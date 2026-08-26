@@ -1,6 +1,6 @@
 # Fabric Portal
 
-Production-ready SaaS platform with multi-tenant architecture, AI agent orchestration, and durable workflow execution.
+A production-ready SaaS platform with multi-tenant architecture, AI agent orchestration, and durable workflow execution.
 
 ## Architecture
 
