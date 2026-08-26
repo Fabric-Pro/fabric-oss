@@ -1,0 +1,239 @@
+/* Basic editor styles */
+.tiptap-container {
+  width: 100%; /* Full width of parent (accounts for sidebar) */
+  max-width: 100%; /* Prevent overflow */
+  height: 100%; /* Take full height */
+  display: flex;
+  flex-direction: column;
+  overflow: hidden; /* Hide overflow on container */
+  box-sizing: border-box; /* Include padding in height calculation */
+}
+
+.tiptap {
+  flex: 1; /* Take up remaining space */
+  box-sizing: border-box; /* Include padding in height calculation */
+  overflow-y: auto; /* Scroll only the editor content */
+  overflow-x: hidden; /* Prevent horizontal scroll */
+  min-height: 0; /* Allow flex item to shrink below content size */
+}
+
+.tiptap :first-child {
+  margin-top: 0;
+}
+
+/* List styles */
+.tiptap ul,
+.tiptap ol {
+  padding: 0 1rem;
+  margin: 1.25rem 1rem 1.25rem 0.4rem;
+}
+
+.tiptap ul li p,
+.tiptap ol li p {
+  margin-top: 0.25em;
+  margin-bottom: 0.25em;
+}
+
+/* Heading styles */
+.tiptap h1,
+.tiptap h2,
+.tiptap h3,
+.tiptap h4,
+.tiptap h5,
+.tiptap h6 {
+  line-height: 1.1;
+  margin-top: 2.5rem;
+  text-wrap: pretty;
+  font-weight: bold;
+}
+
+.tiptap h1,
+.tiptap h2,
+.tiptap h3,
+.tiptap h4,
+.tiptap h5,
+.tiptap h6 {
+  margin-top: 3.5rem;
+  margin-bottom: 1.5rem;
+}
+
+.tiptap p {
+  margin-bottom: 1rem;
+}
+
+.tiptap h1 {
+  font-size: 1.4rem;
+}
+
+.tiptap h2 {
+  font-size: 1.2rem;
+}
+
+.tiptap h3 {
+  font-size: 1.1rem;
+}
+
+.tiptap h4,
+.tiptap h5,
+.tiptap h6 {
+  font-size: 1rem;
+}
+
+/* Code and preformatted text styles */
+.tiptap code {
+  background-color: var(--purple-light);
+  border-radius: 0.4rem;
+  color: var(--black);
+  font-size: 0.85rem;
+  padding: 0.25em 0.3em;
+}
+
+.tiptap pre {
+  background: var(--black);
+  border-radius: 0.5rem;
+  color: var(--white);
+  font-family: "JetBrainsMono", monospace;
+  margin: 1.5rem 0;
+  padding: 0.75rem 1rem;
+}
+
+.tiptap pre code {
+  background: none;
+  color: inherit;
+  font-size: 0.8rem;
+  padding: 0;
+}
+
+.tiptap blockquote {
+  border-left: 3px solid var(--gray-3);
+  margin: 1.5rem 0;
+  padding-left: 1rem;
+}
+
+.tiptap hr {
+  border: none;
+  border-top: 1px solid var(--gray-2);
+  margin: 2rem 0;
+}
+
+/* Diff highlighting - EXACT COPY of ag-ui-demo/style.css */
+/* <s> for deletions (red), <em> for additions (green) */
+.tiptap s {
+  background-color: #f9818150;
+  padding: 2px;
+  font-weight: bold;
+  color: rgba(0, 0, 0, 0.7);
+}
+
+.tiptap em {
+  background-color: #b2f2bb;
+  padding: 2px;
+  font-weight: bold;
+  font-style: normal;
+}
+
+/* Dark mode diff highlighting */
+.dark .tiptap s {
+  background-color: rgba(239, 68, 68, 0.4);
+  color: rgba(255, 255, 255, 0.9);
+}
+
+.dark .tiptap em {
+  background-color: rgba(34, 197, 94, 0.4);
+  color: rgba(255, 255, 255, 0.95);
+  font-style: normal;
+}
+
+/* CopilotKit theme customization */
+.copilotKitWindow {
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+}
+
+/* CopilotKit Sidebar styling to match app theme */
+[data-copilotkit-sidebar] {
+  background-color: hsl(var(--card)) !important;
+  border-left: 1px solid hsl(var(--border)) !important;
+  color: hsl(var(--card-foreground)) !important;
+}
+
+/* Sidebar header */
+[data-copilotkit-sidebar] [class*="header"] {
+  background-color: hsl(var(--card)) !important;
+  border-bottom: 1px solid hsl(var(--border)) !important;
+}
+
+/* Sidebar title */
+[data-copilotkit-sidebar] h2,
+[data-copilotkit-sidebar] [class*="title"] {
+  color: hsl(var(--foreground)) !important;
+}
+
+/* Chat messages */
+[data-copilotkit-sidebar] [class*="message"] {
+  color: hsl(var(--foreground)) !important;
+}
+
+/* User messages */
+[data-copilotkit-sidebar] [class*="user-message"] {
+  background-color: hsl(var(--primary)) !important;
+  color: hsl(var(--primary-foreground)) !important;
+}
+
+/* Assistant messages */
+[data-copilotkit-sidebar] [class*="assistant-message"] {
+  background-color: hsl(var(--muted)) !important;
+  color: hsl(var(--foreground)) !important;
+}
+
+/* Input area */
+[data-copilotkit-sidebar] textarea,
+[data-copilotkit-sidebar] input {
+  background-color: hsl(var(--background)) !important;
+  border: 1px solid hsl(var(--border)) !important;
+  color: hsl(var(--foreground)) !important;
+}
+
+[data-copilotkit-sidebar] textarea::placeholder,
+[data-copilotkit-sidebar] input::placeholder {
+  color: hsl(var(--muted-foreground)) !important;
+}
+
+/* Buttons */
+[data-copilotkit-sidebar] button {
+  background-color: hsl(var(--primary)) !important;
+  color: hsl(var(--primary-foreground)) !important;
+}
+
+[data-copilotkit-sidebar] button:hover {
+  background-color: hsl(var(--primary) / 0.9) !important;
+}
+
+/* Suggestions */
+[data-copilotkit-sidebar] [class*="suggestion"] {
+  background-color: hsl(var(--muted)) !important;
+  border: 1px solid hsl(var(--border)) !important;
+  color: hsl(var(--foreground)) !important;
+}
+
+[data-copilotkit-sidebar] [class*="suggestion"]:hover {
+  background-color: hsl(var(--accent)) !important;
+}
+
+/* Scrollbar for dark mode */
+.dark [data-copilotkit-sidebar] ::-webkit-scrollbar {
+  width: 8px;
+}
+
+.dark [data-copilotkit-sidebar] ::-webkit-scrollbar-track {
+  background: hsl(var(--muted));
+}
+
+.dark [data-copilotkit-sidebar] ::-webkit-scrollbar-thumb {
+  background: hsl(var(--muted-foreground) / 0.3);
+  border-radius: 4px;
+}
+
+.dark [data-copilotkit-sidebar] ::-webkit-scrollbar-thumb:hover {
+  background: hsl(var(--muted-foreground) / 0.5);
+}
+

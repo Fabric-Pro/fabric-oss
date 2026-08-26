@@ -1,0 +1,238 @@
+/* TipTap editor styles for PromptEditorAI */
+.tiptap {
+	outline: none;
+}
+
+.tiptap p {
+	margin: 1em 0;
+}
+
+.tiptap h1,
+.tiptap h2,
+.tiptap h3,
+.tiptap h4,
+.tiptap h5,
+.tiptap h6 {
+	margin: 1.5em 0 0.5em;
+	font-weight: 600;
+	line-height: 1.3;
+}
+
+.tiptap h1 {
+	font-size: 2em;
+}
+
+.tiptap h2 {
+	font-size: 1.5em;
+}
+
+.tiptap h3 {
+	font-size: 1.25em;
+}
+
+.tiptap ul,
+.tiptap ol {
+	padding-left: 1.5em;
+	margin: 1em 0;
+}
+
+.tiptap li {
+	margin: 0.25em 0;
+}
+
+.tiptap code {
+	background-color: rgba(0, 0, 0, 0.05);
+	padding: 0.2em 0.4em;
+	border-radius: 3px;
+	font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+	font-size: 0.9em;
+}
+
+.tiptap pre {
+	background-color: rgba(0, 0, 0, 0.05);
+	padding: 1em;
+	border-radius: 6px;
+	overflow-x: auto;
+	margin: 1em 0;
+}
+
+.tiptap pre code {
+	background-color: transparent;
+	padding: 0;
+}
+
+.tiptap blockquote {
+	border-left: 3px solid rgba(0, 0, 0, 0.1);
+	padding-left: 1em;
+	margin: 1em 0;
+	font-style: italic;
+}
+
+.tiptap a {
+	color: rgb(59, 130, 246);
+	text-decoration: underline;
+	cursor: pointer;
+}
+
+.tiptap a:hover {
+	color: rgb(37, 99, 235);
+}
+
+/* Template variable highlighting */
+.template-variable {
+	background-color: rgba(59, 130, 246, 0.1);
+	color: rgb(59, 130, 246);
+	padding: 0.125rem 0.25rem;
+	border-radius: 0.25rem;
+	font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+	font-size: 0.875em;
+	font-weight: 500;
+}
+
+/* Dark mode support */
+.dark .tiptap code {
+	background-color: rgba(255, 255, 255, 0.1);
+}
+
+.dark .tiptap pre {
+	background-color: rgba(255, 255, 255, 0.05);
+}
+
+.dark .tiptap blockquote {
+	border-left-color: rgba(255, 255, 255, 0.2);
+}
+
+.dark .template-variable {
+	background-color: rgba(96, 165, 250, 0.15);
+	color: rgb(96, 165, 250);
+}
+
+.dark .tiptap a {
+	color: rgb(96, 165, 250);
+}
+
+.dark .tiptap a:hover {
+	color: rgb(147, 197, 253);
+}
+
+/* Syntax examples section */
+details summary {
+	font-weight: 500;
+	transition: color 0.2s;
+}
+
+details[open] summary {
+	margin-bottom: 0.5rem;
+}
+
+/* Template syntax highlighting in code blocks */
+.hljs-template-variable {
+	color: rgb(59, 130, 246);
+	background-color: rgba(59, 130, 246, 0.1);
+	padding: 0.125rem 0.25rem;
+	border-radius: 0.25rem;
+}
+
+.hljs-template-tag {
+	color: rgb(168, 85, 247);
+	background-color: rgba(168, 85, 247, 0.1);
+	padding: 0.125rem 0.25rem;
+	border-radius: 0.25rem;
+}
+
+.hljs-keyword {
+	color: rgb(236, 72, 153);
+	font-weight: 600;
+}
+
+.hljs-name {
+	color: rgb(14, 165, 233);
+}
+
+.hljs-filter {
+	color: rgb(234, 179, 8);
+}
+
+.dark .hljs-template-variable {
+	color: rgb(96, 165, 250);
+	background-color: rgba(96, 165, 250, 0.15);
+}
+
+.dark .hljs-template-tag {
+	color: rgb(192, 132, 252);
+	background-color: rgba(192, 132, 252, 0.15);
+}
+
+.dark .hljs-keyword {
+	color: rgb(244, 114, 182);
+}
+
+.dark .hljs-name {
+	color: rgb(56, 189, 248);
+}
+
+.dark .hljs-filter {
+	color: rgb(250, 204, 21);
+}
+
+/* Placeholder styles */
+.tiptap p.is-editor-empty:first-child::before {
+	color: rgba(0, 0, 0, 0.3);
+	content: attr(data-placeholder);
+	float: left;
+	height: 0;
+	pointer-events: none;
+}
+
+.dark .tiptap p.is-editor-empty:first-child::before {
+	color: rgba(255, 255, 255, 0.3);
+}
+
+/* Link styles */
+.tiptap-link {
+	color: rgb(59, 130, 246);
+	text-decoration: underline;
+	cursor: pointer;
+}
+
+.tiptap-link:hover {
+	color: rgb(37, 99, 235);
+}
+
+.dark .tiptap-link {
+	color: rgb(96, 165, 250);
+}
+
+.dark .tiptap-link:hover {
+	color: rgb(147, 197, 253);
+}
+
+/* Raw text view styling */
+.raw-text-view {
+	font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+	font-size: 0.875rem;
+	line-height: 1.5;
+	min-height: 500px;
+	background-color: rgba(0, 0, 0, 0.02);
+	border: 1px solid rgba(0, 0, 0, 0.1);
+	border-radius: 0.375rem;
+	padding: 1rem;
+	resize: vertical;
+}
+
+.dark .raw-text-view {
+	background-color: rgba(255, 255, 255, 0.02);
+	border-color: rgba(255, 255, 255, 0.1);
+}
+
+.raw-text-view:focus {
+	outline: none;
+	border-color: rgb(59, 130, 246);
+	box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.1);
+}
+
+.dark .raw-text-view:focus {
+	border-color: rgb(96, 165, 250);
+	box-shadow: 0 0 0 2px rgba(96, 165, 250, 0.1);
+}
+

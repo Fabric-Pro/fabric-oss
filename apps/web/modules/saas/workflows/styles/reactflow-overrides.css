@@ -1,0 +1,39 @@
+.react-flow__controls {
+	box-shadow: none;
+}
+
+.react-flow__controls-button {
+	border-radius: 0.5rem;
+	background-color: hsl(var(--background));
+	border: 1px solid hsl(var(--border));
+	color: hsl(var(--foreground));
+	transition:
+		background-color 0.2s ease,
+		color 0.2s ease,
+		border-color 0.2s ease;
+}
+
+.react-flow__controls-button:hover {
+	background-color: hsl(var(--muted));
+}
+
+.react-flow__controls-button svg {
+	width: 1rem;
+	height: 1rem;
+	color: inherit;
+	fill: currentColor;
+	stroke: currentColor;
+}
+
+/* Fix for custom buttons inside Controls - ensure full clickability */
+.react-flow__controls > button {
+	position: relative;
+	z-index: 10;
+	pointer-events: auto;
+}
+
+/* Ensure the controls container allows proper button interaction */
+.react-flow__controls {
+	overflow: visible;
+}
+

@@ -1,0 +1,101 @@
+{
+	"build": {
+		"id": "1",
+		"name": "20260724.1",
+		"url": "https://dev.azure.com/example-org/_apis/build/Builds/1"
+	},
+	"buildConfiguration": {
+		"branchName": "refs/heads/qa-demo",
+		"buildDefinitionId": 1,
+		"flavor": "",
+		"id": 1,
+		"number": "20260724.1",
+		"platform": "",
+		"project": {
+			"name": "Fabric"
+		},
+		"targetBranchName": "",
+		"uri": "vstfs:///Build/Build/1"
+	},
+	"completedDate": "2026-07-24T13:37:29.013Z",
+	"createdDate": "2026-07-24T13:37:32.677Z",
+	"customFields": [
+		{
+			"fieldName": "TestRunSystem",
+			"value": "VSTS - PTR"
+		}
+	],
+	"id": 2,
+	"incompleteTests": 0,
+	"isAutomated": true,
+	"lastUpdatedBy": {
+		"_links": {
+			"avatar": {
+				"href": "https://dev.azure.com/example-org/_apis/GraphProfile/MemberAvatars/svc.MDAwMDAwMDAtMDAwMC0wMDAwLTAwMDAtMDAwMDAwMDAwMDAxOkJ1aWxkOjAwMDAwMDAwLTAwMDAtMDAwMC0wMDAwLTAwMDAwMDAwMDAwMw"
+			}
+		},
+		"descriptor": "svc.MDAwMDAwMDAtMDAwMC0wMDAwLTAwMDAtMDAwMDAwMDAwMDAxOkJ1aWxkOjAwMDAwMDAwLTAwMDAtMDAwMC0wMDAwLTAwMDAwMDAwMDAwMw",
+		"displayName": "Fabric Build Service (example-org)",
+		"id": "00000000-0000-0000-0000-000000000003",
+		"imageUrl": "https://dev.azure.com/example-org/_apis/GraphProfile/MemberAvatars/svc.MDAwMDAwMDAtMDAwMC0wMDAwLTAwMDAtMDAwMDAwMDAwMDAxOkJ1aWxkOjAwMDAwMDAwLTAwMDAtMDAwMC0wMDAwLTAwMDAwMDAwMDAwMw",
+		"uniqueName": "Build\\00000000-0000-0000-0000-000000000000",
+		"url": "https://spsprodcus7.vssps.visualstudio.com/A00000000-0000-0000-0000-000000000001/_apis/Identities/00000000-0000-0000-0000-000000000003"
+	},
+	"lastUpdatedDate": "2026-07-24T13:37:33.223Z",
+	"name": "acme-store unit tests",
+	"notApplicableTests": 0,
+	"owner": {
+		"_links": {
+			"avatar": {
+				"href": "https://dev.azure.com/example-org/_apis/GraphProfile/MemberAvatars/svc.MDAwMDAwMDAtMDAwMC0wMDAwLTAwMDAtMDAwMDAwMDAwMDAxOkJ1aWxkOjAwMDAwMDAwLTAwMDAtMDAwMC0wMDAwLTAwMDAwMDAwMDAwMw"
+			}
+		},
+		"descriptor": "svc.MDAwMDAwMDAtMDAwMC0wMDAwLTAwMDAtMDAwMDAwMDAwMDAxOkJ1aWxkOjAwMDAwMDAwLTAwMDAtMDAwMC0wMDAwLTAwMDAwMDAwMDAwMw",
+		"displayName": "Fabric Build Service (example-org)",
+		"id": "00000000-0000-0000-0000-000000000003",
+		"imageUrl": "https://dev.azure.com/example-org/_apis/GraphProfile/MemberAvatars/svc.MDAwMDAwMDAtMDAwMC0wMDAwLTAwMDAtMDAwMDAwMDAwMDAxOkJ1aWxkOjAwMDAwMDAwLTAwMDAtMDAwMC0wMDAwLTAwMDAwMDAwMDAwMw",
+		"uniqueName": "Build\\00000000-0000-0000-0000-000000000000",
+		"url": "https://spsprodcus7.vssps.visualstudio.com/A00000000-0000-0000-0000-000000000001/_apis/Identities/00000000-0000-0000-0000-000000000003"
+	},
+	"passedTests": 4,
+	"pipelineReference": {
+		"jobReference": {
+			"attempt": 1,
+			"jobName": "__default"
+		},
+		"phaseReference": {
+			"attempt": 1,
+			"phaseName": "Job"
+		},
+		"pipelineDefinitionId": 1,
+		"pipelineId": 1,
+		"stageReference": {
+			"attempt": 1,
+			"stageName": "__default"
+		}
+	},
+	"postProcessState": "Complete",
+	"project": {
+		"id": "00000000-0000-0000-0000-000000000000",
+		"name": "Fabric"
+	},
+	"revision": 4,
+	"runStatistics": [
+		{
+			"count": 4,
+			"outcome": "Passed",
+			"state": "Unspecified"
+		},
+		{
+			"count": 1,
+			"outcome": "Failed",
+			"state": "Unspecified"
+		}
+	],
+	"startedDate": "2026-07-24T13:37:29.003Z",
+	"state": "Completed",
+	"totalTests": 5,
+	"unanalyzedTests": 1,
+	"url": "https://dev.azure.com/example-org/Fabric/_apis/test/Runs/2",
+	"webAccessUrl": "https://dev.azure.com/example-org/Fabric/_TestManagement/Runs?runId=2&_a=runCharts"
+}

@@ -1,0 +1,63 @@
+# Copy to terraform.tfvars and fill in your values. terraform.tfvars is gitignored.
+
+region       = "us-east-1"
+cluster_name = "fabric-dev"
+environment  = "dev"
+
+# GitLab project path (e.g. "myuser/fabric-test"). Used in the OIDC trust policy.
+gitlab_project_path = "REPLACE_ME/fabric-test"
+
+# Runner authentication token (glrt-…): GitLab project -> Settings -> CI/CD -> Runners -> New project runner.
+# This is the modern auth token, NOT a legacy registration token.
+gitlab_runner_token = "glrt-REPLACE_ME"
+
+# CIDRs allowed to reach the public EKS API endpoint. Open by default for dev;
+# tighten to your CI runner NAT + admin IPs for anything you keep around.
+# eks_public_access_cidrs = ["203.0.113.4/32"]
+
+# --- Production posture (SOC 2) --------------------------------------------
+# For a production deployment, override the RDS defaults below. See
+# docs/compliance/soc2/self-hosted/03-production-reference-architecture.md.
+#   rds_skip_final_snapshot     = false   # keep a final snapshot + turn on deletion protection
+#   rds_multi_az                = true    # AZ-failover standby (A1.2 availability)
+#   rds_backup_retention_period = 30      # 30-day PITR window
+#   rds_apply_immediately       = false   # changes ride the maintenance window
+# Also restrict the EKS endpoint above (eks_public_access_cidrs) to operator IPs.
+
+# Empty for HTTP-only ALB (default). Set to your delegated subdomain to enable Route 53 + HTTPS.
+domain_name = ""
+
+# Browser origins allowed by S3 bucket CORS. This is the app's PUBLIC origin and CAN BE
+# YOUR CUSTOM DOMAIN (e.g. "https://app.example.com") — or, if you have no domain yet,
+# the HTTP ALB hostname. Prefer the domain: it's stable + HTTPS and set once up front.
+# REQUIRED for in-app file uploads
+# (avatars, project/workspace documents): the browser does a presigned-PUT straight
+# to S3, and without the app's own origin here the upload fails CORS preflight
+# ("No 'Access-Control-Allow-Origin' header"). Add the public origin the app is
+# served from:
+#   • With a custom domain (domain_name set above) — use the HTTPS origin:
+#       web_origins = ["https://app.example.com"]
+#   • HTTP-only ALB (no domain) — the ALB DNS name only exists AFTER the first deploy.
+#     Do the first `terraform apply` + the Helm deploy, then get the hostname with
+#     `kubectl get ingress -n fabric` (ADDRESS column) and add it here + re-apply:
+#       web_origins = ["http://k8s-fabric-fabricwe-xxxx.us-east-1.elb.amazonaws.com"]
+# (The localhost entries are only for running the Aspire dev server against this bucket.)
+web_origins = [
+  "http://localhost:3000",
+  "http://localhost:3001",
+  # "https://app.example.com",        # <- your domain, OR
+  # "http://<your-alb-dns-name>",     # <- your ALB hostname (kubectl get ingress -n fabric)
+]
+
+# Two-phase apply: leave false for the FIRST apply (foundational AWS infra), then set
+# true for the SECOND apply once the cluster is healthy (installs in-cluster controllers).
+enable_k8s_addons = false
+
+# Budget alerts go here. Also used for ACM cert validation if you set domain_name.
+alert_email = "you@example.com"
+
+tags = {
+  Project = "fabric"
+  Owner   = "REPLACE_ME"
+  Env     = "dev"
+}

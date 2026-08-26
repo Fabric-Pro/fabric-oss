@@ -1,0 +1,2 @@
+ALTER TYPE "DataConnectionProvider" ADD VALUE IF NOT EXISTS 'GOOGLE_STORAGE';
+ALTER TYPE "DataConnectionProvider" ADD VALUE IF NOT EXISTS 'R2';

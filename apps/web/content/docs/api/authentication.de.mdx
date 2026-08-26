@@ -1,0 +1,138 @@
+---
+title: Authentifizierung & Autorisierung
+description: Wie Authentifizierung und Autorisierung in Fabric AI funktionieren, einschließlich Anmeldemethoden, Sitzungsverwaltung und rollenbasierter Zugriffskontrolle.
+---
+
+Fabric AI bietet sichere Authentifizierung mit Unterstützung für mehrere Anmeldemethoden und Zugriffskontrolle auf Organisationsebene.
+
+## Authentifizierungsmethoden
+
+Fabric unterstützt folgende Anmeldemethoden:
+
+| Methode | Beschreibung |
+|--------|-------------|
+| **E-Mail & Passwort** | Traditionelle Registrierung mit E-Mail-Verifizierung |
+| **Magic Link** | Passwortlose Anmeldung per E-Mail |
+| **Passkey** | WebAuthn/FIDO2 biometrische Authentifizierung |
+| **Zwei-Faktor (2FA)** | TOTP-basierter zweiter Faktor |
+| **Google OAuth** | Anmeldung mit Google-Konto |
+| **GitHub OAuth** | Anmeldung mit GitHub-Konto |
+| **Microsoft OAuth** | Anmeldung mit Microsoft-Konto |
+
+## Sitzungsverwaltung
+
+Die API verwendet sitzungsbasierte Authentifizierung. Wenn sich ein Benutzer anmeldet, wird eine sichere Sitzung erstellt:
+
+1. Benutzer authentifiziert sich über eine der unterstützten Methoden
+2. Eine Sitzung wird erstellt und sicher gespeichert
+3. Ein sicheres HTTP-only-Cookie wird auf dem Client gesetzt
+4. Nachfolgende API-Anfragen schließen das Cookie automatisch ein
+5. Jede Anfrage validiert die Sitzung vor der Verarbeitung
+
+Sitzungen sind mit konfigurierbarem Ablauf konfiguriert und unterstützen Konto-Verknüpfung (Benutzer können mehrere OAuth-Anbieter mit einem Konto verknüpfen).
+
+---
+
+## Sicherheit der Fehlermeldungen
+
+Alle Authentifizierungs-Fehlermeldungen folgen den OWASP-Sicherheitsrichtlinien, um Kontoermittlung und Credential-Probing zu verhindern:
+
+| Ablauf | Fehlerverhalten |
+|--------|----------------|
+| **Anmeldung** | Alle Anmeldedaten-Fehler (falsches Passwort, nicht existierende E-Mail, Konto nicht gefunden) geben eine einzige generische Meldung „Ungültige E-Mail oder Passwort" zurück. Das Backend gibt unabhängig vom Fehlergrund denselben `INVALID_EMAIL_OR_PASSWORD`-Code zurück. |
+| **Passwort vergessen** | Zeigt immer eine Erfolgsmeldung („Falls ein Konto mit dieser E-Mail-Adresse existiert, erhältst du einen Link zum Zurücksetzen deines Passworts"), unabhängig davon, ob die E-Mail registriert ist. Das Backend gibt HTTP 200 für existierende und nicht existierende E-Mails zurück. |
+| **Registrierung** | Zeigt „Ein Konto mit dieser E-Mail-Adresse existiert bereits", wenn die E-Mail bereits vergeben ist. Dies ist akzeptabel, da der Benutzer die Aktion mit seiner eigenen E-Mail initiiert hat. |
+| **Zwei-Faktor** | Zeigt spezifische, umsetzbare Meldungen (ungültiger Code, abgelaufener Code, zu viele Versuche), da der Benutzer bereits teilweise authentifiziert ist. |
+| **Passkey** | Zeigt spezifische Fehlermeldungen für Passkey-Verifizierung und Registrierungsfehler. |
+
+### Unterstützte Fehlercodes
+
+Authentifizierungs-Fehlercodes werden zentral auf lokalisierte benutzerfreundliche Meldungen (Englisch und Deutsch) abgebildet. Folgende Kategorien werden abgedeckt:
+
+- **Basis-Auth-Codes** — Anmeldung, Registrierung, Sitzung, E-Mail-Verifizierung, Token-Fehler
+- **Zwei-Faktor-Codes** — Ungültiges/abgelaufenes OTP, Backup-Code-Fehler, Sitzungsablauf
+- **Passkey-Codes** — Challenge-, Registrierungs- und Authentifizierungsfehler
+- **Benutzerdefinierte Codes** — Kontosperrung, Rate-Limiting, Einladungsfehler
+
+Jeder nicht erkannte Fehlercode wird auf eine generische „Etwas ist schiefgelaufen"-Meldung zurückgeführt.
+
+---
+
+## Autorisierungsebenen
+
+API-Endpunkte haben unterschiedliche Autorisierungsebenen:
+
+| Ebene | Beschreibung | Beispiel |
+|-------|-------------|---------|
+| **Öffentlich** | Keine Authentifizierung erforderlich | Kontaktformulare, Newsletter-Anmeldung |
+| **Authentifiziert** | Erfordert eine gültige Sitzung | Profileinstellungen, KI-Chat |
+| **Tenant-beschränkt** | Authentifiziert mit automatischer Datenisolierung | Projekte, Dokumente, Workflows |
+| **Admin** | Erfordert Admin-Rolle | Benutzerverwaltung, Systemeinstellungen |
+
+### Rate-Limiting
+
+API-Endpunkte werden ratenbegrenzt, um Missbrauch zu verhindern:
+
+| Kategorie | Beschreibung |
+|----------|-------------|
+| **Standard** | Pro-Benutzer-Grenzen für normale Operationen |
+| **KI-Operationen** | Strengere Pro-Benutzer-Grenzen für KI/LLM-Aufrufe |
+| **Workflow-Operationen** | Pro-Benutzer-Grenzen für Workflow-Verwaltung |
+| **Agenten-Operationen** | Pro-Benutzer-Grenzen für Agenten-Ausführungen |
+| **Öffentlich** | Pro-IP-Grenzen für nicht authentifizierte Endpunkte |
+
+---
+
+## Organisationsrollen
+
+Zugriff auf Organisationsebene verwendet rollenbasierte Zugriffskontrolle:
+
+| Rolle | Berechtigungen |
+|------|-------------|
+| **Eigentümer** | Volle Kontrolle einschließlich Abrechnung, Löschung und Mitgliederverwaltung |
+| **Admin** | Kann Mitglieder, Einstellungen und alle Ressourcen verwalten |
+| **Mitglied** | Kann Agenten verwenden, Dokumente erstellen und auf gemeinsame Ressourcen zugreifen |
+
+Rollen werden beim Einladen von Mitgliedern zugewiesen und können von Eigentümern und Admins geändert werden.
+
+---
+
+## Social OAuth Einrichtung
+
+Um Social-Anmeldeanbieter zu aktivieren, konfigurieren Sie Folgendes:
+
+| Anbieter | Anforderungen |
+|----------|-------------|
+| **Google** | OAuth Client-ID und Secret aus der [Google Cloud Console](https://console.cloud.google.com) |
+| **GitHub** | OAuth App-Anmeldedaten aus den [GitHub Developer Settings](https://github.com/settings/developers) |
+| **Microsoft** | App-Registrierung aus dem [Azure Portal](https://portal.azure.com) |
+
+Konto-Verknüpfung ist für Google und GitHub aktiviert, sodass Benutzer sich mit mehreren Anbietern anmelden und diese mit einem einzigen Konto verknüpfen können.
+
+---
+
+## API-Referenz
+
+Die API generiert automatisch OpenAPI-Dokumentation für alle Authentifizierungs-Endpunkte. Zugriff auf die Referenz unter:
+
+```
+GET /api/auth/reference
+```
+
+Dies bietet eine vollständige Referenz aller verfügbaren Authentifizierungs-Endpunkte, Anfrage-/Antwortschemata und Fehlercodes.
+
+---
+
+## Nächste Schritte
+
+<Cards>
+  <Card title="API-Übersicht" href="/docs/api/overview">
+    REST-API-Endpunkte und Verwendung
+  </Card>
+  <Card title="Datenisolierung" href="/docs/guides/tenant-isolation">
+    Multi-Tenant-Datenisolierung
+  </Card>
+  <Card title="Organisationen" href="/docs/features/organizations">
+    Organisations-Verwaltungsfunktionen
+  </Card>
+</Cards>

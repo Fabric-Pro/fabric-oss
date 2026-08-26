@@ -1,0 +1,47 @@
+{
+	"name": "@repo/rag",
+	"version": "0.0.3",
+	"license": "Apache-2.0",
+	"private": true,
+	"main": "./index.ts",
+	"types": "./**/*.ts",
+	"scripts": {
+		"type-check": "tsc --noEmit",
+		"test": "vitest run",
+		"test:watch": "vitest",
+		"test:rag": "dotenv -c -e ../../.env.local -- tsx test-rag.ts",
+		"test:tokenizer": "tsx lib/chunking/tokenizer.test.ts",
+		"test:semantic": "dotenv -c -e ../../.env.local -- tsx lib/chunking/semantic.test.ts"
+	},
+	"dependencies": {
+		"@azure/ai-form-recognizer": "^5.1.0",
+		"@huggingface/transformers": "^3.8.1",
+		"@qdrant/js-client-rest": "^1.16.2",
+		"@repo/ai": "workspace:*",
+		"@repo/database": "workspace:*",
+		"@repo/integrations": "workspace:*",
+		"@repo/logs": "workspace:*",
+		"@repo/openapi-tools": "workspace:*",
+		"@repo/utils": "workspace:*",
+		"@temporalio/client": "~1.16.3",
+		"ai": "^6.0.116",
+		"code-chunk": "^0.1.13",
+		"exceljs": "^4.4.0",
+		"html-to-text": "^9.0.5",
+		"js-tiktoken": "^1.0.21",
+		"jszip": "^3.10.1",
+		"mammoth": "^1.8.0",
+		"pdf-parse": "^1.1.1",
+		"sharp": "^0.35.0",
+		"zod": "^4.0.0-beta.2"
+	},
+	"devDependencies": {
+		"@repo/tsconfig": "workspace:*",
+		"@types/html-to-text": "^9.0.4",
+		"@types/node": "^22.10.2",
+		"@types/pdf-parse": "^1.1.4",
+		"tsx": "^4.19.2",
+		"typescript": "^5.9.3",
+		"vitest": "^4.1.8"
+	}
+}

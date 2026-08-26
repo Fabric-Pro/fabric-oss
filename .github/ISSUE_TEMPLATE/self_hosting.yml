@@ -1,0 +1,77 @@
+name: Self-hosting help
+description: Fabric will not install, start, or connect in your own environment.
+labels: ["self-hosting", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this when a deployment will not come up. If Fabric runs but a feature
+        misbehaves, file a bug report instead.
+
+  - type: dropdown
+    id: deploy-mode
+    attributes:
+      label: How are you deploying?
+      options:
+        - Docker Compose
+        - .NET Aspire (local development)
+        - Kubernetes / Helm
+        - Something else, described below
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: The release tag, or the commit SHA if you build from source.
+      placeholder: v1.4.2, or 0214c068
+    validations:
+      required: true
+
+  - type: textarea
+    id: stuck
+    attributes:
+      label: Where it stops
+      description: >
+        The step you reached and what happened there. Name the container or
+        service if one of them is the problem.
+      placeholder: |
+        `docker compose up` brings everything up except the worker, which
+        restarts every 30 seconds.
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: >
+        Output from the service that fails. Redact connection strings, API keys,
+        and anything identifying your organization before you post.
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Host and dependencies
+      description: >
+        Operating system, container runtime, Postgres version, and how you supply
+        secrets. Air-gapped or proxied networks are worth mentioning.
+      placeholder: |
+        Ubuntu 24.04, Docker 27.3, Postgres 16 in the same compose file.
+        Secrets from a .env file. No outbound internet except a proxy.
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: checked
+    attributes:
+      label: Before you file
+      options:
+        - label: I read docs/deployment.md
+          required: true
+        - label: I searched existing issues and discussions
+          required: true

@@ -1,0 +1,93 @@
+# Fabric Weave Services
+# Docker Compose configuration for multi-agent orchestration services
+# Ports aligned with Aspire AppHost (8140/8141/8142)
+
+version: '3.8'
+
+services:
+  # weave-readers: Tier 1 agents (Thread, Spindle, Weft, Warp)
+  weave-readers:
+    build:
+      context: ../../..
+      dockerfile: agents/langchain/weave-readers/Dockerfile
+    ports:
+      - "8140:8140"
+    environment:
+      - PORT=8140
+      - NODE_ENV=production
+      - SANDBOX_API_URL=${SANDBOX_API_URL:-http://host.docker.internal:8787}
+      - AGENT_SERVICE_SECRET=${AGENT_SERVICE_SECRET}
+      - AI_TOKEN_SECRET=${AI_TOKEN_SECRET}
+      - DATABASE_URL=${DATABASE_URL}
+      - DIRECT_URL=${DIRECT_URL:-${DATABASE_URL}}
+      - FABRIC_API_URL=${FABRIC_API_URL:-http://host.docker.internal:3001}
+      - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-*}
+    networks:
+      - fabric-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8140/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+
+  # weave-shuttle: Category-specific implementation (write access)
+  weave-shuttle:
+    build:
+      context: ../../..
+      dockerfile: agents/langchain/weave-shuttle/Dockerfile
+    ports:
+      - "8141:8141"
+    environment:
+      - PORT=8141
+      - NODE_ENV=production
+      - SANDBOX_API_URL=${SANDBOX_API_URL:-http://host.docker.internal:8787}
+      - AGENT_SERVICE_SECRET=${AGENT_SERVICE_SECRET}
+      - AI_TOKEN_SECRET=${AI_TOKEN_SECRET}
+      - FABRIC_API_URL=${FABRIC_API_URL:-http://host.docker.internal:3001}
+      # AGENT_SERVICE_SECRET is already set above — used for both A2A auth and internal bridge
+      - FABRIC_INTERNAL_URL=${FABRIC_INTERNAL_URL:-http://host.docker.internal:3001}
+      - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-*}
+    networks:
+      - fabric-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8141/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+
+  # weave-planners: Multi-node LangGraph agents (Pattern)
+  weave-planners:
+    build:
+      context: ../../..
+      dockerfile: agents/langchain/weave-planners/Dockerfile
+    ports:
+      - "8142:8142"
+    environment:
+      - PORT=8142
+      - NODE_ENV=production
+      - WEAVE_READERS_URL=${WEAVE_READERS_URL:-http://weave-readers:8140}
+      - AGENT_SERVICE_SECRET=${AGENT_SERVICE_SECRET}
+      - AI_TOKEN_SECRET=${AI_TOKEN_SECRET}
+      - FABRIC_API_URL=${FABRIC_API_URL:-http://host.docker.internal:3001}
+      - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-*}
+      - DATABASE_URL=${DATABASE_URL}
+    networks:
+      - fabric-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8142/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+    depends_on:
+      - weave-readers
+
+networks:
+  fabric-network:
+    external: true
+    name: fabric-network

@@ -1,0 +1,75 @@
+version: "3.8"
+
+# DUAL PROTOCOL ARCHITECTURE:
+# - langgraph-api (AG-UI): Port 8124 for CopilotKit frontend
+# - a2a-server: Port 8224 for orchestrator agent-to-agent communication
+
+services:
+  langgraph-redis:
+    image: redis:6
+    healthcheck:
+      test: redis-cli ping
+      interval: 5s
+      timeout: 1s
+      retries: 5
+    networks:
+      - langgraph-network
+
+  # AG-UI Server (LangGraph) - For CopilotKit
+  langgraph-api:
+    build:
+      context: .
+      dockerfile: Dockerfile.langgraph
+    ports:
+      - "8124:8000"
+    depends_on:
+      langgraph-redis:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      - REDIS_URI=redis://langgraph-redis:6379
+      - POSTGRES_URI=postgresql://postgres:postgres@host.docker.internal:5433/langgraph
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - langgraph-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # A2A Server - For Orchestrator
+  a2a-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8224:8224"
+    depends_on:
+      langgraph-redis:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      - REDIS_URI=redis://langgraph-redis:6379
+      - POSTGRES_URI=postgresql://postgres:postgres@host.docker.internal:5433/langgraph
+      - PORT=8224
+      - HOST=0.0.0.0
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - langgraph-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8224/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+networks:
+  langgraph-network:
+    driver: bridge
+

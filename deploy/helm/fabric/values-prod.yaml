@@ -1,0 +1,92 @@
+# =============================================================================
+# Fabric Helm chart — production overrides
+# =============================================================================
+# Production-shape profile.
+#
+# Intent:
+#   - HA replicas (>= 2) for Fabric application services. The bundled Qdrant
+#     StatefulSet remains single-node; use an external service when vector-store
+#     HA is required.
+#   - Production-tier resource requests/limits.
+#   - TLS-terminated ALB Ingress — requires global.domain and
+#     ingress.certificateArn (set via --set or a secrets-merged values file).
+#   - NetworkPolicy ON (default-deny + per-service allow).
+#
+# Apply with:
+#   helm upgrade --install fabric . -f values-prod.yaml -n fabric \
+#     --set global.imageRegistry=123456789012.dkr.ecr.us-east-1.amazonaws.com \
+#     --set global.imageTag=$CI_COMMIT_SHA \
+#     --set ingress.certificateArn=arn:aws:acm:us-east-1:...:certificate/... \
+#     --atomic --timeout 15m
+#
+# NOTE: global.imageTag MUST be supplied explicitly for prod deploys — do not
+# rely on the "latest" default inherited from values.yaml. Mutable tags break
+# reproducibility and prevent reliable rollbacks. CI should always pass
+# $CI_COMMIT_SHA (or an equivalent immutable digest) via --set.
+# =============================================================================
+
+global:
+  environment: "prod"
+  # domain: deliberately NOT set here. It becomes a real Ingress host rule and
+  # the base of every auth callback, so a committed placeholder is not inert —
+  # it silently produces a deployment addressed at a hostname nobody owns.
+  # Supplied at deploy time from the PROD_DOMAIN CI variable (or --set
+  # global.domain=... for a manual upgrade). See README.md § Environment wiring.
+  # imageTag: MUST be supplied at deploy time (--set global.imageTag=$CI_COMMIT_SHA)
+  #          The "latest" default in values.yaml is unsafe for production.
+
+ingress:
+  enabled: true
+  tls: true
+  certificateArn: ""                  # MUST be supplied at deploy time (--set or secrets file)
+
+web:
+  replicas: 2
+  resources:
+    requests: { cpu: 500m, memory: 1Gi }
+    limits:   { cpu: 2000m, memory: 2Gi }
+
+temporalWorker:
+  replicas: 2
+  resources:
+    requests: { cpu: 500m, memory: 1Gi }
+    limits:   { cpu: 2000m, memory: 2Gi }
+
+mcpStdioWrapper:
+  replicas: 2
+  resources:
+    requests: { cpu: 500m, memory: 1Gi }
+    limits:   { cpu: 2000m, memory: 2Gi }
+
+agents:
+  - { name: document-generator,         image: fabric-document-generator,         port: 8124, replicas: 2 }
+  - { name: project-document-generator, image: fabric-project-document-generator, port: 8125, replicas: 2 }
+  - { name: task-planner,               image: fabric-task-planner,               port: 8126, replicas: 2 }
+  - { name: story-breakdown,            image: fabric-story-breakdown,            port: 8127, replicas: 2 }
+  - { name: api-agent,                  image: fabric-api-agent,                  port: 8131, replicas: 2 }
+  - { name: prompt-enhancer,            image: fabric-prompt-enhancer,            port: 8134, replicas: 2 }
+  - { name: data-analyst,               image: fabric-data-analyst,               port: 8130, replicas: 2 }
+  - { name: backlog-updater,            image: fabric-backlog-updater,            port: 8135, replicas: 2 }
+  - { name: weave-readers,              image: fabric-weave-readers,              port: 8140, replicas: 2 }
+  - { name: weave-shuttle,              image: fabric-weave-shuttle,              port: 8141, replicas: 2 }
+  - { name: weave-planners,             image: fabric-weave-planners,             port: 8142, replicas: 2 }
+
+networkPolicy:
+  enabled: true
+  # Conservative default; override to the real VPC CIDR via the optional
+  # VPC_CIDR CI variable (see Terraform module.vpc output). Unlike `domain`, a
+  # wrong value here narrows or widens ALB→web ingress rather than producing an
+  # unreachable deployment, so it is a default rather than a required input.
+  vpcCidr: "10.0.0.0/16"
+
+# Prod Qdrant sizing. Re-evaluate before launch: the OSS Helm chart lacks
+# zero-downtime upgrades, automatic shard rebalancing, and built-in DR. For a
+# real prod cluster, consider Qdrant Hybrid Cloud (qdrant.enabled = false +
+# externalUrl) or implementing PV snapshot backups via the EBS CSI driver.
+qdrant:
+  enabled: true
+  storage:
+    size: 50Gi
+  resources:
+    requests: { cpu: 500m, memory: 2Gi }
+    limits:   { cpu: 2000m, memory: 4Gi }

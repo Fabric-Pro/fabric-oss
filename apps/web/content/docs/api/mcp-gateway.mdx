@@ -1,0 +1,240 @@
+---
+title: MCP Gateway API
+description: API reference for the Fabric MCP Gateway — endpoint details, authentication, tools, and authority management.
+---
+
+The Fabric MCP Gateway exposes a single endpoint that implements the **MCP 2025-03-26 Streamable HTTP** transport. It works with any MCP-compatible client.
+
+## Endpoint
+
+```
+POST https://your-fabric.com/api/mcp-gateway
+```
+
+## Authentication
+
+Include one of the following:
+
+| Method | Header | Format |
+|---|---|---|
+| API Key (recommended) | `Authorization` | `Bearer fab_xxxx_xxxxxxxxxx` |
+| Organization context | `X-Organization-Id` | Organization ID string |
+
+## MCP Protocol Methods
+
+### initialize
+
+Establishes a new MCP session.
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "initialize",
+  "params": {}
+}
+```
+
+**Response:**
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+    "protocolVersion": "2025-03-26",
+    "serverInfo": {
+      "name": "fabric-mcp-gateway",
+      "version": "1.0.0"
+    },
+    "capabilities": {
+      "tools": { "listChanged": true }
+    },
+    "instructions": "..."
+  }
+}
+```
+
+The response includes an `Mcp-Session-Id` header for subsequent requests.
+
+### tools/list
+
+Returns all available tools.
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "method": "tools/list"
+}
+```
+
+**Response includes:**
+
+- **Platform tools** (`fabric_*`) — always present, 21 tools
+- **Connected server tools** (`{prefix}__{tool}`) — from your MCP server connections
+
+Connected tools include `_meta` with authority status:
+
+```json
+{
+  "name": "linear__create_issue",
+  "description": "[Linear] Create a new issue",
+  "inputSchema": { "..." },
+  "_meta": {
+    "requiresAuthority": true,
+    "authorityStatus": "missing",
+    "providerKey": "linear"
+  }
+}
+```
+
+### tools/call
+
+Execute a tool.
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 3,
+  "method": "tools/call",
+  "params": {
+    "name": "fabric_list_projects",
+    "arguments": {
+      "status": "ACTIVE",
+      "limit": 10
+    }
+  }
+}
+```
+
+For connected server tools, authority must be active:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 4,
+  "method": "tools/call",
+  "params": {
+    "name": "linear__list_issues",
+    "arguments": { "project": "ABC" }
+  }
+}
+```
+
+If not authorized, returns:
+
+```json
+{
+  "result": {
+    "content": [{
+      "type": "text",
+      "text": "{\"error\":\"Authority required\",\"action\":\"request_authority\",\"providerKey\":\"linear\"}"
+    }],
+    "isError": true
+  }
+}
+```
+
+## Authority Management API
+
+The following oRPC procedures manage authority sessions from the Fabric UI/API:
+
+### List Authority Sessions
+
+```
+GET /api/rpc/mcp.authority.list
+```
+
+**Parameters:**
+
+| Name | Type | Description |
+|---|---|---|
+| `organizationId` | `string?` | Org context (null for personal) |
+| `status` | `string?` | Filter: `PENDING`, `ACTIVE`, `EXPIRED`, `REVOKED`, `COMPLETED` |
+| `limit` | `number?` | Max results (default 20) |
+| `offset` | `number?` | Pagination offset |
+
+### Get Authority Session
+
+```
+GET /api/rpc/mcp.authority.get
+```
+
+| Name | Type | Description |
+|---|---|---|
+| `sessionId` | `string` | Authority session ID |
+| `organizationId` | `string?` | Org context |
+
+### Approve Authority Session
+
+```
+POST /api/rpc/mcp.authority.approve
+```
+
+| Name | Type | Description |
+|---|---|---|
+| `sessionId` | `string` | Session to approve |
+| `organizationId` | `string?` | Org context |
+| `instructions` | `string?` | Optional notes for the agent |
+
+### Deny Authority Session
+
+```
+POST /api/rpc/mcp.authority.deny
+```
+
+| Name | Type | Description |
+|---|---|---|
+| `sessionId` | `string` | Session to deny |
+| `organizationId` | `string?` | Org context |
+| `reason` | `string?` | Denial reason |
+
+### Revoke Authority Session
+
+```
+POST /api/rpc/mcp.authority.revoke
+```
+
+| Name | Type | Description |
+|---|---|---|
+| `sessionId` | `string` | Active session to revoke |
+| `organizationId` | `string?` | Org context |
+
+## HTTP Methods
+
+| Method | Purpose |
+|---|---|
+| `POST /api/mcp-gateway` | JSON-RPC requests |
+| `GET /api/mcp-gateway` | Server info (no auth) |
+| `DELETE /api/mcp-gateway` | Terminate session (include `Mcp-Session-Id` header) |
+
+## Error Codes
+
+| JSON-RPC Code | Meaning |
+|---|---|
+| `-32700` | Parse error (malformed JSON) |
+| `-32600` | Invalid JSON-RPC version |
+| `-32601` | Method not found |
+| `-32602` | Missing required parameters |
+| `-32603` | Internal error |
+
+## Rate Limits
+
+Standard API rate limits apply. The gateway does not add additional rate limiting beyond what the underlying MCP servers enforce.
+
+---
+
+## Next Steps
+
+<Cards>
+  <Card title="MCP Authority & Security" href="/docs/core-concepts/mcp-authority">
+    Complete security guide: credentials, authority, stake levels, and audit
+  </Card>
+  <Card title="MCP Gateway Guide" href="/docs/integrations/mcp-gateway">
+    Setup guide with client configurations
+  </Card>
+  <Card title="Runtime Authority" href="/docs/core-concepts/runtime-authority">
+    How the authorization model works
+  </Card>
+</Cards>

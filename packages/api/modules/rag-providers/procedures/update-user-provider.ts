@@ -1,0 +1,114 @@
+import { ORPCError } from "@orpc/server";
+import { upsertUserRagProvider } from "@repo/database";
+import { encryptApiKey, isValidApiKeyFormat, maskApiKey } from "@repo/utils";
+import { z } from "zod";
+import {
+	Permissions,
+	requirePermission,
+	tenantProtectedProcedure,
+} from "../../../orpc/procedures";
+
+/**
+ * Update or create RAG provider configuration for the current user
+ */
+export const updateUserProvider = tenantProtectedProcedure
+	.use(requirePermission(Permissions.ORG_RAG_SETTINGS_EDIT))
+	.route({
+		method: "PUT",
+		path: "/rag-providers/user/{providerName}",
+		tags: ["RAG Providers"],
+		summary: "Update user RAG provider",
+		description:
+			"Update or create a RAG extraction provider configuration for the current user",
+	})
+	.input(
+		z.object({
+			providerName: z.string(),
+			apiKey: z.string().optional(),
+			endpoint: z.string().url().optional().nullable(),
+			isDefault: z.boolean().optional(),
+			priority: z.number().int().min(0).optional(),
+			enabled: z.boolean().optional(),
+		}),
+	)
+	.output(
+		z.object({
+			success: z.boolean(),
+			provider: z.object({
+				id: z.string(),
+				providerName: z.string(),
+				maskedApiKey: z.string().nullable(),
+				endpoint: z.string().nullable(),
+				isDefault: z.boolean(),
+				priority: z.number(),
+				enabled: z.boolean(),
+			}),
+		}),
+	)
+	.handler(
+		async ({
+			context: { user },
+			input: {
+				providerName,
+				apiKey,
+				endpoint,
+				isDefault,
+				priority,
+				enabled,
+			},
+		}) => {
+			// Validate provider name
+			const validProviders = [
+				"local-pdf",
+				"local-docx",
+				"local-text",
+				"unstructured",
+				"llamaparse",
+				"azure-document-intelligence",
+			];
+
+			if (!validProviders.includes(providerName)) {
+				throw new ORPCError("BAD_REQUEST", {
+					message: `Invalid provider name. Must be one of: ${validProviders.join(", ")}`,
+				});
+			}
+
+			// Encrypt API key if provided
+			let encryptedApiKey: string | undefined;
+			if (apiKey) {
+				// Validate API key format
+				if (!isValidApiKeyFormat(apiKey)) {
+					throw new ORPCError("BAD_REQUEST", {
+						message: "Invalid API key format",
+					});
+				}
+				encryptedApiKey = encryptApiKey(apiKey);
+			}
+
+			// Update in database
+			const updated = await upsertUserRagProvider({
+				userId: user.id,
+				providerName,
+				encryptedApiKey,
+				endpoint: endpoint ?? undefined,
+				isDefault,
+				priority,
+				enabled,
+			});
+
+			return {
+				success: true,
+				provider: {
+					id: updated.id,
+					providerName: updated.providerName,
+					maskedApiKey: updated.encryptedApiKey
+						? maskApiKey(updated.encryptedApiKey)
+						: null,
+					endpoint: updated.endpoint,
+					isDefault: updated.isDefault,
+					priority: updated.priority,
+					enabled: updated.enabled,
+				},
+			};
+		},
+	);

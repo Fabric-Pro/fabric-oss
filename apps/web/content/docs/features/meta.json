@@ -1,0 +1,24 @@
+{
+	"title": "Features",
+	"pages": [
+		"dashboard",
+		"projects",
+		"pm-sync",
+		"testing",
+		"security-accessibility-scanning",
+		"channel-context",
+		"ai-chat",
+		"workflow-builder",
+		"agent-templates",
+		"skills",
+		"reports",
+		"ai-providers",
+		"data-connections",
+		"prompts",
+		"organizations",
+		"workspaces",
+		"agent-deployments",
+		"agent-memory",
+		"automation-templates"
+	]
+}

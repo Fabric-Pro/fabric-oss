@@ -1,0 +1,85 @@
+---
+title: Integrationen verbinden & überprüfen
+description: Eine praktische Checkliste, um eine Integration einzurichten und zu bestätigen, dass sie funktioniert — plus Trennen, erneutes Verbinden und Hinweise zum Token-Ablauf.
+---
+
+Diese Seite ist eine praktische Checkliste, um jede Integration einzurichten und zu bestätigen, dass sie durchgängig funktioniert — nützlich vor einer Demo, einem Onboarding oder einem Release.
+
+## Checkliste zum Verbinden & Überprüfen
+
+Gehen Sie für jede Integration, die Sie einrichten, diese Schritte durch:
+
+<Steps>
+  <Step>
+    ### Verbinden
+
+    Öffnen Sie **Einstellungen → Integrationen**, öffnen Sie die Karte des Anbieters und klicken Sie auf **Verbinden** / **Aktionen einrichten**. Schließen Sie das OAuth-Popup ab (oder geben Sie Anmeldedaten ein). Wählen Sie zuerst den richtigen **Geltungsbereich** — persönlich vs. Organisation.
+  </Step>
+
+  <Step>
+    ### „Verbunden" bestätigen
+
+    Die Anbieter-Karte und ihr **Funktionsstatus** sollten **Verbunden** anzeigen. Wenn **Erneut verbinden erforderlich** angezeigt wird, ist die gespeicherte Anmeldung abgelaufen — verbinden Sie sich vor dem Testen neu.
+  </Step>
+
+  <Step>
+    ### Verfügbare Aktionen prüfen
+
+    Überprüfen Sie auf der Anbieter-Seite die **Verfügbaren Aktionen**. Jeder Anbieter ist **Wissen** (Lesen/Suchen), **Aktion** (Schreiben) oder **Hybrid** (beides). Zeigt ein Anbieter „Aktionen-Einrichtung noch nicht verfügbar", hat er noch keine Laufzeit-Aktionen.
+  </Step>
+
+  <Step>
+    ### Eine Live-Aktion im Chat ausführen
+
+    Öffnen Sie **KI-Chat** und bitten Sie den Agenten, die Integration zu nutzen (siehe die anbieterspezifischen Prompts unten). Eine erfolgreiche, fundierte Antwort — oder ein erstelltes Element, das Sie im externen Tool sehen können — bestätigt, dass die Verbindung durchgängig funktioniert.
+  </Step>
+
+  <Step>
+    ### Das Ergebnis extern überprüfen
+
+    Bei Schreib-Aktionen öffnen Sie das externe System und bestätigen, dass das Element erstellt/aktualisiert wurde. Bei Wissens-Aktionen bestätigen Sie, dass die Antwort echte Inhalte widerspiegelt.
+  </Step>
+</Steps>
+
+## Smoke-Tests pro Anbieter
+
+| Anbieter | Typ | Im Chat ausprobieren |
+|----------|------|-------------|
+| **GitHub** | Hybrid | „Durchsuche meine offenen GitHub-Issues" → dann „erstelle ein Test-Issue in &lt;Repo&gt;" |
+| **GitLab** | Hybrid | „Durchsuche Issues in &lt;Projekt&gt;" → „erstelle ein Test-GitLab-Issue" |
+| **Jira** | Hybrid | „Finde offene Bugs in &lt;Projekt&gt;" → „erstelle ein Test-Jira-Issue" |
+| **Confluence** | Wissen | „Durchsuche Confluence nach &lt;Thema&gt;" |
+| **Slack** | Hybrid | „Poste eine Testnachricht in #&lt;Kanal&gt;" |
+| **Notion** | Hybrid | „Durchsuche Notion nach &lt;Seite&gt;" → „erstelle eine Testseite" |
+| **Google Drive** | Wissen | „Finde &lt;Dokument&gt; in meinem Drive" |
+| **Microsoft Teams** | Hybrid | „Durchsuche Teams nach &lt;Thema&gt;" |
+| **Linear** | Hybrid | „Finde Linear-Issues zu &lt;Thema&gt;" → „erstelle ein Test-Ticket" |
+| **Azure DevOps** | MCP | „Liste Work Items im aktuellen Sprint auf" (in der MCP-Registry aktivieren) |
+
+## Trennen & erneut verbinden
+
+- **Trennen:** Öffnen Sie den Anbieter unter **Einstellungen → Integrationen** und klicken Sie auf **Trennen**. Dies deaktiviert die Verbindung, sodass sie in Chat oder Workflows nicht mehr verwendet werden kann.
+- **Gemeinsame Verbindungen:** Jira und Confluence teilen sich eine **Atlassian**-Verbindung — das Trennen der einen trennt beide. Teams und Microsoft 365 teilen sich eine **Microsoft-Graph**-Verbindung.
+- **Erneut verbinden:** Klicken Sie wieder auf **Verbinden** / **Aktionen einrichten** und autorisieren erneut. Das erneute Verbinden aktualisiert Scopes und Tokens.
+
+## Token-Ablauf
+
+- Die meisten OAuth-Anbieter erneuern Tokens automatisch. Wenn ein Refresh-Token abläuft oder widerrufen wird, zeigt der Anbieter **Erneut verbinden erforderlich** — verbinden Sie sich einfach neu.
+- Einige Anbieter stellen keine Refresh-Tokens aus und benötigen ein regelmäßiges manuelles erneutes Verbinden. Wenn eine zuvor funktionierende Integration nicht mehr reagiert, verbinden Sie sich zuerst neu.
+
+## Gesundheit & Status
+
+Bei MCP-basierten Servern (hinzugefügt unter **Einstellungen → MCP-Registry**) zeigt jeder Server einen **Gesundheitsstatus**. Wenn Tools im Chat nicht mehr erscheinen, prüfen Sie, ob der Server **Aktiviert** und **Gesund** ist, und aktualisieren Sie dann die Tool-Liste.
+
+---
+
+## Nächste Schritte
+
+<Cards>
+  <Card title="Ihre erste Integration verbinden" href="/docs/tutorials/setup-integrations">
+    Der Schritt-für-Schritt-Einrichtungsablauf
+  </Card>
+  <Card title="MCP-Integration" href="/docs/integrations/mcp">
+    Wie verbundene Tools zur Laufzeit aufgerufen werden
+  </Card>
+</Cards>

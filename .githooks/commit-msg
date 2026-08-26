@@ -1,0 +1,42 @@
+#!/usr/bin/env sh
+# Fabric commit-msg guard.
+#
+# Two checks, cheapest first. The identifier guard runs LAST on purpose: this
+# script has no `set -e`, so the hook's exit status is whatever the final
+# command returns. Anything appended after that node call would mask its
+# failures.
+
+[ -z "$1" ] && exit 0
+
+# --- DCO sign-off ------------------------------------------------------------
+# Every non-merge commit needs a `Signed-off-by:` trailer, which `git commit -s`
+# adds. `.github/workflows/dco.yml` is the real gate, but it only runs after a
+# push, and when GitHub's runners are saturated that job can sit queued for
+# hours — on 2026-08-19 it wedged long enough to outlast a whole PR. Catching it
+# at authorship costs nothing and removes the round trip entirely.
+#
+# Deliberately NOT auto-appended: the trailer certifies that the author has the
+# right to submit the code under the project's licence. Adding it on their
+# behalf would be making that certification for them.
+#
+# Merge commits are exempt, matching the CI check.
+if [ ! -f "$(git rev-parse --git-dir)/MERGE_HEAD" ]; then
+	if ! grep -qiE '^Signed-off-by: .+ <.+@.+>' "$1"; then
+		echo "commit-msg: missing Signed-off-by trailer (DCO)." >&2
+		echo "  new commit:  git commit -s" >&2
+		echo "  last commit: git commit --amend -s --no-edit" >&2
+		echo "  whole branch: git rebase --signoff origin/master" >&2
+		exit 1
+	fi
+fi
+
+# --- Real identifiers --------------------------------------------------------
+# A commit message is published the moment it is pushed to a public repo, and it
+# survives squash-merge. Ticket titles are the usual source — an agent or a
+# developer pulls the title into the subject line and a real name rides along.
+# Reference tickets by number only.
+#
+# Skips silently unless a term list is available — see tooling/identifier-guard/check.mjs.
+command -v node >/dev/null 2>&1 || exit 0
+
+node tooling/identifier-guard/check.mjs --files "$1"

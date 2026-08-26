@@ -1,0 +1,14 @@
+-- Add CANCELLED value to ExtractionStatus enum.
+--
+-- URL Context Sources: when a user clicks "Cancel crawl" on an in-flight
+-- LINK row, the workflow's catch-path used to finalize the parent as
+-- COMPLETED so the UI would exit EXTRACTING. That made cancelled and
+-- successful crawls visually indistinguishable. Adding CANCELLED lets us
+-- finalize cancelled crawls as a terminal-but-distinct state.
+--
+-- Safe rollout: this is an additive enum value, no rewrites of existing rows.
+-- Postgres requires the ALTER TYPE outside any explicit transaction; Prisma
+-- migrate runs each migration in its own implicit transaction, but
+-- ALTER TYPE ... ADD VALUE is allowed in newer Postgres (>=12) without the
+-- transactional restriction. This repo runs PG 15, so the plain ALTER works.
+ALTER TYPE "ExtractionStatus" ADD VALUE IF NOT EXISTS 'CANCELLED';

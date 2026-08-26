@@ -1,0 +1,11 @@
+{
+	"extends": "@repo/tsconfig/react-library.json",
+	"compilerOptions": {
+		// react-library.json's lib (ES2022 + DOM) lacks DOM.Iterable, so the
+		// iterator methods on Headers (req.headers.entries() in the Polar
+		// webhook handler) are untyped (TS2339). Add DOM.Iterable.
+		"lib": ["ES2022", "DOM", "DOM.Iterable"]
+	},
+	"include": ["**/*.ts"],
+	"exclude": ["dist", "build", "node_modules"]
+}

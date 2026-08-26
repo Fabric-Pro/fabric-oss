@@ -1,0 +1,303 @@
+{
+	"title": "AI / LLM Usage Overview",
+	"tags": ["ai", "llm", "tokens"],
+	"timezone": "browser",
+	"schemaVersion": 36,
+	"version": 1,
+	"refresh": "30s",
+	"panels": [
+		{
+			"id": 1,
+			"title": "LLM Success Rate",
+			"type": "stat",
+			"gridPos": { "x": 0, "y": 0, "w": 6, "h": 4 },
+			"targets": [
+				{
+					"expr": "(sum(rate(llm_requests_total{status=\"success\"}[5m])) / clamp_min(sum(rate(llm_requests_total[5m])), 0.001)) * 100",
+					"legendFormat": "Success Rate"
+				}
+			],
+			"options": {
+				"reduceOptions": {
+					"values": false,
+					"calcs": ["lastNotNull"]
+				},
+				"unit": "percent"
+			},
+			"fieldConfig": {
+				"defaults": {
+					"thresholds": {
+						"mode": "absolute",
+						"steps": [
+							{ "value": 0, "color": "red" },
+							{ "value": 90, "color": "yellow" },
+							{ "value": 99, "color": "green" }
+						]
+					}
+				}
+			}
+		},
+		{
+			"id": 2,
+			"title": "Request Rate",
+			"type": "stat",
+			"gridPos": { "x": 6, "y": 0, "w": 6, "h": 4 },
+			"targets": [
+				{
+					"expr": "sum(rate(llm_requests_total[5m]))",
+					"legendFormat": "Requests/sec"
+				}
+			],
+			"options": {
+				"reduceOptions": {
+					"values": false,
+					"calcs": ["lastNotNull"]
+				},
+				"unit": "reqps"
+			}
+		},
+		{
+			"id": 3,
+			"title": "Token Rate (total)",
+			"type": "stat",
+			"gridPos": { "x": 12, "y": 0, "w": 6, "h": 4 },
+			"targets": [
+				{
+					"expr": "sum(rate(llm_tokens_total[5m]))",
+					"legendFormat": "Tokens/sec"
+				}
+			],
+			"options": {
+				"reduceOptions": {
+					"values": false,
+					"calcs": ["lastNotNull"]
+				},
+				"unit": "short"
+			}
+		},
+		{
+			"id": 4,
+			"title": "P95 Latency",
+			"type": "stat",
+			"gridPos": { "x": 18, "y": 0, "w": 6, "h": 4 },
+			"targets": [
+				{
+					"expr": "histogram_quantile(0.95, sum(rate(llm_request_duration_milliseconds_bucket[5m])) by (le))",
+					"legendFormat": "P95"
+				}
+			],
+			"options": {
+				"reduceOptions": {
+					"values": false,
+					"calcs": ["lastNotNull"]
+				},
+				"unit": "ms"
+			},
+			"fieldConfig": {
+				"defaults": {
+					"thresholds": {
+						"mode": "absolute",
+						"steps": [
+							{ "value": 0, "color": "green" },
+							{ "value": 10000, "color": "yellow" },
+							{ "value": 30000, "color": "red" }
+						]
+					}
+				}
+			}
+		},
+		{
+			"id": 5,
+			"title": "Token Usage by Provider",
+			"type": "timeseries",
+			"gridPos": { "x": 0, "y": 4, "w": 12, "h": 7 },
+			"targets": [
+				{
+					"expr": "sum(rate(llm_tokens_total{type=\"input\"}[5m])) by (provider)",
+					"legendFormat": "{{ provider }} — input"
+				},
+				{
+					"expr": "sum(rate(llm_tokens_total{type=\"output\"}[5m])) by (provider)",
+					"legendFormat": "{{ provider }} — output"
+				}
+			],
+			"fieldConfig": {
+				"defaults": {
+					"custom": {
+						"drawStyle": "line",
+						"fillOpacity": 15,
+						"stacking": { "mode": "none" }
+					},
+					"unit": "short"
+				}
+			},
+			"options": {
+				"legend": { "displayMode": "table", "placement": "bottom" }
+			}
+		},
+		{
+			"id": 6,
+			"title": "Request Rate by Provider & Model",
+			"type": "timeseries",
+			"gridPos": { "x": 12, "y": 4, "w": 12, "h": 7 },
+			"targets": [
+				{
+					"expr": "sum(rate(llm_requests_total[5m])) by (provider, model)",
+					"legendFormat": "{{ provider }}/{{ model }}"
+				}
+			],
+			"fieldConfig": {
+				"defaults": {
+					"custom": {
+						"drawStyle": "bars",
+						"fillOpacity": 50,
+						"stacking": { "mode": "normal" }
+					},
+					"unit": "reqps"
+				}
+			},
+			"options": {
+				"legend": { "displayMode": "table", "placement": "bottom" }
+			}
+		},
+		{
+			"id": 7,
+			"title": "Token Usage Spike Ratio (current vs 1h avg)",
+			"type": "timeseries",
+			"gridPos": { "x": 0, "y": 11, "w": 12, "h": 7 },
+			"targets": [
+				{
+					"expr": "sum(rate(llm_tokens_total[5m])) / clamp_min(sum(rate(llm_tokens_total[1h])), 0.001)",
+					"legendFormat": "Spike ratio"
+				}
+			],
+			"fieldConfig": {
+				"defaults": {
+					"custom": {
+						"drawStyle": "line",
+						"fillOpacity": 10,
+						"thresholdsStyle": { "mode": "line" }
+					},
+					"thresholds": {
+						"mode": "absolute",
+						"steps": [
+							{ "value": 0, "color": "green" },
+							{ "value": 3, "color": "red" }
+						]
+					},
+					"unit": "short"
+				}
+			}
+		},
+		{
+			"id": 8,
+			"title": "LLM Error Rate by Provider",
+			"type": "timeseries",
+			"gridPos": { "x": 12, "y": 11, "w": 12, "h": 7 },
+			"targets": [
+				{
+					"expr": "sum(rate(llm_errors_total[5m])) by (provider, error_type)",
+					"legendFormat": "{{ provider }} — {{ error_type }}"
+				}
+			],
+			"fieldConfig": {
+				"defaults": {
+					"custom": {
+						"drawStyle": "line",
+						"fillOpacity": 20
+					},
+					"unit": "short"
+				}
+			},
+			"options": {
+				"legend": { "displayMode": "table", "placement": "bottom" }
+			}
+		},
+		{
+			"id": 9,
+			"title": "Request Latency by Provider (P50 / P95 / P99)",
+			"type": "timeseries",
+			"gridPos": { "x": 0, "y": 18, "w": 24, "h": 7 },
+			"targets": [
+				{
+					"expr": "histogram_quantile(0.50, sum(rate(llm_request_duration_milliseconds_bucket[5m])) by (le, provider))",
+					"legendFormat": "{{ provider }} — P50"
+				},
+				{
+					"expr": "histogram_quantile(0.95, sum(rate(llm_request_duration_milliseconds_bucket[5m])) by (le, provider))",
+					"legendFormat": "{{ provider }} — P95"
+				},
+				{
+					"expr": "histogram_quantile(0.99, sum(rate(llm_request_duration_milliseconds_bucket[5m])) by (le, provider))",
+					"legendFormat": "{{ provider }} — P99"
+				}
+			],
+			"fieldConfig": {
+				"defaults": {
+					"custom": {
+						"drawStyle": "line",
+						"fillOpacity": 5
+					},
+					"unit": "ms"
+				}
+			},
+			"options": {
+				"legend": { "displayMode": "table", "placement": "bottom" }
+			}
+		},
+		{
+			"id": 10,
+			"title": "Token Breakdown by Model",
+			"type": "timeseries",
+			"gridPos": { "x": 0, "y": 25, "w": 12, "h": 7 },
+			"targets": [
+				{
+					"expr": "sum(rate(llm_tokens_total{type=\"input\"}[5m])) by (model)",
+					"legendFormat": "{{ model }} — input"
+				},
+				{
+					"expr": "sum(rate(llm_tokens_total{type=\"output\"}[5m])) by (model)",
+					"legendFormat": "{{ model }} — output"
+				}
+			],
+			"fieldConfig": {
+				"defaults": {
+					"custom": {
+						"drawStyle": "bars",
+						"fillOpacity": 50,
+						"stacking": { "mode": "normal" }
+					},
+					"unit": "short"
+				}
+			},
+			"options": {
+				"legend": { "displayMode": "table", "placement": "bottom" }
+			}
+		},
+		{
+			"id": 11,
+			"title": "Requests by Operation Type",
+			"type": "timeseries",
+			"gridPos": { "x": 12, "y": 25, "w": 12, "h": 7 },
+			"targets": [
+				{
+					"expr": "sum(rate(llm_requests_total[5m])) by (operation)",
+					"legendFormat": "{{ operation }}"
+				}
+			],
+			"fieldConfig": {
+				"defaults": {
+					"custom": {
+						"drawStyle": "bars",
+						"fillOpacity": 50,
+						"stacking": { "mode": "normal" }
+					},
+					"unit": "reqps"
+				}
+			},
+			"options": {
+				"legend": { "displayMode": "table", "placement": "bottom" }
+			}
+		}
+	]
+}

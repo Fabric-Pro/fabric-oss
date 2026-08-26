@@ -1,0 +1,51 @@
+name: Feature request
+description: Propose a capability Fabric does not have yet.
+labels: ["enhancement", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Planning to build this yourself? For anything large, open a
+        [discussion](https://github.com/Fabric-Pro/fabric-oss/discussions) first and
+        settle the approach. Maintainers would rather object to a sketch than to
+        three thousand finished lines.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: >
+        What are you trying to do, and where does Fabric get in the way? Describe
+        the situation rather than the feature, so a maintainer can suggest a
+        solution you had not considered.
+      placeholder: |
+        Our reviewers need to see which stories a release touched. Today I export
+        both lists and diff them by hand every Friday.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you have in mind
+      description: Your proposed solution, if you have one.
+    validations:
+      required: false
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What you tried instead
+      description: >
+        Workarounds, other tools, or existing Fabric features that came close.
+        This tells us how much the gap costs you.
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: contribution
+    attributes:
+      label: Would you like to build it?
+      options:
+        - label: I am willing to open a pull request for this
+          required: false

@@ -1,0 +1,53 @@
+-- Time-ordered index on audit_log, for the two scheduled jobs that scan it by
+-- createdAt with no tenant or action predicate.
+--
+-- WHY THIS IS NEEDED
+--
+-- audit_log carries five indexes and every one of them has `createdAt` as a
+-- TRAILING column (led by organizationId, userId, action, projectId, category).
+-- None can serve a bare `createdAt` range + sort. Two scheduled jobs do exactly
+-- that:
+--
+--   * the hourly seal job (readWindowPage in audit-log-seal-store.ts) filters
+--     `createdAt >= periodStart AND < periodEnd` ordered by (createdAt, id);
+--   * the daily retention purge (audit-log-retention.ts) deletes
+--     `createdAt < cutoff` ordered by createdAt with a LIMIT subquery.
+--
+-- Both therefore fell back to a scan proportional to the WHOLE table rather than
+-- to their window. The retention activity's own comment already assumed this
+-- index existed — it says the LIMIT "lets each batch scan only the index head"
+-- and names a `(createdAt, id)` ordering — so the assumption was false and the
+-- per-run cost grew with total rows, without a ceiling.
+--
+-- The seal job makes it compounding rather than merely slow: it only advances its
+-- window on success, so a run that times out leaves the window unadvanced and the
+-- next run has more to do.
+--
+-- Latent while only a curated taxonomy wrote rows. Automatic activity capture
+-- multiplies the insert rate, which is what makes it load-bearing now. `id` is
+-- included so the composite also covers the cursor pagination both jobs use.
+--
+-- Measured at 300k rows, purge access pattern
+-- (WHERE createdAt < x ORDER BY createdAt LIMIT 5000):
+--   with this index     Index Only Scan      0.92 ms    122 buffers
+--   without it          Sort + Gather Merge  50.9 ms  2,840 buffers
+-- The unindexed plan sorts the whole matching set, so it degrades with total
+-- table size; the indexed one stays bounded by the LIMIT.
+--
+-- CONCURRENTLY, AND WHY THERE IS NO MANUAL STEP
+--
+-- audit_log is write-hot on every authenticated mutation, so a blocking index
+-- build would stall writes platform-wide for as long as the build takes.
+--
+-- PostgreSQL forbids CONCURRENTLY inside a transaction block, and Prisma wraps a
+-- MULTI-statement migration in one — but it does NOT wrap a single-statement
+-- migration. So this file applies through the ordinary `prisma migrate deploy`
+-- path with no special handling and no human step. Verified against PostgreSQL 16
+-- with Prisma 6.18: this exact file applies cleanly and the resulting index is
+-- valid; the same statement preceded by a second statement fails with SQLSTATE
+-- 25001, "CREATE INDEX CONCURRENTLY cannot run inside a transaction block".
+--
+-- KEEP THIS MIGRATION TO ONE STATEMENT. Adding a second reintroduces the
+-- transaction wrapper and breaks it.
+CREATE INDEX CONCURRENTLY IF NOT EXISTS "audit_log_createdAt_id_idx"
+  ON "audit_log" ("createdAt", "id");

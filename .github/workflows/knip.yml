@@ -1,0 +1,59 @@
+name: Knip
+
+# Runs the full knip suite — unused files, unused/unlisted dependencies and
+# binaries, unresolved imports, unused exports/types, and duplicate exports —
+# on every PR to the canonical branch (`master`).
+#
+# Rationale: the baselines were cleaned tier by tier (dependencies, files,
+# exports) and `pnpm knip` now exits 0 across all issue types. Without a CI
+# gate the clean baseline silently regresses one import at a time. Knip's
+# configuration hints are informational and never affect the exit code, so
+# the small set of documented benign hints does not fail this job.
+#
+# knip analyzes the whole monorepo graph in one pass, so there is no
+# changed-package scoping (same reasoning as the Biome workflow). It needs no
+# .env.local or generated artifacts: the generated Prisma zod barrel it treats
+# as an entry is tracked in git.
+#
+# This job starts out NOT in the required-checks set; promote it via branch
+# protection once it has proven quiet on real PRs.
+#
+# Security: no user-controlled fields are interpolated into run: blocks.
+
+on:
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: knip-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  knip:
+    name: Knip (dead code and dependencies)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          fetch-depth: 1
+
+      - name: Setup pnpm
+        # Version is read from root package.json's `packageManager` field.
+        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Knip
+        run: pnpm knip

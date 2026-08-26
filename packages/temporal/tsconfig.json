@@ -1,0 +1,16 @@
+{
+	"extends": "@repo/tsconfig/base.json",
+	"compilerOptions": {
+		// The newsletter send activity imports @repo/mail, whose template barrel
+		// pulls React Email .tsx files into the type-check graph. Set jsx locally
+		// (mirrors packages/auth/tsconfig.json, which imports @repo/mail the same
+		// way) so tsc can parse those .tsx files. Temporal has no .tsx source.
+		"jsx": "react-jsx",
+		// Raise target above the base.json ES6 default so tsc accepts
+		// top-level await in test files (TS1378). Type-check only — the
+		// runtime build (tsup) sets its own target; Node 20 supports it.
+		"target": "ES2022"
+	},
+	"include": ["**/*.ts"],
+	"exclude": ["dist", "build", "node_modules"]
+}

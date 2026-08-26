@@ -1,0 +1,261 @@
+---
+title: Build Your First Workflow
+description: Create a workflow that receives a webhook, analyses the payload with AI, and posts the result to Slack.
+---
+
+This tutorial builds a working automation end to end: a webhook receives text, an AI node
+analyses it, and a Slack node posts the result. You will run it from the editor first,
+then publish it and call it over HTTP.
+
+## Before you start
+
+- A Fabric account
+- An AI provider configured under [AI configuration](/docs/getting-started/ai-configuration)
+- A Slack connection, if you want the last step — the workflow works without it
+- `curl` and `openssl`, for the HTTP call at the end
+
+## Step 1: Create the workflow
+
+<Steps>
+  <Step>
+    ### Open Workflows
+
+    Click **Workflows** in the sidebar, then **New Workflow**.
+  </Step>
+
+  <Step>
+    ### Name it
+
+    The workflow is created straight away as `Untitled Workflow` and opens on an empty
+    canvas. Click the name in the header and change it to `My First Workflow`.
+  </Step>
+</Steps>
+
+## Step 2: Add the trigger
+
+<Steps>
+  <Step>
+    ### Add a trigger node
+
+    Click **Add a Step** on the canvas. The right-hand panel opens on its **Actions**
+    tab; choose **Trigger**.
+  </Step>
+
+  <Step>
+    ### Set the trigger type
+
+    Click the node and set **Trigger Type** to **Webhook**. The URL and its signing
+    secret are generated when you publish.
+  </Step>
+</Steps>
+
+## Step 3: Analyse the payload with AI
+
+<Steps>
+  <Step>
+    ### Add a Generate Text node
+
+    Click **+** in the toolbar. An empty action appears to the right and the **Actions**
+    tab opens; choose **Generate Text** from the **AI** group.
+
+    Adding a node does not connect it. Drag from the handle on the right of the trigger
+    to the handle on the left of the new node — an unconnected node never runs.
+  </Step>
+
+  <Step>
+    ### Write the prompt
+
+    Open the node and set its prompt:
+
+    ```
+    Analyse the following text and provide:
+    1. A one-sentence summary
+    2. Key topics mentioned
+    3. Sentiment (positive, negative, or neutral)
+
+    Text: {{body}}
+    ```
+
+    Every top-level field of the webhook's JSON payload becomes a variable of the same
+    name, so a request sending `{"body": "..."}` gives you `{{body}}`. To use another
+    node's output instead, reference it by that node's label: `{{Generate Text.text}}`.
+  </Step>
+
+</Steps>
+
+The node runs on your workspace's configured model; it has no model picker of its own.
+(**Generate Image** does — its model is part of the node's settings.)
+
+## Step 4: Post the result to Slack
+
+Skip this step if you have not connected Slack — the workflow still runs, and you can
+read the AI output in the execution log.
+
+<Steps>
+  <Step>
+    ### Add the node
+
+    Click **+** again, choose **Send Slack Message**, and connect it to the AI node the
+    same way.
+  </Step>
+
+  <Step>
+    ### Connect Slack
+
+    If Slack is not connected yet, open **Integrations** in the sidebar, connect Slack,
+    and come back. See the [Slack integration guide](/docs/integrations/slack).
+  </Step>
+
+  <Step>
+    ### Write the message
+
+    - **Channel**: `#general`, or any channel your Slack app is in
+    - **Message**:
+
+    ```
+    New analysis complete
+
+    {{Generate Text.text}}
+    ```
+
+    `Generate Text` is the AI node's label and `text` is the field it outputs. Rename the
+    node and you have to update the reference to match.
+  </Step>
+</Steps>
+
+## Step 5: Save, then run it from the editor
+
+Press **Save**, then **Run**. The execution panel shows each node in turn with its input,
+output and duration.
+
+The same executor runs both paths, so a node that works here works over the webhook —
+with two differences worth knowing before you read the results. An editor run sends no
+webhook payload, so `{{body}}` resolves to nothing and the AI node sees a prompt ending in
+`Text:`. And publishing uses your **saved** graph, not what is on screen: nothing
+autosaves, so save before you publish or you will publish an empty workflow.
+
+## Step 6: Publish and call it over HTTP
+
+<Steps>
+  <Step>
+    ### Publish
+
+    Click **Publish**, tick **Enable Webhook Trigger**, and add a changelog line if you
+    want one. Ticking that box is what arms the endpoint: it sets the workflow's trigger
+    type to Webhook and mints the signing secret. Publish without it and calls are
+    refused, however published the workflow looks.
+  </Step>
+
+  <Step>
+    ### Copy the URL and the secret
+
+    The dialog shows the webhook URL and the webhook secret. Copy both now: while the
+    workflow stays published, nothing shows the secret again.
+  </Step>
+
+  <Step>
+    ### Sign a request and send it
+
+    The endpoint refuses unauthenticated requests. Sign the exact bytes you are sending
+    with the secret, and pass the hash in `X-Workflow-Signature`:
+
+    ```bash
+    URL="https://…/api/workflows/trigger/<workflowId>"
+    SECRET="<the secret from the publish dialog>"
+    BODY='{"body": "Our team launched the new dashboard this week. Feedback has been positive, with a 40% increase in daily active users. Mobile performance still needs attention."}'
+
+    SIGNATURE=$(printf '%s' "$BODY" | openssl dgst -sha256 -hmac "$SECRET" -r | cut -d' ' -f1)
+
+    curl -X POST "$URL" \
+      -H "Content-Type: application/json" \
+      -H "X-Workflow-Signature: sha256=$SIGNATURE" \
+      -d "$BODY"
+    ```
+
+    A successful call returns an `executionId`.
+  </Step>
+
+  <Step>
+    ### Watch the run
+
+    Open the workflow's execution history and find the run with that `executionId`. Each
+    node shows its status; click one to see what went in and what came out. If you wired
+    Slack, the message is in your channel.
+  </Step>
+</Steps>
+
+## Step 7: Extend it
+
+### Branch on the result
+
+Add a **Condition** node after the AI node. Its expression is evaluated against earlier
+nodes' outputs, and the node gets a `true` and a `false` edge you can wire to different
+destinations:
+
+```
+{{Generate Text.text}}.includes("negative")
+```
+
+Send `true` to `#urgent-alerts` and `false` to `#general-updates`.
+
+### Run it on a schedule instead
+
+Change the trigger node's type to **Schedule** and give it a cron expression such as
+`0 9 * * *` for every morning at 09:00. The schedule starts when you publish; pausing the
+workflow from its card menu stops it.
+
+### Let AI draft the next one
+
+Instead of building by hand, describe what you want:
+
+```
+Create a workflow that receives customer feedback via webhook,
+analyses sentiment with AI, creates a Linear issue for negative
+feedback, and posts a summary to Slack.
+```
+
+## Habits worth keeping
+
+**Know the three reference forms.** `{{Node Label.field}}` reads an earlier node's output,
+`{{fieldName}}` reads a field of the trigger payload, and `{{$nodeId.field}}` does the same
+as the first but survives renaming the node.
+
+**Run after each node you add.** Catching a bad reference with two nodes on the canvas is
+much easier than with eight.
+
+**Rename nodes to what they do.** `Analyse Sentiment` beats `Generate Text` when a graph
+has three AI nodes — and the label is what you reference.
+
+## Troubleshooting
+
+**The call returns 403.** Either the workflow is not live — a draft, paused or archived —
+or its trigger type is not Webhook. The response body says which. The second case is the
+common one: republish and tick **Enable Webhook Trigger**.
+
+**The call returns 401.** The signature does not match. Sign the exact bytes you send —
+re-formatting the JSON after signing changes the hash — and prefix the hex digest with
+`sha256=`.
+
+**The AI node returns nothing.** Check that an AI provider is configured under
+**Settings → AI Providers**, then open the node's entry in the execution log and confirm
+the prompt arrived with `{{body}}` filled in.
+
+**Slack did not receive the message.** Confirm the Slack app is in the target channel and
+read the Slack node's output in the execution log — a failed call reports the reason
+there.
+
+---
+
+## Next steps
+
+<Cards>
+  <Card title="Workflow Builder" href="/docs/features/workflow-builder">
+    The full node palette, limits and publishing model
+  </Card>
+  <Card title="First Document" href="/docs/tutorials/first-document">
+    Generate your first AI document
+  </Card>
+  <Card title="First Agent" href="/docs/tutorials/first-agent">
+    Build a custom AI agent
+  </Card>
+</Cards>

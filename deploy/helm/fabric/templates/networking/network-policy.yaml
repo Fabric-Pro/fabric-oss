@@ -1,0 +1,119 @@
+{{- if .Values.networkPolicy.enabled }}
+# Default-deny — no traffic allowed unless explicitly permitted by another NetworkPolicy.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+  labels:
+{{- include "fabric.labels" (dict "name" "default-deny" "Release" .Release "component" "networking") | nindent 4 }}
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+---
+# Allow DNS resolution (kube-dns) from all pods.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+---
+# Allow the ALB to reach the web pod on its container port.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-alb-to-web
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: web
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        # ALB ENIs live in the VPC, so target-group source IPs are within VPC CIDR.
+        # Scoping here (instead of 0.0.0.0/0) blocks arbitrary pods from reaching web.
+        - ipBlock:
+            cidr: {{ .Values.networkPolicy.vpcCidr | default "10.0.0.0/8" }}
+      ports:
+        - port: {{ .Values.web.port }}
+          protocol: TCP
+---
+# Allow web to reach all agents and mcp-stdio-wrapper.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-web-to-internals
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app.kubernetes.io/component
+        operator: In
+        values: [agent, platform]
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: web
+{{- if .Values.qdrant.enabled }}
+---
+# Allow temporal-worker and agents to reach Qdrant on its HTTP/gRPC ports.
+# (allow-web-to-internals already covers web -> qdrant since qdrant is component=platform,
+#  but temporal-worker is also platform and the rule only opens web as the source.)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-internal-to-qdrant
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: qdrant
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchExpressions:
+              - key: app.kubernetes.io/component
+                operator: In
+                values: [agent, platform]
+      ports:
+        - port: {{ .Values.qdrant.port }}
+          protocol: TCP
+        - port: {{ .Values.qdrant.grpcPort }}
+          protocol: TCP
+{{- end }}
+---
+# Allow all pods to egress to external services (Temporal Cloud, AI providers, Cloudflare, Postgres, Redis, S3).
+# This is the simple MVP allow-list — production should tighten by IP/CIDR.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-external-egress
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 169.254.0.0/16   # block IMDS / link-local
+{{- end }}

@@ -1,0 +1,205 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Fabric — Pull requests (docs mock)</title>
+<!-- Real Inter + JetBrains Mono, the app's --font-sans / --font-mono. -->
+<link rel="stylesheet" href="../.fonts/fonts.css">
+<style>
+/* Design tokens copied verbatim from tooling/tailwind/theme.css :root (light). */
+:root{
+  --border:#d8d2cc; --input:#d2ccc5; --ring:#9f2a3a;
+  --background:#f7f6f2; --foreground:#1f1c19;
+  --primary:#9f2a3a; --primary-foreground:#fff7f7;
+  --secondary:#047857; --secondary-foreground:#ffffff;
+  --destructive:#c81e1e; --destructive-foreground:#ffffff;
+  --muted:#efede8; --muted-foreground:#625c55;
+  --accent:#f2e7e7; --accent-foreground:#6b1521;
+  --card:#fffdf9; --card-foreground:#1f1c19;
+  --popover:#fffdf9;
+  --highlight:#d97706; --highlight-foreground:#451a03;
+  --radius:0.625rem;
+  --radius-md:calc(var(--radius) - 2px);
+  --radius-lg:var(--radius);
+  /* Inter is the app's --font-sans (next/font). Falls back to the host sans. */
+  --font-sans:Inter,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  --font-mono:"JetBrains Mono",ui-monospace,"Cascadia Mono",Consolas,monospace;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{
+  background:var(--background); color:var(--foreground);
+  font-family:var(--font-sans); -webkit-font-smoothing:antialiased;
+  padding:28px; width:1120px;
+}
+.shot{background:var(--background)}
+.shot + .shot{margin-top:40px}
+
+/* --- shared type scale (Tailwind) --- */
+.t-sm{font-size:.875rem;line-height:1.25rem}
+.t-xs{font-size:.75rem;line-height:1rem}
+.t-base{font-size:1rem;line-height:1.5rem}
+.medium{font-weight:500}
+.muted{color:var(--muted-foreground)}
+
+/* --- the tab's segmented control (TestCasesList.tsx) --- */
+.segments{display:inline-flex;border:1px solid color-mix(in srgb,var(--border) 60%,transparent);
+  border-radius:var(--radius-lg);padding:2px}
+.segments button{font-family:inherit;font-size:.875rem;line-height:1.25rem;font-weight:500;
+  padding:6px 16px;border:0;border-radius:var(--radius-md);background:transparent;
+  color:var(--muted-foreground);cursor:pointer}
+.segments button[aria-pressed="true"]{background:var(--primary);color:var(--primary-foreground)}
+.seg-row{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:16px}
+.about{width:28px;height:28px;display:grid;place-items:center;color:var(--muted-foreground)}
+
+/* --- PullRequestReviewsPanel --- */
+.panel > * + *{margin-top:16px}
+.readform{display:flex;flex-wrap:wrap;align-items:flex-end;gap:12px;
+  border:1px solid color-mix(in srgb,var(--border) 60%,transparent);
+  border-radius:var(--radius-lg);background:color-mix(in srgb,var(--muted) 40%,transparent);padding:16px}
+.field > * + *{margin-top:6px}
+label{display:block;font-size:.875rem;line-height:1;font-weight:500}
+.select,.input{display:flex;height:36px;align-items:center;border-radius:var(--radius-md);
+  background:var(--background);border:1px solid var(--input);padding:8px 12px;
+  font-size:1rem;line-height:1.5rem;font-family:inherit}
+.select{justify-content:space-between;gap:8px;width:256px}
+.select > span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.input{width:128px}
+.input.ph{color:color-mix(in srgb,var(--foreground) 40%,transparent)}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;height:36px;
+  padding:8px 16px;border:0;border-radius:var(--radius-md);background:var(--primary);
+  color:var(--primary-foreground);font-family:inherit;font-size:.875rem;line-height:1.25rem;
+  font-weight:500;letter-spacing:.025em;cursor:pointer}
+
+.list{border:1px solid color-mix(in srgb,var(--border) 60%,transparent);border-radius:var(--radius-lg);
+  overflow:hidden;background:var(--background)}
+.row{display:flex;width:100%;align-items:center;gap:12px;padding:12px 16px;text-align:left;
+  border:0;background:transparent;font-family:inherit;cursor:pointer}
+.row + .row{border-top:1px solid color-mix(in srgb,var(--border) 60%,transparent)}
+.row.hover{background:var(--accent)}
+.row .body{min-width:0;flex:1}
+.row .title{display:block;font-weight:500;font-size:.875rem;line-height:1.25rem;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.row .meta{display:block;margin-top:2px;color:var(--muted-foreground);font-size:.75rem;line-height:1rem;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pill{flex-shrink:0;border-radius:9999px;padding:2px 8px;font-size:.75rem;line-height:1rem;font-weight:500}
+.pill.warn{border:1px solid color-mix(in srgb,var(--highlight) 40%,transparent);
+  background:color-mix(in srgb,var(--highlight) 10%,transparent);color:var(--highlight)}
+.pill.bad{border:1px solid color-mix(in srgb,var(--destructive) 40%,transparent);
+  background:color-mix(in srgb,var(--destructive) 10%,transparent);color:var(--destructive)}
+svg.icon{width:16px;height:16px;flex-shrink:0;color:var(--muted-foreground)}
+
+/* --- PullRequestDiffSheet (rendered as the right-hand sheet) --- */
+#shot-sheet{width:768px}
+.sheet{width:768px;background:var(--background);
+  border:1px solid var(--border);border-radius:var(--radius-lg);overflow:hidden;
+  display:flex;flex-direction:column}
+.sheet-head{border-bottom:1px solid var(--border);padding:16px 20px}
+.sheet-head h2{font-size:1rem;line-height:1.5rem;font-weight:600;letter-spacing:-.01em}
+.sheet-meta{display:flex;flex-wrap:wrap;align-items:center;gap:4px 12px;margin-top:8px;
+  color:var(--muted-foreground);font-size:.75rem;line-height:1rem}
+.sheet-meta .mono{font-family:var(--font-mono)}
+.sheet-meta a{color:var(--primary);text-decoration:none;display:inline-flex;align-items:center;gap:4px}
+.trunc{display:flex;align-items:flex-start;gap:8px;padding:12px 20px;font-size:.75rem;line-height:1rem;
+  border-bottom:1px solid color-mix(in srgb,var(--highlight) 40%,transparent);
+  background:color-mix(in srgb,var(--highlight) 10%,transparent)}
+.trunc svg{width:16px;height:16px;flex-shrink:0;color:var(--highlight);margin-top:1px}
+pre{padding:20px;font-family:var(--font-mono);font-size:.75rem;line-height:1.625;overflow:auto;flex:1}
+pre div{white-space:pre}
+.add{color:var(--secondary)} .del{color:var(--destructive)} .hunk{color:var(--muted-foreground)}
+</style>
+</head>
+<body>
+
+<!-- ==================== shot 1: the panel ==================== -->
+<div class="shot" id="shot-panel">
+  <div class="seg-row">
+    <div class="segments">
+      <button type="button" aria-pressed="false">Cases</button>
+      <button type="button" aria-pressed="false">Plans</button>
+      <button type="button" aria-pressed="false">Features</button>
+      <button type="button" aria-pressed="false">Runs</button>
+      <button type="button" aria-pressed="true">Pull requests</button>
+      <button type="button" aria-pressed="false">Questions</button>
+    </div>
+    <div class="about" aria-hidden="true">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg>
+    </div>
+  </div>
+
+  <div class="panel">
+    <p class="t-sm muted">Point Fabric at a pull request and it fetches the diff through this project’s connected repository, then keeps what it read. No analysis yet — this is the ingest the QA and architecture review lenses will be built on.</p>
+
+    <div class="readform">
+      <div class="field">
+        <label for="repo">Repository</label>
+        <div class="select" id="repo">
+          <span>northwind/checkout</span>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16" style="opacity:.5"><path d="m6 9 6 6 6-6"/></svg>
+        </div>
+      </div>
+      <div class="field">
+        <label for="num">Pull request</label>
+        <div class="input ph" id="num">123</div>
+      </div>
+      <button class="btn" type="button">Read pull request</button>
+    </div>
+
+    <div class="list">
+      <div class="row">
+        <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M13 6h3a2 2 0 0 1 2 2v7M6 9v12"/></svg>
+        <span class="body">
+          <span class="title">Retry the payment capture once on a gateway timeout</span>
+          <span class="meta">northwind/checkout #248 · dana · 4 files · 12 minutes ago</span>
+        </span>
+      </div>
+      <div class="row">
+        <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M13 6h3a2 2 0 0 1 2 2v7M6 9v12"/></svg>
+        <span class="body">
+          <span class="title">Regenerate the pricing API client</span>
+          <span class="meta">northwind/checkout #245 · mira · 214 files · 3 hours ago</span>
+        </span>
+        <span class="pill warn">Partial diff</span>
+      </div>
+      <div class="row">
+        <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M13 6h3a2 2 0 0 1 2 2v7M6 9v12"/></svg>
+        <span class="body">
+          <span class="title">Move the tax table behind a feature flag</span>
+          <span class="meta">northwind/checkout #241 · dana · 9 files · yesterday</span>
+        </span>
+        <span class="pill bad">Diff unavailable</span>
+      </div>
+      <div class="row">
+        <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M13 6h3a2 2 0 0 1 2 2v7M6 9v12"/></svg>
+        <span class="body">
+          <span class="title">Add an idempotency key to the refund endpoint</span>
+          <span class="meta">northwind/checkout #236 · pri · 6 files · 2 days ago</span>
+        </span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ==================== shot 2: the diff sheet ==================== -->
+<div class="shot" id="shot-sheet">
+  <div class="sheet">
+    <div class="sheet-head">
+      <h2>Regenerate the pricing API client</h2>
+      <div class="sheet-meta">
+        <span>northwind/checkout #245</span><span aria-hidden="true">·</span>
+        <span>214 files</span><span aria-hidden="true">·</span>
+        <span class="mono">9f3c1ab</span>
+        <a href="#">Open on GitHub
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="12" height="12"><path d="M15 3h6v6M10 14 21 3M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></svg>
+        </a>
+      </div>
+    </div>
+    <p class="trunc">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/></svg>
+      This pull request was larger than Fabric stores for one review, so the diff below is the first part of it. Anything built on this review sees only what is shown here.
+    </p>
+    <pre><div class="hunk">diff --git a/src/pricing/client.ts b/src/pricing/client.ts</div><div>index 4c1e2ab..8b77d90 100644</div><div class="del">--- a/src/pricing/client.ts</div><div class="add">+++ b/src/pricing/client.ts</div><div class="hunk">@@ -1,14 +1,22 @@</div><div>-// Generated by openapi-typescript 6.7.0</div><div class="del">-export interface PriceQuote {</div><div class="del">-  amount: number;</div><div class="del">-  currency: string;</div><div class="del">-}</div><div class="add">+// Generated by openapi-typescript 7.4.2</div><div class="add">+export interface PriceQuote {</div><div class="add">+  amount: number;</div><div class="add">+  currency: string;</div><div class="add">+  /** Present only for quotes issued under a contract. */</div><div class="add">+  contractId?: string;</div><div class="add">+}</div><div> </div><div> export async function fetchQuote(sku: string): Promise&lt;PriceQuote&gt; {</div><div class="del">-  const res = await fetch(`/pricing/${sku}`);</div><div class="add">+  const res = await fetch(`/pricing/v2/${sku}`);</div><div>   if (!res.ok) {</div><div>     throw new Error(`Quote failed: ${res.status}`);</div><div>   }</div><div>   return res.json();</div><div> }</div></pre>
+  </div>
+</div>
+
+</body>
+</html>

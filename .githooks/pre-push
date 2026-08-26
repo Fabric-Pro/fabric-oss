@@ -1,0 +1,74 @@
+#!/usr/bin/env sh
+# Fabric pre-push guard: term-list freshness, then the ref names being published.
+#
+# Push is where the irreversibility is. A stale term list on a local commit
+# harms nothing, but pushing publishes the ref — after which a branch name
+# carrying a real organization is on the remote for good, and CI is structurally
+# too late to have helped. This hook runs before anything reaches the remote and
+# aborts the whole push on a non-zero exit.
+#
+# Two things happen here, in order:
+#   1. The local term list is brought up to date if it has fallen behind, so
+#      step 2 checks against the current list rather than whatever was copied
+#      onto this machine months ago.
+#   2. Every ref about to be published is scanned.
+#
+# Both no-op silently when there is no local term list: that is an external
+# contributor or a fresh clone, and neither has anything to leak. See
+# tooling/identifier-guard/terms-sync.mjs for the full state matrix.
+#
+# The authoritative gate for FILE CONTENT remains the identifiers job in
+# .github/workflows/security.yml, which always reads the current list.
+
+status=0
+bad_ref=0
+
+# Nothing here works without node; a fresh clone must still be able to push.
+if ! command -v node >/dev/null 2>&1; then
+	exit 0
+fi
+
+# ------------------------------------------------------ term list freshness
+# Exits non-zero only when the list is KNOWN to be behind and could not be
+# updated automatically. Being offline or unauthenticated is not a failure.
+if ! node tooling/identifier-guard/terms-sync.mjs; then
+	status=1
+fi
+
+# ------------------------------------------------------------- ref names
+# stdin: <local ref> <local sha> <remote ref> <remote sha>, one line per ref.
+# Checking the REMOTE name is the point — `git push origin HEAD:other-name`
+# publishes a name that never existed locally.
+while read -r _local_ref local_sha remote_ref _remote_sha; do
+	# An all-zero local sha is a deletion: nothing is being published.
+	case "$local_sha" in
+	*[!0]*) ;;
+	*) continue ;;
+	esac
+
+	[ -n "$remote_ref" ] || continue
+	name=${remote_ref#refs/heads/}
+	name=${name#refs/tags/}
+
+	if ! node tooling/identifier-guard/check.mjs --text "ref:$name" "$name"; then
+		status=1
+		bad_ref=1
+	fi
+done
+
+# stderr, matching check.mjs — this is diagnostic output on a failure path.
+# The rename advice appears only when a REF is what failed; on a stale list it
+# would send the reader after the wrong problem.
+if [ "$status" -ne 0 ]; then
+	{
+		echo ""
+		echo "Push aborted. Nothing has been published."
+		if [ "$bad_ref" -ne 0 ]; then
+			echo "Rename the branch before pushing — once a ref is on the remote it cannot be recalled:"
+			echo "  git branch -m <new-name>"
+		fi
+		echo ""
+	} >&2
+fi
+
+exit "$status"

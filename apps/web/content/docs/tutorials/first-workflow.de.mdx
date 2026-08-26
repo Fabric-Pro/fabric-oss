@@ -1,0 +1,274 @@
+---
+title: Ihren ersten Workflow erstellen
+description: Einen Workflow bauen, der einen Webhook empfängt, die Nutzlast mit KI analysiert und das Ergebnis nach Slack schickt.
+---
+
+Dieses Tutorial baut eine funktionierende Automatisierung von Anfang bis Ende: Ein Webhook
+empfängt Text, ein KI-Knoten analysiert ihn, ein Slack-Knoten postet das Ergebnis. Sie
+führen den Workflow zuerst im Editor aus, veröffentlichen ihn dann und rufen ihn über HTTP
+auf.
+
+Die Knotennamen im Canvas sind englisch, so wie sie in der Oberfläche erscheinen. Dieses
+Tutorial verwendet sie unverändert, damit Referenzen wie `{{Generate Text.text}}` genau so
+funktionieren, wie sie hier stehen.
+
+## Bevor Sie beginnen
+
+- Ein Fabric-Konto
+- Ein konfigurierter KI-Anbieter, siehe [KI-Konfiguration](/docs/getting-started/ai-configuration)
+- Eine Slack-Verbindung, falls Sie den letzten Schritt mitmachen möchten — der Workflow läuft auch ohne
+- `curl` und `openssl` für den HTTP-Aufruf am Ende
+
+## Schritt 1: Workflow anlegen
+
+<Steps>
+  <Step>
+    ### Workflows öffnen
+
+    Klicken Sie in der Seitenleiste auf **Workflows**, dann auf **New Workflow**.
+  </Step>
+
+  <Step>
+    ### Benennen
+
+    Der Workflow wird sofort als `Untitled Workflow` angelegt und öffnet sich auf einem
+    leeren Canvas. Klicken Sie den Namen in der Kopfzeile an und ändern Sie ihn zu
+    `My First Workflow`.
+  </Step>
+</Steps>
+
+## Schritt 2: Trigger hinzufügen
+
+<Steps>
+  <Step>
+    ### Trigger-Knoten anlegen
+
+    Klicken Sie auf dem Canvas auf **Add a Step**. Rechts öffnet sich das Panel im Tab
+    **Actions**; wählen Sie dort **Trigger**.
+  </Step>
+
+  <Step>
+    ### Trigger-Art setzen
+
+    Klicken Sie den Knoten an und setzen Sie **Trigger Type** auf **Webhook**. URL und
+    Signaturgeheimnis entstehen beim Veröffentlichen.
+  </Step>
+</Steps>
+
+## Schritt 3: Nutzlast mit KI analysieren
+
+<Steps>
+  <Step>
+    ### **Generate Text**-Knoten hinzufügen
+
+    Klicken Sie auf **+** in der Werkzeugleiste. Rechts erscheint eine leere Aktion und
+    der Tab **Actions** öffnet sich; wählen Sie **Generate Text** aus der Gruppe **AI**.
+
+    Das Hinzufügen verbindet den Knoten nicht. Ziehen Sie vom Anschlusspunkt rechts am
+    Trigger zum Anschlusspunkt links am neuen Knoten — ein unverbundener Knoten läuft nie.
+  </Step>
+
+  <Step>
+    ### Prompt schreiben
+
+    Öffnen Sie den Knoten und setzen Sie seinen Prompt:
+
+    ```
+    Analysiere den folgenden Text und gib aus:
+    1. Eine Zusammenfassung in einem Satz
+    2. Die genannten Kernthemen
+    3. Die Stimmung (positiv, negativ oder neutral)
+
+    Text: {{body}}
+    ```
+
+    Jedes Feld der obersten Ebene der JSON-Nutzlast wird zu einer gleichnamigen Variablen.
+    Eine Anfrage mit `{"body": "..."}` liefert Ihnen also `{{body}}`. Um stattdessen die
+    Ausgabe eines anderen Knotens zu verwenden, referenzieren Sie ihn über seine
+    Beschriftung: `{{Generate Text.text}}`.
+  </Step>
+
+</Steps>
+
+Der Knoten läuft mit dem konfigurierten Modell Ihres Workspace; eine eigene Modellauswahl
+hat er nicht. (**Generate Image** hat eine — dort gehört das Modell zu den Einstellungen
+des Knotens.)
+
+## Schritt 4: Ergebnis nach Slack posten
+
+Überspringen Sie diesen Schritt, wenn Sie Slack nicht verbunden haben — der Workflow läuft
+trotzdem, und die KI-Ausgabe steht im Ausführungsprotokoll.
+
+<Steps>
+  <Step>
+    ### Knoten hinzufügen
+
+    Klicken Sie erneut auf **+**, wählen Sie **Send Slack Message** und verbinden Sie den
+    Knoten auf dieselbe Weise mit dem KI-Knoten.
+  </Step>
+
+  <Step>
+    ### Slack verbinden
+
+    Ist Slack noch nicht verbunden, öffnen Sie **Integrations** in der Seitenleiste,
+    verbinden Sie Slack und kehren Sie zurück. Siehe die
+    [Slack-Integrationsanleitung](/docs/integrations/slack).
+  </Step>
+
+  <Step>
+    ### Nachricht schreiben
+
+    - **Channel**: `#general` oder jeder Kanal, in dem Ihre Slack-App ist
+    - **Message**:
+
+    ```
+    Neue Analyse abgeschlossen
+
+    {{Generate Text.text}}
+    ```
+
+    `Generate Text` ist die Beschriftung des KI-Knotens, `text` das Feld, das er ausgibt.
+    Wenn Sie den Knoten umbenennen, müssen Sie die Referenz mit anpassen.
+  </Step>
+</Steps>
+
+## Schritt 5: Speichern und im Editor ausführen
+
+Klicken Sie auf **Save**, dann auf **Run**. Das Ausführungspanel zeigt jeden Knoten
+nacheinander mit Eingabe, Ausgabe und Dauer.
+
+Beide Wege nutzen denselben Executor — ein Knoten, der hier funktioniert, funktioniert auch
+über den Webhook. Zwei Unterschiede sollten Sie kennen, bevor Sie die Ergebnisse lesen: Ein
+Lauf aus dem Editor sendet keine Webhook-Nutzlast, `{{body}}` bleibt also leer und der
+KI-Knoten sieht einen Prompt, der mit `Text:` endet. Und veröffentlicht wird Ihr
+**gespeicherter** Graph, nicht der auf dem Bildschirm: Es wird nichts automatisch
+gespeichert, speichern Sie also vor dem Veröffentlichen.
+
+## Schritt 6: Veröffentlichen und über HTTP aufrufen
+
+<Steps>
+  <Step>
+    ### Veröffentlichen
+
+    Klicken Sie auf **Publish**, aktivieren Sie **Enable Webhook Trigger** und ergänzen Sie
+    bei Bedarf eine Changelog-Zeile. Erst dieses Häkchen schaltet den Endpunkt scharf: Es
+    setzt die Trigger-Art des Workflows auf Webhook und erzeugt das Signaturgeheimnis.
+    Ohne das Häkchen werden Aufrufe abgelehnt, so veröffentlicht der Workflow auch
+    aussieht.
+  </Step>
+
+  <Step>
+    ### URL und Geheimnis kopieren
+
+    Der Dialog zeigt Webhook-URL und Webhook-Geheimnis. Kopieren Sie beides jetzt: Solange
+    der Workflow veröffentlicht bleibt, zeigt es Ihnen nichts erneut an.
+  </Step>
+
+  <Step>
+    ### Anfrage signieren und senden
+
+    Der Endpunkt lehnt unauthentifizierte Anfragen ab. Signieren Sie exakt die Bytes, die
+    Sie senden, mit dem Geheimnis und übergeben Sie den Hash in `X-Workflow-Signature`:
+
+    ```bash
+    URL="https://…/api/workflows/trigger/<workflowId>"
+    SECRET="<das Geheimnis aus dem Publish-Dialog>"
+    BODY='{"body": "Unser Team hat diese Woche das neue Dashboard veröffentlicht. Das Feedback ist positiv, die täglich aktiven Nutzer sind um 40 % gestiegen. Die Performance auf Mobilgeräten braucht noch Aufmerksamkeit."}'
+
+    SIGNATURE=$(printf '%s' "$BODY" | openssl dgst -sha256 -hmac "$SECRET" -r | cut -d' ' -f1)
+
+    curl -X POST "$URL" \
+      -H "Content-Type: application/json" \
+      -H "X-Workflow-Signature: sha256=$SIGNATURE" \
+      -d "$BODY"
+    ```
+
+    Ein erfolgreicher Aufruf gibt eine `executionId` zurück.
+  </Step>
+
+  <Step>
+    ### Lauf ansehen
+
+    Öffnen Sie die Ausführungshistorie des Workflows und suchen Sie den Lauf mit dieser
+    `executionId`. Jeder Knoten zeigt seinen Status; ein Klick zeigt Ein- und Ausgabe. Wenn
+    Sie Slack verbunden haben, liegt die Nachricht in Ihrem Kanal.
+  </Step>
+</Steps>
+
+## Schritt 7: Erweitern
+
+### Nach Ergebnis verzweigen
+
+Fügen Sie nach dem KI-Knoten einen **Condition**-Knoten ein. Sein Ausdruck wird gegen die
+Ausgaben früherer Knoten ausgewertet, und der Knoten erhält eine `true`- und eine
+`false`-Kante, die Sie zu unterschiedlichen Zielen führen können:
+
+```
+{{Generate Text.text}}.includes("negative")
+```
+
+Leiten Sie `true` an `#urgent-alerts` und `false` an `#general-updates`.
+
+### Stattdessen nach Zeitplan ausführen
+
+Setzen Sie die Art des Trigger-Knotens auf **Schedule** und geben Sie einen Cron-Ausdruck
+an, etwa `0 9 * * *` für jeden Morgen um 09:00 Uhr. Der Zeitplan startet beim
+Veröffentlichen; das Pausieren des Workflows über sein Kartenmenü stoppt ihn.
+
+### Den nächsten von der KI entwerfen lassen
+
+Statt von Hand zu bauen, beschreiben Sie, was Sie brauchen:
+
+```
+Erstelle einen Workflow, der Kundenfeedback per Webhook empfängt,
+die Stimmung mit KI analysiert, für negatives Feedback ein
+Linear-Issue anlegt und eine Zusammenfassung nach Slack postet.
+```
+
+## Gewohnheiten, die sich lohnen
+
+**Kennen Sie die drei Referenzformen.** `{{Node Label.field}}` liest die Ausgabe eines
+früheren Knotens, `{{fieldName}}` ein Feld der Trigger-Nutzlast, und `{{$nodeId.field}}`
+tut dasselbe wie die erste Form, übersteht aber das Umbenennen.
+
+**Führen Sie nach jedem neuen Knoten aus.** Eine falsche Referenz mit zwei Knoten auf dem
+Canvas zu finden ist deutlich einfacher als mit acht.
+
+**Benennen Sie Knoten danach, was sie tun.** `Analyse Sentiment` ist hilfreicher als
+`Generate Text`, sobald ein Graph drei KI-Knoten enthält — und die Beschriftung ist das,
+was Sie referenzieren.
+
+## Fehlersuche
+
+**Der Aufruf antwortet mit 403.** Entweder ist der Workflow nicht aktiv — Entwurf,
+pausiert oder archiviert — oder seine Trigger-Art ist nicht Webhook. Der Antwort-Body
+nennt den Grund. Der zweite Fall ist der häufigere: erneut veröffentlichen und dabei
+**Enable Webhook Trigger** aktivieren.
+
+**Der Aufruf antwortet mit 401.** Die Signatur passt nicht. Signieren Sie exakt die Bytes,
+die Sie senden — ein Umformatieren des JSON nach dem Signieren ändert den Hash — und stellen
+Sie dem Hex-Digest `sha256=` voran.
+
+**Der KI-Knoten liefert nichts.** Prüfen Sie, ob unter **Settings → AI Providers** ein
+Anbieter konfiguriert ist, und sehen Sie im Ausführungsprotokoll nach, ob der Prompt mit
+eingesetztem `{{body}}` angekommen ist.
+
+**Slack hat die Nachricht nicht erhalten.** Prüfen Sie, ob die Slack-App im Zielkanal ist,
+und lesen Sie die Ausgabe des Slack-Knotens im Ausführungsprotokoll — ein fehlgeschlagener
+Aufruf nennt dort den Grund.
+
+---
+
+## Nächste Schritte
+
+<Cards>
+  <Card title="Workflow-Builder" href="/docs/features/workflow-builder">
+    Die vollständige Knotenpalette, Grenzen und das Veröffentlichungsmodell
+  </Card>
+  <Card title="Erstes Dokument" href="/docs/tutorials/first-document">
+    Ihr erstes KI-Dokument erzeugen
+  </Card>
+  <Card title="Erster Agent" href="/docs/tutorials/first-agent">
+    Einen eigenen KI-Agenten bauen
+  </Card>
+</Cards>

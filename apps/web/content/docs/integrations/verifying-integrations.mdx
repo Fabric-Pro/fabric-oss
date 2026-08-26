@@ -1,0 +1,85 @@
+---
+title: Connecting & Verifying Integrations
+description: A practical checklist for connecting an integration and confirming it actually works, plus disconnect, reconnect, and token-expiry guidance.
+---
+
+This page is a practical checklist for setting up any integration and confirming it works end to end — useful before a demo, an onboarding, or a release.
+
+## Connect & Verify Checklist
+
+For each integration you set up, walk these steps:
+
+<Steps>
+  <Step>
+    ### Connect
+
+    Open **Settings → Integrations**, open the provider's card, and click **Connect** / **Set Up Actions**. Complete the OAuth popup (or enter credentials). Choose the right **scope** first — personal vs organization.
+  </Step>
+
+  <Step>
+    ### Confirm "Connected"
+
+    The provider card and its **Capability status** should show **Connected**. If it shows **Reconnect required**, the stored credential expired — reconnect before testing.
+  </Step>
+
+  <Step>
+    ### Check available actions
+
+    On the provider page, review **Available actions**. Each provider is **Knowledge** (read/search), **Actions** (write), or **Hybrid** (both). If a provider shows "Actions setup not yet available," it has no runtime actions yet.
+  </Step>
+
+  <Step>
+    ### Run a live action in chat
+
+    Open **AI Chat** and ask the agent to use the integration (see the per-provider prompts below). A successful, grounded response — or a created item you can see in the external tool — confirms the connection works end to end.
+  </Step>
+
+  <Step>
+    ### Verify the result externally
+
+    For write actions, open the external system and confirm the item was created/updated. For knowledge actions, confirm the answer reflects real content.
+  </Step>
+</Steps>
+
+## Per-Provider Smoke Tests
+
+| Provider | Type | Try in chat |
+|----------|------|-------------|
+| **GitHub** | Hybrid | "Search my open GitHub issues" → then "create a test issue in &lt;repo&gt;" |
+| **GitLab** | Hybrid | "Search issues in &lt;project&gt;" → "create a test GitLab issue" |
+| **Jira** | Hybrid | "Find open bugs in &lt;project&gt;" → "create a test Jira issue" |
+| **Confluence** | Knowledge | "Search Confluence for &lt;topic&gt;" |
+| **Slack** | Hybrid | "Post a test message to #&lt;channel&gt;" |
+| **Notion** | Hybrid | "Search Notion for &lt;page&gt;" → "create a test page" |
+| **Google Drive** | Knowledge | "Find &lt;document&gt; in my Drive" |
+| **Microsoft Teams** | Hybrid | "Search Teams for &lt;topic&gt;" |
+| **Linear** | Hybrid | "Find Linear issues about &lt;topic&gt;" → "create a test ticket" |
+| **Azure DevOps** | MCP | "List work items in the current sprint" (enable under MCP Registry) |
+
+## Disconnecting & Reconnecting
+
+- **Disconnect:** open the provider under **Settings → Integrations** and click **Disconnect**. This deactivates the connection so it can no longer be used in chat or workflows.
+- **Shared connections:** Jira and Confluence share one **Atlassian** connection — disconnecting one disconnects both. Teams and Microsoft 365 share one **Microsoft Graph** connection.
+- **Reconnect:** click **Connect** / **Set Up Actions** again and re-authorize. Reconnecting refreshes scopes and tokens.
+
+## Token Expiry
+
+- Most OAuth providers refresh tokens automatically. When a refresh token expires or is revoked, the provider shows **Reconnect required** — just reconnect.
+- Some providers don't issue refresh tokens and need periodic manual reconnection. If a previously-working integration stops responding, reconnect first.
+
+## Health & Status
+
+For MCP-based servers (added under **Settings → MCP Registry**), each server shows a **health status**. If tools stop appearing in chat, confirm the server is **Enabled** and **Healthy**, then refresh the tool list.
+
+---
+
+## Next Steps
+
+<Cards>
+  <Card title="Connect Your First Integration" href="/docs/tutorials/setup-integrations">
+    The step-by-step setup flow
+  </Card>
+  <Card title="MCP Integration" href="/docs/integrations/mcp">
+    How connected tools are called at runtime
+  </Card>
+</Cards>

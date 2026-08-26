@@ -1,0 +1,16 @@
+packages:
+  - config
+  - apps/*
+  - packages/*
+  - tooling/*
+  # The Cloudflare sandbox worker. Outside the workspace it was invisible to
+  # `pnpm install --filter`, which made its CI install a silent no-op: nothing
+  # was fetched, and the deploy failed on unresolvable imports and a missing
+  # wrangler. It only ever worked locally because that directory had a
+  # node_modules from a manual install.
+  - services/*
+  - agents/*/*
+  - agents/*/*/*
+  - "!agents/langchain/cuga/**"
+  - party
+  - party-cf

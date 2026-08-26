@@ -1,0 +1,243 @@
+---
+title: Häufig gestellte Fragen
+description: Häufige Fragen und Antworten zu Fabric AI.
+---
+
+Finden Sie Antworten auf die häufigsten Fragen zu Fabric AI.
+
+## Allgemein
+
+### Was ist Fabric AI?
+
+Fabric AI ist eine Unternehmensplattform, die die Softwareentwicklung durch intelligente KI-Agenten, RAG-gestützte Dokumentenerstellung und dauerhafte Workflow-Automatisierung beschleunigt. Sie hilft Teams, Dokumente zu generieren, repetitive Aufgaben zu automatisieren und ihre bestehenden Wissensdatenbanken zu nutzen.
+
+### Wie unterscheidet sich Fabric von ChatGPT oder Claude?
+
+Während ChatGPT und Claude allgemeine KI-Assistenten sind, ist Fabric AI speziell für Softwareentwicklungs-Workflows entwickelt:
+
+| Feature | Allgemeine KI-Assistenten | Fabric AI |
+|---------|----------------------|-----------|
+| Dokumentenerstellung | Einfach | Strukturierte Vorlagen mit RAG |
+| Externe Tools | Begrenzt/Keine | MCP-Integration (Jira, GitHub, Slack) |
+| Workflow-Automatisierung | Keine | Dauerhafte, fehlertolerante Workflows |
+| Team-Zusammenarbeit | Keine | Multi-Tenant mit rollenbasiertem Zugriff |
+| Kontext aus Ihren Dokumenten | Jedes Mal hochladen | Persistente Workspaces mit RAG |
+
+### Sind meine Daten sicher?
+
+Ja. Fabric AI nimmt Sicherheit ernst:
+
+- **Datenisolierung**: Multi-Tenant-Architektur stellt sicher, dass Ihre Daten isoliert sind
+- **Verschlüsselung**: Alle Daten werden im Ruhezustand und während der Übertragung verschlüsselt
+- **API-Schlüssel-Sicherheit**: Ihre KI-Anbieter-Schlüssel sind verschlüsselt
+- **Kein Training**: Ihre Daten werden nie zum Training von KI-Modellen verwendet
+- **SOC 2-Konformität**: Unternehmenssicherheitspraktiken
+
+### Welche KI-Anbieter werden unterstützt?
+
+Fabric AI unterstützt alle wichtigen KI-Anbieter über das Vercel AI SDK:
+
+- OpenAI (GPT-4o, GPT-4o-mini, o1)
+- Anthropic (Claude Sonnet, Claude Opus, Claude Haiku)
+- Google (Gemini 2.0 Flash, Gemini Pro)
+- Groq, Cerebras (ultraschnelle Llama-Inferenz)
+- DeepSeek (R1, V3)
+- Mistral, Cohere, Together AI, Fireworks, XAI und mehr
+
+Fabric unterstützt 20+ Anbieter, einschließlich Gateways (Vercel Gateway, OpenRouter, Cloudflare AI) und Cloud-Anbieter (Azure AI Foundry, AWS Bedrock, Google Vertex AI).
+
+Sie können mehrere Anbieter konfigurieren und je nach Bedarf zwischen ihnen wechseln.
+
+## Preise & Pläne
+
+### Gibt es einen kostenlosen Tarif?
+
+Fabric AI bietet einen kostenlosen Tarif mit begrenzter Nutzung. Sie können auf einen bezahlten Plan upgraden, um zusätzliche Features und höhere Nutzungsgrenzen zu erhalten.
+
+### Benötige ich meinen eigenen KI-API-Schlüssel?
+
+Ja. Fabric AI verwendet ein BYOK (Bring Your Own Key)-Modell. Sie stellen Ihre API-Schlüssel für OpenAI, Anthropic oder andere Anbieter bereit. Dies gibt Ihnen:
+
+- Volle Kontrolle über Kosten
+- Auswahl der Modelle
+- Direkte Beziehung zu Anbietern
+- Kein Aufschlag auf KI-Kosten
+
+### Kann ich Fabric mit meinem Team nutzen?
+
+Ja! Erstellen Sie eine Organisation, um mit Ihrem Team zusammenzuarbeiten:
+
+- Gemeinsame Workspaces und Dokumente
+- Organisationsweite Prompts und Agenten
+- Rollenbasierte Zugriffskontrolle
+- Zentralisierte Abrechnung (optional)
+
+## Features
+
+### Was ist RAG und warum ist es wichtig?
+
+RAG (Retrieval-Augmented Generation) ermöglicht KI-Agenten den Zugriff auf Ihre Dokumente beim Generieren von Antworten. Anstatt sich nur auf die Trainingsdaten der KI zu verlassen, können Agenten:
+
+- Auf Ihre früheren PRDs und Spezifikationen verweisen
+- Den Vorlagen Ihres Unternehmens folgen
+- Ihre Terminologie und Konventionen verwenden
+- In Ihren tatsächlichen Daten verankert bleiben
+
+[Mehr über RAG erfahren →](/docs/core-concepts/rag)
+
+### Was sind MCP-Tools?
+
+MCP (Model Context Protocol) ist ein offener Standard, der es KI-Agenten ermöglicht, mit externen Tools zu interagieren. Mit MCP können Fabric-Agenten:
+
+- Jira-Tickets aus PRDs erstellen
+- Updates an Slack posten
+- GitHub-Issues lesen und aktualisieren
+- Auf Notion-Datenbanken zugreifen
+- Und viele weitere Integrationen
+
+[Mehr über MCP erfahren →](/docs/integrations/mcp)
+
+### Welche Dokumenttypen kann Fabric generieren?
+
+Der Document Generator kann erstellen:
+
+- Produktanforderungsdokumente (PRDs)
+- Technische Spezifikationen
+- Architekturdokumente
+- API-Dokumentation
+- User Stories
+- Release Notes
+- Besprechungszusammenfassungen
+- Runbooks
+- Und benutzerdefinierte Dokumenttypen
+
+### Kann ich benutzerdefinierte Agenten erstellen?
+
+Ja! Sie können benutzerdefinierte Agenten erstellen mit:
+
+- Benutzerdefinierten System-Prompts
+- Spezifischem Tool-Zugriff
+- Benutzerdefinierten Genehmigungsworkflows
+- Template-Variablen
+- RAG-Kontext
+
+[Tutorial: Ihren ersten Agenten erstellen →](/docs/tutorials/first-agent)
+
+## Technisch
+
+### Wie funktioniert die Workflow-Engine?
+
+Fabric verwendet eine dauerhafte Workflow-Engine für zuverlässige Ausführung. Das bedeutet:
+
+- **Fehlertoleranz**: Workflows werden nach Fehlern fortgesetzt
+- **Langläufer**: Unterstützung für Workflows, die Stunden oder Tage dauern
+- **Human-in-the-loop**: Integrierte Genehmigungsworkflows
+- **Sichtbarkeit**: Echtzeit-Fortschrittsverfolgung
+
+[Mehr über Workflows erfahren →](/docs/core-concepts/workflows)
+
+### Welche Dateitypen kann ich für RAG hochladen?
+
+Fabric unterstützt:
+
+- PDF (einschließlich gescannter Dokumente mit OCR)
+- Microsoft Word (.docx)
+- Markdown (.md)
+- Klartext (.txt)
+- Verschiedene Code-Dateien
+- HTML-Seiten
+
+### Gibt es eine API?
+
+Ja, Fabric bietet eine umfassende API für:
+
+- Verwaltung von Agenten und Gesprächen
+- Hochladen von Dokumenten in Workspaces
+- Programmatisches Auslösen von Workflows
+- Zugriff auf generierte Inhalte
+
+[API-Dokumentation →](/docs/api/overview)
+
+### Kann ich Fabric selbst hosten?
+
+Fabric bietet mehrere Bereitstellungsoptionen:
+
+- **Cloud-Hosting**: Vollständig verwaltet unter fabric.pro (empfohlen)
+- **Self-Hosting**: Auf Ihrer eigenen Infrastruktur bereitstellen
+
+[Installationsoptionen →](/docs/getting-started/installation)
+
+## Fehlerbehebung
+
+### Mein KI-Anbieter funktioniert nicht
+
+1. Überprüfen Sie, ob Ihr API-Schlüssel korrekt ist
+2. Prüfen Sie, ob der Anbieter in den Einstellungen aktiviert ist
+3. Stellen Sie sicher, dass Sie Credits/Kontingent beim Anbieter haben
+4. Testen Sie die Verbindung in Einstellungen → KI-Gateway
+
+### Dokumente werden nicht hochgeladen
+
+1. Überprüfen Sie, ob das Dateiformat unterstützt wird
+2. Stellen Sie sicher, dass die Dateigröße unter 50 MB liegt
+3. Versuchen Sie, die Seite zu aktualisieren
+4. Überprüfen Sie Ihr Speicherkontingent
+
+### Agenten-Antworten sind langsam
+
+1. Großer Kontext (viele Dokumente) braucht länger zum Verarbeiten
+2. Komplexe Prompts erfordern mehr Berechnung
+3. Einige Modelle sind langsamer als andere
+4. Überprüfen Sie Ihre Internetverbindung
+
+### MCP-Tools sind nicht verfügbar
+
+1. Überprüfen Sie, ob der MCP-Server in den Einstellungen konfiguriert ist
+2. Stellen Sie sicher, dass die Authentifizierung abgeschlossen ist
+3. Testen Sie die Server-Verbindung
+4. Stellen Sie sicher, dass der Agent die Berechtigung hat, die Tools zu verwenden
+
+### Workflow ist hängengeblieben
+
+1. Überprüfen Sie den Workflow-Status in der Workflows-Registerkarte
+2. Suchen Sie nach ausstehenden Genehmigungen
+3. Prüfen Sie auf fehlgeschlagene Aktivitäten
+4. Kontaktieren Sie den Support, wenn das Problem anhält
+
+## Hilfe erhalten
+
+### Wo kann ich Unterstützung erhalten?
+
+- **Dokumentation**: Sie lesen sie gerade!
+- **E-Mail**: support@fabric.pro
+- **Community**: Treten Sie unserem Discord-Server bei
+- **Enterprise**: Dedizierter Support für Enterprise-Kunden
+
+### Wie melde ich einen Fehler?
+
+1. Gehen Sie zu **Hilfe → Problem melden**
+2. Beschreiben Sie, was Sie erwartet haben vs. was passiert ist
+3. Geben Sie Schritte zur Reproduktion an
+4. Fügen Sie Screenshots bei, wenn hilfreich
+
+### Kann ich ein Feature anfragen?
+
+Ja! Wir freuen uns über Feature-Anfragen:
+
+1. Gehen Sie zu **Hilfe → Feature-Anfrage**
+2. Beschreiben Sie Ihren Anwendungsfall
+3. Erklären Sie, wie das Feature helfen würde
+4. Stimmen Sie für bestehende Anfragen ab
+
+---
+
+## Noch Fragen?
+
+<Cards>
+  <Card title="Erste Schritte" href="/docs/getting-started/overview">
+    Vollständige Einrichtungsanleitung
+  </Card>
+  <Card title="TechFabric kontaktieren" href="https://techfabric.com/contact">
+    Unser Support-Team per E-Mail erreichen
+  </Card>
+</Cards>

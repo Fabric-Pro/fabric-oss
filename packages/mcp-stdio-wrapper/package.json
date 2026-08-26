@@ -1,0 +1,29 @@
+{
+	"name": "@repo/mcp-stdio-wrapper",
+	"version": "0.0.4",
+	"license": "Apache-2.0",
+	"private": true,
+	"type": "module",
+	"main": "./index.ts",
+	"exports": {
+		".": "./index.ts",
+		"./server": "./src/server.ts"
+	},
+	"scripts": {
+		"dev": "tsx src/server.ts",
+		"start": "node --import tsx src/server.ts",
+		"type-check": "tsc --noEmit"
+	},
+	"dependencies": {
+		"@hono/node-server": "^2.0.11",
+		"hono": "^4.12.34",
+		"shell-quote": "^1.9.0",
+		"zod": "^4.2.1"
+	},
+	"devDependencies": {
+		"@repo/tsconfig": "workspace:*",
+		"@types/node": "^22.10.5",
+		"tsx": "^4.19.2",
+		"typescript": "5.9.3"
+	}
+}

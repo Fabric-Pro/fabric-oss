@@ -1,0 +1,10 @@
+{
+	"version": 1,
+	"skills": {
+		"beautiful-mermaid": {
+			"source": "intellectronica/agent-skills",
+			"sourceType": "github",
+			"computedHash": "0bbbe0bb6d026f50ba64b18bca28fbf646b2602456da9c1ce0f8f3d27bf80b03"
+		}
+	}
+}

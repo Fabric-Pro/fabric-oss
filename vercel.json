@@ -1,0 +1,7 @@
+{
+	"$schema": "https://openapi.vercel.sh/vercel.json",
+	"git": {
+		"submodules": false
+	},
+	"ignoreCommand": "bash -c 'B=$(git merge-base origin/master HEAD 2>/dev/null||echo HEAD^);!git diff --name-only $B HEAD|grep -qvE\"^(deployment/|.github/|docs/|.*\\.md$)\"'"
+}

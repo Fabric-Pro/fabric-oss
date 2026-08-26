@@ -1,0 +1,12 @@
+-- Where the sign-in form lives, when it is not at the environment's base URL.
+--
+-- `baseUrl` meant both "where the application is" and "where the sign-in form
+-- is". The runner navigated to it and expected the email and password fields to
+-- be on that page, so an app with a marketing site in front of its login could
+-- not be described at all — the workaround was to point `baseUrl` at the login
+-- page and lie about where the app is.
+--
+-- Nullable, and null preserves the previous behaviour exactly: sign in at
+-- `baseUrl`. No backfill, because every existing row is already configured under
+-- the old meaning and would be broken by having one invented for it.
+ALTER TABLE "project_environment" ADD COLUMN "signInUrl" TEXT;

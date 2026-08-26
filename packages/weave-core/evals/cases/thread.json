@@ -1,0 +1,37 @@
+{
+	"name": "thread-codebase-exploration",
+	"cases": [
+		{
+			"id": "thread-001",
+			"name": "Find authentication middleware",
+			"agent": "thread",
+			"input": {
+				"message": "Find the authentication middleware in this codebase",
+				"context": {
+					"sandboxSessionId": "test-session-123",
+					"workDir": "/workspace"
+				}
+			},
+			"expected": {
+				"tools": ["searchCode", "readFile"],
+				"output": "should contain middleware location"
+			}
+		},
+		{
+			"id": "thread-002",
+			"name": "Explore project structure",
+			"agent": "thread",
+			"input": {
+				"message": "Show me the project structure",
+				"context": {
+					"sandboxSessionId": "test-session-123",
+					"workDir": "/workspace"
+				}
+			},
+			"expected": {
+				"tools": ["listFiles"],
+				"output": "should list top-level directories"
+			}
+		}
+	]
+}

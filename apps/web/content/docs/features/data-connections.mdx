@@ -1,0 +1,53 @@
+---
+title: Data Connections
+description: How Fabric connects to external systems — now unified under Integrations as runtime actions.
+---
+
+<Callout type="warning">
+**This has changed.** Fabric no longer has a separate "Data Connections" surface for syncing external content into a background index. Connecting an external service — and everything it can do — now lives under **Settings → Integrations**, where each provider is configured as a set of **runtime actions**.
+</Callout>
+
+## What changed
+
+"Data Connections" used to be a separate way to sync external content (Notion pages, Drive files, and so on) into a background index for retrieval. That surface has been retired in favor of a single, unified model:
+
+- **One place** — manage every external connection under **Settings → Integrations**.
+- **Runtime actions, not background sync** — instead of pre-indexing content, agents call **knowledge actions** (e.g. "Search Notion", "Get Page Content") live, on demand. Providers also expose **write actions** (e.g. "Create Issue"). A provider that offers both is labeled **Hybrid**.
+- **Same credentials everywhere** — one connection works in AI chat, the orchestrator, and workflow nodes alike.
+
+<Callout type="info">
+**Backlog sync is different.** Linking a project to a project-management tool (Azure DevOps, GitLab, Jira, Fizzy) *does* keep your backlog aligned two ways over time. That's a separate, project-level capability — see [Project Management Sync](/docs/features/pm-sync).
+</Callout>
+
+## Where things moved
+
+| Before | Now |
+|--------|-----|
+| Settings → Data Connections | **Settings → Integrations** |
+| "Available Providers" tab | The provider grid on the Integrations page |
+| Set up Search / background sync | **Manage Actions** on a provider (knowledge actions run live) |
+| RAG indexing of connected content | Project context + RAG providers — see [RAG](/docs/core-concepts/rag) |
+
+## Connecting a service
+
+See **[Connect Your First Integration](/docs/tutorials/setup-integrations)** for the current step-by-step flow, and **[MCP Integration](/docs/integrations/mcp)** for how connected tools are called at runtime.
+
+## Knowledge & retrieval
+
+For document knowledge and retrieval-augmented generation, Fabric uses **project context** and your configured **RAG / embedding providers** — see [RAG](/docs/core-concepts/rag). Connected integrations contribute through live knowledge actions rather than a separate sync.
+
+---
+
+## Next Steps
+
+<Cards>
+  <Card title="Connect Your First Integration" href="/docs/tutorials/setup-integrations">
+    The current integration setup flow
+  </Card>
+  <Card title="MCP Integration" href="/docs/integrations/mcp">
+    How connected tools are called at runtime
+  </Card>
+  <Card title="RAG" href="/docs/core-concepts/rag">
+    How document knowledge and retrieval work
+  </Card>
+</Cards>

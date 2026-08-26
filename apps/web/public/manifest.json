@@ -1,0 +1,21 @@
+{
+	"name": "Fabric",
+	"short_name": "Fabric",
+	"description": "AI-powered software delivery platform",
+	"start_url": "/app",
+	"display": "standalone",
+	"background_color": "#fafaf9",
+	"theme_color": "#9F2A3A",
+	"icons": [
+		{
+			"src": "/images/favicon-32x32.png",
+			"sizes": "32x32",
+			"type": "image/png"
+		},
+		{
+			"src": "/images/apple-touch-icon.png",
+			"sizes": "180x180",
+			"type": "image/png"
+		}
+	]
+}

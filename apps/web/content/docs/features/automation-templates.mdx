@@ -1,0 +1,96 @@
+---
+title: Automation Templates
+description: Save and reuse workflow patterns as parameterized templates for repeatable automation.
+---
+
+Automation Templates let you save successful workflow patterns as reusable templates. Define parameterized steps once, then execute them repeatedly with different inputs.
+
+## What is an Automation Template?
+
+An Automation Template captures a sequence of workflow steps with configurable parameters. Instead of rebuilding workflows from scratch, you save a proven pattern and reuse it across projects.
+
+**Examples:**
+- A data extraction pipeline that scrapes, processes, and stores content
+- An onboarding workflow that creates accounts across multiple systems
+- A reporting template that gathers metrics and generates summaries
+
+## Creating a Template
+
+<Steps>
+  <Step>
+    ### Define the Template
+
+    Go to **Automation Templates** in the sidebar and click **New Template**.
+
+    Provide a name, description, and category for easy discovery.
+  </Step>
+
+  <Step>
+    ### Configure Workflow Steps
+
+    Define the sequence of steps the template will execute. Each step is stored as a parameterized workflow definition.
+  </Step>
+
+  <Step>
+    ### Add Parameters
+
+    Define user-configurable parameters that change between executions. Parameters use a JSON schema to define types, defaults, and validation rules.
+  </Step>
+
+  <Step>
+    ### Save and Categorize
+
+    Choose a category (e.g., `data-extraction`, `reporting`, `onboarding`) and add tags for searchability. Optionally share the template with your organization.
+  </Step>
+</Steps>
+
+## Template Properties
+
+| Property | Description |
+|----------|-------------|
+| **Name** | Display name for the template |
+| **Description** | What the template does |
+| **Workflow Steps** | Parameterized step definitions (JSON) |
+| **Parameters** | User-configurable input schema |
+| **Category** | Classification (e.g., reporting, onboarding) |
+| **Tags** | Searchable labels |
+| **Version** | Auto-incremented version number |
+| **Public** | Whether the template is shared with organization members |
+
+## Sharing Templates
+
+Templates support two visibility levels:
+
+- **Private** (default) - Only visible to the creator
+- **Public** - Visible to all members of the organization
+
+To share a template, toggle the **Public** setting when editing.
+
+## Multi-Tenant Support
+
+Automation Templates work in both personal and organization contexts:
+
+- **Personal** (`/app/automation-templates`) - Your private templates
+- **Organization** (`/app/{org}/automation-templates`) - Organization-scoped templates
+- Public templates are only shared within the same organization
+
+## Usage Tracking
+
+Each template tracks:
+
+- **Use count** - How many times the template has been executed
+- **Last used** - When the template was last run
+- **Version history** - Changes over time
+
+---
+
+## Next Steps
+
+<Cards>
+  <Card title="Workflow Builder" href="/docs/features/workflow-builder">
+    Build custom workflows with the visual drag-and-drop canvas
+  </Card>
+  <Card title="Agent Templates" href="/docs/features/agent-templates">
+    Create reusable agent configurations
+  </Card>
+</Cards>

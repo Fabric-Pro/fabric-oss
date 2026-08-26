@@ -1,0 +1,174 @@
+name: Docker Build Check
+
+# Build the container images that carry a browser, on PRs that could break them.
+#
+# WHY THIS EXISTS
+# No workflow built any Dockerfile on a pull request. The container-apps
+# pipeline is push-to-master only and `deploy-temporal-worker.yml` was retired,
+# so a broken image layer merged with every PR check green and stayed broken for
+# two days — every deploy failing at the Chromium install with exit 127 while the
+# worker ran old code. Nothing in CI could have caught it, because nothing built
+# the image until after merge.
+#
+# WHY PATH-FILTERED RATHER THAN ALWAYS
+# The build takes roughly ten minutes. Running it on every PR in the repo would
+# tax hundreds of changes that cannot affect the image to catch the handful that
+# can. The filter below is the set that decides what the image contains:
+#   * the Dockerfile itself — where the #2336 break actually lived;
+#   * `packages/temporal/package.json` — its direct dependencies, and the bins
+#     pnpm links for them, which is what the broken layer relied on;
+#   * the root `package.json` — `onlyBuiltDependencies` lives there, and
+#     `playwright` being absent from it is why the browser binaries were never
+#     downloaded in the first place;
+#   * `pnpm-lock.yaml` — resolution changes under any of the above.
+#
+# Deliberately NOT the deploy pipeline's full shared-package set. That fires on
+# most PRs in the repo; this gate is for changes to how the image is BUILT, not
+# to code the image happens to carry. Type-check and unit tests already cover
+# the latter.
+#
+# The Dockerfile's own build-time assertion (it launches the resolved Chromium)
+# means a successful build here is a real signal, not just "the layers ran".
+#
+# WHY THE SANDBOX WORKER IS HERE TOO
+# It has the same shape of exposure and even less cover. Nothing in CI builds
+# `services/sandbox-worker/Dockerfile` either — that image is built by
+# Cloudflare at `wrangler deploy`, so a broken layer fails a DEPLOY rather than a
+# check, which is strictly worse than the temporal case. It carries a Chromium
+# for sandbox-executed browser tests (Mode B) and the identical
+# build-time launch assertion, so building it on a PR is what makes that
+# assertion worth having. Its context is `services/sandbox-worker` alone: the
+# image installs its own tools globally with npm and depends on nothing in the
+# pnpm workspace, which is why the workspace paths above are not in its filter.
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'packages/temporal/Dockerfile'
+      - 'packages/temporal/package.json'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+      - 'services/sandbox-worker/Dockerfile'
+      - 'services/sandbox-worker/package.json'
+      - 'packages/mcp-stdio-wrapper/Dockerfile'
+      - 'apps/web/Dockerfile'
+      - 'packages/database/Dockerfile.migrate'
+      - '.github/workflows/docker-build-check.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docker-build-check-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  temporal-worker:
+    name: build temporal worker image
+    runs-on: ubuntu-8core
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
+
+      - name: Build (no push)
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
+        with:
+          context: .
+          file: packages/temporal/Dockerfile
+          push: false
+          # GitHub's cache pool is hard-capped at 10 GB and the deploy
+          # pipeline's thirteen images already exceed it, which is why that
+          # pipeline caches to ACR instead. This gate builds ONE image and has
+          # no registry credentials on a pull request (a fork PR must not get
+          # them), so a scoped GHA cache is the right trade: it fits, and a cold
+          # miss costs time rather than correctness.
+          cache-from: type=gha,scope=temporal-worker-pr
+          cache-to: type=gha,scope=temporal-worker-pr,mode=max
+
+  sandbox-worker:
+    name: build sandbox worker image
+    runs-on: ubuntu-8core
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
+
+      - name: Build (no push)
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
+        with:
+          # The image installs everything itself; it needs no workspace files, so
+          # the narrow context keeps the build fast and the cache small.
+          context: services/sandbox-worker
+          file: services/sandbox-worker/Dockerfile
+          push: false
+          cache-from: type=gha,scope=sandbox-worker-pr
+          cache-to: type=gha,scope=sandbox-worker-pr,mode=max
+
+  # These were built by nothing on a pull request. The web and wrapper images ship
+  # only through the self-hosted GitLab pipeline and the migration runner only on
+  # a release tag, so a Dockerfile break in any of them stayed invisible until
+  # something downstream tried to build it. Both the migration runner and the web
+  # image were in fact broken on master when this gate first ran.
+  mcp-stdio-wrapper:
+    name: build mcp stdio wrapper image
+    runs-on: ubuntu-8core
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
+
+      - name: Build (no push)
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
+        with:
+          context: .
+          file: packages/mcp-stdio-wrapper/Dockerfile
+          push: false
+          cache-from: type=gha,scope=mcp-stdio-wrapper-pr
+          cache-to: type=gha,scope=mcp-stdio-wrapper-pr,mode=max
+
+  migration-runner:
+    name: build migration runner image
+    runs-on: ubuntu-8core
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
+
+      - name: Build (no push)
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
+        with:
+          context: .
+          file: packages/database/Dockerfile.migrate
+          push: false
+          cache-from: type=gha,scope=migration-runner-pr
+          cache-to: type=gha,scope=migration-runner-pr,mode=max
+
+  web:
+    name: build web image
+    runs-on: ubuntu-8core
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
+
+      - name: Build (no push)
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
+        with:
+          context: .
+          file: apps/web/Dockerfile
+          push: false
+          cache-from: type=gha,scope=web-pr
+          cache-to: type=gha,scope=web-pr,mode=max

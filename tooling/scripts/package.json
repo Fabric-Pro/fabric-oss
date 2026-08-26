@@ -1,0 +1,25 @@
+{
+	"dependencies": {
+		"@repo/auth": "workspace:*",
+		"@repo/database": "workspace:*",
+		"@repo/logs": "workspace:*"
+	},
+	"devDependencies": {
+		"@repo/tsconfig": "workspace:*",
+		"@types/node": "^24.10.0",
+		"nanoid": "^6.0.0",
+		"tsx": "^4.20.6",
+		"vitest": "^4.1.8"
+	},
+	"name": "@repo/scripts",
+	"private": true,
+	"scripts": {
+		"create:plugin": "dotenv -c -e ../../.env -- tsx ./src/create-plugin.ts",
+		"create:user": "dotenv -c -e ../../.env -- tsx ./src/create-user.ts",
+		"security:check-org-context": "tsx ./src/check-org-context-security.ts",
+		"test": "vitest run",
+		"type-check": "tsc --noEmit"
+	},
+	"version": "0.0.3",
+	"license": "Apache-2.0"
+}

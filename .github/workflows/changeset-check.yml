@@ -1,0 +1,117 @@
+name: Changeset check
+
+# Fails any PR that touches code paths but does not include a changeset.
+# Opt out by applying the `skip-changeset` label (for docs-only, CI-only,
+# or other no-user-impact PRs).
+#
+# See packages/fabric-app/README.md for the rationale and
+# docs/deployment.md § Release Strategy for the full release flow.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+    # Canonical upstream branch is `master` (post-cutover); see
+    # COLLABORATION.md and docs/deployment.md § Branch cutover checklist.
+    branches: [master]
+
+concurrency:
+  group: changeset-check-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Require changeset
+    runs-on: ubuntu-latest
+    # Skip the check if:
+    # - PR carries the opt-out label, OR
+    # - PR is the auto-generated release PR from changesets/action
+    #   (head branch `changeset-release/<base>`) — that PR consumes
+    #   changesets rather than adding them, so requiring one would
+    #   deadlock the release. The release PR head branch is
+    #   `changeset-release/master` (post-cutover canonical base).
+    if: ${{ !contains(github.event.pull_request.labels.*.name, 'skip-changeset')
+            && github.event.pull_request.head.ref != 'changeset-release/master' }}
+    steps:
+      - name: Checkout PR
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          # Full history so `pnpm changeset status --since=origin/$BASE_REF`
+          # can diff against the merge base.
+          fetch-depth: 0
+
+      - name: Path-based opt-out (docs/CI/changeset-only changes)
+        id: paths
+        # Only the listed paths changed → no changeset required.
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          CHANGED=$(git diff --name-only "$BASE_SHA" "$HEAD_SHA")
+          echo "Changed files:"
+          echo "$CHANGED"
+          # Files matching any of these patterns count as "no-impact"
+          NON_IMPACT_REGEX='^(\.changeset/|\.github/|docs/|\.vscode/|\.claude/|\.cursor/|\.augment/|.*\.md$|\.gitignore$|\.editorconfig$|LICENSE)'
+          IMPACT=$(echo "$CHANGED" | grep -Ev "$NON_IMPACT_REGEX" || true)
+          if [ -z "$IMPACT" ]; then
+            echo "no_impact=true" >> "$GITHUB_OUTPUT"
+            echo "Only no-impact paths changed; skipping changeset check."
+          else
+            echo "no_impact=false" >> "$GITHUB_OUTPUT"
+            echo "Impacting files present; changeset required."
+          fi
+
+      - name: Setup pnpm
+        if: steps.paths.outputs.no_impact == 'false'
+        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6
+
+      - name: Setup Node.js
+        if: steps.paths.outputs.no_impact == 'false'
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+
+      - name: Verify a changeset exists and declares package bumps
+        if: steps.paths.outputs.no_impact == 'false'
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+        run: |
+          # Two-layer check:
+          # 1. `changeset status` exits non-zero if no changeset files are
+          #    present since base — catches the "forgot to add one" case.
+          # 2. Parse the JSON output and require at least one package bump
+          #    in `.releases` — catches malformed changesets with empty
+          #    frontmatter (file exists but bumps nothing, so the bot
+          #    consumes it without producing a CHANGELOG entry; release
+          #    notes silently lost).
+          # Pin to the version in package.json so a future Changesets
+          # release can't silently change the `--output` JSON schema
+          # (which the `jq .releases | length` check below depends on)
+          # or alter `status` exit-code semantics. Keep in sync with the
+          # `@changesets/cli` devDependency in the root package.json.
+          set +e
+          OUTPUT=$(pnpm dlx @changesets/cli@2.31.0 status --since="origin/$BASE_REF" --output=changeset-status.json 2>&1)
+          STATUS=$?
+          set -e
+          echo "$OUTPUT"
+          if [ $STATUS -ne 0 ]; then
+            echo ""
+            echo "::error::No changeset detected on this PR."
+            echo "::error::Run \`pnpm changeset\` locally and commit the generated .changeset/*.md file,"
+            echo "::error::or apply the \`skip-changeset\` label if this PR has no user-visible impact."
+            exit 1
+          fi
+          RELEASE_COUNT=$(jq '.releases | length' changeset-status.json)
+          if [ "$RELEASE_COUNT" -eq 0 ]; then
+            echo ""
+            echo "::error::Changeset file(s) present but declare no package bumps."
+            echo "::error::Each .changeset/*.md must include frontmatter like:"
+            echo "::error::"
+            echo "::error::  ---"
+            echo "::error::  \"fabric-app\": patch"
+            echo "::error::  ---"
+            echo "::error::"
+            echo "::error::See AGENTS.md § Changesets for the full format."
+            exit 1
+          fi
+          echo "Changeset present with $RELEASE_COUNT package bump(s) — OK."

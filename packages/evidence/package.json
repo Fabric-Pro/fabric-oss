@@ -1,0 +1,22 @@
+{
+	"name": "@repo/evidence",
+	"private": true,
+	"version": "0.0.1",
+	"license": "Apache-2.0",
+	"description": "Evidence.dev project generator for Fabric reports",
+	"main": "./src/index.ts",
+	"types": "./src/index.ts",
+	"scripts": {
+		"type-check": "tsc --noEmit"
+	},
+	"dependencies": {
+		"js-yaml": "^4.3.0",
+		"zod": "^4.1.12"
+	},
+	"devDependencies": {
+		"@repo/tsconfig": "workspace:*",
+		"@types/js-yaml": "^4.0.9",
+		"@types/node": "24.10.0",
+		"typescript": "^5.8.3"
+	}
+}

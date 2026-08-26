@@ -1,0 +1,88 @@
+# Fabric Sandbox Worker
+# Provides isolated code execution environment for AI agents
+
+name = "fabric-sandbox-dev"
+main = "src/index.ts"
+compatibility_date = "2025-01-08"
+workers_dev = true
+compatibility_flags = ["nodejs_compat_v2"]
+
+[observability]
+enabled = true
+
+# Dynamic Worker Loader binding for stateless JS/TS execution (POST /execute).
+#
+# COMMENTED OUT, not deleted. `dynamic_worker_loader` is a closed Cloudflare beta
+# and this account is not allowlisted, so declaring it makes every deploy fail:
+#   binding LOADER has an unknown type dynamic_worker_loader [code: 10021]
+# That failure is why the live worker stayed on a January build for six months
+# while a fail-closed CORS fix and Chromium in the sandbox image went unshipped.
+#
+# `/execute` handles the missing binding and answers 501 with a reason.
+#
+# Uncommenting these three lines once the account is allowlisted is NECESSARY but
+# NOT SUFFICIENT, which an earlier version of this comment got wrong. `/execute`
+# has no caller: `SandboxClient` (packages/sandbox/src/client.ts) exposes
+# createSession / runClaude / exec / getDiff / commit / push / readFile /
+# writeFile / destroySession and nothing that posts to `/execute`. Note `exec` is
+# a different endpoint — `/sessions/:id/exec`, a shell command in the container.
+#
+# So enabling the beta alone leaves the route as unreachable as it is today.
+# Making the capability real needs all three: the allowlist, a client method, and
+# a caller that wants stateless JS/TS evaluation.
+# [[unsafe.bindings]]
+# name = "LOADER"
+# type = "dynamic_worker_loader"
+
+# Sandbox container configuration
+[[containers]]
+class_name = "Sandbox"
+image = "./Dockerfile"
+instance_type = "standard-3"
+max_instances = 10
+
+# Durable Objects for session management
+[[durable_objects.bindings]]
+name = "SESSION_DO"
+class_name = "SessionDO"
+
+[[durable_objects.bindings]]
+name = "SANDBOX"
+class_name = "Sandbox"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["SessionDO", "Sandbox"]
+
+# Development variables
+[vars]
+ENVIRONMENT = "development"
+
+# Production environment
+[env.production]
+name = "fabric-sandbox"
+
+[env.production.vars]
+ENVIRONMENT = "production"
+
+# Same closed-beta binding as the top-level one above, and commented out for the
+# same reason — with it declared, `wrangler deploy --env production` cannot ship
+# either. Uncomment both together once the account is allowlisted.
+# [[env.production.unsafe.bindings]]
+# name = "LOADER"
+# type = "dynamic_worker_loader"
+
+[[env.production.containers]]
+name = "fabric-sandbox-production"
+class_name = "Sandbox"
+image = "./Dockerfile"
+instance_type = "standard-3"
+max_instances = 20
+
+[[env.production.durable_objects.bindings]]
+name = "SESSION_DO"
+class_name = "SessionDO"
+
+[[env.production.durable_objects.bindings]]
+name = "SANDBOX"
+class_name = "Sandbox"

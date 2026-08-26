@@ -1,0 +1,22 @@
+{
+	"extends": "@repo/tsconfig/agent.json",
+	"compilerOptions": {
+		"outDir": "./dist",
+		"rootDir": ".",
+		"incremental": false
+	},
+	"include": [
+		"*.ts",
+		"nodes/**/*.ts",
+		"prompts/**/*.ts",
+		"state/**/*.ts",
+		"utils/**/*.ts"
+	],
+	"exclude": [
+		"node_modules",
+		"dist",
+		"__tests__",
+		"vitest.config.ts",
+		"tsup.config.ts"
+	]
+}

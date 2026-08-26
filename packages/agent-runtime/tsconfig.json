@@ -1,0 +1,10 @@
+{
+	"extends": "@repo/tsconfig/base.json",
+	"compilerOptions": {
+		"outDir": "./dist",
+		"rootDir": "./src",
+		"tsBuildInfoFile": "./tsconfig.tsbuildinfo"
+	},
+	"include": ["src/**/*"],
+	"exclude": ["node_modules", "dist", "__tests__"]
+}

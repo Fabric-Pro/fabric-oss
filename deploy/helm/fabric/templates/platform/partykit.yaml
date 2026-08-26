@@ -1,0 +1,158 @@
+{{- if .Values.partykit.enabled }}
+# Self-hosted PartyKit (real-time collaboration) — Cloudflare-free path (Fizzy #1722).
+#
+# Runs the prod `party-cf` server under workerd in-cluster so enterprise
+# deployments need no Cloudflare egress. StatefulSet gives a
+# stable identity + per-pod PVC for the Durable Object SQLite document state.
+#
+# HA MODEL (verified 2026-07-09): a single replica is "restart-tolerant,
+# single-active" — on pod restart, editors reconnect and resync from the
+# persisted snapshot (brief per-room blip, no data loss). This is the default.
+#
+# Scaling to replicas > 1 requires STICKY ROUTING BY ROOM (all clients of a
+# document must reach the same pod). AWS ALB cannot hash by URL path, so true
+# multi-replica room-affinity needs either an nginx ingress with
+# `upstream-hash-by: $uri`, or the Redis-backed (Hocuspocus) path. Do not set
+# replicas > 1 with the ALB ingress below — see docs/deployment.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: partykit
+  labels:
+{{- include "fabric.labels" (dict "name" "partykit" "Release" .Release "component" "platform") | nindent 4 }}
+spec:
+  serviceName: partykit
+  replicas: {{ .Values.partykit.replicas }}
+  selector:
+    matchLabels:
+{{- include "fabric.selectorLabels" (dict "name" "partykit" "Release" .Release) | nindent 6 }}
+  template:
+    metadata:
+      labels:
+{{- include "fabric.selectorLabels" (dict "name" "partykit" "Release" .Release) | nindent 8 }}
+        app.kubernetes.io/component: platform
+    spec:
+      serviceAccountName: {{ include "fabric.serviceAccountName" (dict "Values" .Values) }}
+      containers:
+        - name: partykit
+          image: "{{ .Values.partykit.image.repository }}:{{ .Values.partykit.image.tag }}"
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          ports:
+            - name: http
+              containerPort: {{ .Values.partykit.port }}
+              protocol: TCP
+          env:
+            - name: PARTYKIT_ENV
+              value: "production"
+            - name: PARTYKIT_PORT
+              value: {{ .Values.partykit.port | quote }}
+            # Server calls FABRIC_API_URL/api/collab/verify to authorize connections.
+            - name: FABRIC_API_URL
+              value: "http://web.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.web.port }}"
+            # Shared secret authorizing the Temporal publish path (broadcasts).
+            - name: AGENT_SERVICE_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: fabric-app-secrets
+                  key: AGENT_SERVICE_SECRET
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 30
+          resources:
+{{- toYaml .Values.partykit.resources | nindent 12 }}
+          volumeMounts:
+            - name: partykit-data
+              mountPath: /data
+  volumeClaimTemplates:
+    - metadata:
+        name: partykit-data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        {{- with .Values.partykit.storage.storageClassName }}
+        storageClassName: {{ . | quote }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.partykit.storage.size }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: partykit
+  labels:
+{{- include "fabric.labels" (dict "name" "partykit" "Release" .Release "component" "platform") | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+{{- include "fabric.selectorLabels" (dict "name" "partykit" "Release" .Release) | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.partykit.port }}
+      targetPort: http
+      protocol: TCP
+{{- if .Values.partykit.pdb.enabled }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: partykit
+  labels:
+{{- include "fabric.labels" (dict "name" "partykit" "Release" .Release "component" "platform") | nindent 4 }}
+spec:
+  maxUnavailable: {{ .Values.partykit.pdb.maxUnavailable }}
+  selector:
+    matchLabels:
+{{- include "fabric.selectorLabels" (dict "name" "partykit" "Release" .Release) | nindent 6 }}
+{{- end }}
+{{- if .Values.partykit.ingress.enabled }}
+---
+# Browsers connect directly to NEXT_PUBLIC_PARTYKIT_HOST, so PartyKit needs a
+# PUBLIC ingress (unlike qdrant). Set collaboration.partykitHost to this host.
+# ALB carries WebSockets natively; raise the idle timeout so long-lived collab
+# connections aren't dropped.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: partykit
+  labels:
+{{- include "fabric.labels" (dict "name" "partykit" "Release" .Release "component" "ingress") | nindent 4 }}
+  annotations:
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/healthcheck-path: /health
+    alb.ingress.kubernetes.io/load-balancer-attributes: idle_timeout.timeout_seconds=3600
+    {{- if .Values.partykit.ingress.tls }}
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}, {"HTTPS": 443}]'
+    alb.ingress.kubernetes.io/ssl-redirect: '443'
+    alb.ingress.kubernetes.io/certificate-arn: {{ required "partykit.ingress.certificateArn is required when partykit.ingress.tls=true" .Values.partykit.ingress.certificateArn | quote }}
+    {{- else }}
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}]'
+    {{- end }}
+spec:
+  ingressClassName: alb
+  rules:
+    - host: {{ required "partykit.ingress.host is required when partykit.ingress.enabled=true" .Values.partykit.ingress.host | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: partykit
+                port:
+                  number: {{ .Values.partykit.port }}
+{{- end }}
+{{- end }}

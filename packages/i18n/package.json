@@ -1,0 +1,17 @@
+{
+	"dependencies": {
+		"@repo/config": "workspace:*",
+		"deepmerge": "^4.3.1"
+	},
+	"devDependencies": {
+		"@repo/tsconfig": "workspace:*",
+		"@types/node": "^24.10.0"
+	},
+	"name": "@repo/i18n",
+	"private": true,
+	"scripts": {
+		"type-check": "tsc --noEmit"
+	},
+	"version": "0.0.0",
+	"license": "Apache-2.0"
+}

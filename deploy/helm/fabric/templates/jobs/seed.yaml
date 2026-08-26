@@ -1,0 +1,51 @@
+{{- if .Values.seed.enabled }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: fabric-seed-{{ .Release.Revision }}
+  labels:
+{{- include "fabric.labels" (dict "name" "fabric-seed" "Release" .Release "component" "seed") | nindent 4 }}
+spec:
+  backoffLimit: 1
+  ttlSecondsAfterFinished: 604800   # keep seed Job around for 7 days (longer than migrate — easier to debug seeding)
+  template:
+    metadata:
+      labels:
+{{- include "fabric.selectorLabels" (dict "name" "fabric-seed" "Release" .Release) | nindent 8 }}
+        app.kubernetes.io/component: seed
+    spec:
+      restartPolicy: Never
+      serviceAccountName: {{ include "fabric.serviceAccountName" (dict "Values" .Values) }}
+      containers:
+        - name: seed
+          # Use the temporal-worker image because it ships the full monorepo workspace
+          # under /app/packages (including packages/database with the seed scripts).
+          # The web image is a Next.js standalone build and does not contain
+          # packages/database, so it cannot run `pnpm --filter @repo/database deploy:seeds`.
+          image: "{{ .Values.global.imageRegistry }}/{{ .Values.temporalWorker.image.repository }}:{{ .Values.global.imageTag }}"
+          imagePullPolicy: IfNotPresent
+          # For now this seeds ONLY the AI model catalog (seed-ai-models) + system prompts
+          # (seed-prompts-only) — both DB-only, idempotent (upsert) global catalogs. To run
+          # the full ordered set (users, system-agents, skills, templates, mcp, ...) switch
+          # the command back to: ["pnpm", "--filter", "@repo/database", "deploy:seeds"].
+          command: ["sh", "-c"]
+          args:
+            - "cd /app/packages/database && pnpm exec tsx ./prisma/seed-ai-models.ts && pnpm exec tsx ./prisma/seed-prompts-only.ts"
+          envFrom:
+            - configMapRef:
+                name: {{ .Release.Name }}-config
+            - secretRef:
+                name: fabric-app-secrets
+          env:
+            - name: SEED_DEV_USERS
+              value: {{ .Values.seed.devUsers | quote }}
+            - name: SEED_USERS_JSON
+              value: {{ .Values.seed.usersJson | quote }}
+            - name: SEED_ORG_SLUG
+              value: {{ .Values.seed.orgSlug | quote }}
+            - name: SEED_ORG_NAME
+              value: {{ .Values.seed.orgName | quote }}
+          resources:
+            requests: { cpu: 100m, memory: 256Mi }
+            limits:   { cpu: 1000m, memory: 1Gi }
+{{- end }}

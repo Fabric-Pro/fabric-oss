@@ -1,0 +1,2 @@
+-- AlterEnum
+ALTER TYPE "BackgroundJobKind" ADD VALUE 'PUBLISHING_TOPIC_GENERATION';

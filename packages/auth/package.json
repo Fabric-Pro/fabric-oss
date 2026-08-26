@@ -1,0 +1,39 @@
+{
+	"dependencies": {
+		"@better-auth/passkey": "1.6.2",
+		"@repo/agent-core": "workspace:*",
+		"@repo/config": "workspace:*",
+		"@repo/database": "workspace:*",
+		"@repo/i18n": "workspace:*",
+		"@repo/logs": "workspace:*",
+		"@repo/mail": "workspace:*",
+		"@repo/payments": "workspace:*",
+		"@repo/temporal": "workspace:*",
+		"@repo/utils": "workspace:*",
+		"@upstash/redis": "^1.37.0",
+		"@zxcvbn-ts/core": "^3.0.4",
+		"@zxcvbn-ts/language-common": "^3.0.4",
+		"@zxcvbn-ts/language-en": "^3.0.2",
+		"better-auth": "1.6.22",
+		"cookie": "^1.0.2",
+		"jose": "^6.2.2"
+	},
+	"devDependencies": {
+		"@repo/tsconfig": "workspace:*",
+		"@types/node": "^24.10.0",
+		"vitest": "^4.1.8"
+	},
+	"main": "./index.ts",
+	"name": "@repo/auth",
+	"private": true,
+	"scripts": {
+		"migrate": "dotenv -e ../../.env.local -- pnpm dlx @better-auth/cli@latest generate --config ./auth.ts --output ../database/prisma/schema.prisma",
+		"seed:user": "dotenv -c -e ../../.env.local -- tsx ./scripts/create-user.ts",
+		"test": "vitest --run",
+		"test:watch": "vitest",
+		"type-check": "tsc --noEmit"
+	},
+	"types": "./index.ts",
+	"version": "0.0.3",
+	"license": "Apache-2.0"
+}

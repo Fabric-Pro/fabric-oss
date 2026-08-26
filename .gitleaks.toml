@@ -1,0 +1,110 @@
+# .gitleaks.toml — Fabric secret-scan configuration
+#
+# WHO READS THIS FILE
+#   1. Fabric's own git-history security scan
+#      (packages/temporal/src/activities/security-scan/git-history-scan.ts) runs
+#      `gitleaks detect --source <clone>` with NO --config flag. gitleaks therefore
+#      auto-discovers this file at the repo root. Precedence (gitleaks docs):
+#        --config  >  GITLEAKS_CONFIG  >  (target)/.gitleaks.toml  >  built-in default
+#      The scanner uses none of the higher-precedence options, so THIS file wins.
+#   2. The local pre-commit hook (.githooks/pre-commit) runs `gitleaks protect`,
+#      which auto-discovers this same file.
+#
+# WHAT IT DOES
+#   `[extend] useDefault = true` keeps EVERY built-in gitleaks rule active — this
+#   file only ADDS an allowlist that suppresses CONFIRMED false positives. Because
+#   the allowlist is purely additive, it can only ever hide a non-secret; it can
+#   never stop a real, non-allowlisted secret from being detected.
+#
+# WHAT IT DELIBERATELY DOES NOT DO
+#   It never allowlists a `.env*` path or any real credential. Genuinely-committed
+#   secrets (e.g. the historical .env.staging values) still surface so they can be
+#   rotated — see docs/security/git-history-secret-remediation.md.
+
+title = "Fabric gitleaks config"
+
+[extend]
+# Inherit all built-in gitleaks rules; we only append an allowlist below.
+useDefault = true
+
+[allowlist]
+description = "Fabric false-positive suppression — confirmed non-secrets only. Never allowlists a .env* path or a real credential (those must be rotated, not hidden). See docs/security/git-history-secret-remediation.md."
+
+# --- Non-secret MATCHES (regex tested against the detected secret) --------------
+# Every entry is FULLY ANCHORED (^…$) so it can only suppress the exact captured
+# string, never a longer real credential that happens to share the prefix. All
+# entries are identifiers or documentation placeholders — no real credential value
+# is ever allowlisted here. (Dummy values such as the Stripe `sk_test_` key are
+# covered by their file path in `paths` below.)
+regexes = [
+  # gitleaks' 24-char token rules (atlassian-api-token, etsy-access-token, …) fire
+  # on the oRPC helper identifier `tenantProtectedProcedure` (exactly 24 chars) — a
+  # function name, never a credential, that appears in non-test files so it cannot
+  # be path-scoped.
+  '''^tenantProtectedProcedure$''',
+  # Documentation dummy keys: the "❌ NEVER DO THIS" anti-examples in the mirrored
+  # skills libraries (.claude/.cursor/.github-copilot skills) and fabric/standards
+  # docs. Value-based on purpose — a path allowlist on those directories could hide
+  # a future real paste; these exact anchored dummies can never be a live credential.
+  '''^sk_live_abc123$''',
+  '''^sk_live_abc123\.\.\.$''',
+  '''^sk-1234567890abcdef$''',
+  # Example bearer token in the audit-log OpenAPI spec's embedded curl examples
+  # (packages/api/modules/audit/rest/openapi-spec.ts).
+  '''^org_abc12345_secret$''',
+  # gitleaks' generic-api-key regex spans lines in example env files with empty
+  # values (KEY=""\nNEXT_KEY="") and captures the NEXT variable's NAME as the
+  # "secret". This is an env-var identifier, not a value — real Lemon Squeezy
+  # keys (eyJ… JWTs) would still be caught by the jwt + generic rules.
+  '''^LEMONSQUEEZY_API_KEY=$''',
+  # Azure BUILT-IN role definition IDs in deployment/azure/setup-github-oidc.sh.
+  # generic-api-key fires because the variable names contain "SECRETS" next to a
+  # GUID (ROLE_KV_SECRETS_OFFICER / ROLE_KV_SECRETS_USER). These are Microsoft's
+  # own globally-fixed role identifiers — identical in every Azure tenant,
+  # published in the built-in-roles reference, and verifiable with
+  # `az role definition list --name "Key Vault Secrets Officer"`. They grant
+  # nothing by themselves; they name which roles the script's ABAC condition
+  # permits the deploy principal to assign. Anchored so only these two exact
+  # GUIDs are suppressed — any other value in those variables still fires.
+  '''^b86a8fe4-44ce-4948-aee5-eccb2c155cd7$''',
+  '''^4633458b-17de-408a-b874-0445c86b69e6$''',
+]
+
+# --- Non-secret PATHS (regex tested against the finding's file path) ------------
+# Files whose "secrets" are examples / fixtures / detection-patterns by nature.
+# NOTE: no `.env*` entry here — real secrets committed to env files must still fire.
+paths = [
+  # Secret-DETECTION rule library (holds PEM headers etc. as MATCH patterns).
+  '''agents/langchain/weave-readers/src/lib/security-patterns\.ts$''',
+  # Unit-test fixtures for secret redaction / detection / token verification.
+  '''(^|/)__tests__/''',
+  '''\.test\.(ts|tsx|js|jsx|mjs|cjs)$''',
+  '''\.spec\.(ts|tsx|js|jsx|mjs|cjs)$''',
+  # DB seed data & agent-prompt example documents (fake tokens in generated content).
+  '''packages/database/prisma/seed[-\w]*\.ts$''',
+  '''packages/agent-prompts/''',
+  # Documentation examples — scoped to docs dirs & READMEs, NOT all markdown (a
+  # blanket *.md allowlist is a real-leak vector for pasted tokens).
+  '''(^|/)docs/''',
+  '''(^|/)README\.md$''',
+  '''\.mdx$''',
+  # One-off integration test script (Stripe sk_test_ dummy; already deleted at HEAD).
+  '''scripts/test-mcp-integration\.ts$''',
+  # Railway helper scripts — the flagged values are service UUIDs, not credentials.
+  '''scripts/(configure-railway-agent-roots|update-railway-web-env)\.sh$''',
+]
+
+# --- POST-ROTATION cleanup (uncommented 2026-07-29) ----------------------------
+# Every credential in docs/security/git-history-secret-remediation.md was rotated
+# on 2026-07-29 (owner-attested; evidence table in that doc), and the secret-
+# bearing refs (tags v0.5.0–v1.3.3, main, production, 642 pre-cutover branches)
+# were deleted from origin the same day. The historical commits below therefore
+# hold only DEAD secrets; listing them stops the scanner from re-flagging them if
+# they ever resurface (a restored bundle, a cached ref, an old clone pushed back).
+# A newly committed live secret is unaffected — this suppresses only these exact
+# historical commits.
+commits = [
+  "129493b3a6", "94c3b1be46", "6980919bbe", "7a26e55e82", "759f88aa8b",
+  "fa98dfb979", "8360012d49", "8d0766549d", "e703d4404e", "de84fb0d2b",
+  "0885a2316a", "6925278b02", "7551bc85c5",
+]

@@ -1,0 +1,20 @@
+-- A run whose cases could never be attempted was reporting PASSED.
+--
+-- `persistAgenticRun` derived the run status as `failed > 0 ? FAILED : PASSED`,
+-- so a run where every case was BLOCKED — sign-in failed, the page never
+-- loaded, the model was unreachable — came out green. The first real agentic
+-- run on staging did exactly that: 0 passed, 0 failed, 1 blocked, status
+-- PASSED. The enum's own comment already said PASSED means "every case reached
+-- a verdict and none failed", which a blocked case does not satisfy.
+--
+-- BLOCKED is a separate value rather than folding into FAILED because FAILED is
+-- documented as a verdict about the SOFTWARE ("the product disagreed"), while a
+-- blocked case is a statement about the RUNNER. That is the same line REFUSED
+-- already draws in this enum, for the same stated reason: reading "nothing was
+-- tested" as a test result is a lie in either direction.
+--
+-- Adding an enum value is backwards compatible: no existing row changes, and
+-- nothing reads BLOCKED until the worker carrying the new code is deployed.
+-- Postgres cannot add an enum value inside a transaction block that also uses
+-- it, but a bare ADD VALUE is safe on its own.
+ALTER TYPE "agentic_run_status" ADD VALUE IF NOT EXISTS 'BLOCKED';

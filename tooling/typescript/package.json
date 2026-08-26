@@ -1,0 +1,10 @@
+{
+	"devDependencies": {},
+	"name": "@repo/tsconfig",
+	"private": true,
+	"publishConfig": {
+		"access": "public"
+	},
+	"version": "0.0.0",
+	"license": "Apache-2.0"
+}

@@ -1,0 +1,77 @@
+# Shared product-tree notifier for the private staging -> OSS relay. This
+# workflow exists identically in fabric-dev and fabric-oss so exact-ref
+# synchronization remains possible, but the repository guard makes it active
+# only in Fabric-Pro/fabric-dev. It never checks out or executes PR content.
+name: OSS Relay Notifier
+
+on:
+  pull_request_target:
+    types: [labeled, synchronize, reopened, ready_for_review]
+    branches: [master]
+  issue_comment:
+    types: [created]
+
+permissions:
+  pull-requests: read
+
+jobs:
+  notify:
+    name: Wake the private relay
+    if: >-
+      github.repository == 'Fabric-Pro/fabric-dev' &&
+      ((github.event_name == 'pull_request_target' &&
+        github.event.pull_request.head.repo.full_name == github.repository &&
+        contains(github.event.pull_request.labels.*.name, 'ready-for-relay')) ||
+       (github.event_name == 'issue_comment' &&
+        github.event.issue.pull_request != null &&
+        startsWith(github.event.comment.body, '/relay ')))
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: oss-relay-notifier
+    steps:
+      # pull_request_target is load-bearing: the workflow definition comes
+      # from trusted master. Do not add checkout, PR artifacts, caches, or
+      # execution of any path from the proposed change. The credential can
+      # dispatch one private-repo workflow but carries no product-repo write.
+      - name: Dispatch identifiers-only wake-up
+        env:
+          DISPATCH_TOKEN: ${{ secrets.OSS_RELAY_DISPATCH_TOKEN }}
+          STAGING_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          COMMENT_BODY: ${{ github.event.comment.body }}
+          STAGING_PR: ${{ github.event.pull_request.number || github.event.issue.number }}
+          EVENT_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$STAGING_PR" =~ ^[1-9][0-9]*$ ]] \
+            || { echo "::error::GitHub supplied an invalid PR number"; exit 1; }
+          PR=$(GH_TOKEN="$STAGING_TOKEN" gh api "repos/$GITHUB_REPOSITORY/pulls/$STAGING_PR")
+          [[ "$(jq -r '.state' <<<"$PR")" == open &&
+              "$(jq -r '.draft // false' <<<"$PR")" == false &&
+              "$(jq -r '.base.ref' <<<"$PR")" == master &&
+              "$(jq -r '.head.repo.full_name' <<<"$PR")" == "$GITHUB_REPOSITORY" ]] \
+            || { echo "::error::relay wake-up requires an open, non-draft same-repository PR targeting master"; exit 1; }
+          if ! jq -e '.labels | map(.name) | index("ready-for-relay") != null' <<<"$PR" >/dev/null; then
+            echo "PR is not ready-for-relay; a later label event will retry"
+            exit 0
+          fi
+          EXPECTED_HEAD_SHA=$(jq -r '.head.sha' <<<"$PR")
+          [[ "$EXPECTED_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]] \
+            || { echo "::error::GitHub supplied an invalid head SHA"; exit 1; }
+          if [[ "$EVENT_NAME" == issue_comment ]]; then
+            [[ "$COMMENT_BODY" =~ ^/relay\ ([0-9a-f]{40})$ ]] \
+              || { echo "Comment is not an exact relay command; no dispatch"; exit 0; }
+            [[ "${BASH_REMATCH[1]}" == "$EXPECTED_HEAD_SHA" ]] \
+              || { echo "Comment targets a stale PR head; no dispatch"; exit 0; }
+          else
+            [[ "$EVENT_HEAD_SHA" == "$EXPECTED_HEAD_SHA" ]] \
+              || { echo "PR head moved during notifier execution; a synchronize event will retry"; exit 0; }
+          fi
+          [[ -n "$DISPATCH_TOKEN" ]] \
+            || { echo "::error::OSS_RELAY_DISPATCH_TOKEN is not configured"; exit 1; }
+          jq -n --arg pr "$STAGING_PR" --arg head "$EXPECTED_HEAD_SHA" \
+            '{ref:"ops",inputs:{mode:"relay",staging_pr:$pr,expected_head_sha:$head}}' \
+            >"$RUNNER_TEMP/dispatch.json"
+          GH_TOKEN="$DISPATCH_TOKEN" gh api --method POST \
+            repos/Fabric-Pro/fabric/actions/workflows/oss-relay.yml/dispatches \
+            --input "$RUNNER_TEMP/dispatch.json"

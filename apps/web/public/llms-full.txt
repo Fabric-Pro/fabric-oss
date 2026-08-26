@@ -1,0 +1,118 @@
+# Fabric AI — Full Context
+
+> The complete agent engineering platform for software development teams.
+
+Fabric is where engineering teams design, build, and deploy AI agents that understand their entire codebase, connect to any tool via MCP (Model Context Protocol), and automate the software delivery lifecycle.
+
+## Product Overview
+
+Fabric replaces fragmented AI coding tools with a unified platform that maintains persistent context across every stage of software delivery: planning, specification, implementation, review, and deployment.
+
+Unlike single-purpose copilots that suggest code line by line, Fabric agents operate at the project level — they understand architecture decisions, team conventions, existing code patterns, and business requirements before generating any output.
+
+## Platform Capabilities
+
+### Context Engine
+- Ingest repositories, documentation, and project artifacts into a semantic vector index
+- RAG (Retrieval-Augmented Generation) provides relevant context to every agent call
+- Project fingerprinting identifies tech stack, frameworks, and conventions automatically
+- Context persists across sessions — agents remember prior decisions and rationale
+
+### AI Agent Framework
+- Design custom agents with configurable system prompts, tools, and model preferences
+- Each agent can connect to any combination of MCP servers for tool access
+- Agents support multi-turn conversation, tool calling, and artifact generation
+- Built-in agents for document generation, code review, task planning, and more
+
+### Weave Multi-Agent Orchestration
+Six specialized agents collaborate on complex engineering tasks:
+- **Pattern**: Plans execution by researching the codebase and generating structured step-by-step plans
+- **Thread**: Read-only codebase explorer that analyzes code structure, dependencies, and patterns
+- **Spindle**: Web researcher that finds documentation, best practices, and external references
+- **Shuttle**: Implementation agent that writes code via background coding sessions
+- **Weft**: Quality reviewer that audits implementations for correctness and best practices
+- **Warp**: Security auditor that checks for vulnerabilities and compliance issues
+
+Orchestration features:
+- Wave-based parallel execution (independent steps run concurrently)
+- Loom routing: LLM-powered dynamic agent reassignment between execution waves
+- Tapestry context propagation: completed step outputs feed into subsequent steps
+- Human-in-the-loop checkpoints via Temporal signals
+- Plan revision flow: iterate on plans with feedback before execution
+
+### MCP Integration
+- 100+ pre-built MCP server integrations (GitHub, Jira, Linear, Slack, databases, and more)
+- Public MCP registry for discovering and connecting servers
+- Custom MCP server support for proprietary tools and APIs
+- Per-project and per-organization MCP configuration
+
+### Durable Workflow Engine
+- Powered by Temporal for crash-resistant, resumable workflows
+- Automatic retries with exponential backoff and circuit breakers
+- Long-running operations survive process restarts and deployments
+- Full execution history and audit trail
+
+### AI-Powered SDLC Automation
+- Generate PRDs (Product Requirements Documents) from high-level descriptions
+- Create user stories with acceptance criteria from project context
+- Produce technical specifications grounded in existing architecture
+- Generate and review code with full codebase awareness
+- Automated testing suggestions based on code changes
+
+### Multi-Provider AI Support
+Bring your own API keys. Supported providers:
+- OpenAI (GPT-4o, GPT-4o-mini, o1, o3)
+- Anthropic (Claude Sonnet, Claude Haiku)
+- Groq (Llama 3.3, Mixtral)
+- DeepSeek (DeepSeek-R1, DeepSeek-V3)
+- Mistral AI (Mistral Large, Codestral)
+- Together AI, Fireworks, Cohere, Cerebras, xAI, Replicate
+- Azure AI Foundry, AWS Bedrock, Google Vertex AI
+- Gateway providers: Vercel AI Gateway, OpenRouter, Cloudflare AI
+
+Users configure their preferred provider and model per task type (chat, code generation, reasoning, embeddings) at the user or organization level.
+
+### Multi-Tenant Architecture
+- Personal workspaces and organization workspaces with strict data isolation
+- Role-based access control (owner, editor, viewer) per project
+- Organization-level AI provider configuration and model preferences
+- SSO and audit logs for enterprise deployments
+
+## Technology Stack
+
+- Frontend: Next.js 16, React 19, TypeScript, Tailwind CSS, Shadcn UI
+- Backend: oRPC, Hono, Better Auth, Prisma, PostgreSQL
+- AI: Vercel AI SDK, LangGraph, OpenAI SDK, Anthropic SDK
+- Infrastructure: Temporal (workflows), Azure Container Apps, Qdrant (vector DB)
+- Protocols: A2A (Agent-to-Agent), MCP (Model Context Protocol)
+
+## Pricing
+
+### Free
+- Personal use
+- Limited agent runs
+- Community support
+
+### Pro — $29/month
+- 7-day free trial
+- Full platform access
+- All agent types and MCP integrations
+- Priority support
+- Annual option: $290/year
+
+### Enterprise — Custom
+- Dedicated support and SLAs
+- SSO / SAML authentication
+- Audit logs and compliance
+- Custom deployment options
+- Volume pricing
+
+## Links
+
+- Website: https://fabric.pro
+- Documentation: https://fabric.pro/en/docs
+- Blog: https://fabric.pro/en/blog
+- MCP Registry: https://fabric.pro/en/mcp-registry
+- Changelog: https://fabric.pro/en/changelog
+- Contact TechFabric: https://techfabric.com/contact
+- Summary: https://fabric.pro/llms.txt

@@ -1,0 +1,56 @@
+name: Request external review
+
+# Replaces native CODEOWNERS auto-review (see .github/CODEOWNERS).
+# Pull requests from outside contributors get @preddy4690 requested as
+# reviewer; pull requests from organization members, the repository owner,
+# and direct collaborators do not.
+#
+# pull_request_target (not pull_request) so the base repository's token can
+# write review requests even when the PR comes from a fork. Nothing is
+# checked out and no PR-controlled text is interpolated into the run block,
+# which is what makes the trusted-context event safe here.
+
+on:
+  pull_request_target:
+    types: [opened, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  request-review:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Request review from the sanctioned maintainer for external authors
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ASSOCIATION: ${{ github.event.pull_request.author_association }}
+          NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          case "$ASSOCIATION" in
+            MEMBER|OWNER|COLLABORATOR)
+              echo "Internal author ($ASSOCIATION) — no review request."
+              exit 0
+              ;;
+          esac
+          # Requesting an already-requested or already-reviewed reviewer, or
+          # the PR author themselves, returns 422 — a no-op for this
+          # workflow's purpose. Every other failure must fail the step so a
+          # dead routing control turns visibly red instead of silently
+          # stopping external review requests.
+          if ! ERR=$(gh api --method POST \
+            "repos/${{ github.repository }}/pulls/${NUMBER}/requested_reviewers" \
+            -f 'reviewers[]=preddy4690' 2>&1); then
+            case "$ERR" in
+              *422*|*Unprocessable*)
+                echo "Review request already present — ignoring"
+                ;;
+              *)
+                echo "$ERR" >&2
+                exit 1
+                ;;
+            esac
+          else
+            echo "Review requested from preddy4690"
+          fi

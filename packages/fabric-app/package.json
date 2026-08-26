@@ -1,0 +1,11 @@
+{
+  "name": "fabric-app",
+  "version": "1.13.7",
+  "license": "Apache-2.0",
+  "private": true,
+  "description": "Meta-package that tracks the deployable Fabric application version for changesets and the tag-based prod deploy workflow. Not published to npm.",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Fabric-Pro/fabric.git"
+  }
+}

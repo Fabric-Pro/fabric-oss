@@ -1,0 +1,45 @@
+# Production profile — copy to terraform.tfvars and fill in. terraform.tfvars is
+# gitignored and MUST NOT contain committed secrets (all app secrets are generated
+# by Terraform into Secrets Manager; nothing sensitive belongs here).
+
+region       = "us-east-1"
+cluster_name = "fabric-prod"
+environment  = "prod"
+
+# GitLab project path (e.g. "myuser/fabric"). Used in the OIDC trust policy.
+gitlab_project_path = "REPLACE_ME/fabric"
+
+# REQUIRED in production. Restrict the EKS API endpoint to your operator/admin +
+# CI-runner NAT egress IPs. Do NOT use 0.0.0.0/0. Use [] for a private-only
+# endpoint if you operate via VPN/bastion.
+eks_public_access_cidrs = ["203.0.113.4/32"] # <- your operator/CI egress IPs
+
+# REQUIRED in production. Provisions the Route 53 zone + ACM cert that terminate
+# TLS at the ALB, so there is no HTTP-only listener.
+domain_name = "app.example.com"
+
+# The app's public HTTPS origin (for S3 CORS on presigned uploads).
+web_origins = ["https://app.example.com"]
+
+# Budgets + operational alerts.
+alert_email = "sre@example.com"
+
+# Two-phase apply: leave false for the FIRST apply (foundational AWS infra), then
+# set true for the SECOND apply once the cluster is healthy (in-cluster controllers).
+enable_k8s_addons = false
+
+# --- Production posture (SOC 2) — these already default to the hardened values
+# below; shown here for visibility. Override only with cause. ---
+#   rds_multi_az                = true   # AZ-failover standby (A1.2 availability)
+#   rds_backup_retention_period = 30     # 30-day point-in-time-recovery window
+#   rds_apply_immediately       = false  # changes ride the maintenance window
+#   node_desired_size           = 3      # one node per AZ (HA)
+#   node_min_size               = 3
+#   node_max_size               = 6
+#   node_instance_types         = ["t3.xlarge"]
+
+tags = {
+  Project = "fabric"
+  Owner   = "REPLACE_ME"
+  Env     = "prod"
+}

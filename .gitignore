@@ -1,0 +1,240 @@
+# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+
+# Local guidances and investigations (not committed)
+guidances/
+
+# Local specs (planning artifacts kept out of git; tracked in .specs/)
+.specs/
+specs/
+docs/specs/*/
+.claude/specs/
+fabric/specs/*/
+
+# Claude Code git worktrees — never commit these (they get committed as
+# stray gitlinks when `git add` is run while a worktree dir is present)
+.claude/worktrees/
+
+# dependencies
+node_modules
+.pnp
+.pnp.js
+
+# testing
+coverage
+
+# next.js
+.next/
+out/
+build
+.swc/
+
+# misc
+.DS_Store
+*.pem
+
+# debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# local env files
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+.env.staging
+.env.production
+.env.compose
+.dev.vars
+
+# local seed configuration (contains real user PII; never commit)
+packages/database/prisma/seed-users.local.json
+
+# turbo
+.turbo
+
+# ui
+dist/
+
+# typescript
+*.tsbuildinfo
+
+# tsup bundled config files
+*.bundled_*.mjs
+
+# playwright MCP artifacts
+.playwright-mcp/
+
+# other
+.react-email/
+.content-collections/
+.prisma-zod-generator-manifest.json
+# pnpm store (ignore entire store directory)
+.pnpm-store/
+
+# .NET Aspire
+aspire/**/appsettings.Development.json
+aspire/**/appsettings.*.json
+!aspire/**/appsettings.json
+!aspire/**/appsettings.Development.json.example
+aspire/**/bin/
+aspire/**/obj/
+aspire/**/.vs/
+*.lscache
+
+*.sqlite
+
+# CUGA Agent specific
+__pycache__/
+output/
+*.db
+cuga_workspace/
+.idea/
+*.log
+/agents/langchain/cuga-agent/frontend/dist/
+!/agents/langchain/cuga-agent/frontend-workspaces/frontend/dist
+/agents/langchain/cuga-agent/frontend/node_modules/
+experiment_results_*
+output_graphs/
+*.egg-info/
+backup_*
+vendor/
+logs/
+# packages/logs is a real workspace; the broad `logs/` pattern above
+# would otherwise hide newly-added files (e.g. tests) in it.
+!packages/logs/
+!packages/logs/**
+# Re-ignore build artifacts that the broad re-include above would otherwise un-hide.
+packages/logs/node_modules/
+packages/logs/.turbo/
+packages/logs/*.tsbuildinfo
+dist_cuga/
+agent-analytics/
+cuga-dashboard/
+dbs/
+crm_tmp/
+debug_extractions/
+debug_extractions_websocket/
+.secrets.*
+!.secrets.baseline
+evaluation/
+evaluation_*
+logging_*
+appworld/
+server_logs/
+modes.custom.toml
+experiments/outputs/
+cuga.egg-info/
+.cursor/
+.vercel
+.env*.local
+
+# Cloudflare Workers
+.wrangler/
+
+# npm lock file (project uses pnpm)
+package-lock.json
+.codex/**
+docs/local-meeting-notes/**
+AGENTS.local.md
+.env.local.ba*
+
+# Fabric Agent workspace (user-specific, may contain secrets)
+.claude-plugin/
+.claude/settings.local.json
+
+# CLI runtime artifacts (created when Fabric/Kilo CLI runs in this repo)
+.fabric/
+.kilo/
+
+# Root-level local Fabric workspace artifacts (safe to ignore only at repo root)
+/automations.json
+/config.json
+/events.jsonl
+/views.json
+/labels/
+/sessions/
+/skills/
+/sources/
+/statuses/
+/nuget.config
+/local
+
+# Weave plugin runtime state
+.weave/*
+!.weave/plans/
+!.weave/designs/
+
+.git-commit-msg-slack.txt
+
+# Terraform / IaC — never commit state, plans, or real var files; they can embed
+# resolved secrets and resource IDs. Templates (*.tfvars.example) stay tracked
+# because the `*.tfvars` rule only matches files ending in `.tfvars`.
+*.tfstate
+*.tfstate.*
+*.tfplan
+*.tfvars
+*.auto.tfvars
+.terraform/
+crash.log
+crash.*.log
+
+# osv-scanner report (written by the Security workflow and local gate runs)
+osv.json
+
+# Vitest JSON reports written by db-integration.yml's count guards. CI reads
+# them in-place from a fresh checkout; locally they are left behind by anyone
+# re-running a guarded suite to check a count, and are pure artifacts.
+packages/database/rls-isolation-results.json
+packages/database/db-integration-results.json
+packages/database/last-edit-clock-results.json
+packages/database/postgres-suites-results.json
+packages/database/feature-maturation-results.json
+packages/database/publishing-suite-schema-results.json
+packages/database/role-tag-trigger-results.json
+packages/temporal/publishing-notify-activity-results.json
+packages/temporal/publishing-email-delivery-results.json
+packages/temporal/publishing-reconcile-activity-results.json
+
+# Local database dump/restore workspace (staging migration scratch — never commit real data)
+db_dump/
+
+# Webfonts the docs-screenshot renderer downloads on demand (see
+# tooling/docs-screenshots/render.mjs) — fetched, not authored.
+tooling/docs-screenshots/.fonts/
+
+# Ad-hoc screenshots / scratch captures at repo root. QA and manual verification
+# produce these constantly and they routinely show a real org, project names and
+# live data — they must never be committed. Capture into a scratch dir outside the
+# repo, or attach to the ticket rather than the tree.
+/*.png
+/*.jpg
+/*.jpeg
+/*.webp
+/*.gif
+
+# Env files: ignore every variant by default, then re-allow only the committed
+# examples. The per-filename list above is a denylist and leaks anything not
+# explicitly named — `.env.vercel.prod` (a real production credential file) was
+# matched by none of those patterns and was one `git add -A` away from being
+# committed.
+.env*
+!.env*.example
+!**/.env*.example
+
+# Blocked-identifier term list — supplied out-of-band, never committed.
+# Distributed out-of-band; CI reads it from the FABRIC_BLOCKED_TERMS secret.
+# See tooling/identifier-guard/check.mjs and CONTRIBUTING.md § Placeholder Data.
+.blocked-terms
+# Records which version of the shared list the file above was fetched from.
+.blocked-terms.stamp
+
+# Point-in-time UI validation captures. They are evidence for one PR, not
+# documentation — attach them to the PR instead. Committing them accumulates
+# binaries forever and puts app screenshots in the tree, which is the one leak
+# channel no automated check can inspect.
+.claude/ui-validation/
+
+# Security evidence dossiers — reproductions of live issues; never publish
+.claude/evidence/

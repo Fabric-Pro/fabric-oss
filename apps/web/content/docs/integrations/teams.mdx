@@ -1,0 +1,125 @@
+---
+title: Microsoft Teams
+description: Connect Microsoft Teams so Fabric agents can list teams and channels, search messages, and read chats as runtime actions.
+---
+
+Connect Microsoft Teams to Fabric AI so agents and workflows can list teams and channels, search messages, read channel and chat history, and find shared files — as live runtime actions.
+
+Teams is a **Hybrid** provider. It connects through **Microsoft Graph**, so a single authorization covers Teams (and, when available, other Microsoft 365 content).
+
+## Setting Up Teams
+
+<Steps>
+  <Step>
+    ### Open Teams under Integrations
+
+    Go to **Settings → Integrations** and open the **Teams** card.
+  </Step>
+
+  <Step>
+    ### Set Up Actions
+
+    Click **Set Up Actions** and sign in with your Microsoft account, granting the requested Graph permissions.
+  </Step>
+
+  <Step>
+    ### Confirm
+
+    The provider shows **Connected** with its available runtime actions.
+  </Step>
+</Steps>
+
+<Callout type="info">
+Connecting at the **organization** level shares one Teams connection across all members. A Microsoft 365 admin may need to grant consent for the Fabric app in your tenant.
+</Callout>
+
+<Callout type="warning">
+**Meeting transcripts need one more setting.** Beyond the Graph permissions above, Teams gates transcript access behind a tenant setting — **Transcript API access** — that is **off by default**. Until an administrator turns it on, transcript reads fail no matter what the Fabric app has been granted. See [Meeting transcripts unavailable](#meeting-transcripts-unavailable--transcript-api-access-is-off).
+</Callout>
+
+## Available Actions
+
+| Action | Type | Description |
+|--------|------|-------------|
+| **List Teams** | Knowledge | List all teams the user has joined |
+| **List Channels** | Knowledge | List channels in a specific team |
+| **Search Messages** | Knowledge | Search for messages across all Teams channels and chats |
+| **List Channel Messages** | Knowledge | List recent messages in a channel |
+| **Get Shared Files** | Knowledge | Get files shared in a Teams channel |
+| **List Chats** | Knowledge | List direct and group chats for the user |
+| **Get Chat Messages** | Knowledge | Get messages from a direct or group chat |
+
+### In AI Chat
+
+```
+"Search Teams for the deploy discussion from last week"
+
+"Summarize recent messages in the #incidents channel"
+```
+
+## Microsoft 365
+
+**Microsoft 365** (SharePoint docs, OneDrive files) appears under **Settings → Integrations** as a separate card, but **runtime actions for it aren't available yet** — its card shows "Actions setup not yet available." Microsoft Teams is the Microsoft Graph integration that currently exposes runtime actions.
+
+## Disconnecting & Reconnecting
+
+1. Open **Settings → Integrations → Teams**
+2. Click **Disconnect**
+3. To reconnect, click **Set Up Actions** again and re-authorize
+
+## Troubleshooting
+
+### Can't connect / admin consent required
+- A Microsoft 365 administrator may need to approve the Fabric app for your tenant
+
+### Meeting transcripts unavailable — Transcript API access is off
+
+Since the end of July 2026, Teams blocks Graph API access to meeting transcripts for every tenant by default, regardless of which app permissions have been granted. Messages, channels and files are unaffected — only transcripts.
+
+A **Teams administrator** or **Global administrator** of the tenant that hosts the meetings needs to:
+
+1. Open the **Teams admin center → Meetings → Meeting settings → Transcript API access**
+2. Turn **Microsoft Graph access** on
+3. Turn **Include speaker attribution** on — also off by default; without it, transcript reads that include speaker names fail
+
+The PowerShell equivalent:
+
+```powershell
+Set-CsTeamsMeetingConfiguration -EnableGraphTranscriptAccess $true -EnableAttributedTranscripts $true -Identity Global
+```
+
+<Callout type="info">
+Allow up to about 30 minutes for the change to take effect. The setting is **per tenant**: every organization using transcript sync has to enable it in its own tenant, and one organization enabling it does nothing for another.
+</Callout>
+
+See Microsoft's [Meeting transcript API access](https://learn.microsoft.com/microsoftteams/meeting-transcript-api-access) for the full reference.
+
+### Messages or channels aren't found
+- Confirm the connection shows **Connected**
+- Make sure the signed-in account is a member of the teams/channels you expect
+
+## Beyond runtime actions
+
+Teams also feeds project context and can host a bot:
+
+- **Channels, chats & meetings as context** — monitor Teams channels and group chats for backlog proposals, and sync **meeting transcripts** into a project as searchable context. See [Channels & Meetings as Context](/docs/features/channel-context).
+- **Talk to an agent in Teams** — deploy a Fabric agent with a chat trigger and `@`-mention it; bound to a project, it can answer from that project's data. See [Agent Deployments](/docs/features/agent-deployments#slack-and-teams-triggers).
+
+---
+
+## Next Steps
+
+<Cards>
+  <Card title="Channels & Meetings as Context" href="/docs/features/channel-context">
+    Monitor channels & sync meeting transcripts
+  </Card>
+  <Card title="Agent Deployments" href="/docs/features/agent-deployments">
+    Run a Fabric agent as a Teams bot
+  </Card>
+  <Card title="MCP Integration" href="/docs/integrations/mcp">
+    How connected tools are called at runtime
+  </Card>
+  <Card title="AI Chat" href="/docs/features/ai-chat">
+    Use Teams in AI conversations
+  </Card>
+</Cards>

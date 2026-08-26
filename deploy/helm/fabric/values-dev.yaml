@@ -1,0 +1,129 @@
+# =============================================================================
+# Fabric Helm chart — dev / personal-test overrides
+# =============================================================================
+# Cost-minimal profile for personal-test EKS clusters.
+#
+# Intent:
+#   - Single replica everywhere (web included) — no HA, no scale.
+#   - Shrunken resource requests/limits so the whole stack fits on a small
+#     node group without burning credits.
+#   - HTTP-only Ingress (inherits ingress.tls = false from values.yaml). Do NOT
+#     override ingress.tls here — devs without a domain should keep ALB-default.
+#   - Seed off, NetworkPolicy off, custom-agent-runtime off.
+#
+# This file carries SIZING AND PROFILE ONLY — no account-bound values. The
+# environment wiring (site URL, region, S3 buckets, Temporal
+# namespace) is supplied at deploy time from `terraform output`, so one chart
+# serves every cluster. See "Environment wiring" at the bottom of this file.
+#
+# Apply with:
+#   helm upgrade --install fabric . -f values-dev.yaml -n fabric --create-namespace \
+#     --set global.siteUrl="http://$WEB_ALB_HOSTNAME" \
+#     --set s3.buckets.avatars="$S3_BUCKET_PREFIX-avatars" \
+#     ... (see README.md "Environment wiring" for the full flag set)
+# =============================================================================
+
+web:
+  replicas: 1
+  resources:
+    # The Next.js 16 standalone server (next-server) OOM-crashes (V8 heap
+    # "Allocation failed") under a 512Mi cap — it boots then gets OOM-killed into
+    # CrashLoopBackOff. t3.xlarge nodes (16Gi) have ample room; give it 1.5Gi.
+    requests: { cpu: 200m, memory: 512Mi }
+    limits:   { cpu: 1000m, memory: 1536Mi }
+
+temporalWorker:
+  replicas: 1
+  # RDS enforces FORCE RLS on the shared app role, which hid all rows from the
+  # worker (document generation failed: "No record found"). Use the dedicated
+  # fabric_worker BYPASSRLS role instead. See apply-rls-direct.ts.
+  bypassRlsRole: true
+  resources:
+    # OOM-crashed (V8 "JavaScript heap out of memory", exit 134) under 512Mi — it
+    # climbs to its heap ceiling ~60s after start, so it looked Ready during the
+    # deploy window but then CrashLoopBackOff'd (83 restarts). Match web at 1.5Gi;
+    # Node auto-sizes its heap from the cgroup limit (no NODE_OPTIONS needed).
+    requests: { cpu: 100m, memory: 512Mi }
+    limits:   { cpu: 1000m, memory: 1536Mi }
+
+mcpStdioWrapper:
+  replicas: 1
+  resources:
+    requests: { cpu: 50m, memory: 128Mi }
+    limits:   { cpu: 500m, memory: 512Mi }
+
+seed:
+  enabled: false
+
+networkPolicy:
+  enabled: false
+
+customAgentRuntime:
+  enabled: false
+
+# Fluent Bit log-shipping to CloudWatch is disabled for dev: the DaemonSet
+# CrashLoopBackOffs (StartError) and, being a non-core observability component,
+# it blocks the whole `helm --wait` rollout. Re-enable once the fluent-bit
+# config/IRSA is sorted (tracked follow-up). App + agent containers are unaffected.
+fluentbit:
+  enabled: false
+
+# Dev Qdrant: keep defaults from values.yaml (10Gi PVC, 256Mi/1Gi RAM) — they
+# already fit a personal-test cluster.
+qdrant:
+  enabled: true
+  storage:
+    # The cluster has NO default StorageClass (only `gp2`, unmarked), so qdrant's
+    # default storageClassName: "" leaves its PVC Pending forever -> pod never
+    # schedules. Pin to gp2 (handled by the EBS CSI driver via in-tree migration).
+    # TODO(infra): create a default gp3 StorageClass (ebs.csi.aws.com) in terraform
+    # so the chart's "" default works as documented, then drop this override.
+    storageClassName: gp2
+
+# Weave (multi-agent orchestration) agents are deferred for now: weave-planners
+# CrashLoopBackOffs and, because `helm upgrade --wait` blocks on every Deployment,
+# it fails the whole rollout. Override the agents list to the non-weave set so
+# weave is simply not deployed. (Helm replaces lists, so this is the full set
+# minus weave-readers / weave-shuttle / weave-planners.) Re-add once weave is fixed.
+agents:
+  - { name: document-generator,         image: fabric-document-generator,         port: 8124, replicas: 1 }
+  - { name: project-document-generator, image: fabric-project-document-generator, port: 8125, replicas: 1 }
+  - { name: task-planner,               image: fabric-task-planner,               port: 8126, replicas: 1 }
+  - { name: story-breakdown,            image: fabric-story-breakdown,            port: 8127, replicas: 1 }
+  - { name: api-agent,                  image: fabric-api-agent,                  port: 8131, replicas: 1 }
+  - { name: prompt-enhancer,            image: fabric-prompt-enhancer,            port: 8134, replicas: 1 }
+  - { name: data-analyst,               image: fabric-data-analyst,               port: 8130, replicas: 1 }
+  - { name: backlog-updater,            image: fabric-backlog-updater,            port: 8135, replicas: 1 }
+
+# =============================================================================
+# Environment wiring — deliberately NOT in this file
+# =============================================================================
+# These four groups are account-bound (`terraform output`) and differ per
+# cluster, so they are supplied at deploy time rather than committed here:
+#
+#   global.siteUrl         the internet-facing ALB hostname, as http://<host>.
+#                          Drives NEXT_PUBLIC_SITE_URL + auth callbacks.
+#                          Override-only: the ingress stays host-less
+#                          (wildcard), so this does NOT pin a Host rule. Once a
+#                          real domain exists, use global.domain + TLS instead.
+#   global.region          drives S3_ENDPOINT / S3_REGION in the ConfigMap.
+#   s3.buckets.*           all seven derive from one prefix — the same rule the
+#                          Terraform module itself applies
+#                          (modules/s3/main.tf: "<prefix>-<logical-name>").
+#   temporal.namespace     Temporal Cloud → Namespaces. temporal.address only
+#                          needs setting when the namespace is outside the
+#                          region the chart defaults to (values.yaml).
+#
+# Note `elasticache.endpoint` is NOT in that list. The chart defines the key but
+# no template reads it — REDIS_URL comes from the Terraform-managed
+# `fabric/<env>/redis` secret via ExternalSecrets. It was set here, which made
+# it look load-bearing; it only ever fed the pod-restart checksum.
+#
+# `ci/gitlab/60-deploy-aws.yml` passes all of them from GitLab CI/CD variables
+# and hard-fails when a required one is missing, so a deploy cannot come up
+# green against a bucket or namespace that does not exist. For a manual
+# `helm upgrade`, pass the same
+# flags yourself — README.md § Environment wiring lists them in full.
+#
+# collaboration.partykitHost is likewise left at its default; set it after the
+# first Cloudflare PartyKit deploy (optional for an HTTP-only test).

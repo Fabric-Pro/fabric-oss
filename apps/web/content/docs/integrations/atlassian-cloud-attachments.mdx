@@ -1,0 +1,134 @@
+---
+title: Jira Image Attachments
+description: Enable real-screenshot rendering on Jira cards by configuring the hybrid Atlassian Cloud OAuth app for your Fabric workspace.
+---
+
+When Fabric pushes a feature to Jira, images in the description normally
+embed as inline `data:` URLs. Jira's description format caps total text at
+~32 KB, so large screenshots get skipped. To render full-resolution images
+inline, Fabric uploads them as **native Jira attachments** and references
+them by URL — which requires one extra Atlassian OAuth authorization beyond
+the standard Rovo MCP connection.
+
+This guide is for **workspace administrators**. Once set up, every user who
+connects Atlassian gets image attachments automatically — no per-user
+action needed.
+
+## Why an extra step is required
+
+The Atlassian Rovo MCP server (what powers the standard "Connect Atlassian"
+button) issues tokens scoped to `mcp.atlassian.com`. Those tokens **cannot**
+upload attachments — Rovo exposes no attachment-upload tool, and its tokens
+are rejected by Atlassian's REST API.
+
+Uploading attachments needs a token scoped to `api.atlassian.com`, which
+comes from a standard Atlassian OAuth 2.0 (3LO) app. Atlassian does not
+support dynamic registration for these apps, so an admin must register one
+once per environment.
+
+## What you'll configure
+
+<Steps>
+  <Step>
+    ### Register an Atlassian OAuth 2.0 (3LO) app
+
+    1. Go to [developer.atlassian.com/console](https://developer.atlassian.com/console/myapps/)
+    2. Click **Create** → **OAuth 2.0 integration**
+    3. Name it something recognizable (e.g. "Fabric — Jira Attachments")
+  </Step>
+
+  <Step>
+    ### Add the Jira permission scopes
+
+    Under **Permissions**, add the **Jira API** and enable these scopes
+    (both granular and classic for compatibility):
+
+    ```
+    read:me
+    read:jira-user
+    read:jira-work
+    write:jira-work
+    read:attachment:jira
+    write:attachment:jira
+    read:issue:jira
+    write:issue:jira
+    offline_access
+    ```
+
+    `write:attachment:jira` is the one that unlocks uploads;
+    `offline_access` lets Fabric refresh the token without re-prompting.
+  </Step>
+
+  <Step>
+    ### Set the callback URL
+
+    Under **Authorization → OAuth 2.0 (3LO)**, set the callback URL to your
+    Fabric environment's callback endpoint:
+
+    ```
+    https://YOUR_FABRIC_DOMAIN/api/mcp/atlassian-cloud/callback
+    ```
+
+    Each environment (staging, production) needs its **own** app
+    registration, because the callback URL differs. You cannot share one
+    app across domains.
+  </Step>
+
+  <Step>
+    ### Copy the client credentials into Fabric's environment
+
+    From the app's **Settings** page, copy the **Client ID** and
+    **Secret**, then set them as environment variables wherever Fabric is
+    deployed:
+
+    ```
+    ATLASSIAN_CLOUD_OAUTH_CLIENT_ID
+    ATLASSIAN_CLOUD_OAUTH_CLIENT_SECRET
+    ```
+
+    Store the secret in a secrets manager (e.g. a Key Vault) — never commit
+    it to source. After setting them, restart the Fabric web and worker
+    processes so they pick up the new values.
+  </Step>
+
+  <Step>
+    ### Connect (or reconnect) Atlassian
+
+    Once the credentials are live, the next time anyone connects Atlassian
+    from **Settings → MCP Servers**, they'll see two consent screens
+    back-to-back: the standard Rovo connection, then the image-attachment
+    authorization. Both happen in a single click.
+
+    Already connected? Each Atlassian card shows an **"Enable image
+    attachments"** prompt with a one-click button to authorize without
+    reconnecting Rovo.
+  </Step>
+</Steps>
+
+## One app, all users
+
+A single registered app per environment serves every Fabric user on any
+Atlassian site they belong to. The Client ID identifies **Fabric** as the
+application — not any particular Atlassian workspace. Each user's token is
+bound to the Atlassian site they authorize, exactly like "Sign in with
+Google." You do not register a separate app per customer.
+
+## If you skip this
+
+Everything still works — Fabric falls back to inline `data:` URL embedding.
+Small images render fine; large screenshots are skipped on Jira push. The
+standard Rovo connection (issues, comments, search) is unaffected either
+way. This setup only changes how images render.
+
+## Troubleshooting
+
+- **"Enable image attachments" keeps showing after connecting** — confirm
+  both env vars are set on the **deployed** environment (not just locally)
+  and that the web/worker processes were restarted.
+- **Authorization fails with an invalid-redirect error** — the callback URL
+  in the Atlassian Console must exactly match
+  `https://YOUR_FABRIC_DOMAIN/api/mcp/atlassian-cloud/callback`, including
+  `https://` and no trailing slash.
+- **Images still skipped after connecting** — verify the
+  `write:attachment:jira` scope is enabled on the app; without it, uploads
+  are rejected and Fabric degrades to inline embedding.

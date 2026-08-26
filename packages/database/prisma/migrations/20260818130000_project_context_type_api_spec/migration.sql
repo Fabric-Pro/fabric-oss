@@ -1,0 +1,12 @@
+-- Fizzy #2236. OpenAPI/Swagger specs as project context.
+--
+-- Adds one member to ProjectContextType. A spec routed to this type is chunked by
+-- endpoint and by model rather than by character window, so retrieval returns the
+-- endpoints a question matches instead of an arbitrary 2048-character slice of JSON.
+--
+-- Additive only. No existing row changes type, and nothing reads API_SPEC until the
+-- FABRIC_FEATURE_OPENAPI_SPEC_CONTEXT flag is on, so this is safe to apply ahead of
+-- the code that writes it. Rolling the feature back is a flag flip; the enum member
+-- stays, because dropping an enum value in Postgres requires rewriting the type and
+-- there is no reason to pay that for an unused member.
+ALTER TYPE "public"."ProjectContextType" ADD VALUE IF NOT EXISTS 'API_SPEC';

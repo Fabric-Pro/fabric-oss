@@ -1,0 +1,22 @@
+-- Create-vs-Enrich routing for action items extracted from ingested meeting
+-- transcripts and monitored chat threads.
+--
+-- Per-project opt-in, matching the neighbouring monitor flags on this table
+-- (`meetingTranscriptAutoAnalyzeEnabled`, `teamsChannelMonitorEnabled`,
+-- `slackChannelMonitorEnabled`). A project-level column rather than an
+-- environment variable is what makes the planned rollout possible: the routing
+-- can be switched on for a handful of dogfooding projects in any environment,
+-- including production, without a deploy.
+--
+-- Defaults FALSE so every existing project keeps today's capture-as-is
+-- behaviour — each extracted action item proposed as a brand-new ticket — until
+-- someone opts in. Switching it back off is a complete rollback: routing only
+-- ever runs at ingestion time, and nothing it produces is committed without an
+-- explicit reviewer approval, so disabling it cannot leave partially-routed
+-- state behind. Sources ingested while it was on keep whatever proposals they
+-- already produced, which remain reviewable and overridable as normal.
+--
+-- NOT NULL with a constant default: PostgreSQL 11+ records this in the catalog
+-- rather than rewriting the table, so the lock is brief even on a large
+-- `project` table.
+ALTER TABLE "project" ADD COLUMN "actionItemRoutingEnabled" BOOLEAN NOT NULL DEFAULT false;

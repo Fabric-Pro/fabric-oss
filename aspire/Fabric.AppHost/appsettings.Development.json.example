@@ -1,0 +1,26 @@
+{
+  "Parameters": {
+    "postgres-password": "postgres",
+    "minio-root-user": "minioadmin",
+    "minio-root-password": "minioadmin",
+    "grafana-admin-password": "admin",
+    "ai-token-secret": "dev-ai-token-secret-for-local-development-only-32bytes",
+    "agent-api-key": "dev-agent-api-key-for-local-development-only",
+    "fabric-server-api-key": "dev-fabric-server-api-key-for-local-development-only"
+  },
+  "Aspire": {
+    "Dashboard": {
+      "Frontend": {
+        "AuthMode": "Unsecured"
+      }
+    }
+  },
+  "Logging": {
+    "LogLevel": {
+      "Default": "Debug",
+      "Microsoft.AspNetCore": "Information",
+      "Aspire.Hosting": "Debug"
+    }
+  }
+}
+

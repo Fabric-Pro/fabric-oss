@@ -1,0 +1,18 @@
+{
+	"$schema": "https://openapi.vercel.sh/vercel.json",
+	"buildCommand": "cd ../.. && export DOCKER_BUILD=true NEXT_TYPECHECK_SPLIT=true && pnpm turbo type-check --filter=@repo/web && pnpm turbo build --filter=@repo/web",
+	"installCommand": "cd ../.. && pnpm install",
+	"ignoreCommand": "sh scripts/vercel-ignore.sh",
+	"framework": "nextjs",
+	"outputDirectory": ".next",
+	"crons": [
+		{
+			"path": "/api/cron/cleanup-oauth-states",
+			"schedule": "0 * * * *"
+		},
+		{
+			"path": "/api/cron/fail-stuck-pm-sync",
+			"schedule": "*/5 * * * *"
+		}
+	]
+}

@@ -1,0 +1,291 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Fabric — QA surfaces (docs mocks)</title>
+<!-- Real Inter + JetBrains Mono, the app's --font-sans / --font-mono. -->
+<link rel="stylesheet" href="../.fonts/fonts.css">
+<style>
+/* Tokens copied verbatim from tooling/tailwind/theme.css :root (light). */
+:root{
+  --border:#d8d2cc; --input:#d2ccc5; --ring:#9f2a3a;
+  --background:#f7f6f2; --foreground:#1f1c19;
+  --primary:#9f2a3a; --primary-foreground:#fff7f7;
+  --secondary:#047857; --destructive:#c81e1e;
+  --muted:#efede8; --muted-foreground:#625c55;
+  --accent:#f2e7e7; --card:#fffdf9;
+  --highlight:#d97706;
+  --radius:0.625rem; --radius-md:calc(var(--radius) - 2px); --radius-lg:var(--radius);
+  --radius-sm:calc(var(--radius) - 4px);
+  --font-sans:Inter,system-ui,"Segoe UI",sans-serif;
+  --font-mono:"JetBrains Mono",ui-monospace,Consolas,monospace;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--background);color:var(--foreground);font-family:var(--font-sans);
+  -webkit-font-smoothing:antialiased;padding:28px;width:1160px}
+.shot{background:var(--background)} .shot + .shot{margin-top:40px}
+.t-sm{font-size:.875rem;line-height:1.25rem}
+.t-xs{font-size:.75rem;line-height:1rem}
+.mono{font-family:var(--font-mono);font-variant-numeric:tabular-nums}
+.muted{color:var(--muted-foreground)}
+.nums{font-variant-numeric:tabular-nums}
+.medium{font-weight:500}
+
+/* segmented control */
+.segments{display:inline-flex;border:1px solid color-mix(in srgb,var(--border) 60%,transparent);
+  border-radius:var(--radius-lg);padding:2px}
+.segments button{font-family:inherit;font-size:.875rem;line-height:1.25rem;font-weight:500;
+  padding:6px 16px;border:0;border-radius:var(--radius-md);background:transparent;
+  color:var(--muted-foreground)}
+.segments button[aria-pressed="true"]{background:var(--primary);color:var(--primary-foreground)}
+.seg-row{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:16px}
+.about{width:28px;height:28px;display:grid;place-items:center;color:var(--muted-foreground)}
+
+/* pills — TONE_CLASSES.pill + the chip shell from TestCaseStatusChip */
+.chip{display:inline-flex;align-items:center;gap:6px;border-radius:9999px;border:1px solid;
+  padding:2px 8px;font-weight:500;font-size:.75rem;line-height:1rem;color:var(--foreground)}
+.chip .dot{width:6px;height:6px;flex-shrink:0;border-radius:9999px}
+.tone-secondary{border-color:color-mix(in srgb,var(--secondary) 30%,transparent);
+  background:color-mix(in srgb,var(--secondary) 10%,transparent)}
+.tone-secondary .dot{background:var(--secondary)}
+.tone-highlight{border-color:color-mix(in srgb,var(--highlight) 30%,transparent);
+  background:color-mix(in srgb,var(--highlight) 10%,transparent)}
+.tone-highlight .dot{background:var(--highlight)}
+.tone-primary{border-color:color-mix(in srgb,var(--primary) 30%,transparent);
+  background:color-mix(in srgb,var(--primary) 10%,transparent)}
+.tone-primary .dot{background:var(--primary)}
+.tone-muted{border-color:color-mix(in srgb,var(--border) 70%,transparent);
+  background:color-mix(in srgb,var(--muted) 60%,transparent)}
+.tone-muted .dot{background:var(--muted-foreground)}
+.tone-destructive{border-color:color-mix(in srgb,var(--destructive) 30%,transparent);
+  background:color-mix(in srgb,var(--destructive) 10%,transparent)}
+.tone-destructive .dot{background:var(--destructive)}
+
+/* --- Cases segment: TestCaseRow --- */
+.cases{display:flex;flex-direction:column;gap:6px}
+.case{display:flex;align-items:center;gap:12px;border:1px solid var(--border);
+  border-radius:var(--radius-lg);background:var(--card);padding:10px 12px}
+.cb{width:16px;height:16px;flex-shrink:0;border:1px solid var(--input);border-radius:4px;
+  background:var(--background)}
+.case .ident{flex-shrink:0;font-family:var(--font-mono);font-variant-numeric:tabular-nums;
+  color:var(--muted-foreground);font-size:.75rem;line-height:1rem}
+.case .body{display:flex;min-width:0;flex:1;flex-direction:column;gap:4px}
+.case .titleline{display:flex;min-width:0;align-items:center;gap:10px}
+.case .title{min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+  font-weight:500;font-size:.875rem;line-height:1.25rem}
+.case .meta{display:flex;flex-wrap:wrap;align-items:center;gap:4px 8px;
+  color:var(--muted-foreground);font-size:.75rem;line-height:1rem}
+.cov{display:inline-flex;align-items:center;gap:6px}
+.cov .kind{border-radius:4px;background:var(--muted);padding:2px 6px;font-size:11px;
+  color:var(--muted-foreground)}
+.cov .fid{font-family:var(--font-mono);font-variant-numeric:tabular-nums;color:var(--primary)}
+.tag{border-radius:4px;background:var(--muted);padding:2px 6px;color:var(--muted-foreground)}
+.slot{flex-shrink:0}
+
+/* stat strip — a compact summary bar above the list */
+.strip{display:flex;align-items:center;gap:20px;border:1px solid var(--border);
+  border-radius:var(--radius-lg);background:var(--card);padding:12px 16px;margin-bottom:12px}
+.stat .label{font-size:11px;font-weight:500;text-transform:uppercase;letter-spacing:.14em;
+  color:var(--muted-foreground)}
+.stat .value{margin-top:2px;font-size:1.25rem;line-height:1.5rem;font-weight:600;
+  font-variant-numeric:tabular-nums}
+.bar{flex:1;display:flex;height:6px;border-radius:9999px;overflow:hidden;background:var(--muted)}
+.bar i{display:block;height:100%}
+
+/* --- Findings list: FindingsSection --- */
+.findings .head{display:flex;align-items:center;justify-content:space-between;gap:8px;
+  margin-bottom:8px}
+.findings .kicker{font-size:11px;font-weight:500;text-transform:uppercase;
+  letter-spacing:.2em;color:var(--muted-foreground)}
+.findings ul{list-style:none;border:1px solid var(--border);border-radius:var(--radius-md);
+  overflow:hidden}
+.findings li{display:flex;align-items:flex-start;gap:12px;padding:10px 12px}
+.findings li + li{border-top:1px solid var(--border)}
+.findings .box{margin-top:4px;width:14px;height:14px;flex-shrink:0;border:1px solid var(--input);
+  border-radius:3px;background:var(--background)}
+.findings .warn{margin-top:2px;width:16px;height:16px;flex-shrink:0;color:var(--destructive)}
+.findings .col{min-width:0;flex:1}
+.findings .name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:500;
+  font-size:.875rem;line-height:1.25rem}
+.findings .sub{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+  color:var(--muted-foreground);font-size:.75rem;line-height:1rem}
+.findings .count{margin-top:2px;color:var(--muted-foreground);font-size:.75rem;line-height:1rem}
+.findings pre{margin-top:6px;border-radius:4px;background:color-mix(in srgb,var(--muted) 60%,transparent);
+  padding:4px 8px;font-family:var(--font-mono);font-size:11px;color:var(--muted-foreground);
+  overflow-x:auto}
+.findings .cause{display:block;margin-top:8px;border:1px dashed var(--border);
+  border-radius:var(--radius-md);padding:6px 8px}
+.findings .cause .k{display:block}
+.findings .cause .k{font-size:10px;font-weight:500;text-transform:uppercase;
+  letter-spacing:.14em;color:var(--muted-foreground)}
+.findings .cause p{margin-top:4px;font-size:.75rem;line-height:1.1rem;color:color-mix(in srgb,var(--foreground) 90%,transparent)}
+.kind{flex-shrink:0;border-radius:9999px;border:1px solid;padding:2px 8px;font-weight:500;
+  font-size:.75rem;line-height:1rem}
+.kind.bug{border-color:color-mix(in srgb,var(--destructive) 40%,transparent);
+  background:color-mix(in srgb,var(--destructive) 10%,transparent);color:var(--destructive)}
+.kind.flaky{border-color:color-mix(in srgb,var(--highlight) 40%,transparent);
+  background:color-mix(in srgb,var(--highlight) 10%,transparent);color:var(--highlight)}
+.kind.env{border-color:var(--border);background:var(--muted);color:var(--muted-foreground)}
+</style>
+</head>
+<body>
+
+<!-- ============ shot: Cases segment ============ -->
+<div class="shot" id="shot-cases">
+  <div class="seg-row">
+    <div class="segments">
+      <button type="button" aria-pressed="true">Cases</button>
+      <button type="button" aria-pressed="false">Plans</button>
+      <button type="button" aria-pressed="false">Features</button>
+      <button type="button" aria-pressed="false">Runs</button>
+      <button type="button" aria-pressed="false">Pull requests</button>
+      <button type="button" aria-pressed="false">Questions</button>
+    </div>
+    <div class="about" aria-hidden="true">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg>
+    </div>
+  </div>
+
+  <div class="strip">
+    <div class="stat"><div class="label">Cases</div><div class="value">34</div></div>
+    <div class="stat"><div class="label">Ready</div><div class="value">21</div></div>
+    <div class="stat"><div class="label">Automated</div><div class="value">12</div></div>
+    <div class="stat"><div class="label">Coverage</div><div class="value">78%</div></div>
+    <div class="bar">
+      <i style="width:62%;background:var(--secondary)"></i>
+      <i style="width:21%;background:var(--highlight)"></i>
+      <i style="width:9%;background:var(--primary)"></i>
+    </div>
+  </div>
+
+  <div class="cases">
+    <div class="case">
+      <span class="cb" aria-hidden="true"></span>
+      <span class="body">
+        <span class="titleline">
+          <span class="ident">TC-014</span>
+          <span class="title">Capture retries once when the payment gateway times out</span>
+        </span>
+        <span class="meta">
+          <span class="nums">6 steps</span><span aria-hidden="true">·</span>
+          <span class="cov"><span class="kind">Feature</span><span class="fid">F-102</span><span class="muted">Resilient checkout</span></span>
+          <span aria-hidden="true">·</span><span class="tag">payments</span>
+        </span>
+      </span>
+      <span class="slot"><span class="chip tone-secondary"><span class="dot"></span>Ready</span></span>
+      <span class="slot"><span class="chip tone-destructive"><span class="dot"></span>Critical</span></span>
+    </div>
+    <div class="case">
+      <span class="cb" aria-hidden="true"></span>
+      <span class="body">
+        <span class="titleline">
+          <span class="ident">TC-015</span>
+          <span class="title">A second capture with the same idempotency key does not double-charge</span>
+        </span>
+        <span class="meta">
+          <span class="nums">4 steps</span><span aria-hidden="true">·</span>
+          <span class="cov"><span class="kind">Feature</span><span class="fid">F-102</span><span class="muted">Resilient checkout</span></span>
+          <span aria-hidden="true">·</span><span class="tag">integration</span>
+        </span>
+      </span>
+      <span class="slot"><span class="chip tone-secondary"><span class="dot"></span>Ready</span></span>
+      <span class="slot"><span class="chip tone-highlight"><span class="dot"></span>High</span></span>
+    </div>
+    <div class="case">
+      <span class="cb" aria-hidden="true"></span>
+      <span class="body">
+        <span class="titleline">
+          <span class="ident">TC-016</span>
+          <span class="title">Refund endpoint rejects an amount above the original charge</span>
+        </span>
+        <span class="meta">
+          <span class="nums">5 steps</span><span aria-hidden="true">·</span>
+          <span class="cov"><span class="kind">Feature</span><span class="fid">F-104</span><span class="muted">Refunds</span></span>
+        </span>
+      </span>
+      <span class="slot"><span class="chip tone-highlight"><span class="dot"></span>Draft</span></span>
+      <span class="slot"><span class="chip tone-primary"><span class="dot"></span>Medium</span></span>
+    </div>
+    <div class="case">
+      <span class="cb" aria-hidden="true"></span>
+      <span class="body">
+        <span class="titleline">
+          <span class="ident">TC-017</span>
+          <span class="title">A tenant cannot read another tenant's refund history</span>
+        </span>
+        <span class="meta">
+          <span class="nums">3 steps</span><span aria-hidden="true">·</span>
+          <span class="cov"><span class="kind">Feature</span><span class="fid">F-104</span><span class="muted">Refunds</span></span>
+          <span aria-hidden="true">·</span><span class="tag">security</span>
+        </span>
+      </span>
+      <span class="slot"><span class="chip tone-primary"><span class="dot"></span>Proposed</span></span>
+      <span class="slot"><span class="chip tone-highlight"><span class="dot"></span>High</span></span>
+    </div>
+    <div class="case">
+      <span class="cb" aria-hidden="true"></span>
+      <span class="body">
+        <span class="titleline">
+          <span class="ident">TC-018</span>
+          <span class="title">Tax table falls back to the default jurisdiction when the flag is off</span>
+        </span>
+        <span class="meta">
+          <span class="nums">4 steps</span><span aria-hidden="true">·</span>
+          <span class="muted" style="opacity:.7">Not linked to a feature</span>
+        </span>
+      </span>
+      <span class="slot"><span class="chip tone-muted"><span class="dot"></span>Closed</span></span>
+      <span class="slot"><span class="chip tone-muted"><span class="dot"></span>Low</span></span>
+    </div>
+  </div>
+</div>
+
+<!-- ============ shot: CI findings ============ -->
+<div class="shot findings" id="shot-findings" style="width:820px">
+  <div class="head">
+    <span class="kicker">Findings</span>
+    <span class="muted t-xs mono">3 open</span>
+  </div>
+  <ul>
+    <li>
+      <span class="box" aria-hidden="true"></span>
+      <svg class="warn" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M12 8v4M12 16h.01"/></svg>
+      <span class="col">
+        <p class="name">checkout captures payment once on gateway timeout</p>
+        <p class="sub">TC-014 · packages/payments/__tests__/capture.spec.ts</p>
+        <p class="count">Failed in 11 of the last 14 runs · first seen 6 days ago</p>
+        <pre>AssertionError: expected captureCalls to equal 1, received 2</pre>
+        <span class="cause">
+          <span class="k">Proposed cause</span>
+          <p>The retry wrapper added in <span class="mono">capture.ts</span> does not check the idempotency key before re-issuing, so a timeout that actually succeeded is captured twice. Read: capture.ts, gateway-client.ts, capture.spec.ts.</p>
+        </span>
+      </span>
+      <span class="kind bug">Product bug</span>
+    </li>
+    <li>
+      <span class="box" aria-hidden="true"></span>
+      <svg class="warn" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M12 8v4M12 16h.01"/></svg>
+      <span class="col">
+        <p class="name">pricing quote renders the contract badge</p>
+        <p class="sub">TC-009 · apps/web/__tests__/quote-badge.test.tsx</p>
+        <p class="count">Failed in 3 of the last 14 runs · passes on re-run</p>
+        <pre>Timed out waiting for element [data-testid="contract-badge"]</pre>
+      </span>
+      <span class="kind flaky">Flaky</span>
+    </li>
+    <li>
+      <span class="box" aria-hidden="true"></span>
+      <svg class="warn" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M12 8v4M12 16h.01"/></svg>
+      <span class="col">
+        <p class="name">refund history loads for a tenant with no refunds</p>
+        <p class="sub">TC-011 · packages/api/__tests__/refunds.spec.ts</p>
+        <p class="count">Failed in 2 of the last 14 runs · only on the nightly job</p>
+        <pre>ECONNREFUSED 127.0.0.1:5432</pre>
+      </span>
+      <span class="kind env">Environment</span>
+    </li>
+  </ul>
+</div>
+
+</body>
+</html>

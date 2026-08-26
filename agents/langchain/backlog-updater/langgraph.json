@@ -1,0 +1,7 @@
+{
+	"dependencies": ["."],
+	"graphs": {
+		"backlog_updater": "./server.ts:graph"
+	},
+	"env": ".env"
+}

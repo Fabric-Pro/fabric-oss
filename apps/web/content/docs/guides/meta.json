@@ -1,0 +1,4 @@
+{
+	"title": "Guides",
+	"pages": ["configuration", "deployment", "tenant-isolation"]
+}

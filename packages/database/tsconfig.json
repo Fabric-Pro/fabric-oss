@@ -1,0 +1,27 @@
+{
+	"extends": "@repo/tsconfig/base.json",
+	"compilerOptions": {
+		// `jsx: "preserve"` is required because `prisma/queries/ai-models.ts`
+		// dynamically imports `@repo/payments` for the AI usage-limits post-
+		// record path (/). That module transitively reaches
+		// `@repo/api/lib/notification-service` → `@repo/mail`, whose React
+		// email templates are.tsx files. The dynamic `import` is deferred
+		// at RUNTIME to break the module-init cycle, but TypeScript still
+		// follows the type chain at compile time and needs to be able to read
+		// the.tsx files in @repo/mail. Set to "preserve" to avoid emit
+		// (database is a backend-only package — no JSX is actually compiled).
+		"jsx": "preserve",
+		// Raise target above the base.json ES6 default so tsc accepts
+		// top-level await (TS1378) and BigInt literals (TS2737) in test and
+		// script files. Type-check only; Node 20 supports both at runtime.
+		"target": "ES2022"
+	},
+	"include": ["**/*.ts"],
+	"exclude": [
+		"dist",
+		"build",
+		"node_modules",
+		"prisma/zod/**/*.ts",
+		"prisma/seed.ts"
+	]
+}

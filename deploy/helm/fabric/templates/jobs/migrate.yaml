@@ -1,0 +1,150 @@
+{{- if .Values.migrations.enabled }}
+# ─────────────────────────────────────────────────────────────────────────────
+# Migration hook prerequisites.
+#
+# The migrate Job below is a pre-install/pre-upgrade hook, so Helm runs it
+# BEFORE applying the chart's normal resources — including the app
+# ServiceAccount (networking/service-account.yaml) and the fabric-app-secrets
+# ExternalSecret. On a FRESH install those don't exist when the hook fires, so
+# the Job can't create its pod ("error looking up service account fabric/fabric:
+# serviceaccount fabric not found") and the hook times out -> --atomic rollback.
+#
+# Rather than couple the migration to the app's resource lifecycle (hook-ifying
+# the shared SA/Secret would cascade-delete fabric-app-secrets on every upgrade
+# via creationPolicy: Owner), the hook gets its OWN dedicated ServiceAccount and
+# a DB-only ExternalSecret, created as earlier-weighted hooks (-20, -10) so both
+# exist before the Job (weight 0) runs. The migrate SA needs no IRSA — migrations
+# reach RDS over DATABASE_URL and make no AWS API calls.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: fabric-migrate
+  labels:
+{{- include "fabric.labels" (dict "name" "fabric-migrate" "Release" .Release "component" "migrate") | nindent 4 }}
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "-20"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded,hook-failed
+{{- if .Values.externalSecrets.enabled }}
+---
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: fabric-migrate-secrets
+  labels:
+{{- include "fabric.labels" (dict "name" "fabric-migrate" "Release" .Release "component" "migrate") | nindent 4 }}
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "-10"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded,hook-failed
+spec:
+  refreshInterval: {{ .Values.externalSecrets.refreshInterval }}
+  secretStoreRef:
+    kind: ClusterSecretStore
+    name: {{ .Values.externalSecrets.secretStore }}
+  target:
+    name: fabric-migrate-secrets
+    creationPolicy: Owner
+  dataFrom:
+    - extract:
+        key: "fabric/{{ .Values.global.environment }}/database"
+{{- if .Values.temporalWorker.bypassRlsRole }}
+    # WORKER_DB_PASSWORD — apply-rls-direct.ts (run by this hook) uses it to
+    # create/ensure the fabric_worker BYPASSRLS role. WORKER_DATABASE_URL is also
+    # pulled but unused here; the hook connects via the privileged DATABASE_URL above.
+    - extract:
+        key: "fabric/{{ .Values.global.environment }}/database-worker"
+{{- end }}
+{{- end }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: fabric-migrate-{{ .Release.Revision }}
+  labels:
+{{- include "fabric.labels" (dict "name" "fabric-migrate" "Release" .Release "component" "migrate") | nindent 4 }}
+  annotations:
+    "helm.sh/hook": pre-upgrade,pre-install
+    "helm.sh/hook-weight": "0"
+    # hook-failed is required: without it, a single transient migration failure
+    # leaves the Job orphaned and blocks all future deploys (only hook-succeeded
+    # triggers cleanup, and that never fires on a failed Job).
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded,hook-failed
+spec:
+  backoffLimit: 0          # any migration failure aborts the deploy
+  ttlSecondsAfterFinished: 86400   # keep finished Job around for 24h so logs are inspectable
+  template:
+    metadata:
+      labels:
+{{- include "fabric.selectorLabels" (dict "name" "fabric-migrate" "Release" .Release) | nindent 8 }}
+        app.kubernetes.io/component: migrate
+    spec:
+      restartPolicy: Never
+      # Dedicated hook SA created above (weight -20), so this pre-install hook
+      # pod can be scheduled before the app's normal-resource SA exists.
+      serviceAccountName: fabric-migrate
+      containers:
+        - name: prisma-migrate
+          image: "{{ .Values.global.imageRegistry }}/{{ .Values.temporalWorker.image.repository }}:{{ .Values.global.imageTag }}"
+          imagePullPolicy: IfNotPresent
+          # Use the temporal-worker image because it ships the full monorepo workspace
+          # under /app/packages (including packages/database with Prisma schema + migrations).
+          # The web image is a Next.js standalone build and does not contain
+          # packages/database, so it cannot run `prisma migrate deploy`.
+          command: ["sh", "-c"]
+          # RLS policies are NOT shipped via Prisma migrations — they live in
+          # packages/database/scripts/apply-rls-direct.ts and must run after
+          # `prisma migrate deploy` for tenant isolation to take effect. Without
+          # this second step, a fresh AWS database has the relational schema but
+          # no DB-enforced row-level security, so the API trusts only its own
+          # tenant filters (defense-in-depth gone).
+          #
+          # We invoke the script directly (not via `pnpm apply:rls`) because
+          # the package.json alias is `dotenv -c -e ../../.env.local -- tsx ...`,
+          # which fails in-cluster (no .env.local file). The envFrom block
+          # already exposes DATABASE_URL / DIRECT_URL from fabric-app-secrets.
+          args:
+            - "cd /app/packages/database && pnpm exec prisma migrate deploy && pnpm exec tsx ./scripts/apply-rls-direct.ts"
+          env:
+            # The RLS step (tsx apply-rls-direct.ts) connects via the
+            # node-postgres PrismaClient, which needs SSL for RDS (see
+            # config-map.yaml). `prisma migrate deploy` ignores PGSSLMODE and is
+            # unaffected. Without this the RLS step fails: "no pg_hba.conf entry
+            # for host ... no encryption" (SQLSTATE 28000).
+            - name: PGSSLMODE
+              value: "no-verify"
+            # WORKER_RLS_MODE selects bypassrls vs policy for apply-rls-direct.ts.
+            # Sourced directly from values, NOT the runtime ConfigMap — this
+            # pre-install/pre-upgrade hook runs before normal resources (incl. the
+            # ConfigMap) exist, so an envFrom on it would be empty on fresh installs.
+            # The matching WORKER_DB_PASSWORD arrives via fabric-migrate-secrets
+            # above when temporalWorker.bypassRlsRole is set.
+            - name: WORKER_RLS_MODE
+              value: {{ .Values.databricks.workerRlsMode | default "bypassrls" | quote }}
+            # WORKER_ROLE_PREPROVISIONED — on managed Postgres (Lakebase) the
+            # fabric_worker role is admin-created because this hook's connection
+            # can't CREATE ROLE; set true so apply-rls-direct.ts skips role
+            # management and only attaches the worker_bypass policies. Without it,
+            # policy mode silently skips worker_bypass on hosts that block CREATE ROLE.
+            - name: WORKER_ROLE_PREPROVISIONED
+              value: {{ .Values.databricks.workerRolePreprovisioned | default false | quote }}
+            # APP_RLS_BYPASS — on managed Postgres (Lakebase) the fabric_app
+            # role has no implicit RLS bypass the way Neon's neon_superuser
+            # membership gave it, and the query layer's raw db client with
+            # explicit tenant filters is the isolation boundary — so enforced
+            # RLS with no tenant context returns zero rows for every raw-db
+            # query. Set true so apply-rls-direct.ts attaches the app_bypass
+            # policies. Default false (Neon/AWS, where the app connection
+            # already bypasses RLS).
+            - name: APP_RLS_BYPASS
+              value: {{ .Values.databricks.appRlsBypass | default false | quote }}
+          envFrom:
+            # DB-only ExternalSecret created above (weight -10) — DATABASE_URL /
+            # DIRECT_URL from fabric/<env>/database. The app's full
+            # fabric-app-secrets is a normal resource applied after hooks.
+            - secretRef:
+                name: fabric-migrate-secrets
+          resources:
+            requests: { cpu: 100m, memory: 256Mi }
+            limits:   { cpu: 1000m, memory: 1Gi }
+{{- end }}

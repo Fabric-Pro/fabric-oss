@@ -1,0 +1,17 @@
+{
+	"extends": "@repo/tsconfig/base.json",
+	"compilerOptions": {
+		"outDir": "./dist",
+		"rootDir": ".",
+		// The base config targets ES6, which predates top-level `await` and so
+		// rejects it with TS1378 — even though `module: "Preserve"` allows it and
+		// `lib` is already ES2022. This package is `"type": "module"` and its
+		// tests use top-level `await import()` to pick up `vi.mock` hoisting, so
+		// it needs the same ES2022 target that database/temporal/observability
+		// already set.
+		"target": "ES2022",
+		"types": ["node"]
+	},
+	"include": ["**/*.ts"],
+	"exclude": ["node_modules", "dist"]
+}

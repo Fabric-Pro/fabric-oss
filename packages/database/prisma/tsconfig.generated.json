@@ -1,0 +1,33 @@
+{
+	// Standalone config used ONLY by scripts/generate-client.mts to compile the
+	// generated Prisma client (prisma/generated/**) from .ts source into .js + .d.ts.
+	//
+	// Why: the `prisma-client` generator emits ~47MB of .ts SOURCE. With the repo's
+	// source-consumed package pattern, every one of @repo/database's ~18 consumers
+	// re-type-checks all of it from source, which pushed `tsc` past 8GB and made
+	// `pnpm type-check` OOM at normal heap. Compiling it to .d.ts once (skipped by
+	// every consumer's `skipLibCheck`) drops fabric-ai from ~948k to ~100k lines of
+	// checked TypeScript and lets it type-check under a 4GB heap.
+	//
+	// Deliberately does NOT extend @repo/tsconfig/base.json: that sets `noEmit` and
+	// module/jsx options tuned for source consumption. This one must EMIT, and the
+	// generated tree is self-contained (imports only the Prisma runtime + itself —
+	// zero @repo/* imports), so it needs none of the base's module wiring.
+	"compilerOptions": {
+		"module": "ESNext",
+		"moduleResolution": "Bundler",
+		"target": "ES2022",
+		"lib": ["ES2022", "DOM"],
+		"declaration": true,
+		"declarationMap": false,
+		"sourceMap": false,
+		"emitDeclarationOnly": false,
+		"skipLibCheck": true,
+		"noEmitOnError": false,
+		"strict": false,
+		"types": []
+	},
+	// No outDir/rootDir on purpose: tsc then emits client.js + client.d.ts next to
+	// each client.ts in place. generate-client.mts strips the .ts afterwards.
+	"include": ["generated/**/*.ts"]
+}

@@ -1,0 +1,47 @@
+{{- range $agent := .Values.agents }}
+{{- include "fabric.deployment" (dict
+    "name"      $agent.name
+    "component" "agent"
+    "image"     (printf "%s/%s:%s" $.Values.global.imageRegistry $agent.image $.Values.global.imageTag)
+    "replicas"  (default 1 $agent.replicas)
+    "port"      $agent.port
+    "resources" (default (dict
+      "requests" (dict "cpu" "100m" "memory" "256Mi")
+      "limits"   (dict "cpu" "500m" "memory" "512Mi")) $agent.resources)
+    "securityContext" (dict
+      "runAsNonRoot" true
+      "runAsUser"    1001
+      "fsGroup"      1001)
+    "extraEnv"  (list (dict "name" "PORT" "value" (toString $agent.port)))
+    "probes"    (dict
+      "livenessProbe"  (dict
+        "httpGet"             (dict "path" "/health" "port" $agent.port)
+        "initialDelaySeconds" 15
+        "periodSeconds"       20
+        "timeoutSeconds"      5
+        "failureThreshold"    3)
+      "readinessProbe" (dict
+        "httpGet"             (dict "path" "/health" "port" $agent.port)
+        "initialDelaySeconds" 5
+        "periodSeconds"       10
+        "timeoutSeconds"      5
+        "failureThreshold"    3))
+    "Release"   $.Release
+    "Values"    $.Values
+) }}
+---
+{{- include "fabric.service" (dict
+    "name"      $agent.name
+    "component" "agent"
+    "port"      $agent.port
+    "Release"   $.Release
+    "Values"    $.Values
+) }}
+---
+{{- end }}
+{{- if .Values.customAgentRuntime.enabled }}
+# customAgentRuntime (15th agent) Deployment + Service goes here when enabled.
+# Wire pattern matches the loop above — pass a single dict directly to the macros
+# with name="custom-agent-runtime", port=.Values.customAgentRuntime.port (default 8240),
+# image=.Values.customAgentRuntime.image.repository.
+{{- end }}

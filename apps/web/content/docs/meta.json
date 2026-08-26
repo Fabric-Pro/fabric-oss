@@ -1,0 +1,15 @@
+{
+	"pages": [
+		"index",
+		"getting-started",
+		"core-concepts",
+		"features",
+		"agents",
+		"integrations",
+		"tutorials",
+		"guides",
+		"api",
+		"glossary",
+		"faq"
+	]
+}

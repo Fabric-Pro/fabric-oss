@@ -1,0 +1,5 @@
+# Fetched workflow histories may contain tenant data — never commit them.
+# The directory itself is kept so the replay test can detect "no fixtures"
+# and skip, rather than fail, in clean checkouts.
+*
+!.gitignore

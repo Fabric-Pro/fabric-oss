@@ -1,0 +1,24 @@
+{
+	"name": "custom-agent-runtime",
+	"private": true,
+	"version": "1.0.3",
+	"license": "Apache-2.0",
+	"description": "Runtime for hosting user-created custom agents with A2A protocol support",
+	"type": "module",
+	"scripts": {
+		"dev": "PORT=8240 tsx server.ts",
+		"build": "tsup --config tsup.config.ts",
+		"start": "PORT=8240 node dist/server.js"
+	},
+	"dependencies": {
+		"@hono/node-server": "^2.0.11",
+		"hono": "^4.12.34",
+		"uuid": "^14.0.1"
+	},
+	"devDependencies": {
+		"@types/node": "^22.10.5",
+		"tsup": "^8.5.0",
+		"tsx": "^4.19.2",
+		"typescript": "^5.9.3"
+	}
+}

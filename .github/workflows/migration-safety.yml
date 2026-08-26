@@ -1,0 +1,280 @@
+name: Migration Safety
+
+# Expand/contract enforcement on new migrations.
+#
+# Rolling deploys run the old and new application version against the same
+# schema, so a migration has to be safe for both. This gate rejects the shapes
+# that break that — and the two lock hazards that have actually shipped here: a
+# non-CONCURRENT index build on a populated table, and an unbatched backfill
+# inside the migration transaction.
+#
+# Migrations that predate the linter are grandfathered via
+# packages/database/migration-lint-baseline.json. The baseline only ever
+# shrinks: new migrations must pass, or carry an explicit
+# `-- migration-lint: allow <rule> — <reason>` marker that a reviewer reads.
+
+# Deliberately NOT path-filtered. A required check that never runs never reports,
+# so GitHub waits forever on a status that will not arrive. Adding this to the
+# required set while it was path-filtered blocked every open pull request.
+# The scoping moved inside the job instead.
+on:
+  pull_request:
+    branches: [master]
+
+permissions:
+  contents: read
+  # For the file list the scope step reads below.
+  pull-requests: read
+
+concurrency:
+  group: migration-safety-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint-migrations:
+    name: Lint migrations
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          fetch-depth: 1
+
+      # Skips everything below when no migration moved: a shallow checkout and one
+      # API call, rather than a pnpm install. Reads the API instead of a git diff
+      # because a three-dot diff needs a merge base, and fetching that much
+      # history costs more than the check it guards.
+      #
+      # Every input the linter's verdict depends on has to be in this alternation,
+      # not just the migrations. pending-constraint-validations.json is one of
+      # them: the linter fails on an entry whose `validateBy` date has passed, and
+      # that deadline is the half of the NOT VALID exemption that makes it
+      # temporary. Leaving the file out meant a one-line PR moving a deadline to
+      # 2099 never ran the rule that reads it — the obligation could be extended
+      # indefinitely with no CI signal at all.
+      #
+      # packages/database/package.json is another: `lint:migrations` there is the
+      # command this job runs, so a pull request that repoints or neuters that
+      # script decides what every later run enforces. Without it in the list, the
+      # change that disables the linter is the one change the linter never sees.
+      # pnpm-workspace.yaml is in the list for the same reason — it decides
+      # whether `--filter @repo/database` selects anything at all — but the
+      # alternation is not what makes that safe. Matching the path only means the
+      # job runs; the Lint step below is where a workspace that no longer
+      # contains the package turns into a failure instead of a silent pass.
+      - name: Does this change touch migrations?
+        id: scope
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          # Read the pull request's file list, and refuse anything that might
+          # be partial. Every guard below exists because some way of getting a
+          # short list exits 0.
+          #
+          # The REST endpoint, three attempts, then fail. This step used to
+          # read `gh pr view --json files`, and on 2026-08-17 that surface —
+          # GraphQL — served HTTP 503 for roughly half an hour while REST was
+          # healthy, failing the check on four unrelated pull requests. One
+          # call to one service made every blip terminal.
+          #
+          # GraphQL is not kept as a fallback, though, because it cannot answer
+          # this question safely. `gh pr view --json files` builds its query as
+          # `files(first: 100)` and never paginates it, so on gh 2.97.0 an
+          # 871-file pull request here comes back with exactly 100 entries and
+          # exit 0 — and that pull request's two migrations sit at positions
+          # 454 and 455, outside the window. The old GraphQL-only read would
+          # have answered "no migration files changed" for a pull request that
+          # added two. It cannot report rename sources either. A fallback that
+          # silently truncates is worse than no fallback for a safety gate, so
+          # a REST outage fails this step loudly instead.
+          #
+          #   One line per entry, `filename` then `previous_filename` — a
+          #   rename reports the destination as `filename` and the source only
+          #   as `previous_filename`, so reading the former alone makes a file
+          #   moved *out* of a guarded path invisible. Both go on the same
+          #   line, tab separated, so the line count stays equal to the entry
+          #   count and can be compared against something.
+          #
+          #   `-eq "$EXPECTED"` — that something is the pull request's own
+          #   `changed_files`. Nothing else here proves a list is whole: the
+          #   endpoint caps at 3000 entries and hands back the prefix with exit
+          #   0, and a page lost mid-pagination looks the same. An exact count
+          #   turns every one of those into a mismatch instead of a short list
+          #   that reads as "no migrations here".
+          #
+          #   `strings | select(test("\\S")) // error(…)` — a filter naming a
+          #   key the response lacks does not fail. jq prints an empty line per
+          #   entry and exits 0, so an unrecognised shape would arrive as a
+          #   list of blank names. The `strings | select` half rejects an entry
+          #   whose filename is present but empty, which would otherwise pass
+          #   the count check as a well-formed line matching nothing. Git has
+          #   no empty pathnames, so that only happens if the response is
+          #   wrong — which is the case worth being loud about.
+          #
+          #   `-n` — a pull request normally changes at least one file, so an
+          #   empty list means we failed to read it, whatever the exit code
+          #   claimed. A genuinely empty diff does fail here; it has no
+          #   migrations to lint, and a false alarm on a degenerate diff is the
+          #   cheaper mistake.
+          #
+          # Not defended against: the pull request's head moving between this
+          # read and the checkout above. The endpoint describes the pull
+          # request's current head, so a push landing mid-run could describe a
+          # revision this job is not testing. `cancel-in-progress` on the
+          # concurrency group above means the superseded run is normally killed
+          # rather than allowed to report on stale state.
+          #
+          # The retries only widen the window a transient fault has to clear.
+          # Once they are spent the step exits non-zero — the same fail-closed
+          # verdict it reached before, just no longer on the first blip.
+          FILES=""
+          for attempt in 1 2 3; do
+            if EXPECTED=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR" --jq '.changed_files') \
+               && FILES=$(gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR/files" --jq '.[] | [((.filename | strings | select(test("\\S"))) // error("REST file entry has no usable filename")), (.previous_filename // "")] | @tsv') \
+               && [ -n "$EXPECTED" ] && [ -n "$FILES" ] \
+               && [ "$(wc -l <<<"$FILES")" -eq "$EXPECTED" ]; then
+              break
+            fi
+            if [ "$attempt" -eq 3 ]; then
+              echo "::error::Could not read a complete pull request file list after 3 attempts. Failing closed rather than skipping the migration lint."
+              exit 1
+            fi
+            echo "Attempt $attempt: no complete file list, retrying in $((attempt * 5))s."
+            sleep $((attempt * 5))
+          done
+          # A here-string, not `printf | grep`. `grep -q` exits at its first
+          # match, so the printf feeding it can still be mid-write when the
+          # reader goes away, take SIGPIPE, and have `pipefail` report the
+          # pipeline as 141 — false — sending a pull request that *does* touch
+          # migrations down the else branch and skipping the lint.
+          #
+          # It is a race between grep's exit and printf's remaining write, not
+          # a size threshold: observed twice on a ~400 KB list, then not again
+          # on that same input over 30 further runs. So it cannot be pinned to
+          # a file count and cannot be regression-tested reliably — which is
+          # the argument for removing it structurally rather than bounding it.
+          # A here-string hands grep a file: no pipe, no reader to lose, no
+          # race to run.
+          #
+          # The tabs become newlines only here, so both names on a renamed
+          # entry are anchored at `^` for the match while $FILES itself keeps
+          # one line per entry for the count above. Entries with no rename
+          # source contribute a blank line, which matches nothing.
+          if grep -qE '^(packages/database/prisma/migrations/|packages/database/prisma/pending-constraint-validations\.json|packages/database/scripts/lint-migrations\.ts|packages/database/migration-lint-baseline\.json|packages/database/package\.json|pnpm-workspace\.yaml|\.github/workflows/migration-safety\.yml)' <<<"${FILES//$'\t'/$'\n'}"; then
+            echo "relevant=true" >> "$GITHUB_OUTPUT"
+            echo "Migration files changed — linting."
+          else
+            echo "relevant=false" >> "$GITHUB_OUTPUT"
+            echo "No migration files changed — nothing to lint."
+          fi
+
+      - name: Setup pnpm
+        if: steps.scope.outputs.relevant == 'true'
+        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6
+
+      - name: Setup Node.js
+        if: steps.scope.outputs.relevant == 'true'
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        if: steps.scope.outputs.relevant == 'true'
+        run: pnpm install --frozen-lockfile
+
+      # The linter reads migration SQL off disk and needs no database.
+      - name: Lint migrations
+        if: steps.scope.outputs.relevant == 'true'
+        run: |
+          set -euo pipefail
+          # pnpm reports both kinds of "there was nothing to run" as success —
+          # verified against this workspace — so neither can be left to the
+          # exit code, and this step would otherwise pass having linted nothing:
+          #
+          #   `pnpm --filter <pkg> …` where the workspace contains no such
+          #   package prints "No projects matched the filters" and exits 0. A
+          #   change dropping packages/database from pnpm-workspace.yaml would
+          #   go green here.
+          #
+          #   `pnpm --filter <pkg> <script>` where the package has no such
+          #   script prints "None of the selected packages has a … script" and
+          #   also exits 0. Deleting or renaming lint:migrations would too.
+          #
+          # Both are checked before the run, against the project pnpm itself
+          # selects rather than against a fixed path. Asking pnpm where
+          # @repo/database is and reading *that* manifest keeps the two checks
+          # talking about the same package: a fixed `packages/database/…` path
+          # could still hold a valid script while the workspace resolved the
+          # name somewhere else entirely.
+          #
+          # `if ! PKG_PATH=$(…)` rather than testing the output alone, because
+          # a command substitution's failure is invisible to `set -e` inside an
+          # `if` condition — a `pnpm ls` that errored and printed nothing would
+          # otherwise sail past a test looking only for the literal `[]`.
+          #
+          # `strings | select(test("\\S"))` rather than a bare truthiness test,
+          # because jq counts every string as true, including "" and "   " —
+          # and an empty script is a script pnpm runs as an empty command,
+          # successfully, having linted nothing. Rejected here: absent, null,
+          # false, empty, whitespace-only, and an unparseable manifest.
+          #
+          # What remains is pointing the script at something that does nothing,
+          # which CI cannot distinguish from a linter that passes. That is a
+          # visible edit to a file this job's own path filter matches, so it
+          # arrives as a review question rather than as silence.
+          if ! PKG_PATH=$(pnpm ls --filter @repo/database --depth -1 --json | jq -r '.[0].path // empty'); then
+            echo "::error::Could not ask pnpm where @repo/database resolves. Refusing to report success without linting."
+            exit 1
+          fi
+          if [ -z "$PKG_PATH" ]; then
+            echo "::error::@repo/database did not resolve in the pnpm workspace, so the migration linter would not run. Refusing to report success."
+            exit 1
+          fi
+          if ! jq -e '.scripts["lint:migrations"] | strings | select(test("\\S"))' "$PKG_PATH/package.json" > /dev/null; then
+            echo "::error::$PKG_PATH/package.json defines no runnable lint:migrations script, so the migration linter would not run. Refusing to report success."
+            exit 1
+          fi
+          pnpm --filter @repo/database lint:migrations
+
+      # The baseline exists to grandfather history, not to absorb new
+      # migrations. Growing it silently would let exactly the statements this
+      # gate exists to catch through, so a PR that adds to it fails here.
+      - name: Baseline must not grow
+        if: steps.scope.outputs.relevant == 'true'
+        # BASE_REF arrives through `env:` rather than being interpolated into the
+        # script. A `${{ }}` expression is substituted as literal text before bash
+        # parses the line, and git permits `$()`, backticks and `;` in ref names —
+        # so a branch name would be executable code here. Reaching it needs write
+        # access to this repo, but the shell-variable form costs nothing.
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          BASELINE: packages/database/migration-lint-baseline.json
+        run: |
+          git fetch --depth=1 origin "$BASE_REF"
+
+          # No baseline on the base branch means this PR introduces it, so there
+          # is nothing to compare against. Distinguishing "absent" from "empty"
+          # matters: treating absent as zero made the PR that adds the baseline
+          # fail its own guard. Deleting the file to dodge this check is not a way
+          # through — the lint step above then has no grandfathering at all and
+          # reports every pre-existing violation.
+          if ! git cat-file -e "FETCH_HEAD:$BASELINE" 2>/dev/null; then
+            echo "No baseline on $BASE_REF yet — this change introduces it. Nothing to compare."
+            exit 0
+          fi
+
+          count() { node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{try{console.log((JSON.parse(s).migrations||[]).length)}catch{console.log(-1)}})"; }
+          BASE=$(git show "FETCH_HEAD:$BASELINE" | count)
+          HEAD=$(count < "$BASELINE")
+          echo "baseline on $BASE_REF: $BASE — on this branch: $HEAD"
+
+          if [ "$BASE" -lt 0 ] || [ "$HEAD" -lt 0 ]; then
+            echo "::error::Could not parse the migration-lint baseline as JSON on one of the two refs."
+            exit 1
+          fi
+          if [ "$HEAD" -gt "$BASE" ]; then
+            echo "::error::The migration-lint baseline grew from $BASE to $HEAD. It grandfathers pre-existing migrations only — a new migration must pass the rules or carry an explicit '-- migration-lint: allow <rule> — <reason>' marker."
+            exit 1
+          fi

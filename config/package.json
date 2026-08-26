@@ -1,0 +1,21 @@
+{
+	"exports": {
+		".": "./index.ts"
+	},
+	"main": "./index.ts",
+	"types": "./index.ts",
+	"devDependencies": {
+		"@repo/tsconfig": "workspace:*"
+	},
+	"files": [
+		"index.ts",
+		"types.ts"
+	],
+	"name": "@repo/config",
+	"private": true,
+	"scripts": {
+		"type-check": "tsc --noEmit"
+	},
+	"version": "0.0.0",
+	"license": "Apache-2.0"
+}

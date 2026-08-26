@@ -1,0 +1,56 @@
+#!/usr/bin/env sh
+# Fabric pre-commit guards: secret scan + identifier scan.
+#
+# Both are best-effort LOCAL guards for fast feedback. Installed automatically by
+# the root package.json "prepare" script (which runs `git config core.hooksPath
+# .githooks` on `pnpm install`).
+#
+# The AUTHORITATIVE gates remain CI:
+#   - secrets           -> TruffleHog job in .github/workflows/security.yml
+#   - identifiers       -> identifiers job in the same workflow
+# Either check skips silently when its tooling or term list is unavailable, so a
+# fresh clone never gets stuck.
+
+status=0
+
+# ---------------------------------------------------------------- secret scan
+if command -v gitleaks >/dev/null 2>&1; then
+	# Scan only what is staged; --redact ensures a matched secret is never printed.
+	# gitleaks renamed `protect` -> `git` in v8.19 (the scanner image pins 8.18.4,
+	# which uses `protect`). Auto-detect so this works on old and new installs.
+	if gitleaks git --help >/dev/null 2>&1; then
+		gitleaks git --staged --redact --no-banner
+	else
+		gitleaks protect --staged --redact --no-banner
+	fi
+
+	if [ $? -ne 0 ]; then
+		echo ""
+		echo "BLOCKED: gitleaks flagged a potential secret in your staged changes (redacted above)."
+		echo "  - Remove it and load it from an env var / secret manager, OR"
+		echo "  - If it is a genuine false positive, add an allowlist entry to .gitleaks.toml."
+		echo "  (CI's TruffleHog check enforces this too.)"
+		status=1
+	fi
+else
+	echo "info: gitleaks not installed - skipping local secret scan (CI still enforces it)."
+	echo "      install it for pre-commit protection: https://github.com/gitleaks/gitleaks#installing"
+fi
+
+# ------------------------------------------------------- identifier scan
+# Skips silently unless a term list is present (see tooling/identifier-guard/check.mjs).
+if command -v node >/dev/null 2>&1; then
+	staged=$(git diff --cached --name-only --diff-filter=ACMR)
+
+	if [ -n "$staged" ]; then
+		# shellcheck disable=SC2086
+		echo "$staged" | tr '\n' '\0' | xargs -0 node tooling/identifier-guard/check.mjs --files || status=1
+	fi
+
+	branch=$(git symbolic-ref --quiet --short HEAD 2>/dev/null)
+	if [ -n "$branch" ]; then
+		node tooling/identifier-guard/check.mjs --text "branch:$branch" "$branch" || status=1
+	fi
+fi
+
+exit "$status"

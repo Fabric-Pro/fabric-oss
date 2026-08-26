@@ -1,0 +1,243 @@
+---
+title: Frequently Asked Questions
+description: Common questions and answers about Fabric AI.
+---
+
+Find answers to the most common questions about Fabric AI.
+
+## General
+
+### What is Fabric AI?
+
+Fabric AI is an enterprise platform that accelerates software development through intelligent AI agents, RAG-powered document generation, and durable workflow automation. It helps teams generate documents, automate repetitive tasks, and leverage their existing knowledge bases.
+
+### How is Fabric different from ChatGPT or Claude?
+
+While ChatGPT and Claude are general-purpose AI assistants, Fabric AI is purpose-built for software development workflows:
+
+| Feature | General AI Assistants | Fabric AI |
+|---------|----------------------|-----------|
+| Document generation | Basic | Structured templates with RAG |
+| External tools | Limited/None | MCP integration (Jira, GitHub, Slack) |
+| Workflow automation | None | Durable, fault-tolerant workflows |
+| Team collaboration | None | Multi-tenant with role-based access |
+| Context from your docs | Upload each time | Persistent workspaces with RAG |
+
+### Is my data secure?
+
+Yes. Fabric AI takes security seriously:
+
+- **Data isolation**: Multi-tenant architecture ensures your data is isolated
+- **Encryption**: All data encrypted at rest and in transit
+- **API key security**: Your AI provider keys are encrypted
+- **No training**: Your data is never used to train AI models
+- **SOC 2 compliance**: Enterprise-grade security practices
+
+### Which AI providers are supported?
+
+Fabric AI supports all major AI providers through the Vercel AI SDK:
+
+- OpenAI (GPT-4o, GPT-4o-mini, o1)
+- Anthropic (Claude Sonnet, Claude Opus, Claude Haiku)
+- Google (Gemini 2.0 Flash, Gemini Pro)
+- Groq, Cerebras (ultra-fast Llama inference)
+- DeepSeek (R1, V3)
+- Mistral, Cohere, Together AI, Fireworks, XAI, and more
+
+Fabric supports 20+ providers including gateways (Vercel Gateway, OpenRouter, Cloudflare AI) and cloud providers (Azure AI Foundry, AWS Bedrock, Google Vertex AI).
+
+You can configure multiple providers and switch between them based on your needs.
+
+## Pricing & Plans
+
+### Is there a free tier?
+
+Fabric AI offers a free tier with limited usage. You can upgrade to a paid plan for additional features and higher usage limits.
+
+### Do I need my own AI API key?
+
+Yes. Fabric AI uses a BYOK (Bring Your Own Key) model. You provide your API keys for OpenAI, Anthropic, or other providers. This gives you:
+
+- Full control over costs
+- Choice of models
+- Direct relationship with providers
+- No markup on AI costs
+
+### Can I use Fabric with my team?
+
+Yes! Create an organization to collaborate with your team:
+
+- Shared workspaces and documents
+- Organization-wide prompts and agents
+- Role-based access control
+- Centralized billing (optional)
+
+## Features
+
+### What is RAG and why does it matter?
+
+RAG (Retrieval-Augmented Generation) allows AI agents to access your documents when generating responses. Instead of relying only on the AI's training data, agents can:
+
+- Reference your past PRDs and specs
+- Follow your company's templates
+- Use your terminology and conventions
+- Stay grounded in your actual data
+
+[Learn more about RAG →](/docs/core-concepts/rag)
+
+### What are MCP tools?
+
+MCP (Model Context Protocol) is an open standard that lets AI agents interact with external tools. With MCP, Fabric agents can:
+
+- Create Jira tickets from PRDs
+- Post updates to Slack
+- Read and update GitHub issues
+- Access Notion databases
+- And many more integrations
+
+[Learn more about MCP →](/docs/integrations/mcp)
+
+### What document types can Fabric generate?
+
+The Document Generator can create:
+
+- Product Requirements Documents (PRDs)
+- Technical Specifications
+- Architecture Documents
+- API Documentation
+- User Stories
+- Release Notes
+- Meeting Summaries
+- Runbooks
+- And custom document types
+
+### Can I create custom agents?
+
+Yes! You can create custom agents with:
+
+- Custom system prompts
+- Specific tool access
+- Custom approval workflows
+- Template variables
+- RAG context
+
+[Tutorial: Create Your First Agent →](/docs/tutorials/first-agent)
+
+## Technical
+
+### How does the workflow engine work?
+
+Fabric uses a durable workflow engine for reliable execution. This means:
+
+- **Fault tolerance**: Workflows resume after failures
+- **Long-running**: Support for workflows that take hours or days
+- **Human-in-the-loop**: Built-in approval workflows
+- **Visibility**: Real-time progress tracking
+
+[Learn more about Workflows →](/docs/core-concepts/workflows)
+
+### What file types can I upload for RAG?
+
+Fabric supports:
+
+- PDF (including scanned documents with OCR)
+- Microsoft Word (.docx)
+- Markdown (.md)
+- Plain text (.txt)
+- Various code files
+- HTML pages
+
+### Is there an API?
+
+Yes, Fabric provides a comprehensive API for:
+
+- Managing agents and conversations
+- Uploading documents to workspaces
+- Triggering workflows programmatically
+- Accessing generated content
+
+[API Documentation →](/docs/api/overview)
+
+### Can I self-host Fabric?
+
+Fabric offers multiple deployment options:
+
+- **Cloud hosted**: Fully managed at fabric.pro (recommended)
+- **Self-hosted**: Deploy to your own infrastructure
+
+[Installation Options →](/docs/getting-started/installation)
+
+## Troubleshooting
+
+### My AI provider isn't working
+
+1. Verify your API key is correct
+2. Check that the provider is enabled in Settings
+3. Ensure you have credits/quota with the provider
+4. Test the connection in Settings → AI Gateway
+
+### Documents aren't uploading
+
+1. Check file format is supported
+2. Ensure file size is under 50MB
+3. Try refreshing the page
+4. Check your storage quota
+
+### Agent responses are slow
+
+1. Large context (many documents) takes longer to process
+2. Complex prompts require more computation
+3. Some models are slower than others
+4. Check your internet connection
+
+### MCP tools aren't available
+
+1. Verify the MCP server is configured in Settings
+2. Check that authentication is complete
+3. Test the server connection
+4. Ensure the agent has permission to use the tools
+
+### Workflow is stuck
+
+1. Check workflow status in the Workflows tab
+2. Look for pending approvals
+3. Check for failed activities
+4. Contact support if issue persists
+
+## Getting Help
+
+### Where can I get support?
+
+- **Documentation**: You're reading it!
+- **Email**: support@fabric.pro
+- **Community**: Join our Discord server
+- **Enterprise**: Dedicated support for enterprise customers
+
+### How do I report a bug?
+
+1. Go to **Help → Report Issue**
+2. Describe what you expected vs. what happened
+3. Include steps to reproduce
+4. Attach screenshots if helpful
+
+### Can I request a feature?
+
+Yes! We love feature requests:
+
+1. Go to **Help → Feature Request**
+2. Describe your use case
+3. Explain how the feature would help
+4. Vote on existing requests
+
+---
+
+## Still have questions?
+
+<Cards>
+  <Card title="Getting Started" href="/docs/getting-started/overview">
+    Complete setup guide
+  </Card>
+  <Card title="Contact TechFabric" href="https://techfabric.com/contact">
+    Email our support team
+  </Card>
+</Cards>

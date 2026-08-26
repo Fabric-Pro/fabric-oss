@@ -1,0 +1,49 @@
+---
+title: Datenverbindungen
+description: Wie Fabric sich mit externen Systemen verbindet — jetzt unter Integrationen als Laufzeit-Aktionen vereinheitlicht.
+---
+
+<Callout type="warning">
+**Das hat sich geändert.** Fabric hat keine separate „Datenverbindungen"-Oberfläche mehr, um externe Inhalte in einen Hintergrund-Index zu synchronisieren. Das Verbinden eines externen Dienstes — und alles, was er kann — befindet sich jetzt unter **Einstellungen → Integrationen**, wo jeder Anbieter als eine Reihe von **Laufzeit-Aktionen** konfiguriert wird.
+</Callout>
+
+## Was sich geändert hat
+
+„Datenverbindungen" war früher eine separate Möglichkeit, externe Inhalte (Notion-Seiten, Drive-Dateien usw.) in einen Hintergrund-Index für den Abruf zu synchronisieren. Diese Oberfläche wurde zugunsten eines einzigen, vereinheitlichten Modells eingestellt:
+
+- **Ein Ort** — verwalten Sie jede externe Verbindung unter **Einstellungen → Integrationen**.
+- **Laufzeit-Aktionen statt Hintergrund-Synchronisierung** — anstatt Inhalte vorab zu indizieren, rufen Agenten **Wissens-Aktionen** (z. B. „Search Notion", „Get Page Content") bei Bedarf live auf. Anbieter stellen außerdem **Schreib-Aktionen** bereit (z. B. „Create Issue"). Ein Anbieter, der beides bietet, wird als **Hybrid** gekennzeichnet.
+- **Dieselben Anmeldedaten überall** — eine Verbindung funktioniert in KI-Chat, im Orchestrator und in Workflow-Knoten gleichermaßen.
+
+## Wohin die Dinge verschoben wurden
+
+| Vorher | Jetzt |
+|--------|-----|
+| Einstellungen → Datenverbindungen | **Einstellungen → Integrationen** |
+| Tab „Verfügbare Anbieter" | Das Anbieter-Raster auf der Integrationen-Seite |
+| Suche einrichten / Hintergrund-Sync | **Aktionen verwalten** bei einem Anbieter (Wissens-Aktionen laufen live) |
+| RAG-Indizierung verbundener Inhalte | Projekt-Kontext + RAG-Anbieter — siehe [RAG](/docs/core-concepts/rag) |
+
+## Einen Dienst verbinden
+
+Siehe **[Ihre erste Integration verbinden](/docs/tutorials/setup-integrations)** für den aktuellen Schritt-für-Schritt-Ablauf und **[MCP-Integration](/docs/integrations/mcp)**, wie verbundene Tools zur Laufzeit aufgerufen werden.
+
+## Wissen & Abruf
+
+Für Dokumentenwissen und Retrieval-Augmented Generation verwendet Fabric **Projekt-Kontext** und Ihre konfigurierten **RAG-/Einbettungsanbieter** — siehe [RAG](/docs/core-concepts/rag). Verbundene Integrationen tragen über Live-Wissens-Aktionen bei, nicht über eine separate Synchronisierung.
+
+---
+
+## Nächste Schritte
+
+<Cards>
+  <Card title="Ihre erste Integration verbinden" href="/docs/tutorials/setup-integrations">
+    Der aktuelle Integrations-Einrichtungsablauf
+  </Card>
+  <Card title="MCP-Integration" href="/docs/integrations/mcp">
+    Wie verbundene Tools zur Laufzeit aufgerufen werden
+  </Card>
+  <Card title="RAG" href="/docs/core-concepts/rag">
+    Wie Dokumentenwissen und Abruf funktionieren
+  </Card>
+</Cards>

@@ -1,0 +1,74 @@
+---
+title: Cloud & Self-Hosting
+description: Options for running Fabric AI -- cloud hosted or self-hosted on your own infrastructure.
+---
+
+Fabric AI is available as a managed cloud service or as a self-hosted application.
+
+## Cloud Hosted
+
+The recommended way to use Fabric AI. Visit [fabric.pro](https://fabric.pro) to get started.
+
+- No infrastructure to manage
+- Automatic updates and new features
+- Enterprise-grade security and uptime
+- Managed scaling and monitoring
+
+## Self-Hosted
+
+Fabric AI is open source and can be deployed to your own infrastructure for full control over data and configuration.
+
+Self-hosting requires:
+- A cloud or on-premise environment capable of running containerized services
+- A relational database
+- Object storage for file uploads
+- An AI provider API key
+
+Detailed setup instructions, infrastructure requirements, and configuration guidance are available in the [project repository](https://github.com/fabric-ai/fabric-portal).
+
+### Security
+
+Self-hosted deployments follow the same security practices as the cloud version:
+
+- All sensitive credentials are encrypted at rest
+- Internal services are not exposed to the public internet
+- Audit logging provides complete activity trails
+
+### Webhook IP Allowlists
+
+If you enable webhook IP allowlisting for agent deployments, configure the proxy header Fabric should trust for the caller's source IP:
+
+```bash
+TRUSTED_PROXY_IP_HEADER=cf-connecting-ip
+```
+
+Supported values today:
+
+- `cf-connecting-ip`
+- `x-forwarded-for`
+- `x-real-ip`
+
+Choose the header your ingress or reverse proxy sets after normalizing the real client IP. Do not point this to a header that can pass through from the public internet unchanged.
+
+Operational notes:
+
+- Cloud-hosted Fabric manages this at the edge for you.
+- Self-hosted Fabric should set this in the web application's runtime environment.
+- If webhook IP allowlisting is enabled but `TRUSTED_PROXY_IP_HEADER` is missing, Fabric rejects those webhook requests by design.
+- Keep webhook signature verification enabled even when using IP allowlists.
+
+---
+
+## Next Steps
+
+<Cards>
+  <Card title="Configuration" href="/docs/guides/configuration">
+    Settings and provider configuration
+  </Card>
+  <Card title="Data Isolation" href="/docs/guides/tenant-isolation">
+    How your data is protected
+  </Card>
+  <Card title="How Fabric Works" href="/docs/core-concepts/architecture">
+    Platform overview
+  </Card>
+</Cards>

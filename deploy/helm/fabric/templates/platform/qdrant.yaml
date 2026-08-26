@@ -1,0 +1,102 @@
+{{- if .Values.qdrant.enabled }}
+# Single-node Qdrant for RAG. StatefulSet (stable identity + PVC) + ClusterIP
+# service. Auth API key sourced from the cluster-synced `fabric-app-secrets`
+# Secret (External Secrets Operator pulls `fabric/<env>/qdrant`), remapped to
+# Qdrant's nested env var convention. Telemetry disabled.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: qdrant
+  labels:
+{{- include "fabric.labels" (dict "name" "qdrant" "Release" .Release "component" "platform") | nindent 4 }}
+spec:
+  serviceName: qdrant
+  replicas: 1
+  selector:
+    matchLabels:
+{{- include "fabric.selectorLabels" (dict "name" "qdrant" "Release" .Release) | nindent 6 }}
+  template:
+    metadata:
+      labels:
+{{- include "fabric.selectorLabels" (dict "name" "qdrant" "Release" .Release) | nindent 8 }}
+        app.kubernetes.io/component: platform
+    spec:
+      serviceAccountName: {{ include "fabric.serviceAccountName" (dict "Values" .Values) }}
+      containers:
+        - name: qdrant
+          image: "{{ .Values.qdrant.image.repository }}:{{ .Values.qdrant.image.tag }}"
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          ports:
+            - name: http
+              containerPort: {{ .Values.qdrant.port }}
+              protocol: TCP
+            - name: grpc
+              containerPort: {{ .Values.qdrant.grpcPort }}
+              protocol: TCP
+          env:
+            - name: QDRANT__SERVICE__API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: fabric-app-secrets
+                  key: QDRANT_API_KEY
+            - name: QDRANT__TELEMETRY_DISABLED
+              value: "true"
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /livez
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 30
+          resources:
+{{- toYaml .Values.qdrant.resources | nindent 12 }}
+          volumeMounts:
+            - name: qdrant-data
+              mountPath: /qdrant/storage
+  # volumeClaimTemplate name is `qdrant-data` (not `storage`): the first deploy,
+  # before qdrant.storage.storageClassName was set, created a PVC `storage-qdrant-0`
+  # with NO storageClass that stuck Pending forever; a StatefulSet reuses an
+  # existing PVC by name, so it never picked up the gp2 fix. Renaming the claim
+  # forces a fresh PVC (`qdrant-data-qdrant-0`) that binds via gp2; the old
+  # `storage-qdrant-0` is left orphaned (harmless, unbound, no volume).
+  volumeClaimTemplates:
+    - metadata:
+        name: qdrant-data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        {{- with .Values.qdrant.storage.storageClassName }}
+        storageClassName: {{ . | quote }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.qdrant.storage.size }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: qdrant
+  labels:
+{{- include "fabric.labels" (dict "name" "qdrant" "Release" .Release "component" "platform") | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+{{- include "fabric.selectorLabels" (dict "name" "qdrant" "Release" .Release) | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.qdrant.port }}
+      targetPort: http
+      protocol: TCP
+    - name: grpc
+      port: {{ .Values.qdrant.grpcPort }}
+      targetPort: grpc
+      protocol: TCP
+{{- end }}

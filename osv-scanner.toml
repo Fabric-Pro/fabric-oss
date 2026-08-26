@@ -1,0 +1,60 @@
+# Dependency advisories we have decided not to patch.
+#
+# This file is the machine-readable half of the dismissal table in
+# SECURITY.md § Documented dismissals, which stays the authority for the
+# reasoning behind each entry. Add a row there when you add an entry here.
+#
+# `ignoreUntil` is enforced by osv-scanner: once the date passes the advisory
+# fails CI again, so a dismissal cannot outlive its quarterly re-evaluation.
+# It replaces `pnpm.auditConfig.ignoreGhsas`, which had no expiry — a dismissal
+# there was permanent unless somebody remembered to revisit it.
+#
+# The former undici@5.x entries (GHSA-v9p9-hfj2-hcw8, GHSA-vrm6-8vpv-qv8q,
+# GHSA-vxpw-j846-p89q) were removed once undici@5 left the lockfile and
+# osv-scanner started flagging them as unused ignores.
+
+# The former brace-expansion entry (GHSA-mh99-v99m-4gvg) was removed
+# 2026-08-03: the 1.x/2.x backports it was waiting for shipped and the
+# lockfile now resolves 1.1.18 / 2.1.4.
+
+# extract-zip has no fixed release to move to: 2.0.1 is simultaneously the
+# last affected version and the newest ever published, and the current
+# @langchain/langgraph-cli (1.4.4) still declares `extract-zip: ^2.0.1` — so
+# neither the package nor its parent can be upgraded out of this one.
+[[IgnoredVulns]]
+id = "GHSA-jmr9-qjv8-65gv"
+ignoreUntil = 2026-11-12
+reason = "extract-zip@2.0.1 via @langchain/langgraph-cli; no patched release exists upstream. Sole call site is the CLI's Python dev path, which this repo never invokes. See SECURITY.md § Documented dismissals."
+
+# deepmerge-ts is patchable and we are declining the patch, not stuck with it:
+# a `pnpm.overrides` entry does move @prisma/config's exact "7.1.5" pin to 8.0.1
+# (verified), the way `undici@^5.0.0` → `^6.27.0` already does elsewhere. We
+# decline because it forces an unsupported major into a third-party CLI's own
+# config loader — a worse trade than an availability-only flaw on a build-time
+# path fed by our own config. Nothing else in the lockfile depends on
+# deepmerge-ts, and @prisma/client has no dependencies of its own.
+#
+# Expect renewal rather than removal at the expiry: @prisma/config still pins
+# 7.1.5 exactly as of its 7.9.1 release. If renewing again, take the override.
+[[IgnoredVulns]]
+id = "GHSA-ggr8-5vv4-36mx"
+ignoreUntil = 2026-11-17
+reason = "deepmerge-ts@7.1.5 via the Prisma CLI's config loader. Patchable by a pnpm override to 8.0.1; declined because it forces an unsupported major into a third-party CLI's own loader. Stack exhaustion (availability only) on a build-time path fed by our own config. See SECURITY.md § Documented dismissals."
+
+# @opentelemetry/core has two copies in the lockfile. The v2 copy is already
+# patched — the existing `@opentelemetry/core@^2.0.0` -> `^2.8.0` override
+# resolves it to 2.10.0 — so only the v1 copy is flagged, and it cannot be
+# moved: the 1.x line ended at 1.30.1 and 2.8.0 is the first fixed release.
+# @temporalio/interceptors-opentelemetry is the only top-level package that
+# introduces the v1 island, and its current latest (1.22.0) still declares
+# `@opentelemetry/core: ^1.25.1`, so upgrading Temporal does not move it. An
+# override forcing v2 breaks that island at require time, not in theory: v2
+# dropped 20 of v1's 64 exports, and sdk-trace-base@1.30.1/config.js
+# dereferences the removed `TracesSamplerValues` at module top level.
+#
+# Note: once ignored, a medium finding also stops appearing in the CI severity
+# summary, so this advisory is tracked here rather than in the job output.
+[[IgnoredVulns]]
+id = "GHSA-8988-4f7v-96qf"
+ignoreUntil = 2026-11-19
+reason = "@opentelemetry/core@1.30.1 via @temporalio/interceptors-opentelemetry. No 1.x fix exists and an override to v2 breaks the v1 island at require time. The vulnerable W3CBaggagePropagator is never constructed from this copy: provider creation is lazy behind getTracer(), which only Temporal's OTel workflow interceptors call, and this repo never registers them. See SECURITY.md § Documented dismissals."

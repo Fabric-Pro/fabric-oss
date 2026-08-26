@@ -1,0 +1,46 @@
+{
+	"root": false,
+	"extends": "//",
+	"linter": {
+		"rules": {
+			"style": {
+				"noParameterAssign": "error",
+				"useAsConstAssertion": "error",
+				"useDefaultParameterLast": "error",
+				"useEnumInitializers": "error",
+				"useSelfClosingElements": "error",
+				"useSingleVarDeclarator": "error",
+				"noUnusedTemplateLiteral": "error",
+				"useNumberNamespace": "error",
+				"noInferrableTypes": "error",
+				"noUselessElse": "error"
+			}
+		}
+	},
+	"overrides": [
+		{
+			"includes": ["app/(marketing)/**/page.tsx"],
+			"linter": {
+				"rules": {
+					"security": {
+						"noDangerouslySetInnerHtml": "off"
+					}
+				}
+			}
+		},
+		{
+			"includes": [
+				"app/api/ai/**",
+				"app/api/workspaces/chat/route.ts",
+				"modules/saas/mcp/lib/gateway/platform-tools.ts"
+			],
+			"linter": {
+				"rules": {
+					"style": {
+						"noRestrictedImports": "off"
+					}
+				}
+			}
+		}
+	]
+}

@@ -1,0 +1,159 @@
+---
+title: CI Test Results
+description: Pull automated test results from GitHub Actions, GitLab CI, and Azure DevOps into Fabric, link them to your test cases, and see what broke without opening your CI dashboard.
+---
+
+Fabric reads what your CI actually ran and shows it in the project's **Testing** tab, next to the test cases those runs prove. Each automated test is matched back to the case it verifies, so coverage stops being a guess.
+
+Fabric never writes to your repository. It reads run results, and it can start a run in a pipeline you already have — it does not create repositories, commit workflow files, or change your CI configuration.
+
+## Where results come from
+
+<Callout type="warning">
+**Results come from your connected code repository, not your PM tool.** A project whose Azure DevOps is connected only as a project-management tool has no source for test results — the PM connection cannot return test runs.
+
+Azure DevOps results *do* work, through the ADO **code repository** integration in **Settings ▸ Development**. That is a different connection from the ADO **PM** integration, even though they point at the same Azure DevOps.
+</Callout>
+
+If you have a PM tool connected but no repository, Fabric says so by name in **Settings ▸ Testing** rather than showing you a bare empty list, so you don't go hunting through a connection that is working perfectly well at its own job.
+
+| Provider | What Fabric reads | What your pipeline must do |
+|---|---|---|
+| **GitHub Actions** | Workflow runs, then a JUnit XML artifact | GitHub has no per-test API, so Fabric looks for an **artifact** whose name contains `junit`, `test`, `report`, or `result`. An artifact named `coverage` is invisible no matter what's inside it. The token needs `Actions: read`. |
+| **GitLab CI** | Pipelines, then the native test report | JUnit must be declared under `artifacts:reports:junit`. Using `artifacts:paths` stores the file but produces no report, so Fabric sees nothing. |
+| **Azure DevOps** | Test Runs, then per-run results | Requires a `PublishTestResults` task in the pipeline. The PAT needs **Test Management: Read** — a Code-only PAT lists no test runs at all. |
+
+<Callout type="info">
+**The single commonest cause of an empty Azure DevOps sync** is a PAT with Code access but not Test Management: Read. Fabric can see your repository and still return no test runs.
+</Callout>
+
+### Reading results and starting them are separate permissions
+
+The scopes above let Fabric **read** your results, which is a complete setup on its own. Starting a run from inside Fabric needs write access as well:
+
+| Provider | To start a run |
+|---|---|
+| **GitHub Actions** | `Actions: Read and write` for a GitHub App, `actions:write` on a fine-grained token, or the `workflow` scope on a classic token. The workflow must also declare `workflow_dispatch:`. |
+| **GitLab CI** | The `api` scope. `read_api` reads pipelines but cannot create one. |
+| **Azure DevOps** | **Build: Read and execute**. |
+
+Without write access the **Run tests** button tells you which scope it needs, and nothing else changes.
+
+<Callout type="info">
+**Connecting through a GitHub App?** Adding a permission to the App raises a request that an organisation owner approves for each installation. Until that is approved the existing tokens keep their old permissions, and reconnecting the repository will not change them. If you want both reading and starting runs, ask for **Actions: Read and write** up front so the approval only happens once.
+</Callout>
+
+A run whose per-test detail can't be read still arrives as a run-level record with its pass/fail counts, so the outcome is never lost.
+
+## Connect a pipeline
+
+<Steps>
+  <Step>
+    ### Connect the repository
+
+    In **Settings ▸ Development**, connect the code repository whose CI you want to read. Fabric reuses this connection and its credential — there is no separate credential to store for test results.
+  </Step>
+
+  <Step>
+    ### Make the pipeline publish results
+
+    Your pipeline has to emit results in the form the table above describes. Fabric can generate a starting snippet for you: open **Settings ▸ Testing** and use the CI setup section.
+
+    The snippet is text for you to commit. Fabric hands it over and says so on screen — it will not push to your repository.
+  </Step>
+
+  <Step>
+    ### Wait for the first sync, or press Sync now
+
+    Fabric checks for new results on a schedule you control (every 15 minutes by default — see [Testing settings](/docs/features/testing/settings)). **Sync now** in the Testing tab always works, whatever the schedule says.
+  </Step>
+</Steps>
+
+## Read the results
+
+Open a project's **Testing** tab and choose the **Runs** segment. Each run shows its pipeline name, status, branch, and when it happened. Opening a run shows the per-test breakdown and the raw status your provider reported, which is what you want when a result looks wrong.
+
+The same panel appears on a feature's **Testing** tab, scoped to the runs that actually tested that feature.
+
+### What each status means
+
+Fabric normalises every provider's vocabulary onto one set. Anything ambiguous reads as "needs attention" rather than green.
+
+| Status | Meaning |
+|---|---|
+| **Passed** | The test passed. |
+| **Failed** | The test ran and failed. |
+| **Skipped** | The suite was deliberately told not to run it. Nothing is wrong. |
+| **Not run** | Queued, pending, or never reached. |
+| **Blocked** | Attempted, but could not proceed — including aborted, cancelled, inconclusive and timed-out. Any status Fabric doesn't recognise lands here. |
+
+<Callout type="info">
+**Pass rate excludes skips.** A suite is not punished for tests it was told to skip: the rate is calculated over the tests that actually executed, so deliberately skipping a suite doesn't drag your numbers down.
+</Callout>
+
+### Empty, unsupported, and stale
+
+Three states are deliberately distinct, because they call for different reactions:
+
+- **Nothing has run yet** — an empty state, never an error. Your cases are there; no pipeline has reported against them.
+- **The connected tool can't return results** — a named explanation of *why*, rather than silence. Connecting a PM tool where a repository is needed is the usual cause.
+- **The last fetch failed** — the runs on screen stay visible with the timestamp of the last *successful* fetch, so you can tell whether you're looking at data twenty minutes or twenty days old. A failed sync also shows the provider's own reply on hover, which is usually the fastest route to the real cause.
+
+## Link a result to a case
+
+Fabric matches an automated test to the case it verifies using the case's **automation reference** — the test's identifier or file path. Set it on the case, and every future run of that test updates the case's result and history automatically.
+
+Automated tests that don't match any case are surfaced separately, so you can see what your suite covers that your case list doesn't.
+
+## When something fails
+
+![The findings list: three CI failures, each showing the case it belongs to, the test file, how many of the last runs it failed in, the assertion that failed, and a kind badge — Product bug, Flaky, Environment. The first carries a proposed cause naming the files Fabric read](/images/docs/qa/qa-ci-findings.png)
+
+<Steps>
+  <Step>
+    ### A finding groups what keeps breaking
+
+    A recurring failure gets a stable identity rather than appearing as a fresh mystery each run, so you can see that the same thing has broken eleven times.
+  </Step>
+
+  <Step>
+    ### Ask for a cause
+
+    Use **Analyse** on a finding to have Fabric propose a root cause. It reads what changed since the test last passed and names the files it reasoned over, so you can judge the suspects rather than take a verdict on trust.
+
+    This is button-triggered, not automatic: analysing every failure would bill you for reasoning nobody asked to read.
+  </Step>
+
+  <Step>
+    ### Promote it to a bug
+
+    Turn a finding into a tracked bug in one click, carrying what broke with it. Findings that turn out to be the same problem can be merged, and ones you've handled can be dismissed.
+
+    If you would rather not do this by hand, turn on **Open bugs for failing tests** in [Testing settings](/docs/features/testing/settings) and Fabric opens the bug for you when CI reports a linked case as failing — at most one per case. It is off by default.
+  </Step>
+</Steps>
+
+## Start a run from Fabric
+
+You can start a run in the pipeline you already have, without leaving Fabric — pick the scope, start it, and watch the result arrive through the same ingestion path as any other run.
+
+![The "Run tests in your CI" dialog, stating that Fabric starts a run in your existing pipeline and never changes your CI configuration: a Repository picker showing example-org/storefront, a Pipeline picker still reading "Choose a pipeline to run", a "Branch or ref" field holding main with a note that it defaults to the branch QA watches, and a disabled "Start run" button beside Close](/images/docs/qa/qa-run-tests-dialog.png)
+
+**You pick the pipeline** — Fabric never preselects one. A repository often has several workflows, and starting the wrong one costs CI minutes and produces results against the wrong scope, so **Start run** stays disabled until you choose.
+
+If Fabric can't start a run it says why rather than failing quietly: a repository it can't write to, a pipeline it can't find, or a provider that doesn't support triggering.
+
+<Callout type="info">
+This starts *your* pipeline. If you want Fabric to run a test case itself by driving a browser, that's a different feature — see [Test Cases](/docs/features/testing/cases).
+</Callout>
+
+## Next Steps
+
+<Cards>
+  <Card title="Testing settings" href="/docs/features/testing/settings">
+    Set testing depth, sync frequency, and environments
+  </Card>
+  <Card title="Test Cases" href="/docs/features/testing/cases">
+    Author cases and link them to the tests that prove them
+  </Card>
+</Cards>

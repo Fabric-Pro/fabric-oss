@@ -1,0 +1,15 @@
+{
+	"$schema": "https://www.partykit.io/schema.json",
+	"name": "fabric-collab",
+	"main": "document.ts",
+	"compatibilityDate": "2024-01-01",
+	"parties": {
+		"document": "document.ts",
+		"health": "health.ts",
+		"orchestrator": "orchestrator.ts",
+		"taskagent": "taskAgent.ts"
+	},
+	"vars": {
+		"FABRIC_API_URL": "http://localhost:3001"
+	}
+}

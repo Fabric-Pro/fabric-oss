@@ -1,0 +1,348 @@
+---
+title: KI-Anbieter-Konfiguration
+description: So konfigurieren Sie KI-Anbieter (OpenAI, Anthropic, Groq, Cerebras, DeepSeek) in Fabric AI mit automatischer Modellauswahl.
+---
+
+Fabric AI unterstützt mehrere KI-Anbieter über das Vercel AI SDK. Diese Anleitung zeigt, wie Sie Ihren bevorzugten Anbieter konfigurieren und wie Modelle automatisch ausgewählt werden.
+
+<Callout type="info">
+**Single Source of Truth**: Alle Modelldefinitionen sind im Fabric AI Model Catalog zentralisiert, was konsistente Modellnamen in der gesamten Anwendung gewährleistet.
+</Callout>
+
+## Unterstützte Anbieter
+
+<Cards>
+  <Card title="Groq">
+    Llama 3.3 70B, Llama 3.1 8B, DeepSeek R1, GPT-OSS-120B
+
+    Best for: Ultra-fast inference, cost-effective
+  </Card>
+  <Card title="Cerebras">
+    Llama 3.3 70B, Llama 3.1 8B, GPT-OSS-120B
+
+    Best for: Fastest inference speeds
+  </Card>
+  <Card title="OpenAI">
+    GPT-4o, GPT-4o-mini, o1, DALL-E 3
+
+    Best for: Complex reasoning, image generation, embeddings
+  </Card>
+  <Card title="Anthropic">
+    Claude 3.5 Sonnet, Claude 3.5 Haiku, Claude 3 Opus
+
+    Best for: Long context, nuanced understanding
+  </Card>
+  <Card title="DeepSeek">
+    DeepSeek Chat, DeepSeek R1
+
+    Best for: Cost-effective reasoning
+  </Card>
+  <Card title="Vercel AI Gateway">
+    Alle Anbieter über eine API
+
+    Best for: Unified monitoring, provider fallbacks
+  </Card>
+</Cards>
+
+## So funktioniert die Modellauswahl
+
+Fabric verwendet eine **vereinfachte, anbieterzentrierte Modellauswahl**:
+
+1. **Sie wählen EINEN Standardanbieter** (z.B. Cerebras, Groq, OpenAI)
+2. **Jeder Anbieter hat optimierte Standardeinstellungen** für verschiedene Aufgabentypen (CHAT, TOOL_CALLING, etc.)
+3. **Sie können pro Aufgabentyp überschreiben**, wenn Sie andere Modelle möchten
+
+### Aufgabentypen und Standardmodelle
+
+Modellnamen werden aus dem AI Model Catalog aufgelöst, der kanonische Modellnamen auf anbieterspezifische IDs abbildet:
+
+| Task Type | Cerebras | Groq | OpenAI Direct |
+|-----------|----------|------|---------------|
+| **SIMPLE** | llama3.1-8b | llama-3.1-8b-instant | gpt-4o-mini |
+| **COMPLEX** | llama-3.3-70b | llama-3.3-70b-versatile | gpt-4o |
+| **CHAT** | llama-3.3-70b | llama-3.3-70b-versatile | gpt-4o |
+| **TOOL_CALLING** | gpt-oss-120b | openai/gpt-oss-120b | gpt-4o |
+| **REASONING** | gpt-oss-120b | deepseek-r1-distill-llama-70b | o1 |
+| **EMBEDDING** | *(uses OpenAI)* | *(uses OpenAI)* | text-embedding-3-small |
+
+<Callout type="info">
+**Kanonische Namen**: Der Katalog verwendet kanonische Modellnamen (z.B. `llama-3-3-70b`), die automatisch auf anbieterspezifische IDs aufgelöst werden. Beim Wechsel des Anbieters werden Modelle automatisch neu zugeordnet.
+</Callout>
+
+<Callout type="info">
+**Warum gpt-oss-120b für TOOL_CALLING?** Llama-Modelle haben unzuverlässige Function/Tool-Aufrufe. Das gpt-oss-120b-Modell hat native Tool-Calling-Unterstützung und ist daher zuverlässiger für Agenten und Workflows.
+</Callout>
+
+## Konfigurationsmethoden
+
+### Methode 1: Über die Oberfläche (Empfohlen)
+
+<Steps>
+  <Step>
+    ### Zu Einstellungen navigieren
+
+    Klicken Sie auf Ihr Profil-Icon oben rechts und wählen Sie **Settings**.
+  </Step>
+
+  <Step>
+    ### AI Providers öffnen
+
+    Klicken Sie in der Einstellungs-Seitenleiste auf **AI Providers**.
+  </Step>
+
+  <Step>
+    ### Anbieter auswählen
+
+    Wählen Sie Ihren KI-Anbieter aus dem Dropdown. Optionen umfassen:
+    - **Cerebras** — Schnellste Inferenz
+    - **Groq** — Schnell und kosteneffektiv
+    - **OpenAI** — Leistungsstärkste Modelle
+    - **Anthropic** — Beste für langen Kontext
+    - **DeepSeek** — Kosteneffektives Reasoning
+    - **Vercel AI Gateway** — Einheitlicher Zugang zu allen Anbietern
+  </Step>
+
+  <Step>
+    ### API-Schlüssel eingeben
+
+    Fügen Sie Ihren API-Schlüssel aus dem Dashboard Ihres Anbieters ein:
+
+    - **Groq**: Schlüssel unter [console.groq.com](https://console.groq.com/keys)
+    - **Cerebras**: Schlüssel unter [cloud.cerebras.ai](https://cloud.cerebras.ai)
+    - **OpenAI**: Schlüssel unter [platform.openai.com](https://platform.openai.com/api-keys)
+    - **Anthropic**: Schlüssel unter [console.anthropic.com](https://console.anthropic.com/settings/keys)
+    - **DeepSeek**: Schlüssel unter [platform.deepseek.com](https://platform.deepseek.com/api_keys)
+  </Step>
+
+  <Step>
+    ### Verbindung testen
+
+    Klicken Sie auf **Test Connection**, um zu prüfen, ob Ihr API-Schlüssel funktioniert.
+  </Step>
+
+  <Step>
+    ### Speichern
+
+    Klicken Sie auf **Save**, um Ihre Konfiguration zu speichern. Modelle werden automatisch basierend auf Ihrem Anbieter ausgewählt!
+  </Step>
+</Steps>
+
+### Methode 2: Organisationskonfiguration
+
+Für Teams konfigurieren Sie KI-Anbieter auf Organisationsebene:
+
+<Steps>
+  <Step>
+    ### Zu Organisation wechseln
+
+    Verwenden Sie den Organisations-Umschalter in der oberen Leiste.
+  </Step>
+
+  <Step>
+    ### Organisationseinstellungen öffnen
+
+    Klicken Sie auf **Settings → AI Providers**.
+  </Step>
+
+  <Step>
+    ### Anbieter konfigurieren
+
+    Fügen Sie den API-Schlüssel Ihrer Organisation hinzu. Alle Mitglieder verwenden diese Konfiguration.
+  </Step>
+</Steps>
+
+### Methode 3: Umgebungsvariablen (Self-Hosted)
+
+```bash
+# Global gateway (optional)
+AI_GATEWAY_API_KEY="vck_..."
+
+# Oder direkte Anbieter-Schlüssel
+GROQ_API_KEY="gsk_..."
+CEREBRAS_API_KEY="..."
+OPENAI_API_KEY="sk-..."
+ANTHROPIC_API_KEY="sk-ant-..."
+DEEPSEEK_API_KEY="..."
+```
+
+## Modellpräferenzen überschreiben
+
+Möchten Sie ein anderes Modell für bestimmte Aufgaben verwenden? Sie können die Standardeinstellungen überschreiben:
+
+<Steps>
+  <Step>
+    ### Zu AI Providers Einstellungen gehen
+
+    Navigieren Sie zu **Settings → AI Providers**.
+  </Step>
+
+  <Step>
+    ### Modellpräferenzen erweitern
+
+    Klicken Sie auf **Model Preferences**, um Aufgabentypen zu sehen.
+  </Step>
+
+  <Step>
+    ### Überschreibung auswählen
+
+    Für jeden Aufgabentyp (CHAT, TOOL_CALLING, etc.) können Sie ein anderes Modell aus den verfügbaren Modellen Ihres Anbieters auswählen.
+  </Step>
+</Steps>
+
+**Beispiel:** Sie möchten vielleicht:
+- `llama-3.3-70b` für CHAT (konversationell)
+- `gpt-oss-120b` für TOOL_CALLING (zuverlässige Funktionsaufrufe)
+- `deepseek-r1-distill-llama-70b` für REASONING (komplexes Denken)
+
+## Anbieter wechseln
+
+Beim Wechsel Ihres Standardanbieters wählt Fabric **automatisch die richtigen Modelle**:
+
+```
+Vorher: Provider = GROQ
+  CHAT → llama-3.3-70b-versatile
+  TOOL_CALLING → openai/gpt-oss-120b
+
+Nachher: Provider = CEREBRAS
+  CHAT → llama-3.3-70b
+  TOOL_CALLING → gpt-oss-120b
+```
+
+Keine manuelle Neukonfiguration erforderlich!
+
+## Anbieterspezifische Einrichtung
+
+### Groq (Empfohlen für Geschwindigkeit)
+
+<Tabs items={['Dashboard', 'Environment']}>
+  <Tab value="Dashboard">
+    1. Gehen Sie zu [console.groq.com](https://console.groq.com)
+    2. Navigieren Sie zu **API Keys**
+    3. Klicken Sie auf **Create API Key**
+    4. Kopieren Sie den Schlüssel
+    5. Fügen Sie ihn in Fabric Settings → AI Providers ein
+  </Tab>
+  <Tab value="Environment">
+    ```bash
+    GROQ_API_KEY="gsk_..."
+    ```
+  </Tab>
+</Tabs>
+
+**Verfügbare Modelle:**
+- `llama-3.3-70b-versatile` — Beste Balance aus Geschwindigkeit und Leistung
+- `llama-3.1-8b-instant` — Ultra-schnell für einfache Aufgaben
+- `deepseek-r1-distill-llama-70b` — Reasoning-Modell
+- `openai/gpt-oss-120b` — Zuverlässiges Tool Calling
+
+### Cerebras (Schnellste Inferenz)
+
+<Tabs items={['Dashboard', 'Environment']}>
+  <Tab value="Dashboard">
+    1. Gehen Sie zu [cloud.cerebras.ai](https://cloud.cerebras.ai)
+    2. Navigieren Sie zu **API Keys**
+    3. Erstellen Sie einen neuen Schlüssel
+    4. Kopieren Sie den Schlüssel
+    5. Fügen Sie ihn in Fabric Settings → AI Providers ein
+  </Tab>
+  <Tab value="Environment">
+    ```bash
+    CEREBRAS_API_KEY="..."
+    ```
+  </Tab>
+</Tabs>
+
+**Verfügbare Modelle:**
+- `llama-3.3-70b` — Hohe Leistung
+- `llama3.1-8b` — Schnell für einfache Aufgaben
+- `gpt-oss-120b` — Zuverlässiges Tool Calling
+
+### OpenAI (Leistungsstärkste Modelle)
+
+<Tabs items={['Dashboard', 'Environment']}>
+  <Tab value="Dashboard">
+    1. Gehen Sie zu [platform.openai.com](https://platform.openai.com)
+    2. Navigieren Sie zu **API Keys**
+    3. Klicken Sie auf **Create new secret key**
+    4. Kopieren Sie den Schlüssel
+    5. Fügen Sie ihn in Fabric Settings → AI Providers ein
+  </Tab>
+  <Tab value="Environment">
+    ```bash
+    OPENAI_API_KEY="sk-..."
+    ```
+  </Tab>
+</Tabs>
+
+**Verfügbare Modelle:**
+- `gpt-4o` — Leistungsstärkstes, Vision-Unterstützung
+- `gpt-4o-mini` — Schnell und kosteneffektiv
+- `o1` — Fortgeschrittenes Reasoning
+- `text-embedding-3-small` — Embeddings
+
+### Vercel AI Gateway verwenden
+
+Für Produktions-Deployments bietet Vercel AI Gateway:
+
+- **Einheitliche API** — Ein Endpunkt für alle Anbieter
+- **Kostenverfolgung** — Nutzung über Anbieter hinweg überwachen
+- **Rate Limiting** — Schutz vor unkontrollierten Kosten
+- **Fallbacks** — Automatischer Anbieter-Failover
+
+**Einrichtung:**
+1. Gehen Sie zu [vercel.com/dashboard/ai/gateway](https://vercel.com/dashboard/ai/gateway)
+2. Erstellen Sie ein Gateway und fügen Sie Anbieter-API-Schlüssel hinzu
+3. Kopieren Sie den Gateway-API-Schlüssel
+4. Fügen Sie ihn in Fabric Settings → AI Providers ein
+
+```bash
+AI_GATEWAY_API_KEY="vck_..."
+```
+
+## Fehlerbehebung
+
+### „Kein Modell für Anbieter konfiguriert"
+- Der AI Model Catalog wurde möglicherweise nicht initialisiert
+- Bei Self-Hosted-Instanzen stellen Sie sicher, dass die Datenbank geseeded wurde (siehe Installationsanleitung)
+- Bei Cloud-gehosteten Instanzen kontaktieren Sie Ihren Administrator
+
+### „Ungültiger API-Schlüssel"
+- Überprüfen Sie, ob der Schlüssel korrekt kopiert wurde (keine zusätzlichen Leerzeichen)
+- Stellen Sie sicher, dass der Schlüssel nicht widerrufen wurde
+- Vergewissern Sie sich, dass Sie den richtigen Anbieter-Schlüssel verwenden
+
+### „400 Bad Request" mit Cerebras/Groq
+- Dies bedeutet oft, dass das Modell kein Tool Calling unterstützt
+- Das System sollte automatisch `gpt-oss-120b` für TOOL_CALLING-Aufgaben verwenden
+- Prüfen Sie, ob der AI Model Catalog korrekt initialisiert wurde
+
+### Tool-Call-JSON-Fehler
+- Kleinere Modelle erzeugen manchmal fehlerhaftes JSON
+- Fabric repariert diese Fehler automatisch, wenn möglich
+- Bei anhaltenden Fehlern versuchen Sie ein leistungsstärkeres Modell für TOOL_CALLING-Aufgaben
+
+### „Rate Limited"
+- Sie haben die Rate-Limits Ihres Anbieters überschritten
+- Warten Sie einige Minuten und versuchen Sie es erneut
+- Erwägen Sie ein Upgrade Ihres Anbieter-Plans
+
+## Sicherheitsbest Practices
+
+- **Teilen Sie niemals** Ihre API-Schlüssel
+- **Rotieren Sie Schlüssel** regelmäßig
+- **Verwenden Sie Organisations-Schlüssel** für Team-Deployments
+- **Überwachen Sie die Nutzung** zur Anomalie-Erkennung
+- **Setzen Sie Ausgabelimits** bei Ihrem Anbieter
+
+---
+
+## Nächste Schritte
+
+<Cards>
+  <Card title="Modellauswahl verstehen" href="/blog/ai-model-selection-gateways-providers-routing">
+    Vertiefen Sie sich in die Funktionsweise der Modellauswahl
+  </Card>
+  <Card title="Ihren ersten Agenten erstellen" href="/docs/tutorials/first-agent">
+    Erstellen Sie einen benutzerdefinierten Agenten mit Ihrem konfigurierten KI-Anbieter
+  </Card>
+</Cards>

@@ -1,0 +1,123 @@
+name: Temporal Replay Credential-Free Gate
+
+# This pull_request workflow is intentionally incapable of private replay. It
+# contains no environment, secret reference, checkout, dependency install, or
+# PR-code execution. It supplies the stable automatic CheckRun for PRs that do
+# not enter trusted replay. For an eligible workflow-changing PR, its job name
+# changes so the pull_request_target workflow is the sole producer of the
+# required `replay-validation` context.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [master]
+
+permissions: {}
+
+concurrency:
+  group: temporal-replay-unprivileged-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  changes:
+    name: Detect Temporal replay changes (credential-free)
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: read
+    outputs:
+      workflows: ${{ steps.filter.outputs.workflows }}
+    steps:
+      # On pull_request, paths-filter reads the changed-file list from the
+      # Pulls API. There is deliberately no checkout of contributor code.
+      - uses: dorny/paths-filter@7b450fff21473bca461d4b92ce414b9d0420d706 # v4
+        id: filter
+        with:
+          filters: |
+            workflows:
+              - 'packages/temporal/src/**'
+              - 'packages/temporal/__tests__/replay-validation.test.ts'
+              - 'packages/temporal/scripts/fetch-replay-histories.ts'
+              - '.github/scripts/temporal-replay/**'
+              - '.github/workflows/temporal-replay-pr-check.yml'
+              - '.github/workflows/temporal-replay-validation.yml'
+
+  replay_check:
+    # jobs.<job_id>.name supports the github and needs contexts. This exact
+    # expression mirrors the trusted metadata gate. Only eligible relevant PRs
+    # receive the distinct name; all others create the stable required check.
+    name: >-
+      ${{ needs.changes.result == 'success' &&
+          needs.changes.outputs.workflows == 'true' &&
+          github.event.pull_request.head.repo.full_name == github.repository &&
+          ((github.repository == 'Fabric-Pro/fabric' ||
+            github.repository == 'Fabric-Pro/fabric-dev') ||
+           (github.repository == 'Fabric-Pro/fabric-oss' &&
+            github.event.pull_request.user.login == 'fabric-relay[bot]' &&
+            startsWith(github.event.pull_request.head.ref, 'relay/'))) &&
+          'replay-validation-unprivileged' || 'replay-validation' }}
+    needs: changes
+    if: always()
+    runs-on: ubuntu-latest
+    permissions: {}
+    env:
+      REPOSITORY: ${{ github.repository }}
+      PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+      HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+      HEAD_REF: ${{ github.event.pull_request.head.ref }}
+      CHANGES_RESULT: ${{ needs.changes.result }}
+      WORKFLOWS_CHANGED: ${{ needs.changes.outputs.workflows }}
+    steps:
+      - name: Report credential-free replay policy
+        run: |
+          set -euo pipefail
+
+          if [[ "$CHANGES_RESULT" != "success" ]]; then
+            echo "::error::Credential-free Temporal change detection failed."
+            exit 1
+          fi
+          if [[ "$WORKFLOWS_CHANGED" != "true" &&
+                "$WORKFLOWS_CHANGED" != "false" ]]; then
+            echo "::error::Temporal change detection returned invalid output."
+            exit 1
+          fi
+          if [[ "$WORKFLOWS_CHANGED" == "false" ]]; then
+            echo "::notice::Credential-free: Temporal replay is not required because no relevant files changed."
+            exit 0
+          fi
+
+          same_repository=false
+          if [[ "$HEAD_REPOSITORY" == "$REPOSITORY" ]]; then
+            same_repository=true
+          fi
+
+          eligible=false
+          if [[ "$same_repository" == "true" &&
+                ("$REPOSITORY" == "Fabric-Pro/fabric" ||
+                 "$REPOSITORY" == "Fabric-Pro/fabric-dev") ]]; then
+            eligible=true
+          elif [[ "$same_repository" == "true" &&
+                  "$REPOSITORY" == "Fabric-Pro/fabric-oss" &&
+                  "$PR_AUTHOR" == "fabric-relay[bot]" &&
+                  "$HEAD_REF" == relay/* ]]; then
+            eligible=true
+          fi
+
+          if [[ "$eligible" == "true" ]]; then
+            echo "::notice::Credential-free preflight passed; the trusted real-history replay owns the required replay-validation context."
+            exit 0
+          fi
+
+          if [[ "$REPOSITORY" == "Fabric-Pro/fabric-oss" ]]; then
+            if [[ "$same_repository" == "true" &&
+                  "$PR_AUTHOR" == "fabric-relay[bot]" ]]; then
+              echo "::error::Relay App PR is outside the required relay/** namespace; private replay refused."
+              exit 1
+            fi
+            echo "::notice::Credential-free: private Temporal replay is not applicable to this ordinary or fork fabric-oss PR."
+            echo "::notice::No checkout, dependency installation, private history access, secrets, or PR code execution occurred."
+            echo "::notice::External Temporal workflow changes require maintainer-controlled private replay before merge; that manual policy is not automated by this check."
+            exit 0
+          fi
+
+          echo "::error::Workflow-relevant private-repository fork PR requires an authorized same-repository replay."
+          exit 1

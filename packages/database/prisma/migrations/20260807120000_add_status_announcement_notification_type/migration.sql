@@ -1,0 +1,26 @@
+-- A customer-facing status announcement is not an incident.
+--
+-- The push half of the customer status page needs a notification type of its own,
+-- and reusing SYSTEM_INCIDENT would have shipped rows nobody could read. Two
+-- read-side rules make that type invisible to exactly the audience this feature
+-- exists for:
+--
+--   * the bell list and the unread count exclude INCIDENT_NOTIFICATION_TYPES
+--     unless the dedupe key starts with `weekly-digest`, so a status-announcement
+--     row would never appear; and
+--   * the row renderer lists SYSTEM_INCIDENT as admin-only, so a customer who did
+--     see one would get an "admin-only" toast instead of navigation.
+--
+-- Both rules are correct for incidents — those moved off the per-user inbox into
+-- the admin monitoring timeline on purpose. Widening either one to let an
+-- announcement through would bolt a second special case onto a filter that
+-- already carries one. A distinct type needs neither: it is absent from the
+-- incident list and from the admin-only set, so it is visible and clickable for
+-- the org owners/admins it is addressed to.
+--
+-- Additive and idempotent, matching the house style. Nothing writes the value
+-- until the worker carrying the sweeper is deployed, and the sweeper itself stays
+-- inert until FABRIC_STATUS_ANNOUNCEMENT_NOTIFICATIONS_ENABLED=true. Postgres
+-- cannot USE a new enum value in the transaction that adds it; this is a bare
+-- ALTER with no dependent DML, so the standard migration transaction is fine.
+ALTER TYPE "NotificationType" ADD VALUE IF NOT EXISTS 'STATUS_ANNOUNCEMENT';

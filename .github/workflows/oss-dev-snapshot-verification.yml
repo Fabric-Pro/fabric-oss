@@ -1,0 +1,98 @@
+name: Verify OSS Snapshots for Dev
+
+# Phase 3 verification-only thin deployer. It proves that fabric-dev can read
+# and verify the private fabric-oss snapshot set for the exact staging master
+# commit. Azure ownership remains with the legacy deployer until Phase 4, so
+# this workflow deliberately has no cloud identity and performs no mutation.
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: oss-dev-snapshot-verification
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: Resolve and verify private OSS snapshots
+    if: github.repository == 'Fabric-Pro/fabric-dev' && github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    permissions:
+      contents: read
+      packages: read
+      attestations: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+
+      - name: Capture exact staging source
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ ]] \
+            || { echo "::error::GITHUB_SHA is not a full commit OID"; exit 1; }
+          actual_sha=$(git rev-parse HEAD)
+          [[ "$actual_sha" == "$GITHUB_SHA" ]] \
+            || { echo "::error::checkout is $actual_sha, expected $GITHUB_SHA"; exit 1; }
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
+
+      - name: Authenticate to private GHCR snapshots
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Resolve and verify all exact-SHA snapshots
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SNAPSHOT_MAX_WAIT_SECONDS: '1500'
+          SNAPSHOT_POLL_INTERVAL_SECONDS: '20'
+        run: |
+          .github/actions/oss-snapshot/verify-dev-snapshot.sh \
+            "$GITHUB_SHA" \
+            oss-dev-snapshot-verification.json
+
+      - name: Retain verification evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: oss-dev-snapshot-verification-${{ github.sha }}
+          path: oss-dev-snapshot-verification.json
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Recheck staging tip before any future mutation
+        id: tip
+        run: |
+          set -euo pipefail
+          git fetch --no-tags --depth=1 origin refs/heads/master
+          current_sha=$(git rev-parse FETCH_HEAD)
+          if [[ "$current_sha" != "$GITHUB_SHA" ]]; then
+            echo "current=false" >>"$GITHUB_OUTPUT"
+            echo "Captured SHA $GITHUB_SHA is stale; current master is $current_sha."
+            exit 0
+          fi
+          echo "current=true" >>"$GITHUB_OUTPUT"
+          echo "Captured SHA is still the current fabric-dev master tip."
+
+      - name: Record verification-only handoff
+        env:
+          CURRENT_TIP: ${{ steps.tip.outputs.current }}
+        run: |
+          {
+            echo "## Private OSS snapshot verification"
+            echo
+            echo "- Source SHA: \`$GITHUB_SHA\`"
+            echo "- Verified images: 14"
+            echo "- Still current staging tip: \`$CURRENT_TIP\`"
+            echo "- Mode: verification-only; no ACR import or Container Apps deployment"
+          } >>"$GITHUB_STEP_SUMMARY"

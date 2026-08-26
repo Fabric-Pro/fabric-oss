@@ -1,0 +1,16 @@
+{
+	"extends": "@repo/tsconfig/agent.json",
+	"compilerOptions": {
+		"outDir": "./dist",
+		"rootDir": ".",
+		"incremental": false
+	},
+	"include": ["**/*.ts"],
+	"exclude": [
+		"node_modules",
+		"dist",
+		"__tests__",
+		"vitest.config.ts",
+		"vitest.setup.ts"
+	]
+}

@@ -1,0 +1,389 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Fabric — QA gates (docs mock)</title>
+<!-- Real Inter + JetBrains Mono, the app's --font-sans / --font-mono. -->
+<link rel="stylesheet" href="../.fonts/fonts.css">
+<style>
+/* Tokens copied verbatim from tooling/tailwind/theme.css :root (light). */
+:root{
+  --border:#d8d2cc; --ring:#9f2a3a;
+  --background:#f7f6f2; --foreground:#1f1c19;
+  --primary:#9f2a3a; --primary-foreground:#fff7f7;
+  --secondary:#047857;
+  --destructive:#c81e1e; --destructive-foreground:#ffffff;
+  --muted:#efede8; --muted-foreground:#625c55;
+  --accent:#f2e7e7; --accent-foreground:#6b1521;
+  --card:#fffdf9; --card-foreground:#1f1c19;
+  --highlight:#d97706; --highlight-foreground:#451a03;
+  --radius:0.625rem; --radius-lg:var(--radius);
+  --font-sans:Inter,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  --font-mono:"JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--background);color:var(--foreground);font-family:var(--font-sans);
+  -webkit-font-smoothing:antialiased;padding:24px;width:820px}
+.shot{width:772px;margin-bottom:40px}
+
+/* --- shared component primitives, mirroring the app's class structure --- */
+.card{border:1px solid var(--border);border-radius:var(--radius-lg);background:var(--card)}
+.pad{padding:16px}
+h4{font-size:.875rem;line-height:1.25rem;font-weight:500}
+.sub{margin-top:2px;color:var(--muted-foreground);font-size:.75rem;line-height:1rem}
+/* .editorial-label, copied from apps/web/app/globals.css */
+.editorial{display:inline-flex;align-items:center;gap:.75rem;font-family:var(--font-sans);
+  font-size:.6875rem;font-weight:400;letter-spacing:.25em;text-transform:uppercase;color:#B91C1C}
+.editorial::before{content:"";display:block;width:2px;height:1rem;background:#B91C1C;flex-shrink:0}
+.mono{font-family:var(--font-mono);font-size:.75rem}
+
+/* Alert (@ui/components/alert), warning variant */
+.alert{display:flex;gap:10px;border:1px solid color-mix(in srgb,var(--highlight) 40%,transparent);
+  border-radius:var(--radius);background:color-mix(in srgb,var(--highlight) 8%,transparent);
+  padding:12px 14px}
+.alert.destructive{border-color:color-mix(in srgb,var(--destructive) 40%,transparent);
+  background:color-mix(in srgb,var(--destructive) 7%,transparent)}
+.alert svg{width:16px;height:16px;flex-shrink:0;margin-top:1px;color:var(--highlight)}
+.alert.destructive svg{color:var(--destructive)}
+.alert .title{font-size:.8125rem;font-weight:600;line-height:1.15rem}
+.alert .body{margin-top:3px;font-size:.8125rem;line-height:1.2rem;color:var(--muted-foreground)}
+
+/* Buttons */
+.btn{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--border);
+  border-radius:var(--radius);background:var(--card);padding:6px 11px;
+  font-family:inherit;font-size:.8125rem;font-weight:500;line-height:1.1rem;color:var(--foreground)}
+.btn.primary{background:var(--primary);border-color:var(--primary);color:var(--primary-foreground)}
+.btn[disabled]{opacity:.5}
+.btn svg{width:14px;height:14px}
+
+/* Tabs (feature maturation tablist) */
+.tabs{display:flex;gap:2px;border-bottom:1px solid var(--border);padding:0 4px}
+.tab{display:inline-flex;align-items:center;gap:6px;padding:9px 13px;font-size:.8125rem;
+  font-weight:500;color:var(--muted-foreground);border-bottom:2px solid transparent}
+.tab.on{color:var(--foreground);border-bottom-color:var(--primary)}
+.tab .warn{width:15px;height:15px;color:var(--highlight)}
+.badge{display:inline-flex;min-width:19px;height:19px;align-items:center;justify-content:center;
+  border-radius:9999px;padding:0 6px;font-size:11px;font-weight:600;
+  background:color-mix(in srgb,var(--highlight) 16%,transparent);color:var(--highlight-foreground)}
+
+/* Dialog shell */
+.dialog{border:1px solid var(--border);border-radius:calc(var(--radius) + 2px);
+  background:var(--card);box-shadow:0 12px 32px -12px rgba(31,28,25,.28);padding:20px}
+.dialog h3{font-size:1rem;font-weight:600;line-height:1.4rem}
+.dialog .desc{margin-top:4px;color:var(--muted-foreground);font-size:.8125rem;line-height:1.2rem}
+.field{margin-top:14px}
+.label{font-size:.8125rem;font-weight:500;margin-bottom:5px;display:block}
+.select,.input{width:100%;border:1px solid var(--border);border-radius:var(--radius);
+  background:var(--card);padding:8px 11px;font-size:.8125rem;font-family:inherit;
+  display:flex;align-items:center;justify-content:space-between}
+.select.placeholder{color:var(--muted-foreground)}
+.hint{margin-top:5px;color:var(--muted-foreground);font-size:.75rem;line-height:1rem}
+.actions{display:flex;justify-content:flex-end;gap:8px;margin-top:18px}
+
+/* DraftingStageIndicator, compact */
+.stage{display:inline-flex;align-items:center;gap:4px;border-radius:.25rem;
+  padding:2px 6px;font-size:10px;font-weight:500}
+
+/* Covers AC — link row and its open checkbox menu */
+.linkrow{display:flex;align-items:center;gap:8px;border:1px solid var(--border);
+  border-radius:var(--radius);padding:8px 10px}
+.linktitle{flex:1;min-width:0;font-size:.8125rem;font-weight:500;overflow:hidden;
+  text-overflow:ellipsis;white-space:nowrap}
+.acbtn{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--border);
+  border-radius:var(--radius);background:var(--card);padding:3px 8px;font-size:.75rem;
+  font-weight:500;white-space:nowrap}
+.menu{margin-top:6px;margin-left:auto;width:22rem;border:1px solid var(--border);
+  border-radius:var(--radius);background:var(--card);padding:4px;
+  box-shadow:0 10px 28px -12px rgba(31,28,25,.3)}
+.mi{display:flex;align-items:flex-start;gap:8px;border-radius:calc(var(--radius) - 4px);
+  padding:6px 8px;font-size:.75rem;line-height:1.05rem}
+.mi.on{background:color-mix(in srgb,var(--primary) 6%,transparent)}
+.mi.stale{color:var(--muted-foreground)}
+.tick{display:inline-block;width:12px;flex-shrink:0;color:var(--primary);font-size:.7rem}
+.mi.stale .tick{color:var(--muted-foreground)}
+.misep{margin:4px 6px;border-top:1px solid var(--border)}
+
+/* Case rows */
+.rows{border:1px solid var(--border);border-radius:var(--radius-lg);background:var(--card)}
+.row{display:flex;align-items:center;gap:12px;padding:11px 13px;border-top:1px solid var(--border)}
+.row:first-child{border-top:0}
+.row .id{font-family:var(--font-mono);font-size:.75rem;color:var(--muted-foreground);flex-shrink:0}
+.row .t{flex:1;min-width:0;font-size:.8125rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.row .acts{display:flex;gap:6px;flex-shrink:0}
+.rationale{margin-top:3px;font-size:.75rem;color:var(--muted-foreground)}
+
+.warnrow{display:flex;align-items:flex-start;gap:8px;border:1px solid color-mix(in srgb,var(--highlight) 40%,transparent);
+  background:color-mix(in srgb,var(--highlight) 10%,transparent);border-radius:var(--radius-lg);
+  padding:12px;font-size:.8125rem;line-height:1.2rem}
+.warnrow .acref{flex-shrink:0;font-family:var(--font-mono);font-size:.75rem;color:var(--muted-foreground)}
+.revealed{display:inline-flex;align-items:center;vertical-align:middle;margin-left:8px;
+  border:1px solid color-mix(in srgb,var(--secondary) 40%,transparent);
+  background:color-mix(in srgb,var(--secondary) 10%,transparent);color:var(--secondary);
+  border-radius:9999px;padding:1px 8px;font-size:10px;font-weight:500;
+  text-transform:uppercase;letter-spacing:.05em}
+</style>
+</head>
+<body>
+
+<!-- ─────────────── 1. Coverage target refuses the move to Done ─────────────── -->
+<div class="shot" id="shot-coverage" style="width:600px">
+  <div class="dialog">
+    <h3>Coverage is below the target</h3>
+    <p class="desc">Add cases for the uncovered criteria, or record why this
+      feature is shipping without them.</p>
+
+    <div style="margin-top:14px">
+      <div class="alert">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+          stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/>
+          <path d="M12 9v4"/><path d="M12 17h.01"/>
+        </svg>
+        <div>
+          <div class="title">40% covered, and this project asks for 80%</div>
+          <div class="body">2 of 5 acceptance criteria have a test case behind them.</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="field">
+      <span class="label">Reason for shipping under the target</span>
+      <div class="input" style="display:block;min-height:62px;line-height:1.35rem">
+        Config-only change behind an existing flag; the checkout smoke run
+        covers the two paths without cases.
+      </div>
+      <p class="hint">Kept on the feature with your name and the date, so the
+        decision stays visible afterwards.</p>
+    </div>
+
+    <div class="actions">
+      <button class="btn" type="button">Cancel</button>
+      <button class="btn primary" type="button">Mark done anyway</button>
+    </div>
+  </div>
+</div>
+
+<!-- ─────────────── 2. Test-first marker on the feature's Testing tab ─────────────── -->
+<div class="shot" id="shot-testfirst">
+  <div class="card" style="overflow:hidden">
+    <div class="tabs">
+      <span class="tab">Summary &amp; Questions <span class="badge">3</span></span>
+      <span class="tab">Decision Log</span>
+      <span class="tab">Full Specification</span>
+      <span class="tab on">Testing
+        <svg class="warn" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+          stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/>
+          <path d="M12 9v4"/><path d="M12 17h.01"/>
+        </svg>
+      </span>
+    </div>
+
+    <div class="pad">
+      <h4 style="margin-bottom:2px">Test cases</h4>
+      <p class="sub" style="margin-bottom:12px">No test cases are linked to this
+        feature yet. Draft them with AI, or add and link them from the Testing tab.</p>
+
+      <div class="alert">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+          stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/>
+          <path d="M12 9v4"/><path d="M12 17h.01"/>
+        </svg>
+        <div>
+          <div class="body" style="margin-top:0">This project works test-first, so
+            Fabric will not start an implementation session for this feature until
+            it has at least one test case.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ─────────────── 3. Stage transition warning ─────────────── -->
+<div class="shot" id="shot-transition" style="width:600px">
+  <div class="dialog">
+    <h3>Feature Drafting Transition</h3>
+    <p class="desc">Enhance F-214: Apply a promo code at checkout</p>
+
+    <div style="margin-top:14px">
+      <div class="alert">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+          stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/>
+          <path d="M12 9v4"/><path d="M12 17h.01"/>
+        </svg>
+        <div>
+          <div class="title">No test cases yet</div>
+          <div class="body">This project works test-first. You can move the feature
+            on, but Fabric will not start an implementation session for it until it
+            has at least one test case.</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- DraftingStageIndicator compact: DRAFTING_STAGE_META colors at 20% alpha. -->
+    <div style="display:flex;align-items:flex-end;gap:12px;margin-top:16px">
+      <div>
+        <p class="sub" style="margin-bottom:6px">From</p>
+        <span class="stage" style="background:#10B98120;color:#10B981">Draft</span>
+      </div>
+      <div style="margin-bottom:2px;color:var(--muted-foreground)">&rarr;</div>
+      <div>
+        <p class="sub" style="margin-bottom:6px">To</p>
+        <span class="stage" style="background:#05966920;color:#059669">Ready for Dev</span>
+      </div>
+    </div>
+
+    <div class="field">
+      <p class="sub" style="margin-bottom:6px">Prompt</p>
+      <div class="select placeholder">
+        <span>Use default prompt</span>
+        <span>&#9662;</span>
+      </div>
+    </div>
+
+    <div class="actions">
+      <button class="btn" type="button">Cancel</button>
+      <button class="btn primary" type="button">Move to Ready for Dev</button>
+    </div>
+  </div>
+</div>
+
+<!-- ─────────────── 4. Run tests — a pipeline must be chosen ─────────────── -->
+<div class="shot" id="shot-runtests" style="width:600px">
+  <div class="dialog">
+    <h3>Run tests in your CI</h3>
+    <p class="desc">Fabric starts a run in your existing pipeline and picks the
+      results up on the next sync. It never changes your CI configuration.</p>
+
+    <div class="field">
+      <span class="label">Repository</span>
+      <div class="select">
+        <span class="mono">example-org/storefront</span>
+        <span style="color:var(--muted-foreground)">&#9662;</span>
+      </div>
+    </div>
+
+    <div class="field">
+      <span class="label">Pipeline</span>
+      <div class="select placeholder">
+        <span>Choose a pipeline to run</span>
+        <span>&#9662;</span>
+      </div>
+    </div>
+
+    <div class="field">
+      <span class="label">Branch or ref</span>
+      <div class="input"><span>main</span></div>
+      <p class="hint">Defaults to the branch QA watches for this repository.</p>
+    </div>
+
+    <div class="actions">
+      <button class="btn" type="button">Close</button>
+      <button class="btn primary" type="button" disabled>Start run</button>
+    </div>
+  </div>
+</div>
+
+<!-- ─────────────── 5. Revising a case: from spec, or from the implementation ─────────────── -->
+<div class="shot" id="shot-revise">
+  <div style="margin-bottom:10px">
+    <div class="editorial">Needs a look</div>
+    <p class="sub" style="margin-top:5px">2 test cases were drafted from an earlier
+      version of this feature. 1 case has proposed steps waiting for a decision.
+      Ask for revised steps &mdash; checked against the specification, or against
+      the pull request that implemented it &mdash; then accept or reject them.</p>
+  </div>
+
+  <div class="rows">
+    <div class="row">
+      <div style="flex:1;min-width:0">
+        <div><span class="id">TC-118</span>
+          <span style="font-size:.8125rem;font-weight:500">&nbsp;Promo code reduces the order total</span></div>
+      </div>
+      <div class="acts">
+        <button class="btn" type="button">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+            stroke-linecap="round" stroke-linejoin="round"><path d="m12 3-1.9 5.8a2 2 0 0 1-1.287 1.288L3 12l5.8 1.9a2 2 0 0 1 1.288 1.287L12 21l1.9-5.8a2 2 0 0 1 1.287-1.288L21 12l-5.8-1.9a2 2 0 0 1-1.288-1.287Z"/></svg>
+          From spec</button>
+        <button class="btn" type="button">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+            stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M13 6h3a2 2 0 0 1 2 2v7"/><line x1="6" x2="6" y1="9" y2="21"/></svg>
+          From implementation</button>
+      </div>
+    </div>
+
+    <div class="row">
+      <div style="flex:1;min-width:0">
+        <div><span class="id">TC-121</span>
+          <span style="font-size:.8125rem;font-weight:500">&nbsp;An expired promo code is rejected at checkout</span></div>
+        <div class="rationale">The button was renamed from &ldquo;Apply&rdquo; to
+          &ldquo;Redeem&rdquo; and the error moved inline. (Revised from #482.)</div>
+      </div>
+      <div class="acts">
+        <button class="btn" type="button">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+            stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
+          Accept</button>
+        <button class="btn" type="button" aria-label="Reject the proposed steps for TC-121">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+            stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ─────────────── 6. Covers AC — several criteria on one case ─────────────── -->
+<div class="shot" id="shot-covers-ac" style="width:560px">
+  <div class="card pad">
+    <h4 style="margin-bottom:2px">Linked work items</h4>
+    <p class="sub" style="margin-bottom:14px">The features and bugs this case verifies.</p>
+
+    <div class="linkrow">
+      <span class="id">F-214</span>
+      <span class="linktitle">Apply a promo code at checkout</span>
+      <span class="sub" style="margin:0">Covers AC</span>
+      <span class="acbtn">AC 1, AC 3 <span style="color:var(--muted-foreground)">&#9662;</span></span>
+    </div>
+
+    <!-- The open menu, drawn inline so the screenshot shows the choice being made. -->
+    <div class="menu">
+      <div class="mi on"><span class="tick">&#10003;</span>AC 1 — A promo code entered at checkout reduces the order total.</div>
+      <div class="mi"><span class="tick"></span>AC 2 — An expired promo code is rejected with an inline error.</div>
+      <div class="mi on"><span class="tick">&#10003;</span>AC 3 — A promo code cannot be applied twice to one order.</div>
+      <div class="mi"><span class="tick"></span>AC 4 — Removing a promo code restores the original total.</div>
+      <div class="misep"></div>
+      <div class="mi stale"><span class="tick">&#10003;</span>AC 9 — no longer a criterion</div>
+    </div>
+  </div>
+</div>
+
+<!-- ─────────────── 7. Test-first evidence on the analysis ─────────────── -->
+<div class="shot" id="shot-testfirst-evidence" style="width:620px">
+  <div class="card">
+    <div class="pad">
+      <p style="margin:0 0 10px;text-align:right;font-size:.75rem;color:var(--muted-foreground)">
+        Analysis generated 12 Aug 2026, 09:14 — reviewed against 8 test cases</p>
+
+      <h4 style="margin:0 0 2px">Under-specified criteria</h4>
+      <p class="sub" style="margin-bottom:12px">Criteria the analysis flagged as
+        too ambiguous to test reliably.</p>
+
+      <div class="warnrow">
+        <span class="acref">AC 3</span>
+        <span>The promo code is rejected "if it has expired", but nothing says
+          whether expiry is evaluated in the shopper's timezone or the store's.
+          <span class="revealed">Drafting revealed</span></span>
+      </div>
+      <div class="warnrow" style="margin-top:8px">
+        <span class="acref">AC 5</span>
+        <span>"Reasonable performance" gives no threshold to assert against.</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+</body>
+</html>

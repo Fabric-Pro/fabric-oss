@@ -1,0 +1,47 @@
+{
+	"name": "@repo/observability",
+	"version": "0.0.0",
+	"license": "Apache-2.0",
+	"private": true,
+	"type": "module",
+	"main": "./index.ts",
+	"types": "./index.ts",
+	"exports": {
+		".": {
+			"types": "./index.ts",
+			"import": "./index.ts",
+			"default": "./index.ts"
+		},
+		"./breakers": {
+			"types": "./lib/breakers.ts",
+			"import": "./lib/breakers.ts",
+			"default": "./lib/breakers.ts"
+		}
+	},
+	"scripts": {
+		"type-check": "tsc --noEmit",
+		"test": "vitest run",
+		"test:watch": "vitest"
+	},
+	"dependencies": {
+		"@opentelemetry/api": "1.9.1",
+		"@opentelemetry/api-logs": "0.217.0",
+		"@opentelemetry/auto-instrumentations-node": "0.75.0",
+		"@opentelemetry/exporter-logs-otlp-grpc": "0.217.0",
+		"@opentelemetry/exporter-metrics-otlp-grpc": "0.217.0",
+		"@opentelemetry/exporter-trace-otlp-grpc": "0.217.0",
+		"@opentelemetry/resources": "2.7.1",
+		"@opentelemetry/sdk-logs": "0.217.0",
+		"@opentelemetry/sdk-metrics": "2.7.1",
+		"@opentelemetry/sdk-node": "0.217.0",
+		"@opentelemetry/semantic-conventions": "1.40.0",
+		"applicationinsights": "^3.15.0",
+		"cockatiel": "^3.2.1",
+		"prom-client": "^15.1.3"
+	},
+	"devDependencies": {
+		"@repo/tsconfig": "workspace:*",
+		"@types/node": "^24.10.0",
+		"vitest": "^4.1.8"
+	}
+}

@@ -1,0 +1,106 @@
+name: PR review checks
+
+# Reviews every pull request into master from two perspectives and leaves one
+# comment. Deliberately ADVISORY: this job is not a required check, the review
+# step cannot fail the job, and an unresolved comment never blocks a merge.
+#
+# Every rule it applies is decidable by reading the changed lines. Nothing here
+# asks a model — partly because no model credential exists in Actions, and
+# mostly because a review that is confidently wrong costs more than one that
+# says less. The model-backed lenses are a product feature and run in the app.
+
+on:
+  pull_request:
+    branches: [master]
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: pr-review-checks-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    name: PR review checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          # Both sides of the comparison have to be present to diff them.
+          fetch-depth: 0
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+
+      # A checker whose own tests are red has no business reporting on anyone
+      # else's code. Left able to fail the job on purpose: the job is not
+      # required, so a red run is visible without blocking a merge.
+      - name: Self-test
+        run: |
+          find tooling/pr-review-checks/__tests__ -name '*.test.mjs' -print0 \
+            | xargs -0 node --test
+
+      - name: Review the change
+        id: review
+        # A crash here must not fail the run; the comment step reports it.
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          BASE='${{ github.event.pull_request.base.sha }}'
+          HEAD='${{ github.event.pull_request.head.sha }}'
+          git diff -U0 "$BASE" "$HEAD" > /tmp/pr.diff
+          mapfile -t FILES < <(git diff --name-only "$BASE" "$HEAD")
+          if [ "${#FILES[@]}" -eq 0 ]; then
+            : > /tmp/report.md
+            exit 0
+          fi
+          node tooling/pr-review-checks/check.mjs \
+            --diff /tmp/pr.diff --files "${FILES[@]}" > /tmp/report.md
+
+      - name: Leave one comment
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+          REVIEW_OUTCOME: ${{ steps.review.outcome }}
+        run: |
+          set -euo pipefail
+          MARKER='<!-- pr-review-checks -->'
+
+          if [ "$REVIEW_OUTCOME" != "success" ]; then
+            BODY="$MARKER
+          **PR review checks did not run.** The step failed — see the job log.
+          This is advisory and does not block the merge."
+          elif [ -s /tmp/report.md ]; then
+            BODY="$MARKER
+          **PR review checks**
+
+          $(cat /tmp/report.md)
+
+          <sub>Advisory, never blocking. Every rule is computed from the changed
+          lines, not asked of a model. Findings are limited to lines this pull
+          request introduced.</sub>"
+          else
+            BODY="$MARKER
+          **PR review checks** — no issues found."
+          fi
+
+          # One comment per pull request, updated in place. A new comment per
+          # push turns a long-lived branch into a wall of stale reviews.
+          EXISTING=$(gh api "repos/$REPO/issues/$PR/comments" --paginate \
+            --jq "[.[] | select(.body | contains(\"$MARKER\"))] | .[0].id // empty")
+
+          if [ -n "$EXISTING" ]; then
+            gh api -X PATCH "repos/$REPO/issues/comments/$EXISTING" \
+              -f body="$BODY" > /dev/null
+          else
+            gh api -X POST "repos/$REPO/issues/$PR/comments" \
+              -f body="$BODY" > /dev/null
+          fi
+
+          echo "Comment written. Review step outcome: $REVIEW_OUTCOME"

@@ -1,0 +1,2 @@
+ALTER TYPE "DataConnectionProvider" ADD VALUE IF NOT EXISTS 'TEAMS';
+ALTER TYPE "DataConnectionProvider" ADD VALUE IF NOT EXISTS 'ASANA';

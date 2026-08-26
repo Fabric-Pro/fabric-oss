@@ -1,0 +1,198 @@
+---
+title: Authentication & Authorization
+description: How authentication and authorization work in Fabric AI, including sign-in methods, session management, and role-based access control.
+---
+
+Fabric AI provides secure authentication with support for multiple sign-in methods and organization-level access control.
+
+## Authentication Methods
+
+Fabric supports the following sign-in methods:
+
+| Method | Description |
+|--------|-------------|
+| **Email & Password** | Traditional sign-up with email verification |
+| **Magic Link** | Passwordless login via email |
+| **Passkey** | WebAuthn/FIDO2 biometric authentication |
+| **Two-Factor (2FA)** | TOTP-based second factor |
+| **Google OAuth** | Sign in with Google account |
+| **GitHub OAuth** | Sign in with GitHub account |
+| **Microsoft OAuth** | Sign in with Microsoft account |
+
+## Email Verification
+
+When signing up with email and password, a verification email is sent automatically. Users must verify their email before they can sign in.
+
+If the verification email is lost or expires, users can request a new one directly from the login page. When a sign-in attempt fails due to an unverified email, a **Resend verification email** option appears inline. After resending, a 60-second sliding-window countdown prevents repeated requests — the timer starts from the moment the user clicks resend.
+
+Rate limits apply to verification email resends:
+
+| Limit | Window | Type |
+|-------|--------|------|
+| 1 request per email | 60 seconds | Sliding (from last send) |
+| 3 requests per email | 1 hour | Fixed |
+| 10 requests per IP | 1 hour | Fixed |
+
+The endpoint returns identical responses regardless of whether an email exists, is verified, or is unverified — preventing email enumeration attacks.
+
+---
+
+## Brute Force Protection
+
+Authentication endpoints are protected against brute force attacks with two layers of defense:
+
+### IP Rate Limiting
+
+Per-IP rate limits apply to the following authentication endpoints, preventing automated abuse. Other auth routes (e.g., session retrieval) are not rate-limited:
+
+| Endpoint | Limit | Window |
+|----------|-------|--------|
+| Sign in (password) | 20 requests | 60 seconds |
+| Sign up | 20 requests | 60 seconds |
+| Forgot password | 20 requests | 60 seconds |
+| Magic link | 20 requests | 60 seconds |
+| Two-factor verification | 20 requests | 60 seconds |
+
+When exceeded, the API returns HTTP 429 with a `Retry-After` header.
+
+### Account Lockout
+
+After **5 consecutive failed password login attempts**, the account is temporarily locked for **1 hour**. During lockout, the user sees a message with a link to reset their password. Completing a password reset immediately clears the lockout and resets the failure counter.
+
+A successful login at any point resets the failure counter to zero.
+
+### Security Properties
+
+- Error responses are identical for non-existent and locked accounts, preventing email enumeration
+- Lockout state is stored in the database, surviving restarts and multi-instance deployments
+- Rate limit counters use Redis for performance, with in-memory fallback when Redis is unavailable
+- All failed login attempts and lockout events are logged for security monitoring
+
+---
+
+## Error Message Security
+
+All authentication error messages follow OWASP security guidelines to prevent account enumeration and credential probing:
+
+| Flow | Error Behavior |
+|------|---------------|
+| **Login** | All credential errors (wrong password, non-existent email, account not found) return a single generic "Invalid email or password" message. The backend returns the same `INVALID_EMAIL_OR_PASSWORD` code regardless of the failure reason. |
+| **Forgot Password** | Always shows a success message ("If an account with that email exists, you will receive a link to reset your password"), regardless of whether the email is registered. The backend returns HTTP 200 for both existing and non-existing emails. |
+| **Sign Up** | Shows "An account with this email already exists" when the email is taken. This is acceptable because the user initiated the action with their own email. |
+| **Two-Factor** | Shows specific, actionable messages (invalid code, expired code, too many attempts) since the user is already partially authenticated. |
+| **Passkey** | Shows specific error messages for passkey verification and registration failures. |
+
+### Supported Error Codes
+
+Authentication error codes are centrally mapped to localized user-facing messages (English and German). The following categories are covered:
+
+- **Base auth codes** — login, signup, session, email verification, token errors
+- **Two-factor codes** — invalid/expired OTP, backup code errors, session expiry
+- **Passkey codes** — challenge, registration, and authentication failures
+- **Custom codes** — account lockout, rate limiting, invitation errors
+
+Any unrecognized error code falls back to a generic "Something went wrong" message.
+
+---
+
+## Session Management
+
+The API uses session-based authentication. When a user signs in, a secure session is created:
+
+1. User authenticates via one of the supported methods
+2. A session is created and stored securely
+3. A secure HTTP-only cookie is set on the client
+4. Subsequent API requests include the cookie automatically
+5. Each request validates the session before proceeding
+
+Sessions are configured with configurable expiration and support account linking (users can link multiple OAuth providers to one account).
+
+---
+
+## Authorization Levels
+
+API endpoints have different authorization levels:
+
+| Level | Description | Example |
+|-------|-------------|---------|
+| **Public** | No authentication required | Contact forms, newsletter signup |
+| **Authenticated** | Requires a valid session | Profile settings, AI chat |
+| **Tenant-Scoped** | Authenticated with automatic data isolation | Projects, documents, workflows |
+| **Admin** | Requires admin role | User management, system settings |
+
+### Rate Limiting
+
+API endpoints are rate-limited to prevent abuse:
+
+| Category | Description |
+|----------|-------------|
+| **Standard** | Per-user limits for regular operations |
+| **AI Operations** | Stricter per-user limits for AI/LLM calls |
+| **Workflow Operations** | Per-user limits for workflow management |
+| **Agent Operations** | Per-user limits for agent executions |
+| **Public** | Per-IP limits for unauthenticated endpoints |
+
+---
+
+## Organization Roles
+
+Organization-level access uses role-based access control:
+
+| Role | Permissions |
+|------|-------------|
+| **Owner** | Full control including billing, deletion, and member management |
+| **Admin** | Can manage members, settings, and all resources |
+| **Member** | Can use agents, create documents, and access shared resources |
+
+Roles are assigned when inviting members and can be changed by owners and admins.
+
+---
+
+## Social OAuth Setup
+
+To enable social sign-in providers, configure the following:
+
+| Provider | Requirements |
+|----------|-------------|
+| **Google** | OAuth client ID and secret from [Google Cloud Console](https://console.cloud.google.com) |
+| **GitHub** | OAuth app credentials from [GitHub Developer Settings](https://github.com/settings/developers) |
+| **Microsoft** | App registration from [Azure Portal](https://portal.azure.com) |
+
+Account linking is enabled for Google and GitHub, allowing users to sign in with multiple providers and link them to a single account.
+
+---
+
+## API Reference
+
+The API automatically generates OpenAPI documentation for all authentication endpoints. Access the reference at:
+
+```
+GET /api/auth/reference
+```
+
+This provides a complete reference of all available authentication endpoints, request/response schemas, and error codes.
+
+---
+
+## API Keys for MCP Gateway
+
+Fabric API keys (format: `fab_xxxx_xxxxxxxxxx`) are also used to authenticate with the [MCP Gateway](/docs/integrations/mcp-gateway). Create keys in **Settings → API Keys** and use them with external MCP clients like Claude Desktop and Cursor.
+
+---
+
+## Next Steps
+
+<Cards>
+  <Card title="API Overview" href="/docs/api/overview">
+    REST API endpoints and usage
+  </Card>
+  <Card title="MCP Gateway API" href="/docs/api/mcp-gateway">
+    Use Fabric as an MCP server from external clients
+  </Card>
+  <Card title="Data Isolation" href="/docs/guides/tenant-isolation">
+    Multi-tenant data isolation
+  </Card>
+  <Card title="Organizations" href="/docs/features/organizations">
+    Organization management features
+  </Card>
+</Cards>

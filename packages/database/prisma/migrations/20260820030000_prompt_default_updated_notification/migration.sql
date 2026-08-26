@@ -1,0 +1,22 @@
+-- A prompt default changing is not a status change and not an agent reply.
+--
+-- Fizzy #2068 FR6: when the universal or organization default prompt for an
+-- action is published or updated, the people subject to it are told, so they can
+-- read what changed and decide whether to adopt it.
+--
+-- A distinct type rather than reusing STORY_STATUS_CHANGED or AGENT_REPLY_READY:
+-- the row renderer and the bell's filters key off the type, and reusing one
+-- would either mis-route the click target or inherit filtering written for a
+-- different feature. The category is AGENT, which already maps to the `aiAgent`
+-- preference toggle — so a user who has muted agent notifications is not
+-- notified about the prompts those agents run, without a new setting.
+--
+-- ALTER TYPE ... ADD VALUE is a ONE-WAY DOOR: it does not roll back, and rolling
+-- a release back does not restore the schema. Accepted deliberately, as the repo
+-- has done many times, and recorded here so it reads as a decision rather than a
+-- discovery.
+--
+-- Safe inside the standard migration transaction on PostgreSQL 12+: a new enum
+-- value simply cannot be USED until the transaction commits, and nothing here
+-- uses it. Additive and idempotent.
+ALTER TYPE "NotificationType" ADD VALUE IF NOT EXISTS 'PROMPT_DEFAULT_UPDATED';

@@ -1,0 +1,23 @@
+{
+	"name": "@fabric/sandbox-worker",
+	"version": "0.0.1",
+	"license": "Apache-2.0",
+	"private": true,
+	"type": "module",
+	"scripts": {
+		"dev": "wrangler dev",
+		"deploy": "wrangler deploy",
+		"deploy:prod": "wrangler deploy --env production",
+		"cf-typegen": "wrangler types"
+	},
+	"dependencies": {
+		"@cloudflare/sandbox": "^0.6.7",
+		"jose": "^6.1.3",
+		"zod": "^4.3.4"
+	},
+	"devDependencies": {
+		"@cloudflare/workers-types": "^4.20250106.0",
+		"typescript": "^5.9.3",
+		"wrangler": "^4.54.0"
+	}
+}

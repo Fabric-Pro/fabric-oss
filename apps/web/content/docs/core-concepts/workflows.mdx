@@ -1,0 +1,329 @@
+---
+title: Durable Workflows
+description: How Fabric AI executes complex, multi-step operations reliably with built-in fault tolerance and human-in-the-loop approvals.
+---
+
+Fabric AI uses a **durable workflow engine** to ensure that complex multi-step operations complete reliably -- even when things go wrong.
+
+## Why Workflows Matter
+
+### The Problem with Traditional Execution
+
+Traditional request-response systems have limitations:
+
+```mermaid
+flowchart LR
+    A[User Request] --> B[Server Process]
+    B --> C[Response]
+    B -.-> D[Network timeout?]
+    B -.-> E[Server crash?]
+    B -.-> F[API rate limit?]
+    B -.-> G[User closes browser?]
+    D --> H[Lost work]
+    E --> H
+    F --> H
+    G --> H
+```
+
+When generating a PRD that takes 5 minutes, or creating 20 Jira tickets, any interruption means starting over.
+
+### The Workflow Solution
+
+Workflows persist state at every step:
+
+```mermaid
+flowchart LR
+    A[User Request] --> B[Workflow Started]
+    B --> C[Step 1 completed]
+    C --> D[Step 2 completed]
+    D --> E[Step 3...]
+    B -.-> F[(State saved)]
+    C -.-> G[(State saved)]
+    D -.-> H[(State saved)]
+```
+
+**If anything fails:** The workflow resumes from the last saved state.
+
+## How It Works
+
+### Key Concepts
+
+| Concept | Description |
+|---------|-------------|
+| **Workflows** | Long-running, fault-tolerant processes that coordinate multiple steps |
+| **Activities** | Individual units of work like API calls, AI generation, or file operations |
+| **Signals** | External events that can modify running workflows (e.g., approvals) |
+| **Queries** | Read the current state of a running workflow |
+
+### Workflow Lifecycle
+
+```mermaid
+stateDiagram-v2
+    [*] --> PENDING
+    PENDING --> RUNNING
+    RUNNING --> COMPLETED
+    RUNNING --> FAILED
+    RUNNING --> WAITING: Needs approval
+    WAITING --> RESUMED: Approved
+    RESUMED --> RUNNING
+    COMPLETED --> [*]
+    FAILED --> [*]
+```
+
+## Workflows in Fabric
+
+### Document Generation Workflow
+
+When you ask an agent to generate a document, this workflow executes:
+
+<Steps>
+  <Step>
+    ### Initialize Context
+
+    Load user preferences, organization settings, and conversation history.
+  </Step>
+
+  <Step>
+    ### Retrieve RAG Context
+
+    Search your workspace documents for relevant content based on the request.
+  </Step>
+
+  <Step>
+    ### Generate Content
+
+    Call the AI model with context to generate the document.
+  </Step>
+
+  <Step>
+    ### Apply Formatting
+
+    Format the output according to document type (PRD, spec, etc.).
+  </Step>
+
+  <Step>
+    ### Save and Return
+
+    Store the document and return it to the user.
+  </Step>
+</Steps>
+
+Each step:
+- Automatically retries on failure
+- Has configurable timeouts
+- Saves state before and after
+
+### Orchestrator Workflow
+
+Fabric Loom runs a more complex workflow:
+
+```mermaid
+flowchart TB
+    subgraph INIT["1. INITIALIZE"]
+        I1[Load memory and context]
+        I2[Retrieve workspace documents]
+    end
+
+    subgraph ROUTE["2. ROUTE"]
+        R1[Analyze request semantically]
+        R2[Find matching agents/tools]
+    end
+
+    subgraph PLAN["3. PLAN"]
+        P1[Decompose into steps]
+        P2[Identify dependencies]
+        P3[Check approval requirements]
+    end
+
+    subgraph EXECUTE["4. EXECUTE"]
+        E1{Needs approval?}
+        E2[Await approval]
+        E3[Execute tool or agent]
+        E4[Handle errors]
+        E5[Record result]
+        E1 -->|Yes| E2
+        E1 -->|No| E3
+        E2 --> E3
+        E3 --> E4
+        E4 --> E5
+    end
+
+    subgraph LEARN["5. LEARN"]
+        L1[Record success/failure patterns]
+        L2[Update memory]
+    end
+
+    INIT --> ROUTE --> PLAN --> EXECUTE --> LEARN
+```
+
+## Reliability Features
+
+### Automatic Retries
+
+Activities retry automatically with exponential backoff:
+
+```mermaid
+flowchart TB
+    A1[Attempt 1: Execute] -->|Failed| W1[Wait 2s]
+    W1 --> A2[Attempt 2: Retry]
+    A2 -->|Failed| W2[Wait 4s]
+    W2 --> A3[Attempt 3: Retry]
+    A3 -->|Failed| W3[Wait 8s]
+    W3 --> A4[Attempt 4: Retry]
+    A4 -->|Success| S[Complete]
+```
+
+Configuration:
+- **Initial interval** -- 1 second
+- **Maximum interval** -- 5 minutes
+- **Maximum attempts** -- 5 (configurable)
+- **Backoff coefficient** -- 2.0
+
+### Heartbeats
+
+Long-running activities send periodic heartbeats to indicate they're still alive. If heartbeats stop, the workflow engine can retry the activity on a different worker.
+
+### Timeouts
+
+Multiple timeout types protect against hanging operations:
+
+| Timeout Type | Purpose | Default |
+|--------------|---------|---------|
+| Start-to-close | Max time for single attempt | 5 minutes |
+| Schedule-to-close | Max time including retries | 30 minutes |
+| Heartbeat | Max time between heartbeats | 1 minute |
+| Schedule-to-start | Max time in queue | 10 minutes |
+
+## Human-in-the-Loop
+
+Workflows can pause for human approval:
+
+### How It Works
+
+```mermaid
+flowchart TB
+    A[Workflow running] --> B{High-risk operation?}
+    B -->|Yes| C[AWAITING APPROVAL]
+    B -->|No| F[Continue execution]
+    C --> D{User decision}
+    D -->|Approve| E[Workflow continues]
+    D -->|Reject| G[Skip or fail gracefully]
+    D -->|Modify| H[Adjust parameters]
+    H --> E
+    F --> E
+```
+
+> **Example:** "The workflow wants to delete 50 Jira tickets. Do you want to proceed?"
+
+**Key Features:**
+- Workflow pauses indefinitely (or until timeout)
+- State is preserved while waiting
+- User can approve/reject anytime
+- Workflow resumes immediately after approval
+
+## Observability
+
+### Workflow Monitoring
+
+Monitor your workflows through the Fabric dashboard:
+
+- **List all workflows** -- See running, completed, and failed
+- **View timeline** -- Step-by-step execution visualization
+- **Inspect state** -- Current workflow variables
+- **Replay** -- Re-execute failed workflows
+
+### Event History
+
+Every workflow maintains a complete event history:
+
+```mermaid
+sequenceDiagram
+    participant W as Workflow
+    participant A1 as Retrieve Context
+    participant A2 as Generate Document
+
+    W->>W: Execution Started
+    W->>A1: Task Scheduled
+    A1->>A1: Task Started
+    A1-->>W: Task Completed
+    W->>A2: Task Scheduled
+    A2->>A2: Task Started
+    A2-->>W: Task Completed
+    W->>W: Execution Completed
+```
+
+This history enables:
+- **Debugging** -- See exactly what happened
+- **Replay** -- Re-execute with same inputs
+- **Audit** -- Complete compliance trail
+
+## Trust-Based Approvals
+
+The Orchestrator learns from your approval patterns:
+
+### How It Works
+
+**Week 1:**
+```
+Operation: Post to Slack -> Request approval -> Approved
+Operation: Create Jira ticket -> Request approval -> Approved
+Operation: Post to Slack -> Request approval -> Approved
+```
+
+**Week 2:**
+```
+Operation: Post to Slack -> Auto-approved (you always approve)
+Operation: Create Jira ticket -> Request approval -> Approved
+```
+
+**Week 4:**
+```
+Operation: Post to Slack -> Auto-approved
+Operation: Create Jira ticket -> Auto-approved
+Operation: DELETE 100 records -> Request approval (always ask for deletes)
+```
+
+### Risk Levels
+
+| Risk Level | Examples | Default Behavior |
+|------------|----------|------------------|
+| Low | Read, list, search | Auto-approve |
+| Medium | Create, update | Learn from patterns |
+| High | Bulk operations | Usually request approval |
+| Critical | Delete, financial | Always request approval |
+
+## Best Practices
+
+### Designing for Reliability
+
+**Do:**
+- Break work into small, focused steps
+- Use idempotent operations when possible
+- Handle partial success gracefully
+- Set appropriate timeouts
+
+**Don't:**
+- Put too much logic in a single step
+- Assume network calls will always succeed
+- Skip error handling
+- Use infinite timeouts
+
+### Monitoring
+
+- Check workflow status regularly for failures
+- Set up alerts for workflow failures
+- Review execution times for optimization
+- Audit approval patterns
+
+---
+
+## Next Steps
+
+<Cards>
+  <Card title="Agents" href="/docs/agents/overview">
+    Learn about the different agent types
+  </Card>
+  <Card title="Orchestrator" href="/docs/agents/orchestrator">
+    Deep dive into Fabric Loom
+  </Card>
+</Cards>

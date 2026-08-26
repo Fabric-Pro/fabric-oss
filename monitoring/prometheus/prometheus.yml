@@ -1,0 +1,48 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    cluster: "fabric-dev"
+    environment: "development"
+
+# Alertmanager configuration
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: []
+      # - alertmanager:9093
+
+# Load rules once and periodically evaluate them
+rule_files:
+  - "/etc/prometheus/alerts/*.yml"
+
+# Scrape configurations
+scrape_configs:
+  # Scrape Fabric MCP metrics
+  - job_name: "fabric-mcp"
+    static_configs:
+      - targets: ["host.docker.internal:3001"]
+    metrics_path: "/api/metrics"
+    scrape_interval: 30s
+    authorization:
+      type: Bearer
+      credentials: local-dev-secret
+
+  # OpenTelemetry metrics (LLM, RAG, DB) flow via OTel Collector in production.
+  # Locally Aspire does not run otel-collector, so OTel metrics are not scraped here —
+  # they still reach the Aspire Dashboard via OTLP push.
+  # In prod: scrape otel-collector at port 8889 (see monitoring/otel-collector/).
+
+  # Scrape Prometheus itself
+  - job_name: "prometheus"
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  # Scrape Node Exporter (Linux only - for system metrics)
+  # Note: node-exporter is only available on Linux systems
+  # On macOS/Windows, this job will fail to scrape but won't affect other metrics
+  - job_name: "node"
+    static_configs:
+      - targets: ["node-exporter:9100"]
+    # Reduce scrape timeout to fail faster on non-Linux platforms
+    scrape_timeout: 5s

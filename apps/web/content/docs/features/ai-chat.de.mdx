@@ -1,0 +1,179 @@
+---
+title: KI-Chat
+description: Konversationelle KI-Oberfläche mit Dokumentenkontext, Tool-Integration und mehreren Reasoning-Modi.
+---
+
+Der KI-Chat ist die primäre Möglichkeit, mit Fabrics KI-Fähigkeiten zu interagieren. Er unterstützt Echtzeit-Streaming, Dokument-Uploads für Kontext, MCP-Tool-Ausführung und mehrere Reasoning-Tiefen.
+
+## Chat-Modi
+
+Fabric bietet zwei Chat-Modi, die jeweils für unterschiedliche Aufgaben geeignet sind:
+
+### Direkter Chat
+
+Am besten für schnelle Gespräche und einfache Aufgaben geeignet:
+
+- Echtzeit-Streaming-Antworten
+- Direkte MCP-Tool-Ausführung
+- Dokument-Upload und RAG-Kontext
+- Semantische Gedächtnis-Integration
+- Gesprächspersistenz
+
+### Orchestrator-Chat
+
+Am besten für komplexe, mehrstufige Aufgaben geeignet:
+
+- Dauerhafte, workflow-basierte Ausführung
+- Multi-Agenten-Aufgabenkoordination
+- Mensch-im-Prozess-Genehmigungsflüsse
+- Aufgabenplan-Visualisierung und Fortschriftsverfolgung
+- Schrittweises Reasoning mit Überprüfung
+
+## Reasoning-Tiefe
+
+Die Tiefe des KI-Reasonings hängt vom Modell und Aufgabentyp ab, den Sie konfiguriert haben. Modelle mit Reasoning-Fähigkeiten (wie o1 oder DeepSeek R1) bieten tiefere Analyse mit schrittweiser Überprüfung, während schnelle Modelle (wie GPT-4o-mini oder Llama über Groq) auf Geschwindigkeit optimieren.
+
+Konfigurieren Sie Modellpräferenzen pro Aufgabentyp unter **Einstellungen → KI-Anbieter**. Details unter [KI-Anbieter](/docs/features/ai-providers).
+
+## Ein Gespräch starten
+
+<Steps>
+  <Step>
+    ### KI-Chat öffnen
+
+    Klicken Sie in der linken Seitenleiste auf **Chat**, um die KI-Chat-Oberfläche zu öffnen.
+  </Step>
+
+  <Step>
+    ### Ihren Ansatz wählen
+
+    Sie können starten mit:
+
+    - **Freitext** — Geben Sie Ihre Frage oder Aufgabe direkt ein
+    - **Mit Dokumenten** — Laden Sie Dateien für Kontext hoch, bevor Sie fragen
+  </Step>
+
+  <Step>
+    ### Ihre Nachricht senden
+
+    Geben Sie Ihre Nachricht ein und drücken Sie die Eingabetaste. Die KI streamt ihre Antwort in Echtzeit.
+  </Step>
+</Steps>
+
+## Dokument-Upload
+
+Laden Sie Dokumente hoch, um der KI Kontext über Ihre Arbeit zu geben. Die KI verwendet RAG (Retrieval-Augmented Generation), um auf Ihre Dokumente zu verweisen, wenn sie antwortet.
+
+### Unterstützte Formate
+
+| Kategorie | Formate |
+|----------|---------|
+| **Dokumente** | PDF, DOCX, TXT, MD, HTML, JSON |
+| **Bilder** | JPEG, PNG, GIF, WEBP, TIFF (OCR-Extraktion) |
+
+**Maximale Dateigröße:** 10 MB pro Datei
+
+### Wie der Dokumentenkontext funktioniert
+
+1. **Hochladen** — Dateien per Drag & Drop oder Klicken zum Hochladen
+2. **Verarbeitung** — Dateien werden automatisch extrahiert, aufgeteilt und eingebettet
+3. **Bereit** — Dokumente werden für die semantische Suche verfügbar
+4. **Abruf** — Wenn Sie eine Nachricht senden, ruft die KI die relevantesten Abschnitte aus Ihren Dokumenten ab und bezieht sie als Kontext ein
+
+### Dokumentenstatus
+
+| Status | Beschreibung |
+|--------|-------------|
+| **Ausstehend** | Datei hochgeladen, wartet auf Verarbeitung |
+| **Verarbeitung** | Extraktion, Aufteilung und Einbettung läuft |
+| **Bereit** | Dokument für RAG-Abruf verfügbar |
+| **Fehlgeschlagen** | Verarbeitung hat einen Fehler gefunden |
+
+## MCP-Tool-Integration
+
+Wenn MCP-Server konfiguriert sind, kann die KI ihre Tools während Gesprächen nutzen.
+
+### Tool-Vorschläge
+
+Während Sie tippen, schlägt die KI relevante MCP-Tools basierend auf Ihrer Eingabe vor:
+
+- Vorschläge erscheinen nach 5+ Zeichen
+- Zeigt Tool-Name, Quellserver und Beschreibung
+- Klicken Sie auf einen Vorschlag, um ihn in Ihre Nachricht aufzunehmen
+
+### Tool-Ausführung
+
+Während eines Gesprächs kann die KI MCP-Tools aufrufen, um Aufgaben zu erledigen:
+
+- **Tool-Aufruf-Karten** zeigen den Tool-Namen, Argumente und Ergebnisse
+- Einige Tools benötigen **Bestätigung** vor der Ausführung
+- Ergebnisse werden in die Antwort der KI integriert
+
+## Gesprächsverwaltung
+
+### Verlauf
+
+Zugriff auf vergangene Gespräche über die **Seitenleiste**:
+
+- Gespräche nach Titel oder Inhalt **suchen**
+- Wichtige Gespräche **anheften** für schnellen Zugriff
+- Alte Gespräche **archivieren**, um Ordnung zu halten
+- Gespräche werden nach Datum gruppiert
+
+### Checkpoints
+
+Checkpoints erstellen, um den Gesprächszustand zu speichern:
+
+- **Erstellen** Sie einen Checkpoint an einem beliebigen Punkt im Gespräch
+- **Wiederherstellen** zu einem früheren Checkpoint, um einen anderen Ansatz zu versuchen
+- **Löschen** Sie nicht mehr benötigte Checkpoints
+- Token-Nutzung bei jedem Checkpoint verfolgen
+
+### Automatische Titel
+
+Fabric generiert nach dem ersten Austausch automatisch beschreibende Titel für Ihre Gespräche, sodass sie leicht zu finden sind.
+
+## Token-Nutzung
+
+Die Chat-Oberfläche verfolgt die Token-Nutzung:
+
+- **Eingabe-Tokens** — Tokens in Ihren Nachrichten und Kontext
+- **Ausgabe-Tokens** — Tokens in KI-Antworten
+- **Reasoning-Tokens** — Zusätzliche Tokens für tiefes Reasoning
+- **Gecachte Tokens** — Tokens aus Cache (schneller, geringere Kosten)
+- **Kontext-Schätzung** — Wie viel des Kontextfensters verwendet wird
+
+## Workflow-Ausführung
+
+Die KI kann während eines Gesprächs Workflows vorschlagen und ausführen:
+
+1. Die KI identifiziert einen relevanten Workflow für Ihre Aufgabe
+2. Ein **Bestätigungsdialog** erscheint mit Workflow-Name und Beschreibung
+3. Klicken Sie auf **Ausführen** zum Starten oder **Abbrechen** zum Überspringen
+4. Workflow-Ergebnisse werden in das Gespräch integriert
+
+## Mandantenfähige Unterstützung
+
+Der KI-Chat funktioniert sowohl in persönlichen als auch in Organisationskontexten:
+
+- **Persönlich** (`/app/nexus`) — Ihre privaten Gespräche
+- **Organisation** (`/app/{org}/nexus`) — Organisationsbereichsbezogene Gespräche
+- Jeder Kontext hat einen separaten Gesprächsverlauf
+- KI-Modellpräferenzen werden pro Kontext aufgelöst (persönlich oder auf Organisationsebene)
+- Dokument-Uploads sind nach Kontext isoliert
+
+---
+
+## Nächste Schritte
+
+<Cards>
+  <Card title="Orchestrator" href="/docs/agents/orchestrator">
+    Multi-Agenten-Orchestrierung für komplexe Aufgaben
+  </Card>
+  <Card title="MCP-Integration" href="/docs/integrations/mcp">
+    MCP-Server für Tool-Zugriff im Chat konfigurieren
+  </Card>
+  <Card title="KI-Konfiguration" href="/docs/features/ai-providers">
+    Bevorzugte KI-Modelle und Anbieter festlegen
+  </Card>
+</Cards>

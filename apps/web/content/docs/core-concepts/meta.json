@@ -1,0 +1,10 @@
+{
+	"title": "Core Concepts",
+	"pages": [
+		"architecture",
+		"rag",
+		"workflows",
+		"runtime-authority",
+		"mcp-authority"
+	]
+}

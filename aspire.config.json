@@ -1,0 +1,5 @@
+{
+	"appHost": {
+		"path": "aspire/Fabric.AppHost/Fabric.AppHost.csproj"
+	}
+}

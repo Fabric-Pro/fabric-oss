@@ -1,0 +1,31 @@
+{
+	"name": "weave-readers",
+	"private": true,
+	"version": "0.1.3",
+	"license": "Apache-2.0",
+	"description": "Tier 1 weave agents: Thread, Spindle, Weft, Warp (read-only)",
+	"type": "module",
+	"scripts": {
+		"dev": "tsx watch src/index.ts",
+		"build": "tsup --config tsup.config.ts",
+		"start": "node dist/index.js",
+		"typecheck": "tsc --noEmit"
+	},
+	"dependencies": {
+		"@hono/node-server": "^2.0.11",
+		"@repo/agent-runtime": "workspace:*",
+		"@repo/ai": "workspace:*",
+		"ai": "^6.0.116",
+		"hono": "^4.12.34",
+		"nunjucks": "^3.2.4",
+		"stripe": "^19.2.0",
+		"undici": "^8.5.0",
+		"zod": "^3.22.4"
+	},
+	"devDependencies": {
+		"@types/node": "^20.10.0",
+		"tsup": "^8.5.1",
+		"tsx": "^4.19.2",
+		"typescript": "^5.3.0"
+	}
+}

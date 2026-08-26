@@ -1,0 +1,2 @@
+-- AlterEnum
+ALTER TYPE "BackgroundJobKind" ADD VALUE 'STORY_KIND_REGENERATION';

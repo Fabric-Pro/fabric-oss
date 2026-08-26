@@ -1,0 +1,209 @@
+---
+title: Connect Your First Integration
+description: A step-by-step tutorial to connect external services so your agents and workflows can act on them.
+---
+
+This tutorial walks you through connecting your first external service to Fabric AI. In about 10 minutes, you'll have an integration ready to use in AI chat and workflows.
+
+## What You'll Accomplish
+
+By the end of this tutorial, you'll have:
+
+- Connected an external service (GitHub, Slack, or Notion)
+- Tested the connection
+- Used the integration in an AI conversation
+- Understood how integrations work
+
+## Prerequisites
+
+Before starting, make sure you have:
+
+- ✅ A Fabric AI account
+- ✅ An account with at least one external service (GitHub, Slack, Linear, Notion, etc.)
+
+## How Integrations Work
+
+Fabric connects to external systems so your agents and workflows can **take actions** on them at runtime — search a workspace, read a page, create an issue, post a message. You manage every connection in one place: **Settings → Integrations**.
+
+A connection is used in two ways:
+
+| Used by | What it powers | Example |
+|--------|---------|----------|
+| **MCP Servers** | AI-driven tool calls in chat and the orchestrator | "Create a GitHub issue", "post to Slack" |
+| **Workflow Integrations** | Action nodes in the visual workflow builder | Scheduled reports, triggered actions |
+
+Both share the same connected credentials — connect a system once and it's available to agents and workflows alike.
+
+Each provider exposes a set of **runtime actions** in two flavors: **knowledge** actions that read or search (e.g. "Search Notion", "Get Page Content") and **write** actions that change things (e.g. "Create Page"). A provider that offers both is labeled **Hybrid**.
+
+<Callout type="info">
+Fabric runs these as **live runtime actions** — there's no background sync or separate "data connection" to set up. When an agent needs information from a connected system, it calls a knowledge action on demand. The one structured exception is **backlog sync** to a project-management tool — see [Project Management Sync](/docs/features/pm-sync).
+</Callout>
+
+## Step 1: Set Up an MCP Server
+
+MCP servers let AI agents interact with external tools during conversations.
+
+<Steps>
+  <Step>
+    ### Navigate to MCP Settings
+
+    Go to **Settings → MCP Servers** in the left sidebar.
+  </Step>
+
+  <Step>
+    ### Browse the Registry
+
+    Click **Add Server** to see all available MCP servers organized by category:
+    - **Development** — GitHub, GitLab, Atlassian (Jira & Confluence), Azure DevOps, Fizzy
+    - **Communication** — Slack
+    - **Knowledge & Docs** — Notion, Google Drive
+    - **Diagramming** — Excalidraw
+  </Step>
+
+  <Step>
+    ### Select and Connect
+
+    Pick a server — we'll use **GitHub** as an example:
+
+    **Option A: OAuth (Recommended)**
+    1. Click **Connect with OAuth**
+    2. Authorize Fabric AI in the GitHub popup
+    3. Done — tokens are stored and auto-refreshed
+
+    **Option B: API Key**
+    1. Generate a Personal Access Token on GitHub
+    2. Paste it into the API key field
+    3. Click **Save**
+  </Step>
+
+  <Step>
+    ### Test the Connection
+
+    Click **Test Connection**. You should see a success message with latency info.
+  </Step>
+
+  <Step>
+    ### Try It in Chat
+
+    Open **AI Chat** and try a command:
+
+    ```
+    "List my open GitHub issues"
+    ```
+
+    The AI discovers the GitHub MCP tools and uses them to fetch your issues.
+  </Step>
+</Steps>
+
+## Step 2: Set Up a Workflow Integration
+
+Workflow integrations power the visual workflow builder nodes.
+
+<Steps>
+  <Step>
+    ### Open the Workflow Builder
+
+    Navigate to **Workflows** and open or create a workflow.
+  </Step>
+
+  <Step>
+    ### Add an Integration Node
+
+    Click **+** to add a node, then browse the **Integrations** category. Select the service you want (e.g., Slack, GitHub, Linear).
+  </Step>
+
+  <Step>
+    ### Configure Credentials
+
+    Click **Configure Integration** on the node:
+
+    - Enter your API key or token
+    - Click **Test Connection** to verify
+    - Credentials are encrypted and stored securely
+  </Step>
+
+  <Step>
+    ### Configure the Action
+
+    Set up what the node does:
+    - **GitHub**: Create Issue → set owner, repo, title
+    - **Slack**: Send Message → set channel, message
+    - **Linear**: Create Issue → set team, title, priority
+  </Step>
+</Steps>
+
+## Integration Scope
+
+### Personal vs Organization
+
+| Scope | Visibility | Use Case |
+|-------|------------|----------|
+| **Personal** | Only you | Your personal GitHub, personal Drive |
+| **Organization** | All org members | Company Jira, shared Slack workspace |
+
+Choose the scope when connecting. Organization integrations are managed by org admins.
+
+### Multi-Tenant Isolation
+
+- Personal connections are never visible in organization contexts
+- Organization connections are never visible to other organizations
+- Each user can have their own connections alongside org-shared ones
+
+## Quick Reference: Supported Integrations
+
+**Type** is the kind of runtime actions a provider offers: **Knowledge** (read/search), **Actions** (write), or **Hybrid** (both).
+
+| Service | Type | Set up under |
+|---------|------|--------------|
+| [GitHub](/docs/integrations/github) | Hybrid | Settings → Integrations |
+| [GitLab](/docs/integrations/gitlab) | Hybrid | Settings → Integrations |
+| [Slack](/docs/integrations/slack) | Hybrid | Settings → Integrations |
+| [Microsoft Teams](/docs/integrations/teams) | Hybrid | Settings → Integrations |
+| [Jira](/docs/integrations/jira) | Hybrid | Settings → Integrations |
+| [Confluence](/docs/integrations/confluence) | Knowledge | Settings → Integrations |
+| [Notion](/docs/integrations/notion) | Hybrid | Settings → Integrations |
+| [Google Drive](/docs/integrations/google-drive) | Knowledge | Settings → Integrations |
+| [Linear](/docs/integrations/linear) | Hybrid | Settings → Integrations |
+| [Azure DevOps](/docs/integrations/azure-devops) | Hybrid | Settings → MCP Registry |
+| [Excalidraw](/docs/integrations/excalidraw) | Actions | Settings → MCP Registry |
+| [Fizzy](/docs/integrations/fizzy) | Hybrid | Settings → MCP Registry |
+
+<Callout type="info">
+**Microsoft 365** also appears under Settings → Integrations, but its runtime actions aren't available yet ("Actions setup not yet available"). Use **Microsoft Teams** for Microsoft Graph actions today.
+</Callout>
+
+## Troubleshooting
+
+### "Connection failed" during setup
+
+- Double-check your API key or token
+- Ensure the token has the required permissions/scopes
+- Try disconnecting and reconnecting for OAuth-based services
+
+### Tools not appearing in AI Chat
+
+- Verify the MCP server is **Enabled** in settings
+- Check that the server's health status is **Healthy**
+- Try refreshing the tool list in the chat settings
+
+### An action isn't available for a provider
+
+- Open the provider under **Settings → Integrations** and check **Available actions** — some providers expose only knowledge actions, others only write actions
+- Make sure the connection shows **Connected** and the required scopes were granted during authorization
+
+---
+
+## Next Steps
+
+<Cards>
+  <Card title="Build Your First Workflow" href="/docs/tutorials/first-workflow">
+    Use your new integration in an automated workflow
+  </Card>
+  <Card title="MCP Deep Dive" href="/docs/integrations/mcp">
+    Learn how MCP protocol powers tool connections
+  </Card>
+  <Card title="AI Chat" href="/docs/features/ai-chat">
+    Use integrations in AI conversations
+  </Card>
+</Cards>

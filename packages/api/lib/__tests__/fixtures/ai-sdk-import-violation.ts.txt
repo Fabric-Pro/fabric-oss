@@ -1,0 +1,15 @@
+// Fixture used by ai-sdk-import-guard.test.ts. The file extension is
+// `.ts.txt` so Biome's noRestrictedImports rule (which targets .ts/.tsx)
+// never lints it directly. The test copies its contents into a temp
+// .ts file inside the test root, runs `biome check`, and asserts the
+// rule fires — proving the lint guard is wired and reaches new code
+// outside the chokepoint package.
+import { openai } from "@ai-sdk/openai";
+import { generateText } from "ai";
+
+export async function bypass() {
+	return await generateText({
+		model: openai("gpt-4"),
+		prompt: "test",
+	});
+}

@@ -1,0 +1,777 @@
+x-compose-env-files: &compose_env_files
+  - ./.env.compose.example
+  - path: ./.env.compose
+    required: false
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: fabric-postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: fabric
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  minio:
+    image: minio/minio
+    container_name: fabric-minio
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+      MINIO_BROWSER_REDIRECT_URL: http://localhost:9003
+    ports:
+      - "9002:9000"
+      - "9003:9001"
+    volumes:
+      - minio_data:/data
+    command: server /data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+
+  temporal:
+    image: temporalio/auto-setup:1.28.0
+    container_name: fabric-temporal
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      - DB=postgres12
+      - DB_PORT=5432
+      - POSTGRES_USER=postgres
+      - POSTGRES_PWD=postgres
+      - POSTGRES_SEEDS=postgres
+    ports:
+      - "7233:7233"  # gRPC endpoint
+    volumes:
+      - temporal_data:/etc/temporal
+    healthcheck:
+      test: ["CMD", "tctl", "--address", "temporal:7233", "workflow", "list"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  temporal-ui:
+    image: temporalio/ui:2.44.1
+    container_name: fabric-temporal-ui
+    depends_on:
+      temporal:
+        condition: service_healthy
+    environment:
+      - TEMPORAL_ADDRESS=temporal:7233
+      - TEMPORAL_CORS_ORIGINS=http://localhost:3001
+    ports:
+      - "8233:8080"  # Web UI
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: fabric-qdrant
+    ports:
+      - "6333:6333"  # REST API
+      - "6334:6334"  # gRPC API (optional)
+    volumes:
+      - qdrant_storage:/qdrant/storage
+    environment:
+      # Optional: Set API key for authentication
+      # QDRANT__SERVICE__API_KEY: "your-api-key-here"
+
+      # Performance tuning (optional)
+      QDRANT__SERVICE__MAX_REQUEST_SIZE_MB: 32
+      QDRANT__SERVICE__MAX_WORKERS: 4
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "timeout 1 bash -c '</dev/tcp/127.0.0.1/6333' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  redis:
+    image: redis:7-alpine
+    container_name: fabric-redis
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # ==========================================
+  # DOCUMENT GENERATOR AGENT - DUAL PROTOCOL
+  # ==========================================
+  # AG-UI (LangGraph) on port 8124: For CopilotKit frontend
+  # Single unified server handles both AG-UI (CopilotKit) and A2A (orchestrator) protocols
+
+  # Document Generator - Unified Server (AG-UI + A2A)
+  document-generator:
+    image: node:22-alpine
+    container_name: fabric-document-generator
+    working_dir: /app/agents/langchain/document-generator
+    command: >
+      sh -c "
+        retry_count=0;
+        max_retries=3;
+        until corepack enable && pnpm install; do
+          retry_count=$$((retry_count + 1));
+          if [ $$retry_count -ge $$max_retries ]; then
+            echo 'Failed to install dependencies after $$max_retries attempts';
+            exit 1;
+          fi;
+          echo 'Retry $$retry_count/$$max_retries: waiting 10s before retry...';
+          sleep 10;
+        done;
+        echo 'Starting Unified server (AG-UI + A2A)...';
+        npx tsx unified-server.ts
+      "
+    ports:
+      - "8124:8124"
+    volumes:
+      - .:/app
+      - agent_node_modules_1:/app/node_modules
+    env_file: *compose_env_files
+    environment:
+      - NODE_ENV=development
+      - PORT=8124
+      - HOST=0.0.0.0
+      - RUNTIME_API_URL=http://web:3001
+    restart: on-failure:3
+    depends_on:
+      temporal:
+        condition: service_healthy
+      web:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:8124/health',res=>{process.exit(res.statusCode===200?0:1)}).on('error',()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+
+  # ==========================================
+  # PROJECT DOCUMENT GENERATOR AGENT - UNIFIED
+  # ==========================================
+  # Single unified server handles both AG-UI (CopilotKit) and A2A (orchestrator) protocols
+
+  project-document-generator:
+    image: node:22-alpine
+    container_name: fabric-project-document-generator
+    working_dir: /app/agents/langchain/project-document-generator
+    command: >
+      sh -c "
+        retry_count=0;
+        max_retries=3;
+        until corepack enable && pnpm install; do
+          retry_count=$$((retry_count + 1));
+          if [ $$retry_count -ge $$max_retries ]; then
+            echo 'Failed to install dependencies after $$max_retries attempts';
+            exit 1;
+          fi;
+          echo 'Retry $$retry_count/$$max_retries: waiting 10s before retry...';
+          sleep 10;
+        done;
+        echo 'Starting Unified server (AG-UI + A2A)...';
+        npx tsx unified-server.ts
+      "
+    ports:
+      - "8125:8125"
+    volumes:
+      - .:/app
+      - agent_node_modules_2:/app/node_modules
+    env_file: *compose_env_files
+    environment:
+      - NODE_ENV=development
+      - PORT=8125
+      - HOST=0.0.0.0
+      - RUNTIME_API_URL=http://web:3001
+    restart: on-failure:3
+    depends_on:
+      temporal:
+        condition: service_healthy
+      web:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:8125/health',res=>{process.exit(res.statusCode===200?0:1)}).on('error',()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+
+  # ==========================================
+  # TASK PLANNER AGENT - UNIFIED
+  # ==========================================
+  # Single unified server handles both AG-UI (CopilotKit) and A2A (orchestrator) protocols
+
+  task-planner:
+    image: node:22-alpine
+    container_name: fabric-task-planner
+    working_dir: /app/agents/langchain/task-planner
+    command: >
+      sh -c "
+        retry_count=0;
+        max_retries=3;
+        until corepack enable && pnpm install; do
+          retry_count=$$((retry_count + 1));
+          if [ $$retry_count -ge $$max_retries ]; then
+            echo 'Failed to install dependencies after $$max_retries attempts';
+            exit 1;
+          fi;
+          echo 'Retry $$retry_count/$$max_retries: waiting 10s before retry...';
+          sleep 10;
+        done;
+        echo 'Starting Unified server (AG-UI + A2A)...';
+        npx tsx unified-server.ts
+      "
+    ports:
+      - "8126:8126"
+    volumes:
+      - .:/app
+      - agent_node_modules_3:/app/node_modules
+    env_file: *compose_env_files
+    environment:
+      - NODE_ENV=development
+      - PORT=8126
+      - HOST=0.0.0.0
+      - RUNTIME_API_URL=http://web:3001
+    restart: on-failure:3
+    depends_on:
+      temporal:
+        condition: service_healthy
+      web:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:8126/health',res=>{process.exit(res.statusCode===200?0:1)}).on('error',()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+
+  # ==========================================
+  # STORY BREAKDOWN AGENT - UNIFIED
+  # ==========================================
+  # Single unified server handles both AG-UI (CopilotKit) and A2A (orchestrator) protocols
+
+  story-breakdown:
+    image: node:22-alpine
+    container_name: fabric-story-breakdown
+    working_dir: /app/agents/langchain/story-breakdown
+    command: >
+      sh -c "
+        retry_count=0;
+        max_retries=3;
+        until corepack enable && pnpm install; do
+          retry_count=$$((retry_count + 1));
+          if [ $$retry_count -ge $$max_retries ]; then
+            echo 'Failed to install dependencies after $$max_retries attempts';
+            exit 1;
+          fi;
+          echo 'Retry $$retry_count/$$max_retries: waiting 10s before retry...';
+          sleep 10;
+        done;
+        echo 'Starting Unified server (AG-UI + A2A)...';
+        npx tsx unified-server.ts
+      "
+    ports:
+      - "8127:8127"
+    volumes:
+      - .:/app
+      - agent_node_modules_4:/app/node_modules
+    env_file: *compose_env_files
+    environment:
+      - NODE_ENV=development
+      - PORT=8127
+      - HOST=0.0.0.0
+      - RUNTIME_API_URL=http://web:3001
+    restart: on-failure:3
+    depends_on:
+      temporal:
+        condition: service_healthy
+      web:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:8127/health',res=>{process.exit(res.statusCode===200?0:1)}).on('error',()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+
+  # ==========================================
+  # API AGENT - UNIFIED
+  # ==========================================
+  # Single unified server handles both AG-UI (CopilotKit) and A2A (orchestrator) protocols
+
+  api-agent:
+    image: node:22-alpine
+    container_name: fabric-api-agent
+    working_dir: /app/agents/langchain/api-agent
+    command: >
+      sh -c "
+        retry_count=0;
+        max_retries=3;
+        until corepack enable && pnpm install; do
+          retry_count=$$((retry_count + 1));
+          if [ $$retry_count -ge $$max_retries ]; then
+            echo 'Failed to install dependencies after $$max_retries attempts';
+            exit 1;
+          fi;
+          echo 'Retry $$retry_count/$$max_retries: waiting 10s before retry...';
+          sleep 10;
+        done;
+        echo 'Starting Unified server (AG-UI + A2A)...';
+        npx tsx unified-server.ts
+      "
+    ports:
+      - "8131:8131"
+    volumes:
+      - .:/app
+      - agent_node_modules_5:/app/node_modules
+    env_file: *compose_env_files
+    environment:
+      - NODE_ENV=development
+      - PORT=8131
+      - HOST=0.0.0.0
+      - RUNTIME_API_URL=http://web:3001
+    restart: on-failure:3
+    depends_on:
+      temporal:
+        condition: service_healthy
+      web:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:8131/health',res=>{process.exit(res.statusCode===200?0:1)}).on('error',()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+
+  # ==========================================
+  # PROMPT ENHANCER AGENT - UNIFIED
+  # ==========================================
+  # Single unified server handles both AG-UI (CopilotKit) and A2A (orchestrator) protocols
+
+  prompt-enhancer:
+    image: node:22-alpine
+    container_name: fabric-prompt-enhancer
+    working_dir: /app/agents/langchain/prompt-enhancer
+    command: >
+      sh -c "
+        retry_count=0;
+        max_retries=3;
+        until corepack enable && pnpm install; do
+          retry_count=$$((retry_count + 1));
+          if [ $$retry_count -ge $$max_retries ]; then
+            echo 'Failed to install dependencies after $$max_retries attempts';
+            exit 1;
+          fi;
+          echo 'Retry $$retry_count/$$max_retries: waiting 10s before retry...';
+          sleep 10;
+        done;
+        echo 'Starting Unified Server (AG-UI + A2A)...';
+        npx tsx unified-server.ts
+      "
+    ports:
+      - "8134:8134"
+    volumes:
+      - .:/app
+      - agent_node_modules_8:/app/node_modules
+    env_file: *compose_env_files
+    environment:
+      - NODE_ENV=development
+      - PORT=8134
+      - HOST=0.0.0.0
+      - RUNTIME_API_URL=http://web:3001
+    restart: on-failure:3
+    depends_on:
+      temporal:
+        condition: service_healthy
+      web:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:8134/health',res=>{process.exit(res.statusCode===200?0:1)}).on('error',()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+
+  # Custom Agent Runtime - hosts user-created custom agents
+  custom-agent-runtime:
+    image: node:22-alpine
+    container_name: fabric-custom-agent-runtime
+    working_dir: /app/agents/langchain/custom-agent-runtime
+    command: >
+      sh -c "
+        retry_count=0;
+        max_retries=3;
+        until corepack enable && pnpm install; do
+          retry_count=$$((retry_count + 1));
+          if [ $$retry_count -ge $$max_retries ]; then
+            echo 'Failed to install dependencies after $$max_retries attempts';
+            exit 1;
+          fi;
+          echo 'Retry $$retry_count/$$max_retries: waiting 10s before retry...';
+          sleep 10;
+        done;
+        echo 'Starting Custom Agent Runtime A2A server...';
+        npx tsx server.ts
+      "
+    ports:
+      - "8240:8240"
+    volumes:
+      - .:/app
+      - agent_node_modules_9:/app/node_modules
+    env_file: *compose_env_files
+    environment:
+      - NODE_ENV=development
+      - PORT=8240
+      - HOST=0.0.0.0
+      - RUNTIME_API_URL=http://web:3001
+    restart: on-failure:3
+    depends_on:
+      temporal:
+        condition: service_healthy
+      web:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:8240/health',res=>{process.exit(res.statusCode===200?0:1)}).on('error',()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+
+  # ==========================================
+  # PARTYKIT - REAL-TIME COLLABORATION
+  # ==========================================
+  # PartyKit server for real-time collaboration features (document editing, presence, etc.)
+
+  partykit:
+    image: node:22
+    container_name: fabric-partykit
+    working_dir: /app/party
+    command: >
+      sh -c "
+        retry_count=0;
+        max_retries=3;
+        until corepack enable && pnpm install; do
+          retry_count=$$((retry_count + 1));
+          if [ $$retry_count -ge $$max_retries ]; then
+            echo 'Failed to install dependencies after $$max_retries attempts';
+            exit 1;
+          fi;
+          echo 'Retry $$retry_count/$$max_retries: waiting 10s before retry...';
+          sleep 10;
+        done;
+        echo 'Starting PartyKit server...';
+        ./start-dev.sh
+      "
+    ports:
+      - "1999:1999"
+    volumes:
+      - .:/app
+      - partykit_node_modules:/app/party/node_modules
+    env_file: *compose_env_files
+    environment:
+      - NODE_ENV=development
+      - PARTYKIT_PORT=1999
+      - HOST=0.0.0.0
+    restart: on-failure:3
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:1999/parties/health/test',res=>{process.exit(res.statusCode===200?0:1)}).on('error',()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  # ==========================================
+  # Weave multi-agent services (plan, read, implement)
+
+  weave-readers:
+    image: node:22-alpine
+    container_name: fabric-weave-readers
+    working_dir: /app
+    command: >
+      sh -c "
+        corepack enable &&
+        cd /app/agents/langchain/weave-readers &&
+        pnpm exec tsx src/index.ts
+      "
+    ports:
+      - "8140:8140"
+    volumes:
+      - .:/app
+    env_file: *compose_env_files
+    environment:
+      - NODE_ENV=development
+      - PORT=8140
+      - HOST=0.0.0.0
+    restart: on-failure:3
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8140/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  weave-planners:
+    image: node:22-alpine
+    container_name: fabric-weave-planners
+    working_dir: /app
+    command: >
+      sh -c "
+        corepack enable &&
+        cd /app/agents/langchain/weave-planners &&
+        pnpm exec tsx src/index.ts
+      "
+    ports:
+      - "8142:8142"
+    volumes:
+      - .:/app
+    env_file: *compose_env_files
+    environment:
+      - NODE_ENV=development
+      - PORT=8142
+      - HOST=0.0.0.0
+    restart: on-failure:3
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      weave-readers:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8142/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  weave-shuttle:
+    image: node:22-alpine
+    container_name: fabric-weave-shuttle
+    working_dir: /app
+    command: >
+      sh -c "
+        corepack enable &&
+        cd /app/agents/langchain/weave-shuttle &&
+        pnpm exec tsx src/index.ts
+      "
+    ports:
+      - "8141:8141"
+    volumes:
+      - .:/app
+    env_file: *compose_env_files
+    environment:
+      - NODE_ENV=development
+      - PORT=8141
+      - HOST=0.0.0.0
+      - FABRIC_INTERNAL_URL=http://fabric-web:3001
+    restart: on-failure:3
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8141/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  temporal-worker:
+    image: node:22-bookworm
+    container_name: fabric-temporal-worker
+    working_dir: /app
+    command: >
+      sh -c "
+        retry_count=0;
+        max_retries=3;
+        until corepack enable && pnpm install; do
+          retry_count=$$((retry_count + 1));
+          if [ $$retry_count -ge $$max_retries ]; then
+            echo 'Failed to install dependencies after $$max_retries attempts';
+            exit 1;
+          fi;
+          echo 'Retry $$retry_count/$$max_retries: waiting 10s before retry...';
+          sleep 10;
+        done;
+        pnpm --filter @repo/temporal worker:dev
+      "
+    volumes:
+      - .:/app
+      - temporal_worker_node_modules:/app/node_modules
+    env_file: *compose_env_files
+    environment:
+      - NODE_ENV=development
+    restart: on-failure:3
+    depends_on:
+      temporal:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+
+  web:
+    image: node:22-alpine
+    container_name: fabric-web
+    working_dir: /app
+    command: >
+      sh -c "
+        retry_count=0;
+        max_retries=3;
+        until corepack enable && pnpm install; do
+          retry_count=$$((retry_count + 1));
+          if [ $$retry_count -ge $$max_retries ]; then
+            echo 'Failed to install dependencies after $$max_retries attempts';
+            exit 1;
+          fi;
+          echo 'Retry $$retry_count/$$max_retries: waiting 10s before retry...';
+          sleep 10;
+        done;
+        NEXT_DISABLE_FILE_WATCHING=true pnpm --filter web dev
+      "
+    ports:
+      - "3000:3001"
+    volumes:
+      - .:/app
+      - web_node_modules:/app/node_modules
+    env_file: *compose_env_files
+    environment:
+      - NODE_ENV=development
+      - NODE_OPTIONS=--dns-result-order=ipv4first
+      - DOCKER_CONTAINER=true
+    restart: on-failure:3
+    depends_on:
+      postgres:
+        condition: service_healthy
+      temporal:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+
+  # ==========================================
+  # Observability Stack
+  # ==========================================
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: fabric-prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--web.console.libraries=/usr/share/prometheus/console_libraries"
+      - "--web.console.templates=/usr/share/prometheus/consoles"
+      - "--web.enable-lifecycle"
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+      - ./monitoring/prometheus/alerts:/etc/prometheus/alerts
+      - prometheus_data:/prometheus
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:9090/-/healthy"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: fabric-grafana
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_SERVER_ROOT_URL=http://localhost:3100
+      - GF_INSTALL_PLUGINS=grafana-piechart-panel
+    ports:
+      - "3100:3001"
+    volumes:
+      - ./monitoring/grafana/dashboards:/etc/grafana/dashboards
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning
+      - grafana_data:/var/lib/grafana
+    depends_on:
+      - prometheus
+      - jaeger
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3001/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    container_name: fabric-jaeger
+    environment:
+      - COLLECTOR_ZIPKIN_HOST_PORT=:9411
+      - COLLECTOR_OTLP_ENABLED=true
+    ports:
+      - "16686:16686"      # Jaeger UI
+      - "4318:4318"        # OTLP HTTP receiver
+      - "4317:4317"        # OTLP gRPC receiver
+      - "5778:5778"        # Serve configs
+      - "14268:14268"      # Accept jaeger.thrift directly
+      - "14250:14250"      # Accept model.proto
+      - "9411:9411"        # Zipkin compatible endpoint
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:14269/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  node-exporter:
+    image: prom/node-exporter:latest
+    container_name: fabric-node-exporter
+    command:
+      - "--path.procfs=/host/proc"
+      - "--path.sysfs=/host/sys"
+      - "--path.rootfs=/host"
+      - "--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)"
+    ports:
+      - "9100:9100"
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+
+volumes:
+  postgres_data:
+  minio_data:
+  temporal_data:
+  qdrant_storage:
+  redis_data:
+  agent_node_modules_1:  # document-generator
+  agent_node_modules_2:  # project-document-generator
+  agent_node_modules_3:  # task-planner
+  agent_node_modules_4:  # story-breakdown
+  agent_node_modules_5:  # api-agent
+  # agent_node_modules_6: removed - browser-agent replaced by cuga
+  # agent_node_modules_7: removed - code-executor deprecated, use cuga
+  agent_node_modules_8:  # prompt-enhancer
+  agent_node_modules_9:  # custom-agent-runtime
+  partykit_node_modules:  # partykit
+  temporal_worker_node_modules:
+  web_node_modules:
+  prometheus_data:
+  grafana_data:

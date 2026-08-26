@@ -1,0 +1,506 @@
+---
+title: Fabric Loom
+description: The intelligent orchestrator that routes tasks, manages workflows, and learns from experience.
+---
+
+Fabric Loom (the orchestrator) is the brain of Fabric AI. It intelligently routes your requests to the right agents and tools, manages complex multi-step workflows, and learns from every interaction to get better over time.
+
+## What Makes the Orchestrator Special?
+
+### Before the Orchestrator
+
+```mermaid
+flowchart TB
+    U["User: 'Create a PRD and add stories to Jira'"]
+
+    U --> M
+
+    subgraph M["Manual Process"]
+        M1[1. Open Document Generator]
+        M2[2. Generate PRD]
+        M3[3. Copy PRD content]
+        M4[4. Open Jira]
+        M5[5. Manually create stories]
+        M6[6. Hope nothing fails]
+        M1 --> M2 --> M3 --> M4 --> M5 --> M6
+    end
+```
+
+### With the Orchestrator
+
+```mermaid
+flowchart TB
+    U["User: 'Create a PRD and add stories to Jira'"]
+
+    U --> O
+
+    subgraph O["Orchestrator"]
+        O1[1. Detect user intent]
+        O2[2. Retrieve workspace context]
+        O3[3. Create execution plan]
+        O4[4. Generate PRD]
+        O5[5. Create Jira tickets]
+        O6[6. Handle errors automatically]
+        O7[7. Learn for next time]
+        O1 --> O2 --> O3 --> O4 --> O5 --> O6 --> O7
+    end
+
+    O --> R[PRD + Jira stories created ✓]
+```
+
+## Core Capabilities
+
+### 1. User Intent Detection
+
+The Orchestrator understands what you're asking for, including explicit requests:
+
+```mermaid
+flowchart TB
+    R["Request: 'Use the Jira tool to get my open tickets'"]
+    R --> I
+
+    subgraph I["Intent Detection"]
+        I1["Explicit tool request: Jira"]
+        I2["Operation: read/list"]
+        I3["Skip semantic search"]
+    end
+
+    I --> J[Use Jira MCP directly]
+```
+
+**Recognized intents:**
+- **Explicit tool requests** — "use the Jira tool", "search with GitHub"
+- **YouTube URLs** — Automatically routes to transcript extraction
+- **Workspace references** — "my docs", "attached files" → use RAG
+- **Integration triggers** — "post to Slack", "send an email"
+- **Fabric patterns** — "summarize", "extract wisdom", "analyze claims"
+
+### 2. Semantic Routing
+
+The Orchestrator uses AI embeddings to find the best executor for your task:
+
+```mermaid
+flowchart TB
+    R["Request: 'Post this update to our team Slack'"]
+    R --> S
+
+    subgraph S["Semantic Search"]
+        Q["Query: 'post update slack'"]
+        Q --> RES
+        subgraph RES["Results"]
+            R1["slack integration: send_message (0.96)"]
+            R2["slack-mcp: post_message (0.91)"]
+            R3["notification-agent (0.71)"]
+        end
+    end
+
+    S --> U[Use Slack integration - fastest]
+```
+
+**Why this matters:**
+- No need to remember which tool does what
+- Works with 100+ tools without confusion
+- Natural language understanding
+- Respects explicit user preferences
+
+### 3. Task Planning
+
+Complex requests are automatically decomposed:
+
+```mermaid
+flowchart TB
+    R["Request: 'Create a PRD for auth, generate stories, post to Slack'"]
+    R --> PLAN
+
+    subgraph PLAN["Task Plan"]
+        S1["**Step 1: Generate PRD**<br/>Executor: document-generator<br/>Outputs: prd_document"]
+        S2["**Step 2: Extract Stories**<br/>Executor: task-planner<br/>Inputs: prd_document<br/>Outputs: story_list"]
+        S3["**Step 3: Create Jira Tickets**<br/>Executor: jira-mcp<br/>Inputs: story_list<br/>Outputs: ticket_ids"]
+        S4["**Step 4: Post to Slack**<br/>Executor: slack integration<br/>Inputs: prd_document, ticket_ids"]
+
+        S1 --> S2 --> S3 --> S4
+    end
+```
+
+### 4. Priority-Based Executor Assignment
+
+Each step is assigned the optimal executor based on capability and speed:
+
+| Priority | Executor Type | Use Case |
+|----------|--------------|----------|
+| 1 | Workflow Integrations | Slack, GitHub, Email—fastest path |
+| 2 | MCP Tools | Connected services via MCP protocol |
+| 3 | Fabric AI Tools | YouTube, web scraping, audio |
+| 4 | Specialized Agents | Tasks requiring AI reasoning |
+| 5 | Pre-defined Workflows | Complex automations |
+| 6 | LLM | Simple text generation |
+| 7 | Web/Browser | Browser automation (last resort) |
+
+### 5. Context Flow
+
+Each step can use outputs from previous steps:
+
+```mermaid
+flowchart TB
+    S1["**Step 1 Output**<br/>prd_document: '## Authentication PRD...'"]
+    S1 --> S2
+
+    S2["**Step 2**<br/>Input: prd_document<br/>Output: stories: ['Login flow', ...]"]
+    S2 --> S3
+
+    S3["**Step 3**<br/>Input: stories<br/>Output: ticket_ids: ['AUTH-1', 'AUTH-2']"]
+    S3 --> S4
+
+    S4["**Step 4**<br/>Input: prd_document + ticket_ids<br/>Output: 'Posted to #engineering'"]
+```
+
+**Variable interpolation** allows referencing previous step outputs using template syntax like `{{step-1.output.title}}`.
+
+### 6. Trust-Based Approvals
+
+The Orchestrator learns what you approve:
+
+```mermaid
+flowchart LR
+    subgraph W1["Week 1 - Learning"]
+        A1["Post to Slack? [Approve]"]
+        A2["Create Jira? [Approve]"]
+        A3["Post to Slack? [Approve]"]
+        A4["Create Jira? [Approve]"]
+    end
+
+    subgraph W4["Week 4 - Trusted"]
+        B1["Post to Slack: ✅ Auto-approved"]
+        B2["Create Jira: ✅ Auto-approved"]
+        B3["Delete 50 records: ⚠️ Always ask"]
+    end
+
+    W1 --> W4
+```
+
+### 7. Memory System
+
+The Orchestrator remembers what works and what doesn't:
+
+**Positive Memory:**
+- Successful routing patterns
+- Effective tool combinations
+- Working prompts and parameters
+
+**Negative Memory:**
+- Failed approaches
+- Rate-limited operations
+- Error-prone patterns
+
+```
+New request similar to past failure:
+"⚠️ Similar task failed 3 days ago due to rate limiting.
+ Automatically batching operations with delays."
+```
+
+### 8. Graceful Recovery
+
+When things go wrong, the Orchestrator handles it:
+
+| Error Type | Response |
+|------------|----------|
+| Timeout | Retry with longer timeout |
+| Rate limit | Exponential backoff |
+| Network error | Retry with backoff |
+| Validation error | Fix and retry once |
+| Not found | Skip step, continue |
+| Auth error | Fail gracefully, alert user |
+
+## Workflow Integrations
+
+The Orchestrator includes built-in integrations for common services—faster than MCP:
+
+### Available Integrations
+
+| Integration | Operations | Speed |
+|------------|------------|-------|
+| **Slack** | send_message, post_notification, send_dm | ~200ms |
+| **GitHub** | create_issue, create_pr, list_issues | ~300ms |
+| **Linear** | create_issue, list_issues, update_issue | ~250ms |
+| **Email** | send_email (via Resend) | ~400ms |
+| **Webhooks** | Custom HTTP calls | ~200ms |
+
+### Integration vs. MCP Tools
+
+```mermaid
+flowchart TB
+    R["'Post to Slack'"]
+
+    R --> I["**Integration Path**<br/>Direct API Call<br/>~200ms ⚡"]
+    R --> M["**MCP Path**<br/>MCP Protocol<br/>~800ms"]
+
+    I --> C["Orchestrator chooses faster path"]
+    M -.-> C
+```
+
+## Fabric AI Tools
+
+Built-in tools for content processing without external dependencies:
+
+### YouTube Tools
+
+- `fabric_youtube_transcript` — Extract raw transcripts with optional timestamps
+- `fabric_analyze_youtube` — Apply patterns: summarize, extract_wisdom, analyze_claims, create_keynote
+
+```mermaid
+flowchart TB
+    R["Request: 'Summarize this YouTube video...'"]
+    R --> Y
+
+    subgraph Y["Fabric AI YouTube Tool"]
+        Y1[1. Extract transcript]
+        Y2[2. Apply summarize pattern]
+        Y3[3. Return structured summary]
+        Y1 --> Y2 --> Y3
+    end
+```
+
+### Web Tools
+
+- `fabric_scrape_url` — Scrape and readability-enhance web content
+- `fabric_analyze_webpage` — Apply Fabric patterns to web content
+
+### Audio Tools
+
+- `fabric_transcribe_audio` — Convert audio files to text
+
+## MCP Tool Integration
+
+The Orchestrator can execute MCP tools directly:
+
+### Available Tools
+
+- **GitHub** — Issues, PRs, repositories
+- **Jira** — Tickets, sprints, projects
+- **Slack** — Messages, channels
+- **Notion** — Pages, databases
+- **Linear** — Issues, projects
+- And many more...
+
+### Tool Selection
+
+The Orchestrator automatically selects tools:
+
+```mermaid
+flowchart TB
+    R["Request: 'Create a Jira ticket for the login bug'"]
+    R --> T
+
+    subgraph T["Tool Selection"]
+        T1["Search: 'create jira ticket'"]
+        T2["Match: jira-mcp → create_issue (0.96)"]
+        T3["Decision: Use MCP tool directly"]
+        T1 --> T2 --> T3
+    end
+```
+
+### Tool vs. Agent Delegation
+
+| Scenario | Use Tool | Use Agent |
+|----------|----------|-----------|
+| Direct API call | ✓ | |
+| Simple CRUD | ✓ | |
+| Needs reasoning | | ✓ |
+| Complex generation | | ✓ |
+| Multi-step logic | | ✓ |
+
+## Starred Preferences
+
+Prioritize your favorite tools, servers, and agents:
+
+### How to Star
+
+1. Go to **Settings → MCP Servers** or **Agents**
+2. Click the ⭐ icon next to items you use frequently
+3. Starred items get priority in routing decisions
+
+### What Starring Does
+
+| Starred Item | Effect |
+|-------------|--------|
+| MCP Server | ALL tools from that server get elevated priority |
+| Specific Tool | Individual tool boosted in semantic search |
+| Agent | Preferred agent considered first for delegation |
+| Integration | Favorite integration prioritized |
+
+## Using the Orchestrator
+
+### Starting a Conversation
+
+1. Go to **Agents → Fabric AI (Orchestrator)**
+2. Type your request naturally
+3. The Orchestrator handles the rest
+
+### Example Requests
+
+**Simple:**
+```
+"Create a PRD for user authentication"
+```
+
+**Multi-step:**
+```
+"Create a PRD for the payment feature, then generate
+user stories and create them in Jira"
+```
+
+**With context:**
+```
+"Based on our Q4 roadmap, create a technical spec
+for the new API gateway and post a summary to #engineering"
+```
+
+**YouTube processing:**
+```
+"Summarize this video and extract the key insights:
+https://youtube.com/watch?v=..."
+```
+
+**Web research:**
+```
+"Scrape this article and create a summary with key takeaways:
+https://example.com/article"
+```
+
+### Execution Modes
+
+Choose the right mode for your task:
+
+| Mode | Max Steps | Use Case |
+|------|-----------|----------|
+| Lite | 10 | Quick tasks, simple queries |
+| Balanced | 20 | Standard workflows (default) |
+| Deep | 25 | Complex multi-agent tasks |
+
+### Attaching Context
+
+Improve results by attaching:
+
+- **Workspaces** — Documents for RAG context
+- **Projects** — Previous project documents
+- **Specific files** — Upload directly
+
+## Workflow Visualization
+
+Watch your workflow execute in real-time:
+
+```mermaid
+flowchart TB
+    subgraph WF["Workflow Progress"]
+        S1["✓ Step 1: Generate PRD<br/>document-generator • 3.2s"]
+        S2["● Step 2: Extract Stories<br/>task-planner • Processing..."]
+        S3["○ Step 3: Create Jira Tickets<br/>Pending"]
+        S4["○ Step 4: Post to Slack<br/>Pending"]
+
+        S1 --> S2 --> S3 --> S4
+    end
+```
+
+## Approval Workflows
+
+### When Approvals Are Needed
+
+The Orchestrator requests approval for:
+
+1. **High-risk operations** — Delete, bulk updates
+2. **External actions** — First-time tool usage
+3. **Expensive operations** — Large API calls
+4. **Unknown patterns** — New types of requests
+
+### Risk Levels
+
+| Operation | Risk Level | Approval |
+|-----------|------------|----------|
+| Read/List/Search | Low | Auto-approved |
+| Update/Modify | Medium | Check trust history |
+| Create/Insert | High | Ask if untrusted |
+| Delete/Bulk ops | Critical | Always ask |
+| Code execution | Medium+ | Check trust history |
+| Browser automation | Medium+ | Check trust history |
+
+### Approval Interface
+
+```mermaid
+flowchart TB
+    subgraph APPROVAL["Approval Required"]
+        direction TB
+        T["**The workflow wants to:**"]
+        A1["✓ Create PRD document (auto-approved)"]
+        A2["✓ Generate 5 user stories (auto-approved)"]
+        A3["⚠️ Create 5 Jira tickets"]
+
+        R["**Affected resources:**<br/>Jira project: AUTH<br/>5 new tickets"]
+
+        B1["[Approve All]"]
+        B2["[Approve Without Jira]"]
+        B3["[Reject]"]
+    end
+```
+
+### Consolidated Prompts
+
+Multiple approvals are grouped into one:
+
+```
+Before: 5 separate approval prompts
+After:  1 consolidated prompt with all actions listed
+```
+
+## Advanced Features
+
+### Follow-up Handling
+
+The Orchestrator understands context:
+
+```
+You: "Create a PRD for auth"
+Orchestrator: [Generates PRD]
+
+You: "Actually, also include OAuth support"
+Orchestrator: "Updating PRD to include OAuth..."
+[Modifies existing document, not starting over]
+```
+
+### Journey Tracking
+
+Full context is maintained:
+
+- Current phase of execution
+- Decisions made and why
+- Assumptions with confidence levels
+- All artifacts generated
+- Complete conversation history
+
+### Real-time Signals
+
+Query workflow state anytime to see current progress, generated artifacts, and execution status.
+
+### Generalist Agent Delegation
+
+For complex tasks requiring autonomous execution:
+
+| Delegation Mode | Behavior |
+|----------------|----------|
+| `single-step` | Orchestrator decomposes, agent executes steps |
+| `complete-task` | Agent handles entire task autonomously |
+
+---
+
+## Next Steps
+
+<Cards>
+  <Card title="Document Generator" href="/docs/agents/document-generator">
+    Learn about the document generation agent
+  </Card>
+  <Card title="MCP Integration" href="/docs/integrations/mcp">
+    Connect external tools
+  </Card>
+  <Card title="Workflows" href="/docs/core-concepts/workflows">
+    Understand durable workflow execution
+  </Card>
+</Cards>

@@ -1,0 +1,55 @@
+{
+	"dependencies": {
+		"@ai-sdk/anthropic": "^3.0.0",
+		"@ai-sdk/cerebras": "^2.0.5",
+		"@ai-sdk/deepseek": "^2.0.0",
+		"@ai-sdk/groq": "^3.0.1",
+		"@ai-sdk/openai": "^3.0.0",
+		"@repo/agent-prompts": "workspace:*",
+		"@repo/config": "workspace:*",
+		"@repo/database": "workspace:*",
+		"@repo/permissions": "workspace:*",
+		"@repo/databricks": "workspace:*",
+		"@repo/logs": "workspace:*",
+		"@repo/payments": "workspace:*",
+		"@repo/storage": "workspace:*",
+		"@repo/utils": "workspace:*",
+		"ai": "^6.0.116",
+		"undici": "^8.5.0",
+		"zod": "^4.3.6"
+	},
+	"devDependencies": {
+		"@repo/tsconfig": "workspace:*",
+		"typescript": "5.9.3",
+		"vitest": "^4.1.8"
+	},
+	"main": "./index.ts",
+	"name": "@repo/ai",
+	"private": true,
+	"exports": {
+		".": "./index.ts",
+		"./model-factory": "./model-factory.ts",
+		"./models": "./lib/models.ts",
+		"./prompts": "./lib/prompts.ts",
+		"./streaming": "./lib/streaming-optimizations.ts",
+		"./model-selector": "./lib/dynamic-model-selector.ts",
+		"./gateway": "./lib/gateway-config.ts",
+		"./capabilities": "./lib/model-capabilities.ts",
+		"./title-generator": "./lib/title-generator.ts",
+		"./sidekick": "./sidekick/index.ts",
+		"./sidekick/constants": "./sidekick/constants.ts",
+		"./sidekick/prompt": "./sidekick/prompt.ts",
+		"./skills": "./skills/index.ts",
+		"./limits": "./limits/index.ts",
+		"./prompt-cache": "./lib/prompt-cache.ts",
+		"./lib/*": "./lib/*.ts"
+	},
+	"scripts": {
+		"type-check": "tsc --noEmit",
+		"test": "vitest run",
+		"test:watch": "vitest"
+	},
+	"types": "./index.ts",
+	"version": "0.0.3",
+	"license": "Apache-2.0"
+}

@@ -1,0 +1,75 @@
+---
+title: Jira
+description: Jira verbinden, damit Fabric-Agenten und -Workflows Issues als Laufzeit-Aktionen erstellen und durchsuchen können.
+---
+
+Verbinden Sie Jira mit Fabric AI, damit Agenten und Workflows Issues erstellen und Ihre Projekte mit JQL durchsuchen können — als Live-Laufzeit-Aktionen.
+
+Jira ist ein **Hybrid**-Anbieter: Er bietet sowohl Wissens- (Suche) als auch Schreib- (Erstellen) Aktionen.
+
+<Callout type="info">
+Jira und Confluence teilen sich eine **Atlassian**-Verbindung — Fabric verwendet Atlassians offiziellen Rovo-MCP-Server, sodass eine einzige OAuth-Autorisierung beide freischaltet. Siehe auch [Confluence](/docs/integrations/confluence).
+</Callout>
+
+## Jira einrichten
+
+<Steps>
+  <Step>
+    ### Jira unter Integrationen öffnen
+
+    Gehen Sie zu **Einstellungen → Integrationen** und öffnen Sie die **Jira**-Karte.
+  </Step>
+
+  <Step>
+    ### Aktionen einrichten
+
+    Klicken Sie auf **Aktionen einrichten** und autorisieren Sie Fabric AI bei Atlassian (OAuth). Dies verbindet sowohl Jira als auch Confluence.
+  </Step>
+
+  <Step>
+    ### Bestätigen
+
+    Der Anbieter zeigt **Verbunden** mit seinen verfügbaren Laufzeit-Aktionen.
+  </Step>
+</Steps>
+
+## Verfügbare Aktionen
+
+| Aktion | Typ | Beschreibung |
+|--------|------|-------------|
+| **Search Jira Issues** | Wissen | Jira-Issues mit JQL durchsuchen |
+| **Create Jira Issue** | Aktion | Ein neues Issue in einem Jira-Projekt erstellen |
+
+### Im KI-Chat
+
+```
+"Finde alle offenen Bugs, die mir im MOBILE-Projekt zugewiesen sind"
+
+"Erstelle eine Jira-Story für den Onboarding-Flow, den wir gerade spezifiziert haben"
+```
+
+## Trennen & erneut verbinden
+
+1. Öffnen Sie **Einstellungen → Integrationen → Jira**
+2. Klicken Sie auf **Trennen** (dies trennt auch die gemeinsame Atlassian-Verbindung, die Confluence nutzt)
+3. Zum erneuten Verbinden klicken Sie wieder auf **Aktionen einrichten** und autorisieren erneut
+
+## Fehlerbehebung
+
+### Issues werden nicht gefunden
+- Prüfen Sie, ob die Verbindung **Verbunden** anzeigt
+- Überprüfen Sie Ihre JQL und ob das autorisierte Konto das Projekt sehen kann
+- Stellen Sie sicher, dass bei der Autorisierung die richtige Atlassian-Site ausgewählt wurde
+
+---
+
+## Nächste Schritte
+
+<Cards>
+  <Card title="Confluence" href="/docs/integrations/confluence">
+    Die andere Hälfte der gemeinsamen Atlassian-Verbindung
+  </Card>
+  <Card title="MCP-Integration" href="/docs/integrations/mcp">
+    Wie verbundene Tools zur Laufzeit aufgerufen werden
+  </Card>
+</Cards>

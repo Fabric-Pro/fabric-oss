@@ -1,0 +1,159 @@
+---
+title: Skills
+description: Browse and create reusable skill modules that extend agent capabilities.
+---
+
+Skills are modular, self-contained instruction sets in Markdown format. Attach them to agent templates or report templates to give agents specialized capabilities without rewriting instructions.
+
+## What is a Skill?
+
+A skill is a Markdown document containing focused instructions for a specific capability. When attached to an agent, the skill content becomes part of the agent's memory as a file (`skills/{slug}/SKILL.md`).
+
+**Example:** A "research-methodology" skill might contain instructions for systematic literature review, source evaluation criteria, and citation formatting rules.
+
+## Browsing the Catalog
+
+Navigate to **Skills** in the left sidebar to access the skill catalog.
+
+### Filtering
+
+- **Search** — Find skills by name or description
+- **Scope** — Filter by All, System, Organization, or Personal
+- **Category** — Quick filter by category tags
+
+### Skill Scopes
+
+| Scope | Visibility | Editable By |
+|-------|------------|-------------|
+| **System** | Everyone | Read-only (built-in) |
+| **Organization** | Org members only | Org owners and admins |
+| **User** | Only you | Only you |
+
+## Creating a Skill
+
+<Steps>
+  <Step>
+    ### Click "Create Skill"
+
+    From the Skills catalog, click the create button.
+  </Step>
+
+  <Step>
+    ### Define the Skill
+
+    Fill in the details:
+
+    - **Name** — Descriptive name (e.g., "Code Review Best Practices")
+    - **Slug** — URL-friendly identifier (e.g., `code-review-best-practices`)
+    - **Description** — What this skill enables
+    - **Category** — Organizational category (e.g., "engineering", "research")
+    - **Tags** — Additional labels for filtering
+  </Step>
+
+  <Step>
+    ### Write the Content
+
+    Write the skill instructions in Markdown. Be clear and specific:
+
+    ```markdown
+    # Code Review Best Practices
+
+    ## Review Checklist
+    - Check for security vulnerabilities (OWASP Top 10)
+    - Verify error handling covers edge cases
+    - Ensure tests cover new functionality
+    - Check for performance implications
+
+    ## Communication Style
+    - Be constructive, not critical
+    - Suggest improvements with examples
+    - Acknowledge good patterns
+    ```
+  </Step>
+
+  <Step>
+    ### Set Scope and Publish
+
+    Choose the scope:
+    - **Personal** — Only you can use it
+    - **Organization** — Share with your team
+
+    Toggle **Published** to make it available in the catalog.
+  </Step>
+</Steps>
+
+## Using Skills
+
+### With Agent Templates
+
+1. Open an agent template's detail page
+2. Go to the **Skills** section
+3. Click **Attach** and select skills from the catalog
+4. Set the **sort order** (determines priority)
+5. Mark skills as **required** or optional
+
+When an instance is created from the template, attached skills are materialized into the agent's memory.
+
+### With Report Templates
+
+1. Open a report template's detail page
+2. Go to the **Skills** section
+3. Attach relevant skills
+4. Skills provide additional instructions for AI-powered report enrichment
+
+### Scope Rules for Attachment
+
+- **System skills** can attach to any template
+- **Organization skills** only attach to templates in the same organization
+- **User skills** only attach to your personal templates
+
+## Skill Materialization
+
+When you create an agent instance from a template with attached skills:
+
+1. Each skill is copied into the instance's memory as `skills/{slug}/SKILL.md`
+2. The agent reads these files as part of its instructions
+3. You can edit materialized skills in the instance without affecting the original
+4. The original skill is tracked via a `sourceSkillId` link
+
+## Versioning
+
+Skills support simple version tracking:
+
+- Each update increments the version number
+- Agent instances that materialized an older version are not automatically updated
+- To update an instance's skills, re-initialize its memory from the template
+
+## Best Practices
+
+### Writing Effective Skills
+
+- **Be focused** — One capability per skill
+- **Use clear structure** — Headings, checklists, and examples
+- **Include examples** — Show the agent what good output looks like
+- **Define boundaries** — Specify what the skill should and should not do
+
+### Organization
+
+- **Descriptive slugs** — `data-analysis-methodology` not `skill-1`
+- **Consistent categories** — Use the same categories across your team
+- **Tag generously** — Multiple tags make skills easier to find
+
+### Maintenance
+
+- **Review periodically** — Update skills as best practices evolve
+- **Track usage** — The catalog shows how often each skill is used
+- **Archive unused skills** — Unpublish skills that are no longer relevant
+
+---
+
+## Next Steps
+
+<Cards>
+  <Card title="Agent Templates" href="/docs/features/agent-templates">
+    Attach skills to agent templates
+  </Card>
+  <Card title="Reports" href="/docs/features/reports">
+    Use skills to enhance report generation
+  </Card>
+</Cards>

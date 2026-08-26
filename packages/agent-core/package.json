@@ -1,0 +1,114 @@
+{
+	"name": "@repo/agent-core",
+	"version": "0.1.3",
+	"license": "Apache-2.0",
+	"private": true,
+	"type": "module",
+	"exports": {
+		".": {
+			"types": "./src/index.ts",
+			"default": "./src/index.ts"
+		},
+		"./a2a": {
+			"types": "./src/a2a/index.ts",
+			"default": "./src/a2a/index.ts"
+		},
+		"./a2a/server": {
+			"types": "./src/a2a/server.ts",
+			"default": "./src/a2a/server.ts"
+		},
+		"./backend": {
+			"types": "./src/backend.ts",
+			"default": "./src/backend.ts"
+		},
+		"./adapters": {
+			"types": "./src/adapters/index.ts",
+			"default": "./src/adapters/index.ts"
+		},
+		"./reflection": {
+			"types": "./src/reflection/index.ts",
+			"default": "./src/reflection/index.ts"
+		},
+		"./hitl": {
+			"types": "./src/hitl/index.ts",
+			"default": "./src/hitl/index.ts"
+		},
+		"./trajectory": {
+			"types": "./src/trajectory/index.ts",
+			"default": "./src/trajectory/index.ts"
+		},
+		"./runtime": {
+			"types": "./src/runtime/index.ts",
+			"default": "./src/runtime/index.ts"
+		},
+		"./services/usage-logging": {
+			"types": "./src/services/usage-logging.ts",
+			"default": "./src/services/usage-logging.ts"
+		},
+		"./services/langchain-models": {
+			"types": "./src/services/langchain-models.ts",
+			"default": "./src/services/langchain-models.ts"
+		},
+		"./reasoning-trace": {
+			"types": "./src/reasoning-trace/index.ts",
+			"default": "./src/reasoning-trace/index.ts"
+		},
+		"./recursion": {
+			"types": "./src/recursion.ts",
+			"default": "./src/recursion.ts"
+		},
+		"./message-shape": {
+			"types": "./src/message-shape.ts",
+			"default": "./src/message-shape.ts"
+		},
+		"./utils/sanitize-error": {
+			"types": "./src/utils/sanitize-error.ts",
+			"default": "./src/utils/sanitize-error.ts"
+		},
+		"./unified-server": {
+			"types": "./src/unified-server.ts",
+			"default": "./src/unified-server.ts"
+		},
+		"./predictive-tool-args": {
+			"types": "./src/predictive-tool-args.ts",
+			"default": "./src/predictive-tool-args.ts"
+		},
+		"./output-truncation": {
+			"types": "./src/output-truncation.ts",
+			"default": "./src/output-truncation.ts"
+		}
+	},
+	"scripts": {
+		"type-check": "tsc --noEmit",
+		"test": "vitest run",
+		"test:watch": "vitest",
+		"test:coverage": "vitest run --coverage"
+	},
+	"dependencies": {
+		"@hono/node-server": "^2.0.11",
+		"@langchain/anthropic": "^1.3.17",
+		"@langchain/core": "^1.1.24",
+		"@langchain/groq": "1.1.0",
+		"@langchain/langgraph": "^1.1.4",
+		"@langchain/openai": "1.2.7",
+		"@repo/agent-runtime": "workspace:*",
+		"@repo/agent-tools": "workspace:*",
+		"@repo/agent-types": "workspace:*",
+		"@repo/ai": "workspace:*",
+		"@repo/ai-token": "workspace:*",
+		"@repo/database": "workspace:*",
+		"@repo/mcp": "workspace:*",
+		"@repo/observability": "workspace:*",
+		"@repo/rag": "workspace:*",
+		"hono": "^4.12.34",
+		"undici": "^8.5.0",
+		"uuid": "^14.0.1",
+		"zod": "^4.1.12"
+	},
+	"devDependencies": {
+		"@copilotkit/runtime": "1.52.0",
+		"@repo/tsconfig": "workspace:*",
+		"typescript": "5.9.3",
+		"vitest": "^4.1.8"
+	}
+}

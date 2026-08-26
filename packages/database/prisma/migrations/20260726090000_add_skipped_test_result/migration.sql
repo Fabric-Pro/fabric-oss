@@ -1,0 +1,21 @@
+-- Card 1834 (FR3) — `skipped` as a first-class test result.
+--
+-- Until now `mapRawStatusToTestResult` had nowhere to put a genuine skip, so
+-- `skipped` / `ignored` fell through to BLOCKED ("attempted, could not
+-- proceed") and read as needing attention. Meanwhile the run's `skippedCount`
+-- was counting NOT_RUN (queued / never reached), so the number labelled
+-- "skipped" in the UI meant something else entirely.
+--
+-- Additive enum value, matching the house style for enum migrations (see
+-- 20260726040000_add_qa_document_types). `IF NOT EXISTS` keeps it idempotent
+-- across re-runs and a freshly-seeded database.
+--
+-- NOTE: Postgres cannot add an enum value inside a transaction block that then
+-- USES it in the same transaction; this is a pure ALTER with no dependent DML,
+-- so the standard migration transaction is fine.
+--
+-- No backfill. Rows already stored as BLOCKED stay BLOCKED: we cannot tell in
+-- retrospect which of them were skips rather than genuine blocks, and guessing
+-- would rewrite history. Runs ingested from here on classify correctly.
+
+ALTER TYPE "test_result" ADD VALUE IF NOT EXISTS 'SKIPPED';

@@ -1,0 +1,21 @@
+{
+	"title": "Funktionen",
+	"pages": [
+		"dashboard",
+		"projects",
+		"testing",
+		"ai-chat",
+		"workflow-builder",
+		"agent-templates",
+		"skills",
+		"reports",
+		"ai-providers",
+		"data-connections",
+		"prompts",
+		"organizations",
+		"workspaces",
+		"agent-deployments",
+		"agent-memory",
+		"automation-templates"
+	]
+}

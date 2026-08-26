@@ -1,0 +1,10 @@
+# Temporal Server Dynamic Configuration
+# Increases payload size limits to handle large orchestrator responses
+# (e.g., code analysis of large repos like Fabric)
+
+limit.blobSize.error:
+  - value: 16777216  # 16MB (default: 2MB)
+    constraints: {}
+limit.blobSize.warn:
+  - value: 4194304  # 4MB (default: 256KB)
+    constraints: {}

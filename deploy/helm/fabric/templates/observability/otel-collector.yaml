@@ -1,0 +1,110 @@
+{{- if .Values.otelCollector.enabled }}
+# OpenTelemetry Collector — runs as a DaemonSet so every node exposes a local
+# OTLP endpoint reachable from workload pods via $(NODE_IP):4317 (gRPC) or
+# $(NODE_IP):4318 (HTTP). The hostPort wiring below is load-bearing: without
+# it, the NODE_IP-style endpoint is unreachable across the node.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: otel-collector-config
+  labels:
+{{- include "fabric.labels" (dict "name" "otel-collector" "Release" .Release "component" "observability") | nindent 4 }}
+data:
+  config.yaml: |
+    extensions:
+      health_check:
+        endpoint: 0.0.0.0:13133
+    receivers:
+      otlp:
+        protocols:
+          grpc:
+            endpoint: 0.0.0.0:4317
+          http:
+            endpoint: 0.0.0.0:4318
+    processors:
+      batch:
+        send_batch_size: 1024
+        timeout: 10s
+      resource:
+        attributes:
+          - key: cluster
+            value: {{ .Values.global.environment | quote }}
+            action: upsert
+    exporters:
+      awsemf:
+        region: {{ .Values.global.region | quote }}
+        log_group_name: "/fabric/{{ .Values.global.environment }}/metrics"
+        namespace: Fabric/{{ .Values.global.environment }}
+        resource_to_telemetry_conversion:
+          enabled: true
+      awsxray:
+        region: {{ .Values.global.region | quote }}
+      awscloudwatchlogs:
+        region: {{ .Values.global.region | quote }}
+        log_group_name: "/fabric/{{ .Values.global.environment }}/otel-logs"
+        log_stream_name: "otel-collector"
+    service:
+      extensions: [health_check]
+      pipelines:
+        metrics:
+          receivers: [otlp]
+          processors: [batch, resource]
+          exporters: [awsemf]
+        traces:
+          receivers: [otlp]
+          processors: [batch, resource]
+          exporters: [awsxray]
+        logs:
+          receivers: [otlp]
+          processors: [batch, resource]
+          exporters: [awscloudwatchlogs]
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: otel-collector
+  labels:
+{{- include "fabric.labels" (dict "name" "otel-collector" "Release" .Release "component" "observability") | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+{{- include "fabric.selectorLabels" (dict "name" "otel-collector" "Release" .Release) | nindent 6 }}
+  template:
+    metadata:
+      labels:
+{{- include "fabric.selectorLabels" (dict "name" "otel-collector" "Release" .Release) | nindent 8 }}
+        app.kubernetes.io/component: observability
+    spec:
+      serviceAccountName: {{ include "fabric.serviceAccountName" (dict "Values" .Values) }}
+      hostNetwork: false
+      containers:
+        - name: otel-collector
+          image: otel/opentelemetry-collector-contrib:0.95.0
+          args: ["--config=/etc/otel/config.yaml"]
+          ports:
+            - { name: otlp-grpc,    containerPort: 4317,  hostPort: 4317, protocol: TCP }
+            - { name: otlp-http,    containerPort: 4318,  hostPort: 4318, protocol: TCP }
+            - { name: metrics,      containerPort: 8888,  protocol: TCP }
+            - { name: health-check, containerPort: 13133, protocol: TCP }
+          env:
+            - name: AWS_REGION
+              value: {{ .Values.global.region | quote }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/otel
+              readOnly: true
+          resources:
+            requests: { cpu: 100m, memory: 256Mi }
+            limits:   { cpu: 500m, memory: 512Mi }
+          livenessProbe:
+            httpGet: { path: /, port: 13133 }
+            initialDelaySeconds: 10
+            periodSeconds: 30
+      volumes:
+        - name: config
+          configMap:
+            name: otel-collector-config
+            items:
+              - key: config.yaml
+                path: config.yaml
+{{- end }}

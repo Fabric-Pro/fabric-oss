@@ -1,0 +1,31 @@
+{
+	"name": "@repo/mcp",
+	"version": "0.0.4",
+	"license": "Apache-2.0",
+	"private": true,
+	"type": "module",
+	"main": "./index.ts",
+	"exports": {
+		".": "./index.ts",
+		"./lib/*": "./lib/*.ts"
+	},
+	"scripts": {
+		"test": "vitest run",
+		"test:watch": "vitest",
+		"type-check": "tsc --noEmit"
+	},
+	"dependencies": {
+		"@ai-sdk/mcp": "^1.0.0",
+		"@modelcontextprotocol/sdk": "^1.26.0",
+		"@repo/ai": "workspace:*",
+		"@repo/database": "workspace:*",
+		"@repo/utils": "workspace:*",
+		"ai": "^6.0.116",
+		"zod": "^4.3.6"
+	},
+	"devDependencies": {
+		"@repo/tsconfig": "workspace:*",
+		"typescript": "^5.9.3",
+		"vitest": "^4.1.8"
+	}
+}

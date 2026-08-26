@@ -1,0 +1,80 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`formatRagContextsSimple — wire format lock > renders a benign document attachment in a stable shape 1`] = `
+"## Files Attached This Turn
+
+The following files were attached by the user in their current message. Their
+full content is included inline below — you have already read every word.
+
+When you reference an attached file, use phrasing such as:
+  - "based on the attached <filename>"
+  - "the attached <filename> describes…"
+  - "according to the attached <filename>"
+
+Do NOT tell the user to "see", "open", "view", or "use" the attached file —
+the chat surface does not render or link to attachments, so any phrasing that
+implies the user must follow up to read the file is incorrect. The text below
+is the file content itself.
+
+### Attachment 1
+<fabric_attachment>
+[Uploaded Document: budget.xlsx]
+Sheet1
+A1	B1
+</fabric_attachment>"
+`;
+
+exports[`formatRagContextsSimple — wire format lock > renders a benign image attachment in a stable shape 1`] = `
+"## Files Attached This Turn
+
+The following files were attached by the user in their current message. Their
+full content is included inline below — you have already read every word.
+
+When you reference an attached file, use phrasing such as:
+  - "based on the attached <filename>"
+  - "the attached <filename> describes…"
+  - "according to the attached <filename>"
+
+Do NOT tell the user to "see", "open", "view", or "use" the attached file —
+the chat surface does not render or link to attachments, so any phrasing that
+implies the user must follow up to read the file is incorrect. The text below
+is the file content itself.
+
+### Attachment 1
+<fabric_attachment>
+[Uploaded Image: chart.png]
+![chart.png](data:image/png;base64,AAAA)
+</fabric_attachment>"
+`;
+
+exports[`formatRagContextsSimple — wire format lock > renders a legacy-shaped attachment in a stable shape 1`] = `
+"## Files Attached This Turn
+
+The following files were attached by the user in their current message. Their
+full content is included inline below — you have already read every word.
+
+When you reference an attached file, use phrasing such as:
+  - "based on the attached <filename>"
+  - "the attached <filename> describes…"
+  - "according to the attached <filename>"
+
+Do NOT tell the user to "see", "open", "view", or "use" the attached file —
+the chat surface does not render or link to attachments, so any phrasing that
+implies the user must follow up to read the file is incorrect. The text below
+is the file content itself.
+
+### Attachment 1
+[Uploaded Document: budget.xlsx]
+Sheet1
+A1	B1"
+`;
+
+exports[`formatRagContextsSimple — wire format lock > renders a retrieved chunk in a stable shape 1`] = `
+"## Retrieved Context
+
+The following information was retrieved from the project's knowledge base.
+Use this to inform your document while maintaining consistency with established decisions.
+
+### Reference 1
+The team decided to use Postgres in Q2."
+`;

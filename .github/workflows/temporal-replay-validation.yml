@@ -1,0 +1,447 @@
+name: Temporal Replay Validation
+
+# Replays recent dev Temporal histories against the PR's workflow code to catch
+# non-determinism bugs before merge. Follows Temporal's pre-deployment replay
+# recipe: https://docs.temporal.io/develop/typescript/testing-suite#replay
+#
+# The canonical branch (`master`) deploys to dev, so dev histories are
+# produced by the workflow code currently running on `master` — the baseline
+# we want the PR to stay compatible with.
+#
+# Workflow-type coverage is implicit: `fetch-replay-histories.ts` discovers
+# every workflow type that has run in dev and writes fixtures under
+# __tests__/__fixtures__/histories/<WorkflowType>/. The replayer
+# (__tests__/replay-validation.test.ts) iterates every fixture directory and
+# replays it against the bundled workflow code. To extend coverage to a new
+# workflow it's enough to (a) export it from src/workflows/index.ts (so it's
+# bundled), (b) ensure it runs at least once in dev before the next replay
+# fetch. Currently in the implicit set: urlSourceCrawlWorkflow (URL Context
+# Sources spec §15.4) and every other workflow exported from the workflows
+# barrel.
+#
+# Security and branch-protection note: this secret-bearing workflow uses
+# pull_request_target so the gate and status publisher always execute trusted
+# default-branch workflow code. It never checks out or executes PR code until
+# authenticated event metadata passes the replay gate. For eligible relevant
+# PRs only, it reports a legacy commit status named `replay-validation` on the
+# exact PR head SHA. The credential-free pull_request companion supplies the
+# automatic required CheckRun for every other PR and changes its job name for
+# eligible relevant PRs. Denied private forks and malformed Relay App PRs
+# intentionally receive a same-name trusted failure as well: both contexts
+# must pass, so contributor-controlled YAML cannot forge the denial away.
+
+on:
+  # pull_request_target loads this workflow from the default branch. Do not
+  # replace it with pull_request while the replay job holds environment secrets.
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+    # Canonical upstream branch is `master` (post-cutover); see
+    # docs/deployment.md § Branch cutover checklist.
+    branches: [master]
+  # Manual trigger for validating plumbing changes (the test, fetch script, or
+  # the workflow itself) without needing a PR that touches workflow code.
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: temporal-replay-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  changes:
+    name: Detect workflow changes
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # dorny/paths-filter uses the Pulls API on pull_request_target events.
+      pull-requests: read
+    outputs:
+      workflows: ${{ steps.filter.outputs.workflows }}
+    steps:
+      # On pull_request_target events dorny/paths-filter detects changed files
+      # via the Pulls API and does not need the repo on disk. Checkout is only
+      # required for the git-based detection used on workflow_dispatch runs.
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        if: github.event_name == 'workflow_dispatch'
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: dorny/paths-filter@7b450fff21473bca461d4b92ce414b9d0420d706 # v4
+        id: filter
+        with:
+          filters: |
+            workflows:
+              # Workflow code imports helpers transitively across the package
+              # (e.g. src/workflows/template-execution.ts imports
+              # ../activities/lib/safe-expression-evaluator, and the
+              # orchestrator workflows pull from ../orchestrator-config,
+              # ../risk-assessment, ../execution-waves). Those helpers are
+              # bundled into the workflow sandbox by bundleWorkflowCode, so
+              # changing them can change deterministic workflow behavior
+              # without touching src/workflows/ itself. Scope the filter to
+              # the whole package's src/ to avoid silent gaps in coverage.
+              - 'packages/temporal/src/**'
+              - 'packages/temporal/__tests__/replay-validation.test.ts'
+              - 'packages/temporal/scripts/fetch-replay-histories.ts'
+              - '.github/scripts/temporal-replay/**'
+              - '.github/workflows/temporal-replay-pr-check.yml'
+              - '.github/workflows/temporal-replay-validation.yml'
+
+  authorize:
+    name: Authorize private replay
+    runs-on: ubuntu-latest
+    permissions: {}
+    outputs:
+      secret_eligible: ${{ steps.gate.outputs.secret_eligible }}
+      reason: ${{ steps.gate.outputs.reason }}
+    steps:
+      # This job intentionally has no checkout, environment, secrets, or
+      # dependency installation. Event fields enter the script only through
+      # env so branch/login text cannot alter shell syntax.
+      - name: Validate authenticated event metadata
+        id: gate
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REPOSITORY: ${{ github.repository }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+
+          emit_decision() {
+            printf 'secret_eligible=%s\nreason=%s\n' "$1" "$2" >> "$GITHUB_OUTPUT"
+          }
+
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            emit_decision true trusted_manual_dispatch
+            exit 0
+          fi
+
+          if [[ "$EVENT_NAME" != "pull_request_target" ]]; then
+            emit_decision false unsupported_event
+            exit 0
+          fi
+
+          if [[ ! "$PR_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::Invalid pull request head SHA; refusing replay authorization."
+            exit 1
+          fi
+
+          if [[ "$HEAD_REPOSITORY" != "$REPOSITORY" ]]; then
+            emit_decision false untrusted_head_repository
+          elif [[ "$REPOSITORY" == "Fabric-Pro/fabric" ||
+                  "$REPOSITORY" == "Fabric-Pro/fabric-dev" ]]; then
+            emit_decision true private_same_repository_pr
+          elif [[ "$REPOSITORY" == "Fabric-Pro/fabric-oss" &&
+                  "$PR_AUTHOR" == "fabric-relay[bot]" &&
+                  "$HEAD_REF" == relay/* ]]; then
+            emit_decision true authenticated_public_relay_pr
+          elif [[ "$REPOSITORY" == "Fabric-Pro/fabric-oss" &&
+                  "$PR_AUTHOR" == "fabric-relay[bot]" ]]; then
+            emit_decision false public_pr_outside_relay_namespace
+          elif [[ "$REPOSITORY" == "Fabric-Pro/fabric-oss" ]]; then
+            emit_decision false public_credential_free_not_applicable
+          else
+            emit_decision false repository_not_allowlisted
+          fi
+
+  publish_denial:
+    # A pull_request workflow is contributor-controlled. For cases that must
+    # block, this trusted legacy failure intentionally shares the required
+    # context with any automatic CheckRun: branch protection requires both to
+    # pass, so renaming or greening PR-controlled YAML cannot bypass denial.
+    name: Publish trusted replay denial
+    needs: [changes, authorize]
+    if: >-
+      always() &&
+      github.event_name == 'pull_request_target' &&
+      (needs.changes.result != 'success' ||
+       (needs.changes.outputs.workflows != 'true' &&
+        needs.changes.outputs.workflows != 'false') ||
+       (needs.changes.outputs.workflows == 'true' &&
+        (needs.authorize.result != 'success' ||
+         ((github.repository == 'Fabric-Pro/fabric' ||
+           github.repository == 'Fabric-Pro/fabric-dev') &&
+          needs.authorize.outputs.secret_eligible != 'true') ||
+         (github.repository == 'Fabric-Pro/fabric-oss' &&
+          needs.authorize.outputs.reason == 'public_pr_outside_relay_namespace'))))
+    runs-on: ubuntu-latest
+    permissions:
+      statuses: write
+    env:
+      REPOSITORY: ${{ github.repository }}
+      PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      GH_TOKEN: ${{ github.token }}
+      CHANGES_RESULT: ${{ needs.changes.result }}
+      WORKFLOWS_CHANGED: ${{ needs.changes.outputs.workflows }}
+      AUTHORIZATION_RESULT: ${{ needs.authorize.result }}
+      SECRET_ELIGIBLE: ${{ needs.authorize.outputs.secret_eligible }}
+      AUTHORIZATION_REASON: ${{ needs.authorize.outputs.reason }}
+    steps:
+      - name: Publish exact-head failure from trusted policy
+        run: |
+          set -euo pipefail
+
+          description="Temporal replay denied by trusted policy"
+          if [[ "$CHANGES_RESULT" != "success" ]]; then
+            description="Trusted Temporal change detection failed"
+          elif [[ "$WORKFLOWS_CHANGED" != "true" &&
+                  "$WORKFLOWS_CHANGED" != "false" ]]; then
+            description="Trusted Temporal change detection was invalid"
+          elif [[ "$WORKFLOWS_CHANGED" == "false" ]]; then
+            echo "::error::Trusted denial must not run when no relevant files changed."
+            exit 1
+          elif [[ "$AUTHORIZATION_RESULT" != "success" ]]; then
+            description="Trusted Temporal replay authorization failed"
+          elif [[ ("$REPOSITORY" == "Fabric-Pro/fabric" ||
+                   "$REPOSITORY" == "Fabric-Pro/fabric-dev") &&
+                  "$SECRET_ELIGIBLE" != "true" ]]; then
+            description="Private-repo fork cannot use required Temporal replay"
+          elif [[ "$REPOSITORY" == "Fabric-Pro/fabric-oss" &&
+                  "$AUTHORIZATION_REASON" == "public_pr_outside_relay_namespace" ]]; then
+            description="Relay App PR is outside required relay namespace"
+          else
+            echo "::error::Trusted denial job reached an unrecognized policy state; no status published."
+            exit 1
+          fi
+
+          if [[ ! "$PR_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::Invalid pull request head SHA; refusing denial publication."
+            exit 1
+          fi
+
+          gh api --method POST "repos/$REPOSITORY/statuses/$PR_HEAD_SHA" \
+            --raw-field state=failure \
+            --raw-field context=replay-validation \
+            --raw-field description="$description" \
+            --raw-field target_url="$RUN_URL" >/dev/null
+
+          echo "::error::$description"
+          exit 1
+
+  initialize_status:
+    name: Initialize eligible PR-head replay status
+    needs: [changes, authorize]
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (needs.changes.result == 'success' &&
+       needs.changes.outputs.workflows == 'true' &&
+       needs.authorize.result == 'success' &&
+       needs.authorize.outputs.secret_eligible == 'true')
+    runs-on: ubuntu-latest
+    permissions:
+      statuses: write
+    steps:
+      - name: Publish pending status on exact eligible PR head
+        if: github.event_name == 'pull_request_target'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+
+          if [[ ! "$PR_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::Invalid pull request head SHA; refusing to publish replay status."
+            exit 1
+          fi
+
+          gh api --method POST "repos/$REPOSITORY/statuses/$PR_HEAD_SHA" \
+            --raw-field state=pending \
+            --raw-field context=replay-validation \
+            --raw-field description="Real Temporal replay pending" \
+            --raw-field target_url="$RUN_URL" >/dev/null
+
+      - name: Manual dispatch uses the trusted workflow result
+        if: github.event_name == 'workflow_dispatch'
+        run: echo "Manual dispatch does not require a PR-head commit status."
+
+  replay:
+    name: Replay dev histories against exact PR code
+    needs: [initialize_status, changes, authorize]
+    # All preceding jobs execute trusted default-branch workflow code. Only an
+    # eligible event reaches this environment-bearing job and its exact-SHA
+    # checkout. replay-eligibility.test.mjs pins this expression to the policy.
+    if: >-
+      needs.initialize_status.result == 'success' &&
+      needs.changes.result == 'success' &&
+      needs.authorize.result == 'success' &&
+      needs.authorize.outputs.secret_eligible == 'true' &&
+      (github.event_name == 'workflow_dispatch' ||
+       needs.changes.outputs.workflows == 'true')
+    runs-on: ubuntu-latest
+    environment: dev
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      # Security exception: this privileged checkout is reachable only after
+      # trusted default-branch jobs verify the immutable head SHA belongs to
+      # this repository and either (a) the repository is the allowlisted
+      # private fabric/fabric-dev repo, whose same-repo writers are trusted,
+      # or (b) the repository is fabric-oss, the authenticated PR creator is
+      # fabric-relay[bot], and the head is in the App-only relay/** namespace.
+      # Forks and ordinary OSS PRs cannot reach this job. The checked-out code
+      # must run against private replay histories, so removing the checkout
+      # would remove the validation this workflow exists to provide. Re-review
+      # this exception if any gate, repository allowlist, creator check, or
+      # relay namespace rule changes.
+      # nosemgrep: yaml.github-actions.security.pull-request-target-code-checkout.pull-request-target-code-checkout
+      - name: Checkout exact pull request head
+        if: github.event_name == 'pull_request_target'
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Checkout exact manual-dispatch commit
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Validate replay eligibility policy
+        run: node --test .github/scripts/temporal-replay/*.test.mjs
+
+      - name: Setup pnpm
+        # Version is read from the root package.json's `packageManager` field.
+        # Specifying `version:` alongside that errors in action-setup v4+.
+        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        # Scoped to @repo/temporal and its workspace dependency graph — the
+        # same filter the worker Dockerfile installs with. Both scripts this
+        # job runs (fetch:replay-histories → tsx, test:replay → vitest)
+        # resolve from @repo/temporal's own devDependencies, so the rest of
+        # the monorepo's dependencies are dead weight here.
+        run: pnpm install --frozen-lockfile --filter "@repo/temporal..."
+
+      - name: Verify Temporal secrets
+        env:
+          TEMPORAL_ADDRESS: ${{ secrets.TEMPORAL_ADDRESS }}
+          TEMPORAL_NAMESPACE: ${{ secrets.TEMPORAL_NAMESPACE }}
+          TEMPORAL_CLOUD_API_KEY: ${{ secrets.TEMPORAL_CLOUD_API_KEY }}
+        run: |
+          if [[ -z "$TEMPORAL_ADDRESS" || -z "$TEMPORAL_NAMESPACE" ]]; then
+            echo "::error::Missing TEMPORAL_ADDRESS or TEMPORAL_NAMESPACE in 'dev' environment secrets."
+            exit 1
+          fi
+          if [[ -z "$TEMPORAL_CLOUD_API_KEY" ]]; then
+            echo "::error::Missing TEMPORAL_CLOUD_API_KEY in 'dev' environment secrets (or configure mTLS vars in the script)."
+            exit 1
+          fi
+
+      - name: Fetch replay fixtures from dev
+        # Sample size chosen per Temporal's guidance (~10-20/type is typical for
+        # CI). Running histories bounded smaller to cap fetch cost on large
+        # partial histories. Window kept tight so fetches stay fast and we
+        # still pick up recent behavior.
+        env:
+          TEMPORAL_ADDRESS: ${{ secrets.TEMPORAL_ADDRESS }}
+          TEMPORAL_NAMESPACE: ${{ secrets.TEMPORAL_NAMESPACE }}
+          TEMPORAL_CLOUD_API_KEY: ${{ secrets.TEMPORAL_CLOUD_API_KEY }}
+        run: |
+          pnpm --filter @repo/temporal fetch:replay-histories -- \
+            --per-type 10 \
+            --per-type-running 3 \
+            --since-days 3
+
+      - name: Run replay validation
+        # REPLAY_REQUIRE_FIXTURES turns "no fixtures" from a skip into a failure.
+        # Unset locally on purpose: a clean checkout has no fixtures and its test
+        # run should stay green. In CI the fetch step above is supposed to have
+        # produced them, so an empty set means the fetch found nothing — and a
+        # gate that reports success having replayed zero histories is worse than
+        # a red one, because it stops anyone looking.
+        env:
+          REPLAY_REQUIRE_FIXTURES: "1"
+        run: pnpm --filter @repo/temporal test:replay
+
+  publish_outcome:
+    name: Publish replay outcome
+    needs: [initialize_status, changes, authorize, replay]
+    if: >-
+      always() &&
+      (github.event_name == 'workflow_dispatch' ||
+       (needs.changes.result == 'success' &&
+        needs.changes.outputs.workflows == 'true' &&
+        needs.authorize.result == 'success' &&
+        needs.authorize.outputs.secret_eligible == 'true'))
+    runs-on: ubuntu-latest
+    permissions:
+      statuses: write
+    env:
+      EVENT_NAME: ${{ github.event_name }}
+      REPOSITORY: ${{ github.repository }}
+      PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      GH_TOKEN: ${{ github.token }}
+      INITIAL_STATUS_RESULT: ${{ needs.initialize_status.result }}
+      CHANGES_RESULT: ${{ needs.changes.result }}
+      WORKFLOWS_CHANGED: ${{ needs.changes.outputs.workflows }}
+      AUTHORIZATION_RESULT: ${{ needs.authorize.result }}
+      SECRET_ELIGIBLE: ${{ needs.authorize.outputs.secret_eligible }}
+      REPLAY_RESULT: ${{ needs.replay.result }}
+    steps:
+      - name: Aggregate and publish exact-head status
+        run: |
+          set -euo pipefail
+
+          state=failure
+          description="Temporal replay gate failed; inspect trusted workflow"
+
+          if [[ "$INITIAL_STATUS_RESULT" != "success" ]]; then
+            description="Replay status initialization failed"
+          elif [[ "$AUTHORIZATION_RESULT" != "success" ]]; then
+            description="Replay authorization failed"
+          elif [[ "$CHANGES_RESULT" != "success" ]]; then
+            description="Temporal change detection failed"
+          elif [[ "$SECRET_ELIGIBLE" != "true" ]]; then
+            description="Trusted replay publisher ran for an ineligible event"
+          elif [[ "$REPLAY_RESULT" == "success" ]]; then
+            state=success
+            description="Real dev-history Temporal replay passed"
+          elif [[ "$REPLAY_RESULT" == "skipped" ]]; then
+            description="Eligible real Temporal replay was unexpectedly skipped"
+          else
+            description="Real Temporal replay failed; inspect trusted workflow"
+          fi
+
+          if [[ "$EVENT_NAME" == "pull_request_target" ]]; then
+            if [[ ! "$PR_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+              echo "::error::Invalid pull request head SHA; refusing final status publication."
+              exit 1
+            fi
+            if [[ "$state" != "success" && "$state" != "failure" ]]; then
+              echo "::error::Invalid replay status state."
+              exit 1
+            fi
+
+            gh api --method POST "repos/$REPOSITORY/statuses/$PR_HEAD_SHA" \
+              --raw-field state="$state" \
+              --raw-field context=replay-validation \
+              --raw-field description="$description" \
+              --raw-field target_url="$RUN_URL" >/dev/null
+          fi
+
+          if [[ "$state" != "success" ]]; then
+            echo "::error::$description"
+            exit 1
+          fi
+
+          echo "$description"

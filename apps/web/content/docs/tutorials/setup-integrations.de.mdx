@@ -1,0 +1,209 @@
+---
+title: Ihre erste Integration verbinden
+description: Eine Schritt-für-Schritt-Anleitung zum Verbinden externer Dienste, damit Ihre Agenten und Workflows auf ihnen agieren können.
+---
+
+Dieses Tutorial führt Sie durch die Verbindung Ihres ersten externen Dienstes mit Fabric AI. In etwa 10 Minuten haben Sie eine Integration, die in KI-Chat und Workflows einsatzbereit ist.
+
+## Was Sie erreichen werden
+
+Am Ende dieses Tutorials haben Sie:
+
+- Einen externen Dienst verbunden (GitHub, Slack oder Notion)
+- Die Verbindung getestet
+- Die Integration in einem KI-Gespräch verwendet
+- Verstanden, wie Integrationen funktionieren
+
+## Voraussetzungen
+
+Stellen Sie sicher, dass Sie folgendes haben:
+
+- ✅ Ein Fabric AI-Konto
+- ✅ Ein Konto bei mindestens einem externen Dienst (GitHub, Slack, Linear, Notion usw.)
+
+## Wie Integrationen funktionieren
+
+Fabric verbindet sich mit externen Systemen, damit Ihre Agenten und Workflows zur Laufzeit **Aktionen** darauf ausführen können — einen Workspace durchsuchen, eine Seite lesen, ein Issue erstellen, eine Nachricht posten. Sie verwalten jede Verbindung an einem Ort: **Einstellungen → Integrationen**.
+
+Eine Verbindung wird auf zwei Arten genutzt:
+
+| Genutzt von | Was es ermöglicht | Beispiel |
+|--------|---------|----------|
+| **MCP-Server** | KI-gesteuerte Tool-Aufrufe in Chat und Orchestrator | „GitHub-Issue erstellen", „An Slack posten" |
+| **Workflow-Integrationen** | Aktionsknoten im visuellen Workflow-Builder | Geplante Berichte, ausgelöste Aktionen |
+
+Beide nutzen dieselben verbundenen Anmeldedaten — verbinden Sie ein System einmal, und es steht Agenten und Workflows gleichermaßen zur Verfügung.
+
+Jeder Anbieter stellt eine Reihe von **Laufzeit-Aktionen** in zwei Ausprägungen bereit: **Wissens**-Aktionen, die lesen oder suchen (z. B. „Search Notion", „Get Page Content"), und **Schreib**-Aktionen, die etwas ändern (z. B. „Create Page"). Ein Anbieter, der beides bietet, wird als **Hybrid** gekennzeichnet.
+
+<Callout type="info">
+Fabric führt diese als **Live-Laufzeit-Aktionen** aus — es gibt keine Hintergrund-Synchronisierung und keine separate „Datenverbindung" einzurichten. Wenn ein Agent Informationen aus einem verbundenen System benötigt, ruft er bei Bedarf eine Wissens-Aktion auf.
+</Callout>
+
+## Schritt 1: Einen MCP-Server einrichten
+
+MCP-Server ermöglichen KI-Agenten die Interaktion mit externen Tools während Gesprächen.
+
+<Steps>
+  <Step>
+    ### Zu MCP-Einstellungen navigieren
+
+    Gehen Sie in der linken Seitenleiste zu **Einstellungen → MCP-Server**.
+  </Step>
+
+  <Step>
+    ### Registry durchsuchen
+
+    Klicken Sie auf **Server hinzufügen**, um alle verfügbaren MCP-Server nach Kategorie organisiert zu sehen:
+    - **Entwicklung** — GitHub, GitLab, Atlassian (Jira & Confluence), Azure DevOps, Fizzy
+    - **Kommunikation** — Slack
+    - **Wissen & Dokumente** — Notion, Google Drive
+    - **Diagramme** — Excalidraw
+  </Step>
+
+  <Step>
+    ### Auswählen und verbinden
+
+    Wählen Sie einen Server — wir verwenden **GitHub** als Beispiel:
+
+    **Option A: OAuth (Empfohlen)**
+    1. Klicken Sie auf **Mit OAuth verbinden**
+    2. Autorisieren Sie Fabric AI im GitHub-Popup
+    3. Fertig — Tokens werden gespeichert und automatisch erneuert
+
+    **Option B: API-Schlüssel**
+    1. Generieren Sie ein Personal Access Token auf GitHub
+    2. Fügen Sie es in das API-Schlüssel-Feld ein
+    3. Klicken Sie auf **Speichern**
+  </Step>
+
+  <Step>
+    ### Verbindung testen
+
+    Klicken Sie auf **Verbindung testen**. Sie sollten eine Erfolgsmeldung mit Latenzinformationen sehen.
+  </Step>
+
+  <Step>
+    ### Im Chat ausprobieren
+
+    Öffnen Sie **KI-Chat** und versuchen Sie einen Befehl:
+
+    ```
+    „Liste meine offenen GitHub-Issues auf"
+    ```
+
+    Die KI entdeckt die GitHub MCP-Tools und verwendet sie, um Ihre Issues abzurufen.
+  </Step>
+</Steps>
+
+## Schritt 2: Eine Workflow-Integration einrichten
+
+Workflow-Integrationen betreiben die visuellen Workflow-Builder-Knoten.
+
+<Steps>
+  <Step>
+    ### Workflow-Builder öffnen
+
+    Navigieren Sie zu **Workflows** und öffnen oder erstellen Sie einen Workflow.
+  </Step>
+
+  <Step>
+    ### Einen Integrationsknoten hinzufügen
+
+    Klicken Sie auf **+**, um einen Knoten hinzuzufügen, und durchsuchen Sie die Kategorie **Integrationen**. Wählen Sie den gewünschten Dienst (z. B. Slack, GitHub, Linear).
+  </Step>
+
+  <Step>
+    ### Anmeldedaten konfigurieren
+
+    Klicken Sie auf dem Knoten auf **Integration konfigurieren**:
+
+    - Geben Sie Ihren API-Schlüssel oder Token ein
+    - Klicken Sie auf **Verbindung testen**, um zu überprüfen
+    - Anmeldedaten werden verschlüsselt gespeichert
+  </Step>
+
+  <Step>
+    ### Aktion konfigurieren
+
+    Richten Sie ein, was der Knoten tut:
+    - **GitHub**: Issue erstellen → Eigentümer, Repository, Titel festlegen
+    - **Slack**: Nachricht senden → Kanal, Nachricht festlegen
+    - **Linear**: Issue erstellen → Team, Titel, Priorität festlegen
+  </Step>
+</Steps>
+
+## Integrations-Umfang
+
+### Persönlich vs. Organisation
+
+| Umfang | Sichtbarkeit | Anwendungsfall |
+|-------|------------|----------|
+| **Persönlich** | Nur Sie | Ihr persönliches GitHub, persönliches Drive |
+| **Organisation** | Alle Org-Mitglieder | Firmen-Jira, gemeinsamer Slack-Workspace |
+
+Wählen Sie den Umfang beim Verbinden. Organisations-Integrationen werden von Org-Admins verwaltet.
+
+### Multi-Tenant-Isolierung
+
+- Persönliche Verbindungen sind in Organisationskontexten nie sichtbar
+- Organisations-Verbindungen sind für andere Organisationen nie sichtbar
+- Jeder Benutzer kann eigene Verbindungen neben organisationsweiten haben
+
+## Kurzübersicht: Unterstützte Integrationen
+
+**Typ** ist die Art der Laufzeit-Aktionen, die ein Anbieter bietet: **Wissen** (Lesen/Suchen), **Aktion** (Schreiben) oder **Hybrid** (beides).
+
+| Dienst | Typ | Einrichten unter |
+|---------|------|--------------|
+| [GitHub](/docs/integrations/github) | Hybrid | Einstellungen → Integrationen |
+| [GitLab](/docs/integrations/gitlab) | Hybrid | Einstellungen → Integrationen |
+| [Slack](/docs/integrations/slack) | Hybrid | Einstellungen → Integrationen |
+| [Microsoft Teams](/docs/integrations/teams) | Hybrid | Einstellungen → Integrationen |
+| [Jira](/docs/integrations/jira) | Hybrid | Einstellungen → Integrationen |
+| [Confluence](/docs/integrations/confluence) | Wissen | Einstellungen → Integrationen |
+| [Notion](/docs/integrations/notion) | Hybrid | Einstellungen → Integrationen |
+| [Google Drive](/docs/integrations/google-drive) | Wissen | Einstellungen → Integrationen |
+| [Linear](/docs/integrations/linear) | Hybrid | Einstellungen → Integrationen |
+| [Azure DevOps](/docs/integrations/azure-devops) | Hybrid | Einstellungen → MCP-Registry |
+| [Excalidraw](/docs/integrations/excalidraw) | Aktion | Einstellungen → MCP-Registry |
+| [Fizzy](/docs/integrations/fizzy) | Hybrid | Einstellungen → MCP-Registry |
+
+<Callout type="info">
+**Microsoft 365** erscheint ebenfalls unter Einstellungen → Integrationen, aber seine Laufzeit-Aktionen sind noch nicht verfügbar („Aktionen-Einrichtung noch nicht verfügbar"). Verwenden Sie heute **Microsoft Teams** für Microsoft-Graph-Aktionen.
+</Callout>
+
+## Fehlerbehebung
+
+### „Verbindung fehlgeschlagen" beim Einrichten
+
+- Überprüfen Sie Ihren API-Schlüssel oder Token
+- Stellen Sie sicher, dass das Token die erforderlichen Berechtigungen/Bereiche hat
+- Versuchen Sie bei OAuth-basierten Diensten, die Verbindung zu trennen und neu herzustellen
+
+### Tools erscheinen nicht im KI-Chat
+
+- Überprüfen Sie, ob der MCP-Server in den Einstellungen **Aktiviert** ist
+- Prüfen Sie, ob der Gesundheitsstatus des Servers **Gesund** ist
+- Versuchen Sie, die Tool-Liste in den Chat-Einstellungen zu aktualisieren
+
+### Eine Aktion ist für einen Anbieter nicht verfügbar
+
+- Öffnen Sie den Anbieter unter **Einstellungen → Integrationen** und prüfen Sie **Verfügbare Aktionen** — manche Anbieter bieten nur Wissens-Aktionen, andere nur Schreib-Aktionen
+- Stellen Sie sicher, dass die Verbindung **Verbunden** anzeigt und die erforderlichen Scopes bei der Autorisierung erteilt wurden
+
+---
+
+## Nächste Schritte
+
+<Cards>
+  <Card title="Ihren ersten Workflow erstellen" href="/docs/tutorials/first-workflow">
+    Ihre neue Integration in einem automatisierten Workflow verwenden
+  </Card>
+  <Card title="MCP-Vertiefung" href="/docs/integrations/mcp">
+    Erfahren Sie, wie das MCP-Protokoll Tool-Verbindungen ermöglicht
+  </Card>
+  <Card title="KI-Chat" href="/docs/features/ai-chat">
+    Integrationen in KI-Gesprächen verwenden
+  </Card>
+</Cards>

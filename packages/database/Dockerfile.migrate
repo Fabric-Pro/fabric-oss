@@ -1,0 +1,133 @@
+# syntax=docker/dockerfile:1
+
+# Migration runner — a release-pinned, single-purpose image that owns the
+# database half of a promotion: preflight, `prisma migrate deploy`, then RLS.
+#
+# STATUS: this image is built, SBOM'd and attested on every release tag, but
+# nothing deploys FROM it yet. The pipeline in this repo runs the same `promote`
+# script directly on the runner. The image exists so that a deployer which does
+# not hold this source tree can run the exact reviewed migrations by digest
+# instead of checking out product code — self-hosters today, and a separate
+# deployment pipeline later. Until such a consumer exists, treat this as a
+# published artifact with no consumer, not as the path production takes.
+#
+# Why a dedicated image rather than reusing the temporal-worker one (which is
+# what the Helm chart does today): the worker image carries Chromium, Semgrep and
+# a Python runtime for scanning activities, none of which a migration needs. That
+# is a large attack surface and a large SBOM to review for a container that holds
+# privileged database credentials. This image carries the Prisma CLI, the
+# generated client, the migration SQL and the RLS script — nothing else.
+#
+# The seed scripts ship in the image (they are release-pinned product artifacts
+# like the migrations), but the default command does NOT run them. Seeding needs
+# object-storage credentials that schema migration does not, and `seed-ai-models`
+# deletes catalog rows whose entry disappeared — neither belongs in the step that
+# gates the application rollout. Run seeds explicitly, after the rollout:
+#
+#   docker run <image> sh -ec 'pnpm deploy:seeds'
+
+# =============================================================================
+# Stage 1: deps — workspace manifests only, so the install layer caches well
+# =============================================================================
+FROM node:22-slim AS deps
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    openssl \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && npm install -g pnpm@10.14.0
+
+WORKDIR /app
+
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY tooling ./tooling
+COPY config/package.json ./config/
+
+# @repo/database and its transitive workspace dependencies. @repo/storage and
+# @repo/permissions are declared dependencies of @repo/database, so pnpm needs
+# their manifests to resolve the graph even though the migration path never
+# imports them at runtime.
+COPY packages/database/package.json ./packages/database/
+COPY packages/databricks/package.json ./packages/databricks/
+COPY packages/logs/package.json ./packages/logs/
+COPY packages/observability/package.json ./packages/observability/
+COPY packages/permissions/package.json ./packages/permissions/
+COPY packages/storage/package.json ./packages/storage/
+COPY packages/utils/package.json ./packages/utils/
+
+RUN pnpm install --frozen-lockfile --filter @repo/database...
+
+# =============================================================================
+# Stage 2: builder — generate the Prisma client this release expects
+# =============================================================================
+FROM deps AS builder
+
+COPY config ./config
+COPY packages/database ./packages/database
+COPY packages/databricks ./packages/databricks
+COPY packages/logs ./packages/logs
+COPY packages/observability ./packages/observability
+COPY packages/permissions ./packages/permissions
+COPY packages/storage ./packages/storage
+COPY packages/utils ./packages/utils
+
+# Generation needs a syntactically valid URL; the real one arrives at runtime.
+ENV DATABASE_URL="postgresql://dummy:dummy@localhost:5432/dummy"
+
+RUN pnpm --filter @repo/database generate
+
+# A silently stale or missing client is the failure this assertion exists to
+# catch — it would otherwise surface as a migration that "succeeded" against a
+# client that does not match the schema it just applied.
+RUN test -d packages/database/prisma/generated \
+    || (echo "FATAL: prisma generate produced no client" && exit 1)
+
+# =============================================================================
+# Stage 3: runtime — least-privilege, no build toolchain
+# =============================================================================
+FROM node:22-slim AS runtime
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    openssl \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && npm install -g pnpm@10.14.0 tsx@4.19.2
+
+WORKDIR /app
+
+COPY --from=builder /app/package.json /app/pnpm-lock.yaml /app/pnpm-workspace.yaml ./
+COPY --from=builder /app/tooling ./tooling
+COPY --from=builder /app/node_modules ./node_modules
+COPY --from=builder /app/config ./config
+COPY --from=builder /app/packages ./packages
+
+# Apache-2.0 §4(a) and §4(d): a recipient of the Work gets a copy of the licence
+# and of the NOTICE attributions. Publishing this image to a registry for someone
+# else to pull is distribution, so these travel inside it rather than living only
+# in the source tree they do not have. THIRD_PARTY_NOTICES.md comes along because
+# NOTICE points at it; shipping one without the other leaves the attribution
+# pointing at nothing.
+COPY LICENSE NOTICE THIRD_PARTY_NOTICES.md ./
+
+ENV NODE_ENV=production
+
+# The migration connects to the database and nothing else, so it needs no
+# writable application state — only a HOME for tsx's transform cache. Numeric uid
+# matches the other images so a Kubernetes runAsNonRoot admission check can
+# verify it (a named user cannot be verified).
+RUN addgroup --system --gid 1001 nodejs \
+    && adduser --system --uid 1001 --ingroup nodejs --home /home/appuser appuser \
+    && mkdir -p /home/appuser \
+    && chown appuser:nodejs /home/appuser
+ENV HOME=/home/appuser
+USER appuser
+
+WORKDIR /app/packages/database
+
+# The same `promote` script the deploy workflow runs: preflight, migrate, RLS,
+# chained with `&&` so a failure at any step stops the rest and exits non-zero.
+# Sharing the script rather than restating the sequence here is deliberate — a
+# second copy in this CMD would drift from the one CI actually exercises, and the
+# drift would be invisible until someone ran this image and got a different
+# result from the pipeline.
+CMD ["pnpm", "promote"]

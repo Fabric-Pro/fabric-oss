@@ -1,0 +1,112 @@
+---
+title: Microsoft Teams
+description: Microsoft Teams verbinden, damit Fabric-Agenten Teams und Kanäle auflisten, Nachrichten durchsuchen und Chats als Laufzeit-Aktionen lesen können.
+---
+
+Verbinden Sie Microsoft Teams mit Fabric AI, damit Agenten und Workflows Teams und Kanäle auflisten, Nachrichten durchsuchen, Kanal- und Chat-Verläufe lesen und geteilte Dateien finden können — als Live-Laufzeit-Aktionen.
+
+Teams ist ein **Hybrid**-Anbieter. Es verbindet sich über **Microsoft Graph**, sodass eine einzige Autorisierung Teams abdeckt (und, sobald verfügbar, weitere Microsoft 365-Inhalte).
+
+## Teams einrichten
+
+<Steps>
+  <Step>
+    ### Teams unter Integrationen öffnen
+
+    Gehen Sie zu **Einstellungen → Integrationen** und öffnen Sie die **Teams**-Karte.
+  </Step>
+
+  <Step>
+    ### Aktionen einrichten
+
+    Klicken Sie auf **Aktionen einrichten** und melden Sie sich mit Ihrem Microsoft-Konto an, wobei Sie die angeforderten Graph-Berechtigungen erteilen.
+  </Step>
+
+  <Step>
+    ### Bestätigen
+
+    Der Anbieter zeigt **Verbunden** mit seinen verfügbaren Laufzeit-Aktionen.
+  </Step>
+</Steps>
+
+<Callout type="info">
+Eine Verbindung auf **Organisations**-Ebene teilt eine Teams-Verbindung mit allen Mitgliedern. Ein Microsoft 365-Administrator muss die Fabric-App in Ihrem Tenant möglicherweise genehmigen.
+</Callout>
+
+<Callout type="warning">
+**Für Besprechungstranskripte ist eine weitere Einstellung nötig.** Über die oben genannten Graph-Berechtigungen hinaus schützt Teams den Transkript-Zugriff durch eine Tenant-Einstellung — **Transcript API access** —, die **standardmäßig deaktiviert** ist. Solange ein Administrator sie nicht aktiviert, schlagen Transkript-Abrufe fehl, unabhängig davon, welche Berechtigungen die Fabric-App erhalten hat. Siehe [Besprechungstranskripte nicht verfügbar](#besprechungstranskripte-nicht-verfügbar--transcript-api-access-ist-deaktiviert).
+</Callout>
+
+## Verfügbare Aktionen
+
+| Aktion | Typ | Beschreibung |
+|--------|------|-------------|
+| **List Teams** | Wissen | Alle Teams auflisten, denen der Benutzer beigetreten ist |
+| **List Channels** | Wissen | Kanäle in einem bestimmten Team auflisten |
+| **Search Messages** | Wissen | Nach Nachrichten in allen Teams-Kanälen und Chats suchen |
+| **List Channel Messages** | Wissen | Neueste Nachrichten in einem Kanal auflisten |
+| **Get Shared Files** | Wissen | In einem Teams-Kanal geteilte Dateien abrufen |
+| **List Chats** | Wissen | Direkt- und Gruppenchats des Benutzers auflisten |
+| **Get Chat Messages** | Wissen | Nachrichten aus einem Direkt- oder Gruppenchat abrufen |
+
+### Im KI-Chat
+
+```
+"Durchsuche Teams nach der Deploy-Diskussion von letzter Woche"
+
+"Fasse die neuesten Nachrichten im Kanal #incidents zusammen"
+```
+
+## Microsoft 365
+
+**Microsoft 365** (SharePoint-Dokumente, OneDrive-Dateien) erscheint unter **Einstellungen → Integrationen** als separate Karte, aber **Laufzeit-Aktionen dafür sind noch nicht verfügbar** — die Karte zeigt „Aktionen-Einrichtung noch nicht verfügbar". Microsoft Teams ist die Microsoft-Graph-Integration, die derzeit Laufzeit-Aktionen bereitstellt.
+
+## Trennen & erneut verbinden
+
+1. Öffnen Sie **Einstellungen → Integrationen → Teams**
+2. Klicken Sie auf **Trennen**
+3. Zum erneuten Verbinden klicken Sie wieder auf **Aktionen einrichten** und autorisieren erneut
+
+## Fehlerbehebung
+
+### Verbindung nicht möglich / Admin-Zustimmung erforderlich
+- Ein Microsoft 365-Administrator muss die Fabric-App für Ihren Tenant möglicherweise genehmigen
+
+### Besprechungstranskripte nicht verfügbar — Transcript API access ist deaktiviert
+
+Seit Ende Juli 2026 blockiert Teams den Graph-API-Zugriff auf Besprechungstranskripte für jeden Tenant standardmäßig, unabhängig davon, welche App-Berechtigungen erteilt wurden. Nachrichten, Kanäle und Dateien sind davon nicht betroffen — nur Transkripte.
+
+Ein **Teams-Administrator** oder **globaler Administrator** des Tenants, in dem die Besprechungen stattfinden, muss:
+
+1. Das **Teams Admin Center → Besprechungen → Besprechungseinstellungen → Transcript API access** öffnen
+2. **Microsoft Graph access** aktivieren
+3. **Include speaker attribution** aktivieren — ebenfalls standardmäßig deaktiviert; ohne diese Einstellung schlagen Transkript-Abrufe fehl, die Sprechernamen enthalten
+
+Das PowerShell-Äquivalent:
+
+```powershell
+Set-CsTeamsMeetingConfiguration -EnableGraphTranscriptAccess $true -EnableAttributedTranscripts $true -Identity Global
+```
+
+<Callout type="info">
+Planen Sie bis zu etwa 30 Minuten ein, bis die Änderung wirksam wird. Die Einstellung gilt **pro Tenant**: Jede Organisation, die Transkript-Synchronisierung nutzt, muss sie in ihrem eigenen Tenant aktivieren — die Aktivierung in einer Organisation wirkt sich nicht auf eine andere aus.
+</Callout>
+
+Die vollständige Referenz finden Sie in Microsofts [Meeting transcript API access](https://learn.microsoft.com/microsoftteams/meeting-transcript-api-access).
+
+### Nachrichten oder Kanäle werden nicht gefunden
+- Prüfen Sie, ob die Verbindung **Verbunden** anzeigt
+- Stellen Sie sicher, dass das angemeldete Konto Mitglied der erwarteten Teams/Kanäle ist
+
+---
+
+## Nächste Schritte
+
+<Cards>
+  <Card title="MCP-Integration" href="/docs/integrations/mcp">
+    Wie verbundene Tools zur Laufzeit aufgerufen werden
+  </Card>
+  <Card title="KI-Chat" href="/docs/features/ai-chat">
+    Teams in KI-Gesprächen nutzen
+  </Card>
+</Cards>

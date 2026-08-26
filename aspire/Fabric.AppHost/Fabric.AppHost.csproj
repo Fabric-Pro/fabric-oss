@@ -1,0 +1,33 @@
+<Project Sdk="Aspire.AppHost.Sdk/13.4.6">
+
+  <PropertyGroup>
+    <!-- Emits packages.lock.json so the NuGet graph is scannable by the
+         Dependency audit gate (SECURITY.md § CI enforcement). Without a lock
+         file osv-scanner has nothing to read and the .NET surface is silently
+         outside the audit. -->
+    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <UserSecretsId>fabric-apphost-secrets</UserSecretsId>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Aspire.Hosting.PostgreSQL" Version="13.4.6" />
+    <PackageReference Include="Aspire.Hosting.Redis" Version="13.4.6" />
+    <PackageReference Include="Aspire.Hosting.JavaScript" Version="13.4.6" />
+    <!-- Preview channel: Browsers is still gated behind ASPIREBROWSERLOGS001 in 13.4.x -->
+    <PackageReference Include="Aspire.Hosting.Browsers" Version="13.4.6-preview.1.26319.6" />
+    <PackageReference Include="DotNetEnv" Version="3.1.1" />
+
+    <!-- Azure hosting packages for cloud deployment -->
+    <PackageReference Include="Aspire.Hosting.Azure" Version="13.4.6" />
+    <PackageReference Include="Aspire.Hosting.Azure.AppContainers" Version="13.4.6" />
+    <PackageReference Include="Aspire.Hosting.Azure.Redis" Version="13.4.6" />
+    <PackageReference Include="Aspire.Hosting.Azure.PostgreSQL" Version="13.4.6" />
+    <PackageReference Include="Aspire.Hosting.Azure.KeyVault" Version="13.4.6" />
+  </ItemGroup>
+
+</Project>
+

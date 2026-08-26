@@ -1,0 +1,95 @@
+---
+title: Azure DevOps
+description: Connect Azure DevOps via MCP so Fabric agents can work with work items, repositories, pipelines, and wikis.
+---
+
+Connect Azure DevOps to Fabric AI so agents and workflows can read and manage **work items**, browse **repositories** and pull requests, inspect **pipelines** and builds, and search **wikis** — as live runtime actions.
+
+Azure DevOps is provided as an **MCP server**, so you add it from the MCP Registry rather than the provider grid.
+
+## Setting Up Azure DevOps
+
+<Steps>
+  <Step>
+    ### Open the MCP Registry
+
+    Go to **Settings → MCP Registry** and find **Azure DevOps**.
+  </Step>
+
+  <Step>
+    ### Connect
+
+    Authorize Fabric AI to your Azure DevOps organization (OAuth), or provide a Personal Access Token with the required scopes.
+  </Step>
+
+  <Step>
+    ### Enable & Test
+
+    Click **Test Connection**, then toggle the server to **Enabled**. Its tools become available to agents and workflows.
+  </Step>
+</Steps>
+
+## Capabilities
+
+Through the Azure DevOps MCP server, agents can:
+
+| Area | Examples |
+|------|----------|
+| **Work items** | Create, update, query (WIQL), comment, link, and batch-edit work items; browse backlogs and iterations |
+| **Boards & sprints** | List backlogs, iterations, and team capacity |
+| **Repositories** | Browse files and branches, search commits, and read pull requests |
+| **Pull requests** | Create PRs, list/▸comment on threads, and manage reviewers |
+| **Pipelines** | List builds and runs, read build logs, and check status |
+| **Wikis** | List and read wiki pages, and search wiki content |
+
+### In AI Chat
+
+```
+"Create a bug in the Mobile board for the crash on login"
+
+"List the work items in the current sprint for team Platform"
+
+"Show the latest failed pipeline run and its error log"
+```
+
+<Callout type="info">
+Bug work items render their body in the **Repro Steps** field; Fabric writes there (and to Description) when creating or updating bugs.
+</Callout>
+
+## Disconnecting
+
+Open **Settings → MCP Registry → Azure DevOps** and disable or remove the server.
+
+## Troubleshooting
+
+### Work item creation fails
+- Verify the project's process template supports the work-item type (e.g. **Bug** exists in Agile/Scrum/CMMI, not Basic)
+- Confirm the connection is **Enabled** and the token/OAuth scopes allow write access
+
+### Nothing returns
+- Check the server's health status in the MCP Registry
+- Make sure the connected identity has access to the target project
+
+## Use as a project management tool
+
+Beyond runtime actions, you can link a project to Azure DevOps and sync its backlog two ways — pushing features as work items and pulling work items back in. In the project's **Settings → Project Management**, pick **Azure DevOps**, then choose the **team/board** and (optionally) the **Area Path**, **Work Item Type** (e.g. *User Story* on Agile, *Product Backlog Item* on Scrum), and **Iteration Path**.
+
+<Callout type="info">
+A Bug's body syncs to the **Repro Steps** field, not Description. The work-item type must exist in the project's process (Agile/Scrum/CMMI — *not* Basic). See [Project Management Sync](/docs/features/pm-sync) for the full push/pull and conflict-resolution flow.
+</Callout>
+
+---
+
+## Next Steps
+
+<Cards>
+  <Card title="Project Management Sync" href="/docs/features/pm-sync">
+    Push and pull your backlog with Azure DevOps
+  </Card>
+  <Card title="MCP Integration" href="/docs/integrations/mcp">
+    How MCP servers and their tools work
+  </Card>
+  <Card title="MCP Authority & Security" href="/docs/core-concepts/mcp-authority">
+    How agents get approved access to connected tools
+  </Card>
+</Cards>

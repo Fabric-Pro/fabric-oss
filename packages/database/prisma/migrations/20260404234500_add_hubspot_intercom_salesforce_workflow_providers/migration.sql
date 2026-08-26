@@ -1,0 +1,3 @@
+ALTER TYPE "WorkflowIntegrationProvider" ADD VALUE IF NOT EXISTS 'HUBSPOT';
+ALTER TYPE "WorkflowIntegrationProvider" ADD VALUE IF NOT EXISTS 'INTERCOM';
+ALTER TYPE "WorkflowIntegrationProvider" ADD VALUE IF NOT EXISTS 'SALESFORCE';

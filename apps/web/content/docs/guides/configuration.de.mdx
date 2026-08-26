@@ -1,0 +1,108 @@
+---
+title: Konfigurationsreferenz
+description: Wichtige Einstellungen, die Sie in Fabric AI für KI-Anbieter, Authentifizierung, E-Mail, Zahlungen und Analysen konfigurieren können.
+---
+
+Fabric AI ist so konzipiert, dass es mit minimaler Konfiguration sofort einsatzbereit ist. Die meisten Einstellungen können über die Web-UI verwaltet werden. Diese Seite behandelt die wichtigsten Konfigurationsoptionen.
+
+## KI-Anbieter
+
+Die wichtigste Konfiguration ist die Verbindung Ihres KI-Anbieters. Sie können dies vollständig über die UI tun.
+
+<Steps>
+  <Step>
+    ### Zu Einstellungen navigieren
+
+    Gehen Sie in der Seitenleiste zu **Einstellungen > KI-Anbieter**.
+  </Step>
+
+  <Step>
+    ### Einen Anbieter wählen
+
+    Wählen Sie aus 20+ unterstützten Anbietern, darunter OpenAI, Anthropic, Groq, Cerebras, DeepSeek und mehr.
+  </Step>
+
+  <Step>
+    ### Ihren API-Schlüssel eingeben
+
+    Fügen Sie Ihren API-Schlüssel aus dem Dashboard Ihres Anbieters ein. Schlüssel werden vor der Speicherung verschlüsselt.
+  </Step>
+
+  <Step>
+    ### Testen und speichern
+
+    Klicken Sie auf **Verbindung testen**, um zu überprüfen, dann auf **Speichern**.
+  </Step>
+</Steps>
+
+Für eine detaillierte KI-Anbieter-Einrichtung siehe den [KI-Konfigurationsleitfaden](/docs/getting-started/ai-configuration).
+
+---
+
+## Authentifizierungsanbieter
+
+Fabric unterstützt mehrere Anmeldemethoden. Soziale OAuth-Anbieter können durch Konfiguration der folgenden Angaben aktiviert werden:
+
+| Anbieter | Was Sie benötigen |
+|----------|---------------|
+| **Google** | Google OAuth Client-ID und Secret aus der [Google Cloud Console](https://console.cloud.google.com) |
+| **GitHub** | GitHub OAuth App-Anmeldedaten aus den [GitHub Developer Settings](https://github.com/settings/developers) |
+| **Microsoft** | Microsoft Graph App-Anmeldedaten aus dem [Azure Portal](https://portal.azure.com) |
+
+Integrierte Methoden (E-Mail/Passwort, Magic Link, Passkeys, 2FA) funktionieren ohne zusätzliche Konfiguration.
+
+---
+
+## E-Mail
+
+Konfigurieren Sie einen E-Mail-Anbieter, um transaktionale E-Mails (Verifizierung, Einladungen, Benachrichtigungen) zu aktivieren:
+
+| Anbieter | Beschreibung |
+|----------|-------------|
+| **Resend** | Modernes E-Mail-API mit hervorragender Entwicklererfahrung |
+
+Resend ist der unterstützte E-Mail-Anbieter.
+
+---
+
+## Zahlungen
+
+Fabric unterstützt mehrere Zahlungsanbieter für Abonnement-Abrechnung:
+
+| Anbieter | Beschreibung |
+|----------|-------------|
+| **Stripe** | Vollständige Zahlungsabwicklung |
+
+Konfigurieren Sie den Stripe-API-Schlüssel und das Webhook-Secret, um Abrechnungsfunktionen zu aktivieren.
+
+---
+
+## Analysen
+
+Verfolgen Sie die Nutzung mit Ihrer bevorzugten Analyseplattform:
+
+| Anbieter | Beschreibung |
+|----------|-------------|
+| **PostHog** | Produktanalysen, Session-Replay und Feature-Flags |
+
+---
+
+## Self-Hosting-Konfiguration
+
+Wenn Sie eine selbstgehostete Instanz betreiben, müssen Sie Ihre Datenbank, Ihren Speicher und andere Infrastrukturkomponenten konfigurieren. Detaillierte Einrichtungsanleitungen sind im [Projekt-Repository](https://github.com/fabric-ai/fabric-portal) verfügbar.
+
+---
+
+## Nächste Schritte
+
+<Cards>
+  <Card title="KI-Konfiguration" href="/docs/getting-started/ai-configuration">
+    Detaillierte Anleitung zur Konfiguration von KI-Anbietern und Modellen
+  </Card>
+  <Card title="Installation" href="/docs/getting-started/installation">
+    Vollständige lokale Entwicklungsumgebung
+  </Card>
+  <Card title="Organisationen" href="/docs/features/organizations">
+    Team-Zusammenarbeit einrichten
+  </Card>
+</Cards>

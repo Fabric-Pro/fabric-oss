@@ -1,0 +1,239 @@
+{
+	"title": "MCP Operations Overview",
+	"tags": ["mcp", "oauth", "authentication"],
+	"timezone": "browser",
+	"schemaVersion": 36,
+	"version": 1,
+	"refresh": "30s",
+	"panels": [
+		{
+			"id": 1,
+			"title": "OAuth Connection Success Rate",
+			"type": "stat",
+			"gridPos": { "x": 0, "y": 0, "w": 6, "h": 4 },
+			"targets": [
+				{
+					"expr": "sum(rate(mcp_oauth_connections_total{status=\"success\"}[5m])) / sum(rate(mcp_oauth_connections_total[5m])) * 100",
+					"legendFormat": "Success Rate"
+				}
+			],
+			"options": {
+				"reduceOptions": {
+					"values": false,
+					"calcs": ["lastNotNull"]
+				},
+				"unit": "percent"
+			},
+			"fieldConfig": {
+				"defaults": {
+					"thresholds": {
+						"mode": "absolute",
+						"steps": [
+							{ "value": 0, "color": "red" },
+							{ "value": 90, "color": "yellow" },
+							{ "value": 95, "color": "green" }
+						]
+					}
+				}
+			}
+		},
+		{
+			"id": 2,
+			"title": "Test Connection Latency (95th percentile)",
+			"type": "stat",
+			"gridPos": { "x": 6, "y": 0, "w": 6, "h": 4 },
+			"targets": [
+				{
+					"expr": "histogram_quantile(0.95, sum(rate(mcp_test_connection_duration_seconds_bucket[5m])) by (le)) * 1000",
+					"legendFormat": "P95 Latency"
+				}
+			],
+			"options": {
+				"reduceOptions": {
+					"values": false,
+					"calcs": ["lastNotNull"]
+				},
+				"unit": "ms"
+			},
+			"fieldConfig": {
+				"defaults": {
+					"thresholds": {
+						"mode": "absolute",
+						"steps": [
+							{ "value": 0, "color": "green" },
+							{ "value": 2000, "color": "yellow" },
+							{ "value": 5000, "color": "red" }
+						]
+					}
+				}
+			}
+		},
+		{
+			"id": 3,
+			"title": "Active Configurations",
+			"type": "stat",
+			"gridPos": { "x": 12, "y": 0, "w": 6, "h": 4 },
+			"targets": [
+				{
+					"expr": "sum(mcp_active_configurations)",
+					"legendFormat": "Total Active"
+				}
+			],
+			"options": {
+				"reduceOptions": {
+					"values": false,
+					"calcs": ["lastNotNull"]
+				}
+			}
+		},
+		{
+			"id": 4,
+			"title": "Token Refresh Rate",
+			"type": "graph",
+			"gridPos": { "x": 0, "y": 4, "w": 12, "h": 6 },
+			"targets": [
+				{
+					"expr": "sum(rate(mcp_token_refresh_total{status=\"success\"}[5m])) by (server_key)",
+					"legendFormat": "{{server_key}} - Success"
+				},
+				{
+					"expr": "sum(rate(mcp_token_refresh_total{status=\"failure\"}[5m])) by (server_key)",
+					"legendFormat": "{{server_key}} - Failure"
+				}
+			],
+			"yaxes": [
+				{
+					"format": "ops",
+					"label": "Refreshes per second"
+				}
+			]
+		},
+		{
+			"id": 5,
+			"title": "OAuth Connections by Server",
+			"type": "graph",
+			"gridPos": { "x": 12, "y": 4, "w": 12, "h": 6 },
+			"targets": [
+				{
+					"expr": "sum(rate(mcp_oauth_connections_total[5m])) by (server_key, status)",
+					"legendFormat": "{{server_key}} - {{status}}"
+				}
+			],
+			"yaxes": [
+				{
+					"format": "ops",
+					"label": "Connections per second"
+				}
+			]
+		},
+		{
+			"id": 6,
+			"title": "Test Connection Duration by Transport",
+			"type": "graph",
+			"gridPos": { "x": 0, "y": 10, "w": 12, "h": 6 },
+			"targets": [
+				{
+					"expr": "histogram_quantile(0.50, sum(rate(mcp_test_connection_duration_seconds_bucket[5m])) by (le, transport))",
+					"legendFormat": "{{transport}} - P50"
+				},
+				{
+					"expr": "histogram_quantile(0.95, sum(rate(mcp_test_connection_duration_seconds_bucket[5m])) by (le, transport))",
+					"legendFormat": "{{transport}} - P95"
+				},
+				{
+					"expr": "histogram_quantile(0.99, sum(rate(mcp_test_connection_duration_seconds_bucket[5m])) by (le, transport))",
+					"legendFormat": "{{transport}} - P99"
+				}
+			],
+			"yaxes": [
+				{
+					"format": "s",
+					"label": "Duration"
+				}
+			]
+		},
+		{
+			"id": 7,
+			"title": "Configuration Operations",
+			"type": "graph",
+			"gridPos": { "x": 12, "y": 10, "w": 12, "h": 6 },
+			"targets": [
+				{
+					"expr": "sum(rate(mcp_config_operations_total[5m])) by (operation, auth_type)",
+					"legendFormat": "{{operation}} - {{auth_type}}"
+				}
+			],
+			"yaxes": [
+				{
+					"format": "ops",
+					"label": "Operations per second"
+				}
+			]
+		},
+		{
+			"id": 8,
+			"title": "Consecutive Failures (Top 10)",
+			"type": "table",
+			"gridPos": { "x": 0, "y": 16, "w": 12, "h": 6 },
+			"targets": [
+				{
+					"expr": "topk(10, mcp_consecutive_failures)",
+					"format": "table",
+					"instant": true
+				}
+			],
+			"transformations": [
+				{
+					"id": "organize",
+					"options": {
+						"excludeByName": {
+							"Time": true,
+							"__name__": true
+						},
+						"renameByName": {
+							"config_id": "Config ID",
+							"server_key": "Server",
+							"Value": "Failures"
+						}
+					}
+				}
+			]
+		},
+		{
+			"id": 9,
+			"title": "DCR Registrations",
+			"type": "graph",
+			"gridPos": { "x": 12, "y": 16, "w": 12, "h": 6 },
+			"targets": [
+				{
+					"expr": "sum(rate(mcp_dcr_registrations_total[5m])) by (status, server_key)",
+					"legendFormat": "{{server_key}} - {{status}}"
+				}
+			],
+			"yaxes": [
+				{
+					"format": "ops",
+					"label": "Registrations per second"
+				}
+			]
+		},
+		{
+			"id": 10,
+			"title": "Error Rate by Type",
+			"type": "graph",
+			"gridPos": { "x": 0, "y": 22, "w": 24, "h": 6 },
+			"targets": [
+				{
+					"expr": "sum(rate(mcp_errors_total[5m])) by (error_type, operation)",
+					"legendFormat": "{{operation}} - {{error_type}}"
+				}
+			],
+			"yaxes": [
+				{
+					"format": "ops",
+					"label": "Errors per second"
+				}
+			]
+		}
+	]
+}

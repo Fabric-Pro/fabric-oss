@@ -1,0 +1,22 @@
+{
+	"dependencies": {
+		"@repo/utils": "workspace:*",
+		"consola": "^3.4.2"
+	},
+	"devDependencies": {
+		"@repo/tsconfig": "workspace:*",
+		"@types/node": "^24.10.0",
+		"vitest": "^4.1.8"
+	},
+	"main": "./index.ts",
+	"name": "@repo/logs",
+	"private": true,
+	"scripts": {
+		"test": "vitest run --passWithNoTests",
+		"test:watch": "vitest",
+		"type-check": "tsc --noEmit"
+	},
+	"types": "./index.ts",
+	"version": "0.0.1",
+	"license": "Apache-2.0"
+}

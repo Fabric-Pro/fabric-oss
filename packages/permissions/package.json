@@ -1,0 +1,25 @@
+{
+	"name": "@repo/permissions",
+	"private": true,
+	"version": "0.0.0",
+	"license": "Apache-2.0",
+	"type": "module",
+	"main": "./index.ts",
+	"exports": {
+		".": {
+			"types": "./index.ts",
+			"import": "./index.ts",
+			"default": "./index.ts"
+		}
+	},
+	"scripts": {
+		"test": "vitest run",
+		"test:watch": "vitest",
+		"type-check": "tsc --noEmit"
+	},
+	"devDependencies": {
+		"@repo/tsconfig": "workspace:*",
+		"@types/node": "^24.10.0",
+		"vitest": "^4.1.8"
+	}
+}

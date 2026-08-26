@@ -1,0 +1,48 @@
+{
+	"name": "@fabricorg/sdk",
+	"version": "0.1.0",
+	"description": "TypeScript SDK for the Fabric AI platform",
+	"keywords": [
+		"fabric",
+		"ai",
+		"sdk",
+		"cli"
+	],
+	"homepage": "https://fabric.pro",
+	"license": "MIT",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/Fabric-Pro/fabric.git",
+		"directory": "packages/sdk"
+	},
+	"type": "module",
+	"exports": {
+		".": {
+			"types": "./dist/index.d.ts",
+			"import": "./dist/index.js",
+			"require": "./dist/index.cjs"
+		}
+	},
+	"main": "./dist/index.cjs",
+	"module": "./dist/index.js",
+	"types": "./dist/index.d.ts",
+	"publishConfig": {
+		"access": "public"
+	},
+	"files": [
+		"dist"
+	],
+	"scripts": {
+		"build": "tsup",
+		"dev": "tsup --watch",
+		"test": "vitest run",
+		"test:watch": "vitest",
+		"type-check": "tsc --noEmit"
+	},
+	"devDependencies": {
+		"@repo/tsconfig": "workspace:*",
+		"tsup": "^8.0.0",
+		"typescript": "5.9.3",
+		"vitest": "^4.1.8"
+	}
+}

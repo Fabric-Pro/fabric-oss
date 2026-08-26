@@ -1,0 +1,901 @@
+/**
+ * Data Analyst LangGraph Agent
+ *
+ * A LangGraph-based agent that uses Fabric's MCP tools for data analysis.
+ * Replaces Composio with dynamic MCP tool discovery from user's configured servers.
+ * Includes built-in chart generation tool for creating visualizations.
+ *
+ * MCP configs are fetched via API to keep the agent stateless (no direct database access).
+ */
+
+import { StateGraph, START, END, Annotation } from "@langchain/langgraph";
+import {
+	HumanMessage,
+	AIMessage,
+	type BaseMessage,
+} from "@langchain/core/messages";
+import { ToolNode } from "@langchain/langgraph/prebuilt";
+import { DynamicStructuredTool } from "@langchain/core/tools";
+import { z } from "zod";
+import {
+	getAgentModelAsync,
+	logAgentUsageFromRunnableConfig,
+} from "@repo/agent-core";
+import {
+	buildReasoningUpdate,
+	countHumanMessages,
+	reasoningByTurnAnnotation,
+	stripRawResponseEnvelope,
+} from "@repo/agent-core/reasoning-trace";
+import {
+	countToolRoundsSinceLastHuman,
+	deriveRecursionLimit,
+} from "@repo/agent-core/recursion";
+import { createMCPClient } from "@ai-sdk/mcp";
+import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { decryptApiKey } from "@repo/utils";
+
+type McpClientType = Awaited<ReturnType<typeof createMCPClient>>;
+
+export const MAX_TOOL_ITERATIONS = 20;
+
+/**
+ * The agent-tool loop needs 2*N + 1 supersteps to reach its finalize call;
+ * discover_tools and cleanup add two fixed graph nodes outside that loop.
+ * The shared derivation adds a five-step safety buffer above this invariant.
+ */
+export const DEFAULT_RECURSION_LIMIT = deriveRecursionLimit({
+	maxToolIterations: MAX_TOOL_ITERATIONS,
+	graphOverhead: 2,
+});
+
+/**
+ * Build authentication headers for MCP servers
+ * (Copied from @repo/mcp to avoid database dependency)
+ */
+function buildAuthHeaders(
+	authType: string,
+	token?: string | null,
+	apiKeyMethod: "BEARER" | "HEADER" | "PLAIN" = "BEARER",
+	apiKeyHeaderName?: string | null,
+): Record<string, string> {
+	if (!token) return {};
+
+	if (authType === "API_KEY") {
+		if (apiKeyMethod === "BEARER") {
+			return { Authorization: `Bearer ${token}` };
+		}
+		if (apiKeyMethod === "PLAIN") {
+			return { Authorization: token };
+		}
+		// HEADER method - use custom header name or default to X-API-Key
+		const headerName = apiKeyHeaderName || "X-API-Key";
+		return { [headerName]: token };
+	}
+
+	if (authType === "OAUTH2") {
+		return { Authorization: `Bearer ${token}` };
+	}
+
+	return {};
+}
+
+/**
+ * Create an MCP client from options (no database dependency)
+ */
+async function createMcpClient(options: {
+	serverUrl: string;
+	transport: "HTTP" | "SSE" | string;
+	headers?: Record<string, string>;
+}): Promise<McpClientType> {
+	const { serverUrl, transport, headers = {} } = options;
+
+	// Create transport based on type
+	const transportInstance =
+		transport === "SSE"
+			? new SSEClientTransport(new URL(serverUrl), {
+					requestInit: { headers },
+				})
+			: new StreamableHTTPClientTransport(new URL(serverUrl), {
+					requestInit: { headers },
+				});
+
+	// Create and return the MCP client
+	return await createMCPClient({ transport: transportInstance });
+}
+
+/**
+ * Close an MCP client connection
+ */
+async function closeMcpClient(client: McpClientType): Promise<void> {
+	try {
+		await client.close();
+	} catch (error) {
+		console.warn("[MCP] Error closing client:", error);
+	}
+}
+
+// Use 'any' for MCP client type to avoid type instantiation depth issues with experimental @ai-sdk/mcp API
+type McpClientAny = any;
+import {
+	createChartArtifact,
+	type ChartArtifact,
+	type ChartType,
+	type ChartArtifactConfig,
+} from "@repo/agent-tools";
+import {
+	createListDataSourcesTool,
+	createSuggestConnectionTool,
+	createCalculateStatisticsTool,
+	createAggregateDataTool,
+	createDetectTrendsTool,
+	createJoinDatasetsTool,
+	getConnectionSuggestions,
+	clearConnectionSuggestions,
+	detectMentionedButNotConnected,
+	type ConnectionSuggestionArtifact,
+} from "./analytics-tools";
+
+// State annotation for the agent
+const DataAnalystAnnotation = Annotation.Root({
+	messages: Annotation<BaseMessage[]>({
+		reducer: (current, update) => [...current, ...update],
+		default: () => [],
+	}),
+	systemPrompt: Annotation<string>({
+		reducer: (_, update) => update,
+		default: () => "",
+	}),
+	response: Annotation<string>({
+		reducer: (_, update) => update,
+		default: () => "",
+	}),
+	error: Annotation<string | null>({
+		reducer: (_, update) => update,
+		default: () => null,
+	}),
+	// MCP tool state
+	// Use 'any[]' to avoid TypeScript type instantiation depth issues with DynamicStructuredTool and Zod
+	mcpTools: Annotation<any[]>({
+		reducer: (_, update) => update,
+		default: () => [],
+	}),
+	mcpClients: Annotation<McpClientAny[]>({
+		reducer: (_, update) => update,
+		default: () => [],
+	}),
+	// Chart artifacts generated by the agent
+	chartArtifacts: Annotation<ChartArtifact[]>({
+		reducer: (current, update) => [...current, ...update],
+		default: () => [],
+	}),
+	// Connection suggestions for missing integrations
+	connectionSuggestions: Annotation<ConnectionSuggestionArtifact[]>({
+		reducer: (current, update) => [...current, ...update],
+		default: () => [],
+	}),
+	// Available data sources (for informing the user)
+	availableDataSources: Annotation<string[]>({
+		reducer: (_, update) => update,
+		default: () => [],
+	}),
+	// Per-turn reasoning trace ("Thinking · X.Ys" UI affordance). Populated
+	// by agentNode via buildReasoningUpdate from @repo/agent-core/reasoning-trace
+	// when the bound model emits Anthropic thinking blocks, OpenAI reasoning
+	// blocks, or Vercel Gateway raw_response reasoning. Keyed by turnIndex
+	// (= count of human messages preceding the assistant turn). Ephemeral.
+	reasoningByTurn: reasoningByTurnAnnotation(),
+});
+
+type DataAnalystState = typeof DataAnalystAnnotation.State;
+
+/**
+ * Create the built-in chart tool
+ * This tool is always available and creates structured chart artifacts
+ */
+function createChartTool(
+	addArtifact: (artifact: ChartArtifact) => void,
+): DynamicStructuredTool {
+	return new DynamicStructuredTool({
+		name: "create_chart",
+		description: [
+			"Create a chart visualization from data.",
+			"Use this tool when you need to visualize data as a chart.",
+			"Supported chart types: line, bar, pie, area, scatter.",
+			"The data array should contain objects with consistent keys matching xAxis and yAxis fields.",
+			"Returns a chart artifact that the UI will render as an interactive chart.",
+		].join(" "),
+		schema: z.object({
+			chartType: z
+				.enum(["line", "bar", "pie", "area", "scatter"])
+				.describe(
+					"Type of chart. Use 'line' for trends, 'bar' for comparisons, 'pie' for proportions, 'area' for cumulative data, 'scatter' for correlations.",
+				),
+			data: z
+				.array(z.record(z.unknown()))
+				.describe(
+					"Array of data objects with keys matching xAxis and yAxis fields.",
+				),
+			config: z
+				.object({
+					xAxis: z.string().describe("Field name for X axis"),
+					yAxis: z
+						.union([z.string(), z.array(z.string())])
+						.describe("Field name(s) for Y axis"),
+					title: z.string().optional().describe("Chart title"),
+					series: z
+						.string()
+						.optional()
+						.describe("Field to split into series"),
+					stacked: z
+						.boolean()
+						.optional()
+						.describe("Stack series (bar/area)"),
+					showLegend: z.boolean().optional().describe("Show legend"),
+				})
+				.describe("Chart configuration"),
+			sourceDescription: z
+				.string()
+				.optional()
+				.describe("Description of data source"),
+		}),
+		func: async (input) => {
+			const artifact = createChartArtifact({
+				chartType: input.chartType as ChartType,
+				data: input.data as Record<string, unknown>[],
+				config: input.config as ChartArtifactConfig,
+				sourceDescription: input.sourceDescription,
+			});
+
+			// Add to artifacts collection
+			addArtifact(artifact);
+
+			// Return success message with artifact reference
+			return JSON.stringify({
+				success: true,
+				message: `Created ${input.chartType} chart: ${input.config.title || "Untitled"}`,
+				artifactId: artifact.id,
+				dataPoints: input.data.length,
+			});
+		},
+	});
+}
+
+// Shared artifacts collection for the current graph execution
+let currentArtifacts: ChartArtifact[] = [];
+
+/**
+ * Get all artifacts generated during the current execution
+ */
+export function getGeneratedArtifacts(): ChartArtifact[] {
+	return [...currentArtifacts];
+}
+
+/**
+ * Clear artifacts (call before starting a new execution)
+ */
+export function clearArtifacts(): void {
+	currentArtifacts = [];
+	clearConnectionSuggestions();
+}
+
+/**
+ * Get all connection suggestion artifacts
+ */
+export function getConnectionSuggestionArtifacts(): ConnectionSuggestionArtifact[] {
+	return getConnectionSuggestions();
+}
+
+/**
+ * Add an artifact to the collection
+ */
+function addArtifact(artifact: ChartArtifact): void {
+	currentArtifacts.push(artifact);
+}
+
+/**
+ * MCP config response from the API
+ */
+interface McpConfigResponse {
+	id: string;
+	name: string;
+	transportType: string;
+	baseUrl?: string;
+	command?: string;
+	args?: string[];
+	headers?: Record<string, string>;
+	env?: Record<string, string>;
+	authType: string;
+	encryptedApiKey?: string;
+	apiKeyHeaderName?: string;
+	apiKeyMethod?: string;
+	accessToken?: string;
+	serverName?: string;
+	serverDefaultUrl?: string;
+}
+
+/**
+ * Fetch MCP configs from Fabric API (stateless - no database access)
+ */
+async function fetchMcpConfigs(aiToken: string): Promise<McpConfigResponse[]> {
+	const fabricApiUrl =
+		process.env.RUNTIME_API_URL ||
+		process.env.FABRIC_API_URL ||
+		"http://localhost:3001";
+	const url = `${fabricApiUrl}/api/mcp/configs`;
+
+	console.log("[DataAnalyst] Fetching MCP configs from:", url);
+
+	const response = await fetch(url, {
+		method: "GET",
+		headers: {
+			"X-AI-Token": aiToken,
+			"Content-Type": "application/json",
+		},
+	});
+
+	if (!response.ok) {
+		const error = await response.text();
+		throw new Error(
+			`Failed to fetch MCP configs: ${response.status} ${error}`,
+		);
+	}
+
+	const data = await response.json();
+	return data.configs || [];
+}
+
+/**
+ * Node: Discover and load MCP tools from user's configured servers
+ * Also includes the built-in chart tool
+ *
+ * Uses the Fabric API to fetch MCP configs (stateless pattern - no direct database access)
+ */
+async function discoverMcpTools(
+	state: DataAnalystState,
+	config?: { configurable?: Record<string, unknown> },
+): Promise<Partial<DataAnalystState>> {
+	const aiToken = config?.configurable?.ai_token as string | undefined;
+
+	// Always include the built-in chart tool
+	const chartTool = createChartTool(addArtifact);
+	// Use 'any' array type to avoid TypeScript type instantiation depth issues with Zod schemas
+	const tools: any[] = [chartTool];
+	const clients: McpClientAny[] = [];
+
+	console.log("[DataAnalyst] Added built-in chart tool");
+
+	if (!aiToken) {
+		console.log("[DataAnalyst] No AI token, skipping MCP tool discovery");
+		return { mcpTools: tools, mcpClients: [] };
+	}
+
+	console.log("[DataAnalyst] Discovering MCP tools via API");
+
+	try {
+		// Fetch MCP configs from Fabric API
+		const configs = await fetchMcpConfigs(aiToken);
+		console.log(`[DataAnalyst] Found ${configs.length} MCP configs`);
+
+		// Create MCP clients and extract tools
+		for (const mcpConfig of configs) {
+			try {
+				const serverUrl =
+					mcpConfig.baseUrl || mcpConfig.serverDefaultUrl;
+				if (!serverUrl) {
+					console.warn(
+						`[DataAnalyst] No URL for MCP config ${mcpConfig.name}, skipping`,
+					);
+					continue;
+				}
+
+				// Build auth headers
+				let authHeaders: Record<string, string> = {};
+				if (
+					mcpConfig.authType === "API_KEY" &&
+					mcpConfig.encryptedApiKey
+				) {
+					const apiKey = decryptApiKey(mcpConfig.encryptedApiKey);
+					authHeaders = buildAuthHeaders(
+						mcpConfig.authType,
+						apiKey,
+						(mcpConfig.apiKeyMethod as
+							| "BEARER"
+							| "HEADER"
+							| "PLAIN") || "BEARER",
+						mcpConfig.apiKeyHeaderName,
+					);
+				} else if (
+					mcpConfig.authType === "OAUTH2" &&
+					mcpConfig.accessToken
+				) {
+					authHeaders = {
+						Authorization: `Bearer ${mcpConfig.accessToken}`,
+					};
+				}
+
+				// Merge with config headers
+				const headers = { ...mcpConfig.headers, ...authHeaders };
+
+				// Create MCP client
+				const client = await createMcpClient({
+					serverUrl,
+					transport:
+						mcpConfig.transportType === "SSE" ? "SSE" : "HTTP",
+					headers,
+				});
+
+				clients.push(client);
+				const serverName = mcpConfig.serverName || mcpConfig.name;
+
+				// Get tools from this MCP server
+				const mcpTools = await client.tools();
+
+				for (const [toolName, toolDef] of Object.entries(mcpTools)) {
+					const def = toolDef as {
+						description?: string;
+						inputSchema?: Record<string, unknown>;
+					};
+
+					// Convert MCP tool to LangChain DynamicStructuredTool
+					const lcTool = new DynamicStructuredTool({
+						name: `${serverName.toLowerCase().replace(/\s+/g, "_")}_${toolName}`,
+						description:
+							def.description ||
+							`Tool from ${serverName}: ${toolName}`,
+						schema: convertJsonSchemaToZod(def.inputSchema),
+						func: async (input: Record<string, unknown>) => {
+							try {
+								// Execute the MCP tool
+								const result = await client.callTool({
+									name: toolName,
+									arguments: input,
+								});
+
+								// Extract text content from result
+								if (
+									result &&
+									typeof result === "object" &&
+									"content" in result
+								) {
+									const content = result.content;
+									if (Array.isArray(content)) {
+										return content
+											.map((c: any) => {
+												if (c.type === "text")
+													return c.text;
+												if (c.type === "image")
+													return `![Image](${c.data})`;
+												return JSON.stringify(c);
+											})
+											.join("\n");
+									}
+									return JSON.stringify(content);
+								}
+								return JSON.stringify(result);
+							} catch (error) {
+								const msg =
+									error instanceof Error
+										? error.message
+										: String(error);
+								console.error(
+									`[DataAnalyst] Tool ${toolName} failed:`,
+									msg,
+								);
+								return `Error executing ${toolName}: ${msg}`;
+							}
+						},
+					});
+
+					tools.push(lcTool);
+				}
+
+				console.log(
+					`[DataAnalyst] Loaded ${Object.keys(mcpTools).length} tools from ${serverName}`,
+				);
+			} catch (error) {
+				console.warn(
+					`[DataAnalyst] Failed to load MCP config ${mcpConfig.name}:`,
+					error,
+				);
+			}
+		}
+
+		// Add analytics tools
+		const fabricApiUrl =
+			process.env.RUNTIME_API_URL ||
+			process.env.FABRIC_API_URL ||
+			"http://localhost:3001";
+		const connectedConfigs = configs.map((c) => ({
+			name: c.name,
+			serverName: c.serverName,
+		}));
+
+		tools.push(createListDataSourcesTool(connectedConfigs));
+		tools.push(createSuggestConnectionTool(connectedConfigs, fabricApiUrl));
+		tools.push(createCalculateStatisticsTool());
+		tools.push(createAggregateDataTool());
+		tools.push(createDetectTrendsTool());
+		tools.push(createJoinDatasetsTool());
+
+		console.log(
+			`[DataAnalyst] Total tools loaded: ${tools.length} (including built-in analytics tools)`,
+		);
+
+		const availableSources = configs.map((c) => c.serverName || c.name);
+		return {
+			mcpTools: tools,
+			mcpClients: clients,
+			availableDataSources: availableSources,
+		};
+	} catch (error) {
+		console.error("[DataAnalyst] Failed to discover MCP tools:", error);
+
+		// Still add analytics tools even on error
+		const fabricApiUrl =
+			process.env.RUNTIME_API_URL ||
+			process.env.FABRIC_API_URL ||
+			"http://localhost:3001";
+		tools.push(createListDataSourcesTool([]));
+		tools.push(createSuggestConnectionTool([], fabricApiUrl));
+		tools.push(createCalculateStatisticsTool());
+		tools.push(createAggregateDataTool());
+		tools.push(createDetectTrendsTool());
+		tools.push(createJoinDatasetsTool());
+
+		return { mcpTools: tools, mcpClients: [], availableDataSources: [] };
+	}
+}
+
+/**
+ * Convert JSON Schema to Zod schema (simplified)
+ */
+function convertJsonSchemaToZod(
+	schema?: Record<string, unknown>,
+): z.ZodObject<any> {
+	if (!schema || !schema.properties) {
+		return z.object({}).passthrough();
+	}
+
+	const properties = schema.properties as Record<
+		string,
+		Record<string, unknown>
+	>;
+	const required = (schema.required as string[]) || [];
+	const shape: Record<string, z.ZodTypeAny> = {};
+
+	for (const [key, prop] of Object.entries(properties)) {
+		let zodType: z.ZodTypeAny;
+
+		switch (prop.type) {
+			case "string":
+				zodType = z.string();
+				if (prop.enum) {
+					zodType = z.enum(prop.enum as [string, ...string[]]);
+				}
+				break;
+			case "number":
+			case "integer":
+				zodType = z.number();
+				break;
+			case "boolean":
+				zodType = z.boolean();
+				break;
+			case "array":
+				zodType = z.array(z.unknown());
+				break;
+			case "object":
+				zodType = z.record(z.unknown());
+				break;
+			default:
+				zodType = z.unknown();
+		}
+
+		if (prop.description) {
+			zodType = zodType.describe(prop.description as string);
+		}
+
+		if (!required.includes(key)) {
+			zodType = zodType.optional();
+		}
+
+		shape[key] = zodType;
+	}
+
+	return z.object(shape);
+}
+
+/**
+ * Coerce `tool_calls[*].args` on each assistant message to a plain object.
+ *
+ * Anthropic (and other providers) reject `tool_use.input` values that are not
+ * JSON dictionaries with errors like
+ * `messages.{i}.content.{j}.tool_use.input: Input should be a valid dictionary`.
+ * On a multi-iteration agent loop, a single malformed tool call from a prior
+ * iteration is replayed back to the model and poisons every subsequent call.
+ *
+ * This sanitizer matches the `convertToAiSdkMessages` pass in the Fabric
+ * orchestrator (`packages/temporal/.../run-agent-iteration.ts`) — the Data
+ * Analyst runs as its own LangGraph service and therefore needs an equivalent
+ * defense at the boundary between LangChain `BaseMessage[]` and the model
+ * provider.
+ */
+function sanitizeToolCallArgs<T>(messages: T[]): T[] {
+	return messages.map((message) => {
+		const tcs = (message as { tool_calls?: unknown }).tool_calls;
+		if (!Array.isArray(tcs) || tcs.length === 0) {
+			return message;
+		}
+		let mutated = false;
+		const sanitizedCalls = tcs.map((tc: unknown) => {
+			const call = tc as { args?: unknown } & Record<string, unknown>;
+			const args = call?.args;
+			if (args && typeof args === "object" && !Array.isArray(args)) {
+				return tc;
+			}
+			mutated = true;
+			let coerced: Record<string, unknown> = {};
+			if (typeof args === "string") {
+				try {
+					const parsed = JSON.parse(args);
+					if (
+						parsed &&
+						typeof parsed === "object" &&
+						!Array.isArray(parsed)
+					) {
+						coerced = parsed as Record<string, unknown>;
+					}
+				} catch {
+					// Fall through to {}
+				}
+			}
+			return { ...call, args: coerced };
+		});
+		if (!mutated) {
+			return message;
+		}
+		return { ...(message as object), tool_calls: sanitizedCalls } as T;
+	});
+}
+
+/**
+ * Translate raw provider/SDK errors into a user-facing message.
+ *
+ * The catch block previously returned the raw API error verbatim, e.g.
+ * `messages.3.content.0.tool_use.input: Input should be a valid dictionary`,
+ * which exposes implementation details and makes the experience feel broken.
+ * The raw `msg` is still kept in `state.error` for telemetry.
+ */
+function toFriendlyAgentError(raw: string): string {
+	if (
+		/tool_use\.input/i.test(raw) ||
+		/valid dictionary/i.test(raw) ||
+		/Invalid tool_use/i.test(raw)
+	) {
+		return "Sorry, I couldn't prepare that tool call. Please try rephrasing your request, or describe what you want differently.";
+	}
+	if (/rate.?limit|429|too many requests/i.test(raw)) {
+		return "I'm being rate-limited right now. Please try again in a moment.";
+	}
+	if (/context.?length|token limit|too (long|large)/i.test(raw)) {
+		return "Your request is too long for me to process. Please shorten it and try again.";
+	}
+	if (/timeout|timed out|ETIMEDOUT/i.test(raw)) {
+		return "That request took too long to complete. Please try again.";
+	}
+	return "I ran into a problem completing that request. Please try again or rephrase.";
+}
+
+/**
+ * Node: Agent reasoning with tools
+ */
+async function agentNode(
+	state: DataAnalystState,
+	config?: { configurable?: Record<string, unknown> },
+): Promise<Partial<DataAnalystState>> {
+	try {
+		const generationStart = Date.now();
+		// Get the model using token exchange
+		const model = await getAgentModelAsync(
+			{ configurable: config?.configurable },
+			{ taskType: "TOOL_CALLING" },
+		);
+
+		const toolRounds = countToolRoundsSinceLastHuman(state.messages);
+		const finalizeMode = toolRounds >= MAX_TOOL_ITERATIONS;
+
+		// Bind MCP tools to the model
+		const modelWithTools =
+			state.mcpTools.length > 0 && !finalizeMode
+				? model.bindTools(state.mcpTools)
+				: model;
+
+		const systemPrompt = finalizeMode
+			? `${state.systemPrompt}\n\n## Analysis Budget Exhausted\n\nThe analysis tool budget is exhausted. Produce the final answer now using only the data already gathered. Do not request or call any more tools.`
+			: state.systemPrompt;
+
+		// Prepare messages with system prompt.
+		// `sanitizeToolCallArgs` coerces any non-object tool_call args from
+		// prior iterations to `{}` so Anthropic's `tool_use.input must be a
+		// dictionary` validation cannot reject a replayed assistant turn.
+		const messagesWithSystem = sanitizeToolCallArgs([
+			{ role: "system", content: systemPrompt },
+			...state.messages,
+		]);
+
+		// Invoke the model. turnStart is captured BEFORE invoke per
+		// buildReasoningUpdate protocol P3 (otherwise durationMs ≈ 0).
+		const turnStart = Date.now();
+		const response = await modelWithTools.invoke(messagesWithSystem);
+		await logAgentUsageFromRunnableConfig(
+			{ configurable: config?.configurable },
+			response,
+			{
+				taskType: "TOOL_CALLING",
+				agentId: "data_analyst",
+				latencyMs: Date.now() - generationStart,
+			},
+		);
+
+		// === Reasoning capture (shared lib, F-1171 follow-up) ===
+		// buildReasoningUpdate MUST run BEFORE stripRawResponseEnvelope —
+		// see protocol P1 in @repo/agent-core/reasoning-trace/emit.ts.
+		const reasoningByTurnUpdate = buildReasoningUpdate({
+			response,
+			existingByTurn: state.reasoningByTurn,
+			stateMessages: state.messages,
+			turnStart,
+			loggerLabel: "[DataAnalyst]",
+		});
+		stripRawResponseEnvelope(response);
+		if (finalizeMode && response.tool_calls?.length) {
+			console.warn(
+				"[DataAnalyst] Model requested tools after the analysis budget was exhausted; discarding tool calls",
+				{ toolRounds, maxToolIterations: MAX_TOOL_ITERATIONS },
+			);
+			response.tool_calls = [];
+		}
+
+		if (reasoningByTurnUpdate.reasoningByTurn) {
+			const turnIndex = countHumanMessages(state.messages);
+			const entry = reasoningByTurnUpdate.reasoningByTurn[turnIndex];
+			console.log("[DataAnalyst] Reasoning emitted", {
+				turnIndex,
+				textLength: entry?.text.length ?? 0,
+				durationMs: entry?.durationMs ?? 0,
+			});
+		}
+
+		// Check if we have tool calls
+		if (response.tool_calls && response.tool_calls.length > 0) {
+			return {
+				messages: [response as BaseMessage],
+				...reasoningByTurnUpdate,
+			};
+		}
+
+		// Extract text response
+		const textContent =
+			typeof response.content === "string"
+				? response.content
+				: Array.isArray(response.content)
+					? response.content
+							.filter((c: any) => c.type === "text")
+							.map((c: any) => c.text)
+							.join("")
+					: "";
+
+		return {
+			messages: [response as BaseMessage],
+			response: textContent,
+			...reasoningByTurnUpdate,
+		};
+	} catch (error) {
+		const msg = error instanceof Error ? error.message : String(error);
+		console.error("[DataAnalyst] Agent error:", msg);
+		return {
+			error: msg,
+			response: toFriendlyAgentError(msg),
+		};
+	}
+}
+
+/**
+ * Node: Execute tools
+ */
+async function toolNode(
+	state: DataAnalystState,
+	config?: { configurable?: Record<string, unknown> },
+): Promise<Partial<DataAnalystState>> {
+	if (state.mcpTools.length === 0) {
+		return { messages: [] };
+	}
+
+	const toolNodeInstance = new ToolNode(state.mcpTools);
+	const result = await toolNodeInstance.invoke(state, config);
+
+	return {
+		messages: result.messages || [],
+	};
+}
+
+/**
+ * Node: Cleanup MCP clients
+ */
+async function cleanupNode(
+	state: DataAnalystState,
+): Promise<Partial<DataAnalystState>> {
+	// Close all MCP clients
+	for (const client of state.mcpClients) {
+		try {
+			await closeMcpClient(client);
+		} catch {
+			// Ignore cleanup errors
+		}
+	}
+
+	return { mcpClients: [] };
+}
+
+/**
+ * Routing function: Should we continue to tools or end?
+ */
+function shouldContinue(state: DataAnalystState): "tools" | "cleanup" {
+	const lastMessage = state.messages[state.messages.length - 1];
+
+	if (
+		lastMessage &&
+		"tool_calls" in lastMessage &&
+		Array.isArray(lastMessage.tool_calls) &&
+		lastMessage.tool_calls.length > 0
+	) {
+		// Defense-in-depth: agentNode's finalize mode already strips tool_calls
+		// once the budget is spent, so this branch is normally unreachable —
+		// kept as a backstop should a future path bypass the finalize strip.
+		const toolRounds = countToolRoundsSinceLastHuman(state.messages);
+		if (toolRounds > MAX_TOOL_ITERATIONS) {
+			console.warn(
+				"[DataAnalyst] Tool iteration limit exceeded; routing to cleanup",
+				{ toolRounds, maxToolIterations: MAX_TOOL_ITERATIONS },
+			);
+			return "cleanup";
+		}
+		return "tools";
+	}
+
+	return "cleanup";
+}
+
+// Exported for unit tests only — not part of the public surface.
+export const __testing = {
+	sanitizeToolCallArgs,
+	toFriendlyAgentError,
+	agentNode,
+	shouldContinue,
+};
+
+/**
+ * Create the Data Analyst LangGraph
+ */
+export function createDataAnalystGraph() {
+	const graph = new StateGraph(DataAnalystAnnotation)
+		// Nodes
+		.addNode("discover_tools", discoverMcpTools)
+		.addNode("agent", agentNode)
+		.addNode("tools", toolNode)
+		.addNode("cleanup", cleanupNode)
+		// Edges
+		.addEdge(START, "discover_tools")
+		.addEdge("discover_tools", "agent")
+		.addConditionalEdges("agent", shouldContinue, {
+			tools: "tools",
+			cleanup: "cleanup",
+		})
+		.addEdge("tools", "agent")
+		.addEdge("cleanup", END);
+
+	return graph.compile();
+}
+
+export { DataAnalystAnnotation };

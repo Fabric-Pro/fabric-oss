@@ -1,0 +1,31 @@
+{
+	"dependencies": {
+		"@repo/config": "workspace:*",
+		"@repo/database": "workspace:*",
+		"@repo/logs": "workspace:*",
+		"@repo/observability": "workspace:*",
+		"stripe": "^19.2.0",
+		"zod": "^4.1.12"
+	},
+	"devDependencies": {
+		"@repo/tsconfig": "workspace:*",
+		"@types/node": "^24.10.0"
+	},
+	"main": "./index.ts",
+	"exports": {
+		".": {
+			"types": "./index.ts",
+			"default": "./index.ts"
+		},
+		"./types": "./types.ts",
+		"./lib/helper": "./src/lib/helper.ts"
+	},
+	"name": "@repo/payments",
+	"private": true,
+	"scripts": {
+		"type-check": "tsc --noEmit"
+	},
+	"types": "./index.ts",
+	"version": "0.0.3",
+	"license": "Apache-2.0"
+}

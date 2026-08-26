@@ -1,0 +1,35 @@
+{
+	"dependencies": {
+		"@react-email/components": "^0.5.7",
+		"@react-email/render": "^1.4.0",
+		"@repo/config": "workspace:*",
+		"@repo/i18n": "workspace:*",
+		"@repo/logs": "workspace:*",
+		"@repo/observability": "workspace:*",
+		"@repo/utils": "workspace:*",
+		"react": "19.2.0",
+		"react-dom": "19.2.0",
+		"react-email": "^4.3.2",
+		"resend": "^6.4.0",
+		"use-intl": "^4.4.0"
+	},
+	"devDependencies": {
+		"@repo/tsconfig": "workspace:*",
+		"@types/node": "24.10.0",
+		"@types/react": "19.2.2",
+		"vitest": "^4.1.8"
+	},
+	"main": "./index.ts",
+	"name": "@repo/mail",
+	"private": true,
+	"scripts": {
+		"export": "email export",
+		"preview": "email dev --port 3005",
+		"test": "vitest run",
+		"test:watch": "vitest",
+		"type-check": "tsc --noEmit"
+	},
+	"types": "./index.ts",
+	"version": "0.0.1",
+	"license": "Apache-2.0"
+}

@@ -1,0 +1,81 @@
+---
+title: GitLab
+description: GitLab verbinden, damit Fabric-Agenten und -Workflows Issues als Laufzeit-Aktionen erstellen und durchsuchen können.
+---
+
+Verbinden Sie GitLab mit Fabric AI, damit Agenten und Workflows Issues in Ihren GitLab-Projekten erstellen und durchsuchen können — als Live-Laufzeit-Aktionen.
+
+GitLab ist ein **Hybrid**-Anbieter: Er bietet sowohl Wissens- (Suche) als auch Schreib- (Erstellen) Aktionen.
+
+<Callout type="info">
+Fabric verwendet GitLabs **offiziellen MCP-Server** („GitLab (Offiziell)", verfügbar mit GitLab Premium/Ultimate). Bei Konten ohne diesen greift Fabric automatisch auf die GitLab-REST-API zurück — keine Konfigurationsänderung nötig.
+</Callout>
+
+## GitLab einrichten
+
+<Steps>
+  <Step>
+    ### GitLab unter Integrationen öffnen
+
+    Gehen Sie zu **Einstellungen → Integrationen** und öffnen Sie die **GitLab**-Karte.
+  </Step>
+
+  <Step>
+    ### Aktionen einrichten
+
+    Klicken Sie auf **Aktionen einrichten** und autorisieren Sie Fabric AI im GitLab-Popup (OAuth). Tokens werden verschlüsselt gespeichert und automatisch erneuert.
+  </Step>
+
+  <Step>
+    ### Bestätigen
+
+    Der Anbieter zeigt **Verbunden** mit seinen verfügbaren Laufzeit-Aktionen.
+  </Step>
+</Steps>
+
+## Verfügbare Aktionen
+
+| Aktion | Typ | Beschreibung |
+|--------|------|-------------|
+| **Search GitLab Issues** | Wissen | Issues in einem GitLab-Projekt durchsuchen |
+| **Create GitLab Issue** | Aktion | Ein neues Issue in einem GitLab-Projekt erstellen |
+
+### Im KI-Chat
+
+```
+"Finde offene Issues mit dem Label 'bug' im Web-Projekt"
+
+"Erstelle ein GitLab-Issue für die fehlgeschlagene Pipeline, die wir besprochen haben"
+```
+
+## Trennen & erneut verbinden
+
+1. Öffnen Sie **Einstellungen → Integrationen → GitLab**
+2. Klicken Sie auf **Trennen**
+3. Zum erneuten Verbinden klicken Sie wieder auf **Aktionen einrichten** und autorisieren erneut
+
+<Callout type="info">
+Wenn eine gespeicherte GitLab-Anmeldung nicht mehr funktioniert (Refresh-Token abgelaufen oder widerrufen), zeigt der Anbieter den Hinweis **Erneut verbinden erforderlich** — klicken Sie auf **Erneut verbinden**, um die Laufzeit-Aktionen wiederherzustellen.
+</Callout>
+
+## Fehlerbehebung
+
+### „Erneut verbinden erforderlich"
+- Das OAuth-Token ist abgelaufen oder wurde widerrufen. Klicken Sie auf der GitLab-Karte unter **Einstellungen → Integrationen** auf **Erneut verbinden**.
+
+### Eine Aktion liefert keine Ergebnisse
+- Prüfen Sie, ob die Verbindung **Verbunden** anzeigt
+- Stellen Sie sicher, dass das autorisierte Konto Zugriff auf das Zielprojekt hat
+
+---
+
+## Nächste Schritte
+
+<Cards>
+  <Card title="MCP-Integration" href="/docs/integrations/mcp">
+    Wie verbundene Tools zur Laufzeit aufgerufen werden
+  </Card>
+  <Card title="Workflow-Builder" href="/docs/features/workflow-builder">
+    GitLab-Aktionen in automatisierten Workflows verwenden
+  </Card>
+</Cards>

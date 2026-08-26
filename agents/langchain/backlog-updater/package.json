@@ -1,0 +1,32 @@
+{
+	"name": "backlog-updater-agent",
+	"private": true,
+	"version": "1.0.3",
+	"license": "Apache-2.0",
+	"description": "LangGraph agent for AI-powered backlog analysis and updates from project context",
+	"type": "module",
+	"scripts": {
+		"dev": "langgraph dev --host localhost --port 8135 --no-browser",
+		"build": "tsup --config tsup.config.ts",
+		"start": "node dist/server.js",
+		"test": "vitest run"
+	},
+	"dependencies": {
+		"@langchain/anthropic": "^1.3.17",
+		"@langchain/core": "^1.1.24",
+		"@langchain/groq": "1.1.0",
+		"@langchain/langgraph": "^1.1.4",
+		"@langchain/openai": "^1.2.7",
+		"@repo/agent-core": "workspace:*",
+		"@repo/logs": "workspace:*",
+		"@repo/observability": "workspace:*",
+		"undici": "^8.5.0"
+	},
+	"devDependencies": {
+		"@langchain/langgraph-cli": "1.1.13",
+		"@types/node": "^22.10.5",
+		"tsup": "^8.5.0",
+		"typescript": "^5.9.3",
+		"vitest": "^4.1.8"
+	}
+}

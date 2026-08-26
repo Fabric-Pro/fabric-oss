@@ -1,0 +1,47 @@
+{
+	"name": "@fabricorg/cli",
+	"version": "0.1.0",
+	"description": "CLI for the Fabric AI platform",
+	"keywords": [
+		"fabric",
+		"ai",
+		"cli",
+		"developer-tools"
+	],
+	"homepage": "https://fabric.pro",
+	"license": "MIT",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/Fabric-Pro/fabric.git",
+		"directory": "packages/cli"
+	},
+	"type": "module",
+	"bin": {
+		"fabric": "./dist/fabric.js"
+	},
+	"files": [
+		"dist"
+	],
+	"publishConfig": {
+		"access": "public"
+	},
+	"scripts": {
+		"build": "tsup",
+		"dev": "tsup --watch",
+		"type-check": "tsc --noEmit",
+		"fabric": "node --import tsx/esm src/bin/fabric.ts"
+	},
+	"dependencies": {
+		"@fabricorg/sdk": "workspace:*",
+		"@fabricorg/sdk-mcp": "workspace:*",
+		"cli-table3": "^0.6.5",
+		"commander": "^13.1.0",
+		"conf": "^13.1.0"
+	},
+	"devDependencies": {
+		"@repo/tsconfig": "workspace:*",
+		"tsup": "^8.0.0",
+		"tsx": "^4.21.0",
+		"typescript": "5.9.3"
+	}
+}

@@ -1,0 +1,61 @@
+name: Scan container image
+description: >-
+  Scans a built Fabric image for vulnerable OS and application packages and
+  blocks deployment on fixable criticals (SOC 2 CC6.8).
+
+inputs:
+  image:
+    description: Full image reference to scan, including tag.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    # Reports everything at HIGH+; gates only on what Fabric can actually act
+    # on. Each narrowing below is measured, not assumed — an earlier revision
+    # gated all fixable criticals and blocked the dev deploy on 2026-07-15
+    # (run 29455372935) on findings no change to this repo could fix.
+    #
+    # `--ignore-unfixed`: node:22-slim carried 19 high / 4 critical with no
+    # upstream fix; only 2 of 23 were actionable.
+    #
+    # CRITICAL rather than HIGH: this runs on every push to master and on the
+    # v*.*.* tags that drive prod, and node:22-slim is a moving tag — a newly
+    # disclosed high in the base image would block a release with no Fabric
+    # change behind it.
+    #
+    # `vuln-type: os` on the gate is the fix for the breakage above. The
+    # built image bundles third-party Go binaries (esbuild under node_modules,
+    # gitleaks in /usr/local/bin). Trivy reports the Go stdlib version each was
+    # compiled with, so it flagged CVE-2024-24790 and CVE-2025-68121 as
+    # "fixed" — fixed in Go, not in a release of those tools. Fabric cannot
+    # rebuild someone else's binary, and new Go stdlib CVEs land often enough
+    # that gating on them would break deploys on a schedule set by upstream.
+    #
+    # Narrowing the gate to OS packages loses no real coverage:
+    #   - OS packages          -> gated here; fixable by moving the base image.
+    #   - App dependencies     -> already gated by the Security workflow's
+    #                             osv-scanner job against pnpm-lock.yaml, which
+    #                             is the actionable source for them.
+    #   - Vendored Go binaries -> reported below, not gated; nothing in this
+    #                             repo can change them.
+    - name: Scan image (report)
+      uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0
+      with:
+        image-ref: ${{ inputs.image }}
+        scanners: vuln
+        severity: HIGH,CRITICAL
+        ignore-unfixed: true
+        format: table
+        exit-code: '0'
+
+    - name: Gate on fixable OS criticals
+      uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0
+      with:
+        image-ref: ${{ inputs.image }}
+        scanners: vuln
+        vuln-type: os
+        severity: CRITICAL
+        ignore-unfixed: true
+        format: table
+        exit-code: '1'

@@ -1,0 +1,84 @@
+---
+title: Azure DevOps
+description: Azure DevOps über MCP verbinden, damit Fabric-Agenten mit Work Items, Repositories, Pipelines und Wikis arbeiten können.
+---
+
+Verbinden Sie Azure DevOps mit Fabric AI, damit Agenten und Workflows **Work Items** lesen und verwalten, **Repositories** und Pull Requests durchsuchen, **Pipelines** und Builds prüfen und **Wikis** durchsuchen können — als Live-Laufzeit-Aktionen.
+
+Azure DevOps wird als **MCP-Server** bereitgestellt, daher fügen Sie es über die MCP-Registry hinzu, nicht über das Anbieter-Raster.
+
+## Azure DevOps einrichten
+
+<Steps>
+  <Step>
+    ### MCP-Registry öffnen
+
+    Gehen Sie zu **Einstellungen → MCP-Registry** und suchen Sie **Azure DevOps**.
+  </Step>
+
+  <Step>
+    ### Verbinden
+
+    Autorisieren Sie Fabric AI für Ihre Azure DevOps-Organisation (OAuth) oder geben Sie ein Personal Access Token mit den erforderlichen Scopes an.
+  </Step>
+
+  <Step>
+    ### Aktivieren & Testen
+
+    Klicken Sie auf **Verbindung testen** und schalten Sie den Server auf **Aktiviert**. Seine Tools stehen dann Agenten und Workflows zur Verfügung.
+  </Step>
+</Steps>
+
+## Funktionen
+
+Über den Azure DevOps MCP-Server können Agenten:
+
+| Bereich | Beispiele |
+|------|----------|
+| **Work Items** | Work Items erstellen, aktualisieren, abfragen (WIQL), kommentieren, verknüpfen und im Batch bearbeiten; Backlogs und Iterationen durchsuchen |
+| **Boards & Sprints** | Backlogs, Iterationen und Team-Kapazität auflisten |
+| **Repositories** | Dateien und Branches durchsuchen, Commits suchen und Pull Requests lesen |
+| **Pull Requests** | PRs erstellen, Threads auflisten/kommentieren und Reviewer verwalten |
+| **Pipelines** | Builds und Runs auflisten, Build-Logs lesen und Status prüfen |
+| **Wikis** | Wiki-Seiten auflisten und lesen sowie Wiki-Inhalte durchsuchen |
+
+### Im KI-Chat
+
+```
+"Erstelle einen Bug im Mobile-Board für den Absturz beim Login"
+
+"Liste die Work Items im aktuellen Sprint für das Team Platform auf"
+
+"Zeige den letzten fehlgeschlagenen Pipeline-Run und sein Fehlerprotokoll"
+```
+
+<Callout type="info">
+Bug-Work-Items zeigen ihren Inhalt im Feld **Repro Steps**; Fabric schreibt dorthin (und in die Beschreibung), wenn Bugs erstellt oder aktualisiert werden.
+</Callout>
+
+## Trennen
+
+Öffnen Sie **Einstellungen → MCP-Registry → Azure DevOps** und deaktivieren oder entfernen Sie den Server.
+
+## Fehlerbehebung
+
+### Erstellen eines Work Items schlägt fehl
+- Prüfen Sie, ob die Prozessvorlage des Projekts den Work-Item-Typ unterstützt (z. B. existiert **Bug** in Agile/Scrum/CMMI, nicht in Basic)
+- Stellen Sie sicher, dass die Verbindung **Aktiviert** ist und die Token-/OAuth-Scopes Schreibzugriff erlauben
+
+### Es kommen keine Ergebnisse zurück
+- Prüfen Sie den Gesundheitsstatus des Servers in der MCP-Registry
+- Stellen Sie sicher, dass die verbundene Identität Zugriff auf das Zielprojekt hat
+
+---
+
+## Nächste Schritte
+
+<Cards>
+  <Card title="MCP-Integration" href="/docs/integrations/mcp">
+    Wie MCP-Server und ihre Tools funktionieren
+  </Card>
+  <Card title="MCP-Autorität & Sicherheit" href="/docs/core-concepts/mcp-authority">
+    Wie Agenten genehmigten Zugriff auf verbundene Tools erhalten
+  </Card>
+</Cards>

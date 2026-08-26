@@ -1,0 +1,339 @@
+{
+	"count": 5,
+	"value": [
+		{
+			"automatedTestName": "cart > adds an item to the cart",
+			"automatedTestStorage": "test/cart.test.js",
+			"automatedTestType": "JUnit",
+			"build": {
+				"id": "1",
+				"name": "20260724.1",
+				"url": "https://dev.azure.com/example-org/_apis/build/Builds/1"
+			},
+			"completedDate": "2026-07-24T13:37:29.003Z",
+			"computerName": "runnervm-example",
+			"createdDate": "2026-07-24T13:37:33.147Z",
+			"customFields": [],
+			"failureType": "None",
+			"id": 100000,
+			"lastUpdatedBy": {
+				"_links": {
+					"avatar": {
+						"href": "https://dev.azure.com/example-org/_apis/GraphProfile/MemberAvatars/svc.MDAwMDAwMDAtMDAwMC0wMDAwLTAwMDAtMDAwMDAwMDAwMDAxOkJ1aWxkOjAwMDAwMDAwLTAwMDAtMDAwMC0wMDAwLTAwMDAwMDAwMDAwMw"
+					}
+				},
+				"descriptor": "svc.MDAwMDAwMDAtMDAwMC0wMDAwLTAwMDAtMDAwMDAwMDAwMDAxOkJ1aWxkOjAwMDAwMDAwLTAwMDAtMDAwMC0wMDAwLTAwMDAwMDAwMDAwMw",
+				"displayName": "Fabric Build Service (example-org)",
+				"id": "00000000-0000-0000-0000-000000000003",
+				"imageUrl": "https://dev.azure.com/example-org/_apis/GraphProfile/MemberAvatars/svc.MDAwMDAwMDAtMDAwMC0wMDAwLTAwMDAtMDAwMDAwMDAwMDAxOkJ1aWxkOjAwMDAwMDAwLTAwMDAtMDAwMC0wMDAwLTAwMDAwMDAwMDAwMw",
+				"uniqueName": "Build\\00000000-0000-0000-0000-000000000000",
+				"url": "https://spsprodcus7.vssps.visualstudio.com/A00000000-0000-0000-0000-000000000001/_apis/Identities/00000000-0000-0000-0000-000000000003"
+			},
+			"lastUpdatedDate": "2026-07-24T13:37:33.147Z",
+			"outcome": "Passed",
+			"priority": 0,
+			"project": {
+				"id": "00000000-0000-0000-0000-000000000000",
+				"name": "Fabric",
+				"url": "https://dev.azure.com/example-org/_apis/projects/Fabric"
+			},
+			"revision": 1,
+			"runBy": {
+				"_links": {
+					"avatar": {
+						"href": "https://dev.azure.com/example-org/_apis/GraphProfile/MemberAvatars/aad.MDAwMDAwMDAtMDAwMC0wMDAwLTAwMDAtMDAwMDAwMDAwMDAy"
+					}
+				},
+				"descriptor": "aad.MDAwMDAwMDAtMDAwMC0wMDAwLTAwMDAtMDAwMDAwMDAwMDAy",
+				"displayName": "Test User",
+				"id": "00000000-0000-0000-0000-000000000002",
+				"imageUrl": "https://dev.azure.com/example-org/_apis/GraphProfile/MemberAvatars/aad.MDAwMDAwMDAtMDAwMC0wMDAwLTAwMDAtMDAwMDAwMDAwMDAy",
+				"uniqueName": "dev@example.com",
+				"url": "https://spsprodcus7.vssps.visualstudio.com/A00000000-0000-0000-0000-000000000001/_apis/Identities/00000000-0000-0000-0000-000000000002"
+			},
+			"startedDate": "2026-07-24T13:37:29.003Z",
+			"state": "Completed",
+			"testCase": {
+				"name": "cart > adds an item to the cart"
+			},
+			"testCaseReferenceId": 3,
+			"testCaseTitle": "cart > adds an item to the cart",
+			"testRun": {
+				"id": "2",
+				"name": "acme-store unit tests",
+				"url": "https://dev.azure.com/example-org/Fabric/_apis/test/Runs/2"
+			},
+			"url": "https://dev.azure.com/example-org/Fabric/_apis/test/Runs/2/Results/100000"
+		},
+		{
+			"automatedTestName": "cart > rejects a non-positive quantity",
+			"automatedTestStorage": "test/cart.test.js",
+			"automatedTestType": "JUnit",
+			"build": {
+				"id": "1",
+				"name": "20260724.1",
+				"url": "https://dev.azure.com/example-org/_apis/build/Builds/1"
+			},
+			"completedDate": "2026-07-24T13:37:29.007Z",
+			"computerName": "runnervm-example",
+			"createdDate": "2026-07-24T13:37:33.147Z",
+			"customFields": [],
+			"durationInMs": 4.0,
+			"failureType": "None",
+			"id": 100001,
+			"lastUpdatedBy": {
+				"_links": {
+					"avatar": {
+						"href": "https://dev.azure.com/example-org/_apis/GraphProfile/MemberAvatars/svc.MDAwMDAwMDAtMDAwMC0wMDAwLTAwMDAtMDAwMDAwMDAwMDAxOkJ1aWxkOjAwMDAwMDAwLTAwMDAtMDAwMC0wMDAwLTAwMDAwMDAwMDAwMw"
+					}
+				},
+				"descriptor": "svc.MDAwMDAwMDAtMDAwMC0wMDAwLTAwMDAtMDAwMDAwMDAwMDAxOkJ1aWxkOjAwMDAwMDAwLTAwMDAtMDAwMC0wMDAwLTAwMDAwMDAwMDAwMw",
+				"displayName": "Fabric Build Service (example-org)",
+				"id": "00000000-0000-0000-0000-000000000003",
+				"imageUrl": "https://dev.azure.com/example-org/_apis/GraphProfile/MemberAvatars/svc.MDAwMDAwMDAtMDAwMC0wMDAwLTAwMDAtMDAwMDAwMDAwMDAxOkJ1aWxkOjAwMDAwMDAwLTAwMDAtMDAwMC0wMDAwLTAwMDAwMDAwMDAwMw",
+				"uniqueName": "Build\\00000000-0000-0000-0000-000000000000",
+				"url": "https://spsprodcus7.vssps.visualstudio.com/A00000000-0000-0000-0000-000000000001/_apis/Identities/00000000-0000-0000-0000-000000000003"
+			},
+			"lastUpdatedDate": "2026-07-24T13:37:33.147Z",
+			"outcome": "Passed",
+			"priority": 0,
+			"project": {
+				"id": "00000000-0000-0000-0000-000000000000",
+				"name": "Fabric",
+				"url": "https://dev.azure.com/example-org/_apis/projects/Fabric"
+			},
+			"revision": 1,
+			"runBy": {
+				"_links": {
+					"avatar": {
+						"href": "https://dev.azure.com/example-org/_apis/GraphProfile/MemberAvatars/aad.MDAwMDAwMDAtMDAwMC0wMDAwLTAwMDAtMDAwMDAwMDAwMDAy"
+					}
+				},
+				"descriptor": "aad.MDAwMDAwMDAtMDAwMC0wMDAwLTAwMDAtMDAwMDAwMDAwMDAy",
+				"displayName": "Test User",
+				"id": "00000000-0000-0000-0000-000000000002",
+				"imageUrl": "https://dev.azure.com/example-org/_apis/GraphProfile/MemberAvatars/aad.MDAwMDAwMDAtMDAwMC0wMDAwLTAwMDAtMDAwMDAwMDAwMDAy",
+				"uniqueName": "dev@example.com",
+				"url": "https://spsprodcus7.vssps.visualstudio.com/A00000000-0000-0000-0000-000000000001/_apis/Identities/00000000-0000-0000-0000-000000000002"
+			},
+			"startedDate": "2026-07-24T13:37:29.003Z",
+			"state": "Completed",
+			"testCase": {
+				"name": "cart > rejects a non-positive quantity"
+			},
+			"testCaseReferenceId": 5,
+			"testCaseTitle": "cart > rejects a non-positive quantity",
+			"testRun": {
+				"id": "2",
+				"name": "acme-store unit tests",
+				"url": "https://dev.azure.com/example-org/Fabric/_apis/test/Runs/2"
+			},
+			"url": "https://dev.azure.com/example-org/Fabric/_apis/test/Runs/2/Results/100001"
+		},
+		{
+			"automatedTestName": "cart > computes the cart total",
+			"automatedTestStorage": "test/cart.test.js",
+			"automatedTestType": "JUnit",
+			"build": {
+				"id": "1",
+				"name": "20260724.1",
+				"url": "https://dev.azure.com/example-org/_apis/build/Builds/1"
+			},
+			"completedDate": "2026-07-24T13:37:29.007Z",
+			"computerName": "runnervm-example",
+			"createdDate": "2026-07-24T13:37:33.147Z",
+			"customFields": [],
+			"failureType": "None",
+			"id": 100002,
+			"lastUpdatedBy": {
+				"_links": {
+					"avatar": {
+						"href": "https://dev.azure.com/example-org/_apis/GraphProfile/MemberAvatars/svc.MDAwMDAwMDAtMDAwMC0wMDAwLTAwMDAtMDAwMDAwMDAwMDAxOkJ1aWxkOjAwMDAwMDAwLTAwMDAtMDAwMC0wMDAwLTAwMDAwMDAwMDAwMw"
+					}
+				},
+				"descriptor": "svc.MDAwMDAwMDAtMDAwMC0wMDAwLTAwMDAtMDAwMDAwMDAwMDAxOkJ1aWxkOjAwMDAwMDAwLTAwMDAtMDAwMC0wMDAwLTAwMDAwMDAwMDAwMw",
+				"displayName": "Fabric Build Service (example-org)",
+				"id": "00000000-0000-0000-0000-000000000003",
+				"imageUrl": "https://dev.azure.com/example-org/_apis/GraphProfile/MemberAvatars/svc.MDAwMDAwMDAtMDAwMC0wMDAwLTAwMDAtMDAwMDAwMDAwMDAxOkJ1aWxkOjAwMDAwMDAwLTAwMDAtMDAwMC0wMDAwLTAwMDAwMDAwMDAwMw",
+				"uniqueName": "Build\\00000000-0000-0000-0000-000000000000",
+				"url": "https://spsprodcus7.vssps.visualstudio.com/A00000000-0000-0000-0000-000000000001/_apis/Identities/00000000-0000-0000-0000-000000000003"
+			},
+			"lastUpdatedDate": "2026-07-24T13:37:33.147Z",
+			"outcome": "Passed",
+			"priority": 0,
+			"project": {
+				"id": "00000000-0000-0000-0000-000000000000",
+				"name": "Fabric",
+				"url": "https://dev.azure.com/example-org/_apis/projects/Fabric"
+			},
+			"revision": 1,
+			"runBy": {
+				"_links": {
+					"avatar": {
+						"href": "https://dev.azure.com/example-org/_apis/GraphProfile/MemberAvatars/aad.MDAwMDAwMDAtMDAwMC0wMDAwLTAwMDAtMDAwMDAwMDAwMDAy"
+					}
+				},
+				"descriptor": "aad.MDAwMDAwMDAtMDAwMC0wMDAwLTAwMDAtMDAwMDAwMDAwMDAy",
+				"displayName": "Test User",
+				"id": "00000000-0000-0000-0000-000000000002",
+				"imageUrl": "https://dev.azure.com/example-org/_apis/GraphProfile/MemberAvatars/aad.MDAwMDAwMDAtMDAwMC0wMDAwLTAwMDAtMDAwMDAwMDAwMDAy",
+				"uniqueName": "dev@example.com",
+				"url": "https://spsprodcus7.vssps.visualstudio.com/A00000000-0000-0000-0000-000000000001/_apis/Identities/00000000-0000-0000-0000-000000000002"
+			},
+			"startedDate": "2026-07-24T13:37:29.007Z",
+			"state": "Completed",
+			"testCase": {
+				"name": "cart > computes the cart total"
+			},
+			"testCaseReferenceId": 4,
+			"testCaseTitle": "cart > computes the cart total",
+			"testRun": {
+				"id": "2",
+				"name": "acme-store unit tests",
+				"url": "https://dev.azure.com/example-org/Fabric/_apis/test/Runs/2"
+			},
+			"url": "https://dev.azure.com/example-org/Fabric/_apis/test/Runs/2/Results/100002"
+		},
+		{
+			"automatedTestName": "cart > applies a percentage discount",
+			"automatedTestStorage": "test/cart.test.js",
+			"automatedTestType": "JUnit",
+			"build": {
+				"id": "1",
+				"name": "20260724.1",
+				"url": "https://dev.azure.com/example-org/_apis/build/Builds/1"
+			},
+			"completedDate": "2026-07-24T13:37:29.01Z",
+			"computerName": "runnervm-example",
+			"createdDate": "2026-07-24T13:37:33.147Z",
+			"customFields": [],
+			"durationInMs": 3.0,
+			"errorMessage": "expected -100 to be 80 // Object.is equality",
+			"failingSince": {
+				"build": {
+					"buildSystem": "Azure DevOps Services",
+					"definitionId": 0,
+					"id": 1,
+					"number": "20260724.1"
+				},
+				"date": "2026-07-24T13:37:29.01Z"
+			},
+			"failureType": "None",
+			"id": 100003,
+			"lastUpdatedBy": {
+				"_links": {
+					"avatar": {
+						"href": "https://dev.azure.com/example-org/_apis/GraphProfile/MemberAvatars/svc.MDAwMDAwMDAtMDAwMC0wMDAwLTAwMDAtMDAwMDAwMDAwMDAxOkJ1aWxkOjAwMDAwMDAwLTAwMDAtMDAwMC0wMDAwLTAwMDAwMDAwMDAwMw"
+					}
+				},
+				"descriptor": "svc.MDAwMDAwMDAtMDAwMC0wMDAwLTAwMDAtMDAwMDAwMDAwMDAxOkJ1aWxkOjAwMDAwMDAwLTAwMDAtMDAwMC0wMDAwLTAwMDAwMDAwMDAwMw",
+				"displayName": "Fabric Build Service (example-org)",
+				"id": "00000000-0000-0000-0000-000000000003",
+				"imageUrl": "https://dev.azure.com/example-org/_apis/GraphProfile/MemberAvatars/svc.MDAwMDAwMDAtMDAwMC0wMDAwLTAwMDAtMDAwMDAwMDAwMDAxOkJ1aWxkOjAwMDAwMDAwLTAwMDAtMDAwMC0wMDAwLTAwMDAwMDAwMDAwMw",
+				"uniqueName": "Build\\00000000-0000-0000-0000-000000000000",
+				"url": "https://spsprodcus7.vssps.visualstudio.com/A00000000-0000-0000-0000-000000000001/_apis/Identities/00000000-0000-0000-0000-000000000003"
+			},
+			"lastUpdatedDate": "2026-07-24T13:37:33.147Z",
+			"outcome": "Failed",
+			"priority": 0,
+			"project": {
+				"id": "00000000-0000-0000-0000-000000000000",
+				"name": "Fabric",
+				"url": "https://dev.azure.com/example-org/_apis/projects/Fabric"
+			},
+			"revision": 1,
+			"runBy": {
+				"_links": {
+					"avatar": {
+						"href": "https://dev.azure.com/example-org/_apis/GraphProfile/MemberAvatars/aad.MDAwMDAwMDAtMDAwMC0wMDAwLTAwMDAtMDAwMDAwMDAwMDAy"
+					}
+				},
+				"descriptor": "aad.MDAwMDAwMDAtMDAwMC0wMDAwLTAwMDAtMDAwMDAwMDAwMDAy",
+				"displayName": "Test User",
+				"id": "00000000-0000-0000-0000-000000000002",
+				"imageUrl": "https://dev.azure.com/example-org/_apis/GraphProfile/MemberAvatars/aad.MDAwMDAwMDAtMDAwMC0wMDAwLTAwMDAtMDAwMDAwMDAwMDAy",
+				"uniqueName": "dev@example.com",
+				"url": "https://spsprodcus7.vssps.visualstudio.com/A00000000-0000-0000-0000-000000000001/_apis/Identities/00000000-0000-0000-0000-000000000002"
+			},
+			"stackTrace": "\nAssertionError: expected -100 to be 80 // Object.is equality\n\n- Expected\n+ Received\n\n- 80\n+ -100\n\n  test/cart.test.js:28:34\n            ",
+			"startedDate": "2026-07-24T13:37:29.007Z",
+			"state": "Completed",
+			"testCase": {
+				"name": "cart > applies a percentage discount"
+			},
+			"testCaseReferenceId": 2,
+			"testCaseTitle": "cart > applies a percentage discount",
+			"testRun": {
+				"id": "2",
+				"name": "acme-store unit tests",
+				"url": "https://dev.azure.com/example-org/Fabric/_apis/test/Runs/2"
+			},
+			"url": "https://dev.azure.com/example-org/Fabric/_apis/test/Runs/2/Results/100003"
+		},
+		{
+			"automatedTestName": "cart > waives shipping over the free-shipping threshold",
+			"automatedTestStorage": "test/cart.test.js",
+			"automatedTestType": "JUnit",
+			"build": {
+				"id": "1",
+				"name": "20260724.1",
+				"url": "https://dev.azure.com/example-org/_apis/build/Builds/1"
+			},
+			"completedDate": "2026-07-24T13:37:29.013Z",
+			"computerName": "runnervm-example",
+			"createdDate": "2026-07-24T13:37:33.147Z",
+			"customFields": [],
+			"durationInMs": 3.0,
+			"failureType": "None",
+			"id": 100004,
+			"lastUpdatedBy": {
+				"_links": {
+					"avatar": {
+						"href": "https://dev.azure.com/example-org/_apis/GraphProfile/MemberAvatars/svc.MDAwMDAwMDAtMDAwMC0wMDAwLTAwMDAtMDAwMDAwMDAwMDAxOkJ1aWxkOjAwMDAwMDAwLTAwMDAtMDAwMC0wMDAwLTAwMDAwMDAwMDAwMw"
+					}
+				},
+				"descriptor": "svc.MDAwMDAwMDAtMDAwMC0wMDAwLTAwMDAtMDAwMDAwMDAwMDAxOkJ1aWxkOjAwMDAwMDAwLTAwMDAtMDAwMC0wMDAwLTAwMDAwMDAwMDAwMw",
+				"displayName": "Fabric Build Service (example-org)",
+				"id": "00000000-0000-0000-0000-000000000003",
+				"imageUrl": "https://dev.azure.com/example-org/_apis/GraphProfile/MemberAvatars/svc.MDAwMDAwMDAtMDAwMC0wMDAwLTAwMDAtMDAwMDAwMDAwMDAxOkJ1aWxkOjAwMDAwMDAwLTAwMDAtMDAwMC0wMDAwLTAwMDAwMDAwMDAwMw",
+				"uniqueName": "Build\\00000000-0000-0000-0000-000000000000",
+				"url": "https://spsprodcus7.vssps.visualstudio.com/A00000000-0000-0000-0000-000000000001/_apis/Identities/00000000-0000-0000-0000-000000000003"
+			},
+			"lastUpdatedDate": "2026-07-24T13:37:33.147Z",
+			"outcome": "Passed",
+			"priority": 0,
+			"project": {
+				"id": "00000000-0000-0000-0000-000000000000",
+				"name": "Fabric",
+				"url": "https://dev.azure.com/example-org/_apis/projects/Fabric"
+			},
+			"revision": 1,
+			"runBy": {
+				"_links": {
+					"avatar": {
+						"href": "https://dev.azure.com/example-org/_apis/GraphProfile/MemberAvatars/aad.MDAwMDAwMDAtMDAwMC0wMDAwLTAwMDAtMDAwMDAwMDAwMDAy"
+					}
+				},
+				"descriptor": "aad.MDAwMDAwMDAtMDAwMC0wMDAwLTAwMDAtMDAwMDAwMDAwMDAy",
+				"displayName": "Test User",
+				"id": "00000000-0000-0000-0000-000000000002",
+				"imageUrl": "https://dev.azure.com/example-org/_apis/GraphProfile/MemberAvatars/aad.MDAwMDAwMDAtMDAwMC0wMDAwLTAwMDAtMDAwMDAwMDAwMDAy",
+				"uniqueName": "dev@example.com",
+				"url": "https://spsprodcus7.vssps.visualstudio.com/A00000000-0000-0000-0000-000000000001/_apis/Identities/00000000-0000-0000-0000-000000000002"
+			},
+			"startedDate": "2026-07-24T13:37:29.01Z",
+			"state": "Completed",
+			"testCase": {
+				"name": "cart > waives shipping over the free-shipping threshold"
+			},
+			"testCaseReferenceId": 1,
+			"testCaseTitle": "cart > waives shipping over the free-shipping threshold",
+			"testRun": {
+				"id": "2",
+				"name": "acme-store unit tests",
+				"url": "https://dev.azure.com/example-org/Fabric/_apis/test/Runs/2"
+			},
+			"url": "https://dev.azure.com/example-org/Fabric/_apis/test/Runs/2/Results/100004"
+		}
+	]
+}

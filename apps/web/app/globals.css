@@ -1,0 +1,1417 @@
+@import "tailwindcss";
+@import "fumadocs-ui/css/neutral.css";
+@import "fumadocs-ui/css/preset.css";
+@import "@repo/tailwind-config/theme.css";
+@import "@repo/tailwind-config/tailwind-animate.css";
+
+@source "../node_modules/fumadocs-ui/dist/**/*.js";
+@source "../node_modules/streamdown/dist/index.js";
+
+@variant dark (&:where(.dark, .dark *));
+
+/* Reserve the scrollbar gutter so the page doesn't shift when Radix
+ * Popover/Dialog/Select locks body scroll on open. Radix sets
+ * overflow:hidden + adds padding-right equal to the scrollbar width
+ * to compensate, but the result is a visible empty strip on the right
+ * (especially on Windows). Reserving the gutter at all times means
+ * there's no width change to compensate for. */
+html {
+	scrollbar-gutter: stable;
+}
+
+/* Radix UI's body-lock primitive (Popover, DropdownMenu, Select, Dialog,
+ * Sheet, etc.) sets `data-scroll-locked` on <html> AND/OR <body> (it
+ * varies by Radix sub-package + version) AND adds an inline
+ * `padding-right` on <body> equal to the scrollbar width to compensate
+ * for the scrollbar disappearing when overflow flips to hidden.
+ * Combined with `scrollbar-gutter: stable` above, this double-pads the
+ * page — the gutter already reserves the space, so Radix's extra
+ * padding pushes everything visibly to the left when any dropdown
+ * opens (reported on the URL-source full view + roadmap card More
+ * menu; the right-edge of the page jumps ~10–14px every time the
+ * three-dot menu opens or closes).
+ *
+ * Zero out BOTH the attribute selector AND the inline body padding so
+ * the gutter alone owns the compensation. The selectors are designed
+ * to over-cover: hitting `body` with inline `padding-right` set by the
+ * Radix primitive uses an attribute substring match on `style` so we
+ * neutralise it even when Radix doesn't (yet) flip the attribute.
+ *
+ * The body selectors are prefixed with `html ` (specificity 0,1,2) so
+ * they outrank `react-remove-scroll`'s own `body[data-scroll-locked]`
+ * rule (0,1,1): that rule is injected into <head> at runtime — AFTER
+ * globals.css — and also carries !important, so an equal-specificity
+ * selector would lose on source order and leave `margin-right: 17px`
+ * (the `--removed-body-scroll-bar-size`) applied, narrowing the page by
+ * the scrollbar width on every dropdown/dialog open. The higher
+ * specificity wins regardless of source order.
+ *
+ * ALSO: when Radix locks the scroll it sets `overflow: hidden` on the
+ * <body> element; in some browsers/locales this causes a single-frame
+ * width re-measurement that shifts content. Force-pin scrollbar-gutter
+ * AND `overflow-y: scroll` on the root element so the scrollbar's
+ * visual presence is identical whether or not Radix has locked the
+ * body. */
+html {
+	overflow-y: scroll;
+}
+
+:root[data-scroll-locked],
+html body[data-scroll-locked],
+html body[style*="padding-right"],
+html body[style*="overflow"] {
+	padding-right: 0 !important;
+	margin-right: 0 !important;
+}
+
+:root[data-scroll-locked] body,
+body[data-scroll-locked] {
+	/* Override Radix's inline overflow: hidden when scrollbar-gutter is
+	 * stable. The page-level scroll bar (now always visible thanks to
+	 * overflow-y: scroll above) takes ownership of the gutter; Radix's
+	 * lock is unnecessary on Chromium/Firefox and visibly shifts on
+	 * Webkit. */
+	overflow-y: scroll !important;
+}
+
+/* Atmospheric background treatments */
+body {
+	background-image: var(--bg-texture);
+	background-attachment: fixed;
+}
+
+.dark body {
+	background-image: var(--bg-texture), var(--bg-gradient);
+	background-attachment: fixed;
+}
+
+/* --font-serif alias → Inter (EB Garamond removed; all fonts are Inter) */
+:root {
+	--font-serif: var(--font-sans);
+}
+
+/* Large headings — Inter light for a clean, modern feel */
+h1, h2 {
+	font-family: var(--font-sans);
+	font-weight: 300;
+	letter-spacing: -0.03em;
+	line-height: 1.15;
+}
+
+/* Sub-headings — Inter medium */
+h3, h4, h5, h6 {
+	font-family: var(--font-sans);
+	font-weight: 500;
+	letter-spacing: -0.015em;
+}
+
+h1 { font-size: 1.875rem; }
+h2 { font-size: 1.5rem; }
+h3 { font-size: 1.125rem; line-height: 1.625rem; }
+
+/* Code blocks with monospace font */
+pre, code, kbd, samp {
+	font-family: var(--font-mono);
+}
+
+/* Consistent pointer cursor for interactive controls */
+button:not(:disabled),
+a[href],
+[role="button"]:not([aria-disabled="true"]),
+summary,
+input[type="button"]:not(:disabled),
+input[type="submit"]:not(:disabled),
+input[type="reset"]:not(:disabled) {
+	cursor: pointer;
+}
+
+/* Staggered animation utilities */
+@keyframes stagger-fade-in {
+	from {
+		opacity: 0;
+		transform: translateY(8px);
+	}
+	to {
+		opacity: 1;
+		transform: translateY(0);
+	}
+}
+
+.animate-stagger {
+	animation: stagger-fade-in 0.4s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.animate-stagger-1 { animation-delay: 0.05s; }
+.animate-stagger-2 { animation-delay: 0.1s; }
+.animate-stagger-3 { animation-delay: 0.15s; }
+.animate-stagger-4 { animation-delay: 0.2s; }
+.animate-stagger-5 { animation-delay: 0.25s; }
+
+/* Shared premium app surface utilities */
+.app-editorial-label {
+	display: inline-flex;
+	align-items: center;
+	gap: 0.75rem;
+	font-size: 0.6875rem;
+	font-weight: 600;
+	letter-spacing: 0.22em;
+	text-transform: uppercase;
+	color: var(--muted-foreground);
+}
+
+.app-editorial-label::before {
+	content: "";
+	display: block;
+	width: 2px;
+	height: 1rem;
+	border-radius: 999px;
+	background: var(--primary);
+}
+
+/* D2 (Feature Maturation): briefly flash a diff section when its confirm-time
+   change-summary bullet is clicked, to orient the reviewer. */
+@keyframes maturation-section-flash {
+	0% {
+		background-color: color-mix(in srgb, var(--primary) 22%, transparent);
+	}
+	100% {
+		background-color: transparent;
+	}
+}
+
+.maturation-section-flash {
+	animation: maturation-section-flash 1.5s ease-out;
+	border-radius: 0.25rem;
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.maturation-section-flash {
+		animation: none;
+		outline: 2px solid var(--primary);
+		outline-offset: 2px;
+	}
+}
+
+.app-surface {
+	background:
+		linear-gradient(180deg, color-mix(in srgb, var(--card) 96%, var(--muted)), var(--card)),
+		var(--card);
+	border: 1px solid color-mix(in srgb, var(--border) 82%, transparent);
+	box-shadow: 0 1px 2px color-mix(in srgb, var(--foreground) 6%, transparent);
+}
+
+.dark .app-surface {
+	background:
+		linear-gradient(180deg, color-mix(in srgb, var(--card) 92%, white 2%), var(--card)),
+		var(--card);
+	box-shadow:
+		inset 0 1px 0 color-mix(in srgb, white 4%, transparent),
+		0 1px 0 color-mix(in srgb, black 28%, transparent);
+}
+
+.app-dot-grid {
+	background-image: radial-gradient(circle, currentColor 1px, transparent 1px);
+	background-size: 28px 28px;
+	mask-image: linear-gradient(to bottom, black, transparent 82%);
+}
+
+.app-soft-badge {
+	border: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+	background: color-mix(in srgb, var(--muted) 64%, transparent);
+	color: color-mix(in srgb, var(--foreground) 70%, var(--muted-foreground));
+}
+
+/* Shared low-contrast scrollbars for chat surfaces and embedded panels */
+.subtle-scrollbar {
+	scrollbar-width: thin;
+	scrollbar-color: transparent transparent;
+}
+
+.subtle-scrollbar:hover {
+	scrollbar-color: color-mix(in srgb, var(--border) 42%, transparent) transparent;
+}
+
+.subtle-scrollbar::-webkit-scrollbar {
+	width: 6px;
+	height: 6px;
+}
+
+.subtle-scrollbar::-webkit-scrollbar-track {
+	background: transparent;
+}
+
+.subtle-scrollbar::-webkit-scrollbar-thumb {
+	background: transparent;
+	border-radius: 999px;
+}
+
+.subtle-scrollbar:hover::-webkit-scrollbar-thumb {
+	background: color-mix(in srgb, var(--border) 42%, transparent);
+}
+
+.subtle-scrollbar::-webkit-scrollbar-thumb:hover {
+	background: color-mix(in srgb, var(--border) 58%, transparent);
+}
+
+/* Always-visible thin scrollbar — a more prominent sibling of
+   `.subtle-scrollbar` for fixed-height regions whose vertical scrollability
+   must be obvious at a glance (the Atlas Overview tour body + tech-stack list).
+   The thumb is inset by a transparent border so an 8px track reads as a slim
+   pill, and every colour resolves to a design token so it themes in light and
+   dark. */
+.scroll-affordance {
+	scrollbar-width: thin;
+	scrollbar-color: color-mix(in srgb, var(--muted-foreground) 32%, transparent)
+		transparent;
+}
+
+.scroll-affordance::-webkit-scrollbar {
+	width: 8px;
+	height: 8px;
+}
+
+.scroll-affordance::-webkit-scrollbar-track {
+	background: transparent;
+}
+
+.scroll-affordance::-webkit-scrollbar-thumb {
+	background: color-mix(in srgb, var(--muted-foreground) 32%, transparent);
+	border: 2px solid transparent;
+	background-clip: padding-box;
+	border-radius: 999px;
+}
+
+.scroll-affordance:hover::-webkit-scrollbar-thumb,
+.scroll-affordance::-webkit-scrollbar-thumb:hover {
+	background: color-mix(in srgb, var(--muted-foreground) 52%, transparent);
+	background-clip: padding-box;
+}
+
+/* ============================================================================
+   MARKETING PAGE - MODERN ANIMATIONS & EFFECTS
+   ============================================================================ */
+
+/* Animated gradient border effect */
+@keyframes gradient-rotate {
+	0% { --gradient-angle: 0deg; }
+	100% { --gradient-angle: 360deg; }
+}
+
+@property --gradient-angle {
+	syntax: "<angle>";
+	initial-value: 0deg;
+	inherits: false;
+}
+
+.animate-gradient-border {
+	position: relative;
+	background: linear-gradient(var(--background), var(--background)) padding-box,
+		conic-gradient(from var(--gradient-angle), #6366f1, #8b5cf6, #d946ef, #6366f1) border-box;
+	border: 2px solid transparent;
+	animation: gradient-rotate 4s linear infinite;
+}
+
+/* Floating animation for elements */
+@keyframes float {
+	0%, 100% { transform: translateY(0px); }
+	50% { transform: translateY(-10px); }
+}
+
+@keyframes float-slow {
+	0%, 100% { transform: translateY(0px) rotate(0deg); }
+	50% { transform: translateY(-15px) rotate(2deg); }
+}
+
+.animate-float {
+	animation: float 3s ease-in-out infinite;
+}
+
+.animate-float-slow {
+	animation: float-slow 6s ease-in-out infinite;
+}
+
+/* Glow pulse effect */
+@keyframes glow-pulse {
+	0%, 100% {
+		box-shadow: 0 0 20px rgba(99, 102, 241, 0.3);
+	}
+	50% {
+		box-shadow: 0 0 40px rgba(99, 102, 241, 0.6), 0 0 60px rgba(139, 92, 246, 0.3);
+	}
+}
+
+.animate-glow-pulse {
+	animation: glow-pulse 3s ease-in-out infinite;
+}
+
+/* Scroll reveal animation */
+@keyframes reveal-up {
+	from {
+		opacity: 0;
+		transform: translateY(30px);
+	}
+	to {
+		opacity: 1;
+		transform: translateY(0);
+	}
+}
+
+.reveal-on-scroll {
+	opacity: 0;
+}
+
+.reveal-on-scroll.revealed {
+	animation: reveal-up 0.6s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+/* Background grain/noise texture for depth */
+.bg-noise {
+	position: relative;
+}
+
+.bg-noise::before {
+	content: "";
+	position: absolute;
+	inset: 0;
+	background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 400 400' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noiseFilter'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noiseFilter)'/%3E%3C/svg%3E");
+	opacity: 0.03;
+	pointer-events: none;
+	mix-blend-mode: overlay;
+}
+
+/* Mesh gradient background */
+.bg-mesh-gradient {
+	background:
+		radial-gradient(at 40% 20%, hsla(240, 100%, 70%, 0.1) 0px, transparent 50%),
+		radial-gradient(at 80% 0%, hsla(189, 100%, 60%, 0.08) 0px, transparent 50%),
+		radial-gradient(at 0% 50%, hsla(270, 100%, 60%, 0.1) 0px, transparent 50%),
+		radial-gradient(at 80% 50%, hsla(340, 100%, 70%, 0.08) 0px, transparent 50%),
+		radial-gradient(at 0% 100%, hsla(250, 100%, 60%, 0.1) 0px, transparent 50%);
+}
+
+/* Spotlight hover effect */
+.spotlight-card {
+	position: relative;
+	overflow: hidden;
+}
+
+.spotlight-card::before {
+	content: "";
+	position: absolute;
+	inset: 0;
+	background: radial-gradient(
+		600px circle at var(--mouse-x, 50%) var(--mouse-y, 50%),
+		rgba(99, 102, 241, 0.15),
+		transparent 40%
+	);
+	opacity: 0;
+	transition: opacity 0.3s;
+	pointer-events: none;
+}
+
+.spotlight-card:hover::before {
+	opacity: 1;
+}
+
+/* Animated underline for links */
+.animated-underline {
+	position: relative;
+	text-decoration: none;
+}
+
+.animated-underline::after {
+	content: "";
+	position: absolute;
+	bottom: -2px;
+	left: 0;
+	width: 0;
+	height: 2px;
+	background: linear-gradient(to right, #6366f1, #8b5cf6, #d946ef);
+	transition: width 0.3s ease-out;
+}
+
+.animated-underline:hover::after {
+	width: 100%;
+}
+
+/* Bento grid hover effects */
+.bento-item {
+	transition: transform 0.3s ease-out, box-shadow 0.3s ease-out;
+}
+
+.bento-item:hover {
+	transform: translateY(-4px);
+	box-shadow:
+		0 20px 25px -5px rgba(0, 0, 0, 0.1),
+		0 8px 10px -6px rgba(0, 0, 0, 0.1);
+}
+
+.dark .bento-item:hover {
+	box-shadow:
+		0 20px 25px -5px rgba(0, 0, 0, 0.4),
+		0 8px 10px -6px rgba(0, 0, 0, 0.3),
+		0 0 0 1px rgba(255, 255, 255, 0.05);
+}
+
+/* Glowing orb animation */
+@keyframes orb-float {
+	0%, 100% {
+		transform: translate(0, 0) scale(1);
+		opacity: 0.3;
+	}
+	25% {
+		transform: translate(10px, -20px) scale(1.05);
+		opacity: 0.4;
+	}
+	50% {
+		transform: translate(-5px, -10px) scale(0.95);
+		opacity: 0.25;
+	}
+	75% {
+		transform: translate(-15px, 5px) scale(1.02);
+		opacity: 0.35;
+	}
+}
+
+.animate-orb {
+	animation: orb-float 8s ease-in-out infinite;
+}
+
+/* Marquee animation for logos */
+@keyframes marquee {
+	0% { transform: translateX(0); }
+	100% { transform: translateX(-50%); }
+}
+
+.animate-marquee {
+	animation: marquee 30s linear infinite;
+}
+
+.animate-marquee:hover {
+	animation-play-state: paused;
+}
+
+/* Section divider with gradient fade */
+.section-divider {
+	height: 1px;
+	background: linear-gradient(
+		to right,
+		transparent,
+		rgba(99, 102, 241, 0.3) 20%,
+		rgba(139, 92, 246, 0.3) 50%,
+		rgba(99, 102, 241, 0.3) 80%,
+		transparent
+	);
+}
+
+/* Shimmer animation for loading states */
+@keyframes shimmer {
+	0% {
+		background-position: -200% 0;
+	}
+	100% {
+		background-position: 200% 0;
+	}
+}
+
+.animate-shimmer {
+	animation: shimmer 2s ease-in-out infinite;
+}
+
+/* AI Generating Indicator - Wavy underline with shimmer */
+@keyframes wavy-underline {
+	0%, 100% {
+		text-decoration-style: wavy;
+		text-underline-offset: 3px;
+	}
+	50% {
+		text-underline-offset: 5px;
+	}
+}
+
+@keyframes pulse-glow {
+	0%, 100% {
+		text-shadow: 0 0 8px rgba(16, 185, 129, 0.6);
+		filter: brightness(1);
+	}
+	50% {
+		text-shadow: 0 0 16px rgba(16, 185, 129, 0.9), 0 0 24px rgba(16, 185, 129, 0.4);
+		filter: brightness(1.1);
+	}
+}
+
+@keyframes text-shimmer {
+	0% {
+		background-position: -200% center;
+	}
+	100% {
+		background-position: 200% center;
+	}
+}
+
+.ai-generating-indicator {
+	position: relative;
+	display: inline-flex;
+	align-items: center;
+	gap: 0.5rem;
+	font-weight: 700;
+	font-size: 0.875rem;
+	color: #059669;
+	white-space: nowrap;
+	animation: pulse-glow 1.5s ease-in-out infinite;
+}
+
+/* Wavy shimmer underline bar */
+.ai-generating-indicator::after {
+	content: '';
+	position: absolute;
+	bottom: -4px;
+	left: 0;
+	right: 0;
+	height: 3px;
+	background: linear-gradient(
+		90deg,
+		transparent 0%,
+		#10b981 20%,
+		#34d399 50%,
+		#10b981 80%,
+		transparent 100%
+	);
+	background-size: 200% auto;
+	animation: text-shimmer 1.2s linear infinite;
+	border-radius: 3px;
+	/* SVG wavy pattern as mask */
+	mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='4' viewBox='0 0 20 4'%3E%3Cpath d='M0 2 Q2.5 0 5 2 T10 2 T15 2 T20 2' stroke='black' stroke-width='3' fill='none'/%3E%3C/svg%3E");
+	mask-size: 20px 4px;
+	mask-repeat: repeat-x;
+	-webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='4' viewBox='0 0 20 4'%3E%3Cpath d='M0 2 Q2.5 0 5 2 T10 2 T15 2 T20 2' stroke='black' stroke-width='3' fill='none'/%3E%3C/svg%3E");
+	-webkit-mask-size: 20px 4px;
+	-webkit-mask-repeat: repeat-x;
+}
+
+.dark .ai-generating-indicator {
+	color: #34d399;
+}
+
+.dark .ai-generating-indicator::after {
+	background: linear-gradient(
+		90deg,
+		transparent 0%,
+		#34d399 20%,
+		#6ee7b7 50%,
+		#34d399 80%,
+		transparent 100%
+	);
+	background-size: 200% auto;
+}
+
+/* ============================================================================
+   MARKETING — CSS custom properties (light ↔ dark)
+   ============================================================================ */
+
+:root {
+	/* Section backgrounds */
+	--mkt-bg-hero:  #EBEBEB;
+	--mkt-bg-alt:   #F0EFED;
+	--mkt-bg-card:  #ffffff;
+	--mkt-bg-hover: #FAFAF9;
+
+	/* Text scale */
+	--mkt-tx-1: #1a1a1a;
+	--mkt-tx-2: #3d3d3d;
+	--mkt-tx-3: #545454;
+	--mkt-tx-4: #646464;
+	--mkt-tx-5: #7c7c7c;
+	--mkt-tx-6: #8f8f8f;
+	--mkt-tx-7: #a3a3a3;
+	--mkt-tx-8: #949494;
+	--mkt-tx-9: #c4c4c4;
+
+	/* Accents */
+	--mkt-border: #D6D5D3;
+	--mkt-red:    #9F2A3A;
+	--mkt-red-dk: #7F2230;
+
+	/* Diff highlighting */
+	--mkt-diff-del: rgba(254, 226, 226, 0.55);
+	--mkt-diff-add: rgba(220, 252, 231, 0.55);
+
+	/* Atlas graph categories — node/legend/panel swatches.
+	   Light-theme hues: slightly darkened from the dark palette below so the
+	   icon/dot keeps WCAG AA contrast against the warm card surface. */
+	--atlas-cat-ai: #0f9b80;
+	--atlas-cat-integration: #3f7fc0;
+	--atlas-cat-security: #b8860b;
+	--atlas-cat-infra: #6f5fd0;
+	--atlas-cat-data: #c14f8a;
+	--atlas-cat-experience: #c06a45;
+	--atlas-cat-ops: #5f7a72;
+}
+
+.dark {
+	/* Section backgrounds */
+	--mkt-bg-hero:  #111110;
+	--mkt-bg-alt:   #161615;
+	--mkt-bg-card:  #1d1c1b;
+	--mkt-bg-hover: #252423;
+
+	/* Text scale */
+	--mkt-tx-1: #f0ede8;
+	--mkt-tx-2: #d7d3cd;
+	--mkt-tx-3: #c4c0ba;
+	--mkt-tx-4: #b0aba5;
+	--mkt-tx-5: #9c9792;
+	--mkt-tx-6: #87837f;
+	--mkt-tx-7: #6f6b68;
+	--mkt-tx-8: #7d7975;
+	--mkt-tx-9: #303030;
+
+	/* Accents */
+	--mkt-border: #2e2d2c;
+	--mkt-red:    #e06a78;
+	--mkt-red-dk: #c75667;
+
+	/* Diff highlighting — mid-tone tints (destructive/secondary hues) at a
+	   higher alpha than the old near-black 0.28 so the highlight reads against
+	   the dark surface. The marked text itself sets `text-foreground` (see
+	   ConflictResolveDialog WordDiff) so it never falls back to the unreadable
+	   UA-default mark color on a dark background. */
+	--mkt-diff-del: rgba(239, 68, 68, 0.30);
+	--mkt-diff-add: rgba(52, 211, 153, 0.26);
+
+	/* Atlas graph categories — brighter hues tuned to read
+	   against the dark zinc card surface (icon/dot ≥ AA contrast). */
+	--atlas-cat-ai: #1fc9a0;
+	--atlas-cat-integration: #5b9ad6;
+	--atlas-cat-security: #e0b454;
+	--atlas-cat-infra: #8b7ce0;
+	--atlas-cat-data: #e06aa6;
+	--atlas-cat-experience: #d98a6a;
+	--atlas-cat-ops: #7d9b94;
+}
+
+/* ============================================================================
+   MARKETING — Particle Network Animation
+   ============================================================================ */
+
+@keyframes mkt-particle-pulse {
+	0%, 100% { 
+		opacity: 0.6;
+		transform: scale(1);
+	}
+	50% { 
+		opacity: 1;
+		transform: scale(1.2);
+	}
+}
+
+@keyframes mkt-connection-pulse {
+	0%, 100% { opacity: 0.2; }
+	50% { opacity: 0.5; }
+}
+
+@keyframes mkt-float {
+	0%, 100% { transform: translateY(0px); }
+	50% { transform: translateY(-10px); }
+}
+
+/* ============================================================================
+   MARKETING — Crane arm animation (SDLC pipeline)
+   ============================================================================ */
+
+@keyframes mkt-crane-swing {
+	0%   { transform: rotate(-30deg); }
+	50%  { transform: rotate(30deg);  }
+	100% { transform: rotate(-30deg); }
+}
+
+.mkt-crane-arm-active {
+	animation: mkt-crane-swing 2.4s ease-in-out infinite;
+}
+
+/* Smooth transitions for theme switching */
+@media (prefers-reduced-motion: no-preference) {
+	* {
+		transition-property: background-color, border-color, color;
+		transition-duration: 150ms;
+		transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+	}
+}
+
+/* Respect reduced motion preference — collapse all animations & transitions */
+@media (prefers-reduced-motion: reduce) {
+	*,
+	*::before,
+	*::after {
+		animation-duration: 0.01ms !important;
+		animation-iteration-count: 1 !important;
+		transition-duration: 0.01ms !important;
+		scroll-behavior: auto !important;
+	}
+	/* Reveal-on-scroll elements must still become visible even without animation */
+	.reveal-on-scroll,
+	.editorial-reveal {
+		opacity: 1 !important;
+	}
+}
+
+/* Enhanced shadows for depth */
+.shadow-elevated {
+	box-shadow:
+		0 1px 2px 0 rgb(0 0 0 / 0.05),
+		0 8px 24px -4px rgb(0 0 0 / 0.1);
+}
+
+.dark .shadow-elevated {
+	box-shadow:
+		0 1px 2px 0 rgb(0 0 0 / 0.4),
+		0 8px 24px -4px rgb(0 0 0 / 0.3),
+		0 0 0 1px rgb(255 255 255 / 0.05);
+}
+
+/* ============================================================================
+   MARKETING EDITORIAL REDESIGN — light theme animations & utilities
+   ============================================================================ */
+
+/* Orbital dot fade-in on page load */
+@keyframes marketing-hero-in {
+	from {
+		opacity: 0;
+		transform: translateY(12px);
+	}
+	to {
+		opacity: 1;
+		transform: translateY(0);
+	}
+}
+
+.marketing-hero-in {
+	animation: marketing-hero-in 0.8s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.marketing-hero-in-delay-1 { animation-delay: 0.1s; opacity: 0; }
+.marketing-hero-in-delay-2 { animation-delay: 0.22s; opacity: 0; }
+.marketing-hero-in-delay-3 { animation-delay: 0.36s; opacity: 0; }
+.marketing-hero-in-delay-4 { animation-delay: 0.5s; opacity: 0; }
+
+/* Scroll-in for editorial sections */
+@keyframes editorial-reveal {
+	from {
+		opacity: 0;
+		transform: translateY(20px);
+	}
+	to {
+		opacity: 1;
+		transform: translateY(0);
+	}
+}
+
+.editorial-reveal {
+	opacity: 0;
+}
+
+.editorial-reveal.is-visible {
+	animation: editorial-reveal 0.7s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+/* Dot grid background for marketing sections */
+.bg-dot-grid {
+	background-image: radial-gradient(circle, rgba(0,0,0,0.14) 1px, transparent 1px);
+	background-size: 32px 32px;
+}
+
+/* Section label style (red + left border) */
+.editorial-label {
+	display: inline-flex;
+	align-items: center;
+	gap: 0.75rem;
+	font-family: var(--font-sans);
+	font-size: 0.6875rem;
+	font-weight: 400;
+	letter-spacing: 0.25em;
+	text-transform: uppercase;
+	color: #B91C1C;
+}
+
+.editorial-label::before {
+	content: "";
+	display: block;
+	width: 2px;
+	height: 1rem;
+	background: #B91C1C;
+	flex-shrink: 0;
+}
+
+/* SDLC dot animation */
+@keyframes sdlc-pulse {
+	0%, 100% { transform: scale(1); opacity: 0.6; }
+	50% { transform: scale(1.3); opacity: 1; }
+}
+
+.sdlc-dot-active {
+	animation: sdlc-pulse 2s ease-in-out infinite;
+}
+
+/*
+ * Indeterminate progress bar — a segment sweeps left-to-right to signal an
+ * in-flight, unbounded operation (e.g. a running scan). Motion is suppressed
+ * under prefers-reduced-motion, leaving a static partial fill.
+ */
+@keyframes scan-progress-indeterminate {
+	0% { transform: translateX(-100%); }
+	100% { transform: translateX(250%); }
+}
+
+.scan-progress-indeterminate {
+	width: 40%;
+	animation: scan-progress-indeterminate 1.25s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.scan-progress-indeterminate {
+		animation: none;
+		transform: none;
+		width: 35%;
+	}
+}
+
+/* Editorial section divider */
+.editorial-divider {
+	height: 1px;
+	background: rgba(0, 0, 0, 0.08);
+}
+
+pre.shiki {
+	@apply mb-4 rounded-lg p-6;
+}
+
+#nd-sidebar {
+	@apply bg-card! top-[4.5rem] md:h-[calc(100dvh-4.5rem)]!;
+
+	button[data-search-full] {
+		@apply bg-transparent;
+	}
+}
+
+/*
+ * Docs pages render the Fumadocs sidebar as `position: fixed` (z-index 20),
+ * pinned full-height to the viewport. The shared marketing <footer> is a
+ * full-width, statically-positioned sibling rendered after <main>, so at the
+ * bottom of the scroll the fixed sidebar paints over the footer's left column
+ * (logo + copyright). Lift the footer above the sidebar with an opaque
+ * background so it reads as a full-width band below all content. Scoped via
+ * `:has(#nd-sidebar)` so only docs pages (which have the sidebar) are affected.
+ */
+body:has(#nd-sidebar) footer {
+	@apply relative z-30 bg-background;
+}
+
+#nd-page .prose {
+	h1,
+	h2,
+	h3,
+	h4,
+	h5,
+	h6 {
+		a {
+			@apply no-underline!;
+		}
+	}
+}
+
+/*
+ * Integrations docs only: let the prev/next footer-nav description wrap to two
+ * lines instead of Fumadocs' single-line `truncate` (which clips with an
+ * ellipsis when the sidebar narrows the content column). Scoped via the
+ * `data-docs-section` attribute set in the docs page route.
+ *
+ * Deliberately NOT scoped under `#nd-page`. Until fumadocs-ui 16.8 the page root
+ * was a <div id="nd-page"> wrapping a separate <article>; from 16.8 the article
+ * IS `#nd-page`, so the old `#nd-page article[...]` descendant selector silently
+ * stopped matching and this rule quietly did nothing. Matching the article by its
+ * attribute alone is structure-agnostic, and it is the exact selector
+ * `docs-integrations-footer-nav.spec.ts` asserts — so the rule and its test cannot
+ * drift apart again.
+ */
+article[data-docs-section="integrations"] p.text-fd-muted-foreground.truncate {
+	white-space: normal;
+	overflow: hidden;
+	display: -webkit-box;
+	-webkit-box-orient: vertical;
+	-webkit-line-clamp: 2;
+}
+
+div[role="tablist"].bg-secondary {
+	@apply bg-muted!;
+}
+
+input[cmdk-input] {
+	@apply border-none focus-visible:ring-0;
+}
+
+/* Diff highlighting for document editor */
+mark.bg-green-200 {
+	background-color: rgb(187 247 208);
+}
+
+del.bg-red-200 {
+	background-color: rgb(254 202 202);
+	text-decoration: line-through;
+}
+
+@layer base {
+	.dark ::selection {
+		background-color: rgba(59, 130, 246, 0.4);
+		color: var(--foreground);
+	}
+}
+
+.dark mark.bg-green-900 {
+	background-color: rgb(20 83 45);
+	color: #ffffff;
+}
+
+.dark del.bg-red-900 {
+	background-color: rgb(127 29 29);
+	color: #ffffff;
+}
+
+.dark mark[data-color] {
+	color: #111827 !important;
+}
+
+/* Colourless highlight — TipTap's `==text==` input rule emits a bare `<mark>`
+   with neither a `data-color` attribute nor an inline style, so it matched none
+   of the rules above and fell back to the UA `Mark`/`MarkText` system colours,
+   which are unreadable against the dark theme. Tint it from `--highlight` (amber
+   in both themes) and pin the text to `--foreground` so it stays legible in
+   light and dark, the same pairing the diff tints use. `:not([class])` leaves
+   the marks that bring their own colour classes alone (the diff highlights above
+   and the WordDiff marks in Conflict/DuplicateResolveDialog); no `!important` is
+   needed here because a colourless mark carries no inline `style` to outrank. */
+mark:not([data-color]):not([class]) {
+	background-color: color-mix(in srgb, var(--highlight) 30%, transparent);
+	color: var(--foreground);
+}
+
+/* Streamdown markdown styling */
+.streamdown {
+	@apply font-sans text-foreground;
+}
+
+.streamdown p {
+	@apply my-3 text-foreground;
+}
+
+.streamdown h1,
+.streamdown h2,
+.streamdown h3,
+.streamdown h4,
+.streamdown h5,
+.streamdown h6 {
+	font-family: var(--font-sans) !important;
+	letter-spacing: -0.02em;
+	@apply text-foreground font-semibold;
+}
+
+.streamdown h1 {
+	font-size: 1.12rem !important;
+	line-height: 1.2 !important;
+	margin-top: 0.75rem !important;
+	margin-bottom: 0.625rem !important;
+}
+
+.streamdown h2 {
+	font-size: 1rem !important;
+	line-height: 1.25 !important;
+	margin-top: 0.75rem !important;
+	margin-bottom: 0.5rem !important;
+}
+
+.streamdown h3 {
+	font-size: 0.95rem !important;
+	line-height: 1.35 !important;
+	margin-top: 0.625rem !important;
+	margin-bottom: 0.375rem !important;
+}
+
+.streamdown h4,
+.streamdown h5,
+.streamdown h6 {
+	font-size: 0.9rem !important;
+	line-height: 1.35 !important;
+	margin-top: 0.625rem !important;
+	margin-bottom: 0.375rem !important;
+}
+
+.streamdown ul,
+.streamdown ol {
+	@apply text-foreground;
+}
+
+.streamdown li {
+	@apply text-foreground;
+}
+
+.streamdown strong {
+	@apply text-foreground font-semibold;
+}
+
+.streamdown em {
+	@apply text-foreground italic;
+}
+
+.streamdown code {
+	@apply rounded bg-muted px-1.5 py-0.5 text-sm text-foreground;
+}
+
+.streamdown pre {
+	@apply bg-muted border border-border rounded-lg p-4 overflow-x-auto my-3;
+}
+
+.streamdown a {
+	@apply text-primary hover:underline;
+}
+
+.streamdown blockquote {
+	@apply border-l-4 border-primary pl-4 italic text-foreground/80 my-3;
+}
+
+/* =============================================================================
+   Mermaid Diagram Styling
+   Clean, readable diagrams with consistent colors
+   ============================================================================= */
+
+/* ============================================================================
+   MERMAID WRAP - scroll container, zoom/pan cursors, custom scrollbar
+   ============================================================================ */
+.mermaid-wrap {
+	scrollbar-width: thin;
+	scrollbar-color: rgba(0, 0, 0, 0.15) transparent;
+}
+
+.mermaid-wrap::-webkit-scrollbar {
+	width: 6px;
+	height: 6px;
+}
+
+.mermaid-wrap::-webkit-scrollbar-track {
+	background: transparent;
+}
+
+.mermaid-wrap::-webkit-scrollbar-thumb {
+	background: rgba(0, 0, 0, 0.15);
+	border-radius: 3px;
+}
+
+.mermaid-wrap::-webkit-scrollbar-thumb:hover {
+	background: rgba(0, 0, 0, 0.3);
+}
+
+.dark .mermaid-wrap {
+	scrollbar-color: rgba(255, 255, 255, 0.15) transparent;
+}
+
+.dark .mermaid-wrap::-webkit-scrollbar-thumb {
+	background: rgba(255, 255, 255, 0.15);
+}
+
+.dark .mermaid-wrap::-webkit-scrollbar-thumb:hover {
+	background: rgba(255, 255, 255, 0.3);
+}
+
+.mermaid-wrap.is-zoomed {
+	cursor: grab;
+}
+
+.mermaid-wrap.is-panning {
+	cursor: grabbing !important;
+	user-select: none;
+}
+
+/* SVG base styling */
+.mermaid-diagram svg {
+	min-width: fit-content;
+}
+
+/* Beautiful Mermaid: ensure connector labels are legible in light/dark themes */
+.mermaid-diagram svg[data-renderer="beautiful-mermaid"] .edge-label text {
+	fill: var(--fg) !important;
+}
+
+.mermaid-diagram svg[data-renderer="beautiful-mermaid"] .edge-label rect {
+	fill: color-mix(in srgb, var(--bg) 88%, var(--fg) 12%) !important;
+	stroke: color-mix(in srgb, var(--fg) 24%, var(--bg)) !important;
+}
+
+.mermaid-diagram svg[data-renderer="beautiful-mermaid"] g.message text {
+	fill: var(--_text) !important;
+	opacity: 1 !important;
+}
+
+.mermaid-diagram svg[data-renderer="beautiful-mermaid"] .cluster-label text,
+.mermaid-diagram svg[data-renderer="beautiful-mermaid"] .cluster text {
+	fill: var(--fg) !important;
+}
+
+.mermaid-diagram svg[data-renderer="beautiful-mermaid"] g.subgraph > text {
+	fill: var(--_text) !important;
+}
+
+.mermaid-diagram svg[data-renderer="beautiful-mermaid"] .cluster-label rect {
+	fill: color-mix(in srgb, var(--bg) 84%, var(--fg) 16%) !important;
+	stroke: color-mix(in srgb, var(--fg) 22%, var(--bg)) !important;
+}
+
+/* ============================================================================
+   ANIMATION
+   ============================================================================ */
+@keyframes mermaid-fade-in {
+	from { opacity: 0; }
+	to { opacity: 1; }
+}
+
+.mermaid-diagram svg {
+	animation: mermaid-fade-in 0.35s ease-out;
+}
+
+/* =============================================================================
+   Sugar-high Syntax Highlighting
+   Fast, lightweight code highlighting for AI chat code blocks
+   ============================================================================= */
+
+/* Light mode syntax colors (GitHub-inspired) */
+.sh__comment {
+	color: #6a737d;
+	font-style: italic;
+}
+
+.sh__keyword {
+	color: #d73a49;
+	font-weight: 500;
+}
+
+.sh__string {
+	color: #22863a;
+}
+
+.sh__variable {
+	color: #e36209;
+}
+
+.sh__operator {
+	color: #005cc5;
+}
+
+.sh__function {
+	color: #6f42c1;
+}
+
+.sh__number {
+	color: #005cc5;
+}
+
+.sh__property {
+	color: #005cc5;
+}
+
+.sh__class {
+	color: #6f42c1;
+}
+
+.sh__identifier {
+	color: inherit;
+}
+
+.sh__sign {
+	color: #6a737d;
+}
+
+.sh__break {
+	color: inherit;
+}
+
+.sh__entity {
+	color: #22863a;
+}
+
+.sh__jsxliterals {
+	color: #e36209;
+}
+
+/* Dark mode syntax colors (GitHub dark theme inspired) */
+.dark .sh__comment {
+	color: #8b949e;
+	font-style: italic;
+}
+
+.dark .sh__keyword {
+	color: #ff7b72;
+	font-weight: 500;
+}
+
+.dark .sh__string {
+	color: #a5d6ff;
+}
+
+.dark .sh__variable {
+	color: #ffa657;
+}
+
+.dark .sh__operator {
+	color: #79c0ff;
+}
+
+.dark .sh__function {
+	color: #d2a8ff;
+}
+
+.dark .sh__number {
+	color: #79c0ff;
+}
+
+.dark .sh__property {
+	color: #79c0ff;
+}
+
+.dark .sh__class {
+	color: #d2a8ff;
+}
+
+.dark .sh__identifier {
+	color: inherit;
+}
+
+.dark .sh__sign {
+	color: #8b949e;
+}
+
+.dark .sh__break {
+	color: inherit;
+}
+
+.dark .sh__entity {
+	color: #7ee787;
+}
+
+.dark .sh__jsxliterals {
+	color: #ffa657;
+}
+
+/* Editor pages own their own sidebar shifting via the page-chrome wrapper
+ * (`sm:right-[28rem]` on the fixed-position container — the `sm` breakpoint
+ * matches CopilotKit's own `min-width: 640px` dock point; see
+ * modules/saas/shared/components/copilot/ai-sidebar-layout.ts). CopilotKit's
+ * default rule that adds `margin-right: 28rem` to its
+ * `.copilotKitSidebarContentWrapper.sidebarExpanded` would double-shrink
+ * the editor body if both apply, AND it leaves the breadcrumb / action
+ * bar (which sit OUTSIDE the wrapper but inside the page chrome) covered
+ * by the chat panel because only the wrapper's children shift.
+ *
+ * Cancel CopilotKit's wrapper margin so the only shift comes from the
+ * page chrome — the entire masthead (title, breadcrumb, action bar,
+ * editor) slides as one piece when the chat panel opens.
+ */
+.copilotKitSidebarContentWrapper.sidebarExpanded {
+	margin-right: 0 !important;
+}
+
+/* CopilotKit theme bridge — bind the assistant drawer (AI Backlog Update /
+ * Feature Assistant) to Fabric's design tokens so the panel always tracks
+ * the app's `.dark` class instead of CopilotKit's own hardcoded white/black
+ * defaults and its `prefers-color-scheme` fallback in `useDarkMode`.
+ *
+ * Why this is needed:
+ *   1. CopilotKit ships fixed RGB values (`rgb(255 255 255)` light,
+ *      `rgb(17,17,17)` dark) that don't match Fabric's warm-stone /
+ *      dark-zinc palette — even in matched themes the drawer felt like a
+ *      separate product bolted on.
+ *   2. CopilotKit's CSS also reacts to `[data-theme="dark"]` and any
+ *      element carrying `style*="color-scheme: dark"`, plus its
+ *      `useDarkMode` hook falls back to `prefers-color-scheme: dark`
+ *      matchMedia. When Fabric is set to light but the user's OS is dark
+ *      (the "System mode" path users hit), those fallbacks fire
+ *      independently of Fabric's chosen theme — producing a black drawer
+ *      wrapped around light cards with unreadable low-contrast text.
+ *
+ * Re-binding the tokens to Fabric's `--card`, `--foreground`, etc. means
+ * the assistant container, proposal cards, chips, buttons and input area
+ * always render in the same theme as the rest of the app, regardless of
+ * which detection path CopilotKit takes.
+ *
+ * Specificity note: each selector below intentionally compounds `html` +
+ * `:root` (and the dark-mode discriminator) to land one column higher than
+ * the corresponding CopilotKit selector — CopilotKit's stylesheet is
+ * bundled AFTER `globals.css` in Next.js's chunk graph, so a bare `:root`
+ * would tie at (0,0,1) and lose to CopilotKit on source order:
+ *   `html:root`                                 → (0,0,2)  beats `:root` (0,0,1)
+ *   `html:root.dark`                            → (0,1,2)  beats `.dark` / `html.dark`
+ *   `html:root[data-theme="dark"]`              → (0,1,2)  beats `[data-theme=…]`
+ *   `html:root[style*="color-scheme: dark"]`    → (0,1,2)  beats `html[style*=…]`
+ */
+html:root,
+html:root.dark,
+html:root[data-theme="dark"],
+html:root[style*="color-scheme: dark"] {
+	--copilot-kit-primary-color: var(--primary);
+	--copilot-kit-contrast-color: var(--primary-foreground);
+	--copilot-kit-background-color: var(--card);
+	--copilot-kit-secondary-color: var(--card);
+	--copilot-kit-secondary-contrast-color: var(--card-foreground);
+	--copilot-kit-input-background-color: var(--muted);
+	--copilot-kit-separator-color: var(--border);
+	--copilot-kit-muted-color: var(--muted-foreground);
+	--copilot-kit-error-background: color-mix(in srgb, var(--destructive) 8%, var(--card));
+	--copilot-kit-error-border: var(--destructive);
+	--copilot-kit-error-text: var(--destructive);
+	--copilot-kit-dev-console-bg: var(--muted);
+	--copilot-kit-dev-console-text: var(--foreground);
+}
+
+/* CopilotKit's *default* header — used by every surface that does NOT pass a
+ * custom Header slot (AI Backlog Update's bare <CopilotSidebar> in
+ * BacklogChat.tsx, the agent chats, the prompt editors, the doc generator) —
+ * reuses `--copilot-kit-contrast-color` as its `background-color`. That token is
+ * mapped above to `--primary-foreground`, the near-white on-primary text color,
+ * which stays near-white in BOTH themes. So the default header rendered a white
+ * strip on the dark drawer in dark mode (it blends in in light mode, which is why
+ * only dark mode surfaced the bug).
+ *
+ * Bind the default header to the same `--card` surface Fabric's custom header
+ * (CopilotSidebarHeader) already uses, with `--card-foreground` title text — both
+ * tokens are theme-aware, so this single rule is correct in light AND dark with no
+ * `.dark` duplication. The header's action/close buttons already read
+ * `--copilot-kit-muted-color` (→ `--muted-foreground`) and the bottom border
+ * already reads `--copilot-kit-separator-color` (→ `--border`), so neither needs an
+ * override. We deliberately do NOT remap the shared `--copilot-kit-contrast-color`
+ * token (it is the correct on-primary contrast color elsewhere) — the fix is scoped
+ * to `.copilotKitHeader` only.
+ *
+ * Specificity: `html:root .copilotKitHeader` is (0,2,1) — it outranks both
+ * CopilotKit's `.copilotKitHeader` (0,1,0) and `.copilotKitSidebar
+ * .copilotKitHeader` (0,2,0) on the type column, so it wins regardless of
+ * CopilotKit's stylesheet loading after `globals.css`. */
+html:root .copilotKitHeader {
+	background-color: var(--card);
+	color: var(--card-foreground);
+}
+
+/* #1896 transcript anchor line flash */
+@keyframes transcript-line-flash-kf {
+	from {
+		background-color: color-mix(in srgb, var(--primary) 25%, transparent);
+	}
+	to {
+		background-color: transparent;
+	}
+}
+.transcript-line-flash {
+	animation: transcript-line-flash-kf 1.5s ease-out;
+	border-radius: 2px;
+}
+@media (prefers-reduced-motion: reduce) {
+	.transcript-line-flash {
+		animation: none;
+		background-color: color-mix(in srgb, var(--primary) 15%, transparent);
+	}
+}

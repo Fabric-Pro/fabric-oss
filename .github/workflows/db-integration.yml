@@ -1,0 +1,1117 @@
+name: DB Integration
+
+# Real-Postgres, merge-blocking gate for the daily-brief release-notes
+# exclusions tenant-XOR suite, which CANNOT run on `unit-tests.yml`.
+#
+# Why this can't just be a step in unit-tests.yml (the 1869 lesson):
+# `unit-tests.yml` sets DATABASE_URL to a well-known PLACEHOLDER
+# (postgresql://test:test@localhost:5432/test) purely so the
+# @repo/database Prisma singleton can initialize at module load — it is
+# never connected to. `daily-brief-exclusions.test.ts` self-skips via
+# `describe.skipIf(!hasReachableDatabaseUrl())`, which explicitly rejects
+# the placeholder (see packages/database/__tests__/_helpers/db-availability.ts),
+# so a green `unit-tests` check proves nothing about the exclusions table's
+# create/delete/list, [projectId, targetKey] idempotency, concurrency, and
+# XOR org-vs-personal scoping. This workflow spins up a REAL Postgres
+# service, applies migrations + RLS policies, and runs that suite so it
+# executes (not skip). A pre-flight + post-hoc guard (see the `db-tests`
+# job) fails the job outright if the suite would have self-skipped — a
+# green run here can never be a false pass.
+#
+# Scope note (RLS enforcement): the query-level XOR this suite verifies is
+# the isolation boundary our feature actually relies on in production — the
+# API/worker use the BYPASSRLS base `db` with explicit tenant columns, so
+# RLS only bites getTenantDb()/withRLSContext() paths. The RLS-POLICY
+# enforcement suite (`rls-isolation.test.ts`) IS now run in this job by the
+# dedicated steps below (see "Run the RLS-policy enforcement suite"): its
+# setup fixtures are seeded on the privileged `postgres` connection (which
+# bypasses RLS), then each assertion drops to the NOBYPASSRLS/NOSUPERUSER
+# `fabric_rls_test` role via `SET LOCAL ROLE` (see
+# __tests__/_helpers/rls-role.ts), so the tenant_isolation USING/WITH CHECK
+# policies are enforced against a connection SUBJECT to RLS. The RLS policy
+# is applied here (apply-rls-direct.ts); the same suite also runs locally
+# via `pnpm --filter @repo/database test:rls` against a privileged
+# (superuser) dev DB — the harness drops role per-assertion via SET LOCAL
+# ROLE, so the outer connection must itself be privileged enough to SET
+# ROLE (a plain CREATEROLE connection is not sufficient on PG16).
+#
+# Temporal note: `temporal-tests` gives packages/temporal's own
+# RUN_DB_INTEGRATION=1-gated suites (publishing-notify-activity.test.ts,
+# Fizzy #1850, Phase 1C-2b) the same real-Postgres execution this file
+# already gives packages/database's suites. Without it, that file's
+# `it.skipIf(!RUN_DB)` cases self-skip under unit-tests.yml (which never
+# sets RUN_DB_INTEGRATION) and vitest exits 0 — the activity implementing
+# the whole notification lifecycle would have zero CI signal.
+#
+# Branch-protection note: mirrors unit-tests.yml's 3-job pattern, plus one
+# more parallel test job (`temporal-tests`) gated on its own path filter.
+# This workflow always runs on PRs to the canonical branch so the
+# `db-integration` status check is reported on every PR; the expensive
+# `db-tests` / `temporal-tests` jobs only run when their relevant paths
+# actually changed (or on workflow_dispatch). The aggregate job fails
+# closed if the path-filter didn't succeed, so `db-integration` is safe to
+# mark as a required check even though both test jobs are conditionally
+# skipped.
+
+on:
+  pull_request:
+    # Canonical upstream branch is `master` (post-cutover); see
+    # docs/deployment.md § Branch cutover checklist.
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  # dorny/paths-filter uses the Pulls API on PR events.
+  pull-requests: read
+
+concurrency:
+  group: db-integration-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  changes:
+    name: Detect changed paths
+    runs-on: ubuntu-latest
+    outputs:
+      db: ${{ steps.filter.outputs.db }}
+      temporal: ${{ steps.filter.outputs.temporal }}
+    steps:
+      # On pull_request events dorny/paths-filter detects changed files via
+      # the Pulls API (the `pull-requests: read` permission above) and does
+      # not need the repo on disk. Checkout is only required for the
+      # git-based detection used on workflow_dispatch runs.
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        if: github.event_name != 'pull_request'
+        with:
+          fetch-depth: 1
+      - uses: dorny/paths-filter@7b450fff21473bca461d4b92ce414b9d0420d706 # v4
+        id: filter
+        with:
+          filters: |
+            db:
+              - 'packages/database/**'
+              - 'packages/database/prisma/schema.prisma'
+              - 'packages/database/prisma/migrations/**'
+              # The prompt procedures' notification delivery is asserted
+              # against a real Postgres here (recipient resolution + the
+              # bell rows a reader actually gets), so prompt-API changes
+              # are DB-relevant too.
+              - 'packages/api/modules/prompts/**'
+              - '.github/workflows/db-integration.yml'
+            temporal:
+              # publishing-notify-activity.test.ts (Fizzy #1850) reads and
+              # writes through @repo/database (the ledger's compare-and-swap,
+              # the tenant fence, the unique delivery triple) — none of that
+              # is mockable, so this suite is as dependent on
+              # packages/database/** as it is on packages/temporal/** itself.
+              - 'packages/temporal/**'
+              - 'packages/database/**'
+              - '.github/workflows/db-integration.yml'
+
+  db-tests:
+    name: DB/RLS/XOR tests (real Postgres)
+    needs: changes
+    # Always run on workflow_dispatch (manual validation); on PRs only when
+    # DB-relevant paths changed.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      needs.changes.outputs.db == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: fabric_test
+        ports:
+          - 5432:5432
+        # -h/-p make this a TCP probe, and they are load-bearing. Without
+        # them pg_isready checks the UNIX SOCKET, which during container
+        # startup is answered by the temporary server the postgres entrypoint
+        # runs while executing initdb — a server that listens on the socket
+        # only, is not accepting TCP, and is shut down before the real one
+        # starts. Docker marks a container healthy on the FIRST successful
+        # probe, so --health-retries cannot recover from an early false
+        # positive: the job proceeds against a server that is about to
+        # disappear, and the first real client (prisma migrate deploy) fails
+        # on a connection reset that looks like a flake. Probing 127.0.0.1
+        # cannot pass until the real server is accepting TCP connections.
+        #
+        # --health-start-period is deliberate too. The old unix-socket probe
+        # used to succeed in about a second, so the 10 x 5s retry budget was
+        # almost entirely spare margin. A TCP probe cannot succeed until
+        # initdb, the init scripts, and the real server have all finished —
+        # that margin is now incidental, not structural, and would vanish
+        # silently if anyone ever trimmed --health-retries.
+        options: >-
+          --health-cmd "pg_isready -U postgres -h 127.0.0.1 -p 5432"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+          --health-start-period 15s
+    env:
+      # Deliberately NOT the unit-tests.yml placeholder
+      # (postgresql://test:test@localhost:5432/test) — that value is
+      # rejected by hasReachableDatabaseUrl() and would make the exclusion
+      # suite self-skip. This points at the real `postgres` service above.
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/fabric_test
+      DIRECT_URL: postgresql://postgres:postgres@localhost:5432/fabric_test
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          fetch-depth: 1
+
+      - name: Setup pnpm
+        # Version is read from root package.json's `packageManager` field.
+        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          # Matches root package.json `engines.node` (>=22.19.0) and the
+          # temporal-tests job below. This job used to pin 20; the prompt
+          # notification-delivery suite's import graph (undici v8 via the
+          # external-delivery path) requires >=22, and shipping on 22 while
+          # testing on 20 exercises a runtime nobody runs.
+          node-version: '22'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # prisma/generated is gitignored and costs 60-75s to build here, and
+      # again in the temporal-tests job, on every run. It is a pure function of
+      # the schema, the generator config and the pinned generator versions, so
+      # key the cache on exactly those and skip the rebuild when none moved.
+      # Both jobs share this key deliberately — they build the same artifact.
+      #
+      # prisma/zod is NOT cached: it is committed .ts source (see
+      # scripts/generate-client.mts) and arrives with the checkout. A schema
+      # edit changes this key, misses, and regenerates both.
+      - name: Restore generated Prisma client
+        id: prisma-client-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: packages/database/prisma/generated
+          key: prisma-client-${{ runner.os }}-${{ hashFiles('packages/database/prisma/schema.prisma', 'packages/database/prisma/zod-generator.config.json', 'packages/database/prisma/tsconfig.generated.json', 'packages/database/scripts/generate-client.mts', 'packages/database/scripts/fix-zod-imports.ts', 'pnpm-lock.yaml') }}
+
+      - name: Generate Prisma client
+        if: steps.prisma-client-cache.outputs.cache-hit != 'true'
+        run: pnpm --filter @repo/database generate
+
+      - name: Apply migrations
+        # Applies every migration, including the hand-authored
+        # 20260710120000_daily_brief_release_note_exclusions migration,
+        # against a real Postgres — this is also the deferred DB
+        # revalidation for that migration's offline authoring.
+        run: pnpm --filter @repo/database exec prisma migrate deploy --schema=./prisma/schema.prisma
+
+      - name: Apply RLS policies
+        # Invoked directly (not via the `apply:rls` npm script) because that
+        # script is wrapped in `dotenv -c -e ../../.env.local --`, and
+        # .env.local does not exist in CI — dotenv-cli would error before
+        # ever reaching the script. apply-rls-direct.ts reads DATABASE_URL
+        # from the process environment via the Prisma `db` client, so
+        # invoking tsx directly with this job's env is sufficient.
+        # WORKER_DB_PASSWORD / WORKER_ROLE_PREPROVISIONED are intentionally
+        # left unset so fabric_worker role provisioning is skipped; the
+        # tenant_isolation policies under test still apply regardless.
+        run: pnpm --filter @repo/database exec tsx ./scripts/apply-rls-direct.ts
+
+      - name: Run the RLS-policy enforcement suite (non-superuser harness)
+        env:
+          RUN_DB_INTEGRATION: '1'
+        run: |
+          pnpm --filter @repo/database exec vitest run \
+            __tests__/rls-isolation.test.ts \
+            --passWithNoTests=false \
+            --reporter=dot \
+            --reporter=json --outputFile=rls-isolation-results.json
+
+      - name: 'Guard: assert the RLS enforcement suite executed (exact count, zero skips)'
+        run: |
+          node <<'EOF'
+          const fs = require("node:fs");
+          // 36 -> 37: Fizzy #1749 adds "Attachment retention minimum under RLS",
+          // which pins that an RLS-scoped MIN() over `project` reads LARGER than
+          // the true minimum — the hazard the purge's BYPASSRLS precondition
+          // exists to avoid. Bumping this constant is the intended way to add a
+          // case here; the exact pin is what forces the acknowledgement.
+          // 37 -> 41: Fizzy #1850 (1C-3a) adds the publishing_chat_delivery
+          // broadcast ledger, pinned in BOTH directions in org and personal
+          // context. Both directions because that table has no recipient
+          // column: the tenant XOR and the user_owned policy over it are the
+          // whole of what separates one tenant's posted-message record from
+          // another's. Measured before the registration landed, the two
+          // positives already passed and only the two negatives failed —
+          // which is the asymmetry that shows the negatives are reading the
+          // policy rather than an empty table.
+          const EXPECTED = 41;
+          const j = JSON.parse(fs.readFileSync("packages/database/rls-isolation-results.json","utf8"));
+          const files = j.testResults?.length ?? 0;
+          const total = j.numTotalTests ?? 0;
+          const passed = j.numPassedTests ?? 0;
+          const skipped = (j.numSkippedTests ?? 0) + (j.numPendingTests ?? 0);
+          const todo = j.numTodoTests ?? 0;
+          console.log(`rls-isolation: ${files} file(s), total=${total} passed=${passed} skipped=${skipped} todo=${todo}`);
+          if (files !== 1) { console.error("::error::expected exactly 1 test file"); process.exit(1); }
+          if (skipped > 0) { console.error("::error::suite self-skipped — false pass"); process.exit(1); }
+          if (todo > 0) { console.error("::error::a case is .todo — coverage silently dropped"); process.exit(1); }
+          if (total !== EXPECTED || passed !== EXPECTED) {
+            console.error(`::error::expected exactly ${EXPECTED} passing tests, got total=${total} passed=${passed}`);
+            process.exit(1);
+          }
+          EOF
+
+      - name: 'Guard: assert DATABASE_URL is a real, reachable Postgres'
+        # Anti-false-pass pre-flight. hasReachableDatabaseUrl() (the same
+        # predicate the exclusion suite gates on) rejects an unset URL and
+        # the well-known unit-tests.yml placeholder
+        # (postgresql://test:test@localhost:5432/test). Mirror that check
+        # here plus a live pg_isready probe, so a misconfigured env can
+        # never silently downgrade this job into skipping the suites while
+        # still reporting green.
+        run: |
+          if [[ -z "$DATABASE_URL" ]]; then
+            echo "::error::DATABASE_URL is unset — the DB-integration suites would self-skip and this job would be a false pass."
+            exit 1
+          fi
+          if [[ "$DATABASE_URL" == "postgresql://test:test@localhost:5432/test" ]]; then
+            echo "::error::DATABASE_URL is the unit-tests.yml placeholder — hasReachableDatabaseUrl() would return false and the exclusion suite would self-skip."
+            exit 1
+          fi
+          if ! pg_isready -d "$DATABASE_URL" -t 5; then
+            echo "::error::Postgres is not reachable at DATABASE_URL — cannot run DB-integration tests."
+            exit 1
+          fi
+          echo "DATABASE_URL is real and reachable — guard passed."
+
+      - name: Run the tenant-XOR suite against real Postgres
+        # Runs the exclusion feature's tenant-isolation suite — create /
+        # delete / list, [projectId, targetKey] idempotency, concurrency, and
+        # XOR org-vs-personal scoping — against a real Postgres (it self-skips
+        # on the unit-tests.yml placeholder URL; here it actually executes).
+        # This validates the mechanism our feature relies on in production: the
+        # API/worker use the BYPASSRLS base `db` with EXPLICIT tenant columns,
+        # so query-level XOR is the enforced isolation boundary (RLS only bites
+        # getTenantDb()/withRLSContext() paths). --passWithNoTests=false makes
+        # "no test files matched" a hard failure, not a silent green pass.
+        #
+        # Separately, __tests__/rls-isolation.test.ts (the RLS-policy
+        # ENFORCEMENT suite) runs in the dedicated "Run the RLS-policy
+        # enforcement suite" step above. Its assertions require a connection
+        # SUBJECT to RLS: setup fixtures are seeded on the privileged
+        # `postgres` connection (which bypasses RLS), then each assertion drops
+        # to the NOBYPASSRLS/NOSUPERUSER `fabric_rls_test` role via `SET LOCAL
+        # ROLE` (see __tests__/_helpers/rls-role.ts), so the tenant_isolation
+        # USING/WITH CHECK policies are actually enforced. The RLS policy is
+        # applied above (apply-rls-direct.ts); the same suite also runs locally
+        # via `pnpm --filter @repo/database test:rls` against a privileged
+        # (superuser) dev DB — the outer connection must be able to SET ROLE.
+        run: |
+          pnpm --filter @repo/database exec vitest run \
+            prisma/queries/projects/__tests__/daily-brief-exclusions.test.ts \
+            --passWithNoTests=false \
+            --reporter=dot \
+            --reporter=json --outputFile=db-integration-results.json
+
+      - name: Run the prompt integration suites (real Postgres)
+        # Fizzy #2068. Every assertion here is one a mocked suite cannot make,
+        # because the contract IS the SQL: whether the approval claim is really
+        # a lock (two concurrent approvals must produce exactly ONE winner),
+        # what a `jsonb` targets column hands back, and whether the reviewer
+        # query selects the right people across two tables and two role fields.
+        #
+        # Verified by removing the `status: "PENDING"` guard from the claim and
+        # watching this suite report `expected 2 to be 1` — both approvals won.
+        #
+        # The tier-resolution suite answers what the WHERE-clause tests cannot:
+        # given these rows, which prompt does a user actually get. It also reads
+        # the runtime resolver and the library badge from ONE set of rows, so the
+        # two drifting apart fails here — that drift shipped once already.
+        # Verified by disabling the personal-first branch: `expected 'USER' to be
+        # 'ORG'`.
+        run: |
+          pnpm --filter @repo/database exec vitest run \
+            __tests__/prompt-nominations.integration.test.ts \
+            __tests__/prompt-tier-resolution.integration.test.ts \
+            --passWithNoTests=false \
+            --reporter=dot \
+            --reporter=json --outputFile=prompt-nominations-results.json
+
+      - name: 'Guard: assert the prompt integration suites executed (zero skips)'
+        # The suite self-skips via `describe.skipIf(!hasReachableDatabaseUrl())`.
+        # Without this check a drifting predicate would report a trivially green
+        # 0-tests-run result and the step above would still succeed — the exact
+        # false pass the sibling guards exist to prevent.
+        run: |
+          node <<'EOF'
+          const fs = require("node:fs");
+          const r = JSON.parse(
+            fs.readFileSync("packages/database/prompt-nominations-results.json", "utf8"),
+          );
+          const skipped = r.numPendingTests ?? 0;
+          const passed = r.numPassedTests ?? 0;
+          if (skipped > 0) {
+            console.error(`::error::${skipped} prompt integration test(s) skipped — the DB gate did not open.`);
+            process.exit(1);
+          }
+          if (passed < 20) {
+            console.error(`::error::expected at least 20 prompt integration tests, saw ${passed}.`);
+            process.exit(1);
+          }
+          console.log(`prompt integration suites: ${passed} passed, 0 skipped`);
+          EOF
+
+      - name: 'Prompt notification delivery (api package, real Postgres)'
+        # The staging rehearsal for Fizzy #2068 stopped one inch short: a
+        # self-nomination wrote zero notification rows, and nothing
+        # distinguished "pipeline broken" from "the nominator is deliberately
+        # excluded". This suite pins that distinction against real rows —
+        # recipient resolution excludes the actor, the bell row lands on the
+        # tier admin with the AI summary in the snippet, the default-change
+        # announce reaches org members with the catalog deep-link, and a
+        # refired announce coalesces instead of doubling.
+        run: |
+          pnpm --filter @repo/api exec vitest run \
+            modules/prompts/__tests__/prompt-notify-delivery.integration.test.ts \
+            --passWithNoTests=false \
+            --reporter=dot \
+            --reporter=json --outputFile=prompt-notify-delivery-results.json
+
+      - name: 'Guard: assert the delivery suite executed (zero skips)'
+        run: |
+          node <<'EOF'
+          const fs = require("node:fs");
+          const r = JSON.parse(
+            fs.readFileSync("packages/api/prompt-notify-delivery-results.json", "utf8"),
+          );
+          const skipped = r.numPendingTests ?? 0;
+          const passed = r.numPassedTests ?? 0;
+          if (skipped > 0) {
+            console.error(`::error::${skipped} delivery test(s) skipped — the DB gate did not open.`);
+            process.exit(1);
+          }
+          if (passed < 5) {
+            console.error(`::error::expected at least 5 delivery tests, saw ${passed}.`);
+            process.exit(1);
+          }
+          console.log(`delivery suite: ${passed} passed, 0 skipped`);
+          EOF
+
+      - name: 'Guard: assert the XOR suite actually executed (zero skips)'
+        # Post-hoc anti-false-pass check. `daily-brief-exclusions.test.ts`
+        # self-skips via `describe.skipIf(!hasReachableDatabaseUrl())` — if
+        # that predicate somehow evaluated false-negative (env drift,
+        # future refactor, etc.) the suite would report a trivially green
+        # 0-tests-run result and the previous step would still succeed.
+        # Parse the JSON reporter output and fail if anything was skipped,
+        # if the one file didn't run, or if fewer than 6 tests passed
+        # (daily-brief-exclusions.test.ts has 6 cases; a shortfall means the
+        # suite failed to collect or silently skipped part of its set).
+        run: |
+          node <<'EOF'
+          const fs = require("node:fs");
+          const path = "packages/database/db-integration-results.json";
+          const report = JSON.parse(fs.readFileSync(path, "utf8"));
+          const files = report.testResults?.length ?? 0;
+          const passed = report.numPassedTests ?? 0;
+          const skipped =
+            (report.numSkippedTests ?? 0) + (report.numPendingTests ?? 0);
+          console.log(
+            `db-integration results: ${files} file(s), ${passed} passed, ${skipped} skipped`,
+          );
+          if (files !== 1) {
+            console.error(
+              `::error::Expected exactly 1 test file (daily-brief-exclusions.test.ts) to run, got ${files}.`,
+            );
+            process.exit(1);
+          }
+          if (skipped > 0) {
+            console.error(
+              `::error::${skipped} test(s) were skipped — this means the suite self-skipped (e.g. hasReachableDatabaseUrl() returned false) instead of actually executing against Postgres. A green run here would be a false pass.`,
+            );
+            process.exit(1);
+          }
+          if (passed < 6) {
+            console.error(
+              `::error::Only ${passed} test(s) passed — expected at least 6 in daily-brief-exclusions.test.ts. This may indicate the suite failed to collect its full test set.`,
+            );
+            process.exit(1);
+          }
+          EOF
+
+      - name: Run the last-edit clock suite against real Postgres
+        env:
+          RUN_DB_INTEGRATION: '1'
+        # `last-edit-clock.integration.test.ts` is the only proof that seeding a
+        # feature's Logic Summary moves Prisma's `@updatedAt` row clock while
+        # leaving the semantic edit clock alone — the bug the whole
+        # lastEditedAt column exists to fix. A mocked test cannot show it,
+        # because the thing that moves `updatedAt` is Postgres applying
+        # `@updatedAt` on a real write. It also pins the optimistic-concurrency
+        # token: a write holding a pre-edit clock must match zero rows.
+        run: |
+          pnpm --filter @repo/database exec vitest run             prisma/queries/projects/__tests__/last-edit-clock.integration.test.ts             --passWithNoTests=false             --reporter=dot             --reporter=json --outputFile=last-edit-clock-results.json
+
+      - name: 'Guard: assert the last-edit clock suite actually executed (zero skips)'
+        # Same anti-false-pass shape as the XOR guard above: the file
+        # self-skips via `describe.skipIf(!hasReachableDatabaseUrl())`, so a
+        # green step proves nothing on its own.
+        run: |
+          node <<'EOF'
+          const fs = require("node:fs");
+          const path = "packages/database/last-edit-clock-results.json";
+          const report = JSON.parse(fs.readFileSync(path, "utf8"));
+          const files = report.testResults?.length ?? 0;
+          const passed = report.numPassedTests ?? 0;
+          const skipped =
+            (report.numSkippedTests ?? 0) + (report.numPendingTests ?? 0);
+          console.log(
+            `last-edit-clock results: ${files} file(s), ${passed} passed, ${skipped} skipped`,
+          );
+          if (files !== 1) {
+            console.error(
+              `::error::Expected exactly 1 test file (last-edit-clock.integration.test.ts) to run, got ${files}.`,
+            );
+            process.exit(1);
+          }
+          if (skipped > 0) {
+            console.error(
+              `::error::${skipped} test(s) were skipped — the suite self-skipped instead of executing against Postgres, so a green run here would be a false pass.`,
+            );
+            process.exit(1);
+          }
+          // Bump this floor whenever the suite gains a test. A floor left
+          // behind the real count still passes and quietly stops guarding
+          // against a test being dropped.
+          if (passed < 12) {
+            console.error(
+              `::error::Only ${passed} test(s) passed — expected at least 12. The suite failed to collect its full set.`,
+            );
+            process.exit(1);
+          }
+          EOF
+
+      - name: Run the chat-delivery kind-partitioning suite against real Postgres
+        env:
+          RUN_DB_INTEGRATION: '1'
+        # `chat-delivery-kind.integration.test.ts` is the real-Postgres proof
+        # for the widened chat-delivery unique key (Fizzy #2203). The mocked
+        # sibling `chat-delivery-kind.test.ts` only proves the queries are
+        # BUILT right (kind appears in the where/data passed to Prisma); it
+        # cannot prove what the real unique index and a real conditional
+        # write do. This hits both: a CONTENT row and an APPROVAL row now
+        # coexisting on one channel, per-kind dedup, and that markChatDelivery
+        # / listChatDeliveriesForSend correctly scope by kind against real
+        # rows. It also asserts the schema itself — that the legacy
+        # (sendId, platform, externalTeamId, channelId) index really is gone
+        # and the widened key is still enforcing — which is what keeps a green
+        # coexistence result from being equally consistent with a weakened
+        # assertion.
+        run: |
+          pnpm --filter @repo/database exec vitest run \
+            prisma/queries/projects/__tests__/chat-delivery-kind.integration.test.ts \
+            --passWithNoTests=false \
+            --reporter=dot \
+            --reporter=json --outputFile=chat-delivery-kind-results.json
+
+      - name: 'Guard: assert the chat-delivery kind suite actually executed (zero skips)'
+        # Same anti-false-pass shape as the guards above: the file self-skips
+        # via `describe.skipIf(!hasReachableDatabaseUrl())`, so a green step
+        # proves nothing on its own.
+        run: |
+          node <<'EOF'
+          const fs = require("node:fs");
+          const path = "packages/database/chat-delivery-kind-results.json";
+          const report = JSON.parse(fs.readFileSync(path, "utf8"));
+          const files = report.testResults?.length ?? 0;
+          const passed = report.numPassedTests ?? 0;
+          const skipped =
+            (report.numSkippedTests ?? 0) + (report.numPendingTests ?? 0);
+          console.log(
+            `chat-delivery-kind results: ${files} file(s), ${passed} passed, ${skipped} skipped`,
+          );
+          if (files !== 1) {
+            console.error(
+              `::error::Expected exactly 1 test file (chat-delivery-kind.integration.test.ts) to run, got ${files}.`,
+            );
+            process.exit(1);
+          }
+          if (skipped > 0) {
+            console.error(
+              `::error::${skipped} test(s) were skipped — the suite self-skipped instead of executing against Postgres, so a green run here would be a false pass.`,
+            );
+            process.exit(1);
+          }
+          // Bump this floor whenever the suite gains a test. A floor left
+          // behind the real count still passes and quietly stops guarding
+          // against a test being dropped.
+          if (passed < 7) {
+            console.error(
+              `::error::Only ${passed} test(s) passed — expected at least 7. The suite failed to collect its full set.`,
+            );
+            process.exit(1);
+          }
+          EOF
+
+      - name: Run the previously-skipping Postgres suites
+        env:
+          RUN_DB_INTEGRATION: '1'
+        # These self-skip without a database, so for weeks they reported
+        # green in the job that has none while being broken in the only place
+        # they mean anything. One died in a beforeAll, two asserted a recipient
+        # count the resolver cannot produce, one asserted a default that had
+        # been deliberately flipped. test-cases.integration pins the criterion
+        # contract behind per-AC traceability — the regression it guards shipped
+        # precisely because the suite was never enumerated here. Listing them
+        # is what makes their result real; the guard below is what keeps it real.
+        run: |
+          pnpm --filter @repo/database exec vitest run             prisma/queries/projects/__tests__/test-case-coverage.integration.test.ts             prisma/queries/projects/__tests__/test-cases.integration.test.ts             prisma/queries/__tests__/newsletter-approval-notification.test.ts             prisma/queries/projects/__tests__/reclaim-stale-review-sends.test.ts             __tests__/organization-feature-maturation-v2-flag.test.ts             --passWithNoTests=false             --reporter=dot             --reporter=json --outputFile=postgres-suites-results.json
+
+      - name: 'Guard: assert the Postgres suites actually executed (zero skips)'
+        # Same anti-false-pass shape as the guards above. A skip here means the
+        # database was unreachable, which is precisely the condition that let
+        # these rot — so it must fail the job rather than pass quietly.
+        run: |
+          node <<'EOF'
+          const fs = require("node:fs");
+          const path = "packages/database/postgres-suites-results.json";
+          const report = JSON.parse(fs.readFileSync(path, "utf8"));
+          const files = report.testResults?.length ?? 0;
+          const passed = report.numPassedTests ?? 0;
+          const skipped =
+            (report.numSkippedTests ?? 0) + (report.numPendingTests ?? 0);
+          console.log(
+            `postgres suites: ${files} file(s), ${passed} passed, ${skipped} skipped`,
+          );
+          if (files !== 5) {
+            console.error(
+              `::error::Expected exactly 5 test files to run, got ${files}. The enumerated suites are test-case-coverage.integration, test-cases.integration, newsletter-approval-notification, reclaim-stale-review-sends and organization-feature-maturation-v2-flag — if you added or removed one in the vitest command above, update this count to match.`,
+            );
+            process.exit(1);
+          }
+          if (skipped > 0) {
+            console.error(
+              `::error::${skipped} test(s) were skipped — the suites self-skipped instead of executing against Postgres, so a green run here would be a false pass.`,
+            );
+            process.exit(1);
+          }
+          // Bump this floor whenever these suites gain a test. A floor left
+          // behind the real count still passes and quietly stops guarding
+          // against a test being dropped.
+          if (passed < 49) {
+            console.error(
+              `::error::Only ${passed} test(s) passed — expected at least 49.`,
+            );
+            process.exit(1);
+          }
+          EOF
+
+      - name: Run the feature-maturation query suite against real Postgres
+        env:
+          RUN_DB_INTEGRATION: '1'
+        # `feature-maturation.test.ts` covers the Decision Log query helpers,
+        # including the cross-project scoping of `getOpenDecisionsForStories`:
+        # a caller authorized for one project must not read a sibling
+        # project's open questions by passing its story ids. That assertion is
+        # only meaningful against a real Postgres — the whole file self-skips
+        # on the placeholder URL, so it silently contributed nothing to CI
+        # until it was listed here.
+        run: |
+          pnpm --filter @repo/database exec vitest run \
+            __tests__/feature-maturation.test.ts \
+            --passWithNoTests=false \
+            --reporter=dot \
+            --reporter=json --outputFile=feature-maturation-results.json
+
+      - name: 'Guard: assert the feature-maturation suite actually executed'
+        # Same anti-false-pass shape as the XOR guard above: the suite is
+        # wrapped in `describe.skipIf(!hasReachableDatabaseUrl())`, so a
+        # connection problem would report a trivially green zero-test run.
+        run: |
+          node <<'EOF'
+          const fs = require("node:fs");
+          const path = "packages/database/feature-maturation-results.json";
+          const report = JSON.parse(fs.readFileSync(path, "utf8"));
+          const files = report.testResults?.length ?? 0;
+          const passed = report.numPassedTests ?? 0;
+          const skipped =
+            (report.numSkippedTests ?? 0) + (report.numPendingTests ?? 0);
+          console.log(
+            `feature-maturation results: ${files} file(s), ${passed} passed, ${skipped} skipped`,
+          );
+          if (files !== 1) {
+            console.error(
+              `::error::Expected exactly 1 test file (feature-maturation.test.ts) to run, got ${files}.`,
+            );
+            process.exit(1);
+          }
+          if (skipped > 0) {
+            console.error(
+              `::error::${skipped} test(s) were skipped — the suite self-skipped instead of executing against Postgres. A green run here would be a false pass.`,
+            );
+            process.exit(1);
+          }
+          if (passed < 15) {
+            console.error(
+              `::error::Only ${passed} test(s) passed — expected at least 15. The cross-project scoping case may not have been collected.`,
+            );
+            process.exit(1);
+          }
+          EOF
+
+      - name: Run the publishing-suite schema smoke test against real Postgres
+        env:
+          RUN_DB_INTEGRATION: '1'
+        run: |
+          pnpm --filter @repo/database exec vitest run \
+            __tests__/publishing-suite-schema.test.ts \
+            __tests__/publishing-suite-constraints.test.ts \
+            __tests__/publishing-suite-createorget.test.ts \
+            __tests__/publishing-suite-persist.test.ts \
+            __tests__/publishing-suite-costguard.test.ts \
+            __tests__/publishing-suite-queries.test.ts \
+            __tests__/publishing-suite-contributors.test.ts \
+            __tests__/publishing-settings-schema.test.ts \
+            __tests__/publishing-settings-queries.test.ts \
+            __tests__/publishing-last-run.test.ts \
+            __tests__/publishing-notifications.test.ts \
+            __tests__/publishing-deferral-index-smoke.test.ts \
+            __tests__/publishing-reconcile-sweep.test.ts \
+            __tests__/publishing-reconcile-contention.test.ts \
+            __tests__/publishing-clock-rule.test.ts \
+            __tests__/publishing-drain-page.test.ts \
+            __tests__/publishing-chat-delivery.test.ts \
+            __tests__/publishing-preferences-hash-write.test.ts \
+            __tests__/publishing-preference-fields.test.ts \
+            --passWithNoTests=false \
+            --reporter=dot \
+            --reporter=json --outputFile=publishing-suite-schema-results.json
+
+      - name: 'Guard: assert the publishing-suite schema smoke test executed (zero skips)'
+        run: |
+          node <<'EOF'
+          const fs = require("node:fs");
+          const report = JSON.parse(fs.readFileSync("packages/database/publishing-suite-schema-results.json","utf8"));
+          const files = report.testResults?.length ?? 0;
+          const total = report.numTotalTests ?? 0;
+          const passed = report.numPassedTests ?? 0;
+          const skipped = (report.numSkippedTests ?? 0) + (report.numPendingTests ?? 0);
+          const todo = report.numTodoTests ?? 0;
+          console.log(`publishing-suite-schema: ${files} file(s), total=${total} passed=${passed} skipped=${skipped} todo=${todo}`);
+          if (files !== 19) { console.error("::error::Expected exactly 19 test files (publishing-suite-schema.test.ts + publishing-suite-constraints.test.ts + publishing-suite-createorget.test.ts + publishing-suite-persist.test.ts + publishing-suite-costguard.test.ts + publishing-suite-queries.test.ts + publishing-suite-contributors.test.ts + publishing-settings-schema.test.ts + publishing-settings-queries.test.ts + publishing-last-run.test.ts + publishing-notifications.test.ts + publishing-deferral-index-smoke.test.ts + publishing-reconcile-sweep.test.ts + publishing-reconcile-contention.test.ts + publishing-clock-rule.test.ts + publishing-drain-page.test.ts + publishing-chat-delivery.test.ts + publishing-preferences-hash-write.test.ts + publishing-preference-fields.test.ts)"); process.exit(1); }
+          if (skipped > 0) { console.error("::error::smoke test self-skipped — RUN_DB_INTEGRATION not honored — false pass"); process.exit(1); }
+          if (todo > 0) { console.error(`::error::${todo} case(s) are .todo — coverage was silently dropped. vitest reports numTodoTests separately from numPendingTests, so the zero-skips check above cannot see them.`); process.exit(1); }
+          // Engine-derived, so it sits ahead of the hand-maintained floor
+          // below: every case this run COLLECTED must also have passed. A
+          // .todo never reaches here — the check above exits first, with a
+          // message that names it. This one covers what that message does not:
+          // a pending case, a failing one, and any future vitest counter that
+          // keeps a collected case out of the passed total without either
+          // named check seeing it. The floor cannot catch any of those — as
+          // soon as any of the fifteen files gains one passing case, 15 files
+          // / 284 passed / zero skipped is satisfied again with an assertion
+          // silently gone.
+          if (total !== passed) { console.error(`::error::${total} test(s) collected but only ${passed} passed — a case was left pending, or a counter this guard does not name has appeared. (A .todo exits at the check above, so it is not the cause here.) Every collected case in this list must pass.`); process.exit(1); }
+          // This is a floor, not the exact-count pin the sibling guards in this
+          // file use, and deliberately so. Each sibling pins ONE file — any
+          // change to that suite's count is a change to that file, so an exact
+          // EXPECTED is the right instrument. This step aggregates the results
+          // of FIFTEEN files that different Publishing Suite slices grow
+          // independently; an exact count here would make every unrelated PR
+          // that adds a case to any one of them fail this guard until someone
+          // remembers to bump the constant. The floor is the right instrument
+          // for an aggregate — exactness is the right instrument for one file.
+          if (passed < 358) { console.error("::error::Expected at least 358 passing tests. HOW TO READ THE BREAKDOWN BELOW, because reading it as a flat list of current counts is wrong and was flagged as such in review: a file's LEADING number is its count at the moment the slice that wrote that clause landed, and every later slice appends its own additions as a trailing 'plus ... in <file>' clause naming the file again rather than editing the earlier number. Four files need that reading today and more will over time, so do not trust a leading number on its own. The invariant that keeps the whole thing honest, and the one to check if it ever looks wrong: read base-plus-additions, and the stated numbers sum to EXACTLY the floor asserted above. They did when this line was last touched, verified against an observed run rather than by arithmetic on the prose. Breakdown: (94 across the original 7 publishing-suite-*.test.ts files: 3 in publishing-suite-schema.test.ts + 6 in publishing-suite-constraints.test.ts, Codex F1 tenant-XOR + F2 GENERATING-timeout CHECK constraints + 2 in publishing-suite-createorget.test.ts, Task 2 createOrGetPublishingCycle idempotency incl. F4-producer stored-coveredThrough read-back + Codex N2 occurrenceKey retry-after-terminalization recovery + 34 in publishing-suite-persist.test.ts, Task 3 persistCycleTerminal CAS incl. F1 Project re-lock/re-validate TOCTOU + Phase 1B Task 6 suggestedPostTypes/contributorUserIds persisted on inserted topics + role-aware round-trip + FR9/10 angle and subject/angle-multiplication cases + 1C-2a retry-idempotency recovery (READY, mixed create-once, NO_TOPICS, competing-status rejection, INSUFFICIENT_CONTEXT) and its post-transfer suppression boundary + 1C-2b's READY-transition activation cases (activates in the same transaction that sets READY, respects a caller that does not opt in, and does not activate a NO_TOPICS terminalization) + 5 in publishing-suite-costguard.test.ts, Task 4 countNewContextSince H2 cost guard incl. F5 late-transcript-insights + 42 in publishing-suite-queries.test.ts, Plan 3 Task 1 listPublishingTopics/createManualPublishingTopic/updatePublishingTopicStatus/getLatestPublishingCycle/resolveProjectTenant query helpers plus every Phase 1B/1B-tail fast-follow (author recommendations, why-suggested provenance, post-type overrides, meeting-participant attribution, subject projection) + 2 in publishing-suite-contributors.test.ts, Phase 1B Task 5 resolveProjectContributorIds project-scoped story/doc contributor union + empty-provenance no-op; plus Phase 1C-1 Task 9's 3 suites: 3 in publishing-settings-schema.test.ts (documented defaults + tenant-XOR CHECK rejects both/neither) + 8 in publishing-settings-queries.test.ts (default read is a no-write, XOR-normalized tenant stamping, partial-update independence, null-clears-lookback, tenant-mismatch rejection, missing-project error, concurrent disjoint-field updates, re-home on project transfer) + 10 in publishing-last-run.test.ts (newest-READY selection, NO_TOPICS/clean-INSUFFICIENT_CONTEXT count, dirty-INSUFFICIENT_CONTEXT/FAILED/GENERATING exclusion, organization-project normalized-tuple counting, transfer-predates-cycle exclusion, empty-list, and multi-project one-row-per-project keying); plus the notification-ledger suite shared by Phase 1C-2b and 1C-2c: 93 in publishing-notifications.test.ts (the ledger's outcome/status CHECK constraints and tenant-XOR/cascade behavior, activation and completion compare-and-swap incl. stale-version and terminal-downgrade guards, recipient eligibility merged from project and organization rosters behind the function-tags flag, exactly-once ledger+bell delivery incl. skip/retry/revoke and post-transfer suppression, delivery-state reads that distinguish state from mere row existence, and the creation fence's terminal-cycle refusal with its NOT_APPLICABLE/RESOLUTION_FAILED discriminators and the deliberate SKIPPED-row asymmetry; plus Phase 1C-2c's email cases: the lease columns and the status CHECK widened to admit SENDING (NOT VALID at the time, validated by 1C-2d-2a), the outcome CHECK's MAIL_NOT_CONFIGURED value now reachable, the claim/confirm/fail fence incl. lease expiry, claim-token mismatch and the lastAttemptAt that deliberately survives a released claim, and the claim asking ONE semantic question — is this row still owed, and free to take — over delivery, status, expiry, attempt count and lease together, so a terminal row, an obligation past its own deadline and an attempt-exhausted one are all refused rather than re-taken; a status list alone answers which statuses may be claimed and says nothing about whether THIS row still may be, terminalizing writers releasing the lease while a SENT row keeps it, the publishingEmails opt-out reader that is independent of publishingSuggestions, and the channel-aware re-authorization that resolves EMAIL and IN_APP as two independent candidate sets; plus Phase 1C-2d-1a's deferral-schema cases: the expiresAt and attemptCount columns carrying their documented defaults (no default on expiresAt, attemptCount NOT NULL DEFAULT 0) and expiresAt's wire type pinned to timestamp(3) rather than timestamp(6) or timestamptz, the status CHECK widened to admit DEFERRED and EXPIRED (NOT VALID at the time, validated by 1C-2d-2a), the new deferred-shape CHECK rejecting a DEFERRED row with no expiry even before that constraint was validated — proving NOT VALID skipped only the scan of existing rows, not enforcement on new writes — and holding the same way when DEFERRED is reached by UPDATE rather than INSERT, every non-DEFERRED status (including the deferral-terminal EXPIRED) still permitting a null expiry, and both new constraints now reporting convalidated = true, the pending-constraint-validations.json obligations discharged by 1C-2d-2a's VALIDATE migration in the same change rather than carried further; plus Phase 1C-2d-1b's index cases: 5 in publishing-deferral-index-smoke.test.ts, which pin the two partial indexes by the plan the planner actually chooses rather than by index name — no sequential scan on the expiry-ordered drain page, no sort inside a single expiry tie group (the batch one cycle's close creates, where the keyset cursor can only seek because id is in the index key), no sequential scan and no sort on the expired-lease reclaim scan, each index's key list and partial predicate reconstructed from the catalog so that a full-table replacement which still yields an index scan is rejected on its definition, and a generic-plan case recording that NEITHER partial index is reachable when the status arrives as a bind parameter, since a generic plan has no value with which to prove status = $1 implies status = 'DEFERRED' — that last case documents why the 1C-2d-2 sweep must emit the status as a literal, it does not enforce it; plus Phase 1C-2d-2a's reconciliation cases: 30 in publishing-reconcile-sweep.test.ts, which pin the cycle sweep's own SQL rather than a copy of it — two text guards that no query plan can prove (the cycle outcome emitted as a LITERAL, because a partial index is reachable only where the query predicate provably implies the index predicate and a generic plan cannot prove notificationOutcome = $1 implies = 'PENDING'; and the batch bound a literal, so the bound is a property of the statement rather than of the caller) plus a frozen-file guard proving notificationOutcomeAt is named in exactly three source files, so a second writer anywhere under packages, apps or agents is red — thirteen cycle cases (a PENDING cycle past the suggestion workflow's execution timeout terminalizing to ABANDONED with the shared version bumped, one inside the window left alone, one whose row is older than the bound but whose lifecycle was activated ten minutes ago left alone — the staleness clock is an explicit notificationOutcomeAt stamped at activation, neither the insert time nor updatedAt, because the row is created before the workflow is started and a retried start would otherwise manufacture a permanent false alert, while updatedAt would be correct only for as long as an inventory of every writer of the cycle model stayed complete — one PENDING cycle with a NULL clock left alone BY THE ABANDON PASS, the shape a worker predating the column leaves behind, kept as its own case so the abandon pass and the enrolment pass stay distinguishable, the activation writer asserted to stamp the clock in the same write that sets PENDING, nothing re-stamping it afterwards driven against the real production writers, NOT_APPLICABLE never adopted because activation is a different guard with two writers, a terminal MAIL_NOT_CONFIGURED cycle refused, the outcome-column race in which ABANDONED survives a late notify attempt's MAIL_NOT_CONFIGURED, and the primary path's crashed-send residue staying SENDING by design while its cycle still reaches ABANDONED so the operator does get a signal) — eight enrolment cases proving the bounded pass adopts exactly the null-clock row under a floor that is never earlier than the moment the sweep first saw it, never re-stamps a clock that already exists, never touches a non-PENDING cycle, stops at the same 2,000-per-run ceiling as everything else, reports what is left as a bounded residual the run itself raises to warn, holds under a worker clock skewed in EITHER direction, and carries its floor's volatile clock and its non-waiting FOR UPDATE SKIP LOCKED page on the statement text, because with a page that never waits no single-process case can separate the two clocks — three cycle batch-ceiling boundary cases proving a spent budget is not a backlog, two cases on the SHORT-page exit — the third of the three exits, and the one the no-progress pair cannot reach — an undrained short page that still reports the work it left behind and a drained one that reports none and issues no probe at all, and two cases on the loop's no-progress break, driving it with a full page whose compare-and-swaps all lose — a shape the short-page break cannot reach — one that the loop stops there after a single batch and one that the run then REPORTS the page it left behind, because the residual probe was asked only when the batch budget ran out and that exit spends no budget at all — and two cases pinning the schema objects the whole bound rests on, which no behavioural case can see because LIMIT bounds rows returned and never rows read: both partial indexes by exact pg_get_indexdef equality captured from the database rather than predicted, so a rename or a re-predication that still yields an index scan is red on its definition, and the (mcv) statistics object by its declaration plus proof that it collects a PENDING/null-clock combination when the table is analyzed, since a fresh database ships that object empty and only an MCV list records a per-column NULL flag at all; plus 4 in publishing-clock-rule.test.ts, which are Decision 33's two concurrency pairs and the two properties no single-actor case can express: holding the project row locked across a delivery's expiry and proving the hardened claim is refused afterwards, because that defect is a clock captured before the lock was granted; and holding a cycle row locked past the staleness bound and proving the enrolment pass writes no backdated floor and the abandon pass does not terminalize it, because that defect is a floor projected before the lock was granted; plus Phase 1C-2d-2b-1's ledger cases: the sweep file grows to 65 with pass 1's own transitions — text guards no plan can prove (every delivery STATUS emitted as a literal, the arm order pinned so expiry takes precedence over the attempt bound, and each statement binding exactly as many parameters as it has placeholders, in both directions, which is the guard that would have caught a probe handed its update's parameter list at authoring time rather than only under budget exhaustion), the plan-shape pair with its bind-parameter negative control and its generic-vs-custom meta-control, thirteen behaviour cases covering every reachable ledger shape including the pair where two overlapping executions reach DIFFERENT terminal states for an at-bound row past its deadline and its under-bound control that must agree, the order-independence probe set run in both directions with the fixed point itself pinned so identical cannot become identically wrong, whole-pass properties (terminal rows never re-queued, a second run moving nothing, the batch report, and the deferred-shape CHECK rejecting a hand-written UPDATE), and four batch-ceiling boundary cases — the two false positives a spent budget produces on each statement plus the one real backlog, driven on BOTH statements because the branch that probes binds THAT statement's parameters and the two do not have the same arity; plus 2 in publishing-reconcile-contention.test.ts, which is the three-actor case one rolled-back transaction cannot host: two overlapping sweep transactions on separate connections with the second CONFIRMED parked on the first's row lock by reading pg_stat_activity from a third, then the real claim — asserted BEFORE any cleanup tick, in both acquisition orders, refused for a different reason in each because in one the status is claimable and the expiry is not while in the other the status itself is terminal, plus 1C-2d-2b-2's two: the drain's claim does NOT park on a sweep's uncommitted reclaim — its own DEFERRED literal means the row's visible version does not match, so it takes no lock, waits for nothing and reports the obligation still owed — and an obligation already past its deadline is refused on BOTH sides of that commit, because the still-owed probe carries the same database-clock expiry term the claim does and therefore answers about the obligation rather than about the lock; plus Phase 1C-2d-2b-2's drain suite: 19 in publishing-drain-page.test.ts, which pin the deferral drain's own statements — the keyset page walking the DEFERRED partial index with a cost bounded by the PAGE and not by the backlog, asserted as an absolute ceiling at two backlog sizes a tenfold step apart because a delta between two measurements cannot tell 'does not scale' from 'scaled by less than the tolerance I chose'; text guards no plan can prove (every status a literal, the order by URGENCY and never by recency, and each statement binding exactly as many parameters as it has placeholders); the atomic claim that tests the attempt bound and increments it in ONE statement, so two concurrent claims move the counter by exactly one; the at-bound discharge that rides on the claim's refusal, carrying an expiry term without which a run whose pass-1 budget was spent would commit FAILED where pass 1 commits EXPIRED — the same clock, the same run, a precedence inversion; the deferral-aware failure recorder that returns a row to DEFERRED under the bound and to FAILED at it, comparing the count THIS attempt already consumed; and the row-scoped skip writer, an allow-list of one, which refuses to terminalize a row another attempt claimed after the gate passed — where the shipped creating writer's deny-list of one would have cleared a live lease); plus 1C-2d-3a's producer cases in publishing-notifications.test.ts: eight on the deferral writer — a DEFERRED row written with no lease, a zero attempt count and a 14-day expiry, create-once via skipDuplicates so a retried keyless attempt preserves an existing row's attempt count, its expiry AND any lease a drain has since taken (an upsert would extend a 14-day obligation for the length of the outage), the partial case where only the recipients without a row are written and the count reported is what the database inserted rather than the input length, coexistence with the same recipient's IN_APP row because the unique key includes the channel, both fence refusals writing nothing, an empty set issuing no query at all so the common case stays off the contended project row lock, and the ORDERING case that pins the project row being taken BEFORE the fence is read — a fence that only reads leaves a window in which a concurrent closing transaction commits a terminal cycle between the read and the insert, and no single-connection case can stage that window while a fence read preceding the lock is visible in the query order alone; plus the one that names the defect this slice was written around: the completing exit SPARES a DEFERRED row while still terminalizing its FAILED neighbour, because deliveredAt null and a status that is not SKIPPED both hold of a row the producer has just written, so without the notIn term the close destroys the obligation the same attempt created and nothing else notices — the row exists, its status is terminal, the cycle outcome is right and every count agrees; plus the leased-channel fence's 4 in publishing-suite-constraints.test.ts, which pin the constraint that lets three of this ledger's four readers keep selecting rows by status alone: SENDING, DEFERRED and EXPIRED refused on a channel whose lifecycle the reconciliation sweep does not implement — one case per status, because a single-value case passes just as well against a predicate that names only that value, and a fresh recipient per iteration, because the ledger's unique key on (cycleId, recipientUserId, channel) would otherwise make the SECOND insert fail on the index in exactly the run where the fence is absent, reporting a rejection for the wrong reason — the positive control that every status the in-app channel actually reaches is still admitted, which is what separates a correct predicate from one whose status list is mistyped and rejects nothing and one written without the status term at all, which rejects the whole channel — the same refusal when the leased status is reached by UPDATE rather than INSERT, since a second channel would claim an existing row rather than insert a leased one — and the constraint reported as convalidated = TRUE, discharged by 20260820120000_validate_publishing_notification_delivery_leased_channel; it asserted false from 20260818120000 until then, precisely so that whichever slice discharged the obligation had something to PROVE rather than a JSON line to delete — the count is four either way, which is why the flip cannot redden this guard and had to be carried here by hand; plus 1C-3a's 5 in publishing-suite-constraints.test.ts on the broadcast ledger, which is a DIFFERENT table and therefore a different set of properties: the tenant XOR refused in both directions, the status CHECK refusing DEFERRED — chosen because it is a real status on the SIBLING ledger, so a copy-paste from the email path is the realistic way it would arrive at a table that has no deferral, no lease reclaim and no drain to discharge it — its positive control admitting all four statuses on a DISTINCT channel per iteration, since a shared one would fail on the unique index from the second row and report a pass the case did not earn, and the unique (cycleId, platform, externalTeamId, channelId) refusing a second row, which is the single property the no-double-post guarantee rests on: the sender claims by INSERT and reads a conflict as already-handled, so an absent or differently-keyed index would let that claim succeed twice and put two identical messages in a shared channel. That last case asserts on the error's SHAPE rather than its text, and the divergence from its CHECK-constraint neighbours is the ORM rather than a preference: Postgres puts a CHECK's name in the message and Prisma passes it through, but a UNIQUE violation is intercepted and re-rendered as P2002 with a column list, so no index name ever appears — and the columns arrive in the message while meta.target comes back empty, which is why the case reads both carriers and asserts all four columns, since the code alone would pass against a unique constraint on any subset, including one omitting channelId that would refuse a SECOND channel in the same cycle and break the broadcast rather than protect it; plus 1C-3a's 3 in publishing-settings-queries.test.ts on the broadcast target list: the round trip through the upsert and the read, the partial-update contract that keeps an unrelated save (a cadence change) from silently turning chat off, and the empty array reaching the column — that last one is the OFF switch itself, since the design has no separate boolean on the grounds that a second control could disagree with the selection, so nothing else in the suite would notice if the writer folded [] back into unchanged; plus 1C-3b's 9 in publishing-chat-delivery.test.ts on the broadcast ledger's WRITERS, which is a different question from 1C-3a's cases on the same table's constraints — those asked whether the database refuses a bad row, these ask whether the three functions the sender actually calls behave: the claim writing SENDING on an unseen channel, its refusal against an existing row in EACH of the four statuses (four cases and not one, because a single-status case passes just as well against a refusal predicate naming only that status, and the guarantee being pinned is that ANY pre-existing row refuses — a SENDING one included, since that is precisely what a crashed attempt leaves behind after the provider already accepted the message, and re-posting to be sure would put a duplicate in a shared channel), a SECOND channel in the same cycle still claimable so the key is proven per-channel rather than per-cycle, SENT carrying the provider message id and a delivery timestamp, the reason/errorMessage split asserted on both columns because a writer that put the closed classification into the free-text column would satisfy every count in this file and quietly break the only field an operator can filter on, and a mark scoped to its own cycle; plus 2 more in the same file after an adversarial review of the branch moved the SKIP path into the claim — a claim landing straight in SKIPPED with its reason in ONE statement, proven against the real status CHECK because the constraint has to admit that status on an INSERT and not only on the UPDATE the settle used to perform, and the row that claim writes still refusing a later send claim, without which moving the skip into the claim would have quietly opened the door the two-statement version kept shut. The two statements mattered: SENDING is written before any provider is contacted and is counted as delivered, so a failure between claim and settle left a row reading as a delivered broadcast for a channel the send path never even reached; plus 1C-1b's 12 in publishing-preferences-hash-write.test.ts, which are the only place the two encodings of \"counts as a run\" meet: five cases asserting that a terminal carries a preferences fingerprint on EXACTLY the cycles the cadence reader counts — the assertion is the agreement itself, not two independent expectations, so a drift in either the raw SQL here or the TypeScript predicate in persistCycleTerminal reddens this file and changing both together does not; one that the stored hash is DERIVED from the snapshot the caller passed rather than from a hash the caller chose, which is what keeps a single producer; three on the replay-recovery backfill, covering the success and INSUFFICIENT_CONTEXT branches SEPARATELY because a fix applied to one is not a fix applied to the other, the dirty half proving the backfill obeys the counts-as-a-run rule rather than filling any null it finds, and one proving a second replay carrying DIFFERENT preferences cannot overwrite a hash already recorded — without which a retry would rewrite what the recorded run actually used; two on the reader, which must answer for the NEWEST counted cycle including when that cycle carries no hash, staged as an older hash-bearing cycle behind a newer counted null-hash one (the shape a preferencesHash IS NOT NULL filter would silently skip past, matching an ancestor hash and cancelling a recovery run the project needs) and as a dirty INSUFFICIENT_CONTEXT that must not answer at all; and one that a caller supplying no preferences writes no hash rather than writing null, so a rolling deploy cannot blank a column a newer worker just set; plus 1C-1b part 2's 9 in publishing-preference-fields.test.ts, which are the three properties no mocked suite can answer about the ADVISORY preference columns: that PUBLISHING_SUITE_SETTINGS_PUBLIC_SELECT actually carries them — the gate for BOTH the read response and the write response, so omitting one there leaves the write succeeding, the column holding the value and only the read coming back short — asserted twice, once on the round trip and once end-to-end through buildPublishingPreferencesSnapshot, because the second is the only case that fails when the columns exist, the form writes them and the fingerprint goes on hashing empty lists forever; that a row written BEFORE these columns existed still reads, staged through raw SQL naming only the pre-existing columns, since the migration's correctness on a POPULATED table is a property of the DDL and nothing else in the slice would notice a NOT NULL added without a default — which Postgres refuses outright rather than backfilling; and that the post-type column is the CLOSED enum rather than text, asserted against the system catalog because no WRITE can distinguish the two — ARRAY['x']::\"Enum\"[] fails on the CAST before Postgres ever looks at the target column, so two earlier drafts of that case were green while the column did not exist at all; plus the three-state contract the two lists and the free-text field share — omitted leaves the stored value alone, [] and null CLEAR it — where a guard folding any pair together would make the clear button silently do nothing"); process.exit(1); }
+          EOF
+
+      - name: Run the project role-confirmation suites (real Postgres)
+        # Fizzy #2264. The trigger CORRECTS rather than raising, which makes it
+        # silent by design — the trigger suite is the only thing anywhere that
+        # can detect it missing, dropped by a later migration, or installed as
+        # AFTER UPDATE. It must never be allowed to self-skip.
+        #
+        # The confirmation suite alongside it covers what the mocked writer
+        # tests structurally cannot: the row lock deciding who reads a
+        # committed value, the unique index refusing a second create, and the
+        # RLS policy deciding who can see the row at all. Both files run in one
+        # step so a single guard below reads one report.
+        env:
+          RUN_DB_INTEGRATION: '1'
+        run: |
+          pnpm --filter @repo/database exec vitest run \
+            __tests__/project-user-function-tag-version-trigger.test.ts \
+            __tests__/project-user-function-tag-confirmation.test.ts \
+            --passWithNoTests=false \
+            --reporter=dot \
+            --reporter=json --outputFile=role-tag-trigger-results.json
+
+      - name: 'Guard: assert the role-tag suites executed (exact count, zero skips)'
+        # Same anti-false-pass shape as the guards above: both files self-skip
+        # via `describe.skipIf(!hasReachableDatabaseUrl())`, so a green step
+        # proves nothing on its own.
+        run: |
+          node <<'EOF'
+          const fs = require("node:fs");
+          const path = "packages/database/role-tag-trigger-results.json";
+          const report = JSON.parse(fs.readFileSync(path, "utf8"));
+          const files = report.testResults?.length ?? 0;
+          const total = report.numTotalTests ?? 0;
+          const passed = report.numPassedTests ?? 0;
+          const skipped =
+            (report.numSkippedTests ?? 0) + (report.numPendingTests ?? 0);
+          console.log(
+            `role-tag-trigger results: ${files} file(s), total=${total} passed=${passed} skipped=${skipped}`,
+          );
+          if (files !== 2) {
+            console.error(
+              `::error::Expected exactly 2 test files (project-user-function-tag-version-trigger.test.ts and project-user-function-tag-confirmation.test.ts) to run, got ${files}.`,
+            );
+            process.exit(1);
+          }
+          if (skipped > 0) {
+            console.error(
+              `::error::${skipped} test(s) were skipped — the suite self-skipped instead of executing against Postgres. A green run here would be a false pass.`,
+            );
+            process.exit(1);
+          }
+          // 26 = 10 trigger + 16 confirmation, counted from an observed run
+          // rather than predicted, so the first failure here is a real change
+          // and not a constant somebody has to guess at.
+          //
+          // 10 in project-user-function-tag-version-trigger.test.ts:
+          //   1 INSERT + 3 version-correction + 1 no-double-bump
+          //   + 1 untouched-columns + 3 confirmedAt-invariant
+          //   + 1 advance-by-more-than-one (the `<=` vs `<>` discriminator).
+          //
+          // 16 in project-user-function-tag-confirmation.test.ts:
+          //   5 admin-path confirmation-clearing — including the two the
+          //   trigger cannot cover for the writer, and which are therefore the
+          //   only ones in this file that redden when the writer's clear is
+          //   deleted: a first row CREATED unconfirmed at version 0 (the
+          //   trigger is BEFORE UPDATE, so an INSERT carries whatever the
+          //   writer put in it) and an organizationId-only re-home (the tag set
+          //   does not move, so invariant 1 never fires)
+          //   + 2 applyGlobalDefaultFunctionTags branches + 1 stale-version CAS
+          //   + 3 concurrency (same-version race, absent-row race, and the
+          //   expectedVersion-null-against-an-existing-row conflict)
+          //   + 2 row-lock (the observed 55P03 block and the interleaving that
+          //   reddens when `FOR UPDATE` is deleted) + 2 status reads
+          //   + 1 RLS cross-organization invisibility.
+          if (total !== 26 || passed !== 26) {
+            console.error(
+              `::error::Expected exactly 26 tests (total and passed), got total=${total} passed=${passed}.`,
+            );
+            process.exit(1);
+          }
+          EOF
+
+  temporal-tests:
+    name: Temporal publishing tests (real Postgres)
+    needs: changes
+    # Always run on workflow_dispatch (manual validation); on PRs only when
+    # temporal- or database-relevant paths changed.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      needs.changes.outputs.temporal == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: fabric_test
+        ports:
+          - 5432:5432
+        # -h/-p make this a TCP probe, and they are load-bearing. Without
+        # them pg_isready checks the UNIX SOCKET, which during container
+        # startup is answered by the temporary server the postgres entrypoint
+        # runs while executing initdb — a server that listens on the socket
+        # only, is not accepting TCP, and is shut down before the real one
+        # starts. Docker marks a container healthy on the FIRST successful
+        # probe, so --health-retries cannot recover from an early false
+        # positive: the job proceeds against a server that is about to
+        # disappear, and the first real client (prisma migrate deploy) fails
+        # on a connection reset that looks like a flake. Probing 127.0.0.1
+        # cannot pass until the real server is accepting TCP connections.
+        #
+        # --health-start-period is deliberate too. The old unix-socket probe
+        # used to succeed in about a second, so the 10 x 5s retry budget was
+        # almost entirely spare margin. A TCP probe cannot succeed until
+        # initdb, the init scripts, and the real server have all finished —
+        # that margin is now incidental, not structural, and would vanish
+        # silently if anyone ever trimmed --health-retries.
+        options: >-
+          --health-cmd "pg_isready -U postgres -h 127.0.0.1 -p 5432"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+          --health-start-period 15s
+    env:
+      # Deliberately NOT the unit-tests.yml placeholder
+      # (postgresql://test:test@localhost:5432/test) — the two suites in this
+      # job are gated on RUN_DB_INTEGRATION=1, not a reachability probe, but
+      # they still need a real connection to write through: the ledger's unique
+      # (cycleId, recipientUserId, channel) triple, the outcome column's
+      # compare-and-swap, and the tenant fence's FOR UPDATE all require an
+      # actual Postgres, not a mock. This points at the real `postgres`
+      # service above.
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/fabric_test
+      DIRECT_URL: postgresql://postgres:postgres@localhost:5432/fabric_test
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          fetch-depth: 1
+
+      - name: Setup pnpm
+        # Version is read from root package.json's `packageManager` field.
+        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          # Matches root package.json `engines.node` (>=22.19.0) and unit-tests.yml.
+          # The suite under test ships on 22, so pinning an older major here would
+          # exercise a runtime nobody runs. The db-tests job above still pins 20 —
+          # pre-existing, and out of this slice's scope to change.
+          node-version: '22'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Same cache and key as the db-tests job above — one artifact, built
+      # once per schema/generator change instead of twice per run.
+      - name: Restore generated Prisma client
+        id: prisma-client-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: packages/database/prisma/generated
+          key: prisma-client-${{ runner.os }}-${{ hashFiles('packages/database/prisma/schema.prisma', 'packages/database/prisma/zod-generator.config.json', 'packages/database/prisma/tsconfig.generated.json', 'packages/database/scripts/generate-client.mts', 'packages/database/scripts/fix-zod-imports.ts', 'pnpm-lock.yaml') }}
+
+      - name: Generate Prisma client
+        # publishing-notify-activity.test.ts imports `db` and the publishing
+        # queries from @repo/database directly (not via turbo's task graph,
+        # which would generate this automatically as a `test` dependency —
+        # see turbo.json). This step is what makes that import resolve.
+        if: steps.prisma-client-cache.outputs.cache-hit != 'true'
+        run: pnpm --filter @repo/database generate
+
+      - name: Apply migrations
+        run: pnpm --filter @repo/database exec prisma migrate deploy --schema=./prisma/schema.prisma
+
+      - name: Apply RLS policies
+        # Invoked directly for the same reason as the db-tests job above:
+        # apply:rls wraps itself in `dotenv -c -e ../../.env.local --`, which
+        # errors in CI where .env.local does not exist.
+        run: pnpm --filter @repo/database exec tsx ./scripts/apply-rls-direct.ts
+
+      - name: Run the publishing contributor-notification activity suite against real Postgres
+        env:
+          RUN_DB_INTEGRATION: '1'
+        # runPublishingTopicsReadyNotification (Fizzy #1850, Phase 1C-2b) is
+        # the activity this whole slice exists to ship. Every assertion in
+        # this file depends on a real ledger row, a real compare-and-swap on
+        # the cycle's notificationOutcome, or a real tenant-scoped query —
+        # none of which a mocked Prisma client can exercise. Without this
+        # step the file self-skips under unit-tests.yml (which never sets
+        # RUN_DB_INTEGRATION) and vitest still exits 0.
+        run: |
+          pnpm --filter @repo/temporal exec vitest run \
+            __tests__/publishing-notify-activity.test.ts \
+            --passWithNoTests=false \
+            --reporter=dot \
+            --reporter=json --outputFile=publishing-notify-activity-results.json
+
+      - name: 'Guard: assert the publishing notification activity suite executed (exact count, zero skips)'
+        run: |
+          node <<'EOF'
+          const fs = require("node:fs");
+          // 53 -> 58: Fizzy #1850 slice 1C-2d-3b bounds one attempt's email walk
+          // at PUBLISHING_NOTIFY_MAX_EMAILS_PER_ATTEMPT and gives it the ledger as
+          // a cursor. The four cases pin the bound biting, the retry ADVANCING
+          // rather than re-walking, a full bound spent only on recipients who
+          // still need one, and a roster inside the bound behaving as before.
+          // The fifth pins the "email walk bounded" log line, which the deploy
+          // runbook now instructs an operator to grep for and read `remaining`
+          // off — an operator-facing line that nothing asserts is the
+          // write-only telemetry that hid a month-long outage once already.
+          // Taken from an observed run, not from arithmetic.
+          const EXPECTED = 58;
+          const report = JSON.parse(fs.readFileSync("packages/temporal/publishing-notify-activity-results.json","utf8"));
+          const files = report.testResults?.length ?? 0;
+          const total = report.numTotalTests ?? 0;
+          const passed = report.numPassedTests ?? 0;
+          const skipped = (report.numSkippedTests ?? 0) + (report.numPendingTests ?? 0);
+          const todo = report.numTodoTests ?? 0;
+          console.log(`publishing-notify-activity: ${files} file(s), total=${total} passed=${passed} skipped=${skipped} todo=${todo}`);
+          if (files !== 1) { console.error("::error::Expected exactly 1 test file (publishing-notify-activity.test.ts)"); process.exit(1); }
+          if (skipped > 0) { console.error("::error::suite self-skipped — RUN_DB_INTEGRATION not honored — false pass"); process.exit(1); }
+          if (todo > 0) { console.error("::error::a case is .todo — coverage silently dropped"); process.exit(1); }
+          if (total !== EXPECTED || passed !== EXPECTED) {
+            console.error(`::error::expected exactly ${EXPECTED} passing tests (the full suite: ledger outcome/status CHECK constraints, activation and completion compare-and-swap incl. stale-version and terminal-downgrade guards, recipient eligibility resolution, exactly-once ledger+bell delivery incl. skip/retry/revoke, delivery-state reads, the per-recipient opt-out re-check, and the delivery/close mutual exclusion — the project row lock held across the closing transaction plus the fence's refusal to write under a cycle terminalized mid-attempt; plus Phase 1C-2c's email cases: the two independent candidate sets and their four flag/preference combinations, the publishingEmails opt-out honored separately from the bell's publishingSuggestions, MAIL_NOT_CONFIGURED written as a forced outcome that wins over SENT while leaving the bell delivered and retryable, SENDING counted as unconfirmed so a held lease cannot close a cycle, and the tenant-moved handling that must stay BELOW the email loop); plus Phase 1C-2d-3a's producer cases: an email-only recipient's obligation DEFERRED rather than dropped and the row read back AFTER the activity returns, which is the only assertion that can fail — every other one passes with the obligation destroyed, since the row exists, its status is terminal, the cycle outcome is right and every count agrees; the intersection recipient NOT deferred, because the bell reached them and a second slower obligation for someone the fast channel is still retrying is how the ledger's own duplicate protection gets defeated; the negative control that a cycle where every email candidate also gets a bell defers nobody, without which a producer deferring the WHOLE candidate set would pass every other case; MAIL_NOT_CONFIGURED still recorded and the bell still delivered, because deferral is an ADDITION to that path rather than a replacement for it; a REJECT when the deferral write fails, injected at the query layer rather than by mocking the writer, since §9.6 names that as the one case the reject rule exists for — the obligation undischarged AND unrecorded; idempotency across a retried attempt, staged so the first attempt REJECTS because an attempt that defers and completes closes the cycle and the second would exit on the already-terminal branch without reaching the writer at all; the in-band claim taking over a deferred row once the key returns, DEFERRED having been a claimable status since 1C-2c; and the pair that pins the accounting — a DEFERRED row the claim cannot take does not hold the cycle open, while a HELD lease still does, which is what stops that exclusion widening into one), got total=${total} passed=${passed}`);
+            process.exit(1);
+          }
+          EOF
+
+      - name: Run the publishing email delivery suite against real Postgres
+        env:
+          RUN_DB_INTEGRATION: '1'
+        # The claim -> send -> confirm module (Fizzy #1850, Phase 1C-2c) and its
+        # interleaving cases. This needs its own step for the same reason
+        # publishing-notify-activity.test.ts does, and the reason is not
+        # theoretical: run this file the way unit-tests.yml runs it — with
+        # RUN_DB_INTEGRATION and a real DATABASE_URL both absent — and it
+        # reports "1 passed | 12 skipped" and exits 0. The one case that
+        # survives is a module-shape assertion; every case that exercises the
+        # lease self-skips. Without this step the entire email delivery path
+        # would have no CI signal at all while looking green.
+        run: |
+          pnpm --filter @repo/temporal exec vitest run \
+            __tests__/publishing-email-delivery.test.ts \
+            --passWithNoTests=false \
+            --reporter=dot \
+            --reporter=json --outputFile=publishing-email-delivery-results.json
+
+      - name: 'Guard: assert the publishing email delivery suite executed (exact count, zero skips)'
+        run: |
+          node <<'EOF'
+          const fs = require("node:fs");
+          const EXPECTED = 15;
+          const report = JSON.parse(fs.readFileSync("packages/temporal/publishing-email-delivery-results.json","utf8"));
+          const files = report.testResults?.length ?? 0;
+          const total = report.numTotalTests ?? 0;
+          const passed = report.numPassedTests ?? 0;
+          const skipped = (report.numSkippedTests ?? 0) + (report.numPendingTests ?? 0);
+          const todo = report.numTodoTests ?? 0;
+          console.log(`publishing-email-delivery: ${files} file(s), total=${total} passed=${passed} skipped=${skipped} todo=${todo}`);
+          if (files !== 1) { console.error("::error::Expected exactly 1 test file (publishing-email-delivery.test.ts)"); process.exit(1); }
+          if (skipped > 0) { console.error("::error::suite self-skipped — RUN_DB_INTEGRATION not honored — false pass"); process.exit(1); }
+          if (todo > 0) { console.error("::error::a case is .todo — coverage silently dropped"); process.exit(1); }
+          if (total !== EXPECTED || passed !== EXPECTED) {
+            console.error(`::error::expected exactly ${EXPECTED} passing tests (the full suite: the module is not re-exported through the activities barrel, the send carries the template, the absolute url and the deterministic attempt-independent idempotency key, a false return and a throw both record a failure and release the claim, lastAttemptAt survives that release so the dedupe-window warning still fires past 24h and stays silent inside it, a held lease does not send, a terminal cycle does not send, a lost confirmation reports ALREADY_TERMINAL rather than SENT, two concurrent deliveries send exactly one message, the claim returns the attempt age it read under its own lock, an organization-context retry does not duplicate, and a cancellation committed mid-claim survives and is reported TERMINAL rather than held; plus the re-drive script's mail-key guard, spawned as a real child process because the guard reads the environment this file mocks away: it refuses with no RESEND_API_KEY and leaves the claimed EMAIL row and the cycle outcome untouched, and with the key present it proceeds and the close terminalizes that same row — the damage the refusal stands between an operator and), got total=${total} passed=${passed}`);
+            process.exit(1);
+          }
+          EOF
+
+      - name: Run the publishing reconciliation activity suite against real Postgres
+        env:
+          RUN_DB_INTEGRATION: '1'
+        # The terminalize-and-reclaim sweep (Fizzy #2213, Phase 1C-2d-2a). This
+        # needs its own step for the same reason its two siblings above do, and
+        # the reason is not theoretical: run these files the way unit-tests.yml
+        # runs them — with RUN_DB_INTEGRATION and a real DATABASE_URL both absent
+        # — and eight of the ten cases self-skip while the two source-shape cases
+        # pass, and vitest exits 0.
+        #
+        # BOTH FILES, and the second one is the point. The re-drive regression
+        # suite is what closed a duplicate-send defect: the tool's own duplicate
+        # guard could not see an old DEFERRED obligation still inside its expiry,
+        # so it re-sent mail the provider had already forgotten the idempotency
+        # key for. Its two cases drive the script as a real child process, so
+        # nothing else in CI executes them. Running one file here and demanding
+        # two in the guard below was a deterministic failure AND a suite that
+        # never ran; the fix is the second file, never a smaller guard.
+        run: |
+          pnpm --filter @repo/temporal exec vitest run \
+            __tests__/publishing-reconcile-activity.test.ts \
+            __tests__/redrive-publishing-notification.test.ts \
+            __tests__/publishing-drain-activity.test.ts \
+            --passWithNoTests=false \
+            --reporter=dot \
+            --reporter=json --outputFile=publishing-reconcile-activity-results.json
+
+      - name: 'Guard: assert the publishing reconciliation activity suite executed (exact count, zero skips)'
+        run: |
+          node <<'EOF'
+          const fs = require("node:fs");
+          const EXPECTED = 26;
+          const report = JSON.parse(fs.readFileSync("packages/temporal/publishing-reconcile-activity-results.json","utf8"));
+          const files = report.testResults?.length ?? 0;
+          const total = report.numTotalTests ?? 0;
+          const passed = report.numPassedTests ?? 0;
+          const skipped = (report.numSkippedTests ?? 0) + (report.numPendingTests ?? 0);
+          const todo = report.numTodoTests ?? 0;
+          console.log(`publishing-reconcile-activity: ${files} file(s), total=${total} passed=${passed} skipped=${skipped} todo=${todo}`);
+          if (files !== 3) { console.error("::error::Expected exactly 3 test files (publishing-reconcile-activity.test.ts + redrive-publishing-notification.test.ts + publishing-drain-activity.test.ts)"); process.exit(1); }
+          if (skipped > 0) { console.error("::error::suite self-skipped — RUN_DB_INTEGRATION not honored — false pass"); process.exit(1); }
+          if (todo > 0) { console.error("::error::a case is .todo — coverage silently dropped"); process.exit(1); }
+          if (total !== EXPECTED || passed !== EXPECTED) {
+            console.error(`::error::expected exactly ${EXPECTED} passing tests. Eleven in publishing-reconcile-activity.test.ts: the module imports no mail path and reads no mail key — asserted on the source, because an import that is merely unreached still couples the module — the activity reaches the activities barrel the worker hands to every Worker.create call, the ABANDONED signal is exactly ONE warn line per RUN carrying the count rather than one line per cycle, a run that abandons nothing still reports at info so a quiet hour stays distinguishable from a schedule that stopped firing, a null-clock PENDING cycle is ENROLLED on this tick and swept on a LATER one — the floor is never earlier than the moment the sweep first saw the row, so a worker clock that trails this one cannot make a live cycle look stale — a non-zero null-clock residual raises the level on its own even when nothing was abandoned, the staleness bound is the suggestion workflow's imported execution timeout rather than a copied literal and a cycle either side of it is treated accordingly, and markCycleFailed — the cycle writer that lives in this package, which the database suite cannot import — is driven for real against a PENDING cycle and leaves its staleness clock exactly where it was; plus 1C-2d-2b-1's three LEDGER cases — the ledger pass expiring, reclaiming and DISCHARGING THE ATTEMPT BOUND with no transactional-email key present in the process, which is what makes the 2b-1/2b-2 split honest because the half that ships the transitions must make progress on exactly the deployment that produced the backlog; the per-transition counts asserted EXHAUSTIVELY on the key set rather than spot-checked, so a fifth transition added later cannot be a number the workflow reports and nothing has ever seen, together with sweptAt pinned to fall INSIDE the call rather than merely being a string; and the states_reclaimed line, exactly one per run, carrying a moved count equal to the sum of the transitions and asserted to be INFO and never warn, because an expired obligation is the sweep working and an alert rule keyed on level would otherwise fire hourly on a healthy deployment. Two in redrive-publishing-notification.test.ts, spawned as a real child process because the script reads an environment a mock cannot supply: the duplicate guard refuses an old DEFERRED obligation still inside its expiry, which the shipped status list could not see and would have re-sent past the provider's idempotency horizon, and it does NOT demand --force-stale for a FAILED row at the attempt bound, which is not re-sendable at all. Plus 1C-2d-2b-2's thirteen in publishing-drain-activity.test.ts: the mail-configuration gate returning with zero counts rather than throwing — a throw would be an hourly red workflow on every deployment without a key, an alert firing on a supported configuration — and leaving every deferred row exactly where it was, since the gate is a RETURN and not a filter; the claim/send/confirm path carrying the same attempt-independent idempotency key the in-band path uses, so an obligation attempted in band and then deferred collapses into that attempt at the provider; a provider rejection returning the row to DEFERRED rather than FAILED, because a FAILED row carrying an expiry is invisible to the drain AND to pass 1; the four per-row gates each terminalizing as SKIPPED with their own reason and consuming no attempt; the gates read FRESH per row, pinned by flipping the project kill switch BETWEEN two rows of one page — the case an implementation that memoizes per run fails and every other gate case passes; the page budget spent with what is left PROBED rather than inferred, at the boundary where an exactly-full backlog and a real one look identical from the inside; and the source assertion that this activity reads the mail configuration while pass 1's still does not. Got total=${total} passed=${passed}`);
+            process.exit(1);
+          }
+          EOF
+
+  # Stable status check name reported on every PR to the canonical branch
+  # (`master`). Configure this as the required check in branch protection —
+  # not `db-tests` or `temporal-tests`, both of which are conditionally
+  # skipped on PRs that don't touch their relevant files.
+  db-integration:
+    name: db-integration
+    needs: [changes, db-tests, temporal-tests]
+    if: always()
+    runs-on: ubuntu-latest
+    env:
+      EVENT_NAME: ${{ github.event_name }}
+      CHANGES_RESULT: ${{ needs.changes.result }}
+      DB_CHANGED: ${{ needs.changes.outputs.db }}
+      DB_TESTS_RESULT: ${{ needs.db-tests.result }}
+      TEMPORAL_CHANGED: ${{ needs.changes.outputs.temporal }}
+      TEMPORAL_TESTS_RESULT: ${{ needs.temporal-tests.result }}
+    steps:
+      - name: Aggregate
+        run: |
+          # The path-filter job is a prerequisite. If it failed (or was
+          # cancelled), DB_CHANGED/TEMPORAL_CHANGED are empty and we can't
+          # trust a "no changes" answer — fail closed so PRs don't bypass
+          # the gate.
+          if [[ "$CHANGES_RESULT" != "success" ]]; then
+            echo "::error::Path-filter job did not succeed (result: $CHANGES_RESULT). Cannot determine whether DB-integration tests are required."
+            exit 1
+          fi
+
+          failed=0
+
+          # On PRs: db-tests is required only when DB-relevant paths changed.
+          # On workflow_dispatch: db-tests always runs, propagate its result.
+          if [[ "$EVENT_NAME" == "workflow_dispatch" || "$DB_CHANGED" == "true" ]]; then
+            if [[ "$DB_TESTS_RESULT" == "skipped" ]]; then
+              echo "::error::DB-relevant changes detected but the db-tests job did not run."
+              failed=1
+            elif [[ "$DB_TESTS_RESULT" != "success" ]]; then
+              echo "::error::DB-integration tests failed (db-tests job result: $DB_TESTS_RESULT)."
+              failed=1
+            else
+              echo "DB-integration tests passed."
+            fi
+          else
+            echo "No DB-relevant changes — DB-integration tests not required."
+          fi
+
+          # Same two-state gate for the temporal publishing suite: required
+          # only when packages/temporal/** or packages/database/** changed
+          # (or on workflow_dispatch), independent of the db-tests gate above
+          # so a PR touching only packages/temporal/** still blocks on this.
+          if [[ "$EVENT_NAME" == "workflow_dispatch" || "$TEMPORAL_CHANGED" == "true" ]]; then
+            if [[ "$TEMPORAL_TESTS_RESULT" == "skipped" ]]; then
+              echo "::error::Temporal- or database-relevant changes detected but the temporal-tests job did not run."
+              failed=1
+            elif [[ "$TEMPORAL_TESTS_RESULT" != "success" ]]; then
+              echo "::error::Temporal publishing tests failed (temporal-tests job result: $TEMPORAL_TESTS_RESULT)."
+              failed=1
+            else
+              echo "Temporal publishing tests passed."
+            fi
+          else
+            echo "No temporal- or database-relevant changes — temporal publishing tests not required."
+          fi
+
+          if [[ "$failed" -ne 0 ]]; then
+            exit 1
+          fi

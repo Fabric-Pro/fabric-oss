@@ -1,0 +1,1 @@
+export { WorkflowTemplateChat } from "./WorkflowTemplateChat";

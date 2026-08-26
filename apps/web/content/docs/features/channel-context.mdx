@@ -1,0 +1,103 @@
+---
+title: Channels & Meetings as Context
+description: Monitor Slack and Teams channels for backlog ideas, and sync Teams meeting transcripts into your project as context.
+---
+
+Bring the conversations your team is already having into a project. Fabric can **watch Slack and Teams channels** (and Teams group chats) and turn the discussion into proposed backlog items, and it can **sync Teams meeting transcripts** into your project as searchable context for AI.
+
+You set all of this up per project under **Settings → Knowledge**.
+
+<Callout type="info">
+**How this differs from other integrations.** Runtime actions let an agent *call* Slack/Teams on demand ("post to Slack"). [PM Sync](/docs/features/pm-sync) keeps a backlog aligned with a PM tool. This is a third thing: **pulling conversation and meeting content in** as project context and backlog ideas. All three share the same connected integration.
+</Callout>
+
+## Channel & chat monitoring
+
+Link a channel (or a Teams group chat) to a project, and Fabric analyzes new messages and **drafts proposed backlog changes** for you to review — nothing is added to your backlog automatically.
+
+| Source | Connect | How it picks up messages |
+|--------|---------|--------------------------|
+| **Slack channel** | Slack integration | Event-driven — reacts to new messages in near real time |
+| **Teams channel** | Microsoft Teams integration | Scheduled scans on an interval you choose |
+| **Teams group chat** | Microsoft Teams integration | Scheduled scans on an interval you choose |
+
+### Set it up
+
+<Steps>
+  <Step>
+    ### Open project knowledge settings
+
+    In your project, go to **Settings → Knowledge** and find the **channel monitor** for Slack or Teams (Teams also has a separate **chat monitor** for group chats).
+  </Step>
+
+  <Step>
+    ### Link channels
+
+    Use the link button to open the channel (or chat) picker and choose which ones to monitor. The provider must already be connected under **Settings → Integrations**.
+  </Step>
+
+  <Step>
+    ### Turn on monitoring
+
+    Enable the monitor. For Teams you also pick a **scan interval** and a quiet window; Slack reacts to messages as they arrive. You can also trigger a one-off scan to pull recent history immediately.
+  </Step>
+
+  <Step>
+    ### Review proposals
+
+    Fabric drafts **backlog change proposals** from the conversation. Review and **approve** the ones you want — only then do they become features in your backlog.
+  </Step>
+</Steps>
+
+<Callout type="warning">
+Monitoring proposes; it never writes silently. Every suggestion goes through your review before it touches the backlog. Unlink a channel at any time to stop monitoring it.
+</Callout>
+
+## Teams meeting transcripts
+
+Link recurring **Teams meetings** to a project and Fabric syncs their **transcripts** as project context, so AI features and agents can draw on what was actually said in the meeting.
+
+<Steps>
+  <Step>
+    ### Link meetings
+
+    In **Settings → Knowledge**, open the meeting picker and link the recurring Teams meetings you want. Transcripts from roughly the **last 30 days** are pulled on the first sync.
+  </Step>
+
+  <Step>
+    ### Keep them in sync
+
+    Turn on auto-sync to pull new transcripts on a schedule, or run a sync on demand. A **Last sync** timestamp shows when transcripts were last pulled.
+  </Step>
+</Steps>
+
+Synced transcripts become part of your project's knowledge, so they're available to [RAG retrieval](/docs/core-concepts/rag) the same way uploaded documents are.
+
+<Callout type="info">
+Meeting transcripts require that transcription is enabled and available for the meeting in Microsoft Teams. Channel/chat monitoring and meeting-transcript sync are configured separately, both under **Settings → Knowledge**.
+</Callout>
+
+## What's supported
+
+| Capability | Slack | Microsoft Teams |
+|-----------|:-----:|:---------------:|
+| Channel monitoring → backlog proposals | ✅ | ✅ |
+| Group-chat monitoring → backlog proposals | — | ✅ |
+| Meeting transcripts → project context | — | ✅ |
+
+## Next Steps
+
+<Cards>
+  <Card title="Slack" href="/docs/integrations/slack">
+    Connect Slack and monitor a channel
+  </Card>
+  <Card title="Microsoft Teams" href="/docs/integrations/teams">
+    Connect Teams for channels, chats & meetings
+  </Card>
+  <Card title="RAG" href="/docs/core-concepts/rag">
+    How synced content powers AI retrieval
+  </Card>
+  <Card title="Project Management Sync" href="/docs/features/pm-sync">
+    Two-way backlog sync with a PM tool
+  </Card>
+</Cards>

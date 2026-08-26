@@ -1,0 +1,271 @@
+{
+	"$schema": "https://turbo.build/schema.json",
+	"globalDependencies": ["**/.env.*local"],
+	"globalEnv": [
+		"NODE_ENV",
+		"DOCKER_BUILD",
+		"NEXT_TYPECHECK_SPLIT",
+		"VERCEL",
+		"CI",
+		"DATABASE_URL",
+		"DIRECT_URL",
+		"NEXT_PUBLIC_*",
+		"!NEXT_PUBLIC_VERCEL_*",
+		"APP_URL",
+		"APP_VERSION",
+		"AUTH_SECRET",
+		"BETTER_AUTH_SECRET",
+		"ENCRYPTION_KEY",
+		"AI_GATEWAY_API_KEY",
+		"OPENAI_API_KEY",
+		"ANTHROPIC_API_KEY",
+		"GOOGLE_AI_STUDIO_API_KEY",
+		"GROQ_API_KEY",
+		"COHERE_API_KEY",
+		"QDRANT_*",
+		"REDIS_URL",
+		"UPSTASH_REDIS_REST_URL",
+		"UPSTASH_REDIS_REST_TOKEN",
+		"RESEND_API_KEY",
+		"MAIL_*",
+		"STRIPE_*",
+		"DODO_PAYMENTS_*",
+		"CREEM_*",
+		"LEMONSQUEEZY_*",
+		"POLAR_*",
+		"S3_*",
+		"STORAGE_PROVIDER",
+		"ENABLE_TEMPORAL_WORKFLOWS",
+		"WORKFLOW_MAX_CONCURRENT_EXECUTIONS",
+		"TEMPORAL_*",
+		"OTEL_*",
+		"TURBO_REMOTE_CACHE_SIGNATURE_KEY"
+	],
+	"globalPassThroughEnv": [
+		"VERCEL_*",
+		"CI",
+		"NODE_ENV",
+		"DOCKER_BUILD",
+		"NEXT_RUNTIME",
+		"HOST",
+		"HOSTNAME",
+		"PORT",
+		"CORS_ALLOWED_ORIGINS",
+		"ALLOW_EXTERNAL_ACCESS",
+		"FABRIC_*",
+		"AGENT_*",
+		"AI_TOKEN_*",
+		"API_AGENT_URL",
+		"BACKLOG_UPDATER_URL",
+		"CODE_EXECUTOR_URL",
+		"CUGA_AGENT_URL",
+		"DATA_ANALYST_URL",
+		"DOCUMENT_GENERATOR_URL",
+		"LANGGRAPH_RUNTIME_URL",
+		"MCP_*",
+		"ORCHESTRATOR_URL",
+		"PROJECT_DOCUMENT_GENERATOR_URL",
+		"PROMPT_ENHANCER_URL",
+		"STORY_BREAKDOWN_URL",
+		"TASK_PLANNER_URL",
+		"RUNTIME_API_URL",
+		"SANDBOX_*",
+		"COLLAB_JWT_SECRET",
+		"CRON_SECRET",
+		"METRICS_SECRET",
+		"TURNSTILE_SECRET_KEY",
+		"ENCRYPTION_KEYS",
+		"ENCRYPTION_ACTIVE_KEY_VERSION",
+		"GOOGLE_CLIENT_*",
+		"SLACK_CLIENT_*",
+		"MICROSOFT_GRAPH_CLIENT_*",
+		"NOTION_CLIENT_ID",
+		"NOTION_CLIENT_SECRET",
+		"GITLAB_CLIENT_*",
+		"ATLASSIAN_CLOUD_OAUTH_CLIENT_*",
+		"FABRIC_GITHUB_CLIENT_*",
+		"UNSTRUCTURED_API_KEY",
+		"FIRECRAWL_*",
+		"PERPLEXITY_*",
+		"FAL_*",
+		"EVIDENCE_API_KEY",
+		"LETTA_*",
+		"RATE_LIMIT_*",
+		"RBAC_DRY_RUN",
+		"FEATURE_PM_TYPE_MAPPING",
+		"SKILLS_BUCKET_NAME",
+		"PROJECT_DOCUMENT_ASSETS_BUCKET_NAME",
+		"WEAVE_PLANNERS_URL",
+		"WEAVE_READERS_URL",
+		"WEAVE_SHUTTLE_URL",
+		"SEED_USER_PASSWORD",
+		"TEST_*",
+		"VALIDATE_A2A",
+		"fabric_staging_READ_WRITE_TOKEN"
+	],
+	"tasks": {
+		"build": {
+			"dependsOn": ["^generate", "^build"],
+			"outputs": ["dist/**", ".next/**", "!.next/cache/**"],
+			"inputs": ["$TURBO_DEFAULT$", ".env*"]
+		},
+		"type-check": {
+			"dependsOn": ["generate", "^generate", "^build"],
+			"outputs": [],
+			// Prune formats `tsc` never opens as part of THIS task's program,
+			// which under the default input set still bust its hash — and,
+			// because `type-check` fans out through `^build`, a README touched
+			// in a leaf package re-checks every dependent too.
+			//
+			// "tsc never opens it" is not the same as "it cannot affect types".
+			// apps/web's .md/.mdx ARE type-bearing: content-collections turns
+			// them into the module apps/web/tsconfig.json aliases as
+			// `content-collections`. Pruning them here is still sound because
+			// they remain inputs to the prerequisite `typegen` task, and a
+			// prerequisite's hash feeds this one — so edit that content and
+			// this task still re-runs. Do NOT copy this list onto `typegen`;
+			// there it would be a false cache hit.
+			//
+			// *.json stays live regardless (the base tsconfig sets
+			// `resolveJsonModule`), as do test files — @repo/temporal and
+			// @repo/database deliberately type-check theirs.
+			"inputs": [
+				"$TURBO_DEFAULT$",
+				"!**/*.md",
+				"!**/*.mdx",
+				"!**/*.css",
+				"!**/*.snap",
+				"!**/*.yml",
+				"!**/*.yaml",
+				"!**/*.png",
+				"!**/*.jpg",
+				"!**/*.jpeg",
+				"!**/*.gif",
+				"!**/*.svg",
+				"!**/*.webp",
+				"!**/*.ico"
+			]
+		},
+		// Generates .next/types/{routes.d.ts,validator.ts,cache-life.d.ts},
+		// which apps/web/tsconfig.json pulls in via `.next/types/**/*.ts`.
+		// `next typegen` produces exactly that set without running a build, and
+		// @content-collections/next branches on the `typegen` argv the same way
+		// it does on `build`, so .content-collections/generated is written too.
+		// Both are declared as outputs: a cache hit skips the task, so anything
+		// tsc needs must be restorable from the cache rather than regenerated.
+		//
+		// `^build`, not just `^generate`, because this task reads workspace
+		// source outside its own package: apps/web/content-collections.ts
+		// imports @repo/config. `^generate` does not carry those file hashes,
+		// and the reason is the `generate` task's narrow input allowlist below
+		// (prisma schema, *.graphql, package.json, the generator script) — not
+		// that @repo/config lacks a generate script. `build` uses
+		// $TURBO_DEFAULT$, so its node hashes ordinary package source even for
+		// the packages in web's closure that have no build script either.
+		// Verified with `turbo --dry`: editing config/index.ts left
+		// @repo/web#typegen byte-identical under `^generate` alone, and moves
+		// it under `^build`. Without this, a cache hit restores
+		// .content-collections/generated built from a stale config.
+		//
+		// This is NOT free. typegen previously ran concurrently with the
+		// dependency builds and now runs after them, adding roughly its own
+		// duration to the critical path. Accepted deliberately: the
+		// parallelism-preserving alternative — pinning $TURBO_ROOT$ inputs at
+		// the paths content-collections.ts happens to read today — goes stale
+		// silently the moment it imports something new, and the failure mode
+		// there is type-checking against stale generated types. Latency is
+		// recoverable; a false green is not.
+		//
+		// Coverage is every properly DECLARED workspace dependency, walked
+		// transitively via build's own `^build`. A raw relative import into a
+		// package web does not declare would still escape it.
+		"typegen": {
+			"dependsOn": ["^generate", "^build"],
+			"outputs": [".next/types/**", ".content-collections/**"],
+			"inputs": ["$TURBO_DEFAULT$", ".env*"]
+		},
+		"@repo/web#type-check": {
+			// `typegen`, not `build`: the production build was only ever a way
+			// to get .next/types on disk, and it put a multi-minute Turbopack
+			// compile on the critical path of every local and full-sweep
+			// type-check.
+			//
+			// Dropping the edge also drops the guarantee that `next build` and
+			// `tsc` never overlap, which apps/web/next.config.ts documents as a
+			// 16 GB OOM. Nothing here can express "these two tasks must not be
+			// concurrent", so apps/web/vercel.json now chains `turbo type-check`
+			// and `turbo build` with `&&` instead of asking for both in one
+			// invocation. Do not re-merge them.
+			"dependsOn": ["typegen", "generate", "^generate", "^build"],
+			"outputs": [],
+			"inputs": [
+				"$TURBO_DEFAULT$",
+				"!**/*.md",
+				"!**/*.mdx",
+				"!**/*.css",
+				"!**/*.snap",
+				"!**/*.yml",
+				"!**/*.yaml",
+				"!**/*.png",
+				"!**/*.jpg",
+				"!**/*.jpeg",
+				"!**/*.gif",
+				"!**/*.svg",
+				"!**/*.webp",
+				"!**/*.ico"
+			]
+		},
+		"test": {
+			"dependsOn": ["generate", "^generate"],
+			"inputs": [
+				"$TURBO_DEFAULT$",
+				"vitest.config.*",
+				"vitest.setup.*",
+				"__tests__/**",
+				"src/**/*.test.*",
+				"modules/**/*.test.*",
+				".env*"
+			],
+			"outputs": ["coverage/**"],
+			"env": ["CI"]
+		},
+		"clean": {
+			"cache": false
+		},
+		"generate": {
+			// prisma/zod/** is tracked source, but it must still be a declared
+			// output: this task's generate pipeline rewrites the barrel (raw
+			// generation, then the fix-zod-imports repair), so a cache hit
+			// must restore the repaired barrel rather than leave whatever a
+			// stray raw `prisma generate` last wrote there.
+			"outputs": [
+				"src/generated/**",
+				"prisma/generated/**",
+				"prisma/zod/**",
+				"dist/**"
+			],
+			"inputs": [
+				"prisma/schema.prisma",
+				"src/**/*.graphql",
+				"package.json",
+				"scripts/generate-client.mts",
+				"scripts/fix-zod-imports.ts",
+				"prisma/zod-generator.config.json",
+				"prisma/tsconfig.generated.json"
+			]
+		},
+		"dev": {
+			"cache": false,
+			"dependsOn": ["^generate"],
+			"persistent": true
+		},
+		"export": {
+			"outputs": ["out/**"]
+		},
+		"start": {
+			"cache": false,
+			"dependsOn": ["^generate", "^build"],
+			"persistent": true
+		}
+	}
+}

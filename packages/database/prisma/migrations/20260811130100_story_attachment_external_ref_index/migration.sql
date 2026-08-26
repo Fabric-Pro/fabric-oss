@@ -1,0 +1,42 @@
+-- The real per-story external-file uniqueness constraint for PM attachment
+-- sync (Fizzy #1746). Prisma cannot express a partial index in the schema DSL,
+-- so it lives here and is documented on the StoryAttachment model instead of
+-- being declared as `@@unique(...)`.
+--
+-- WHY PARTIAL, AND WHY NOT sourceTool
+--
+-- A plain Prisma unique on (storyId, sourceTool, externalAttachmentId) gets it
+-- wrong in both directions:
+--
+--   * it UNDER-enforces — sourceTool is NULL for every Fabric-origin row by
+--     design, and Postgres's default NULLS DISTINCT means a key with two
+--     nullable columns rejects nothing there, so the outbound-push case
+--     externalAttachmentId exists to protect was not actually covered;
+--   * it OVER-enforces — a non-partial index spans soft-deleted rows, so
+--     re-importing a PM file after any soft-delete (including the
+--     missingStreak >= 2 path) would raise P2002 for up to
+--     FABRIC_ATTACHMENT_RETENTION_DAYS.
+--
+-- Dropping sourceTool from the key covers Fabric-origin rows too, and the
+-- `deletedAt IS NULL` predicate excludes tombstones. `externalAttachmentId IS
+-- NOT NULL` keeps Fabric-origin rows (which have no external handle) out of the
+-- index entirely, so uploading two local files to one story stays legal.
+--
+-- Consequence for callers: Prisma only generates `findUnique` for constraints
+-- it knows about, and this one is invisible to it — use `findFirst` on
+-- (storyId, externalAttachmentId), never `findUnique`.
+--
+-- CONCURRENTLY, AND WHY THERE IS NO MANUAL STEP
+--
+-- story_attachment is populated, so a blocking index build would lock out
+-- attachment writes for the duration. PostgreSQL forbids CONCURRENTLY inside a
+-- transaction block, and Prisma wraps a MULTI-statement migration in one — but
+-- it does NOT wrap a single-statement migration, so this file applies through
+-- the ordinary `prisma migrate deploy` path with no human step (same mechanism
+-- as 20260806120000_audit_log_created_at_index).
+--
+-- KEEP THIS MIGRATION TO ONE STATEMENT. Adding a second reintroduces the
+-- transaction wrapper and breaks it with SQLSTATE 25001.
+CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS "story_attachment_external_ref_key"
+  ON "story_attachment" ("storyId", "externalAttachmentId")
+  WHERE "deletedAt" IS NULL AND "externalAttachmentId" IS NOT NULL;

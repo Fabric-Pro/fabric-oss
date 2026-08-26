@@ -1,0 +1,79 @@
+---
+title: Confluence
+description: Connect Confluence so Fabric agents can search, read, and create pages as runtime actions.
+---
+
+Connect Confluence to Fabric AI so agents and workflows can search spaces, read page content, and create pages — as live runtime actions.
+
+Confluence is a **Knowledge** provider (read-focused), with a page-creation action.
+
+<Callout type="info">
+Confluence and Jira share one **Atlassian** connection — Fabric uses Atlassian's official Rovo MCP server, so a single OAuth authorization unlocks both. See also [Jira](/docs/integrations/jira).
+</Callout>
+
+## Setting Up Confluence
+
+<Steps>
+  <Step>
+    ### Open Confluence under Integrations
+
+    Go to **Settings → Integrations** and open the **Confluence** card.
+  </Step>
+
+  <Step>
+    ### Set Up Actions
+
+    Click **Set Up Actions** and authorize Fabric AI with Atlassian (OAuth). This connects both Confluence and Jira.
+  </Step>
+
+  <Step>
+    ### Confirm
+
+    The provider shows **Connected** with its available runtime actions.
+  </Step>
+</Steps>
+
+## Available Actions
+
+| Action | Type | Description |
+|--------|------|-------------|
+| **Search Confluence** | Knowledge | Search for pages and content in Confluence |
+| **Get Page Content** | Knowledge | Retrieve content from a Confluence page |
+| **List Space Pages** | Knowledge | List all pages in a Confluence space |
+| **Create Page** | Action | Create a new page in Confluence |
+
+### In AI Chat
+
+```
+"What does our Confluence runbook say about on-call rotation?"
+
+"Summarize the architecture pages in the PLATFORM space"
+```
+
+The agent calls Confluence's knowledge actions live — no background sync required.
+
+## Disconnecting & Reconnecting
+
+1. Open **Settings → Integrations → Confluence**
+2. Click **Disconnect** (this also disconnects the shared Atlassian connection used by Jira)
+3. To reconnect, click **Set Up Actions** again and re-authorize
+
+## Troubleshooting
+
+### Pages aren't found
+- Confirm the connection shows **Connected**
+- Make sure the authorized account has access to the space
+- Verify the correct Atlassian site was selected during authorization
+
+---
+
+## Next Steps
+
+<Cards>
+  <Card title="Jira" href="/docs/integrations/jira">
+    The other half of the shared Atlassian connection
+  </Card>
+  <Card title="MCP Integration" href="/docs/integrations/mcp">
+    How connected tools are called at runtime
+  </Card>
+</Cards>

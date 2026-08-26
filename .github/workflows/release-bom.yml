@@ -1,0 +1,1316 @@
+name: Release BOM
+
+# Open-sourcing plan §4.1 — "artifacts first, publish last".
+#
+# release.yml pushes the protected `v<version>` tag and creates the GitHub
+# Release AS A DRAFT. Four workflows fire off that same tag push and build the
+# release's artifacts. This workflow waits for all four, assembles a
+# `release-manifest.json` recording the source SHA plus the identity and digest
+# of every artifact, attests it, attaches it to the draft, re-reads what
+# actually landed on the Release, asserts the manifest is complete — and only
+# then publishes.
+#
+# The property this buys: a failed or partial build never yields a PUBLISHED
+# release. Self-hosters, and the ops reconciler (which selects on
+# `.draft == false and .prerelease == false`), only ever see complete releases.
+#
+# What a stuck draft does and does not block — read this before panicking at
+# 2am, and see docs/runbooks/release-bom.md:
+#   - BLOCKED: client-delivery.yml (keys on `release: published`) and the ops
+#     reconciler's admission of the release into the deployment ledger.
+#   - NOT BLOCKED: the production rollout itself. The four deploy workflows
+#     trigger on the TAG, not on the Release, so they have already run.
+#     Moving them behind the published Release is an explicit Phase 4
+#     freeze-window item and must not be done while the team ships from
+#     `master`.
+#
+# Nothing here rebuilds anything. Every digest is READ from the registry the
+# release's own build already pushed to, so the manifest records what shipped
+# rather than what a second build would have produced (§4.5 "Release
+# identity").
+
+on:
+  push:
+    tags: ['v*.*.*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to assemble the BOM for (e.g. v1.13.4). Dispatch with --ref <tag> as well, so the Production environment admits the image job.'
+        required: true
+        type: string
+
+# A DISTINCT group, keyed on the tag. Two traps this avoids:
+#   - Sharing a group with a workflow this one waits on deadlocks instantly —
+#     the waiter occupies the group the awaited run needs, and GitHub resolves
+#     that by evaluating the file to zero jobs rather than by erroring.
+#   - A static group would serialize unrelated releases behind each other.
+# `inputs` is read through `github.event.inputs` on purpose: the `inputs`
+# context is only defined for workflow_dispatch/workflow_call, and referencing
+# it from a file that also has a `push` trigger makes GitHub reject the whole
+# workflow on push events (zero jobs, "workflow file issue" — the exact
+# failure ops-reconcile-dispatch.yml hit on its first scheduled fire).
+concurrency:
+  group: release-bom-${{ github.event.inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  MANIFEST_SCHEMA_VERSION: '1.0.0'
+  MANIFEST_FILE: release-manifest.json
+  ATTESTATION_FILE: release-manifest.intoto.jsonl
+
+  # The 13 container images a release ships, as ACR repository suffixes (the
+  # registry stores them under `fabric/<name>`). Declared once at workflow
+  # level so the collector and the publish gate cannot drift apart. Keep in
+  # sync with deploy-azure-container-apps.yml's promote-images list and the
+  # ops reconciler's IMAGES array.
+  ACR_IMAGE_COMPONENTS: >-
+    temporal-worker
+    mcp-stdio-wrapper
+    document-generator
+    task-planner
+    story-breakdown
+    api-agent
+    prompt-enhancer
+    project-document-generator
+    data-analyst
+    backlog-updater
+    weave-readers
+    weave-shuttle
+    weave-planners
+
+  # Every workflow that produces something the manifest records. All four are
+  # triggered by the same `push: tags: v*.*.*` event this workflow is.
+  ARTIFACT_RUN_WORKFLOWS: >-
+    build-migration-runner.yml
+    deploy-azure-container-apps.yml
+    deploy-vercel-prod.yml
+    deploy-partykit-prod.yml
+
+  # Generous, because deploy-azure-container-apps.yml builds up to 13 images
+  # from scratch on a release where dev had nothing to promote. A timeout is
+  # fail-closed: the release stays a draft.
+  BOM_WAIT_TIMEOUT_MINUTES: '120'
+  BOM_POLL_SECONDS: '30'
+
+  # The draft is created by the step immediately AFTER the tag push that
+  # started this workflow, so the two race. Seconds are the expected wait;
+  # the budget is generous only so a slow release.yml never strands a healthy
+  # release. Exceeding it still fails closed.
+  BOM_DRAFT_WAIT_SECONDS: '300'
+  BOM_DRAFT_POLL_SECONDS: '10'
+
+  # Subresource Integrity validated by SHAPE, not just by prefix. The base64
+  # payload length is fixed per algorithm (64/48/32/20 raw bytes), so a
+  # truncated or placeholder value like `sha512-x` is rejected instead of
+  # being recorded as a package's identity — schema 1.0.0 documents these
+  # fields as exactly that, and a present-but-garbage value is worse than a
+  # loud failure. npm emits sha512 today; the other three are accepted
+  # because the SRI spec permits them. `dist.shasum` is npm's sha1 hex.
+  #
+  # This regex is a PREFILTER, not the whole test: it fixes the length and
+  # the padding but cannot constrain the unused bits of the final base64
+  # character, so a correctly sized value ending `B==` satisfies it while
+  # being invalid base64. `sri_ok()` in the two steps that use this does the
+  # decode that actually settles it.
+  NPM_INTEGRITY_RE: '^(sha512-[A-Za-z0-9+/]{86}==|sha384-[A-Za-z0-9+/]{64}|sha256-[A-Za-z0-9+/]{43}=|sha1-[A-Za-z0-9+/]{27}=)$'
+  NPM_SHASUM_RE: '^[0-9a-f]{40}$'
+
+jobs:
+  # ==========================================================================
+  # 1. Resolve what we are assembling a BOM for, and prove the draft exists.
+  # ==========================================================================
+  resolve:
+    name: Resolve release tag and draft
+    # A tag DELETION arrives as a `push` matching the v*.*.* filter, with
+    # GITHUB_SHA reverted to the default branch — the same guard the deploy
+    # workflows carry.
+    if: github.event.deleted != true
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      # GitHub's releases list omits drafts unless the caller has push access.
+      # This token only reads here, but `contents: write` is what gives it the
+      # access needed to discover the draft that release.yml just created.
+      contents: write
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+      sha: ${{ steps.tag.outputs.sha }}
+      was_draft: ${{ steps.release.outputs.was_draft }}
+    steps:
+      - name: Resolve tag to its commit
+        id: tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          # Caller-controlled text: validated below before first use, and
+          # never spliced into a command line.
+          INPUT_TAG: ${{ github.event.inputs.tag }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          TAG="${INPUT_TAG:-$REF_NAME}"
+          if ! printf '%s' "$TAG" | grep -qE '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'; then
+            echo "::error::'$TAG' is not a v<major>.<minor>.<patch> release tag. Nothing to assemble."
+            exit 1
+          fi
+
+          # Deref an annotated tag to its commit, exactly as the ops
+          # reconciler's plan.sh does. release.yml creates annotated tags, so
+          # the ref object is a tag object, not a commit.
+          REF_JSON=$(gh api "repos/$REPO/git/ref/tags/$TAG")
+          OBJ_TYPE=$(printf '%s' "$REF_JSON" | jq -r '.object.type')
+          OBJ_SHA=$(printf '%s' "$REF_JSON" | jq -r '.object.sha')
+          if [ "$OBJ_TYPE" = "tag" ]; then
+            TAG_JSON=$(gh api "repos/$REPO/git/tags/$OBJ_SHA")
+            OBJ_TYPE=$(printf '%s' "$TAG_JSON" | jq -r '.object.type')
+            OBJ_SHA=$(printf '%s' "$TAG_JSON" | jq -r '.object.sha')
+          fi
+          if [ "$OBJ_TYPE" != "commit" ] || ! printf '%s' "$OBJ_SHA" | grep -qE '^[0-9a-f]{40}$'; then
+            echo "::error::$TAG does not resolve to a commit (got '$OBJ_TYPE')."
+            exit 1
+          fi
+
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "sha=$OBJ_SHA" >> "$GITHUB_OUTPUT"
+          echo "Assembling the BOM for $TAG at $OBJ_SHA"
+
+      - name: Wait for the release to exist
+        id: release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ steps.tag.outputs.tag }}
+          WAIT_SECONDS: ${{ env.BOM_DRAFT_WAIT_SECONDS }}
+          POLL_SECONDS: ${{ env.BOM_DRAFT_POLL_SECONDS }}
+        run: |
+          set -euo pipefail
+          # POLLED, not checked once. release.yml pushes the tag — which is
+          # what started this workflow — and creates the draft in the NEXT
+          # step, so the two genuinely race. A fast runner reaching here
+          # before that step finishes would fail with "no release exists"
+          # seconds before the draft appeared, stranding a perfectly healthy
+          # release until someone dispatched this workflow by hand.
+          #
+          # Listed rather than fetched by tag: `releases/tags/{tag}` 404s for
+          # drafts, which is precisely the state we expect to find here.
+          # GitHub only includes drafts in this listing for callers with push
+          # access, so this job's GITHUB_TOKEN must retain `contents: write`.
+          find_release() {
+            gh api "repos/$REPO/releases?per_page=100" --paginate \
+              --jq '.[] | {tag_name, draft, prerelease, html_url}' \
+              | jq -s --arg t "$TAG" 'map(select(.tag_name == $t)) | first // empty'
+          }
+
+          DEADLINE=$(( $(date +%s) + WAIT_SECONDS ))
+          EXISTING=''
+          while :; do
+            EXISTING=$(find_release)
+            [ -n "$EXISTING" ] && break
+            if [ "$(date +%s)" -ge "$DEADLINE" ]; then
+              echo "::error::No VISIBLE GitHub Release for $TAG appeared within ${WAIT_SECONDS}s. First verify this job still has contents: write: GitHub omits drafts from release listings for callers without push access. If that permission is intact, check release.yml for a failure between 'Auto-tag' and 'Create draft GitHub Release'. If the tag was pushed by hand, create the draft first, then re-run this workflow — see docs/runbooks/release-bom.md § Publishing by hand."
+              exit 1
+            fi
+            echo "Release $TAG does not exist yet — release.yml is probably still creating the draft. Waiting..."
+            sleep "$POLL_SECONDS"
+          done
+
+          DRAFT=$(printf '%s' "$EXISTING" | jq -r '.draft')
+          echo "was_draft=$DRAFT" >> "$GITHUB_OUTPUT"
+          if [ "$DRAFT" = "true" ]; then
+            echo "Release $TAG is a draft — this run decides whether it gets published."
+          else
+            echo "::warning::Release $TAG is ALREADY published. This run will still assemble, attest and attach the manifest, but the publish step is then a no-op and re-publishing emits no \`release: published\` event. See docs/runbooks/release-bom.md."
+          fi
+
+  # ==========================================================================
+  # 2. Wait for every artifact-producing run on this tag. Fail-closed on any
+  #    failure or timeout: the release stays a draft.
+  # ==========================================================================
+  await-artifact-runs:
+    name: Wait for artifact builds
+    needs: [resolve]
+    runs-on: ubuntu-latest
+    timeout-minutes: 130
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      runs: ${{ steps.wait.outputs.runs }}
+    steps:
+      - name: Poll the tag's workflow runs
+        id: wait
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ needs.resolve.outputs.tag }}
+          SHA: ${{ needs.resolve.outputs.sha }}
+          WORKFLOWS: ${{ env.ARTIFACT_RUN_WORKFLOWS }}
+          TIMEOUT_MINUTES: ${{ env.BOM_WAIT_TIMEOUT_MINUTES }}
+          POLL_SECONDS: ${{ env.BOM_POLL_SECONDS }}
+        run: |
+          set -euo pipefail
+
+          # A run is identified by head_sha AND head_branch. head_sha alone is
+          # ambiguous: deploy-azure-container-apps.yml triggers on BOTH
+          # `push: branches: [master]` and `push: tags: v*.*.*`, and the tag
+          # points at a commit that is also on master — so the same SHA has a
+          # master run (dev deploy) and a tag run (prod deploy). For a tag
+          # push GitHub sets head_branch to the tag name, which separates
+          # them. Presence is never taken for started: a run that does not
+          # exist yet and a run still in progress are both "keep waiting".
+          # `run_attempt` is captured, not just the id: `gh run rerun` keeps
+          # the run id and increments the attempt, so an id alone cannot tell
+          # a cached success from a later re-run that failed. The publish gate
+          # re-checks both. `event` is captured because only a tag-PUSH run is
+          # trustworthy here — see the rejection below.
+          # FILTER, then select — the ordering is load-bearing. Selecting the
+          # newest run and *then* rejecting non-push runs wedges the release
+          # permanently: a dispatched run has a higher id, so it wins
+          # selection and is refused, and nothing can dislodge it. Re-running
+          # the real tag-push run does not help, because a re-run keeps the
+          # original id and only bumps run_attempt, so the dispatch stays
+          # newest forever. Excluding non-push runs from selection instead
+          # means a dispatched run simply does not participate.
+          latest_run() { # $1 = workflow file -> newest TAG-PUSH run, or empty
+            gh api "repos/$REPO/actions/workflows/$1/runs?head_sha=$SHA&per_page=100" \
+              --jq '.workflow_runs[] | {id, run_attempt, event, head_branch, head_sha, status, conclusion, html_url}' \
+              | jq -s --arg t "$TAG" --arg s "$SHA" \
+                  'map(select(.head_branch == $t and .head_sha == $s and .event == "push"))
+                   | sort_by(.id) | last // empty'
+          }
+          dispatched_runs() { # non-push runs claiming this tag+commit, for diagnosis
+            gh api "repos/$REPO/actions/workflows/$1/runs?head_sha=$SHA&per_page=100" \
+              --jq '.workflow_runs[] | {event, head_branch, head_sha, status, html_url}' \
+              | jq -sr --arg t "$TAG" --arg s "$SHA" \
+                  'map(select(.head_branch == $t and .head_sha == $s and .event != "push"))
+                   | if length == 0 then "" else map("\(.event) \(.html_url)") | join(", ") end'
+          }
+          other_runs() { # what DID exist at this SHA, for a legible timeout
+            gh api "repos/$REPO/actions/workflows/$1/runs?head_sha=$SHA&per_page=100" \
+              --jq '[.workflow_runs[] | "\(.head_branch)/\(.event)/\(.status)/\(.conclusion // "-")"] | join(", ")'
+          }
+
+          read -r -a PENDING <<< "$WORKFLOWS"
+          DEADLINE=$(( $(date +%s) + TIMEOUT_MINUTES * 60 ))
+          RESULT='{}'
+
+          while :; do
+            STILL=()
+            for WF in ${PENDING[@]+"${PENDING[@]}"}; do
+              RUN=$(latest_run "$WF")
+              if [ -z "$RUN" ]; then
+                # Non-push runs are IGNORED, not fatal, and not a reason to
+                # stop waiting — the tag-push run may simply not exist yet.
+                # Only build-migration-runner.yml and deploy-vercel-prod.yml
+                # take a `ref` input on workflow_dispatch that decides what
+                # gets checked out, so a dispatched run's metadata can say tag
+                # A while it built commit B; nothing in that metadata reveals
+                # the difference, which is why such runs never participate.
+                # If NO push run ever appears, the timeout below says so
+                # specifically.
+                DISPATCHED=$(dispatched_runs "$WF" || true)
+                if [ -n "$DISPATCHED" ]; then
+                  echo "  $WF — no tag-push run for $TAG at ${SHA:0:7} yet (ignoring non-push run(s): $DISPATCHED)"
+                else
+                  echo "  $WF — no run for $TAG at ${SHA:0:7} yet"
+                fi
+                STILL+=("$WF")
+                continue
+              fi
+              URL=$(printf '%s' "$RUN" | jq -r '.html_url')
+              STATUS=$(printf '%s' "$RUN" | jq -r '.status')
+              CONCLUSION=$(printf '%s' "$RUN" | jq -r '.conclusion // ""')
+              if [ "$STATUS" != "completed" ]; then
+                echo "  $WF — $STATUS ($URL)"
+                STILL+=("$WF")
+                continue
+              fi
+              if [ "$CONCLUSION" != "success" ]; then
+                echo "::error::$WF for $TAG concluded '$CONCLUSION' — $URL. The release stays a DRAFT and nothing is published. Fix the build, re-run that workflow, then re-run this one (workflow_dispatch, tag=$TAG)."
+                exit 1
+              fi
+              echo "  $WF — success ($URL)"
+              RESULT=$(printf '%s' "$RESULT" | jq -c --arg k "$WF" --argjson v "$RUN" '. + {($k): $v}')
+            done
+
+            PENDING=(${STILL[@]+"${STILL[@]}"})
+            [ ${#PENDING[@]} -eq 0 ] && break
+
+            if [ "$(date +%s)" -ge "$DEADLINE" ]; then
+              echo "::error::Timed out after ${TIMEOUT_MINUTES}m waiting for: ${PENDING[*]}. The release stays a DRAFT."
+              for WF in "${PENDING[@]}"; do
+                DISPATCHED=$(dispatched_runs "$WF" || true)
+                if [ -n "$DISPATCHED" ]; then
+                  echo "::error::  PRODUCER NOT FROM THE TAG PUSH: $WF has no run triggered by the $TAG push, only non-push run(s): $DISPATCHED. Those are ignored, never used: a dispatched run takes a ref input that decides what it actually builds, so its artifacts cannot be assumed to come from $TAG. Dispatching another one will not help. See docs/runbooks/release-bom.md § No tag-push run exists."
+                else
+                  echo "::error::  $WF — runs seen at ${SHA:0:7}: $(other_runs "$WF" || echo 'none')"
+                fi
+              done
+              exit 1
+            fi
+            sleep "$POLL_SECONDS"
+          done
+
+          echo "runs=$RESULT" >> "$GITHUB_OUTPUT"
+          echo "All four artifact workflows succeeded for $TAG."
+
+  # ==========================================================================
+  # 3. Collect every component's identity and digest.
+  # ==========================================================================
+  collect:
+    name: Collect artifact digests
+    needs: [resolve, await-artifact-runs]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # Bound to Production for the Azure OIDC federation the ACR lookups need —
+    # the same environment deploy-azure-container-apps.yml's promote-images
+    # job binds on a tag push. On a workflow_dispatch re-run this is why the
+    # dispatch must carry `--ref <tag>`: the Production environment's
+    # deployment policy admits `v*.*.*` refs, and a dispatch from `master`
+    # would be refused here. That refusal is fail-closed (draft stands), not
+    # a corrupt state.
+    environment: Production
+    permissions:
+      contents: read
+      actions: read
+      packages: read
+      attestations: read
+      id-token: write # Azure OIDC federation
+    steps:
+      - name: Checkout the release commit
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          ref: ${{ needs.resolve.outputs.sha }}
+          fetch-depth: 1
+
+      - name: Prepare
+        run: mkdir -p bom-parts
+
+      # ---- migration-runner (GHCR, attested) --------------------------------
+      # Consumes the manifest fragment build-migration-runner.yml already
+      # emits for exactly this purpose rather than re-resolving the digest —
+      # re-resolving would introduce a second, independent answer to a
+      # question that already has an authoritative one.
+      - name: Log in to GHCR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+
+      - name: Collect migration-runner entry
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ needs.resolve.outputs.sha }}
+          TAG: ${{ needs.resolve.outputs.tag }}
+          RUNS: ${{ needs.await-artifact-runs.outputs.runs }}
+        run: |
+          set -euo pipefail
+          RUN_ID=$(printf '%s' "$RUNS" | jq -r '."build-migration-runner.yml".id')
+          rm -rf fragment && mkdir -p fragment
+          if ! gh run download "$RUN_ID" --repo "$REPO" \
+                 --name migration-runner-attestations --dir fragment; then
+            echo "::error::Could not download the 'migration-runner-attestations' artifact from build-migration-runner.yml run $RUN_ID. It is retained for 90 days; past that, re-run that workflow at $TAG before re-running this one."
+            exit 1
+          fi
+          FRAGMENT=fragment/migration-runner.manifest.json
+          [ -f "$FRAGMENT" ] || { echo "::error::$FRAGMENT missing from the artifact — build-migration-runner.yml's 'Emit manifest fragment' step did not produce it."; exit 1; }
+
+          IMAGE=$(jq -r '.image' "$FRAGMENT")
+          DIGEST=$(jq -r '.digest' "$FRAGMENT")
+          FRAGMENT_SHA=$(jq -r '.sourceSha' "$FRAGMENT")
+          if [ "$FRAGMENT_SHA" != "$SHA" ]; then
+            echo "::error::The migration-runner fragment was built from $FRAGMENT_SHA but this release is $SHA. Refusing to record an image from a different commit."
+            exit 1
+          fi
+          printf '%s' "$DIGEST" | grep -qE '^sha256:[0-9a-f]{64}$' || { echo "::error::migration-runner digest '$DIGEST' is not a sha256 digest."; exit 1; }
+
+          # Verify the attestations rather than trusting the fragment: the
+          # fragment is an unsigned workflow artifact, the attestation is the
+          # signed claim. Same invocation shape the ops reconciler uses before
+          # it will run a migration — repo, signer workflow, and the attested
+          # source commit all pinned.
+          SIGNER="$REPO/.github/workflows/build-migration-runner.yml"
+          echo "Verifying build provenance for $IMAGE@$DIGEST"
+          gh attestation verify "oci://$IMAGE@$DIGEST" \
+            --repo "$REPO" \
+            --signer-workflow "$SIGNER" \
+            --source-digest "$SHA"
+          echo "Verifying SBOM attestation"
+          gh attestation verify "oci://$IMAGE@$DIGEST" \
+            --repo "$REPO" \
+            --signer-workflow "$SIGNER" \
+            --source-digest "$SHA" \
+            --predicate-type https://spdx.dev/Document/v2.3
+
+          jq -n \
+            --arg image "$IMAGE" \
+            --arg tag "$(jq -r '.tag' "$FRAGMENT")" \
+            --arg digest "$DIGEST" \
+            --arg signer "$SIGNER" \
+            --arg sha "$SHA" \
+            '[{
+               component: "migration-runner",
+               type: "oci-image",
+               registryRole: "ghcr",
+               repository: $image,
+               tag: $tag,
+               digest: $digest,
+               reference: ($image + "@" + $digest),
+               attestations: {
+                 buildProvenance: "verified",
+                 sbom: "verified",
+                 signerWorkflow: $signer,
+                 sourceDigest: $sha
+               },
+               producedBy: "build-migration-runner.yml"
+             }]' > bom-parts/migration-runner.json
+          echo "migration-runner: $DIGEST (provenance + SBOM verified)"
+
+      # ---- the 13 container images ------------------------------------------
+      - name: Azure Login
+        uses: azure/login@532459ea530d8321f2fb9bb10d1e0bcf23869a43 # v3
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Collect container image digests
+        env:
+          SHA: ${{ needs.resolve.outputs.sha }}
+          TAG: ${{ needs.resolve.outputs.tag }}
+          COMPONENTS: ${{ env.ACR_IMAGE_COMPONENTS }}
+          DEV_SUFFIX: ${{ vars.DEV_ACR_SUFFIX }}
+          PROD_SUFFIX: ${{ vars.ACR_SUFFIX }}
+        run: |
+          set -euo pipefail
+          # `set -u` does not catch these: the variables are SET but empty
+          # when the repository variable is missing, and an empty suffix
+          # resolves to a DIFFERENT registry name — every lookup would then
+          # miss and read as a build problem rather than a config one.
+          if [ -z "${DEV_SUFFIX:-}" ]; then
+            echo "::error::DEV_ACR_SUFFIX is empty — set the DEV_ACR_SUFFIX repository variable."
+            exit 1
+          fi
+          if [ -z "${PROD_SUFFIX:-}" ]; then
+            echo "::error::ACR_SUFFIX is empty — set the ACR_SUFFIX repository variable."
+            exit 1
+          fi
+          DEV_ACR="fabric${DEV_SUFFIX}devacr"
+          PROD_ACR="fabric${PROD_SUFFIX}prodacr"
+
+          # NOT `az acr manifest show --query digest`: that prints the RAW
+          # manifest, and a buildx-built OCI image index — the shape of every
+          # image here, since attestations ride the index — has no top-level
+          # `digest` field, so the query silently returns empty for every
+          # image that exists. `az acr repository show --image` returns the
+          # tag's registry attributes, whose `digest` IS the index digest.
+          resolve_digest() { # <acr> <repo:tag> -> digest or empty
+            az acr repository show --name "$1" --image "$2" \
+              --query digest -o tsv 2>/dev/null || true
+          }
+
+          # Dev-first, prod-fallback, and the manifest records which one
+          # answered. The dev ACR is the reconciler's trust root, so it is
+          # asked first — but it very often does NOT hold the release commit.
+          # A changesets version commit touches only package.json, CHANGELOG
+          # and .changeset/*, none of which match deploy-azure-container-
+          # apps.yml's change filters, so its master push builds nothing;
+          # promote-images then finds nothing to import and the tag run builds
+          # every image straight into the PROD registry. Requiring dev would
+          # therefore fail-closed on a perfectly good release. Missing from
+          # BOTH registries is the real partial-build signal, and that does
+          # fail closed.
+          ENTRIES='[]'
+          MISSING=()
+          for NAME in $COMPONENTS; do
+            REPO_PATH="fabric/$NAME"
+            ROLE="dev-trust-root"
+            DIGEST=$(resolve_digest "$DEV_ACR" "$REPO_PATH:$SHA")
+            if [ -z "$DIGEST" ]; then
+              ROLE="prod-release-build"
+              DIGEST=$(resolve_digest "$PROD_ACR" "$REPO_PATH:$SHA")
+            fi
+            if [ -z "$DIGEST" ] || ! printf '%s' "$DIGEST" | grep -qE '^sha256:[0-9a-f]{64}$'; then
+              echo "  $NAME — MISSING at $SHA in both registries"
+              MISSING+=("$NAME")
+              continue
+            fi
+            echo "  $NAME — $DIGEST ($ROLE)"
+            ENTRIES=$(printf '%s' "$ENTRIES" | jq -c \
+              --arg c "$NAME" --arg r "$REPO_PATH" --arg t "$SHA" \
+              --arg d "$DIGEST" --arg role "$ROLE" \
+              '. + [{
+                 component: $c,
+                 type: "oci-image",
+                 registryRole: $role,
+                 repository: $r,
+                 tag: $t,
+                 digest: $d,
+                 attestations: { buildProvenance: "none", sbom: "none" },
+                 producedBy: "deploy-azure-container-apps.yml"
+               }]')
+          done
+
+          if [ ${#MISSING[@]} -gt 0 ]; then
+            echo "::error::Release $TAG has no image for these components at $SHA in either container registry: ${MISSING[*]}. That is a partial build — the release stays a DRAFT. Re-run deploy-azure-container-apps.yml at $TAG, then re-run this workflow."
+            exit 1
+          fi
+          printf '%s' "$ENTRIES" > bom-parts/images.json
+          echo "Resolved $(printf '%s' "$ENTRIES" | jq 'length') container image digests."
+
+      # ---- npm packages ------------------------------------------------------
+      - name: Collect npm package integrity
+        env:
+          TAG: ${{ needs.resolve.outputs.tag }}
+          INTEGRITY_RE: ${{ env.NPM_INTEGRITY_RE }}
+          SHASUM_RE: ${{ env.NPM_SHASUM_RE }}
+        run: |
+          set -euo pipefail
+          # Enumerated from the tree at the release commit, not from a list
+          # kept here: adding a publishable package must not silently drop it
+          # out of the BOM. `private: true` packages (@fabricorg/mcp-server
+          # today) are never published, so they are not release artifacts.
+          # The regex above fixes length and padding but cannot constrain the
+          # unused bits in the final base64 character — a correctly sized
+          # value ending `B==` passes it and is still not valid base64.
+          # Decoding is the honest test: GNU base64 exits non-zero on exactly
+          # that, and the decoded length then confirms the digest is the
+          # right size for its algorithm. Deliberately NOT a decode-and-
+          # re-encode round trip: this check blocking a real release is a
+          # worse outcome than it admitting an odd-looking value, so where
+          # two tests both catch the known defect the more permissive one
+          # wins. A runner whose base64 is laxer than GNU's would let a
+          # non-canonical value through, and that is the acceptable direction
+          # to be wrong in.
+          sri_ok() { # $1 = integrity value
+            local v="$1" alg want got
+            printf '%s' "$v" | grep -qE "$INTEGRITY_RE" || return 1
+            alg="${v%%-*}"
+            case "$alg" in
+              sha512) want=64 ;;
+              sha384) want=48 ;;
+              sha256) want=32 ;;
+              sha1)   want=20 ;;
+              *) return 1 ;;
+            esac
+            got=0
+            if ! got=$(printf '%s' "${v#*-}" | base64 -d 2>/dev/null | wc -c); then
+              return 1
+            fi
+            [ "$got" -eq "$want" ]
+          }
+
+          # Emitted as one compact JSON object per package rather than as
+          # delimited text: a missing `version` would render as an empty field
+          # that shell splitting silently swallows, and the resulting
+          # `npm view <name>@<name>` failure would be blamed on the registry.
+          mapfile -t PKGS < <(
+            git ls-files -- '**/package.json' 'package.json' \
+              | while read -r f; do
+                  jq -c 'select(.name != null
+                                and (.name | startswith("@fabricorg/"))
+                                and (.private != true))
+                         | {name, version}' "$f"
+                done | sort
+          )
+          if [ ${#PKGS[@]} -eq 0 ]; then
+            echo "::error::Found no publishable @fabricorg/* packages at this commit. That cannot be right — check the checkout."
+            exit 1
+          fi
+
+          ENTRIES='[]'
+          MISSING=()
+          MALFORMED=()
+          for ROW in "${PKGS[@]}"; do
+            NAME=$(printf '%s' "$ROW" | jq -r '.name')
+            VERSION=$(printf '%s' "$ROW" | jq -r '.version // ""')
+            if [ -z "$VERSION" ]; then
+              echo "::error::$NAME declares no version at $TAG — it cannot be recorded in the release BOM."
+              exit 1
+            fi
+            # release.yml publishes through changesets, which skips versions
+            # already on the registry — so "already there" is the NORMAL case
+            # and is not republished. What is being recorded is what shipped.
+            # Retried because a version published minutes ago can still be
+            # propagating.
+            META=''
+            for ATTEMPT in 1 2 3 4 5; do
+              if META=$(npm view "$NAME@$VERSION" --json 2>/dev/null) && [ -n "$META" ]; then
+                break
+              fi
+              META=''
+              sleep 15
+            done
+            INTEGRITY=$(printf '%s' "$META" | jq -r 'if type == "array" then .[-1] else . end | .dist.integrity // empty' 2>/dev/null || true)
+            SHASUM=$(printf '%s' "$META" | jq -r 'if type == "array" then .[-1] else . end | .dist.shasum // empty' 2>/dev/null || true)
+            if [ -z "$INTEGRITY" ] && [ -z "$SHASUM" ]; then
+              echo "  $NAME@$VERSION — NOT on the registry"
+              MISSING+=("$NAME@$VERSION")
+              continue
+            fi
+            # Present-but-malformed is a DIFFERENT failure from absent, and
+            # saying so saves chasing a publish that already succeeded.
+            if ! sri_ok "$INTEGRITY"; then
+              echo "  $NAME@$VERSION — malformed integrity '$INTEGRITY'"
+              MALFORMED+=("$NAME@$VERSION (integrity '$INTEGRITY')")
+              continue
+            fi
+            if ! printf '%s' "$SHASUM" | grep -qE "$SHASUM_RE"; then
+              echo "  $NAME@$VERSION — malformed shasum '$SHASUM'"
+              MALFORMED+=("$NAME@$VERSION (shasum '$SHASUM')")
+              continue
+            fi
+            echo "  $NAME@$VERSION — $INTEGRITY"
+            ENTRIES=$(printf '%s' "$ENTRIES" | jq -c \
+              --arg n "$NAME" --arg v "$VERSION" \
+              --arg i "$INTEGRITY" --arg s "$SHASUM" \
+              '. + [{
+                 component: $n,
+                 type: "npm-package",
+                 name: $n,
+                 version: $v,
+                 registry: "https://registry.npmjs.org",
+                 integrity: $i,
+                 shasum: $s,
+                 producedBy: "release.yml"
+               }]')
+          done
+
+          if [ ${#MISSING[@]} -gt 0 ]; then
+            echo "::error::These packages are declared at $TAG but are not on the npm registry at that version: ${MISSING[*]}. npm publish did not complete — the release stays a DRAFT. Check the changesets step in release.yml (trusted publishing is configured per package on npmjs.com), then re-run this workflow."
+            exit 1
+          fi
+          if [ ${#MALFORMED[@]} -gt 0 ]; then
+            echo "::error::These packages ARE on the npm registry but returned digest metadata this release cannot record as an identity: ${MALFORMED[*]}. The publish itself succeeded, so do not re-publish — re-run this workflow, and if the registry keeps returning the same value, raise it rather than weakening the check."
+            exit 1
+          fi
+          printf '%s' "$ENTRIES" > bom-parts/npm.json
+
+      # ---- platform deployments ---------------------------------------------
+      - name: Collect platform deployment identities
+        env:
+          SHA: ${{ needs.resolve.outputs.sha }}
+          RUNS: ${{ needs.await-artifact-runs.outputs.runs }}
+        run: |
+          set -euo pipefail
+          # Vercel and PartyKit deploy straight to their platforms and retain
+          # nothing content-addressed to attach or verify, so these entries
+          # record deployment IDENTITY instead of a digest. `digest: null` is
+          # deliberate — a fabricated one would make the manifest lie about
+          # what it can prove. The run is the evidence: it is immutable, it
+          # names the commit, and its logs hold the deployment URL.
+          REASON="Deployed directly to the hosting platform; no content-addressed artifact is retained that this release could attach or verify. The producing workflow run is the deployment's identity."
+          jq -n --argjson runs "$RUNS" --arg sha "$SHA" --arg reason "$REASON" \
+            '[
+              { component: "web", platform: "vercel", wf: "deploy-vercel-prod.yml" },
+              { component: "collab-worker", platform: "cloudflare", wf: "deploy-partykit-prod.yml" }
+            ]
+            | map({
+                component: .component,
+                type: "platform-deployment",
+                platform: .platform,
+                digest: null,
+                digestUnavailableReason: $reason,
+                producedBy: .wf,
+                deployment: {
+                  commit: $sha,
+                  runId: ($runs[.wf].id | tostring),
+                  runUrl: $runs[.wf].html_url,
+                  conclusion: $runs[.wf].conclusion
+                }
+              })' > bom-parts/platform.json
+          jq -r '.[] | "  \(.component) — \(.deployment.conclusion) (\(.deployment.runUrl))"' bom-parts/platform.json
+
+      - name: Upload BOM parts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-bom-parts
+          path: bom-parts/
+          retention-days: 90
+          if-no-files-found: error
+
+  # ==========================================================================
+  # 4. Assemble the manifest, attest it, attach both to the draft.
+  # ==========================================================================
+  attach:
+    name: Assemble, attest and attach the manifest
+    needs: [resolve, await-artifact-runs, collect]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write # upload release assets
+      id-token: write # keyless attestation
+      attestations: write
+    steps:
+      - name: Download BOM parts
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: release-bom-parts
+          path: bom-parts
+
+      - name: Assemble release-manifest.json
+        env:
+          MANIFEST_FILE: ${{ env.MANIFEST_FILE }}
+          SCHEMA_VERSION: ${{ env.MANIFEST_SCHEMA_VERSION }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ needs.resolve.outputs.tag }}
+          SHA: ${{ needs.resolve.outputs.sha }}
+          RUNS: ${{ needs.await-artifact-runs.outputs.runs }}
+          WORKFLOW_REF: ${{ github.workflow_ref }}
+          SERVER_URL: ${{ github.server_url }}
+        run: |
+          set -euo pipefail
+          for f in migration-runner images npm platform; do
+            [ -s "bom-parts/$f.json" ] || { echo "::error::bom-parts/$f.json is missing or empty — the collect job did not produce a complete set."; exit 1; }
+          done
+
+          COMPONENTS=$(jq -s 'add | sort_by(.type, .component)' \
+            bom-parts/migration-runner.json \
+            bom-parts/images.json \
+            bom-parts/npm.json \
+            bom-parts/platform.json)
+
+          jq -n \
+            --arg schema "$SCHEMA_VERSION" \
+            --arg tag "$TAG" \
+            --arg sha "$SHA" \
+            --arg repo "$REPO" \
+            --arg generatedAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --arg workflowRef "$WORKFLOW_REF" \
+            --arg runUrl "$SERVER_URL/$REPO/actions/runs/$GITHUB_RUN_ID" \
+            --arg runId "$GITHUB_RUN_ID" \
+            --arg runAttempt "$GITHUB_RUN_ATTEMPT" \
+            --argjson runs "$RUNS" \
+            --argjson components "$COMPONENTS" \
+            '{
+              schemaVersion: $schema,
+              kind: "fabric.release-manifest",
+              release: {
+                tag: $tag,
+                sourceSha: $sha,
+                sourceRepository: $repo,
+                generatedAt: $generatedAt,
+                generatedBy: {
+                  workflowRef: $workflowRef,
+                  runId: $runId,
+                  runAttempt: $runAttempt,
+                  runUrl: $runUrl
+                }
+              },
+              producers: ($runs | to_entries | map({
+                workflow: .key,
+                runId: (.value.id | tostring),
+                runAttempt: (.value.run_attempt | tostring),
+                runUrl: .value.html_url,
+                conclusion: .value.conclusion
+              }) | sort_by(.workflow)),
+              components: $components
+            }' > "$MANIFEST_FILE"
+
+          jq empty "$MANIFEST_FILE"
+          echo "Assembled $MANIFEST_FILE with $(jq '.components | length' "$MANIFEST_FILE") components."
+
+      - name: Attest the manifest
+        id: attest
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        with:
+          subject-path: ${{ env.MANIFEST_FILE }}
+
+      - name: Attach manifest and attestation to the draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ needs.resolve.outputs.tag }}
+          MANIFEST_FILE: ${{ env.MANIFEST_FILE }}
+          ATTESTATION_FILE: ${{ env.ATTESTATION_FILE }}
+          BUNDLE_PATH: ${{ steps.attest.outputs.bundle-path }}
+        run: |
+          set -euo pipefail
+          [ -n "$BUNDLE_PATH" ] && [ -f "$BUNDLE_PATH" ] \
+            || { echo "::error::attest-build-provenance produced no bundle at '$BUNDLE_PATH'."; exit 1; }
+          cp "$BUNDLE_PATH" "$ATTESTATION_FILE"
+          # --clobber so a re-run replaces the assets rather than 422-ing on
+          # a name collision.
+          #
+          # Targeting a DRAFT by tag name works because gh falls back to
+          # listing releases when `releases/tags/{tag}` 404s (a draft carries
+          # no tag association) — the same path `gh release download` and
+          # `gh release edit` take in the publish job. If a future gh ever
+          # drops that fallback, all three fail together with "release not
+          # found" for a release that is plainly on /releases; the fix is to
+          # address the release by id through `gh api`, not to publish early.
+          gh release upload "$TAG" "$MANIFEST_FILE" "$ATTESTATION_FILE" \
+            --repo "$REPO" --clobber
+          echo "Attached $MANIFEST_FILE and $ATTESTATION_FILE to the $TAG release."
+
+  # ==========================================================================
+  # 5. The gate. Verify what actually landed, then publish — as the App.
+  # ==========================================================================
+  publish:
+    name: Verify the manifest and publish the release
+    needs: [resolve, attach]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      # Draft downloads also require push access. The GITHUB_TOKEN remains a
+      # read-only caller by convention in this job; the actual publish uses the
+      # Release App so `release: published` still triggers client delivery.
+      contents: write
+      attestations: read
+      actions: read # re-reading the producer runs just before publishing
+    steps:
+      # The expected npm set is RE-DERIVED from the release commit rather than
+      # carried over from the collect job. A gate that trusts the thing it is
+      # gating checks nothing.
+      - name: Checkout the release commit
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          ref: ${{ needs.resolve.outputs.sha }}
+          fetch-depth: 1
+          # This job's GITHUB_TOKEN has contents:write only so GitHub exposes
+          # the draft release. Do not persist that credential in the checkout.
+          persist-credentials: false
+
+      - name: Fetch the manifest back off the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ needs.resolve.outputs.tag }}
+          MANIFEST_FILE: ${{ env.MANIFEST_FILE }}
+        run: |
+          set -euo pipefail
+          # Downloaded, not reused from the previous job: the question this
+          # gate answers is "is the asset on the release complete", and the
+          # only way to answer it is to read the asset on the release.
+          rm -f "$MANIFEST_FILE"
+          gh release download "$TAG" --repo "$REPO" --pattern "$MANIFEST_FILE" --clobber
+          [ -s "$MANIFEST_FILE" ] || { echo "::error::$MANIFEST_FILE did not come back off release $TAG."; exit 1; }
+          jq empty "$MANIFEST_FILE"
+
+      - name: Verify the manifest attestation
+        id: verify
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          MANIFEST_FILE: ${{ env.MANIFEST_FILE }}
+        run: |
+          set -euo pipefail
+          # Pinning the signer workflow is what makes this more than a
+          # checksum: it says the bytes on the release are the bytes THIS
+          # workflow attested, not a manifest someone uploaded by hand.
+          gh attestation verify "$MANIFEST_FILE" \
+            --repo "$REPO" \
+            --signer-workflow "$REPO/.github/workflows/release-bom.yml"
+
+          # Anchor the exact bytes that just passed. The publish step re-reads
+          # the asset currently attached to the Release and requires it to
+          # match this digest — otherwise the thing verified here and the
+          # thing published are not the same file.
+          VERIFIED=$(sha256sum "$MANIFEST_FILE" | cut -d' ' -f1)
+          echo "sha256=$VERIFIED" >> "$GITHUB_OUTPUT"
+          echo "Verified manifest bytes: sha256 $VERIFIED"
+
+      - name: Assert the manifest is complete
+        env:
+          MANIFEST_FILE: ${{ env.MANIFEST_FILE }}
+          SCHEMA_VERSION: ${{ env.MANIFEST_SCHEMA_VERSION }}
+          TAG: ${{ needs.resolve.outputs.tag }}
+          SHA: ${{ needs.resolve.outputs.sha }}
+          COMPONENTS: ${{ env.ACR_IMAGE_COMPONENTS }}
+          WORKFLOWS: ${{ env.ARTIFACT_RUN_WORKFLOWS }}
+          INTEGRITY_RE: ${{ env.NPM_INTEGRITY_RE }}
+          SHASUM_RE: ${{ env.NPM_SHASUM_RE }}
+        run: |
+          set -euo pipefail
+          FAILURES=()
+          fail() { FAILURES+=("$1"); echo "::error::$1"; }
+
+          [ "$(jq -r '.schemaVersion' "$MANIFEST_FILE")" = "$SCHEMA_VERSION" ] \
+            || fail "schemaVersion is $(jq -r '.schemaVersion' "$MANIFEST_FILE"), expected $SCHEMA_VERSION"
+          [ "$(jq -r '.release.tag' "$MANIFEST_FILE")" = "$TAG" ] \
+            || fail "manifest records release tag $(jq -r '.release.tag' "$MANIFEST_FILE"), expected $TAG"
+          [ "$(jq -r '.release.sourceSha' "$MANIFEST_FILE")" = "$SHA" ] \
+            || fail "manifest records source SHA $(jq -r '.release.sourceSha' "$MANIFEST_FILE"), expected $SHA"
+
+          # Every producing run must be present and green.
+          for WF in $WORKFLOWS; do
+            CONCLUSION=$(jq -r --arg w "$WF" '.producers[] | select(.workflow == $w) | .conclusion' "$MANIFEST_FILE")
+            [ "$CONCLUSION" = "success" ] || fail "producer $WF is '${CONCLUSION:-absent}', expected success"
+          done
+
+          # Expected component set, re-derived. Container images from the
+          # workflow-level list, npm packages from the tree at this commit.
+          EXPECTED=$( { echo "migration-runner"
+                        for c in $COMPONENTS; do echo "$c"; done
+                        echo "web"; echo "collab-worker"
+                        git ls-files -- '**/package.json' 'package.json' \
+                          | while read -r f; do
+                              jq -r 'select(.name != null
+                                            and (.name | startswith("@fabricorg/"))
+                                            and (.private != true)) | .name' "$f"
+                            done
+                      } | sort -u )
+          ACTUAL=$(jq -r '.components[].component' "$MANIFEST_FILE" | sort -u)
+          while read -r c; do
+            [ -n "$c" ] || continue
+            printf '%s\n' "$ACTUAL" | grep -qxF "$c" || fail "component '$c' is expected in the release BOM but the manifest does not contain it"
+          done <<< "$EXPECTED"
+          while read -r c; do
+            [ -n "$c" ] || continue
+            printf '%s\n' "$EXPECTED" | grep -qxF "$c" || fail "component '$c' is in the manifest but is not an expected release component"
+          done <<< "$ACTUAL"
+
+          # Per-type well-formedness. Digests must look like digests; a
+          # present-but-empty field is exactly the shape a silent registry
+          # miss takes.
+          # Each row is read as one JSON object and its fields pulled out with
+          # jq, rather than as delimited text split in the shell. An EMPTY
+          # field is exactly the shape a silent registry miss takes, and it is
+          # the one shape shell splitting mangles: tab is an IFS *whitespace*
+          # character, so bash collapses `a\t\tc` to two fields and every
+          # value after the gap shifts left. The gate still failed, but it
+          # named the wrong field — and a checklist that misreports which
+          # component is broken costs more at 2am than it saves.
+          check_rows() { # $1 = jq selector, $2 = shell function to apply
+            local row
+            while read -r row; do
+              [ -n "$row" ] || continue
+              "$2" "$row"
+            done < <(jq -c ".components[] | select($1)" "$MANIFEST_FILE")
+          }
+
+          check_oci() {
+            local name digest
+            name=$(printf '%s' "$1" | jq -r '.component')
+            digest=$(printf '%s' "$1" | jq -r '.digest // ""')
+            printf '%s' "$digest" | grep -qE '^sha256:[0-9a-f]{64}$' \
+              || fail "oci-image '$name' has digest '${digest}', which is not a sha256:<64 hex> digest"
+          }
+          # The regex above fixes length and padding but cannot constrain the
+          # unused bits in the final base64 character — a correctly sized
+          # value ending `B==` passes it and is still not valid base64.
+          # Decoding is the honest test: GNU base64 exits non-zero on exactly
+          # that, and the decoded length then confirms the digest is the
+          # right size for its algorithm. Deliberately NOT a decode-and-
+          # re-encode round trip: this check blocking a real release is a
+          # worse outcome than it admitting an odd-looking value, so where
+          # two tests both catch the known defect the more permissive one
+          # wins. A runner whose base64 is laxer than GNU's would let a
+          # non-canonical value through, and that is the acceptable direction
+          # to be wrong in.
+          sri_ok() { # $1 = integrity value
+            local v="$1" alg want got
+            printf '%s' "$v" | grep -qE "$INTEGRITY_RE" || return 1
+            alg="${v%%-*}"
+            case "$alg" in
+              sha512) want=64 ;;
+              sha384) want=48 ;;
+              sha256) want=32 ;;
+              sha1)   want=20 ;;
+              *) return 1 ;;
+            esac
+            got=0
+            if ! got=$(printf '%s' "${v#*-}" | base64 -d 2>/dev/null | wc -c); then
+              return 1
+            fi
+            [ "$got" -eq "$want" ]
+          }
+
+          check_npm() {
+            local name version integrity shasum
+            name=$(printf '%s' "$1" | jq -r '.component')
+            version=$(printf '%s' "$1" | jq -r '.version // ""')
+            integrity=$(printf '%s' "$1" | jq -r '.integrity // ""')
+            shasum=$(printf '%s' "$1" | jq -r '.shasum // ""')
+            [ -n "$version" ] || fail "npm-package '$name' has no version"
+            sri_ok "$integrity" \
+              || fail "npm-package '$name' has integrity '${integrity}', which is not a well-formed Subresource Integrity value (algorithm prefix, canonical base64, and a payload the right size for that algorithm)"
+            printf '%s' "$shasum" | grep -qE "$SHASUM_RE" \
+              || fail "npm-package '$name' has shasum '${shasum}', which is not a 40-character hex digest"
+          }
+          check_platform() {
+            local name run_id conclusion
+            name=$(printf '%s' "$1" | jq -r '.component')
+            run_id=$(printf '%s' "$1" | jq -r '.deployment.runId // ""')
+            conclusion=$(printf '%s' "$1" | jq -r '.deployment.conclusion // ""')
+            { [ -n "$run_id" ] && [ "$run_id" != "null" ]; } \
+              || fail "platform-deployment '$name' records no producing run id"
+            [ "$conclusion" = "success" ] \
+              || fail "platform-deployment '$name' records conclusion '${conclusion}', expected success"
+          }
+
+          check_rows '.type == "oci-image"' check_oci
+          check_rows '.type == "npm-package"' check_npm
+          check_rows '.type == "platform-deployment"' check_platform
+
+          # The migration runner is the only component whose provenance is
+          # verifiable today, so its verification is not optional.
+          MR=$(jq -c '.components[] | select(.component == "migration-runner")' "$MANIFEST_FILE")
+          [ -n "$MR" ] || fail "migration-runner is absent from the manifest"
+          if [ -n "$MR" ]; then
+            [ "$(printf '%s' "$MR" | jq -r '.attestations.buildProvenance')" = "verified" ] \
+              || fail "migration-runner build provenance is not recorded as verified"
+            [ "$(printf '%s' "$MR" | jq -r '.attestations.sbom')" = "verified" ] \
+              || fail "migration-runner SBOM attestation is not recorded as verified"
+            [ "$(printf '%s' "$MR" | jq -r '.attestations.sourceDigest')" = "$SHA" ] \
+              || fail "migration-runner attests source $(printf '%s' "$MR" | jq -r '.attestations.sourceDigest'), expected $SHA"
+          fi
+
+          if [ ${#FAILURES[@]} -gt 0 ]; then
+            echo "::error::${#FAILURES[@]} completeness check(s) failed — release $TAG stays a DRAFT and is NOT published. Each failure is listed above; see docs/runbooks/release-bom.md."
+            exit 1
+          fi
+          echo "Manifest for $TAG is complete: $(jq '.components | length' "$MANIFEST_FILE") components, all producers green."
+
+      # The App token is minted BEFORE the checks below, deliberately
+      # reversing release.yml's "mint late" ordering. There, late minting
+      # keeps a write-capable credential away from dependency and build
+      # scripts. Here nothing of the sort runs after it: the only thing
+      # between the mint and the publish is this job's own read-only API
+      # calls, and they use GITHUB_TOKEN, not this token. What minting first
+      # buys is the thing that actually matters at this point — the tag
+      # re-check, the producer re-check and `gh release edit` all happen in
+      # ONE step, with no step boundary for the world to move across.
+      - name: Mint GitHub App installation token
+        id: release-app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+        with:
+          app-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+
+      # ====================================================================
+      # The last look, and the publish, in one step.
+      #
+      # Everything before this validated a SNAPSHOT. Splitting the re-check
+      # from the publish would reopen the very window the re-check exists to
+      # close: a tag move or a producer re-run during step scheduling would
+      # make the verified snapshot stale before `gh release edit` ran.
+      #
+      # A window remains, and it CANNOT be closed: between the last API
+      # response and the publish request there is always some interval, and
+      # GitHub offers no compare-and-swap on releases — no "publish only if
+      # the tag still points at X". This is the irreducible remainder, not an
+      # oversight. Do not "fix" it by adding another check; the only thing
+      # that would change is which microsecond the gap sits in.
+      # ====================================================================
+      - name: Re-verify the tag and producer runs, then publish
+        id: publish
+        env:
+          # Reads run as GITHUB_TOKEN. The App token is applied to the single
+          # write, and only there.
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          APP_TOKEN: ${{ steps.release-app-token.outputs.token }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ needs.resolve.outputs.tag }}
+          SHA: ${{ needs.resolve.outputs.sha }}
+          WAS_DRAFT: ${{ needs.resolve.outputs.was_draft }}
+          MANIFEST_FILE: ${{ env.MANIFEST_FILE }}
+          VERIFIED_SHA256: ${{ steps.verify.outputs.sha256 }}
+        run: |
+          set -euo pipefail
+          FAILURES=()
+          fail() { FAILURES+=("$1"); echo "::error::$1"; }
+
+          # Is the API answering at all? Used to tell "this thing is gone"
+          # apart from "GitHub did not answer", which are the same exit code
+          # from `gh api` and very different problems for the reader.
+          api_is_up() { gh api "repos/$REPO" --jq '.id' >/dev/null 2>&1; }
+
+          if [ -z "${APP_TOKEN:-}" ]; then
+            echo "::error::The GitHub App token was not minted — check the RELEASE_APP_ID / RELEASE_APP_PRIVATE_KEY secrets and that the App is installed on this repo. Release $TAG stays a DRAFT. Publishing with GITHUB_TOKEN instead is NOT an acceptable fallback: it would leave client-delivery.yml unfired."
+            exit 1
+          fi
+
+          if [ "$WAS_DRAFT" != "true" ]; then
+            echo "::warning::Release $TAG was already published before this run. Re-publishing is a no-op and emits no \`release: published\` event, so client-delivery.yml will not fire from this run."
+          fi
+
+          # ---- the tag still resolves to the commit the manifest records ----
+          # A draft release carries a `target_commitish` — the default branch,
+          # since release.yml passes no --target. If the tag were deleted
+          # while the BOM was building, publishing the draft would RECREATE
+          # the tag at that commitish, shipping a release whose manifest
+          # describes a different commit entirely. The `protect-v-tags`
+          # ruleset does not save us here: we publish AS the App, which is
+          # its bypass actor.
+          if ! REF_JSON=$(gh api "repos/$REPO/git/ref/tags/$TAG" 2>/dev/null); then
+            if api_is_up; then
+              fail "TAG DELETED: $TAG no longer exists; it resolved to $SHA when this run started. Publishing now could recreate the tag at the release's target_commitish and ship a release whose manifest describes a different commit. Restore the tag at $SHA, then re-run this workflow."
+            else
+              fail "TAG LOOKUP FAILED: the GitHub API did not answer when resolving $TAG, so it could not be confirmed to still point at $SHA. This is NOT evidence that the tag was deleted — nothing is known either way. Re-run this workflow once the API is healthy."
+            fi
+          else
+            OBJ_TYPE=$(printf '%s' "$REF_JSON" | jq -r '.object.type')
+            OBJ_SHA=$(printf '%s' "$REF_JSON" | jq -r '.object.sha')
+            if [ "$OBJ_TYPE" = "tag" ]; then
+              TAG_JSON=$(gh api "repos/$REPO/git/tags/$OBJ_SHA")
+              OBJ_TYPE=$(printf '%s' "$TAG_JSON" | jq -r '.object.type')
+              OBJ_SHA=$(printf '%s' "$TAG_JSON" | jq -r '.object.sha')
+            fi
+            if [ "$OBJ_SHA" != "$SHA" ]; then
+              fail "TAG MOVED: $TAG resolved to $SHA when this run started and now resolves to $OBJ_SHA. Every digest in the manifest was collected for $SHA. Investigate the protected-tag bypass that moved it before anything is published."
+            else
+              echo "Tag $TAG still resolves to $SHA."
+            fi
+          fi
+
+          # ---- every producer run is still newest, same attempt, green ----
+          # `await-artifact-runs` recorded a snapshot and then stopped
+          # looking. A producer re-run since then would leave the manifest
+          # asserting a success that no longer holds — `gh run rerun` keeps
+          # the run id and bumps run_attempt, a re-dispatch creates a new id,
+          # so both are checked. This matters most for the Vercel and
+          # PartyKit entries, where the run IS the only deployment evidence
+          # the manifest has.
+          while read -r ROW; do
+            [ -n "$ROW" ] || continue
+            WF=$(printf '%s' "$ROW" | jq -r '.workflow')
+            WANT_ID=$(printf '%s' "$ROW" | jq -r '.runId')
+            WANT_ATTEMPT=$(printf '%s' "$ROW" | jq -r '.runAttempt // ""')
+            if [ -z "$WANT_ATTEMPT" ] || [ "$WANT_ATTEMPT" = "null" ]; then
+              fail "MANIFEST INCOMPLETE: producer $WF records no runAttempt, so a re-run since assembly cannot be detected. Re-run this workflow to regenerate the manifest."
+              continue
+            fi
+            if ! RUNS_JSON=$(gh api "repos/$REPO/actions/workflows/$WF/runs?head_sha=$SHA&per_page=100" 2>/dev/null); then
+              if api_is_up; then
+                fail "PRODUCER LOOKUP REFUSED: the runs of $WF could not be listed, though the API is answering. Check that this job still has actions: read."
+              else
+                fail "PRODUCER LOOKUP FAILED: the GitHub API did not answer when re-checking $WF run $WANT_ID, so it could not be confirmed still green. Nothing is known either way. Re-run this workflow once the API is healthy."
+              fi
+              continue
+            fi
+            # Same filter-then-select ordering as the wait loop, and for the
+            # same reason — if the two disagreed about which run counts, the
+            # gate would be checking a different run from the one recorded.
+            NOW=$(printf '%s' "$RUNS_JSON" \
+                  | jq '.workflow_runs[] | {id, run_attempt, event, head_branch, head_sha, status, conclusion, html_url}' \
+                  | jq -s --arg t "$TAG" --arg s "$SHA" \
+                      'map(select(.head_branch == $t and .head_sha == $s and .event == "push"))
+                       | sort_by(.id) | last // empty')
+            if [ -z "$NOW" ]; then
+              NON_PUSH=$(printf '%s' "$RUNS_JSON" | jq -r --arg t "$TAG" --arg s "$SHA" \
+                '[.workflow_runs[] | select(.head_branch == $t and .head_sha == $s and .event != "push")] | length')
+              if [ "${NON_PUSH:-0}" -gt 0 ]; then
+                fail "PRODUCER NOT FROM THE TAG PUSH: $WF no longer has a run triggered by the $TAG push — only ${NON_PUSH} non-push run(s) at this commit, which are ignored because a dispatched run's ref input decides what it actually builds. The manifest records run $WANT_ID; if that run was deleted, this release cannot be verified without re-creating it. See docs/runbooks/release-bom.md § No tag-push run exists."
+              else
+                fail "PRODUCER GONE: no run of $WF for $TAG is visible any more, though the manifest records run $WANT_ID. Re-run $WF at $TAG, then re-run this workflow."
+              fi
+              continue
+            fi
+            NOW_ID=$(printf '%s' "$NOW" | jq -r '.id | tostring')
+            NOW_ATTEMPT=$(printf '%s' "$NOW" | jq -r '.run_attempt | tostring')
+            NOW_EVENT=$(printf '%s' "$NOW" | jq -r '.event')
+            NOW_STATUS=$(printf '%s' "$NOW" | jq -r '.status')
+            NOW_CONCLUSION=$(printf '%s' "$NOW" | jq -r '.conclusion // ""')
+            NOW_URL=$(printf '%s' "$NOW" | jq -r '.html_url')
+            # Belt and braces on a security-relevant filter: the selection
+            # above cannot return a non-push run, so this only fires if
+            # someone later edits that jq and drops the event clause.
+            if [ "$NOW_EVENT" != "push" ]; then
+              fail "SELECTION INVARIANT BROKEN: $WF run $NOW_ID was selected despite event '$NOW_EVENT'. The run-selection filter in this workflow no longer excludes non-push runs — fix that filter; do not publish."
+              continue
+            fi
+            if [ "$NOW_ID" != "$WANT_ID" ]; then
+              fail "PRODUCER SUPERSEDED: $WF was recorded as run $WANT_ID, but a newer run ($NOW_ID, $NOW_STATUS) now exists for $TAG — $NOW_URL. The manifest describes artifacts that newer run may have replaced. Re-run this workflow once it has settled."
+              continue
+            fi
+            if [ "$NOW_ATTEMPT" != "$WANT_ATTEMPT" ]; then
+              fail "PRODUCER RE-RUN: $WF run $WANT_ID was recorded at attempt $WANT_ATTEMPT and is now on attempt $NOW_ATTEMPT ($NOW_STATUS) — $NOW_URL. The recorded success is stale. Re-run this workflow once that attempt has settled."
+              continue
+            fi
+            if [ "$NOW_STATUS" != "completed" ] || [ "$NOW_CONCLUSION" != "success" ]; then
+              fail "PRODUCER NO LONGER GREEN: $WF run $WANT_ID attempt $NOW_ATTEMPT is now ${NOW_STATUS}/${NOW_CONCLUSION:-in-flight} — $NOW_URL."
+              continue
+            fi
+            echo "$WF — run $NOW_ID attempt $NOW_ATTEMPT still completed/success."
+          done < <(jq -c '.producers[]' "$MANIFEST_FILE")
+
+          # ---- the ATTACHED asset is still the one that was verified ----
+          # Every check above ran against the LOCAL copy this job downloaded
+          # near its start. Between that download and now, anyone with Release
+          # write access could `--clobber` the draft's asset: the semantic
+          # checks would keep passing against our stale local copy while the
+          # Release published a different, public manifest. The whole point of
+          # this gate is that what gets published is what was verified, so the
+          # currently attached bytes have to be re-read and compared.
+          #
+          # Byte equality against the digest `gh attestation verify` passed —
+          # NOT a re-run of the semantic checks. A forged manifest can be
+          # internally consistent, so "it still parses and looks complete"
+          # proves nothing; identical bytes, on the other hand, are covered by
+          # that same attestation.
+          #
+          # Like the tag re-check, this shrinks the window and cannot close
+          # it. It is deliberately the LAST thing queried before publication.
+          if [ -z "${VERIFIED_SHA256:-}" ]; then
+            fail "NO VERIFIED DIGEST: the attestation-verification step recorded no sha256 for the manifest, so the attached asset cannot be confirmed to be the verified one."
+          else
+            rm -rf publish-recheck && mkdir -p publish-recheck
+            if ! gh release download "$TAG" --repo "$REPO" --pattern "$MANIFEST_FILE" --dir publish-recheck --clobber 2>/dev/null; then
+              fail "MANIFEST RE-READ FAILED: $MANIFEST_FILE could not be downloaded from release $TAG, so the asset that would be published could not be confirmed to be the one this run verified."
+            else
+              ATTACHED_SHA256=$(sha256sum "publish-recheck/$MANIFEST_FILE" | cut -d' ' -f1)
+              if [ "$ATTACHED_SHA256" != "$VERIFIED_SHA256" ]; then
+                fail "MANIFEST SWAPPED: the $MANIFEST_FILE attached to $TAG is no longer the file this run verified (verified sha256 $VERIFIED_SHA256, currently attached $ATTACHED_SHA256). Something replaced the release asset between verification and publication. Do NOT publish by hand and do NOT simply re-run — find out who changed it first."
+              else
+                echo "Attached manifest still matches the verified bytes (sha256 $ATTACHED_SHA256)."
+              fi
+            fi
+          fi
+
+          if [ ${#FAILURES[@]} -gt 0 ]; then
+            echo "::error::${#FAILURES[@]} pre-publish check(s) failed — release $TAG stays a DRAFT and is NOT published. See docs/runbooks/release-bom.md § Reading a failure."
+            exit 1
+          fi
+          echo "Tag, producer runs and attached manifest all re-verified."
+
+          # The point of no return. Nothing below this line may fail: after
+          # it returns 0 the release IS published, and a later non-zero exit
+          # would report a draft that does not exist.
+          if ! GH_TOKEN="$APP_TOKEN" gh release edit "$TAG" --repo "$REPO" --draft=false --latest; then
+            echo "::error::PUBLISH FAILED: \`gh release edit\` did not succeed for $TAG, so the release STAYS A DRAFT. Nothing is half-published — the manifest is attached and every check above passed, so re-running this workflow is safe once the cause is fixed."
+            exit 1
+          fi
+          echo "Published $TAG."
+
+      - name: Summary
+        if: always()
+        env:
+          MANIFEST_FILE: ${{ env.MANIFEST_FILE }}
+          TAG: ${{ needs.resolve.outputs.tag }}
+          SHA: ${{ needs.resolve.outputs.sha }}
+          OUTCOME: ${{ steps.publish.outcome }}
+          SERVER_URL: ${{ github.server_url }}
+          REPO: ${{ github.repository }}
+        run: |
+          {
+            printf '## Release BOM — %s\n\n' "$TAG"
+            if [ "$OUTCOME" = "success" ]; then
+              printf -- '**PUBLISHED.** The manifest is complete and attached.\n\n'
+            else
+              printf -- '**NOT PUBLISHED — the release is still a DRAFT.** The failing check is in the log above; nothing was half-published. See `docs/runbooks/release-bom.md`.\n\n'
+            fi
+            printf -- '- Source commit: `%s`\n' "$SHA"
+            printf -- '- Release: %s/%s/releases/tag/%s\n\n' "$SERVER_URL" "$REPO" "$TAG"
+            if [ -s "$MANIFEST_FILE" ]; then
+              printf '### Components in the manifest\n\n'
+              printf '| Component | Type | Digest / version |\n|---|---|---|\n'
+              jq -r '.components[]
+                     | [ .component,
+                         .type,
+                         ( .digest // .version // ("run " + (.deployment.runId // "?")) ) ]
+                     | @tsv' "$MANIFEST_FILE" \
+                | while IFS=$'\t' read -r c t v; do
+                    printf '| `%s` | %s | `%s` |\n' "$c" "$t" "$v"
+                  done
+              printf '\n### Producing runs\n\n'
+              jq -r '.producers[] | "- `\(.workflow)` — \(.conclusion) ([run](\(.runUrl)))"' "$MANIFEST_FILE"
+            else
+              printf 'No manifest was retrieved, so no component list can be shown. The failure happened before or during the manifest download.\n'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

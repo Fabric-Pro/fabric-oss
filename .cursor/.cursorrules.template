@@ -1,0 +1,196 @@
+# [Project Name] - Fabric Framework
+
+This project follows the Fabric spec-driven development workflow for systematic feature development with AI assistance.
+
+## Tech Stack
+
+- **Frontend**: [e.g., Next.js 14, React, TypeScript, Tailwind CSS]
+- **Backend**: [e.g., Node.js, Express, PostgreSQL]
+- **Testing**: [e.g., Vitest, Playwright]
+- **Deployment**: [e.g., Vercel, AWS]
+
+## Fabric Workflow
+
+Follow this systematic workflow for all features:
+
+### 1. Shape Spec
+Reference: @.cursor/prompts/shape-spec.md
+- Gather requirements through strategic questions
+- Create initial spec outline
+- Identify edge cases and acceptance criteria
+
+### 2. Write Spec
+Reference: @.cursor/prompts/write-spec.md
+- Write detailed specification
+- Define acceptance criteria
+- Document edge cases
+
+### 3. Create Tasks
+Reference: @.cursor/prompts/create-tasks.md
+- Break spec into task groups
+- Define implementation order
+- Estimate effort
+
+### 4. Implement
+Reference: @.cursor/prompts/implement-tasks.md
+- Follow TDD approach
+- Implement tasks systematically
+- Update progress in tasks.md
+
+### 5. Verify
+Reference: @.cursor/prompts/3-verify-implementation.md
+- Verify all acceptance criteria met
+- Run full test suite
+- Generate verification report
+
+## Specialized Agents
+
+Use these agents for domain-specific work:
+
+- **@.cursor/agents/implementer.md** - Full-stack implementation
+- **@.cursor/agents/backend-specialist.md** - API and server-side
+- **@.cursor/agents/frontend-specialist.md** - UI and components
+- **@.cursor/agents/database-specialist.md** - Schema and queries
+- **@.cursor/agents/test-specialist.md** - Testing strategies
+- **@.cursor/agents/devops-specialist.md** - CI/CD and deployment
+
+## Coding Standards
+
+**ALWAYS** reference and follow: @fabric/standards/coding-standards.md
+
+Key principles:
+- Test-Driven Development (TDD)
+- Small, focused functions (< 20 lines)
+- Descriptive variable names
+- Proper error handling
+- Type safety (TypeScript)
+- No code duplication (DRY)
+
+## File Structure
+
+```
+fabric/
+├── standards/           # Project coding standards
+│   ├── coding-standards.md
+│   ├── validation-requirements.md
+│   └── best-practices.md
+└── specs/              # Feature specifications
+    └── YYYY-MM-DD-feature-name/
+        ├── spec.md     # Detailed specification
+        ├── tasks.md    # Task breakdown
+        └── orchestration.yml  # Implementation plan (optional)
+
+src/
+├── app/                # Next.js app directory
+├── components/         # React components
+├── lib/               # Utility functions
+└── __tests__/         # Test files
+```
+
+## Testing Requirements
+
+- **TDD Approach**: Write tests before implementation
+- **Coverage**: Aim for 80%+ on business logic
+- **Test Types**:
+  - Unit tests: Individual functions/components
+  - Integration tests: API endpoints, database operations
+  - E2E tests: Critical user flows
+
+**Test Naming:**
+```typescript
+describe('Feature/Component', () => {
+  it('should do expected behavior', () => {
+    // Test implementation
+  });
+});
+```
+
+## API Standards
+
+**Response Format:**
+```typescript
+{
+  "success": boolean,
+  "data": any,
+  "error": {
+    "code": string,
+    "message": string,
+    "details": any
+  } | null
+}
+```
+
+**Error Handling:**
+- Use custom error classes
+- Provide meaningful error messages
+- Include error codes for client handling
+- Log errors with context
+
+## Component Standards
+
+**React Components:**
+- Functional components only
+- TypeScript for all props
+- Tailwind CSS for styling
+- Accessibility required (ARIA labels, keyboard nav)
+
+**Example:**
+```typescript
+interface ButtonProps {
+  label: string;
+  onClick: () => void;
+  variant?: 'primary' | 'secondary';
+  disabled?: boolean;
+}
+
+export const Button: FC<ButtonProps> = ({ 
+  label, 
+  onClick, 
+  variant = 'primary',
+  disabled = false 
+}) => {
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      className={/* Tailwind classes */}
+      aria-label={label}
+    >
+      {label}
+    </button>
+  );
+};
+```
+
+## Database Standards
+
+- Use migrations for schema changes
+- Add indexes for frequently queried fields
+- Use transactions for multi-step operations
+- Validate data before database operations
+
+## Git Workflow
+
+- Commit after each completed task
+- Use descriptive commit messages
+- Reference spec in commits: `feat: Add user auth (spec: 2024-01-15-auth)`
+- Keep commits small and focused
+
+## Skills Library
+
+Reference skills from @.cursor/skills/ for deep expertise:
+- @.cursor/skills/nextjs/ - Next.js patterns
+- @.cursor/skills/react/ - React best practices
+- @.cursor/skills/typescript/ - TypeScript patterns
+- @.cursor/skills/testing/ - Testing strategies
+- @.cursor/skills/api-design/ - API patterns
+
+## Remember
+
+- **Always start with a spec** - No coding without specification
+- **Follow the workflow** - Don't skip phases
+- **Update as you go** - Keep tasks.md current
+- **Reference standards** - Check @fabric/standards/ before coding
+- **Test first** - TDD approach for all features
+- **Ask questions** - Clarify before implementing
+

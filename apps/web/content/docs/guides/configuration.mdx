@@ -1,0 +1,108 @@
+---
+title: Configuration Reference
+description: Key settings you can configure in Fabric AI for AI providers, authentication, email, payments, and analytics.
+---
+
+Fabric AI is designed to work out of the box with minimal configuration. Most settings can be managed through the web UI. This page covers the key configuration options available to you.
+
+## AI Providers
+
+The most important configuration is connecting your AI provider. You can do this entirely through the UI.
+
+<Steps>
+  <Step>
+    ### Navigate to Settings
+
+    Go to **Settings > AI Providers** from the sidebar.
+  </Step>
+
+  <Step>
+    ### Choose a Provider
+
+    Select from 20+ supported providers including OpenAI, Anthropic, Groq, Cerebras, DeepSeek, and more.
+  </Step>
+
+  <Step>
+    ### Enter Your API Key
+
+    Paste your API key from your provider's dashboard. Keys are encrypted before storage.
+  </Step>
+
+  <Step>
+    ### Test and Save
+
+    Click **Test Connection** to verify, then **Save**.
+  </Step>
+</Steps>
+
+For detailed AI provider setup, see the [AI Configuration guide](/docs/getting-started/ai-configuration).
+
+---
+
+## Authentication Providers
+
+Fabric supports multiple sign-in methods. Social OAuth providers can be enabled by configuring the following:
+
+| Provider | What You Need |
+|----------|---------------|
+| **Google** | Google OAuth client ID and secret from [Google Cloud Console](https://console.cloud.google.com) |
+| **GitHub** | GitHub OAuth app credentials from [GitHub Developer Settings](https://github.com/settings/developers) |
+| **Microsoft** | Microsoft Graph app credentials from [Azure Portal](https://portal.azure.com) |
+
+Built-in methods (email/password, magic link, passkeys, 2FA) work without additional configuration.
+
+---
+
+## Email
+
+Configure an email provider to enable transactional emails (verification, invitations, notifications):
+
+| Provider | Description |
+|----------|-------------|
+| **Resend** | Modern email API with great developer experience |
+
+Resend is the supported email provider.
+
+---
+
+## Payments
+
+Fabric supports multiple payment providers for subscription billing:
+
+| Provider | Description |
+|----------|-------------|
+| **Stripe** | Full-featured payment processing |
+
+Configure the Stripe API key and webhook secret to enable billing features.
+
+---
+
+## Analytics
+
+Track usage with your preferred analytics platform:
+
+| Provider | Description |
+|----------|-------------|
+| **PostHog** | Product analytics, session replay, and feature flags |
+
+---
+
+## Self-Hosting Configuration
+
+If you're running a self-hosted instance, you'll need to configure your database, storage, and other infrastructure components. Detailed setup instructions are available in the [project repository](https://github.com/fabric-ai/fabric-portal).
+
+---
+
+## Next Steps
+
+<Cards>
+  <Card title="AI Configuration" href="/docs/getting-started/ai-configuration">
+    Detailed guide to configuring AI providers and models
+  </Card>
+  <Card title="Installation" href="/docs/getting-started/installation">
+    Full local development setup
+  </Card>
+  <Card title="Organizations" href="/docs/features/organizations">
+    Set up team collaboration
+  </Card>
+</Cards>

@@ -1,0 +1,66 @@
+{
+	"now": "2026-08-21T12:00:00.000Z",
+	"retentionDays": 30,
+	"graceDays": 7,
+	"currentMasterSha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+	"releaseSha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+	"proofSha": "cccccccccccccccccccccccccccccccccccccccc",
+	"versions": [
+		{
+			"key": "release",
+			"digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+			"createdAt": "2026-01-01T00:00:00.000Z",
+			"tags": ["bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"],
+			"kind": "image",
+			"subjectDigest": null
+		},
+		{
+			"key": "old-unreferenced",
+			"digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+			"createdAt": "2026-01-01T00:00:00.000Z",
+			"tags": ["dddddddddddddddddddddddddddddddddddddddd"],
+			"kind": "image",
+			"subjectDigest": null
+		},
+		{
+			"key": "current-master",
+			"digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+			"createdAt": "2026-01-01T00:00:00.000Z",
+			"tags": ["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],
+			"kind": "image",
+			"subjectDigest": null
+		},
+		{
+			"key": "in-window",
+			"digest": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+			"createdAt": "2026-08-20T00:00:00.000Z",
+			"tags": ["eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"],
+			"kind": "image",
+			"subjectDigest": null
+		},
+		{
+			"key": "referrer",
+			"digest": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+			"createdAt": "2026-01-01T00:00:00.000Z",
+			"tags": ["attestation-referrer"],
+			"kind": "attestation",
+			"subjectDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+		},
+		{
+			"key": "untagged",
+			"digest": "sha256:6666666666666666666666666666666666666666666666666666666666666666",
+			"createdAt": "2026-01-01T00:00:00.000Z",
+			"tags": [],
+			"kind": "image",
+			"subjectDigest": null
+		},
+		{
+			"key": "active-proof",
+			"digest": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+			"createdAt": "2026-01-01T00:00:00.000Z",
+			"tags": ["cccccccccccccccccccccccccccccccccccccccc"],
+			"kind": "image",
+			"subjectDigest": null
+		}
+	]
+}

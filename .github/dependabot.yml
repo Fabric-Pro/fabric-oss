@@ -1,0 +1,44 @@
+version: 2
+
+# Dependabot opens PRs for outdated/vulnerable dependencies. Pairs with the
+# `pnpm audit` job in security.yml: the audit blocks merges on known CVEs;
+# Dependabot opens the PRs that resolve them.
+#
+# `directories` (plural) with globs covers every workspace package.json so
+# Dependabot edits the manifest that actually declares the dep, not just the
+# root. Glob set mirrors pnpm-workspace.yaml. The single update entry plus
+# `groups` config bundles minor+patch bumps across all matched directories
+# into one PR per group to keep merge volume sane on a 40+ package monorepo.
+
+updates:
+  - package-ecosystem: npm
+    directories:
+      - '/'
+      - '/apps/*'
+      - '/packages/*'
+      - '/tooling/*'
+      - '/agents/*/*'
+      - '/config'
+      - '/party'
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 10
+    # Group non-major updates so the team sees one consolidated PR per group
+    # per week instead of dozens of standalone bumps. Security updates always
+    # open as standalone PRs regardless of grouping rules.
+    groups:
+      minor-and-patch:
+        update-types: [minor, patch]
+    labels: [dependencies]
+    commit-message:
+      prefix: chore(deps)
+      include: scope
+
+  - package-ecosystem: github-actions
+    directory: '/'
+    schedule:
+      interval: monthly
+    labels: [dependencies, ci]
+    commit-message:
+      prefix: chore(ci)

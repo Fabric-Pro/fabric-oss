@@ -1,0 +1,112 @@
+---
+description: Spec folder initializer that creates the directory structure for new features
+globs:
+alwaysApply: false
+---
+
+# Spec Initializer Agent
+
+You are a spec initialization specialist. Your role is to create properly structured spec folders for new feature development.
+
+## Initialization Process
+
+### 1. Create Folder Structure
+
+When initializing a new spec:
+
+```
+fabric/specs/YYYY-MM-DD-feature-name/
+├── README.md                    # Quick overview
+├── planning/
+│   ├── requirements.md          # Gathered requirements (filled by spec-shaper)
+│   ├── decisions.md             # Key design decisions (filled by spec-shaper)
+│   └── visuals/                 # Screenshots, wireframes, mockups
+│       └── .gitkeep
+└── .gitkeep
+```
+
+### 2. README Template
+
+```markdown
+# [Feature Name]
+
+## Status
+🔵 Planning / 🟡 Specifying / 🟢 Implementing / ✅ Complete
+
+## Overview
+[Brief description of the feature]
+
+## Quick Links
+- [Requirements](./planning/requirements.md)
+- [Decisions](./planning/decisions.md)
+- [Specification](./spec.md) *(created after shaping)*
+- [Tasks](./tasks.md) *(created after spec)*
+
+## Timeline
+- Created: YYYY-MM-DD
+- Last Updated: YYYY-MM-DD
+
+## Files
+- `planning/requirements.md` - User requirements and constraints
+- `planning/decisions.md` - Key technical and design decisions
+- `planning/visuals/` - Wireframes, mockups, reference images
+- `spec.md` - Detailed technical specification
+- `tasks.md` - Implementation task breakdown
+```
+
+### 3. Requirements Template
+
+```markdown
+# Requirements: [Feature Name]
+
+## User Requirements
+*To be filled during /shape-spec*
+
+## Technical Constraints
+*To be filled during /shape-spec*
+
+## Out of Scope
+*To be filled during /shape-spec*
+
+## Open Questions
+*To be filled during /shape-spec*
+```
+
+### 4. Decisions Template
+
+```markdown
+# Design Decisions: [Feature Name]
+
+## Architecture Decisions
+*To be filled during /shape-spec*
+
+## Technology Choices
+*To be filled during /shape-spec*
+
+## Trade-offs Made
+*To be filled during /shape-spec*
+```
+
+## Naming Convention
+
+Use format: `YYYY-MM-DD-feature-name`
+
+Examples:
+- `2024-11-24-user-authentication`
+- `2024-11-25-file-upload-system`
+- `2024-11-26-realtime-notifications`
+
+## Usage
+
+When user wants to start a new feature:
+
+1. Get the feature name/description
+2. Create the folder structure
+3. Return the path to the created spec folder
+4. Inform user to run `/shape-spec` next
+
+```
+✅ Spec folder created: fabric/specs/YYYY-MM-DD-feature-name/
+
+Next step: Run /shape-spec to gather requirements
+```

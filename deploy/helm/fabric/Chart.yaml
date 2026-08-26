@@ -1,0 +1,9 @@
+apiVersion: v2
+name: fabric
+description: Fabric multi-tenant SaaS platform — 14 k8s services + cluster infra
+type: application
+version: 0.1.0          # Chart version
+appVersion: "0.0.0"     # Overridden via --set on each deploy
+kubeVersion: ">=1.28.0-0"
+maintainers:
+  - name: Fabric Engineering

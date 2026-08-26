@@ -1,0 +1,58 @@
+{
+	"name": "@fabricorg/sdk-mcp",
+	"version": "0.1.0",
+	"description": "MCP server adapter for @fabricorg/sdk — expose a Fabric workspace as MCP tools",
+	"keywords": [
+		"fabric",
+		"mcp",
+		"model-context-protocol",
+		"agent"
+	],
+	"homepage": "https://fabric.pro",
+	"license": "MIT",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/Fabric-Pro/fabric.git",
+		"directory": "packages/sdk-mcp"
+	},
+	"type": "module",
+	"exports": {
+		".": {
+			"types": "./dist/index.d.ts",
+			"import": "./dist/index.js",
+			"require": "./dist/index.cjs"
+		},
+		"./stdio": {
+			"types": "./dist/stdio.d.ts",
+			"import": "./dist/stdio.js",
+			"require": "./dist/stdio.cjs"
+		}
+	},
+	"main": "./dist/index.cjs",
+	"module": "./dist/index.js",
+	"types": "./dist/index.d.ts",
+	"publishConfig": {
+		"access": "public"
+	},
+	"files": [
+		"dist"
+	],
+	"scripts": {
+		"build": "tsup",
+		"dev": "tsup --watch",
+		"type-check": "tsc --noEmit"
+	},
+	"peerDependencies": {
+		"@fabricorg/sdk": "workspace:*"
+	},
+	"dependencies": {
+		"@modelcontextprotocol/sdk": "^1.26.0",
+		"zod": "^4.3.6"
+	},
+	"devDependencies": {
+		"@fabricorg/sdk": "workspace:*",
+		"@repo/tsconfig": "workspace:*",
+		"tsup": "^8.0.0",
+		"typescript": "5.9.3"
+	}
+}

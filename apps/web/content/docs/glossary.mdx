@@ -1,0 +1,103 @@
+---
+title: Glossary
+description: Definitions of key terms and concepts used throughout Fabric AI.
+---
+
+A reference of terminology used in Fabric AI documentation and the platform.
+
+## A
+
+### Authority Grant
+A specific permission within an Authority Session, scoped to a provider (e.g., `github`, `linear`) with an access level (READ or WRITE). Grants can be BROAD (reusable within the session) or REQUEST (one-shot, consumed after use). See [Runtime Authority](/docs/core-concepts/runtime-authority).
+
+### Authority Session
+A time-bounded execution context within which Authority Grants are valid. Tied to a specific user, tenant, run type, and expiration time. Part of Fabric's Pipes-style session-scoped authorization model. See [Runtime Authority](/docs/core-concepts/runtime-authority).
+
+### A2A Protocol
+Agent-to-Agent protocol. An open standard for inter-agent communication that enables the Orchestrator to discover capabilities and delegate tasks to specialized agents.
+
+### AG-UI Protocol
+Agent-to-UI protocol. Handles real-time communication between agents and the frontend, including state deltas, tool call visibility, streaming, and approval requests.
+
+### Agent Template
+A reusable configuration for creating agent instances. Templates define the system prompt, available tools, skills, and behavior. Scoped as System (available to all), Organization, or User.
+
+### Automation Template
+A saved workflow pattern that can be reused and triggered automatically. Inspired by repeatable task patterns.
+
+## B
+
+### BYOK (Bring Your Own Key)
+Fabric's model where users provide their own API keys for AI providers. This gives full control over costs and model selection.
+
+## D
+
+### Data Connection
+A legacy term for an external service connected to Fabric via OAuth or API key (e.g. Google Drive, Notion, GitHub). These are now managed under **Settings → Integrations** as providers with runtime **actions**. See [Integrations](/docs/tutorials/setup-integrations).
+
+### Direct Provider
+An AI provider connected directly via its native API (e.g., OpenAI, Anthropic, Groq). Contrast with Gateway providers.
+
+## E
+
+### Embedding
+A vector representation of text used for semantic search. Fabric uses embedding models to convert document chunks into vectors for fast, accurate retrieval.
+
+## G
+
+### Gateway Provider
+An AI provider that routes requests to multiple underlying models through a single API key (e.g., Vercel Gateway, OpenRouter, Cloudflare AI).
+
+## M
+
+### MCP (Model Context Protocol)
+An open standard that lets AI agents interact with external tools and services. MCP servers expose tools (e.g., create a Jira ticket, post to Slack) that agents can discover and execute.
+
+### MCP Gateway
+Fabric's unified MCP endpoint that aggregates all platform tools (projects, docs, workspaces, workflows) and connected MCP server tools into a single URL. Works with Claude Desktop, Cursor, VS Code, and any MCP-compatible client. See [MCP Gateway](/docs/integrations/mcp-gateway).
+
+### Model Resolution
+The process by which Fabric selects an AI model for a given task. Priority: User Override > Organization Override > System Default. No hardcoded fallbacks.
+
+## O
+
+### Orchestrator
+The central AI coordinator that routes user requests to the appropriate agent, tool, or workflow. Uses semantic routing, task decomposition, and priority-based executor assignment.
+
+## P
+
+### Provider Key
+A canonical identifier for an MCP server or integration (e.g., `github`, `linear`, `slack`, `custom:my-server`). Used by the runtime authority system to scope grants to specific providers. Known MCP servers are mapped to standard keys; custom servers use the `custom:` prefix.
+
+## R
+
+### RAG (Retrieval-Augmented Generation)
+A technique where AI responses are enhanced by retrieving relevant context from your documents. Documents are chunked, embedded as vectors, and stored for semantic search.
+
+## R (continued)
+
+### Runtime Authority
+The system that separates persistent credentials from ephemeral runtime access. AI agents must obtain human-approved, time-limited authority before using connected external systems. Inspired by WorkOS Pipes MCP. See [Runtime Authority](/docs/core-concepts/runtime-authority).
+
+## S
+
+### Skill
+A reusable capability that can be attached to agent templates. Skills define specific tools or behaviors (e.g., "code review", "data analysis") with versioning support.
+
+## T
+
+### Task Type
+A classification for AI work that determines which model is used. Types: Simple, Complex, Chat, Tool Calling, Reasoning, Embedding. Each can have a different model configured.
+
+### Tenant Isolation
+The architectural pattern ensuring data is strictly separated between personal and organization contexts. Your personal data is never visible in an organization, and one organization's data is never visible to another.
+
+## W
+
+### Workspace
+A collaboration space for teams to share documents, agents, and conversations. Supports role-based access with Administrator, Contributor, and Stakeholder roles.
+
+## X
+
+### XOR Pattern
+The exclusive filtering pattern for multi-tenant data access. In organization context, only organization data is visible. In personal context, only your personal data is visible. Data never leaks across contexts.

@@ -1,0 +1,10 @@
+{
+	"devDependencies": {
+		"tailwindcss": "^4.1.16"
+	},
+	"main": "theme.css",
+	"name": "@repo/tailwind-config",
+	"private": true,
+	"version": "0.0.0",
+	"license": "Apache-2.0"
+}

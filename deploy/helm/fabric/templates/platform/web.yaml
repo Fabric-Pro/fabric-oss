@@ -1,0 +1,37 @@
+{{- if .Values.web.enabled }}
+{{- include "fabric.deployment" (dict
+    "name"      "web"
+    "component" "platform"
+    "image"     (printf "%s/%s:%s" .Values.global.imageRegistry .Values.web.image.repository .Values.global.imageTag)
+    "replicas"  .Values.web.replicas
+    "port"      .Values.web.port
+    "resources" .Values.web.resources
+    "securityContext" (dict
+      "runAsNonRoot" true
+      "runAsUser"    1001
+      "fsGroup"      1001)
+    "probes"    (dict
+      "livenessProbe"  (dict
+        "httpGet"             (dict "path" "/api/health" "port" .Values.web.port)
+        "initialDelaySeconds" 15
+        "periodSeconds"       20
+        "timeoutSeconds"      5
+        "failureThreshold"    3)
+      "readinessProbe" (dict
+        "httpGet"             (dict "path" "/api/health" "port" .Values.web.port)
+        "initialDelaySeconds" 5
+        "periodSeconds"       10
+        "timeoutSeconds"      5
+        "failureThreshold"    3))
+    "Release"   .Release
+    "Values"    .Values
+) }}
+---
+{{- include "fabric.service" (dict
+    "name"      "web"
+    "component" "platform"
+    "port"      .Values.web.port
+    "Release"   .Release
+    "Values"    .Values
+) }}
+{{- end }}

@@ -1,0 +1,18 @@
+{{- if .Values.ingress.enabled }}
+Fabric is reachable at:
+{{- if .Values.ingress.tls }}
+  https://{{ .Values.global.domain }}
+{{- else }}
+  http://<ALB hostname — run `kubectl get ingress fabric-web -n {{ .Release.Namespace }}` to see it>
+{{- end }}
+{{- end }}
+
+Check pod status:
+  kubectl get pods -n {{ .Release.Namespace }}
+
+Tail web logs:
+  kubectl logs -n {{ .Release.Namespace }} -l app.kubernetes.io/name=web --tail=100 -f
+
+Roll back:
+  helm history fabric -n {{ .Release.Namespace }}
+  helm rollback fabric <revision> -n {{ .Release.Namespace }}

@@ -1,0 +1,35 @@
+{
+	"name": "@repo/agent-prompts",
+	"version": "0.0.0",
+	"license": "Apache-2.0",
+	"private": true,
+	"type": "module",
+	"exports": {
+		".": {
+			"types": "./src/index.ts",
+			"default": "./src/index.ts"
+		},
+		"./markdown-repair": {
+			"types": "./src/core/markdown-repair.ts",
+			"default": "./src/core/markdown-repair.ts"
+		}
+	},
+	"scripts": {
+		"test": "vitest run",
+		"type-check": "tsc --noEmit"
+	},
+	"dependencies": {
+		"@repo/agent-types": "workspace:*",
+		"remark-gfm": "^4.0.1",
+		"remark-parse": "^11.0.0",
+		"unified": "^11.0.5",
+		"unist-util-visit": "^5.1.0"
+	},
+	"devDependencies": {
+		"@repo/tsconfig": "workspace:*",
+		"@types/mdast": "^4.0.4",
+		"@types/unist": "^3.0.3",
+		"typescript": "5.9.3",
+		"vitest": "^4.1.8"
+	}
+}

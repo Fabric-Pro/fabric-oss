@@ -1,0 +1,12 @@
+-- A test case a sceptic role PROPOSED, awaiting a human's Accept or Reject
+-- (mocks B4; register gap G6).
+--
+-- Distinct from DRAFT, which is a case someone has committed to and is still
+-- polishing. PROPOSED is one nobody has agreed to yet, which is why it is
+-- excluded from coverage counts — a project's "tested by N cases" must not rise
+-- because an AI suggested something.
+--
+-- Added as a new value only. No existing row changes state, and nothing that
+-- reads DRAFT/READY/CLOSED behaves differently until a case is actually
+-- proposed.
+ALTER TYPE "test_case_state" ADD VALUE IF NOT EXISTS 'PROPOSED' BEFORE 'DRAFT';

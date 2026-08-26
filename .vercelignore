@@ -1,0 +1,63 @@
+# Agents - deployed separately to LangGraph Cloud
+# Use /agents/ with leading slash to only match root-level directory
+# (not packages/api/modules/agents/ which is needed for the web build)
+/agents/
+
+# Documentation - not needed for web deployment
+/docs/
+
+# Scripts and tooling
+/scripts/
+*.sh
+# ...except the Ignored Build Step script, which Vercel must be able to run
+# before `vercel build` (referenced by ignoreCommand in apps/web/vercel.json)
+!apps/web/scripts/vercel-ignore.sh
+check-*.ts
+check-*.sql
+
+# Docker and deployment configs for other platforms
+/docker/
+docker-compose*.yml
+Dockerfile*
+.dockerignore
+railway.toml
+apps/web/railway.toml
+/agents/langchain/api-agent/railway.toml
+
+# .NET Aspire orchestration
+/aspire/
+/.aspire/
+
+# Local development configs
+.env.local
+.env.compose
+.env.docker.example
+
+# IDE and editor configs
+/.cursor/
+/.augment/
+/.claude/
+/.fabric/
+
+# PartyKit - deployed separately
+/party/
+
+# Git submodules (deployed separately)
+/agents/langchain/cuga/
+
+# Test files
+**/*.test.ts
+**/*.spec.ts
+**/tests/
+**/e2e/
+playwright.config.ts
+playwright-report/
+test-results/
+
+# Build artifacts
+.turbo/
+**/dist/
+**/.next/
+
+# Temporal worker - deployed separately
+packages/temporal/src/worker.ts

@@ -1,0 +1,269 @@
+---
+title: Getting Started Overview
+description: Everything you need to set up Fabric AI and start using intelligent AI agents for your development workflow.
+---
+
+Welcome! This guide will walk you through setting up Fabric AI and using your first AI agent. Whether you're a product manager looking to generate PRDs or a developer wanting to automate documentation, you'll be up and running in minutes.
+
+## Prerequisites
+
+Before you begin, make sure you have:
+
+- **A Fabric AI account** — Sign up at [fabric.pro](https://fabric.pro)
+- **An AI provider API key** — From OpenAI, Anthropic, or another supported provider
+- **Modern web browser** — Chrome, Firefox, Safari, or Edge (latest versions)
+
+## Account Setup
+
+<Steps>
+  <Step>
+    ### Create Your Account
+
+    Visit [fabric.pro](https://fabric.pro) and click **Get Started**. You can sign up using:
+
+    - **Email & Password** — Traditional sign-up with email verification
+    - **Magic Link** — Passwordless login via email
+    - **Social Login** — Sign in with Google, GitHub, or other providers
+    - **Passkey** — Use biometric authentication (recommended for security)
+  </Step>
+
+  <Step>
+    ### Complete Your Profile
+
+    After signing in, complete your profile:
+
+    1. Add your **name** and optional **avatar**
+    2. Select your **timezone** for accurate scheduling
+    3. Choose your preferred **language** (Fabric supports multiple languages)
+  </Step>
+
+  <Step>
+    ### Configure AI Provider
+
+    Navigate to **Settings → AI Gateway** to set up your AI provider:
+
+    1. Click **Add Provider**
+    2. Select your provider (OpenAI, Anthropic, Google, etc.)
+    3. Paste your API key
+    4. Click **Test Connection** to verify it works
+    5. Click **Save**
+
+    > **Tip:** You can configure multiple providers and switch between them based on your needs. Each provider has different strengths—Claude for long contexts, GPT-4 for complex reasoning, etc.
+  </Step>
+</Steps>
+
+## Understanding the Interface
+
+When you first log in, you'll see the main dashboard with these key areas:
+
+### Left Sidebar
+
+- **Dashboard** — Overview of your recent activity and quick stats
+- **Agents** — Browse, create, and manage AI agents
+- **Projects** — Organize work into projects with documents and workflows
+- **Prompts** — Access and manage your prompt library
+- **Workspaces** — Upload and organize documents for RAG context
+- **Settings** — Configure your account, AI providers, and integrations
+
+### Main Content Area
+
+This is where you'll interact with agents, view documents, and work on projects. The interface adapts based on what you're doing:
+
+- **Chat Interface** — For conversing with AI agents
+- **Document Editor** — Rich text editor with AI assistance
+- **Dashboard Views** — Analytics and overview panels
+
+### Top Bar
+
+- **Search** — Quick access to any feature or document
+- **Notifications** — Stay updated on workflow completions and approvals
+- **Organization Switcher** — Switch between personal account and organizations
+- **Profile Menu** — Access settings, help, and sign out
+
+## Your First AI Agent
+
+Let's create your first AI agent and generate a document:
+
+<Steps>
+  <Step>
+    ### Navigate to Agents
+
+    Click **Agents** in the left sidebar. You'll see a list of available agents, including:
+
+    - **Document Generator** — Creates various document types (PRDs, specs, etc.)
+    - **Fabric AI** — The intelligent orchestrator that routes tasks to specialized agents
+    - **Custom Agents** — Agents you or your organization have created
+  </Step>
+
+  <Step>
+    ### Select an Agent
+
+    For your first experience, let's use the **Document Generator** agent. Click on it to open the chat interface.
+  </Step>
+
+  <Step>
+    ### Start a Conversation
+
+    Type a message to begin. Here are some examples to try:
+
+    ```
+    Create a PRD for a user authentication feature with OAuth support
+    ```
+
+    ```
+    Write a technical specification for a REST API that manages user profiles
+    ```
+
+    ```
+    Generate an architecture document for a microservices-based e-commerce platform
+    ```
+  </Step>
+
+  <Step>
+    ### Review and Refine
+
+    The agent will generate a document based on your request. You can:
+
+    - **Edit directly** in the document editor
+    - **Ask for changes** by chatting with the agent
+    - **Accept or reject** suggested modifications
+    - **Export** the final document to PDF, DOCX, or Markdown
+  </Step>
+</Steps>
+
+## Adding Context with RAG
+
+To get better results, you can provide context from your existing documents:
+
+<Steps>
+  <Step>
+    ### Create a Workspace
+
+    Go to **Workspaces → Create Workspace**. Give it a name like "Product Documentation" or "Technical Specs".
+  </Step>
+
+  <Step>
+    ### Upload Documents
+
+    Drag and drop documents into your workspace. Fabric supports:
+
+    - **PDF** — Including scanned documents with OCR
+    - **Word Documents** — .docx files
+    - **Markdown** — .md files
+    - **Text Files** — .txt files
+    - **Code Files** — Various programming languages
+  </Step>
+
+  <Step>
+    ### Attach Workspace to Agent
+
+    When starting a conversation with an agent, click the **Attach** button and select your workspace. The agent will now have access to all documents in that workspace for context.
+  </Step>
+</Steps>
+
+## Organizations and Collaboration
+
+If you're working with a team, you can create an organization:
+
+<Steps>
+  <Step>
+    ### Create an Organization
+
+    Go to **Settings → Organizations → Create Organization**. Choose a name and invite team members via email.
+  </Step>
+
+  <Step>
+    ### Set Member Roles
+
+    Assign roles to team members:
+
+    - **Owner** — Full control, including billing and deletion
+    - **Admin** — Can manage members and settings
+    - **Member** — Can use agents and create documents
+  </Step>
+
+  <Step>
+    ### Share Resources
+
+    Within an organization, you can share:
+
+    - **Workspaces** — Documents and knowledge bases
+    - **Prompts** — Custom prompt templates
+    - **Agents** — Organization-specific agents
+    - **Projects** — Collaborative projects
+  </Step>
+</Steps>
+
+## Connecting External Tools
+
+Fabric AI can connect to your existing tools using MCP (Model Context Protocol):
+
+### Popular Integrations
+
+<Cards>
+  <Card title="GitHub">
+    Read repositories, create issues, manage pull requests
+  </Card>
+  <Card title="Jira">
+    Create tickets, update statuses, manage sprints
+  </Card>
+  <Card title="Slack">
+    Post messages, read channels, manage notifications
+  </Card>
+  <Card title="Notion">
+    Read and write pages, manage databases
+  </Card>
+</Cards>
+
+To set up an integration:
+
+1. Go to **Settings → MCP Servers**
+2. Click **Add Server** and select from the registry
+3. Authenticate using OAuth or API key
+4. Test the connection
+
+Once connected, agents can use these tools to automate tasks like creating Jira tickets from PRDs or posting updates to Slack.
+
+## What's Next?
+
+Now that you're set up, explore these guides:
+
+<Cards>
+  <Card title="Core Concepts" href="/docs/core-concepts/architecture">
+    Understand how Fabric AI works under the hood
+  </Card>
+  <Card title="Document Generation" href="/docs/tutorials/first-document">
+    Deep dive into creating different document types
+  </Card>
+  <Card title="Custom Prompts" href="/docs/features/prompts">
+    Create and manage custom prompts for your agents
+  </Card>
+  <Card title="Workflow Automation" href="/docs/core-concepts/workflows">
+    Learn about durable workflow automation
+  </Card>
+</Cards>
+
+## Troubleshooting
+
+### Common Issues
+
+**AI Provider Not Working**
+- Verify your API key is correct and has sufficient credits
+- Check that the provider is enabled in your settings
+- Try testing the connection again
+
+**Documents Not Uploading**
+- Ensure the file format is supported
+- Check that the file size is under 50MB
+- Try refreshing the page and uploading again
+
+**Slow Response Times**
+- Large documents may take longer to process
+- Complex prompts require more computation
+- Check your internet connection
+
+### Getting Help
+
+- **Documentation** — You're reading it!
+- **Support Email** — support@fabric.pro
+- **Community** — Join our Discord for community support

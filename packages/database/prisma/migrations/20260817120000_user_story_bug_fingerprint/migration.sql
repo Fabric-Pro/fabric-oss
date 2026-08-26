@@ -1,0 +1,16 @@
+-- Stable dedup key for machine-filed bugs: a caller-supplied hash of a
+-- normalized error signature, so an autonomous monitoring agent that sees the
+-- same failure twice re-finds the bug it already opened instead of filing a
+-- second one.
+--
+-- Deliberately a NEW column rather than a reuse of "externalId": that column
+-- means "linked to a PM-tool issue", and several flows key off it being
+-- non-null alone (roadmap auto-push, the PM-sync enqueue short-circuit, the
+-- conflict preview filter, the external-link chip). A fingerprint stored there
+-- would make every machine-filed bug behave as if it had a remote counterpart.
+--
+-- Nullable with no default: expand-phase safe, and the previous app version
+-- simply never writes it. The partial unique index that enforces one
+-- non-terminal bug per (projectId, fingerprint) lands in the next migration so
+-- it can be built CONCURRENTLY outside a transaction.
+ALTER TABLE "user_story" ADD COLUMN "bugFingerprint" TEXT;

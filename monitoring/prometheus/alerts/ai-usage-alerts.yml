@@ -1,0 +1,91 @@
+groups:
+  - name: ai_usage_alerts
+    interval: 30s
+    rules:
+      # Token consumption spike — rate is 5x higher than the 1-hour average
+      - alert: TokenUsageSpike
+        expr: |
+          (
+            sum(rate(llm_tokens_total[5m]))
+            /
+            clamp_min(sum(rate(llm_tokens_total[1h])), 0.001)
+          ) > 5
+        for: 5m
+        labels:
+          severity: warning
+          component: ai
+        annotations:
+          summary: "Unusual token consumption spike detected"
+          description: "Token usage rate is {{ $value | humanize }}x the 1-hour average"
+
+      # High output token rate per model — possible runaway generation
+      - alert: HighOutputTokenRate
+        expr: |
+          sum(rate(llm_tokens_total{type="output"}[5m])) by (model, provider) > 5000
+        for: 10m
+        labels:
+          severity: warning
+          component: ai
+        annotations:
+          summary: "High output token rate for {{ $labels.provider }}/{{ $labels.model }}"
+          description: "Output token rate is {{ $value | humanize }} tokens/sec for {{ $labels.provider }}/{{ $labels.model }}"
+
+      # LLM error rate — more than 10% of requests failing
+      - alert: HighLLMErrorRate
+        expr: |
+          (
+            sum(rate(llm_errors_total[5m]))
+            /
+            clamp_min(sum(rate(llm_requests_total[5m])), 0.001)
+          ) * 100 > 10
+        for: 5m
+        labels:
+          severity: critical
+          component: ai
+        annotations:
+          summary: "High LLM error rate"
+          description: "LLM error rate is {{ $value | humanizePercentage }} (threshold: 10%)"
+
+      # Per-provider error rate — catch provider-specific outages
+      - alert: LLMProviderErrorRate
+        expr: |
+          (
+            sum(rate(llm_errors_total[5m])) by (provider)
+            /
+            clamp_min(sum(rate(llm_requests_total[5m])) by (provider), 0.001)
+          ) * 100 > 25
+        for: 5m
+        labels:
+          severity: warning
+          component: ai
+        annotations:
+          summary: "High error rate for LLM provider {{ $labels.provider }}"
+          description: "Error rate for {{ $labels.provider }} is {{ $value | humanizePercentage }} (threshold: 25%)"
+
+      # High LLM latency — P95 above 30 seconds
+      - alert: HighLLMLatency
+        expr: |
+          histogram_quantile(0.95,
+            sum(rate(llm_request_duration_milliseconds_bucket[5m])) by (le, provider)
+          ) > 30000
+        for: 5m
+        labels:
+          severity: warning
+          component: ai
+        annotations:
+          summary: "High LLM request latency for {{ $labels.provider }}"
+          description: "P95 latency is {{ $value | humanize }}ms for {{ $labels.provider }} (threshold: 30s)"
+
+      # No LLM requests at all — possible instrumentation or service issue
+      - alert: NoLLMRequests
+        expr: |
+          sum(rate(llm_requests_total[15m])) == 0
+            and
+          sum(llm_requests_total) > 0
+        for: 15m
+        labels:
+          severity: warning
+          component: ai
+        annotations:
+          summary: "No LLM requests in the last 15 minutes"
+          description: "LLM requests have stopped entirely despite prior activity"

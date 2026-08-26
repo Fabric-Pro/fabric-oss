@@ -1,0 +1,51 @@
+---
+title: Cloud & Self-Hosting
+description: Optionen zum Betrieb von Fabric AI — cloudgehostet oder selbstgehostet auf Ihrer eigenen Infrastruktur.
+---
+
+Fabric AI ist als verwalteter Cloud-Dienst oder als selbstgehostete Anwendung verfügbar.
+
+## Cloud-Hosting
+
+Der empfohlene Weg zur Nutzung von Fabric AI. Besuchen Sie [fabric.pro](https://fabric.pro) für den Einstieg.
+
+- Keine Infrastruktur zu verwalten
+- Automatische Updates und neue Features
+- Unternehmenssicherheit und -verfügbarkeit
+- Verwaltete Skalierung und Überwachung
+
+## Self-Hosting
+
+Fabric AI ist Open Source und kann auf Ihrer eigenen Infrastruktur bereitgestellt werden, um volle Kontrolle über Daten und Konfiguration zu haben.
+
+Self-Hosting erfordert:
+- Eine Cloud- oder On-Premise-Umgebung, die containerisierte Dienste ausführen kann
+- Eine relationale Datenbank
+- Objektspeicher für Dateiuploads
+- Einen KI-Anbieter API-Schlüssel
+
+Detaillierte Einrichtungsanleitungen, Infrastrukturanforderungen und Konfigurationshinweise sind im [Projekt-Repository](https://github.com/fabric-ai/fabric-portal) verfügbar.
+
+### Sicherheit
+
+Self-hosted-Bereitstellungen folgen denselben Sicherheitspraktiken wie die Cloud-Version:
+
+- Alle sensiblen Anmeldedaten werden im Ruhezustand verschlüsselt
+- Interne Dienste sind nicht dem öffentlichen Internet ausgesetzt
+- Audit-Protokollierung liefert vollständige Aktivitätsprotokolle
+
+---
+
+## Nächste Schritte
+
+<Cards>
+  <Card title="Konfiguration" href="/docs/guides/configuration">
+    Einstellungen und Anbieter-Konfiguration
+  </Card>
+  <Card title="Datenisolierung" href="/docs/guides/tenant-isolation">
+    Wie Ihre Daten geschützt werden
+  </Card>
+  <Card title="Wie Fabric funktioniert" href="/docs/core-concepts/architecture">
+    Plattformübersicht
+  </Card>
+</Cards>

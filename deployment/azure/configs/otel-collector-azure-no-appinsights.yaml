@@ -1,0 +1,75 @@
+# =============================================================================
+# OpenTelemetry Collector Configuration — no Application Insights variant
+# =============================================================================
+# Used when the environment has no Application Insights component.
+# The azuremonitor exporter resolves ${env:APPLICATIONINSIGHTS_CONNECTION_STRING}
+# at startup and the collector refuses to start without it, so this variant
+# swaps it for the debug exporter at minimal verbosity: the worker's OTLP
+# export keeps a live endpoint (no connection-refused noise in the worker)
+# and telemetry is dropped locally — the environment's status quo.
+# Keep receivers/processors in lock-step with otel-collector-azure.yaml.
+# =============================================================================
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  batch:
+    timeout: 5s
+    send_batch_size: 1000
+    send_batch_max_size: 1500
+
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 400
+    spike_limit_mib: 100
+
+  resource:
+    attributes:
+      - key: deployment.environment
+        value: "${env:DEPLOYMENT_ENVIRONMENT}"
+        action: upsert
+      - key: service.namespace
+        value: "fabric"
+        action: upsert
+
+exporters:
+  # Sink: accepted and dropped (sampled trace lines at basic verbosity).
+  debug:
+    verbosity: basic
+    sampling_initial: 1
+    sampling_thereafter: 500
+
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+
+service:
+  extensions: [health_check]
+
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, batch, resource]
+      exporters: [debug]
+
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, batch, resource]
+      exporters: [debug]
+
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, batch, resource]
+      exporters: [debug]
+
+  telemetry:
+    logs:
+      level: info
+    metrics:
+      address: 0.0.0.0:8888

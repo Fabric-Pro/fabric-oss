@@ -1,0 +1,4 @@
+{
+	"$comment": "Constraints added NOT VALID and awaiting their VALIDATE CONSTRAINT in a LATER RELEASE. `promote` runs every pending migration in one `prisma migrate deploy` pass, so two files in one release are not separately scheduled — the split is only real across releases. Delete an entry in the same PR that adds its VALIDATE. scripts/lint-migrations.ts fails on an undeclared NOT VALID, on a stale entry whose VALIDATE has already landed, and on an entry whose validateBy date has passed.",
+	"pending": []
+}

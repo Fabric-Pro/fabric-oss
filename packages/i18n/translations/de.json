@@ -1,0 +1,3752 @@
+{
+	"appUpdate": {
+		"banner": {
+			"title": "Eine neue Version von Fabric ist verfügbar",
+			"description": "Diese Seite wird automatisch neu geladen, um die neueste Version zu laden.",
+			"countdown": "Neuladen in {seconds}s",
+			"action": "Jetzt aktualisieren"
+		}
+	},
+	"admin": {
+		"menu": {
+			"auditLogExplorer": "Audit-Log-Explorer",
+			"organizations": "Organisationen",
+			"users": "Benutzer"
+		},
+		"auditLogExplorer": {
+			"title": "Audit-Log-Explorer",
+			"subtitle": "Verwende das öffentliche /api/v1/audit-log-Endpunkt als Fabric-Mitarbeiter (Dogfooding).",
+			"label": "STAFF · MANDANTENÜBERGREIFEND",
+			"explanation": "Füge den Audit-Log-API-Schlüssel eines Kunden ein. Der Schlüssel allein wählt den Mandanten aus — ein org_*-Schlüssel liefert das vollständige Audit-Log dieser Organisation; ein fab_*-Schlüssel liefert das persönliche Log dieses Benutzers. Keine zusätzliche Org-ID-Eingabe erforderlich. Die angezeigten Daten entsprechen exakt dem, was der Kunde über GET /api/v1/audit-log sieht. Nur-Lesen — kein Mitgliederfilter (wir haben über die öffentliche API keinen Zugriff auf das Benutzerverzeichnis des Kunden).",
+			"docsLink": "API-Dokumentation öffnen",
+			"connect": {
+				"title": "Verbinden",
+				"baseUrl": "Basis-URL",
+				"baseUrlPlaceholder": "https://fabric.pro",
+				"baseUrlHelp": "Wird nur zur Anzeige verwendet und als Linkziel für die Schaltfläche „API-Dokumentation öffnen“.",
+				"apiKey": "API-Schlüssel",
+				"apiKeyPlaceholder": "org_… oder fab_…",
+				"apiKeyHelp": "Wird niemals gespeichert. Bleibt nur für diese Sitzung im Komponentenstatus.",
+				"showKey": "API-Schlüssel anzeigen",
+				"hideKey": "API-Schlüssel ausblenden",
+				"connectButton": "Verbinden",
+				"disconnect": "Trennen"
+			},
+			"filters": {
+				"title": "Filter",
+				"from": "Von",
+				"to": "Bis",
+				"action": "Aktion",
+				"actionPlaceholder": "z. B. feature.created",
+				"category": "Kategorie",
+				"categoryPlaceholder": "z. B. auth, data, admin",
+				"severity": "Schweregrad",
+				"severityAny": "Beliebiger Schweregrad",
+				"outcome": "Ergebnis",
+				"outcomeAny": "Beliebiges Ergebnis",
+				"correlationId": "Korrelations-ID",
+				"correlationIdPlaceholder": "Request- / Trace-ID",
+				"ipAddress": "IP-Adresse",
+				"ipAddressPlaceholder": "z. B. 203.0.113.42",
+				"apply": "Anwenden",
+				"reset": "Zurücksetzen"
+			},
+			"table": {
+				"when": "Wann",
+				"actor": "Akteur",
+				"action": "Aktion",
+				"resource": "Ressource",
+				"outcome": "Ergebnis",
+				"severity": "Schweregrad",
+				"ip": "IP-Adresse",
+				"emptyTitle": "Noch keine Audit-Zeilen",
+				"emptyBody": "Entweder entsprechen keine Ereignisse den aktuellen Filtern oder dieser Mandant hat noch keine Audit-Log-Zeilen erzeugt."
+			},
+			"pagination": {
+				"loadMore": "Mehr laden",
+				"loading": "Lade…",
+				"showing": "Zeige {count} Zeile(n)",
+				"totalKnown": "{count} insgesamt",
+				"reachedEnd": "Ende des Audit-Logs"
+			},
+			"errors": {
+				"invalidKey": "Authentifizierung fehlgeschlagen. Überprüfe den API-Schlüssel und versuche es erneut.",
+				"genericFetch": "Audit-Log konnte nicht geladen werden. {message}",
+				"notFound": "Für diesen API-Schlüssel wurde kein Mandant gefunden."
+			}
+		},
+		"organizations": {
+			"backToList": "Zurück zu Organisationen",
+			"confirmDelete": {
+				"confirm": "Löschen",
+				"message": "Bist du sicher, dass du diese Organisation löschen möchtest? Diese Aktion kann nicht rückgängig gemacht werden.",
+				"title": "Organisation löschen"
+			},
+			"create": "Erstellen",
+			"delete": "Löschen",
+			"deleteOrganization": {
+				"deleted": "Die Organisation wurde erfolgreich gelöscht!",
+				"deleting": "Löschung der Organisation...",
+				"notDeleted": "Organisation konnte nicht gelöscht werden. Bitte versuche es erneut."
+			},
+			"edit": "bearbeiten",
+			"form": {
+				"createTitle": "Erstellen eine Organisation",
+				"name": "Name der Organisation",
+				"notifications": {
+					"error": "Die Organisation konnte nicht gespeichert werden. Bitte versuche es später noch einmal.",
+					"success": "Die Organisation wurde erfolgreich gespeichert."
+				},
+				"save": "Speichern",
+				"updateTitle": "Organisation bearbeiten"
+			},
+			"loading": "Organisationen laden...",
+			"membersCount": "{count} {count, plural, one {Mitglied} other {Mitglieder}}",
+			"search": "Suche nach einer Organisation...",
+			"title": "Verwalten von Organisationen"
+		},
+		"title": "Administration",
+		"users": {
+			"confirmDelete": {
+				"confirm": "Löschen",
+				"message": "Bist du sicher, dass du diesen Benutzer löschen möchtest? Diese Aktion kann nicht rückgängig gemacht werden.",
+				"title": "Benutzer löschen"
+			},
+			"delete": "Löschen",
+			"deleteUser": {
+				"deleted": "Der Benutzer wurde erfolgreich gelöscht!",
+				"deleting": "Benutzer wird gelöscht...",
+				"notDeleted": "Der Benutzer konnte nicht gelöscht werden. \nBitte versuche es erneut."
+			},
+			"emailVerified": {
+				"verified": "Email verifiziert",
+				"waiting": "E-Mail wartet auf Verifizierung"
+			},
+			"impersonate": "Imitieren",
+			"impersonation": {
+				"impersonating": "Ich gebe mich als {name} aus..."
+			},
+			"loading": "Benutzer werden geladen...",
+			"resendVerificationMail": {
+				"error": "Bestätigungsmail konnte nicht erneut gesendet werden. \nBitte versuche es erneut.",
+				"submitting": "Bestätigungsmail wird erneut gesendet...",
+				"success": "Bestätigungsmail wurde gesendet.",
+				"title": "Bestätigungsmail erneut senden"
+			},
+			"search": "Nach Name oder E-Mail suchen...",
+			"title": "Benutzer verwalten",
+			"assignAdminRole": "Administration-Rolle zuweisen",
+			"removeAdminRole": "Adminstrator-Rolle entfernen"
+		},
+		"description": "Verwalte deine Anwendung."
+	},
+	"app": {
+		"menu": {
+			"accountSettings": "Kontoeinstellungen",
+			"admin": "Administration",
+			"aiChatbot": "Nexus",
+			"documentGenerator": "Dokument-Generator",
+			"organizationSettings": "Organisationseinstellungen",
+			"start": "Start"
+		},
+		"userMenu": {
+			"accountSettings": "Kontoeinstellungen",
+			"colorMode": "Farbmodus",
+			"documentation": "Dokumentation",
+			"home": "Startseite",
+			"logout": "Abmelden"
+		},
+		"jobs": {
+			"sectionLabel": "Job-Hub",
+			"title": "Hintergrundaufgaben",
+			"description": "Kanalüberwachung und Repository-Erfassung, die für diesen Workspace im Hintergrund laufen.",
+			"openLabel": "Hintergrundaufgaben öffnen",
+			"activeLabel": "{count, plural, one {# Aufgabe läuft} other {# Aufgaben laufen}}",
+			"toggleSteps": "Teilaufgaben anzeigen",
+			"stepsCount": "{completed}/{total} Schritte",
+			"startedAgo": "Vor {time} gestartet",
+			"finishedAgo": "Vor {time} beendet",
+			"retentionNote": "Beendete Aufgaben bleiben {days, plural, one {# Tag} other {# Tage}} sichtbar",
+			"sections": {
+				"active": "Aktiv",
+				"recent": "Zuletzt"
+			},
+			"status": {
+				"running": "Läuft",
+				"completed": "Abgeschlossen",
+				"failed": "Fehlgeschlagen"
+			},
+			"stepStatus": {
+				"pending": "Wartet",
+				"running": "Läuft",
+				"completed": "Fertig",
+				"failed": "Fehlgeschlagen",
+				"skipped": "Übersprungen"
+			},
+			"kinds": {
+				"TEAMS_CHANNEL_MONITOR": "Kanalüberwachung",
+				"TEAMS_CHAT_MONITOR": "Chat-Überwachung",
+				"SLACK_CHANNEL_MONITOR": "Kanalüberwachung",
+				"SLACK_BACKFILL": "Kanal-Nacherfassung",
+				"CODE_INDEXING": "Repository-Erfassung",
+				"CONTEXT_PROCESSING": "Dokumenterfassung",
+				"STORY_KIND_REGENERATION": "Neufassung für den neuen Typ",
+				"PUBLISHING_TOPIC_GENERATION": "Themenvorschläge"
+			},
+			"steps": {
+				"fetch": "Nachrichten abrufen",
+				"analyze": "Inhalte analysieren",
+				"propose": "Vorschläge erstellen",
+				"clone": "Repository klonen",
+				"secretScan": "Nach Secrets suchen",
+				"walk": "Dateien erfassen",
+				"symbols": "Symbole extrahieren",
+				"embed": "Inhalte einbetten",
+				"summaries": "Dateien zusammenfassen",
+				"finalize": "Index abschließen",
+				"download": "Datei herunterladen",
+				"extract": "Text extrahieren",
+				"chunk": "In Abschnitte teilen",
+				"store": "Für die Suche speichern"
+			},
+			"counts": {
+				"messagesScanned": "{count, plural, one {# Nachricht geprüft} other {# Nachrichten geprüft}}",
+				"threadsAnalyzed": "{count, plural, one {# Thread analysiert} other {# Threads analysiert}}",
+				"groupsFlushed": "{count, plural, one {# Thread analysiert} other {# Threads analysiert}}",
+				"proposalsCreated": "{count, plural, one {# Vorschlag erstellt} other {# Vorschläge erstellt}}",
+				"emptyThreads": "{count, plural, one {# ohne Vorschlag} other {# ohne Vorschlag}}",
+				"skippedAlreadySeen": "{count, plural, one {# bereits gesehen} other {# bereits gesehen}}",
+				"failedChannels": "{count, plural, one {# fehlgeschlagen} other {# fehlgeschlagen}}",
+				"failures": "{count, plural, one {# fehlgeschlagen} other {# fehlgeschlagen}}",
+				"filesProgress": "{count}/{total} Dateien indexiert",
+				"filesProcessed": "{count, plural, one {# Datei indexiert} other {# Dateien indexiert}}",
+				"chunksCreated": "{count, plural, one {# Abschnitt verarbeitet} other {# Abschnitte verarbeitet}}",
+				"summariesCreated": "{count, plural, one {# Zusammenfassung erstellt} other {# Zusammenfassungen erstellt}}",
+				"symbols": "{count, plural, one {# Symbol extrahiert} other {# Symbole extrahiert}}",
+				"embedded": "{count, plural, one {# eingebettet} other {# eingebettet}}",
+				"errors": "{count, plural, one {# Fehler} other {# Fehler}}"
+			},
+			"empty": {
+				"title": "Keine Hintergrundaufgaben",
+				"description": "Sobald Fabric einen Teams- oder Slack-Kanal überwacht oder ein Repository bzw. Dokument erfasst, erscheint der Fortschritt hier."
+			}
+		},
+		"notifications": {
+			"openLabel": "Benachrichtigungen",
+			"unreadLabel": "{count} ungelesene Benachrichtigungen",
+			"unreadIndicator": "Ungelesen",
+			"sectionLabel": "Posteingang",
+			"title": "Benachrichtigungen",
+			"markAllRead": "Alle als gelesen markieren",
+			"viewAll": "Alle Benachrichtigungen anzeigen",
+			"settings": "Einstellungen",
+			"settingsHint": "Öffnet die Einstellungen deines persönlichen Kontos",
+			"tabs": {
+				"all": "Alle",
+				"unread": "Ungelesen",
+				"inbound": "Eingehend",
+				"conflict": "Konflikte",
+				"mentions": "Erwähnungen",
+				"archived": "Archiviert"
+			},
+			"categories": {
+				"MENTION": "Erwähnung",
+				"REPLY": "Antwort",
+				"ASSIGNMENT": "Zuweisung",
+				"STATUS": "Status",
+				"AGENT": "Agent",
+				"PROJECT": "Projekt",
+				"SYSTEM": "System",
+				"BILLING": "Abrechnung",
+				"CONTEXT_INDEXING_STARTED": "Indexierung",
+				"CONTEXT_INDEXING_COMPLETED": "Indexierung",
+				"SUBSCRIPTION": "Beobachtet"
+			},
+			"empty": {
+				"title": "Nichts Neues",
+				"description": "Erwähnungen, Antworten und Zuweisungen erscheinen hier, wenn Teammitglieder deine Aufmerksamkeit brauchen."
+			},
+			"dismiss": "Verwerfen",
+			"restore": "Wiederherstellen",
+			"archivedToast": "Benachrichtigung archiviert",
+			"undo": "Rückgängig",
+			"loadMore": "Mehr laden",
+			"loading": "Lädt…"
+		}
+	},
+	"auth": {
+		"errors": {
+			"emailCanNotBeUpdated": "E-Mail konnte nicht aktualisiert werden.",
+			"emailNotVerified": "Bitte verifiziere zunächst deine E-Mail, bevor du dich anmeldest.",
+			"failedToCreateSession": "Eine Sitzung konnte nicht erstellt werden.",
+			"failedToCreateUser": "Benutzer konnte nicht erstellt werden.",
+			"failedToGetSession": "Session konnte nicht geladen werden.",
+			"failedToGetUserInfo": "Benutzerinformationen konnten nicht geladen werden.",
+			"failedToUpdateUser": "Benutzer konnte nicht aktualisiert werden.",
+			"idTokenNotSupported": "ID-Token wird nicht unterstützt.",
+			"invalidEmail": "Die eingegebene E-Mail ist ungültig.",
+			"invalidEmailOrPassword": "Die von dir eingegebenen Anmeldedaten sind ungültig. Bitte überprüfe sie und versuche es erneut.",
+			"invalidInvitation": "Die Einladung ist ungültig oder abgelaufen.",
+			"invalidToken": "Dieser Link ist ungültig oder abgelaufen. Bitte fordere einen neuen an.",
+			"passwordTooLong": "Das Passwort ist zu lang.",
+			"passwordTooShort": "Das Passwort ist zu kurz.",
+			"providerNotFound": "Dieser Anbieter wird nicht unterstützt.",
+			"socialAccountAlreadyLinked": "Dieses Konto ist bereits mit einem Benutzer verknüpft.",
+			"unknown": "Etwas ist schiefgelaufen. Bitte versuche es erneut.",
+			"userAlreadyExists": "Ein Konto mit dieser E-Mail-Adresse existiert bereits. Bitte melde dich an oder verwende eine andere E-Mail-Adresse.",
+			"sessionExpired": "Die Sitzung ist abgelaufen.",
+			"failedToUnlinkLastAccount": "Konto kann nicht entkoppelt werden",
+			"accountLocked": "Konto vorübergehend gesperrt aufgrund zu vieler fehlgeschlagener Versuche. Bitte versuche es später erneut oder setze dein Passwort zurück.",
+			"rateLimited": "Zu viele Anfragen. Bitte warte einen Moment und versuche es erneut.",
+			"captchaFailed": "Überprüfung fehlgeschlagen. Bitte versuche es erneut.",
+			"userAlreadyHasPassword": "Für dieses Konto ist bereits ein Passwort festgelegt.",
+			"twoFactor": {
+				"invalidCode": "Der Bestätigungscode ist falsch. Bitte versuche es erneut.",
+				"otpNotEnabled": "Zwei-Faktor-Authentifizierung ist für dieses Konto nicht aktiviert.",
+				"otpExpired": "Der Bestätigungscode ist abgelaufen. Bitte fordere einen neuen an.",
+				"totpNotEnabled": "Die Authentifizierungs-App-Verifizierung ist für dieses Konto nicht eingerichtet.",
+				"notEnabled": "Zwei-Faktor-Authentifizierung ist für dieses Konto nicht aktiviert.",
+				"backupCodesNotEnabled": "Backup-Codes sind für dieses Konto nicht aktiviert.",
+				"invalidBackupCode": "Der Backup-Code ist ungültig.",
+				"tooManyAttempts": "Zu viele Versuche. Bitte fordere einen neuen Code an.",
+				"invalidSession": "Deine Verifizierungssitzung ist abgelaufen. Bitte melde dich erneut an.",
+				"accountTemporarilyLocked": "Zu viele fehlgeschlagene Zwei-Faktor-Versuche. Dein Konto ist vorübergehend gesperrt — versuche es in etwa 15 Minuten erneut.",
+				"stepUpRequired": "Bestätige zu deiner Sicherheit erneut deinen Zwei-Faktor-Code, bevor du die Zwei-Faktor-Einstellungen änderst."
+			},
+			"passkey": {
+				"challengeNotFound": "Passkey-Verifizierung fehlgeschlagen. Bitte versuche es erneut.",
+				"registrationFailed": "Passkey-Registrierung konnte nicht verifiziert werden.",
+				"notFound": "Kein Passkey für dieses Konto gefunden.",
+				"authenticationFailed": "Passkey-Authentifizierung fehlgeschlagen. Bitte versuche es erneut.",
+				"sessionFailed": "Sitzung konnte nicht erstellt werden. Bitte versuche es erneut.",
+				"updateFailed": "Passkey konnte nicht aktualisiert werden. Bitte versuche es erneut.",
+				"notAllowed": "Du darfst diesen Passkey nicht registrieren."
+			},
+			"verification": {
+				"tokenExpired": "Dieser Bestätigungslink ist abgelaufen. Fordere einen neuen an.",
+				"invalidToken": "Dieser Bestätigungslink ist ungültig.",
+				"userNotFound": "Wir konnten kein Konto für diesen Bestätigungslink finden.",
+				"unauthorized": "Du bist nicht berechtigt, diese Verifizierung abzuschließen.",
+				"genericError": "Wir konnten deine E-Mail nicht verifizieren. Bitte versuche es erneut."
+			}
+		},
+		"forgotPassword": {
+			"backToSignin": "Zurück zum Login",
+			"email": "E-Mail",
+			"hints": {
+				"linkNotSent": {
+					"message": "Es tut uns leid, aber wir konnten keinen Link zum Zurücksetzen des Passworts senden. \nBitte versuche es später noch einmal.",
+					"title": "Link nicht gesendet"
+				},
+				"linkSent": {
+					"message": "Falls ein Konto mit dieser E-Mail-Adresse existiert, erhältst du einen Link zum Zurücksetzen deines Passworts. Der Link ist 1 Stunde gültig.",
+					"title": "Link gesendet"
+				}
+			},
+			"message": "Bitte gib deine E-Mail-Adresse ein und wir senden dir einen Link zum Zurücksetzen deines Passworts.",
+			"submit": "Link senden",
+			"title": "Hast du dein Passwort vergessen?"
+		},
+		"login": {
+			"continueWith": "Oder weiter mit",
+			"accountMismatch": {
+				"title": "Anderes Konto",
+				"description": "Sie sind als {currentEmail} angemeldet, aber diese Einladung ist für {invitationEmail}.",
+				"switchAccount": "Konto wechseln",
+				"switching": "Wird abgemeldet…",
+				"providerHint": "„Mit GitHub anmelden“ und Passkeys verwenden Ihre bestehende Sitzung erneut. Nutzen Sie E-Mail oder Google, oder wechseln Sie das Konto zuerst beim Anbieter (z. B. github.com)."
+			},
+			"createAnAccount": "Ein Konto erstellen",
+			"dontHaveAnAccount": "Du hast noch kein Konto?",
+			"forgotPassword": "Passwort vergessen?",
+			"hints": {
+				"invalidCredentials": "Die von dir eingegebenen Anmeldeinformationen sind ungültig. \nBitte versuche es erneut.",
+				"linkSent": {
+					"message": "Wir haben dir einen Link zum Fortfahren gesendet. \nBitte überprüfe deinen Posteingang.",
+					"title": "Link gesendet"
+				}
+			},
+			"loginWithPasskey": "Anmeldung mit Passkey",
+			"modes": {
+				"magicLink": "Magischer Link",
+				"password": "Passwort"
+			},
+			"submit": "Anmelden",
+			"subtitle": "Bitte gib deine Zugangsdaten ein, um dich anzumelden.",
+			"title": "Willkommen zurück",
+			"sendMagicLink": "Anmelde-Link senden",
+			"resetToUnlock": "Setze dein Passwort zurück, um dein Konto zu entsperren"
+		},
+		"resetPassword": {
+			"backToSignin": "Zurück zu Signin",
+			"hints": {
+				"error": "Es tut uns leid, aber wir konnten dein Passwort nicht zurücksetzen. Bitte versuche es erneut.",
+				"linkExpired": {
+					"title": "Link abgelaufen oder ungültig",
+					"message": "Dieser Link zum Zurücksetzen des Passworts ist nicht mehr gültig. Bitte fordere einen neuen an.",
+					"requestNewLink": "Neuen Link anfordern"
+				},
+				"success": "Dein Passwort wurde erfolgreich zurückgesetzt."
+			},
+			"message": "Bitte gib ein neues Passwort ein.",
+			"newPassword": "Neues Passwort",
+			"submit": "Passwort zurücksetzen",
+			"title": "Dein Passwort zurücksetzen"
+		},
+		"projectInvitation": {
+			"verifyEmailSentTitle": "Prüfe deinen Posteingang",
+			"verifyEmailSentMessage": "Wir haben einen Bestätigungslink an <email></email> gesendet. Sobald du deine E-Mail-Adresse bestätigt hast, erhältst du automatisch Zugriff auf <projectName></projectName>.",
+			"verifyEmailSentSpamHint": "Keine E-Mail erhalten? Prüfe auch deinen Spam-Ordner.",
+			"signingOut": "Wird abgemeldet…",
+			"providerHint": "Immer noch als {currentEmail} angemeldet? „Mit GitHub anmelden“ und Passkeys verwenden Ihre bestehende Sitzung erneut. Nutzen Sie E-Mail oder Google, oder wechseln Sie das Konto zuerst beim Anbieter (z. B. github.com).",
+			"errorGeneric": "Etwas ist schiefgelaufen. Bitte versuche es erneut."
+		},
+		"signup": {
+			"alreadyHaveAccount": "Du hast bereits ein Konto?",
+			"acceptTermsPrefix": "Ich akzeptiere die",
+			"acceptTermsError": "Du musst den Nutzungsbedingungen und der Datenschutzerklärung zustimmen.",
+			"and": "und die",
+			"email": "Email",
+			"hints": {
+				"signupFailed": "Es tut uns leid, aber wir konnten dein Konto nicht erstellen. \nBitte versuche es später noch einmal.",
+				"verifyEmail": "Wir haben dir einen Link zur Bestätigung deiner E-Mail-Adresse gesendet. \nBitte überprüfe deinen Posteingang. Der Link ist 24 Stunden gültig."
+			},
+			"message": "Wir freuen uns, dass du dich uns anschließen möchtest. \nBitte fülle das untenstehende Formular aus, um dein Konto zu erstellen.",
+			"name": "Name",
+			"password": "Passwort",
+			"privacyPolicy": "Datenschutzerklärung",
+			"signIn": "Anmelden",
+			"submit": "Benutzerkonto erstellen",
+			"termsOfService": "Nutzungsbedingungen",
+			"title": "Ein Konto erstellen"
+		},
+		"verification": {
+			"alreadyVerified": "Ihre E-Mail-Adresse ist bereits verifiziert. Sie können sich anmelden.",
+			"confirmed": "Deine E-Mail wurde verifiziert.",
+			"confirming": "E-Mail wird bestätigt",
+			"redirecting": "Du wirst automatisch weitergeleitet.",
+			"genericError": "Etwas ist schiefgelaufen. Bitte versuchen Sie es erneut.",
+			"rateLimited": "Bitte versuchen Sie es später erneut oder kontaktieren Sie den Support.",
+			"resendCountdown": "Erneut senden möglich in {seconds}s",
+			"resendLink": "Bestätigungs-E-Mail erneut senden",
+			"resendSending": "Wird gesendet...",
+			"resendSuccess": "Bestätigungs-E-Mail gesendet. Überprüfen Sie Ihren Posteingang.",
+			"signinAction": "Anmelden"
+		},
+		"confirmEmail": {
+			"title": "E-Mail bestätigen",
+			"heading": "Bestätige deine E-Mail-Adresse",
+			"body": "Klicke auf die Schaltfläche unten, um deine E-Mail-Adresse zu bestätigen. Anschließend musst du dich anmelden.",
+			"confirmButton": "E-Mail bestätigen"
+		},
+		"verify": {
+			"backToSignin": "Zurück zur Anmeldung",
+			"code": "Einmaliges Passwort",
+			"message": "Gib das Einmalpasswort aus deiner Authentifizierungs-App ein, um fortzufahren.",
+			"submit": "Verifizieren",
+			"title": "Verifiziere dein Konto"
+		},
+		"revokeEmailChange": {
+			"title": "E-Mail-Änderung abbrechen",
+			"heading": "E-Mail-Änderung abbrechen",
+			"body": "Klicke auf den Button unten, um die ausstehende E-Mail-Änderung abzubrechen und dich aus allen aktiven Sitzungen abzumelden.",
+			"confirmButton": "E-Mail-Änderung abbrechen",
+			"success": "Die E-Mail-Änderung wurde abgebrochen und du wurdest abgemeldet.",
+			"error": "Dieser Link ist ungültig oder abgelaufen.",
+			"backToLogin": "Zurück zur Anmeldung"
+		}
+	},
+	"blog": {
+		"description": "In diesem Blog schreibe ich über alles mögliche.",
+		"title": "Mein toller Blog",
+		"back": "Zurück zum Blog"
+	},
+	"changelog": {
+		"description": "Bleibe über die neuesten Änderungen in unserem Produkt auf dem Laufenden.",
+		"title": "Changelog"
+	},
+	"releaseNotes": {
+		"title": "Release Notes",
+		"description": "Was wir bei Fabric veröffentlicht haben.",
+		"empty": "Noch keine Release Notes.",
+		"unavailable": "Der Inhalt dieser Release Note ist nicht verfügbar.",
+		"fallbackHeadline": "Release Note"
+	},
+	"common": {
+		"confirmation": {
+			"cancel": "Abbrechen",
+			"confirm": "Bestätigen"
+		},
+		"menu": {
+			"agents": "Agenten",
+			"blog": "Blog",
+			"changelog": "Changelog",
+			"compare": "Vergleich",
+			"contact": "Kontakt",
+			"dashboard": "Dashboard",
+			"docs": "Dokumentation",
+			"faq": "FAQ",
+			"howItWorks": "So funktioniert's",
+			"login": "Anmelden",
+			"pricing": "Preise"
+		},
+		"tableOfContents": {
+			"title": "Auf dieser Seite"
+		},
+		"actions": {
+			"continue": "Weiter",
+			"verify": "Überprüfen Sie"
+		}
+	},
+	"faq": {
+		"description": "Hast du irgendwelche Fragen? \nWir sind für dich da.",
+		"title": "Häufig gestellte Fragen"
+	},
+	"mail": {
+		"common": {
+			"openLinkInBrowser": "Falls der Button nicht funktioniert, kopiere diesen Link in deinen Browser:"
+		},
+		"aiUsageLimitWarning": {
+			"subject": "TODO: de — AI usage at 80%",
+			"subjectWithName": "TODO: de — AI usage at 80% — {limitName}",
+			"heading": "TODO: de — AI usage at 80%",
+			"headingWithName": "TODO: de — AI usage at 80% — {limitName}",
+			"body": "TODO: de — Your AI usage has reached 80% of its cap. You can review or adjust this limit at any time.",
+			"usageLineTokens": "TODO: de — Used {used} of {max} tokens {window}.",
+			"usageLineSpend": "TODO: de — Used {used} of {max} {window}.",
+			"manageButton": "TODO: de — Manage limits",
+			"footerNote": "TODO: de — If you no longer want to track this limit, you can remove it from the AI usage settings page.",
+			"window": {
+				"hourly": "TODO: de — this hour",
+				"daily": "TODO: de — today",
+				"weekly": "TODO: de — this week",
+				"monthly": "TODO: de — this month"
+			}
+		},
+		"aiUsageLimitReached": {
+			"subject": "TODO: de — AI usage limit reached",
+			"subjectWithName": "TODO: de — AI usage limit reached — {limitName}",
+			"heading": "TODO: de — AI usage limit reached",
+			"headingWithName": "TODO: de — AI usage limit reached — {limitName}",
+			"bodyHard": "TODO: de — AI requests are paused until the next window starts. You can raise or remove the cap at any time.",
+			"bodySoft": "TODO: de — This is a soft limit, so AI requests are still going through. You may want to review the cap.",
+			"usageLineTokens": "TODO: de — Used {used} of {max} tokens {window}.",
+			"usageLineSpend": "TODO: de — Used {used} of {max} {window}.",
+			"manageButton": "TODO: de — Manage limits",
+			"footerNote": "TODO: de — If you no longer want to track this limit, you can remove it from the AI usage settings page.",
+			"window": {
+				"hourly": "TODO: de — this hour",
+				"daily": "TODO: de — today",
+				"weekly": "TODO: de — this week",
+				"monthly": "TODO: de — this month"
+			}
+		},
+		"emailVerification": {
+			"heading": "E-Mail bestätigen",
+			"body": "Hallo {name}, bitte bestätige deine E-Mail-Adresse, um dein Fabric AI-Konto zu aktivieren.",
+			"confirmEmail": "E-Mail-Adresse bestätigen",
+			"expiryNotice": "Dieser Link ist 24 Stunden gültig. Falls er abgelaufen ist, kannst du nach der Anmeldung einen neuen anfordern.",
+			"ignoreNotice": "Falls du kein Fabric AI-Konto erstellt hast, kannst du diese E-Mail ignorieren.",
+			"subject": "Fabric AI: E-Mail-Adresse bestätigen"
+		},
+		"forgotPassword": {
+			"heading": "Passwort zurücksetzen",
+			"body": "Hallo {name}, wir haben eine Anfrage zum Zurücksetzen des Passworts für dein Fabric AI-Konto erhalten. Klicke auf den Button unten, um ein neues Passwort festzulegen.",
+			"resetPassword": "Passwort zurücksetzen",
+			"expiryNotice": "Dieser Link ist 1 Stunde gültig. Falls er abgelaufen ist, kannst du auf der Anmeldeseite einen neuen anfordern.",
+			"ignoreNotice": "Falls du kein Zurücksetzen angefordert hast, ist keine Aktion erforderlich. Dein Passwort bleibt unverändert.",
+			"subject": "Fabric AI: Passwort zurücksetzen"
+		},
+		"magicLink": {
+			"heading": "Bei Fabric AI anmelden",
+			"body": "Verwende den Button unten, um dich sicher bei deinem Fabric AI-Konto anzumelden. Dieser Link ist einmalig und läuft in Kürze ab.",
+			"login": "Anmelden",
+			"ignoreNotice": "Falls du diesen Link nicht angefordert hast, kannst du diese E-Mail ignorieren.",
+			"subject": "Fabric AI: Dein Anmelde-Link"
+		},
+		"newUser": {
+			"heading": "Willkommen bei Fabric AI",
+			"body": "Hallo {name}, danke für deine Anmeldung. Verwende den folgenden Code, um deine E-Mail zu bestätigen und loszulegen.",
+			"otpLabel": "Dein Bestätigungscode",
+			"otpExpiry": "Dieser Code läuft in Kürze ab.",
+			"orUseLink": "Du kannst dich auch über den folgenden Button verifizieren:",
+			"confirmEmail": "E-Mail-Adresse bestätigen",
+			"ignoreNotice": "Falls du dieses Konto nicht erstellt hast, kannst du diese E-Mail ignorieren.",
+			"subject": "Fabric AI: E-Mail-Adresse bestätigen"
+		},
+		"newsletterConfirm": {
+			"subject": "Bestätige dein Newsletter-Abo",
+			"heading": "Fast geschafft",
+			"body": "Bitte bestätige dein Abo der Fabric-Release-Notes, indem du auf den Button unten klickst.",
+			"cta": "Abo bestätigen",
+			"ignoreNotice": "Wenn du das nicht angefordert hast, kannst du diese E-Mail ignorieren."
+		},
+		"newsletterSignup": {
+			"heading": "Du bist angemeldet",
+			"body": "Danke für dein Abonnement des Fabric AI-Newsletters. Wir teilen Produktupdates, neue Funktionen und praktische Einblicke in KI-gestützte Softwareentwicklung.",
+			"unsubscribeNotice": "Du kannst dich jederzeit über den Link am Ende zukünftiger E-Mails abmelden.",
+			"subject": "Fabric AI: Willkommen beim Newsletter"
+		},
+		"organizationInvitation": {
+			"body": "Du wurdest eingeladen, {organizationName} auf Fabric AI beizutreten. Nimm die Einladung an, um mit deinem Team loszulegen.",
+			"headline": "{organizationName} auf Fabric AI beitreten",
+			"join": "Einladung annehmen",
+			"subject": "Fabric AI: Einladung zu einer Organisation"
+		},
+		"projectInvitation": {
+			"body": "{inviterName} hat dich eingeladen, an \"{projectName}\" als {role} mitzuarbeiten.",
+			"headline": "Einladung zu {projectName}",
+			"accept": "Einladung ansehen",
+			"subject": "Fabric AI: Einladung zur Zusammenarbeit an einem Projekt"
+		},
+		"reportExecutionReady": {
+			"subject": "Ihr Bericht \"{instanceName}\" ist fertig",
+			"headline": "Ihr Bericht ist fertig",
+			"body": "„{instanceName}“ wurde fertig generiert und kann jetzt angesehen werden.",
+			"cta": "Bericht ansehen"
+		},
+		"reportExecutionFailed": {
+			"subject": "Ihr Bericht \"{instanceName}\" ist fehlgeschlagen",
+			"headline": "Ihr Bericht konnte nicht generiert werden",
+			"body": "„{instanceName}“ wurde nicht fertig generiert. Öffnen Sie den Ausführungsverlauf, um zu sehen, was schiefgelaufen ist.",
+			"cta": "Ausführungsverlauf öffnen"
+		},
+		"releaseNotesNewsletter": {
+			"subject": "{projectName}: Produktupdate",
+			"eyebrow": "{projectName} · Releasenotes",
+			"unsubscribeNotice": "Du erhältst diese E-Mail, weil du {projectName}-Updates abonniert hast.",
+			"unsubscribeCta": "Abbestellen",
+			"openCta": "Fabric öffnen →",
+			"privacyCta": "Datenschutz",
+			"termsCta": "Nutzungsbedingungen"
+		},
+		"welcome": {
+			"heading": "Willkommen bei Fabric AI, {name}",
+			"body": "Deine E-Mail wurde bestätigt und dein Konto ist einsatzbereit. Fabric AI hilft dir, Softwarebereitstellung mit intelligenten Agenten und Workflows zu automatisieren.",
+			"nextStepsHeading": "Erste Schritte:",
+			"step1": "1. Vervollständige dein Profil in den Kontoeinstellungen.",
+			"step2": "2. Erstelle dein erstes Projekt oder tritt einer Organisation bei.",
+			"step3": "3. Entdecke KI-Agenten, Workflows und Dokumentengenerierung.",
+			"cta": "Erste-Schritte-Anleitung lesen",
+			"docsLinkFallback": "Oder öffne die Dokumentation direkt:",
+			"subject": "Fabric AI: Willkommen — alles bereit"
+		},
+		"signupAttemptNotice": {
+			"heading": "Mit deiner E-Mail-Adresse wurde ein Registrierungsversuch unternommen",
+			"body": "Jemand hat versucht, ein Fabric AI-Konto mit dieser E-Mail-Adresse zu erstellen. Falls du das warst, hast du bereits ein Konto — melde dich unten an.",
+			"bodyWithName": "Hallo {name}, jemand hat versucht, ein Fabric AI-Konto mit dieser E-Mail-Adresse zu erstellen. Falls du das warst, hast du bereits ein Konto — melde dich unten an.",
+			"instruction": "Falls du dein Passwort vergessen hast, kannst du es über den Link unten zurücksetzen.",
+			"signIn": "Anmelden",
+			"forgotPasswordPrefix": "Passwort vergessen?",
+			"resetPassword": "Passwort zurücksetzen",
+			"ignoreNotice": "Falls du das nicht warst, ist keine Aktion erforderlich. Dein Konto bleibt sicher.",
+			"subject": "Fabric AI: Registrierungsversuch auf deinem Konto"
+		},
+		"emailChangeRequest": {
+			"heading": "E-Mail-Änderung angefordert",
+			"greeting": "Diese Nachricht wurde an {email} gesendet, weil für dieses Konto eine Änderung angefordert wurde.",
+			"body": "Hallo {name}, am {timestamp} wurde eine Anfrage gestellt, deine Fabric AI E-Mail in {newEmail} zu ändern. Klicke auf den Button unten, um die Änderung zu bestätigen.",
+			"approveButton": "E-Mail-Änderung bestätigen",
+			"expiryNotice": "Dieser Link läuft in 24 Stunden ab. Nach der Bestätigung senden wir eine Verifizierungs-E-Mail an deine neue Adresse, um die Änderung abzuschließen.",
+			"revokeHeading": "Hast du das nicht angefordert?",
+			"revokeBody": "Falls du das nicht warst, brich die Änderung ab und melde dich aus allen aktiven Sitzungen ab:",
+			"revokeButton": "Abbrechen und überall abmelden",
+			"ignoreNotice": "Wenn du diese E-Mail ignorierst, wird keine Änderung vorgenommen – die Anfrage läuft automatisch ab.",
+			"subject": "Fabric AI: E-Mail-Änderung auf deinem Konto angefordert"
+		}
+	},
+	"newsletter": {
+		"confirm": {
+			"title": "Bestätige dein Abo",
+			"prompt": "Klicke unten, um dein Abo der Fabric-Release-Notes zu bestätigen.",
+			"confirmCta": "Abo bestätigen",
+			"success": {
+				"title": "Du bist angemeldet",
+				"message": "Danke für die Bestätigung. Du erhältst ab jetzt die Fabric-Release-Notes."
+			},
+			"invalid": {
+				"title": "Link ungültig oder abgelaufen",
+				"message": "Dieser Bestätigungslink ist ungültig oder wurde bereits verwendet."
+			},
+			"error": "Etwas ist schiefgelaufen. Bitte versuche es erneut."
+		},
+		"email": "Email",
+		"hints": {
+			"error": {
+				"message": "Der Newsletter konnte nicht abonniert werden. Bitte versuche es später noch einmal."
+			},
+			"success": {
+				"title": "Fast geschafft",
+				"message": "Sieh in deinem Posteingang nach, um dein Abo zu bestätigen."
+			}
+		},
+		"embed": {
+			"copy": "Kopieren",
+			"copied": "Kopiert",
+			"cancel": "Abbrechen",
+			"widgetLabel": "Einbetten",
+			"widgetHeading": "Auf Ihrer Website einbetten",
+			"widgetDescription": "Zeigen Sie die Release Notes dieses Projekts mit einem sich selbst aktualisierenden Widget auf Ihrer eigenen Website an. Aktivieren Sie es, passen Sie das Design an Ihre Website an und fügen Sie den Codeausschnitt in Ihr HTML ein.",
+			"enableLabel": "Einbettbares Widget aktivieren",
+			"enableDescription": "Wenn aktiviert, wird eine öffentliche Widget-URL erzeugt, damit externe Websites Ihre Release Notes anzeigen können.",
+			"themeLabel": "Design",
+			"theme_light": "Hell",
+			"theme_dark": "Dunkel",
+			"accentLabel": "Akzentfarbe",
+			"accentHexLabel": "Hex-Wert der Akzentfarbe",
+			"accentInvalid": "Bitte einen gültigen Hex-Farbwert eingeben (z. B. #9F2A3A).",
+			"fontLabel": "Schriftart",
+			"font_system": "System",
+			"font_inter": "Inter",
+			"font_serif": "Serif",
+			"densityLabel": "Dichte",
+			"density_comfortable": "Komfortabel",
+			"density_compact": "Kompakt",
+			"radiusLabel": "Eckenradius (px)",
+			"widthLabel": "Breite",
+			"widthHint": "Eine Pixelzahl (280–640) oder \"100%\", um den Container zu füllen.",
+			"save": "Design speichern",
+			"saved": "Design gespeichert",
+			"snippetLabel": "Einbettungs-Codeausschnitt",
+			"instructions": "Fügen Sie diesen Codeausschnitt an der Stelle in das HTML Ihrer Website ein, an der das Widget erscheinen soll. Kopieren Sie ihn nach Änderungen am Design erneut.",
+			"regenerateLabel": "Token neu generieren",
+			"regenerateDescription": "Erneuern Sie das Einbettungs-Token, falls es offengelegt wurde oder Sie bestehende Einbettungen widerrufen möchten.",
+			"regenerate": "Token neu generieren",
+			"regenerated": "Einbettungs-Token neu generiert",
+			"regenerateError": "Token konnte nicht neu generiert werden",
+			"regenerateConfirmTitle": "Einbettungs-Token neu generieren?",
+			"regenerateConfirmBody": "Dadurch wird das aktuelle Token dauerhaft ungültig. Bereits auf einer anderen Website eingefügte Codeausschnitte funktionieren nicht mehr, bis Sie den neuen kopieren und einfügen.",
+			"regenerateConfirmCta": "Neu generieren",
+			"disabledHint": "Aktivieren Sie das Widget, um sein Design zu konfigurieren und den Einbettungs-Codeausschnitt zu erhalten."
+		},
+		"privacyNote": "Wir respektieren deine Privatsphäre. Du kannst dich jederzeit abmelden.",
+		"submit": "Abonnieren",
+		"subtitle": "Bleiben Sie auf dem Laufenden mit den neuesten KI-gestützten SDLC-Automatisierungsfunktionen und Updates.",
+		"title": "Erhalte frühen Zugang"
+	},
+	"onboarding": {
+		"account": {
+			"avatar": "Avatar",
+			"avatarDescription": "Klicke auf den Kreis oder ziehe ein Bild hinein, um deinen Avatar hochzuladen.",
+			"name": "Name"
+		},
+		"continue": "Weiter",
+		"message": "Nur ein paar schnelle Schritte, um dir den Einstieg zu erleichtern.",
+		"notifications": {
+			"accountSetupFailed": "Es tut uns leid, aber wir konnten dein Konto nicht einrichten. \nBitte versuche es später noch einmal."
+		},
+		"step": "Schritt {step} / {total}",
+		"title": "Richte dein Konto ein"
+	},
+	"organizations": {
+		"createForm": {
+			"name": "Name der Organisation",
+			"notifications": {
+				"error": "Es tut uns leid, aber wir konnten deine Organisation nicht erstellen. Bitte versuche es später noch einmal.",
+				"success": "Deine Organisation wurde erstellt. Du kannst nun Mitglieder einladen."
+			},
+			"submit": "Organisation erstellen",
+			"subtitle": "Gib einen Namen für deine Organisation ein, um loszulegen. Du kannst den Namen später in den Organisationseinstellungen ändern.",
+			"title": "Erstelle eine Organisation"
+		},
+		"invitationAlert": {
+			"description": "Du bist eingeladen worden, einer Organisation beizutreten. Wenn du dich anmeldest oder registrierst, akzeptierst du automatisch die Einladung und trittst der Organisation bei.",
+			"title": "Einladung der Organisation annehmen"
+		},
+		"invitationModal": {
+			"accept": "Annehmen",
+			"decline": "Ablehnen",
+			"description": "Du wurdest eingeladen, der Organisation {organizationName} beizutreten. Möchtest du die Einladung annehmen und der Organisation beitreten?",
+			"title": "Organisation beitreten",
+			"error": "Etwas ist schiefgelaufen. Bitte versuche es erneut.",
+			"errorNotFound": "Diese Einladung ist nicht mehr verfügbar.",
+			"expiredTitle": "Einladung abgelaufen",
+			"expiredDescription": "Diese Einladung, {organizationName} beizutreten, ist nicht mehr gültig.",
+			"expiredNotice": "Diese Einladung ist abgelaufen. Bitte kontaktiere den Organisationsadministrator, um eine neue Einladung anzufordern.",
+			"alreadyAcceptedTitle": "Einladung bereits angenommen",
+			"alreadyAcceptedDescription": "Du hast diese Einladung, {organizationName} beizutreten, bereits angenommen.",
+			"alreadyRejectedTitle": "Einladung abgelehnt",
+			"alreadyRejectedDescription": "Diese Einladung, {organizationName} beizutreten, wurde abgelehnt.",
+			"canceledTitle": "Einladung zurückgezogen",
+			"canceledDescription": "Diese Einladung, {organizationName} beizutreten, wurde von der Organisation zurückgezogen.",
+			"canceledNotice": "Bitte kontaktiere den Organisationsadministrator, wenn du glaubst, dass dies ein Fehler war.",
+			"signInRequiredTitle": "Anmeldung erforderlich",
+			"signInRequiredDescription": "Du musst dich anmelden oder ein Konto erstellen, um auf diese Einladung zu {organizationName} zu antworten.",
+			"signIn": "Anmelden",
+			"signUp": "Konto erstellen",
+			"emailMismatchTitle": "Falsches Konto",
+			"emailMismatchDescription": "Du bist als {currentEmail} angemeldet, aber diese Einladung wurde an {invitationEmail} gesendet.",
+			"signInWithDifferentAccount": "Mit einem anderen Konto anmelden",
+			"signingOut": "Wird abgemeldet…",
+			"providerHint": "Immer noch als {currentEmail} angemeldet? „Mit GitHub anmelden“ und Passkeys verwenden Ihre bestehende Sitzung erneut. Nutzen Sie E-Mail oder Google, oder wechseln Sie das Konto zuerst beim Anbieter (z. B. github.com).",
+			"goToOrganization": "Zur Organisation",
+			"goToDashboard": "Zum Dashboard"
+		},
+		"organizationSelect": {
+			"createNewOrganization": "Neue Organisation erstellen",
+			"organizations": "Organisationen",
+			"personalAccount": "Persönliches Konto",
+			"switchError": "Arbeitsbereich konnte nicht gewechselt werden. Bitte versuche es erneut.",
+			"switching": "Arbeitsbereich wird gewechselt…",
+			"workspaceLabel": "Arbeitsbereich: {name}"
+		},
+		"organizationsGrid": {
+			"createNewOrganization": "Neue Organisation erstellen",
+			"title": "Deine Organisationen"
+		},
+		"roles": {
+			"admin": "Administration",
+			"member": "Mitglied",
+			"owner": "Eigentümer"
+		},
+		"settings": {
+			"changeName": {
+				"title": "Name der Organisation"
+			},
+			"deleteOrganization": {
+				"confirmation": "Bist du sicher, dass du deine Organisation löschen möchtest?",
+				"description": "Lösche deine Organisation dauerhaft. Sobald du deine Organisation gelöscht hast, gibt es kein Zurück mehr. Zur Bestätigung gib bitte unten dein Passwort ein:",
+				"submit": "Organisation löschen",
+				"title": "Organisation löschen"
+			},
+			"logo": {
+				"description": "Lade ein Logo für deine Organisation hoch.",
+				"title": "Logo der Organisation"
+			},
+			"members": {
+				"activeMembers": "Aktive Mitglieder",
+				"description": "Sieh dir alle aktiven Mitglieder und die ausstehenden Einladungen deiner Organisation an.",
+				"invitations": {
+					"empty": "Es wurden noch keine Mitglieder eingeladen.",
+					"expiresAt": "Läuft am {date} ab",
+					"expired": "Abgelaufen",
+					"invitedBy": "Eingeladen von {name}",
+					"invitationStatus": {
+						"accepted": "Angenommen",
+						"canceled": "Abgebrochen",
+						"pending": "Ausstehend",
+						"rejected": "Abgelehnt"
+					},
+					"revoke": "Einladung widerrufen",
+					"resend": "Einladung erneut senden"
+				},
+				"inviteMember": {
+					"description": "Um ein neues Mitglied einzuladen, sende ihm eine Einladung.",
+					"email": "E-Mail",
+					"notifications": {
+						"error": {
+							"description": "Wir konnten das Mitglied nicht einladen. Bitte versuche es später noch einmal.",
+							"title": "Mitglied konnte nicht eingeladen werden"
+						},
+						"success": {
+							"description": "Das Mitglied ist eingeladen worden.",
+							"title": "Eingeladenes Mitglied"
+						}
+					},
+					"role": "Rolle",
+					"submit": "Einladen",
+					"title": "Mitglied einladen"
+				},
+				"leaveOrganization": "Organisation verlassen",
+				"notifications": {
+					"removeMember": {
+						"error": {
+							"description": "Das Mitglied konnte nicht aus deiner Organisation entfernt werden. Bitte versuche es erneut."
+						},
+						"loading": {
+							"description": "Mitglied aus der Organisation entfernen..."
+						},
+						"success": {
+							"description": "Das Mitglied wurde erfolgreich aus deiner Organisation entfernt."
+						}
+					},
+					"revokeInvitation": {
+						"error": {
+							"description": "Die Einladung konnte nicht widerrufen werden. Bitte versuche es später noch einmal."
+						},
+						"loading": {
+							"description": "Widerruf der Einladung..."
+						},
+						"success": {
+							"description": "Die Einladung ist widerrufen worden."
+						}
+					},
+					"updateMembership": {
+						"error": {
+							"description": "Die Mitgliedschaft in der Organisation konnte nicht aktualisiert werden. Bitte versuche es erneut."
+						},
+						"loading": {
+							"description": "Aktualisierung der Mitgliedschaft..."
+						},
+						"success": {
+							"description": "Die Mitgliedschaft wurde erfolgreich aktualisiert"
+						}
+					},
+					"resendInvitation": {
+						"loading": {
+							"description": "Einladung erneut senden..."
+						},
+						"success": {
+							"description": "Einladung erneut gesendet — neuer Link läuft in 7 Tagen ab"
+						},
+						"error": {
+							"description": "Einladung konnte nicht erneut gesendet werden"
+						},
+						"rateLimited": {
+							"description": "Bitte warte, bevor du eine weitere Einladung an diese Adresse sendest"
+						}
+					}
+				},
+				"pendingInvitations": "Ausstehende Einladungen",
+				"removeMember": "Mitglied entfernen",
+				"title": "Mitglieder"
+			},
+			"notifications": {
+				"organizationDeleted": "Deine Organisation wurde gelöscht.",
+				"organizationNameNotUpdated": "Wir konnten den Namen deiner Organisation nicht aktualisieren. Bitte versuche es später noch einmal.",
+				"organizationNameUpdated": "Der Name deiner Organisation wurde aktualisiert.",
+				"organizationNotDeleted": "Wir konnten deine Organisation nicht löschen. Bitte versuche es später noch einmal."
+			},
+			"subtitle": "Verwalte die Einstellungen der Organisation.",
+			"title": "Organisation",
+			"dangerZone": {
+				"title": "Gefahrenzone"
+			}
+		},
+		"start": {
+			"subtitle": "Willkommen auf der Startseite dieser Organisation!"
+		}
+	},
+	"pricing": {
+		"choosePlan": "Plan auswählen",
+		"contactSales": "Vertrieb kontaktieren",
+		"description": "Wähle das passende Paket für dich aus.",
+		"getStarted": "Jetzt loslegen",
+		"month": "Monat",
+		"monthly": "Monatlich",
+		"products": {
+			"free": {
+				"description": "Kostenlos nutzbar — mit eigenen KI-Provider-Schlüsseln (BYOK)",
+				"features": {},
+				"title": "Free"
+			}
+		},
+		"purchase": "Kaufen",
+		"recommended": "Empfohlen",
+		"subscribe": "Abonnieren",
+		"title": "Preise",
+		"trialPeriod": "{days} {days, plural, one {Tag} other {Tage}} kostenlose Testphase",
+		"year": "Jahr",
+		"yearly": "Jährlich",
+		"perSeat": "Sitz"
+	},
+	"settings": {
+		"auditLog": {
+			"title": "Audit-Log",
+			"label": "Aktivitätsverlauf",
+			"description": "Jede administrative Aktion, jedes Authentifizierungsereignis und jede Änderung im Lebenszyklus dieser Organisation.",
+			"personalLabel": "Aktivitätsverlauf",
+			"personalDescription": "Authentifizierung, MFA und persönliche Lebenszyklusereignisse für dein Konto.",
+			"loading": "Ereignisse werden geladen",
+			"loadMore": "Mehr laden",
+			"empty": {
+				"title": "Keine Ereignisse entsprechen diesen Filtern",
+				"description": "Erweitere den Datumsbereich oder entferne aktive Filter.",
+				"virginTitle": "Noch keine Aktivität",
+				"virginDescription": "Aktivitäten erscheinen hier, sobald Personen diese Organisation nutzen."
+			},
+			"error": {
+				"title": "Audit-Ereignisse konnten nicht geladen werden",
+				"retry": "Erneut versuchen",
+				"defaultMessage": "Beim Abrufen des Audit-Logs ist etwas schiefgelaufen."
+			},
+			"forbidden": {
+				"title": "Zugriff erforderlich",
+				"description": "Nur Organisations-Inhaber und Admins können das Audit-Log einsehen."
+			},
+			"columns": {
+				"timestamp": "Zeitstempel",
+				"timestampWithZone": "Zeitstempel (UTC)",
+				"actor": "Akteur",
+				"correlation": "Korrelation",
+				"action": "Aktion",
+				"severity": "Schweregrad",
+				"resource": "Ressource",
+				"project": "Projekt",
+				"outcome": "Ergebnis",
+				"ip": "IP",
+				"latency": "Latenz",
+				"expand": "Details"
+			},
+			"badges": {
+				"deletedUser": "gelöschter Benutzer",
+				"impersonation": "über Identitätswechsel",
+				"deletedResource": "gelöscht",
+				"system": "System",
+				"apiKey": "API-Schlüssel"
+			},
+			"outcomes": {
+				"success": "Erfolg",
+				"failure": "Fehlschlag"
+			},
+			"severities": {
+				"info": "Info",
+				"warning": "Warnung",
+				"error": "Fehler",
+				"critical": "Kritisch"
+			},
+			"filters": {
+				"action": {
+					"label": "Aktion",
+					"ariaLabel": "Nach Aktion filtern",
+					"placeholder": "Jede Aktion"
+				},
+				"category": {
+					"label": "Kategorie",
+					"ariaLabel": "Nach Kategorie filtern",
+					"placeholder": "Jede Kategorie"
+				},
+				"actor": {
+					"label": "Akteur",
+					"ariaLabel": "Nach Akteur filtern",
+					"placeholder": "Jeder Akteur",
+					"personalLockedTitle": "Persönliche Ereignisse"
+				},
+				"dateRange": {
+					"label": "Datumsbereich",
+					"ariaLabel": "Nach Datumsbereich filtern",
+					"presets": {
+						"last5Minutes": "Letzte 5 Minuten",
+						"lastHour": "Letzte 1 Stunde",
+						"today": "Heute",
+						"last7Days": "Letzte 7 Tage",
+						"last30Days": "Letzte 30 Tage",
+						"last90Days": "Letzte 90 Tage",
+						"custom": "Benutzerdefiniert"
+					}
+				},
+				"project": {
+					"label": "Projekt",
+					"ariaLabel": "Nach Projekt filtern",
+					"placeholder": "Jedes Projekt"
+				},
+				"severity": {
+					"label": "Schweregrad",
+					"ariaLabel": "Nach Schweregrad filtern",
+					"placeholder": "Jeder Schweregrad"
+				},
+				"outcome": {
+					"label": "Ergebnis",
+					"ariaLabel": "Nach Ergebnis filtern",
+					"placeholder": "Jedes Ergebnis"
+				},
+				"correlation": {
+					"label": "Korrelations-ID",
+					"placeholder": "exakte Übereinstimmung",
+					"ariaLabel": "Nach Korrelations-ID filtern"
+				},
+				"ipAddress": {
+					"label": "IP",
+					"placeholder": "enthält…",
+					"ariaLabel": "Nach IP-Adressen-Teilstring filtern"
+				},
+				"actorType": {
+					"sectionLabel": "Benutzerdefiniert",
+					"description": "Nach Akteurtyp filtern",
+					"user": "Benutzer",
+					"api_key": "API-Schlüssel",
+					"system": "System",
+					"agent": "Agent"
+				},
+				"reset": "Filter zurücksetzen"
+			},
+			"export": {
+				"label": "Exportieren",
+				"ariaLabel": "Audit-Log exportieren",
+				"csv": "Als CSV exportieren",
+				"ndjson": "Als NDJSON exportieren",
+				"confirmTitle": "{count} Zeilen exportieren?",
+				"confirmDescription": "Große Exporte können einen Moment dauern. Verfeinere deine Filter, wenn du nur einen Teilbereich brauchst.",
+				"confirmCta": "Fortfahren",
+				"cancel": "Abbrechen",
+				"success": "Export fertig",
+				"failed": "Export fehlgeschlagen",
+				"historyAriaLabel": "Letzte Exporte anzeigen",
+				"historyHeading": "Letzte 5 Exporte",
+				"historyEmpty": "Noch keine Exporte.",
+				"reDownload": "Erneut herunterladen",
+				"moreFilters": "weitere"
+			},
+			"metadataDrawer": {
+				"title": "Ereignisdetails",
+				"close": "Schließen",
+				"resource": "Ressource",
+				"openResource": "Ressource öffnen",
+				"metadata": "Metadaten",
+				"rawMetadata": "Alle Metadaten",
+				"noMetadata": "Für dieses Ereignis wurden keine Metadaten erfasst.",
+				"utcTooltip": "UTC: {iso}",
+				"correlationId": "Korrelations-ID",
+				"correlationHint": "Diese Anfrage über Logs und Metriken hinweg nachverfolgen",
+				"copyCorrelation": "Korrelations-ID kopieren",
+				"copyCorrelationHint": "Mit dieser ID kann diese Aktion über Logs und Traces hinweg nachverfolgt werden.",
+				"traceFlow": "Diesen Ablauf nachverfolgen",
+				"traceFlowHint": "Alle Audit-Ereignisse dieser Anfrage anzeigen",
+				"copied": "Kopiert",
+				"actor": "Akteur",
+				"ip": "IP-Adresse",
+				"userAgent": "User-Agent",
+				"requestInput": "Anfragedaten",
+				"keyboardHelp": "Tastatur: r aktualisieren · / Filter fokussieren · j/k navigieren · Enter öffnen · Esc schließen",
+				"exception": {
+					"title": "Ausnahme",
+					"type": "Typ",
+					"fingerprint": "Fingerabdruck",
+					"stacktrace": "Stack-Trace",
+					"cause": "Ursachenkette",
+					"copyFingerprint": "Fingerabdruck kopieren"
+				}
+			},
+			"stats": {
+				"title": "Audit-Log Übersicht",
+				"loading": "Statistiken werden geladen",
+				"error": "Statistiken nicht verfügbar",
+				"eventsToday": "Ereignisse heute",
+				"failuresToday": "Fehler heute",
+				"uniqueActors": "Eindeutige Akteure heute",
+				"sessionsToday": "Sitzungen heute",
+				"topAction": "Top-Aktion heute",
+				"topActionNone": "Keine Aktivität",
+				"topActionWithCount": "{action} ({count})",
+				"sparkline": "Volumen letzte 24h",
+				"averageLatency": "Ø Latenz",
+				"latencyWindowAriaLabel": "Latenz-Zeitfenster",
+				"latencyWindow": {
+					"1h": "1 Std",
+					"6h": "6 Std",
+					"24h": "24 Std",
+					"7d": "7 Tage"
+				}
+			},
+			"autoRefresh": {
+				"label": "Auto-Aktualisierung",
+				"ariaLabel": "Intervall für Auto-Aktualisierung",
+				"off": "Aus",
+				"tenSeconds": "10s",
+				"thirtySeconds": "30s",
+				"oneMinute": "1m"
+			},
+			"actions": {
+				"unknown": "Unbekannte Aktion",
+				"auth": {
+					"login": {
+						"success": "Anmeldung erfolgreich",
+						"failure": "Anmeldung fehlgeschlagen"
+					},
+					"logout": "Abmeldung",
+					"mfa": {
+						"enabled": "MFA aktiviert",
+						"disabled": "MFA deaktiviert"
+					},
+					"password": {
+						"changed": "Passwort geändert"
+					},
+					"impersonation": {
+						"started": "Identitätswechsel gestartet",
+						"ended": "Identitätswechsel beendet"
+					}
+				},
+				"org": {
+					"created": "Organisation erstellt",
+					"updated": "Organisation aktualisiert",
+					"deleted": "Organisation gelöscht",
+					"settings": {
+						"updated": "Organisationseinstellungen aktualisiert"
+					},
+					"member": {
+						"invited": "Mitglied eingeladen",
+						"role_changed": "Rolle geändert",
+						"removed": "Mitglied entfernt"
+					},
+					"api_key": {
+						"created": "API-Schlüssel erstellt",
+						"revoked": "API-Schlüssel widerrufen",
+						"rotated": "API-Schlüssel rotiert"
+					},
+					"integration": {
+						"connected": "Integration verbunden",
+						"disconnected": "Integration getrennt",
+						"config_updated": "Integrationskonfiguration aktualisiert"
+					}
+				},
+				"account": {
+					"api_key": {
+						"created": "Persönlicher API-Schlüssel erstellt",
+						"revoked": "Persönlicher API-Schlüssel widerrufen",
+						"rotated": "Persönlicher API-Schlüssel rotiert"
+					}
+				},
+				"project": {
+					"ci_run": {
+						"triggered": "CI-Lauf aus Fabric gestartet"
+					},
+					"agentic_run": {
+						"dispatched": "Fabric-Testlauf gestartet"
+					},
+					"environment_credential": {
+						"updated": "Anmeldedaten der Umgebung geändert"
+					},
+					"environment": {
+						"created": "Projektumgebung erstellt",
+						"updated": "Projektumgebung aktualisiert",
+						"deleted": "Projektumgebung gelöscht"
+					},
+					"qa_settings": {
+						"updated": "Testing-Einstellungen des Projekts aktualisiert"
+					},
+					"qa_webhook": {
+						"created": "Testing-Webhook erstellt",
+						"rotated": "Testing-Webhook-Geheimnis rotiert",
+						"expiry_updated": "Ablauf des Testing-Webhooks aktualisiert",
+						"revoked": "Testing-Webhook widerrufen"
+					},
+					"pull_request": {
+						"read": "Pull Request gelesen",
+						"reviewed": "Pull Request geprüft",
+						"finding_judged": "Review-Finding bewertet",
+						"comment_posted": "Review-Kommentar veröffentlicht"
+					},
+					"created": "Projekt erstellt",
+					"updated": "Projekt aktualisiert",
+					"archived": "Projekt archiviert",
+					"deleted": "Projekt gelöscht",
+					"member": {
+						"invited": "Projektmitglied eingeladen",
+						"role_changed": "Projektmitgliedsrolle geändert",
+						"function_tags_changed": "Funktions-Tags des Projektmitglieds geändert",
+						"function_tags_confirmed": "Projektmitglied hat Funktions-Tags bestätigt",
+						"removed": "Projektmitglied entfernt"
+					},
+					"meeting_digest": {
+						"inclusion_changed": "Meeting-Digest-Aufnahme geändert",
+						"action_item_toggled": "Erledigt-Status einer Meeting-Aktion geändert"
+					},
+					"invitation": {
+						"widget_dismissed": "Invitation widget dismissed"
+					},
+					"databricks_knowledge": {
+						"connected": "Databricks-Wissensanbindung verbunden",
+						"disconnected": "Databricks-Wissensanbindung getrennt"
+					},
+					"qa_finding": {
+						"dismissed": "Testing-Befund verworfen",
+						"merged": "Testing-Befunde zusammengeführt"
+					}
+				},
+				"story": {
+					"created": "Feature erstellt",
+					"updated": "Feature aktualisiert",
+					"deleted": "Feature gelöscht",
+					"status_changed": "Feature-Status geändert",
+					"pm_pushed": "An PM-Tool gepusht",
+					"reprioritized": "KI-Neupriorisierungslauf",
+					"auto_hidden": "Feature auto-hidden",
+					"auto_unhidden": "Feature auto-unhidden",
+					"pm_ticket_unlinked": "PM ticket unlinked",
+					"pm_flag_missing_auto_dismissed": "Missing-PM-card flag auto-dismissed"
+				},
+				"audit": {
+					"viewed": "Audit-Log angesehen",
+					"exported": "Audit-Log exportiert",
+					"retention": {
+						"purged": "Audit-Aufbewahrung bereinigt"
+					},
+					"api_request": "REST-API-Anfrage"
+				},
+				"userActivity": {
+					"viewed": "Nutzeraktivität angesehen"
+				},
+				"admin": {
+					"auditLog": {
+						"viaApiKey": "Kunden-Audit-Log abgefragt (Staff)"
+					}
+				},
+				"error": {
+					"permission_denied": "Zugriff verweigert",
+					"not_found": "Ressource nicht gefunden",
+					"validation": "Validierungsfehler",
+					"rate_limited": "Rate-Limit überschritten",
+					"unavailable": "Dienst nicht verfügbar",
+					"timeout": "Zeitüberschreitung",
+					"conflict": "Konflikt",
+					"internal": "Interner Fehler"
+				},
+				"incident": {
+					"fired": "Incident ausgelöst",
+					"re_fired": "Incident erneut ausgelöst",
+					"acknowledged": "Incident bestätigt",
+					"commented": "Incident kommentiert",
+					"auto_resolved": "Incident automatisch behoben",
+					"manual_resolved": "Incident manuell behoben"
+				},
+				"weave": {
+					"session": {
+						"terminated_on_exit": "Weave-Sitzung beendet",
+						"terminated_stale": "Weave-Sitzung abgebrochen (überfällig)"
+					}
+				},
+				"document_assistant": {
+					"conversation": {
+						"created": "Assistent-Konversation erstellt",
+						"renamed": "Assistent-Konversation umbenannt",
+						"archived": "Assistent-Konversation archiviert",
+						"deleted": "Assistent-Konversation gelöscht",
+						"spilled": "Assistent-Konversation ausgelagert",
+						"visibility_changed": "Sichtbarkeit der Assistent-Konversation geändert"
+					}
+				},
+				"newsletter": {
+					"approval": {
+						"required_changed": "Newsletter-Freigabepflicht geändert"
+					},
+					"send": {
+						"approved": "Newsletter-Versand freigegeben",
+						"rejected": "Newsletter-Versand abgelehnt"
+					},
+					"widget": {
+						"enabled": "Newsletter widget enabled",
+						"disabled": "Newsletter widget disabled",
+						"token_rotated": "Newsletter widget token rotated"
+					}
+				},
+				"dailyBrief": {
+					"releaseNote": {
+						"hidden": "Release Note aus Daily Brief ausgeblendet",
+						"unhidden": "Release Note im Daily Brief wiederhergestellt"
+					}
+				},
+				"atlas": {
+					"analysis": {
+						"requested": "Atlas analysis requested",
+						"cancelled": "Atlas analysis cancelled",
+						"completed": "Atlas analysis completed",
+						"failed": "Atlas analysis failed"
+					},
+					"node": {
+						"regenerated": "Atlas node regenerated",
+						"edited": "Atlas node edited"
+					},
+					"edge": {
+						"edited": "Atlas edge edited",
+						"created": "Atlas edge created",
+						"deleted": "Atlas edge deleted",
+						"restored": "Atlas edge restored"
+					},
+					"branch": {
+						"changed": "Atlas branch changed"
+					},
+					"branches": {
+						"pinned": "Atlas branches pinned"
+					}
+				},
+				"backlog": {
+					"proposal": {
+						"cancelled": "Backlog proposal cancelled",
+						"timed_out": "Backlog proposal timed out"
+					}
+				},
+				"mcp": {
+					"config": {
+						"created": "MCP configuration created",
+						"updated": "MCP configuration updated",
+						"deleted": "MCP configuration deleted"
+					}
+				},
+				"decision": {
+					"override_accepted": "Decision override accepted"
+				},
+				"featureFlag": {
+					"updated": "Feature flag updated",
+					"reset": "Feature flag reset"
+				},
+				"statusUpdate": {
+					"published": "Statusmeldung veröffentlicht",
+					"revised": "Statusmeldung aktualisiert"
+				}
+			},
+			"aria": {
+				"severity": "Schweregrad: {severity}",
+				"correlationCell": "Korrelations-ID, klicken zum Filtern",
+				"copyCorrelationCell": "Korrelations-ID {id} in die Zwischenablage kopieren",
+				"copyCorrelationHover": "Vollständige ID kopieren",
+				"copiedCorrelation": "{id} kopiert"
+			},
+			"sort": {
+				"label": "Sortieren",
+				"ariaLabel": "Sortierreihenfolge",
+				"newest": "Neueste zuerst",
+				"oldest": "Älteste zuerst",
+				"severityDesc": "Schweregrad (höchster zuerst)"
+			},
+			"pills": {
+				"region": "Aktive Filter",
+				"heading": "Filter",
+				"clearAll": "Alle entfernen",
+				"remove": "{label}: {value} entfernen",
+				"labels": {
+					"action": "Aktion",
+					"category": "Kategorie",
+					"actor": "Akteur",
+					"actorType": "Akteurtyp",
+					"project": "Projekt",
+					"severity": "Schweregrad",
+					"outcome": "Ergebnis",
+					"dateRange": "Datumsbereich",
+					"correlation": "Korrelation",
+					"ipAddress": "IP"
+				}
+			},
+			"resultCount": {
+				"showing": "Zeige {shown} Ereignisse",
+				"showingOfTotal": "Zeige {shown} Ereignisse (von {total} insgesamt)"
+			},
+			"menu": {
+				"organization": "Audit-Log",
+				"personal": "Audit-Log"
+			},
+			"actorFilter": {
+				"label": "Akteur",
+				"placeholder": "Alle Mitglieder",
+				"searchPlaceholder": "Suche nach Name oder E-Mail",
+				"empty": "Keine Mitglieder gefunden",
+				"loading": "Mitglieder werden geladen",
+				"clear": "Akteur-Filter zurücksetzen",
+				"ariaLabel": "Nach Organisationsmitglied filtern",
+				"selectMember": "Mitglied {name} auswählen"
+			},
+			"projectFilter": {
+				"label": "Projekt",
+				"placeholder": "Alle Projekte",
+				"searchPlaceholder": "Projekte suchen",
+				"empty": "Keine Projekte gefunden",
+				"loading": "Projekte werden geladen",
+				"clear": "Projekt-Filter zurücksetzen",
+				"ariaLabel": "Nach Projekt filtern",
+				"selectProject": "Projekt {name} auswählen"
+			},
+			"tooltips": {
+				"statsEventsToday": "Anzahl der in den letzten 24 Stunden aufgezeichneten Audit-Ereignisse.",
+				"statsFailuresToday": "Ereignisse mit Outcome=Fehlschlag in den letzten 24 Stunden.",
+				"statsUniqueActors": "Eindeutige authentifizierte Mitglieder, die heute Ereignisse ausgelöst haben.",
+				"statsTopAction": "Die häufigste Aktion heute.",
+				"statsSessionsToday": "Eindeutige authentifizierte Sitzungen, die heute Ereignisse erzeugt haben.",
+				"statsAverageLatency": "Durchschnittliche Prozedur-Latenz im gewählten Zeitfenster. Das Mini-Diagramm zeigt den Mittelwert pro Bucket.",
+				"statsSparkline": "Stündliches Ereignisvolumen über die letzten 24 Stunden.",
+				"filterAction": "Auf bestimmte Ereignistypen filtern.",
+				"filterCategory": "Auf eine übergeordnete Ereigniskategorie filtern (auth, project, etc).",
+				"filterActor": "Auf Ereignisse eines bestimmten Organisationsmitglieds filtern.",
+				"filterActorType": "Nach Akteurtyp filtern (Benutzer, API-Schlüssel, System, Agent).",
+				"filterProject": "Auf Ereignisse eines bestimmten Projekts filtern.",
+				"filterDateRange": "Ereignisse auf einen Zeitraum eingrenzen.",
+				"filterSeverity": "Nach Schweregrad filtern (info, warning, error, critical).",
+				"filterOutcome": "Auf erfolgreiche oder fehlgeschlagene Ereignisse filtern.",
+				"filterCorrelation": "Alle Ereignisse mit dieser Korrelations-ID anzeigen (ein Request-Flow).",
+				"filterIpAddress": "Teilstring-Übereinstimmung mit Client-IP.",
+				"autoRefresh": "Die Tabelle im gewählten Intervall neu laden.",
+				"export": "Die aktuell gefilterten Zeilen als CSV oder NDJSON herunterladen. Maximal 50.000 Zeilen pro Export. Berücksichtigt aktive Filter.",
+				"exportSplit": "Exportiert die aktuelle gefilterte Ansicht. Klicke auf das Chevron, um letzte Exporte zu sehen und erneut herunterzuladen.",
+				"exportReDownload": "Dieselbe Abfrage (synchron) mit dem gespeicherten Filter erneut ausführen.",
+				"sort": "Ereignisse sortieren.",
+				"severityInfo": "info: routinemäßige Aktivität",
+				"severityWarning": "warning: bemerkenswertes Ereignis",
+				"severityError": "error: fehlgeschlagene Aktion",
+				"severityCritical": "critical: Systemfehler",
+				"outcomeSuccess": "Die Aktion wurde erfolgreich abgeschlossen.",
+				"outcomeFailure": "Die Aktion wurde nicht abgeschlossen; Metadaten enthalten möglicherweise eine Ausnahme.",
+				"resourceType": "Ressourcentyp: {type}",
+				"actionRawKey": "Roher Aktions-Schlüssel: {key}",
+				"correlationPrefix": "Korrelations-ID {id}. Klicken, um auf diesen Ablauf zu filtern.",
+				"correlationCopy": "Vollständige Korrelations-ID kopieren",
+				"removeFilter": "Diesen Filter entfernen",
+				"traceFlow": "Tabelle auf alle Ereignisse mit dieser Korrelations-ID filtern.",
+				"columnTimestamp": "UTC-Zeitstempel des Ereignisses.",
+				"columnActor": "Wer das Ereignis ausgelöst hat — Benutzer, API-Schlüssel, System oder Agent.",
+				"columnCorrelation": "Trace-ID, die Ereignisse eines Request-Flows verbindet. Klicken, um auf den Flow zu filtern.",
+				"columnAction": "Aktionsschlüssel aus der geschlossenen Taxonomie. Beispiel-Icons:",
+				"columnSeverity": "Schweregrad-Stufe, von gering bis dringend:",
+				"columnResource": "Ressourcentyp, auf den die Aktion abzielte. Beispieltypen:",
+				"columnProject": "Projekt, dem das Ereignis zugeordnet ist (falls vorhanden).",
+				"columnOutcome": "Ergebnis der Aktion:",
+				"columnIp": "Vertrauenswürdige Client-IP der Anfrage.",
+				"columnIpLegend": "IPv4- oder IPv6-Adresse",
+				"columnLatency": "Prozedur-Dauer in Millisekunden (sofern gemessen).",
+				"resourceTypeUser": "Benutzer",
+				"resourceTypeProject": "Projekt",
+				"resourceTypeStory": "Feature",
+				"resourceTypeOrganization": "Organisation",
+				"resourceTypeApiKey": "API-Schlüssel"
+			},
+			"filterGroups": {
+				"when": "Wann",
+				"who": "Wer",
+				"what": "Was",
+				"where": "Wo"
+			},
+			"latency": {
+				"label": "Latenz",
+				"ariaLabel": "Prozedur-Latenz",
+				"unknown": "—"
+			},
+			"pagination": {
+				"label": "Zeilen pro Seite",
+				"ariaLabel": "Seitengröße",
+				"next": "Weiter",
+				"prev": "Zurück",
+				"showingOfTotal": "Zeige {shown} von {total}",
+				"totalRecords": "{total} Datensätze gesamt"
+			},
+			"traceDiagram": {
+				"title": "Request-Trace",
+				"description": "Alle Audit-Ereignisse mit dieser Korrelations-ID, nach Zeitstempel geordnet.",
+				"close": "Trace schließen",
+				"exportPng": "Als PNG exportieren",
+				"empty": "Keine Ereignisse mit dieser Korrelations-ID.",
+				"emptyDescription": "Der Ablauf ist möglicherweise älter als die Aufbewahrungsfrist oder die Korrelations-ID existiert nicht.",
+				"loading": "Trace wird geladen",
+				"latencyLabel": "{ms}ms",
+				"openFullCorrelation": "In Haupttabelle anzeigen",
+				"node": {
+					"actor": "Akteur: {actor}",
+					"timestamp": "Zeitstempel: {timestamp}"
+				}
+			},
+			"apiKeysDrawer": {
+				"title": "API-Schlüssel",
+				"description": "REST API-Schlüssel zur Abfrage des Audit-Logs aus externen Tools generieren und verwalten.",
+				"openButton": "API-Schlüssel verwalten",
+				"close": "Schließen",
+				"docsLinkEnabled": "API-Dokumentation (Swagger UI)",
+				"docsLinkDisabled": "Dokumentation nur in Staging verfügbar — bitte Administrator kontaktieren.",
+				"newKeyHeading": "Neuen Schlüssel generieren",
+				"existingKeysHeading": "Vorhandene Schlüssel",
+				"lifecycleHeading": "Lebenszyklus-Ereignisse",
+				"lifecycleEmpty": "Noch keine API-Schlüssel-Lebenszyklus-Ereignisse.",
+				"showSecret": "Geheimnis anzeigen",
+				"hideSecret": "Geheimnis verbergen",
+				"copyId": "Schlüssel-ID kopieren",
+				"copyPrefix": "Präfix kopieren",
+				"viewAuditTrail": "Audit-Trail anzeigen",
+				"createdBy": "Erstellt von",
+				"rotatedBy": "Rotiert von",
+				"revokedBy": "Widerrufen von",
+				"lastUsed": "Zuletzt verwendet",
+				"never": "Nie",
+				"scopesAuditLogRead": "audit_log:read",
+				"scopesAuditLogExport": "audit_log:export",
+				"statusActive": "Aktiv",
+				"statusRevoked": "Widerrufen",
+				"statusExpired": "Abgelaufen"
+			}
+		},
+		"account": {
+			"avatar": {
+				"description": "Um deinen Avatar zu ändern, klicke auf das Bild in diesem Block und wähle eine Datei von deinem Computer zum Hochladen aus.",
+				"notifications": {
+					"error": "Avatar konnte nicht aktualisiert werden",
+					"success": "Avatar wurde erfolgreich aktualisiert",
+					"deleteError": "Avatar konnte nicht entfernt werden",
+					"deleteSuccess": "Avatar wurde erfolgreich entfernt"
+				},
+				"title": "Dein Avatar"
+			},
+			"changeEmail": {
+				"description": "Um deine E-Mail zu ändern, ändere sie im Eingabefeld und drücke auf Speichern. Du musst die neue E-Mail bestätigen, bevor sie aktiv wird.",
+				"notifications": {
+					"error": "E-Mail konnte nicht aktualisiert werden",
+					"success": "E-Mail wurde erfolgreich aktualisiert"
+				},
+				"title": "Deine E-Mail"
+			},
+			"changeName": {
+				"notifications": {
+					"error": "Name konnte nicht aktualisiert werden",
+					"success": "Name wurde erfolgreich aktualisiert"
+				},
+				"title": "Dein Name"
+			},
+			"deleteAccount": {
+				"confirmation": "Bist du sicher, dass du dein Konto löschen möchtest? Diese Aktion kann nicht rückgängig gemacht werden.",
+				"description": "Lösche dein Konto dauerhaft. Sobald du dein Konto gelöscht hast, gibt es kein Zurück mehr.",
+				"notifications": {
+					"error": "Konto konnte nicht gelöscht werden"
+				},
+				"passwordField": {
+					"label": "Gib dein Passwort zur Bestätigung ein",
+					"placeholder": "Dein aktuelles Passwort",
+					"invalidPassword": "Falsches Passwort. Bitte versuche es erneut."
+				},
+				"submit": "Konto löschen",
+				"title": "Konto löschen"
+			},
+			"language": {
+				"description": "Um die Sprache der App für dein Konto zu ändern, wähle eine Sprache aus der Liste aus und klicke auf Speichern.",
+				"notifications": {
+					"error": "Sprache konnte nicht aktualisiert werden",
+					"success": "Sprache wurde erfolgreich aktualisiert"
+				},
+				"title": "Deine Sprache"
+			},
+			"security": {
+				"activeSessions": {
+					"description": "Dies sind alle aktiven Sitzungen deines Kontos. Klicke auf das X, um eine bestimmte Sitzung zu beenden.",
+					"title": "Aktive Sitzungen",
+					"notifications": {
+						"revokeSession": {
+							"success": "Session beendet"
+						}
+					},
+					"currentSession": "Aktuelle Sitzung"
+				},
+				"changePassword": {
+					"currentPassword": "Aktuelles Passwort",
+					"newPassword": "Neues Passwort",
+					"notifications": {
+						"error": "Passwort kann nicht aktualisiert werden",
+						"success": "Passwort wurde erfolgreich aktualisiert"
+					},
+					"title": "Dein Passwort"
+				},
+				"connectedAccounts": {
+					"connect": "Verbinden",
+					"disconnect": "Trennen",
+					"title": "Verbundene Konten"
+				},
+				"passkeys": {
+					"description": "Verwende Passkeys als sichere alternative zu Passwörtern.",
+					"notifications": {
+						"addPasskey": {
+							"error": {
+								"title": "Kann keinen Hauptschlüssel hinzufügen"
+							},
+							"success": {
+								"title": "Passkey hinzugefügt"
+							}
+						},
+						"deletePasskey": {
+							"error": {
+								"title": "Der Hauptschlüssel konnte nicht gelöscht werden"
+							},
+							"loading": {
+								"title": "Hauptschlüssel löschen..."
+							},
+							"success": {
+								"title": "Passkey gelöscht"
+							}
+						}
+					},
+					"title": "Passwörter"
+				},
+				"setPassword": {
+					"description": "Du hast noch kein Passwort festgelegt. Um ein solches festzulegen, musst du den Ablauf der Passwortrücksetzung durchlaufen. Klicke auf die Schaltfläche unten, um eine E-Mail zum Zurücksetzen deines Passworts zu senden, und folge den Anweisungen in der E-Mail.",
+					"notifications": {
+						"error": "Der Link zum Festlegen des Passworts konnte nicht gesendet werden. Bitte versuche es erneut.",
+						"success": "Prüfen deinen Posteingang auf den Link, um Ihr Passwort festzulegen."
+					},
+					"submit": "Passwort festlegen",
+					"title": "Dein Passwort"
+				},
+				"title": "Sicherheit",
+				"twoFactor": {
+					"description": "Füge deinem Konto eine zusätzliche Sicherheitsebene hinzu.",
+					"dialog": {
+						"password": {
+							"description": "Bitte verifiziere dein Konto, indem du dein Passwort eingibst:",
+							"label": "Dein Passwort:",
+							"title": "Mit Passwort verifizieren"
+						},
+						"totpUrl": {
+							"code": "Geben Sie den 6-stelligen Code ein, um die Einrichtung zu bestätigen:",
+							"description": "Verwende deine bevorzugte Authentifizierungs-App und scanne den QR-Code damit oder gib das unten stehende Geheimnis manuell ein, um die Zwei-Faktor-Authentifizierung einzurichten.",
+							"title": "Zwei-Faktor-Authentifizierung aktivieren"
+						}
+					},
+					"disable": "Zwei-Faktor-Authentifizierung deaktivieren",
+					"enable": "Zwei-Faktor-Authentifizierung aktivieren",
+					"enabled": "Du hast die Zwei-Faktor-Authentifizierung für dein Konto aktiviert.",
+					"notifications": {
+						"disable": {
+							"success": {
+								"title": "Die Zwei-Faktor-Authentifizierung wurde erfolgreich deaktiviert."
+							}
+						},
+						"enable": {
+							"error": {
+								"title": "Dein Konto konnte mit dem angegebenen Passwort nicht verifiziert werden. Bitte versuche es erneut."
+							}
+						},
+						"verify": {
+							"success": {
+								"title": "Die Zwei-Faktor-Authentifizierung wurde erfolgreich aktiviert."
+							}
+						}
+					},
+					"title": "Zwei-Faktor-Authentifizierung",
+					"backupCodes": {
+						"title": "Backup-Codes",
+						"remaining": "{remaining} von {total} Backup-Codes verbleibend",
+						"statusLoading": "Backup-Codes werden geprüft…",
+						"statusError": "Status der Backup-Codes konnte nicht geladen werden. Bitte versuche es später erneut.",
+						"regenerate": "Backup-Codes neu generieren",
+						"regenerateDialog": {
+							"title": "Backup-Codes neu generieren",
+							"description": "Gib dein aktuelles Passwort und einen aktuellen Zwei-Faktor-Code ein, um einen neuen Satz Backup-Codes zu erstellen. Deine vorhandenen Codes werden ungültig.",
+							"passwordLabel": "Dein Passwort:",
+							"codeLabel": "Code aus deiner Authenticator-App oder ein unbenutzter Backup-Code:"
+						},
+						"saveDialog": {
+							"title": "Backup-Codes speichern",
+							"description": "Bewahre diese Codes an einem sicheren Ort auf. Jeder Code kann nur einmal verwendet werden. Wenn du keinen Zugriff mehr auf deine Authentifizierungs-App hast, sind diese Codes deine einzige Möglichkeit, wieder Zugang zu erhalten.",
+							"codesRegion": "Backup-Codes",
+							"copy": "Codes kopieren",
+							"download": "Codes herunterladen",
+							"copied": "In die Zwischenablage kopiert",
+							"saved": "Ich habe diese Codes gespeichert",
+							"done": "Fertig"
+						},
+						"notifications": {
+							"regenerate": {
+								"success": {
+									"title": "Neue Backup-Codes wurden erstellt. Deine alten Codes sind jetzt ungültig."
+								},
+								"error": {
+									"title": "Backup-Codes konnten nicht neu generiert werden. Bitte versuche es erneut."
+								}
+							}
+						}
+					}
+				}
+			},
+			"subtitle": "Verwalte die Einstellungen deines persönlichen Kontos.",
+			"title": "Kontoeinstellungen"
+		},
+		"billing": {
+			"createCustomerPortal": {
+				"label": "Abrechung verwalten",
+				"notifications": {
+					"error": {
+						"title": "Es konnte keine Kundenportalsitzung erstellt werden. \nBitte versuche es erneut."
+					}
+				}
+			},
+			"activePlan": {
+				"status": {
+					"active": "Aktiv",
+					"canceled": "Gekündigt",
+					"expired": "Ausgelaufen",
+					"incomplete": "Unvollständig",
+					"past_due": "Überfällig",
+					"paused": "Pausiert",
+					"trialing": "Testversion",
+					"unpaid": "Unbezahlt"
+				},
+				"title": "Dein Plan"
+			},
+			"changePlan": {
+				"description": "Wähle einen Plan aus, den du abonnieren möchtest.",
+				"title": "Ändere deinen Plan"
+			},
+			"title": "Zahlung"
+		},
+		"aiUsage": {
+			"limits": {
+				"sectionLabel": "TODO: de — Usage limits",
+				"manageButton": "TODO: de — Manage limits",
+				"emptyTitle": "TODO: de — No limits set",
+				"emptyBody": "TODO: de — Set a cap on tokens or spend, evaluated hourly, daily, or monthly. Hard limits pause AI requests when reached; soft limits notify you and let requests continue.",
+				"emptyCta": "TODO: de — Set your first limit",
+				"rowUsedOfMax": "TODO: de — {used} / {max} {unit}",
+				"rowWindowHourly": "TODO: de — this hour ({tz})",
+				"rowWindowDaily": "TODO: de — today ({tz})",
+				"rowWindowMonthly": "TODO: de — this month ({tz})",
+				"rowEnforcementHard": "TODO: de — Hard",
+				"rowEnforcementSoft": "TODO: de — Soft",
+				"rowEnforcementHardTooltip": "TODO: de — Hard limit — AI requests are paused when this cap is reached.",
+				"rowEnforcementSoftTooltip": "TODO: de — Soft limit — you'll be notified, but AI requests still go through.",
+				"rowProviderRemoved": "TODO: de — (provider removed)",
+				"rowEditAriaLabel": "TODO: de — Edit limit {name}",
+				"sheet": {
+					"sheetTitleCreate": "TODO: de — New usage limit",
+					"sheetTitleEdit": "TODO: de — Edit usage limit",
+					"fieldName": "TODO: de — Name (optional)",
+					"fieldNamePlaceholder": "TODO: de — e.g. Production OpenAI cap",
+					"fieldDimension": "TODO: de — Dimension",
+					"fieldDimensionTokens": "TODO: de — Tokens",
+					"fieldDimensionSpend": "TODO: de — Spend (USD)",
+					"fieldWindow": "TODO: de — Window",
+					"fieldWindowHourly": "TODO: de — Hourly",
+					"fieldWindowDaily": "TODO: de — Daily",
+					"fieldWindowMonthly": "TODO: de — Monthly",
+					"fieldMaxValue": "TODO: de — Max value",
+					"fieldMaxValueUnitTokens": "TODO: de — tokens",
+					"fieldMaxValueUnitSpend": "TODO: de — USD",
+					"fieldEnforcement": "TODO: de — Enforcement",
+					"fieldEnforcementHard": "TODO: de — Hard (block)",
+					"fieldEnforcementSoft": "TODO: de — Soft (notify only)",
+					"fieldEnforcementHardCaption": "TODO: de — Pause AI requests when reached.",
+					"fieldEnforcementSoftCaption": "TODO: de — Notify only; AI requests still go through.",
+					"fieldProvider": "TODO: de — Provider",
+					"fieldProviderAll": "TODO: de — All providers",
+					"fieldModel": "TODO: de — Model",
+					"fieldModelAll": "TODO: de — All models",
+					"fieldTaskType": "TODO: de — Task type",
+					"fieldTaskTypeAll": "TODO: de — All task types",
+					"saveButton": "Speichern",
+					"savingButton": "TODO: de — Saving…",
+					"cancelButton": "Abbrechen",
+					"deleteButton": "Löschen",
+					"savedToast": "TODO: de — Limit saved.",
+					"deletedToast": "TODO: de — Limit removed.",
+					"saveErrorToast": "TODO: de — Could not save the limit. Please try again.",
+					"deleteErrorToast": "TODO: de — Could not remove the limit. Please try again.",
+					"deleteConfirmTitle": "TODO: de — Delete this limit?",
+					"deleteConfirmBody": "TODO: de — This limit will stop being enforced. Past usage history is preserved.",
+					"deleteConfirmConfirm": "Löschen",
+					"deleteConfirmCancel": "Abbrechen",
+					"highConcurrencyDisclaimer": "TODO: de — Limits are best-effort and may be exceeded by a small margin under high concurrency."
+				},
+				"toast": {
+					"blockedTitle": "TODO: de — AI is paused — usage limit reached",
+					"blockedSpend": "TODO: de — You've reached {window}'s spend cap. Other AI requests are paused until it resets.",
+					"blockedTokens": "TODO: de — You've reached {window}'s token cap. Other AI requests are paused until it resets.",
+					"blockedAction": "TODO: de — Manage limits →",
+					"blockedActionAriaLabel": "TODO: de — Open AI usage limits settings",
+					"resetsInDaysHours": "TODO: de — Resets in {d}d {h}h",
+					"resetsInHoursMinutes": "TODO: de — Resets in {h}h {m}m",
+					"resetsInMinutes": "TODO: de — Resets in {m}m",
+					"resetsShortly": "TODO: de — Resets shortly",
+					"window": {
+						"hourly": "TODO: de — this hour",
+						"daily": "TODO: de — today",
+						"monthly": "TODO: de — this month"
+					}
+				},
+				"notifications": {
+					"warning": {
+						"title": "TODO: de — AI usage at 80% — {limitName}",
+						"titleNoName": "TODO: de — AI usage at 80%",
+						"snippet": "TODO: de — {used} of {max} {unit} used in the {window} window."
+					},
+					"reached": {
+						"title": "TODO: de — AI usage limit reached — {limitName}",
+						"titleNoName": "TODO: de — AI usage limit reached",
+						"snippetHard": "TODO: de — {used} of {max} {unit} used. AI requests are paused until the next {window} window.",
+						"snippetSoft": "TODO: de — {used} of {max} {unit} used in the {window} window."
+					}
+				}
+			}
+		},
+		"menu": {
+			"account": {
+				"billing": "Abrechnung",
+				"dangerZone": "Danger-Zone",
+				"general": "Allgemein",
+				"security": "Sicherheit",
+				"title": "Konto"
+			},
+			"organization": {
+				"billing": "Abrechnung",
+				"general": "Allgemein",
+				"members": "Mitglieder",
+				"title": "Org",
+				"dangerZone": "Gefahrenzone"
+			}
+		},
+		"save": "Speichern"
+	},
+	"start": {
+		"subtitle": "Sieh dir die neuesten Statistiken über dein großartiges Unternehmen an.",
+		"welcome": "Willkommen {name}!"
+	},
+	"zod": {
+		"errors": {
+			"invalid_arguments": "Ungültige Funktionsargumente",
+			"invalid_date": "Ungültiges Datum",
+			"invalid_enum_value": "Ungültiger Enum-Wert. {options} erwartet, {received} erhalten",
+			"invalid_intersection_types": "Schnittmengenergebnisse konnten nicht zusammengeführt werden",
+			"invalid_literal": "Ungültiger Literalwert, {expected} erwartet",
+			"invalid_return_type": "Ungültiger Funktionsrückgabewert",
+			"invalid_string": {
+				"cuid": "Ungültige {validation}",
+				"datetime": "Ungültige {validation}",
+				"email": "Ungültige {validation}",
+				"endsWith": "Ungültige Eingabe: muss mit \"{endsWith}\" enden",
+				"regex": "Ungültig",
+				"startsWith": "Ungültige Eingabe: muss mit \"{startsWith}\" beginnen",
+				"url": "Ungültige {validation}",
+				"uuid": "Ungültige {validation}"
+			},
+			"invalid_type": "{expected} erwartet, {received} erhalten",
+			"invalid_type_received_undefined": "Darf nicht leer sein",
+			"invalid_union": "Ungültige Eingabe",
+			"invalid_union_discriminator": "Ungültiger Diskriminatorwert, {options} erwartet",
+			"not_finite": "Zahl muss endlich sein",
+			"not_multiple_of": "Zahl muss ein Vielfaches von {multipleOf} sein",
+			"too_big": {
+				"array": {
+					"exact": "Array muss genau {maximum} Element(e) enthalten",
+					"inclusive": "Array muss höchstens {maximum} Element(e) enthalten",
+					"not_inclusive": "Array muss weniger als {maximum} Element(e) enthalten"
+				},
+				"date": {
+					"exact": "Datum muss genau {- maximum, datetime} sein",
+					"inclusive": "Datum muss kleiner oder gleich {- maximum, datetime} sein",
+					"not_inclusive": "Datum muss kleiner sein als {- maximum, datetime}"
+				},
+				"number": {
+					"exact": "Zahl muss genau {maximum} sein",
+					"inclusive": "Zahl muss kleiner oder gleich {maximum} sein",
+					"not_inclusive": "Zahl muss kleiner sein als {maximum}"
+				},
+				"set": {
+					"exact": "Ungültige Eingabe",
+					"inclusive": "Ungültige Eingabe",
+					"not_inclusive": "Ungültige Eingabe"
+				},
+				"string": {
+					"exact": "String muss genau {maximum} Zeichen enthalten",
+					"inclusive": "Die Zeichenfolge darf höchstens {maximum} Zeichen enthalten",
+					"not_inclusive": "String muss unter {maximum} Zeichen enthalten"
+				}
+			},
+			"too_small": {
+				"array": {
+					"exact": "Array muss genau {minimum} Element(e) enthalten",
+					"inclusive": "Array muss mindestens {minimum} Element(e) enthalten",
+					"not_inclusive": "Array muss mehr als {minimum} Element(e) enthalten"
+				},
+				"date": {
+					"exact": "Datum muss genau {- minimum, datetime} sein",
+					"inclusive": "Datum muss größer oder gleich {- minimum, datetime} sein",
+					"not_inclusive": "Datum muss größer sein als {- minimum, datetime}"
+				},
+				"number": {
+					"exact": "Zahl muss genau {minimum} sein",
+					"inclusive": "Zahl muss größer oder gleich {minimum} sein",
+					"not_inclusive": "Zahl muss größer sein als {minimum}"
+				},
+				"set": {
+					"exact": "Ungültige Eingabe",
+					"inclusive": "Ungültige Eingabe",
+					"not_inclusive": "Ungültige Eingabe"
+				},
+				"string": {
+					"exact": "Zeichenfolge muss genau {minimum} Zeichen enthalten",
+					"inclusive": "Zeichenkette muss mindestens {minimum} Zeichen enthalten",
+					"not_inclusive": "Zeichenfolge muss mehr als {minimum} Zeichen enthalten"
+				}
+			},
+			"unrecognized_keys": "Unbekannte Schlüssel im Objekt: {keys}"
+		},
+		"types": {
+			"array": "Array",
+			"bigint": "BigInt",
+			"boolean": "Boolean",
+			"date": "Datum",
+			"float": "Float",
+			"function": "Funktion",
+			"integer": "Integer",
+			"map": "Map",
+			"nan": "NaN",
+			"never": "Nicht definiert",
+			"null": "Null",
+			"number": "Zahl",
+			"object": "Objekt",
+			"promise": "Promise",
+			"set": "Set",
+			"string": "String",
+			"symbol": "Symbol",
+			"undefined": "Undefined",
+			"unknown": "Unbekannt",
+			"void": "Void"
+		},
+		"validations": {
+			"cuid": "Cuid",
+			"cuid2": "Cuid2",
+			"datetime": "Datum",
+			"email": "E-Mail",
+			"emoji": "Emoji",
+			"ip": "IP",
+			"regex": "Regex",
+			"ulid": "Ulid",
+			"url": "URL",
+			"uuid": "Uuid"
+		}
+	},
+	"documentation": {
+		"title": "Dokumentation",
+		"fallbackNotice": "Diese Seite ist in Ihrer gewählten Sprache noch nicht verfügbar. Es wird die englische Version angezeigt."
+	},
+	"choosePlan": {
+		"title": "Wähle einen Plan",
+		"description": "Um weiterzumachen, wähle bitte einen Plan aus."
+	},
+	"projects": {
+		"sharedWithMe": {
+			"title": "Für mich freigegeben",
+			"description": "Projekte in anderen Organisationen, zu denen du als Gast eingeladen wurdest."
+		},
+		"contexts": {
+			"download": {
+				"action": "Herunterladen",
+				"actionForRow": "{title} herunterladen",
+				"downloadAll": "Alle herunterladen",
+				"downloadAllAria": "Alle Kontexte herunterladen",
+				"preparing": "Archiv wird vorbereitet…",
+				"preparingAria": "Archiv wird vorbereitet, bitte warten",
+				"empty": "Keine Kontexte zum Herunterladen",
+				"pending": "Dieser Kontext wird noch verarbeitet",
+				"extractedTextWarning": "Lädt extrahierten Text herunter — die Originalquelle wird nicht in Fabric gespeichert",
+				"completed": "{included} von {total} Kontexten heruntergeladen",
+				"skipped": "{skipped} wurden übersprungen (werden noch verarbeitet oder nicht verfügbar)",
+				"tooLarge": "Dieses Projekt hat {count} Kontexte ({size}). Der Batch-Download ist auf {maxCount} Kontexte und {maxSize} begrenzt.",
+				"failed": "Download fehlgeschlagen. Bitte versuche es erneut.",
+				"format": {
+					"markdown": "Markdown (.md)",
+					"pdf": "PDF",
+					"docx": "Word (.docx)",
+					"aria": "Download-Format wählen"
+				}
+			}
+		},
+		"stories": {
+			"duplicates": {
+				"scanButton": "Auf Duplikate prüfen",
+				"scanTooltip": "Mögliche doppelte Features und Bugs mit KI finden.",
+				"scanFound": "{count, plural, one {# mögliches Duplikat gefunden} other {# mögliche Duplikate gefunden}}",
+				"scanNoneTitle": "Keine Duplikate gefunden",
+				"scanNoneDescription": "{count, plural, one {# Element geprüft} other {# Elemente geprüft}}.",
+				"scanFailed": "Duplikatsuche fehlgeschlagen",
+				"scanCompleteTitle": "Prüfung abgeschlossen",
+				"scanCompleteItems": "{count, plural, one {# Element hat ein mögliches Duplikat} other {# Elemente haben mögliche Duplikate}}",
+				"scanCompleteTagged": "Die betroffenen Elemente sind auf der Roadmap mit dem Chip \"Mögliches Duplikat\" oder \"Überschneidender Umfang\" markiert.",
+				"scanNoneTagged": "Es wurden keine Elemente markiert.",
+				"scanIncompleteTitle": "Prüfung konnte nicht abgeschlossen werden",
+				"scanIncompleteDescription": "Der KI-Prüfer konnte {count, plural, one {das # Kandidatenpaar} other {keines der # Kandidatenpaare}} diesmal prüfen – meist eine vorübergehende KI-Störung.",
+				"scanIncompleteUnchanged": "Es wurde nichts geändert und Ihre bestehenden Duplikat-Markierungen bleiben unberührt. Versuchen Sie es gleich noch einmal.",
+				"scanPartialWarning": "Hinweis: {count, plural, one {# Paar} other {# Paare}} konnte diesmal nicht geprüft werden und wird bei der nächsten Prüfung erneut versucht.",
+				"scanAgain": "Erneut prüfen",
+				"scanAgainAria": "Erneut prüfen – Duplikatsuche wiederholen",
+				"viewDuplicates": "Duplikate anzeigen",
+				"done": "Fertig",
+				"viewDuplicatesAria": "Duplikate anzeigen – nur markierte Elemente auf der Roadmap zeigen",
+				"doneAria": "Fertig – Zusammenfassung der Prüfung schließen",
+				"chipSingle": "Mögliches Duplikat",
+				"chipMulti": "{count} mögliche Duplikate",
+				"chipOverlapSingle": "Überschneidender Umfang",
+				"chipOverlapMulti": "{count} überschneidende Einträge",
+				"overlapPillLabel": "Überschneidender Umfang",
+				"overlapPillHelp": "Diese beiden Einträge sind nicht austauschbar, decken aber im Wesentlichen dasselbe Problem oder dieselbe Fähigkeit mit unterschiedlicher Ausrichtung ab. Prüfen Sie, ob sie zusammengeführt werden sollen, einer vom anderen abhängen soll, oder verwerfen Sie, falls sie bewusst getrennt sind.",
+				"chipAria": "{label} – prüfen und auflösen",
+				"chipTooltipKnown": "Mögliches Duplikat von: {titles}",
+				"chipTooltipGeneric": "Dieses mögliche Duplikat prüfen und auflösen.",
+				"chipTooltipOverlapKnown": "Überschneidender Umfang mit: {titles}",
+				"chipTooltipOverlapGeneric": "Diesen überschneidenden Eintrag prüfen – zusammenführen, verknüpfen oder getrennt lassen.",
+				"dialogTitleOverlap": "Überschneidender Umfang",
+				"dialogDescriptionOverlap": "Diese beiden Einträge sind nicht austauschbar, decken aber im Wesentlichen dasselbe Problem oder dieselbe Fähigkeit mit unterschiedlicher Ausrichtung ab. Führen Sie sie zusammen, lassen Sie einen vom anderen abhängen, oder verwerfen Sie, falls sie bewusst getrennt sind.",
+				"dialogTitle": "Mögliches Duplikat",
+				"dialogDescription": "Diese beiden Einträge scheinen dieselbe Arbeit zu sein. Wählen Sie, welcher behalten werden soll, und führen Sie den anderen damit zusammen – oder verwerfen Sie, falls es keine Duplikate sind.",
+				"whyFlagged": "Grund der Markierung: ",
+				"similarConfidence": "{similarity}% ähnlich · {confidence}% Übereinstimmung",
+				"similarConfidenceAria": "Wie diese Werte berechnet werden",
+				"similarHelpLabel": "Ähnlichkeit",
+				"similarHelpBody": "Wie ähnlich sich die beiden Elemente lesen, nachdem sie in KI-Embeddings umgewandelt wurden — ein Kosinusvergleich von Titel und Beschreibung. Nur sehr ähnliche Paare werden überhaupt berücksichtigt.",
+				"confidenceHelpLabel": "Übereinstimmungssicherheit",
+				"confidenceHelpBody": "Anschließend liest eine KI beide Elemente vollständig und bewertet, wie sicher sie ist, dass sie dieselbe Arbeit beschreiben. Beide Prüfungen müssen übereinstimmen, bevor ein Duplikat markiert wird.",
+				"keepLabel": "Welcher behalten wird",
+				"keepInstruction": "Jede Karte kann ihren Originaltext oder eine KI-zusammengeführte Version anzeigen. Das Zusammenführen behält diese Karte; die andere wird stillgelegt.",
+				"keepThis": "Diese behalten",
+				"keepAria": "{identifier} behalten: {title}",
+				"modeOriginal": "Original",
+				"modeAiMerge": "KI-Zusammenführung",
+				"modeAiTooltip": "Beide Tickets mit KI in diese Karte zusammenführen",
+				"generating": "KI-Zusammenführung wird erstellt…",
+				"diffLegendOriginal": "Hervorgehoben = nur in {identifier}, verglichen mit {other}",
+				"diffLegendAi": "Hervorgehoben = von der KI-Zusammenführung ergänzt, verglichen mit dem Original von {identifier}",
+				"viewInFabric": "{identifier} in Fabric öffnen – wird in einem neuen Tab geöffnet",
+				"viewInFabricAria": "{identifier} in Fabric in einem neuen Tab öffnen",
+				"aiMergeInfo": "Die KI-Zusammenführung erstellt eine kombinierte Beschreibung und Akzeptanzkriterien aus beiden Tickets und behält {identifier} als verbleibendes Ticket. Wechseln Sie frei zwischen Original und KI-Zusammenführung, klicken Sie zum Neugenerieren auf das ↻ auf der Schaltfläche und prüfen Sie vor dem Zusammenführen.",
+				"aiMergeInfoAria": "So funktioniert die KI-Zusammenführung",
+				"badgeKeeping": "Behalten",
+				"badgeRemoving": "Entfernen",
+				"columnCombined": "Kombiniert (KI)",
+				"combineAction": "Mit KI kombinieren",
+				"combineHint": "Erstellen Sie eine Beschreibung und Akzeptanzkriterien, die das Beste aus beiden in {identifier} zusammenführen. Sie können sie vor dem Zusammenführen bearbeiten.",
+				"regenerate": "Neu generieren",
+				"showFull": "Vollständigen Inhalt anzeigen",
+				"hideFull": "Vollständigen Inhalt ausblenden",
+				"attachmentsLabel": "Anhänge",
+				"attachmentsKeptLabel": "Anhänge (übernommen)",
+				"metaCreated": "Erstellt {date}",
+				"metaUpdated": "Aktualisiert {date}",
+				"metaWords": "{count, plural, one {# Wort} other {# Wörter}}",
+				"whyFlaggedLabel": "Warum markiert?",
+				"aboutAria": "Über diesen Vergleich",
+				"metaByAuthor": "von {author}",
+				"metaDetailsAria": "Vollständige Metadaten für {identifier} anzeigen",
+				"metaLabelCreated": "Erstellt",
+				"metaLabelUpdated": "Aktualisiert",
+				"metaLabelAuthor": "Autor",
+				"metaLabelSource": "Quelle",
+				"metaLabelStage": "Phase",
+				"metaLabelWords": "Wörter",
+				"metaNeverEdited": "Nie bearbeitet",
+				"metaUtcSuffix": "{time} UTC",
+				"declinedChip": "Abgelehntes Duplikat",
+				"declinedTooltipKnown": "Zusammengeführt mit {identifier} und geschlossen",
+				"declinedTooltipGeneric": "Dieses Element wurde mit einem anderen zusammengeführt und geschlossen",
+				"cancel": "Abbrechen",
+				"notADuplicate": "Kein Duplikat",
+				"dismissing": "Wird verworfen…",
+				"mergeKeepAsIs": "Zusammenführen – {identifier} behalten",
+				"mergeKeepCombined": "Zusammenführen & kombinieren – {identifier} behalten",
+				"typeBug": "Bug",
+				"typeFeature": "Feature",
+				"typeAria": "{identifier} ist ein {kind}",
+				"mergeTypeNoteBug": "Unterschiedliche Typen – beim Zusammenführen bleibt {identifier} bestehen, der kombinierte Inhalt folgt daher der Bug-Vorlage.",
+				"mergeTypeNoteFeature": "Unterschiedliche Typen – beim Zusammenführen bleibt {identifier} bestehen, der kombinierte Inhalt folgt daher der Feature-Vorlage.",
+				"merging": "Wird zusammengeführt…",
+				"mergedTitle": "{duplicate} in {survivor} zusammengeführt",
+				"mergedDescription": "{duplicate} wurde auf „Abgelehnt“ gesetzt und die Aufgaben übernommen.",
+				"mergedCombinedDescription": "{survivor} hat jetzt die kombinierte Beschreibung und Akzeptanzkriterien; {duplicate} wurde auf „Abgelehnt“ gesetzt und die Aufgaben übernommen.",
+				"combining": "Wird kombiniert…",
+				"combineTruncated": "Der kombinierte Entwurf wurde abgeschnitten. Generieren Sie ihn vor dem Zusammenführen neu.",
+				"combineDescriptionLabel": "Beschreibung",
+				"combineAcceptanceLabel": "Akzeptanzkriterien",
+				"combineFailed": "Einträge konnten nicht kombiniert werden",
+				"dismissedTitle": "Als kein Duplikat markiert",
+				"dismissedDescription": "Dieses Paar wird nicht erneut markiert.",
+				"linkBadgeFallbackTool": "PM-Tool",
+				"linkBadgeLabel": "{tool} {ticketRef}",
+				"linkBadgeAria": "Öffnet {tool} {ticketRef} in einem neuen Tab",
+				"linkSyncFailed": "Letzte Synchronisierung fehlgeschlagen",
+				"linkSyncStale": "Längere Zeit nicht synchronisiert",
+				"linkOpen": "{tool} {ticketRef} öffnen",
+				"linkMigrateTitle": "Verknüpftes {tool}-Ticket behalten?",
+				"linkMigrateBody": "{discardedRef} ist mit {tool}-Ticket {ticketRef} verknüpft, und {survivorRef} ist nicht verknüpft. Die Verknüpfung auf {survivorRef} übertragen, damit sie nach dem Zusammenführen erhalten bleibt?",
+				"linkMigrateAccept": "Verknüpfung übertragen",
+				"linkMigrateDecline": "Ohne sie zusammenführen",
+				"linkSelectTitle": "Zwei PM-Verknüpfungen – eine zum Behalten auswählen",
+				"linkSelectLegend": "Wähle, welche PM-Verknüpfung behalten wird",
+				"linkSelectBody": "Beide Elemente sind mit unterschiedlichen PM-Tickets verknüpft. Wähle die Verknüpfung, die {survivorRef} behält; die andere wird aus dem zusammengeführten Element entfernt.",
+				"linkSelectOnItem": "Auf {identifier}",
+				"linkLastSynced": "Zuletzt synchronisiert {date}",
+				"linkNeverSynced": "Noch nicht synchronisiert",
+				"linkCreated": "Erstellt {date}",
+				"linkSelectConfirm": "Diese Verknüpfung behalten"
+			},
+			"convertKind": {
+				"titleBug": "In einen Bug ändern?",
+				"titleFeature": "In ein Feature ändern?",
+				"bodyBug": "Beschreibung und Akzeptanzkriterien werden ersetzt. Fabric schreibt den Inhalt über die Bug-Vorlage neu und nutzt den aktuellen Text nur als Referenz — nichts davon wird wörtlich übernommen, auch nicht selbst geschriebene Passagen. Die aktuelle Fassung wird vorher im Versionsverlauf gesichert und kann wiederhergestellt werden. Die Entwurfsphase wird auf DRAFT zurückgesetzt und der Typfilter der Roadmap folgt dem neuen Typ.",
+				"bodyFeature": "Beschreibung und Akzeptanzkriterien werden ersetzt. Fabric schreibt den Inhalt über die Feature-Vorlage neu und nutzt den aktuellen Text nur als Referenz — nichts davon wird wörtlich übernommen, auch nicht selbst geschriebene Passagen. Die aktuelle Fassung wird vorher im Versionsverlauf gesichert und kann wiederhergestellt werden. Die Entwurfsphase wird auf DRAFT zurückgesetzt und der Typfilter der Roadmap folgt dem neuen Typ.",
+				"cancel": "Abbrechen",
+				"confirmBug": "In einen Bug ändern",
+				"confirmFeature": "In ein Feature ändern",
+				"converting": "Wird geändert…",
+				"startedBug": "In einen Bug geändert — Inhalt wird neu geschrieben",
+				"startedFeature": "In ein Feature geändert — Inhalt wird neu geschrieben",
+				"startedDescription": "Der Typ wurde geändert. Beschreibung und Akzeptanzkriterien werden gerade über die neue Vorlage neu geschrieben und ersetzen den bisherigen Text; das dauert etwa eine Minute.",
+				"tooltipHint": "Beschreibung und Akzeptanzkriterien werden über die Vorlage des neuen Typs neu geschrieben; die Entwurfsphase wird auf DRAFT zurückgesetzt.",
+				"inFlightTitle": "Inhalt wird für den neuen Typ neu geschrieben",
+				"inFlightBody": "Beschreibung und Akzeptanzkriterien werden gerade über die neue Vorlage neu geschrieben. Bis das abgeschlossen ist, sind sie schreibgeschützt. Die vorherige Fassung liegt bereits im Versionsverlauf.",
+				"completedTitle": "Beschreibung und Akzeptanzkriterien neu geschrieben",
+				"completedBody": "Dieses Element folgt jetzt der Form seines neuen Typs. Die Fassung von vor der Änderung liegt im Versionsverlauf.",
+				"failedTitle": "Der Inhalt wurde nicht neu geschrieben",
+				"failedBody": "Der Typ wurde geändert, aber der Neuentwurf ist nicht angekommen — Beschreibung und Akzeptanzkriterien sind unverändert geblieben.",
+				"failedReason": "Grund: {reason}",
+				"badgeRunning": "Wird neu geschrieben",
+				"badgeRunningAria": "Beschreibung und Akzeptanzkriterien werden für den neuen Typ neu geschrieben",
+				"badgeFailed": "Nicht neu geschrieben",
+				"badgeFailedAria": "Der Typ wurde geändert, aber der Inhalt wurde nicht neu geschrieben — der bisherige Text blieb erhalten",
+				"dismiss": "Ausblenden",
+				"announceStarted": "Beschreibung und Akzeptanzkriterien werden für den neuen Typ neu geschrieben.",
+				"announceCompleted": "Beschreibung und Akzeptanzkriterien wurden für den neuen Typ neu geschrieben.",
+				"announceFailed": "Der Neuentwurf wurde nicht abgeschlossen. Beschreibung und Akzeptanzkriterien sind unverändert geblieben."
+			},
+			"download": {
+				"action": "Download",
+				"actionAria": "Download this feature",
+				"format": {
+					"markdown": "Markdown (.md)",
+					"pdf": "PDF (.pdf)",
+					"docx": "Word (.docx)"
+				},
+				"bulkAction": "Download selected (.zip)",
+				"bulkActionAria": "Download the selected features as a ZIP archive",
+				"preparing": "Preparing…",
+				"preparingAria": "Preparing archive, please wait",
+				"tooMany": "Select fewer than 50 features to download as a batch.",
+				"empty": "None of the selected features have enough content to export.",
+				"failed": "Download failed. Please try again.",
+				"stubBlocked": "This feature doesn't have enough content to export. Add a description, acceptance criteria, or tasks first.",
+				"bulkSuccess": "Downloaded {included} of {total} features. {skipped} skipped.",
+				"manifest": {
+					"included": "INCLUDED",
+					"skipped": "SKIPPED",
+					"reason": {
+						"insufficientContent": "Insufficient content",
+						"notFoundOrNoPermission": "Feature not found or access denied"
+					}
+				}
+			},
+			"create": {
+				"descriptionLabel": "Worum geht's?",
+				"descriptionPlaceholderFeature": "Beschreibe das Feature...",
+				"descriptionPlaceholderBug": "Beschreibe den Fehler...",
+				"titleGenerating": "Titel wird generiert…",
+				"titleGenerated": "Titel generiert.",
+				"titleGenerationFailed": "Title generation failed — a placeholder title has been assigned.",
+				"titleInsufficient": "Description was short — using placeholder title. You can edit it any time.",
+				"attachments": {
+					"dropHint": "Drop images here",
+					"attachButton": "Attach images",
+					"limitsCaption": "PNG · JPEG · GIF · WebP · up to 5 MB each",
+					"removeAriaLabel": "Remove attachment {name}",
+					"dropzoneAriaLabel": "Attach images — drop here or press Enter to browse",
+					"validationToast": {
+						"unsupportedType": "Unsupported image type — use PNG, JPEG, GIF, or WebP.",
+						"tooLarge": "File too large — maximum size is 5 MB."
+					}
+				},
+				"docAttachments": {
+					"dropHint": "Dokumente hier ablegen",
+					"attachButton": "Dokumente anhängen",
+					"limitsCaption": "DOCX · MD · TXT · EXCALIDRAW · bis zu 25 MB pro Datei",
+					"removeAriaLabel": "Anhang {name} entfernen",
+					"dropzoneAriaLabel": "Dokumente anhängen — hier ablegen oder Enter drücken zum Durchsuchen",
+					"designationAriaLabel": "Kennzeichnung für {name}",
+					"designationAsset": "Asset (geschützt)",
+					"designationContextOnly": "Nur Kontext",
+					"validationToast": {
+						"unsupportedType": "Nicht unterstützter Dateityp — DOCX, MD, TXT oder EXCALIDRAW verwenden.",
+						"tooLarge": "Datei zu groß — maximale Größe ist 25 MB."
+					}
+				}
+			},
+			"workspace": {
+				"regenerateTitleAction": "Titel neu generieren",
+				"regenerateTitleTooltip": "Neuen Titel mit KI aus der Beschreibung generieren",
+				"regenerateTitleSuccess": "Titel aktualisiert.",
+				"regenerateTitleInFlight": "Wird generiert…",
+				"regenerateTitleEmptyDescription": "Bitte zuerst eine Beschreibung hinzufügen.",
+				"copyLinkSuccess": "In Zwischenablage kopiert",
+				"copyLinkFailed": "Link konnte nicht kopiert werden",
+				"notifyAction": "Mitglieder benachrichtigen",
+				"notifyTitle": "Projektmitglieder benachrichtigen",
+				"notifyDescription": "Wähle Mitglieder aus, die über dieses Feature benachrichtigt werden sollen. Sie erhalten eine Benachrichtigung mit einem Link direkt hierher.",
+				"notifyLoadingMembers": "Mitglieder werden geladen…",
+				"notifyNoMembers": "Keine weiteren Projektmitglieder zum Benachrichtigen.",
+				"notifyMembersError": "Mitglieder konnten nicht geladen werden. Bitte versuche es erneut.",
+				"notifyNoneSent": "Alle Ausgewählten wurden bereits benachrichtigt.",
+				"notifyGuest": "Gast",
+				"notifySelectMember": "{name} auswählen",
+				"notifyMessagePlaceholder": "Optionale Nachricht hinzufügen…",
+				"notifyCancel": "Abbrechen",
+				"notifySend": "{count, plural, =0 {Senden} one {# Mitglied benachrichtigen} other {# Mitglieder benachrichtigen}}",
+				"notifySuccess": "{count, plural, =0 {Niemand wurde benachrichtigt} one {# Mitglied benachrichtigt} other {# Mitglieder benachrichtigt}}",
+				"notifyError": "Benachrichtigung konnte nicht gesendet werden. Bitte versuche es erneut."
+			},
+			"titleFallback": {
+				"untitledFeature": "Unbenanntes Feature",
+				"untitledBug": "Unbenannter Fehler"
+			},
+			"maturation": {
+				"qa": {
+					"verdict": {
+						"headline": {
+							"blocked": "Noch nicht abnahmebereit",
+							"caution": "Abnehmbar, mit Vorbehalten",
+							"ready": "Bereit zur Abnahme",
+							"partial": "Abdeckung wirkt sauber, aber nicht alle Fälle sind geladen",
+							"noCriteria": "Noch nichts, wogegen getestet werden könnte"
+						},
+						"reason": {
+							"uncovered": "{count, plural, one {# Akzeptanzkriterium hat keinen abdeckenden Testfall} other {# Akzeptanzkriterien haben keinen abdeckenden Testfall}}.",
+							"ambiguous": "{count, plural, one {# Kriterium ist zu mehrdeutig, um zuverlässig getestet zu werden} other {# Kriterien sind zu mehrdeutig, um zuverlässig getestet zu werden}}.",
+							"failing": "{count, plural, one {# verknüpfter Testfall schlägt fehl} other {# verknüpfte Testfälle schlagen fehl}}.",
+							"stale": "Die Analyse ist älter als die aktuelle Spezifikation.",
+							"missing": "Für dieses Feature wurde noch keine Analyse erzeugt."
+						},
+						"actions": {
+							"refreshAnalysis": "Analyse aktualisieren",
+							"draftGaps": "{count, plural, one {Fall für die Lücke entwerfen} other {Fälle für die # Lücken entwerfen}}"
+						}
+					},
+					"draftingRevealed": "Entwurf deckte auf",
+					"draftingRevealedGuidance": "Diese Lücken stammen aus den entworfenen Testfällen. Genau dafür entwirft man sie zuerst: Passe die Anforderungen an, und die nächste Analyse markiert das Behobene nicht mehr.",
+					"coverageSummary": {
+						"heading": "Abdeckung",
+						"ringAria": "{pct}% der Akzeptanzkriterien abgedeckt — {covered} von {criteria}",
+						"coveredOf": "{covered} von {criteria} Kriterien",
+						"gap": "{count, plural, one {# Kriterium hat keinen abdeckenden Fall} other {# Kriterien haben keinen abdeckenden Fall}}.",
+						"noGap": "Jedes Akzeptanzkriterium hat mindestens einen Fall.",
+						"caseCount": "{count, plural, one {# Fall ist mit diesem Feature verknüpft} other {# Fälle sind mit diesem Feature verknüpft}}.",
+						"truncated": "Noch nicht alle sind geladen."
+					},
+					"pipelineRuns": {
+						"runConfiguration": {
+							"title": "Diesen Lauf konfigurieren",
+							"description": "{count, plural, one {# Testfall ausgewählt.} other {# Testfälle ausgewählt.}} Alles, was auf dem Projektstandard bleibt, folgt Einstellungen ▸ Testen und bleibt damit automatisch aktuell.",
+							"loading": "Konfigurationen werden geladen…",
+							"savedConfiguration": "Gespeicherte Konfiguration",
+							"runner": "Ausführung",
+							"runnerAgentic": "Agentisch — nutzt die erfassten Schritte und KI",
+							"runnerScripted": "Skriptgesteuert — führt einen gespeicherten Aktionsplan in einer Sandbox aus",
+							"runnerHintAgentic": "Fabric interpretiert jeden erfassten Schritt, während es den Browser steuert.",
+							"runnerHintScripted": "Jeder ausgewählte Testfall benötigt einen gespeicherten Plan. Skriptgesteuerte Läufe nutzen Chromium und führen keine Modellaufrufe aus.",
+							"environment": "Umgebung",
+							"projectDefault": "Projektstandard",
+							"environmentOption": "{name} — {type}",
+							"browser": "Browser",
+							"resolution": "Auflösung",
+							"saveAs": "Als Konfiguration speichern",
+							"saveAsOptional": "(optional)",
+							"saveAsPlaceholder": "Nächtliche Regression auf Firefox",
+							"save": "Speichern",
+							"saved": "„{name}“ gespeichert",
+							"saveHint": "Speichert Ausführung, Umgebung, Browser und Auflösung — nicht die ausgewählten Testfälle, damit später hinzugefügte Fälle weiterhin abgedeckt werden.",
+							"costHintAgentic": "Fabric berechnet die endgültige Token-Schätzung beim Start aus den ausgewählten Testfällen und ihren tatsächlichen Schritten.",
+							"costHintScripted": "Skriptgesteuerte Läufe führen keine Modellaufrufe aus.",
+							"cancel": "Abbrechen",
+							"start": "Lauf starten"
+						},
+						"findings": {
+							"dismiss": "Verwerfen",
+							"dismissed": "Befund verworfen. Er erscheint nur wieder, wenn der Fehler erneut auftritt.",
+							"alreadyDismissed": "Dieser Befund wurde bereits verworfen.",
+							"selectForMerge": "{name} zum Zusammenführen auswählen",
+							"mergeHint": "{count, plural, one {# Befund ausgewählt} other {# Befunde ausgewählt}} — beim Zusammenführen bleibt der älteste erhalten, die übrigen gehen darin auf.",
+							"mergeAction": "In ältesten zusammenführen",
+							"mergeCancel": "Auswahl aufheben",
+							"merged": "{count, plural, one {# Duplikat zusammengeführt} other {# Duplikate zusammengeführt}}."
+						}
+					}
+				}
+			}
+		},
+		"testCases": {
+			"title": "Testing",
+			"subtitle": "Erstelle Testfälle und Pläne, führe sie gegen deine Umgebungen aus und sieh, was CI gemeldet hat — samt der Fehler, die immer wiederkehren, zur Triage.",
+			"segmentsAria": "Testing-Bereiche",
+			"loadingCases": "Testfälle werden geladen…",
+			"shareableViewHint": "Filter, Sortierung und Seite stehen in der Adresszeile — diese Ansicht ist teilbar, und „Zurück“ führt dorthin zurück.",
+			"health": {
+				"cases": "Fälle",
+				"casesHint": "Alle Testfälle dieses Projekts unter den aktuell gesetzten Filtern.",
+				"casesAllStatesHint": "Alle Testfälle dieses Projekts über sämtliche Status hinweg — die Tabelle unten ist auf einen Status eingegrenzt, daher ist diese Summe größer.",
+				"passing": "bestanden",
+				"passingHint": "Anteil der {executed} Fälle mit erfasstem Ergebnis, die bestanden haben. Nie ausgeführte Fälle zählen nicht mit, damit eine kaum begonnene Suite nicht wie eine fehlschlagende wirkt — insgesamt gibt es {total} Fälle.",
+				"mixAria": "{passed} bestanden, {failed} fehlgeschlagen, {blocked} blockiert",
+				"automated": "automatisiert",
+				"ofTarget": "/ {pct} % Ziel",
+				"automatedHint": "{automated} von {total} Fällen sind als automatisiert markiert und tragen eine echte Automatisierungsreferenz. {ci} % wurden tatsächlich von CI ausgeführt — einen Test zu verknüpfen und ihn auszuführen sind zwei verschiedene Dinge."
+			},
+			"savedViews": {
+				"trigger": "Gespeicherte Ansichten",
+				"label": "Gespeicherte Ansichten",
+				"hint": "Speichere Filter, Sortierung und Seite unter einem Namen und komm mit einem Klick zurück. Eine gespeicherte Ansicht ist dasselbe wie der Link in der Adresszeile — was du speichern kannst, kannst du auch einer Kollegin schicken. Wird in diesem Browser gehalten.",
+				"empty": "Noch keine gespeicherten Ansichten. Grenze die Liste ein und speichere sie unter einem Namen.",
+				"saveCurrent": "Aktuelle Ansicht speichern…",
+				"nothingToSave": "Grenze die Liste zuerst ein",
+				"atLimit": "Limit erreicht — zuerst eine entfernen",
+				"namePlaceholder": "Ansicht benennen",
+				"nameAria": "Name für diese gespeicherte Ansicht",
+				"removeAria": "Gespeicherte Ansicht {name} löschen",
+				"save": "Speichern",
+				"cancel": "Abbrechen"
+			},
+			"display": {
+				"density": "Zeilendichte",
+				"densityAria": "Zeilendichte",
+				"densityHint": "Wie eng Zeilen gepackt sind. Kompakt zeigt rund ein Drittel mehr auf einmal — genau das, was die Triage von ein paar Hundert Fällen braucht. Wird in diesem Browser gemerkt und nicht über einen Link geteilt.",
+				"densities": {
+					"comfortable": "Komfortabel",
+					"compact": "Kompakt"
+				},
+				"columns": "Spalten",
+				"columnsAria": "Spalten auswählen",
+				"columnsHint": "Spalten ausschalten, damit die wichtigen mehr Platz bekommen. Wird in diesem Browser gemerkt und nicht über einen Link geteilt.",
+				"columnsHintHidden": "{count, plural, one {# Spalte ist ausgeblendet} other {# Spalten sind ausgeblendet}}. Hier wieder einschalten.",
+				"showAllColumns": "Alle Spalten anzeigen",
+				"columnNames": {
+					"covers": "Deckt ab",
+					"result": "Ergebnis",
+					"state": "Status",
+					"priority": "Priorität",
+					"owner": "Verantwortlich",
+					"lastRun": "Letzter Lauf"
+				}
+			},
+			"attention": {
+				"label": "Braucht Aufmerksamkeit",
+				"failing": "Fehlgeschlagen",
+				"blocked": "Blockiert",
+				"proposed": "Wartet auf Prüfung",
+				"notRun": "Nie ausgeführt",
+				"failingHint": "{count, plural, one {# Fall, dessen} other {# Fälle, deren}} letzter Lauf einen Fehlschlag gemeldet hat. Das sind bekannte Defekte — hier anfangen. Ein Klick filtert die Tabelle genau darauf.",
+				"blockedHint": "{count, plural, one {# Fall, der} other {# Fälle, die}} nicht bis zu einem Ergebnis ausgeführt werden konnten — kaputte Umgebung, fehlende Daten, eine Abhängigkeit, die nie hochkam. Blockiert ist nicht fehlgeschlagen: Es ist in keine Richtung etwas bewiesen.",
+				"proposedHint": "{count, plural, one {# Fall, den} other {# Fälle, die}} eine adversariale KI-Prüfinstanz vorgeschlagen hat und über den noch niemand entschieden hat. Annehmen setzt ihn auf Entwurf, Ablehnen schließt ihn — so oder so bleibt er dokumentiert.",
+				"notRunHint": "{count, plural, one {# Fall, der} other {# Fälle, die}} noch nie ein Ergebnis geliefert hat. Ein ungetesteter Fall sieht in jeder Summe außer dieser genauso aus wie ein bestandener."
+			},
+			"segmentCountHint": {
+				"cases": "Der Zähler zählt alle Testfälle im Projekt.",
+				"plans": "Der Zähler zählt die Testpläne in diesem Projekt.",
+				"features": "Der Zähler zählt Arbeitselemente OHNE abdeckenden Fall — die Lücke, nicht die Summe, er sinkt also, während du sie schließt.",
+				"runs": "Der Zähler zählt alle erfassten Läufe, aus Fabric und aus deiner CI.",
+				"reviews": "Der Zähler zählt die Pull Requests, die Fabric gelesen hat.",
+				"questions": "Der Zähler zählt nur OFFENE Fragen — eine zu beantworten senkt ihn."
+			},
+			"columns": {
+				"select": "Auswählen",
+				"id": "ID",
+				"testCase": "Testfall",
+				"covers": "Deckt ab",
+				"result": "Ergebnis",
+				"state": "Status",
+				"priority": "Prio",
+				"owner": "Verantwortlich",
+				"lastRun": "Letzter Lauf",
+				"actions": "Aktionen",
+				"sortByAria": "Nach {column} sortieren",
+				"sortedAscAria": "Nach {column} aufsteigend sortiert. Aktivieren zum Umkehren.",
+				"sortedDescAria": "Nach {column} absteigend sortiert. Aktivieren zum Umkehren.",
+				"sortHint": "Klicken, um nach dieser Spalte zu sortieren; erneut klicken zum Umkehren.",
+				"idHint": "Die dauerhafte Kennung des Falls. Sie ändert sich nie und ist daher das, was in einem Ticket oder einer Commit-Nachricht zitiert wird.",
+				"testCaseHint": "Was der Fall prüft, in einer Zeile. Ein Blitz bedeutet, dass ein automatisierter Test verknüpft ist; ein Branch-Symbol bedeutet, dass das letzte Ergebnis aus der CI stammt und nicht von einer Person. Bei abgeschnittenem Titel zum Lesen mit der Maus darüberfahren.",
+				"coversHint": "Das Feature oder der Bug, den dieser Fall prüft. „Nicht abgedeckt“ heißt, er ist mit nichts verknüpft und zählt damit auf keine Abdeckung ein — meist ein Versehen, keine Entscheidung.",
+				"resultHint": "Das zuletzt erfasste Ergebnis für diesen Fall. „Nie ausgeführt“ heißt, dass ihn noch niemand ausgeführt hat — das ist etwas anderes als bestanden.",
+				"stateHint": "Wo der Fall in seinem eigenen Lebenszyklus steht: Vorgeschlagen (von einer KI-Prüfinstanz vorgeschlagen, wartet auf deine Entscheidung), Entwurf (in Arbeit), Bereit (zum Ausführen freigegeben), Geschlossen (ausgemustert, aber dokumentiert).",
+				"priorityHint": "Wie schwer ein Fehlschlag hier wiegt. Als gefüllte Balken dargestellt, damit die Stufe nicht allein über Farbe lesbar ist — für das Wort mit der Maus darüberfahren.",
+				"lastRunHint": "Wann dieser Fall zuletzt ein Ergebnis geliefert hat, aus beliebiger Quelle. Für den genauen Zeitstempel mit der Maus darüberfahren."
+			},
+			"pagination": {
+				"aria": "Testfall-Seiten",
+				"range": "{from}–{to} von {total} Fällen",
+				"none": "Keine Fälle",
+				"rows": "Zeilen",
+				"rowsAria": "Fälle pro Seite",
+				"previous": "Vorherige Seite",
+				"next": "Nächste Seite",
+				"goToPage": "Zu Seite {page}"
+			},
+			"about": {
+				"trigger": "Über {segment}",
+				"cases": {
+					"title": "Fälle",
+					"body": "Alle Testfälle dieses Projekts — selbst verfasst, nicht aus einem Lauf abgeleitet. Ein Fall ist eine geordnete Liste aus Aktion + Erwartung mit Status, Priorität und Verantwortlichem, nummeriert ab TC-001. Fälle sind die Einheit, auf die sich alles andere bezieht: Pläne gruppieren sie, Läufe führen sie aus, die Abdeckung zählt sie."
+				},
+				"plans": {
+					"title": "Pläne",
+					"body": "Benannte Teilmengen der Fälle — ein Smoke-Set, eine Release-Checkliste, ein Regressionslauf. Ein Plan verweist auf Fälle, statt sie zu kopieren: Änderungen an einem Fall gelten in jedem Plan, der ihn enthält."
+				},
+				"features": {
+					"title": "Features",
+					"body": "Abdeckung aus Sicht der Arbeit statt der Testsuite: je Feature und Bug, wie viele Fälle es zu testen beanspruchen und wie viele Akzeptanzkriterien tatsächlich benannt werden. „Nicht abgedeckt“ heißt, kein Fall verweist darauf — und ein ungetestetes Feature sieht aus wie ein bestandenes, bis etwas bricht."
+				},
+				"runs": {
+					"title": "Läufe",
+					"body": "Was tatsächlich ausgeführt wurde, aus zwei Quellen in einer Historie: Läufe, die Fabric selbst gegen eine deiner Umgebungen gefahren hat, und Läufe, die deine CI gemeldet hat. Jede Zeile zeigt Quelle, Auslöser und Ergebnis. Fehlschläge werden zu Findings für die Triage — Fabric legt nie selbst einen Bug an."
+				},
+				"questions": {
+					"title": "Fragen",
+					"body": "Offene Fragen aus dem Erstellen oder Prüfen von Fällen — eine mehrdeutige Anforderung, ein Ablauf ohne erwartetes Ergebnis. Sie stehen hier statt als Kommentar an einem Fall, damit sichtbar ist, was Abdeckung blockiert, ohne jeden Fall zu öffnen."
+				},
+				"reviews": {
+					"title": "Pull Requests",
+					"body": "Pull Requests, die Fabric aus deinem verbundenen Repository gelesen hat — jeweils mit genau dem Diff, das dabei abgerufen wurde. Mehr passiert hier vorerst nicht: Fabric liest und zeigt an, damit du siehst, worauf ein Review aufsetzen würde, bevor es ein Review gibt. Das Lesen nutzt die Repository-Zugangsdaten, mit denen dieses Projekt bereits verbunden ist, und wird im Audit-Log festgehalten."
+				}
+			},
+			"segments": {
+				"cases": "Fälle",
+				"plans": "Pläne",
+				"features": "Abdeckung",
+				"runs": "Läufe",
+				"questions": "Fragen",
+				"reviews": "Pull Requests"
+			},
+			"prReview": {
+				"accuracy": "{lens}: {falsePositives} von {judged} bewerteten Befunden waren falsch ({percent} % Fehlalarme)",
+				"lens": {
+					"qa": "QA-Lens",
+					"architecture": "Architektur-Lens"
+				},
+				"intro": "Gib Fabric einen Pull Request an: Fabric holt das Diff über das verbundene Repository dieses Projekts und behält, was es gelesen hat. Öffne einen, um ihn auf Testabdeckung oder zirkuläre Imports zu prüfen.",
+				"repositoryLabel": "Repository",
+				"repositoryPlaceholder": "Repository auswählen",
+				"numberLabel": "Pull Request",
+				"readAction": "Pull Request lesen",
+				"readSuccess": "Pull Request #{number} gelesen.",
+				"noRepositories": "Mit diesem Projekt ist noch kein Code-Repository verbunden. Verbinde eines unter Einstellungen ▸ Repositories, um einen Pull Request zu lesen.",
+				"loading": "Pull Requests werden geladen…",
+				"changedFiles": "{count, plural, =1 {# Datei} other {# Dateien}}",
+				"openOnProvider": "Auf GitHub öffnen",
+				"empty": {
+					"title": "Noch keine Pull Requests gelesen",
+					"body": "Lies oben einen ein, dann wird das abgerufene Diff hier gespeichert."
+				},
+				"status": {
+					"failed": "Diff nicht verfügbar",
+					"truncated": "Teilweises Diff"
+				},
+				"review": {
+					"runArchitecture": "Zirkuläre Imports prüfen",
+					"architectureHeading": "Architektur",
+					"architectureNotAnalysed": "Noch nicht geprüft. Fabric berechnet das aus deinem indizierten Import-Graphen — ohne AI.",
+					"architectureClean": "Geprüft {when} — diese Änderung ist an keinem zirkulären Import beteiligt.",
+					"notIndexed": "Das Repository dieses Projekts ist noch nicht indiziert, daher hat Fabric keinen Import-Graphen zum Prüfen. Starte zuerst eine Analyse im Atlas-Tab.",
+					"cyclesContext": "{touched} von {total} zirkulären Imports im Repository betreffen diese Änderung.",
+					"runAction": "Auf Testabdeckung prüfen",
+					"running": "Prüfung läuft…",
+					"notAnalysed": "Noch nicht geprüft. Fabric vergleicht diese Änderung mit deinen Features und den Fällen, die sie bereits abdecken.",
+					"noFindings": "Geprüft {when} — keine Abdeckungslücken gefunden.",
+					"heading": "Abdeckungslücken",
+					"model": "Geprüft von {model}",
+					"noProvider": "Für diesen Workspace ist kein AI-Provider konfiguriert, daher konnte die Prüfung nicht laufen. Richte einen unter Einstellungen ▸ AI-Assistent ein.",
+					"dropped": "{count, plural, =1 {# Finding wurde} other {# Findings wurden}} verworfen, weil sie eine Datei nennen, die nicht Teil dieser Änderung ist.",
+					"noDiff": "Fabric hat für diesen Pull Request kein Diff gespeichert, es gibt also nichts zu prüfen.",
+					"accept": "Übernehmen",
+					"dismiss": "Verwerfen",
+					"recommendation": "Empfehlung:",
+					"postComment": "Im Pull Request veröffentlichen",
+					"postCommentHint": "Schreibt einen Kommentar in den Pull Request und aktualisiert ihn bei späteren Durchläufen. Blockiert nichts.",
+					"commentPosted": "Review im Pull Request veröffentlicht",
+					"commentUpdated": "Review-Kommentar im Pull Request aktualisiert",
+					"reopen": "Wieder öffnen",
+					"accepted": "Übernommen",
+					"dismissed": "Verworfen",
+					"judged": "Als {status} markiert.",
+					"severity": {
+						"HIGH": "Hoch",
+						"MEDIUM": "Mittel",
+						"LOW": "Niedrig"
+					},
+					"dismissalReason": {
+						"INCORRECT": "Nicht zutreffend",
+						"WONT_FIX": "Zutreffend, wird nicht behoben",
+						"OUT_OF_SCOPE": "Zutreffend, außerhalb des Umfangs",
+						"ALREADY_COVERED": "Zutreffend, bereits abgedeckt"
+					}
+				},
+				"diff": {
+					"loadingTitle": "Pull Request",
+					"loading": "Das gelesene Diff wird geladen…",
+					"unavailable": "Dieser Pull-Request-Eintrag konnte nicht geladen werden.",
+					"truncated": "Dieser Pull Request war größer, als Fabric pro Review speichert — das Diff unten ist nur der erste Teil. Alles, was auf diesem Eintrag aufbaut, sieht ausschließlich das hier Gezeigte.",
+					"empty": "Fabric hat für diesen Pull Request kein Diff gespeichert."
+				},
+				"accuracyTarget": "Ziel unter {percent} %",
+				"accuracyUnclassified": "· {count} ohne Begründung verworfen"
+			},
+			"states": {
+				"proposed": "Vorgeschlagen",
+				"draft": "Entwurf",
+				"ready": "Bereit",
+				"closed": "Geschlossen"
+			},
+			"priorities": {
+				"low": "Niedrig",
+				"medium": "Mittel",
+				"high": "Hoch",
+				"critical": "Kritisch"
+			},
+			"automation": {
+				"notAutomated": "Nicht automatisiert",
+				"planned": "Geplant",
+				"automated": "Automatisiert"
+			},
+			"pmStatus": {
+				"PENDING": "Ausstehend",
+				"SUCCESS": "Verbunden",
+				"CONFLICT": "Konflikt",
+				"FAILED": "Fehlgeschlagen"
+			},
+			"actions": {
+				"new": "Neuer Testfall",
+				"newPlan": "Neuer Plan",
+				"generateWithAi": "Mit KI generieren",
+				"generateWithAiOff": "Die Testfall-Generierung ist für dieses Projekt deaktiviert. Ein Projekt-Administrator kann sie unter Einstellungen → Testen aktivieren.",
+				"importFromPm": "Aus PM importieren",
+				"clone": "Duplizieren",
+				"delete": "Löschen",
+				"addToPlan": "Zu Plan hinzufügen",
+				"sync": "Jetzt synchronisieren",
+				"link": "Arbeitselement verknüpfen",
+				"unlink": "Verknüpfung entfernen",
+				"cancel": "Abbrechen",
+				"save": "Änderungen speichern",
+				"create": "Testfall erstellen",
+				"add": "Hinzufügen",
+				"done": "Fertig",
+				"loadMore": "Mehr laden",
+				"editPlan": "Plan bearbeiten",
+				"deletePlan": "Plan löschen"
+			},
+			"caseCount": "{count, plural, one {# Fall} other {# Fälle}}",
+			"stepCount": "{count, plural, one {# Schritt} other {# Schritte}}",
+			"coverage": "{count, plural, one {Getestet von # Fall} other {Getestet von # Fällen}}",
+			"filters": {
+				"searchPlaceholder": "Testfälle suchen…",
+				"searchAria": "Testfälle suchen",
+				"stateAria": "Nach Status filtern",
+				"priorityAria": "Nach Priorität filtern",
+				"tagAria": "Nach Tag filtern",
+				"tagPlaceholder": "Tag…",
+				"allStates": "Alle Status",
+				"addFilter": "Filter hinzufügen",
+				"addFilterHint": "Es werden nur die Filter angezeigt, die Sie verwenden. Hier einen hinzufügen; mit dem x daneben wieder entfernen.",
+				"addFilterAllShown": "Alle Filter werden bereits angezeigt.",
+				"removeFilterAria": "Filter {label} entfernen",
+				"priorityLabel": "Priorität",
+				"automationLabel": "Automatisierung",
+				"resultLabel": "Letztes Ergebnis",
+				"linkedLabel": "Arbeitselement",
+				"featureLabel": "Feature",
+				"tagLabel": "Tag",
+				"allPriorities": "Alle Prioritäten",
+				"clear": "Zurücksetzen",
+				"showingOfTotal": "{shown} von {total} werden angezeigt — grenze die Filter ein, um die Liste zu verkleinern.",
+				"stateAll": "Alle",
+				"segmentAria": "{label}, {count, plural, one {# Fall} other {# Fälle}}",
+				"automationAria": "Nach Automatisierungsstatus filtern",
+				"allAutomation": "Alle Automatisierung",
+				"resultAria": "Nach Ausführungsergebnis filtern",
+				"allResults": "Alle Ergebnisse",
+				"externalAria": "Nach PM-Verknüpfung filtern",
+				"allExternal": "Verknüpft & nicht verknüpft",
+				"externalLinked": "Mit PM verknüpft",
+				"externalNotLinked": "Nicht mit PM verknüpft",
+				"featureFilter": "Beliebiges Feature",
+				"featureAria": "Nach Feature filtern",
+				"featureChipLabel": "Feature",
+				"featureRemoveAria": "Filter für Feature {identifier} entfernen",
+				"planChipLabel": "Plan",
+				"planRemoveAria": "Planfilter {identifier} entfernen",
+				"clearAll": "Alle Filter zurücksetzen",
+				"removeOne": "{filter} entfernen",
+				"fieldSearch": "Suche",
+				"fieldState": "Status",
+				"fieldPriority": "Priorität",
+				"fieldResult": "Ergebnis",
+				"fieldAutomation": "Automatisierung",
+				"fieldTag": "Tag",
+				"fieldFeature": "Feature",
+				"fieldPlan": "Plan",
+				"fieldExternal": "PM-Verknüpfung",
+				"externalUnlinked": "Nicht verknüpft",
+				"valueSelected": "Ausgewählt",
+				"searchHint": "Durchsucht Titel, Kennung, den Text jedes Schritts und Tags. Läuft serverseitig über alle Fälle des Projekts, nicht nur über die angezeigte Seite.",
+				"tagHint": "Grenzt auf Fälle mit diesem Tag ein. Tags sind freier Text am Fall — ein mehrwortiger Tag funktioniert samt Leerzeichen.",
+				"priorityFilterHint": "Wie schwer ein Fehlschlag wiegen würde. Unabhängig vom Status: Ein kritischer Fall kann trotzdem ein unfertiger Entwurf sein.",
+				"automationFilterHint": "Ob ein Fall ohne Person laufen soll. „Automatisiert“ ist hier die am Fall erfasste Absicht — der Automatisierungswert in der Kopfzeile ist strenger und zählt nur Fälle, die zusätzlich eine echte Automatisierungsreferenz tragen.",
+				"resultFilterHint": "Das jüngste Ergebnis. „Nie ausgeführt“ ist kein Bestehen — es heißt, dass zum Fall noch nichts bewiesen ist.",
+				"externalFilterHint": "Ob der Fall mit einer Karte im verbundenen PM-Tool verknüpft ist. Nur Tools mit nativen Testfällen (Azure DevOps, Xray, Zephyr) lassen sich verknüpfen.",
+				"stateAllHint": "Alle Fälle unabhängig vom Status. Die Zähler der übrigen Segmente ergeben zusammen genau diesen.",
+				"stateHint": {
+					"proposed": "Eine adversariale KI-Prüfinstanz hat diesen Fall vorgeschlagen, und niemand hat entschieden. Annehmen setzt ihn auf Entwurf, Ablehnen schließt ihn — so oder so bleibt er dokumentiert.",
+					"draft": "In Arbeit. Entwürfe sind echte Fälle und können ausgeführt werden — der Status sagt, dass die Formulierung noch nicht steht, nicht dass der Fall inaktiv ist.",
+					"ready": "Freigegeben zum Ausführen. Genau das erwartet ein Plan, wenn er Fälle aufnimmt.",
+					"closed": "Ausgemustert. Bleibt erhalten, damit nachvollziehbar ist, was einmal geprüft wurde, zählt aber nicht in Abdeckung und Pläne."
+				}
+			},
+			"row": {
+				"selectAria": "{identifier} auswählen",
+				"actionsAria": "Aktionen für {identifier}",
+				"covers": "Deckt ab",
+				"noCoverage": "Keine Abdeckung",
+				"stateChangeAria": "Status für {identifier} ändern",
+				"acceptProposed": "Annehmen",
+				"acceptProposedAria": "Vorgeschlagenen Testfall {identifier} annehmen",
+				"rejectProposed": "Ablehnen",
+				"rejectProposedAria": "Vorgeschlagenen Testfall {identifier} ablehnen",
+				"priorityChangeAria": "Priorität für {identifier} ändern",
+				"resultMarkAria": "Ausführungsergebnis für {identifier} festlegen",
+				"lastRunProvenance": "Zuletzt ausgeführt von {by}",
+				"neverRun": "Noch nicht ausgeführt",
+				"unknownActor": "jemandem",
+				"ownerAssigned": "Verantwortliche:r zugewiesen",
+				"unassigned": "Nicht zugewiesen",
+				"kindFeature": "Feature",
+				"kindBug": "Bug",
+				"coversAria": "{kind} {identifier} öffnen: {title}",
+				"coversMore": "{count, plural, one {+# weiteres} other {+# weitere}}",
+				"automated": "Automatisiert",
+				"automatedAria": "Automatisiert — {ref}",
+				"fromCi": "Aus CI",
+				"fromCiAria": "Ergebnis stammt aus CI — {by}",
+				"uncovered": "Nicht abgedeckt",
+				"neverRunShort": "—",
+				"proposedReview": "Von einer KI-Prüfinstanz vorgeschlagen"
+			},
+			"bulk": {
+				"selectedCount": "{count} ausgewählt",
+				"setStatePlaceholder": "Status setzen…",
+				"setStateAria": "Status für Auswahl setzen",
+				"addToPlanAria": "Auswahl zu einem Plan hinzufügen",
+				"clearSelection": "Auswahl aufheben",
+				"updated": "{count, plural, one {# Fall aktualisiert} other {# Fälle aktualisiert}}",
+				"added": "{count, plural, one {# Fall zum Plan hinzugefügt} other {# Fälle zum Plan hinzugefügt}}",
+				"deleted": "{count, plural, one {# Fall gelöscht} other {# Fälle gelöscht}}",
+				"deleteFailed": "Massenlöschung fehlgeschlagen: {error}",
+				"markResult": "Ergebnis setzen",
+				"markResultAria": "Ausführungsergebnis für ausgewählte Fälle setzen",
+				"reset": "Auf Nicht ausgeführt zurücksetzen",
+				"sync": "Synchronisieren",
+				"syncStarted": "Synchronisierung gestartet",
+				"selectAllAria": "Alle Testfälle auswählen",
+				"marked": "{count, plural, one {# Fall markiert} other {# Fälle markiert}}",
+				"failed": "Massenaktualisierung fehlgeschlagen: {error}",
+				"selectAllMatching": "Alle {total} passenden auswählen",
+				"allMatchingSelected": "Alle {total} Testfälle, die diesen Filtern entsprechen, sind ausgewählt.",
+				"loadedSelected": "{count, plural, one {# Testfall auf dieser Seite ist ausgewählt.} other {Alle # Testfälle auf dieser Seite sind ausgewählt.}}",
+				"syncNeedsIds": "Die Synchronisierung gilt für einzeln ausgewählte Testfälle. Heben Sie die Auswahl „alle passenden“ auf und wählen Sie dann die zu synchronisierenden Testfälle aus.",
+				"overIdLimit": "Mehr als {limit} Testfälle sind ausgewählt — mehr als eine Anfrage übertragen kann. Wählen Sie oben alle passenden aus oder heben Sie einige Markierungen auf."
+			},
+			"confirm": {
+				"deleteTitle": "Testfall löschen",
+				"deleteMessage": "Warnung: Das Löschen von {identifier} ist dauerhaft und entfernt seine Schritte und Verknüpfungen.",
+				"bulkDeleteTitle": "Ausgewählte Testfälle löschen",
+				"bulkDeleteMessage": "Warnung: Das Löschen von {count, plural, one {# Testfall} other {# Testfällen}} ist endgültig und entfernt deren Schritte und Verknüpfungen.",
+				"resetTitle": "Alle Ergebnisse zurücksetzen",
+				"resetMessage": "Warnung: Dadurch wird das Ausführungsergebnis jedes Testfalls in diesem Projekt auf Nicht ausgeführt zurückgesetzt. Der Ausführungsverlauf bleibt erhalten."
+			},
+			"empty": {
+				"cases": "Noch keine Testfälle",
+				"plans": "Noch keine Testpläne",
+				"casesFiltered": "Keine Fälle passen zu diesen Filtern",
+				"casesFilteredHint": "{total, plural, one {# Fall existiert} other {# Fälle existieren}} in diesem Projekt. Lockere einen Filter, um sie zu sehen.",
+				"casesHint": "Halte als geordnete Aktion-/Erwartet-Schritte fest, was zu prüfen ist. Oder lass Fabric einen ersten Satz aus den Akzeptanzkriterien eines Features entwerfen — jeder entworfene Fall verweist zurück auf das Kriterium, das er prüft.",
+				"draftFromFeature": "Aus einem Feature entwerfen"
+			},
+			"errors": {
+				"listFailed": "Testfälle konnten nicht geladen werden.",
+				"plansFailed": "Testpläne konnten nicht geladen werden.",
+				"retry": "Erneut versuchen",
+				"featuresFailed": "Testabdeckung konnte nicht geladen werden."
+			},
+			"editor": {
+				"editDescription": "Bearbeite den Fall, seine geordneten Schritte, Verknüpfungen und die Synchronisierung.",
+				"createDescription": "Erstelle einen neuen Testfall mit geordneten Aktion-/Erwartet-Schritten.",
+				"notFound": "Dieser Testfall existiert nicht mehr. Möglicherweise wurde er gelöscht.",
+				"savesImmediately": "Verknüpfungen, Pläne und AC-Referenzen werden sofort gespeichert — Abbrechen verwirft nur die Felder oben."
+			},
+			"scripted": {
+				"label": "Playwright-Skript",
+				"hint": "Bearbeitbarer Mode-B-Aktionsplan. Das validierte JSON kann navigieren, interagieren und prüfen; Zugangsdaten bleiben im vertrauenswürdigen Runner und werden dem Plan nie bereitgestellt.",
+				"manualSaveHint": "Manuelle Änderungen werden beim Speichern des Testfalls zu einer neuen Revision.",
+				"generate": "Skript erstellen",
+				"regenerate": "Neu generieren",
+				"history": "Verlauf",
+				"generated": "Playwright-Skript generiert",
+				"restored": "Skriptrevision wiederhergestellt",
+				"loading": "Wird geladen…",
+				"loadFailed": "Dieser Verlauf konnte nicht geladen werden.",
+				"loadMore": "Mehr laden",
+				"retry": "Erneut versuchen",
+				"cancel": "Abbrechen",
+				"unknownAuthor": "Unbekannte Person",
+				"origin": {
+					"manual": "Manuelle Änderung",
+					"agentRun": "Agentenlauf + Repository",
+					"repository": "Nur Repository",
+					"restore": "Wiederhergestellte Revision"
+				},
+				"generator": {
+					"title": "Wiederverwendbares Testskript erstellen",
+					"description": "Wähle die Nachweise, die Fabric verwenden soll. Das generierte Skript kann vor späteren Läufen bearbeitet werden.",
+					"tokenHint": "Die Generierung kann einmal die Repository-Embedding-Suche und das konfigurierte Generierungsmodell verwenden. Spätere Mode-B-Läufe führen den gespeicherten Plan ohne Modellaufrufe aus.",
+					"generate": "Skript generieren",
+					"edit": "Manuell bearbeiten",
+					"agent": {
+						"title": "Agentenlauf + Repository",
+						"description": "Verwende beobachtete Schritte eines früheren Agentenlaufs zusammen mit relevantem indexiertem Quellcode.",
+						"runLabel": "Agentenlauf",
+						"empty": "Es gibt noch keinen geeigneten Agentenlauf. Führe diesen Fall im Agentenmodus aus oder wähle Nur Repository."
+					},
+					"repository": {
+						"title": "Nur Repository",
+						"description": "Verwende die Absicht des Testfalls und relevanten indexierten Quellcode, ohne Beobachtungen aus einem Agentenlauf."
+					},
+					"manual": {
+						"title": "Manuell",
+						"description": "Schreibe oder füge den deklarativen JSON-Aktionsplan selbst ein. Diese Option ruft kein Modell auf."
+					}
+				},
+				"revisions": {
+					"title": "Skriptverlauf",
+					"description": "Jede gespeicherte Änderung bleibt mit Autor, Zeitstempel und Ursprung erhalten. Eine Wiederherstellung fügt eine neue Revision hinzu und löscht keinen späteren Verlauf.",
+					"empty": "Noch keine gespeicherten Skriptrevisionen.",
+					"diffHint": "Mit − markierte Zeilen wurden aus dieser Revision entfernt; mit + markierte Zeilen wurden im aktuellen Editor hinzugefügt.",
+					"restore": "Diese Revision wiederherstellen"
+				}
+			},
+			"webhook": {
+				"title": "Pipeline-Ergebnisse per Webhook empfangen",
+				"description": "Ein signierter Webhook meldet Laufmetadaten sofort. Der 15-Minuten-Abruf lädt detaillierte Testergebnisse und bleibt der Rückfallweg. Du fügst den Endpunkt beim Anbieter hinzu; Fabric ändert deine CI-Konfiguration nie.",
+				"loading": "Webhook-Einstellungen werden geladen…",
+				"loadFailed": "Webhook-Einstellungen konnten nicht geladen werden.",
+				"retry": "Erneut versuchen",
+				"create": "Webhook erstellen",
+				"endpoint": "Endpunkt-URL",
+				"copy": "Kopieren",
+				"clipboardDenied": "Der Zugriff auf die Zwischenablage wurde verweigert",
+				"secret": {
+					"title": "Dieses Geheimnis jetzt kopieren",
+					"description": "Es wird einmal angezeigt und kann nach Verlassen oder Neuladen der Seite nicht wiederhergestellt werden.",
+					"aria": "Einmaliges Webhook-Geheimnis",
+					"copy": "Geheimnis kopieren"
+				},
+				"currentSecret": "Aktuelles Geheimnis",
+				"deliveries": "Empfangene Zustellungen",
+				"deliverySummary": "{count} · zuletzt {date}",
+				"previousValidUntil": "Das vorherige Geheimnis bleibt bis {date} gültig.",
+				"expired": "Dieser Webhook ist abgelaufen und weist Zustellungen ab.",
+				"lastError": "Letzte Zustellung fehlgeschlagen",
+				"providerSetup": "Anbieter einrichten",
+				"providers": {
+					"github": "GitHub Actions",
+					"gitlab": "GitLab CI",
+					"azure": "Azure DevOps"
+				},
+				"instructions": {
+					"genericSignature": "Setze X-Fabric-QA-Signature auf den hexadezimalen HMAC-SHA256 aus Anbieter + „.“ + Zustellungs-ID + „.“ + Zeitstempel + „.“ + exaktem Request-Body mit diesem Geheimnis. Die Header-Namen behalten das Präfix X-Fabric-QA-, damit bereits eingerichtete Webhooks weiter funktionieren.",
+					"github": {
+						"title": "GitHub-Repository-Webhook",
+						"step1": "Öffne Repository Settings → Webhooks → Add webhook.",
+						"step2": "Füge die Endpunkt-URL und das hier einmalig angezeigte Geheimnis ein.",
+						"step3": "Wähle application/json und aktiviere das Ereignis „Workflow runs“."
+					},
+					"gitlab": {
+						"title": "Signierte GitLab-CI-Anfrage",
+						"step1": "Sende das Pipeline-Ergebnis-JSON aus einem geschützten CI-Job an den Endpunkt.",
+						"step2": "Setze X-Fabric-QA-Provider: gitlab, einen eindeutigen X-Fabric-QA-Delivery-Wert und den aktuellen Unix-Zeitstempel in X-Fabric-QA-Timestamp."
+					},
+					"azure": {
+						"title": "Signierte Azure-DevOps-Anfrage",
+						"step1": "Sende das Testlauf-JSON aus einem geschützten Pipeline-Schritt oder Service-Hook-Adapter an den Endpunkt.",
+						"step2": "Setze X-Fabric-QA-Provider: azure-devops, einen eindeutigen X-Fabric-QA-Delivery-Wert und den aktuellen Unix-Zeitstempel in X-Fabric-QA-Timestamp."
+					}
+				},
+				"expiry": "Ablauf (optional)",
+				"save": "Speichern",
+				"overlap": {
+					"label": "Überschneidung bei Rotation",
+					"minutes15": "15 Minuten",
+					"hour1": "1 Stunde",
+					"hours6": "6 Stunden",
+					"hours24": "24 Stunden"
+				},
+				"rotate": "Rotieren",
+				"revoke": "Webhook widerrufen",
+				"revokeDialog": {
+					"title": "Testing-Webhook widerrufen?",
+					"message": "Alle Zustellungen an diesen Endpunkt werden abgewiesen, bis ein neues Geheimnis erstellt wurde."
+				},
+				"toasts": {
+					"created": "Testing-Webhook erstellt",
+					"rotated": "Webhook-Geheimnis rotiert",
+					"expiryUpdated": "Webhook-Ablauf aktualisiert",
+					"revoked": "Testing-Webhook widerrufen"
+				},
+				"prReviewNote": "Ein signierter Webhook meldet Laufdaten sofort. Dasselbe Secret signiert auch den projektbezogenen Pull-Request-Review-Webhook unter /api/webhooks/github/pull-request/{projectId} — dieser Endpunkt ist dem deploymentweiten vorzuziehen."
+			},
+			"fields": {
+				"title": "Titel",
+				"titlePlaceholder": "z. B. Nutzer kann Passwort per E-Mail-Link zurücksetzen",
+				"summary": "Zusammenfassung / Vorbedingungen",
+				"summaryPlaceholder": "Kontext, Vorbedingungen oder Testdaten…",
+				"state": "Status",
+				"priority": "Priorität",
+				"automation": "Automatisierung",
+				"automationRef": "Automatisierungs-Referenz",
+				"automationRefPlaceholder": "z. B. auth › setzt Passwort per E-Mail-Link zurück",
+				"automationRefHint": "Die Test-Kennung, über die dein Team verknüpft. Eine Angabe markiert diesen Fall als automatisiert.",
+				"automationFilePath": "Testdatei",
+				"automationFilePathPlaceholder": "z. B. apps/web/tests/e2e/login.spec.ts",
+				"automationUrl": "CI-/Report-Link",
+				"automationUrlPlaceholder": "https://…",
+				"automationUrlOpen": "Öffnen",
+				"automationUrlOpenAria": "Automatisierungs-Report in neuem Tab öffnen",
+				"automationUrlInvalid": "Gib einen gültigen http(s)-Link ein oder lass das Feld leer.",
+				"owner": "Verantwortlich",
+				"ownerNone": "Kein Verantwortlicher",
+				"tags": "Tags",
+				"tagsPlaceholder": "Tag eingeben, Enter drücken",
+				"removeTagAria": "Tag {tag} entfernen",
+				"stateEditAria": "Status ändern",
+				"priorityEditAria": "Priorität ändern"
+			},
+			"steps": {
+				"heading": "Schritte",
+				"empty": "Noch keine Schritte. Füge das erste Aktion-/Erwartet-Paar hinzu.",
+				"add": "Schritt hinzufügen",
+				"actionLabel": "Aktion",
+				"expectedLabel": "Erwartet",
+				"actionPlaceholder": "Was der Tester tut",
+				"expectedPlaceholder": "Was passieren soll",
+				"reorderAria": "Schritt {number} neu anordnen",
+				"actionAria": "Schritt {number} Aktion",
+				"expectedAria": "Schritt {number} erwartetes Ergebnis",
+				"insertAfterAria": "Einen Schritt nach Schritt {number} einfügen",
+				"insertBelow": "Schritt darunter einfügen",
+				"deleteAria": "Schritt {number} löschen",
+				"delete": "Schritt löschen"
+			},
+			"links": {
+				"heading": "Verknüpfte Arbeitselemente",
+				"empty": "Noch keine verknüpften Arbeitselemente.",
+				"coversAc": "Deckt AK ab",
+				"acStale": "{ref} — kein Kriterium mehr",
+				"acNone": "Nicht verknüpft",
+				"acOption": "AK {index} — {text}",
+				"acRefAria": "Abgedecktes Akzeptanzkriterium für {identifier}",
+				"unlinkAria": "{identifier} trennen",
+				"workItemFallback": "Arbeitselement"
+			},
+			"membership": {
+				"empty": "Noch in keinem Plan.",
+				"removeFromAria": "Aus {name} entfernen",
+				"addPlaceholder": "Zu einem Plan hinzufügen…"
+			},
+			"plans": {
+				"heading": "Testpläne",
+				"filters": {
+					"all": "Alle",
+					"active": "Aktiv",
+					"inactive": "Inaktiv"
+				},
+				"hintAria": "Wie Testpläne funktionieren",
+				"hint": "Ein Plan ist eine benannte Teilmenge von Fällen, die du als Satz ausführst — ein Smoke-Durchlauf, eine Release-Checkliste. Er VERWEIST auf Fälle, statt sie zu kopieren: Das Bearbeiten eines Falls aktualisiert jeden Plan, der ihn enthält, und das Hinzufügen zu einem Plan ändert den Fall nicht.",
+				"subtitle": "Fasse Fälle in ausführbaren Plänen zusammen. Ein Fall kann in vielen Plänen enthalten sein.",
+				"active": "Aktiv",
+				"inactive": "Inaktiv",
+				"createTitle": "Neuer Testplan",
+				"createDescription": "Ein Plan enthält eine geordnete Menge von Testfällen.",
+				"nameLabel": "Name",
+				"namePlaceholder": "z. B. Release-2.0-Regression",
+				"descriptionLabel": "Beschreibung",
+				"descriptionPlaceholder": "Was dieser Plan abdeckt…",
+				"create": "Plan erstellen",
+				"editTitle": "Testplan bearbeiten",
+				"editDescription": "Aktualisiere Name, Beschreibung oder Status des Plans.",
+				"stateLabel": "Aktiv",
+				"stateHint": "Inaktive Pläne bleiben in der Liste, sind aber als nicht aktiv genutzt markiert.",
+				"save": "Plan speichern",
+				"deleteTitle": "Testplan löschen",
+				"deleteConfirm": "Beim Löschen von „{name}“ werden der Plan und seine Fallzuordnungen entfernt. Die Testfälle selbst werden nicht gelöscht.",
+				"deleteCta": "Plan löschen",
+				"card": {
+					"passing": "Bestehen",
+					"notRunYet": "Noch nicht ausgeführt",
+					"noDescription": "Keine Beschreibung",
+					"updated": "Aktualisiert {time}",
+					"passRateAria": "Testergebnisse — {breakdown}"
+				}
+			},
+			"planDetail": {
+				"back": "Zurück zu den Plänen",
+				"notFound": "Plan nicht gefunden.",
+				"addCase": "Fall hinzufügen",
+				"empty": "Noch keine Fälle in diesem Plan.",
+				"searchCasesPlaceholder": "Fälle suchen…",
+				"searchCasesAria": "Testfälle suchen",
+				"sectionPlaceholder": "Optionale Abschnittsbezeichnung",
+				"sectionAria": "Abschnittsbezeichnung",
+				"noMatches": "Keine passenden Fälle",
+				"showingOfTotal": "Die ersten {shown} von {total} werden angezeigt — grenze mit der Suche ein.",
+				"reorderAria": "{identifier} neu anordnen",
+				"removeFromPlanAria": "{identifier} aus dem Plan entfernen",
+				"removeFromPlan": "Aus dem Plan entfernen",
+				"viewInCases": "In Testfällen anzeigen",
+				"runPlan": "Plan ausführen",
+				"openCaseAria": "{identifier} öffnen"
+			},
+			"sync": {
+				"statusConnected": "Verbunden",
+				"reconnectRequired": "Erneut verbinden erforderlich",
+				"retry": "Erneut versuchen",
+				"dismiss": "Verwerfen",
+				"syncStarted": "Synchronisierung gestartet",
+				"retryQueued": "Synchronisierung in Warteschlange",
+				"retryFailed": "Synchronisierung konnte nicht gestartet werden – prüfe die Verbindung zu deinem PM-Tool.",
+				"dismissed": "Synchronisierungsfehler verworfen",
+				"dismissNoop": "Kein aktiver Fehler zum Verwerfen",
+				"heading": "PM-Synchronisierung",
+				"hint": "Halte diesen Fall mit deinem verbundenen PM-Tool synchron.",
+				"autoSync": "Auto-Sync",
+				"autoSyncAria": "Automatische PM-Synchronisierung für diesen Testfall umschalten",
+				"statusLabel": "Status",
+				"pushUnsupported": "Dein verbundenes PM-Tool hat keine nativen Testfälle, daher können Testfälle nicht damit synchronisiert werden."
+			},
+			"import": {
+				"title": "Aus PM importieren",
+				"hint": "Durchsuche dein verbundenes PM-Tool und importiere Arbeitselemente als Testfälle.",
+				"searchPlaceholder": "Arbeitselemente suchen…",
+				"searchAria": "PM-Arbeitselemente zum Importieren suchen",
+				"import": "Importieren",
+				"alreadyImported": "Importiert",
+				"imported": "{id} importiert",
+				"importFailed": "Import fehlgeschlagen: {error}",
+				"empty": "Keine Arbeitselemente gefunden.",
+				"loadFailed": "Arbeitselemente konnten nicht aus deinem PM-Tool geladen werden.",
+				"pageInfo": "Seite {page} · {total} gesamt",
+				"prev": "Zurück",
+				"next": "Weiter"
+			},
+			"runs": {
+				"heading": "Durchläufe",
+				"currentResult": "Aktuelles Ergebnis",
+				"mark": "Ergebnis eintragen",
+				"markAria": "Ein Durchlaufergebnis für diesen Testfall eintragen",
+				"resultLegend": "Ergebnis",
+				"planLabel": "Plan",
+				"planNone": "Kein Plan",
+				"noteLabel": "Notiz (optional)",
+				"notePlaceholder": "Was ist bei diesem Durchlauf passiert…",
+				"record": "Ergebnis speichern",
+				"historyHeading": "Verlauf",
+				"historyEmpty": "Noch keine Durchläufe erfasst.",
+				"historyFailed": "Laufverlauf konnte nicht geladen werden.",
+				"viewAll": "Alle anzeigen ({total})",
+				"dialogDescription": "Alle erfassten Durchlaufergebnisse für diesen Testfall – neueste zuerst.",
+				"provenanceBy": "von {name}",
+				"sourceManual": "Manuell",
+				"sourceSynced": "Aus PM synchronisiert",
+				"sourcePipeline": "Aus CI-Pipeline",
+				"inPlan": "in {identifier}",
+				"externalRunAria": "Den externen Durchlauf in deinem PM-Tool öffnen"
+			},
+			"activity": {
+				"heading": "Aktivität",
+				"viewAll": "Alle anzeigen ({total})",
+				"dialogDescription": "Alles, was für diesen Testfall erfasst wurde – neueste zuerst.",
+				"empty": "Noch keine Änderungen erfasst.",
+				"loadFailed": "Aktivität konnte nicht geladen werden. Öffne den Testfall erneut.",
+				"by": "von {name}",
+				"created": "Erstellt",
+				"stateChanged": "Status: {from} → {to}",
+				"priorityChanged": "Priorität: {from} → {to}",
+				"renamed": "Umbenannt",
+				"stepsChanged": "Schritte aktualisiert ({from} → {to})",
+				"automationChanged": "Automatisierung: {from} → {to}",
+				"pmLinkChanged": "Feature-Verknüpfung geändert"
+			},
+			"history": {
+				"dialog": {
+					"showing": "{shown} von {total} werden angezeigt",
+					"showMore": "Mehr anzeigen",
+					"loadFailed": "Der Verlauf konnte nicht geladen werden."
+				}
+			},
+			"ai": {
+				"draftTitle": "Testfälle mit KI generieren",
+				"draftHint": "Erstelle bearbeitbare Testfälle aus den Akzeptanzkriterien eines oder mehrerer Features. Generierte Fälle beginnen als Entwürfe, die du prüfen und verfeinern kannst.",
+				"features": "Features",
+				"featurePlaceholder": "Ein oder mehrere Features auswählen",
+				"featureAria": "Features auswählen, aus denen Testfälle erstellt werden",
+				"capHint": "Bis zu {max} Features pro Durchlauf — jedes ist eine eigene KI-Generierung.",
+				"capReached": "Du hast das Maximum von {max} Features für einen Durchlauf ausgewählt.",
+				"backgroundHint": "Die Generierung läuft im Hintergrund. Du kannst dieses Fenster schließen und weiterarbeiten — du wirst benachrichtigt, sobald die Entwürfe bereit sind.",
+				"progress": "Testfälle werden erstellt — {done} von {total} Features",
+				"cancelRun": "Abbrechen",
+				"cancelFailed": "Der Entwurfslauf konnte nicht abgebrochen werden: {error}",
+				"draftedToast": "{count, plural, one {# Testfall erstellt} other {# Testfälle erstellt}}",
+				"outcomes": {
+					"drafted": "Testfälle aus diesem Feature erstellt.",
+					"noAcceptanceCriteria": "Übersprungen — dieses Feature hat keine Akzeptanzkriterien, aus denen Testfälle erstellt werden können. Ergänze sie und starte den Durchlauf erneut.",
+					"noAiProvider": "Übersprungen — für dieses Projekt ist noch kein KI-Anbieter konfiguriert. Du kannst Testfälle weiterhin manuell anlegen.",
+					"noCases": "Das Modell hat aus diesem Feature keine brauchbaren Testfälle geliefert. Versuche ein Feature mit klareren Akzeptanzkriterien.",
+					"notFound": "Übersprungen — dieses Feature gehört nicht mehr zum Projekt.",
+					"failed": "Die Generierung für dieses Feature ist fehlgeschlagen."
+				},
+				"results": {
+					"title": "Erstellte Testfälle",
+					"description": "Die in diesem Durchlauf generierten Testfälle. Sie beginnen als Entwürfe — prüfe sie und markiere die gewünschten als bereit.",
+					"loading": "Erstellte Testfälle werden geladen…",
+					"notFound": "Dieser Generierungslauf ist nicht mehr verfügbar.",
+					"casesHeading": "{count, plural, one {# neuer Testfall} other {# neue Testfälle}}",
+					"covers": "Deckt {feature} ab",
+					"coversAc": "Deckt {feature} ab · {ac}",
+					"open": "Öffnen",
+					"skippedHeading": "Features ohne erstellte Testfälle",
+					"view": "Testfälle ansehen",
+					"promote": "{count, plural, one {# Testfall als bereit markieren} other {# Testfälle als bereit markieren}}",
+					"promotedToast": "{count, plural, one {# Testfall als bereit markiert} other {# Testfälle als bereit markiert}}",
+					"promoteFailed": "Testfälle konnten nicht als bereit markiert werden: {error}"
+				}
+			},
+			"toasts": {
+				"cloned": "Testfall dupliziert",
+				"cloneFailed": "Duplizieren fehlgeschlagen: {error}",
+				"deleted": "Testfall gelöscht",
+				"deleteFailed": "Löschen fehlgeschlagen: {error}",
+				"created": "Testfall erstellt",
+				"createFailed": "Erstellen fehlgeschlagen: {error}",
+				"saved": "Testfall gespeichert",
+				"saveFailed": "Speichern fehlgeschlagen: {error}",
+				"titleRequired": "Ein Titel ist erforderlich",
+				"linkFailed": "Verknüpfen fehlgeschlagen: {error}",
+				"unlinkFailed": "Trennen fehlgeschlagen: {error}",
+				"addedToPlan": "Zum Plan hinzugefügt",
+				"addToPlanFailed": "Hinzufügen zum Plan fehlgeschlagen: {error}",
+				"removedFromPlan": "Aus dem Plan entfernt",
+				"removeFromPlanFailed": "Entfernen aus dem Plan fehlgeschlagen: {error}",
+				"planCreated": "Plan erstellt",
+				"planCreateFailed": "Plan konnte nicht erstellt werden: {error}",
+				"planNameRequired": "Ein Planname ist erforderlich",
+				"planUpdated": "Plan aktualisiert",
+				"planUpdateFailed": "Plan konnte nicht aktualisiert werden: {error}",
+				"planDeleted": "Plan gelöscht",
+				"planDeleteFailed": "Plan konnte nicht gelöscht werden: {error}",
+				"reorderFailed": "Fälle konnten nicht neu angeordnet werden: {error}",
+				"draftFailed": "Entwurf fehlgeschlagen: {error}",
+				"resultRecorded": "Ausführungsergebnis aktualisiert",
+				"resultFailed": "Ergebnis konnte nicht erfasst werden: {error}",
+				"reset": "Ergebnisse auf Nicht ausgeführt zurückgesetzt",
+				"resetFailed": "Ergebnisse konnten nicht zurückgesetzt werden: {error}",
+				"syncFailed": "Synchronisierung konnte nicht gestartet werden: {error}"
+			},
+			"result": {
+				"passed": "Bestanden",
+				"failed": "Fehlgeschlagen",
+				"blocked": "Blockiert",
+				"notRun": "Nicht ausgeführt",
+				"skipped": "Übersprungen"
+			},
+			"stats": {
+				"total": "Gesamt",
+				"totalAllStates": "Gesamt (alle Status)",
+				"byState": "Nach Status",
+				"automation": "Automatisierung",
+				"automatedPct": "{pct}% automatisiert",
+				"automatedCount": "{count, plural, one {# automatisiert} other {# automatisiert}}",
+				"passing": "Bestehen",
+				"executedOf": "{executed} von {total} ausgeführt",
+				"ciCoverage": "CI-Abdeckung",
+				"coverageTarget": "Ziel {pct}%",
+				"ciCoveredPct": "{pct}% per CI ausgeführt",
+				"ciCoveredCount": "{count, plural, one {# per CI ausgeführt} other {# per CI ausgeführt}}"
+			},
+			"sort": {
+				"aria": "Testfälle sortieren",
+				"order": "Standardreihenfolge",
+				"priority": "Priorität",
+				"recentRun": "Zuletzt ausgeführt",
+				"title": "Titel A–Z",
+				"directionAria": "Sortierrichtung: {direction}. Auswählen zum Umkehren.",
+				"asc": "Aufsteigend",
+				"desc": "Absteigend",
+				"hint": "Wird serverseitig über alle passenden Fälle angewendet und ordnet damit die gesamte Ergebnismenge, nicht nur die sichtbare Seite. „Standardreihenfolge“ ist die manuelle Reihenfolge, in die sich Zeilen ziehen lassen."
+			},
+			"featurePicker": {
+				"searchPlaceholder": "Features & Bugs suchen…",
+				"loading": "Wird geladen…",
+				"noMatches": "Keine passenden Arbeitselemente",
+				"includeBugsAndClosed": "Bugs & geschlossene einbeziehen",
+				"selectedCount": "{count} ausgewählt",
+				"bug": "Bug",
+				"closed": "Geschlossen",
+				"coverageCount": "{count, plural, =0 {Keine Testfälle} one {# Testfall} other {# Testfälle}}"
+			},
+			"features": {
+				"heading": "Testabdeckung",
+				"subtitle": "Wie gut jedes Feature und jeder Bug durch Testfälle abgedeckt ist. Wähle einen Eintrag, um die zugehörigen Testfälle zu sehen.",
+				"searchPlaceholder": "Features & Bugs suchen...",
+				"searchAria": "Features und Bugs suchen",
+				"kindAria": "Nach Arbeitselementtyp filtern",
+				"allKinds": "Features & Bugs",
+				"kindFeature": "Features",
+				"kindBug": "Bugs",
+				"uncoveredOnly": "Nur ohne Abdeckung",
+				"featureCount": "{count, plural, one {# Feature} other {# Features}}",
+				"covered": "Abgedeckt",
+				"uncovered": "Nicht abgedeckt",
+				"acRefCount": "{count, plural, =0 {Keine AK-Verweise} one {# AK referenziert} other {# AK referenziert}}",
+				"viewCasesAria": "Testfälle für {identifier} anzeigen",
+				"empty": "Noch keine Features",
+				"emptyFiltered": "Keine passenden Features"
+			},
+			"run": {
+				"title": "{plan} ausführen",
+				"description": "Arbeite jeden Testfall durch und erfasse das Ergebnis. Die Ergebnisse werden diesem Plan zugeordnet.",
+				"finishedDescription": "Dieser Durchlauf ist abgeschlossen. Die Bestehensquote des Plans wurde aktualisiert.",
+				"progress": "Testfall {current} von {total}",
+				"progressAria": "{marked} von {total} Testfällen erfasst",
+				"noSteps": "Dieser Testfall hat keine Schritte.",
+				"skip": "Überspringen",
+				"previous": "Zurück",
+				"finish": "Durchlauf beenden",
+				"summary": "{marked} von {total} Testfällen in diesem Durchlauf erfasst."
+			},
+			"reorder": {
+				"handleAria": "{identifier} neu anordnen",
+				"blocked": {
+					"SORT": "Ziehen zum Neuanordnen ist verfügbar, wenn die Liste nach manueller Reihenfolge sortiert ist.",
+					"DIRECTION": "Wechseln Sie zu aufsteigend, um Zeilen zu ziehen — die gespeicherte Reihenfolge wird von oben nummeriert.",
+					"FILTERED": "Entfernen Sie die Filter, um Zeilen zu ziehen. Die Reihenfolge gilt für alle Testfälle des Projekts, daher würde das Neuanordnen einer gefilterten Teilmenge die nicht sichtbaren Fälle durcheinanderbringen.",
+					"NOT_ALL_LOADED": "Laden Sie die restlichen Testfälle, um Zeilen zu ziehen. Die Reihenfolge gilt für alle Testfälle des Projekts, daher würde das Neuanordnen nur der geladenen Fälle die übrigen durcheinanderbringen."
+				}
+			}
+		},
+		"atlas": {
+			"tabLabel": "Atlas",
+			"tabSubtitle": "Codebasis erkunden und kartografieren",
+			"mode": {
+				"label": "Ansichtsmodus",
+				"technical": "Technisch",
+				"business": "Business",
+				"technicalTooltip": "Die technische Ansicht zeigt Code-Module, Dateien und Abhängigkeiten – farbkodiert nach Sprache. Ideal für Entwickler.",
+				"businessTooltip": "Die Business-Ansicht zeigt Fähigkeiten und Domänen in verständlicher Sprache – was das System tut, nicht wie. Ideal für Produkt und Onboarding.",
+				"infoLabel": "Was die Business- und die technische Ansicht zeigen"
+			},
+			"repo": {
+				"label": "Repository",
+				"placeholder": "Repository auswählen",
+				"default": "Standard"
+			},
+			"status": {
+				"analyzed": "Analysiert",
+				"notAnalyzed": "Noch nicht analysiert",
+				"commitDiffAriaAhead": "{count, plural, one {# neuer Commit} other {# neue Commits}}",
+				"commitDiffAriaBehind": "{count, plural, one {# entfernter Commit} other {# entfernte Commits}}",
+				"commitDiffTooltipAhead": "+{count} — Commits auf {branch}, die noch nicht im analysierten Stand enthalten sind.",
+				"commitDiffTooltipBehind": "−{count} — Commits aus dem analysierten Stand, die nicht mehr auf dem Branch vorhanden sind (der Verlauf wurde umgeschrieben).",
+				"newCommitsTooltip": "{count, plural, one {# Commit wurde seit der letzten Analyse auf dem Branch hinzugefügt.} other {# Commits wurden seit der letzten Analyse auf dem Branch hinzugefügt.}} Erneut analysieren, um die Karte aktuell zu halten.",
+				"reanalyzeRecommended": "Erneute Analyse empfohlen",
+				"reanalyzeReasonNewCommits": "{count, plural, one {# neuer Commit ist} other {# neue Commits sind}} seit dem analysierten Commit auf {branch} gelandet. Analysieren Sie erneut, um die Karte zu aktualisieren.",
+				"reanalyzeReasonIncomparable": "Der analysierte Commit kann nicht mehr mit dem Branch-Head verglichen werden (sein Verlauf wurde möglicherweise neu geschrieben). Analysieren Sie erneut, um die Karte zu aktualisieren.",
+				"monitoringPaused": "Commit-Überwachung pausiert",
+				"monitoringPausedTooltip": "Fabric kann das Repository mit den gespeicherten Zugangsdaten nicht erreichen, daher ist die Verfolgung neuer Commits pausiert. Verbinden Sie das Repository neu, um fortzufahren.",
+				"reconnect": "Neu verbinden",
+				"reconnectTooltip": "Öffnet die Repository-Verbindung in den Projekteinstellungen zur erneuten Authentifizierung.",
+				"reconnectNeeded": "Repository-Verbindung abgelaufen",
+				"reconnectNeededTooltip": "Die gespeicherte Verbindung konnte nicht automatisch erneuert werden. Verbinden Sie das Repository neu, um Analyse und Commit-Überwachung fortzusetzen.",
+				"patExpired": "Zugriffstoken abgelaufen",
+				"patExpiredTooltip": "Das persönliche Zugriffstoken für dieses Repository ist abgelaufen. Aktualisieren Sie es in den Repository-Verbindungseinstellungen, um Analyse und Commit-Überwachung fortzusetzen.",
+				"reanalyzeDisabledPat": "Das Zugriffstoken des Repositorys ist abgelaufen — aktualisieren Sie es über „Neu verbinden“, um neu zu analysieren.",
+				"reanalyzeDisabledReconnect": "Die Repository-Verbindung ist abgelaufen — verbinden Sie sie neu, um neu zu analysieren.",
+				"editBranch": "Überwachten Branch ändern",
+				"branchPopoverTitle": "Überwachter Branch",
+				"branchPopoverDescription": "Atlas analysiert diesen Branch und verfolgt seine Commits.",
+				"branchInputLabel": "Branch-Name",
+				"branchSearchPlaceholder": "Branches durchsuchen…",
+				"branchListHeading": "Branches",
+				"branchEmpty": "Keine passenden Branches.",
+				"branchListError": "Branches konnten nicht geladen werden. Geben Sie stattdessen einen Branch-Namen ein.",
+				"branchUseCustom": "„{branch}“ verwenden",
+				"branchCurrent": "Aktuell",
+				"branchDefaultBadge": "Standard",
+				"pinBranch": "{branch} anheften",
+				"unpinBranch": "{branch} lösen",
+				"branchPinError": "Angeheftete Branches konnten nicht aktualisiert werden",
+				"branchSave": "Speichern",
+				"branchCancel": "Abbrechen",
+				"branchSaved": "Überwachter Branch aktualisiert",
+				"branchErrorNotFound": "Branch „{branch}“ wurde im Remote-Repository nicht gefunden.",
+				"branchErrorCredentials": "Die Repository-Zugangsdaten sind abgelaufen — verbinden Sie das Repository neu, um den Branch zu ändern.",
+				"branchErrorNetwork": "Das Repository konnte zur Überprüfung des Branches nicht erreicht werden. Versuchen Sie es gleich erneut.",
+				"branchErrorGeneric": "Der überwachte Branch konnte nicht aktualisiert werden",
+				"reanalyzeToApply": "Neu analysieren, um zu {branch} zu wechseln",
+				"analyze": "Analysieren",
+				"reanalyze": "Erneut analysieren",
+				"reanalyzeTooltip": "Repository erneut scannen und den Graphen neu aufbauen. Neue Commits werden einbezogen.",
+				"reanalyzeNormal": "Erneut analysieren",
+				"reanalyzeNormalHint": "Baut die Karte neu auf und behält Ihre manuellen Knoten-Änderungen als hoch priorisierten Kontext bei.",
+				"reanalyzeFresh": "Komplett neu analysieren",
+				"reanalyzeFreshHint": "Ignoriert Ihre manuellen Beschreibungen und Kategorien — baut alles von Grund auf neu auf.",
+				"analyzeOptions": "Optionen für die erneute Analyse",
+				"analyzing": "Analysiere…",
+				"analyzingInBackground": "Analyse läuft im Hintergrund…",
+				"backgroundRunUpdated": "Aktualisiert auf {sha}",
+				"analysisStarted": "Analyse gestartet",
+				"analysisError": "Analyse konnte nicht gestartet werden",
+				"history": "Verlauf",
+				"historyTooltip": "Vergangene Analysen anzeigen – wer sie ausgelöst hat, wann und welchen Commit sie abdeckten.",
+				"repoUnavailable": "Kein Zugriff auf das Repository",
+				"repoUnavailableTooltip": "Die hinterlegten Zugangsdaten funktionieren, aber Fabric kann dieses Repository nicht lesen — installiere die Provider-App darauf oder verbinde es erneut mit einem Personal Access Token.",
+				"reanalyzeDisabledRepo": "Fabric kann dieses Repository nicht lesen — installiere die Provider-App darauf oder verbinde es mit einem Personal Access Token neu, um neu zu analysieren.",
+				"manageRepository": "Repository verwalten",
+				"monitoringPausedRepoUnavailableTooltip": "Die Überwachung ist pausiert, weil Fabric dieses Repository nicht lesen kann. Gewähre Zugriff (installiere die Provider-App) oder verbinde es mit einem Personal Access Token, um fortzufahren."
+			},
+			"empty": {
+				"noRepoTitle": "Kein Repository verbunden",
+				"noRepoDescription": "Verbinde ein Repository in den Projekteinstellungen, um eine Atlas-Karte deiner Codebasis zu erstellen.",
+				"notAnalyzedTitle": "Deine Codebasis, kartografiert",
+				"notAnalyzedDescription": "Starte eine Analyse, um einen interaktiven Atlas zu erstellen – visualisiere Module, Abhängigkeiten und Business-Fähigkeiten und stelle der KI beliebige Fragen.",
+				"analyzeCta": "Codebasis analysieren"
+			},
+			"analyzing": {
+				"title": "Atlas wird erstellt",
+				"description": "Wir scannen das Repository und kartografieren seine Struktur. Das kann einige Minuten dauern – du kannst den Tab wechseln und später zurückkehren.",
+				"elapsed": "Läuft seit {elapsed}",
+				"longRunning": "Große Repositories brauchen einige Minuten. Die Analyse läuft im Hintergrund weiter, auch wenn du diese Seite verlässt."
+			},
+			"cancel": {
+				"button": "Analyse abbrechen",
+				"confirmTitle": "Diese Analyse abbrechen?",
+				"confirmBody": "Der laufende Scan wird gestoppt und es wird keine Karte erstellt. Du kannst jederzeit eine neue Analyse starten.",
+				"confirmKeep": "Weiter analysieren",
+				"confirmAccept": "Analyse abbrechen",
+				"confirmPending": "Wird abgebrochen…",
+				"cancelled": "Analyse abgebrochen",
+				"error": "Analyse konnte nicht abgebrochen werden",
+				"cancelledTitle": "Analyse abgebrochen",
+				"cancelledBody": "Du hast diese Analyse vor dem Abschluss abgebrochen. Starte eine neue, sobald du bereit bist.",
+				"startNew": "Neue Analyse starten"
+			},
+			"failed": {
+				"title": "Analyse fehlgeschlagen",
+				"description": "Beim Analysieren des Repositories ist ein Fehler aufgetreten.",
+				"retry": "Erneut versuchen"
+			},
+			"graph": {
+				"loading": "Graph wird geladen",
+				"loadError": "Graph konnte nicht geladen werden.",
+				"empty": "Keine Knoten für diesen Modus verfügbar.",
+				"searchPlaceholder": "Knoten suchen…",
+				"searchAria": "Graph-Knoten suchen",
+				"searchClear": "Suche löschen",
+				"matchCount": "{count, plural, one {# Treffer} other {# Treffer}}",
+				"nodeList": "Knoten",
+				"list": "Liste",
+				"legend": "Farblegende",
+				"legendKinds": "Knotentypen",
+				"legendLanguages": "Sprachen",
+				"legendMore": "+{count} weitere",
+				"nodeTooltip": "Jeder Knoten ist ein Modul, eine Fähigkeit oder eine Domäne der analysierten Codebasis. Klicke auf einen Knoten, um Beschreibung, Metriken und Beziehungen zu sehen.",
+				"zoomIn": "Vergrößern",
+				"zoomOut": "Verkleinern",
+				"fitView": "Ansicht anpassen",
+				"resetLayout": "Layout zurücksetzen",
+				"resetLayoutTooltip": "Automatisches Layout wiederherstellen – alle manuellen Positionen werden zurückgesetzt.",
+				"layoutSaved": "Layout gespeichert",
+				"layoutSaveError": "Layout konnte nicht gespeichert werden",
+				"nodeListLabel": "Graph-Knoten",
+				"nodeCount": "{count, plural, one {# Knoten} other {# Knoten}}",
+				"kindPlural": {
+					"DIRECTORY": "{count, plural, one {# Verzeichnis} other {# Verzeichnisse}}",
+					"MODULE": "{count, plural, one {# Modul} other {# Module}}",
+					"FILE": "{count, plural, one {# Datei} other {# Dateien}}",
+					"CAPABILITY": "{count, plural, one {# Fähigkeit} other {# Fähigkeiten}}",
+					"DOMAIN": "{count, plural, one {# Domäne} other {# Domänen}}"
+				},
+				"references": "{count, plural, one {# Referenz} other {# Referenzen}}",
+				"referencesAria": "Von {label} referenzierte Knoten anzeigen",
+				"referencesTitle": "Referenzen",
+				"exportImage": "Bild exportieren",
+				"exportPng": "PNG-Bild",
+				"exportPdf": "PDF-Dokument",
+				"exportImageDone": "Graph-Bild exportiert",
+				"exportImageError": "Graph-Bild konnte nicht exportiert werden"
+			},
+			"node": {
+				"regionLabel": "Ausgewählter Knoten",
+				"notFound": "Knoten nicht gefunden",
+				"loadError": "Knoten-Details konnten nicht geladen werden.",
+				"close": "Panel schließen",
+				"description": "Beschreibung",
+				"documentation": "Dokumentation",
+				"noDescription": "Keine Beschreibung für diesen Knoten verfügbar.",
+				"noDescriptionFile": "Diese Datei wurde noch nicht beschrieben.",
+				"describeWithAi": "Mit KI beschreiben",
+				"describeSuccess": "Beschreibung generiert",
+				"describeError": "Beschreibung konnte nicht generiert werden",
+				"noAiProvider": "Für diesen Arbeitsbereich ist kein KI-Anbieter konfiguriert. Füge einen in den Einstellungen hinzu.",
+				"regenerate": "Mit KI neu generieren",
+				"regenerateInstructions": "Auf bestimmte Aspekte fokussieren, Kontext hinzufügen… (optional)",
+				"regenerateSubmit": "Neu generieren",
+				"regenerateCancel": "Abbrechen",
+				"metricsTitle": "Metriken",
+				"metrics": {
+					"loc": "Codezeilen",
+					"symbols": "Symbole",
+					"imports": "Importe",
+					"dependents": "Abhängige",
+					"files": "Dateien",
+					"language": "Sprache"
+				},
+				"directionIn": "ein",
+				"directionOut": "aus",
+				"askAi": "KI dazu befragen",
+				"dependsOnLabel": "Hängt ab von",
+				"usedByLabel": "Verwendet von",
+				"statFiles": "Dateien",
+				"statLines": "Zeilen",
+				"statLinks": "Verknüpfungen",
+				"showMore": "Mehr anzeigen",
+				"showLess": "Weniger anzeigen",
+				"moreChips": "+{count} weitere",
+				"moreDetails": "Weitere Details",
+				"kind": {
+					"DIRECTORY": "Verzeichnis",
+					"MODULE": "Modul",
+					"FILE": "Datei",
+					"CAPABILITY": "Fähigkeit",
+					"DOMAIN": "Domäne"
+				},
+				"regenerateInstructionsPlaceholder": "Kontext oder Fokus hinzufügen, z. B. 'für neue Entwickler erklären'...",
+				"editDescription": "Beschreibung bearbeiten",
+				"editPlaceholder": "Beschreiben Sie diesen Knoten in eigenen Worten…",
+				"editSave": "Speichern",
+				"editCancel": "Abbrechen",
+				"editClear": "Auf KI zurücksetzen",
+				"editSaved": "Gespeichert",
+				"editError": "Ihre Änderungen konnten nicht gespeichert werden",
+				"editedByYou": "Von Ihnen bearbeitet",
+				"editedDescriptionHint": "Wird vom Atlas-Assistenten verwendet, wenn Sie zu diesem Knoten fragen.",
+				"regenerateAi": "KI-Version neu generieren",
+				"regenerateOverrideNote": "Ihre bearbeitete Beschreibung bleibt erhalten — dies aktualisiert nur die KI-Version dahinter.",
+				"editCategory": "Kategorie bearbeiten",
+				"categoryEditedByYou": "Kategorie von Ihnen bearbeitet",
+				"categorySearchPlaceholder": "Kategorie suchen oder eingeben…",
+				"categoryPresetsHeading": "Kategorien",
+				"categoryCustomHeading": "Benutzerdefiniert",
+				"categoryUseCustom": "\"{value}\" verwenden",
+				"categoryEmpty": "Tippen, um eine benutzerdefinierte Kategorie hinzuzufügen.",
+				"categoryResetToAi": "Auf KI-Kategorie zurücksetzen",
+				"history": "Bearbeitungsverlauf",
+				"historyTitle": "Bearbeitungsverlauf",
+				"historyEmpty": "Noch keine manuellen Änderungen.",
+				"historyError": "Bearbeitungsverlauf konnte nicht geladen werden.",
+				"historyBy": "von {name}",
+				"historyField": {
+					"description": "Beschreibung",
+					"category": "Kategorie"
+				},
+				"edgeKind": {
+					"contains": "Enthält",
+					"imports": "Importiert",
+					"dependsOn": "Hängt ab von",
+					"covers": "Abdeckt",
+					"relatesTo": "In Beziehung zu"
+				}
+			},
+			"connections": {
+				"tab": "Verbindungen",
+				"regionLabel": "Graph-Verbindungen",
+				"searchPlaceholder": "Knoten & Verbindungen suchen…",
+				"searchAria": "Knoten und Verbindungen suchen",
+				"showDeleted": "Gelöschte anzeigen",
+				"newConnection": "Neue Verbindung",
+				"empty": "Für diesen Modus gibt es noch keine Verbindungen.",
+				"noMatches": "Keine Verbindungen entsprechen Ihrer Suche.",
+				"restore": "Verbindung wiederherstellen",
+				"restoreSuccess": "Verbindung wiederhergestellt",
+				"restoreError": "Verbindung konnte nicht wiederhergestellt werden",
+				"createSource": "Von",
+				"createTarget": "Zu",
+				"createKind": "Beziehung",
+				"createDescription": "Beschreibung",
+				"createDescriptionPlaceholder": "Diese Verbindung beschreiben… (optional)",
+				"createSelectNode": "Knoten auswählen…",
+				"createSearchNodes": "Knoten suchen…",
+				"createNoNodes": "Keine passenden Knoten.",
+				"createSubmit": "Verbindung erstellen",
+				"createCancel": "Abbrechen",
+				"createSuccess": "Verbindung erstellt",
+				"createError": "Verbindung konnte nicht erstellt werden",
+				"info": "Über Verbindungen",
+				"infoTitle": "Verbindungen",
+				"infoBody": "Verbindungen sind die Referenzen zwischen Knoten – was was aufruft, importiert, davon abhängt oder dazu in Beziehung steht. Der Atlas-Assistent berücksichtigt sie bei seinen Antworten. Erstelle eine, indem du zwischen zwei Karten auf der Karte ziehst oder „Neue Verbindung“ nutzt; du kannst ihre Beschreibung bearbeiten, sie löschen und wiederherstellen und die KI-erzeugten jederzeit neu zuordnen. Strukturelle Änderungen werden lokal vorgemerkt – mit Speichern übernimmst du sie."
+			},
+			"staged": {
+				"unsavedCount": "{count, plural, one {# nicht gespeicherte Änderung} other {# nicht gespeicherte Änderungen}}",
+				"save": "Speichern",
+				"discard": "Verwerfen",
+				"saveSuccess": "{count, plural, one {# Änderung gespeichert} other {# Änderungen gespeichert}}",
+				"saveError": "Änderungen konnten nicht gespeichert werden"
+			},
+			"connectionEditor": {
+				"title": "Neue Verbindung",
+				"kind": "Beziehung",
+				"description": "Beschreibung",
+				"descriptionPlaceholder": "Diese Verbindung beschreiben… (optional)",
+				"save": "Speichern",
+				"remove": "Entfernen",
+				"cancel": "Abbrechen"
+			},
+			"edgePanel": {
+				"regionLabel": "Details der ausgewählten Verbindung",
+				"close": "Panel schließen",
+				"type": "Typ",
+				"description": "Beschreibung",
+				"manualBadge": "Manuell",
+				"editedBadge": "Von Ihnen bearbeitet",
+				"deletedBadge": "Gelöscht",
+				"editDescription": "Beschreibung bearbeiten",
+				"editPlaceholder": "Beschreiben Sie diese Verbindung in eigenen Worten…",
+				"editSave": "Speichern",
+				"editCancel": "Abbrechen",
+				"editClear": "Beschreibung entfernen",
+				"noDescription": "Keine Beschreibung für diese Verbindung.",
+				"noDescriptionEditable": "Noch keine Beschreibung — fügen Sie eine hinzu, um diese Verbindung zu erklären.",
+				"showMore": "Mehr anzeigen",
+				"showLess": "Weniger anzeigen",
+				"history": "Bearbeitungsverlauf",
+				"historyTitle": "Bearbeitungsverlauf",
+				"historyEmpty": "Noch keine manuellen Bearbeitungen.",
+				"historyError": "Bearbeitungsverlauf konnte nicht geladen werden.",
+				"historyBy": "von {name}",
+				"historyAction": {
+					"created": "Erstellt",
+					"description": "Beschreibung",
+					"deleted": "Gelöscht",
+					"restored": "Wiederhergestellt"
+				},
+				"delete": "Verbindung löschen",
+				"deleteConfirm": "Löschen",
+				"deleteCancel": "Abbrechen",
+				"deleteConfirmBody": "Dadurch wird die Verbindung von der Karte entfernt. Sie können sie später aus der Verbindungsliste wiederherstellen.",
+				"restore": "Verbindung wiederherstellen"
+			},
+			"category": {
+				"ai": "KI & Agenten",
+				"integration": "Integrationen",
+				"security": "Sicherheit & Auth",
+				"infra": "Infrastruktur",
+				"data": "Daten & Speicher",
+				"experience": "Erlebnis",
+				"ops": "Plattform & Betrieb",
+				"aiDesc": "KI-Agenten, LLM-Orchestrierung, Prompts und Inferenz — die intelligente Automatisierungsebene.",
+				"integrationDesc": "Konnektoren zu externen Tools und Diensten — GitHub, Slack, Jira, MCP, Webhooks und Benachrichtigungen.",
+				"securityDesc": "Authentifizierung, Autorisierung, Mandanten-Isolation, Secrets und Audit — wer worauf zugreifen darf.",
+				"infraDesc": "Deployment, Laufzeit, Worker, Container sowie Build-/Release-Pipelines — wo der Code läuft.",
+				"dataDesc": "Datenbanken, Persistenz, Migrationen, Caching, Vektoren/RAG und Dateispeicher — wo der Zustand liegt.",
+				"experienceDesc": "Die Nutzeroberfläche — Seiten, Komponenten, Editoren, Dashboards und Design.",
+				"opsDesc": "Abrechnung, Monitoring, Konfiguration, Admin, Nutzung und Plattform-Tooling — der Betrieb des Produkts."
+			},
+			"legend": {
+				"title": "Legende",
+				"collapse": "Legende einklappen",
+				"expand": "Legende ausklappen",
+				"connectionsTitle": "Verbindungen"
+			},
+			"chat": {
+				"regionLabel": "Atlas-Assistent",
+				"title": "Atlas",
+				"assistantTitle": "Atlas-Assistent",
+				"interrupted": "Antwort unterbrochen",
+				"turnNotSaved": "Dieser Beitrag konnte nicht im Verlauf gespeichert werden",
+				"placeholder": "Stell beliebige Fragen zum Graphen – Module, Abhängigkeiten, Fähigkeiten oder Verbindungen.",
+				"inputLabel": "Nachricht an den Atlas-Assistenten",
+				"inputPlaceholder": "Über diese Codebasis fragen…",
+				"send": "Nachricht senden",
+				"thinking": "Denkt nach…",
+				"error": "Der Assistent konnte nicht antworten",
+				"chatTooltip": "Stelle der KI beliebige Fragen zum Graphen. Sie kann Module erklären, Abhängigkeiten verfolgen, Fähigkeiten zusammenfassen und Folgefragen beantworten.",
+				"newConversation": "Neue Unterhaltung",
+				"conversations": "Unterhaltungen",
+				"conversationsEmpty": "Noch keine Unterhaltungen. Starte eine unten.",
+				"conversationsTotal": "{count, plural, one {# Unterhaltung} other {# Unterhaltungen}}",
+				"conversationsClose": "Verlauf schließen",
+				"conversationsShowMore": "Mehr anzeigen",
+				"conversationsBucketToday": "Heute",
+				"conversationsBucketYesterday": "Gestern",
+				"conversationsBucketThisWeek": "Diese Woche",
+				"conversationsBucketOlder": "Älter",
+				"conversationPrivate": "Privat",
+				"conversationShared": "Geteilt",
+				"conversationSharedBy": "Geteilt von {name}",
+				"conversationRename": "Umbenennen",
+				"conversationVisibility": "Sichtbarkeit",
+				"conversationMakeShared": "Teilen",
+				"conversationMakePrivate": "Privat machen",
+				"conversationDelete": "Löschen",
+				"conversationDeleteConfirm": "Unterhaltung löschen?",
+				"conversationDeleteConfirmDescription": "Dies löscht die Unterhaltung und alle Nachrichten dauerhaft.",
+				"conversationDeleteConfirmAction": "Löschen",
+				"conversationDeleteConfirmCancel": "Abbrechen",
+				"conversationDeleted": "Unterhaltung gelöscht",
+				"conversationDeleteError": "Unterhaltung konnte nicht gelöscht werden",
+				"conversationUpdated": "Unterhaltung aktualisiert",
+				"conversationUpdateError": "Unterhaltung konnte nicht aktualisiert werden",
+				"conversationCreateError": "Unterhaltung konnte nicht erstellt werden",
+				"conversationRenameLabel": "Name der Unterhaltung",
+				"conversationRenamePlaceholder": "z.B. Fragen zum Authentifizierungsablauf",
+				"conversationRenameSave": "Speichern",
+				"conversationRenameCancel": "Abbrechen",
+				"conversationMoreActions": "Weitere Aktionen für diese Unterhaltung",
+				"suggestionsLabel": "Vorgeschlagene Fragen",
+				"suggestions": {
+					"authentication": "Welche Module betreffen die Authentifizierung?",
+					"isolation": "Wo wird die Mandantentrennung erzwungen?",
+					"schema": "Was würde brechen, wenn ich das Datenbankschema ändere?",
+					"capabilityDepends": "Wovon hängt die Fähigkeit {capability} ab?"
+				}
+			},
+			"techStack": {
+				"title": "Tech Stack",
+				"titleTooltip": "Frameworks, Bibliotheken und Tools aus den Abhängigkeitsdateien dieses Repositories.",
+				"empty": "Keine Manifeste erkannt",
+				"emptyDescription": "Füge eine package.json, requirements.txt, go.mod o.Ä. hinzu, um deinen Tech Stack hier zu sehen.",
+				"devLabel": "dev",
+				"kindFramework": "Framework",
+				"kindRuntime": "Runtime",
+				"kindLibrary": "Bibliothek",
+				"kindTool": "Tool",
+				"collapse": "Einklappen",
+				"expand": "Ausklappen",
+				"groupFrameworks": "Frameworks",
+				"groupRuntime": "Laufzeit & Sprache",
+				"groupAi": "KI-SDKs",
+				"groupData": "Daten & Infra",
+				"groupLibraries": "Bibliotheken",
+				"tags": {
+					"framework": "Framework",
+					"runtime": "Laufzeit",
+					"language": "Sprache",
+					"ai": "KI",
+					"data": "Daten",
+					"library": "Bibliothek"
+				}
+			},
+			"about": {
+				"triggerLabel": "Über Atlas",
+				"label": "Über Atlas",
+				"title": "Ihre Codebasis, kartiert",
+				"intro": "Atlas verwandelt ein verbundenes Repository in eine lebendige Karte Ihres Systems — jedes Modul, jede Fähigkeit und die Beziehungen zwischen ihnen — damit Sie und Ihre Agenten über die gesamte Codebasis nachdenken können, nicht nur über eine Datei nach der anderen.",
+				"analyseTitle": "Analysieren",
+				"analyseBody": "Atlas scannt Ihr verbundenes Repository bei einem bestimmten Commit und extrahiert Dateien, Module, Importe und Abhängigkeiten.",
+				"mapTitle": "Kartieren",
+				"mapBody": "Es gruppiert alles in Geschäftsfähigkeiten und technische Module und berechnet dann den Beziehungsgraphen zwischen ihnen.",
+				"exploreTitle": "Erkunden",
+				"exploreBody": "Lesen Sie den Überblick für eine Zusammenfassung auf hoher Ebene oder öffnen Sie den Graphen, um nachzuvollziehen, wie eine Fähigkeit oder ein Modul mit dem Rest verbunden ist.",
+				"askTitle": "Fragen",
+				"askBody": "Der Atlas-Assistent beantwortet Fragen auf Grundlage des Graphen — was wovon abhängt und worauf sich eine Änderung auswirken würde.",
+				"editTitle": "Verbindungen erstellen",
+				"editTag": "KI-bewusst",
+				"editBody": "Zeichnen Sie eigene Verbindungen, legen Sie Typ und Beschreibung fest, löschen oder stellen Sie sie wieder her oder ordnen Sie sie mit KI neu zu — Atlas speichert Ihre Änderungen, und der Assistent bezieht sie ein.",
+				"systemTitle": "Systemkarte",
+				"systemTag": "Mehrere Repos",
+				"systemBody": "Verbinden Sie weitere Repositorys, und Atlas verknüpft sie zu einer repoübergreifenden Karte — die Aufrufe, gemeinsam genutzten Bibliotheken und gemeinsamen Domänen zwischen Ihren Diensten — damit der Assistent über das gesamte System nachdenkt.",
+				"footerNote": "Atlas markiert **erneute Analyse empfohlen**, wenn der Branch vom zuletzt analysierten Commit abgewichen ist — führen Sie sie erneut aus, um die Karte aktuell zu halten."
+			},
+			"view": {
+				"overview": "Überblick",
+				"graph": "Graph",
+				"system": "Systemkarte",
+				"overviewTooltip": "Eine Dashboard-Zusammenfassung des Repositorys – was es tut, wichtige Kennzahlen, Sprachen, die am häufigsten genutzten Module, Geschäftsfähigkeiten und der Tech-Stack.",
+				"graphTooltip": "Die interaktive Abhängigkeits-/Fähigkeitskarte, die du durchsuchen, verschieben und Knoten für Knoten erkunden kannst."
+			},
+			"system": {
+				"linking": "Repository-übergreifende Beziehungen werden ermittelt…",
+				"empty": "Verbinde und analysiere mindestens zwei Repositorys, um die Systemkarte zu sehen.",
+				"legendTitle": "Repository-übergreifende Beziehungen",
+				"reposLabel": "Repositorys",
+				"reposSelected": "{count} von {total} Repos",
+				"selectAll": "Alle auswählen",
+				"default": "Standard",
+				"edgeDetailClose": "Schließen",
+				"edgeNoDetail": "Keine weiteren Details.",
+				"edgeKind": {
+					"SHARES_LIBRARY": "Gemeinsame Bibliothek",
+					"DEPENDS_ON": "Hängt ab von",
+					"CALLS_API": "Ruft API auf",
+					"RELATES_TO": "Gemeinsame Domäne"
+				},
+				"needMoreRepos": "Verbinde und analysiere mindestens 2 Repositories, um die Systemkarte zu nutzen.",
+				"remapHistoryTitle": "Beziehungsverlauf",
+				"remapHistoryEmpty": "Noch keine Beziehungsänderungen.",
+				"remapTrigger": {
+					"auto": "Automatisch",
+					"remap": "Neu zuordnen",
+					"remap_fresh": "Neu zuordnen (komplett)"
+				}
+			},
+			"overview": {
+				"sectionLabel": "Repository-Überblick",
+				"export": "Exportieren",
+				"exportJson": "JSON",
+				"exportMarkdown": "Markdown",
+				"exportDone": "Export heruntergeladen",
+				"statNodes": "Knoten",
+				"statRelationships": "Beziehungen",
+				"statFiles": "Dateien",
+				"statModules": "Module",
+				"statCapabilities": "Fähigkeiten",
+				"statLanguages": "Sprachen",
+				"languagesTitle": "Sprachen",
+				"languagesHint": "Anzahl der Module pro primärer Sprache",
+				"topModulesTitle": "Am stärksten vernetzte Module",
+				"topModulesHint": "Sortiert nach der Anzahl abhängiger Module",
+				"dependents": "{count, plural, one {# abhängiges Modul} other {# abhängige Module}}",
+				"heroLabel": "Was diese Codebasis macht",
+				"heroTitleFallback": "{repo} — Codebase-Karte",
+				"heroSummaryFallback": "Eine Karte der Module und Fähigkeiten dieses Repositorys und ihrer Verbindungen — erkunden Sie sie im Graphen oder stellen Sie dem Assistenten eine Frage.",
+				"heroAnalysed": "Analysiert",
+				"heroOnBranch": "auf {branch}",
+				"languageMixLabel": "Sprachverteilung",
+				"capabilitiesTitle": "Geschäftsfähigkeiten",
+				"capabilitiesViewAll": "Alle {count} im Graphen ansehen",
+				"capabilityFiles": "{count, plural, one {# Datei} other {# Dateien}}",
+				"capabilityConnections": "{count, plural, one {# Verbindung} other {# Verbindungen}}",
+				"techStackTitle": "Tech-Stack",
+				"openInGraph": "Im Graphen öffnen",
+				"empty": "Noch nichts zusammenzufassen."
+			},
+			"tour": {
+				"title": "Einführung",
+				"titleTooltip": "Ein geführter Überblick darüber, was diese Codebasis tut und welche wichtigen Fähigkeiten sie hat – in verständlicher Sprache für Neulinge erklärt.",
+				"intro": "Was diese Codebasis tut",
+				"stepOf": "Schritt {current} von {total}",
+				"back": "Zurück",
+				"next": "Weiter",
+				"finish": "Fertig",
+				"restart": "Von vorn",
+				"skip": "Überblick überspringen",
+				"focusNode": "Im Graphen anzeigen",
+				"pageOf": "Seite {current} von {total}",
+				"goToPage": "Zu Seite {page} wechseln"
+			},
+			"history": {
+				"title": "Analyseverlauf",
+				"close": "Verlauf schließen",
+				"empty": "Noch keine Analysen.",
+				"modeFull": "Vollständig",
+				"modeIncremental": "Inkrementell",
+				"modeRemap": "Neu zuordnen",
+				"modeRemapFresh": "Neu zuordnen (komplett)",
+				"statusRunning": "Läuft",
+				"statusReady": "Bereit",
+				"statusFailed": "Fehlgeschlagen",
+				"triggeredBy": "von {name}",
+				"triggeredByUnknown": "Unbekannt",
+				"nodes": "{count, plural, one {# Knoten} other {# Knoten}}",
+				"edges": "{count, plural, one {# Kante} other {# Kanten}}",
+				"files": "{count, plural, one {# Datei} other {# Dateien}}",
+				"tokensCompact": "{tokens} Tokens",
+				"tokensTooltip": "{count, number} Tokens insgesamt",
+				"costTooltip": "Geschätzte Kosten: ${usd}",
+				"runsTotal": "{count, plural, one {# Analyse} other {# Analysen}}",
+				"showMore": "Mehr anzeigen"
+			},
+			"remap": {
+				"button": "Neu zuordnen",
+				"soloButton": "Referenzen neu zuordnen",
+				"systemButton": "Beziehungen neu zuordnen",
+				"keep": "Neu zuordnen (meine Änderungen behalten)",
+				"keepHint": "Verbindungen neu generieren und dabei deine manuellen Änderungen und Löschungen beibehalten.",
+				"fresh": "Komplett neu zuordnen…",
+				"freshHint": "Alle deine Änderungen verwerfen und von Grund auf neu beginnen.",
+				"pending": "Wird neu zugeordnet…",
+				"options": "Optionen für die Neuzuordnung",
+				"confirmTitle": "Komplett neu zuordnen?",
+				"confirmBody": "Dadurch werden alle deine Verbindungsänderungen, manuell hinzugefügten Verbindungen, Löschungen und deren Verlauf — sowohl in der Geschäfts- als auch in der technischen Ansicht — dauerhaft entfernt und die Verbindungen anschließend von Grund auf neu generiert. Dies kann nicht rückgängig gemacht werden.",
+				"confirmAction": "Komplett neu zuordnen",
+				"cancel": "Abbrechen",
+				"soloSuccess": "{count} Referenzen generiert",
+				"systemSuccess": "Beziehungen neu zugeordnet",
+				"error": "Neuzuordnung fehlgeschlagen. Bitte erneut versuchen."
+			}
+		}
+	}
+}

@@ -1,0 +1,7 @@
+# Bulk biome format remediation (legacy format violations).
+# Use: git config blame.ignoreRevsFile .git-blame-ignore-revs
+55777efd1855c2050692dba390336e2cab247301
+
+# Wrapped the feature editor content in a flex row (one added nesting level
+# in StoryWorkspace.tsx reflowed ~90 attribute lines through Biome).
+b5fd299ff71a9782d5a7e0d6ba5203ddc7695939

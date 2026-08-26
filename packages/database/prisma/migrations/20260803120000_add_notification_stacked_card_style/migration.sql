@@ -1,0 +1,23 @@
+-- Opt-in stacked-card notification style (#2117).
+--
+-- Display preference, not a delivery gate. Every other boolean on this table
+-- decides whether a notification is written at all — `mentions`, `replies`,
+-- `assignments`, `status`, `syncProject` and `aiAgent` gate in-app categories
+-- via CATEGORY_TO_TOGGLE, and `reportEmails` gates the email channel. This one
+-- only decides how already-delivered rows are drawn, which is why it is read
+-- through a separate type in the query layer rather than joining
+-- NotificationPreferenceFlags. That type is consumed by the write-time
+-- delivery filter, so a member that gates nothing would make its contract
+-- untrue.
+--
+-- It is also the first column here that defaults to FALSE. The delivery flags
+-- are opt-out (a missing row means everything is enabled); the card style is
+-- opt-in per the ticket's release note, so every existing user keeps the
+-- compact rows they have today until they choose otherwise.
+--
+-- Additive and rolling-deploy safe: adding a NOT NULL column with a constant
+-- default is metadata-only on PostgreSQL 11+, so no table rewrite and no lock
+-- held for the length of a scan. The previous app version simply never selects
+-- the column.
+ALTER TABLE "notification_preference"
+  ADD COLUMN "stackedCardStyle" BOOLEAN NOT NULL DEFAULT false;

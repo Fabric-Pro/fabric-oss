@@ -1,0 +1,33 @@
+{
+	"name": "@repo/letta",
+	"version": "0.0.1",
+	"license": "Apache-2.0",
+	"private": true,
+	"description": "Letta integration for semantic memory and stateful agents",
+	"main": "./src/index.ts",
+	"types": "./src/index.ts",
+	"exports": {
+		".": {
+			"import": "./src/index.ts",
+			"require": "./src/index.ts",
+			"types": "./src/index.ts"
+		},
+		"./agents": {
+			"import": "./src/agents/index.ts",
+			"require": "./src/agents/index.ts",
+			"types": "./src/agents/index.ts"
+		},
+		"./memory": {
+			"import": "./src/memory/index.ts",
+			"require": "./src/memory/index.ts",
+			"types": "./src/memory/index.ts"
+		}
+	},
+	"scripts": {
+		"type-check": "tsc --noEmit"
+	},
+	"devDependencies": {
+		"@types/node": "^20.14.0",
+		"typescript": "^5.4.5"
+	}
+}

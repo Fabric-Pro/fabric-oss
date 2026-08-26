@@ -1,0 +1,112 @@
+name: Type Check
+
+# Scoped TypeScript type-check on every PR to `master`.
+#
+# Scoping: `pnpm turbo type-check --filter=...[origin/<base>]` checks only
+# the packages changed vs the PR base (and their dependents) — the same
+# pattern unit-tests.yml uses for tests. A full-repo sweep re-checks all
+# ~45 packages, including heavy source packages whose generated types
+# (e.g. @repo/database's ~47MB Prisma client) are re-checked by every
+# consumer; that needs >8GB and is impractical on a dev machine. The
+# local pr-quality-gate hook runs the same scoped check.
+#
+# Memory: the elevated NODE_OPTIONS heap lives ONLY here (a large CI
+# runner with the RAM to spare) — it is deliberately NOT baked into the
+# shared `type-check` script, so contributors' machines are never forced
+# to a 12GB floor. The heavy-package memory blow-up is tracked for a
+# compiled-packages migration.
+#
+# Security: no user-controlled fields are interpolated into run: blocks;
+# BASE_REF is github.base_ref (GitHub-controlled) and guarded by the
+# EVENT_NAME check.
+
+on:
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: type-check-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  type-check:
+    name: type-check
+    runs-on: ubuntu-8core
+    timeout-minutes: 30
+    env:
+      # Placeholder so @repo/database's prisma singleton (throws at module
+      # load when DATABASE_URL is unset) can initialize during generate.
+      DATABASE_URL: 'postgresql://test:test@localhost:5432/test'
+      DIRECT_URL: 'postgresql://test:test@localhost:5432/test'
+      # CI-only headroom for the heaviest changed-package graphs. Never
+      # imposed on contributors (not in the shared script).
+      NODE_OPTIONS: '--max-old-space-size=16384'
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          # Full history so Turbo's [origin/<base>] filter resolves the
+          # merge base; shallow checkout falls back to running everything.
+          fetch-depth: 0
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+
+      - name: Restore Turbo cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .turbo
+          key: ${{ runner.os }}-turbo-typecheck-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-turbo-typecheck-
+            ${{ runner.os }}-turbo-
+
+      # Turbo's cache only replays whole tasks; on a miss the task re-runs
+      # cold. TypeScript's own incremental state is what makes a miss cheap
+      # (deploy-vercel-prod.yml relies on the same thing for apps/web, where
+      # it measured 138s cold vs 23s warm). Paths are enumerated rather than
+      # globbed as `**/*.tsbuildinfo` so the cache action never walks
+      # node_modules. A .tsbuildinfo restored from a different commit is safe:
+      # tsc version-checks every file it recorded and re-checks what moved.
+      - name: Restore TypeScript incremental state
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            apps/*/.next/cache/*.tsbuildinfo
+            apps/*/tsconfig.tsbuildinfo
+            packages/*/tsconfig.tsbuildinfo
+            agents/langchain/*/tsconfig.tsbuildinfo
+            services/*/tsconfig.tsbuildinfo
+            tooling/*/tsconfig.tsbuildinfo
+            config/tsconfig.tsbuildinfo
+            party/tsconfig.tsbuildinfo
+            party-cf/tsconfig.tsbuildinfo
+          key: ${{ runner.os }}-tsbuildinfo-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-tsbuildinfo-
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Type check (scoped to changed packages)
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          # On PRs: only the packages affected by the diff vs the PR base
+          # (and their dependents). On workflow_dispatch: full sweep.
+          # `^generate`/`^build` run as turbo type-check dependencies.
+          if [[ "$EVENT_NAME" == "pull_request" ]]; then
+            pnpm turbo type-check --concurrency=4 --filter="...[origin/${BASE_REF}]"
+          else
+            pnpm turbo type-check --concurrency=4
+          fi

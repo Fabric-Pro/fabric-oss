@@ -1,0 +1,40 @@
+{{- if .Values.mcpStdioWrapper.enabled }}
+{{- /* mcp-stdio-wrapper runs as non-root uid 1001: packages/mcp-stdio-wrapper/
+   Dockerfile pins `mcpwrapper` to a NUMERIC uid (useradd -r -u 1001), so kubelet
+   can verify runAsNonRoot at admission (SOC 2 CC7.1, card 1721 FR-7). */}}
+{{- include "fabric.deployment" (dict
+    "name"      "mcp-stdio-wrapper"
+    "component" "platform"
+    "image"     (printf "%s/%s:%s" .Values.global.imageRegistry .Values.mcpStdioWrapper.image.repository .Values.global.imageTag)
+    "replicas"  .Values.mcpStdioWrapper.replicas
+    "port"      .Values.mcpStdioWrapper.port
+    "resources" .Values.mcpStdioWrapper.resources
+    "securityContext" (dict
+      "runAsNonRoot" true
+      "runAsUser"    1001
+      "fsGroup"      1001)
+    "probes"    (dict
+      "livenessProbe"  (dict
+        "httpGet"             (dict "path" "/health" "port" .Values.mcpStdioWrapper.port)
+        "initialDelaySeconds" 15
+        "periodSeconds"       20
+        "timeoutSeconds"      5
+        "failureThreshold"    3)
+      "readinessProbe" (dict
+        "httpGet"             (dict "path" "/health" "port" .Values.mcpStdioWrapper.port)
+        "initialDelaySeconds" 5
+        "periodSeconds"       10
+        "timeoutSeconds"      5
+        "failureThreshold"    3))
+    "Release"   .Release
+    "Values"    .Values
+) }}
+---
+{{- include "fabric.service" (dict
+    "name"      "mcp-stdio-wrapper"
+    "component" "platform"
+    "port"      .Values.mcpStdioWrapper.port
+    "Release"   .Release
+    "Values"    .Values
+) }}
+{{- end }}

@@ -1,0 +1,23 @@
+export function FrontIcon({ className }: { className?: string }) {
+	return (
+		<svg
+			xmlns="http://www.w3.org/2000/svg"
+			width="1em"
+			height="1em"
+			fill="none"
+			viewBox="0 0 24 24"
+			className={className}
+			aria-label="Front"
+			role="img"
+		>
+			<path
+				fill="#A857F1"
+				d="M3.003 20.644h5.933V8.908h11.829V3H3.003z"
+			/>
+			<path
+				fill="#A857F1"
+				d="M15.648 20.997a5.352 5.352 0 1 0 0-10.704 5.352 5.352 0 0 0 0 10.704"
+			/>
+		</svg>
+	);
+}

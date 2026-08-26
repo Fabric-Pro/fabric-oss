@@ -1,0 +1,329 @@
+name: Unit Tests
+
+# Runs Vitest unit tests on every PR to the upstream canonical branch
+# (`master` — see docs/deployment.md § Branch cutover checklist).
+#
+# Branch-protection note: this workflow always runs on PRs to the
+# canonical branch so the `unit-tests` status check is reported on every
+# PR. The expensive `vitest` job only runs when test-relevant files
+# actually change; for all other PRs the aggregate job returns success
+# immediately. This is what lets the check be safely required in branch
+# protection — a simple `on.paths:` filter would block merges on PRs that
+# don't touch source/tests (the check would never run at all).
+#
+# Scoping: `pnpm turbo run test --filter=...[origin/<base>]` only executes
+# packages affected by the diff against the PR's base branch (and their
+# dependents) per Turbo's dependency graph. workflow_dispatch runs the
+# full sweep with no filter — use it to manually validate tooling
+# changes that don't show up as code diffs.
+#
+# Security: this workflow does not interpolate any user-controlled fields
+# (PR title, body, branch name, commit message, etc.) into run: blocks.
+# Only github.event_name and numeric github.event.pull_request.number are
+# referenced in expressions, both of which are GitHub-controlled.
+
+on:
+  pull_request:
+    # Canonical upstream branch is `master` (post-cutover); see
+    # docs/deployment.md § Branch cutover checklist.
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  # dorny/paths-filter uses the Pulls API on PR events.
+  pull-requests: read
+
+concurrency:
+  group: unit-tests-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  changes:
+    name: Detect changed paths
+    runs-on: ubuntu-latest
+    outputs:
+      code: ${{ steps.filter.outputs.code }}
+    steps:
+      # On pull_request events dorny/paths-filter detects changed files via
+      # the Pulls API (the `pull-requests: read` permission above) and does
+      # not need the repo on disk. Checkout is only required for the
+      # git-based detection used on workflow_dispatch runs.
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        if: github.event_name != 'pull_request'
+        with:
+          fetch-depth: 1
+      - uses: dorny/paths-filter@7b450fff21473bca461d4b92ce414b9d0420d706 # v4
+        id: filter
+        with:
+          filters: |
+            code:
+              # Source and test files across the monorepo.
+              - '**/*.ts'
+              - '**/*.tsx'
+              - '**/*.js'
+              - '**/*.jsx'
+              - '**/*.mjs'
+              - '**/*.cjs'
+              # Translation bundles. No glob above covers a .json here, yet
+              # several suites read them as their subject: the mail template
+              # guard (packages/mail/emails/template-i18n-coverage.test.ts)
+              # and apps/web's i18n drift tests all import en.json directly.
+              # A copy edit adding an ICU placeholder to a string a template
+              # calls param-free breaks the email at runtime and is invisible
+              # to tsc — without this entry that PR touches no other path,
+              # skips vitest, and reports green.
+              - 'packages/i18n/translations/**'
+              # Configuration that affects test execution.
+              - '**/vitest.config.*'
+              - '**/vitest.setup.*'
+              - '**/package.json'
+              - 'pnpm-lock.yaml'
+              - 'pnpm-workspace.yaml'
+              - 'turbo.json'
+              - 'packages/database/prisma/schema.prisma'
+              - '.github/workflows/unit-tests.yml'
+
+  vitest:
+    name: Vitest
+    needs: changes
+    # Always run on workflow_dispatch (full sweep). On PRs, only run when
+    # test-relevant paths changed.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      needs.changes.outputs.code == 'true'
+    # Larger runner: this monorepo runs vitest across ~27 packages in
+    # parallel via turbo. On the standard 4-core runner the cold-cache
+    # TS transform routinely starves CPU and times tests out. 8-core
+    # halved wall-clock time and removed the parallel-load flakes; 16-core
+    # halved it again, which is what the note below is about.
+    #
+    # 8-core -> 16-core, measured against a workflow_dispatch control on
+    # master (`Run unit tests` = 616s, job 670s):
+    #
+    #   step 616s -> 365s (-41%), job 670s -> 414s (-38%), 36/36 tasks clean.
+    #   apps/web 530s -> 221s, @repo/api 440s -> 207s,
+    #   @repo/temporal 400s -> 200s — all three roughly halve and end up
+    #   balanced, which is what you expect when the constraint was CPU.
+    #
+    # Cost: 16-core is $0.042/min against $0.022, and billing rounds each job
+    # up to a whole minute, so 670s (12 min, $0.264) becomes 414s (7 min,
+    # $0.294) — about +$0.03 per run. It would have been CHEAPER as well as
+    # faster below 360s; the ~49s of setup either side of the test step is
+    # what keeps it in the 7th minute.
+    #
+    # This job is the binding constraint on PR wall clock — it finished last
+    # on 5 of 5 sampled PRs — and it is now SATURATED on 8 cores. Three heavy
+    # packages (apps/web, @repo/api, @repo/temporal, ~1758 test files between
+    # them) run concurrently under `--concurrency=4` below, so cutting any one
+    # phase's cost just hands the freed CPU to the other two and the step
+    # lands in the same place. Measured against a workflow_dispatch control on
+    # master (`Run unit tests` = 616s), 2026-08-19:
+    #
+    #   vitest maxWorkers 1 -> "50%"   645s -> 617s   parallelism 0.9x -> 3.5x,
+    #                                                 no wall-clock gain
+    #   node/jsdom env split           616s -> 621s   `environment` fell
+    #                                                 938s -> 686s as predicted,
+    #                                                 wall clock did not move
+    #   pool: "threads"                249s -> 415s   local; jsdom realm per
+    #                                                 thread, 67% slower
+    #   deps.optimizer                 -21s local     24 files failed, breaks
+    #                                                 module mocking
+    #   ubuntu-16core                  n/a            label is not provisioned
+    #                                                 in this org
+    #   --concurrency 4 -> 6 and 12    aborted        @repo/rag times out at
+    #                                                 15s under the extra load
+    #                                                 and turbo kills the run,
+    #                                                 at BOTH values
+    #
+    # That last one matters for anyone eyeing the ~90s gap between the step
+    # (~620s) and the largest package (~530s) and assuming the ~33 small tasks
+    # are queueing behind one free slot. They may well be, but the box has no
+    # headroom to let them through: the three heavy packages already put ~15
+    # vitest workers on 8 cores, so 4 is not a conservative cap, it is the
+    # ceiling. The control at 4 completes 36/36; 6 and 12 both stop at 25/36
+    # and 29/36 respectively.
+    #
+    # Turbo caching cannot help either, and this is structural rather than a
+    # cold cache: PR runs DO restore a master-scoped entry and still report
+    # `0 cached` every time, because `--filter=...[origin/<base>]` scopes the
+    # run to AFFECTED packages and affected means hash-changed by definition.
+    # A `36 cached >>> FULL TURBO` replay only happens re-running an identical
+    # SHA. (Dependency source changes do propagate into dependents' hashes —
+    # verified by hashing @repo/api#test before and after a one-line edit to
+    # packages/database — so there is no false-green hazard here either.)
+    #
+    # Two levers cost money rather than config: a bigger runner (needs an org
+    # admin to provision the label), or sharding this job across a matrix
+    # (~420s instead of ~680s, at roughly +28% on this workflow's runner
+    # spend).
+    #
+    # The ONE config-only lever with a real payoff is `isolate: false` on
+    # apps/web. Measured on the full suite: 268s -> 133s, a clean 2x, because
+    # `setup` collapses 584s -> 39s and `import` 1840s -> 1033s when 766 files
+    # stop each paying for their own fork. It is not landable as-is — it fails
+    # 49 files / 228 tests on cross-file contamination (leaked vi.fn call
+    # counts, a missing `fetch` global, stale mock registries, jsdom "Not
+    # implemented").
+    #
+    # An earlier revision of this note called that blast radius "enumerable and
+    # clustered" and suggested repairing the 49. THAT WAS WRONG, and the
+    # correction is the useful part: the failing set is NOT stable. Quarantining
+    # those 49 into their own isolate:true project (so the other ~717 shared a
+    # fork) dropped the suite to 77s and surfaced 27 DIFFERENT failing files;
+    # re-running that same config unchanged then gave 23, differing from the
+    # first by 48 entries, with different test counts collected (8797 vs 8826).
+    #
+    # So there is no fixed list to repair — contamination varies with whatever
+    # grouping the scheduler happens to pick, and a quarantine list chases a
+    # moving target. Shipping isolate:false here, wholesale or selective, buys
+    # roughly 2x in exchange for a nondeterministically red CI. Do not take that
+    # trade without first making the tests hermetic, which is open-ended work
+    # rather than the bounded job it looks like.
+    #
+    # The obvious config-level repair was then tried and is NOT sufficient.
+    # apps/web sets none of vitest's mock-hygiene options — vitest.setup.ts only
+    # calls RTL's cleanup() — so `clearMocks` + `unstubGlobals` + `unstubEnvs`
+    # alongside isolate:false looked like the systematic fix. It moved the
+    # failure count barely (49 files -> 43) and did nothing for the instability:
+    # two identical runs with those options gave 43 and 45 failing files sharing
+    # only THREE files in common, 82 entries apart. Which files break is close to
+    # random once the fork is shared, so the contamination is not mock state and
+    # not a list — it is the suite's general reliance on per-file process
+    # isolation. Making it hermetic means auditing all ~766 files.
+    #
+    # Runner labels, checked empirically because the REST API needs admin:org to
+    # list them: this org has exactly `ubuntu-latest` and `ubuntu-8core`. A probe
+    # matrix over ubuntu-4core / 16core / 32core and the GitHub default-style
+    # ubuntu-latest-{4,8,16}-cores left every one of them queued and unassigned
+    # for 4.5 minutes while the two real labels finished in seconds. A bigger
+    # runner therefore needs an org admin to create the label first.
+    #
+    # @repo/temporal was measured the same way and is also NOT a candidate —
+    # `--no-isolate` fails 8 files / 69 tests there.
+    #
+    # Please do not spend another round on worker counts, pools, environments
+    # or cache warming; those are settled above.
+    runs-on: ubuntu-16core
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          # Full history so Turbo's `[origin/<base>]` filter can resolve
+          # the merge base and compute affected packages. With shallow
+          # checkout the filter falls back to running everything.
+          fetch-depth: 0
+
+      - name: Setup pnpm
+        # Version is read from root package.json's `packageManager` field.
+        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+
+      # Persist Turbo's local cache (.turbo/cache) across runs — the
+      # official Turborepo GitHub Actions recipe. Re-pushes to a PR (and
+      # rebases) replay cached results for packages whose inputs didn't
+      # change instead of re-running their tests; only genuinely affected
+      # packages execute. The SHA-suffixed key never repeats, so every run
+      # restores the newest cache for this branch (falling back to the base
+      # branch) via restore-keys and saves its own snapshot. Correctness is
+      # unchanged: Turbo's cache keys hash each package's inputs (sources,
+      # deps, lockfile, task env) — the same semantics local `turbo test`
+      # already relies on.
+      - name: Restore Turbo cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .turbo
+          key: ${{ runner.os }}-turbo-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-turbo-
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Hard gate: fail PRs that introduce Prisma queries without explicit
+      # organizationId coercion (tenant-isolation foot-gun). Runs on every PR
+      # regardless of which packages changed — it is a cross-cutting security check.
+      - name: Tenant isolation check
+        # Invoked directly (not via an npm script) to keep root package.json
+        # unchanged — adding a script entry trips the security workflow's
+        # `deps changed` path filter and forces a full pnpm audit run.
+        run: pnpm exec tsx scripts/tenant-isolation-check.ts
+
+      # `^generate` runs as a `test` task dependency in turbo.json, so
+      # @repo/database (Prisma client + Zod schemas) is generated before any
+      # package's tests execute. No separate generate step needed here.
+      #
+      # On PRs we filter to packages affected by the diff vs the PR's base
+      # branch (whatever the PR is targeting); on workflow_dispatch we run
+      # everything by passing no filter. The branching is done in shell
+      # rather than in a `${{ }}` template so the run: block contains no
+      # expression interpolation. BASE_REF is `github.base_ref` (PR target
+      # branch name, e.g. `master`) and is empty on non-PR
+      # events — which we guard via the EVENT_NAME check.
+      - name: Run unit tests
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+          # Placeholder so @repo/database's prisma singleton, which throws
+          # at module load when DATABASE_URL is unset, can initialize. Tests
+          # that touch the DB mock it; this URL is never connected to.
+          DATABASE_URL: 'postgresql://test:test@localhost:5432/test'
+          DIRECT_URL: 'postgresql://test:test@localhost:5432/test'
+        run: |
+          # --concurrency=4 caps parallel turbo tasks so each gets ~2 cores
+          # of the 8-core runner. Default would let 8+ heavy vitest workers
+          # compete and starve each other on cold-cache TS transform.
+          if [[ "$EVENT_NAME" == "pull_request" ]]; then
+            pnpm turbo run test --concurrency=4 --filter="...[origin/${BASE_REF}]"
+          else
+            pnpm turbo run test --concurrency=4
+          fi
+
+  # Stable status check name reported on every PR to the canonical branch
+  # (`master`). Configure this as the required check in branch protection —
+  # not the `vitest` job, which is conditionally skipped on PRs that don't
+  # touch test-relevant files.
+  unit-tests:
+    name: unit-tests
+    needs: [changes, vitest]
+    if: always()
+    runs-on: ubuntu-latest
+    env:
+      EVENT_NAME: ${{ github.event_name }}
+      CHANGES_RESULT: ${{ needs.changes.result }}
+      CODE_CHANGED: ${{ needs.changes.outputs.code }}
+      VITEST_RESULT: ${{ needs.vitest.result }}
+    steps:
+      - name: Aggregate
+        run: |
+          # The path-filter job is a prerequisite. If it failed (or was
+          # cancelled), CODE_CHANGED is empty and we can't trust a "no
+          # changes" answer — fail closed so PRs don't bypass the gate.
+          if [[ "$CHANGES_RESULT" != "success" ]]; then
+            echo "::error::Path-filter job did not succeed (result: $CHANGES_RESULT). Cannot determine whether unit tests are required."
+            exit 1
+          fi
+
+          # On PRs: vitest is required only when test-relevant paths changed.
+          # On workflow_dispatch: vitest always runs, propagate its result.
+          if [[ "$EVENT_NAME" == "pull_request" && "$CODE_CHANGED" != "true" ]]; then
+            echo "No test-relevant changes — unit tests not required."
+            exit 0
+          fi
+
+          if [[ "$VITEST_RESULT" == "skipped" ]]; then
+            echo "::error::Test-relevant changes detected but the vitest job did not run."
+            exit 1
+          fi
+
+          if [[ "$VITEST_RESULT" != "success" ]]; then
+            echo "::error::Unit tests failed (vitest job result: $VITEST_RESULT)."
+            exit 1
+          fi
+
+          echo "Unit tests passed."

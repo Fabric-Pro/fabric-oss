@@ -1,0 +1,94 @@
+---
+title: GitLab
+description: Connect GitLab so Fabric agents and workflows can create and search issues as runtime actions.
+---
+
+Connect GitLab to Fabric AI so agents and workflows can create and search issues across your GitLab projects — as live runtime actions.
+
+GitLab is a **Hybrid** provider: it offers both knowledge (search) and write (create) actions.
+
+<Callout type="info">
+Fabric uses **GitLab's official MCP server** ("GitLab (Official)", available on GitLab Premium/Ultimate). On accounts without it, Fabric falls back to GitLab's REST API automatically — no configuration change needed.
+</Callout>
+
+## Setting Up GitLab
+
+<Steps>
+  <Step>
+    ### Open GitLab under Integrations
+
+    Go to **Settings → Integrations** and open the **GitLab** card.
+  </Step>
+
+  <Step>
+    ### Set Up Actions
+
+    Click **Set Up Actions** and authorize Fabric AI in the GitLab popup (OAuth). Tokens are stored encrypted and refreshed automatically.
+  </Step>
+
+  <Step>
+    ### Confirm
+
+    The provider shows **Connected** with its available runtime actions.
+  </Step>
+</Steps>
+
+## Available Actions
+
+| Action | Type | Description |
+|--------|------|-------------|
+| **Search GitLab Issues** | Knowledge | Search issues in a GitLab project |
+| **Create GitLab Issue** | Action | Create a new issue in a GitLab project |
+
+### In AI Chat
+
+```
+"Find open issues labeled 'bug' in the web project"
+
+"Create a GitLab issue for the failing pipeline we discussed"
+```
+
+## Disconnecting & Reconnecting
+
+To revoke access or switch accounts:
+
+1. Open **Settings → Integrations → GitLab**
+2. Click **Disconnect**
+3. To reconnect, click **Set Up Actions** again and re-authorize
+
+<Callout type="info">
+If a stored GitLab credential stops working (the refresh token expired or was revoked), the provider shows a **Reconnect required** notice — click **Reconnect** to restore runtime actions.
+</Callout>
+
+## Troubleshooting
+
+### "Reconnect required"
+- The OAuth token expired or was revoked. Click **Reconnect** on the GitLab card under **Settings → Integrations**.
+
+### An action returns no results
+- Confirm the connection shows **Connected**
+- Make sure the authorized account has access to the target project
+
+## Use as a project management tool
+
+You can link a project to GitLab and sync its backlog two ways — pushing features as issues and pulling issues back in. In the project's **Settings → Project Management**, pick **GitLab**, choose the GitLab project, and map GitLab **labels to statuses** so pulled issues land in the right column.
+
+<Callout type="info">
+GitLab is a **flat issues** model — there's no epic/feature/story hierarchy, so nested items flatten to issues on push. PM sync works on the **Free** tier (REST) as well as Premium/Ultimate (MCP). See [Project Management Sync](/docs/features/pm-sync) for the full push/pull and conflict-resolution flow.
+</Callout>
+
+---
+
+## Next Steps
+
+<Cards>
+  <Card title="Project Management Sync" href="/docs/features/pm-sync">
+    Push and pull your backlog with GitLab
+  </Card>
+  <Card title="MCP Integration" href="/docs/integrations/mcp">
+    How connected tools are called at runtime
+  </Card>
+  <Card title="Workflow Builder" href="/docs/features/workflow-builder">
+    Use GitLab actions in automated workflows
+  </Card>
+</Cards>

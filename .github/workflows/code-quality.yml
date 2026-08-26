@@ -1,0 +1,67 @@
+name: Code Quality
+
+# Runs Biome format + lint on every PR to the canonical branch (`master`).
+#
+# Rationale: formatting/lint were previously enforced only by a local
+# pre-PR hook, never in CI — so violations drifted onto master unchecked
+# (a full `pnpm format` once had to reformat ~280 files). This workflow
+# makes `pnpm format:check` and `pnpm lint` a required, always-reported
+# status so drift can't accumulate again.
+#
+# Biome checks the whole tree in a couple of seconds, so there is no need
+# to scope to changed packages (unlike the heavier vitest/type-check jobs).
+#
+# The artifact-notices gate rides in this job for the same reason, plus one
+# more: it has to run on a PR that touches only a Dockerfile. `unit-tests`
+# skips such a PR entirely (its paths filter is source-file shaped), and
+# `turbo run test --filter=...[base]` would not select the check's package
+# even if it did not. This workflow has no paths filter at all, so nothing
+# can slip past it.
+#
+# Security: no user-controlled fields are interpolated into run: blocks.
+
+on:
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: code-quality-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  biome:
+    name: Biome (format + lint)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          fetch-depth: 1
+
+      - name: Setup pnpm
+        # Version is read from root package.json's `packageManager` field.
+        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Format check
+        run: pnpm format:check
+
+      - name: Lint
+        run: pnpm lint
+
+      # Apache-2.0 §4(a)/(d) and MIT's notice condition follow the artifact, not
+      # the tree — see docs/licensing.md.
+      - name: Artifact licence and notice check
+        run: pnpm exec tsx scripts/check-artifact-notices.ts

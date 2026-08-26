@@ -1,0 +1,85 @@
+# =============================================================================
+# OpenTelemetry Collector Configuration for Azure Container Apps
+# =============================================================================
+# Simplified configuration for temporal-worker sidecar:
+# - Receives OTLP from localhost:4317 (temporal worker)
+# - Forwards to Application Insights via Azure Monitor exporter
+# =============================================================================
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  # Batch processor for better performance
+  batch:
+    timeout: 5s
+    send_batch_size: 1000
+    send_batch_max_size: 1500
+
+  # Memory limiter to prevent OOM
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 400
+    spike_limit_mib: 100
+
+  # Resource processor to add common attributes
+  resource:
+    attributes:
+      - key: deployment.environment
+        value: "${env:DEPLOYMENT_ENVIRONMENT}"
+        action: upsert
+      - key: service.namespace
+        value: "fabric"
+        action: upsert
+
+exporters:
+  # Azure Monitor exporter for Application Insights
+  azuremonitor:
+    connection_string: "${env:APPLICATIONINSIGHTS_CONNECTION_STRING}"
+    maxbatchsize: 1000
+    maxbatchinterval: 10s
+
+  # Debug exporter (disabled in production - enable only for troubleshooting)
+  # To enable: add 'debug' to the exporters list in desired pipelines
+  # debug:
+  #   verbosity: basic
+  #   sampling_initial: 5
+  #   sampling_thereafter: 200
+
+extensions:
+  # Health check endpoint
+  health_check:
+    endpoint: 0.0.0.0:13133
+
+service:
+  extensions: [health_check]
+
+  pipelines:
+    # Traces pipeline - send to Application Insights
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, batch, resource]
+      exporters: [azuremonitor]
+
+    # Metrics pipeline - send to Application Insights
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, batch, resource]
+      exporters: [azuremonitor]
+
+    # Logs pipeline - send to Application Insights
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, batch, resource]
+      exporters: [azuremonitor]
+
+  telemetry:
+    logs:
+      level: info
+    metrics:
+      address: 0.0.0.0:8888

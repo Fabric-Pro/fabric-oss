@@ -1,0 +1,28 @@
+# Terraform working files
+.terraform/
+.terraform.lock.hcl
+*.tfstate
+*.tfstate.*
+*.tfstate.backup
+crash.log
+crash.*.log
+
+# Module test artifacts
+.terraform.tfstate.lock.info
+
+# Editor backups
+*.swp
+*.bak
+
+# Local override files
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# Don't ignore variables.tf and outputs.tf — those are committed
+# Do NOT ignore terraform.tfvars.example — it's committed
+# DO ignore terraform.tfvars — contains secrets
+terraform.tfvars
+*.auto.tfvars
+*.auto.tfvars.json

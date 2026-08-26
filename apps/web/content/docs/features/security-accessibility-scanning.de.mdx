@@ -1,0 +1,181 @@
+---
+title: Sicherheits- & Barrierefreiheits-Scanning
+description: KI-Agenten, die die Features und Dokumente Ihres Projekts auf OWASP-Top-10-Sicherheitsrisiken und WCAG-2.1-AA-Barrierefreiheitsprobleme prüfen — mit Schweregrad und Behebungshinweis für jeden Befund.
+---
+
+Jedes Fabric-Projekt verfügt über eine Seite **Sicherheit & Barrierefreiheit**, auf der zwei KI-Agenten Ihre Arbeit prüfen und melden, was sie finden. Der **Sicherheits-Agent** prüft Ihre Features und Dokumente gegen die **OWASP Top 10**; der **Barrierefreiheits-Agent** prüft die von Ihnen beschriebene Benutzeroberfläche gegen **WCAG 2.1 AA**. Jeder Befund enthält einen Schweregrad, einen verständlichen Behebungshinweis und einen Verweis auf die Regel, die ihn erzeugt hat.
+
+<Callout type="info">
+**Das Scanning funktioniert bereits zur Entwurfszeit.** Die Agenten lesen, was bereits in Fabric vorhanden ist — Ihre Features (mit Akzeptanzkriterien) und generierte Dokumente —, sodass Sie Sicherheit und Barrierefreiheit prüfen können, *bevor* eine einzige Zeile Code existiert. Es muss nichts installiert und kein Repository verbunden werden.
+</Callout>
+
+## Die Seite öffnen
+
+Öffnen Sie in einem Projekt den Tab **Sicherheit**. Sie sehen drei Bereiche:
+
+- **Scan ausführen** und eine Zusammenfassung des **letzten Scans** (Status, Zeitpunkt, Anzahl der Befunde, verwendetes Modell).
+- **Konfiguration** — welche Scanner laufen, wie Befunde durchgesetzt werden und Ihre benutzerdefinierten Regeln.
+- **Ergebnisse** — Befunde nach Schweregrad gruppiert, mit Filtern.
+
+## Einen Scan ausführen
+
+<Steps>
+  <Step>
+    ### Den Tab Sicherheit öffnen
+
+    Klicken Sie in Ihrem Projekt auf **Sicherheit**.
+  </Step>
+
+  <Step>
+    ### Auf Scan ausführen klicken
+
+    Die Schaltfläche startet einen Scan über das gesamte Projekt. Die Zusammenfassung zeigt **Wird ausgeführt**, während gearbeitet wird — in der Regel unter zwei Minuten —, und Sie können Fabric weiter nutzen; Sie erhalten eine Benachrichtigung, sobald der Scan abgeschlossen ist.
+  </Step>
+
+  <Step>
+    ### Die Befunde prüfen
+
+    Befunde erscheinen nach Schweregrad gruppiert (**Kritisch → Hoch → Mittel → Niedrig**). Jeder Befund hat einen Titel, eine Beschreibung des Risikos, einen Abschnitt **Behebung**, die zugeordnete Regel (z. B. *OWASP Top 10 — A03:2021 Injection* oder *WCAG 2.1 AA — 1.4.3 Contrast (Minimum)*) sowie das Feature oder Dokument, auf das er sich bezieht.
+  </Step>
+</Steps>
+
+<Callout type="info">
+**Ein sauberer Scan wird ausdrücklich bestätigt.** Wenn die Agenten nichts finden, erhalten Sie die Bestätigung „Sauberer Scan — keine Probleme gefunden" mit einem Zeitstempel, nicht nur eine leere Liste.
+</Callout>
+
+## Was gescannt wird
+
+Die Agenten lesen den **in Fabric vorhandenen Kontext** Ihres Projekts:
+
+- **Features** — Titel, Beschreibungen, Akzeptanzkriterien und Release Notes.
+- **Generierte Dokumente** — PRDs, Spezifikationen und andere Dokumente. Die darin beschriebene Benutzeroberfläche prüft der Barrierefreiheits-Agent.
+
+Ein projektweiter Scan deckt Ihre aktuellen Features und aktiven Dokumente gemeinsam ab. Je ausführlicher Ihre Features und Dokumente sind, desto präziser sind die Befunde — die Agenten können nur prüfen, was niedergeschrieben ist.
+
+Wenn Sie ein Quell-Repository verbinden und **Semgrep** (siehe unten) aktivieren, führt der Scan *zusätzlich* eine echte statische Analyse (SAST) über Ihren tatsächlichen Code aus — Sie erhalten also sowohl die Prüfung zur Entwurfszeit als auch Befunde auf Code-Ebene.
+
+<Callout type="info">
+**Befunde enthalten niemals Ihre Geheimnisse.** Wenn ein Dokument oder Ihr Code eine Anmeldeinformation, einen API-Schlüssel oder ein Token enthält, beschreibt der Scan das *Problem* und redigiert den Geheimniswert — er wird aus jedem Befund entfernt, bevor der Befund gespeichert wird. Der Semgrep-Code-Scan und der Git-Verlaufs-Scan klonen Ihr Repository in einen temporären Ordner und löschen ihn nach dem Scannen (gitleaks läuft ebenfalls mit Redaktion). Dies betrifft die Befunde des Scans selbst — es ändert nichts daran, was andere Fabric-Funktionen (Ihre Dokumente, der Code-Index, Meeting-Transkripte) bereits speichern. Der Audit bleibt zudem strikt bei Sicherheit und Barrierefreiheit — kein Performance- oder Code-Stil-Rauschen.
+</Callout>
+
+## Konfiguration
+
+Öffnen Sie die Karte **Konfiguration**, um das Scanning anzupassen. Änderungen werden mit **Änderungen speichern** übernommen.
+
+| Einstellung | Funktion |
+|-------------|----------|
+| **Sicherheits-Scanning** | Den OWASP-Top-10-Sicherheits-Agenten ein- oder ausschalten |
+| **Barrierefreiheits-Scanning** | Den WCAG-2.1-AA-Barrierefreiheits-Agenten ein- oder ausschalten |
+| **Repository-Code scannen (Semgrep)** | Den Semgrep-Static-Analyzer über Ihr verbundenes Repository ausführen, um echte Sicherheitsbefunde auf Code-Ebene zu erhalten. Läuft nur, wenn ein Repository verbunden ist |
+| **Git-Verlauf nach Geheimnissen scannen (gitleaks)** | Den gesamten Commit-Verlauf Ihres Repositorys nach Anmeldeinformationen durchsuchen, die committet und später entfernt wurden. Aufwändiger (vollständiger Klon) und optional. Läuft nur, wenn ein Repository verbunden ist |
+| **Durchsetzungsmodus** | **Warnen (nicht blockierend)** zeigt Befunde an, ohne die Arbeit zu stoppen (Voreinstellung). **Block** blockiert bei jedem Scan automatisch jedes Work Item, mit dem ein Befund verknüpft ist |
+| **Auto-Scan am Reifegrad-Gate** | Ein Feature automatisch scannen, wenn es eine gewählte Phase erreicht |
+| **Reifegrad-Gate** | Die Entwurfsphase (z. B. **Veröffentlicht**), die einen Auto-Scan auslöst |
+
+<Callout type="info">
+**Zwei Durchsetzungsmodi.** Im Modus **Warnen** (Voreinstellung) sind Befunde rein beratend — ein Scan blockiert nichts. Im Modus **Block** blockiert jeder Scan automatisch **jedes Work Item, mit dem ein Befund verknüpft ist**, und nutzt den Befund als Grund — das Work Item erhält einen **Blockiert**-Chip (in seiner Versionshistorie festgehalten) und bleibt blockiert, bis Sie es manuell entfernen. Ein erneuter Scan überschreibt einen von Ihnen bearbeiteten Grund nicht, und der Wechsel zurück zu **Warnen** stoppt neue Auto-Blockierungen (bestehende bleiben). Sie können jedes Work Item in beiden Modi auch manuell blockieren.
+</Callout>
+
+### Auto-Scan, wenn ein Feature reift
+
+Mit aktiviertem **Auto-Scan am Reifegrad-Gate** führt Fabric einen gezielten Scan eines Features in dem Moment aus, in dem es die von Ihnen gewählte **Reifegrad-Gate**-Phase erreicht. Das ist praktisch, um Probleme bei der Fertigstellung von Features zu erkennen, ohne dass jemand daran denken muss, eine Schaltfläche zu drücken. Der Scan läuft einmal pro Übergang in das Gate und erzeugt keine doppelten Scans.
+
+## Benutzerdefinierte Regeln
+
+Über die OWASP Top 10 und WCAG 2.1 AA hinaus können Sie **projektspezifische Regeln** hinzufügen, die die Agenten zusätzlich zu den Standardsätzen durchsetzen — etwa eine Branchen-Compliance-Anforderung oder eine interne Sicherheitsrichtlinie.
+
+<Steps>
+  <Step>
+    ### Eine Regel hinzufügen
+
+    Klicken Sie unter **Konfiguration → Benutzerdefinierte Regeln** auf **Regel hinzufügen**.
+  </Step>
+
+  <Step>
+    ### Sie beschreiben
+
+    Geben Sie der Regel einen **Namen**, wählen Sie ihre **Kategorie** (Sicherheit oder Barrierefreiheit) und ihren **Schweregrad** und schreiben Sie die **Anleitung** — was der Agent kennzeichnen soll. Seien Sie konkret (z. B. „Kennzeichne jedes Feature, das beschreibt, Anmeldedaten direkt im Quellcode oder in der Client-Konfiguration zu speichern, statt in einem Secrets-Manager").
+  </Step>
+
+  <Step>
+    ### Speichern und scannen
+
+    Speichern Sie Ihre Änderungen und führen Sie einen Scan aus. Befunde aus einer benutzerdefinierten Regel sind deutlich mit einem Badge **Benutzerdefinierte Regel** gekennzeichnet und als *Custom: &lt;Ihr Regelname&gt;* zugeordnet, sodass Sie immer wissen, welche Regel sie erzeugt hat.
+  </Step>
+</Steps>
+
+## Befunde abarbeiten
+
+Jeder Befund bietet Aktionen:
+
+- **Beheben** — Sie haben ihn behandelt. Er wechselt in den Status **Behoben**.
+- **Verwerfen** — er trifft nicht zu. Er wechselt in den Status **Verworfen**.
+- **Wieder öffnen** — einen behobenen oder verworfenen Befund zurück auf **Offen** setzen.
+
+**Triage anpassen.** Klappen Sie einen Befund auf und nutzen Sie die Steuerelemente unter **Triage anpassen**, um **Schweregrad**, **Kategorie** oder **Status** zu überschreiben. Die erste KI-Einschätzung ist nur ein Ausgangspunkt — wenn etwas zu hoch bewertet oder in die falsche Kategorie eingeordnet wurde, korrigieren Sie es direkt. Jede Änderung wird sofort gespeichert und im **Verlauf** festgehalten.
+
+**Einen Befund an der Quelle prüfen.** Öffnen Sie einen Befund und folgen Sie seinem Quell-Link, um ihn selbst zu überprüfen: ein **Code**-Befund (Semgrep) öffnet die genaue **Datei und Zeile** in Ihrem Repository, ein **Git-Verlaufs**-Befund öffnet den betreffenden **Commit**, und ein Befund zu einem Feature verlinkt auf dieses **Feature** in Fabric. (Repo-Links funktionieren für GitHub und GitLab.)
+
+Nutzen Sie die Filter **Status**, **Kategorie** und **Schweregrad**, um sich zu fokussieren — zum Beispiel nur **offene** **Sicherheits**-Befunde mit Schweregrad **Hoch**.
+
+<Callout type="info">
+**Scan vs. Vollständiger Scan.** Die Schaltfläche **Scan** führt einen *inkrementellen* Scan aus — sie analysiert nur Features und Dokumente neu, die sich seit Ihrem letzten Scan geändert haben, und behält die Befunde zu allem anderen (mit Ihrer Triage). Das ist schneller und günstiger. **Vollständiger Scan** (im Dropdown) analysiert alles von Grund auf neu. So oder so zeigt die Ergebnisseite das vollständige aktuelle Bild des letzten Laufs; frühere Läufe werden im **Verlauf** mit Dauer, Kosten und Modell aufbewahrt.
+</Callout>
+
+## Das zugehörige Work Item blockieren
+
+Ein Befund bezieht sich auf ein bereits vorhandenes Feature — ein neues Ticket zu erstellen wäre also überflüssig. Stattdessen können Sie dieses Work Item **blockieren**, bis das Problem behoben ist.
+
+<Steps>
+  <Step>
+    ### Den Befund öffnen und auf „F‑XXX blockieren" klicken
+
+    Wenn sich ein Befund auf ein vorhandenes Feature bezieht, zeigt er eine Schaltfläche **F‑XXX blockieren**. Mit einem Klick markieren Sie dieses Work Item als blockiert — der Befund wird zum Blockierungsgrund.
+  </Step>
+
+  <Step>
+    ### Es erscheint am Work Item
+
+    Das Feature trägt nun einen **Blockiert**-Chip — auf der Roadmap, dem Board und am Work Item selbst — mit dem Grund beim Überfahren mit der Maus. Der Befund zeigt einen Chip **Blockiert → F‑XXX**, der direkt dorthin verlinkt. Auf der Roadmap können Sie zudem nach **blockierten** Work Items filtern.
+  </Step>
+
+  <Step>
+    ### Auch manuell blockieren oder freigeben
+
+    An jedem Work Item können Sie direkt **Blockieren** oder **Freigeben** (mit optionalem Grund). Jede Blockierung und Freigabe wird in der **Versionshistorie** des Work Items festgehalten.
+  </Step>
+</Steps>
+
+## Befunde zu Tickets gruppieren
+
+Blockieren ist der richtige Schritt, wenn sich ein Befund auf ein bereits vorhandenes Feature bezieht. Manche Befunde sind jedoch **übergreifend** — Dutzende von Secrets, die über Ihren Git-Verlauf verstreut sind, oder eine Klasse von Barrierefreiheitsproblemen, die die gesamte Oberfläche betrifft — und verdienen eigene nachverfolgte Arbeit statt einer Blockierung an einem unbeteiligten Feature. **Zu Tickets gruppieren** wandelt sie für Sie in Backlog-Tickets um.
+
+Klicken Sie in der Kopfzeile der **Ergebnisse** auf **Zu Tickets gruppieren**. Fabric liest jeden offenen Befund aus Ihrem letzten Scan, gruppiert sie nach **Thema** (die Kategorie des Befunds und die Regel, die ihn erzeugt hat) und entwirft **ein Backlog-Ticket pro Thema** — so werden aus 119 „Secret im Git-Verlauf"-Treffern ein einziges, umsetzbares Ticket statt 119 loser Befunde.
+
+<Callout type="info">
+**Zuerst aktivieren.** Die Gruppierung ist standardmäßig deaktiviert. Aktivieren Sie **Fabric-Agent-Ticketerstellung** unter **Konfiguration** — bis dahin bleibt die Schaltfläche deaktiviert und erklärt per Hinweis, warum. So erstellt der Agent keine Backlog-Einträge, bevor Sie es wünschen.
+</Callout>
+
+Jedes Ticket ist ein normales Work Item, das über denselben Ablauf wie jedes andere erstellt wird — es erscheint also auf Ihrer Roadmap und synchronisiert sich wie alles andere mit Ihrem Projektmanagement-Tool. Es enthält:
+
+- Einen **Titel** und eine **Zusammenfassung**, die das Thema beschreiben.
+- Eine **Schweregrad-Aufschlüsselung** und eine **Priorität**, die sich am schwersten Befund des Themas orientiert (ein einziger kritischer Befund macht es zu einem P0-Ticket).
+- Die **vollständige Liste** der Befunde des Themas samt ihrer Fundorte.
+- **Behebungs**-Hinweise, die über die Gruppe hinweg zusammengefasst sind, sowie die **Quelle** (welcher Scanner sie gefunden hat).
+- Bei Barrierefreiheits-Themen ein **`needs-rule-review`**-Tag — eine Erinnerung, die Regelauslegung der KI zu prüfen, bevor Sie handeln.
+
+<Callout type="info">
+**Erneutes Ausführen erzeugt nie Duplikate.** Gruppieren Sie so oft Sie möchten. Ein Thema, das bereits ein Ticket hat, wird **übersprungen** — oder, falls seither neue Befunde dafür aufgetaucht sind, fügt der Agent einen **Kommentar** hinzu, der nur diese neuen auflistet. Das ursprüngliche Ticket wird nie bearbeitet und kein zweites für dasselbe Thema angelegt.
+</Callout>
+
+Wenn der Lauf abgeschlossen ist, listet ein **Ergebnis**-Dialog jedes Thema und dessen Ausgang auf — **Erstellt**, **Aktualisiert**, **Übersprungen** oder **Fehlgeschlagen** — jeweils mit direktem Link zum Ticket. Kann ein Thema nicht verarbeitet werden, wird es als **Fehlgeschlagen** mit Begründung angezeigt statt verworfen, und Sie können es einfach erneut ausführen.
+
+## Verlauf
+
+Oben auf der Seite gibt es zwei Verlaufsansichten. **Verlauf** zeichnet jeden **Scan** auf (wer ihn wann ausgeführt hat, das Ergebnis, welche **Scanner** liefen sowie **Dauer, Kosten und Modell**) sowie Konfigurationsänderungen. **Befund-Updates** zeichnet die Aktivität pro Befund auf — jede **Statusänderung** (behoben / verworfen / wieder geöffnet) und jede **Triage-Anpassung** (geänderter Schweregrad oder Kategorie). Beide zeigen die neuesten Einträge mit einer Schaltfläche **Mehr anzeigen**, und zusammen sind sie der Prüfpfad für Ihre Sicherheits- und Barrierefreiheitsarbeit. (Das Blockieren eines Work Items wird in dessen eigener Versionshistorie festgehalten.)
+
+## Tipps
+
+- **Schreiben Sie ausführliche Akzeptanzkriterien.** Die Agenten argumentieren auf Basis dessen, was Sie beschreiben — explizite Sicherheits- und Barrierefreiheitsanforderungen führen zu präziseren Befunden.
+- **Scannen Sie nach dem Generieren von Dokumenten.** Dokumente enthalten mehr Details als Feature-Stubs, sodass ein Scan nach der Dokumentgenerierung tendenziell mehr zutage fördert.
+- **Beginnen Sie im Modus Warnen.** Halten Sie Befunde beratend, während Ihr Team die Gewohnheit entwickelt, sie zu prüfen.

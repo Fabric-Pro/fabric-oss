@@ -1,0 +1,179 @@
+---
+title: Project Management Sync
+description: Connect a project to Azure DevOps, GitLab, Jira, or Fizzy and push/pull your backlog as features and work items.
+---
+
+Connect a Fabric project to your project-management (PM) tool and keep the backlog in sync both ways. **Push** features from Fabric to create and update work items, **pull** existing tickets in as features, and let Fabric reconcile conflicts, duplicates, and remote edits as they happen.
+
+In Fabric, a backlog item is a **Feature** (shown with an `F-XXX` identifier). When you sync, each Feature maps to a work item in your PM tool — an Azure DevOps work item, a GitLab issue, a Jira issue, or a Fizzy card.
+
+<Callout type="info">
+**This is different from runtime actions.** Connecting a tool under **Settings → Integrations** lets agents *call* it on demand in chat ("create a Jira issue"). PM sync is a separate, **project-level** link that keeps your whole backlog aligned with the tool over time — with push/pull, auto-sync, and conflict handling. The two share the same connection but serve different jobs.
+</Callout>
+
+## Before you start
+
+PM sync builds on a connected integration. Connect the provider first under **Settings → Integrations** (see [Connect Your First Integration](/docs/tutorials/setup-integrations)), then link it to a project.
+
+| PM tool | Connect first as | Notes |
+|---------|------------------|-------|
+| **Azure DevOps** | MCP server | Pick a team/board, area path, work-item type |
+| **Jira** | Atlassian (Rovo) MCP | One OAuth covers Jira + Confluence; multi-site picker |
+| **Fizzy** | MCP server | Select a board |
+| **GitLab** | OAuth integration | Uses GitLab's official MCP where available, REST API otherwise — works on the Free tier |
+
+<Callout type="info">
+**GitHub is a repository tool, not a PM tool.** Use it to connect code repositories — it does not appear in the project management picker.
+</Callout>
+
+## Connect a PM tool to your project
+
+<Steps>
+  <Step>
+    ### Open project management settings
+
+    In your project, go to **Settings → Project Management**, then find the **Project Management Integration** card.
+  </Step>
+
+  <Step>
+    ### Pick a tool
+
+    Open the **Project Management Tool** dropdown and choose your provider. Only tools you've connected under **Settings → Integrations** appear here (GitLab also appears when connected via OAuth). If a tool is missing, use the **Configure now** link to set it up first.
+  </Step>
+
+  <Step>
+    ### Select a board or project
+
+    Use **Select Board/Project** to choose the destination container — the Azure DevOps project, GitLab project, Jira project, or Fizzy board that features will sync to.
+
+    Some tools ask for more detail:
+    - **Azure DevOps** — choose the **team/board**, and optionally set the **Area Path**, **Work Item Type** (e.g. *User Story* on Agile, *Product Backlog Item* on Scrum), and **Iteration Path**.
+    - **GitLab** — map GitLab **labels to statuses** so pulled issues land in the right column.
+  </Step>
+
+  <Step>
+    ### Test the connection
+
+    Click **Test Sync** to create a throwaway work item in the tool and confirm Fabric has the right access. On success you get a link to view the test item.
+  </Step>
+
+  <Step>
+    ### Save
+
+    Click **Save Settings**. The project is now linked — features can be pushed and tickets pulled.
+  </Step>
+</Steps>
+
+## Push: send features to your PM tool
+
+Pushing creates a work item the first time and **overwrites** it on every push after that.
+
+**One feature at a time.** Each feature card carries a **PM sync chip** showing its status. Open it and choose:
+
+- **Start syncing** — for an unlinked feature; creates the work item in your tool.
+- **Push to** your tool — for a linked feature; overwrites the linked card with the editor's current content (you'll get a confirmation first, since this can't be undone).
+
+**Several at once.** Select features in the roadmap or kanban, then use **Sync selected features** to push them in one action.
+
+### Auto-sync
+
+Turn on auto-sync to push a feature automatically every time it's saved. The PM sync chip reflects the current state:
+
+| Chip | Meaning |
+|------|---------|
+| **Synced** | Auto-sync is on and the feature is linked and up to date |
+| **Not synced** | Auto-sync is on, but there's no work item yet — it pushes on the next save |
+| **Paused** | Auto-sync is off; changes won't push until you resume |
+| **PM sync failed** | The last sync failed — open the chip to review the error and retry |
+| **Conflict** | Both Fabric and the tool changed this item — resolve it before syncing |
+| **PM tool not set** | No PM tool is configured for this project |
+
+A link to open the work item, plus its reference (e.g. `#1234`), appears on synced features so you can jump to the card.
+
+## Pull: import your backlog
+
+Pulling brings existing tickets from your PM tool into Fabric as features.
+
+<Steps>
+  <Step>
+    ### Open the pull dialog
+
+    From the roadmap, choose **Pull from** your tool.
+  </Step>
+
+  <Step>
+    ### Find tickets
+
+    Search by title, or filter by ID (e.g. `1,5,10-15`). The dialog shows how many tickets are **on board**, how many are **already imported**, and how many are **ready to import**.
+  </Step>
+
+  <Step>
+    ### Select and pull
+
+    Tick the tickets you want. The action button reflects your selection — **Pull N tickets** for new items, **Update N tickets** when re-importing already-synced ones.
+  </Step>
+</Steps>
+
+<Callout type="warning">
+Re-pulling a ticket you've already imported **overwrites** the Fabric feature with the tool's current version. The dialog warns you when your selection includes already-imported tickets; turn on **Include already-imported tickets** only when you intend to overwrite.
+</Callout>
+
+## Resolve conflicts, duplicates & drift
+
+When both sides change, or a ticket changes remotely, Fabric surfaces it for review rather than guessing.
+
+### Review Center
+
+The roadmap toolbar shows a **Review Center** inbox with a count of items needing attention. It groups issues into three tabs:
+
+- **Conflicts** — both Fabric and the tool changed the same item
+- **Failures** — a push or pull errored
+- **Pull Drift** — the tool's copy changed since the last sync (content edits, or the ticket was closed, reopened, or deleted upstream)
+
+### Conflicts
+
+When both sides diverge, Fabric opens a side-by-side comparison of the **Fabric** and **PM tool** versions with the differences highlighted. Choose how to resolve:
+
+- **Use Fabric** — push Fabric's version, overwriting the tool's change.
+- **Use PM** — take the tool's version into Fabric.
+- **AI merge** — Fabric drafts a combined title and description from both sides. Review and edit the result, then **Accept merge** (or **Regenerate**).
+
+### Duplicates
+
+Fabric flags features that look like duplicates and shows a similarity/confidence score. Review the pair side by side, optionally generate an **AI merge** of the two, then keep one as the survivor — **Keep F-XXX as survivor** or **Keep F-XXX with AI merge**. If the items are linked to different PM tickets, Fabric asks which link the survivor should keep. Choose **Not a duplicate** to dismiss the pair.
+
+### Drift
+
+For remote changes (Pull Drift), open **Resolve** to reconcile content the same way as a conflict, or accept the upstream state change inline — for example **Hide** a feature whose ticket reached a terminal status, **Unhide** one that was reopened, or **Unlink** one whose ticket was deleted upstream.
+
+## Sync history
+
+Every push and pull is recorded. On the **Roadmap**, open the history window from the toolbar and switch to the **Sync History** tab for a read-only log you can filter by **date**, **direction** (push/pull), **status** (success / failure / conflict), and **item type**. Failed and conflicted rows show the underlying reason, and synced rows link out to the work item.
+
+Keeping it beside the roadmap's change history lets you line a sync event up against the ticket change that triggered it. Anyone who can read the project can open either tab. **Project Management** settings also carries a **View sync log** shortcut straight to that tab.
+
+## Supported tools & caveats
+
+| Tool | Hierarchy | Notes |
+|------|-----------|-------|
+| **Azure DevOps** | Epics → Features → Stories/Bugs | Work-item type must match the project's process (Agile/Scrum/CMMI — *not* Basic). A Bug's body syncs to **Repro Steps**, not Description. |
+| **Jira** | Epics → Stories/Issues | Shared Atlassian (Rovo) connection with Confluence; descriptions use Atlassian Document Format. |
+| **GitLab** | Flat issues only | No epic/feature/story hierarchy — nested items flatten to issues. Needs a label→status map for pull. Works on Free (REST) and Premium/Ultimate (MCP). |
+| **Fizzy** | Cards on boards | Standard board/card sync. |
+
+## Next Steps
+
+<Cards>
+  <Card title="Azure DevOps" href="/docs/integrations/azure-devops">
+    Connect Azure DevOps and use it as a PM tool
+  </Card>
+  <Card title="GitLab" href="/docs/integrations/gitlab">
+    Connect GitLab and use it as a PM tool
+  </Card>
+  <Card title="Jira" href="/docs/integrations/jira">
+    Connect Jira and use it as a PM tool
+  </Card>
+  <Card title="Fizzy" href="/docs/integrations/fizzy">
+    Connect Fizzy and use it as a PM tool
+  </Card>
+</Cards>

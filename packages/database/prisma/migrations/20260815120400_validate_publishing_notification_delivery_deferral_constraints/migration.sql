@@ -1,0 +1,111 @@
+-- Publishing Suite 1C-2d-2a discharges the obligation 1C-2d-1a recorded.
+--
+-- 20260815120100 added both CHECKs NOT VALID because publishing_notification_delivery is live and
+-- the scan over existing rows is work worth paying for in a release of its own. Both entries are
+-- deleted from pending-constraint-validations.json in this same change; scripts/lint-migrations.ts
+-- fails on a stale entry whose VALIDATE has already landed, so leaving one behind is a red CI check
+-- rather than a quiet inconsistency.
+--
+-- CORRECTING THE RECORD, because the deleted entries carried a false reason. They justified the
+-- deferral with "an ALTER TABLE that validates takes ACCESS EXCLUSIVE on a table the notification
+-- path claims rows in". That is wrong, and it was measured on postgres:16 (the CI major version)
+-- against this table's real shape with 10,300 rows: VALIDATE CONSTRAINT held
+-- ShareUpdateExclusiveLock and nothing stronger, and with both validations open in an uncommitted
+-- transaction the notification path's own write shape -- UPDATE ... SET status='SENDING',
+-- "claimedAt"=now() -- committed without ever waiting on it.
+--
+-- READ THE SHAPE, NOT THE DIGITS, which is the same warning 20260815120380 gives about its own
+-- figures and is earned here too. That write was timed on two separate runs of the SAME fixture on
+-- the SAME host and came back 4.423 ms and 2.526 ms -- one conclusion, a factor of 1.8 between the
+-- numbers, and both are recorded here rather than one of them chosen. What is load-bearing is the
+-- lock level and the absence of a wait; a particular millisecond is one machine and one warm cache.
+-- The row count is not of that kind and is exact: the fixture is 2800 DEFERRED + 2500 SENDING +
+-- 5000 SENT (the plan's Appendix A).
+--
+-- The deferral was still the right call, for a different reason: the validating scan reads every
+-- page of the relation and blocks VACUUM, ANALYZE and other DDL for its duration. That is a real
+-- cost, and it is the one worth paying in a release of its own.
+--
+-- SET LOCAL is the FIRST statement, before either ALTER TABLE. Placing it after one guards nothing:
+-- that statement has already taken its lock. This was a real defect on an earlier slice. SET LOCAL
+-- requires a transaction, which is what Prisma gives a MULTI-statement migration file -- measured,
+-- not assumed: a two-statement file whose second statement fails leaves nothing behind from the
+-- first (Task 2 Step 0, and docs/database-promotion.md:218-232). That is also why both VALIDATEs
+-- live in one file rather than two: they take the same lock on the same table, so splitting them
+-- would buy nothing, while ADD COLUMN takes a STRONGER lock on a DIFFERENT table and therefore has
+-- its own file, and the backfill has another.
+--
+-- ============================================================================================
+-- THE ONE WAY THIS FILE CAN FAIL, and the one PostgreSQL gives an operator the least help with.
+--
+-- A VALIDATE CONSTRAINT that meets a row its predicate rejects aborts the whole deploy pass with
+--
+--     Error: P3018 ... Database error code: 23514
+--     ERROR: check constraint "publishing_notification_delivery_deferred_shape" of relation
+--     "publishing_notification_delivery" is violated by some row
+--
+-- naming the CONSTRAINT and never the ROW. Reproduced on postgres:16 (16.14) against this branch's
+-- own migrations directory with a single DEFERRED row carrying no expiry.
+--
+-- IT SHOULD BE UNREACHABLE, and the argument is short enough to check rather than trust. DEFERRED
+-- first became a writable status in 20260815120100. The predicate before it admitted
+-- ('SENT','FAILED','SKIPPED','SENDING') and the one before that ('SENT','FAILED','SKIPPED'), added
+-- VALIDATING in the same file that created the table. NOT VALID skips the scan of EXISTING rows and
+-- nothing else, so each predicate was enforced on every insert and update from the instant it
+-- existed, and each successor admits a strict SUPERSET of its predecessor -- so every row satisfies
+-- the widest one, by induction over the three. The deferred_shape CHECK arrived in that same
+-- 20260815120100, and the window inside that file where DEFERRED is writable and the shape CHECK
+-- does not yet exist is not observable from another session: the DROP CONSTRAINT on its first
+-- statement takes AccessExclusiveLock and a lock taken inside a transaction is held until COMMIT,
+-- so nothing else can write the table until both predicates become visible together (measured on
+-- postgres:16 -- AccessExclusiveLock granted after the DROP, and still the only lock held after the
+-- ADD CONSTRAINT ... NOT VALID).
+--
+-- SO IF IT HAPPENS ANYWAY, something put the row there out of band: the constraint dropped and
+-- re-added by hand, or rows loaded while it was gone. That is exactly how the reproduction above
+-- had to be built, and it is the first place to look.
+--
+-- FIND THE ROW, which is the part the error will not do for you. In psql, substituting whichever
+-- constraint the error named:
+--
+--     \set conname 'publishing_notification_delivery_deferred_shape'
+--     SELECT format(
+--              'SELECT id, status, "expiresAt", "createdAt" FROM %s WHERE NOT %s ORDER BY "createdAt";',
+--              conrelid::regclass,
+--              regexp_replace(regexp_replace(pg_get_constraintdef(oid), '^CHECK\s+', ''), '\s+NOT VALID$', ''))
+--       FROM pg_constraint WHERE conname = :'conname';
+--     \gexec
+--
+-- It reads the predicate out of the catalog instead of restating it here, so it cannot go stale the
+-- next time the status list widens, and it returns the rows the constraint REJECTS and no others --
+-- a CHECK passes on TRUE *or* NULL, and `WHERE NOT (pred)` drops the NULL rows along with the
+-- passing ones. Verified against the reproduction: one row for deferred_shape, zero for
+-- status_check, and the non-DEFERRED control row not returned. For the shape CHECK it reduces to
+-- `WHERE status = 'DEFERRED' AND "expiresAt" IS NULL`.
+--
+-- THEN FIX THE DATA. THE FIX IS NOT IN THIS FILE. Stamp the row with an expiry so it re-enters the
+-- deferral lifecycle, or terminalize it to EXPIRED; only then run
+-- `prisma migrate resolve --rolled-back "20260815120400_validate_publishing_notification_delivery_deferral_constraints"`
+-- and re-run migrate deploy. The generic recovery at docs/database-promotion.md:196-213 says to fix
+-- the FILE before resolving the ledger, and following it here loops forever, because the file is
+-- correct. Measured, not predicted: resolve --rolled-back plus a re-run against the unfixed row
+-- returned the identical 23514; the same two commands after terminalizing that one row applied
+-- cleanly and both constraints then reported convalidated = true.
+--
+-- AND DO NOT REACH FOR `--applied`, which is what the neighbouring files in this slice tell you to
+-- do -- 20260815120350 twice and 20260815120380 once, counted rather than assumed; 20260815120300
+-- says nothing of the kind because it has no way to refuse. Those two refuse BEFORE doing anything,
+-- so resolving them applied costs only the thing they would have built. `--applied` on THIS file
+-- records a validation that did not happen: both
+-- constraints stay NOT VALID with nothing left to say so. The ledger is already empty, the linter
+-- reads the repository rather than the database, and the convalidated assertions in
+-- publishing-notifications.test.ts run against a freshly migrated CI database -- never against the
+-- one that was resolved.
+-- ============================================================================================
+SET LOCAL lock_timeout = '5s';
+
+ALTER TABLE "publishing_notification_delivery"
+  VALIDATE CONSTRAINT "publishing_notification_delivery_status_check";
+
+ALTER TABLE "publishing_notification_delivery"
+  VALIDATE CONSTRAINT "publishing_notification_delivery_deferred_shape";

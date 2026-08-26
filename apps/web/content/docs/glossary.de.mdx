@@ -1,0 +1,84 @@
+---
+title: Glossar
+description: Definitionen von Schlüsselbegriffen und -konzepten, die in der Fabric AI-Dokumentation verwendet werden.
+---
+
+Eine Referenz der in der Fabric AI-Dokumentation und auf der Plattform verwendeten Terminologie.
+
+## A
+
+### A2A-Protokoll
+Agent-to-Agent-Protokoll. Ein offener Standard für die Kommunikation zwischen Agenten, der es dem Orchestrator ermöglicht, Fähigkeiten zu entdecken und Aufgaben an spezialisierte Agenten zu delegieren.
+
+### AG-UI-Protokoll
+Agent-to-UI-Protokoll. Verwaltet die Echtzeit-Kommunikation zwischen Agenten und dem Frontend, einschließlich Zustandsänderungen, Tool-Aufruf-Sichtbarkeit, Streaming und Genehmigungsanfragen.
+
+### Agenten-Vorlage
+Eine wiederverwendbare Konfiguration zum Erstellen von Agenten-Instanzen. Vorlagen definieren den System-Prompt, verfügbare Tools, Fähigkeiten und das Verhalten. Beschränkt als System (für alle verfügbar), Organisation oder Benutzer.
+
+### Automatisierungsvorlage
+Ein gespeichertes Workflow-Muster, das wiederverwendet und automatisch ausgelöst werden kann. Inspiriert von wiederholbaren Aufgabenmustern.
+
+## B
+
+### BYOK (Bring Your Own Key)
+Fabric's Modell, bei dem Benutzer ihre eigenen API-Schlüssel für KI-Anbieter bereitstellen. Dies gibt volle Kontrolle über Kosten und Modellauswahl.
+
+## D
+
+### Datenverbindung
+Ein veralteter Begriff für einen externen Dienst, der über OAuth oder API-Schlüssel mit Fabric verbunden ist (z. B. Google Drive, Notion, GitHub). Diese werden jetzt unter **Einstellungen → Integrationen** als Anbieter mit Laufzeit-**Aktionen** verwaltet. Siehe [Integrationen](/docs/tutorials/setup-integrations).
+
+### Direkter Anbieter
+Ein KI-Anbieter, der direkt über seine native API verbunden ist (z. B. OpenAI, Anthropic, Groq). Im Gegensatz zu Gateway-Anbietern.
+
+## E
+
+### Einbettung (Embedding)
+Eine Vektordarstellung von Text, die für semantische Suche verwendet wird. Fabric verwendet Einbettungsmodelle, um Dokumentabschnitte in Vektoren für schnellen, präzisen Abruf umzuwandeln.
+
+## G
+
+### Gateway-Anbieter
+Ein KI-Anbieter, der Anfragen über einen einzigen API-Schlüssel an mehrere zugrunde liegende Modelle weiterleitet (z. B. Vercel Gateway, OpenRouter, Cloudflare AI).
+
+## M
+
+### MCP (Model Context Protocol)
+Ein offener Standard, der es KI-Agenten ermöglicht, mit externen Tools und Diensten zu interagieren. MCP-Server stellen Tools bereit (z. B. ein Jira-Ticket erstellen, an Slack posten), die Agenten entdecken und ausführen können.
+
+### Modellauflösung
+Der Prozess, durch den Fabric ein KI-Modell für eine bestimmte Aufgabe auswählt. Priorität: Benutzer-Override > Organisations-Override > System-Standard. Keine fest codierten Fallbacks.
+
+## O
+
+### Orchestrator
+Der zentrale KI-Koordinator, der Benutzeranfragen an den entsprechenden Agenten, das Tool oder den Workflow weiterleitet. Verwendet semantisches Routing, Aufgabenzerlegung und prioritätsbasierte Executor-Zuweisung.
+
+## R
+
+### RAG (Retrieval-Augmented Generation)
+Eine Technik, bei der KI-Antworten durch Abruf relevanten Kontexts aus Ihren Dokumenten verbessert werden. Dokumente werden in Abschnitte aufgeteilt, als Vektoren eingebettet und für semantische Suche gespeichert.
+
+## F
+
+### Fähigkeit (Skill)
+Eine wiederverwendbare Fähigkeit, die an Agenten-Vorlagen angehängt werden kann. Fähigkeiten definieren spezifische Tools oder Verhaltensweisen (z. B. „Code-Review", „Datenanalyse") mit Versionierungsunterstützung.
+
+## A
+
+### Aufgabentyp (Task Type)
+Eine Klassifizierung für KI-Arbeit, die bestimmt, welches Modell verwendet wird. Typen: Einfach, Komplex, Chat, Tool-Aufruf, Reasoning, Einbettung. Jeder kann ein anderes Modell konfiguriert haben.
+
+### Tenant-Isolierung
+Das Architekturmuster, das sicherstellt, dass Daten strikt zwischen persönlichen und Organisationskontexten getrennt sind. Ihre persönlichen Daten sind in einer Organisation nie sichtbar, und die Daten einer Organisation sind für eine andere nie sichtbar.
+
+## W
+
+### Workspace
+Ein Kollaborationsraum für Teams zum Teilen von Dokumenten, Agenten und Gesprächen. Unterstützt rollenbasierter Zugriff mit Administrator-, Mitwirkender- und Stakeholder-Rollen.
+
+## X
+
+### XOR-Muster
+Das exklusive Filtermuster für Multi-Tenant-Datenzugriff. Im Organisationskontext sind nur Organisationsdaten sichtbar. Im persönlichen Kontext sind nur Ihre persönlichen Daten sichtbar. Daten lecken nie über Kontexte hinaus.

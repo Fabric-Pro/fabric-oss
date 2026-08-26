@@ -1,0 +1,358 @@
+---
+title: "Building a Dynamic Agent Loop with Temporal: Durable Orchestration for Tools, Workflows, and Workspaces"
+date: "2026-03-01"
+authorName: "Preetham Reddy"
+authorLink: "https://www.linkedin.com/in/preethamreddy/"
+excerpt: "How Fabric's orchestrator evolved into a dynamic Temporal-powered agent loop with on-demand tool discovery, MCP connectivity, workspace RAG, workflow integrations, and human-in-the-loop controls."
+tags: ["AI", "Temporal", "Orchestrator", "Agent Loop", "MCP", "Workflows", "RAG", "Multi-Tenant"]
+published: true
+---
+
+# Building a Dynamic Agent Loop with Temporal: Durable Orchestration for Tools, Workflows, and Workspaces
+
+The breaking point was not a model hallucination.
+
+It was a perfectly reasonable workflow:
+
+- read project context from a workspace
+- draft a rollout plan
+- create tickets in the PM tool
+- post a summary to Slack
+
+The agent did the first two steps well. Then the PM tool call failed on auth refresh. The user sent a follow-up while it was retrying. By the time we recovered, the original plan was stale, the user intent had changed, and the system had no clean way to adapt.
+
+Nothing was "wrong" with the LLM.
+Our orchestration model was wrong.
+
+That was the shift: stop treating execution like a static script, and treat it like a **durable control loop**.
+
+---
+
+## The Reality of Production Agent Work
+
+Single-agent demos look linear.
+Production systems are not.
+
+In practice, every run has moving parts:
+
+- tool availability changes mid-run
+- OAuth states change mid-run
+- user intent changes mid-run
+- the best next action is often unknown until you inspect previous results
+
+So "plan once, execute once" becomes brittle fast.
+
+The design we moved to is simple conceptually:
+
+1. Observe state.
+2. Decide next action.
+3. Execute safely.
+4. Incorporate result.
+5. Repeat until done.
+
+```mermaid
+flowchart LR
+    n1["User Request"] --> n2["Initialize Context"]
+    n2 --> n3["Loop Iteration"]
+    n3 --> n4["Decide Next Action"]
+    n4 --> n5["Execute Tool or Delegate"]
+    n5 --> n6["Observe Result"]
+    n6 --> n7{"Done"}
+    n7 -->|No| n3
+    n7 -->|Yes| n8["Return Final Response"]
+```
+
+That loop is where Temporal changed everything for us.
+
+---
+
+## Why Temporal Changed the Architecture
+
+We run the orchestrator as `orchestratorExecutionWorkflow` on `fabric-orchestrator`.
+
+Temporal gives us the properties this loop needs:
+
+- **durability**: workflow state survives restarts and deploys
+- **control**: live signals for `approval`, `followUp`, `cancel`
+- **observability**: queryable workflow state (`progress`, `status`, `plan`, `pendingApproval`)
+- **determinism**: predictable behavior under retries and replay
+
+```mermaid
+sequenceDiagram
+    participant UI as Fabric UI
+    participant API as Orchestrator API
+    participant TW as Temporal Workflow
+    participant ACT as Activities
+
+    UI->>API: start stream request
+    API->>TW: start workflow with execution id
+    TW->>ACT: Initialize and run loop
+    UI->>API: send approval request
+    API->>TW: Signal approval
+    UI->>API: send follow up request
+    API->>TW: Signal followUp message
+    UI->>API: request status and progress
+    API->>TW: Query workflow state
+    TW-->>API: Current phase and step data
+    API-->>UI: Live execution updates
+```
+
+That control model sounds subtle, but it changes behavior radically: the workflow is no longer a black box behind an API poller. It is a live, addressable process.
+
+---
+
+## The Workflow We Actually Run
+
+For current Fabric orchestrator runs, iterative execution is the default for all modes except `save_reuse` (which keeps upfront planning for trajectory replay).
+
+High-level shape:
+
+1. Initialization
+2. Iterative execution loop
+3. Completion child workflow (fire-and-forget)
+
+```mermaid
+flowchart TB
+    a1["Start Orchestrator Workflow"] --> a2["Initialization Phase"]
+    a2 --> a3["Preload resource metadata"]
+    a3 --> a4["Load orchestrator memory"]
+    a4 --> a5["Policy and prompt enrichment"]
+    a5 --> a6["Iterative Execution Phase"]
+
+    a6 --> a7["Run agent iteration"]
+    a7 --> a8{"Response or Tool Calls"}
+    a8 -->|Response| a9["Final response"]
+    a8 -->|Tools| a10["Execute tool calls with safety gates"]
+    a10 --> a6
+
+    a9 --> a11["Completion child workflow"]
+    a11 --> a12["Return output to user"]
+```
+
+The important detail is not the boxes. It is that every loop turn carries updated context, updated risk state, and updated user intent.
+
+---
+
+## A Concrete Loop Walkthrough
+
+Take this request:
+
+> "Create a launch checklist from workspace docs, open tasks in our PM system, then post update in Slack."
+
+What happens in a real run:
+
+1. **Init** loads orchestrator memory and preloads metadata for enabled MCP configs, integrations, and agents.
+2. First iteration may call `search_tools` to discover exact capabilities needed now.
+3. Loop executes workspace RAG query (`workspace_rag_query`) for grounding.
+4. Loop executes PM action tool or integration operation.
+5. If risky action is detected, workflow pauses on approval signal.
+6. User sends follow-up: "Only for P0 and P1 items." Signal updates live state.
+7. Next iteration adapts immediately and completes with updated constraints.
+
+No restart. No context loss. No side channel state machine outside Temporal.
+
+---
+
+## Dynamic Capability Discovery Instead of Tool Bloat
+
+A major issue in earlier versions was large static tool payloads in context.
+
+We now start with a minimal capability surface and expand only when needed via a meta-tool pattern (`search_tools`).
+
+Under the hood this combines:
+
+- always-available capability shortcuts
+- explicit server mention detection
+- keyword matching
+- semantic capability search
+- agent discovery for delegation
+
+```mermaid
+flowchart TD
+    b1["User need inside iteration"] --> b2["search tools meta tool"]
+    b2 --> b3["Keyword and server name matching"]
+    b2 --> b4["Vector capability search"]
+    b2 --> b5["Agent capability search"]
+    b3 --> b6["Merge ranked results"]
+    b4 --> b6
+    b5 --> b6
+    b6 --> b7["Inject discovered tools into available tools"]
+    b7 --> b8["Next iteration can call discovered tools directly"]
+```
+
+This is the core loop behavior: discover first, execute second.
+
+---
+
+## MCP Execution Path: Cached, Typed, and OAuth-Aware
+
+When the loop selects an MCP tool, execution goes through `executeMcpTool`.
+
+Key behaviors:
+
+- cached MCP client retrieval per config
+- cached tool list retrieval
+- argument deserialization and schema coercion
+- OAuth refresh support through auth provider
+- structured "auth required" output when reconnect is needed
+
+```mermaid
+sequenceDiagram
+    participant Iter as Iterative Loop
+    participant Exec as executeMcpTool
+    participant MCP as MCP Client Factory
+    participant Srv as MCP Server
+
+    Iter->>Exec: send tool call and tenant context
+    Exec->>MCP: get cached mcp client
+    MCP->>Srv: connect with http or sse
+    Exec->>Srv: Call tool
+    Srv-->>Exec: Tool result or auth error
+    Exec-->>Iter: return success output or auth required payload
+```
+
+One implementation rule matters a lot here: credentials are resolved in activities, not embedded in workflow input. That keeps secrets out of Temporal history.
+
+---
+
+## Integrations and Workspaces Are Loop-Native
+
+The dynamic loop is not MCP-only.
+
+### Workflow integrations
+
+We route directly through integration handlers for providers like Slack, GitHub, Linear, Resend, and Microsoft Graph using tenant-scoped stored credentials.
+
+```mermaid
+flowchart LR
+    c1["Step request"] --> c2["Resolve provider and operation"]
+    c2 --> c3["Fetch tenant scoped credentials"]
+    c3 --> c4["Execute integration operation"]
+    c4 --> c5["Structured step output and variables"]
+```
+
+### Workspace RAG
+
+Workspace retrieval is on-demand via `workspace_rag_query`, executed during the loop when needed.
+
+```mermaid
+sequenceDiagram
+    participant Iter as Iteration
+    participant WR as WorkspaceRagHandler
+    participant RAG as retrieveWorkspaceDocumentsActivity
+    participant VS as Vector Store
+
+    Iter->>WR: execute workspace rag query
+    WR->>RAG: send query and workspace options
+    RAG->>VS: Semantic retrieval
+    VS-->>RAG: Relevant chunks and sources
+    RAG-->>WR: Context string
+    WR-->>Iter: Tool result for next reasoning turn
+```
+
+This keeps startup lean and retrieval relevant.
+
+---
+
+## Human-in-the-Loop as a First-Class Runtime Path
+
+Risk checks happen before execution of each tool call in iterative mode.
+
+High-risk operations create approval tasks and pause workflow progress until an `approval` signal arrives.
+
+```mermaid
+flowchart TD
+    d1["Tool Call Proposed"] --> d2["Assess Risk"]
+    d2 --> d3{"Approval Required"}
+    d3 -->|No| d4["Execute Tool"]
+    d3 -->|Yes| d5["Create approval task"]
+    d5 --> d6["Workflow waits for approval signal"]
+    d6 --> d7{"Approved"}
+    d7 -->|Yes| d4
+    d7 -->|No| d8["Record rejection and continue loop"]
+```
+
+This model is why we can keep execution adaptive without giving up safety.
+
+---
+
+## Budget Guardrails for Long-Running Loops
+
+Iterative loops can drift in cost if unmanaged.
+
+We enforce:
+
+- per-mode `maxIterations`
+- per-mode `maxTotalTokens`
+- pruning of older tool results
+- large output summarization
+- synthesis response when budget limits are hit
+
+```mermaid
+flowchart LR
+    e1["Iteration N"] --> e2{"Within budget"}
+    e2 -->|Yes| e3["Execute next action"]
+    e2 -->|No| e4["Run synthesis iteration with no tools"]
+    e4 --> e5["Return bounded final response"]
+```
+
+This keeps the loop bounded while still producing useful completion output.
+
+---
+
+## Completion Is Decoupled from User Latency
+
+After we have user-facing output, we launch a completion child workflow with `ParentClosePolicy.ABANDON`.
+
+That child handles:
+
+- reflection on final output
+- execution pattern recording
+- trajectory embedding in semantic memory
+- episodic memory creation
+- pattern extraction for future runs
+- optional trajectory save in `save_reuse` mode
+
+```mermaid
+flowchart TB
+    f1["Main workflow has final response"] --> f2["Start completion child workflow"]
+    f2 --> f3["Reflect on output"]
+    f2 --> f4["Record execution pattern"]
+    f2 --> f5["Embed trajectory in semantic memory"]
+    f2 --> f6["Create episodic memory"]
+    f2 --> f7["Extract reusable patterns"]
+    f2 --> f8["Optional trajectory save"]
+```
+
+The user gets a response quickly. The system still gets smarter afterward.
+
+---
+
+## The Multi-Tenant Constraint That Shapes Everything
+
+Fabric is multi-tenant by default, so every loop stage carries explicit tenant context:
+
+- workflow input includes `userId` and `organizationId`
+- MCP lookup and execution use tenant-scoped filters
+- integration credential resolution is tenant-scoped
+- workspace retrieval is tenant-scoped
+- memory writes are tenant-scoped
+
+In dynamic loops, missing tenant propagation is one of the easiest ways to introduce subtle data isolation bugs. We treat propagation as a hard invariant.
+
+---
+
+## The Shift in Engineering Mindset
+
+The biggest change was not "better prompts."
+
+It was this architectural shift:
+
+- from static plans to iterative control loops
+- from client-managed state to workflow-managed state
+- from tool catalogs to on-demand capability discovery
+- from binary success/failure to durable, controllable progression
+
+That is the path from an impressive agent demo to a production orchestration system.
+
+And for us, Temporal is the layer that made that path practical.

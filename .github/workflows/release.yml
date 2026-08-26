@@ -1,0 +1,404 @@
+name: Release
+
+# Canonical upstream branch is `master` (post-cutover). `main` is archived
+# read-only — see COLLABORATION.md and docs/deployment.md § Branch cutover
+# checklist.
+
+on:
+  push:
+    branches:
+      - master
+
+concurrency: ${{ github.workflow }}-${{ github.ref }}
+
+jobs:
+  release:
+    name: Release
+    if: github.repository == 'Fabric-Pro/fabric-oss'
+    runs-on: ubuntu-8core
+    permissions:
+      contents: write
+      pull-requests: write
+      id-token: write # npm provenance
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          fetch-depth: 0
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6
+
+      # No `registry-url` here ON PURPOSE: setting it makes setup-node write an
+      # `_authToken=${NODE_AUTH_TOKEN}` line into .npmrc, and a leftover
+      # empty-token auth line is known to break npm's trusted-publishing OIDC
+      # path (actions/setup-node#1551). npm and changesets both default to
+      # registry.npmjs.org, so nothing is lost by omitting it.
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+          cache: "pnpm"
+
+      # npm publishes via TRUSTED PUBLISHING (OIDC) — no npm token anywhere in
+      # this workflow. The exchange is done by the npm CLI: this job's
+      # `id-token: write` lets npm mint a workflow-identity token and swap it
+      # at registry.npmjs.org for a short-lived publish credential, valid only
+      # for packages whose npmjs.com "Trusted publisher" is configured as
+      # (GitHub Actions, this repository, workflow file `release.yml`).
+      # Consequences:
+      #   - `release.yml` can never be RENAMED without repointing the trusted
+      #     publisher config on all @fabricorg packages.
+      #   - The chain is: changesets → `pnpm publish` → which shells out to
+      #     `npm publish`. Node 22 bundles npm 10.x, but the OIDC exchange
+      #     needs npm >= 11.5.1 — hence this upgrade step.
+      - name: Upgrade npm for trusted publishing
+        run: |
+          npm install -g npm@^11
+          npm --version
+
+      # Persist Turbo's local cache (.turbo/cache) across runs (official
+      # Turborepo CI recipe). Most master pushes don't touch @fabricorg/*,
+      # so the build + type-check below become instant cache replays.
+      # .turbo is gitignored, so the restored cache can never leak into the
+      # commits/pushes changesets/action makes later in this job.
+      - name: Restore Turbo cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .turbo
+          key: ${{ runner.os }}-turbo-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-turbo-
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build publishable packages
+        run: pnpm turbo build --filter="@fabricorg/*"
+
+      - name: Type-check publishable packages
+        run: pnpm turbo type-check --filter="@fabricorg/*"
+
+      # MUST stay immediately before the changesets step — it undoes something
+      # `pnpm install` does, so any install placed between the two would put it
+      # back and the failure returns.
+      #
+      # The root `prepare` script points core.hooksPath at .githooks. Since
+      # 2026-08-19 one of those hooks — commit-msg — requires a DCO
+      # `Signed-off-by:` trailer, and the step below commits as
+      # github-actions[bot] with the fixed message `chore: release`, which has
+      # none. The hook rejects it, `git commit` exits 1, and the action fails
+      # BEFORE the version bump. That takes `Auto-tag fabric-app deploy tag`
+      # down with it, so no `v*.*.*` tag is pushed and PRODUCTION NEVER DEPLOYS
+      # — quietly, since this job is the only thing that goes red.
+      #
+      # Unsetting the hooks path is the fix, NOT giving the bot a sign-off.
+      # .github/workflows/dco.yml is the authority: it exempts this exact PR
+      # under "Trusted-automation allowlist (GitHub Apps cannot sign off)".
+      # Writing a trailer here would fabricate a certification on behalf of an
+      # identity that gate says cannot make one — and .githooks/commit-msg
+      # declines to auto-append one for humans for precisely that reason.
+      #
+      # Scoped to this job's own checkout, and the only commit it affects is
+      # the bot's, whose message is the fixed literal above — so the identifier
+      # guard in the same hook has nothing to inspect either.
+      - name: Unset local git hooks for the release bot's commit
+        run: |
+          git config --unset core.hooksPath || true
+          # Positive control: an unset that silently did nothing looks exactly
+          # like one that worked, and the symptom would only reappear on the
+          # next master push.
+          if path=$(git config --get core.hooksPath); then
+            echo "::error::core.hooksPath is still set to '$path'. The release commit will be rejected by commit-msg. Did a step between the install and here re-run the root 'prepare' script?"
+            exit 1
+          fi
+          echo "core.hooksPath is unset — the bot's 'chore: release' commit will not run commit-msg."
+
+      - name: Create release PR or publish to npm
+        id: changesets
+        uses: changesets/action@a45c4d594aa4e2c509dc14a9f2b3b67ba3780d0d # v1
+        with:
+          version: pnpm version-packages
+          publish: pnpm release
+          commit: "chore: release"
+          title: "chore: release"
+          createGithubReleases: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Auth is npm trusted publishing (OIDC) — see the npm-upgrade step
+          # above. No NODE_AUTH_TOKEN / NPM_TOKEN on purpose; do not add one
+          # back, a configured token would silently take precedence over the
+          # OIDC exchange.
+          #
+          # Provenance must stay explicitly OFF while this repo is private:
+          # under trusted publishing npm turns provenance on by default, and
+          # the registry rejects provenance from private source repos (E422
+          # "Only public source repositories are supported"). The value must
+          # be the STRING "false". Flip to "true" at the public cutover.
+          NPM_CONFIG_PROVENANCE: "false"
+
+      # A fresh repository has no v* tags yet. Tagging merely because the
+      # current version has no corresponding tag would therefore publish the
+      # seed itself on its first master push, even though no Version PR was
+      # merged. Bind release tagging to the event that actually authorizes it:
+      # packages/fabric-app/package.json changed version in this exact commit.
+      # Read from GITHUB_SHA rather than the working tree because
+      # changesets/action may have switched HEAD to its Version PR branch.
+      - name: Detect fabric-app version release
+        id: deploy-version
+        if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+        run: |
+          set -euo pipefail
+          export LC_ALL=C
+          VERSION_PATH="packages/fabric-app/package.json"
+          is_stable_semver() {
+            [[ "$1" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
+          }
+          semver_is_greater() {
+            local newer_parts older_parts i newer older
+            IFS=. read -r -a newer_parts <<< "$1"
+            IFS=. read -r -a older_parts <<< "$2"
+            for i in 0 1 2; do
+              newer="${newer_parts[$i]}"
+              older="${older_parts[$i]}"
+              if [ "$newer" = "$older" ]; then
+                continue
+              fi
+              if [ "${#newer}" -ne "${#older}" ]; then
+                [ "${#newer}" -gt "${#older}" ]
+                return
+              fi
+              [[ "$newer" > "$older" ]]
+              return
+            done
+            return 1
+          }
+
+          if ! git cat-file -e "${GITHUB_SHA}:${VERSION_PATH}" 2>/dev/null; then
+            echo "::error::${VERSION_PATH} is absent from the pushed master commit ${GITHUB_SHA}."
+            exit 1
+          fi
+
+          VERSION=$(git show "${GITHUB_SHA}:${VERSION_PATH}" | jq -er '.version | select(type == "string" and length > 0)')
+          if ! is_stable_semver "$VERSION"; then
+            echo "::error::fabric-app version is not canonical stable semver (<major>.<minor>.<patch>). Refusing to create a tag that release-bom.yml cannot admit."
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+          if ! git cat-file -e "${GITHUB_SHA}^:${VERSION_PATH}" 2>/dev/null; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "No parent version exists (initial seed or path introduction) — refusing to create a release tag."
+            exit 0
+          fi
+
+          PREVIOUS_VERSION=$(git show "${GITHUB_SHA}^:${VERSION_PATH}" | jq -er '.version | select(type == "string" and length > 0)')
+          if ! is_stable_semver "$PREVIOUS_VERSION"; then
+            echo "::error::The parent fabric-app version is not canonical stable semver. Refusing an ambiguous release transition."
+            exit 1
+          fi
+          echo "previous-version=$PREVIOUS_VERSION" >> "$GITHUB_OUTPUT"
+          if [ "$VERSION" = "$PREVIOUS_VERSION" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "fabric-app remains at $VERSION — no release tag is authorized by this master push."
+            exit 0
+          fi
+
+          if ! semver_is_greater "$VERSION" "$PREVIOUS_VERSION"; then
+            echo "::error::fabric-app version moved backward from $PREVIOUS_VERSION to $VERSION. Refusing to create a release tag."
+            exit 1
+          fi
+
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+          echo "fabric-app changed from $PREVIOUS_VERSION to $VERSION — release tagging is authorized."
+
+      # Mint the App installation token, deliberately LATE — after
+      # `pnpm install` / build / publish have already run — and scoped to THIS
+      # repo only (an unscoped installation token would carry write access to
+      # every repo the App is installed on, which this job never needs).
+      # Minting late means the write-scoped credential never coexists with
+      # dependency or build scripts, and the 1-hour App-token lifetime can't
+      # expire before the tag push on a slow run. It is applied JUST-IN-TIME
+      # to the one `git push` below as a per-invocation
+      # `-c http.<host>.extraheader` override, never written to git config.
+      # Checkout keeps its default GITHUB_TOKEN credential (which
+      # changesets/action needs to push the Version PR branch); pushing the
+      # tag as the App instead is what (a) triggers tag-driven workflows (a
+      # GITHUB_TOKEN push never does) and (b) is honoured as the
+      # `protect-v-tags` ruleset bypass actor. App needs Contents: write (and
+      # Workflows: write if a release ever needs to tag across a
+      # workflow-file change).
+      - name: Mint GitHub App installation token
+        id: release-app-token
+        if: steps.deploy-version.outputs.changed == 'true'
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+        with:
+          app-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+
+      # Auto-tag the fabric-app deploy tag (v<version>) after the Version PR
+      # is merged. The changesets action creates per-package tags like
+      # `fabric-app@0.5.2`, which do NOT match the `v*.*.*` trigger pattern
+      # on deploy-azure-container-apps.yml. This step reads the current
+      # fabric-app version and pushes `v<version>` so the prod deploy fires.
+      #
+      # `published: true` is only set when a *public* npm package is published;
+      # an app-only release (only fabric-app bumped) skips publish, so we don't
+      # gate on it — we rely on the idempotent tag-exists check below.
+      #
+      # The push below swaps in the App credential just-in-time (minted in
+      # the previous step), so the tag is authored by the App and DOES
+      # trigger tag-driven workflows — a GITHUB_TOKEN push never would.
+      - name: Auto-tag fabric-app deploy tag
+        # Canonical branch is `master` (post-cutover); see header comment on
+        # `on:` above.
+        id: auto-tag
+        if: steps.deploy-version.outputs.changed == 'true'
+        env:
+          APP_SLUG: ${{ steps.release-app-token.outputs.app-slug }}
+          RELEASE_TOKEN: ${{ steps.release-app-token.outputs.token }}
+          VERSION: ${{ steps.deploy-version.outputs.version }}
+        run: |
+          # Read the version and tag the commit from $GITHUB_SHA explicitly,
+          # NOT from the working tree or HEAD. changesets/action's version
+          # step mutates package.json in-place (bumping to the next version)
+          # and switches HEAD to the changeset-release/* branch where it
+          # committed the bump. Reading from disk would tag the wrong
+          # version; tagging HEAD would tag the wrong commit.
+          TAG="v$VERSION"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          if git rev-parse "refs/tags/$TAG" >/dev/null 2>&1; then
+            echo "Tag $TAG already exists — nothing to do."
+            echo "tagged=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ -z "$RELEASE_TOKEN" ]; then
+            echo "::error::GitHub App token was not minted — check that the RELEASE_APP_ID and RELEASE_APP_PRIVATE_KEY secrets are set and that the App is installed on this repo. See docs/deployment.md § Release Strategy."
+            exit 1
+          fi
+          if [[ ! "$APP_SLUG" =~ ^[a-z0-9-]+$ ]]; then
+            echo "::error::The token action returned an invalid App slug: '${APP_SLUG:-<empty>}'. Refusing to create a tag with ambiguous identity."
+            exit 1
+          fi
+          APP_LOGIN="${APP_SLUG}[bot]"
+          APP_USER_ID=$(GH_TOKEN="$RELEASE_TOKEN" gh api "users/$APP_LOGIN" --jq '.id')
+          if [[ ! "$APP_USER_ID" =~ ^[0-9]+$ ]]; then
+            echo "::error::Could not resolve the numeric bot user ID for $APP_LOGIN. Refusing to fall back to github-actions[bot] tag metadata."
+            exit 1
+          fi
+          git config user.name "$APP_LOGIN"
+          git config user.email "${APP_USER_ID}+${APP_LOGIN}@users.noreply.github.com"
+          git tag -a "$TAG" "$GITHUB_SHA" -m "Release $TAG (auto-tagged from fabric-app version bump)"
+          # Authenticate THIS push as the App without persisting the credential
+          # in git config (so a compromised dependency postinstall could never
+          # read it; install/build already ran above).
+          #
+          # actions/checkout@v7 persists its default GITHUB_TOKEN credential as
+          # an `http.<host>.extraheader` in an EXTERNAL file pulled in via
+          # `includeIf.gitdir`, NOT in `.git/config`. So `git config --unset-all`
+          # on the local config could not remove it (the prior bug: the
+          # GITHUB_TOKEN header survived, we added the App header on top, and the
+          # push sent two `Authorization` headers → "Duplicate header" / HTTP 400).
+          #
+          # Override per-invocation instead: `http.extraheader` is multi-valued
+          # and an EMPTY value resets the whole list — so the first `-c` clears
+          # every inherited header (including the includeIf'd GITHUB_TOKEN one)
+          # and the second sets ONLY the App header. Pushing as the App is what
+          # makes the tag trigger the prod deploy workflows. The value is masked.
+          APP_AUTH="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$RELEASE_TOKEN" | base64 -w0)"
+          echo "::add-mask::$APP_AUTH"
+          git -c http.https://github.com/.extraheader= \
+              -c http.https://github.com/.extraheader="$APP_AUTH" \
+              push origin "$TAG"
+          echo "Pushed $TAG at ${GITHUB_SHA:0:7} — deploy-azure-container-apps.yml will pick it up."
+          echo "tagged=true" >> "$GITHUB_OUTPUT"
+
+      - name: Create draft GitHub Release with CHANGELOG section
+        # Mirrors the just-pushed tag onto the GitHub Releases page so /releases
+        # surfaces a scannable, dated release log with the full changelog for
+        # the team. Only runs when the previous step actually created a new
+        # tag (not the "already exists" no-op path).
+        #
+        # `changesets/action`'s `createGithubReleases: true` is ineffective for
+        # our deploy meta-package because `fabric-app` is `"private": true` —
+        # changesets only creates GitHub Releases for packages it publishes to
+        # npm, which fabric-app isn't. So we do it here, extracting the
+        # just-published section from `packages/fabric-app/CHANGELOG.md`.
+        #
+        # CREATED AS A DRAFT — open-sourcing plan §4.1, "artifacts first,
+        # publish last". At this moment the release's bill of materials does
+        # not exist: the tag was pushed seconds ago and the four workflows it
+        # triggers have not built anything yet. `release-bom.yml` waits for
+        # them, attaches `release-manifest.json`, verifies it, and only then
+        # flips this release to published with `--latest`. So a failed or
+        # partial build leaves a DRAFT and never a published release.
+        #
+        # Two consequences, spelled out because they are the point:
+        #   - `client-delivery.yml` keys on `release: published`, so it now
+        #     fires at the BOM publish gate instead of here. Client delivery
+        #     is therefore later, and strictly downstream of a complete BOM.
+        #   - the ops reconciler selects `draft == false` releases only, so an
+        #     incomplete release is never admitted to the deploy ledger.
+        # What is NOT affected: the four `push: tags: v*.*.*` deploy workflows
+        # fire off the TAG, not the release, so a stuck draft does not block
+        # the production rollout itself.
+        #
+        # `--latest` is deliberately not passed here: GitHub ignores
+        # make_latest on a draft, and release-bom.yml applies it at publish.
+        #
+        # Uses the App token so `gh release create` can write Releases (the
+        # App needs `contents: write` and `actions: write` on this repo).
+        # release-bom.yml publishes with an App token too, for the same reason
+        # that matters here: an action taken with GITHUB_TOKEN triggers no
+        # further workflow runs, so a GITHUB_TOKEN publish would silently stop
+        # `client-delivery.yml` from ever firing.
+        if: steps.auto-tag.outputs.tagged == 'true'
+        env:
+          GH_TOKEN: ${{ steps.release-app-token.outputs.token }}
+          VERSION: ${{ steps.auto-tag.outputs.version }}
+          TAG: ${{ steps.auto-tag.outputs.tag }}
+        run: |
+          # Extract the `## <VERSION>` section from CHANGELOG.md — everything
+          # between that heading and the next `## <number>` heading. Read from
+          # $GITHUB_SHA explicitly for the same reason the tag step does.
+          NOTES=$(git show "${GITHUB_SHA}:packages/fabric-app/CHANGELOG.md" | \
+            awk -v ver="## ${VERSION}" '
+              $0 == ver { p = 1; next }
+              p && /^## [0-9]/ { exit }
+              p { print }
+            ')
+          if [ -z "$(echo "$NOTES" | tr -d "[:space:]")" ]; then
+            echo "::warning::No CHANGELOG section found for ${VERSION} — creating an empty Release. Check packages/fabric-app/CHANGELOG.md."
+            NOTES="See [\`packages/fabric-app/CHANGELOG.md\`](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/blob/${GITHUB_SHA}/packages/fabric-app/CHANGELOG.md) for the full changelog."
+          fi
+          # Idempotency, and it now has to BRANCH on the draft flag rather
+          # than just detect existence — "a draft is already waiting" and "a
+          # release was already published" call for different messages and
+          # mean different things about the §4.1 gate. `gh release view`
+          # answers neither: it exits 0 for both. Its lookup is also
+          # indirect for drafts (`releases/tags/{tag}` 404s, because a draft
+          # carries no tag association, and gh falls back to listing), so ask
+          # the list directly and read `.draft` off the answer.
+          if ! RELEASES=$(gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+                 --paginate --jq '.[] | {tag_name, draft, html_url}'); then
+            echo "::error::Could not list releases to check whether $TAG already exists. Refusing to create one blindly — a second DRAFT for the same tag is possible (GitHub does not reject duplicate drafts), would not show on /releases, and would leave the §4.1 publish gate acting on the wrong object."
+            exit 1
+          fi
+          EXISTING=$(printf '%s\n' "$RELEASES" | jq -s --arg t "$TAG" 'map(select(.tag_name == $t)) | first // empty')
+          if [ -n "$EXISTING" ]; then
+            if [ "$(printf '%s' "$EXISTING" | jq -r '.draft')" = "true" ]; then
+              echo "GitHub Release $TAG already exists as a draft — leaving it for release-bom.yml to complete."
+            else
+              echo "::warning::GitHub Release $TAG already exists and is already PUBLISHED — not recreating it. If that was not a deliberate manual backfill, find out how it was published without the §4.1 BOM gate. See docs/runbooks/release-bom.md."
+            fi
+            exit 0
+          fi
+          gh release create "$TAG" \
+            --title "$TAG" \
+            --notes "$NOTES" \
+            --draft
+          echo "Created DRAFT GitHub Release $TAG at https://github.com/${GITHUB_REPOSITORY}/releases/tag/${TAG}"
+          echo "release-bom.yml will assemble the release manifest, attach it, and publish this release."

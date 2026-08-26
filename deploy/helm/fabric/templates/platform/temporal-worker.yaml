@@ -1,0 +1,27 @@
+{{- if .Values.temporalWorker.enabled }}
+# temporal-worker runs as non-root uid 1001 (packages/temporal/Dockerfile creates
+# the `appuser` non-root user; SOC 2 CC7.1, card 1721 FR-7). Its runtime writes
+# (git clones + security scans) all target os.tmpdir() => /tmp, so no writable
+# volume is required.
+{{- include "fabric.deployment" (dict
+    "name"      "temporal-worker"
+    "component" "platform"
+    "image"     (printf "%s/%s:%s" .Values.global.imageRegistry .Values.temporalWorker.image.repository .Values.global.imageTag)
+    "replicas"  .Values.temporalWorker.replicas
+    "resources" .Values.temporalWorker.resources
+    "securityContext" (dict
+      "runAsNonRoot" true
+      "runAsUser"    1001
+      "fsGroup"      1001)
+    "extraEnv"  (ternary (list (dict "name" "DATABASE_URL" "valueFrom" (dict "secretKeyRef" (dict "name" "fabric-worker-secrets" "key" "WORKER_DATABASE_URL")))) (list) .Values.temporalWorker.bypassRlsRole)
+    "probes"    (dict
+      "livenessProbe" (dict
+        "exec"                (dict "command" (list "sh" "-c" "pgrep -f 'tsx.*worker'"))
+        "initialDelaySeconds" 30
+        "periodSeconds"       30
+        "timeoutSeconds"      5
+        "failureThreshold"    3))
+    "Release"   .Release
+    "Values"    .Values
+) }}
+{{- end }}

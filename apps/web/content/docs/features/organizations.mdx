@@ -1,0 +1,316 @@
+---
+title: Organizations & Multi-Tenancy
+description: Collaborate with your team using organizations, role-based access control, and shared resources.
+---
+
+Organizations in Fabric AI enable team collaboration with enterprise-grade security and isolation. Share agents, workspaces, and prompts while maintaining control over who can access what.
+
+## What is an Organization?
+
+An organization is a shared workspace for teams:
+
+```mermaid
+flowchart TB
+    subgraph ORG["Acme Corp Organization"]
+        direction TB
+
+        subgraph RESOURCES["Shared Resources"]
+            A["Agents<br/>(Shared)"]
+            W["Workspaces<br/>(Shared)"]
+            P["Prompts<br/>(Shared)"]
+        end
+
+        subgraph MEMBERS["Members"]
+            M1["Owner<br/>Alice"]
+            M2["Admin<br/>Bob"]
+            M3["Member<br/>Charlie"]
+            M4["Member<br/>Diana"]
+        end
+
+        subgraph MCP["MCP Connections"]
+            C1["GitHub"]
+            C2["Jira"]
+            C3["Slack"]
+            C4["Notion"]
+        end
+    end
+```
+
+## Creating an Organization
+
+<Steps>
+  <Step>
+    ### Navigate to Settings
+
+    Click your profile icon and select **Settings → Organizations**.
+  </Step>
+
+  <Step>
+    ### Create Organization
+
+    Click **Create Organization** and fill in:
+    
+    - **Name**: Your company or team name
+    - **Slug**: URL-friendly identifier (auto-generated)
+    - **Logo**: Upload your organization's logo (optional)
+  </Step>
+
+  <Step>
+    ### Invite Members
+
+    Add team members by email:
+    
+    1. Click **Invite Members**
+    2. Enter email addresses
+    3. Select role for each member
+    4. Click **Send Invites**
+    
+    Invitees receive an email with a link to join.
+  </Step>
+</Steps>
+
+## Roles & Permissions
+
+Fabric AI uses role-based access control (RBAC):
+
+| Permission | Owner | Admin | Member |
+|------------|-------|-------|--------|
+| Use agents and workspaces | ✅ | ✅ | ✅ |
+| Create agents and workspaces | ✅ | ✅ | ✅ |
+| Invite members | ✅ | ✅ | ❌ |
+| Manage member roles | ✅ | ✅ | ❌ |
+| Remove members | ✅ | ✅ | ❌ |
+| Configure MCP servers | ✅ | ✅ | ❌ |
+| Manage billing | ✅ | ❌ | ❌ |
+| Delete organization | ✅ | ❌ | ❌ |
+| Transfer ownership | ✅ | ❌ | ❌ |
+
+### Owner
+
+- Full control over the organization
+- Only role that can delete the organization or manage billing
+- One owner per organization (can be transferred)
+
+### Admin
+
+- Can manage members and settings
+- Cannot access billing or delete organization
+- Ideal for team leads and managers
+
+### Member
+
+- Can use shared resources
+- Can create personal and organization resources
+- Cannot manage other members
+
+## Shared Resources
+
+### Organization Agents
+
+Agents can be scoped to your organization:
+
+```mermaid
+flowchart LR
+    subgraph VIS["Agent Visibility"]
+        P["Personal"] --> P1["Only you can use"]
+        O["Organization"] --> O1["All org members can use"]
+        PU["Public"] --> PU1["Anyone with link"]
+    end
+```
+
+When creating an agent, select **Organization** visibility to share with your team.
+
+### Organization Workspaces
+
+Share knowledge bases across your team:
+
+- Upload company documents once
+- All members can attach to conversations
+- Maintain consistent context
+- Version control for documents
+
+### Organization Prompts
+
+Create shared prompt templates:
+
+- Standardize document formats
+- Ensure consistent tone and style
+- Share best practices
+- Track usage analytics
+
+### Organization MCP Connections
+
+Connect organization accounts to external tools:
+
+- **GitHub Organization** — Shared repo access
+- **Jira Project** — Company-wide issue tracking
+- **Slack Workspace** — Team communication
+- **Notion Workspace** — Shared documentation
+
+## Data Isolation
+
+Fabric AI ensures complete data isolation between organizations:
+
+```mermaid
+flowchart TB
+    subgraph PLATFORM["Fabric AI Platform"]
+        subgraph ORGA["Org A Data"]
+            A1["Agents"]
+            A2["Workspaces"]
+            A3["Documents"]
+            A4["MCP Keys"]
+        end
+
+        BARRIER["✕ Cannot Access"]
+
+        subgraph ORGB["Org B Data"]
+            B1["Agents"]
+            B2["Workspaces"]
+            B3["Documents"]
+            B4["MCP Keys"]
+        end
+
+        ORGA -.-> BARRIER
+        BARRIER -.-> ORGB
+    end
+```
+
+### Security Features
+
+- **Database isolation**: Separate data storage per organization
+- **API key encryption**: Credentials encrypted at rest
+- **Audit logging**: Track who accessed what and when
+- **Session management**: Secure session handling
+- **SSO support**: Enterprise single sign-on (coming soon)
+
+## Switching Between Organizations
+
+You can belong to multiple organizations:
+
+<Steps>
+  <Step>
+    ### Open Organization Switcher
+
+    Click your profile icon or the organization name in the top bar.
+  </Step>
+
+  <Step>
+    ### Select Organization
+
+    Choose from:
+    - **Personal Account** — Your private workspace
+    - **Organization 1** — First team
+    - **Organization 2** — Second team
+    - etc.
+  </Step>
+
+  <Step>
+    ### Context Switches
+
+    All resources now show content from the selected organization.
+  </Step>
+</Steps>
+
+## Personal vs Organization Context
+
+Understand which context you're working in:
+
+| Aspect | Personal | Organization |
+|--------|----------|--------------|
+| Agents | Only you | All members |
+| Workspaces | Only you | All members |
+| Prompts | Only you | All members |
+| MCP Connections | Your accounts | Shared accounts |
+| Billing | Your plan | Org plan |
+
+## Managing Members
+
+### Inviting Members
+
+1. Go to **Settings → Organization → Members**
+2. Click **Invite**
+3. Enter email addresses (comma-separated for bulk)
+4. Select default role
+5. Click **Send Invites**
+
+### Changing Roles
+
+1. Find the member in the list
+2. Click the role dropdown
+3. Select new role
+4. Changes apply immediately
+
+### Removing Members
+
+1. Find the member in the list
+2. Click **Remove**
+3. Confirm removal
+
+Removed members:
+- Lose access immediately
+- Personal resources stay in their account
+- Organization resources remain with the org
+
+## Best Practices
+
+### 1. Use Descriptive Names
+
+Name agents and workspaces clearly:
+- ✅ "Q4 Product PRDs"
+- ❌ "Workspace 1"
+
+### 2. Set Appropriate Visibility
+
+- Use **Personal** for experiments and drafts
+- Use **Organization** for team resources
+- Rarely use **Public**
+
+### 3. Organize Workspaces by Domain
+
+Create separate workspaces for different knowledge domains:
+- "Backend Architecture"
+- "Frontend Guidelines"
+- "Product Requirements"
+- "Customer Research"
+
+### 4. Standardize with Prompts
+
+Create organization prompts for:
+- PRD templates
+- Technical spec formats
+- Meeting summary structures
+
+### 5. Audit Regularly
+
+Review members and permissions periodically:
+- Remove inactive members
+- Update roles as responsibilities change
+- Archive unused resources
+
+## Enterprise Features
+
+For enterprise customers:
+
+- **SSO/SAML**: Single sign-on with your identity provider
+- **SCIM**: Automatic user provisioning
+- **Advanced audit logs**: Detailed activity tracking
+- **Custom data retention**: Control how long data is stored
+- **Dedicated support**: Priority assistance
+
+Contact sales@fabric.pro for enterprise pricing.
+
+---
+
+## Next Steps
+
+<Cards>
+  <Card title="Getting Started" href="/docs/getting-started/overview">
+    Set up your account and organization
+  </Card>
+  <Card title="MCP Integration" href="/docs/integrations/mcp">
+    Connect organization tools
+  </Card>
+  <Card title="Create Custom Agent" href="/docs/tutorials/first-agent">
+    Build agents for your team
+  </Card>
+</Cards>

@@ -1,0 +1,460 @@
+---
+title: External Agent API
+description: Execute your Fabric agents programmatically from any application using the External Agent API.
+---
+
+The External Agent API lets you trigger agent executions from outside of Fabric — your own apps, scripts, CI/CD pipelines, or third-party services. Agents run the same way they do inside Fabric, with full access to their configured tools, knowledge sources, and memory.
+
+## Overview
+
+```mermaid
+sequenceDiagram
+    participant App as Your Application
+    participant API as Fabric External API
+    participant Agent as Agent Execution
+
+    App->>API: POST /agents/{id}/execute
+    Note over API: Authenticate API key
+    Note over API: Validate agent is exposed
+    API->>Agent: Start execution workflow
+    API-->>App: 202 Accepted + executionId
+    App->>API: GET /executions/{id}
+    API-->>App: Status + result
+```
+
+## Getting Started
+
+### 1. Create an API Key
+
+<Steps>
+  <Step>
+    ### Go to Settings
+
+    Navigate to **Settings > API Keys** in your Fabric dashboard.
+  </Step>
+
+  <Step>
+    ### Generate a Key
+
+    Click **Create API Key** and give it a descriptive name (e.g., "CI/CD Pipeline" or "Backend Service").
+
+    Select the scopes your key needs:
+
+    | Scope | What it allows |
+    |-------|---------------|
+    | `agents:read` | List and view exposed agents |
+    | `agents:execute` | Trigger agent executions |
+    | `agents:stream` | Stream execution results in real time |
+
+    For most use cases, select all three.
+  </Step>
+
+  <Step>
+    ### Copy and Store Securely
+
+    Your key will look like `fab_xxxxxxxx_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx` for personal keys or `org_xxxxxxxx_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx` for organization keys.
+
+    **The full key is shown only once.** Store it securely (e.g., in a secrets manager or environment variable).
+  </Step>
+</Steps>
+
+### 2. Expose an Agent
+
+Before an agent can be called via the API, you need to enable external access:
+
+<Steps>
+  <Step>
+    ### Open the Agent Editor
+
+    Go to **Agents** and click **Edit** on the agent you want to expose.
+  </Step>
+
+  <Step>
+    ### Enable "Expose via API"
+
+    Scroll to the **External API Access** section and toggle **Expose via API** on.
+  </Step>
+
+  <Step>
+    ### Copy the Endpoint URL
+
+    Once enabled, the endpoint URL is displayed. Click the copy button to grab it. The URL looks like:
+
+    ```
+    https://your-fabric-instance.com/api/v1/external/agents/{agentId}/execute
+    ```
+
+    This URL is stable — it won't change when you edit and save the agent.
+  </Step>
+
+  <Step>
+    ### Save Changes
+
+    Click **Save Changes** to persist the setting.
+  </Step>
+</Steps>
+
+### 3. Make Your First Call
+
+```bash
+curl -X POST https://your-fabric-instance.com/api/v1/external/agents/{agentId}/execute \
+  -H "Authorization: Bearer fab_xxxxxxxx_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "input": {
+      "message": "Summarize the Q4 sales report"
+    }
+  }'
+```
+
+**Response** (202 Accepted):
+
+```json
+{
+  "executionId": "exec_abc123",
+  "status": "RUNNING",
+  "deploymentId": "dep_xyz789",
+  "workflowId": "deployment-exec-exec_abc123"
+}
+```
+
+## API Reference
+
+All endpoints are under `/api/v1/external/`. Every request requires an API key in the `Authorization` header.
+
+```
+Authorization: Bearer <your_api_key>
+```
+
+---
+
+### List Exposed Agents
+
+Returns all agents you have exposed via the API.
+
+```
+GET /api/v1/external/agents
+```
+
+**Response:**
+
+```json
+[
+  {
+    "id": "clx1abc...",
+    "sId": "jfa2def...",
+    "name": "Sales Report Analyst",
+    "description": "Analyzes sales data and generates insights",
+    "executionMode": "single_turn",
+    "template": {
+      "slug": "data-analyst",
+      "displayName": "Data Analyst",
+      "category": "DATA"
+    }
+  }
+]
+```
+
+---
+
+### Get Agent Details
+
+Returns metadata and input schema for a specific agent.
+
+```
+GET /api/v1/external/agents/{agentId}
+```
+
+**Response:**
+
+```json
+{
+  "id": "clx1abc...",
+  "sId": "jfa2def...",
+  "name": "Sales Report Analyst",
+  "executionMode": "single_turn",
+  "version": 3,
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "query": {
+        "type": "string",
+        "description": "Input message or query for the agent"
+      }
+    }
+  }
+}
+```
+
+---
+
+### Execute an Agent
+
+Triggers a new execution of the agent.
+
+```
+POST /api/v1/external/agents/{agentId}/execute
+```
+
+**Request body:**
+
+```json
+{
+  "input": {
+    "message": "Your prompt or task for the agent"
+  },
+  "priority": "NORMAL",
+  "stream": false,
+  "idempotencyKey": "unique-request-id-123"
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `input` | object | Yes | Key-value pairs passed to the agent. Must include at least one field. |
+| `priority` | string | No | `LOW`, `NORMAL` (default), `HIGH`, or `CRITICAL` |
+| `stream` | boolean | No | If `true`, returns an SSE stream instead of a polling ID. Requires `agents:stream` scope. |
+| `idempotencyKey` | string | No | Prevents duplicate executions. If a request with the same key was already processed, the original result is returned. |
+
+**Response** (202 Accepted):
+
+```json
+{
+  "executionId": "exec_abc123",
+  "status": "RUNNING",
+  "deploymentId": "dep_xyz789",
+  "workflowId": "deployment-exec-exec_abc123"
+}
+```
+
+---
+
+### Poll Execution Status
+
+Check the status and result of a running or completed execution.
+
+```
+GET /api/v1/external/executions/{executionId}
+```
+
+**Response** (completed):
+
+```json
+{
+  "id": "exec_abc123",
+  "status": "COMPLETED",
+  "output": {
+    "response": "Based on the Q4 sales data..."
+  },
+  "startedAt": "2026-03-10T14:30:00Z",
+  "completedAt": "2026-03-10T14:30:45Z"
+}
+```
+
+**Possible statuses:** `PENDING`, `RUNNING`, `COMPLETED`, `FAILED`, `CANCELLED`
+
+---
+
+### Stream Execution (SSE)
+
+For real-time results, either pass `"stream": true` in the execute request body or connect to the streaming endpoint after starting an execution:
+
+```
+GET /api/v1/external/executions/{executionId}/stream
+```
+
+This returns a Server-Sent Events stream. Events include progress updates and the final result.
+
+**Example with curl:**
+
+```bash
+curl -N https://your-fabric-instance.com/api/v1/external/executions/exec_abc123/stream \
+  -H "Authorization: Bearer fab_xxxxxxxx_..."
+```
+
+---
+
+### Upload a File
+
+Upload an image for use in an agent execution (e.g., for vision-capable agents).
+
+```
+POST /api/v1/external/agents/files
+```
+
+**Request:** multipart/form-data with a `file` field.
+
+**Response:**
+
+```json
+{
+  "fileId": "file_abc123",
+  "mimeType": "image/png",
+  "name": "screenshot.png"
+}
+```
+
+Use the returned `fileId` in the `images` array of an execute request:
+
+```json
+{
+  "input": { "message": "What's in this screenshot?" },
+  "images": [
+    { "fileId": "file_abc123", "mimeType": "image/png", "name": "screenshot.png" }
+  ]
+}
+```
+
+Maximum 5 images per execution request.
+
+## Error Handling
+
+The API returns standard HTTP status codes with JSON error bodies:
+
+```json
+{
+  "error": "Description of what went wrong"
+}
+```
+
+| Status | Meaning |
+|--------|---------|
+| 400 | Invalid request body or missing required fields |
+| 401 | Missing or invalid API key |
+| 403 | API key lacks the required scope |
+| 404 | Agent not found, not exposed, or not active |
+| 429 | Rate limit or execution quota exceeded |
+| 500 | Internal server error |
+
+**Common 404 causes:**
+- The agent's "Expose via API" toggle is off
+- The API key type doesn't match the agent's context (personal key for an org agent, or vice versa)
+- The agent has been archived
+
+## Rate Limiting
+
+Requests are rate-limited per API key. Rate limit headers are included in every response:
+
+```
+X-RateLimit-Limit: 60
+X-RateLimit-Remaining: 58
+X-RateLimit-Reset: 1710000000
+Retry-After: 5
+```
+
+When rate-limited (429), wait for the `Retry-After` duration before retrying.
+
+## Personal vs Organization Keys
+
+| Key type | Prefix | Access |
+|----------|--------|--------|
+| Personal | `fab_` | Your personal agents only |
+| Organization | `org_` | Agents in that organization |
+
+A personal key (`fab_*`) can only access agents you own in your personal workspace. An organization key (`org_*`) can only access agents within that organization. Use the key type that matches where your agent lives.
+
+## Idempotency
+
+To prevent duplicate executions (e.g., on network retries), include an `idempotencyKey` in the request body or an `X-Idempotency-Key` header:
+
+```bash
+curl -X POST .../agents/{agentId}/execute \
+  -H "Authorization: Bearer fab_..." \
+  -H "X-Idempotency-Key: order-12345-retry-1" \
+  -H "Content-Type: application/json" \
+  -d '{"input": {"message": "Process order 12345"}}'
+```
+
+If a request with the same idempotency key has already been processed for this agent, the API returns the original execution result with status 200 instead of creating a new execution.
+
+## Examples
+
+### Python
+
+```python
+import requests
+import time
+
+API_KEY = "fab_xxxxxxxx_..."
+BASE_URL = "https://your-fabric-instance.com/api/v1/external"
+AGENT_ID = "your-agent-id"
+
+headers = {
+    "Authorization": f"Bearer {API_KEY}",
+    "Content-Type": "application/json",
+}
+
+# Start execution
+response = requests.post(
+    f"{BASE_URL}/agents/{AGENT_ID}/execute",
+    headers=headers,
+    json={"input": {"message": "Analyze last month's support tickets"}},
+)
+execution = response.json()
+execution_id = execution["executionId"]
+
+# Poll for result
+while True:
+    result = requests.get(
+        f"{BASE_URL}/executions/{execution_id}",
+        headers=headers,
+    ).json()
+
+    if result["status"] in ("COMPLETED", "FAILED", "CANCELLED"):
+        break
+    time.sleep(2)
+
+print(result)
+```
+
+### JavaScript / TypeScript
+
+```typescript
+const API_KEY = "fab_xxxxxxxx_...";
+const BASE_URL = "https://your-fabric-instance.com/api/v1/external";
+const AGENT_ID = "your-agent-id";
+
+const headers = {
+  Authorization: `Bearer ${API_KEY}`,
+  "Content-Type": "application/json",
+};
+
+// Start execution
+const execResponse = await fetch(`${BASE_URL}/agents/${AGENT_ID}/execute`, {
+  method: "POST",
+  headers,
+  body: JSON.stringify({
+    input: { message: "Generate a weekly status report" },
+  }),
+});
+const { executionId } = await execResponse.json();
+
+// Poll for result
+let result;
+do {
+  await new Promise((r) => setTimeout(r, 2000));
+  const pollResponse = await fetch(
+    `${BASE_URL}/executions/${executionId}`,
+    { headers }
+  );
+  result = await pollResponse.json();
+} while (result.status === "PENDING" || result.status === "RUNNING");
+
+console.log(result);
+```
+
+---
+
+## Next Steps
+
+<Cards>
+  <Card title="Agent Templates" href="/docs/features/agent-templates">
+    Create and configure agents to expose
+  </Card>
+  <Card title="Agent Deployments" href="/docs/features/agent-deployments">
+    Deploy agents with webhooks and schedules
+  </Card>
+  <Card title="Authentication" href="/docs/api/authentication">
+    Learn about Fabric's authentication system
+  </Card>
+</Cards>

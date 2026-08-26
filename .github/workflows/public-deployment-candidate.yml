@@ -1,0 +1,73 @@
+name: Public Deployment Candidate
+
+# Secretless validation for deployment artifacts retained in the public seed.
+# It is deliberately usable in the current private master, seed rehearsals,
+# and the public repository: no repository-name guard or privileged workflow
+# is involved.
+on:
+  pull_request:
+    branches: [master]
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: public-deployment-candidate-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate-public-deployment-assets:
+    name: Public deployment candidate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Install pinned validation tools
+        # Standalone, checksum-verified compilers keep this fork-safe and avoid
+        # Azure CLI entirely: this job never authenticates to a cloud.
+        env:
+          BICEP_VERSION: 0.46.1
+          BICEP_SHA256: 3e011d629ea4311b7a7dd8f0040ab2b1a072ea4ff5d02cb75e0e55a9a6703fb9
+          HELM_VERSION: 4.2.0
+          HELM_SHA256: 97dbeb971be4ac4b27e3839976d9564c0fb35c6f3b1da89dd1e292d236af4096
+        run: |
+          set -euo pipefail
+          tools_dir="$RUNNER_TEMP/public-deployment-candidate-tools"
+          bin_dir="$tools_dir/bin"
+          mkdir -p "$bin_dir"
+
+          bicep_path="$bin_dir/bicep"
+          curl --fail --location --proto '=https' --tlsv1.2 --silent --show-error \
+            --output "$bicep_path" \
+            "https://downloads.bicep.azure.com/v${BICEP_VERSION}/bicep-linux-x64"
+          printf '%s  %s\n' "$BICEP_SHA256" "$bicep_path" > "$tools_dir/bicep.sha256"
+          sha256sum --check --status "$tools_dir/bicep.sha256"
+          chmod 0755 "$bicep_path"
+          [ "$(DOTNET_BUNDLE_EXTRACT_BASE_DIR="$RUNNER_TEMP/bicep-bundle" "$bicep_path" --version | awk '{ print $4 }')" = "$BICEP_VERSION" ]
+
+          helm_archive="$tools_dir/helm.tar.gz"
+          curl --fail --location --proto '=https' --tlsv1.2 --silent --show-error \
+            --output "$helm_archive" \
+            "https://get.helm.sh/helm-v${HELM_VERSION}-linux-amd64.tar.gz"
+          printf '%s  %s\n' "$HELM_SHA256" "$helm_archive" > "$tools_dir/helm.sha256"
+          sha256sum --check --status "$tools_dir/helm.sha256"
+          tar -xzf "$helm_archive" --strip-components=1 -C "$bin_dir" linux-amd64/helm
+          [ "$("$bin_dir/helm" version --template '{{ .Version }}')" = "v$HELM_VERSION" ]
+
+          printf '%s\n' "$bin_dir" >> "$GITHUB_PATH"
+          "$bicep_path" --version
+          printf 'Helm '
+          "$bin_dir/helm" version --template '{{ .Version }}'
+          printf '\n'
+          docker compose version
+          jq --version
+
+      - name: Validate public deployment assets
+        run: ./scripts/validate-public-deployment-candidate.sh

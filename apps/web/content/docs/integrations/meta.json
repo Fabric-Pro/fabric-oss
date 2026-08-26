@@ -1,0 +1,21 @@
+{
+	"title": "Integrations",
+	"pages": [
+		"mcp-gateway",
+		"mcp",
+		"verifying-integrations",
+		"github",
+		"gitlab",
+		"slack",
+		"teams",
+		"jira",
+		"confluence",
+		"notion",
+		"google-drive",
+		"linear",
+		"azure-devops",
+		"excalidraw",
+		"fizzy",
+		"atlassian-cloud-attachments"
+	]
+}

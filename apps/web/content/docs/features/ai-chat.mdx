@@ -1,0 +1,179 @@
+---
+title: AI Chat
+description: Conversational AI interface with document context, tool integration, and multiple reasoning modes.
+---
+
+AI Chat is the primary way to interact with Fabric's AI capabilities. It supports real-time streaming, document uploads for context, MCP tool execution, and multiple reasoning depths.
+
+## Chat Modes
+
+Fabric offers two chat modes, each suited to different tasks:
+
+### Direct Chat
+
+Best for quick conversations and straightforward tasks:
+
+- Real-time streaming responses
+- Direct MCP tool execution
+- Document upload and RAG context
+- Semantic memory integration
+- Conversation persistence
+
+### Orchestrator Chat
+
+Best for complex, multi-step tasks:
+
+- Durable workflow-based execution
+- Multi-agent task coordination
+- Human-in-the-loop approval flows
+- Task plan visualization and progress tracking
+- Step-by-step reasoning with verification
+
+## Reasoning Depth
+
+The depth of AI reasoning depends on the model and task type you have configured. Models with reasoning capabilities (such as o1 or DeepSeek R1) provide deeper analysis with step-by-step verification, while fast models (such as GPT-4o-mini or Llama via Groq) optimize for speed.
+
+Configure model preferences per task type in **Settings → AI Providers**. See [AI Providers](/docs/features/ai-providers) for details.
+
+## Starting a Conversation
+
+<Steps>
+  <Step>
+    ### Open AI Chat
+
+    Click **Chat** in the left sidebar to open the AI Chat interface.
+  </Step>
+
+  <Step>
+    ### Choose Your Approach
+
+    You can start from:
+
+    - **Free text** — Type your question or task directly
+    - **With documents** — Upload files for context before asking
+  </Step>
+
+  <Step>
+    ### Send Your Message
+
+    Type your message and press Enter. The AI streams its response in real-time.
+  </Step>
+</Steps>
+
+## Document Upload
+
+Upload documents to give the AI context about your work. The AI uses RAG (Retrieval-Augmented Generation) to reference your documents when responding.
+
+### Supported Formats
+
+| Category | Formats |
+|----------|---------|
+| **Documents** | PDF, DOCX, TXT, MD, HTML, JSON |
+| **Images** | JPEG, PNG, GIF, WEBP, TIFF (OCR extraction) |
+
+**Maximum file size:** 10 MB per file
+
+### How Document Context Works
+
+1. **Upload** — Drag and drop files or click to upload
+2. **Processing** — Files are automatically extracted, chunked, and embedded
+3. **Ready** — Documents become available for semantic search
+4. **Retrieval** — When you send a message, the AI retrieves the most relevant sections from your documents and includes them as context
+
+### Document Status
+
+| Status | Description |
+|--------|-------------|
+| **Pending** | File uploaded, waiting to be processed |
+| **Processing** | Extraction, chunking, and embedding in progress |
+| **Ready** | Document available for RAG retrieval |
+| **Failed** | Processing encountered an error |
+
+## MCP Tool Integration
+
+When MCP servers are configured, the AI can use their tools during conversations.
+
+### Tool Suggestions
+
+As you type, the AI suggests relevant MCP tools based on your input:
+
+- Suggestions appear after 5+ characters
+- Shows tool name, source server, and description
+- Click a suggestion to include it in your message
+
+### Tool Execution
+
+During a conversation, the AI may call MCP tools to complete tasks:
+
+- **Tool call cards** display the tool name, arguments, and results
+- Some tools require **confirmation** before execution
+- Results are incorporated into the AI's response
+
+## Conversation Management
+
+### History
+
+Access past conversations from the **sidebar**:
+
+- **Search** conversations by title or content
+- **Pin** important conversations for quick access
+- **Archive** old conversations to keep things tidy
+- Conversations are grouped by date
+
+### Checkpoints
+
+Create checkpoints to save conversation state:
+
+- **Create** a checkpoint at any point in the conversation
+- **Restore** to a previous checkpoint to try a different approach
+- **Delete** checkpoints you no longer need
+- Track token usage at each checkpoint
+
+### Automatic Titles
+
+Fabric automatically generates descriptive titles for your conversations after the first exchange, making them easy to find later.
+
+## Token Usage
+
+The chat interface tracks token usage:
+
+- **Input tokens** — Tokens in your messages and context
+- **Output tokens** — Tokens in AI responses
+- **Reasoning tokens** — Additional tokens used for deep reasoning
+- **Cached tokens** — Tokens served from cache (faster, lower cost)
+- **Context estimate** — How much of the context window is used
+
+## Workflow Execution
+
+The AI can suggest and execute workflows during a conversation:
+
+1. The AI identifies a relevant workflow for your task
+2. A **confirmation dialog** appears with the workflow name and description
+3. Click **Execute** to run or **Cancel** to skip
+4. Workflow results are incorporated into the conversation
+
+## Multi-Tenant Support
+
+AI Chat works in both personal and organization contexts:
+
+- **Personal** (`/app/nexus`) — Your private conversations
+- **Organization** (`/app/{org}/nexus`) — Organization-scoped conversations
+- Each context has separate conversation history
+- AI model preferences are resolved per context (personal or org-level)
+- Document uploads are isolated by context
+
+---
+
+## Next Steps
+
+<Cards>
+  <Card title="Orchestrator" href="/docs/agents/orchestrator">
+    Learn about multi-agent orchestration for complex tasks
+  </Card>
+  <Card title="MCP Integration" href="/docs/integrations/mcp">
+    Configure MCP servers for tool access in chat
+  </Card>
+  <Card title="AI Configuration" href="/docs/features/ai-providers">
+    Set your preferred AI models and providers
+  </Card>
+</Cards>

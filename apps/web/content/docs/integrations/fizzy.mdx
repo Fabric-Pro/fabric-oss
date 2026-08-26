@@ -1,0 +1,49 @@
+---
+title: Fizzy
+description: Connect Fizzy via MCP so Fabric agents can work with cards and project boards.
+---
+
+Connect Fizzy to Fabric AI so agents and workflows can work with **cards and project boards** — read, search, and create cards — as runtime actions.
+
+Fizzy is provided as an **MCP server**, added from the MCP Registry.
+
+## Setting Up Fizzy
+
+<Steps>
+  <Step>
+    ### Open the MCP Registry
+
+    Go to **Settings → MCP Registry** and find **Fizzy**.
+  </Step>
+
+  <Step>
+    ### Connect
+
+    Provide your Fizzy credentials, then **Test Connection** and toggle the server to **Enabled**.
+  </Step>
+</Steps>
+
+### In AI Chat
+
+```
+"Create a Fizzy card for the bug we just found"
+
+"What cards are in the High Priority column?"
+```
+
+## Use as a project management tool
+
+You can link a project to Fizzy and sync its backlog two ways — pushing features as cards and pulling cards back in. In the project's **Settings → Project Management**, pick **Fizzy** and choose the board features should sync to. See [Project Management Sync](/docs/features/pm-sync) for the full push/pull and conflict-resolution flow.
+
+---
+
+## Next Steps
+
+<Cards>
+  <Card title="Project Management Sync" href="/docs/features/pm-sync">
+    Push and pull your backlog with Fizzy
+  </Card>
+  <Card title="MCP Integration" href="/docs/integrations/mcp">
+    How MCP servers and their tools work
+  </Card>
+</Cards>

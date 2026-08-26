@@ -1,0 +1,305 @@
+---
+title: Generate Your First Document
+description: A step-by-step tutorial to create your first AI-generated document with Fabric AI.
+---
+
+This tutorial walks you through creating your first document with Fabric AI. In about 10 minutes, you'll go from a rough idea to a polished PRD.
+
+## What You'll Create
+
+By the end of this tutorial, you'll have:
+
+- Created a workspace with reference documents
+- Started a conversation with the Document Generator agent
+- Generated a complete PRD (Product Requirements Document)
+- Learned how to refine and export your document
+
+## Prerequisites
+
+Before starting, make sure you have:
+
+- ✅ A Fabric AI account ([sign up here](https://fabric.pro))
+- ✅ An AI provider configured (see [AI Configuration](/docs/getting-started/ai-configuration))
+- ✅ 10 minutes of time
+
+## Step 1: Prepare Your Context (Optional)
+
+If you have existing documents you want the AI to reference, start by creating a workspace:
+
+<Steps>
+  <Step>
+    ### Navigate to Workspaces
+
+    Click **Workspaces** in the left sidebar.
+  </Step>
+
+  <Step>
+    ### Create a New Workspace
+
+    Click **Create Workspace** and name it something like "Product Documentation".
+  </Step>
+
+  <Step>
+    ### Upload Documents
+
+    Drag and drop any reference materials:
+    - Previous PRDs
+    - Company templates
+    - Technical constraints
+    - Market research
+
+    Don't have any? That's fine—skip to Step 2!
+  </Step>
+</Steps>
+
+## Step 2: Start a Project
+
+<Steps>
+  <Step>
+    ### Navigate to Projects
+
+    Click **Projects** in the left sidebar.
+  </Step>
+
+  <Step>
+    ### Create New Project
+
+    Click **Create Project** and fill in:
+
+    - **Name**: "My First Feature"
+    - **Description**: "Learning to use Fabric AI"
+  </Step>
+
+  <Step>
+    ### Open the Project
+
+    Click on your new project to open it.
+  </Step>
+</Steps>
+
+## Step 3: Generate Your Document
+
+Now for the fun part—let's generate a PRD!
+
+<Steps>
+  <Step>
+    ### Start a Conversation
+
+    Click **New Document** or the **Chat** button in your project.
+  </Step>
+
+  <Step>
+    ### Attach Context (Optional)
+
+    If you created a workspace:
+    1. Click the **Attach** button (paperclip icon)
+    2. Select your workspace
+    3. The AI will now reference those documents
+  </Step>
+
+  <Step>
+    ### Describe Your Feature
+
+    Type a description of what you want to build. Here's an example:
+
+    ```
+    Create a PRD for a user notification preferences feature.
+
+    The feature should allow users to:
+    - Choose which types of notifications they receive
+    - Select their preferred notification channels (email, push, SMS)
+    - Set quiet hours when they don't want to be disturbed
+    - Customize notification frequency (immediate, daily digest, weekly)
+
+    Target users: Both free and premium users
+    Platform: Web and mobile apps
+    ```
+
+    Press Enter to send.
+  </Step>
+
+  <Step>
+    ### Watch the Magic
+
+    The Document Generator will:
+    1. Analyze your request
+    2. Retrieve relevant context (if attached)
+    3. Generate a comprehensive PRD
+    4. Stream the output in real-time
+
+    This usually takes 30-60 seconds.
+  </Step>
+</Steps>
+
+## Step 4: Review and Refine
+
+Your PRD is generated! Now let's make it perfect.
+
+### Understanding the Output
+
+The generated PRD typically includes:
+
+- **Executive Summary** — High-level overview
+- **Problem Statement** — Why this feature is needed
+- **Goals & Objectives** — What success looks like
+- **User Stories** — As a/I want/So that format
+- **Requirements** — Functional and non-functional
+- **Success Metrics** — How to measure success
+- **Timeline** — Suggested phases
+
+### Making Changes
+
+You have several options:
+
+**Option 1: Chat with the Agent**
+
+Ask for specific changes:
+
+```
+"Add a section about security considerations"
+
+"Expand the user stories section with more edge cases"
+
+"Make the timeline more aggressive - we need this in 6 weeks"
+```
+
+**Option 2: Edit Directly**
+
+Click into the document and edit like any text editor:
+- Add or remove sections
+- Rewrite specific paragraphs
+- Fix typos or formatting
+
+**Option 3: Accept/Reject Changes**
+
+When the AI suggests changes:
+- **Accept** — Apply the changes
+- **Reject** — Keep your original
+- **Accept with modifications** — Use as a starting point
+
+## Step 5: Export Your Document
+
+Once you're happy with your PRD:
+
+<Steps>
+  <Step>
+    ### Save the Document
+
+    Click **Save** to store it in your project.
+  </Step>
+
+  <Step>
+    ### Export
+
+    Click **Export** and choose your format:
+    - **Markdown** — For GitHub, Notion, etc.
+    - **PDF** — For sharing and printing
+    - **DOCX** — For Microsoft Word
+  </Step>
+
+  <Step>
+    ### Share (Optional)
+
+    - Copy a shareable link
+    - Email directly from Fabric
+    - Post to Slack or Teams
+  </Step>
+</Steps>
+
+## Tips for Better Results
+
+### Be Specific
+
+```
+❌ "Create a PRD for notifications"
+
+✅ "Create a PRD for a notification preferences feature that lets
+   users control email, push, and SMS notifications separately,
+   with quiet hours and frequency settings"
+```
+
+### Provide Context
+
+The more context you provide, the better the output:
+
+- Attach relevant workspaces
+- Mention existing constraints
+- Reference similar features
+- Specify target users
+
+### Use Follow-ups
+
+Don't try to get everything perfect in one request:
+
+```
+First: "Create a PRD for user notifications"
+Then:  "Add more detail to the mobile app requirements"
+Then:  "Include API specifications for the backend team"
+```
+
+### Iterate
+
+Your first draft is just the beginning. The best PRDs come from:
+1. Generating an initial draft
+2. Reviewing with your team
+3. Refining based on feedback
+4. Updating as you learn more
+
+## What's Next?
+
+Now that you've created your first document, try these:
+
+<Cards>
+  <Card title="Technical Specification">
+    Generate a tech spec from your PRD:
+
+    "Based on this PRD, create a technical specification document"
+  </Card>
+  <Card title="User Stories">
+    Break down into stories:
+
+    "Generate user stories with acceptance criteria from this PRD"
+  </Card>
+  <Card title="Architecture Document">
+    Design the system:
+
+    "Create an architecture document for implementing this feature"
+  </Card>
+</Cards>
+
+## Troubleshooting
+
+### "The output doesn't match what I wanted"
+
+- Be more specific in your request
+- Attach more context documents
+- Break your request into smaller parts
+- Try a different document type
+
+### "The document is too short/long"
+
+Ask for adjustments:
+- "Expand the requirements section with more detail"
+- "Summarize this into a one-page executive summary"
+
+### "The AI made assumptions I don't agree with"
+
+Clarify in follow-ups:
+- "Actually, we don't support mobile yet—update for web only"
+- "We're targeting enterprise users, not consumers"
+
+---
+
+## Next Steps
+
+<Cards>
+  <Card title="Prompt Library" href="/docs/features/prompts">
+    Create custom prompts for consistent output
+  </Card>
+  <Card title="Orchestrator" href="/docs/agents/orchestrator">
+    Automate multi-step workflows
+  </Card>
+  <Card title="MCP Integration" href="/docs/integrations/mcp">
+    Connect to Jira, Slack, and more
+  </Card>
+</Cards>

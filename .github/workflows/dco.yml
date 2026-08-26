@@ -1,0 +1,113 @@
+name: DCO
+
+# Enforces the Developer Certificate of Origin: every human-authored,
+# non-merge commit on a PR must carry a `Signed-off-by:` trailer whose
+# email matches the commit author (`git commit -s`). See CONTRIBUTING.md
+# § Developer Certificate of Origin and
+# docs/open-source/open-sourcing-plan.md §6.4.
+#
+# Exemptions (disclosed in CONTRIBUTING.md):
+# - An explicit allowlist of trusted automation PRs: the changesets
+#   release PR (github-actions[bot] on this repo's changeset-release/master
+#   branch), dependabot, and the corporate OSS Relay App on relay/** branches.
+#   The Relay App login is a repository variable and an unset value exempts
+#   nobody. Enforced at the PR-creator level — an
+#   authenticated identity — NOT via per-commit author metadata, which
+#   is forgeable (anyone can set a bot's email as the commit author).
+#   Deliberately NOT a blanket "[bot]" exemption: any other GitHub App
+#   opening a PR is checked like a human contributor.
+# - Merge commits (more than one parent), matching standard DCO-app
+#   practice. Conflict resolutions inside merge commits are therefore
+#   not certified; contributors should prefer rebase over merge.
+#
+# The check reads commits via the API only — it never checks out PR code,
+# so it is safe to run on fork PRs with no secrets exposure (§6.3 of the
+# open-sourcing plan). It fails closed when the commit list may be
+# incomplete (the endpoint caps at 250 commits). Not yet in the
+# required-checks set; it becomes required at the Phase 3
+# branch-protection setup.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [master]
+
+permissions:
+  pull-requests: read
+
+concurrency:
+  group: dco-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: DCO check
+    runs-on: ubuntu-latest
+    # Trusted-automation allowlist (GitHub Apps cannot sign off). A skipped
+    # job reports success, so this stays compatible with a required check.
+    if: >-
+      ${{
+        !(
+          (
+            github.event.pull_request.user.login == 'github-actions[bot]' &&
+            github.event.pull_request.head.repo.full_name == github.repository &&
+            github.event.pull_request.head.ref == 'changeset-release/master'
+          ) ||
+          github.event.pull_request.user.login == 'dependabot[bot]' ||
+          (
+            vars.OSS_RELAY_APP_LOGIN != '' &&
+            github.event.pull_request.user.login == vars.OSS_RELAY_APP_LOGIN &&
+            github.event.pull_request.head.repo.full_name == github.repository &&
+            startsWith(github.event.pull_request.head.ref, 'relay/')
+          )
+        )
+      }}
+    steps:
+      - name: Verify Signed-off-by on every commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          EXPECTED: ${{ github.event.pull_request.commits }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+        run: |
+          # --paginate emits one JSON array per page; merge into one array.
+          gh api "repos/$REPO/pulls/$PR_NUMBER/commits?per_page=100" --paginate | jq -s 'add' > commits.json
+
+          # Fail closed if the API view of the PR is incomplete — this
+          # endpoint returns at most 250 commits, so a larger PR could
+          # otherwise pass with unverified commits.
+          TOTAL=$(jq 'length' commits.json)
+          echo "PR declares $EXPECTED commit(s); API returned $TOTAL."
+          if [ "$EXPECTED" -gt 250 ] || [ "$TOTAL" -ne "$EXPECTED" ]; then
+            echo "::error::Cannot verify the complete commit set: the PR declares $EXPECTED commits but the API returned $TOTAL (endpoint cap: 250)."
+            echo "::error::Split the PR into smaller ones so every commit can be verified."
+            exit 1
+          fi
+
+          # A commit passes if it is a merge commit or has a Signed-off-by
+          # line containing the commit author's email (case-insensitive).
+          jq -r '
+            .[]
+            | select((.parents | length) <= 1)
+            | . as $c
+            | ($c.commit.author.email | ascii_downcase) as $email
+            | ($c.commit.message | ascii_downcase | split("\n")
+               | map(select(startswith("signed-off-by:") and contains("<" + $email + ">")))
+               | length) as $signoffs
+            | select($signoffs == 0)
+            | "\($c.sha[0:10])  \($c.commit.author.email)  \($c.commit.message | split("\n")[0])"
+          ' commits.json > offenders.txt
+
+          if [ -s offenders.txt ]; then
+            echo "::error::DCO check failed — the following commit(s) lack a Signed-off-by trailer matching the commit author:"
+            while IFS= read -r line; do
+              echo "::error::  $line"
+            done < offenders.txt
+            echo "::error::Sign off your commits with 'git commit -s'. To fix existing commits:"
+            echo "::error::  git rebase --signoff origin/$BASE_REF && git push --force-with-lease"
+            echo "::error::See CONTRIBUTING.md § Developer Certificate of Origin."
+            exit 1
+          fi
+
+          echo "All non-merge commits are signed off — DCO OK."

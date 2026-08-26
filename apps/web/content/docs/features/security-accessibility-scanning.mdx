@@ -1,0 +1,194 @@
+---
+title: Security & Accessibility Scanning
+description: Run AI agents that scan your project's features and documents for OWASP Top 10 security risks and WCAG 2.1 AA accessibility issues, with severity and remediation for every finding.
+---
+
+Every Fabric project has a **Security & Accessibility** page where two AI agents review your work and report what they find. The **security agent** checks your features and documents against the **OWASP Top 10**; the **accessibility agent** checks the UI you describe against **WCAG 2.1 AA**. Each finding comes with a severity, plain-language remediation, and a reference to the rule that produced it.
+
+<Callout type="info">
+**Scanning works at design time.** The agents read what's already in Fabric — your features (with acceptance criteria) and generated documents — so you can review security and accessibility *before* a line of code exists. There's nothing to install and no repository to connect.
+</Callout>
+
+## Open the page
+
+In a project, open the **Security** tab. You'll see three areas:
+
+- **Run scan** and a **last scan** summary (status, when it ran, how many findings, the model used).
+- **Configuration** — which scanners run, how findings are enforced, and your custom rules.
+- **Results** — findings grouped by severity, with filters.
+
+## Run a scan
+
+<Steps>
+  <Step>
+    ### Open the Security tab
+
+    In your project, click **Security**.
+  </Step>
+
+  <Step>
+    ### Click Run scan
+
+    The button starts a scan over the whole project. The summary shows **Running** while it works — typically under a couple of minutes — and you can keep using Fabric; you'll get a notification when it finishes.
+  </Step>
+
+  <Step>
+    ### Review the findings
+
+    Findings appear grouped by severity (**Critical → High → Medium → Low**). Each one has a title, a description of the risk, a **Remediation** block, the rule it maps to (e.g. *OWASP Top 10 — A03:2021 Injection* or *WCAG 2.1 AA — 1.4.3 Contrast (Minimum)*), and the feature or document it's about.
+  </Step>
+</Steps>
+
+<Callout type="info">
+**A clean scan is confirmed explicitly.** If the agents find nothing, you get a "Clean scan — no issues found" confirmation with a timestamp, not just an empty list.
+</Callout>
+
+## What gets scanned
+
+The agents read your project's **Fabric-held context**:
+
+- **Features** — titles, descriptions, acceptance criteria, and release notes.
+- **Generated documents** — PRDs, specs, and other documents. Their described UI is what the accessibility agent reviews.
+
+A project-wide scan covers your recent features and active documents together. The richer your features and documents, the sharper the findings — the agents can only review what's written down.
+
+If you connect a source repository and enable **Semgrep** (below), the scan *also* runs real static analysis (SAST) over your actual code — so you get both design-time review and code-level findings.
+
+<Callout type="info">
+**Findings never contain your secrets.** If a document or your code contains a credential, API key, or token, the scan describes the *issue* and redacts the secret value — it's scrubbed from every finding before the finding is saved. The Semgrep code scan and the git-history secret scan clone your repository to a temporary folder and delete it after scanning (gitleaks also runs with redaction). This covers the scan's own findings — it doesn't change what other Fabric features (your documents, the code index, meeting transcripts) already store. The audit also stays strictly on security and accessibility — no performance or code-style noise.
+</Callout>
+
+## Confidence and false-positive review
+
+Not every finding is equally certain. Each one carries a **confidence** — how sure the scanner is that it's a real issue, shown as a **High**, **Medium**, or **Low** chip. Behind the scenes, the scanner also captures the exact **evidence** for each finding — the offending code, a gitleaks rule and location, or the AI reviewer's cited quote — and feeds that (redacted) evidence to the false-positive judge, so its verdict is grounded in what actually triggered the rule rather than the rule's name alone.
+
+**The default view is curated for signal.** Findings the scanner was **low-confidence** about — and noisy **"audit"-category** static-analysis rules, which are informational by nature — are **collapsed out of the default view**. They're never deleted: a **"Show N low-confidence findings"** control sits at the bottom of the results and reveals them with one click, and every one stays fully actionable. This split is **deterministic** — a plain confidence threshold — so it works instantly, costs nothing, and holds even if the AI review below never runs.
+
+**An AI false-positive review runs automatically as the final scan phase.** Once the scanners finish, an adversarial AI reviewer looks over the **ambiguous** findings — the ones in the middle confidence band, where a second opinion is worth the most — and **auto-dismisses** the ones it judges to be false positives, keeping confirmed findings visible. To stay cheap it uses a smaller, cost-aware model tier and reviews only that ambiguous band rather than every finding. Every auto-dismissal is **reversible**: it's an ordinary **Dismissed** status you can **Reopen**, and each one is recorded in **History**.
+
+<Callout type="info">
+**Everything degrades gracefully.** Each scanner and the AI review are **independently toggleable** under **Configuration**. Turn the review off and scans still run and the default view still holds — low-confidence findings stay collapsed behind the deterministic threshold regardless. The review only ever *reduces* noise; it never blocks or fails a scan.
+</Callout>
+
+## Configuration
+
+Open the **Configuration** card to tune how scanning works. Changes are saved with **Save changes**.
+
+| Setting | What it does |
+|---------|--------------|
+| **Security scanning** | Turn the OWASP Top 10 security agent on or off |
+| **Accessibility scanning** | Turn the WCAG 2.1 AA accessibility agent on or off |
+| **Scan repository code (Semgrep)** | Run the Semgrep static analyzer over your connected repository for real code-level security findings. Only runs when a repository is connected |
+| **Scan git history for secrets (gitleaks)** | Deep-scan your repository's entire commit history for credentials that were committed and later removed. Heavier (full clone) and opt-in. Only runs when a repository is connected |
+| **Auto-review findings (AI false-positive triage)** | Run the AI false-positive review as the final scan phase. It auto-dismisses likely false positives (reversibly) and keeps confirmed findings visible. Best-effort — never blocks or fails a scan. On by default |
+| **Enforcement mode** | **Warn (non-blocking)** surfaces findings without stopping work (the default). **Block** auto-blocks each work item a finding is tied to on every scan |
+| **Auto-scan at maturation gate** | Automatically scan a feature when it reaches a chosen stage |
+| **Maturation gate** | The drafting stage (e.g. **Published**) that triggers an auto-scan |
+
+<Callout type="info">
+**Two enforcement modes.** In **Warn** (the default) findings are advisory — a scan never blocks anything. In **Block**, every scan automatically **blocks each work item a finding is tied to**, using the finding as the reason — the work item gets a **Blocked** chip (recorded in its version history) and stays blocked until you remove it manually. A re-scan won't overwrite a reason you've edited, and switching back to **Warn** stops new auto-blocks (existing ones remain). You can also block any work item manually in either mode.
+</Callout>
+
+### Auto-scan when a feature matures
+
+With **Auto-scan at maturation gate** on, Fabric runs a focused scan of a feature the moment it reaches the **maturation gate** stage you choose. This is handy for catching issues as features are finalized, without anyone remembering to press a button. It runs once per transition into the gate and won't pile up duplicate scans.
+
+## Custom rules
+
+Beyond the OWASP Top 10 and WCAG 2.1 AA, you can add **project-specific rules** the agents enforce alongside the standard sets — for example, an industry compliance requirement or a house security policy.
+
+<Steps>
+  <Step>
+    ### Add a rule
+
+    In **Configuration → Custom rules**, click **Add rule**.
+  </Step>
+
+  <Step>
+    ### Describe it
+
+    Give the rule a **name**, choose its **category** (Security or Accessibility) and **severity**, and write the **guidance** — what the agent should flag. Be specific (e.g. "Flag any feature that describes storing credentials directly in source code or client-side config instead of a secrets manager").
+  </Step>
+
+  <Step>
+    ### Save and scan
+
+    Save your changes and run a scan. Findings from a custom rule are clearly marked with a **Custom rule** badge and attributed as *Custom: &lt;your rule name&gt;*, so you always know which rule produced them.
+  </Step>
+</Steps>
+
+## Work through findings
+
+Each finding has actions:
+
+- **Resolve** — you've addressed it. It moves to the **Resolved** status.
+- **Dismiss** — it doesn't apply. It moves to **Dismissed**.
+- **Reopen** — bring a resolved or dismissed finding back to **Open**.
+
+**Adjust the triage.** Expand a finding and use the **Adjust triage** controls to override its **Severity**, **Category**, or **Status**. The AI's first pass is a starting point — if it rated something too high, or filed a finding under the wrong category, correct it in place. Each change is saved immediately and recorded in **History**.
+
+**Verify a finding at its source.** Open a finding and follow its source link to check it yourself: a **code** finding (Semgrep) opens the exact **file and line** in your repository, a **git-history** finding opens the offending **commit**, and a finding about a feature links to that **Feature** in Fabric. (Repo links work for GitHub and GitLab.)
+
+Use the **Status**, **Category**, and **Severity** filters to focus — for example, only **Open** **High**-severity **Security** findings.
+
+<Callout type="info">
+**Scan vs Full scan.** The **Scan** button runs an *incremental* scan — it only re-analyzes features and documents that changed since your last scan, and keeps the findings on everything else (with your triage intact). It's faster and cheaper. The dropdown's **Full scan** re-analyzes everything from scratch. Either way, the results page shows the latest run's complete picture; previous runs are kept in **History** with their duration, cost, and model.
+</Callout>
+
+## Block the related work item
+
+A finding is about a feature you already have, so there's no need to create a new ticket. Instead, you can **block** that work item until the issue is addressed.
+
+<Steps>
+  <Step>
+    ### Open the finding and click Block F‑XXX
+
+    When a finding is about an existing feature, it shows a **Block F‑XXX** button. Click it to mark that work item blocked — the finding becomes the block reason.
+  </Step>
+
+  <Step>
+    ### It shows up on the work item
+
+    The feature now carries a **Blocked** chip — on the roadmap, the board, and the work item itself — with the reason on hover. The finding shows a **Blocked → F‑XXX** chip linking straight to it. On the roadmap you can also filter to just **Blocked** work items.
+  </Step>
+
+  <Step>
+    ### Block or unblock manually too
+
+    On any work item you can **Block** or **Unblock** directly (with an optional reason). Every block and unblock is recorded in the work item's **version history**.
+  </Step>
+</Steps>
+
+## Group findings into tickets
+
+Blocking is the right move when a finding maps to one feature you already have. But some findings are **cross-cutting** — dozens of secrets scattered across your git history, or a class of accessibility issue that spans the whole UI — and deserve their own tracked work rather than a block on an unrelated feature. **Group into tickets** turns those into backlog tickets for you.
+
+From the **Results** header, click **Group into tickets**. Fabric reads every open finding from your latest scan, clusters them by **theme** (the finding's category and the rule that produced it), and drafts **one backlog ticket per theme** — so 119 "secret in git history" hits become a single, actionable ticket instead of 119 loose findings.
+
+<Callout type="info">
+**Turn it on first.** Grouping is off by default. Enable **Fabric Agent ticket generation** under **Configuration** — until you do, the button stays disabled with a hint explaining why. This keeps the agent from creating backlog items until you've decided you want it to.
+</Callout>
+
+Each ticket is a normal work item, created through the same flow as any other — so it appears on your roadmap and syncs to your project-management tool like everything else. It carries:
+
+- A **title** and **summary** describing the theme.
+- A **severity breakdown** and a **priority** taken from the theme's worst finding (one Critical finding makes it a P0 ticket).
+- The **full list** of the theme's findings, with their locations.
+- **Remediation** guidance aggregated across the group, and the **source** (which scanner found them).
+- For accessibility themes, a **`needs-rule-review`** tag — a reminder to sanity-check the AI's rule interpretation before acting on it.
+
+<Callout type="info">
+**Re-running never duplicates.** Group into tickets as often as you like. A theme that already has a ticket is **skipped** — or, if new findings have appeared for it since, the agent adds a **comment** listing just those new ones. It never edits the original ticket or opens a second one for the same theme.
+</Callout>
+
+When the run finishes, a **results** dialog lists every theme and what happened to it — **Created**, **Updated**, **Skipped**, or **Failed** — each linking straight to its ticket. If a theme can't be processed, it's shown as **Failed** with the reason rather than dropped, and you can simply run it again.
+
+## History
+
+There are two history views at the top of the page. **History** records every **scan** (who ran it and when, the result, which **scanners** ran, and the run's **duration, cost, and model**) and configuration changes. **Finding updates** records per-finding activity — every **status change** (resolved / dismissed / reopened) and every **triage edit** (a changed severity or category). Both show the most recent entries with a **Show more** button, and together they're the audit trail for your security and accessibility work. (Blocking a work item is recorded in that work item's own version history.)
+
+## Tips
+
+- **Write detailed acceptance criteria.** The agents reason about what you describe — explicit security and accessibility requirements lead to more precise findings.
+- **Scan after generating documents.** Documents carry more detail than feature stubs, so a scan after document generation tends to surface more.
+- **Start in Warn mode.** Keep findings advisory while your team builds the habit of reviewing them.

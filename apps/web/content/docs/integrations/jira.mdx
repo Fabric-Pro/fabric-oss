@@ -1,0 +1,86 @@
+---
+title: Jira
+description: Connect Jira so Fabric agents and workflows can create and search issues as runtime actions.
+---
+
+Connect Jira to Fabric AI so agents and workflows can create issues and search your projects with JQL — as live runtime actions.
+
+Jira is a **Hybrid** provider: it offers both knowledge (search) and write (create) actions.
+
+<Callout type="info">
+Jira and Confluence share one **Atlassian** connection — Fabric uses Atlassian's official Rovo MCP server, so a single OAuth authorization unlocks both. See also [Confluence](/docs/integrations/confluence).
+</Callout>
+
+## Setting Up Jira
+
+<Steps>
+  <Step>
+    ### Open Jira under Integrations
+
+    Go to **Settings → Integrations** and open the **Jira** card.
+  </Step>
+
+  <Step>
+    ### Set Up Actions
+
+    Click **Set Up Actions** and authorize Fabric AI with Atlassian (OAuth). This connects both Jira and Confluence.
+  </Step>
+
+  <Step>
+    ### Confirm
+
+    The provider shows **Connected** with its available runtime actions.
+  </Step>
+</Steps>
+
+## Available Actions
+
+| Action | Type | Description |
+|--------|------|-------------|
+| **Search Jira Issues** | Knowledge | Search Jira issues with JQL |
+| **Create Jira Issue** | Action | Create a new issue in a Jira project |
+
+### In AI Chat
+
+```
+"Find all open bugs assigned to me in the MOBILE project"
+
+"Create a Jira story for the onboarding flow we just specced"
+```
+
+## Disconnecting & Reconnecting
+
+1. Open **Settings → Integrations → Jira**
+2. Click **Disconnect** (this also disconnects the shared Atlassian connection used by Confluence)
+3. To reconnect, click **Set Up Actions** again and re-authorize
+
+## Troubleshooting
+
+### Issues aren't found
+- Confirm the connection shows **Connected**
+- Check your JQL and that the authorized account can see the project
+- Verify the correct Atlassian site was selected during authorization
+
+## Use as a project management tool
+
+You can link a project to Jira and sync its backlog two ways — pushing features as issues and pulling issues back in. In the project's **Settings → Project Management**, pick **Jira**, then choose the Jira project. If your account has access to multiple Atlassian sites, the picker spans all of them.
+
+<Callout type="info">
+Jira uses the shared **Atlassian (Rovo)** connection, and issue descriptions use Atlassian Document Format. See [Project Management Sync](/docs/features/pm-sync) for the full push/pull and conflict-resolution flow.
+</Callout>
+
+---
+
+## Next Steps
+
+<Cards>
+  <Card title="Project Management Sync" href="/docs/features/pm-sync">
+    Push and pull your backlog with Jira
+  </Card>
+  <Card title="Confluence" href="/docs/integrations/confluence">
+    The other half of the shared Atlassian connection
+  </Card>
+  <Card title="MCP Integration" href="/docs/integrations/mcp">
+    How connected tools are called at runtime
+  </Card>
+</Cards>

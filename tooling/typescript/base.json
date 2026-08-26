@@ -1,0 +1,25 @@
+{
+	"$schema": "https://json.schemastore.org/tsconfig",
+	"compilerOptions": {
+		"allowJs": true,
+		"composite": false,
+		"esModuleInterop": true,
+		"forceConsistentCasingInFileNames": true,
+		"incremental": true,
+		"inlineSources": false,
+		"isolatedModules": true,
+		"lib": ["ES2022", "DOM"],
+		"module": "Preserve",
+		"target": "ES6",
+		"moduleResolution": "bundler",
+		"noUnusedLocals": false,
+		"noUnusedParameters": false,
+		"preserveWatchOutput": true,
+		"resolveJsonModule": true,
+		"skipLibCheck": true,
+		"strict": true,
+		"strictNullChecks": true
+	},
+	"display": "Default",
+	"exclude": ["node_modules", "dist", ".next", "build"]
+}

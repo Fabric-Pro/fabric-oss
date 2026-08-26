@@ -1,0 +1,92 @@
+---
+title: Google Drive
+description: Google Drive verbinden, damit Fabric-Agenten Ihre Drive-Dokumente als Laufzeit-Wissens-Aktionen auflisten, durchsuchen und lesen können.
+---
+
+Verbinden Sie Google Drive mit Fabric AI, damit Agenten und Workflows Ihre Drive-Dokumente auflisten, durchsuchen und lesen können — als Live-Laufzeit-Aktionen, bei Bedarf.
+
+Google Drive ist ein **Wissens**-Anbieter: Er bietet Lese-/Abruf-Aktionen, keine Schreib-Aktionen.
+
+## Integrationsmethoden
+
+| Methode | Anwendungsfall | Auth |
+|--------|----------|------|
+| **MCP-Server** | Drive-Dateien in Chat & Agenten auflisten, durchsuchen und lesen | OAuth |
+| **Workflow-Plugin** | In Workflow-Knoten auf Drive-Dateien zugreifen | OAuth |
+
+## Google Drive einrichten
+
+<Steps>
+  <Step>
+    ### Google Drive unter Integrationen öffnen
+
+    Gehen Sie zu **Einstellungen → Integrationen** und öffnen Sie die **Google Drive**-Karte.
+  </Step>
+
+  <Step>
+    ### Aktionen einrichten
+
+    Klicken Sie auf **Aktionen einrichten** und autorisieren Sie Fabric AI auf dem Google-Zustimmungsbildschirm. Melden Sie sich mit dem Google-Konto an, dessen Drive Fabric nutzen soll.
+  </Step>
+
+  <Step>
+    ### Bestätigen
+
+    Der Anbieter zeigt **Verbunden** mit seinen verfügbaren Laufzeit-Aktionen. Agenten können sie nun live aufrufen.
+  </Step>
+</Steps>
+
+<Callout type="info">
+Verwenden Sie ein Google Workspace-Konto? Ihr Administrator muss die Fabric-OAuth-App möglicherweise genehmigen, bevor Sie sich verbinden können.
+</Callout>
+
+## Verfügbare Aktionen
+
+| Aktion | Typ | Beschreibung |
+|--------|------|-------------|
+| **List Drive Files** | Wissen | Dateien und Ordner aus Google Drive auflisten |
+| **Search Drive** | Wissen | Nach Dateien in Google Drive suchen |
+| **Get Document Content** | Wissen | Inhalt eines Google Drive-Dokuments abrufen |
+
+### Verwendung im KI-Chat
+
+```
+"Was sagt unser Mitarbeiterhandbuch über Remote-Arbeitsrichtlinien?"
+
+"Fasse den Q4-Finanzbericht aus Drive zusammen"
+
+"Finde die Designspezifikationen für die mobile App"
+```
+
+Der Agent ruft die Wissens-Aktionen von Drive live auf, um die relevanten Dokumente zu finden und zu lesen — es gibt keine Hintergrund-Synchronisierung, auf die man warten muss.
+
+## Mehrere Konten
+
+Verbinden Sie mehrere Google-Konten:
+
+- Persönliches Google-Konto für Ihre eigenen Dokumente
+- Geteilte Organisations-Drives für Team-Inhalte
+- Jede Verbindung wird durch ihr Konto / ihren Workspace identifiziert
+
+## Fehlerbehebung
+
+### OAuth-Zustimmungsfehler
+- Stellen Sie sicher, dass Sie sich mit dem richtigen Google-Konto anmelden
+- Bei einem Google Workspace-Konto muss Ihr Administrator die OAuth-App möglicherweise genehmigen
+
+### Eine Aktion liefert keine Ergebnisse
+- Prüfen Sie, ob die Verbindung unter **Einstellungen → Integrationen** **Verbunden** anzeigt
+- Stellen Sie sicher, dass das angemeldete Konto Zugriff auf die erwarteten Dateien hat
+
+---
+
+## Nächste Schritte
+
+<Cards>
+  <Card title="MCP-Integration" href="/docs/integrations/mcp">
+    Wie verbundene Tools zur Laufzeit aufgerufen werden
+  </Card>
+  <Card title="KI-Chat" href="/docs/features/ai-chat">
+    Google Drive in KI-Gesprächen nutzen
+  </Card>
+</Cards>

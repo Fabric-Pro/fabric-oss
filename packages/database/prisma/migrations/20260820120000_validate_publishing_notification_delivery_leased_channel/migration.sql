@@ -1,0 +1,173 @@
+-- Fizzy #1850, Publishing Suite. Discharges the last pending constraint validation on
+-- publishing_notification_delivery: the leased-channel fence added NOT VALID in
+-- 20260818120000, declared in prisma/pending-constraint-validations.json, deleted from that
+-- file in this same change. scripts/lint-migrations.ts fails on a stale entry whose VALIDATE
+-- has already landed, so leaving the line behind is a red check rather than a quiet drift.
+--
+-- WHY NOW, AND NOT WHEN THE ENTRY SAID. The entry named "Publishing Suite 1C-3 (chat channel),
+-- or the first later slice to touch this ledger — whichever lands first", and 20260818120000's
+-- own header gave the reason: "the phase's next slice puts a third channel in this same
+-- ledger". 1C-3 has since shipped -- 20260818130000 -- and it does NOT touch this ledger. It
+-- carries its own publishing_chat_delivery table, keyed by channel rather than by person,
+-- because a broadcast has no recipient and this table's key is
+-- (cycleId, recipientUserId, channel) with recipientUserId NOT NULL.
+--
+-- So the trigger the entry was waiting on will not fire, and the named validator has already
+-- landed without validating. Left alone, the entry would sit until its 2027-02-28 deadline
+-- turned it red, pointing at a slice that shipped six months earlier. A dated obligation whose
+-- discharge condition has become unreachable is not deferred work; it is a stale pointer that
+-- reads as deferred work. Discharging it is the correction.
+--
+-- THE PREMISE THAT MOVED, STATED PLAINLY, because it is the part a later reader needs: the
+-- fence was written expecting a second leased channel in this table, and the phase instead put
+-- its third channel in a table of its own. The fence is not thereby unnecessary. Only the
+-- timing of the widening it anticipated changed.
+--
+-- CORRECTING THE RECORD, because 20260818120000 cannot be edited and its header is what a
+-- future slice will read. That header says: "THREE OF THE FOUR READERS ... select rows by
+-- status ALONE ... Only the drain page names a channel." BOTH HALVES ARE WRONG, and an earlier
+-- draft of THIS file repeated them rather than re-deriving them, which is how a stale count
+-- outlives the slice that wrote it.
+--
+--   The drain page names no channel. PUBLISHING_DRAIN_PAGE_SQL is `WHERE "status" = 'DEFERRED'
+--   AND ("expiresAt","id") > ($1,$2)`, and its LIMIT-1 remaining probe is the same predicate.
+--   The one statement in that file that names a channel is
+--   recordPublishingDeferredEmailFailure, and there the channel is part of the row's identity.
+--
+--   The readers are not four, and the in-app one is not among them. deliverPublishingTopicsReadyInApp
+--   addresses its row with a findUnique pinned to channel:'IN_APP' and then updates by primary
+--   key with an ALLOW-LIST OF ONE status (FAILED). It is channel-keyed and status-allow-listed,
+--   so a pre-existing IN_APP row in a leased status is refused whether or not this CHECK was
+--   ever validated. That conversion from a deny-list shipped in the SAME slice as the fence,
+--   so the enumeration was already stale on the day it landed.
+--
+-- WHAT VALIDATING ACTUALLY BUYS, then, stated at the size it really is, since NOT VALID already
+-- bound every write. The beneficiaries are the statements that CHOOSE ROWS by walking the
+-- ledger without asking what a row is for: PUBLISHING_RECLAIM_STATEMENTS' two sweeps, whose own
+-- comment cites this constraint to license the omission ("`status = 'DEFERRED'` already means
+-- an email obligation"), and the drain's page and remaining probe. The drain is the one worth
+-- naming twice: a non-EMAIL DEFERRED row is not merely mis-swept there, it is paged, claimed
+-- and handed to the send path -- mail delivered to a recipient on a channel the row says is not
+-- email.
+--
+-- For all of them that licence was true of every row written since 2026-08-18 and merely
+-- *believed* of everything older. Validating is what makes it true of the whole relation.
+--
+-- AND THE BELIEF IS CHEAPLY CHECKABLE, which an earlier draft of this file denied in as many
+-- words -- it claimed the gap "can only be closed, never observed". That was false, and falsely
+-- discouraging: the locating SELECT printed below answers "does a violating row exist" against
+-- any environment, right now, before anything is deployed, and `pg_constraint.convalidated`
+-- answers "was the scan actually performed". RUN THE FIRST ONE AGAINST EVERY TARGET
+-- ENVIRONMENT BEFORE PROMOTING AND EXPECT ZERO ROWS. One SELECT turns the argument below from
+-- an induction over call sites into a measurement, and the argument's failure mode is a
+-- mid-release abort that blocks every later promotion until a human resolves it by hand.
+--
+-- IT IS IN A LATER RELEASE, which is the whole point of the split -- `promote` runs every
+-- pending migration in one `prisma migrate deploy` pass, so two files in one release are not
+-- separately scheduled. 20260818120000 shipped in v1.13.2 (`git tag --contains 97574bb5e`);
+-- this file lands no earlier than the release after v1.13.3.
+--
+-- THE SCAN SHOULD FIND NOTHING, and the argument is short enough to check rather than trust.
+-- The predicate is `status NOT IN ('SENDING','DEFERRED','EXPIRED') OR channel = 'EMAIL'`, so
+-- what has to hold is that no row ever ENTERS that set of three on a non-EMAIL channel. There
+-- are exactly two entry points, and both name the channel as a literal:
+--
+--   claimPublishingEmailDelivery  -- the create arm writes channel:'EMAIL' beside
+--                                    status:'SENDING'; the update arm is keyed on the id
+--                                    returned by a findUnique on
+--                                    (cycleId, recipientUserId, channel:'EMAIL').
+--   deferPublishingEmailDeliveries -- createMany writes channel:'EMAIL' beside status:'DEFERRED'.
+--
+-- Every other write of the three is a TRANSITION INSIDE the set -- DEFERRED to SENDING in the
+-- drain, DEFERRED or SENDING to EXPIRED in the reconciler -- and so cannot introduce a channel
+-- the set did not already hold. In-app writes only ever reach SENT, FAILED or SKIPPED.
+--
+-- STATED THAT WAY ON PURPOSE, because the looser claim -- "every writer hard-codes EMAIL" --
+-- is FALSE and a reviewer checking it would rightly stop here. publishingEmailClaimableSql,
+-- the fragment the claim's UPDATE actually carries, has NO CHANNEL TERM AT ALL: it asks
+-- deliveredAt, status, attemptCount, expiresAt, and -- when a lease cutoff param is supplied,
+-- as the claim does -- claimedAt. Channel is not among them at any call site. The fence sits
+-- one statement upstream in the findUnique. That is precisely the shape 20260818120000 was
+-- added to hold in place -- an invariant maintained by what the callers happen to do rather
+-- than by the predicates that read the rows -- and it is why this constraint is worth
+-- validating rather than dropping.
+--
+-- NOT VALID skipped the scan of rows existing on 2026-08-18 and bound every write from that
+-- instant, so the only rows the scan can reject are older ones, written by those same two
+-- entry points under the same two literals.
+--
+-- ==========================================================================================
+-- THE THREE WAYS THIS FILE CAN ABORT A DEPLOY. They look alike in the log -- all three arrive
+-- wrapped as P3018 -- and they call for OPPOSITE actions. Read the SQLSTATE, not the P-code.
+--
+--   23514  a row violates the predicate. THE DATA IS WRONG. Fix it, then resolve --rolled-back.
+--   55P03  lock_timeout: the 5s wait for SHARE UPDATE EXCLUSIVE expired because something else
+--          held it (VACUUM, ANALYZE, other DDL). NOTHING IS WRONG. The locating query below
+--          will correctly return zero rows -- do not go hunting. Resolve --rolled-back and
+--          re-run, once the conflicting holder is gone.
+--   57014  statement_timeout: the scan itself outran the bound set below. Also NOT a data
+--          problem. Re-run in a quieter window, or raise the bound after measuring.
+--
+-- NEVER `--applied` FOR ANY OF THE THREE. It records a validation that did not happen and
+-- leaves the constraint NOT VALID with nothing in the repository left to say so. This is the
+-- part most easily got wrong and 20260815120400's header argues it at length.
+--
+-- FOR 23514, Postgres names the CONSTRAINT and never the ROW. For this predicate the offending
+-- rows are exactly:
+--
+--     SELECT id, status, channel, "createdAt" FROM publishing_notification_delivery
+--      WHERE status IN ('SENDING','DEFERRED','EXPIRED') AND channel <> 'EMAIL'
+--      ORDER BY "createdAt";
+--
+-- Exact rather than approximate: both columns are NOT NULL (20260812120300), so this
+-- hand-written negation and the catalog-driven `WHERE NOT (pred)` form in 20260815120400's
+-- header return the same rows, with no CHECK-passes-on-NULL gap between them.
+--
+-- THEN FIX THE DATA -- AND THE SIBLING FILE'S REMEDY IS ILLEGAL HERE. 20260815120400 says
+-- "stamp the row with an expiry ... or terminalize it to EXPIRED". Against THIS predicate both
+-- fail: EXPIRED is itself inside the forbidden set, so that UPDATE is refused with the SAME
+-- 23514 naming the SAME constraint -- which reads as "the migration failed again" rather than
+-- "my repair was illegal", and loops. The legal repairs are:
+--
+--   status = 'SKIPPED'   moves the row out of the set and TERMINALIZES it. The obligation is
+--                        discharged, not deferred. Correct when the row is junk.
+--   status = 'FAILED'    also moves it out, but FAILED is in PUBLISHING_EMAIL_CLAIMABLE_STATUSES,
+--                        so the row stays RE-CLAIMABLE and the obligation survives. Correct
+--                        when a real recipient is still owed something.
+--   channel = 'EMAIL'    legal, and the right repair only if the row really is an email
+--                        obligation mislabelled. It can raise 23505 on
+--                        publishing_notification_delivery_cycle_recipient_channel_key if the
+--                        EMAIL row for that (cycleId, recipientUserId) already exists.
+--
+-- ==========================================================================================
+--
+-- LOCK LEVEL, MEASURED RATHER THAN ASSUMED: VALIDATE CONSTRAINT takes SHARE UPDATE EXCLUSIVE,
+-- not ACCESS EXCLUSIVE -- measured on postgres:16 against this table in 20260815120400, where
+-- the notification path's own `UPDATE ... SET status='SENDING'` committed without waiting on an
+-- open validation. The cost that justified deferring the scan is the other one: it reads every
+-- page and blocks VACUUM, ANALYZE and further DDL for its duration.
+--
+-- BOTH BOUNDS ARE SET HERE BECAUSE NOTHING ELSE SETS THEM. docs/database-promotion.md used to
+-- read as though preflight's `lock_timeout` (5s) and `statement_timeout` (15m) protected the
+-- migrations' ALTERs. They never did: `promote` is `pnpm preflight && prisma migrate deploy &&
+-- pnpm deploy:rls` -- three processes -- and preflight-migrate.ts sets those GUCs on its own
+-- pg Client and `end()`s it in a `finally`. A session GUC dies with its connection, so
+-- `migrate deploy` inherits neither and runs at the server defaults. That doc has been
+-- corrected in this same change. It matters here first because this is the repo's first
+-- migration whose runtime is proportional to production row count, and the application
+-- rollout waits on the migrate job.
+--
+-- 15 MINUTES IS NOT A GUESS: it is DEFAULT_STATEMENT_TIMEOUT_MS from preflight-migrate.ts, the
+-- ceiling the promotion already intends for a migrating statement. On this table's measured
+-- shape the scan is milliseconds; the bound exists to make a pathological case fail fast and
+-- diagnosably instead of holding the release open indefinitely.
+--
+-- BOTH SET LOCALs COME FIRST. Placing either after the ALTER guards nothing -- that statement
+-- has already taken its lock and started its scan. lock_timeout bounds only the WAIT for the
+-- lock; statement_timeout is what bounds the scan. SET LOCAL requires a transaction, which is
+-- what Prisma gives a multi-statement migration file.
+SET LOCAL lock_timeout = '5s';
+SET LOCAL statement_timeout = '15min';
+
+ALTER TABLE "publishing_notification_delivery"
+  VALIDATE CONSTRAINT "publishing_notification_delivery_leased_channel";

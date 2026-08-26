@@ -1,0 +1,22 @@
+{
+	"name": "fabric-collab-prod",
+	"version": "0.0.1",
+	"license": "Apache-2.0",
+	"private": true,
+	"scripts": {
+		"deploy": "wrangler deploy",
+		"dev": "wrangler dev",
+		"type-check": "tsc --noEmit",
+		"tail": "wrangler tail"
+	},
+	"dependencies": {
+		"partyserver": "^0.5.2",
+		"y-partyserver": "^2.2.0",
+		"yjs": "^13.6.27"
+	},
+	"devDependencies": {
+		"@cloudflare/workers-types": "^4.20260424.1",
+		"typescript": "^5.7.3",
+		"wrangler": "^4.82.2"
+	}
+}

@@ -1,0 +1,228 @@
+{
+	"devDependencies": {
+		"@repo/tsconfig": "workspace:*",
+		"@types/mustache": "^4.2.6",
+		"@types/node": "^24.10.0",
+		"@types/nunjucks": "^3.2.6",
+		"vitest": "^4.1.8"
+	},
+	"main": "./index.ts",
+	"type": "module",
+	"exports": {
+		"./sensitive-keys": {
+			"types": "./lib/sensitive-keys.ts",
+			"import": "./lib/sensitive-keys.ts",
+			"default": "./lib/sensitive-keys.ts"
+		},
+		"./log-redaction": {
+			"types": "./lib/log-redaction.ts",
+			"import": "./lib/log-redaction.ts",
+			"default": "./lib/log-redaction.ts"
+		},
+		"./redis-connection": {
+			"types": "./lib/redis-connection.ts",
+			"import": "./lib/redis-connection.ts",
+			"default": "./lib/redis-connection.ts"
+		},
+		".": {
+			"types": "./index.ts",
+			"import": "./index.ts",
+			"default": "./index.ts"
+		},
+		"./template-renderer": {
+			"types": "./template-renderer.ts",
+			"import": "./template-renderer.ts",
+			"default": "./template-renderer.ts"
+		},
+		"./qa-test-types": {
+			"types": "./lib/qa-test-types.ts",
+			"import": "./lib/qa-test-types.ts",
+			"default": "./lib/qa-test-types.ts"
+		},
+		"./layer-rules": {
+			"types": "./lib/layer-rules.ts",
+			"import": "./lib/layer-rules.ts",
+			"default": "./lib/layer-rules.ts"
+		},
+		"./architecture-rules": {
+			"types": "./lib/architecture-rules.ts",
+			"import": "./lib/architecture-rules.ts",
+			"default": "./lib/architecture-rules.ts"
+		},
+		"./import-cycles": {
+			"types": "./lib/import-cycles.ts",
+			"import": "./lib/import-cycles.ts",
+			"default": "./lib/import-cycles.ts"
+		},
+		"./acceptance-criteria": {
+			"types": "./lib/acceptance-criteria.ts",
+			"import": "./lib/acceptance-criteria.ts",
+			"default": "./lib/acceptance-criteria.ts"
+		},
+		"./clean-spec-content": {
+			"types": "./lib/clean-spec-content.ts",
+			"import": "./lib/clean-spec-content.ts",
+			"default": "./lib/clean-spec-content.ts"
+		},
+		"./markdown-heading": {
+			"types": "./lib/markdown-heading.ts",
+			"import": "./lib/markdown-heading.ts",
+			"default": "./lib/markdown-heading.ts"
+		},
+		"./adf-text": {
+			"types": "./lib/adf-text.ts",
+			"import": "./lib/adf-text.ts",
+			"default": "./lib/adf-text.ts"
+		},
+		"./correlation-id": {
+			"types": "./lib/correlation-id.ts",
+			"import": "./lib/correlation-id.ts",
+			"default": "./lib/correlation-id.ts"
+		},
+		"./organization-log-context": {
+			"types": "./lib/organization-log-context.ts",
+			"import": "./lib/organization-log-context.ts",
+			"default": "./lib/organization-log-context.ts"
+		},
+		"./integration-tool-ref": {
+			"types": "./lib/integration-tool-ref.ts",
+			"import": "./lib/integration-tool-ref.ts",
+			"default": "./lib/integration-tool-ref.ts"
+		},
+		"./project-context": {
+			"types": "./lib/project-context.ts",
+			"import": "./lib/project-context.ts",
+			"default": "./lib/project-context.ts"
+		},
+		"./read-only-mode": {
+			"types": "./lib/read-only-mode.ts",
+			"import": "./lib/read-only-mode.ts",
+			"default": "./lib/read-only-mode.ts"
+		},
+		"./document-version-author": {
+			"types": "./lib/document-version-author.ts",
+			"import": "./lib/document-version-author.ts",
+			"default": "./lib/document-version-author.ts"
+		},
+		"./group-highlights": {
+			"types": "./lib/group-highlights.ts",
+			"import": "./lib/group-highlights.ts",
+			"default": "./lib/group-highlights.ts"
+		},
+		"./normalize-for-comparison": {
+			"types": "./lib/normalize-for-comparison.ts",
+			"import": "./lib/normalize-for-comparison.ts",
+			"default": "./lib/normalize-for-comparison.ts"
+		},
+		"./operation-result-message": {
+			"types": "./lib/operation-result-message.ts",
+			"import": "./lib/operation-result-message.ts",
+			"default": "./lib/operation-result-message.ts"
+		},
+		"./oauth-refresh": {
+			"types": "./lib/oauth-refresh.ts",
+			"import": "./lib/oauth-refresh.ts",
+			"default": "./lib/oauth-refresh.ts"
+		},
+		"./realtime-emit": {
+			"types": "./lib/realtime-emit.ts",
+			"import": "./lib/realtime-emit.ts",
+			"default": "./lib/realtime-emit.ts"
+		},
+		"./attachment": {
+			"types": "./lib/attachment.ts",
+			"import": "./lib/attachment.ts",
+			"default": "./lib/attachment.ts"
+		},
+		"./ai-chat-attachment": {
+			"types": "./lib/ai-chat-attachment.ts",
+			"import": "./lib/ai-chat-attachment.ts",
+			"default": "./lib/ai-chat-attachment.ts"
+		},
+		"./story-attachment-ai-context": {
+			"types": "./lib/story-attachment-ai-context.ts",
+			"import": "./lib/story-attachment-ai-context.ts",
+			"default": "./lib/story-attachment-ai-context.ts"
+		},
+		"./feature-flag": {
+			"types": "./lib/feature-flag.ts",
+			"import": "./lib/feature-flag.ts",
+			"default": "./lib/feature-flag.ts"
+		},
+		"./feature-flag-registry": {
+			"types": "./lib/feature-flag-registry.ts",
+			"import": "./lib/feature-flag-registry.ts",
+			"default": "./lib/feature-flag-registry.ts"
+		},
+		"./tag-value": {
+			"types": "./lib/tag-value.ts",
+			"import": "./lib/tag-value.ts",
+			"default": "./lib/tag-value.ts"
+		},
+		"./work-item-type-mapping": {
+			"types": "./lib/work-item-type-mapping.ts",
+			"import": "./lib/work-item-type-mapping.ts",
+			"default": "./lib/work-item-type-mapping.ts"
+		},
+		"./url-security": {
+			"types": "./lib/url-security.ts",
+			"import": "./lib/url-security.ts",
+			"default": "./lib/url-security.ts"
+		},
+		"./scrub-secrets": {
+			"types": "./lib/scrub-secrets.ts",
+			"import": "./lib/scrub-secrets.ts",
+			"default": "./lib/scrub-secrets.ts"
+		},
+		"./limit-signal": {
+			"types": "./lib/limit-signal.ts",
+			"import": "./lib/limit-signal.ts",
+			"default": "./lib/limit-signal.ts"
+		},
+		"./classify-limit-error": {
+			"types": "./lib/classify-limit-error.ts",
+			"import": "./lib/classify-limit-error.ts",
+			"default": "./lib/classify-limit-error.ts"
+		},
+		"./pipeline-sync-failure-kinds": {
+			"types": "./lib/pipeline-sync-failure-kinds.ts",
+			"import": "./lib/pipeline-sync-failure-kinds.ts",
+			"default": "./lib/pipeline-sync-failure-kinds.ts"
+		},
+		"./document-type-catalog": {
+			"types": "./lib/document-type-catalog.ts",
+			"import": "./lib/document-type-catalog.ts",
+			"default": "./lib/document-type-catalog.ts"
+		},
+		"./prompt-action-catalog": {
+			"types": "./lib/prompt-action-catalog.ts",
+			"import": "./lib/prompt-action-catalog.ts",
+			"default": "./lib/prompt-action-catalog.ts"
+		},
+		"./attachment-limits": {
+			"types": "./lib/attachment-limits.ts",
+			"import": "./lib/attachment-limits.ts",
+			"default": "./lib/attachment-limits.ts"
+		}
+	},
+	"name": "@repo/utils",
+	"private": true,
+	"scripts": {
+		"test": "vitest run",
+		"test:watch": "vitest",
+		"type-check": "tsc --noEmit"
+	},
+	"types": "./index.ts",
+	"version": "0.0.1",
+	"license": "Apache-2.0",
+	"dependencies": {
+		"@upstash/realtime": "^1.0.0",
+		"@upstash/redis": "^1.34.3",
+		"handlebars": "^4.7.8",
+		"liquidjs": "^10.27.1",
+		"mustache": "^4.2.0",
+		"nunjucks": "^3.2.4",
+		"undici": "^8.5.0",
+		"zod": "^4.2.1"
+	}
+}

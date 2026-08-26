@@ -1,0 +1,389 @@
+---
+title: API Overview
+description: Programmatically interact with Fabric AI using our REST API.
+---
+
+Fabric AI provides a comprehensive REST API that lets you integrate AI-powered document generation, agent interactions, and workflow automation into your applications.
+
+## Base URL
+
+All API requests are made to:
+
+```
+https://api.fabric.pro/v1
+```
+
+For self-hosted installations, replace with your instance URL.
+
+## Authentication
+
+All API requests require authentication using a Bearer token:
+
+```bash
+curl -X GET https://api.fabric.pro/v1/agents \
+  -H "Authorization: Bearer YOUR_API_TOKEN"
+```
+
+### Getting Your API Token
+
+1. Go to **Settings → API Tokens**
+2. Click **Generate Token**
+3. Give it a descriptive name
+4. Copy and store securely (shown only once)
+
+### Token Scopes
+
+When creating a token, select appropriate scopes:
+
+| Scope | Permissions |
+|-------|-------------|
+| `agents:read` | List and view agents |
+| `agents:write` | Create and update agents |
+| `conversations:read` | View conversations |
+| `conversations:write` | Create messages, start conversations |
+| `workspaces:read` | List and view workspaces |
+| `workspaces:write` | Upload documents, manage workspaces |
+| `workflows:read` | View workflow status |
+| `workflows:write` | Start and manage workflows |
+
+## Quick Start
+
+### Start a Conversation
+
+```bash
+curl -X POST https://api.fabric.pro/v1/conversations \
+  -H "Authorization: Bearer YOUR_API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "agentId": "agent_abc123",
+    "message": "Create a PRD for user authentication"
+  }'
+```
+
+### Response
+
+```json
+{
+  "id": "conv_xyz789",
+  "agentId": "agent_abc123",
+  "status": "active",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Create a PRD for user authentication"
+    },
+    {
+      "role": "assistant",
+      "content": "# Product Requirements Document...",
+      "streaming": true
+    }
+  ],
+  "createdAt": "2024-01-15T10:30:00Z"
+}
+```
+
+## Core Endpoints
+
+### Agents
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/agents` | List all agents |
+| GET | `/agents/:id` | Get agent details |
+| POST | `/agents` | Create a new agent |
+| PUT | `/agents/:id` | Update an agent |
+| DELETE | `/agents/:id` | Delete an agent |
+
+### Conversations
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/conversations` | List conversations |
+| GET | `/conversations/:id` | Get conversation details |
+| POST | `/conversations` | Start new conversation |
+| POST | `/conversations/:id/messages` | Add message |
+| DELETE | `/conversations/:id` | Delete conversation |
+
+### Workspaces
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/workspaces` | List workspaces |
+| GET | `/workspaces/:id` | Get workspace details |
+| POST | `/workspaces` | Create workspace |
+| POST | `/workspaces/:id/documents` | Upload document |
+| DELETE | `/workspaces/:id` | Delete workspace |
+
+### Workflows
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/workflows` | List workflows |
+| GET | `/workflows/:id` | Get workflow status |
+| POST | `/workflows` | Start workflow |
+| POST | `/workflows/:id/approve` | Approve pending step |
+| POST | `/workflows/:id/cancel` | Cancel workflow |
+
+## Response Format
+
+All responses follow a consistent format:
+
+### Success Response
+
+```json
+{
+  "data": {
+    // Resource data
+  },
+  "meta": {
+    "requestId": "req_abc123"
+  }
+}
+```
+
+### Paginated Response
+
+```json
+{
+  "data": [
+    // Array of resources
+  ],
+  "meta": {
+    "total": 100,
+    "page": 1,
+    "perPage": 20,
+    "requestId": "req_abc123"
+  }
+}
+```
+
+### Error Response
+
+```json
+{
+  "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "Invalid agent ID format",
+    "details": {
+      "field": "agentId",
+      "reason": "Must be a valid UUID"
+    }
+  },
+  "meta": {
+    "requestId": "req_abc123"
+  }
+}
+```
+
+## Error Codes
+
+| Code | HTTP Status | Description |
+|------|-------------|-------------|
+| `UNAUTHORIZED` | 401 | Invalid or missing token |
+| `FORBIDDEN` | 403 | Token lacks required scope |
+| `NOT_FOUND` | 404 | Resource not found |
+| `VALIDATION_ERROR` | 400 | Invalid request data |
+| `RATE_LIMITED` | 429 | Too many requests |
+| `INTERNAL_ERROR` | 500 | Server error |
+
+## Rate Limiting
+
+API requests are rate limited:
+
+- **Standard**: 100 requests/minute
+- **Enterprise**: Custom limits
+
+Rate limit headers are included in responses:
+
+```
+X-RateLimit-Limit: 100
+X-RateLimit-Remaining: 95
+X-RateLimit-Reset: 1705320600
+```
+
+## Streaming Responses
+
+For real-time agent responses, use Server-Sent Events (SSE):
+
+```bash
+curl -X POST https://api.fabric.pro/v1/conversations \
+  -H "Authorization: Bearer YOUR_API_TOKEN" \
+  -H "Accept: text/event-stream" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "agentId": "agent_abc123",
+    "message": "Create a PRD for notifications",
+    "stream": true
+  }'
+```
+
+### SSE Events
+
+```
+event: message_start
+data: {"id": "msg_123", "role": "assistant"}
+
+event: content_delta
+data: {"delta": "# Product Requirements"}
+
+event: content_delta
+data: {"delta": " Document\n\n## Overview"}
+
+event: message_end
+data: {"id": "msg_123", "status": "complete"}
+```
+
+## Webhooks
+
+Configure webhooks to receive real-time notifications:
+
+### Supported Events
+
+| Event | Description |
+|-------|-------------|
+| `conversation.created` | New conversation started |
+| `conversation.completed` | Conversation finished |
+| `workflow.started` | Workflow execution began |
+| `workflow.completed` | Workflow finished |
+| `workflow.approval_needed` | Human approval required |
+| `document.uploaded` | Document added to workspace |
+
+### Webhook Payload
+
+```json
+{
+  "event": "workflow.completed",
+  "timestamp": "2024-01-15T10:35:00Z",
+  "data": {
+    "workflowId": "wf_abc123",
+    "status": "completed",
+    "result": {
+      // Workflow-specific data
+    }
+  }
+}
+```
+
+### Configuring Webhooks
+
+1. Go to **Settings → Webhooks**
+2. Click **Add Webhook**
+3. Enter your endpoint URL
+4. Select events to receive
+5. Save and verify
+
+## SDKs
+
+Official SDKs are available for popular languages:
+
+### JavaScript/TypeScript
+
+```bash
+npm install @fabric-ai/sdk
+```
+
+```typescript
+import { FabricClient } from '@fabric-ai/sdk';
+
+const fabric = new FabricClient({
+  apiKey: process.env.FABRIC_API_KEY
+});
+
+const conversation = await fabric.conversations.create({
+  agentId: 'agent_abc123',
+  message: 'Create a PRD for user auth'
+});
+
+for await (const chunk of conversation.stream()) {
+  console.log(chunk.content);
+}
+```
+
+### Python
+
+```bash
+pip install fabric-ai
+```
+
+```python
+from fabric_ai import FabricClient
+
+fabric = FabricClient(api_key=os.environ["FABRIC_API_KEY"])
+
+conversation = fabric.conversations.create(
+    agent_id="agent_abc123",
+    message="Create a PRD for user auth"
+)
+
+for chunk in conversation.stream():
+    print(chunk.content)
+```
+
+## Examples
+
+### Generate a Document
+
+```typescript
+import { FabricClient } from '@fabric-ai/sdk';
+
+const fabric = new FabricClient({ apiKey: 'YOUR_API_KEY' });
+
+// Start conversation with Document Generator
+const conv = await fabric.conversations.create({
+  agentId: 'document-generator',
+  workspaceIds: ['ws_templates'],
+  message: `Create a PRD for a notification preferences feature.
+
+    Requirements:
+    - Email, push, and SMS channels
+    - Quiet hours configuration
+    - Frequency settings
+
+    Target: Web and mobile apps`
+});
+
+// Wait for completion
+const result = await conv.waitForCompletion();
+
+// Export as markdown
+const markdown = await fabric.documents.export(result.documentId, 'markdown');
+```
+
+### Trigger a Workflow
+
+```typescript
+// Start an automated workflow
+const workflow = await fabric.workflows.create({
+  template: 'prd-to-jira',
+  inputs: {
+    prdDocumentId: 'doc_xyz789',
+    jiraProjectKey: 'PROJ',
+    assignee: 'john@company.com'
+  }
+});
+
+// Wait for approval step
+await workflow.waitForEvent('approval_needed');
+
+// Approve programmatically
+await workflow.approve({
+  stepId: 'create-stories',
+  approver: 'api-automation'
+});
+```
+
+---
+
+## Next Steps
+
+<Cards>
+  <Card title="Getting Started" href="/docs/getting-started/overview">
+    Set up your Fabric AI account
+  </Card>
+  <Card title="Agents" href="/docs/agents/overview">
+    Learn about available agents
+  </Card>
+  <Card title="Workflows" href="/docs/core-concepts/workflows">
+    Understand workflow automation
+  </Card>
+</Cards>

@@ -1,0 +1,35 @@
+# Normalize all text files to LF in the repository and the working tree.
+#
+# Rationale: the repo's .editorconfig and Biome both require `eol=lf`, but
+# Windows checkouts with `core.autocrlf=true` smudge files to CRLF on checkout.
+# That makes `biome format` (pnpm format:check) report a CRLF diff on virtually
+# every file locally, even though every committed blob is already LF and CI
+# (Linux) sees them as clean. This file makes Git store LF and check out LF on
+# every platform, so the local format noise disappears for new clones.
+#
+# Existing Windows working trees keep CRLF until re-checkout / `git add
+# --renormalize .`; we intentionally do NOT bulk-renormalize here because that
+# would rewrite thousands of files and conflict with every in-flight branch.
+* text=auto eol=lf
+
+# Binary types: never normalize line endings.
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.webp  binary
+*.avif  binary
+*.ico   binary
+*.svg   text  eol=lf
+*.woff  binary
+*.woff2 binary
+*.ttf   binary
+*.otf   binary
+*.eot   binary
+*.pdf   binary
+*.zip   binary
+*.gz    binary
+*.mp4   binary
+*.webm  binary
+*.mp3   binary
+*.wav   binary

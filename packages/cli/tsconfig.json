@@ -1,0 +1,13 @@
+{
+	"extends": "@repo/tsconfig/base.json",
+	"compilerOptions": {
+		"outDir": "dist",
+		"declaration": true,
+		"sourceMap": true,
+		"paths": {
+			"@fabricorg/sdk": ["../sdk/src/index.ts"]
+		}
+	},
+	"include": ["src", "../sdk/src"],
+	"exclude": ["node_modules", "dist"]
+}

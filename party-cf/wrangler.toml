@@ -1,0 +1,71 @@
+name = "fabric-collab-prod"
+main = "src/index.ts"
+compatibility_date = "2024-09-23"
+compatibility_flags = ["nodejs_compat"]
+# Set CLOUDFLARE_ACCOUNT_ID in the deploy environment (e.g. via wrangler env or
+# a GitHub Actions secret). Leaving account_id unset here keeps the file safe
+# to share across organizations.
+# account_id = "<your-cloudflare-account-id>"
+
+[vars]
+PARTYKIT_ENV = "production"
+
+# Durable Object bindings. The binding `name` is what
+# routePartykitRequest matches against the URL segment after /parties/
+# (kebab-cased). The `class_name` references the exported class.
+
+[[durable_objects.bindings]]
+name = "Main"
+class_name = "Document"
+
+[[durable_objects.bindings]]
+name = "Orchestrator"
+class_name = "Orchestrator"
+
+[[durable_objects.bindings]]
+name = "TaskAgent"
+class_name = "TaskAgent"
+
+[[durable_objects.bindings]]
+name = "Health"
+class_name = "Health"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Document", "Orchestrator", "TaskAgent", "Health"]
+
+# Observability: enable Workers Logs (free) for prod debugging.
+[observability]
+enabled = true
+
+# ─── Staging environment ────────────────────────────────────────────────
+# Deploys a separate Worker (fabric-collab-staging) with its own Durable
+# Object namespaces. Wrangler does not inherit vars or bindings into named
+# environments, so both are redeclared here; inheritable keys (main,
+# compatibility_date, compatibility_flags, [[migrations]], [observability])
+# apply as-is. PARTYKIT_ENV=production on staging is deliberate: staging
+# rehearses the real production auth mode outside prod — the full token →
+# verify → subscribe flow end-to-end, for document collab and for
+# orchestrator/task-agent alike now that issue #624 has shipped their scoped
+# JWTs.
+[env.staging]
+name = "fabric-collab-staging"
+
+[env.staging.vars]
+PARTYKIT_ENV = "production"
+
+[[env.staging.durable_objects.bindings]]
+name = "Main"
+class_name = "Document"
+
+[[env.staging.durable_objects.bindings]]
+name = "Orchestrator"
+class_name = "Orchestrator"
+
+[[env.staging.durable_objects.bindings]]
+name = "TaskAgent"
+class_name = "TaskAgent"
+
+[[env.staging.durable_objects.bindings]]
+name = "Health"
+class_name = "Health"

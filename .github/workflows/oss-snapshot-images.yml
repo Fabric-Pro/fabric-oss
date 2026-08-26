@@ -1,0 +1,292 @@
+name: Build OSS Snapshot Images
+
+# Builds the complete Azure OCI snapshot set from one exact public-repository
+# commit. Consumers must resolve the full-SHA tag to the attested digest; this
+# workflow never publishes latest, a short SHA or a release coordinate.
+#
+# Retention is intentionally NOT live here. The planner under
+# .github/actions/oss-snapshot/oss-snapshot-retention.mjs is deterministic,
+# fail-closed and
+# test-covered, but it performs no API calls and exposes no delete operation.
+# GitHub API collection/deletion will remain disabled until pagination,
+# release/proof protection inputs, OCI referrers and package-version deletion
+# have been proven against the private Phase 3 packages.
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# No concurrency group by design. GitHub concurrency keeps at most one pending
+# run and silently replaces older pending runs; that could discard the only
+# snapshot proof for a staging fast-forward or future release. Every master SHA
+# therefore keeps its own run to completion.
+
+env:
+  SNAPSHOT_NAMESPACE: ghcr.io/fabric-pro/fabric-oss-snapshots
+
+jobs:
+  policy-tests:
+    name: Validate snapshot policy modules
+    if: github.repository == 'Fabric-Pro/fabric-oss'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+
+      - name: Run focused Node tests
+        run: node --test .github/actions/oss-snapshot/oss-snapshot-*.test.mjs
+
+  build:
+    name: Build and attest ${{ matrix.component }}
+    needs: policy-tests
+    if: github.repository == 'Fabric-Pro/fabric-oss'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - component: temporal-worker
+            dockerfile: packages/temporal/Dockerfile
+          - component: document-generator
+            dockerfile: agents/langchain/document-generator/Dockerfile
+          - component: project-document-generator
+            dockerfile: agents/langchain/project-document-generator/Dockerfile
+          - component: task-planner
+            dockerfile: agents/langchain/task-planner/Dockerfile
+          - component: story-breakdown
+            dockerfile: agents/langchain/story-breakdown/Dockerfile
+          - component: data-analyst
+            dockerfile: agents/langchain/data-analyst/Dockerfile
+          - component: api-agent
+            dockerfile: agents/langchain/api-agent/Dockerfile
+          - component: prompt-enhancer
+            dockerfile: agents/langchain/prompt-enhancer/Dockerfile
+          - component: backlog-updater
+            dockerfile: agents/langchain/backlog-updater/Dockerfile
+          - component: weave-readers
+            dockerfile: agents/langchain/weave-readers/Dockerfile
+          - component: weave-shuttle
+            dockerfile: agents/langchain/weave-shuttle/Dockerfile
+          - component: weave-planners
+            dockerfile: agents/langchain/weave-planners/Dockerfile
+          - component: mcp-stdio-wrapper
+            dockerfile: packages/mcp-stdio-wrapper/Dockerfile
+          - component: migration-runner
+            dockerfile: packages/database/Dockerfile.migrate
+    env:
+      IMAGE_NAME: ghcr.io/fabric-pro/fabric-oss-snapshots/${{ matrix.component }}
+      SOURCE_URL: ${{ github.server_url }}/${{ github.repository }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+
+      - name: Verify exact source checkout
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ ]] \
+            || { echo "::error::GITHUB_SHA is not a full commit SHA"; exit 1; }
+          ACTUAL_SHA=$(git rev-parse HEAD)
+          [[ "$ACTUAL_SHA" == "$GITHUB_SHA" ]] \
+            || { echo "::error::checkout is $ACTUAL_SHA, expected $GITHUB_SHA"; exit 1; }
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push full-SHA snapshot
+        id: build
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          platforms: linux/amd64
+          push: true
+          tags: ${{ env.IMAGE_NAME }}:${{ github.sha }}
+          labels: |
+            org.opencontainers.image.source=${{ env.SOURCE_URL }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          # GitHub's attestation actions below own both predicates. Disabling
+          # BuildKit predicates avoids a second, differently shaped claim.
+          provenance: false
+          sbom: false
+          cache-from: type=gha,scope=oss-snapshot-${{ matrix.component }}
+          cache-to: type=gha,scope=oss-snapshot-${{ matrix.component }},mode=max
+
+      - name: Reclaim BuildKit space before SBOM scan
+        run: docker buildx prune --all --force
+
+      - name: Generate SPDX SBOM from pushed digest
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
+        with:
+          # Supplying registry credentials makes this pinned action invoke
+          # Syft's registry provider directly. Without them, its automatic
+          # Docker-first selection can duplicate a large image in the daemon
+          # and exhaust a standard runner before registry fallback.
+          image: ${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }}
+          format: spdx-json
+          output-file: ${{ matrix.component }}.spdx.json
+          upload-release-assets: false
+          upload-artifact: false
+          registry-username: ${{ github.actor }}
+          registry-password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        with:
+          subject-name: ${{ env.IMAGE_NAME }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+          create-storage-record: false
+
+      - name: Attest SPDX SBOM
+        uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763 # v4.1.1
+        with:
+          subject-name: ${{ env.IMAGE_NAME }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          sbom-path: ${{ matrix.component }}.spdx.json
+          push-to-registry: true
+          create-storage-record: false
+
+      - name: Verify source- and workflow-bound attestations
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+          REPOSITORY: ${{ github.repository }}
+          SIGNER_WORKFLOW: ${{ github.repository }}/.github/workflows/oss-snapshot-images.yml
+        run: |
+          set -euo pipefail
+          COMMON_ARGS=(
+            --repo "$REPOSITORY"
+            --signer-workflow "$SIGNER_WORKFLOW"
+            --source-digest "$GITHUB_SHA"
+            --source-ref "$GITHUB_REF"
+            --deny-self-hosted-runners
+          )
+          gh attestation verify "oci://${IMAGE_NAME}@${DIGEST}" "${COMMON_ARGS[@]}"
+          gh attestation verify "oci://${IMAGE_NAME}@${DIGEST}" \
+            "${COMMON_ARGS[@]}" \
+            --predicate-type https://spdx.dev/Document/v2.3
+
+      - name: Emit manifest fragment
+        env:
+          COMPONENT: ${{ matrix.component }}
+          DOCKERFILE: ${{ matrix.dockerfile }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+          REPOSITORY: ${{ github.repository }}
+          WORKFLOW_REF: ${{ github.workflow_ref }}
+          SIGNER_WORKFLOW: ${{ github.repository }}/.github/workflows/oss-snapshot-images.yml
+        run: |
+          set -euo pipefail
+          [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] \
+            || { echo "::error::build returned an invalid digest: $DIGEST"; exit 1; }
+          jq -n \
+            --arg component "$COMPONENT" \
+            --arg dockerfile "$DOCKERFILE" \
+            --arg image "$IMAGE_NAME" \
+            --arg tag "$GITHUB_SHA" \
+            --arg digest "$DIGEST" \
+            --arg sourceSha "$GITHUB_SHA" \
+            --arg sourceRef "$GITHUB_REF" \
+            --arg sourceRepository "$REPOSITORY" \
+            --arg buildWorkflow "$WORKFLOW_REF" \
+            --arg signerWorkflow "$SIGNER_WORKFLOW" \
+            --arg sourceUrl "$SOURCE_URL" \
+            '{
+              schemaVersion: "1.0.0",
+              component: $component,
+              dockerfile: $dockerfile,
+              context: ".",
+              image: $image,
+              tag: $tag,
+              digest: $digest,
+              sourceSha: $sourceSha,
+              sourceRef: $sourceRef,
+              sourceRepository: $sourceRepository,
+              buildWorkflow: $buildWorkflow,
+              signerWorkflow: $signerWorkflow,
+              labels: {
+                "org.opencontainers.image.source": $sourceUrl,
+                "org.opencontainers.image.revision": $sourceSha
+              },
+              attestations: {
+                provenance: "https://slsa.dev/provenance/v1",
+                sbom: "https://spdx.dev/Document/v2.3"
+              }
+            }' > "${COMPONENT}.manifest.json"
+
+      - name: Upload component evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: oss-snapshot-part-${{ matrix.component }}
+          path: |
+            ${{ matrix.component }}.manifest.json
+            ${{ matrix.component }}.spdx.json
+          if-no-files-found: error
+          # This artifact only transports evidence to the aggregate job. The
+          # complete evidence artifact below retains the same files for 90 days.
+          retention-days: 1
+
+  aggregate:
+    name: Validate and aggregate all snapshots
+    needs: [policy-tests, build]
+    if: github.repository == 'Fabric-Pro/fabric-oss'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+
+      - name: Download all component evidence
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          pattern: oss-snapshot-part-*
+          path: snapshot-parts
+          merge-multiple: true
+
+      - name: Validate and assemble the snapshot manifest
+        run: |
+          node .github/actions/oss-snapshot/oss-snapshot-manifest.mjs \
+            --directory snapshot-parts \
+            --output oss-snapshot-manifest.json \
+            --repository "$GITHUB_REPOSITORY" \
+            --sha "$GITHUB_SHA" \
+            --ref "$GITHUB_REF" \
+            --workflow-ref "$GITHUB_WORKFLOW_REF" \
+            --server-url "$GITHUB_SERVER_URL" \
+            --summary "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload complete snapshot evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: oss-snapshot-manifest-${{ github.sha }}
+          path: |
+            oss-snapshot-manifest.json
+            snapshot-parts/*.manifest.json
+            snapshot-parts/*.spdx.json
+          if-no-files-found: error
+          retention-days: 90

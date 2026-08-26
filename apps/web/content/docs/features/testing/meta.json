@@ -1,0 +1,11 @@
+{
+	"title": "Testing",
+	"pages": [
+		"index",
+		"cases",
+		"feature-testing-tab",
+		"ci-results",
+		"pull-requests",
+		"settings"
+	]
+}

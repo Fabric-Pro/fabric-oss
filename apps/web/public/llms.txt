@@ -1,0 +1,31 @@
+# Fabric AI
+
+> The complete agent engineering platform for software development teams.
+
+Fabric is a platform where engineering teams design, build, and deploy AI agents that understand their entire codebase, connect to any tool via MCP, and automate the software delivery lifecycle — from planning to code generation to review.
+
+## Core Capabilities
+
+- **Context-Aware AI Agents**: Agents that ingest and reason over your codebase, documentation, and project history
+- **MCP Integration**: 100+ Model Context Protocol server integrations for connecting agents to external tools and data sources
+- **Weave Multi-Agent Orchestration**: 6 specialized agents (Thread, Spindle, Shuttle, Weft, Warp, Pattern) that collaborate on complex engineering tasks
+- **Durable Workflows**: Temporal-backed execution with human-in-the-loop checkpoints, automatic retries, and crash recovery
+- **AI-Powered SDLC**: Generate PRDs, user stories, technical specs, code, and reviews from project context
+- **Multi-Provider AI**: Bring your own API keys — supports OpenAI, Anthropic, Groq, DeepSeek, Mistral, and 10+ more providers
+- **Semantic Search (RAG)**: Vector-indexed project knowledge for contextual retrieval across all agents
+
+## Plans
+
+- Free: Personal use, limited agent runs
+- Pro: $29/month (7-day free trial), full platform access
+- Enterprise: Custom pricing, dedicated support, SSO, audit logs
+
+## Links
+
+- Website: https://fabric.pro
+- Documentation: https://fabric.pro/en/docs
+- Blog: https://fabric.pro/en/blog
+- MCP Registry: https://fabric.pro/en/mcp-registry
+- Changelog: https://fabric.pro/en/changelog
+- Contact TechFabric: https://techfabric.com/contact
+- Full context: https://fabric.pro/llms-full.txt

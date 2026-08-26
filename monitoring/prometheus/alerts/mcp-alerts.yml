@@ -1,0 +1,81 @@
+groups:
+  - name: mcp_alerts
+    interval: 30s
+    rules:
+      # OAuth connection failure rate alert
+      - alert: HighOAuthFailureRate
+        expr: |
+          (
+            sum(rate(mcp_oauth_connections_total{status="failure"}[5m]))
+            /
+            sum(rate(mcp_oauth_connections_total[5m]))
+          ) * 100 > 10
+        for: 5m
+        labels:
+          severity: warning
+          component: mcp
+        annotations:
+          summary: "High OAuth connection failure rate"
+          description: "OAuth connection failure rate is {{ $value | humanizePercentage }} (threshold: 10%)"
+
+      # Test connection latency alert
+      - alert: HighTestConnectionLatency
+        expr: |
+          histogram_quantile(0.95,
+            sum(rate(mcp_test_connection_duration_seconds_bucket[5m])) by (le)
+          ) > 5
+        for: 5m
+        labels:
+          severity: warning
+          component: mcp
+        annotations:
+          summary: "High test connection latency"
+          description: "95th percentile test connection latency is {{ $value }}s (threshold: 5s)"
+
+      # Token refresh failure alert
+      - alert: TokenRefreshFailures
+        expr: |
+          sum(rate(mcp_token_refresh_total{status="failure"}[5m])) > 0
+        for: 10m
+        labels:
+          severity: warning
+          component: mcp
+        annotations:
+          summary: "Token refresh failures detected"
+          description: "Token refresh is failing at {{ $value }} requests/second"
+
+      # Consecutive failures alert
+      - alert: HighConsecutiveFailures
+        expr: |
+          mcp_consecutive_failures > 5
+        for: 5m
+        labels:
+          severity: critical
+          component: mcp
+        annotations:
+          summary: "MCP configuration has high consecutive failures"
+          description: "Config {{ $labels.config_id }} for server {{ $labels.server_key }} has {{ $value }} consecutive failures"
+
+      # Error rate alert
+      - alert: HighErrorRate
+        expr: |
+          sum(rate(mcp_errors_total[5m])) by (operation) > 1
+        for: 5m
+        labels:
+          severity: warning
+          component: mcp
+        annotations:
+          summary: "High error rate in {{ $labels.operation }}"
+          description: "Error rate for {{ $labels.operation }} is {{ $value }} errors/second"
+
+      # No recent cleanup alert
+      - alert: CleanupJobNotRunning
+        expr: |
+          time() - max(mcp_cleanup_total) > 7200
+        for: 10m
+        labels:
+          severity: warning
+          component: mcp
+        annotations:
+          summary: "Cleanup job hasn't run recently"
+          description: "MCP cleanup job hasn't run in the last 2 hours"

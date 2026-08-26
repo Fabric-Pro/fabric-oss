@@ -1,0 +1,41 @@
+-- Fizzy #1850, Publishing Suite. Only the EMAIL channel may hold a status the reconciliation
+-- sweep manages.
+--
+-- SENDING, DEFERRED and EXPIRED are not general delivery states. They are the states of ONE
+-- channel's lifecycle: a lease that a claim takes and a sweep reclaims, an obligation with a
+-- 14-day deadline, and that deadline having passed. Every writer of them hard-codes the EMAIL
+-- channel today -- but THREE OF THE FOUR READERS that act on them select rows by status ALONE.
+-- Both statements in PUBLISHING_RECLAIM_STATEMENTS ask only `status = 'DEFERRED'` and
+-- `status = 'SENDING'`; the in-app take-over in deliverPublishingTopicsReadyInApp asks only for a
+-- row that is not delivered and not SKIPPED. Only the drain page names a channel. The four agree
+-- because of what the writers happen to do, which is not a guarantee, and the phase's next slice
+-- puts a third channel in this same ledger.
+--
+-- The failure this prevents is silent in both directions. The sweep would reclaim a non-email row
+-- on email's lease window, email's attempt bound and email's expiry, because its candidate SELECT
+-- never asked what the row is for. And the in-app take-over would read a deferred row as claimable
+-- work, deliver the bell and mark it SENT -- destroying an obligation a different carrier owns,
+-- with the row present, its status terminal, the cycle outcome correct and every count in
+-- agreement. That second one is verbatim the defect this module has already paid for once, and the
+-- reason it cost a full round is that only a test reading the ledger back AFTER the activity
+-- returns can see it.
+--
+-- THIS FOLLOWS THE RULE THE FIRST MIGRATION ON THIS TABLE ALREADY STATED: "a status whose
+-- lifecycle has not shipped should not be writable when making it unwritable is free." The same
+-- holds one dimension over -- a status whose lifecycle has shipped for exactly one channel.
+--
+-- The predicate NAMES EMAIL rather than excluding IN_APP, and the difference is the whole point.
+-- Excluding the one channel already proven wrong for these states would admit the next channel
+-- silently, which is the case this exists for. A slice that wants a leased second channel has to
+-- widen this constraint, and that is the decision point: it cannot be reached by accident.
+--
+-- NOT VALID: the predicate holds of every existing row as a matter of who wrote them, so a
+-- validating form would scan the table and find nothing. The migration lint rule is syntactic and
+-- cannot see that, and its `allow` marker carries no expiry while the pending-validations ledger
+-- carries a deadline the linter enforces. Deferring the scan is also right on its own terms -- it
+-- reads every page and blocks VACUUM, ANALYZE and other DDL for its duration -- but it costs
+-- nothing in protection: NOT VALID skips only the scan of EXISTING rows and binds every write from
+-- creation.
+ALTER TABLE "publishing_notification_delivery"
+  ADD CONSTRAINT "publishing_notification_delivery_leased_channel"
+  CHECK ("status" NOT IN ('SENDING','DEFERRED','EXPIRED') OR "channel" = 'EMAIL') NOT VALID;

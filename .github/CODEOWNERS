@@ -1,0 +1,13 @@
+# Code ownership for this repository is enforced by the
+# "Request external review" workflow, not by native CODEOWNERS rules:
+# pull requests from outside contributors are routed to @preddy4690
+# (the sanctioned corporate maintainer), while pull requests from
+# organization members and collaborators do not generate a review
+# request. Native CODEOWNERS cannot tell the two apart, so no
+# ownership rules are declared here on purpose.
+#
+# See .github/workflows/request-external-review.yml.
+#
+# If branch protection ever starts requiring review from code owners,
+# reintroduce explicit rules here — the workflow only requests reviews,
+# it does not gate merges.

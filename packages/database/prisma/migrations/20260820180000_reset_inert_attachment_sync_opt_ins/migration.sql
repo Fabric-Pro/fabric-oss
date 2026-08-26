@@ -1,0 +1,27 @@
+-- Clear every stored PM attachment-sync opt-in.
+--
+-- `Project.syncAttachments` has never been read by anything: only the schema
+-- and the UI controls of the attachment-sync plan shipped, not the reconcile
+-- engine that would act on the flag. The project-settings switch that writes
+-- it is now hidden behind NEXT_PUBLIC_FABRIC_FEATURE_PM_ATTACHMENT_SYNC, so a
+-- project that flipped it on while it was inert keeps a `true` it can no
+-- longer see or clear — and the engine PR, which turns that flag on, would
+-- read it as standing consent and push that project's attachments into its
+-- linked work items on the first sweep.
+--
+-- `update-project.ts` already resolves this exact situation the same way: a PM
+-- disconnect forces `syncAttachments = false` precisely because "the UI hides
+-- this toggle once no PM tool is configured, so a flag left ON would have no
+-- affordance to clear". Hiding the toggle globally is the same state, so it
+-- gets the same treatment.
+--
+-- Data-only and deliberately unconditional over projects: no schema change, no
+-- default change, nothing to roll back. The column keeps its `false` default,
+-- so re-opting in is one click once the control returns — and that click is
+-- the consent the engine should be acting on, rather than one given to a
+-- setting that did nothing.
+--
+-- The predicate narrows to rows that would actually change; it does not
+-- exclude any opted-in project.
+
+UPDATE "project" SET "syncAttachments" = false WHERE "syncAttachments";

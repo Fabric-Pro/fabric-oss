@@ -1,0 +1,158 @@
+{
+	"$schema": "https://unpkg.com/knip@6/schema.json",
+	"ignoreBinaries": ["fabric-kanban", "langgraph"],
+	"ignore": [".claude/**", ".agents/**", "ag-ui-demo/**"],
+	"workspaces": {
+		".": {
+			"entry": [
+				"scripts/*.{js,mjs,ts}",
+				"tooling/docs-screenshots/render.mjs",
+				"tooling/identifier-guard/__tests__/*.test.mjs",
+				"tooling/pr-review-checks/__tests__/*.test.mjs"
+			]
+		},
+		"agents/langchain/api-agent": {
+			"entry": ["server.ts"],
+			"ignoreDependencies": [
+				"@langchain/anthropic",
+				"@langchain/groq",
+				"@langchain/openai",
+				"@langchain/langgraph-cli",
+				"@repo/observability",
+				"undici"
+			]
+		},
+		"agents/langchain/backlog-updater": {
+			"entry": ["server.ts"],
+			"ignoreDependencies": [
+				"@langchain/anthropic",
+				"@langchain/groq",
+				"@langchain/openai",
+				"@langchain/langgraph-cli",
+				"@repo/observability",
+				"undici"
+			]
+		},
+		"agents/langchain/data-analyst": {
+			"entry": ["tests/setup.ts"],
+			"ignoreDependencies": [
+				"@hono/node-server",
+				"hono",
+				"@langchain/groq",
+				"@repo/observability",
+				"undici"
+			]
+		},
+		"agents/langchain/document-generator": {
+			"entry": ["server.ts"],
+			"ignoreDependencies": [
+				"@langchain/anthropic",
+				"@langchain/groq",
+				"@langchain/openai",
+				"@langchain/langgraph-cli",
+				"@repo/observability",
+				"undici"
+			]
+		},
+		"agents/langchain/project-document-generator": {
+			"entry": ["server.ts"],
+			"ignoreDependencies": [
+				"@langchain/anthropic",
+				"@langchain/groq",
+				"@langchain/openai",
+				"@langchain/langgraph-cli",
+				"@repo/observability",
+				"undici"
+			]
+		},
+		"agents/langchain/prompt-enhancer": {
+			"ignoreDependencies": [
+				"@langchain/anthropic",
+				"@langchain/groq",
+				"@langchain/openai",
+				"@repo/observability",
+				"undici"
+			]
+		},
+		"agents/langchain/story-breakdown": {
+			"entry": ["server.ts"],
+			"ignoreDependencies": [
+				"@langchain/anthropic",
+				"@langchain/groq",
+				"@langchain/openai",
+				"@langchain/langgraph-cli",
+				"@repo/observability",
+				"undici"
+			]
+		},
+		"agents/langchain/task-planner": {
+			"entry": ["server.ts"],
+			"ignoreDependencies": [
+				"@langchain/anthropic",
+				"@langchain/groq",
+				"@langchain/openai",
+				"@langchain/langgraph-cli",
+				"@repo/observability",
+				"undici"
+			]
+		},
+		"agents/langchain/weave-planners": {
+			"ignoreDependencies": ["@ai-sdk/openai", "ai", "undici"]
+		},
+		"agents/langchain/weave-readers": {
+			"entry": ["src/lib/*.test.ts"],
+			"ignoreDependencies": ["nunjucks", "stripe", "undici"]
+		},
+		"agents/langchain/weave-shuttle": {
+			"entry": ["__tests__/*.test.ts"]
+		},
+		"apps/web": {
+			"entry": [
+				"content-collections.ts",
+				"modules/i18n/request.ts",
+				"playwright.qa-2104.config.ts",
+				"tests/*.setup.ts"
+			],
+			"ignoreDependencies": [
+				"sharp",
+				"@repo/code-validation",
+				"content-collections"
+			]
+		},
+		"packages/api": {
+			"entry": ["scripts/*.ts"]
+		},
+		"packages/database": {
+			"entry": [
+				"scripts/*.ts",
+				"prisma/seed-*.ts",
+				"prisma/zod/index.ts",
+				"vitest.perf.config.ts"
+			]
+		},
+		"packages/atlas": {
+			"ignoreDependencies": ["@repo/utils"]
+		},
+		"packages/mail": {
+			"ignoreDependencies": ["@react-email/preview-server"]
+		},
+		"party": {
+			"entry": [
+				"document.ts",
+				"health.ts",
+				"orchestrator.ts",
+				"taskAgent.ts"
+			],
+			"ignoreDependencies": ["yjs"]
+		},
+		"services/sandbox-worker": {
+			"ignoreDependencies": ["cloudflare"]
+		},
+		"tooling/tailwind": {
+			"ignoreDependencies": ["tailwindcss"]
+		},
+		"tooling/typescript": {
+			"ignoreUnresolved": ["next"]
+		}
+	}
+}

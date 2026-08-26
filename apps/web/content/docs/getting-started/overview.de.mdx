@@ -1,0 +1,269 @@
+---
+title: Einführungsübersicht
+description: Alles, was Sie brauchen, um Fabric AI einzurichten und intelligente KI-Agenten für Ihren Entwicklungs-Workflow zu nutzen.
+---
+
+Willkommen! Diese Anleitung führt Sie durch die Einrichtung von Fabric AI und die Nutzung Ihres ersten KI-Agenten. Ob Sie Produktmanager sind, der PRDs erstellen möchte, oder Entwickler, der Dokumentation automatisieren will – in wenigen Minuten sind Sie einsatzbereit.
+
+## Voraussetzungen
+
+Bevor Sie beginnen, stellen Sie sicher, dass Sie haben:
+
+- **Ein Fabric AI-Konto** — Registrieren Sie sich unter [fabric.pro](https://fabric.pro)
+- **Einen KI-Anbieter-API-Schlüssel** — Von OpenAI, Anthropic oder einem anderen unterstützten Anbieter
+- **Einen modernen Webbrowser** — Chrome, Firefox, Safari oder Edge (neueste Versionen)
+
+## Kontoeinrichtung
+
+<Steps>
+  <Step>
+    ### Konto erstellen
+
+    Besuchen Sie [fabric.pro](https://fabric.pro) und klicken Sie auf **Get Started**. Sie können sich registrieren mit:
+
+    - **E-Mail & Passwort** — Klassische Registrierung mit E-Mail-Verifizierung
+    - **Magic Link** — Passwortlose Anmeldung per E-Mail
+    - **Social Login** — Anmeldung mit Google, GitHub oder anderen Anbietern
+    - **Passkey** — Biometrische Authentifizierung (empfohlen für Sicherheit)
+  </Step>
+
+  <Step>
+    ### Profil vervollständigen
+
+    Nach der Anmeldung vervollständigen Sie Ihr Profil:
+
+    1. Fügen Sie Ihren **Namen** und optional ein **Avatar** hinzu
+    2. Wählen Sie Ihre **Zeitzone** für genaue Planung
+    3. Wählen Sie Ihre bevorzugte **Sprache** (Fabric unterstützt mehrere Sprachen)
+  </Step>
+
+  <Step>
+    ### KI-Anbieter konfigurieren
+
+    Navigieren Sie zu **Einstellungen → AI Gateway**, um Ihren KI-Anbieter einzurichten:
+
+    1. Klicken Sie auf **Add Provider**
+    2. Wählen Sie Ihren Anbieter (OpenAI, Anthropic, Google, etc.)
+    3. Fügen Sie Ihren API-Schlüssel ein
+    4. Klicken Sie auf **Test Connection**, um zu prüfen, ob er funktioniert
+    5. Klicken Sie auf **Save**
+
+    > **Tipp:** Sie können mehrere Anbieter konfigurieren und je nach Bedarf wechseln. Jeder Anbieter hat unterschiedliche Stärken – Claude für lange Kontexte, GPT-4 für komplexe Argumentation, etc.
+  </Step>
+</Steps>
+
+## Die Oberfläche verstehen
+
+Beim ersten Login sehen Sie das Haupt-Dashboard mit diesen Bereichen:
+
+### Linke Seitenleiste
+
+- **Dashboard** — Überblick über Ihre letzte Aktivität und Schnellstatistiken
+- **Agents** — KI-Agenten durchsuchen, erstellen und verwalten
+- **Projects** — Arbeiten in Projekten mit Dokumenten und Workflows organisieren
+- **Prompts** — Auf Ihre Prompt-Bibliothek zugreifen und verwalten
+- **Workspaces** — Dokumente für RAG-Kontext hochladen und organisieren
+- **Settings** — Konto, KI-Anbieter und Integrationen konfigurieren
+
+### Hauptinhalt
+
+Hier interagieren Sie mit Agenten, sehen Dokumente und arbeiten an Projekten. Die Oberfläche passt sich an:
+
+- **Chat-Oberfläche** — Für Gespräche mit KI-Agenten
+- **Dokumenten-Editor** — Rich-Text-Editor mit KI-Unterstützung
+- **Dashboard-Ansichten** — Analysen und Übersichtspanels
+
+### Obere Leiste
+
+- **Suche** — Schnellzugriff auf jede Funktion oder jedes Dokument
+- **Benachrichtigungen** — Bleiben Sie über Workflow-Abschlüsse und Genehmigungen informiert
+- **Organisations-Umschalter** — Wechseln Sie zwischen persönlichem Konto und Organisationen
+- **Profil-Menü** — Einstellungen, Hilfe und Abmeldung
+
+## Ihr erster KI-Agent
+
+Erstellen wir Ihren ersten KI-Agenten und ein Dokument:
+
+<Steps>
+  <Step>
+    ### Zu Agents navigieren
+
+    Klicken Sie auf **Agents** in der linken Seitenleiste. Sie sehen eine Liste verfügbarer Agenten, darunter:
+
+    - **Document Generator** — Erstellt verschiedene Dokumenttypen (PRDs, Spezifikationen, etc.)
+    - **Fabric AI** — Der intelligente Orchestrator, der Aufgaben an spezialisierte Agenten weiterleitet
+    - **Custom Agents** — Agenten, die Sie oder Ihre Organisation erstellt haben
+  </Step>
+
+  <Step>
+    ### Agenten auswählen
+
+    Für Ihr erstes Erlebnis verwenden wir den **Document Generator**-Agenten. Klicken Sie darauf, um die Chat-Oberfläche zu öffnen.
+  </Step>
+
+  <Step>
+    ### Konversation starten
+
+    Geben Sie eine Nachricht ein, um zu beginnen. Hier einige Beispiele:
+
+    ```
+    Create a PRD for a user authentication feature with OAuth support
+    ```
+
+    ```
+    Write a technical specification for a REST API that manages user profiles
+    ```
+
+    ```
+    Generate an architecture document for a microservices-based e-commerce platform
+    ```
+  </Step>
+
+  <Step>
+    ### Überprüfen und verfeinern
+
+    Der Agent erstellt ein Dokument basierend auf Ihrer Anfrage. Sie können:
+
+    - **Direkt bearbeiten** im Dokumenten-Editor
+    - **Änderungen anfordern** durch Chat mit dem Agenten
+    - **Vorgeschlagene Änderungen annehmen oder ablehnen**
+    - **Exportieren** des finalen Dokuments als PDF, DOCX oder Markdown
+  </Step>
+</Steps>
+
+## Kontext mit RAG hinzufügen
+
+Für bessere Ergebnisse können Sie Kontext aus bestehenden Dokumenten bereitstellen:
+
+<Steps>
+  <Step>
+    ### Workspace erstellen
+
+    Gehen Sie zu **Workspaces → Create Workspace**. Geben Sie einen Namen ein, z.B. „Produktdokumentation" oder „Technische Spezifikationen".
+  </Step>
+
+  <Step>
+    ### Dokumente hochladen
+
+    Ziehen Sie Dokumente per Drag & Drop in Ihren Workspace. Fabric unterstützt:
+
+    - **PDF** — Inkl. gescannte Dokumente mit OCR
+    - **Word-Dokumente** — .docx-Dateien
+    - **Markdown** — .md-Dateien
+    - **Textdateien** — .txt-Dateien
+    - **Code-Dateien** — Verschiedene Programmiersprachen
+  </Step>
+
+  <Step>
+    ### Workspace an Agenten anhängen
+
+    Beim Starten einer Konversation mit einem Agenten klicken Sie auf **Attach** und wählen Ihren Workspace. Der Agent hat nun Zugriff auf alle Dokumente in diesem Workspace als Kontext.
+  </Step>
+</Steps>
+
+## Organisationen und Zusammenarbeit
+
+Bei der Arbeit im Team können Sie eine Organisation erstellen:
+
+<Steps>
+  <Step>
+    ### Organisation erstellen
+
+    Gehen Sie zu **Settings → Organizations → Create Organization**. Wählen Sie einen Namen und laden Sie Teammitglieder per E-Mail ein.
+  </Step>
+
+  <Step>
+    ### Rollen zuweisen
+
+    Weisen Sie Teammitgliedern Rollen zu:
+
+    - **Owner** — Volle Kontrolle inkl. Abrechnung und Löschung
+    - **Admin** — Kann Mitglieder und Einstellungen verwalten
+    - **Member** — Kann Agenten nutzen und Dokumente erstellen
+  </Step>
+
+  <Step>
+    ### Ressourcen teilen
+
+    Innerhalb einer Organisation können Sie teilen:
+
+    - **Workspaces** — Dokumente und Wissensbasen
+    - **Prompts** — Benutzerdefinierte Prompt-Vorlagen
+    - **Agents** — Organisationsspezifische Agenten
+    - **Projects** — Kollaborative Projekte
+  </Step>
+</Steps>
+
+## Externe Tools verbinden
+
+Fabric AI kann über MCP (Model Context Protocol) mit Ihren bestehenden Tools verbinden:
+
+### Beliebte Integrationen
+
+<Cards>
+  <Card title="GitHub">
+    Repositories lesen, Issues erstellen, Pull Requests verwalten
+  </Card>
+  <Card title="Jira">
+    Tickets erstellen, Status aktualisieren, Sprints verwalten
+  </Card>
+  <Card title="Slack">
+    Nachrichten posten, Kanäle lesen, Benachrichtigungen verwalten
+  </Card>
+  <Card title="Notion">
+    Seiten lesen und schreiben, Datenbanken verwalten
+  </Card>
+</Cards>
+
+Integration einrichten:
+
+1. Gehen Sie zu **Settings → MCP Servers**
+2. Klicken Sie auf **Add Server** und wählen Sie aus der Registry
+3. Authentifizieren Sie sich per OAuth oder API-Schlüssel
+4. Testen Sie die Verbindung
+
+Nach der Verbindung können Agenten diese Tools nutzen, um z.B. Jira-Tickets aus PRDs zu erstellen oder Updates in Slack zu posten.
+
+## Was kommt als Nächstes?
+
+Jetzt, da Sie eingerichtet sind, erkunden Sie diese Anleitungen:
+
+<Cards>
+  <Card title="Kernkonzepte" href="/docs/core-concepts/architecture">
+    Verstehen Sie, wie Fabric AI unter der Haube funktioniert
+  </Card>
+  <Card title="Dokumentenerstellung" href="/docs/tutorials/first-document">
+    Vertiefen Sie sich in die Erstellung verschiedener Dokumenttypen
+  </Card>
+  <Card title="Benutzerdefinierte Prompts" href="/docs/features/prompts">
+    Erstellen und verwalten Sie benutzerdefinierte Prompts für Ihre Agenten
+  </Card>
+  <Card title="Workflow-Automatisierung" href="/docs/core-concepts/workflows">
+    Erfahren Sie mehr über dauerhafte Workflow-Automatisierung
+  </Card>
+</Cards>
+
+## Fehlerbehebung
+
+### Häufige Probleme
+
+**KI-Anbieter funktioniert nicht**
+- Überprüfen Sie, ob Ihr API-Schlüssel korrekt ist und ausreichend Guthaben hat
+- Prüfen Sie, ob der Anbieter in Ihren Einstellungen aktiviert ist
+- Testen Sie die Verbindung erneut
+
+**Dokumente werden nicht hochgeladen**
+- Stellen Sie sicher, dass das Dateiformat unterstützt wird
+- Prüfen Sie, ob die Dateigröße unter 50 MB liegt
+- Aktualisieren Sie die Seite und versuchen Sie den Upload erneut
+
+**Langsame Antwortzeiten**
+- Große Dokumente können länger zur Verarbeitung benötigen
+- Komplexe Prompts erfordern mehr Rechenleistung
+- Prüfen Sie Ihre Internetverbindung
+
+### Hilfe erhalten
+
+- **Dokumentation** — Sie lesen sie gerade!
+- **Support-E-Mail** — support@fabric.pro
+- **Community** — Treten Sie unserem Discord für Community-Support bei

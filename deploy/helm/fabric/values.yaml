@@ -1,0 +1,214 @@
+# =============================================================================
+# Fabric Helm chart — default values
+# =============================================================================
+# Holds non-secret defaults shared by every deployment profile.
+# Environment-specific overrides live in values-dev.yaml / values-prod.yaml.
+# Secrets are synced into k8s by External Secrets Operator (see externalSecrets
+# block) and never appear here.
+# =============================================================================
+
+global:
+  imageRegistry: ""                   # Set per-deploy by CI (e.g. 123456789012.dkr.ecr.us-east-1.amazonaws.com)
+  imageTag: "latest"                  # Overridden by CI with $CI_COMMIT_SHA
+  environment: "dev"                  # dev | staging | prod
+  domain: ""                          # Empty -> ALB hostname used; set to delegate via Route 53
+  # Explicit public base URL for the app (NEXT_PUBLIC_SITE_URL / auth callbacks).
+  # Takes precedence over `domain`. Use to point at the raw ALB hostname when there
+  # is no real domain yet, WITHOUT adding an ingress host rule (ingress stays
+  # host-less / wildcard). Leave empty to derive from `domain`.
+  siteUrl: ""
+  region: "us-east-1"
+
+ingress:
+  enabled: true
+  tls: false                          # HTTP-only by default (Decision §15.3)
+  certificateArn: ""                  # Required only when tls: true
+
+externalSecrets:
+  enabled: true
+  secretStore: aws-secrets-manager    # ClusterSecretStore name
+  refreshInterval: 1h
+
+# The migrate Job (templates/jobs/migrate.yaml) uses the temporal-worker image,
+# not the web image — the web image is a Next.js standalone build and doesn't
+# contain packages/database. The temporal-worker image ships the full workspace.
+migrations:
+  enabled: true
+
+# The seed Job (templates/jobs/seed.yaml) also uses the temporal-worker image
+# for the same reason — it needs packages/database/scripts/* from the workspace.
+seed:
+  enabled: false                      # Opt-in via --set seed.enabled=true
+  devUsers: ""
+  usersJson: ""
+  orgSlug: ""
+  orgName: ""
+
+serviceAccount:
+  create: true
+  name: fabric
+  roleArn: ""                         # IRSA role ARN — populated by Terraform output
+
+web:
+  enabled: true
+  replicas: 2
+  image:
+    repository: fabric-web
+  port: 3000
+  resources:
+    requests: { cpu: 100m, memory: 256Mi }
+    limits:   { cpu: 1000m, memory: 1Gi }
+
+temporalWorker:
+  enabled: true
+  replicas: 1
+  # When true, the temporal-worker connects as the dedicated `fabric_worker` role
+  # (BYPASSRLS) instead of the shared app role, so it can read/write tenant tables
+  # under FORCE RLS. Requires the fabric/<env>/database-worker secret + the migrate
+  # hook to create the role (apply-rls-direct.ts). Off by default; on for AWS/EKS.
+  bypassRlsRole: false
+  image:
+    repository: fabric-temporal-worker
+  resources:
+    requests: { cpu: 100m, memory: 256Mi }
+    limits:   { cpu: 1000m, memory: 1Gi }
+
+mcpStdioWrapper:
+  enabled: true
+  replicas: 1
+  image:
+    repository: fabric-mcp-stdio-wrapper
+  port: 3100
+  resources:
+    requests: { cpu: 100m, memory: 256Mi }
+    limits:   { cpu: 1000m, memory: 1Gi }
+
+agents:
+  - { name: document-generator,         image: fabric-document-generator,         port: 8124, replicas: 1 }
+  - { name: project-document-generator, image: fabric-project-document-generator, port: 8125, replicas: 1 }
+  - { name: task-planner,               image: fabric-task-planner,               port: 8126, replicas: 1 }
+  - { name: story-breakdown,            image: fabric-story-breakdown,            port: 8127, replicas: 1 }
+  - { name: api-agent,                  image: fabric-api-agent,                  port: 8131, replicas: 1 }
+  - { name: prompt-enhancer,            image: fabric-prompt-enhancer,            port: 8134, replicas: 1 }
+  - { name: data-analyst,               image: fabric-data-analyst,               port: 8130, replicas: 1 }
+  - { name: backlog-updater,            image: fabric-backlog-updater,            port: 8135, replicas: 1 }
+  - { name: weave-readers,              image: fabric-weave-readers,              port: 8140, replicas: 1 }
+  - { name: weave-shuttle,              image: fabric-weave-shuttle,              port: 8141, replicas: 1 }
+  - { name: weave-planners,             image: fabric-weave-planners,             port: 8142, replicas: 1 }
+
+customAgentRuntime:
+  enabled: false                      # Wire later (Decision §15.5)
+
+otelCollector:
+  enabled: true
+  exporter: cloudwatch                # cloudwatch | otlp-http | none
+
+fluentbit:
+  enabled: true
+  destination: cloudwatch
+
+networkPolicy:
+  # On by default. The VPC CNI addon is deployed with enableNetworkPolicy=true
+  # (deploy/terraform/modules/eks), so these policies are enforced rather than
+  # decorative — leaving them off shipped a cluster with no segmentation at all
+  # unless an override happened to turn them on.
+  #
+  # values-dev.yaml sets this to false explicitly and values-prod.yaml sets it
+  # to true, so neither shipped profile changes behaviour; this default governs
+  # a deploy from bare values.yaml.
+  enabled: true
+  # Source CIDR permitted to reach web (the ALB's ENIs live in the VPC).
+  # MUST match your VPC. The default matches this stack's Terraform
+  # (modules/vpc: 10.0.0.0/16). If your VPC is outside 10.0.0.0/8 — an AWS
+  # default VPC is 172.31.0.0/16 — you MUST override this, or the ALB cannot
+  # reach web and the app is unreachable with healthy-looking pods.
+  vpcCidr: "10.0.0.0/8"
+
+temporal:
+  address: "us-east-1.aws.api.temporal.io:7233"   # Override with your Temporal Cloud endpoint
+  namespace: "default"                # Override with your Temporal Cloud namespace
+
+collaboration:
+  enabled: true
+  partykitHost: ""                    # Set after PartyKit deploy (Cloudflare host, or the
+                                      # partykit.ingress.host below when self-hosting in-cluster)
+
+# Self-hosted PartyKit (real-time collaboration) — Cloudflare-free path (#1722).
+# Default OFF: SaaS deployments keep collaboration.partykitHost pointed at the
+# Cloudflare Workers host. Set enabled=true to run PartyKit in-cluster instead;
+# then set collaboration.partykitHost to partykit.ingress.host.
+#
+# HA: replicas=1 is "restart-tolerant, single-active" (verified). Scaling to >1
+# requires sticky routing by room, which AWS ALB cannot do — see the template
+# header and docs/deployment. Keep replicas=1 with the ALB ingress.
+partykit:
+  enabled: false
+  replicas: 1
+  image:
+    repository: fabric-partykit-selfhost   # push to your registry (party-cf/Dockerfile)
+    tag: "latest"
+  port: 1999
+  storage:
+    size: 5Gi
+    storageClassName: ""              # Empty -> cluster default (gp3 via AWS EBS CSI)
+  resources:
+    requests: { cpu: 100m, memory: 256Mi }
+    limits:   { cpu: 500m, memory: 512Mi }
+  pdb:
+    enabled: false                    # Enable with maxUnavailable once replicas>1 / real HA
+    maxUnavailable: 0
+  ingress:
+    enabled: false                    # Browsers connect directly -> needs a public ingress
+    host: ""                          # e.g. partykit.fabric.example.com
+    tls: false
+    certificateArn: ""                # Required when tls=true (ACM ARN)
+
+elasticache:
+  endpoint: ""                        # Set from Terraform output
+
+# Self-hosted Qdrant (vector DB for RAG). Single-node StatefulSet with an EBS
+# PVC, ClusterIP-only service, API-key auth via Secrets Manager.
+#
+# Set `enabled: false` to bypass the in-cluster deploy and point the app at
+# Qdrant Cloud / Hybrid Cloud — wire the external URL via `externalUrl` and
+# load QDRANT_API_KEY into Secrets Manager group `qdrant` manually.
+#
+# The official Qdrant Helm chart's OSS feature set is "community support" only
+# (no zero-downtime upgrades, no built-in DR). That's acceptable for dev; prod
+# should re-evaluate before launch (Qdrant Hybrid Cloud or managed DR).
+qdrant:
+  enabled: true
+  externalUrl: ""                     # Used only when qdrant.enabled = false
+  image:
+    repository: qdrant/qdrant
+    tag: "v1.13.0"
+  port: 6333                          # HTTP API
+  grpcPort: 6334                      # gRPC
+  storage:
+    size: 10Gi
+    storageClassName: ""              # Empty -> cluster default (gp3 via AWS EBS CSI)
+  resources:
+    requests: { cpu: 100m, memory: 256Mi }
+    limits:   { cpu: 500m, memory: 1Gi }
+
+# Databricks workspace integration (optional). Phase 1: Lakebase Postgres.
+# Secrets (DATABRICKS_CLIENT_SECRET / DATABRICKS_TOKEN) load from the
+# Secrets Manager group `databricks` — see docs/deployment/DATABRICKS.md.
+databricks:
+  host: ""                            # https://adb-xxxx.azuredatabricks.net; empty = disabled
+  databaseAuthProvider: "password"    # "password" | "databricks-oauth"
+  workerRlsMode: "bypassrls"          # "bypassrls" | "policy"
+  workerRolePreprovisioned: false     # true = fabric_worker admin-created (managed PG, e.g. Lakebase); apply-rls-direct.ts skips role mgmt, only attaches worker_bypass policies
+  appRlsBypass: false                 # true = fabric_app gets per-table app_bypass policies (managed PG, e.g. Lakebase, where the app role has no implicit RLS bypass)
+
+s3:
+  buckets:
+    avatars: ""                       # Set from Terraform output (each = fully-qualified bucket name)
+    chatDocuments: ""
+    projectContexts: ""
+    workspaceDocuments: ""
+    orchestratorArtifacts: ""
+    skills: ""
+    projectDocumentAssets: ""
+
+tags: {}

@@ -1,0 +1,81 @@
+name: Bug report
+description: Something behaves differently from what the docs or the code say it should.
+labels: ["bug", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Found a security vulnerability? Close this and follow
+        [the security policy](https://github.com/Fabric-Pro/fabric-oss/security/policy) instead.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you saw, and what you expected instead.
+      placeholder: |
+        Creating a project with an empty description returns a 500.
+        I expected a validation error naming the field.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: >
+        Numbered steps someone else can follow on a fresh install. Maintainers
+        close bugs they cannot reproduce, so spend your effort here.
+      placeholder: |
+        1. Sign in and open any organization
+        2. Projects, then New project
+        3. Enter a name, leave the description empty, Save
+        4. The request fails
+    validations:
+      required: true
+
+  - type: dropdown
+    id: deploy-mode
+    attributes:
+      label: How are you running Fabric?
+      options:
+        - Docker Compose
+        - .NET Aspire (local development)
+        - Kubernetes / Helm
+        - Hosted (fabric.pro)
+        - Something else, described below
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: >
+        The release tag you deployed, or the commit SHA if you build from source
+        (`git rev-parse --short HEAD`).
+      placeholder: v1.4.2, or 0214c068
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Anything about your setup that a maintainer could not guess.
+      placeholder: |
+        Postgres 16 on Neon, Node 22.11, Firefox 141 on Windows 11.
+        Behind a corporate proxy.
+    validations:
+      required: false
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or error output
+      description: >
+        Paste the relevant part rather than the whole file. Redact tokens,
+        connection strings, and customer data before you post.
+      render: shell
+    validations:
+      required: false

@@ -1,0 +1,7 @@
+{
+	"dependencies": ["."],
+	"graphs": {
+		"project_document_generator": "./server.ts:graph"
+	},
+	"env": ".env"
+}

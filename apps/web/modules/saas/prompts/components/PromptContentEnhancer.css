@@ -1,0 +1,115 @@
+/* Diff highlighting styles - matches ag-ui-demo exactly */
+/* <s> for deletions (red), <em> for additions (green) */
+
+/* Diff display container for raw text mode */
+.prompt-diff-display s {
+	background-color: #f9818150;
+	padding: 2px;
+	font-weight: bold;
+	color: rgba(0, 0, 0, 0.7);
+	text-decoration: none; /* Removed strikethrough - red background is sufficient for diff highlighting */
+}
+
+.prompt-diff-display em {
+	background-color: #b2f2bb;
+	padding: 2px;
+	font-weight: bold;
+	font-style: normal;
+}
+
+/* Dark mode diff highlighting for raw text */
+.dark .prompt-diff-display s {
+	background-color: rgba(239, 68, 68, 0.4);
+	color: rgba(255, 255, 255, 0.9);
+}
+
+.dark .prompt-diff-display em {
+	background-color: rgba(34, 197, 94, 0.4);
+	color: rgba(255, 255, 255, 0.95);
+}
+
+/* NOTE: TipTap diff styles removed - PromptContentEnhancer uses Textarea, not TipTap.
+   Diff highlighting for TipTap editors should use DocumentEditor.css with streaming-diff-active class. */
+
+/* TipTap editor styles */
+.tiptap {
+	outline: none;
+}
+
+.tiptap p {
+	margin: 1em 0;
+}
+
+.tiptap h1,
+.tiptap h2,
+.tiptap h3,
+.tiptap h4,
+.tiptap h5,
+.tiptap h6 {
+	margin: 1.5em 0 0.5em;
+	font-weight: 600;
+	line-height: 1.3;
+}
+
+.tiptap h1 {
+	font-size: 2em;
+}
+
+.tiptap h2 {
+	font-size: 1.5em;
+}
+
+.tiptap h3 {
+	font-size: 1.25em;
+}
+
+.tiptap ul,
+.tiptap ol {
+	padding-left: 1.5em;
+	margin: 1em 0;
+}
+
+.tiptap code {
+	background-color: rgba(0, 0, 0, 0.05);
+	padding: 0.2em 0.4em;
+	border-radius: 3px;
+	font-family: monospace;
+	font-size: 0.9em;
+}
+
+.tiptap pre {
+	background-color: rgba(0, 0, 0, 0.05);
+	padding: 1em;
+	border-radius: 6px;
+	overflow-x: auto;
+	margin: 1em 0;
+}
+
+.tiptap pre code {
+	background-color: transparent;
+	padding: 0;
+}
+
+.tiptap blockquote {
+	border-left: 3px solid rgba(0, 0, 0, 0.1);
+	padding-left: 1em;
+	margin: 1em 0;
+	font-style: italic;
+}
+
+/* Template variable highlighting */
+.template-variable {
+	background-color: rgba(59, 130, 246, 0.1);
+	color: rgb(59, 130, 246);
+	padding: 0.125rem 0.25rem;
+	border-radius: 0.25rem;
+	font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+	font-size: 0.875em;
+	font-weight: 500;
+}
+
+/* Dark mode support for template variables */
+.dark .template-variable {
+	background-color: rgba(96, 165, 250, 0.15);
+	color: rgb(96, 165, 250);
+}

@@ -1,0 +1,198 @@
+---
+title: Testfälle
+description: Verfassen Sie Testfälle mit geordneten Schritten, synchronisieren Sie sie mit Ihrem PM-Tool, fassen Sie sie zu Plänen zusammen, verknüpfen Sie sie mit der Arbeit, die sie prüfen, und stellen Sie sie der Projekt-KI als Kontext bereit.
+---
+
+Jedes Fabric-Projekt verfügt über einen Tab **Testing**, in dem Sie Testfälle so verfassen, wie Sie es in Azure DevOps Test Plans oder TestRail tun würden — geordnete Schritte aus **Aktion + Erwartetem Ergebnis**, ein Status, eine Priorität, ein Verantwortlicher und Tags. Von dort aus können Sie Fälle mit Ihrem Projektmanagement-Tool synchronisieren, sie zu Plänen zusammenfassen, sie mit den Features und Bugs verknüpfen, die sie prüfen, neue Fälle aus den Akzeptanzkriterien eines Features mit KI entwerfen und sehen, wie diese Fälle bei der Ausführung tatsächlich abgeschnitten haben.
+
+In Fabric trägt jeder Fall eine `TC-001`-Kennung (pro Projekt) und jeder Plan eine `TP-001`. Ein Fall hat einen Lebenszyklus-**Status** — **Vorgeschlagen**, **Entwurf**, **Bereit** oder **Geschlossen** — und eine **Priorität** von Niedrig bis Kritisch.
+
+<Callout type="info">
+**Ergebnisse stammen aus zwei Quellen.** Fabric liest, was Ihre CI gemeldet hat — Azure DevOps, GitHub Actions und GitLab CI — und verknüpft jeden automatisierten Test mit dem Fall, den er prüft. Fabric kann einen Fall auch selbst ausführen und dabei einen echten Browser durch dessen Schritte gegen eine Ihrer Umgebungen steuern. Beide Arten von Läufen erscheinen in derselben Historie.
+</Callout>
+
+## Den Tab öffnen
+
+Öffnen Sie in einem Projekt den Tab **Testing**. Er hat fünf Bereiche:
+
+- **Fälle** — die Liste der Testfälle mit Suche und Filtern (Status, Priorität, Tag). Jede Zeile zeigt die `TC-NNN`-Kennung, den Titel, den Status, die Priorität, die Anzahl der Schritte, ein etwaig verknüpftes Feature und Tags.
+- **Pläne** — Ihre Testpläne (`TP-NNN`, Name, Status, Anzahl der Fälle).
+- **Features** — Abdeckung aus Sicht der Arbeit statt der Testsuite: welche Features und Bugs Fälle haben und welche nicht.
+- **Läufe** — die Ausführungshistorie, sowohl die von Fabric selbst gesteuerten Läufe als auch die von Ihrer CI gemeldeten, mit dem, was fehlgeschlagen ist, und wer sie gestartet hat.
+- **Fragen** — die offenen Fragen, die beim Entwerfen oder Prüfen von Fällen aufkamen, damit eine Unklarheit, die die Abdeckung blockiert, sichtbar ist, ohne jeden Fall zu öffnen.
+
+Der Tab funktioniert sowohl in persönlichen als auch in Organisationsprojekten; Fälle dringen niemals über diese Grenze hinweg.
+
+## Einen Fall mit Schritten erstellen
+
+<Steps>
+  <Step>
+    ### Auf Neu klicken
+
+    Klicken Sie im Bereich **Fälle** auf **Neu**. Der Fall-Editor fährt von rechts aus.
+  </Step>
+
+  <Step>
+    ### Die Grunddaten eingeben
+
+    Geben Sie dem Fall einen **Titel**, eine optionale **Beschreibung** (für Vorbedingungen oder eine Zusammenfassung) und legen Sie **Status**, **Priorität**, **Automatisierungsstatus**, **Verantwortlichen** und **Tags** fest.
+  </Step>
+
+  <Step>
+    ### Geordnete Schritte hinzufügen
+
+    Fügen Sie im **Schritt-Editor** Zeilen aus **Aktion** und **Erwartetem Ergebnis** hinzu. Über die Zeilensteuerung können Sie Schritte einfügen, löschen und umsortieren — per Ziehen am Griff oder mit der Tastatur. Die von Ihnen festgelegte Reihenfolge ist die Reihenfolge, in der der Fall gelesen und synchronisiert wird.
+  </Step>
+
+  <Step>
+    ### Speichern
+
+    Klicken Sie auf **Speichern**. Der Fall erhält seine nächste `TC-NNN`-Kennung und erscheint in der Liste. Sie können ihn jederzeit erneut öffnen, um Felder oder Schritte zu bearbeiten.
+  </Step>
+</Steps>
+
+<Callout type="info">
+**Duplizieren, um einen Fall wiederzuverwenden.** Mit **Duplizieren** kopieren Sie einen Fall — samt Feldern und Schritten — als neuen **Entwurf**-Fall. Ein Duplikat ist lokal: Es startet ohne Verknüpfung zu einem PM-Tool.
+</Callout>
+
+## Einen Fall mit einem Feature verknüpfen
+
+Verbinden Sie einen Fall mit der Arbeit, die er prüft, damit die Abdeckung von beiden Seiten sichtbar ist.
+
+<Steps>
+  <Step>
+    ### Den Fall öffnen und Verknüpfte Work Items suchen
+
+    Nutzen Sie im Fall-Editor das Steuerelement **Verknüpfte Work Items**, um die Features und Bugs Ihres Projekts zu durchsuchen.
+  </Step>
+
+  <Step>
+    ### Ein Feature und (optional) ein Akzeptanzkriterium wählen
+
+    Wählen Sie das Feature oder den Bug aus. Wenn der Fall ein bestimmtes Akzeptanzkriterium prüft, setzen Sie **Deckt AK N ab**, um festzuhalten, welches.
+  </Step>
+
+  <Step>
+    ### Die Abdeckung am Feature sehen
+
+    Das Feature zeigt nun eine schreibgeschützte Zeile **Durch N Fälle getestet**, sodass jeder, der das Feature betrachtet, sieht, dass es eine Testabdeckung hat. Sie können eine Verknüpfung jederzeit von beiden Seiten entfernen.
+  </Step>
+</Steps>
+
+## Einen Plan erstellen
+
+Ein **Testplan** ist eine flache Sammlung von Fällen — ohne verschachtelte Suites.
+
+<Steps>
+  <Step>
+    ### Den Plan erstellen
+
+    Klicken Sie im Bereich **Pläne** auf **Neuer Plan** und geben Sie ihm einen Namen. Er erhält eine `TP-NNN`-Kennung.
+  </Step>
+
+  <Step>
+    ### Fälle hinzufügen
+
+    Öffnen Sie den Plan und fügen Sie Fälle über die Auswahl hinzu. Sortieren Sie sie per Ziehen oder Tastatur um und geben Sie einem Fall eine optionale **Abschnitt**-Bezeichnung, um ihn innerhalb des Plans zu gruppieren.
+  </Step>
+
+  <Step>
+    ### Fälle über Pläne hinweg wiederverwenden
+
+    Derselbe Fall kann zu vielen Plänen gehören — ihn zu einem zweiten Plan hinzuzufügen entfernt ihn nicht aus dem ersten. Ein Fall kann pro Plan nur einmal vorkommen.
+  </Step>
+</Steps>
+
+## Mit Ihrem PM-Tool synchronisieren
+
+Testfälle werden über **dieselbe** Verbindung synchronisiert, die auch Ihre Features nutzen — Azure DevOps, Jira, GitLab oder Fizzy —, sodass nichts Neues zu verbinden ist. (Siehe [Projektmanagement-Synchronisierung](/docs/features/pm-sync) zum Verbinden eines PM-Tools mit Ihrem Projekt.)
+
+<Steps>
+  <Step>
+    ### Auto-Sync aktivieren (optional)
+
+    Schalten Sie im Fall-Editor **Auto-Sync** ein, um den Fall bei jedem Speichern an Ihr PM-Tool zu übertragen.
+  </Step>
+
+  <Step>
+    ### Jetzt synchronisieren
+
+    Klicken Sie auf **Jetzt synchronisieren**, um den Fall sofort zu übertragen oder Aktualisierungen aus dem verknüpften Work Item abzurufen. Ein Status-Chip zeigt, ob der Fall **Verbunden** ist, eine **Erneute Verbindung** benötigt oder auf einen Konflikt gestoßen ist.
+  </Step>
+
+  <Step>
+    ### Abweichungen auflösen
+
+    Wenn sowohl Fabric als auch das Tool den Fall geändert haben, zeigt der Chip einen **Konflikt**. Nutzen Sie **Erneut versuchen**, um erneut zu übertragen, oder **Verwerfen**, um den Fehler zu löschen, sobald Sie ihn behandelt haben.
+  </Step>
+</Steps>
+
+<Callout type="info">
+**Ihre Schritte reisen mit dem Fall — bei jedem Tool.** Wenn ein Fall synchronisiert wird, werden seine geordneten Aktion/Erwartet-Schritte in die Beschreibung des Work Items geschrieben, sodass sie in jedem PM-Tool erscheinen. Bei **Azure DevOps** befüllen die Schritte zusätzlich das native Feld **Schritte** des Work Items, sodass sie als richtiges Schrittraster dargestellt werden.
+</Callout>
+
+## Mit KI generieren
+
+Lassen Sie Fabric Fälle aus den Akzeptanzkriterien eines Features als Ausgangspunkt entwerfen.
+
+<Steps>
+  <Step>
+    ### Auf Mit KI generieren klicken
+
+    Klicken Sie im Bereich **Fälle** auf **Mit KI generieren** und wählen Sie ein Feature.
+  </Step>
+
+  <Step>
+    ### Die Entwürfe prüfen
+
+    Fabric liest die Beschreibung und die Akzeptanzkriterien des Features und entwirft bearbeitbare Fälle mit betitelten, geordneten Schritten. Jeder generierte Fall wird als **Entwurf** erstellt und mit diesem Feature verknüpft.
+  </Step>
+
+  <Step>
+    ### Bearbeiten und hochstufen
+
+    Öffnen Sie jeden Entwurf, verfeinern Sie die Schritte und setzen Sie ihn auf **Bereit**, wenn er gut ist. Die KI finalisiert einen Fall nie — sie gibt Ihnen nur einen Vorsprung.
+  </Step>
+</Steps>
+
+<Callout type="info">
+**Jeder Fall steht der Projekt-KI zur Verfügung.** Jeder Fall, den Sie verfassen, wird in das Projektwissen gespiegelt, sodass der KI-Assistent ihn berücksichtigt, wenn er Ihr Team unterstützt — genauso, wie er Ihre Dokumente und Entscheidungen berücksichtigt. Beim Löschen eines Falls wird er aus diesem Kontext entfernt.
+</Callout>
+
+## Einen Agentenlauf in einen wiederverwendbaren Test umwandeln
+
+Mode B führt einen gespeicherten deklarativen Playwright-Aktionsplan aus, statt
+bei jedem Lauf erneut einen Agenten die Schritte interpretieren zu lassen.
+Öffnen Sie einen vorhandenen Fall und wählen Sie **Skript erstellen**:
+
+- **Agentenlauf + Repository** kombiniert einen auswählbaren früheren
+  Mode-A-Lauf – auch einen älteren – mit relevantem indexiertem Quellcode.
+- **Nur Repository** verwendet den Fall und den indexierten Code ohne
+  Beobachtungen aus einem vorherigen Lauf.
+- **Manuell** öffnet den Editor für einen eigenen JSON-Aktionsplan und verwendet
+  keine KI.
+
+Die KI-gestützte Erstellung kann einmal die Repository-Embedding-Suche und das
+konfigurierte Generierungsmodell verwenden. Spätere Mode-B-Läufe führen den
+gespeicherten Plan ohne Modellaufrufe aus. Jede gespeicherte Version behält
+Zeitstempel, Autor und Ursprung; **Verlauf** zeigt einen +/- Diff und kann eine
+ältere Version wiederherstellen, ohne neuere Versionen zu löschen.
+
+<Callout type="warning">
+Der gespeicherte Plan besteht aus validierten Daten, nicht aus ausführbarem Code.
+Er unterstützt eine geschlossene Menge gleichursprünglicher Navigations-,
+Interaktions- und Prüfschritte. Fabrics vertrauenswürdiger Runner hält die
+Umgebungszugangsdaten; der Plan kann nicht auf Zugangsdaten, Node-APIs,
+Playwright-Interna oder beliebige Netzwerkanfragen zugreifen.
+</Callout>
+
+## Nächste Schritte
+
+<Cards>
+  <Card title="Projektmanagement-Synchronisierung" href="/docs/features/pm-sync">
+    Azure DevOps, Jira, GitLab oder Fizzy mit Ihrem Projekt verbinden
+  </Card>
+  <Card title="Projekte" href="/docs/features/projects">
+    Dokumente, Features und Testfälle in einem Projekt organisieren
+  </Card>
+</Cards>

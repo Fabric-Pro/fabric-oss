@@ -1,0 +1,79 @@
+---
+title: Confluence
+description: Confluence verbinden, damit Fabric-Agenten Seiten als Laufzeit-Aktionen durchsuchen, lesen und erstellen können.
+---
+
+Verbinden Sie Confluence mit Fabric AI, damit Agenten und Workflows Bereiche durchsuchen, Seiteninhalte lesen und Seiten erstellen können — als Live-Laufzeit-Aktionen.
+
+Confluence ist ein **Wissens**-Anbieter (leseorientiert) mit einer Aktion zum Erstellen von Seiten.
+
+<Callout type="info">
+Confluence und Jira teilen sich eine **Atlassian**-Verbindung — Fabric verwendet Atlassians offiziellen Rovo-MCP-Server, sodass eine einzige OAuth-Autorisierung beide freischaltet. Siehe auch [Jira](/docs/integrations/jira).
+</Callout>
+
+## Confluence einrichten
+
+<Steps>
+  <Step>
+    ### Confluence unter Integrationen öffnen
+
+    Gehen Sie zu **Einstellungen → Integrationen** und öffnen Sie die **Confluence**-Karte.
+  </Step>
+
+  <Step>
+    ### Aktionen einrichten
+
+    Klicken Sie auf **Aktionen einrichten** und autorisieren Sie Fabric AI bei Atlassian (OAuth). Dies verbindet sowohl Confluence als auch Jira.
+  </Step>
+
+  <Step>
+    ### Bestätigen
+
+    Der Anbieter zeigt **Verbunden** mit seinen verfügbaren Laufzeit-Aktionen.
+  </Step>
+</Steps>
+
+## Verfügbare Aktionen
+
+| Aktion | Typ | Beschreibung |
+|--------|------|-------------|
+| **Search Confluence** | Wissen | Nach Seiten und Inhalten in Confluence suchen |
+| **Get Page Content** | Wissen | Inhalt einer Confluence-Seite abrufen |
+| **List Space Pages** | Wissen | Alle Seiten in einem Confluence-Bereich auflisten |
+| **Create Page** | Aktion | Eine neue Seite in Confluence erstellen |
+
+### Im KI-Chat
+
+```
+"Was sagt unser Confluence-Runbook über die On-Call-Rotation?"
+
+"Fasse die Architektur-Seiten im PLATFORM-Bereich zusammen"
+```
+
+Der Agent ruft die Wissens-Aktionen von Confluence live auf — keine Hintergrund-Synchronisierung erforderlich.
+
+## Trennen & erneut verbinden
+
+1. Öffnen Sie **Einstellungen → Integrationen → Confluence**
+2. Klicken Sie auf **Trennen** (dies trennt auch die gemeinsame Atlassian-Verbindung, die Jira nutzt)
+3. Zum erneuten Verbinden klicken Sie wieder auf **Aktionen einrichten** und autorisieren erneut
+
+## Fehlerbehebung
+
+### Seiten werden nicht gefunden
+- Prüfen Sie, ob die Verbindung **Verbunden** anzeigt
+- Stellen Sie sicher, dass das autorisierte Konto Zugriff auf den Bereich hat
+- Stellen Sie sicher, dass bei der Autorisierung die richtige Atlassian-Site ausgewählt wurde
+
+---
+
+## Nächste Schritte
+
+<Cards>
+  <Card title="Jira" href="/docs/integrations/jira">
+    Die andere Hälfte der gemeinsamen Atlassian-Verbindung
+  </Card>
+  <Card title="MCP-Integration" href="/docs/integrations/mcp">
+    Wie verbundene Tools zur Laufzeit aufgerufen werden
+  </Card>
+</Cards>

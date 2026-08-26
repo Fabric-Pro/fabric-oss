@@ -1,0 +1,159 @@
+---
+title: Skills
+description: Wiederverwendbare Skill-Module durchsuchen und erstellen, die Agentenfähigkeiten erweitern.
+---
+
+Skills sind modulare, eigenständige Anweisungssätze im Markdown-Format. Hängen Sie sie an Agenten-Vorlagen oder Berichtsvorlagen an, um Agenten spezialisierte Fähigkeiten zu geben, ohne Anweisungen neu schreiben zu müssen.
+
+## Was ist ein Skill?
+
+Ein Skill ist ein Markdown-Dokument mit fokussierten Anweisungen für eine bestimmte Fähigkeit. Wenn er an einen Agenten angehängt wird, wird der Skill-Inhalt Teil des Agenten-Gedächtnisses als Datei (`skills/{slug}/SKILL.md`).
+
+**Beispiel:** Ein „Forschungsmethodik"-Skill könnte Anweisungen für systematische Literaturrecherche, Quellenbewertungskriterien und Zitierformatierungsregeln enthalten.
+
+## Den Katalog durchsuchen
+
+Navigieren Sie in der linken Seitenleiste zu **Skills**, um den Skill-Katalog aufzurufen.
+
+### Filtern
+
+- **Suche** — Skills nach Name oder Beschreibung finden
+- **Bereich** — Nach Alle, System, Organisation oder Persönlich filtern
+- **Kategorie** — Schnellfilter nach Kategorien-Tags
+
+### Skill-Bereiche
+
+| Bereich | Sichtbarkeit | Bearbeitbar von |
+|-------|------------|-------------|
+| **System** | Für alle | Nur lesbar (integriert) |
+| **Organisation** | Nur für Org-Mitglieder | Org-Eigentümer und Admins |
+| **Benutzer** | Nur für Sie | Nur Sie |
+
+## Einen Skill erstellen
+
+<Steps>
+  <Step>
+    ### Auf „Skill erstellen" klicken
+
+    Im Skills-Katalog auf die Erstellen-Schaltfläche klicken.
+  </Step>
+
+  <Step>
+    ### Den Skill definieren
+
+    Details ausfüllen:
+
+    - **Name** — Beschreibender Name (z. B. „Code-Review Best Practices")
+    - **Slug** — URL-freundlicher Bezeichner (z. B. `code-review-best-practices`)
+    - **Beschreibung** — Was dieser Skill ermöglicht
+    - **Kategorie** — Organisatorische Kategorie (z. B. „engineering", „forschung")
+    - **Tags** — Zusätzliche Labels zum Filtern
+  </Step>
+
+  <Step>
+    ### Den Inhalt schreiben
+
+    Die Skill-Anweisungen in Markdown schreiben. Klar und spezifisch sein:
+
+    ```markdown
+    # Code-Review Best Practices
+
+    ## Review-Checkliste
+    - Auf Sicherheitslücken prüfen (OWASP Top 10)
+    - Fehlerbehandlung deckt Randfälle ab
+    - Tests decken neue Funktionalität ab
+    - Auf Leistungsauswirkungen prüfen
+
+    ## Kommunikationsstil
+    - Konstruktiv, nicht kritisch sein
+    - Verbesserungen mit Beispielen vorschlagen
+    - Gute Muster anerkennen
+    ```
+  </Step>
+
+  <Step>
+    ### Bereich festlegen und veröffentlichen
+
+    Bereich auswählen:
+    - **Persönlich** — Nur Sie können ihn verwenden
+    - **Organisation** — Mit Ihrem Team teilen
+
+    **Veröffentlicht** umschalten, um ihn im Katalog verfügbar zu machen.
+  </Step>
+</Steps>
+
+## Skills verwenden
+
+### Mit Agenten-Vorlagen
+
+1. Die Detailseite einer Agenten-Vorlage öffnen
+2. Zum Abschnitt **Skills** gehen
+3. Auf **Anhängen** klicken und Skills aus dem Katalog auswählen
+4. Die **Sortierreihenfolge** festlegen (bestimmt Priorität)
+5. Skills als **erforderlich** oder optional markieren
+
+Wenn eine Instanz aus der Vorlage erstellt wird, werden angehängte Skills in das Gedächtnis des Agenten materialisiert.
+
+### Mit Berichtsvorlagen
+
+1. Die Detailseite einer Berichtsvorlage öffnen
+2. Zum Abschnitt **Skills** gehen
+3. Relevante Skills anhängen
+4. Skills bieten zusätzliche Anweisungen für KI-gestützte Berichtsanreicherung
+
+### Bereichsregeln für das Anhängen
+
+- **System-Skills** können an beliebige Vorlagen angehängt werden
+- **Organisations-Skills** können nur an Vorlagen in derselben Organisation angehängt werden
+- **Benutzer-Skills** können nur an Ihre persönlichen Vorlagen angehängt werden
+
+## Skill-Materialisierung
+
+Wenn Sie eine Agenten-Instanz aus einer Vorlage mit angehängten Skills erstellen:
+
+1. Jeder Skill wird als `skills/{slug}/SKILL.md` in das Gedächtnis der Instanz kopiert
+2. Der Agent liest diese Dateien als Teil seiner Anweisungen
+3. Sie können materialisierte Skills in der Instanz bearbeiten, ohne das Original zu beeinflussen
+4. Der ursprüngliche Skill wird über einen `sourceSkillId`-Link verfolgt
+
+## Versionierung
+
+Skills unterstützen einfache Versionsverfolgung:
+
+- Jede Aktualisierung erhöht die Versionsnummer
+- Agenten-Instanzen, die eine ältere Version materialisiert haben, werden nicht automatisch aktualisiert
+- Um die Skills einer Instanz zu aktualisieren, das Gedächtnis aus der Vorlage neu initialisieren
+
+## Best Practices
+
+### Effektive Skills schreiben
+
+- **Fokussiert sein** — Eine Fähigkeit pro Skill
+- **Klare Struktur verwenden** — Überschriften, Checklisten und Beispiele
+- **Beispiele einbeziehen** — Zeigen, wie gute Ausgabe aussieht
+- **Grenzen definieren** — Angeben, was der Skill tun und nicht tun soll
+
+### Organisation
+
+- **Beschreibende Slugs** — `daten-analyse-methodik` statt `skill-1`
+- **Konsistente Kategorien** — Dieselben Kategorien im gesamten Team verwenden
+- **Großzügig taggen** — Mehrere Tags machen Skills leichter zu finden
+
+### Pflege
+
+- **Regelmäßig überprüfen** — Skills aktualisieren, wenn sich Best Practices weiterentwickeln
+- **Nutzung verfolgen** — Der Katalog zeigt, wie oft jeder Skill verwendet wird
+- **Ungenutzte Skills archivieren** — Skills, die nicht mehr relevant sind, veröffentlichen aufheben
+
+---
+
+## Nächste Schritte
+
+<Cards>
+  <Card title="Agenten-Vorlagen" href="/docs/features/agent-templates">
+    Skills an Agenten-Vorlagen anhängen
+  </Card>
+  <Card title="Berichte" href="/docs/features/reports">
+    Skills zur Verbesserung der Berichtsgenerierung nutzen
+  </Card>
+</Cards>

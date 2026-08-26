@@ -1,0 +1,298 @@
+@theme {
+	--color-background: var(--background);
+	--color-foreground: var(--foreground);
+	--color-card: var(--card);
+	--color-card-foreground: var(--card-foreground);
+	--color-popover: var(--popover);
+	--color-popover-foreground: var(--popover-foreground);
+	--color-primary: var(--primary);
+	--color-primary-foreground: var(--primary-foreground);
+	--color-primary-ink: var(--primary-ink);
+	--color-secondary: var(--secondary);
+	--color-secondary-foreground: var(--secondary-foreground);
+	--color-muted: var(--muted);
+	--color-muted-foreground: var(--muted-foreground);
+	--color-accent: var(--accent);
+	--color-accent-foreground: var(--accent-foreground);
+	--color-success: var(--success);
+	--color-success-foreground: var(--success-foreground);
+	--color-destructive: var(--destructive);
+	--color-destructive-foreground: var(--destructive-foreground);
+	--color-border: var(--border);
+	--color-input: var(--input);
+	--color-ring: var(--ring);
+	--color-highlight: var(--highlight);
+	--color-highlight-foreground: var(--highlight-foreground);
+	--radius-lg: var(--radius);
+	--radius-md: calc(var(--radius) - 1px);
+	--radius-sm: calc(var(--radius) - 1px);
+ 
+	/* Font families are defined in Document.tsx and applied via CSS variables */
+
+	--animation-accordion-down: accordion-down 0.2s ease-out;
+	--animation-accordion-up: accordion-up 0.2s ease-out;
+
+	/* Radix Collapsible (disclosure cards) — keyed to the collapsible content
+	   height var. Uses the v4 `--animate-*` namespace so `animate-collapsible-*`
+	   utilities are generated. */
+	--animate-collapsible-down: collapsible-down 0.2s ease-out;
+	--animate-collapsible-up: collapsible-up 0.2s ease-out;
+
+	/* Enhanced animations */
+	--animation-fade-in: fade-in 0.3s ease-out;
+	--animation-slide-up: slide-up 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+	--animation-scale-in: scale-in 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+
+	@keyframes accordion-down {
+		from {
+			height: 0;
+		}
+		to {
+			height: var(--radix-accordion-content-height);
+		}
+	}
+	@keyframes accordion-up {
+		from {
+			height: var(--radix-accordion-content-height);
+		}
+		to {
+			height: 0;
+		}
+	}
+
+	@keyframes collapsible-down {
+		from {
+			height: 0;
+		}
+		to {
+			height: var(--radix-collapsible-content-height);
+		}
+	}
+	@keyframes collapsible-up {
+		from {
+			height: var(--radix-collapsible-content-height);
+		}
+		to {
+			height: 0;
+		}
+	}
+
+	@keyframes fade-in {
+		from {
+			opacity: 0;
+		}
+		to {
+			opacity: 1;
+		}
+	}
+
+	@keyframes slide-up {
+		from {
+			opacity: 0;
+			transform: translateY(10px);
+		}
+		to {
+			opacity: 1;
+			transform: translateY(0);
+		}
+	}
+
+	@keyframes scale-in {
+		from {
+			opacity: 0;
+			transform: scale(0.95);
+		}
+		to {
+			opacity: 1;
+			transform: scale(1);
+		}
+	}
+}
+
+@layer base {
+	:root {
+		/* Light mode - warm editorial workspace palette */
+		--border: #d8d2cc;
+		--input: #d2ccc5;
+		--ring: #9f2a3a;
+		--background: #f7f6f2;
+		--foreground: #1f1c19;
+		--primary: #9f2a3a;
+		--primary-foreground: #fff7f7;
+		/*
+		 * Brand colour as INK on a surface, for links and small text. Separate
+		 * from --primary because the two pull opposite ways: ink needs contrast
+		 * against the surface, a filled control needs contrast against its own
+		 * --primary-foreground.
+		 *
+		 * Resolved from --primary-ink-light, which OrganizationThemeProvider
+		 * sets per organization brand — --primary is tenant-configurable, so a
+		 * fixed value here would render off-brand inside any org. The literal
+		 * is only the fallback for contexts with no org theme (personal
+		 * workspace, marketing), and matches the default --primary.
+		 */
+		--primary-ink: var(--primary-ink-light, #9f2a3a);
+		--secondary: #047857;
+		--secondary-foreground: #ffffff;
+		/*
+		 * --destructive darkened from red-600 (#dc2626) to #c81e1e 2026-07-20 to
+		 * satisfy WCAG 2.1 AA contrast (4.5:1 for small text) in light mode.
+		 * Old: 4.47:1 on --background and 4.13:1 on --muted (both fail).
+		 * New: 5.31:1 and 4.90:1 (both pass).
+		 *
+		 * Unlike dark mode, light mode has no trade-off here: --destructive is
+		 * both the ink of `text-destructive` and the surface under white
+		 * `--destructive-foreground`, and darkening improves BOTH directions
+		 * (white on destructive goes 4.83:1 -> 5.74:1). Same shape as the
+		 * --success bump below.
+		 *
+		 * Dark mode is the opposite -- darkening the FILL there would fix filled
+		 * controls and break `text-destructive` -- so it stays at #ef4444. That
+		 * conclusion was right about the fill and stopped one step early: the
+		 * FOREGROUND could be darkened instead, which fixes the pairing without
+		 * touching the ink. See the dark-mode --destructive-foreground note.
+		 */
+		--destructive: #c81e1e;
+		--destructive-foreground: #ffffff;
+		/*
+		 * --success bumped from emerald-600 (#059669) to emerald-700 (#047857)
+		 * 2026-05-24 to satisfy WCAG 2.1 AA contrast (4.5:1 for small text)
+		 * on the stone-toned light-mode background (#fffdf9 popover/card).
+		 * Old value: 3.7:1 (fails). New value: ~5.3:1 (passes).
+		 * Affects every text-success usage in light mode — strict improvement.
+		 * Dark mode --success stays at #22c55e (already passes on #111110).
+		 */
+		--success: #047857;
+		--success-foreground: #ffffff;
+		--muted: #efede8;
+		--muted-foreground: #625c55;
+		--accent: #f2e7e7;
+		--accent-foreground: #6b1521;
+		--popover: #fffdf9;
+		--popover-foreground: #1f1c19;
+		--card: #fffdf9;
+		--card-foreground: #1f1c19;
+		--highlight: #d97706;
+		--highlight-foreground: #451a03;
+		--radius: 0.625rem;
+
+		/* fumadocs */
+		--fd-banner-height: 4.5rem;
+
+		/* Atmospheric background layers */
+		--bg-texture: url("data:image/svg+xml,%3Csvg width='64' height='64' viewBox='0 0 64 64' xmlns='http://www.w3.org/2000/svg'%3E%3Cg fill='%2378716c' fill-opacity='0.018'%3E%3Ccircle cx='1' cy='1' r='1'/%3E%3C/g%3E%3C/svg%3E");
+	}
+
+	.dark {
+		/* Dark mode - deep editorial workspace palette */
+		--border: #343232;
+		--input: #3d3a3a;
+		--ring: #c4556a;
+		--background: #111110;
+		--foreground: #f4f1ec;
+		/*
+		 * As a FILL this needs a DARK foreground, not a light one. #fff7f7 on
+		 * #c4556a measures only 4.10:1, under the 4.5:1 WCAG 2.1 AA floor for small
+		 * text, so every primary CTA in dark mode failed.
+		 *
+		 * The fix has to be the foreground, not the fill. Darkening --primary would
+		 * work for filled controls and break the ~870 `text-primary` usages that
+		 * read it as ink against the dark surface (that is what --primary-ink is
+		 * for, but almost nothing uses it).
+		 *
+		 * And it has to be near-black specifically: #111110 — the ink
+		 * --secondary-foreground and --success-foreground use — reaches only 4.37:1
+		 * here. #000000 measures 4.85:1. Same shape as the dark
+		 * --destructive-foreground note below: a bright fill takes a dark ink.
+		 *
+		 * Enforced by `theme-token-contrast.test.ts`.
+		 */
+		--primary: #c4556a;
+		--primary-foreground: #000000;
+		/* See the light-mode note. Fallback matches the default --primary at a
+		 * lightness that clears AA on the dark surface (5.00:1 on --card). */
+		--primary-ink: var(--primary-ink-dark, #d06a7d);
+		--secondary: #34d399;
+		--secondary-foreground: #111110;
+		--destructive: #ef4444;
+		/*
+		 * Dark ink, not white. Every bright dark-mode fill in this block pairs
+		 * with a dark foreground — `--secondary-foreground` and
+		 * `--success-foreground` are both #111110, `--highlight-foreground` is
+		 * #1c1917 — because that is the only way to clear AA on a light fill.
+		 * `--destructive-foreground` was the single outlier at #ffffff, and white
+		 * on #ef4444 measures 3.76:1, under the 4.5:1 floor. So EVERY surface
+		 * pairing `bg-destructive` with `text-destructive-foreground` failed AA in
+		 * dark mode: destructive buttons, severity badges, the delete affordance on
+		 * avatar upload, the outage badge on the customer status page.
+		 *
+		 * #111110 measures 5.02:1 on the same fill. Light mode keeps #ffffff,
+		 * which is correct there — its `--destructive` is the darker #c81e1e and
+		 * white measures 5.74:1.
+		 *
+		 * Enforced by `theme-token-contrast.test.ts`.
+		 */
+		--destructive-foreground: #111110;
+		--success: #22c55e;
+		--success-foreground: #111110;
+		--muted: #211f1f;
+		--muted-foreground: #aaa39c;
+		--accent: #2a2227;
+		--accent-foreground: #fff7f7;
+		--popover: #1b1a19;
+		--popover-foreground: #f4f1ec;
+		--card: #1b1a19;
+		--card-foreground: #f4f1ec;
+		--highlight: #fbbf24;
+		--highlight-foreground: #1c1917;
+
+		/* Enhanced atmospheric background for dark mode */
+		--bg-texture: url("data:image/svg+xml,%3Csvg width='64' height='64' viewBox='0 0 64 64' xmlns='http://www.w3.org/2000/svg'%3E%3Cg fill='%23f4f1ec' fill-opacity='0.012'%3E%3Ccircle cx='1' cy='1' r='1'/%3E%3C/g%3E%3C/svg%3E");
+		--bg-gradient: radial-gradient(ellipse 80% 48% at 50% -20%, color-mix(in srgb, var(--primary) 14%, transparent), transparent 70%);
+	}
+
+	*,
+	::after,
+	::before,
+	::backdrop,
+	::file-selector-button {
+		@apply border-border;
+	}
+}
+
+@utility container {
+	margin-inline: auto;
+	padding-inline: 1.5rem;
+	width: 100%;
+	max-width: var(--container-7xl);
+}
+
+@utility no-scrollbar {
+	&::-webkit-scrollbar {
+		display: none;
+	}
+	-ms-overflow-style: none;
+	scrollbar-width: none;
+}
+
+/**
+ * Always-visible thin scrollbar for scrollable strips. Browsers only paint a
+ * scrollbar on `overflow-*: auto` containers when content actually overflows,
+ * so applying this utility shows the bar exactly when scrolling is possible
+ * and stays invisible when everything fits.
+ */
+@utility scrollbar-thin {
+	scrollbar-width: thin;
+	scrollbar-color: var(--color-border) transparent;
+	&::-webkit-scrollbar {
+		height: 6px;
+		width: 6px;
+	}
+	&::-webkit-scrollbar-thumb {
+		background-color: var(--color-border);
+		border-radius: 3px;
+	}
+	&::-webkit-scrollbar-track {
+		background: transparent;
+	}
+}

@@ -1,0 +1,38 @@
+{
+	"name": "prompt-enhancer-agent",
+	"version": "1.0.3",
+	"license": "Apache-2.0",
+	"description": "LangGraph agent for AI-powered prompt enhancement with AG-UI and A2A protocol support",
+	"type": "module",
+	"private": true,
+	"scripts": {
+		"dev": "PORT=8134 tsx --env-file=.env unified-server.ts",
+		"dev:a2a": "PORT=8134 tsx --env-file=.env a2a-server.ts",
+		"build": "tsup --config tsup.config.ts",
+		"start": "PORT=8134 node dist/unified-server.js",
+		"start:a2a": "PORT=8134 node --env-file=.env dist/a2a-server.js",
+		"type-check": "tsc --noEmit",
+		"test": "vitest run"
+	},
+	"dependencies": {
+		"@hono/node-server": "^2.0.11",
+		"@langchain/anthropic": "^1.3.17",
+		"@langchain/core": "^1.1.24",
+		"@langchain/groq": "1.1.0",
+		"@langchain/langgraph": "^1.1.4",
+		"@langchain/openai": "^1.2.7",
+		"@repo/agent-core": "workspace:*",
+		"@repo/agent-tools": "workspace:*",
+		"@repo/observability": "workspace:*",
+		"hono": "^4.12.34",
+		"undici": "^8.5.0",
+		"uuid": "^14.0.1"
+	},
+	"devDependencies": {
+		"@types/node": "^22.10.5",
+		"tsup": "^8.5.0",
+		"tsx": "^4.19.2",
+		"typescript": "^5.9.3",
+		"vitest": "^4.1.8"
+	}
+}

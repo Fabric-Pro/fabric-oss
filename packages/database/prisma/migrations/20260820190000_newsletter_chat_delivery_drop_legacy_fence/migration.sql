@@ -1,0 +1,59 @@
+-- Contract half of Fizzy #2203. The widened
+-- (sendId, kind, platform, externalTeamId, channelId) key created by
+-- 20260820170100 supersedes this one; while this index stands the database refuses an
+-- APPROVAL row for a channel that already holds a CONTENT row, and because the
+-- alert claims its slot first (at hold time) it is the PUBLICATION that gets
+-- refused. That is why FABRIC_FEATURE_NEWSLETTER_APPROVAL_CHAT has stayed off.
+--
+-- CONCURRENTLY, because newsletter_chat_delivery is populated and a plain
+-- DROP INDEX takes ACCESS EXCLUSIVE on the table for the whole drop, queueing
+-- every application write behind it.
+--
+-- KEEP THIS MIGRATION TO ONE STATEMENT. Prisma wraps a multi-statement migration
+-- in a transaction and does not wrap a single-statement one; CONCURRENTLY cannot
+-- run inside a transaction (SQLSTATE 25001). That is also why there is no
+-- SET LOCAL lock_timeout here - it would be a second statement, and CONCURRENTLY
+-- is itself the lock mitigation.
+--
+-- NO `IF EXISTS`, deliberately. If this index is absent the expand migration never
+-- ran here, and that must fail loudly rather than record as applied. Recovery from
+-- a cancelled or timed-out drop is NOT the invalid-index retry that applies to
+-- concurrent index BUILDS - a concurrent drop waits for conflicting transactions
+-- instead. Follow docs/database-promotion.md "When a migration fails": leave this
+-- file alone, `prisma migrate resolve --rolled-back` once per failed attempt, then
+-- re-run the promotion.
+--
+-- One caveat that omission creates, worth knowing before you re-run: if the DROP
+-- itself committed but the process died before Prisma recorded finished_at, the
+-- retry fails with 42704 "index does not exist" and
+-- `migrate resolve --rolled-back` will never clear it — the schema change did
+-- happen, so the correct form is `--applied`. Check which world you are in first:
+-- `SELECT 1 FROM pg_indexes WHERE indexname =
+-- 'newsletter_chat_delivery_send_channel_key'` returns a row only if the DROP
+-- has not committed (Fizzy #2237).
+--
+-- Droppable this way because Prisma's @@unique emits a bare CREATE UNIQUE INDEX
+-- rather than ADD CONSTRAINT ... UNIQUE; PostgreSQL refuses DROP INDEX
+-- CONCURRENTLY on an index that backs a UNIQUE or PRIMARY KEY constraint.
+-- Verified: pg_constraint joined to pg_class on conindid returns no row for it.
+--
+-- Not a precondition of this migration, but the thing it makes possible, and
+-- this file is what a schema promoter reads: once the flag is on and the first
+-- APPROVAL row exists, rolling the worker back to a build that predates `kind`
+-- is unsafe. Those older markChatDelivery / listChatDeliveriesForSend queries
+-- key without `kind`, so they match an APPROVAL row and clobber or miscount it —
+-- the reads are the problem, not the writes, and no index can prevent it.
+--
+-- migration-lint: allow destructive-without-marker — the widened
+-- (sendId, kind, platform, externalTeamId, channelId) key that supersedes this
+-- index is created by 20260820170100, which sorts before this migration and so
+-- applies first in every environment: there is no instant at which neither index
+-- enforces the channel's uniqueness, whether the two ship in one release or two.
+-- Once the widened index exists the drop is safe even for an app version that
+-- predates `kind`, because `kind` is NOT NULL DEFAULT 'CONTENT' and the widened
+-- index then degenerates to exactly the tuple this one enforced.
+-- VERIFY BEFORE PROMOTING: that the widened index is indisvalid. A concurrent
+-- build that failed and was force-resolved as applied would leave this migration
+-- removing the only index actually enforcing anything.
+--   SELECT indexrelid::regclass FROM pg_index WHERE NOT indisvalid;
+DROP INDEX CONCURRENTLY "newsletter_chat_delivery_send_channel_key";

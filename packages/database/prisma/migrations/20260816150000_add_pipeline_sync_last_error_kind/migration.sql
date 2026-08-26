@@ -1,0 +1,31 @@
+-- The classified failure kind for the last pipeline sync failure (see
+-- SyncFailureKind in
+-- packages/temporal/src/activities/pipeline-results/sync-failure-classification.ts).
+--
+-- Nullable with no backfill: rows written before this column existed recorded
+-- only the readable `lastError` sentence, and NULL is the honest record of "no
+-- classification was kept" rather than a fabricated kind. Stored so a REPEAT
+-- of the identical failure state can be detected without string-comparing
+-- `lastError` — a rate-limit message embeds a changing reset timestamp, so two
+-- consecutive rate-limit failures would otherwise never compare equal.
+ALTER TABLE "test_pipeline_sync_state" ADD COLUMN "lastErrorKind" TEXT;
+
+-- When the sync attempt that last wrote this row STARTED (not when it
+-- committed). Both writers — recordPipelineSyncFailure and
+-- advancePipelineSyncState — compare the incoming attempt's start timestamp
+-- against this column inside the advisory-locked transaction and skip their
+-- write when the stored value is strictly newer.
+--
+-- Why this is needed: the activity runs with heartbeatTimeout 30s and
+-- maximumAttempts 3, and Temporal does NOT kill a heartbeat-timed-out attempt
+-- — it just starts another. Two attempts genuinely run concurrently, and the
+-- advisory lock only guarantees they don't interleave; it says nothing about
+-- which one is NEWER. Without this column an older attempt whose HTTP call
+-- hung could commit FAILED after a newer attempt already committed SUCCESS,
+-- leaving a stale failure row, a stale banner, and a wrong log level.
+--
+-- Nullable with no backfill: rows written before this column existed carry no
+-- attempt identity, and NULL means "unknown, do not block" — the guard treats
+-- a NULL stored value as always-older so the first write after deploy always
+-- lands rather than being silently dropped.
+ALTER TABLE "test_pipeline_sync_state" ADD COLUMN "lastAttemptStartedAt" TIMESTAMP(3);

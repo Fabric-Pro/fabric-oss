@@ -1,0 +1,53 @@
+{
+	"name": "@fabricorg/integrations-notion",
+	"version": "0.1.0",
+	"description": "Notion integration plugin for Fabric — type augmentation + runtime",
+	"keywords": [
+		"fabric",
+		"notion",
+		"integration"
+	],
+	"homepage": "https://fabric.pro",
+	"license": "MIT",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/Fabric-Pro/fabric.git",
+		"directory": "packages/integrations-notion"
+	},
+	"type": "module",
+	"exports": {
+		".": {
+			"types": "./dist/index.d.ts",
+			"import": "./dist/index.js",
+			"require": "./dist/index.cjs"
+		}
+	},
+	"main": "./dist/index.cjs",
+	"module": "./dist/index.js",
+	"types": "./dist/index.d.ts",
+	"publishConfig": {
+		"access": "public"
+	},
+	"files": [
+		"dist",
+		"THIRD_PARTY_NOTICES.md",
+		"LICENSE-APACHE-2.0"
+	],
+	"scripts": {
+		"build": "tsup",
+		"dev": "tsup --watch",
+		"type-check": "tsc --noEmit"
+	},
+	"peerDependencies": {
+		"@fabricorg/sdk": "workspace:*"
+	},
+	"dependencies": {
+		"@fabricorg/integrations-runtime": "workspace:*"
+	},
+	"devDependencies": {
+		"@fabricorg/sdk": "workspace:*",
+		"@repo/tsconfig": "workspace:*",
+		"tsup": "^8.0.0",
+		"typescript": "5.9.3"
+	}
+}

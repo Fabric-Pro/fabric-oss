@@ -1,0 +1,108 @@
+# =============================================================================
+# OpenTelemetry Collector Configuration for Fabric
+# =============================================================================
+# Multi-destination OTLP routing:
+# - Aspire Dashboard (real-time debugging)
+# - Jaeger (distributed tracing storage)
+# - Prometheus (metrics for Grafana dashboards)
+# =============================================================================
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  # Batch processor for better performance
+  batch:
+    timeout: 5s
+    send_batch_size: 1000
+    send_batch_max_size: 1500
+
+  # Memory limiter to prevent OOM
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 400
+    spike_limit_mib: 100
+
+  # Resource processor to add common attributes
+  resource:
+    attributes:
+      - key: deployment.environment
+        value: "${env:ENVIRONMENT}"
+        action: upsert
+      - key: service.namespace
+        value: "fabric"
+        action: upsert
+
+exporters:
+  # Aspire Dashboard (for real-time debugging via Azure Portal)
+  otlp/aspire:
+    endpoint: "${env:ASPIRE_DASHBOARD_ENDPOINT}"
+    tls:
+      insecure: true
+
+  # Jaeger (for distributed tracing storage and analysis)
+  otlp/jaeger:
+    endpoint: "${env:JAEGER_ENDPOINT}"
+    tls:
+      insecure: true
+
+  # Prometheus exporter (for Grafana metrics dashboards)
+  # Exposes metrics at :8889/metrics for Prometheus to scrape
+  # No namespace prefix — metric names match what the app emits via OTel
+  # (e.g. llm_requests_total) so alert rules and dashboards work unchanged.
+  prometheus:
+    endpoint: 0.0.0.0:8889
+    resource_to_telemetry_conversion:
+      enabled: true
+
+  # Debug exporter (for troubleshooting - logs to stdout)
+  debug:
+    verbosity: basic
+    sampling_initial: 5
+    sampling_thereafter: 200
+
+extensions:
+  # Health check endpoint
+  health_check:
+    endpoint: 0.0.0.0:13133
+
+  # Performance profiling (optional)
+  pprof:
+    endpoint: 0.0.0.0:1777
+
+  # zPages for debugging (optional)
+  zpages:
+    endpoint: 0.0.0.0:55679
+
+service:
+  extensions: [health_check, pprof, zpages]
+
+  pipelines:
+    # Traces pipeline - debug output for testing
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, batch, resource]
+      exporters: [debug]
+
+    # Metrics pipeline - debug output for testing
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, batch, resource]
+      exporters: [debug, prometheus]
+
+    # Logs pipeline - debug output for testing
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, batch, resource]
+      exporters: [debug]
+
+  telemetry:
+    logs:
+      level: info
+    metrics:
+      address: 0.0.0.0:8888

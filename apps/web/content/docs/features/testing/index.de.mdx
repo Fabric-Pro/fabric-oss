@@ -1,0 +1,59 @@
+---
+title: Überblick
+description: Wie das Testing-Feature von Fabric zusammenhängt — woher Testfälle kommen, woher Ergebnisse kommen, was sie liest und welche Einstellungen daran etwas ändern.
+---
+
+Testing in Fabric ist ein Kreislauf, kein einzelner Bildschirm. Aus den Akzeptanzkriterien eines Features entstehen Testfälle; die Fälle werden ausgeführt — von Ihrer CI oder von Fabric selbst in einem echten Browser — und erzeugen Ergebnisse; die Ergebnisse ergeben ein Urteil darüber, ob das Feature abgenommen werden kann; und die Lücken bestimmen, was als Nächstes entworfen wird.
+
+Jeder Teil hat seine eigene Seite.
+
+## Wo was zu finden ist
+
+Testing erscheint an zwei Stellen, und beide beantworten unterschiedliche Fragen.
+
+| | Beantwortete Frage | Ort |
+|---|---|---|
+| **Testing-Tab des Projekts** | „Wie steht es um die gesamte Suite?" | Projekt ▸ **Testing** |
+| **Testing-Tab eines Features** | „Kann *dieses* Feature abgenommen werden?" | Feature ▸ **Testing** |
+
+Der Projekt-Tab zeigt die Suite als Ganzes. Der Feature-Tab zeigt dieselben Fälle, gefiltert auf das, was dieses eine Feature verifiziert, samt dem Urteil, das daraus folgt. Keiner der beiden ist eine Zusammenfassung des anderen.
+
+Alle Einstellungen dazu liegen an einer Stelle: Projekt ▸ **Einstellungen** ▸ **Testing**.
+
+## Der Kreislauf
+
+1. **Aus Kriterien werden Fälle.** Fabric entwirft Testfälle aus den Akzeptanzkriterien eines Features. Entworfene Fälle kommen als **Vorgeschlagen** an und warten auf eine Person — sie gelangen nie ungefragt in die Suite.
+2. **Fälle werden ausgeführt.** Zwei unabhängige Quellen, eine Historie: Ihre CI (Azure DevOps, GitHub Actions, GitLab CI) meldet, was sie ausgeführt hat, und Fabric kann einen Fall selbst ausführen, indem es einen echten Browser durch dessen Schritte steuert.
+3. **Aus Ergebnissen wird ein Urteil.** Die Urteilskarte im Testing-Tab eines Features antwortet direkt — **blockiert**, **mit Vorbehalt**, **bereit** oder **unbekannt** — und nennt die Gründe.
+4. **Lücken fließen zurück.** Das Segment **Abdeckung** zeigt die Lücke aus Sicht der Arbeit statt aus Sicht der Suite: welche Features und Bugs überhaupt keinen Fall haben.
+
+## Test-getriebene und normale Reihenfolge
+
+**TDD-Ansatz anwenden** (Projekt ▸ Einstellungen ▸ Testing ▸ **Generierung**, standardmäßig **aus**) ändert zwei Dinge, nicht eines.
+
+**Normale Reihenfolge (Standard).** Das Feature wird zuerst geprüft; Testfälle werden danach aus den geprüften Kriterien entworfen.
+
+**TDD-Reihenfolge.** Fälle werden *vor* der Implementierung aus den Akzeptanzkriterien entworfen und vor dem Schreiben von Code geprüft. Die Feature-Prüfung liest dann zusätzlich die entworfenen Fälle und stellt der Spezifikation drei Fragen: Widerspricht ein Fall der Spezifikation? Setzt ein Fall etwas voraus, das die Spezifikation nie zusichert? Gibt es ein Kriterium, das kein Fall abdeckt?
+
+Genau deshalb ist der Schalter relevant. In der normalen Reihenfolge sieht die Prüfung die Fälle bewusst **nicht** — es gibt sie noch nicht, und ein Modell mit seiner eigenen späteren Ausgabe zu belegen hieße, es sich selbst bewerten zu lassen.
+
+<Callout type="info">
+Die TDD-Reihenfolge ist eine Festlegung über die **Reihenfolge**, kein Freigabe-Gate. Nichts blockiert Sie, wenn Sie vor der Prüfung der Fälle implementieren.
+</Callout>
+
+## Was ein Testfall trägt
+
+Jeder Fall hat eine projektweite Kennung `TC-NNN`, geordnete Schritte aus **Aktion + Erwartung**, eine verantwortliche Person, Tags — und zwei unabhängige Dimensionen, die häufig verwechselt werden:
+
+- **Status** — wo der Fall in seinem eigenen Leben steht: **Vorgeschlagen** → **Entwurf** → **Bereit** → **Geschlossen**.
+- **Ergebnis** — das zuletzt erfasste Urteil: bestanden, fehlgeschlagen, blockiert oder nicht ausgeführt.
+
+Ein Fall in **Bereit**, der nie ausgeführt wurde, ist normal. **Nicht ausgeführt ist kein Bestanden** — es heißt, dass über den Fall noch nichts bewiesen wurde. **Blockiert** ist wiederum etwas Drittes: der Lauf kam zu keinem Urteil, es ist also in keine Richtung etwas bewiesen.
+
+## Weiter
+
+<Cards>
+  <Card title="Testfälle" href="/docs/features/testing/cases">
+    Fälle mit geordneten Schritten schreiben, filtern, mit KI entwerfen und mit Ihrem PM-Tool synchronisieren
+  </Card>
+</Cards>

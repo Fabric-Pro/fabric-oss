@@ -1,0 +1,161 @@
+{
+	"$schema": "./node_modules/@biomejs/biome/configuration_schema.json",
+	"formatter": {
+		"enabled": true,
+		"useEditorconfig": true
+	},
+	"linter": {
+		"enabled": true,
+		"rules": {
+			"recommended": true,
+			"suspicious": {
+				"noExplicitAny": "off",
+				"noArrayIndexKey": "off",
+				"noImplicitAnyLet": "warn",
+				"noAssignInExpressions": "warn",
+				"noControlCharactersInRegex": "warn",
+				"noShadowRestrictedNames": "warn",
+				"useIterableCallbackReturn": "warn"
+			},
+			"complexity": {
+				"noForEach": "off"
+			},
+			"correctness": {
+				"useExhaustiveDependencies": "off",
+				"noUnusedImports": {
+					"level": "warn",
+					"fix": "safe"
+				},
+				"noUnusedFunctionParameters": "warn",
+				"noUnusedVariables": "warn",
+				"noSwitchDeclarations": "warn",
+				"useUniqueElementIds": "off"
+			},
+			"style": {
+				"noUnusedTemplateLiteral": "warn",
+				"noNonNullAssertion": "warn",
+				"useBlockStatements": "warn",
+				"noParameterAssign": "warn",
+				"useAsConstAssertion": "warn",
+				"useDefaultParameterLast": "warn",
+				"useEnumInitializers": "warn",
+				"useSelfClosingElements": "warn",
+				"useSingleVarDeclarator": "warn",
+				"useNumberNamespace": "warn",
+				"useNodejsImportProtocol": "warn",
+				"noInferrableTypes": "warn",
+				"noUselessElse": "warn",
+				"noRestrictedImports": {
+					"level": "error",
+					"options": {
+						"paths": {
+							"ai": {
+								"importNames": [
+									"generateText",
+									"streamText",
+									"generateObject",
+									"streamObject",
+									"embed",
+									"embedMany",
+									"experimental_transcribe",
+									"experimental_generateImage",
+									"createGateway",
+									"experimental_createProviderRegistry",
+									"wrapLanguageModel"
+								],
+								"message": "Direct imports of model-construction or model-invocation specifiers from 'ai' are forbidden outside packages/ai/**. Use getAIModelWithMetadata() / getAIEmbeddingModelWithMetadata() from @repo/ai so AI usage limits and credit checks apply. See fabric/standards/ai/llm-integration.md and the chokepoint in packages/ai/lib/dynamic-model-selector.ts."
+							}
+						},
+						"patterns": [
+							{
+								"group": [
+									"@ai-sdk/openai",
+									"@ai-sdk/anthropic",
+									"@ai-sdk/azure",
+									"@ai-sdk/google",
+									"@ai-sdk/google-generative-ai",
+									"@ai-sdk/google-vertex",
+									"@ai-sdk/mistral",
+									"@ai-sdk/cohere",
+									"@ai-sdk/amazon-bedrock",
+									"@ai-sdk/cerebras",
+									"@ai-sdk/deepseek",
+									"@ai-sdk/groq",
+									"@ai-sdk/togetherai",
+									"@ai-sdk/fireworks",
+									"@ai-sdk/perplexity",
+									"@ai-sdk/xai"
+								],
+								"message": "Direct imports of @ai-sdk/* provider packages are forbidden outside packages/ai/**. Construct models via getAIModelWithMetadata() / getAIEmbeddingModelWithMetadata() from @repo/ai so AI usage limits and credit checks apply. See fabric/standards/ai/llm-integration.md and the chokepoint in packages/ai/lib/dynamic-model-selector.ts."
+							}
+						]
+					}
+				}
+			},
+			"a11y": {
+				"noSvgWithoutTitle": "warn",
+				"noStaticElementInteractions": "warn",
+				"useAriaPropsSupportedByRole": "warn",
+				"useButtonType": "warn",
+				"useKeyWithClickEvents": "warn",
+				"noLabelWithoutControl": "warn",
+				"useSemanticElements": "warn"
+			},
+			"security": {
+				"noDangerouslySetInnerHtml": "warn"
+			}
+		}
+	},
+	"assist": { "actions": { "source": { "organizeImports": "on" } } },
+	"files": {
+		"includes": [
+			"**",
+			"!.agents",
+			"!ag-ui-demo",
+			"!agents/langchain/data-analyst",
+			"!zod/index.ts",
+			"!tailwind-animate.css",
+			"!!**/globals.css",
+			"!**/package.json",
+			"!**/packages.lock.json"
+		]
+	},
+	"javascript": {
+		"jsxRuntime": "reactClassic"
+	},
+	"overrides": [
+		{
+			"includes": [
+				"agents/**",
+				"packages/temporal/**",
+				"packages/rag/**",
+				"packages/search/**",
+				"packages/fabric-ai/**"
+			],
+			"linter": {
+				"rules": {
+					"style": {
+						"noRestrictedImports": "off"
+					}
+				}
+			}
+		}
+	],
+	"css": {
+		"formatter": {
+			"enabled": false
+		},
+		"linter": {
+			"enabled": false
+		},
+		"parser": {
+			"tailwindDirectives": true
+		}
+	},
+	"vcs": {
+		"enabled": true,
+		"clientKind": "git",
+		"defaultBranch": "master",
+		"useIgnoreFile": true
+	}
+}

@@ -1,0 +1,389 @@
+---
+title: API-Übersicht
+description: Fabric AI programmgesteuert über unsere REST-API verwenden.
+---
+
+Fabric AI bietet eine umfassende REST-API, mit der Sie KI-gestützte Dokumenterstellung, Agenten-Interaktionen und Workflow-Automatisierung in Ihre Anwendungen integrieren können.
+
+## Basis-URL
+
+Alle API-Anfragen werden an folgende Adresse gesendet:
+
+```
+https://api.fabric.pro/v1
+```
+
+Für selbstgehostete Installationen ersetzen Sie diese durch Ihre Instanz-URL.
+
+## Authentifizierung
+
+Alle API-Anfragen erfordern eine Authentifizierung mit einem Bearer-Token:
+
+```bash
+curl -X GET https://api.fabric.pro/v1/agents \
+  -H "Authorization: Bearer IHR_API_TOKEN"
+```
+
+### Ihr API-Token erhalten
+
+1. Gehen Sie zu **Einstellungen → API-Tokens**
+2. Klicken Sie auf **Token generieren**
+3. Geben Sie ihm einen beschreibenden Namen
+4. Kopieren und sicher aufbewahren (nur einmal angezeigt)
+
+### Token-Bereiche
+
+Wählen Sie beim Erstellen eines Tokens die entsprechenden Bereiche:
+
+| Bereich | Berechtigungen |
+|-------|-------------|
+| `agents:read` | Agenten auflisten und anzeigen |
+| `agents:write` | Agenten erstellen und aktualisieren |
+| `conversations:read` | Gespräche anzeigen |
+| `conversations:write` | Nachrichten erstellen, Gespräche starten |
+| `workspaces:read` | Workspaces auflisten und anzeigen |
+| `workspaces:write` | Dokumente hochladen, Workspaces verwalten |
+| `workflows:read` | Workflow-Status anzeigen |
+| `workflows:write` | Workflows starten und verwalten |
+
+## Schnellstart
+
+### Ein Gespräch starten
+
+```bash
+curl -X POST https://api.fabric.pro/v1/conversations \
+  -H "Authorization: Bearer IHR_API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "agentId": "agent_abc123",
+    "message": "Erstelle ein PRD für Benutzerauthentifizierung"
+  }'
+```
+
+### Antwort
+
+```json
+{
+  "id": "conv_xyz789",
+  "agentId": "agent_abc123",
+  "status": "active",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Erstelle ein PRD für Benutzerauthentifizierung"
+    },
+    {
+      "role": "assistant",
+      "content": "# Produktanforderungsdokument...",
+      "streaming": true
+    }
+  ],
+  "createdAt": "2024-01-15T10:30:00Z"
+}
+```
+
+## Kern-Endpunkte
+
+### Agenten
+
+| Methode | Endpunkt | Beschreibung |
+|--------|----------|-------------|
+| GET | `/agents` | Alle Agenten auflisten |
+| GET | `/agents/:id` | Agenten-Details abrufen |
+| POST | `/agents` | Neuen Agenten erstellen |
+| PUT | `/agents/:id` | Agenten aktualisieren |
+| DELETE | `/agents/:id` | Agenten löschen |
+
+### Gespräche
+
+| Methode | Endpunkt | Beschreibung |
+|--------|----------|-------------|
+| GET | `/conversations` | Gespräche auflisten |
+| GET | `/conversations/:id` | Gesprächsdetails abrufen |
+| POST | `/conversations` | Neues Gespräch starten |
+| POST | `/conversations/:id/messages` | Nachricht hinzufügen |
+| DELETE | `/conversations/:id` | Gespräch löschen |
+
+### Workspaces
+
+| Methode | Endpunkt | Beschreibung |
+|--------|----------|-------------|
+| GET | `/workspaces` | Workspaces auflisten |
+| GET | `/workspaces/:id` | Workspace-Details abrufen |
+| POST | `/workspaces` | Workspace erstellen |
+| POST | `/workspaces/:id/documents` | Dokument hochladen |
+| DELETE | `/workspaces/:id` | Workspace löschen |
+
+### Workflows
+
+| Methode | Endpunkt | Beschreibung |
+|--------|----------|-------------|
+| GET | `/workflows` | Workflows auflisten |
+| GET | `/workflows/:id` | Workflow-Status abrufen |
+| POST | `/workflows` | Workflow starten |
+| POST | `/workflows/:id/approve` | Ausstehenden Schritt genehmigen |
+| POST | `/workflows/:id/cancel` | Workflow abbrechen |
+
+## Antwortformat
+
+Alle Antworten folgen einem einheitlichen Format:
+
+### Erfolgsantwort
+
+```json
+{
+  "data": {
+    // Ressourcendaten
+  },
+  "meta": {
+    "requestId": "req_abc123"
+  }
+}
+```
+
+### Paginierte Antwort
+
+```json
+{
+  "data": [
+    // Array von Ressourcen
+  ],
+  "meta": {
+    "total": 100,
+    "page": 1,
+    "perPage": 20,
+    "requestId": "req_abc123"
+  }
+}
+```
+
+### Fehlerantwort
+
+```json
+{
+  "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "Ungültiges Agenten-ID-Format",
+    "details": {
+      "field": "agentId",
+      "reason": "Muss eine gültige UUID sein"
+    }
+  },
+  "meta": {
+    "requestId": "req_abc123"
+  }
+}
+```
+
+## Fehlercodes
+
+| Code | HTTP-Status | Beschreibung |
+|------|-------------|-------------|
+| `UNAUTHORIZED` | 401 | Ungültiges oder fehlendes Token |
+| `FORBIDDEN` | 403 | Token fehlen erforderliche Bereiche |
+| `NOT_FOUND` | 404 | Ressource nicht gefunden |
+| `VALIDATION_ERROR` | 400 | Ungültige Anfragedaten |
+| `RATE_LIMITED` | 429 | Zu viele Anfragen |
+| `INTERNAL_ERROR` | 500 | Server-Fehler |
+
+## Rate-Limiting
+
+API-Anfragen werden ratenbegrenzt:
+
+- **Standard**: 100 Anfragen/Minute
+- **Enterprise**: Individuelle Grenzen
+
+Rate-Limit-Header sind in Antworten enthalten:
+
+```
+X-RateLimit-Limit: 100
+X-RateLimit-Remaining: 95
+X-RateLimit-Reset: 1705320600
+```
+
+## Streaming-Antworten
+
+Für Echtzeit-Agenten-Antworten verwenden Sie Server-Sent Events (SSE):
+
+```bash
+curl -X POST https://api.fabric.pro/v1/conversations \
+  -H "Authorization: Bearer IHR_API_TOKEN" \
+  -H "Accept: text/event-stream" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "agentId": "agent_abc123",
+    "message": "Erstelle ein PRD für Benachrichtigungen",
+    "stream": true
+  }'
+```
+
+### SSE-Events
+
+```
+event: message_start
+data: {"id": "msg_123", "role": "assistant"}
+
+event: content_delta
+data: {"delta": "# Produktanforderungs"}
+
+event: content_delta
+data: {"delta": "dokument\n\n## Übersicht"}
+
+event: message_end
+data: {"id": "msg_123", "status": "complete"}
+```
+
+## Webhooks
+
+Konfigurieren Sie Webhooks, um Echtzeit-Benachrichtigungen zu empfangen:
+
+### Unterstützte Events
+
+| Event | Beschreibung |
+|-------|-------------|
+| `conversation.created` | Neues Gespräch gestartet |
+| `conversation.completed` | Gespräch beendet |
+| `workflow.started` | Workflow-Ausführung begonnen |
+| `workflow.completed` | Workflow beendet |
+| `workflow.approval_needed` | Menschliche Genehmigung erforderlich |
+| `document.uploaded` | Dokument zum Workspace hinzugefügt |
+
+### Webhook-Payload
+
+```json
+{
+  "event": "workflow.completed",
+  "timestamp": "2024-01-15T10:35:00Z",
+  "data": {
+    "workflowId": "wf_abc123",
+    "status": "completed",
+    "result": {
+      // Workflow-spezifische Daten
+    }
+  }
+}
+```
+
+### Webhooks konfigurieren
+
+1. Gehen Sie zu **Einstellungen → Webhooks**
+2. Klicken Sie auf **Webhook hinzufügen**
+3. Geben Sie Ihre Endpunkt-URL ein
+4. Wählen Sie zu empfangende Events aus
+5. Speichern und überprüfen
+
+## SDKs
+
+Offizielle SDKs sind für gängige Sprachen verfügbar:
+
+### JavaScript/TypeScript
+
+```bash
+npm install @fabric-ai/sdk
+```
+
+```typescript
+import { FabricClient } from '@fabric-ai/sdk';
+
+const fabric = new FabricClient({
+  apiKey: process.env.FABRIC_API_KEY
+});
+
+const conversation = await fabric.conversations.create({
+  agentId: 'agent_abc123',
+  message: 'Erstelle ein PRD für Benutzer-Auth'
+});
+
+for await (const chunk of conversation.stream()) {
+  console.log(chunk.content);
+}
+```
+
+### Python
+
+```bash
+pip install fabric-ai
+```
+
+```python
+from fabric_ai import FabricClient
+
+fabric = FabricClient(api_key=os.environ["FABRIC_API_KEY"])
+
+conversation = fabric.conversations.create(
+    agent_id="agent_abc123",
+    message="Erstelle ein PRD für Benutzer-Auth"
+)
+
+for chunk in conversation.stream():
+    print(chunk.content)
+```
+
+## Beispiele
+
+### Ein Dokument generieren
+
+```typescript
+import { FabricClient } from '@fabric-ai/sdk';
+
+const fabric = new FabricClient({ apiKey: 'IHR_API_SCHLÜSSEL' });
+
+// Gespräch mit Document Generator starten
+const conv = await fabric.conversations.create({
+  agentId: 'document-generator',
+  workspaceIds: ['ws_templates'],
+  message: `Erstelle ein PRD für eine Benachrichtigungseinstellungs-Funktion.
+
+    Anforderungen:
+    - E-Mail-, Push- und SMS-Kanäle
+    - Ruhezeiten-Konfiguration
+    - Häufigkeitseinstellungen
+
+    Ziel: Web- und mobile Apps`
+});
+
+// Auf Abschluss warten
+const result = await conv.waitForCompletion();
+
+// Als Markdown exportieren
+const markdown = await fabric.documents.export(result.documentId, 'markdown');
+```
+
+### Einen Workflow auslösen
+
+```typescript
+// Automatisierten Workflow starten
+const workflow = await fabric.workflows.create({
+  template: 'prd-to-jira',
+  inputs: {
+    prdDocumentId: 'doc_xyz789',
+    jiraProjectKey: 'PROJ',
+    assignee: 'john@company.com'
+  }
+});
+
+// Auf Genehmigungsschritt warten
+await workflow.waitForEvent('approval_needed');
+
+// Programmatisch genehmigen
+await workflow.approve({
+  stepId: 'create-stories',
+  approver: 'api-automation'
+});
+```
+
+---
+
+## Nächste Schritte
+
+<Cards>
+  <Card title="Erste Schritte" href="/docs/getting-started/overview">
+    Ihr Fabric AI-Konto einrichten
+  </Card>
+  <Card title="Agenten" href="/docs/agents/overview">
+    Über verfügbare Agenten erfahren
+  </Card>
+  <Card title="Workflows" href="/docs/core-concepts/workflows">
+    Workflow-Automatisierung verstehen
+  </Card>
+</Cards>

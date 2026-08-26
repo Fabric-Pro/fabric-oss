@@ -1,0 +1,92 @@
+---
+title: Google Drive
+description: Connect Google Drive so Fabric agents can list, search, and read your Drive documents as runtime knowledge actions.
+---
+
+Connect Google Drive to Fabric AI so agents and workflows can list, search, and read your Drive documents — as live runtime actions, on demand.
+
+Google Drive is a **Knowledge** provider: it offers read/retrieval actions, not write actions.
+
+## Integration Methods
+
+| Method | Use Case | Auth |
+|--------|----------|------|
+| **MCP Server** | List, search, and read Drive files in chat & agents | OAuth |
+| **Workflow Plugin** | Access Drive files in workflow nodes | OAuth |
+
+## Setting Up Google Drive
+
+<Steps>
+  <Step>
+    ### Open Google Drive under Integrations
+
+    Go to **Settings → Integrations** and open the **Google Drive** card.
+  </Step>
+
+  <Step>
+    ### Set Up Actions
+
+    Click **Set Up Actions** and authorize Fabric AI on Google's consent screen. Sign in with the Google account whose Drive you want Fabric to access.
+  </Step>
+
+  <Step>
+    ### Confirm
+
+    The provider shows **Connected** with its available runtime actions. Agents can now call them live.
+  </Step>
+</Steps>
+
+<Callout type="info">
+Using a Google Workspace account? Your admin may need to approve the Fabric OAuth app before you can connect.
+</Callout>
+
+## Available Actions
+
+| Action | Type | Description |
+|--------|------|-------------|
+| **List Drive Files** | Knowledge | List files and folders from Google Drive |
+| **Search Drive** | Knowledge | Search for files in Google Drive |
+| **Get Document Content** | Knowledge | Retrieve content from a Google Drive document |
+
+### Using in AI Chat
+
+```
+"What does our company handbook say about remote work policies?"
+
+"Summarize the Q4 financial report from Drive"
+
+"Find the design specifications for the mobile app"
+```
+
+The agent calls Drive's knowledge actions live to find and read the relevant documents — there's no background sync to wait on.
+
+## Multiple Accounts
+
+Connect multiple Google accounts:
+
+- Personal Google account for your own documents
+- Organization shared drives for team content
+- Each connection is identified by its account / workspace
+
+## Troubleshooting
+
+### OAuth consent errors
+- Ensure you're signing in with the correct Google account
+- If using a Google Workspace account, your admin may need to approve the OAuth app
+
+### An action returns no results
+- Confirm the connection shows **Connected** under **Settings → Integrations**
+- Make sure the signed-in account has access to the files you expect
+
+---
+
+## Next Steps
+
+<Cards>
+  <Card title="MCP Integration" href="/docs/integrations/mcp">
+    How connected tools are called at runtime
+  </Card>
+  <Card title="AI Chat" href="/docs/features/ai-chat">
+    Use Google Drive in AI conversations
+  </Card>
+</Cards>

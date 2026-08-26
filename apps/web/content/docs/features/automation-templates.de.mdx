@@ -1,0 +1,96 @@
+---
+title: Automatisierungsvorlagen
+description: Workflow-Muster als parametrisierte Vorlagen für wiederholbare Automatisierung speichern und wiederverwenden.
+---
+
+Automatisierungsvorlagen ermöglichen es, erfolgreiche Workflow-Muster als wiederverwendbare Vorlagen zu speichern. Definieren Sie parametrisierte Schritte einmal und führen Sie sie dann wiederholt mit verschiedenen Eingaben aus.
+
+## Was ist eine Automatisierungsvorlage?
+
+Eine Automatisierungsvorlage erfasst eine Abfolge von Workflow-Schritten mit konfigurierbaren Parametern. Anstatt Workflows von Grund auf neu zu erstellen, speichern Sie ein bewährtes Muster und verwenden es über Projekte hinweg.
+
+**Beispiele:**
+- Eine Datenextraktionspipeline, die Inhalte scrapt, verarbeitet und speichert
+- Ein Onboarding-Workflow, der Konten über mehrere Systeme hinweg erstellt
+- Eine Berichtsvorlage, die Metriken sammelt und Zusammenfassungen generiert
+
+## Eine Vorlage erstellen
+
+<Steps>
+  <Step>
+    ### Die Vorlage definieren
+
+    Gehen Sie in der Seitenleiste zu **Automatisierungsvorlagen** und klicken Sie auf **Neue Vorlage**.
+
+    Einen Namen, eine Beschreibung und eine Kategorie für leichte Auffindbarkeit angeben.
+  </Step>
+
+  <Step>
+    ### Workflow-Schritte konfigurieren
+
+    Die Abfolge von Schritten definieren, die die Vorlage ausführen wird. Jeder Schritt wird als parametrisierte Workflow-Definition gespeichert.
+  </Step>
+
+  <Step>
+    ### Parameter hinzufügen
+
+    Benutzerkonfigurierbare Parameter definieren, die sich zwischen Ausführungen ändern. Parameter verwenden ein JSON-Schema zur Definition von Typen, Standardwerten und Validierungsregeln.
+  </Step>
+
+  <Step>
+    ### Speichern und kategorisieren
+
+    Eine Kategorie wählen (z. B. `datenextraktion`, `berichte`, `onboarding`) und Tags für die Auffindbarkeit hinzufügen. Optional die Vorlage mit Ihrer Organisation teilen.
+  </Step>
+</Steps>
+
+## Vorlageneigenschaften
+
+| Eigenschaft | Beschreibung |
+|----------|-------------|
+| **Name** | Anzeigename für die Vorlage |
+| **Beschreibung** | Was die Vorlage macht |
+| **Workflow-Schritte** | Parametrisierte Schritt-Definitionen (JSON) |
+| **Parameter** | Benutzerkonfigurierbares Eingabe-Schema |
+| **Kategorie** | Klassifizierung (z. B. Berichte, Onboarding) |
+| **Tags** | Durchsuchbare Labels |
+| **Version** | Automatisch erhöhte Versionsnummer |
+| **Öffentlich** | Ob die Vorlage mit Organisationsmitgliedern geteilt wird |
+
+## Vorlagen teilen
+
+Vorlagen unterstützen zwei Sichtbarkeitsstufen:
+
+- **Privat** (Standard) - Nur für den Ersteller sichtbar
+- **Öffentlich** - Für alle Mitglieder der Organisation sichtbar
+
+Um eine Vorlage zu teilen, die Einstellung **Öffentlich** beim Bearbeiten umschalten.
+
+## Mandantenfähige Unterstützung
+
+Automatisierungsvorlagen funktionieren sowohl in persönlichen als auch in Organisationskontexten:
+
+- **Persönlich** (`/app/automation-templates`) - Ihre privaten Vorlagen
+- **Organisation** (`/app/{org}/automation-templates`) - Organisationsbereichsbezogene Vorlagen
+- Öffentliche Vorlagen werden nur innerhalb derselben Organisation geteilt
+
+## Nutzungsverfolgung
+
+Jede Vorlage verfolgt:
+
+- **Nutzungsanzahl** - Wie oft die Vorlage ausgeführt wurde
+- **Zuletzt genutzt** - Wann die Vorlage zuletzt ausgeführt wurde
+- **Versionsverlauf** - Änderungen im Laufe der Zeit
+
+---
+
+## Nächste Schritte
+
+<Cards>
+  <Card title="Workflow-Builder" href="/docs/features/workflow-builder">
+    Benutzerdefinierte Workflows mit dem visuellen Drag-and-Drop-Canvas erstellen
+  </Card>
+  <Card title="Agenten-Vorlagen" href="/docs/features/agent-templates">
+    Wiederverwendbare Agentenkonfigurationen erstellen
+  </Card>
+</Cards>

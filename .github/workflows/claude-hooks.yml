@@ -1,0 +1,44 @@
+name: Claude Code Hooks
+
+# Validates the team-shared Claude Code PreToolUse hooks under .claude/.
+# A broken hook script or malformed settings.json would lock every dev
+# out of Claude in this checkout the moment it lands on main — so this
+# workflow gates any change touching .claude/ or its own definition.
+#
+# The job is intentionally small (no installs, no node_modules) so the
+# check stays fast and discoverable next to the artifact it guards.
+
+on:
+  pull_request:
+    paths:
+      - ".claude/**"
+      - ".github/workflows/claude-hooks.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: claude-hooks-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: Validate hooks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+
+      - name: Validate .claude/settings.json parses
+        run: node -e "JSON.parse(require('fs').readFileSync('.claude/settings.json','utf8'))"
+
+      - name: Syntax-check every hook script
+        run: find .claude/hooks -name '*.mjs' -print0 | xargs -0 -n1 node --check
+
+      - name: Run hook test suite
+        run: find .claude/hooks/__tests__ -name '*.test.mjs' -print0 | xargs -0 node --test

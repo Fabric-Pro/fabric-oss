@@ -1,0 +1,6 @@
+# Local environment
+.env
+
+# PartyKit build artifacts
+.partykit/
+node_modules/
