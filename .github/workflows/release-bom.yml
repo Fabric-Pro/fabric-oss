@@ -3,12 +3,20 @@ name: Release BOM
 # Open-sourcing plan §4.1 — "artifacts first, publish last".
 #
 # release.yml pushes the protected `v<version>` tag and creates the GitHub
-# Release AS A DRAFT. Four workflows fire off that same tag push and build the
-# release's artifacts. This workflow waits for all four, assembles a
-# `release-manifest.json` recording the source SHA plus the identity and digest
-# of every artifact, attests it, attaches it to the draft, re-reads what
-# actually landed on the Release, asserts the manifest is complete — and only
-# then publishes.
+# Release AS A DRAFT. Two workflows produce the release's artifacts, and they
+# are started by DIFFERENT refs — which is the single most surprising thing
+# about this file, so it is stated first:
+#
+#   - oss-snapshot-images.yml builds, pushes and attests all 14 container
+#     images on the `master` PUSH of the release commit. The tag push does not
+#     start it at all, and its run therefore carries head_branch `master`.
+#   - release-artifacts.yml builds and attests the Cloudflare collab worker
+#     off the TAG push, so its run carries head_branch `<tag>`.
+#
+# This workflow waits for both, assembles a `release-manifest.json` recording
+# the source SHA plus the identity and digest of every artifact, attests it,
+# attaches it to the draft, re-reads what actually landed on the Release,
+# asserts the manifest is complete — and only then publishes.
 #
 # The property this buys: a failed or partial build never yields a PUBLISHED
 # release. Self-hosters, and the ops reconciler (which selects on
@@ -18,11 +26,13 @@ name: Release BOM
 # 2am, and see docs/runbooks/release-bom.md:
 #   - BLOCKED: client-delivery.yml (keys on `release: published`) and the ops
 #     reconciler's admission of the release into the deployment ledger.
-#   - NOT BLOCKED: the production rollout itself. The four deploy workflows
-#     trigger on the TAG, not on the Release, so they have already run.
-#     Moving them behind the published Release is an explicit Phase 4
-#     freeze-window item and must not be done while the team ships from
-#     `master`.
+#   - ALSO BLOCKED, and deliberately: the production rollout. Nothing in this
+#     repository deploys anything. The ops reconciler selects on
+#     `.draft == false and .prerelease == false`, so a stuck draft holds
+#     production at the previous release rather than shipping a partial one.
+#     That is the intended fail-closed behaviour, not an outage — the artifacts
+#     for a stuck draft exist and are attested, so a fixed re-run publishes the
+#     same bytes rather than rebuilding them.
 #
 # Nothing here rebuilds anything. Every digest is READ from the registry the
 # release's own build already pushed to, so the manifest records what shipped
@@ -35,7 +45,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Release tag to assemble the BOM for (e.g. v1.13.4). Dispatch with --ref <tag> as well, so the Production environment admits the image job.'
+        description: 'Release tag to assemble the BOM for (e.g. v1.13.4). No --ref is required: every job resolves the tag to its commit and checks that commit out explicitly, and no job binds a deployment environment any more.'
         required: true
         type: string
 
@@ -57,15 +67,30 @@ permissions:
   contents: read
 
 env:
-  MANIFEST_SCHEMA_VERSION: '1.0.0'
+  # 2.0.0 — every container row is a GHCR snapshot with verified provenance and
+  # SBOM and carries a `deployTarget`; the two platform rows split into
+  # `platform-artifact` and `platform-source`. A consumer that understands
+  # 1.0.0 does NOT understand these rows, which is why this is a major bump
+  # rather than a field addition.
+  MANIFEST_SCHEMA_VERSION: '2.0.0'
   MANIFEST_FILE: release-manifest.json
   ATTESTATION_FILE: release-manifest.intoto.jsonl
 
-  # The 13 container images a release ships, as ACR repository suffixes (the
-  # registry stores them under `fabric/<name>`). Declared once at workflow
-  # level so the collector and the publish gate cannot drift apart. Keep in
-  # sync with deploy-azure-container-apps.yml's promote-images list and the
-  # ops reconciler's IMAGES array.
+  # The one release asset that is a deployable artifact rather than a record of
+  # one. Declared at workflow level because three jobs must agree on the name:
+  # collect carries it, attach uploads it, and the publish gate re-reads it —
+  # and the deployer downloads it from the release by exactly this name.
+  COLLAB_ARTIFACT_FILE: collab-worker.tgz
+
+  # The 13 container images a release ROLLS OUT, named by the repository path
+  # the deployer imports each one into (`fabric/<name>`) — recorded on every
+  # row as `deployTarget`. Declared once at workflow level so the collector and
+  # the publish gate cannot drift apart. Keep in sync with the ops reconciler's
+  # IMAGES array.
+  #
+  # This is deliberately 13, not 14: `migration-runner` is built and attested
+  # alongside them and appears in the manifest, but it is executed as a job
+  # rather than rolled out as a service, so it has no deploy target.
   ACR_IMAGE_COMPONENTS: >-
     temporal-worker
     mcp-stdio-wrapper
@@ -81,17 +106,17 @@ env:
     weave-shuttle
     weave-planners
 
-  # Every workflow that produces something the manifest records. All four are
-  # triggered by the same `push: tags: v*.*.*` event this workflow is.
+  # Every workflow that produces something the manifest records. They are NOT
+  # both triggered by the tag push — see the header, and `expected_branch()` in
+  # the wait job, which is what keeps the run selector honest about that.
   ARTIFACT_RUN_WORKFLOWS: >-
-    build-migration-runner.yml
-    deploy-azure-container-apps.yml
-    deploy-vercel-prod.yml
-    deploy-partykit-prod.yml
+    oss-snapshot-images.yml
+    release-artifacts.yml
 
-  # Generous, because deploy-azure-container-apps.yml builds up to 13 images
-  # from scratch on a release where dev had nothing to promote. A timeout is
-  # fail-closed: the release stays a draft.
+  # Generous, because the tag push RACES the snapshot matrix rather than
+  # starting it: release.yml tags the version commit while that commit's
+  # `master` run may still be building all 14 images (up to 90 minutes, plus
+  # its aggregate job). A timeout is fail-closed: the release stays a draft.
   BOM_WAIT_TIMEOUT_MINUTES: '120'
   BOM_POLL_SECONDS: '30'
 
@@ -254,38 +279,50 @@ jobs:
           set -euo pipefail
 
           # A run is identified by head_sha AND head_branch. head_sha alone is
-          # ambiguous: deploy-azure-container-apps.yml triggers on BOTH
-          # `push: branches: [master]` and `push: tags: v*.*.*`, and the tag
-          # points at a commit that is also on master — so the same SHA has a
-          # master run (dev deploy) and a tag run (prod deploy). For a tag
-          # push GitHub sets head_branch to the tag name, which separates
-          # them. Presence is never taken for started: a run that does not
-          # exist yet and a run still in progress are both "keep waiting".
+          # ambiguous: the release commit sits on `master` AND is what the tag
+          # points at, so the same SHA has runs from both refs. head_branch is
+          # what separates them — GitHub sets it to the tag name for a tag
+          # push and to the branch name for a branch push.
+          #
+          # The branch a producer's run carries is therefore PER PRODUCER, not
+          # one literal for all of them, because the two producers are started
+          # by different refs (see the header). A single literal would silently
+          # never match one of them, and the release would sit as a draft until
+          # the timeout with a perfectly healthy producer.
+          expected_branch() { # $1 = workflow file -> head_branch its run carries
+            case "$1" in
+              oss-snapshot-images.yml) printf '%s' 'master' ;;
+              *) printf '%s' "$TAG" ;;
+            esac
+          }
+
+          # Presence is never taken for started: a run that does not exist yet
+          # and a run still in progress are both "keep waiting".
           # `run_attempt` is captured, not just the id: `gh run rerun` keeps
           # the run id and increments the attempt, so an id alone cannot tell
           # a cached success from a later re-run that failed. The publish gate
-          # re-checks both. `event` is captured because only a tag-PUSH run is
+          # re-checks both. `event` is captured because only a PUSH run is
           # trustworthy here — see the rejection below.
           # FILTER, then select — the ordering is load-bearing. Selecting the
           # newest run and *then* rejecting non-push runs wedges the release
           # permanently: a dispatched run has a higher id, so it wins
           # selection and is refused, and nothing can dislodge it. Re-running
-          # the real tag-push run does not help, because a re-run keeps the
+          # the real push run does not help, because a re-run keeps the
           # original id and only bumps run_attempt, so the dispatch stays
           # newest forever. Excluding non-push runs from selection instead
           # means a dispatched run simply does not participate.
-          latest_run() { # $1 = workflow file -> newest TAG-PUSH run, or empty
+          latest_run() { # $1 = workflow file -> newest PUSH run, or empty
             gh api "repos/$REPO/actions/workflows/$1/runs?head_sha=$SHA&per_page=100" \
               --jq '.workflow_runs[] | {id, run_attempt, event, head_branch, head_sha, status, conclusion, html_url}' \
-              | jq -s --arg t "$TAG" --arg s "$SHA" \
-                  'map(select(.head_branch == $t and .head_sha == $s and .event == "push"))
+              | jq -s --arg b "$(expected_branch "$1")" --arg s "$SHA" \
+                  'map(select(.head_sha == $s and .head_branch == $b and .event == "push"))
                    | sort_by(.id) | last // empty'
           }
-          dispatched_runs() { # non-push runs claiming this tag+commit, for diagnosis
+          dispatched_runs() { # non-push runs claiming this ref+commit, for diagnosis
             gh api "repos/$REPO/actions/workflows/$1/runs?head_sha=$SHA&per_page=100" \
               --jq '.workflow_runs[] | {event, head_branch, head_sha, status, html_url}' \
-              | jq -sr --arg t "$TAG" --arg s "$SHA" \
-                  'map(select(.head_branch == $t and .head_sha == $s and .event != "push"))
+              | jq -sr --arg b "$(expected_branch "$1")" --arg s "$SHA" \
+                  'map(select(.head_sha == $s and .head_branch == $b and .event != "push"))
                    | if length == 0 then "" else map("\(.event) \(.html_url)") | join(", ") end'
           }
           other_runs() { # what DID exist at this SHA, for a legible timeout
@@ -303,19 +340,17 @@ jobs:
               RUN=$(latest_run "$WF")
               if [ -z "$RUN" ]; then
                 # Non-push runs are IGNORED, not fatal, and not a reason to
-                # stop waiting — the tag-push run may simply not exist yet.
-                # Only build-migration-runner.yml and deploy-vercel-prod.yml
-                # take a `ref` input on workflow_dispatch that decides what
-                # gets checked out, so a dispatched run's metadata can say tag
-                # A while it built commit B; nothing in that metadata reveals
-                # the difference, which is why such runs never participate.
-                # If NO push run ever appears, the timeout below says so
-                # specifically.
+                # stop waiting — the push run may simply not exist yet. A
+                # workflow_dispatch decides for itself what it checks out, so
+                # its metadata can name one ref while it built another commit;
+                # nothing in that metadata reveals the difference, which is why
+                # such runs never participate. If NO push run ever appears, the
+                # timeout below says so specifically.
                 DISPATCHED=$(dispatched_runs "$WF" || true)
                 if [ -n "$DISPATCHED" ]; then
-                  echo "  $WF — no tag-push run for $TAG at ${SHA:0:7} yet (ignoring non-push run(s): $DISPATCHED)"
+                  echo "  $WF — no push run on $(expected_branch "$WF") at ${SHA:0:7} yet (ignoring non-push run(s): $DISPATCHED)"
                 else
-                  echo "  $WF — no run for $TAG at ${SHA:0:7} yet"
+                  echo "  $WF — no run on $(expected_branch "$WF") at ${SHA:0:7} yet"
                 fi
                 STILL+=("$WF")
                 continue
@@ -344,9 +379,9 @@ jobs:
               for WF in "${PENDING[@]}"; do
                 DISPATCHED=$(dispatched_runs "$WF" || true)
                 if [ -n "$DISPATCHED" ]; then
-                  echo "::error::  PRODUCER NOT FROM THE TAG PUSH: $WF has no run triggered by the $TAG push, only non-push run(s): $DISPATCHED. Those are ignored, never used: a dispatched run takes a ref input that decides what it actually builds, so its artifacts cannot be assumed to come from $TAG. Dispatching another one will not help. See docs/runbooks/release-bom.md § No tag-push run exists."
+                  echo "::error::  PRODUCER NOT FROM A PUSH: $WF has no push run on $(expected_branch "$WF") at ${SHA:0:7}, only non-push run(s): $DISPATCHED. Those are ignored, never used: a dispatched run decides for itself what it checks out, so its artifacts cannot be assumed to come from this commit. Dispatching another one will not help. See docs/runbooks/release-bom.md § No tag-push run exists."
                 else
-                  echo "::error::  $WF — runs seen at ${SHA:0:7}: $(other_runs "$WF" || echo 'none')"
+                  echo "::error::  $WF — expected a push run on $(expected_branch "$WF"); runs seen at ${SHA:0:7}: $(other_runs "$WF" || echo 'none')"
                 fi
               done
               exit 1
@@ -355,7 +390,7 @@ jobs:
           done
 
           echo "runs=$RESULT" >> "$GITHUB_OUTPUT"
-          echo "All four artifact workflows succeeded for $TAG."
+          echo "Both artifact workflows succeeded for $TAG."
 
   # ==========================================================================
   # 3. Collect every component's identity and digest.
@@ -365,20 +400,17 @@ jobs:
     needs: [resolve, await-artifact-runs]
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    # Bound to Production for the Azure OIDC federation the ACR lookups need —
-    # the same environment deploy-azure-container-apps.yml's promote-images
-    # job binds on a tag push. On a workflow_dispatch re-run this is why the
-    # dispatch must carry `--ref <tag>`: the Production environment's
-    # deployment policy admits `v*.*.*` refs, and a dispatch from `master`
-    # would be refused here. That refusal is fail-closed (draft stands), not
-    # a corrupt state.
-    environment: Production
+    # NO `environment:` and NO cloud federation. Every digest this job records
+    # now comes from GHCR snapshots the release's own build already attested,
+    # read with this job's own GITHUB_TOKEN, so the job needs no deployment
+    # credential of any kind. That is a property worth keeping: this repository
+    # holds nothing that can reach a production registry, and assembling a BOM
+    # must never be the reason it acquires one.
     permissions:
       contents: read
-      actions: read
-      packages: read
+      actions: read # downloading the collab worker artifact
+      packages: read # reading the GHCR snapshots
       attestations: read
-      id-token: write # Azure OIDC federation
     steps:
       - name: Checkout the release commit
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
@@ -389,177 +421,113 @@ jobs:
       - name: Prepare
         run: mkdir -p bom-parts
 
-      # ---- migration-runner (GHCR, attested) --------------------------------
-      # Consumes the manifest fragment build-migration-runner.yml already
-      # emits for exactly this purpose rather than re-resolving the digest —
-      # re-resolving would introduce a second, independent answer to a
-      # question that already has an authoritative one.
+      # ---- all 14 container images (attested GHCR snapshots) -----------------
+      # `docker login` is what makes `docker buildx imagetools inspect` and the
+      # `--bundle-from-oci` attestation reads below work: the snapshot packages
+      # are private, and the attestations are registry referrers rather than
+      # GitHub-hosted records.
       - name: Log in to GHCR
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
 
-      - name: Collect migration-runner entry
+      # Nothing is re-resolved and nothing is rebuilt here. oss-snapshot-
+      # images.yml already built, pushed and attested all 14 images for this
+      # exact commit, and the repository already ships the verifier that
+      # consumes them — which polls for every exact-SHA snapshot with bounded
+      # backoff and verifies BOTH the provenance and the SPDX attestation
+      # against a pinned repo, signer workflow, source digest and source ref.
+      #
+      # That script is CALLED rather than re-implemented on purpose: the ops
+      # reconciler is its second caller, and one definition of "this snapshot
+      # is trustworthy" is the whole point. Forking it would create two.
+      #
+      # The wait budget is large because the tag push RACES the snapshot
+      # matrix rather than starting it (see BOM_WAIT_TIMEOUT_MINUTES). Running
+      # out fails closed: the release stays a draft.
+      - name: Resolve and verify all exact-SHA snapshots
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          REPO: ${{ github.repository }}
+          SNAPSHOT_MAX_WAIT_SECONDS: '5400'
           SHA: ${{ needs.resolve.outputs.sha }}
-          TAG: ${{ needs.resolve.outputs.tag }}
-          RUNS: ${{ needs.await-artifact-runs.outputs.runs }}
         run: |
           set -euo pipefail
-          RUN_ID=$(printf '%s' "$RUNS" | jq -r '."build-migration-runner.yml".id')
-          rm -rf fragment && mkdir -p fragment
-          if ! gh run download "$RUN_ID" --repo "$REPO" \
-                 --name migration-runner-attestations --dir fragment; then
-            echo "::error::Could not download the 'migration-runner-attestations' artifact from build-migration-runner.yml run $RUN_ID. It is retained for 90 days; past that, re-run that workflow at $TAG before re-running this one."
-            exit 1
-          fi
-          FRAGMENT=fragment/migration-runner.manifest.json
-          [ -f "$FRAGMENT" ] || { echo "::error::$FRAGMENT missing from the artifact — build-migration-runner.yml's 'Emit manifest fragment' step did not produce it."; exit 1; }
+          .github/actions/oss-snapshot/verify-dev-snapshot.sh \
+            "$SHA" bom-parts/snapshot-evidence.json
 
-          IMAGE=$(jq -r '.image' "$FRAGMENT")
-          DIGEST=$(jq -r '.digest' "$FRAGMENT")
-          FRAGMENT_SHA=$(jq -r '.sourceSha' "$FRAGMENT")
-          if [ "$FRAGMENT_SHA" != "$SHA" ]; then
-            echo "::error::The migration-runner fragment was built from $FRAGMENT_SHA but this release is $SHA. Refusing to record an image from a different commit."
-            exit 1
-          fi
-          printf '%s' "$DIGEST" | grep -qE '^sha256:[0-9a-f]{64}$' || { echo "::error::migration-runner digest '$DIGEST' is not a sha256 digest."; exit 1; }
-
-          # Verify the attestations rather than trusting the fragment: the
-          # fragment is an unsigned workflow artifact, the attestation is the
-          # signed claim. Same invocation shape the ops reconciler uses before
-          # it will run a migration — repo, signer workflow, and the attested
-          # source commit all pinned.
-          SIGNER="$REPO/.github/workflows/build-migration-runner.yml"
-          echo "Verifying build provenance for $IMAGE@$DIGEST"
-          gh attestation verify "oci://$IMAGE@$DIGEST" \
-            --repo "$REPO" \
-            --signer-workflow "$SIGNER" \
-            --source-digest "$SHA"
-          echo "Verifying SBOM attestation"
-          gh attestation verify "oci://$IMAGE@$DIGEST" \
-            --repo "$REPO" \
-            --signer-workflow "$SIGNER" \
-            --source-digest "$SHA" \
-            --predicate-type https://spdx.dev/Document/v2.3
-
-          jq -n \
-            --arg image "$IMAGE" \
-            --arg tag "$(jq -r '.tag' "$FRAGMENT")" \
-            --arg digest "$DIGEST" \
-            --arg signer "$SIGNER" \
-            --arg sha "$SHA" \
-            '[{
-               component: "migration-runner",
-               type: "oci-image",
-               registryRole: "ghcr",
-               repository: $image,
-               tag: $tag,
-               digest: $digest,
-               reference: ($image + "@" + $digest),
-               attestations: {
-                 buildProvenance: "verified",
-                 sbom: "verified",
-                 signerWorkflow: $signer,
-                 sourceDigest: $sha
-               },
-               producedBy: "build-migration-runner.yml"
-             }]' > bom-parts/migration-runner.json
-          echo "migration-runner: $DIGEST (provenance + SBOM verified)"
-
-      # ---- the 13 container images ------------------------------------------
-      - name: Azure Login
-        uses: azure/login@532459ea530d8321f2fb9bb10d1e0bcf23869a43 # v3
-        with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-
-      - name: Collect container image digests
+      - name: Build the container image rows
         env:
           SHA: ${{ needs.resolve.outputs.sha }}
           TAG: ${{ needs.resolve.outputs.tag }}
           COMPONENTS: ${{ env.ACR_IMAGE_COMPONENTS }}
-          DEV_SUFFIX: ${{ vars.DEV_ACR_SUFFIX }}
-          PROD_SUFFIX: ${{ vars.ACR_SUFFIX }}
         run: |
           set -euo pipefail
-          # `set -u` does not catch these: the variables are SET but empty
-          # when the repository variable is missing, and an empty suffix
-          # resolves to a DIFFERENT registry name — every lookup would then
-          # miss and read as a build problem rather than a config one.
-          if [ -z "${DEV_SUFFIX:-}" ]; then
-            echo "::error::DEV_ACR_SUFFIX is empty — set the DEV_ACR_SUFFIX repository variable."
-            exit 1
-          fi
-          if [ -z "${PROD_SUFFIX:-}" ]; then
-            echo "::error::ACR_SUFFIX is empty — set the ACR_SUFFIX repository variable."
-            exit 1
-          fi
-          DEV_ACR="fabric${DEV_SUFFIX}devacr"
-          PROD_ACR="fabric${PROD_SUFFIX}prodacr"
+          EVIDENCE=bom-parts/snapshot-evidence.json
+          [ -s "$EVIDENCE" ] || { echo "::error::$EVIDENCE is missing or empty — the snapshot verifier produced no evidence."; exit 1; }
 
-          # NOT `az acr manifest show --query digest`: that prints the RAW
-          # manifest, and a buildx-built OCI image index — the shape of every
-          # image here, since attestations ride the index — has no top-level
-          # `digest` field, so the query silently returns empty for every
-          # image that exists. `az acr repository show --image` returns the
-          # tag's registry attributes, whose `digest` IS the index digest.
-          resolve_digest() { # <acr> <repo:tag> -> digest or empty
-            az acr repository show --name "$1" --image "$2" \
-              --query digest -o tsv 2>/dev/null || true
-          }
+          # Re-read from the evidence rather than restating them here: the
+          # source ref and signer workflow the verifier actually bound its
+          # checks to are the only ones a row may claim. A second copy of those
+          # literals in this file could drift from the verification that
+          # happened, and a manifest row asserting a binding nobody checked is
+          # exactly the lie this pipeline exists to prevent.
+          EV_SHA=$(jq -r '.sourceSha // ""' "$EVIDENCE")
+          EV_REF=$(jq -r '.sourceRef // ""' "$EVIDENCE")
+          EV_SIGNER=$(jq -r '.signerWorkflow // ""' "$EVIDENCE")
+          [ "$EV_SHA" = "$SHA" ] \
+            || { echo "::error::The snapshot evidence was collected for '${EV_SHA:-<missing>}' but this release is $SHA. Refusing to record images from a different commit."; exit 1; }
+          [ -n "$EV_REF" ] \
+            || { echo "::error::The snapshot evidence records no sourceRef, so no row can state what ref the attestations were verified against."; exit 1; }
+          [ -n "$EV_SIGNER" ] \
+            || { echo "::error::The snapshot evidence records no signerWorkflow, so no row can state which workflow signed the attestations."; exit 1; }
 
-          # Dev-first, prod-fallback, and the manifest records which one
-          # answered. The dev ACR is the reconciler's trust root, so it is
-          # asked first — but it very often does NOT hold the release commit.
-          # A changesets version commit touches only package.json, CHANGELOG
-          # and .changeset/*, none of which match deploy-azure-container-
-          # apps.yml's change filters, so its master push builds nothing;
-          # promote-images then finds nothing to import and the tag run builds
-          # every image straight into the PROD registry. Requiring dev would
-          # therefore fail-closed on a perfectly good release. Missing from
-          # BOTH registries is the real partial-build signal, and that does
-          # fail closed.
-          ENTRIES='[]'
-          MISSING=()
-          for NAME in $COMPONENTS; do
-            REPO_PATH="fabric/$NAME"
-            ROLE="dev-trust-root"
-            DIGEST=$(resolve_digest "$DEV_ACR" "$REPO_PATH:$SHA")
-            if [ -z "$DIGEST" ]; then
-              ROLE="prod-release-build"
-              DIGEST=$(resolve_digest "$PROD_ACR" "$REPO_PATH:$SHA")
-            fi
-            if [ -z "$DIGEST" ] || ! printf '%s' "$DIGEST" | grep -qE '^sha256:[0-9a-f]{64}$'; then
-              echo "  $NAME — MISSING at $SHA in both registries"
-              MISSING+=("$NAME")
-              continue
-            fi
-            echo "  $NAME — $DIGEST ($ROLE)"
-            ENTRIES=$(printf '%s' "$ENTRIES" | jq -c \
-              --arg c "$NAME" --arg r "$REPO_PATH" --arg t "$SHA" \
-              --arg d "$DIGEST" --arg role "$ROLE" \
-              '. + [{
-                 component: $c,
-                 type: "oci-image",
-                 registryRole: $role,
-                 repository: $r,
-                 tag: $t,
-                 digest: $d,
-                 attestations: { buildProvenance: "none", sbom: "none" },
-                 producedBy: "deploy-azure-container-apps.yml"
-               }]')
-          done
+          # `deployTarget` is the repository path the ops reconciler imports an
+          # image INTO, and it lives in the SIGNED manifest deliberately: it is
+          # what lets the deployer pair a GHCR source with its destination
+          # without re-deriving a coordinate this release never signed.
+          # migration-runner is built and attested with the other 13 but is
+          # executed as a job rather than rolled out as a service, so it is
+          # absent from this map and its row carries no deployTarget.
+          DEPLOY_TARGETS=$(printf '%s\n' $COMPONENTS \
+            | jq -R 'select(length > 0)' \
+            | jq -s 'map({key: ., value: ("fabric/" + .)}) | from_entries')
 
-          if [ ${#MISSING[@]} -gt 0 ]; then
-            echo "::error::Release $TAG has no image for these components at $SHA in either container registry: ${MISSING[*]}. That is a partial build — the release stays a DRAFT. Re-run deploy-azure-container-apps.yml at $TAG, then re-run this workflow."
-            exit 1
-          fi
-          printf '%s' "$ENTRIES" > bom-parts/images.json
-          echo "Resolved $(printf '%s' "$ENTRIES" | jq 'length') container image digests."
+          jq --arg sha "$SHA" \
+             --arg ref "$EV_REF" \
+             --arg signer "$EV_SIGNER" \
+             --argjson targets "$DEPLOY_TARGETS" \
+             '[ .images[] as $img
+                | {
+                    component: $img.component,
+                    type: "oci-image",
+                    registryRole: "ghcr-snapshot",
+                    repository: $img.image
+                  }
+                  + (if $targets[$img.component] then {deployTarget: $targets[$img.component]} else {} end)
+                  + {
+                    tag: $img.tag,
+                    digest: $img.digest,
+                    reference: ($img.image + "@" + $img.digest),
+                    attestations: {
+                      buildProvenance: "verified",
+                      sbom: "verified",
+                      signerWorkflow: $signer,
+                      sourceDigest: $sha,
+                      sourceRef: $ref
+                    },
+                    producedBy: "oss-snapshot-images.yml"
+                  }
+              ]' "$EVIDENCE" > bom-parts/images.json
+
+          # A truncated evidence file would otherwise surface as a missing
+          # component at the publish gate, several jobs later. 13 rolled out
+          # plus migration-runner.
+          COUNT=$(jq 'length' bom-parts/images.json)
+          EXPECTED_COUNT=$(( $(printf '%s\n' $COMPONENTS | grep -c . ) + 1 ))
+          [ "$COUNT" -eq "$EXPECTED_COUNT" ] \
+            || { echo "::error::The snapshot evidence yielded $COUNT image rows, expected $EXPECTED_COUNT. That is a partial snapshot set — the release stays a DRAFT."; exit 1; }
+          jq -r '.[] | "  \(.component) — \(.digest)"' bom-parts/images.json
+          echo "Recorded $COUNT attested snapshot images (provenance + SBOM verified)."
 
       # ---- npm packages ------------------------------------------------------
       - name: Collect npm package integrity
@@ -689,40 +657,130 @@ jobs:
           fi
           printf '%s' "$ENTRIES" > bom-parts/npm.json
 
-      # ---- platform deployments ---------------------------------------------
-      - name: Collect platform deployment identities
+      # ---- the two platform components ---------------------------------------
+      # They are no longer the same kind of thing, and schema 2.0.0 stops
+      # pretending they are:
+      #
+      #   collab-worker is a `platform-artifact`. release-artifacts.yml builds
+      #   it with no credentials at all and attests the tarball, so it has a
+      #   real digest and real provenance — the same standard the 14 images
+      #   meet.
+      #
+      #   web is a `platform-source`. Next.js INLINES its ~37 NEXT_PUBLIC_*
+      #   values at build time, so a bundle built without the production
+      #   platform environment is production-INCORRECT rather than merely
+      #   unverified — right code, wrong flags and wrong URLs — and it would
+      #   deploy silently. That environment lives with the deployer, not here,
+      #   so this repository produces no web artifact to digest. The release
+      #   records the source commit as web's identity and says plainly why
+      #   there is nothing content-addressed; the deployment ledger records
+      #   what actually went live. A fabricated digest would make the manifest
+      #   lie about what it can prove, which is worse than an honest gap.
+      - name: Collect the platform component rows
         env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
           SHA: ${{ needs.resolve.outputs.sha }}
+          TAG: ${{ needs.resolve.outputs.tag }}
           RUNS: ${{ needs.await-artifact-runs.outputs.runs }}
+          ARTIFACT_NAME: collab-worker
+          COLLAB_ASSET: ${{ env.COLLAB_ARTIFACT_FILE }}
         run: |
           set -euo pipefail
-          # Vercel and PartyKit deploy straight to their platforms and retain
-          # nothing content-addressed to attach or verify, so these entries
-          # record deployment IDENTITY instead of a digest. `digest: null` is
-          # deliberate — a fabricated one would make the manifest lie about
-          # what it can prove. The run is the evidence: it is immutable, it
-          # names the commit, and its logs hold the deployment URL.
-          REASON="Deployed directly to the hosting platform; no content-addressed artifact is retained that this release could attach or verify. The producing workflow run is the deployment's identity."
-          jq -n --argjson runs "$RUNS" --arg sha "$SHA" --arg reason "$REASON" \
+          RUN_ID=$(printf '%s' "$RUNS" | jq -r '."release-artifacts.yml".id')
+          RUN_ATTEMPT=$(printf '%s' "$RUNS" | jq -r '."release-artifacts.yml".run_attempt')
+          rm -rf collab-artifact && mkdir -p collab-artifact
+          if ! gh run download "$RUN_ID" --repo "$REPO" \
+                 --name "$ARTIFACT_NAME" --dir collab-artifact; then
+            echo "::error::Could not download the '$ARTIFACT_NAME' artifact from release-artifacts.yml run $RUN_ID. It is retained for 90 days; past that, re-run that workflow at $TAG before re-running this one."
+            exit 1
+          fi
+          BUNDLE=collab-artifact/collab-worker.tgz
+          [ -f "$BUNDLE" ] \
+            || { echo "::error::collab-worker.tgz is missing from the '$ARTIFACT_NAME' artifact — release-artifacts.yml's build step did not produce it."; exit 1; }
+
+          # The digest recorded in the manifest is of the bytes that ACTUALLY
+          # arrived, never of the .sha256 file that rode along with them: that
+          # file is an unsigned workflow artifact. It is still compared,
+          # because a mismatch means the two halves of one upload disagree and
+          # that is worth failing on loudly rather than silently preferring
+          # one. What settles trust is the attestation, below.
+          #
+          # The sidecar is REQUIRED, not read best-effort. `upload-artifact`'s
+          # `if-no-files-found: error` proves only that at least one of its
+          # configured paths matched, and the tarball alone satisfies that — so
+          # a checksum step that produced nothing would leave the tarball
+          # uploaded on its own. Reading the sidecar with `|| true` would then
+          # turn that half-complete upload into a silent pass, which is the
+          # exact opposite of what the paragraph above says must happen.
+          SIDECAR=collab-artifact/collab-worker.sha256
+          [ -s "$SIDECAR" ] \
+            || { echo "::error::collab-worker.sha256 is missing or empty from the '$ARTIFACT_NAME' artifact, so the tarball's own recorded digest cannot be compared. That is a half-complete upload, not an absent option — re-run release-artifacts.yml at $TAG."; exit 1; }
+          RECORDED=$(tr -d '[:space:]' < "$SIDECAR")
+          printf '%s' "$RECORDED" | grep -qE '^[0-9a-f]{64}$' \
+            || { echo "::error::collab-worker.sha256 contains '${RECORDED}', which is not 64 lowercase hex characters. Re-run release-artifacts.yml at $TAG."; exit 1; }
+          ACTUAL=$(sha256sum "$BUNDLE" | cut -d' ' -f1)
+          [ "$RECORDED" = "$ACTUAL" ] \
+            || { echo "::error::collab-worker.tgz hashes to $ACTUAL but the artifact's own collab-worker.sha256 records $RECORDED. Re-run release-artifacts.yml at $TAG."; exit 1; }
+
+          # Same invocation shape used for the snapshots: repo, signer workflow
+          # and attested source commit all pinned, so a tarball built by
+          # anything other than this repository's release-artifacts.yml at this
+          # commit cannot pass.
+          SIGNER="$REPO/.github/workflows/release-artifacts.yml"
+          echo "Verifying build provenance for collab-worker.tgz"
+          gh attestation verify "$BUNDLE" \
+            --repo "$REPO" \
+            --signer-workflow "$SIGNER" \
+            --source-digest "$SHA"
+
+          WEB_REASON="Built from this exact source commit by the ops deployer, which holds the platform environment the bundle inlines; no content-addressed artifact is produced by this repository."
+
+          jq -n \
+            --arg sha "$SHA" \
+            --arg digest "sha256:$ACTUAL" \
+            --arg artifactName "$ARTIFACT_NAME" \
+            --arg runId "$RUN_ID" \
+            --arg runAttempt "$RUN_ATTEMPT" \
+            --arg webReason "$WEB_REASON" \
             '[
-              { component: "web", platform: "vercel", wf: "deploy-vercel-prod.yml" },
-              { component: "collab-worker", platform: "cloudflare", wf: "deploy-partykit-prod.yml" }
-            ]
-            | map({
-                component: .component,
-                type: "platform-deployment",
-                platform: .platform,
+              {
+                component: "collab-worker",
+                type: "platform-artifact",
+                digest: $digest,
+                artifact: {
+                  name: $artifactName,
+                  runId: $runId,
+                  runAttempt: $runAttempt
+                },
+                attestations: { buildProvenance: "verified" },
+                producedBy: "release-artifacts.yml"
+              },
+              {
+                component: "web",
+                type: "platform-source",
                 digest: null,
-                digestUnavailableReason: $reason,
-                producedBy: .wf,
+                digestUnavailableReason: $webReason,
                 deployment: {
                   commit: $sha,
-                  runId: ($runs[.wf].id | tostring),
-                  runUrl: $runs[.wf].html_url,
-                  conclusion: $runs[.wf].conclusion
-                }
-              })' > bom-parts/platform.json
-          jq -r '.[] | "  \(.component) — \(.deployment.conclusion) (\(.deployment.runUrl))"' bom-parts/platform.json
+                  platform: "vercel"
+                },
+                producedBy: null
+              }
+            ]' > bom-parts/platform.json
+
+          # The tarball rides through the BOM jobs as well as being measured.
+          # It is not merely an input to a manifest row: the deployer downloads
+          # `collab-worker.tgz` FROM THE RELEASE by name and deploys its bytes,
+          # so it has to become a release asset. Carrying it in bom-parts/ is
+          # what gets it to the attach job, which uploads it alongside the
+          # manifest. Producer-run artifacts expire; a release asset does not,
+          # which is the difference between a release that can still be
+          # deployed in six months and one that cannot.
+          cp "$BUNDLE" "bom-parts/$COLLAB_ASSET"
+
+          echo "  collab-worker — sha256:$ACTUAL (provenance verified, carried through as a release asset)"
+          echo "  web — source $SHA (no artifact produced here; see digestUnavailableReason)"
 
       - name: Upload BOM parts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -763,12 +821,17 @@ jobs:
           SERVER_URL: ${{ github.server_url }}
         run: |
           set -euo pipefail
-          for f in migration-runner images npm platform; do
+          # `images.json` now carries all 14 containers including
+          # migration-runner: they come from one snapshot set, verified in one
+          # pass, so splitting migration-runner into its own part would be two
+          # names for one fact. `snapshot-evidence.json` also rides in the
+          # artifact but is NOT a component list — it is the verifier's own
+          # output, kept for audit.
+          for f in images npm platform; do
             [ -s "bom-parts/$f.json" ] || { echo "::error::bom-parts/$f.json is missing or empty — the collect job did not produce a complete set."; exit 1; }
           done
 
           COMPONENTS=$(jq -s 'add | sort_by(.type, .component)' \
-            bom-parts/migration-runner.json \
             bom-parts/images.json \
             bom-parts/npm.json \
             bom-parts/platform.json)
@@ -819,19 +882,40 @@ jobs:
         with:
           subject-path: ${{ env.MANIFEST_FILE }}
 
-      - name: Attach manifest and attestation to the draft release
+      - name: Attach the manifest, its attestation and the platform artifact
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
           TAG: ${{ needs.resolve.outputs.tag }}
           MANIFEST_FILE: ${{ env.MANIFEST_FILE }}
           ATTESTATION_FILE: ${{ env.ATTESTATION_FILE }}
+          COLLAB_ASSET: ${{ env.COLLAB_ARTIFACT_FILE }}
           BUNDLE_PATH: ${{ steps.attest.outputs.bundle-path }}
         run: |
           set -euo pipefail
           [ -n "$BUNDLE_PATH" ] && [ -f "$BUNDLE_PATH" ] \
             || { echo "::error::attest-build-provenance produced no bundle at '$BUNDLE_PATH'."; exit 1; }
           cp "$BUNDLE_PATH" "$ATTESTATION_FILE"
+
+          # The collab worker tarball is a RELEASE ASSET, not just BOM input.
+          # The deployer downloads it from the release by name and deploys its
+          # bytes, so a release whose manifest promises a platform artifact
+          # that is not attached is a release nothing can deploy.
+          #
+          # Bound to the manifest BEFORE it is attached: the two are published
+          # together and must describe the same bytes. The publish gate
+          # re-checks the identical binding against what actually landed on the
+          # release, because this check can only speak for what was uploaded,
+          # not for what is still there at publication time.
+          [ -s "bom-parts/$COLLAB_ASSET" ] \
+            || { echo "::error::bom-parts/$COLLAB_ASSET is missing from the BOM parts — the collect job did not carry the platform artifact through."; exit 1; }
+          EXPECTED_COLLAB=$(jq -r '.components[] | select(.component == "collab-worker") | .digest // ""' "$MANIFEST_FILE")
+          [ -n "$EXPECTED_COLLAB" ] \
+            || { echo "::error::The assembled manifest records no digest for collab-worker, so $COLLAB_ASSET cannot be bound to it."; exit 1; }
+          cp "bom-parts/$COLLAB_ASSET" "./$COLLAB_ASSET"
+          ACTUAL_COLLAB="sha256:$(sha256sum "$COLLAB_ASSET" | cut -d' ' -f1)"
+          [ "$ACTUAL_COLLAB" = "$EXPECTED_COLLAB" ] \
+            || { echo "::error::$COLLAB_ASSET hashes to $ACTUAL_COLLAB but the manifest records $EXPECTED_COLLAB. Refusing to attach bytes the manifest does not describe."; exit 1; }
           # --clobber so a re-run replaces the assets rather than 422-ing on
           # a name collision.
           #
@@ -842,9 +926,9 @@ jobs:
           # drops that fallback, all three fail together with "release not
           # found" for a release that is plainly on /releases; the fix is to
           # address the release by id through `gh api`, not to publish early.
-          gh release upload "$TAG" "$MANIFEST_FILE" "$ATTESTATION_FILE" \
+          gh release upload "$TAG" "$MANIFEST_FILE" "$ATTESTATION_FILE" "$COLLAB_ASSET" \
             --repo "$REPO" --clobber
-          echo "Attached $MANIFEST_FILE and $ATTESTATION_FILE to the $TAG release."
+          echo "Attached $MANIFEST_FILE, $ATTESTATION_FILE and $COLLAB_ASSET to the $TAG release."
 
   # ==========================================================================
   # 5. The gate. Verify what actually landed, then publish — as the App.
@@ -982,12 +1066,46 @@ jobs:
             done < <(jq -c ".components[] | select($1)" "$MANIFEST_FILE")
           }
 
+          # Under schema 2.0.0 EVERY container row comes from the attested
+          # snapshot set, so the provenance and SBOM assertions that used to
+          # apply to migration-runner alone are now the standard for all 14.
+          # `reference` and `deployTarget` are checked here too: the deployer
+          # reconstructs both from canonical values and refuses a row whose
+          # stated ones disagree, so a mismatch is better caught at the publish
+          # gate — where it leaves a draft — than at admission, where it leaves
+          # a published release nothing can deploy.
           check_oci() {
-            local name digest
+            local name digest repository reference deploy_target prov sbom source_digest
             name=$(printf '%s' "$1" | jq -r '.component')
             digest=$(printf '%s' "$1" | jq -r '.digest // ""')
+            repository=$(printf '%s' "$1" | jq -r '.repository // ""')
+            reference=$(printf '%s' "$1" | jq -r '.reference // ""')
+            deploy_target=$(printf '%s' "$1" | jq -r '.deployTarget // ""')
+            prov=$(printf '%s' "$1" | jq -r '.attestations.buildProvenance // ""')
+            sbom=$(printf '%s' "$1" | jq -r '.attestations.sbom // ""')
+            source_digest=$(printf '%s' "$1" | jq -r '.attestations.sourceDigest // ""')
+
             printf '%s' "$digest" | grep -qE '^sha256:[0-9a-f]{64}$' \
               || fail "oci-image '$name' has digest '${digest}', which is not a sha256:<64 hex> digest"
+            [ -n "$repository" ] || fail "oci-image '$name' records no repository"
+            [ "$reference" = "${repository}@${digest}" ] \
+              || fail "oci-image '$name' has reference '${reference}', expected '${repository}@${digest}'"
+            [ "$prov" = "verified" ] \
+              || fail "oci-image '$name' build provenance is '${prov}', expected verified"
+            [ "$sbom" = "verified" ] \
+              || fail "oci-image '$name' SBOM attestation is '${sbom}', expected verified"
+            [ "$source_digest" = "$SHA" ] \
+              || fail "oci-image '$name' attests source '${source_digest}', expected $SHA"
+
+            # migration-runner is executed, not rolled out, so it is the one
+            # image that must NOT claim a deploy target.
+            if [ "$name" = "migration-runner" ]; then
+              [ -z "$deploy_target" ] \
+                || fail "oci-image 'migration-runner' records deployTarget '${deploy_target}'; it is run as a job and has no rollout destination"
+            else
+              [ "$deploy_target" = "fabric/$name" ] \
+                || fail "oci-image '$name' has deployTarget '${deploy_target}', expected 'fabric/$name'"
+            fi
           }
           # The regex above fixes length and padding but cannot constrain the
           # unused bits in the final base64 character — a correctly sized
@@ -1031,33 +1149,43 @@ jobs:
             printf '%s' "$shasum" | grep -qE "$SHASUM_RE" \
               || fail "npm-package '$name' has shasum '${shasum}', which is not a 40-character hex digest"
           }
-          check_platform() {
-            local name run_id conclusion
+          # A platform-artifact is held to the same standard as an image: a
+          # real digest over real bytes, with provenance this run verified.
+          check_platform_artifact() {
+            local name digest prov
             name=$(printf '%s' "$1" | jq -r '.component')
-            run_id=$(printf '%s' "$1" | jq -r '.deployment.runId // ""')
-            conclusion=$(printf '%s' "$1" | jq -r '.deployment.conclusion // ""')
-            { [ -n "$run_id" ] && [ "$run_id" != "null" ]; } \
-              || fail "platform-deployment '$name' records no producing run id"
-            [ "$conclusion" = "success" ] \
-              || fail "platform-deployment '$name' records conclusion '${conclusion}', expected success"
+            digest=$(printf '%s' "$1" | jq -r '.digest // ""')
+            prov=$(printf '%s' "$1" | jq -r '.attestations.buildProvenance // ""')
+            printf '%s' "$digest" | grep -qE '^sha256:[0-9a-f]{64}$' \
+              || fail "platform-artifact '$name' has digest '${digest}', which is not a sha256:<64 hex> digest"
+            [ "$prov" = "verified" ] \
+              || fail "platform-artifact '$name' build provenance is '${prov}', expected verified"
+          }
+
+          # A platform-source has no digest BY CONSTRUCTION, so the gate checks
+          # the three things that keep that honest: the absence is explicit
+          # rather than a missing field, the reason is stated rather than
+          # empty, and the commit the row does claim is this release's. A row
+          # that quietly acquired a digest would mean something started
+          # producing an artifact this manifest is not verifying.
+          check_platform_source() {
+            local name digest reason commit
+            name=$(printf '%s' "$1" | jq -r '.component')
+            digest=$(printf '%s' "$1" | jq -r '.digest | if . == null then "null" else tostring end')
+            reason=$(printf '%s' "$1" | jq -r '.digestUnavailableReason // ""')
+            commit=$(printf '%s' "$1" | jq -r '.deployment.commit // ""')
+            [ "$digest" = "null" ] \
+              || fail "platform-source '$name' records digest '${digest}'; a source row must record digest: null"
+            [ -n "$reason" ] \
+              || fail "platform-source '$name' records no digestUnavailableReason, so the manifest does not say why it has no digest"
+            [ "$commit" = "$SHA" ] \
+              || fail "platform-source '$name' records deployment commit '${commit}', expected $SHA"
           }
 
           check_rows '.type == "oci-image"' check_oci
           check_rows '.type == "npm-package"' check_npm
-          check_rows '.type == "platform-deployment"' check_platform
-
-          # The migration runner is the only component whose provenance is
-          # verifiable today, so its verification is not optional.
-          MR=$(jq -c '.components[] | select(.component == "migration-runner")' "$MANIFEST_FILE")
-          [ -n "$MR" ] || fail "migration-runner is absent from the manifest"
-          if [ -n "$MR" ]; then
-            [ "$(printf '%s' "$MR" | jq -r '.attestations.buildProvenance')" = "verified" ] \
-              || fail "migration-runner build provenance is not recorded as verified"
-            [ "$(printf '%s' "$MR" | jq -r '.attestations.sbom')" = "verified" ] \
-              || fail "migration-runner SBOM attestation is not recorded as verified"
-            [ "$(printf '%s' "$MR" | jq -r '.attestations.sourceDigest')" = "$SHA" ] \
-              || fail "migration-runner attests source $(printf '%s' "$MR" | jq -r '.attestations.sourceDigest'), expected $SHA"
-          fi
+          check_rows '.type == "platform-artifact"' check_platform_artifact
+          check_rows '.type == "platform-source"' check_platform_source
 
           if [ ${#FAILURES[@]} -gt 0 ]; then
             echo "::error::${#FAILURES[@]} completeness check(s) failed — release $TAG stays a DRAFT and is NOT published. Each failure is listed above; see docs/runbooks/release-bom.md."
@@ -1110,6 +1238,7 @@ jobs:
           SHA: ${{ needs.resolve.outputs.sha }}
           WAS_DRAFT: ${{ needs.resolve.outputs.was_draft }}
           MANIFEST_FILE: ${{ env.MANIFEST_FILE }}
+          COLLAB_ASSET: ${{ env.COLLAB_ARTIFACT_FILE }}
           VERIFIED_SHA256: ${{ steps.verify.outputs.sha256 }}
         run: |
           set -euo pipefail
@@ -1164,9 +1293,21 @@ jobs:
           # looking. A producer re-run since then would leave the manifest
           # asserting a success that no longer holds — `gh run rerun` keeps
           # the run id and bumps run_attempt, a re-dispatch creates a new id,
-          # so both are checked. This matters most for the Vercel and
-          # PartyKit entries, where the run IS the only deployment evidence
-          # the manifest has.
+          # so both are checked.
+          #
+          # This MUST use the same per-producer branch predicate as the wait
+          # job, for the same reason the ordering below is preserved: if the
+          # two disagreed about which run counts, a healthy producer would be
+          # reported as PRODUCER GONE and the release would stay a draft
+          # forever with nothing wrong with it. Duplicated rather than shared
+          # because a workflow step is its own shell.
+          expected_branch() { # $1 = workflow file -> head_branch its run carries
+            case "$1" in
+              oss-snapshot-images.yml) printf '%s' 'master' ;;
+              *) printf '%s' "$TAG" ;;
+            esac
+          }
+
           while read -r ROW; do
             [ -n "$ROW" ] || continue
             WF=$(printf '%s' "$ROW" | jq -r '.workflow')
@@ -1187,18 +1328,19 @@ jobs:
             # Same filter-then-select ordering as the wait loop, and for the
             # same reason — if the two disagreed about which run counts, the
             # gate would be checking a different run from the one recorded.
+            WANT_BRANCH=$(expected_branch "$WF")
             NOW=$(printf '%s' "$RUNS_JSON" \
                   | jq '.workflow_runs[] | {id, run_attempt, event, head_branch, head_sha, status, conclusion, html_url}' \
-                  | jq -s --arg t "$TAG" --arg s "$SHA" \
-                      'map(select(.head_branch == $t and .head_sha == $s and .event == "push"))
+                  | jq -s --arg b "$WANT_BRANCH" --arg s "$SHA" \
+                      'map(select(.head_sha == $s and .head_branch == $b and .event == "push"))
                        | sort_by(.id) | last // empty')
             if [ -z "$NOW" ]; then
-              NON_PUSH=$(printf '%s' "$RUNS_JSON" | jq -r --arg t "$TAG" --arg s "$SHA" \
-                '[.workflow_runs[] | select(.head_branch == $t and .head_sha == $s and .event != "push")] | length')
+              NON_PUSH=$(printf '%s' "$RUNS_JSON" | jq -r --arg b "$WANT_BRANCH" --arg s "$SHA" \
+                '[.workflow_runs[] | select(.head_sha == $s and .head_branch == $b and .event != "push")] | length')
               if [ "${NON_PUSH:-0}" -gt 0 ]; then
-                fail "PRODUCER NOT FROM THE TAG PUSH: $WF no longer has a run triggered by the $TAG push — only ${NON_PUSH} non-push run(s) at this commit, which are ignored because a dispatched run's ref input decides what it actually builds. The manifest records run $WANT_ID; if that run was deleted, this release cannot be verified without re-creating it. See docs/runbooks/release-bom.md § No tag-push run exists."
+                fail "PRODUCER NOT FROM A PUSH: $WF no longer has a push run on $WANT_BRANCH at this commit — only ${NON_PUSH} non-push run(s), which are ignored because a dispatched run decides for itself what it checks out. The manifest records run $WANT_ID; if that run was deleted, this release cannot be verified without re-creating it. See docs/runbooks/release-bom.md § No tag-push run exists."
               else
-                fail "PRODUCER GONE: no run of $WF for $TAG is visible any more, though the manifest records run $WANT_ID. Re-run $WF at $TAG, then re-run this workflow."
+                fail "PRODUCER GONE: no push run of $WF on $WANT_BRANCH at $SHA is visible any more, though the manifest records run $WANT_ID. Re-run $WF at that commit, then re-run this workflow."
               fi
               continue
             fi
@@ -1263,6 +1405,42 @@ jobs:
             fi
           fi
 
+          # ---- the attached collab worker IS the bytes the manifest records --
+          # The manifest is a record; this asset is the thing that gets
+          # deployed. The deployer downloads `$COLLAB_ASSET` from the release by
+          # name and ships its contents, so two failures are equally fatal here
+          # and both are checked:
+          #
+          #   ABSENT  — publishing a release whose signed manifest promises a
+          #             platform artifact that is not attached ships a release
+          #             nothing can deploy, and the failure would surface during
+          #             a production promotion rather than here.
+          #   SWAPPED — a different but perfectly valid re-run artifact from the
+          #             same commit would pass a provenance check while not
+          #             being the bytes this release recorded. Only the digest
+          #             separates them.
+          #
+          # Compared against the digest in the manifest that just passed
+          # attestation, which is what binds the deployable bytes to the signed
+          # record of them. Queried alongside the manifest re-read, and last,
+          # for the same window-shrinking reason.
+          EXPECTED_COLLAB=$(jq -r '.components[] | select(.component == "collab-worker") | .digest // ""' "$MANIFEST_FILE")
+          if [ -z "$EXPECTED_COLLAB" ]; then
+            fail "MANIFEST INCOMPLETE: the verified manifest records no digest for collab-worker, so the attached $COLLAB_ASSET cannot be bound to it. Re-run this workflow to regenerate the manifest."
+          else
+            rm -rf publish-collab && mkdir -p publish-collab
+            if ! gh release download "$TAG" --repo "$REPO" --pattern "$COLLAB_ASSET" --dir publish-collab --clobber 2>/dev/null; then
+              fail "PLATFORM ARTIFACT MISSING: $COLLAB_ASSET is not attached to release $TAG, though the manifest records collab-worker as a platform artifact at $EXPECTED_COLLAB. The deployer downloads this asset by name, so publishing now would ship a release that cannot be deployed. Re-run this workflow to re-attach it."
+            else
+              ATTACHED_COLLAB="sha256:$(sha256sum "publish-collab/$COLLAB_ASSET" | cut -d' ' -f1)"
+              if [ "$ATTACHED_COLLAB" != "$EXPECTED_COLLAB" ]; then
+                fail "PLATFORM ARTIFACT SWAPPED: the $COLLAB_ASSET attached to $TAG hashes to $ATTACHED_COLLAB, but the signed manifest records $EXPECTED_COLLAB. Something replaced the release asset after it was attached. Do NOT publish by hand and do NOT simply re-run — find out who changed it first."
+              else
+                echo "Attached $COLLAB_ASSET matches the manifest digest ($ATTACHED_COLLAB)."
+              fi
+            fi
+          fi
+
           if [ ${#FAILURES[@]} -gt 0 ]; then
             echo "::error::${#FAILURES[@]} pre-publish check(s) failed — release $TAG stays a DRAFT and is NOT published. See docs/runbooks/release-bom.md § Reading a failure."
             exit 1
@@ -1303,7 +1481,7 @@ jobs:
               jq -r '.components[]
                      | [ .component,
                          .type,
-                         ( .digest // .version // ("run " + (.deployment.runId // "?")) ) ]
+                         ( .digest // .version // .deployment.commit // "—" ) ]
                      | @tsv' "$MANIFEST_FILE" \
                 | while IFS=$'\t' read -r c t v; do
                     printf '| `%s` | %s | `%s` |\n' "$c" "$t" "$v"

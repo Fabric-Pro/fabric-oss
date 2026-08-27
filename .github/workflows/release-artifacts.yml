@@ -1,0 +1,125 @@
+name: Release Artifacts
+
+# The credential-free half of a release's platform artifacts.
+#
+# oss-snapshot-images.yml already builds, pushes and attests every CONTAINER a
+# release ships, on the `master` push of the release commit. What it cannot
+# produce is the Cloudflare collab worker: that is not a container, so it has
+# no snapshot. This workflow closes that gap on the release tag.
+#
+# It runs with NO secrets at all, and that is a property rather than an
+# omission. The worker's only build inputs are its own source and
+# `party-cf/wrangler.toml`; its runtime secrets are pushed by the deployer
+# AFTER the worker is live, never at build time. So the artifact this workflow
+# emits is a complete, content-addressed description of what will be deployed,
+# built in a job that holds nothing worth stealing.
+#
+# The output — a tarball plus a build-provenance attestation over it — is what
+# lets release-bom.yml record `collab-worker` as a real `platform-artifact`
+# row, with a digest and verified provenance, instead of as a deployment it can
+# only point at after the fact.
+#
+# NO `concurrency:` block, deliberately. release-bom.yml waits on this
+# workflow, and a shared concurrency group between a waiter and the run it
+# awaits deadlocks instantly — GitHub resolves that by evaluating the workflow
+# to zero jobs rather than by erroring. A distinct group would be safe but buys
+# nothing: one tag fires exactly one run.
+
+on:
+  push:
+    tags: ['v*.*.*']
+
+permissions:
+  contents: read
+
+jobs:
+  collab-worker:
+    name: Build and attest the collab worker bundle
+    # Two guards, both fail-closed:
+    #   - Repository: a fork or a mirror must never mint an attestation that
+    #     release-bom.yml would then accept as this repository's. Same guard
+    #     every job in oss-snapshot-images.yml carries.
+    #   - Deletion: a tag DELETION arrives as a `push` matching the v*.*.*
+    #     filter, with GITHUB_SHA reverted to the default branch. Building and
+    #     attesting a bundle from the default branch under a tag that no longer
+    #     exists is exactly the shape of artifact this pipeline must not mint.
+    if: github.repository == 'Fabric-Pro/fabric-oss' && github.event.deleted != true
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write # keyless attestation
+      attestations: write
+    steps:
+      - name: Checkout the tagged commit
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          fetch-depth: 1
+          # Nothing here needs a git credential, and everything after this step
+          # runs package scripts and a bundler over product code.
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+
+      # `--dry-run --outdir` runs the real deploy pipeline — resolve, bundle,
+      # validate — and stops before the upload, so it needs no Cloudflare
+      # credential and still fails on anything that would fail a deploy.
+      #
+      # wrangler.toml rides along beside the bundle because none of what it
+      # carries is IN the bundle: `main`, the four Durable Object bindings and
+      # the [migrations] block. It is copied byte-for-byte and is covered by
+      # the attestation over the tarball, so the deployer receives the config
+      # this commit declared rather than one reconstructed downstream. Note
+      # that `main` still names the SOURCE entry point: a deployer unpacking
+      # this tarball points it at the bundled entry (or re-bundles from an
+      # extracted source tree) rather than assuming the path resolves as-is.
+      - name: Build collab worker bundle
+        working-directory: party-cf
+        run: |
+          set -euo pipefail
+          pnpm install --filter fabric-collab-prod --frozen-lockfile
+          pnpm --filter fabric-collab-prod type-check
+          npx wrangler deploy --env="" --dry-run --outdir=dist
+          cp wrangler.toml dist/wrangler.toml
+          tar -czf ../collab-worker.tgz -C dist .
+          sha256sum ../collab-worker.tgz | cut -d' ' -f1 > ../collab-worker.sha256
+
+      # Over the tarball, not over the directory: the digest that ends up in
+      # the release manifest has to be the digest of the bytes a consumer
+      # actually downloads, and a directory has no single one.
+      - name: Attest the collab worker bundle
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        with:
+          subject-path: collab-worker.tgz
+
+      # 90 days matches every other artifact release-bom.yml consumes, and
+      # if-no-files-found: error keeps a silently empty upload from reading as
+      # a successful producer run downstream.
+      - name: Upload the collab worker artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: collab-worker
+          path: |
+            collab-worker.tgz
+            collab-worker.sha256
+          retention-days: 90
+          if-no-files-found: error
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            printf '## Collab worker bundle\n\n'
+            if [ -f collab-worker.sha256 ]; then
+              printf -- '- Artifact: `collab-worker` (`collab-worker.tgz`, `collab-worker.sha256`)\n'
+              printf -- '- sha256: `%s`\n' "$(cat collab-worker.sha256)"
+              printf -- '- Source commit: `%s`\n' "$GITHUB_SHA"
+            else
+              printf 'The bundle was not built, so there is nothing to attest or upload.\n'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -313,7 +313,7 @@ jobs:
           git -c http.https://github.com/.extraheader= \
               -c http.https://github.com/.extraheader="$APP_AUTH" \
               push origin "$TAG"
-          echo "Pushed $TAG at ${GITHUB_SHA:0:7} — deploy-azure-container-apps.yml will pick it up."
+          echo "Pushed $TAG at ${GITHUB_SHA:0:7} — release-artifacts.yml and release-bom.yml fire off this tag; the container images come from oss-snapshot-images.yml's run of this same commit on master."
           echo "tagged=true" >> "$GITHUB_OUTPUT"
 
       - name: Create draft GitHub Release with CHANGELOG section
