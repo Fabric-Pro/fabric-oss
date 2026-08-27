@@ -65,6 +65,39 @@ export interface ReadinessEvidence {
 	 */
 	descriptionLength: number;
 
+	/**
+	 * Work already underway that will satisfy an item once it lands.
+	 *
+	 * The sheet's Definitions tab lists **In Progress** as an item state, and
+	 * the 20 August walkthrough asked for it in as many words — "it may need to
+	 * scan, so there's like an in-progress kind of state". Without it, doing the
+	 * thing and watching the row sit there unchanged is indistinguishable from
+	 * the action having failed.
+	 */
+	inFlight: {
+		/**
+		 * Context sources still PENDING or EXTRACTING, cut the same four ways
+		 * as `indexedContext`.
+		 *
+		 * Deliberately mirrored: an item may only claim to be In Progress about
+		 * work that would actually satisfy IT. A project-wide count says a wiki
+		 * is being scanned because someone pasted a marketing link, which is a
+		 * lie the user cannot check.
+		 */
+		context: {
+			total: number;
+			meetingTranscripts: number;
+			knowledgeBaseLinks: number;
+			notionSources: number;
+		};
+		/** A full or refresh index currently running. */
+		codebaseIndexing: boolean;
+		/** Document types with a row still generating. */
+		documentTypes: ReadonlySet<string>;
+		/** A security scan currently running. */
+		scan: boolean;
+	};
+
 	/** Free-form project metadata the Overview tab collects. */
 	featureCount: number;
 	techStackCount: number;
@@ -110,8 +143,11 @@ export interface ReadinessEvidence {
 	};
 
 	/**
-	 * Documents that exist AND are usable — the 19 August tightening. A row in
-	 * `GENERATING` or `FAILED`, or one with no readable content, does not count.
+	 * Documents that exist AND are usable — the 19 August tightening. A row with
+	 * no readable content does not count, and neither does one in `GENERATING`
+	 * or `FAILED` that has never held any: nothing has been produced yet. A
+	 * re-run over a document that already has content does count, because that
+	 * content is still the project's document — see `evidence.ts`.
 	 */
 	completeDocumentTypes: Set<string>;
 
@@ -146,6 +182,14 @@ export interface ReadinessRule {
 	 */
 	supersededBy?: string[];
 	detect: (evidence: ReadinessEvidence) => boolean;
+	/**
+	 * Whether the work that satisfies this item is already running.
+	 *
+	 * Only consulted while the item is incomplete. Omit it for rules whose
+	 * satisfying action is instantaneous — there is no meaningful window during
+	 * which "add a team member" is in progress.
+	 */
+	inProgress?: (evidence: ReadinessEvidence) => boolean;
 }
 
 /** A rule plus everything computed about it for one project and one viewer. */
@@ -158,6 +202,11 @@ export interface ResolvedReadinessItem {
 	needLevel: NeedLevel;
 	/** True when detection passed, or a supersession made it unnecessary. */
 	isComplete: boolean;
+	/**
+	 * Something is running that will complete this item. Never true alongside
+	 * `isComplete` — once the work lands, the item is simply done.
+	 */
+	isInProgress: boolean;
 	/** Set when completion came from supersession rather than detection. */
 	supersededBy?: string;
 	/** The manual state a person put this item in, if any. */

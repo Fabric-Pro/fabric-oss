@@ -569,3 +569,51 @@ describe("a codebase attached through an integration is a connected codebase", (
 		expect(resolve(e).phase).toBe("DEVELOPMENT_EXECUTION");
 	});
 });
+
+describe("a document whose re-run is still going", () => {
+	/**
+	 * Regeneration puts a document in both sets at once: it is still the
+	 * project's PRD (`completeDocumentTypes`) and a run is working on it
+	 * (`inFlight.documentTypes`). Complete has to win, or the fix for the
+	 * vanishing PRD just returns the same row as "In progress" instead of done —
+	 * which is no more true and no more use to the person reading it.
+	 */
+	function regeneratingPrd(): ReadinessEvidence {
+		const e = fullySetUp();
+		e.inFlight.documentTypes = new Set(["PRD"]);
+		return e;
+	}
+
+	it("reads as complete, not as in progress", () => {
+		const prd = resolve(regeneratingPrd()).items.find(
+			(item) => item.key === "prd",
+		);
+
+		expect(prd?.isComplete).toBe(true);
+		expect(prd?.isInProgress).toBe(false);
+	});
+
+	it("keeps the items that hang off it satisfied", () => {
+		// `architecture` depends on `prd`, and the two context items are
+		// superseded by it. One document flickering used to take them with it.
+		const items = resolve(regeneratingPrd()).items;
+
+		expect(items.find((i) => i.key === "architecture")?.isComplete).toBe(
+			true,
+		);
+		expect(items.find((i) => i.key === "context-source")?.isComplete).toBe(
+			true,
+		);
+	});
+
+	it("still reads as in progress when there is no document yet", () => {
+		const e = fullySetUp();
+		e.completeDocumentTypes.delete("PRD");
+		e.inFlight.documentTypes = new Set(["PRD"]);
+
+		const prd = resolve(e).items.find((item) => item.key === "prd");
+
+		expect(prd?.isComplete).toBe(false);
+		expect(prd?.isInProgress).toBe(true);
+	});
+});

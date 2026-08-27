@@ -5444,8 +5444,7 @@
 			"readOnly": "View only",
 			"readOnlyReason": "You need edit access to this project to snooze an item, mark it not applicable, or set the phase.",
 			"blockedByDependency": "{count, plural, one {# more item appears once an earlier step is done} other {# more items appear once earlier steps are done}}",
-			"showMe": "Show me",
-			"showMeHint": "Go there and highlight where this is done"
+			"stateInProgress": "In progress"
 		},
 		"level": {
 			"NOT_READY": "Not ready",

@@ -46,7 +46,6 @@
 import { db } from "@repo/database";
 import { logger } from "@repo/logs";
 import { isTestCasesEnabled } from "@repo/utils/feature-flag";
-import { runInBackground } from "../../weave/lib/run-in-background";
 import { startTestCaseDraft } from "./start-test-case-draft";
 
 /** Ready for Dev, in the enum's own spelling. */

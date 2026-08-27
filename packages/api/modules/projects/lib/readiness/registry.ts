@@ -29,9 +29,14 @@
  * ## Detection verifies success, not attempt
  *
  * Every rule below asks whether the underlying thing actually *worked*. A
- * document row in `GENERATING` or `FAILED`, a scan that started and died, a
+ * document that has never produced content, a scan that started and died, a
  * context source whose extraction failed — none of them count. This is the
  * single most important property of the sheet's 19 August revision.
+ *
+ * What it does NOT mean is that a later re-run un-works the thing. Re-running a
+ * generation flips the document row's status, and re-indexing flips the code
+ * index's, without either taking away what the project already has; both reads
+ * key on the durable fact instead of the transient status (see `evidence.ts`).
  */
 
 import type { ProjectPhase } from "@repo/database";
@@ -74,6 +79,7 @@ export const READINESS_RULES: readonly ReadinessRule[] = [
 		needLevel: phase({ discovery: "SHOULD", development: "SHOULD" }),
 		supersededBy: ["prd", "business-case", "proposal"],
 		detect: (e) => e.indexedContext.total >= 1,
+		inProgress: (e) => e.inFlight.context.total > 0,
 	},
 	{
 		key: "additional-context-sources",
@@ -84,6 +90,7 @@ export const READINESS_RULES: readonly ReadinessRule[] = [
 		needLevel: phase({ discovery: "SHOULD", development: "SHOULD" }),
 		supersededBy: ["prd", "business-case", "proposal"],
 		detect: (e) => e.indexedContext.total >= 2,
+		inProgress: (e) => e.inFlight.context.total > 0,
 	},
 	{
 		// Settings, not the Context tab. What satisfies this rule is a chat
@@ -108,6 +115,7 @@ export const READINESS_RULES: readonly ReadinessRule[] = [
 		needLevel: phase({ discovery: "SHOULD", development: "SHOULD" }),
 		dependsOn: ["chat-app-connected"],
 		detect: (e) => e.indexedContext.meetingTranscripts >= 1,
+		inProgress: (e) => e.inFlight.context.meetingTranscripts > 0,
 	},
 	{
 		key: "pm-system-connected",
@@ -126,6 +134,7 @@ export const READINESS_RULES: readonly ReadinessRule[] = [
 		target: { kind: "settings", subTab: "development" },
 		needLevel: phase({ discovery: "SHOULD", development: "MUST" }),
 		detect: (e) => e.code.repositoryConnected && e.code.analysisCompleted,
+		inProgress: (e) => e.inFlight.codebaseIndexing,
 	},
 	{
 		// Notion only for v1. Confluence connects and records the source, but no
@@ -139,6 +148,7 @@ export const READINESS_RULES: readonly ReadinessRule[] = [
 		target: { kind: "tab", tab: "context" },
 		needLevel: phase({ discovery: "COULD", development: "SHOULD" }),
 		detect: (e) => e.indexedContext.notionSources >= 1,
+		inProgress: (e) => e.inFlight.context.notionSources > 0,
 	},
 	{
 		key: "knowledge-base",
@@ -148,6 +158,7 @@ export const READINESS_RULES: readonly ReadinessRule[] = [
 		target: { kind: "tab", tab: "context" },
 		needLevel: phase({ discovery: "COULD", development: "SHOULD" }),
 		detect: (e) => e.indexedContext.knowledgeBaseLinks >= 1,
+		inProgress: (e) => e.inFlight.context.knowledgeBaseLinks > 0,
 	},
 
 	// ── Documents ────────────────────────────────────────────────────────────
@@ -165,6 +176,7 @@ export const READINESS_RULES: readonly ReadinessRule[] = [
 		needLevel: phase({ discovery: "SHOULD", development: "COULD" }),
 		supersededBy: ["prd"],
 		detect: (e) => e.completeDocumentTypes.has("BUSINESS_CASE"),
+		inProgress: (e) => e.inFlight.documentTypes.has("BUSINESS_CASE"),
 	},
 	{
 		key: "proposal",
@@ -175,6 +187,7 @@ export const READINESS_RULES: readonly ReadinessRule[] = [
 		needLevel: phase({ discovery: "MUST", development: "COULD" }),
 		supersededBy: ["prd"],
 		detect: (e) => e.completeDocumentTypes.has("PROPOSAL"),
+		inProgress: (e) => e.inFlight.documentTypes.has("PROPOSAL"),
 	},
 	{
 		key: "prd",
@@ -184,6 +197,7 @@ export const READINESS_RULES: readonly ReadinessRule[] = [
 		target: { kind: "tab", tab: "documents" },
 		needLevel: phase({ discovery: "MUST", development: "MUST" }),
 		detect: (e) => e.completeDocumentTypes.has("PRD"),
+		inProgress: (e) => e.inFlight.documentTypes.has("PRD"),
 	},
 	{
 		key: "architecture",
@@ -194,6 +208,7 @@ export const READINESS_RULES: readonly ReadinessRule[] = [
 		needLevel: phase({ discovery: "COULD", development: "MUST" }),
 		dependsOn: ["prd", "proposal", "business-case", "codebase-connected"],
 		detect: (e) => e.completeDocumentTypes.has("ARCHITECTURE"),
+		inProgress: (e) => e.inFlight.documentTypes.has("ARCHITECTURE"),
 	},
 	{
 		key: "api-spec",
@@ -204,6 +219,7 @@ export const READINESS_RULES: readonly ReadinessRule[] = [
 		needLevel: phase({ discovery: "COULD", development: "SHOULD" }),
 		dependsOn: ["architecture"],
 		detect: (e) => e.completeDocumentTypes.has("API_SPEC"),
+		inProgress: (e) => e.inFlight.documentTypes.has("API_SPEC"),
 	},
 	{
 		key: "technical-spec",
@@ -214,6 +230,7 @@ export const READINESS_RULES: readonly ReadinessRule[] = [
 		needLevel: phase({ discovery: "COULD", development: "SHOULD" }),
 		dependsOn: ["architecture"],
 		detect: (e) => e.completeDocumentTypes.has("TECHNICAL_SPEC"),
+		inProgress: (e) => e.inFlight.documentTypes.has("TECHNICAL_SPEC"),
 	},
 	{
 		key: "qa-strategy",
@@ -224,6 +241,7 @@ export const READINESS_RULES: readonly ReadinessRule[] = [
 		needLevel: phase({ discovery: "COULD", development: "SHOULD" }),
 		dependsOn: ["prd"],
 		detect: (e) => e.completeDocumentTypes.has("QA_STRATEGY"),
+		inProgress: (e) => e.inFlight.documentTypes.has("QA_STRATEGY"),
 	},
 
 	// ── Roadmap ──────────────────────────────────────────────────────────────
@@ -334,6 +352,7 @@ export const READINESS_RULES: readonly ReadinessRule[] = [
 		}),
 		dependsOn: ["codebase-connected"],
 		detect: (e) => e.code.analysisCompleted && e.code.atlasAnalysisExists,
+		inProgress: (e) => e.inFlight.codebaseIndexing,
 	},
 	{
 		// A scan that ran and failed is not a completed scan.
@@ -348,6 +367,7 @@ export const READINESS_RULES: readonly ReadinessRule[] = [
 		}),
 		dependsOn: ["codebase-connected"],
 		detect: (e) => e.successfulScanExists,
+		inProgress: (e) => e.inFlight.scan,
 	},
 ];
 

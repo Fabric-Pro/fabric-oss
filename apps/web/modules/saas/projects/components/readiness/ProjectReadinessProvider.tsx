@@ -32,6 +32,7 @@ export interface ReadinessItem {
 	ctaLabelKey: string;
 	needLevel: "MUST" | "SHOULD" | "COULD" | "NOT_APPLICABLE";
 	isComplete: boolean;
+	isInProgress: boolean;
 	supersededBy?: string;
 	manualState: "SNOOZED" | "NOT_APPLICABLE" | "HELP_REQUESTED" | null;
 	snoozeUntil: string | Date | null;
@@ -101,6 +102,22 @@ export function ProjectReadinessProvider({
 				organizationId: organizationId ?? null,
 			}) as Promise<ReadinessData>,
 		staleTime: 30_000,
+		/**
+		 * Poll only while something is actually running.
+		 *
+		 * An indexing repository or a generating document lands minutes after
+		 * the click that started it, with no mutation to notice — the cache
+		 * subscription below cannot help, because nothing on this client
+		 * changes. Polling while any item is In Progress is what turns that into
+		 * "done" without a refresh; the moment nothing is running, this returns
+		 * false and the query goes quiet again.
+		 */
+		refetchInterval: (query) =>
+			(query.state.data as ReadinessData | undefined)?.items?.some(
+				(i) => i.isInProgress,
+			)
+				? 15_000
+				: false,
 	});
 
 	/**

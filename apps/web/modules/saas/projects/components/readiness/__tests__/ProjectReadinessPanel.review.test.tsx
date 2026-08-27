@@ -114,6 +114,7 @@ function item(overrides: Item = {}): Item {
 		ctaLabelKey: "readiness.cta.featureSnapshot",
 		needLevel: "MUST",
 		isComplete: false,
+		isInProgress: false,
 		manualState: null,
 		snoozeUntil: null,
 		isVisible: true,
@@ -342,13 +343,13 @@ describe("pointing at the destination", () => {
 		};
 	}
 
-	it("spotlights the anchor when help is asked for", async () => {
+	it("spotlights the destination when the item's own action is used", async () => {
 		const user = userEvent.setup();
 		const { events, stop } = listen();
 
 		// The default fixture is feature-snapshot, whose anchor is on Overview.
 		mountWith([item()]);
-		await user.click(screen.getByRole("button", { name: /show me/i }));
+		await user.click(screen.getByText("Define Features"));
 
 		stop();
 		expect(events).toHaveLength(1);
@@ -357,41 +358,26 @@ describe("pointing at the destination", () => {
 	});
 
 	/**
-	 * The primary action just goes. Spotlighting on every call-to-action meant a
-	 * dimmed screen each time someone acted on the checklist, which is why the
-	 * help control exists separately.
+	 * An item with no anchor navigates quietly. Better than a callout aimed at
+	 * the wrong part of the page.
 	 */
-	it("does not spotlight when the call-to-action itself is used", async () => {
+	it("stays silent for an item with nothing to point at", async () => {
 		const user = userEvent.setup();
 		const { events, stop } = listen();
 
-		mountWith([item()]);
-		await user.click(screen.getByText("Define Features"));
-
-		stop();
-		expect(events).toHaveLength(0);
-	});
-
-	it("offers no help control for an item with no anchor to point at", () => {
 		mountWith([
 			item({
 				key: "team-members",
 				ctaLabelKey: "readiness.cta.teamMembers",
 			}),
 		]);
+		await user.click(screen.getByText("Add Members"));
 
-		expect(
-			screen.queryByRole("button", { name: /show me/i }),
-		).not.toBeInTheDocument();
+		stop();
+		expect(events).toHaveLength(0);
 	});
 });
 
-/**
- * Every row in the sheet carries a short description and a tooltip explaining
- * what the item wants and why. Both were translated and neither reached the
- * page, which is the whole reason a checklist item could read as an
- * instruction nobody could follow.
- */
 describe("each item explains itself", () => {
 	it("puts the item name in a tooltip trigger, reachable by keyboard", () => {
 		mountWith([item()]);
@@ -414,5 +400,28 @@ describe("each item explains itself", () => {
 			item({ key: "tech-stack", ctaLabelKey: "readiness.cta.techStack" }),
 		]);
 		expect(screen.getByText("Tech Stack")).toBeInTheDocument();
+	});
+});
+
+/**
+ * The sheet's Definitions tab lists In Progress as an item state, and the
+ * 20 August walkthrough asked for it: "it may need to scan, so there's like an
+ * in-progress kind of state". Without it, doing the thing and watching the row
+ * sit unchanged is indistinguishable from the action having failed.
+ */
+describe("work already underway", () => {
+	it("says so on the item, and keeps its actions", () => {
+		mountWith([item({ isInProgress: true })]);
+
+		expect(screen.getByText(/in progress/i)).toBeInTheDocument();
+		// A slow scan must not take the item's controls away.
+		expect(
+			screen.getByRole("button", { name: /^Snooze/i }),
+		).toBeInTheDocument();
+	});
+
+	it("says nothing when nothing is running", () => {
+		mountWith([item()]);
+		expect(screen.queryByText(/in progress/i)).not.toBeInTheDocument();
 	});
 });

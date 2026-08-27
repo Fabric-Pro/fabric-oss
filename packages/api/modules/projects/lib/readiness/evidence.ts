@@ -16,6 +16,13 @@ import type { ReadinessEvidence } from "./types";
 const USABLE_DOCUMENT_STATUSES = ["COMPLETE", "REVIEW"] as const;
 
 /**
+ * Statuses a document passes through while a run is working on it. A row in one
+ * of these still counts when it already holds content — see the document read
+ * below for why.
+ */
+const RERUNNING_DOCUMENT_STATUSES = ["GENERATING", "FAILED"] as const;
+
+/**
  * Context sources only count once extraction has finished successfully — a
  * source that failed to extract has given the project nothing.
  */
@@ -78,6 +85,10 @@ export async function gatherReadinessEvidence(
 		atlasAnalysis,
 		activeRepositoryIntegrations,
 		completedCodeIndex,
+		extractingContexts,
+		indexingCodeIndex,
+		generatingDocumentTypes,
+		runningScan,
 	] = await Promise.all([
 		// Indexed context sources, grouped by kind so one read serves four rules.
 		db.projectContext.groupBy({
@@ -94,14 +105,36 @@ export async function gatherReadinessEvidence(
 				knowledgeBaseSourceCategory: "KNOWLEDGE_BASE_WIKI",
 			},
 		}),
-		// Only documents that are active AND usable. A row in GENERATING or
-		// FAILED exists but has given the project nothing.
+		// Only documents that are active AND usable — plus the one case where a
+		// transient status hides a document the project genuinely has.
+		//
+		// Regeneration mutates the SAME row: `markDocumentGenerationStarted`
+		// writes it GENERATING, and a run that fails leaves it FAILED. Keying
+		// only on status therefore dropped a long-satisfied PRD the moment its
+		// owner hit Refresh, and left it dropped once the run failed — the
+		// checklist offering "Create PRD" beside a Documents tab plainly showing
+		// one. It cascades, too: `business-case` and `proposal` are superseded by
+		// `prd` and `architecture` depends on it, so one status flip resurfaced
+		// several rows at once.
+		//
+		// The content is what survives a failed re-run: the previous version is
+		// still on the row, still active, still what retrieval reads. So a row
+		// mid-rerun counts when it already holds content, and does not when it is
+		// empty — a first-ever generation has nothing yet, which is exactly when
+		// the item should read In Progress rather than done. Same shape as the
+		// code-index read below keying on `lastFullIndexAt` rather than status.
 		db.projectDocument.groupBy({
 			by: ["type"],
 			where: {
 				projectId,
 				isActive: true,
-				status: { in: [...USABLE_DOCUMENT_STATUSES] },
+				OR: [
+					{ status: { in: [...USABLE_DOCUMENT_STATUSES] } },
+					{
+						status: { in: [...RERUNNING_DOCUMENT_STATUSES] },
+						content: { not: "" },
+					},
+				],
 			},
 			_count: { _all: true },
 		}),
@@ -150,6 +183,32 @@ export async function gatherReadinessEvidence(
 			where: { projectId, lastFullIndexAt: { not: null } },
 			select: { id: true },
 		}),
+		// ── In-flight work ───────────────────────────────────────────────
+		// Everything below answers "is this already happening?" rather than
+		// "did it work?". An item is only ever In Progress while incomplete.
+		db.projectContext.findMany({
+			where: {
+				projectId,
+				extractionStatus: { in: ["PENDING", "EXTRACTING"] },
+			},
+			select: { type: true, knowledgeBaseSourceCategory: true },
+		}),
+		db.projectCodeIndex.findFirst({
+			where: { projectId, status: { in: ["PENDING", "INDEXING"] } },
+			select: { id: true },
+		}),
+		db.projectDocument.findMany({
+			where: {
+				projectId,
+				isActive: true,
+				status: { in: ["GENERATING"] },
+			},
+			select: { type: true },
+		}),
+		db.projectScan.findFirst({
+			where: { projectId, status: { in: ["PENDING", "RUNNING"] } },
+			select: { id: true },
+		}),
 	]);
 
 	const contextCountByType = new Map<string, number>(
@@ -174,6 +233,28 @@ export async function gatherReadinessEvidence(
 		phase: project.projectPhase,
 		expectedDevelopmentStartDate: project.expectedDevelopmentStartDate,
 		descriptionLength: project.description?.trim().length ?? 0,
+
+		inFlight: {
+			context: {
+				total: extractingContexts.length,
+				meetingTranscripts: extractingContexts.filter(
+					(c) => c.type === "MEETING_TRANSCRIPT",
+				).length,
+				knowledgeBaseLinks: extractingContexts.filter(
+					(c) =>
+						c.type === "LINK" &&
+						c.knowledgeBaseSourceCategory === "KNOWLEDGE_BASE_WIKI",
+				).length,
+				notionSources: extractingContexts.filter(
+					(c) => c.type === "INTEGRATION",
+				).length,
+			},
+			codebaseIndexing: indexingCodeIndex !== null,
+			documentTypes: new Set(
+				generatingDocumentTypes.map((d) => String(d.type)),
+			),
+			scan: runningScan !== null,
+		},
 
 		featureCount: project.features.length,
 		techStackCount: project.techStack.length,

@@ -22,11 +22,11 @@ import {
 	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
+import { runInBackground } from "../../../weave/lib/run-in-background";
+import { maybeAutoDraftOnStageChange } from "../../lib/auto-draft-test-cases";
 import { enqueuePmSync } from "../../lib/enqueue-pm-sync";
 import { stripInternalStoryFields } from "../../lib/strip-internal-story-fields";
 import { validateStageForKind } from "../../lib/validate-stage-for-kind";
-import { maybeAutoDraftOnStageChange } from "../../lib/auto-draft-test-cases";
-import { runInBackground } from "../../../weave/lib/run-in-background";
 import { maybeTriggerMaturationScan } from "../scan/lib/start-scan";
 
 export const updateStoryProcedure = tenantProtectedProcedure
