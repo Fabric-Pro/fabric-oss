@@ -550,7 +550,7 @@ resource httpErrorBurnRateSev1Alert 'Microsoft.Insights/scheduledQueryRules@2022
   location: location
   properties: {
     displayName: 'App - HTTP 5xx Burn Rate SEV-1 (14.4x over 5m and 1h)'
-    description: 'HTTP 5xx error rate is burning the monthly SLO budget at 14.4x the sustainable rate over BOTH the 5m and 1h windows — page on-call. Routes through ${alertsWebhookUrl}. See runbook: https://github.com/Fabric-Pro/fabric/blob/main/docs/runbooks/error-rate-spike.md'
+    description: 'HTTP 5xx error rate is burning the monthly SLO budget at 14.4x the sustainable rate over BOTH the 5m and 1h windows — page on-call. Routes through ${alertsWebhookUrl}. See the alert catalogue: https://github.com/Fabric-Pro/fabric-oss/blob/master/docs/monitoring/alerts.md#http-5xx-burn-rate-kql-scheduledqueryrules'
     severity: 0
     enabled: true
     scopes: [appInsightsId]
@@ -590,7 +590,7 @@ resource httpErrorBurnRateSev1Alert 'Microsoft.Insights/scheduledQueryRules@2022
     actions: {
       actionGroups: [actionGroup.id]
       customProperties: {
-        runbook_url: 'https://github.com/Fabric-Pro/fabric/blob/main/docs/runbooks/error-rate-spike.md'
+        runbook_url: 'https://github.com/Fabric-Pro/fabric-oss/blob/master/docs/monitoring/alerts.md#http-5xx-burn-rate-kql-scheduledqueryrules'
         severity: 'SEV-1'
       }
     }
@@ -603,7 +603,7 @@ resource httpErrorBurnRateSev2Alert 'Microsoft.Insights/scheduledQueryRules@2022
   location: location
   properties: {
     displayName: 'App - HTTP 5xx Burn Rate SEV-2 (6x over 30m and 6h)'
-    description: 'HTTP 5xx error rate is burning the monthly SLO budget at 6x the sustainable rate over BOTH the 30m and 6h windows — open ticket, respond within business hours. Routes through ${alertsWebhookUrl}. See runbook: https://github.com/Fabric-Pro/fabric/blob/main/docs/runbooks/error-rate-spike.md'
+    description: 'HTTP 5xx error rate is burning the monthly SLO budget at 6x the sustainable rate over BOTH the 30m and 6h windows — open ticket, respond within business hours. Routes through ${alertsWebhookUrl}. See the alert catalogue: https://github.com/Fabric-Pro/fabric-oss/blob/master/docs/monitoring/alerts.md#http-5xx-burn-rate-kql-scheduledqueryrules'
     severity: 1
     enabled: true
     scopes: [appInsightsId]
@@ -642,7 +642,7 @@ resource httpErrorBurnRateSev2Alert 'Microsoft.Insights/scheduledQueryRules@2022
     actions: {
       actionGroups: [actionGroup.id]
       customProperties: {
-        runbook_url: 'https://github.com/Fabric-Pro/fabric/blob/main/docs/runbooks/error-rate-spike.md'
+        runbook_url: 'https://github.com/Fabric-Pro/fabric-oss/blob/master/docs/monitoring/alerts.md#http-5xx-burn-rate-kql-scheduledqueryrules'
         severity: 'SEV-2'
       }
     }
@@ -655,7 +655,7 @@ resource httpErrorBurnRateSev3Alert 'Microsoft.Insights/scheduledQueryRules@2022
   location: location
   properties: {
     displayName: 'App - HTTP 5xx Burn Rate SEV-3 (1x over 6h and 2d)'
-    description: 'HTTP 5xx error rate is burning the monthly SLO budget at the sustained baseline rate over BOTH the 6h and 2d windows — SEV-3 ticket-only, surfaces in the weekly digest. Note: long window capped at Azure scheduledQueryRules max (P2D = 48h). Routes through ${alertsWebhookUrl}. See runbook: https://github.com/Fabric-Pro/fabric/blob/main/docs/runbooks/error-rate-spike.md'
+    description: 'HTTP 5xx error rate is burning the monthly SLO budget at the sustained baseline rate over BOTH the 6h and 2d windows — SEV-3 ticket-only, surfaces in the weekly digest. Note: long window capped at Azure scheduledQueryRules max (P2D = 48h). Routes through ${alertsWebhookUrl}. See the alert catalogue: https://github.com/Fabric-Pro/fabric-oss/blob/master/docs/monitoring/alerts.md#http-5xx-burn-rate-kql-scheduledqueryrules'
     severity: 3
     enabled: true
     scopes: [appInsightsId]
@@ -694,7 +694,7 @@ resource httpErrorBurnRateSev3Alert 'Microsoft.Insights/scheduledQueryRules@2022
     actions: {
       actionGroups: [actionGroup.id]
       customProperties: {
-        runbook_url: 'https://github.com/Fabric-Pro/fabric/blob/main/docs/runbooks/error-rate-spike.md'
+        runbook_url: 'https://github.com/Fabric-Pro/fabric-oss/blob/master/docs/monitoring/alerts.md#http-5xx-burn-rate-kql-scheduledqueryrules'
         severity: 'SEV-3'
       }
     }
@@ -716,7 +716,7 @@ resource circuitBreakerOpenedAlert 'Microsoft.Insights/scheduledQueryRules@2022-
   location: location
   properties: {
     displayName: 'Integration - Circuit Breaker Opened'
-    description: 'A provider circuit breaker transitioned to OPEN — short-circuiting calls. See runbook: https://github.com/Fabric-Pro/fabric/blob/main/docs/runbooks/integration-outage.md'
+    description: 'A provider circuit breaker transitioned to OPEN — short-circuiting calls. See the alert catalogue: https://github.com/Fabric-Pro/fabric-oss/blob/master/docs/monitoring/alerts.md#integration-health-kql-scheduledqueryrules'
     severity: 0
     enabled: true
     scopes: [appInsightsId]
@@ -745,7 +745,7 @@ resource circuitBreakerOpenedAlert 'Microsoft.Insights/scheduledQueryRules@2022-
     actions: {
       actionGroups: [actionGroup.id]
       customProperties: {
-        runbook_url: 'https://github.com/Fabric-Pro/fabric/blob/main/docs/runbooks/integration-outage.md'
+        runbook_url: 'https://github.com/Fabric-Pro/fabric-oss/blob/master/docs/monitoring/alerts.md#integration-health-kql-scheduledqueryrules'
         severity: 'SEV-1'
       }
     }
@@ -758,7 +758,7 @@ resource syntheticProbeFailingAlert 'Microsoft.Insights/scheduledQueryRules@2022
   location: location
   properties: {
     displayName: 'Integration - Synthetic Probe Failing (>=3 failures in 15m)'
-    description: 'A provider synthetic probe failed 3 or more times in the last 15 minutes — open ticket. Routes through ${alertsWebhookUrl}. See runbook: https://github.com/Fabric-Pro/fabric/blob/main/docs/runbooks/integration-outage.md'
+    description: 'A provider synthetic probe failed 3 or more times in the last 15 minutes — open ticket. Routes through ${alertsWebhookUrl}. See the alert catalogue: https://github.com/Fabric-Pro/fabric-oss/blob/master/docs/monitoring/alerts.md#integration-health-kql-scheduledqueryrules'
     severity: 1
     enabled: true
     scopes: [appInsightsId]
@@ -789,7 +789,7 @@ resource syntheticProbeFailingAlert 'Microsoft.Insights/scheduledQueryRules@2022
     actions: {
       actionGroups: [actionGroup.id]
       customProperties: {
-        runbook_url: 'https://github.com/Fabric-Pro/fabric/blob/main/docs/runbooks/integration-outage.md'
+        runbook_url: 'https://github.com/Fabric-Pro/fabric-oss/blob/master/docs/monitoring/alerts.md#integration-health-kql-scheduledqueryrules'
         severity: 'SEV-2'
       }
     }
@@ -811,7 +811,7 @@ resource dependencyFailureAlert 'Microsoft.Insights/scheduledQueryRules@2022-06-
   location: location
   properties: {
     displayName: 'Integration - Outbound Dependency Failures (>5 in 15m)'
-    description: 'Outbound dependency failures exceeded 5 in the last 15 minutes for one or more tracked providers (OpenAI, Anthropic, Stripe, Resend, S3). Routes through ${alertsWebhookUrl}. See runbook: https://github.com/Fabric-Pro/fabric/blob/main/docs/runbooks/integration-outage.md'
+    description: 'Outbound dependency failures exceeded 5 in the last 15 minutes for one or more tracked providers (OpenAI, Anthropic, Stripe, Resend, S3). Routes through ${alertsWebhookUrl}. See the alert catalogue: https://github.com/Fabric-Pro/fabric-oss/blob/master/docs/monitoring/alerts.md#integration-health-kql-scheduledqueryrules'
     severity: 1
     enabled: true
     scopes: [appInsightsId]
@@ -848,7 +848,7 @@ resource dependencyFailureAlert 'Microsoft.Insights/scheduledQueryRules@2022-06-
     actions: {
       actionGroups: [actionGroup.id]
       customProperties: {
-        runbook_url: 'https://github.com/Fabric-Pro/fabric/blob/main/docs/runbooks/integration-outage.md'
+        runbook_url: 'https://github.com/Fabric-Pro/fabric-oss/blob/master/docs/monitoring/alerts.md#integration-health-kql-scheduledqueryrules'
         severity: 'SEV-2'
       }
     }
@@ -889,7 +889,7 @@ resource repoOauthCredentialsRejectedAlert 'Microsoft.Insights/scheduledQueryRul
   location: location
   properties: {
     displayName: 'Integration - GitHub OAuth App Credentials Rejected (config error)'
-    description: 'The temporal-worker\'s configured GitHub OAuth app client_id/secret were rejected by GitHub during a repo-integration token refresh. This is a configuration error (wrong/stale FABRIC_GITHUB_CLIENT_ID/SECRET) — NOT a user\'s expired token — and breaks credential refresh for every GitHub integration in this environment. Fix the GitHub OAuth secrets in Key Vault / the deploy environment and restart the worker. See runbook: https://github.com/Fabric-Pro/fabric/blob/main/docs/runbooks/integration-outage.md'
+    description: 'The temporal-worker\'s configured GitHub OAuth app client_id/secret were rejected by GitHub during a repo-integration token refresh. This is a configuration error (wrong/stale FABRIC_GITHUB_CLIENT_ID/SECRET) — NOT a user\'s expired token — and breaks credential refresh for every GitHub integration in this environment. Fix the GitHub OAuth secrets in Key Vault / the deploy environment and restart the worker. See the alert catalogue: https://github.com/Fabric-Pro/fabric-oss/blob/master/docs/monitoring/alerts.md#integration-health-kql-scheduledqueryrules'
     severity: 2
     enabled: true
     scopes: [logAnalyticsWorkspaceId]
@@ -919,7 +919,7 @@ resource repoOauthCredentialsRejectedAlert 'Microsoft.Insights/scheduledQueryRul
     actions: {
       actionGroups: [actionGroup.id]
       customProperties: {
-        runbook_url: 'https://github.com/Fabric-Pro/fabric/blob/main/docs/runbooks/integration-outage.md'
+        runbook_url: 'https://github.com/Fabric-Pro/fabric-oss/blob/master/docs/monitoring/alerts.md#integration-health-kql-scheduledqueryrules'
         severity: 'SEV-2'
       }
     }
@@ -938,7 +938,7 @@ resource repoHealthDegradedAlert 'Microsoft.Insights/scheduledQueryRules@2022-06
   location: location
   properties: {
     displayName: 'Integration - Repo Health Degraded (>50% unhealthy)'
-    description: 'More than half of the monitored repository integrations were unhealthy in the most recent scheduled health-check cycle — a systemic problem (mass token revocation, GitHub egress outage, or wrong worker OAuth app credentials) rather than the normal trickle of individually-expired user tokens. See runbook: https://github.com/Fabric-Pro/fabric/blob/main/docs/runbooks/integration-outage.md'
+    description: 'More than half of the monitored repository integrations were unhealthy in the most recent scheduled health-check cycle — a systemic problem (mass token revocation, GitHub egress outage, or wrong worker OAuth app credentials) rather than the normal trickle of individually-expired user tokens. See the alert catalogue: https://github.com/Fabric-Pro/fabric-oss/blob/master/docs/monitoring/alerts.md#integration-health-kql-scheduledqueryrules'
     severity: 3
     enabled: true
     scopes: [logAnalyticsWorkspaceId]
@@ -971,7 +971,7 @@ resource repoHealthDegradedAlert 'Microsoft.Insights/scheduledQueryRules@2022-06
     actions: {
       actionGroups: [actionGroup.id]
       customProperties: {
-        runbook_url: 'https://github.com/Fabric-Pro/fabric/blob/main/docs/runbooks/integration-outage.md'
+        runbook_url: 'https://github.com/Fabric-Pro/fabric-oss/blob/master/docs/monitoring/alerts.md#integration-health-kql-scheduledqueryrules'
         severity: 'SEV-3'
       }
     }

@@ -2782,9 +2782,10 @@ async function seedFizzyMcpServer() {
 			"Project management tool by Basecamp - manage boards, cards, and workflows",
 		defaultUrl: "https://fizzy.fabric.pro/mcp",
 		docsUrl: "https://github.com/Fabric-Pro/fizzy-mcp",
+		// The proxy serves no icon; null so the catalog falls back to its placeholder.
+		iconUrl: null,
 		transport: "HTTP" as const,
 		authMethods: ["API_KEY"] as ("NONE" | "API_KEY" | "OAUTH2")[],
-		iconUrl: "https://fizzy.fabric.pro/icon.png",
 		author: "Fabric Pro",
 		repositoryUrl: "https://github.com/Fabric-Pro/fizzy-mcp",
 		category: "Project Management",
@@ -2824,7 +2825,7 @@ async function seedFabricMcpServer() {
 		authMethods: ["API_KEY"] as ("NONE" | "API_KEY" | "OAUTH2")[],
 		iconUrl: "https://fabric.pro/favicon.ico",
 		author: "Fabric",
-		repositoryUrl: "https://github.com/Fabric-Pro/fabric",
+		repositoryUrl: "https://github.com/Fabric-Pro/fabric-oss",
 		category: "Productivity",
 		tags: [
 			"fabric",

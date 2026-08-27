@@ -166,28 +166,6 @@ exists so a WORKING webhook is not throttled or disabled for answering 4xx to
 deliveries that were never ours. A deliberately dead path wants the opposite: fail
 visibly in the sender's own deliveries tab, so somebody moves it.
 
-## Verified against reality, 2026-07-30
-
-Run on staging against the Foundry Test Bench project, which has
-`Fabric-Pro/fabric` connected and Azure AI Foundry configured.
-
-- Read PR #2412: correct title, author, file count, and a head SHA matching the
-  real commit. GitHub-only picker filter confirmed — GitLab repos are not offered.
-- QA lens on #2412 and #2409 (docs-tooling changes): **no findings, correctly** —
-  a docs-tooling PR introduces no product behaviour for a test case to cover.
-  (An earlier revision of this page explained the empty result by saying the
-  project's features were an unrelated fixture. That was wrong: the features are
-  real product features from this same repo. The empty answer was right for the
-  simpler reason.)
-- QA lens on #2411 (30 files of real product code): **six findings, zero false
-  positives**, every one a genuine untested branch in the lens's own
-  implementation. Those six gaps are now covered by tests
-  (`analyse-qa-contract.test.ts`, `pr-review-feature-context.queries.test.ts`,
-  `pr-review-replace-lens-findings.queries.test.ts`, `pr-review-findings.test.tsx`).
-- Architecture lens on #2412: traversed the real Atlas graph and reported no cycle
-  involving the change — importantly *not* "not indexed".
-- Accept recorded the judgement and rendered "Accepted". 0 console errors.
-
 ## The false-positive rate, measured
 
 Twenty-two merged pull requests from this repository were run through the QA lens

@@ -2,7 +2,7 @@
 
 ## Problem
 
-GitHub (and GitLab, Microsoft) OAuth token refresh is implemented **five times** across the codebase with diverging behavior. Each implementation hand-rolls the `fetch` call to the token endpoint, parses the response, and handles errors. Bugs like the ones fixed in [#446](https://github.com/Fabric-Pro/fabric/pull/446) (missing `Accept: application/json` header, missing failure-count recording, missing `KNOWN_TOKEN_ENDPOINTS` fallback) had to be fixed in multiple files. They probably still exist in the implementations that PR did not touch.
+GitHub (and GitLab, Microsoft) OAuth token refresh is implemented **five times** across the codebase with diverging behavior. Each implementation hand-rolls the `fetch` call to the token endpoint, parses the response, and handles errors. Bugs like the ones fixed in `#446` (missing `Accept: application/json` header, missing failure-count recording, missing `KNOWN_TOKEN_ENDPOINTS` fallback) had to be fixed in multiple files. They probably still exist in the implementations that PR did not touch.
 
 ## Current State — Five Refresh Implementations
 
@@ -206,4 +206,4 @@ No integration tests that mock the token endpoint and run each caller's full ref
 
 ## Precedent
 
-PR [#446](https://github.com/Fabric-Pro/fabric/pull/446) fixed the MCP refresh path for GitHub and Notion. This refactor exists because that PR had to touch three files to fix one bug — a one-file fix would have been better, and would have automatically carried the same corrections to the other two call sites.
+PR `#446` fixed the MCP refresh path for GitHub and Notion. This refactor exists because that PR had to touch three files to fix one bug — a one-file fix would have been better, and would have automatically carried the same corrections to the other two call sites.
