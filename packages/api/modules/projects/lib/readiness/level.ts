@@ -279,6 +279,13 @@ export function resolveReadiness(input: ResolveInput): ReadinessSummary {
 		// therefore is not counted anywhere below.
 		const isVisible = dependencyMet;
 
+		// An item is In Progress only while it is still incomplete: once the
+		// scan or the generation lands, "done" is the whole story.
+		const isInProgress =
+			!isComplete &&
+			!isNotApplicable &&
+			(rule.inProgress?.(evidence) ?? false);
+
 		const counts =
 			isVisible && needLevel !== "NOT_APPLICABLE" && !isNotApplicable;
 
@@ -296,6 +303,7 @@ export function resolveReadiness(input: ResolveInput): ReadinessSummary {
 			target: rule.target,
 			needLevel,
 			isComplete: isComplete || isNotApplicable,
+			isInProgress,
 			supersededBy: supersededByKey,
 			manualState,
 			snoozeUntil: personalSnooze?.snoozeUntil ?? null,

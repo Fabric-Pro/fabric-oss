@@ -37,6 +37,7 @@ const ItemSchema = z.object({
 	ctaLabelKey: z.string(),
 	needLevel: z.enum(["MUST", "SHOULD", "COULD", "NOT_APPLICABLE"]),
 	isComplete: z.boolean(),
+	isInProgress: z.boolean(),
 	supersededBy: z.string().optional(),
 	manualState: z
 		.enum(["SNOOZED", "NOT_APPLICABLE", "HELP_REQUESTED"])

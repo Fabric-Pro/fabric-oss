@@ -13,6 +13,17 @@ export function emptyEvidence(): ReadinessEvidence {
 		phase: "DEVELOPMENT_EXECUTION",
 		expectedDevelopmentStartDate: null,
 		descriptionLength: 0,
+		inFlight: {
+			context: {
+				total: 0,
+				meetingTranscripts: 0,
+				knowledgeBaseLinks: 0,
+				notionSources: 0,
+			},
+			codebaseIndexing: false,
+			documentTypes: new Set<string>(),
+			scan: false,
+		},
 		featureCount: 0,
 		techStackCount: 0,
 		indexedContext: {

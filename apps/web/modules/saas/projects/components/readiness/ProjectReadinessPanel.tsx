@@ -22,7 +22,12 @@ import {
 } from "@ui/components/tooltip";
 import { cn } from "@ui/lib";
 import { formatDistanceToNow } from "date-fns";
-import { CheckIcon, ChevronDownIcon, ChevronUpIcon } from "lucide-react";
+import {
+	CheckIcon,
+	ChevronDownIcon,
+	ChevronUpIcon,
+	Loader2Icon,
+} from "lucide-react";
 import Link from "next/link";
 import { useTranslations } from "next-intl";
 import { useEffect, useState } from "react";
@@ -716,20 +721,10 @@ function ReadinessPanelBody() {
 									projectBasePath,
 									item.target,
 								)}
-								onCtaClick={() =>
-									handleTargetClick(projectId, item.target)
-								}
-								onShowMe={
-									ITEM_SPOTLIGHT[item.key]
-										? () => {
-												handleTargetClick(
-													projectId,
-													item.target,
-												);
-												spotlightFor(item.key);
-											}
-										: undefined
-								}
+								onCtaClick={() => {
+									handleTargetClick(projectId, item.target);
+									spotlightFor(item.key);
+								}}
 								stateLabel={
 									item.manualState === "SNOOZED"
 										? t("panel.stateSnoozed")
@@ -804,7 +799,6 @@ function ReadinessGapRow({
 	itemTooltip,
 	ctaHref,
 	onCtaClick,
-	onShowMe,
 	stateLabel,
 	t,
 	onSnooze,
@@ -821,8 +815,6 @@ function ReadinessGapRow({
 	itemTooltip: string;
 	ctaHref: string;
 	onCtaClick: () => void;
-	/** Absent when the item has no anchor worth pointing at. */
-	onShowMe?: () => void;
 	/** Set once the item is resolved somehow; null while it is still a gap. */
 	stateLabel: string | null;
 	t: ReturnType<typeof useTranslations<"readiness">>;
@@ -893,6 +885,20 @@ function ReadinessGapRow({
 							{t("panel.readOnlyReason")}
 						</TooltipContent>
 					</Tooltip>
+				)}
+				{/* In Progress: the work that satisfies this item is already
+				    running. Shown regardless of edit rights, because it is a
+				    statement about the project rather than an action — and
+				    shown alongside the actions, so a slow scan does not take
+				    the item's controls away. */}
+				{item.isInProgress && (
+					<span className="flex items-center gap-1.5 font-medium text-highlight text-xs">
+						<Loader2Icon
+							className="size-3 motion-safe:animate-spin"
+							aria-hidden="true"
+						/>
+						{t("panel.stateInProgress")}
+					</span>
 				)}
 				{!canAct ? null : item.manualState === "SNOOZED" ? (
 					<>
@@ -970,16 +976,6 @@ function ReadinessGapRow({
 						    it survives JavaScript being busy. The click handler
 						    only carries the settings sub-tab, which no URL can
 						    express. */}
-						{onShowMe && (
-							<Button
-								variant="ghost"
-								size="sm"
-								onClick={onShowMe}
-								title={t("panel.showMeHint")}
-							>
-								{t("panel.showMe")}
-							</Button>
-						)}
 						<Button asChild variant="outline" size="sm">
 							<Link href={ctaHref} onClick={onCtaClick}>
 								{ctaLabel}

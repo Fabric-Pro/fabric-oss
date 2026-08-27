@@ -18,8 +18,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const { mockDb } = vi.hoisted(() => ({
 	mockDb: {
 		project: { findUnique: vi.fn() },
-		projectContext: { groupBy: vi.fn(), count: vi.fn() },
-		projectDocument: { groupBy: vi.fn() },
+		projectContext: { groupBy: vi.fn(), count: vi.fn(), findMany: vi.fn() },
+		projectDocument: { groupBy: vi.fn(), findMany: vi.fn() },
 		projectMember: { count: vi.fn() },
 		userStory: { count: vi.fn() },
 		projectScan: { findFirst: vi.fn() },
@@ -66,7 +66,10 @@ beforeEach(() => {
 	mockDb.project.findUnique.mockResolvedValue(projectRow());
 	mockDb.projectContext.groupBy.mockResolvedValue([]);
 	mockDb.projectContext.count.mockResolvedValue(0);
+	mockDb.projectContext.findMany.mockResolvedValue([]);
 	mockDb.projectDocument.groupBy.mockResolvedValue([]);
+	// Nothing generating, indexing or scanning unless a test says so.
+	mockDb.projectDocument.findMany.mockResolvedValue([]);
 	mockDb.projectMember.count.mockResolvedValue(0);
 	mockDb.userStory.count.mockResolvedValue(0);
 	mockDb.projectScan.findFirst.mockResolvedValue(null);
@@ -152,5 +155,157 @@ describe("gatherReadinessEvidence — codebase analysis", () => {
 		const result = await gatherReadinessEvidence("p1");
 
 		expect(result?.evidence.code.analysisCompleted).toBe(false);
+	});
+});
+
+/**
+ * A document a re-run is working on (Fizzy #2165).
+ *
+ * Regeneration mutates the same row — GENERATING while it runs, FAILED if it
+ * dies — so a status-only read dropped a PRD the project plainly had the moment
+ * its owner hit Refresh, and left it dropped when the run failed at the model's
+ * output-token limit. Reported from staging with the checklist offering "Create
+ * PRD" beside a Documents tab showing one.
+ *
+ * These assert which rows the read SELECTS rather than restating its shape: the
+ * `where` the code actually passed is applied to plain rows below.
+ */
+interface DocumentRow {
+	status: string;
+	content: string;
+	isActive: boolean;
+}
+
+type WhereClause = Record<string, unknown>;
+
+/** Understands only the operators this read uses: `in`, `not`, and `OR`. */
+function clauseMatches(clause: WhereClause, row: DocumentRow): boolean {
+	return Object.entries(clause).every(([field, condition]) => {
+		if (field === "OR") {
+			return (condition as WhereClause[]).some((branch) =>
+				clauseMatches(branch, row),
+			);
+		}
+		if (!(field in row)) {
+			// Scoping fields a document row of this fixture does not model.
+			return true;
+		}
+		const value = row[field as keyof DocumentRow];
+		if (condition !== null && typeof condition === "object") {
+			const operator = condition as { in?: unknown[]; not?: unknown };
+			if (operator.in) {
+				return operator.in.includes(value);
+			}
+			if ("not" in operator) {
+				return value !== operator.not;
+			}
+		}
+		return value === condition;
+	});
+}
+
+async function documentReadSelects(row: DocumentRow): Promise<boolean> {
+	await gatherReadinessEvidence("p1");
+	const call = mockDb.projectDocument.groupBy.mock.calls.at(0)?.[0] as
+		| { where: WhereClause }
+		| undefined;
+	if (!call) {
+		throw new Error("the document read was never issued");
+	}
+	return clauseMatches(call.where, row);
+}
+
+describe("gatherReadinessEvidence — documents under a re-run", () => {
+	it("counts a document being regenerated, whose previous content is still there", async () => {
+		expect(
+			await documentReadSelects({
+				status: "GENERATING",
+				content: "# Product Requirements\n...",
+				isActive: true,
+			}),
+		).toBe(true);
+	});
+
+	it("counts a document whose re-run failed", async () => {
+		// The failure wrote a status and an error. It did not take away the
+		// version already on the row, which retrieval still reads.
+		expect(
+			await documentReadSelects({
+				status: "FAILED",
+				content: "# Product Requirements\n...",
+				isActive: true,
+			}),
+		).toBe(true);
+	});
+
+	it("does not count a first generation that has produced nothing yet", async () => {
+		// The create route writes the row empty for the run to fill. This is
+		// precisely when the item should read In Progress, not done.
+		expect(
+			await documentReadSelects({
+				status: "GENERATING",
+				content: "",
+				isActive: true,
+			}),
+		).toBe(false);
+	});
+
+	it("does not count a first generation that failed", async () => {
+		expect(
+			await documentReadSelects({
+				status: "FAILED",
+				content: "",
+				isActive: true,
+			}),
+		).toBe(false);
+	});
+
+	it("still counts a finished document", async () => {
+		expect(
+			await documentReadSelects({
+				status: "COMPLETE",
+				content: "# Product Requirements\n...",
+				isActive: true,
+			}),
+		).toBe(true);
+	});
+
+	it("still ignores a draft that no run has ever completed", async () => {
+		// Widening the status list instead of adding the branch would have
+		// started counting these, which no rule asks for.
+		expect(
+			await documentReadSelects({
+				status: "DRAFT",
+				content: "# Notes\n...",
+				isActive: true,
+			}),
+		).toBe(false);
+	});
+
+	it("keys the re-run branch on content, the column that survives a failure", async () => {
+		await gatherReadinessEvidence("p1");
+
+		// Named explicitly: the matcher above skips fields a row does not model,
+		// so a mistyped column here would otherwise select nothing and still
+		// satisfy every assertion in this block.
+		const branches = (
+			mockDb.projectDocument.groupBy.mock.calls.at(0)?.[0] as {
+				where: { OR: WhereClause[] };
+			}
+		).where.OR;
+
+		expect(branches).toContainEqual(
+			expect.objectContaining({ content: { not: "" } }),
+		);
+	});
+
+	it("still ignores a document that has been stood down", async () => {
+		expect(
+			await documentReadSelects({
+				status: "COMPLETE",
+				content: "# Product Requirements\n...",
+				isActive: false,
+			}),
+		).toBe(false);
 	});
 });
