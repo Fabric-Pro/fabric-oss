@@ -26,6 +26,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ASSOCIATION: ${{ github.event.pull_request.author_association }}
+          AUTHOR: ${{ github.event.pull_request.user.login }}
           NUMBER: ${{ github.event.pull_request.number }}
         run: |
           case "$ASSOCIATION" in
@@ -34,6 +35,23 @@ jobs:
               exit 0
               ;;
           esac
+          # author_association under-reports on organization repos: outside
+          # collaborators and members with private org membership both come
+          # through as CONTRIBUTOR. Ask the repository itself whether the
+          # author holds write access before treating them as external. The
+          # login is validated before it enters the request path, and an API
+          # error deliberately falls through to requesting review — the safe
+          # direction for a routing control is extra noise, never a silently
+          # skipped external review.
+          if [[ "$AUTHOR" =~ ^[A-Za-z0-9-]+$ ]]; then
+            PERM=$(gh api "repos/${{ github.repository }}/collaborators/${AUTHOR}/permission"               --jq .permission 2>/dev/null) || PERM=""
+            case "$PERM" in
+              admin|maintain|write)
+                echo "Author has $PERM access — no review request."
+                exit 0
+                ;;
+            esac
+          fi
           # Requesting an already-requested or already-reviewed reviewer, or
           # the PR author themselves, returns 422 — a no-op for this
           # workflow's purpose. Every other failure must fail the step so a
