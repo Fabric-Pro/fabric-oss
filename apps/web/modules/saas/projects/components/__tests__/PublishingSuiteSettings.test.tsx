@@ -39,7 +39,11 @@ vi.mock("sonner", () => ({
 	},
 }));
 
-function renderCard(canEdit: boolean, canGenerate = canEdit) {
+function renderCard(
+	canEdit: boolean,
+	canGenerate = canEdit,
+	onNavigateToChatChannels?: () => void,
+) {
 	const client = new QueryClient({
 		defaultOptions: { queries: { retry: false } },
 	});
@@ -55,6 +59,7 @@ function renderCard(canEdit: boolean, canGenerate = canEdit) {
 					organizationId={null}
 					canEdit={canEdit}
 					canGenerate={canGenerate}
+					onNavigateToChatChannels={onNavigateToChatChannels}
 				/>
 			</QueryClientProvider>,
 		),
@@ -411,11 +416,46 @@ describe("PublishingSuiteSettings", () => {
 
 	it("points at channel setup when the project has none linked", async () => {
 		slackLinkedMock.mockResolvedValue([]);
-		renderCard(true);
+		const onNavigate = vi.fn();
+		renderCard(true, true, onNavigate);
 
 		expect(
 			await screen.findByText(/connect a teams or slack channel/i),
 		).toBeInTheDocument();
+
+		// The copy alone was all this case used to assert, and it passed for
+		// months while the empty state was a dead end: prose naming a
+		// destination the reader had no way to reach. "Points at" has to mean
+		// the reader can follow it, or the name overstates the assertion.
+		await userEvent.click(
+			screen.getByRole("button", { name: /connect a channel/i }),
+		);
+		expect(onNavigate).toHaveBeenCalledTimes(1);
+	});
+
+	it("offers channel setup when channels are ALREADY linked", async () => {
+		// The reported case. A project with channels linked still had no way to
+		// reach one more, because the only affordance lived in the empty-state
+		// branch — the one branch such a project never renders.
+		const onNavigate = vi.fn();
+		renderCard(true, true, onNavigate);
+
+		await screen.findByLabelText(/SLACK: release-notes/i);
+		await userEvent.click(
+			screen.getByRole("button", { name: /connect a channel/i }),
+		);
+		expect(onNavigate).toHaveBeenCalledTimes(1);
+	});
+
+	it("renders no connect affordance when the host offers no way to navigate", async () => {
+		// The prop is optional, and a host that cannot switch tabs must not get
+		// a button that does nothing when clicked.
+		renderCard(true);
+
+		await screen.findByLabelText(/SLACK: release-notes/i);
+		expect(
+			screen.queryByRole("button", { name: /connect a channel/i }),
+		).not.toBeInTheDocument();
 	});
 
 	it("disables the picker for a user who cannot edit settings", async () => {

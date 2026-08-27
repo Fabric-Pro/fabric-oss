@@ -43,6 +43,7 @@ import { Switch } from "@ui/components/switch";
 import { Textarea } from "@ui/components/textarea";
 import { SparklesIcon } from "lucide-react";
 import { toast } from "sonner";
+import { ConnectChatChannelButton } from "./ConnectChatChannelButton";
 
 type PublishingCadence = "MANUAL" | "WEEKLY" | "BIWEEKLY" | "MONTHLY";
 
@@ -82,6 +83,12 @@ type Props = {
 	canEdit: boolean;
 	/** PUBLISHING_TOPIC_CREATE — Editors too. Gates ONLY "Generate now". */
 	canGenerate: boolean;
+	/** Sends the reader to where channels are LINKED (Settings → Knowledge);
+	 *  this card only selects among channels already linked. Optional, and
+	 *  omitting it hides the affordance rather than rendering a dead button.
+	 *  Deliberately NOT gated on `canEdit`, matching the newsletter card: the
+	 *  destination is a tab, not a mutation. */
+	onNavigateToChatChannels?: () => void;
 };
 
 export function PublishingSuiteSettings({
@@ -89,6 +96,7 @@ export function PublishingSuiteSettings({
 	organizationId,
 	canEdit,
 	canGenerate,
+	onNavigateToChatChannels,
 }: Props) {
 	const queryClient = useQueryClient();
 	const queryKey = [
@@ -317,6 +325,11 @@ export function PublishingSuiteSettings({
 	];
 	const linkedChatChannelsLoaded =
 		!teamsLinkedQuery.isLoading && !slackLinkedQuery.isLoading;
+	// Named because the connect affordance and the list/empty-state ternary
+	// both branch on it, and two spellings of one condition is how they drift
+	// apart — which is the shape of the bug this card had: the affordance was
+	// reachable from only one of the two branches.
+	const hasLinkedChatChannels = linkedChatChannels.length > 0;
 	const selectedChatChannels = (s?.chatChannels ??
 		[]) as PublishingChatChannel[];
 
@@ -571,7 +584,7 @@ export function PublishingSuiteSettings({
 						topic suggestions. Leave every channel unchecked to keep
 						chat off.
 					</p>
-					{linkedChatChannels.length > 0 ? (
+					{hasLinkedChatChannels ? (
 						<ul className="divide-y divide-border rounded-xl border border-border">
 							{linkedChatChannels.map((channel) => {
 								const key = chatChannelKey(channel);
@@ -616,12 +629,24 @@ export function PublishingSuiteSettings({
 								</strong>{" "}
 								to broadcast topic suggestions to chat.
 							</p>
+							<ConnectChatChannelButton
+								onNavigate={onNavigateToChatChannels}
+								className="mt-3"
+							/>
 						</div>
 					) : (
 						<p className="text-sm text-muted-foreground">
 							Loading connected channels…
 						</p>
 					)}
+					{/* Outside the ternary above, because a project that has
+					    already linked a channel renders the list branch and
+					    would otherwise never see a way to link another. */}
+					{hasLinkedChatChannels ? (
+						<ConnectChatChannelButton
+							onNavigate={onNavigateToChatChannels}
+						/>
+					) : null}
 				</div>
 
 				<div>

@@ -25,6 +25,10 @@ import {
 	useProjectTabCustomization,
 } from "../lib/project-tab-preferences";
 import { ActionItemRoutingSettings } from "./ActionItemRoutingSettings";
+import {
+	CHAT_MONITORS_SECTION_ID,
+	scrollToChatMonitors,
+} from "./ConnectChatChannelButton";
 import { FieldMappingPanel } from "./field-mapping/FieldMappingPanel";
 import { GoogleDocsSelectorDialog } from "./GoogleDocsSelectorDialog";
 import { MeetingTranscriptSyncSettings } from "./MeetingTranscriptSyncSettings";
@@ -269,6 +273,26 @@ export function ProjectSettings({
 			setSettingsTab(requested as SettingsTab);
 		}
 	}, [settingsSearchParams]);
+	// Chat channels are LINKED on the Knowledge tab, but SELECTED on the
+	// Newsletter and Publishing cards. Switching the tab is not enough: the
+	// monitor cards sit well below the fold of a long tab, so a reader who
+	// clicked "Connect a channel" would land at the top with nothing obviously
+	// different. The scroll is deferred rather than run in this handler because
+	// the anchor does not exist until the Knowledge tab has rendered.
+	const [scrollToChatMonitorsPending, setScrollToChatMonitorsPending] =
+		useState(false);
+	const navigateToChatChannels = useCallback(() => {
+		setSettingsTab("knowledge");
+		setScrollToChatMonitorsPending(true);
+	}, [setSettingsTab]);
+	useEffect(() => {
+		if (!scrollToChatMonitorsPending || settingsTab !== "knowledge") {
+			return;
+		}
+		setScrollToChatMonitorsPending(false);
+		scrollToChatMonitors();
+	}, [scrollToChatMonitorsPending, settingsTab]);
+
 	const [googleDocsDialogOpen, setGoogleDocsDialogOpen] = useState(false);
 	const googleDocsContextEnabled = isMonitoringFeatureEnabled(
 		"feature-google-docs-context",
@@ -459,7 +483,14 @@ export function ProjectSettings({
 							{/* One anchor around all three: the readiness item is
 							    "a chat app is connected", and any of these
 							    satisfies it. */}
+							{/* Two attributes, two owners: the onboarding target
+							    belongs to the Get Started registry and its drift
+							    test, the id to the "Connect a channel" affordance
+							    on the newsletter and publishing cards. Sharing one
+							    would leave a rename green on the tested side and
+							    silently broken on the other. */}
 							<div
+								id={CHAT_MONITORS_SECTION_ID}
 								className="space-y-4"
 								data-onboarding-target="settings-chat-monitors"
 							>
@@ -606,9 +637,7 @@ export function ProjectSettings({
 							onNavigateToRepositories={() =>
 								setSettingsTab("development")
 							}
-							onNavigateToChatChannels={() =>
-								setSettingsTab("knowledge")
-							}
+							onNavigateToChatChannels={navigateToChatChannels}
 						/>
 					</div>
 				)}
@@ -626,6 +655,7 @@ export function ProjectSettings({
 							organizationId={project.organizationId ?? null}
 							canEdit={canEditSettings}
 							canGenerate={project.canPublish ?? canEditSettings}
+							onNavigateToChatChannels={navigateToChatChannels}
 						/>
 					</div>
 				)}

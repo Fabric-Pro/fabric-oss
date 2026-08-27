@@ -51,6 +51,7 @@ import {
 import { useTranslations } from "next-intl";
 import { Fragment, useEffect, useState } from "react";
 import { toast } from "sonner";
+import { ConnectChatChannelButton } from "./ConnectChatChannelButton";
 import { NewsletterReviewHighlight } from "./NewsletterReviewHighlight";
 import {
 	describeReviewFailure,
@@ -493,6 +494,10 @@ export function ProjectNewsletterSettings({
 	];
 	const linkedChatChannelsLoaded =
 		!teamsLinkedQuery.isLoading && !slackLinkedQuery.isLoading;
+	// Both chat-channel pickers below (review alerts, and newsletter delivery)
+	// branch on this to choose between a list and an empty state, and both now
+	// also render the connect affordance outside that choice.
+	const hasLinkedChatChannels = linkedChatChannels.length > 0;
 
 	const invalidate = (key: "settings" | "subscribers" | "sends") => {
 		if (key === "sends") {
@@ -978,7 +983,7 @@ export function ProjectNewsletterSettings({
 								alongside the in-app notification and the
 								reviewer email, which needs mail configured.
 							</p>
-							{linkedChatChannels.length > 0 ? (
+							{hasLinkedChatChannels ? (
 								<ul className="divide-y divide-border rounded-xl border border-border">
 									{linkedChatChannels.map((channel) => {
 										const key = chatChannelKey(channel);
@@ -1065,22 +1070,25 @@ export function ProjectNewsletterSettings({
 										</strong>{" "}
 										to receive review alerts.
 									</p>
-									{onNavigateToChatChannels ? (
-										<Button
-											variant="outline"
-											size="sm"
-											className="mt-3"
-											onClick={onNavigateToChatChannels}
-										>
-											Connect a channel
-										</Button>
-									) : null}
+									<ConnectChatChannelButton
+										onNavigate={onNavigateToChatChannels}
+										className="mt-3"
+									/>
 								</div>
 							) : (
 								<p className="text-sm text-muted-foreground">
 									Loading connected channels…
 								</p>
 							)}
+							{/* Outside the ternary above: a project that has
+							    already linked a channel renders the list
+							    branch, and would otherwise never see a way to
+							    link another. */}
+							{hasLinkedChatChannels ? (
+								<ConnectChatChannelButton
+									onNavigate={onNavigateToChatChannels}
+								/>
+							) : null}
 						</div>
 					) : null}
 
@@ -1363,7 +1371,7 @@ export function ProjectNewsletterSettings({
 					{chatSelected ? (
 						<div className="mt-5 space-y-2">
 							<p className={sectionTitleClass}>Chat channels</p>
-							{linkedChatChannels.length > 0 ? (
+							{hasLinkedChatChannels ? (
 								<ul className="divide-y divide-border rounded-xl border border-border">
 									{linkedChatChannels.map((channel) => {
 										const key = chatChannelKey(channel);
@@ -1415,22 +1423,25 @@ export function ProjectNewsletterSettings({
 										</strong>{" "}
 										to deliver release notes to chat.
 									</p>
-									{onNavigateToChatChannels ? (
-										<Button
-											variant="outline"
-											size="sm"
-											className="mt-3"
-											onClick={onNavigateToChatChannels}
-										>
-											Connect a channel
-										</Button>
-									) : null}
+									<ConnectChatChannelButton
+										onNavigate={onNavigateToChatChannels}
+										className="mt-3"
+									/>
 								</div>
 							) : (
 								<p className="text-sm text-muted-foreground">
 									Loading connected channels…
 								</p>
 							)}
+							{/* Outside the ternary above: a project that has
+							    already linked a channel renders the list
+							    branch, and would otherwise never see a way to
+							    link another. */}
+							{hasLinkedChatChannels ? (
+								<ConnectChatChannelButton
+									onNavigate={onNavigateToChatChannels}
+								/>
+							) : null}
 						</div>
 					) : null}
 				</div>

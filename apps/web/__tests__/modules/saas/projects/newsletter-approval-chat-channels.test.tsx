@@ -244,6 +244,40 @@ describe("ProjectNewsletterSettings — review-alert chat channel picker", () =>
 		expect(seenQueryOptions.teamsLinked?.enabled).toBe(false);
 	});
 
+	it("offers channel setup beside a picker that ALREADY lists channels", async () => {
+		// The affordance used to live only in each picker's empty-state branch,
+		// so the moment a project linked its first channel it lost every route
+		// to a second. Both pickers on this card render the LIST branch here,
+		// which is the branch that had no way out.
+		setSettings({ requireApproval: true, deliveryDestination: "BOTH" });
+		queryData.slackLinked = [
+			{
+				slackTeamId: "T1",
+				channelId: "C1",
+				channelName: "releases",
+			},
+		];
+		const onNavigate = vi.fn();
+		render(
+			<ProjectNewsletterSettings
+				projectId="p-1"
+				organizationId={null}
+				onNavigateToChatChannels={onNavigate}
+			/>,
+		);
+
+		// Two, not one: the review-alert picker and the delivery picker are
+		// separate surfaces and both were affected. Asserting the count keeps a
+		// half-fix from passing.
+		const buttons = await screen.findAllByRole("button", {
+			name: /connect a channel/i,
+		});
+		expect(buttons).toHaveLength(2);
+
+		await userEvent.click(buttons[0]);
+		expect(onNavigate).toHaveBeenCalledTimes(1);
+	});
+
 	it("shows the picker when review is on", async () => {
 		setSettings({ requireApproval: true });
 		queryData.slackLinked = [
