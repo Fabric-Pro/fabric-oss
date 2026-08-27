@@ -124,6 +124,9 @@ const inPageSource = [
 	// The refresh-history table (1C-4a) sits beside the topic list rather than
 	// inside it — its own query, its own states — so its anchor lives here.
 	"apps/web/modules/saas/projects/components/publishing-suite/PublishingCycleHistory.tsx",
+	// The Snooze/Unsnooze control (1D-2) is per-row chrome rendered by the row
+	// component itself rather than the list, so its anchor lives here.
+	"apps/web/modules/saas/projects/components/publishing-suite/TopicRow.tsx",
 	"apps/web/modules/saas/weave/components/WeaveDashboard.tsx",
 	"apps/web/modules/saas/projects/components/AgentActivityTab.tsx",
 	"apps/web/modules/saas/projects/components/DiagramsList.tsx",

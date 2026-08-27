@@ -1,123 +1,30 @@
 "use client";
 
-import type { ApiRouterClient } from "@repo/api/orpc/router";
-import { FUNCTION_TAG_LABELS } from "@repo/database/src/function-tags";
+import { composeInboxSections } from "@repo/database/src/publishing-inbox";
 import { PageTourButton } from "@saas/get-started/components/PageTourButton";
+import { useFeatureFlag } from "@saas/shared/components/FeatureFlagProvider";
 import { orpc } from "@shared/lib/orpc-query-utils";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@ui/components/button";
-import {
-	Select,
-	SelectContent,
-	SelectItem,
-	SelectTrigger,
-	SelectValue,
-} from "@ui/components/select";
-import {
-	Tooltip,
-	TooltipContent,
-	TooltipProvider,
-	TooltipTrigger,
-} from "@ui/components/tooltip";
 import { cn } from "@ui/lib";
 import { AlertTriangleIcon, PlusIcon, RefreshCwIcon } from "lucide-react";
 import { type ReactNode, useState } from "react";
 import { toast } from "sonner";
 import { CreateTopicDialog } from "./CreateTopicDialog";
-import { DeclineTopicDialog } from "./DeclineTopicDialog";
-import { PostTypesDialog } from "./PostTypesDialog";
 import { PublishingCycleHistory } from "./PublishingCycleHistory";
-import { PublishTopicDialog } from "./PublishTopicDialog";
+import type { SnoozePreset } from "./SnoozeTopicDialog";
+import { TopicRow } from "./TopicRow";
+import {
+	type PostType,
+	type PublishingTopic,
+	TOPIC_STATUSES,
+	type TopicStatus,
+} from "./topic-shared";
 
-/** Only http(s) URLs are safe to render as a navigable href — a stored
- * `javascript:`/`data:` URL would otherwise be a stored-XSS vector when
- * another project member clicks the link. Saving stays lenient (DV6);
- * this only gates NAVIGATION. */
-function isSafeHttpUrl(value: string): boolean {
-	try {
-		const u = new URL(value);
-		return u.protocol === "http:" || u.protocol === "https:";
-	} catch {
-		return false;
-	}
-}
-
-/** The five `PublishingTopicStatus` values, in triage order, with UI labels.
- *  Snooze is deliberately absent: it is an overlay (`isSnoozed`), not a status,
- *  so it filters separately below. */
-type TopicStatus =
-	| "SUGGESTION"
-	| "SELECTED"
-	| "IN_PROGRESS"
-	| "PUBLISHED"
-	| "DECLINED";
-
-const TOPIC_STATUSES: ReadonlyArray<{ value: TopicStatus; label: string }> = [
-	{ value: "SUGGESTION", label: "Suggestion" },
-	{ value: "SELECTED", label: "Selected" },
-	{ value: "IN_PROGRESS", label: "In progress" },
-	{ value: "PUBLISHED", label: "Published" },
-	{ value: "DECLINED", label: "Declined" },
-];
-
-// Inferred from the oRPC list-topics output (Task 2) — never `any`. Type-only,
-// so it is erased at build time and adds no runtime coupling to the API package.
-type PublishingTopic = Awaited<
-	ReturnType<ApiRouterClient["projects"]["publishingSuite"]["listTopics"]>
->["items"][number];
-
-// The `PublishingTopicPostType` union, sourced from the API type so a schema
-// change surfaces here at compile time (and keeps the chip filter below
-// cast-free).
-type PostType = PublishingTopic["suggestedPostTypes"][number];
-
-// 1B: the four `PublishingTopicPostType` values, in fixed display order, with
-// UI labels — an AI topic's suggested-post-type chip row renders in this
-// order regardless of the array order the API returns.
-const POST_TYPE_LABELS: ReadonlyArray<{ value: PostType; label: string }> = [
-	{ value: "TWEET", label: "Tweet" },
-	{ value: "BLOG_POST", label: "Blog Post" },
-	{ value: "CASE_STUDY", label: "Case Study" },
-	{ value: "STAKEHOLDER_EMAIL", label: "Stakeholder Email" },
-];
-
-type WhySuggested = NonNullable<PublishingTopic["whySuggested"]>;
-
-// Compose the muted "why suggested" line (format C). Returns the full string
-// including the "Based on " prefix. Segments join with " · ".
-function formatWhySuggested(w: WhySuggested): string {
-	const segments: string[] = [];
-	for (const s of w.named) {
-		segments.push(
-			s.type === "meeting"
-				? s.label
-					? `"${s.label}" meeting`
-					: "Meeting"
-				: `"${s.label}"`,
-		);
-	}
-	if (w.prCount > 0) {
-		segments.push(`${w.prCount} ${w.prCount === 1 ? "PR" : "PRs"}`);
-	}
-	if (w.overflowCount > 0) {
-		segments.push(`+${w.overflowCount} more`);
-	}
-	return `Based on ${segments.join(" · ")}`;
-}
-
-type MeetingSpeakers = NonNullable<PublishingTopic["meetingSpeakers"]>;
-
-// Compose the muted "Meeting participants —" line. Visible token per member:
-// @username, else name. Join ", "; append "+N more" for overflow. The label is
-// intentionally soft (heuristic name match, not verified identity — spec D9/§8.1).
-function formatMeetingParticipants(m: MeetingSpeakers): string {
-	const shown = m.members
-		.map((p) => (p.username ? `@${p.username}` : (p.name ?? "")))
-		.filter((token) => token !== "")
-		.join(", ");
-	const overflow = m.overflowCount > 0 ? ` +${m.overflowCount} more` : "";
-	return `Meeting participants — ${shown}${overflow}`;
-}
+// FR2 caps Recently Modified at three. A single constant so `maxRecent`, the
+// overflow-button condition and the "Showing N of …" label can never drift
+// apart — changing the cap in one place changes the label to match.
+const MAX_RECENT = 3;
 
 export function PublishingSuiteList({
 	projectId,
@@ -129,16 +36,49 @@ export function PublishingSuiteList({
 	canEdit: boolean;
 }) {
 	const queryClient = useQueryClient();
+	const inboxEnabled = useFeatureFlag("PUBLISHING_INBOX");
 	const [createOpen, setCreateOpen] = useState(false);
 	const [statusFilter, setStatusFilter] = useState<
 		TopicStatus | "SNOOZED" | null
 	>(null); // null = all
-	// C-Med2: topics whose status mutation is currently in flight. Disabling a
-	// row's control while ITS request is pending stops rapid changes on the same
-	// topic from racing (an older response overwriting a newer choice).
-	const [pendingTopicIds, setPendingTopicIds] = useState<ReadonlySet<string>>(
-		() => new Set(),
-	);
+	// C-Med2: per-topic in-flight WRITE COUNT, not a presence flag. Expanding a
+	// row is deliberately allowed while a status write is in flight (FR4), so
+	// two of `changeStatus` / `changePostTypes` / `changeReadState` /
+	// `changeSnooze` can be in flight for the SAME topic at once. A presence
+	// `Set` loses that overlap: whichever write settles first deletes the id in
+	// its `finally`, re-enabling the row's controls even though another write
+	// for that same topic is still outstanding (e.g. a slow read=true overlaps
+	// a fast read=false and the user's later action goes silently missing at
+	// the next refetch). A count keeps the topic pending until every one of
+	// its writes has settled — see `beginPending` / `endPending` below.
+	const [pendingTopicIds, setPendingTopicIds] = useState<
+		ReadonlyMap<string, number>
+	>(() => new Map());
+
+	const beginPending = (topicId: string) => {
+		setPendingTopicIds((prev) => {
+			const next = new Map(prev);
+			next.set(topicId, (next.get(topicId) ?? 0) + 1);
+			return next;
+		});
+	};
+
+	const endPending = (topicId: string) => {
+		setPendingTopicIds((prev) => {
+			const count = prev.get(topicId) ?? 0;
+			const next = new Map(prev);
+			if (count <= 1) {
+				next.delete(topicId);
+			} else {
+				next.set(topicId, count - 1);
+			}
+			return next;
+		});
+	};
+	// FR2 caps the section at three. The cap lifts IN PLACE rather than linking
+	// to a chip: the section is composed from IN_PROGRESS *and* SELECTED, so no
+	// single chip is guaranteed to contain the row that overflowed.
+	const [showAllRecent, setShowAllRecent] = useState(false);
 
 	const topicsQuery = useQuery(
 		orpc.projects.publishingSuite.listTopics.queryOptions({
@@ -177,7 +117,7 @@ export function PublishingSuiteList({
 		declineReason: string | null,
 		publishedUrl: string | null,
 	) => {
-		setPendingTopicIds((prev) => new Set(prev).add(topicId));
+		beginPending(topicId);
 		try {
 			await updateStatus.mutateAsync({
 				projectId,
@@ -188,11 +128,7 @@ export function PublishingSuiteList({
 				publishedUrl,
 			});
 		} finally {
-			setPendingTopicIds((prev) => {
-				const next = new Set(prev);
-				next.delete(topicId);
-				return next;
-			});
+			endPending(topicId);
 		}
 	};
 
@@ -214,7 +150,7 @@ export function PublishingSuiteList({
 		topicId: string,
 		postTypes: PostType[] | null,
 	) => {
-		setPendingTopicIds((prev) => new Set(prev).add(topicId));
+		beginPending(topicId);
 		try {
 			await updatePostTypes.mutateAsync({
 				projectId,
@@ -223,11 +159,65 @@ export function PublishingSuiteList({
 				postTypes,
 			});
 		} finally {
-			setPendingTopicIds((prev) => {
-				const next = new Set(prev);
-				next.delete(topicId);
-				return next;
+			endPending(topicId);
+		}
+	};
+
+	const setReadState = useMutation(
+		orpc.projects.publishingSuite.setTopicReadState.mutationOptions({
+			onSuccess: invalidate,
+			onError: () => {
+				toast.error(
+					"We couldn't update that topic's read state. Please try again.",
+				);
+			},
+		}),
+	);
+
+	// Shares `pendingTopicIds` with the status and post-type writes on purpose
+	// (design 7.3): one in-flight set per topic means a rapid expand-then-toggle
+	// cannot land out of order, at the cost of briefly disabling this row's
+	// other controls. A second set just for read state would buy a slightly
+	// livelier row and reintroduce exactly the race the shared set removes.
+	const changeReadState = async (topicId: string, read: boolean) => {
+		beginPending(topicId);
+		try {
+			await setReadState.mutateAsync({
+				projectId,
+				organizationId,
+				topicId,
+				read,
 			});
+		} finally {
+			endPending(topicId);
+		}
+	};
+
+	const setSnooze = useMutation(
+		orpc.projects.publishingSuite.setTopicSnooze.mutationOptions({
+			onSuccess: invalidate,
+			onError: () => {
+				toast.error("We couldn't snooze that topic. Please try again.");
+			},
+		}),
+	);
+
+	const changeSnooze = async (
+		topicId: string,
+		preset: SnoozePreset | null,
+		reason: string | null,
+	) => {
+		beginPending(topicId);
+		try {
+			await setSnooze.mutateAsync({
+				projectId,
+				organizationId,
+				topicId,
+				preset,
+				reason,
+			});
+		} finally {
+			endPending(topicId);
 		}
 	};
 
@@ -244,8 +234,41 @@ export function PublishingSuiteList({
 				: topics.filter(
 						(t) => t.status === statusFilter && !t.isSnoozed,
 					);
+	// The Inbox composition sorts by `updatedAt.getTime()`, which throws on a
+	// string. `updatedAt` crosses the wire as `Date | string` (see
+	// PublishingCycleHistory's identical guard in this same directory), so
+	// this normalization is required, not defensive padding.
+	const inboxSections = composeInboxSections(
+		topics.map((t) => ({
+			...t,
+			updatedAt:
+				t.updatedAt instanceof Date
+					? t.updatedAt
+					: new Date(t.updatedAt),
+		})),
+		{ maxRecent: showAllRecent ? Number.POSITIVE_INFINITY : MAX_RECENT },
+	);
 	const cycleStatus = cycleQuery.data?.cycle?.status ?? null;
 	const hasCycle = cycleQuery.data?.cycle != null;
+
+	// The row now takes eight props and would otherwise be written out three
+	// times (flat list, Recently Modified, Suggested). Hoisted once so every
+	// call site shares the exact same wiring.
+	const renderRow = (t: PublishingTopic) => (
+		<TopicRow
+			key={t.id}
+			topic={t}
+			canEdit={canEdit}
+			inbox={inboxEnabled}
+			isPending={(pendingTopicIds.get(t.id) ?? 0) > 0}
+			onChangeStatus={(status, declineReason, publishedUrl) =>
+				changeStatus(t.id, status, declineReason, publishedUrl)
+			}
+			onChangePostTypes={(postTypes) => changePostTypes(t.id, postTypes)}
+			onSetReadState={(read) => changeReadState(t.id, read)}
+			onSetSnooze={(preset, reason) => changeSnooze(t.id, preset, reason)}
+		/>
+	);
 
 	// The body switches on state, but the header + CreateTopicDialog wrap EVERY
 	// state (P15), so manual creation is always available (gated by canEdit).
@@ -284,31 +307,54 @@ export function PublishingSuiteList({
 					value={statusFilter}
 					onChange={setStatusFilter}
 				/>
-				{visibleTopics.length > 0 ? (
+				{inboxEnabled && statusFilter === null ? (
+					<div
+						className="space-y-4"
+						data-onboarding-target="publishing-suite-inbox"
+					>
+						<InboxSection
+							label="Recently Modified"
+							emptyText="Nothing in progress right now."
+						>
+							{inboxSections.recentlyModified.length > 0 ? (
+								<>
+									<ul className="space-y-2">
+										{inboxSections.recentlyModified.map(
+											renderRow,
+										)}
+									</ul>
+									{inboxSections.recentlyModifiedTotal >
+									MAX_RECENT ? (
+										<Button
+											type="button"
+											variant="ghost"
+											size="sm"
+											onClick={() =>
+												setShowAllRecent((v) => !v)
+											}
+										>
+											{showAllRecent
+												? "Show fewer"
+												: `Showing ${MAX_RECENT} of ${inboxSections.recentlyModifiedTotal} — show all`}
+										</Button>
+									) : null}
+								</>
+							) : null}
+						</InboxSection>
+						<InboxSection
+							label="Suggested"
+							emptyText="No new suggestions right now."
+						>
+							{inboxSections.suggested.length > 0 ? (
+								<ul className="space-y-2">
+									{inboxSections.suggested.map(renderRow)}
+								</ul>
+							) : null}
+						</InboxSection>
+					</div>
+				) : visibleTopics.length > 0 ? (
 					<ul className="space-y-2">
-						{visibleTopics.map((t) => (
-							<TopicRow
-								key={t.id}
-								topic={t}
-								canEdit={canEdit}
-								isPending={pendingTopicIds.has(t.id)}
-								onChangeStatus={(
-									status,
-									declineReason,
-									publishedUrl,
-								) =>
-									changeStatus(
-										t.id,
-										status,
-										declineReason,
-										publishedUrl,
-									)
-								}
-								onChangePostTypes={(postTypes) =>
-									changePostTypes(t.id, postTypes)
-								}
-							/>
-						))}
+						{visibleTopics.map(renderRow)}
 					</ul>
 				) : (
 					<p className="text-sm text-muted-foreground">
@@ -377,402 +423,6 @@ export function PublishingSuiteList({
 				onCreated={invalidate}
 			/>
 		</div>
-	);
-}
-
-// ---------------------------------------------------------------------------
-// Row: title + pitch + status control (with the styled decline dialog).
-// ---------------------------------------------------------------------------
-
-function TopicRow({
-	topic,
-	canEdit,
-	isPending,
-	onChangeStatus,
-	onChangePostTypes,
-}: {
-	topic: PublishingTopic;
-	canEdit: boolean;
-	/** True while THIS topic's status mutation is in flight (C-Med2). */
-	isPending: boolean;
-	onChangeStatus: (
-		status: TopicStatus,
-		declineReason: string | null,
-		publishedUrl: string | null,
-	) => Promise<void>;
-	onChangePostTypes: (postTypes: PostType[] | null) => Promise<void>;
-}) {
-	const [declineOpen, setDeclineOpen] = useState(false);
-	const [declinePending, setDeclinePending] = useState(false);
-	const [publishOpen, setPublishOpen] = useState(false);
-	const [publishPending, setPublishPending] = useState(false);
-	const [postTypesOpen, setPostTypesOpen] = useState(false);
-	const [postTypesPending, setPostTypesPending] = useState(false);
-
-	const handleValueChange = (next: string) => {
-		if (next === topic.status) {
-			return;
-		}
-		if (next === "DECLINED") {
-			// Route through the styled dialog to collect an optional reason.
-			setDeclineOpen(true);
-			return;
-		}
-		if (next === "PUBLISHED") {
-			// Route through the styled dialog to collect an optional URL.
-			setPublishOpen(true);
-			return;
-		}
-		// Fire-and-forget: a failure is surfaced by the shared mutation's
-		// onError toast. The catch only prevents an unhandled rejection.
-		void onChangeStatus(next as TopicStatus, null, null).catch(() => {});
-	};
-
-	// C-Med2: close the dialog only AFTER the decline succeeds, so a failed
-	// decline keeps the typed reason (and surfaces the error via the shared
-	// onError toast) instead of silently discarding it.
-	const handleDeclineConfirm = async (reason: string | null) => {
-		setDeclinePending(true);
-		try {
-			await onChangeStatus("DECLINED", reason, null);
-			setDeclineOpen(false);
-		} catch {
-			// Error already surfaced by the shared mutation's onError toast;
-			// keep the dialog open so the reason isn't lost.
-		} finally {
-			setDeclinePending(false);
-		}
-	};
-
-	// Two DISTINCT exits (Global Constraints): "Mark as published" (this
-	// handler) always mutates — with the typed URL, or `null` when dismissed
-	// (FR15). Cancel/Escape/overlay-close never call this handler at all; they
-	// only flip `publishOpen` back to false via the dialog's plain
-	// `onOpenChange={setPublishOpen}` below, so the topic stays in its prior
-	// status with no mutation (ticket line 141).
-	const handlePublishConfirm = async (url: string | null) => {
-		setPublishPending(true);
-		try {
-			await onChangeStatus("PUBLISHED", null, url);
-			setPublishOpen(false);
-		} catch {
-			// Error surfaced by the shared mutation onError toast; keep dialog
-			// open so the typed URL isn't lost (mirrors decline).
-		} finally {
-			setPublishPending(false);
-		}
-	};
-
-	const handlePostTypesSubmit = async (postTypes: PostType[] | null) => {
-		setPostTypesPending(true);
-		try {
-			await onChangePostTypes(postTypes);
-			setPostTypesOpen(false);
-		} catch {
-			// Surfaced by the shared mutation's onError toast; keep the dialog
-			// open so the user's checkbox choices aren't lost (mirrors decline).
-		} finally {
-			setPostTypesPending(false);
-		}
-	};
-
-	return (
-		<li className="flex items-start justify-between gap-4 rounded-xl border border-border bg-card p-4">
-			<div className="min-w-0 space-y-1">
-				<p className="font-medium text-foreground">{topic.title}</p>
-				{topic.angle ? (
-					<p className="inline-flex w-fit items-center gap-1.5 rounded-full border border-border bg-muted px-2 py-0.5 text-[11px] text-muted-foreground">
-						<span className="uppercase tracking-[0.15em] text-muted-foreground">
-							Angle
-						</span>
-						<span className="text-foreground">{topic.angle}</span>
-					</p>
-				) : null}
-				{topic.pitch ? (
-					<p className="text-sm leading-6 text-muted-foreground">
-						{topic.pitch}
-					</p>
-				) : null}
-				{topic.whySuggested ? (
-					<p className="text-xs text-muted-foreground">
-						{formatWhySuggested(topic.whySuggested)}
-					</p>
-				) : null}
-				{topic.rankReason ? (
-					<p className="border-l-2 border-primary pl-2 text-xs text-muted-foreground">
-						{topic.rankReason.kind === "contributed"
-							? "Based on your contribution"
-							: `Matches your role: ${topic.rankReason.matchedTags
-									.map((t) => FUNCTION_TAG_LABELS[t])
-									.join(", ")}`}
-					</p>
-				) : null}
-				{topic.meetingSpeakers ? (
-					<p
-						className="text-xs text-muted-foreground"
-						aria-label={`Meeting participants: ${topic.meetingSpeakers.members
-							.map((m) => m.name ?? "")
-							.filter((token) => token !== "")
-							.join(", ")}${
-							topic.meetingSpeakers.overflowCount > 0
-								? `, and ${topic.meetingSpeakers.overflowCount} more`
-								: ""
-						}`}
-					>
-						{formatMeetingParticipants(topic.meetingSpeakers)}
-					</p>
-				) : null}
-				{topic.subject ? (
-					<p
-						className="text-xs text-muted-foreground"
-						aria-label={`Subject: ${topic.subject}`}
-					>
-						Subject · {topic.subject}
-					</p>
-				) : null}
-				{topic.status === "PUBLISHED" ? (
-					<div className="flex items-center gap-2">
-						{topic.publishedUrl ? (
-							isSafeHttpUrl(topic.publishedUrl) ? (
-								<a
-									href={topic.publishedUrl}
-									target="_blank"
-									rel="noopener noreferrer"
-									className="inline-block truncate text-sm text-primary underline underline-offset-2"
-								>
-									{topic.publishedUrl}
-								</a>
-							) : (
-								<span
-									className="inline-block truncate text-sm text-muted-foreground"
-									title={topic.publishedUrl}
-								>
-									{topic.publishedUrl}
-								</span>
-							)
-						) : null}
-						{canEdit ? (
-							<Button
-								type="button"
-								variant="ghost"
-								size="sm"
-								aria-label={
-									topic.publishedUrl ? "Edit URL" : "Add URL"
-								}
-								// C-Med2 (extended to this new affordance): a
-								// status mutation for THIS topic is in flight —
-								// block a second, racing mutation the same way
-								// the Select is already blocked below.
-								disabled={isPending}
-								onClick={() => setPublishOpen(true)}
-							>
-								{topic.publishedUrl ? "Edit URL" : "Add URL"}
-							</Button>
-						) : null}
-					</div>
-				) : null}
-				{topic.contributors.length > 0 ? (
-					<ul
-						className="flex flex-wrap items-center gap-1.5 pt-1"
-						aria-label="Contributors"
-					>
-						{topic.contributors.map((c) => (
-							<li
-								key={c.id}
-								className="flex items-center gap-1"
-								aria-label={`Contributor: ${c.name}`}
-							>
-								{c.image ? (
-									// eslint-disable-next-line @next/next/no-img-element
-									<img
-										src={c.image}
-										alt=""
-										className="size-4 rounded-full"
-									/>
-								) : (
-									<span
-										aria-hidden
-										className="flex size-4 items-center justify-center rounded-full bg-muted text-[9px] font-medium text-muted-foreground"
-									>
-										{c.name.charAt(0).toUpperCase()}
-									</span>
-								)}
-								<span className="text-xs text-muted-foreground">
-									{c.username ?? c.name}
-								</span>
-							</li>
-						))}
-					</ul>
-				) : null}
-				{topic.authorRecommendation ? (
-					<p
-						className="text-xs text-muted-foreground"
-						aria-label={`${
-							topic.authorRecommendation.model === "single"
-								? "Recommended author"
-								: "Recommended co-authors"
-						}: ${topic.authorRecommendation.authors
-							.map(
-								(a) =>
-									`${a.name}, ${a.matchedTags
-										.map((t) => FUNCTION_TAG_LABELS[t])
-										.join(" and ")}`,
-							)
-							.join("; ")}`}
-					>
-						{topic.authorRecommendation.model === "single"
-							? "Recommended author — "
-							: "Recommended co-authors — "}
-						{topic.authorRecommendation.authors
-							.map(
-								(a) =>
-									`${a.username ? `@${a.username}` : a.name} · ${a.matchedTags
-										.map((t) => FUNCTION_TAG_LABELS[t])
-										.join(", ")}`,
-							)
-							.join("; ")}
-					</p>
-				) : null}
-				{(() => {
-					const effectivePostTypes =
-						topic.userPostTypes ?? topic.suggestedPostTypes;
-					if (effectivePostTypes.length === 0 && !canEdit) {
-						return null;
-					}
-					const recByType = new Map(
-						topic.postTypeRecommendations.map((r) => [r.type, r]),
-					);
-					const chipClassName =
-						"appearance-none rounded-full border border-border bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground";
-					return (
-						<TooltipProvider>
-							<div
-								data-testid="post-type-row"
-								role="group"
-								className="flex flex-wrap items-center gap-1.5 pt-1"
-								aria-label="Post types"
-							>
-								{POST_TYPE_LABELS.filter((p) =>
-									effectivePostTypes.includes(p.value),
-								).map((p) => {
-									const rec = recByType.get(p.value);
-									const chipContent = (
-										<>
-											<span>{p.label}</span>
-											{rec?.theme ? (
-												<span className="text-muted-foreground/70">
-													{" · "}
-													{rec.theme}
-												</span>
-											) : null}
-										</>
-									);
-									// Enriched chip: a real, focusable, nameable
-									// control. A bare <span> has the implicit ARIA
-									// role `generic`, which PROHIBITS naming from
-									// `aria-label` (WAI-ARIA 1.2 §5.2.8.6) — the
-									// rationale would be inert to screen readers —
-									// and Radix's `TooltipTrigger asChild` never
-									// adds `tabIndex` to a non-interactive clone, so
-									// a keyboard-only user could never focus it to
-									// reveal the tooltip either. `button` is
-									// natively focusable AND its role permits
-									// `aria-label` naming, fixing both gaps.
-									return rec?.rationale ? (
-										<Tooltip key={p.value}>
-											<TooltipTrigger asChild>
-												<button
-													type="button"
-													className={chipClassName}
-													aria-label={`Why ${p.label}${rec.theme ? `: ${rec.theme}` : ""}. ${rec.rationale}`}
-												>
-													{chipContent}
-												</button>
-											</TooltipTrigger>
-											<TooltipContent>
-												{rec.rationale}
-											</TooltipContent>
-										</Tooltip>
-									) : (
-										<span
-											key={p.value}
-											className={chipClassName}
-										>
-											{chipContent}
-										</span>
-									);
-								})}
-								{canEdit ? (
-									<Button
-										type="button"
-										variant="ghost"
-										size="sm"
-										disabled={isPending}
-										onClick={() => setPostTypesOpen(true)}
-									>
-										Edit post types
-									</Button>
-								) : null}
-							</div>
-						</TooltipProvider>
-					);
-				})()}
-			</div>
-			<div className="shrink-0">
-				<Select
-					value={topic.status}
-					onValueChange={handleValueChange}
-					disabled={!canEdit || isPending}
-				>
-					<SelectTrigger
-						className="w-[10rem]"
-						aria-label={`Status for ${topic.title}`}
-					>
-						<SelectValue />
-					</SelectTrigger>
-					<SelectContent>
-						{TOPIC_STATUSES.map((s) => (
-							<SelectItem key={s.value} value={s.value}>
-								{s.label}
-							</SelectItem>
-						))}
-					</SelectContent>
-				</Select>
-			</div>
-			<DeclineTopicDialog
-				topicTitle={topic.title}
-				open={declineOpen}
-				onOpenChange={setDeclineOpen}
-				onConfirm={handleDeclineConfirm}
-				isPending={declinePending}
-			/>
-			<PublishTopicDialog
-				topicTitle={topic.title}
-				open={publishOpen}
-				onOpenChange={setPublishOpen}
-				onConfirm={handlePublishConfirm}
-				isPending={publishPending}
-				initialUrl={topic.publishedUrl}
-				title={
-					topic.status === "PUBLISHED"
-						? "Edit published URL"
-						: undefined
-				}
-				confirmLabel={topic.status === "PUBLISHED" ? "Save" : undefined}
-			/>
-			<PostTypesDialog
-				topicTitle={topic.title}
-				open={postTypesOpen}
-				onOpenChange={setPostTypesOpen}
-				initialSelected={
-					topic.userPostTypes ?? topic.suggestedPostTypes
-				}
-				hasOverride={topic.userPostTypes !== null}
-				hasAiSuggestion={topic.suggestedPostTypes.length > 0}
-				onSubmit={handlePostTypesSubmit}
-				isPending={postTypesPending}
-			/>
-		</li>
 	);
 }
 
@@ -1013,5 +663,36 @@ function FailedState() {
 				topics are unchanged — try again in a little while.
 			</p>
 		</div>
+	);
+}
+
+// ---------------------------------------------------------------------------
+// Inbox (1D-2): Recently Modified + Suggested sections.
+// ---------------------------------------------------------------------------
+
+/**
+ * One Inbox section: an editorial label and either its rows or a muted line.
+ *
+ * `app-editorial-label`, not `editorial-label` — the latter is the marketing
+ * variant and hardcodes its red, which CLAUDE.md forbids in app components.
+ * An empty section is explicitly NOT an error state (UC1/UC2), so it is a
+ * muted paragraph and never a role="alert".
+ */
+function InboxSection({
+	label,
+	emptyText,
+	children,
+}: {
+	label: string;
+	emptyText: string;
+	children: ReactNode;
+}) {
+	return (
+		<section aria-label={label} className="space-y-2">
+			<h3 className="app-editorial-label">{label}</h3>
+			{children ?? (
+				<p className="text-sm text-muted-foreground">{emptyText}</p>
+			)}
+		</section>
 	);
 }

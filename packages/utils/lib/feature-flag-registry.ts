@@ -123,6 +123,14 @@ export const FEATURE_FLAG_REGISTRY = {
 		default: false,
 		note: "Fizzy #2264. On, any user with no default role/function tag is blocked by an undismissable modal until they set one — including users who previously chose 'Don't ask again', whose opt-out this deliberately ignores. Off restores the previous dismissible prompt exactly; no data is written or removed either way. Rollback is this switch: a page load or an explicit reload both re-read the flag through the same ~10s server-side flag cache, so either clears a client within ~10s of an admin's change — a reload is not instant, it's bound by that same cache. An already-open gate on an active tab clears within ~40s (that ~10s cache plus the gate's 30s kill-switch poll).",
 	},
+	PUBLISHING_INBOX: {
+		label: "Publishing Suite Inbox",
+		description:
+			"Replaces the unfiltered publishing topic list with a two-section Inbox — Recently Modified and Suggested — whose rows expand, carry per-user read state, and can be snoozed.",
+		envVar: "FABRIC_FEATURE_PUBLISHING_INBOX",
+		default: false,
+		note: "Fizzy #2265. This is a UI switch: off renders the previous flat list exactly, with no redeploy and no migration. The two write procedures are deliberately NOT behind it — gating them here would mean turning this off strands every snoozed topic, because the un-snooze call would be rejected by the same switch that hid the button. Consequences differ by field and both are intended. Read markers are inert when off, since nothing renders them. Snooze is not: the status chips already exclude snoozed topics and the Snoozed chip already exists, both from the earlier slice and both independent of this flag, so a topic snoozed while this was on stays hidden from the status chips afterwards and is found under the Snoozed chip. Nothing becomes unreachable. Separately, the earlier slice's migration is not gated by this flag and does not reverse: previously deferred topics were moved to Suggestion when it shipped, whatever this is set to.",
+	},
 } as const satisfies Record<string, FeatureFlagDefinition>;
 
 export type FeatureFlagKey = keyof typeof FEATURE_FLAG_REGISTRY;

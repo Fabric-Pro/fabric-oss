@@ -50,7 +50,24 @@ export default defineConfig({
 				// streamdown imports katex/dist/katex.min.css as a side-effect;
 				// inlining both lets the cssStubPlugin intercept the CSS import
 				// before Node's ESM loader sees the unknown .css extension.
-				inline: ["katex", "streamdown"],
+				//
+				// `@testing-library/jest-dom` (imported from `vitest.setup.ts`)
+				// calls `require("vitest")` internally. Left un-inlined, Node's
+				// native CJS resolver walks up from jest-dom's own nested
+				// `node_modules` and can land on a DIFFERENT physical copy of
+				// `vitest` than the one running the suite (pnpm content-hashes
+				// vitest separately per peer-dependency set, and this repo has
+				// several). That second module instance's worker-RPC state is
+				// never initialized, so `expect(...).toMatchSnapshot()` fails
+				// every time with "The snapshot state for '<file>' is not
+				// found" — jest-dom's own custom matchers (`toBeInTheDocument`,
+				// etc.) still work because `expect.extend` writes through a
+				// shared registry, so this silently affected only snapshot
+				// tests, and none existed in this workspace before. Inlining
+				// routes jest-dom through Vite's resolver, which respects the
+				// single project-root `vitest` instance like everything else
+				// here.
+				inline: ["katex", "streamdown", "@testing-library/jest-dom"],
 			},
 		},
 		exclude: [
