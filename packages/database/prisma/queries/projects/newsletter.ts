@@ -449,6 +449,15 @@ export async function addNewsletterSubscriber(data: {
 export async function enrollProjectMembersAsSubscribers(input: {
 	projectId: string;
 	createdByUserId?: string;
+	/**
+	 * Enrol exactly these addresses instead of reading the project roster.
+	 * The join-time path passes the single address that just joined, so one
+	 * accept costs one insert rather than a full-roster read plus an N-row
+	 * payload. Omitted everywhere the roster IS the intent (the enable
+	 * transition, the pre-send reconcile). Normalization and de-duplication
+	 * are applied either way.
+	 */
+	emails?: string[];
 }): Promise<{ enrolled: number }> {
 	const project = await db.project.findUnique({
 		where: { id: input.projectId },
@@ -470,11 +479,13 @@ export async function enrollProjectMembersAsSubscribers(input: {
 		return { enrolled: 0 };
 	}
 
-	const members = await getProjectMembers(input.projectId);
+	const rawEmails =
+		input.emails ??
+		(await getProjectMembers(input.projectId)).map((m) => m.user?.email);
 	const emails = Array.from(
 		new Set(
-			members
-				.map((m) => m.user?.email?.trim().toLowerCase())
+			rawEmails
+				.map((e) => e?.trim().toLowerCase())
 				.filter((e): e is string => !!e),
 		),
 	);
@@ -500,6 +511,52 @@ export async function enrollProjectMembersAsSubscribers(input: {
 		skipDuplicates: true,
 	});
 	return { enrolled: res.count };
+}
+
+/**
+ * Enrol ONE member who has just joined a project, if that project's newsletter
+ * is enabled. The join-time entry point (Fizzy #2290).
+ *
+ * Before this existed, enrolment ran at exactly two moments — the false->true
+ * `enabled` transition, and the reconcile inside the send activity — so a
+ * member who joined an already-enabled project left no subscriber row until
+ * the next send. They still RECEIVED that send (the reconcile sees them), but
+ * the admin reading project settings saw a recipient list that under-reported
+ * who would get it, and the only way to correct it was to toggle the
+ * newsletter off and on.
+ *
+ * Scoped to the joining address rather than the whole roster, because this
+ * runs on a request path — an invitation accept, or a sign-in that reconciles
+ * a pending invite. Re-enrolling every member on each join would make one
+ * accept cost a roster read plus an N-row insert payload for a project of N
+ * members, all but one row a no-op. The roster-wide pass still exists where
+ * the roster IS the intent: the enable transition, and the pre-send reconcile
+ * that remains the backstop for anything this path misses.
+ *
+ * Gating on `enabled` is deliberate: while the newsletter is off no subscriber
+ * rows should exist, and the enable transition backfills every member anyway,
+ * so the end state is identical and the disabled case costs one indexed read.
+ *
+ * `createdByUserId` is left to resolve from the project's NewsletterSettings —
+ * the audit actor is the admin who configured the newsletter, not the member
+ * who just joined. Inherits create-if-absent semantics, so an UNSUBSCRIBED
+ * tombstone is never resurrected by someone re-joining the project.
+ */
+export async function enrollProjectMemberIfNewsletterEnabled(input: {
+	projectId: string;
+	email: string;
+}): Promise<{ enrolled: number }> {
+	const settings = await db.newsletterSettings.findUnique({
+		where: { projectId: input.projectId },
+		select: { enabled: true },
+	});
+	if (!settings?.enabled) {
+		return { enrolled: 0 };
+	}
+	return enrollProjectMembersAsSubscribers({
+		projectId: input.projectId,
+		emails: [input.email],
+	});
 }
 
 export async function removeNewsletterSubscriber(
