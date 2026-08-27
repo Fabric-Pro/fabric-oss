@@ -2382,7 +2382,7 @@ export type PublishingCycleStatus = z.infer<typeof PublishingCycleStatusSchema>;
 
 // File: PublishingTopicStatus.schema.ts
 
-export const PublishingTopicStatusSchema = z.enum(['SUGGESTION', 'SELECTED', 'IN_PROGRESS', 'PUBLISHED', 'DECLINED', 'DEFERRED'])
+export const PublishingTopicStatusSchema = z.enum(['SUGGESTION', 'SELECTED', 'IN_PROGRESS', 'PUBLISHED', 'DECLINED'])
 
 export type PublishingTopicStatus = z.infer<typeof PublishingTopicStatusSchema>;
 
