@@ -66,7 +66,7 @@ info:
     
   contact:
     name: API Support
-    email: api-support@company.com
+    email: api-support@example.com
     url: https://developer.company.com/support
   
   license:

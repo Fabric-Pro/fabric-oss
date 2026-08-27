@@ -32,7 +32,7 @@ const confluencePlugin: IntegrationPlugin = {
 			id: "email",
 			label: "Email Address",
 			type: "email",
-			placeholder: "user@company.com",
+			placeholder: "user@example.com",
 			helpText: "Email associated with your Atlassian account",
 			configKey: "email",
 			envVar: "CONFLUENCE_EMAIL",

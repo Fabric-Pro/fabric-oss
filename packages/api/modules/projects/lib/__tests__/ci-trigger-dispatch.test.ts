@@ -88,7 +88,7 @@ describe("deriveCiTriggerPlan", () => {
 		const plan = deriveCiTriggerPlan(
 			target({
 				provider: "GITLAB",
-				repositoryUrl: "git@gitlab.com:a/b.git",
+				repositoryUrl: "git@gitlab.example:a/b.git",
 			}),
 		);
 

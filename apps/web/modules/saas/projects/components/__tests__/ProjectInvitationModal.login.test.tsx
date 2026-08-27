@@ -346,11 +346,11 @@ describe("ProjectInvitationModal — needs_login branch", () => {
 				state={{
 					type: "needs_login",
 					invitationId: "inv-1",
-					email: "b@x.com",
+					email: "b@example.com",
 				}}
 			/>,
 		);
 
-		expect(screen.getByDisplayValue("b@x.com")).toBeInTheDocument();
+		expect(screen.getByDisplayValue("b@example.com")).toBeInTheDocument();
 	});
 });

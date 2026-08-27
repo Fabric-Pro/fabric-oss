@@ -234,7 +234,7 @@ describe("createDocumentWithContent — content handling", () => {
 	it("stores the supplied body unchanged apart from a null-byte strip", async () => {
 		const body = "# Heading\n\n<script>alert(1)</script>\n\nBody text.";
 
-		await createDocumentWithContent(baseInput({ content: `${body} ` }));
+		await createDocumentWithContent(baseInput({ content: `${body}\0` }));
 
 		// Verbatim: this route promises the user's own words, and the content is
 		// markdown rendered through the editor's schema-whitelisted parser

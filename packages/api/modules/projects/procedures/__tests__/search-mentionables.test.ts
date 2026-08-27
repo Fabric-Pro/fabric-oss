@@ -168,7 +168,7 @@ describe("searchMentionablesProcedure", () => {
 		setMembers([
 			{
 				userId: "user_guest",
-				user: user("user_guest", "Guest Greta", "greta@external.com"),
+				user: user("user_guest", "Guest Greta", "greta@example.net"),
 			},
 		]);
 
@@ -205,12 +205,12 @@ describe("searchMentionablesProcedure", () => {
 		mockDocumentFindUnique.mockResolvedValue({ projectId: "proj_1" });
 		mockProjectFindUnique.mockResolvedValue({
 			id: "proj_1",
-			user: user("user_a", "Alice", "alice@acme.com"),
+			user: user("user_a", "Alice", "alice.acme@example.com"),
 		});
 		setMembers([
 			{
 				userId: "user_b",
-				user: user("user_b", "Bob", "bob@other.com"),
+				user: user("user_b", "Bob", "bob@example.org"),
 			},
 		]);
 

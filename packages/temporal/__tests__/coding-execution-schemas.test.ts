@@ -14,7 +14,7 @@ describe("coding execution schemas", () => {
 				repoOwner: "acme",
 				repoName: "my-project",
 				projectName: "My Project",
-				workingDirectory: "/home/user/projects/my-project",
+				workingDirectory: "/tmp/projects/my-project",
 			};
 
 			const result = CreateSessionParamsSchema.safeParse(params);

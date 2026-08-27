@@ -149,7 +149,7 @@ describe("updateInstanceInputSchema — scheduleUpdate validation", () => {
 // ── Shared handler context ───────────────────────────────────────────────────
 
 const ctx = {
-	user: { id: "u1", email: "u@x.com" },
+	user: { id: "u1", email: "u@example.com" },
 	session: { id: "s1", activeOrganizationId: null },
 	headers: undefined,
 };

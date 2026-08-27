@@ -206,8 +206,8 @@ describe("brute-force protection service", () => {
 
 	it("masks email correctly in logs", () => {
 		expect(maskEmail("john@example.com")).toBe("j***@example.com");
-		expect(maskEmail("a@b.co")).toBe("a***@b.co");
-		expect(maskEmail("test.user@domain.org")).toBe("t***@domain.org");
+		expect(maskEmail("a@example.com")).toBe("a***@example.com");
+		expect(maskEmail("test.user@example.org")).toBe("t***@example.org");
 		expect(maskEmail("noatsign")).toBe("***@unknown");
 	});
 

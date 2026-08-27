@@ -51,7 +51,7 @@ const ROWS = {
 		{
 			userId: "u1",
 			name: "Ada Lovelace",
-			email: "ada@x.com",
+			email: "ada@example.com",
 			image: null,
 			role: "admin",
 			lastSeenAt: new Date("2026-07-23T09:00:00.000Z").toISOString(),
@@ -61,7 +61,7 @@ const ROWS = {
 		{
 			userId: "u2",
 			name: "Grace Hopper",
-			email: "grace@x.com",
+			email: "grace@example.com",
 			image: null,
 			role: "member",
 			lastSeenAt: null,
@@ -81,7 +81,7 @@ describe("UserActivityView", () => {
 		mockListMembers.mockResolvedValue(ROWS);
 		renderView();
 		expect(await screen.findByText("Ada Lovelace")).toBeInTheDocument();
-		expect(screen.getByText("ada@x.com")).toBeInTheDocument();
+		expect(screen.getByText("ada@example.com")).toBeInTheDocument();
 		expect(screen.getByText("5")).toBeInTheDocument();
 	});
 

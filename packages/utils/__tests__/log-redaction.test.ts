@@ -92,11 +92,11 @@ describe("redactLogText — credentials", () => {
 
 	it("removes the password from a URL but keeps host and user", () => {
 		const { text } = redactLogText(
-			"connect postgres://svcuser:hunter2pass@db.internal:5432/app failed",
+			"connect postgres://svcuser:hunter2pass@db.invalid:5432/app failed",
 		);
 		expect(text).not.toContain("hunter2pass");
 		expect(text).toContain("svcuser");
-		expect(text).toContain("db.internal");
+		expect(text).toContain("db.invalid");
 	});
 
 	it("removes a query-string signature", () => {

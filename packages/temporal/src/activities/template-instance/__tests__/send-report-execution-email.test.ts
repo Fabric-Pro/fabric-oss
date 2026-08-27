@@ -15,7 +15,7 @@ import { getBaseUrl } from "@repo/utils";
 import { sendReportExecutionEmail } from "../send-report-execution-email";
 
 const ctx = {
-	recipientEmail: "o@x.com",
+	recipientEmail: "o@example.com",
 	instanceName: "Q3",
 	instanceId: "i1",
 	organizationId: null,
@@ -49,7 +49,7 @@ it("sends the ready template with personal overview URL + idempotency key", asyn
 	await sendReportExecutionEmail({ executionId: "e1", status: "COMPLETED" });
 	expect(sendEmail).toHaveBeenCalledWith(
 		expect.objectContaining({
-			to: "o@x.com",
+			to: "o@example.com",
 			templateId: "reportExecutionReady",
 			idempotencyKey: "report-email-e1-COMPLETED",
 			context: {

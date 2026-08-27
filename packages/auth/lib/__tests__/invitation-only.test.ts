@@ -70,10 +70,10 @@ describe("lookupInvitation", () => {
 		(getPendingProjectInvitationByEmail as Mock).mockResolvedValue({
 			id: "pinv1",
 		});
-		const res = await lookupInvitation("guest@external.com");
+		const res = await lookupInvitation("guest@example.com");
 		expect(res).toMatchObject({ id: "pinv1" });
 		expect(getPendingProjectInvitationByEmail).toHaveBeenCalledWith(
-			"guest@external.com",
+			"guest@example.com",
 		);
 	});
 });
@@ -132,7 +132,7 @@ describe("invitation-only handler", () => {
 		await expect(
 			handler({
 				path: "/sign-up/email",
-				body: { email: "guest@external.com" },
+				body: { email: "guest@example.com" },
 			} as never),
 		).resolves.toBeUndefined();
 	});

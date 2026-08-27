@@ -13,13 +13,18 @@
 
 set -uo pipefail
 
-REPO_ROOT="/c/Users/ivanv/source/repos/Fabric/fabric"
-COOKIE_JAR="/c/Users/ivanv/AppData/Local/Temp/fabric-cookies.txt"
+# Override with E2E_REPO_ROOT / E2E_COOKIE_JAR for a non-default checkout or
+# cookie-jar location (e.g. on Windows under Git Bash).
+REPO_ROOT="${E2E_REPO_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
+COOKIE_JAR="${E2E_COOKIE_JAR:-${TMPDIR:-/tmp}/fabric-cookies.txt}"
 TEMPORAL_UI="http://127.0.0.1:53354"
 WEB_BASE="http://localhost:3001"
 PROJECT_ID="cmpdzedh7000zck5hdtdgd12n"
 
-cd "$REPO_ROOT"
+cd -- "$REPO_ROOT" || {
+  printf 'Unable to enter E2E repository root: %s\n' "$REPO_ROOT" >&2
+  exit 1
+}
 
 mk_change() {
   local title="$1"

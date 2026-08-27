@@ -79,14 +79,14 @@ describe("subscribe-to-newsletter (double opt-in)", () => {
 			token: "tok-1234567890",
 		});
 		const res = await subscribe({
-			input: { email: "New@X.com" },
+			input: { email: "New@Example.com" },
 			context: ctx,
 		});
 		expect(res).toEqual({ success: true });
 		expect(mockCreatePending).toHaveBeenCalledWith(
 			expect.objectContaining({
 				projectId: "fabric-main",
-				email: "new@x.com",
+				email: "new@example.com",
 				userId: null,
 				organizationId: "org-9",
 				createdByUserId: "admin-1",
@@ -94,7 +94,7 @@ describe("subscribe-to-newsletter (double opt-in)", () => {
 		);
 		expect(mockSendEmail).toHaveBeenCalledWith(
 			expect.objectContaining({
-				to: "new@x.com",
+				to: "new@example.com",
 				locale: "en",
 				templateId: "newsletterConfirm",
 				context: {
@@ -111,16 +111,19 @@ describe("subscribe-to-newsletter (double opt-in)", () => {
 			created: true,
 			token: "tok-1234567890",
 		});
-		await subscribe({ input: { email: "  Spaced@X.com  " }, context: ctx });
+		await subscribe({
+			input: { email: "  Spaced@Example.com  " },
+			context: ctx,
+		});
 		expect(mockCreatePending).toHaveBeenCalledWith(
-			expect.objectContaining({ email: "spaced@x.com" }),
+			expect.objectContaining({ email: "spaced@example.com" }),
 		);
 	});
 
 	it("returns generic success and sends NO email when the row already exists", async () => {
 		mockCreatePending.mockResolvedValue({ created: false, token: null });
 		const res = await subscribe({
-			input: { email: "existing@x.com" },
+			input: { email: "existing@example.com" },
 			context: ctx,
 		});
 		expect(res).toEqual({ success: true });
@@ -130,7 +133,7 @@ describe("subscribe-to-newsletter (double opt-in)", () => {
 	it("returns generic success and writes nothing when FABRIC_MAIN_PROJECT_ID is unset", async () => {
 		process.env.FABRIC_MAIN_PROJECT_ID = "";
 		const res = await subscribe({
-			input: { email: "x@x.com" },
+			input: { email: "x@example.com" },
 			context: ctx,
 		});
 		expect(res).toEqual({ success: true });

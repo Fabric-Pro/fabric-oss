@@ -258,7 +258,7 @@ export function TextToWorkflow({
 							id="workflow-prompt"
 							placeholder={
 								hasExistingWorkflow
-									? "E.g., Change the email recipient to sales@company.com..."
+									? "E.g., Change the email recipient to sales@example.com..."
 									: "E.g., Send me an email every time a new ticket is created in Linear..."
 							}
 							value={prompt}
@@ -302,7 +302,7 @@ export function TextToWorkflow({
 						<div className="space-y-1">
 							{(hasExistingWorkflow
 								? [
-										"Change the email recipient to support@company.com",
+										"Change the email recipient to support@example.com",
 										"Add a delay of 5 minutes before the notification",
 										"Remove the Slack notification step",
 										"Update the AI prompt to include more details",

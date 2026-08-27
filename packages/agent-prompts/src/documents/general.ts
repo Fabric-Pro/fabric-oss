@@ -251,9 +251,9 @@ Format as bulleted list or table.`,
 
 ### Support & Contact
 - **Team Slack Channel**: #payments-engineering
-- **On-Call**: payments-oncall@company.com
-- **Team Lead**: Sarah Johnson (sarah@company.com)
-- **Product Manager**: Mike Chen (mike@company.com)`,
+- **On-Call**: payments-oncall@example.com
+- **Team Lead**: Sarah Johnson (sarah@example.com)
+- **Product Manager**: Mike Chen (mike@example.com)`,
 		},
 		{
 			name: "Appendix",

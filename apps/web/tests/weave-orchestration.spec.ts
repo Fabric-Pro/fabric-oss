@@ -176,7 +176,7 @@ test.describe("Working Directory Validation", () => {
 				}
 
 				// Enter an absolute path
-				await dirInput.fill("/home/user/project");
+				await dirInput.fill("/tmp/project");
 				if (await confirmBtn.isVisible()) {
 					// Should no longer be disabled for path validation reasons
 					const title = await confirmBtn.getAttribute("title");

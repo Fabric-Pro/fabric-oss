@@ -67,27 +67,33 @@ describe("activityRangeStart", () => {
 
 describe("sortMembersByRecency", () => {
 	const rows = [
-		{ email: "b@x.com", lastSeenAt: new Date("2026-07-01T00:00:00Z") },
-		{ email: "a@x.com", lastSeenAt: null },
-		{ email: "c@x.com", lastSeenAt: new Date("2026-06-01T00:00:00Z") },
+		{
+			email: "b@example.com",
+			lastSeenAt: new Date("2026-07-01T00:00:00Z"),
+		},
+		{ email: "a@example.com", lastSeenAt: null },
+		{
+			email: "c@example.com",
+			lastSeenAt: new Date("2026-06-01T00:00:00Z"),
+		},
 	];
 	const bySeen = (r: { lastSeenAt: Date | null }) => r.lastSeenAt;
 
 	it("desc puts most recently active first and never-active last", () => {
 		const sorted = sortMembersByRecency(rows, "desc", bySeen);
 		expect(sorted.map((r) => r.email)).toEqual([
-			"b@x.com",
-			"c@x.com",
-			"a@x.com",
+			"b@example.com",
+			"c@example.com",
+			"a@example.com",
 		]);
 	});
 
 	it("asc puts never-active first (most inactive), then oldest", () => {
 		const sorted = sortMembersByRecency(rows, "asc", bySeen);
 		expect(sorted.map((r) => r.email)).toEqual([
-			"a@x.com",
-			"c@x.com",
-			"b@x.com",
+			"a@example.com",
+			"c@example.com",
+			"b@example.com",
 		]);
 	});
 
@@ -99,23 +105,23 @@ describe("sortMembersByRecency", () => {
 
 	it("breaks ties by email ascending", () => {
 		const tied = [
-			{ email: "z@x.com", lastSeenAt: null },
-			{ email: "a@x.com", lastSeenAt: null },
+			{ email: "z@example.com", lastSeenAt: null },
+			{ email: "a@example.com", lastSeenAt: null },
 		];
 		expect(
 			sortMembersByRecency(tied, "desc", bySeen).map((r) => r.email),
-		).toEqual(["a@x.com", "z@x.com"]);
+		).toEqual(["a@example.com", "z@example.com"]);
 	});
 
 	it("sorts on whichever date the accessor returns", () => {
 		const mixed = [
 			{
-				email: "b@x.com",
+				email: "b@example.com",
 				lastSeenAt: null,
 				lastLoginAt: new Date("2026-07-01T00:00:00Z"),
 			},
 			{
-				email: "a@x.com",
+				email: "a@example.com",
 				lastSeenAt: new Date("2026-07-20T00:00:00Z"),
 				lastLoginAt: null,
 			},
@@ -124,6 +130,6 @@ describe("sortMembersByRecency", () => {
 			sortMembersByRecency(mixed, "desc", (r) => r.lastLoginAt).map(
 				(r) => r.email,
 			),
-		).toEqual(["b@x.com", "a@x.com"]);
+		).toEqual(["b@example.com", "a@example.com"]);
 	});
 });

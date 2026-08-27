@@ -95,7 +95,7 @@ describe("subscribe-to-newsletter (embed token path)", () => {
 
 	it("token ABSENT → unchanged Fabric-main path (env helper), NOT the embed path", async () => {
 		const res = await subscribe({
-			input: { email: "New@X.com" },
+			input: { email: "New@Example.com" },
 			context: ctx,
 		});
 		expect(res).toEqual({ success: true });
@@ -103,7 +103,7 @@ describe("subscribe-to-newsletter (embed token path)", () => {
 		expect(mockCreatePending).toHaveBeenCalledWith(
 			expect.objectContaining({
 				projectId: "fabric-main",
-				email: "new@x.com",
+				email: "new@example.com",
 			}),
 		);
 		// Embed helpers untouched.
@@ -114,7 +114,7 @@ describe("subscribe-to-newsletter (embed token path)", () => {
 	it("token INVALID (resolve → null) → generic success, NO upsert, NO email", async () => {
 		mockResolveByEmbedToken.mockResolvedValue(null);
 		const res = await subscribe({
-			input: { email: "a@b.com", token: "bad-token" },
+			input: { email: "a@example.com", token: "bad-token" },
 			context: ctx,
 		});
 		expect(res).toEqual({ success: true });
@@ -135,7 +135,7 @@ describe("subscribe-to-newsletter (embed token path)", () => {
 			publicEmbedTokenVersion: 3,
 		});
 		const res = await subscribe({
-			input: { email: "a@b.com", token: "disabled-token" },
+			input: { email: "a@example.com", token: "disabled-token" },
 			context: ctx,
 		});
 		expect(res).toEqual({ success: true });
@@ -162,7 +162,7 @@ describe("subscribe-to-newsletter (embed token path)", () => {
 		});
 
 		const res = await subscribe({
-			input: { email: "Sub@Embed.COM ", token: "good-token" },
+			input: { email: "Sub@Example.ORG ", token: "good-token" },
 			context: ctx,
 		});
 
@@ -172,7 +172,7 @@ describe("subscribe-to-newsletter (embed token path)", () => {
 		expect(mockUpsertEmbedPending).toHaveBeenCalledWith(
 			expect.objectContaining({
 				projectId: "proj-org",
-				email: "sub@embed.com",
+				email: "sub@example.org",
 				userId: null,
 				organizationId: "org-42",
 				createdByUserId: "creator-9",
@@ -181,7 +181,7 @@ describe("subscribe-to-newsletter (embed token path)", () => {
 		);
 		expect(mockSendEmail).toHaveBeenCalledWith(
 			expect.objectContaining({
-				to: "sub@embed.com",
+				to: "sub@example.org",
 				locale: "en",
 				templateId: "newsletterConfirm",
 				context: {
@@ -212,7 +212,7 @@ describe("subscribe-to-newsletter (embed token path)", () => {
 		});
 
 		await subscribe({
-			input: { email: "p@x.com", token: "good" },
+			input: { email: "p@example.com", token: "good" },
 			context: ctx,
 		});
 
@@ -243,7 +243,7 @@ describe("subscribe-to-newsletter (embed token path)", () => {
 		});
 
 		const res = await subscribe({
-			input: { email: "again@x.com", token: "good-token" },
+			input: { email: "again@example.com", token: "good-token" },
 			context: ctx,
 		});
 
@@ -267,7 +267,7 @@ describe("subscribe-to-newsletter (embed token path)", () => {
 		});
 
 		const res = await subscribe({
-			input: { email: "drop@x.com", token: "good-token" },
+			input: { email: "drop@example.com", token: "good-token" },
 			context: ctx,
 		});
 

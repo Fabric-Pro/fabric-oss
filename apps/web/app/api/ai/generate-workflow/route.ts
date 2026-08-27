@@ -344,7 +344,7 @@ Response format based on the change type:
 
 For UPDATES to existing nodes (e.g., "change email to different address"):
 - action: "update"
-- updates: [{nodeId: "existing-id", newConfig: {to: "new@email.com"}}]
+- updates: [{nodeId: "existing-id", newConfig: {to: "new@example.com"}}]
 - description: what was changed
 
 For ADDING new nodes while keeping existing:

@@ -11,8 +11,8 @@ describe("maskEmail", () => {
 	});
 
 	it("masks an email with a multi-segment domain", () => {
-		expect(maskEmail("alice@mail.company.org")).toBe(
-			"a***@mail.company.org",
+		expect(maskEmail("alice@mail.company.example")).toBe(
+			"a***@mail.company.example",
 		);
 	});
 

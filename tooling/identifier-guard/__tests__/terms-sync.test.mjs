@@ -238,11 +238,14 @@ describe("terms-sync — origin parsing decides whether the guard works at all",
 	// "unknown", and the whole guard fails open forever without saying anything.
 	// SSH is what every developer on this repo actually uses.
 	const forms = [
-		["git@github.com:example-org/example-repo.git", "SSH, with .git"],
-		["git@github.com:example-org/example-repo", "SSH, bare"],
+		["git@github.example:example-org/example-repo.git", "SSH, with .git"],
+		["git@github.example:example-org/example-repo", "SSH, bare"],
 		["https://github.com/example-org/example-repo.git", "HTTPS, with .git"],
 		["https://github.com/example-org/example-repo", "HTTPS, bare"],
-		["ssh://git@github.com/example-org/example-repo.git", "ssh:// scheme"],
+		[
+			"ssh://git@github.example/example-org/example-repo.git",
+			"ssh:// scheme",
+		],
 	];
 
 	for (const [url, label] of forms) {

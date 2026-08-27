@@ -34,7 +34,7 @@ beforeEach(() => {
 	vi.clearAllMocks();
 	mockGetRepos.mockResolvedValue([{ owner: "o", repo: "r" }]);
 	mockBuildUrl.mockResolvedValue(
-		"https://x-access-token:tok@github.com/o/r.git",
+		"https://x-access-token:tok@github.example/o/r.git",
 	);
 	mockListRemote.mockResolvedValue(`${HEAD}\trefs/heads/main`);
 	mockGetCheckpoint.mockResolvedValue(null);

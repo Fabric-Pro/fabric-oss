@@ -32,7 +32,7 @@ describe("fingerprintFinding", () => {
 		const tuesday = fingerprintFinding({
 			...base,
 			failureMessage:
-				"expected -100 to be 80\n at /home/runner/work/test/cart.test.js:126:11 (took 187ms) id=0a71ffcd9931",
+				"expected -100 to be 80\n at /tmp/ci-run/test/cart.test.js:126:11 (took 187ms) id=0a71ffcd9931",
 		});
 		expect(monday).toBe(tuesday);
 	});

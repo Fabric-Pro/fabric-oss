@@ -39,7 +39,7 @@ describe("createPendingPublicSubscriber", () => {
 		const before = Date.now();
 		const res = await createPendingPublicSubscriber({
 			projectId: "p1",
-			email: "new@x.com",
+			email: "new@example.com",
 			userId: null,
 			organizationId: "org-9",
 			createdByUserId: "admin-1",
@@ -68,7 +68,7 @@ describe("createPendingPublicSubscriber", () => {
 		};
 		expect(arg.data).toMatchObject({
 			projectId: "p1",
-			email: "new@x.com",
+			email: "new@example.com",
 			userId: null,
 			organizationId: "org-9",
 			createdByUserId: "admin-1",
@@ -81,7 +81,7 @@ describe("createPendingPublicSubscriber", () => {
 		create.mockRejectedValue(P2002);
 		const res = await createPendingPublicSubscriber({
 			projectId: "p1",
-			email: "existing@x.com",
+			email: "existing@example.com",
 			userId: null,
 			organizationId: "org-9",
 			createdByUserId: "admin-1",
@@ -94,7 +94,7 @@ describe("createPendingPublicSubscriber", () => {
 		await expect(
 			createPendingPublicSubscriber({
 				projectId: "p1",
-				email: "x@x.com",
+				email: "x@example.com",
 				userId: "u1",
 				organizationId: null,
 				createdByUserId: "u1",
@@ -111,9 +111,9 @@ describe("confirmPublicSubscriber", () => {
 
 	it("flips exactly one PENDING row to ACTIVE and returns its email", async () => {
 		updateMany.mockResolvedValue({ count: 1 });
-		findFirst.mockResolvedValue({ email: "new@x.com" });
+		findFirst.mockResolvedValue({ email: "new@example.com" });
 		const res = await confirmPublicSubscriber("p1", "tok-1234567890");
-		expect(res).toEqual({ confirmed: true, email: "new@x.com" });
+		expect(res).toEqual({ confirmed: true, email: "new@example.com" });
 		const arg = updateMany.mock.calls[0][0] as {
 			where: Record<string, unknown>;
 			data: Record<string, unknown>;

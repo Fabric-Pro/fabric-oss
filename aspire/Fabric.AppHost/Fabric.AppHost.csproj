@@ -2,7 +2,7 @@
 
   <PropertyGroup>
     <!-- Emits packages.lock.json so the NuGet graph is scannable by the
-         Dependency audit gate (SECURITY.md ง CI enforcement). Without a lock
+         Dependency audit gate (SECURITY.md ยง CI enforcement). Without a lock
          file osv-scanner has nothing to read and the .NET surface is silently
          outside the audit. -->
     <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>

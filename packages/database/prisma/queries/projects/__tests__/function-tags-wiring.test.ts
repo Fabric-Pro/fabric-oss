@@ -68,7 +68,7 @@ describe("acceptProjectInvitation — copy-on-join wiring", () => {
 		const invitation = {
 			id: "inv-1",
 			projectId: "proj-1",
-			email: "member@x.com",
+			email: "member@example.com",
 			role: "VIEWER",
 			invitedBy: "inviter-1",
 			status: "PENDING",
@@ -93,7 +93,7 @@ describe("acceptProjectInvitation — copy-on-join wiring", () => {
 			return { count: 1 };
 		});
 
-		await acceptProjectInvitation("inv-1", "user-1", "member@x.com");
+		await acceptProjectInvitation("inv-1", "user-1", "member@example.com");
 
 		expect(dbMock.$transaction).toHaveBeenCalledTimes(1);
 		expect(mockApplyGlobalDefaultFunctionTags).toHaveBeenCalledTimes(1);
@@ -136,7 +136,7 @@ describe("reconcilePendingInvitesForUser — copy-on-join wiring", () => {
 
 		const result = await reconcilePendingInvitesForUser({
 			userId: "user-2",
-			email: "member2@x.com",
+			email: "member2@example.com",
 		});
 
 		expect(result.projectMembershipsCreated).toBe(1);

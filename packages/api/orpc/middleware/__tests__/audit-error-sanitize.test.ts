@@ -39,13 +39,13 @@ describe("sanitizeStack", () => {
 	});
 
 	it("strips repo-root prefix", () => {
-		const repoRoot = "/Users/dev/fabric";
+		const repoRoot = "/tmp/fabric";
 		const stack =
-			"Error: x\n    at handler (/Users/dev/fabric/packages/api/foo.ts:1:1)";
+			"Error: x\n    at handler (/tmp/fabric/packages/api/foo.ts:1:1)";
 		const result = sanitizeStack(stack, repoRoot);
 		expect(result).toBeDefined();
 		expect(result?.[0]).toContain("packages/api/foo.ts");
-		expect(result?.[0]).not.toContain("/Users/dev/fabric/packages");
+		expect(result?.[0]).not.toContain("/tmp/fabric/packages");
 	});
 
 	it("drops node_modules frames", () => {

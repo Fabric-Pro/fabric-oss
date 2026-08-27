@@ -48,7 +48,7 @@ vi.mock("../../../../../orpc/procedures", () => {
 import "../dismiss-welcome-widget";
 
 const ctx = {
-	user: { id: "user-me", email: "me@x.com" },
+	user: { id: "user-me", email: "me@example.com" },
 	session: { id: "s-1", activeOrganizationId: null },
 	headers: undefined,
 };

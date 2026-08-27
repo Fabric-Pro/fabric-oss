@@ -10,7 +10,7 @@ import { defineConfig, devices } from "@playwright/test";
  *
  * Run:
  *   QA_BASE_URL=https://<preview-host> \
- *   E2E_USER_EMAIL=you@techfabric.com E2E_USER_PASSWORD=... \
+ *   E2E_USER_EMAIL=you@example.com E2E_USER_PASSWORD=... \
  *   QA_PROJECT_ID=cmnixc8pd000004jpy6yt4wdk \
  *   npx playwright test --config=playwright.qa-2104.config.ts
  *

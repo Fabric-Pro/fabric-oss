@@ -73,7 +73,7 @@ describe("WeaveExecutionMonitor", () => {
 				providerMetadata: {},
 				externalUrl: "http://127.0.0.1:4242/workspaces/ws_1",
 				externalStatus: "awaiting_review",
-				workingDirectory: "/home/dev/Development/fabric",
+				workingDirectory: "/tmp/workspace/fabric",
 				targetBranch: "main",
 				pullRequestUrl: "https://github.com/acme/fabric/pull/12",
 				repositoryOwner: "acme",
@@ -104,7 +104,7 @@ describe("WeaveExecutionMonitor", () => {
 			screen.getByText(/Runtime: awaiting_review/i),
 		).toBeInTheDocument();
 		expect(
-			screen.getByText(/Repo root: \/home\/dev\/Development\/fabric/i),
+			screen.getByText(/Repo root: \/tmp\/workspace\/fabric/i),
 		).toBeInTheDocument();
 		expect(
 			screen.getByRole("link", { name: /Open runtime/i }),

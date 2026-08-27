@@ -225,11 +225,11 @@ describe("Tenant isolation (read side)", () => {
 	});
 
 	it("env-listed deployment admin can list ANY org without being a member", async () => {
-		vi.stubEnv("FABRIC_DEPLOYMENT_ADMIN_EMAILS", "sre@fabric.dev");
+		vi.stubEnv("FABRIC_DEPLOYMENT_ADMIN_EMAILS", "sre@example.com");
 		mocks.memberFindUnique.mockResolvedValue(null); // not a member
 
 		const mw = requireAuditLogReadOrDeploymentAdmin();
-		const ctx = makeContext({ id: "sre-id", email: "sre@fabric.dev" });
+		const ctx = makeContext({ id: "sre-id", email: "sre@example.com" });
 		const { called, error } = await runReadMiddleware(mw, ctx, {
 			organizationId: "org-not-a-member-of",
 		});
@@ -243,7 +243,7 @@ describe("Tenant isolation (read side)", () => {
 	it("env list NOT containing the caller's email still FORBIDS cross-org", async () => {
 		vi.stubEnv(
 			"FABRIC_DEPLOYMENT_ADMIN_EMAILS",
-			"sre@fabric.dev,ops@fabric.dev",
+			"sre@example.com,ops@example.com",
 		);
 		mocks.memberFindUnique.mockResolvedValue(null);
 
@@ -264,13 +264,13 @@ describe("Tenant isolation (read side)", () => {
 		vi.stubEnv("FABRIC_DEPLOYMENT_ADMIN_EMAILS", "");
 		mocks.memberFindUnique.mockResolvedValue(null);
 		const mw = requireAuditLogReadOrDeploymentAdmin();
-		const ctx = makeContext({ id: "sre-id", email: "sre@fabric.dev" });
+		const ctx = makeContext({ id: "sre-id", email: "sre@example.com" });
 
 		const r1 = await runReadMiddleware(mw, ctx, { organizationId: "o1" });
 		expect(r1.error).toBeInstanceOf(ORPCError);
 
 		// Operator adds the SRE email at runtime. Next call must pass.
-		vi.stubEnv("FABRIC_DEPLOYMENT_ADMIN_EMAILS", "sre@fabric.dev");
+		vi.stubEnv("FABRIC_DEPLOYMENT_ADMIN_EMAILS", "sre@example.com");
 		const r2 = await runReadMiddleware(mw, ctx, { organizationId: "o1" });
 		expect(r2.called).toBe(true);
 		expect(r2.error).toBeNull();

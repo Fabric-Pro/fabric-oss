@@ -53,7 +53,7 @@ describe("useFabricMention", () => {
 
 		act(() => {
 			const r = result.current.handleInputChange(
-				"contact me at user@fabric.io",
+				"contact me at user@example.com",
 			);
 			expect(r.consumed).toBe(false);
 		});

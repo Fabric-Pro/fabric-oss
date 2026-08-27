@@ -25,7 +25,7 @@ const jiraPlugin: IntegrationPlugin = {
 			id: "email",
 			label: "Jira User Email (required for Jira Cloud)",
 			type: "email",
-			placeholder: "user@company.com",
+			placeholder: "user@example.com",
 			configKey: "email",
 			envVar: "JIRA_EMAIL",
 			required: true,

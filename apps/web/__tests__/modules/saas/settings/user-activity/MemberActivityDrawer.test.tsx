@@ -43,7 +43,12 @@ function renderDrawer(userId: string | null) {
 }
 
 const HISTORY = {
-	user: { id: "u1", name: "Ada Lovelace", email: "ada@x.com", image: null },
+	user: {
+		id: "u1",
+		name: "Ada Lovelace",
+		email: "ada@example.com",
+		image: null,
+	},
 	role: "admin",
 	lastSeenAt: new Date("2026-07-23T09:00:00.000Z").toISOString(),
 	buckets: [

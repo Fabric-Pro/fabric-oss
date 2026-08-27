@@ -21,7 +21,7 @@ describe("loadActiveSubscribersActivity", () => {
 		listActiveNewsletterSubscribers.mockReset().mockResolvedValue([
 			{
 				id: "s1",
-				email: "a@x.com",
+				email: "a@example.com",
 				name: null,
 				unsubscribeToken: "t1",
 			},

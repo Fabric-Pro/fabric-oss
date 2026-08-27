@@ -117,7 +117,7 @@ describe.skipIf(!hasReachableDatabaseUrl())(
 			organizationId: string | null;
 		}) => ({
 			reviewedByUserId: REVIEWER_ID,
-			actorEmail: "reviewer@test.com",
+			actorEmail: "reviewer@example.com",
 			actorName: "Reviewer",
 			organizationId: project.organizationId,
 			projectId: project.id,

@@ -20,14 +20,14 @@ describe("invitation token", () => {
 	it("round-trips invitationId + email", () => {
 		const tok = buildInvitationToken({
 			invitationId: "i1",
-			email: "a@b.com",
+			email: "a@example.com",
 		});
 		const v = parseInvitationToken(tok);
 		expect(v.ok).toBe(true);
 		if (v.ok) {
 			expect(v.payload).toMatchObject({
 				invitationId: "i1",
-				email: "a@b.com",
+				email: "a@example.com",
 			});
 		}
 	});
@@ -35,7 +35,7 @@ describe("invitation token", () => {
 	it("rejects tampered email (payload mutation)", () => {
 		const tok = buildInvitationToken({
 			invitationId: "i1",
-			email: "a@b.com",
+			email: "a@example.com",
 		});
 		const [head, sig] = tok.split(".");
 		// Corrupt the last two chars of the base64url-encoded JSON head
@@ -46,7 +46,7 @@ describe("invitation token", () => {
 	it("rejects tampered signature", () => {
 		const tok = buildInvitationToken({
 			invitationId: "i1",
-			email: "a@b.com",
+			email: "a@example.com",
 		});
 		const [head] = tok.split(".");
 		expect(parseInvitationToken(`${head}.deadbeef`).ok).toBe(false);
@@ -55,7 +55,7 @@ describe("invitation token", () => {
 	it("rejects expired token (ttlSec -1)", () => {
 		// Build an already-expired token using signToken directly
 		const expiredTok = signToken<{ invitationId: string; email: string }>(
-			{ invitationId: "i1", email: "a@b.com" },
+			{ invitationId: "i1", email: "a@example.com" },
 			{ ttlSec: -1 },
 		);
 		const v = parseInvitationToken(expiredTok);

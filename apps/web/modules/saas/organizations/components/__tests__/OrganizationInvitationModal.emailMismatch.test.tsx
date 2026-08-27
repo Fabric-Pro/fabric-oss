@@ -78,8 +78,8 @@ describe("OrganizationInvitationModal — email_mismatch switch CTA", () => {
 		organizationSlug: "acme",
 		state: {
 			type: "email_mismatch" as const,
-			invitationEmail: "b@x.com",
-			currentEmail: "a@x.com",
+			invitationEmail: "b@example.com",
+			currentEmail: "a@example.com",
 		},
 	};
 
@@ -95,7 +95,7 @@ describe("OrganizationInvitationModal — email_mismatch switch CTA", () => {
 
 		expect(signOutMock).toHaveBeenCalledTimes(1);
 		expect(hrefValue).toBe(
-			"https://app.example.test/auth/login?invitationId=inv-1&email=b%40x.com",
+			"https://app.example.test/auth/login?invitationId=inv-1&email=b%40example.com",
 		);
 		expect(callOrder).toEqual(["signOut", "navigate"]);
 	});

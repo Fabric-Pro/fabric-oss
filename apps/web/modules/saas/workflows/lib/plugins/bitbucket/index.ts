@@ -15,7 +15,7 @@ const bitbucketPlugin: IntegrationPlugin = {
 			id: "email",
 			label: "Bitbucket Account Email",
 			type: "email",
-			placeholder: "you@company.com",
+			placeholder: "you@example.com",
 			configKey: "email",
 			envVar: "BITBUCKET_EMAIL",
 			required: true,

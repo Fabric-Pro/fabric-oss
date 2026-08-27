@@ -55,7 +55,7 @@ describe("canInviteUser — owner self-invite", () => {
 		});
 		mockUserFindUnique.mockResolvedValue({ id: "owner1" });
 
-		const result = await canInviteUser("p1", "actor", "owner@x.com");
+		const result = await canInviteUser("p1", "actor", "owner@example.com");
 
 		expect(result).toEqual({
 			canInvite: false,
@@ -75,7 +75,11 @@ describe("canInviteUser — owner self-invite", () => {
 		mockMemberFindFirst.mockResolvedValue(null);
 		mockInvitationFindFirst.mockResolvedValue(null);
 
-		const result = await canInviteUser("p1", "actor", "someone@x.com");
+		const result = await canInviteUser(
+			"p1",
+			"actor",
+			"someone@example.com",
+		);
 
 		expect(result).toEqual({ canInvite: true });
 	});

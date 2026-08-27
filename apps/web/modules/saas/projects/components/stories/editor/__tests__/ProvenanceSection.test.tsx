@@ -62,10 +62,10 @@ describe("ProvenanceSection", () => {
 			<ProvenanceSection
 				story={base}
 				creatorName={null}
-				creatorEmail="k@x.com"
+				creatorEmail="k@example.com"
 			/>,
 		);
-		expect(screen.getByText(/k@x\.com/)).toBeInTheDocument();
+		expect(screen.getByText(/k@example\.com/)).toBeInTheDocument();
 		rerender(
 			<ProvenanceSection
 				story={base}

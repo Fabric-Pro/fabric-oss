@@ -96,7 +96,7 @@ const freshservicePlugin: IntegrationPlugin = {
 					key: "email",
 					label: "Requester Email",
 					type: "template-input",
-					placeholder: "requester@company.com",
+					placeholder: "requester@example.com",
 				},
 			],
 		},
