@@ -1,5 +1,43 @@
 # fabric-app
 
+## 1.14.0
+
+### Minor Changes
+
+- 42c7975: Import GitLab attachments back into Fabric, completing bidirectional attachment sync
+
+### Patch Changes
+
+- 4a0e7b8: Let a project reach chat-channel setup from the settings cards that select channels, including when channels are already linked.
+- 42c7975: Decision ownership now rejects non-members, survives version reverts safely, and stops re-notifying the owner on every save.
+- 42c7975: Decisions can now be tagged with a type from a per-project AI-recommended taxonomy, an accountable owner, a long-standing/short-term duration, and a Priority flag that feeds roadmap prioritization.
+- 42c7975: Re-drafting test cases no longer duplicates cases when the model spells the same criterion differently
+- 42c7975: AI-drafted test cases now link to the acceptance criteria they validate
+- ad9cddd: Stop Direct chat dropping whole MCP servers from the model's tool list while still showing them as connected
+- 42c7975: Prompt tags become one green-filled pill everywhere, and default badges are outlined and coloured by tier.
+- 42c7975: Tidy the Temporal payload-bounding helpers after three-lens review
+- b42e34e: New project members now appear in an enabled newsletter's recipient list as soon as they join, instead of only after the next send or a disable/re-enable toggle.
+- 42c7975: Add project-level prompt defaults: a project can override the organization's choice for its own actions.
+- 42c7975: Prompt notifications now deep-link into the organization's own pages, and the nomination title reads "an organization".
+- 42c7975: Fix the `prompts.bind.listForStages` test expectations left behind by the project prompt tier, which were failing on master.
+- 3378c7f: Publishing topics now open into a two-section Inbox with read/unread state and snooze, behind the default-off PUBLISHING_INBOX flag.
+- d0db49f: Remove the retired Deferred status from the publishing topic type, completing the move to the snooze overlay
+- 42c7975: QA Suite Phase 1 enabled on production workers
+- 42c7975: Test cases mirrored for AI retrieval name the acceptance criteria they cover again
+- 42c7975: Test-case AI context names the same acceptance criterion the coverage ring counts
+- 9c5aff8: Readiness checklist: a document being regenerated no longer disappears from the checklist, and a failed re-run no longer takes it away for good.
+- 9c5aff8: Readiness checklist: show when an item's work is already running, and finish without a page refresh. Also restores the callout behaviour a merge had reverted.
+- 42c7975: Readiness checklist: keep an item's actions reachable while it is snoozed, reject a development start date in the past, point the chat and transcript items at something, and return the checklist to 26 rows.
+- 64c156f: Rework the release BOM around attested container snapshots and a credential-free collab-worker artifact, and emit release-manifest schema 2.0.0.
+- 479d829: Normalize test-fixture emails and filesystem paths to reserved RFC 2606 placeholders ahead of the public-repo flip.
+- 42c7975: Clearing a prompt default keeps the binding available for one-click restore.
+- 42c7975: Support 1:1 direct chats alongside group chats in Microsoft Teams Chat Monitor and integration contexts.
+- 42c7975: One prompts page with Prompts and Actions tabs, and scope tabs as the library's primary filter.
+- 42c7975: Close post-ship review gaps in the Temporal payload bounding: bound every MCP tool-result exit, never corrupt JSON listings, keep elision visible
+- 42c7975: Bound Temporal payloads under the 4 MiB gRPC frame limit so large board pulls, story-sync listings and MCP tool results degrade gracefully instead of stalling
+- 42c7975: Test fixtures now use example.com placeholder emails instead of ad-hoc short domains.
+- 42c7975: Repair the generated Zod barrel so database schemas import cleanly again.
+
 ## 1.13.7
 
 ### Patch Changes
