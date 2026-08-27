@@ -192,7 +192,7 @@ resource's user-facing identifier, never a credential.
 
 ### Deployment-admin bypass
 
-Setting `FABRIC_DEPLOYMENT_ADMIN_EMAILS=sre1@fabric.dev,sre2@fabric.dev`
+Setting `FABRIC_DEPLOYMENT_ADMIN_EMAILS=sre1@example.com,sre2@example.com`
 allows the listed addresses to read any org's audit log without being a
 member. Used by Fabric SRE for remote diagnostics. Has security
 implications: each listed email is effectively a super-admin for the

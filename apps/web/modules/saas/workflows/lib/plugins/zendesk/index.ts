@@ -24,7 +24,7 @@ const zendeskPlugin: IntegrationPlugin = {
 			id: "email",
 			label: "Zendesk Email",
 			type: "email",
-			placeholder: "agent@company.com",
+			placeholder: "agent@example.com",
 			configKey: "email",
 			envVar: "ZENDESK_EMAIL",
 			required: true,

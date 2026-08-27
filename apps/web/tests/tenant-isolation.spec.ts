@@ -13,12 +13,12 @@ import { describe, expect, test } from "@playwright/test";
 const TEST_TENANTS = {
 	userA: {
 		userId: "test-user-a",
-		email: "user-a@test.com",
+		email: "user-a@example.com",
 		personalMcpConfigId: "mcp-config-personal-user-a",
 	},
 	userB: {
 		userId: "test-user-b",
-		email: "user-b@test.com",
+		email: "user-b@example.com",
 		personalMcpConfigId: "mcp-config-personal-user-b",
 	},
 	orgA: {

@@ -141,10 +141,10 @@ describe("sanitizeMcpErrorMessage", () => {
 
 		it("strips multiple emails in one message", () => {
 			const out = sanitizeMcpErrorMessage(
-				"cross-tenant leak: a@x.io and b@y.org match",
+				"cross-tenant leak: a@example.org and b@example.net match",
 			);
-			expect(out).not.toContain("a@x.io");
-			expect(out).not.toContain("b@y.org");
+			expect(out).not.toContain("a@example.org");
+			expect(out).not.toContain("b@example.net");
 		});
 	});
 

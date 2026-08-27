@@ -19,7 +19,7 @@ describe("block-secret-paths — blocks edits", () => {
 		".env.staging",
 		"apps/web/server.pem",
 		"apps/web/server.key",
-		"/Users/me/.npmrc",
+		"/tmp/workspace/.npmrc",
 		".npmrc",
 		"credentials.json",
 		"credentials",

@@ -31,8 +31,8 @@ const baseInput = {
 		highlights: [],
 	},
 	subscribers: [
-		{ id: "1", email: "a@b.com", name: null, unsubscribeToken: "t1" },
-		{ id: "2", email: "c@d.com", name: null, unsubscribeToken: "t2" },
+		{ id: "1", email: "a@example.com", name: null, unsubscribeToken: "t1" },
+		{ id: "2", email: "c@example.org", name: null, unsubscribeToken: "t2" },
 	],
 };
 
@@ -64,7 +64,7 @@ describe("sendNewsletterEmailsActivity", () => {
 	it("counts a provider failure and continues", async () => {
 		claimDelivery.mockReset().mockResolvedValue({ alreadySent: false });
 		markDelivery.mockReset().mockResolvedValue(undefined);
-		// pass 1: a@b.com fails, c@d.com sends; pass 2 retry of a@b.com also fails.
+		// pass 1: a@example.com fails, c@example.org sends; pass 2 retry of a@example.com also fails.
 		sendEmail
 			.mockReset()
 			.mockResolvedValueOnce(false)
@@ -73,7 +73,7 @@ describe("sendNewsletterEmailsActivity", () => {
 		expect(out).toEqual({ sentCount: 1, failedCount: 1 });
 		expect(markDelivery).toHaveBeenCalledWith(
 			"s1",
-			"a@b.com",
+			"a@example.com",
 			"FAILED",
 			expect.any(String),
 		);

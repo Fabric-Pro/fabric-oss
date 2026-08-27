@@ -30,7 +30,7 @@ vi.mock("../../../../../orpc/procedures", () => {
 import "../get-welcome-widget";
 
 const ctx = {
-	user: { id: "user-me", email: "me@x.com" },
+	user: { id: "user-me", email: "me@example.com" },
 	session: { activeOrganizationId: null },
 };
 
@@ -52,7 +52,7 @@ describe("getWelcomeWidget", () => {
 		// Identity is taken from the authenticated session, never from input —
 		// this is the data-leak regression guard.
 		expect(mockGetInviteWelcomeWidgetData).toHaveBeenCalledWith(
-			"me@x.com",
+			"me@example.com",
 			"user-me",
 			null,
 		);

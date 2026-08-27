@@ -53,26 +53,29 @@ describe("isDeploymentAdmin", () => {
 	});
 
 	it("matches a single email exactly", () => {
-		vi.stubEnv("FABRIC_DEPLOYMENT_ADMIN_EMAILS", "sre@fabric.dev");
-		expect(isDeploymentAdmin("sre@fabric.dev")).toBe(true);
+		vi.stubEnv("FABRIC_DEPLOYMENT_ADMIN_EMAILS", "sre@example.com");
+		expect(isDeploymentAdmin("sre@example.com")).toBe(true);
 	});
 
 	it("matches case-insensitively in both directions", () => {
-		vi.stubEnv("FABRIC_DEPLOYMENT_ADMIN_EMAILS", "A@B.COM");
-		expect(isDeploymentAdmin("a@b.com")).toBe(true);
-		vi.stubEnv("FABRIC_DEPLOYMENT_ADMIN_EMAILS", "a@b.com");
-		expect(isDeploymentAdmin("A@B.COM")).toBe(true);
+		vi.stubEnv("FABRIC_DEPLOYMENT_ADMIN_EMAILS", "A@EXAMPLE.COM");
+		expect(isDeploymentAdmin("a@example.com")).toBe(true);
+		vi.stubEnv("FABRIC_DEPLOYMENT_ADMIN_EMAILS", "a@example.com");
+		expect(isDeploymentAdmin("A@EXAMPLE.COM")).toBe(true);
 	});
 
 	it("trims surrounding whitespace on every entry", () => {
-		vi.stubEnv("FABRIC_DEPLOYMENT_ADMIN_EMAILS", " a@b.com , c@d.com ");
-		expect(isDeploymentAdmin("a@b.com")).toBe(true);
-		expect(isDeploymentAdmin("c@d.com")).toBe(true);
+		vi.stubEnv(
+			"FABRIC_DEPLOYMENT_ADMIN_EMAILS",
+			" a@example.com , c@example.org ",
+		);
+		expect(isDeploymentAdmin("a@example.com")).toBe(true);
+		expect(isDeploymentAdmin("c@example.org")).toBe(true);
 	});
 
 	it("skips empty entries from leading, trailing, and adjacent commas", () => {
-		vi.stubEnv("FABRIC_DEPLOYMENT_ADMIN_EMAILS", ",,a@b.com,,");
-		expect(isDeploymentAdmin("a@b.com")).toBe(true);
+		vi.stubEnv("FABRIC_DEPLOYMENT_ADMIN_EMAILS", ",,a@example.com,,");
+		expect(isDeploymentAdmin("a@example.com")).toBe(true);
 		// Empty entries must not match the empty input — defense-in-depth.
 		expect(isDeploymentAdmin("")).toBe(false);
 		expect(isDeploymentAdmin(null)).toBe(false);
@@ -82,14 +85,14 @@ describe("isDeploymentAdmin", () => {
 	it("does not match an email that is not in the list", () => {
 		vi.stubEnv(
 			"FABRIC_DEPLOYMENT_ADMIN_EMAILS",
-			"sre@fabric.dev,ops@fabric.dev",
+			"sre@example.com,ops@example.com",
 		);
 		expect(isDeploymentAdmin("attacker@example.com")).toBe(false);
 	});
 
 	it("ignores trailing whitespace inside the input email", () => {
-		vi.stubEnv("FABRIC_DEPLOYMENT_ADMIN_EMAILS", "sre@fabric.dev");
-		expect(isDeploymentAdmin("  sre@fabric.dev  ")).toBe(true);
+		vi.stubEnv("FABRIC_DEPLOYMENT_ADMIN_EMAILS", "sre@example.com");
+		expect(isDeploymentAdmin("  sre@example.com  ")).toBe(true);
 	});
 });
 
@@ -139,7 +142,7 @@ describe("requireAuditLogReadOrDeploymentAdmin middleware", () => {
 		const mw = requireAuditLogReadOrDeploymentAdmin();
 		const { called, error } = await runMiddleware(
 			mw,
-			{ user: { id: "u1", email: "a@b.com" } },
+			{ user: { id: "u1", email: "a@example.com" } },
 			{},
 		);
 		expect(called).toBe(true);
@@ -151,7 +154,7 @@ describe("requireAuditLogReadOrDeploymentAdmin middleware", () => {
 		const mw = requireAuditLogReadOrDeploymentAdmin();
 		const { called, error } = await runMiddleware(
 			mw,
-			{ user: { id: "u1", email: "a@b.com" } },
+			{ user: { id: "u1", email: "a@example.com" } },
 			{ organizationId: null },
 		);
 		expect(called).toBe(true);
@@ -159,13 +162,13 @@ describe("requireAuditLogReadOrDeploymentAdmin middleware", () => {
 	});
 
 	it("bypasses membership and role for deployment-admin emails", async () => {
-		vi.stubEnv("FABRIC_DEPLOYMENT_ADMIN_EMAILS", "sre@fabric.dev");
+		vi.stubEnv("FABRIC_DEPLOYMENT_ADMIN_EMAILS", "sre@example.com");
 		mocks.memberFindUnique.mockResolvedValue(null);
 
 		const mw = requireAuditLogReadOrDeploymentAdmin();
 		const { called, error } = await runMiddleware(
 			mw,
-			{ user: { id: "u1", email: "sre@fabric.dev" } },
+			{ user: { id: "u1", email: "sre@example.com" } },
 			{ organizationId: "org-1" },
 		);
 		expect(called).toBe(true);
@@ -179,7 +182,7 @@ describe("requireAuditLogReadOrDeploymentAdmin middleware", () => {
 		const mw = requireAuditLogReadOrDeploymentAdmin();
 		const { called, error } = await runMiddleware(
 			mw,
-			{ user: { id: "u1", email: "a@b.com" } },
+			{ user: { id: "u1", email: "a@example.com" } },
 			{ organizationId: "org-1" },
 		);
 		expect(called).toBe(false);
@@ -193,7 +196,7 @@ describe("requireAuditLogReadOrDeploymentAdmin middleware", () => {
 		const mw = requireAuditLogReadOrDeploymentAdmin();
 		const { called, error } = await runMiddleware(
 			mw,
-			{ user: { id: "u1", email: "a@b.com" } },
+			{ user: { id: "u1", email: "a@example.com" } },
 			{ organizationId: "org-1" },
 		);
 		expect(called).toBe(false);
@@ -209,7 +212,7 @@ describe("requireAuditLogReadOrDeploymentAdmin middleware", () => {
 		const mw = requireAuditLogReadOrDeploymentAdmin();
 		const { called, error } = await runMiddleware(
 			mw,
-			{ user: { id: "u1", email: "a@b.com" } },
+			{ user: { id: "u1", email: "a@example.com" } },
 			{ organizationId: "org-1" },
 		);
 		expect(called).toBe(true);
@@ -222,7 +225,7 @@ describe("requireAuditLogReadOrDeploymentAdmin middleware", () => {
 		const mw = requireAuditLogReadOrDeploymentAdmin();
 		const { called, error } = await runMiddleware(
 			mw,
-			{ user: { id: "u1", email: "a@b.com" } },
+			{ user: { id: "u1", email: "a@example.com" } },
 			{ organizationId: "org-1" },
 		);
 		expect(called).toBe(true);
@@ -235,7 +238,7 @@ describe("requireAuditLogReadOrDeploymentAdmin middleware", () => {
 		const mw = requireAuditLogExportOrDeploymentAdmin();
 		const { called, error } = await runMiddleware(
 			mw,
-			{ user: { id: "u1", email: "a@b.com" } },
+			{ user: { id: "u1", email: "a@example.com" } },
 			{ organizationId: "org-1" },
 		);
 		expect(called).toBe(false);

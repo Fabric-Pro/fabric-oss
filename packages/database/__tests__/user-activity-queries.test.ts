@@ -57,8 +57,8 @@ beforeEach(() => {
 describe("listMemberActivity", () => {
 	it("clamps the member query to the organization and maps rows", async () => {
 		mocks.memberFindMany.mockResolvedValue([
-			makeMember("u1", "u1@x.com"),
-			makeMember("u2", "u2@x.com"),
+			makeMember("u1", "u1@example.com"),
+			makeMember("u2", "u2@example.com"),
 		]);
 		// First groupBy call = last logins (_max), second = counts (_count).
 		mocks.auditGroupBy.mockImplementation(async (args: any) =>
@@ -99,7 +99,7 @@ describe("listMemberActivity", () => {
 		expect(result.items[0]).toEqual({
 			userId: "u1",
 			name: "User u1",
-			email: "u1@x.com",
+			email: "u1@example.com",
 			image: null,
 			role: "member",
 			lastSeenAt: null,
@@ -112,7 +112,9 @@ describe("listMemberActivity", () => {
 	});
 
 	it("applies the range filter to the count query only", async () => {
-		mocks.memberFindMany.mockResolvedValue([makeMember("u1", "u1@x.com")]);
+		mocks.memberFindMany.mockResolvedValue([
+			makeMember("u1", "u1@example.com"),
+		]);
 		mocks.auditGroupBy.mockResolvedValue([]);
 
 		await listMemberActivity({
@@ -152,9 +154,9 @@ describe("listMemberActivity", () => {
 
 	it("paginates in-memory with offset/limit", async () => {
 		mocks.memberFindMany.mockResolvedValue([
-			makeMember("u1", "a@x.com"),
-			makeMember("u2", "b@x.com"),
-			makeMember("u3", "c@x.com"),
+			makeMember("u1", "a@example.com"),
+			makeMember("u2", "b@example.com"),
+			makeMember("u3", "c@example.com"),
 		]);
 		mocks.auditGroupBy.mockResolvedValue([]);
 
@@ -168,7 +170,7 @@ describe("listMemberActivity", () => {
 		});
 		expect(result.total).toBe(3);
 		expect(result.items).toHaveLength(1);
-		expect(result.items[0].email).toBe("c@x.com");
+		expect(result.items[0].email).toBe("c@example.com");
 	});
 
 	it("returns empty for an org with no members without querying audit_log", async () => {
@@ -193,7 +195,7 @@ describe("listMemberActivity", () => {
 				user: {
 					id: "u1",
 					name: "User u1",
-					email: "u1@x.com",
+					email: "u1@example.com",
 					image: null,
 					lastSeenAt: seen,
 				},
@@ -222,7 +224,7 @@ describe("listMemberActivity", () => {
 				user: {
 					id: "u1",
 					name: "Stale login, active now",
-					email: "active@x.com",
+					email: "active@example.com",
 					image: null,
 					lastSeenAt: new Date("2026-07-23T09:00:00.000Z"),
 				},
@@ -232,7 +234,7 @@ describe("listMemberActivity", () => {
 				user: {
 					id: "u2",
 					name: "Recent login, gone since",
-					email: "dormant@x.com",
+					email: "dormant@example.com",
 					image: null,
 					lastSeenAt: new Date("2026-05-01T09:00:00.000Z"),
 				},
@@ -262,8 +264,8 @@ describe("listMemberActivity", () => {
 		});
 
 		expect(result.items.map((i) => i.email)).toEqual([
-			"active@x.com",
-			"dormant@x.com",
+			"active@example.com",
+			"dormant@example.com",
 		]);
 	});
 });
@@ -283,7 +285,7 @@ describe("getMemberLoginHistory", () => {
 
 	it("buckets logins and returns recent events for a member", async () => {
 		mocks.memberFindUnique.mockResolvedValue(
-			makeMember("u1", "u1@x.com", "admin"),
+			makeMember("u1", "u1@example.com", "admin"),
 		);
 		mocks.auditFindMany.mockImplementation(async (args: any) =>
 			args.take === 20

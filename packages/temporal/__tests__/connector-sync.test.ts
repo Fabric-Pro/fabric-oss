@@ -2404,8 +2404,8 @@ describe("connector sync Gmail provider", () => {
 						payload: {
 							headers: [
 								{ name: "Subject", value: "PRD Review" },
-								{ name: "From", value: "pm@fabric.so" },
-								{ name: "To", value: "team@fabric.so" },
+								{ name: "From", value: "pm@example.com" },
+								{ name: "To", value: "team@example.com" },
 								{
 									name: "Date",
 									value: "Thu, 03 Apr 2026 10:00:00 +0000",
@@ -2507,7 +2507,7 @@ describe("connector sync Zendesk provider", () => {
 			},
 			credentials: {
 				domain: "acme",
-				email: "support@acme.com",
+				email: "support@example.com",
 				apiToken: "zd-token",
 			},
 		});
@@ -2556,7 +2556,7 @@ describe("connector sync Zendesk provider", () => {
 			},
 			credentials: {
 				domain: "acme",
-				email: "support@acme.com",
+				email: "support@example.com",
 				apiToken: "zd-token",
 			},
 			syncType: "full",
@@ -2615,7 +2615,7 @@ describe("connector sync Zendesk provider", () => {
 			},
 			credentials: {
 				domain: "acme",
-				email: "support@acme.com",
+				email: "support@example.com",
 				apiToken: "zd-token",
 			},
 			syncType: "full",
@@ -2671,7 +2671,7 @@ describe("connector sync Jira provider", () => {
 			},
 			credentials: {
 				domain: "acme.atlassian.net",
-				email: "pm@acme.com",
+				email: "pm@example.com",
 				apiToken: "jira-token",
 			},
 		});
@@ -2754,7 +2754,7 @@ describe("connector sync Jira provider", () => {
 			},
 			credentials: {
 				domain: "acme.atlassian.net",
-				email: "pm@acme.com",
+				email: "pm@example.com",
 				apiToken: "jira-token",
 			},
 			syncType: "full",
@@ -2819,7 +2819,7 @@ describe("connector sync Salesforce provider", () => {
 			},
 			credentials: {
 				domain: "acme.my.salesforce.com",
-				email: "integration@acme.com",
+				email: "integration@example.com",
 				apiToken: "sf-token",
 			},
 		});
@@ -2869,7 +2869,7 @@ describe("connector sync Salesforce provider", () => {
 			},
 			credentials: {
 				domain: "acme.my.salesforce.com",
-				email: "integration@acme.com",
+				email: "integration@example.com",
 				apiToken: "sf-token",
 			},
 			syncType: "full",

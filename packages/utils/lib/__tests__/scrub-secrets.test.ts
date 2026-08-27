@@ -53,12 +53,15 @@ describe("scrubSecrets", () => {
 	// do it.
 	it.each([
 		[
-			"Error: connect ECONNREFUSED postgresql://admin:hunter2@db.internal:5432/fabric",
+			"Error: connect ECONNREFUSED postgresql://admin:hunter2@db.invalid:5432/fabric",
 			"hunter2",
 		],
 		["datasource db url postgres://u:p4ssw0rd@10.0.0.5/app", "p4ssw0rd"],
 		["redis://default:sEcReT123@cache:6379", "sEcReT123"],
-		["mongodb+srv://root:topsecret@cluster0.mongodb.net/test", "topsecret"],
+		[
+			"mongodb+srv://root:topsecret@cluster0.mongodb.example/test",
+			"topsecret",
+		],
 		["amqps://svc:rabbitpw@broker:5671/vhost", "rabbitpw"],
 	])("redacts the password out of %s", (body, password) => {
 		const out = scrubSecrets(body);
@@ -68,10 +71,10 @@ describe("scrubSecrets", () => {
 
 	it("keeps the scheme, user and host — they are the diagnosis, not the secret", () => {
 		const out = scrubSecrets(
-			"connect ECONNREFUSED postgresql://admin:hunter2@db.internal:5432/fabric",
+			"connect ECONNREFUSED postgresql://admin:hunter2@db.invalid:5432/fabric",
 		);
 		expect(out).toContain("postgresql://admin:");
-		expect(out).toContain("@db.internal:5432/fabric");
+		expect(out).toContain("@db.invalid:5432/fabric");
 		expect(out).toContain("ECONNREFUSED");
 	});
 
@@ -81,7 +84,7 @@ describe("scrubSecrets", () => {
 		for (const url of [
 			"https://gitlab.com/api/v4/projects/1/pipeline",
 			"see https://docs.example.com/ci#setup for the fix",
-			"ssh://git@github.com/acme/store.git",
+			"ssh://git@github.example/acme/store.git",
 		]) {
 			expect(scrubSecrets(url)).toBe(url);
 		}

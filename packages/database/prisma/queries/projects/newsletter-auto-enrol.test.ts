@@ -54,8 +54,8 @@ describe("enrollProjectMembersAsSubscribers", () => {
 			userId: "owner-1",
 		});
 		getProjectMembers.mockResolvedValue([
-			member("owner@x.com", "owner-1"),
-			member("a@x.com"),
+			member("owner@example.com", "owner-1"),
+			member("a@example.com"),
 		]);
 
 		const res = await enrollProjectMembersAsSubscribers({
@@ -88,8 +88,8 @@ describe("enrollProjectMembersAsSubscribers", () => {
 			),
 		).toBe(true);
 		expect(arg.data.map((r) => r.email).sort()).toEqual([
-			"a@x.com",
-			"owner@x.com",
+			"a@example.com",
+			"owner@example.com",
 		]);
 		// fresh, distinct tokens
 		expect(arg.data[0].unsubscribeToken).not.toBe(
@@ -103,7 +103,9 @@ describe("enrollProjectMembersAsSubscribers", () => {
 			organizationId: null,
 			userId: "owner-1",
 		});
-		getProjectMembers.mockResolvedValue([member("owner@x.com", "owner-1")]);
+		getProjectMembers.mockResolvedValue([
+			member("owner@example.com", "owner-1"),
+		]);
 		subscriberCreateMany.mockResolvedValue({ count: 1 });
 
 		await enrollProjectMembersAsSubscribers({
@@ -129,9 +131,9 @@ describe("enrollProjectMembersAsSubscribers", () => {
 			userId: "o",
 		});
 		getProjectMembers.mockResolvedValue([
-			member(" A@X.com "),
-			member("a@x.com"),
-			member("b@x.com"),
+			member(" A@Example.com "),
+			member("a@example.com"),
+			member("b@example.com"),
 		]);
 		subscriberCreateMany.mockResolvedValue({ count: 2 });
 
@@ -143,8 +145,8 @@ describe("enrollProjectMembersAsSubscribers", () => {
 			data: Array<{ email: string }>;
 		};
 		expect(arg.data.map((r) => r.email).sort()).toEqual([
-			"a@x.com",
-			"b@x.com",
+			"a@example.com",
+			"b@example.com",
 		]);
 	});
 
@@ -157,7 +159,7 @@ describe("enrollProjectMembersAsSubscribers", () => {
 		settingsFindUnique.mockResolvedValue({
 			createdByUserId: "settings-admin",
 		});
-		getProjectMembers.mockResolvedValue([member("a@x.com")]);
+		getProjectMembers.mockResolvedValue([member("a@example.com")]);
 		subscriberCreateMany.mockResolvedValue({ count: 1 });
 
 		await enrollProjectMembersAsSubscribers({ projectId: "p1" });

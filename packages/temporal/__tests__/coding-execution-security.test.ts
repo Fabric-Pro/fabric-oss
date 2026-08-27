@@ -91,8 +91,8 @@ describe("security utilities", () => {
 
 	describe("validateWorkingDirectory", () => {
 		it("allows paths within base directory", () => {
-			const baseDir = "/home/user/projects";
-			const workingDirectory = "/home/user/projects/my-app";
+			const baseDir = "/tmp/projects";
+			const workingDirectory = "/tmp/projects/my-app";
 			const result = validateWorkingDirectory(
 				workingDirectory,
 				"KANBAN_LOCAL",
@@ -112,7 +112,7 @@ describe("security utilities", () => {
 		});
 
 		it("rejects paths outside base directory", () => {
-			const baseDir = "/home/user/projects";
+			const baseDir = "/tmp/projects";
 			expect(() =>
 				validateWorkingDirectory(
 					"/etc/passwd",
@@ -122,7 +122,7 @@ describe("security utilities", () => {
 			).toThrow(SessionValidationError);
 			expect(() =>
 				validateWorkingDirectory(
-					"/home/user/projects/../etc",
+					"/tmp/projects/../etc",
 					"KANBAN_LOCAL",
 					baseDir,
 				),
@@ -309,7 +309,7 @@ describe("security utilities", () => {
 
 		it("rejects suspicious URL patterns", () => {
 			expect(() =>
-				validateBackgroundAgentsUrl("https://example.com@evil.com"),
+				validateBackgroundAgentsUrl("https://example.com@evil.example"),
 			).toThrow(SessionValidationError);
 			expect(() =>
 				validateBackgroundAgentsUrl("https://example.com/path\x00"),

@@ -4,7 +4,8 @@ import {
 	getDatabaseAuthProvider,
 } from "../prisma/adapter-config";
 
-const URL = "postgresql://app@ep-test.databricks.com:5432/db?sslmode=require";
+const URL =
+	"postgresql://app@ep-test.databricks.example:5432/db?sslmode=require";
 const token = () => Promise.resolve("oauth-token");
 
 describe("getDatabaseAuthProvider", () => {

@@ -119,10 +119,10 @@ describe("notifySignupAttempt", () => {
 			mockSet.mockResolvedValueOnce("OK");
 			mockSet.mockResolvedValueOnce(null);
 
-			await notifySignupAttempt("Foo@Bar.com");
-			await notifySignupAttempt("foo@bar.com");
+			await notifySignupAttempt("Foo@Example.com");
+			await notifySignupAttempt("foo@example.com");
 
-			const expectedKey = sha256BucketKey("foo@bar.com");
+			const expectedKey = sha256BucketKey("foo@example.com");
 			const allSetKeys = mockSet.mock.calls.map((c) => c[0]);
 			expect(allSetKeys).toEqual([expectedKey, expectedKey]);
 		});

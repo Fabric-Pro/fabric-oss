@@ -153,7 +153,7 @@ describe("getInviteWelcomeWidgetData", () => {
 			}),
 		]);
 		const res = await getInviteWelcomeWidgetData(
-			"ME@x.com",
+			"ME@example.com",
 			"user-me",
 			null,
 		);
@@ -171,17 +171,17 @@ describe("getInviteWelcomeWidgetData", () => {
 
 	it("normalizes the email to lowercase for the query", async () => {
 		mockInvitationFindMany.mockResolvedValue([]);
-		await getInviteWelcomeWidgetData("ME@X.com", "user-me", null);
+		await getInviteWelcomeWidgetData("ME@example.com", "user-me", null);
 		expect(mockInvitationFindMany).toHaveBeenCalledWith(
 			expect.objectContaining({
-				where: expect.objectContaining({ email: "me@x.com" }),
+				where: expect.objectContaining({ email: "me@example.com" }),
 			}),
 		);
 	});
 
 	it("filters org vs personal via the project relation (XOR)", async () => {
 		mockInvitationFindMany.mockResolvedValue([]);
-		await getInviteWelcomeWidgetData("me@x.com", "user-me", "org-9");
+		await getInviteWelcomeWidgetData("me@example.com", "user-me", "org-9");
 		expect(mockInvitationFindMany).toHaveBeenCalledWith(
 			expect.objectContaining({
 				where: expect.objectContaining({
@@ -219,7 +219,7 @@ describe("getInviteWelcomeWidgetData", () => {
 			}),
 		]);
 		const res = await getInviteWelcomeWidgetData(
-			"me@x.com",
+			"me@example.com",
 			"user-me",
 			null,
 		);
@@ -235,7 +235,7 @@ describe("getInviteWelcomeWidgetData", () => {
 		]);
 		mockInvitationFindMany.mockResolvedValue([invite({ id: "a" })]);
 		const res = await getInviteWelcomeWidgetData(
-			"me@x.com",
+			"me@example.com",
 			"user-me",
 			null,
 		);
@@ -246,7 +246,7 @@ describe("getInviteWelcomeWidgetData", () => {
 		mockUserFindMany.mockResolvedValue([]);
 		mockInvitationFindMany.mockResolvedValue([invite({ id: "a" })]);
 		const res = await getInviteWelcomeWidgetData(
-			"me@x.com",
+			"me@example.com",
 			"user-me",
 			null,
 		);
@@ -256,7 +256,7 @@ describe("getInviteWelcomeWidgetData", () => {
 	it("returns null mostRecent and 0 count when there are no invites", async () => {
 		mockInvitationFindMany.mockResolvedValue([]);
 		const res = await getInviteWelcomeWidgetData(
-			"me@x.com",
+			"me@example.com",
 			"user-me",
 			null,
 		);
@@ -275,7 +275,7 @@ describe("getInviteWelcomeWidgetData — recent-member source", () => {
 			}),
 		]);
 		const res = await getInviteWelcomeWidgetData(
-			"me@x.com",
+			"me@example.com",
 			"user-me",
 			null,
 		);
@@ -293,7 +293,7 @@ describe("getInviteWelcomeWidgetData — recent-member source", () => {
 			memberRow({ projectId: "p-mem" }),
 		]);
 		const res = await getInviteWelcomeWidgetData(
-			"me@x.com",
+			"me@example.com",
 			"user-me",
 			null,
 		);
@@ -307,7 +307,7 @@ describe("getInviteWelcomeWidgetData — recent-member source", () => {
 		]);
 		mockMemberFindMany.mockResolvedValue([memberRow({ projectId: "dup" })]);
 		const res = await getInviteWelcomeWidgetData(
-			"me@x.com",
+			"me@example.com",
 			"user-me",
 			null,
 		);
@@ -323,7 +323,7 @@ describe("getInviteWelcomeWidgetData — recent-member source", () => {
 			memberRow({ projectId: "p-aaa", projectName: "Same", acceptedAt }),
 		]);
 		const res = await getInviteWelcomeWidgetData(
-			"me@x.com",
+			"me@example.com",
 			"user-me",
 			null,
 		);
@@ -346,7 +346,7 @@ describe("getInviteWelcomeWidgetData — recent-member source", () => {
 			}),
 		]);
 		const res = await getInviteWelcomeWidgetData(
-			"me@x.com",
+			"me@example.com",
 			"user-me",
 			null,
 		);
@@ -360,7 +360,7 @@ describe("getInviteWelcomeWidgetData — recent-member source", () => {
 		]);
 		mockInvitationFindMany.mockResolvedValue([]);
 		mockMemberFindMany.mockResolvedValue([]);
-		await getInviteWelcomeWidgetData("me@x.com", "user-me", null);
+		await getInviteWelcomeWidgetData("me@example.com", "user-me", null);
 		const expectedScope = {
 			OR: [
 				{ organizationId: null },
@@ -388,7 +388,7 @@ describe("getInviteWelcomeWidgetData — recent-member source", () => {
 		mockOrgMemberFindMany.mockResolvedValue([]);
 		mockInvitationFindMany.mockResolvedValue([]);
 		mockMemberFindMany.mockResolvedValue([]);
-		await getInviteWelcomeWidgetData("me@x.com", "user-me", null);
+		await getInviteWelcomeWidgetData("me@example.com", "user-me", null);
 		expect(mockInvitationFindMany).toHaveBeenCalledWith(
 			expect.objectContaining({
 				where: expect.objectContaining({ project: {} }),
@@ -399,7 +399,7 @@ describe("getInviteWelcomeWidgetData — recent-member source", () => {
 	it("org context keeps strict XOR for both sources and never queries userOrgIds", async () => {
 		mockInvitationFindMany.mockResolvedValue([]);
 		mockMemberFindMany.mockResolvedValue([]);
-		await getInviteWelcomeWidgetData("me@x.com", "user-me", "org-9");
+		await getInviteWelcomeWidgetData("me@example.com", "user-me", "org-9");
 		expect(mockOrgMemberFindMany).not.toHaveBeenCalled();
 		expect(mockMemberFindMany).toHaveBeenCalledWith(
 			expect.objectContaining({
@@ -422,7 +422,7 @@ describe("getUserPendingInviteForProject", () => {
 			project: { organizationId: "org-2" },
 		});
 		const res = await getUserPendingInviteForProject(
-			"ME@x.com",
+			"ME@example.com",
 			"user-me",
 			"proj-7",
 			"org-2",
@@ -436,7 +436,7 @@ describe("getUserPendingInviteForProject", () => {
 			expect.objectContaining({
 				where: expect.objectContaining({
 					projectId: "proj-7",
-					email: "me@x.com",
+					email: "me@example.com",
 					status: "PENDING",
 					project: { organizationId: "org-2" },
 				}),
@@ -447,7 +447,7 @@ describe("getUserPendingInviteForProject", () => {
 	it("returns null when there is no matching pending invite", async () => {
 		mockInvitationFindFirst.mockResolvedValue(null);
 		const res = await getUserPendingInviteForProject(
-			"me@x.com",
+			"me@example.com",
 			"user-me",
 			"proj-x",
 			null,
@@ -502,7 +502,7 @@ describe("getUserPendingInviteForProject — guest scoping", () => {
 		mockInvitationFindFirst.mockResolvedValue(null);
 		// NEW 4-arg signature: (email, userId, projectId, organizationId?)
 		await getUserPendingInviteForProject(
-			"me@x.com",
+			"me@example.com",
 			"user-me",
 			"proj-1",
 			null,
@@ -511,7 +511,7 @@ describe("getUserPendingInviteForProject — guest scoping", () => {
 			expect.objectContaining({
 				where: expect.objectContaining({
 					projectId: "proj-1",
-					email: "me@x.com",
+					email: "me@example.com",
 					project: {
 						OR: [
 							{ organizationId: null },

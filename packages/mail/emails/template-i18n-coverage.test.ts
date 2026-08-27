@@ -38,7 +38,7 @@ import { defaultLocale } from "../src/util/translations";
  * Matches a `mail.<template>.<key>` path that leaked into rendered output.
  *
  * The `\b` is load-bearing: without it this also matches ordinary copy like
- * `jane@gmail.co.uk` or `https://email.fabric.pro/x`, so the first fixture
+ * `jane@webmail.co.example` or `https://email.fabric.pro/x`, so the first fixture
  * with a two-label domain or a sending subdomain would fail the guard on
  * correct code. A real leak is always preceded by `>` or whitespace, both
  * non-word characters, so the boundary costs no coverage.

@@ -31,7 +31,7 @@ beforeEach(() => {
 		...baseExec,
 	} as any);
 	vi.mocked(db.user.findUnique).mockResolvedValue({
-		email: "owner@x.com",
+		email: "owner@example.com",
 	} as any);
 	vi.mocked(getNotificationPreferences).mockResolvedValue({
 		reportEmails: true,
@@ -47,7 +47,7 @@ it("returns context and claims on the happy personal path", async () => {
 		status: "COMPLETED",
 	});
 	expect(ctx).toMatchObject({
-		recipientEmail: "owner@x.com",
+		recipientEmail: "owner@example.com",
 		instanceName: "Q3 Report",
 		organizationSlug: null,
 	});

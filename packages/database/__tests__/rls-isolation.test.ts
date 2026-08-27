@@ -48,7 +48,7 @@ describe("PostgreSQL RLS Policies", () => {
 			create: {
 				id: TEST_USERS.userA,
 				name: "Test User A",
-				email: "user-a-rls@test.com",
+				email: "user-a-rls@example.com",
 				emailVerified: true,
 				onboardingComplete: false,
 				createdAt: now,
@@ -62,7 +62,7 @@ describe("PostgreSQL RLS Policies", () => {
 			create: {
 				id: TEST_USERS.userB,
 				name: "Test User B",
-				email: "user-b-rls@test.com",
+				email: "user-b-rls@example.com",
 				emailVerified: true,
 				onboardingComplete: false,
 				createdAt: now,

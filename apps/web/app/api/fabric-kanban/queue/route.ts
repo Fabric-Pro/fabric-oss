@@ -19,7 +19,7 @@ import { type NextRequest, NextResponse } from "next/server";
 
 function normalizeRepoUrl(raw: string): string {
 	let url = raw.trim();
-	// Convert SSH git@github.com:owner/repo.git → https://github.com/owner/repo
+	// Convert SSH git@<host>:owner/repo.git → https://<host>/owner/repo (host-agnostic)
 	url = url.replace(/^git@([^:]+):(.+)$/, "https://$1/$2");
 	// Strip trailing .git
 	url = url.replace(/\.git$/, "");

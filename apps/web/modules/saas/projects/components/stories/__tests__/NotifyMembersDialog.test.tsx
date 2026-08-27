@@ -54,19 +54,19 @@ import { NotifyMembersDialog } from "../NotifyMembersDialog";
 const MEMBERS = [
 	{
 		userId: "user-1", // current user — must be excluded
-		user: { name: "Alice", email: "alice@x.io", image: null },
+		user: { name: "Alice", email: "alice@example.com", image: null },
 		isGuest: false,
 		acceptedAt: null,
 	},
 	{
 		userId: "user-2",
-		user: { name: "Bob", email: "bob@x.io", image: null },
+		user: { name: "Bob", email: "bob@example.com", image: null },
 		isGuest: false,
 		acceptedAt: new Date(),
 	},
 	{
 		userId: "user-3",
-		user: { name: "Carol", email: "carol@x.io", image: null },
+		user: { name: "Carol", email: "carol@example.com", image: null },
 		isGuest: true,
 		acceptedAt: new Date(),
 	},

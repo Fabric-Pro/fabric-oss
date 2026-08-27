@@ -92,11 +92,9 @@ describe("provider selection", () => {
 describe("connectionEnv", () => {
 	it("splits a connection string into the variables pg_dump reads", () => {
 		expect(
-			connectionEnv(
-				"postgresql://alice:s3cret@db.example.com:6543/fabric",
-			),
+			connectionEnv("postgresql://alice:s3cret@db.example:6543/fabric"),
 		).toEqual({
-			PGHOST: "db.example.com",
+			PGHOST: "db.example",
 			PGPORT: "6543",
 			PGUSER: "alice",
 			PGPASSWORD: "s3cret",

@@ -52,20 +52,26 @@ describe("NewsletterForm", () => {
 	it("subscribes and shows the success state", async () => {
 		subscribe.mockResolvedValue({ success: true });
 		render(<NewsletterForm />);
-		await userEvent.type(screen.getByPlaceholderText("Email"), "a@b.com");
+		await userEvent.type(
+			screen.getByPlaceholderText("Email"),
+			"a@example.com",
+		);
 		await userEvent.click(
 			screen.getByRole("button", { name: "Subscribe" }),
 		);
 		await waitFor(() =>
 			expect(screen.getByText("Almost there")).toBeInTheDocument(),
 		);
-		expect(subscribe).toHaveBeenCalledWith({ email: "a@b.com" });
+		expect(subscribe).toHaveBeenCalledWith({ email: "a@example.com" });
 	});
 
 	it("shows the inline error when subscribe rejects", async () => {
 		subscribe.mockRejectedValue(new Error("nope"));
 		render(<NewsletterForm />);
-		await userEvent.type(screen.getByPlaceholderText("Email"), "a@b.com");
+		await userEvent.type(
+			screen.getByPlaceholderText("Email"),
+			"a@example.com",
+		);
 		await userEvent.click(
 			screen.getByRole("button", { name: "Subscribe" }),
 		);

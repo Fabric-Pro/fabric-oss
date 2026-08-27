@@ -240,12 +240,12 @@ describe("markStatus — error humanization", () => {
 		await service.markStatus({
 			analysisId: "an-1",
 			status: "FAILED",
-			error: "clone failed: https://x-access-token:ghs_SECRET@github.com/acme/widgets timed out",
+			error: "clone failed: https://x-access-token:ghs_SECRET@github.example/acme/widgets timed out",
 		});
 
 		const persisted = mockFailAnalysisRun.mock.calls[0]?.[1] as string;
 		expect(persisted).not.toContain("ghs_SECRET");
-		expect(persisted).toContain("***@github.com");
+		expect(persisted).toContain("***@github.example");
 	});
 
 	it("preserves a null error", async () => {

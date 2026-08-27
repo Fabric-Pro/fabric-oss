@@ -72,7 +72,9 @@ beforeAll(() => {
 
 beforeEach(() => {
 	membersFn.mockReset().mockResolvedValue({
-		members: [{ userId: "u1", user: { name: "Dave", email: "k@x.com" } }],
+		members: [
+			{ userId: "u1", user: { name: "Dave", email: "k@example.com" } },
+		],
 	});
 });
 

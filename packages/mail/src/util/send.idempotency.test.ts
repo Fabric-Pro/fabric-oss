@@ -16,7 +16,7 @@ describe("sendEmail idempotencyKey (template path)", () => {
 	it("forwards idempotencyKey to the provider", async () => {
 		sendSpy.mockClear();
 		await sendEmail({
-			to: "a@b.com",
+			to: "a@example.com",
 			templateId: "releaseNotesNewsletter",
 			// @ts-expect-error context shape intentionally unchecked; getTemplate is mocked
 			context: {},

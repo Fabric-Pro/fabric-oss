@@ -139,7 +139,7 @@ describe("prepareRunForIngestion", () => {
 						name: "login succeeds",
 						rawStatus: "failed",
 						failureMessage:
-							"PrismaClientInitializationError: can't reach postgresql://fabric:hunter2@db.internal:5432/app",
+							"PrismaClientInitializationError: can't reach postgresql://fabric:hunter2@db.invalid:5432/app",
 					},
 				],
 			},
@@ -150,6 +150,6 @@ describe("prepareRunForIngestion", () => {
 		const message = out.results?.[0]?.failureMessage ?? "";
 		expect(message).not.toContain("hunter2");
 		// Host and database still identify WHICH datasource failed.
-		expect(message).toContain("@db.internal:5432/app");
+		expect(message).toContain("@db.invalid:5432/app");
 	});
 });

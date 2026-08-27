@@ -130,8 +130,8 @@ describe("ProjectInvitationModal — email_mismatch switch CTA", () => {
 		role: "PROJECT_MEMBER",
 		state: {
 			type: "email_mismatch" as const,
-			invitationEmail: "b@x.com",
-			currentEmail: "a@x.com",
+			invitationEmail: "b@example.com",
+			currentEmail: "a@example.com",
 		},
 	};
 

@@ -246,7 +246,7 @@ describe("revokeEmailChangeHandler", () => {
 	it("(l) marks the {oldEmail, newEmail} tuple as revoked so JWT 2 is rejected", async () => {
 		const token = makeToken({
 			oldEmail: "owner@example.com",
-			newEmail: "attacker@evil.com",
+			newEmail: "attacker@evil.example",
 		});
 
 		await revokeEmailChangeHandler(token, makeDeps());
@@ -254,7 +254,7 @@ describe("revokeEmailChangeHandler", () => {
 		expect(mockMarkEmailChangeRevoked).toHaveBeenCalledOnce();
 		expect(mockMarkEmailChangeRevoked).toHaveBeenCalledWith(
 			"owner@example.com",
-			"attacker@evil.com",
+			"attacker@evil.example",
 		);
 	});
 

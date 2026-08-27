@@ -31,7 +31,7 @@ export const resendPlugin: IntegrationPlugin = {
 			id: "fromEmail",
 			label: "From Email",
 			type: "email",
-			placeholder: "noreply@yourdomain.com",
+			placeholder: "noreply@yourdomain.example",
 			helpText:
 				"The email address to send from (must be verified in Resend)",
 			configKey: "fromEmail",

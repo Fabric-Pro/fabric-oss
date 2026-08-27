@@ -72,7 +72,7 @@ vi.mock("../../../../../orpc/procedures", () => {
 import "../cancel-execution";
 
 const ctx = {
-	user: { id: "u1", email: "u@x.com" },
+	user: { id: "u1", email: "u@example.com" },
 	session: { id: "s1", activeOrganizationId: null },
 };
 

@@ -214,7 +214,7 @@ test.describe("Feature export — bulk (kanban selection action bar)", () => {
 			throw new Error("download produced no local path");
 		}
 		const buffer = readFileSync(path);
-		expect(buffer.slice(0, 4).toString("binary")).toBe("PK");
+		expect(buffer.slice(0, 4).toString("binary")).toBe("PK\x03\x04");
 
 		const entries = listZipEntries(buffer);
 		expect(entries).toContain("MANIFEST.txt");

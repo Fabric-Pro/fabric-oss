@@ -91,7 +91,7 @@ describe.skipIf(!HAS_DB)(
 				create: {
 					id: TEST_USER_ID,
 					name: "Test User RLS Incidents",
-					email: "rls-incidents@test.com",
+					email: "rls-incidents@example.com",
 					emailVerified: true,
 					onboardingComplete: false,
 					createdAt: now,

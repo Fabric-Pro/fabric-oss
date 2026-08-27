@@ -100,11 +100,11 @@ beforeEach(() => {
 describe("LoginForm — invite account mismatch guard", () => {
 	it("does NOT auto-redirect and shows the switch panel when signed in as a different account", async () => {
 		useSessionMock.mockReturnValue({
-			user: { email: "a@x.com" },
+			user: { email: "a@example.com" },
 			loaded: true,
 		});
 
-		render(<LoginForm invitationId="inv-1" email="b@x.com" />);
+		render(<LoginForm invitationId="inv-1" email="b@example.com" />);
 
 		// The blind redirect to /organization-invitation/inv-1 must not fire.
 		expect(replaceMock).not.toHaveBeenCalled();
@@ -125,7 +125,7 @@ describe("LoginForm — invite account mismatch guard", () => {
 
 	it("re-enables the switch button and does NOT reload when sign-out fails", async () => {
 		useSessionMock.mockReturnValue({
-			user: { email: "a@x.com" },
+			user: { email: "a@example.com" },
 			loaded: true,
 		});
 
@@ -142,7 +142,7 @@ describe("LoginForm — invite account mismatch guard", () => {
 			},
 		);
 
-		render(<LoginForm invitationId="inv-1" email="b@x.com" />);
+		render(<LoginForm invitationId="inv-1" email="b@example.com" />);
 
 		const switchButton = screen.getByRole("button", {
 			name: /auth\.login\.accountMismatch\.switchAccount/,
@@ -161,11 +161,11 @@ describe("LoginForm — invite account mismatch guard", () => {
 
 	it("auto-redirects (no regression) when signed in as the invited account", () => {
 		useSessionMock.mockReturnValue({
-			user: { email: "b@x.com" },
+			user: { email: "b@example.com" },
 			loaded: true,
 		});
 
-		render(<LoginForm invitationId="inv-1" email="b@x.com" />);
+		render(<LoginForm invitationId="inv-1" email="b@example.com" />);
 
 		expect(replaceMock).toHaveBeenCalledWith(
 			"/organization-invitation/inv-1",
@@ -177,7 +177,7 @@ describe("LoginForm — invite account mismatch guard", () => {
 
 	it("auto-redirects to the default target when authenticated with no invite email", () => {
 		useSessionMock.mockReturnValue({
-			user: { email: "a@x.com" },
+			user: { email: "a@example.com" },
 			loaded: true,
 		});
 

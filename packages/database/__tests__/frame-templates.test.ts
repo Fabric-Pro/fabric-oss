@@ -30,7 +30,7 @@ beforeAll(async () => {
 	const now = new Date();
 	await db.$executeRaw(Prisma.sql`
 		INSERT INTO "user" (id, name, email, "emailVerified", "onboardingComplete", "createdAt", "updatedAt")
-		VALUES (${USER_ID}, ${"Test Templates"}, ${"templates@test.com"}, true, false, ${now}, ${now})
+		VALUES (${USER_ID}, ${"Test Templates"}, ${"templates@example.com"}, true, false, ${now}, ${now})
 		ON CONFLICT (id) DO NOTHING
 	`);
 	await db.$executeRaw(Prisma.sql`

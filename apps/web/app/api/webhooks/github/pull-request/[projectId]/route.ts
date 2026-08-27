@@ -47,7 +47,7 @@ function rateLimitKey(request: NextRequest, projectId: string): string {
 	if (client === "unknown") {
 		client = createHash("sha256")
 			.update(
-				`${request.headers.get("user-agent") ?? ""}${request.headers.get("accept-language") ?? ""}`,
+				`${request.headers.get("user-agent") ?? ""}\x1f${request.headers.get("accept-language") ?? ""}`,
 			)
 			.digest("hex")
 			.slice(0, 16);
