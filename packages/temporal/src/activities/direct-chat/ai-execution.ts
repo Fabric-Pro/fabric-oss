@@ -73,7 +73,11 @@ import type { McpToolInfo } from "./mcp-tools";
 import { extractReasoningText } from "./reasoning-stream";
 import { extractStreamErrorMessage } from "./stream-error";
 import { resolveStreamOutcome } from "./stream-outcome";
-import { capToolSet, validateMcpToolSet } from "./tool-payload-safety";
+import {
+	capToolSet,
+	summarizeOmittedTools,
+	validateMcpToolSet,
+} from "./tool-payload-safety";
 
 const logger = {
 	info: (message: string, data?: Record<string, unknown>) =>
@@ -933,24 +937,57 @@ export async function executeDirectChatActivity(
 	// combined MCP payload so a large/invalid tool set can't fail the model call.
 	// Built-in / workflow / skill tools are merged separately below and are not
 	// subject to this cap.
+	// The count cap is about the model's ability to choose well from a long
+	// list, not payload size; with the round-robin split below it works out at
+	// a dozen tools per server for a four-server selection.
 	const MAX_MCP_TOOLS = 48;
-	const MAX_MCP_SCHEMA_BYTES = 16_000;
+	// 16_000 was the original conservative guess and it was far too tight: a
+	// single server's schemas average ~800 bytes per tool, so four selected
+	// servers lost two of them outright (Fizzy #2040). The orchestrator engine
+	// runs the same provider with no byte cap at all and has been observed
+	// carrying 142 MCP tools, so a ceiling four times higher is still well
+	// inside what the provider takes, while keeping #1644's guard against a
+	// runaway payload. Invalid schemas — #1644's other half — are dropped by
+	// `validateMcpToolSet` regardless of this number.
+	const MAX_MCP_SCHEMA_BYTES = 64_000;
 	const mcpValidation = validateMcpToolSet(mcpTools);
 	if (mcpValidation.dropped.length > 0) {
 		logger.warn("Dropped invalid MCP tool schemas", {
 			dropped: mcpValidation.dropped,
 		});
 	}
+	const serverOf = (toolName: string) =>
+		toolToServerMap[toolName]?.serverName ?? "Unknown server";
 	const mcpCapped = capToolSet(mcpValidation.tools, {
 		maxTools: MAX_MCP_TOOLS,
 		maxTotalSchemaBytes: MAX_MCP_SCHEMA_BYTES,
 		precomputedBytes: mcpValidation.sizes,
+		// Share the budget between the servers the user selected. Spending it
+		// in iteration order let the oldest config take all of it and left
+		// later servers with nothing, while the deck still showed them as
+		// active (Fizzy #2040).
+		groupOf: serverOf,
 	});
+	// A server the user selected that reaches the model with none — or only
+	// some — of its tools has to be named in the prompt below, or the model
+	// reports the truncated list as its full capability and tells the user the
+	// server isn't connected at all.
+	const omittedServerSummary = summarizeOmittedTools(
+		[...mcpValidation.dropped, ...mcpCapped.dropped],
+		Object.keys(mcpCapped.tools),
+		serverOf,
+	);
 	if (mcpCapped.dropped.length > 0) {
 		logger.warn("Capped MCP tool payload over budget", {
 			droppedCount: mcpCapped.dropped.length,
 			dropped: mcpCapped.dropped,
 			keptCount: Object.keys(mcpCapped.tools).length,
+			budgetBytes: MAX_MCP_SCHEMA_BYTES,
+			requestedBytes: Object.values(mcpValidation.sizes).reduce(
+				(total, size) => total + size,
+				0,
+			),
+			affectedServers: omittedServerSummary,
 		});
 	}
 	mcpTools = mcpCapped.tools;
@@ -1020,6 +1057,17 @@ AVAILABLE MCP TOOLS:
 ${mcpToolNames.map((name) => `  • ${name}`).join("\n")}
 
 CRITICAL: When the user asks you to draw, create a diagram, visualize, sketch, or generate any visual content, call the appropriate MCP tool immediately. Never explain how to use the tool — call it.`
+		: ""
+}
+${
+	// Deliberately outside the `mcpToolsEnabled` branch: when the budget drops
+	// EVERY MCP tool that branch renders nothing, and the worst case — the one
+	// where the user is most sure their servers are connected — would be the
+	// one turn that says nothing about them.
+	omittedServerSummary.length > 0
+		? `- SOME CONNECTED TOOLS ARE NOT AVAILABLE THIS TURN. These servers are connected, but some or all of their tools could not be included:
+${omittedServerSummary.map((entry) => `  • ${entry}`).join("\n")}
+If the user asks for something one of them does, say those tools were left out of this turn because too many servers are enabled at once, and suggest they turn some off in the chat's tool selector. Never tell them the server is not connected — it is.`
 		: ""
 }
 ${toolsEnabled && hasWorkflowTools ? "- User workflows can be listed and executed." : ""}

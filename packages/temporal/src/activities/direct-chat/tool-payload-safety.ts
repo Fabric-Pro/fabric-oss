@@ -105,13 +105,27 @@ export interface CapOptions {
 	 * not present in this map (e.g. pinned/built-in tools).
 	 */
 	precomputedBytes?: Record<string, number>;
+	/**
+	 * Groups tools that compete for the same budget — in practice the MCP
+	 * server a tool came from. When provided, the budget is shared between
+	 * groups round-robin instead of being spent in iteration order, so a
+	 * server that sorts late still reaches the model.
+	 *
+	 * Without it, one server's tools can consume the whole budget and every
+	 * later server contributes nothing, while the UI still reports it as
+	 * connected (Fizzy #2040).
+	 */
+	groupOf?: (name: string) => string;
 }
 
 /**
  * Caps a tool set by count and approximate combined-schema size. Pinned tools
- * (per `alwaysKeep`) are retained unconditionally; remaining tools are added in
- * order until a limit is reached. Dropped tools are reported, never silently
- * removed.
+ * (per `alwaysKeep`) are retained unconditionally. Dropped tools are reported,
+ * never silently removed.
+ *
+ * Without `groupOf` the remaining tools are added in iteration order until a
+ * limit is reached. With it, each group contributes one tool per round, so the
+ * budget is shared rather than claimed by whoever iterates first.
  */
 export function capToolSet(
 	tools: Record<string, unknown>,
@@ -127,22 +141,95 @@ export function capToolSet(
 	let count = 0;
 	let bytes = 0;
 
+	const sizeOf = (name: string, def: unknown) =>
+		opts.precomputedBytes?.[name] ?? approxSchemaBytes(def);
+
 	for (const [name, def] of pinned) {
 		kept[name] = def;
 		count++;
-		bytes += opts.precomputedBytes?.[name] ?? approxSchemaBytes(def);
+		bytes += sizeOf(name, def);
 	}
 
-	for (const [name, def] of rest) {
-		const size = opts.precomputedBytes?.[name] ?? approxSchemaBytes(def);
+	const admit = (name: string, def: unknown) => {
+		const size = sizeOf(name, def);
 		if (count >= opts.maxTools || bytes + size > opts.maxTotalSchemaBytes) {
 			dropped.push({ name, reason: "over_tool_budget" });
-			continue;
+			return;
 		}
 		kept[name] = def;
 		count++;
 		bytes += size;
+	};
+
+	if (!opts.groupOf) {
+		for (const [name, def] of rest) {
+			admit(name, def);
+		}
+		return { tools: kept, dropped };
+	}
+
+	// Round-robin: one tool per group per round, preserving each group's own
+	// order. Within a round the cheapest schema goes first — when the budget
+	// dies mid-round that leaves the smallest tools standing, so the most
+	// groups keep representation. Group order breaks size ties, which makes
+	// the outcome deterministic given a stable caller-side sort.
+	const groupOf = opts.groupOf;
+	const queues = new Map<string, Array<[string, unknown]>>();
+	for (const entry of rest) {
+		const group = groupOf(entry[0]);
+		const queue = queues.get(group);
+		if (queue) {
+			queue.push(entry);
+		} else {
+			queues.set(group, [entry]);
+		}
+	}
+
+	const groupOrder = [...queues.keys()];
+	let cursor = 0;
+	while (true) {
+		const round: Array<[string, unknown]> = [];
+		for (const group of groupOrder) {
+			const entry = queues.get(group)?.[cursor];
+			if (entry) {
+				round.push(entry);
+			}
+		}
+		if (round.length === 0) {
+			break;
+		}
+		round.sort((a, b) => sizeOf(a[0], a[1]) - sizeOf(b[0], b[1]));
+		for (const [name, def] of round) {
+			admit(name, def);
+		}
+		cursor++;
 	}
 
 	return { tools: kept, dropped };
+}
+
+/**
+ * Describes, per MCP server, what a caller's tool set lost to validation or the
+ * budget — so the prompt can say "these tools were left out" instead of letting
+ * the model present a truncated list as its whole capability (Fizzy #2040).
+ *
+ * Returns one entry per affected server, in the order the drops were reported,
+ * or an empty array when nothing was lost.
+ */
+export function summarizeOmittedTools(
+	dropped: ToolDropInfo[],
+	keptToolNames: string[],
+	serverOf: (toolName: string) => string,
+): string[] {
+	const omittedByServer = new Map<string, number>();
+	for (const drop of dropped) {
+		const server = serverOf(drop.name);
+		omittedByServer.set(server, (omittedByServer.get(server) ?? 0) + 1);
+	}
+	const survivingServers = new Set(keptToolNames.map(serverOf));
+	return [...omittedByServer.entries()].map(([server, omitted]) =>
+		survivingServers.has(server)
+			? `${server} (${omitted} of its tools omitted)`
+			: `${server} (all of its tools omitted)`,
+	);
 }
