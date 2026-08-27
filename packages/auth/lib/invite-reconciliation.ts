@@ -22,6 +22,7 @@
 import { seedDefaultMcpConfigsForTenant } from "@repo/agent-core/backend";
 import {
 	db,
+	enrollProjectMemberIfNewsletterEnabled,
 	type ReconcileCreatedOrgMembership,
 	reconcilePendingInvitesForUser,
 	recordAudit,
@@ -227,9 +228,21 @@ export async function runInviteReconciliationForUser(params: {
 			await runOrgGrantSideEffects({ user, grant, trigger });
 		}
 
-		// Project grants: guest-scoped — log only, no side effects (parity
-		// with the manual project accept path, which records no audit row
-		// and has no seat impact).
+		// Project grants: guest-scoped — no audit row and no seat impact, in
+		// parity with the manual project accept path. The one side effect
+		// both paths share is newsletter enrolment (Fizzy #2290), so a member
+		// who signs up straight into an already-enabled project shows up in
+		// the settings recipient list immediately rather than at the next
+		// send. It lives here rather than in the core because
+		// `invite-reconciliation.ts` is a pure data layer by contract — this
+		// wrapper is where its side effects belong.
+		//
+		// Only created memberships are looped. `resolveProjectInvite` reports
+		// its own P2002 loser as `already_member` (in `skipped`, carrying no
+		// projectId), and that case needs no hook: a P2002 there means either
+		// a parallel reconciliation runner won the create — and it appears in
+		// its own `createdProjectMemberships` — or an invite-link accept won,
+		// and that path enrols from every branch.
 		for (const grant of result.createdProjectMemberships) {
 			logger.info(
 				"[Auth] Invite reconciliation created project membership",
@@ -242,6 +255,25 @@ export async function runInviteReconciliationForUser(params: {
 					invitationIds: [grant.invitationId],
 				},
 			);
+			// Best-effort: the membership is already committed, and a
+			// newsletter failure must not fail the sign-in hook that got us
+			// here. The send-time reconcile is the backstop.
+			try {
+				await enrollProjectMemberIfNewsletterEnabled({
+					projectId: grant.projectId,
+					email,
+				});
+			} catch (error) {
+				logger.error(
+					"[Auth] Invite reconciliation newsletter enrolment failed",
+					{
+						trigger,
+						userId,
+						projectId: grant.projectId,
+						error,
+					},
+				);
+			}
 		}
 
 		// Completion summary. The all-zero no-op logs at debug to keep

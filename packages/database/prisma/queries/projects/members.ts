@@ -9,8 +9,21 @@
  * matches the authenticated user's email.
  */
 
+import { logger } from "@repo/logs";
 import { db, Prisma, type ProjectMemberRole } from "../../client";
+// Both of these import back from this module (`function-tags.ts` and
+// `newsletter.ts` each pull in `getProjectMembers`), so both edges are import
+// cycles. The function-tags one predates this file's current shape and ships
+// today; the newsletter one was added alongside enrol-on-join.
+//
+// They are safe because no cyclic binding is touched during module evaluation
+// — every use is inside an async function body, by which point both modules
+// are fully initialized and ESM's live bindings resolve. Breaking them would
+// mean extracting `getProjectMembers` into a third module, which is a
+// repo-wide change to a shared query surface rather than anything local to a
+// caller. Do that deliberately if it is ever wanted, not as a side effect.
 import { applyGlobalDefaultFunctionTags } from "./function-tags";
+import { enrollProjectMemberIfNewsletterEnabled } from "./newsletter";
 
 /**
  * Invite a user to collaborate on a project.
@@ -239,6 +252,57 @@ async function consumePendingProjectInvitation(
 }
 
 /**
+ * Accept a project invitation, then enrol the project's members into its
+ * newsletter if one is enabled (Fizzy #2290).
+ *
+ * The enrolment runs on EVERY path that yields a membership — the genuine
+ * create, both idempotent already-a-member returns, and the P2002 recovery
+ * branch — not only on the create. Two runners can both see no member; one
+ * commits and the other lands in P2002. If only the winner enrolled and it
+ * then died, nobody would write the subscriber row, and the member would stay
+ * missing from the settings recipient list until the next send. Enrolment is
+ * idempotent, so the redundant attempts cost a couple of indexed reads.
+ *
+ * It runs AFTER the transaction commits, and best-effort. A membership is the
+ * user's access to the project; a newsletter outage must not be able to take
+ * it away. Placing the call inside the transaction would not help either — in
+ * PostgreSQL a failed statement aborts the enclosing transaction whatever the
+ * surrounding try/catch does.
+ *
+ * Residual, accepted: if this process exits between the commit and the
+ * enrolment call, no subscriber row is written until the next send. That is
+ * the pre-#2290 state — the member still receives the newsletter, because the
+ * send activity reconciles members before every send; only the settings list
+ * is briefly stale, and it self-heals on the next send.
+ */
+export async function acceptProjectInvitation(
+	invitationId: string,
+	userId: string,
+	userEmail: string,
+) {
+	const member = await acceptProjectInvitationCore(
+		invitationId,
+		userId,
+		userEmail,
+	);
+
+	try {
+		await enrollProjectMemberIfNewsletterEnabled({
+			projectId: member.projectId,
+			email: userEmail,
+		});
+	} catch (error) {
+		logger.error("newsletter: member enrolment on project join failed", {
+			projectId: member.projectId,
+			userId,
+			error,
+		});
+	}
+
+	return member;
+}
+
+/**
  * Accept a project invitation.
  *
  * SECURITY: requires `userEmail` (the authenticated user's verified email).
@@ -259,7 +323,7 @@ async function consumePendingProjectInvitation(
  * with no membership, declined, or accepted with no surviving membership —
  * keep the original error behavior (same message).
  */
-export async function acceptProjectInvitation(
+async function acceptProjectInvitationCore(
 	invitationId: string,
 	userId: string,
 	userEmail: string,

@@ -611,6 +611,56 @@ jobs:
           }
           EOF
 
+      - name: Run the newsletter enrol-on-join suite against real Postgres
+        # Fizzy #2290. The mock-based wiring suites prove that the accept path
+        # CALLS the enrolment helper; only this one proves a subscriber row
+        # lands, carries the project's XOR tenant columns, and leaves an
+        # UNSUBSCRIBED tombstone alone. Without this listing the suite
+        # self-skips on the unit-tests placeholder URL and never executes
+        # anywhere — a Prisma write or tenant-column regression would ship
+        # green.
+        run: |
+          pnpm --filter @repo/database exec vitest run             __tests__/newsletter-enrol-on-join.test.ts             --passWithNoTests=false             --reporter=dot             --reporter=json --outputFile=newsletter-enrol-results.json
+
+      - name: 'Guard: assert the enrol-on-join suite actually executed (zero skips)'
+        # Same anti-false-pass shape as the guards above: a self-skip is
+        # exactly the failure this suite exists to rule out, so it must fail
+        # the job rather than pass quietly.
+        run: |
+          node <<'EOF'
+          const fs = require("node:fs");
+          const path = "packages/database/newsletter-enrol-results.json";
+          const report = JSON.parse(fs.readFileSync(path, "utf8"));
+          const files = report.testResults?.length ?? 0;
+          const passed = report.numPassedTests ?? 0;
+          const skipped =
+            (report.numSkippedTests ?? 0) + (report.numPendingTests ?? 0);
+          console.log(
+            `newsletter enrol-on-join: ${files} file(s), ${passed} passed, ${skipped} skipped`,
+          );
+          if (files !== 1) {
+            console.error(
+              `::error::Expected exactly 1 test file to run, got ${files}.`,
+            );
+            process.exit(1);
+          }
+          if (skipped > 0) {
+            console.error(
+              `::error::${skipped} test(s) were skipped — the suite self-skipped instead of executing against Postgres, so a green run here would be a false pass.`,
+            );
+            process.exit(1);
+          }
+          // Bump this floor whenever the suite gains a test. A floor left
+          // behind the real count still passes and quietly stops guarding
+          // against a test being dropped.
+          if (passed < 5) {
+            console.error(
+              `::error::Only ${passed} test(s) passed — expected at least 5.`,
+            );
+            process.exit(1);
+          }
+          EOF
+
       - name: Run the feature-maturation query suite against real Postgres
         env:
           RUN_DB_INTEGRATION: '1'

@@ -23,6 +23,7 @@ vi.mock("./members", () => ({
 }));
 
 import {
+	enrollProjectMemberIfNewsletterEnabled,
 	enrollProjectMembersAsSubscribers,
 	removeNewsletterSubscriber,
 } from "./newsletter";
@@ -204,6 +205,110 @@ describe("enrollProjectMembersAsSubscribers", () => {
 			await enrollProjectMembersAsSubscribers({
 				projectId: "p1",
 				createdByUserId: "a",
+			}),
+		).toEqual({ enrolled: 0 });
+		expect(subscriberCreateMany).not.toHaveBeenCalled();
+	});
+});
+
+describe("enrollProjectMemberIfNewsletterEnabled", () => {
+	beforeEach(() => {
+		projectFindUnique.mockReset().mockResolvedValue({
+			id: "p1",
+			organizationId: "org-9",
+			userId: "owner-1",
+		});
+		settingsFindUnique.mockReset();
+		subscriberCreateMany.mockReset().mockResolvedValue({ count: 1 });
+		getProjectMembers
+			.mockReset()
+			.mockResolvedValue([member("a@example.com")]);
+	});
+
+	it("enrols only the joining address, without reading the roster", async () => {
+		settingsFindUnique.mockResolvedValue({
+			enabled: true,
+			createdByUserId: "settings-admin",
+		});
+
+		expect(
+			await enrollProjectMemberIfNewsletterEnabled({
+				projectId: "p1",
+				email: " Newcomer@Example.com ",
+			}),
+		).toEqual({ enrolled: 1 });
+
+		expect(subscriberCreateMany).toHaveBeenCalledTimes(1);
+		const arg = subscriberCreateMany.mock.calls[0][0] as {
+			data: Array<{
+				email: string;
+				createdByUserId: string;
+				organizationId: string | null;
+				userId: string | null;
+				status: string;
+			}>;
+			skipDuplicates: boolean;
+		};
+		// Exactly one row, normalized. This runs on a request path, so an
+		// accept must not cost a roster read plus an N-row insert payload for
+		// a project of N members — that is what the roster-wide pass at
+		// enable-time and send-time is for.
+		expect(getProjectMembers).not.toHaveBeenCalled();
+		expect(arg.data).toHaveLength(1);
+		expect(arg.data[0].email).toBe("newcomer@example.com");
+		// Create-if-absent: an UNSUBSCRIBED tombstone must survive a re-join.
+		expect(arg.skipDuplicates).toBe(true);
+		// Audit actor is the admin who configured the newsletter, never the
+		// member who just joined.
+		expect(arg.data[0].createdByUserId).toBe("settings-admin");
+		// XOR tenant fields come from the project, not the joining member.
+		expect(arg.data[0]).toMatchObject({
+			organizationId: "org-9",
+			userId: null,
+			status: "ACTIVE",
+		});
+	});
+
+	it("no-ops when the newsletter is disabled", async () => {
+		settingsFindUnique.mockResolvedValue({
+			enabled: false,
+			createdByUserId: "settings-admin",
+		});
+
+		expect(
+			await enrollProjectMemberIfNewsletterEnabled({
+				projectId: "p1",
+				email: "a@example.com",
+			}),
+		).toEqual({ enrolled: 0 });
+		expect(subscriberCreateMany).not.toHaveBeenCalled();
+		// The disabled path must cost one indexed read and nothing else.
+		expect(projectFindUnique).not.toHaveBeenCalled();
+		expect(getProjectMembers).not.toHaveBeenCalled();
+	});
+
+	it("no-ops when the project has no newsletter settings row", async () => {
+		settingsFindUnique.mockResolvedValue(null);
+
+		expect(
+			await enrollProjectMemberIfNewsletterEnabled({
+				projectId: "p1",
+				email: "a@example.com",
+			}),
+		).toEqual({ enrolled: 0 });
+		expect(subscriberCreateMany).not.toHaveBeenCalled();
+	});
+
+	it("no-ops on a blank address rather than inserting an empty email", async () => {
+		settingsFindUnique.mockResolvedValue({
+			enabled: true,
+			createdByUserId: "settings-admin",
+		});
+
+		expect(
+			await enrollProjectMemberIfNewsletterEnabled({
+				projectId: "p1",
+				email: "   ",
 			}),
 		).toEqual({ enrolled: 0 });
 		expect(subscriberCreateMany).not.toHaveBeenCalled();

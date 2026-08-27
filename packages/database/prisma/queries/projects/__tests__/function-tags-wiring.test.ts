@@ -22,6 +22,16 @@ vi.mock("../function-tags", () => ({
 	applyGlobalDefaultFunctionTags: mockApplyGlobalDefaultFunctionTags,
 }));
 
+// `acceptProjectInvitation` also enrols newsletter subscribers after commit
+// (Fizzy #2290). Stub it out here: this suite's `db` stand-in carries only the
+// tables the copy-on-join paths touch, so the real helper would throw, get
+// swallowed by the best-effort catch, and leave an error log in a suite that
+// has nothing to do with newsletters. Its own wiring lives in
+// `newsletter-membership-wiring.test.ts`.
+vi.mock("../newsletter", () => ({
+	enrollProjectMemberIfNewsletterEnabled: vi.fn(),
+}));
+
 const { dbMock } = vi.hoisted(() => ({
 	dbMock: {
 		projectInvitation: {

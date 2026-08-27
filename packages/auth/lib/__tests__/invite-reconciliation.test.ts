@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@repo/database", () => ({
 	db: { user: { findUnique: vi.fn() } },
+	enrollProjectMemberIfNewsletterEnabled: vi.fn(),
 	reconcilePendingInvitesForUser: vi.fn(),
 	recordAudit: vi.fn(),
 }));
@@ -26,6 +27,7 @@ vi.mock("../organization", () => ({
 import { seedDefaultMcpConfigsForTenant } from "@repo/agent-core/backend";
 import {
 	db,
+	enrollProjectMemberIfNewsletterEnabled,
 	type ReconcilePendingInvitesResult,
 	reconcilePendingInvitesForUser,
 	recordAudit,
@@ -255,7 +257,7 @@ describe("runInviteReconciliationForUser — org-grant side effects", () => {
 		expect(updateSeatsInOrganizationSubscription).not.toHaveBeenCalled();
 	});
 
-	it("fires no side effects for project grants (guest-scoped)", async () => {
+	it("fires no org-grant side effects for project grants (guest-scoped)", async () => {
 		mockResult({
 			projectInvitesFound: 1,
 			projectMembershipsCreated: 1,
@@ -278,6 +280,64 @@ describe("runInviteReconciliationForUser — org-grant side effects", () => {
 				memberId: "pmember-1",
 				role: "EDITOR",
 			}),
+		);
+	});
+
+	// Fizzy #2290 — the one side effect project grants DO share with the
+	// manual accept path, so someone who signs up straight into an already
+	// enabled project appears in its recipient list at once.
+	it("enrols newsletter subscribers for each created project membership", async () => {
+		mockResult({
+			projectInvitesFound: 1,
+			projectMembershipsCreated: 1,
+			createdProjectMemberships: [PROJECT_GRANT],
+		});
+
+		await runInviteReconciliationForUser({
+			userId: "user-1",
+			trigger: "session_create",
+		});
+
+		expect(enrollProjectMemberIfNewsletterEnabled).toHaveBeenCalledTimes(1);
+		expect(enrollProjectMemberIfNewsletterEnabled).toHaveBeenCalledWith({
+			projectId: "proj-1",
+			// The reconciled user's own verified address, normalized.
+			email: "user@example.com",
+		});
+	});
+
+	it("does not enrol when no project membership was created", async () => {
+		mockResult({ projectInvitesFound: 1, projectMembershipsCreated: 0 });
+
+		await runInviteReconciliationForUser({
+			userId: "user-1",
+			trigger: "session_create",
+		});
+
+		expect(enrollProjectMemberIfNewsletterEnabled).not.toHaveBeenCalled();
+	});
+
+	it("logs and continues when newsletter enrolment throws", async () => {
+		mockResult({
+			projectInvitesFound: 1,
+			projectMembershipsCreated: 1,
+			createdProjectMemberships: [PROJECT_GRANT],
+		});
+		(enrollProjectMemberIfNewsletterEnabled as Mock).mockRejectedValueOnce(
+			new Error("newsletter is down"),
+		);
+
+		// The membership is already committed; a newsletter outage must not
+		// take down the sign-in hook that got us here.
+		await expect(
+			runInviteReconciliationForUser({
+				userId: "user-1",
+				trigger: "session_create",
+			}),
+		).resolves.toBeUndefined();
+		expect(logger.error).toHaveBeenCalledWith(
+			expect.stringContaining("newsletter enrolment failed"),
+			expect.objectContaining({ projectId: "proj-1" }),
 		);
 	});
 });
