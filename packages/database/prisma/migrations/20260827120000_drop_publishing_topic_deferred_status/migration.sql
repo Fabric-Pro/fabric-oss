@@ -1,0 +1,172 @@
+-- 1D-1b (Fizzy #2265). The CONTRACT half of the expand/contract pair whose
+-- expand half was 20260825112401_publishing_topic_snooze_and_read.
+--
+-- That migration added the snooze overlay columns and moved every DEFERRED
+-- topic to SUGGESTION, but deliberately LEFT the enum value in place, because
+-- removing a value from a Postgres enum is not an in-place edit: the type has
+-- to be rebuilt and every column of that type rewritten to point at the new
+-- one. Doing that in the same release as the backfill would have broken any app
+-- instance still running the previous version mid-deploy — it still knew the
+-- value and could still write it.
+--
+-- Safe now, and each of these was checked rather than assumed:
+--   * the expand release reached production on 2026-08-25, so no running
+--     instance predates it;
+--   * no code path writes or accepts the value — the status procedure's input
+--     enum lists the five live statuses, and the pre-expand revision of that
+--     file listed six, so the narrowing is exactly what the expand release
+--     shipped. Nothing else under packages/, apps/ or agents/ names
+--     PublishingTopicStatus.DEFERRED outside generated output;
+--   * the type has TWO non-internal dependents, and both are on the one column:
+--     pg_class for publishing_topic.status itself, and pg_attrdef for its
+--     DEFAULT. The second is why the swap below has to bracket itself with
+--     DROP DEFAULT / SET DEFAULT — a default is parsed against the type it was
+--     declared with and does not follow the column onto a new one. No view,
+--     function, domain, policy, CHECK or index references the type; that was
+--     read out of pg_depend rather than assumed, with the projection kept wide
+--     enough that a second dependent could not hide inside a NULL column.
+--
+-- NOT touched by this migration, despite sharing the name:
+-- publishing_notification_delivery.status is a String column whose DEFERRED is
+-- a live deferral state with its own drain, and QaOpenQuestionStatus.DEFERRED
+-- is a live value on a different enum.
+--
+-- WHY THIS RE-DRAINS, given the expand migration already did.
+-- An earlier draft claimed no row could hold the value because that backfill
+-- emptied it. That claim contradicted the paragraph above it. The backfill is a
+-- one-shot UPDATE that committed at expand time; the value was kept alive
+-- precisely BECAUSE instances running the previous release were still up and
+-- could still write it, and those instances outlived the migration by the
+-- length of the rolling deploy. Any row written in that window is still
+-- DEFERRED and nothing has drained it since. It is almost certainly an empty
+-- set — but "almost certainly empty" is the wrong thing to bet a release
+-- pipeline on, because the failure is not local (see the recovery note below).
+--
+-- WHAT ACTUALLY CLOSES THE WINDOW IS THE LOCK, NOT THE TRANSACTION. A second
+-- draft said the drain runs "inside the same transaction as the swap, where no
+-- window exists at all". That was false, and reproducibly so: an UPDATE takes
+-- ROW EXCLUSIVE, which does not exclude other writers, so a concurrent INSERT
+-- of a DEFERRED row lands between the drain and the swap and the USING cast
+-- then aborts with 22P02. Staged on a clone with a real second session, that is
+-- exactly what happens. Hence the explicit LOCK TABLE: it is the ACCESS
+-- EXCLUSIVE lock that makes the drain's result hold until the swap, and taking
+-- it FIRST also removes a lock upgrade the drain would otherwise introduce —
+-- ROW EXCLUSIVE escalating to ACCESS EXCLUSIVE, which a concurrent reader that
+-- then waits on a drained row turns into a deadlock the MIGRATION can lose at
+-- deadlock_timeout, an outcome lock_timeout never gets to govern. Under the
+-- same staged interleave, with the LOCK first, the migration commits and the
+-- concurrent writer is cleanly refused instead.
+--
+-- row_security is turned off for the same class of reason: publishing_topic is
+-- FORCE ROW LEVEL SECURITY and tenant_isolation falls through to `ELSE false`
+-- without tenant context, so a connection role WITHOUT bypassrls silently gets
+-- `UPDATE 0` from the drain — no error, nothing drained — and the DDL that
+-- follows is not RLS-filtered, so it sees every row and aborts anyway. Verified
+-- both ways on a clone. `SET LOCAL row_security = off` is a no-op for a
+-- bypassing role and raises immediately, before any lock, for one that cannot.
+-- The migration should not depend silently on which role DATABASE_URL carries.
+--
+-- The drain is bounded by a literal predicate, so `unbatched-backfill` does not
+-- fire — that rule targets an UPDATE with no WHERE, an UPDATE ... FROM, or a
+-- subquery-driven predicate. The expand migration carries the identical
+-- statement for the same reason.
+--
+-- ON THE LOCKS, stated honestly because an earlier draft was not. ALTER
+-- COLUMN ... TYPE REWRITES the table under ACCESS EXCLUSIVE and rebuilds every
+-- index on it, and the cost is proportional to the row count of the whole table
+-- across every tenant — not, as that draft claimed, to the tens of topics one
+-- project holds. A per-project number bounds nothing here.
+--
+-- So it was measured, and on a database shaped like production rather than a
+-- convenient one: apply-rls-direct run FIRST, so publishing_topic carries FORCE
+-- ROW LEVEL SECURITY and its tenant_isolation policy exactly as deployed; then
+-- 500,000 topics with real-length titles, pitches and angles — 439 bytes a row,
+-- a 217 MB heap — of which 501 are stray DEFERRED rows for the drain to find.
+-- The whole `prisma migrate deploy` finished in 3.4 seconds: every stray row
+-- drained, all 500,000 intact, five indexes rebuilt, the DEFAULT restored, RLS
+-- and its policy still in place. No single statement in it came near the
+-- 15-minute bound — comparing the whole deploy against a per-statement timeout
+-- understates the margin, and even that conservative reading is ~260x.
+--
+-- An earlier round of this comment cited four seconds and called it three
+-- orders of magnitude of headroom. It was 225x, and worse, that seed had RLS
+-- switched OFF and rows a third the width, so it never exercised the path
+-- production actually takes. Two limits remain on this one, and they are the
+-- honest ones: it is local Docker rather than production hardware, and it is an
+-- IDLE database — which cannot measure the thing that really decides this
+-- migration's fate, whether ACCESS EXCLUSIVE can be acquired against live
+-- traffic inside lock_timeout.
+--
+-- BOTH TIMEOUT BOUNDS ARE SET HERE, FIRST, and both are load-bearing for
+-- different reasons — the pattern and its rationale come from
+-- 20260820120000_validate_publishing_notification_delivery_leased_channel,
+-- whose own comment records that preflight's GUCs cannot cover this: `promote`
+-- runs preflight, `prisma migrate deploy` and `deploy:rls` as three separate
+-- processes, and a session GUC dies with its connection. lock_timeout bounds
+-- only the WAIT to acquire — it stops this migration queueing behind a long
+-- transaction and, while it waits, blocking every reader and writer that queues
+-- behind IT. statement_timeout is what bounds the rewrite, at preflight's own
+-- DEFAULT_STATEMENT_TIMEOUT_MS, and it is per-statement, so the drain cannot
+-- consume the rewrite's budget. Placing either after the ALTER would guard
+-- nothing: that statement has already taken its lock and begun.
+--
+-- RECOVERY, because "just re-run it in a quieter window" — which an earlier
+-- draft said — is false and expensively so. A bound firing (55P03 lock_timeout
+-- or 57014 statement_timeout) rolls the transaction back cleanly, but leaves a
+-- _prisma_migrations row with finished_at AND rolled_back_at both null. On the
+-- promote path, preflight-migrate.ts's evaluateMigrationLedger closes on
+-- exactly that shape, so the NEXT promotion of anything fails until a human
+-- resolves it; on the Helm path (deploy/helm/.../jobs/migrate.yaml, which runs
+-- migrate deploy with no preflight) Prisma's own P3009 blocks it instead. That
+-- is a deliberate trade — a blocked pipeline is recoverable, a lock-storm on a
+-- table every tenant reads is not — but it is a human step, not a retry. Read
+-- docs/database-promotion.md before choosing the `prisma migrate resolve`
+-- argument: --applied and --rolled-back are opposites and picking by guess
+-- records a schema change that did not happen.
+--
+-- 40P01 deadlock_detected was reachable while the drain preceded an unheld
+-- ACCESS EXCLUSIVE lock; taking the lock explicitly removes that shape. And the
+-- block is deliberately NOT re-runnable once applied: a second pass dies at the
+-- drain, because 'DEFERRED' is no longer a valid literal for the rebuilt type.
+-- It fails loudly and atomically, which is the right way round.
+--
+-- The whole swap is one transaction. Anything appended to this file must go
+-- BEFORE the COMMIT; a statement after it runs unlocked, unbounded and outside
+-- the rollback.
+
+-- migration-lint: allow type-change — the column is not changing type in the
+-- ordinary sense; it is being repointed at a rebuilt version of its own enum,
+-- which is the only way Postgres removes a label.
+--
+-- type-change is the ONLY rule this migration trips, which was established by
+-- stripping the markers and reading what the linter then reported rather than
+-- by predicting it. The ALTER TYPE ... RENAME pair and the DROP TYPE do not
+-- reach rename-in-place or destructive-without-marker, because the linter
+-- recognises the ALTER TABLE and DROP TABLE / DROP INDEX forms and not the TYPE
+-- ones. No marker is claimed for them: a suppression that suppresses nothing
+-- reads as though the linter objected and someone overruled it, and it would
+-- silently pre-authorise those rules for whatever statement is added to this
+-- file next. That the linter cannot see a DROP TYPE at all is a real gap in the
+-- linter, and a marker here would paper over the gap rather than record it.
+--
+-- Neither operation is dangerous here: the renames park the old type under a
+-- temporary name for the length of one transaction and change no name any
+-- application version references, and the DROP removes that parked type inside
+-- the same transaction that replaced it, with the dependency check above
+-- showing nothing but the column and its default pointing at it.
+
+-- AlterEnum
+BEGIN;
+SET LOCAL lock_timeout = '5s';
+SET LOCAL statement_timeout = '15min';
+SET LOCAL row_security = off;
+LOCK TABLE "publishing_topic" IN ACCESS EXCLUSIVE MODE;
+UPDATE "publishing_topic" SET "status" = 'SUGGESTION' WHERE "status" = 'DEFERRED';
+CREATE TYPE "publishing_topic_status_new" AS ENUM ('SUGGESTION', 'SELECTED', 'IN_PROGRESS', 'PUBLISHED', 'DECLINED');
+ALTER TABLE "publishing_topic" ALTER COLUMN "status" DROP DEFAULT;
+ALTER TABLE "publishing_topic" ALTER COLUMN "status" TYPE "publishing_topic_status_new" USING ("status"::text::"publishing_topic_status_new");
+ALTER TYPE "publishing_topic_status" RENAME TO "publishing_topic_status_old";
+ALTER TYPE "publishing_topic_status_new" RENAME TO "publishing_topic_status";
+DROP TYPE "publishing_topic_status_old";
+ALTER TABLE "publishing_topic" ALTER COLUMN "status" SET DEFAULT 'SUGGESTION';
+COMMIT;

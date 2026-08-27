@@ -5189,22 +5189,20 @@ enum PublishingCycleStatus {
   @@map("publishing_cycle_status")
 }
 
+/// Snooze is deliberately NOT a value here. It is an overlay
+/// (PublishingTopic.snoozedUntil/snoozeReason), because a status cannot carry a
+/// snooze without destroying the status the topic already had — which is the
+/// state FR8 routes by. This enum carried a DEFERRED value until 1D-1b
+/// (Fizzy #2265) and that was the mistake; adding a SNOOZED here would repeat
+/// it. Unrelated, despite the shared name: publishing_notification_delivery.status
+/// is a String column whose own DEFERRED value is a live deferral state, and so
+/// is QaOpenQuestionStatus.DEFERRED.
 enum PublishingTopicStatus {
   SUGGESTION
   SELECTED
   IN_PROGRESS
   PUBLISHED
   DECLINED
-  // DEPRECATED (1D, Fizzy #2265). Snooze is now an overlay
-  // (snoozedUntil/snoozeReason), because a status cannot carry a snooze without
-  // destroying the status the topic had. No code path writes or accepts this
-  // value after Task 7, and no row holds it after this migration's backfill.
-  // The value itself is dropped in slice 1D-1b, once this slice has deployed —
-  // dropping it here would emit an ALTER COLUMN ... TYPE swap that fails the
-  // migration linter and breaks rolling deploys.
-  // NOT to be confused with publishing_notification_delivery.status, a String
-  // column whose own DEFERRED value is unrelated and still live.
-  DEFERRED
 
   @@map("publishing_topic_status")
 }
