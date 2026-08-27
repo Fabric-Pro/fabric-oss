@@ -13,7 +13,7 @@
 	"license": "MIT",
 	"repository": {
 		"type": "git",
-		"url": "git+https://github.com/Fabric-Pro/fabric.git",
+		"url": "git+https://github.com/Fabric-Pro/fabric-oss.git",
 		"directory": "packages/integrations-runtime"
 	},
 	"type": "module",
