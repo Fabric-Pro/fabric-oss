@@ -323,3 +323,31 @@ describe("ROLE_TAG_ENFORCEMENT", () => {
 		).toBe(false);
 	});
 });
+
+describe("PUBLISHING_INBOX", () => {
+	it("is registered, default-OFF, and seeded by its env var", () => {
+		expect(FEATURE_FLAG_REGISTRY.PUBLISHING_INBOX).toBeDefined();
+		expect(FEATURE_FLAG_REGISTRY.PUBLISHING_INBOX.default).toBe(false);
+		expect(FEATURE_FLAG_REGISTRY.PUBLISHING_INBOX.envVar).toBe(
+			"FABRIC_FEATURE_PUBLISHING_INBOX",
+		);
+	});
+
+	it("resolves override > env > default", () => {
+		expect(resolveFlag("PUBLISHING_INBOX", undefined, {}).enabled).toBe(
+			false,
+		);
+		expect(
+			resolveFlag("PUBLISHING_INBOX", undefined, {
+				FABRIC_FEATURE_PUBLISHING_INBOX: "true",
+			}).enabled,
+		).toBe(true);
+		// An explicit admin OFF must beat a truthy env var — that is the whole
+		// point of the override row, and the reason rollback needs no redeploy.
+		expect(
+			resolveFlag("PUBLISHING_INBOX", false, {
+				FABRIC_FEATURE_PUBLISHING_INBOX: "true",
+			}).enabled,
+		).toBe(false);
+	});
+});

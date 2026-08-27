@@ -994,6 +994,20 @@ export const GET_STARTED_PAGES: readonly GsPage[] = [
 				body: "Fabric analyses your project's code changes, calls, release notes and features to surface publishing topics. Set each one's status to triage your queue.",
 			},
 			{
+				id: "publishing-suite-inbox",
+				anchor: "publishing-suite-inbox",
+				title: "Two sections, not one long list",
+				body: "With no filter selected the queue splits in two: Recently Modified holds what you and your team are actively working on, newest first and capped at three so it stays a shortlist, and Suggested holds everything Fabric has surfaced that nobody has picked up yet. Choosing a status chip swaps back to a single flat list of just that status.",
+				conditional: true,
+			},
+			{
+				id: "publishing-suite-snooze",
+				anchor: "publishing-suite-snooze",
+				title: "Not now, but not never",
+				body: "Snoozing hides a topic from the Inbox for a week, a month or three months, and it comes back on its own when that time is up — in whichever section its status belongs to by then. It keeps its status the whole time, so snoozing something you had already started does not lose that you started it. Declining is the permanent version; this is the one you can forget about safely.",
+				conditional: true,
+			},
+			{
 				id: "publishing-suite-new",
 				anchor: "publishing-suite-new",
 				title: "Add your own topic",

@@ -63,6 +63,15 @@ const {
 
 vi.mock("sonner", () => ({ toast: { error: toastError } }));
 
+// Every assertion in this file predates the Inbox and describes flag-OFF
+// behaviour, which section 7.6 of the design requires to stay unchanged. This
+// mock is therefore the ROLLBACK REGRESSION GUARD, not a convenience: if a
+// change to the Inbox leaks into the flag-off path, these 59 tests are what
+// catches it. Flag-ON behaviour lives in publishing-suite-inbox.test.tsx.
+vi.mock("@saas/shared/components/FeatureFlagProvider", () => ({
+	useFeatureFlag: () => false,
+}));
+
 vi.mock("@tanstack/react-query", () => ({
 	useQuery: (opts: { queryKey?: unknown[] }) => {
 		const procedure = Array.isArray(opts?.queryKey)
@@ -198,6 +207,25 @@ vi.mock("@shared/lib/orpc-query-utils", () => {
 					),
 					updateTopicPostTypes: m(
 						"projects.publishingSuite.updateTopicPostTypes",
+					),
+					// Task 4 (Fizzy #2265, 1D-2): PublishingSuiteList now
+					// unconditionally constructs the read-state mutation
+					// (mirrors updateTopicStatus/updateTopicPostTypes above),
+					// regardless of the flag value mocked in this file. Same
+					// obligation as listCycles/cycleChatDeliveries above: a
+					// missing entry is not a failing assertion, it's
+					// `undefined.mutationOptions` failing every case at once.
+					setTopicReadState: m(
+						"projects.publishingSuite.setTopicReadState",
+					),
+					// Task 5 (Fizzy #2265, 1D-2): PublishingSuiteList now also
+					// unconditionally constructs the snooze mutation, regardless of
+					// the flag value mocked in this file. Same obligation as
+					// setTopicReadState above: a missing entry is not a failing
+					// assertion, it is `undefined.mutationOptions` failing every case
+					// in the file at once.
+					setTopicSnooze: m(
+						"projects.publishingSuite.setTopicSnooze",
 					),
 				},
 			},
