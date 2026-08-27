@@ -190,6 +190,48 @@ async function loadHandler(
 	return mod[exportName]._handler;
 }
 
+// `loadHandler` imports inside the test body, so whichever test reaches a
+// handler module FIRST pays that module's cold transform against its own
+// `testTimeout`. The dep graph behind these is the expensive one this package's
+// vitest.config.ts already warns about (Prisma client, ai-sdk, @repo/temporal,
+// slower to transform under Vitest 4's module runner than it was under v3).
+// Measured in this file: the first test to reach `../bulk-update-findings` runs
+// 4077ms against 5-19ms for every other test in it — a cost that belongs to the
+// import, not to anything the test asserts.
+//
+// That is what made this file flaky rather than slow (Fabric item 897). On a
+// loaded CI runner with cold caches the import intermittently tips past 20s,
+// and the failure does not stop there: vitest fails the test at the timeout but
+// cannot cancel the promise, so the abandoned continuation drains the three
+// `mockResolvedValueOnce` values queued by "applies the patch to each id" into
+// whichever test is running when it lands. The next one asserts a single call
+// and sees four. One timeout, two failures, and the second names a mock count
+// rather than the import that actually broke.
+//
+// Warming the graph once here pays the transform before any test runs.
+//
+// This is deliberately TOP-LEVEL rather than a `beforeAll`. A hook would move
+// the same cold import off `testTimeout` and straight onto `hookTimeout`, which
+// this package never sets and which therefore defaults to 10s — half the budget
+// the import was already exceeding, so the fix would have failed sooner than the
+// bug it replaced. Both numbers were measured here rather than read off the
+// docs: a `beforeAll` sleeping 30s reports "Hook timed out in 10000ms", while a
+// 15s top-level await completes, because collection is bound by neither budget.
+//
+// `vi.mock` calls are hoisted above this, so the mocks are registered before
+// these imports evaluate. Isolation is unchanged either way: `vi.resetModules()`
+// still hands each test a fresh module instance, because it resets the module
+// registry and not Vite's transform cache.
+await Promise.all([
+	import("../apply-review"),
+	import("../bulk-update-findings"),
+	import("../cancel-review"),
+	import("../cancel-scan"),
+	import("../list-findings"),
+	import("../start-review"),
+	import("../trigger-scan"),
+]);
+
 beforeEach(() => {
 	vi.clearAllMocks();
 	vi.resetModules();
