@@ -826,7 +826,15 @@ export async function listPublishingTopics(o: {
 			projectId: o.projectId,
 			...(o.status ? { status: o.status as never } : {}),
 		},
-		orderBy: { createdAt: "desc" }, // recency baseline (preserved within each rank tier)
+		// Recency baseline, preserved within each rank tier below. `createdAt`
+		// alone is not a TOTAL order: a generation cycle writes its topics in
+		// one batch, so every topic from that cycle shares a `createdAt` to the
+		// millisecond. Postgres may return tied rows in any order, and an
+		// UPDATE to one of them (a snooze, a status change) can move it — so
+		// without a tiebreaker the Inbox reshuffles itself after a write that
+		// had nothing to do with ordering. `id` is unique and is the same key
+		// `listPublishingCycles` below already breaks ties on.
+		orderBy: [{ createdAt: "desc" }, { id: "desc" }],
 		select: TOPIC_LIST_SELECT,
 	});
 

@@ -45,9 +45,15 @@ export async function getFlagOverrides(): Promise<
 		// outage, etc). This read runs inside the authenticated layout and
 		// two Meeting Digest procedures, so a throw here takes down every
 		// authenticated page. Degrade instead: return "no overrides", which
-		// sends every flag through `resolveFlag` to its env/registry value
-		// (registry default for PERSONAL_MEETINGS is `false`) — the fail-safe
-		// direction can only turn flags off, never on.
+		// sends every flag through `resolveFlag` to its env/registry value.
+		//
+		// The fail direction is per-flag, not uniformly safe. For a default-OFF
+		// flag this can only turn it off. For a default-ON one it resolves back
+		// ON, so an admin's OFF is not durable against a fault in this table
+		// specifically — accepted, and recorded in each such flag's `note`.
+		// Three flags default ON today (UNIFIED_AGENT_INTERFACE,
+		// NEWSLETTER_APPROVAL_CHAT, PUBLISHING_INBOX); read the registry rather
+		// than trusting this count, which is the sort of thing that goes stale.
 		//
 		// Deliberately NOT cached: caching this empty Map would pin every
 		// flag to its fallback value for the rest of the TTL even after the
