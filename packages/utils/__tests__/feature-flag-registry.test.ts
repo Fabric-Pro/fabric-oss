@@ -325,29 +325,48 @@ describe("ROLE_TAG_ENFORCEMENT", () => {
 });
 
 describe("PUBLISHING_INBOX", () => {
-	it("is registered, default-OFF, and seeded by its env var", () => {
+	it("is registered, defaults ON, and is seeded by its env var", () => {
 		expect(FEATURE_FLAG_REGISTRY.PUBLISHING_INBOX).toBeDefined();
-		expect(FEATURE_FLAG_REGISTRY.PUBLISHING_INBOX.default).toBe(false);
+		expect(FEATURE_FLAG_REGISTRY.PUBLISHING_INBOX.default).toBe(true);
 		expect(FEATURE_FLAG_REGISTRY.PUBLISHING_INBOX.envVar).toBe(
 			"FABRIC_FEATURE_PUBLISHING_INBOX",
 		);
 	});
 
-	it("resolves override > env > default", () => {
-		expect(resolveFlag("PUBLISHING_INBOX", undefined, {}).enabled).toBe(
-			false,
-		);
+	// Nothing sets FABRIC_FEATURE_PUBLISHING_INBOX in any deployed
+	// environment: no Bicep parameter, no workflow step, no .env template.
+	// Every occurrence of the name is inert — this registry entry, these
+	// tests, and the changeset that ships the flip (which is consumed and
+	// deleted at release). That makes this default the thing that actually
+	// governs staging and production, which is the whole point of flipping it
+	// rather than setting an env var.
+	it("resolves ON when neither an override nor the env var is set", () => {
+		expect(resolveFlag("PUBLISHING_INBOX", undefined, {})).toEqual({
+			enabled: true,
+			source: "default",
+		});
+	});
+
+	it("rolls back from the env var, so a deploy can disable it with no database write", () => {
 		expect(
 			resolveFlag("PUBLISHING_INBOX", undefined, {
-				FABRIC_FEATURE_PUBLISHING_INBOX: "true",
-			}).enabled,
-		).toBe(true);
-		// An explicit admin OFF must beat a truthy env var — that is the whole
-		// point of the override row, and the reason rollback needs no redeploy.
+				FABRIC_FEATURE_PUBLISHING_INBOX: "false",
+			}),
+		).toEqual({ enabled: false, source: "env" });
+	});
+
+	// An explicit admin OFF must beat a truthy env var — that is the whole
+	// point of the override row, and the reason rollback needs no redeploy.
+	//
+	// This one assertion is NOT sensitive to registration: `resolveFlag`
+	// returns from its override branch before it ever indexes the registry, so
+	// it would pass even if the key did not exist. It is kept because it
+	// states the kill-switch contract; the three above cover the entry.
+	it("lets an admin off-override beat a truthy env var", () => {
 		expect(
 			resolveFlag("PUBLISHING_INBOX", false, {
 				FABRIC_FEATURE_PUBLISHING_INBOX: "true",
-			}).enabled,
-		).toBe(false);
+			}),
+		).toEqual({ enabled: false, source: "override" });
 	});
 });

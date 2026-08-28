@@ -1228,3 +1228,31 @@ describe("listPublishingTopics — whySuggested provenance (composition)", () =>
 		});
 	});
 });
+
+describe("listPublishingTopics — deterministic list order", () => {
+	// `createdAt` alone is NOT a total order here. A generation cycle writes
+	// its topics in one batch, so every topic from that cycle carries the SAME
+	// `createdAt` down to the millisecond — ties are the rule, not the edge
+	// case. Postgres may return tied rows in any order, and an UPDATE to one
+	// of them (a snooze, a status change) can move it, so the Inbox silently
+	// reshuffles after an unrelated write. Observed on a staging project whose
+	// four topics formed two exactly-tied pairs.
+	//
+	// This asserts the QUERY rather than the returned array on purpose: the
+	// ordering is Postgres' to perform, and a mocked `findMany` returns
+	// whatever the test handed it. The one thing this layer owns — and the one
+	// thing that was wrong — is whether it ASKS for a total order.
+	//
+	// The tiebreaker must be a unique column; `id` is the same key the cycle
+	// history query in this module already breaks ties on.
+	it("asks Postgres for a total order, so tied createdAt values cannot reshuffle", async () => {
+		publishingTopicFindMany.mockResolvedValue([]);
+		userFindMany.mockResolvedValue([]);
+		viewerTagFindUnique.mockResolvedValue(null);
+
+		await listPublishingTopics({ projectId: "p1", viewerUserId: "v1" });
+
+		const { orderBy } = publishingTopicFindMany.mock.calls[0][0];
+		expect(orderBy).toEqual([{ createdAt: "desc" }, { id: "desc" }]);
+	});
+});
