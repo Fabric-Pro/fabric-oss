@@ -155,26 +155,6 @@ export async function getUserDefaultProviderConfig(
 }
 
 /**
- * Update last used timestamp for organization's provider config
- */
-export async function updateOrganizationProviderLastUsed(configId: string) {
-	return await db.cloudProviderConfig.update({
-		where: { id: configId },
-		data: { lastUsedAt: new Date() },
-	});
-}
-
-/**
- * Update last used timestamp for user's provider config
- */
-export async function updateUserProviderLastUsed(configId: string) {
-	return await db.userCloudProviderConfig.update({
-		where: { id: configId },
-		data: { lastUsedAt: new Date() },
-	});
-}
-
-/**
  * Full provider config result for AI API calls
  */
 export interface AiProviderConfig {
