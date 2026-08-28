@@ -6,7 +6,7 @@
  * creation, cleared by the auth after-hook (packages/auth/auth.ts) once the
  * user changes their password. Re-setting it on every seed run would force
  * every seeded user to change their password again on the next re-seed —
- * see https://github.com/Fabric-Pro/fabric/pull/984.
+ * see PR #984 in the pre-open-source history.
  *
  * This is a structural assertion against the source file rather than an
  * execution test — we verify the flag is present (and absent) in the right

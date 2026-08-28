@@ -1,4 +1,4 @@
-This package contains material derived from Corsair (Apache-2.0). Full repository notices: THIRD_PARTY_NOTICES.md in the source repository (https://github.com/Fabric-Pro/fabric).
+This package contains material derived from Corsair (Apache-2.0). Full repository notices: THIRD_PARTY_NOTICES.md in the source repository (https://github.com/Fabric-Pro/fabric-oss).
 
 ## Corsair (https://github.com/corsairdotdev/corsair)
 

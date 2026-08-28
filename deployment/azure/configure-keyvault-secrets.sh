@@ -121,7 +121,7 @@ set_secret "temporal-namespace" "TEMPORAL_NAMESPACE" "Temporal namespace"
 set_secret "temporal-api-key" "TEMPORAL_CLOUD_API_KEY" "Temporal Cloud API key"
 
 # Fabric API URL for callbacks
-set_secret "fabric-api-url" "FABRIC_API_URL" "NextJS API URL (e.g., https://staging.fabric.pro)"
+set_secret "fabric-api-url" "FABRIC_API_URL" "NextJS API URL (e.g., https://fabric.example.com)"
 
 # Better Auth secret for AI Gateway key encryption
 set_secret "better-auth-secret" "BETTER_AUTH_SECRET" "Better Auth encryption secret (same as Vercel)"

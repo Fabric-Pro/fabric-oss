@@ -49,7 +49,7 @@ Three reasons:
 ## The two-app testing flow (local)
 
 The explorer accepts any base URL — `http://localhost:3001` for local,
-`https://staging.fabric.pro` for staging, or
+`https://staging.example.com` for staging, or
 `https://customer-self-hosted.example.com` for a customer's deployment.
 To rehearse against a "remote" Fabric without leaving your laptop,
 run two app instances pointing at separate ports against the same dev

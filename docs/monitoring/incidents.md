@@ -500,6 +500,4 @@ cool-down is a query edit, not a workflow edit.
 - [`alerts.md`](./alerts.md) — rules that drive incidents.
 - [`status-pages.md`](./status-pages.md) — provider registry and
   per-provider parsers.
-- [`../runbooks/error-rate-spike.md`](../runbooks/error-rate-spike.md) — error-rate response steps.
-- [`../runbooks/integration-outage.md`](../runbooks/integration-outage.md) — integration outage response steps.
 - [`../adr/005-monitoring-architecture.md`](../adr/005-monitoring-architecture.md) — backend decision record.
