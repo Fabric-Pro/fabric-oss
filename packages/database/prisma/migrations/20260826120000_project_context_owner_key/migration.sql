@@ -1,0 +1,61 @@
+-- A normalized owner identity on project_context, so a child table can carry a
+-- foreign key that COMPARES OWNERS (Fizzy #2228).
+--
+-- Conversation capture is about to hang two child tables off project_context.
+-- Parentage alone is not tenant isolation: Postgres does not evaluate the
+-- PARENT's row-level-security policy through a foreign key, so a raw or buggy
+-- writer could attach a child to a parent in another project while carrying
+-- tenant columns that satisfy the child's own policy — and every later read,
+-- export and cascade would run under contradictory ownership.
+--
+-- Widening the key to (parentContextId, projectId) does not close it either: an
+-- organization-owned child under a personal parent, or a child naming a
+-- different organization, both still match, because such a key never looks at
+-- who owns either row.
+--
+-- The obvious fix — put userId and organizationId in the foreign key — cannot
+-- work. Under the tenant XOR exactly one of them is always NULL, and a foreign
+-- key with a NULL among its referencing columns is satisfied trivially under
+-- the default MATCH SIMPLE. It would be a constraint that never once fires.
+--
+-- Hence one non-null column that both tenancies collapse into. With it, the
+-- child's key becomes (parentContextId, projectId, ownerKey) and ownership
+-- disagreement is simply not expressible.
+--
+-- Generated rather than written, because a value the application maintains is a
+-- value the application can get wrong — and this column's whole purpose is to
+-- be the thing that is right when the query layer is not. Postgres rejects any
+-- INSERT or UPDATE that supplies it.
+--
+-- Deliberately NULLABLE and with no CHECK on this table. A pre-existing context
+-- row carrying neither tenant column resolves to NULL, which makes it ineligible
+-- to parent a captured bundle — the correct outcome, and one reached without a
+-- validating scan of a populated table. The XOR CHECK belongs on the two new
+-- tables, where it can be declared at creation for free; see migration
+-- 20260826120200.
+--
+-- LOCK NOTE: a STORED generated column is materialized, so this rewrites the
+-- table under ACCESS EXCLUSIVE — every reader and writer of project_context is
+-- blocked for the duration. What that duration is depends on the TOTAL size of
+-- the table, not on any one project's share of it: a per-project row count says
+-- nothing about how many projects there are. Measure the table (row count and
+-- pg_total_relation_size, TOAST included, since `content` is stored there)
+-- before promoting this, and schedule accordingly if it is large.
+--
+-- lock_timeout FIRST, per the convention in this directory: the timeout has to
+-- be in force BEFORE the statement that takes the lock, or it guards nothing —
+-- see 20260815120300_publishing_cycle_notification_outcome_at, whose own header
+-- records that mistake shipping once. A migration that cannot get the lock
+-- within 5s fails and is retried off-peak; one that waits unbounded queues
+-- every subsequent query behind itself.
+--
+-- SET LOCAL works here because this file has TWO statements and Prisma wraps a
+-- multi-statement migration in one transaction. Nothing in this file may use
+-- CONCURRENTLY for the same reason. The unique index this column exists to
+-- support is a separate, CONCURRENT migration precisely because an index build
+-- is the part that must not be held inside one.
+SET LOCAL lock_timeout = '5s';
+
+-- AlterTable
+ALTER TABLE "project_context"
+  ADD COLUMN "ownerKey" TEXT GENERATED ALWAYS AS (COALESCE("organizationId", "userId")) STORED;

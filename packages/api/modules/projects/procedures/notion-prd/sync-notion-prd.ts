@@ -8,6 +8,8 @@ import {
 	getDataConnectionById,
 	getWorkspaceDocumentWithChunks,
 	hasProjectAccess,
+	recordContextIndexingFailure,
+	updateContextExtractionStatus,
 } from "@repo/database";
 import { deleteProjectContext, embedProjectContext } from "@repo/rag";
 import { z } from "zod";
@@ -54,6 +56,70 @@ function buildWorkspaceDocumentContent(
 		.trim();
 
 	return chunkContent || null;
+}
+
+/**
+ * Embed a bound Notion context inline, then record what happened on the row
+ * (Fizzy #2228, R13).
+ *
+ * Both procedures below embed synchronously rather than starting
+ * `contextEmbeddingWorkflow`, and `embedProjectContext` writes only `qdrantId`
+ * and `embeddedAt` — the `extractionStatus` write lives in
+ * `embedSingleContextActivity`, which this path never reaches. So a bound page
+ * carrying several kilobytes of text stayed on the schema default `PENDING` for
+ * the life of the row. Nothing downstream advances it, and no repair path
+ * reaches it either: the bulk `contexts.embed` endpoint skips
+ * `type: "INTEGRATION"` outright. Readiness evidence counts only `COMPLETED`
+ * sources, so a real, indexed PRD counted for nothing.
+ *
+ * The contract mirrors `embedSingleContextActivity` on purpose, so the two ways
+ * a context can be embedded leave the same row state behind:
+ * - a vector was stored → `COMPLETED`, clearing whatever message an earlier
+ *   attempt left behind (a stale one keeps describing a fixed failure)
+ * - the embed reported failure → the indexing-failure record, which names the
+ *   step that failed and leaves an already-`COMPLETED` row's status alone
+ * - the call succeeded but stored no vector → status untouched. "Ready" has to
+ *   mean a vector exists, not that we tried; flipping here is exactly the
+ *   lying-pill bug that the metadata-only INTEGRATION wiring was fixed for.
+ */
+async function embedAndRecordOutcome(
+	options: Parameters<typeof embedProjectContext>[0],
+): Promise<void> {
+	let result: Awaited<ReturnType<typeof embedProjectContext>>;
+
+	try {
+		result = await embedProjectContext(options);
+	} catch (error) {
+		// `embedProjectContext` normally resolves with `{ success: false }`, but
+		// a provider/config throw still has to leave a truthful row rather than
+		// a silent PENDING one. The error is re-thrown so the caller's response
+		// is unchanged.
+		await recordContextIndexingFailure(
+			options.contextId,
+			`Search indexing failed: ${
+				error instanceof Error ? error.message : "Unknown error"
+			}`,
+		);
+		throw error;
+	}
+
+	if (!result.success) {
+		await recordContextIndexingFailure(
+			options.contextId,
+			`Search indexing failed: ${
+				result.error ?? "Embedding generation failed"
+			}`,
+		);
+		return;
+	}
+
+	if (!result.qdrantId) {
+		return;
+	}
+
+	await updateContextExtractionStatus(options.contextId, "COMPLETED", {
+		extractionError: null,
+	});
 }
 
 /**
@@ -232,7 +298,7 @@ export const syncPrdSourceProcedure = tenantProtectedProcedure
 			organizationId,
 		});
 
-		await embedProjectContext({
+		await embedAndRecordOutcome({
 			contextId,
 			projectId: input.projectId,
 			userId: user.id,
@@ -735,7 +801,7 @@ export const bindNotionPageProcedure = tenantProtectedProcedure
 			organizationId,
 		});
 
-		await embedProjectContext({
+		await embedAndRecordOutcome({
 			contextId,
 			projectId: input.projectId,
 			userId: user.id,

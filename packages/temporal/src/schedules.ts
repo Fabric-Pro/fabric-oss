@@ -136,6 +136,27 @@ const DOC_EMBED_SWEEP_WORKFLOW_NAME = "projectDocumentEmbeddingSweepWorkflow";
 const DOC_EMBED_SWEEP_CRON_SCHEDULE = "*/5 * * * *";
 const DOC_EMBED_SWEEP_TASK_QUEUE = "project-documents";
 
+// Exported, unlike most of its siblings, because the registration test asserts
+// the COMPLETE create() payload — a literal it also owned would prove nothing.
+export const CONVERSATION_BUNDLE_EMBED_SWEEP_SCHEDULE_ID =
+	"conversation-bundle-embedding-sweep";
+export const CONVERSATION_BUNDLE_EMBED_SWEEP_WORKFLOW_NAME =
+	"conversationBundleEmbeddingSweepWorkflow";
+// Every 15 minutes. This queue is meant to be EMPTY: it only fills when an
+// embed failed or a worker died between taking the lease and the vector write
+// (Fizzy #2228, U11 — U5 made those non-fatal, so Temporal never retries them
+// and nothing else comes back for the row). The cost of being late is that a
+// captured conversation is not yet searchable, not that anything is lost, so
+// this runs far less often than the 5-minute document zombie sweep. It is also
+// the throughput control: the activity takes ONE bounded batch per tick rather
+// than draining in a loop, because a failing row hands its lease straight back
+// and an in-run loop would re-select it every batch.
+export const CONVERSATION_BUNDLE_EMBED_SWEEP_CRON_SCHEDULE = "*/15 * * * *";
+// One tick, not a backlog. Every missed trigger would do the work this one is
+// about to do — the queue is read fresh each run — so replaying them is pure
+// waste.
+export const CONVERSATION_BUNDLE_EMBED_SWEEP_CATCHUP_WINDOW = "15 minutes";
+
 const AUDIT_LOG_RETENTION_SCHEDULE_ID = "audit-log-retention";
 const AUDIT_LOG_RETENTION_WORKFLOW_NAME = "auditLogRetentionWorkflow";
 // Daily at 03:00 UTC — purges audit_log rows older than
@@ -343,6 +364,7 @@ export async function registerSystemSchedules(): Promise<void> {
 		await registerRepoHealthCheckSchedule(scheduleClient);
 		await registerAuthorityCleanupSchedule(scheduleClient);
 		await registerDocumentEmbeddingSweepSchedule(scheduleClient);
+		await registerConversationBundleEmbeddingSweepSchedule(scheduleClient);
 		await registerDocumentRefreshSchedule(scheduleClient);
 		await registerPmStatePollSchedule(scheduleClient);
 		await registerPipelineResultsSyncSchedule(scheduleClient);
@@ -604,6 +626,62 @@ async function registerDocumentEmbeddingSweepSchedule(
 		if (error instanceof ScheduleAlreadyRunning) {
 			console.log(
 				`[Worker] Schedule "${DOC_EMBED_SWEEP_SCHEDULE_ID}" already exists, skipping`,
+			);
+		} else {
+			throw error;
+		}
+	}
+}
+
+/**
+ * Register the conversation-bundle-embedding-sweep schedule (Fizzy #2228, U11).
+ *
+ * Finishes captured Teams / Slack conversation bundles whose embedding never
+ * completed: an embed that failed, or a worker that died between taking the
+ * embedding lease and the vector write. U5 deliberately made both of those
+ * non-fatal to the channel-monitor activity — the conversation text is durable
+ * by then, and failing the activity would re-run an analyzer whose message
+ * claims are already gone — which is exactly why Temporal has nothing to retry
+ * and why this pass has to exist.
+ *
+ * `overlap: "SKIP"` is safe because the run is bounded twice over: the activity
+ * takes at most one batch, and its start-to-close timeout is far shorter than
+ * the interval between triggers.
+ */
+export async function registerConversationBundleEmbeddingSweepSchedule(
+	scheduleClient: ScheduleClient,
+): Promise<void> {
+	try {
+		await scheduleClient.create({
+			scheduleId: CONVERSATION_BUNDLE_EMBED_SWEEP_SCHEDULE_ID,
+			spec: {
+				cronExpressions: [
+					CONVERSATION_BUNDLE_EMBED_SWEEP_CRON_SCHEDULE,
+				],
+			},
+			action: {
+				type: "startWorkflow",
+				workflowType: CONVERSATION_BUNDLE_EMBED_SWEEP_WORKFLOW_NAME,
+				taskQueue: TASK_QUEUE,
+				args: [],
+			},
+			policies: {
+				overlap: "SKIP",
+				catchupWindow: CONVERSATION_BUNDLE_EMBED_SWEEP_CATCHUP_WINDOW,
+			},
+			state: {
+				paused: false,
+				note: "Embeds captured Teams/Slack conversation bundles whose embedding never completed (embeddedAt null, no live lease). A run that keeps reporting a full batch means the backlog is not draining.",
+			},
+		});
+
+		console.log(
+			`[Worker] Schedule "${CONVERSATION_BUNDLE_EMBED_SWEEP_SCHEDULE_ID}" registered (every 15 minutes)`,
+		);
+	} catch (error) {
+		if (error instanceof ScheduleAlreadyRunning) {
+			console.log(
+				`[Worker] Schedule "${CONVERSATION_BUNDLE_EMBED_SWEEP_SCHEDULE_ID}" already exists, skipping`,
 			);
 		} else {
 			throw error;

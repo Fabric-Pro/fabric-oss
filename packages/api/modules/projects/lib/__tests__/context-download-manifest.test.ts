@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
+import { buildContextDownloadManifest } from "../context-download-manifest";
 import {
-	buildContextDownloadManifest,
-	type SkipReason,
-} from "../context-download-manifest";
+	CONTEXT_SKIP_REASON_CODES,
+	type ContextSkipReason,
+	describeContextSkipReason,
+} from "../context-skip-reason";
 
 const FIXED_DATE = new Date("2026-04-15T14:22:03.000Z");
 
@@ -79,13 +81,24 @@ describe("buildContextDownloadManifest", () => {
 		expect(out).not.toContain("SKIPPED");
 	});
 
-	it("renders each stable skipped reason verbatim", () => {
-		const reasons: SkipReason[] = [
-			"Source object not found in storage",
-			"Storage read failed",
-			"Context not ready",
-			"Content unavailable",
-		];
+	it("renders every taxonomy reason verbatim", () => {
+		// The manifest prints whatever `describeContextSkipReason` produces,
+		// so walking the taxonomy here means a new reason cannot ship without
+		// this file proving it renders (Fizzy #2228).
+		const reasons = CONTEXT_SKIP_REASON_CODES.map((code) =>
+			describeContextSkipReason(
+				code === "CONVERSATION_NOT_CAPTURED" ||
+					code === "PRIVATE_CONVERSATION_EXCLUDED"
+					? { code, sourceSystem: "Slack" }
+					: ({ code } as ContextSkipReason),
+			),
+		);
+		// The samples above are built through a cast, so a new payload-carrying
+		// reason would render `Linked undefined chat` and still pass the
+		// verbatim check below. Fail on the placeholder instead.
+		for (const reason of reasons) {
+			expect(reason).not.toMatch(/undefined/);
+		}
 		const out = buildContextDownloadManifest({
 			...baseArgs,
 			tenant: { kind: "personal" },
@@ -96,7 +109,9 @@ describe("buildContextDownloadManifest", () => {
 				reason,
 			})),
 		});
-		expect(out).toContain("--- SKIPPED (4) ---");
+		expect(out).toContain(
+			`--- SKIPPED (${CONTEXT_SKIP_REASON_CODES.length}) ---`,
+		);
 		for (const reason of reasons) {
 			expect(out).toContain(reason);
 		}
@@ -181,7 +196,13 @@ describe("buildContextDownloadManifest", () => {
 				{ type: "NOTE", title: "B", fileInZip: "files/b.md" },
 			],
 			skipped: [
-				{ type: "LINK", title: "C", reason: "Content unavailable" },
+				{
+					type: "LINK",
+					title: "C",
+					reason: describeContextSkipReason({
+						code: "NOTHING_STORED",
+					}),
+				},
 			],
 			totalBytes: 1536,
 		});

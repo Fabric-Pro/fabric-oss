@@ -338,6 +338,13 @@ export {
 } from "./context-embedding";
 // Context Summarization activities (compressed project-history digests)
 export * from "./context-summarization";
+// Conversation-bundle embedding recovery (scheduled sweep over captured channel
+// bundles whose embed failed or crashed — Fizzy #2228)
+export {
+	type SweepConversationBundleEmbeddingsInput,
+	type SweepConversationBundleEmbeddingsOutput,
+	sweepConversationBundleEmbeddingsActivity,
+} from "./conversation-bundle-embedding-sweep";
 // Daily Brief activities (cross-tool project digest)
 export {
 	AHEAD_LOOKAHEAD_HOURS,

@@ -134,6 +134,22 @@ export async function storeProjectContext(
 			path: metadata?.path || null,
 			operationId: metadata?.operationId || null,
 			operationTags: metadata?.operationTags || null,
+			// Captured conversation bundles (Fizzy #2228). A monitored channel's
+			// messages live in `ProjectContextConversationBundle`, not in the
+			// channel's `ProjectContext` pointer row, so a hit on one of these
+			// points has to be refetched from a different table — and the point
+			// is the only thing that knows which. Null on every other point, so
+			// existing points and existing filters are unaffected.
+			//
+			// Deliberately NOT declared as a payload index: it is read off the
+			// search result and never filtered on. Only indexed keys may appear
+			// in a delete-by-filter (Qdrant answers 400 otherwise), and the
+			// channel-unlink delete reaches these same points through the
+			// already-indexed `contextId` / `originalContextId` instead.
+			conversationBundleId: metadata?.conversationBundleId || null,
+			// The bundle's channel — a grouping key back to the pointer row,
+			// read the same way and filtered on just as little.
+			parentContextId: metadata?.parentContextId || null,
 			// Store the chunk text in the payload so retrieval can return the
 			// actual matched passage (via searchSimilarProjectContexts) instead
 			// of re-fetching the entire parent document from Postgres. Adds ~1
@@ -365,6 +381,14 @@ export async function searchSimilarProjectContexts(
 				type: result.payload?.type as string,
 				filename: result.payload?.filename as string | undefined,
 				content: result.payload?.content as string | undefined,
+				// Present only on captured-conversation points; tells the
+				// refetch to look in the bundle table rather than in
+				// `ProjectContext`.
+				conversationBundleId:
+					(result.payload?.conversationBundleId as
+						| string
+						| null
+						| undefined) ?? undefined,
 			}),
 		);
 

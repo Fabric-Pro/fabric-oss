@@ -175,6 +175,48 @@ export function getCollectionName(
 }
 
 /**
+ * Base name of the collection holding project-context vectors.
+ *
+ * The name on the wire is tenant-dependent and MUST be resolved through
+ * `getCollectionName`: personal data lives in this shared collection, an
+ * organization's in `project-contexts-org-<orgId>`. Every writer resolves it
+ * the same way, so a hardcoded literal that does not match turns a delete into
+ * a no-op that leaves every vector behind, and turns a clear-then-re-embed
+ * into a pile-up of stale points under the new ones. Exported so the delete
+ * and reprocess paths that resolve it cannot drift from the writers.
+ */
+export const PROJECT_CONTEXTS_BASE_COLLECTION = "project-contexts" as const;
+
+/**
+ * Whether the resolved collection exists in Qdrant RIGHT NOW.
+ *
+ * Deliberately UNCACHED, and deliberately separate from the private
+ * `checkCollectionExists` below, which memoizes for five minutes. The callers
+ * of this function are delete and clear paths that treat "no such collection"
+ * as success — a tenant that never embedded anything legitimately has none —
+ * so a stale `false` would skip a real delete and report it as done, leaving
+ * vectors searchable that the caller has just told the user are gone. That is
+ * precisely the failure these call sites exist to distinguish, so they must
+ * ask Qdrant every time.
+ *
+ * Deliberately a plain existence check and NOT `ensureCollection`, which
+ * *creates* the collection it resolves — that would make "this tenant never
+ * embedded anything" permanently indistinguishable from "the delete failed",
+ * and would have a cleanup path conjuring collections into existence as a side
+ * effect. Mirrors the check `deleteOrganizationCollections` performs before
+ * dropping a collection.
+ *
+ * A Qdrant failure PROPAGATES rather than degrading to `false`, so an
+ * unreachable vector store cannot masquerade as an empty one.
+ */
+export async function collectionExistsUncached(
+	collectionName: string,
+): Promise<boolean> {
+	const { collections } = await qdrantClient.getCollections();
+	return collections.some((collection) => collection.name === collectionName);
+}
+
+/**
  * Check if a collection exists (with caching)
  */
 async function checkCollectionExists(collectionName: string): Promise<boolean> {

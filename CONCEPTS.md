@@ -85,6 +85,18 @@ An extension whose canonical media type is resolved ahead of whatever the client
 
 Forcing does three jobs at once, which is why it is one mechanism and not three: it rescues a file the operating system gave no type, it collapses alias spellings onto the one media type the readers match on, and it overrides a declaration that would route the file wrongly. It is derived from the [[Format vocabulary]] rather than listed separately — a format added to a vocabulary without reaching its forced list is advertised and then refused for exactly the untyped and alias-typed uploads forcing exists to rescue. Forcing an extension whose family overlaps another format's is what keeps the narrower one from being captured by the wider.
 
+## Monitored conversations
+
+### Linked conversation
+A chat or channel from an external messaging system attached to a project as context. The attachment is a **pointer, not a copy**: it records which conversation to watch and how far it has been read, and nothing about the messages themselves.
+
+This is the distinction that misleads people most often, because a linked conversation appears in the project's context list beside items that do hold their content. Reading one means going out to the source system or to what a [[Conversation bundle]] captured — never to the pointer itself. Only shared channels are eligible to be captured; a one-to-one or group chat can be linked and watched, but its messages are never stored, so it reports where its content lives rather than pretending to hold it.
+
+### Conversation bundle
+One analyzed batch of messages from a linked conversation, stored as its own record beneath that conversation's pointer. A conversation accumulates bundles over time; each is written once and never rewritten, so together they partition the conversation rather than overlapping it.
+
+Two rules make bundles behave under concurrency and failure. Identity is claimed per message before a bundle is written, in the same transaction, so two workers reading the same conversation at once end up with disjoint message sets and a retry re-wins exactly what it lost — a bundle can never be silently duplicated or dropped. And a bundle is embedded under a *lease* held while the work is in flight, which is deliberately not the same record as the mark saying embedding finished: a worker that dies mid-embed leaves the lease to expire and the row reclaimable, where writing the completion mark up front would have hidden it from recovery forever.
+
 ## Living documents
 
 ### Auto-Refresh

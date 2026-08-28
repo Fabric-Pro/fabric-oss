@@ -10,6 +10,7 @@
 		"./activities": "./src/activities/index.ts",
 		"./activities/publishing-suggestion": "./src/activities/publishing-suggestion/index.ts",
 		"./clean-spec-agent-for-kind": "./src/lib/clean-spec-agent-for-kind.ts",
+		"./delete-channel-context": "./src/lib/delete-channel-context.ts",
 		"./duplicate-scan-core": "./src/lib/duplicate-scan-core.ts",
 		"./prompt-kind-guard": "./src/lib/prompt-kind-guard.ts",
 		"./test-case-context": "./src/lib/test-case-context-content.ts",

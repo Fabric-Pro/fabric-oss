@@ -13,6 +13,12 @@
  * All tools enforce multi-tenant isolation via the gateway session.
  */
 
+// The export's conversation-pointer classifier, reused rather than
+// reimplemented (Fizzy #2228). Both surfaces answer "why is this row's body
+// empty" about the same metadata, and the last time this repo kept two copies
+// of one explanation, only one of them got fixed. Importing a pure leaf module
+// — no I/O, no Prisma, no oRPC — keeps that from happening again.
+import { classifyConversationPointer } from "@repo/api/modules/projects/lib/context-skip-reason";
 import type {
 	GatewaySession,
 	GatewayToolDefinition,
@@ -826,11 +832,11 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 	{
 		name: "fabric_get_project_context",
 		description:
-			"Reads one project context source in full: the transcript text of a meeting, the extracted text of an uploaded PDF/DOCX/spreadsheet, the crawled markdown of a link, or a pasted note. " +
+			"Reads one project context source in full: the transcript text of a meeting, the extracted text of an uploaded PDF/DOCX/spreadsheet, the crawled markdown of a link, a pasted note, or the conversation captured from a monitored Teams/Slack channel. " +
 			"Get the contextId from fabric_list_project_contexts. " +
 			"Long bodies are paged, never silently cut: when 'truncated' is true, call again with 'offset' set to 'nextOffset' to continue. " +
 			"For uploaded files the response also carries 'originalFile.url' — a short-lived link to the original binary, for cases where the extracted text is not enough (an image, a diagram-heavy PDF). " +
-			"If 'contentAvailable' is false, read 'unavailableReason': a monitored Teams or Slack conversation, for example, stores no transcript on the context itself, so an empty body does not mean an empty conversation.",
+			"If 'contentAvailable' is false, read 'unavailableReason': a monitored Teams or Slack conversation, for example, keeps its captured messages apart from the context row, so an empty body does not mean an empty conversation.",
 		inputSchema: {
 			type: "object",
 			properties: {
@@ -3434,6 +3440,13 @@ function resolveContextProvider(ctx: ContextRowLike): string | null {
  * empty `content` forever — its messages are analysed into backlog proposals
  * and never stored on the context. Returning a bare empty string there would
  * read as "the conversation was empty".
+ *
+ * A one-to-one or group chat gets its own sentence ahead of that one, because
+ * the generic wording is false for it: it says the messages *are* captured
+ * elsewhere, and for a private chat nothing is captured anywhere. An agent
+ * told to look in "separate conversation records" would search for something
+ * that does not exist. This matches `PRIVATE_CONVERSATION_EXCLUDED` in the
+ * export's taxonomy — one fact, told the same way on both surfaces.
  */
 function resolveContextUnavailableReason(ctx: ContextRowLike): string {
 	const status = ctx.extractionStatus ?? "";
@@ -3447,10 +3460,20 @@ function resolveContextUnavailableReason(ctx: ContextRowLike): string {
 			: "Extraction failed for this source.";
 	}
 	if (ctx.type === "INTEGRATION") {
+		const pointer = classifyConversationPointer({
+			type: ctx.type,
+			metadata: ctx.metadata ?? null,
+		});
+		if (pointer?.kind === "PRIVATE_CHAT") {
+			return (
+				`This source pins a linked ${pointer.sourceSystem} chat. One-to-one and group chats are ` +
+				`not captured by design, so no messages are stored for it here — read them in ${pointer.sourceSystem}.`
+			);
+		}
 		return (
-			"This source pins a monitored external conversation. Its messages are analysed into " +
-			"backlog proposals rather than stored on the context, so there is no transcript to read here — " +
-			"an empty body does not mean an empty conversation."
+			"This source pins a monitored external conversation. Its messages are captured into " +
+			"separate conversation records rather than onto the context row, so an empty body " +
+			"does not mean an empty conversation."
 		);
 	}
 	if (BINARY_CONTEXT_TYPES.has(ctx.type)) {
@@ -3523,8 +3546,12 @@ async function handleGetProjectContext(
 	args: Record<string, unknown>,
 	session: GatewaySession,
 ): Promise<ToolCallResult> {
-	const { getContextById, getCrawledUrlSourceMarkdown, hasProjectAccess } =
-		await import("@repo/database");
+	const {
+		getCapturedConversationMarkdown,
+		getContextById,
+		getCrawledUrlSourceMarkdown,
+		hasProjectAccess,
+	} = await import("@repo/database");
 
 	const contextId = args.contextId as string;
 	if (!contextId) {
@@ -3548,15 +3575,37 @@ async function handleGetProjectContext(
 		return errorResult("Context not found or access denied");
 	}
 
-	// A PATH_PREFIX URL source scatters its markdown across child page rows
-	// instead of the parent's `content`, so reassemble it before reading.
-	const body =
-		ctx.type === "LINK" && ctx.urlScope === "PATH_PREFIX"
-			? await getCrawledUrlSourceMarkdown(ctx.id, {
-					userId: session.userId,
-					organizationId: session.organizationId,
-				})
-			: (ctx.content ?? "");
+	// Two kinds of row keep their text somewhere other than `content`, and both
+	// have to be reassembled before reading.
+	//
+	// A PATH_PREFIX URL source scatters its markdown across child page rows. A
+	// monitored Teams or Slack channel is a pointer whose captured conversation
+	// lives in `ProjectContextConversationBundle` (Fizzy #2228) — this read is a
+	// path no retrieval-time guard covers, so it is exactly where an empty body
+	// used to be indistinguishable from an empty conversation.
+	//
+	// The bundle text arrives already neutralized against prompt injection: the
+	// capture path applies the guard before the row write so every derived copy
+	// inherits it. Nothing is re-applied here.
+	let body: string;
+	if (ctx.type === "LINK" && ctx.urlScope === "PATH_PREFIX") {
+		body = await getCrawledUrlSourceMarkdown(ctx.id, {
+			userId: session.userId,
+			organizationId: session.organizationId,
+		});
+	} else if (ctx.type === "INTEGRATION") {
+		const captured = await getCapturedConversationMarkdown(ctx.id, {
+			userId: session.userId,
+			organizationId: session.organizationId,
+		});
+		// An integration with nothing captured falls back to whatever the row
+		// itself holds — which for a monitored channel is "", and then
+		// `resolveContextUnavailableReason` explains why rather than implying
+		// the conversation was empty.
+		body = captured.length > 0 ? captured : (ctx.content ?? "");
+	} else {
+		body = ctx.content ?? "";
+	}
 
 	const offset = Math.max((args.offset as number) ?? 0, 0);
 	const maxLength = Math.min(

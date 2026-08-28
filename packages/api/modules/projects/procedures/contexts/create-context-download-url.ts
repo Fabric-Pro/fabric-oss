@@ -32,7 +32,7 @@
 import { randomUUID } from "node:crypto";
 import { ORPCError } from "@orpc/server";
 import { config } from "@repo/config";
-import { db, getContextById } from "@repo/database";
+import { getContextById } from "@repo/database";
 import { getSignedUrl, uploadFile } from "@repo/storage";
 import { buildContentDisposition } from "@repo/utils/attachment";
 import { z } from "zod";
@@ -46,6 +46,10 @@ import { verifyOrganizationMembership } from "../../../organizations/lib/members
 import { buildContextTextPayload } from "../../lib/build-context-text-payload";
 import { classifyContext } from "../../lib/context-classification";
 import { contextDownloadFilename } from "../../lib/context-download-filename";
+import {
+	buildPathPrefixMarkdown,
+	isPathPrefixLink,
+} from "../../lib/path-prefix-link-markdown";
 import { SINGLE_PRESIGN_EXPIRY_SECONDS } from "./constants";
 
 /** Input schema — spec §6.1. */
@@ -80,50 +84,6 @@ function readIntegrationProvider(ctx: {
 	return typeof provider === "string" && provider.length > 0
 		? provider
 		: null;
-}
-
-/**
- * Concatenate the markdown of every indexed page under a PATH_PREFIX LINK
- * context into a single string. Per-page heading + URL + body, separated by
- * a horizontal-rule line so the result reads like a small site dump rather
- * than a smashed-together blob.
- *
- * Sort order is `pageUrl ASC` — the same ordering `listUrlPages` uses for
- * the in-app drawer, so the downloaded file's reading order matches what
- * the user saw before exporting.
- *
- * Tenant XOR is re-derived from the caller (NOT trusted from the parent
- * row) so a stale mirrored-tenant child can't leak across orgs. The query
- * still scopes to `parentContextId` which is already tenant-checked by
- * `getContextById` upstream.
- */
-async function buildPathPrefixMarkdown(
-	parentContextId: string,
-	tenantFilter:
-		| { organizationId: string }
-		| { organizationId: null; userId: string },
-): Promise<string> {
-	const pages = await db.projectContextUrlPage.findMany({
-		where: {
-			parentContextId,
-			...tenantFilter,
-		},
-		select: {
-			pageUrl: true,
-			pageTitle: true,
-			content: true,
-		},
-		orderBy: { pageUrl: "asc" },
-	});
-
-	const sections = pages
-		.filter((p) => typeof p.content === "string" && p.content.length > 0)
-		.map((p) => {
-			const heading = p.pageTitle || p.pageUrl;
-			return `## ${heading}\n${p.pageUrl}\n\n${p.content}\n`;
-		});
-
-	return sections.join("\n---\n\n");
 }
 
 /** Resolve a human-readable title from column + metadata fallbacks. */
@@ -256,10 +216,7 @@ export const createContextDownloadUrlProcedure = tenantProtectedProcedure
 		// concatenate the children in-place (ordered by pageUrl ASC) so the
 		// presigned `.md` is one self-contained Markdown file.
 		let content = projectContext.content;
-		if (
-			projectContext.type === "LINK" &&
-			projectContext.urlScope === "PATH_PREFIX"
-		) {
+		if (isPathPrefixLink(projectContext)) {
 			const tenantFilter = organizationId
 				? { organizationId }
 				: { organizationId: null as null, userId: user.id };

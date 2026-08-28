@@ -112,6 +112,18 @@ const USER_OWNED_TABLES = new Set([
 	"ProjectDocument", // Project documents
 	"ProjectContext", // Project context files / RAG contexts
 	"ProjectContextUrlPage", // Per-page child rows for URL context sources (PATH_PREFIX scope)
+	"ProjectContextConversationBundle", // Captured Teams/Slack channel bundles under a monitored channel context
+	// The per-message claim companion. Registered in its own right, not left to
+	// inherit through its parent: it gates whether a message can EVER be
+	// captured, so an unfiltered write here could suppress another tenant's
+	// capture through a uniqueness conflict without touching any content.
+	"ProjectContextConversationClaim",
+	// The stranded-vector cleanup queue an unlink writes in the same
+	// transaction as its row delete. It holds no content, but it names context
+	// and bundle ids belonging to one tenant, and the drain reads the
+	// collection to aim at off the record — so it gets the same floor as the
+	// tables it cleans up after.
+	"ProjectContextPendingVectorCleanup",
 	"ProjectReadinessItemState", // Manual readiness item states — snooze / not applicable / help requested
 	"ProjectReadinessVerdict", // Last computed readiness verdict per item, for "recently completed"
 	"BackgroundJob", // Job Hub — background job progress rows (tenant XOR + projectId)
@@ -232,6 +244,9 @@ const PROJECT_SCOPED_TABLES: Record<string, string> = {
 	ProjectDocument: "projectId",
 	ProjectContext: "projectId",
 	ProjectContextUrlPage: "projectId",
+	ProjectContextConversationBundle: "projectId",
+	ProjectContextConversationClaim: "projectId",
+	ProjectContextPendingVectorCleanup: "projectId",
 	ProjectReadinessItemState: "projectId",
 	ProjectReadinessVerdict: "projectId",
 	BackgroundJob: "projectId",

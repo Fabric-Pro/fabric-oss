@@ -569,8 +569,14 @@ jobs:
         # contract behind per-AC traceability — the regression it guards shipped
         # precisely because the suite was never enumerated here. Listing them
         # is what makes their result real; the guard below is what keeps it real.
+        #
+        # conversation-capture-constraints (Fizzy #2228) belongs here for the
+        # same reason and one more: what it asserts IS the database. It writes
+        # raw SQL that no query layer filters and expects Postgres to refuse it,
+        # so a run without a real Postgres does not weaken the signal — it
+        # removes it entirely.
         run: |
-          pnpm --filter @repo/database exec vitest run             prisma/queries/projects/__tests__/test-case-coverage.integration.test.ts             prisma/queries/projects/__tests__/test-cases.integration.test.ts             prisma/queries/__tests__/newsletter-approval-notification.test.ts             prisma/queries/projects/__tests__/reclaim-stale-review-sends.test.ts             __tests__/organization-feature-maturation-v2-flag.test.ts             --passWithNoTests=false             --reporter=dot             --reporter=json --outputFile=postgres-suites-results.json
+          pnpm --filter @repo/database exec vitest run             prisma/queries/projects/__tests__/test-case-coverage.integration.test.ts             prisma/queries/projects/__tests__/test-cases.integration.test.ts             prisma/queries/__tests__/newsletter-approval-notification.test.ts             prisma/queries/projects/__tests__/reclaim-stale-review-sends.test.ts             __tests__/organization-feature-maturation-v2-flag.test.ts             __tests__/conversation-capture-constraints.test.ts             --passWithNoTests=false             --reporter=dot             --reporter=json --outputFile=postgres-suites-results.json
 
       - name: 'Guard: assert the Postgres suites actually executed (zero skips)'
         # Same anti-false-pass shape as the guards above. A skip here means the
@@ -588,9 +594,9 @@ jobs:
           console.log(
             `postgres suites: ${files} file(s), ${passed} passed, ${skipped} skipped`,
           );
-          if (files !== 5) {
+          if (files !== 6) {
             console.error(
-              `::error::Expected exactly 5 test files to run, got ${files}. The enumerated suites are test-case-coverage.integration, test-cases.integration, newsletter-approval-notification, reclaim-stale-review-sends and organization-feature-maturation-v2-flag — if you added or removed one in the vitest command above, update this count to match.`,
+              `::error::Expected exactly 6 test files to run, got ${files}. The enumerated suites are test-case-coverage.integration, test-cases.integration, newsletter-approval-notification, reclaim-stale-review-sends, organization-feature-maturation-v2-flag and conversation-capture-constraints — if you added or removed one in the vitest command above, update this count to match.`,
             );
             process.exit(1);
           }

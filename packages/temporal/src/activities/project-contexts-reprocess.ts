@@ -9,13 +9,16 @@ import { QdrantClient } from "@qdrant/js-client-rest";
 import { getRAGProviderConfig } from "@repo/ai";
 import { db } from "@repo/database/prisma/client";
 import { reembedProjectContext as ragReembed } from "@repo/rag";
+import {
+	collectionExistsUncached,
+	getCollectionName,
+	PROJECT_CONTEXTS_BASE_COLLECTION,
+} from "@repo/rag/lib/collection-manager";
 
 const qdrant = new QdrantClient({
 	url: process.env.QDRANT_URL || "http://localhost:6333",
 	apiKey: process.env.QDRANT_API_KEY,
 });
-
-const COLLECTION_NAME = "project_contexts";
 
 export interface ProjectContextForReprocess {
 	id: string;
@@ -92,7 +95,28 @@ export async function fetchProjectContextsForReprocess(params: {
 }
 
 /**
- * Delete all project contexts from Qdrant
+ * Delete all of a project's context points from Qdrant.
+ *
+ * Runs before the re-embed, so it is the step that keeps a reprocess from
+ * stacking a second copy of every chunk on top of the old ones. Failures are
+ * therefore NOT swallowed: only a collection that does not exist counts as
+ * "nothing to clear", and everything else propagates so the workflow aborts
+ * before a single context is re-written.
+ *
+ * # The delete is wider than the re-embed, so it hands the difference back
+ *
+ * The filter clears every point carrying this `projectId` — including the
+ * conversation bundles captured under a linked channel, whose points are
+ * written under the BUNDLE row's id (see `capture-conversation-bundle.ts`).
+ * The re-embed that follows only walks `ProjectContext` rows of type other
+ * than INTEGRATION, so nothing in this workflow ever rebuilds them.
+ *
+ * Left alone, those rows would still say `embeddedAt` — a claim that the
+ * vector store holds their point — so the recovery sweep, which looks for a
+ * null `embeddedAt`, could not see them either: the conversations would go
+ * silently unsearchable until the next capture on that channel, which rebuilds
+ * nothing retrospectively. Clearing the stamp is what puts them back in the
+ * sweep's queue, and the sweep re-embeds each one under its own row's tenant.
  */
 export async function deleteProjectContextsFromQdrant(params: {
 	projectId: string;
@@ -100,41 +124,73 @@ export async function deleteProjectContextsFromQdrant(params: {
 }): Promise<void> {
 	const { projectId, organizationId } = params;
 
-	console.log(
-		`[ReprocessActivity] Deleting Qdrant points for project ${projectId}`,
+	// Resolve the collection the re-embed will write to — an organization's
+	// points live in a dedicated collection, not in the personal one.
+	const collectionName = getCollectionName(
+		PROJECT_CONTEXTS_BASE_COLLECTION,
+		organizationId,
 	);
 
-	try {
-		// Build filter for deletion
-		const filter: any = {
-			must: [
-				{
-					key: "projectId",
-					match: { value: projectId },
-				},
-			],
-		};
+	console.log(
+		`[ReprocessActivity] Deleting Qdrant points for project ${projectId} from collection ${collectionName}`,
+	);
 
-		if (organizationId) {
-			filter.must.push({
-				key: "organizationId",
-				match: { value: organizationId },
-			});
-		}
-
-		// Delete all points matching the filter
-		await qdrant.delete(COLLECTION_NAME, {
-			wait: true,
-			filter,
-		});
-
+	// Per-organization collections are created lazily on first write, so a
+	// tenant that never embedded a project context legitimately has none —
+	// there is nothing to clear and nothing to fail over.
+	if (!(await collectionExistsUncached(collectionName))) {
 		console.log(
-			`[ReprocessActivity] Deleted Qdrant points for project ${projectId}`,
+			`[ReprocessActivity] Collection ${collectionName} does not exist — no points to clear for project ${projectId}`,
 		);
-	} catch {
-		// Collection might not exist yet - that's OK
+		return;
+	}
+
+	// Both filter keys are indexed payload fields on the project-contexts
+	// collection; Qdrant rejects delete-by-filter on an unindexed key with 400.
+	const filter: {
+		must: Array<{ key: string; match: { value: string } }>;
+	} = {
+		must: [
+			{
+				key: "projectId",
+				match: { value: projectId },
+			},
+		],
+	};
+
+	if (organizationId) {
+		filter.must.push({
+			key: "organizationId",
+			match: { value: organizationId },
+		});
+	}
+
+	// Delete all points matching the filter. An error here is a real failure —
+	// the previous bare catch reported a clear that never happened as done, and
+	// the re-embed that follows then duplicated every chunk.
+	await qdrant.delete(collectionName, {
+		wait: true,
+		filter,
+	});
+
+	console.log(
+		`[ReprocessActivity] Deleted Qdrant points for project ${projectId} from collection ${collectionName}`,
+	);
+
+	// ONLY after the delete succeeded: the rows whose points that call just
+	// removed and nothing in this workflow rebuilds. Resetting the stamp puts
+	// them back into the recovery sweep's queue — `embeddedAt` null and no
+	// lease is exactly the predicate it lists on. Run before the delete, this
+	// would queue rows whose points are still there and have a failed delete
+	// leave the sweep re-embedding what was never cleared.
+	const requeued = await db.projectContextConversationBundle.updateMany({
+		where: { projectId },
+		data: { embeddedAt: null, qdrantId: null, embeddingLeaseAt: null },
+	});
+
+	if (requeued.count > 0) {
 		console.log(
-			`[ReprocessActivity] No existing points to delete or collection doesn't exist`,
+			`[ReprocessActivity] Queued ${requeued.count} conversation bundle(s) of project ${projectId} for re-embedding`,
 		);
 	}
 }

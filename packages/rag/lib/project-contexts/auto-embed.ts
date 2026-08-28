@@ -238,6 +238,13 @@ export async function embedProjectContext(
 				totalChunks: 1,
 				// originalContextId enables filter-based deletion
 				originalContextId: contextId,
+				// Captured conversation bundles (Fizzy #2228) are embedded under
+				// their OWN row id, in a table the retrieval refetch does not
+				// otherwise look in. Forwarding these two is what lets a hit say
+				// "this is a bundle, here is its id" — without them the caller's
+				// metadata stops here and the point is unresolvable.
+				conversationBundleId: metadata?.conversationBundleId,
+				parentContextId: metadata?.parentContextId,
 			},
 		});
 
@@ -440,6 +447,11 @@ async function embedWithChunking(
 					section: chunk.metadata.section,
 					// originalContextId enables filter-based deletion of all chunks
 					originalContextId: contextId,
+					// See the single-chunk path: a long captured conversation
+					// chunks like anything else, and every one of its chunks has
+					// to resolve back to the bundle row.
+					conversationBundleId: metadata?.conversationBundleId,
+					parentContextId: metadata?.parentContextId,
 				},
 			});
 

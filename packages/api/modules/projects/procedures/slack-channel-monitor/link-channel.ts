@@ -1,5 +1,5 @@
 import { ORPCError } from "@orpc/server";
-import { db } from "@repo/database";
+import { db, ensureSlackChannelIntegrationContext } from "@repo/database";
 import { getSlackCredentials } from "@repo/integrations/slack";
 import { z } from "zod";
 import { withCorrelationMemo } from "../../../../lib/temporal-correlation";
@@ -208,6 +208,42 @@ export const linkChannelProcedure = tenantProtectedProcedure
 					: {}),
 			},
 		});
+
+		// Register the channel as a ProjectContext INTEGRATION row if it has
+		// none. Linking from Project Settings wrote only the monitor row, so
+		// those channels had no context row at all — and conversation capture
+		// hangs its bundles off exactly that row, which made capture a
+		// permanent no-op for them (Fizzy #2228). Teams has done this since it
+		// gained the same picker gap; this is its Slack counterpart.
+		//
+		// At LINK time, deliberately, and never from the capture path: capture
+		// finding no parent is the correct outcome for a channel the user just
+		// unlinked, and an ensure there would resurrect the row mid-run.
+		//
+		// Idempotent — a second link of the same channel matches the existing
+		// row on `metadata.channelId` and creates nothing. Best-effort: the
+		// monitor link is the primary action and must not fail over this.
+		try {
+			await ensureSlackChannelIntegrationContext({
+				projectId: input.projectId,
+				channelId: input.channelId,
+				channelName: input.channelName,
+				slackTeamId,
+				teamName,
+				channelWebUrl: input.channelWebUrl,
+				userId: user.id,
+				organizationId: organizationId ?? undefined,
+			});
+		} catch (contextErr) {
+			console.error(
+				"[slack-channel-monitor:link] failed to register integration context",
+				{
+					projectId: input.projectId,
+					channelId: input.channelId,
+				},
+				contextErr,
+			);
+		}
 
 		// A Slack channel added via the Add Context dialog leaves a
 		// metadata-only SLACK INTEGRATION context row in PENDING (the create

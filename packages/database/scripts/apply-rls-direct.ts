@@ -225,6 +225,26 @@ async function applyRLS() {
 			{ name: "project_document_asset", policy: "user_owned" }, // Binary/HTML artifacts attached to generated docs
 			{ name: "project_context", policy: "user_owned" }, // Project context files
 			{ name: "project_context_url_page", policy: "user_owned" }, // URL Context Sources per-page crawl rows
+			{
+				name: "project_context_conversation_bundle",
+				policy: "user_owned",
+			}, // Captured Teams/Slack channel bundles hanging off a monitored channel context
+			// Registered separately from the bundle table on purpose: this one holds
+			// tenant-associated provider message ids and gates whether a message can
+			// ever be captured, so a cross-tenant write could suppress capture through
+			// a uniqueness conflict without touching any content.
+			{
+				name: "project_context_conversation_claim",
+				policy: "user_owned",
+			},
+			// Stranded-vector cleanup queue: the ids an unlink still owes the
+			// vector store after its rows are gone. Registered like the tables
+			// it cleans up after — it names one tenant's context and bundle ids
+			// and carries the organizationId that decides the collection.
+			{
+				name: "project_context_pending_vector_cleanup",
+				policy: "user_owned",
+			},
 			{ name: "project_readiness_item_state", policy: "user_owned" }, // Manual readiness states (snooze / not applicable / help requested)
 			{ name: "project_readiness_verdict", policy: "user_owned" }, // Last computed readiness verdict per item
 			{ name: "project_context_summary", policy: "user_owned" }, // Compressed project-history summaries

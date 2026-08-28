@@ -7,13 +7,6 @@
  * English-only, plain UTF-8, fixed 3 / 14 / 40 / rest column layout. No I/O.
  */
 
-/** Stable, human-readable reasons for skipping a context during export. */
-export type SkipReason =
-	| "Source object not found in storage"
-	| "Storage read failed"
-	| "Context not ready"
-	| "Content unavailable";
-
 export interface ManifestIncludedRow {
 	type: string;
 	title: string;
@@ -23,7 +16,19 @@ export interface ManifestIncludedRow {
 export interface ManifestSkippedRow {
 	type: string;
 	title: string;
-	reason: SkipReason;
+	/**
+	 * The rendered reason line, produced by `describeContextSkipReason` in
+	 * `./context-skip-reason` — the single source for both this file and the
+	 * per-reason counts the procedure returns (Fizzy #2228). It is a plain
+	 * string here rather than a union because one reason names the source
+	 * system it points at, and because keeping the taxonomy in one module is
+	 * what stops the manifest and the in-app summary drifting apart.
+	 *
+	 * The union that used to live here carried `"Context not ready"`, a
+	 * reason U1 made unreachable when extraction status stopped gating
+	 * inclusion. It is gone rather than orphaned.
+	 */
+	reason: string;
 }
 
 type ManifestTenant =
@@ -37,6 +42,13 @@ export interface BuildContextDownloadManifestArgs {
 	exportedBy: { id: string; email: string };
 	included: ReadonlyArray<ManifestIncludedRow>;
 	skipped: ReadonlyArray<ManifestSkippedRow>;
+	/**
+	 * Bytes of the entries the archive actually carries — not a pre-flight
+	 * estimate over everything the export considered. A row that was skipped,
+	 * excluded by the item ceiling, or that failed its storage read part-way
+	 * through the build contributes nothing here, because none of its bytes
+	 * reached the archive (Fizzy #2228).
+	 */
 	totalBytes: number;
 }
 

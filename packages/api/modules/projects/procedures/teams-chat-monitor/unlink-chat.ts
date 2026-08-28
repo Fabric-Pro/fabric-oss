@@ -1,5 +1,6 @@
 import { ORPCError } from "@orpc/server";
 import { db, unlinkTeamsChatFromProject } from "@repo/database";
+import { deleteMonitoredConversationContext } from "@repo/temporal/delete-channel-context";
 import { z } from "zod";
 import {
 	Permissions,
@@ -16,6 +17,14 @@ import {
  * associated seen-message dedup rows. Existing PendingBacklogProposal rows
  * remain intact — they keep their reference to the chat via sourceMetadata
  * for historical display.
+ *
+ * The chat's `ProjectContext` pointer row goes too (Fizzy #2228, U7). Chats are
+ * never a source of conversation capture — capture is scoped to shared channels
+ * by decision, because a project is a wider audience than a private
+ * conversation — so this one reliably finds no bundles. It runs the same path
+ * anyway: leaving the pointer row behind would keep an unlinked chat listed as
+ * a project context, and a chat row that HAS been embedded by some other route
+ * would keep its vectors.
  */
 export const unlinkChatProcedure = tenantProtectedProcedure
 	.use(requireProjectPermission(Permissions.PROJECT_UPDATE))
@@ -25,7 +34,7 @@ export const unlinkChatProcedure = tenantProtectedProcedure
 		tags: ["Projects", "Teams Chat Monitor"],
 		summary: "Unlink a Teams chat from a project",
 		description:
-			"Removes a linked Teams chat and its seen-message markers.",
+			"Removes a linked Teams chat, its seen-message markers, and its context row.",
 	})
 	.input(
 		z.object({
@@ -53,6 +62,30 @@ export const unlinkChatProcedure = tenantProtectedProcedure
 		if (!project) {
 			throw new ORPCError("NOT_FOUND", {
 				message: "Project not found",
+			});
+		}
+
+		// The monitor row carries the provider identity — the input is this
+		// row's own id, which no context's metadata records. Read it while it
+		// is still there; the context lookup below matches on `chatId`.
+		const linked = await db.projectLinkedTeamsChat.findFirst({
+			where: { id: input.linkedChatId, projectId: input.projectId },
+			select: { chatId: true },
+		});
+
+		if (linked) {
+			await deleteMonitoredConversationContext({
+				projectId: input.projectId,
+				// The tenant a PERSONAL stranded-vector cleanup record is
+				// written and read under. An organization unlink keys on
+				// `organizationId` instead — the queue enforces the XOR.
+				userId: user.id,
+				organizationId,
+				conversation: {
+					provider: "MICROSOFT_TEAMS",
+					kind: "chat",
+					chatId: linked.chatId,
+				},
 			});
 		}
 
