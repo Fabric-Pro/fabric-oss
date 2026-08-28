@@ -139,6 +139,22 @@ export async function updateTeamsChatCursor(
 	});
 }
 
+/**
+ * Clear a chat's failure state after a tick that succeeded without moving the
+ * cursor. Mirror of `clearTeamsChannelFailureState` — see the note there
+ * (Fizzy #2311).
+ */
+export async function clearTeamsChatFailureState(linkedChatId: string) {
+	return await db.projectLinkedTeamsChat.update({
+		where: { id: linkedChatId },
+		data: {
+			consecutiveFailures: 0,
+			lastErrorMessage: null,
+			lastErrorAt: null,
+		},
+	});
+}
+
 export async function recordTeamsChatFailure(
 	linkedChatId: string,
 	errorMessage: string,

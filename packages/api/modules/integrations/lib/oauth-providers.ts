@@ -569,6 +569,12 @@ const microsoftGraphProvider: OAuthProviderConfig = {
 					client_secret: clientSecret,
 					refresh_token: refreshToken,
 					grant_type: "refresh_token",
+					// Always name the resource. A redemption that omits `scope`
+					// is issued against whichever resource was redeemed last, so
+					// after a SharePoint exchange every later Graph call fails
+					// with 401 "Invalid audience" (Fizzy #2311). `.default`
+					// pins the resource without narrowing the grant.
+					scope: "https://graph.microsoft.com/.default",
 				}),
 			},
 		);
@@ -1224,7 +1230,8 @@ export const oauthProviders: Record<OAuthProviderType, OAuthProviderConfig> = {
 			owner: "user",
 		},
 		getUserInfo: async (accessToken: string): Promise<OAuthUserInfo> => {
-			// Notion returns user info in the token response, so we get it from /users/me
+			// Notion returns user info in the token response, so we get it from
+			// the users/me endpoint
 			const response = await fetch("https://api.notion.com/v1/users/me", {
 				headers: {
 					Authorization: `Bearer ${accessToken}`,

@@ -271,6 +271,19 @@ export async function teamsChannelMonitorWorkflow(
 						lastMessageCreatedAt: minThreadLastActivity,
 						lastMessageId: minThreadRootId,
 					});
+				} else if (
+					// The cursor update above is what clears failure state, so a
+					// tick that succeeded but found nothing used to leave the
+					// error banner and the "re-link this channel" prompt in
+					// place forever — recovery is a property of the tick
+					// succeeding, not of the cursor moving (Fizzy #2311).
+					// Gated so in-flight executions started before this activity
+					// existed replay deterministically.
+					patched("teams-monitor-clear-failure-on-quiet-tick-2026-08")
+				) {
+					await activities.clearTeamsChannelFailureActivity({
+						linkedChannelId: channel.id,
+					});
 				}
 			} catch (err) {
 				const errorMessage =

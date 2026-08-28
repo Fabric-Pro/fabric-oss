@@ -250,6 +250,17 @@ export async function teamsChatMonitorWorkflow(
 						lastMessageCreatedAt: minThreadLastActivity,
 						lastMessageId: minThreadRootId,
 					});
+				} else if (
+					// A tick that succeeded but found nothing must still clear
+					// the failure banner — see the note in
+					// teams-channel-monitor.ts (Fizzy #2311).
+					patched(
+						"teams-chat-monitor-clear-failure-on-quiet-tick-2026-08",
+					)
+				) {
+					await activities.clearTeamsChatFailureActivity({
+						linkedChatId: chat.id,
+					});
 				}
 			} catch (err) {
 				const errorMessage =
