@@ -46,8 +46,26 @@ jobs:
           [[ "$STAGING_PR" =~ ^[1-9][0-9]*$ ]] \
             || { echo "::error::GitHub supplied an invalid PR number"; exit 1; }
           PR=$(GH_TOKEN="$STAGING_TOKEN" gh api "repos/$GITHUB_REPOSITORY/pulls/$STAGING_PR")
-          [[ "$(jq -r '.state' <<<"$PR")" == open &&
-              "$(jq -r '.draft // false' <<<"$PR")" == false &&
+          # The relay itself adds the `relayed` label and closes the PR when
+          # it finishes, and that label addition re-fires this notifier. A
+          # closed PR can never be relayed (ops re-derives authorization from
+          # live state regardless), so finding one here is a routine no-op —
+          # not an error. Exiting 1 for it made every successfully relayed PR
+          # end on a red check, which is exactly the noise that teaches people
+          # to ignore the one notifier failure that ever matters.
+          PR_STATE=$(jq -er '.state' <<<"$PR")
+          case "$PR_STATE" in
+            open) ;;
+            closed)
+              echo "PR #$STAGING_PR is closed — nothing to wake (already relayed or abandoned)."
+              exit 0
+              ;;
+            *)
+              echo "::error::GitHub supplied an unrecognized PR state '$PR_STATE'"
+              exit 1
+              ;;
+          esac
+          [[ "$(jq -r '.draft // false' <<<"$PR")" == false &&
               "$(jq -r '.base.ref' <<<"$PR")" == master &&
               "$(jq -r '.head.repo.full_name' <<<"$PR")" == "$GITHUB_REPOSITORY" ]] \
             || { echo "::error::relay wake-up requires an open, non-draft same-repository PR targeting master"; exit 1; }
