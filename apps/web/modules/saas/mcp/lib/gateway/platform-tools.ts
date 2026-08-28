@@ -252,7 +252,9 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 			"WARNING: Check the 'draftingStage' field in the response. If it is NOT 'PUBLISHED', the feature spec may be incomplete and should not be implemented yet — confirm with the user before proceeding. " +
 			"The returned 'projectId' can be used with fabric_list_documents(projectId) to also fetch the project's PRD, technical spec, or architecture docs for additional context. " +
 			"Task 'id' fields → fabric_complete_task. Task 'repositoryUrl'/'targetBranch' fields show where previous coding runs pushed code. " +
-			"After implementing, call fabric_update_task with your branch and PR URL to record the implementation.",
+			"After implementing, call fabric_update_task with your branch and PR URL to record the implementation. " +
+			"This returns the spec as it stands now, with no provenance: call fabric_get_feature_decisions for what was decided and by whom (and what is still an open question), and fabric_get_feature_versions for how the spec got here. " +
+			"The 'pmSync' block says whether the linked PM-tool card still reflects this spec — 'autoSyncEnabled' false means the card is a snapshot of the last manual push, not a live mirror, so Fabric is the source of truth.",
 		inputSchema: {
 			type: "object",
 			properties: {
@@ -263,6 +265,84 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 				projectId: {
 					type: "string",
 					description: "Project ID — required to verify access",
+				},
+			},
+			required: ["featureId", "projectId"],
+		},
+		annotations: { readOnlyHint: true },
+		_gateway_source: "platform",
+	},
+	{
+		name: "fabric_get_feature_decisions",
+		description:
+			"Returns the feature's Decision Log — the threaded record of what was decided about this spec and by whom. " +
+			"fabric_get_feature tells you WHAT the spec says; this tells you WHY it says it. " +
+			"Each thread is a question root plus its answers, with 'content' reproduced verbatim — quote it, never paraphrase it and call it a decision. " +
+			"PROVENANCE IS THE POINT: every entry carries 'source' (HUMAN = a person wrote it, AI_CONFIRMED = the AI proposed it and it was accepted unchallenged) and every answer carries 'answerSource' (MANUAL / AI_EDITED / AI_SUGGESTED). " +
+			"A spec whose decisions are all AI_CONFIRMED has not actually been decided by the product side — treat those as drafts and confirm before building on them. " +
+			"Threads with status 'OPEN' are unanswered questions and are the scope risk on this feature; check them before estimating. " +
+			"Returns an empty list when maturation has never run on the feature.",
+		inputSchema: {
+			type: "object",
+			properties: {
+				featureId: {
+					type: "string",
+					description: "Feature ID from fabric_list_features",
+				},
+				projectId: {
+					type: "string",
+					description: "Project ID — required to verify access",
+				},
+				status: {
+					type: "string",
+					enum: [
+						"OPEN",
+						"RESOLVED",
+						"REJECTED",
+						"FORMATTING_ONLY",
+						"POSSIBLY_RESOLVED",
+					],
+					description:
+						"Filter threads by root status. Omit for all. 'OPEN' = still unanswered by the product side.",
+				},
+			},
+			required: ["featureId", "projectId"],
+		},
+		annotations: { readOnlyHint: true },
+		_gateway_source: "platform",
+	},
+	{
+		name: "fabric_get_feature_versions",
+		description:
+			"Returns the feature's revision history — one entry per saved version, newest first, each carrying the change-summary bullets the enhance run emitted describing what it rewrote. " +
+			"Use it to see how a spec reached its current state: what the last maturation run changed, when the acceptance criteria last moved, and who moved them. " +
+			"Version BODIES ARE OMITTED by default because a mature spec runs to tens of KB per version — pass 'version' to retrieve one revision in full (description, acceptance criteria, and the summary-digest / working-notes snapshots as they stood then). " +
+			"Pairs with fabric_get_feature_decisions: versions say what changed, decisions say why.",
+		inputSchema: {
+			type: "object",
+			properties: {
+				featureId: {
+					type: "string",
+					description: "Feature ID from fabric_list_features",
+				},
+				projectId: {
+					type: "string",
+					description: "Project ID — required to verify access",
+				},
+				version: {
+					type: "number",
+					description:
+						"Retrieve this single version in full, including the spec body as it stood at that revision. Omit to list version metadata only.",
+				},
+				limit: {
+					type: "number",
+					description: "Max versions per page (default 20, max 50)",
+					default: 20,
+				},
+				offset: {
+					type: "number",
+					description: "Offset for pagination (default 0)",
+					default: 0,
 				},
 			},
 			required: ["featureId", "projectId"],
@@ -1341,6 +1421,10 @@ export async function executePlatformTool(
 				return await handleListFeatures(args, session);
 			case "fabric_get_feature":
 				return await handleGetFeature(args, session);
+			case "fabric_get_feature_decisions":
+				return await handleGetFeatureDecisions(args, session);
+			case "fabric_get_feature_versions":
+				return await handleGetFeatureVersions(args, session);
 			case "fabric_get_project_statuses":
 				return await handleGetProjectStatuses(args, session);
 			case "fabric_update_feature_status":
@@ -1430,11 +1514,15 @@ function errorResult(message: string): ToolCallResult {
 	};
 }
 
-/** Build XOR tenant filter */
+/**
+ * Build XOR tenant filter. Returns a discriminated union rather than a widened
+ * `organizationId: string | null` so it satisfies query helpers that type their
+ * tenant argument as the union (e.g. `listDecisionLogThreads`).
+ */
 function tenantFilter(session: GatewaySession) {
 	return session.organizationId
 		? { organizationId: session.organizationId, userId: session.userId }
-		: { organizationId: null as string | null, userId: session.userId };
+		: { organizationId: null, userId: session.userId };
 }
 
 // ─── Identity Handlers ──────────────────────────────────────────────────────
@@ -1802,9 +1890,20 @@ async function handleGetFeature(
 		size: story.size,
 		storyPoints: story.storyPoints,
 		draftingStage: story.draftingStage,
+		maturationStatus: story.maturationStatus,
 		assigneeId: story.assigneeId,
 		externalId: story.externalId,
 		externalUrl: story.externalUrl,
+		// Whether the linked PM-tool card still reflects this spec. Auto-sync is
+		// off by default, so a card is a snapshot of the last manual push rather
+		// than a live mirror — without this an agent reads the card as current.
+		pmSync: {
+			autoSyncEnabled: story.pmAutoSyncEnabled,
+			lastSyncedStatusId: story.lastSyncedStatusId,
+			statusDrifted:
+				story.lastSyncedStatusId !== null &&
+				story.lastSyncedStatusId !== story.statusId,
+		},
 		tasks: story.tasks.map((t) => ({
 			id: t.id,
 			identifier: t.identifier,
@@ -1834,6 +1933,175 @@ async function handleGetFeature(
 			: null,
 		createdAt: story.createdAt,
 		updatedAt: story.updatedAt,
+	});
+}
+
+/**
+ * The Decision Log behind a feature. `listDecisionLogThreads` already drops
+ * soft-deleted rows and threads roots with their replies, so this handler only
+ * resolves the tenant filter, checks access and shapes the response.
+ */
+async function handleGetFeatureDecisions(
+	args: Record<string, unknown>,
+	session: GatewaySession,
+): Promise<ToolCallResult> {
+	const { getStoryById, hasProjectAccess, listDecisionLogThreads } =
+		await import("@repo/database");
+
+	const featureId = args.featureId as string;
+	const projectId = args.projectId as string;
+	if (!featureId) {
+		return errorResult("featureId is required");
+	}
+	if (!projectId) {
+		return errorResult("projectId is required");
+	}
+
+	const hasAccess = await hasProjectAccess(
+		projectId,
+		session.userId,
+		session.organizationId || undefined,
+	);
+	if (!hasAccess) {
+		return errorResult("Project not found or access denied");
+	}
+
+	const story = await getStoryById(featureId, projectId);
+	if (!story) {
+		return errorResult("Feature not found");
+	}
+
+	const threads = await listDecisionLogThreads({
+		tenantFilter: tenantFilter(session),
+		userStoryId: featureId,
+	});
+
+	const statusFilter = args.status as string | undefined;
+	const selected = statusFilter
+		? threads.filter((t) => t.root.status === statusFilter)
+		: threads;
+
+	return jsonResult({
+		featureId,
+		identifier: story.identifier,
+		maturationStatus: story.maturationStatus,
+		totalThreads: threads.length,
+		openThreads: threads.filter((t) => t.root.status === "OPEN").length,
+		// Surfaced as a count so a caller sees at a glance whether a person ever
+		// weighed in — an all-AI_CONFIRMED log reads as "decided" but is not.
+		humanAuthoredThreads: threads.filter((t) => t.root.source === "HUMAN")
+			.length,
+		threads: selected.map((thread) => ({
+			id: thread.root.id,
+			status: thread.root.status,
+			topic: thread.root.topic,
+			impactedSection: thread.root.impactedSection,
+			summary: thread.root.summary,
+			content: thread.root.content,
+			authorType: thread.root.authorType,
+			authorName: thread.root.authorName,
+			source: thread.root.source,
+			decidedBy: thread.root.decidedBy,
+			sourceProvenance: thread.root.sourceProvenance,
+			createdAt: thread.root.createdAt,
+			replies: thread.replies.map((reply) => ({
+				id: reply.id,
+				content: reply.content,
+				summary: reply.summary,
+				authorType: reply.authorType,
+				authorName: reply.authorName,
+				source: reply.source,
+				answerSource: reply.answerSource,
+				decidedBy: reply.decidedBy,
+				createdAt: reply.createdAt,
+			})),
+		})),
+	});
+}
+
+/**
+ * Revision history. Bodies are `@db.Text` and a mature spec runs to tens of KB,
+ * so the list carries metadata only and a full revision is opt-in via `version`.
+ */
+async function handleGetFeatureVersions(
+	args: Record<string, unknown>,
+	session: GatewaySession,
+): Promise<ToolCallResult> {
+	const {
+		getFeatureVersion,
+		getFeatureVersions,
+		getStoryById,
+		hasProjectAccess,
+	} = await import("@repo/database");
+
+	const featureId = args.featureId as string;
+	const projectId = args.projectId as string;
+	if (!featureId) {
+		return errorResult("featureId is required");
+	}
+	if (!projectId) {
+		return errorResult("projectId is required");
+	}
+
+	const hasAccess = await hasProjectAccess(
+		projectId,
+		session.userId,
+		session.organizationId || undefined,
+	);
+	if (!hasAccess) {
+		return errorResult("Project not found or access denied");
+	}
+
+	const story = await getStoryById(featureId, projectId);
+	if (!story) {
+		return errorResult("Feature not found");
+	}
+
+	if (args.version !== undefined) {
+		const requested = Number(args.version);
+		const full = await getFeatureVersion(featureId, requested);
+		if (!full) {
+			return errorResult(
+				`Version ${requested} not found for this feature`,
+			);
+		}
+		return jsonResult({
+			featureId,
+			identifier: story.identifier,
+			version: {
+				version: full.version,
+				createdAt: full.createdAt,
+				draftingStage: full.draftingStage,
+				changedBy: full.changedBy,
+				changeDescription: full.changeDescription,
+				changeSummary: full.changeSummary,
+				description: full.description,
+				acceptanceCriteria: full.acceptanceCriteria,
+				summaryDigestSnapshot: full.summaryDigestSnapshot,
+				workingNotesSnapshot: full.workingNotesSnapshot,
+			},
+		});
+	}
+
+	const { versions, total, hasMore } = await getFeatureVersions(
+		featureId,
+		Math.min((args.limit as number) ?? 20, 50),
+		(args.offset as number) ?? 0,
+	);
+
+	return jsonResult({
+		featureId,
+		identifier: story.identifier,
+		total,
+		hasMore,
+		versions: versions.map((version) => ({
+			version: version.version,
+			createdAt: version.createdAt,
+			draftingStage: version.draftingStage,
+			changedBy: version.changedBy,
+			changeDescription: version.changeDescription,
+			changeSummary: version.changeSummary,
+		})),
 	});
 }
 
