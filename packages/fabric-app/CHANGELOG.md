@@ -1,5 +1,28 @@
 # fabric-app
 
+## 1.14.1
+
+### Patch Changes
+
+- d5b8332: Monitored Teams and Slack channels now keep their conversations, so they export and the assistant can cite them.
+- d5b8332: A Notion page bound as a project's PRD source now reaches a terminal indexed state instead of sitting on "Pending" forever.
+- e360efa: Stop an unrestricted MCP selection collapsing to the managed defaults, so a chat runs with every server the user has enabled rather than only Excalidraw
+- 64bc5d5: Ship a corrective migration so the publishing-topic enum contract also applies where no role can bypass row-level security.
+- 518b0b1: Fix Teams channel and chat monitors failing with a Microsoft Graph 401 by naming the Graph resource when refreshing a token.
+- 88761f4: Remove two unused AI provider "last used" timestamp helpers from the database query layer.
+- 662579f: PM Integration no longer shows a healthy status when the caller's MCP connection is missing or disabled — it names the reason and links to the fix.
+- 9db8411: Repoint public-tree links at the open-source repository, drop instructions and run logs that only made sense inside the private tree.
+- d5b8332: A linked one-to-one or group chat now says it is excluded by design, instead of reporting itself as a channel whose messages have not been captured yet.
+- f832c26: Turn the Publishing Suite Inbox on by default, so publishing topics open into the two-section Inbox without an administrator enabling it
+- f832c26: Stop the Publishing Suite list reordering itself after an unrelated write, by breaking `createdAt` ties on a unique key
+- d5b8332: A captured channel conversation whose search indexing failed is now finished automatically instead of staying unsearchable forever.
+- d5b8332: A vector hit on a captured channel conversation now resolves to that conversation's text, so embedding one actually makes it retrievable
+- aee05e5: Stop the scan-procedures suite failing intermittently in CI by paying its module transform once instead of inside a test's timeout.
+- 5e04927: Dismissing a readiness-checklist callout now closes it, instead of opening the Get started drawer over the component it just pointed at
+- d5b8332: Unlink no longer strands conversation vectors when the store refuses, and the batch export stops allocating before it refuses for size
+- d5b8332: Unlinking a monitored Teams or Slack channel now deletes the context captured from it, together with its vectors
+- 19a4ea3: Fabric MCP now exposes a feature's decision log and revision history, and reports whether the linked PM-tool card still reflects the spec.
+
 ## 1.14.0
 
 ### Minor Changes
