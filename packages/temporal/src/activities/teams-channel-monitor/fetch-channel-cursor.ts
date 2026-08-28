@@ -10,6 +10,7 @@
 
 import {
 	appendAppliedChangeIndexes,
+	clearTeamsChannelFailureState,
 	finalizeBacklogUpdateSession,
 	getLinkedTeamsChannelsForMonitor,
 	getTeamsLinkedChannelJobContext,
@@ -61,6 +62,10 @@ export interface UpdateTeamsChannelMonitorLastRunInput {
 export interface RecordTeamsChannelFailureInput {
 	linkedChannelId: string;
 	errorMessage: string;
+}
+
+export interface ClearTeamsChannelFailureInput {
+	linkedChannelId: string;
 }
 
 // =============================================================================
@@ -311,5 +316,26 @@ export async function recordTeamsChannelFailureActivity(
 			linkedChannelId,
 		});
 		// Non-fatal — swallow so the monitor keeps working.
+	}
+}
+
+/**
+ * Clear a channel's failure state after a tick that succeeded without advancing
+ * the cursor, so a recovered but quiet channel stops showing the re-link prompt
+ * (Fizzy #2311).
+ *
+ * Best-effort, like the failure recorder above: clearing a banner must never
+ * fail a tick that otherwise worked.
+ */
+export async function clearTeamsChannelFailureActivity(
+	input: ClearTeamsChannelFailureInput,
+): Promise<void> {
+	try {
+		await clearTeamsChannelFailureState(input.linkedChannelId);
+	} catch (error) {
+		logger.error("[TeamsChannelMonitor] Failed to clear channel failure", {
+			error: error instanceof Error ? error.message : String(error),
+			linkedChannelId: input.linkedChannelId,
+		});
 	}
 }

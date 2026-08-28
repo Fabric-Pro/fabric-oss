@@ -9,6 +9,7 @@
  */
 
 import {
+	clearTeamsChatFailureState,
 	getLinkedTeamsChatsForMonitor,
 	getTeamsLinkedChatJobContext,
 	recordTeamsChatFailure,
@@ -50,6 +51,10 @@ export interface LinkedChatForMonitor {
 
 export interface UpdateTeamsChatMonitorLastRunInput {
 	projectId: string;
+}
+
+export interface ClearTeamsChatFailureInput {
+	linkedChatId: string;
 }
 
 export interface RecordTeamsChatFailureInput {
@@ -200,5 +205,22 @@ export async function recordTeamsChatFailureActivity(
 			linkedChatId,
 		});
 		// Non-fatal — swallow so the monitor keeps working.
+	}
+}
+
+/**
+ * Clear a chat's failure state after a tick that succeeded without advancing the
+ * cursor. Mirror of `clearTeamsChannelFailureActivity` (Fizzy #2311).
+ */
+export async function clearTeamsChatFailureActivity(
+	input: ClearTeamsChatFailureInput,
+): Promise<void> {
+	try {
+		await clearTeamsChatFailureState(input.linkedChatId);
+	} catch (error) {
+		logger.error("[TeamsChatMonitor] Failed to clear chat failure", {
+			error: error instanceof Error ? error.message : String(error),
+			linkedChatId: input.linkedChatId,
+		});
 	}
 }

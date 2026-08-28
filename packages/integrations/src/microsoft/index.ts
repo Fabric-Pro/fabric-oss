@@ -306,6 +306,23 @@ function parseVttToStructured(
 }
 
 /**
+ * Resource to redeem the refresh token against.
+ *
+ * **Always send a scope.** A refresh token here is multi-resource, and a
+ * redemption that omits `scope` is issued against whichever resource was
+ * redeemed last — so once the channel-recording fallback in
+ * `stream-transcript.ts` takes a SharePoint token, every later Graph refresh
+ * silently comes back with `aud` = SharePoint and Graph answers 401
+ * `InvalidAuthenticationToken` ("Invalid audience"). The retry re-mints the same
+ * wrong token, so the connection never recovers on its own (Fizzy #2311).
+ *
+ * `.default` costs nothing: the scope pins the *resource* only and does not
+ * narrow the grant — asking for a single scope still returns every consented
+ * one.
+ */
+const GRAPH_DEFAULT_SCOPE = "https://graph.microsoft.com/.default";
+
+/**
  * Refresh Microsoft OAuth access token using refresh token.
  * Returns the new token response or throws if refresh fails.
  */
@@ -335,6 +352,7 @@ async function refreshMicrosoftToken(
 				client_secret: clientSecret,
 				refresh_token: refreshToken,
 				grant_type: "refresh_token",
+				scope: GRAPH_DEFAULT_SCOPE,
 			}),
 		},
 	);

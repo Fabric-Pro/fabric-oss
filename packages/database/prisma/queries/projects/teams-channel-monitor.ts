@@ -147,6 +147,27 @@ export async function updateTeamsChannelCursor(
 	});
 }
 
+/**
+ * Clear a channel's failure state after a tick that succeeded without moving
+ * the cursor.
+ *
+ * `updateTeamsChannelCursor` already resets these, but the workflow only calls
+ * it when the tick found new threads — so a channel that recovers while quiet
+ * kept its banner and its "please re-link this channel" prompt forever
+ * (Fizzy #2311). Recovery is a property of the tick succeeding, not of the
+ * cursor moving.
+ */
+export async function clearTeamsChannelFailureState(linkedChannelId: string) {
+	return await db.projectLinkedTeamsChannel.update({
+		where: { id: linkedChannelId },
+		data: {
+			consecutiveFailures: 0,
+			lastErrorMessage: null,
+			lastErrorAt: null,
+		},
+	});
+}
+
 export async function recordTeamsChannelFailure(
 	linkedChannelId: string,
 	errorMessage: string,
