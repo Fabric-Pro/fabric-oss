@@ -99,6 +99,8 @@
 		"backfill:last-edited-at:staging": "dotenv -c -e ../../.env.staging -- tsx ./scripts/backfill-last-edited-at.ts",
 		"backfill:proposal-summaries": "dotenv -c -e ../../.env.local -- tsx ./scripts/backfill-pending-proposal-summaries.ts",
 		"backfill:proposal-summaries:staging": "dotenv -c -e ../../.env.staging -- tsx ./scripts/backfill-pending-proposal-summaries.ts",
+		"repair:embedded-integration-contexts": "dotenv -c -e ../../.env.local -- tsx ./scripts/complete-embedded-integration-contexts.ts",
+		"repair:embedded-integration-contexts:staging": "dotenv -c -e ../../.env.staging -- tsx ./scripts/complete-embedded-integration-contexts.ts",
 		"clear:trajectories": "dotenv -c -e ../../.env.local -- tsx ./scripts/clear-orchestrator-trajectories.ts",
 		"clear:fabric-ai-tools": "dotenv -c -e ../../.env.local -- tsx ./scripts/clear-fabric-ai-tools.ts",
 		"test:lakebase": "tsx ./scripts/lakebase-validation.ts",

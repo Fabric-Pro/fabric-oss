@@ -17,6 +17,14 @@ vi.mock("@repo/database", async (importOriginal) => {
 		markTeamsMessagesAsSeen: (...a: unknown[]) =>
 			markTeamsMessagesAsSeen(...a),
 		db: {
+			// Conversation capture (Fizzy #2228) runs ahead of the analyzer and
+			// looks the channel's ProjectContext row up through this. These
+			// fixtures register no such row, so capture correctly finds no
+			// parent and writes nothing — which is what keeps this suite about
+			// the attachment sidecar and the prompt bytes, exactly as before.
+			// Capture's own behaviour is covered in
+			// `__tests__/conversation-bundle-capture.test.ts`.
+			projectContext: { findMany: async () => [] },
 			$transaction: async (fn: (tx: unknown) => Promise<unknown>) =>
 				fn({
 					projectLinkedTeamsChannelSeenMessage: {

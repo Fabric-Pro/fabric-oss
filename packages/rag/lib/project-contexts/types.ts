@@ -75,4 +75,15 @@ export interface ProjectRetrievalResult {
 	 * (typically truncated).
 	 */
 	content?: string;
+	/**
+	 * The captured conversation bundle this point was embedded from, when it
+	 * was one (Fizzy #2228). Bundle rows live in
+	 * `ProjectContextConversationBundle`, so a hit carrying this must be
+	 * refetched from there — `getRetrievableContextById` knows only about
+	 * `ProjectContext` and `ProjectContextUrlPage` and returns null for it.
+	 *
+	 * `undefined` on every ordinary context point, which is what keeps the
+	 * existing resolution path byte-identical.
+	 */
+	conversationBundleId?: string;
 }

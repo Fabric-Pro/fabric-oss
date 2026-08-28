@@ -1,0 +1,30 @@
+-- The unique index the conversation children's composite foreign key points at
+-- (Fizzy #2228).
+--
+-- A foreign key needs a unique index over EXACTLY its referenced columns, so
+-- referencing (id, projectId, ownerKey) requires this index to exist first. It
+-- constrains nothing about project_context's own rows — `id` is already the
+-- primary key, so the triple is unique by construction. Its only job is to make
+-- (parentContextId, projectId, ownerKey) a legal reference, which is what turns
+-- "the child agrees with its parent about project AND owner" into something the
+-- database checks rather than something the query layer remembers to.
+--
+-- CONCURRENTLY because project_context is populated and a plain build takes a
+-- write lock on it for the length of the build.
+--
+-- NO `IF NOT EXISTS` — deliberately, and do not add it. A failed concurrent
+-- build leaves the index behind with `indisvalid = false`; `IF NOT EXISTS` would
+-- then see the name taken on the retry and skip the rebuild, so the migration
+-- would be recorded as applied while the uniqueness this foreign key depends on
+-- silently did not exist — and 20260826120200 would fail to create the foreign
+-- key, or worse, succeed against an index that enforces nothing. Without the
+-- clause the retry fails loudly instead. Recovery per
+-- docs/database-promotion.md § "A concurrent build that does fail": find it with
+--   SELECT indexrelid::regclass FROM pg_index WHERE NOT indisvalid;
+-- then DROP INDEX that name before re-running the migration.
+--
+-- KEEP THIS MIGRATION TO ONE STATEMENT. A second one reintroduces Prisma's
+-- transaction wrapper, and CONCURRENTLY cannot run inside a transaction
+-- (SQLSTATE 25001).
+CREATE UNIQUE INDEX CONCURRENTLY "project_context_id_projectId_ownerKey_key"
+  ON "project_context" ("id", "projectId", "ownerKey");

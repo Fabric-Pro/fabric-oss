@@ -23,6 +23,7 @@ import type {
 } from "@repo/integrations";
 import { logger } from "@repo/logs";
 import { heartbeat } from "@temporalio/activity";
+import { captureChannelConversationBundle } from "../../lib/capture-conversation-bundle";
 import {
 	analyzeContextAndPropose,
 	type ChangeProposal,
@@ -210,6 +211,44 @@ export async function analyzeChannelThreadActivity(
 			channelDisplayName,
 		);
 
+		// Step 2b: Capture the conversation BEFORE the analyzer runs, so it
+		// happens on both branches of the analyzer's outcome (Fizzy #2228).
+		// The zero-change branch below is where this channel's content used to
+		// disappear entirely: the transcript only ever survived inside a
+		// PendingBacklogProposal, and that branch writes none. Placing capture
+		// here — rather than duplicating it into each branch — is what makes
+		// the guarantee independent of what the LLM decided.
+		//
+		// Not wrapped in its own try/catch on purpose. A failure inside the
+		// capture transaction rolls its message claims back, so the Temporal
+		// retry re-claims the same messages and writes the bundle it was going
+		// to write. Swallowing it would leave the claims committed with no
+		// bundle, and the retry would then compute an empty claim set — losing
+		// exactly the content this exists to keep.
+		heartbeat("capturing conversation bundle");
+		await captureChannelConversationBundle({
+			channel: { provider: "MICROSOFT_TEAMS", teamId, channelId },
+			projectId,
+			userId,
+			organizationId,
+			channelDisplayName,
+			providerThreadId: thread.rootMessageId,
+			messages: [
+				{
+					providerMessageId: thread.rootMessageId,
+					author: thread.rootAuthor,
+					createdAt: thread.rootCreatedAt,
+					content: thread.rootContent,
+				},
+				...thread.replies.map((reply) => ({
+					providerMessageId: reply.messageId,
+					author: reply.author,
+					createdAt: reply.createdAt,
+					content: reply.content,
+				})),
+			],
+		});
+
 		heartbeat("calling analyzeContextAndPropose");
 		const proposal: ChangeProposal = await analyzeContextAndPropose({
 			projectId,
@@ -233,8 +272,6 @@ export async function analyzeChannelThreadActivity(
 			// applies the project's own opt-in.
 			allowRouting: true,
 		});
-
-		const threadLastActivityDate = new Date(thread.threadLastActivity);
 
 		// Flatten root + reply image-attachment refs into a single sidecar
 		// list (chat-thread image-attachments feature, FR-9 / spec § 4.4).

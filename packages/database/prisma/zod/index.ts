@@ -240,7 +240,7 @@ export type ProjectDocumentAssetScalarFieldEnum = z.infer<typeof ProjectDocument
 
 // File: ProjectContextScalarFieldEnum.schema.ts
 
-export const ProjectContextScalarFieldEnumSchema = z.enum(['id', 'projectId', 'type', 'content', 'qdrantId', 'embeddedAt', 'metadata', 's3Path', 's3Bucket', 'originalFilename', 'mimeType', 'fileSize', 'extractionStatus', 'extractionError', 'extractedAt', 'sourceUrl', 'sourceTitle', 'knowledgeBaseSourceCategory', 'knowledgeBaseSourceCategoryOther', 'urlScope', 'urlMaxPages', 'urlRefreshMode', 'urlNextRefreshAt', 'urlLastSyncedAt', 'urlScheduleId', 'urlActiveWorkflowId', 'sourceType', 'aiInstructions', 'userId', 'organizationId', 'createdAt', 'updatedAt'])
+export const ProjectContextScalarFieldEnumSchema = z.enum(['id', 'projectId', 'type', 'content', 'qdrantId', 'embeddedAt', 'metadata', 's3Path', 's3Bucket', 'originalFilename', 'mimeType', 'fileSize', 'extractionStatus', 'extractionError', 'extractedAt', 'sourceUrl', 'sourceTitle', 'knowledgeBaseSourceCategory', 'knowledgeBaseSourceCategoryOther', 'urlScope', 'urlMaxPages', 'urlRefreshMode', 'urlNextRefreshAt', 'urlLastSyncedAt', 'urlScheduleId', 'urlActiveWorkflowId', 'sourceType', 'aiInstructions', 'userId', 'organizationId', 'ownerKey', 'createdAt', 'updatedAt'])
 
 export type ProjectContextScalarFieldEnum = z.infer<typeof ProjectContextScalarFieldEnumSchema>;
 
@@ -261,6 +261,24 @@ export type ProjectReadinessVerdictScalarFieldEnum = z.infer<typeof ProjectReadi
 export const ProjectContextUrlPageScalarFieldEnumSchema = z.enum(['id', 'parentContextId', 'projectId', 'pageUrl', 'pageTitle', 'content', 'qdrantId', 'embeddedAt', 'lastFetchedAt', 'etag', 'lastModifiedHeader', 'contentHash', 'chunkCount', 'extractionStatus', 'extractionError', 'userId', 'organizationId', 'createdAt', 'updatedAt'])
 
 export type ProjectContextUrlPageScalarFieldEnum = z.infer<typeof ProjectContextUrlPageScalarFieldEnumSchema>;
+
+// File: ProjectContextConversationBundleScalarFieldEnum.schema.ts
+
+export const ProjectContextConversationBundleScalarFieldEnumSchema = z.enum(['id', 'parentContextId', 'projectId', 'providerThreadId', 'content', 'contentHash', 'messageCount', 'bundleStartedAt', 'bundleEndedAt', 'qdrantId', 'embeddingLeaseAt', 'embeddedAt', 'extractionStatus', 'extractionError', 'userId', 'organizationId', 'ownerKey', 'createdAt', 'updatedAt'])
+
+export type ProjectContextConversationBundleScalarFieldEnum = z.infer<typeof ProjectContextConversationBundleScalarFieldEnumSchema>;
+
+// File: ProjectContextConversationClaimScalarFieldEnum.schema.ts
+
+export const ProjectContextConversationClaimScalarFieldEnumSchema = z.enum(['id', 'parentContextId', 'projectId', 'providerMessageId', 'providerThreadId', 'messageCreatedAt', 'bundleId', 'userId', 'organizationId', 'ownerKey', 'createdAt', 'updatedAt'])
+
+export type ProjectContextConversationClaimScalarFieldEnum = z.infer<typeof ProjectContextConversationClaimScalarFieldEnumSchema>;
+
+// File: ProjectContextPendingVectorCleanupScalarFieldEnum.schema.ts
+
+export const ProjectContextPendingVectorCleanupScalarFieldEnumSchema = z.enum(['id', 'projectId', 'contextIds', 'attempts', 'lastError', 'userId', 'organizationId', 'createdAt', 'updatedAt'])
+
+export type ProjectContextPendingVectorCleanupScalarFieldEnum = z.infer<typeof ProjectContextPendingVectorCleanupScalarFieldEnumSchema>;
 
 // File: ProjectContextSummaryScalarFieldEnum.schema.ts
 
@@ -4076,6 +4094,7 @@ export const ProjectContextSchema = z.object({
   aiInstructions: z.string().nullish(),
   userId: z.string().nullish(),
   organizationId: z.string().nullish(),
+  ownerKey: z.string().nullish(),
   createdAt: z.date(),
   updatedAt: z.date(),
 });
@@ -4144,6 +4163,70 @@ export const ProjectContextUrlPageSchema = z.object({
 });
 
 export type ProjectContextUrlPageType = z.infer<typeof ProjectContextUrlPageSchema>;
+
+
+// File: ProjectContextConversationBundle.schema.ts
+
+export const ProjectContextConversationBundleSchema = z.object({
+  id: z.string(),
+  parentContextId: z.string(),
+  projectId: z.string(),
+  providerThreadId: z.string().nullish(),
+  content: z.string(),
+  contentHash: z.string(),
+  messageCount: z.number().int(),
+  bundleStartedAt: z.date(),
+  bundleEndedAt: z.date().nullish(),
+  qdrantId: z.string().nullish(),
+  embeddingLeaseAt: z.date().nullish(),
+  embeddedAt: z.date().nullish(),
+  extractionStatus: ExtractionStatusSchema.default("PENDING"),
+  extractionError: z.string().nullish(),
+  userId: z.string().nullish(),
+  organizationId: z.string().nullish(),
+  ownerKey: z.string().nullish(),
+  createdAt: z.date(),
+  updatedAt: z.date(),
+});
+
+export type ProjectContextConversationBundleType = z.infer<typeof ProjectContextConversationBundleSchema>;
+
+
+// File: ProjectContextConversationClaim.schema.ts
+
+export const ProjectContextConversationClaimSchema = z.object({
+  id: z.string(),
+  parentContextId: z.string(),
+  projectId: z.string(),
+  providerMessageId: z.string(),
+  providerThreadId: z.string().nullish(),
+  messageCreatedAt: z.date().nullish(),
+  bundleId: z.string().nullish(),
+  userId: z.string().nullish(),
+  organizationId: z.string().nullish(),
+  ownerKey: z.string().nullish(),
+  createdAt: z.date(),
+  updatedAt: z.date(),
+});
+
+export type ProjectContextConversationClaimType = z.infer<typeof ProjectContextConversationClaimSchema>;
+
+
+// File: ProjectContextPendingVectorCleanup.schema.ts
+
+export const ProjectContextPendingVectorCleanupSchema = z.object({
+  id: z.string(),
+  projectId: z.string(),
+  contextIds: z.array(z.string()),
+  attempts: z.number().int(),
+  lastError: z.string().nullish(),
+  userId: z.string().nullish(),
+  organizationId: z.string().nullish(),
+  createdAt: z.date(),
+  updatedAt: z.date(),
+});
+
+export type ProjectContextPendingVectorCleanupType = z.infer<typeof ProjectContextPendingVectorCleanupSchema>;
 
 
 // File: ProjectContextSummary.schema.ts

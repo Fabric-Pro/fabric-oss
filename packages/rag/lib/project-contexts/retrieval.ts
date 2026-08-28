@@ -15,6 +15,7 @@ import {
 	db,
 	getProjectRagSettings,
 	getRetrievableContextById,
+	getRetrievableConversationBundleById,
 } from "@repo/database";
 import { logger } from "@repo/logs";
 import { generateEmbedding } from "../embedding";
@@ -237,20 +238,43 @@ export async function retrieveProjectContexts(
 		// while preserving Qdrant's relevance order, then fetch all rows in parallel.
 		const orderedIds: string[] = [];
 		const scoreById = new Map<string, number>();
+		// Which of those ids belong to a captured conversation bundle rather
+		// than to a context row. Carried from the point payload, because the id
+		// alone cannot say which table holds it.
+		const bundleIdById = new Map<string, string>();
 		for (const result of searchResults) {
 			if (scoreById.has(result.contextId)) {
 				continue;
 			}
 			scoreById.set(result.contextId, result.score);
+			if (result.conversationBundleId) {
+				bundleIdById.set(result.contextId, result.conversationBundleId);
+			}
 			orderedIds.push(result.contextId);
 		}
 
-		// Use `getRetrievableContextById` (not `getContextById`) so URL-page
-		// chunks resolve. Per-page chunks are embedded with their own
-		// `ProjectContextUrlPage.id` as the Qdrant `contextId`; the helper
-		// falls back to that table when the id isn't a `ProjectContext`.
+		// Vector store as an index of ids; the text always comes back from
+		// Postgres. Three tables can hold it:
+		//   - `ProjectContext` — the ordinary case.
+		//   - `ProjectContextUrlPage` — per-page URL chunks are embedded with
+		//     their own page id, which `getRetrievableContextById` falls back to.
+		//   - `ProjectContextConversationBundle` — a monitored channel's captured
+		//     messages (Fizzy #2228). The channel's own context row is a pointer
+		//     with empty `content`, so resolving a bundle hit through the context
+		//     path would return nothing to cite even when it "succeeded". Only
+		//     the payload knows, hence the branch.
 		const fetched = await Promise.all(
-			orderedIds.map((id) => getRetrievableContextById(id)),
+			orderedIds.map((id) => {
+				const bundleId = bundleIdById.get(id);
+				if (!bundleId) {
+					return getRetrievableContextById(id);
+				}
+				return getRetrievableConversationBundleById({
+					bundleId,
+					projectId,
+					tenant: { userId, organizationId },
+				});
+			}),
 		);
 
 		const contexts: RetrievedContext[] = [];

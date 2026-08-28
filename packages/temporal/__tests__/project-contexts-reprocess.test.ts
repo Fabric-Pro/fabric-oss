@@ -9,11 +9,29 @@
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+const mocks = vi.hoisted(() => ({
+	qdrantDelete: vi.fn(),
+	qdrantGetCollections: vi.fn(),
+	bundleUpdateMany: vi.fn(),
+}));
+
+/** Activity stubs for the workflow-ordering tests at the bottom of this file. */
+const activityStubs = vi.hoisted(() => ({
+	validateRAGProviderConfig: vi.fn(),
+	fetchProjectContextsForReprocess: vi.fn(),
+	deleteProjectContextsFromQdrant: vi.fn(),
+	reembedProjectContext: vi.fn(),
+	updateReprocessProgress: vi.fn(),
+}));
+
 // Mock the database
 vi.mock("@repo/database/prisma/client", () => ({
 	db: {
 		projectContext: {
 			findMany: vi.fn(),
+		},
+		projectContextConversationBundle: {
+			updateMany: mocks.bundleUpdateMany,
 		},
 	},
 }));
@@ -34,20 +52,50 @@ vi.mock("@repo/rag", () => ({
 
 // Mock Qdrant client. vitest 4.x rejects arrow-function
 // .mockImplementation here because the source calls `new QdrantClient(...)`
-// and arrows aren't constructable. Use a real class instead.
+// and arrows aren't constructable. Use a real class instead, delegating to
+// hoisted spies so the tests can assert which collection was addressed.
 vi.mock("@qdrant/js-client-rest", () => ({
 	QdrantClient: class MockQdrantClient {
-		delete = vi.fn().mockResolvedValue({ status: "acknowledged" });
+		delete = (...a: unknown[]) => mocks.qdrantDelete(...a);
+		getCollections = (...a: unknown[]) => mocks.qdrantGetCollections(...a);
 	},
 }));
+
+// Workflow-level ordering tests only: the activity tests above exercise the
+// real implementations.
+vi.mock("@temporalio/workflow", async () => {
+	const actual = await vi.importActual<typeof import("@temporalio/workflow")>(
+		"@temporalio/workflow",
+	);
+	return {
+		ApplicationFailure: actual.ApplicationFailure,
+		log: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
+		proxyActivities: vi.fn(() => activityStubs),
+	};
+});
 
 import { db } from "@repo/database/prisma/client";
 import { reembedProjectContext as ragReembed } from "@repo/rag";
 import type { ProjectContextForReprocess } from "../src/activities/project-contexts-reprocess";
 
+const PERSONAL_COLLECTION = "project-contexts";
+const ORG_ID = "orgexample1";
+const ORG_COLLECTION = `project-contexts-org-${ORG_ID}`;
+/** The name this activity used to hardcode. Nothing may resolve to it. */
+const LEGACY_UNDERSCORE_COLLECTION = "project_contexts";
+
+function collectionsExisting(...names: string[]) {
+	return { collections: names.map((name) => ({ name })) };
+}
+
 describe("Project Contexts Reprocess Workflow", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
+		mocks.qdrantDelete.mockResolvedValue({ status: "acknowledged" });
+		mocks.qdrantGetCollections.mockResolvedValue(
+			collectionsExisting(PERSONAL_COLLECTION, ORG_COLLECTION),
+		);
+		mocks.bundleUpdateMany.mockResolvedValue({ count: 0 });
 	});
 
 	describe("fetchProjectContextsForReprocess", () => {
@@ -189,6 +237,198 @@ describe("Project Contexts Reprocess Workflow", () => {
 		});
 	});
 
+	describe("deleteProjectContextsFromQdrant", () => {
+		// The activity used to clear a hardcoded `project_contexts`
+		// (underscore) while the re-embed writes to the collection
+		// `getCollectionName` resolves — so nothing was ever cleared, and every
+		// reprocess stacked another copy of each chunk on top of the old ones.
+		it("clears the bare base collection for a personal-tenant project", async () => {
+			const { deleteProjectContextsFromQdrant } = await import(
+				"../src/activities/project-contexts-reprocess"
+			);
+
+			await deleteProjectContextsFromQdrant({ projectId: "proj-123" });
+
+			expect(mocks.qdrantDelete).toHaveBeenCalledWith(
+				PERSONAL_COLLECTION,
+				{
+					wait: true,
+					filter: {
+						must: [
+							{
+								key: "projectId",
+								match: { value: "proj-123" },
+							},
+						],
+					},
+				},
+			);
+		});
+
+		it("clears the per-organization collection for an organization project", async () => {
+			const { deleteProjectContextsFromQdrant } = await import(
+				"../src/activities/project-contexts-reprocess"
+			);
+
+			await deleteProjectContextsFromQdrant({
+				projectId: "proj-123",
+				organizationId: ORG_ID,
+			});
+
+			expect(mocks.qdrantDelete).toHaveBeenCalledWith(ORG_COLLECTION, {
+				wait: true,
+				filter: {
+					must: [
+						{ key: "projectId", match: { value: "proj-123" } },
+						{ key: "organizationId", match: { value: ORG_ID } },
+					],
+				},
+			});
+			// The invariant the bug violated: an organization's points are
+			// never cleared out of the personal collection, which never held
+			// them.
+			expect(mocks.qdrantDelete).not.toHaveBeenCalledWith(
+				PERSONAL_COLLECTION,
+				expect.anything(),
+			);
+		});
+
+		it("never addresses the legacy underscore collection", async () => {
+			const { deleteProjectContextsFromQdrant } = await import(
+				"../src/activities/project-contexts-reprocess"
+			);
+
+			await deleteProjectContextsFromQdrant({ projectId: "proj-123" });
+			await deleteProjectContextsFromQdrant({
+				projectId: "proj-123",
+				organizationId: ORG_ID,
+			});
+
+			for (const [collection] of mocks.qdrantDelete.mock.calls) {
+				expect(collection).not.toBe(LEGACY_UNDERSCORE_COLLECTION);
+			}
+		});
+
+		it("succeeds without deleting when the organization's collection was never created", async () => {
+			// Per-organization collections are created lazily on first write.
+			mocks.qdrantGetCollections.mockResolvedValue(
+				collectionsExisting(PERSONAL_COLLECTION),
+			);
+
+			const { deleteProjectContextsFromQdrant } = await import(
+				"../src/activities/project-contexts-reprocess"
+			);
+
+			await expect(
+				deleteProjectContextsFromQdrant({
+					projectId: "proj-123",
+					organizationId: ORG_ID,
+				}),
+			).resolves.toBeUndefined();
+			expect(mocks.qdrantDelete).not.toHaveBeenCalled();
+		});
+
+		it("surfaces a vector-store failure against an existing collection instead of swallowing it", async () => {
+			// The previous bare catch reported a clear that never happened as
+			// done; the re-embed then duplicated every chunk.
+			mocks.qdrantDelete.mockRejectedValue(
+				new Error("Qdrant unavailable"),
+			);
+
+			const { deleteProjectContextsFromQdrant } = await import(
+				"../src/activities/project-contexts-reprocess"
+			);
+
+			await expect(
+				deleteProjectContextsFromQdrant({
+					projectId: "proj-123",
+					organizationId: ORG_ID,
+				}),
+			).rejects.toThrow("Qdrant unavailable");
+		});
+
+		// The delete is project-wide; the re-embed that follows only walks
+		// non-INTEGRATION `ProjectContext` rows. Conversation bundles are
+		// therefore cleared and never rebuilt — and a row still claiming
+		// `embeddedAt` is invisible to the recovery sweep too, so the stamp has
+		// to come off or the conversations go silently unsearchable.
+		it("hands the bundles it just orphaned back to the recovery sweep", async () => {
+			mocks.bundleUpdateMany.mockResolvedValue({ count: 3 });
+
+			const { deleteProjectContextsFromQdrant } = await import(
+				"../src/activities/project-contexts-reprocess"
+			);
+
+			await deleteProjectContextsFromQdrant({
+				projectId: "proj-123",
+				organizationId: ORG_ID,
+			});
+
+			// Exactly the sweep's predicate: `embeddedAt` null, no lease.
+			expect(mocks.bundleUpdateMany).toHaveBeenCalledWith({
+				where: { projectId: "proj-123" },
+				data: {
+					embeddedAt: null,
+					qdrantId: null,
+					embeddingLeaseAt: null,
+				},
+			});
+		});
+
+		it("does not requeue bundles when the clear failed", async () => {
+			// The points are still there and the workflow aborts before
+			// re-embedding anything, so the stamps must stand.
+			mocks.qdrantDelete.mockRejectedValue(
+				new Error("Qdrant unavailable"),
+			);
+
+			const { deleteProjectContextsFromQdrant } = await import(
+				"../src/activities/project-contexts-reprocess"
+			);
+
+			await expect(
+				deleteProjectContextsFromQdrant({
+					projectId: "proj-123",
+					organizationId: ORG_ID,
+				}),
+			).rejects.toThrow("Qdrant unavailable");
+			expect(mocks.bundleUpdateMany).not.toHaveBeenCalled();
+		});
+
+		it("does not requeue bundles when there was no collection to clear", async () => {
+			mocks.qdrantGetCollections.mockResolvedValue(
+				collectionsExisting(PERSONAL_COLLECTION),
+			);
+
+			const { deleteProjectContextsFromQdrant } = await import(
+				"../src/activities/project-contexts-reprocess"
+			);
+
+			await deleteProjectContextsFromQdrant({
+				projectId: "proj-123",
+				organizationId: ORG_ID,
+			});
+
+			expect(mocks.qdrantDelete).not.toHaveBeenCalled();
+			expect(mocks.bundleUpdateMany).not.toHaveBeenCalled();
+		});
+
+		it("surfaces an unreachable vector store rather than treating it as empty", async () => {
+			mocks.qdrantGetCollections.mockRejectedValue(
+				new Error("ECONNREFUSED 6333"),
+			);
+
+			const { deleteProjectContextsFromQdrant } = await import(
+				"../src/activities/project-contexts-reprocess"
+			);
+
+			await expect(
+				deleteProjectContextsFromQdrant({ projectId: "proj-123" }),
+			).rejects.toThrow("ECONNREFUSED");
+			expect(mocks.qdrantDelete).not.toHaveBeenCalled();
+		});
+	});
+
 	describe("Workflow input validation", () => {
 		it("should require projectId", () => {
 			const validInput = {
@@ -292,5 +532,74 @@ describe("Scalability and High Availability", () => {
 
 			expect(expectedTimeouts.startToCloseTimeout).toBe("10 minutes");
 		});
+	});
+});
+
+describe("Reprocess clears prior points before writing new ones", () => {
+	beforeEach(() => {
+		vi.clearAllMocks();
+		activityStubs.fetchProjectContextsForReprocess.mockResolvedValue([
+			{
+				id: "ctx-1",
+				type: "TEXT",
+				content: "Content",
+				originalFilename: null,
+				sourceUrl: null,
+				sourceTitle: null,
+			},
+		]);
+		activityStubs.validateRAGProviderConfig.mockResolvedValue(undefined);
+		activityStubs.deleteProjectContextsFromQdrant.mockResolvedValue(
+			undefined,
+		);
+		activityStubs.reembedProjectContext.mockResolvedValue(undefined);
+		activityStubs.updateReprocessProgress.mockResolvedValue(undefined);
+	});
+
+	it("clears the project's existing points before the first re-embed", async () => {
+		const { projectContextsReprocessWorkflow } = await import(
+			"../src/workflows/project-contexts-reprocess"
+		);
+
+		const out = await projectContextsReprocessWorkflow({
+			projectId: "proj-123",
+			userId: "user-123",
+			organizationId: ORG_ID,
+		});
+
+		expect(out.success).toBe(true);
+		expect(
+			activityStubs.deleteProjectContextsFromQdrant,
+		).toHaveBeenCalledWith({
+			projectId: "proj-123",
+			organizationId: ORG_ID,
+		});
+		// Ordering is the whole point: re-embedding on top of points that were
+		// never cleared is how a re-embed accumulates duplicates.
+		expect(
+			activityStubs.deleteProjectContextsFromQdrant.mock
+				.invocationCallOrder[0],
+		).toBeLessThan(
+			activityStubs.reembedProjectContext.mock.invocationCallOrder[0],
+		);
+	});
+
+	it("aborts without re-embedding when the clear fails, so points cannot accumulate", async () => {
+		activityStubs.deleteProjectContextsFromQdrant.mockRejectedValue(
+			new Error("Qdrant unavailable"),
+		);
+
+		const { projectContextsReprocessWorkflow } = await import(
+			"../src/workflows/project-contexts-reprocess"
+		);
+
+		await expect(
+			projectContextsReprocessWorkflow({
+				projectId: "proj-123",
+				userId: "user-123",
+				organizationId: ORG_ID,
+			}),
+		).rejects.toThrow("Qdrant unavailable");
+		expect(activityStubs.reembedProjectContext).not.toHaveBeenCalled();
 	});
 });

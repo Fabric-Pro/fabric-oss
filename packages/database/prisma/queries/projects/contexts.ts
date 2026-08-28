@@ -539,6 +539,12 @@ export async function getUrlSourceContext(input: {
  * batch download procedure. `metadata` is included so the caller can derive
  * `integrationProvider` (stored under `metadata.provider`) without a second
  * round-trip.
+ *
+ * `urlScope` is selected for one reason: a `LINK` row crawled with
+ * `PATH_PREFIX` keeps its markdown in child `ProjectContextUrlPage` rows and
+ * leaves `content` empty on the parent. Without this column the batch export
+ * cannot tell that row apart from a genuinely empty one, and skips a link the
+ * single-item download exports fine. Keep it in the select.
  */
 export async function listContextsForDownload(projectId: string) {
 	return await db.projectContext.findMany({
@@ -554,11 +560,18 @@ export async function listContextsForDownload(projectId: string) {
 			fileSize: true,
 			sourceTitle: true,
 			sourceUrl: true,
+			urlScope: true,
 			extractionStatus: true,
 			metadata: true,
 			createdAt: true,
 		},
-		orderBy: { createdAt: "asc" },
+		// `createdAt` alone is not a total order: rows written in one
+		// transaction share a timestamp and Postgres may return those ties in
+		// any order. The batch export truncates at an item ceiling rather than
+		// refusing (Fizzy #2228), so an unstable tie order would mean two
+		// exports of an unchanged project dropped different rows. `id` settles
+		// it.
+		orderBy: [{ createdAt: "asc" }, { id: "asc" }],
 	});
 }
 

@@ -25,6 +25,14 @@ vi.mock("@repo/database", async (importOriginal) => {
 			createPendingBacklogProposal(...a),
 		attachProposalToSeenSlackMessage: (...a: unknown[]) =>
 			attachProposalToSeenSlackMessage(...a),
+		// Conversation capture (Fizzy #2228) runs between the fetch and the
+		// claim and looks the channel's ProjectContext row up through this.
+		// These fixtures register no such row, so capture correctly finds no
+		// parent and writes nothing — which keeps this suite about the
+		// attachment sidecar and the prompt bytes, exactly as before. Capture's
+		// own behaviour is covered in
+		// `__tests__/conversation-bundle-capture.test.ts`.
+		db: { projectContext: { findMany: async () => [] } },
 	};
 });
 

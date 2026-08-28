@@ -2203,8 +2203,18 @@
 				"pending": "This context is still being processed",
 				"extractedTextWarning": "Downloads extracted text — original source is not stored in Fabric",
 				"completed": "Downloaded {included} of {total} contexts",
-				"skipped": "{skipped} were skipped (still processing or unavailable)",
-				"tooLarge": "This project has {count} contexts ({size}). Batch download is limited to {maxCount} contexts and {maxSize}.",
+				"skippedReason": {
+					"NOTHING_STORED": "{count, plural, one {# item had nothing stored to export} other {# items had nothing stored to export}}",
+					"EXTRACTION_FAILED": "{count, plural, one {# item's text extraction failed} other {# items' text extraction failed}}",
+					"EXTRACTION_CANCELLED": "{count, plural, one {# item's text extraction was cancelled} other {# items' text extraction was cancelled}}",
+					"CONVERSATION_NOT_CAPTURED": "{count, plural, one {# linked conversation had no captured messages} other {# linked conversations had no captured messages}}",
+					"PRIVATE_CONVERSATION_EXCLUDED": "{count, plural, one {# linked chat is not captured by design — one-to-one and group chats stay in the source app} other {# linked chats are not captured by design — one-to-one and group chats stay in the source app}}",
+					"CRAWL_INDEXED_NO_PAGES": "{count, plural, one {# crawled link indexed no pages} other {# crawled links indexed no pages}}",
+					"OBJECT_MISSING": "{count, plural, one {# stored file was missing from storage} other {# stored files were missing from storage}}",
+					"STORAGE_READ_FAILED": "{count, plural, one {# item could not be read from storage} other {# items could not be read from storage}}",
+					"BEYOND_ITEM_LIMIT": "{count, plural, one {# item was past the archive's item limit — download it on its own} other {# items were past the archive's item limit — download them on their own}}"
+				},
+				"tooLarge": "This project's contexts total {size}. Batch download is limited to {maxSize}.",
 				"failed": "Download failed. Please try again.",
 				"format": {
 					"markdown": "Markdown (.md)",

@@ -18,6 +18,11 @@ import {
 } from "@repo/database";
 import { logger } from "@repo/logs";
 import { withProviderBreaker } from "@repo/observability";
+import {
+	collectionExistsUncached,
+	getCollectionName,
+	PROJECT_CONTEXTS_BASE_COLLECTION,
+} from "@repo/rag/lib/collection-manager";
 import { deleteObjects, listObjects } from "@repo/storage";
 import { heartbeat } from "@temporalio/activity";
 import { Resend } from "resend";
@@ -26,8 +31,6 @@ const qdrant = new QdrantClient({
 	url: process.env.QDRANT_URL || "http://localhost:6333",
 	apiKey: process.env.QDRANT_API_KEY,
 });
-
-const COLLECTION_NAME = "project_contexts";
 
 // ============================================================================
 // Types
@@ -131,38 +134,59 @@ export async function deleteProjectFromQdrantActivity(
 ): Promise<DeleteProjectFromQdrantOutput> {
 	const { projectId, organizationId } = input;
 
-	logger.info(
-		`[ProjectDeletion] Deleting Qdrant vectors for project ${projectId}`,
+	// Resolve the collection that actually holds this tenant's vectors — an
+	// organization's project contexts are written to a dedicated collection,
+	// not to the personal one.
+	const collectionName = getCollectionName(
+		PROJECT_CONTEXTS_BASE_COLLECTION,
+		organizationId,
 	);
 
+	logger.info(
+		`[ProjectDeletion] Deleting Qdrant vectors for project ${projectId} from collection ${collectionName}`,
+	);
+
+	// A collection that was never created is a success, not a failure:
+	// per-organization collections are created lazily on first write, so an
+	// organization that never embedded a project context legitimately has none.
+	// Failing here would stall project deletion — and the scheduled 7-day
+	// cleanup behind it — on exactly the projects with nothing to delete.
+	if (!(await collectionExistsUncached(collectionName))) {
+		logger.info(
+			`[ProjectDeletion] Collection ${collectionName} does not exist — no vectors to delete for project ${projectId}`,
+		);
+		return { success: true };
+	}
+
+	// Both filter keys are indexed payload fields on the project-contexts
+	// collection; Qdrant rejects delete-by-filter on an unindexed key with 400.
+	const filter: {
+		must: Array<{ key: string; match: { value: string } }>;
+	} = {
+		must: [
+			{
+				key: "projectId",
+				match: { value: projectId },
+			},
+		],
+	};
+
+	if (organizationId) {
+		filter.must.push({
+			key: "organizationId",
+			match: { value: organizationId },
+		});
+	}
+
 	try {
-		// Build filter for deletion
-		const filter: {
-			must: Array<{ key: string; match: { value: string } }>;
-		} = {
-			must: [
-				{
-					key: "projectId",
-					match: { value: projectId },
-				},
-			],
-		};
-
-		if (organizationId) {
-			filter.must.push({
-				key: "organizationId",
-				match: { value: organizationId },
-			});
-		}
-
 		// Delete all points matching the filter
-		await qdrant.delete(COLLECTION_NAME, {
+		await qdrant.delete(collectionName, {
 			wait: true,
 			filter,
 		});
 
 		logger.info(
-			`[ProjectDeletion] Deleted Qdrant vectors for project ${projectId}`,
+			`[ProjectDeletion] Deleted Qdrant vectors for project ${projectId} from collection ${collectionName}`,
 		);
 
 		return { success: true };
@@ -170,24 +194,13 @@ export async function deleteProjectFromQdrantActivity(
 		const errorMsg =
 			error instanceof Error ? error.message : "Unknown error";
 
-		// Distinguish between "nothing to delete" (collection doesn't exist) and transient failures
-		// Collection not found (404) or no vectors to delete is OK - the goal is achieved
-		const isNotFoundError =
-			errorMsg.includes("not found") ||
-			errorMsg.includes("doesn't exist") ||
-			errorMsg.includes("404");
-
-		if (isNotFoundError) {
-			logger.info(
-				`[ProjectDeletion] No Qdrant vectors found for project ${projectId} (already deleted or never existed)`,
-			);
-			return { success: true };
-		}
-
-		// Transient failures (connection issues, timeouts, etc.) should throw
-		// so Temporal can retry the activity
+		// The collection was confirmed to exist immediately above, so nothing
+		// reaching here is a "nothing to delete" — a not-found message no
+		// longer earns a success. Every failure is surfaced so Temporal
+		// retries; if the collection really was dropped in between, the retry's
+		// existence check reports success without touching the vector store.
 		logger.error(
-			`[ProjectDeletion] Transient failure deleting Qdrant vectors for project ${projectId}: ${errorMsg}`,
+			`[ProjectDeletion] Failed deleting Qdrant vectors for project ${projectId} from collection ${collectionName}: ${errorMsg}`,
 		);
 		throw error;
 	}
@@ -406,7 +419,7 @@ export async function sendProjectDeletionReminderActivity(
 		}
 
 		const resend = new Resend(resendApiKey);
-		const fromEmail = process.env.MAIL_FROM || "noreply@fabric.run";
+		const fromEmail = config.mails.from;
 
 		await withProviderBreaker("resend", "email_send", () =>
 			resend.emails.send({

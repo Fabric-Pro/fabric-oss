@@ -2,16 +2,25 @@
  * Slack Channel Monitor — per-thread LLM analysis activity.
  *
  * Mirrors `analyze-channel-messages.ts` (Teams) closely:
- *  1. Claim the thread root via INSERT-as-lock on the seen-message table.
+ *  1. Resolve the linked-channel row (provides slackTeamId + names).
+ *  2. Fetch the full thread via `conversations.replies` (separate activity).
+ *  3. Format the thread into the snapshot the analyzer and capture both read.
+ *  4. Capture the conversation as a durable bundle row (Fizzy #2228).
+ *  5. Claim the thread root via INSERT-as-lock on the seen-message table.
  *     If the row already exists, return early with `skippedReason: 'already_seen'`
  *     and NEVER call the LLM — this is how concurrent live + backfill paths
  *     dedupe on the same thread.
- *  2. Fetch the full thread via `conversations.replies` (separate activity).
- *  3. Load the flat project backlog (60s TTL cache, shared with Teams).
- *  4. Call `analyzeContextAndPropose()` — same LLM helper Teams uses.
- *  5. On a non-empty proposal, persist `PendingBacklogProposal` with
+ *  6. Load the flat project backlog (60s TTL cache, shared with Teams).
+ *  7. Call `analyzeContextAndPropose()` — same LLM helper Teams uses.
+ *  8. On a non-empty proposal, persist `PendingBacklogProposal` with
  *     `source: SLACK_CHANNEL`, then update the seen-message row with the
  *     proposal id.
+ *
+ * Steps 2 and 5 used to be the other way round. The claim is what makes a
+ * re-analyzed thread a no-op, and a no-op that skipped capture is how a
+ * monitored channel's content went missing — so capture had to precede the
+ * claim, and it needs the fetched text, which moved the fetch out of the lock
+ * with it. See the note at the call site.
  *
  * Activity policy is set on the workflow side via `proxyActivities`. Errors
  * propagate so Temporal retries (default 3 attempts) and the workflow's
@@ -31,6 +40,7 @@ import type {
 } from "@repo/integrations";
 import { logger } from "@repo/logs";
 import { heartbeat } from "@temporalio/activity";
+import { captureChannelConversationBundle } from "../../lib/capture-conversation-bundle";
 import {
 	analyzeContextAndPropose,
 	type ChangeProposal,
@@ -297,37 +307,22 @@ export async function analyzeSlackThreadActivity(
 	await jobStep("fetch", "completed", { sourceId: linked.linkedChannelId });
 	await jobStep("analyze", "running", { sourceId: linked.linkedChannelId });
 
-	// Step 2: INSERT-as-lock claim BEFORE the LLM call. Concurrent live +
-	// backfill paths race here — only the inserter proceeds.
-	heartbeat("claiming thread root");
-	const claimed = await claimSlackMessageForAnalysis(
-		linked.linkedChannelId,
-		threadRootTs,
-	);
-	if (!claimed) {
-		logger.info("[SlackChannelMonitor] Thread already claimed — skipping", {
-			projectId,
-			channelId,
-			threadRootTs,
-		});
-		await jobIncrement(
-			{ groupsFlushed: 1, skippedAlreadySeen: 1 },
-			linked.linkedChannelId,
-		);
-		await jobStep("analyze", "completed", {
-			sourceId: linked.linkedChannelId,
-		});
-		return {
-			success: true,
-			changeCount: 0,
-			skippedReason: "already_seen",
-			pendingAttachments: [],
-			attachmentWarnings: [],
-		};
-	}
-
 	try {
-		// Step 3: fetch the full thread via conversations.replies.
+		// Step 2: fetch the full thread via conversations.replies.
+		//
+		// This USED to sit after the claim below. Capture has to run before the
+		// claim — the claim is what makes a re-analyzed thread a no-op, and a
+		// no-op that skips capture is how content went missing — and capture
+		// needs the fetched text, so the fetch moved out of the lock with it
+		// (Fizzy #2228).
+		//
+		// The cost is real and accepted: two workers racing one thread now both
+		// fetch before either wins the claim, so Slack sees a duplicate read and
+		// the two may hold different snapshots. The per-message claim inside
+		// capture is what makes that safe — they end up with disjoint claim sets
+		// whatever each of them fetched. The claim-as-lock below keeps protecting
+		// exactly what it was written to protect: the analyzer and proposal work,
+		// never the capture.
 		heartbeat("fetching thread context");
 		const thread = await fetchSlackThreadContextActivity({
 			userId,
@@ -337,16 +332,68 @@ export async function analyzeSlackThreadActivity(
 			threadRootTs,
 		});
 
-		// Step 4: load the flat project backlog (TTL-cached).
-		heartbeat("fetching project backlog");
-		const existingBacklog = await getCachedProjectBacklog(projectId);
-
-		// Step 5: format + invoke the LLM.
+		// Step 3: form the snapshot.
 		const formatted = formatSlackThreadForBacklog(
 			thread.messages,
 			linked.channelDisplayName,
 			threadRootTs,
 		);
+
+		// Step 4: capture the conversation, ahead of the claim and therefore
+		// ahead of every branch that returns without proposing anything.
+		//
+		// Not wrapped in its own try/catch: a failure inside the capture
+		// transaction rolls its message claims back, so the Temporal retry
+		// re-claims the same messages and writes the bundle it was going to
+		// write. Swallowing it would leave claims committed with no bundle, and
+		// the retry would then compute an empty claim set.
+		heartbeat("capturing conversation bundle");
+		await captureChannelConversationBundle({
+			channel: { provider: "SLACK", channelId },
+			projectId,
+			userId,
+			organizationId,
+			channelDisplayName: linked.channelDisplayName,
+			providerThreadId: threadRootTs,
+			messages: thread.messages.map((message) => ({
+				providerMessageId: message.ts,
+				author: message.sender,
+				createdAt: message.createdAt,
+				content: message.content,
+			})),
+		});
+
+		// Step 5: INSERT-as-lock claim BEFORE the LLM call. Concurrent live +
+		// backfill paths race here — only the inserter proceeds.
+		heartbeat("claiming thread root");
+		const claimed = await claimSlackMessageForAnalysis(
+			linked.linkedChannelId,
+			threadRootTs,
+		);
+		if (!claimed) {
+			logger.info(
+				"[SlackChannelMonitor] Thread already claimed — skipping",
+				{ projectId, channelId, threadRootTs },
+			);
+			await jobIncrement(
+				{ groupsFlushed: 1, skippedAlreadySeen: 1 },
+				linked.linkedChannelId,
+			);
+			await jobStep("analyze", "completed", {
+				sourceId: linked.linkedChannelId,
+			});
+			return {
+				success: true,
+				changeCount: 0,
+				skippedReason: "already_seen",
+				pendingAttachments: thread.pendingAttachments,
+				attachmentWarnings: thread.attachmentWarnings,
+			};
+		}
+
+		// Step 6: load the flat project backlog (TTL-cached).
+		heartbeat("fetching project backlog");
+		const existingBacklog = await getCachedProjectBacklog(projectId);
 
 		heartbeat("calling analyzeContextAndPropose");
 		const proposal: ChangeProposal = await analyzeContextAndPropose({
@@ -398,7 +445,7 @@ export async function analyzeSlackThreadActivity(
 			};
 		}
 
-		// Step 6: persist the proposal + link the seen-row to it.
+		// Step 7: persist the proposal + link the seen-row to it.
 		// `attachments` + `attachmentWarnings` carry the fetch-time image refs
 		// for the apply-time orchestrator. Existing keys are preserved via
 		// the explicit object below — readers that don't know about the new

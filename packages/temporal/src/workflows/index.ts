@@ -149,6 +149,13 @@ export {
 	type ContextSummarizationOutput,
 	contextSummarizationWorkflow,
 } from "./context-summarization-workflow";
+// Conversation-bundle embedding recovery (cron — finishes captured channel
+// bundles whose embed failed or crashed, Fizzy #2228)
+export {
+	type ConversationBundleEmbeddingSweepInput,
+	type ConversationBundleEmbeddingSweepOutput,
+	conversationBundleEmbeddingSweepWorkflow,
+} from "./conversation-bundle-embedding-sweep";
 export { conversationRetentionWorkflow } from "./conversation-retention";
 // Daily Brief workflow (cross-tool project digest)
 export {

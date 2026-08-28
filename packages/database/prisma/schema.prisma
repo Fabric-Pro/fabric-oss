@@ -173,6 +173,9 @@ model User {
   projectDocumentAssets                           ProjectDocumentAsset[]
   projectContexts                                 ProjectContext[]
   projectContextUrlPages                          ProjectContextUrlPage[]
+  projectContextConversationBundles               ProjectContextConversationBundle[]
+  projectContextConversationClaims                ProjectContextConversationClaim[]
+  projectContextPendingVectorCleanups             ProjectContextPendingVectorCleanup[]
   projectReadinessItemStates                      ProjectReadinessItemState[]
   projectReadinessVerdicts                        ProjectReadinessVerdict[]
   projectContextSummaries                         ProjectContextSummary[]
@@ -605,6 +608,9 @@ model Organization {
   projectDocumentAssets                   ProjectDocumentAsset[]
   projectContexts                         ProjectContext[]
   projectContextUrlPages                  ProjectContextUrlPage[]
+  projectContextConversationBundles       ProjectContextConversationBundle[]
+  projectContextConversationClaims        ProjectContextConversationClaim[]
+  projectContextPendingVectorCleanups     ProjectContextPendingVectorCleanup[]
   projectReadinessItemStates              ProjectReadinessItemState[]
   projectReadinessVerdicts                ProjectReadinessVerdict[]
   projectContextSummaries                 ProjectContextSummary[]
@@ -1666,6 +1672,7 @@ model Project {
   organization                          Organization?                      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   user                                  User                               @relation(fields: [userId], references: [id], onDelete: Cascade)
   contexts                              ProjectContext[]                   @relation("ProjectContexts")
+  contextPendingVectorCleanups          ProjectContextPendingVectorCleanup[]
   contextSummaries                      ProjectContextSummary[]
   prdSourceContext                      ProjectContext?                    @relation("PrdSourceContext", fields: [prdSourceContextId], references: [id])
   documents                             ProjectDocument[]
@@ -1977,6 +1984,24 @@ model ProjectContext {
   userId         String?
   organizationId String?
 
+  /// DATABASE-GENERATED — never write this from application code.
+  ///
+  /// `GENERATED ALWAYS AS (COALESCE("organizationId", "userId")) STORED`. It
+  /// collapses the tenant XOR into one non-null identity so a child table can
+  /// carry a foreign key that COMPARES OWNERS, not just parentage. A composite
+  /// FK over `(parentContextId, projectId)` alone still admits an
+  /// organization-owned child under a personal parent, because it never looks
+  /// at who owns either row; and a plain FK on `(userId, organizationId)` can
+  /// never be enforced at all, since MATCH SIMPLE skips any row with a NULL in
+  /// the referencing columns and the XOR guarantees one of them always is.
+  ///
+  /// Prisma cannot express generation, so it is declared here as an ordinary
+  /// nullable column purely so the schema and the database agree; a
+  /// shadow-database diff sees a matching TEXT column and reports no drift.
+  /// Postgres rejects any INSERT or UPDATE that supplies a value.
+  /// Added by migration 20260826120000.
+  ownerKey String?
+
   createdAt    DateTime      @default(now())
   updatedAt    DateTime      @updatedAt
   project      Project       @relation("ProjectContexts", fields: [projectId], references: [id], onDelete: Cascade)
@@ -1992,6 +2017,19 @@ model ProjectContext {
   // Indexed child pages for PATH_PREFIX crawls
   urlPages ProjectContextUrlPage[]
 
+  // Captured conversation bundles and the per-message claims that key them
+  conversationBundles ProjectContextConversationBundle[]
+  conversationClaims  ProjectContextConversationClaim[]
+
+  /// The owner-inclusive identity a conversation child's composite foreign key
+  /// points at. Unique rather than a plain index because a foreign key needs a
+  /// unique index over exactly the referenced columns — `id` alone already
+  /// makes the triple unique, so this adds no constraint on this table's own
+  /// rows; it exists so ownership disagreement is unrepresentable in the
+  /// children. Built CONCURRENTLY in migration 20260826120100 (this table is
+  /// populated, so an in-transaction build would take a write lock for the
+  /// length of it).
+  @@unique([id, projectId, ownerKey], map: "project_context_id_projectId_ownerKey_key")
   @@index([projectId])
   @@index([type])
   @@index([userId])
@@ -2128,6 +2166,238 @@ model ProjectContextUrlPage {
   @@index([organizationId])
   @@index([parentContextId, extractionStatus])
   @@map("project_context_url_page")
+}
+
+// One captured bundle of messages from a monitored Teams or Slack CHANNEL
+// (Fizzy #2228). A linked channel's ProjectContext row is a pointer — it stores
+// a cursor and dedup markers, never the messages — so a channel exported as
+// "Content unavailable" and the assistant could not cite it. Each analyzed
+// bundle now lands here as its own durable, individually embedded row hanging
+// off that channel's context row.
+//
+// # Ownership is enforced by the database, not by the query layer
+//
+// A plain foreign key on `parentContextId` is not enough. Postgres does not
+// evaluate the PARENT's row-level-security policy through a foreign key, so a
+// raw or buggy writer could attach a row to a parent in another project while
+// carrying tenant columns that satisfy this table's own policy — and every
+// later read, export and cascade would then run under contradictory ownership.
+// Matching the project is not enough either: a foreign key over
+// `(parentContextId, projectId)` still admits an organization-owned child under
+// a personal parent, or a child naming a different organization, because it
+// never compares owners.
+//
+// So the foreign key is composite over `(parentContextId, projectId, ownerKey)`
+// against `project_context (id, projectId, ownerKey)` — see `ownerKey` on
+// ProjectContext for why a normalized owner identity is what makes that
+// enforceable. Ownership disagreement cannot be expressed.
+//
+// TWO CONSTRAINTS BELOW ARE RAW SQL, because Prisma cannot express either:
+//   - `project_context_conversation_bundle_owner_fkey`, the composite FK above
+//     (modelling it as a Prisma relation would put the generated `ownerKey`
+//     into every INSERT, which Postgres rejects);
+//   - `project_context_conversation_bundle_tenant_xor`, the CHECK enforcing
+//     that exactly one of `userId` / `organizationId` is set — the generated
+//     column depends on it, since COALESCE over two NULLs is NULL.
+// Both live in migration 20260826120200. A shadow-database diff cannot see them
+// in this file and may read them as drift and try to DROP them; they are not
+// drift. (Same situation as the partial index documented on
+// ProjectReadinessItemState.)
+model ProjectContextConversationBundle {
+  id              String         @id @default(cuid())
+  parentContextId String
+  parentContext   ProjectContext @relation(fields: [parentContextId], references: [id], onDelete: Cascade)
+
+  /// Denormalized from parent.projectId so project-scoped filters and RLS apply
+  /// without a join. Held to the parent's value by the composite FK, not by
+  /// convention.
+  projectId String
+
+  /// Provider thread this bundle was formed over (a Teams reply chain, a Slack
+  /// thread ts). Nullable — a channel-level bundle need not belong to a thread.
+  providerThreadId String?
+
+  /// Formatted and prompt-injection-neutralized bundle text. Every derived copy
+  /// — vector payload, retrieval result, export archive, MCP read — inherits
+  /// the guard from here, so it must never be re-derived from raw provider text.
+  content      String @db.Text
+  contentHash  String
+  messageCount Int    @default(0)
+
+  /// Chronological ordering, and the coverage window an export states. Not
+  /// `createdAt`: capture can lag the conversation by a poll interval.
+  bundleStartedAt DateTime
+  bundleEndedAt   DateTime?
+
+  qdrantId String?
+
+  /// Claimed by compare-and-set before embedding starts. NEVER use `embeddedAt`
+  /// as the claim: a crash between claiming and the vector write would leave it
+  /// non-null with no vector, and the recovery pass — which looks for a null
+  /// `embeddedAt` and no live lease — would skip that row forever.
+  embeddingLeaseAt DateTime?
+
+  /// Written ONLY after the vector store confirms the point.
+  embeddedAt DateTime?
+
+  extractionStatus ExtractionStatus @default(PENDING)
+  extractionError  String?
+
+  // Tenant XOR fields (mirrors parent ProjectContext — never both set)
+  userId         String?
+  organizationId String?
+
+  /// DATABASE-GENERATED — never write this from application code. See
+  /// `ProjectContext.ownerKey`.
+  ownerKey String?
+
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+  user         User?         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organization Organization? @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  claims ProjectContextConversationClaim[]
+
+  @@index([parentContextId])
+  @@index([projectId])
+  @@index([qdrantId])
+  @@index([extractionStatus])
+  @@index([userId])
+  @@index([organizationId])
+  /// Chronological read-back for one channel, and the export's coverage window.
+  @@index([parentContextId, bundleStartedAt], map: "project_context_conversation_bundle_parent_started_idx")
+  /// The recovery sweep's predicate: null `embeddedAt` with no live lease.
+  @@index([embeddedAt, embeddingLeaseAt], map: "project_context_conversation_bundle_embed_sweep_idx")
+  @@map("project_context_conversation_bundle")
+}
+
+// One claimed provider message, per monitored channel context (Fizzy #2228).
+//
+// This is what makes capture idempotent by construction. A bundle is written
+// over the messages whose claim rows this transaction actually INSERTed, so a
+// retried or concurrent write of the same message loses the uniqueness race and
+// contributes nothing rather than duplicating — and two workers racing one
+// thread produce disjoint bundles regardless of what each fetched.
+//
+// It carries the same tenant columns, the same XOR CHECK and the same
+// owner-inclusive composite foreign key as the bundle table, and its own
+// entries in the tenant-db project-scoped map and the RLS allowlist. That is
+// not symmetry for its own sake: this table holds tenant-associated provider
+// message identifiers, and it GATES whether a message can ever be captured — an
+// unprivileged cross-tenant write here could suppress capture through a
+// uniqueness conflict without ever touching content.
+//
+// `project_context_conversation_claim_owner_fkey` and
+// `project_context_conversation_claim_tenant_xor` are raw SQL in migration
+// 20260826120200 for the same reasons given on the bundle model.
+model ProjectContextConversationClaim {
+  id              String         @id @default(cuid())
+  parentContextId String
+  parentContext   ProjectContext @relation(fields: [parentContextId], references: [id], onDelete: Cascade)
+
+  /// Denormalized from parent.projectId; held there by the composite FK.
+  projectId String
+
+  /// The provider's own message identifier. Unique within the parent context —
+  /// that uniqueness IS the claim.
+  providerMessageId String
+  providerThreadId  String?
+  messageCreatedAt  DateTime?
+
+  /// The bundle this claim was folded into. Nullable only for the window inside
+  /// the claiming transaction before the bundle row exists; a claim that
+  /// committed without one would leave a retry with an empty claim set and no
+  /// row to attach to, which is why claim and bundle share a transaction.
+  bundleId String?
+  bundle   ProjectContextConversationBundle? @relation(fields: [bundleId], references: [id], onDelete: Cascade)
+
+  // Tenant XOR fields (mirrors parent ProjectContext — never both set)
+  userId         String?
+  organizationId String?
+
+  /// DATABASE-GENERATED — never write this from application code. See
+  /// `ProjectContext.ownerKey`.
+  ownerKey String?
+
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+  user         User?         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organization Organization? @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([parentContextId, providerMessageId], map: "project_context_conversation_claim_message_key")
+  @@index([parentContextId])
+  @@index([projectId])
+  @@index([bundleId])
+  @@index([userId])
+  @@index([organizationId])
+  @@map("project_context_conversation_claim")
+}
+
+// The ids whose VECTORS still have to be deleted, after the rows that held them
+// are already gone (Fizzy #2228).
+//
+// Unlinking a monitored channel deletes the pointer context row and its bundles
+// BEFORE it touches the vector store, and that ordering is not incidental: row
+// absence is the state a concurrent embedder reads to decide whether to abandon
+// its write or compensate for it (see `capture-conversation-bundle.ts`). The
+// price is that between the commit and the vector delete, the ids exist only in
+// that one call's memory — so a vector-store failure stranded the points where
+// no retry could ever find them. The user's retry found no context row, took
+// the "nothing to delete" path, and reported SUCCESS while the conversation
+// text stayed indexed. The Qdrant payload carries the message text, so that is
+// retained third-party conversation content after the user was told it was
+// removed.
+//
+// A row here is written in the SAME transaction as the row delete, so the ids
+// cannot be lost with the rows, and it is removed only once the vector store
+// has confirmed. Both a retried unlink and the scheduled recovery sweep drain
+// it, so the cleanup finishes whether or not the user comes back.
+//
+// Deliberately NOT a child of project_context: outliving those rows is the
+// entire point. It hangs off the PROJECT instead, which is also the scope the
+// unlink drains by.
+//
+// `project_context_pending_vector_cleanup_tenant_xor` is raw SQL in migration
+// 20260826130000 — a CHECK constraint is not expressible in schema.prisma, the
+// same way the two capture tables' are not.
+model ProjectContextPendingVectorCleanup {
+  id String @id @default(cuid())
+
+  /// The project whose collection the stranded points are in, and what the
+  /// unlink drain looks a record up by.
+  projectId String
+  project   Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  /// Every id whose points must go: the pointer context row's own id, and each
+  /// bundle row that cascaded with it. They reach the vector payload through
+  /// `contextId` / `originalContextId`, which is what the delete filter matches
+  /// — see `deleteContextVectors`.
+  contextIds String[]
+
+  /// Failed drains. The sweep orders on this so one poisoned record cannot
+  /// starve fresh ones at the head of a bounded batch.
+  attempts  Int     @default(0)
+  lastError String?
+
+  // Tenant XOR fields — exactly one set, like the two capture tables. The
+  // `organizationId` also DECIDES WHICH COLLECTION the points are in, so the
+  // drain reads it off the record rather than from an ambient value; a sweep
+  // that used a run-wide tenant would aim at a collection the points are not in
+  // and report a clean delete.
+  userId         String?
+  organizationId String?
+
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+  user         User?         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organization Organization? @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([projectId])
+  @@index([userId])
+  @@index([organizationId])
+  /// The sweep's queue order: fewest failures first, oldest first within that.
+  @@index([attempts, createdAt], map: "project_context_pending_vector_cleanup_queue_idx")
+  @@map("project_context_pending_vector_cleanup")
 }
 
 // Compressed project-history summary. Holds an LLM-generated digest of a project's

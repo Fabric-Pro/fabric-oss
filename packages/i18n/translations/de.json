@@ -2007,8 +2007,18 @@
 				"pending": "Dieser Kontext wird noch verarbeitet",
 				"extractedTextWarning": "Lädt extrahierten Text herunter — die Originalquelle wird nicht in Fabric gespeichert",
 				"completed": "{included} von {total} Kontexten heruntergeladen",
-				"skipped": "{skipped} wurden übersprungen (werden noch verarbeitet oder nicht verfügbar)",
-				"tooLarge": "Dieses Projekt hat {count} Kontexte ({size}). Der Batch-Download ist auf {maxCount} Kontexte und {maxSize} begrenzt.",
+				"skippedReason": {
+					"NOTHING_STORED": "{count, plural, one {# Element hatte nichts zum Exportieren gespeichert} other {# Elemente hatten nichts zum Exportieren gespeichert}}",
+					"EXTRACTION_FAILED": "{count, plural, one {Bei # Element ist die Textextraktion fehlgeschlagen} other {Bei # Elementen ist die Textextraktion fehlgeschlagen}}",
+					"EXTRACTION_CANCELLED": "{count, plural, one {Bei # Element wurde die Textextraktion abgebrochen} other {Bei # Elementen wurde die Textextraktion abgebrochen}}",
+					"CONVERSATION_NOT_CAPTURED": "{count, plural, one {# verknüpfte Unterhaltung hatte keine erfassten Nachrichten} other {# verknüpfte Unterhaltungen hatten keine erfassten Nachrichten}}",
+					"PRIVATE_CONVERSATION_EXCLUDED": "{count, plural, one {# verknüpfter Chat wird bewusst nicht erfasst — Einzel- und Gruppenchats bleiben in der Quell-App} other {# verknüpfte Chats werden bewusst nicht erfasst — Einzel- und Gruppenchats bleiben in der Quell-App}}",
+					"CRAWL_INDEXED_NO_PAGES": "{count, plural, one {# gecrawlter Link hat keine Seiten indexiert} other {# gecrawlte Links haben keine Seiten indexiert}}",
+					"OBJECT_MISSING": "{count, plural, one {# gespeicherte Datei fehlte im Speicher} other {# gespeicherte Dateien fehlten im Speicher}}",
+					"STORAGE_READ_FAILED": "{count, plural, one {# Element konnte nicht aus dem Speicher gelesen werden} other {# Elemente konnten nicht aus dem Speicher gelesen werden}}",
+					"BEYOND_ITEM_LIMIT": "{count, plural, one {# Element lag über dem Elementlimit des Archivs — lade es einzeln herunter} other {# Elemente lagen über dem Elementlimit des Archivs — lade sie einzeln herunter}}"
+				},
+				"tooLarge": "Die Kontexte dieses Projekts umfassen insgesamt {size}. Der Batch-Download ist auf {maxSize} begrenzt.",
 				"failed": "Download fehlgeschlagen. Bitte versuche es erneut.",
 				"format": {
 					"markdown": "Markdown (.md)",
