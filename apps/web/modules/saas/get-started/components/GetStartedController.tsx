@@ -258,6 +258,12 @@ export function GetStartedController() {
 	// Whether the active page tour was auto-launched (first-visit) vs started
 	// manually — dismissing an auto one opts the user out of further auto-opens.
 	const pageTourAutoRef = useRef(false);
+	// Where the active spotlight was launched from. The drawer's "Show me"
+	// hands the user back to the drawer they came from; a spotlight raised by
+	// another surface (GET_STARTED_SPOTLIGHT_EVENT) must close to nothing —
+	// opening a drawer the user never asked for buries the thing the callout
+	// just pointed at.
+	const spotlightFromDrawerRef = useRef(false);
 
 	// Serialize progress writes so the server read-modify-write can't race.
 	const chainRef = useRef<Promise<unknown>>(Promise.resolve());
@@ -332,6 +338,7 @@ export function GetStartedController() {
 	}, [persist]);
 
 	const showComponent = useCallback((item: GsItem) => {
+		spotlightFromDrawerRef.current = true;
 		setAdHocStep(adHocStepFor(item));
 		setMode("spotlight");
 	}, []);
@@ -570,6 +577,7 @@ export function GetStartedController() {
 						}
 					: { kind: "anchor", anchorId: d.anchorId, side: "bottom" },
 			});
+			spotlightFromDrawerRef.current = false;
 			setMode("spotlight");
 		};
 		window.addEventListener(GET_STARTED_OPEN_EVENT, onOpen);
@@ -648,7 +656,10 @@ export function GetStartedController() {
 	}, [tourSteps, index, persist]);
 
 	// A one-off "Show me" ends by returning to the drawer so users keep exploring.
-	const endSpotlight = useCallback(() => setMode("drawer"), []);
+	const endSpotlight = useCallback(
+		() => setMode(spotlightFromDrawerRef.current ? "drawer" : "idle"),
+		[],
+	);
 	const noop = useCallback(() => {}, []);
 
 	// Page-tour navigation is transient (no per-step persistence — the visit is
