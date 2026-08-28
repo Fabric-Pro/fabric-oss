@@ -323,18 +323,23 @@ export function ProjectManagementSettings({ project }: Props) {
 	// resolution). Used to label the connected-config card for tools without an
 	// MCPConfig (GitLab REST). Same query StoriesRoadmap uses, so React Query
 	// dedupes it across the two views.
-	const { data: pmCapabilities } = useQuery({
-		queryKey: [
-			"pmCapabilities",
-			project.id,
-			project.organizationId ?? null,
-		],
-		queryFn: () =>
-			orpcClient.projects.stories.pmCapabilities({
-				projectId: project.id,
-			}),
-		staleTime: 60_000,
-	});
+	// Held in a memo because the PM-settings save has to invalidate THIS key:
+	// the card's health state is read from this query, and a 60s staleTime would
+	// otherwise leave a just-repaired connection showing its pre-repair problem
+	// (Fizzy #1884).
+	const pmCapabilitiesQueryKey = useMemo(
+		() => ["pmCapabilities", project.id, project.organizationId ?? null],
+		[project.id, project.organizationId],
+	);
+	const { data: pmCapabilities, isError: pmCapabilitiesUnavailable } =
+		useQuery({
+			queryKey: pmCapabilitiesQueryKey,
+			queryFn: () =>
+				orpcClient.projects.stories.pmCapabilities({
+					projectId: project.id,
+				}),
+			staleTime: 60_000,
+		});
 
 	// Repository integrations for this project — used to derive the GitLab
 	// codebase repo path so the PM container picker can default to it when
@@ -571,6 +576,14 @@ export function ProjectManagementSettings({ project }: Props) {
 		},
 		onSuccess: (_, variables) => {
 			queryClient.invalidateQueries({ queryKey: projectGetQueryKey });
+			// The health card reads `pmCapabilities`, which caches for 60s. A
+			// save is the one moment the answer is guaranteed to have changed
+			// — without this, repairing a broken connection leaves the card
+			// still showing the pre-repair problem (and Test Sync withheld)
+			// until the cache happens to go stale (Fizzy #1884).
+			queryClient.invalidateQueries({
+				queryKey: pmCapabilitiesQueryKey,
+			});
 			// Update local state for immediate UI feedback
 			setSavedContainerName(variables.containerName);
 			// Use the config ID directly — no need to re-resolve from server ID
@@ -766,6 +779,35 @@ export function ProjectManagementSettings({ project }: Props) {
 		savedMcpServerName ??
 		pmDetectedTypeDisplayName(pmCapabilities?.detectedType) ??
 		null;
+
+	// Fizzy #1884: the persisted `Project` columns
+	// (`projectManagementMcpServerId` / `…ConfigId` / `…ContainerName`) record
+	// what was once saved — never whether the MCP config they point at still
+	// resolves for the person looking at this page. `getPMCapabilities` answers
+	// exactly that, per user, via `resolvePMConfigForUser`, and hands back the
+	// SAME actionable sentence the sync path throws ("You have not connected
+	// your account to the project management tool…"). Reading it here is what
+	// stops this card from advertising a connection that every sync will refuse
+	// — the divergence users reported as "No issues" over a broken integration.
+	//
+	// Deliberately tri-state. `pmCapabilities` is `undefined` while the query is
+	// in flight AND after it fails, so only a RESOLVED response carrying a
+	// non-empty `error` demotes the card. A page load must never flash a problem
+	// it has not confirmed — same reasoning as the GitLab nudge banner below.
+	// The settled-failure case is not silently folded into "healthy" either:
+	// `pmCapabilitiesUnavailable` adds an explicit "couldn't check" line to the
+	// connected card, so an unreachable status endpoint reads as unverified
+	// rather than as a passed check.
+	//
+	// Keyed on `error` rather than `capabilities === null` because the one
+	// branch that returns both null is `configured: false`, which cannot reach
+	// this card (`isPMConfigured` is already false there). Every other null-
+	// capabilities branch sets a message.
+	const pmConnectionError =
+		typeof pmCapabilities?.error === "string" &&
+		pmCapabilities.error.trim().length > 0
+			? pmCapabilities.error.trim()
+			: null;
 
 	// Provider name for the toggle sentences below ("Sync attachments with X").
 	// Deliberately NOT `connectedProviderLabel`: that one prefers the
@@ -1355,54 +1397,46 @@ export function ProjectManagementSettings({ project }: Props) {
 					</div>
 				)}
 
-				{/* Current Configuration - styled like GitHub Connection */}
-				{isPMConfigured && savedContainerName && !isChangingBoard && (
-					<div className="p-3 rounded-lg bg-green-50 dark:bg-green-950/30 border border-green-200 dark:border-green-800">
-						<div className="flex items-center justify-between">
-							<div className="flex items-center gap-3">
-								<div className="h-8 w-8 rounded-full bg-green-100 dark:bg-green-900/50 flex items-center justify-center">
-									<ListTodoIcon className="h-4 w-4 text-success dark:text-green-400" />
-								</div>
-								<div>
-									<div className="flex items-center gap-1.5">
-										<CheckCircle2Icon className="h-4 w-4 text-success dark:text-green-400" />
-										<span className="text-sm font-medium text-success">
-											Connected to {savedContainerName}
-										</span>
+				{/* Unusable connection (Fizzy #1884). Same slot as the connected
+				    card below, and mutually exclusive with it: the project is
+				    wired to a PM tool, but `getPMCapabilities` could not resolve
+				    a usable connection for THIS user, so "Connected" would be a
+				    false trust signal and Test Sync could only ever fail. Shows
+				    the backend's own sentence — the one the sync path throws —
+				    plus the two ways out: connect in MCP Servers, or re-pick the
+				    tool/board here. */}
+				{isPMConfigured &&
+					savedContainerName &&
+					!isChangingBoard &&
+					pmConnectionError && (
+						<div className="p-3 rounded-lg bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800">
+							<div className="flex items-start justify-between gap-3">
+								<div className="flex items-start gap-3">
+									<div className="h-8 w-8 shrink-0 rounded-full bg-amber-100 dark:bg-amber-900/50 flex items-center justify-center">
+										<TriangleAlertIcon className="h-4 w-4 text-highlight" />
 									</div>
-									{connectedProviderLabel && (
-										<p className="text-xs text-success dark:text-green-400">
-											via {connectedProviderLabel}
+									<div>
+										<p className="text-sm font-medium text-highlight">
+											Project management connection needs
+											setup
 										</p>
-									)}
+										<p className="text-xs text-muted-foreground mt-0.5">
+											{connectedProviderLabel
+												? `${savedContainerName} · via ${connectedProviderLabel}`
+												: savedContainerName}
+										</p>
+										<p className="text-sm text-highlight/80 mt-2">
+											{pmConnectionError}
+										</p>
+										<a
+											href={mcpSettingsUrl}
+											className="text-sm text-primary hover:underline"
+										>
+											Configure it in MCP Servers
+										</a>
+									</div>
 								</div>
-							</div>
-							{isProjectOwner && (
-								<div className="flex items-center gap-1">
-									<Tooltip>
-										<TooltipTrigger asChild>
-											<Button
-												variant="outline"
-												size="sm"
-												disabled={
-													testPMSyncMutation.isPending
-												}
-												onClick={() =>
-													testPMSyncMutation.mutate()
-												}
-												className="text-green-700 border-green-200 hover:bg-green-50 dark:text-green-300 dark:border-green-800 dark:hover:bg-green-900/30"
-											>
-												{testPMSyncMutation.isPending ? (
-													<Loader2Icon className="h-4 w-4 animate-spin" />
-												) : (
-													"Test Sync"
-												)}
-											</Button>
-										</TooltipTrigger>
-										<TooltipContent>
-											{t("testPmSync")}
-										</TooltipContent>
-									</Tooltip>
+								{isProjectOwner && (
 									<Tooltip>
 										<TooltipTrigger asChild>
 											<Button
@@ -1412,7 +1446,7 @@ export function ProjectManagementSettings({ project }: Props) {
 													setIsChangingBoard(true)
 												}
 												aria-label="Change board"
-												className="text-green-700 hover:text-green-800 hover:bg-green-100 dark:text-green-300 dark:hover:bg-green-900/50"
+												className="text-highlight hover:bg-amber-100 dark:hover:bg-amber-900/50"
 											>
 												<PencilIcon className="h-4 w-4" />
 											</Button>
@@ -1421,11 +1455,102 @@ export function ProjectManagementSettings({ project }: Props) {
 											{t("changeBoard")}
 										</TooltipContent>
 									</Tooltip>
-								</div>
-							)}
+								)}
+							</div>
 						</div>
-					</div>
-				)}
+					)}
+
+				{/* Current Configuration - styled like GitHub Connection */}
+				{isPMConfigured &&
+					savedContainerName &&
+					!isChangingBoard &&
+					!pmConnectionError && (
+						<div className="p-3 rounded-lg bg-green-50 dark:bg-green-950/30 border border-green-200 dark:border-green-800">
+							<div className="flex items-center justify-between">
+								<div className="flex items-center gap-3">
+									<div className="h-8 w-8 rounded-full bg-green-100 dark:bg-green-900/50 flex items-center justify-center">
+										<ListTodoIcon className="h-4 w-4 text-success dark:text-green-400" />
+									</div>
+									<div>
+										<div className="flex items-center gap-1.5">
+											<CheckCircle2Icon className="h-4 w-4 text-success dark:text-green-400" />
+											<span className="text-sm font-medium text-success">
+												Connected to{" "}
+												{savedContainerName}
+											</span>
+										</div>
+										{connectedProviderLabel && (
+											<p className="text-xs text-success dark:text-green-400">
+												via {connectedProviderLabel}
+											</p>
+										)}
+										{/* A settled failure of the health query
+										    is not evidence of a broken
+										    connection — the saved config is
+										    genuinely bound — but it is not
+										    evidence of a working one either.
+										    Say so rather than let the green
+										    card imply a check that never
+										    returned. Test Sync stays available
+										    as the on-demand verification. */}
+										{pmCapabilitiesUnavailable && (
+											<p className="text-xs text-muted-foreground mt-0.5">
+												Couldn’t check the connection
+												status just now — run Test Sync
+												to verify.
+											</p>
+										)}
+									</div>
+								</div>
+								{isProjectOwner && (
+									<div className="flex items-center gap-1">
+										<Tooltip>
+											<TooltipTrigger asChild>
+												<Button
+													variant="outline"
+													size="sm"
+													disabled={
+														testPMSyncMutation.isPending
+													}
+													onClick={() =>
+														testPMSyncMutation.mutate()
+													}
+													className="text-green-700 border-green-200 hover:bg-green-50 dark:text-green-300 dark:border-green-800 dark:hover:bg-green-900/30"
+												>
+													{testPMSyncMutation.isPending ? (
+														<Loader2Icon className="h-4 w-4 animate-spin" />
+													) : (
+														"Test Sync"
+													)}
+												</Button>
+											</TooltipTrigger>
+											<TooltipContent>
+												{t("testPmSync")}
+											</TooltipContent>
+										</Tooltip>
+										<Tooltip>
+											<TooltipTrigger asChild>
+												<Button
+													variant="ghost"
+													size="sm"
+													onClick={() =>
+														setIsChangingBoard(true)
+													}
+													aria-label="Change board"
+													className="text-green-700 hover:text-green-800 hover:bg-green-100 dark:text-green-300 dark:hover:bg-green-900/50"
+												>
+													<PencilIcon className="h-4 w-4" />
+												</Button>
+											</TooltipTrigger>
+											<TooltipContent>
+												{t("changeBoard")}
+											</TooltipContent>
+										</Tooltip>
+									</div>
+								)}
+							</div>
+						</div>
+					)}
 
 				{/* The log records what THIS card configures, but it lives on the
 				    Roadmap — so point at it from here. Shown only alongside a live
