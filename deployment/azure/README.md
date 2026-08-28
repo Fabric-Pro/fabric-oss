@@ -136,7 +136,7 @@ This directory contains the infrastructure-as-code and deployment configurations
    | `TEMPORAL_ADDRESS` | Temporal server address | `your-namespace.tmprl.cloud:7233` |
    | `TEMPORAL_NAMESPACE` | Temporal namespace | `fabric-dev` |
    | `TEMPORAL_CLOUD_API_KEY` | Temporal Cloud API key | `tclt_...` |
-   | `FABRIC_API_URL` | Fabric API URL (NextJS) | `https://staging.fabric.pro` |
+   | `FABRIC_API_URL` | Fabric API URL (NextJS) | `https://fabric.example.com` |
    | `RESEND_API_KEY` | Resend API key for worker-sent emails (newsletter, notifications) | `re_...` |
 
    **RAG/Storage Secrets (required for document processing):**

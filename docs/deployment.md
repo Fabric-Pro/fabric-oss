@@ -87,8 +87,8 @@ The auto-tag step in `release.yml` cannot use the default `GITHUB_TOKEN` to push
 
 1. Create a GitHub App at `https://github.com/organizations/<org>/settings/apps/new` (or `https://github.com/settings/apps/new` for a personal account). Name it e.g. `Fabric Release Bot`. Uncheck the **Active** webhook checkbox. Under **Repository permissions** set **Contents: Read and write** and leave everything else as "No access". Scope it to "Only on this account". Click **Create GitHub App**.
 2. On the app's settings page, scroll to **Private keys** → **Generate a private key**. Save the downloaded `.pem` file securely (GitHub does not let you retrieve key contents again). Note the **App ID** shown near the top.
-3. In the app's left sidebar click **Install App** → choose the org/account → **Only select repositories** → pick `Fabric-Pro/fabric` → **Install**.
-4. Add two repo secrets at `https://github.com/Fabric-Pro/fabric/settings/secrets/actions`:
+3. In the app's left sidebar click **Install App** → choose the org/account → **Only select repositories** → pick `Fabric-Pro/fabric-oss` → **Install**.
+4. Add two repo secrets at `https://github.com/Fabric-Pro/fabric-oss/settings/secrets/actions`:
    - `RELEASE_APP_ID` — the integer App ID from step 2.
    - `RELEASE_APP_PRIVATE_KEY` — the entire contents of the `.pem` file, including the `-----BEGIN/END RSA PRIVATE KEY-----` lines.
 
@@ -181,7 +181,3 @@ BETTER_AUTH_SECRET="..."
 # At least one AI provider key
 ANTHROPIC_API_KEY="sk-ant-..." # or OPENAI_API_KEY, GROQ_API_KEY, etc.
 ```
-
-## Database / data tasks
-
-- [ ] Run `pnpm exec tsx packages/database/scripts/backfill-mcp-token-hash.ts` from the repo root if the `mCPConfig.accessTokenHash` audit returned `null_hash > 0`.

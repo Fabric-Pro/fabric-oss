@@ -9,7 +9,7 @@ defaults:
     - desktop
 projects:
   fabric:
-    repo: Fabric-Pro/fabric
+    repo: Fabric-Pro/fabric-oss
     path: .
     defaultBranch: master
     agentRules: >-

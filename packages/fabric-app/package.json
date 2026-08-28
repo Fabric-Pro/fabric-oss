@@ -6,6 +6,6 @@
   "description": "Meta-package that tracks the deployable Fabric application version for changesets and the tag-based prod deploy workflow. Not published to npm.",
   "repository": {
     "type": "git",
-    "url": "https://github.com/Fabric-Pro/fabric.git"
+    "url": "https://github.com/Fabric-Pro/fabric-oss.git"
   }
 }

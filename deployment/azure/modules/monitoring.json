@@ -409,7 +409,7 @@
 			"location": "[parameters('location')]",
 			"properties": {
 				"displayName": "App - HTTP 5xx Burn Rate SEV-1 (14.4x over 5m and 1h)",
-				"description": "[format('HTTP 5xx error rate is burning the monthly SLO budget at 14.4x the sustainable rate over BOTH the 5m and 1h windows — page on-call. Routes through {0}. See runbook: https://github.com/Fabric-Pro/fabric/blob/main/docs/runbooks/error-rate-spike.md', parameters('alertsWebhookUrl'))]",
+				"description": "[format('HTTP 5xx error rate is burning the monthly SLO budget at 14.4x the sustainable rate over BOTH the 5m and 1h windows — page on-call. Routes through {0}. See the alert catalogue: https://github.com/Fabric-Pro/fabric-oss/blob/master/docs/monitoring/alerts.md#http-5xx-burn-rate-kql-scheduledqueryrules', parameters('alertsWebhookUrl'))]",
 				"severity": 0,
 				"enabled": true,
 				"scopes": ["[parameters('appInsightsId')]"],
@@ -434,7 +434,7 @@
 						"[resourceId('Microsoft.Insights/actionGroups', format('{0}-alerts-ag', parameters('resourcePrefix')))]"
 					],
 					"customProperties": {
-						"runbook_url": "https://github.com/Fabric-Pro/fabric/blob/main/docs/runbooks/error-rate-spike.md",
+						"runbook_url": "https://github.com/Fabric-Pro/fabric-oss/blob/master/docs/monitoring/alerts.md#http-5xx-burn-rate-kql-scheduledqueryrules",
 						"severity": "SEV-1"
 					}
 				},
@@ -452,7 +452,7 @@
 			"location": "[parameters('location')]",
 			"properties": {
 				"displayName": "App - HTTP 5xx Burn Rate SEV-2 (6x over 30m and 6h)",
-				"description": "[format('HTTP 5xx error rate is burning the monthly SLO budget at 6x the sustainable rate over BOTH the 30m and 6h windows — open ticket, respond within business hours. Routes through {0}. See runbook: https://github.com/Fabric-Pro/fabric/blob/main/docs/runbooks/error-rate-spike.md', parameters('alertsWebhookUrl'))]",
+				"description": "[format('HTTP 5xx error rate is burning the monthly SLO budget at 6x the sustainable rate over BOTH the 30m and 6h windows — open ticket, respond within business hours. Routes through {0}. See the alert catalogue: https://github.com/Fabric-Pro/fabric-oss/blob/master/docs/monitoring/alerts.md#http-5xx-burn-rate-kql-scheduledqueryrules', parameters('alertsWebhookUrl'))]",
 				"severity": 1,
 				"enabled": true,
 				"scopes": ["[parameters('appInsightsId')]"],
@@ -477,7 +477,7 @@
 						"[resourceId('Microsoft.Insights/actionGroups', format('{0}-alerts-ag', parameters('resourcePrefix')))]"
 					],
 					"customProperties": {
-						"runbook_url": "https://github.com/Fabric-Pro/fabric/blob/main/docs/runbooks/error-rate-spike.md",
+						"runbook_url": "https://github.com/Fabric-Pro/fabric-oss/blob/master/docs/monitoring/alerts.md#http-5xx-burn-rate-kql-scheduledqueryrules",
 						"severity": "SEV-2"
 					}
 				},
@@ -495,7 +495,7 @@
 			"location": "[parameters('location')]",
 			"properties": {
 				"displayName": "App - HTTP 5xx Burn Rate SEV-3 (1x over 6h and 3d)",
-				"description": "[format('HTTP 5xx error rate is burning the monthly SLO budget at the sustained baseline rate over BOTH the 6h and 3d windows — SEV-3 ticket-only, surfaces in the weekly digest. Routes through {0}. See runbook: https://github.com/Fabric-Pro/fabric/blob/main/docs/runbooks/error-rate-spike.md', parameters('alertsWebhookUrl'))]",
+				"description": "[format('HTTP 5xx error rate is burning the monthly SLO budget at the sustained baseline rate over BOTH the 6h and 3d windows — SEV-3 ticket-only, surfaces in the weekly digest. Routes through {0}. See the alert catalogue: https://github.com/Fabric-Pro/fabric-oss/blob/master/docs/monitoring/alerts.md#http-5xx-burn-rate-kql-scheduledqueryrules', parameters('alertsWebhookUrl'))]",
 				"severity": 3,
 				"enabled": true,
 				"scopes": ["[parameters('appInsightsId')]"],
@@ -520,7 +520,7 @@
 						"[resourceId('Microsoft.Insights/actionGroups', format('{0}-alerts-ag', parameters('resourcePrefix')))]"
 					],
 					"customProperties": {
-						"runbook_url": "https://github.com/Fabric-Pro/fabric/blob/main/docs/runbooks/error-rate-spike.md",
+						"runbook_url": "https://github.com/Fabric-Pro/fabric-oss/blob/master/docs/monitoring/alerts.md#http-5xx-burn-rate-kql-scheduledqueryrules",
 						"severity": "SEV-3"
 					}
 				},
@@ -538,7 +538,7 @@
 			"location": "[parameters('location')]",
 			"properties": {
 				"displayName": "Integration - Circuit Breaker Opened",
-				"description": "A provider circuit breaker transitioned to OPEN — short-circuiting calls. See runbook: https://github.com/Fabric-Pro/fabric/blob/main/docs/runbooks/integration-outage.md",
+				"description": "A provider circuit breaker transitioned to OPEN — short-circuiting calls. See the alert catalogue: https://github.com/Fabric-Pro/fabric-oss/blob/master/docs/monitoring/alerts.md#integration-health-kql-scheduledqueryrules",
 				"severity": 0,
 				"enabled": true,
 				"scopes": ["[parameters('appInsightsId')]"],
@@ -563,7 +563,7 @@
 						"[resourceId('Microsoft.Insights/actionGroups', format('{0}-alerts-ag', parameters('resourcePrefix')))]"
 					],
 					"customProperties": {
-						"runbook_url": "https://github.com/Fabric-Pro/fabric/blob/main/docs/runbooks/integration-outage.md",
+						"runbook_url": "https://github.com/Fabric-Pro/fabric-oss/blob/master/docs/monitoring/alerts.md#integration-health-kql-scheduledqueryrules",
 						"severity": "SEV-1"
 					}
 				},
@@ -581,7 +581,7 @@
 			"location": "[parameters('location')]",
 			"properties": {
 				"displayName": "Integration - Synthetic Probe Failing (>=3 failures in 15m)",
-				"description": "[format('A provider synthetic probe failed 3 or more times in the last 15 minutes — open ticket. Routes through {0}. See runbook: https://github.com/Fabric-Pro/fabric/blob/main/docs/runbooks/integration-outage.md', parameters('alertsWebhookUrl'))]",
+				"description": "[format('A provider synthetic probe failed 3 or more times in the last 15 minutes — open ticket. Routes through {0}. See the alert catalogue: https://github.com/Fabric-Pro/fabric-oss/blob/master/docs/monitoring/alerts.md#integration-health-kql-scheduledqueryrules', parameters('alertsWebhookUrl'))]",
 				"severity": 1,
 				"enabled": true,
 				"scopes": ["[parameters('appInsightsId')]"],
@@ -606,7 +606,7 @@
 						"[resourceId('Microsoft.Insights/actionGroups', format('{0}-alerts-ag', parameters('resourcePrefix')))]"
 					],
 					"customProperties": {
-						"runbook_url": "https://github.com/Fabric-Pro/fabric/blob/main/docs/runbooks/integration-outage.md",
+						"runbook_url": "https://github.com/Fabric-Pro/fabric-oss/blob/master/docs/monitoring/alerts.md#integration-health-kql-scheduledqueryrules",
 						"severity": "SEV-2"
 					}
 				},
@@ -624,7 +624,7 @@
 			"location": "[parameters('location')]",
 			"properties": {
 				"displayName": "Integration - Outbound Dependency Failures (>5 in 15m)",
-				"description": "[format('Outbound dependency failures exceeded 5 in the last 15 minutes for one or more tracked providers (OpenAI, Anthropic, Stripe, Resend, S3). Routes through {0}. See runbook: https://github.com/Fabric-Pro/fabric/blob/main/docs/runbooks/integration-outage.md', parameters('alertsWebhookUrl'))]",
+				"description": "[format('Outbound dependency failures exceeded 5 in the last 15 minutes for one or more tracked providers (OpenAI, Anthropic, Stripe, Resend, S3). Routes through {0}. See the alert catalogue: https://github.com/Fabric-Pro/fabric-oss/blob/master/docs/monitoring/alerts.md#integration-health-kql-scheduledqueryrules', parameters('alertsWebhookUrl'))]",
 				"severity": 1,
 				"enabled": true,
 				"scopes": ["[parameters('appInsightsId')]"],
@@ -649,7 +649,7 @@
 						"[resourceId('Microsoft.Insights/actionGroups', format('{0}-alerts-ag', parameters('resourcePrefix')))]"
 					],
 					"customProperties": {
-						"runbook_url": "https://github.com/Fabric-Pro/fabric/blob/main/docs/runbooks/integration-outage.md",
+						"runbook_url": "https://github.com/Fabric-Pro/fabric-oss/blob/master/docs/monitoring/alerts.md#integration-health-kql-scheduledqueryrules",
 						"severity": "SEV-2"
 					}
 				},

@@ -23,12 +23,6 @@ management.
 |---|---|
 | [ADR-005](../adr/005-monitoring-architecture.md) | Application Insights as the monitoring backend with single webhook funnel. |
 
-## Related runbooks
-
-- [`docs/runbooks/error-rate-spike.md`](../runbooks/error-rate-spike.md) — response steps for SEV-1/2/3 HTTP 5xx burn-rate alerts.
-- [`docs/runbooks/integration-outage.md`](../runbooks/integration-outage.md) — response steps for provider outages (statuspage, breaker, synthetic probe).
-- [`docs/runbooks/downtime-alert-resolution.md`](../runbooks/downtime-alert-resolution.md) — response steps for Container App replica / restart alerts (parent app-downtime spec).
-
 ## How to read these docs
 
 - Start with [`architecture.md`](./architecture.md) if you are new to
@@ -43,4 +37,6 @@ management.
   to justify a backend choice or evaluate a replacement.
 
 Each sub-document is authoritative and self-contained — references
-runbooks and other docs by link rather than duplicating content.
+the other docs by link rather than duplicating content. Deployment-specific
+response procedure is not in this tree; it belongs in the operator's own
+runbook.

@@ -85,7 +85,12 @@ Every rule below is defined in
 All rules emit through the shared Action Group; no rule has a separate
 webhook.
 
-### HTTP 5xx burn rate (3 rules, KQL scheduledQueryRules)
+Each rule's `customProperties.runbook_url` carries a link back to this
+catalogue, so the Teams card lands the responder on the rule that fired.
+What happens next is in [`incidents.md`](./incidents.md); mitigation steps
+are deployment-specific and belong in the operator's own runbook.
+
+### HTTP 5xx burn rate (KQL scheduledQueryRules)
 
 | Alert name | Severity | Eval freq | Window | KQL summary | Threshold |
 |---|---|---|---|---|---|
@@ -93,11 +98,7 @@ webhook.
 | `${prefix}-http-5xx-burn-rate-sev2` | SEV-2 | 15 min | 6 h | `requests` table, short=30 m + long=6 h | `short_rate > 0.006 AND long_rate > 0.006 AND long_total > 30` |
 | `${prefix}-http-5xx-burn-rate-sev3` | SEV-3 | 1 h | 2 d (capped at Azure max P2D) | `requests` table, short=6 h + long=2 d | `short_rate > 0.001 AND long_rate > 0.001 AND long_total > 100` |
 
-Runbook: [`docs/runbooks/error-rate-spike.md`](../runbooks/error-rate-spike.md).
-Each rule sets `customProperties.runbook_url` so the CAS payload carries
-the link directly into the Teams card.
-
-### LLM-specific (6 rules, KQL scheduledQueryRules)
+### LLM-specific (KQL scheduledQueryRules)
 
 The LLM rules query the `dependencies` and `requests` tables, filtering
 on `name startswith "llm."` (the span name pattern emitted by the
@@ -113,19 +114,19 @@ to deploy.
 | `${prefix}-llm-high-output-token-rate` | SEV-2 | 5 min | 5 min | Output tokens per second > 5 000 for any model/provider pair. |
 | `${prefix}-llm-no-requests` | SEV-2 | 5 min | 6 h | Zero LLM requests in the last 15 min AND prior activity in the 6 h before. Detects instrumentation breakage. |
 
-### Integration health (3 rules, KQL scheduledQueryRules)
+### Integration health (KQL scheduledQueryRules)
 
 | Alert name | Severity | Eval freq | Window | Trigger |
 |---|---|---|---|---|
 | `${prefix}-circuit-breaker-opened` | SEV-1 | 1 min | 5 min | Any `customEvents` row with `name == "CircuitBreakerStateChange"` and `newState == "open"`. Grouped by `provider`. |
 | `${prefix}-synthetic-probe-failing` | SEV-2 | 5 min | 15 min | 3+ failures for a provider in `customEvents` where `name == "SyntheticProbeResult"`. |
 | `${prefix}-dependency-failures` | SEV-2 | 5 min | 15 min | More than 5 dependency failures in 15 min for `api.openai.com`, `api.anthropic.com`, `api.stripe.com`, `api.resend.com`, or `*.amazonaws.com`. Grouped by `target`. |
+| `${prefix}-repo-oauth-credentials-rejected` | SEV-2 | 15 min | 45 min | The worker's GitHub OAuth app credentials were rejected during a repo-integration token refresh — a configuration error, not an expired user token. |
+| `${prefix}-repo-health-degraded` | SEV-3 | 30 min | 1 h | More than half the monitored repository integrations were unhealthy in the most recent health-check cycle. |
 
-Runbook: [`docs/runbooks/integration-outage.md`](../runbooks/integration-outage.md).
+### Container App availability (metric alerts)
 
-### Container App availability (2 rules per app, metric alerts)
-
-Emitted in a `[for app in monitoredContainerApps: ...]` loop. The
+Two rules per app, emitted in a `[for app in monitoredContainerApps: ...]` loop. The
 `monitoredContainerApps` array is auto-derived from `tsAgentConfigs`
 plus the two standalone apps, so adding a new TS/LangGraph agent
 automatically enrols it.
@@ -140,8 +141,6 @@ supported by Azure Monitor (table verified May 2026), so the per-app
 loop is the workaround. The Bicep file carries a migration sketch that
 collapses 2N rules into 2 once Microsoft adds containerApps to the
 supported list.
-
-Runbook: [`docs/runbooks/downtime-alert-resolution.md`](../runbooks/downtime-alert-resolution.md).
 
 ## Tunable thresholds
 
@@ -176,8 +175,10 @@ current values without grepping Bicep.
 3. Set `severity: 0|1|3` and `scopes: [appInsightsId]`.
 4. Reference the shared `actionGroups: [actionGroup.id]` — never create
    a parallel Action Group.
-5. Add a `customProperties.runbook_url` pointing to the runbook so the
-   CAS payload carries it.
+5. Add a `customProperties.runbook_url` pointing to this document's
+   section for the rule's family, so the CAS payload carries it. The
+   headings are link targets — renaming one breaks every alert that
+   points at it.
 6. Bump the `alertRuleCount` output to keep the deploy summary honest.
 
 ### Container-App metric alert
@@ -213,8 +214,6 @@ existing breaker / probe / statuspage rules pick it up. See
 - [`incidents.md`](./incidents.md) — what happens after the alert fires.
 - [`status-pages.md`](./status-pages.md) — provider-side detection and
   the registry.
-- [`../runbooks/error-rate-spike.md`](../runbooks/error-rate-spike.md) — SEV-1/2/3 HTTP 5xx response runbook.
-- [`../runbooks/integration-outage.md`](../runbooks/integration-outage.md) — provider outage response runbook.
 - [`../adr/005-monitoring-architecture.md`](../adr/005-monitoring-architecture.md) — backend choice and funnel rationale.
 
 ## Alertmanager webhook ingestion (v3)

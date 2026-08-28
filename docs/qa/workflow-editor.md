@@ -162,34 +162,13 @@ The `manual` rows above are the ones no suite asserts. The **cross-user tenancy*
 rows need a second account in the same organization; plan for that before
 starting, or the pass stops halfway.
 
-### Executed against staging, 2026-08-08
-
-A scripted browser pass drove `staging.fabric.pro` against one workflow, then
-deleted it (delete 200, re-read 404). Nine rows passed: create from the list,
-rename and persist, configure node fields, canvas renders the saved graph
-(3 nodes / 2 edges), delete an edge, start a run, per-node logs (3 logs, 3 with
-output), node failure surfaced (`Node http_2 failed: HTTP 404`), and AI
-generation returning a graph.
-
-The tenth found a defect. Asked to branch on a status code, the live generator
-emitted `condition_1 -> condition_1` on both handles; the graph saved and every
-run was refused with "Workflow contains a cycle". Fixed by dropping
-self-referencing edges and telling the model a branch must target another node.
-
-The same pass found a second one: a reference to an object interpolated as
-`[object Object]`, which is the default shape of generated graphs
-(`{{Trigger.data}}`).
-
-Two things worth knowing for the next pass. Per-node `duration` read null on
-staging because that fix had not deployed yet — it is a useful signal for
-whether a deploy has landed. And a driver script must use `executionId` for
-`workflows/executions/get`, not `id`; getting that wrong reports a 400 as if it
-were the run's status.
-
 Two integration rows remain genuinely manual, and deliberately so: connecting an
 integration and using **Test Connection** both need a real vendor credential,
 which does not belong in an automated pass or in a shared environment. Exercise
 them by hand against a throwaway key.
+
+A driver script must read `executionId` for `workflows/executions/get`, not
+`id`; getting that wrong reports a 400 as if it were the run's own status.
 
 When measuring layout, assert a bounding box rather than visibility. A
 collapsed canvas is still visible, which is how a canvas pinned to 211px on a

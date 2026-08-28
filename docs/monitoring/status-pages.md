@@ -289,7 +289,5 @@ unsupported reason as hover text. No alert ever fires.
   `synthetic-probe-failing` alert rules.
 - [`incidents.md`](./incidents.md) — what happens after a poll
   reports degraded health.
-- [`../runbooks/integration-outage.md`](../runbooks/integration-outage.md)
-  — operator response steps for provider outages.
 - [`../adr/005-monitoring-architecture.md`](../adr/005-monitoring-architecture.md)
   — backend decision record.
