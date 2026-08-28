@@ -13,6 +13,7 @@ import { getSession } from "@saas/auth/lib/server";
 import type { NextRequest } from "next/server";
 import { v4 as uuidv4 } from "uuid";
 import { z } from "zod";
+import { unionDefaultMcpConfigIds } from "../union-default-mcp-config-ids";
 import { extractAiUsageLimitExceededError } from "./extract-ai-usage-limit-error";
 import {
 	type FrontendReasoningMode,
@@ -986,6 +987,11 @@ async function handleTemporalWorkflow(params: {
 				// set so managed-default servers (e.g. Excalidraw, when
 				// `defaultEnabled`) are eligible inside the direct-chat workflow.
 				// On helper failure, log and proceed with the original array.
+				//
+				// `unionDefaultMcpConfigIds` guards the three-state contract:
+				// `null`/`undefined` ("all configs enabled") and `[]`
+				// ("explicitly none") pass through untouched, since unioning
+				// into either would narrow it to the defaults alone.
 				let effectiveEnabledMcpConfigIds: string[] | undefined =
 					enabledMcpConfigIds;
 				try {
@@ -993,14 +999,10 @@ async function handleTemporalWorkflow(params: {
 						userId,
 						organizationId ?? null,
 					);
-					if (defaultIds.length > 0) {
-						const existing = Array.isArray(enabledMcpConfigIds)
-							? enabledMcpConfigIds
-							: [];
-						effectiveEnabledMcpConfigIds = Array.from(
-							new Set([...existing, ...defaultIds]),
-						);
-					}
+					effectiveEnabledMcpConfigIds = unionDefaultMcpConfigIds(
+						enabledMcpConfigIds,
+						defaultIds,
+					);
 				} catch (defaultIdsError) {
 					console.warn(
 						"[Direct Chat Stream] Failed to union default-enabled MCP config ids — proceeding with caller-supplied array",

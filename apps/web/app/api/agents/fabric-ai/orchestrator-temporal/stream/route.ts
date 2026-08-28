@@ -37,6 +37,7 @@ import { REDIS_KEEPALIVE_MS } from "@repo/utils/redis-connection";
 import { getSession } from "@saas/auth/lib/server";
 import type { NextRequest } from "next/server";
 import { v4 as uuidv4 } from "uuid";
+import { unionDefaultMcpConfigIds } from "../../union-default-mcp-config-ids";
 
 const POLL_INTERVAL = 200; // Poll every 200ms for faster updates
 // Bounds the WHOLE request from entry (see `requestStartedAt` in POST),
@@ -502,20 +503,21 @@ export async function POST(request: NextRequest) {
 		// On helper failure, log and proceed with the original array — the
 		// workflow's defense-in-depth at `applyDefaultMcpEagerRouting`
 		// still resolves via `findDefaultMcpConfigActivity`.
+		//
+		// `unionDefaultMcpConfigIds` guards the same three-state contract the
+		// prioritized-ids union below already respects: `null` ("all configs
+		// enabled") and `[]` ("explicitly none") pass through untouched, since
+		// unioning into either would narrow it to the defaults alone.
 		let effectiveEnabledMcpConfigIds: string[] | null = enabledMcpConfigIds;
 		try {
 			const defaultIds = await getDefaultEnabledMcpConfigIds(
 				userId,
 				organizationId ?? null,
 			);
-			if (defaultIds.length > 0) {
-				const existing = Array.isArray(enabledMcpConfigIds)
-					? enabledMcpConfigIds
-					: [];
-				effectiveEnabledMcpConfigIds = Array.from(
-					new Set([...existing, ...defaultIds]),
-				);
-			}
+			effectiveEnabledMcpConfigIds = unionDefaultMcpConfigIds(
+				enabledMcpConfigIds,
+				defaultIds,
+			);
 		} catch (defaultIdsError) {
 			console.warn(
 				"[Orchestrator Stream] Failed to union default-enabled MCP config ids — proceeding with caller-supplied array",
