@@ -125,6 +125,8 @@ interface PendingTranscript {
 
 export interface DescribeMissingTranscriptsInput {
 	graphError?: string;
+	/** Why Graph refused to resolve the meeting at all, when it did. */
+	lookupError?: string;
 	isChannelMeeting: boolean;
 	fallbackDiagnostic?: string;
 }
@@ -147,7 +149,8 @@ export interface DescribeMissingTranscriptsInput {
 export function describeMissingTranscripts(
 	input: DescribeMissingTranscriptsInput,
 ): string {
-	const { graphError, isChannelMeeting, fallbackDiagnostic } = input;
+	const { graphError, lookupError, isChannelMeeting, fallbackDiagnostic } =
+		input;
 
 	if (graphError) {
 		return graphError;
@@ -158,7 +161,9 @@ export function describeMissingTranscripts(
 
 	return [
 		"No transcripts available for this meeting.",
-		"Microsoft Graph does not serve transcripts for channel meetings, so the meeting recording was checked instead.",
+		lookupError
+			? `Microsoft Graph would not look this channel meeting up (${lookupError}), so the meeting recording was checked instead.`
+			: "Microsoft Graph does not serve transcripts for channel meetings, so the meeting recording was checked instead.",
 		fallbackDiagnostic,
 	]
 		.filter(Boolean)
@@ -408,26 +413,85 @@ export async function fetchAndStoreMeetingTranscript(
 		meetingSubject,
 	});
 
-	try {
-		// Step 1: Resolve online meeting ID from join URL
-		heartbeat("resolving meeting from join URL");
-		const meetingResult = (await executeMicrosoftTeamsTool(
-			"get_meeting_by_join_url",
-			{ joinWebUrl: joinUrl },
-			userId,
-			organizationId,
-		)) as {
-			meeting?: {
-				id: string;
-				subject?: string;
-			} | null;
-			error?: string;
-		};
+	// A channel meeting has a second route to its transcript — the recording in
+	// the channel's SharePoint library — and that route is resolved from the
+	// join URL alone. Knowing this up front is what lets a refusal from Graph
+	// below be non-fatal.
+	const channelThreadId = extractChannelThreadId(joinUrl);
+	const isChannelMeeting = channelThreadId !== null;
 
-		if (!meetingResult.meeting?.id) {
+	try {
+		// Steps 1 and 2: resolve the online meeting from its join URL, then ask
+		// Graph for its transcripts.
+		//
+		// Delegated resolution is organizer-scoped: an attendee of a channel
+		// meeting gets `403 "3003: User does not have access to lookup meeting"`.
+		// That used to end the sync right here, which left the channel-meeting
+		// recording fallback — the one path that needs no meeting id at all —
+		// sitting behind the very call an attendee can never make. So for a
+		// channel meeting, every way Graph can decline (a 403, a thrown
+		// transport error, or the empty 200 it returns to the organizer) leads
+		// to the same place: try the recording.
+		let meetingId: string | null = null;
+		let graphError: string | undefined;
+		let pendingTranscripts: PendingTranscript[] = [];
+
+		try {
+			heartbeat("resolving meeting from join URL");
+			const meetingResult = (await executeMicrosoftTeamsTool(
+				"get_meeting_by_join_url",
+				{ joinWebUrl: joinUrl },
+				userId,
+				organizationId,
+			)) as {
+				meeting?: {
+					id: string;
+					subject?: string;
+				} | null;
+				error?: string;
+			};
+
+			meetingId = meetingResult.meeting?.id ?? null;
+			graphError = meetingResult.error;
+
+			if (meetingId) {
+				heartbeat("listing transcripts");
+				const transcriptListResult = (await executeMicrosoftTeamsTool(
+					"list_meeting_transcripts",
+					{ meetingId },
+					userId,
+					organizationId,
+				)) as {
+					transcripts?: Array<{
+						id: string;
+						createdDateTime?: string;
+					}>;
+					count?: number;
+					error?: string;
+				};
+
+				graphError = transcriptListResult.error;
+				pendingTranscripts = (
+					transcriptListResult.transcripts ?? []
+				).map((transcript) => ({
+					transcriptId: transcript.id,
+					createdDateTime: transcript.createdDateTime,
+				}));
+			}
+		} catch (error) {
+			// An ordinary meeting has nowhere else to look, so its failure is
+			// still the caller's to report.
+			if (!isChannelMeeting) {
+				throw error;
+			}
+			graphError = error instanceof Error ? error.message : String(error);
+		}
+
+		const lookupError = meetingId ? undefined : graphError;
+
+		if (!meetingId && !isChannelMeeting) {
 			const errorMsg =
-				meetingResult.error ||
-				"Could not resolve meeting from join URL.";
+				graphError || "Could not resolve meeting from join URL.";
 			logger.warn(
 				"[MeetingTranscriptSync] Meeting not found for join URL",
 				{
@@ -442,32 +506,19 @@ export async function fetchAndStoreMeetingTranscript(
 			};
 		}
 
-		const meetingId = meetingResult.meeting.id;
+		if (!meetingId) {
+			logger.info(
+				"[MeetingTranscriptSync] Graph would not look this channel meeting up; going straight to its recording",
+				{ meetingSubject, error: lookupError },
+			);
+		}
 
-		// Step 2: List transcripts for this meeting
-		heartbeat("listing transcripts");
-		const transcriptListResult = (await executeMicrosoftTeamsTool(
-			"list_meeting_transcripts",
-			{ meetingId },
-			userId,
-			organizationId,
-		)) as {
-			transcripts?: Array<{ id: string; createdDateTime?: string }>;
-			count?: number;
-			error?: string;
-		};
+		// The key a transcript is filed under. Graph's online-meeting id when we
+		// have one; otherwise the channel's thread id, which is stable across
+		// every occurrence of that channel meeting and so preserves exactly the
+		// grouping the Graph id provided.
+		const meetingKey = meetingId ?? `channel:${channelThreadId}`;
 
-		let pendingTranscripts: PendingTranscript[] = (
-			transcriptListResult.transcripts ?? []
-		).map((transcript) => ({
-			transcriptId: transcript.id,
-			createdDateTime: transcript.createdDateTime,
-		}));
-
-		// Graph serves no transcripts for channel meetings, so an empty list
-		// there is the API declining rather than a meeting without a transcript.
-		// The recording in the channel's SharePoint library still carries one.
-		const isChannelMeeting = extractChannelThreadId(joinUrl) !== null;
 		let fallbackDiagnostic: string | undefined;
 
 		if (pendingTranscripts.length === 0 && isChannelMeeting) {
@@ -483,7 +534,7 @@ export async function fetchAndStoreMeetingTranscript(
 				Number.isFinite(occurrence.getTime()) &&
 				(await hasTranscriptNearOccurrence({
 					projectId,
-					meetingId,
+					linkedMeetingId,
 					occurrence,
 					toleranceMs: OCCURRENCE_COVERAGE_TOLERANCE_MS,
 				}));
@@ -491,7 +542,7 @@ export async function fetchAndStoreMeetingTranscript(
 			if (alreadyCovered) {
 				logger.info(
 					"[MeetingTranscriptSync] Occurrence already has a transcript, not looking for a recording",
-					{ meetingId, meetingSubject, meetingDate },
+					{ meetingKey, meetingSubject, meetingDate },
 				);
 				return {
 					success: false,
@@ -533,19 +584,20 @@ export async function fetchAndStoreMeetingTranscript(
 			if (pendingTranscripts.length > 0) {
 				logger.info(
 					"[MeetingTranscriptSync] Channel meeting transcript recovered from its recording",
-					{ meetingId, meetingSubject },
+					{ meetingKey, meetingSubject },
 				);
 			}
 		}
 
 		if (pendingTranscripts.length === 0) {
 			const errorMsg = describeMissingTranscripts({
-				graphError: transcriptListResult.error,
+				graphError: meetingId ? graphError : undefined,
+				lookupError,
 				isChannelMeeting,
 				fallbackDiagnostic,
 			});
 			logger.info("[MeetingTranscriptSync] No transcripts found", {
-				meetingId,
+				meetingKey,
 				isChannelMeeting,
 				error: errorMsg,
 			});
@@ -575,14 +627,14 @@ export async function fetchAndStoreMeetingTranscript(
 			// Check if already synced (deduplication)
 			const alreadySynced = await isTranscriptAlreadySynced(
 				projectId,
-				meetingId,
+				meetingKey,
 				transcriptId,
 			);
 			if (alreadySynced) {
 				logger.info(
 					"[MeetingTranscriptSync] Transcript already synced, skipping",
 					{
-						meetingId,
+						meetingKey,
 						transcriptId,
 					},
 				);
@@ -590,7 +642,9 @@ export async function fetchAndStoreMeetingTranscript(
 			}
 
 			// Step 4: Fetch transcript content — from the recording when that is
-			// where this transcript was found, otherwise from Graph.
+			// where this transcript was found, otherwise from Graph. Only Graph
+			// can hand us a transcript without a recording, so `meetingId` is
+			// always resolved on that branch.
 			heartbeat(`fetching transcript ${transcriptId}`);
 			const transcriptContent = (await executeMicrosoftTeamsTool(
 				transcript.recording
@@ -616,7 +670,7 @@ export async function fetchAndStoreMeetingTranscript(
 					"[MeetingTranscriptSync] Transcript content error",
 					{
 						error: transcriptContent.error,
-						meetingId,
+						meetingKey,
 						transcriptId,
 					},
 				);
@@ -649,7 +703,7 @@ export async function fetchAndStoreMeetingTranscript(
 				logger.warn(
 					"[MeetingTranscriptSync] Transcript content was empty",
 					{
-						meetingId,
+						meetingKey,
 						transcriptId,
 					},
 				);
@@ -717,7 +771,7 @@ export async function fetchAndStoreMeetingTranscript(
 					organizationId,
 					metadata: {
 						provider: "microsoft-teams",
-						meetingId,
+						meetingId: meetingKey,
 						transcriptId,
 						meetingSubject,
 						meetingDate: occurrenceDate,
@@ -737,7 +791,7 @@ export async function fetchAndStoreMeetingTranscript(
 			const transcriptRecord = await createMeetingTranscriptRecord({
 				projectId,
 				linkedMeetingId,
-				meetingId,
+				meetingId: meetingKey,
 				transcriptId,
 				meetingSubject,
 				meetingDate: occurrenceDate
@@ -771,7 +825,7 @@ export async function fetchAndStoreMeetingTranscript(
 							metadata: {
 								sourceTitle: `Meeting Transcript: ${meetingSubject}`,
 								provider: "microsoft-teams",
-								meetingId,
+								meetingId: meetingKey,
 								transcriptId,
 							},
 						},
@@ -829,7 +883,7 @@ export async function fetchAndStoreMeetingTranscript(
 									organizationId,
 									transcriptRecordId: transcriptRecord.id,
 									contextId: newContext.id,
-									meetingId,
+									meetingId: meetingKey,
 									transcriptId,
 									linkedMeetingId,
 									meetingSubject,
@@ -903,7 +957,7 @@ export async function fetchAndStoreMeetingTranscript(
 			logger.info(
 				"[MeetingTranscriptSync] Transcript stored successfully",
 				{
-					meetingId,
+					meetingKey,
 					transcriptId,
 					contextId: newContext.id,
 					transcriptRecordId: transcriptRecord.id,

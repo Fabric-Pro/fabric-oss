@@ -157,7 +157,7 @@ export async function isTranscriptAlreadySynced(
 
 export interface TranscriptNearOccurrenceInput {
 	projectId: string;
-	meetingId: string;
+	linkedMeetingId: string;
 	occurrence: Date;
 	toleranceMs: number;
 }
@@ -176,16 +176,22 @@ export interface TranscriptNearOccurrenceInput {
  * recording's own timestamp, which trails the calendar occurrence this is compared against, and
  * these values are currently written ~3h behind real UTC. Six hours absorbs both while staying well
  * inside the 24h that separates two occurrences of a daily meeting, so it cannot match a neighbour.
+ *
+ * Scoped by `linkedMeetingId` rather than `meetingId` because `meetingId` is not stable across
+ * sources either: when Graph refuses to resolve a channel meeting, the transcript is filed under
+ * the channel's thread id instead of Graph's online-meeting id. Keying coverage on the link — one
+ * row per meeting per project, whatever Graph is willing to say about it — is what an occurrence
+ * actually belongs to.
  */
 export async function hasTranscriptNearOccurrence(
 	input: TranscriptNearOccurrenceInput,
 ): Promise<boolean> {
-	const { projectId, meetingId, occurrence, toleranceMs } = input;
+	const { projectId, linkedMeetingId, occurrence, toleranceMs } = input;
 
 	const record = await db.projectMeetingTranscript.findFirst({
 		where: {
 			projectId,
-			meetingId,
+			linkedMeetingId,
 			meetingDate: {
 				gte: new Date(occurrence.getTime() - toleranceMs),
 				lte: new Date(occurrence.getTime() + toleranceMs),
