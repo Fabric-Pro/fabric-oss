@@ -30,18 +30,18 @@ import { ORPCError } from "@orpc/client";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const {
-	mockProjectFindFirst,
+	mockProjectFindUnique,
 	mockListChatDeliveriesForProjectSend,
 	mockGetLinkedChannelNames,
 } = vi.hoisted(() => ({
-	mockProjectFindFirst: vi.fn(),
+	mockProjectFindUnique: vi.fn(),
 	mockListChatDeliveriesForProjectSend: vi.fn(),
 	mockGetLinkedChannelNames: vi.fn(),
 }));
 
 vi.mock("@repo/database", () => ({
 	db: {
-		project: { findFirst: mockProjectFindFirst },
+		project: { findUnique: mockProjectFindUnique },
 	},
 	listChatDeliveriesForProjectSend: mockListChatDeliveriesForProjectSend,
 	getLinkedChannelNames: mockGetLinkedChannelNames,
@@ -133,7 +133,10 @@ const LEDGER_ROWS = [
 
 beforeEach(() => {
 	vi.clearAllMocks();
-	mockProjectFindFirst.mockResolvedValue({ id: "p1" });
+	mockProjectFindUnique.mockResolvedValue({
+		id: "p1",
+		organizationId: "org-1",
+	});
 	// Fake table. An unbounded call — one where the handler dropped `projectId`
 	// — degrades to the activity-facing behaviour: EVERY project's rows for that
 	// send id. That is precisely the leak the bound exists to prevent, so the
@@ -174,8 +177,8 @@ describe("newsletter.sends.chatDeliveries", () => {
 		expect(mockGetLinkedChannelNames).not.toHaveBeenCalled();
 	});
 
-	it("wrong-tenant project id -> NOT_FOUND before the ledger is read", async () => {
-		mockProjectFindFirst.mockResolvedValue(null);
+	it("a project id that resolves to no row -> NOT_FOUND before the ledger is read", async () => {
+		mockProjectFindUnique.mockResolvedValue(null);
 
 		const error = await chatDeliveries({
 			input: {

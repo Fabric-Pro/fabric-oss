@@ -11,7 +11,9 @@
  *  - unsubscribe: returns { success: true } for any token (no existence leak),
  *    is idempotent, and never throws even when the token is unknown.
  *  - settings.update -> settings.get round-trip on a mocked store; a
- *    wrong-tenant projectId (db.project.findFirst -> null) returns NOT_FOUND.
+ *    a projectId that resolves to no row (db.project.findUnique -> null) returns
+ *    NOT_FOUND. Cross-tenant rejection itself now happens in
+ *    `requireProjectPermission`, which these unit tests stub out.
  *  - sendNow: TOO_MANY_REQUESTS when a recent non-FAILED send exists;
  *    { inFlight: true } when createOrGetNewsletterSend reports created:false.
  *
@@ -22,7 +24,7 @@ import { ORPCError } from "@orpc/client";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const {
-	mockProjectFindFirst,
+	mockProjectFindUnique,
 	mockGetNewsletterSettings,
 	mockUpsertNewsletterSettings,
 	mockEnrollProjectMembersAsSubscribers,
@@ -45,7 +47,7 @@ const {
 	mockGetLinkedTeamsChannels,
 	mockGetLinkedSlackChannels,
 } = vi.hoisted(() => ({
-	mockProjectFindFirst: vi.fn(),
+	mockProjectFindUnique: vi.fn(),
 	mockGetNewsletterSettings: vi.fn(),
 	mockUpsertNewsletterSettings: vi.fn(),
 	mockEnrollProjectMembersAsSubscribers: vi.fn(),
@@ -73,7 +75,7 @@ const {
 
 vi.mock("@repo/database", () => ({
 	db: {
-		project: { findFirst: mockProjectFindFirst },
+		project: { findUnique: mockProjectFindUnique },
 		$transaction: mockTransaction,
 	},
 	getNewsletterSettings: mockGetNewsletterSettings,
@@ -242,7 +244,7 @@ describe("unsubscribe (public, no existence leak)", () => {
 
 describe("settings.update -> settings.get round-trip + tenant XOR", () => {
 	it("persists via update then returns the persisted values from get", async () => {
-		mockProjectFindFirst.mockResolvedValue({
+		mockProjectFindUnique.mockResolvedValue({
 			id: "proj-1",
 			organizationId: null,
 			userId: "user-1",
@@ -297,7 +299,7 @@ describe("settings.update -> settings.get round-trip + tenant XOR", () => {
 
 	it("org context: derives userId null + organizationId set (XOR)", async () => {
 		// ORG-owned project: organizationId set, userId null on the project row.
-		mockProjectFindFirst.mockResolvedValue({
+		mockProjectFindUnique.mockResolvedValue({
 			id: "proj-1",
 			organizationId: "org-9",
 			userId: null,
@@ -338,8 +340,8 @@ describe("settings.update -> settings.get round-trip + tenant XOR", () => {
 		);
 	});
 
-	it("settings.get throws NOT_FOUND for a wrong-tenant project id", async () => {
-		mockProjectFindFirst.mockResolvedValue(null);
+	it("settings.get throws NOT_FOUND when the project does not resolve", async () => {
+		mockProjectFindUnique.mockResolvedValue(null);
 		await expect(
 			getSettings({
 				input: { projectId: "other-tenant-proj", organizationId: null },
@@ -349,8 +351,8 @@ describe("settings.update -> settings.get round-trip + tenant XOR", () => {
 		expect(mockGetNewsletterSettings).not.toHaveBeenCalled();
 	});
 
-	it("settings.update throws NOT_FOUND for a wrong-tenant project id", async () => {
-		mockProjectFindFirst.mockResolvedValue(null);
+	it("settings.update throws NOT_FOUND when the project does not resolve", async () => {
+		mockProjectFindUnique.mockResolvedValue(null);
 		await expect(
 			updateSettings({
 				input: {
@@ -367,7 +369,7 @@ describe("settings.update -> settings.get round-trip + tenant XOR", () => {
 
 describe("settings.update — member auto-enrolment backfill", () => {
 	beforeEach(() => {
-		mockProjectFindFirst.mockReset().mockResolvedValue({
+		mockProjectFindUnique.mockReset().mockResolvedValue({
 			id: "p1",
 			organizationId: "org-9",
 			userId: "owner-1",
@@ -479,7 +481,7 @@ describe("updateNewsletterSettingsInput — lookbackDays validation", () => {
 
 describe("sendNow (rate-limit + idempotency)", () => {
 	beforeEach(() => {
-		mockProjectFindFirst.mockResolvedValue({
+		mockProjectFindUnique.mockResolvedValue({
 			id: "proj-1",
 			name: "Acme",
 			organizationId: null,
@@ -606,7 +608,7 @@ describe("sendNow (rate-limit + idempotency)", () => {
 
 	it("org context: passes userId null + organizationId set to createOrGetNewsletterSend (XOR)", async () => {
 		// ORG-owned project overrides the personal-context default from beforeEach.
-		mockProjectFindFirst.mockResolvedValue({
+		mockProjectFindUnique.mockResolvedValue({
 			id: "proj-1",
 			name: "Acme",
 			organizationId: "org-9",
@@ -638,7 +640,7 @@ describe("sendNow (rate-limit + idempotency)", () => {
 
 describe("sendNow — window via resolveWindow", () => {
 	it("calls resolveWindow with manual fallback 7 and threads the returned start/end", async () => {
-		mockProjectFindFirst.mockResolvedValue({
+		mockProjectFindUnique.mockResolvedValue({
 			id: "proj-1",
 			organizationId: "org-9",
 			userId: null,
@@ -687,7 +689,7 @@ describe("sendNow — window via resolveWindow", () => {
 
 describe("sendNow — detail-level override resolution", () => {
 	it("input.detailLevel override wins over the persisted settings.detailLevel", async () => {
-		mockProjectFindFirst.mockResolvedValue({
+		mockProjectFindUnique.mockResolvedValue({
 			id: "proj-1",
 			name: "Acme",
 			organizationId: null,
@@ -729,7 +731,7 @@ describe("sendNow — detail-level override resolution", () => {
 	});
 
 	it("reads detailLevel back from the created send row into the workflow.start args", async () => {
-		mockProjectFindFirst.mockResolvedValue({
+		mockProjectFindUnique.mockResolvedValue({
 			id: "proj-1",
 			name: "Acme",
 			organizationId: null,
@@ -774,7 +776,7 @@ describe("sendNow — detail-level override resolution", () => {
 
 describe("sendNow — delivery destination threading", () => {
 	it("resolves deliveryDestination + chatChannels from settings (no per-send override), passes both to createOrGetNewsletterSend, and reads both back from the created send row into the workflow.start args", async () => {
-		mockProjectFindFirst.mockResolvedValue({
+		mockProjectFindUnique.mockResolvedValue({
 			id: "proj-1",
 			name: "Acme",
 			organizationId: null,
@@ -852,7 +854,7 @@ describe("sends.list — pagination + filter + shape", () => {
 	const organizationId = null;
 
 	beforeEach(() => {
-		mockProjectFindFirst.mockResolvedValue({
+		mockProjectFindUnique.mockResolvedValue({
 			id: projectId,
 			organizationId: null,
 			userId: "user-1",
@@ -899,8 +901,8 @@ describe("sends.list — pagination + filter + shape", () => {
 		expect(limitSchema.safeParse(100).success).toBe(true);
 	});
 
-	it("returns NOT_FOUND for a wrong-tenant project", async () => {
-		mockProjectFindFirst.mockResolvedValue(null);
+	it("returns NOT_FOUND when the project does not resolve", async () => {
+		mockProjectFindUnique.mockResolvedValue(null);
 		await expect(
 			listSends({
 				input: { projectId: "other-proj", organizationId: null },
@@ -913,7 +915,10 @@ describe("sends.list — pagination + filter + shape", () => {
 
 describe("sends.memberList", () => {
 	beforeEach(() => {
-		mockProjectFindFirst.mockReset().mockResolvedValue({ id: "p1" });
+		mockProjectFindUnique.mockReset().mockResolvedValue({
+			id: "p1",
+			organizationId: "org-9",
+		});
 		mockListNewsletterSendsForMembers.mockReset().mockResolvedValue([
 			{
 				id: "s1",
@@ -940,8 +945,8 @@ describe("sends.memberList", () => {
 		expect(r.sends).toHaveLength(1);
 	});
 
-	it("NOT_FOUND on wrong tenant", async () => {
-		mockProjectFindFirst.mockResolvedValue(null);
+	it("NOT_FOUND when the project does not resolve", async () => {
+		mockProjectFindUnique.mockResolvedValue(null);
 		await expect(
 			(memberListSendsProcedure as any)._handler({
 				input: { projectId: "p1", organizationId: "org-9" },

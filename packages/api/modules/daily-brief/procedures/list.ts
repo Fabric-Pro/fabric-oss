@@ -6,10 +6,10 @@
 import { ORPCError } from "@orpc/server";
 import { db } from "@repo/database";
 import { z } from "zod";
+import { assertInputOrgMatchesProject } from "../../../lib/authorized-project-tenant";
 import {
 	Permissions,
 	requireProjectPermission,
-	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
 
@@ -23,25 +23,19 @@ export const listProcedure = tenantProtectedProcedure
 			limit: z.number().int().min(1).max(50).default(20),
 		}),
 	)
-	.handler(async ({ input, context }) => {
-		const organizationId = resolveOrganizationId(
-			input.organizationId,
-			context.session,
-		);
-
-		const project = await db.project.findFirst({
-			where: organizationId
-				? { id: input.projectId, organizationId }
-				: {
-						id: input.projectId,
-						organizationId: null,
-						userId: context.user.id,
-					},
-			select: { id: true },
+	.handler(async ({ input }) => {
+		// `requireProjectPermission` above has already authorized this caller for
+		// THIS project — as owner, active ProjectMember, or via an org role. Load
+		// the project by id and take the tenant from the loaded row;
+		// `input.organizationId` is a guard, never a scoping key.
+		const project = await db.project.findUnique({
+			where: { id: input.projectId },
+			select: { id: true, organizationId: true },
 		});
 		if (!project) {
 			throw new ORPCError("NOT_FOUND", { message: "Project not found" });
 		}
+		assertInputOrgMatchesProject(input.organizationId, project);
 
 		const briefs = await db.dailyBrief.findMany({
 			where: { projectId: input.projectId },

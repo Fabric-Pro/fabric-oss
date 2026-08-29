@@ -9,11 +9,11 @@ import {
 import { getTemporalClient, isTemporalAvailable } from "@repo/temporal";
 import { WorkflowExecutionAlreadyStartedError } from "@temporalio/client";
 import { z } from "zod";
+import { assertInputOrgMatchesProject } from "../../../lib/authorized-project-tenant";
 import { withCorrelationMemo } from "../../../lib/temporal-correlation";
 import {
 	Permissions,
 	requireProjectPermission,
-	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
 import { classifyReviewOutcome } from "../lib/review-outcome";
@@ -85,23 +85,18 @@ export const approveSendProcedure = tenantProtectedProcedure
 		}),
 	)
 	.handler(async ({ input, context }) => {
-		const organizationId = resolveOrganizationId(
-			input.organizationId,
-			context.session,
-		);
-		const project = await db.project.findFirst({
-			where: organizationId
-				? { id: input.projectId, organizationId }
-				: {
-						id: input.projectId,
-						organizationId: null,
-						userId: context.user.id,
-					},
+		// `requireProjectPermission` above has already authorized this caller for
+		// THIS project — as owner, active ProjectMember, or via an org role. Load
+		// the project by id and take the tenant from the loaded row;
+		// `input.organizationId` is a guard, never a scoping key.
+		const project = await db.project.findUnique({
+			where: { id: input.projectId },
 			select: { id: true, name: true, organizationId: true },
 		});
 		if (!project) {
 			throw new ORPCError("NOT_FOUND", { message: "Project not found" });
 		}
+		assertInputOrgMatchesProject(input.organizationId, project);
 		const row = await getNewsletterSendForSendPhase(input.sendId);
 		if (!row || row.projectId !== input.projectId) {
 			throw new ORPCError("NOT_FOUND", { message: "Send not found" });

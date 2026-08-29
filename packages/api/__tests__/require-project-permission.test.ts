@@ -194,6 +194,80 @@ describe("requireProjectPermission — project role overrides org role", () => {
 		expect(mocks.memberFindFirst).not.toHaveBeenCalled();
 	});
 
+	/**
+	 * The two cases below are a PERSONAL project reached by someone who is not
+	 * its owner. They were missing: every existing member case here is an
+	 * org-owned project, and the only personal case is the owner.
+	 *
+	 * That gap is what let the newsletter and daily-brief handlers re-scope
+	 * their own project lookup to `userId: context.user.id` — which in personal
+	 * context means OWNER — and reject an accepted member the middleware had
+	 * just admitted. Those handlers no longer re-check, so this middleware is
+	 * now the only thing standing between a stranger and the project. Pin both
+	 * halves: the member gets in, the stranger does not.
+	 */
+	it("personal project, accepted non-owner member is granted and seeds a null-org access grant", async () => {
+		mocks.projectFindUnique.mockResolvedValue({
+			id: PROJECT_ID,
+			organizationId: null,
+			userId: OWNER_ID,
+		});
+		mocks.projectMemberFindUnique.mockResolvedValue({
+			role: "VIEWER",
+			acceptedAt: new Date(),
+			expiresAt: null,
+		});
+
+		const requireProjectPermission = await loadMiddleware();
+		const mw = requireProjectPermission(Permissions.PROJECT_SETTINGS_READ);
+
+		const { next } = await invokeMw(
+			mw,
+			makeCtx(GUEST_ID, {
+				tenantContext: {
+					userId: GUEST_ID,
+					type: "personal",
+					organizationId: null,
+				},
+			}),
+			{ projectId: PROJECT_ID },
+		);
+
+		expect(next).toHaveBeenCalled();
+		// Null org, because the project is personal — the grant carries the
+		// PROJECT's tenant, not the caller's.
+		expect(grantSpy).toHaveBeenCalledWith(PROJECT_ID, null);
+		// A personal project has no host org, so Path C must not be attempted.
+		expect(mocks.memberFindFirst).not.toHaveBeenCalled();
+	});
+
+	it("personal project, caller with no membership at all is denied and seeds nothing", async () => {
+		mocks.projectFindUnique.mockResolvedValue({
+			id: PROJECT_ID,
+			organizationId: null,
+			userId: OWNER_ID,
+		});
+		mocks.projectMemberFindUnique.mockResolvedValue(null);
+
+		const requireProjectPermission = await loadMiddleware();
+		const mw = requireProjectPermission(Permissions.PROJECT_SETTINGS_READ);
+
+		await expect(
+			invokeMw(
+				mw,
+				makeCtx(GUEST_ID, {
+					tenantContext: {
+						userId: GUEST_ID,
+						type: "personal",
+						organizationId: null,
+					},
+				}),
+				{ projectId: PROJECT_ID },
+			),
+		).rejects.toThrow(/FORBIDDEN|Missing required permission/);
+		expect(grantSpy).not.toHaveBeenCalled();
+	});
+
 	it("personal-project owner passes unconditionally — even a permission NOT in the OWNER project set", async () => {
 		// Personal project: no org, project.userId === caller. The pre-refactor
 		// Path A granted an owner ANY project permission via an unconditional

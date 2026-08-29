@@ -1,10 +1,10 @@
 import { ORPCError } from "@orpc/server";
 import { addNewsletterSubscriber, db } from "@repo/database";
 import { z } from "zod";
+import { assertInputOrgMatchesProject } from "../../../lib/authorized-project-tenant";
 import {
 	Permissions,
 	requireProjectPermission,
-	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
 
@@ -19,23 +19,18 @@ export const addSubscribersProcedure = tenantProtectedProcedure
 		}),
 	)
 	.handler(async ({ input, context }) => {
-		const organizationId = resolveOrganizationId(
-			input.organizationId,
-			context.session,
-		);
-		const project = await db.project.findFirst({
-			where: organizationId
-				? { id: input.projectId, organizationId }
-				: {
-						id: input.projectId,
-						organizationId: null,
-						userId: context.user.id,
-					},
+		// `requireProjectPermission` above has already authorized this caller for
+		// THIS project — as owner, active ProjectMember, or via an org role. Load
+		// the project by id and take the tenant from the loaded row;
+		// `input.organizationId` is a guard, never a scoping key.
+		const project = await db.project.findUnique({
+			where: { id: input.projectId },
 			select: { id: true, organizationId: true, userId: true },
 		});
 		if (!project) {
 			throw new ORPCError("NOT_FOUND", { message: "Project not found" });
 		}
+		assertInputOrgMatchesProject(input.organizationId, project);
 
 		const unique = Array.from(
 			new Set(input.emails.map((e) => e.trim().toLowerCase())),
