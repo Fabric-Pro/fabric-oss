@@ -280,6 +280,147 @@ describe("fetchAndStoreMeetingTranscript — channel meeting recording fallback"
 	});
 });
 
+describe("fetchAndStoreMeetingTranscript — Graph refuses the meeting lookup", () => {
+	const LOOKUP_403 =
+		'Microsoft Graph API error: 403 Forbidden - {"error":{"code":"Forbidden","message":"3003: User does not have access to lookup meeting"}}';
+	/** `channel:` + whatever the mocked `extractChannelThreadId` above returns. */
+	const CHANNEL_KEY = "channel:19:thread@thread.tacv2";
+
+	/**
+	 * Delegated resolution is organizer-scoped, so an attendee of a channel
+	 * meeting never gets past `get_meeting_by_join_url`. This is the shape that
+	 * produces — a throw, not an error-carrying result.
+	 */
+	function wireRefusedLookup(
+		extra: (tool: string) => Record<string, unknown> | undefined = () =>
+			undefined,
+	) {
+		mocks.executeMicrosoftTeamsToolMock.mockImplementation(
+			async (tool: string) => {
+				const override = extra(tool);
+				if (override) {
+					return override;
+				}
+				if (tool === "get_meeting_by_join_url") {
+					throw new Error(LOOKUP_403);
+				}
+				return {};
+			},
+		);
+	}
+
+	function wireRecording(tool: string) {
+		if (tool === "list_recording_transcripts") {
+			return {
+				transcripts: [
+					{
+						id: "stream:rec-28",
+						createdDateTime: "2026-08-20T17:10:00Z",
+						driveId: "drive-1",
+						recordingItemId: "rec-28",
+						recordingWebUrl:
+							"https://example.sharepoint.com/sites/S/rec28.mp4",
+					},
+				],
+			};
+		}
+		if (tool === "get_recording_transcript_content") {
+			return { entries: [{ speaker: "Alice", text: "Hello." }] };
+		}
+		return undefined;
+	}
+
+	it("still reaches the recording when the lookup is refused", async () => {
+		wireRefusedLookup(wireRecording);
+
+		const result = await fetchAndStoreMeetingTranscript(BASE_INPUT);
+
+		// The recording walk resolves from the join URL alone, so a refused
+		// lookup must not take it down with it.
+		expect(result.transcriptsFetched).toBe(1);
+		const tools = mocks.executeMicrosoftTeamsToolMock.mock.calls.map(
+			(call) => call[0],
+		);
+		expect(tools).toContain("list_recording_transcripts");
+		expect(tools).not.toContain("list_meeting_transcripts");
+	});
+
+	it("files the transcript under the channel when Graph never named the meeting", async () => {
+		wireRefusedLookup(wireRecording);
+
+		await fetchAndStoreMeetingTranscript(BASE_INPUT);
+
+		// The thread id is stable across every occurrence of a channel meeting,
+		// so it preserves the grouping Graph's id would have provided.
+		expect(mocks.createMeetingTranscriptRecordMock).toHaveBeenCalledWith(
+			expect.objectContaining({ meetingId: CHANNEL_KEY }),
+		);
+		expect(mocks.isTranscriptAlreadySyncedMock).toHaveBeenCalledWith(
+			"proj-1",
+			CHANNEL_KEY,
+			"stream:rec-28",
+		);
+	});
+
+	it("reaches the recording when the transcript list itself throws", async () => {
+		mocks.executeMicrosoftTeamsToolMock.mockImplementation(
+			async (tool: string) => {
+				if (tool === "get_meeting_by_join_url") {
+					return { meeting: { id: "meeting-1" } };
+				}
+				if (tool === "list_meeting_transcripts") {
+					throw new Error("socket hang up");
+				}
+				return wireRecording(tool) ?? {};
+			},
+		);
+
+		const result = await fetchAndStoreMeetingTranscript(BASE_INPUT);
+
+		expect(result.transcriptsFetched).toBe(1);
+		// Graph named the meeting before it fell over, so that id still stands.
+		expect(mocks.createMeetingTranscriptRecordMock).toHaveBeenCalledWith(
+			expect.objectContaining({ meetingId: "meeting-1" }),
+		);
+	});
+
+	it("leaves an ordinary meeting's refusal fatal", async () => {
+		wireRefusedLookup(wireRecording);
+
+		const result = await fetchAndStoreMeetingTranscript({
+			...BASE_INPUT,
+			joinUrl: ORDINARY_JOIN_URL,
+		});
+
+		// Nothing else to try, so the refusal is still the answer.
+		expect(result.transcriptsFetched).toBe(0);
+		expect(result.error).toContain("3003");
+		const tools = mocks.executeMicrosoftTeamsToolMock.mock.calls.map(
+			(call) => call[0],
+		);
+		expect(tools).not.toContain("list_recording_transcripts");
+	});
+
+	it("names both causes when the recording comes up empty too", async () => {
+		wireRefusedLookup((tool) =>
+			tool === "list_recording_transcripts"
+				? {
+						transcripts: [],
+						diagnostic:
+							"No recording matches this occurrence — the meeting was most likely not recorded.",
+					}
+				: undefined,
+		);
+
+		const result = await fetchAndStoreMeetingTranscript(BASE_INPUT);
+
+		// The sync workflow classifies skipped-vs-failed on this prefix.
+		expect(result.error?.startsWith("No transcripts available")).toBe(true);
+		expect(result.error).toContain("3003");
+		expect(result.error).toContain("not recorded");
+	});
+});
+
 describe("occurrence-level coverage guard", () => {
 	it("does not go looking for a recording when the occurrence already has a transcript", async () => {
 		mocks.hasTranscriptNearOccurrenceMock.mockResolvedValue(true);
@@ -297,16 +438,19 @@ describe("occurrence-level coverage guard", () => {
 		expect(mocks.projectContextCreateMock).not.toHaveBeenCalled();
 	});
 
-	it("asks about coverage using the meeting and its occurrence", async () => {
+	it("asks about coverage using the link and its occurrence", async () => {
 		mocks.hasTranscriptNearOccurrenceMock.mockResolvedValue(true);
 		wireGraphWithNoTranscripts();
 
 		await fetchAndStoreMeetingTranscript(BASE_INPUT);
 
+		// Scoped by the link, not Graph's meeting id: that id is absent whenever
+		// Graph refuses the lookup, so keying on it would let the same
+		// occurrence be ingested once under each.
 		expect(mocks.hasTranscriptNearOccurrenceMock).toHaveBeenCalledWith(
 			expect.objectContaining({
 				projectId: "proj-1",
-				meetingId: "meeting-1",
+				linkedMeetingId: "lm-1",
 				occurrence: new Date(BASE_INPUT.meetingDate),
 			}),
 		);
