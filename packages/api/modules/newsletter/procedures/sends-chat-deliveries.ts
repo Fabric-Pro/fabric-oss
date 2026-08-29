@@ -5,11 +5,11 @@ import {
 	listChatDeliveriesForProjectSend,
 } from "@repo/database";
 import { z } from "zod";
+import { assertInputOrgMatchesProject } from "../../../lib/authorized-project-tenant";
 import {
 	Permissions,
 	requireInputOrgPermission,
 	requireProjectPermission,
-	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
 import { describeChatDeliveryFailure } from "../lib/chat-delivery-error";
@@ -27,10 +27,14 @@ export const chatDeliveriesProcedure = tenantProtectedProcedure
 	// Verifies membership of the organization named in the INPUT. Required, and
 	// not covered by requireProjectPermission below: that middleware resolves on
 	// (projectId, userId) and never reads the org, and `resolveOrganizationId`
-	// returns the caller's string verbatim with no membership lookup. Sibling
-	// newsletter procedures omit this only because they predate the ratchet and
-	// sit on the unaudited debt baseline — new procedures must not copy them
-	// (packages/api/__tests__/input-org-unverified-ratchet.test.ts).
+	// returns the caller's string verbatim with no membership lookup.
+	//
+	// The sibling newsletter procedures take the ratchet's other sanctioned
+	// route — they no longer resolve the org from input at all, deriving it from
+	// the loaded project row and treating `input.organizationId` as a guard
+	// (`assertInputOrgMatchesProject`). Either is fine; what is not fine is
+	// scoping the project lookup itself by the caller, which locked out every
+	// non-owner member of a personal project.
 	.use(requireInputOrgPermission(Permissions.PROJECT_SETTINGS_READ))
 	.use(requireProjectPermission(Permissions.PROJECT_SETTINGS_READ))
 	.input(
@@ -40,24 +44,19 @@ export const chatDeliveriesProcedure = tenantProtectedProcedure
 			sendId: z.string(),
 		}),
 	)
-	.handler(async ({ input, context }) => {
-		const organizationId = resolveOrganizationId(
-			input.organizationId,
-			context.session,
-		);
-		const project = await db.project.findFirst({
-			where: organizationId
-				? { id: input.projectId, organizationId }
-				: {
-						id: input.projectId,
-						organizationId: null,
-						userId: context.user.id,
-					},
-			select: { id: true },
+	.handler(async ({ input }) => {
+		// `requireProjectPermission` above has already authorized this caller for
+		// THIS project — as owner, active ProjectMember, or via an org role. Load
+		// the project by id and take the tenant from the loaded row;
+		// `input.organizationId` is a guard, never a scoping key.
+		const project = await db.project.findUnique({
+			where: { id: input.projectId },
+			select: { id: true, organizationId: true },
 		});
 		if (!project) {
 			throw new ORPCError("NOT_FOUND", { message: "Project not found" });
 		}
+		assertInputOrgMatchesProject(input.organizationId, project);
 
 		const rows = await listChatDeliveriesForProjectSend(
 			input.sendId,

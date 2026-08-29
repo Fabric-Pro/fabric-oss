@@ -38,7 +38,7 @@
  *    NOT_FOUND (no transition attempted); an already-decided row (rejected:
  *    false) is CONFLICT.
  *  - pending: lists PENDING_APPROVAL + APPROVED rows for the resolved
- *    project; a wrong-tenant project id is NOT_FOUND.
+ *    project; a project id that resolves to no row is NOT_FOUND.
  *  - Permission wiring: approve/reject declare PROJECT_SETTINGS_EDIT,
  *    pending declares PROJECT_SETTINGS_READ (mirrors the AUTHZ assertion
  *    style in settings-embed.test.ts — the mocked orpc/procedures chain
@@ -54,7 +54,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 
 const {
-	mockProjectFindFirst,
+	mockProjectFindUnique,
 	mockNewsletterSendFindFirst,
 	mockIsTemporalAvailable,
 	mockWorkflowStart,
@@ -64,7 +64,7 @@ const {
 	mockListPendingApprovalSends,
 	WorkflowExecutionAlreadyStartedError,
 } = vi.hoisted(() => ({
-	mockProjectFindFirst: vi.fn(),
+	mockProjectFindUnique: vi.fn(),
 	mockNewsletterSendFindFirst: vi.fn(),
 	mockIsTemporalAvailable: vi.fn(),
 	mockWorkflowStart: vi.fn(),
@@ -94,7 +94,7 @@ vi.mock("@temporalio/client", () => ({
 
 vi.mock("@repo/database", () => ({
 	db: {
-		project: { findFirst: mockProjectFindFirst },
+		project: { findUnique: mockProjectFindUnique },
 		newsletterSend: { findFirst: mockNewsletterSendFindFirst },
 	},
 	listPendingApprovalSends: mockListPendingApprovalSends,
@@ -163,7 +163,7 @@ const project = {
 
 beforeEach(() => {
 	vi.clearAllMocks();
-	mockProjectFindFirst.mockResolvedValue(project);
+	mockProjectFindUnique.mockResolvedValue(project);
 	mockIsTemporalAvailable.mockResolvedValue(true);
 	mockWorkflowStart.mockResolvedValue({ workflowId: "wf-1" });
 });
@@ -395,7 +395,7 @@ describe("sends.approve", () => {
 	});
 
 	it("project not found -> NOT_FOUND before any row is read", async () => {
-		mockProjectFindFirst.mockResolvedValue(null);
+		mockProjectFindUnique.mockResolvedValue(null);
 
 		const error = await approve({
 			input: {
@@ -739,8 +739,8 @@ describe("sends.reject", () => {
 		expect(mockRejectNewsletterSend).not.toHaveBeenCalled();
 	});
 
-	it("wrong-tenant project id -> NOT_FOUND before the sendId ownership check", async () => {
-		mockProjectFindFirst.mockResolvedValue(null);
+	it("a project id that resolves to no row -> NOT_FOUND before the sendId ownership check", async () => {
+		mockProjectFindUnique.mockResolvedValue(null);
 
 		const error = await reject({
 			input: {
@@ -849,8 +849,8 @@ describe("sends.pending", () => {
 		expect(mockListPendingApprovalSends).toHaveBeenCalledWith("p1");
 	});
 
-	it("wrong-tenant project id -> NOT_FOUND", async () => {
-		mockProjectFindFirst.mockResolvedValue(null);
+	it("a project id that resolves to no row -> NOT_FOUND", async () => {
+		mockProjectFindUnique.mockResolvedValue(null);
 
 		const error = await pending({
 			input: { projectId: "other-tenant", organizationId: "org-9" },

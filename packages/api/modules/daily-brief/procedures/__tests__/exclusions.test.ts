@@ -17,11 +17,15 @@
  *    `metadata:{kind,targetKey}` + `resource.name` from the PRE-DELETE row.
  *  - unhide: a missing row (`deleted:false`) is a no-op — NO audit AND NO regen.
  *  - list: returns the project's exclusions, scoped to the VERIFIED tenant
- *    (never raw input) — including the XOR case where the verified project's
- *    tenant columns diverge from what the caller passed.
- *  - hide/unhide: a foreign-tenant caller -> NOT_FOUND, no write / audit / regen.
+ *    (never raw input) — including the XOR case where the caller's ambient org
+ *    context differs from the project's own tenant. Where the caller passes an
+ *    organizationId that CONTRADICTS the project, that is BAD_REQUEST rather
+ *    than a silently re-scoped query.
+ *  - hide/unhide: a project that does not resolve -> NOT_FOUND, no write / audit
+ *    / regen. (Cross-tenant rejection lives in requireProjectPermission, which
+ *    this harness stubs; an input org contradicting the project is BAD_REQUEST.)
  *  - hide/unhide: a regenerate failure does NOT throw or roll back the mutation.
- *  - list: a foreign-tenant caller -> NOT_FOUND, no query.
+ *  - list: a project that does not resolve -> NOT_FOUND, no query.
  *  - permission wiring: hide/unhide/list all declare PROJECT_SETTINGS_EDIT
  *    (mock-level check plus a source-scan of exclusions-hide.ts /
  *    exclusions-unhide.ts / exclusions-list.ts, since the mocked Permissions
@@ -43,7 +47,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 
 const {
-	mockProjectFindFirst,
+	mockProjectFindUnique,
 	mockTransaction,
 	mockCreateExclusion,
 	mockDeleteExclusion,
@@ -57,7 +61,7 @@ const {
 	mockDailyBriefCreate,
 	mockDailyBriefUpdate,
 } = vi.hoisted(() => ({
-	mockProjectFindFirst: vi.fn(),
+	mockProjectFindUnique: vi.fn(),
 	// db.$transaction runs the callback with a sentinel tx client and returns
 	// its result — createReleaseNoteExclusion / deleteReleaseNoteExclusion /
 	// recordAuditTx are all mocked, so the tx identity is irrelevant.
@@ -77,7 +81,7 @@ const {
 
 vi.mock("@repo/database", () => ({
 	db: {
-		project: { findFirst: mockProjectFindFirst },
+		project: { findUnique: mockProjectFindUnique },
 		$transaction: mockTransaction,
 		dailyBrief: {
 			findFirst: mockDailyBriefFindFirst,
@@ -164,7 +168,7 @@ const tenant = { projectId: "p1", organizationId: "org-9", userId: "owner-1" };
 
 beforeEach(() => {
 	vi.clearAllMocks();
-	mockProjectFindFirst.mockResolvedValue(project);
+	mockProjectFindUnique.mockResolvedValue(project);
 	// $transaction executes the callback and returns its result.
 	mockTransaction.mockImplementation(async (cb: (tx: unknown) => unknown) =>
 		cb({ __tx: true }),
@@ -333,8 +337,8 @@ describe("dailyBrief.exclusions.hide", () => {
 		);
 	});
 
-	it("a foreign-tenant caller -> NOT_FOUND, no write / audit / regenerate", async () => {
-		mockProjectFindFirst.mockResolvedValue(null);
+	it("a project that does not resolve -> NOT_FOUND, no write / audit / regenerate", async () => {
+		mockProjectFindUnique.mockResolvedValue(null);
 
 		const error = await hide({
 			input: {
@@ -482,8 +486,8 @@ describe("dailyBrief.exclusions.unhide", () => {
 		expect(mockRequestRegen).not.toHaveBeenCalled();
 	});
 
-	it("a foreign-tenant caller -> NOT_FOUND, no delete / audit / regenerate", async () => {
-		mockProjectFindFirst.mockResolvedValue(null);
+	it("a project that does not resolve -> NOT_FOUND, no delete / audit / regenerate", async () => {
+		mockProjectFindUnique.mockResolvedValue(null);
 
 		const error = await unhide({
 			input: {
@@ -592,8 +596,8 @@ describe("dailyBrief.exclusions.list", () => {
 		);
 	});
 
-	it("a foreign-tenant caller -> NOT_FOUND, no query", async () => {
-		mockProjectFindFirst.mockResolvedValue(null);
+	it("a project that does not resolve -> NOT_FOUND, no query", async () => {
+		mockProjectFindUnique.mockResolvedValue(null);
 
 		const error = await list({
 			input: { projectId: "other-tenant", organizationId: "org-9" },
@@ -605,12 +609,40 @@ describe("dailyBrief.exclusions.list", () => {
 		expect(mockListExclusions).not.toHaveBeenCalled();
 	});
 
-	it("XOR scoping: an org caller's tenant is derived from the VERIFIED project, not raw input", async () => {
-		// The verified project is a PERSONAL row (organizationId: null) even
-		// though the caller passed organizationId — the query must be scoped
-		// to the personal tenant derived from the project, never a mix of the
-		// two, so an org-scoped caller can never see another tenant's rows.
-		mockProjectFindFirst.mockResolvedValue({
+	it("an input organizationId that contradicts the project is rejected, and nothing is queried", async () => {
+		// Replaces an assertion that could not happen in production. It used to
+		// mock a PERSONAL project while the caller passed `organizationId`, then
+		// check the tenant came from the project — but the old lookup was
+		// `where: { id, organizationId }`, so a personal row could never be
+		// returned for that call. The mock, not the code, produced the scenario.
+		//
+		// The lookup is now by id alone, which makes the contradiction reachable
+		// for the first time — so it is checked explicitly instead.
+		mockProjectFindUnique.mockResolvedValue({
+			id: "p2",
+			organizationId: null,
+			userId: "owner-2",
+		});
+
+		const error = await list({
+			input: { projectId: "p2", organizationId: "org-9" },
+			context: orgContext,
+		}).catch((e: unknown) => e);
+
+		expect(error).toBeInstanceOf(ORPCError);
+		// BAD_REQUEST, not NOT_FOUND: requireProjectPermission already authorized
+		// this caller for this project, so refusing to confirm it exists would
+		// hide nothing they do not already know.
+		expect((error as ORPCError<string, unknown>).code).toBe("BAD_REQUEST");
+		expect(mockListExclusions).not.toHaveBeenCalled();
+	});
+
+	it("XOR scoping: the tenant is derived from the VERIFIED project row, not from the caller's context", async () => {
+		// The caller sits in an org context but omits organizationId, which a
+		// guest on a personal-context page legitimately does. The project is
+		// personal, so the query must be scoped to the project OWNER's userId —
+		// never to the caller, and never to the caller's ambient org.
+		mockProjectFindUnique.mockResolvedValue({
 			id: "p2",
 			organizationId: null,
 			userId: "owner-2",
@@ -618,7 +650,7 @@ describe("dailyBrief.exclusions.list", () => {
 		mockListExclusions.mockResolvedValue([]);
 
 		await list({
-			input: { projectId: "p2", organizationId: "org-9" },
+			input: { projectId: "p2" },
 			context: orgContext,
 		});
 

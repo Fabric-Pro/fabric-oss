@@ -20,14 +20,14 @@ import { ORPCError } from "@orpc/client";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 
-const { mockProjectFindFirst, mockRequestRegeneration } = vi.hoisted(() => ({
-	mockProjectFindFirst: vi.fn(),
+const { mockProjectFindUnique, mockRequestRegeneration } = vi.hoisted(() => ({
+	mockProjectFindUnique: vi.fn(),
 	mockRequestRegeneration: vi.fn(),
 }));
 
 vi.mock("@repo/database", () => ({
 	db: {
-		project: { findFirst: mockProjectFindFirst },
+		project: { findUnique: mockProjectFindUnique },
 	},
 	// Real values — regenerate.ts calls
 	// `timeWindowKindSchema.default(DEFAULT_DAILY_BRIEF_WINDOW)` at module-load
@@ -78,7 +78,7 @@ const project = {
 
 beforeEach(() => {
 	vi.clearAllMocks();
-	mockProjectFindFirst.mockResolvedValue(project);
+	mockProjectFindUnique.mockResolvedValue(project);
 });
 
 describe("dailyBrief.regenerate response shape", () => {
@@ -193,7 +193,7 @@ describe("dailyBrief.regenerate response shape", () => {
 	});
 
 	it("project not found -> NOT_FOUND before the helper is called", async () => {
-		mockProjectFindFirst.mockResolvedValue(null);
+		mockProjectFindUnique.mockResolvedValue(null);
 
 		const error = await regenerate({
 			input: { projectId: "other-tenant", organizationId: "org-9" },

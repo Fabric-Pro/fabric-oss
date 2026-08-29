@@ -20,10 +20,10 @@ import {
 	isTemporalAvailable,
 } from "@repo/temporal";
 import { z } from "zod";
+import { assertInputOrgMatchesProject } from "../../../lib/authorized-project-tenant";
 import {
 	Permissions,
 	requireProjectPermission,
-	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
 
@@ -37,26 +37,18 @@ export const getProcedure = tenantProtectedProcedure
 		}),
 	)
 	.handler(async ({ input, context }) => {
-		const organizationId = resolveOrganizationId(
-			input.organizationId,
-			context.session,
-		);
-
-		// Authorize via the project, not via the brief's own tenant columns
-		// (those may drift if a project is ever transferred between user and org).
-		const project = await db.project.findFirst({
-			where: organizationId
-				? { id: input.projectId, organizationId }
-				: {
-						id: input.projectId,
-						organizationId: null,
-						userId: context.user.id,
-					},
-			select: { id: true },
+		// `requireProjectPermission` above has already authorized this caller for
+		// THIS project — as owner, active ProjectMember, or via an org role. Load
+		// the project by id and take the tenant from the loaded row;
+		// `input.organizationId` is a guard, never a scoping key.
+		const project = await db.project.findUnique({
+			where: { id: input.projectId },
+			select: { id: true, organizationId: true },
 		});
 		if (!project) {
 			throw new ORPCError("NOT_FOUND", { message: "Project not found" });
 		}
+		assertInputOrgMatchesProject(input.organizationId, project);
 
 		const brief = await db.dailyBrief.findFirst({
 			where: {

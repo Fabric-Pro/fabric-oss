@@ -866,6 +866,37 @@ export function ProjectNewsletterSettings({
 		.map((e) => e.trim())
 		.filter(Boolean).length;
 
+	// A failed settings read must not fall through to the form. Every field below
+	// reads `settingsQuery.data?.settings` with a `??` default, so an error used
+	// to render as a fully-populated panel saying the newsletter is off with no
+	// subscribers — indistinguishable from a project that simply has not
+	// configured one, and the reason a permissions bug went unnoticed until a
+	// save failed. Show the failure instead of a confident wrong answer.
+	if (settingsQuery.isError) {
+		return (
+			<Alert variant="error" role="alert">
+				<AlertTriangleIcon />
+				<AlertTitle>Newsletter settings could not be loaded</AlertTitle>
+				<AlertDescription className="space-y-2">
+					<p>
+						The settings shown here would not reflect this project,
+						so they are hidden. This is usually a temporary network
+						problem; if it persists, you may not have access to this
+						project&apos;s newsletter configuration.
+					</p>
+					<Button
+						variant="outline"
+						size="sm"
+						onClick={() => settingsQuery.refetch()}
+						disabled={settingsQuery.isFetching}
+					>
+						{settingsQuery.isFetching ? "Retrying…" : "Try again"}
+					</Button>
+				</AlertDescription>
+			</Alert>
+		);
+	}
+
 	return (
 		<div className="space-y-6">
 			{reposExpired ? (

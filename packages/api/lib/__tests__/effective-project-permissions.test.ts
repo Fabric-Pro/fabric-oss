@@ -94,6 +94,79 @@ describe("resolveEffectiveProjectPermissions", () => {
 	 * an assertion. That is the intended signal: the two queries either overlap
 	 * or the test does not finish.
 	 */
+	it("outsider on a personal project — no membership, no org → source none, no permissions", async () => {
+		mocks.projectFindUnique.mockResolvedValue({
+			id: PROJECT_ID,
+			organizationId: null,
+			userId: OWNER_ID,
+		});
+		mocks.projectMemberFindUnique.mockResolvedValue(null);
+
+		const resolve = await load();
+		const access = await resolve(PROJECT_ID, USER_ID);
+
+		expect(access?.source).toBe("none");
+		expect(access?.permissions).toEqual([]);
+		// A personal project has no host org to fall back to, so path B must not
+		// even be attempted.
+		expect(mocks.memberFindFirst).not.toHaveBeenCalled();
+	});
+
+	it("outsider on an org project — not an org member either → source none", async () => {
+		mocks.projectFindUnique.mockResolvedValue({
+			id: PROJECT_ID,
+			organizationId: ORG_ID,
+			userId: OWNER_ID,
+		});
+		mocks.projectMemberFindUnique.mockResolvedValue(null);
+		mocks.memberFindFirst.mockResolvedValue(null);
+
+		const resolve = await load();
+		const access = await resolve(PROJECT_ID, USER_ID);
+
+		expect(access?.source).toBe("none");
+		expect(access?.permissions).toEqual([]);
+	});
+
+	it("a ProjectMember row that was never accepted does not grant path C", async () => {
+		mocks.projectFindUnique.mockResolvedValue({
+			id: PROJECT_ID,
+			organizationId: null,
+			userId: OWNER_ID,
+		});
+		mocks.projectMemberFindUnique.mockResolvedValue({
+			role: "EDITOR",
+			acceptedAt: null,
+			expiresAt: null,
+		});
+
+		const resolve = await load();
+		const access = await resolve(PROJECT_ID, USER_ID);
+
+		// An invitation is not a membership.
+		expect(access?.source).toBe("none");
+		expect(access?.permissions).toEqual([]);
+	});
+
+	it("an expired guest membership does not grant path C", async () => {
+		mocks.projectFindUnique.mockResolvedValue({
+			id: PROJECT_ID,
+			organizationId: null,
+			userId: OWNER_ID,
+		});
+		mocks.projectMemberFindUnique.mockResolvedValue({
+			role: "VIEWER",
+			acceptedAt: new Date("2020-01-01"),
+			expiresAt: new Date("2020-06-01"),
+		});
+
+		const resolve = await load();
+		const access = await resolve(PROJECT_ID, USER_ID);
+
+		expect(access?.source).toBe("none");
+		expect(access?.permissions).toEqual([]);
+	});
+
 	it("issues the project and ProjectMember lookups concurrently", async () => {
 		let releaseProject: (value: unknown) => void = () => {};
 		const memberCalled = new Promise<void>((resolveCalled) => {

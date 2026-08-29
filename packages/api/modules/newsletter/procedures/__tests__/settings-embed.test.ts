@@ -29,7 +29,7 @@ import { ORPCError } from "@orpc/client";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const {
-	mockProjectFindFirst,
+	mockProjectFindUnique,
 	mockGetNewsletterSettings,
 	mockUpsertNewsletterSettings,
 	mockEnrollProjectMembersAsSubscribers,
@@ -40,7 +40,7 @@ const {
 	mockGetLinkedTeamsChannels,
 	mockGetLinkedSlackChannels,
 } = vi.hoisted(() => ({
-	mockProjectFindFirst: vi.fn(),
+	mockProjectFindUnique: vi.fn(),
 	mockGetNewsletterSettings: vi.fn(),
 	mockUpsertNewsletterSettings: vi.fn(),
 	mockEnrollProjectMembersAsSubscribers: vi.fn(),
@@ -65,7 +65,7 @@ const {
 
 vi.mock("@repo/database", () => ({
 	db: {
-		project: { findFirst: mockProjectFindFirst },
+		project: { findUnique: mockProjectFindUnique },
 		$transaction: mockTransaction,
 	},
 	getNewsletterSettings: mockGetNewsletterSettings,
@@ -176,8 +176,8 @@ describe("widget mutations — authz gate + cross-tenant isolation", () => {
 		expect(typeof requireProjectPermission).toBe("function");
 	});
 
-	it("update → NOT_FOUND for a wrong-tenant project id (no upsert, no tx)", async () => {
-		mockProjectFindFirst.mockResolvedValue(null);
+	it("update → NOT_FOUND when the project does not resolve (no upsert, no tx)", async () => {
+		mockProjectFindUnique.mockResolvedValue(null);
 		await expect(
 			updateSettings({
 				input: {
@@ -192,8 +192,8 @@ describe("widget mutations — authz gate + cross-tenant isolation", () => {
 		expect(mockTransaction).not.toHaveBeenCalled();
 	});
 
-	it("regenerate → NOT_FOUND for a wrong-tenant project id (no rotate, no tx)", async () => {
-		mockProjectFindFirst.mockResolvedValue(null);
+	it("regenerate → NOT_FOUND when the project does not resolve (no rotate, no tx)", async () => {
+		mockProjectFindUnique.mockResolvedValue(null);
 		await expect(
 			regenerate({
 				input: { projectId: "other-tenant", organizationId: null },
@@ -210,7 +210,7 @@ describe("widget mutations — authz gate + cross-tenant isolation", () => {
 // ---------------------------------------------------------------------------
 describe("widget enable/disable/re-enable", () => {
 	beforeEach(() => {
-		mockProjectFindFirst.mockResolvedValue({
+		mockProjectFindUnique.mockResolvedValue({
 			id: "p1",
 			organizationId: "org-9",
 			userId: null,
@@ -362,7 +362,10 @@ describe("widget enable/disable/re-enable", () => {
 // ---------------------------------------------------------------------------
 describe("regenerateEmbedToken", () => {
 	beforeEach(() => {
-		mockProjectFindFirst.mockResolvedValue({ id: "p1" });
+		mockProjectFindUnique.mockResolvedValue({
+			id: "p1",
+			organizationId: "org-9",
+		});
 	});
 
 	it("returns the rotated { token, version } and audits token_rotated in-tx", async () => {
@@ -392,7 +395,7 @@ describe("regenerateEmbedToken", () => {
 // ---------------------------------------------------------------------------
 describe("atomicity — the exposure change and its audit row commit together", () => {
 	beforeEach(() => {
-		mockProjectFindFirst.mockResolvedValue({
+		mockProjectFindUnique.mockResolvedValue({
 			id: "p1",
 			organizationId: "org-9",
 			userId: null,
@@ -439,7 +442,10 @@ describe("atomicity — the exposure change and its audit row commit together", 
 	});
 
 	it("regenerate: recordAuditTx failure aborts the rotate tx", async () => {
-		mockProjectFindFirst.mockResolvedValue({ id: "p1" });
+		mockProjectFindUnique.mockResolvedValue({
+			id: "p1",
+			organizationId: "org-9",
+		});
 		mockRecordAuditTx.mockRejectedValue(new Error("audit insert failed"));
 		await expect(
 			regenerate({
@@ -455,7 +461,10 @@ describe("atomicity — the exposure change and its audit row commit together", 
 // ---------------------------------------------------------------------------
 describe("settings.get — widget fields present even with no settings row", () => {
 	it("returns publicWidgetEnabled:false + publicEmbedToken:null on the synthetic default", async () => {
-		mockProjectFindFirst.mockResolvedValue({ id: "p1" });
+		mockProjectFindUnique.mockResolvedValue({
+			id: "p1",
+			organizationId: null,
+		});
 		// getNewsletterSettings returns the synthetic defaults (Task 2) when no row.
 		mockGetNewsletterSettings.mockResolvedValue({
 			id: null,

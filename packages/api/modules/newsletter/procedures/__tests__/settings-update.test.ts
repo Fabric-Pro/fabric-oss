@@ -12,7 +12,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 vi.mock("@repo/database", () => ({
-	db: { project: { findFirst: vi.fn() }, $transaction: vi.fn() },
+	db: { project: { findUnique: vi.fn() }, $transaction: vi.fn() },
 	getNewsletterSettings: vi.fn(),
 	upsertNewsletterSettings: vi.fn(),
 	enrollProjectMembersAsSubscribers: vi.fn(),
@@ -117,7 +117,7 @@ describe("updateSettingsProcedure handler — F3 chat channel validation", () =>
 			organizationId: null,
 			userId: "user-1",
 		};
-		vi.mocked(db.project.findFirst).mockResolvedValue(project);
+		vi.mocked(db.project.findUnique).mockResolvedValue(project);
 		vi.mocked(db.$transaction).mockImplementation(async (fn: any) =>
 			fn({}),
 		);

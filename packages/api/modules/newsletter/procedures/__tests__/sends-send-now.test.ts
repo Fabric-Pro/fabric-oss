@@ -14,7 +14,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 vi.mock("@repo/database", () => ({
-	db: { project: { findFirst: vi.fn() } },
+	db: { project: { findUnique: vi.fn() } },
 	createOrGetNewsletterSend: vi.fn(),
 	finalizeNewsletterSend: vi.fn(),
 	findRecentNonFailedSend: vi.fn(),

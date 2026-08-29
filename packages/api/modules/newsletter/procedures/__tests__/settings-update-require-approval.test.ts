@@ -22,7 +22,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const {
-	mockProjectFindFirst,
+	mockProjectFindUnique,
 	mockGetNewsletterSettings,
 	mockUpsertNewsletterSettings,
 	mockEnrollProjectMembersAsSubscribers,
@@ -32,7 +32,7 @@ const {
 	mockGetLinkedTeamsChannels,
 	mockGetLinkedSlackChannels,
 } = vi.hoisted(() => ({
-	mockProjectFindFirst: vi.fn(),
+	mockProjectFindUnique: vi.fn(),
 	mockGetNewsletterSettings: vi.fn(),
 	mockUpsertNewsletterSettings: vi.fn(),
 	mockEnrollProjectMembersAsSubscribers: vi.fn(),
@@ -50,7 +50,7 @@ const {
 
 vi.mock("@repo/database", () => ({
 	db: {
-		project: { findFirst: mockProjectFindFirst },
+		project: { findUnique: mockProjectFindUnique },
 		$transaction: mockTransaction,
 	},
 	getNewsletterSettings: mockGetNewsletterSettings,
@@ -104,7 +104,7 @@ beforeEach(() => {
 	mockTransaction.mockImplementation(async (cb: (tx: unknown) => unknown) =>
 		cb({ newsletterSettings: { findUnique: mockTxFindUnique } }),
 	);
-	mockProjectFindFirst.mockResolvedValue({
+	mockProjectFindUnique.mockResolvedValue({
 		id: "p1",
 		organizationId: "org-9",
 		userId: null,
