@@ -741,8 +741,11 @@ describe("inbox sections", () => {
 			name: /recently modified/i,
 		});
 		const titles = within(recent)
-			.getAllByTestId("topic-disclosure")
-			.map((b) => b.textContent);
+			// #1851: the title is now a <Link> beside the disclosure chevron,
+			// not the disclosure's own text. The ORDER asserted below is
+			// unchanged — only where the title is read from.
+			.getAllByRole("link")
+			.map((a) => a.textContent);
 		expect(titles[0]).toMatch(/Newer/);
 		expect(titles[1]).toMatch(/Older/);
 	});
@@ -813,8 +816,11 @@ describe("inbox sections", () => {
 		renderList();
 		const suggested = screen.getByRole("region", { name: /suggested/i });
 		const titles = within(suggested)
-			.getAllByTestId("topic-disclosure")
-			.map((b) => b.textContent);
+			// #1851: the title is now a <Link> beside the disclosure chevron,
+			// not the disclosure's own text. The ORDER asserted below is
+			// unchanged — only where the title is read from.
+			.getAllByRole("link")
+			.map((a) => a.textContent);
 		expect(titles[0]).toMatch(/Contributed but old/);
 		expect(titles[1]).toMatch(/Newer but unranked/);
 	});
@@ -846,8 +852,11 @@ describe("inbox sections", () => {
 			name: /recently modified/i,
 		});
 		const titles = within(recent)
-			.getAllByTestId("topic-disclosure")
-			.map((b) => b.textContent);
+			// #1851: the title is now a <Link> beside the disclosure chevron,
+			// not the disclosure's own text. The ORDER asserted below is
+			// unchanged — only where the title is read from.
+			.getAllByRole("link")
+			.map((a) => a.textContent);
 		expect(titles[0]).toMatch(/Newer/);
 		expect(titles[1]).toMatch(/Older/);
 	});

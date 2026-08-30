@@ -267,6 +267,7 @@ import {
 	createPublishingTopicProcedure,
 	generatePublishingTopicsNowProcedure,
 	getPublishingSuiteSettingsProcedure,
+	getPublishingTopicProcedure,
 	latestPublishingCycleProcedure,
 	listCycleChatDeliveriesProcedure,
 	listPublishingCyclesProcedure,
@@ -1325,6 +1326,10 @@ export const projectsRouter = {
 	// Publishing Suite (AI-suggested + manual topic pipeline)
 	publishingSuite: {
 		listTopics: listPublishingTopicsProcedure,
+		// #1851 (2A-1): the Topic Item Page's single-topic read. Returns the
+		// same enriched shape `listTopics` returns, so the page header and the
+		// Inbox row cannot drift apart.
+		getTopic: getPublishingTopicProcedure,
 		latestCycle: latestPublishingCycleProcedure,
 		listCycles: listPublishingCyclesProcedure,
 		cycleChatDeliveries: listCycleChatDeliveriesProcedure,

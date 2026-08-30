@@ -12,9 +12,11 @@ import { cn } from "@ui/lib";
 import {
 	AlarmClockIcon,
 	AlarmClockOffIcon,
+	ChevronDownIcon,
 	MailIcon,
 	MailOpenIcon,
 } from "lucide-react";
+import Link from "next/link";
 import { useEffect, useState } from "react";
 import { DeclineTopicDialog } from "./DeclineTopicDialog";
 import { PostTypesDialog } from "./PostTypesDialog";
@@ -53,6 +55,7 @@ export function TopicRow({
 	canEdit,
 	inbox,
 	isPending,
+	topicHref,
 	onChangeStatus,
 	onChangePostTypes,
 	onSetReadState,
@@ -62,6 +65,13 @@ export function TopicRow({
 	canEdit: boolean;
 	/** PUBLISHING_INBOX. False renders exactly the row that shipped. */
 	inbox: boolean;
+	/**
+	 * Href of this topic's Item Page (#1851 FR2). Passed in rather than built
+	 * here: the row has no `projectId` and no tenant context, and giving it a
+	 * hook to fetch them would make a presentational component depend on where
+	 * it is mounted.
+	 */
+	topicHref: string;
 	/** True while THIS topic's status mutation is in flight (C-Med2). */
 	isPending: boolean;
 	onChangeStatus: (
@@ -362,7 +372,17 @@ export function TopicRow({
 		return (
 			<li className="flex items-start justify-between gap-4 rounded-xl border border-border bg-card p-4">
 				<div className="min-w-0 space-y-1">
-					<p className="font-medium text-foreground">{topic.title}</p>
+					{/* #1851 FR2. The flag-off layout is the rollback path and
+					    stays frozen otherwise — this is a deliberate feature
+					    addition, not a restructure to share markup with the
+					    Inbox layout. Here the title was a plain <p>, so it
+					    becomes a link with no disclosure to displace. */}
+					<Link
+						href={topicHref}
+						className="block font-medium text-foreground"
+					>
+						{topic.title}
+					</Link>
 					{angleChip}
 					{pitchLine}
 					{details}
@@ -391,6 +411,25 @@ export function TopicRow({
 								aria-hidden="true"
 							/>
 						)}
+						{/* #1851 FR2: the title is a real anchor to the Topic
+						    Item Page, so middle-click, Ctrl+click and "open in
+						    new tab" work. It cannot live INSIDE the disclosure
+						    button — a link nested in a button is invalid and
+						    breaks the button's accessible name — so the
+						    disclosure moved to its own chevron below. */}
+						<Link
+							href={topicHref}
+							className="min-w-0 flex-1 text-left"
+						>
+							<span
+								className={cn(
+									"text-foreground",
+									isRead ? "font-medium" : "font-semibold",
+								)}
+							>
+								{topic.title}
+							</span>
+						</Link>
 						<button
 							type="button"
 							data-testid="topic-disclosure"
@@ -403,20 +442,25 @@ export function TopicRow({
 							// — no risk of the read/unread suffix picking up a
 							// stray join-space from concatenating two child
 							// nodes' accessible names.
+							//
+							// #1851: this label MOVED here from the title,
+							// which is now a link. It has to keep the exact
+							// same text — it is the row's only non-colour
+							// unread signal, and `publishing-suite-inbox`
+							// asserts on it by accessible name.
 							aria-label={`${topic.title}, ${
 								isRead ? "read" : "unread"
 							}`}
 							onClick={handleToggleExpand}
-							className="min-w-0 flex-1 text-left"
+							className="shrink-0 rounded p-0.5 text-muted-foreground transition-colors hover:text-foreground"
 						>
-							<span
+							<ChevronDownIcon
 								className={cn(
-									"text-foreground",
-									isRead ? "font-medium" : "font-semibold",
+									"size-4 transition-transform duration-200",
+									expanded && "rotate-180",
 								)}
-							>
-								{topic.title}
-							</span>
+								aria-hidden="true"
+							/>
 						</button>
 					</div>
 					{angleChip}
