@@ -721,12 +721,17 @@ export type PublishingWhySuggested = {
 } | null;
 
 /**
- * List-only projection: the shared record fields plus the 1B post-type
- * suggestions and RESOLVED contributor handles. Deliberately NOT merged into
- * `PublishingTopicRecord` — `createManualPublishingTopic`,
- * `updatePublishingTopicStatus`, and `getPublishingTopic` (via `TOPIC_SELECT`)
- * don't resolve handles, so widening the shared type/select would force every
- * one of those call sites to pay for a `db.user.findMany` they never use.
+ * The projection for topics that are DISPLAYED: the shared record fields plus
+ * the 1B post-type suggestions and RESOLVED contributor handles. Used by
+ * `listPublishingTopics` and, through it, by `getPublishingTopic` — the Topic
+ * Item Page needs the same handles the Inbox row shows, and pays one
+ * `db.user.findMany` for one topic to get them.
+ *
+ * Deliberately NOT merged into `PublishingTopicRecord`: the WRITE paths
+ * (`createManualPublishingTopic`, `updatePublishingTopicStatus`) return their
+ * row through the narrower `TOPIC_SELECT` and never resolve handles, so
+ * widening the shared type/select would force them to pay for a lookup they
+ * have no use for.
  */
 export interface PublishingTopicListItem {
 	id: string;
@@ -820,10 +825,21 @@ export async function listPublishingTopics(o: {
 	projectId: string;
 	status?: string;
 	viewerUserId: string;
+	/**
+	 * Narrow to ONE topic (Fizzy #1851, Phase 2A-1). Set by
+	 * `getPublishingTopic` so the Topic Item Page reads through this exact
+	 * function instead of a parallel single-row query: the six degrade
+	 * contracts documented above, the projection, and the `provenance` strip
+	 * are then shared by construction rather than by copy. Always combined
+	 * with `projectId` in the WHERE, so an id from another project resolves
+	 * to no rows (DV16) rather than to a topic the viewer may not see.
+	 */
+	topicId?: string;
 }): Promise<{ items: PublishingTopicListItem[] }> {
 	const rows = await db.publishingTopic.findMany({
 		where: {
 			projectId: o.projectId,
+			...(o.topicId ? { id: o.topicId } : {}),
 			...(o.status ? { status: o.status as never } : {}),
 		},
 		// Recency baseline, preserved within each rank tier below. `createdAt`
@@ -1399,6 +1415,41 @@ export async function listPublishingTopics(o: {
 	} catch {
 		return { items };
 	}
+}
+
+/**
+ * Read ONE publishing topic for the Topic Item Page (Fizzy #1851, Phase 2A-1).
+ *
+ * Delegates to `listPublishingTopics` with its `topicId` filter rather than
+ * running its own query, so the detail page and the Inbox row are fed by the
+ * SAME enrichment and the SAME projection. That is deliberate: the two views
+ * render the same fields through the same `TopicDetails` component, and a
+ * second enrichment path would drift from this one the first time either
+ * changed. Every degrade contract listed on `listPublishingTopics` therefore
+ * applies here unchanged — a handle-lookup failure yields a topic with no
+ * contributors, never a failed page.
+ *
+ * `projectId` re-scopes the read (DV16). An `id` belonging to another project
+ * returns `null`, which callers surface as NOT_FOUND — the same answer a
+ * genuinely missing topic gets, so the page cannot be used to probe for the
+ * existence of topics in projects the viewer cannot see.
+ *
+ * `rankReason` is a list-ordering signal. On a single-row read the partition
+ * is trivially the viewer's own tier, which is what the Inbox row would show
+ * for the same topic — so it stays meaningful rather than becoming noise.
+ */
+export async function getPublishingTopic(o: {
+	id: string;
+	projectId: string;
+	viewerUserId: string;
+}): Promise<{ topic: PublishingTopicListItem } | null> {
+	const { items } = await listPublishingTopics({
+		projectId: o.projectId,
+		viewerUserId: o.viewerUserId,
+		topicId: o.id,
+	});
+	const topic = items[0];
+	return topic ? { topic } : null;
 }
 
 export async function getLatestPublishingCycle(projectId: string): Promise<{

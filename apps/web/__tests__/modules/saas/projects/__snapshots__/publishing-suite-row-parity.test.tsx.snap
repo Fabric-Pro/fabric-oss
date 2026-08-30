@@ -10,11 +10,12 @@ exports[`PublishingSuiteList row parity > renders the flag-off row exactly as it
     <div
       class="min-w-0 space-y-1"
     >
-      <p
-        class="font-medium text-foreground"
+      <a
+        class="block font-medium text-foreground"
+        href="/app/projects/proj-1/publishing/t1"
       >
         Alpha topic
-      </p>
+      </a>
       <p
         class="inline-flex w-fit items-center gap-1.5 rounded-full border border-border bg-muted px-2 py-0.5 text-[11px] text-muted-foreground"
       >

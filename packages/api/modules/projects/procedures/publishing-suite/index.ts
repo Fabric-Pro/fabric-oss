@@ -4,6 +4,7 @@
 export { createPublishingTopicProcedure } from "./create-topic";
 export { generatePublishingTopicsNowProcedure } from "./generate-now";
 export { getPublishingSuiteSettingsProcedure } from "./get-settings";
+export { getPublishingTopicProcedure } from "./get-topic";
 export { latestPublishingCycleProcedure } from "./latest-cycle";
 export { listCycleChatDeliveriesProcedure } from "./list-cycle-chat-deliveries";
 export { listPublishingCyclesProcedure } from "./list-cycles";

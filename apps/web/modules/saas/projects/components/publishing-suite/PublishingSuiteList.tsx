@@ -2,6 +2,8 @@
 
 import { composeInboxSections } from "@repo/database/src/publishing-inbox";
 import { PageTourButton } from "@saas/get-started/components/PageTourButton";
+import { useBasePath } from "@saas/organizations/hooks/use-organization-context";
+import { buildPublishingTopicRoute } from "@saas/projects/lib/publishing/routes";
 import { useFeatureFlag } from "@saas/shared/components/FeatureFlagProvider";
 import { orpc } from "@shared/lib/orpc-query-utils";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -36,6 +38,7 @@ export function PublishingSuiteList({
 	canEdit: boolean;
 }) {
 	const queryClient = useQueryClient();
+	const basePath = useBasePath();
 	const inboxEnabled = useFeatureFlag("PUBLISHING_INBOX");
 	const [createOpen, setCreateOpen] = useState(false);
 	const [statusFilter, setStatusFilter] = useState<
@@ -261,6 +264,7 @@ export function PublishingSuiteList({
 			canEdit={canEdit}
 			inbox={inboxEnabled}
 			isPending={(pendingTopicIds.get(t.id) ?? 0) > 0}
+			topicHref={buildPublishingTopicRoute(basePath, projectId, t.id)}
 			onChangeStatus={(status, declineReason, publishedUrl) =>
 				changeStatus(t.id, status, declineReason, publishedUrl)
 			}

@@ -98,6 +98,7 @@ vi.mock("@repo/database", () => ({
 	grantProjectAccess: vi.fn(),
 	getOrganizationMembership: vi.fn(),
 	getTenantContext: vi.fn(() => ({})),
+	getPublishingTopic: vi.fn(),
 	listPublishingTopics: vi.fn(),
 	getLatestPublishingCycle: vi.fn(),
 	// 1C-4a: the cycle-history reader and its matching count.
@@ -243,6 +244,7 @@ import {
 	getPublishingSuiteSettings,
 	listPublishingChatDeliveriesForProjectCycle,
 	listPublishingCycles,
+	getPublishingTopic,
 	listPublishingTopics,
 	Prisma,
 	PublishingTopicProjectNotFoundError,
@@ -256,6 +258,7 @@ import { Permissions } from "@repo/permissions";
 import {
 	createPublishingTopicProcedure,
 	generatePublishingTopicsNowProcedure,
+	getPublishingTopicProcedure,
 	latestPublishingCycleProcedure,
 	listCycleChatDeliveriesProcedure,
 	listPublishingCyclesProcedure,
@@ -358,6 +361,55 @@ describe("publishing-suite procedures — permission gating", () => {
 			(generatePublishingTopicsNowProcedure as unknown as HandlerBearing)
 				.__permission,
 		).toBe(Permissions.PUBLISHING_TOPIC_CREATE);
+	});
+});
+
+describe("getTopic", () => {
+	const getHandler = (
+		getPublishingTopicProcedure as unknown as HandlerBearing
+	).handler;
+
+	it("is gated on PUBLISHING_TOPIC_READ", () => {
+		expect(
+			(getPublishingTopicProcedure as unknown as HandlerBearing)
+				.__permission,
+		).toBe(Permissions.PUBLISHING_TOPIC_READ);
+	});
+
+	it("returns the topic and passes the viewer through", async () => {
+		vi.mocked(getPublishingTopic).mockResolvedValue({
+			topic: { id: "t1", title: "A topic" },
+		} as never);
+
+		const res = await getHandler({
+			input: { projectId: "p1", topicId: "t1", organizationId: null },
+			context: ctx,
+		});
+
+		expect(getPublishingTopic).toHaveBeenCalledWith({
+			id: "t1",
+			projectId: "p1",
+			viewerUserId: "u1",
+		});
+		expect(res).toEqual({ topic: { id: "t1", title: "A topic" } });
+	});
+
+	it("throws NOT_FOUND when the topic is not in this project", async () => {
+		// DV16: a topic id from another project must be indistinguishable from
+		// a topic that does not exist, so the page cannot be used to probe for
+		// topics in projects the viewer cannot see.
+		vi.mocked(getPublishingTopic).mockResolvedValue(null as never);
+
+		await expect(
+			getHandler({
+				input: {
+					projectId: "p1",
+					topicId: "foreign",
+					organizationId: null,
+				},
+				context: ctx,
+			}),
+		).rejects.toThrow(/not found/i);
 	});
 });
 
