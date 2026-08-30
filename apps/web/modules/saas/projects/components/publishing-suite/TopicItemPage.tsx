@@ -8,6 +8,8 @@ import { ArrowLeftIcon } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
+import { PlanningAnalysisTab, TopicOpenQuestions } from "./PlanningAnalysisTab";
+import { readPlanningQuestions } from "./planning-analysis-content";
 import { TopicDetails } from "./TopicDetails";
 import { POST_TYPE_LABELS, TOPIC_STATUSES } from "./topic-shared";
 
@@ -58,6 +60,36 @@ export function TopicItemPage({
 		}),
 	);
 	const topic = topicQuery.data?.topic;
+
+	// Fetched HERE rather than inside the Planning & Analysis panel, so the
+	// Summary & Questions tab can render the same open questions (FR39) from the
+	// same cache entry — one poll, one source of truth for which decisions are
+	// still open.
+	//
+	// The interval is the FUNCTION form so polling is keyed off the response
+	// itself: it runs only while an attempt is GENERATING and stops the moment
+	// the row goes terminal. A fixed interval would keep polling a finished
+	// analysis for as long as the tab stays open.
+	const analysisQuery = useQuery({
+		...orpc.projects.publishingSuite.getPlanningAnalysis.queryOptions({
+			input: { projectId, topicId, organizationId },
+		}),
+		refetchInterval: (query) => {
+			const attempt = query.state.data?.latestAttempt;
+			// A LIVE run only. An attempt past its deadline will never change on
+			// its own — nothing sweeps it; the next attempt reclaims it — so
+			// polling one would be an interval that never ends.
+			return attempt?.status === "GENERATING" && !attempt.isExpired
+				? 3000
+				: false;
+		},
+	});
+	const latestAttempt = analysisQuery.data?.latestAttempt ?? null;
+	const latestReady = analysisQuery.data?.latestReady ?? null;
+	// Questions come from the last READY analysis, never from a running or
+	// failed attempt: a question a reader can see must be one that actually
+	// survives, and a failed attempt has no content at all.
+	const openQuestions = readPlanningQuestions(latestReady?.content);
 
 	// 1D's FR4 makes expanding a row "opening" it, which writes the read
 	// marker. Opening the whole page is the strongest form of opening there
@@ -205,16 +237,26 @@ export function TopicItemPage({
 						onEditUrl={() => undefined}
 						onEditPostTypes={() => undefined}
 					/>
-					<EmptyState>
-						Open questions arrive with the planning worksheet.
-					</EmptyState>
+					{openQuestions.length > 0 ? (
+						<TopicOpenQuestions questions={openQuestions} />
+					) : (
+						<EmptyState>
+							No open questions yet. They arrive with the planning
+							analysis.
+						</EmptyState>
+					)}
 				</TabsContent>
 
 				<TabsContent value="planningAnalysis">
-					<EmptyState>
-						No planning analysis yet. Generating one is coming in
-						the next release.
-					</EmptyState>
+					<PlanningAnalysisTab
+						projectId={projectId}
+						topicId={topicId}
+						organizationId={organizationId}
+						canEdit={canEdit}
+						isLoading={analysisQuery.isLoading}
+						latestAttempt={latestAttempt}
+						latestReady={latestReady}
+					/>
 				</TabsContent>
 
 				<TabsContent value="decisionLog">

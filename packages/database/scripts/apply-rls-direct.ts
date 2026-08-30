@@ -412,6 +412,10 @@ async function applyRLS() {
 			{ name: "publishing_suite_settings", policy: "user_owned" }, // Publishing Suite per-project config
 			{ name: "publishing_notification_delivery", policy: "user_owned" }, // Publishing Suite delivery ledger
 			{ name: "publishing_chat_delivery", policy: "user_owned" }, // Publishing Suite chat broadcast ledger
+			{
+				name: "publishing_topic_planning_analysis",
+				policy: "user_owned",
+			}, // Publishing Suite planning worksheet
 			{ name: "document_version", policy: "user_owned" }, // Document history
 			{ name: "document_auto_refresh_settings", policy: "user_owned" }, // Per-document auto-refresh enrollment
 			{ name: "feature_version", policy: "user_owned" }, // Feature version history

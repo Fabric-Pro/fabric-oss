@@ -265,7 +265,9 @@ import {
 } from "./procedures/project-tabs";
 import {
 	createPublishingTopicProcedure,
+	generatePlanningAnalysisProcedure,
 	generatePublishingTopicsNowProcedure,
+	getPlanningAnalysisProcedure,
 	getPublishingSuiteSettingsProcedure,
 	getPublishingTopicProcedure,
 	latestPublishingCycleProcedure,
@@ -1341,6 +1343,11 @@ export const projectsRouter = {
 		getSettings: getPublishingSuiteSettingsProcedure,
 		updateSettings: updatePublishingSuiteSettingsProcedure,
 		generateNow: generatePublishingTopicsNowProcedure,
+		// #1851 (2A-2): the topic's planning worksheet. `getPlanningAnalysis`
+		// returns TWO rows — the latest attempt and the latest READY one — so a
+		// failed regeneration cannot blank a good analysis the reader still wants.
+		generatePlanningAnalysis: generatePlanningAnalysisProcedure,
+		getPlanningAnalysis: getPlanningAnalysisProcedure,
 	},
 
 	// User Stories & Tasks (Kanban)

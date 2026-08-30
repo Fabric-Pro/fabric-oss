@@ -45,6 +45,19 @@ const generateNowMocks = vi.hoisted(() => ({
 	requestPublishingGeneration: vi.fn(),
 }));
 
+// 2A-2 (#1851): the planning-analysis pair. The DB helpers own the Project-row
+// lock, the version sequence and the terminal compare-and-set — all covered by
+// `packages/database/__tests__/publishing-planning-analysis.test.ts` — so here
+// they are mocked and what is exercised is the HANDLER: the ratchet, the
+// ordering of the availability check against row creation, and the rollback.
+const planningMocks = vi.hoisted(() => ({
+	startPlanningAnalysisAttempt: vi.fn(),
+	getLatestPlanningAnalysis: vi.fn(),
+	failPlanningAnalysis: vi.fn(),
+	isTemporalAvailable: vi.fn(),
+	workflowStart: vi.fn(),
+}));
+
 const {
 	FakePrismaClientKnownRequestError,
 	FakePublishingTopicProjectNotFoundError,
@@ -120,6 +133,9 @@ vi.mock("@repo/database", () => ({
 	// collection with an error three files away from its cause.
 	PUBLISHING_SNOOZE_PRESETS: ["ONE_WEEK", "ONE_MONTH", "THREE_MONTHS"],
 	resolveProjectTenant: vi.fn(),
+	startPlanningAnalysisAttempt: planningMocks.startPlanningAnalysisAttempt,
+	getLatestPlanningAnalysis: planningMocks.getLatestPlanningAnalysis,
+	failPlanningAnalysis: planningMocks.failPlanningAnalysis,
 	PublishingTopicProjectNotFoundError:
 		FakePublishingTopicProjectNotFoundError,
 	PublishingTopicTenantMismatchError: FakePublishingTopicTenantMismatchError,
@@ -187,7 +203,10 @@ vi.mock("@repo/utils/feature-flag", () => ({
 // stays so the OTHER procedures in this file, which only load the barrel and
 // never call generateNow's handler, still resolve `@repo/temporal` cleanly.
 vi.mock("@repo/temporal", () => ({
-	isTemporalAvailable: vi.fn(),
+	isTemporalAvailable: planningMocks.isTemporalAvailable,
+	getTemporalClient: async () => ({
+		workflow: { start: planningMocks.workflowStart },
+	}),
 }));
 
 vi.mock("../modules/projects/lib/request-publishing-generation", () => ({
@@ -257,7 +276,9 @@ import {
 import { Permissions } from "@repo/permissions";
 import {
 	createPublishingTopicProcedure,
+	generatePlanningAnalysisProcedure,
 	generatePublishingTopicsNowProcedure,
+	getPlanningAnalysisProcedure,
 	getPublishingTopicProcedure,
 	latestPublishingCycleProcedure,
 	listCycleChatDeliveriesProcedure,
@@ -291,6 +312,12 @@ const updatePostTypesHandler = (
 ).handler;
 const generateNowHandler = (
 	generatePublishingTopicsNowProcedure as unknown as HandlerBearing
+).handler;
+const generatePlanningHandler = (
+	generatePlanningAnalysisProcedure as unknown as HandlerBearing
+).handler;
+const getPlanningHandler = (
+	getPlanningAnalysisProcedure as unknown as HandlerBearing
 ).handler;
 const listCyclesHandler = (
 	listPublishingCyclesProcedure as unknown as HandlerBearing
@@ -1543,5 +1570,214 @@ describe("setTopicReadState", () => {
 				context: { user: { id: "u1" } },
 			}),
 		).rejects.toMatchObject({ code: "NOT_FOUND" });
+	});
+});
+
+describe("planning analysis — permission gates", () => {
+	it("generatePlanningAnalysis is gated on PUBLISHING_TOPIC_UPDATE", () => {
+		expect(
+			(generatePlanningAnalysisProcedure as unknown as HandlerBearing)
+				.__permission,
+		).toBe(Permissions.PUBLISHING_TOPIC_UPDATE);
+	});
+
+	it("getPlanningAnalysis is gated on PUBLISHING_TOPIC_READ", () => {
+		expect(
+			(getPlanningAnalysisProcedure as unknown as HandlerBearing)
+				.__permission,
+		).toBe(Permissions.PUBLISHING_TOPIC_READ);
+	});
+});
+
+describe("generatePlanningAnalysis", () => {
+	beforeEach(() => {
+		dbMocks.projectFindUnique.mockResolvedValue({
+			id: "p1",
+			organizationId: "org-1",
+		});
+		planningMocks.isTemporalAvailable.mockResolvedValue(true);
+		planningMocks.startPlanningAnalysisAttempt.mockResolvedValue({
+			status: "started",
+			analysisId: "pa-1",
+			version: 1,
+		});
+		planningMocks.workflowStart.mockResolvedValue(undefined);
+		planningMocks.failPlanningAnalysis.mockResolvedValue({
+			persisted: true,
+		});
+	});
+
+	const call = (input: Record<string, unknown> = {}) =>
+		generatePlanningHandler({
+			input: {
+				projectId: "p1",
+				topicId: "t1",
+				organizationId: null,
+				...input,
+			},
+			context: ctx,
+		});
+
+	it("applies the eligibility ratchet to the project lookup", async () => {
+		await call();
+
+		expect(dbMocks.projectFindUnique).toHaveBeenCalledWith(
+			expect.objectContaining({
+				where: { id: "p1", status: "ACTIVE", deletedAt: null },
+			}),
+		);
+	});
+
+	it("NOT_FOUND when the project is archived, deleted or absent", async () => {
+		dbMocks.projectFindUnique.mockResolvedValue(null);
+
+		await expect(call()).rejects.toMatchObject({ code: "NOT_FOUND" });
+		expect(
+			planningMocks.startPlanningAnalysisAttempt,
+		).not.toHaveBeenCalled();
+	});
+
+	it("rejects a positively-wrong organizationId, and only that", async () => {
+		await expect(call({ organizationId: "org-2" })).rejects.toMatchObject({
+			code: "BAD_REQUEST",
+		});
+		// A guest on a personal-context page sends null for an org-owned project.
+		// That must keep working, or the ratchet becomes a bug.
+		await expect(call({ organizationId: null })).resolves.toMatchObject({
+			started: true,
+		});
+	});
+
+	it("checks Temporal BEFORE creating the row", async () => {
+		// Order is the whole point. Creating the row first and discovering the
+		// outage second strands a GENERATING row holding the partial unique index,
+		// so the button refuses for ten minutes over an outage that may already be
+		// over.
+		planningMocks.isTemporalAvailable.mockResolvedValue(false);
+
+		await expect(call()).resolves.toEqual({
+			started: false,
+			reason: "unavailable",
+		});
+		expect(
+			planningMocks.startPlanningAnalysisAttempt,
+		).not.toHaveBeenCalled();
+	});
+
+	it("NOT_FOUND when the topic is not in this project", async () => {
+		// The helper re-scopes to { id, projectId } under its Project lock, so a
+		// real topic id from another project answers exactly as a missing one does.
+		planningMocks.startPlanningAnalysisAttempt.mockResolvedValue({
+			status: "not_found",
+		});
+
+		await expect(call()).rejects.toMatchObject({ code: "NOT_FOUND" });
+		expect(planningMocks.workflowStart).not.toHaveBeenCalled();
+	});
+
+	it("reports in-progress on a double click without starting a second run", async () => {
+		planningMocks.startPlanningAnalysisAttempt.mockResolvedValue({
+			status: "in_flight",
+		});
+
+		await expect(call()).resolves.toEqual({
+			started: false,
+			reason: "in-progress",
+		});
+		expect(planningMocks.workflowStart).not.toHaveBeenCalled();
+	});
+
+	it("starts the workflow keyed on the attempt, with the tenant from the project row", async () => {
+		await call();
+
+		const [name, opts] = planningMocks.workflowStart.mock.calls[0];
+		expect(name).toBe("generatePublishingPlanningAnalysisWorkflow");
+		expect(opts.workflowId).toBe("publishing-topic-pa:pa-1");
+		expect(opts.taskQueue).toBe("fabric-worker");
+		expect(opts.workflowIdConflictPolicy).toBe("FAIL");
+		expect(opts.args[0]).toEqual({
+			analysisId: "pa-1",
+			topicId: "t1",
+			projectId: "p1",
+			// From the LOADED project row, never from client input — the request
+			// above passed organizationId: null for this org-owned project.
+			organizationId: "org-1",
+			actorUserId: "u1",
+		});
+	});
+
+	it("rolls the row back when the workflow cannot be started", async () => {
+		// Otherwise the UI polls a GENERATING row no workflow will ever complete,
+		// and the partial unique index refuses every retry until the deadline
+		// sweep clears it.
+		planningMocks.workflowStart.mockRejectedValue(
+			new Error("temporal down"),
+		);
+
+		await expect(call()).rejects.toMatchObject({
+			code: "INTERNAL_SERVER_ERROR",
+		});
+		expect(planningMocks.failPlanningAnalysis).toHaveBeenCalledWith(
+			expect.objectContaining({ id: "pa-1", projectId: "p1" }),
+		);
+	});
+
+	it("treats an already-started workflow as in-progress, not as a failure", async () => {
+		const err = new Error("already started");
+		err.name = "WorkflowExecutionAlreadyStartedError";
+		planningMocks.workflowStart.mockRejectedValue(err);
+
+		await expect(call()).resolves.toEqual({
+			started: false,
+			reason: "in-progress",
+		});
+		// Emphatically NOT rolled back: a run for this attempt exists and is
+		// filling the very row the UI is about to poll.
+		expect(planningMocks.failPlanningAnalysis).not.toHaveBeenCalled();
+	});
+});
+
+describe("getPlanningAnalysis", () => {
+	it("scopes the read by projectId and returns both rows", async () => {
+		// TWO rows, because one cannot carry both meanings: `latestReady` is what
+		// to render, `latestAttempt` is what to say about it. Returning only the
+		// newest would blank a good analysis the moment a regeneration failed.
+		const ready = { id: "pa-1", version: 1, status: "READY" };
+		const attempt = { id: "pa-2", version: 2, status: "FAILED" };
+		planningMocks.getLatestPlanningAnalysis.mockResolvedValue({
+			latestAttempt: attempt,
+			latestReady: ready,
+		});
+
+		const res = await getPlanningHandler({
+			input: { projectId: "p1", topicId: "t1", organizationId: null },
+			context: ctx,
+		});
+
+		expect(planningMocks.getLatestPlanningAnalysis).toHaveBeenCalledWith({
+			topicId: "t1",
+			projectId: "p1",
+		});
+		expect(res).toEqual({ latestAttempt: attempt, latestReady: ready });
+	});
+
+	it("answers a topic from another project exactly as it answers a topic with no analysis", async () => {
+		// DV16. The helper's projectId filter makes both cases produce two nulls,
+		// so this endpoint cannot be used to probe for topics elsewhere.
+		planningMocks.getLatestPlanningAnalysis.mockResolvedValue({
+			latestAttempt: null,
+			latestReady: null,
+		});
+
+		await expect(
+			getPlanningHandler({
+				input: {
+					projectId: "p1",
+					topicId: "elsewhere",
+					organizationId: null,
+				},
+				context: ctx,
+			}),
+		).resolves.toEqual({ latestAttempt: null, latestReady: null });
 	});
 });

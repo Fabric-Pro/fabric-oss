@@ -29,6 +29,11 @@
 			"import": "./index.ts",
 			"default": "./index.ts"
 		},
+		"./publishing-planning-prompt": {
+			"types": "./lib/publishing-planning-prompt.ts",
+			"import": "./lib/publishing-planning-prompt.ts",
+			"default": "./lib/publishing-planning-prompt.ts"
+		},
 		"./template-renderer": {
 			"types": "./template-renderer.ts",
 			"import": "./template-renderer.ts",

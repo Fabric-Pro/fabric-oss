@@ -295,6 +295,13 @@ export {
 	type GenerateMeetingAgendaWorkflowOutput,
 	generateMeetingAgendaWorkflow,
 } from "./generate-meeting-agenda";
+// Publishing Suite Planning & Analysis (fire-and-forget — one topic's planning
+// worksheet, from its own provenance). #1851
+export {
+	type GeneratePublishingPlanningAnalysisWorkflowInput,
+	type GeneratePublishingPlanningAnalysisWorkflowOutput,
+	generatePublishingPlanningAnalysisWorkflow,
+} from "./generate-publishing-planning-analysis";
 // Goal-Oriented Agent workflow (iterative goal achievement)
 export {
 	cancelSignal as goalOrientedCancelSignal,

@@ -18,6 +18,7 @@ import {
 	promptActionFeatureType,
 	promptActionId,
 } from "../lib/prompt-action-catalog";
+import { PUBLISHING_PLANNING_ANALYSIS_AGENT_KEY } from "../lib/publishing-planning-prompt";
 
 const actions = listPromptActions();
 const byId = (id: string) => actions.find((a) => a.id === id);
@@ -152,5 +153,43 @@ describe("promptActionFeatureType", () => {
 		expect(promptActionFeatureType(agent!, "SANITY_CHECK")).toBe(
 			"WORK_ITEMS",
 		);
+	});
+});
+
+describe("Publishing Suite planning prompt (#1851)", () => {
+	// The agent key must be the SAME string in the seed's SYSTEM prompt, the
+	// seed's binding, this catalog, and the Temporal activity that resolves the
+	// binding. A mismatch resolves no binding and silently falls back to the
+	// default body forever — the hazard `meeting_agenda_generator` documents but
+	// does not close, since it repeats its literal in every one of those places.
+	//
+	// Here all four import one constant, so drift is impossible rather than
+	// detectable, and this test guards the remaining hole: someone re-hardcoding
+	// the string in the catalog.
+	it("files the planning prompt under Publishing Suite by the shared key", () => {
+		const target = findPromptAgentTarget(
+			PUBLISHING_PLANNING_ANALYSIS_AGENT_KEY,
+		);
+		expect(target).toBeDefined();
+		expect(target?.featureType).toBe("PUBLISHING");
+	});
+
+	it("is bound for GENERAL with no story kind", () => {
+		// One prompt per tenant covers every project and topic. A stage-scoped or
+		// kind-scoped binding would make the activity's exact-match resolution
+		// (documentType GENERAL, storyKind null) find nothing.
+		const target = findPromptAgentTarget(
+			PUBLISHING_PLANNING_ANALYSIS_AGENT_KEY,
+		);
+		expect(target?.actions).toEqual([
+			{ documentType: "GENERAL", storyKind: null },
+		]);
+	});
+
+	it("gives Publishing Suite a tier-1 area of its own", () => {
+		// It is a nav area in the product, so filing its prompt under Meetings or
+		// Project Documents would be the invention the catalog's own rule warns
+		// against: tier 1 follows the areas the app already has.
+		expect(PROMPT_FEATURE_TYPES.PUBLISHING).toBeDefined();
 	});
 });

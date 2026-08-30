@@ -7,11 +7,13 @@
  * resolves against a hoisted `state` fixture keyed off the oRPC procedure path
  * baked into the mocked `queryOptions` queryKey.
  *
- * Scope note: this slice ships the SHELL. The three real tabs render their
- * content (Summary) or an empty state (Planning & Analysis, Decision Log);
- * questions and planning analysis arrive in 2A-2 / 2A-3. What these tests pin
- * is the shell's contract — default tab, the topic header, and that the four
- * generation tabs are present but NOT operable (FR50).
+ * Scope note: 2A-1 shipped the SHELL and these tests pin its contract — default
+ * tab, the topic header, and that the four generation tabs are present but NOT
+ * operable (FR50). 2A-2 filled in Planning & Analysis and the open-questions
+ * list (FR39); the panel's own states live in
+ * `publishing-planning-analysis-tab.test.tsx`, and what is pinned HERE is the
+ * wiring: that the page fetches the analysis once and both tabs read the same
+ * questions. Answering them is 2A-3.
  */
 
 import { render, screen, within } from "@testing-library/react";
@@ -22,6 +24,11 @@ const { state, refetchTopic, setReadStateMutate, toastError } = vi.hoisted(
 	() => ({
 		state: {
 			topic: null as Record<string, unknown> | null,
+			// 2A-2: the planning analysis the page now fetches alongside the
+			// topic. Two rows, because a failed regeneration must not blank a
+			// good analysis — see PlanningAnalysisTab's own test file.
+			latestAttempt: null as Record<string, unknown> | null,
+			latestReady: null as Record<string, unknown> | null,
 			pending: false,
 			error: false,
 			// Drive the read-marker write to reject, so the failure path is
@@ -51,6 +58,18 @@ vi.mock("@tanstack/react-query", () => ({
 				isLoading: state.pending,
 				isError: state.error,
 				refetch: refetchTopic,
+			};
+		}
+		if (procedure === "projects.publishingSuite.getPlanningAnalysis") {
+			return {
+				data: {
+					latestAttempt: state.latestAttempt,
+					latestReady: state.latestReady,
+				},
+				isPending: false,
+				isLoading: false,
+				isError: false,
+				refetch: vi.fn(),
 			};
 		}
 		return {
@@ -116,6 +135,12 @@ vi.mock("@shared/lib/orpc-query-utils", () => {
 					setTopicReadState: m(
 						"projects.publishingSuite.setTopicReadState",
 					),
+					getPlanningAnalysis: q(
+						"projects.publishingSuite.getPlanningAnalysis",
+					),
+					generatePlanningAnalysis: m(
+						"projects.publishingSuite.generatePlanningAnalysis",
+					),
 				},
 			},
 		},
@@ -173,6 +198,8 @@ function renderPage(canEdit = true) {
 
 beforeEach(() => {
 	state.topic = topic();
+	state.latestAttempt = null;
+	state.latestReady = null;
 	state.pending = false;
 	state.error = false;
 	state.readStateRejects = false;
@@ -351,5 +378,92 @@ describe("TopicItemPage — read marker", () => {
 		state.topic = topic({ isRead: true });
 		renderPage();
 		expect(setReadStateMutate).not.toHaveBeenCalled();
+	});
+});
+
+describe("TopicItemPage — open questions (FR39)", () => {
+	const readyAnalysis = (questions: unknown[]) => ({
+		id: "pa-1",
+		version: 1,
+		status: "READY",
+		content: { topicAngle: "A reliability story.", questions },
+		sourceRefs: {},
+		model: "test-model",
+		promptSource: "BOUND",
+		error: null,
+		createdAt: new Date("2026-08-30T10:00:00Z"),
+		updatedAt: new Date("2026-08-30T10:04:00Z"),
+	});
+
+	const QUESTION = {
+		questionId: "q1",
+		decisionKind: "CUSTOMER_NAME",
+		subject: "the named customer",
+		question: "May we name the customer?",
+		recommendedResponse: "Ask their marketing contact first.",
+		whyItMatters: "A case study without the name is a different piece.",
+		source: "MODEL",
+	};
+
+	it("shows the analysis's open questions on the default tab", () => {
+		// FR39 lands in 2A-2 rather than 2A-3 because the buckets and the question
+		// list are independent: an analysis can flag a decision as needing
+		// confirmation while the question that decides it lives on another tab
+		// nobody has opened.
+		state.latestReady = readyAnalysis([QUESTION]);
+		state.latestAttempt = state.latestReady;
+
+		renderPage();
+
+		expect(screen.getByText(/may we name the customer/i)).toBeVisible();
+		expect(
+			screen.getByText(/ask their marketing contact first/i),
+		).toBeVisible();
+	});
+
+	it("falls back to an empty state when no analysis has been run", () => {
+		renderPage();
+		expect(screen.getByText(/no open questions yet/i)).toBeInTheDocument();
+	});
+
+	it("draws questions from the last READY analysis, never from a failed attempt", () => {
+		// A failed attempt has no content at all. Reading questions from "the
+		// newest attempt" would empty the list the moment a regeneration failed —
+		// the same defect the two-row API exists to prevent, one tab over.
+		state.latestReady = readyAnalysis([QUESTION]);
+		state.latestAttempt = {
+			...readyAnalysis([]),
+			id: "pa-2",
+			version: 2,
+			status: "FAILED",
+			content: null,
+			error: "Rate limited.",
+		};
+
+		renderPage();
+
+		expect(screen.getByText(/may we name the customer/i)).toBeVisible();
+	});
+
+	it("renders the analysis itself on the Planning & Analysis tab", async () => {
+		state.latestReady = readyAnalysis([QUESTION]);
+		state.latestAttempt = state.latestReady;
+
+		const user = userEvent.setup();
+		renderPage();
+		await user.click(
+			screen.getByRole("tab", { name: /planning & analysis/i }),
+		);
+
+		expect(screen.getByText(/a reliability story/i)).toBeVisible();
+	});
+
+	it("offers a reader no generate control", () => {
+		renderPage(false);
+		expect(
+			screen.queryByRole("button", {
+				name: /generate planning analysis/i,
+			}),
+		).not.toBeInTheDocument();
 	});
 });
