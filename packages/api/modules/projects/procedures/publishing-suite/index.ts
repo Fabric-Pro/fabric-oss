@@ -9,6 +9,10 @@ export { latestPublishingCycleProcedure } from "./latest-cycle";
 export { listCycleChatDeliveriesProcedure } from "./list-cycle-chat-deliveries";
 export { listPublishingCyclesProcedure } from "./list-cycles";
 export { listPublishingTopicsProcedure } from "./list-topics";
+export {
+	generatePlanningAnalysisProcedure,
+	getPlanningAnalysisProcedure,
+} from "./planning-analysis";
 export { setTopicReadStateProcedure } from "./set-topic-read-state";
 export { setTopicSnoozeProcedure } from "./set-topic-snooze";
 export { updatePublishingSuiteSettingsProcedure } from "./update-settings";

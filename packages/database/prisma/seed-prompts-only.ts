@@ -1,4 +1,12 @@
 import { logger } from "@repo/logs";
+// The prompt body and its agent key live in @repo/utils so this seed and the
+// Temporal activity that resolves the binding share ONE definition. Two copies
+// kept in step by a test is the arrangement `meeting_agenda_generator` uses,
+// and the test it names does not exist.
+import {
+	PUBLISHING_PLANNING_ANALYSIS_AGENT_KEY,
+	PUBLISHING_PLANNING_ANALYSIS_FALLBACK_BODY,
+} from "@repo/utils/publishing-planning-prompt";
 import { db } from "../prisma/client";
 import type { StoryKind } from "./zod";
 
@@ -290,6 +298,19 @@ const PROMPT_DOCUMENT_TYPE_BINDINGS: Record<string, SeedBindingSpec> = {
 		documentTypes: ["GENERAL"],
 		storyKind: null as null,
 		targetKey: "meeting_agenda_generator",
+	},
+	// publishing_topic_planning_analysis: the Topic Item Page's pre-draft planning
+	// worksheet (#1851, Phase 2A-2). Its own agent key so
+	// `generatePlanningAnalysisActivity` resolves a prompt distinct from every
+	// document prompt at the same documentType/storyKind. GENERAL + null: one
+	// prompt per tenant covers every project and topic. The activity passes the
+	// topic and its resolved source context as HANDLEBARS variables; the output
+	// contract and the FR40-FR42 approval rules are appended code-side and are
+	// NOT part of this body, so an override cannot drop them.
+	[PUBLISHING_PLANNING_ANALYSIS_AGENT_KEY]: {
+		documentTypes: ["GENERAL"],
+		storyKind: null as null,
+		targetKey: PUBLISHING_PLANNING_ANALYSIS_AGENT_KEY,
 	},
 	// test_case_step_reviser: re-drafts ONE existing case whose feature has since
 	// changed. Kept separate from `test_case_drafter` because the contract is
@@ -4982,6 +5003,42 @@ Rules:
 - Do NOT report code quality, naming, style, architecture, or performance. Another lens owns those, and mixing them in makes this list unreadable.
 - Do NOT report a missing test for behaviour the change did not touch. An untested area that this pull request did not go near is not this pull request's finding.
 - Returning NO findings is a real and frequently correct answer. A well-covered change should produce an empty list, and padding it makes every future list less believable.`,
+	},
+	{
+		// publishing_topic_planning_analysis — the Topic Item Page's pre-draft
+		// planning worksheet (#1851, Phase 2A-2). Resolved at runtime by
+		// `generatePlanningAnalysisActivity` (packages/temporal) via
+		// getBoundPromptForAgent.
+		//
+		// The BODY is imported rather than repeated here, so this seed and the
+		// activity's in-memory fallback cannot drift. That is deliberate: the
+		// `meeting_agenda_generator` entry above keeps two copies and its comment
+		// says "a test in @repo/temporal pins this" — no such test exists, because
+		// nothing imports this module. A shared constant makes drift impossible
+		// rather than merely detectable.
+		//
+		// Content is the PO's "Topic Planning & Analysis Prompt v1.1" attached to
+		// the card, with its Markdown-only output rule adapted (this prompt runs
+		// with structured output, so each section is a field whose value is
+		// Markdown). The rule's intent — never emit the finished content asset —
+		// plus the FR40-FR42 approval rules are appended CODE-SIDE so an org
+		// override cannot drop them by accident.
+		//
+		// INSERT-ONLY: once this seeds, changing the text does nothing on an
+		// environment that already ran the seed. Ship wording changes as an
+		// explicit UPDATE migration, as
+		// 20260726030000_sync_test_case_drafter_prompt_qa_policy did.
+		key: PUBLISHING_PLANNING_ANALYSIS_AGENT_KEY,
+		name: "Topic Planning & Analysis",
+		description:
+			"Builds the pre-draft planning worksheet for a Publishing Suite topic: angle, key details, recommended authors and voice, audience fit, content types, supporting assets, source signals, risks and open questions.",
+		category: "publishing",
+		tags: ["publishing", "publishing-suite", "planning", "ai-generation"],
+		format: "HANDLEBARS" as const,
+		promptType: "STRUCTURED" as const,
+		structuredFormat: "JSON" as const,
+		isPublic: true,
+		content: PUBLISHING_PLANNING_ANALYSIS_FALLBACK_BODY,
 	},
 ];
 

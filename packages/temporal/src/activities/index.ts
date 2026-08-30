@@ -391,6 +391,9 @@ export {
 // Publishing Suggestion activities (Publishing Suite 1A — collectors, tenant
 // assertion, summarizer, and the Task 9 persistence boundary).
 export * from "./publishing-suggestion";
+// Planning & Analysis activities (Publishing Suite 2A-2 — the topic worksheet's
+// generator and its failure marker).
+export * from "./publishing-planning";
 // Deep Researcher activities (parallel sub-agent research workflow)
 export * from "./deep-researcher";
 // Deep Researcher activities (parallel sub-agent research coordination)

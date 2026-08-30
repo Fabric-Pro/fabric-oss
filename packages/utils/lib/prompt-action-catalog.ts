@@ -28,6 +28,7 @@
  */
 
 import { documentTypeShortLabel } from "./document-type-catalog";
+import { PUBLISHING_PLANNING_ANALYSIS_AGENT_KEY } from "./publishing-planning-prompt";
 
 export type PromptStoryKind = "FEATURE" | "BUG" | null;
 
@@ -115,6 +116,11 @@ export const PROMPT_FEATURE_TYPES = {
 		label: "Meetings & Intake",
 		description:
 			"Preparing meetings, and deciding where captured action items land.",
+	},
+	PUBLISHING: {
+		label: "Publishing Suite",
+		description:
+			"Turning delivered work into publishable topics, and planning what to write before anything is drafted.",
 	},
 } as const satisfies Record<string, { label: string; description: string }>;
 
@@ -411,6 +417,17 @@ export const PROMPT_AGENT_TARGETS: readonly PromptAgentTarget[] = [
 		key: "action_item_routing_judge",
 		label: "Action Item Routing Judge",
 		featureType: "MEETINGS",
+		actions: nonStage("GENERAL"),
+	},
+	{
+		// The pre-draft planning worksheet for a publishing topic. Editing it
+		// changes what the analysis considers and how it frames authorship,
+		// audience and content-type advice. It cannot remove the output contract
+		// or the approval rules (no asset is generated; nothing sensitive is
+		// treated as approved) — those are appended code-side.
+		key: PUBLISHING_PLANNING_ANALYSIS_AGENT_KEY,
+		label: "Topic Planning & Analysis",
+		featureType: "PUBLISHING",
 		actions: nonStage("GENERAL"),
 	},
 ];

@@ -57,6 +57,7 @@ export * from "./publishing-notification-outcome";
 export * from "./publishing-notification-reconcile";
 export * from "./publishing-recipients";
 export * from "./publishing-settings";
+export * from "./publishing-planning";
 export * from "./publishing-suite";
 export * from "./pull-request-reviews";
 export * from "./qa-coverage";

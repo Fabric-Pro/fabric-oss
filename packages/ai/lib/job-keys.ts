@@ -29,6 +29,15 @@ export const AI_JOB_TYPES = [
 	"newsletter-curation",
 	/** Publishing-suggestion topic summarization (daily cron). */
 	"publishing-suggestion",
+	/**
+	 * Publishing-suite topic Planning & Analysis (#1851).
+	 *
+	 * Separate from `publishing-suggestion` because the spend behaves nothing
+	 * like it: this one is user-initiated, on demand, and runs a much longer
+	 * prompt over one topic's own sources. Folding the two together would hide a
+	 * per-click cost inside a daily cron's line item.
+	 */
+	"publishing-planning-analysis",
 	/** Slack channel monitor note summarization. */
 	"slack-channel-monitor",
 	/** Security scanning grouping/review/scan model calls. */

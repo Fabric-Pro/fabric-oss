@@ -268,6 +268,8 @@ model User {
   publishingSuiteSettings      PublishingSuiteSettings[]
   publishingNotificationsReceived PublishingNotificationDelivery[]
   publishingTopicReads PublishingTopicRead[]
+  publishingPlanningAnalyses   PublishingTopicPlanningAnalysis[] @relation("PublishingPlanningAnalysisTenant")
+  publishingPlanningAnalysesRequested PublishingTopicPlanningAnalysis[] @relation("PublishingPlanningAnalysisRequestedBy")
 
   // Notification center relations
   notifications                   Notification[]
@@ -682,6 +684,7 @@ model Organization {
   publishingTopics                        PublishingTopic[]
   publishingSuiteSettings                 PublishingSuiteSettings[]
   publishingTopicReads                    PublishingTopicRead[]
+  publishingPlanningAnalyses              PublishingTopicPlanningAnalysis[]
 
   // Dynamic agent relations
   offloadedToolOutputs   OffloadedToolOutput[]
@@ -1729,6 +1732,7 @@ model Project {
   qaAnalysisVersions         QaAnalysisVersion[]
   publishingSuggestionCycles PublishingSuggestionCycle[]
   publishingTopics           PublishingTopic[]
+  publishingPlanningAnalyses PublishingTopicPlanningAnalysis[]
   publishingSuiteSettings    PublishingSuiteSettings?
 
   // Episodic memory relation (conversations scoped to project)
@@ -6773,12 +6777,77 @@ model PublishingTopic {
   cycle        PublishingSuggestionCycle? @relation(fields: [cycleId], references: [id], onDelete: SetNull)
   createdBy    User?                      @relation("PublishingTopicCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
   readMarkers  PublishingTopicRead[]
+  planningAnalyses PublishingTopicPlanningAnalysis[]
 
   @@unique([projectId, dedupeKey]) // project-wide dedup across ALL statuses (dedupeKey is non-null)
   @@index([projectId, status])
   @@index([cycleId])
   @@index([createdById])
   @@map("publishing_topic")
+}
+
+/// AI-generated pre-draft planning worksheet for ONE publishing topic
+/// (Phase 2A-2, Fizzy #1851).
+///
+/// TENANCY: `organizationId`/`userId` are denormalised from the parent topic and
+/// are strict XOR — an org project stores `userId = NULL`. They are TENANCY, not
+/// ownership; who asked for the run is `requestedById`. Copying
+/// `DecisionLogEntry`'s required `userId` here would make every org-project write
+/// violate the CHECK constraint.
+///
+/// Three things this model needs that Prisma cannot express, all created in
+/// `20260830120000_add_publishing_topic_planning_analysis`:
+///   - a partial unique index `(topicId) WHERE status = 'GENERATING'` — the
+///     in-flight guard, so one topic cannot have two runs in flight;
+///   - `CHECK (("organizationId" IS NULL) <> ("userId" IS NULL))` — strict XOR,
+///     matching `publishing_topic_tenant_xor`. RLS does NOT substitute: its org
+///     branch permits any `userId`, it does not require null;
+///   - `CHECK ("status" <> 'GENERATING' OR "executionTimeoutAt" IS NOT NULL)` —
+///     the liveness deadline, matching
+///     `publishing_suggestion_cycle_generating_timeout`. Without it the partial
+///     index above becomes a PERMANENT lock the moment a worker dies between the
+///     insert and the terminal marker: no user action would ever free the topic.
+model PublishingTopicPlanningAnalysis {
+  id             String                          @id @default(cuid())
+  topicId        String
+  projectId      String
+  organizationId String? // denormalized from the parent topic (XOR)
+  userId         String? // denormalized from the parent topic (XOR — null for org topics)
+  version        Int
+  status         PublishingPlanningAnalysisStatus @default(GENERATING)
+  content        Json? // Zod-validated planning document; null until READY
+  sourceRefs     Json                            @default("{}") // what fed this version, and what failed to
+  model          String?
+  /// BOUND | DEFAULT_UNBOUND | DEFAULT_RENDER_FAILED — which prompt actually
+  /// shaped this analysis. An analysis built from the default body because a
+  /// bound prompt would not render reads exactly like one built from the bound
+  /// prompt, so it is the one thing a reader cannot recover from the output.
+  promptSource   String?
+  error          String?                         @db.Text
+  requestedById  String? // authorship, never tenancy
+  /// Liveness deadline for the reclaim; CHECK-enforced while GENERATING.
+  executionTimeoutAt DateTime?
+  createdAt      DateTime                        @default(now())
+  updatedAt      DateTime                        @updatedAt
+
+  topic        PublishingTopic @relation(fields: [topicId], references: [id], onDelete: Cascade)
+  project      Project         @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  organization Organization?   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User?           @relation("PublishingPlanningAnalysisTenant", fields: [userId], references: [id], onDelete: Cascade)
+  requestedBy  User?           @relation("PublishingPlanningAnalysisRequestedBy", fields: [requestedById], references: [id], onDelete: SetNull)
+
+  @@unique([topicId, version])
+  @@index([topicId, createdAt])
+  @@index([organizationId])
+  @@index([userId])
+  @@index([requestedById])
+  @@map("publishing_topic_planning_analysis")
+}
+
+enum PublishingPlanningAnalysisStatus {
+  GENERATING
+  READY
+  FAILED
 }
 
 /// Per-user read marker for a publishing topic (1D, Fizzy #2265).
