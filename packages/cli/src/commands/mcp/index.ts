@@ -25,7 +25,7 @@ export function buildMcpCommand(): Command {
 	mcp.command("servers")
 		.description("List accessible MCP servers (system + custom)")
 		.option("--org <slug>", "Organization context")
-		.option("--personal", "Personal context")
+		.option("--personal", "Retired — context is organization-only")
 		.option(
 			"--format <format>",
 			"Output format: table|json|yaml|csv",
@@ -45,7 +45,6 @@ export function buildMcpCommand(): Command {
 				try {
 					list = await client.mcp.listServers({
 						org: ctx?.type === "org" ? ctx.slug : undefined,
-						personal: ctx?.type === "personal" ? true : undefined,
 					});
 				} catch (err: unknown) {
 					printError((err as Error).message, 1);
@@ -80,7 +79,7 @@ export function buildMcpCommand(): Command {
 		.command("list", { isDefault: true })
 		.description("List your MCP configurations")
 		.option("--org <slug>", "Organization context")
-		.option("--personal", "Personal context")
+		.option("--personal", "Retired — context is organization-only")
 		.option(
 			"--format <format>",
 			"Output format: table|json|yaml|csv",
@@ -100,7 +99,6 @@ export function buildMcpCommand(): Command {
 				try {
 					list = await client.mcp.listConfigs({
 						org: ctx?.type === "org" ? ctx.slug : undefined,
-						personal: ctx?.type === "personal" ? true : undefined,
 					});
 				} catch (err: unknown) {
 					printError((err as Error).message, 1);
@@ -131,7 +129,7 @@ export function buildMcpCommand(): Command {
 		.command("show <id>")
 		.description("Show a specific MCP configuration")
 		.option("--org <slug>", "Organization context")
-		.option("--personal", "Personal context")
+		.option("--personal", "Retired — context is organization-only")
 		.option("--format <format>", "Output format: table|json|yaml", "table")
 		.action(
 			async (
@@ -144,7 +142,6 @@ export function buildMcpCommand(): Command {
 				try {
 					config = await client.mcp.getConfig(id, {
 						org: ctx?.type === "org" ? ctx.slug : undefined,
-						personal: ctx?.type === "personal" ? true : undefined,
 					});
 				} catch (err: unknown) {
 					printError((err as Error).message, 1);
@@ -177,7 +174,7 @@ export function buildMcpCommand(): Command {
 		.command("delete <id>")
 		.description("Delete an MCP configuration")
 		.option("--org <slug>", "Organization context")
-		.option("--personal", "Personal context")
+		.option("--personal", "Retired — context is organization-only")
 		.option("-y, --yes", "Skip confirmation prompt")
 		.action(
 			async (
@@ -197,7 +194,6 @@ export function buildMcpCommand(): Command {
 				try {
 					await client.mcp.deleteConfig(id, {
 						org: ctx?.type === "org" ? ctx.slug : undefined,
-						personal: ctx?.type === "personal" ? true : undefined,
 					});
 				} catch (err: unknown) {
 					printError((err as Error).message, 1);

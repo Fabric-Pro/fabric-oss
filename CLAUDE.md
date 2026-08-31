@@ -92,6 +92,12 @@ const filter = organizationId
 
 Use `tenantProtectedProcedure` (recommended) or `resolveOrganizationId()` for manual control. See `AGENTS.md` for full details.
 
+**The personal arm is no longer a context you route into.** Every account has an
+organization, and `organizationId: null` is now a fail-closed default reached only
+when something failed to resolve one — code that lands there should treat it as a
+bug, not as personal context. The XOR rule itself is unchanged: never `OR` two
+tenant predicates. See `docs/adr/018-organization-is-the-only-tenant-context.md`.
+
 **One documented exception: `PromptBinding` resolution.** `getBoundPromptVersion` consults the caller's own `USER` binding *before* the `ORG` one inside an organization, so a personal default prompt overrides the organization's for the person who set it (Fizzy #2068, FR3/FR4). Do not "fix" this back to XOR.
 
 The rule above exists to stop one tenant's **data** reaching another. A prompt binding is not tenant data — it is one person's preference about their own work, and honouring it exposes nobody else's anything. The isolation that matters here is between two *users*, and that stays absolute: every `USER`-scope lookup is filtered by `userId`, so no one ever resolves someone else's override.

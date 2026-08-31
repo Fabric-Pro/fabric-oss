@@ -4,6 +4,18 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockMutate = vi.fn();
 
+/**
+ * The organization the caller BELONGS to, which is not always the one in the
+ * URL — a project-only guest is rendered under the host's slug. `useAccountPath`
+ * resolves to theirs; a URL-derived path would send them to the host's settings,
+ * which bounces a guest straight back out.
+ */
+const ownSlug = { current: null as string | null };
+vi.mock("@saas/organizations/hooks/use-organization-context", () => ({
+	useAccountPath: (path: string) =>
+		ownSlug.current ? `/app/${ownSlug.current}/${path}` : `/app/${path}`,
+}));
+
 vi.mock("@saas/auth/hooks/use-session", () => ({
 	useSession: vi.fn(),
 }));
@@ -170,11 +182,35 @@ describe("MfaSetupBanner", () => {
 	});
 
 	describe("behavior", () => {
-		it("links to security settings page", () => {
+		it("links to account security inside the caller's own organization", () => {
+			// The link was hardcoded at the personal settings tree, which was
+			// the only place account security lived. That tree is gone, and the
+			// path follows the organization the caller BELONGS to — not the one
+			// in the URL, which for a project-only guest is somebody else's and
+			// bounces them out.
+			ownSlug.current = "example-org";
 			setupMocks();
 			render(<MfaSetupBanner />);
 			const link = screen.getByText("Set up now").closest("a");
-			expect(link).toHaveAttribute("href", "/app/settings/security");
+			expect(link).toHaveAttribute(
+				"href",
+				"/app/example-org/settings/account/security",
+			);
+		});
+
+		it("still resolves outside an organization, where the redirect catches it", () => {
+			// Rendered before a context resolves, the path has no slug. The
+			// route it lands on is the catch-all left behind by the removed
+			// tree, which redirects into the caller's organization rather than
+			// answering with a 404.
+			ownSlug.current = null;
+			setupMocks();
+			render(<MfaSetupBanner />);
+			const link = screen.getByText("Set up now").closest("a");
+			expect(link).toHaveAttribute(
+				"href",
+				"/app/settings/account/security",
+			);
 		});
 
 		it("calls dismiss mutation with snooze action", () => {

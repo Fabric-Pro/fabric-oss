@@ -122,7 +122,12 @@ describe("audit.taxonomy handler", () => {
 		// OWN role on a project — the counterpart to the admin-side
 		// function_tags_changed, and the only one of the pair the member can
 		// emit, Fizzy #2264) = 108.
-		expect(result.actions).toHaveLength(108);
+		// + 1 mcp.session.organization_denied (a protocol request named an
+		// organization its caller is not a member of and was refused. The
+		// refusal is the only trace the attempt leaves — the request never
+		// reaches a tenant-scoped query, so nothing downstream would log it,
+		// Fizzy #1875) = 109.
+		expect(result.actions).toHaveLength(109);
 		expect(result.actions).toContain("auth.login.success");
 		expect(result.actions).toContain("audit.retention.purged");
 		expect(result.actions).toContain("project.pull_request.comment_posted");

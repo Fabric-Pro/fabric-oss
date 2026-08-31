@@ -10,8 +10,8 @@ import { z } from "zod";
 import {
 	Permissions,
 	protectedProcedure,
-	requirePermission,
-	resolveOrganizationId,
+	requireProjectPermission,
+	resolveOrganizationIdForCaller,
 } from "../../../orpc/procedures";
 
 const ListTemplatesInputSchema = z.object({
@@ -22,7 +22,7 @@ const ListTemplatesInputSchema = z.object({
 });
 
 export const listTemplatesProcedure = protectedProcedure
-	.use(requirePermission(Permissions.AGENT_READ))
+	.use(requireProjectPermission(Permissions.AGENT_READ))
 	.route({
 		method: "GET",
 		path: "/weave/templates",
@@ -32,9 +32,10 @@ export const listTemplatesProcedure = protectedProcedure
 	.input(ListTemplatesInputSchema)
 	.handler(async ({ input, context }) => {
 		const userId = context.user.id;
-		const organizationId = resolveOrganizationId(
+		const organizationId = await resolveOrganizationIdForCaller(
 			input.organizationId,
 			context.session,
+			userId,
 		);
 
 		const templates = await db.weavePlanTemplate.findMany({

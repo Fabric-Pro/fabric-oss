@@ -1,6 +1,7 @@
 import { config } from "@repo/config";
 import {
 	BarChart3Icon,
+	BellIcon,
 	BotIcon,
 	BrainCircuitIcon,
 	CalendarDaysIcon,
@@ -450,6 +451,11 @@ const SETTINGS_GROUP: GsGroup = {
 			cluster: "Account & profile",
 			href: settingsHref("general"),
 		},
+		// No `scope` on either of these: both surfaces are account-global and
+		// now have an organization-rooted route as well as a personal one
+		// (Fizzy #1875, R7/R8), so `settingsHref` resolves in both contexts.
+		// `settings-security` was marked personal-only, which hid it from the
+		// drawer in an organization — wrong once the page is reachable there.
 		{
 			id: "settings-security",
 			label: "Security",
@@ -457,8 +463,16 @@ const SETTINGS_GROUP: GsGroup = {
 				"Password, passkeys, two-factor authentication, and your active sessions.",
 			icon: LockIcon,
 			cluster: "Account & profile",
-			scope: "personal",
 			href: settingsHref("security"),
+		},
+		{
+			id: "settings-notifications",
+			label: "Notifications",
+			description:
+				"Pick which notification categories reach your Notification Center, and whether they also go to email or a signed webhook.",
+			icon: BellIcon,
+			cluster: "Account & profile",
+			href: settingsHref("notifications"),
 		},
 		{
 			id: "settings-members",

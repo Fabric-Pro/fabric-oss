@@ -8,8 +8,8 @@ import { z } from "zod";
 import {
 	Permissions,
 	protectedProcedure,
-	requirePermission,
-	resolveOrganizationId,
+	requireProjectPermission,
+	resolveOrganizationIdForCaller,
 } from "../../../orpc/procedures";
 
 const GetConfigInputSchema = z.object({
@@ -18,7 +18,7 @@ const GetConfigInputSchema = z.object({
 });
 
 export const getConfigProcedure = protectedProcedure
-	.use(requirePermission(Permissions.AGENT_READ))
+	.use(requireProjectPermission(Permissions.AGENT_READ))
 	.route({
 		method: "GET",
 		path: "/weave/config/:projectId",
@@ -28,9 +28,10 @@ export const getConfigProcedure = protectedProcedure
 	.input(GetConfigInputSchema)
 	.handler(async ({ input, context }) => {
 		const userId = context.user.id;
-		const organizationId = resolveOrganizationId(
+		const organizationId = await resolveOrganizationIdForCaller(
 			input.organizationId,
 			context.session,
+			userId,
 		);
 
 		const hasAccess = await hasProjectAccess(

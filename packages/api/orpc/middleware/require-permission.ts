@@ -153,6 +153,69 @@ export function requirePermission(permission: Permission) {
  *     explicit ProjectMember row.
  *  D. Otherwise, FORBIDDEN.
  */
+/**
+ * The project-permission decision, extracted from the middleware around it.
+ *
+ * Kept separate because it is the shape a HANDLER needs. Twelve weave
+ * procedures identify their work by a `planId`, so the project is only known
+ * after the plan is loaded and no middleware can see it; the check for those
+ * has to happen where the plan does. This is what they would call, and keeping
+ * one implementation is what stops the two answering differently.
+ *
+ * What it means for a guest was measured before it was wired, because it is not
+ * obvious: NO project role grants `AGENT_CREATE`, `AGENT_UPDATE` or
+ * `AGENT_DELETE`. The project ladder tops out at `AGENT_EXECUTE`, because agent
+ * management is an organization-level concern. So a project-scoped guest can
+ * read weave plans and start executions, and cannot approve, revise or delete
+ * one — their ProjectMember row is authoritative and cannot grant what those
+ * ask for. That is the ruling, not an accident of the tables.
+ *
+ * The precedence is project-authoritative: an owner passes, an active
+ * ProjectMember row decides alone, and the organization role is the fallback.
+ * Throws rather than returning a boolean — every caller's answer to "no" is to
+ * stop, and a boolean invites one of them to carry on.
+ */
+export async function assertProjectPermission(
+	projectId: string,
+	userId: string,
+	permission: Permission,
+	context?: { allowedProjectIds?: string[] },
+): Promise<void> {
+	const access = await resolveEffectiveProjectPermissions(projectId, userId);
+	if (!access) {
+		throw new ORPCError("NOT_FOUND", { message: "Project not found" });
+	}
+
+	// A personal-project owner passes unconditionally, matching the middleware
+	// exactly — an owner is authorized for any project permission, including
+	// ones outside the OWNER permission set.
+	if (access.source === "owner") {
+		return;
+	}
+
+	if (hasPermission(access.permissions, permission)) {
+		// An active ProjectMember grant seeds the tenant carve-out so
+		// downstream tenant-db reads can see this project for a guest. An
+		// org-role grant needs no carve-out — the organization filter covers it.
+		if (access.source === "project-member") {
+			grantProjectAccess(projectId, access.organizationId);
+			if (context) {
+				context.allowedProjectIds = [
+					...(context.allowedProjectIds ?? []),
+					projectId,
+				];
+			}
+		}
+		return;
+	}
+
+	denyPermission(
+		permission,
+		`Missing required permission: ${permission}`,
+		userId,
+	);
+}
+
 export function requireProjectPermission(
 	permission: Permission,
 	options?: { projectIdKey?: string },
@@ -184,42 +247,14 @@ export function requireProjectPermission(
 					throw new ORPCError("UNAUTHORIZED");
 				}
 
-				const access = await resolveEffectiveProjectPermissions(
+				// One implementation, shared with the handler-side check the
+				// plan-scoped procedures use — two copies of this precedence
+				// would eventually answer differently.
+				await assertProjectPermission(
 					projectId,
 					userId,
-				);
-				if (!access) {
-					throw new ORPCError("NOT_FOUND", {
-						message: "Project not found",
-					});
-				}
-
-				// Personal-project owner passes unconditionally (exact parity
-				// with the pre-refactor Path A — an owner is authorized for any
-				// project permission, including ones outside the OWNER project
-				// permission set).
-				if (access.source === "owner") {
-					return next();
-				}
-
-				if (hasPermission(access.permissions, permission)) {
-					// Active ProjectMember grants seed the tenant carve-out so
-					// downstream tenant-db queries can read this project for a
-					// guest. Org-role grants don't need it (org filter covers them).
-					if (access.source === "project-member") {
-						grantProjectAccess(projectId, access.organizationId);
-						context.allowedProjectIds = [
-							...(context.allowedProjectIds ?? []),
-							projectId,
-						];
-					}
-					return next();
-				}
-
-				denyPermission(
 					permission,
-					`Missing required permission: ${permission}`,
-					userId,
+					context,
 				);
 				return next();
 			});
@@ -363,9 +398,12 @@ function resolveTargetOrganizationId(
  * of THAT org with a role that grants `permission`.
  *
  * Behaviour:
- *  - **Personal context** (resolved org is `undefined` / explicit `null`):
- *    pass through, exactly like `requirePermission` — personal data is scoped
- *    to the caller's `userId` by tenant-db, so there is no org role to check.
+ *  - **Nothing resolved** (`undefined` / explicit `null`): pass through, exactly
+ *    like `requirePermission` — this was personal context, whose data is scoped
+ *    to the caller's `userId` by tenant-db, so there was no org role to check.
+ *    Pass `requireOrganization: true` to REFUSE instead, which is required on
+ *    any procedure that no longer has a personal variant — otherwise sending
+ *    `organizationId: null` skips the role check.
  *  - **Org context**: look up the caller's membership in the *resolved* org.
  *    No membership → `FORBIDDEN` (a hard cross-tenant boundary, never
  *    downgraded by `RBAC_DRY_RUN`). Member but role lacks `permission` →
@@ -378,7 +416,7 @@ function resolveTargetOrganizationId(
  */
 export function requireInputOrgPermission(
 	permission: Permission,
-	options?: { orgIdKey?: string },
+	options?: { orgIdKey?: string; requireOrganization?: boolean },
 ) {
 	const key = options?.orgIdKey ?? "organizationId";
 	const mw = os
@@ -398,8 +436,29 @@ export function requireInputOrgPermission(
 				context.session,
 			);
 
-			// Personal context — no org role applies; userId scoping handles it.
+			// Nothing resolved. Historically that meant personal context, where
+			// no org role applies because tenant-db scopes by userId — so the
+			// check passed through.
+			//
+			// That pass-through is a BYPASS for a procedure that has no personal
+			// variant: `organizationId: null` in the input resolves to nothing
+			// (explicit null deliberately does not fall back to the session), so
+			// a caller who sends it skips the role check entirely. The handler
+			// still refuses a non-member — object-level access is checked
+			// against the row's real organization — but the ROLE never runs,
+			// which is exactly what this middleware exists to make it do.
+			//
+			// `requireOrganization` closes that on procedures where personal
+			// context no longer exists. It is opt-in rather than the default
+			// because the pass-through is still correct for the account-global
+			// procedures that share this middleware.
 			if (!organizationId) {
+				if (options?.requireOrganization) {
+					throw new ORPCError("FORBIDDEN", {
+						message:
+							"This operation requires an organization context",
+					});
+				}
 				return next();
 			}
 

@@ -10,10 +10,10 @@ import { getTemporalClient } from "@repo/temporal";
 import { orchestratorCancelSignal } from "@repo/temporal/workflows";
 import { z } from "zod";
 import {
+	assertProjectPermission,
 	Permissions,
 	protectedProcedure,
-	requirePermission,
-	resolveOrganizationId,
+	resolveOrganizationIdForCaller,
 } from "../../../orpc/procedures";
 
 const CancelExecutionInputSchema = z.object({
@@ -22,7 +22,6 @@ const CancelExecutionInputSchema = z.object({
 });
 
 export const cancelExecutionProcedure = protectedProcedure
-	.use(requirePermission(Permissions.AGENT_DELETE))
 	.route({
 		method: "POST",
 		path: "/weave/executions/:executionId/cancel",
@@ -32,9 +31,10 @@ export const cancelExecutionProcedure = protectedProcedure
 	.input(CancelExecutionInputSchema)
 	.handler(async ({ input, context }) => {
 		const userId = context.user.id;
-		const organizationId = resolveOrganizationId(
+		const organizationId = await resolveOrganizationIdForCaller(
 			input.organizationId,
 			context.session,
+			userId,
 		);
 
 		const execution = await db.weaveExecution.findFirst({
@@ -52,6 +52,15 @@ export const cancelExecutionProcedure = protectedProcedure
 				message: "Execution not found or access denied",
 			});
 		}
+
+		// Object-level, and the same decision the middleware makes for a
+		// procedure whose input names the project. This one names an execution, so
+		// the project is only known here.
+		await assertProjectPermission(
+			execution.projectId,
+			userId,
+			Permissions.AGENT_UPDATE,
+		);
 
 		if (
 			execution.status !== "RUNNING" &&

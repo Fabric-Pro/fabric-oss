@@ -32,6 +32,8 @@ vi.mock("@saas/organizations/hooks/use-active-organization", () => ({
 }));
 
 vi.mock("@saas/organizations/hooks/use-organization-context", () => ({
+	// Not a guest in this file, so the account org is never consulted.
+	useAccountOrganization: () => null,
 	useOrganizationContext: () => ({
 		organizationId: "org-1",
 		organizationSlug: "acme",
@@ -45,6 +47,7 @@ vi.mock("@saas/organizations/hooks/use-is-guest-in-org", () => ({
 
 vi.mock("@saas/organizations/lib/api", () => ({
 	useOrganizationListQuery: () => ({
+		isPending: false,
 		data: [
 			{ slug: "acme", name: "Acme", logo: null },
 			{ slug: "globex", name: "Globex", logo: null },
@@ -59,8 +62,7 @@ vi.mock("@shared/hooks/router", () => ({
 vi.mock("next-intl", () => ({
 	useTranslations: () => (key: string) => {
 		const map: Record<string, string> = {
-			"organizations.organizationSelect.personalAccount":
-				"Personal Account",
+			"organizations.organizationSelect.ownAccount": "Personal Account",
 			"organizations.organizationSelect.organizations": "Organizations",
 			"organizations.organizationSelect.switching":
 				"Switching workspace…",
@@ -183,9 +185,9 @@ describe("OrganzationSelect — switching feedback", () => {
 		activeOrgState.switchingToSlug = "globex";
 		render(<OrganzationSelect />);
 
-		expect(
-			screen.getByRole("button", { name: /test user/i }),
-		).toBeDisabled();
+		// The personal-account option used to be one of the things this
+		// asserted was disabled. It no longer exists: context is
+		// organization-only, so every workspace option IS an organization.
 		const globexButtons = screen.getAllByRole("button", {
 			name: /globex/i,
 		});

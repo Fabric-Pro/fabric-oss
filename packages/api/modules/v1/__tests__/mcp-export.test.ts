@@ -10,6 +10,10 @@ const mockListSystemMcpServers = vi.fn();
 const mockLogDataEvent = vi.fn().mockResolvedValue(undefined);
 
 vi.mock("@repo/database", () => ({
+	resolveUserOrganization: vi.fn(async () => ({
+		kind: "resolved" as const,
+		organizationId: "org-test",
+	})),
 	deleteMcpConfig: (...args: unknown[]) => mockDeleteMcpConfig(...args),
 	getMcpConfigById: (...args: unknown[]) => mockGetMcpConfigById(...args),
 	getValidAccessToken: (...args: unknown[]) =>

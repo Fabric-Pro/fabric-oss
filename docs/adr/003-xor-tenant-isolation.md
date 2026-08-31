@@ -1,8 +1,14 @@
 # ADR-003: XOR Pattern for Tenant Isolation
 
-- **Status**: Accepted
+- **Status**: Accepted, amended by [ADR-018](018-organization-is-the-only-tenant-context.md)
 - **Date**: 2024-06-01
 - **Deciders**: Engineering team
+
+> **Amendment (2026-08-31).** The XOR rule below still holds — never `OR` two
+> tenant predicates. What no longer holds is the premise that personal is one of
+> two reachable contexts: every account now has an organization, and the
+> `organizationId: null` arm is a fail-closed default rather than a context to
+> route into. See ADR-018 before writing new tenant-scoped code.
 
 ## Context
 

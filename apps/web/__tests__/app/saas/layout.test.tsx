@@ -85,7 +85,12 @@ let warnSpy: ReturnType<typeof vi.spyOn>;
 
 beforeEach(() => {
 	vi.clearAllMocks();
-	mockGetOrganizationList.mockResolvedValue([]);
+	// Every account has an organization now (FR1a), and the layout redirects to
+	// the creation page when one has none — so an empty list would send these
+	// tests there instead of into the role-tag code they are about.
+	mockGetOrganizationList.mockResolvedValue([
+		{ id: "org-1", slug: "example-org", name: "Example Org" },
+	]);
 	warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
 });
 

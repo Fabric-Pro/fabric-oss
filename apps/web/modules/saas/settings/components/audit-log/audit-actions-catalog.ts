@@ -999,6 +999,13 @@ export const AUDIT_ACTIONS: AuditActionEntry[] = [
 			"An MCP server configuration was removed. Features depending on it stop working.",
 	},
 	{
+		key: "mcp.session.organization_denied",
+		categoryId: "org",
+		labelKey: "settings.auditLog.actions.mcp.session.organization_denied",
+		description:
+			"A protocol request named an organization its caller does not belong to, and was refused. The row records the attempt, since a refused request never reaches a tenant-scoped query and would otherwise leave no trace.",
+	},
+	{
 		key: "decision.override_accepted",
 		categoryId: "project",
 		labelKey: "settings.auditLog.actions.decision.override_accepted",

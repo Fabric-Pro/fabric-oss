@@ -8,13 +8,13 @@
  */
 
 import { ORPCError } from "@orpc/server";
-import { db, hasProjectAccess } from "@repo/database";
+import { db } from "@repo/database";
 import { z } from "zod";
 import {
+	assertProjectPermission,
 	Permissions,
 	protectedProcedure,
-	requirePermission,
-	resolveOrganizationId,
+	resolveOrganizationIdForCaller,
 } from "../../../orpc/procedures";
 import { runInBackground } from "../lib/run-in-background";
 import { runPatternGeneration } from "../lib/run-pattern-generation";
@@ -65,7 +65,6 @@ function rebuildRetryMessage(plan: {
 }
 
 export const retryGenerationProcedure = protectedProcedure
-	.use(requirePermission(Permissions.AGENT_UPDATE))
 	.route({
 		method: "POST",
 		path: "/weave/plans/:planId/retry-generation",
@@ -78,9 +77,10 @@ export const retryGenerationProcedure = protectedProcedure
 	.output(RetryGenerationOutputSchema)
 	.handler(async ({ input, context }) => {
 		const userId = context.user.id;
-		const organizationId = resolveOrganizationId(
+		const organizationId = await resolveOrganizationIdForCaller(
 			input.organizationId,
 			context.session,
+			userId,
 		);
 
 		const plan = await db.weavePlan.findFirst({
@@ -111,17 +111,14 @@ export const retryGenerationProcedure = protectedProcedure
 			});
 		}
 
-		const hasAccess = await hasProjectAccess(
+		// Object-level, and the same decision the middleware makes for a
+		// procedure whose input names the project. This one names a plan, so
+		// the project is only known here.
+		await assertProjectPermission(
 			plan.projectId,
 			userId,
-			organizationId,
+			Permissions.AGENT_UPDATE,
 		);
-
-		if (!hasAccess) {
-			throw new ORPCError("FORBIDDEN", {
-				message: "You don't have access to this project",
-			});
-		}
 
 		if (plan.status !== "FAILED") {
 			throw new ORPCError("BAD_REQUEST", {

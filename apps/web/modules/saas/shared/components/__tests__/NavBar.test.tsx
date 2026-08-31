@@ -29,6 +29,10 @@ vi.mock("@saas/organizations/hooks/use-organization-context", () => ({
 	// The Job Hub button in the sidebar footer polls its badge count through
 	// `useTenantQuery`, which reads the active org id directly.
 	useOrganizationId: () => "org-1",
+	// Account-level destinations resolve to an organization the caller
+	// BELONGS to, which for a guest is not the one in the URL.
+	useAccountBasePath: () => "/app/own-org",
+	useAccountPath: (path: string) => `/app/own-org/${path}`,
 }));
 
 const guestMock = vi.fn();
@@ -277,27 +281,27 @@ describe("NavBar — guest sidebar hygiene", () => {
 	}
 
 	// Guests get the SAME nav as their personal workspace — the switcher
-	// reads "Personal account" for them, so every item below it must be the
+	// names their OWN organization for them, so every item below it must be
 	// personal item rooted at /app, never the host org's basePath.
-	it("shows the full personal nav rooted at /app for project-only guests in an org", () => {
+	it("roots the guest's nav in their OWN org, never the host's", () => {
 		setupGuestOrgContext();
 		renderNavBar();
 
 		const expectedItems: Array<[RegExp, string]> = [
-			[/app\.menu\.start/, "/app"],
+			[/app\.menu\.start/, "/app/own-org"],
 			// The chat entry points at the unified agent interface; Nexus is
 			// retired into it and /nexus redirects there (#2040).
-			[/app\.menu\.aiChatbot/, "/app/agents/fabric-ai"],
-			[/app\.menu\.prompts/, "/app/prompts"],
-			[/^Projects$/, "/app/projects"],
-			[/AI Agents/, "/app/agents"],
-			[/^Skills$/, "/app/skills"],
-			[/^Templates$/, "/app/agent-templates"],
-			[/^Workflows$/, "/app/workflows"],
-			[/^Integrations$/, "/app/settings/integrations"],
-			[/^Workspaces$/, "/app/workspaces"],
-			[/MCP Servers/, "/app/mcp-servers"],
-			[/^Reports$/, "/app/report-templates"],
+			[/app\.menu\.aiChatbot/, "/app/own-org/agents/fabric-ai"],
+			[/app\.menu\.prompts/, "/app/own-org/prompts"],
+			[/^Projects$/, "/app/own-org/projects"],
+			[/AI Agents/, "/app/own-org/agents"],
+			[/^Skills$/, "/app/own-org/skills"],
+			[/^Templates$/, "/app/own-org/agent-templates"],
+			[/^Workflows$/, "/app/own-org/workflows"],
+			[/^Integrations$/, "/app/own-org/settings/integrations"],
+			[/^Workspaces$/, "/app/own-org/workspaces"],
+			[/MCP Servers/, "/app/own-org/mcp-servers"],
+			[/^Reports$/, "/app/own-org/report-templates"],
 		];
 		for (const [name, href] of expectedItems) {
 			const links = screen.getAllByRole("link", { name });
@@ -308,17 +312,29 @@ describe("NavBar — guest sidebar hygiene", () => {
 		}
 	});
 
+	// The guarantee this whole branch exists to protect, asserted directly
+	// rather than inferred from the table above: whatever the guest's nav
+	// points at, none of it is the organization they are looking at.
+	it("puts no host-org link anywhere in the guest's nav", () => {
+		setupGuestOrgContext();
+		renderNavBar();
+
+		for (const link of screen.getAllByRole("link")) {
+			expect(link.getAttribute("href") ?? "").not.toContain("/app/org-1");
+		}
+	});
+
 	// Guests must never be routed into (or shown) the host org's chrome —
 	// their Projects item points at the PERSONAL projects list, which hosts
 	// the "Shared with me" section.
-	it("points the guest Projects item at the personal projects route", () => {
+	it("points the guest Projects item at their own org's projects route", () => {
 		setupGuestOrgContext();
 		renderNavBar();
 
 		const projects = screen.getAllByRole("link", { name: /^Projects$/ });
 		expect(projects.length).toBeGreaterThan(0);
 		for (const link of projects) {
-			expect(link).toHaveAttribute("href", "/app/projects");
+			expect(link).toHaveAttribute("href", "/app/own-org/projects");
 		}
 	});
 
@@ -333,7 +349,7 @@ describe("NavBar — guest sidebar hygiene", () => {
 		}
 	});
 
-	it("shows personal account settings (not organization settings) for project-only guests in an org", () => {
+	it("shows account settings (not organization settings) for project-only guests in an org", () => {
 		setupGuestOrgContext();
 		renderNavBar();
 
@@ -345,7 +361,10 @@ describe("NavBar — guest sidebar hygiene", () => {
 		});
 		expect(accountLinks.length).toBeGreaterThan(0);
 		for (const link of accountLinks) {
-			expect(link).toHaveAttribute("href", "/app/settings/general");
+			expect(link).toHaveAttribute(
+				"href",
+				"/app/own-org/settings/account/profile",
+			);
 		}
 		// Logout is still present
 		expect(
@@ -417,7 +436,7 @@ describe("NavBar — admin link stays in the current workspace", () => {
 		}
 	});
 
-	it("points the Admin link at the personal admin route in personal context", () => {
+	it("points the Admin link at the caller's own org outside org context", () => {
 		setupAdminInPersonal();
 		renderNavBar();
 
@@ -426,13 +445,13 @@ describe("NavBar — admin link stays in the current workspace", () => {
 		});
 		expect(adminLinks.length).toBeGreaterThan(0);
 		for (const link of adminLinks) {
-			expect(link).toHaveAttribute("href", "/app/admin");
+			expect(link).toHaveAttribute("href", "/app/own-org/admin");
 		}
 	});
 
 	// A guest's presented workspace IS personal, so even a system admin who
 	// is only a guest in the org gets the personal admin route.
-	it("points the Admin link at the personal admin route for guest admins in an org", () => {
+	it("points the Admin link at their own org for guest admins in an org", () => {
 		sessionMock.mockReturnValue({
 			user: { id: "u-1", email: "admin@example.test", role: "admin" },
 		});
@@ -449,7 +468,7 @@ describe("NavBar — admin link stays in the current workspace", () => {
 		});
 		expect(adminLinks.length).toBeGreaterThan(0);
 		for (const link of adminLinks) {
-			expect(link).toHaveAttribute("href", "/app/admin");
+			expect(link).toHaveAttribute("href", "/app/own-org/admin");
 		}
 	});
 
@@ -849,7 +868,7 @@ describe("NavBar — unified agent interface rollback", () => {
 		const link = screen.getByRole("link", {
 			name: /app\.menu\.aiChatbot$/,
 		});
-		expect(link).toHaveAttribute("href", "/app/agents/fabric-ai");
+		expect(link).toHaveAttribute("href", "/app/own-org/agents/fabric-ai");
 	});
 
 	it("sends the chat entry back to Nexus when the flag is off", () => {
@@ -859,6 +878,6 @@ describe("NavBar — unified agent interface rollback", () => {
 		const link = screen.getByRole("link", {
 			name: /app\.menu\.aiChatbotLegacy/,
 		});
-		expect(link).toHaveAttribute("href", "/app/nexus");
+		expect(link).toHaveAttribute("href", "/app/own-org/nexus");
 	});
 });

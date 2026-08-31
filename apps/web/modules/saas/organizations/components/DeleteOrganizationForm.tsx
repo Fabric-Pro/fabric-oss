@@ -48,6 +48,10 @@ export function DeleteOrganizationForm() {
 						"organizations.settings.notifications.organizationDeleted",
 					),
 				);
+				// Clears the organization that no longer exists from the
+				// session — not a return to personal context, which is gone.
+				// `/app` then routes on membership: another organization if
+				// they have one, the creation page if this was their last.
 				await setActiveOrganization(null);
 				await reloadOrganizations();
 				router.replace("/app");

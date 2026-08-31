@@ -6,13 +6,13 @@
  */
 
 import { ORPCError } from "@orpc/server";
-import { db, hasProjectAccess } from "@repo/database";
+import { db } from "@repo/database";
 import { z } from "zod";
 import {
+	assertProjectPermission,
 	Permissions,
 	protectedProcedure,
-	requirePermission,
-	resolveOrganizationId,
+	resolveOrganizationIdForCaller,
 } from "../../../orpc/procedures";
 
 const ApprovePlanInputSchema = z.object({
@@ -23,7 +23,6 @@ const ApprovePlanInputSchema = z.object({
 });
 
 export const approvePlanProcedure = protectedProcedure
-	.use(requirePermission(Permissions.AGENT_UPDATE))
 	.route({
 		method: "POST",
 		path: "/weave/plans/:planId/approve",
@@ -35,9 +34,10 @@ export const approvePlanProcedure = protectedProcedure
 	.input(ApprovePlanInputSchema)
 	.handler(async ({ input, context }) => {
 		const userId = context.user.id;
-		const organizationId = resolveOrganizationId(
+		const organizationId = await resolveOrganizationIdForCaller(
 			input.organizationId,
 			context.session,
+			userId,
 		);
 
 		// Find plan with proper tenant isolation
@@ -57,18 +57,14 @@ export const approvePlanProcedure = protectedProcedure
 			});
 		}
 
-		// Verify project access
-		const hasAccess = await hasProjectAccess(
+		// Object-level, and the same decision the middleware makes for a
+		// procedure whose input names the project. This one names a plan, so
+		// the project is only known here.
+		await assertProjectPermission(
 			plan.projectId,
 			userId,
-			organizationId,
+			Permissions.AGENT_UPDATE,
 		);
-
-		if (!hasAccess) {
-			throw new ORPCError("FORBIDDEN", {
-				message: "You don't have access to this project",
-			});
-		}
 
 		if (plan.status !== "PENDING_APPROVAL" && plan.status !== "DRAFT") {
 			throw new ORPCError("BAD_REQUEST", {

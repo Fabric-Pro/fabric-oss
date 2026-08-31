@@ -133,6 +133,15 @@ describe("better-auth 2FA lockout drift", () => {
 				expect([
 					"INVALID_CODE",
 					"TOO_MANY_ATTEMPTS_REQUEST_NEW_CODE",
+					// Fifteen verifies through three real deliveries outlive the
+					// earliest code's TTL, and a re-send leaves that record in
+					// play — so a late attempt may legitimately consume an
+					// expired one. Third per-code outcome, same class as the two
+					// above: it says THIS CODE is finished, never that the
+					// ACCOUNT is locked, which is the only thing this guard
+					// claims. Without it the run fails roughly two times in
+					// three on timing alone.
+					"OTP_HAS_EXPIRED",
 				]).toContain(
 					(error as { body?: { code?: string } })?.body?.code,
 				);

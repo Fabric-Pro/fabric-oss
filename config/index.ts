@@ -41,7 +41,7 @@ export const config = {
 		// Should users be able to create new organizations? Otherwise only admin users can create them
 		enableUsersToCreateOrganizations: true,
 		// Whether users should be required to be in an organization. This will redirect users to the organization page after sign in
-		requireOrganization: false,
+		requireOrganization: true,
 		// Define forbidden organization slugs. Make sure to add all paths that you define as a route after /app/... to avoid routing issues
 		forbiddenOrganizationSlugs: [
 			"new-organization",

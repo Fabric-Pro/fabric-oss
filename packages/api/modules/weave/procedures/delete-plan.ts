@@ -7,13 +7,13 @@
  */
 
 import { ORPCError } from "@orpc/server";
-import { db, hasProjectAccess } from "@repo/database";
+import { db } from "@repo/database";
 import { z } from "zod";
 import {
+	assertProjectPermission,
 	Permissions,
 	protectedProcedure,
-	requirePermission,
-	resolveOrganizationId,
+	resolveOrganizationIdForCaller,
 } from "../../../orpc/procedures";
 
 const DeletePlanInputSchema = z.object({
@@ -35,7 +35,6 @@ const ACTIVE_EXECUTION_STATUSES = [
 ] as const;
 
 export const deletePlanProcedure = protectedProcedure
-	.use(requirePermission(Permissions.AGENT_DELETE))
 	.route({
 		method: "POST",
 		path: "/weave/plans/:planId/delete",
@@ -48,9 +47,10 @@ export const deletePlanProcedure = protectedProcedure
 	.output(DeletePlanOutputSchema)
 	.handler(async ({ input, context }) => {
 		const userId = context.user.id;
-		const organizationId = resolveOrganizationId(
+		const organizationId = await resolveOrganizationIdForCaller(
 			input.organizationId,
 			context.session,
+			userId,
 		);
 
 		const plan = await db.weavePlan.findFirst({
@@ -69,17 +69,14 @@ export const deletePlanProcedure = protectedProcedure
 			});
 		}
 
-		const hasAccess = await hasProjectAccess(
+		// Object-level, and the same decision the middleware makes for a
+		// procedure whose input names the project. This one names a plan, so
+		// the project is only known here.
+		await assertProjectPermission(
 			plan.projectId,
 			userId,
-			organizationId,
+			Permissions.AGENT_DELETE,
 		);
-
-		if (!hasAccess) {
-			throw new ORPCError("FORBIDDEN", {
-				message: "You don't have access to this project",
-			});
-		}
 
 		// Refuse to delete while a workflow may still be running — cancel the
 		// execution first so the run is torn down cleanly.

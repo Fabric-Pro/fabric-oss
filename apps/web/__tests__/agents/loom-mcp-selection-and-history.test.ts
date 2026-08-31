@@ -98,7 +98,7 @@ describe("control deck tabs", () => {
 	// own guards (`showAgents && sectionMode !== "tools"`) resolve to nothing
 	// there, so the tab highlighted and the body below it stayed empty.
 	const source = readSource(
-		"app/(saas)/app/agents/fabric-ai/FabricAIClient.tsx",
+		"modules/saas/agents/components/fabric-ai/FabricAIClient.tsx",
 	);
 
 	it("offers the Agents tab only on the orchestrator engine", () => {

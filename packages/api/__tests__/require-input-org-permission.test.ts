@@ -112,6 +112,65 @@ describe("requireInputOrgPermission — tenant-membership enforcement", () => {
 		expect(mocks.getOrganizationMembership).not.toHaveBeenCalled();
 	});
 
+	// The pass-through above is a BYPASS on any procedure that no longer has a
+	// personal variant: explicit null deliberately does not fall back to the
+	// session, so a caller who sends it skips the role check. Found while
+	// verifying the weave fix, which had claimed the checks now evaluate.
+	it("refuses instead of passing through when requireOrganization is set", async () => {
+		const requireInputOrgPermission = await loadMiddleware();
+		const mw = requireInputOrgPermission(Permissions.INTEGRATION_CONNECT, {
+			requireOrganization: true,
+		});
+
+		await expect(
+			invokeMw(
+				mw,
+				makeCtx({
+					session: { activeOrganizationId: null },
+					tenantContext: {
+						userId: USER_ID,
+						type: "personal",
+						organizationId: null,
+					},
+				}),
+				{ organizationId: null },
+			),
+		).rejects.toMatchObject({ code: "FORBIDDEN" });
+
+		// Refused before any lookup — there is no organization to look one up in.
+		expect(mocks.getOrganizationMembership).not.toHaveBeenCalled();
+	});
+
+	// A caller whose SESSION carries an organization is unaffected: only an
+	// explicit null reaches the refusal, and that is the crafted case.
+	it("still resolves from the session when the input omits the organization", async () => {
+		mocks.getOrganizationMembership.mockResolvedValue({ role: "owner" });
+
+		const requireInputOrgPermission = await loadMiddleware();
+		const mw = requireInputOrgPermission(Permissions.INTEGRATION_CONNECT, {
+			requireOrganization: true,
+		});
+
+		const { next } = await invokeMw(
+			mw,
+			makeCtx({
+				session: { activeOrganizationId: SESSION_ORG },
+				tenantContext: {
+					userId: USER_ID,
+					type: "organization",
+					organizationId: SESSION_ORG,
+				},
+			}),
+			{},
+		);
+
+		expect(next).toHaveBeenCalled();
+		expect(mocks.getOrganizationMembership).toHaveBeenCalledWith(
+			SESSION_ORG,
+			USER_ID,
+		);
+	});
+
 	it("cross-tenant: admin of session org A passing org B is FORBIDDEN, and membership is checked against org B", async () => {
 		// Caller is admin of SESSION_ORG (their session), but not a member of
 		// VICTIM_ORG. This is the exact IDOR the fix closes.

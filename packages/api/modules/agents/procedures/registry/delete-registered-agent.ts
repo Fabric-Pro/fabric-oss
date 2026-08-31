@@ -16,7 +16,7 @@ import { z } from "zod";
 import {
 	Permissions,
 	protectedProcedure,
-	requirePermission,
+	requireInputOrgPermission,
 	resolveOrganizationId,
 } from "../../../../orpc/procedures";
 import { verifyOrganizationMembership } from "../../../organizations/lib/membership";
@@ -25,7 +25,11 @@ import { verifyOrganizationMembership } from "../../../organizations/lib/members
  * Delete a registered agent
  */
 export const deleteRegisteredAgent = protectedProcedure
-	.use(requirePermission(Permissions.AGENT_DELETE))
+	.use(
+		requireInputOrgPermission(Permissions.AGENT_DELETE, {
+			requireOrganization: true,
+		}),
+	)
 	.route({
 		method: "DELETE",
 		path: "/agents/registry/:id",

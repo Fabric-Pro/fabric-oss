@@ -32,6 +32,7 @@ import {
 	type HybridExecutionInput,
 	type TemplateExecutionInput,
 } from "@repo/temporal";
+import { recordOrganizationRefusal } from "@saas/mcp/lib/record-organization-refusal";
 import type { NextRequest } from "next/server";
 import {
 	executePlatformTool,
@@ -60,6 +61,68 @@ interface AuthResult {
 	userName: string;
 	email: string;
 	role: "user" | "admin";
+}
+
+/**
+ * Why a request that presented usable credentials still gets no session.
+ *
+ * All three are refusals of the same kind — the caller is known, and the
+ * organization they would run in could not be settled — so they are reasons
+ * inside one `refused` outcome rather than three outcomes of their own. That
+ * shape is deliberate: every consumer already branches on
+ * `status === "refused"` and returns, so a reason added here cannot be
+ * silently unhandled by one of them, whereas a new *status* would be. Only
+ * the response builder reads the reason, and it must handle each one.
+ *
+ * - `not_a_member` — the request named an organization; the caller does not
+ *   belong to it. Nothing about retrying with the same key changes that.
+ * - `ambiguous` — the request named nothing, and the caller belongs to
+ *   several organizations. They have somewhere to go but have not said
+ *   where, and naming one is a remedy they can actually apply, so the
+ *   refusal has to point at it.
+ * - `no_membership` — the request named nothing and the caller belongs to no
+ *   organization at all. There is nowhere to resolve to, and no header they
+ *   could send would create one.
+ */
+type OrganizationRefusal =
+	| { reason: "not_a_member"; requestedOrganizationId: string }
+	| { reason: "ambiguous_organization"; organizationIds: string[] }
+	| { reason: "no_membership" };
+
+/**
+ * What authenticating one request concluded. Three answers, not two.
+ *
+ * `anonymous` means no usable credentials were presented — this route serves
+ * those as a public session, so it is a normal outcome rather than an error.
+ * `refused` means credentials WERE presented and no organization could be
+ * settled for them — see `OrganizationRefusal` for the three ways that
+ * happens.
+ *
+ * The distinction has to survive as far as the request handlers. Both cases
+ * used to be `null`, and every session path treats a null fresh result as "no
+ * credentials this time, keep using the stored session" — so a refusal
+ * expressed as absence would be answered by serving the caller the tenant
+ * their session already carried.
+ */
+type AuthOutcome =
+	| { status: "authenticated"; authResult: AuthResult }
+	| { status: "anonymous" }
+	| { status: "refused"; refusal: OrganizationRefusal };
+
+const ANONYMOUS_AUTH: AuthOutcome = { status: "anonymous" };
+
+function authenticatedAs(authResult: AuthResult): AuthOutcome {
+	return { status: "authenticated", authResult };
+}
+
+/**
+ * The authenticated identity, or `null` for a public session. Only safe to
+ * call once a `refused` outcome has been handled — it deliberately collapses
+ * `refused` into `null`, which is why every caller checks for the refusal
+ * first and returns before reaching here.
+ */
+function authResultOf(outcome: AuthOutcome): AuthResult | null {
+	return outcome.status === "authenticated" ? outcome.authResult : null;
 }
 
 interface RequestSession {
@@ -498,15 +561,14 @@ const CONFORMANCE_PROMPTS = [
 	},
 ];
 
-async function authenticateRequest(
-	request: NextRequest,
-): Promise<AuthResult | null> {
+async function authenticateRequest(request: NextRequest): Promise<AuthOutcome> {
 	const authHeader = request.headers.get("authorization");
 
 	if (authHeader?.startsWith("Bearer ")) {
 		const rawKey = authHeader.slice(7);
 		const keyHash = createHash("sha256").update(rawKey).digest("hex");
-		const { db } = await import("@repo/database");
+		const { db, isOrganizationMember, resolveUserOrganization } =
+			await import("@repo/database");
 
 		const orgKey = await db.organizationApiKey.findFirst({
 			where: {
@@ -533,21 +595,23 @@ async function authenticateRequest(
 			});
 
 			if (!user) {
-				return null;
+				return ANONYMOUS_AUTH;
 			}
 
-			return {
+			// The organization comes from the key record itself, so there is
+			// nothing caller-supplied to verify on this branch.
+			return authenticatedAs({
 				userId: orgKey.createdByUserId,
 				organizationId: orgKey.organizationId,
 				userName: user.name || "Unknown",
 				email: user.email,
 				role: (user.role as "user" | "admin") || "user",
-			};
+			});
 		}
 
 		const result = await verifyUserApiKey(rawKey);
 		if (!result.valid || !result.userId) {
-			return null;
+			return ANONYMOUS_AUTH;
 		}
 
 		const user = await db.user.findUnique({
@@ -556,30 +620,185 @@ async function authenticateRequest(
 		});
 
 		if (!user) {
-			return null;
+			return ANONYMOUS_AUTH;
 		}
 
-		return {
+		// Everything except the tenant is settled at this point, and both
+		// outcomes below carry it unchanged.
+		const identity = {
 			userId: result.userId,
-			organizationId: request.headers.get("x-organization-id") ?? null,
 			userName: user.name || "Unknown",
 			email: user.email,
 			role: (user.role as "user" | "admin") || "user",
 		};
+
+		// The tenant on this branch is whatever the request asked for, so it is
+		// only honoured once the caller is confirmed to be a member of it.
+		const requestedOrganizationId =
+			request.headers.get("x-organization-id") ?? null;
+
+		if (requestedOrganizationId) {
+			if (
+				!(await isOrganizationMember(
+					result.userId,
+					requestedOrganizationId,
+				))
+			) {
+				recordOrganizationRefusal(
+					request.headers,
+					{
+						userId: result.userId,
+						email: user.email,
+						name: user.name ?? null,
+					},
+					requestedOrganizationId,
+					"mcp-http",
+				);
+				return {
+					status: "refused",
+					refusal: {
+						reason: "not_a_member",
+						requestedOrganizationId,
+					},
+				};
+			}
+
+			return authenticatedAs({
+				...identity,
+				organizationId: requestedOrganizationId,
+			});
+		}
+
+		// Nothing named. A personal key carries a user and no tenant, and this
+		// server has to run inside exactly one organization, so the answer comes
+		// from the shared resolver rather than from this file — the gateway asks
+		// the same question and the two must not drift apart. It resolves only
+		// where the answer is unambiguous and authorised (Fizzy #1875, R4b);
+		// everything else is an absence, and an absence is a refusal here, not a
+		// quiet fall-through to no tenant at all.
+		const resolution = await resolveUserOrganization(result.userId);
+
+		// Switch, not a chain of `if`s, and the two vocabularies are kept
+		// visibly apart. The resolver's `kind` is owned by `@repo/database`;
+		// this route's refusal `reason` is a wire contract shared with the
+		// gateway. They are deliberately not the same words, so the mapping
+		// between them has to be written down — and an exhaustive switch is
+		// what makes the compiler check it. A chain of equality tests silently
+		// accepts a literal that can never match, which is exactly how a
+		// fail-closed branch turns into a fall-through.
+		switch (resolution.kind) {
+			case "ambiguous":
+				// Not audited, unlike `not_a_member`: nothing was selected, so
+				// there is no denied selection to record. The caller
+				// under-specified the request rather than reaching for a
+				// tenant, and the refusal tells them how to specify it.
+				return {
+					status: "refused",
+					refusal: {
+						reason: "ambiguous_organization",
+						organizationIds: resolution.organizationIds,
+					},
+				};
+			case "no_membership":
+				return {
+					status: "refused",
+					refusal: { reason: "no_membership" },
+				};
+			case "resolved":
+				return authenticatedAs({
+					...identity,
+					organizationId: resolution.organizationId,
+				});
+		}
 	}
 
 	const session = await auth.api.getSession({ headers: request.headers });
 	if (!session?.user) {
-		return null;
+		// No credentials at all — served as a public session, and left alone on
+		// purpose. There is no user here, so there is no membership to resolve;
+		// running the resolver would mean inventing an identity to run it for.
+		return ANONYMOUS_AUTH;
 	}
 
-	return {
+	// A browser session carries an `activeOrganizationId` that was validated
+	// when the caller switched into it — but it is a STORED field, so it
+	// outlives the membership being revoked. Nothing else on this branch is
+	// caller-supplied or freshly derived, which makes it the one place here
+	// that has to re-read membership. The gateway checks the same thing on its
+	// own browser branch, and two entry points disagreeing about whether a
+	// removed member still has access is the worst shape that divergence could
+	// take.
+	//
+	// This branch stays excluded from the organization-only rule (Fizzy #1875,
+	// R6), and that exclusion is about a NULL organization: a browser session
+	// may still legitimately sit in personal context while personal context
+	// exists. It was never about a stale one.
+	const browserOrganizationId = session.session.activeOrganizationId ?? null;
+	const { isOrganizationMember, resolveUserOrganization } = await import(
+		"@repo/database"
+	);
+	if (browserOrganizationId) {
+		if (
+			!(await isOrganizationMember(
+				session.user.id,
+				browserOrganizationId,
+			))
+		) {
+			return {
+				status: "refused",
+				refusal: {
+					reason: "not_a_member",
+					requestedOrganizationId: browserOrganizationId,
+				},
+			};
+		}
+	}
+
+	// A session that names NO organization used to mean personal context, and
+	// this branch passed the null straight through. That was correct while
+	// personal context was somewhere a browser could be; it is not somewhere
+	// any more, and FR4 says this server must not resolve to it under any code
+	// path — this was the path.
+	//
+	// Sessions are seeded with an organization at creation now, so this is the
+	// residue: a session minted before that shipped, or a caller whose
+	// membership is ambiguous enough that the seeding declined to guess. Both
+	// go through the same shared resolver the key branch uses, and an absence
+	// is a refusal here rather than a quiet fall-through to no tenant.
+	if (!browserOrganizationId) {
+		const resolution = await resolveUserOrganization(session.user.id);
+		switch (resolution.kind) {
+			case "ambiguous":
+				return {
+					status: "refused",
+					refusal: {
+						reason: "ambiguous_organization",
+						organizationIds: resolution.organizationIds,
+					},
+				};
+			case "no_membership":
+				return {
+					status: "refused",
+					refusal: { reason: "no_membership" },
+				};
+			case "resolved":
+				return authenticatedAs({
+					userId: session.user.id,
+					organizationId: resolution.organizationId,
+					userName: session.user.name || "Unknown",
+					email: session.user.email,
+					role: (session.user.role as "user" | "admin") || "user",
+				});
+		}
+	}
+
+	return authenticatedAs({
 		userId: session.user.id,
-		organizationId: session.session.activeOrganizationId ?? null,
+		organizationId: browserOrganizationId,
 		userName: session.user.name || "Unknown",
 		email: session.user.email,
 		role: (session.user.role as "user" | "admin") || "user",
-	};
+	});
 }
 
 function subscriptionsKey(sessionId: string): string {
@@ -746,6 +965,37 @@ async function getDurableSession(
 	};
 }
 
+/**
+ * Persist an organization switch onto the durable session.
+ *
+ * The switch tool moves the in-memory session, and this route stores its
+ * sessions across requests — so without this the move is forgotten and the
+ * stored session still names the organization the caller just left. That is
+ * not merely a lost setting: the next request re-authenticates, resolves the
+ * NEW organization (the switch persisted last-active), disagrees with the
+ * stored one, and the session is refused. The tool would brick the session it
+ * just succeeded on.
+ *
+ * The gateway has always done this for its own store. Both entry points offer
+ * the same tool, so both have to remember what it did.
+ */
+async function updateDurableSessionOrganization(
+	sessionId: string,
+	organizationId: string | null,
+): Promise<void> {
+	const store = getSessionStore();
+	if (store) {
+		await store.update(sessionId, { organizationId });
+		return;
+	}
+
+	const existing = fallbackSessions.get(sessionId);
+	if (existing) {
+		existing.organizationId = organizationId;
+		fallbackSessions.set(sessionId, existing);
+	}
+}
+
 async function touchDurableSession(sessionId: string): Promise<void> {
 	const store = getSessionStore();
 	if (store) {
@@ -813,11 +1063,18 @@ function createJsonRpcErrorResponse(
 	status: number,
 	code: number,
 	message: string,
+	/**
+	 * JSON-RPC's own extension point for machine-readable detail. The gateway
+	 * answers the same refusals with a `reason` field, and a client should not
+	 * have to parse prose on one entry point and read a field on the other to
+	 * tell "name one of yours" from "you have none to name".
+	 */
+	data?: Record<string, unknown>,
 ): Response {
 	return new Response(
 		JSON.stringify({
 			jsonrpc: "2.0",
-			error: { code, message },
+			error: { code, message, ...(data ? { data } : {}) },
 			id: null,
 		}),
 		{
@@ -827,6 +1084,93 @@ function createJsonRpcErrorResponse(
 			},
 		},
 	);
+}
+
+/**
+ * The response for a request whose organization could not be settled.
+ *
+ * Never 401 — the credentials were fine in all three cases. The status then
+ * says whether the caller can do anything about it: 400 when the request was
+ * under-specified and re-sending it with a header fixes it, 403 when it was
+ * not. That split is what stops a caller in several organizations reading
+ * their refusal as a lockout, and stops a caller in none reading theirs as a
+ * missing header they could go and add.
+ */
+function createOrganizationRefusalResponse(
+	refusal: OrganizationRefusal,
+): Response {
+	switch (refusal.reason) {
+		case "not_a_member":
+			return createJsonRpcErrorResponse(
+				403,
+				-32000,
+				`Access denied: you are not a member of organization ${refusal.requestedOrganizationId}`,
+				{ reason: "not_a_member" },
+			);
+		case "ambiguous_organization":
+			// The ids are the caller's own organizations, and naming one is the
+			// whole remedy, so the message spells them out rather than making
+			// them go and look. Order carries no precedence — the resolver
+			// sorts purely so the list is stable to read.
+			return createJsonRpcErrorResponse(
+				400,
+				-32000,
+				`Organization required: you are a member of ${refusal.organizationIds.length} organizations and this request named none. Send the x-organization-id header set to one of: ${refusal.organizationIds.join(", ")}`,
+				{ reason: "ambiguous_organization" },
+			);
+		case "no_membership":
+			return createJsonRpcErrorResponse(
+				403,
+				-32000,
+				"Access denied: this key resolves to no organization, because its owner belongs to none. " +
+					"Nothing this session can send will supply one — its owner has to join or create an organization first.",
+				{ reason: "no_membership" },
+			);
+	}
+}
+
+/**
+ * Decide whether a stored session may be reused for this request.
+ *
+ * A session belonging to a real account is reusable only while the request
+ * still authenticates as the same user in the same organization. Absent
+ * credentials no longer qualify: this path used to fall back to the stored
+ * session whenever fresh authentication produced nothing, which meant the
+ * tenancy decision taken when the session was created outlived every later
+ * re-evaluation of it, for as long as the session lived.
+ *
+ * A stored PUBLIC session is unaffected — there is no identity in it to
+ * disagree with, and the caller is served exactly as before.
+ *
+ * Returns an error `Response` when the session must not be reused, `null`
+ * when it may be.
+ */
+function checkStoredSessionAuth(
+	storedAuthResult: AuthResult | null,
+	authOutcome: AuthOutcome,
+): Response | null {
+	if (authOutcome.status === "refused") {
+		return createOrganizationRefusalResponse(authOutcome.refusal);
+	}
+
+	if (!storedAuthResult) {
+		return null;
+	}
+
+	const authResult = authResultOf(authOutcome);
+	if (
+		!authResult ||
+		authResult.userId !== storedAuthResult.userId ||
+		authResult.organizationId !== storedAuthResult.organizationId
+	) {
+		return createJsonRpcErrorResponse(
+			401,
+			-32000,
+			"Authentication failed for MCP session",
+		);
+	}
+
+	return null;
 }
 
 function extractMessages(rawBody: unknown): JSONRPCMessage[] | null {
@@ -1941,11 +2285,28 @@ function createRequestSession(
 			}
 
 			if (PLATFORM_TOOL_DEFINITIONS.some((tool) => tool.name === name)) {
-				return (await executePlatformTool(
+				const result = (await executePlatformTool(
 					name,
 					args,
 					session.gatewaySession,
 				)) as any;
+
+				// The switch tool mutates the in-memory session; this route
+				// stores sessions across requests, so the move has to be
+				// written down or the next request refuses the session the
+				// switch just succeeded on.
+				if (
+					name === "fabric_switch_organization" &&
+					!result?.isError &&
+					sessionId
+				) {
+					await updateDurableSessionOrganization(
+						sessionId,
+						session.gatewaySession.organizationId,
+					);
+				}
+
+				return result;
 			}
 
 			throw new McpError(
@@ -2037,7 +2398,11 @@ async function handlePostRequest(
 	request: NextRequest,
 	routeOptions: McpRouteOptions,
 ): Promise<Response> {
-	const authResult = await authenticateRequest(request);
+	const authOutcome = await authenticateRequest(request);
+	if (authOutcome.status === "refused") {
+		return createOrganizationRefusalResponse(authOutcome.refusal);
+	}
+	const authResult = authResultOf(authOutcome);
 	let parsedBody: unknown;
 
 	try {
@@ -2048,18 +2413,12 @@ async function handlePostRequest(
 			const durableSession = await getDurableSession(sessionId);
 			if (durableSession) {
 				const storedAuthResult = restoreAuthResult(durableSession.core);
-				if (
-					authResult &&
-					storedAuthResult &&
-					(authResult.userId !== storedAuthResult.userId ||
-						authResult.organizationId !==
-							storedAuthResult.organizationId)
-				) {
-					return createJsonRpcErrorResponse(
-						401,
-						-32000,
-						"Authentication failed for MCP session",
-					);
+				const authFailure = checkStoredSessionAuth(
+					storedAuthResult,
+					authOutcome,
+				);
+				if (authFailure) {
+					return authFailure;
 				}
 
 				const session = createRequestSession(
@@ -2131,17 +2490,9 @@ async function handlePostRequest(
 	}
 
 	const storedAuthResult = restoreAuthResult(durableSession.core);
-	if (
-		authResult &&
-		storedAuthResult &&
-		(authResult.userId !== storedAuthResult.userId ||
-			authResult.organizationId !== storedAuthResult.organizationId)
-	) {
-		return createJsonRpcErrorResponse(
-			401,
-			-32000,
-			"Authentication failed for MCP session",
-		);
+	const authFailure = checkStoredSessionAuth(storedAuthResult, authOutcome);
+	if (authFailure) {
+		return authFailure;
 	}
 
 	const effectiveAuthResult = storedAuthResult ?? authResult;
@@ -2181,24 +2532,15 @@ async function handleGetRequest(
 		return createJsonRpcErrorResponse(404, -32001, "Session not found");
 	}
 
-	const requestAuthResult = await authenticateRequest(request);
+	const authOutcome = await authenticateRequest(request);
 	const storedAuthResult = restoreAuthResult(durableSession.core);
-	if (
-		requestAuthResult &&
-		storedAuthResult &&
-		(requestAuthResult.userId !== storedAuthResult.userId ||
-			requestAuthResult.organizationId !==
-				storedAuthResult.organizationId)
-	) {
-		return createJsonRpcErrorResponse(
-			401,
-			-32000,
-			"Authentication failed for MCP session",
-		);
+	const authFailure = checkStoredSessionAuth(storedAuthResult, authOutcome);
+	if (authFailure) {
+		return authFailure;
 	}
 
 	const session = createRequestSession(
-		storedAuthResult ?? requestAuthResult,
+		storedAuthResult ?? authResultOf(authOutcome),
 		{
 			sessionId,
 			enableSessionManagement: true,
@@ -2234,24 +2576,15 @@ async function handleDeleteRequest(
 		return createJsonRpcErrorResponse(404, -32001, "Session not found");
 	}
 
-	const requestAuthResult = await authenticateRequest(request);
+	const authOutcome = await authenticateRequest(request);
 	const storedAuthResult = restoreAuthResult(durableSession.core);
-	if (
-		requestAuthResult &&
-		storedAuthResult &&
-		(requestAuthResult.userId !== storedAuthResult.userId ||
-			requestAuthResult.organizationId !==
-				storedAuthResult.organizationId)
-	) {
-		return createJsonRpcErrorResponse(
-			401,
-			-32000,
-			"Authentication failed for MCP session",
-		);
+	const authFailure = checkStoredSessionAuth(storedAuthResult, authOutcome);
+	if (authFailure) {
+		return authFailure;
 	}
 
 	const session = createRequestSession(
-		storedAuthResult ?? requestAuthResult,
+		storedAuthResult ?? authResultOf(authOutcome),
 		{
 			sessionId,
 			enableSessionManagement: true,

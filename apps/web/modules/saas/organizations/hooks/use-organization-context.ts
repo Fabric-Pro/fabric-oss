@@ -1,3 +1,4 @@
+import { useOrganizationListQuery } from "@saas/organizations/lib/api";
 import { useSeededGuestFlag } from "@saas/organizations/lib/organization-guest-context";
 import { useMemo } from "react";
 import { useActiveOrganization } from "./use-active-organization";
@@ -117,6 +118,57 @@ export function useOrganizationSlug(): string | null {
 export function useBasePath(): string {
 	const slug = useOrganizationSlug();
 	return slug ? `/app/${slug}` : "/app";
+}
+
+/**
+ * The organization to root ACCOUNT-level chrome in — a profile, account
+ * security, notification preferences, and the switcher label naming where the
+ * person is.
+ *
+ * Not the same question as `useBasePath`, and the difference only shows for a
+ * project-only guest. Their chrome is rendered under the host organization's
+ * slug, so a URL-derived path sends them to the host's settings, and the
+ * organization settings layout bounces a guest straight back out. Observed, not
+ * inferred: the link rendered, and following it returned the guest to the
+ * project they came from.
+ *
+ * So this resolves to an organization the caller actually belongs to. The URL's
+ * organization when it is one of theirs — the ordinary case, and it keeps the
+ * chrome consistent with what they are looking at — and otherwise their own.
+ *
+ * Returns null while the membership list is loading or when they belong
+ * nowhere; each caller decides what to render meanwhile.
+ */
+export function useAccountOrganization() {
+	const slug = useOrganizationSlug();
+	const { data: organizations } = useOrganizationListQuery();
+
+	if (!organizations?.length) {
+		return null;
+	}
+	const own = organizations.find(
+		(organization) => organization.slug === slug,
+	);
+	return own ?? organizations[0];
+}
+
+/**
+ * `useAccountOrganization` as a path.
+ *
+ * Falls back to `/app` while the list is loading or when they belong nowhere.
+ * That path is a redirect which resolves the same question server-side, so the
+ * fallback is a slower answer rather than a wrong one.
+ */
+export function useAccountBasePath(): string {
+	const own = useAccountOrganization();
+	return own ? `/app/${own.slug}` : "/app";
+}
+
+/** Build a path for a page that belongs to the account, not the workspace. */
+export function useAccountPath(path: string): string {
+	const basePath = useAccountBasePath();
+	const normalizedPath = path.startsWith("/") ? path.slice(1) : path;
+	return `${basePath}/${normalizedPath}`;
 }
 
 /**

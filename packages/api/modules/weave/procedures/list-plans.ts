@@ -8,8 +8,8 @@ import { z } from "zod";
 import {
 	Permissions,
 	protectedProcedure,
-	requirePermission,
-	resolveOrganizationId,
+	requireProjectPermission,
+	resolveOrganizationIdForCaller,
 } from "../../../orpc/procedures";
 
 const ListPlansInputSchema = z.object({
@@ -32,7 +32,7 @@ const ListPlansInputSchema = z.object({
 });
 
 export const listPlansProcedure = protectedProcedure
-	.use(requirePermission(Permissions.AGENT_READ))
+	.use(requireProjectPermission(Permissions.AGENT_READ))
 	.route({
 		method: "GET",
 		path: "/weave/plans",
@@ -42,9 +42,10 @@ export const listPlansProcedure = protectedProcedure
 	.input(ListPlansInputSchema)
 	.handler(async ({ input, context }) => {
 		const userId = context.user.id;
-		const organizationId = resolveOrganizationId(
+		const organizationId = await resolveOrganizationIdForCaller(
 			input.organizationId,
 			context.session,
+			userId,
 		);
 
 		// Verify project access

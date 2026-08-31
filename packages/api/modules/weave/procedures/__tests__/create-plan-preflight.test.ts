@@ -15,6 +15,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const {
 	mockHasProjectAccess,
+	mockAssertProjectPermission,
 	mockProjectFindUnique,
 	mockPlanCreate,
 	mockRunInBackground,
@@ -22,6 +23,7 @@ const {
 	mockFetch,
 } = vi.hoisted(() => ({
 	mockHasProjectAccess: vi.fn(),
+	mockAssertProjectPermission: vi.fn(),
 	mockProjectFindUnique: vi.fn(),
 	mockPlanCreate: vi.fn(),
 	mockRunInBackground: vi.fn(),
@@ -56,8 +58,26 @@ vi.mock("../../../../orpc/procedures", () => {
 	});
 	return {
 		protectedProcedure: chainable,
+		assertProjectPermission: mockAssertProjectPermission,
 		requirePermission: () => () => undefined,
+		requireProjectPermission: () => () => undefined,
 		Permissions: new Proxy({}, { get: (_target, prop) => String(prop) }),
+		resolveOrganizationIdForCaller: async (
+			inputOrganizationId: string | null | undefined,
+			session: { activeOrganizationId?: string | null },
+		) => {
+			// Mirrors the resolution half only. The membership half it adds is
+			// covered directly in the orpc procedure tests; these suites are
+			// about weave's own behaviour, and a caller who is not a member
+			// never reaches them.
+			if (inputOrganizationId) {
+				return inputOrganizationId;
+			}
+			if (inputOrganizationId === null) {
+				return undefined;
+			}
+			return session.activeOrganizationId ?? undefined;
+		},
 		resolveOrganizationId: (
 			inputOrganizationId: string | null | undefined,
 			session: { activeOrganizationId?: string | null },
@@ -114,6 +134,7 @@ beforeEach(() => {
 	// Default: configured planner URL (deployed-style), healthy service.
 	process.env.WEAVE_PLANNERS_URL = "http://planners.test:8142";
 	mockHasProjectAccess.mockResolvedValue(true);
+	mockAssertProjectPermission.mockResolvedValue(undefined);
 	mockProjectFindUnique.mockResolvedValue({
 		name: "Demo Project",
 		description: "Project-level description",

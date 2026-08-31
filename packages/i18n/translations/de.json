@@ -240,7 +240,7 @@
 			"markAllRead": "Alle als gelesen markieren",
 			"viewAll": "Alle Benachrichtigungen anzeigen",
 			"settings": "Einstellungen",
-			"settingsHint": "Öffnet die Einstellungen deines persönlichen Kontos",
+			"settingsHint": "Öffnet die Einstellungen deines Kontos",
 			"tabs": {
 				"all": "Alle",
 				"unread": "Ungelesen",
@@ -728,7 +728,9 @@
 		"account": {
 			"avatar": "Avatar",
 			"avatarDescription": "Klicke auf den Kreis oder ziehe ein Bild hinein, um deinen Avatar hochzuladen.",
-			"name": "Name"
+			"name": "Name",
+			"workspaceReady": "{name} ist bereit",
+			"workspaceReadyHint": "Wir haben diesen privaten Workspace für dich eingerichtet — hier liegen deine Projekte, Dokumente und Agenten. Lade andere ein, wenn du möchtest, oder behalte ihn für dich."
 		},
 		"continue": "Weiter",
 		"message": "Nur ein paar schnelle Schritte, um dir den Einstieg zu erleichtern.",
@@ -785,10 +787,10 @@
 		"organizationSelect": {
 			"createNewOrganization": "Neue Organisation erstellen",
 			"organizations": "Organisationen",
-			"personalAccount": "Persönliches Konto",
 			"switchError": "Arbeitsbereich konnte nicht gewechselt werden. Bitte versuche es erneut.",
 			"switching": "Arbeitsbereich wird gewechselt…",
-			"workspaceLabel": "Arbeitsbereich: {name}"
+			"workspaceLabel": "Arbeitsbereich: {name}",
+			"ownAccount": "Dein Konto"
 		},
 		"organizationsGrid": {
 			"createNewOrganization": "Neue Organisation erstellen",
@@ -946,7 +948,6 @@
 			"label": "Aktivitätsverlauf",
 			"description": "Jede administrative Aktion, jedes Authentifizierungsereignis und jede Änderung im Lebenszyklus dieser Organisation.",
 			"personalLabel": "Aktivitätsverlauf",
-			"personalDescription": "Authentifizierung, MFA und persönliche Lebenszyklusereignisse für dein Konto.",
 			"loading": "Ereignisse werden geladen",
 			"loadMore": "Mehr laden",
 			"empty": {
@@ -1010,7 +1011,7 @@
 					"label": "Akteur",
 					"ariaLabel": "Nach Akteur filtern",
 					"placeholder": "Jeder Akteur",
-					"personalLockedTitle": "Persönliche Ereignisse"
+					"personalLockedTitle": "Deine eigenen Ereignisse"
 				},
 				"dateRange": {
 					"label": "Datumsbereich",
@@ -1726,7 +1727,6 @@
 					}
 				}
 			},
-			"subtitle": "Verwalte die Einstellungen deines persönlichen Kontos.",
 			"title": "Kontoeinstellungen"
 		},
 		"billing": {

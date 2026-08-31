@@ -37,6 +37,8 @@ vi.mock("@saas/organizations/hooks/use-active-organization", () => ({
 }));
 
 vi.mock("@saas/organizations/hooks/use-organization-context", () => ({
+	// Not a guest here, so the account organization is never consulted.
+	useAccountOrganization: () => null,
 	useOrganizationContext: () => ({
 		organizationId: "org-1",
 		organizationSlug: "acme",
@@ -71,7 +73,7 @@ vi.mock("@shared/hooks/router", () => ({
 
 vi.mock("next-intl", () => ({
 	useTranslations: () => (key: string) => {
-		if (key === "organizations.organizationSelect.personalAccount") {
+		if (key === "organizations.organizationSelect.ownAccount") {
 			return "Personal Account";
 		}
 		if (key === "organizations.organizationSelect.organizations") {
@@ -152,17 +154,24 @@ describe("organization switching regression", () => {
 		mockRouterReplace.mockReset();
 	});
 
-	it("switches to personal account by clearing the active organization instead of only replacing the route", async () => {
+	it("offers no way back to personal context", async () => {
+		// This asserted the opposite until the elimination: the switcher had a
+		// personal-account option, and it was the ONLY affordance in the
+		// product that set the active organization to null. With context
+		// organization-only there is nothing to switch back to, and the guard
+		// worth keeping is that the option cannot return — a switcher that
+		// quietly regrew it would put users back into a context nothing else
+		// supports any more.
 		render(<OrganzationSelect />);
 
-		const personalButtons = screen.getAllByRole("button", {
-			name: /test user/i,
-		});
-		expect(personalButtons.length).toBeGreaterThan(0);
+		expect(
+			screen.queryAllByRole("button", { name: /test user/i }),
+		).toHaveLength(0);
 
-		await userEvent.click(personalButtons[0]);
-
-		expect(mockSetActiveOrganization).toHaveBeenCalledWith(null);
-		expect(mockRouterReplace).not.toHaveBeenCalledWith("/app");
+		// And nothing else in the rendered switcher clears the tenant.
+		for (const button of screen.getAllByRole("button")) {
+			await userEvent.click(button);
+		}
+		expect(mockSetActiveOrganization).not.toHaveBeenCalledWith(null);
 	});
 });

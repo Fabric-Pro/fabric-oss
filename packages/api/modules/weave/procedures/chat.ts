@@ -12,8 +12,8 @@ import { z } from "zod";
 import {
 	Permissions,
 	protectedProcedure,
-	requirePermission,
-	resolveOrganizationId,
+	requireProjectPermission,
+	resolveOrganizationIdForCaller,
 } from "../../../orpc/procedures";
 import { assertWeaveServiceHealthy } from "../lib/weave-preflight";
 
@@ -26,7 +26,7 @@ const ChatInputSchema = z.object({
 });
 
 export const chatProcedure = protectedProcedure
-	.use(requirePermission(Permissions.AGENT_UPDATE))
+	.use(requireProjectPermission(Permissions.AGENT_UPDATE))
 	.route({
 		method: "POST",
 		path: "/weave/chat",
@@ -38,9 +38,10 @@ export const chatProcedure = protectedProcedure
 	.input(ChatInputSchema)
 	.handler(async ({ input, context }) => {
 		const userId = context.user.id;
-		const organizationId = resolveOrganizationId(
+		const organizationId = await resolveOrganizationIdForCaller(
 			input.organizationId,
 			context.session,
+			userId,
 		);
 
 		const hasAccess = await hasProjectAccess(

@@ -1,7 +1,7 @@
 import { getOrchestratorPreferences } from "@repo/database";
+import FabricAIClient from "@saas/agents/components/fabric-ai/FabricAIClient";
 import { getActiveOrganization, getSession } from "@saas/auth/lib/server";
 import { redirect } from "next/navigation";
-import FabricAIClient from "../../../../agents/fabric-ai/FabricAIClient";
 
 /**
  * Organization-scoped Loom (Fabric AI) page.

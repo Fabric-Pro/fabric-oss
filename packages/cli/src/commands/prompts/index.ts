@@ -26,7 +26,7 @@ export function buildPromptsCommand(): Command {
 		.command("list")
 		.description("List prompt templates")
 		.option("--org <slug>", "Organization context")
-		.option("--personal", "Personal context")
+		.option("--personal", "Retired — context is organization-only")
 		.option("--search <query>", "Search by name")
 		.option("--category <cat>", "Filter by category")
 		.option("--limit <n>", "Max results", "50")
@@ -52,7 +52,6 @@ export function buildPromptsCommand(): Command {
 				try {
 					list = await client.prompts.list({
 						org: ctx?.type === "org" ? ctx.slug : undefined,
-						personal: ctx?.type === "personal" ? true : undefined,
 						search: opts.search,
 						category: opts.category,
 						limit: Number(opts.limit),
@@ -87,7 +86,7 @@ export function buildPromptsCommand(): Command {
 		.command("get <id>")
 		.description("Get a prompt (prints latest version content by default)")
 		.option("--org <slug>", "Organization context")
-		.option("--personal", "Personal context")
+		.option("--personal", "Retired — context is organization-only")
 		.option(
 			"--format <format>",
 			"Output format: raw|table|json|yaml (default: raw)",
@@ -104,7 +103,6 @@ export function buildPromptsCommand(): Command {
 				try {
 					prompt = await client.prompts.get(id, {
 						org: ctx?.type === "org" ? ctx.slug : undefined,
-						personal: ctx?.type === "personal" ? true : undefined,
 					});
 				} catch (err: unknown) {
 					printError((err as Error).message, 1);
@@ -146,7 +144,7 @@ export function buildPromptsCommand(): Command {
 		.command("create")
 		.description("Create a new prompt")
 		.option("--org <slug>", "Organization context")
-		.option("--personal", "Personal context")
+		.option("--personal", "Retired — context is organization-only")
 		.requiredOption("--key <key>", "Prompt key (unique identifier)")
 		.requiredOption("--name <name>", "Prompt name")
 		.option("-d, --description <text>", "Prompt description")
@@ -175,7 +173,6 @@ export function buildPromptsCommand(): Command {
 						content: opts.content,
 						category: opts.category,
 						org: ctx?.type === "org" ? ctx.slug : undefined,
-						personal: ctx?.type === "personal" ? true : undefined,
 					});
 				} catch (err: unknown) {
 					printError((err as Error).message, 1);
@@ -203,7 +200,7 @@ export function buildPromptsCommand(): Command {
 		.command("update <id>")
 		.description("Update a prompt")
 		.option("--org <slug>", "Organization context")
-		.option("--personal", "Personal context")
+		.option("--personal", "Retired — context is organization-only")
 		.option("--name <name>", "New name")
 		.option("-d, --description <text>", "New description")
 		.option("--category <cat>", "Category")
@@ -229,7 +226,6 @@ export function buildPromptsCommand(): Command {
 						description: opts.description,
 						category: opts.category,
 						org: ctx?.type === "org" ? ctx.slug : undefined,
-						personal: ctx?.type === "personal" ? true : undefined,
 					});
 				} catch (err: unknown) {
 					printError((err as Error).message, 1);

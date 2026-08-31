@@ -18,7 +18,7 @@ export function buildChatsCommand(): Command {
 		.command("list")
 		.description("List AI chat sessions")
 		.option("--org <slug>", "Organization context")
-		.option("--personal", "Personal context")
+		.option("--personal", "Retired — context is organization-only")
 		.option("--limit <n>", "Max results (default 20)", "20")
 		.option(
 			"--format <format>",
@@ -40,7 +40,6 @@ export function buildChatsCommand(): Command {
 				try {
 					list = await client.chats.list({
 						org: ctx?.type === "org" ? ctx.slug : undefined,
-						personal: ctx?.type === "personal" ? true : undefined,
 						limit: Number(opts.limit),
 					});
 				} catch (err: unknown) {
@@ -65,7 +64,7 @@ export function buildChatsCommand(): Command {
 		.command("show <id>")
 		.description("Show chat details")
 		.option("--org <slug>", "Organization context")
-		.option("--personal", "Personal context")
+		.option("--personal", "Retired — context is organization-only")
 		.option("--format <format>", "Output format: table|json|yaml", "table")
 		.action(
 			async (
@@ -78,7 +77,6 @@ export function buildChatsCommand(): Command {
 				try {
 					chat = await client.chats.get(id, {
 						org: ctx?.type === "org" ? ctx.slug : undefined,
-						personal: ctx?.type === "personal" ? true : undefined,
 					});
 				} catch (err: unknown) {
 					printError((err as Error).message, 1);

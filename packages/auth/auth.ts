@@ -40,6 +40,7 @@ import {
 	isEmailChangeRevoked,
 	isEmailVerifyJWTBlocked,
 } from "./lib/email-verify-blocklist";
+import { ensureUserHasOrganization } from "./lib/ensure-user-organization";
 import { buildInvitationToken } from "./lib/invitation-token";
 import { runInviteReconciliationForUser } from "./lib/invite-reconciliation";
 import { notifySignupAttempt } from "./lib/notify-signup-attempt";
@@ -52,6 +53,7 @@ import {
 	assertPasswordStrength,
 	PasswordTooWeakError,
 } from "./lib/password-strength";
+import { seedSessionOrganization } from "./lib/seed-session-organization";
 import { socialProviders } from "./lib/social-providers";
 import { buildTrustedOrigins } from "./lib/trusted-origins";
 import { verifyTurnstileToken } from "./lib/turnstile";
@@ -328,22 +330,6 @@ const authOptions = {
 						}
 					}
 
-					// Personal-context managed-default MCP configs. Best-effort —
-					// a sentinel-seed failure MUST NOT block signup. Errors are
-					// logged and swallowed; the next signin / next eager-load
-					// defends downstream.
-					try {
-						await seedDefaultMcpConfigsForTenant({
-							userId: user.id,
-							organizationId: null,
-						});
-					} catch (error) {
-						logger.error(
-							"[Auth] Failed to seed default MCP configs for new user",
-							{ userId: user.id, error: String(error) },
-						);
-					}
-
 					// Resolve pending org/project invitations matching this
 					// email (magic-link/OAuth signups arrive pre-verified).
 					// The wrapper gates on emailVerified internally and never
@@ -353,6 +339,47 @@ const authOptions = {
 						userId: user.id,
 						trigger: "user_create",
 					});
+
+					// AFTER reconciliation, never before: an invited user
+					// already belongs somewhere by this point and must not be
+					// handed a second, empty organization (FR1a). A password
+					// signup's invitations are not resolved yet, which is why
+					// the same call is made again on session creation — the
+					// helper is idempotent and asks whether they belong
+					// anywhere, not whether they were just created.
+					const autoCreated = await ensureUserHasOrganization(
+						user.id,
+						seedDefaultMcpConfigsForTenant,
+					);
+
+					// Nothing is seeded personally, not even as a fallback.
+					//
+					// `ensureUserHasOrganization` seeds the organization it
+					// creates, which is the normal path. When it could not make
+					// one, this used to seed personally instead, reasoning that
+					// a signup ending with neither tenant seeded was the worse
+					// regression. That traded one bad state for the exact state
+					// this epic exists to remove — a user with personal rows and
+					// no organization is the personal environment, whatever it
+					// is called.
+					//
+					// The trade is unnecessary, because the failure heals
+					// itself: this same helper runs on every session create, so
+					// the next sign-in makes the organization AND seeds it. What
+					// the user loses in between is default MCP configs on a
+					// signup whose organization creation already failed — and
+					// they were about to hit that failure anyway.
+					// Only the failure is worth a line. "Already had one" is the
+					// normal shape for an invited user, and warning on it fired
+					// on every invited signup with a message that was false in
+					// both halves — they have an organization, and nothing will
+					// seed on their next sign-in either.
+					if (autoCreated.outcome === "failed") {
+						logger.warn(
+							"[Auth] No organization for new user; MCP defaults will seed on their next sign-in",
+							{ userId: user.id, reason: autoCreated.reason },
+						);
+					}
 				},
 			},
 		},
@@ -376,6 +403,25 @@ const authOptions = {
 						userId: session.userId,
 						trigger: "session_create",
 					});
+
+					// The same self-heal, for the same reason reconciliation
+					// runs here: a password signup's invitations resolve at
+					// this point, and an account created before organizations
+					// were guaranteed has none at all. Both get one here, and
+					// a user who already belongs somewhere is untouched.
+					await ensureUserHasOrganization(
+						session.userId,
+						seedDefaultMcpConfigsForTenant,
+					);
+
+					// Give the session the organization it runs in. This field
+					// was only ever written by an explicit organization switch,
+					// so a user who signed in and never switched carried none —
+					// and everything that falls back to it fell back to
+					// nothing. Extracted so the rule is testable without
+					// booting Better Auth, and so its reasoning lives beside
+					// it.
+					await seedSessionOrganization(session);
 				},
 			},
 		},

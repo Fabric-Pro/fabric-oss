@@ -3,6 +3,7 @@
 import { zodResolver } from "@hookform/resolvers/zod";
 import { authClient } from "@repo/auth/client";
 import { useSession } from "@saas/auth/hooks/use-session";
+import { useAccountOrganization } from "@saas/organizations/hooks/use-organization-context";
 import { UserAvatarUpload } from "@saas/settings/components/UserAvatarUpload";
 import { Button } from "@ui/components/button";
 import {
@@ -30,6 +31,13 @@ type FormValues = z.infer<typeof formSchema>;
 export function OnboardingStep1({ onCompleted }: { onCompleted: () => void }) {
 	const t = useTranslations();
 	const { user } = useSession();
+	// The organization every account now gets at signup (Fizzy #1875, FR1a).
+	// Naming it here is the acceptance criterion, not decoration: an account
+	// that silently gains a workspace leaves the person guessing whether they
+	// made it, whether it is shared, and whether it is the thing they are
+	// supposed to be in. Absent while the membership list loads — the step
+	// renders without it rather than blocking on it.
+	const workspace = useAccountOrganization();
 	const form = useForm<FormValues>({
 		// eslint-disable-next-line @typescript-eslint/no-explicit-any
 		resolver: zodResolver(formSchema as any),
@@ -63,6 +71,19 @@ export function OnboardingStep1({ onCompleted }: { onCompleted: () => void }) {
 
 	return (
 		<div>
+			{workspace ? (
+				<div className="mb-8 rounded-lg border border-border bg-muted/40 px-4 py-3">
+					<p className="font-medium text-sm">
+						{t("onboarding.account.workspaceReady", {
+							name: workspace.name,
+						})}
+					</p>
+					<p className="mt-1 text-muted-foreground text-sm">
+						{t("onboarding.account.workspaceReadyHint")}
+					</p>
+				</div>
+			) : null}
+
 			<Form {...form}>
 				<form
 					className="flex flex-col items-stretch gap-8"

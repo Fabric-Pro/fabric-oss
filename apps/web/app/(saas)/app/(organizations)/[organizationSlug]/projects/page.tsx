@@ -1,8 +1,4 @@
-import {
-	getActiveOrganization,
-	getSession,
-	isGuestInOrg,
-} from "@saas/auth/lib/server";
+import { getActiveOrganization, getSession } from "@saas/auth/lib/server";
 import { ProjectsList } from "@saas/projects/components/ProjectsList";
 import { PageBreadcrumbs } from "@saas/shared/components/PageBreadcrumbs";
 import { TopRightControls } from "@saas/shared/components/TopRightControls";
@@ -26,25 +22,21 @@ export default async function ProjectsPage({
 		redirect("/app");
 	}
 
-	// Project-only guests must not see the host org named in the
-	// breadcrumb trail — drop the org crumb and keep just "Projects".
-	const guest = await isGuestInOrg(session.user.id, organization.id);
-
+	// The org crumb used to be dropped here, by hand, for project-only guests.
+	// `PageBreadcrumbs` now drops it for every page at once — this one was the
+	// only one of twenty-three that had remembered to — so the trail is passed
+	// unconditionally and the membership probe this page made for it is gone.
 	return (
 		<div className="w-full py-6 space-y-6">
 			<TopRightControls />
 			<PageBreadcrumbs
-				items={
-					guest
-						? [{ label: "Projects" }]
-						: [
-								{
-									label: organization.name,
-									href: `/app/${organizationSlug}`,
-								},
-								{ label: "Projects" },
-							]
-				}
+				items={[
+					{
+						label: organization.name,
+						href: `/app/${organizationSlug}`,
+					},
+					{ label: "Projects" },
+				]}
 			/>
 
 			<ProjectsList />

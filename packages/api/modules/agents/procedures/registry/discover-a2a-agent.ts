@@ -10,7 +10,7 @@ import { z } from "zod";
 import {
 	Permissions,
 	protectedProcedure,
-	requirePermission,
+	requireInputOrgPermission,
 } from "../../../../orpc/procedures";
 
 /**
@@ -60,7 +60,11 @@ const A2AAgentCardSchema = z.object({
  * ```
  */
 export const discoverA2AAgent = protectedProcedure
-	.use(requirePermission(Permissions.AGENT_UPDATE))
+	.use(
+		requireInputOrgPermission(Permissions.AGENT_UPDATE, {
+			requireOrganization: true,
+		}),
+	)
 	.route({
 		method: "POST",
 		path: "/agents/registry/discover-a2a",

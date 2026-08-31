@@ -3,7 +3,10 @@ import { config } from "@repo/config";
 import { useSession } from "@saas/auth/hooks/use-session";
 import { useActiveOrganization } from "@saas/organizations/hooks/use-active-organization";
 import { useIsGuestInOrg } from "@saas/organizations/hooks/use-is-guest-in-org";
-import { useOrganizationContext } from "@saas/organizations/hooks/use-organization-context";
+import {
+	useAccountOrganization,
+	useOrganizationContext,
+} from "@saas/organizations/hooks/use-organization-context";
 import { useOrganizationListQuery } from "@saas/organizations/lib/api";
 import { ActivePlanBadge } from "@saas/payments/components/ActivePlanBadge";
 import { Spinner } from "@shared/components/Spinner";
@@ -46,11 +49,16 @@ export function OrganzationSelect({
 		useOrganizationContext();
 	const { setActiveOrganization, isSwitching, switchingToSlug } =
 		useActiveOrganization();
-	const { data: allOrganizations } = useOrganizationListQuery();
+	const { data: allOrganizations, isPending: isOrganizationListPending } =
+		useOrganizationListQuery();
 	// Project-only guests must not see the host org's identity in the
-	// switcher — present their personal account instead. The dropdown
-	// below stays unchanged: it only lists real memberships.
+	// switcher. They used to be shown a personal account; personal context is
+	// gone, and every account has an organization now, so they are shown their
+	// OWN — which is both true and something they can act on. The dropdown
+	// below stays unchanged: it only lists real memberships, and the host has
+	// never been among them.
 	const isGuest = useIsGuestInOrg();
+	const accountOrg = useAccountOrganization();
 	const [mounted, setMounted] = useState(false);
 
 	// While a switch is in flight, optimistically present the *target*
@@ -68,16 +76,32 @@ export function OrganzationSelect({
 		? switchingToPersonal
 			? null
 			: (pendingOrg ?? organization)
-		: organization;
+		: isGuest
+			? accountOrg
+			: organization;
 	const showOrgPresentation = isSwitching
 		? !switchingToPersonal && !!displayOrg
-		: !!organization && !isGuest;
+		: !!displayOrg;
+
+	// The checked row must agree with the trigger. The radio group is keyed by
+	// the URL's slug, which for a guest names the host — an organization their
+	// membership list does not contain, so nothing would be checked while the
+	// trigger named their own.
+	const selectedSlug = isGuest
+		? (accountOrg?.slug ?? undefined)
+		: (organizationSlug ?? undefined);
 
 	useEffect(() => {
 		setMounted(true);
 	}, []);
 
-	if (!user || !mounted) {
+	// A guest's label comes from the membership list, which is fetched on the
+	// client — the layout only seeds the ACTIVE organization, and for a guest
+	// that is the host, which their label may not name. Hold the skeleton
+	// rather than let the fallback label flash on every page load. Keyed on
+	// `isPending`, not on the absence of data, so a failed fetch falls through
+	// to the fallback instead of spinning forever.
+	if (!user || !mounted || (isGuest && isOrganizationListPending)) {
 		if (collapsed) {
 			return (
 				<div className="size-9 shrink-0 animate-pulse rounded-full bg-muted" />
@@ -97,48 +121,11 @@ export function OrganzationSelect({
 	// Shared dropdown body — identical for the expanded and collapsed triggers.
 	const menuContent = (
 		<>
-			{!config.organizations.requireOrganization && (
-				<>
-					<DropdownMenuLabel className="text-foreground/60 text-xs font-medium pb-1">
-						{t("organizations.organizationSelect.personalAccount")}
-					</DropdownMenuLabel>
-					<DropdownMenuRadioGroup
-						value={organizationId ?? user.id}
-						onValueChange={(value: string) => {
-							if (value === user.id) {
-								void setActiveOrganization(null);
-							}
-						}}
-					>
-						<DropdownMenuRadioItem
-							value={user.id}
-							disabled={isSwitching}
-							className="cursor-pointer pl-2"
-						>
-							<div className="flex w-full items-center gap-2.5">
-								<UserAvatar
-									className="size-6 shrink-0"
-									name={user.name ?? ""}
-									avatarUrl={user.image}
-								/>
-								<span className="truncate text-sm">
-									{user.name}
-								</span>
-								{switchingToPersonal && (
-									<Spinner className="ml-auto size-3.5" />
-								)}
-							</div>
-						</DropdownMenuRadioItem>
-					</DropdownMenuRadioGroup>
-					<DropdownMenuSeparator />
-				</>
-			)}
-
 			<DropdownMenuLabel className="text-foreground/60 text-xs font-medium pb-1">
 				{t("organizations.organizationSelect.organizations")}
 			</DropdownMenuLabel>
 			<DropdownMenuRadioGroup
-				value={organizationSlug ?? undefined}
+				value={selectedSlug}
 				onValueChange={(newSlug: string) => {
 					setActiveOrganization(newSlug);
 				}}
@@ -197,7 +184,7 @@ export function OrganzationSelect({
 	const triggerLabel =
 		showOrgPresentation && displayOrg
 			? displayOrg.name
-			: t("organizations.organizationSelect.personalAccount");
+			: t("organizations.organizationSelect.ownAccount");
 
 	// Collapsed rail: a compact circular avatar that still opens the full
 	// switcher and reveals the workspace name on hover, so a collapsed sidebar
@@ -291,7 +278,7 @@ export function OrganzationSelect({
 							/>
 							<span className="flex-1 truncate text-sm font-medium">
 								{t(
-									"organizations.organizationSelect.personalAccount",
+									"organizations.organizationSelect.ownAccount",
 								)}
 							</span>
 							{config.users.enableBilling && !isSwitching && (

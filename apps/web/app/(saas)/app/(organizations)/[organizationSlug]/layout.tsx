@@ -81,8 +81,13 @@ export default async function OrganizationLayout({
 			orgRequiresTwoFactor,
 		})
 	) {
+		// Inside the organization rather than out of it. This used to send
+		// people to the personal settings tree, which was the only place
+		// account security lived; the tree is gone and the page has an
+		// organization-reachable home, so enforcement no longer has to push a
+		// member out of the organization enforcing it.
 		redirect(
-			`/app/settings/security?mfaRequired=1&from=${encodeURIComponent(
+			`/app/${organizationSlug}/settings/account/security?mfaRequired=1&from=${encodeURIComponent(
 				organizationSlug,
 			)}`,
 		);

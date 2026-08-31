@@ -21,7 +21,7 @@ export function buildWorkspacesCommand(): Command {
 		.command("list")
 		.description("List workspaces")
 		.option("--org <slug>", "Organization context")
-		.option("--personal", "Personal context")
+		.option("--personal", "Retired — context is organization-only")
 		.option("--search <query>", "Search by name")
 		.option("--status <status>", "Filter: ACTIVE|ARCHIVED")
 		.option("--limit <n>", "Max results (default 20)", "20")
@@ -47,7 +47,6 @@ export function buildWorkspacesCommand(): Command {
 				try {
 					list = await client.workspaces.list({
 						org: ctx?.type === "org" ? ctx.slug : undefined,
-						personal: ctx?.type === "personal" ? true : undefined,
 						search: opts.search,
 						status: opts.status as
 							| "ACTIVE"
@@ -85,7 +84,7 @@ export function buildWorkspacesCommand(): Command {
 		.command("show <id>")
 		.description("Show workspace details")
 		.option("--org <slug>", "Organization context")
-		.option("--personal", "Personal context")
+		.option("--personal", "Retired — context is organization-only")
 		.option("--format <format>", "Output format: table|json|yaml", "table")
 		.action(
 			async (
@@ -98,7 +97,6 @@ export function buildWorkspacesCommand(): Command {
 				try {
 					ws = await client.workspaces.get(id, {
 						org: ctx?.type === "org" ? ctx.slug : undefined,
-						personal: ctx?.type === "personal" ? true : undefined,
 					});
 				} catch (err: unknown) {
 					printError((err as Error).message, 1);

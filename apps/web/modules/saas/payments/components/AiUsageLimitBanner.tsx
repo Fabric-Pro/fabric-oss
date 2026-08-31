@@ -1,7 +1,10 @@
 "use client";
 
 import { useIsGuestInOrg } from "@saas/organizations/hooks/use-is-guest-in-org";
-import { useOrganizationContext } from "@saas/organizations/hooks/use-organization-context";
+import {
+	useAccountOrganization,
+	useOrganizationContext,
+} from "@saas/organizations/hooks/use-organization-context";
 import {
 	type AiUsageLimitStatus,
 	useAiUsageLimits,
@@ -11,8 +14,8 @@ import { Alert, AlertDescription, AlertTitle } from "@ui/components/alert";
 import { Button } from "@ui/components/button";
 import { cn } from "@ui/lib";
 import { AlertTriangle, ExternalLink } from "lucide-react";
-import { useTranslations } from "next-intl";
 import Link from "next/link";
+import { useTranslations } from "next-intl";
 import { useMemo } from "react";
 
 /**
@@ -37,14 +40,17 @@ import { useMemo } from "react";
  */
 export function AiUsageLimitBanner() {
 	const t = useTranslations();
-	const { organizationId } = useOrganizationContext();
-	// Project-scoped guests get the personal presentation everywhere in
-	// the shell, and the org-scoped limits procedures 403 for them.
-	// Explicit `null` = personal scope (multi-tenant XOR) so guests see
-	// THEIR limits, never the host org's. Server-seeded, so this is
-	// correct on first render — the org-scoped call never fires.
+	const { organizationId, organizationSlug } = useOrganizationContext();
+	// A project-scoped guest must see THEIR limits, never the host org's, and
+	// the org-scoped procedures 403 for them in the host anyway. That used to
+	// mean personal scope — an explicit `null`. Personal scope is going away,
+	// and a guest now has an organization of their own, so it means theirs.
+	// Server-seeded, so this is correct on first render.
 	const isGuest = useIsGuestInOrg();
-	const effectiveOrganizationId = isGuest ? null : organizationId;
+	const accountOrg = useAccountOrganization();
+	const effectiveOrganizationId = isGuest
+		? (accountOrg?.id ?? null)
+		: organizationId;
 	const { data } = useAiUsageLimitsStatus(effectiveOrganizationId);
 	// `canManage` mirrors the gate on AiUsageLimitsCard — non-admin org
 	// members get an empty payload from the status procedure, so they
@@ -70,10 +76,15 @@ export function AiUsageLimitBanner() {
 	const visible = triggered.slice(0, 3);
 	const remaining = triggered.length - visible.length;
 
-	// Guests manage their PERSONAL limits — the rows above were fetched
-	// with the personal scope, so the CTA must route there too.
-	const baseSettingsPath = effectiveOrganizationId
-		? `/app/${effectiveOrganizationId}/settings/usage`
+	// The CTA must land in the same tenancy the rows above were fetched with.
+	//
+	// It interpolated the organization ID into a path segment that resolves by
+	// SLUG, so for every organization member this link 404'd — verified against
+	// a live server, where the id form is a 404 and the slug form is a 200.
+	// Pre-existing; found while sweeping the personal fallbacks out.
+	const settingsSlug = isGuest ? accountOrg?.slug : organizationSlug;
+	const baseSettingsPath = settingsSlug
+		? `/app/${settingsSlug}/settings/usage`
 		: "/app/settings/usage";
 
 	return (

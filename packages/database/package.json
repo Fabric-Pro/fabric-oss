@@ -121,7 +121,9 @@
 		"test:rls": "cross-env RUN_DB_INTEGRATION=1 dotenv -c -e ../../.env.local -- vitest run __tests__/rls-isolation.test.ts",
 		"test:db": "cross-env RUN_DB_INTEGRATION=1 dotenv -c -e ../../.env.local -- vitest run",
 		"test:rls:incidents": "vitest run __tests__/rls/incident-tables.test.ts",
-		"test:provider-sync": "vitest run __tests__/ai-provider-config-sync.test.ts"
+		"test:provider-sync": "vitest run __tests__/ai-provider-config-sync.test.ts",
+		"revoke:pre-org-keys": "dotenv -c -e ../../.env.local -- tsx ./scripts/revoke-pre-org-personal-keys.ts",
+		"revoke:pre-org-keys:staging": "dotenv -c -e ../../.env.staging -- tsx ./scripts/revoke-pre-org-personal-keys.ts"
 	},
 	"types": "./index.ts",
 	"version": "0.0.3",

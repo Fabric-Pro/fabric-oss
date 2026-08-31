@@ -18,6 +18,10 @@ const mockSearchWorkspaceChunks = vi.fn();
 const mockGenerateSparseVector = vi.fn();
 
 vi.mock("@repo/database", () => ({
+	resolveUserOrganization: vi.fn(async () => ({
+		kind: "resolved" as const,
+		organizationId: "org-test",
+	})),
 	hasWorkspaceAccess: (...args: unknown[]) => mockHasWorkspaceAccess(...args),
 	listWorkspaces: (...args: unknown[]) => mockListWorkspaces(...args),
 	db: {
@@ -67,7 +71,7 @@ function makeApp() {
 			keyId: "key-1",
 			keyPrefix: "fab_test",
 			userId: "user-1",
-			organizationId: undefined,
+			organizationId: "org-test",
 			scopes: ["workspaces:read"],
 		});
 		await next();
@@ -152,10 +156,12 @@ describe("v1 workspaces.query", () => {
 		});
 		expect(body.meta.total).toBe(1);
 
-		// Embedding pipeline invoked with tenant context
+		// Embedding pipeline invoked with tenant context. The organization is
+		// the one the key resolves to: a personal key naming none used to run
+		// with no tenant at all, and PO-9 retired that.
 		expect(mockGetAIEmbeddingModel).toHaveBeenCalledWith({
 			userId: "user-1",
-			organizationId: undefined,
+			organizationId: "org-test",
 		});
 		expect(mockEmbed).toHaveBeenCalledWith(
 			expect.objectContaining({ value: "OAuth flow" }),
@@ -167,7 +173,7 @@ describe("v1 workspaces.query", () => {
 			expect.objectContaining({
 				workspaceId: "ws-1",
 				userId: "user-1",
-				organizationId: undefined,
+				organizationId: "org-test",
 				minSimilarity: 0.4,
 			}),
 		);

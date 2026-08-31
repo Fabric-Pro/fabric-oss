@@ -18,6 +18,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const {
 	mockHasProjectAccess,
+	mockAssertProjectPermission,
 	mockPlanFindFirst,
 	mockPlanUpdate,
 	mockProjectFindUnique,
@@ -27,6 +28,7 @@ const {
 	mockWorkflowStart,
 } = vi.hoisted(() => ({
 	mockHasProjectAccess: vi.fn(),
+	mockAssertProjectPermission: vi.fn(),
 	mockPlanFindFirst: vi.fn(),
 	mockPlanUpdate: vi.fn(),
 	mockProjectFindUnique: vi.fn(),
@@ -70,8 +72,26 @@ vi.mock("../../../../orpc/procedures", () => {
 	});
 	return {
 		protectedProcedure: chainable,
+		assertProjectPermission: mockAssertProjectPermission,
 		requirePermission: () => () => undefined,
+		requireProjectPermission: () => () => undefined,
 		Permissions: new Proxy({}, { get: (_target, prop) => String(prop) }),
+		resolveOrganizationIdForCaller: async (
+			inputOrganizationId: string | null | undefined,
+			session: { activeOrganizationId?: string | null },
+		) => {
+			// Mirrors the resolution half only. The membership half it adds is
+			// covered directly in the orpc procedure tests; these suites are
+			// about weave's own behaviour, and a caller who is not a member
+			// never reaches them.
+			if (inputOrganizationId) {
+				return inputOrganizationId;
+			}
+			if (inputOrganizationId === null) {
+				return undefined;
+			}
+			return session.activeOrganizationId ?? undefined;
+		},
 		resolveOrganizationId: (
 			inputOrganizationId: string | null | undefined,
 			session: { activeOrganizationId?: string | null },
@@ -130,6 +150,7 @@ beforeEach(() => {
 		delete process.env[key];
 	}
 	mockHasProjectAccess.mockResolvedValue(true);
+	mockAssertProjectPermission.mockResolvedValue(undefined);
 	mockPlanFindFirst.mockResolvedValue(approvedPlan);
 	mockPlanUpdate.mockResolvedValue({});
 	mockProjectFindUnique.mockResolvedValue({

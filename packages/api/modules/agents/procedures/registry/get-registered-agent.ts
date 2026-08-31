@@ -16,7 +16,7 @@ import { z } from "zod";
 import {
 	Permissions,
 	protectedProcedure,
-	requirePermission,
+	requireInputOrgPermission,
 	resolveOrganizationId,
 } from "../../../../orpc/procedures";
 import { verifyOrganizationMembership } from "../../../organizations/lib/membership";
@@ -25,7 +25,11 @@ import { verifyOrganizationMembership } from "../../../organizations/lib/members
  * Get registered agent by ID or agentId
  */
 export const getRegisteredAgent = protectedProcedure
-	.use(requirePermission(Permissions.AGENT_READ))
+	.use(
+		requireInputOrgPermission(Permissions.AGENT_READ, {
+			requireOrganization: true,
+		}),
+	)
 	.route({
 		method: "GET",
 		path: "/agents/registry/:id",

@@ -19,6 +19,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const {
 	mockHasProjectAccess,
+	mockAssertProjectPermission,
 	mockPlanFindFirst,
 	mockPlanUpdate,
 	mockRunInBackground,
@@ -26,6 +27,7 @@ const {
 	mockFetch,
 } = vi.hoisted(() => ({
 	mockHasProjectAccess: vi.fn(),
+	mockAssertProjectPermission: vi.fn(),
 	mockPlanFindFirst: vi.fn(),
 	mockPlanUpdate: vi.fn(),
 	mockRunInBackground: vi.fn(),
@@ -62,8 +64,26 @@ vi.mock("../../../../orpc/procedures", () => {
 	});
 	return {
 		protectedProcedure: chainable,
+		assertProjectPermission: mockAssertProjectPermission,
 		requirePermission: () => () => undefined,
+		requireProjectPermission: () => () => undefined,
 		Permissions: new Proxy({}, { get: (_target, prop) => String(prop) }),
+		resolveOrganizationIdForCaller: async (
+			inputOrganizationId: string | null | undefined,
+			session: { activeOrganizationId?: string | null },
+		) => {
+			// Mirrors the resolution half only. The membership half it adds is
+			// covered directly in the orpc procedure tests; these suites are
+			// about weave's own behaviour, and a caller who is not a member
+			// never reaches them.
+			if (inputOrganizationId) {
+				return inputOrganizationId;
+			}
+			if (inputOrganizationId === null) {
+				return undefined;
+			}
+			return session.activeOrganizationId ?? undefined;
+		},
 		resolveOrganizationId: (
 			inputOrganizationId: string | null | undefined,
 			session: { activeOrganizationId?: string | null },
@@ -117,6 +137,7 @@ beforeEach(() => {
 	savedPlannersUrl = process.env.WEAVE_PLANNERS_URL;
 	process.env.WEAVE_PLANNERS_URL = "http://planners.test:8142";
 	mockHasProjectAccess.mockResolvedValue(true);
+	mockAssertProjectPermission.mockResolvedValue(undefined);
 	mockPlanFindFirst.mockResolvedValue(failedPlan);
 	mockPlanUpdate.mockResolvedValue({});
 	mockRunPatternGeneration.mockResolvedValue(undefined);
@@ -182,7 +203,11 @@ describe("retryGenerationProcedure — guards", () => {
 	});
 
 	it("throws FORBIDDEN without project access", async () => {
-		mockHasProjectAccess.mockResolvedValue(false);
+		mockAssertProjectPermission.mockRejectedValue(
+			new ORPCError("FORBIDDEN", {
+				message: "Missing required permission",
+			}),
+		);
 
 		const handler = await loadHandler();
 		const error = await handler({

@@ -515,11 +515,20 @@ function scanProcedureFiles(): ProcedureFile[] {
 		// invariant. New variants should be named with the same prefix.
 		// Files derived from a pre-gated base (see PRE_GATED_PROCEDURE_BASES)
 		// inherit permission coverage from the base.
+		//
+		// `assertProjectPermission` counts too, and is the one exception to the
+		// naming rule. It is the same decision `requireProjectPermission`
+		// makes — literally the function that middleware calls — but callable
+		// from a HANDLER, which is the only place a procedure whose input names
+		// a plan rather than a project can make it. The invariant this guard
+		// protects is that a file declares a permission, not where it declares
+		// one; a middleware-shaped name would be a lie about when it runs.
 		const usesPreGatedBase = Array.from(PRE_GATED_PROCEDURE_BASES).some(
 			(name) => new RegExp(`\\b${name}\\b`).test(content),
 		);
 		const hasPermissionDecorator =
 			/\brequire[A-Z]\w*\s*\(/.test(content) ||
+			/\bassertProjectPermission\s*\(/.test(content) ||
 			usesPreGatedBase ||
 			COVERAGE_EXEMPTIONS.has(file);
 

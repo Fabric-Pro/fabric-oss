@@ -16,10 +16,10 @@ import {
 } from "@repo/temporal/workflows";
 import { z } from "zod";
 import {
+	assertProjectPermission,
 	Permissions,
 	protectedProcedure,
-	requirePermission,
-	resolveOrganizationId,
+	resolveOrganizationIdForCaller,
 } from "../../../orpc/procedures";
 
 const SignalApprovalInputSchema = z.object({
@@ -33,7 +33,6 @@ const SignalApprovalInputSchema = z.object({
 });
 
 export const signalApprovalProcedure = protectedProcedure
-	.use(requirePermission(Permissions.AGENT_UPDATE))
 	.route({
 		method: "POST",
 		path: "/weave/executions/:executionId/signal",
@@ -43,9 +42,10 @@ export const signalApprovalProcedure = protectedProcedure
 	.input(SignalApprovalInputSchema)
 	.handler(async ({ input, context }) => {
 		const userId = context.user.id;
-		const organizationId = resolveOrganizationId(
+		const organizationId = await resolveOrganizationIdForCaller(
 			input.organizationId,
 			context.session,
+			userId,
 		);
 
 		const execution = await db.weaveExecution.findFirst({
@@ -63,6 +63,15 @@ export const signalApprovalProcedure = protectedProcedure
 				message: "Execution not found or access denied",
 			});
 		}
+
+		// Object-level, and the same decision the middleware makes for a
+		// procedure whose input names the project. This one names an execution, so
+		// the project is only known here.
+		await assertProjectPermission(
+			execution.projectId,
+			userId,
+			Permissions.AGENT_UPDATE,
+		);
 
 		if (execution.status !== "CHECKPOINT") {
 			throw new ORPCError("BAD_REQUEST", {
@@ -99,7 +108,6 @@ const AutoApproveAllInputSchema = z.object({
 });
 
 export const autoApproveAllProcedure = protectedProcedure
-	.use(requirePermission(Permissions.AGENT_UPDATE))
 	.route({
 		method: "POST",
 		path: "/weave/executions/:executionId/auto-approve",
@@ -109,9 +117,10 @@ export const autoApproveAllProcedure = protectedProcedure
 	.input(AutoApproveAllInputSchema)
 	.handler(async ({ input, context }) => {
 		const userId = context.user.id;
-		const organizationId = resolveOrganizationId(
+		const organizationId = await resolveOrganizationIdForCaller(
 			input.organizationId,
 			context.session,
+			userId,
 		);
 
 		const execution = await db.weaveExecution.findFirst({
@@ -129,6 +138,15 @@ export const autoApproveAllProcedure = protectedProcedure
 				message: "Execution not found or access denied",
 			});
 		}
+
+		// Object-level, and the same decision the middleware makes for a
+		// procedure whose input names the project. This one names an execution, so
+		// the project is only known here.
+		await assertProjectPermission(
+			execution.projectId,
+			userId,
+			Permissions.AGENT_UPDATE,
+		);
 
 		const activeStatuses = ["RUNNING", "PAUSED", "CHECKPOINT"];
 		if (!activeStatuses.includes(execution.status)) {
@@ -160,7 +178,6 @@ const RevokeAutoApproveInputSchema = z.object({
 });
 
 export const revokeAutoApproveProcedure = protectedProcedure
-	.use(requirePermission(Permissions.AGENT_UPDATE))
 	.route({
 		method: "POST",
 		path: "/weave/executions/:executionId/revoke-auto-approve",
@@ -171,9 +188,10 @@ export const revokeAutoApproveProcedure = protectedProcedure
 	.input(RevokeAutoApproveInputSchema)
 	.handler(async ({ input, context }) => {
 		const userId = context.user.id;
-		const organizationId = resolveOrganizationId(
+		const organizationId = await resolveOrganizationIdForCaller(
 			input.organizationId,
 			context.session,
+			userId,
 		);
 
 		const execution = await db.weaveExecution.findFirst({
@@ -191,6 +209,15 @@ export const revokeAutoApproveProcedure = protectedProcedure
 				message: "Execution not found or access denied",
 			});
 		}
+
+		// Object-level, and the same decision the middleware makes for a
+		// procedure whose input names the project. This one names an execution, so
+		// the project is only known here.
+		await assertProjectPermission(
+			execution.projectId,
+			userId,
+			Permissions.AGENT_UPDATE,
+		);
 
 		const activeStatuses = ["RUNNING", "PAUSED", "CHECKPOINT"];
 		if (!activeStatuses.includes(execution.status)) {
@@ -227,7 +254,6 @@ const RetryFromStepInputSchema = z.object({
 });
 
 export const retryFromStepProcedure = protectedProcedure
-	.use(requirePermission(Permissions.AGENT_UPDATE))
 	.route({
 		method: "POST",
 		path: "/weave/executions/:executionId/retry-from-step",
@@ -237,9 +263,10 @@ export const retryFromStepProcedure = protectedProcedure
 	.input(RetryFromStepInputSchema)
 	.handler(async ({ input, context }) => {
 		const userId = context.user.id;
-		const organizationId = resolveOrganizationId(
+		const organizationId = await resolveOrganizationIdForCaller(
 			input.organizationId,
 			context.session,
+			userId,
 		);
 
 		const execution = await db.weaveExecution.findFirst({
@@ -257,6 +284,15 @@ export const retryFromStepProcedure = protectedProcedure
 				message: "Execution not found or access denied",
 			});
 		}
+
+		// Object-level, and the same decision the middleware makes for a
+		// procedure whose input names the project. This one names an execution, so
+		// the project is only known here.
+		await assertProjectPermission(
+			execution.projectId,
+			userId,
+			Permissions.AGENT_UPDATE,
+		);
 
 		if (
 			!["RUNNING", "PAUSED", "CHECKPOINT", "FAILED"].includes(

@@ -247,12 +247,20 @@ export const AUDIT_ACTIONS = [
 	// is explicitly "audit" (same forensic bucket as `audit.viewed`) rather than
 	// derived from the action prefix.
 	"userActivity.viewed",
-	// mcp (3) — MCP data-source credential-config lifecycle (SOC 2 CC7.2). A
+	// mcp (4) — MCP data-source credential-config lifecycle (SOC 2 CC7.2). A
 	// tenant creating/updating/deleting an MCP config manages stored credentials,
 	// so each mutation is recorded in the audit ledger.
 	"mcp.config.created",
 	"mcp.config.updated",
 	"mcp.config.deleted",
+	// A protocol request named an organization its caller is not a member of,
+	// and the server refused to serve it. Recorded because the refusal is the
+	// only trace the attempt leaves — the request never reaches a tenant-scoped
+	// query, so nothing downstream would log it. `metadata.requestedOrganizationId`
+	// carries the tenant that was named; the row's own `organizationId` stays
+	// null, because the caller has no standing in it and the row must not appear
+	// in that organization's log.
+	"mcp.session.organization_denied",
 	// decision (1) — AI decision pre-check override. Written server-side when a
 	// user accepts AI output that contradicts a logged architecture decision
 	// (backlog "Apply Selected", or the document "Keep anyway" acknowledge).

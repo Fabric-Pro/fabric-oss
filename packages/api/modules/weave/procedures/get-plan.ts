@@ -6,10 +6,10 @@ import { ORPCError } from "@orpc/server";
 import { db } from "@repo/database";
 import { z } from "zod";
 import {
+	assertProjectPermission,
 	Permissions,
 	protectedProcedure,
-	requirePermission,
-	resolveOrganizationId,
+	resolveOrganizationIdForCaller,
 } from "../../../orpc/procedures";
 
 const GetPlanInputSchema = z.object({
@@ -18,7 +18,6 @@ const GetPlanInputSchema = z.object({
 });
 
 export const getPlanProcedure = protectedProcedure
-	.use(requirePermission(Permissions.AGENT_READ))
 	.route({
 		method: "GET",
 		path: "/weave/plans/:planId",
@@ -28,9 +27,10 @@ export const getPlanProcedure = protectedProcedure
 	.input(GetPlanInputSchema)
 	.handler(async ({ input, context }) => {
 		const userId = context.user.id;
-		const organizationId = resolveOrganizationId(
+		const organizationId = await resolveOrganizationIdForCaller(
 			input.organizationId,
 			context.session,
+			userId,
 		);
 
 		const plan = await db.weavePlan.findFirst({
@@ -54,6 +54,15 @@ export const getPlanProcedure = protectedProcedure
 				message: "Plan not found or access denied",
 			});
 		}
+
+		// Object-level, and the same decision the middleware makes for a
+		// procedure whose input names the project. This one names a plan, so
+		// the project is only known here.
+		await assertProjectPermission(
+			plan.projectId,
+			userId,
+			Permissions.AGENT_READ,
+		);
 
 		return plan;
 	});

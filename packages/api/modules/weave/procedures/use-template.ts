@@ -11,8 +11,8 @@ import { z } from "zod";
 import {
 	Permissions,
 	protectedProcedure,
-	requirePermission,
-	resolveOrganizationId,
+	requireInputOrgPermission,
+	resolveOrganizationIdForCaller,
 } from "../../../orpc/procedures";
 
 const UseTemplateInputSchema = z.object({
@@ -21,7 +21,15 @@ const UseTemplateInputSchema = z.object({
 });
 
 export const useTemplateProcedure = protectedProcedure
-	.use(requirePermission(Permissions.AGENT_UPDATE))
+	.use(
+		// Org-scoped, not project-scoped: a template belongs to a person and an
+		// organization and names no project, so there is no object to check it
+		// against. `requireOrganization` refuses the explicit null that would
+		// otherwise walk past the role check.
+		requireInputOrgPermission(Permissions.AGENT_UPDATE, {
+			requireOrganization: true,
+		}),
+	)
 	.route({
 		method: "POST",
 		path: "/weave/templates/:templateId/use",
@@ -31,9 +39,10 @@ export const useTemplateProcedure = protectedProcedure
 	.input(UseTemplateInputSchema)
 	.handler(async ({ input, context }) => {
 		const userId = context.user.id;
-		const organizationId = resolveOrganizationId(
+		const organizationId = await resolveOrganizationIdForCaller(
 			input.organizationId,
 			context.session,
+			userId,
 		);
 
 		const template = await db.weavePlanTemplate.findFirst({
