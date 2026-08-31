@@ -3096,12 +3096,20 @@ export function StoryWorkspace({
 		story.lastEditedAt ??
 		story.createdAt;
 
-	// Clear cached AI readiness result and switch to Spec Readiness mode when story content or spec updates
+	// Clear the assessment whenever scoreable content or the selected rubric
+	// changes. A kind conversion can preserve the text and edit timestamp, so it
+	// must invalidate independently to avoid showing a FEATURE score on a BUG (or
+	// vice versa) until another edit happens.
 	useEffect(() => {
 		requestGenRef.current++;
 		setAiResult(null);
 		setIsAiMode(false);
-	}, [story.description, story.acceptanceCriteria, lastEditedAtTimestamp]);
+	}, [
+		story.kind,
+		story.description,
+		story.acceptanceCriteria,
+		lastEditedAtTimestamp,
+	]);
 
 	// Maturation V2 status picker. A dedicated mutation — deliberately NOT the
 	// full `updateMutation` — because that one's onSuccess clears
