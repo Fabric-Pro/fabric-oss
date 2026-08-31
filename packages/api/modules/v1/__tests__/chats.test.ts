@@ -27,6 +27,10 @@ const mockGenerateChatTitle = vi.fn();
 const mockConvertToModelMessages = vi.fn();
 
 vi.mock("@repo/database", () => ({
+	resolveUserOrganization: vi.fn(async () => ({
+		kind: "resolved" as const,
+		organizationId: "org-test",
+	})),
 	getAiChatByIdForTenant: (...args: unknown[]) =>
 		mockGetAiChatByIdForTenant(...args),
 	getAiChatsByUserId: (...args: unknown[]) => mockGetAiChatsByUserId(...args),
@@ -128,10 +132,15 @@ beforeEach(() => {
 // --- Tests ---------------------------------------------------------------
 
 describe("v1 chats — GET/POST/PATCH/DELETE", () => {
-	it("GET /chats lists personal-context chats", async () => {
-		mockGetAiChatsByUserId.mockResolvedValue([
-			chatRow(),
-			chatRow({ id: "chat-2" }),
+	it("GET /chats lists the organization a personal key resolves to", async () => {
+		// This asserted personal-context listing until PO-9: a personal key
+		// naming no organization resolved to none, and the route took its
+		// user-scoped branch. A key-authenticated caller now resolves like
+		// every other one, so the organization branch is the live path and the
+		// user-scoped query is not reached at all.
+		mockGetAiChatsByOrganizationId.mockResolvedValue([
+			chatRow({ organizationId: "org-test" }),
+			chatRow({ id: "chat-2", organizationId: "org-test" }),
 		]);
 		const app = makeApp();
 
@@ -141,11 +150,15 @@ describe("v1 chats — GET/POST/PATCH/DELETE", () => {
 		expect(body.data).toHaveLength(2);
 		expect(body.data[0]).toMatchObject({
 			id: "chat-1",
-			organizationId: null,
+			organizationId: "org-test",
 		});
-		expect(mockGetAiChatsByUserId).toHaveBeenCalledWith(
-			expect.objectContaining({ userId: "user-1" }),
+		expect(mockGetAiChatsByOrganizationId).toHaveBeenCalledWith(
+			expect.objectContaining({
+				userId: "user-1",
+				organizationId: "org-test",
+			}),
 		);
+		expect(mockGetAiChatsByUserId).not.toHaveBeenCalled();
 	});
 
 	it("POST /chats creates a chat without projectId access check when none provided", async () => {

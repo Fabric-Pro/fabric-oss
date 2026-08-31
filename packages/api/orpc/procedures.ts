@@ -236,6 +236,7 @@ export const tenantProtectedProcedure = protectedProcedure.use(
 export { getOrganizationIdFromContext, getTenantFilterFromContext };
 export { Permissions } from "@repo/permissions";
 export {
+	assertProjectPermission,
 	getPermissionFromMiddleware,
 	PERMISSION_MIDDLEWARE_TAG,
 	requireInputOrgPermission,
@@ -438,6 +439,60 @@ export function resolveOrganizationId(
 		return session.activeOrganizationId;
 	}
 	return undefined;
+}
+
+/**
+ * Resolve the organization a request runs in, and confirm the caller belongs to
+ * it before returning it.
+ *
+ * `resolveOrganizationId` deliberately does not do this: it answers "which
+ * organization did this request name", which is a different question from "may
+ * this caller act there". Handlers that reach it through the tenant-aware
+ * procedure builder get the second answer from the permission middleware. A
+ * handler on the plain builder does not — the middleware has no tenant context
+ * to evaluate, so its permission check returns early — and if such a handler
+ * then writes the resolved organization onto a row, the caller has chosen the
+ * tenant their content lands in.
+ *
+ * Use this wherever a caller-supplied organization reaches storage from a
+ * procedure that is not tenant-aware. It is the same rule the protocol servers
+ * apply to an organization named on a request: a caller may ask for a tenant;
+ * they may not ask for one they have no tie to.
+ *
+ * "Tie", not "membership", and the difference is a project-scoped guest. They
+ * hold no membership row by definition, so a membership-only check refuses
+ * them — which was observed against a real guest, refusing every weave call
+ * their own dashboard made while the same call succeeded with the organization
+ * omitted. An accepted project membership inside the organization is a real
+ * tie and is honoured as one.
+ *
+ * Returns `undefined` for personal context exactly as `resolveOrganizationId`
+ * does — there is no membership to confirm when no organization was named.
+ */
+export async function resolveOrganizationIdForCaller(
+	inputOrganizationId: string | null | undefined,
+	session: { activeOrganizationId?: string | null },
+	userId: string,
+): Promise<string | undefined> {
+	const organizationId = resolveOrganizationId(inputOrganizationId, session);
+	if (!organizationId) {
+		return undefined;
+	}
+
+	// A TIE, not a membership. Membership alone refuses the project-scoped
+	// guest — someone invited to one project inside an organization they do not
+	// belong to — and refusing them is a regression rather than a boundary:
+	// object-level access already lets them reach that project. The boundary
+	// that matters holds either way, because a caller with neither tie is
+	// refused, so naming a tenant you have no relationship with gets nowhere.
+	const { hasOrganizationTie } = await import("@repo/database");
+	if (!(await hasOrganizationTie(userId, organizationId))) {
+		throw new ORPCError("FORBIDDEN", {
+			message: "You do not have access to this organization",
+		});
+	}
+
+	return organizationId;
 }
 
 /**

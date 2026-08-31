@@ -49,17 +49,22 @@ describe("auth.ts hook wiring — seedDefaultMcpConfigsForTenant", () => {
 	});
 
 	// -----------------------------------------------------------------------
-	// user.create.after hook seeds the personal sentinel row.
-	// The personal path MUST pass `organizationId: null` (XOR — never
-	// `undefined`, never an org id).
+	// NOTHING is seeded personally — not even as a fallback.
+	//
+	// This asserted the opposite: that `user.create.after` seeded a personal
+	// sentinel row with `organizationId: null`. That was the fallback for a
+	// signup whose organization could not be created, on the reasoning that
+	// neither tenant seeded was the worse outcome.
+	//
+	// It traded one bad state for the state this epic removes — a user with
+	// personal rows and no organization IS the personal environment, whatever
+	// it is called. The trade was unnecessary: the same helper runs on every
+	// session create, so the next sign-in makes the organization and seeds it.
 	// -----------------------------------------------------------------------
 
-	it("calls seedDefaultMcpConfigsForTenant with organizationId: null inside user.create.after", () => {
-		// Look for the user-create call's literal `organizationId: null`
-		// inside an `await seedDefaultMcpConfigsForTenant({ ... })` invocation.
-		// Multiline match because the call spans several lines per code style.
-		expect(AUTH_SOURCE).toMatch(
-			/await\s+seedDefaultMcpConfigsForTenant\(\s*\{\s*userId:\s*user\.id\s*,\s*organizationId:\s*null/,
+	it("never seeds a personal tenant, in any hook", () => {
+		expect(AUTH_SOURCE).not.toMatch(
+			/seedDefaultMcpConfigsForTenant\(\s*\{[^}]*organizationId:\s*null/,
 		);
 	});
 
@@ -125,7 +130,10 @@ describe("auth.ts hook wiring — seedDefaultMcpConfigsForTenant", () => {
 				/await\s+seedDefaultMcpConfigsForTenant\(/g,
 			),
 		];
-		expect(callSites.length).toBeGreaterThanOrEqual(4);
+		// Three, not four: the personal fallback that used to be the fourth is
+		// gone. The organization hooks are what remain, and each still has to
+		// be best-effort.
+		expect(callSites.length).toBeGreaterThanOrEqual(3);
 
 		for (const match of callSites) {
 			const start = Math.max(0, match.index! - 200);

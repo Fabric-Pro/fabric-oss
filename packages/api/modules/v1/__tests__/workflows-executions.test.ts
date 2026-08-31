@@ -25,6 +25,10 @@ const mockTemporalCancel = vi.fn();
 const mockGetTemporalClient = vi.fn();
 
 vi.mock("@repo/database", () => ({
+	resolveUserOrganization: vi.fn(async () => ({
+		kind: "resolved" as const,
+		organizationId: "org-test",
+	})),
 	getWorkflowById: (...args: unknown[]) => mockGetWorkflowById(...args),
 	getWorkflowExecutionById: (...args: unknown[]) =>
 		mockGetWorkflowExecutionById(...args),

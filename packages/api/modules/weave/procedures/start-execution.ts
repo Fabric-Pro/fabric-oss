@@ -6,15 +6,15 @@
  */
 
 import { ORPCError } from "@orpc/server";
-import { db, hasProjectAccess } from "@repo/database";
+import { db } from "@repo/database";
 import { getTemporalClient } from "@repo/temporal";
 import { z } from "zod";
 import { withCorrelationMemo } from "../../../lib/temporal-correlation";
 import {
+	assertProjectPermission,
 	Permissions,
 	protectedProcedure,
-	requirePermission,
-	resolveOrganizationId,
+	resolveOrganizationIdForCaller,
 } from "../../../orpc/procedures";
 
 const StartExecutionInputSchema = z.object({
@@ -44,7 +44,6 @@ function isGitHubRepoUrl(repoUrl: string): boolean {
 }
 
 export const startExecutionProcedure = protectedProcedure
-	.use(requirePermission(Permissions.AGENT_EXECUTE))
 	.route({
 		method: "POST",
 		path: "/weave/executions/start",
@@ -56,9 +55,10 @@ export const startExecutionProcedure = protectedProcedure
 	.input(StartExecutionInputSchema)
 	.handler(async ({ input, context }) => {
 		const userId = context.user.id;
-		const organizationId = resolveOrganizationId(
+		const organizationId = await resolveOrganizationIdForCaller(
 			input.organizationId,
 			context.session,
+			userId,
 		);
 
 		const plan = await db.weavePlan.findFirst({
@@ -77,17 +77,14 @@ export const startExecutionProcedure = protectedProcedure
 			});
 		}
 
-		const hasAccess = await hasProjectAccess(
+		// Object-level, and the same decision the middleware makes for a
+		// procedure whose input names the project. This one names a plan, so
+		// the project is only known here.
+		await assertProjectPermission(
 			plan.projectId,
 			userId,
-			organizationId,
+			Permissions.AGENT_EXECUTE,
 		);
-
-		if (!hasAccess) {
-			throw new ORPCError("FORBIDDEN", {
-				message: "You don't have access to this project",
-			});
-		}
 
 		if (plan.status !== "APPROVED") {
 			throw new ORPCError("BAD_REQUEST", {

@@ -639,6 +639,9 @@ export function CreateAgentPage({
 	);
 	const hasAllRequiredIntegrations = missingIntegrations.length === 0;
 	const integrationsSettingsUrl = useContextPath("settings/integrations");
+	// Was built by interpolating the organization ID into a segment that
+	// resolves by SLUG, so the "Add" link 404'd inside an organization.
+	const mcpServersUrl = useContextPath("mcp-servers");
 	// === MCP Server Requirements ===
 	// State to track which MCP config is selected for each required key
 	type ToolConnections = Record<
@@ -1796,11 +1799,7 @@ export function CreateAgentPage({
 																			asChild
 																		>
 																			<Link
-																				href={
-																					organizationId
-																						? `/app/${organizationId}/mcp-servers?search=${key}`
-																						: `/app/mcp-servers?search=${key}`
-																				}
+																				href={`${mcpServersUrl}?search=${key}`}
 																			>
 																				<PlusIcon className="h-4 w-4 mr-1" />
 																				Add

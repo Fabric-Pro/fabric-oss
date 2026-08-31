@@ -28,7 +28,7 @@ export function buildFeaturesCommand(): Command {
 		.description("List features in a project")
 		.requiredOption("-p, --project <id>", "Project ID")
 		.option("--org <slug>", "Organization context")
-		.option("--personal", "Personal context")
+		.option("--personal", "Retired — context is organization-only")
 		.option(
 			"--priority <priority>",
 			"Filter: P0_CRITICAL|P1_HIGH|P2_MEDIUM|P3_LOW",
@@ -58,7 +58,6 @@ export function buildFeaturesCommand(): Command {
 				try {
 					list = await client.projects.listFeatures(opts.project, {
 						org: ctx?.type === "org" ? ctx.slug : undefined,
-						personal: ctx?.type === "personal" ? true : undefined,
 						priority: opts.priority as
 							| FabricFeature["priority"]
 							| undefined,
@@ -89,7 +88,7 @@ export function buildFeaturesCommand(): Command {
 		.description("Show feature details")
 		.requiredOption("-p, --project <projectId>", "Project ID")
 		.option("--org <slug>", "Organization context")
-		.option("--personal", "Personal context")
+		.option("--personal", "Retired — context is organization-only")
 		.option("--format <format>", "Output format: table|json|yaml", "table")
 		.action(
 			async (
@@ -110,8 +109,6 @@ export function buildFeaturesCommand(): Command {
 						id,
 						{
 							org: ctx?.type === "org" ? ctx.slug : undefined,
-							personal:
-								ctx?.type === "personal" ? true : undefined,
 						},
 					);
 				} catch (err: unknown) {
@@ -145,7 +142,7 @@ export function buildFeaturesCommand(): Command {
 		.description("Create a feature in a project")
 		.requiredOption("-p, --project <projectId>", "Project ID")
 		.option("--org <slug>", "Organization context")
-		.option("--personal", "Personal context")
+		.option("--personal", "Retired — context is organization-only")
 		.option("-d, --description <text>", "Feature description")
 		.option(
 			"--priority <priority>",
@@ -177,8 +174,6 @@ export function buildFeaturesCommand(): Command {
 								| FabricFeature["priority"]
 								| undefined,
 							org: ctx?.type === "org" ? ctx.slug : undefined,
-							personal:
-								ctx?.type === "personal" ? true : undefined,
 						},
 					);
 				} catch (err: unknown) {
@@ -210,7 +205,7 @@ export function buildFeaturesCommand(): Command {
 		.requiredOption("-p, --project <projectId>", "Project ID")
 		.requiredOption("-f, --feature <featureId>", "Feature ID")
 		.option("--org <slug>", "Organization context")
-		.option("--personal", "Personal context")
+		.option("--personal", "Retired — context is organization-only")
 		.option(
 			"--format <format>",
 			"Output format: table|json|yaml|csv",
@@ -235,8 +230,6 @@ export function buildFeaturesCommand(): Command {
 						opts.feature,
 						{
 							org: ctx?.type === "org" ? ctx.slug : undefined,
-							personal:
-								ctx?.type === "personal" ? true : undefined,
 						},
 					);
 				} catch (err: unknown) {
@@ -268,7 +261,7 @@ export function buildFeaturesCommand(): Command {
 		.description("Update a feature")
 		.requiredOption("-p, --project <projectId>", "Project ID")
 		.option("--org <slug>", "Organization context")
-		.option("--personal", "Personal context")
+		.option("--personal", "Retired — context is organization-only")
 		.option("--title <title>", "New title")
 		.option("-d, --description <text>", "New description")
 		.option(
@@ -303,8 +296,6 @@ export function buildFeaturesCommand(): Command {
 								| FabricFeature["priority"]
 								| undefined,
 							org: ctx?.type === "org" ? ctx.slug : undefined,
-							personal:
-								ctx?.type === "personal" ? true : undefined,
 						},
 					);
 				} catch (err: unknown) {

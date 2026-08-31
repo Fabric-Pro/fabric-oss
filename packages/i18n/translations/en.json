@@ -264,7 +264,7 @@
 			"markAllRead": "Mark all read",
 			"viewAll": "View all notifications",
 			"settings": "Notification settings",
-			"settingsHint": "Opens your personal account settings",
+			"settingsHint": "Opens your account settings",
 			"tabs": {
 				"all": "All",
 				"unread": "Unread",
@@ -802,7 +802,9 @@
 		"account": {
 			"avatar": "Avatar",
 			"avatarDescription": "Click the circle or drop an image to it to upload your avatar.",
-			"name": "Name"
+			"name": "Name",
+			"workspaceReady": "{name} is ready",
+			"workspaceReadyHint": "We set up this private workspace for you — your projects, documents and agents live here. Invite others when you want to, or keep it to yourself."
 		},
 		"continue": "Continue",
 		"getStarted": {
@@ -943,7 +945,7 @@
 		"organizationSelect": {
 			"createNewOrganization": "Create new organization",
 			"organizations": "Organizations",
-			"personalAccount": "Personal account",
+			"ownAccount": "Your account",
 			"switchError": "Couldn't switch workspace. Please try again.",
 			"switching": "Switching workspace…",
 			"workspaceLabel": "Workspace: {name}"
@@ -1155,7 +1157,6 @@
 			"label": "Activity history",
 			"description": "Every administrative action, authentication event, and lifecycle change for this organization.",
 			"personalLabel": "Activity history",
-			"personalDescription": "Authentication, MFA, and personal-context lifecycle events for your account.",
 			"loading": "Loading events",
 			"loadMore": "Load more",
 			"empty": {
@@ -1219,7 +1220,7 @@
 					"label": "Actor",
 					"ariaLabel": "Filter by actor",
 					"placeholder": "Any actor",
-					"personalLockedTitle": "Personal events"
+					"personalLockedTitle": "Your own events"
 				},
 				"dateRange": {
 					"label": "Date range",
@@ -1584,6 +1585,9 @@
 						"created": "MCP configuration created",
 						"updated": "MCP configuration updated",
 						"deleted": "MCP configuration deleted"
+					},
+					"session": {
+						"organization_denied": "MCP organization access denied"
 					}
 				},
 				"decision": {
@@ -1958,7 +1962,6 @@
 					"ariaLabel": "Two-factor authentication setup prompt"
 				}
 			},
-			"subtitle": "Manage the settings of your personal account.",
 			"title": "Account settings"
 		},
 		"billing": {

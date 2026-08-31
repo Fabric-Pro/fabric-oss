@@ -29,7 +29,7 @@ function readSource(relativePath: string): string {
 
 describe("engine pills while a conversation is loaded", () => {
 	const source = readSource(
-		"app/(saas)/app/agents/fabric-ai/FabricAIClient.tsx",
+		"modules/saas/agents/components/fabric-ai/FabricAIClient.tsx",
 	);
 
 	it("derives the lock from the active conversation", () => {

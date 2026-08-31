@@ -159,8 +159,9 @@ const launcherSource = [
 	"apps/web/modules/saas/agent-templates/components/AgentTemplatesHero.tsx",
 	"apps/web/modules/saas/automation-templates/components/TemplatesHero.tsx",
 	// Settings shell hero (default app-settings) + the Integrations override.
+	// One override, not two: the personal settings tree is gone, so the
+	// organization page is the only place the launcher lives.
 	"apps/web/modules/saas/settings/components/SettingsHero.tsx",
-	"apps/web/app/(saas)/app/(account)/settings/integrations/page.tsx",
 	"apps/web/app/(saas)/app/(organizations)/[organizationSlug]/settings/integrations/page.tsx",
 	// Project pages (getStartedPageId on ProjectSectionHero, or inline button).
 	"apps/web/modules/saas/projects/components/ProjectOverview.tsx",

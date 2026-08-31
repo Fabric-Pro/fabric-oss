@@ -23,8 +23,10 @@ vi.mock("@saas/auth/hooks/use-session", () => ({
 }));
 
 const orgContextMock = vi.fn();
+const accountOrgMock = vi.fn();
 vi.mock("@saas/organizations/hooks/use-organization-context", () => ({
 	useOrganizationContext: () => orgContextMock(),
+	useAccountOrganization: () => accountOrgMock(),
 }));
 
 const guestMock = vi.fn();
@@ -39,7 +41,7 @@ vi.mock("@saas/organizations/hooks/use-active-organization", () => ({
 }));
 
 vi.mock("@saas/organizations/lib/api", () => ({
-	useOrganizationListQuery: () => ({ data: [] }),
+	useOrganizationListQuery: () => ({ data: [], isPending: false }),
 }));
 
 vi.mock("@saas/payments/components/ActivePlanBadge", () => ({
@@ -92,7 +94,7 @@ vi.mock("next/link", () => ({
 
 import { OrganzationSelect } from "../OrganizationSelect";
 
-const PERSONAL_ACCOUNT_KEY = "organizations.organizationSelect.personalAccount";
+const OWN_ACCOUNT_KEY = "organizations.organizationSelect.ownAccount";
 
 function setupOrgContext({ isGuest }: { isGuest: boolean }) {
 	sessionMock.mockReturnValue({
@@ -114,9 +116,17 @@ function setupOrgContext({ isGuest }: { isGuest: boolean }) {
 		},
 	});
 	guestMock.mockReturnValue(isGuest);
+	// A guest is by definition not a member of the host, so the organization
+	// they are rooted in is always a different one.
+	accountOrgMock.mockReturnValue({
+		id: "org-own",
+		slug: "pats-workspace",
+		name: "Pat's workspace",
+		logo: null,
+	});
 }
 
-function setupPersonalContext() {
+function setupNoOrgContext() {
 	sessionMock.mockReturnValue({
 		user: {
 			id: "u-1",
@@ -131,6 +141,7 @@ function setupPersonalContext() {
 		organization: null,
 	});
 	guestMock.mockReturnValue(false);
+	accountOrgMock.mockReturnValue(null);
 }
 
 beforeEach(() => {
@@ -138,19 +149,22 @@ beforeEach(() => {
 });
 
 describe("OrganzationSelect — guest org concealment", () => {
-	it("shows the personal-account presentation (not the org) for project-only guests in an org", () => {
+	it("shows the guest's OWN org (not the host) for project-only guests", () => {
 		setupOrgContext({ isGuest: true });
 		render(<OrganzationSelect />);
 
-		// Trigger renders the personal branch: user avatar + translated label
-		expect(screen.getByText(PERSONAL_ACCOUNT_KEY)).toBeInTheDocument();
-		expect(screen.getByTestId("user-avatar")).toBeInTheDocument();
+		// The guest is somewhere real — their own workspace, named.
+		expect(screen.getByText("Pat's workspace")).toBeInTheDocument();
+		expect(screen.getByTestId("organization-logo")).toHaveAttribute(
+			"data-name",
+			"Pat's workspace",
+		);
 
-		// The host org's identity must not appear anywhere in the closed switcher
+		// The host org's identity must not appear anywhere in the closed
+		// switcher — the guarantee this branch exists for, unchanged.
 		expect(screen.queryByText("Acme Corp")).not.toBeInTheDocument();
-		expect(
-			screen.queryByTestId("organization-logo"),
-		).not.toBeInTheDocument();
+		// And they are no longer told they are in a personal account.
+		expect(screen.queryByText(OWN_ACCOUNT_KEY)).not.toBeInTheDocument();
 	});
 
 	it("keeps the org presentation for real members in an org (regression guard)", () => {
@@ -162,16 +176,14 @@ describe("OrganzationSelect — guest org concealment", () => {
 
 		// Closed dropdown: the personal-account label only lives in the menu
 		// content, so it must not render on the trigger for members.
-		expect(
-			screen.queryByText(PERSONAL_ACCOUNT_KEY),
-		).not.toBeInTheDocument();
+		expect(screen.queryByText(OWN_ACCOUNT_KEY)).not.toBeInTheDocument();
 	});
 
-	it("keeps the personal-account presentation in personal (no-org) context (regression guard)", () => {
-		setupPersonalContext();
+	it("falls back to the account presentation when no org is in context", () => {
+		setupNoOrgContext();
 		render(<OrganzationSelect />);
 
-		expect(screen.getByText(PERSONAL_ACCOUNT_KEY)).toBeInTheDocument();
+		expect(screen.getByText(OWN_ACCOUNT_KEY)).toBeInTheDocument();
 		expect(screen.getByTestId("user-avatar")).toBeInTheDocument();
 		expect(
 			screen.queryByTestId("organization-logo"),
@@ -195,18 +207,17 @@ describe("OrganzationSelect — collapsed rail variant", () => {
 		expect(screen.queryByText("Acme Corp")).not.toBeInTheDocument();
 	});
 
-	it("renders the personal avatar (not the org) for project-only guests when collapsed", () => {
+	it("renders the guest's OWN org avatar (not the host's) when collapsed", () => {
 		setupOrgContext({ isGuest: true });
 		render(<OrganzationSelect collapsed />);
 
-		expect(screen.getByTestId("user-avatar")).toBeInTheDocument();
-		expect(
-			screen.queryByTestId("organization-logo"),
-		).not.toBeInTheDocument();
+		const logo = screen.getByTestId("organization-logo");
+		expect(logo).toHaveAttribute("data-name", "Pat's workspace");
+		expect(logo).not.toHaveAttribute("data-name", "Acme Corp");
 	});
 
-	it("renders the personal avatar in personal (no-org) context when collapsed", () => {
-		setupPersonalContext();
+	it("renders the account avatar when no org is in context, collapsed", () => {
+		setupNoOrgContext();
 		render(<OrganzationSelect collapsed />);
 
 		expect(screen.getByTestId("user-avatar")).toBeInTheDocument();

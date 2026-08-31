@@ -2,6 +2,7 @@
 
 import { useSession } from "@saas/auth/hooks/use-session";
 import { useUserAccountsQuery } from "@saas/auth/lib/api";
+import { useAccountPath } from "@saas/organizations/hooks/use-organization-context";
 import { useSidebarCollapse } from "@saas/shared/contexts/SidebarCollapseContext";
 import { orpcClient } from "@shared/lib/orpc-client";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -21,6 +22,11 @@ export function MfaSetupBanner({ className }: MfaSetupBannerProps) {
 	const t = useTranslations();
 	const { user, loaded: sessionLoaded } = useSession();
 	const { isCollapsed } = useSidebarCollapse();
+	// Account security lives inside an organization now, and specifically inside
+	// one the caller BELONGS to. A URL-derived path would send a project-only
+	// guest to the host organization's settings, which bounces them straight
+	// back out — observed against a real guest, not inferred.
+	const securityPath = useAccountPath("settings/account/security");
 	const accountsQuery = useUserAccountsQuery();
 	const queryClient = useQueryClient();
 
@@ -140,7 +146,7 @@ export function MfaSetupBanner({ className }: MfaSetupBannerProps) {
 				</div>
 				<div className="flex shrink-0 items-center gap-2">
 					<Button size="sm" variant="outline" asChild>
-						<Link href="/app/settings/security">
+						<Link href={securityPath}>
 							{t("settings.account.security.mfaPrompt.setupCta")}
 						</Link>
 					</Button>

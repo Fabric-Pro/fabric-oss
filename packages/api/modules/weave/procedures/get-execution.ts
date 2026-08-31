@@ -13,10 +13,10 @@ import {
 } from "@repo/temporal/workflows";
 import { z } from "zod";
 import {
+	assertProjectPermission,
 	Permissions,
 	protectedProcedure,
-	requirePermission,
-	resolveOrganizationId,
+	resolveOrganizationIdForCaller,
 } from "../../../orpc/procedures";
 
 const GetExecutionInputSchema = z.object({
@@ -39,7 +39,6 @@ const NON_TERMINAL_EXECUTION_STATUSES = [
 ] as const;
 
 export const getExecutionProcedure = protectedProcedure
-	.use(requirePermission(Permissions.AGENT_READ))
 	.route({
 		method: "GET",
 		path: "/weave/executions/:executionId",
@@ -49,9 +48,10 @@ export const getExecutionProcedure = protectedProcedure
 	.input(GetExecutionInputSchema)
 	.handler(async ({ input, context }) => {
 		const userId = context.user.id;
-		const organizationId = resolveOrganizationId(
+		const organizationId = await resolveOrganizationIdForCaller(
 			input.organizationId,
 			context.session,
+			userId,
 		);
 
 		let execution = await db.weaveExecution.findFirst({
@@ -72,6 +72,15 @@ export const getExecutionProcedure = protectedProcedure
 				message: "Execution not found or access denied",
 			});
 		}
+
+		// Object-level, and the same decision the middleware makes for a
+		// procedure whose input names the project. This one names an execution, so
+		// the project is only known here.
+		await assertProjectPermission(
+			execution.projectId,
+			userId,
+			Permissions.AGENT_READ,
+		);
 
 		// Reconcile-on-read: a workflow can die without persisting terminal
 		// state (worker crash, Temporal-side termination), leaving the row

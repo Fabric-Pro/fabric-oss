@@ -1,5 +1,6 @@
 "use client";
 
+import { useBasePath } from "@saas/organizations/hooks/use-organization-context";
 import { Badge } from "@ui/components/badge";
 import { Button } from "@ui/components/button";
 import {
@@ -44,6 +45,9 @@ type Props = {
 
 export function TemplateCard({ template, onExecute, onDelete }: Props) {
 	const router = useRouter();
+	// Personal context resolves to `/app`, an organization to `/app/{slug}` —
+	// so a card opened inside an organization stays inside it (Fizzy #1875 R11).
+	const basePath = useBasePath();
 
 	const shortDescription = template.description
 		? template.description.length > 100
@@ -81,7 +85,7 @@ export function TemplateCard({ template, onExecute, onDelete }: Props) {
 						<DropdownMenuItem
 							onClick={() =>
 								router.push(
-									`/app/automation-templates/${template.id}`,
+									`${basePath}/automation-templates/${template.id}`,
 								)
 							}
 						>
@@ -152,7 +156,7 @@ export function TemplateCard({ template, onExecute, onDelete }: Props) {
 						className="flex-1"
 						onClick={() =>
 							router.push(
-								`/app/automation-templates/${template.id}`,
+								`${basePath}/automation-templates/${template.id}`,
 							)
 						}
 					>

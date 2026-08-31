@@ -13,7 +13,11 @@ import { purgeUser } from "@saas/meeting-digest/lib/personal-insights-cache";
 import { NotificationBell } from "@saas/notifications/components/NotificationBell";
 import { useContextPath } from "@saas/organizations/hooks";
 import { useIsGuestInOrg } from "@saas/organizations/hooks/use-is-guest-in-org";
-import { useOrganizationContext } from "@saas/organizations/hooks/use-organization-context";
+import {
+	useAccountBasePath,
+	useAccountPath,
+	useOrganizationContext,
+} from "@saas/organizations/hooks/use-organization-context";
 import { useProjectShortcuts } from "@saas/projects/hooks/use-project-shortcuts";
 import { ColorModeToggle } from "@saas/shared/components/ColorModeToggle";
 import { FabricLogo } from "@saas/shared/components/FabricLogo";
@@ -164,6 +168,7 @@ export function NavBar({
 	// users on a surface the flag is meant to have turned off.
 	const unifiedAgentInterface = useFeatureFlag("UNIFIED_AGENT_INTERFACE");
 	const settingsPath = useContextPath("settings/general");
+	const accountSettingsPath = useAccountPath("settings/account/profile");
 	const isGuest = useIsGuestInOrg();
 	const { isCollapsed, toggleCollapsed } = useSidebarCollapse();
 	const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
@@ -197,12 +202,25 @@ export function NavBar({
 		});
 	};
 
-	// Project-only guests are presented their PERSONAL workspace inside the
-	// host org: the switcher reads "Personal account" for them, so the nav
-	// and the account utilities must be the personal variants rooted at
-	// /app — the host org is never named or linked in their chrome.
-	const treatAsPersonal = isGuest || !isOrgContext;
-	const effectiveBasePath = treatAsPersonal ? "/app" : basePath;
+	// Project-only guests are rendered under the HOST organization's slug, but
+	// their chrome is not the host's — the host is never named or linked in it,
+	// and that guarantee is why this branch exists at all.
+	//
+	// It used to root them at /app, in a personal workspace. Personal context is
+	// gone, and it turned out not to be needed: every account has an
+	// organization now, so a guest has one of their own to be rooted in. The
+	// host stays unnamed, nothing is disclosed, and the nav points somewhere
+	// the person can actually go — which /app-rooted links no longer do.
+	//
+	// The project shortcuts below are the deliberate exception, and always
+	// were: they are built from the project's OWN organization slug so a
+	// guest's shortcut reaches the host project their chrome does not name.
+	const ownBasePath = useAccountBasePath();
+	// True for a guest, and for anything rendered outside an organization —
+	// both are cases where the URL does not name a workspace the caller can be
+	// rooted in, so the chrome is rooted in the one they have.
+	const rootInOwnOrg = isGuest || !isOrgContext;
+	const effectiveBasePath = rootInOwnOrg ? ownBasePath : basePath;
 
 	// Quick-access project shortcuts (#1694). Called once here rather than
 	// inside a per-item child: the nav item array is already assembled once in
@@ -230,10 +248,8 @@ export function NavBar({
 		},
 	);
 
-	const accountHref = treatAsPersonal
-		? "/app/settings/general"
-		: settingsPath;
-	const accountLabel = treatAsPersonal
+	const accountHref = rootInOwnOrg ? accountSettingsPath : settingsPath;
+	const accountLabel = rootInOwnOrg
 		? t("app.userMenu.accountSettings")
 		: t("app.menu.organizationSettings");
 	const accountUtilities = user
@@ -261,17 +277,40 @@ export function NavBar({
 				{
 					label: accountLabel,
 					href: accountHref,
-					icon: treatAsPersonal ? SettingsIcon : Building2Icon,
+					icon: rootInOwnOrg ? SettingsIcon : Building2Icon,
 				},
+				// In an organization the entry above points at the
+				// ORGANIZATION's settings, which left the account's own
+				// settings with no route from anywhere in the chrome
+				// (Fizzy #1875, R7/R8). The account link goes ALONGSIDE the
+				// organization one rather than swapping with it.
+				//
+				// All four account-global pages have organization-side homes
+				// now (`settings/account/*`), so this resolves inside an
+				// organization rather than leaving context — the earlier note
+				// here said the profile page had none, and that stopped being
+				// true when the personal settings tree was replaced.
+				//
+				// Guests are excluded via `rootInOwnOrg`: `accountHref` IS
+				// this link for them, so a second copy would be a duplicate.
+				...(rootInOwnOrg
+					? []
+					: [
+							{
+								label: t("app.userMenu.accountSettings"),
+								href: accountSettingsPath,
+								icon: SettingsIcon,
+							},
+						]),
 				...(user.role === "admin"
 					? [
 							{
 								label: t("app.menu.admin"),
 								// Keep the current workspace base so a system
-								// admin stays in their org (`/app/{slug}/admin`)
-								// instead of flipping to the personal workspace.
-								// Guests get the personal admin route — their
-								// presented workspace IS personal.
+								// admin stays in their org (`/app/{slug}/admin`).
+								// A guest gets their OWN organization's admin
+								// route, which is where `effectiveBasePath`
+								// points for them.
 								href: `${effectiveBasePath}/admin`,
 								icon: ShieldCheckIcon,
 							},
@@ -286,9 +325,9 @@ export function NavBar({
 			]
 		: [];
 
-	// Guests (users with project-only access to this org) get the SAME nav
-	// as their personal workspace — every href rooted at /app via
-	// effectiveBasePath, matching the "Personal account" switcher above.
+	// Guests (users with project-only access to this org) get a nav rooted in
+	// their OWN organization via effectiveBasePath, matching the switcher
+	// above — never in the host organization they are looking at.
 	// The pathname-based isActive checks keep items (e.g. Projects) lit
 	// while a guest views a shared project under /app/{slug}/projects/{id}.
 	const navSections: NavSection[] = [

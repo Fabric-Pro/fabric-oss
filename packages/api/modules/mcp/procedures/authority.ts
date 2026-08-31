@@ -17,7 +17,7 @@ import { z } from "zod";
 import {
 	Permissions,
 	protectedProcedure,
-	requirePermission,
+	requireInputOrgPermission,
 	resolveOrganizationId,
 } from "../../../orpc/procedures";
 
@@ -25,7 +25,11 @@ import {
  * List authority sessions for the current user/org context.
  */
 export const listAuthoritySessionsProcedure = protectedProcedure
-	.use(requirePermission(Permissions.MCP_READ))
+	.use(
+		requireInputOrgPermission(Permissions.MCP_READ, {
+			requireOrganization: true,
+		}),
+	)
 	.route({ method: "GET", path: "/authority/sessions", tags: ["Authority"] })
 	.input(
 		z.object({
@@ -56,7 +60,11 @@ export const listAuthoritySessionsProcedure = protectedProcedure
  * Get a specific authority session with grants.
  */
 export const getAuthoritySessionProcedure = protectedProcedure
-	.use(requirePermission(Permissions.MCP_READ))
+	.use(
+		requireInputOrgPermission(Permissions.MCP_READ, {
+			requireOrganization: true,
+		}),
+	)
 	.route({
 		method: "GET",
 		path: "/authority/sessions/{sessionId}",
@@ -94,7 +102,11 @@ export const getAuthoritySessionProcedure = protectedProcedure
  * This is the human-in-the-loop approval endpoint called from the UI.
  */
 export const approveAuthoritySessionProcedure = protectedProcedure
-	.use(requirePermission(Permissions.MCP_UPDATE))
+	.use(
+		requireInputOrgPermission(Permissions.MCP_UPDATE, {
+			requireOrganization: true,
+		}),
+	)
 	.route({
 		method: "POST",
 		path: "/authority/sessions/{sessionId}/approve",
@@ -145,7 +157,11 @@ export const approveAuthoritySessionProcedure = protectedProcedure
  * Deny a pending authority session.
  */
 export const denyAuthoritySessionProcedure = protectedProcedure
-	.use(requirePermission(Permissions.MCP_UPDATE))
+	.use(
+		requireInputOrgPermission(Permissions.MCP_UPDATE, {
+			requireOrganization: true,
+		}),
+	)
 	.route({
 		method: "POST",
 		path: "/authority/sessions/{sessionId}/deny",
@@ -194,7 +210,11 @@ export const denyAuthoritySessionProcedure = protectedProcedure
  * Revoke an active authority session.
  */
 export const revokeAuthoritySessionProcedure = protectedProcedure
-	.use(requirePermission(Permissions.MCP_UPDATE))
+	.use(
+		requireInputOrgPermission(Permissions.MCP_UPDATE, {
+			requireOrganization: true,
+		}),
+	)
 	.route({
 		method: "POST",
 		path: "/authority/sessions/{sessionId}/revoke",

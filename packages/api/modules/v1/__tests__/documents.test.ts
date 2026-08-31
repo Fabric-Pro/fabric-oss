@@ -17,6 +17,10 @@ const mockHasProjectAccess = vi.fn();
 const mockCanEditProject = vi.fn();
 
 vi.mock("@repo/database", () => ({
+	resolveUserOrganization: vi.fn(async () => ({
+		kind: "resolved" as const,
+		organizationId: "org-test",
+	})),
 	listDocuments: (...args: unknown[]) => mockListDocuments(...args),
 	getDocumentById: (...args: unknown[]) => mockGetDocumentById(...args),
 	createDocument: (...args: unknown[]) => mockCreateDocument(...args),

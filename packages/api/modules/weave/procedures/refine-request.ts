@@ -17,8 +17,8 @@ import { z } from "zod";
 import {
 	Permissions,
 	protectedProcedure,
-	requirePermission,
-	resolveOrganizationId,
+	requireProjectPermission,
+	resolveOrganizationIdForCaller,
 } from "../../../orpc/procedures";
 
 const RefineRequestInputSchema = z.object({
@@ -60,7 +60,7 @@ UPDATED_MESSAGE: <the improved request incorporating all context so far>
 READY: <true if the request is clear enough, false if more detail would help>`;
 
 export const refineRequestProcedure = protectedProcedure
-	.use(requirePermission(Permissions.AGENT_EXECUTE))
+	.use(requireProjectPermission(Permissions.AGENT_EXECUTE))
 	.route({
 		method: "POST",
 		path: "/weave/plans/refine",
@@ -72,9 +72,10 @@ export const refineRequestProcedure = protectedProcedure
 	.input(RefineRequestInputSchema)
 	.handler(async ({ input, context }) => {
 		const userId = context.user.id;
-		const organizationId = resolveOrganizationId(
+		const organizationId = await resolveOrganizationIdForCaller(
 			input.organizationId,
 			context.session,
+			userId,
 		);
 
 		const hasAccess = await hasProjectAccess(

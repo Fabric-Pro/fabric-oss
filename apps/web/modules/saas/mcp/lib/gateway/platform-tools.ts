@@ -34,7 +34,7 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 		description:
 			"Returns the authenticated user's identity: userId, email, role, active organizationId, and the full list of organizations they belong to. " +
 			"CALL THIS FIRST in any session to understand your context. " +
-			"Returns 'mode': 'personal' (no org) or 'organization' (scoped to an org). " +
+			"Returns 'mode': always 'organization' — every session runs inside exactly one organization; there is no personal mode. " +
 			"If you need to work in a specific org, use the organizationId from this response to call fabric_switch_organization.",
 		inputSchema: { type: "object", properties: {} },
 		annotations: { readOnlyHint: true },
@@ -55,18 +55,18 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 		description:
 			"Switches the active organization context for this entire session. " +
 			"After switching, ALL subsequent calls (fabric_list_projects, fabric_list_features, etc.) are scoped to that organization. " +
-			"Pass organizationId=null to switch back to personal mode. " +
+			"organizationId is REQUIRED and must name an organization you belong to. A session always runs inside one organization — there is no personal context to switch to, and a null or missing organizationId is refused. " +
 			"Get the organizationId from fabric_get_identity or fabric_list_organizations.",
 		inputSchema: {
 			type: "object",
 			properties: {
 				organizationId: {
 					type: "string",
-					nullable: true,
 					description:
-						"Organization ID from fabric_list_organizations, or null to switch to personal mode",
+						"Organization ID from fabric_list_organizations. Required — you must belong to it. There is no null/personal value.",
 				},
 			},
+			required: ["organizationId"],
 		},
 		_gateway_source: "platform",
 	},
@@ -75,7 +75,7 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 	{
 		name: "fabric_list_projects",
 		description:
-			"Lists all projects in the current context (personal or organization). " +
+			"Lists all projects in the session's active organization. " +
 			"Returns project IDs, names, descriptions, and status. " +
 			"Use the returned 'id' field as 'projectId' in fabric_list_features, fabric_list_documents, fabric_get_project_statuses, and other project-scoped tools. " +
 			"Filter by status='ACTIVE' to find projects in progress.",
@@ -130,7 +130,7 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 	{
 		name: "fabric_create_project",
 		description:
-			"Creates a new project in the current context (personal or organization). " +
+			"Creates a new project in the session's active organization. " +
 			"Returns the new project's id and name. " +
 			"After creating, call fabric_list_features(projectId) or fabric_list_documents(projectId) to add content.",
 		inputSchema: {
@@ -479,7 +479,7 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 			"LAYER 1 — fingerprint (exact, reliable). Pass 'fingerprint': a stable key you derive from the underlying error itself, e.g. a hash of the normalized stack top + exception type + failing route, with volatile parts (timestamps, request IDs, memory addresses, row counts) stripped. Send the SAME value on every sighting. If an OPEN bug in this project already carries that fingerprint, it is returned unchanged and dedupedBy='fingerprint'. This is exact and title-independent, so it survives both you and Fabric rewording the report. A bug that was CLOSED or DECLINED does not block a new filing: a regression after a fix is a new bug, and it will get a new row. " +
 			"LAYER 2 — title (best-effort). Even with no fingerprint, the title is matched (normalized, case- and punctuation-insensitive) against the project's open bugs. A match returns that bug with dedupedBy='title'. Bug titles are only ever matched against other bugs, never against features. When a title match happens AND you supplied a fingerprint that the matched bug does not yet have, your fingerprint is attached to it (the response sets fingerprintAttached=true) so every later sighting hits layer 1 instead. " +
 			"WRITING THE REPORT: put the failure in 'title' as a short specific symptom ('Checkout returns 500 when cart is empty'), not a category ('bug in checkout'). Put everything you observed in 'description' — error message, stack trace, the request or job that triggered it, environment, frequency, first-seen time. That text is fed to the project's bug-drafting prompt, so more detail produces a more actionable card. " +
-			"Get 'projectId' from fabric_list_projects. The project must belong to your session's ACTIVE context — call fabric_switch_organization first if it lives in another organization (or in your personal space). Requires permission to create work items in the project. " +
+			"Get 'projectId' from fabric_list_projects. The project must belong to your session's ACTIVE organization — call fabric_switch_organization first if it lives in another organization you belong to. Requires permission to create work items in the project. " +
 			"Inputs are validated strictly: an unrecognised 'priority' is rejected rather than quietly downgraded, so read the error and resend with a valid value.",
 		inputSchema: {
 			type: "object",
@@ -487,7 +487,7 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 				projectId: {
 					type: "string",
 					description:
-						"Project ID from fabric_list_projects. Must be in your session's active organization (or personal context).",
+						"Project ID from fabric_list_projects. Must be in your session's active organization.",
 				},
 				title: {
 					type: "string",
@@ -523,7 +523,7 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 			"FILE ONLY WHAT WAS ACTUALLY ASKED FOR. Create a feature when a person has requested the capability or agreed a follow-up is worth tracking. Do NOT create one speculatively, to record an idea you had, or to split work you are about to do anyway — an unwanted feature has to be triaged and closed by a human. " +
 			"A TITLE COLLISION IS SUCCESS, NOT AN ERROR. Before creating anything, your title is matched (normalized, case- and punctuation-insensitive) against the project's other open features. On a match nothing is created and the response is still success-shaped: 'created' is false, 'dedupedBy' is 'title', and 'id' / 'identifier' point at the item that already covers this request. Treat that as 'already tracked'. If you have information the existing item does not cover, attach it with fabric_create_feature_task or raise it with whoever asked — do NOT resend with a reworded title to force a second row. Feature titles are only ever matched against other features, never against bugs, and a CLOSED or DECLINED item does not block a new filing. " +
 			"WRITING THE REQUEST: put a short capability statement in 'title' ('Export the roadmap as CSV'), not a vague area ('reporting') — it is also the dedup key. Put the request and its context in 'description': who asked, the problem it solves, constraints, links to the conversation. That text is fed to the drafting prompt, so more context produces a more actionable card. " +
-			"Get 'projectId' from fabric_list_projects. The project must belong to your session's ACTIVE context — call fabric_switch_organization first if it lives in another organization (or in your personal space). Requires permission to create work items in the project. " +
+			"Get 'projectId' from fabric_list_projects. The project must belong to your session's ACTIVE organization — call fabric_switch_organization first if it lives in another organization you belong to. Requires permission to create work items in the project. " +
 			"Inputs are validated strictly: an unrecognised 'priority' or 'size' is rejected rather than quietly defaulted, so read the error and resend with a valid value.",
 		inputSchema: {
 			type: "object",
@@ -531,7 +531,7 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 				projectId: {
 					type: "string",
 					description:
-						"Project ID from fabric_list_projects. Must be in your session's active organization (or personal context).",
+						"Project ID from fabric_list_projects. Must be in your session's active organization.",
 				},
 				title: {
 					type: "string",
@@ -1217,7 +1217,7 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 	{
 		name: "fabric_list_frames",
 		description:
-			"Lists all Frames in the current context (personal or organization). Returns frame IDs, titles, formats, and share status. " +
+			"Lists all Frames in the session's active organization. Returns frame IDs, titles, formats, and share status. " +
 			"Use the returned 'id' field as 'frameId' in fabric_get_frame, fabric_update_frame, or fabric_share_frame.",
 		inputSchema: { type: "object", properties: {} },
 		annotations: { readOnlyHint: true },
@@ -1313,7 +1313,7 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 	{
 		name: "fabric_list_connected_servers",
 		description:
-			"Lists all MCP servers the user has connected in the current context (personal or organization). Returns server names, provider keys, status, and available tool count. " +
+			"Lists all MCP servers the user has connected in the session's active organization. Returns server names, provider keys, status, and available tool count. " +
 			"Use the 'providerKey' values from this response as input to fabric_request_authority when you need runtime access to external tools on those servers. " +
 			"Example: if a server has providerKey='linear', pass providerKey='linear' to fabric_request_authority to request access.",
 		inputSchema: { type: "object", properties: {} },
@@ -1562,7 +1562,15 @@ async function handleGetIdentity(
 			? (organizations.find((o) => o.id === session.organizationId)
 					?.name ?? null)
 			: null,
-		mode: session.organizationId ? "organization" : "personal",
+		// One value, written as a literal rather than a ternary so no reader
+		// has to work out which branch is dead. Both key-authenticated entry
+		// points resolve an organization before a session exists, and
+		// fabric_switch_organization refuses a null one, so nothing a caller
+		// can do produces a personal session. `organizationId` above stays the
+		// authoritative field: the one path that can still carry a null one is
+		// a browser session sitting in personal context, which is out of scope
+		// here until personal context is removed, and it reports that null.
+		mode: "organization" as const,
 		organizations,
 	});
 }
@@ -1599,17 +1607,47 @@ async function handleSwitchOrganization(
 ): Promise<ToolCallResult> {
 	const organizationId = (args.organizationId as string | null) ?? null;
 
-	if (organizationId) {
-		const { db } = await import("@repo/database");
-		const membership = await db.member.findFirst({
-			where: { userId: session.userId, organizationId },
-		});
-		if (!membership) {
-			return errorResult(
-				`Access denied: you are not a member of organization ${organizationId}`,
-			);
-		}
+	// A null organization used to mean "back to personal context". It no
+	// longer means anything: every session runs inside exactly one
+	// organization, so there is no context to go back to (R5). The refusal
+	// names the reason rather than reading as a validation slip, because the
+	// caller is a model that will otherwise retry the same call.
+	if (!organizationId) {
+		return errorResult(
+			"organizationId is required. Fabric is organization-only: a session always runs inside one organization, and there is no personal context to switch back to. " +
+				"Call fabric_list_organizations and pass one of the organization IDs it returns.",
+		);
 	}
+
+	// Same verifier the protocol routes use on a caller-supplied
+	// organization, so the two selectors cannot drift into disagreeing
+	// about who is a member of what.
+	const { db, isOrganizationMember } = await import("@repo/database");
+	if (!(await isOrganizationMember(session.userId, organizationId))) {
+		return errorResult(
+			`Access denied: you are not a member of organization ${organizationId}`,
+		);
+	}
+
+	// Persist last-active BEFORE moving the session, and from here rather
+	// than through the oRPC procedure that owns the browser switcher — this
+	// handler has no request context to call it with.
+	//
+	// The session and the shared resolver must not disagree about the same
+	// caller. Both protocol entry points now re-resolve the organization on
+	// every request and keep a stored session only while it still equals that
+	// answer; the resolver's answer for a multi-organization caller IS
+	// `User.lastActiveOrganizationId`. So a switch that moved only the
+	// in-memory session would be undone by the next request — the resolver
+	// would return the unchanged last-active, the session would no longer
+	// match, and it would be dropped and reissued in the organization the
+	// caller just switched away from. Writing first also means a failed write
+	// leaves the session where it was instead of stranding it somewhere the
+	// resolver will not agree with.
+	await db.user.update({
+		where: { id: session.userId },
+		data: { lastActiveOrganizationId: organizationId },
+	});
 
 	// Update the session — the caller (gateway route) will persist this
 	const previousOrgId = session.organizationId;
@@ -1619,7 +1657,7 @@ async function handleSwitchOrganization(
 		success: true,
 		previousOrganizationId: previousOrgId,
 		newOrganizationId: organizationId,
-		mode: organizationId ? "organization" : "personal",
+		mode: "organization" as const,
 	});
 }
 
@@ -2438,12 +2476,17 @@ type ProjectWriteResolution =
  * TENANT SCOPING — why the middle step exists at all: `hasProjectAccess` proves
  * MEMBERSHIP but not context. It ignores its `organizationId` argument entirely
  * (`packages/database/prisma/queries/projects/projects.ts:918`), so a caller
- * whose gateway session is active in org A can name an org-B project (or a
- * personal one) and pass. Every write path therefore also compares the
+ * whose gateway session is active in org A can name an org-B project (or an
+ * org-less one) and pass. Every write path therefore also compares the
  * project's own owner org against the session's and refuses a mismatch —
  * otherwise the item would be drafted with one tenant's context and written
- * into another's project. Both sides are normalised to `null` so personal
- * (`null`) and org contexts compare exactly, never loosely.
+ * into another's project. Both sides are normalised to `null` so the
+ * comparison is exact, never loose.
+ *
+ * An org-less project (`organizationId` is `null`) is still reachable in the
+ * data — this change migrated none — but no longer reachable by a caller,
+ * since no session can sit in the context that owns it. Its refusal therefore
+ * offers no way out, and must not suggest one.
  *
  * The ordering is load-bearing: a non-member must not learn which tenant owns a
  * project id they guessed, and the permission check runs last so a refusal
@@ -2489,12 +2532,37 @@ async function resolveProjectForStoryWrite(
 	const projectOrganizationId = project.organizationId ?? null;
 	const sessionOrganizationId = session.organizationId ?? null;
 	if (projectOrganizationId !== sessionOrganizationId) {
+		// Only offer the switch to someone who can actually take it.
+		//
+		// `fabric_switch_organization` holds the caller to `isOrganizationMember`,
+		// so a project-scoped guest — an accepted ProjectMember inside an
+		// organization they do not belong to — is refused there. They can READ
+		// this project, because `hasProjectAccess` ignores the organization
+		// argument it is handed and answers on the ProjectMember row alone. So
+		// the guest reads the project, tries to write, and is sent to a door
+		// that will not open for them. Telling someone "no" is worse than
+		// nothing only when the "no" is wrong; sending them somewhere they
+		// cannot go is worse than either.
+		const canSwitch = projectOrganizationId
+			? await (async () => {
+					const { isOrganizationMember } = await import(
+						"@repo/database"
+					);
+					return isOrganizationMember(
+						session.userId,
+						projectOrganizationId,
+					);
+				})()
+			: false;
+
 		return {
 			ok: false,
 			error: errorResult(
-				projectOrganizationId
-					? `This project belongs to a different organization than your active session context. Call fabric_switch_organization with organizationId="${projectOrganizationId}" first, then retry.`
-					: "This is a personal project and your session is scoped to an organization. Call fabric_switch_organization with organizationId=null first, then retry.",
+				!projectOrganizationId
+					? "This project belongs to no organization and cannot be reached: every session runs inside exactly one organization, and there is no context you can switch to that would make it reachable. Pick a project from fabric_list_projects instead."
+					: canSwitch
+						? `This project belongs to a different organization than your active session context. Call fabric_switch_organization with organizationId="${projectOrganizationId}" first, then retry.`
+						: "You have access to this project, but not to the organization that owns it, so there is no session context from which you can write to it. Reading it works. Ask an administrator of that organization for membership if you need to create work items here.",
 			),
 		};
 	}

@@ -1,6 +1,12 @@
 /**
  * Tests for the server-side route guard on the admin audit-log explorer page.
  *
+ * Repointed from the personal route to the organization one when the personal
+ * tree was retired (Fizzy #1875, R1). The guard is character-for-character the
+ * same on both, and nothing else covered the organization copy — deleting this
+ * with its route would have left the only admin-role check on that page
+ * untested.
+ *
  * The page MUST redirect:
  *   - to `/auth/login` when there is no session
  *   - to `/app` when the session user is not a system admin
@@ -48,7 +54,7 @@ afterEach(() => {
 
 async function callPage() {
 	const mod = await import(
-		"../../../../app/(saas)/app/(account)/admin/audit-log-explorer/page"
+		"../../../../app/(saas)/app/(organizations)/[organizationSlug]/admin/audit-log-explorer/page"
 	);
 	return (mod.default as () => Promise<unknown>)();
 }

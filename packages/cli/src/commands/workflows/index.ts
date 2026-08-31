@@ -26,7 +26,7 @@ export function buildWorkflowsCommand(): Command {
 		.command("list")
 		.description("List workflows")
 		.option("--org <slug>", "Organization context")
-		.option("--personal", "Personal context")
+		.option("--personal", "Retired — context is organization-only")
 		.option("--status <status>", "Filter: DRAFT|ACTIVE|PAUSED|ARCHIVED")
 		.option("--search <query>", "Search by name")
 		.option("--limit <n>", "Max results", "20")
@@ -52,7 +52,6 @@ export function buildWorkflowsCommand(): Command {
 				try {
 					list = await client.workflows.list({
 						org: ctx?.type === "org" ? ctx.slug : undefined,
-						personal: ctx?.type === "personal" ? true : undefined,
 						status: opts.status as
 							| FabricWorkflow["status"]
 							| undefined,
@@ -88,7 +87,7 @@ export function buildWorkflowsCommand(): Command {
 		.command("show <id>")
 		.description("Show workflow details")
 		.option("--org <slug>", "Organization context")
-		.option("--personal", "Personal context")
+		.option("--personal", "Retired — context is organization-only")
 		.option("--format <format>", "Output format: table|json|yaml", "table")
 		.action(
 			async (
@@ -101,7 +100,6 @@ export function buildWorkflowsCommand(): Command {
 				try {
 					wf = await client.workflows.get(id, {
 						org: ctx?.type === "org" ? ctx.slug : undefined,
-						personal: ctx?.type === "personal" ? true : undefined,
 					});
 				} catch (err: unknown) {
 					printError((err as Error).message, 1);
@@ -129,7 +127,7 @@ export function buildWorkflowsCommand(): Command {
 		.command("trigger <id>")
 		.description("Trigger a workflow execution")
 		.option("--org <slug>", "Organization context")
-		.option("--personal", "Personal context")
+		.option("--personal", "Retired — context is organization-only")
 		.option("--input <json>", "JSON input for triggerData", "{}")
 		.option("--vars <json>", "JSON variables", "{}")
 		.action(
@@ -162,7 +160,6 @@ export function buildWorkflowsCommand(): Command {
 				try {
 					result = await client.workflows.trigger(id, {
 						org: ctx?.type === "org" ? ctx.slug : undefined,
-						personal: ctx?.type === "personal" ? true : undefined,
 						triggerData,
 						variables,
 					});
@@ -181,7 +178,7 @@ export function buildWorkflowsCommand(): Command {
 		.command("status <id> <execId>")
 		.description("Get workflow execution status")
 		.option("--org <slug>", "Organization context")
-		.option("--personal", "Personal context")
+		.option("--personal", "Retired — context is organization-only")
 		.option("--format <format>", "Output format: table|json|yaml", "table")
 		.action(
 			async (
@@ -195,7 +192,6 @@ export function buildWorkflowsCommand(): Command {
 				try {
 					exec = await client.workflows.getExecution(id, execId, {
 						org: ctx?.type === "org" ? ctx.slug : undefined,
-						personal: ctx?.type === "personal" ? true : undefined,
 					});
 				} catch (err: unknown) {
 					printError((err as Error).message, 1);

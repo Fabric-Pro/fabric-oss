@@ -59,13 +59,21 @@ Every feature MUST support both **personal** (`/app/...`) and **organization** (
 
 ### The XOR Pattern
 
+> **Since ADR-018, personal is not a context you route into.** Every account has an
+> organization; the `organizationId: null` arm below is a fail-closed default reached
+> only when something failed to resolve one, and code that lands there should treat it
+> as a bug. The rule that follows is unchanged and still binding — it is the *shape*
+> that survives, not the second context. The samples further down this chapter still
+> describe personal as a live context; read them with this in mind.
+> See [`docs/adr/018-organization-is-the-only-tenant-context.md`](docs/adr/018-organization-is-the-only-tenant-context.md).
+
 **Always use exclusive filtering - never OR patterns:**
 
 ```typescript
 // ✅ CORRECT - XOR pattern
 const tenantFilter = organizationId
   ? { organizationId, userId }           // Org context
-  : { organizationId: null, userId };    // Personal context (null is REQUIRED)
+  : { organizationId: null, userId };    // Fail-closed default; see the note below
 
 // ❌ WRONG - Leaks data between contexts
 const data = await db.table.findMany({

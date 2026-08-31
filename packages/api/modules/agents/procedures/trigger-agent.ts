@@ -14,7 +14,7 @@ import { withCorrelationMemo } from "../../../lib/temporal-correlation";
 import {
 	agentRateLimitedProcedure,
 	Permissions,
-	requirePermission,
+	requireInputOrgPermission,
 } from "../../../orpc/procedures";
 import { verifyOrganizationMembership } from "../../organizations/lib/membership";
 
@@ -92,7 +92,11 @@ const AgentInputSchema = z.object({
  * Rate limited to prevent abuse of expensive AI operations
  */
 export const triggerAgent = agentRateLimitedProcedure
-	.use(requirePermission(Permissions.AGENT_EXECUTE))
+	.use(
+		requireInputOrgPermission(Permissions.AGENT_EXECUTE, {
+			requireOrganization: true,
+		}),
+	)
 	.route({
 		method: "POST",
 		path: "/agents/trigger",

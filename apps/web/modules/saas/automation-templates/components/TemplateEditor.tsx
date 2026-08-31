@@ -1,5 +1,6 @@
 "use client";
 
+import { useBasePath } from "@saas/organizations/hooks/use-organization-context";
 import { Spinner } from "@shared/components/Spinner";
 import { orpc } from "@shared/lib/orpc-query-utils";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -44,6 +45,9 @@ type Props = {
 
 export function TemplateEditor({ templateId, organizationId }: Props) {
 	const router = useRouter();
+	// Where a freshly-saved template lands: the tree the editor was opened in,
+	// not always the personal one (R11).
+	const basePath = useBasePath();
 	const queryClient = useQueryClient();
 	const isNew = !templateId;
 
@@ -85,7 +89,9 @@ export function TemplateEditor({ templateId, organizationId }: Props) {
 				queryClient.invalidateQueries({
 					queryKey: ["automationTemplates"],
 				});
-				router.push(`/app/automation-templates/${data.template.id}`);
+				router.push(
+					`${basePath}/automation-templates/${data.template.id}`,
+				);
 			},
 			onError: (error) => {
 				toast.error("Failed to create template", {

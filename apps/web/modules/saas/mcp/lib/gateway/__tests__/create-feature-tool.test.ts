@@ -24,6 +24,7 @@ const mocks = vi.hoisted(() => ({
 	hasProjectAccess: vi.fn(),
 	canCreateProjectStory: vi.fn(),
 	findFirst: vi.fn(),
+	isOrganizationMember: vi.fn(),
 	updateMany: vi.fn(),
 	storyFindUnique: vi.fn(),
 	projectFindUnique: vi.fn(),
@@ -44,6 +45,7 @@ vi.mock("@repo/database", () => ({
 		},
 		project: { findUnique: mocks.projectFindUnique },
 	},
+	isOrganizationMember: mocks.isOrganizationMember,
 	hasProjectAccess: mocks.hasProjectAccess,
 	canCreateProjectStory: mocks.canCreateProjectStory,
 	buildBacklogDedupGuard: mocks.buildBacklogDedupGuard,
@@ -96,6 +98,11 @@ beforeEach(() => {
 	mocks.hasProjectAccess.mockResolvedValue(true);
 	mocks.canCreateProjectStory.mockResolvedValue(true);
 	mocks.findFirst.mockResolvedValue(null);
+	// The caller IS a member of the project's organization — their ACTIVE
+	// context is simply a different one. That is the case the refusal below
+	// exists to name, so it is the default; a test wanting the guest case (access
+	// to the project, none to its organization) overrides it.
+	mocks.isOrganizationMember.mockResolvedValue(true);
 	mocks.dispatchLifecycleEvent.mockResolvedValue(undefined);
 	// The title-matched row is still open unless a test says otherwise.
 	mocks.storyFindUnique.mockResolvedValue({
@@ -481,7 +488,13 @@ describe("fabric_create_feature — tenant context", () => {
 		expect(mocks.createStoryFromProposal).not.toHaveBeenCalled();
 	});
 
-	it("refuses a personal project from an organization session", async () => {
+	/**
+	 * Context is organization-only, so a project owned by no organization is
+	 * unreachable rather than one switch away. The refusal deliberately no
+	 * longer names `organizationId=null` — that call now always fails, so the
+	 * old instruction sent a model into a retry loop.
+	 */
+	it("refuses an org-less project from an organization session", async () => {
 		mocks.projectFindUnique.mockResolvedValue({
 			id: "proj-1",
 			organizationId: null,
@@ -494,7 +507,8 @@ describe("fabric_create_feature — tenant context", () => {
 		);
 
 		expect(result.isError).toBe(true);
-		expect(payload(result).error).toContain("organizationId=null");
+		expect(payload(result).error).toMatch(/cannot be reached/i);
+		expect(payload(result).error).not.toContain("organizationId=null");
 		expect(mocks.createStoryFromProposal).not.toHaveBeenCalled();
 	});
 

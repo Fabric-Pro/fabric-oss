@@ -1,5 +1,6 @@
 "use client";
 
+import { useBasePath } from "@saas/organizations/hooks/use-organization-context";
 import { Spinner } from "@shared/components/Spinner";
 import { orpc } from "@shared/lib/orpc-query-utils";
 import { useQuery } from "@tanstack/react-query";
@@ -53,6 +54,9 @@ type Props = {
 
 export function TemplatesList({ organizationId }: Props) {
 	const router = useRouter();
+	// `/app` in personal context, `/app/{slug}` inside an organization — the list
+	// is mounted in both trees and must not navigate out of its own (R11).
+	const basePath = useBasePath();
 	const [searchQuery, setSearchQuery] = useState("");
 	const [debouncedSearch] = useDebounceValue(searchQuery, 300);
 	const [categoryFilter, setCategoryFilter] = useState<string>("all");
@@ -186,7 +190,7 @@ export function TemplatesList({ organizationId }: Props) {
 					<Button
 						data-onboarding-target="automation-templates-new"
 						onClick={() =>
-							router.push("/app/automation-templates/new")
+							router.push(`${basePath}/automation-templates/new`)
 						}
 					>
 						<PlusIcon className="h-4 w-4 mr-2" />
@@ -214,7 +218,9 @@ export function TemplatesList({ organizationId }: Props) {
 						visibilityFilter === "all" && (
 							<Button
 								onClick={() =>
-									router.push("/app/automation-templates/new")
+									router.push(
+										`${basePath}/automation-templates/new`,
+									)
 								}
 							>
 								<PlusIcon className="h-4 w-4 mr-2" />

@@ -12,18 +12,22 @@ import { SettingsSidebarLayout } from "@saas/settings/components/SettingsSidebar
 import { isDeploymentAdminEmail } from "@saas/settings/lib/deployment-admin";
 import { isUserActivityDashboardEnabled } from "@saas/settings/lib/user-activity-flag";
 import { RobotIcon } from "@saas/shared/components/icons/RobotIcon";
+import { UserAvatar } from "@shared/components/UserAvatar";
 import {
 	ActivityIcon,
 	BarChart3Icon,
+	BellIcon,
 	BrainCircuitIcon,
 	CreditCardIcon,
 	FileTextIcon,
 	HistoryIcon,
 	KeyIcon,
 	LinkIcon,
+	LockKeyholeIcon,
 	ScrollTextIcon,
 	SearchIcon,
 	Settings2Icon,
+	SettingsIcon,
 	SparklesIcon,
 	TriangleAlertIcon,
 	Users2Icon,
@@ -205,6 +209,56 @@ export default async function SettingsLayout({
 							},
 						]
 					: []),
+			],
+		},
+		// Account-global settings that an organization member must still be able
+		// to reach (Fizzy #1875, R7/R8). Both pages are properties of the
+		// ACCOUNT, not of this organization — no organization is passed into
+		// either, and nothing about them is scoped per tenant (R9).
+		//
+		// APPENDED, never prepended: SettingsMenu renders its compact sidebar
+		// header from `menuItems[0].title` / `.avatar`, so putting this group
+		// first would head an organization-owned page with the user's own name
+		// and avatar. That stayed invisible while the organization group was the
+		// only one here.
+		//
+		// Nested under `account/` rather than sitting at the top level beside
+		// the organization's own pages. Two of the four would otherwise collide
+		// outright — `general` is a profile here and an organization there,
+		// `danger-zone` deletes an account here and an organization there — and
+		// the collision is not merely a naming clash: a person who followed a
+		// bookmark to delete their account would land on the page that deletes
+		// the organization. The other two carry the same ambiguity more quietly,
+		// so all four live in one place that says whose they are.
+		{
+			title: t("settings.menu.account.title"),
+			avatar: (
+				<UserAvatar
+					name={session?.user?.name ?? ""}
+					avatarUrl={session?.user?.image}
+				/>
+			),
+			items: [
+				{
+					title: t("settings.menu.account.general"),
+					href: `${organizationSettingsBasePath}/account/profile`,
+					icon: <SettingsIcon className="size-4 opacity-50" />,
+				},
+				{
+					title: t("settings.menu.account.security"),
+					href: `${organizationSettingsBasePath}/account/security`,
+					icon: <LockKeyholeIcon className="size-4 opacity-50" />,
+				},
+				{
+					title: "Notifications",
+					href: `${organizationSettingsBasePath}/account/notifications`,
+					icon: <BellIcon className="size-4 opacity-50" />,
+				},
+				{
+					title: t("settings.menu.account.dangerZone"),
+					href: `${organizationSettingsBasePath}/account/danger-zone`,
+					icon: <TriangleAlertIcon className="size-4 opacity-50" />,
+				},
 			],
 		},
 	];

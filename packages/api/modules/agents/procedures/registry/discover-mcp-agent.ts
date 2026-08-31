@@ -13,7 +13,7 @@ import { z } from "zod";
 import {
 	Permissions,
 	protectedProcedure,
-	requirePermission,
+	requireInputOrgPermission,
 } from "../../../../orpc/procedures";
 
 /**
@@ -221,7 +221,11 @@ async function validateMcpConnection(
  * ```
  */
 export const discoverMcpAgent = protectedProcedure
-	.use(requirePermission(Permissions.AGENT_UPDATE))
+	.use(
+		requireInputOrgPermission(Permissions.AGENT_UPDATE, {
+			requireOrganization: true,
+		}),
+	)
 	.route({
 		method: "POST",
 		path: "/agents/registry/discover-mcp",

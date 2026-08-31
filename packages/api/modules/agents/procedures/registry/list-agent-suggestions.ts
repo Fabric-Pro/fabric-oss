@@ -10,7 +10,7 @@ import { z } from "zod";
 import {
 	Permissions,
 	protectedProcedure,
-	requirePermission,
+	requireInputOrgPermission,
 	resolveOrganizationId,
 } from "../../../../orpc/procedures";
 import { verifyOrganizationMembership } from "../../../organizations/lib/membership";
@@ -101,7 +101,11 @@ const EntityTypeSchema = z
 	.default("registered");
 
 export const listAgentSuggestions = protectedProcedure
-	.use(requirePermission(Permissions.AGENT_READ))
+	.use(
+		requireInputOrgPermission(Permissions.AGENT_READ, {
+			requireOrganization: true,
+		}),
+	)
 	.route({
 		method: "GET",
 		path: "/agents/registry/:id/suggestions",
@@ -181,7 +185,11 @@ export const listAgentSuggestions = protectedProcedure
 	});
 
 export const updateAgentSuggestions = protectedProcedure
-	.use(requirePermission(Permissions.AGENT_READ))
+	.use(
+		requireInputOrgPermission(Permissions.AGENT_READ, {
+			requireOrganization: true,
+		}),
+	)
 	.route({
 		method: "PATCH",
 		path: "/agents/registry/:id/suggestions",
@@ -281,7 +289,11 @@ export const updateAgentSuggestions = protectedProcedure
 	});
 
 export const patchAgentSuggestion = protectedProcedure
-	.use(requirePermission(Permissions.AGENT_READ))
+	.use(
+		requireInputOrgPermission(Permissions.AGENT_READ, {
+			requireOrganization: true,
+		}),
+	)
 	.route({
 		method: "PATCH",
 		path: "/agents/registry/:id/suggestions/:suggestionId",

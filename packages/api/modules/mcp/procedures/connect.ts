@@ -148,9 +148,13 @@ export const connectProcedures = {
 				// Get the site URL from environment
 				const siteUrl =
 					process.env.NEXT_PUBLIC_SITE_URL || "http://localhost:3001";
-				const basePath = organizationId
-					? `/app/${organizationId}/settings/mcp`
-					: "/app/settings/mcp";
+				// Slug-less on purpose. This segment resolves by SLUG, and the
+				// organization ID interpolated here produced a 404 — but the
+				// slug is not available in a procedure that only knows the id.
+				// `/app/settings/mcp` is the redirect that resolves the
+				// caller's organization server-side, which is the case it was
+				// kept for: a link built where no slug can be known.
+				const basePath = "/app/settings/mcp";
 				// The OAuth start URL should point to the MCP settings page where user can initiate OAuth
 				oauthStartUrl = `${siteUrl}${basePath}?connect=${serverId}`;
 			}

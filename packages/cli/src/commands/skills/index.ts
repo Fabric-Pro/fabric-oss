@@ -21,7 +21,7 @@ export function buildSkillsCommand(): Command {
 		.command("list")
 		.description("List skills")
 		.option("--org <slug>", "Organization context")
-		.option("--personal", "Personal context")
+		.option("--personal", "Retired — context is organization-only")
 		.option("--search <query>", "Search by name")
 		.option("--category <cat>", "Filter by category")
 		.option("--limit <n>", "Max results", "50")
@@ -47,7 +47,6 @@ export function buildSkillsCommand(): Command {
 				try {
 					list = await client.skills.list({
 						org: ctx?.type === "org" ? ctx.slug : undefined,
-						personal: ctx?.type === "personal" ? true : undefined,
 						search: opts.search,
 						category: opts.category,
 						limit: Number(opts.limit),

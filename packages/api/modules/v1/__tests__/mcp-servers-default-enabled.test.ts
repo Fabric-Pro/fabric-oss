@@ -25,6 +25,10 @@ const mockDeleteMcpConfig = vi.fn();
 const mockGetValidAccessToken = vi.fn();
 
 vi.mock("@repo/database", () => ({
+	resolveUserOrganization: vi.fn(async () => ({
+		kind: "resolved" as const,
+		organizationId: "org-test",
+	})),
 	listCustomMcpServersForTenant: (...args: unknown[]) =>
 		mockListCustomMcpServersForTenant(...args),
 	listSystemMcpServers: (...args: unknown[]) =>

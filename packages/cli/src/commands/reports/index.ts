@@ -29,7 +29,7 @@ export function buildReportsCommand(): Command {
 		.command("list", { isDefault: true })
 		.description("List report templates")
 		.option("--org <slug>", "Organization context")
-		.option("--personal", "Personal context")
+		.option("--personal", "Retired — context is organization-only")
 		.option("--search <query>", "Search by name")
 		.option("--category <cat>", "Filter by category")
 		.option("--limit <n>", "Max results (default 20)", "20")
@@ -55,7 +55,6 @@ export function buildReportsCommand(): Command {
 				try {
 					list = await client.reports.listTemplates({
 						org: ctx?.type === "org" ? ctx.slug : undefined,
-						personal: ctx?.type === "personal" ? true : undefined,
 						search: opts.search,
 						category: opts.category,
 						limit: Number(opts.limit),
@@ -88,7 +87,7 @@ export function buildReportsCommand(): Command {
 		.command("show <id>")
 		.description("Show report template details")
 		.option("--org <slug>", "Organization context")
-		.option("--personal", "Personal context")
+		.option("--personal", "Retired — context is organization-only")
 		.option("--format <format>", "Output format: table|json|yaml", "table")
 		.action(
 			async (
@@ -101,7 +100,6 @@ export function buildReportsCommand(): Command {
 				try {
 					tmpl = await client.reports.getTemplate(id, {
 						org: ctx?.type === "org" ? ctx.slug : undefined,
-						personal: ctx?.type === "personal" ? true : undefined,
 					});
 				} catch (err: unknown) {
 					printError((err as Error).message, 1);
@@ -139,7 +137,7 @@ export function buildReportsCommand(): Command {
 		.command("list", { isDefault: true })
 		.description("List report executions")
 		.option("--org <slug>", "Organization context")
-		.option("--personal", "Personal context")
+		.option("--personal", "Retired — context is organization-only")
 		.option("--limit <n>", "Max results (default 20)", "20")
 		.option(
 			"--format <format>",
@@ -161,7 +159,6 @@ export function buildReportsCommand(): Command {
 				try {
 					list = await client.reports.listExecutions({
 						org: ctx?.type === "org" ? ctx.slug : undefined,
-						personal: ctx?.type === "personal" ? true : undefined,
 						limit: Number(opts.limit),
 					});
 				} catch (err: unknown) {

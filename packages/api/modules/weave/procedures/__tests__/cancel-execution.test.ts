@@ -57,8 +57,26 @@ vi.mock("../../../../orpc/procedures", () => {
 	});
 	return {
 		protectedProcedure: chainable,
+		assertProjectPermission: async () => undefined,
 		requirePermission: () => () => undefined,
+		requireProjectPermission: () => () => undefined,
 		Permissions: new Proxy({}, { get: (_t, p) => String(p) }),
+		resolveOrganizationIdForCaller: async (
+			inputOrganizationId: string | null | undefined,
+			session: { activeOrganizationId?: string | null },
+		) => {
+			// Mirrors the resolution half only. The membership half it adds is
+			// covered directly in the orpc procedure tests; these suites are
+			// about weave's own behaviour, and a caller who is not a member
+			// never reaches them.
+			if (inputOrganizationId) {
+				return inputOrganizationId;
+			}
+			if (inputOrganizationId === null) {
+				return undefined;
+			}
+			return session.activeOrganizationId ?? undefined;
+		},
 		resolveOrganizationId: (
 			orgId: string | null | undefined,
 			session: { activeOrganizationId?: string | null },

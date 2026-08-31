@@ -25,7 +25,7 @@ export function buildProjectsCommand(): Command {
 		.command("list")
 		.description("List projects")
 		.option("--org <slug>", "Organization context")
-		.option("--personal", "Personal context")
+		.option("--personal", "Retired — context is organization-only")
 		.option(
 			"--status <status>",
 			"Filter by status: ACTIVE|DRAFT|COMPLETED|ARCHIVED",
@@ -54,7 +54,6 @@ export function buildProjectsCommand(): Command {
 				try {
 					list = await client.projects.list({
 						org: ctx?.type === "org" ? ctx.slug : undefined,
-						personal: ctx?.type === "personal" ? true : undefined,
 						status: opts.status as
 							| FabricProject["status"]
 							| undefined,
@@ -84,7 +83,7 @@ export function buildProjectsCommand(): Command {
 		.command("show <id>")
 		.description("Show project details")
 		.option("--org <slug>", "Organization context")
-		.option("--personal", "Personal context")
+		.option("--personal", "Retired — context is organization-only")
 		.option("--format <format>", "Output format: table|json|yaml", "table")
 		.action(
 			async (
@@ -97,7 +96,6 @@ export function buildProjectsCommand(): Command {
 				try {
 					project = await client.projects.get(id, {
 						org: ctx?.type === "org" ? ctx.slug : undefined,
-						personal: ctx?.type === "personal" ? true : undefined,
 					});
 				} catch (err: unknown) {
 					printError((err as Error).message, 1);
@@ -125,7 +123,7 @@ export function buildProjectsCommand(): Command {
 		.command("create <name>")
 		.description("Create a new project")
 		.option("--org <slug>", "Organization context")
-		.option("--personal", "Personal context")
+		.option("--personal", "Retired — context is organization-only")
 		.option("-d, --description <text>", "Project description")
 		.option("--repo <url>", "Repository URL")
 		.option(
@@ -156,7 +154,6 @@ export function buildProjectsCommand(): Command {
 						repositoryUrl: opts.repo,
 						status: opts.status as "DRAFT" | "ACTIVE",
 						org: ctx?.type === "org" ? ctx.slug : undefined,
-						personal: ctx?.type === "personal" ? true : undefined,
 					});
 				} catch (err: unknown) {
 					printError((err as Error).message, 1);
@@ -184,7 +181,7 @@ export function buildProjectsCommand(): Command {
 		.command("update <id>")
 		.description("Update a project")
 		.option("--org <slug>", "Organization context")
-		.option("--personal", "Personal context")
+		.option("--personal", "Retired — context is organization-only")
 		.option("--name <name>", "New name")
 		.option("-d, --description <text>", "New description")
 		.option("--repo <url>", "Repository URL")
@@ -218,7 +215,6 @@ export function buildProjectsCommand(): Command {
 							| "ARCHIVED"
 							| undefined,
 						org: ctx?.type === "org" ? ctx.slug : undefined,
-						personal: ctx?.type === "personal" ? true : undefined,
 					});
 				} catch (err: unknown) {
 					printError((err as Error).message, 1);

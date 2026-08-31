@@ -19,7 +19,7 @@ export function buildAgentsCommand(): Command {
 		.command("list")
 		.description("List agents")
 		.option("--org <slug>", "Organization context")
-		.option("--personal", "Personal context")
+		.option("--personal", "Retired — context is organization-only")
 		.option("--status <status>", "Filter: ACTIVE|INACTIVE|DEPRECATED")
 		.option("--limit <n>", "Max results", "50")
 		.option(
@@ -43,7 +43,6 @@ export function buildAgentsCommand(): Command {
 				try {
 					list = await client.agents.list({
 						org: ctx?.type === "org" ? ctx.slug : undefined,
-						personal: ctx?.type === "personal" ? true : undefined,
 						status: opts.status as
 							| FabricAgent["status"]
 							| undefined,
@@ -79,7 +78,7 @@ export function buildAgentsCommand(): Command {
 		.command("show <id>")
 		.description("Show agent details")
 		.option("--org <slug>", "Organization context")
-		.option("--personal", "Personal context")
+		.option("--personal", "Retired — context is organization-only")
 		.option("--format <format>", "Output format: table|json|yaml", "table")
 		.action(
 			async (
@@ -92,7 +91,6 @@ export function buildAgentsCommand(): Command {
 				try {
 					agent = await client.agents.get(id, {
 						org: ctx?.type === "org" ? ctx.slug : undefined,
-						personal: ctx?.type === "personal" ? true : undefined,
 					});
 				} catch (err: unknown) {
 					printError((err as Error).message, 1);
@@ -122,7 +120,7 @@ export function buildAgentsCommand(): Command {
 		.command("execute <id>")
 		.description("Execute an agent")
 		.option("--org <slug>", "Organization context")
-		.option("--personal", "Personal context")
+		.option("--personal", "Retired — context is organization-only")
 		.option("--input <json>", 'Input JSON (e.g. \'{"key":"value"}\')')
 		.option("--format <format>", "Output format: table|json|yaml", "table")
 		.action(
@@ -152,7 +150,6 @@ export function buildAgentsCommand(): Command {
 					result = await client.agents.execute(id, {
 						input: inputObj,
 						org: ctx?.type === "org" ? ctx.slug : undefined,
-						personal: ctx?.type === "personal" ? true : undefined,
 					});
 				} catch (err: unknown) {
 					printError((err as Error).message, 1);

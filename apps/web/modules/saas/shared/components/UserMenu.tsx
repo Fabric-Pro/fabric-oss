@@ -128,18 +128,26 @@ export function UserMenu({ showUserName }: { showUserName?: boolean }) {
 
 				<div className="my-2 h-px bg-border/60" />
 
-				{/* Account Settings — only in personal context */}
-				{!isOrgContext && (
-					<DropdownMenuItem
-						asChild
-						className="rounded-xl px-3 py-2.5"
-					>
-						<Link href="/app/settings/general">
-							<SettingsIcon className="mr-2 size-4 text-muted-foreground" />
-							{t("app.userMenu.accountSettings")}
-						</Link>
-					</DropdownMenuItem>
-				)}
+				{/*
+				 * Account Settings — offered in EVERY context (Fizzy #1875,
+				 * R7/R8). It used to be hidden in an organization, which left
+				 * an organization member with no route to their own account
+				 * settings from either the menu or the sidebar.
+				 *
+				 * The destination stays personal-rooted on purpose: security and
+				 * notifications now have organization-side routes, but the
+				 * profile page does not and building one is out of scope. The
+				 * organization layout's two-factor enforcement already sends
+				 * organization members to `/app/settings/security`, so leaving
+				 * organization context here is established behaviour, not an
+				 * oversight — please don't "fix" it to a context-relative path.
+				 */}
+				<DropdownMenuItem asChild className="rounded-xl px-3 py-2.5">
+					<Link href="/app/settings/general">
+						<SettingsIcon className="mr-2 size-4 text-muted-foreground" />
+						{t("app.userMenu.accountSettings")}
+					</Link>
+				</DropdownMenuItem>
 
 				{/* Organization Settings — only in org context */}
 				{isOrgContext && !config.organizations.hideOrganization && (

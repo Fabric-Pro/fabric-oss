@@ -108,7 +108,7 @@ vi.mock("next-intl", () => ({
 			"tabs.archived": "Archived",
 			unreadIndicator: "Unread",
 			settings: "Notification settings",
-			settingsHint: "Opens your personal account settings",
+			settingsHint: "Opens your account settings",
 		};
 		return map[key] ?? key;
 	},

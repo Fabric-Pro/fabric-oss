@@ -10,6 +10,10 @@ const { mocks } = vi.hoisted(() => ({
 }));
 
 vi.mock("@repo/database", () => ({
+	resolveUserOrganization: vi.fn(async () => ({
+		kind: "resolved" as const,
+		organizationId: "org-test",
+	})),
 	createProject: vi.fn(),
 	getProjectAccessById: vi.fn(),
 	getProjectByIdForExternalApi: mocks.getProjectByIdForExternalApi,

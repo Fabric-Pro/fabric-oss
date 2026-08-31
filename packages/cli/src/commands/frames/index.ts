@@ -21,7 +21,7 @@ export function buildFramesCommand(): Command {
 		.command("list")
 		.description("List frames and slideshows")
 		.option("--org <slug>", "Organization context")
-		.option("--personal", "Personal context")
+		.option("--personal", "Retired — context is organization-only")
 		.option("--limit <n>", "Max results (default 50)", "50")
 		.option(
 			"--format <format>",
@@ -43,7 +43,6 @@ export function buildFramesCommand(): Command {
 				try {
 					list = await client.frames.list({
 						org: ctx?.type === "org" ? ctx.slug : undefined,
-						personal: ctx?.type === "personal" ? true : undefined,
 						limit: Number(opts.limit),
 					});
 				} catch (err: unknown) {
@@ -76,7 +75,7 @@ export function buildFramesCommand(): Command {
 		.command("show <id>")
 		.description("Show frame details")
 		.option("--org <slug>", "Organization context")
-		.option("--personal", "Personal context")
+		.option("--personal", "Retired — context is organization-only")
 		.option("--format <format>", "Output format: table|json|yaml", "table")
 		.action(
 			async (
@@ -89,7 +88,6 @@ export function buildFramesCommand(): Command {
 				try {
 					frame = await client.frames.get(id, {
 						org: ctx?.type === "org" ? ctx.slug : undefined,
-						personal: ctx?.type === "personal" ? true : undefined,
 					});
 				} catch (err: unknown) {
 					printError((err as Error).message, 1);

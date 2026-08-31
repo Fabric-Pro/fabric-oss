@@ -14,7 +14,7 @@ vi.mock("next-intl", () => ({
 	useTranslations: () => (key: string) => {
 		const map: Record<string, string> = {
 			settings: "Notification settings",
-			settingsHint: "Opens your personal account settings",
+			settingsHint: "Opens your account settings",
 		};
 		return map[key] ?? key;
 	},

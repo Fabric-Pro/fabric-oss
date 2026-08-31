@@ -12,8 +12,8 @@ import { z } from "zod";
 import {
 	Permissions,
 	protectedProcedure,
-	requirePermission,
-	resolveOrganizationId,
+	requireProjectPermission,
+	resolveOrganizationIdForCaller,
 } from "../../../orpc/procedures";
 import { runInBackground } from "../lib/run-in-background";
 import { runPatternGeneration } from "../lib/run-pattern-generation";
@@ -37,7 +37,7 @@ const CreatePlanOutputSchema = z.object({
 });
 
 export const createPlanProcedure = protectedProcedure
-	.use(requirePermission(Permissions.AGENT_CREATE))
+	.use(requireProjectPermission(Permissions.AGENT_CREATE))
 	.route({
 		method: "POST",
 		path: "/weave/plans/create",
@@ -50,9 +50,10 @@ export const createPlanProcedure = protectedProcedure
 	.output(CreatePlanOutputSchema)
 	.handler(async ({ input, context }) => {
 		const userId = context.user.id;
-		const organizationId = resolveOrganizationId(
+		const organizationId = await resolveOrganizationIdForCaller(
 			input.organizationId,
 			context.session,
+			userId,
 		);
 
 		// Verify project access
