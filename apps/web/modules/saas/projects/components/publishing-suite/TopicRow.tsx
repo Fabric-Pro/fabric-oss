@@ -8,6 +8,11 @@ import {
 	SelectTrigger,
 	SelectValue,
 } from "@ui/components/select";
+import {
+	Tooltip,
+	TooltipContent,
+	TooltipTrigger,
+} from "@ui/components/tooltip";
 import { cn } from "@ui/lib";
 import {
 	AlarmClockIcon,
@@ -17,6 +22,7 @@ import {
 	MailOpenIcon,
 } from "lucide-react";
 import Link from "next/link";
+import { useTranslations } from "next-intl";
 import { useEffect, useState } from "react";
 import { DeclineTopicDialog } from "./DeclineTopicDialog";
 import { PostTypesDialog } from "./PostTypesDialog";
@@ -86,6 +92,11 @@ export function TopicRow({
 		reason: string | null,
 	) => Promise<void>;
 }) {
+	// Visible hint for the two icon-only controls. The `aria-label` on each
+	// button is what a screen reader announces and stays authoritative; this
+	// copy is the sighted-mouse equivalent, and says what the control DOES
+	// rather than restating its label.
+	const t = useTranslations("tooltips.publishing");
 	const [declineOpen, setDeclineOpen] = useState(false);
 	const [declinePending, setDeclinePending] = useState(false);
 	const [publishOpen, setPublishOpen] = useState(false);
@@ -473,54 +484,75 @@ export function TopicRow({
 					) : null}
 				</div>
 				<div className="flex w-full shrink-0 items-center gap-2 sm:w-auto">
-					<Button
-						type="button"
-						variant="ghost"
-						size="sm"
-						aria-label={isRead ? "Mark as unread" : "Mark as read"}
-						disabled={isPending}
-						onClick={handleManualReadToggle}
-					>
-						{isRead ? (
-							<MailIcon className="size-4" aria-hidden="true" />
-						) : (
-							<MailOpenIcon
-								className="size-4"
-								aria-hidden="true"
-							/>
-						)}
-					</Button>
-					{canEdit ? (
-						<Button
-							type="button"
-							variant="ghost"
-							size="sm"
-							data-onboarding-target="publishing-suite-snooze"
-							aria-label={isSnoozed ? "Unsnooze" : "Snooze"}
-							disabled={isPending}
-							onClick={() => {
-								if (isSnoozed) {
-									setSnoozeOverride(false);
-									void onSetSnooze(null, null).catch(() =>
-										setSnoozeOverride(null),
-									);
-									return;
+					<Tooltip>
+						<TooltipTrigger asChild>
+							<Button
+								type="button"
+								variant="ghost"
+								size="sm"
+								aria-label={
+									isRead ? "Mark as unread" : "Mark as read"
 								}
-								setSnoozeOpen(true);
-							}}
-						>
-							{isSnoozed ? (
-								<AlarmClockOffIcon
-									className="size-4"
-									aria-hidden="true"
-								/>
-							) : (
-								<AlarmClockIcon
-									className="size-4"
-									aria-hidden="true"
-								/>
-							)}
-						</Button>
+								disabled={isPending}
+								onClick={handleManualReadToggle}
+							>
+								{isRead ? (
+									<MailIcon
+										className="size-4"
+										aria-hidden="true"
+									/>
+								) : (
+									<MailOpenIcon
+										className="size-4"
+										aria-hidden="true"
+									/>
+								)}
+							</Button>
+						</TooltipTrigger>
+						<TooltipContent>
+							{isRead ? t("markUnread") : t("markRead")}
+						</TooltipContent>
+					</Tooltip>
+					{canEdit ? (
+						<Tooltip>
+							<TooltipTrigger asChild>
+								<Button
+									type="button"
+									variant="ghost"
+									size="sm"
+									data-onboarding-target="publishing-suite-snooze"
+									aria-label={
+										isSnoozed ? "Unsnooze" : "Snooze"
+									}
+									disabled={isPending}
+									onClick={() => {
+										if (isSnoozed) {
+											setSnoozeOverride(false);
+											void onSetSnooze(null, null).catch(
+												() => setSnoozeOverride(null),
+											);
+											return;
+										}
+										setSnoozeOpen(true);
+									}}
+								>
+									{isSnoozed ? (
+										<AlarmClockOffIcon
+											className="size-4"
+											aria-hidden="true"
+										/>
+									) : (
+										<AlarmClockIcon
+											className="size-4"
+											aria-hidden="true"
+										/>
+									)}
+								</Button>
+							</TooltipTrigger>
+							<TooltipContent>
+								{isSnoozed ? t("unsnooze") : t("snooze")}
+							</TooltipContent>
+						</Tooltip>
 					) : null}
 					{renderStatusSelect("w-full sm:w-[10rem]")}
 				</div>
