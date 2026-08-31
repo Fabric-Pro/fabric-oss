@@ -59,10 +59,16 @@ const CASES: Array<[string, () => ReadinessEvidence, () => ReadinessEvidence]> =
 			"chat-app-connected",
 			() => {
 				const e = emptyEvidence();
-				e.chat.slackConnected = true;
+				e.chat.linkedChannelCount = 1;
 				return e;
 			},
-			emptyEvidence,
+			// A monitor switched on over zero linked channels is not a
+			// connected chat app — it watches nothing.
+			() => {
+				const e = emptyEvidence();
+				e.chat.slackChannelMonitorEnabled = true;
+				return e;
+			},
 		],
 		[
 			"meeting-transcripts",
@@ -157,9 +163,11 @@ const CASES: Array<[string, () => ReadinessEvidence, () => ReadinessEvidence]> =
 		],
 		[
 			"terminal-statuses",
+			// Statuses named, auto-close deliberately OFF — the item is
+			// "terminal statuses DEFINED", and the list classifies linked items
+			// whether or not closed ones are hidden from the Roadmap.
 			() => {
 				const e = emptyEvidence();
-				e.pm.autoCloseEnabled = true;
 				e.pm.terminalStatusCount = 2;
 				return e;
 			},
@@ -197,12 +205,15 @@ const CASES: Array<[string, () => ReadinessEvidence, () => ReadinessEvidence]> =
 			// Teams monitor, which made this Must unreachable on Slack projects.
 			() => {
 				const e = emptyEvidence();
+				e.chat.linkedChannelCount = 1;
 				e.chat.slackChannelMonitorEnabled = true;
 				return e;
 			},
+			// Linked but not watched: the connection satisfies
+			// `chat-app-connected`, never work capture.
 			() => {
 				const e = emptyEvidence();
-				e.chat.slackConnected = true;
+				e.chat.linkedChannelCount = 1;
 				return e;
 			},
 		],

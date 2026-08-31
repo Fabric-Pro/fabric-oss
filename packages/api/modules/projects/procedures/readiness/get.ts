@@ -39,11 +39,15 @@ const ItemSchema = z.object({
 	isComplete: z.boolean(),
 	isInProgress: z.boolean(),
 	supersededBy: z.string().optional(),
+	/** Copy variant naming the condition still in the way; see the registry. */
+	unmetReason: z.string().optional(),
 	manualState: z
 		.enum(["SNOOZED", "NOT_APPLICABLE", "HELP_REQUESTED"])
 		.nullable(),
 	snoozeUntil: z.date().nullable(),
 	isVisible: z.boolean(),
+	/** The prerequisite hiding this item, when one is. */
+	blockedBy: z.string().optional(),
 	isActiveGap: z.boolean(),
 	target: z.union([
 		z.object({ kind: z.literal("tab"), tab: z.string() }),

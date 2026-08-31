@@ -57,6 +57,13 @@ vi.mock("@shared/lib/orpc-client", () => ({
 	},
 }));
 
+vi.mock("@saas/projects/lib/project-tab-preferences", () => ({
+	// These tests are about the panel's actions, not tab visibility: every tab
+	// is reachable so the calls to action render as links.
+	useProjectTabCustomization: () => ({ config: undefined, prefs: undefined }),
+	resolveProjectTabs: (tabs: readonly unknown[]) => tabs,
+}));
+
 vi.mock("@saas/organizations/hooks/use-organization-context", () => ({
 	useOrganizationContext: () => ({
 		organizationId: null,
@@ -267,7 +274,7 @@ describe("a viewer who cannot edit the project", () => {
 		mountWith([item()], { canAct: true });
 
 		expect(
-			screen.getByRole("button", { name: /^Snooze/i }),
+			screen.getByRole("button", { name: "Actions for this item" }),
 		).toBeInTheDocument();
 		expect(screen.queryByText(/view only/i)).not.toBeInTheDocument();
 	});
@@ -416,7 +423,7 @@ describe("work already underway", () => {
 		expect(screen.getByText(/in progress/i)).toBeInTheDocument();
 		// A slow scan must not take the item's controls away.
 		expect(
-			screen.getByRole("button", { name: /^Snooze/i }),
+			screen.getByRole("button", { name: "Actions for this item" }),
 		).toBeInTheDocument();
 	});
 

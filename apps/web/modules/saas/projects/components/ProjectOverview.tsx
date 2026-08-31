@@ -1,5 +1,6 @@
 "use client";
 
+import type { TabId } from "@saas/projects/lib/project-tabs";
 import { cn } from "@ui/lib";
 import {
 	ChevronDownIcon,
@@ -17,7 +18,6 @@ import {
 	getPipelineDocuments,
 	isActiveDocument,
 } from "../lib/document-pipeline";
-import type { TabId } from "./ProjectDetails";
 import {
 	type EditSection,
 	ProjectSectionEditDialog,

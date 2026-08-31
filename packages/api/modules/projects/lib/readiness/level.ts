@@ -279,12 +279,26 @@ export function resolveReadiness(input: ResolveInput): ReadinessSummary {
 		// therefore is not counted anywhere below.
 		const isVisible = dependencyMet;
 
+		// Which prerequisite is holding it back. `dependsOn` is a disjunction,
+		// so any one of them unlocks the item; the first is the one the panel
+		// names, matching checklist order rather than picking arbitrarily.
+		const blockedBy = isVisible
+			? undefined
+			: (rule.dependsOn?.find((key) => !satisfied(key)) ?? undefined);
+
 		// An item is In Progress only while it is still incomplete: once the
 		// scan or the generation lands, "done" is the whole story.
 		const isInProgress =
 			!isComplete &&
 			!isNotApplicable &&
 			(rule.inProgress?.(evidence) ?? false);
+
+		// Only an outstanding item gets instructions. Resolving one and leaving
+		// "still needed: ..." underneath it would contradict the tick beside it.
+		const unmetReason =
+			isComplete || isNotApplicable
+				? undefined
+				: (rule.unmet?.(evidence) ?? undefined);
 
 		const counts =
 			isVisible && needLevel !== "NOT_APPLICABLE" && !isNotApplicable;
@@ -305,9 +319,11 @@ export function resolveReadiness(input: ResolveInput): ReadinessSummary {
 			isComplete: isComplete || isNotApplicable,
 			isInProgress,
 			supersededBy: supersededByKey,
+			unmetReason: unmetReason ?? undefined,
 			manualState,
 			snoozeUntil: personalSnooze?.snoozeUntil ?? null,
 			isVisible,
+			blockedBy,
 			isActiveGap,
 		});
 	}

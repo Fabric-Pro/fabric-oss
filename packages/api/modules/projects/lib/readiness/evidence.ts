@@ -89,6 +89,9 @@ export async function gatherReadinessEvidence(
 		indexingCodeIndex,
 		generatingDocumentTypes,
 		runningScan,
+		linkedSlackChannelCount,
+		linkedTeamsChannelCount,
+		linkedTeamsChatCount,
 	] = await Promise.all([
 		// Indexed context sources, grouped by kind so one read serves four rules.
 		db.projectContext.groupBy({
@@ -209,6 +212,13 @@ export async function gatherReadinessEvidence(
 			where: { projectId, status: { in: ["PENDING", "RUNNING"] } },
 			select: { id: true },
 		}),
+		// ── Linked chat surfaces ─────────────────────────────────────────
+		// The durable fact behind "a chat app is connected". Counted rather
+		// than read off a monitor flag: linking a channel is what connects the
+		// app, and the flag only decides whether Fabric watches it continuously.
+		db.projectLinkedSlackChannel.count({ where: { projectId } }),
+		db.projectLinkedTeamsChannel.count({ where: { projectId } }),
+		db.projectLinkedTeamsChat.count({ where: { projectId } }),
 	]);
 
 	const contextCountByType = new Map<string, number>(
@@ -269,12 +279,10 @@ export async function gatherReadinessEvidence(
 		},
 
 		chat: {
-			// A monitor can only be configured against a connected workspace, so
-			// an enabled monitor is the signal that the app is connected.
-			slackConnected: project.slackChannelMonitorEnabled,
-			teamsConnected:
-				project.teamsChannelMonitorEnabled ||
-				project.teamsChatMonitorEnabled,
+			linkedChannelCount:
+				linkedSlackChannelCount +
+				linkedTeamsChannelCount +
+				linkedTeamsChatCount,
 			slackChannelMonitorEnabled: project.slackChannelMonitorEnabled,
 			teamsChannelMonitorEnabled: project.teamsChannelMonitorEnabled,
 			teamsChatMonitorEnabled: project.teamsChatMonitorEnabled,

@@ -114,8 +114,21 @@ export interface ReadinessEvidence {
 
 	/** Chat and transcript capture configuration. */
 	chat: {
-		slackConnected: boolean;
-		teamsConnected: boolean;
+		/**
+		 * Chat channels and group chats linked to this project — Slack channels,
+		 * Teams channels and Teams chats together.
+		 *
+		 * This, not a monitor flag, is what "a chat app is connected" means. A
+		 * linked channel is immediately usable: the manual "Monitor now" run
+		 * scans linked channels with no reference to any enabled flag, so a
+		 * project with a linked channel and the monitor off can still pull work
+		 * out of its chat. The flag governs continuous watching, which is what
+		 * the separate work-capture item is named for.
+		 *
+		 * Reading the flag here also made the two items identical predicates, so
+		 * "connect a chat app" and "turn work capture on" could never differ.
+		 */
+		linkedChannelCount: number;
 		slackChannelMonitorEnabled: boolean;
 		teamsChannelMonitorEnabled: boolean;
 		teamsChatMonitorEnabled: boolean;
@@ -190,6 +203,26 @@ export interface ReadinessRule {
 	 * which "add a team member" is in progress.
 	 */
 	inProgress?: (evidence: ReadinessEvidence) => boolean;
+	/**
+	 * Which condition is standing between this project and the item, as a copy
+	 * variant resolved under `<i18nKey>.unmet.<variant>`.
+	 *
+	 * Every tooltip on the checklist is the spreadsheet's copy, and all 26 of
+	 * them say why an item matters rather than what would satisfy it. On a rule
+	 * with more than one condition that leaves a user who has done half the work
+	 * with no way to tell which half is missing — a project connected to a PM
+	 * system reads "sync keeps Fabric aligned" while silently waiting on the
+	 * auto-push toggle. Two of the bugs this file was corrected for hid exactly
+	 * there.
+	 *
+	 * It lives beside `detect` rather than in the copy file so the two cannot
+	 * drift: changing one without the other shows up in the same diff. Only the
+	 * wording is translated; the branching is here.
+	 *
+	 * Return null when the rule is satisfied, or omit the function entirely
+	 * where the call to action already says everything ("Set Tech Stack").
+	 */
+	unmet?: (evidence: ReadinessEvidence) => string | null;
 }
 
 /** A rule plus everything computed about it for one project and one viewer. */
@@ -209,11 +242,27 @@ export interface ResolvedReadinessItem {
 	isInProgress: boolean;
 	/** Set when completion came from supersession rather than detection. */
 	supersededBy?: string;
+	/**
+	 * Copy variant naming the condition still standing in the way. Only ever set
+	 * on an incomplete item — a satisfied item needs no instructions.
+	 */
+	unmetReason?: string;
 	/** The manual state a person put this item in, if any. */
 	manualState: ProjectReadinessItemStateValue | null;
 	snoozeUntil: Date | null;
 	/** False when a dependency is unmet — the panel does not show it. */
 	isVisible: boolean;
+	/**
+	 * The item that would unlock this one, when a dependency is what is hiding
+	 * it. Set only while `isVisible` is false.
+	 *
+	 * The panel knows an item is hidden but not why, so it could only ever say
+	 * "N more items appear once earlier steps are done" — a count with no
+	 * actionable content. Naming the prerequisite turns that into the blocked
+	 * capability warning the card asks for: connect a codebase and Atlas,
+	 * Security scan and Release notes all become reachable.
+	 */
+	blockedBy?: string;
 	/**
 	 * True when this item is an unmet Must or Should for the active phase, i.e.
 	 * something the project genuinely still owes. Snoozed items are excluded.

@@ -33,8 +33,7 @@ export function emptyEvidence(): ReadinessEvidence {
 			notionSources: 0,
 		},
 		chat: {
-			slackConnected: false,
-			teamsConnected: false,
+			linkedChannelCount: 0,
 			slackChannelMonitorEnabled: false,
 			teamsChannelMonitorEnabled: false,
 			teamsChatMonitorEnabled: false,

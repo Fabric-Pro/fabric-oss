@@ -27,6 +27,9 @@ const { mockDb } = vi.hoisted(() => ({
 		atlasAnalysis: { findFirst: vi.fn() },
 		projectRepositoryIntegration: { count: vi.fn() },
 		projectCodeIndex: { findFirst: vi.fn() },
+		projectLinkedSlackChannel: { count: vi.fn() },
+		projectLinkedTeamsChannel: { count: vi.fn() },
+		projectLinkedTeamsChat: { count: vi.fn() },
 	},
 }));
 
@@ -77,6 +80,9 @@ beforeEach(() => {
 	mockDb.atlasAnalysis.findFirst.mockResolvedValue(null);
 	mockDb.projectRepositoryIntegration.count.mockResolvedValue(0);
 	mockDb.projectCodeIndex.findFirst.mockResolvedValue(null);
+	mockDb.projectLinkedSlackChannel.count.mockResolvedValue(0);
+	mockDb.projectLinkedTeamsChannel.count.mockResolvedValue(0);
+	mockDb.projectLinkedTeamsChat.count.mockResolvedValue(0);
 });
 
 describe("gatherReadinessEvidence — codebase connection", () => {
@@ -307,5 +313,55 @@ describe("gatherReadinessEvidence — documents under a re-run", () => {
 				isActive: false,
 			}),
 		).toBe(false);
+	});
+});
+
+describe("gatherReadinessEvidence — a linked chat channel is a connected chat app", () => {
+	it("counts Slack, Teams channels and Teams chats together", async () => {
+		mockDb.projectLinkedSlackChannel.count.mockResolvedValue(1);
+		mockDb.projectLinkedTeamsChannel.count.mockResolvedValue(2);
+		mockDb.projectLinkedTeamsChat.count.mockResolvedValue(3);
+
+		const result = await gatherReadinessEvidence("p1");
+
+		expect(result?.evidence.chat.linkedChannelCount).toBe(6);
+	});
+
+	it("counts a linked channel whose monitor is switched off", async () => {
+		// The regression this rule was changed for: a channel is linked, the
+		// auto-monitor toggle is off, and the checklist reported no chat app.
+		mockDb.project.findUnique.mockResolvedValue(
+			projectRow({ slackChannelMonitorEnabled: false }),
+		);
+		mockDb.projectLinkedSlackChannel.count.mockResolvedValue(1);
+
+		const result = await gatherReadinessEvidence("p1");
+
+		expect(result?.evidence.chat.linkedChannelCount).toBe(1);
+		expect(result?.evidence.chat.slackChannelMonitorEnabled).toBe(false);
+	});
+
+	it("does not invent a channel from an enabled monitor", async () => {
+		mockDb.project.findUnique.mockResolvedValue(
+			projectRow({ slackChannelMonitorEnabled: true }),
+		);
+
+		const result = await gatherReadinessEvidence("p1");
+
+		expect(result?.evidence.chat.linkedChannelCount).toBe(0);
+	});
+
+	it("scopes every count to this project", async () => {
+		await gatherReadinessEvidence("p1");
+
+		for (const model of [
+			mockDb.projectLinkedSlackChannel,
+			mockDb.projectLinkedTeamsChannel,
+			mockDb.projectLinkedTeamsChat,
+		]) {
+			expect(model.count).toHaveBeenCalledWith({
+				where: { projectId: "p1" },
+			});
+		}
 	});
 });

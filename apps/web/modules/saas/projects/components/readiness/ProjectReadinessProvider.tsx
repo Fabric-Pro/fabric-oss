@@ -34,6 +34,10 @@ export interface ReadinessItem {
 	isComplete: boolean;
 	isInProgress: boolean;
 	supersededBy?: string;
+	/** Copy variant for the "still needed" line; resolved against i18n. */
+	unmetReason?: string;
+	/** The prerequisite hiding this item, when one is. */
+	blockedBy?: string;
 	manualState: "SNOOZED" | "NOT_APPLICABLE" | "HELP_REQUESTED" | null;
 	snoozeUntil: string | Date | null;
 	isVisible: boolean;
