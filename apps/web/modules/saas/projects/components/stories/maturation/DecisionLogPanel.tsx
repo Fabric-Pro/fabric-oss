@@ -3,12 +3,18 @@
 import { Button } from "@ui/components/button";
 import { Markdown } from "@ui/components/markdown";
 import { Textarea } from "@ui/components/textarea";
+import {
+	Tooltip,
+	TooltipContent,
+	TooltipTrigger,
+} from "@ui/components/tooltip";
 import { cn } from "@ui/lib";
 import {
 	CheckCircle2,
 	ChevronDown,
 	CircleDashed,
 	FileText,
+	PencilLine,
 	Sparkles,
 	XCircle,
 } from "lucide-react";
@@ -500,23 +506,43 @@ function DecisionThreadCard({
 											</div>
 										</div>
 									) : canAmend ? (
-										<Button
-											type="button"
-											variant="ghost"
-											size="sm"
-											className="mt-1 text-xs"
-											disabled={isAmending}
-											onClick={() => {
-												setAmendTargetId(reply.id);
-												setDraft(
-													reply.content ??
-														reply.summary ??
-														"",
-												);
-											}}
-										>
-											{t("amend")}
-										</Button>
+										<Tooltip>
+											<TooltipTrigger asChild>
+												<Button
+													type="button"
+													variant="ghost"
+													size="icon"
+													// A thread list renders one
+													// Amend per live answer, so a
+													// bare "Amend" is ambiguous to
+													// a screen reader — name the
+													// answer being replaced.
+													aria-label={t("amendAria", {
+														text:
+															reply.summary ??
+															reply.content ??
+															"",
+													})}
+													className="mt-1 size-7 text-muted-foreground opacity-70 transition-[color,opacity] hover:bg-transparent hover:text-foreground hover:opacity-100 focus-visible:opacity-100"
+													disabled={isAmending}
+													onClick={() => {
+														setAmendTargetId(
+															reply.id,
+														);
+														setDraft(
+															reply.content ??
+																reply.summary ??
+																"",
+														);
+													}}
+												>
+													<PencilLine className="size-3.5" />
+												</Button>
+											</TooltipTrigger>
+											<TooltipContent side="left">
+												{t("amend")}
+											</TooltipContent>
+										</Tooltip>
 									) : null}
 
 									{/* Superseded turns: present, never deleted,

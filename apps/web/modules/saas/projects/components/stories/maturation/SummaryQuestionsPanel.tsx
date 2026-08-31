@@ -11,7 +11,7 @@ import {
 	TooltipContent,
 	TooltipTrigger,
 } from "@ui/components/tooltip";
-import { Loader2, SparklesIcon } from "lucide-react";
+import { Loader2, Pencil, SparklesIcon } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { useEffect, useMemo, useState } from "react";
 import type { AiReadinessData } from "./ReadinessBar";
@@ -307,10 +307,13 @@ export function SummaryQuestionsPanel({
 						</p>
 						<ul className="space-y-2">
 							{options.map((opt) => (
-								<li key={opt.text} className="flex gap-2">
+								<li key={opt.text} className="relative">
 									{/* Accept and Edit are siblings, not nested:
 									    the accept affordance is itself a button,
-									    so Edit cannot live inside it. */}
+									    so Edit cannot live inside it. The pencil
+									    is only PAINTED inside, by positioning it
+									    over the corner `pr-10` reserves below —
+									    same DOM, two independent hit targets. */}
 									<Button
 										type="button"
 										variant="outline"
@@ -328,7 +331,7 @@ export function SummaryQuestionsPanel({
 											}
 										}}
 										disabled={isAnswering}
-										className="h-auto flex-1 flex-col items-start gap-0.5 whitespace-normal py-2 text-left"
+										className="h-auto w-full flex-col items-start gap-0.5 whitespace-normal py-2 pr-10 text-left"
 									>
 										<span className="text-xs font-medium">
 											{opt.text}
@@ -339,24 +342,44 @@ export function SummaryQuestionsPanel({
 											</span>
 										)}
 									</Button>
-									<Button
-										type="button"
-										variant="ghost"
-										size="sm"
-										onClick={() =>
-											open(thread.root.id, opt.text)
-										}
-										disabled={isAnswering}
-										// Several Edit controls render at once, so
-										// a bare "Edit" is ambiguous to a screen
-										// reader — name the suggestion.
-										aria-label={t("editSuggestionAria", {
-											text: opt.text,
-										})}
-										className="self-start text-xs"
-									>
-										{t("editSuggestion")}
-									</Button>
+									<Tooltip>
+										<TooltipTrigger asChild>
+											<Button
+												type="button"
+												variant="ghost"
+												size="icon"
+												onClick={() =>
+													open(
+														thread.root.id,
+														opt.text,
+													)
+												}
+												disabled={isAnswering}
+												// Several Edit controls render at
+												// once, so a bare "Edit" is
+												// ambiguous to a screen reader —
+												// name the suggestion. The tooltip
+												// is for sighted pointer users;
+												// this is the real name.
+												aria-label={t(
+													"editSuggestionAria",
+													{ text: opt.text },
+												)}
+												// Visible at rest rather than
+												// revealed on hover: a hover-only
+												// icon does not exist on touch.
+												// `hover:bg-transparent` stops the
+												// ghost fill painting a second
+												// rectangle over the card.
+												className="absolute top-1 right-1 size-7 text-muted-foreground opacity-70 transition-[color,opacity] hover:bg-transparent hover:text-foreground hover:opacity-100 focus-visible:opacity-100"
+											>
+												<Pencil className="size-3.5" />
+											</Button>
+										</TooltipTrigger>
+										<TooltipContent side="left">
+											{t("editSuggestion")}
+										</TooltipContent>
+									</Tooltip>
 								</li>
 							))}
 						</ul>
