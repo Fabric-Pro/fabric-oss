@@ -18,6 +18,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { db, Prisma } from "../prisma/client";
 import {
+	amendQuestionAnswer,
 	appendDecisionLogReply,
 	createDecisionLogEntry,
 	effectiveApprovalMode,
@@ -156,6 +157,101 @@ describe.skipIf(!hasReachableDatabaseUrl())(
 				expect(threads[1].replies[0].content).toBe(
 					"A reply on the first thread",
 				);
+			});
+
+			it("amends an answer by appending a superseding turn, never mutating", async () => {
+				const root = await createDecisionLogEntry({
+					tenantFilter: orgTenant,
+					userStoryId: storyId,
+					authorType: "USER",
+					status: "RESOLVED",
+					summary: "Mandatory MFA?",
+					questionId: `q-amend-${RUN_ID}`,
+					source: "HUMAN",
+					authorUserId: USER_ID,
+				});
+				const original = await appendDecisionLogReply({
+					tenantFilter: orgTenant,
+					userStoryId: storyId,
+					parentId: root.id,
+					authorType: "USER",
+					content: "Yes",
+					authorUserId: USER_ID,
+				});
+
+				const amended = await amendQuestionAnswer({
+					tenantFilter: orgTenant,
+					rootId: root.id,
+					supersedesId: original.id,
+					answer: "Yes, for admins only",
+					authorUserId: USER_ID,
+					decidedBy: USER_ID,
+					answerSource: "AI_EDITED",
+				});
+				expect(amended?.supersedesId).toBe(original.id);
+
+				// The superseded turn is untouched — append-only, so history stands.
+				const stillThere = await db.decisionLogEntry.findUnique({
+					where: { id: original.id },
+				});
+				expect(stillThere?.content).toBe("Yes");
+				expect(stillThere?.deletedAt).toBeNull();
+
+				// Default (the Decisions tab) keeps both turns for history.
+				const withHistory = await listDecisionLogThreads({
+					tenantFilter: orgTenant,
+					userStoryId: storyId,
+				});
+				const full = withHistory.find((t) => t.root.id === root.id);
+				expect(full?.replies.map((r) => r.id).sort()).toEqual(
+					[original.id, amended?.id].sort(),
+				);
+
+				// AI surfaces must see ONLY the current answer, or the model gets
+				// two equally authoritative decisions for one question.
+				const forAi = await listDecisionLogThreads({
+					tenantFilter: orgTenant,
+					userStoryId: storyId,
+					excludeSuperseded: true,
+				});
+				const live = forAi.find((t) => t.root.id === root.id);
+				expect(live?.replies).toHaveLength(1);
+				expect(live?.replies[0].content).toBe("Yes, for admins only");
+			});
+
+			it("refuses to amend a turn that was already superseded", async () => {
+				const root = await createDecisionLogEntry({
+					tenantFilter: orgTenant,
+					userStoryId: storyId,
+					authorType: "USER",
+					status: "RESOLVED",
+					summary: "Race?",
+					questionId: `q-race-${RUN_ID}`,
+					source: "HUMAN",
+					authorUserId: USER_ID,
+				});
+				const original = await appendDecisionLogReply({
+					tenantFilter: orgTenant,
+					userStoryId: storyId,
+					parentId: root.id,
+					authorType: "USER",
+					content: "First",
+					authorUserId: USER_ID,
+				});
+				const args = {
+					tenantFilter: orgTenant,
+					rootId: root.id,
+					supersedesId: original.id,
+					authorUserId: USER_ID,
+					decidedBy: USER_ID,
+				};
+				expect(
+					await amendQuestionAnswer({ ...args, answer: "Second" }),
+				).not.toBeNull();
+				// A second amendment of the SAME turn is a lost race, not a fork.
+				expect(
+					await amendQuestionAnswer({ ...args, answer: "Third" }),
+				).toBeNull();
 			});
 
 			it("excludes soft-deleted entries from the thread fetch", async () => {

@@ -516,6 +516,102 @@ export async function resolveQuestionThread({
 	});
 }
 
+export interface AmendQuestionAnswerInput {
+	tenantFilter: MaturationTenantFilter;
+	/** The RESOLVED thread root whose answer is being amended. */
+	rootId: string;
+	/** The answer turn being replaced. Must be the thread's live (non-superseded) answer. */
+	supersedesId: string;
+	/** The corrected answer, appended as a new turn. */
+	answer: string;
+	authorUserId: string;
+	decidedBy: string;
+	/** Provenance of the amended answer — an amended AI answer is an edit (#1910). */
+	answerSource?: DecisionLogEntry["answerSource"];
+	authorName?: string | null;
+	sourceProvenance?: string | null;
+}
+
+/**
+ * Amend a resolved question's answer by APPENDING a new turn that supersedes the
+ * previous one (#1910). Nothing is mutated: the superseded turn stays byte-identical
+ * and readable as history, which is what keeps the Decision Log append-only and lets
+ * the Decisions tab stay a log rather than an editor.
+ *
+ * Mirrors `resolveQuestionThread`: a transaction, a tenant-scoped lookup, and `null`
+ * on a miss so the caller surfaces NOT_FOUND rather than minting a parallel answer.
+ * The root is left RESOLVED — amending changes the answer, never the status.
+ *
+ * A turn can be superseded at most once, enforced by a unique index on
+ * `supersedesId`: a second amendment supersedes the first amendment, keeping the
+ * chain linear. We check for an existing superseder inside the transaction so a
+ * lost race returns `null` instead of surfacing a raw constraint violation.
+ *
+ * CRITICAL for callers: a turn with a `supersededBy` row is retracted and must be
+ * excluded from every AI surface — see the Temporal feature-decisions handler.
+ */
+export async function amendQuestionAnswer({
+	tenantFilter,
+	rootId,
+	supersedesId,
+	answer,
+	authorUserId,
+	decidedBy,
+	answerSource = null,
+	authorName = null,
+	sourceProvenance = null,
+}: AmendQuestionAnswerInput): Promise<DecisionLogEntry | null> {
+	return db.$transaction(async (tx) => {
+		const root = await tx.decisionLogEntry.findFirst({
+			where: {
+				...buildDecisionLogTenantWhere(tenantFilter),
+				id: rootId,
+				parentId: null,
+				deletedAt: null,
+			},
+			select: { id: true, userStoryId: true },
+		});
+		if (!root) {
+			return null;
+		}
+
+		// The target must be a live answer turn ON THIS THREAD, in this tenant, and
+		// not already superseded. Any miss is a stale client or a lost race.
+		const target = await tx.decisionLogEntry.findFirst({
+			where: {
+				...buildDecisionLogTenantWhere(tenantFilter),
+				id: supersedesId,
+				parentId: root.id,
+				deletedAt: null,
+				supersededBy: null,
+			},
+			select: { id: true },
+		});
+		if (!target) {
+			return null;
+		}
+
+		return tx.decisionLogEntry.create({
+			data: {
+				userStoryId: root.userStoryId,
+				parentId: root.id,
+				authorType: "USER",
+				authorUserId,
+				status: "RESOLVED",
+				source: "HUMAN",
+				content: answer,
+				answerSource,
+				authorName,
+				sourceProvenance,
+				supersedesId: target.id,
+				decidedBy,
+				organizationId: tenantFilter.organizationId,
+				userId: tenantFilter.userId,
+			},
+		});
+	});
+}
+
 export interface DecisionLogThread {
 	root: DecisionLogEntry;
 	replies: DecisionLogEntry[];
@@ -523,7 +619,15 @@ export interface DecisionLogThread {
 
 export interface ListDecisionLogThreadsInput {
 	tenantFilter: MaturationTenantFilter;
-	userStoryId: string;
+	userStoryId: string /**
+	 * Drop answer turns that a later amendment superseded (#1910).
+	 *
+	 * Default `false` keeps every turn, which is what the Decisions tab needs — it
+	 * renders the superseded answer as collapsed history. Pass `true` from any AI
+	 * surface: a retracted answer handed to a model reads as a second, equally
+	 * authoritative decision for the same question.
+	 */;
+	excludeSuperseded?: boolean;
 }
 
 /**
@@ -535,6 +639,7 @@ export interface ListDecisionLogThreadsInput {
 export async function listDecisionLogThreads({
 	tenantFilter,
 	userStoryId,
+	excludeSuperseded = false,
 }: ListDecisionLogThreadsInput): Promise<DecisionLogThread[]> {
 	const rows = await db.decisionLogEntry.findMany({
 		where: {
@@ -545,10 +650,24 @@ export async function listDecisionLogThreads({
 		orderBy: { createdAt: "asc" },
 	});
 
+	// A turn is superseded when some OTHER row points at it. Derived from the rows
+	// already fetched, so filtering costs no extra query.
+	const supersededIds = new Set<string>();
+	if (excludeSuperseded) {
+		for (const row of rows) {
+			if (row.supersedesId) {
+				supersededIds.add(row.supersedesId);
+			}
+		}
+	}
+
 	const repliesByParent = new Map<string, DecisionLogEntry[]>();
 	const roots: DecisionLogEntry[] = [];
 
 	for (const row of rows) {
+		if (supersededIds.has(row.id)) {
+			continue;
+		}
 		if (row.parentId === null) {
 			roots.push(row);
 			continue;

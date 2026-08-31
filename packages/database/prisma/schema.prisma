@@ -6367,6 +6367,17 @@ model DecisionLogEntry {
   // question roots and on pre-feature rows. Real column (not metadata) so acceptance
   // is queryable.
   answerSource     AnswerSource?
+  // Amendment pointer (#1910): set on an answer turn that REPLACES an earlier
+  // answer turn on the same thread. Amending never mutates the row it replaces —
+  // the log stays append-only and the previous answer remains readable as
+  // history. Unique because a given turn can be superseded at most once: a second
+  // amendment supersedes the amendment, not the original, so the chain stays
+  // linear and the DB refuses a double-supersede race outright.
+  //
+  // CRITICAL: a turn with a `supersededBy` row is retracted. It must never reach
+  // an AI surface — see the Temporal feature-decisions handler, which renders
+  // thread replies into model context.
+  supersedesId     String?       @unique
   metadata         Json?
   organizationId   String?
   userId           String
@@ -6377,6 +6388,10 @@ model DecisionLogEntry {
   story        UserStory          @relation(fields: [userStoryId], references: [id], onDelete: Cascade)
   parent       DecisionLogEntry?  @relation("DecisionLogEntryReplies", fields: [parentId], references: [id], onDelete: Cascade)
   replies      DecisionLogEntry[] @relation("DecisionLogEntryReplies")
+  // SetNull, not Cascade: if the superseded turn is ever hard-deleted, the
+  // amendment that replaced it is still the live answer and must survive.
+  supersedes   DecisionLogEntry?  @relation("DecisionLogEntrySupersedes", fields: [supersedesId], references: [id], onDelete: SetNull)
+  supersededBy DecisionLogEntry?  @relation("DecisionLogEntrySupersedes")
   user         User               @relation(fields: [userId], references: [id], onDelete: Cascade)
   organization Organization?      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
 

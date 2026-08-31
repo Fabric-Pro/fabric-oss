@@ -9,7 +9,7 @@
 
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { DecisionLogPanel } from "../DecisionLogPanel";
 import type { DecisionLogThread } from "../types";
 
@@ -35,10 +35,91 @@ function resolvedThread(
 			decidedBy: null,
 			cleanSpecPropagation: null,
 			suggestedOptions: [],
+			supersedesId: null,
 		},
 		replies: [],
 	};
 }
+
+/** An answer turn on a thread. `supersedesId` set = it replaced an earlier one. */
+function answerTurn(
+	id: string,
+	content: string,
+	supersedesId: string | null,
+	createdAt = new Date("2026-01-03"),
+) {
+	return {
+		id,
+		status: "RESOLVED" as const,
+		summary: null,
+		content,
+		authorType: "USER" as const,
+		source: "HUMAN" as const,
+		authorName: null,
+		sourceProvenance: null,
+		createdAt,
+		supersedesId,
+	};
+}
+
+/**
+ * Amendment rendering (#1910). An amendment is an APPENDED turn that supersedes
+ * the previous answer — the log is never edited in place — so the panel must show
+ * the newest turn as the answer and keep the superseded one as collapsed history.
+ */
+describe("DecisionLogPanel — amended answers", () => {
+	function amendedThread(): DecisionLogThread {
+		const thread = resolvedThread(
+			"a",
+			"Authentication",
+			new Date("2026-01-01"),
+		);
+		return {
+			root: { ...thread.root, questionId: "q_a" },
+			replies: [
+				answerTurn("r1", "Yes", null),
+				answerTurn("r2", "Yes, for admins only", "r1"),
+			],
+		};
+	}
+
+	it("shows the amendment as the answer and the superseded turn as history", () => {
+		render(<DecisionLogPanel threads={[amendedThread()]} />);
+
+		expect(screen.getByText("Yes, for admins only")).toBeInTheDocument();
+		// Present, not deleted — the old answer stays readable behind a disclosure.
+		expect(screen.getByText("amendedFrom")).toBeInTheDocument();
+		expect(screen.getByText("Yes")).toBeInTheDocument();
+	});
+
+	it("amends against the LIVE turn, not the superseded one", async () => {
+		const onAmend = vi.fn();
+		render(
+			<DecisionLogPanel threads={[amendedThread()]} onAmend={onAmend} />,
+		);
+
+		await userEvent.click(screen.getByRole("button", { name: "amend" }));
+		const box = screen.getByRole("textbox", { name: "amendLabel" });
+		await userEvent.clear(box);
+		await userEvent.type(box, "Everyone");
+		await userEvent.click(
+			screen.getByRole("button", { name: "amendSubmit" }),
+		);
+
+		expect(onAmend).toHaveBeenCalledWith({
+			questionId: "q_a",
+			supersedesId: "r2",
+			answer: "Everyone",
+		});
+	});
+
+	it("is read-only when no amend handler is supplied", () => {
+		render(<DecisionLogPanel threads={[amendedThread()]} />);
+		expect(
+			screen.queryByRole("button", { name: "amend" }),
+		).not.toBeInTheDocument();
+	});
+});
 
 describe("DecisionLogPanel — grouping by topic", () => {
 	it("renders a section per impactedSection with the topic as the label", () => {

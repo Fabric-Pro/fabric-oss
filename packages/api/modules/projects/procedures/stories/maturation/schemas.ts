@@ -50,6 +50,10 @@ const DecisionLogReplySchema = z.object({
 	authorName: z.string().nullable(),
 	sourceProvenance: z.string().nullable(),
 	createdAt: z.date(),
+	// Amendment pointer (#1910): set on an answer turn that replaces an earlier
+	// one. The superseded turn stays in the thread so the Decisions tab can show
+	// it as history; AI surfaces exclude it via `excludeSuperseded`.
+	supersedesId: z.string().nullable(),
 });
 
 const CleanSpecPropagationStatusSchema = z.enum([

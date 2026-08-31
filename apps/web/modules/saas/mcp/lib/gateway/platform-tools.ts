@@ -1946,6 +1946,10 @@ async function handleGetFeature(
  * The Decision Log behind a feature. `listDecisionLogThreads` already drops
  * soft-deleted rows and threads roots with their replies, so this handler only
  * resolves the tenant filter, checks access and shapes the response.
+ *
+ * Superseded turns are excluded: this tool answers a model, and an amended
+ * answer is retracted, so returning it alongside its replacement would present
+ * two competing decisions for one question.
  */
 async function handleGetFeatureDecisions(
 	args: Record<string, unknown>,
@@ -1980,6 +1984,7 @@ async function handleGetFeatureDecisions(
 	const threads = await listDecisionLogThreads({
 		tenantFilter: tenantFilter(session),
 		userStoryId: featureId,
+		excludeSuperseded: true,
 	});
 
 	const statusFilter = args.status as string | undefined;

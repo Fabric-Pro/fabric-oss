@@ -159,6 +159,12 @@ export class FeatureDecisionsHandler implements StepHandler {
 				organizationId: input.organizationId ?? null,
 			},
 			userStoryId: filters.storyId,
+			// This handler renders thread replies straight into an agent's context,
+			// under a stance line calling resolved decisions authoritative. An answer
+			// that a later amendment retracted must never appear there — otherwise the
+			// model receives two equally authoritative answers to one question and has
+			// no way to tell which one still stands (#1910).
+			excludeSuperseded: true,
 		})) as DecisionThread[];
 
 		const filteredThreads = filters.status

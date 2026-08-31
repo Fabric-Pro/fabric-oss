@@ -469,6 +469,8 @@ export const enhanceFeatureProcedure = tenantProtectedProcedure
 						organizationId: organizationId ?? null,
 					},
 					userStoryId: input.storyId,
+					// Feeds an AI prompt — a retracted answer must not reach the model (#1910).
+					excludeSuperseded: true,
 				});
 				if (threads.length === 0) {
 					return null;

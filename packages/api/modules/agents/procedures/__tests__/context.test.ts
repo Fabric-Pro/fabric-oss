@@ -373,6 +373,7 @@ describe("getAgentProjectContext — architecture decisions risk signal", () => 
 		expect(mockListDecisionLogThreads).toHaveBeenCalledWith({
 			tenantFilter: { userId: "user_1", organizationId: null },
 			userStoryId: "story_1",
+			excludeSuperseded: true,
 		});
 	});
 
@@ -424,6 +425,7 @@ describe("getAgentProjectContext — architecture decisions risk signal", () => 
 		expect(mockListDecisionLogThreads).toHaveBeenCalledWith({
 			tenantFilter: { userId: "user_1", organizationId: "org_1" },
 			userStoryId: "story_1",
+			excludeSuperseded: true,
 		});
 	});
 

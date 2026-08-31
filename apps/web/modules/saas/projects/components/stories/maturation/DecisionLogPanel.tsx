@@ -1,6 +1,8 @@
 "use client";
 
+import { Button } from "@ui/components/button";
 import { Markdown } from "@ui/components/markdown";
+import { Textarea } from "@ui/components/textarea";
 import { cn } from "@ui/lib";
 import {
 	CheckCircle2,
@@ -14,8 +16,26 @@ import { useTranslations } from "next-intl";
 import { useMemo, useState } from "react";
 import type { DecisionLogThread, DecisionStatus } from "./types";
 
+type AmendAnswerInput = {
+	questionId: string;
+	/** The live answer turn being replaced. */
+	supersedesId: string;
+	answer: string;
+};
+
 type Props = {
 	threads: DecisionLogThread[];
+	/**
+	 * Amend the answer to a resolved question (#1910). Omitted = the log is
+	 * read-only, which is the correct fallback for a viewer.
+	 *
+	 * This is the panel's ONLY write, and it still never mutates: it appends a new
+	 * answer turn that supersedes the previous one, so the log stays append-only
+	 * and the old answer remains readable as history.
+	 */
+	onAmend?: (input: AmendAnswerInput) => void;
+	/** `questionId` of the thread whose amendment is in flight, else null. */
+	amendingId?: string | null;
 };
 
 type Filter = "all" | "OPEN" | "RESOLVED";
@@ -35,7 +55,7 @@ const AI_UPDATES_SECTION = "AI Updates";
  * (AI vs. you), the spec changes it produced ("Changed: …"), and its replies. A
  * status filter narrows to open vs. resolved.
  */
-export function DecisionLogPanel({ threads }: Props) {
+export function DecisionLogPanel({ threads, onAmend, amendingId }: Props) {
 	const t = useTranslations("projects.stories.maturation.decisionLog");
 	// Default to decisions only — the Decision Log is the changelog of settled
 	// decisions, not a parking lot for unanswered questions (those live in the
@@ -189,6 +209,8 @@ export function DecisionLogPanel({ threads }: Props) {
 											<DecisionThreadCard
 												key={thread.root.id}
 												thread={thread}
+												onAmend={onAmend}
+												amendingId={amendingId}
 											/>
 										))}
 									</ol>
@@ -207,9 +229,64 @@ export function DecisionLogPanel({ threads }: Props) {
  * status) on the LEFT, the answer(s) on the RIGHT. Stacks on narrow screens. The
  * "Changed:" spec-propagation summary sits as a full-width footer when present.
  */
-function DecisionThreadCard({ thread }: { thread: DecisionLogThread }) {
+function DecisionThreadCard({
+	thread,
+	onAmend,
+	amendingId,
+}: {
+	thread: DecisionLogThread;
+	onAmend?: (input: AmendAnswerInput) => void;
+	amendingId?: string | null;
+}) {
 	const t = useTranslations("projects.stories.maturation.decisionLog");
 	const changed = thread.root.cleanSpecPropagation?.appliedSummaries ?? [];
+	// The turn currently being amended (its id), plus the draft text.
+	const [amendTargetId, setAmendTargetId] = useState<string | null>(null);
+	const [draft, setDraft] = useState("");
+
+	// A turn is superseded when a later one points at it. Live turns render as the
+	// answer; superseded ones become collapsed history beneath the turn that
+	// replaced them, so nothing is ever hidden and nothing is ever mutated.
+	const { liveReplies, historyBySuperseder } = useMemo(() => {
+		const byId = new Map(thread.replies.map((r) => [r.id, r]));
+		const superseded = new Set(
+			thread.replies
+				.map((r) => r.supersedesId)
+				.filter((id): id is string => Boolean(id)),
+		);
+		const history = new Map<string, typeof thread.replies>();
+		for (const reply of thread.replies) {
+			if (superseded.has(reply.id)) {
+				continue;
+			}
+			// Walk back the chain so a twice-amended answer shows both prior turns,
+			// newest first.
+			const chain: typeof thread.replies = [];
+			let cursor = reply.supersedesId;
+			while (cursor) {
+				const prev = byId.get(cursor);
+				if (!prev) {
+					break;
+				}
+				chain.push(prev);
+				cursor = prev.supersedesId;
+			}
+			if (chain.length > 0) {
+				history.set(reply.id, chain);
+			}
+		}
+		return {
+			liveReplies: thread.replies.filter((r) => !superseded.has(r.id)),
+			historyBySuperseder: history,
+		};
+	}, [thread.replies]);
+
+	const questionId = thread.root.questionId;
+	const canAmend =
+		Boolean(onAmend) &&
+		Boolean(questionId) &&
+		thread.root.status === "RESOLVED";
+	const isAmending = Boolean(questionId) && amendingId === questionId;
 
 	// AI-update notes are run-history, not Q&A: render the change bullets (one per
 	// line) with an "AI update" marker instead of the two-column question/answer.
@@ -324,9 +401,9 @@ function DecisionThreadCard({ thread }: { thread: DecisionLogThread }) {
 
 				{/* Right — the answer(s) */}
 				<div className="min-w-0 sm:border-l sm:border-border sm:pl-4">
-					{thread.replies.length > 0 ? (
+					{liveReplies.length > 0 ? (
 						<ul className="space-y-2">
-							{thread.replies.map((reply) => (
+							{liveReplies.map((reply) => (
 								<li key={reply.id} className="space-y-1">
 									<Markdown className="leading-relaxed text-foreground">
 										{reply.summary ?? reply.content ?? ""}
@@ -367,6 +444,110 @@ function DecisionThreadCard({ thread }: { thread: DecisionLogThread }) {
 									>
 										{reply.createdAt.toLocaleString()}
 									</time>
+
+									{/* Amend (#1910). Appends a superseding turn —
+									    the log is never edited in place. */}
+									{amendTargetId === reply.id ? (
+										<div className="mt-2 space-y-2">
+											<Textarea
+												value={draft}
+												onChange={(e) =>
+													setDraft(e.target.value)
+												}
+												rows={3}
+												aria-label={t("amendLabel")}
+												disabled={isAmending}
+											/>
+											<div className="flex items-center justify-end gap-2">
+												<Button
+													type="button"
+													variant="ghost"
+													size="sm"
+													onClick={() =>
+														setAmendTargetId(null)
+													}
+													disabled={isAmending}
+												>
+													{t("amendCancel")}
+												</Button>
+												<Button
+													type="button"
+													size="sm"
+													disabled={
+														isAmending ||
+														!draft.trim()
+													}
+													onClick={() => {
+														if (
+															!onAmend ||
+															!questionId
+														) {
+															return;
+														}
+														onAmend({
+															questionId,
+															supersedesId:
+																reply.id,
+															answer: draft.trim(),
+														});
+														setAmendTargetId(null);
+													}}
+												>
+													{isAmending
+														? t("amendSaving")
+														: t("amendSubmit")}
+												</Button>
+											</div>
+										</div>
+									) : canAmend ? (
+										<Button
+											type="button"
+											variant="ghost"
+											size="sm"
+											className="mt-1 text-xs"
+											disabled={isAmending}
+											onClick={() => {
+												setAmendTargetId(reply.id);
+												setDraft(
+													reply.content ??
+														reply.summary ??
+														"",
+												);
+											}}
+										>
+											{t("amend")}
+										</Button>
+									) : null}
+
+									{/* Superseded turns: present, never deleted,
+									    collapsed so the live answer reads first. */}
+									{(historyBySuperseder.get(reply.id)
+										?.length ?? 0) > 0 && (
+										<details className="mt-2">
+											<summary className="cursor-pointer text-xs text-muted-foreground">
+												{t("amendedFrom")}
+											</summary>
+											<ul className="mt-1 space-y-1 border-l border-border pl-3">
+												{historyBySuperseder
+													.get(reply.id)
+													?.map((old) => (
+														<li key={old.id}>
+															<Markdown className="text-sm leading-relaxed text-muted-foreground line-through decoration-muted-foreground/40">
+																{old.summary ??
+																	old.content ??
+																	""}
+															</Markdown>
+															<time
+																dateTime={old.createdAt.toISOString()}
+																className="text-xs text-muted-foreground/70"
+															>
+																{old.createdAt.toLocaleString()}
+															</time>
+														</li>
+													))}
+											</ul>
+										</details>
+									)}
 								</li>
 							))}
 						</ul>

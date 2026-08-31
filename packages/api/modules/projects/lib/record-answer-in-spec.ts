@@ -119,6 +119,82 @@ export interface RecordAnswerInSpecParams {
  * inside the write's own transaction and under its `FOR UPDATE` lock, so the
  * second answer computes its bullet against the first one's committed result.
  */
+/**
+ * Upsert a resolved Q+A into the pending-decisions appendix (#1910).
+ *
+ * Amending an answer MUST NOT append a second bullet for the same question. The
+ * appendix is part of `description`, and the Clean Spec is the only thing the AI
+ * reads — two bullets answering one question differently would hand the next
+ * maturation run two contradictory decisions with no way to tell which is
+ * current. So an existing bullet for this question is REPLACED in place,
+ * preserving its position in the appendix.
+ *
+ * Falls back to a plain append when there is no matching bullet, which is the
+ * normal case after a maturation run has dissolved the appendix into the body.
+ * The body then still states the superseded answer while this bullet carries the
+ * correction — which is exactly what the appendix is for: telling the next run
+ * what changed.
+ *
+ * Matching is a literal `indexOf` on the question line, never a regex, so
+ * question text containing regex metacharacters cannot misbehave. Pure.
+ */
+export function upsertPendingDecision(
+	description: string | null | undefined,
+	question: string,
+	answer: string,
+): string {
+	const base = (description ?? "").trimEnd();
+	const headingEnd = findPendingDecisionsHeadingEnd(base);
+	if (headingEnd === -1) {
+		return appendPendingDecision(base, question, answer);
+	}
+
+	const head = base.slice(0, headingEnd);
+	const body = base.slice(headingEnd);
+	const marker = `- **Q:** ${question.trim()}`;
+	const found = body.indexOf(`\n${marker}`);
+	if (found === -1) {
+		return appendPendingDecision(base, question, answer);
+	}
+
+	// Replace from the start of the matched bullet up to the next bullet (or the
+	// end), so a multi-line "Decided:" block is fully swapped rather than leaving
+	// orphaned continuation lines behind.
+	const from = found + 1;
+	const nextBullet = body.indexOf("\n- **Q:** ", from + marker.length);
+	const to = nextBullet === -1 ? body.length : nextBullet;
+	const bullet = `- **Q:** ${question.trim()}\n  **Decided:** ${answer.trim()}`;
+	return `${head}${body.slice(0, from)}${bullet}${body.slice(to)}`;
+}
+
+/**
+ * Amend a previously recorded answer in the Clean Spec (#1910). Same write path
+ * and concurrency guard as `recordAnswerInSpec`, but upserts the question's
+ * bullet instead of appending, so the spec carries exactly one current answer.
+ */
+export async function amendAnswerInSpec({
+	storyId,
+	projectId,
+	tenantFilter,
+	lastEditedByName,
+	question,
+	answer,
+}: RecordAnswerInSpecParams): Promise<void> {
+	await updateStoryDescriptionUnderLock(
+		storyId,
+		projectId,
+		(currentDescription) =>
+			upsertPendingDecision(currentDescription, question, answer),
+		{
+			userId: tenantFilter.userId,
+			organizationId: tenantFilter.organizationId ?? undefined,
+			changedBy: tenantFilter.userId,
+			lastEditedByName: lastEditedByName ?? null,
+			lastEditedSource: "MANUAL",
+		},
+	);
+}
+
 export async function recordAnswerInSpec({
 	storyId,
 	projectId,

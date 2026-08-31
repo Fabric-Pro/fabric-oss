@@ -225,6 +225,8 @@ async function loadAgentContext(
 						organizationId: input.organizationId ?? null,
 					},
 					userStoryId: input.storyId,
+					// Feeds an AI prompt — a retracted answer must not reach the model (#1910).
+					excludeSuperseded: true,
 				})
 			: Promise.resolve([]),
 		input.taskId

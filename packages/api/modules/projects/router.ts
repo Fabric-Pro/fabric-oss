@@ -411,6 +411,7 @@ import { listMeetingReferencesProcedure } from "./procedures/stories/list-meetin
 import { listStoriesProcedure } from "./procedures/stories/list-stories";
 // Feature Maturation V2 — three-tab editor backend (spec 2026-06-09 §12)
 import { acceptCleanSpecPatchProcedure } from "./procedures/stories/maturation/accept-clean-spec-patch";
+import { amendAnswerProcedure } from "./procedures/stories/maturation/amend-answer";
 import { answerQuestionProcedure } from "./procedures/stories/maturation/answer-question";
 import { appendDecisionEntryProcedure } from "./procedures/stories/maturation/append-decision-entry";
 import { ensureSeededProcedure } from "./procedures/stories/maturation/ensure-seeded";
@@ -1484,6 +1485,7 @@ export const projectsRouter = {
 			listDecisionLog: listDecisionLogProcedure,
 			appendDecisionEntry: appendDecisionEntryProcedure,
 			answerQuestion: answerQuestionProcedure,
+			amendAnswer: amendAnswerProcedure,
 			ensureSeeded: ensureSeededProcedure,
 			setWorkingNotes: setWorkingNotesProcedure,
 			summarizeChanges: summarizeChangesProcedure,

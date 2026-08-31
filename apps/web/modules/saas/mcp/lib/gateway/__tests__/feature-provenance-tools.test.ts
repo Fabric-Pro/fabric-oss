@@ -256,6 +256,7 @@ describe("fabric_get_feature_decisions", () => {
 		expect(mocks.listDecisionLogThreads).toHaveBeenCalledWith({
 			tenantFilter: { organizationId: "org-1", userId: "user-1" },
 			userStoryId: "story-1",
+			excludeSuperseded: true,
 		});
 	});
 
@@ -269,7 +270,24 @@ describe("fabric_get_feature_decisions", () => {
 		expect(mocks.listDecisionLogThreads).toHaveBeenCalledWith({
 			tenantFilter: { organizationId: null, userId: "user-1" },
 			userStoryId: "story-1",
+			excludeSuperseded: true,
 		});
+	});
+
+	// This tool answers a model, so a retracted answer must not travel with the
+	// one that replaced it. Pinned on its own rather than left to the tenant-filter
+	// assertions above, which would still pass if the option moved or was dropped
+	// from only one of them.
+	it("excludes superseded turns, so an amended answer is not served twice", async () => {
+		await executePlatformTool(
+			"fabric_get_feature_decisions",
+			{ featureId: "story-1", projectId: "proj-1" },
+			session,
+		);
+
+		expect(mocks.listDecisionLogThreads).toHaveBeenCalledWith(
+			expect.objectContaining({ excludeSuperseded: true }),
+		);
 	});
 
 	it("reports an empty log rather than failing when maturation never ran", async () => {
