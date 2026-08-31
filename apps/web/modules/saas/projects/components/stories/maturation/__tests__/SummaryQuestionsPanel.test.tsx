@@ -225,7 +225,11 @@ describe("SummaryQuestionsPanel — AI answer recommendations (#7)", () => {
 		});
 	});
 
-	it("typing your own over a suggestion answers with AI_EDITED", async () => {
+	// Was asserted as AI_EDITED until #1907. "Type your own" opens an EMPTY box, so
+	// nothing is taken from the AI — that is a MANUAL answer, and AI_EDITED is now
+	// reserved for a suggestion the PO opened and actually changed. Deliberate
+	// contract change, not a stale assertion.
+	it("typing your own over a suggestion answers with MANUAL", async () => {
 		const onAnswer = vi.fn();
 		renderPanel({
 			openQuestions: [
@@ -248,8 +252,118 @@ describe("SummaryQuestionsPanel — AI answer recommendations (#7)", () => {
 		);
 		expect(onAnswer).toHaveBeenCalledWith("q_a", "Custom answer", {
 			summary: "",
+			answerSource: "MANUAL",
+		});
+	});
+
+	// next-intl is key-mocked, so every Edit control shares the accessible name
+	// "editSuggestionAria" — index them rather than matching on the option text.
+	function editControls() {
+		return screen.getAllByRole("button", { name: "editSuggestionAria" });
+	}
+
+	it("Edit pre-fills the answer field with that suggestion's text (#1907 AC-4)", async () => {
+		renderPanel({
+			openQuestions: [
+				withSuggestions("a", "Mandatory MFA?", [
+					{ text: "Yes", justification: "Baseline." },
+					{ text: "Optional", justification: "Gradual opt-in." },
+				]),
+			],
+		});
+
+		// Second control => second option, proving Edit is per-suggestion.
+		await userEvent.click(editControls()[1]);
+		expect(
+			screen.getByRole("textbox", { name: "answerLabel" }),
+		).toHaveValue("Optional");
+	});
+
+	it("editing a suggestion and saving it unchanged records AI_SUGGESTED", async () => {
+		const onAnswer = vi.fn();
+		renderPanel({
+			openQuestions: [
+				withSuggestions("a", "Mandatory MFA?", [
+					{ text: "Yes", justification: "Baseline." },
+				]),
+			],
+			onAnswer,
+		});
+
+		await userEvent.click(editControls()[0]);
+		await userEvent.click(
+			screen.getByRole("button", { name: "answerSubmit" }),
+		);
+		expect(onAnswer).toHaveBeenCalledWith("q_a", "Yes", {
+			summary: "",
+			answerSource: "AI_SUGGESTED",
+		});
+	});
+
+	it("editing a suggestion and changing the text records AI_EDITED", async () => {
+		const onAnswer = vi.fn();
+		renderPanel({
+			openQuestions: [
+				withSuggestions("a", "Mandatory MFA?", [
+					{ text: "Yes", justification: "Baseline." },
+				]),
+			],
+			onAnswer,
+		});
+
+		await userEvent.click(editControls()[0]);
+		const box = screen.getByRole("textbox", { name: "answerLabel" });
+		await userEvent.clear(box);
+		await userEvent.type(box, "Yes, for admins only");
+		await userEvent.click(
+			screen.getByRole("button", { name: "answerSubmit" }),
+		);
+		expect(onAnswer).toHaveBeenCalledWith("q_a", "Yes, for admins only", {
+			summary: "",
 			answerSource: "AI_EDITED",
 		});
+	});
+
+	it("clearing the field while editing blocks the save", async () => {
+		const onAnswer = vi.fn();
+		renderPanel({
+			openQuestions: [
+				withSuggestions("a", "Mandatory MFA?", [
+					{ text: "Yes", justification: "Baseline." },
+				]),
+			],
+			onAnswer,
+		});
+
+		await userEvent.click(editControls()[0]);
+		await userEvent.clear(
+			screen.getByRole("textbox", { name: "answerLabel" }),
+		);
+		expect(
+			screen.getByRole("button", { name: "answerSubmit" }),
+		).toBeDisabled();
+		expect(onAnswer).not.toHaveBeenCalled();
+	});
+
+	it("cancelling an edit restores the suggestions and leaves the question open", async () => {
+		const onAnswer = vi.fn();
+		renderPanel({
+			openQuestions: [
+				withSuggestions("a", "Mandatory MFA?", [
+					{ text: "Yes", justification: "Baseline." },
+				]),
+			],
+			onAnswer,
+		});
+
+		await userEvent.click(editControls()[0]);
+		await userEvent.click(screen.getByRole("button", { name: "cancel" }));
+
+		expect(
+			screen.queryByRole("textbox", { name: "answerLabel" }),
+		).not.toBeInTheDocument();
+		expect(screen.getByText("Baseline.")).toBeInTheDocument();
+		expect(onAnswer).not.toHaveBeenCalled();
 	});
 
 	it("a question with no suggestion uses the plain manual flow (MANUAL)", async () => {

@@ -3071,6 +3071,8 @@
 					"hidePossiblyResolved": "Hide set aside",
 					"suggestedAnswersLabel": "Suggested answers",
 					"typeYourOwn": "Type your own",
+					"editSuggestion": "Edit",
+					"editSuggestionAria": "Edit this suggested answer: {text}",
 					"autoProposeLabel": "Auto-propose answers",
 					"autoProposeHint": "When on, the AI suggests answers to new questions using connected context."
 				},
