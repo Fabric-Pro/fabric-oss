@@ -29,6 +29,110 @@ const readinessCache = new Map<string, CachedEvaluation>();
 
 // Clears detailed specs whole; raising higher eats into context margin on small-context models.
 const SPEC_FIELD_CHAR_LIMIT = 30_000;
+const ENGINEERING_CONTEXT_CHAR_LIMIT = 10_000;
+
+const BUG_READINESS_RUBRIC = `
+BUG READINESS RUBRIC:
+- Assess whether engineering and QA can begin investigating and verifying the fix.
+- Evaluate the bug Overview, Steps to Reproduce, Expected Result, Actual Result, and Fix Verification criteria.
+- Evaluate supporting triage context when present: severity/priority, affected area, environment, frequency, evidence/error messages, user/business impact, and workaround.
+- Treat environment and evidence as supporting context, not automatic blockers. Flag them only when their absence prevents meaningful reproduction or investigation.
+- A bug does NOT require a feature story, use cases, feature scope, functional requirements, or feature Acceptance Criteria. Never list those feature-only elements as bug gaps.
+- Call a missing section a gap only when its information cannot be inferred elsewhere in the ticket.
+`;
+
+const FEATURE_READINESS_RUBRIC = `
+FEATURE / USER STORY READINESS RUBRIC:
+- Assess whether product intent is sufficiently clear and testable for sprint execution.
+- Evaluate the feature narrative or user outcome, scope and boundaries, functional requirements, user flows, acceptance criteria, business rules, and product-relevant edge cases.
+- Flag missing acceptance criteria when the intended behavior is not otherwise testable.
+- Do not require bug-only sections such as Steps to Reproduce, Expected Result, Actual Result, environment, or severity.
+`;
+
+const ENGINEERING_SECTION_PATTERN =
+	/^(?:dev(?:eloper)? investigation items?|dev notes?|engineering (?:notes?|tasks?|investigation)|technical (?:notes?|discovery)|spikes?)(?:\s*\([^)]*\))?$/i;
+
+const PRODUCT_SECTION_PATTERN =
+	/^(?:acceptance criteria|fix verification|feature narrative|feature story|overview|benefit hypothesis|scope|in scope|out of scope|key decisions|use cases?|requirements|functional requirements|business rules|user flows?|open questions?|assumptions|dependencies|data & validation rules|permissions(?: \/ roles)?|non-functional requirements|bug metadata|triage assessment|steps to reproduce|expected result|actual result|environment|attachments \/ evidence|impact assessment|original description from user|needs more info|supporting questions|context & related signals|likely root cause hypotheses|requirements ↔ code mismatch|pm\/ba blocking gaps|updates from re-analysis|release planning|release notes|source index)(?:\s*\([^)]*\))?$/i;
+
+type ReadinessQuestion = {
+	impactedSection: string | null;
+	topic: string | null;
+	summary: string | null;
+};
+
+function normalizedHeading(value: string): string {
+	return value
+		.replace(/^\s*#+\s*/, "")
+		.replace(/^[*_`:\s]+/g, "")
+		.replace(/[*_`:\s]+$/g, "")
+		.trim();
+}
+
+export function isEngineeringReadinessQuestion(
+	question: ReadinessQuestion,
+): boolean {
+	const section = question.impactedSection
+		? normalizedHeading(question.impactedSection)
+		: "";
+	if (ENGINEERING_SECTION_PATTERN.test(section)) {
+		return true;
+	}
+
+	// Older decision-log rows may not have impactedSection populated. Only
+	// accept an explicit label at the start; broad keyword matching would hide
+	// legitimate product questions that happen to mention implementation.
+	const label = normalizedHeading(question.topic || question.summary || "");
+	return /^(?:dev investigation|dev note|engineering (?:note|task|investigation)|technical discovery|spike)\b/i.test(
+		label,
+	);
+}
+
+export function partitionReadinessSections(markdown: string): {
+	product: string;
+	engineering: string;
+} {
+	const lines = markdown.split("\n");
+	const product: string[] = [];
+	const engineering: string[] = [];
+	let excludedHeadingLevel: number | null = null;
+
+	for (const line of lines) {
+		const markdownHeading = /^(\s*)(#{1,6})\s+(.+?)\s*$/.exec(line);
+		const boldHeading = /^\s*(?:\*\*|__)(.+?)(?:\*\*|__)\s*:?\s*$/.exec(
+			line,
+		);
+		const headingTitle = markdownHeading?.[3] ?? boldHeading?.[1];
+		if (headingTitle) {
+			// A standalone bold label has no Markdown hierarchy. Treat it as a
+			// section boundary that ends at the next heading or standalone label.
+			const level = markdownHeading ? markdownHeading[2].length : 7;
+			const title = normalizedHeading(headingTitle);
+
+			if (
+				excludedHeadingLevel !== null &&
+				(level <= excludedHeadingLevel ||
+					PRODUCT_SECTION_PATTERN.test(title))
+			) {
+				excludedHeadingLevel = null;
+			}
+			if (ENGINEERING_SECTION_PATTERN.test(title)) {
+				excludedHeadingLevel = level;
+			}
+		}
+
+		(excludedHeadingLevel === null ? product : engineering).push(line);
+	}
+
+	return {
+		product: product.join("\n").trim(),
+		engineering: engineering.join("\n").trim(),
+	};
+}
+
+export function stripEngineeringReadinessSections(markdown: string): string {
+	return partitionReadinessSections(markdown).product;
+}
 
 export function getAiReadinessTierLabel(score: number): string {
 	if (score >= 100) {
@@ -170,6 +274,12 @@ export const evaluateAiReadinessProcedure = tenantProtectedProcedure
 					(e.status === "RESOLVED" ||
 						e.status === "POSSIBLY_RESOLVED"),
 			) ?? [];
+		const productOpenQuestions = openQuestions.filter(
+			(question) => !isEngineeringReadinessQuestion(question),
+		);
+		const engineeringOpenQuestions = openQuestions.filter(
+			isEngineeringReadinessQuestion,
+		);
 
 		const semanticUpdatedAt = story.lastEditedAt ?? story.createdAt;
 		const isRecentlyUpdated =
@@ -204,11 +314,25 @@ export const evaluateAiReadinessProcedure = tenantProtectedProcedure
 			);
 
 			const isBug = story.kind === "BUG";
-			const sanitizedDescription = story.description
-				? story.description.length > SPEC_FIELD_CHAR_LIMIT
-					? `${story.description.slice(0, SPEC_FIELD_CHAR_LIMIT)}\n...[description truncated for evaluation]`
-					: story.description
+			const readinessRubric = isBug
+				? BUG_READINESS_RUBRIC
+				: FEATURE_READINESS_RUBRIC;
+			const partitionedDescription = partitionReadinessSections(
+				story.description ?? "",
+			);
+			const productDescription = partitionedDescription.product;
+			const sanitizedDescription = productDescription
+				? productDescription.length > SPEC_FIELD_CHAR_LIMIT
+					? `${productDescription.slice(0, SPEC_FIELD_CHAR_LIMIT)}\n...[description truncated for evaluation]`
+					: productDescription
 				: "(None provided)";
+			const sanitizedEngineeringContext =
+				partitionedDescription.engineering
+					? partitionedDescription.engineering.length >
+						ENGINEERING_CONTEXT_CHAR_LIMIT
+						? `${partitionedDescription.engineering.slice(0, ENGINEERING_CONTEXT_CHAR_LIMIT)}\n...[engineering context truncated]`
+						: partitionedDescription.engineering
+					: "None";
 
 			const sanitizedAcceptanceCriteria = story.acceptanceCriteria
 				? story.acceptanceCriteria.length > SPEC_FIELD_CHAR_LIMIT
@@ -220,30 +344,50 @@ export const evaluateAiReadinessProcedure = tenantProtectedProcedure
 You are an expert Agile Product Manager evaluating a software ${isBug ? "bug ticket" : "user story specification"}.
 Analyze the specification readiness for sprint execution based on the provided title, description, acceptance criteria, and decision log questions.
 
-Work Item Kind: ${story.kind} (${isBug ? "BUG FIX — Evaluate readiness based on bug overview, reproduction steps, expected vs actual behavior, and fix criteria" : "FEATURE — Evaluate readiness based on functional requirements and user flow clarity"})
+Work Item Kind: ${story.kind}
 Work Item Title: ${story.title}
 Work Item Description: ${sanitizedDescription}
 Acceptance Criteria / Fix Criteria: ${sanitizedAcceptanceCriteria}
 Last genuine edit (or creation when never edited): ${semanticUpdatedAt.toISOString()} (${isRecentlyUpdated ? "Changed within last 15 days" : "NOT changed in last 15 days — STALE"})
-Open Question Threads (${openQuestions.length}): ${openQuestions.map((q) => q.topic || q.summary || "Question").join("; ") || "None"}
+Unresolved Product Question Threads (${productOpenQuestions.length}): ${productOpenQuestions.map((q) => q.topic || q.summary || "Question").join("; ") || "None"}
 Resolved Question Threads (${resolvedQuestions.length}): ${resolvedQuestions.map((q) => q.topic || q.summary || "Question").join("; ") || "None"}
+
+NON-SCOREABLE ENGINEERING CONTEXT — REFERENCE ONLY:
+Use this block only to understand what Product has delegated, deferred, or already recognized as implementation work. Its contents must never lower the readiness score, appear in gaps, or be treated as unresolved product requirements.
+Dev / Engineering Sections:
+${sanitizedEngineeringContext}
+Engineering Investigation Threads (${engineeringOpenQuestions.length}): ${engineeringOpenQuestions.map((q) => q.topic || q.summary || "Engineering investigation").join("; ") || "None"}
+END NON-SCOREABLE ENGINEERING CONTEXT
+
+${readinessRubric}
 
 CRITICAL RESTRICTION RULES:
 - NEVER mention "Design links", "API links", "Figma links", "API contracts", "Swagger docs", or "test data placeholders" in Gaps or Rationale.
-- Evaluate ONLY the text in the provided Feature Description, Acceptance Criteria, and Decision Log Questions.
-- Focus Gaps strictly on missing business logic, undefined edge cases, missing user flow details, or unresolved open question threads.
+- Evaluate ONLY the text in the provided Work Item Description, Acceptance/Fix Criteria, and Decision Log Questions.
+- Focus Gaps strictly on missing product behavior, undefined product edge cases, missing user-flow details, or unresolved PRODUCT question threads.
 - SEPARATE PRODUCT GAPS FROM ENGINEERING TASKS: Do NOT flag technical discovery, codebase lookups, or implementation details as gaps. These are engineering tasks, not product specification failures.
+- DEV INVESTIGATION ITEMS ARE NOT PRODUCT GAPS: Do not deduct points for items under explicitly engineering-labeled sections such as "Dev Investigation Items", "Engineering Investigation", "Technical Discovery", or "Spikes", or for questions about where/how to change code. A generic "Implementation Notes" or "Implementation Details" heading is not automatically engineering-only; evaluate its contents by meaning.
 - EXPLICIT DEFERRALS ARE NOT GAPS: If the spec explicitly delegates a decision to engineering (e.g., "deferred to engineering discretion") or branches based on an existing backend pattern (e.g., "if system soft-deletes do X, else Y"), consider the product requirement RESOLVED.
+- EXPLICITLY ACCEPTED ALTERNATIVES ARE RESOLVED: If Product deliberately permits two or more outcomes (e.g., "either skip scoring or show an unsupported-type message"), do not demand one authoritative option. Flag alternatives only when the spec does not accept them all and choosing between them is necessary to satisfy the stated product outcome.
+- OUT-OF-SCOPE MEANS DO NOT SCORE: Treat explicit Out of Scope items as deliberate boundaries. Never deduct points or request behavior, edge cases, or acceptance criteria for them.
+- EXISTING CAPABILITIES ARE SATISFIED CONTEXT: When the spec says a capability already exists, is preserved, or is a prerequisite, do not ask how/where it is implemented and do not require new acceptance criteria for that existing behavior unless this feature changes it.
+- READ THE WHOLE SPEC BEFORE CLAIMING A GAP: Do not flag information as missing when it is answered elsewhere in the description, requirements, key decisions, use cases, acceptance criteria, or stated prerequisites.
+- DO NOT INVENT REQUIREMENTS: Do not request additional UI indicators, messages, workflows, controls, or acceptance criteria when the explicitly required outcome is already testable. A potential enhancement is not a readiness gap unless it is necessary to execute or verify a stated product requirement.
+- DETECT PRODUCT CONTRADICTIONS: Flag two or more explicit, simultaneously applicable product requirements that prescribe incompatible outcomes. In the gap, name both conflicting behaviors and the sections where they appear.
+- DO NOT INVENT CONTRADICTIONS: Current behavior versus explicitly desired future behavior is a change, not a contradiction. Neither are role-specific behavior, conditional branches, phased rollout, fallback behavior, engineering alternatives, explicit deferrals, or out-of-scope boundaries unless the statements truly apply under the same conditions and cannot both be satisfied.
 
 Instructions:
 1. Dynamically evaluate requirement clarity, acceptance testability, and question resolutions.
-2. If open question threads exist, weigh them heavily as gaps and deduct readiness points.
-3. Do not deduct points or list gaps for items explicitly categorized as "Dev Investigation Items" or similar technical lookups.
-4. If the specification has not been updated within 15 days, cap the maximum score at 95% and flag it as stale in the gaps list.
-5. Compute an overall readiness score as an integer number from 0 to 100.
-6. Provide a concise 1-sentence rationale (max 15 words).
-7. Provide 1-2 concise, punchy bullet points for strengths (return [] if none).
-8. Provide 1-2 concise, punchy bullet points for gaps (return [] if none). Ensure gaps are purely product-facing.
+2. Classify every possible gap as PRODUCT or ENGINEERING before scoring. Only PRODUCT gaps may reduce the score or appear in the gaps output.
+3. If unresolved Product Question Threads exist, weigh them heavily as gaps and deduct readiness points. Engineering Investigation Threads must not reduce the score.
+4. Do not deduct points or list gaps for items explicitly categorized as "Dev Investigation Items" or similar technical lookups, even if they are unresolved or phrased as questions.
+5. For each candidate PRODUCT gap, search the entire supplied spec for an answer, an accepted alternative, an explicit deferral, an out-of-scope declaration, or an existing/prerequisite capability. Discard the candidate if any is found.
+6. Check for direct contradictions between simultaneously applicable product requirements. Treat a confirmed contradiction as a PRODUCT gap and identify both source sections concisely.
+7. If the specification has not been updated within 15 days, cap the maximum score at 95% and flag it as stale in the gaps list.
+8. Compute an overall readiness score as an integer number from 0 to 100.
+9. Provide a concise 1-sentence rationale (max 15 words).
+10. Provide 1-2 concise, punchy bullet points for strengths (return [] if none).
+11. Provide 1-2 concise, punchy bullet points for gaps (return [] if none). Ensure gaps are purely product-facing.
 `;
 
 			const maxOutputTokens = computeScaledOutputTokenBudget(metadata, {

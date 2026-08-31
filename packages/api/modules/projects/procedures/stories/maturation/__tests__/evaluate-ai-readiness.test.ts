@@ -70,6 +70,11 @@ vi.mock("../../../../../../orpc/procedures", () => {
 });
 
 await import("../evaluate-ai-readiness");
+const {
+	isEngineeringReadinessQuestion,
+	partitionReadinessSections,
+	stripEngineeringReadinessSections,
+} = await import("../evaluate-ai-readiness");
 const evaluateAiReadiness = handlers[0] as (ctx: {
 	input: {
 		projectId: string;
@@ -389,6 +394,498 @@ describe("evaluateAiReadinessProcedure", () => {
 				),
 			}),
 		);
+	});
+
+	it("applies the bug rubric without requiring feature-only sections", async () => {
+		mocks.hasProjectAccess.mockResolvedValue(true);
+		mocks.userStoryFindFirst.mockResolvedValue({
+			id: "bug-rubric",
+			kind: "BUG",
+			title: "Save action fails",
+			description: "Steps and observed behavior",
+			acceptanceCriteria: "The save succeeds after the fix",
+			createdAt: new Date(),
+			lastEditedAt: null,
+			decisionLogEntries: [],
+		});
+		mocks.getAIModelWithMetadata.mockResolvedValue(MODEL_WITH_METADATA);
+		mocks.generateObject.mockResolvedValue({
+			object: {
+				aiReadinessScore: 80,
+				rationale: "Actionable bug report.",
+				strengths: [],
+				gaps: [],
+			},
+		});
+
+		await evaluateAiReadiness({
+			input: { projectId: "proj-1", storyId: "bug-rubric" },
+			context: { user: { id: "user-1" }, session: {} },
+		});
+
+		expect(mocks.generateObject).toHaveBeenCalledWith(
+			expect.objectContaining({
+				prompt: expect.stringMatching(
+					/BUG READINESS RUBRIC:[\s\S]*Steps to Reproduce[\s\S]*Expected Result[\s\S]*Actual Result[\s\S]*does NOT require[\s\S]*feature Acceptance Criteria/,
+				),
+			}),
+		);
+	});
+
+	it("applies the feature rubric without requiring bug-only sections", async () => {
+		mocks.hasProjectAccess.mockResolvedValue(true);
+		mocks.userStoryFindFirst.mockResolvedValue({
+			id: "feature-rubric",
+			kind: "FEATURE",
+			title: "Export reports",
+			description: "Users can export reports",
+			acceptanceCriteria:
+				"GIVEN a report WHEN exported THEN a file downloads",
+			createdAt: new Date(),
+			lastEditedAt: null,
+			decisionLogEntries: [],
+		});
+		mocks.getAIModelWithMetadata.mockResolvedValue(MODEL_WITH_METADATA);
+		mocks.generateObject.mockResolvedValue({
+			object: {
+				aiReadinessScore: 90,
+				rationale: "Testable feature specification.",
+				strengths: [],
+				gaps: [],
+			},
+		});
+
+		await evaluateAiReadiness({
+			input: { projectId: "proj-1", storyId: "feature-rubric" },
+			context: { user: { id: "user-1" }, session: {} },
+		});
+
+		expect(mocks.generateObject).toHaveBeenCalledWith(
+			expect.objectContaining({
+				prompt: expect.stringMatching(
+					/FEATURE \/ USER STORY READINESS RUBRIC:[\s\S]*functional requirements[\s\S]*acceptance criteria[\s\S]*Do not require bug-only sections/,
+				),
+			}),
+		);
+	});
+
+	it("explicitly excludes dev investigation items and engineering deferrals from gaps", async () => {
+		mocks.hasProjectAccess.mockResolvedValue(true);
+		mocks.userStoryFindFirst.mockResolvedValue({
+			id: "dev-items",
+			kind: "FEATURE",
+			title: "Implementation investigation",
+			description: "Dev Investigation Items: locate the existing service",
+			acceptanceCriteria: "Behavior is testable",
+			createdAt: new Date(),
+			lastEditedAt: null,
+			decisionLogEntries: [],
+		});
+		mocks.getAIModelWithMetadata.mockResolvedValue(MODEL_WITH_METADATA);
+		mocks.generateObject.mockResolvedValue({
+			object: {
+				aiReadinessScore: 90,
+				rationale: "Product behavior is clear.",
+				strengths: [],
+				gaps: [],
+			},
+		});
+
+		await evaluateAiReadiness({
+			input: { projectId: "proj-1", storyId: "dev-items" },
+			context: { user: { id: "user-1" }, session: {} },
+		});
+
+		expect(mocks.generateObject).toHaveBeenCalledWith(
+			expect.objectContaining({
+				prompt: expect.stringMatching(
+					/DEV INVESTIGATION ITEMS ARE NOT PRODUCT GAPS:[\s\S]*Do not deduct points[\s\S]*EXPLICIT DEFERRALS ARE NOT GAPS/,
+				),
+			}),
+		);
+	});
+
+	it("separates engineering decision-log questions from product questions before prompting", async () => {
+		mocks.hasProjectAccess.mockResolvedValue(true);
+		mocks.userStoryFindFirst.mockResolvedValue({
+			id: "mixed-questions",
+			kind: "FEATURE",
+			title: "Export reports",
+			description: "Users can export reports",
+			acceptanceCriteria: "Exports preserve report data",
+			createdAt: new Date(),
+			lastEditedAt: null,
+			decisionLogEntries: [
+				{
+					status: "OPEN",
+					questionId: "product-question",
+					impactedSection: "Scope",
+					topic: "Which report formats are supported?",
+					summary: null,
+				},
+				{
+					status: "OPEN",
+					questionId: "engineering-question",
+					impactedSection: "Dev Investigation Items",
+					topic: "Which export service should be reused?",
+					summary: null,
+				},
+			],
+		});
+		mocks.getAIModelWithMetadata.mockResolvedValue(MODEL_WITH_METADATA);
+		mocks.generateObject.mockResolvedValue({
+			object: {
+				aiReadinessScore: 75,
+				rationale: "One product decision remains open.",
+				strengths: [],
+				gaps: ["Supported report formats are undefined"],
+			},
+		});
+
+		await evaluateAiReadiness({
+			input: { projectId: "proj-1", storyId: "mixed-questions" },
+			context: { user: { id: "user-1" }, session: {} },
+		});
+
+		const prompt = mocks.generateObject.mock.calls[0]?.[0]
+			?.prompt as string;
+		expect(prompt).toContain(
+			"Unresolved Product Question Threads (1): Which report formats are supported?",
+		);
+		expect(prompt).toContain(
+			"NON-SCOREABLE ENGINEERING CONTEXT — REFERENCE ONLY",
+		);
+		expect(prompt).toContain(
+			"Engineering Investigation Threads (1): Which export service should be reused?",
+		);
+		expect(prompt).toContain(
+			"Its contents must never lower the readiness score, appear in gaps",
+		);
+		expect(prompt).toContain(
+			"Engineering Investigation Threads must not reduce the score",
+		);
+	});
+
+	it("removes explicitly headed engineering sections from scoreable description", () => {
+		const markdown =
+			"# Feature\nProduct narrative\n\n## Dev Investigation Items\n- Locate the service\n### Notes\n- Check the adapter\n\n## Acceptance Criteria\n- Export succeeds";
+
+		expect(stripEngineeringReadinessSections(markdown)).toBe(
+			"# Feature\nProduct narrative\n\n## Acceptance Criteria\n- Export succeeds",
+		);
+	});
+
+	it("retains explicitly headed engineering sections as reference context", () => {
+		const markdown =
+			"# Feature\nProduct narrative\n\n## Dev Investigation Items\n- Locate the service\n### Notes\n- Check the adapter\n\n## Acceptance Criteria\n- Export succeeds";
+
+		expect(partitionReadinessSections(markdown)).toEqual({
+			product:
+				"# Feature\nProduct narrative\n\n## Acceptance Criteria\n- Export succeeds",
+			engineering:
+				"## Dev Investigation Items\n- Locate the service\n### Notes\n- Check the adapter",
+		});
+	});
+
+	it("recognizes bold Dev Investigation section labels", () => {
+		const markdown = `# Feature
+Product narrative
+
+## **Dev Investigation Items**
+- Locate the service
+
+## Acceptance Criteria
+- Export succeeds
+
+**Dev Notes**
+- Confirm the adapter
+
+**Release Notes**
+Export is now available.`;
+
+		expect(partitionReadinessSections(markdown)).toEqual({
+			product: `# Feature
+Product narrative
+
+## Acceptance Criteria
+- Export succeeds
+
+**Release Notes**
+Export is now available.`,
+			engineering: `## **Dev Investigation Items**
+- Locate the service
+
+**Dev Notes**
+- Confirm the adapter`,
+		});
+	});
+
+	it("recovers product sections nested beneath an engineering heading", () => {
+		const markdown = `## Dev Investigation Items
+- Locate the service
+
+### Acceptance Criteria
+- Export succeeds`;
+
+		expect(partitionReadinessSections(markdown)).toEqual({
+			product: "### Acceptance Criteria\n- Export succeeds",
+			engineering: "## Dev Investigation Items\n- Locate the service",
+		});
+	});
+
+	it("recovers canonical parenthetical product headings beneath engineering context", () => {
+		const markdown = `## Dev Notes
+- Locate the service
+
+### Acceptance Criteria (Fix Verification)
+- Saving succeeds
+
+### Non-Functional Requirements (only if relevant)
+- Complete within two seconds`;
+
+		expect(partitionReadinessSections(markdown)).toEqual({
+			product: `### Acceptance Criteria (Fix Verification)
+- Saving succeeds
+
+### Non-Functional Requirements (only if relevant)
+- Complete within two seconds`,
+			engineering: "## Dev Notes\n- Locate the service",
+		});
+	});
+
+	it("recovers canonical Bug and Feature sections with malformed nesting", () => {
+		for (const heading of [
+			"Business Rules",
+			"User Flows",
+			"Open Questions",
+			"Assumptions",
+			"Dependencies",
+			"Impact Assessment",
+			"Steps to Reproduce",
+			"Expected Result",
+			"Actual Result",
+			"Environment",
+			"Bug Metadata",
+			"Triage Assessment",
+		]) {
+			const markdown = `## Dev Notes\n- Investigate code\n\n### ${heading}\n- Product content`;
+			const result = partitionReadinessSections(markdown);
+
+			expect(result.product, heading).toContain(`### ${heading}`);
+			expect(result.engineering, heading).not.toContain(`### ${heading}`);
+		}
+	});
+
+	it("keeps generic Implementation Notes and Details in scoreable product content", () => {
+		const markdown = `## Implementation Notes
+- Preserve the user-visible retry path.
+
+## Implementation Details
+- Admins must receive an error when saving fails.`;
+
+		expect(partitionReadinessSections(markdown)).toEqual({
+			product: markdown,
+			engineering: "",
+		});
+	});
+
+	it("does not tell the model to ignore generic Implementation Notes headings", async () => {
+		mocks.hasProjectAccess.mockResolvedValue(true);
+		mocks.userStoryFindFirst.mockResolvedValue({
+			id: "implementation-notes",
+			kind: "FEATURE",
+			title: "Retry failed saves",
+			description:
+				"## Implementation Notes\nThe user must see a retry control after a failed save.",
+			acceptanceCriteria: "The retry control repeats the save operation",
+			createdAt: new Date(),
+			lastEditedAt: null,
+			decisionLogEntries: [],
+		});
+		mocks.getAIModelWithMetadata.mockResolvedValue(MODEL_WITH_METADATA);
+		mocks.generateObject.mockResolvedValue({
+			object: {
+				aiReadinessScore: 90,
+				rationale: "Retry behavior is testable.",
+				strengths: [],
+				gaps: [],
+			},
+		});
+
+		await evaluateAiReadiness({
+			input: { projectId: "proj-1", storyId: "implementation-notes" },
+			context: { user: { id: "user-1" }, session: {} },
+		});
+
+		const prompt = mocks.generateObject.mock.calls[0]?.[0]
+			?.prompt as string;
+		expect(prompt).toContain(
+			'A generic "Implementation Notes" or "Implementation Details" heading is not automatically engineering-only',
+		);
+		expect(prompt).toContain(
+			"## Implementation Notes\nThe user must see a retry control",
+		);
+	});
+
+	it("does not remove product sections that mention implementation in their content", () => {
+		const markdown =
+			"## Functional Requirements\n- Show implementation progress to the user\n\n## Acceptance Criteria\n- Progress is visible";
+
+		expect(stripEngineeringReadinessSections(markdown)).toBe(markdown);
+	});
+
+	it("treats explicit scope boundaries and existing prerequisites as non-gaps", async () => {
+		mocks.hasProjectAccess.mockResolvedValue(true);
+		mocks.userStoryFindFirst.mockResolvedValue({
+			id: "existing-and-out-of-scope",
+			kind: "FEATURE",
+			title: "Require role selection at login",
+			description:
+				"Role editing already exists in personal settings.\n\n## Out of Scope\n- Redesigning the role taxonomy.",
+			acceptanceCriteria:
+				"GIVEN no role WHEN login THEN require selection",
+			createdAt: new Date(),
+			lastEditedAt: null,
+			decisionLogEntries: [],
+		});
+		mocks.getAIModelWithMetadata.mockResolvedValue(MODEL_WITH_METADATA);
+		mocks.generateObject.mockResolvedValue({
+			object: {
+				aiReadinessScore: 95,
+				rationale: "Feature behavior is clear and testable.",
+				strengths: [],
+				gaps: [],
+			},
+		});
+
+		await evaluateAiReadiness({
+			input: {
+				projectId: "proj-1",
+				storyId: "existing-and-out-of-scope",
+			},
+			context: { user: { id: "user-1" }, session: {} },
+		});
+
+		const prompt = mocks.generateObject.mock.calls[0]?.[0]
+			?.prompt as string;
+		expect(prompt).toContain("OUT-OF-SCOPE MEANS DO NOT SCORE");
+		expect(prompt).toContain("EXISTING CAPABILITIES ARE SATISFIED CONTEXT");
+		expect(prompt).toContain("READ THE WHOLE SPEC BEFORE CLAIMING A GAP");
+		expect(prompt).toContain(
+			"For each candidate PRODUCT gap, search the entire supplied spec",
+		);
+	});
+
+	it("detects direct product contradictions without confusing intentional variants", async () => {
+		mocks.hasProjectAccess.mockResolvedValue(true);
+		mocks.userStoryFindFirst.mockResolvedValue({
+			id: "contradictory-feature",
+			kind: "FEATURE",
+			title: "Assign project roles",
+			description:
+				"## Requirements\nUsers may select multiple roles.\n\n## Acceptance Criteria\nA user must select exactly one role.",
+			acceptanceCriteria: "Role selection is saved",
+			createdAt: new Date(),
+			lastEditedAt: null,
+			decisionLogEntries: [],
+		});
+		mocks.getAIModelWithMetadata.mockResolvedValue(MODEL_WITH_METADATA);
+		mocks.generateObject.mockResolvedValue({
+			object: {
+				aiReadinessScore: 70,
+				rationale: "Role cardinality requirements conflict.",
+				strengths: [],
+				gaps: [
+					"Requirements allow multiple roles, while Acceptance Criteria require exactly one.",
+				],
+			},
+		});
+
+		await evaluateAiReadiness({
+			input: { projectId: "proj-1", storyId: "contradictory-feature" },
+			context: { user: { id: "user-1" }, session: {} },
+		});
+
+		const prompt = mocks.generateObject.mock.calls[0]?.[0]
+			?.prompt as string;
+		expect(prompt).toContain("DETECT PRODUCT CONTRADICTIONS");
+		expect(prompt).toContain("DO NOT INVENT CONTRADICTIONS");
+		expect(prompt).toContain(
+			"two or more explicit, simultaneously applicable product requirements",
+		);
+		expect(prompt).toContain(
+			"Current behavior versus explicitly desired future behavior is a change, not a contradiction",
+		);
+		expect(prompt).toContain(
+			"Treat a confirmed contradiction as a PRODUCT gap",
+		);
+	});
+
+	it("does not treat accepted fallback alternatives or invented UX enhancements as gaps", async () => {
+		mocks.hasProjectAccess.mockResolvedValue(true);
+		mocks.userStoryFindFirst.mockResolvedValue({
+			id: "accepted-alternatives",
+			kind: "FEATURE",
+			title: "Apply type-specific AI Readiness rubrics",
+			description: `## Key Decisions
+For an unsupported type, either skip AI Readiness or show a message that type-specific readiness is not supported. Both outcomes are acceptable.
+
+## Type Changes
+If a work item's type changes, re-running AI Readiness applies the rubric for its current type.`,
+			acceptanceCriteria: `1. GIVEN an unsupported type WHEN AI Readiness runs THEN scoring is skipped or an unsupported-type message is returned.
+2. GIVEN a changed work-item type WHEN AI Readiness is re-run THEN the current type's rubric is applied.`,
+			createdAt: new Date(),
+			lastEditedAt: null,
+			decisionLogEntries: [],
+		});
+		mocks.getAIModelWithMetadata.mockResolvedValue(MODEL_WITH_METADATA);
+		mocks.generateObject.mockResolvedValue({
+			object: {
+				aiReadinessScore: 95,
+				rationale:
+					"Fallback and type-change outcomes are explicitly testable.",
+				strengths: [],
+				gaps: [],
+			},
+		});
+
+		await evaluateAiReadiness({
+			input: { projectId: "proj-1", storyId: "accepted-alternatives" },
+			context: { user: { id: "user-1" }, session: {} },
+		});
+
+		const prompt = mocks.generateObject.mock.calls[0]?.[0]
+			?.prompt as string;
+		expect(prompt).toContain(
+			"EXPLICITLY ACCEPTED ALTERNATIVES ARE RESOLVED",
+		);
+		expect(prompt).toContain(
+			"either skip scoring or show an unsupported-type message",
+		);
+		expect(prompt).toContain("DO NOT INVENT REQUIREMENTS");
+		expect(prompt).toContain(
+			"Do not request additional UI indicators, messages, workflows, controls, or acceptance criteria",
+		);
+		expect(prompt).toContain(
+			"A potential enhancement is not a readiness gap",
+		);
+	});
+
+	it("does not classify ordinary product questions as engineering work", () => {
+		expect(
+			isEngineeringReadinessQuestion({
+				impactedSection: "Functional Requirements",
+				topic: "Should users see implementation progress?",
+				summary: null,
+			}),
+		).toBe(false);
+		expect(
+			isEngineeringReadinessQuestion({
+				impactedSection: null,
+				topic: "Dev Investigation: locate the existing export service",
+				summary: null,
+			}),
+		).toBe(true);
 	});
 
 	it("retries once when generateObject throws transient NoObjectGeneratedError schema parse error", async () => {
