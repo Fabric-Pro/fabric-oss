@@ -5474,8 +5474,11 @@
 			"snoozeOneMonth": "1 month",
 			"readOnly": "View only",
 			"readOnlyReason": "You need edit access to this project to snooze an item, mark it not applicable, or set the phase.",
-			"blockedByDependency": "{count, plural, one {# more item appears once an earlier step is done} other {# more items appear once earlier steps are done}}",
-			"stateInProgress": "In progress"
+			"stateInProgress": "In progress",
+			"targetUnavailable": "This step's destination is switched off for this project, so there is nowhere to send you. An administrator can re-enable the tab in project settings.",
+			"nextUp": "Next: {item}",
+			"unlockedBy": "Complete {prerequisite} to unlock {items}.",
+			"itemActions": "Actions for this item"
 		},
 		"level": {
 			"NOT_READY": "Not ready",
@@ -5491,7 +5494,7 @@
 			"featureSnapshot": {
 				"name": "Feature Snapshot",
 				"description": "Define the major capabilities or feature areas Fabric should understand.",
-				"tooltip": "Feature context helps Fabric generate better documents, roadmap items, and recommendations. For early projects, this can be lightweight and refined over time.”"
+				"tooltip": "Feature context helps Fabric generate better documents, roadmap items, and recommendations. For early projects, this can be lightweight and refined over time."
 			},
 			"techStack": {
 				"name": "Tech Stack",
@@ -5506,12 +5509,19 @@
 			"additionalContextSources": {
 				"name": "Additional context sources added",
 				"description": "Add multiple meaningful context sources.",
-				"tooltip": "Additional sources improve Fabric’s ability to cross-check assumptions, identify gaps, and generate higher-quality outputs."
+				"tooltip": "Additional sources improve Fabric’s ability to cross-check assumptions, identify gaps, and generate higher-quality outputs.",
+				"unmet": {
+					"first": "Still needed: add a context source.",
+					"second": "Still needed: add a second context source — this item wants two."
+				}
 			},
 			"chatAppConnected": {
 				"name": "Chat app connected",
 				"description": "Connect a relevant Slack or Teams workspace/channel.",
-				"tooltip": "Chat context helps Fabric capture decisions, urgency, requirements, and follow-up work discussed outside formal documents."
+				"tooltip": "Chat context helps Fabric capture decisions, urgency, requirements, and follow-up work discussed outside formal documents.",
+				"unmet": {
+					"link": "Still needed: link a Slack or Teams channel in Settings → Knowledge. Connecting the workspace alone is not enough; a channel has to be linked to this project."
+				}
 			},
 			"meetingTranscripts": {
 				"name": "Meeting transcripts available",
@@ -5526,17 +5536,27 @@
 			"codebaseConnected": {
 				"name": "Codebase connected",
 				"description": "Connect a readable codebase when development has started.",
-				"tooltip": "Codebase access helps Fabric ground technical documents, validate requirements against implementation, and support engineering handoff."
+				"tooltip": "Codebase access helps Fabric ground technical documents, validate requirements against implementation, and support engineering handoff.",
+				"unmet": {
+					"analysis": "Still needed: the repository is connected, but its first analysis has not finished successfully yet.",
+					"connect": "Still needed: connect a repository in Settings → Development."
+				}
 			},
 			"wikiConnected": {
 				"name": "Wiki Connected",
 				"description": "Connect a relevant project wiki.",
-				"tooltip": "Wiki context can improve long-lived documents and reduce missing background information."
+				"tooltip": "Wiki context can improve long-lived documents and reduce missing background information.",
+				"unmet": {
+					"notion": "Still needed: connect a Notion source and let it index. Confluence records a source but cannot yet be ingested, so it will not satisfy this."
+				}
 			},
 			"knowledgeBase": {
 				"name": "Knowledge Base",
 				"description": "Connect a relevant project knowledge base.",
-				"tooltip": "Knowledge base context can improve long-lived documents and reduce missing background information."
+				"tooltip": "Knowledge base context can improve long-lived documents and reduce missing background information.",
+				"unmet": {
+					"classify": "Still needed: add a link source classified as Knowledge Base / Wiki, and let it finish indexing. The other seven categories do not count."
+				}
 			},
 			"businessCase": {
 				"name": "Business Case Document",
@@ -5571,7 +5591,10 @@
 			"qaStrategy": {
 				"name": "QA Strategy exists",
 				"description": "QA strategy or testing plan exists.",
-				"tooltip": "QA planning improves release confidence and clarifies quality gates before delivery."
+				"tooltip": "QA planning improves release confidence and clarifies quality gates before delivery.",
+				"unmet": {
+					"document": "Still needed: create a QA Strategy document under Documents. The Testing tab and Settings → Testing do not satisfy this."
+				}
 			},
 			"roadmapPopulated": {
 				"name": "Roadmap Populated",
@@ -5581,27 +5604,46 @@
 			"pmSyncEnabled": {
 				"name": "PM-system sync enabled",
 				"description": "Sync work items to your project management system.",
-				"tooltip": "Sync keeps Fabric and your connected project management system aligned so work can be managed in both places when configured.”"
+				"tooltip": "Sync keeps Fabric and your connected project management system aligned so work can be managed in both places when configured.",
+				"unmet": {
+					"autoPush": "Still needed: turn on “Auto-push status changes to PM tool” in Settings → Development. Connecting the system does not start syncing on its own.",
+					"connect": "Still needed: connect a project management system first.",
+					"readOnly": "Still needed: read-only mode is on, which blocks every outbound write. Turn it off in Settings → Development."
+				}
 			},
 			"terminalStatuses": {
 				"name": "Terminal statuses defined",
 				"description": "Map completed or closed PM-system statuses.",
-				"tooltip": "Terminal statuses help Fabric recognize completed, canceled, or removed work and keep Roadmap clean."
+				"tooltip": "Terminal statuses help Fabric recognize completed, canceled, or removed work and keep Roadmap clean.",
+				"unmet": {
+					"define": "Still needed: name at least one terminal status in Settings → Development — the statuses your PM tool uses for closed work."
+				}
 			},
 			"teamMembers": {
 				"name": "Add Team Members",
 				"description": "Add project team members to Fabric.",
-				"tooltip": "Fabric’s value increases when the team can share context, review outputs, and collaborate in the same project workspace."
+				"tooltip": "Fabric’s value increases when the team can share context, review outputs, and collaborate in the same project workspace.",
+				"unmet": {
+					"accept": "Still needed: a second member who has accepted their invitation. Pending invitations do not count yet."
+				}
 			},
 			"workCaptureTranscripts": {
 				"name": "Work capture from transcripts enabled",
 				"description": "Fabric can capture work items discussed on discovery and team meetings.",
-				"tooltip": "Fabric can propose new or updated work items from meeting transcripts when transcript capture is configured."
+				"tooltip": "Fabric can propose new or updated work items from meeting transcripts when transcript capture is configured.",
+				"unmet": {
+					"autoAnalyze": "Still needed: turn on automatic transcript analysis in Settings → Knowledge.",
+					"transcript": "Still needed: a meeting transcript on this project."
+				}
 			},
 			"workCaptureChat": {
 				"name": "Work capture from Chat",
 				"description": "Work capture from chat enabled.",
-				"tooltip": "Fabric can propose new or updated work items from monitored chat channels when chat capture is configured."
+				"tooltip": "Fabric can propose new or updated work items from monitored chat channels when chat capture is configured.",
+				"unmet": {
+					"link": "Still needed: link a chat channel first.",
+					"monitor": "Still needed: switch the channel monitor on. Linked channels can be scanned on demand, but work capture needs continuous watching."
+				}
 			},
 			"releaseNotes": {
 				"name": "Release notes configured",
@@ -5611,12 +5653,19 @@
 			"atlasExplored": {
 				"name": "Codebase explored in Atlas",
 				"description": "Fabric can help you understand your codebase.",
-				"tooltip": "Atlas helps users understand code structure, dependencies, and implementation details after a codebase is connected."
+				"tooltip": "Atlas helps users understand code structure, dependencies, and implementation details after a codebase is connected.",
+				"unmet": {
+					"analysis": "Still needed: the codebase analysis has not completed yet.",
+					"run": "Still needed: open Atlas and run an analysis for this project."
+				}
 			},
 			"securityScan": {
 				"name": "Security scan completed",
 				"description": "Fabric can help you understand vulnerabilities in your codebase.",
-				"tooltip": "Security scanning helps identify vulnerabilities or risks in the connected codebase."
+				"tooltip": "Security scanning helps identify vulnerabilities or risks in the connected codebase.",
+				"unmet": {
+					"run": "Still needed: run a security scan that completes successfully. A scan that started and failed does not count."
+				}
 			}
 		},
 		"cta": {
@@ -5647,6 +5696,12 @@
 			"releaseNotes": "Configure release notes",
 			"atlasExplored": "Explore Atlas",
 			"securityScan": "Scan codebase"
+		},
+		"needLevel": {
+			"MUST": "Must",
+			"SHOULD": "Should",
+			"COULD": "Could",
+			"NOT_APPLICABLE": "Not needed in this phase"
 		}
 	}
 }

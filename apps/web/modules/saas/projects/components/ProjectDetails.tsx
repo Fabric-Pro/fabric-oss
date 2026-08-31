@@ -16,6 +16,7 @@ import {
 	resolveProjectTabs,
 	useProjectTabCustomization,
 } from "@saas/projects/lib/project-tab-preferences";
+import { isTabId, type TabId, tabs } from "@saas/projects/lib/project-tabs";
 import { useConfirmationAlert } from "@saas/shared/components/ConfirmationAlertProvider";
 import { PageBreadcrumbs } from "@saas/shared/components/PageBreadcrumbs";
 import { useFocusMode } from "@saas/shared/contexts/FocusModeContext";
@@ -27,35 +28,17 @@ import { Skeleton } from "@ui/components/skeleton";
 import { cn } from "@ui/lib";
 import {
 	AlertTriangleIcon,
-	BotIcon,
-	CalendarDaysIcon,
 	CheckCircleIcon,
 	ChevronLeftIcon,
 	ChevronRightIcon,
-	ClipboardCheckIcon,
-	ClipboardListIcon,
 	CodeIcon,
-	CombineIcon,
 	ExternalLinkIcon,
-	FileTextIcon,
 	FolderIcon,
 	GithubIcon,
-	LayoutDashboardIcon,
 	Loader2Icon as Loader2,
-	MapIcon,
-	MegaphoneIcon,
-	NetworkIcon,
-	NewspaperIcon,
-	PenToolIcon,
-	ReceiptIcon,
-	RocketIcon,
 	RotateCcwIcon,
-	ScrollTextIcon,
 	Settings2Icon,
-	SettingsIcon,
-	ShieldCheckIcon,
 	Trash2Icon,
-	WorkflowIcon,
 	XIcon,
 } from "lucide-react";
 import dynamic from "next/dynamic";
@@ -220,126 +203,6 @@ type Props = {
 	projectId: string;
 	organizationSlug?: string;
 };
-
-const tabs = [
-	{
-		id: "overview",
-		label: "Overview",
-		icon: LayoutDashboardIcon,
-	},
-	{
-		id: "daily-brief",
-		label: "Daily Brief",
-		icon: NewspaperIcon,
-	},
-	{ id: "meeting-digest", label: "Meeting Digest", icon: CalendarDaysIcon },
-	{
-		id: "release-notes",
-		label: "Release Notes",
-		icon: RocketIcon,
-	},
-	{
-		id: "documents",
-		label: "Documents",
-		icon: FileTextIcon,
-	},
-	{
-		id: "decisions",
-		label: "Decisions",
-		icon: ScrollTextIcon,
-	},
-	{
-		id: "context",
-		label: "Context",
-		icon: FolderIcon,
-	},
-	{
-		id: "pipeline",
-		label: "Pipeline",
-		icon: WorkflowIcon,
-	},
-	{
-		id: "stories",
-		label: "Roadmap",
-		icon: MapIcon,
-	},
-	{
-		id: "test-cases",
-		// Displayed as "Testing": the tab covers the whole quality surface —
-		// cases, plans, runs, findings and coverage — not just case authoring,
-		// and "Testing" says what happens here to someone who does not read "QA"
-		// as a job title. The ID stays `test-cases` deliberately: it is persisted
-		// in sessionStorage and is the onboarding anchor
-		// (`project-tab-test-cases`), so renaming it would strand open sessions
-		// and break "Show me" for no visible gain. Same display-name-vs-identifier
-		// split as UserStory/"Features".
-		label: "Testing",
-		icon: ClipboardCheckIcon,
-	},
-	{
-		id: "publishing-suite",
-		label: "Publishing Suite",
-		icon: MegaphoneIcon,
-	},
-	{
-		id: "weave",
-		label: "Weave",
-		icon: CombineIcon,
-	},
-	{
-		id: "kanban",
-		label: "Coding Agents",
-		icon: BotIcon,
-	},
-	{
-		id: "agent-activity",
-		label: "Agent Activity",
-		icon: BotIcon,
-	},
-	{
-		id: "diagrams",
-		label: "Diagrams",
-		icon: PenToolIcon,
-	},
-	{
-		id: "reports",
-		label: "Reports",
-		icon: ClipboardListIcon,
-	},
-	{
-		id: "usage",
-		label: "Usage",
-		icon: ReceiptIcon,
-	},
-	// {
-	// 	id: "artifacts",
-	// 	label: "Artifacts",
-	// 	icon: CodeIcon,
-	// },
-	{
-		id: "atlas",
-		label: "Atlas",
-		icon: NetworkIcon,
-	},
-	{
-		id: "security",
-		label: "Security",
-		icon: ShieldCheckIcon,
-	},
-	{
-		id: "settings",
-		label: "Settings",
-		icon: SettingsIcon,
-	},
-] as const;
-
-export type TabId = (typeof tabs)[number]["id"];
-
-// Deliberately validates against the FULL tab list, flag-gated tabs included
-// (the content region's render guards keep a flag-off tab from rendering).
-// Module-level so the deep-link hook's effect dependency stays stable.
-const isTabId = (value: string): value is TabId =>
-	tabs.some((t) => t.id === value);
 
 // Tab-scoped (sessionStorage) key for persisting the active project tab. Must
 // NOT use localStorage: that is shared across every browser tab of the origin,

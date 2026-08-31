@@ -238,3 +238,6 @@ tooling/docs-screenshots/.fonts/
 
 # Security evidence dossiers — reproductions of live issues; never publish
 .claude/evidence/
+
+# Per-ticket working folders (local only)
+.claude/items/

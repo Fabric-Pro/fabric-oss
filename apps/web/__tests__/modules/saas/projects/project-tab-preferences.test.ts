@@ -134,7 +134,7 @@ describe("future-tab coverage (new tabs need no wiring)", () => {
 		const source = readFileSync(
 			path.resolve(
 				repoRoot,
-				"apps/web/modules/saas/projects/components/ProjectDetails.tsx",
+				"apps/web/modules/saas/projects/lib/project-tabs.ts",
 			),
 			"utf8",
 		);

@@ -27,7 +27,7 @@ const repoRoot = path.resolve(here, "../../../../../../..");
 const read = (rel: string) => readFileSync(path.resolve(repoRoot, rel), "utf8");
 
 const projectDetailsSource = read(
-	"apps/web/modules/saas/projects/components/ProjectDetails.tsx",
+	"apps/web/modules/saas/projects/lib/project-tabs.ts",
 );
 const settingsNavSource = read(
 	"apps/web/modules/saas/projects/components/ProjectSettingsNav.tsx",
@@ -113,6 +113,75 @@ describe("readiness item targets", () => {
 		}
 	});
 
+	// Need levels were printed as the raw enum, so the panel showed "MUST" and
+	// "NOT_APPLICABLE" — the latter indistinguishable from the manual state of
+	// the same name. Now translated, so the keys need the same guard.
+	it("every need level resolves to real copy", () => {
+		const messages = JSON.parse(
+			read("packages/i18n/translations/en.json"),
+		) as Record<string, unknown>;
+
+		for (const level of [
+			"MUST",
+			"SHOULD",
+			"COULD",
+			"NOT_APPLICABLE",
+		] as const) {
+			const value = `readiness.needLevel.${level}`
+				.split(".")
+				.reduce<unknown>(
+					(node, part) =>
+						node && typeof node === "object"
+							? (node as Record<string, unknown>)[part]
+							: undefined,
+					messages,
+				);
+			expect(
+				typeof value === "string" && value.trim().length > 0,
+				`need level "${level}" has no copy at "readiness.needLevel.${level}"`,
+			).toBe(true);
+		}
+	});
+
+	// The "still needed" line is resolved the same way the CTA label is, and the
+	// CTA labels shipped once with all 26 keys wrong — a missing key renders a
+	// raw path or throws, and nothing else would notice. Every variant a rule can
+	// return is exercised against the real evidence permutations rather than a
+	// hand-listed set, so adding a branch without copy fails here.
+	it("every unmet variant a rule can return resolves to real copy", () => {
+		const messages = JSON.parse(
+			read("packages/i18n/translations/en.json"),
+		) as Record<string, unknown>;
+
+		const lookup = (dotted: string): unknown =>
+			dotted
+				.split(".")
+				.reduce<unknown>(
+					(node, part) =>
+						node && typeof node === "object"
+							? (node as Record<string, unknown>)[part]
+							: undefined,
+					messages,
+				);
+
+		for (const rule of READINESS_RULES) {
+			if (!rule.unmet) {
+				continue;
+			}
+			const camel = rule.key.replace(/-([a-z])/g, (_, c: string) =>
+				c.toUpperCase(),
+			);
+			for (const variant of unmetVariants(rule)) {
+				const dotted = `readiness.items.${camel}.unmet.${variant}`;
+				const value = lookup(dotted);
+				expect(
+					typeof value === "string" && value.trim().length > 0,
+					`readiness item "${rule.key}" can return unmet variant "${variant}", which has no copy at "${dotted}"`,
+				).toBe(true);
+			}
+		}
+	});
+
 	// Structural, so a NEW rule cannot drift either: the key is derived from the
 	// rule key rather than invented per rule. Every one of the 26 was invented
 	// before this test existed, and every one of them was wrong — the registry
@@ -158,3 +227,79 @@ describe("readiness item targets", () => {
 		]);
 	});
 });
+
+/**
+ * Every variant a rule's `unmet` can return.
+ *
+ * Brute-forced rather than hand-listed: each rule branches on a couple of
+ * evidence fields, so flipping every field the evidence exposes between "absent"
+ * and "present" reaches every branch without this test needing to know which
+ * fields a given rule reads. A hand-listed set would pass while a new branch
+ * went uncovered, which is the failure mode this test exists for.
+ */
+function unmetVariants(rule: (typeof READINESS_RULES)[number]): string[] {
+	const found = new Set<string>();
+	for (const present of [false, true]) {
+		for (const alt of [false, true]) {
+			const e = permutedEvidence(present, alt);
+			const variant = rule.unmet?.(e);
+			if (variant) {
+				found.add(variant);
+			}
+		}
+	}
+	return [...found];
+}
+
+/** An evidence object with every field the `unmet` branches read set two ways. */
+function permutedEvidence(present: boolean, alt: boolean) {
+	const n = present ? 1 : 0;
+	return {
+		phase: null,
+		expectedDevelopmentStartDate: null,
+		descriptionLength: 0,
+		inFlight: {
+			context: {
+				total: 0,
+				meetingTranscripts: 0,
+				knowledgeBaseLinks: 0,
+				notionSources: 0,
+			},
+			codebaseIndexing: false,
+			documentTypes: new Set<string>(),
+			scan: false,
+		},
+		featureCount: n,
+		techStackCount: n,
+		indexedContext: {
+			total: n,
+			meetingTranscripts: n,
+			knowledgeBaseLinks: n,
+			notionSources: n,
+		},
+		chat: {
+			linkedChannelCount: n,
+			slackChannelMonitorEnabled: alt,
+			teamsChannelMonitorEnabled: alt,
+			teamsChatMonitorEnabled: alt,
+			transcriptAutoAnalyzeEnabled: alt,
+		},
+		pm: {
+			connected: present,
+			autoPushEnabled: alt,
+			readOnlyMode: alt,
+			autoCloseEnabled: alt,
+			terminalStatusCount: n,
+		},
+		code: {
+			repositoryConnected: present,
+			analysisCompleted: alt,
+			atlasAnalysisExists: alt,
+		},
+		completeDocumentTypes: new Set<string>(),
+		acceptedMemberCount: n,
+		roadmapItemCount: n,
+		successfulScanExists: present,
+		newsletterEnabled: present,
+	};
+}

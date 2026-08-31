@@ -33,8 +33,7 @@ function fullySetUp(): ReadinessEvidence {
 		notionSources: 1,
 	};
 	e.chat = {
-		slackConnected: true,
-		teamsConnected: true,
+		linkedChannelCount: 1,
 		slackChannelMonitorEnabled: true,
 		teamsChannelMonitorEnabled: true,
 		teamsChatMonitorEnabled: true,
@@ -300,8 +299,7 @@ describe("readiness level", () => {
 				terminalStatusCount: 0,
 			};
 			e.chat = {
-				slackConnected: false,
-				teamsConnected: false,
+				linkedChannelCount: 0,
 				slackChannelMonitorEnabled: false,
 				teamsChannelMonitorEnabled: false,
 				teamsChatMonitorEnabled: false,
@@ -338,8 +336,7 @@ describe("readiness level", () => {
 
 		it("cascades through a chain of dependencies", () => {
 			const e = fullySetUp();
-			e.chat.slackConnected = false;
-			e.chat.teamsConnected = false;
+			e.chat.linkedChannelCount = 0;
 			e.chat.slackChannelMonitorEnabled = false;
 			e.chat.teamsChannelMonitorEnabled = false;
 			e.chat.teamsChatMonitorEnabled = false;

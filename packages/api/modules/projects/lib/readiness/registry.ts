@@ -90,21 +90,29 @@ export const READINESS_RULES: readonly ReadinessRule[] = [
 		needLevel: phase({ discovery: "SHOULD", development: "SHOULD" }),
 		supersededBy: ["prd", "business-case", "proposal"],
 		detect: (e) => e.indexedContext.total >= 2,
+		unmet: (e) => (e.indexedContext.total >= 1 ? "second" : "first"),
 		inProgress: (e) => e.inFlight.context.total > 0,
 	},
 	{
-		// Settings, not the Context tab. What satisfies this rule is a chat
-		// MONITOR being enabled (see `detect`), and monitors are configured in
-		// Project Settings -> Knowledge, alongside meeting transcripts. Sending
-		// people to Context asked them to add a context source, which never
-		// satisfies it — "add chat app by clicking add context, like what?"
+		// Settings, not the Context tab: chat surfaces are linked in Project
+		// Settings -> Knowledge, alongside meeting transcripts. Sending people
+		// to Context asked them to add a context source, which never satisfies
+		// it — "add chat app by clicking add context, like what?"
+		//
+		// Detects a LINKED channel, not an enabled monitor. Linking is what
+		// connects the app, and a linked channel is usable straight away — the
+		// manual "Monitor now" run scans linked channels with no reference to
+		// any enabled flag. Reading the flag here also made this rule and
+		// `work-capture-chat` the same predicate, so the two steps could never
+		// show different states.
 		key: "chat-app-connected",
 		category: "CONTEXT_AND_CONNECTIONS",
 		i18nKey: "readiness.items.chatAppConnected",
 		ctaLabelKey: "readiness.cta.chatAppConnected",
 		target: { kind: "settings", subTab: "knowledge" },
 		needLevel: phase({ discovery: "SHOULD", development: "SHOULD" }),
-		detect: (e) => e.chat.slackConnected || e.chat.teamsConnected,
+		detect: (e) => e.chat.linkedChannelCount >= 1,
+		unmet: () => "link",
 	},
 	{
 		key: "meeting-transcripts",
@@ -134,6 +142,7 @@ export const READINESS_RULES: readonly ReadinessRule[] = [
 		target: { kind: "settings", subTab: "development" },
 		needLevel: phase({ discovery: "SHOULD", development: "MUST" }),
 		detect: (e) => e.code.repositoryConnected && e.code.analysisCompleted,
+		unmet: (e) => (e.code.repositoryConnected ? "analysis" : "connect"),
 		inProgress: (e) => e.inFlight.codebaseIndexing,
 	},
 	{
@@ -148,6 +157,7 @@ export const READINESS_RULES: readonly ReadinessRule[] = [
 		target: { kind: "tab", tab: "context" },
 		needLevel: phase({ discovery: "COULD", development: "SHOULD" }),
 		detect: (e) => e.indexedContext.notionSources >= 1,
+		unmet: () => "notion",
 		inProgress: (e) => e.inFlight.context.notionSources > 0,
 	},
 	{
@@ -158,6 +168,7 @@ export const READINESS_RULES: readonly ReadinessRule[] = [
 		target: { kind: "tab", tab: "context" },
 		needLevel: phase({ discovery: "COULD", development: "SHOULD" }),
 		detect: (e) => e.indexedContext.knowledgeBaseLinks >= 1,
+		unmet: () => "classify",
 		inProgress: (e) => e.inFlight.context.knowledgeBaseLinks > 0,
 	},
 
@@ -241,6 +252,7 @@ export const READINESS_RULES: readonly ReadinessRule[] = [
 		needLevel: phase({ discovery: "COULD", development: "SHOULD" }),
 		dependsOn: ["prd"],
 		detect: (e) => e.completeDocumentTypes.has("QA_STRATEGY"),
+		unmet: () => "document",
 		inProgress: (e) => e.inFlight.documentTypes.has("QA_STRATEGY"),
 	},
 
@@ -268,6 +280,12 @@ export const READINESS_RULES: readonly ReadinessRule[] = [
 		dependsOn: ["pm-system-connected"],
 		detect: (e) =>
 			e.pm.connected && e.pm.autoPushEnabled && !e.pm.readOnlyMode,
+		unmet: (e) =>
+			!e.pm.connected
+				? "connect"
+				: e.pm.readOnlyMode
+					? "readOnly"
+					: "autoPush",
 	},
 	{
 		key: "terminal-statuses",
@@ -277,7 +295,12 @@ export const READINESS_RULES: readonly ReadinessRule[] = [
 		target: { kind: "settings", subTab: "development" },
 		needLevel: phase({ discovery: "SHOULD", development: "MUST" }),
 		dependsOn: ["pm-system-connected"],
-		detect: (e) => e.pm.autoCloseEnabled && e.pm.terminalStatusCount >= 1,
+		// "Terminal statuses DEFINED" — the defined list, not the auto-close
+		// toggle. The list does real work on its own: the PM poll reads it to
+		// classify linked items as terminal without consulting auto-close, which
+		// governs only whether closed items are hidden from the Roadmap.
+		detect: (e) => e.pm.terminalStatusCount >= 1,
+		unmet: () => "define",
 	},
 
 	// ── Members ──────────────────────────────────────────────────────────────
@@ -290,6 +313,7 @@ export const READINESS_RULES: readonly ReadinessRule[] = [
 		target: { kind: "settings", subTab: "members" },
 		needLevel: phase({ discovery: "SHOULD", development: "MUST" }),
 		detect: (e) => e.acceptedMemberCount >= 2,
+		unmet: () => "accept",
 	},
 
 	// ── Automation ───────────────────────────────────────────────────────────
@@ -304,11 +328,19 @@ export const READINESS_RULES: readonly ReadinessRule[] = [
 		detect: (e) =>
 			e.indexedContext.meetingTranscripts >= 1 &&
 			e.chat.transcriptAutoAnalyzeEnabled,
+		unmet: (e) =>
+			e.indexedContext.meetingTranscripts >= 1
+				? "autoAnalyze"
+				: "transcript",
 	},
 	{
 		// Slack OR Teams. The product has three independent monitors and the
 		// original rule named only the Teams one, which made this Must
 		// impossible to complete on a Slack-only project.
+		//
+		// A linked channel AND a monitor, mirroring `work-capture-transcripts`
+		// (a transcript AND auto-analyse). A monitor enabled over zero linked
+		// channels watches nothing, so the flag alone must not satisfy this.
 		key: "work-capture-chat",
 		category: "AUTOMATION",
 		i18nKey: "readiness.items.workCaptureChat",
@@ -317,9 +349,11 @@ export const READINESS_RULES: readonly ReadinessRule[] = [
 		needLevel: phase({ discovery: "SHOULD", development: "MUST" }),
 		dependsOn: ["chat-app-connected"],
 		detect: (e) =>
-			e.chat.slackChannelMonitorEnabled ||
-			e.chat.teamsChannelMonitorEnabled ||
-			e.chat.teamsChatMonitorEnabled,
+			e.chat.linkedChannelCount >= 1 &&
+			(e.chat.slackChannelMonitorEnabled ||
+				e.chat.teamsChannelMonitorEnabled ||
+				e.chat.teamsChatMonitorEnabled),
+		unmet: (e) => (e.chat.linkedChannelCount >= 1 ? "monitor" : "link"),
 	},
 	{
 		key: "release-notes",
@@ -352,6 +386,7 @@ export const READINESS_RULES: readonly ReadinessRule[] = [
 		}),
 		dependsOn: ["codebase-connected"],
 		detect: (e) => e.code.analysisCompleted && e.code.atlasAnalysisExists,
+		unmet: (e) => (e.code.analysisCompleted ? "run" : "analysis"),
 		inProgress: (e) => e.inFlight.codebaseIndexing,
 	},
 	{
@@ -367,6 +402,7 @@ export const READINESS_RULES: readonly ReadinessRule[] = [
 		}),
 		dependsOn: ["codebase-connected"],
 		detect: (e) => e.successfulScanExists,
+		unmet: () => "run",
 		inProgress: (e) => e.inFlight.scan,
 	},
 ];

@@ -42,6 +42,11 @@ const navSource = read("apps/web/modules/saas/shared/components/NavBar.tsx");
 const projectDetailsSource = read(
 	"apps/web/modules/saas/projects/components/ProjectDetails.tsx",
 );
+/** The tab array moved out of ProjectDetails so the readiness panel can read it
+ * without importing the component that renders it. */
+const projectTabsSource = read(
+	"apps/web/modules/saas/projects/lib/project-tabs.ts",
+);
 
 /**
  * The canonical project-tab id list, parsed from ProjectDetails' `tabs` array.
@@ -51,10 +56,10 @@ const projectDetailsSource = read(
  * the disabled "artifacts" placeholder) are skipped.
  */
 function liveProjectTabIds(): string[] {
-	const start = projectDetailsSource.indexOf("const tabs = [");
-	const end = projectDetailsSource.indexOf("] as const;", start);
+	const start = projectTabsSource.indexOf("const tabs = [");
+	const end = projectTabsSource.indexOf("] as const;", start);
 	const ids: string[] = [];
-	for (const line of projectDetailsSource.slice(start, end).split("\n")) {
+	for (const line of projectTabsSource.slice(start, end).split("\n")) {
 		if (line.trim().startsWith("//")) {
 			continue;
 		}
@@ -227,7 +232,7 @@ function expectProjectTabAnchor(anchor: string) {
 	const tab = anchor.replace("project-tab-", "");
 	expect(projectDetailsSource).toContain("data-onboarding-target");
 	expect(
-		projectDetailsSource.includes(`id: "${tab}"`),
+		projectTabsSource.includes(`id: "${tab}"`),
 		`project tab "${tab}" (anchor "${anchor}") no longer exists in ProjectDetails.tsx`,
 	).toBe(true);
 }
@@ -359,7 +364,7 @@ describe("get-started — detailed page tours", () => {
 			// App/sidebar pages aren't project tabs, so skip the tab check.
 			if (!page.app) {
 				expect(
-					projectDetailsSource.includes(`id: "${page.tab}"`),
+					projectTabsSource.includes(`id: "${page.tab}"`),
 					`page tour tab "${page.tab}" no longer exists in ProjectDetails.tsx`,
 				).toBe(true);
 			}

@@ -6,6 +6,11 @@ import {
 	type SpotlightEventDetail,
 } from "@saas/get-started/lib/tour-steps";
 import { useOrganizationContext } from "@saas/organizations/hooks/use-organization-context";
+import {
+	resolveProjectTabs,
+	useProjectTabCustomization,
+} from "@saas/projects/lib/project-tab-preferences";
+import { tabs as PROJECT_TABS } from "@saas/projects/lib/project-tabs";
 import { orpcClient } from "@shared/lib/orpc-client";
 import { useMutation } from "@tanstack/react-query";
 import { Button } from "@ui/components/button";
@@ -13,6 +18,8 @@ import {
 	DropdownMenu,
 	DropdownMenuContent,
 	DropdownMenuItem,
+	DropdownMenuLabel,
+	DropdownMenuSeparator,
 	DropdownMenuTrigger,
 } from "@ui/components/dropdown-menu";
 import {
@@ -27,10 +34,11 @@ import {
 	ChevronDownIcon,
 	ChevronUpIcon,
 	Loader2Icon,
+	MoreHorizontalIcon,
 } from "lucide-react";
 import Link from "next/link";
 import { useTranslations } from "next-intl";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { SettingsTab } from "../ProjectSettingsNav";
 import { navigateToProjectSettingsTab } from "../settings-tab-navigation";
 import {
@@ -390,6 +398,28 @@ function ReadinessPanelBody() {
 	// replaces sent people to Settings and left them to find the field — on the
 	// 20 Aug review it read as a dead control. Nothing is written until someone
 	// picks a value: an assumed phase must never persist as a chosen one.
+	/**
+	 * The tabs THIS viewer can reach.
+	 *
+	 * A checklist item routes to a tab id, but the tab bar is filtered per
+	 * viewer — a feature flag, admin tab config or a personal preference can
+	 * remove one — and a `?tab=` naming a tab outside that set falls back to
+	 * Overview in silence. The CTA then looks broken: the click registers, the
+	 * page does not move, and nothing says why. Shares its cache with the tab
+	 * bar's own hook, so this costs no extra requests.
+	 */
+	const tabCustomization = useProjectTabCustomization({ projectId });
+	const reachableTabIds = useMemo(
+		() =>
+			new Set(
+				resolveProjectTabs(PROJECT_TABS, {
+					config: tabCustomization.config,
+					prefs: tabCustomization.prefs,
+				}).map((tab) => tab.id as string),
+			),
+		[tabCustomization.config, tabCustomization.prefs],
+	);
+
 	const setPhase = useMutation({
 		mutationFn: (projectPhase: ProjectPhase) =>
 			orpcClient.projects.update({
@@ -458,8 +488,37 @@ function ReadinessPanelBody() {
 		);
 	}
 
-	if (!data?.enabled || !isExpanded) {
+	if (!data?.enabled) {
 		return null;
+	}
+
+	// Collapsed, the panel used to render nothing at all, leaving only a pill up
+	// beside the project title — far from where the panel was, and reading as a
+	// status label rather than a handle: "once I collapse it, I don't know that a
+	// user would know how to unexpand it."
+	//
+	// The strip is the panel in one line, in the panel's own place. It restores
+	// the handle AND the information: a rail would have been a door with nothing
+	// behind it, and readiness would still have stopped existing on collapse. A
+	// Ready project gets nothing here — it has nothing to ask for, and the card
+	// wants that state compact and quiet.
+	if (!isExpanded) {
+		if (data.level === "READY") {
+			return null;
+		}
+		return (
+			<ReadinessSummaryStrip
+				t={t}
+				level={data.level}
+				requiredOutstanding={
+					data.activeGaps.filter((i) => i.needLevel === "MUST").length
+				}
+				completedCount={data.completedCount}
+				totalCount={data.totalCount}
+				nextGapKey={data.activeGaps[0]?.key ?? null}
+				onExpand={() => setExpanded(true)}
+			/>
+		);
 	}
 
 	// Show All lists every item the panel is allowed to display, in checklist
@@ -482,6 +541,26 @@ function ReadinessPanelBody() {
 	const blockedItems = data.items.filter(
 		(i) => !i.isVisible && i.needLevel !== "NOT_APPLICABLE",
 	);
+	// One warning per prerequisite rather than one per hidden item: a codebase
+	// unlocks three things at once, and three separate lines saying "connect a
+	// codebase" is the same sentence three times.
+	const blockedGroups = [
+		...blockedItems
+			.reduce((groups, blockedItem) => {
+				const prerequisite = blockedItem.blockedBy;
+				if (!prerequisite) {
+					return groups;
+				}
+				const existing = groups.get(prerequisite);
+				if (existing) {
+					existing.push(blockedItem);
+				} else {
+					groups.set(prerequisite, [blockedItem]);
+				}
+				return groups;
+			}, new Map<string, typeof blockedItems>())
+			.entries(),
+	];
 	const percent =
 		data.totalCount === 0
 			? 0
@@ -673,23 +752,34 @@ function ReadinessPanelBody() {
 				{/* Items behind an unmet dependency are not rendered at all, so a
 				    reader could not tell "nothing left" from "not unlocked yet".
 				    Say how many are waiting and name them. */}
-				{blockedItems.length > 0 && (
-					<Tooltip delayDuration={150}>
-						<TooltipTrigger asChild>
-							<p className="w-fit cursor-default text-muted-foreground text-xs underline decoration-dotted underline-offset-4">
-								{t("panel.blockedByDependency", {
-									count: blockedItems.length,
+				{/* Grouped by what would unlock them, so the count becomes an
+				    instruction. "6 more items appear once earlier steps are
+				    done" told a reader something was missing but never what to
+				    do about it — the blocked-capability warning the card asks
+				    for is this list, naming the prerequisite. Informational
+				    only: 4A warns, it never blocks the action (4B gates). */}
+				{blockedGroups.length > 0 && (
+					<div className="flex flex-col gap-1">
+						{blockedGroups.map(([prerequisite, blocked]) => (
+							<p
+								key={prerequisite}
+								className="text-muted-foreground text-xs"
+							>
+								{t("panel.unlockedBy", {
+									prerequisite: t(
+										`items.${toCamel(prerequisite)}.name` as never,
+									),
+									items: blocked
+										.map((i) =>
+											t(
+												`items.${toCamel(i.key)}.name` as never,
+											),
+										)
+										.join(", "),
 								})}
 							</p>
-						</TooltipTrigger>
-						<TooltipContent side="bottom" className="max-w-xs">
-							{blockedItems
-								.map((i) =>
-									t(`items.${toCamel(i.key)}.name` as never),
-								)
-								.join(", ")}
-						</TooltipContent>
-					</Tooltip>
+						))}
+					</div>
 				)}
 
 				{rows.length === 0 ? (
@@ -717,10 +807,21 @@ function ReadinessPanelBody() {
 								itemTooltip={t(
 									`items.${toCamel(item.key)}.tooltip` as never,
 								)}
+								itemUnmet={
+									item.unmetReason
+										? t(
+												`items.${toCamel(item.key)}.unmet.${item.unmetReason}` as never,
+											)
+										: null
+								}
 								ctaHref={readinessTargetHref(
 									projectBasePath,
 									item.target,
 								)}
+								ctaReachable={
+									item.target.kind !== "tab" ||
+									reachableTabIds.has(item.target.tab)
+								}
 								onCtaClick={() => {
 									handleTargetClick(projectId, item.target);
 									spotlightFor(item.key);
@@ -797,6 +898,8 @@ function ReadinessGapRow({
 	ctaLabel,
 	itemDescription,
 	itemTooltip,
+	itemUnmet,
+	ctaReachable,
 	ctaHref,
 	onCtaClick,
 	stateLabel,
@@ -811,6 +914,19 @@ function ReadinessGapRow({
 	ctaLabel: string;
 	/** The sheet's "Short Description" column. */
 	itemDescription: string;
+	/**
+	 * What is still standing in the way, when the rule can name it. Rendered
+	 * under the sheet's tooltip rather than replacing it: the spreadsheet copy
+	 * is canonical and says why the item matters, which is a different question
+	 * from what would satisfy it.
+	 */
+	itemUnmet: string | null;
+	/**
+	 * Whether the call to action's destination exists for this viewer. A tab
+	 * outside their visible set silently redirects to Overview, so the button is
+	 * withdrawn rather than left looking broken.
+	 */
+	ctaReachable: boolean;
 	/** The sheet's "Tooltip text" column. */
 	itemTooltip: string;
 	ctaHref: string;
@@ -834,6 +950,11 @@ function ReadinessGapRow({
 
 	return (
 		<li className="flex flex-wrap items-center gap-3 border-border/60 border-t py-2 first:border-t-0">
+			{/* The need level was rendered as the raw enum, so a row graded
+			    NOT_APPLICABLE for the phase read identically to one a person had
+			    marked Not applicable — two unrelated meanings sharing a word, on
+			    a row that also offered a "Not applicable" button. Phase
+			    non-applicability now says so in its own words. */}
 			<span
 				className={cn(
 					"font-mono text-[10px] uppercase tracking-wider",
@@ -842,7 +963,7 @@ function ReadinessGapRow({
 						: "text-muted-foreground",
 				)}
 			>
-				{item.needLevel}
+				{t(`needLevel.${item.needLevel}` as never)}
 			</span>
 			{/* The sheet carries a short description and a tooltip for every row
 			    and neither was ever rendered — the whole explanation of what an
@@ -868,6 +989,11 @@ function ReadinessGapRow({
 				<TooltipContent side="bottom" className="max-w-sm">
 					<p className="font-medium">{itemDescription}</p>
 					<p className="mt-1 text-muted-foreground">{itemTooltip}</p>
+					{itemUnmet && (
+						<p className="mt-2 border-border/60 border-t pt-2 font-medium text-foreground">
+							{itemUnmet}
+						</p>
+					)}
 				</TooltipContent>
 			</Tooltip>
 			<div className="ml-auto flex flex-wrap items-center gap-2">
@@ -933,11 +1059,13 @@ function ReadinessGapRow({
 						>
 							{t("panel.unsnooze")}
 						</Button>
-						<Button asChild variant="outline" size="sm">
-							<Link href={ctaHref} onClick={onCtaClick}>
-								{ctaLabel}
-							</Link>
-						</Button>
+						<ReadinessCta
+							t={t}
+							reachable={ctaReachable}
+							href={ctaHref}
+							label={ctaLabel}
+							onClick={onCtaClick}
+						/>
 					</>
 				) : item.manualState === "NOT_APPLICABLE" ? (
 					<>
@@ -957,30 +1085,75 @@ function ReadinessGapRow({
 						<CheckIcon className="size-3" aria-hidden="true" />
 						{stateLabel}
 					</span>
+				) : item.needLevel === "NOT_APPLICABLE" ? (
+					/* Not graded in this phase: snoozing a reminder nobody is
+					   getting, or marking "not applicable" what already is,
+					   changes nothing observable. The call to action stays —
+					   running a scan early is a reasonable thing to want. */
+					<ReadinessCta
+						t={t}
+						reachable={ctaReachable}
+						href={ctaHref}
+						label={ctaLabel}
+						onClick={onCtaClick}
+					/>
 				) : (
 					<>
-						<SnoozeMenu
-							t={t}
-							label={t("panel.snooze")}
-							onPick={onSnooze}
-						/>
-						<Button
-							variant="ghost"
-							size="sm"
-							onClick={() => onSetNotApplicable(true)}
-						>
-							{t("panel.notApplicable")}
-						</Button>
+						{/* FR22 / AC-9 describe one context menu holding the
+						    item's actions, not a row of inline buttons. With
+						    26 rows the inline verbs were also most of the
+						    panel's visual weight, competing with the item names
+						    the reader is actually scanning. Snooze keeps its own
+						    submenu inside, because picking a duration is a
+						    second choice rather than a second action. */}
+						<DropdownMenu>
+							<DropdownMenuTrigger asChild>
+								<Button
+									variant="ghost"
+									size="sm"
+									aria-label={t("panel.itemActions")}
+								>
+									<MoreHorizontalIcon className="size-4" />
+								</Button>
+							</DropdownMenuTrigger>
+							<DropdownMenuContent align="end">
+								<DropdownMenuLabel>
+									{t("panel.snooze")}
+								</DropdownMenuLabel>
+								{SNOOZE_DURATIONS.map((duration) => (
+									<DropdownMenuItem
+										key={duration.labelKey}
+										onSelect={() =>
+											onSnooze(
+												snoozeUntilFrom(duration.days),
+											)
+										}
+									>
+										{t(
+											`panel.${duration.labelKey}` as never,
+										)}
+									</DropdownMenuItem>
+								))}
+								<DropdownMenuSeparator />
+								<DropdownMenuItem
+									onSelect={() => onSetNotApplicable(true)}
+								>
+									{t("panel.notApplicable")}
+								</DropdownMenuItem>
+							</DropdownMenuContent>
+						</DropdownMenu>
 						{/* A real link, not a button with a router call: it
 						    middle-clicks, it shows its destination on hover, and
 						    it survives JavaScript being busy. The click handler
 						    only carries the settings sub-tab, which no URL can
 						    express. */}
-						<Button asChild variant="outline" size="sm">
-							<Link href={ctaHref} onClick={onCtaClick}>
-								{ctaLabel}
-							</Link>
-						</Button>
+						<ReadinessCta
+							t={t}
+							reachable={ctaReachable}
+							href={ctaHref}
+							label={ctaLabel}
+							onClick={onCtaClick}
+						/>
 					</>
 				)}
 			</div>
@@ -1017,5 +1190,134 @@ function SnoozeMenu({
 				))}
 			</DropdownMenuContent>
 		</DropdownMenu>
+	);
+}
+
+/**
+ * A checklist item's call to action, or an honest explanation instead.
+ *
+ * The tab bar is filtered per viewer, and a `?tab=` naming a tab outside that
+ * set falls back to Overview without an error. A button that registers the
+ * click and moves nothing is worse than no button: the item still says what it
+ * wants, and the reason the route is closed is stated rather than left to be
+ * discovered.
+ */
+function ReadinessCta({
+	t,
+	reachable,
+	href,
+	label,
+	onClick,
+}: {
+	t: ReturnType<typeof useTranslations<"readiness">>;
+	reachable: boolean;
+	href: string;
+	label: string;
+	onClick: () => void;
+}) {
+	if (reachable) {
+		return (
+			<Button asChild variant="outline" size="sm">
+				<Link href={href} onClick={onClick}>
+					{label}
+				</Link>
+			</Button>
+		);
+	}
+	return (
+		<Tooltip delayDuration={150}>
+			<TooltipTrigger asChild>
+				<span>
+					<Button variant="outline" size="sm" disabled>
+						{label}
+					</Button>
+				</span>
+			</TooltipTrigger>
+			<TooltipContent side="left" className="max-w-xs">
+				{t("panel.targetUnavailable")}
+			</TooltipContent>
+		</Tooltip>
+	);
+}
+
+/**
+ * The collapsed panel: level, progress and the next thing to do, in one line.
+ *
+ * The chevron sits where the collapse control was, so the gesture that closed
+ * the panel is the gesture that reopens it. The whole strip is the target, not
+ * just the chevron — a one-line control that only responds at one end is the
+ * same discoverability problem in miniature.
+ */
+function ReadinessSummaryStrip({
+	t,
+	level,
+	requiredOutstanding,
+	completedCount,
+	totalCount,
+	nextGapKey,
+	onExpand,
+}: {
+	t: ReturnType<typeof useTranslations<"readiness">>;
+	level: "NOT_READY" | "PARTIALLY_READY" | "READY";
+	requiredOutstanding: number;
+	completedCount: number;
+	totalCount: number;
+	nextGapKey: string | null;
+	onExpand: () => void;
+}) {
+	return (
+		<section
+			aria-label="Project readiness"
+			className="border-border border-b"
+		>
+			<button
+				type="button"
+				onClick={onExpand}
+				aria-expanded={false}
+				className={cn(
+					"flex w-full flex-wrap items-center gap-x-3 gap-y-1 border-l-4 px-4 py-2 text-left sm:px-6",
+					"transition-colors hover:bg-muted/50",
+					"focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
+					LEVEL_SURFACE[level],
+				)}
+			>
+				<span className="font-semibold text-[11px] uppercase tracking-[0.2em]">
+					{t(`level.${level}` as never)}
+				</span>
+				{requiredOutstanding > 0 && (
+					<span className="text-muted-foreground text-xs">
+						{t("panel.requiredOutstanding", {
+							count: requiredOutstanding,
+						})}
+					</span>
+				)}
+				<span className="text-muted-foreground text-xs">
+					{t("panel.progress", {
+						completed: completedCount,
+						total: totalCount,
+						percent:
+							totalCount === 0
+								? 0
+								: Math.round(
+										(completedCount / totalCount) * 100,
+									),
+					})}
+				</span>
+				{nextGapKey && (
+					<span className="hidden truncate text-muted-foreground text-xs sm:inline">
+						{t("panel.nextUp", {
+							item: t(
+								`items.${toCamel(nextGapKey)}.name` as never,
+							),
+						})}
+					</span>
+				)}
+				<ChevronDownIcon
+					className="ml-auto size-4 text-muted-foreground"
+					aria-hidden="true"
+				/>
+				<span className="sr-only">{t("panel.expand")}</span>
+			</button>
+		</section>
 	);
 }

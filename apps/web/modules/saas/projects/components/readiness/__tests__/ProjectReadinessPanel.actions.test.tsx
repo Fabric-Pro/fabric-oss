@@ -59,6 +59,13 @@ vi.mock("@shared/lib/orpc-client", () => ({
 	},
 }));
 
+vi.mock("@saas/projects/lib/project-tab-preferences", () => ({
+	// These tests are about the panel's actions, not tab visibility: every tab
+	// is reachable so the calls to action render as links.
+	useProjectTabCustomization: () => ({ config: undefined, prefs: undefined }),
+	resolveProjectTabs: (tabs: readonly unknown[]) => tabs,
+}));
+
 vi.mock("@saas/organizations/hooks/use-organization-context", () => ({
 	useOrganizationContext: () => ({
 		organizationId: null,
@@ -180,14 +187,25 @@ describe("snoozing with a chosen duration", () => {
 		const user = userEvent.setup();
 		mountWith([item()]);
 
-		await user.click(screen.getByRole("button", { name: /^Snooze/i }));
+		await user.click(
+			screen.getByRole("button", { name: "Actions for this item" }),
+		);
 		const menu = await screen.findByRole("menu");
 
 		expect(
 			within(menu)
 				.getAllByRole("menuitem")
 				.map((el) => el.textContent?.trim()),
-		).toEqual(["1 day", "3 days", "1 week", "2 weeks", "1 month"]);
+		).toEqual([
+			"1 day",
+			"3 days",
+			"1 week",
+			"2 weeks",
+			"1 month",
+			// FR22 / AC-9: one menu holds the item's actions, so Not applicable
+			// sits alongside the durations rather than as a separate button.
+			"Not applicable",
+		]);
 	});
 
 	it("sends the instant the chosen duration lands on", async () => {
@@ -195,7 +213,9 @@ describe("snoozing with a chosen duration", () => {
 		mountWith([item()]);
 		const before = Date.now();
 
-		await user.click(screen.getByRole("button", { name: /^Snooze/i }));
+		await user.click(
+			screen.getByRole("button", { name: "Actions for this item" }),
+		);
 		await user.click(
 			await screen.findByRole("menuitem", { name: "1 week" }),
 		);
