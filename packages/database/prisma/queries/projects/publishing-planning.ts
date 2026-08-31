@@ -18,6 +18,11 @@
  */
 
 import { db } from "../../client";
+import type {
+	ReconcilableQuestion,
+	ReconcileOutcome,
+} from "./publishing-decisions";
+import { reconcileTopicQuestions } from "./publishing-decisions";
 
 /** How long a GENERATING row stays valid before a later attempt may reclaim it. */
 export const PLANNING_ANALYSIS_TIMEOUT_MS = 10 * 60 * 1000;
@@ -270,14 +275,21 @@ export async function completePlanningAnalysis(input: {
 	sourceRefs: unknown;
 	model: string | null;
 	promptSource: PlanningAnalysisPromptSource;
-}): Promise<{ persisted: boolean }> {
+	// REQUIRED, not optional (Phase 2A-3 fix round 1). `questions?: ...` with
+	// `input.questions ?? []` conflated "the caller passed nothing" with "the
+	// analysis raised no questions" — and the second meaning soft-closes EVERY
+	// live OPEN root. There is exactly one production caller and it always
+	// passes a value, so an explicit array costs it nothing and removes a mode
+	// that can silently wipe a topic's open questions.
+	questions: ReconcilableQuestion[];
+}): Promise<{ persisted: boolean; reconciled: ReconcileOutcome | null }> {
 	return db.$transaction(async (tx) => {
 		const tenant = await lockProjectTenant(
 			tx as unknown as Parameters<typeof lockProjectTenant>[0],
 			input.projectId,
 		);
 		if (!tenant) {
-			return { persisted: false };
+			return { persisted: false, reconciled: null };
 		}
 
 		// TENANT FENCE. The lock above proves the project is still eligible; it
@@ -289,10 +301,15 @@ export async function completePlanningAnalysis(input: {
 		// way; this table needs the same fence.
 		const stored = await tx.publishingTopicPlanningAnalysis.findFirst({
 			where: { id: input.id, projectId: input.projectId },
-			select: { organizationId: true, userId: true },
+			select: {
+				organizationId: true,
+				userId: true,
+				topicId: true,
+				version: true,
+			},
 		});
 		if (!stored || !sameTenant(stored, tenant)) {
-			return { persisted: false };
+			return { persisted: false, reconciled: null };
 		}
 
 		const { count } = await tx.publishingTopicPlanningAnalysis.updateMany({
@@ -314,7 +331,30 @@ export async function completePlanningAnalysis(input: {
 				executionTimeoutAt: null,
 			},
 		});
-		return { persisted: count > 0 };
+		if (count === 0) {
+			// A reclaimed attempt. Its analysis is not the one the topic will show,
+			// so its questions must not be minted either.
+			return { persisted: false, reconciled: null };
+		}
+
+		// Reconcile inside THIS transaction. Outside it, a crash between the READY
+		// flip and the minting would leave a terminal analysis whose questions were
+		// never created, and nothing would ever retry it.
+		const reconciled = await reconcileTopicQuestions(
+			tx as unknown as Parameters<typeof reconcileTopicQuestions>[0],
+			{
+				topicId: stored.topicId,
+				projectId: input.projectId,
+				// The tenant tuple comes from the LOCKED project row, not from the
+				// stored analysis and never from client input.
+				organizationId: tenant.organizationId,
+				userId: tenant.userId,
+				analysisVersion: stored.version,
+				questions: input.questions,
+			},
+		);
+
+		return { persisted: true, reconciled };
 	});
 }
 

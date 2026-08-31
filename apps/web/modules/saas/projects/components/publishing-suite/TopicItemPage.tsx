@@ -8,9 +8,10 @@ import { ArrowLeftIcon } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
-import { PlanningAnalysisTab, TopicOpenQuestions } from "./PlanningAnalysisTab";
-import { readPlanningQuestions } from "./planning-analysis-content";
+import { PlanningAnalysisTab } from "./PlanningAnalysisTab";
+import { TopicDecisionLog } from "./TopicDecisionLog";
 import { TopicDetails } from "./TopicDetails";
+import { TopicQuestionsPanel } from "./TopicQuestionsPanel";
 import { POST_TYPE_LABELS, TOPIC_STATUSES } from "./topic-shared";
 
 /**
@@ -35,9 +36,12 @@ const REVIEW_TABS: ReadonlyArray<{ value: ReviewTab; label: string }> = [
  * reproducing that shape here would trade a page nobody can hold in their head
  * for a superficial symmetry.
  *
- * This slice is the shell. Summary & Questions renders the topic's existing
- * AI-written summary (`pitch`, produced by Phase 1A); questions arrive in
- * 2A-3 and the planning worksheet in 2A-2.
+ * Summary & Questions renders the topic's existing AI-written summary
+ * (`pitch`, produced by Phase 1A) alongside its open and answered questions
+ * (2A-3); the planning worksheet (2A-2) and the Decision Log — the same
+ * decision-thread rows read as a filterable history (2A-3) — fill the other
+ * two tabs. Content generation remains a shell: `GenerationTabsPlaceholder`
+ * below is the only thing later phases (2B/2C) still need to replace.
  */
 export function TopicItemPage({
 	projectId,
@@ -61,10 +65,14 @@ export function TopicItemPage({
 	);
 	const topic = topicQuery.data?.topic;
 
-	// Fetched HERE rather than inside the Planning & Analysis panel, so the
-	// Summary & Questions tab can render the same open questions (FR39) from the
-	// same cache entry — one poll, one source of truth for which decisions are
-	// still open.
+	// Fetched HERE rather than inside the Planning & Analysis panel: the
+	// worksheet needs the SAME `latestAttempt` row the Summary & Questions
+	// tab uses to decide whether its questions panel should explain a failure
+	// rather than look merely empty (`analysisFailed`), so one poll serves
+	// both rather than two independently-timed ones landing on different rows
+	// mid-regeneration. The questions themselves no longer come from this
+	// query at all — they are read from the topic's decision-thread rows
+	// (2A-3), fetched separately below.
 	//
 	// The interval is the FUNCTION form so polling is keyed off the response
 	// itself: it runs only while an attempt is GENERATING and stops the moment
@@ -86,10 +94,19 @@ export function TopicItemPage({
 	});
 	const latestAttempt = analysisQuery.data?.latestAttempt ?? null;
 	const latestReady = analysisQuery.data?.latestReady ?? null;
-	// Questions come from the last READY analysis, never from a running or
-	// failed attempt: a question a reader can see must be one that actually
-	// survives, and a failed attempt has no content at all.
-	const openQuestions = readPlanningQuestions(latestReady?.content);
+
+	// The topic's decision thread (2A-3) — the source of truth for the
+	// Summary & Questions tab's open and answered questions AND, read here as
+	// a filterable history rather than a worklist, the Decision Log tab. One
+	// query, two tabs, so answering a question on one cannot leave the other
+	// stale. Rows survive a failed regeneration (`failPlanningAnalysis`
+	// writes no question at all), so this query, unlike `analysisQuery`
+	// above, has no failure branch to account for.
+	const decisionsQuery = useQuery(
+		orpc.projects.publishingSuite.listTopicDecisions.queryOptions({
+			input: { projectId, topicId, organizationId },
+		}),
+	);
 
 	// 1D's FR4 makes expanding a row "opening" it, which writes the read
 	// marker. Opening the whole page is the strongest form of opening there
@@ -237,14 +254,15 @@ export function TopicItemPage({
 						onEditUrl={() => undefined}
 						onEditPostTypes={() => undefined}
 					/>
-					{openQuestions.length > 0 ? (
-						<TopicOpenQuestions questions={openQuestions} />
-					) : (
-						<EmptyState>
-							No open questions yet. They arrive with the planning
-							analysis.
-						</EmptyState>
-					)}
+					<TopicQuestionsPanel
+						projectId={projectId}
+						topicId={topicId}
+						organizationId={organizationId}
+						canEdit={canEdit}
+						isLoading={decisionsQuery.isLoading}
+						analysisFailed={latestAttempt?.status === "FAILED"}
+						threads={decisionsQuery.data?.threads ?? []}
+					/>
 				</TabsContent>
 
 				<TabsContent value="planningAnalysis">
@@ -260,9 +278,10 @@ export function TopicItemPage({
 				</TabsContent>
 
 				<TabsContent value="decisionLog">
-					<EmptyState>
-						No decisions recorded for this topic yet.
-					</EmptyState>
+					<TopicDecisionLog
+						threads={decisionsQuery.data?.threads ?? []}
+						isLoading={decisionsQuery.isLoading}
+					/>
 				</TabsContent>
 			</Tabs>
 

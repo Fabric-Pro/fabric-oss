@@ -21,6 +21,13 @@ const {
 	analysisUpdateMany,
 	analysisAggregate,
 	topicFindFirst,
+	// Added for Phase 2A-3: `completePlanningAnalysis` now reconciles topic
+	// questions inside the same transaction (`reconcileTopicQuestions`), which
+	// touches this table. Additive only — no existing mock or assertion above
+	// this point changes.
+	decisionFindMany,
+	decisionCreate,
+	decisionUpdate,
 	transaction,
 } = vi.hoisted(() => ({
 	queryRaw: vi.fn(),
@@ -29,6 +36,9 @@ const {
 	analysisUpdateMany: vi.fn(),
 	analysisAggregate: vi.fn(),
 	topicFindFirst: vi.fn(),
+	decisionFindMany: vi.fn(),
+	decisionCreate: vi.fn(),
+	decisionUpdate: vi.fn(),
 	transaction: vi.fn(),
 }));
 
@@ -40,6 +50,11 @@ const tx = {
 		create: analysisCreate,
 		updateMany: analysisUpdateMany,
 		aggregate: analysisAggregate,
+	},
+	publishingTopicDecisionEntry: {
+		findMany: decisionFindMany,
+		create: decisionCreate,
+		update: decisionUpdate,
 	},
 };
 
@@ -53,6 +68,11 @@ vi.mock("../prisma/client", () => ({
 			create: analysisCreate,
 			updateMany: analysisUpdateMany,
 			aggregate: analysisAggregate,
+		},
+		publishingTopicDecisionEntry: {
+			findMany: decisionFindMany,
+			create: decisionCreate,
+			update: decisionUpdate,
 		},
 	},
 	Prisma: {},
@@ -94,6 +114,9 @@ beforeEach(() => {
 			...data,
 		}),
 	);
+	// No question roots by default — reconciliation is a no-op unless a test
+	// explicitly opts in to it.
+	decisionFindMany.mockResolvedValue([]);
 });
 
 describe("startPlanningAnalysisAttempt — tenancy", () => {
@@ -321,6 +344,9 @@ describe("completePlanningAnalysis", () => {
 			sourceRefs: {},
 			model: "test-model",
 			promptSource: "BOUND",
+			// Required since the fix-round-1 signature change; empty because none
+			// of these tests exercise reconciliation.
+			questions: [],
 		});
 
 		const where = analysisUpdateMany.mock.calls[0]?.[0]?.where;
@@ -339,6 +365,9 @@ describe("completePlanningAnalysis", () => {
 			sourceRefs: {},
 			model: "test-model",
 			promptSource: "BOUND",
+			// Required since the fix-round-1 signature change; empty because none
+			// of these tests exercise reconciliation.
+			questions: [],
 		});
 
 		expect(result.persisted).toBe(false);
@@ -355,6 +384,9 @@ describe("completePlanningAnalysis", () => {
 			sourceRefs: {},
 			model: "test-model",
 			promptSource: "BOUND",
+			// Required since the fix-round-1 signature change; empty because none
+			// of these tests exercise reconciliation.
+			questions: [],
 		});
 
 		expect(String(queryRaw.mock.calls[0]?.[0])).toMatch(/FOR UPDATE/i);
@@ -370,6 +402,9 @@ describe("completePlanningAnalysis", () => {
 			sourceRefs: {},
 			model: "test-model",
 			promptSource: "BOUND",
+			// Required since the fix-round-1 signature change; empty because none
+			// of these tests exercise reconciliation.
+			questions: [],
 		});
 
 		expect(result.persisted).toBe(false);
@@ -482,9 +517,12 @@ describe("terminal writes — cross-tenant fence", () => {
 			sourceRefs: {},
 			model: "m",
 			promptSource: "BOUND",
+			questions: [],
 		});
 
-		expect(result).toEqual({ persisted: false });
+		// Phase 2A-3: the fence refuses before reconciliation ever runs, so
+		// `reconciled` is null rather than an outcome — see `publishing-decisions.ts`.
+		expect(result).toEqual({ persisted: false, reconciled: null });
 		expect(analysisUpdateMany).not.toHaveBeenCalled();
 	});
 
@@ -498,9 +536,21 @@ describe("terminal writes — cross-tenant fence", () => {
 			sourceRefs: {},
 			model: "m",
 			promptSource: "BOUND",
+			questions: [],
 		});
 
-		expect(result).toEqual({ persisted: true });
+		// Phase 2A-3: a successful commit also reconciles the topic's questions in
+		// the same transaction; no `questions` were passed here, so the outcome is
+		// all zeros rather than absent.
+		expect(result).toEqual({
+			persisted: true,
+			reconciled: {
+				minted: 0,
+				refreshed: 0,
+				softClosed: 0,
+				reactivated: 0,
+			},
+		});
 		expect(analysisUpdateMany).toHaveBeenCalled();
 	});
 
@@ -521,9 +571,11 @@ describe("terminal writes — cross-tenant fence", () => {
 			sourceRefs: {},
 			model: "m",
 			promptSource: "BOUND",
+			questions: [],
 		});
 
-		expect(result).toEqual({ persisted: false });
+		// Phase 2A-3: the fence refuses before reconciliation ever runs.
+		expect(result).toEqual({ persisted: false, reconciled: null });
 		expect(analysisUpdateMany).not.toHaveBeenCalled();
 	});
 

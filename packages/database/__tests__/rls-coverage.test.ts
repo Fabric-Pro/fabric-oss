@@ -276,6 +276,43 @@ const PROJECT_SCOPE_BASELINE = new Set([
 	"weave_execution",
 ]);
 
+/**
+ * `publishing_topic_decision_entry` registration (Publishing Suite 2A-3).
+ *
+ * A tenant table missing from EITHER tenant-db list is not "less isolated",
+ * it is UNFILTERED: `tenantProtectedProcedure` looks the model up by name and
+ * silently applies no filter when it is absent. So the registration is the
+ * isolation, and it is worth its own assertion rather than trusting review.
+ *
+ * `RLS_TABLES` in apply-rls-direct.ts is a plain array literal local to
+ * `applyRLS()` (not a module-level export), so — matching how the rest of
+ * this file already checks that script's content — these assertions read its
+ * source text directly rather than importing a symbol that isn't exported.
+ */
+describe("publishing_topic_decision_entry registration", () => {
+	it("is registered as a tenant table", () => {
+		const block =
+			tenantDbSrc.match(
+				/const USER_OWNED_TABLES = new Set\(\[([\s\S]*?)\]\);/,
+			)?.[1] ?? "";
+		expect(block).toMatch(/"PublishingTopicDecisionEntry",/);
+	});
+
+	it("is registered as project-scoped on projectId", () => {
+		const block =
+			tenantDbSrc.match(
+				/const PROJECT_SCOPED_TABLES:[^{]+\{([\s\S]*?)\n\};/,
+			)?.[1] ?? "";
+		expect(block).toMatch(/PublishingTopicDecisionEntry:\s*"projectId",/);
+	});
+
+	it("has an RLS policy in the inventory", () => {
+		expect(applySrc).toMatch(
+			/name:\s*"publishing_topic_decision_entry"\s*,\s*policy:\s*"user_owned"/,
+		);
+	});
+});
+
 describe("tenant-db allowlist parity with the RLS registration", () => {
 	const userOwnedBlock =
 		tenantDbSrc.match(

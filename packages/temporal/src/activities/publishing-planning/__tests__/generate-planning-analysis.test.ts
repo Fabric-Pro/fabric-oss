@@ -381,6 +381,48 @@ describe("generatePlanningAnalysisActivity — what it persists", () => {
 		);
 	});
 
+	it("hands the resolved questions to completePlanningAnalysis as reconciliation rows", async () => {
+		// This is the single link that makes reconciliation happen at all
+		// (`publishing-decisions.ts`): `content.questions` is the analysis's own
+		// record of what it raised, but `reconcileTopicQuestions` never sees the
+		// content blob — only this separate `questions` argument. Pinned by
+		// comparing it against `content.questions` itself (projected down to the
+		// 6 fields the DB layer's `ReconcilableQuestion` type takes), so deleting
+		// the argument, or letting it drift out of sync with the content, both
+		// fail here rather than only in production.
+		await run();
+
+		const content = completePlanningAnalysis.mock.calls[0]?.[0]?.content;
+		const questions =
+			completePlanningAnalysis.mock.calls[0]?.[0]?.questions;
+
+		expect(questions).toEqual(
+			content.questions.map(
+				(q: {
+					questionId: string;
+					decisionKind: string;
+					subject: string | null;
+					question: string;
+					recommendedResponse: string | null;
+					whyItMatters: string | null;
+				}) => ({
+					questionId: q.questionId,
+					decisionKind: q.decisionKind,
+					subject: q.subject,
+					question: q.question,
+					recommendedResponse: q.recommendedResponse,
+					whyItMatters: q.whyItMatters,
+				}),
+			),
+		);
+		// Guards against a vacuous pass: MODEL_OUTPUT resolves to two questions
+		// (see "merges the model's questions with the ones the buckets imply"
+		// above), so if the `questions:` argument were ever deleted entirely,
+		// `questions` here is `undefined` and this fails loudly rather than
+		// `toEqual` quietly comparing two empty arrays.
+		expect(questions).toHaveLength(2);
+	});
+
 	it("reports SUPERSEDED rather than throwing when the CAS is lost", async () => {
 		// The attempt was reclaimed by a deadline sweep while the model ran. Its
 		// row is already terminal and a newer attempt owns the topic — writing

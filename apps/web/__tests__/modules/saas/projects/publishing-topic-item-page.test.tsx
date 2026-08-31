@@ -9,11 +9,13 @@
  *
  * Scope note: 2A-1 shipped the SHELL and these tests pin its contract — default
  * tab, the topic header, and that the four generation tabs are present but NOT
- * operable (FR50). 2A-2 filled in Planning & Analysis and the open-questions
- * list (FR39); the panel's own states live in
- * `publishing-planning-analysis-tab.test.tsx`, and what is pinned HERE is the
- * wiring: that the page fetches the analysis once and both tabs read the same
- * questions. Answering them is 2A-3.
+ * operable (FR50). 2A-2 filled in Planning & Analysis (FR39); the panel's own
+ * states live in `publishing-planning-analysis-tab.test.tsx`, and what is
+ * pinned HERE is the wiring: that the page fetches the analysis once and the
+ * worksheet and the questions panel read the SAME `latestAttempt` row for
+ * their failure signal, even though (2A-3) the questions themselves come from
+ * a separate decisions query — `TopicQuestionsPanel`'s own states live in
+ * `publishing-topic-questions.test.tsx`.
  */
 
 import { render, screen, within } from "@testing-library/react";
@@ -29,6 +31,10 @@ const { state, refetchTopic, setReadStateMutate, toastError } = vi.hoisted(
 			// good analysis — see PlanningAnalysisTab's own test file.
 			latestAttempt: null as Record<string, unknown> | null,
 			latestReady: null as Record<string, unknown> | null,
+			// 2A-3: the decision-thread rows `TopicQuestionsPanel` renders. The
+			// source of truth for the Summary & Questions tab's questions moved
+			// here from the analysis blob above — see the FR39 block below.
+			decisionThreads: [] as Record<string, unknown>[],
 			pending: false,
 			error: false,
 			// Drive the read-marker write to reject, so the failure path is
@@ -66,6 +72,15 @@ vi.mock("@tanstack/react-query", () => ({
 					latestAttempt: state.latestAttempt,
 					latestReady: state.latestReady,
 				},
+				isPending: false,
+				isLoading: false,
+				isError: false,
+				refetch: vi.fn(),
+			};
+		}
+		if (procedure === "projects.publishingSuite.listTopicDecisions") {
+			return {
+				data: { threads: state.decisionThreads },
 				isPending: false,
 				isLoading: false,
 				isError: false,
@@ -141,6 +156,12 @@ vi.mock("@shared/lib/orpc-query-utils", () => {
 					generatePlanningAnalysis: m(
 						"projects.publishingSuite.generatePlanningAnalysis",
 					),
+					listTopicDecisions: q(
+						"projects.publishingSuite.listTopicDecisions",
+					),
+					answerTopicQuestion: m(
+						"projects.publishingSuite.answerTopicQuestion",
+					),
 				},
 			},
 		},
@@ -200,6 +221,7 @@ beforeEach(() => {
 	state.topic = topic();
 	state.latestAttempt = null;
 	state.latestReady = null;
+	state.decisionThreads = [];
 	state.pending = false;
 	state.error = false;
 	state.readStateRejects = false;
@@ -405,13 +427,41 @@ describe("TopicItemPage — open questions (FR39)", () => {
 		source: "MODEL",
 	};
 
+	// A single-thread `listTopicDecisions` root for QUESTION, OPEN by default —
+	// the shape `TopicQuestionsPanel` renders from since 2A-3, replacing the
+	// analysis-blob questions above for display (the blob stays the analysis's
+	// own record of what it raised).
+	const openThread = (
+		q: typeof QUESTION,
+		overrides: Record<string, unknown> = {},
+	) => ({
+		root: {
+			id: `decision-${q.questionId}`,
+			parentId: null,
+			kind: "QUESTION",
+			status: "OPEN",
+			authorType: "AGENT",
+			authorUserId: null,
+			questionId: q.questionId,
+			decisionKind: q.decisionKind,
+			subject: q.subject,
+			summary: q.question,
+			content: null,
+			recommendedResponse: q.recommendedResponse,
+			answerSource: null,
+			analysisVersion: 1,
+			createdAt: new Date("2026-08-30T10:00:00Z"),
+			...overrides,
+		},
+		replies: [],
+	});
+
 	it("shows the analysis's open questions on the default tab", () => {
 		// FR39 lands in 2A-2 rather than 2A-3 because the buckets and the question
 		// list are independent: an analysis can flag a decision as needing
 		// confirmation while the question that decides it lives on another tab
 		// nobody has opened.
-		state.latestReady = readyAnalysis([QUESTION]);
-		state.latestAttempt = state.latestReady;
+		state.decisionThreads = [openThread(QUESTION)];
 
 		renderPage();
 
@@ -426,11 +476,13 @@ describe("TopicItemPage — open questions (FR39)", () => {
 		expect(screen.getByText(/no open questions yet/i)).toBeInTheDocument();
 	});
 
-	it("draws questions from the last READY analysis, never from a failed attempt", () => {
-		// A failed attempt has no content at all. Reading questions from "the
-		// newest attempt" would empty the list the moment a regeneration failed —
-		// the same defect the two-row API exists to prevent, one tab over.
-		state.latestReady = readyAnalysis([QUESTION]);
+	it("keeps showing the questions when a regeneration fails", () => {
+		// The rows are the source of truth, so a failed attempt cannot empty the
+		// list — `failPlanningAnalysis` writes no question at all (proven in
+		// `packages/database/__tests__/publishing-topic-decisions.test.ts`). This
+		// test pins the page half: a FAILED latest attempt must not suppress the
+		// standing questions.
+		state.decisionThreads = [openThread(QUESTION)];
 		state.latestAttempt = {
 			...readyAnalysis([]),
 			id: "pa-2",

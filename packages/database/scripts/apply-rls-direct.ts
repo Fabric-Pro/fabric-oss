@@ -416,6 +416,10 @@ async function applyRLS() {
 				name: "publishing_topic_planning_analysis",
 				policy: "user_owned",
 			}, // Publishing Suite planning worksheet
+			{
+				name: "publishing_topic_decision_entry",
+				policy: "user_owned",
+			}, // Publishing Suite topic decision threads
 			{ name: "document_version", policy: "user_owned" }, // Document history
 			{ name: "document_auto_refresh_settings", policy: "user_owned" }, // Per-document auto-refresh enrollment
 			{ name: "feature_version", policy: "user_owned" }, // Feature version history

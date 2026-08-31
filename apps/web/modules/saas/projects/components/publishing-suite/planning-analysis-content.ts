@@ -16,7 +16,7 @@ interface ClassifiedRecommendation {
 	rationale: string;
 }
 
-export interface PlanningQuestion {
+interface PlanningQuestion {
 	questionId: string;
 	decisionKind: string;
 	subject: string | null;
@@ -172,13 +172,17 @@ export function readPlanningAnalysis(
 }
 
 /**
- * Just the questions.
+ * Just the questions, as the analysis itself raised them.
  *
- * Exported separately because the Summary & Questions tab shows them without
- * the rest of the worksheet (FR39) — and reading them through the same function
- * is what stops the two surfaces disagreeing about which questions are open.
+ * No longer exported (2A-3): the Summary & Questions tab used to show these
+ * straight from the blob, but a blob has no status and no answer, so the
+ * decision-thread rows the analysis reconciles into (`reconcileTopicQuestions`)
+ * are the source of truth for display now — `TopicQuestionsPanel` reads
+ * `listTopicDecisions`, not this. What remains here is `readPlanningAnalysis`'s
+ * own use below, assembling the worksheet's `questions` field, which is the
+ * analysis's own record of what it raised, not a second rendering of it.
  */
-export function readPlanningQuestions(content: unknown): PlanningQuestion[] {
+function readPlanningQuestions(content: unknown): PlanningQuestion[] {
 	const raw = obj(content).questions;
 	if (!Array.isArray(raw)) {
 		return [];
@@ -204,7 +208,16 @@ export function readPlanningQuestions(content: unknown): PlanningQuestion[] {
 	return out;
 }
 
-/** True when the document has nothing worth rendering. */
+/**
+ * True when the document has nothing worth rendering.
+ *
+ * `doc.questions` is deliberately NOT part of this check. Since 2A-3,
+ * `PlanningAnalysisTab` never renders `doc.questions` — the decision-thread
+ * rows `TopicQuestionsPanel` reads are the display surface now (see this
+ * file's own doc comment on `readPlanningQuestions`). Counting it here meant
+ * an analysis whose only content was questions passed as "not empty" and
+ * then rendered a worksheet with no sections at all.
+ */
 export function isEmptyAnalysis(doc: PlanningAnalysisDocument): boolean {
 	return (
 		doc.prose.length === 0 &&
@@ -212,7 +225,6 @@ export function isEmptyAnalysis(doc: PlanningAnalysisDocument): boolean {
 		doc.buckets.length === 0 &&
 		doc.sourceSignals.length === 0 &&
 		doc.risks.length === 0 &&
-		doc.questions.length === 0 &&
 		doc.preDraftGuidance === null
 	);
 }
