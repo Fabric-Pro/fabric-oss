@@ -1,0 +1,11 @@
+-- Validate the amendment-pointer foreign key added NOT VALID in 20260828130000 (#1910).
+--
+-- Sorts after both the NOT VALID addition and the CONCURRENT unique index, so the
+-- constraint is real by the end of this release and needs no entry in
+-- prisma/pending-constraint-validations.json — that ledger is for a NOT VALID whose
+-- VALIDATE lands in a LATER release, which is not the case here.
+--
+-- VALIDATE CONSTRAINT takes ShareUpdateExclusiveLock, not ACCESS EXCLUSIVE, so it does
+-- not block reads or writes on decision_log_entry. The scan finds nothing to reject:
+-- every pre-existing row has a NULL "supersedesId", and NULL satisfies a foreign key.
+ALTER TABLE "decision_log_entry" VALIDATE CONSTRAINT "decision_log_entry_supersedesId_fkey";

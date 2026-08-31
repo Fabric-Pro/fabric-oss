@@ -738,7 +738,7 @@ export type StoryTaskCommentScalarFieldEnum = z.infer<typeof StoryTaskCommentSca
 
 // File: DecisionLogEntryScalarFieldEnum.schema.ts
 
-export const DecisionLogEntryScalarFieldEnumSchema = z.enum(['id', 'userStoryId', 'parentId', 'authorType', 'authorUserId', 'status', 'summary', 'content', 'impactedSection', 'topic', 'questionId', 'source', 'decidedBy', 'authorName', 'sourceProvenance', 'answerSource', 'metadata', 'organizationId', 'userId', 'deletedAt', 'createdAt', 'updatedAt'])
+export const DecisionLogEntryScalarFieldEnumSchema = z.enum(['id', 'userStoryId', 'parentId', 'authorType', 'authorUserId', 'status', 'summary', 'content', 'impactedSection', 'topic', 'questionId', 'source', 'decidedBy', 'authorName', 'sourceProvenance', 'answerSource', 'supersedesId', 'metadata', 'organizationId', 'userId', 'deletedAt', 'createdAt', 'updatedAt'])
 
 export type DecisionLogEntryScalarFieldEnum = z.infer<typeof DecisionLogEntryScalarFieldEnumSchema>;
 
@@ -6063,6 +6063,7 @@ export const DecisionLogEntrySchema = z.object({
   authorName: z.string().nullish(),
   sourceProvenance: z.string().nullish(),
   answerSource: AnswerSourceSchema.nullish(),
+  supersedesId: z.string().nullish(),
   metadata: z.unknown().refine((val) => { const getDepth = (obj: unknown, depth: number = 0): number => { if (depth > 10) return depth; if (obj === null || typeof obj !== 'object') return depth; const values = Object.values(obj as Record<string, unknown>); if (values.length === 0) return depth; return Math.max(...values.map(v => getDepth(v, depth + 1))); }; return getDepth(val) <= 10; }, "JSON nesting depth exceeds maximum of 10").nullish(),
   organizationId: z.string().nullish(),
   userId: z.string(),

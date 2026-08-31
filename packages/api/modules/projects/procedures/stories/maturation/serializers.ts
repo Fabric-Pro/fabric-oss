@@ -140,6 +140,7 @@ export function serializeDecisionLogThread(
 			authorName: thread.root.authorName,
 			sourceProvenance: thread.root.sourceProvenance,
 			createdAt: thread.root.createdAt,
+			supersedesId: thread.root.supersedesId,
 			cleanSpecPropagation: derivePropagation(thread.root.metadata),
 			suggestedOptions: includeRecommendations
 				? deriveRecommendation(thread.root.metadata).suggestedOptions
@@ -155,6 +156,7 @@ export function serializeDecisionLogThread(
 			authorName: reply.authorName,
 			sourceProvenance: reply.sourceProvenance,
 			createdAt: reply.createdAt,
+			supersedesId: reply.supersedesId,
 		})),
 	};
 }

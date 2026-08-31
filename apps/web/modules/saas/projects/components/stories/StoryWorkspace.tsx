@@ -768,6 +768,45 @@ export function StoryWorkspace({
 		}),
 	);
 
+	// Amend a resolved answer (#1910). Appends a superseding turn — the Decision
+	// Log is never edited in place — and upserts the question's bullet in the
+	// Clean Spec appendix so the spec carries exactly one current answer.
+	const maturationAmendMutation = useMutation(
+		orpc.projects.stories.maturation.amendAnswer.mutationOptions({
+			onSuccess: (result) => {
+				invalidateMaturationEditor();
+				// Same reason as the answer path: the spec's appendix changed, so
+				// the story snapshot the editor and the chat copilot read is stale.
+				queryClient.invalidateQueries({
+					queryKey: orpc.projects.stories.get.queryKey({
+						input: { projectId, storyId: story.id, organizationId },
+					}),
+				});
+				onStoryUpdated?.();
+				if (result.specUpdated) {
+					toast.success(tMaturationToasts("specUpdated"));
+				} else {
+					// The amendment is committed to the log; only its integration
+					// into the spec failed. Same severity as the answer path's
+					// equivalent branch, since the user-visible outcome matches.
+					toast.warning(tMaturationToasts("couldntApply"));
+				}
+			},
+			onError: (error) => {
+				// NOT_FOUND here means the turn was superseded by someone else
+				// first, so this client's view of "the current answer" is stale.
+				if (getOrpcCode(error) === "NOT_FOUND") {
+					invalidateMaturationEditor();
+					toast.warning(tMaturationToasts("amendStaleTitle"), {
+						description: tMaturationToasts("amendStaleBody"),
+					});
+					return;
+				}
+				toast.error(tMaturationToasts("amendError"));
+			},
+		}),
+	);
+
 	// Notes is HUMAN-owned (the only writer is `setWorkingNotes`). Save-on-blur.
 	// We deliberately do NOT invalidate `getEditorState` (that would trigger a
 	// refetch that could clobber the textarea mid-edit). Instead we write the
@@ -7770,6 +7809,29 @@ export function StoryWorkspace({
 											threads={
 												maturationData?.decisionLog ??
 												[]
+											}
+											onAmend={(input) =>
+												maturationAmendMutation.mutate({
+													projectId,
+													storyId: story.id,
+													questionId:
+														input.questionId,
+													supersedesId:
+														input.supersedesId,
+													answer: input.answer,
+													// A hand-amended answer is no
+													// longer a straight AI
+													// acceptance (#1910).
+													answerSource: "AI_EDITED",
+												})
+											}
+											amendingId={
+												maturationAmendMutation.isPending
+													? (maturationAmendMutation
+															.variables
+															?.questionId ??
+														null)
+													: null
 											}
 										/>
 									</div>

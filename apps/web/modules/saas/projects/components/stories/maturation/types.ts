@@ -29,6 +29,12 @@ type DecisionLogReply = {
 	authorName: string | null;
 	sourceProvenance: string | null;
 	createdAt: Date;
+	/**
+	 * Set on an answer turn that REPLACES an earlier one (#1910). The turn it
+	 * points at stays in the thread as history; the panel renders it collapsed
+	 * under the live answer. Null on roots and on un-amended answers.
+	 */
+	supersedesId: string | null;
 };
 
 type CleanSpecPropagationStatus =

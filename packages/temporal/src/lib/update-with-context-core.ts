@@ -597,6 +597,8 @@ export async function fetchProjectContextSources({
 							organizationId: organizationId ?? null,
 						},
 						userStoryId: storyId,
+						// Feeds an AI prompt — a retracted answer must not reach the model (#1910).
+						excludeSuperseded: true,
 					})
 				: Promise.resolve([]),
 		],

@@ -21,6 +21,7 @@ import {
 	countPendingDecisions,
 	PENDING_DECISIONS_HEADING,
 	recordAnswerInSpec,
+	upsertPendingDecision,
 } from "../record-answer-in-spec";
 
 // The decoration the editor emits when a user highlights / bolds / demotes the
@@ -608,5 +609,77 @@ describe("recordAnswerInSpec", () => {
 			// The PRE-answer body — what makes the answer revertible.
 			description: "# F\n\nBody.",
 		});
+	});
+});
+
+/**
+ * `upsertPendingDecision` (#1910) — amending an answer must leave the appendix
+ * with exactly ONE bullet for that question. The Clean Spec is the only thing the
+ * AI reads, so a second bullet would hand the next maturation run two
+ * contradictory decisions with no way to tell which one still stands.
+ */
+describe("upsertPendingDecision", () => {
+	function bulletsFor(markdown: string, question: string): string[] {
+		return markdown
+			.split("\n")
+			.filter((line) => line.startsWith(`- **Q:** ${question}`));
+	}
+
+	it("replaces the existing bullet for the question instead of adding a second", () => {
+		const first = appendPendingDecision(
+			"# Spec body",
+			"Mandatory MFA?",
+			"Yes",
+		);
+		const amended = upsertPendingDecision(
+			first,
+			"Mandatory MFA?",
+			"Yes, for admins only",
+		);
+
+		expect(bulletsFor(amended, "Mandatory MFA?")).toHaveLength(1);
+		expect(amended).toContain("**Decided:** Yes, for admins only");
+		expect(amended).not.toContain("**Decided:** Yes\n");
+	});
+
+	it("leaves other questions' bullets untouched and keeps ordering", () => {
+		let doc = appendPendingDecision("# Spec body", "First?", "A");
+		doc = appendPendingDecision(doc, "Second?", "B");
+		doc = appendPendingDecision(doc, "Third?", "C");
+
+		const amended = upsertPendingDecision(doc, "Second?", "B-revised");
+
+		expect(amended).toContain("**Decided:** A");
+		expect(amended).toContain("**Decided:** B-revised");
+		expect(amended).toContain("**Decided:** C");
+		expect(amended).not.toContain("**Decided:** B\n");
+		// The amended bullet keeps its slot rather than jumping to the end.
+		expect(amended.indexOf("First?")).toBeLessThan(
+			amended.indexOf("Second?"),
+		);
+		expect(amended.indexOf("Second?")).toBeLessThan(
+			amended.indexOf("Third?"),
+		);
+	});
+
+	it("appends when the appendix was already dissolved by a maturation run", () => {
+		// No appendix left: the body now states the old answer, and this bullet is
+		// how the next run learns it changed.
+		const amended = upsertPendingDecision(
+			"# Spec body\n\nMFA is mandatory.",
+			"Mandatory MFA?",
+			"Admins only",
+		);
+		expect(amended).toContain(PENDING_DECISIONS_HEADING);
+		expect(bulletsFor(amended, "Mandatory MFA?")).toHaveLength(1);
+	});
+
+	it("treats question text containing regex metacharacters literally", () => {
+		const q = "Support .*+? and [brackets]?";
+		const first = appendPendingDecision("# Spec body", q, "No");
+		const amended = upsertPendingDecision(first, q, "Yes");
+
+		expect(bulletsFor(amended, q)).toHaveLength(1);
+		expect(amended).toContain("**Decided:** Yes");
 	});
 });
