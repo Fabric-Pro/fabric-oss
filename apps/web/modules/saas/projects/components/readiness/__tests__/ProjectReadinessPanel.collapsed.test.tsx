@@ -109,6 +109,12 @@ function mountCollapsed(level: string) {
 		claimInlineSlot: vi.fn(),
 		data: {
 			enabled: true,
+			attention: {
+				changes: [],
+				levelDropped: false,
+				seenAt: null,
+				autoExpandedAt: null,
+			},
 			level,
 			phase: "DEVELOPMENT_EXECUTION",
 			phaseSource: "set",

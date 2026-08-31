@@ -309,6 +309,7 @@ import { updateRagSettingsProcedure } from "./procedures/rag-settings/update-rag
 // Project readiness checklist (Fizzy #2165)
 import {
 	getReadinessProcedure,
+	markReadinessSeenProcedure,
 	requestReadinessHelpProcedure,
 	setReadinessItemNotApplicableProcedure,
 	snoozeReadinessItemProcedure,
@@ -835,6 +836,7 @@ export const projectsRouter = {
 	// Project readiness checklist — computed on read, never stored
 	readiness: {
 		get: getReadinessProcedure,
+		markSeen: markReadinessSeenProcedure,
 		snooze: snoozeReadinessItemProcedure,
 		setNotApplicable: setReadinessItemNotApplicableProcedure,
 		requestHelp: requestReadinessHelpProcedure,

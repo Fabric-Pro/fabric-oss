@@ -143,6 +143,12 @@ function mountWith(items: Item[], data: Record<string, unknown> = {}) {
 		claimInlineSlot: vi.fn(),
 		data: {
 			enabled: true,
+			attention: {
+				changes: [],
+				levelDropped: false,
+				seenAt: null,
+				autoExpandedAt: null,
+			},
 			level: "PARTIALLY_READY",
 			phase: "DEVELOPMENT_EXECUTION",
 			phaseSource: "set",

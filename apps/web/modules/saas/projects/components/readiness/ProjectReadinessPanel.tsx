@@ -509,6 +509,7 @@ function ReadinessPanelBody() {
 		return (
 			<ReadinessSummaryStrip
 				t={t}
+				hasUnseenChanges={data.attention.changes.length > 0}
 				level={data.level}
 				requiredOutstanding={
 					data.activeGaps.filter((i) => i.needLevel === "MUST").length
@@ -538,6 +539,13 @@ function ReadinessPanelBody() {
 		(i) => i.needLevel === "MUST",
 	).length;
 	const hiddenCount = visible.length - data.activeGaps.length;
+	// Tier 1 of the attention rules: a static marker on anything that changed
+	// since this person last opened the panel. Never animated, so it survives a
+	// reload — a pulse a user missed is gone, and the news with it.
+	const changeByKey = new Map(
+		data.attention.changes.map((change) => [change.key, change.kind]),
+	);
+
 	const blockedItems = data.items.filter(
 		(i) => !i.isVisible && i.needLevel !== "NOT_APPLICABLE",
 	);
@@ -807,6 +815,7 @@ function ReadinessPanelBody() {
 								itemTooltip={t(
 									`items.${toCamel(item.key)}.tooltip` as never,
 								)}
+								changeKind={changeByKey.get(item.key) ?? null}
 								itemUnmet={
 									item.unmetReason
 										? t(
@@ -899,6 +908,7 @@ function ReadinessGapRow({
 	itemDescription,
 	itemTooltip,
 	itemUnmet,
+	changeKind,
 	ctaReachable,
 	ctaHref,
 	onCtaClick,
@@ -921,6 +931,8 @@ function ReadinessGapRow({
 	 * from what would satisfy it.
 	 */
 	itemUnmet: string | null;
+	/** What happened to this item since the viewer last looked, if anything. */
+	changeKind: "COMPLETED" | "REGRESSED" | "APPEARED" | null;
 	/**
 	 * Whether the call to action's destination exists for this viewer. A tab
 	 * outside their visible set silently redirects to Overview, so the button is
@@ -965,6 +977,20 @@ function ReadinessGapRow({
 			>
 				{t(`needLevel.${item.needLevel}` as never)}
 			</span>
+			{changeKind && (
+				<span
+					className={cn(
+						"rounded px-1.5 py-0.5 font-medium text-[10px] uppercase tracking-wider",
+						changeKind === "REGRESSED"
+							? "bg-destructive/15 text-destructive"
+							: changeKind === "COMPLETED"
+								? "bg-secondary/15 text-secondary"
+								: "bg-highlight/15 text-highlight",
+					)}
+				>
+					{t(`panel.change${changeKind}` as never)}
+				</span>
+			)}
 			{/* The sheet carries a short description and a tooltip for every row
 			    and neither was ever rendered — the whole explanation of what an
 			    item wants existed in the catalogue and never reached the page:
@@ -1250,6 +1276,7 @@ function ReadinessCta({
  */
 function ReadinessSummaryStrip({
 	t,
+	hasUnseenChanges,
 	level,
 	requiredOutstanding,
 	completedCount,
@@ -1258,6 +1285,8 @@ function ReadinessSummaryStrip({
 	onExpand,
 }: {
 	t: ReturnType<typeof useTranslations<"readiness">>;
+	/** Something moved while this person was away; marked, never animated. */
+	hasUnseenChanges: boolean;
 	level: "NOT_READY" | "PARTIALLY_READY" | "READY";
 	requiredOutstanding: number;
 	completedCount: number;
@@ -1281,6 +1310,12 @@ function ReadinessSummaryStrip({
 					LEVEL_SURFACE[level],
 				)}
 			>
+				{hasUnseenChanges && (
+					<span
+						className="size-2 shrink-0 rounded-full bg-highlight"
+						aria-label={t("panel.unseenChanges")}
+					/>
+				)}
 				<span className="font-semibold text-[11px] uppercase tracking-[0.2em]">
 					{t(`level.${level}` as never)}
 				</span>

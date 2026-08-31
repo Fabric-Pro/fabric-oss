@@ -6,13 +6,14 @@ import {
 } from "@saas/get-started/lib/tour-steps";
 import { useOrganizationContext } from "@saas/organizations/hooks/use-organization-context";
 import { orpcClient } from "@shared/lib/orpc-client";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
 	createContext,
 	type ReactNode,
 	useCallback,
 	useContext,
 	useEffect,
+	useRef,
 	useState,
 } from "react";
 
@@ -45,8 +46,37 @@ export interface ReadinessItem {
 	target: { kind: "tab"; tab: string } | { kind: "settings"; subTab: string };
 }
 
+/** What has changed since this viewer last opened the panel. */
+/**
+ * Whether the panel has already opened itself today, in the VIEWER's day.
+ *
+ * Local rather than UTC deliberately: a cap that resets mid-afternoon for half
+ * the team is not "once a day" in any sense a person recognises.
+ */
+function isFirstViewToday(autoExpandedAt: string | Date | null): boolean {
+	if (!autoExpandedAt) {
+		return true;
+	}
+	const last = new Date(autoExpandedAt);
+	const midnight = new Date();
+	midnight.setHours(0, 0, 0, 0);
+	return last < midnight;
+}
+
+/** What has changed since this viewer last opened the panel. */
+interface ReadinessAttention {
+	changes: Array<{
+		key: string;
+		kind: "COMPLETED" | "REGRESSED" | "APPEARED";
+	}>;
+	levelDropped: boolean;
+	seenAt: string | Date | null;
+	autoExpandedAt: string | Date | null;
+}
+
 interface ReadinessData {
 	enabled: boolean;
+	attention: ReadinessAttention;
 	level: "NOT_READY" | "PARTIALLY_READY" | "READY";
 	phase: "DISCOVERY_PLANNING" | "DEVELOPMENT_EXECUTION";
 	/** "inferred" means nobody chose the phase — say so rather than implying it. */
@@ -192,27 +222,93 @@ export function ProjectReadinessProvider({
 	}, [projectId, refetch]);
 
 	/**
-	 * Expand by default when the project is not Ready, per the acceptance
-	 * criteria. Tracked per project rather than per render so that collapsing it
-	 * sticks while the user moves between tabs — re-expanding on every tab change
-	 * would make the control useless.
+	 * When the panel is allowed to open itself.
+	 *
+	 * It used to expand on every project open while the project was not Ready,
+	 * which is most projects most of the time — so the one gesture the panel
+	 * offers, closing it, was undone by walking away and coming back. Attention
+	 * that fires constantly stops being attention.
+	 *
+	 * Two rules replace it, and one rule silences both:
+	 *
+	 *  - **Once a day.** The first view of the day on a project that is not
+	 *    Ready opens the panel. Capped server-side per person per project, so
+	 *    it survives a reload and does not follow the user between tabs.
+	 *  - **Whenever things got worse.** A level drop, or an item that was
+	 *    complete and is not any more, ignores the daily cap: a repository
+	 *    disconnecting or a document regenerating into failure is news whenever
+	 *    it happens, and nothing else in the product announces it.
+	 *  - **Never after a manual collapse.** Closing the panel answers the
+	 *    question for the rest of the session, and a Ready project is never
+	 *    opened at all — the card wants that state compact and quiet.
 	 */
+	const [manuallyCollapsed, setManuallyCollapsed] = useState<string | null>(
+		null,
+	);
+
 	useEffect(() => {
-		if (!data?.enabled) {
-			return;
-		}
-		if (autoExpandedFor === projectId) {
+		if (!data?.enabled || autoExpandedFor === projectId) {
 			return;
 		}
 		setAutoExpandedFor(projectId);
-		setExpanded(
-			data.level === "NOT_READY" || data.level === "PARTIALLY_READY",
-		);
-	}, [data, projectId, autoExpandedFor]);
 
-	const handleSetExpanded = useCallback((next: boolean) => {
-		setExpanded(next);
-	}, []);
+		if (data.level === "READY" || manuallyCollapsed === projectId) {
+			return;
+		}
+
+		const gotWorse =
+			data.attention.levelDropped ||
+			data.attention.changes.some((c) => c.kind === "REGRESSED");
+		if (gotWorse || isFirstViewToday(data.attention.autoExpandedAt)) {
+			setExpanded(true);
+			autoExpandedRef.current = true;
+		}
+	}, [data, projectId, autoExpandedFor, manuallyCollapsed]);
+
+	/**
+	 * "Seen" is written when the panel is EXPANDED, never on page load.
+	 *
+	 * Opening a project with the panel collapsed must not clear markers nobody
+	 * looked at: an unread badge that clears itself teaches the reader to
+	 * distrust the next one. The auto-expanded flag rides along because only the
+	 * client knows whether the panel opened itself, and the daily cap is about
+	 * that.
+	 */
+	const autoExpandedRef = useRef(false);
+	const markSeen = useMutation({
+		mutationFn: (args: { level: string; autoExpanded: boolean }) =>
+			orpcClient.projects.readiness.markSeen({
+				projectId,
+				organizationId: organizationId ?? null,
+				level: args.level as never,
+				autoExpanded: args.autoExpanded,
+			}),
+	});
+	const seenForRef = useRef<string | null>(null);
+	useEffect(() => {
+		if (!isExpanded || !data?.enabled) {
+			return;
+		}
+		const stamp = `${projectId}:${data.level}`;
+		if (seenForRef.current === stamp) {
+			return;
+		}
+		seenForRef.current = stamp;
+		markSeen.mutate({
+			level: data.level,
+			autoExpanded: autoExpandedRef.current,
+		});
+		autoExpandedRef.current = false;
+	}, [isExpanded, data, projectId, markSeen]);
+
+	const handleSetExpanded = useCallback(
+		(next: boolean) => {
+			setExpanded(next);
+			// A deliberate close answers the question for this session.
+			setManuallyCollapsed(next ? null : projectId);
+		},
+		[projectId],
+	);
 
 	const [inlineSlotCount, setInlineSlotCount] = useState(0);
 	const claimInlineSlot = useCallback(() => {

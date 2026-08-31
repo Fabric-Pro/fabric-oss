@@ -2114,6 +2114,16 @@ model ProjectReadinessVerdict {
   itemKey   String
 
   isComplete Boolean
+  /// Whether the panel could show the item, so a dependency landing is
+  /// distinguishable from the initial seed (Fizzy #2165). Verdict rows are
+  /// written for ALL items on a project's first read, so without this an item
+  /// becoming reachable looks exactly like the row being created.
+  isVisible  Boolean  @default(false)
+  /// When VISIBILITY last flipped. Deliberately separate from `changedAt`:
+  /// that column means "when completion flipped" and "recently completed" reads
+  /// it, so bumping it because a dependency landed would announce long-finished
+  /// items as fresh news — the exact defect this table was corrected for once.
+  visibleChangedAt DateTime?
   /// When the verdict last flipped — not when it was last recomputed.
   changedAt  DateTime @default(now())
 
@@ -4790,6 +4800,21 @@ model ProjectUserPreference {
   // client sanitizes against the live tab list. Shape: @repo/database
   // src/project-tabs.ts.
   projectTabPrefs                   Json?
+  /// Readiness attention state, per user per project (Fizzy #2165).
+  ///
+  /// Every attention rule asks "has anything changed since YOU last looked", and
+  /// nothing answered that: `lastVisitedAt` above records opening the project,
+  /// not opening the checklist, and is overwritten on every visit. Written when
+  /// the panel is EXPANDED rather than on page load — opening a project with the
+  /// panel collapsed must not clear markers nobody saw.
+  readinessSeenAt                   DateTime?
+  /// The level at that moment, so a drop (Ready -> Partially, Partially -> Not)
+  /// can be detected without storing a history.
+  readinessSeenLevel                String?
+  /// When the panel last opened itself for this person, capping the daily
+  /// auto-expand at once. A regression ignores this cap; routine incompleteness
+  /// does not.
+  readinessAutoExpandedAt           DateTime?
   createdAt                         DateTime  @default(now())
   updatedAt                         DateTime  @updatedAt
 
