@@ -262,6 +262,18 @@ export async function generatePlanningAnalysisActivity(
 		sourceRefs: contextResult.sourceRefs,
 		model: metadata?.modelString ?? null,
 		promptSource,
+		// The same list that goes into `content.questions`, handed over as rows.
+		// The blob remains the analysis's own record of what it raised; the ROWS
+		// are what the page reads, because only a row can carry a status and an
+		// answer.
+		questions: questions.map((q) => ({
+			questionId: q.questionId,
+			decisionKind: q.decisionKind,
+			subject: q.subject,
+			question: q.question,
+			recommendedResponse: q.recommendedResponse,
+			whyItMatters: q.whyItMatters,
+		})),
 	});
 
 	if (!persisted) {

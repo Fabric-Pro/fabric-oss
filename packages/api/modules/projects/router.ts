@@ -264,6 +264,7 @@ import {
 	setProjectTabVisibilityProcedure,
 } from "./procedures/project-tabs";
 import {
+	answerTopicQuestionProcedure,
 	createPublishingTopicProcedure,
 	generatePlanningAnalysisProcedure,
 	generatePublishingTopicsNowProcedure,
@@ -274,6 +275,7 @@ import {
 	listCycleChatDeliveriesProcedure,
 	listPublishingCyclesProcedure,
 	listPublishingTopicsProcedure,
+	listTopicDecisionsProcedure,
 	setTopicReadStateProcedure,
 	setTopicSnoozeProcedure,
 	updatePublishingSuiteSettingsProcedure,
@@ -1349,6 +1351,10 @@ export const projectsRouter = {
 		// failed regeneration cannot blank a good analysis the reader still wants.
 		generatePlanningAnalysis: generatePlanningAnalysisProcedure,
 		getPlanningAnalysis: getPlanningAnalysisProcedure,
+		// #1851 (2A-3): the topic's decision thread — questions, their answers,
+		// and the AI Updates a regeneration writes.
+		listTopicDecisions: listTopicDecisionsProcedure,
+		answerTopicQuestion: answerTopicQuestionProcedure,
 	},
 
 	// User Stories & Tasks (Kanban)

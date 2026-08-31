@@ -136,6 +136,15 @@ vi.mock("@repo/database", () => ({
 	startPlanningAnalysisAttempt: planningMocks.startPlanningAnalysisAttempt,
 	getLatestPlanningAnalysis: planningMocks.getLatestPlanningAnalysis,
 	failPlanningAnalysis: planningMocks.failPlanningAnalysis,
+	// 2A-3 (#1851): the decision thread — read it, and answer an open question
+	// on it. `listTopicDecisionsProcedure` (a read) carries NO
+	// `requireEligibleProjectForTopic()` ratchet — see the "reads don't ratchet
+	// like writes do" test below. `answerTopicQuestionProcedure` (a write) DOES,
+	// and that ratchet runs for REAL in this file (backed by
+	// `dbMocks.projectFindUnique` above) — only the DB calls themselves are
+	// mocked here.
+	listTopicDecisions: vi.fn(),
+	answerTopicQuestion: vi.fn(),
 	PublishingTopicProjectNotFoundError:
 		FakePublishingTopicProjectNotFoundError,
 	PublishingTopicTenantMismatchError: FakePublishingTopicTenantMismatchError,
@@ -255,6 +264,7 @@ vi.mock("../orpc/procedures", () => {
 });
 
 import {
+	answerTopicQuestion,
 	countPublishingCycleRecipients,
 	countPublishingCycles,
 	createManualPublishingTopic,
@@ -265,6 +275,7 @@ import {
 	listPublishingCycles,
 	getPublishingTopic,
 	listPublishingTopics,
+	listTopicDecisions,
 	Prisma,
 	PublishingTopicProjectNotFoundError,
 	PublishingTopicTenantMismatchError,
@@ -275,6 +286,7 @@ import {
 } from "@repo/database";
 import { Permissions } from "@repo/permissions";
 import {
+	answerTopicQuestionProcedure,
 	createPublishingTopicProcedure,
 	generatePlanningAnalysisProcedure,
 	generatePublishingTopicsNowProcedure,
@@ -284,6 +296,7 @@ import {
 	listCycleChatDeliveriesProcedure,
 	listPublishingCyclesProcedure,
 	listPublishingTopicsProcedure,
+	listTopicDecisionsProcedure,
 	setTopicReadStateProcedure,
 	setTopicSnoozeProcedure,
 	updatePublishingTopicPostTypesProcedure,
@@ -318,6 +331,12 @@ const generatePlanningHandler = (
 ).handler;
 const getPlanningHandler = (
 	getPlanningAnalysisProcedure as unknown as HandlerBearing
+).handler;
+const listDecisionsHandler = (
+	listTopicDecisionsProcedure as unknown as HandlerBearing
+).handler;
+const answerQuestionHandler = (
+	answerTopicQuestionProcedure as unknown as HandlerBearing
 ).handler;
 const listCyclesHandler = (
 	listPublishingCyclesProcedure as unknown as HandlerBearing
@@ -938,6 +957,37 @@ describe("feature flag gating — flag OFF is NOT_FOUND for every procedure", ()
 		expect(
 			generateNowMocks.requestPublishingGeneration,
 		).not.toHaveBeenCalled();
+	});
+
+	it("listTopicDecisions", async () => {
+		await expect(
+			listDecisionsHandler({
+				input: { projectId: "p1", topicId: "t1", organizationId: null },
+				context: ctx,
+			}),
+		).rejects.toMatchObject({ code: "NOT_FOUND" });
+		expect(listTopicDecisions).not.toHaveBeenCalled();
+	});
+
+	it("answerTopicQuestion", async () => {
+		// The gate runs BEFORE the eligibility ratchet — flag off must never
+		// reach the project lookup at all, the same ordering
+		// generatePlanningAnalysis uses.
+		await expect(
+			answerQuestionHandler({
+				input: {
+					projectId: "p1",
+					topicId: "t1",
+					organizationId: null,
+					questionId: "q1",
+					answer: "Yes.",
+					answerSource: "MANUAL",
+				},
+				context: ctx,
+			}),
+		).rejects.toMatchObject({ code: "NOT_FOUND" });
+		expect(dbMocks.projectFindUnique).not.toHaveBeenCalled();
+		expect(answerTopicQuestion).not.toHaveBeenCalled();
 	});
 });
 
@@ -1779,5 +1829,140 @@ describe("getPlanningAnalysis", () => {
 				context: ctx,
 			}),
 		).resolves.toEqual({ latestAttempt: null, latestReady: null });
+	});
+});
+
+describe("listTopicDecisions", () => {
+	it("scopes the read to the project, never the topic id alone", async () => {
+		listTopicDecisions.mockResolvedValue([]);
+
+		await listDecisionsHandler({
+			input: { projectId: "p1", topicId: "t1", organizationId: null },
+			context: ctx,
+		});
+
+		expect(listTopicDecisions).toHaveBeenCalledWith({
+			projectId: "p1",
+			topicId: "t1",
+		});
+	});
+
+	it("returns a topic's thread even when the project is archived — reads don't ratchet like writes do", async () => {
+		// Unlike generatePlanningAnalysis (a write), this read carries no
+		// requireEligibleProjectForTopic() call: an archived project must not
+		// 404 this ONE tab of the Topic Item Page while the header and the
+		// Planning & Analysis tab render normally. `dbMocks.projectFindUnique`
+		// is set to what the ACTIVE-only ratchet would see for an archived
+		// project (nothing found) precisely so that a reintroduced ratchet call
+		// would throw NOT_FOUND here and redden this test.
+		dbMocks.projectFindUnique.mockResolvedValue(null);
+		listTopicDecisions.mockResolvedValue([]);
+
+		await expect(
+			listDecisionsHandler({
+				input: { projectId: "p1", topicId: "t1", organizationId: null },
+				context: ctx,
+			}),
+		).resolves.toEqual({ threads: [] });
+		expect(dbMocks.projectFindUnique).not.toHaveBeenCalled();
+	});
+});
+
+describe("answerTopicQuestion", () => {
+	beforeEach(() => {
+		dbMocks.projectFindUnique.mockResolvedValue({
+			id: "p1",
+			organizationId: "org-1",
+		});
+		answerTopicQuestion.mockResolvedValue({
+			status: "resolved",
+			root: { id: "root-1", status: "RESOLVED" },
+		});
+	});
+
+	const call = (input: Record<string, unknown> = {}) =>
+		answerQuestionHandler({
+			input: {
+				projectId: "p1",
+				topicId: "t1",
+				organizationId: null,
+				questionId: "q1",
+				answer: "Yes.",
+				answerSource: "MANUAL",
+				...input,
+			},
+			context: ctx,
+		});
+
+	it("is gated on PUBLISHING_TOPIC_UPDATE", () => {
+		expect(
+			(answerTopicQuestionProcedure as unknown as HandlerBearing)
+				.__permission,
+		).toBe(Permissions.PUBLISHING_TOPIC_UPDATE);
+	});
+
+	it("applies the eligibility ratchet — a write, unlike listTopicDecisions above", async () => {
+		await call();
+
+		expect(dbMocks.projectFindUnique).toHaveBeenCalledWith(
+			expect.objectContaining({
+				where: { id: "p1", status: "ACTIVE", deletedAt: null },
+			}),
+		);
+	});
+
+	it("NOT_FOUND when the project is archived, deleted or absent", async () => {
+		dbMocks.projectFindUnique.mockResolvedValue(null);
+
+		await expect(call()).rejects.toMatchObject({ code: "NOT_FOUND" });
+		expect(answerTopicQuestion).not.toHaveBeenCalled();
+	});
+
+	it("rejects a positively-wrong organizationId, and only that", async () => {
+		await expect(call({ organizationId: "org-2" })).rejects.toMatchObject({
+			code: "BAD_REQUEST",
+		});
+		// A guest on a personal-context page sends null for an org-owned project.
+		// That must keep working, or the ratchet becomes a bug.
+		await expect(call({ organizationId: null })).resolves.toMatchObject({
+			status: "resolved",
+		});
+	});
+
+	it("re-scopes the write to the project, never the topic id alone", async () => {
+		await call();
+
+		expect(answerTopicQuestion).toHaveBeenCalledWith(
+			expect.objectContaining({ projectId: "p1", topicId: "t1" }),
+		);
+	});
+
+	it("passes the caller as the author, never a client-supplied id", async () => {
+		await call({ authorUserId: "someone-else" });
+
+		expect(answerTopicQuestion).toHaveBeenCalledWith(
+			expect.objectContaining({ authorUserId: "u1" }),
+		);
+	});
+
+	it("surfaces an unknown question as NOT_FOUND", async () => {
+		answerTopicQuestion.mockResolvedValue({
+			status: "not_found",
+			root: null,
+		});
+
+		await expect(call()).rejects.toMatchObject({ code: "NOT_FOUND" });
+	});
+
+	it("returns the helper's status and root unchanged", async () => {
+		answerTopicQuestion.mockResolvedValue({
+			status: "deduped",
+			root: { id: "root-1", status: "RESOLVED" },
+		});
+
+		await expect(call()).resolves.toEqual({
+			status: "deduped",
+			root: { id: "root-1", status: "RESOLVED" },
+		});
 	});
 });

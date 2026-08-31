@@ -790,6 +790,12 @@ export const PublishingTopicPlanningAnalysisScalarFieldEnumSchema = z.enum(['id'
 
 export type PublishingTopicPlanningAnalysisScalarFieldEnum = z.infer<typeof PublishingTopicPlanningAnalysisScalarFieldEnumSchema>;
 
+// File: PublishingTopicDecisionEntryScalarFieldEnum.schema.ts
+
+export const PublishingTopicDecisionEntryScalarFieldEnumSchema = z.enum(['id', 'topicId', 'projectId', 'organizationId', 'userId', 'parentId', 'authorType', 'authorUserId', 'status', 'kind', 'questionId', 'decisionKind', 'subject', 'summary', 'content', 'recommendedResponse', 'whyItMatters', 'answerSource', 'analysisVersion', 'deletedAt', 'createdAt', 'updatedAt'])
+
+export type PublishingTopicDecisionEntryScalarFieldEnum = z.infer<typeof PublishingTopicDecisionEntryScalarFieldEnumSchema>;
+
 // File: PublishingTopicReadScalarFieldEnum.schema.ts
 
 export const PublishingTopicReadScalarFieldEnumSchema = z.enum(['id', 'topicId', 'userId', 'projectId', 'organizationId', 'readAt'])
@@ -2427,6 +2433,12 @@ export type PublishingTopicPostType = z.infer<typeof PublishingTopicPostTypeSche
 export const PublishingPlanningAnalysisStatusSchema = z.enum(['GENERATING', 'READY', 'FAILED'])
 
 export type PublishingPlanningAnalysisStatus = z.infer<typeof PublishingPlanningAnalysisStatusSchema>;
+
+// File: PublishingDecisionEntryKind.schema.ts
+
+export const PublishingDecisionEntryKindSchema = z.enum(['QUESTION', 'AI_UPDATE'])
+
+export type PublishingDecisionEntryKind = z.infer<typeof PublishingDecisionEntryKindSchema>;
 
 // File: TestCaseState.schema.ts
 
@@ -6290,6 +6302,36 @@ export const PublishingTopicPlanningAnalysisSchema = z.object({
 });
 
 export type PublishingTopicPlanningAnalysisType = z.infer<typeof PublishingTopicPlanningAnalysisSchema>;
+
+
+// File: PublishingTopicDecisionEntry.schema.ts
+
+export const PublishingTopicDecisionEntrySchema = z.object({
+  id: z.string(),
+  topicId: z.string(),
+  projectId: z.string(),
+  organizationId: z.string().nullish(),
+  userId: z.string().nullish(),
+  parentId: z.string().nullish(),
+  authorType: DecisionAuthorTypeSchema,
+  authorUserId: z.string().nullish(),
+  status: DecisionStatusSchema.default("OPEN"),
+  kind: PublishingDecisionEntryKindSchema.default("QUESTION"),
+  questionId: z.string().nullish(),
+  decisionKind: z.string().nullish(),
+  subject: z.string().nullish(),
+  summary: z.string().nullish(),
+  content: z.string().nullish(),
+  recommendedResponse: z.string().nullish(),
+  whyItMatters: z.string().nullish(),
+  answerSource: AnswerSourceSchema.nullish(),
+  analysisVersion: z.number().int().nullish(),
+  deletedAt: z.date().nullish(),
+  createdAt: z.date(),
+  updatedAt: z.date(),
+});
+
+export type PublishingTopicDecisionEntryType = z.infer<typeof PublishingTopicDecisionEntrySchema>;
 
 
 // File: PublishingTopicRead.schema.ts

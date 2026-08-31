@@ -155,6 +155,7 @@ const USER_OWNED_TABLES = new Set([
 	"PublishingNotificationDelivery", // Publishing Suite delivery ledger - tenant XOR + projectId
 	"PublishingChatDelivery", // Publishing Suite chat broadcast ledger - tenant XOR + projectId
 	"PublishingTopicPlanningAnalysis", // Publishing Suite planning worksheet - tenant XOR + projectId
+	"PublishingTopicDecisionEntry", // Publishing Suite topic decision threads - tenant XOR
 	// Note: TestResultEvent (run-result history) is a columnless child of TestCase and
 	// is intentionally NOT registered in any category here — injecting an
 	// organizationId/userId filter would make Prisma throw "Unknown argument". Tenant
@@ -293,6 +294,7 @@ const PROJECT_SCOPED_TABLES: Record<string, string> = {
 	PublishingNotificationDelivery: "projectId",
 	PublishingChatDelivery: "projectId",
 	PublishingTopicPlanningAnalysis: "projectId",
+	PublishingTopicDecisionEntry: "projectId",
 	Epic: "projectId",
 	Feature: "projectId",
 	TaskWorkflowPlan: "projectId",

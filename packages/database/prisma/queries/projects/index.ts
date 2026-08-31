@@ -50,6 +50,7 @@ export * from "./priority-history";
 export * from "./project-shortcuts";
 export * from "./projects";
 export * from "./publishing-chat-delivery";
+export * from "./publishing-decisions";
 export * from "./publishing-last-run";
 export * from "./publishing-notification-delivery";
 export * from "./publishing-notification-drain";

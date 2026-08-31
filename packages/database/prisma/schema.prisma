@@ -270,6 +270,8 @@ model User {
   publishingTopicReads PublishingTopicRead[]
   publishingPlanningAnalyses   PublishingTopicPlanningAnalysis[] @relation("PublishingPlanningAnalysisTenant")
   publishingPlanningAnalysesRequested PublishingTopicPlanningAnalysis[] @relation("PublishingPlanningAnalysisRequestedBy")
+  publishingTopicDecisions     PublishingTopicDecisionEntry[]
+  authoredPublishingTopicDecisions PublishingTopicDecisionEntry[] @relation("PublishingTopicDecisionAuthor")
 
   // Notification center relations
   notifications                   Notification[]
@@ -685,6 +687,7 @@ model Organization {
   publishingSuiteSettings                 PublishingSuiteSettings[]
   publishingTopicReads                    PublishingTopicRead[]
   publishingPlanningAnalyses              PublishingTopicPlanningAnalysis[]
+  publishingTopicDecisions                PublishingTopicDecisionEntry[]
 
   // Dynamic agent relations
   offloadedToolOutputs   OffloadedToolOutput[]
@@ -1733,6 +1736,7 @@ model Project {
   publishingSuggestionCycles PublishingSuggestionCycle[]
   publishingTopics           PublishingTopic[]
   publishingPlanningAnalyses PublishingTopicPlanningAnalysis[]
+  publishingTopicDecisions   PublishingTopicDecisionEntry[]
   publishingSuiteSettings    PublishingSuiteSettings?
 
   // Episodic memory relation (conversations scoped to project)
@@ -6803,6 +6807,7 @@ model PublishingTopic {
   createdBy    User?                      @relation("PublishingTopicCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
   readMarkers  PublishingTopicRead[]
   planningAnalyses PublishingTopicPlanningAnalysis[]
+  publishingTopicDecisions PublishingTopicDecisionEntry[]
 
   @@unique([projectId, dedupeKey]) // project-wide dedup across ALL statuses (dedupeKey is non-null)
   @@index([projectId, status])
@@ -6873,6 +6878,73 @@ enum PublishingPlanningAnalysisStatus {
   GENERATING
   READY
   FAILED
+}
+
+enum PublishingDecisionEntryKind {
+  QUESTION
+  AI_UPDATE
+}
+
+/// One turn in a publishing topic's decision thread: an OPEN question root, the
+/// answer reply that resolves it, or an AGENT-authored AI Update note.
+///
+/// Tenancy and authorship are SEPARATE columns, unlike `DecisionLogEntry` whose
+/// `userId` is a required owner key. `PublishingTopic` is XOR-normalised — an
+/// org topic has `userId = null` — so a child of a topic cannot carry a
+/// required `userId`. `authorUserId` is who wrote the turn, never tenancy.
+///
+/// A SIXTH index exists that Prisma cannot express: the partial unique
+/// `publishing_topic_decision_entry_question_root` on ("topicId", "questionId")
+/// WHERE "parentId" IS NULL AND "deletedAt" IS NULL, added in migration
+/// 20260831120000. It is the reconciliation key — without it a regeneration
+/// mints a duplicate of a question the user may already have answered.
+/// Documented here because a shadow-database diff can read it as drift and
+/// try to DROP it.
+model PublishingTopicDecisionEntry {
+  id             String                      @id @default(cuid())
+  topicId        String
+  projectId      String
+  organizationId String?
+  userId         String?
+  parentId       String?
+  authorType     DecisionAuthorType
+  authorUserId   String?
+  status         DecisionStatus              @default(OPEN)
+  kind           PublishingDecisionEntryKind @default(QUESTION)
+  questionId     String?
+  /// The question's CATEGORY (`CUSTOMER_NAME`, `ASSET_APPROVAL`, …). Stored
+  /// rather than re-read from the analysis, because a question answered against
+  /// version 1 must still render its own grouping after version 2 supersedes
+  /// that analysis.
+  decisionKind   String?
+  subject        String?
+  summary        String?                     @db.Text
+  content        String?                     @db.Text
+  recommendedResponse String?                @db.Text
+  /// The rationale behind the question — why the decision matters, not what
+  /// it is. Carried from the analysis's own `whyItMatters` field so a reader
+  /// on the Summary & Questions tab sees why to bother, not just what to
+  /// answer.
+  whyItMatters   String?                     @db.Text
+  answerSource   AnswerSource?
+  analysisVersion Int?
+  deletedAt      DateTime?
+  createdAt      DateTime                    @default(now())
+  updatedAt      DateTime                    @updatedAt
+
+  topic        PublishingTopic                @relation(fields: [topicId], references: [id], onDelete: Cascade)
+  project      Project                        @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  parent       PublishingTopicDecisionEntry?  @relation("PublishingTopicDecisionReplies", fields: [parentId], references: [id], onDelete: Cascade)
+  replies      PublishingTopicDecisionEntry[] @relation("PublishingTopicDecisionReplies")
+  organization Organization?                  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User?                          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  author       User?                          @relation("PublishingTopicDecisionAuthor", fields: [authorUserId], references: [id], onDelete: SetNull)
+
+  @@index([topicId, createdAt])
+  @@index([parentId])
+  @@index([organizationId])
+  @@index([userId])
+  @@map("publishing_topic_decision_entry")
 }
 
 /// Per-user read marker for a publishing topic (1D, Fizzy #2265).

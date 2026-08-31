@@ -15,6 +15,10 @@ export {
 } from "./planning-analysis";
 export { setTopicReadStateProcedure } from "./set-topic-read-state";
 export { setTopicSnoozeProcedure } from "./set-topic-snooze";
+export {
+	answerTopicQuestionProcedure,
+	listTopicDecisionsProcedure,
+} from "./topic-decisions";
 export { updatePublishingSuiteSettingsProcedure } from "./update-settings";
 export { updatePublishingTopicPostTypesProcedure } from "./update-topic-post-types";
 export { updatePublishingTopicStatusProcedure } from "./update-topic-status";

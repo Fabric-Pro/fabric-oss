@@ -8,7 +8,6 @@ import { AlertTriangleIcon, Loader2Icon, SparklesIcon } from "lucide-react";
 import { toast } from "sonner";
 import {
 	isEmptyAnalysis,
-	type PlanningQuestion,
 	readPlanningAnalysis,
 } from "./planning-analysis-content";
 
@@ -43,9 +42,13 @@ export interface PlanningAnalysisRow {
  * minutes the next one runs — precisely when its reader most wants the last
  * good one.
  *
- * Data is fetched by the page rather than here, so the Summary & Questions tab
- * can render the same questions (FR39) from the same cache entry without a
- * second poll.
+ * Data is fetched by the page rather than here: `latestAttempt`'s status also
+ * drives the Summary & Questions tab's `TopicQuestionsPanel`, which explains a
+ * failed regeneration (`analysisFailed`) rather than rendering as though
+ * nothing was ever raised — so both tabs need the same row from one poll. The
+ * questions themselves no longer travel with this data at all; they are read
+ * from the topic's decision-thread rows (2A-3), a separate query the page
+ * fetches alongside this one.
  */
 export function PlanningAnalysisTab({
 	projectId,
@@ -368,50 +371,5 @@ function Provenance({ row }: { row: PlanningAnalysisRow }) {
 					: " · built from the default prompt"
 				: ""}
 		</p>
-	);
-}
-
-/**
- * The open questions, read-only (FR39).
- *
- * Rendered by the Summary & Questions tab as well as by the worksheet, from the
- * same parsed document — which is what stops the two surfaces disagreeing about
- * which decisions are still open. Answering them is 2A-3's job; this phase's
- * obligation is that a decision the analysis flagged is never invisible.
- */
-export function TopicOpenQuestions({
-	questions,
-}: {
-	questions: PlanningQuestion[];
-}) {
-	if (questions.length === 0) {
-		return null;
-	}
-	return (
-		<section className="space-y-3">
-			<h3 className="editorial-label">Open questions</h3>
-			<ul className="space-y-3">
-				{questions.map((q) => (
-					<li
-						key={q.questionId}
-						className="rounded-lg border border-border bg-card p-4"
-					>
-						<p className="text-foreground text-sm leading-relaxed">
-							{q.question}
-						</p>
-						{q.recommendedResponse ? (
-							<p className="mt-1.5 text-muted-foreground text-sm leading-relaxed">
-								Suggested: {q.recommendedResponse}
-							</p>
-						) : null}
-						{q.whyItMatters ? (
-							<p className="mt-1.5 text-muted-foreground text-xs leading-relaxed">
-								{q.whyItMatters}
-							</p>
-						) : null}
-					</li>
-				))}
-			</ul>
-		</section>
 	);
 }
