@@ -1,6 +1,5 @@
 "use client";
 
-import type { AiReadinessData } from "./ReadinessBar";
 import { Badge } from "@ui/components/badge";
 import { Button } from "@ui/components/button";
 import { Markdown } from "@ui/components/markdown";
@@ -15,6 +14,7 @@ import {
 import { Loader2, SparklesIcon } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { useEffect, useMemo, useState } from "react";
+import type { AiReadinessData } from "./ReadinessBar";
 import { ReadinessBar } from "./ReadinessBar";
 import type {
 	AnswerSource,
@@ -189,9 +189,12 @@ export function SummaryQuestionsPanel({
 	const [activeId, setActiveId] = useState<string | null>(null);
 	const [answer, setAnswer] = useState("");
 	const [summary, setSummary] = useState("");
-	// True when the open custom field was reached from a question that had AI
-	// suggestions — so a typed answer is recorded as AI_EDITED, not MANUAL (#7).
-	const [activeFromSuggestion, setActiveFromSuggestion] = useState(false);
+	// The suggestion text the open answer field was seeded with, or null when the
+	// field was opened empty. Seeding is what separates the three provenances on
+	// submit: null is MANUAL (nothing was taken from the AI — including "type your
+	// own" on a question that DID offer suggestions), an unchanged seed is a plain
+	// AI_SUGGESTED acceptance, and a changed one is a real AI_EDITED edit (#1907).
+	const [editingSeed, setEditingSeed] = useState<string | null>(null);
 	const [showPossiblyResolved, setShowPossiblyResolved] = useState(false);
 
 	// Local mirror of the notebook text. Seeded from the server value and only
@@ -218,11 +221,14 @@ export function SummaryQuestionsPanel({
 		}
 	};
 
-	const open = (id: string, fromSuggestion = false) => {
+	// `seed` pre-fills the field with a suggestion's text (the Edit affordance);
+	// omitting it opens an empty field, which is what "type your own" and a
+	// question with no suggestions both do.
+	const open = (id: string, seed?: string) => {
 		setActiveId(id);
-		setAnswer("");
+		setAnswer(seed ?? "");
 		setSummary("");
-		setActiveFromSuggestion(fromSuggestion);
+		setEditingSeed(seed ?? null);
 	};
 
 	// Group the open questions by topic so the PO can triage by subject. A single
@@ -301,7 +307,10 @@ export function SummaryQuestionsPanel({
 						</p>
 						<ul className="space-y-2">
 							{options.map((opt) => (
-								<li key={opt.text}>
+								<li key={opt.text} className="flex gap-2">
+									{/* Accept and Edit are siblings, not nested:
+									    the accept affordance is itself a button,
+									    so Edit cannot live inside it. */}
 									<Button
 										type="button"
 										variant="outline"
@@ -319,7 +328,7 @@ export function SummaryQuestionsPanel({
 											}
 										}}
 										disabled={isAnswering}
-										className="h-auto w-full flex-col items-start gap-0.5 whitespace-normal py-2 text-left"
+										className="h-auto flex-1 flex-col items-start gap-0.5 whitespace-normal py-2 text-left"
 									>
 										<span className="text-xs font-medium">
 											{opt.text}
@@ -330,6 +339,24 @@ export function SummaryQuestionsPanel({
 											</span>
 										)}
 									</Button>
+									<Button
+										type="button"
+										variant="ghost"
+										size="sm"
+										onClick={() =>
+											open(thread.root.id, opt.text)
+										}
+										disabled={isAnswering}
+										// Several Edit controls render at once, so
+										// a bare "Edit" is ambiguous to a screen
+										// reader — name the suggestion.
+										aria-label={t("editSuggestionAria", {
+											text: opt.text,
+										})}
+										className="self-start text-xs"
+									>
+										{t("editSuggestion")}
+									</Button>
 								</li>
 							))}
 						</ul>
@@ -337,7 +364,7 @@ export function SummaryQuestionsPanel({
 							type="button"
 							variant="ghost"
 							size="sm"
-							onClick={() => open(thread.root.id, true)}
+							onClick={() => open(thread.root.id)}
 							disabled={isAnswering}
 							className="text-xs"
 						>
@@ -363,11 +390,20 @@ export function SummaryQuestionsPanel({
 		if (!answer.trim() || !questionId) {
 			return;
 		}
-		onAnswer(questionId, answer.trim(), {
+		const typed = answer.trim();
+		onAnswer(questionId, typed, {
 			summary,
-			// A typed answer from a question that offered suggestions is an edit/
-			// override (AI_EDITED); from a plain question it's MANUAL (#7).
-			answerSource: activeFromSuggestion ? "AI_EDITED" : "MANUAL",
+			// Three outcomes, decided by what the field was seeded with (#1907):
+			// no seed means nothing was taken from the AI, so MANUAL — this covers
+			// "type your own" even when suggestions were on offer. A seed saved
+			// untouched is a plain acceptance (AI_SUGGESTED), not an edit. Only a
+			// seed the PO actually changed is AI_EDITED.
+			answerSource:
+				editingSeed === null
+					? "MANUAL"
+					: typed === editingSeed.trim()
+						? "AI_SUGGESTED"
+						: "AI_EDITED",
 		});
 	};
 

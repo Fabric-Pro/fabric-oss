@@ -6319,9 +6319,19 @@ enum DecisionSource {
 
 /// How a PO produced the answer to an open question, relative to the AI's proposed
 /// recommendation (demo feedback #7). Queryable so we can measure recommendation
-/// acceptance. AI_SUGGESTED = took a suggested option/recommendation unchanged;
-/// AI_EDITED = a recommendation was offered but the PO typed their own answer;
-/// MANUAL = typed from scratch with no recommendation on offer.
+/// acceptance. AI_SUGGESTED = took a suggested option/recommendation unchanged,
+/// whether by one click or by opening it in the editor and saving it untouched;
+/// AI_EDITED = opened a suggestion in the editor and changed its text;
+/// MANUAL = typed the answer from an empty box — including when suggestions were
+/// on offer and the PO ignored them ("type your own"), since nothing was taken
+/// from the AI in that case.
+///
+/// AI_EDITED previously meant "a recommendation was offered but the PO typed their
+/// own answer" — there was no way to start from a suggestion and edit it, so the
+/// name never matched. Adding that path freed the value for its literal meaning
+/// and moved the old rows to MANUAL. "The AI offered and was ignored" is still
+/// measurable without a value of its own: the question root persists its
+/// suggestedOptions, so it is that set being non-empty next to a MANUAL answer.
 enum AnswerSource {
   AI_SUGGESTED
   AI_EDITED
