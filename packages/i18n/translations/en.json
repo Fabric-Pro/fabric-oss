@@ -5409,6 +5409,12 @@
 		},
 		"reports": {
 			"generationError": "This run stopped before producing a report. The message comes from the report engine — re-running the template retries from the start."
+		},
+		"publishing": {
+			"markRead": "Mark this topic as read. It stays in the Inbox — only the unread dot goes.",
+			"markUnread": "Mark this topic as unread, so it stands out in the Inbox again.",
+			"snooze": "Hide this topic from the Inbox until a date you pick. It comes back on its own.",
+			"unsnooze": "Bring this topic back into the Inbox now, before its snooze runs out."
 		}
 	},
 	"diagrams": {
