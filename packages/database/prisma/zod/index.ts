@@ -252,7 +252,7 @@ export type ProjectReadinessItemStateScalarFieldEnum = z.infer<typeof ProjectRea
 
 // File: ProjectReadinessVerdictScalarFieldEnum.schema.ts
 
-export const ProjectReadinessVerdictScalarFieldEnumSchema = z.enum(['id', 'projectId', 'itemKey', 'isComplete', 'changedAt', 'userId', 'organizationId', 'createdAt', 'updatedAt'])
+export const ProjectReadinessVerdictScalarFieldEnumSchema = z.enum(['id', 'projectId', 'itemKey', 'isComplete', 'isVisible', 'visibleChangedAt', 'changedAt', 'userId', 'organizationId', 'createdAt', 'updatedAt'])
 
 export type ProjectReadinessVerdictScalarFieldEnum = z.infer<typeof ProjectReadinessVerdictScalarFieldEnumSchema>;
 
@@ -576,7 +576,7 @@ export type RequestSpanScalarFieldEnum = z.infer<typeof RequestSpanScalarFieldEn
 
 // File: ProjectUserPreferenceScalarFieldEnum.schema.ts
 
-export const ProjectUserPreferenceScalarFieldEnumSchema = z.enum(['id', 'projectId', 'userId', 'organizationId', 'kanbanLocalRepoPath', 'inviteWidgetDismissedAt', 'inviteWidgetDismissedInviteExpiry', 'roadmapView', 'roadmapStoryOrder', 'decisionsView', 'favoritedAt', 'lastVisitedAt', 'projectTabPrefs', 'createdAt', 'updatedAt'])
+export const ProjectUserPreferenceScalarFieldEnumSchema = z.enum(['id', 'projectId', 'userId', 'organizationId', 'kanbanLocalRepoPath', 'inviteWidgetDismissedAt', 'inviteWidgetDismissedInviteExpiry', 'roadmapView', 'roadmapStoryOrder', 'decisionsView', 'favoritedAt', 'lastVisitedAt', 'projectTabPrefs', 'readinessSeenAt', 'readinessSeenLevel', 'readinessAutoExpandedAt', 'createdAt', 'updatedAt'])
 
 export type ProjectUserPreferenceScalarFieldEnum = z.infer<typeof ProjectUserPreferenceScalarFieldEnumSchema>;
 
@@ -4152,6 +4152,8 @@ export const ProjectReadinessVerdictSchema = z.object({
   projectId: z.string(),
   itemKey: z.string(),
   isComplete: z.boolean(),
+  isVisible: z.boolean(),
+  visibleChangedAt: z.date().nullish(),
   changedAt: z.date(),
   userId: z.string().nullish(),
   organizationId: z.string().nullish(),
@@ -5461,6 +5463,9 @@ export const ProjectUserPreferenceSchema = z.object({
   favoritedAt: z.date().nullish(),
   lastVisitedAt: z.date().nullish(),
   projectTabPrefs: z.unknown().refine((val) => { const getDepth = (obj: unknown, depth: number = 0): number => { if (depth > 10) return depth; if (obj === null || typeof obj !== 'object') return depth; const values = Object.values(obj as Record<string, unknown>); if (values.length === 0) return depth; return Math.max(...values.map(v => getDepth(v, depth + 1))); }; return getDepth(val) <= 10; }, "JSON nesting depth exceeds maximum of 10").nullish(),
+  readinessSeenAt: z.date().nullish(),
+  readinessSeenLevel: z.string().nullish(),
+  readinessAutoExpandedAt: z.date().nullish(),
   createdAt: z.date(),
   updatedAt: z.date(),
 });

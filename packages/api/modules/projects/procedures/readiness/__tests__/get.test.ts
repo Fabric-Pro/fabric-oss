@@ -12,6 +12,7 @@ const { mockDb, mockIsFeatureEnabled, mockGather } = vi.hoisted(() => ({
 	mockDb: {
 		projectReadinessItemState: { findMany: vi.fn() },
 		projectReadinessVerdict: { findMany: vi.fn(), upsert: vi.fn() },
+		projectUserPreference: { findUnique: vi.fn() },
 		$transaction: vi.fn(async () => []),
 	},
 	mockIsFeatureEnabled: vi.fn(),
@@ -64,6 +65,7 @@ beforeEach(() => {
 	vi.clearAllMocks();
 	mockDb.projectReadinessItemState.findMany.mockResolvedValue([]);
 	mockDb.projectReadinessVerdict.findMany.mockResolvedValue([]);
+	mockDb.projectUserPreference.findUnique.mockResolvedValue(null);
 	mockDb.$transaction.mockResolvedValue([]);
 });
 
@@ -201,6 +203,72 @@ describe("projects.readiness.get — recently completed", () => {
 		);
 	});
 
+	// The trap this nearly walked into a second time. Adding `isVisible` left
+	// every existing row false, so the next read flips visibility on most of
+	// them. If a visibility flip moved `changedAt`, that single pass would date
+	// every long-finished item to now and announce the lot as recently
+	// completed — which is precisely the defect this file was corrected for
+	// when a missing row was read as a transition.
+	it("does not resurface a long-complete item when its visibility flips", async () => {
+		const items = resolveReadiness({
+			evidence: evidenceWithSomeComplete(),
+			manualStates: [],
+			viewerUserId: "user-1",
+			now: new Date(),
+		}).items;
+
+		mockDb.projectReadinessVerdict.findMany.mockResolvedValue(
+			items.map((item) => ({
+				itemKey: item.key,
+				isComplete: item.isComplete,
+				// Every row as the migration leaves it.
+				isVisible: false,
+				visibleChangedAt: null,
+				changedAt: new Date("2020-01-01"),
+			})),
+		);
+
+		const result = await callHandler();
+
+		expect(result.recentlyCompleted).toEqual([]);
+	});
+
+	it("records the visibility it just observed without touching changedAt", async () => {
+		const items = resolveReadiness({
+			evidence: evidenceWithSomeComplete(),
+			manualStates: [],
+			viewerUserId: "user-1",
+			now: new Date(),
+		}).items;
+		const visibleItem = items.find((i) => i.isVisible);
+
+		mockDb.projectReadinessVerdict.findMany.mockResolvedValue(
+			items.map((item) => ({
+				itemKey: item.key,
+				isComplete: item.isComplete,
+				isVisible: false,
+				visibleChangedAt: null,
+				changedAt: new Date("2020-01-01"),
+			})),
+		);
+
+		await callHandler();
+
+		const upsertFor = mockDb.projectReadinessVerdict.upsert.mock.calls
+			.map(([args]) => args as Record<string, never>)
+			.find(
+				(args) =>
+					(
+						args.where as {
+							projectId_itemKey: { itemKey: string };
+						}
+					).projectId_itemKey.itemKey === visibleItem?.key,
+			);
+
+		expect(upsertFor?.update).toMatchObject({ isVisible: true });
+		expect(upsertFor?.update).not.toHaveProperty("changedAt");
+	});
+
 	it("does not report an item that has been complete since before the window", async () => {
 		const items = resolveReadiness({
 			evidence: evidenceWithSomeComplete(),
@@ -220,5 +288,146 @@ describe("projects.readiness.get — recently completed", () => {
 		const result = await callHandler();
 
 		expect(result.recentlyCompleted).toEqual([]);
+	});
+});
+
+/**
+ * Attention: what changed since THIS viewer last looked (Fizzy #2165).
+ *
+ * Verdict rows are project-wide but attention is personal, and the pairing only
+ * works because `changedAt` records when a verdict FLIPPED rather than when it
+ * was recomputed. A per-viewer verdict table would have been the obvious
+ * mistake; these pin the behaviour that makes the shared one correct.
+ */
+describe("projects.readiness.get — attention", () => {
+	/** Same shape the recently-completed suite uses: a few items detect complete. */
+	function someComplete() {
+		const evidence = emptyEvidence();
+		evidence.featureCount = 3;
+		evidence.techStackCount = 2;
+		evidence.acceptedMemberCount = 2;
+		return evidence;
+	}
+
+	function storedAs(
+		overrides: Partial<{
+			isComplete: boolean;
+			isVisible: boolean;
+			changedAt: Date;
+			visibleChangedAt: Date | null;
+		}> = {},
+	) {
+		const items = resolveReadiness({
+			evidence: someComplete(),
+			manualStates: [],
+			viewerUserId: "user-1",
+			now: new Date(),
+		}).items;
+		return items.map((item) => ({
+			itemKey: item.key,
+			isComplete: item.isComplete,
+			isVisible: item.isVisible,
+			changedAt: new Date("2020-01-01"),
+			visibleChangedAt: new Date("2020-01-01"),
+			...overrides,
+		}));
+	}
+
+	beforeEach(() => {
+		mockIsFeatureEnabled.mockResolvedValue(true);
+		mockGather.mockResolvedValue({
+			evidence: someComplete(),
+			tenant: { userId: "u", organizationId: null },
+		});
+	});
+
+	it("reports nothing to a viewer who has never opened the panel", async () => {
+		// Not "nothing changed" — nothing to compare against. Reporting every
+		// flip since the beginning of the project on someone's first open is
+		// noise, not news.
+		mockDb.projectUserPreference.findUnique.mockResolvedValue(null);
+		mockDb.projectReadinessVerdict.findMany.mockResolvedValue(
+			storedAs({ isComplete: false }),
+		);
+
+		const result = await callHandler();
+
+		expect(result.attention.changes).toEqual([]);
+		expect(result.attention.seenAt).toBeNull();
+	});
+
+	it("reports only the flips that happened after the viewer last looked", async () => {
+		mockDb.projectUserPreference.findUnique.mockResolvedValue({
+			readinessSeenAt: new Date("2020-06-01"),
+			readinessSeenLevel: "NOT_READY",
+			readinessAutoExpandedAt: null,
+		});
+		// Stored as incomplete; the resolver says several are complete now, so
+		// those flip on this read and are dated now — after the marker.
+		mockDb.projectReadinessVerdict.findMany.mockResolvedValue(
+			storedAs({ isComplete: false }),
+		);
+
+		const result = await callHandler();
+
+		expect(result.attention.changes.length).toBeGreaterThan(0);
+		expect(
+			result.attention.changes.every((c) => c.kind === "COMPLETED"),
+		).toBe(true);
+	});
+
+	it("calls an item that was complete and is not any more a regression", async () => {
+		mockDb.projectUserPreference.findUnique.mockResolvedValue({
+			readinessSeenAt: new Date("2020-06-01"),
+			readinessSeenLevel: "READY",
+			readinessAutoExpandedAt: null,
+		});
+		// Everything stored complete; the resolver disagrees about most of them.
+		mockDb.projectReadinessVerdict.findMany.mockResolvedValue(
+			storedAs({ isComplete: true }),
+		);
+
+		const result = await callHandler();
+
+		expect(
+			result.attention.changes.some((c) => c.kind === "REGRESSED"),
+		).toBe(true);
+	});
+
+	it("calls a newly reachable item an appearance", async () => {
+		mockDb.projectUserPreference.findUnique.mockResolvedValue({
+			readinessSeenAt: new Date("2020-06-01"),
+			readinessSeenLevel: "NOT_READY",
+			readinessAutoExpandedAt: null,
+		});
+		mockDb.projectReadinessVerdict.findMany.mockResolvedValue(
+			storedAs({ isVisible: false }),
+		);
+
+		const result = await callHandler();
+
+		expect(
+			result.attention.changes.some((c) => c.kind === "APPEARED"),
+		).toBe(true);
+	});
+
+	it("notices the level getting worse, and stays quiet when it improves", async () => {
+		mockDb.projectReadinessVerdict.findMany.mockResolvedValue(storedAs());
+
+		mockDb.projectUserPreference.findUnique.mockResolvedValue({
+			readinessSeenAt: new Date("2020-06-01"),
+			readinessSeenLevel: "READY",
+			readinessAutoExpandedAt: null,
+		});
+		expect((await callHandler()).attention.levelDropped).toBe(true);
+
+		// Climbing back up is the project getting better; the item that caused
+		// it already carries its own marker.
+		mockDb.projectUserPreference.findUnique.mockResolvedValue({
+			readinessSeenAt: new Date("2020-06-01"),
+			readinessSeenLevel: "NOT_READY",
+			readinessAutoExpandedAt: null,
+		});
+		expect((await callHandler()).attention.levelDropped).toBe(false);
 	});
 });

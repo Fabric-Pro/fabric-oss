@@ -5478,7 +5478,11 @@
 			"targetUnavailable": "This step's destination is switched off for this project, so there is nowhere to send you. An administrator can re-enable the tab in project settings.",
 			"nextUp": "Next: {item}",
 			"unlockedBy": "Complete {prerequisite} to unlock {items}.",
-			"itemActions": "Actions for this item"
+			"itemActions": "Actions for this item",
+			"changeCOMPLETED": "Done",
+			"changeREGRESSED": "Needs attention",
+			"changeAPPEARED": "New",
+			"unseenChanges": "Something changed since you last looked"
 		},
 		"level": {
 			"NOT_READY": "Not ready",

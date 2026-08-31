@@ -30,6 +30,13 @@ import {
 const RECENTLY_COMPLETED_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 const RECENTLY_COMPLETED_LIMIT = 2;
 
+/** Not Ready is worse than Partially Ready is worse than Ready. */
+const LEVEL_SEVERITY = {
+	READY: 0,
+	PARTIALLY_READY: 1,
+	NOT_READY: 2,
+} as const;
+
 const ItemSchema = z.object({
 	key: z.string(),
 	category: z.string(),
@@ -93,6 +100,21 @@ export const getReadinessProcedure = tenantProtectedProcedure
 			items: z.array(ItemSchema),
 			activeGaps: z.array(ItemSchema),
 			recentlyCompleted: z.array(z.object({ key: z.string() })),
+			/**
+			 * What has changed since THIS viewer last opened the panel, and how
+			 * hard the panel is allowed to push about it.
+			 */
+			attention: z.object({
+				changes: z.array(
+					z.object({
+						key: z.string(),
+						kind: z.enum(["COMPLETED", "REGRESSED", "APPEARED"]),
+					}),
+				),
+				levelDropped: z.boolean(),
+				seenAt: z.date().nullable(),
+				autoExpandedAt: z.date().nullable(),
+			}),
 		}),
 	)
 	.handler(async ({ input, context }) => {
@@ -108,6 +130,12 @@ export const getReadinessProcedure = tenantProtectedProcedure
 			items: [],
 			activeGaps: [],
 			recentlyCompleted: [],
+			attention: {
+				changes: [],
+				levelDropped: false,
+				seenAt: null,
+				autoExpandedAt: null,
+			},
 		};
 
 		if (!(await isFeatureEnabled("PROJECT_READINESS"))) {
@@ -144,15 +172,49 @@ export const getReadinessProcedure = tenantProtectedProcedure
 			now,
 		});
 
-		const recentlyCompleted = await reconcileVerdicts({
+		const { recentlyCompleted, transitions } = await reconcileVerdicts({
 			projectId: input.projectId,
 			tenant,
 			computed: summary.items.map((item) => ({
 				key: item.key,
 				isComplete: item.isComplete,
+				isVisible: item.isVisible,
 			})),
 			now,
 		});
+
+		// Verdicts are project-wide but attention is personal: `changedAt` is
+		// when a verdict FLIPPED, not when it was recomputed, so comparing it
+		// against one viewer's marker is correct even while teammates are
+		// opening the same panel.
+		const seen = await db.projectUserPreference.findUnique({
+			where: {
+				projectId_userId: {
+					projectId: input.projectId,
+					userId: context.user.id,
+				},
+			},
+			select: {
+				readinessSeenAt: true,
+				readinessSeenLevel: true,
+				readinessAutoExpandedAt: true,
+			},
+		});
+
+		const seenAt = seen?.readinessSeenAt ?? null;
+		const changes = seenAt
+			? transitions.filter((t) => t.changedAt > seenAt)
+			: [];
+
+		// A level DROP is news; climbing back up is not — that is the project
+		// getting better, which the pulse already covers through the item that
+		// caused it.
+		const levelDropped =
+			seen?.readinessSeenLevel != null &&
+			LEVEL_SEVERITY[summary.level] >
+				(LEVEL_SEVERITY[
+					seen.readinessSeenLevel as keyof typeof LEVEL_SEVERITY
+				] ?? 0);
 
 		return {
 			enabled: true,
@@ -166,6 +228,13 @@ export const getReadinessProcedure = tenantProtectedProcedure
 			items: summary.items,
 			activeGaps: summary.activeGaps,
 			recentlyCompleted,
+			attention: {
+				changes: changes.map((c) => ({ key: c.key, kind: c.kind })),
+				levelDropped,
+				/** Null until this viewer has opened the panel at least once. */
+				seenAt,
+				autoExpandedAt: seen?.readinessAutoExpandedAt ?? null,
+			},
 		};
 	});
 
@@ -182,14 +251,32 @@ export const getReadinessProcedure = tenantProtectedProcedure
 async function reconcileVerdicts(args: {
 	projectId: string;
 	tenant: { userId: string | null; organizationId: string | null };
-	computed: Array<{ key: string; isComplete: boolean }>;
+	computed: Array<{ key: string; isComplete: boolean; isVisible: boolean }>;
 	now: Date;
-}): Promise<Array<{ key: string }>> {
+}): Promise<{
+	recentlyCompleted: Array<{ key: string }>;
+	/**
+	 * Every verdict flip, with the instant it happened. The caller filters this
+	 * against one viewer's last-seen marker — the flip time is shared, "have I
+	 * seen it" is not.
+	 */
+	transitions: Array<{
+		key: string;
+		kind: "COMPLETED" | "REGRESSED" | "APPEARED";
+		changedAt: Date;
+	}>;
+}> {
 	const { projectId, tenant, computed, now } = args;
 
 	const stored = await db.projectReadinessVerdict.findMany({
 		where: { projectId },
-		select: { itemKey: true, isComplete: true, changedAt: true },
+		select: {
+			itemKey: true,
+			isComplete: true,
+			isVisible: true,
+			changedAt: true,
+			visibleChangedAt: true,
+		},
 	});
 	const storedByKey = new Map(stored.map((row) => [row.itemKey, row]));
 
@@ -209,38 +296,118 @@ async function reconcileVerdicts(args: {
 	const seededKeys = new Set(seeded.map((item) => item.key));
 	const transitioned = computed.filter((item) => {
 		const prior = storedByKey.get(item.key);
-		return prior !== undefined && prior.isComplete !== item.isComplete;
+		return (
+			prior !== undefined &&
+			(prior.isComplete !== item.isComplete ||
+				prior.isVisible !== item.isVisible)
+		);
+	});
+
+	// The same seed-vs-transition rule, applied to visibility. A row seeded on
+	// this pass has not "appeared" — Fabric simply had not looked before, and
+	// treating a seed as news lights up all 26 rows on a project's first read.
+	const classified = transitioned.flatMap((item) => {
+		const prior = storedByKey.get(item.key);
+		if (!prior) {
+			return [];
+		}
+		const kinds: Array<"COMPLETED" | "REGRESSED" | "APPEARED"> = [];
+		if (prior.isComplete !== item.isComplete) {
+			kinds.push(item.isComplete ? "COMPLETED" : "REGRESSED");
+		}
+		if (!prior.isVisible && item.isVisible) {
+			kinds.push("APPEARED");
+		}
+		return kinds.map((kind) => ({ key: item.key, kind, changedAt: now }));
+	});
+
+	// Completion and visibility are written independently, because only the
+	// former may move `changedAt`. Every row on this project carried
+	// `isVisible = false` the moment the column was added, so the first read
+	// after that flips visibility on most of them — bumping `changedAt` there
+	// would report every long-complete item as recently completed.
+	interface VerdictWrite {
+		key: string;
+		/** Set only for a row that does not exist yet. */
+		create: {
+			isComplete: boolean;
+			isVisible: boolean;
+			changedAt: Date;
+			visibleChangedAt: Date;
+		} | null;
+		update: Record<string, unknown>;
+	}
+	const writes = computed.flatMap<VerdictWrite>((item) => {
+		const prior = storedByKey.get(item.key);
+		if (!prior) {
+			return [
+				{
+					key: item.key,
+					create: {
+						isComplete: item.isComplete,
+						isVisible: item.isVisible,
+						changedAt: now,
+						visibleChangedAt: now,
+					},
+					update: {},
+				},
+			];
+		}
+		const update: Record<string, unknown> = {};
+		if (prior.isComplete !== item.isComplete) {
+			update.isComplete = item.isComplete;
+			update.changedAt = now;
+		}
+		if (prior.isVisible !== item.isVisible) {
+			update.isVisible = item.isVisible;
+			update.visibleChangedAt = now;
+		}
+		return Object.keys(update).length > 0
+			? [{ key: item.key, create: null, update }]
+			: [];
 	});
 	const changed = [...seeded, ...transitioned];
 
-	if (changed.length > 0) {
+	if (writes.length > 0) {
 		await db.$transaction(
-			changed.map((item) =>
+			writes.map((write) =>
 				db.projectReadinessVerdict.upsert({
 					where: {
-						projectId_itemKey: { projectId, itemKey: item.key },
+						projectId_itemKey: { projectId, itemKey: write.key },
 					},
 					create: {
 						projectId,
-						itemKey: item.key,
-						isComplete: item.isComplete,
-						changedAt: now,
+						itemKey: write.key,
 						userId: tenant.userId,
 						organizationId: tenant.organizationId,
+						...(write.create ?? {
+							isComplete: false,
+							isVisible: false,
+							changedAt: now,
+							visibleChangedAt: now,
+						}),
 					},
-					update: { isComplete: item.isComplete, changedAt: now },
+					update: write.update,
 				}),
 			),
 		);
 	}
 
 	const cutoff = new Date(now.getTime() - RECENTLY_COMPLETED_WINDOW_MS);
-	const justTransitioned = new Set(transitioned.map((item) => item.key));
-	return computed
+	// Completion flips only. A visibility flip moves `visibleChangedAt`, never
+	// `changedAt`, so an item revealed today has not "just completed" and must
+	// not be dated as though it had — that is what would have resurfaced every
+	// long-finished item the first time this ran after the column was added.
+	const justCompleted = new Set(
+		classified
+			.filter((change) => change.kind !== "APPEARED")
+			.map((change) => change.key),
+	);
+	const recentlyCompleted = computed
 		.filter((item) => item.isComplete && !seededKeys.has(item.key))
 		.map((item) => ({
 			key: item.key,
-			changedAt: justTransitioned.has(item.key)
+			changedAt: justCompleted.has(item.key)
 				? now
 				: (storedByKey.get(item.key)?.changedAt ?? null),
 		}))
@@ -252,4 +419,6 @@ async function reconcileVerdicts(args: {
 		)
 		.slice(0, RECENTLY_COMPLETED_LIMIT)
 		.map((item) => ({ key: item.key }));
+
+	return { recentlyCompleted, transitions: classified };
 }
