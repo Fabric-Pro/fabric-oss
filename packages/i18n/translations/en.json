@@ -3097,6 +3097,7 @@
 					"aiGenerated": "AI-generated",
 					"resolvedMarker": "Resolved",
 					"amend": "Amend",
+					"amendAria": "Amend this answer: {text}",
 					"amendLabel": "Amended answer",
 					"amendSubmit": "Save amendment",
 					"amendSaving": "Saving\u2026",

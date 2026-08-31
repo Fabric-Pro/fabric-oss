@@ -98,7 +98,13 @@ describe("DecisionLogPanel — amended answers", () => {
 			<DecisionLogPanel threads={[amendedThread()]} onAmend={onAmend} />,
 		);
 
-		await userEvent.click(screen.getByRole("button", { name: "amend" }));
+		// The Amend trigger is icon-only, so its accessible name comes from
+		// `amendAria` (which names the answer being replaced) rather than the
+		// visible "Amend" text it used to carry. next-intl is key-mocked here,
+		// so the interpolated text does not appear in the name.
+		await userEvent.click(
+			screen.getByRole("button", { name: "amendAria" }),
+		);
 		const box = screen.getByRole("textbox", { name: "amendLabel" });
 		await userEvent.clear(box);
 		await userEvent.type(box, "Everyone");
