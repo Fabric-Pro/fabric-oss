@@ -7,33 +7,23 @@ import {
 } from "@repo/utils/attachment";
 import { orpcClient } from "@shared/lib/orpc-client";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { Badge } from "@ui/components/badge";
 import { Button } from "@ui/components/button";
 import { Card } from "@ui/components/card";
 import { Input } from "@ui/components/input";
 import { Label } from "@ui/components/label";
-import { SearchInput } from "@ui/components/search-input";
-import { Textarea } from "@ui/components/textarea";
 import {
 	Tooltip,
 	TooltipContent,
 	TooltipTrigger,
 } from "@ui/components/tooltip";
-import { cn } from "@ui/lib";
-import { CheckIcon, Loader2Icon, XIcon } from "lucide-react";
+import { Loader2Icon } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
-import { PROJECT_TYPES, TECH_CATEGORIES } from "../lib/project-constants";
 
 type Project = {
 	id: string;
 	name: string;
-	description: string | null;
-	goals: string | null;
-	projectTypes: string[];
-	techStack: string[] | null;
-	tags: string[] | null;
 	organizationId?: string | null;
 	/** Which readiness checklist grades this project; null means Fabric infers one (#2165). */
 	projectPhase?: "DISCOVERY_PLANNING" | "DEVELOPMENT_EXECUTION" | null;
@@ -58,7 +48,6 @@ export function ProjectGeneralSettings({ project }: Props) {
 	const t = useTranslations("tooltips.projectSettings");
 
 	const [name, setName] = useState(project.name);
-	const [description, setDescription] = useState(project.description ?? "");
 	const [projectPhase, setProjectPhase] = useState<
 		"DISCOVERY_PLANNING" | "DEVELOPMENT_EXECUTION" | ""
 	>(project.projectPhase ?? "");
@@ -69,14 +58,6 @@ export function ProjectGeneralSettings({ project }: Props) {
 					.slice(0, 10)
 			: "",
 	);
-	const [goals, setGoals] = useState(project.goals ?? "");
-	const [selectedTypes, setSelectedTypes] = useState<string[]>(
-		project.projectTypes,
-	);
-	const [selectedTech, setSelectedTech] = useState<string[]>(
-		project.techStack ?? [],
-	);
-	const [techSearch, setTechSearch] = useState("");
 	// Held as a string, not a number: an empty field means "inherit", which is
 	// a distinct state from any numeric value and would be lost to NaN.
 	const [retentionDays, setRetentionDays] = useState<string>(
@@ -90,7 +71,6 @@ export function ProjectGeneralSettings({ project }: Props) {
 	// Sync from parent when project changes
 	useEffect(() => {
 		setName(project.name);
-		setDescription(project.description ?? "");
 		setProjectPhase(project.projectPhase ?? "");
 		setExpectedStart(
 			project.expectedDevelopmentStartDate
@@ -99,18 +79,11 @@ export function ProjectGeneralSettings({ project }: Props) {
 						.slice(0, 10)
 				: "",
 		);
-		setGoals(project.goals ?? "");
-		setSelectedTypes(project.projectTypes);
-		setSelectedTech(project.techStack ?? []);
 		setRetentionDays(project.attachmentRetentionDays?.toString() ?? "");
 	}, [
 		project.name,
-		project.description,
-		project.goals,
 		project.projectPhase,
 		project.expectedDevelopmentStartDate,
-		project.projectTypes,
-		project.techStack,
 		project.attachmentRetentionDays,
 	]);
 
@@ -122,15 +95,9 @@ export function ProjectGeneralSettings({ project }: Props) {
 
 	const hasChanges =
 		name !== project.name ||
-		description !== (project.description ?? "") ||
 		projectPhase !== (project.projectPhase ?? "") ||
 		expectedStart !== initialExpectedStart ||
-		goals !== (project.goals ?? "") ||
-		retentionDays !== (project.attachmentRetentionDays?.toString() ?? "") ||
-		JSON.stringify(selectedTypes) !==
-			JSON.stringify(project.projectTypes) ||
-		JSON.stringify(selectedTech) !==
-			JSON.stringify(project.techStack ?? []);
+		retentionDays !== (project.attachmentRetentionDays?.toString() ?? "");
 
 	const updateMutation = useMutation({
 		mutationFn: async () => {
@@ -159,7 +126,6 @@ export function ProjectGeneralSettings({ project }: Props) {
 				id: project.id,
 				organizationId: project.organizationId,
 				name: name.trim(),
-				description,
 				// "" means the user chose no phase — send null to clear it rather
 				// than undefined, which the API reads as "leave alone".
 				projectPhase: projectPhase === "" ? null : projectPhase,
@@ -167,9 +133,6 @@ export function ProjectGeneralSettings({ project }: Props) {
 					projectPhase === "DISCOVERY_PLANNING" && expectedStart
 						? new Date(expectedStart)
 						: null,
-				goals,
-				projectTypes: selectedTypes,
-				techStack: selectedTech,
 				attachmentRetentionDays: nextRetentionDays,
 			});
 		},
@@ -190,7 +153,6 @@ export function ProjectGeneralSettings({ project }: Props) {
 
 	const handleReset = useCallback(() => {
 		setName(project.name);
-		setDescription(project.description ?? "");
 		setProjectPhase(project.projectPhase ?? "");
 		setExpectedStart(
 			project.expectedDevelopmentStartDate
@@ -199,47 +161,12 @@ export function ProjectGeneralSettings({ project }: Props) {
 						.slice(0, 10)
 				: "",
 		);
-		setGoals(project.goals ?? "");
-		setSelectedTypes(project.projectTypes);
-		setSelectedTech(project.techStack ?? []);
-		setTechSearch("");
 		setRetentionDays(project.attachmentRetentionDays?.toString() ?? "");
 	}, [project]);
 
-	const toggleType = (value: string) => {
-		setSelectedTypes((prev) =>
-			prev.includes(value)
-				? prev.filter((v) => v !== value)
-				: [...prev, value],
-		);
-	};
-
-	const toggleTech = (value: string) => {
-		setSelectedTech((prev) =>
-			prev.includes(value)
-				? prev.filter((v) => v !== value)
-				: [...prev, value],
-		);
-	};
-
-	const filteredTech = techSearch.trim()
-		? Object.entries(TECH_CATEGORIES).reduce(
-				(acc, [category, items]) => {
-					const filtered = items.filter((item) =>
-						item.toLowerCase().includes(techSearch.toLowerCase()),
-					);
-					if (filtered.length > 0) {
-						acc[category] = filtered;
-					}
-					return acc;
-				},
-				{} as Record<string, string[]>,
-			)
-		: TECH_CATEGORIES;
-
 	return (
 		<div className="space-y-6">
-			{/* Name & Description */}
+			{/* Name & Identity */}
 			<Card className="p-6">
 				<div className="space-y-5">
 					<div className="space-y-2">
@@ -250,18 +177,6 @@ export function ProjectGeneralSettings({ project }: Props) {
 							onChange={(e) => setName(e.target.value)}
 							placeholder="My Project"
 							maxLength={255}
-						/>
-					</div>
-
-					<div className="space-y-2">
-						<Label htmlFor="project-description">Description</Label>
-						<Textarea
-							id="project-description"
-							value={description}
-							onChange={(e) => setDescription(e.target.value)}
-							placeholder="What is this project about?"
-							rows={3}
-							className="resize-none"
 						/>
 					</div>
 
@@ -318,129 +233,6 @@ export function ProjectGeneralSettings({ project }: Props) {
 							</p>
 						</div>
 					)}
-
-					<div className="space-y-2">
-						<Label htmlFor="project-goals">Goals</Label>
-						<Textarea
-							id="project-goals"
-							value={goals}
-							onChange={(e) => setGoals(e.target.value)}
-							placeholder="What are the key goals for this project?"
-							rows={3}
-							className="resize-none"
-						/>
-					</div>
-				</div>
-			</Card>
-
-			{/* Project Types */}
-			<Card className="p-6">
-				<div className="space-y-3">
-					<div>
-						<Label>Project Types</Label>
-						<p className="text-sm text-muted-foreground mt-1">
-							Select the types that best describe this project
-						</p>
-					</div>
-					<div className="flex flex-wrap gap-2">
-						{PROJECT_TYPES.map((type) => {
-							const isSelected = selectedTypes.includes(
-								type.value,
-							);
-							const Icon = type.icon;
-							return (
-								<button
-									key={type.value}
-									type="button"
-									onClick={() => toggleType(type.value)}
-									className={cn(
-										"flex items-center gap-2 rounded-lg border px-3 py-2 text-sm transition-colors cursor-pointer",
-										isSelected
-											? "border-primary bg-primary/5 text-foreground"
-											: "border-border text-muted-foreground hover:border-foreground/20 hover:text-foreground",
-									)}
-								>
-									<Icon className="size-4" />
-									{type.label}
-									{isSelected && (
-										<CheckIcon className="size-3.5 text-primary" />
-									)}
-								</button>
-							);
-						})}
-					</div>
-				</div>
-			</Card>
-
-			{/* Tech Stack */}
-			<Card className="p-6">
-				<div className="space-y-3">
-					<div>
-						<Label>Tech Stack</Label>
-						<p className="text-sm text-muted-foreground mt-1">
-							Technologies used in this project
-						</p>
-					</div>
-
-					{/* Selected tech */}
-					{selectedTech.length > 0 && (
-						<div className="flex flex-wrap gap-1.5">
-							{selectedTech.map((tech) => (
-								<Badge
-									key={tech}
-									variant="secondary"
-									className="gap-1 cursor-pointer"
-									onClick={() => toggleTech(tech)}
-								>
-									{tech}
-									<XIcon className="size-3" />
-								</Badge>
-							))}
-						</div>
-					)}
-
-					{/* Search */}
-					<SearchInput
-						placeholder="Search technologies..."
-						value={techSearch}
-						onChange={(e) => setTechSearch(e.target.value)}
-					/>
-
-					{/* Tech categories */}
-					<div className="max-h-[300px] overflow-y-auto space-y-4 rounded-lg border border-border/60 p-3">
-						{Object.entries(filteredTech).map(
-							([category, items]) => (
-								<div key={category}>
-									<p className="text-[11px] font-medium uppercase tracking-[0.12em] text-muted-foreground mb-2">
-										{category}
-									</p>
-									<div className="flex flex-wrap gap-1.5">
-										{items.map((tech) => {
-											const isSelected =
-												selectedTech.includes(tech);
-											return (
-												<button
-													key={tech}
-													type="button"
-													onClick={() =>
-														toggleTech(tech)
-													}
-													className={cn(
-														"rounded-md border px-2 py-1 text-xs transition-colors cursor-pointer",
-														isSelected
-															? "border-primary bg-primary/10 text-foreground"
-															: "border-border/60 text-muted-foreground hover:border-foreground/20 hover:text-foreground",
-													)}
-												>
-													{tech}
-												</button>
-											);
-										})}
-									</div>
-								</div>
-							),
-						)}
-					</div>
 				</div>
 			</Card>
 

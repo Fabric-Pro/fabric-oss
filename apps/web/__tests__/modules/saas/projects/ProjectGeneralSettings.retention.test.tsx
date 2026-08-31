@@ -43,11 +43,6 @@ import { ProjectGeneralSettings } from "@saas/projects/components/ProjectGeneral
 const PROJECT = {
 	id: "project-1",
 	name: "Example project",
-	description: null,
-	goals: null,
-	projectTypes: [],
-	techStack: null,
-	tags: null,
 	organizationId: "org-1",
 	attachmentRetentionDays: 365,
 	effectiveAttachmentRetentionDays: 365,
