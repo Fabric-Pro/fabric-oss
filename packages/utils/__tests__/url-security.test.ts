@@ -109,4 +109,42 @@ describe("outbound URL validation", () => {
 			Object.getOwnPropertyDescriptor(init, "dispatcher")?.value,
 		).toBeDefined();
 	});
+
+	it("preserves an explicit manual redirect policy for callers that validate redirects themselves", async () => {
+		const fetchMock = vi.fn(
+			async (_input: string | URL, _init?: RequestInit) =>
+				new Response(null, {
+					status: 307,
+					headers: { location: "/auth/login" },
+				}),
+		);
+		vi.stubGlobal("fetch", fetchMock);
+
+		await safeFetchOutbound("https://93.184.216.34/app", {
+			redirect: "manual",
+		});
+
+		expect(fetchMock.mock.calls[0]?.[1]).toMatchObject({
+			redirect: "manual",
+		});
+	});
+
+	it("keeps automatic redirects fail-closed even when a caller asks to follow them", async () => {
+		const fetchMock = vi.fn(
+			async (_input: string | URL, _init?: RequestInit) =>
+				new Response(null, {
+					status: 307,
+					headers: { location: "https://evil.example/" },
+				}),
+		);
+		vi.stubGlobal("fetch", fetchMock);
+
+		await safeFetchOutbound("https://93.184.216.34/app", {
+			redirect: "follow",
+		});
+
+		expect(fetchMock.mock.calls[0]?.[1]).toMatchObject({
+			redirect: "error",
+		});
+	});
 });

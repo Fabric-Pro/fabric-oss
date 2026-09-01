@@ -5,9 +5,8 @@
  * `try { runner = await openBrowser() } finally { if (runner) closeBrowser(runner) }`
  * — and that is exactly why this needs its own test: when `newContext` or
  * `newPage` throws, `openBrowser` never RETURNS, so `runner` is still null and
- * the finally has nothing to close. The browser that did launch stays alive for
- * the lifetime of the worker process, around 100-200 MB a time, and Temporal
- * retries the activity so it repeats per attempt.
+ * the finally has nothing to close. The browser that did launch stays alive
+ * until its process ends, and retries repeat that condition.
  *
  * Context and page creation are fallible after the browser process exists, so
  * both paths must close the process before propagating the original error.
@@ -158,6 +157,7 @@ describe("openBrowser cleans up after itself", () => {
 		expect(safeFetchOutbound).toHaveBeenCalledWith(
 			"https://example.com/api/me",
 			expect.objectContaining({
+				redirect: "manual",
 				headers: expect.objectContaining({
 					Authorization: "Bearer secret",
 				}),
