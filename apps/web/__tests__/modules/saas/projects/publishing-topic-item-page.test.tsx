@@ -18,34 +18,44 @@
  * `publishing-topic-questions.test.tsx`.
  */
 
-import { render, screen, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { state, refetchTopic, setReadStateMutate, toastError } = vi.hoisted(
-	() => ({
-		state: {
-			topic: null as Record<string, unknown> | null,
-			// 2A-2: the planning analysis the page now fetches alongside the
-			// topic. Two rows, because a failed regeneration must not blank a
-			// good analysis — see PlanningAnalysisTab's own test file.
-			latestAttempt: null as Record<string, unknown> | null,
-			latestReady: null as Record<string, unknown> | null,
-			// 2A-3: the decision-thread rows `TopicQuestionsPanel` renders. The
-			// source of truth for the Summary & Questions tab's questions moved
-			// here from the analysis blob above — see the FR39 block below.
-			decisionThreads: [] as Record<string, unknown>[],
-			pending: false,
-			error: false,
-			// Drive the read-marker write to reject, so the failure path is
-			// exercised rather than assumed.
-			readStateRejects: false,
-		},
-		refetchTopic: vi.fn(),
-		setReadStateMutate: vi.fn(),
-		toastError: vi.fn(),
-	}),
-);
+const {
+	state,
+	refetchTopic,
+	setReadStateMutate,
+	updatePostTypesMutate,
+	updateStatusMutate,
+	toastError,
+} = vi.hoisted(() => ({
+	state: {
+		topic: null as Record<string, unknown> | null,
+		// 2A-2: the planning analysis the page now fetches alongside the
+		// topic. Two rows, because a failed regeneration must not blank a
+		// good analysis — see PlanningAnalysisTab's own test file.
+		latestAttempt: null as Record<string, unknown> | null,
+		latestReady: null as Record<string, unknown> | null,
+		// 2A-3: the decision-thread rows `TopicQuestionsPanel` renders. The
+		// source of truth for the Summary & Questions tab's questions moved
+		// here from the analysis blob above — see the FR39 block below.
+		decisionThreads: [] as Record<string, unknown>[],
+		pending: false,
+		error: false,
+		// Drive the read-marker write to reject, so the failure path is
+		// exercised rather than assumed.
+		readStateRejects: false,
+		// Same, for the post-type override write: a failed save must keep
+		// the dialog (and the user's checkboxes) rather than close over it.
+		postTypesRejects: false,
+	},
+	refetchTopic: vi.fn(),
+	setReadStateMutate: vi.fn(),
+	updatePostTypesMutate: vi.fn(),
+	updateStatusMutate: vi.fn(),
+	toastError: vi.fn(),
+}));
 
 vi.mock("sonner", () => ({ toast: { error: toastError } }));
 
@@ -117,6 +127,43 @@ vi.mock("@tanstack/react-query", () => ({
 			};
 			return { mutate: run, mutateAsync: vi.fn(), isPending: false };
 		}
+		// The two metadata writes the page's edit affordances make. Both drive
+		// the real lifecycle (mirroring `publishing-suite-list.test.tsx`) so
+		// the component's own onSuccess — which closes the dialog only after
+		// the write lands — actually runs.
+		if (procedure === "projects.publishingSuite.updateTopicPostTypes") {
+			const run = async (vars: unknown) => {
+				updatePostTypesMutate(vars);
+				if (state.postTypesRejects) {
+					const err = new Error("rejected");
+					await opts.onError?.(err, vars, undefined);
+					throw err;
+				}
+				await opts.onSuccess?.(undefined, vars, undefined);
+				return undefined;
+			};
+			return {
+				mutate: (vars: unknown) => {
+					void run(vars).catch(() => {});
+				},
+				mutateAsync: run,
+				isPending: false,
+			};
+		}
+		if (procedure === "projects.publishingSuite.updateTopicStatus") {
+			const run = async (vars: unknown) => {
+				updateStatusMutate(vars);
+				await opts.onSuccess?.(undefined, vars, undefined);
+				return undefined;
+			};
+			return {
+				mutate: (vars: unknown) => {
+					void run(vars).catch(() => {});
+				},
+				mutateAsync: run,
+				isPending: false,
+			};
+		}
 		return { mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false };
 	},
 	useQueryClient: () => ({ invalidateQueries: vi.fn() }),
@@ -161,6 +208,12 @@ vi.mock("@shared/lib/orpc-query-utils", () => {
 					),
 					answerTopicQuestion: m(
 						"projects.publishingSuite.answerTopicQuestion",
+					),
+					updateTopicPostTypes: m(
+						"projects.publishingSuite.updateTopicPostTypes",
+					),
+					updateTopicStatus: m(
+						"projects.publishingSuite.updateTopicStatus",
 					),
 				},
 			},
@@ -225,8 +278,11 @@ beforeEach(() => {
 	state.pending = false;
 	state.error = false;
 	state.readStateRejects = false;
+	state.postTypesRejects = false;
 	refetchTopic.mockReset();
 	setReadStateMutate.mockReset();
+	updatePostTypesMutate.mockReset();
+	updateStatusMutate.mockReset();
 	toastError.mockReset();
 });
 
@@ -516,6 +572,137 @@ describe("TopicItemPage — open questions (FR39)", () => {
 			screen.queryByRole("button", {
 				name: /generate planning analysis/i,
 			}),
+		).not.toBeInTheDocument();
+	});
+});
+
+/**
+ * The page mounts the SAME `TopicDetails` block the Inbox row does, and that
+ * block renders two edit affordances — "Edit post types" (always, for an
+ * editor) and "Edit/Add URL" (on a PUBLISHED topic). The page passed
+ * `() => undefined` for both callbacks, so both buttons rendered enabled and
+ * did nothing at all: no dialog, no write, no error. The Inbox row has wired
+ * these to `PostTypesDialog` / `PublishTopicDialog` since Task 6; these cases
+ * pin the same contract on the Item Page.
+ */
+describe("TopicItemPage — editing topic metadata", () => {
+	it("opens the post-types editor rather than doing nothing", async () => {
+		const user = userEvent.setup();
+		state.topic = topic({ suggestedPostTypes: ["TWEET"] });
+		renderPage();
+
+		await user.click(
+			screen.getByRole("button", { name: "Edit post types" }),
+		);
+
+		expect(await screen.findByRole("dialog")).toBeVisible();
+		expect(screen.getByLabelText("Blog Post")).toBeInTheDocument();
+	});
+
+	it("saves the checked set through updateTopicPostTypes", async () => {
+		const user = userEvent.setup();
+		state.topic = topic({ suggestedPostTypes: ["TWEET"] });
+		renderPage();
+
+		await user.click(
+			screen.getByRole("button", { name: "Edit post types" }),
+		);
+		await user.click(screen.getByLabelText("Blog Post"));
+		await user.click(screen.getByRole("button", { name: "Save" }));
+
+		await waitFor(() =>
+			expect(updatePostTypesMutate).toHaveBeenCalledWith(
+				expect.objectContaining({
+					projectId: "proj-1",
+					topicId: "topic-1",
+					postTypes: ["TWEET", "BLOG_POST"],
+				}),
+			),
+		);
+	});
+
+	it("resets an override back to the AI suggestion", async () => {
+		const user = userEvent.setup();
+		state.topic = topic({
+			suggestedPostTypes: ["TWEET"],
+			userPostTypes: ["CASE_STUDY"],
+		});
+		renderPage();
+
+		await user.click(
+			screen.getByRole("button", { name: "Edit post types" }),
+		);
+		await user.click(
+			screen.getByRole("button", { name: "Reset to AI suggestion" }),
+		);
+
+		await waitFor(() =>
+			expect(updatePostTypesMutate).toHaveBeenCalledWith(
+				expect.objectContaining({ postTypes: null }),
+			),
+		);
+	});
+
+	it("keeps the dialog open when the save fails, so the choices survive", async () => {
+		// Mirrors the Inbox row's contract: close only AFTER success.
+		const user = userEvent.setup();
+		state.topic = topic({ suggestedPostTypes: ["TWEET"] });
+		state.postTypesRejects = true;
+		renderPage();
+
+		await user.click(
+			screen.getByRole("button", { name: "Edit post types" }),
+		);
+		await user.click(screen.getByLabelText("Blog Post"));
+		await user.click(screen.getByRole("button", { name: "Save" }));
+
+		await waitFor(() => expect(toastError).toHaveBeenCalled());
+		expect(screen.getByRole("dialog")).toBeVisible();
+	});
+
+	it("edits a published topic's URL rather than doing nothing", async () => {
+		const user = userEvent.setup();
+		state.topic = topic({
+			status: "PUBLISHED",
+			publishedUrl: "https://example.com/old",
+		});
+		renderPage();
+
+		await user.click(screen.getByRole("button", { name: "Edit URL" }));
+		const dialog = await screen.findByRole("dialog");
+		expect(dialog).toBeVisible();
+
+		const field = within(dialog).getByDisplayValue(
+			"https://example.com/old",
+		);
+		await user.clear(field);
+		await user.type(field, "https://example.com/new");
+		await user.click(within(dialog).getByRole("button", { name: "Save" }));
+
+		await waitFor(() =>
+			expect(updateStatusMutate).toHaveBeenCalledWith(
+				expect.objectContaining({
+					topicId: "topic-1",
+					status: "PUBLISHED",
+					publishedUrl: "https://example.com/new",
+				}),
+			),
+		);
+	});
+
+	it("offers a read-only viewer neither control (PR2)", () => {
+		state.topic = topic({
+			status: "PUBLISHED",
+			publishedUrl: "https://example.com/old",
+			suggestedPostTypes: ["TWEET"],
+		});
+		renderPage(false);
+
+		expect(
+			screen.queryByRole("button", { name: "Edit post types" }),
+		).not.toBeInTheDocument();
+		expect(
+			screen.queryByRole("button", { name: "Edit URL" }),
 		).not.toBeInTheDocument();
 	});
 });

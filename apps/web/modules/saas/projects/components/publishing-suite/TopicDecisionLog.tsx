@@ -91,7 +91,7 @@ export function TopicDecisionLog({ threads, isLoading = false }: Props) {
 	const aiUpdates = filtered.filter((th) => th.root.kind === "AI_UPDATE");
 
 	return (
-		<section className="mx-auto max-w-3xl space-y-5">
+		<section className="space-y-5">
 			<div className="flex items-center justify-between gap-3">
 				<h2 className="editorial-label">Decision log</h2>
 				{/* biome-ignore lint/a11y/useSemanticElements: a filter toggle group, not a form fieldset */}

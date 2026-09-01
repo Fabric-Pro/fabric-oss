@@ -270,3 +270,27 @@ describe("TopicDecisionLog (FR43–FR47)", () => {
 		expect(screen.queryByTestId("decision-root")).not.toBeInTheDocument();
 	});
 });
+
+describe("TopicDecisionLog — panel width", () => {
+	it("fills its tab panel instead of centring in a narrow column", () => {
+		// The log carried `mx-auto max-w-3xl`, copied from the Feature
+		// Maturation `DecisionLogPanel` it mirrors. That sibling is mounted in
+		// a narrow column; this one is a tab panel whose siblings
+		// (`TopicQuestionsPanel`, `PlanningAnalysisTab`) are plain `space-y-*`
+		// with no cap. The carried-over cap pinned the log to 768px and centred
+		// it inside a much wider panel, leaving a large empty gutter and
+		// visually detaching the list from the tab bar above it and the
+		// Content Generation block below.
+		//
+		// Asserted on the class list because jsdom has no layout engine: there
+		// is no width to measure, only the rule that produces one.
+		const { container } = render(
+			<TopicDecisionLog threads={[RESOLVED_THREAD]} />,
+		);
+
+		const panel = container.querySelector("section");
+		expect(panel).not.toBeNull();
+		expect(panel?.className).not.toMatch(/\bmx-auto\b/);
+		expect(panel?.className).not.toMatch(/\bmax-w-/);
+	});
+});

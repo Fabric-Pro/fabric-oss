@@ -9,10 +9,16 @@ import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { PlanningAnalysisTab } from "./PlanningAnalysisTab";
+import { PostTypesDialog } from "./PostTypesDialog";
+import { PublishTopicDialog } from "./PublishTopicDialog";
 import { TopicDecisionLog } from "./TopicDecisionLog";
 import { TopicDetails } from "./TopicDetails";
 import { TopicQuestionsPanel } from "./TopicQuestionsPanel";
-import { POST_TYPE_LABELS, TOPIC_STATUSES } from "./topic-shared";
+import {
+	POST_TYPE_LABELS,
+	type PostType,
+	TOPIC_STATUSES,
+} from "./topic-shared";
 
 /**
  * The three review tabs this page owns. Kept as a literal union rather than
@@ -57,6 +63,14 @@ export function TopicItemPage({
 	const basePath = useBasePath();
 	const queryClient = useQueryClient();
 	const [tab, setTab] = useState<ReviewTab>("summaryQuestions");
+	// The two metadata editors `TopicDetails` triggers. Held here rather than
+	// inside that component because it is the SAME block the Inbox row mounts:
+	// giving it its own dialogs would put two of each in the tree whenever both
+	// surfaces are open, and would stop the row owning its own pending state.
+	const [postTypesOpen, setPostTypesOpen] = useState(false);
+	const [postTypesPending, setPostTypesPending] = useState(false);
+	const [urlOpen, setUrlOpen] = useState(false);
+	const [urlPending, setUrlPending] = useState(false);
 
 	const topicQuery = useQuery(
 		orpc.projects.publishingSuite.getTopic.queryOptions({
@@ -160,6 +174,87 @@ export function TopicItemPage({
 		});
 	}, [topic, projectId, topicId, organizationId, setReadState.mutate]);
 
+	// A metadata write changes what THIS page renders and what the Inbox row
+	// renders, and the two read different queries — invalidating only `getTopic`
+	// would leave the list showing the pre-edit chips until it refetched on its
+	// own.
+	const invalidateTopic = () => {
+		void queryClient.invalidateQueries({
+			queryKey: orpc.projects.publishingSuite.getTopic.queryKey({
+				input: { projectId, topicId, organizationId },
+			}),
+		});
+		void queryClient.invalidateQueries({
+			queryKey: orpc.projects.publishingSuite.listTopics.queryKey({
+				input: { projectId, organizationId },
+			}),
+		});
+	};
+
+	const updatePostTypes = useMutation(
+		orpc.projects.publishingSuite.updateTopicPostTypes.mutationOptions({
+			onSuccess: invalidateTopic,
+			// Same contract as the Inbox row's copy of this write: never fail
+			// silently, or the chips snap back with nothing to explain why.
+			onError: () => {
+				toast.error(
+					"We couldn't update the post types. Please try again.",
+				);
+			},
+		}),
+	);
+
+	const updateStatus = useMutation(
+		orpc.projects.publishingSuite.updateTopicStatus.mutationOptions({
+			onSuccess: invalidateTopic,
+			onError: () => {
+				toast.error("We couldn't update that topic. Please try again.");
+			},
+		}),
+	);
+
+	// Both handlers close the dialog only AFTER the write lands, so a failure
+	// keeps the user's checkboxes / typed URL instead of discarding them —
+	// the contract `TopicRow.handlePostTypesSubmit` established in Task 6.
+	const handlePostTypesSubmit = async (postTypes: PostType[] | null) => {
+		setPostTypesPending(true);
+		try {
+			await updatePostTypes.mutateAsync({
+				projectId,
+				organizationId,
+				topicId,
+				postTypes,
+			});
+			setPostTypesOpen(false);
+		} catch {
+			// Surfaced by this mutation's onError toast above.
+		} finally {
+			setPostTypesPending(false);
+		}
+	};
+
+	// Reached only from a PUBLISHED topic (`TopicDetails` renders the control
+	// under that status alone), so this re-asserts PUBLISHED with a new URL
+	// rather than transitioning the topic.
+	const handleUrlConfirm = async (url: string | null) => {
+		setUrlPending(true);
+		try {
+			await updateStatus.mutateAsync({
+				projectId,
+				organizationId,
+				topicId,
+				status: "PUBLISHED",
+				declineReason: null,
+				publishedUrl: url,
+			});
+			setUrlOpen(false);
+		} catch {
+			// Surfaced by this mutation's onError toast above.
+		} finally {
+			setUrlPending(false);
+		}
+	};
+
 	const backHref = `${basePath}/projects/${projectId}/publishing`;
 
 	if (topicQuery.isPending) {
@@ -250,9 +345,9 @@ export function TopicItemPage({
 					<TopicDetails
 						topic={topic}
 						canEdit={canEdit}
-						isPending={false}
-						onEditUrl={() => undefined}
-						onEditPostTypes={() => undefined}
+						isPending={postTypesPending || urlPending}
+						onEditUrl={() => setUrlOpen(true)}
+						onEditPostTypes={() => setPostTypesOpen(true)}
 					/>
 					<TopicQuestionsPanel
 						projectId={projectId}
@@ -286,6 +381,37 @@ export function TopicItemPage({
 			</Tabs>
 
 			<GenerationTabsPlaceholder />
+
+			{/* The editors behind `TopicDetails`' two affordances. Mounted only
+			    for an editor: the controls that open them are themselves
+			    `canEdit`-gated (PR2), so rendering the dialogs for a reader
+			    would put unreachable write UI in the tree. */}
+			{canEdit ? (
+				<>
+					<PostTypesDialog
+						topicTitle={topic.title}
+						open={postTypesOpen}
+						onOpenChange={setPostTypesOpen}
+						initialSelected={
+							topic.userPostTypes ?? topic.suggestedPostTypes
+						}
+						hasOverride={topic.userPostTypes !== null}
+						hasAiSuggestion={topic.suggestedPostTypes.length > 0}
+						onSubmit={handlePostTypesSubmit}
+						isPending={postTypesPending}
+					/>
+					<PublishTopicDialog
+						topicTitle={topic.title}
+						open={urlOpen}
+						onOpenChange={setUrlOpen}
+						onConfirm={handleUrlConfirm}
+						isPending={urlPending}
+						initialUrl={topic.publishedUrl}
+						title="Edit published URL"
+						confirmLabel="Save"
+					/>
+				</>
+			) : null}
 		</div>
 	);
 }
