@@ -93,3 +93,71 @@ it("adds the projectId carve-out for PublishingChatDelivery (project-scoped)", (
 		],
 	});
 });
+
+// Phase 2B-1 (Fizzy #1853): the two draft tables, in BOTH registries.
+//
+// Worth stating why these live here rather than riding on the RLS suite, since
+// the two look interchangeable and are not. `rls-isolation.test.ts` drops to a
+// NOBYPASSRLS role and sets the tenant GUCs directly, so it proves the DATABASE
+// POLICY written by `apply-rls-direct.ts`. It never calls `getTenantDb()`, so a
+// model missing from `tenant-db.ts` would pass it untouched.
+//
+// That omission is the quiet one: `getTenantFilter()` looks an unknown model up,
+// finds nothing, and returns null — no filter, no error, no failing test. The
+// two registries are also keyed on the PascalCase Prisma MODEL name while every
+// other layer uses the camelCase delegate name, so grepping for
+// `publishingTopicDraft` finds nothing and reads exactly like an omission.
+it("filters PublishingTopicDraft by tenant XOR (user-owned)", () => {
+	const personal = runWithTenantContext(createPersonalContext("u_1"), () =>
+		mergeWithTenantFilter("PublishingTopicDraft", undefined),
+	);
+	expect(personal).toEqual({ userId: "u_1", organizationId: null });
+
+	const org = runWithTenantContext(
+		createOrganizationContext("org_1", "u_1"),
+		() => mergeWithTenantFilter("PublishingTopicDraft", undefined),
+	);
+	expect(org).toEqual({ organizationId: "org_1" });
+});
+
+it("filters PublishingTopicWorkingDraft by tenant XOR (user-owned)", () => {
+	const personal = runWithTenantContext(createPersonalContext("u_1"), () =>
+		mergeWithTenantFilter("PublishingTopicWorkingDraft", undefined),
+	);
+	expect(personal).toEqual({ userId: "u_1", organizationId: null });
+
+	const org = runWithTenantContext(
+		createOrganizationContext("org_1", "u_1"),
+		() => mergeWithTenantFilter("PublishingTopicWorkingDraft", undefined),
+	);
+	expect(org).toEqual({ organizationId: "org_1" });
+});
+
+it("adds the projectId carve-out for PublishingTopicDraft (project-scoped)", () => {
+	// A project guest reaches a project's drafts through the carve-out, not
+	// through a tenant they are not in. USER_OWNED registration alone would
+	// filter them out of a project they were explicitly granted.
+	const merged = runWithTenantContext(createPersonalContext("u_1"), () => {
+		grantProjectAccess("proj_A");
+		return mergeWithTenantFilter("PublishingTopicDraft", undefined);
+	});
+	expect(merged).toEqual({
+		OR: [
+			{ userId: "u_1", organizationId: null },
+			{ projectId: { in: ["proj_A"] } },
+		],
+	});
+});
+
+it("adds the projectId carve-out for PublishingTopicWorkingDraft (project-scoped)", () => {
+	const merged = runWithTenantContext(createPersonalContext("u_1"), () => {
+		grantProjectAccess("proj_A");
+		return mergeWithTenantFilter("PublishingTopicWorkingDraft", undefined);
+	});
+	expect(merged).toEqual({
+		OR: [
+			{ userId: "u_1", organizationId: null },
+			{ projectId: { in: ["proj_A"] } },
+		],
+	});
+});

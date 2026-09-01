@@ -273,6 +273,10 @@ model User {
   publishingTopicReads PublishingTopicRead[]
   publishingPlanningAnalyses   PublishingTopicPlanningAnalysis[] @relation("PublishingPlanningAnalysisTenant")
   publishingPlanningAnalysesRequested PublishingTopicPlanningAnalysis[] @relation("PublishingPlanningAnalysisRequestedBy")
+  publishingTopicDrafts        PublishingTopicDraft[]            @relation("PublishingTopicDraftTenant")
+  publishingTopicDraftsRequested PublishingTopicDraft[]          @relation("PublishingTopicDraftRequestedBy")
+  publishingWorkingDrafts      PublishingTopicWorkingDraft[]     @relation("PublishingWorkingDraftTenant")
+  publishingWorkingDraftsUpdated PublishingTopicWorkingDraft[]   @relation("PublishingWorkingDraftUpdatedBy")
   publishingTopicDecisions     PublishingTopicDecisionEntry[]
   authoredPublishingTopicDecisions PublishingTopicDecisionEntry[] @relation("PublishingTopicDecisionAuthor")
 
@@ -692,6 +696,8 @@ model Organization {
   publishingTopicReads                    PublishingTopicRead[]
   publishingPlanningAnalyses              PublishingTopicPlanningAnalysis[]
   publishingTopicDecisions                PublishingTopicDecisionEntry[]
+  publishingTopicDrafts                   PublishingTopicDraft[]
+  publishingWorkingDrafts                 PublishingTopicWorkingDraft[]
 
   // Dynamic agent relations
   offloadedToolOutputs   OffloadedToolOutput[]
@@ -1741,6 +1747,8 @@ model Project {
   publishingTopics           PublishingTopic[]
   publishingPlanningAnalyses PublishingTopicPlanningAnalysis[]
   publishingTopicDecisions   PublishingTopicDecisionEntry[]
+  publishingTopicDrafts      PublishingTopicDraft[]
+  publishingWorkingDrafts    PublishingTopicWorkingDraft[]
   publishingSuiteSettings    PublishingSuiteSettings?
 
   // Episodic memory relation (conversations scoped to project)
@@ -6880,6 +6888,8 @@ model PublishingTopic {
   readMarkers  PublishingTopicRead[]
   planningAnalyses PublishingTopicPlanningAnalysis[]
   publishingTopicDecisions PublishingTopicDecisionEntry[]
+  drafts       PublishingTopicDraft[]
+  workingDrafts PublishingTopicWorkingDraft[]
 
   @@unique([projectId, dedupeKey]) // project-wide dedup across ALL statuses (dedupeKey is non-null)
   @@index([projectId, status])
@@ -6950,6 +6960,181 @@ enum PublishingPlanningAnalysisStatus {
   GENERATING
   READY
   FAILED
+}
+
+/// One AI generation ATTEMPT for one content type of one publishing topic
+/// (Phase 2B-1, Fizzy #1853).
+///
+/// Deliberately shaped as a twin of `PublishingTopicPlanningAnalysis`: same
+/// GENERATING/READY/FAILED lifecycle, same XOR tenancy denormalised from the
+/// parent topic, same `requestedById`-is-authorship-never-tenancy split, same
+/// `executionTimeoutAt` liveness deadline. A reviewer who knows that table
+/// should not have to learn a second set of conventions for this one.
+///
+/// Rows are treated as immutable once terminal, which is HELPER DISCIPLINE and
+/// not a database invariant: the writers compare-and-set on
+/// `status = 'GENERATING'`, but nothing stops a raw `$executeRaw` or a
+/// bypass-role writer mutating a READY row. No sibling enforces it in-database
+/// either, and a trigger here alone would imply a guarantee the rest of the
+/// publishing family does not make.
+///
+/// `postType` carries the FULL four-value enum rather than a 2B-only pair, so
+/// Phase 2C activates Case Study and Stakeholder Email by adding a prompt
+/// rather than a migration.
+///
+/// Five things this model needs that Prisma cannot express, all created in
+/// `20260901120000_add_publishing_topic_drafts`:
+///   - a composite FK `(topicId, projectId)` onto `publishing_topic (id,
+///     projectId)`. The single-column FKs below prove each id names a real row
+///     and nothing about the two AGREEING, so a draft could otherwise be
+///     attached to a topic in a different project — and `listTopicDrafts`
+///     authorizes on `projectId` and then reads by exactly these two columns;
+///   - a partial unique index `(topicId, postType) WHERE status = 'GENERATING'`
+///     — one run in flight PER CONTENT TYPE. Not per topic: generating a short
+///     post while a blog post generates is legitimate and users will do it;
+///   - `CHECK (("organizationId" IS NULL) <> ("userId" IS NULL))` — strict XOR,
+///     matching `publishing_topic_tenant_xor`. RLS does NOT substitute: its org
+///     branch permits any `userId`, it does not require null;
+///   - `CHECK ("status" <> 'GENERATING' OR "executionTimeoutAt" IS NOT NULL)` —
+///     without it the partial index becomes a PERMANENT lock the moment a
+///     worker dies between the insert and the terminal marker;
+///   - `UNIQUE ("id", "topicId", "postType")` — redundant on its own (`id` is
+///     the primary key) and required anyway, because Postgres accepts the
+///     composite foreign key on `publishing_topic_working_draft` only if the
+///     referenced column list carries a unique constraint.
+model PublishingTopicDraft {
+  id                 String                  @id @default(cuid())
+  topicId            String
+  projectId          String
+  organizationId     String? // denormalized from the parent topic (XOR)
+  userId             String? // denormalized from the parent topic (XOR — null for org topics)
+  postType           PublishingTopicPostType
+  version            Int // per (topicId, postType), allocated under the locked project row
+  status             PublishingDraftStatus   @default(GENERATING)
+  content            Json? // validated draft document; null until READY
+  /// The user's optional generation guidance for THIS run (DV7). Stored per
+  /// attempt rather than per topic: regenerating with different guidance is the
+  /// normal way to use this feature, and a topic-level column could not say
+  /// which guidance produced which draft.
+  guidance           String?                 @db.Text
+  sourceRefs         Json                    @default("{}") // what fed this version, and what failed to
+  model              String?
+  /// BOUND | DEFAULT_UNBOUND | DEFAULT_RENDER_FAILED — which prompt actually
+  /// shaped this draft. A draft built from the default body because a bound
+  /// prompt would not render reads exactly like one built from the bound
+  /// prompt, so it is the one thing a reader cannot recover from the output.
+  promptSource       String?
+  promptId           String? // DV6
+  promptVersion      Int? // DV6
+  error              String?                 @db.Text
+  requestedById      String? // authorship, never tenancy
+  /// Liveness deadline for the reclaim; CHECK-enforced while GENERATING.
+  executionTimeoutAt DateTime?
+  createdAt          DateTime                @default(now())
+  updatedAt          DateTime                @updatedAt
+
+  topic        PublishingTopic @relation(fields: [topicId], references: [id], onDelete: Cascade)
+  project      Project         @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  organization Organization?   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User?           @relation("PublishingTopicDraftTenant", fields: [userId], references: [id], onDelete: Cascade)
+  requestedBy  User?           @relation("PublishingTopicDraftRequestedBy", fields: [requestedById], references: [id], onDelete: SetNull)
+
+  @@unique([topicId, postType, version])
+  @@index([topicId, postType, createdAt])
+  @@index([projectId])
+  @@index([organizationId])
+  @@index([userId])
+  @@index([requestedById])
+  @@map("publishing_topic_draft")
+}
+
+enum PublishingDraftStatus {
+  GENERATING
+  READY
+  FAILED
+}
+
+/// The working draft for one content type of one publishing topic (Phase 2B-1,
+/// Fizzy #1853) — the selected short-post option, or the blog post body as
+/// edited.
+///
+/// SHARED PROJECT CONTENT, not per-author. `@@unique([topicId, postType])` means
+/// one draft per content type for the whole topic, and that is the card's own
+/// model rather than an accident of the key: FR37 scopes a generated draft to
+/// "the current project and topic" — never to a user — and UC2 speaks of "the
+/// working Short Post draft", singular. A publishing topic is a shared work
+/// item and its draft is the team's draft.
+///
+/// Stated here explicitly because the alternative is a breaking change, not an
+/// authorization tweak: making drafts author-private later would need an owner
+/// column inside the unique key and a data migration. `updatedById` is
+/// therefore "who last edited", never an owner.
+///
+/// It also carries the composite `(topicId, projectId)` FK described on
+/// `PublishingTopicDraft`, for the same reason.
+///
+/// WHY THIS IS A SEPARATE TABLE FROM `PublishingTopicDraft`. FR33/FR35 require
+/// that regenerating never silently overwrites saved work. With one table that
+/// is a rule every future writer must remember; with two it is a property of
+/// WHERE THE WRITES GO — generation only ever writes
+/// `publishing_topic_draft`, so it cannot reach this row at all. A rule a later
+/// change can forget is not the same guarantee as one it cannot express.
+///
+/// `sourceDraftId` is a PLAIN COLUMN, not a Prisma relation, and that is
+/// deliberate. The real constraint is composite — it must prove the cited
+/// candidate belongs to the SAME topic and post type, not merely that it
+/// exists — and its delete action must null only `sourceDraftId`:
+///
+///   FOREIGN KEY ("sourceDraftId", "topicId", "postType")
+///     REFERENCES "publishing_topic_draft" ("id", "topicId", "postType")
+///     ON DELETE SET NULL ("sourceDraftId") ON UPDATE CASCADE
+///
+/// Prisma cannot express that subset action; declaring the relation would
+/// generate the all-columns form, which tries to null NOT NULL `topicId` and
+/// `postType` and makes deleting a candidate FAIL instead of preserving the
+/// body. Declaring it as a single-column relation would be worse still — the
+/// schema and the database would disagree about the constraint's shape.
+///
+/// So the constraint is hand-written in
+/// `20260901120000_add_publishing_topic_drafts` and documented here for the
+/// same reason `PublishingTopicDecisionEntry` documents its partial unique
+/// index: a shadow-database diff can read it as drift and try to DROP it. The
+/// subset syntax requires PostgreSQL 15+ (dev runs 15, CI 16).
+///
+/// Deleting a CANDIDATE keeps this row and nulls its provenance; deleting the
+/// TOPIC or the PROJECT deletes it outright. That asymmetry is intended: a
+/// candidate is one attempt among many, whereas a topic is the thing the draft
+/// is about, and a working draft outliving its topic would be an orphan no
+/// screen can reach.
+model PublishingTopicWorkingDraft {
+  id                String                  @id @default(cuid())
+  topicId           String
+  projectId         String
+  organizationId    String? // denormalized from the parent topic (XOR)
+  userId            String? // denormalized from the parent topic (XOR — null for org topics)
+  postType          PublishingTopicPostType
+  body              String                  @db.Text // Markdown the user owns
+  /// Which candidate this body came from. Plain column — see the model doc.
+  sourceDraftId     String?
+  /// TWEET: which prompt-authored option label was selected (DV3). Null for a
+  /// blog post, whose generation produces one draft rather than options.
+  sourceOptionLabel String?
+  updatedById       String?
+  createdAt         DateTime                @default(now())
+  updatedAt         DateTime                @updatedAt
+
+  topic        PublishingTopic @relation(fields: [topicId], references: [id], onDelete: Cascade)
+  project      Project         @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  organization Organization?   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User?           @relation("PublishingWorkingDraftTenant", fields: [userId], references: [id], onDelete: Cascade)
+  updatedBy    User?           @relation("PublishingWorkingDraftUpdatedBy", fields: [updatedById], references: [id], onDelete: SetNull)
+
+  @@unique([topicId, postType]) // at most one working draft per content type
+  @@index([projectId])
+  @@index([organizationId])
+  @@index([userId])
+  @@index([updatedById])
+  @@map("publishing_topic_working_draft")
 }
 
 enum PublishingDecisionEntryKind {

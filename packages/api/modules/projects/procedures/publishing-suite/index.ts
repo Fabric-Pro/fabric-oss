@@ -19,6 +19,7 @@ export {
 	answerTopicQuestionProcedure,
 	listTopicDecisionsProcedure,
 } from "./topic-decisions";
+export { listTopicDraftsProcedure } from "./topic-drafts";
 export { updatePublishingSuiteSettingsProcedure } from "./update-settings";
 export { updatePublishingTopicPostTypesProcedure } from "./update-topic-post-types";
 export { updatePublishingTopicStatusProcedure } from "./update-topic-status";

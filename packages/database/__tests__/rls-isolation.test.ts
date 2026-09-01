@@ -910,6 +910,8 @@ describe("PostgreSQL RLS Policies", () => {
 		let personalCycleId: string;
 		let orgADeliveryId: string;
 		let personalDeliveryId: string;
+		let orgADraftId: string;
+		let orgAWorkingDraftId: string;
 		let orgAChatDeliveryId: string;
 		let personalChatDeliveryId: string;
 
@@ -952,6 +954,34 @@ describe("PostgreSQL RLS Policies", () => {
 						origin: "AI",
 						dedupeKey: "rls-publishing-suite-org-a-topic",
 						status: "SUGGESTION",
+					},
+				})
+			).id;
+
+			// Phase 2B-1 (Fizzy #1853). Both draft tables hang off the topic
+			// above and carry their own denormalised tenant columns, so each
+			// needs its own policy proved rather than inheriting the topic's.
+			orgADraftId = (
+				await db.publishingTopicDraft.create({
+					data: {
+						topicId: orgATopicId,
+						projectId: orgAProject,
+						organizationId: TEST_ORGS.orgA,
+						postType: "TWEET",
+						version: 1,
+						status: "READY",
+					},
+				})
+			).id;
+
+			orgAWorkingDraftId = (
+				await db.publishingTopicWorkingDraft.create({
+					data: {
+						topicId: orgATopicId,
+						projectId: orgAProject,
+						organizationId: TEST_ORGS.orgA,
+						postType: "TWEET",
+						body: "rls isolation smoke body",
 					},
 				})
 			).id;
@@ -1175,6 +1205,82 @@ describe("PostgreSQL RLS Policies", () => {
 			);
 			expect(row).not.toBeNull();
 			expect(row?.id).toBe(orgADeliveryId);
+		});
+
+		// Phase 2B-1 (Fizzy #1853): the two draft tables. BOTH directions on
+		// BOTH tables, because a negative alone cannot tell a working policy
+		// from an empty table — when the chat-delivery registration was missing,
+		// its two positives already passed and only the negatives failed, and
+		// that asymmetry is the whole signal. Each table is asserted in its own
+		// right rather than through its parent topic: both carry denormalised
+		// tenant columns, and a missing entry in `tenant-db.ts` or
+		// `apply-rls-direct.ts` would leave one filtered and the other wide
+		// open with nothing else in the suite noticing.
+
+		it("publishing_topic_draft: Org B context cannot read Org A's draft", async () => {
+			const row = await asRlsRole(
+				{
+					type: "organization",
+					tenantId: TEST_ORGS.orgB,
+					userId: TEST_USERS.userA,
+				},
+				(tx) =>
+					tx.publishingTopicDraft.findUnique({
+						where: { id: orgADraftId },
+					}),
+			);
+
+			expect(row).toBeNull();
+		});
+
+		it("publishing_topic_draft: Org A context CAN read its own draft (positive control)", async () => {
+			const row = await asRlsRole(
+				{
+					type: "organization",
+					tenantId: TEST_ORGS.orgA,
+					userId: TEST_USERS.userA,
+				},
+				(tx) =>
+					tx.publishingTopicDraft.findUnique({
+						where: { id: orgADraftId },
+					}),
+			);
+
+			expect(row).not.toBeNull();
+			expect(row?.id).toBe(orgADraftId);
+		});
+
+		it("publishing_topic_working_draft: Org B context cannot read Org A's working draft", async () => {
+			const row = await asRlsRole(
+				{
+					type: "organization",
+					tenantId: TEST_ORGS.orgB,
+					userId: TEST_USERS.userA,
+				},
+				(tx) =>
+					tx.publishingTopicWorkingDraft.findUnique({
+						where: { id: orgAWorkingDraftId },
+					}),
+			);
+
+			expect(row).toBeNull();
+		});
+
+		it("publishing_topic_working_draft: Org A context CAN read its own working draft (positive control)", async () => {
+			const row = await asRlsRole(
+				{
+					type: "organization",
+					tenantId: TEST_ORGS.orgA,
+					userId: TEST_USERS.userA,
+				},
+				(tx) =>
+					tx.publishingTopicWorkingDraft.findUnique({
+						where: { id: orgAWorkingDraftId },
+					}),
+			);
+
+			expect(row).not.toBeNull();
+			expect(row?.id).toBe(orgAWorkingDraftId);
 		});
 
 		// The recipient column is deliberately NOT a tenant column: user B is the RECIPIENT of nothing

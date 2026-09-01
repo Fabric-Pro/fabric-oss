@@ -276,6 +276,7 @@ import {
 	listPublishingCyclesProcedure,
 	listPublishingTopicsProcedure,
 	listTopicDecisionsProcedure,
+	listTopicDraftsProcedure,
 	setTopicReadStateProcedure,
 	setTopicSnoozeProcedure,
 	updatePublishingSuiteSettingsProcedure,
@@ -1359,6 +1360,12 @@ export const projectsRouter = {
 		// and the AI Updates a regeneration writes.
 		listTopicDecisions: listTopicDecisionsProcedure,
 		answerTopicQuestion: answerTopicQuestionProcedure,
+		// #1853 (2B-1): the topic's generated-draft state. Like
+		// `getPlanningAnalysis`, it returns TWO rows per content type — the
+		// latest attempt and the latest READY one — so a failed regeneration
+		// cannot blank a good draft the reader still wants. Read only; the
+		// generation writes arrive in 2B-2/2B-3.
+		listTopicDrafts: listTopicDraftsProcedure,
 	},
 
 	// User Stories & Tasks (Kanban)

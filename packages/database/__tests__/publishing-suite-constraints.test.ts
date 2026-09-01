@@ -531,6 +531,372 @@ it.skipIf(!RUN_DB)(
 	},
 );
 
+// ---------------------------------------------------------------------------
+// Phase 2B-1 (Fizzy #1853): the two draft tables.
+//
+// These cases exist because NOTHING ELSE CAN SEE the properties they pin. The
+// composite foreign key with its subset delete action, the per-post-type
+// partial index and the two CHECK constraints are all invisible to the mocked
+// query-shape suite in `publishing-drafts.test.ts`, and a migration that exits
+// 0 is not evidence any of them landed.
+// ---------------------------------------------------------------------------
+
+/** A personal-context topic with its user and project, all tracked for cleanup. */
+async function makeDraftTopic() {
+	const user = await makeUser();
+	const project = await makePersonalProject(user.id);
+	const topic = await db.publishingTopic.create({
+		data: {
+			projectId: project.id,
+			userId: user.id,
+			title: "draft fixture",
+			status: "SUGGESTION",
+			origin: "MANUAL",
+			dedupeKey: `draft:${randomUUID()}`,
+		},
+	});
+	return { user, project, topic };
+}
+
+it.skipIf(!RUN_DB)(
+	"2B-1 A: the draft constraints and indexes actually landed",
+	async () => {
+		// Read back what the migration PRODUCED, not that it exited 0. A
+		// hand-authored migration in this repository has passed thirteen reviews
+		// and still been wrong about a Postgres-side name; only the catalog
+		// settles it.
+		const indexes = await db.$queryRaw<Array<{ indexdef: string }>>`
+			SELECT indexdef FROM pg_indexes
+			WHERE tablename = 'publishing_topic_draft'
+			  AND indexname = 'publishing_topic_draft_active'
+		`;
+		expect(indexes).toHaveLength(1);
+		// The PREDICATE, not merely the index's existence: an index over the
+		// same columns without the partial WHERE would forbid a second draft of
+		// any status, which is a different and much worse rule.
+		expect(indexes[0]?.indexdef).toContain('"topicId", "postType"');
+		expect(indexes[0]?.indexdef).toContain("WHERE (status = 'GENERATING'");
+
+		const constraints = await db.$queryRaw<
+			Array<{ conname: string; def: string }>
+		>`
+			SELECT conname::text, pg_get_constraintdef(oid) AS def
+			FROM pg_constraint
+			WHERE conrelid::regclass::text IN (
+				'publishing_topic_draft', 'publishing_topic_working_draft'
+			)
+		`;
+		const byName = new Map(constraints.map((c) => [c.conname, c.def]));
+
+		expect(byName.get("publishing_topic_draft_tenant_xor")).toMatch(
+			/organizationId.*IS NULL.*<>.*userId.*IS NULL/s,
+		);
+		expect(byName.get("publishing_topic_working_draft_tenant_xor")).toMatch(
+			/organizationId.*IS NULL.*<>.*userId.*IS NULL/s,
+		);
+		expect(byName.get("publishing_topic_draft_generating_timeout")).toMatch(
+			/executionTimeoutAt.*IS NOT NULL/s,
+		);
+
+		// The subset delete action is the whole point. A bare ON DELETE SET NULL
+		// nulls every referencing column, including NOT NULL topicId/postType,
+		// which makes deleting a candidate FAIL instead of preserving the body.
+		const fk = byName.get(
+			"publishing_topic_working_draft_source_draft_fkey",
+		);
+		expect(fk).toContain(
+			'FOREIGN KEY ("sourceDraftId", "topicId", "postType")',
+		);
+		expect(fk).toContain('ON DELETE SET NULL ("sourceDraftId")');
+	},
+);
+
+it.skipIf(!RUN_DB)(
+	"2B-1 B: the in-flight guard is per POST TYPE, not per topic",
+	async () => {
+		const { user, project, topic } = await makeDraftTopic();
+		const base = {
+			topicId: topic.id,
+			projectId: project.id,
+			userId: user.id,
+			status: "GENERATING" as const,
+			executionTimeoutAt: new Date(Date.now() + 600_000),
+		};
+
+		// Two content types generating at once on ONE topic is legitimate and
+		// users will do it. The positive half is what separates a per-post-type
+		// index from the per-topic one the sibling analysis table uses — a
+		// rejection-only case passes against either.
+		await db.publishingTopicDraft.create({
+			data: { ...base, postType: "TWEET", version: 1 },
+		});
+		await db.publishingTopicDraft.create({
+			data: { ...base, postType: "BLOG_POST", version: 1 },
+		});
+
+		await expect(
+			db.publishingTopicDraft.create({
+				data: { ...base, postType: "TWEET", version: 2 },
+			}),
+		).rejects.toMatchObject({ code: "P2002" });
+	},
+);
+
+it.skipIf(!RUN_DB)(
+	"2B-1 C: a working draft may only cite a candidate of its own topic and post type",
+	async () => {
+		const { user, project, topic } = await makeDraftTopic();
+		const other = await db.publishingTopic.create({
+			data: {
+				projectId: project.id,
+				userId: user.id,
+				title: "other topic",
+				status: "SUGGESTION",
+				origin: "MANUAL",
+				dedupeKey: `draft:${randomUUID()}`,
+			},
+		});
+		const candidate = await db.publishingTopicDraft.create({
+			data: {
+				topicId: topic.id,
+				projectId: project.id,
+				userId: user.id,
+				postType: "BLOG_POST",
+				version: 1,
+				status: "READY",
+			},
+		});
+		const working = {
+			projectId: project.id,
+			userId: user.id,
+			body: "draft body",
+		};
+
+		// Same topic AND same post type: accepted.
+		await db.publishingTopicWorkingDraft.create({
+			data: {
+				...working,
+				topicId: topic.id,
+				postType: "BLOG_POST",
+				sourceDraftId: candidate.id,
+			},
+		});
+
+		// Another topic's candidate: refused by the composite key.
+		await expect(
+			db.publishingTopicWorkingDraft.create({
+				data: {
+					...working,
+					topicId: other.id,
+					postType: "BLOG_POST",
+					sourceDraftId: candidate.id,
+				},
+			}),
+		).rejects.toThrow(/source_draft_fkey|foreign key/i);
+
+		// Right topic, WRONG post type: also refused. Without this half the
+		// case passes against a two-column key on (sourceDraftId, topicId).
+		await expect(
+			db.publishingTopicWorkingDraft.create({
+				data: {
+					...working,
+					topicId: topic.id,
+					postType: "TWEET",
+					sourceDraftId: candidate.id,
+				},
+			}),
+		).rejects.toThrow(/source_draft_fkey|foreign key/i);
+
+		// MATCH SIMPLE: a hand-written draft citing nothing is legal.
+		await db.publishingTopicWorkingDraft.create({
+			data: {
+				...working,
+				topicId: topic.id,
+				postType: "TWEET",
+				sourceDraftId: null,
+			},
+		});
+	},
+);
+
+it.skipIf(!RUN_DB)(
+	"2B-1 D: deleting a candidate keeps the body; deleting the topic removes everything",
+	async () => {
+		const { user, project, topic } = await makeDraftTopic();
+		const candidate = await db.publishingTopicDraft.create({
+			data: {
+				topicId: topic.id,
+				projectId: project.id,
+				userId: user.id,
+				postType: "BLOG_POST",
+				version: 1,
+				status: "READY",
+			},
+		});
+		await db.publishingTopicWorkingDraft.create({
+			data: {
+				topicId: topic.id,
+				projectId: project.id,
+				userId: user.id,
+				postType: "BLOG_POST",
+				body: "the body the user owns",
+				sourceDraftId: candidate.id,
+			},
+		});
+
+		// THIS is the case that catches an all-columns SET NULL: with one, the
+		// delete raises a not-null violation on topicId/postType and fails here
+		// rather than nulling a single column.
+		await db.publishingTopicDraft.delete({ where: { id: candidate.id } });
+
+		const survived = await db.publishingTopicWorkingDraft.findFirst({
+			where: { topicId: topic.id, postType: "BLOG_POST" },
+		});
+		expect(survived?.body).toBe("the body the user owns");
+		expect(survived?.sourceDraftId).toBeNull();
+		// The other two referencing columns must be UNTOUCHED — they are what
+		// the row's identity is built from.
+		expect(survived?.topicId).toBe(topic.id);
+		expect(survived?.postType).toBe("BLOG_POST");
+
+		// The topic, by contrast, takes both tables with it. A working draft
+		// outliving its topic would be an orphan no screen can reach.
+		await db.publishingTopic.delete({ where: { id: topic.id } });
+		expect(
+			await db.publishingTopicDraft.count({
+				where: { topicId: topic.id },
+			}),
+		).toBe(0);
+		expect(
+			await db.publishingTopicWorkingDraft.count({
+				where: { topicId: topic.id },
+			}),
+		).toBe(0);
+	},
+);
+
+it.skipIf(!RUN_DB)(
+	"2B-1 F: a draft cannot be attached to a topic in a different project",
+	async () => {
+		// The single-column FKs prove each id names a real row and nothing about
+		// the two agreeing. Without the composite key a row pairing topic A with
+		// project Y is accepted — and `listTopicDrafts` authorizes the caller on
+		// `projectId` and then reads by exactly these two denormalised columns,
+		// so a caller authorized on Y would receive topic A's draft metadata.
+		const { user, topic } = await makeDraftTopic();
+		const otherProject = await makePersonalProject(user.id);
+
+		await expect(
+			db.publishingTopicDraft.create({
+				data: {
+					topicId: topic.id,
+					projectId: otherProject.id,
+					userId: user.id,
+					postType: "TWEET",
+					version: 1,
+					status: "READY",
+				},
+			}),
+		).rejects.toThrow(/topic_project_fkey|foreign key/i);
+
+		await expect(
+			db.publishingTopicWorkingDraft.create({
+				data: {
+					topicId: topic.id,
+					projectId: otherProject.id,
+					userId: user.id,
+					postType: "TWEET",
+					body: "mismatched",
+				},
+			}),
+		).rejects.toThrow(/topic_project_fkey|foreign key/i);
+	},
+);
+
+it.skipIf(!RUN_DB)(
+	"2B-1 E: a draft survives its old organization being deleted after a transfer",
+	async () => {
+		// The deterministic half of the transfer story. A draft generated under
+		// org A whose project then moves to org B keeps A's organizationId until
+		// something writes to it; deleting org A would then cascade away content
+		// belonging to a project B owns. Once a write has re-homed the tuple,
+		// that cascade must no longer reach it.
+		const user = await makeUser();
+		const orgA = await db.organization.create({
+			data: {
+				id: `draft-org-a-${randomUUID()}`,
+				name: "org-a",
+				slug: `draft-org-a-${randomUUID()}`,
+				createdAt: new Date(),
+			},
+		});
+		createdOrgIds.push(orgA.id);
+		const orgB = await db.organization.create({
+			data: {
+				id: `draft-org-b-${randomUUID()}`,
+				name: "org-b",
+				slug: `draft-org-b-${randomUUID()}`,
+				createdAt: new Date(),
+			},
+		});
+		createdOrgIds.push(orgB.id);
+
+		const project = await db.project.create({
+			data: {
+				name: "draft-transfer",
+				userId: user.id,
+				organizationId: orgA.id,
+				techStack: [],
+				features: [],
+				tags: [],
+			},
+		});
+		createdProjectIds.push(project.id);
+		const topic = await db.publishingTopic.create({
+			data: {
+				projectId: project.id,
+				organizationId: orgA.id,
+				title: "transferred topic",
+				status: "SUGGESTION",
+				origin: "MANUAL",
+				dedupeKey: `draft:${randomUUID()}`,
+			},
+		});
+		const draft = await db.publishingTopicDraft.create({
+			data: {
+				topicId: topic.id,
+				projectId: project.id,
+				organizationId: orgA.id,
+				postType: "TWEET",
+				version: 1,
+				status: "READY",
+			},
+		});
+
+		// The transfer, and the re-home a subsequent write performs.
+		await db.project.update({
+			where: { id: project.id },
+			data: { organizationId: orgB.id },
+		});
+		await db.publishingTopic.update({
+			where: { id: topic.id },
+			data: { organizationId: orgB.id },
+		});
+		await db.publishingTopicDraft.update({
+			where: { id: draft.id },
+			data: { organizationId: orgB.id },
+		});
+
+		await db.organization.delete({ where: { id: orgA.id } });
+
+		expect(
+			await db.publishingTopicDraft.findUnique({
+				where: { id: draft.id },
+			}),
+		).not.toBeNull();
+	},
+);
+
 afterAll(async () => {
 	await db.project.deleteMany({ where: { id: { in: createdProjectIds } } });
 	await db.organization.deleteMany({ where: { id: { in: createdOrgIds } } });
