@@ -5,6 +5,7 @@ import {
 	getAutoRefreshSettings,
 	updateDocument,
 } from "@repo/database";
+import { normalizeQuoteArtifacts } from "@repo/utils/quote-artifacts";
 import { z } from "zod";
 import { applyDocumentUpdateSideEffects } from "../../../../lib/document-side-effects";
 import {
@@ -54,7 +55,7 @@ export const applyDocumentAutoRefreshProposalProcedure =
 			}),
 		)
 		.handler(async ({ input, context }) => {
-			assertLivingDocsRefreshEnabled();
+			await assertLivingDocsRefreshEnabled();
 
 			const user = context.user;
 			const organizationId = resolveOrganizationId(
@@ -93,7 +94,7 @@ export const applyDocumentAutoRefreshProposalProcedure =
 			let document: Awaited<ReturnType<typeof updateDocument>>;
 			try {
 				document = await updateDocument(input.id, {
-					content: pendingContent,
+					content: normalizeQuoteArtifacts(pendingContent),
 					changeDescription: settings.pendingSummary ?? undefined,
 					// The accepting human, NOT the agent that drafted this.
 					lastEditedBy: user.id,

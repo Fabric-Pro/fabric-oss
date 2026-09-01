@@ -1,4 +1,6 @@
 import {
+	isFeatureEnabled,
+	isKillSwitchArmed,
 	isRefreshDue,
 	listEnabledAutoRefreshSettings,
 	type RefreshActorCandidate,
@@ -7,7 +9,6 @@ import {
 	resolveValidRefreshActors,
 } from "@repo/database";
 import { logger } from "@repo/logs";
-import { isLivingDocsRefreshEnabled } from "@repo/utils/feature-flag";
 import { heartbeat } from "@temporalio/activity";
 
 /**
@@ -55,7 +56,24 @@ export async function findDueDocumentsActivity(): Promise<FindDueDocumentsOutput
 	// Gate in the handler, not in schedule registration: the schedule is always
 	// registered, so flipping the flag on takes effect on the next tick with no
 	// redeploy. (Repo convention — see ensure-context-summarization-schedules.ts.)
-	if (!isLivingDocsRefreshEnabled()) {
+	// Resolved through the shared registry, so an admin override stops the sweep
+	// without a redeploy too — and MUST be awaited: an un-awaited Promise is
+	// truthy, which would open the gate permanently (Fizzy #2210).
+	// BOTH gates. The sweep is the unattended writer, so it must not be able to
+	// run on the kill switch alone: with the rollout off the control does not
+	// render and the enrolment procedures answer NOT_FOUND, so a document that
+	// was enrolled earlier would keep being rewritten with its owner unable to
+	// see the switch, let alone reach it. Rollout off means nothing runs; the
+	// kill switch stays independently able to stop a rollout that IS on.
+	// The sweep gate reads FAIL-CLOSED. Its env var is true in every environment
+	// because it is the brake, so the lenient reader would resolve an admin's OFF
+	// straight back to true the moment the override table is unreadable — during
+	// exactly the kind of fault in which someone is pulling the brake.
+	const [rolloutOn, sweepArmed] = await Promise.all([
+		isFeatureEnabled("LIVING_DOCS_REFRESH"),
+		isKillSwitchArmed("LIVING_DOCS_REFRESH_SWEEP"),
+	]);
+	if (!(rolloutOn && sweepArmed)) {
 		return { due: [] };
 	}
 

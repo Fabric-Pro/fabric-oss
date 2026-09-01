@@ -75,6 +75,11 @@ vi.mock("@repo/database", async () => {
 		storeRefreshProposal: storeProposalMock,
 		getAutoRefreshSettings: getSettingsMock,
 		createDocumentRefreshNotifications: notifyMock,
+		isFeatureEnabled: flagMock,
+		// The sweep gate reads fail-closed through this one. Same resolver
+		// here, so a suite that stubs the flag on still exercises the sweep;
+		// the degraded-read case is covered separately.
+		isKillSwitchArmed: flagMock,
 	};
 });
 
@@ -97,16 +102,16 @@ vi.mock("../lib/side-effects", () => ({
 	applyDocumentRefreshSideEffects: sideEffectsMock,
 }));
 
-vi.mock("@repo/utils/feature-flag", () => ({
-	isLivingDocsRefreshEnabled: flagMock,
-}));
-
 vi.mock("@repo/logs", () => ({
 	logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
 
 import { DocumentVersionConflictError } from "@repo/database";
 import { AI_REFRESH_AUTHOR_ID } from "@repo/utils/document-version-author";
+import {
+	type FeatureFlagKey,
+	resolveFlag,
+} from "@repo/utils/feature-flag-registry";
 import { runDocumentRefreshActivity } from "../run-document-refresh";
 
 const DUE = {
@@ -167,9 +172,37 @@ const autoApplyOn = () => {
 	});
 };
 
+/**
+ * The two lower-precedence inputs the registry resolves the flag from. An
+ * `undefined` override means "no admin row"; an explicit `false` is an admin
+ * turning it off, and beats a truthy env var.
+ */
+let flagOverride: boolean | undefined;
+let flagEnvValue: string | undefined;
+
 beforeEach(() => {
 	vi.clearAllMocks();
-	flagMock.mockReturnValue(true);
+	flagOverride = undefined;
+	// On by env var, no override row — the posture every non-kill-switch test
+	// here assumes. `packages/temporal/vitest.config.ts` sets no flag env, so
+	// it is supplied here rather than read from the process.
+	flagEnvValue = "true";
+	// The gate is the registry's `LIVING_DOCS_REFRESH`, read via
+	// `isFeatureEnabled` from `@repo/database` (Fizzy #2210). Mocking the
+	// retired `@repo/utils/feature-flag` helper here would intercept nothing
+	// and leave the kill-switch tests below asserting nothing while passing.
+	// The real `resolveFlag` runs, so precedence is the shipped one.
+	flagMock.mockImplementation(
+		async (key: FeatureFlagKey) =>
+			resolveFlag(key, flagOverride, {
+				// Both gates. The sweep requires the rollout as well as its own
+				// kill switch, so an environment that only arms the brakes must
+				// NOT be able to run it — that combination would rewrite enrolled
+				// documents while their owners could not see the control.
+				FABRIC_FEATURE_LIVING_DOCS_REFRESH: flagEnvValue,
+				FABRIC_FEATURE_LIVING_DOCS_REFRESH_ROLLOUT: flagEnvValue,
+			} as NodeJS.ProcessEnv).enabled,
+	);
 	getDocumentMock.mockResolvedValue(DOCUMENT);
 	fetchSourcesMock.mockResolvedValue(SOURCES);
 	markAttemptMock.mockResolvedValue(undefined);
@@ -248,7 +281,7 @@ describe("kill switch", () => {
 		// takes minutes. Without a re-read, flipping the flag off would still let
 		// every in-flight refresh land.
 		autoApplyOn();
-		flagMock.mockReturnValue(false);
+		flagEnvValue = "false";
 
 		const outcome = await runDocumentRefreshActivity(DUE);
 
@@ -257,6 +290,43 @@ describe("kill switch", () => {
 		expect(storeProposalMock).not.toHaveBeenCalled();
 		expect(completeCycleMock).not.toHaveBeenCalled();
 		expect(notifyMock).not.toHaveBeenCalled();
+	});
+
+	it("abandons an in-flight refresh when an ADMIN OVERRIDE lands between the sweep and the write", async () => {
+		// The scenario the registry exists for, and the one the env var could
+		// never serve: the flag was on when this document was picked up and the
+		// admin turns it off — with no redeploy — while the model is still
+		// generating. The env var stays "true" throughout, so this can only pass
+		// if the pre-write re-read goes through the override row.
+		//
+		// The flip happens INSIDE the generation call, which is where the real
+		// window is: the sweep is up to an hour behind and the model call takes
+		// minutes.
+		autoApplyOn();
+		flagEnvValue = "true";
+		runContextUpdateMock.mockImplementation(async () => {
+			flagOverride = false;
+			return UPDATE;
+		});
+
+		const outcome = await runDocumentRefreshActivity(DUE);
+
+		expect(outcome).toEqual({ status: "SKIPPED_DISABLED" });
+		expect(updateDocumentMock).not.toHaveBeenCalled();
+		expect(storeProposalMock).not.toHaveBeenCalled();
+		expect(completeCycleMock).not.toHaveBeenCalled();
+		expect(notifyMock).not.toHaveBeenCalled();
+		// The generation actually ran — this is an abandon at the write, not a
+		// document that was never picked up.
+		expect(runContextUpdateMock).toHaveBeenCalledTimes(1);
+	});
+
+	it("re-reads the gate from the shared registry, by key", async () => {
+		autoApplyOn();
+
+		await runDocumentRefreshActivity(DUE);
+
+		expect(flagMock).toHaveBeenCalledWith("LIVING_DOCS_REFRESH_SWEEP");
 	});
 
 	it("abandons without writing when the document was un-enrolled mid-generation", async () => {

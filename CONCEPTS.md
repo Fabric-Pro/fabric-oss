@@ -110,6 +110,8 @@ Direct writing exists as a separate per-document opt-in (auto-apply, off by defa
 ### Refresh Agent
 The non-human author identity that AI-written document versions are attributed to. Deliberately distinct and recognizable, not a generic system label: version history must never let an AI rewrite be mistaken for a person's edit, or a person's edit be mistaken for the agent's.
 
+It is one of several such identities rather than the only one — any automated writer that touches document content needs its own. An automated identity the authorship resolver does not recognise is rendered as an unknown user, which the product reads as a deleted account, so an unregistered writer does not merely go unnamed: version history actively reports it as a person who is gone.
+
 ### Imported document
 A project document whose body is material a person supplied — pasted or uploaded — rather than text the AI produced. Not a lesser document afterwards: it is versioned, editable, and eligible for every later AI action, including enrolment in Auto-Refresh.
 
@@ -124,6 +126,16 @@ At most one per type is the invariant the whole idea rests on: two active docume
 How supplied material is meant to be used at the moment a document is created: as background the AI writes *from*, or as the document body itself, published unchanged.
 
 The two differ in what survives. Used as background, the material is kept as project context and stays available to later generations, and the AI is free to ignore its wording entirely. Used as the body, the words are the document, nothing is generated, and the material is not added to the retrieval corpus a second time — the document already is it.
+
+## Capability gates
+
+### Rollout gate
+The switch that decides whether a capability is available at all — whether its controls render and whether its write paths accept a request. Off means the capability is absent rather than present-and-failing: a surface that renders against a rollout gate its own backend does not honour is the shape of an outage, not of a disabled feature.
+
+### Kill switch
+The switch that stops work already in motion, distinct from the Rollout gate and never a synonym for it. It is armed in every environment by design, because its value is that it is available in an incident; it is read again immediately before an unattended write rather than only when the work was scheduled, so flipping it stops a run already under way.
+
+Two consequences follow from what it is for. It reads fail-closed: a switch whose stored state cannot be read resolves to stopped, because the moment its store is faulting is the moment someone is most likely to be reaching for it. And it cannot authorise work on its own — an unattended writer requires its Rollout gate as well, or a capability nobody can see or reach would still be acting on their documents.
 
 ## Feature specs
 
@@ -275,6 +287,8 @@ Recorded whenever the person opens a project's main view, independently of wheth
 Distinct from the recent-project list the orchestrator keeps for session continuity: that one records what an agent run was pointed at, this one records what a person navigated to. Treating them as interchangeable produces a list the user never built.
 
 ## Flagged ambiguities
+
+- "Feature flag" had been used for both the Rollout gate and the Kill switch — these are distinct, and a capability can need one of each. Merging them turns an always-armed brake into a switch that launches the feature.
 
 *Source usage* and an attachment's *designation* are different axes and must not be
 described in each other's words. Designation decides whether a file is protected from

@@ -539,6 +539,14 @@ export const AUDIT_ACTIONS: AuditActionEntry[] = [
 		description:
 			"A project member checked or unchecked a Meeting Digest action item. `metadata.completed` carries the new state.",
 	},
+	{
+		key: "project.document_generation.failed",
+		categoryId: "project",
+		labelKey:
+			"settings.auditLog.actions.project.document_generation.failed",
+		description:
+			"Document generation could not reach the generation agent, so a fallback path ran. The row is written whether or not that fallback then succeeded — a degraded-but-successful generation still produces one, which is the point: it is otherwise invisible. `metadata.error` carries the PRIMARY failure, which the document's own error field deliberately does not, because that field renders verbatim to every project member. `metadata.phase` names which call failed and `metadata.documentType` which document was being generated.",
+	},
 	// ---- Feature / story ------------------------------------------------
 	{
 		key: "story.created",

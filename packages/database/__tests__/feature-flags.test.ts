@@ -4,7 +4,7 @@ import {
 	type FeatureFlagKey,
 	type FlagSource,
 } from "@repo/utils/feature-flag-registry";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 /**
  * Builds the expected `getAllFlags()` shape straight from the registry, with
@@ -68,6 +68,7 @@ import {
 	getAllFlags,
 	getAllFlagsDetailed,
 	isFeatureEnabled,
+	isKillSwitchArmed,
 	setFlagOverride,
 } from "../prisma/queries/feature-flags";
 
@@ -233,5 +234,51 @@ describe("feature flag readers", () => {
 		await expect(clearFlagOverride("PERSONAL_MEETINGS")).rejects.toThrow(
 			"delete failed",
 		);
+	});
+
+	// A kill switch must not resolve back ON when the table holding an
+	// administrator's OFF cannot be read. `isFeatureEnabled` degrades to the env
+	// value on purpose — right for a rollout gate, wrong for a brake, because a
+	// brake's env var is typically true in every environment precisely so the
+	// switch is available.
+	describe("isKillSwitchArmed", () => {
+		afterEach(() => {
+			vi.unstubAllEnvs();
+		});
+
+		it("resolves DISABLED when the override table cannot be read", async () => {
+			// The deployed posture for a brake: env var true everywhere, so the
+			// lenient reader has something to fall back TO. That fallback is
+			// exactly what must not happen here.
+			vi.stubEnv("FABRIC_FEATURE_LIVING_DOCS_REFRESH", "true");
+			__resetFeatureFlagCacheForTest();
+			findMany.mockRejectedValue(new Error("relation does not exist"));
+
+			// The lenient reader falls back to the env var and says armed...
+			expect(await isFeatureEnabled("LIVING_DOCS_REFRESH_SWEEP")).toBe(
+				true,
+			);
+			// ...the strict one refuses to, which is the whole point.
+			expect(await isKillSwitchArmed("LIVING_DOCS_REFRESH_SWEEP")).toBe(
+				false,
+			);
+		});
+
+		it("honours a readable override and env value when the read succeeds", async () => {
+			vi.stubEnv("FABRIC_FEATURE_LIVING_DOCS_REFRESH", "true");
+			__resetFeatureFlagCacheForTest();
+			findMany.mockResolvedValue([]);
+			expect(await isKillSwitchArmed("LIVING_DOCS_REFRESH_SWEEP")).toBe(
+				true,
+			);
+
+			__resetFeatureFlagCacheForTest();
+			findMany.mockResolvedValue([
+				{ key: "LIVING_DOCS_REFRESH_SWEEP", enabled: false },
+			]);
+			expect(await isKillSwitchArmed("LIVING_DOCS_REFRESH_SWEEP")).toBe(
+				false,
+			);
+		});
 	});
 });

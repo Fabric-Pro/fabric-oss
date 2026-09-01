@@ -405,4 +405,14 @@ describe("audit taxonomy — closed action set", () => {
 			"project.databricks_knowledge.disconnected",
 		);
 	});
+
+	// Fizzy #2210. The primary generation failure is recorded here rather than on
+	// the document, because the document's error field renders verbatim to every
+	// project member. An action missing from this closed list is written as
+	// `audit.unknown_action` and drops out of the admin viewer's action filter —
+	// the same way `project.pull_request.comment_posted` once did — so being IN
+	// the taxonomy is what makes the row retrievable, not merely durable.
+	it("includes project.document_generation.failed in AUDIT_ACTIONS", () => {
+		expect(AUDIT_ACTIONS).toContain("project.document_generation.failed");
+	});
 });

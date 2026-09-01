@@ -1,5 +1,6 @@
 "use client";
 
+import { useFeatureFlag } from "@saas/shared/components/FeatureFlagProvider";
 import { useTenantContext } from "@shared/hooks/use-tenant-query";
 import { orpcClient } from "@shared/lib/orpc-client";
 import { orpc } from "@shared/lib/orpc-query-utils";
@@ -35,16 +36,9 @@ import {
 	SparklesIcon,
 	XIcon,
 } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
-
-// Client mirror of the server `FABRIC_FEATURE_LIVING_DOCS_REFRESH` flag —
-// opt-in, default OFF. Must be read as a literal `process.env.X === "true"`
-// expression so Next.js inlines it at build time (see the comment block in
-// `@saas/shared/lib/feature-flags`). It deliberately does NOT live in that
-// module: that one is for kill switches (default ON), this is opt-in.
-const LIVING_DOCS_ENABLED =
-	process.env.NEXT_PUBLIC_FABRIC_FEATURE_LIVING_DOCS_REFRESH === "true";
+import { getOrpcCode } from "./field-mapping/orpc-error";
 
 type DocumentRefreshCadence =
 	| "ON_DEPLOY"
@@ -102,6 +96,15 @@ const REFRESH_STATUS: Record<
 	FAILED: { label: "Last refresh failed", tone: "bad" },
 };
 
+/**
+ * Copy for the one state that has no data to render against: the settings read
+ * failed and nothing was ever shown. Used as both the tooltip body and the
+ * button's accessible name, so pointer and screen-reader users get the same
+ * explanation.
+ */
+const READ_FAILED_LABEL =
+	"Auto-refresh unavailable — settings could not be loaded";
+
 type DocumentAutoRefreshToggleProps = {
 	documentId: string;
 	projectId: string;
@@ -121,14 +124,22 @@ type DocumentAutoRefreshToggleProps = {
  * labelled, highlight-toned button sitting in the masthead until a human
  * resolves it.
  *
- * Renders nothing when the client feature flag is off. The flag gate lives in
- * the outer component, BEFORE any hook call, so the inner component's hooks are
- * never conditionally executed (same split as `ContextSummaryPanel`).
+ * Renders nothing when the feature flag is off. The flag is the SERVER's answer,
+ * delivered through `FeatureFlagProvider` on the RSC payload — not a
+ * `NEXT_PUBLIC_` variable, which Next.js inlines at build time and which
+ * therefore could disagree with the API that actually enforces the gate
+ * (Fizzy #2210). The gate lives in the outer component, BEFORE the inner
+ * component mounts, so the inner component's hooks are never conditionally
+ * executed (same split as `ContextSummaryPanel`).
  */
 export function DocumentAutoRefreshToggle(
 	props: DocumentAutoRefreshToggleProps,
 ) {
-	if (!LIVING_DOCS_ENABLED) {
+	// Throws when the provider is missing, by design — a forgotten provider must
+	// not be indistinguishable from a disabled feature. Do not catch it.
+	const flagEnabled = useFeatureFlag("LIVING_DOCS_REFRESH");
+
+	if (!flagEnabled) {
 		return null;
 	}
 	return <DocumentAutoRefreshToggleInner {...props} />;
@@ -153,6 +164,49 @@ function DocumentAutoRefreshToggleInner({
 				organizationId,
 			}),
 	});
+
+	// Three very different outcomes used to hide behind `query.data?.enabled ??
+	// false`: the feature is off, the read was refused, and the read broke. That
+	// collapse is the bug (Fizzy #2210) — a broken read rendered the control
+	// against fallback defaults, so every click went to an API that had already
+	// declined to answer.
+	const readErrorCode = getOrpcCode(query.error);
+	// The procedures throw NOT_FOUND when the capability is off for this
+	// deployment and FORBIDDEN when the caller may not flip it. Either way the
+	// control must not exist for this person — which is what those procedures'
+	// own contract already claims.
+	const readDenied =
+		readErrorCode === "NOT_FOUND" || readErrorCode === "FORBIDDEN";
+	// Anything else is a fault, not an answer. React Query RETAINS `data` across
+	// a failed refetch while still flipping `status` to "error", so the presence
+	// of data is what separates "the first load never landed" from "a background
+	// refetch failed under a control the user is already looking at".
+	const hasSettings = query.data !== undefined;
+	const readFailed = query.isError && !readDenied && !hasSettings;
+	const refetchFailed = query.isError && !readDenied && hasSettings;
+
+	// A failed background refetch must not silently freeze the control on stale
+	// settings. Reported once per failure, not once per render: `errorUpdatedAt`
+	// changes only when a new error lands.
+	const reportedErrorAt = useRef<number | null>(null);
+	useEffect(() => {
+		if (
+			!refetchFailed ||
+			reportedErrorAt.current === query.errorUpdatedAt
+		) {
+			return;
+		}
+		reportedErrorAt.current = query.errorUpdatedAt;
+		toast.error(
+			"Could not refresh this document's auto-refresh settings.",
+			{
+				description:
+					query.error instanceof Error
+						? query.error.message
+						: undefined,
+			},
+		);
+	}, [refetchFailed, query.errorUpdatedAt, query.error]);
 
 	const enabled = query.data?.enabled ?? false;
 	const autoApply = query.data?.autoApply ?? false;
@@ -209,11 +263,16 @@ function DocumentAutoRefreshToggleInner({
 			}));
 			return { previous };
 		},
-		onError: (_err, _next, context) => {
+		onError: (error, _next, context) => {
 			if (context?.previous !== undefined) {
 				queryClient.setQueryData(key, context.previous);
 			}
-			toast.error("Could not update auto-refresh for this document.");
+			// The server's own reason, when there is one. A rejection that is not
+			// an `Error` carries no message worth showing, and `undefined` leaves
+			// the toast as its title alone rather than printing "undefined".
+			toast.error("Could not update auto-refresh for this document.", {
+				description: error instanceof Error ? error.message : undefined,
+			});
 		},
 		onSettled: () => {
 			queryClient.invalidateQueries({ queryKey: key });
@@ -288,9 +347,11 @@ function DocumentAutoRefreshToggleInner({
 
 	const isResolving = applyMutation.isPending || discardMutation.isPending;
 	const isBusy = query.isLoading || mutation.isPending;
-	const label = enabled
-		? "Turn off scheduled auto-refresh"
-		: "Turn on scheduled auto-refresh";
+	const label = readFailed
+		? READ_FAILED_LABEL
+		: enabled
+			? "Turn off scheduled auto-refresh"
+			: "Turn on scheduled auto-refresh";
 	const Icon = mutation.isPending
 		? Loader2Icon
 		: enabled
@@ -301,6 +362,12 @@ function DocumentAutoRefreshToggleInner({
 		? new Date(pending.proposedAt)
 		: null;
 
+	// Placed after every hook, so the hook order is identical on the render that
+	// returns null and the one that does not.
+	if (readDenied) {
+		return null;
+	}
+
 	return (
 		<TooltipProvider>
 			<div className={cn("flex items-center gap-1", className)}>
@@ -310,19 +377,30 @@ function DocumentAutoRefreshToggleInner({
 							type="button"
 							variant="ghost"
 							size="icon"
-							onClick={() =>
+							onClick={() => {
+								if (readFailed) {
+									return;
+								}
 								mutation.mutate({
 									enabled: !enabled,
 									cadence,
 									autoApply,
-								})
-							}
+								});
+							}}
 							disabled={isBusy}
+							// `aria-disabled` rather than `disabled` for the
+							// failed-read case, matching `SyncGateButton`: a
+							// natively disabled button takes no pointer or
+							// keyboard events, so the tooltip that explains WHY
+							// it is unusable would never open for anyone. The
+							// click handler above is what makes it inert.
+							aria-disabled={readFailed || undefined}
 							aria-label={label}
-							aria-pressed={enabled}
+							aria-pressed={readFailed ? undefined : enabled}
 							className={cn(
 								"shrink-0 size-8 text-muted-foreground transition-colors hover:text-foreground",
 								enabled && "text-primary hover:text-primary",
+								readFailed && "cursor-not-allowed opacity-60",
 							)}
 						>
 							<Icon
@@ -337,8 +415,9 @@ function DocumentAutoRefreshToggleInner({
 					<TooltipContent>
 						<p className="font-medium">{label}</p>
 						<p className="text-xs text-muted-foreground">
-							Fabric reviews recent project context on a schedule
-							and drafts an update for you to review.
+							{readFailed
+								? "Fabric could not load this document's auto-refresh settings. Reload the page to try again."
+								: "Fabric reviews recent project context on a schedule and drafts an update for you to review."}
 						</p>
 					</TooltipContent>
 				</Tooltip>

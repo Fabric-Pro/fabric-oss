@@ -26,11 +26,13 @@ import {
 	getRAGProviderConfig,
 	logEmbeddingUsageAsync,
 	logModelUsageAsync,
+	readTokenCount,
 	streamText,
 } from "@repo/ai";
 import {
 	computeMaxOutputTokenBudget,
 	computeScaledOutputTokenBudget,
+	DOCUMENT_GENERATION_FALLBACK_CEILING,
 } from "@repo/ai/lib/output-token-budget";
 import {
 	isTextContentType,
@@ -45,6 +47,7 @@ import {
 	listEmbeddedDocumentsForSweep,
 	type Prisma,
 	type ProjectDocumentType,
+	recordAuditDurable,
 } from "@repo/database";
 import {
 	applyContextSummary,
@@ -63,6 +66,7 @@ import {
 	searchSimilarProjectContexts,
 } from "@repo/rag";
 import { documentTypeLabel } from "@repo/utils/document-type-catalog";
+import { normalizeQuoteArtifacts } from "@repo/utils/quote-artifacts";
 import { ApplicationFailure, Context, heartbeat } from "@temporalio/activity";
 import { runDecisionPrecheck } from "../lib/decision-precheck";
 import { buildRetrievedContextBlock } from "../lib/retrieved-context-block";
@@ -1288,6 +1292,10 @@ ${formattingRules}`;
 		// Use null for thread_id to create a new thread for each document
 		let documentContent = "";
 		let chunkCount = 0; // Declare outside try block for use in catch
+		// Set when the primary agent stream fails and the fallback takes over.
+		// Read by both truncation branches so the surfaced error names the FIRST
+		// failure rather than the fallback's symptom (Fizzy #2210).
+		let primaryStreamFailure: string | undefined;
 		// Hoist heartbeat state so the catch block can clean up on stream init failure
 		const HEARTBEAT_INTERVAL_MS = 10000; // Send heartbeat every 10 seconds (well under 2m timeout)
 		let streamComplete = false;
@@ -1444,25 +1452,120 @@ ${formattingRules}`;
 			streamComplete = true;
 
 			const streamDuration = Date.now() - startTime;
+			// The primary failure is the CAUSE of everything that follows. Before
+			// Fizzy #2210 it lived only in this warn line, so a user whose fallback
+			// then truncated was told the document was too large — a claim about
+			// their content, for a dependency that was never reached. Keep it.
+			primaryStreamFailure =
+				err instanceof Error ? err.message : String(err);
 			activityLogger.warn(
 				"Agent stream failed; falling back to Gateway generation",
 				{
 					projectId,
 					documentType,
-					chunkCount: chunkCount || 0,
+					chunkCount,
 					streamDurationMs: streamDuration,
 					error: err instanceof Error ? err.message : String(err),
 					...(err instanceof Error && { stack: err.stack }),
 				},
 			);
+			// Durable, and AWAITED. The fire-and-forget variant returns before the
+			// insert lands and turns a write failure into a log line — which is the
+			// same disappearing act this whole change exists to stop. The activity
+			// must not complete before this settles, including when the fallback
+			// below then SUCCEEDS: a generation that quietly ran on the degraded
+			// path is exactly what nobody could see for two weeks.
+			//
+			// `organizationId` is deliberately omitted rather than guessed: the
+			// recorder derives it from the project, and a project-scoped row written
+			// without one is invisible in the organization's audit view.
+			if (documentId) {
+				// Heartbeat across the ledger write. The primary stream's own
+				// interval was cleared just above, and the next beat is not sent
+				// until the fallback starts — so a stalled INSERT (pool exhaustion,
+				// a DB blip) could outlast the activity's heartbeat timeout and let
+				// the server start a SECOND attempt while this one keeps running.
+				// This is the branch that runs when infrastructure is already
+				// degraded, which is exactly when that stall is plausible.
+				const auditHeartbeatLoop = setInterval(() => {
+					safeHeartbeat({
+						phase: "recording_generation_failure",
+						message: "Recording the generation failure",
+						progress: 45,
+					});
+				}, 10_000);
+				// Bounded. Heartbeating keeps Temporal from declaring the activity
+				// dead, but it does not get the USER their document: until this
+				// settles the fallback has not started. Observability must not
+				// become a hard dependency of generation — least of all on the
+				// branch that runs when the database may itself be the degraded
+				// thing. Time out, log, and fall back.
+				const AUDIT_WRITE_TIMEOUT_MS = 10_000;
+				try {
+					await Promise.race([
+						recordAuditDurable({
+							action: "project.document_generation.failed",
+							severity: "warning",
+							outcome: "failure",
+							actor: {
+								type: "system",
+								nameSnapshot: "document-generation",
+							},
+							projectId,
+							resource: {
+								type: "project_document",
+								id: documentId,
+							},
+							metadata: {
+								documentType,
+								phase: "agent_stream",
+								error: primaryStreamFailure,
+								streamDurationMs: streamDuration,
+								chunkCount,
+							},
+						}),
+						new Promise((_, reject) =>
+							setTimeout(
+								() =>
+									reject(
+										new Error(
+											"audit write timed out; continuing to the fallback",
+										),
+									),
+								AUDIT_WRITE_TIMEOUT_MS,
+							),
+						),
+					]);
+				} catch (auditError) {
+					// Never let the ledger write replace the failure it describes.
+					activityLogger.error(
+						"Failed to record generation-failure audit row",
+						{
+							projectId,
+							documentType,
+							error:
+								auditError instanceof Error
+									? auditError.message
+									: String(auditError),
+						},
+					);
+				} finally {
+					clearInterval(auditHeartbeatLoop);
+				}
+			}
 			// Whole-document generation from a short prompt — maximal mode. Without
 			// an explicit budget Databricks/Anthropic-direct cap the document at
 			// their injected defaults (8,192 / 4,096) and silently truncate it.
+			//
+			// The ceiling matches what the agent allows ITSELF. This path stands in
+			// for the agent, and a stand-in that asks for less output than the thing
+			// it replaces turns an outage into a truncated document (Fizzy #2210).
 			const fallbackMaxOutputTokens = computeMaxOutputTokenBudget(
 				modelMetadata,
 				{
 					promptChars:
 						(systemPrompt?.length ?? 0) + fullPrompt.length,
+					ceilingTokens: DOCUMENT_GENERATION_FALLBACK_CEILING,
 				},
 			);
 			// Use streamText instead of generateText to keep the gateway connection alive
@@ -1501,7 +1604,14 @@ ${formattingRules}`;
 			const fallbackFinishReason = await fallbackStream.finishReason;
 			if (fallbackFinishReason === "length") {
 				throw new Error(
-					`Document generation for "${documentType}" was truncated at the model's output-token limit (budget: ${fallbackMaxOutputTokens ?? "provider default"} tokens). The document is too large for the configured model's output limit.`,
+					describeTruncation({
+						documentType,
+						requestedBudget: fallbackMaxOutputTokens,
+						observedOutputTokens: await readOutputTokens(
+							fallbackStream.usage,
+						),
+						primaryStreamFailure,
+					}),
 				);
 			}
 			documentContent = fallbackText.trim();
@@ -1522,6 +1632,7 @@ ${formattingRules}`;
 				{
 					promptChars:
 						(systemPrompt?.length ?? 0) + fullPrompt.length,
+					ceilingTokens: DOCUMENT_GENERATION_FALLBACK_CEILING,
 				},
 			);
 			// Use streamText instead of generateText to keep the gateway connection alive
@@ -1560,7 +1671,14 @@ ${formattingRules}`;
 				await directFallbackStream.finishReason;
 			if (directFallbackFinishReason === "length") {
 				throw new Error(
-					`Document generation for "${documentType}" was truncated at the model's output-token limit (budget: ${directFallbackMaxOutputTokens ?? "provider default"} tokens). The document is too large for the configured model's output limit.`,
+					describeTruncation({
+						documentType,
+						requestedBudget: directFallbackMaxOutputTokens,
+						observedOutputTokens: await readOutputTokens(
+							directFallbackStream.usage,
+						),
+						primaryStreamFailure,
+					}),
 				);
 			}
 			documentContent = directFallbackText.trim();
@@ -1650,7 +1768,18 @@ ${formattingRules}`;
 			totalDurationSeconds: (totalDuration / 1000).toFixed(2),
 		});
 
-		return { content: documentContent, resolvedPromptVersionId };
+		// Normalize HERE, at the single point the content leaves this activity,
+		// rather than only inside `saveProjectDocument`. The workflow hands this
+		// same string to BOTH the document write and `createDocumentVersion`, so
+		// normalizing at the save seam alone left the version row holding text
+		// that differs from the document at the same version number — and
+		// restoring that version would put the artifacts back. `saveProjectDocument`
+		// still normalizes defensively; the transform is a fixed point, so running
+		// it twice costs nothing.
+		return {
+			content: normalizeQuoteArtifacts(documentContent),
+			resolvedPromptVersionId,
+		};
 	} catch (error) {
 		const totalDuration = Date.now() - startTime;
 		activityLogger.error("Failed to generate document", error, {
@@ -1707,6 +1836,85 @@ const MERMAID_LANGUAGE_PATTERN =
  *  - A bare ` ``` ` (no language) followed by structured markdown is treated
  *    as a stray marker and discarded instead of opening a code block.
  */
+/**
+ * Read the output-token count a finished stream actually produced.
+ *
+ * Reported alongside the requested budget so a truncation says which of two very
+ * different things happened: the provider clamped BELOW what we asked for (the
+ * numbers disagree), or the model genuinely generated to the ceiling and was
+ * still going (they match). Before Fizzy #2210 only the requested number was
+ * printed, so those two cases were indistinguishable and the message blamed the
+ * document for both.
+ *
+ * Never throws: a usage figure is diagnostic detail on an error path, and losing
+ * it must not replace the truncation error with a different one.
+ */
+async function readOutputTokens(
+	usage: PromiseLike<unknown>,
+): Promise<number | undefined> {
+	try {
+		const resolved = await usage;
+		if (
+			typeof resolved === "object" &&
+			resolved !== null &&
+			"outputTokens" in resolved
+		) {
+			// Not always a plain number: since the AI SDK v6 provider interface
+			// some providers report a `{ total, … }` breakdown instead, and a
+			// bare typeof check drops the count on exactly those.
+			// `readTokenCount` is the repo's reader for both shapes.
+			const raw = (resolved as { outputTokens?: unknown }).outputTokens;
+			// A reported ZERO is the most diagnostic value there is on this path:
+			// the provider admitted the request and produced nothing. Collapsing it
+			// into "unreported" would hide exactly the case the two numbers exist
+			// to separate, so only an ABSENT field returns undefined.
+			if (raw === undefined || raw === null) {
+				return undefined;
+			}
+			return readTokenCount(raw);
+		}
+		return undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+/**
+ * Build the user-facing message for a generation that stopped on the model's
+ * output-token limit.
+ *
+ * Deliberately does NOT claim the document is too large. That claim was in the
+ * old message unconditionally, and it was usually false: this branch is only
+ * reachable after the primary agent already failed, and the document that
+ * produced the original report needed roughly a third of the budget the message
+ * accused it of exceeding. State the numbers, name the first failure, and let
+ * the reader draw the conclusion the evidence supports.
+ */
+function describeTruncation(input: {
+	documentType: string;
+	requestedBudget: number | undefined;
+	observedOutputTokens: number | undefined;
+	primaryStreamFailure: string | undefined;
+}): string {
+	const budget = input.requestedBudget ?? "provider default";
+	const produced =
+		input.observedOutputTokens === undefined
+			? "an unreported number of"
+			: `${input.observedOutputTokens}`;
+
+	// Names the FIRST failure without quoting it. `primaryStreamFailure` is the
+	// generation client's own error text — an HTTP body from the internal service,
+	// or a socket error carrying its host and port — and this string is rendered
+	// verbatim to every project member through `generationError`. The raw cause
+	// belongs in the audit ledger, which is admin-gated; here it would be both
+	// unusable to the reader and an internal-topology leak.
+	const cause = input.primaryStreamFailure
+		? " This ran as a fallback because the document generation service could not be reached; an administrator can find the underlying error in the audit log."
+		: "";
+
+	return `Document generation for "${input.documentType}" stopped at the model's output-token limit after producing ${produced} tokens against a requested budget of ${budget}.${cause}`;
+}
+
 export function repairMalformedMermaidFences(source: string): string {
 	const lines = source.split("\n");
 	const output: string[] = [];
@@ -1846,7 +2054,9 @@ export async function saveProjectDocument(
 	// with markdown headings, causing all subsequent content to be swallowed
 	// into one giant code block.  We repair this at save-time so the stored
 	// document is always well-formed.
-	const content = repairMalformedMermaidFences(rawContent);
+	const content = normalizeQuoteArtifacts(
+		repairMalformedMermaidFences(rawContent),
+	);
 
 	try {
 		// Get current document to preserve status and snapshot existing content

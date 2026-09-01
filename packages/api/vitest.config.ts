@@ -11,11 +11,12 @@ export default defineConfig({
 		// covered by `modules/projects/lib/__tests__/test-cases-feature.test.ts`.
 		env: {
 			FABRIC_FEATURE_TEST_CASES: "true",
-			// Living Documents auto-refresh is env-flag-gated the same way: the
-			// enrollment procedures throw NOT_FOUND unless this is exactly "true".
-			// Enable it so those procedure tests exercise real logic instead of the
-			// gate; the gate itself is covered in `packages/utils`.
-			FABRIC_FEATURE_LIVING_DOCS_REFRESH: "true",
+			// Living Documents auto-refresh: the enrolment procedures read the
+			// ROLLOUT gate, whose env var is deliberately a different name from the
+			// sweep's kill switch. Enable it so those procedure tests exercise real
+			// logic instead of the gate; the gate itself is covered in
+			// `packages/utils`.
+			FABRIC_FEATURE_LIVING_DOCS_REFRESH_ROLLOUT: "true",
 		},
 		include: [
 			"modules/**/__tests__/**/*.test.ts",

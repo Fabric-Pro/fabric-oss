@@ -11,9 +11,16 @@
  *      unattended AI rewrites of their document.
  *   5. A pending proposal is surfaced, and Accept / Discard resolve it.
  *   6. A STALE accept is reported honestly rather than silently succeeding.
- *   7. The client feature flag (`NEXT_PUBLIC_FABRIC_FEATURE_LIVING_DOCS_REFRESH`,
- *      opt-in, default OFF) renders the control away entirely — and, because the
- *      gate sits before any hook call, without firing its query.
+ *   7. The feature flag — now the SERVER's answer, read from
+ *      `FeatureFlagProvider`, never a build-time `NEXT_PUBLIC_` variable
+ *      (Fizzy #2210) — renders the control away entirely, and because the gate
+ *      sits before the inner component mounts, without firing its query.
+ *   8. A failed settings READ is not silently rendered as "feature off with
+ *      defaults". A denial hides the control, a first-load fault renders it
+ *      inert with an explanation, and a failed background refetch leaves the
+ *      control the user is looking at exactly where it is.
+ *   9. A failed settings WRITE says what the server said, and says nothing at
+ *      all when the rejection carries no message.
  *
  * NOTE: the cadence select moved INSIDE the settings popover when the
  * "Apply automatically" switch was added — the two settings belong together, and
@@ -21,11 +28,13 @@
  * first; their assertions are otherwise unchanged.
  */
 
+import { readFileSync } from "node:fs";
+import path from "node:path";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const {
 	getAutoRefreshMock,
@@ -34,21 +43,22 @@ const {
 	discardProposalMock,
 	toastErrorMock,
 	toastSuccessMock,
-} = vi.hoisted(() => {
-	// The component reads the flag as a build-time literal
-	// (`process.env.X === "true"`), so it is evaluated once at module load —
-	// set it BEFORE the static import below. The flag-off case re-imports the
-	// module under a stubbed env.
-	process.env.NEXT_PUBLIC_FABRIC_FEATURE_LIVING_DOCS_REFRESH = "true";
-	return {
-		getAutoRefreshMock: vi.fn(),
-		setAutoRefreshMock: vi.fn(),
-		applyProposalMock: vi.fn(),
-		discardProposalMock: vi.fn(),
-		toastErrorMock: vi.fn(),
-		toastSuccessMock: vi.fn(),
-	};
-});
+} = vi.hoisted(() => ({
+	getAutoRefreshMock: vi.fn(),
+	setAutoRefreshMock: vi.fn(),
+	applyProposalMock: vi.fn(),
+	discardProposalMock: vi.fn(),
+	toastErrorMock: vi.fn(),
+	toastSuccessMock: vi.fn(),
+}));
+
+// The flag now arrives from the server through `FeatureFlagProvider`, so it is
+// per-render state and not a module-load constant — no `resetModules` / dynamic
+// re-import dance. Same mock shape ~20 other suites in this repo already use.
+let flagValue = true;
+vi.mock("@saas/shared/components/FeatureFlagProvider", () => ({
+	useFeatureFlag: () => flagValue,
+}));
 
 vi.mock("sonner", () => ({
 	toast: { error: toastErrorMock, success: toastSuccessMock },
@@ -95,24 +105,40 @@ import { DocumentAutoRefreshToggle } from "../DocumentAutoRefreshToggle";
 const DOCUMENT_ID = "doc-1";
 const PROJECT_ID = "project-1";
 
-function wrapper({ children }: { children: ReactNode }) {
-	const queryClient = new QueryClient({
+function makeClient() {
+	return new QueryClient({
 		defaultOptions: { queries: { retry: false } },
 	});
-	return (
-		<QueryClientProvider client={queryClient}>
-			{children}
-		</QueryClientProvider>
-	);
 }
 
-function renderToggle(
-	Component: typeof DocumentAutoRefreshToggle = DocumentAutoRefreshToggle,
-) {
-	return render(
-		<Component documentId={DOCUMENT_ID} projectId={PROJECT_ID} />,
-		{ wrapper },
-	);
+/**
+ * Renders the control and hands the caller the `QueryClient` back, so a test
+ * can drive a REFETCH (the only way to reach the "failed background refetch"
+ * branch without also succeeding at something else first).
+ */
+function renderToggle(queryClient: QueryClient = makeClient()) {
+	function wrapper({ children }: { children: ReactNode }) {
+		return (
+			<QueryClientProvider client={queryClient}>
+				{children}
+			</QueryClientProvider>
+		);
+	}
+	return {
+		...render(
+			<DocumentAutoRefreshToggle
+				documentId={DOCUMENT_ID}
+				projectId={PROJECT_ID}
+			/>,
+			{ wrapper },
+		),
+		queryClient,
+	};
+}
+
+/** An oRPC client error: an `Error` carrying the procedure's `code`. */
+function orpcError(code: string, message: string) {
+	return Object.assign(new Error(message), { code });
 }
 
 function settings(overrides: Record<string, unknown> = {}) {
@@ -156,6 +182,7 @@ async function openProposal(user: ReturnType<typeof userEvent.setup>) {
 }
 
 beforeEach(() => {
+	flagValue = true;
 	getAutoRefreshMock.mockReset();
 	setAutoRefreshMock.mockReset();
 	applyProposalMock.mockReset();
@@ -168,11 +195,6 @@ beforeEach(() => {
 	);
 	applyProposalMock.mockResolvedValue({ applied: true, version: 4 });
 	discardProposalMock.mockResolvedValue({ discarded: true });
-});
-
-afterEach(() => {
-	vi.unstubAllEnvs();
-	vi.resetModules();
 });
 
 describe("DocumentAutoRefreshToggle — enrollment", () => {
@@ -555,18 +577,219 @@ describe("DocumentAutoRefreshToggle — last-refresh outcome", () => {
 	});
 });
 
+/**
+ * The flag is the SERVER's answer, delivered on the RSC payload through
+ * `FeatureFlagProvider`. Previously the client read its own build-time
+ * `NEXT_PUBLIC_` twin under a different parser, which could disagree with the
+ * runtime variable the API enforced — and when it disagreed in the direction
+ * that SHOWED the control, every click failed (Fizzy #2210).
+ */
 describe("DocumentAutoRefreshToggle — feature flag", () => {
+	it("renders the control when the server says the flag is on", async () => {
+		renderToggle();
+
+		expect(
+			await screen.findByRole("button", {
+				name: "Turn on scheduled auto-refresh",
+			}),
+		).toBeInTheDocument();
+	});
+
 	it("renders nothing — and never queries — when the feature flag is off", async () => {
-		vi.resetModules();
-		vi.stubEnv("NEXT_PUBLIC_FABRIC_FEATURE_LIVING_DOCS_REFRESH", "false");
+		flagValue = false;
 
-		const { DocumentAutoRefreshToggle: FlaggedOff } = await import(
-			"../DocumentAutoRefreshToggle"
-		);
-
-		const { container } = renderToggle(FlaggedOff);
+		const { container } = renderToggle();
 
 		expect(container).toBeEmptyDOMElement();
 		expect(getAutoRefreshMock).not.toHaveBeenCalled();
+	});
+
+	it("reads no environment variable at all — the source carries no process.env", () => {
+		// R4. The build-time twin is gone; leaving one behind would recreate the
+		// two-authorities split this ticket exists to end. A source scan rather
+		// than a behavioural assertion, because a build-time read is invisible
+		// to a test that runs the already-inlined module.
+		const source = readFileSync(
+			path.resolve(__dirname, "../DocumentAutoRefreshToggle.tsx"),
+			"utf8",
+		);
+
+		expect(source).not.toMatch(/process\.env/);
+		expect(source).toMatch(/useFeatureFlag\("LIVING_DOCS_REFRESH"\)/);
+	});
+
+	it("reads the flag from the provider, not from a build-time env var", async () => {
+		// The runtime answer flips between renders — impossible for a value
+		// Next.js inlined at build time, which is the whole point of the move.
+		const { unmount } = renderToggle();
+		expect(
+			await screen.findByRole("button", {
+				name: "Turn on scheduled auto-refresh",
+			}),
+		).toBeInTheDocument();
+		unmount();
+
+		flagValue = false;
+		const { container } = renderToggle();
+		expect(container).toBeEmptyDOMElement();
+	});
+});
+
+/**
+ * `query.data?.enabled ?? false` used to make a FAILED read indistinguishable
+ * from "the feature is off" — the control rendered against fallback defaults
+ * and every click went to an API that had already declined to answer. These pin
+ * the three outcomes apart.
+ */
+describe("DocumentAutoRefreshToggle — unreadable settings", () => {
+	it("renders no control when the settings read is refused as NOT_FOUND", async () => {
+		getAutoRefreshMock.mockRejectedValue(
+			orpcError("NOT_FOUND", "Procedure not found"),
+		);
+
+		const { container } = renderToggle();
+
+		await waitFor(() => expect(container).toBeEmptyDOMElement());
+		expect(setAutoRefreshMock).not.toHaveBeenCalled();
+	});
+
+	it("renders no control when the settings read is refused as FORBIDDEN", async () => {
+		getAutoRefreshMock.mockRejectedValue(
+			orpcError("FORBIDDEN", "Not a member of this project"),
+		);
+
+		const { container } = renderToggle();
+
+		await waitFor(() => expect(container).toBeEmptyDOMElement());
+	});
+
+	it("renders an inert control explaining itself when the first read faults", async () => {
+		const user = userEvent.setup();
+		// No oRPC code: a transport fault, not an answer. The capability may well
+		// exist — hiding the control here would be a lie about the product.
+		getAutoRefreshMock.mockRejectedValue(new Error("Failed to fetch"));
+
+		renderToggle();
+
+		const button = await screen.findByRole("button", {
+			name: "Auto-refresh unavailable — settings could not be loaded",
+		});
+		// `aria-disabled`, not `disabled`: a natively disabled button takes no
+		// pointer or keyboard events, so the tooltip explaining WHY it cannot be
+		// used would never open for anyone.
+		expect(button).toHaveAttribute("aria-disabled", "true");
+
+		await user.click(button);
+		expect(setAutoRefreshMock).not.toHaveBeenCalled();
+	});
+
+	it("keeps the control mounted when a background refetch fails after data was shown", async () => {
+		getAutoRefreshMock
+			.mockResolvedValueOnce(
+				settings({ enabled: true, cadence: "WEEKLY" }),
+			)
+			.mockRejectedValue(new Error("Gateway timeout"));
+
+		const { queryClient } = renderToggle();
+
+		const button = await screen.findByRole("button", {
+			name: "Turn off scheduled auto-refresh",
+		});
+		expect(button).toHaveAttribute("aria-pressed", "true");
+
+		await act(async () => {
+			await queryClient.refetchQueries();
+		});
+
+		// Still there, still showing what it last knew — unmounting mid-
+		// interaction would drop focus out of an open popover, and a vanished
+		// control is indistinguishable from an absent capability.
+		expect(
+			screen.getByRole("button", {
+				name: "Turn off scheduled auto-refresh",
+			}),
+		).toBeInTheDocument();
+		expect(
+			screen.getByRole("button", { name: "Auto-refresh settings" }),
+		).toBeInTheDocument();
+
+		await waitFor(() => expect(toastErrorMock).toHaveBeenCalledTimes(1));
+		expect(toastErrorMock.mock.calls[0]?.[1]).toEqual({
+			description: "Gateway timeout",
+		});
+	});
+
+	it("renders the control disabled — not absent — while the read is still in flight", async () => {
+		getAutoRefreshMock.mockImplementation(() => new Promise(() => {}));
+
+		renderToggle();
+
+		const button = await screen.findByRole("button", {
+			name: "Turn on scheduled auto-refresh",
+		});
+		expect(button).toBeDisabled();
+		expect(toastErrorMock).not.toHaveBeenCalled();
+	});
+
+	it("renders the stored cadence once the read lands, not the default", async () => {
+		const user = userEvent.setup();
+		getAutoRefreshMock.mockResolvedValue(
+			settings({ enabled: true, cadence: "MONTHLY" }),
+		);
+
+		renderToggle();
+		await openSettings(user);
+
+		expect(
+			await screen.findByLabelText("Auto-refresh cadence"),
+		).toHaveTextContent("Monthly");
+	});
+});
+
+describe("DocumentAutoRefreshToggle — unwritable settings", () => {
+	it("surfaces the server's own reason in the toast description", async () => {
+		const user = userEvent.setup();
+		setAutoRefreshMock.mockRejectedValue(
+			orpcError("NOT_FOUND", "Auto-refresh is not available."),
+		);
+
+		renderToggle();
+
+		const button = await screen.findByRole("button", {
+			name: "Turn on scheduled auto-refresh",
+		});
+		await waitFor(() => expect(button).not.toBeDisabled());
+		await user.click(button);
+
+		await waitFor(() => expect(toastErrorMock).toHaveBeenCalledTimes(1));
+		expect(toastErrorMock.mock.calls[0]?.[0]).toBe(
+			"Could not update auto-refresh for this document.",
+		);
+		expect(toastErrorMock.mock.calls[0]?.[1]).toEqual({
+			description: "Auto-refresh is not available.",
+		});
+	});
+
+	it("shows the title alone — never the string 'undefined' — for a rejection with no message", async () => {
+		const user = userEvent.setup();
+		// Not an `Error`: there is no message to show, and the old
+		// `String(error)` habit would have printed "undefined" into the toast.
+		setAutoRefreshMock.mockRejectedValue({ notAnError: true });
+
+		renderToggle();
+
+		const button = await screen.findByRole("button", {
+			name: "Turn on scheduled auto-refresh",
+		});
+		await waitFor(() => expect(button).not.toBeDisabled());
+		await user.click(button);
+
+		await waitFor(() => expect(toastErrorMock).toHaveBeenCalledTimes(1));
+		expect(toastErrorMock.mock.calls[0]?.[1]).toEqual({
+			description: undefined,
+		});
+		expect(JSON.stringify(toastErrorMock.mock.calls[0])).not.toContain(
+			"undefined",
+		);
 	});
 });

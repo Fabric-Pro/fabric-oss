@@ -335,6 +335,14 @@ export const ACTION_CATALOG: Record<string, ActionDescriptor> = {
 		"project",
 	),
 
+	"project.document_generation.failed": D(
+		"project.document_generation.failed",
+		"Document generation failed",
+		AlertTriangle,
+		"warning",
+		"project",
+	),
+
 	"project.databricks_knowledge.connected": D(
 		"project.databricks_knowledge.connected",
 		"Databricks knowledge connected",

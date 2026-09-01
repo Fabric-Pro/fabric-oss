@@ -46,7 +46,7 @@ const handler = (
 )["~orpc"].handler;
 
 describe("audit.taxonomy handler", () => {
-	it("returns the 85 closed action keys, 16 categories, and the 8 error keys (D16, D17 + public-REST-API + Weave-session-lifecycle + story.auto_hidden/auto_unhidden + story.pm_ticket_unlinked + atlas analysis-lifecycle/branch/node-edit/pin/edge + backlog proposal-recovery + project.invitation.widget_dismissed + newsletter-widget-owner-actions + project.meeting_digest.inclusion_changed + userActivity.viewed + project.meeting_digest.action_item_toggled + newsletter-approval-gate + dailyBrief.releaseNote hide/unhide + decision-override + story.reprioritized + featureFlag.updated + qa-finding dismiss/merge additions)", async () => {
+	it("returns the 85 closed action keys, 16 categories, and the 8 error keys (D16, D17 + public-REST-API + Weave-session-lifecycle + story.auto_hidden/auto_unhidden + story.pm_ticket_unlinked + atlas analysis-lifecycle/branch/node-edit/pin/edge + backlog proposal-recovery + project.invitation.widget_dismissed + newsletter-widget-owner-actions + project.meeting_digest.inclusion_changed + userActivity.viewed + project.meeting_digest.action_item_toggled + newsletter-approval-gate + dailyBrief.releaseNote hide/unhide + decision-override + story.reprioritized + featureFlag.updated + qa-finding dismiss/merge additions + document-generation-failure)", async () => {
 		const result = await handler({
 			context: { user: { id: "user-1", email: "alice@example.com" } },
 			input: {},
@@ -127,8 +127,17 @@ describe("audit.taxonomy handler", () => {
 		// refusal is the only trace the attempt leaves — the request never
 		// reaches a tenant-scoped query, so nothing downstream would log it,
 		// Fizzy #1875) = 109.
-		expect(result.actions).toHaveLength(109);
+		// + 1 project.document_generation.failed (the generation agent could not
+		// be reached, so a fallback ran — the row is written whether or not that
+		// fallback then succeeded, because a generation that quietly ran on the
+		// degraded path is exactly what nobody could see. It carries the PRIMARY
+		// failure, because the document's own error field renders verbatim to
+		// every project member and a transport error naming an internal host is
+		// not something to put in a project's UI. Without the row that first
+		// failure existed only as a warning log line, Fizzy #2210) = 110.
+		expect(result.actions).toHaveLength(110);
 		expect(result.actions).toContain("auth.login.success");
+		expect(result.actions).toContain("project.document_generation.failed");
 		expect(result.actions).toContain("audit.retention.purged");
 		expect(result.actions).toContain("project.pull_request.comment_posted");
 		expect(result.actions).toContain("statusUpdate.published");

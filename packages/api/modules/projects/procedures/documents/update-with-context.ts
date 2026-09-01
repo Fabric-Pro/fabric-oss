@@ -10,6 +10,7 @@ import {
 	fetchProjectContextSources,
 	runContextUpdate,
 } from "@repo/temporal";
+import { normalizeQuoteArtifacts } from "@repo/utils/quote-artifacts";
 import { z } from "zod";
 import { applyDocumentUpdateSideEffects } from "../../../../lib/document-side-effects";
 import {
@@ -108,7 +109,7 @@ export const updateDocumentWithContextProcedure = tenantProtectedProcedure
 			const confirmedContent = input.confirmedContent;
 
 			const updated = await updateDocument(input.id, {
-				content: confirmedContent,
+				content: normalizeQuoteArtifacts(confirmedContent),
 				lastEditedBy: user.id,
 				changeDescription: "Updated with latest context",
 				userId: user.id,

@@ -38,6 +38,31 @@ export const AI_REFRESH_AUTHOR_ID = "agent:living-docs-refresh";
 export const AI_REFRESH_AUTHOR_NAME = "Fabric Refresh Agent";
 
 /**
+ * `DocumentVersion.changedBy` / `ProjectDocument.lastEditedBy` value stamped by
+ * the one-time quote-artifact repair (Fizzy #2210).
+ *
+ * A second non-human writer, so it needs registering below for the same reason
+ * the first one did: an `agent:` sentinel that {@link resolveDocumentVersionAuthor}
+ * does not recognise falls through to the human branch, matches no `user` row,
+ * and renders as {@link UNKNOWN_AUTHOR_NAME} — which means "the account was
+ * deleted". Version history would then show an automated repair as a vanished
+ * person's edit, which is the ledger inversion this module exists to prevent.
+ */
+export const QUOTE_REPAIR_AUTHOR_ID = "agent:quote-artifact-repair";
+
+/** Display name for {@link QUOTE_REPAIR_AUTHOR_ID}. */
+export const QUOTE_REPAIR_AUTHOR_NAME = "Fabric Content Repair";
+
+/**
+ * Every non-human writer, by sentinel. Adding a writer means adding it HERE —
+ * a sentinel absent from this map is indistinguishable from a deleted user.
+ */
+const AGENT_AUTHOR_NAMES: Record<string, string> = {
+	[AI_REFRESH_AUTHOR_ID]: AI_REFRESH_AUTHOR_NAME,
+	[QUOTE_REPAIR_AUTHOR_ID]: QUOTE_REPAIR_AUTHOR_NAME,
+};
+
+/**
  * Rendered when `changedBy` holds an id that resolves to no `user` row (the
  * account was deleted — nothing cleans up the FK-less column). Neutral on
  * purpose, and never the raw id: leaking an internal cuid into the UI is a
@@ -97,8 +122,9 @@ export function resolveDocumentVersionAuthor(
 		return null;
 	}
 
-	if (isAiRefreshAuthor(changedBy)) {
-		return { kind: "AI_AGENT", name: AI_REFRESH_AUTHOR_NAME };
+	const agentName = AGENT_AUTHOR_NAMES[changedBy];
+	if (agentName) {
+		return { kind: "AI_AGENT", name: agentName };
 	}
 
 	// `user.name` is non-null in the schema but can be whitespace; fall back to
