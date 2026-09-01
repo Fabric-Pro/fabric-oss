@@ -7235,7 +7235,12 @@ export async function listAllFizzyCards(input: {
 					}
 				}
 			} catch (error) {
-				logger.warn(
+				// A column that cannot be read is NOT an empty column. Letting
+				// the listing continue would return a short board, and a full
+				// pull deletes the stories of every card missing from it. Fail
+				// the whole listing so the caller falls back or surfaces an
+				// error instead of quietly dropping a column's worth of cards.
+				logger.error(
 					"[listAllFizzyCards] Failed to fetch cards for column",
 					{
 						columnId: column.id,
@@ -7246,6 +7251,7 @@ export async function listAllFizzyCards(input: {
 								: String(error),
 					},
 				);
+				throw error;
 			}
 		}
 
@@ -7368,7 +7374,15 @@ function parseFizzyCardsResponse(output: unknown): PMWorkItemSummary[] {
 				try {
 					data = JSON.parse(textItem.text);
 				} catch {
-					return items;
+					// NEVER swallow an unparseable column as "no cards": a full
+					// pull deletes every Fabric story whose PM id is absent from
+					// the fetched list, so a silently-empty column deletes real,
+					// still-existing cards' stories. The board-wide empty guard
+					// does not catch it — the other columns keep the result
+					// non-empty. Same rule as the paged listing path.
+					throw new Error(
+						"PM tool returned an unparseable card page for this column",
+					);
 				}
 			}
 		}
