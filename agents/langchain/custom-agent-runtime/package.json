@@ -13,7 +13,7 @@
 	"dependencies": {
 		"@hono/node-server": "^2.0.11",
 		"hono": "^4.12.34",
-		"uuid": "^14.0.1"
+		"uuid": "^14.0.2"
 	},
 	"devDependencies": {
 		"@types/node": "^22.10.5",

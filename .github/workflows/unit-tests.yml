@@ -49,11 +49,11 @@ jobs:
       # the Pulls API (the `pull-requests: read` permission above) and does
       # not need the repo on disk. Checkout is only required for the
       # git-based detection used on workflow_dispatch runs.
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         if: github.event_name != 'pull_request'
         with:
           fetch-depth: 1
-      - uses: dorny/paths-filter@7b450fff21473bca461d4b92ce414b9d0420d706 # v4
+      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4
         id: filter
         with:
           filters: |
@@ -207,7 +207,7 @@ jobs:
     runs-on: ubuntu-16core
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           # Full history so Turbo's `[origin/<base>]` filter can resolve
           # the merge base and compute affected packages. With shallow
