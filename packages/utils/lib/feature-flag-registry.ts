@@ -147,6 +147,14 @@ export const FEATURE_FLAG_REGISTRY = {
 		default: false,
 		note: "Fizzy #2210. Carries the ORIGINAL env var and the original meaning: TRUE in every environment, prod included, because it is the kill switch rather than the rollout. The sweep re-reads it immediately before it writes, so setting it false stops an unattended AI mid-run without a redeploy (ADR-009 consequence 2). Registered here so that stop is now also reachable from the admin console instead of only a redeploy. Kept separate from LIVING_DOCS_REFRESH so an operator can hold 'not rolled out' and 'brakes armed' at the same time — collapsing them would mean enabling the rollout also arms every enrolled document's sweep in the same action. The registry default is false; deployments that want the brakes armed set the env var, which every current environment already does.",
 	},
+	QUESTION_ASSIGNMENT: {
+		label: "Assign people to open maturation questions",
+		description:
+			"Adds a people-picker, @mentions and an assignee status tally to a feature's open questions, so a question that needs someone else's input can be routed to them and they are notified.",
+		envVar: "FABRIC_FEATURE_QUESTION_ASSIGNMENT",
+		default: false,
+		note: "Fizzy #1751. Off renders the questions panel exactly as before — no picker, no avatars, no tally, and the answer box is the plain textarea with a single Answer button. Answering and auto-resolution are untouched either way, so this is a pure UI/notification switch with no migration to reverse. Resolved SERVER-side in getEditorState and gated by the absence of `questionAssignees` in the payload: there is deliberately no client-side flag read, because a NEXT_PUBLIC_ mirror is inlined at build time and would put the kill switch back behind a redeploy. Turning it off leaves existing assignment rows in place, so flipping it on again restores them exactly; while off they are simply never read and no notification is emitted.",
+	},
 } as const satisfies Record<string, FeatureFlagDefinition>;
 
 export type FeatureFlagKey = keyof typeof FEATURE_FLAG_REGISTRY;

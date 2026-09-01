@@ -8,11 +8,13 @@ import {
 	getLatestRunChangeSummary,
 	hasProjectAccess,
 	isAiAnswerRecommendationsEnabled,
+	isFeatureEnabled,
 	listDecisionLogThreads,
 	listQuestionAssignees,
 	type MaturationTab,
 	type MaturationTenantFilter,
 	parseQaAnalysis,
+	type QuestionAssignee,
 	type UserApprovalPreferenceModes,
 } from "@repo/database";
 import { combineCleanSpec } from "@repo/utils/clean-spec-content";
@@ -93,18 +95,24 @@ export const getEditorStateProcedure = tenantProtectedProcedure
 			 * `status: "OPEN"` predicates behind the roadmap's open-question count
 			 * and the reconciliation sweep, and silently break both.
 			 */
-			questionAssignees: z.record(
-				z.string(),
-				z.array(
-					z.object({
-						id: z.string(),
-						name: z.string().nullable(),
-						avatarUrl: z.string().nullable(),
-						/** Who asked them — the recipient of the answered notice. */
-						assignedByUserId: z.string(),
-					}),
-				),
-			),
+			questionAssignees: z
+				.record(
+					z.string(),
+					z.array(
+						z.object({
+							id: z.string(),
+							name: z.string().nullable(),
+							avatarUrl: z.string().nullable(),
+							/** Who asked them — recipient of the answered notice. */
+							assignedByUserId: z.string(),
+						}),
+					),
+				)
+				// `null` means the feature is OFF, which is distinct from `{}`
+				// ("on, nothing assigned yet"). The client renders controls on the
+				// former's absence, so collapsing the two would show an empty
+				// picker on every question with the feature disabled.
+				.nullable(),
 			// Soft-closed questions the latest refresh no longer lists (#5) — shown
 			// collapsed, restorable; never deleted.
 			possiblyResolvedQuestions: z.array(DecisionLogThreadSchema),
@@ -245,10 +253,21 @@ export const getEditorStateProcedure = tenantProtectedProcedure
 		// Who each open question is waiting on (#1751). Loaded only for the OPEN
 		// roots — a resolved or soft-closed question is nobody's outstanding work,
 		// so its assignees are not display state.
-		const assigneesByEntry = await listQuestionAssignees({
-			tenantFilter,
-			entryIds: openQuestions.map((thread) => thread.root.id),
-		});
+		//
+		// The flag is resolved HERE, once, and its absence from the payload is
+		// what hides every control: the client never reads a flag. A
+		// `NEXT_PUBLIC_` mirror would be inlined at build time and put the kill
+		// switch back behind a redeploy, which is the thing the runtime override
+		// exists to avoid.
+		const questionAssignmentEnabled = await isFeatureEnabled(
+			"QUESTION_ASSIGNMENT",
+		);
+		const assigneesByEntry = questionAssignmentEnabled
+			? await listQuestionAssignees({
+					tenantFilter,
+					entryIds: openQuestions.map((thread) => thread.root.id),
+				})
+			: new Map<string, QuestionAssignee[]>();
 		const assigneeUserIds = [
 			...new Set(
 				[...assigneesByEntry.values()].flatMap((rows) =>
@@ -263,20 +282,22 @@ export const getEditorStateProcedure = tenantProtectedProcedure
 				})
 			: [];
 		const assigneeById = new Map(assigneeUsers.map((u) => [u.id, u]));
-		const questionAssignees = Object.fromEntries(
-			[...assigneesByEntry.entries()].map(([entryId, rows]) => [
-				entryId,
-				rows.map((row) => {
-					const user = assigneeById.get(row.assigneeUserId);
-					return {
-						id: row.assigneeUserId,
-						name: user?.name ?? null,
-						avatarUrl: user?.image ?? null,
-						assignedByUserId: row.assignedByUserId,
-					};
-				}),
-			]),
-		);
+		const questionAssignees = questionAssignmentEnabled
+			? Object.fromEntries(
+					[...assigneesByEntry.entries()].map(([entryId, rows]) => [
+						entryId,
+						rows.map((row) => {
+							const user = assigneeById.get(row.assigneeUserId);
+							return {
+								id: row.assigneeUserId,
+								name: user?.name ?? null,
+								avatarUrl: user?.image ?? null,
+								assignedByUserId: row.assignedByUserId,
+							};
+						}),
+					]),
+				)
+			: null;
 
 		// Questions a Clean Spec refresh soft-closed (#5) — the spec no longer lists
 		// them. Surfaced as a collapsed, restorable group rather than deleted.
