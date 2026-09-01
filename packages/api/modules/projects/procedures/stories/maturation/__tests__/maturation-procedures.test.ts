@@ -53,6 +53,7 @@ const { handlers, mocks } = vi.hoisted(() => {
 		// Question assignment (#1751)
 		listQuestionAssignees: vi.fn().mockResolvedValue(new Map()),
 		userFindMany: vi.fn().mockResolvedValue([]),
+		isFeatureEnabled: vi.fn().mockResolvedValue(true),
 	};
 	return { handlers, mocks };
 });
@@ -133,6 +134,7 @@ vi.mock("@repo/database", () => ({
 	// Empty by default: these tests predate assignment and assert on the
 	// question list itself, which assignment does not change.
 	listQuestionAssignees: mocks.listQuestionAssignees,
+	isFeatureEnabled: mocks.isFeatureEnabled,
 	db: {
 		user: { findMany: mocks.userFindMany },
 		project: { findUnique: mocks.projectFindUnique },
@@ -287,6 +289,7 @@ beforeEach(() => {
 	// the loop above mockReset()s every implementation.
 	mocks.listQuestionAssignees.mockResolvedValue(new Map());
 	mocks.userFindMany.mockResolvedValue([]);
+	mocks.isFeatureEnabled.mockResolvedValue(true);
 	mocks.getApprovalPreference.mockResolvedValue(null);
 	mocks.isAiAnswerRecommendationsEnabled.mockResolvedValue(true);
 	mocks.setFeatureApprovalOverride.mockResolvedValue(1);
@@ -397,6 +400,33 @@ describe("getEditorState", () => {
 			tenantFilter: { organizationId: null, userId: "user-1" },
 			userStoryId: "story-1",
 		});
+	});
+
+	// QUESTION_ASSIGNMENT (#1751) is resolved here, server-side, and its absence
+	// from the payload is what hides every control. `null` and `{}` must stay
+	// distinguishable: `{}` means "on, nobody assigned yet", and collapsing the
+	// two would render an empty picker on every question with the feature off.
+	it("omits question assignees entirely when the flag is off", async () => {
+		mocks.isFeatureEnabled.mockResolvedValue(false);
+
+		const res = (await getEditorState({
+			input: { projectId: "project-1", storyId: "story-1" },
+			context: { user: { id: "user-1" }, session: {} },
+		})) as Record<string, unknown>;
+
+		expect(res.questionAssignees).toBeNull();
+		// And it must not pay for the read it will not use.
+		expect(mocks.listQuestionAssignees).not.toHaveBeenCalled();
+	});
+
+	it("returns an assignee map (not null) when the flag is on", async () => {
+		const res = (await getEditorState({
+			input: { projectId: "project-1", storyId: "story-1" },
+			context: { user: { id: "user-1" }, session: {} },
+		})) as Record<string, unknown>;
+
+		expect(res.questionAssignees).toEqual({});
+		expect(mocks.listQuestionAssignees).toHaveBeenCalled();
 	});
 
 	it("returns only OPEN thread roots as open questions", async () => {

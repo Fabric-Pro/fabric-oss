@@ -33,7 +33,6 @@ import { HydratedMessagesProvider } from "../copilot/HydratedMessagesContext";
 import type { AiReadinessData } from "./maturation/ReadinessBar";
 import "@copilotkit/react-ui/styles.css";
 import "../DocumentEditor.css"; // Import diff highlighting styles
-import { isQuestionAssignmentEnabledClient } from "@repo/utils/feature-flag";
 import { isAiContextEligibleAttachmentMime } from "@repo/utils/story-attachment-ai-context";
 import {
 	useFabricAgentLauncher,
@@ -996,7 +995,12 @@ export function StoryWorkspace({
 
 	// Question assignment (#1751). The search backs both the assignee picker and
 	// the `@` popover — the same candidate set, so one query serves both.
-	const isQuestionAssignmentEnabled = isQuestionAssignmentEnabledClient();
+	// No client-side flag read: the server resolves QUESTION_ASSIGNMENT in
+	// getEditorState and omits `questionAssignees` when it is off, which is what
+	// gates every control below. A NEXT_PUBLIC_ mirror would be inlined at build
+	// time and put the kill switch back behind a redeploy.
+	const isQuestionAssignmentEnabled =
+		(maturationData?.questionAssignees ?? null) !== null;
 	const [assigneeQuery, setAssigneeQuery] = useState("");
 	const assignableMembersQuery = useQuery({
 		...orpc.projects.stories.maturation.searchAssignableMembers.queryOptions(
@@ -7728,10 +7732,8 @@ export function StoryWorkspace({
 											// assignment control without a
 											// second check per control.
 											questionAssignees={
-												isQuestionAssignmentEnabled
-													? (maturationData?.questionAssignees ??
-														{})
-													: undefined
+												maturationData?.questionAssignees ??
+												undefined
 											}
 											assignableMembers={
 												assignableMembersQuery.data
