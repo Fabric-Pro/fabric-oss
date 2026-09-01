@@ -742,12 +742,66 @@ type FetchedContextInput = Omit<
 	notionContent?: string[];
 };
 
+/**
+ * What the budget did to one context section on a single run.
+ *
+ * `kept` — included whole. `truncated` — included, clipped to what was left.
+ * `dropped` — the budget ran out before this section and it never reached the
+ * model at all.
+ */
+type SectionBudgetOutcome = {
+	key: keyof ContextSections;
+	requestedTokens: number;
+	grantedTokens: number;
+	outcome: "kept" | "truncated" | "dropped";
+};
+
+/**
+ * One structured line per analysis describing what the budget squeezed out.
+ *
+ * The reason this exists: allocation is greedy in a fixed priority order, so a
+ * single oversized section silently evicts everything behind it — and until now
+ * that eviction was invisible unless someone happened to read a warn line. The
+ * open question of whether accumulated context is actually hurting analyses
+ * (Fizzy #2316, Phase 2) cannot be answered without measuring it, and a
+ * measurement that only fires under pressure has no denominator. So this logs on
+ * BOTH exit paths, `underPressure` telling the two apart.
+ */
+function logBudgetOutcome(args: {
+	projectId?: string;
+	fixedTokens: number;
+	availableForContext: number;
+	requestedContextTokens: number;
+	underPressure: boolean;
+	outcomes: SectionBudgetOutcome[];
+}): void {
+	const { outcomes } = args;
+	logger.info("[Backlog Analysis] context budget outcome", {
+		event: "backlog.context_budget",
+		projectId: args.projectId,
+		maxTokenBudget: MAX_TOKEN_BUDGET,
+		fixedTokens: args.fixedTokens,
+		availableForContext: args.availableForContext,
+		requestedContextTokens: args.requestedContextTokens,
+		underPressure: args.underPressure,
+		droppedSections: outcomes
+			.filter((o) => o.outcome === "dropped")
+			.map((o) => o.key),
+		truncatedSections: outcomes
+			.filter((o) => o.outcome === "truncated")
+			.map((o) => o.key),
+		sections: outcomes,
+	});
+}
+
 export function applyTokenBudget(
 	sections: ContextSections & {
 		backlog: string;
 		pmWorkItems?: string;
 		systemPrompt: string;
 		userPrompt: string;
+		/** Correlation only — never affects allocation. */
+		projectId?: string;
 	},
 ): ContextSections {
 	// Calculate fixed costs (system prompt, user prompt, backlog, PM items)
@@ -763,6 +817,14 @@ export function applyTokenBudget(
 		logger.warn(
 			"[Backlog Analysis] Fixed content exceeds token budget, truncating everything",
 		);
+		logBudgetOutcome({
+			projectId: sections.projectId,
+			fixedTokens,
+			availableForContext,
+			requestedContextTokens: 0,
+			underPressure: true,
+			outcomes: [],
+		});
 		return {};
 	}
 
@@ -840,6 +902,19 @@ export function applyTokenBudget(
 		for (const section of contextSections) {
 			everything[section.key] = section.text;
 		}
+		logBudgetOutcome({
+			projectId: sections.projectId,
+			fixedTokens,
+			availableForContext,
+			requestedContextTokens: totalContextTokens,
+			underPressure: false,
+			outcomes: contextSections.map((section) => ({
+				key: section.key,
+				requestedTokens: estimateTokens(section.text),
+				grantedTokens: estimateTokens(section.text),
+				outcome: "kept" as const,
+			})),
+		});
 		return everything;
 	}
 
@@ -847,25 +922,55 @@ export function applyTokenBudget(
 	let remainingBudget = availableForContext;
 	const result: ContextSections = {};
 
+	const outcomes: SectionBudgetOutcome[] = [];
+
 	for (const section of contextSections) {
+		const sectionTokens = estimateTokens(section.text);
 		if (remainingBudget <= 0) {
 			logger.warn(
 				`[Backlog Analysis] Dropping context section: ${section.key} (no budget remaining)`,
 			);
+			outcomes.push({
+				key: section.key,
+				requestedTokens: sectionTokens,
+				grantedTokens: 0,
+				outcome: "dropped",
+			});
 			continue;
 		}
-		const sectionTokens = estimateTokens(section.text);
 		if (sectionTokens <= remainingBudget) {
 			result[section.key] = section.text;
 			remainingBudget -= sectionTokens;
+			outcomes.push({
+				key: section.key,
+				requestedTokens: sectionTokens,
+				grantedTokens: sectionTokens,
+				outcome: "kept",
+			});
 		} else {
 			result[section.key] = truncateToTokenBudget(
 				section.text,
 				remainingBudget,
 			);
+			outcomes.push({
+				key: section.key,
+				requestedTokens: sectionTokens,
+				grantedTokens: remainingBudget,
+				outcome: "truncated",
+			});
 			remainingBudget = 0;
 		}
 	}
+
+	logBudgetOutcome({
+		projectId: sections.projectId,
+		fixedTokens,
+		availableForContext,
+		requestedContextTokens: totalContextTokens,
+		underPressure: true,
+		outcomes,
+	});
+
 	return result;
 }
 
@@ -1049,6 +1154,8 @@ async function resolveWorkItemBodyTemplates(params: {
 // =============================================================================
 
 function buildAnalysisPrompt(input: {
+	/** Correlation only, for the budget-outcome log. Never affects the prompt. */
+	projectId?: string;
 	fetchedContext: ContextSections;
 	existingBacklog: AnalyzeContextInput["existingBacklog"];
 	pmWorkItems?: AnalyzeContextInput["pmWorkItems"];
@@ -1081,6 +1188,7 @@ function buildAnalysisPrompt(input: {
 	bugBodyTemplate?: string;
 }): string {
 	const {
+		projectId,
 		fetchedContext,
 		existingBacklog,
 		pmWorkItems,
@@ -1425,6 +1533,7 @@ ${rule9}${rule10 ? `\n\n${rule10}` : ""}`;
 		pmWorkItems: pmSection,
 		systemPrompt: fullSystemPrompt,
 		userPrompt,
+		projectId,
 	});
 
 	// Rebuild context section with budgeted content
@@ -1867,6 +1976,7 @@ export async function analyzeContextAndPropose(
 
 	// Build the analysis prompt
 	const prompt = buildAnalysisPrompt({
+		projectId,
 		fetchedContext: flattenedContext,
 		existingBacklog,
 		pmWorkItems,
