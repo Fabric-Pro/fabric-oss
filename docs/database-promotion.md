@@ -182,10 +182,12 @@ would have stopped releases:
 - **A bypass actor.** `protect-master` grants the Maintainer role `always`
   bypass; this ruleset was created with none, so `current_user_can_bypass` read
   `never` even for an admin. That matters because the Changesets version pull
-  request (`changeset-release/master`) is pushed with `GITHUB_TOKEN`, and GitHub
-  deliberately fires no workflows for such pushes — its head commit carries no
-  Actions check runs at all, only the Vercel comment bot. It merges today purely
-  on the `protect-master` bypass. Requiring `Lint migrations` without the same
+  request (`changeset-release/master`) was, at the time, pushed with
+  `GITHUB_TOKEN`, and GitHub deliberately fires no workflows for such pushes —
+  its head commit carried no Actions check runs at all, only the Vercel comment
+  bot, and merged purely on the `protect-master` bypass. (`release.yml` has
+  since switched that push and the PR creation to the release App, so the
+  Version PR now gets check runs; the bypass reasoning below still holds.) Requiring `Lint migrations` without the same
   bypass would have made every future release pull request permanently
   unmergeable. The ruleset now carries the identical Maintainer bypass, which
   grants no privilege that `protect-master` did not already grant.

@@ -25,6 +25,14 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
+          # Leave NO credential in the git config. changesets/action pushes
+          # the Version PR branch through the ~/.netrc it writes from its
+          # GITHUB_TOKEN env (the App token minted below); a persisted
+          # GITHUB_TOKEN header would take precedence over that, push as
+          # github-actions, and fire no pull_request events — so the Version
+          # PR would carry no check runs. Every later `git push` in this job
+          # supplies its own credential per invocation.
+          persist-credentials: false
 
       - name: Setup pnpm
         uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6
@@ -114,6 +122,33 @@ jobs:
           fi
           echo "core.hooksPath is unset — the bot's 'chore: release' commit will not run commit-msg."
 
+      # The Version PR is opened, and its branch pushed, AS THE RELEASE APP —
+      # never as GITHUB_TOKEN. Two reasons, both deliberate:
+      # 1. This repository forbids Actions from creating pull requests
+      #    ("GitHub Actions is not permitted to create or approve pull
+      #    requests"). That setting stays OFF: turning it on would let every
+      #    workflow's token approve pull requests and so satisfy master's
+      #    review requirement by itself.
+      # 2. A GITHUB_TOKEN push fires no pull_request events, so a Version PR
+      #    pushed that way never gets check runs and can only be admin-merged.
+      # The token is scoped to THIS repository and to exactly the two
+      # permissions changesets/action needs (the App must grant Pull requests:
+      # write, or this mint fails loudly). It is minted AFTER install/build so
+      # third-party package scripts never coexist with it — only the repo's
+      # own version/publish scripts do, which already run as master. It is
+      # separate from the tag-step token below, which stays late and
+      # contents-only.
+      - name: Mint the Version-PR App token
+        id: version-pr-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+        with:
+          app-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write
+          permission-pull-requests: write
+
       - name: Create release PR or publish to npm
         id: changesets
         uses: changesets/action@a45c4d594aa4e2c509dc14a9f2b3b67ba3780d0d # v1
@@ -124,7 +159,8 @@ jobs:
           title: "chore: release"
           createGithubReleases: true
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # The App token, not secrets.GITHUB_TOKEN — see the mint step above.
+          GITHUB_TOKEN: ${{ steps.version-pr-token.outputs.token }}
           # Auth is npm trusted publishing (OIDC) — see the npm-upgrade step
           # above. No NODE_AUTH_TOKEN / NPM_TOKEN on purpose; do not add one
           # back, a configured token would silently take precedence over the
@@ -221,10 +257,9 @@ jobs:
       # expire before the tag push on a slow run. It is applied JUST-IN-TIME
       # to the one `git push` below as a per-invocation
       # `-c http.<host>.extraheader` override, never written to git config.
-      # Checkout keeps its default GITHUB_TOKEN credential (which
-      # changesets/action needs to push the Version PR branch); pushing the
-      # tag as the App instead is what (a) triggers tag-driven workflows (a
-      # GITHUB_TOKEN push never does) and (b) is honoured as the
+      # Checkout persists no credential at all (persist-credentials: false
+      # above); pushing the tag as the App is what (a) triggers tag-driven
+      # workflows (a GITHUB_TOKEN push never does) and (b) is honoured as the
       # `protect-v-tags` ruleset bypass actor. App needs Contents: write (and
       # Workflows: write if a release ever needs to tag across a
       # workflow-file change).
@@ -296,9 +331,11 @@ jobs:
           # in git config (so a compromised dependency postinstall could never
           # read it; install/build already ran above).
           #
-          # actions/checkout@v7 persists its default GITHUB_TOKEN credential as
-          # an `http.<host>.extraheader` in an EXTERNAL file pulled in via
-          # `includeIf.gitdir`, NOT in `.git/config`. So `git config --unset-all`
+          # Checkout now persists nothing (persist-credentials: false), but
+          # the reset below is kept as belt and braces: actions/checkout@v7
+          # used to leave its GITHUB_TOKEN credential as an
+          # `http.<host>.extraheader` in an EXTERNAL file pulled in via
+          # `includeIf.gitdir`, NOT in `.git/config`, so `git config --unset-all`
           # on the local config could not remove it (the prior bug: the
           # GITHUB_TOKEN header survived, we added the App header on top, and the
           # push sent two `Authorization` headers → "Duplicate header" / HTTP 400).
