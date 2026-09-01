@@ -55,6 +55,9 @@ export type Config = {
 	mails: {
 		from: string;
 	};
+	support: {
+		email: string;
+	};
 	storage: {
 		bucketNames: {
 			avatars: string;

@@ -39,6 +39,7 @@ import {
 import Link from "next/link";
 import { useTranslations } from "next-intl";
 import { useEffect, useMemo, useState } from "react";
+import { toast } from "sonner";
 import type { SettingsTab } from "../ProjectSettingsNav";
 import { navigateToProjectSettingsTab } from "../settings-tab-navigation";
 import {
@@ -455,6 +456,32 @@ function ReadinessPanelBody() {
 		onSuccess: () => readiness?.refetch(),
 	});
 
+	// The only action here that leaves the product, so it is the only one that
+	// needs to say what became of it. The server answers whether the request
+	// reached a support inbox; a deployment with none configured, or a send
+	// that failed, gets the honest version rather than a confirmation nobody
+	// can act on.
+	const requestHelp = useMutation({
+		mutationFn: (itemKey: string) =>
+			orpcClient.projects.readiness.requestHelp({
+				projectId: readiness?.projectId ?? "",
+				itemKey,
+				organizationId: organizationId ?? null,
+			}),
+		onSuccess: (result) => {
+			// `info` rather than `success` for the second case on purpose: the
+			// request was recorded, but nothing reached anyone, and a green
+			// tick would read as "someone has it".
+			if (result.notified) {
+				toast.success(t("panel.helpRequestNotified"));
+			} else {
+				toast.info(t("panel.helpRequestRecorded"));
+			}
+			readiness?.refetch();
+		},
+		onError: () => toast.error(t("panel.helpRequestFailed")),
+	});
+
 	if (!readiness) {
 		return null;
 	}
@@ -844,6 +871,9 @@ function ReadinessPanelBody() {
 												? t("panel.stateComplete")
 												: null
 								}
+								helpRequested={
+									item.manualState === "HELP_REQUESTED"
+								}
 								t={t}
 								onSnooze={(until) =>
 									snooze.mutate({ itemKey: item.key, until })
@@ -853,6 +883,9 @@ function ReadinessPanelBody() {
 										itemKey: item.key,
 										notApplicable,
 									})
+								}
+								onRequestHelp={() =>
+									requestHelp.mutate(item.key)
 								}
 								canAct={data.canAct}
 							/>
@@ -916,6 +949,8 @@ function ReadinessGapRow({
 	t,
 	onSnooze,
 	onSetNotApplicable,
+	onRequestHelp,
+	helpRequested,
 	canAct,
 }: {
 	item: ReadinessItem;
@@ -949,6 +984,14 @@ function ReadinessGapRow({
 	/** `null` lifts an existing snooze. */
 	onSnooze: (until: Date | null) => void;
 	onSetNotApplicable: (notApplicable: boolean) => void;
+	onRequestHelp: () => void;
+	/**
+	 * Someone has already asked for help with this item. Unlike Snoozed and
+	 * Not applicable it does not resolve the item or change what it counts
+	 * for — the gap is still a gap — so it reads as a marker beside the row
+	 * rather than as the row's state.
+	 */
+	helpRequested: boolean;
 	/** Read-only viewers see the state but cannot change it. */
 	canAct: boolean;
 }) {
@@ -1052,6 +1095,14 @@ function ReadinessGapRow({
 						{t("panel.stateInProgress")}
 					</span>
 				)}
+				{/* Shown to everyone, including read-only viewers: that someone
+				    has already asked is the thing worth knowing before asking
+				    again. */}
+				{helpRequested && (
+					<span className="font-medium text-primary text-xs">
+						{t("panel.stateHelpRequested")}
+					</span>
+				)}
 				{!canAct ? null : item.manualState === "SNOOZED" ? (
 					<>
 						{/* Snoozed reads amber because that is what the rollup
@@ -1084,6 +1135,13 @@ function ReadinessGapRow({
 							onClick={() => onSnooze(null)}
 						>
 							{t("panel.unsnooze")}
+						</Button>
+						<Button
+							variant="ghost"
+							size="sm"
+							onClick={onRequestHelp}
+						>
+							{t("panel.requestHelp")}
 						</Button>
 						<ReadinessCta
 							t={t}
@@ -1165,6 +1223,9 @@ function ReadinessGapRow({
 									onSelect={() => onSetNotApplicable(true)}
 								>
 									{t("panel.notApplicable")}
+								</DropdownMenuItem>
+								<DropdownMenuItem onSelect={onRequestHelp}>
+									{t("panel.requestHelp")}
 								</DropdownMenuItem>
 							</DropdownMenuContent>
 						</DropdownMenu>

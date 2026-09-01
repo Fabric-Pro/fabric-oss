@@ -118,6 +118,19 @@ export const config = {
 		// and a blank sender is worse than the default, so empty falls back too.
 		from: process.env.MAIL_FROM || "noreply@fabric.pro",
 	},
+	// Support
+	support: {
+		// Where in-product help requests are delivered — the readiness
+		// checklist's "Request help" is the first of them (Fizzy #2165).
+		// Supplied per deployment rather than defaulted here: an address in
+		// this file is published with the source, and the inbox that should
+		// answer differs between our deployment and anyone else's. With none
+		// set the request is still recorded, and the panel says plainly that
+		// no email went out instead of claiming someone was told.
+		// `||` rather than `??`, matching `mails.from`: a blank value must
+		// read as "not configured" rather than as an address.
+		email: process.env.SUPPORT_EMAIL || "",
+	},
 	// Frontend
 	ui: {
 		// the themes that should be available in the app
