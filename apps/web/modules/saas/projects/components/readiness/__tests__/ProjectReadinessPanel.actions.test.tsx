@@ -41,9 +41,17 @@ beforeAll(() => {
 	}
 });
 
-const { snoozeMock, setNotApplicableMock, readinessRef } = vi.hoisted(() => ({
+const {
+	snoozeMock,
+	setNotApplicableMock,
+	requestHelpMock,
+	toastMock,
+	readinessRef,
+} = vi.hoisted(() => ({
 	snoozeMock: vi.fn(),
 	setNotApplicableMock: vi.fn(),
+	requestHelpMock: vi.fn(),
+	toastMock: { success: vi.fn(), info: vi.fn(), error: vi.fn() },
 	readinessRef: { current: null as unknown },
 }));
 
@@ -54,10 +62,13 @@ vi.mock("@shared/lib/orpc-client", () => ({
 				snooze: (input: unknown) => snoozeMock(input),
 				setNotApplicable: (input: unknown) =>
 					setNotApplicableMock(input),
+				requestHelp: (input: unknown) => requestHelpMock(input),
 			},
 		},
 	},
 }));
+
+vi.mock("sonner", () => ({ toast: toastMock }));
 
 vi.mock("@saas/projects/lib/project-tab-preferences", () => ({
 	// These tests are about the panel's actions, not tab visibility: every tab
@@ -186,6 +197,7 @@ beforeEach(() => {
 	vi.clearAllMocks();
 	snoozeMock.mockResolvedValue({ ok: true });
 	setNotApplicableMock.mockResolvedValue({ ok: true });
+	requestHelpMock.mockResolvedValue({ ok: true, notified: true });
 });
 
 describe("snoozing with a chosen duration", () => {
@@ -209,8 +221,10 @@ describe("snoozing with a chosen duration", () => {
 			"2 weeks",
 			"1 month",
 			// FR22 / AC-9: one menu holds the item's actions, so Not applicable
-			// sits alongside the durations rather than as a separate button.
+			// and Request help sit alongside the durations rather than as
+			// separate buttons.
 			"Not applicable",
+			"Request help",
 		]);
 	});
 
@@ -307,5 +321,69 @@ describe("undoing a state", () => {
 				name: /un-snooze|mark applicable/i,
 			}),
 		).not.toBeInTheDocument();
+	});
+});
+
+/**
+ * Request help is the one action that leaves the product (Fizzy #2165, FR22 and
+ * the 31 Aug direction that it should mail a monitored inbox). The panel cannot
+ * see whether the mail got out, so it must repeat what the server says rather
+ * than assume the request was passed on.
+ */
+describe("requesting help", () => {
+	it("asks for help on the item behind the menu", async () => {
+		const user = userEvent.setup();
+		mountWith([item()]);
+
+		await user.click(
+			screen.getByRole("button", { name: "Actions for this item" }),
+		);
+		await user.click(
+			await screen.findByRole("menuitem", { name: "Request help" }),
+		);
+
+		await waitFor(() => expect(requestHelpMock).toHaveBeenCalledTimes(1));
+		expect(requestHelpMock.mock.calls[0][0]).toMatchObject({
+			projectId: "p1",
+			itemKey: "feature-snapshot",
+		});
+	});
+
+	it("confirms delivery only when the server says it happened", async () => {
+		const user = userEvent.setup();
+		mountWith([item()]);
+
+		await user.click(
+			screen.getByRole("button", { name: "Actions for this item" }),
+		);
+		await user.click(
+			await screen.findByRole("menuitem", { name: "Request help" }),
+		);
+
+		await waitFor(() =>
+			expect(toastMock.success).toHaveBeenCalledWith(
+				"Help requested. The support inbox has been notified.",
+			),
+		);
+	});
+
+	it("says plainly when the message did not get out", async () => {
+		requestHelpMock.mockResolvedValue({ ok: true, notified: false });
+		const user = userEvent.setup();
+		mountWith([item()]);
+
+		await user.click(
+			screen.getByRole("button", { name: "Actions for this item" }),
+		);
+		await user.click(
+			await screen.findByRole("menuitem", { name: "Request help" }),
+		);
+
+		await waitFor(() =>
+			expect(toastMock.info).toHaveBeenCalledWith(
+				expect.stringContaining("could not be sent"),
+			),
+		);
+		expect(toastMock.success).not.toHaveBeenCalled();
 	});
 });

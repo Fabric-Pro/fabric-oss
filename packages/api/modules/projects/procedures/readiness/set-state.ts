@@ -7,6 +7,7 @@ import {
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
 import { gatherReadinessEvidence } from "../../lib/readiness/evidence";
+import { deliverReadinessHelpRequest } from "../../lib/readiness/help-request";
 import { READINESS_RULES_BY_KEY } from "../../lib/readiness/registry";
 
 /**
@@ -22,7 +23,9 @@ import { READINESS_RULES_BY_KEY } from "../../lib/readiness/registry";
  *    statement about the project rather than about the person making it, so it
  *    is gated on project-edit rights.
  *  - **Request help** is also project-wide, and additionally sets a flag that is
- *    never cleared, so the friction stays visible after the item resolves.
+ *    never cleared, so the friction stays visible after the item resolves. It
+ *    is the only one of the three that leaves the product: the request is
+ *    mailed to the configured support inbox.
  *
  * Completion is not settable. It is derived on read and has no mutation here.
  */
@@ -52,6 +55,15 @@ async function resolveTenant(projectId: string) {
 }
 
 const StateOutput = z.object({ ok: z.literal(true) });
+
+/**
+ * `notified` says whether the request actually reached a support inbox, so the
+ * panel can confirm what happened instead of guessing. It is false when no
+ * address is configured and false when the send failed — from the asker's side
+ * those are the same outcome, and claiming otherwise would be a lie the UI
+ * repeats.
+ */
+const HelpOutput = z.object({ ok: z.literal(true), notified: z.boolean() });
 
 /**
  * Upsert the single project-wide row for an item.
@@ -253,7 +265,7 @@ export const requestReadinessHelpProcedure = tenantProtectedProcedure
 		tags: ["Projects", "Readiness"],
 		summary: "Request help for a readiness item",
 		description:
-			"Flags a readiness item as needing help and records that it ever did.",
+			"Flags a readiness item as needing help, records that it ever did, and mails the configured support inbox.",
 	})
 	.input(
 		z.object({
@@ -262,8 +274,8 @@ export const requestReadinessHelpProcedure = tenantProtectedProcedure
 			organizationId: z.string().nullable().optional(),
 		}),
 	)
-	.output(StateOutput)
-	.handler(async ({ input }) => {
+	.output(HelpOutput)
+	.handler(async ({ input, context }) => {
 		await assertEnabled();
 		assertKnownItem(input.itemKey);
 		const tenant = await resolveTenant(input.projectId);
@@ -298,5 +310,17 @@ export const requestReadinessHelpProcedure = tenantProtectedProcedure
 			data: { everHelpRequested: true },
 		});
 
-		return { ok: true as const };
+		// Awaited rather than fired and forgotten: the answer is part of the
+		// response, and it is one provider call on a deliberate click. A
+		// failure inside is swallowed and reported as `notified: false` — the
+		// record above is the part that must not be lost.
+		const notified = await deliverReadinessHelpRequest({
+			projectId: input.projectId,
+			itemKey: input.itemKey,
+			requesterName: context.user.name ?? context.user.email,
+			requesterEmail: context.user.email,
+			requestedAt: now,
+		});
+
+		return { ok: true as const, notified };
 	});

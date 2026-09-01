@@ -11,20 +11,23 @@
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { mockDb, mockIsFeatureEnabled, mockGather } = vi.hoisted(() => ({
-	mockDb: {
-		projectReadinessItemState: {
-			upsert: vi.fn(),
-			deleteMany: vi.fn(),
-			findFirst: vi.fn(),
-			create: vi.fn(),
-			update: vi.fn(),
-			updateMany: vi.fn(),
+const { mockDb, mockIsFeatureEnabled, mockGather, mockDeliver } = vi.hoisted(
+	() => ({
+		mockDb: {
+			projectReadinessItemState: {
+				upsert: vi.fn(),
+				deleteMany: vi.fn(),
+				findFirst: vi.fn(),
+				create: vi.fn(),
+				update: vi.fn(),
+				updateMany: vi.fn(),
+			},
 		},
-	},
-	mockIsFeatureEnabled: vi.fn(),
-	mockGather: vi.fn(),
-}));
+		mockIsFeatureEnabled: vi.fn(),
+		mockGather: vi.fn(),
+		mockDeliver: vi.fn(),
+	}),
+);
 
 vi.mock("@repo/database", async (importOriginal) => ({
 	...(await importOriginal<Record<string, unknown>>()),
@@ -36,22 +39,35 @@ vi.mock("../../../lib/readiness/evidence", () => ({
 	gatherReadinessEvidence: (...args: unknown[]) => mockGather(...args),
 }));
 
+vi.mock("../../../lib/readiness/help-request", () => ({
+	deliverReadinessHelpRequest: (...args: unknown[]) => mockDeliver(...args),
+}));
+
 import {
+	requestReadinessHelpProcedure,
 	setReadinessItemNotApplicableProcedure,
 	snoozeReadinessItemProcedure,
 } from "../set-state";
 
-const CONTEXT = { user: { id: "user-1" }, session: {} };
+const CONTEXT = {
+	user: { id: "user-1", name: "Alex Doe", email: "alex@example.com" },
+	session: {},
+};
 /** A key that exists in the registry — an unknown one is rejected up front. */
 const ITEM_KEY = "feature-snapshot";
 
-function call(procedure: unknown, input: Record<string, unknown>) {
+function call(
+	procedure: unknown,
+	input: Record<string, unknown>,
+	/** Merged over the default context — pass `{ user: {...} }` to vary the caller. */
+	context: Record<string, unknown> = {},
+) {
 	const handler = (
 		procedure as {
 			"~orpc": { handler: (opts: unknown) => Promise<unknown> };
 		}
 	)["~orpc"].handler;
-	return handler({ input, context: CONTEXT });
+	return handler({ input, context: { ...CONTEXT, ...context } });
 }
 
 beforeEach(() => {
@@ -65,6 +81,8 @@ beforeEach(() => {
 	mockDb.projectReadinessItemState.deleteMany.mockResolvedValue({ count: 1 });
 	mockDb.projectReadinessItemState.findFirst.mockResolvedValue(null);
 	mockDb.projectReadinessItemState.create.mockResolvedValue({});
+	mockDb.projectReadinessItemState.updateMany.mockResolvedValue({ count: 0 });
+	mockDeliver.mockResolvedValue(true);
 });
 
 describe("snooze", () => {
@@ -158,5 +176,51 @@ describe("not applicable", () => {
 		const args = mockDb.projectReadinessItemState.create.mock.calls[0][0];
 		expect(args.data.personalForUserId).toBeNull();
 		expect(args.data.state).toBe("NOT_APPLICABLE");
+	});
+});
+
+describe("request help", () => {
+	it("passes the asker on, so the inbox knows who to answer", async () => {
+		const result = await call(requestReadinessHelpProcedure, {
+			projectId: "p1",
+			itemKey: ITEM_KEY,
+			organizationId: null,
+		});
+
+		expect(result).toEqual({ ok: true, notified: true });
+		const delivered = mockDeliver.mock.calls[0][0];
+		expect(delivered.projectId).toBe("p1");
+		expect(delivered.itemKey).toBe(ITEM_KEY);
+		expect(delivered.requesterEmail).toBe("alex@example.com");
+		expect(delivered.requesterName).toBe("Alex Doe");
+	});
+
+	it("still records the request when nothing could be mailed", async () => {
+		mockDeliver.mockResolvedValue(false);
+
+		const result = await call(requestReadinessHelpProcedure, {
+			projectId: "p1",
+			itemKey: ITEM_KEY,
+			organizationId: null,
+		});
+
+		// The honest answer, and the flag written anyway: an unconfigured
+		// deployment records the friction even though it cannot forward it.
+		expect(result).toEqual({ ok: true, notified: false });
+		const args = mockDb.projectReadinessItemState.create.mock.calls[0][0];
+		expect(args.data.state).toBe("HELP_REQUESTED");
+		expect(args.data.everHelpRequested).toBe(true);
+	});
+
+	it("falls back to the address when the account has no name", async () => {
+		await call(
+			requestReadinessHelpProcedure,
+			{ projectId: "p1", itemKey: ITEM_KEY, organizationId: null },
+			{ user: { id: "user-1", name: null, email: "alex@example.com" } },
+		);
+
+		expect(mockDeliver.mock.calls[0][0].requesterName).toBe(
+			"alex@example.com",
+		);
 	});
 });
