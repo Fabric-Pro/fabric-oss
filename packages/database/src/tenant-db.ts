@@ -107,6 +107,11 @@ const USER_OWNED_TABLES = new Set([
 	"WorkflowVersion", // Workflow version history
 	"WorkflowApiKey", // API keys for workflows
 	"WorkflowExecutionLog", // Execution logs for workflow nodes
+	// Maturation question assignment (#1751). Registered even though the parent
+	// DecisionLogEntry is not: the parent is grandfathered into TENANT_DB_BASELINE in
+	// rls-coverage.test.ts, which is a frozen backlog rather than an approved pattern —
+	// nothing new may join it.
+	"DecisionLogEntryAssignee",
 	"Project",
 	"Diagram", // Excalidraw diagrams - per-user within org, optionally scoped to project
 	"ProjectDocument", // Project documents

@@ -142,6 +142,31 @@ const repoIntegrationTokenExpiredPayload = z.object({
 // which does not run this validator, since the activity cannot import it
 // without a workspace cycle — but the schema is registered here so the
 // validator stays total over `NotificationType`.
+// Maturation question routing (Fizzy #1751). Three payloads rather than one
+// shared shape: each names the actor by the role they played, so a reader of a
+// stored row can tell an assignment from a citation without consulting the type.
+const questionAssignedPayload = z.object({
+	storyId: z.string(),
+	projectId: z.string(),
+	/** The question thread root — also the scroll anchor for the deep link. */
+	questionRootId: z.string(),
+	assignedByUserId: z.string(),
+});
+
+const questionMentionedPayload = z.object({
+	storyId: z.string(),
+	projectId: z.string(),
+	questionRootId: z.string(),
+	mentionedByUserId: z.string(),
+});
+
+const questionAnsweredPayload = z.object({
+	storyId: z.string(),
+	projectId: z.string(),
+	questionRootId: z.string(),
+	answeredByUserId: z.string(),
+});
+
 const pmAttachmentSyncFailedPayload = z.object({
 	projectId: z.string(),
 	storyId: z.string(),
@@ -394,6 +419,9 @@ const NotificationPayloadByType = {
 	[NotificationType.PM_ATTACHMENT_SYNC_FAILED]: pmAttachmentSyncFailedPayload,
 	[NotificationType.DECISION_OWNER_ASSIGNED]: decisionOwnerPayload,
 	[NotificationType.DECISION_OWNER_UPDATED]: decisionOwnerPayload,
+	[NotificationType.QUESTION_ASSIGNED]: questionAssignedPayload,
+	[NotificationType.QUESTION_MENTIONED]: questionMentionedPayload,
+	[NotificationType.QUESTION_ANSWERED]: questionAnsweredPayload,
 } as const;
 
 export function validatePayload(

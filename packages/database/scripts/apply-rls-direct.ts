@@ -301,6 +301,9 @@ async function applyRLS() {
 			// preference is a per-USER default, so userId is required in both branches
 			// → per_user_within_org.
 			{ name: "decision_log_entry", policy: "user_owned" },
+			// Question assignment (#1751) mirrors its parent: the row's tenant key
+			// is `userId`, NOT `assigneeUserId`, so user_owned applies unchanged.
+			{ name: "decision_log_entry_assignee", policy: "user_owned" },
 			{
 				name: "maturation_approval_preference",
 				policy: "per_user_within_org",

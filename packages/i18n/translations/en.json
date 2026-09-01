@@ -3062,6 +3062,17 @@
 					"answerSubmit": "Answer",
 					"answering": "Saving…",
 					"cancel": "Cancel",
+					"assignLabel": "Assign someone",
+					"assigneesLabel": "{count, plural, one {# person assigned} other {# people assigned}}",
+					"assignedState": "Assigned",
+					"unassignedState": "Unassigned",
+					"assigneeSearchPlaceholder": "Search project members…",
+					"assigneeSearchEmpty": "No project members match.",
+					"mentionSuggestionsLabel": "Mention a project member",
+					"askMention": "Ask {names}",
+					"countAnswered": "{count} answered",
+					"countAssigned": "{count} assigned",
+					"countUnanswered": "{count} unanswered",
 					"notesHeading": "Notes",
 					"notesHint": "Your private notebook for this feature. Jot down context, open thoughts, or reminders — the AI never reads or edits this.",
 					"notesPlaceholder": "Add your own notes about this feature…",
@@ -3155,6 +3166,7 @@
 					"cleanSpecRefreshError": "Couldn’t refresh the Full Spec. Please try again.",
 					"questionRestored": "Question restored to the open list.",
 					"questionRestoreError": "Couldn’t restore that question. Please try again.",
+					"assignError": "Couldn’t update who this question is assigned to. Please try again.",
 					"autoProposeError": "Couldn’t update that setting. Please try again."
 				}
 			}

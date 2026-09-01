@@ -14,13 +14,23 @@ import {
 import { Loader2, Pencil, SparklesIcon } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { useEffect, useMemo, useState } from "react";
+import {
+	type AssignableMember,
+	QuestionAssigneePicker,
+} from "./QuestionAssigneePicker";
+import {
+	mentionedMemberIds,
+	QuestionMentionTextarea,
+} from "./QuestionMentionTextarea";
 import type { AiReadinessData } from "./ReadinessBar";
 import { ReadinessBar } from "./ReadinessBar";
 import type {
 	AnswerSource,
 	DecisionLogThread,
+	QuestionAssignee,
 	SuggestedAnswerOption,
 } from "./types";
+import { useScrollToQuestion } from "./use-scroll-to-question";
 
 /** Max suggested options to render per question (FR-3: 1–4; mirrors the API cap). */
 const MAX_SUGGESTED_OPTIONS = 4;
@@ -69,6 +79,22 @@ const TOPIC_ORDER = [
 ] as const;
 
 const OTHER_TOPIC = "Other";
+
+/**
+ * Label for the "Ask" action: name up to two people, count beyond.
+ *
+ * The control sits in a row with two others, so an unbounded list of names would
+ * reflow it. Two is where a name still reads as a person rather than a tally.
+ */
+function formatAskNames(names: string[]): string {
+	if (names.length === 1) {
+		return names[0];
+	}
+	if (names.length === 2) {
+		return `${names[0]} & ${names[1]}`;
+	}
+	return `${names.length} people`;
+}
 
 /** Group open-question threads by topic, in the fixed taxonomy order. */
 function groupByTopic(
@@ -127,6 +153,28 @@ type Props = {
 	onSaveNotes: (content: string) => void;
 	/** Re-open a soft-closed question — wired to `restoreQuestion` (#5). */
 	onRestoreQuestion?: (questionRootId: string) => void;
+	/**
+	 * Who each open question is waiting on (#1751), keyed by thread root id.
+	 * Absent when the feature ships dark, which is what keeps every control
+	 * below invisible without a second flag check per call site.
+	 */
+	questionAssignees?: Record<string, QuestionAssignee[]>;
+	/** Project members offered by the picker and the `@` popover (AC-3). */
+	assignableMembers?: AssignableMember[];
+	/** Drives the member search behind both. */
+	onAssigneeQueryChange?: (query: string) => void;
+	/**
+	 * Set the COMPLETE assignee list for a question. `note` carries the sentence
+	 * the asker had typed, and is stored as context — never as an answer, so the
+	 * question stays open.
+	 */
+	onSetAssignees?: (
+		questionRootId: string,
+		assigneeUserIds: string[],
+		note?: string,
+	) => void;
+	/** The question root whose assignment mutation is in flight, else null. */
+	settingAssigneesId?: string | null;
 	/** The `questionId` currently being answered (mutation pending), else null. */
 	answeringId: string | null;
 	/** The question root id currently being restored (mutation pending), else null. */
@@ -168,6 +216,11 @@ export function SummaryQuestionsPanel({
 	togglingAutoPropose = false,
 	onSaveNotes,
 	onRestoreQuestion,
+	questionAssignees,
+	assignableMembers = [],
+	onAssigneeQueryChange,
+	onSetAssignees,
+	settingAssigneesId = null,
 	answeringId,
 	restoringId = null,
 	hasAcceptanceCriteria,
@@ -243,6 +296,31 @@ export function SummaryQuestionsPanel({
 		(questionGroups[0]?.topic !== OTHER_TOPIC &&
 			questionGroups.length === 1);
 
+	// Scroll to the question a notification linked to, once the list has arrived.
+	useScrollToQuestion(openQuestions.length > 0);
+
+	/**
+	 * Status tally for the top of the list (AC-20).
+	 *
+	 * `Assigned` is DERIVED — an open question with somebody on it — not a stored
+	 * status. A status enum member would fall out of the `OPEN` predicates behind
+	 * the roadmap's open-question count and the reconciliation sweep, so the
+	 * distinction lives here, where it is only ever display.
+	 */
+	const statusCounts = useMemo(() => {
+		const assigned = questionAssignees
+			? openQuestions.filter(
+					(thread) =>
+						(questionAssignees[thread.root.id]?.length ?? 0) > 0,
+				).length
+			: 0;
+		return {
+			answered: resolvedQuestionsCount ?? 0,
+			assigned,
+			unanswered: openQuestions.length - assigned,
+		};
+	}, [openQuestions, questionAssignees, resolvedQuestionsCount]);
+
 	const renderThread = (thread: DecisionLogThread) => {
 		const isActive = activeId === thread.root.id;
 		// answerQuestion resolves the OPEN root by its stable questionId (not the
@@ -252,8 +330,28 @@ export function SummaryQuestionsPanel({
 		// answer as AI_SUGGESTED; "type your own" opens the field as AI_EDITED.
 		const options = suggestionOptions(thread.root.suggestedOptions);
 		const hasSuggestions = options.length > 0;
+		// Assignment controls are present only when the caller wired them, which is
+		// how the feature ships dark without a flag check at every control.
+		const assignmentEnabled = Boolean(questionAssignees && onSetAssignees);
+		const assignees = questionAssignees?.[thread.root.id] ?? [];
+		// Everyone named in the draft answer. Their presence is what offers the
+		// second action — the text alone cannot say whether they are being cited
+		// or asked, so the author picks.
+		const mentioned = isActive
+			? mentionedMemberIds(answer, assignableMembers)
+			: [];
+		const mentionedNames = mentioned
+			.map((id) => assignableMembers.find((m) => m.id === id)?.name)
+			.filter((name): name is string => Boolean(name));
+
 		return (
-			<li key={thread.root.id} className="rounded-lg border bg-card p-3">
+			<li
+				key={thread.root.id}
+				// Same raw root id the notification's `#q-<id>` fragment carries, so
+				// a deep link lands on this row (AC-12).
+				data-question-anchor={thread.root.id}
+				className="rounded-lg border bg-card p-3"
+			>
 				<p className="text-sm font-medium text-foreground">
 					{thread.root.summary ?? thread.root.content ?? ""}
 				</p>
@@ -263,16 +361,44 @@ export function SummaryQuestionsPanel({
 					</Markdown>
 				)}
 
+				{assignmentEnabled && (
+					<div className="mt-2 flex items-center gap-1">
+						<QuestionAssigneePicker
+							assignees={assignees}
+							members={assignableMembers}
+							onChange={(ids) =>
+								onSetAssignees?.(thread.root.id, ids)
+							}
+							onQueryChange={onAssigneeQueryChange ?? (() => {})}
+							saving={settingAssigneesId === thread.root.id}
+						/>
+					</div>
+				)}
+
 				{isActive ? (
 					<div className="mt-3 space-y-2">
-						<Textarea
-							value={answer}
-							onChange={(e) => setAnswer(e.target.value)}
-							placeholder={t("answerPlaceholder")}
-							rows={3}
-							aria-label={t("answerLabel")}
-							disabled={isAnswering}
-						/>
+						{assignmentEnabled ? (
+							<QuestionMentionTextarea
+								value={answer}
+								onChange={setAnswer}
+								members={assignableMembers}
+								onQueryChange={
+									onAssigneeQueryChange ?? (() => {})
+								}
+								placeholder={t("answerPlaceholder")}
+								ariaLabel={t("answerLabel")}
+								disabled={isAnswering}
+							/>
+						) : (
+							<Textarea
+								value={answer}
+								onChange={(e) => setAnswer(e.target.value)}
+								placeholder={t("answerPlaceholder")}
+								rows={3}
+								aria-label={t("answerLabel")}
+								disabled={isAnswering}
+							/>
+						)}
 						<div className="flex items-center justify-end gap-2">
 							<Button
 								type="button"
@@ -283,6 +409,37 @@ export function SummaryQuestionsPanel({
 							>
 								{t("cancel")}
 							</Button>
+							{/* Only offered once somebody is named: "as per @Sam,
+							    ninety days" is an answer, "ninety days, right
+							    @Sam?" is not, and the text cannot tell them
+							    apart. With no mention there is one button and
+							    the behaviour is exactly as before. */}
+							{mentioned.length > 0 && (
+								<Button
+									type="button"
+									variant="outline"
+									size="sm"
+									onClick={() => {
+										onSetAssignees?.(
+											thread.root.id,
+											[
+												...assignees.map((a) => a.id),
+												...mentioned,
+											],
+											answer.trim(),
+										);
+										setActiveId(null);
+									}}
+									disabled={
+										isAnswering ||
+										settingAssigneesId === thread.root.id
+									}
+								>
+									{t("askMention", {
+										names: formatAskNames(mentionedNames),
+									})}
+								</Button>
+							)}
 							<Button
 								type="button"
 								size="sm"
@@ -566,6 +723,38 @@ export function SummaryQuestionsPanel({
 						</Tooltip>
 					)}
 				</div>
+
+				{/* Status tally (AC-20) — who is blocked on what, at a glance.
+				    Only meaningful once assignment is wired, so it rides the same
+				    switch as the controls themselves. */}
+				{questionAssignees && openQuestions.length > 0 && (
+					<div className="mt-2 flex flex-wrap items-center gap-1.5">
+						<Badge
+							variant="secondary"
+							className="text-[11px] font-normal"
+						>
+							{t("countAnswered", {
+								count: statusCounts.answered,
+							})}
+						</Badge>
+						<Badge
+							variant="outline"
+							className="text-[11px] font-normal"
+						>
+							{t("countAssigned", {
+								count: statusCounts.assigned,
+							})}
+						</Badge>
+						<Badge
+							variant="outline"
+							className="text-[11px] font-normal"
+						>
+							{t("countUnanswered", {
+								count: statusCounts.unanswered,
+							})}
+						</Badge>
+					</div>
+				)}
 
 				{openQuestions.length === 0 ? (
 					<p className="mt-3 text-sm text-muted-foreground">

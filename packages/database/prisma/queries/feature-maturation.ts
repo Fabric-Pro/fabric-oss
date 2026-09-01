@@ -1549,3 +1549,166 @@ export function effectiveApprovalMode(
 
 	return HARD_DEFAULT_APPROVAL_MODE[tab];
 }
+
+// ---------------------------------------------------------------------------
+// Question assignment (Fizzy #1751)
+// ---------------------------------------------------------------------------
+
+/**
+ * A person assigned to an open question, plus who put them there.
+ *
+ * `assignedByUserId` is not bookkeeping: after a re-assignment there are two
+ * candidate "askers", and this is what makes "notify the original assigner when
+ * the question is answered" (AC-14) resolve to exactly one person.
+ */
+export interface QuestionAssignee {
+	assigneeUserId: string;
+	assignedByUserId: string;
+}
+
+/**
+ * The same `user_owned` tenant shape as `buildDecisionLogTenantWhere`, typed for
+ * the assignee table.
+ *
+ * A separate function rather than a shared generic: the two where-inputs are
+ * nominally distinct in the generated client, and widening one to satisfy both
+ * would let a filter meant for the parent be spread into the child unnoticed.
+ * The child's tenant columns mirror the parent's, so the SHAPE stays identical —
+ * and `assigneeUserId` is deliberately absent, because scoping by the assignee
+ * would hide an assignment from the person who created it.
+ */
+function buildAssigneeTenantWhere(
+	tenant: MaturationTenantFilter,
+): Prisma.DecisionLogEntryAssigneeWhereInput {
+	return tenant.organizationId === null
+		? { organizationId: null, userId: tenant.userId }
+		: { organizationId: tenant.organizationId };
+}
+
+export interface ListQuestionAssigneesInput {
+	tenantFilter: MaturationTenantFilter;
+	/** Thread-root ids to load assignees for. */
+	entryIds: string[];
+}
+
+/**
+ * Load assignees for a set of question roots in one query, keyed by entry id.
+ *
+ * TENANCY: the filter is the PARENT's tenant shape — `assigneeUserId` is never
+ * a tenant predicate. Filtering on the assignee would scope the read to the
+ * person being asked, so an author who assigned somebody else would stop seeing
+ * their own assignment (AC-4, AC-21).
+ */
+export async function listQuestionAssignees({
+	tenantFilter,
+	entryIds,
+}: ListQuestionAssigneesInput): Promise<Map<string, QuestionAssignee[]>> {
+	if (entryIds.length === 0) {
+		return new Map();
+	}
+
+	const rows = await db.decisionLogEntryAssignee.findMany({
+		where: {
+			...buildAssigneeTenantWhere(tenantFilter),
+			decisionLogEntryId: { in: entryIds },
+		},
+		orderBy: { createdAt: "asc" },
+		select: {
+			decisionLogEntryId: true,
+			assigneeUserId: true,
+			assignedByUserId: true,
+		},
+	});
+
+	const byEntry = new Map<string, QuestionAssignee[]>();
+	for (const row of rows) {
+		const assignee: QuestionAssignee = {
+			assigneeUserId: row.assigneeUserId,
+			assignedByUserId: row.assignedByUserId,
+		};
+		const bucket = byEntry.get(row.decisionLogEntryId);
+		if (bucket) {
+			bucket.push(assignee);
+		} else {
+			byEntry.set(row.decisionLogEntryId, [assignee]);
+		}
+	}
+	return byEntry;
+}
+
+export interface SetQuestionAssigneesInput {
+	tenantFilter: MaturationTenantFilter;
+	/** The question thread root. */
+	entryId: string;
+	/** The complete desired assignee set. An empty array clears the question. */
+	assigneeUserIds: string[];
+	/** Who is performing the assignment. */
+	assignedByUserId: string;
+}
+
+/**
+ * Replace a question's assignee set (AC-2, AC-5, AC-6).
+ *
+ * Set semantics rather than add/remove: assigning, re-assigning and clearing
+ * are the same call with a different desired set, so the caller never diffs.
+ * Rows already present are left untouched so their original `assignedByUserId`
+ * survives a re-save — re-picking someone already assigned must not silently
+ * transfer who hears the answer.
+ *
+ * Returns the newly-added assignees, which is exactly the set to notify.
+ */
+export async function setQuestionAssignees({
+	tenantFilter,
+	entryId,
+	assigneeUserIds,
+	assignedByUserId,
+}: SetQuestionAssigneesInput): Promise<string[]> {
+	// Confirm the question is visible in this tenant before writing anything —
+	// the child row's tenant columns are copied from it, never from the caller.
+	const entry = await db.decisionLogEntry.findFirst({
+		where: {
+			...buildDecisionLogTenantWhere(tenantFilter),
+			id: entryId,
+			deletedAt: null,
+		},
+		select: { id: true, userId: true, organizationId: true },
+	});
+	if (!entry) {
+		return [];
+	}
+
+	const desired = [...new Set(assigneeUserIds)];
+	const existing = await db.decisionLogEntryAssignee.findMany({
+		where: { decisionLogEntryId: entryId },
+		select: { assigneeUserId: true },
+	});
+	const existingIds = new Set(existing.map((row) => row.assigneeUserId));
+	const added = desired.filter((id) => !existingIds.has(id));
+	const removed = [...existingIds].filter((id) => !desired.includes(id));
+
+	await db.$transaction(async (tx) => {
+		if (removed.length > 0) {
+			await tx.decisionLogEntryAssignee.deleteMany({
+				where: {
+					decisionLogEntryId: entryId,
+					assigneeUserId: { in: removed },
+				},
+			});
+		}
+		if (added.length > 0) {
+			await tx.decisionLogEntryAssignee.createMany({
+				data: added.map((assigneeUserId) => ({
+					decisionLogEntryId: entryId,
+					assigneeUserId,
+					assignedByUserId,
+					// Tenant columns inherited from the question, never from the
+					// assignee — see the model's doc-comment.
+					userId: entry.userId,
+					organizationId: entry.organizationId,
+				})),
+			});
+		}
+	});
+
+	return added;
+}

@@ -15,6 +15,10 @@ import {
 	requireProjectPermission,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
+import { listProjectMentionableMembers } from "../../lib/project-mentionable-members";
+
+/** Typeahead popover — a short list the author scans while typing. */
+const MENTION_SUGGESTION_LIMIT = 10;
 
 /**
  * Search users who can be @-mentioned in a given document. The candidate
@@ -65,105 +69,22 @@ export const searchMentionablesProcedure = tenantProtectedProcedure
 			});
 		}
 
-		const [project, projectMembers] = await Promise.all([
-			db.project.findUnique({
-				where: { id: projectId },
-				select: {
-					id: true,
-					user: {
-						select: {
-							id: true,
-							name: true,
-							email: true,
-							image: true,
-						},
-					},
-				},
-			}),
-			db.projectMember.findMany({
-				where: {
-					projectId: projectId,
-					acceptedAt: { not: null },
-					OR: [
-						{ expiresAt: null },
-						{ expiresAt: { gt: new Date() } },
-					],
-				},
-				select: { userId: true },
-			}),
-		]);
+		// Member lookup is shared with question assignment (Fizzy #1751); the
+		// function-tag groups below stay here, since a group is mentionable but
+		// not assignable.
+		const filtered = await listProjectMentionableMembers({
+			projectId,
+			query,
+			limit: MENTION_SUGGESTION_LIMIT,
+		});
 
-		if (!project) {
+		if (!filtered) {
 			throw new ORPCError("NOT_FOUND", {
 				message: "Project not found for document",
 			});
 		}
 
-		const memberUsers = projectMembers.length
-			? await db.user.findMany({
-					where: {
-						id: { in: projectMembers.map((m) => m.userId) },
-					},
-					select: {
-						id: true,
-						name: true,
-						email: true,
-						image: true,
-					},
-				})
-			: [];
-
-		const candidates = new Map<
-			string,
-			{
-				id: string;
-				name: string | null;
-				email: string | null;
-				avatarUrl: string | null;
-			}
-		>();
-
-		candidates.set(project.user.id, {
-			id: project.user.id,
-			name: project.user.name,
-			email: project.user.email,
-			avatarUrl: project.user.image,
-		});
-		for (const u of memberUsers) {
-			if (!candidates.has(u.id)) {
-				candidates.set(u.id, {
-					id: u.id,
-					name: u.name,
-					email: u.email,
-					avatarUrl: u.image,
-				});
-			}
-		}
-
 		const needle = query.trim().toLowerCase();
-		const filtered = needle.length
-			? Array.from(candidates.values()).filter((c) => {
-					const nameMatch =
-						c.name?.toLowerCase().includes(needle) ?? false;
-					const emailMatch =
-						c.email?.toLowerCase().includes(needle) ?? false;
-					return nameMatch || emailMatch;
-				})
-			: Array.from(candidates.values());
-
-		// Sort by name ASC; null names last. Stable by id within a tier.
-		filtered.sort((a, b) => {
-			if (a.name === null && b.name === null) {
-				return a.id.localeCompare(b.id);
-			}
-			if (a.name === null) {
-				return 1;
-			}
-			if (b.name === null) {
-				return -1;
-			}
-			return a.name.localeCompare(b.name);
-		});
 
 		let groups: {
 			kind: "group";
@@ -185,5 +106,5 @@ export const searchMentionablesProcedure = tenantProtectedProcedure
 				: all;
 		}
 
-		return { members: filtered.slice(0, 10), groups };
+		return { members: filtered, groups };
 	});
