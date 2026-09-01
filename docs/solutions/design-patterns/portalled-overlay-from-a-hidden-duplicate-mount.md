@@ -141,4 +141,3 @@ The ref goes on the element the portal anchors to:
 
 - `docs/solutions/design-patterns/moving-a-floating-element-into-normal-flow.md` — the sibling trap in the other direction: a floating element moved into normal flow, with spacing and visibility pitfalls also caught by review rather than by the author.
 - `docs/solutions/ui-bugs/copilotkit-sidebar-editor-overlap.md` — a different overlap failure in the same shell, caused by breakpoint reservation rather than portalling.
-- `docs/plans/2026-07-30-001-feat-get-started-pointer-plan.md` — the plan this surfaced during.

@@ -130,4 +130,3 @@ One extension short of a branch is still a case worth pinning. Keep a negative t
 - `docs/solutions/conventions/accept-and-validation-share-one-vocabulary.md` — the sibling rule about *where* a format list lives. This entry is about *when* to stop adding to one. Its closing instruction ("when you find one drifted list, grep for its siblings") is the same instinct applied to lists rather than branches.
 - `docs/solutions/conventions/derive-query-invalidation-keys-never-hand-build-them.md` — the same generalization, stated for a different hand-authored value: "the problem is not one wrong shape, it is that hand-authoring the filter at all is the defect."
 - `docs/solutions/architecture-patterns/reuse-story-attachment-pipeline-preserve-ai-isolation.md` — carries the surface-scoping correction described above.
-- `docs/plans/2026-08-10-001-fix-untyped-file-upload-rejection-plan.md` — the plan for the generalizing fix, including the count of what it closed.

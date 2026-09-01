@@ -60,7 +60,5 @@ The distinction was surfaced to the decision-maker rather than resolved unilater
 
 ## References
 
-- Plan: [`../plans/2026-07-13-001-feat-living-docs-auto-refresh-plan.md`](../plans/2026-07-13-001-feat-living-docs-auto-refresh-plan.md)
-- Deferred scope, with the four platform capabilities the narrative assumed and that do not exist: [`../plans/2026-07-13-002-feat-living-docs-auto-refresh-deferred-scope.md`](../plans/2026-07-13-002-feat-living-docs-auto-refresh-deferred-scope.md)
 - The durable lesson: [`../solutions/architecture-patterns/scheduling-an-interactive-ai-engine-deletes-its-safety-model.md`](../solutions/architecture-patterns/scheduling-an-interactive-ai-engine-deletes-its-safety-model.md)
 - Prior art for the compare-and-set and terminal-state discipline: [`../solutions/architecture-patterns/cancelling-temporal-backed-jobs.md`](../solutions/architecture-patterns/cancelling-temporal-backed-jobs.md)
