@@ -249,7 +249,18 @@ jobs:
           // positives already passed and only the two negatives failed —
           // which is the asymmetry that shows the negatives are reading the
           // policy rather than an empty table.
-          const EXPECTED = 41;
+          // 41 -> 45: Fizzy #1853 (2B-1) adds publishing_topic_draft and
+          // publishing_topic_working_draft, each pinned in BOTH directions in
+          // org context. Two tables and not one because each carries its own
+          // denormalised tenant columns rather than inheriting the parent
+          // topic's, so a missing entry in tenant-db.ts or apply-rls-direct.ts
+          // would leave one filtered and the other wide open — and nothing else
+          // in the suite would notice, since an unregistered model makes
+          // getTenantFilter() return null and apply NO filter at all, with no
+          // error raised. Both directions for the same reason the chat-delivery
+          // bump above records: a negative alone passes just as well against a
+          // table that is simply empty.
+          const EXPECTED = 45;
           const j = JSON.parse(fs.readFileSync("packages/database/rls-isolation-results.json","utf8"));
           const files = j.testResults?.length ?? 0;
           const total = j.numTotalTests ?? 0;

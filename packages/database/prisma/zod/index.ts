@@ -796,6 +796,18 @@ export const PublishingTopicPlanningAnalysisScalarFieldEnumSchema = z.enum(['id'
 
 export type PublishingTopicPlanningAnalysisScalarFieldEnum = z.infer<typeof PublishingTopicPlanningAnalysisScalarFieldEnumSchema>;
 
+// File: PublishingTopicDraftScalarFieldEnum.schema.ts
+
+export const PublishingTopicDraftScalarFieldEnumSchema = z.enum(['id', 'topicId', 'projectId', 'organizationId', 'userId', 'postType', 'version', 'status', 'content', 'guidance', 'sourceRefs', 'model', 'promptSource', 'promptId', 'promptVersion', 'error', 'requestedById', 'executionTimeoutAt', 'createdAt', 'updatedAt'])
+
+export type PublishingTopicDraftScalarFieldEnum = z.infer<typeof PublishingTopicDraftScalarFieldEnumSchema>;
+
+// File: PublishingTopicWorkingDraftScalarFieldEnum.schema.ts
+
+export const PublishingTopicWorkingDraftScalarFieldEnumSchema = z.enum(['id', 'topicId', 'projectId', 'organizationId', 'userId', 'postType', 'body', 'sourceDraftId', 'sourceOptionLabel', 'updatedById', 'createdAt', 'updatedAt'])
+
+export type PublishingTopicWorkingDraftScalarFieldEnum = z.infer<typeof PublishingTopicWorkingDraftScalarFieldEnumSchema>;
+
 // File: PublishingTopicDecisionEntryScalarFieldEnum.schema.ts
 
 export const PublishingTopicDecisionEntryScalarFieldEnumSchema = z.enum(['id', 'topicId', 'projectId', 'organizationId', 'userId', 'parentId', 'authorType', 'authorUserId', 'status', 'kind', 'questionId', 'decisionKind', 'subject', 'summary', 'content', 'recommendedResponse', 'whyItMatters', 'answerSource', 'analysisVersion', 'deletedAt', 'createdAt', 'updatedAt'])
@@ -2439,6 +2451,12 @@ export type PublishingTopicPostType = z.infer<typeof PublishingTopicPostTypeSche
 export const PublishingPlanningAnalysisStatusSchema = z.enum(['GENERATING', 'READY', 'FAILED'])
 
 export type PublishingPlanningAnalysisStatus = z.infer<typeof PublishingPlanningAnalysisStatusSchema>;
+
+// File: PublishingDraftStatus.schema.ts
+
+export const PublishingDraftStatusSchema = z.enum(['GENERATING', 'READY', 'FAILED'])
+
+export type PublishingDraftStatus = z.infer<typeof PublishingDraftStatusSchema>;
 
 // File: PublishingDecisionEntryKind.schema.ts
 
@@ -6328,6 +6346,54 @@ export const PublishingTopicPlanningAnalysisSchema = z.object({
 });
 
 export type PublishingTopicPlanningAnalysisType = z.infer<typeof PublishingTopicPlanningAnalysisSchema>;
+
+
+// File: PublishingTopicDraft.schema.ts
+
+export const PublishingTopicDraftSchema = z.object({
+  id: z.string(),
+  topicId: z.string(),
+  projectId: z.string(),
+  organizationId: z.string().nullish(),
+  userId: z.string().nullish(),
+  postType: PublishingTopicPostTypeSchema,
+  version: z.number().int(),
+  status: PublishingDraftStatusSchema.default("GENERATING"),
+  content: z.unknown().refine((val) => { const getDepth = (obj: unknown, depth: number = 0): number => { if (depth > 10) return depth; if (obj === null || typeof obj !== 'object') return depth; const values = Object.values(obj as Record<string, unknown>); if (values.length === 0) return depth; return Math.max(...values.map(v => getDepth(v, depth + 1))); }; return getDepth(val) <= 10; }, "JSON nesting depth exceeds maximum of 10").nullish(),
+  guidance: z.string().nullish(),
+  sourceRefs: z.unknown().refine((val) => { const getDepth = (obj: unknown, depth: number = 0): number => { if (depth > 10) return depth; if (obj === null || typeof obj !== 'object') return depth; const values = Object.values(obj as Record<string, unknown>); if (values.length === 0) return depth; return Math.max(...values.map(v => getDepth(v, depth + 1))); }; return getDepth(val) <= 10; }, "JSON nesting depth exceeds maximum of 10").default("{}"),
+  model: z.string().nullish(),
+  promptSource: z.string().nullish(),
+  promptId: z.string().nullish(),
+  promptVersion: z.number().int().nullish(),
+  error: z.string().nullish(),
+  requestedById: z.string().nullish(),
+  executionTimeoutAt: z.date().nullish(),
+  createdAt: z.date(),
+  updatedAt: z.date(),
+});
+
+export type PublishingTopicDraftType = z.infer<typeof PublishingTopicDraftSchema>;
+
+
+// File: PublishingTopicWorkingDraft.schema.ts
+
+export const PublishingTopicWorkingDraftSchema = z.object({
+  id: z.string(),
+  topicId: z.string(),
+  projectId: z.string(),
+  organizationId: z.string().nullish(),
+  userId: z.string().nullish(),
+  postType: PublishingTopicPostTypeSchema,
+  body: z.string(),
+  sourceDraftId: z.string().nullish(),
+  sourceOptionLabel: z.string().nullish(),
+  updatedById: z.string().nullish(),
+  createdAt: z.date(),
+  updatedAt: z.date(),
+});
+
+export type PublishingTopicWorkingDraftType = z.infer<typeof PublishingTopicWorkingDraftSchema>;
 
 
 // File: PublishingTopicDecisionEntry.schema.ts

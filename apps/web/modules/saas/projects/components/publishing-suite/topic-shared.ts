@@ -48,15 +48,26 @@ export type PostType = PublishingTopic["suggestedPostTypes"][number];
 // 1B: the four `PublishingTopicPostType` values, in fixed display order, with
 // UI labels — an AI topic's suggested-post-type chip row renders in this
 // order regardless of the array order the API returns.
+//
+// 2B-1 adds `generationLabel`: the Inbox chip wants the short name ("Tweet")
+// because it sits in a dense row, while the generation tab uses the card's own
+// name for the content type ("Short Post / Tweet"). TWO FIELDS ON ONE LIST, not
+// two lists — a second hand-maintained list is exactly the drift the placeholder
+// this replaces warned about. `generationLabel` is omitted where the two agree.
 export const POST_TYPE_LABELS: ReadonlyArray<{
 	value: PostType;
 	label: string;
+	generationLabel?: string;
 }> = [
-	{ value: "TWEET", label: "Tweet" },
+	{ value: "TWEET", label: "Tweet", generationLabel: "Short Post / Tweet" },
 	{ value: "BLOG_POST", label: "Blog Post" },
 	{ value: "CASE_STUDY", label: "Case Study" },
 	{ value: "STAKEHOLDER_EMAIL", label: "Stakeholder Email" },
 ];
+
+/** The content types Phase 2B activates. The other two belong to Phase 2C. */
+export const GENERATION_ACTIVE_POST_TYPES: ReadonlySet<PostType> =
+	new Set<PostType>(["TWEET", "BLOG_POST"]);
 
 export type WhySuggested = NonNullable<PublishingTopic["whySuggested"]>;
 

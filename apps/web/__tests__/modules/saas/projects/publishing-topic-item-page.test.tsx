@@ -41,6 +41,14 @@ const {
 		// source of truth for the Summary & Questions tab's questions moved
 		// here from the analysis blob above — see the FR39 block below.
 		decisionThreads: [] as Record<string, unknown>[],
+		// 2B-1: the generation tab strip's own read. Fixture state, a
+		// default response AND an error response, because the component
+		// mounts this query unconditionally — a missing entry is not a
+		// failing assertion but `undefined.queryOptions`, which fails
+		// every case in this file at once.
+		drafts: [] as Record<string, unknown>[],
+		workingDrafts: [] as Record<string, unknown>[],
+		draftsError: false,
 		pending: false,
 		error: false,
 		// Drive the read-marker write to reject, so the failure path is
@@ -86,6 +94,19 @@ vi.mock("@tanstack/react-query", () => ({
 				isLoading: false,
 				isError: false,
 				refetch: vi.fn(),
+			};
+		}
+		if (procedure === "projects.publishingSuite.listTopicDrafts") {
+			return {
+				data: state.draftsError
+					? undefined
+					: {
+							drafts: state.drafts,
+							workingDrafts: state.workingDrafts,
+						},
+				isPending: false,
+				isLoading: false,
+				isError: state.draftsError,
 			};
 		}
 		if (procedure === "projects.publishingSuite.listTopicDecisions") {
@@ -202,6 +223,9 @@ vi.mock("@shared/lib/orpc-query-utils", () => {
 					),
 					generatePlanningAnalysis: m(
 						"projects.publishingSuite.generatePlanningAnalysis",
+					),
+					listTopicDrafts: q(
+						"projects.publishingSuite.listTopicDrafts",
 					),
 					listTopicDecisions: q(
 						"projects.publishingSuite.listTopicDecisions",
@@ -371,21 +395,41 @@ describe("TopicItemPage — tabs", () => {
 		).toHaveAttribute("aria-selected", "true");
 	});
 
-	it("shows all four generation tabs as disabled Coming Soon (FR48-FR50)", () => {
-		// FR50: the shell must NOT expose functional generation UI. Presence
-		// alone is not the requirement — a tab a user can activate would be a
-		// promise Phase 2A cannot keep, so `disabled` is the assertion that
-		// matters.
+	// SUPERSEDED, deliberately. Phase 2A's FR50 said a generation tab a user can
+	// activate is a promise 2A cannot keep, and this case pinned that for all
+	// four content types. Phase 2B's FR1/FR2 activate exactly TWO of them, so
+	// the old assertion is no longer true — and the half that IS still true is
+	// kept rather than dropped.
+	//
+	// This is the documented exception to the repository's standing rule that a
+	// failing test caught a real regression: the contract changed on purpose,
+	// the requirement that changed it is named, and the still-valid half is
+	// asserted right below.
+	it("activates the two Phase 2B generation tabs (FR1, FR2)", async () => {
+		const user = userEvent.setup();
 		renderPage();
 		const tablist = screen.getByRole("tablist", {
 			name: /content generation/i,
 		});
-		for (const label of [
-			"Tweet",
-			"Blog Post",
-			"Case Study",
-			"Stakeholder Email",
-		]) {
+
+		for (const label of [/short post \/ tweet/i, /blog post/i]) {
+			const tab = within(tablist).getByRole("tab", { name: label });
+			expect(tab).toBeEnabled();
+			await user.click(tab);
+			expect(tab).toHaveAttribute("aria-selected", "true");
+		}
+	});
+
+	it("leaves the Phase 2C generation tabs disabled and Coming Soon", () => {
+		// The surviving half of the 2A assertion. Case Study and Stakeholder
+		// Email are owned by Phase 2C, so FR50 still holds for them — and
+		// asserting it here is what stops 2B quietly activating a tab it does
+		// not implement.
+		renderPage();
+		const tablist = screen.getByRole("tablist", {
+			name: /content generation/i,
+		});
+		for (const label of ["Case Study", "Stakeholder Email"]) {
 			const tab = within(tablist).getByRole("tab", {
 				name: new RegExp(`${label}.*coming soon`, "i"),
 			});

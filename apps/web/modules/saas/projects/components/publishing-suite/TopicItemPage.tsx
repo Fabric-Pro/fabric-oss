@@ -8,8 +8,13 @@ import { ArrowLeftIcon } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
+import { GenerationTabs } from "./GenerationTabs";
 import { PlanningAnalysisTab } from "./PlanningAnalysisTab";
 import { PostTypesDialog } from "./PostTypesDialog";
+import {
+	isEmptyAnalysis,
+	readPlanningAnalysis,
+} from "./planning-analysis-content";
 import { PublishTopicDialog } from "./PublishTopicDialog";
 import { TopicDecisionLog } from "./TopicDecisionLog";
 import { TopicDetails } from "./TopicDetails";
@@ -46,8 +51,20 @@ const REVIEW_TABS: ReadonlyArray<{ value: ReviewTab; label: string }> = [
  * (`pitch`, produced by Phase 1A) alongside its open and answered questions
  * (2A-3); the planning worksheet (2A-2) and the Decision Log — the same
  * decision-thread rows read as a filterable history (2A-3) — fill the other
- * two tabs. Content generation remains a shell: `GenerationTabsPlaceholder`
- * below is the only thing later phases (2B/2C) still need to replace.
+ * two tabs.
+ *
+ * Content generation is `GenerationTabs` (2B-1), which replaced 2A's disabled
+ * placeholder. It makes the Short Post / Tweet and Blog Post tabs selectable
+ * and gives each its recommendation context, unresolved questions and draft
+ * state; the generate action itself lands in 2B-2/2B-3. Case Study and
+ * Stakeholder Email remain disabled until Phase 2C.
+ *
+ * FOUR queries, all fetched HERE rather than inside the tabs that read them.
+ * `latestAttempt` drives both the Planning & Analysis panel and Summary &
+ * Questions' failure wording; the decision threads drive Summary & Questions,
+ * the Decision Log AND the generation tabs' restriction warnings. One poll,
+ * many readers — two independently-timed queries could land on different rows
+ * mid-regeneration and leave two tabs contradicting each other.
  */
 export function TopicItemPage({
 	projectId,
@@ -121,6 +138,26 @@ export function TopicItemPage({
 			input: { projectId, topicId, organizationId },
 		}),
 	);
+
+	// 2B-1: the topic's generated-draft state, for the generation tab strip.
+	// Polled on the SAME function-form interval the analysis query uses, so a
+	// run that is in flight refreshes and a finished one stops costing anything.
+	// Nothing in 2B-1 can put a row into GENERATING — the writes arrive in
+	// 2B-2/2B-3 — so this never fires today; it is written alongside the query
+	// rather than bolted on later, when remembering is the failure mode.
+	const draftsQuery = useQuery({
+		...orpc.projects.publishingSuite.listTopicDrafts.queryOptions({
+			input: { projectId, topicId, organizationId },
+		}),
+		refetchInterval: (query) => {
+			const live = query.state.data?.drafts?.some(
+				(d) =>
+					d.latestAttempt?.status === "GENERATING" &&
+					!d.latestAttempt.isExpired,
+			);
+			return live ? 3000 : false;
+		},
+	});
 
 	// 1D's FR4 makes expanding a row "opening" it, which writes the read
 	// marker. Opening the whole page is the strongest form of opening there
@@ -380,7 +417,27 @@ export function TopicItemPage({
 				</TabsContent>
 			</Tabs>
 
-			<GenerationTabsPlaceholder />
+			<GenerationTabs
+				analysis={
+					latestReady
+						? (() => {
+								const doc = readPlanningAnalysis(
+									latestReady.content,
+								);
+								// An analysis that came back empty carries no
+								// recommendation, so treating it as "no analysis"
+								// is the honest answer rather than rendering four
+								// silently unexplained AVAILABLE tabs.
+								return isEmptyAnalysis(doc) ? null : doc;
+							})()
+						: null
+				}
+				drafts={draftsQuery.data?.drafts ?? []}
+				workingDrafts={draftsQuery.data?.workingDrafts ?? []}
+				decisionThreads={decisionsQuery.data?.threads ?? []}
+				isLoading={draftsQuery.isLoading}
+				hasError={draftsQuery.isError}
+			/>
 
 			{/* The editors behind `TopicDetails`' two affordances. Mounted only
 			    for an editor: the controls that open them are themselves
@@ -433,40 +490,5 @@ function EmptyState({ children }: { children: React.ReactNode }) {
 		<p className="rounded-xl border border-border border-dashed bg-muted/40 p-6 text-center text-muted-foreground text-sm">
 			{children}
 		</p>
-	);
-}
-
-/**
- * FR48–FR51: the shell for the content types later phases will generate.
- *
- * Driven off `POST_TYPE_LABELS` — the same fixed-order rendering of the
- * `PublishingTopicPostType` enum the Inbox row uses — so Phase 2B/2C activate
- * a tab by shipping its feature, with no edit to a second hand-maintained list
- * that could disagree with the enum (DV15).
- *
- * Every trigger is `disabled`. FR50 forbids exposing functional generation UI
- * in 2A, and a tab a user can activate is a promise this phase cannot keep.
- * The `Tabs` value matches no trigger, so no panel is selected.
- */
-function GenerationTabsPlaceholder() {
-	return (
-		<div className="space-y-2">
-			<p className="editorial-label">Content generation</p>
-			<Tabs value="__none__">
-				<TabsList
-					aria-label="Content generation"
-					className="flex-wrap opacity-70"
-				>
-					{POST_TYPE_LABELS.map((t) => (
-						<TabsTrigger key={t.value} value={t.value} disabled>
-							{t.label}
-							<span className="ml-2 rounded-full bg-muted px-2 py-0.5 text-[10px] text-muted-foreground uppercase tracking-wide">
-								Coming soon
-							</span>
-						</TabsTrigger>
-					))}
-				</TabsList>
-			</Tabs>
-		</div>
 	);
 }
