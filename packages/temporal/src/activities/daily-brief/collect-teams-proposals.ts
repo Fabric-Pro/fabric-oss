@@ -26,6 +26,9 @@ export interface CollectTeamsProposalsInput {
 
 export type CollectTeamsProposalsOutput = TeamsProposalItem[];
 
+/** Row cap — bounds what crosses the Temporal activity boundary (#1997).
+ *  Ordered newest-first, so the cap keeps the most recent proposals. */
+const MAX_PROPOSAL_ROWS = 100;
 const MAX_SUMMARY_CHARS = 800;
 
 // PendingBacklogProposalStatus includes SUPERSEDED and BACKLOG in the DB; the
@@ -98,6 +101,7 @@ export async function collectTeamsProposals(
 			},
 		},
 		orderBy: { createdAt: "desc" },
+		take: MAX_PROPOSAL_ROWS,
 	});
 
 	const items: TeamsProposalItem[] = [];

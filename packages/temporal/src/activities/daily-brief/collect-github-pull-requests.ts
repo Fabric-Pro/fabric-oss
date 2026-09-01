@@ -120,6 +120,16 @@ interface CacheEntry {
 
 const CACHE_TTL_MS = 30 * 60 * 1000; // 30 minutes
 const MAX_PRS_PER_REPO = 100;
+/**
+ * Aggregate cap across ALL repos (Fizzy #1997).
+ *
+ * `MAX_PRS_PER_REPO` bounds one repo; nothing bounded the total, so a project
+ * with many connected repos multiplied straight through — 20 repos near the
+ * per-repo ceiling is ~1.6 MB of the `sections` aggregate that travels to the
+ * summarizer in ONE gRPC message capped at 4 MiB. Mirrors the aggregate cap
+ * the releases collector already applies (MAX_DEPLOYMENT_ITEMS).
+ */
+const MAX_PRS_TOTAL = 300;
 const GITHUB_API_URL = "https://api.github.com";
 const HEARTBEAT_INTERVAL_MS = 10_000;
 const REQUEST_TIMEOUT_MS = 10_000; // per HTTP request — a stalled repo fails fast
@@ -510,15 +520,33 @@ export async function collectGitHubPullRequestsActivity(
 		});
 	}
 
+	// Keep the most recent activity across every repo, then bound the total.
+	// Sorting first means the cap drops the oldest PRs rather than whichever
+	// repo happened to be processed last.
+	items.sort((a, b) => {
+		const at =
+			a.occurredAt instanceof Date
+				? a.occurredAt.getTime()
+				: new Date(a.occurredAt).getTime();
+		const bt =
+			b.occurredAt instanceof Date
+				? b.occurredAt.getTime()
+				: new Date(b.occurredAt).getTime();
+		return bt - at;
+	});
+	const cappedItems =
+		items.length > MAX_PRS_TOTAL ? items.slice(0, MAX_PRS_TOTAL) : items;
+
 	logger.info("[DailyBrief/collectGitHubPullRequests] Complete", {
 		projectId,
 		repoCount: targets.length,
-		itemCount: items.length,
+		itemCount: cappedItems.length,
+		droppedOverAggregateCap: items.length - cappedItems.length,
 		failureCount: failures.length,
 		stalePrCount: stalePrActions.length,
 	});
 
-	return { items, failures, stalePrActions };
+	return { items: cappedItems, failures, stalePrActions };
 }
 
 // =============================================================================

@@ -49,6 +49,20 @@ export interface CollectStoryActivityOutput {
  * Tenant belt-and-suspenders: project.organizationId is compared even though
  * activities run via the worker's superuser connection that bypasses RLS.
  */
+/**
+ * Row caps for the three queries below.
+ *
+ * These bound what crosses the Temporal activity boundary (Fizzy #1997): the
+ * whole `sections` aggregate travels to the summarizer inside ONE gRPC
+ * message, and the frontend rejects anything past 4 MiB. Every query is
+ * ordered newest-first, so a cap keeps the most recent activity — which is
+ * what a daily brief is for — and drops the long tail a reader would not
+ * scroll to anyway. The prompt itself only ever shows 25 per source.
+ */
+const MAX_STORY_ROWS = 200;
+const MAX_VERSION_ROWS = 200;
+const MAX_TASK_ROWS = 200;
+
 export async function collectStoryActivity(
 	input: CollectStoryActivityInput,
 ): Promise<CollectStoryActivityOutput> {
@@ -93,6 +107,7 @@ export async function collectStoryActivity(
 			{ lastEditedAt: { sort: "desc", nulls: "last" } },
 			{ createdAt: "desc" },
 		],
+		take: MAX_STORY_ROWS,
 	});
 
 	const stories: StoryChangeItem[] = [];
@@ -150,6 +165,7 @@ export async function collectStoryActivity(
 			},
 		},
 		orderBy: { createdAt: "desc" },
+		take: MAX_VERSION_ROWS,
 	});
 
 	for (const v of versionRows) {
@@ -202,6 +218,7 @@ export async function collectStoryActivity(
 			},
 		},
 		orderBy: { updatedAt: "desc" },
+		take: MAX_TASK_ROWS,
 	});
 
 	const tasks: TaskChangeItem[] = [];
