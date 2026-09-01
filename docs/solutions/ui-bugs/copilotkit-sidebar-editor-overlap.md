@@ -85,6 +85,4 @@ Safe because `overflow-x: auto` forces `overflow-y: auto`, which would clip *in-
 - **Also check the masthead**, not just the body: a host can reserve space correctly yet still overflow its breadcrumb/action-bar/toolbar rows under the panel (see "Second cause" above). Any non-shrinking `flex` masthead row inside the reserved column needs `min-w-0 overflow-x-auto`. Verify with a clipping-aware scan (walk the editor chrome, compute each element's right edge after clipping ancestors, assert none exceed the panel's left edge) at 1024 + 767px — a naive `getBoundingClientRect().right` check gives false positives once `overflow-x-auto` clips the content.
 
 ## Related Issues
-- Breakpoint fix plan: `docs/plans/2026-07-23-001-fix-ai-sidebar-panel-overlap-plan.md`
-- Document editor masthead plan: `docs/plans/2026-07-28-001-fix-document-editor-masthead-overflow-plan.md`
 - Fizzy #2025

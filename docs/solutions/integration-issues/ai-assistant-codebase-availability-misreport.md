@@ -84,6 +84,4 @@ The original message lied because it answered a 2-dimensional question (is a rep
 
 ## Related Issues
 
-- Requirements: `docs/brainstorms/2026-06-26-ai-assistant-codebase-availability-messaging-requirements.md`
-- Plan: `docs/plans/2026-06-26-001-fix-ai-assistant-codebase-availability-messaging-plan.md`
 - Prior art the notification extends: `docs/superpowers/plans/2026-06-19-repo-connection-self-healing-status-part1.md`

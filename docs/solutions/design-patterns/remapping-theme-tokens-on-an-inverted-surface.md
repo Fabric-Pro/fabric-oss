@@ -115,5 +115,4 @@ Deliberately **not** done: stripping the ~60 now-redundant `max-w-xs` declaratio
 - Primitive: `apps/web/modules/ui/components/tooltip.tsx`
 - Guard: `apps/web/modules/ui/components/__tests__/tooltip-surface.test.tsx`
 - Standard: `fabric/standards/frontend/tooltips.md`
-- Plan and measurements: `docs/plans/2026-07-20-001-fix-global-tooltip-styling-plan.md`
 - Token definitions: `tooling/tailwind/theme.css`
