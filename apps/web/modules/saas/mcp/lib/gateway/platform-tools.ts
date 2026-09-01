@@ -3365,7 +3365,6 @@ async function handleCreateDocument(
 				| undefined) ?? "DRAFT",
 		lastEditedBy: session.userId,
 		userId: session.userId,
-		organizationId: session.organizationId ?? undefined,
 	});
 
 	return jsonResult({

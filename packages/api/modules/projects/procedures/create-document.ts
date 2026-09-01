@@ -559,7 +559,6 @@ async function createPlainDocument({
 		status: input.status,
 		lastEditedBy: user.id,
 		userId: user.id,
-		organizationId: organizationId ?? undefined,
 	});
 
 	if (!document) {

@@ -71,6 +71,22 @@ export function sanitizeContent(content: string): string {
  *
  * TENANT ISOLATION: userId and organizationId are required for proper tenant filtering.
  * These columns enable RLS policies and application-level filtering.
+ *
+ * `organizationId` is read from the PARENT PROJECT rather than taken from the
+ * caller, and the caller's value is ignored. A document's tenant is not a fact
+ * about whoever happened to create it — it is a denormalized copy of its
+ * project's, and a copy that can disagree with its source eventually will.
+ *
+ * It did. A session whose organization failed to resolve passed `undefined`
+ * here, the row was written with a null organization inside an org-owned
+ * project, and `loadDocumentForAutoRefresh` — which compares the two tenants
+ * exclusively — then answered NOT_FOUND for a document the list had just
+ * rendered. The member saw a control that could not work (Fizzy #2210).
+ *
+ * The same reasoning as `setDocumentAutoRefreshProcedure`, which already copies
+ * its tenant columns from the parent document for this reason. Deriving from
+ * the project grants no access: every caller has already cleared a project
+ * permission check, and this only labels the row to match what it belongs to.
  */
 export async function createDocument(data: {
 	projectId: string;
@@ -80,12 +96,26 @@ export async function createDocument(data: {
 	status?: ProjectDocumentStatus;
 	lastEditedBy?: string;
 	userId: string;
-	organizationId?: string;
 }) {
 	const sanitizedContent = sanitizeContent(data.content);
 
 	// Use transaction to ensure document + initial version are created atomically
 	const document = await db.$transaction(async (tx) => {
+		// Read inside the transaction so the tenant cannot be read from a
+		// project that is deleted before the document lands.
+		const project = await tx.project.findUnique({
+			where: { id: data.projectId },
+			select: { organizationId: true },
+		});
+
+		if (!project) {
+			throw new Error(
+				`Cannot create a document in project ${data.projectId}: project not found`,
+			);
+		}
+
+		const organizationId = project.organizationId;
+
 		const doc = await tx.projectDocument.create({
 			data: {
 				projectId: data.projectId,
@@ -97,7 +127,7 @@ export async function createDocument(data: {
 				wordCount: countDocumentWords(sanitizedContent),
 				lastEditedBy: data.lastEditedBy,
 				userId: data.userId,
-				organizationId: data.organizationId,
+				organizationId,
 			},
 		});
 
@@ -111,7 +141,9 @@ export async function createDocument(data: {
 					changeDescription: "Initial version",
 					changedBy: data.lastEditedBy,
 					userId: data.userId,
-					organizationId: data.organizationId,
+					// Same source as the document itself — a version snapshot
+					// must never be filed under a tenant its document is not in.
+					organizationId,
 				},
 			});
 		}
@@ -120,6 +152,74 @@ export async function createDocument(data: {
 	});
 
 	return document;
+}
+
+/**
+ * Adopt a tenant-less document into its project's organization.
+ *
+ * A document's organization is a denormalized copy of its project's. Before
+ * `createDocument` derived that copy from the project, a session whose own
+ * organization failed to resolve wrote `null` here, inside an org-owned
+ * project. The document then existed for every project-scoped query and did
+ * NOT exist for `loadDocumentForAutoRefresh`, which compares the two tenants
+ * exclusively — so the UI rendered an auto-refresh control that answered
+ * NOT_FOUND when a member touched it (Fizzy #2210).
+ *
+ * Healing on access rather than by migration is deliberate: the rows are found
+ * exactly when someone needs them to work, and the repair ships with the code
+ * instead of requiring a production database session.
+ *
+ * ── The two directions are NOT symmetric ─────────────────────────────────────
+ * This only ever fills a null. It never rewrites an organization the document
+ * already has, and never clears one. A heal that could overwrite a populated
+ * tenant would be a cross-tenant write dressed up as a repair — the precise
+ * thing the gate above it exists to prevent. The `organizationId: null` in the
+ * WHERE clause makes that structural rather than a matter of reading the code
+ * correctly: it is a compare-and-set, so a row that gained an organization
+ * between the read and the write is left alone.
+ *
+ * Grants no access. The caller has already cleared its own permission check;
+ * this only labels the row to match the project it has always belonged to.
+ *
+ * @returns the organization the document now carries, or null if it has none
+ * to inherit (a genuinely personal-tenant project).
+ */
+export async function adoptDocumentIntoProjectTenant(document: {
+	id: string;
+	projectId: string;
+	organizationId: string | null;
+}): Promise<string | null> {
+	if (document.organizationId !== null) {
+		return document.organizationId;
+	}
+
+	const project = await db.project.findUnique({
+		where: { id: document.projectId },
+		select: { organizationId: true },
+	});
+
+	// Nothing to inherit. Leave the row as it is rather than inventing a tenant.
+	if (!project?.organizationId) {
+		return null;
+	}
+
+	const organizationId = project.organizationId;
+
+	await db.$transaction([
+		db.projectDocument.updateMany({
+			where: { id: document.id, organizationId: null },
+			data: { organizationId },
+		}),
+		// The version snapshots were written by the same call with the same
+		// null. Leaving them behind would file a document's own history under a
+		// different tenant from the document.
+		db.documentVersion.updateMany({
+			where: { documentId: document.id, organizationId: null },
+			data: { organizationId },
+		}),
+	]);
+
+	return organizationId;
 }
 
 /**
