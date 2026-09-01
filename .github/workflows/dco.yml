@@ -8,9 +8,10 @@ name: DCO
 #
 # Exemptions (disclosed in CONTRIBUTING.md):
 # - An explicit allowlist of trusted automation PRs: the changesets
-#   release PR (github-actions[bot] on this repo's changeset-release/master
-#   branch), dependabot, and the corporate OSS Relay App on relay/** branches.
-#   The Relay App login is a repository variable and an unset value exempts
+#   release PR (opened by the release App on this repo's
+#   changeset-release/master branch), dependabot, and the corporate OSS
+#   Relay App on relay/** branches. Both App logins are repository variables
+#   (RELEASE_APP_LOGIN, OSS_RELAY_APP_LOGIN) and an unset value exempts
 #   nobody. Enforced at the PR-creator level — an
 #   authenticated identity — NOT via per-commit author metadata, which
 #   is forgeable (anyone can set a bot's email as the commit author).
@@ -49,7 +50,8 @@ jobs:
       ${{
         !(
           (
-            github.event.pull_request.user.login == 'github-actions[bot]' &&
+            vars.RELEASE_APP_LOGIN != '' &&
+            github.event.pull_request.user.login == vars.RELEASE_APP_LOGIN &&
             github.event.pull_request.head.repo.full_name == github.repository &&
             github.event.pull_request.head.ref == 'changeset-release/master'
           ) ||
