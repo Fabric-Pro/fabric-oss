@@ -20,6 +20,16 @@
  * Term list format — one per line, `#` comments ignored:
  *   AcmeCorp        block (exit 1)
  *   ~Ambiguous      warn only (exit 0) — for terms that collide with real words
+ *   +Zephyr Corp    block, but only where the parts are actually separated
+ *
+ * `+` exists because the tolerant match below joins a term's parts with
+ * `[\s\-_]*`, so a two-word term also matches the run-together spelling of its
+ * parts. When that spelling is an ordinary word, the entry blocks every innocent
+ * use of it — in whole blobs of any file a branch touches, for content nobody on
+ * that branch wrote. `~` would silence that, at the cost of never blocking the
+ * real name either. `+` keeps the block for every separated spelling and drops
+ * only the concatenation. Prefixes may be combined in either order: `~+Term`,
+ * `+~Term`.
  *
  * Usage:
  *   check.mjs --files <path>...        scan file contents
@@ -57,9 +67,23 @@ function loadRules() {
 		.map((entry) => entry.trim())
 		.filter(Boolean)
 		.map((entry, i) => {
-			const warnOnly = entry.startsWith("~");
-			const term = warnOnly ? entry.slice(1).trim() : entry;
-			return { index: i + 1, regex: buildRegex(term), warnOnly };
+			// Strip prefixes in a loop rather than testing a fixed order, so
+			// `~+Term` and `+~Term` mean the same thing. A list is hand-edited
+			// by whoever owns it; the order they happen to type is not a
+			// distinction worth having.
+			let term = entry;
+			let warnOnly = false;
+			let separatedOnly = false;
+			while (term.startsWith("~") || term.startsWith("+")) {
+				warnOnly = warnOnly || term.startsWith("~");
+				separatedOnly = separatedOnly || term.startsWith("+");
+				term = term.slice(1).trim();
+			}
+			return {
+				index: i + 1,
+				regex: buildRegex(term, separatedOnly),
+				warnOnly,
+			};
 		});
 }
 
@@ -73,16 +97,28 @@ function loadRules() {
  * Splitting on case boundaries matters because a branch name is where a term
  * most often turns up in a different shape than it was written in the list.
  *
+ * `separatedOnly` requires at least one separator between the parts instead of
+ * allowing none. Use it for a term whose concatenation is a real word; without
+ * it that term blocks every ordinary use of the word.
+ *
+ * Note "parts" includes camel-case boundaries, not only explicit separators, so
+ * `+ZephyrCorp` stops matching the run-together `ZephyrCorp` as well. Write the
+ * term the way it should still be caught — `+Zephyr Corp` if the spaced form is
+ * the real name — and leave `+` off any term whose concatenation is not a word
+ * in its own right. A single-part term has no join to constrain and is
+ * unaffected.
+ *
  * @param {string} term
+ * @param {boolean} [separatedOnly]
  * @returns {RegExp}
  */
-function buildRegex(term) {
+function buildRegex(term, separatedOnly = false) {
 	const escaped = term
 		.split(/[\s\-_]+/)
 		.flatMap((chunk) => chunk.split(/(?<=[a-z0-9])(?=[A-Z])/))
 		.filter(Boolean)
 		.map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
-		.join("[\\s\\-_]*");
+		.join(separatedOnly ? "[\\s\\-_]+" : "[\\s\\-_]*");
 	return new RegExp(`(?<![A-Za-z0-9])${escaped}(?![A-Za-z0-9])`, "i");
 }
 

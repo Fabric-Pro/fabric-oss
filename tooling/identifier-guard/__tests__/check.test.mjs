@@ -73,6 +73,108 @@ describe("identifier-guard — does not fire on unrelated text", () => {
 	}
 });
 
+describe("identifier-guard — separated-only entries", () => {
+	// Synthetic, like every term in this file — a real name must never appear
+	// here, which is the whole point of the thing under test. The property being
+	// pinned is structural: a two-word entry must stop matching the run-together
+	// spelling of its parts, which is what collides with an ordinary word when
+	// the parts happen to spell one.
+	const SEPARATED = ["+Zephyr Corp"].join("\n");
+
+	const realShapes = [
+		"contract with Zephyr Corp here",
+		"contract with zephyr-corp here",
+		"contract with zephyr_corp here",
+		"contract with ZEPHYR CORP here",
+	];
+	for (const content of realShapes) {
+		it(`still blocks the separated spelling: ${content}`, () => {
+			assert.equal(
+				run(["--files", fixture(content)], {
+					FABRIC_BLOCKED_TERMS: SEPARATED,
+				}).code,
+				1,
+			);
+		});
+	}
+
+	const runTogether = [
+		'NEXT_PUBLIC_PRICE_ID_ZEPHYRCORP=""',
+		"the zephyrcorp value is about two hours",
+		"a per-document zephyrcorp, not a history",
+	];
+	for (const content of runTogether) {
+		it(`allows the concatenation: ${content}`, () => {
+			assert.equal(
+				run(["--files", fixture(content)], {
+					FABRIC_BLOCKED_TERMS: SEPARATED,
+				}).code,
+				0,
+			);
+		});
+	}
+
+	// The bug this fixes: the same content under a plain entry. Where the
+	// run-together spelling is an ordinary word, this is the false positive.
+	it("blocks the concatenation without the marker — the behaviour being fixed", () => {
+		assert.equal(
+			run(
+				["--files", fixture("the zephyrcorp value is about two hours")],
+				{
+					FABRIC_BLOCKED_TERMS: "Zephyr Corp",
+				},
+			).code,
+			1,
+		);
+	});
+
+	it("accepts the two prefixes in either order", () => {
+		for (const list of ["~+Zephyr Corp", "+~Zephyr Corp"]) {
+			const res = run(["--files", fixture("Zephyr Corp here")], {
+				FABRIC_BLOCKED_TERMS: list,
+			});
+			// warn-only, so it reports without blocking...
+			assert.equal(res.code, 0, list);
+			assert.match(res.stderr, /rule #1/, list);
+		}
+		// ...and separated-only still holds under the same combination.
+		assert.equal(
+			run(["--files", fixture("the zephyrcorp value")], {
+				FABRIC_BLOCKED_TERMS: "~+Zephyr Corp",
+			}).stderr,
+			"",
+		);
+	});
+
+	it("has no effect on a single-part term, which has no join to constrain", () => {
+		assert.equal(
+			run(["--files", fixture("uses Zephyr here")], {
+				FABRIC_BLOCKED_TERMS: "+Zephyr",
+			}).code,
+			1,
+		);
+	});
+
+	// Parts come from camel-case boundaries too, not only explicit separators,
+	// so `+` on a camelCase term also stops matching the run-together form.
+	// Surprising enough to pin: a list author reaching for `+` should write the
+	// spelling they still want caught.
+	it("treats a camel-case boundary as a join, so + drops the run-together form", () => {
+		assert.equal(
+			run(["--files", fixture("uses ZephyrCorp here")], {
+				FABRIC_BLOCKED_TERMS: "+ZephyrCorp",
+			}).code,
+			0,
+		);
+		assert.equal(
+			run(["--files", fixture("uses zephyr-corp here")], {
+				FABRIC_BLOCKED_TERMS: "+ZephyrCorp",
+			}).code,
+			1,
+		);
+	});
+});
+
 describe("identifier-guard — warn-only entries", () => {
 	it("reports but does not block a ~term", () => {
 		const { code, stderr } = run(["--files", fixture("the ambig case")]);
