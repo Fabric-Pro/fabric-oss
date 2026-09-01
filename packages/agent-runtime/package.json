@@ -27,7 +27,7 @@
 	},
 	"dependencies": {
 		"hono": "^4.12.34",
-		"uuid": "^14.0.1"
+		"uuid": "^14.0.2"
 	},
 	"devDependencies": {
 		"@repo/tsconfig": "workspace:*",
