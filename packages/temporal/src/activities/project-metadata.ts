@@ -114,6 +114,11 @@ export async function retrieveProjectContextsActivity(
 			// long, multi-chunk document (e.g. a meeting transcript) can't crowd
 			// out other relevant documents (e.g. a PRD) the user is asking about.
 			diversify: true,
+			// This is the agent's in-line hot path — it answers a waiting user,
+			// so it takes hybrid-RRF order rather than paying for a rerank call.
+			// Previously implicit in the diversify branch; now stated, because a
+			// background caller wants the opposite.
+			skipRerank: true,
 		});
 
 		if (!results || results.length === 0) {

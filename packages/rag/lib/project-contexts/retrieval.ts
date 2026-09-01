@@ -69,6 +69,18 @@ export interface ProjectContextRetrievalOptions {
 	 */
 	diversify?: boolean;
 	/**
+	 * Skip reranking even when the project enables it. Only meaningful on the
+	 * `diversify` path.
+	 *
+	 * Diversification and reranking are independent — one restores
+	 * cross-document variety, the other orders what survives — and a caller that
+	 * cares about relevance wants both. The skip exists for latency: an agent
+	 * answering a user in-line cannot afford an extra rerank model call. A
+	 * background analysis can, and should not silently lose reranking just
+	 * because it asked for diversity.
+	 */
+	skipRerank?: boolean;
+	/**
 	 * Maximum distinct documents to return when `diversify` is `true`. Ignored
 	 * otherwise. Defaults to {@link DEFAULT_DIVERSE_MAX_CONTEXTS}.
 	 */
@@ -313,22 +325,17 @@ export async function retrieveProjectContexts(
 			projectId,
 		);
 
-		// Diversified retrieval returns the top distinct documents directly — they
-		// are already in hybrid-RRF relevance order, and the candidate over-fetch
-		// + dedup above is what restored cross-document diversity. Reranking is
-		// intentionally skipped on this path to keep the agent's hot path fast and
-		// predictable (no extra rerank model call).
-		if (diversify) {
-			const diversified = enrichedContexts.slice(0, maxContexts);
-			logger.info(
-				`[Retrieval] Returning ${diversified.length} distinct contexts (diversified from ${enrichedContexts.length}) for project ${projectId}`,
-			);
-			return applySummary(diversified);
-		}
-
-		// Apply reranking if enabled in RAG settings
-		if (ragSettings.enableReranking && enrichedContexts.length > 1) {
-			// Use rerankTopK from settings (final count after reranking)
+		/**
+		 * Rerank when the project asks for it, falling back to the input order
+		 * if the reranker is unavailable — a failed rerank must never cost the
+		 * caller its results. Shared by both exit paths so they cannot drift.
+		 */
+		const maybeRerank = async (
+			candidates: RetrievedContext[],
+		): Promise<RetrievedContext[]> => {
+			if (!ragSettings.enableReranking || candidates.length <= 1) {
+				return candidates;
+			}
 			// Fall back to 10 if not set (e.g., older settings without this field)
 			const rerankTopK = (ragSettings as any).rerankTopK ?? 10;
 			const rerankerProvider = (ragSettings as any).rerankerProvider as
@@ -336,14 +343,14 @@ export async function retrieveProjectContexts(
 				| undefined;
 
 			logger.info(
-				`[Retrieval] Reranking ${enrichedContexts.length} contexts → top ${rerankTopK} with ${rerankerProvider || "cross-encoder"}`,
+				`[Retrieval] Reranking ${candidates.length} contexts → top ${rerankTopK} with ${rerankerProvider || "cross-encoder"}`,
 			);
 
 			try {
 				const { contexts: rerankedContexts, stats } =
 					await rerankContexts({
 						query,
-						contexts: enrichedContexts,
+						contexts: candidates,
 						topK: rerankTopK,
 						provider: rerankerProvider,
 					});
@@ -352,20 +359,40 @@ export async function retrieveProjectContexts(
 					`[Retrieval] Reranking complete: ${stats.inputCount} → ${stats.outputCount} in ${stats.latencyMs}ms (provider: ${stats.provider})`,
 				);
 
-				return applySummary(rerankedContexts);
+				return rerankedContexts;
 			} catch (error) {
 				logger.warn(
 					`[Retrieval] Reranking failed, returning original results: ${error}`,
 				);
-				// Fall through to return original contexts
+				return candidates;
 			}
+		};
+
+		// Diversified retrieval returns the top distinct documents — the candidate
+		// over-fetch + dedup above is what restored cross-document diversity, and
+		// they arrive in hybrid-RRF relevance order. Callers that cannot afford an
+		// extra rerank model call (an agent answering in-line) pass `skipRerank`
+		// and take that order as-is; everyone else reranks the diversified set
+		// below, because diversity and relevance ordering are separate concerns.
+		if (diversify) {
+			const diversified = enrichedContexts.slice(0, maxContexts);
+			logger.info(
+				`[Retrieval] Returning ${diversified.length} distinct contexts (diversified from ${enrichedContexts.length}) for project ${projectId}`,
+			);
+			return applySummary(
+				options.skipRerank
+					? diversified
+					: await maybeRerank(diversified),
+			);
 		}
 
+		const finalContexts = await maybeRerank(enrichedContexts);
+
 		logger.info(
-			`[Retrieval] Returning ${enrichedContexts.length} contexts for project ${projectId}`,
+			`[Retrieval] Returning ${finalContexts.length} contexts for project ${projectId}`,
 		);
 
-		return applySummary(enrichedContexts);
+		return applySummary(finalContexts);
 	} catch (error) {
 		logger.error(`[Retrieval] Failed to retrieve contexts: ${error}`);
 		throw new Error(

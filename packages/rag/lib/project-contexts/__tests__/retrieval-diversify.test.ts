@@ -128,13 +128,87 @@ describe("retrieveProjectContexts — diversify", () => {
 		expect(res.map((c) => c.id)).toEqual(["ctx-transcript", "ctx-prd"]);
 	});
 
-	it("does not invoke reranking on the diversify path (keeps the agent path fast)", async () => {
+	// The skip used to be implicit in the diversify branch. It is now an
+	// explicit caller opt-out (`skipRerank`), because diversity and relevance
+	// ordering are independent and a background caller wants both — so the
+	// latency exemption has to be asked for rather than inherited.
+	it("skips reranking on the diversify path when the caller opts out (keeps the agent path fast)", async () => {
 		await retrieveProjectContexts({
 			...baseOptions,
 			topK: 5,
 			diversify: true,
+			skipRerank: true,
 		});
 		expect(rerankContexts).not.toHaveBeenCalled();
+	});
+
+	it("reranks the diversified set when the caller does NOT opt out", async () => {
+		vi.mocked(getProjectRagSettings).mockResolvedValue({
+			topK: 50,
+			similarityThreshold: 0.3,
+			enableReranking: true,
+			rerankTopK: 10,
+		} as never);
+		const reranked = [
+			{
+				id: "ctx-prd",
+				type: "FILE",
+				content: "content-of-ctx-prd",
+				score: 0.95,
+			},
+		];
+		vi.mocked(rerankContexts).mockResolvedValue({
+			contexts: reranked,
+			stats: {
+				inputCount: 2,
+				outputCount: 1,
+				latencyMs: 1,
+				provider: "cross-encoder",
+			},
+		} as never);
+
+		const res = await retrieveProjectContexts({
+			...baseOptions,
+			topK: 5,
+			diversify: true,
+		});
+
+		// Diversification still ran first: the reranker was handed the deduped
+		// distinct documents, not the raw chunk-monopolised candidate pool.
+		expect(rerankContexts).toHaveBeenCalledTimes(1);
+		const handed = vi.mocked(rerankContexts).mock.calls[0][0] as {
+			contexts: Array<{ id: string }>;
+		};
+		expect(handed.contexts.map((c) => c.id)).toEqual([
+			"ctx-transcript",
+			"ctx-prd",
+			"ctx-notes",
+		]);
+		expect(res.map((c) => c.id)).toEqual(["ctx-prd"]);
+	});
+
+	it("keeps the diversified results when reranking fails", async () => {
+		vi.mocked(getProjectRagSettings).mockResolvedValue({
+			topK: 50,
+			similarityThreshold: 0.3,
+			enableReranking: true,
+			rerankTopK: 10,
+		} as never);
+		vi.mocked(rerankContexts).mockRejectedValue(
+			new Error("reranker unavailable"),
+		);
+
+		const res = await retrieveProjectContexts({
+			...baseOptions,
+			topK: 5,
+			diversify: true,
+		});
+
+		expect(res.map((c) => c.id)).toEqual([
+			"ctx-transcript",
+			"ctx-prd",
+			"ctx-notes",
+		]);
 	});
 
 	it("regression: the default (non-diversify) path still reranks when the project enables it", async () => {
