@@ -27,7 +27,7 @@
 		"@repo/observability": "workspace:*",
 		"hono": "^4.12.34",
 		"undici": "^8.5.0",
-		"uuid": "^14.0.1"
+		"uuid": "^14.0.2"
 	},
 	"devDependencies": {
 		"@langchain/langgraph-cli": "1.1.13",

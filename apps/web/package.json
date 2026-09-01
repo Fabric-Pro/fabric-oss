@@ -169,7 +169,7 @@
 		"unist-util-visit": "^5.1.0",
 		"use-stick-to-bottom": "^1.1.1",
 		"usehooks-ts": "^3.1.1",
-		"uuid": "^14.0.1",
+		"uuid": "^14.0.2",
 		"y-partykit": "^0.0.33",
 		"yjs": "^13.6.28",
 		"zod": "^4.1.12"
@@ -200,7 +200,7 @@
 		"@vitest/coverage-v8": "^4.1.0",
 		"dotenv": "^17.2.3",
 		"jsdom": "^26.0.2",
-		"postcss": "^8.5.23",
+		"postcss": "^8.5.26",
 		"tailwindcss": "4.1.16",
 		"vitest": "^4.1.8",
 		"vitest-axe": "^0.1.0"

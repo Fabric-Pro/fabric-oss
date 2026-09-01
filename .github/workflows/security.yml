@@ -47,11 +47,11 @@ jobs:
       # the Pulls API (the `pull-requests: read` permission above) and does
       # not need the repo on disk. Checkout is only required for the
       # git-based detection used on workflow_dispatch and schedule runs.
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         if: github.event_name != 'pull_request'
         with:
           fetch-depth: 1
-      - uses: dorny/paths-filter@7b450fff21473bca461d4b92ce414b9d0420d706 # v4
+      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4
         id: filter
         with:
           filters: |
@@ -90,7 +90,7 @@ jobs:
       # intentionally after validating a newer release locally.
       image: semgrep/semgrep:1.161.0
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           # Full history so --baseline-commit can resolve `origin/$BASE_REF`
           # (the PR's target branch — `master`)
@@ -156,7 +156,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 1
 
@@ -217,7 +217,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           # Full history so the action can scan the full PR diff range, not
           # just the merge commit.
@@ -280,7 +280,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           # Full history so the scan covers every commit reachable from the
           # PR head, not just the merge commit.
@@ -329,7 +329,7 @@ jobs:
     timeout-minutes: 5
     if: github.event_name == 'pull_request'
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           # Need the base branch to diff against for the changed-file list.
           fetch-depth: 0
