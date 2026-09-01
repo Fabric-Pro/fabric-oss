@@ -33,9 +33,25 @@ jobs:
       # from trusted master. Do not add checkout, PR artifacts, caches, or
       # execution of any path from the proposed change. The credential can
       # dispatch one private-repo workflow but carries no product-repo write.
+      #
+      # The dispatch credential is a GitHub App installation token, minted
+      # per run, so the woken run is attributed to the App rather than to
+      # whichever person's PAT happens to be stored — a PAT ties every
+      # failure notification and the notifier's continued operation to one
+      # individual's account.
+      - name: Mint the dispatch App token
+        id: dispatch-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+        with:
+          app-id: ${{ secrets.OSS_RELAY_DISPATCH_APP_ID }}
+          private-key: ${{ secrets.OSS_RELAY_DISPATCH_APP_PRIVATE_KEY }}
+          owner: Fabric-Pro
+          repositories: fabric
+          permission-actions: write
+
       - name: Dispatch identifiers-only wake-up
         env:
-          DISPATCH_TOKEN: ${{ secrets.OSS_RELAY_DISPATCH_TOKEN }}
+          DISPATCH_TOKEN: ${{ steps.dispatch-token.outputs.token }}
           STAGING_TOKEN: ${{ github.token }}
           EVENT_NAME: ${{ github.event_name }}
           COMMENT_BODY: ${{ github.event.comment.body }}
@@ -86,7 +102,7 @@ jobs:
               || { echo "PR head moved during notifier execution; a synchronize event will retry"; exit 0; }
           fi
           [[ -n "$DISPATCH_TOKEN" ]] \
-            || { echo "::error::OSS_RELAY_DISPATCH_TOKEN is not configured"; exit 1; }
+            || { echo "::error::the dispatch App token was not minted"; exit 1; }
           jq -n --arg pr "$STAGING_PR" --arg head "$EXPECTED_HEAD_SHA" \
             '{ref:"ops",inputs:{mode:"relay",staging_pr:$pr,expected_head_sha:$head}}' \
             >"$RUNNER_TEMP/dispatch.json"
