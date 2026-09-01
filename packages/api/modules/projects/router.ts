@@ -426,8 +426,10 @@ import { listDecisionLogProcedure } from "./procedures/stories/maturation/list-d
 import { listQaAnalysisVersionsProcedure } from "./procedures/stories/maturation/list-qa-analysis-versions";
 import { recordChangeNoteProcedure } from "./procedures/stories/maturation/record-change-note";
 import { restoreQuestionProcedure } from "./procedures/stories/maturation/restore-question";
+import { searchAssignableMembersProcedure } from "./procedures/stories/maturation/search-assignable-members";
 import { setApprovalModeProcedure } from "./procedures/stories/maturation/set-approval-mode";
 import { setAutoProposeAnswersProcedure } from "./procedures/stories/maturation/set-auto-propose-answers";
+import { setQuestionAssigneesProcedure } from "./procedures/stories/maturation/set-question-assignees";
 import { setWorkingNotesProcedure } from "./procedures/stories/maturation/set-working-notes";
 import { summarizeChangesProcedure } from "./procedures/stories/maturation/summarize-changes";
 import { mergeDuplicateProcedure } from "./procedures/stories/merge-duplicate";
@@ -1500,6 +1502,8 @@ export const projectsRouter = {
 			recordChangeNote: recordChangeNoteProcedure,
 			acceptCleanSpecPatch: acceptCleanSpecPatchProcedure,
 			restoreQuestion: restoreQuestionProcedure,
+			searchAssignableMembers: searchAssignableMembersProcedure,
+			setQuestionAssignees: setQuestionAssigneesProcedure,
 			setAutoProposeAnswers: setAutoProposeAnswersProcedure,
 			generateQaAnalysis: generateQaAnalysisProcedure,
 			qaAnalysisVersions: listQaAnalysisVersionsProcedure,

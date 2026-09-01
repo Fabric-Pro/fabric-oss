@@ -742,6 +742,12 @@ export const DecisionLogEntryScalarFieldEnumSchema = z.enum(['id', 'userStoryId'
 
 export type DecisionLogEntryScalarFieldEnum = z.infer<typeof DecisionLogEntryScalarFieldEnumSchema>;
 
+// File: DecisionLogEntryAssigneeScalarFieldEnum.schema.ts
+
+export const DecisionLogEntryAssigneeScalarFieldEnumSchema = z.enum(['id', 'decisionLogEntryId', 'assigneeUserId', 'assignedByUserId', 'userId', 'organizationId', 'createdAt'])
+
+export type DecisionLogEntryAssigneeScalarFieldEnum = z.infer<typeof DecisionLogEntryAssigneeScalarFieldEnumSchema>;
+
 // File: MaturationApprovalPreferenceScalarFieldEnum.schema.ts
 
 export const MaturationApprovalPreferenceScalarFieldEnumSchema = z.enum(['id', 'userId', 'organizationId', 'cleanSpecMode', 'decisionLogMode', 'summaryQuestionsMode', 'autoAcceptAll', 'createdAt', 'updatedAt'])
@@ -3132,7 +3138,7 @@ export type ChatArtifactType = z.infer<typeof ChatArtifactTypeSchema>;
 
 // File: NotificationType.schema.ts
 
-export const NotificationTypeSchema = z.enum(['STORY_MENTION', 'STORY_COMMENT_REPLY', 'STORY_ASSIGNED', 'TASK_MENTION', 'TASK_COMMENT_REPLY', 'COMMENT_MENTION', 'DOCUMENT_MENTION', 'AGENT_REPLY_READY', 'STORY_STATUS_CHANGED', 'PM_SYNC_CONFLICT', 'AI_USAGE_LIMIT_WARNING', 'AI_USAGE_LIMIT_REACHED', 'INTEGRATION_INCIDENT', 'SYSTEM_INCIDENT', 'CONTEXT_INDEXING_STARTED', 'CONTEXT_INDEXING_COMPLETED', 'REPO_INTEGRATION_TOKEN_EXPIRED', 'SECURITY_SCAN_COMPLETED', 'PROJECT_SERVICE_ALERT_DIGEST', 'REPORT_COMPLETED', 'REPORT_FAILED', 'SECURITY_TICKETS_GENERATED', 'DOCUMENT_UPDATED', 'FEATURE_UPDATED', 'STORY_SHARED', 'NEWSLETTER_APPROVAL_PENDING', 'TEST_CASES_DRAFTED', 'STATUS_ANNOUNCEMENT', 'PUBLISHING_TOPICS_READY', 'PROMPT_DEFAULT_UPDATED', 'PROMPT_NOMINATION_PENDING', 'PM_ATTACHMENT_SYNC_FAILED', 'DECISION_OWNER_ASSIGNED', 'DECISION_OWNER_UPDATED'])
+export const NotificationTypeSchema = z.enum(['STORY_MENTION', 'STORY_COMMENT_REPLY', 'STORY_ASSIGNED', 'TASK_MENTION', 'TASK_COMMENT_REPLY', 'COMMENT_MENTION', 'DOCUMENT_MENTION', 'AGENT_REPLY_READY', 'STORY_STATUS_CHANGED', 'PM_SYNC_CONFLICT', 'AI_USAGE_LIMIT_WARNING', 'AI_USAGE_LIMIT_REACHED', 'INTEGRATION_INCIDENT', 'SYSTEM_INCIDENT', 'CONTEXT_INDEXING_STARTED', 'CONTEXT_INDEXING_COMPLETED', 'REPO_INTEGRATION_TOKEN_EXPIRED', 'SECURITY_SCAN_COMPLETED', 'PROJECT_SERVICE_ALERT_DIGEST', 'REPORT_COMPLETED', 'REPORT_FAILED', 'SECURITY_TICKETS_GENERATED', 'DOCUMENT_UPDATED', 'FEATURE_UPDATED', 'STORY_SHARED', 'NEWSLETTER_APPROVAL_PENDING', 'TEST_CASES_DRAFTED', 'STATUS_ANNOUNCEMENT', 'PUBLISHING_TOPICS_READY', 'PROMPT_DEFAULT_UPDATED', 'PROMPT_NOMINATION_PENDING', 'PM_ATTACHMENT_SYNC_FAILED', 'DECISION_OWNER_ASSIGNED', 'DECISION_OWNER_UPDATED', 'QUESTION_ASSIGNED', 'QUESTION_MENTIONED', 'QUESTION_ANSWERED'])
 
 export type NotificationType = z.infer<typeof NotificationTypeSchema>;
 
@@ -6090,6 +6096,21 @@ export const DecisionLogEntrySchema = z.object({
 });
 
 export type DecisionLogEntryType = z.infer<typeof DecisionLogEntrySchema>;
+
+
+// File: DecisionLogEntryAssignee.schema.ts
+
+export const DecisionLogEntryAssigneeSchema = z.object({
+  id: z.string(),
+  decisionLogEntryId: z.string(),
+  assigneeUserId: z.string(),
+  assignedByUserId: z.string(),
+  userId: z.string(),
+  organizationId: z.string().nullish(),
+  createdAt: z.date(),
+});
+
+export type DecisionLogEntryAssigneeType = z.infer<typeof DecisionLogEntryAssigneeSchema>;
 
 
 // File: MaturationApprovalPreference.schema.ts

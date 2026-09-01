@@ -99,3 +99,17 @@ export type QaAnalysisView = {
 	/** How many test cases this review read. Test-first projects only. */
 	reviewedAgainstCaseCount?: number;
 };
+
+/**
+ * Somebody a question is waiting on (Fizzy #1751).
+ *
+ * `assignedByUserId` is who asked — the person told when the question is
+ * answered. After a re-assignment that is not necessarily whoever asked first,
+ * which is the point: hand a question on and you are the one who hears back.
+ */
+export type QuestionAssignee = {
+	id: string;
+	name: string | null;
+	avatarUrl: string | null;
+	assignedByUserId: string;
+};

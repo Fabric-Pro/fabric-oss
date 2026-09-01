@@ -230,6 +230,9 @@ model User {
   // Feature Maturation V2 relations
   decisionLogEntries            DecisionLogEntry[]
   maturationApprovalPreferences MaturationApprovalPreference[]
+  decisionQuestionAssignments   DecisionLogEntryAssignee[]     @relation("DecisionQuestionAssignee")
+  decisionQuestionsAssignedOut  DecisionLogEntryAssignee[]     @relation("DecisionQuestionAssignedBy")
+  decisionQuestionAssigneeRows  DecisionLogEntryAssignee[]
 
   // Roadmap Priority — band changes this user made by hand or triggered.
   storyPriorityChanges StoryPriorityChange[]
@@ -660,6 +663,7 @@ model Organization {
   userStoryComments                       UserStoryComment[]
   storyTaskComments                       StoryTaskComment[]
   decisionLogEntries                      DecisionLogEntry[]
+  decisionLogEntryAssignees               DecisionLogEntryAssignee[]
   maturationApprovalPreferences           MaturationApprovalPreference[]
   architectureDecisions                   ArchitectureDecision[]
   architectureDecisionComments            ArchitectureDecisionComment[]
@@ -6421,6 +6425,7 @@ model DecisionLogEntry {
   // amendment that replaced it is still the live answer and must survive.
   supersedes   DecisionLogEntry?  @relation("DecisionLogEntrySupersedes", fields: [supersedesId], references: [id], onDelete: SetNull)
   supersededBy DecisionLogEntry?  @relation("DecisionLogEntrySupersedes")
+  assignees    DecisionLogEntryAssignee[]
   user         User               @relation(fields: [userId], references: [id], onDelete: Cascade)
   organization Organization?      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
 
@@ -6436,6 +6441,48 @@ model DecisionLogEntry {
   @@index([organizationId])
   @@index([userId])
   @@map("decision_log_entry")
+}
+
+/// Routes an open maturation question to the people who can answer it (Fizzy #1751).
+///
+/// TENANCY — read this before adding a column. `userId` is the TENANT key and mirrors the
+/// parent entry's owner; it is NOT the assignee. The `user_owned` RLS policy matches
+/// `"userId" = current_user_id()` on its personal branch, so naming the assignee `userId`
+/// would scope a row to the person being asked rather than to the tenant that owns the
+/// question. The assignee is `assigneeUserId`.
+///
+/// `assignedByUserId` is load-bearing, not bookkeeping: after a re-assignment there are two
+/// candidate "askers", and it is what makes "notify the original assigner when the question
+/// is answered" (AC-14) well defined.
+///
+/// There is deliberately no `status` here. A question's `Assigned` state is DERIVED
+/// (`assignees.length > 0 && status === OPEN`) rather than stored, because a new
+/// `DecisionStatus` member would fall out of the `status: "OPEN"` predicates in
+/// `getOpenQuestionCounts` and `markQuestionsPossiblyResolved` and silently break both.
+model DecisionLogEntryAssignee {
+  id                 String   @id @default(cuid())
+  decisionLogEntryId String
+  /// The project member being asked.
+  assigneeUserId     String
+  /// Who created this assignment — the recipient of the "answered" notification.
+  assignedByUserId   String
+  /// Tenant key (mirrors the parent entry), NOT the assignee. See the note above.
+  userId             String
+  organizationId     String?
+  createdAt          DateTime @default(now())
+
+  entry        DecisionLogEntry @relation(fields: [decisionLogEntryId], references: [id], onDelete: Cascade)
+  assignee     User             @relation("DecisionQuestionAssignee", fields: [assigneeUserId], references: [id], onDelete: Cascade)
+  assignedBy   User             @relation("DecisionQuestionAssignedBy", fields: [assignedByUserId], references: [id], onDelete: Cascade)
+  user         User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organization Organization?    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([decisionLogEntryId, assigneeUserId])
+  @@index([decisionLogEntryId])
+  @@index([assigneeUserId])
+  @@index([organizationId])
+  @@index([userId])
+  @@map("decision_log_entry_assignee")
 }
 
 /// Per-user default approval mode per tab plus the "Auto-accept all" preset
@@ -15531,6 +15578,15 @@ enum NotificationType {
   DECISION_OWNER_ASSIGNED
   /// A decision this user owns was edited (content, status, duration, priority).
   DECISION_OWNER_UPDATED
+
+  /// Maturation question routing (Fizzy #1751). The split between the first two
+  /// is the whole point and the copy must preserve it: ASSIGNED is a request —
+  /// someone is waiting on you — while MENTIONED is purely informational, raised
+  /// when an answer merely *cited* you. Categories ASSIGNMENT and MENTION.
+  QUESTION_ASSIGNED
+  QUESTION_MENTIONED
+  /// Sent back to whoever created the assignment once the question is answered.
+  QUESTION_ANSWERED
 }
 
 model Notification {

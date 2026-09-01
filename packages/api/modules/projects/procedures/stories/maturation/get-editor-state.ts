@@ -9,6 +9,7 @@ import {
 	hasProjectAccess,
 	isAiAnswerRecommendationsEnabled,
 	listDecisionLogThreads,
+	listQuestionAssignees,
 	type MaturationTab,
 	type MaturationTenantFilter,
 	parseQaAnalysis,
@@ -77,6 +78,33 @@ export const getEditorStateProcedure = tenantProtectedProcedure
 				acceptanceCriteria: z.string().nullable(),
 			}),
 			openQuestions: z.array(DecisionLogThreadSchema),
+			/**
+			 * Who each open question is waiting on (Fizzy #1751), keyed by thread
+			 * root id.
+			 *
+			 * A sibling map rather than a field on the thread: `DecisionLogThread`
+			 * also serves the full decision log and the soft-closed list, neither of
+			 * which has assignees, and widening the shared shape would put an
+			 * always-empty array on both.
+			 *
+			 * `Assigned` is DERIVED from this — a question is assigned when it has
+			 * entries here and is still open. There is deliberately no stored
+			 * status: an `ASSIGNED` member of the status enum would fall out of the
+			 * `status: "OPEN"` predicates behind the roadmap's open-question count
+			 * and the reconciliation sweep, and silently break both.
+			 */
+			questionAssignees: z.record(
+				z.string(),
+				z.array(
+					z.object({
+						id: z.string(),
+						name: z.string().nullable(),
+						avatarUrl: z.string().nullable(),
+						/** Who asked them — the recipient of the answered notice. */
+						assignedByUserId: z.string(),
+					}),
+				),
+			),
 			// Soft-closed questions the latest refresh no longer lists (#5) — shown
 			// collapsed, restorable; never deleted.
 			possiblyResolvedQuestions: z.array(DecisionLogThreadSchema),
@@ -214,6 +242,42 @@ export const getEditorStateProcedure = tenantProtectedProcedure
 			(thread) => thread.root.status === "OPEN",
 		);
 
+		// Who each open question is waiting on (#1751). Loaded only for the OPEN
+		// roots — a resolved or soft-closed question is nobody's outstanding work,
+		// so its assignees are not display state.
+		const assigneesByEntry = await listQuestionAssignees({
+			tenantFilter,
+			entryIds: openQuestions.map((thread) => thread.root.id),
+		});
+		const assigneeUserIds = [
+			...new Set(
+				[...assigneesByEntry.values()].flatMap((rows) =>
+					rows.map((row) => row.assigneeUserId),
+				),
+			),
+		];
+		const assigneeUsers = assigneeUserIds.length
+			? await db.user.findMany({
+					where: { id: { in: assigneeUserIds } },
+					select: { id: true, name: true, image: true },
+				})
+			: [];
+		const assigneeById = new Map(assigneeUsers.map((u) => [u.id, u]));
+		const questionAssignees = Object.fromEntries(
+			[...assigneesByEntry.entries()].map(([entryId, rows]) => [
+				entryId,
+				rows.map((row) => {
+					const user = assigneeById.get(row.assigneeUserId);
+					return {
+						id: row.assigneeUserId,
+						name: user?.name ?? null,
+						avatarUrl: user?.image ?? null,
+						assignedByUserId: row.assignedByUserId,
+					};
+				}),
+			]),
+		);
+
 		// Questions a Clean Spec refresh soft-closed (#5) — the spec no longer lists
 		// them. Surfaced as a collapsed, restorable group rather than deleted.
 		const possiblyResolvedQuestions = threads.filter(
@@ -259,6 +323,7 @@ export const getEditorStateProcedure = tenantProtectedProcedure
 			openQuestions: openQuestions.map((t) =>
 				serializeDecisionLogThread(t, serializeOpts),
 			),
+			questionAssignees,
 			possiblyResolvedQuestions: possiblyResolvedQuestions.map((t) =>
 				serializeDecisionLogThread(t, serializeOpts),
 			),

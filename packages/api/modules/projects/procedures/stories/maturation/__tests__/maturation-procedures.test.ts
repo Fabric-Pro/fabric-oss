@@ -50,6 +50,9 @@ const { handlers, mocks } = vi.hoisted(() => {
 		setQaAnalysis: vi.fn(),
 		generateQaAnalysisLib: vi.fn(),
 		assertTestCasesFeatureEnabled: vi.fn(),
+		// Question assignment (#1751)
+		listQuestionAssignees: vi.fn().mockResolvedValue(new Map()),
+		userFindMany: vi.fn().mockResolvedValue([]),
 	};
 	return { handlers, mocks };
 });
@@ -125,7 +128,13 @@ vi.mock("@repo/database", () => ({
 	HARD_DEFAULT_APPROVAL_MODE,
 	// QA tab: editor-state depth read + analysis parse/persist +
 	// sibling-feature titles for the cross-feature analysis context (AC-3).
+	// Question assignment (#1751). Editor state loads assignees for the open
+	// roots, so an absent branch here throws before any assertion is reached.
+	// Empty by default: these tests predate assignment and assert on the
+	// question list itself, which assignment does not change.
+	listQuestionAssignees: mocks.listQuestionAssignees,
 	db: {
+		user: { findMany: mocks.userFindMany },
 		project: { findUnique: mocks.projectFindUnique },
 		userStory: {
 			findMany: mocks.userStoryFindMany,
@@ -274,6 +283,10 @@ beforeEach(() => {
 	mocks.hasProjectAccess.mockResolvedValue(true);
 	mocks.getFeatureMaturationState.mockResolvedValue(feature);
 	mocks.listDecisionLogThreads.mockResolvedValue([]);
+	// Question assignment (#1751) — set here rather than at declaration because
+	// the loop above mockReset()s every implementation.
+	mocks.listQuestionAssignees.mockResolvedValue(new Map());
+	mocks.userFindMany.mockResolvedValue([]);
 	mocks.getApprovalPreference.mockResolvedValue(null);
 	mocks.isAiAnswerRecommendationsEnabled.mockResolvedValue(true);
 	mocks.setFeatureApprovalOverride.mockResolvedValue(1);

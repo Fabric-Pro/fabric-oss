@@ -33,6 +33,7 @@ import { HydratedMessagesProvider } from "../copilot/HydratedMessagesContext";
 import type { AiReadinessData } from "./maturation/ReadinessBar";
 import "@copilotkit/react-ui/styles.css";
 import "../DocumentEditor.css"; // Import diff highlighting styles
+import { isQuestionAssignmentEnabledClient } from "@repo/utils/feature-flag";
 import { isAiContextEligibleAttachmentMime } from "@repo/utils/story-attachment-ai-context";
 import {
 	useFabricAgentLauncher,
@@ -991,6 +992,42 @@ export function StoryWorkspace({
 		maturationRestoreMutation.mutate({
 			...maturationEditorInput,
 			questionRootId,
+		});
+
+	// Question assignment (#1751). The search backs both the assignee picker and
+	// the `@` popover — the same candidate set, so one query serves both.
+	const isQuestionAssignmentEnabled = isQuestionAssignmentEnabledClient();
+	const [assigneeQuery, setAssigneeQuery] = useState("");
+	const assignableMembersQuery = useQuery({
+		...orpc.projects.stories.maturation.searchAssignableMembers.queryOptions(
+			{ input: { ...maturationEditorInput, query: assigneeQuery } },
+		),
+		enabled: isQuestionAssignmentEnabled,
+	});
+	const maturationAssignMutation = useMutation(
+		orpc.projects.stories.maturation.setQuestionAssignees.mutationOptions({
+			onSuccess: () => {
+				invalidateMaturationEditor();
+			},
+			onError: () => toast.error(tMaturationToasts("assignError")),
+		}),
+	);
+	/**
+	 * `note` carries the sentence the asker had typed. It is stored as context on
+	 * the thread, never as an answer — this path must leave the question OPEN, or
+	 * asking somebody would close the very question being asked.
+	 */
+	const onMaturationSetAssignees = (
+		questionRootId: string,
+		assigneeUserIds: string[],
+		note?: string,
+	) =>
+		maturationAssignMutation.mutate({
+			...maturationEditorInput,
+			questionRootId,
+			assigneeUserIds,
+			note,
+			link: typeof window === "undefined" ? "" : window.location.pathname,
 		});
 
 	// Staleness of the Clean Spec since its last AI/context update (#2/#3, #R4/R5/R7).
@@ -7685,6 +7722,36 @@ export function StoryWorkspace({
 											onSaveNotes={onMaturationSaveNotes}
 											onRestoreQuestion={
 												onMaturationRestoreQuestion
+											}
+											// Undefined while the flag is off,
+											// which is what hides every
+											// assignment control without a
+											// second check per control.
+											questionAssignees={
+												isQuestionAssignmentEnabled
+													? (maturationData?.questionAssignees ??
+														{})
+													: undefined
+											}
+											assignableMembers={
+												assignableMembersQuery.data
+													?.members ?? []
+											}
+											onAssigneeQueryChange={
+												setAssigneeQuery
+											}
+											onSetAssignees={
+												isQuestionAssignmentEnabled
+													? onMaturationSetAssignees
+													: undefined
+											}
+											settingAssigneesId={
+												maturationAssignMutation.isPending
+													? (maturationAssignMutation
+															.variables
+															?.questionRootId ??
+														null)
+													: null
 											}
 											answeringId={
 												maturationAnswerMutation.isPending

@@ -277,6 +277,49 @@ type AssignmentArgs = {
 	previousAssigneeId?: string | null;
 };
 
+/**
+ * Shared by the three maturation question-routing fan-outs (Fizzy #1751).
+ *
+ * One shape for all three because they differ only in intent — who is told, and
+ * in what words — not in what they are about. The intent lives in the fan-out
+ * that is called, never in a flag on this type: a `kind` field here would invite
+ * a single call site to pick the wrong one at runtime.
+ */
+type QuestionRoutingArgs = {
+	recipientUserIds: string[];
+	/**
+	 * The question thread root — and, unchanged, the scroll anchor.
+	 *
+	 * Deliberately NOT a separate `questionAnchorId`. Document mentions need a
+	 * minted anchor because a mention has no id of its own, and they carry the
+	 * `m_`/`#m-` prefix dance as a result. A question already has a stable id, so
+	 * a second field would only be a chance for the writer and the reader to
+	 * disagree by a prefix.
+	 */
+	questionRootId: string;
+	questionSummary: string;
+	storyId: string;
+	storyTitle: string;
+	projectId: string;
+	organizationId: string | null;
+	actorUserId: string;
+	actorName: string;
+	/** Feature link WITHOUT a fragment; the anchor is appended here. */
+	link: string;
+};
+
+/**
+ * Append the question anchor so the notification lands ON the question rather
+ * than the top of the feature (AC-12).
+ *
+ * The fragment is `#q-<rootId>` and the panel renders the SAME raw root id in
+ * `data-question-anchor`, so writer and reader cannot drift apart. Root ids are
+ * cuids (`[0-9a-z]+`), which the reader's guard pattern accepts unchanged.
+ */
+function buildQuestionLink(args: QuestionRoutingArgs): string {
+	return `${args.link}#q-${args.questionRootId}`;
+}
+
 type DocumentMentionRecipient = { userId: string; anchorId: string };
 
 type DocumentMentionArgs = {
@@ -987,6 +1030,145 @@ export const fanOut = {
 		} catch (error) {
 			logFailure("fanOut.assigned", error);
 		}
+	},
+
+	/**
+	 * Somebody is being asked to answer an open maturation question
+	 * (Fizzy #1751, AC-9).
+	 *
+	 * This is a REQUEST — the recipient is now the person the spec is waiting
+	 * on. Kept deliberately distinct from `questionMentioned` below, which looks
+	 * superficially identical but asks for nothing: a recipient who cannot tell
+	 * the two apart has to open both, which defeats the routing this feature
+	 * exists to provide. The difference lives in the type, the category and the
+	 * verb, so keep all three aligned if you touch either.
+	 *
+	 * The link carries the question anchor, so the notification lands on the
+	 * question rather than the top of the feature (AC-12).
+	 */
+	async questionAssigned(args: QuestionRoutingArgs): Promise<void> {
+		await Promise.all(
+			args.recipientUserIds
+				.filter((userId) => userId !== args.actorUserId)
+				.map(async (userId) => {
+					try {
+						await createNotification({
+							userId,
+							organizationId: args.organizationId,
+							type: NotificationType.QUESTION_ASSIGNED,
+							category: NotificationCategory.ASSIGNMENT,
+							title: `${args.actorName} is asking you about ${args.storyTitle}`,
+							snippet: args.questionSummary,
+							link: buildQuestionLink(args),
+							source: {
+								projectId: args.projectId,
+								storyId: args.storyId,
+								actorUserId: args.actorUserId,
+							},
+							payload: {
+								storyId: args.storyId,
+								projectId: args.projectId,
+								questionRootId: args.questionRootId,
+								assignedByUserId: args.actorUserId,
+							},
+							dedupeKey: `questionassigned:${args.questionRootId}:${userId}`,
+							dedupePolicy: "unreadOnly",
+						});
+					} catch (error) {
+						logFailure("fanOut.questionAssigned", error);
+					}
+				}),
+		);
+	},
+
+	/**
+	 * Somebody was NAMED in an answer rather than asked for one (AC-10).
+	 *
+	 * Purely informational: the author cited them ("as per @andrew, it should be
+	 * X") and the question is already resolved. Nothing is expected back, and the
+	 * copy has to say so — this is the half of the mention split that must not
+	 * read like a task.
+	 */
+	async questionMentioned(args: QuestionRoutingArgs): Promise<void> {
+		await Promise.all(
+			args.recipientUserIds
+				.filter((userId) => userId !== args.actorUserId)
+				.map(async (userId) => {
+					try {
+						await createNotification({
+							userId,
+							organizationId: args.organizationId,
+							type: NotificationType.QUESTION_MENTIONED,
+							category: NotificationCategory.MENTION,
+							title: `${args.actorName} mentioned you in an answer on ${args.storyTitle}`,
+							snippet: args.questionSummary,
+							link: buildQuestionLink(args),
+							source: {
+								projectId: args.projectId,
+								storyId: args.storyId,
+								actorUserId: args.actorUserId,
+							},
+							payload: {
+								storyId: args.storyId,
+								projectId: args.projectId,
+								questionRootId: args.questionRootId,
+								mentionedByUserId: args.actorUserId,
+							},
+							dedupeKey: `questionmentioned:${args.questionRootId}:${userId}`,
+							dedupePolicy: "unreadOnly",
+						});
+					} catch (error) {
+						logFailure("fanOut.questionMentioned", error);
+					}
+				}),
+		);
+	},
+
+	/**
+	 * A question somebody asked has been answered (AC-14).
+	 *
+	 * Recipients are the `assignedByUserId` values on the question's assignment
+	 * rows — the people who actually did the asking. After a re-assignment that
+	 * is not necessarily whoever asked first, which is the point: if you hand a
+	 * question to someone else, you are the one who hears back.
+	 *
+	 * Fired for ANY answer, including one submitted by a non-assignee, because
+	 * assignment routes accountability without restricting who may answer
+	 * (AC-7) — and the asker still wants to know the question is settled.
+	 */
+	async questionAnswered(args: QuestionRoutingArgs): Promise<void> {
+		await Promise.all(
+			args.recipientUserIds
+				.filter((userId) => userId !== args.actorUserId)
+				.map(async (userId) => {
+					try {
+						await createNotification({
+							userId,
+							organizationId: args.organizationId,
+							type: NotificationType.QUESTION_ANSWERED,
+							category: NotificationCategory.REPLY,
+							title: `${args.actorName} answered your question on ${args.storyTitle}`,
+							snippet: args.questionSummary,
+							link: buildQuestionLink(args),
+							source: {
+								projectId: args.projectId,
+								storyId: args.storyId,
+								actorUserId: args.actorUserId,
+							},
+							payload: {
+								storyId: args.storyId,
+								projectId: args.projectId,
+								questionRootId: args.questionRootId,
+								answeredByUserId: args.actorUserId,
+							},
+							dedupeKey: `questionanswered:${args.questionRootId}:${userId}`,
+							dedupePolicy: "unreadOnly",
+						});
+					} catch (error) {
+						logFailure("fanOut.questionAnswered", error);
+					}
+				}),
+		);
 	},
 
 	/**
