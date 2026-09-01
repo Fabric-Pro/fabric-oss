@@ -33,7 +33,14 @@ export interface ContextEmbeddingWorkflowInput {
 	projectId: string;
 	userId: string;
 	organizationId?: string;
-	content: string;
+	/**
+	 * The body to embed. Optional: omit it and the activity reads the content
+	 * back from `contextId`. Callers with a body small enough to travel cheaply
+	 * still pass it inline; a meeting transcript no longer does, because since
+	 * Fizzy #2316 it is stored whole and an arbitrarily long one would push the
+	 * workflow input past Temporal's payload limit.
+	 */
+	content?: string;
 	type: string;
 	metadata?: {
 		filename?: string;

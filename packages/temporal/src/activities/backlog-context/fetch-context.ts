@@ -314,6 +314,8 @@ export async function fetchMeetingTranscript(
 				projectId,
 				joinUrl,
 				startTime,
+				userId,
+				organizationId,
 			});
 			if (cached) {
 				logger.info("[BacklogContext] Meeting transcript cache hit", {
@@ -994,8 +996,10 @@ async function readCachedTranscript(args: {
 	projectId: string;
 	joinUrl: string;
 	startTime?: string;
+	userId: string;
+	organizationId?: string;
 }): Promise<FetchMeetingTranscriptOutput | null> {
-	const { projectId, joinUrl, startTime } = args;
+	const { projectId, joinUrl, startTime, userId, organizationId } = args;
 
 	try {
 		const linkedMeeting = await db.projectLinkedMeeting.findUnique({
@@ -1062,6 +1066,39 @@ async function readCachedTranscript(args: {
 
 		if (!context?.content) {
 			return null;
+		}
+
+		// The sync used to cap what it stored, so this path could assume the
+		// cached body was already small. It no longer does — a transcript is
+		// stored whole however long it is (Fizzy #2316) — and this is now the
+		// only thing standing between a multi-hundred-kilobyte transcript and
+		// `applyTokenBudget`, which allocates greedily and ranks
+		// `meetingTranscripts` above `notionContent` and `ragContext`. Without
+		// this, one long meeting silently consumes the whole budget and drops
+		// the project's other context, which is a worse analysis than the
+		// summary. Same guard the imported path below applies, for the same
+		// reason.
+		if (context.content.length > TRANSCRIPT_SUMMARIZATION_THRESHOLD) {
+			logger.info(
+				"[BacklogContext] Cached transcript exceeds threshold, summarizing",
+				{
+					projectId,
+					originalLength: context.content.length,
+					threshold: TRANSCRIPT_SUMMARIZATION_THRESHOLD,
+				},
+			);
+			return {
+				success: true,
+				transcript: await summarizeTranscript(
+					context.content,
+					chosen.meetingSubject ?? "Meeting",
+					userId,
+					organizationId,
+					projectId,
+				),
+				meetingSubject: chosen.meetingSubject ?? undefined,
+				wasSummarized: true,
+			};
 		}
 
 		return {

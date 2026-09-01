@@ -2,6 +2,7 @@
 
 import { orpcClient } from "@shared/lib/orpc-client";
 import { useQuery } from "@tanstack/react-query";
+import { Alert, AlertDescription, AlertTitle } from "@ui/components/alert";
 import {
 	Sheet,
 	SheetContent,
@@ -11,6 +12,7 @@ import {
 } from "@ui/components/sheet";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@ui/components/tabs";
 import { cn } from "@ui/lib";
+import { InfoIcon } from "lucide-react";
 import { usePathname } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
@@ -135,26 +137,52 @@ export function TranscriptPane({
 		enabled: hasTranscript,
 	});
 
+	// Meetings ingested before transcripts were kept in full hold an AI summary
+	// where the transcript should be, and the original is not recoverable. Say
+	// so rather than letting the tab present a summary as the record.
+	const verbatimUnavailable = data?.transcript.wasSummarized === true;
+
 	return (
-		<TranscriptBody
-			content={data?.transcript.content ?? ""}
-			isLoading={isLoading}
-			isError={isError}
-			hasTranscript={hasTranscript}
-			jumpTarget={jumpTarget}
-			filename={transcriptFilename(meetingSubject, meetingDate)}
-			expandTitle={
-				meetingSubject ? `Transcript — ${meetingSubject}` : "Transcript"
-			}
-			resetKey={transcriptRef}
-			fullTranscriptHref={
-				transcriptContextId
-					? `${pathname}/contexts/${transcriptContextId}?back=meeting-digest${
-							jumpTarget ? `#t-${jumpTarget.line}` : ""
-						}`
-					: null
-			}
-		/>
+		<>
+			{verbatimUnavailable ? (
+				<Alert
+					variant="warning"
+					className="mb-3"
+					data-testid="meeting-transcript-summarized-notice"
+				>
+					<InfoIcon aria-hidden="true" />
+					<AlertTitle>
+						Summarized — not the full transcript
+					</AlertTitle>
+					<AlertDescription>
+						This meeting was synced before Fabric kept long
+						transcripts in full, so only an AI summary of it exists.
+						The original wording is not recoverable.
+					</AlertDescription>
+				</Alert>
+			) : null}
+			<TranscriptBody
+				content={data?.transcript.content ?? ""}
+				isLoading={isLoading}
+				isError={isError}
+				hasTranscript={hasTranscript}
+				jumpTarget={jumpTarget}
+				filename={transcriptFilename(meetingSubject, meetingDate)}
+				expandTitle={
+					meetingSubject
+						? `Transcript — ${meetingSubject}`
+						: "Transcript"
+				}
+				resetKey={transcriptRef}
+				fullTranscriptHref={
+					transcriptContextId
+						? `${pathname}/contexts/${transcriptContextId}?back=meeting-digest${
+								jumpTarget ? `#t-${jumpTarget.line}` : ""
+							}`
+						: null
+				}
+			/>
+		</>
 	);
 }
 
