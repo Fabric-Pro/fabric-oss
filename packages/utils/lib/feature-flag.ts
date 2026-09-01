@@ -90,32 +90,6 @@ export function isFunctionTagsEnabled(): boolean {
 }
 
 /**
- * Assigning project members to open maturation questions (Fizzy #1751) —
- * opt-in, default OFF.
- *
- * OFF ⇒ the questions panel renders exactly as before: no picker, no assignee
- * avatars, no status tally, and the answer box is the plain textarea with a
- * single Answer button. Nothing about answering or resolving changes either way,
- * so this is a rollback-safe kill switch rather than a migration gate.
- *
- * Mirrored to the client as `NEXT_PUBLIC_FABRIC_FEATURE_QUESTION_ASSIGNMENT`
- * (below) because the controls render in the browser. Both must be set for the
- * feature to be usable end to end — the server flag alone leaves the UI hidden,
- * and the client flag alone shows controls whose procedures will still work but
- * whose rollout was not intended.
- */
-export function isQuestionAssignmentEnabled(): boolean {
-	return parseOptInFlag(process.env.FABRIC_FEATURE_QUESTION_ASSIGNMENT);
-}
-
-/** Client mirror of {@link isQuestionAssignmentEnabled}. */
-export function isQuestionAssignmentEnabledClient(): boolean {
-	return parseOptInFlag(
-		process.env.NEXT_PUBLIC_FABRIC_FEATURE_QUESTION_ASSIGNMENT,
-	);
-}
-
-/**
  * Project-level Databricks knowledge in "Update using context" retrieval —
  * opt-in, default OFF. Gates the Databricks branch of
  * `retrieveRelevantContextsForSpec` end-to-end: with the flag off, retrieval
