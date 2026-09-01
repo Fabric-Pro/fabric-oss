@@ -913,6 +913,14 @@ export async function retrieveProjectRagContext(
 			userId,
 			organizationId,
 			topK,
+			// Backlog analysis reads a project's whole corpus, where one
+			// multi-chunk document — a meeting transcript above all, now that
+			// they are stored unabridged — can occupy every one of the topK
+			// chunk slots and leave dedup with that single document, hiding the
+			// PRDs and decisions the analysis actually needs. No `skipRerank`:
+			// this runs in a background workflow, so it can afford the rerank
+			// call and wants the relevance ordering.
+			diversify: true,
 		});
 
 		if (contexts.length === 0) {
