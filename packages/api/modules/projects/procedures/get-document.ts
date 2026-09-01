@@ -1,5 +1,9 @@
 import { ORPCError } from "@orpc/client";
-import { getDocumentById, hasProjectAccess } from "@repo/database";
+import {
+	adoptDocumentIntoProjectTenant,
+	getDocumentById,
+	hasProjectAccess,
+} from "@repo/database";
 import { z } from "zod";
 import {
 	Permissions,
@@ -53,5 +57,18 @@ export const getDocumentProcedure = tenantProtectedProcedure
 			});
 		}
 
-		return { document };
+		// Opening a document is where a tenant-less one gets adopted into its
+		// project's organization. Project access is already established above, and
+		// this read is the first thing every surface does with a document — so the
+		// row is repaired at the moment someone needs it to work, rather than
+		// waiting on a migration. See `adoptDocumentIntoProjectTenant`.
+		const organizationIdAfterAdoption =
+			await adoptDocumentIntoProjectTenant(document);
+
+		return {
+			document: {
+				...document,
+				organizationId: organizationIdAfterAdoption,
+			},
+		};
 	});

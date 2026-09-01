@@ -292,7 +292,6 @@ export function registerDocumentRoutes(
 				status: (body.status as DocumentStatus | undefined) ?? "DRAFT",
 				lastEditedBy: ctx.userId,
 				userId: ctx.userId,
-				organizationId: ctx.organizationId ?? undefined,
 			});
 
 			return c.json(ok(mapDetail(doc)), 201);

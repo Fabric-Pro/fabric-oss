@@ -1,5 +1,9 @@
 import { ORPCError } from "@orpc/client";
-import { getDocumentById, hasProjectAccess } from "@repo/database";
+import {
+	adoptDocumentIntoProjectTenant,
+	getDocumentById,
+	hasProjectAccess,
+} from "@repo/database";
 
 type LoadedDocument = NonNullable<Awaited<ReturnType<typeof getDocumentById>>>;
 
@@ -40,16 +44,39 @@ export async function loadDocumentForAutoRefresh(args: {
 	if (!document || document.projectId !== projectId) {
 		throw notFound;
 	}
-	if ((document.organizationId ?? null) !== (organizationId ?? null)) {
+
+	// Resolved early so the orphan branch below can use it. Asking sooner is not
+	// answering sooner: FORBIDDEN is still thrown strictly after the tenant gate,
+	// so an outsider who guessed the id still learns nothing from the ordering.
+	const hasAccess = await hasProjectAccess(projectId, userId, organizationId);
+
+	// A document with a null organization inside an org-owned project cannot
+	// clear the gate below for ANYONE, its own members included — which is how
+	// this arrived: an auto-refresh control that rendered and then reported the
+	// document missing (Fizzy #2210). Adopt it into its project's tenant.
+	//
+	// Gated on project membership so an outsider cannot provoke a write by
+	// guessing an id, and the refusal is NOT_FOUND rather than FORBIDDEN so the
+	// orphan case stays exactly as uninformative as the healthy one.
+	let documentOrganizationId = document.organizationId;
+	if (documentOrganizationId === null) {
+		if (!hasAccess) {
+			throw notFound;
+		}
+		documentOrganizationId = await adoptDocumentIntoProjectTenant(document);
+	}
+
+	if ((documentOrganizationId ?? null) !== (organizationId ?? null)) {
 		throw notFound;
 	}
 
-	const hasAccess = await hasProjectAccess(projectId, userId, organizationId);
 	if (!hasAccess) {
 		throw new ORPCError("FORBIDDEN", {
 			message: "You don't have access to this project",
 		});
 	}
 
-	return document;
+	// The healed value, not the stale one the row was read with — the caller
+	// copies this straight into the settings row's own tenant columns.
+	return { ...document, organizationId: documentOrganizationId };
 }
