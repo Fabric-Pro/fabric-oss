@@ -408,7 +408,11 @@ export async function safeFetchOutbound(
 	assertSafeOutboundUrl(url);
 	const requestInit: RequestInit = {
 		...init,
-		redirect: "error",
+		// Callers default to fail-closed redirects. `manual` is the sole
+		// exception: it exposes the response to a caller that validates its
+		// next browser hop. Automatic redirects stay closed because their next
+		// destination cannot be checked here before a request leaves the process.
+		redirect: init?.redirect === "manual" ? "manual" : "error",
 	};
 	Object.defineProperty(requestInit, "dispatcher", {
 		value: outboundDispatcher,

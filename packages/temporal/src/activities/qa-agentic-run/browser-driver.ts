@@ -126,7 +126,7 @@ export async function openBrowser(
 	// which is correct and still cannot help here: if `newContext` or `newPage`
 	// throws, this function never RETURNS, so `runner` is still null when the
 	// finally runs and the browser that did launch is orphaned — a live Chromium
-	// process, ~100-200 MB, held for the lifetime of the worker.
+	// process held until it can be closed.
 	//
 	// Context or page creation can fail after launch because the browser process
 	// exits, the worker loses resources, or Playwright rejects an option. Temporal
@@ -160,6 +160,12 @@ export async function openBrowser(
 				const method = request.method();
 				const response = await safeFetchOutbound(requestUrl, {
 					method,
+					// Fulfil redirects back to Playwright instead of following them in
+					// the server-side fetch. The browser then issues the next request,
+					// which passes through this same origin guard before any network
+					// access. This preserves browser navigation semantics (including
+					// POST redirect handling) without widening the credential boundary.
+					redirect: "manual",
 					headers: headersForRequest(
 						requestUrl,
 						request.headers(),
