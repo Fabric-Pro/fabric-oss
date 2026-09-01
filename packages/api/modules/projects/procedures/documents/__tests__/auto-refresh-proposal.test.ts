@@ -18,9 +18,16 @@
  *     searches from the pre-refresh body.
  *
  * The three gates (feature flag, tenant-first NOT_FOUND, DOCUMENT_UPDATE) are
- * asserted exactly as in the sibling `set-auto-refresh.test.ts`.
+ * asserted exactly as in the sibling `set-auto-refresh.test.ts` — including the
+ * flag's resolution through the shared registry (override row >
+ * `FABRIC_FEATURE_LIVING_DOCS_REFRESH_ROLLOUT` > registry default), driven here by the
+ * real `resolveFlag` behind the `isFeatureEnabled` mock.
  */
 
+import {
+	type FeatureFlagKey,
+	resolveFlag,
+} from "@repo/utils/feature-flag-registry";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const { mocks, DocumentVersionConflictError } = vi.hoisted(() => {
@@ -47,6 +54,7 @@ const { mocks, DocumentVersionConflictError } = vi.hoisted(() => {
 			clearRefreshProposal: vi.fn(),
 			updateDocument: vi.fn(),
 			applyDocumentUpdateSideEffects: vi.fn(),
+			isFeatureEnabled: vi.fn(),
 		},
 	};
 });
@@ -57,6 +65,7 @@ vi.mock("@repo/database", () => ({
 	getAutoRefreshSettings: mocks.getAutoRefreshSettings,
 	clearRefreshProposal: mocks.clearRefreshProposal,
 	updateDocument: mocks.updateDocument,
+	isFeatureEnabled: mocks.isFeatureEnabled,
 	DocumentVersionConflictError,
 }));
 
@@ -175,10 +184,18 @@ function input(overrides: Record<string, unknown> = {}) {
 	};
 }
 
+/** The admin override row, as `getFlagOverrides` would report it. */
+let flagOverride: boolean | undefined;
+
 beforeEach(() => {
 	for (const m of Object.values(mocks)) {
 		m.mockReset();
 	}
+	flagOverride = undefined;
+	mocks.isFeatureEnabled.mockImplementation(
+		async (key: FeatureFlagKey) =>
+			resolveFlag(key, flagOverride, process.env).enabled,
+	);
 	mocks.hasProjectAccess.mockResolvedValue(true);
 	mocks.getDocumentById.mockResolvedValue(makeDocument());
 	mocks.getAutoRefreshSettings.mockResolvedValue(makeSettings());
@@ -413,8 +430,8 @@ describe("auto-refresh proposals — authorization", () => {
 });
 
 describe("auto-refresh proposals — feature flag", () => {
-	it("throws NOT_FOUND from both procedures when the flag is off, without touching the DB", async () => {
-		vi.stubEnv("FABRIC_FEATURE_LIVING_DOCS_REFRESH", "false");
+	it("throws NOT_FOUND from both procedures when the env var is off, without touching the DB", async () => {
+		vi.stubEnv("FABRIC_FEATURE_LIVING_DOCS_REFRESH_ROLLOUT", "false");
 
 		for (const handler of [applyHandler, discardHandler]) {
 			await expect(
@@ -424,6 +441,30 @@ describe("auto-refresh proposals — feature flag", () => {
 
 		expect(mocks.getDocumentById).not.toHaveBeenCalled();
 		expect(mocks.getAutoRefreshSettings).not.toHaveBeenCalled();
+		expect(mocks.updateDocument).not.toHaveBeenCalled();
+		expect(mocks.clearRefreshProposal).not.toHaveBeenCalled();
+	});
+
+	it("resolves the gate through the shared registry, by key", async () => {
+		await applyHandler({ input: input(), context: ctx() });
+
+		expect(mocks.isFeatureEnabled).toHaveBeenCalledWith(
+			"LIVING_DOCS_REFRESH",
+		);
+	});
+
+	it("lets an admin override of false close both routes even with the env var set", async () => {
+		vi.stubEnv("FABRIC_FEATURE_LIVING_DOCS_REFRESH_ROLLOUT", "true");
+		flagOverride = false;
+
+		for (const handler of [applyHandler, discardHandler]) {
+			await expect(
+				handler({ input: input(), context: ctx() }),
+			).rejects.toMatchObject({ code: "NOT_FOUND" });
+		}
+
+		// A stranded proposal is the intended trade — the row is untouched, so
+		// turning the flag back on restores it exactly (registry note, #2210).
 		expect(mocks.updateDocument).not.toHaveBeenCalled();
 		expect(mocks.clearRefreshProposal).not.toHaveBeenCalled();
 	});

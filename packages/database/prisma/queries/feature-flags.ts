@@ -28,11 +28,20 @@ export function __resetFeatureFlagCacheForTest(): void {
 	cache = null;
 }
 
-export async function getFlagOverrides(): Promise<
-	Map<FeatureFlagKey, boolean>
-> {
+/**
+ * Overrides plus whether the read actually succeeded.
+ *
+ * `degraded` exists because "no override row" and "we could not look" are
+ * different facts that the Map alone cannot distinguish, and for a kill switch
+ * the difference decides whether an unattended write proceeds. Every existing
+ * caller keeps the old lenient behaviour through {@link getFlagOverrides}.
+ */
+export async function getFlagOverridesDetailed(): Promise<{
+	overrides: Map<FeatureFlagKey, boolean>;
+	degraded: boolean;
+}> {
 	if (cache && Date.now() - cache.at < TTL_MS) {
-		return cache.overrides;
+		return { overrides: cache.overrides, degraded: false };
 	}
 
 	let rows: Array<{ key: string; enabled: boolean }>;
@@ -71,7 +80,10 @@ export async function getFlagOverrides(): Promise<
 			},
 			"Feature flag override read failed; falling back to env/registry defaults for all flags",
 		);
-		return new Map<FeatureFlagKey, boolean>();
+		return {
+			overrides: new Map<FeatureFlagKey, boolean>(),
+			degraded: true,
+		};
 	}
 
 	const overrides = new Map<FeatureFlagKey, boolean>();
@@ -85,7 +97,17 @@ export async function getFlagOverrides(): Promise<
 	}
 
 	cache = { at: Date.now(), overrides };
-	return overrides;
+	return { overrides, degraded: false };
+}
+
+/**
+ * The lenient reader every existing caller uses: a failed override read
+ * degrades to env/registry values rather than throwing.
+ */
+export async function getFlagOverrides(): Promise<
+	Map<FeatureFlagKey, boolean>
+> {
+	return (await getFlagOverridesDetailed()).overrides;
 }
 
 export async function getAllFlagsDetailed(): Promise<
@@ -107,6 +129,29 @@ export async function getAllFlags(): Promise<Record<FeatureFlagKey, boolean>> {
 
 export async function isFeatureEnabled(key: FeatureFlagKey): Promise<boolean> {
 	const overrides = await getFlagOverrides();
+	return resolveFlag(key, overrides.get(key), process.env).enabled;
+}
+
+/**
+ * Fail-CLOSED read, for a flag whose job is to stop something.
+ *
+ * {@link isFeatureEnabled} degrades an unreadable override table to the env
+ * value, which is right for a rollout gate — a fault should not blank the
+ * product. It is wrong for a kill switch: the env var for one is typically
+ * `true` in every environment precisely because the switch is the brake, so an
+ * administrator's OFF would evaporate on exactly the kind of database fault
+ * during which someone is most likely to be pulling it.
+ *
+ * Here an unreadable override table resolves to DISABLED. The cost of being
+ * wrong is a sweep that stands down for a tick; the cost the other way is an
+ * unattended rewrite of a customer's document that an operator believed they
+ * had already stopped.
+ */
+export async function isKillSwitchArmed(key: FeatureFlagKey): Promise<boolean> {
+	const { overrides, degraded } = await getFlagOverridesDetailed();
+	if (degraded) {
+		return false;
+	}
 	return resolveFlag(key, overrides.get(key), process.env).enabled;
 }
 

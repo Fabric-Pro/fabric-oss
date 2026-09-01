@@ -53,6 +53,27 @@ export const MAXIMAL_OUTPUT_TOKEN_CEILING = 32_768;
 export const FALLBACK_OUTPUT_TOKEN_CAP = 64_000;
 
 /**
+ * Ceiling for the document-generation FALLBACK path, matched to the ordinary-turn
+ * ceiling the primary generation agent applies to itself
+ * (`NORMAL_OUTPUT_TOKEN_CEILING` in
+ * `agents/langchain/project-document-generator/nodes/chat-node.ts`).
+ *
+ * Why it is not simply {@link MAXIMAL_OUTPUT_TOKEN_CEILING}: the fallback exists
+ * to stand in for the agent when the agent cannot be reached. A stand-in that
+ * asks for LESS output than the thing it replaces converts an outage into a
+ * truncated document — a degraded path may not be smaller than the path it
+ * replaces (Fizzy #2210).
+ *
+ * Why it is duplicated rather than imported: the agent is a separately deployed
+ * LangGraph service, its tree is not a workspace package, and nothing here may
+ * depend on it. `agent-ceiling-drift-guard.test.ts` reads that file and fails
+ * when the two numbers diverge, which buys the anti-drift property without
+ * inventing a package boundary that does not exist. Deliberately NOT the agent's
+ * truncation-recovery ceiling, which is larger and reserved for its retry.
+ */
+export const DOCUMENT_GENERATION_FALLBACK_CEILING = 48_000;
+
+/**
  * Rough chars-per-token used to SIZE the desired budget (scaled mode). An
  * overestimate here is a harmless ceiling — the budget is clamped down to the
  * provider cap and context window afterward — and /3 is inherited from the

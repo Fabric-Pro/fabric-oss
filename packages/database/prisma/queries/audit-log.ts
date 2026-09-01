@@ -73,7 +73,7 @@ export const AUDIT_ACTIONS = [
 	"account.api_key.created",
 	"account.api_key.revoked",
 	"account.api_key.rotated",
-	// project (30)
+	// project (32)
 	"project.ci_run.triggered",
 	// Fabric dispatched a browser-driving test run against one of the project's
 	// environments. One row per attempt, including refusals (cost cap, or a
@@ -141,6 +141,16 @@ export const AUDIT_ACTIONS = [
 	"project.invitation.widget_dismissed",
 	"project.meeting_digest.inclusion_changed",
 	"project.meeting_digest.action_item_toggled",
+	// Document generation fell back because the generation agent could not be
+	// reached. Written whether or not the fallback then succeeded: a generation
+	// that quietly ran on the degraded path is exactly what nobody could see.
+	// The row carries the PRIMARY failure —
+	// the agent call — because the member-visible error on the document carries
+	// only a plain sentence, deliberately: a transport error naming an internal
+	// host and port is not something to render into a project's UI. Without this
+	// row the first failure existed only as a warning log line, which is why
+	// "manual refresh is broken" went two weeks without a cause (Fizzy #2210).
+	"project.document_generation.failed",
 	// story (10)
 	"story.created",
 	"story.updated",

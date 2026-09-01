@@ -47,7 +47,7 @@ export const getDocumentAutoRefreshProcedure = tenantProtectedProcedure
 		}),
 	)
 	.handler(async ({ input, context }) => {
-		assertLivingDocsRefreshEnabled();
+		await assertLivingDocsRefreshEnabled();
 
 		const organizationId = resolveOrganizationId(
 			input.organizationId,

@@ -1474,6 +1474,9 @@
 					"qa_finding": {
 						"dismissed": "Testing finding dismissed",
 						"merged": "Testing findings merged"
+					},
+					"document_generation": {
+						"failed": "Document generation failed"
 					}
 				},
 				"story": {
@@ -3122,7 +3125,7 @@
 					"amendAria": "Amend this answer: {text}",
 					"amendLabel": "Amended answer",
 					"amendSubmit": "Save amendment",
-					"amendSaving": "Saving\u2026",
+					"amendSaving": "Saving…",
 					"amendCancel": "Cancel",
 					"amendedFrom": "Previous answer",
 					"rejectedMarker": "Rejected",

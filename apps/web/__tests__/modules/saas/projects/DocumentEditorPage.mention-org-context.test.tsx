@@ -56,6 +56,17 @@ vi.mock("@saas/shared/contexts/FullscreenContext", () => ({
 	useFullscreen: () => ({ setIsFullscreen: vi.fn() }),
 }));
 
+// The masthead's `DocumentAutoRefreshToggle` reads its feature flag from
+// `FeatureFlagProvider`, and that hook THROWS when the provider is absent —
+// deliberately, so a forgotten provider cannot masquerade as a disabled
+// feature (Fizzy #2210). This suite renders no provider: it only reaches the
+// skeleton path today because both queries are forced into loading, so the
+// masthead never mounts. Stub the hook rather than leave the suite standing on
+// that coincidence.
+vi.mock("@saas/shared/components/FeatureFlagProvider", () => ({
+	useFeatureFlag: () => false,
+}));
+
 vi.mock("@saas/shared/components/copilot/use-copilot-error-handler", () => ({
 	useCopilotErrorHandler: () => vi.fn(),
 }));

@@ -271,6 +271,7 @@ export {
 } from "./lib/usage-logging";
 export type { UsageLoggingContext } from "./lib/usage-logging-middleware";
 export {
+	readTokenCount,
 	wrapEmbeddingModelWithUsageLogging,
 	wrapModelWithUsageLogging,
 } from "./lib/usage-logging-middleware";

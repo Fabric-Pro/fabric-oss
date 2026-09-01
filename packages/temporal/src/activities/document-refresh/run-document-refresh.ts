@@ -6,6 +6,8 @@ import {
 	DocumentVersionConflictError,
 	getAutoRefreshSettings,
 	getDocumentById,
+	isFeatureEnabled,
+	isKillSwitchArmed,
 	markRefreshAttempt,
 	recordRefreshOutcome,
 	storeRefreshProposal,
@@ -13,7 +15,7 @@ import {
 } from "@repo/database";
 import { logger } from "@repo/logs";
 import { AI_REFRESH_AUTHOR_ID } from "@repo/utils/document-version-author";
-import { isLivingDocsRefreshEnabled } from "@repo/utils/feature-flag";
+import { normalizeQuoteArtifacts } from "@repo/utils/quote-artifacts";
 import { ApplicationFailure, heartbeat } from "@temporalio/activity";
 import {
 	ContextUpdateTruncatedError,
@@ -238,8 +240,24 @@ export async function runDocumentRefreshActivity(
 		// this document up to an hour ago; in that window the feature can have been
 		// killed, or the document un-enrolled. Without this, flipping the flag off
 		// still lets every in-flight refresh commit.
-		const settings = await getAutoRefreshSettings(due.documentId);
-		if (!isLivingDocsRefreshEnabled() || !settings?.enabled) {
+		// Both re-reads go through their real source: the registry (override row,
+		// then env var, then default) and the settings row. An admin flipping the
+		// flag off has to be able to stop this write, so an un-awaited Promise
+		// here — always truthy — would defeat the entire switch (Fizzy #2210).
+		// BOTH gates, for the same reason the sweep checks both: the kill switch
+		// alone must never be enough to authorise an unattended write. With the
+		// rollout off the owner cannot see the control or reach the procedures,
+		// so a write here would be one nobody could have stopped.
+		const [rolloutOn, sweepArmed, settings] = await Promise.all([
+			isFeatureEnabled("LIVING_DOCS_REFRESH"),
+			// Fail-closed: an unreadable override table must not resolve an
+			// administrator's OFF back to the env var's true and let this write
+			// through. A sweep that stands down for a tick is recoverable; an
+			// unattended rewrite someone believed they had stopped is not.
+			isKillSwitchArmed("LIVING_DOCS_REFRESH_SWEEP"),
+			getAutoRefreshSettings(due.documentId),
+		]);
+		if (!rolloutOn || !sweepArmed || !settings?.enabled) {
 			logger.info(
 				"[DocumentRefresh] Abandoning: auto-refresh was turned off while this ran",
 				{ documentId: due.documentId },
@@ -247,12 +265,19 @@ export async function runDocumentRefreshActivity(
 			return { status: "SKIPPED_DISABLED" };
 		}
 
+		// Normalized once: the two branches below are mutually exclusive and both
+		// persist the same text, so this names the thing that is about to be
+		// stored rather than repeating the transform at each exit.
+		const contentToPersist = normalizeQuoteArtifacts(
+			result.updatedDocument,
+		);
+
 		// The default. The model's output is stored for a human to accept or reject
 		// — the same contract the interactive button has always had.
 		if (!settings.autoApply) {
 			await storeRefreshProposal(due.documentId, {
 				when: new Date(),
-				content: result.updatedDocument,
+				content: contentToPersist,
 				summary: result.summary,
 				baselineVersion,
 			});
@@ -265,7 +290,7 @@ export async function runDocumentRefreshActivity(
 
 		try {
 			await updateDocument(due.documentId, {
-				content: result.updatedDocument,
+				content: contentToPersist,
 				changeDescription: result.summary,
 				lastEditedBy: AI_REFRESH_AUTHOR_ID,
 				userId: due.userId ?? due.triggeredByUserId,

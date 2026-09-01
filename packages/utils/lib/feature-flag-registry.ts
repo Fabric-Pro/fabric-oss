@@ -131,6 +131,22 @@ export const FEATURE_FLAG_REGISTRY = {
 		default: true,
 		note: "Fizzy #2265. This is a UI switch: off renders the previous flat list exactly, with no redeploy and no migration. The two write procedures are deliberately NOT behind it — gating them here would mean turning this off strands every snoozed topic, because the un-snooze call would be rejected by the same switch that hid the button. Consequences differ by field and both are intended. Read markers are inert when off, since nothing renders them. Snooze is not: the status chips already exclude snoozed topics and the Snoozed chip already exists, both from the earlier slice and both independent of this flag, so a topic snoozed while this was on stays hidden from the status chips afterwards and is found under the Snoozed chip. Nothing becomes unreachable. Separately, the earlier slice's migration is not gated by this flag and does not reverse: previously deferred topics were moved to Suggestion when it shipped, whatever this is set to. Default ON since the whole of 1D was exercised on staging with it enabled — both sections, read state, all three snooze presets with a rationale, and the decline rationale. Nothing sets this flag's env var in any deployed environment, so this default is what governs there; a deploy can still force it off through the env var, and this switch beats both. One consequence of ON rather than OFF: getFlagOverrides swallows a read error from the override table and returns an empty map, so a fault in that table specifically resolves this flag back ON rather than off, and an admin's OFF is not durable against it.",
 	},
+	LIVING_DOCS_REFRESH: {
+		label: "Living Documents auto-refresh (rollout)",
+		description:
+			"Whether members can see and use scheduled auto-refresh on a document — the masthead control and the four enrolment procedures.",
+		envVar: "FABRIC_FEATURE_LIVING_DOCS_REFRESH_ROLLOUT",
+		default: false,
+		note: "Fizzy #2210. This is the ROLLOUT switch, deliberately NOT the same gate as LIVING_DOCS_REFRESH_SWEEP. Before this entry existed the rollout lived in a build-time client variable (NEXT_PUBLIC_FABRIC_FEATURE_LIVING_DOCS_REFRESH) that could never change at runtime, while the API tier read a different variable with a different parser — two readers of one capability that nothing kept in agreement. Note what that did and did not cause: when the reported failure was investigated both variables were set true, so the drift was possible rather than actual, and it does not explain that report. It is fixed because a gate that CAN disagree with itself will, not because it did. One runtime-resolved reader now drives the control and the four procedures together. Off: the control does not render and the procedures reject as NOT_FOUND; enrolment rows and any stored proposal survive untouched, so turning it back on restores the previous state with no migration. The env var is a NEW name on purpose — the old FABRIC_FEATURE_LIVING_DOCS_REFRESH is the sweep kill switch and is true in every environment, so inheriting it here would have silently launched the feature on deploy.",
+	},
+	LIVING_DOCS_REFRESH_SWEEP: {
+		label: "Living Documents auto-refresh (sweep kill switch)",
+		description:
+			"Whether the hourly sweep may run and an in-flight refresh may commit. The brakes, not the accelerator.",
+		envVar: "FABRIC_FEATURE_LIVING_DOCS_REFRESH",
+		default: false,
+		note: "Fizzy #2210. Carries the ORIGINAL env var and the original meaning: TRUE in every environment, prod included, because it is the kill switch rather than the rollout. The sweep re-reads it immediately before it writes, so setting it false stops an unattended AI mid-run without a redeploy (ADR-009 consequence 2). Registered here so that stop is now also reachable from the admin console instead of only a redeploy. Kept separate from LIVING_DOCS_REFRESH so an operator can hold 'not rolled out' and 'brakes armed' at the same time — collapsing them would mean enabling the rollout also arms every enrolled document's sweep in the same action. The registry default is false; deployments that want the brakes armed set the env var, which every current environment already does.",
+	},
 } as const satisfies Record<string, FeatureFlagDefinition>;
 
 export type FeatureFlagKey = keyof typeof FEATURE_FLAG_REGISTRY;

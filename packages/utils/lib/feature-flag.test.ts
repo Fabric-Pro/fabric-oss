@@ -1,9 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import {
-	isFunctionTagsEnabled,
-	isLivingDocsRefreshEnabled,
-	parseOptInFlag,
-} from "./feature-flag";
+import { isFunctionTagsEnabled, parseOptInFlag } from "./feature-flag";
 
 describe("parseOptInFlag", () => {
 	it("defaults to disabled when unset", () => {
@@ -23,33 +19,6 @@ describe("parseOptInFlag", () => {
 			expect(parseOptInFlag(raw)).toBe(false);
 		},
 	);
-});
-
-describe("isLivingDocsRefreshEnabled", () => {
-	const original = process.env.FABRIC_FEATURE_LIVING_DOCS_REFRESH;
-
-	afterEach(() => {
-		if (original === undefined) {
-			delete process.env.FABRIC_FEATURE_LIVING_DOCS_REFRESH;
-		} else {
-			process.env.FABRIC_FEATURE_LIVING_DOCS_REFRESH = original;
-		}
-	});
-
-	it("is off when the env var is unset", () => {
-		delete process.env.FABRIC_FEATURE_LIVING_DOCS_REFRESH;
-		expect(isLivingDocsRefreshEnabled()).toBe(false);
-	});
-
-	it("is off when the env var is explicitly false", () => {
-		process.env.FABRIC_FEATURE_LIVING_DOCS_REFRESH = "false";
-		expect(isLivingDocsRefreshEnabled()).toBe(false);
-	});
-
-	it("is on when the env var is true", () => {
-		process.env.FABRIC_FEATURE_LIVING_DOCS_REFRESH = "true";
-		expect(isLivingDocsRefreshEnabled()).toBe(true);
-	});
 });
 
 describe("isFunctionTagsEnabled", () => {

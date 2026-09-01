@@ -3,10 +3,15 @@
  * and `setDocumentAutoRefreshProcedure`.
  *
  * Three gates guard both handlers:
- *   1. Feature flag — `assertLivingDocsRefreshEnabled()` throws NOT_FOUND when
- *      `FABRIC_FEATURE_LIVING_DOCS_REFRESH` is unset, so the API behaves as if
- *      the routes don't exist. `packages/api/vitest.config.ts` sets it to
- *      "true", so the suite runs enabled and stubs it off where it matters.
+ *   1. Feature flag — `await assertLivingDocsRefreshEnabled()` throws NOT_FOUND
+ *      when the `LIVING_DOCS_REFRESH` registry flag resolves off, so the API
+ *      behaves as if the routes don't exist. The flag resolves override row >
+ *      `FABRIC_FEATURE_LIVING_DOCS_REFRESH_ROLLOUT` > registry default (OFF);
+ *      `packages/api/vitest.config.ts` sets the env var to "true", so the suite
+ *      runs enabled and stubs it off where it matters. The `isFeatureEnabled`
+ *      mock below runs the REAL `resolveFlag`, so both env stubbing and an
+ *      admin override are exercised against the shipped precedence rather than
+ *      a re-implementation of it.
  *   2. Tenant gate — `getDocumentById` is an UNSCOPED findUnique, so the
  *      document's tenant, not `hasProjectAccess`, is the isolation boundary. A
  *      caller from the wrong tenant must get NOT_FOUND (never FORBIDDEN, which
@@ -20,6 +25,10 @@
  * oRPC mocks mirror the sibling `update-with-context-phase2.test.ts`.
  */
 
+import {
+	type FeatureFlagKey,
+	resolveFlag,
+} from "@repo/utils/feature-flag-registry";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const { mocks } = vi.hoisted(() => ({
@@ -28,6 +37,7 @@ const { mocks } = vi.hoisted(() => ({
 		getDocumentById: vi.fn(),
 		getAutoRefreshSettings: vi.fn(),
 		upsertAutoRefreshSettings: vi.fn(),
+		isFeatureEnabled: vi.fn(),
 	},
 }));
 
@@ -36,6 +46,7 @@ vi.mock("@repo/database", () => ({
 	getDocumentById: mocks.getDocumentById,
 	getAutoRefreshSettings: mocks.getAutoRefreshSettings,
 	upsertAutoRefreshSettings: mocks.upsertAutoRefreshSettings,
+	isFeatureEnabled: mocks.isFeatureEnabled,
 	DEFAULT_DOCUMENT_REFRESH_CADENCE: "BIWEEKLY",
 }));
 
@@ -149,10 +160,22 @@ function getInput(overrides: Record<string, unknown> = {}) {
 	};
 }
 
+/**
+ * The admin override row, as `getFlagOverrides` would report it. `undefined` is
+ * "no row" — which is NOT the same as `false`, and the difference is the whole
+ * point of the registry: an explicit `false` beats a truthy env var.
+ */
+let flagOverride: boolean | undefined;
+
 beforeEach(() => {
 	for (const m of Object.values(mocks)) {
 		m.mockReset();
 	}
+	flagOverride = undefined;
+	mocks.isFeatureEnabled.mockImplementation(
+		async (key: FeatureFlagKey) =>
+			resolveFlag(key, flagOverride, process.env).enabled,
+	);
 	mocks.hasProjectAccess.mockResolvedValue(true);
 	mocks.getDocumentById.mockResolvedValue(makeDocument());
 	mocks.getAutoRefreshSettings.mockResolvedValue(null);
@@ -410,8 +433,8 @@ describe("auto-refresh enrollment — authorization", () => {
 });
 
 describe("auto-refresh enrollment — feature flag", () => {
-	it("throws NOT_FOUND from both procedures when the flag is off, without touching the DB", async () => {
-		vi.stubEnv("FABRIC_FEATURE_LIVING_DOCS_REFRESH", "false");
+	it("throws NOT_FOUND from both procedures when the env var is off, without touching the DB", async () => {
+		vi.stubEnv("FABRIC_FEATURE_LIVING_DOCS_REFRESH_ROLLOUT", "false");
 
 		await expect(
 			getHandler({ input: getInput(), context: ctx() }),
@@ -422,6 +445,32 @@ describe("auto-refresh enrollment — feature flag", () => {
 
 		expect(mocks.getDocumentById).not.toHaveBeenCalled();
 		expect(mocks.getAutoRefreshSettings).not.toHaveBeenCalled();
+		expect(mocks.upsertAutoRefreshSettings).not.toHaveBeenCalled();
+	});
+
+	it("resolves the gate through the shared registry, by key", async () => {
+		await setHandler({ input: setInput(), context: ctx() });
+
+		expect(mocks.isFeatureEnabled).toHaveBeenCalledWith(
+			"LIVING_DOCS_REFRESH",
+		);
+	});
+
+	it("lets an admin override of false close the routes even with the env var set", async () => {
+		// The env var says on — vitest.config.ts sets it for the whole suite —
+		// and the override still wins. This is the runtime kill switch the
+		// bespoke env-var helper could never provide.
+		vi.stubEnv("FABRIC_FEATURE_LIVING_DOCS_REFRESH_ROLLOUT", "true");
+		flagOverride = false;
+
+		await expect(
+			getHandler({ input: getInput(), context: ctx() }),
+		).rejects.toMatchObject({ code: "NOT_FOUND" });
+		await expect(
+			setHandler({ input: setInput(), context: ctx() }),
+		).rejects.toMatchObject({ code: "NOT_FOUND" });
+
+		expect(mocks.getDocumentById).not.toHaveBeenCalled();
 		expect(mocks.upsertAutoRefreshSettings).not.toHaveBeenCalled();
 	});
 });

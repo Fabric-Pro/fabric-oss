@@ -208,6 +208,11 @@
 			"types": "./lib/attachment-limits.ts",
 			"import": "./lib/attachment-limits.ts",
 			"default": "./lib/attachment-limits.ts"
+		},
+		"./quote-artifacts": {
+			"types": "./lib/quote-artifacts.ts",
+			"import": "./lib/quote-artifacts.ts",
+			"default": "./lib/quote-artifacts.ts"
 		}
 	},
 	"name": "@repo/utils",

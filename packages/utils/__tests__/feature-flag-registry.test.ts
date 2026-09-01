@@ -40,6 +40,71 @@ describe("FEATURE_FLAG_REGISTRY", () => {
 		).toBe(false);
 	});
 
+	// #2210. The capability was gated twice before this entry existed — a runtime
+	// server variable and a build-time public twin with a different parser. The
+	// assertion is on the env var name specifically: keeping it is what lets an
+	// existing deployment carry its setting across the migration unchanged.
+	it("registers LIVING_DOCS_REFRESH as the rollout gate, on its own env var", () => {
+		// The env var name is load-bearing. FABRIC_FEATURE_LIVING_DOCS_REFRESH is
+		// the SWEEP kill switch and is true in every environment, so binding the
+		// rollout to it would have launched the feature on deploy.
+		expect(FEATURE_FLAG_REGISTRY.LIVING_DOCS_REFRESH.envVar).toBe(
+			"FABRIC_FEATURE_LIVING_DOCS_REFRESH_ROLLOUT",
+		);
+		expect(FEATURE_FLAG_REGISTRY.LIVING_DOCS_REFRESH.default).toBe(false);
+	});
+
+	it("registers LIVING_DOCS_REFRESH_SWEEP on the original kill-switch env var", () => {
+		expect(FEATURE_FLAG_REGISTRY.LIVING_DOCS_REFRESH_SWEEP.envVar).toBe(
+			"FABRIC_FEATURE_LIVING_DOCS_REFRESH",
+		);
+		expect(FEATURE_FLAG_REGISTRY.LIVING_DOCS_REFRESH_SWEEP.default).toBe(
+			false,
+		);
+	});
+
+	// The two must stay independent: an operator holds "not rolled out" and
+	// "brakes armed" at the same time, which is the state every environment is in
+	// today. A change that makes one imply the other breaks that.
+	it("resolves the rollout and sweep gates independently", () => {
+		const env = { FABRIC_FEATURE_LIVING_DOCS_REFRESH: "true" };
+		expect(
+			resolveFlag("LIVING_DOCS_REFRESH_SWEEP", undefined, env).enabled,
+		).toBe(true);
+		expect(resolveFlag("LIVING_DOCS_REFRESH", undefined, env).enabled).toBe(
+			false,
+		);
+	});
+
+	// An admin's explicit OFF must beat a truthy env var, or the runtime switch
+	// this flag was registered for would be unable to stop an in-flight refresh
+	// on a deployment whose env var says on.
+	it("lets an explicit LIVING_DOCS_REFRESH override beat a truthy env var", () => {
+		const on = { FABRIC_FEATURE_LIVING_DOCS_REFRESH_ROLLOUT: "true" };
+		expect(resolveFlag("LIVING_DOCS_REFRESH", false, on)).toEqual({
+			enabled: false,
+			source: "override",
+		});
+		expect(resolveFlag("LIVING_DOCS_REFRESH", undefined, on)).toEqual({
+			enabled: true,
+			source: "env",
+		});
+		expect(resolveFlag("LIVING_DOCS_REFRESH", undefined, {})).toEqual({
+			enabled: false,
+			source: "default",
+		});
+	});
+
+	// The same override discipline on the brakes: an admin's OFF must stop an
+	// in-flight sweep even though every environment sets the env var to true.
+	it("lets an explicit LIVING_DOCS_REFRESH_SWEEP override beat a truthy env var", () => {
+		expect(
+			resolveFlag("LIVING_DOCS_REFRESH_SWEEP", false, {
+				FABRIC_FEATURE_LIVING_DOCS_REFRESH: "true",
+			}),
+		).toEqual({ enabled: false, source: "override" });
+	});
+
 	it("registers PROJECT_SHORTCUTS with its env var and default", () => {
 		expect(FEATURE_FLAG_REGISTRY.PROJECT_SHORTCUTS.envVar).toBe(
 			"FABRIC_FEATURE_PROJECT_SHORTCUTS",

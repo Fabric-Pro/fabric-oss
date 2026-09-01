@@ -1242,6 +1242,9 @@
 					"qa_finding": {
 						"dismissed": "Testing-Befund verworfen",
 						"merged": "Testing-Befunde zusammengeführt"
+					},
+					"document_generation": {
+						"failed": "Dokumenterstellung fehlgeschlagen"
 					}
 				},
 				"story": {

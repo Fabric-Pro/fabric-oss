@@ -4,8 +4,20 @@
  * Style follows `activities/newsletter/find-due-newsletter-projects.test.ts` —
  * mock `@temporalio/activity`, partially mock `@repo/database`, and drive time
  * with fake timers so the activity's own `new Date()` is deterministic.
+ *
+ * The flag is the registry's `LIVING_DOCS_REFRESH`, read through
+ * `isFeatureEnabled` from `@repo/database` (Fizzy #2210) — NOT the retired
+ * `@repo/utils/feature-flag` helper. Mocking the old module here would stop
+ * intercepting anything and leave this suite asserting nothing while it passed,
+ * so the mock lives on `@repo/database` and runs the REAL `resolveFlag`: an
+ * admin override row is exercised against the shipped precedence (override >
+ * env var > default) rather than a re-implementation of it.
  */
 
+import {
+	type FeatureFlagKey,
+	resolveFlag,
+} from "@repo/utils/feature-flag-registry";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@temporalio/activity", () => ({ heartbeat: vi.fn() }));
@@ -28,12 +40,13 @@ vi.mock("@repo/database", async () => {
 		listEnabledAutoRefreshSettings: listMock,
 		resolveValidRefreshActors: resolveActorsMock,
 		recordRefreshOutcomes: recordOutcomesMock,
+		isFeatureEnabled: flagMock,
+		// The sweep gate reads fail-closed through this one. Same resolver
+		// here, so a suite that stubs the flag on still exercises the sweep;
+		// the degraded-read case is covered separately.
+		isKillSwitchArmed: flagMock,
 	};
 });
-
-vi.mock("@repo/utils/feature-flag", () => ({
-	isLivingDocsRefreshEnabled: flagMock,
-}));
 
 vi.mock("@repo/logs", () => ({
 	logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
@@ -105,11 +118,35 @@ function enrolledInOrg(over: Record<string, unknown> = {}) {
 	});
 }
 
+/**
+ * The two lower-precedence inputs the registry resolves the flag from.
+ * `flagOverride === undefined` means "no admin row", which is NOT the same as
+ * `false` — the difference is the point of the registry, since an explicit
+ * `false` beats a truthy env var.
+ */
+let flagOverride: boolean | undefined;
+let flagEnvValue: string | undefined;
+
 beforeEach(() => {
 	vi.useFakeTimers();
 	vi.setSystemTime(NOW);
 	vi.clearAllMocks();
-	flagMock.mockReturnValue(true);
+	flagOverride = undefined;
+	// The deployed posture these tests assume: turned on by env var, no
+	// override row. `packages/temporal/vitest.config.ts` sets no flag env, so
+	// the env is supplied here rather than read from the process.
+	flagEnvValue = "true";
+	flagMock.mockImplementation(
+		async (key: FeatureFlagKey) =>
+			resolveFlag(key, flagOverride, {
+				// Both gates. The sweep requires the rollout as well as its own
+				// kill switch, so an environment that only arms the brakes must
+				// NOT be able to run it — that combination would rewrite enrolled
+				// documents while their owners could not see the control.
+				FABRIC_FEATURE_LIVING_DOCS_REFRESH: flagEnvValue,
+				FABRIC_FEATURE_LIVING_DOCS_REFRESH_ROLLOUT: flagEnvValue,
+			} as NodeJS.ProcessEnv).enabled,
+	);
 	// By default every candidate's actor is valid — the resolver returns the set
 	// of documentIds it was asked about.
 	resolveActorsMock.mockImplementation(
@@ -125,13 +162,60 @@ afterEach(() => {
 });
 
 describe("feature flag", () => {
-	it("returns nothing and issues no query when the flag is off", async () => {
-		flagMock.mockReturnValue(false);
+	// The combination the two-gate split creates and must refuse: the kill switch
+	// armed (its env var is true in every environment) while the rollout is off.
+	// If the sweep ran here it would rewrite enrolled documents unattended while
+	// their owners could neither see the control nor reach the procedures to stop
+	// it — the brakes must not be able to drive.
+	it("stands down when the brakes are armed but the feature is not rolled out", async () => {
+		flagMock.mockImplementation(
+			async (key: FeatureFlagKey) =>
+				resolveFlag(key, undefined, {
+					FABRIC_FEATURE_LIVING_DOCS_REFRESH: "true",
+					// rollout deliberately unset
+				} as NodeJS.ProcessEnv).enabled,
+		);
+
+		const result = await findDueDocumentsActivity();
+
+		expect(result.due).toEqual([]);
+		expect(listMock).not.toHaveBeenCalled();
+	});
+
+	it("returns nothing and issues no query when the env var is off", async () => {
+		flagEnvValue = "false";
 
 		const { due } = await findDueDocumentsActivity();
 
 		expect(due).toEqual([]);
 		expect(listMock).not.toHaveBeenCalled();
+	});
+
+	it("returns nothing when the flag is unset — the registry default is OFF", async () => {
+		flagEnvValue = undefined;
+
+		const { due } = await findDueDocumentsActivity();
+
+		expect(due).toEqual([]);
+		expect(listMock).not.toHaveBeenCalled();
+	});
+
+	it("stands the sweep down on an admin override of false, even with the env var on", async () => {
+		// The runtime kill switch the retired env-var helper could not provide:
+		// no redeploy, effective on the very next tick.
+		flagEnvValue = "true";
+		flagOverride = false;
+
+		const { due } = await findDueDocumentsActivity();
+
+		expect(due).toEqual([]);
+		expect(listMock).not.toHaveBeenCalled();
+	});
+
+	it("resolves the gate through the shared registry, by key", async () => {
+		await findDueDocumentsActivity();
+
+		expect(flagMock).toHaveBeenCalledWith("LIVING_DOCS_REFRESH_SWEEP");
 	});
 });
 

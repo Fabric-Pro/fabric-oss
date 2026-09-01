@@ -97,8 +97,13 @@ function part(value: unknown, key: string): number {
 /**
  * A token count that may arrive either as a plain number or, since the AI SDK v6
  * provider interface, as a `{ total, … }` breakdown object.
+ *
+ * Exported because any caller reading a token count off `usage` needs both
+ * shapes: a plain `typeof value === "number"` test silently yields nothing on
+ * the providers that report the breakdown, which turns a diagnostic number into
+ * a missing one exactly when it is being used to diagnose something.
  */
-function count(value: unknown): number {
+export function readTokenCount(value: unknown): number {
 	return typeof value === "number" ? num(value) : part(value, "total");
 }
 
@@ -123,9 +128,11 @@ function normalizeUsage(
 	// succeeded. `count` accepts both shapes; the OpenAI-compatible aliases
 	// after it cover an endpoint that hands its usage back unmapped.
 	const inputTokens =
-		count(u.inputTokens) || num(u.promptTokens) || num(u.prompt_tokens);
+		readTokenCount(u.inputTokens) ||
+		num(u.promptTokens) ||
+		num(u.prompt_tokens);
 	const outputTokens =
-		count(u.outputTokens) ||
+		readTokenCount(u.outputTokens) ||
 		num(u.completionTokens) ||
 		num(u.completion_tokens);
 	const totalTokens =

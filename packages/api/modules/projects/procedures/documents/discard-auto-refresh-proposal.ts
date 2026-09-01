@@ -40,7 +40,7 @@ export const discardDocumentAutoRefreshProposalProcedure =
 			}),
 		)
 		.handler(async ({ input, context }) => {
-			assertLivingDocsRefreshEnabled();
+			await assertLivingDocsRefreshEnabled();
 
 			const organizationId = resolveOrganizationId(
 				input.organizationId,
