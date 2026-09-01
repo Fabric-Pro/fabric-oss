@@ -727,36 +727,45 @@ export async function fetchAndStoreMeetingTranscript(
 				.filter(Boolean)
 				.join("\n");
 
-			let finalContent = `${header}${rawTranscript}`;
-			let wasSummarized = false;
+			// The verbatim transcript, always. A summary is generated alongside it
+			// for long meetings (below) but never replaces it: the body is the
+			// only record of what was actually said, and re-ingesting it later is
+			// possible only while the source recording still exists.
+			const finalContent = `${header}${rawTranscript}`;
+			// Means "the verbatim original was destroyed", which is now only true
+			// of rows written before this behaviour changed. It is the flag the
+			// Transcript tab reads to warn that it is showing a summary, so it
+			// stays false here rather than tracking whether a summary was made —
+			// `summary != null` answers that.
+			const wasSummarized = false;
 			// Stored as the row's initial summary — the FULL LLM summary, header-
 			// and prefix-free (a 2000-char substring of header+body used to live
 			// here and surfaced as a truncated blob in the Meeting Digest). Stays
-			// unset when summarization fell back to raw transcript. The on-demand
+			// unset for meetings short enough not to need one. The on-demand
 			// insights extraction later replaces it with a digest-focused summary.
 			let summaryText: string | undefined;
 
-			// Step 6: Summarize if content exceeds threshold
+			// Step 6: Summarize alongside the transcript once it gets long enough
+			// to be worth reading in digest form. The Meeting Digest, the Daily
+			// Brief and the sync settings pane all read this column.
 			heartbeat("processing transcript content");
 			if (finalContent.length > TRANSCRIPT_SUMMARIZATION_THRESHOLD) {
 				logger.info(
-					"[MeetingTranscriptSync] Transcript exceeds threshold, summarizing",
+					"[MeetingTranscriptSync] Transcript exceeds threshold, summarizing alongside it",
 					{
 						originalLength: finalContent.length,
 						threshold: TRANSCRIPT_SUMMARIZATION_THRESHOLD,
 					},
 				);
 
-				const summarized = await summarizeTranscript(
-					rawTranscript,
-					meetingSubject,
-					userId,
-					organizationId,
-					projectId,
-				);
-				finalContent = `${header}${summarized.content}`;
-				wasSummarized = true;
-				summaryText = summarized.llmSummary ?? undefined;
+				summaryText =
+					(await summarizeTranscript(
+						rawTranscript,
+						meetingSubject,
+						userId,
+						organizationId,
+						projectId,
+					)) ?? undefined;
 			}
 
 			// Step 7: Create ProjectContext record
@@ -816,11 +825,14 @@ export async function fetchAndStoreMeetingTranscript(
 					workflowId: `context-embedding-${newContext.id}-${Date.now()}`,
 					args: [
 						{
+							// Deliberately no `content`: a transcript is stored
+							// whole now, and an inline body would put the
+							// workflow input at the mercy of the meeting's
+							// length. The activity reads it back by contextId.
 							contextId: newContext.id,
 							projectId,
 							userId,
 							organizationId,
-							content: finalContent,
 							type: "MEETING_TRANSCRIPT",
 							metadata: {
 								sourceTitle: `Meeting Transcript: ${meetingSubject}`,
@@ -1061,7 +1073,7 @@ async function summarizeTranscript(
 	userId: string,
 	organizationId?: string,
 	projectId?: string,
-): Promise<{ content: string; llmSummary: string | null }> {
+): Promise<string | null> {
 	try {
 		const { model, metadata, trackUsage } = await getAIModelWithMetadata(
 			{
@@ -1114,17 +1126,12 @@ Provide a structured summary of this meeting.`;
 
 		if (summary.trim().length === 0) {
 			logger.warn(
-				"[MeetingTranscriptSync] LLM returned empty summary, using truncated transcript",
+				"[MeetingTranscriptSync] LLM returned empty summary, storing none",
 			);
-			// Raw-transcript fallback is context-body material only — it must
-			// never be stored as the row's summary.
-			return {
-				content: transcript.substring(
-					0,
-					TRANSCRIPT_SUMMARIZATION_THRESHOLD,
-				),
-				llmSummary: null,
-			};
+			// No fallback body is needed any more: the transcript itself is what
+			// gets stored, so a failed summary costs the digest a convenience,
+			// not the record.
+			return null;
 		}
 
 		logger.info("[MeetingTranscriptSync] Transcript summarized", {
@@ -1132,7 +1139,7 @@ Provide a structured summary of this meeting.`;
 			summaryLength: summary.length,
 		});
 
-		return { content: `**Summary:**\n\n${summary}`, llmSummary: summary };
+		return summary;
 	} catch (error) {
 		const errorMessage =
 			error instanceof Error ? error.message : String(error);
@@ -1140,13 +1147,6 @@ Provide a structured summary of this meeting.`;
 			error: errorMessage,
 		});
 
-		// Fall back to truncated transcript (context-body material only).
-		return {
-			content: transcript.substring(
-				0,
-				TRANSCRIPT_SUMMARIZATION_THRESHOLD,
-			),
-			llmSummary: null,
-		};
+		return null;
 	}
 }

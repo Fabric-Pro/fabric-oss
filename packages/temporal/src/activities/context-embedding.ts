@@ -7,6 +7,7 @@
 
 import { AIProviderNotConfiguredError, getRAGProviderConfig } from "@repo/ai";
 import {
+	db,
 	recordContextIndexingFailure,
 	updateContextExtractionStatus,
 } from "@repo/database";
@@ -19,7 +20,8 @@ export interface EmbedSingleContextInput {
 	projectId: string;
 	userId: string;
 	organizationId?: string;
-	content: string;
+	/** Omit to have the activity read the body back from `contextId`. */
+	content?: string;
 	type: string;
 	metadata?: {
 		filename?: string;
@@ -61,8 +63,22 @@ export async function embedSingleContextActivity(
 	});
 
 	try {
+		// A caller may omit the body and let us read it back instead, so that an
+		// arbitrarily long context — a whole meeting transcript, since Fizzy
+		// #2316 stores those unabridged — never has to fit inside a Temporal
+		// payload. The row is the source of truth either way.
+		const body =
+			content ??
+			(
+				await db.projectContext.findUnique({
+					where: { id: contextId },
+					select: { content: true },
+				})
+			)?.content ??
+			"";
+
 		// Skip if no content
-		if (!content || content.trim().length === 0) {
+		if (body.trim().length === 0) {
 			activityLogger.info(
 				"Skipping embedding for empty content context",
 				{
@@ -91,7 +107,7 @@ export async function embedSingleContextActivity(
 				projectId,
 				userId,
 				organizationId,
-				content,
+				content: body,
 				type,
 				apiKey: providerConfig,
 				metadata,

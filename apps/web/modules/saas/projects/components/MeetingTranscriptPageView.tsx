@@ -232,9 +232,10 @@ export function MeetingTranscriptPageView({ transcript, backHref }: Props) {
 								Summarized — not the full transcript
 							</AlertTitle>
 							<AlertDescription>
-								This meeting exceeded the size limit, so Fabric
-								stored an AI summary instead of the full
-								conversation.
+								This meeting was synced before Fabric kept long
+								transcripts in full, so only an AI summary of it
+								exists. The original wording is not recoverable.
+								Meetings synced since then are stored whole.
 							</AlertDescription>
 						</Alert>
 					)}
