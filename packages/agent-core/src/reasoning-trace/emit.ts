@@ -90,19 +90,17 @@ export function buildReasoningUpdate(
 	const mergedText = (existing?.text ?? "") + reasoningText;
 	const startedAt = existing?.startedAt ?? args.turnStart;
 
-	// Two independent Date.now() samples — preserves the pre-refactor behavior
-	// of the in-tree implementation in project-document-generator chat-node.ts
-	// (which the PR 1 spec promised to keep as a pure refactor). The two
-	// samples can differ by a few microseconds; a single sample would tighten
-	// telemetry by ~µs but is a tiny behavior change. Keeping two preserves
-	// strict identity vs. the original.
+	// One Date.now() sample for both fields, so `durationMs` is always exactly
+	// `completedAt - startedAt`. Two independent samples could straddle a
+	// millisecond boundary and disagree by one, which made the invariant flaky.
+	const completedAt = Date.now();
 	return {
 		reasoningByTurn: {
 			[turnIndex]: {
 				text: mergedText,
-				durationMs: Date.now() - startedAt,
+				durationMs: completedAt - startedAt,
 				startedAt,
-				completedAt: Date.now(),
+				completedAt,
 			},
 		},
 	};
