@@ -21,6 +21,7 @@ export {
 export type DocumentType =
 	| "general" // Free-form document
 	| "business_case" // Business Case (decision/funding artifact)
+	| "design_system" // Design System Markdown document
 	| "prd" // Product Requirements Document
 	| "proposal" // Software Development Proposal
 	| "architecture" // Technical Architecture Document
@@ -70,6 +71,31 @@ export const DOCUMENT_TYPES: Record<DocumentType, DocumentTypeMetadata> = {
 			"Recommendation & Next Step",
 		],
 		icon: "📊",
+	},
+	design_system: {
+		id: "design_system",
+		name: "Design System (design.md)",
+		description:
+			"Context-grounded design rules for humans and AI agents, including tokens, components, responsive behavior, and accessibility",
+		sections: [
+			"Visual Theme & Atmosphere",
+			"Design Token Overview",
+			"Color Palette & Roles",
+			"Typography Rules",
+			"Component Styling",
+			"Layout Principles",
+			"Depth & Elevation",
+			"Accessibility & Inclusive Design",
+			"Do’s and Don’ts",
+			"Responsive Behavior",
+			"Component Anatomy Visuals",
+			"Implementation Notes",
+			"Agent Prompt Guide",
+			"Design Gaps",
+			"Open Questions",
+			"Assets / Source References",
+		],
+		icon: "🎨",
 	},
 	prd: {
 		id: "prd",
@@ -317,6 +343,8 @@ export function getExamplePromptForDocumentType(
 		general: "Write a blog post about the benefits of TypeScript",
 		business_case:
 			"Create a business case for adding AI-generated business case documents to our product",
+		design_system:
+			"Create a design.md for a web application using its existing brand assets, UI code, and accessibility requirements",
 		prd: "Create a PRD for a mobile app that helps users track their daily water intake",
 		proposal:
 			"Write a proposal for developing a customer relationship management (CRM) system",

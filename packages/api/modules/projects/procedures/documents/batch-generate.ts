@@ -43,6 +43,7 @@ export const batchGenerateDocumentsProcedure = tenantProtectedProcedure
 					type: z.enum([
 						"GENERAL",
 						"BUSINESS_CASE",
+						"DESIGN_SYSTEM",
 						"PRD",
 						"PROPOSAL",
 						"ARCHITECTURE",

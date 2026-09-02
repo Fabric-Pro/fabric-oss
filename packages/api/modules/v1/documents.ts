@@ -36,6 +36,7 @@ import {
 type DocumentType =
 	| "GENERAL"
 	| "BUSINESS_CASE"
+	| "DESIGN_SYSTEM"
 	| "PRD"
 	| "PROPOSAL"
 	| "ARCHITECTURE"
@@ -59,6 +60,7 @@ type DocumentStatus =
 const DOCUMENT_TYPES: ReadonlySet<DocumentType> = new Set([
 	"GENERAL",
 	"BUSINESS_CASE",
+	"DESIGN_SYSTEM",
 	"PRD",
 	"PROPOSAL",
 	"ARCHITECTURE",

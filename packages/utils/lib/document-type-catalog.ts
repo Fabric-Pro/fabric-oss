@@ -44,6 +44,7 @@
 export type ProjectDocumentTypeName =
 	| "GENERAL"
 	| "BUSINESS_CASE"
+	| "DESIGN_SYSTEM"
 	| "PRD"
 	| "PROPOSAL"
 	| "ARCHITECTURE"
@@ -90,6 +91,11 @@ export const DOCUMENT_TYPE_CATALOG: Record<
 		label: "Business Case",
 		shortLabel: "Business Case",
 		icon: "📊",
+	},
+	DESIGN_SYSTEM: {
+		label: "Design System (design.md)",
+		shortLabel: "Design System",
+		icon: "🎨",
 	},
 	ARCHITECTURE: {
 		label: "Technical Architecture",

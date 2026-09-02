@@ -35,6 +35,7 @@ import {
 	PlusIcon,
 	RefreshCwIcon,
 	SparklesIcon,
+	SwatchBookIcon,
 	Trash2Icon,
 	UsersIcon,
 	WrenchIcon,
@@ -130,6 +131,14 @@ const documentTypeStyles: Record<
 			"border-fuchsia-500/20 bg-fuchsia-500/[0.06] dark:border-fuchsia-500/15 dark:bg-fuchsia-500/[0.04]",
 		haloClassName: "from-fuchsia-500/10 via-fuchsia-500/5 to-transparent",
 	},
+	DESIGN_SYSTEM: {
+		icon: SwatchBookIcon,
+		iconClassName:
+			"border-purple-500/30 bg-purple-500/10 text-purple-600 dark:text-purple-300",
+		panelClassName:
+			"border-purple-500/20 bg-purple-500/[0.06] dark:border-purple-500/15 dark:bg-purple-500/[0.04]",
+		haloClassName: "from-purple-500/10 via-purple-500/5 to-transparent",
+	},
 	TEST_PLAN: {
 		icon: WrenchIcon,
 		iconClassName:
@@ -216,6 +225,7 @@ const documentTypeLabels: Record<string, string> = {
 	PRD: "PRD",
 	PROPOSAL: "Proposal",
 	BUSINESS_CASE: "Business Case",
+	DESIGN_SYSTEM: "Design System",
 	ARCHITECTURE: "Architecture",
 	TECHNICAL_SPEC: "Tech Spec",
 	USER_STORY: "Features",
@@ -234,6 +244,8 @@ const documentTypeDescriptions: Record<string, string> = {
 		"Benefit hypothesis, scope, deliverables, phases, and success metrics",
 	BUSINESS_CASE:
 		"Decision ask, options considered, recommendation, value, and risks",
+	DESIGN_SYSTEM:
+		"Tokens, components, accessibility, responsive behavior, and implementation guidance",
 	ARCHITECTURE: "System design, components, data flow, and infrastructure",
 	TECHNICAL_SPEC:
 		"Detailed technical requirements and implementation details",

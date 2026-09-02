@@ -1,6 +1,7 @@
 export type ProjectDocumentType =
 	| "GENERAL"
 	| "BUSINESS_CASE"
+	| "DESIGN_SYSTEM"
 	| "PRD"
 	| "PROPOSAL"
 	| "ARCHITECTURE"
@@ -19,6 +20,7 @@ export const DOCUMENT_TIERS: Record<
 > = {
 	PRD: { tier: 1, prerequisites: [] },
 	BUSINESS_CASE: { tier: 1, prerequisites: [] },
+	DESIGN_SYSTEM: { tier: 1, prerequisites: [] },
 	PROPOSAL: { tier: 1, prerequisites: [] },
 	ARCHITECTURE: { tier: 2, prerequisites: ["PRD", "PROPOSAL"] },
 	TECHNICAL_SPEC: { tier: 2, prerequisites: ["PRD", "PROPOSAL"] },
@@ -58,6 +60,7 @@ export function getPrerequisiteHint(type: string): string {
 	const names: Record<string, string> = {
 		PRD: "PRD",
 		BUSINESS_CASE: "Business Case",
+		DESIGN_SYSTEM: "Design System",
 		PROPOSAL: "Proposal",
 		ARCHITECTURE: "Architecture",
 		TECHNICAL_SPEC: "Technical Spec",
@@ -93,6 +96,12 @@ export const DEFAULT_DOCUMENT_META: Record<
 		title: "Business Case",
 		description:
 			"Decision ask, options considered, recommendation, value, and risks",
+		defaultPrompt: "",
+	},
+	DESIGN_SYSTEM: {
+		title: "Design System (design.md)",
+		description:
+			"Tokens, components, accessibility, responsive behavior, and implementation guidance",
 		defaultPrompt: "",
 	},
 	PRD: {

@@ -149,6 +149,7 @@ describe("getDocumentMeta", () => {
 		expect(getDocumentMeta("PROPOSAL").label).toBe("Proposal");
 		expect(getDocumentMeta("PRD").label).toBe("Requirements Document");
 		expect(getDocumentMeta("API_SPEC").label).toBe("API Specification");
+		expect(getDocumentMeta("DESIGN_SYSTEM").label).toBe("Design System");
 	});
 
 	it("does not carry the old mismatched labels", () => {

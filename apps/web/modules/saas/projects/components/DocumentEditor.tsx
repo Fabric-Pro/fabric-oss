@@ -155,6 +155,7 @@ const DOCUMENT_TYPE_LABELS: Record<string, string> = {
 	PRD: "PRD",
 	PROPOSAL: "Proposal",
 	BUSINESS_CASE: "Business Case",
+	DESIGN_SYSTEM: "Design System",
 	ARCHITECTURE: "Architecture",
 	TECHNICAL_SPEC: "Technical Spec",
 	USER_STORY: "Feature",

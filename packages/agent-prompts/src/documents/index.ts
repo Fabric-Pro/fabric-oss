@@ -10,6 +10,7 @@ import type { DocumentPromptConfig } from "../types";
 import { API_SPEC_PROMPT } from "./api-spec";
 import { ARCHITECTURE_PROMPT } from "./architecture";
 import { BUSINESS_CASE_PROMPT } from "./business-case";
+import { DESIGN_SYSTEM_PROMPT } from "./design-system";
 import { GENERAL_PROMPT } from "./general";
 // Import all document prompts
 import { PRD_PROMPT } from "./prd";
@@ -30,6 +31,7 @@ export const DOCUMENT_PROMPTS: Record<DocumentType, DocumentPromptConfig> = {
 	api_spec: API_SPEC_PROMPT,
 	user_story: USER_STORY_PROMPT,
 	business_case: BUSINESS_CASE_PROMPT,
+	design_system: DESIGN_SYSTEM_PROMPT,
 	qa_strategy: QA_STRATEGY_PROMPT,
 	srs: SRS_PROMPT,
 	general: GENERAL_PROMPT,

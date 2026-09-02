@@ -263,6 +263,7 @@ function validateAnalysisQuality(content: string): {
 /** Ordered document generation sequence */
 const DOCUMENT_GENERATION_ORDER: ProjectDocumentType[] = [
 	"BUSINESS_CASE",
+	"DESIGN_SYSTEM",
 	"PRD",
 	"PROPOSAL",
 	"ARCHITECTURE",

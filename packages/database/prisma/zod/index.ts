@@ -2028,7 +2028,7 @@ export type QaStrategyLevel = z.infer<typeof QaStrategyLevelSchema>;
 
 // File: ProjectDocumentType.schema.ts
 
-export const ProjectDocumentTypeSchema = z.enum(['GENERAL', 'BUSINESS_CASE', 'PRD', 'PROPOSAL', 'ARCHITECTURE', 'TECHNICAL_SPEC', 'USER_STORY', 'API_SPEC', 'QA_STRATEGY', 'TEST_PLAN', 'TEST_REPORT', 'TRACEABILITY_MATRIX', 'SRS'])
+export const ProjectDocumentTypeSchema = z.enum(['GENERAL', 'BUSINESS_CASE', 'DESIGN_SYSTEM', 'PRD', 'PROPOSAL', 'ARCHITECTURE', 'TECHNICAL_SPEC', 'USER_STORY', 'API_SPEC', 'QA_STRATEGY', 'TEST_PLAN', 'TEST_REPORT', 'TRACEABILITY_MATRIX', 'SRS'])
 
 export type ProjectDocumentType = z.infer<typeof ProjectDocumentTypeSchema>;
 
