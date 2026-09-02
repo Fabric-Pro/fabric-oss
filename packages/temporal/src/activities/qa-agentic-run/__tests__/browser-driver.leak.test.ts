@@ -18,6 +18,7 @@ const close = vi.fn(async () => {});
 const newContext = vi.fn();
 const newPage = vi.fn();
 const route = vi.fn(async (_pattern: string, _handler: unknown) => {});
+const addCookies = vi.fn(async (_cookies: unknown[]) => {});
 const launch = vi.fn(async () => ({ close, newContext }));
 const safeFetchOutbound = vi.fn();
 
@@ -42,7 +43,7 @@ const OPTIONS = {
 beforeEach(() => {
 	vi.clearAllMocks();
 	newPage.mockResolvedValue({ setDefaultTimeout: vi.fn() });
-	newContext.mockResolvedValue({ newPage, route });
+	newContext.mockResolvedValue({ addCookies, newPage, route });
 	safeFetchOutbound.mockResolvedValue(
 		new Response("ok", {
 			status: 200,
@@ -166,5 +167,107 @@ describe("openBrowser cleans up after itself", () => {
 		expect(fulfill).toHaveBeenCalledWith(
 			expect.objectContaining({ status: 200 }),
 		);
+	});
+
+	it("installs every Set-Cookie header before fulfilling a proxied response", async () => {
+		const responseHeaders = new Headers();
+		responseHeaders.append(
+			"set-cookie",
+			"__Secure-fabric.session_token=token-one; Path=/; HttpOnly; Secure; SameSite=Lax",
+		);
+		responseHeaders.append(
+			"set-cookie",
+			"__Secure-fabric.dont_remember=1; Path=/; Secure; SameSite=Lax",
+		);
+		responseHeaders.append(
+			"set-cookie",
+			"__Secure-fabric.session_data=data; Path=/; HttpOnly; Secure; SameSite=Lax",
+		);
+		responseHeaders.append("set-cookie", "scoped=value; Secure");
+		responseHeaders.append(
+			"set-cookie",
+			"network_path=value; Path=//evil.test/session; Secure",
+		);
+		responseHeaders.append(
+			"set-cookie",
+			"unrelated_domain=value; Domain=evil.test; Path=/; Secure",
+		);
+		safeFetchOutbound.mockResolvedValueOnce(
+			new Response("ok", { status: 200, headers: responseHeaders }),
+		);
+		await openBrowser(OPTIONS);
+		const handler = route.mock.calls[0]?.[1] as
+			| ((routeValue: {
+					request: () => {
+						url: () => string;
+						method: () => string;
+						headers: () => Record<string, string>;
+						postData: () => string | null;
+					};
+					abort: (reason: string) => Promise<void>;
+					fulfill: (response: unknown) => Promise<void>;
+			  }) => Promise<void>)
+			| undefined;
+		const fulfill = vi.fn(async (_response: unknown) => {});
+
+		await handler?.({
+			request: () => ({
+				url: () => "https://example.com/api/auth/sign-in/email",
+				method: () => "POST",
+				headers: () => ({ "content-type": "application/json" }),
+				postData: () => "{}",
+			}),
+			abort: vi.fn(async () => {}),
+			fulfill,
+		});
+
+		expect(addCookies).toHaveBeenCalledTimes(1);
+		expect(addCookies).toHaveBeenCalledWith([
+			expect.objectContaining({
+				name: "__Secure-fabric.session_token",
+				value: "token-one",
+				domain: "example.com",
+				path: "/",
+				httpOnly: true,
+				secure: true,
+				sameSite: "Lax",
+			}),
+			expect.objectContaining({
+				name: "__Secure-fabric.dont_remember",
+				value: "1",
+				domain: "example.com",
+				path: "/",
+				secure: true,
+				sameSite: "Lax",
+			}),
+			expect.objectContaining({
+				name: "__Secure-fabric.session_data",
+				value: "data",
+				domain: "example.com",
+				path: "/",
+				httpOnly: true,
+				secure: true,
+				sameSite: "Lax",
+			}),
+			expect.objectContaining({
+				name: "scoped",
+				value: "value",
+				domain: "example.com",
+				path: "/api/auth/sign-in",
+			}),
+			expect.objectContaining({
+				name: "network_path",
+				value: "value",
+				domain: "example.com",
+				path: "//evil.test/session",
+			}),
+		]);
+		expect(addCookies.mock.invocationCallOrder[0]).toBeLessThan(
+			fulfill.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
+		);
+		const fulfilledHeaders = fulfill.mock.calls[0]?.[0] as
+			| { headers?: Record<string, string> }
+			| undefined;
+		expect(fulfilledHeaders?.headers).not.toHaveProperty("set-cookie");
 	});
 });

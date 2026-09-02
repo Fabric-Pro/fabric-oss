@@ -21,6 +21,8 @@
 import { safeFetchOutbound } from "@repo/utils/url-security";
 import type { Browser, BrowserContext, Page } from "playwright";
 
+type BrowserCookie = Parameters<BrowserContext["addCookies"]>[0][number];
+
 /** The closed set of things a step is allowed to do. */
 export type BrowserOperation =
 	| { kind: "click"; role: string; name: string }
@@ -97,6 +99,111 @@ export function headersForRequest(
 		),
 		...scopedHeaders.headers,
 	};
+}
+
+function parseResponseCookie(
+	responseUrl: string,
+	rawCookie: string,
+): BrowserCookie | null {
+	const parsedResponseUrl = new URL(responseUrl);
+	const [nameValue, ...rawAttributes] = rawCookie.split(";");
+	if (!nameValue) {
+		return null;
+	}
+
+	const separator = nameValue.indexOf("=");
+	if (separator <= 0) {
+		return null;
+	}
+
+	const name = nameValue.slice(0, separator).trim();
+	const value = nameValue.slice(separator + 1).trim();
+	const attributes = new Map<string, string>();
+	for (const rawAttribute of rawAttributes) {
+		const attribute = rawAttribute.trim();
+		if (!attribute) {
+			continue;
+		}
+		const attributeSeparator = attribute.indexOf("=");
+		const key = (
+			attributeSeparator === -1
+				? attribute
+				: attribute.slice(0, attributeSeparator)
+		)
+			.trim()
+			.toLowerCase();
+		const attributeValue =
+			attributeSeparator === -1
+				? ""
+				: attribute.slice(attributeSeparator + 1).trim();
+		attributes.set(key, attributeValue);
+	}
+
+	const configuredPath = attributes.get("path");
+	const lastSlash = parsedResponseUrl.pathname.lastIndexOf("/");
+	const defaultPath =
+		lastSlash <= 0 ? "/" : parsedResponseUrl.pathname.slice(0, lastSlash);
+	const path = configuredPath?.startsWith("/") ? configuredPath : defaultPath;
+	const cookie: BrowserCookie = {
+		name,
+		value,
+		domain: parsedResponseUrl.hostname,
+		path,
+		httpOnly: attributes.has("httponly"),
+		secure: attributes.has("secure"),
+	};
+	const domain = attributes.get("domain");
+	if (domain) {
+		const responseHost = parsedResponseUrl.hostname.toLowerCase();
+		const cookieDomain = domain.replace(/^\./, "").toLowerCase();
+		if (
+			responseHost !== cookieDomain &&
+			!responseHost.endsWith(`.${cookieDomain}`)
+		) {
+			return null;
+		}
+		cookie.domain = domain;
+	}
+
+	const sameSite = attributes.get("samesite")?.toLowerCase();
+	if (sameSite === "strict") {
+		cookie.sameSite = "Strict";
+	} else if (sameSite === "lax") {
+		cookie.sameSite = "Lax";
+	} else if (sameSite === "none") {
+		cookie.sameSite = "None";
+	}
+
+	const maxAge = attributes.get("max-age");
+	if (maxAge !== undefined) {
+		const seconds = Number.parseInt(maxAge, 10);
+		if (Number.isFinite(seconds)) {
+			cookie.expires = Math.max(
+				1,
+				Math.floor(Date.now() / 1000) + seconds,
+			);
+		}
+	} else {
+		const expires = attributes.get("expires");
+		if (expires) {
+			const timestamp = Date.parse(expires);
+			if (Number.isFinite(timestamp)) {
+				cookie.expires = Math.max(1, Math.floor(timestamp / 1000));
+			}
+		}
+	}
+
+	return cookie;
+}
+
+function responseCookiesForBrowser(
+	responseUrl: string,
+	headers: Headers,
+): BrowserCookie[] {
+	return headers
+		.getSetCookie()
+		.map((rawCookie) => parseResponseCookie(responseUrl, rawCookie))
+		.filter((cookie): cookie is BrowserCookie => cookie !== null);
 }
 
 /**
@@ -178,8 +285,17 @@ export async function openBrowser(
 				});
 				const responseHeaders: Record<string, string> = {};
 				response.headers.forEach((value, key) => {
-					responseHeaders[key] = value;
+					if (key.toLowerCase() !== "set-cookie") {
+						responseHeaders[key] = value;
+					}
 				});
+				const responseCookies = responseCookiesForBrowser(
+					requestUrl,
+					response.headers,
+				);
+				if (responseCookies.length > 0) {
+					await context.addCookies(responseCookies);
+				}
 				await route.fulfill({
 					status: response.status,
 					headers: responseHeaders,
