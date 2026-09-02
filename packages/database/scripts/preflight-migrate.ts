@@ -57,6 +57,22 @@ export interface ActivityRow {
 	pid: number;
 	state: string | null;
 	duration_ms: number;
+	/**
+	 * How long the session has been in its current `state`. For a session that
+	 * is idle in transaction this is the time it has sat holding its locks.
+	 */
+	state_age_ms: number | null;
+	wait_event_type: string | null;
+	wait_event: string | null;
+	/** `pg_blocking_pids(pid)`: the sessions this one is queued behind. */
+	blocked_by: readonly number[] | null;
+	application_name: string | null;
+	/**
+	 * Tables this session holds a granted lock on. Names only: the query text
+	 * is deliberately not read (see the sampler), so this is what says which
+	 * part of the schema the session is sitting on.
+	 */
+	locked_tables: readonly string[] | null;
 }
 
 /**
@@ -105,6 +121,68 @@ export function evaluateMigrationLedger(
 }
 
 /**
+ * `application_name` is free text the client chose. It goes into a CI log, so
+ * it is clipped and stripped of anything that could break the line or smuggle
+ * a value in: control characters (a newline would start a new log line) and
+ * anything past a display-sized length.
+ */
+export const APPLICATION_NAME_MAX_CHARS = 64;
+export function sanitizeApplicationName(name: string | null): string | null {
+	if (!name) {
+		return null;
+	}
+	// Every control character (C0 and C1) plus the Unicode line and paragraph
+	// separators — a log line must end only where the formatter ends it.
+	const cleaned = name.replace(/[\p{Cc}\p{Zl}\p{Zp}]+/gu, " ").trim();
+	if (cleaned.length === 0) {
+		return null;
+	}
+	return cleaned.length > APPLICATION_NAME_MAX_CHARS
+		? `${cleaned.slice(0, APPLICATION_NAME_MAX_CHARS)}…`
+		: cleaned;
+}
+
+/**
+ * One offender, with everything the failure line needs to be acted on without
+ * a second trip to the database. On 2026-09-02 two dev promotions failed on
+ * "24 transaction(s) open" and the sessions were gone before anyone could ask
+ * pg_stat_activity what they were: the line named pids, ages and states, which
+ * identifies nothing. The shape of that incident — one session idle in
+ * transaction, the rest active — is a lock chain, and a lock chain is only
+ * legible when each line says what it waits on, whom it waits for, and which
+ * tables the holder is sitting on.
+ */
+export function describeOffender(row: ActivityRow): string {
+	const seconds = (ms: number) => `${Math.round(ms / 1000)}s`;
+	const state = row.state ?? "unknown";
+	const parts: string[] = [
+		seconds(row.duration_ms),
+		// Time in state matters for a holder (how long it has been idle on its
+		// locks); for an active session it is just the current statement's age
+		// and would read as a second, contradictory duration.
+		row.state_age_ms != null && state !== "active"
+			? `${state} for ${seconds(row.state_age_ms)}`
+			: state,
+	];
+	if (row.wait_event_type) {
+		parts.push(
+			`waiting on ${row.wait_event_type}${row.wait_event ? `/${row.wait_event}` : ""}`,
+		);
+	}
+	if (row.blocked_by && row.blocked_by.length > 0) {
+		parts.push(`blocked by ${row.blocked_by.join(", ")}`);
+	}
+	const app = sanitizeApplicationName(row.application_name);
+	if (app) {
+		parts.push(`app ${app}`);
+	}
+	if (row.locked_tables && row.locked_tables.length > 0) {
+		parts.push(`holds locks on ${row.locked_tables.join(", ")}`);
+	}
+	return `pid ${row.pid} (${parts.join(", ")})`;
+}
+
+/**
  * Long-running transactions are the reason a migration that "should take a
  * second" takes down a table: the DDL queues behind them holding its own lock
  * request, and every subsequent query on that table queues behind the DDL.
@@ -116,12 +194,7 @@ export function evaluateLongRunningTransactions(
 	const offenders = rows.filter((row) => row.duration_ms >= thresholdMs);
 
 	if (offenders.length > 0) {
-		const summary = offenders
-			.map(
-				(row) =>
-					`pid ${row.pid} (${Math.round(row.duration_ms / 1000)}s, ${row.state ?? "unknown"})`,
-			)
-			.join(", ");
+		const summary = offenders.map(describeOffender).join("; ");
 		return {
 			name: "long-running-transactions",
 			ok: false,
@@ -286,21 +359,45 @@ async function runChecks(
 	}
 
 	// Deliberately does not select `query`: the statement text can carry literal
-	// values from production rows, and this output goes to a CI log.
+	// values from production rows, and this output goes to a CI log. The lock
+	// columns are the substitute — a table name says where a session is sitting
+	// without repeating what it wrote there. Everything else selected is
+	// visible to this role for its own sessions, and every app connection
+	// arrives as the same role.
+	//
+	// `relname::text`, not bare `relname`: `array_agg` over `name` yields a
+	// `name[]`, and the driver has no parser for that array type, so it would
+	// arrive as the literal string "{project,user_story}" rather than an
+	// array. `text[]` is parsed.
 	const sampleLongTransactions = async (): Promise<CheckResult> => {
 		const activity = await client.query<ActivityRow>(
-			`SELECT pid,
-			        state,
-			        EXTRACT(EPOCH FROM (now() - xact_start)) * 1000 AS duration_ms
-			   FROM pg_stat_activity
-			  WHERE xact_start IS NOT NULL
-			    AND pid <> pg_backend_pid()
-			    AND datname = current_database()`,
+			`SELECT a.pid,
+			        a.state,
+			        a.application_name,
+			        a.wait_event_type,
+			        a.wait_event,
+			        EXTRACT(EPOCH FROM (now() - a.xact_start)) * 1000 AS duration_ms,
+			        EXTRACT(EPOCH FROM (now() - a.state_change)) * 1000 AS state_age_ms,
+			        pg_blocking_pids(a.pid) AS blocked_by,
+			        (SELECT array_agg(DISTINCT c.relname::text ORDER BY c.relname::text)
+			           FROM pg_locks l
+			           JOIN pg_class c ON c.oid = l.relation
+			          WHERE l.pid = a.pid
+			            AND l.granted
+			            AND l.locktype = 'relation'
+			            AND c.relkind IN ('r', 'p')
+			            AND c.relnamespace <> 'pg_catalog'::regnamespace) AS locked_tables
+			   FROM pg_stat_activity a
+			  WHERE a.xact_start IS NOT NULL
+			    AND a.pid <> pg_backend_pid()
+			    AND a.datname = current_database()`,
 		);
 		return evaluateLongRunningTransactions(
 			activity.rows.map((row) => ({
 				...row,
 				duration_ms: Number(row.duration_ms),
+				state_age_ms:
+					row.state_age_ms == null ? null : Number(row.state_age_ms),
 			})),
 			longTxThresholdMs,
 		);
