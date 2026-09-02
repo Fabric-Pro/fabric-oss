@@ -7,6 +7,25 @@ degrade or fail loudly instead of stalling.
 - **Owner**: Fabric platform team
 - **Tickets**: Fizzy #1997 (this work), Fizzy #1741 (the production incident that exposed it)
 
+## Determination and status
+
+Earlier guidance described this as a self-hosted-only limitation that could not be resolved.
+Both halves of that turned out to be wrong, and this section is the correction.
+
+**The limit applies to Fabric's production environment.** It is not confined to self-hosted
+deployments. The ceiling is enforced client-side by the Temporal Rust core, so it is
+identical on Temporal Cloud and self-hosted, and no configuration on either raises it.
+
+**It is not raisable, but it is mitigable.** The ceiling cannot be moved, so the resolution
+is to bound what crosses each boundary rather than to ask for more room. That work has
+shipped: payloads now degrade (content capped, summaries slimmed) before they fail, and when
+they must fail they name the boundary instead of surfacing as an unexplained timeout.
+
+Bounded and verified: PM work-item listing (including the per-column and REST paths), MCP
+tool results, daily-brief collectors, and chat retry history. The accepted limits are listed
+under [Known limits](#known-limits) — most notably that the story *push* direction fails fast
+rather than chunking.
+
 ## The limit
 
 Every message crossing the Temporal gRPC boundary is capped at **4,194,304 bytes (4 MiB)**.
