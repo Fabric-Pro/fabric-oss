@@ -8432,7 +8432,12 @@ model ProjectQaSettings {
   // Stored as role keys (see `QA_SCEPTIC_ROLES`) so adding a role is data, not
   // a migration.
   scepticRolesEnabled Boolean  @default(true)
-  scepticRoles        String[] @default([])
+  /// Default MUST match `QA_SETTINGS_DEFAULTS.scepticRoles`: an unconfigured
+  /// project reads that constant, and this column is what gets written the
+  /// first time it saves anything. They disagreed once — the constant said
+  /// ["ux"] while this said [] — so saving an unrelated setting silently
+  /// dropped UX Skeptic. Pinned by `qa-settings-defaults-parity.test.ts`.
+  scepticRoles        String[] @default(["ux"])
 
   // --- Automatic pipeline-result sync --------------------------------------
   //
