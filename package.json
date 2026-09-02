@@ -78,7 +78,7 @@
 			"path-to-regexp@^8.0.0": "^8.4.0",
 			"picomatch@^4.0.0": "^4.0.4",
 			"serialize-javascript@^6.0.0": "^7.0.3",
-			"fast-uri@^3.0.0": "^3.1.5",
+			"fast-uri@^3.0.0": "^3.1.6",
 			"fast-xml-builder@^1.0.0": "^1.1.7",
 			"fastify@^5.0.0": "^5.8.5",
 			"tar@^7.0.0": "^7.5.21",
