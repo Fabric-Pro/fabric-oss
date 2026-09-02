@@ -34,7 +34,8 @@ vi.mock("@repo/database", () => ({
 	listPendingNominations: vi.fn(),
 	withdrawPromptNomination: vi.fn(),
 	getBoundPromptVersion: vi.fn().mockResolvedValue(null),
-	listPromptDefaultRecipients: vi.fn().mockResolvedValue([]),
+	listPromptDefaultAudience: vi.fn().mockResolvedValue([]),
+	markOwnOverrides: vi.fn().mockResolvedValue([]),
 	db: {
 		promptVersion: { findUnique: promptVersionFindUnique },
 		// The FR16 deep-link resolves the org slug; no row → personal-context path.
