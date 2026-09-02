@@ -26,6 +26,11 @@
 
 import { db, Prisma } from "@repo/database";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { filterByCurrentAccess } from "../../notifications/lib/access-filter";
+import {
+	INCIDENT_NOTIFICATION_TYPES,
+	WEEKLY_DIGEST_DEDUPE_PREFIX,
+} from "../../notifications/lib/incident-notification-types";
 import { hasReachableDatabaseUrl } from "../../prompts/__tests__/_helpers/db-availability";
 import { notifyDecisionOwner } from "../lib/decision-owner";
 
@@ -52,6 +57,33 @@ const rowsFor = (userId: string) =>
 			type: { in: ["DECISION_OWNER_ASSIGNED", "DECISION_OWNER_UPDATED"] },
 		},
 	});
+
+/**
+ * What the recipient's bell actually returns, not what the table contains.
+ *
+ * A written row and a visible notification are different claims: the bell
+ * matches `organizationId` exactly, hides incident types, hides archived and
+ * (on the unread tab) read rows, and then re-checks project access at read
+ * time. A notification can satisfy every assertion about its own columns and
+ * still reach nobody. This mirrors the where-clause and the access filter in
+ * `modules/notifications/procedures/list.ts` so a change there that strands
+ * decision-owner rows fails here instead of in someone's empty bell.
+ */
+const bellFor = async (userId: string, organizationId: string | null) => {
+	const rows = await db.notification.findMany({
+		where: {
+			userId,
+			organizationId,
+			archivedAt: null,
+			OR: [
+				{ type: { notIn: INCIDENT_NOTIFICATION_TYPES } },
+				{ dedupeKey: { startsWith: WEEKLY_DIGEST_DEDUPE_PREFIX } },
+			],
+		},
+		orderBy: { createdAt: "desc" },
+	});
+	return filterByCurrentAccess(rows, userId);
+};
 
 describe.skipIf(!hasReachableDatabaseUrl())(
 	"decision owner notification delivery (real Postgres)",
@@ -154,6 +186,41 @@ describe.skipIf(!hasReachableDatabaseUrl())(
 			const rows = await rowsFor(OWNER);
 			expect(rows).toHaveLength(1);
 			expect(rows[0].type).toBe("DECISION_OWNER_UPDATED");
+		});
+
+		// The rest of this suite proves a row was written. These prove the
+		// owner can actually SEE it — the two are not the same claim, and a
+		// notification nobody's bell returns is indistinguishable from one
+		// that was never sent.
+		it("reaches the owner's bell, not just the table", async () => {
+			await notifyDecisionOwner(decision(OWNER), actor, ORG, true);
+
+			const bell = await bellFor(OWNER, ORG);
+			const mine = bell.filter((n) =>
+				n.type.startsWith("DECISION_OWNER_"),
+			);
+			expect(mine).toHaveLength(1);
+			expect(mine[0].title).toContain("ADR-042");
+		});
+
+		// createNotification maps source.projectId onto the projectId COLUMN,
+		// which is what the read-time access filter reads. If that mapping is
+		// ever dropped the row survives every column assertion and silently
+		// stops being access-checked.
+		it("carries the project id the read-time access check needs", async () => {
+			await notifyDecisionOwner(decision(OWNER), actor, ORG, true);
+
+			const rows = await rowsFor(OWNER);
+			expect(rows[0].projectId).toBe(PROJECT);
+		});
+
+		// The bell matches organizationId exactly. A row written against the
+		// wrong tenant is invisible in the one the owner is actually browsing,
+		// which is the failure this assertion exists to catch.
+		it("is invisible from a different organization's bell", async () => {
+			await notifyDecisionOwner(decision(OWNER), actor, ORG, true);
+
+			expect(await bellFor(OWNER, null)).toHaveLength(0);
 		});
 	},
 );
