@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
+	projectFindFirst: vi.fn(),
 	findFirst: vi.fn(),
 	findUnique: vi.fn(),
 	createNotification: vi.fn(),
@@ -18,6 +19,7 @@ vi.mock("@repo/database", async () => {
 	return {
 		...actual,
 		db: {
+			project: { findFirst: mocks.projectFindFirst },
 			projectMember: { findFirst: mocks.findFirst },
 			organization: { findUnique: mocks.findUnique },
 		},
@@ -42,6 +44,8 @@ const decision = {
 };
 
 beforeEach(() => {
+	mocks.projectFindFirst.mockReset();
+	mocks.projectFindFirst.mockResolvedValue(null);
 	mocks.findFirst.mockReset();
 	mocks.findUnique.mockReset();
 	mocks.createNotification.mockReset();
@@ -49,6 +53,17 @@ beforeEach(() => {
 });
 
 describe("isActiveProjectMember", () => {
+	it("counts the project creator/owner, who has no ProjectMember row", async () => {
+		// Regression: staging offered the project owner in the Owner picker and
+		// then refused the save, because the owner is synthesized into the
+		// roster rather than stored as an accepted membership row.
+		mocks.projectFindFirst.mockResolvedValue({ id: "p-1" });
+		mocks.findFirst.mockResolvedValue(null);
+		await expect(isActiveProjectMember("p-1", "u-owner")).resolves.toBe(
+			true,
+		);
+	});
+
 	it("requires an accepted, unexpired membership row", async () => {
 		mocks.findFirst.mockResolvedValue({ id: "pm-1" });
 		await expect(isActiveProjectMember("p-1", "u-1")).resolves.toBe(true);

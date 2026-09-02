@@ -11,15 +11,30 @@ import { logger } from "@repo/logs";
 import { createNotification } from "../../../lib/notification-service";
 
 /**
- * Active membership, using the same predicate as the project roster
- * (`getProjectMembers`): a pending invitation or an expired guest is NOT a
- * member, so neither can be made accountable for a decision — nor receive the
- * notification that names it.
+ * Active membership, matching what the project roster (`getProjectMembers`)
+ * actually treats as a member — which is TWO things, not one:
+ *
+ *  - the project's creator/owner, who is synthesized into the roster and has
+ *    NO ProjectMember row at all (checking only the table rejects the owner of
+ *    the project — found on staging, where the owner could be offered in the
+ *    Owner picker and then refused on save);
+ *  - accepted, unexpired ProjectMember rows — so a pending invitation or a
+ *    lapsed guest is still not a member.
+ *
+ * Anyone outside those two cannot be made accountable for a decision, nor
+ * receive the notification that names it.
  */
 export async function isActiveProjectMember(
 	projectId: string,
 	userId: string,
 ): Promise<boolean> {
+	const project = await db.project.findFirst({
+		where: { id: projectId, userId },
+		select: { id: true },
+	});
+	if (project) {
+		return true;
+	}
 	const member = await db.projectMember.findFirst({
 		where: {
 			projectId,
