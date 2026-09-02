@@ -239,11 +239,20 @@ jobs:
       # binary the action downloads. Without `version:`, the action defaults
       # to `latest`, which would let upstream changes alter the behavior of
       # this required gate.
-      - uses: trufflesecurity/trufflehog@00155c9dc586f34d189adc83d3ac2698c2ec551f # v3.95.8
+      #
+      # The two pins are independent and are deliberately NOT held equal. The
+      # wrapper is kept current — bumping it only ever changes how the
+      # container is invoked — while the binary moves on its own schedule,
+      # because a detector change alters what this required gate finds and can
+      # redden master for every other pull request. Bump `version:` as its own
+      # reviewed change, not as a side effect of a wrapper bump.
+      - uses: trufflesecurity/trufflehog@20652fbbdefffcdaa493a5bf57ab2ac6b1db715b # v3.97.1
         with:
-          # GHCR Docker tag — note the missing `v` prefix. The git tag is
-          # v3.95.8 but the published image is `ghcr.io/trufflesecurity/
-          # trufflehog:3.95.8`, matching the release binary naming.
+          # GHCR Docker tag for the scanner binary — note the missing `v`
+          # prefix. TruffleHog's git tags carry one (v3.95.8) but the published
+          # image does not (`ghcr.io/trufflesecurity/trufflehog:3.95.8`),
+          # matching the release binary naming. This tracks the binary, not the
+          # wrapper tag above; see the note there before changing it.
           version: 3.95.8
           # `head` scopes non-PR scans to the branch being checked out. The
           # action always passes `--branch $HEAD` to the CLI, but on schedule
