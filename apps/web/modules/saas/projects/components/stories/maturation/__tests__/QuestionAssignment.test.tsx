@@ -126,6 +126,33 @@ describe("mentionedMemberIds", () => {
 		);
 	});
 
+	/**
+	 * Two accounts whose display names are "Ann" and "Ann Lee" — a person plus
+	 * their second test account is the ordinary way this happens. `(?!\w)` stops
+	 * `@Sam` matching inside `@Sammy`, but the char after `Ann` in `@Ann Lee` is
+	 * a SPACE, so the guard passes and one token named both people. The "Ask"
+	 * button then offered to route the question to somebody nobody had typed.
+	 */
+	it("gives a token to the longest matching name, not also to its prefix", () => {
+		const pair = [
+			{ id: "u_ann", name: "Ann", email: null, avatarUrl: null },
+			{ id: "u_ann_lee", name: "Ann Lee", email: null, avatarUrl: null },
+		];
+		expect(mentionedMemberIds("please review @Ann Lee", pair)).toEqual([
+			"u_ann_lee",
+		]);
+	});
+
+	it("still names both when both are actually mentioned", () => {
+		const pair = [
+			{ id: "u_ann", name: "Ann", email: null, avatarUrl: null },
+			{ id: "u_ann_lee", name: "Ann Lee", email: null, avatarUrl: null },
+		];
+		expect(
+			mentionedMemberIds("@Ann and @Ann Lee — thoughts?", pair).sort(),
+		).toEqual(["u_ann", "u_ann_lee"]);
+	});
+
 	it("does not match a longer name that merely starts with one", () => {
 		expect(
 			mentionedMemberIds("@Sammy is someone else", [
