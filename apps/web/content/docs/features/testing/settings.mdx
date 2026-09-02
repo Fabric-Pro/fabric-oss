@@ -154,7 +154,7 @@ Everything below the depth selector is a **draft until you press Save**, and Dis
   <Step>
     ### Required test types (sceptic roles)
 
-    Adversarial reviewers that add extra cases during planning, each with its own lens — **Security Reviewer**, **UX Skeptic**, **Performance Critic**, **Accessibility Auditor**, and **Edge-Case Hunter**. All five are on until you change them. Cases they contribute arrive as **Proposed**, so nothing enters your suite without review.
+    Adversarial reviewers that add extra cases during planning, each with its own lens — **Security Reviewer**, **UX Skeptic**, **Performance Critic**, **Accessibility Auditor**, and **Edge-Case Hunter**. Only **UX Skeptic** is on in a new project; enable the others when you want their lens. Cases they contribute arrive as **Proposed**, so nothing enters your suite without review.
 
     **Your depth caps these roles.** A role whose dimension your depth excludes writes nothing — so a project set to Light does not receive security, performance or accessibility cases even with those roles enabled.
 
@@ -162,9 +162,18 @@ Everything below the depth selector is a **draft until you press Save**, and Dis
   </Step>
 
   <Step>
-    ### Coverage target
+    ### Automation target
 
-    The percentage of a feature's acceptance criteria that needs a test case behind it. Defaults to 80%.
+    Under **Confidence & coverage**: the level the automation figure on the Testing tab is measured against. Defaults to **80%**.
+
+    This target is reporting only — it shapes what the coverage rings tell you, and blocks nothing. Turning off **Index coverage** removes the comparison entirely.
+
+  </Step>
+
+  <Step>
+    ### Test Coverage Target
+
+    Under **Sign-off**: the percentage of a feature's acceptance criteria that must have at least one test case linked before the feature can be marked Done. **Off by default** — switching it on pre-fills **30%**.
 
     A feature below the target **cannot be marked Done until someone records why**. The refusal names the numbers — how many criteria are covered, out of how many, and what the project asks for — so the choice is between adding cases for the uncovered criteria or saying why you are shipping without them.
 
@@ -175,7 +184,7 @@ Everything below the depth selector is a **draft until you press Save**, and Dis
     Coverage counts **criteria covered, not cases written** — ten cases all pointing at the same criterion is not ten coverage.
 
     <Callout type="info">
-    Set the target to **0** to switch the check off entirely. A feature with no acceptance criteria always passes it — there is nothing to cover, and blocking it behind a target it can never reach would help nobody.
+    Switching the gate **off** — or setting the target to **0** — disables the check entirely. A feature with no acceptance criteria always passes it — there is nothing to cover, and blocking it behind a target it can never reach would help nobody.
     </Callout>
 
     The check applies when a feature *moves* to Done, so raising your target does not freeze features you have already shipped.
@@ -194,7 +203,7 @@ Everything below the depth selector is a **draft until you press Save**, and Dis
   <Step>
     ### Devices and browsers
 
-    The viewport and browser a Fabric-driven run uses. Defaults are 1920×1080 (with 1366×768 as a second option) and Chromium; Firefox and WebKit are available. The first entry in each list is the one a run uses.
+    The viewport and browser a Fabric-driven run uses. Defaults are **1920×1080** and **Chrome** — one combination, since that is exactly what a run reads. Firefox and WebKit are available, and any other window size fits the free-text field.
   </Step>
 
   <Step>

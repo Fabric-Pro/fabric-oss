@@ -135,7 +135,8 @@ beforeEach(() => {
 	signOffStatus.mockResolvedValue(unsatisfied);
 	// Coverage gate off by default here, so the sign-off tests above stay about
 	// sign-offs. A target of 0 short-circuits before coverage is even computed.
-	qaSettings.mockResolvedValue({ coverageTarget: 0 });
+	// The reporting target stays at 80 on purpose: the Done gate must not read it.
+	qaSettings.mockResolvedValue({ coverageTarget: 80, testCoverageTarget: 0 });
 	storyCoverage.mockResolvedValue({
 		totalCriteria: 0,
 		coveredCriteria: 0,
@@ -224,13 +225,18 @@ describe("update-story QA sign-off gate", () => {
 });
 
 /**
- * The coverage-target gate on marking a feature done.
+ * The test-coverage-target gate on marking a feature done.
  *
- * The target had shipped as a number nothing read: a project could ask for 80%
- * and close every feature at 10% without anything noticing. It now refuses the
- * move to Done — but takes a reason rather than being immovable, because a
- * low-risk feature may legitimately ship under it and a second wall as absolute
- * as the sign-off gate would strand work for a far less clear-cut reason.
+ * The gate reads its own setting (`testCoverageTarget`) and never the reporting
+ * target (`coverageTarget`) the automation rings measure against. One number
+ * used to drive both, which armed a blocking transition from a field the
+ * settings screen described as an automation-reporting target — the defect this
+ * split exists to remove, so the split itself is pinned here from both sides.
+ *
+ * It refuses the move to Done below target — but takes a reason rather than
+ * being immovable, because a low-risk feature may legitimately ship under it
+ * and a second wall as absolute as the sign-off gate would strand work for a
+ * far less clear-cut reason.
  *
  * The two failure modes worth pinning, and neither is "does it block":
  *
@@ -241,7 +247,7 @@ describe("update-story QA sign-off gate", () => {
  *    record of a decision nobody made, from a client that always sends the
  *    field.
  */
-describe("update-story coverage-target gate", () => {
+describe("update-story test-coverage-target gate", () => {
 	const satisfied = { recorded: 2, required: 2, satisfied: true };
 
 	function transitioningToDone() {
@@ -255,10 +261,28 @@ describe("update-story coverage-target gate", () => {
 
 	beforeEach(() => {
 		// Sign-offs satisfied throughout: this block is about coverage, and a
-		// sign-off refusal would mask it.
+		// sign-off refusal would mask it. The reporting target is 0 here so any
+		// gating observed below can only come from the dedicated field.
 		signOffStatus.mockResolvedValue(satisfied);
 		transitioningToDone();
-		qaSettings.mockResolvedValue({ coverageTarget: 80 });
+		qaSettings.mockResolvedValue({
+			coverageTarget: 0,
+			testCoverageTarget: 80,
+		});
+	});
+
+	it("ignores the reporting coverageTarget — rings on, gate off means Done", async () => {
+		// The regression this block exists for: a project that only ever set the
+		// automation-reporting target must not have its features blocked.
+		qaSettings.mockResolvedValue({
+			coverageTarget: 80,
+			testCoverageTarget: 0,
+		});
+
+		await run({ maturationStatus: "DONE" });
+
+		expect(storyCoverage).not.toHaveBeenCalled();
+		expect(updateStoryFn).toHaveBeenCalled();
 	});
 
 	it("refuses Done below the target, naming the numbers", async () => {
@@ -315,10 +339,13 @@ describe("update-story coverage-target gate", () => {
 		expect(data.coverageOverrideById).toBeUndefined();
 	});
 
-	it("is silent for a project whose target is 0", async () => {
-		// The default for a project that never configured one. Coverage is not
-		// even computed.
-		qaSettings.mockResolvedValue({ coverageTarget: 0 });
+	it("is silent for a project whose gate target is 0", async () => {
+		// The default for every project — saved or not — after the split.
+		// Coverage is not even computed.
+		qaSettings.mockResolvedValue({
+			coverageTarget: 80,
+			testCoverageTarget: 0,
+		});
 
 		await run({ maturationStatus: "DONE" });
 

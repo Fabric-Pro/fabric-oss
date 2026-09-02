@@ -174,7 +174,10 @@ export const updateStoryProcedure = tenantProtectedProcedure
 				});
 			}
 
-			// The coverage target, which until now was a number nothing read.
+			// The test coverage gate — its own setting (`testCoverageTarget`), not
+			// the reporting `coverageTarget` the rings read. One number once drove
+			// both, which armed a blocking transition from a field the settings
+			// screen described as an automation-reporting target.
 			//
 			// Refuses the move to Done below target, but takes a reason instead
 			// of being immovable. A low-risk feature may legitimately ship under
@@ -185,9 +188,9 @@ export const updateStoryProcedure = tenantProtectedProcedure
 			//
 			// Read per call like the sign-off threshold above, so raising the
 			// target takes effect on the next attempt rather than the next
-			// deploy.
+			// deploy. 0 — the default for every project — short-circuits to off.
 			const qaSettings = await getProjectQaSettings(input.projectId);
-			const target = qaSettings?.coverageTarget ?? 0;
+			const target = qaSettings?.testCoverageTarget ?? 0;
 			if (target > 0) {
 				const coverage = await getStoryCoverage({
 					projectId: input.projectId,

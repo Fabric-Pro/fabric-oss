@@ -2316,7 +2316,7 @@
 							"runnerAgentic": "Agentisch — nutzt die erfassten Schritte und KI",
 							"runnerScripted": "Skriptgesteuert — führt einen gespeicherten Aktionsplan in einer Sandbox aus",
 							"runnerHintAgentic": "Fabric interpretiert jeden erfassten Schritt, während es den Browser steuert.",
-							"runnerHintScripted": "Jeder ausgewählte Testfall benötigt einen gespeicherten Plan. Skriptgesteuerte Läufe nutzen Chromium und führen keine Modellaufrufe aus.",
+							"runnerHintScripted": "Jeder ausgewählte Testfall benötigt einen gespeicherten Plan. Skriptgesteuerte Läufe nutzen Chrome und führen keine Modellaufrufe aus.",
 							"environment": "Umgebung",
 							"projectDefault": "Projektstandard",
 							"environmentOption": "{name} — {type}",

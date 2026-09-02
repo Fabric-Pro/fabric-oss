@@ -930,7 +930,7 @@ export type TestCaseScriptRevisionScalarFieldEnum = z.infer<typeof TestCaseScrip
 
 // File: ProjectQaSettingsScalarFieldEnum.schema.ts
 
-export const ProjectQaSettingsScalarFieldEnumSchema = z.enum(['id', 'projectId', 'strategyDepth', 'requiredTestTypes', 'confidenceThreshold', 'indexCoverageEnabled', 'coverageTarget', 'requiredQaSignOffs', 'prReviewAutoReviewEnabled', 'prReviewQaLensEnabled', 'prReviewArchitectureLensEnabled', 'architectureRules', 'resolutions', 'browsers', 'rulesMarkdown', 'implementationNotes', 'evidencePolicy', 'evidenceRetentionDays', 'scepticRolesEnabled', 'scepticRoles', 'pipelineSyncEnabled', 'pipelineSyncIntervalMinutes', 'defaultEnvironmentId', 'userId', 'organizationId', 'createdAt', 'updatedAt'])
+export const ProjectQaSettingsScalarFieldEnumSchema = z.enum(['id', 'projectId', 'strategyDepth', 'requiredTestTypes', 'confidenceThreshold', 'indexCoverageEnabled', 'coverageTarget', 'testCoverageTarget', 'requiredQaSignOffs', 'prReviewAutoReviewEnabled', 'prReviewQaLensEnabled', 'prReviewArchitectureLensEnabled', 'architectureRules', 'resolutions', 'browsers', 'rulesMarkdown', 'implementationNotes', 'evidencePolicy', 'evidenceRetentionDays', 'scepticRolesEnabled', 'scepticRoles', 'pipelineSyncEnabled', 'pipelineSyncIntervalMinutes', 'defaultEnvironmentId', 'userId', 'organizationId', 'createdAt', 'updatedAt'])
 
 export type ProjectQaSettingsScalarFieldEnum = z.infer<typeof ProjectQaSettingsScalarFieldEnumSchema>;
 
@@ -6878,6 +6878,7 @@ export const ProjectQaSettingsSchema = z.object({
   confidenceThreshold: z.number().int().default(80),
   indexCoverageEnabled: z.boolean().default(true),
   coverageTarget: z.number().int().default(80),
+  testCoverageTarget: z.number().int(),
   requiredQaSignOffs: z.number().int(),
   prReviewAutoReviewEnabled: z.boolean(),
   prReviewQaLensEnabled: z.boolean().default(true),

@@ -24,6 +24,12 @@ import { Loader2Icon, PlayIcon } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
+import {
+	BROWSER_LABEL,
+	BROWSERS,
+	type Browser,
+	SUGGESTED_RESOLUTIONS,
+} from "../../qa-settings/qa-settings-constants";
 
 /**
  * The run-configuration dialog, and the saved configurations it offers.
@@ -47,11 +53,7 @@ import { toast } from "sonner";
 /** Sentinel — Radix Select cannot hold an empty value. */
 const USE_PROJECT_DEFAULT = "__default__";
 
-const BROWSERS = ["chromium", "firefox", "webkit"] as const;
-/** The closed set the dispatch procedure validates against. */
-type Browser = (typeof BROWSERS)[number];
 type RunMode = "MODE_A" | "MODE_B";
-const RESOLUTIONS = ["1920x1080", "1440x900", "1366x768", "390x844"] as const;
 
 export function RunConfigurationDialog({
 	projectId,
@@ -287,7 +289,7 @@ export function RunConfigurationDialog({
 										</SelectItem>
 										{BROWSERS.map((b) => (
 											<SelectItem key={b} value={b}>
-												{b}
+												{BROWSER_LABEL[b]}
 											</SelectItem>
 										))}
 									</SelectContent>
@@ -308,7 +310,7 @@ export function RunConfigurationDialog({
 										<SelectItem value={USE_PROJECT_DEFAULT}>
 											{t("projectDefault")}
 										</SelectItem>
-										{RESOLUTIONS.map((r) => (
+										{SUGGESTED_RESOLUTIONS.map((r) => (
 											<SelectItem key={r} value={r}>
 												{r}
 											</SelectItem>

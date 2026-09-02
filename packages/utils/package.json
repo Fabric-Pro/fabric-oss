@@ -59,6 +59,11 @@
 			"import": "./lib/qa-test-types.ts",
 			"default": "./lib/qa-test-types.ts"
 		},
+		"./qa-resolutions": {
+			"types": "./lib/qa-resolutions.ts",
+			"import": "./lib/qa-resolutions.ts",
+			"default": "./lib/qa-resolutions.ts"
+		},
 		"./layer-rules": {
 			"types": "./lib/layer-rules.ts",
 			"import": "./lib/layer-rules.ts",

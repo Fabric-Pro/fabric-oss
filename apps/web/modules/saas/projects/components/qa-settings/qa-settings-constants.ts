@@ -12,6 +12,7 @@
  * every project's row to say the same thing it already says.
  */
 
+import { QA_RESOLUTION_PATTERN } from "@repo/utils/qa-resolutions";
 import type { QaTestType } from "@repo/utils/qa-test-types";
 
 export const STRATEGY_DEPTHS = ["HARD", "AVERAGE", "EASY"] as const;
@@ -115,19 +116,28 @@ export const EVIDENCE_POLICY_LABEL: Record<EvidencePolicy, string> = {
 export const BROWSERS = ["chromium", "firefox", "webkit"] as const;
 export type Browser = (typeof BROWSERS)[number];
 
+/**
+ * `chromium` stays the stored enum — existing projects persist it and the
+ * runner consumes it — so the everyday name lives here, at the display layer,
+ * exactly like the Light/Standard/Enterprise depth labels above.
+ */
 export const BROWSER_LABEL: Record<Browser, string> = {
-	chromium: "Chromium",
+	chromium: "Chrome",
 	firefox: "Firefox",
 	webkit: "WebKit",
 };
 
-/** Common defaults offered as one-click toggles; any WxH can still be typed. */
+/** Common laptop/mobile defaults offered as one-click picks; any WxH fits the free-text field. */
 export const SUGGESTED_RESOLUTIONS = [
 	"1920x1080",
-	"1366x768",
+	"1536x864",
 	"1440x900",
 	"390x844",
+	"393x852",
+	"412x915",
 ] as const;
+
+export { QA_RESOLUTION_PATTERN as RESOLUTION_PATTERN };
 
 /**
  * The adversarial personas that may append test cases during planning. Keys

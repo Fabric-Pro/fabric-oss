@@ -196,6 +196,66 @@ describe("organization brand palette", () => {
 		});
 	});
 
+	describe("brand fills as non-text UI surface (slider tracks)", () => {
+		// The shared Slider paints its filled range in `--primary`, which inside
+		// an org is the brand hex. WCAG 2.1 1.4.11 wants ≥3:1 between the filled
+		// and unfilled track (`--muted`) in each theme. Measured against the
+		// default tokens, `green` in light mode lands at 2.82:1 — below the bar —
+		// so slider position there leans back toward hue-only perception.
+		//
+		// Asserted as still-failing ON PURPOSE, the same pattern
+		// theme-token-contrast.test.ts uses: when someone darkens the green fill
+		// (#15803d measures 4.29:1, #047857 4.69:1), this flips red and tells
+		// them to move it out of the list. Adding an entry is a design decision,
+		// not a way to silence the test.
+		const NON_TEXT = 3;
+		const KNOWN_FAILING_NON_TEXT = [
+			{ brand: "green", theme: "light", surface: "#efede8", ratio: 2.82 },
+		] as const;
+
+		const LIGHT_MUTED = "#efede8";
+		const DARK_MUTED = "#211f1f";
+
+		it("every brand fill that clears the bar is asserted", () => {
+			for (const brand of brands) {
+				for (const [theme, muted] of [
+					["light", LIGHT_MUTED],
+					["dark", DARK_MUTED],
+				] as const) {
+					const known = KNOWN_FAILING_NON_TEXT.find(
+						(k) => k.brand === brand.name && k.theme === theme,
+					);
+					if (known) {
+						continue;
+					}
+					const ratio = contrastRatio(
+						parseHex(brand.hex),
+						parseHex(muted),
+					);
+					expect(
+						ratio,
+						`${brand.name} fill on ${theme} --muted = ${ratio.toFixed(2)}:1`,
+					).toBeGreaterThanOrEqual(NON_TEXT);
+				}
+			}
+		});
+
+		for (const known of KNOWN_FAILING_NON_TEXT) {
+			it(`${known.brand} fill on ${known.theme} --muted is a KNOWN failure (${known.ratio}:1)`, () => {
+				const brand = brands.find((b) => b.name === known.brand);
+				expect(brand, known.brand).toBeDefined();
+				const ratio = contrastRatio(
+					parseHex((brand as Brand).hex),
+					parseHex(known.surface),
+				);
+				expect(
+					ratio,
+					`${known.brand} now measures ${ratio.toFixed(2)}:1 — if fixed, remove it from KNOWN_FAILING_NON_TEXT`,
+				).toBeLessThan(NON_TEXT);
+			});
+		}
+	});
+
 	describe("why the dark ink is the only option for those seven", () => {
 		// The whole point of this block. For a fill of luminance L, a LIGHTER
 		// foreground reaching ratio R needs luminance >= R*(L+0.05) - 0.05. When

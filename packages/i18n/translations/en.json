@@ -2946,7 +2946,7 @@
 							"runnerAgentic": "Agentic — uses authored steps and AI",
 							"runnerScripted": "Scripted — runs a saved action plan in a sandbox",
 							"runnerHintAgentic": "Fabric interprets each authored step while it drives the browser.",
-							"runnerHintScripted": "Every selected case must have a saved plan. Scripted runs use Chromium and make no model calls.",
+							"runnerHintScripted": "Every selected case must have a saved plan. Scripted runs use Chrome and make no model calls.",
 							"environment": "Environment",
 							"projectDefault": "Project default",
 							"environmentOption": "{name} — {type}",

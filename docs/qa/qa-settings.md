@@ -51,12 +51,13 @@ Every field is optional server-side, so a partial payload preserves stored value
 | Strategy & depth | `strategyDepth` | `AVERAGE` | AI drafting |
 | Required test types | `requiredTestTypes` | `[]` — follow the tier | AI drafting |
 | Evidence policy | `evidencePolicy` | `SCREENSHOT_REQUIRED` | AI drafting |
-| Sceptic roles | `scepticRolesEnabled`, `scepticRoles` | on, all five | AI drafting |
+| Sceptic roles | `scepticRolesEnabled`, `scepticRoles` | on, UX Skeptic only | AI drafting |
 | Index coverage | `indexCoverageEnabled` | `true` | the coverage rings |
-| Coverage target | `coverageTarget` | `80` | the coverage rings, and the gate on marking a feature done |
+| Automation target | `coverageTarget` | `80` | the coverage rings only — reporting, blocks nothing |
+| Test Coverage Target | `testCoverageTarget` | `0` (off) | the Done gate: % of acceptance criteria needing a linked case |
 | Confidence threshold | `confidenceThreshold` | `80` | the bar a verdict must clear to be recorded; below it a step is `NEEDS_REVIEW` |
 | Default environment | `defaultEnvironmentId` | `null` | which environment a run targets when the dispatch does not name one |
-| Default resolution | `resolutions` | `1920x1080`, `1366x768` | the first entry is the viewport a Fabric run uses |
+| Default resolution | `resolutions` | `1920x1080` | the first entry is the viewport a Fabric run uses |
 | Default browser | `browsers` | `chromium` | the first entry is the browser a Fabric run launches |
 | Evidence retention | `evidenceRetentionDays` | `90` | days a run's screenshots are kept; `0` keeps them indefinitely |
 | Rules / implementation notes | `rulesMarkdown`, `implementationNotes` | empty | house rules given to the runner before it drives a case |
@@ -144,10 +145,12 @@ row to say what it already says.
 
 ### Depth vs. sceptic roles — the tier is a baseline, not a ceiling
 
-`scepticRoles` is an independent control that **defaults to all five on**. A flat
-per-tier exclusion therefore contradicted the lens clause on a *default* project
-set to Light: "do not write security cases" followed four sentences later by
-"apply a security lens".
+`scepticRoles` is an independent control that **defaults to UX Skeptic only** —
+the other four are opt-in, so a default project runs one adversarial lens rather
+than five switches of which depth silences three. A flat per-tier exclusion
+would otherwise contradict the lens clause on a *default* project set to Light:
+"do not write security cases" followed four sentences later by "apply a security
+lens".
 
 The resolution is ordering plus wording, not coupling:
 
@@ -162,8 +165,8 @@ The resolution is ordering plus wording, not coupling:
 
 **Depth caps the roles** (product ruling, 2026-07-31). `resolveScepticRoles`
 drops a role whose dimension the project's effective test types exclude, so
-setting Light does what the tier says rather than being overruled by three
-roles that default to on.
+setting Light does what the tier says rather than being overruled by roles that
+are switched on but cannot write.
 
 Read *effective*, not *the tier's default*: ticking `security` under Depth &
 scope keeps the Security Reviewer at any depth, because an explicit choice
@@ -254,7 +257,9 @@ policy take effect on an already-seeded environment.
 
 `indexCoverageEnabled` and `coverageTarget` set the target the coverage rings on
 the QA tab are measured against. With index coverage off, the rings
-render without a target.
+render without a target. Since the split, that pair is reporting-only — the
+Done gate reads its own `testCoverageTarget`, so "rings on, gate off" is an
+expressible state rather than one number silently doing both jobs.
 
 ### Pipeline sources
 
@@ -543,17 +548,22 @@ Playwright script for one: a team that writes its own cases may still want help
 revising and automating them, and blocking that would remove AI assistance from
 exactly the teams who opted out of AI authorship. Decided 2026-07-31.
 
-**The coverage target BLOCKS Done, and the block takes a reason.** Superseded the
-2026-07-31 ruling that it was advisory, on 2026-08-01.
+**The test coverage target BLOCKS Done, and the block takes a reason.** The
+gate first shipped reading `coverageTarget` — then a number shared with the
+coverage rings, so setting "how much automation to show in the report" silently
+armed a blocking Done transition measured over acceptance criteria instead.
+Superseded the 2026-07-31 ruling that it was advisory on 2026-08-01; split onto
+its own `testCoverageTarget` field (off by default, pre-filling 30% when
+enabled) after that borrowing was observed during QA review.
 
-That ruling framed the choice as gate-or-don't-gate, and both answers were wrong.
-Left advisory, `coverageTarget` was a number nothing read: a project could ask for
-80% and close every feature at 10% with nothing anywhere noticing, which makes a
-control that reads as a guarantee. Made an absolute gate, it would strand low-risk
-work for a reason far less clear-cut than a missing sign-off.
+That earlier ruling framed the choice as gate-or-don't-gate, and both answers
+were wrong. Left advisory, the target was a number nothing read: a project could
+ask for 80% and close every feature at 10% with nothing anywhere noticing, which
+makes a control that reads as a guarantee. Made an absolute gate, it would
+strand low-risk work for a reason far less clear-cut than a missing sign-off.
 
-So it refuses the move to Done below target **unless a reason is recorded**, and
-the reason is stored on the feature with who gave it and when
+So the gate refuses the move to Done below target **unless a reason is
+recorded**, and the reason is stored on the feature with who gave it and when
 (`coverageOverrideReason` / `…ById` / `…At`). A team that ships under target
 repeatedly can see that it did and why — which neither a silent number nor an
 immovable wall would have given them.

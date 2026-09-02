@@ -8346,6 +8346,18 @@ model ProjectQaSettings {
   indexCoverageEnabled Boolean @default(true)
   coverageTarget       Int     @default(80)
 
+  /// The share of a feature's acceptance criteria (0–100) that must have at
+  /// least one test case linked before it can be marked DONE. Zero — the
+  /// default — disables the gate, so no project that never opens the page is
+  /// silently blocked, matching `requiredQaSignOffs`.
+  ///
+  /// Deliberately NOT `coverageTarget`: that number measures automation over
+  /// test cases for the reporting rings, and borrowing it for the Done gate
+  /// armed a blocking transition on a field the screen described as
+  /// reporting-only. A separate column keeps the two policies independent —
+  /// including "rings on, gate off", which one number cannot express.
+  testCoverageTarget Int @default(0)
+
   /// How many distinct people must sign a feature off before it can be marked
   /// DONE. Zero — the default — disables the gate entirely, so no project that
   /// never opens this page changes behaviour.
@@ -8391,8 +8403,9 @@ model ProjectQaSettings {
   /// explain their own conventions.
   architectureRules String? @db.Text
 
-  // Devices & browsers exercised by default.
-  resolutions String[] @default(["1920x1080", "1366x768"])
+  // Devices & browsers exercised by default. One combination — the runner
+  // reads only the first entry, so a second shipped default was inert.
+  resolutions String[] @default(["1920x1080"])
   browsers    String[] @default(["chromium"])
 
   // Rules & evidence — policy the automation is expected to enforce.

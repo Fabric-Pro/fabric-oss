@@ -33,7 +33,7 @@ export const TESTING_SECTIONS = [
 		label: "Confidence & coverage",
 		icon: "target",
 		title: "Confidence & coverage",
-		blurb: "The bar a verdict must clear before it is recorded against a case, and the coverage level the automation figure on the Testing tab is measured against.",
+		blurb: "The bar a verdict must clear before it is recorded against a case, and the coverage level the automation figure on the Testing tab is measured against. The automation target is reporting only — it blocks nothing.",
 	},
 	{
 		id: "reviewLenses",
@@ -75,7 +75,7 @@ export const TESTING_SECTIONS = [
 		label: "Sign-off",
 		icon: "user-check",
 		title: "Sign-off",
-		blurb: "How many people must record a QA sign-off before a feature can move to Done. Zero disables the gate, which is the default — a project that has not chosen a number is not silently blocked.",
+		blurb: "What blocks a feature from moving to Done: how many people must record a QA sign-off, and what share of its acceptance criteria must have at least one test case linked. Both ship disabled — a project that has not chosen a number is not silently blocked.",
 	},
 	{
 		id: "sceptics",
@@ -124,7 +124,7 @@ export const SECTION_FIELDS: Record<TestingSectionId, readonly string[]> = {
 		"evidenceRetentionDays",
 	],
 	sync: ["pipelineSyncEnabled", "pipelineSyncIntervalMinutes"],
-	signOff: ["requiredQaSignOffs"],
+	signOff: ["requiredQaSignOffs", "testCoverageTarget"],
 	sceptics: ["scepticRolesEnabled", "scepticRoles"],
 };
 
