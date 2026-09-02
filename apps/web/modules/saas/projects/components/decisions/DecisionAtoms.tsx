@@ -74,8 +74,24 @@ export function DecisionTagPills({
 }) {
 	const pill =
 		"inline-flex items-center rounded-full border px-2 py-0.5 font-medium text-[11px] leading-none";
+	// Capture requires a type and a duration, but a decision extracted from a
+	// meeting is tagged by a model call that can fail — and one that failed
+	// leaves the draft untagged for good. Say so on the row rather than letting
+	// it read as a decision nobody needed to classify.
+	const needsClassification = !decisionType?.name || !duration;
 	return (
 		<>
+			{needsClassification && (
+				<span
+					className={cn(
+						pill,
+						"border-highlight/40 bg-highlight/10 text-highlight",
+						className,
+					)}
+				>
+					Needs classification
+				</span>
+			)}
 			{decisionType?.name && (
 				<span className={cn(pill, TYPE_TAG_CLASS, className)}>
 					{decisionType.name}
