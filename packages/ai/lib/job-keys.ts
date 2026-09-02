@@ -38,6 +38,17 @@ export const AI_JOB_TYPES = [
 	 * per-click cost inside a daily cron's line item.
 	 */
 	"publishing-planning-analysis",
+	/**
+	 * Publishing-suite Short Post / Tweet drafting (#1853).
+	 *
+	 * Separate from `publishing-planning-analysis` for the reason that one is
+	 * separate from `publishing-suggestion`: the planning worksheet runs once per
+	 * topic and this runs every time someone wants three more options to choose
+	 * between, so the two have very different per-topic spend. Folding them
+	 * together would make a regeneration habit invisible inside the cost of
+	 * analysing topics at all.
+	 */
+	"publishing-short-post",
 	/** Slack channel monitor note summarization. */
 	"slack-channel-monitor",
 	/** Security scanning grouping/review/scan model calls. */

@@ -272,6 +272,7 @@ import {
 	createPublishingTopicProcedure,
 	generatePlanningAnalysisProcedure,
 	generatePublishingTopicsNowProcedure,
+	generateShortPostProcedure,
 	getPlanningAnalysisProcedure,
 	getPublishingSuiteSettingsProcedure,
 	getPublishingTopicProcedure,
@@ -281,6 +282,7 @@ import {
 	listPublishingTopicsProcedure,
 	listTopicDecisionsProcedure,
 	listTopicDraftsProcedure,
+	selectShortPostOptionProcedure,
 	setTopicReadStateProcedure,
 	setTopicSnoozeProcedure,
 	updatePublishingSuiteSettingsProcedure,
@@ -1366,12 +1368,19 @@ export const projectsRouter = {
 		// and the AI Updates a regeneration writes.
 		listTopicDecisions: listTopicDecisionsProcedure,
 		answerTopicQuestion: answerTopicQuestionProcedure,
-		// #1853 (2B-1): the topic's generated-draft state. Like
-		// `getPlanningAnalysis`, it returns TWO rows per content type — the
-		// latest attempt and the latest READY one — so a failed regeneration
-		// cannot blank a good draft the reader still wants. Read only; the
-		// generation writes arrive in 2B-2/2B-3.
+		// #1853 (2B-1): the topic's generated-draft state, and the poll target
+		// while a generation runs. Like `getPlanningAnalysis`, it returns TWO
+		// rows per content type — the latest attempt and the latest READY one —
+		// so a failed regeneration cannot blank a good draft the reader still
+		// wants.
 		listTopicDrafts: listTopicDraftsProcedure,
+		// #1853 (2B-2): Short Post / Tweet. `generateShortPost` starts one run
+		// and returns immediately — the panel polls `listTopicDrafts` for the
+		// result. `selectShortPostOption` adopts one of the three generated
+		// options as the topic's working draft; it takes the option's LABEL, not
+		// its text, and reads the text from the stored draft.
+		generateShortPost: generateShortPostProcedure,
+		selectShortPostOption: selectShortPostOptionProcedure,
 	},
 
 	// User Stories & Tasks (Kanban)

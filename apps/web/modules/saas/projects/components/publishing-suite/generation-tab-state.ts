@@ -15,6 +15,10 @@
  *     problem on a tab they have NOT opened.
  */
 
+import {
+	isRestrictingThread,
+	SAFETY_CRITICAL_KINDS,
+} from "@repo/utils/publishing-restrictions";
 import type { PlanningAnalysisDocument } from "./planning-analysis-content";
 import type { PostType } from "./topic-shared";
 
@@ -137,43 +141,19 @@ export interface Restrictions {
 }
 
 /**
- * Decision kinds whose unresolved state constrains any generated content.
+ * The restriction predicate and its safety-critical kinds live in
+ * `@repo/utils/publishing-restrictions`, not here.
  *
- * An unapproved customer name, asset, metric, internal UI capture or AI
- * likeness is not a question about one content type — it is a fact the draft
- * must not assert, whichever type is being written. `CONTENT_TYPE` is handled
- * separately below precisely because it IS type-specific.
+ * Phase 2B-2 moved them: the Temporal activity that writes the prompt needs the
+ * SAME list this tab shows, because the tab tells the reader "these will be
+ * generalized rather than asserted" and the prompt is what makes that true. Two
+ * copies would let the promise and the behaviour drift with nothing to catch it
+ * — a generalized draft and an over-cautious one read identically.
+ *
+ * Re-exported so this module stays the one import site for everything about
+ * generation tab state.
  */
-const SAFETY_CRITICAL_KINDS: ReadonlySet<string> = new Set([
-	"CUSTOMER_NAME",
-	"ASSET_APPROVAL",
-	"METRICS_APPROVAL",
-	"INTERNAL_UI",
-	"VIDEO_WALKTHROUGH",
-]);
-
-/**
- * Whether ONE thread restricts what a draft may assert.
- *
- * Exported so the panel that LISTS restrictions and the resolver that
- * AGGREGATES them share a single definition. They must not each derive it: an
- * earlier version of the panel filtered on the aggregated `global` flag, which
- * is a property of the whole thread set — so the moment any safety-critical
- * question existed, every open thread passed, including the authorship
- * questions the list exists to keep out.
- *
- * Only `OPEN` `QUESTION` roots count. An answered decision is not a restriction
- * — counting one would make the warning permanent and teach its reader to
- * ignore it — and an `AI_UPDATE` is a note, not a question.
- */
-export function isRestrictingThread(thread: RestrictionThread): boolean {
-	const { root } = thread;
-	if (root.kind !== "QUESTION" || root.status !== "OPEN") {
-		return false;
-	}
-	const kind = root.decisionKind ?? "";
-	return SAFETY_CRITICAL_KINDS.has(kind) || kind === "CONTENT_TYPE";
-}
+export { isRestrictingThread };
 
 /**
  * What the topic's OPEN questions restrict, across the whole thread set.

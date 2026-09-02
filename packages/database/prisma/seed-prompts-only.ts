@@ -7,6 +7,10 @@ import {
 	PUBLISHING_PLANNING_ANALYSIS_AGENT_KEY,
 	PUBLISHING_PLANNING_ANALYSIS_FALLBACK_BODY,
 } from "@repo/utils/publishing-planning-prompt";
+import {
+	PUBLISHING_SHORT_POST_AGENT_KEY,
+	PUBLISHING_SHORT_POST_FALLBACK_BODY,
+} from "@repo/utils/publishing-short-post-prompt";
 import { db } from "../prisma/client";
 import type { StoryKind } from "./zod";
 
@@ -315,6 +319,17 @@ const PROMPT_DOCUMENT_TYPE_BINDINGS: Record<string, SeedBindingSpec> = {
 		documentTypes: ["GENERAL"],
 		storyKind: null as null,
 		targetKey: PUBLISHING_PLANNING_ANALYSIS_AGENT_KEY,
+	},
+	// publishing_topic_short_post: GENERAL + null for the same reason its
+	// planning sibling uses them — one prompt per tenant covers every project
+	// and topic. The activity passes the topic, its planning analysis, its
+	// confirmed decisions and the run's guidance as HANDLEBARS variables; the
+	// three-option contract and the FR28/FR29 approval rules are appended
+	// code-side and are NOT part of this body, so an override cannot drop them.
+	[PUBLISHING_SHORT_POST_AGENT_KEY]: {
+		documentTypes: ["GENERAL"],
+		storyKind: null as null,
+		targetKey: PUBLISHING_SHORT_POST_AGENT_KEY,
 	},
 	// test_case_step_reviser: re-drafts ONE existing case whose feature has since
 	// changed. Kept separate from `test_case_drafter` because the contract is
@@ -5808,6 +5823,33 @@ Rules:
 		structuredFormat: "JSON" as const,
 		isPublic: true,
 		content: PUBLISHING_PLANNING_ANALYSIS_FALLBACK_BODY,
+	},
+	{
+		// publishing_topic_short_post: the short social post drafted from a
+		// topic (#1853, Phase 2B-2, FR14). Body is the PO's "Tweet - Short Post
+		// Prompt v1" attached to the card, with its Markdown-only output rule
+		// adapted the same way its Planning & Analysis sibling adapted v1.1's:
+		// this prompt runs with structured output, so each option is a field
+		// whose text is Markdown. That is what makes FR16's "exactly three"
+		// a schema check rather than a regex over prose.
+		//
+		// The grounding rules FR28/FR29 turn on are appended CODE-SIDE so an
+		// org editing tone cannot drop them by accident.
+		//
+		// INSERT-ONLY: once this seeds, changing the text does nothing on an
+		// environment that already ran the seed. Ship wording changes as an
+		// explicit UPDATE migration.
+		key: PUBLISHING_SHORT_POST_AGENT_KEY,
+		name: "Topic Short Post / Tweet",
+		description:
+			"Drafts three labeled short social post options from a Publishing Suite topic, using its planning analysis, confirmed decisions and project source context.",
+		category: "publishing",
+		tags: ["publishing", "publishing-suite", "short-post", "ai-generation"],
+		format: "HANDLEBARS" as const,
+		promptType: "STRUCTURED" as const,
+		structuredFormat: "JSON" as const,
+		isPublic: true,
+		content: PUBLISHING_SHORT_POST_FALLBACK_BODY,
 	},
 ];
 

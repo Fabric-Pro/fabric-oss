@@ -29,6 +29,7 @@
 
 import { documentTypeShortLabel } from "./document-type-catalog";
 import { PUBLISHING_PLANNING_ANALYSIS_AGENT_KEY } from "./publishing-planning-prompt";
+import { PUBLISHING_SHORT_POST_AGENT_KEY } from "./publishing-short-post-prompt";
 
 export type PromptStoryKind = "FEATURE" | "BUG" | null;
 
@@ -428,6 +429,17 @@ export const PROMPT_AGENT_TARGETS: readonly PromptAgentTarget[] = [
 		// treated as approved) — those are appended code-side.
 		key: PUBLISHING_PLANNING_ANALYSIS_AGENT_KEY,
 		label: "Topic Planning & Analysis",
+		featureType: "PUBLISHING",
+		actions: nonStage("GENERAL"),
+	},
+	{
+		// The short social post drafted from a publishing topic. Editing it
+		// changes voice, length and how the three options differ from one
+		// another. It cannot remove the output contract (exactly three labeled
+		// options) or the approval rules — those are appended code-side, and the
+		// option count is enforced by the schema before anything is persisted.
+		key: PUBLISHING_SHORT_POST_AGENT_KEY,
+		label: "Topic Short Post / Tweet",
 		featureType: "PUBLISHING",
 		actions: nonStage("GENERAL"),
 	},

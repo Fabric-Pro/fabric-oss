@@ -227,6 +227,16 @@ vi.mock("@shared/lib/orpc-query-utils", () => {
 					listTopicDrafts: q(
 						"projects.publishingSuite.listTopicDrafts",
 					),
+					// 2B-2's short post panel owns both of these. Same
+					// obligation the comment above describes: a missing entry
+					// is `undefined.mutationOptions`, which fails every case in
+					// the file at once rather than one assertion.
+					generateShortPost: m(
+						"projects.publishingSuite.generateShortPost",
+					),
+					selectShortPostOption: m(
+						"projects.publishingSuite.selectShortPostOption",
+					),
 					listTopicDecisions: q(
 						"projects.publishingSuite.listTopicDecisions",
 					),

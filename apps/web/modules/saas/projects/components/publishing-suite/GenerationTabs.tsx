@@ -19,6 +19,7 @@ import {
 	resolveRestrictions,
 } from "./generation-tab-state";
 import type { PlanningAnalysisDocument } from "./planning-analysis-content";
+import { ShortPostPanel } from "./ShortPostPanel";
 import type { TopicDecisionThread } from "./TopicQuestionsPanel";
 import {
 	GENERATION_ACTIVE_POST_TYPES,
@@ -42,6 +43,15 @@ interface TopicDraftRow {
 	createdAt: string | Date;
 	updatedAt: string | Date;
 	isExpired?: boolean;
+	/**
+	 * The generated document, `null` until the attempt reaches READY.
+	 *
+	 * `unknown` rather than a shape: it is `Json?` on the row, and each content
+	 * type stores a different document. The panel that renders one is the place
+	 * that knows which, so each narrows it for itself — a union here would make
+	 * every panel carry the other three's cases.
+	 */
+	content?: unknown;
 }
 
 export interface TopicDraftState {
@@ -53,6 +63,14 @@ export interface TopicDraftState {
 export interface TopicWorkingDraftState {
 	postType: PostType;
 	hasBody: boolean;
+	/** The saved draft text. Shared project content, not author-private. */
+	body: string;
+	/**
+	 * Which candidate the body came from. Nullable: the composite FK is
+	 * `ON DELETE SET NULL ("sourceDraftId")`, so deleting a candidate keeps the
+	 * body and forgets its origin.
+	 */
+	sourceDraftId: string | null;
 	sourceOptionLabel: string | null;
 	updatedAt: string | Date;
 }
@@ -63,25 +81,35 @@ export interface TopicWorkingDraftState {
  * Replaces 2A's `GenerationTabsPlaceholder`, whose own comment named itself
  * "the only thing later phases (2B/2C) still need to replace".
  *
- * This slice makes the Short Post / Tweet and Blog Post tabs SELECTABLE and
- * gives each a panel showing its recommendation context (FR6/FR7), the
- * unresolved questions that will constrain it (FR8/FR9) and whether a draft
- * exists. It does NOT generate: the button, the guidance box and the prompts
- * arrive in 2B-2 and 2B-3. A tab that offered generation this phase could not
- * keep the promise.
+ * 2B-1 made the Short Post / Tweet and Blog Post tabs SELECTABLE and gave each a
+ * panel showing its recommendation context (FR6/FR7), the unresolved questions
+ * that will constrain it (FR8/FR9) and whether a draft exists. 2B-2 added
+ * generation for the short post, which is why the Short Post tab now mounts
+ * `ShortPostPanel` in place of the generic draft-state block. Blog Post keeps
+ * that block until 2B-3, whose contract differs in a way that matters: blog
+ * generation seeds a working draft on the first run (FR21) where the short post
+ * deliberately does not (DV4), so one component serving both would be a flag
+ * deciding which product it is.
  *
  * Case Study and Stakeholder Email stay disabled and still read "Coming soon" —
  * 2A's FR50 still holds for them, and only the two types 2B activates are
  * exempt from it.
  */
 export function GenerationTabs({
+	projectId,
+	organizationId,
+	topicId,
 	analysis,
 	drafts,
 	workingDrafts,
 	decisionThreads,
 	isLoading,
 	hasError,
+	canEdit,
 }: {
+	projectId: string;
+	organizationId: string | null;
+	topicId: string;
 	analysis: PlanningAnalysisDocument | null;
 	drafts: TopicDraftState[];
 	workingDrafts: TopicWorkingDraftState[];
@@ -89,6 +117,8 @@ export function GenerationTabs({
 	isLoading: boolean;
 	/** The drafts read failed. States degrade to AVAILABLE and say so. */
 	hasError: boolean;
+	/** PR2: a reader sees every panel, and none of the write controls. */
+	canEdit: boolean;
 }) {
 	const [tab, setTab] = useState<PostType>("TWEET");
 
@@ -190,6 +220,11 @@ export function GenerationTabs({
 						>
 							<GenerationPanel
 								label={t.generationLabel ?? t.label}
+								postType={t.value}
+								projectId={projectId}
+								organizationId={organizationId}
+								topicId={topicId}
+								canEdit={canEdit}
 								info={info ?? null}
 								draft={
 									drafts.find(
@@ -321,6 +356,11 @@ function Badge({
  */
 function GenerationPanel({
 	label,
+	postType,
+	projectId,
+	organizationId,
+	topicId,
+	canEdit,
 	info,
 	draft,
 	working,
@@ -329,6 +369,11 @@ function GenerationPanel({
 	hasAnalysis,
 }: {
 	label: string;
+	postType: PostType;
+	projectId: string;
+	organizationId: string | null;
+	topicId: string;
+	canEdit: boolean;
 	info: GenerationTabInfo | null;
 	draft: TopicDraftState | null;
 	working: TopicWorkingDraftState | null;
@@ -382,13 +427,26 @@ function GenerationPanel({
 				</Section>
 			) : null}
 
-			<Section label="Draft">
-				<DraftState draft={draft} working={working} />
-			</Section>
+			{postType === "TWEET" ? (
+				<ShortPostPanel
+					projectId={projectId}
+					organizationId={organizationId}
+					topicId={topicId}
+					draft={draft}
+					working={working}
+					canEdit={canEdit}
+				/>
+			) : (
+				<>
+					<Section label="Draft">
+						<DraftState draft={draft} working={working} />
+					</Section>
 
-			<p className="rounded-xl border border-border border-dashed bg-muted/40 p-4 text-center text-muted-foreground text-sm">
-				Generating {label} arrives in the next release.
-			</p>
+					<p className="rounded-xl border border-border border-dashed bg-muted/40 p-4 text-center text-muted-foreground text-sm">
+						Generating {label} arrives in the next release.
+					</p>
+				</>
+			)}
 		</div>
 	);
 }
