@@ -229,6 +229,107 @@ describe("the answer box with a mention", () => {
 	});
 });
 
+describe("the member search narrowing while a mention is typed", () => {
+	/**
+	 * `assignableMembers` is a SERVER SEARCH RESULT, not a roster: every
+	 * keystroke after an `@` replaces it with just that token's matches. The
+	 * panel used to resolve mentions against it, so naming a second person
+	 * silently un-named the first — "Ask Sam R. & Dana P." collapsed to "Ask
+	 * Dana P." — while a bare `@` (an unfiltered search) named everybody.
+	 *
+	 * The sequence below is the real one: the roster is NEVER the full set
+	 * during typing, it is whatever the last token matched.
+	 */
+	it("keeps everyone already named when the roster narrows to the last token", async () => {
+		const user = userEvent.setup();
+		const props = {
+			summaryDigest: "A digest",
+			openQuestions: [thread("root_1")],
+			workingNotesContent: null,
+			onAnswer: vi.fn(),
+			onSaveNotes: vi.fn(),
+			answeringId: null,
+			questionAssignees: {},
+			onAssigneeQueryChange: vi.fn(),
+			onSetAssignees: vi.fn(),
+		};
+		// What the search returns while the caret sits in "@Sam".
+		const view = render(
+			<SummaryQuestionsPanel
+				{...props}
+				assignableMembers={[MEMBERS[0]]}
+			/>,
+		);
+
+		await user.click(screen.getByRole("button", { name: "Answer this" }));
+		await user.type(
+			screen.getByRole("textbox", { name: "Answer this" }),
+			"@Sam R. and @Dana P. — thoughts?",
+		);
+
+		// …and what it returns once the caret has moved on to "@Dana".
+		view.rerender(
+			<SummaryQuestionsPanel
+				{...props}
+				assignableMembers={[MEMBERS[1]]}
+			/>,
+		);
+
+		expect(
+			await screen.findByRole("button", { name: "Ask Sam R. & Dana P." }),
+		).toBeInTheDocument();
+	});
+});
+
+describe("what the asker typed", () => {
+	/**
+	 * A QUESTION_ASSIGNED notification deep-links straight to the question. If
+	 * the sentence the asker typed is not rendered there, the recipient arrives
+	 * at a bare assignment and has to go hunting through the Decision Log for
+	 * what they were actually asked.
+	 */
+	it("renders the ask note on the question, with who wrote it", () => {
+		const asked = thread("root_1");
+		render(
+			<SummaryQuestionsPanel
+				summaryDigest="A digest"
+				openQuestions={[
+					{
+						...asked,
+						replies: [
+							{
+								id: "reply_1",
+								status: "OPEN",
+								summary: null,
+								content: "Could you take the second part?",
+								authorType: "USER",
+								source: "HUMAN",
+								authorName: "Sam R.",
+								sourceProvenance: null,
+								createdAt: new Date("2026-09-02T10:00:00Z"),
+								supersedesId: null,
+							},
+						],
+					} as unknown as DecisionLogThread,
+				]}
+				workingNotesContent={null}
+				onAnswer={vi.fn()}
+				onSaveNotes={vi.fn()}
+				answeringId={null}
+				questionAssignees={{}}
+				assignableMembers={MEMBERS}
+				onAssigneeQueryChange={vi.fn()}
+				onSetAssignees={vi.fn()}
+			/>,
+		);
+
+		expect(
+			screen.getByText("Could you take the second part?"),
+		).toBeInTheDocument();
+		expect(screen.getByText("Sam R.")).toBeInTheDocument();
+	});
+});
+
 describe("status tally", () => {
 	it("counts an assigned question as assigned, not unanswered", () => {
 		renderPanel({

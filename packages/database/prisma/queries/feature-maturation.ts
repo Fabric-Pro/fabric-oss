@@ -148,6 +148,8 @@ export interface AppendDecisionLogReplyInput {
 	summary?: string | null;
 	source?: DecisionLogEntry["source"];
 	authorUserId?: string | null;
+	/** Display name captured at write time, as roots already do. */
+	authorName?: string | null;
 	metadata?: Prisma.InputJsonValue;
 }
 

@@ -250,6 +250,38 @@ export function SummaryQuestionsPanel({
 	const [editingSeed, setEditingSeed] = useState<string | null>(null);
 	const [showPossiblyResolved, setShowPossiblyResolved] = useState(false);
 
+	/**
+	 * Everyone the member search has returned SO FAR.
+	 *
+	 * `assignableMembers` is a search result, not a roster: it narrows to
+	 * whatever the `@` token currently reads, so by the time a third name is
+	 * being typed the first two are no longer in it. Resolving mentions against
+	 * it drops everyone named before the last token — which is why typing
+	 * `@and` and picking a second person silently un-mentioned the first, while
+	 * a bare `@` (an unfiltered search) named them all.
+	 *
+	 * Only the resolution reads this. The picker and the `@` popover keep the
+	 * filtered list, because narrowing is exactly what they are for.
+	 */
+	const [knownMembers, setKnownMembers] = useState<AssignableMember[]>([]);
+	useEffect(() => {
+		if (assignableMembers.length === 0) {
+			return;
+		}
+		setKnownMembers((previous) => {
+			const byId = new Map(previous.map((member) => [member.id, member]));
+			let grew = false;
+			for (const member of assignableMembers) {
+				if (!byId.has(member.id)) {
+					byId.set(member.id, member);
+					grew = true;
+				}
+			}
+			// Same set back when nothing is new, so this never re-renders itself.
+			return grew ? [...byId.values()] : previous;
+		});
+	}, [assignableMembers]);
+
 	// Local mirror of the notebook text. Seeded from the server value and only
 	// re-synced when the server value actually changes (e.g. another tab/user),
 	// so in-progress typing is never clobbered by a re-render. `setWorkingNotes`
@@ -338,10 +370,10 @@ export function SummaryQuestionsPanel({
 		// second action — the text alone cannot say whether they are being cited
 		// or asked, so the author picks.
 		const mentioned = isActive
-			? mentionedMemberIds(answer, assignableMembers)
+			? mentionedMemberIds(answer, knownMembers)
 			: [];
 		const mentionedNames = mentioned
-			.map((id) => assignableMembers.find((m) => m.id === id)?.name)
+			.map((id) => knownMembers.find((m) => m.id === id)?.name)
 			.filter((name): name is string => Boolean(name));
 
 		return (
@@ -373,6 +405,36 @@ export function SummaryQuestionsPanel({
 							saving={settingAssigneesId === thread.root.id}
 						/>
 					</div>
+				)}
+
+				{/* The turns already on the question — in practice the sentence
+				    somebody typed when they asked ("could you take the second
+				    part?"). A notification links straight here, so a recipient
+				    who cannot see what they were asked has been handed a bare
+				    assignment (#1751 follow-up). Answers never appear: answering
+				    flips the root out of OPEN and off this list entirely. */}
+				{thread.replies.length > 0 && (
+					<ul className="mt-3 space-y-2 border-l-2 border-border pl-3">
+						{thread.replies.map((reply) => (
+							<li key={reply.id}>
+								<div className="flex flex-wrap items-baseline gap-2">
+									<span className="text-xs font-medium text-foreground">
+										{reply.authorName ??
+											t("noteAuthorUnknown")}
+									</span>
+									<time
+										dateTime={reply.createdAt.toISOString()}
+										className="text-[11px] text-muted-foreground"
+									>
+										{reply.createdAt.toLocaleString()}
+									</time>
+								</div>
+								<Markdown className="mt-0.5 text-sm leading-relaxed text-foreground">
+									{reply.content ?? ""}
+								</Markdown>
+							</li>
+						))}
+					</ul>
 				)}
 
 				{isActive ? (

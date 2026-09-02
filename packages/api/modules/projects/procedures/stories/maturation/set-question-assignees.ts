@@ -21,8 +21,9 @@ import {
  *
  * SET SEMANTICS: the input carries the complete desired assignee list, so
  * assigning (AC-1/2), re-assigning (AC-5) and clearing (AC-6) are one call and
- * the client never diffs. Only newly-added assignees are notified; re-saving an
- * unchanged set is silent.
+ * the client never diffs. A bare re-save of an unchanged set is silent — only
+ * newly-added assignees are notified. An ask that carries a `note` is the
+ * exception: that is a message, and everyone the question is waiting on gets it.
  *
  * NOT ACCESS CONTROL (AC-7): any project member may change the assignees, and
  * assignment never restricts who can answer. There is deliberately no check that
@@ -116,24 +117,47 @@ export const setQuestionAssigneesProcedure = tenantProtectedProcedure
 			assignedByUserId: context.user.id,
 		});
 
-		if (input.note && input.note.trim().length > 0) {
-			await appendDecisionLogReply({
+		const note = input.note?.trim();
+		// The turn the note was stored as. Carried into the notification's dedupe
+		// key so a second ask on the same question is a second notice.
+		let noteEntryId: string | null = null;
+		if (note) {
+			const reply = await appendDecisionLogReply({
 				tenantFilter,
 				parentId: input.questionRootId,
 				userStoryId: question.userStoryId,
 				authorType: "USER",
-				content: input.note,
+				content: note,
 				authorUserId: context.user.id,
+				// Captured at write time, as answer turns already do — the panel
+				// renders the note under the question and an unattributed comment
+				// is worse than none.
+				authorName: context.user.name,
 			});
+			noteEntryId = reply.id;
 		}
 
-		if (added.length > 0) {
+		/**
+		 * An ask carrying a note is a MESSAGE, not just a routing change, so
+		 * everyone the question is now waiting on hears it — not only the people
+		 * this call added. Asking again someone who is already assigned is the
+		 * ordinary way a second question gets asked, and `added` is empty for
+		 * exactly that person: the note would reach nobody.
+		 *
+		 * Without a note the original rule stands — re-saving an unchanged set is
+		 * silent, so toggling avatars in the picker never spams the room.
+		 */
+		const recipientUserIds = note
+			? [...new Set([...added, ...input.assigneeUserIds])]
+			: added;
+
+		if (recipientUserIds.length > 0) {
 			const story = await db.userStory.findUnique({
 				where: { id: question.userStoryId },
 				select: { title: true },
 			});
 			await fanOut.questionAssigned({
-				recipientUserIds: added,
+				recipientUserIds,
 				questionRootId: input.questionRootId,
 				questionSummary:
 					question.summary ?? question.content ?? "Open question",
@@ -144,11 +168,13 @@ export const setQuestionAssigneesProcedure = tenantProtectedProcedure
 				actorUserId: context.user.id,
 				actorName: context.user.name,
 				link: input.link,
+				note,
+				noteEntryId,
 			});
 		}
 
 		return {
 			assigneeUserIds: [...new Set(input.assigneeUserIds)],
-			notifiedUserIds: added,
+			notifiedUserIds: recipientUserIds,
 		};
 	});

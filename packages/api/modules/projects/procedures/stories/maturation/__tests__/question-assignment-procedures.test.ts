@@ -15,7 +15,10 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
  *    half of the mention split, so routing it through the answer path would
  *    close the very question being asked.
  *  - Only NEWLY-ADDED assignees are notified, so re-saving an unchanged set is
- *    silent rather than a re-ping.
+ *    silent rather than a re-ping — UNLESS the ask carries a note, which is a
+ *    message and has to reach everyone it is addressed to.
+ *  - The note the asker typed is what the notification shows. A card that names
+ *    only the question leaves the recipient no idea what was asked of them.
  *  - Assignment is not access control (AC-7): no caller is refused for not
  *    being the author or an existing assignee.
  *  - PM-sync isolation (§7.7): neither procedure may enqueue a sync.
@@ -108,6 +111,7 @@ beforeEach(() => {
 		content: null,
 	});
 	mocks.setQuestionAssignees.mockResolvedValue([ASSIGNEE]);
+	mocks.appendDecisionLogReply.mockResolvedValue({ id: "reply_1" });
 	mocks.userStoryFindUnique.mockResolvedValue({ title: "Export controls" });
 	mocks.listProjectMentionableMembers.mockResolvedValue([]);
 });
@@ -154,6 +158,38 @@ describe("setQuestionAssignees", () => {
 		// …and nothing in this path may carry a resolution.
 		expect(reply).not.toHaveProperty("status");
 		expect(mocks.enqueuePmSync).not.toHaveBeenCalled();
+	});
+
+	it("carries the typed note into the notification", async () => {
+		await setQuestionAssigneesHandler({
+			input: assignInput({ note: "Could you take the second part?" }),
+			context,
+		});
+
+		const args = mocks.questionAssigned.mock.calls[0][0];
+		// The ask itself — not just the question — is what the recipient reads.
+		expect(args.note).toBe("Could you take the second part?");
+		// The turn it was stored as, so a SECOND ask is a second notice rather
+		// than a duplicate the unread-only dedupe swallows.
+		expect(args.noteEntryId).toBe("reply_1");
+	});
+
+	it("reaches somebody already assigned when the ask carries a note", async () => {
+		// Nothing was ADDED: the person being asked is already on the question.
+		mocks.setQuestionAssignees.mockResolvedValue([]);
+
+		const result = (await setQuestionAssigneesHandler({
+			input: assignInput({
+				assigneeUserIds: [ASSIGNEE],
+				note: "Following up — which retention window applies?",
+			}),
+			context,
+		})) as { notifiedUserIds: string[] };
+
+		expect(result.notifiedUserIds).toEqual([ASSIGNEE]);
+		expect(
+			mocks.questionAssigned.mock.calls[0][0].recipientUserIds,
+		).toEqual([ASSIGNEE]);
 	});
 
 	it("skips the reply turn when no note was typed", async () => {
