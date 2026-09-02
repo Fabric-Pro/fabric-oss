@@ -5,11 +5,13 @@ import {
 	type ActivityRow,
 	awaitQuietTransactions,
 	DEFAULT_LONG_TX_THRESHOLD_MS,
+	describeOffender,
 	evaluateAdvisoryLock,
 	evaluateLongRunningTransactions,
 	evaluateMigrationLedger,
 	type MigrationLedgerRow,
 	parseThresholdArg,
+	sanitizeApplicationName,
 	summarize,
 } from "../scripts/preflight-migrate";
 
@@ -30,6 +32,12 @@ function activityRow(overrides: Partial<ActivityRow> = {}): ActivityRow {
 		pid: 1,
 		state: "idle in transaction",
 		duration_ms: 0,
+		state_age_ms: null,
+		wait_event_type: null,
+		wait_event: null,
+		blocked_by: null,
+		application_name: null,
+		locked_tables: null,
 		...overrides,
 	};
 }
@@ -170,6 +178,107 @@ describe("evaluateLongRunningTransactions", () => {
 		const rows = [activityRow({ duration_ms: 5_000 })];
 		expect(evaluateLongRunningTransactions(rows, 10_000).ok).toBe(true);
 		expect(evaluateLongRunningTransactions(rows, 1_000).ok).toBe(false);
+	});
+
+	// The 2026-09-02 shape: one holder idle on its locks, everyone else queued
+	// behind it. The failure line has to make that chain readable on its own,
+	// because by the time anyone looks the sessions are gone.
+	it("describes a lock chain: who holds what, and who waits for whom", () => {
+		const result = evaluateLongRunningTransactions([
+			activityRow({
+				pid: 21471,
+				state: "idle in transaction",
+				duration_ms: 975_000,
+				state_age_ms: 290_000,
+				application_name: "pgbouncer",
+				locked_tables: ["project", "user_story"],
+			}),
+			activityRow({
+				pid: 21468,
+				state: "active",
+				duration_ms: 975_000,
+				state_age_ms: 974_000,
+				wait_event_type: "Lock",
+				wait_event: "transactionid",
+				blocked_by: [21471],
+				application_name: "pgbouncer",
+				locked_tables: ["user_story"],
+			}),
+		]);
+		expect(result.ok).toBe(false);
+		expect(result.detail).toContain(
+			"pid 21471 (975s, idle in transaction for 290s, app pgbouncer, holds locks on project, user_story)",
+		);
+		expect(result.detail).toContain(
+			"pid 21468 (975s, active, waiting on Lock/transactionid, blocked by 21471, app pgbouncer, holds locks on user_story)",
+		);
+	});
+});
+
+describe("sanitizeApplicationName", () => {
+	it("passes an ordinary name through", () => {
+		expect(sanitizeApplicationName("pgbouncer")).toBe("pgbouncer");
+	});
+
+	it("treats empty and null as absent", () => {
+		expect(sanitizeApplicationName(null)).toBeNull();
+		expect(sanitizeApplicationName("")).toBeNull();
+		expect(sanitizeApplicationName("  \n ")).toBeNull();
+	});
+
+	it("keeps a client-chosen name on one log line", () => {
+		expect(sanitizeApplicationName("web\n::error::injected\tline")).toBe(
+			"web ::error::injected line",
+		);
+	});
+
+	it("also flattens Unicode line separators and C1 controls", () => {
+		expect(sanitizeApplicationName("a\u2028b\u2029c\u0085d")).toBe(
+			"a b c d",
+		);
+	});
+
+	it("clips a long name", () => {
+		const long = "x".repeat(200);
+		const out = sanitizeApplicationName(long);
+		expect(out).toHaveLength(65);
+		expect(out?.endsWith("…")).toBe(true);
+	});
+});
+
+describe("describeOffender", () => {
+	it("falls back to the bare shape when the diagnostics are null", () => {
+		expect(
+			describeOffender(
+				activityRow({ pid: 7, state: null, duration_ms: 31_000 }),
+			),
+		).toBe("pid 7 (31s, unknown)");
+	});
+
+	it("does not report time-in-state for an active session", () => {
+		// For an active session state_change is the current statement's start,
+		// which would read as a second, contradictory duration.
+		expect(
+			describeOffender(
+				activityRow({
+					state: "active",
+					duration_ms: 60_000,
+					state_age_ms: 59_000,
+				}),
+			),
+		).toBe("pid 1 (60s, active)");
+	});
+
+	it("omits empty lock and blocker lists rather than printing them", () => {
+		expect(
+			describeOffender(
+				activityRow({
+					duration_ms: 45_000,
+					blocked_by: [],
+					locked_tables: [],
+				}),
+			),
+		).toBe("pid 1 (45s, idle in transaction)");
 	});
 });
 
