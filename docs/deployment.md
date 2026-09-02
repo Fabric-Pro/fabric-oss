@@ -77,6 +77,19 @@ Production deploys are driven by Git tags (`v*.*.*`); branch pushes to `master` 
 3. **Auto-tag:** the next step in `release.yml` reads `packages/fabric-app/package.json`'s new version and pushes `v<version>` to the repo. This tag is what `deploy-azure-container-apps.yml` listens for.
 4. **Prod deploy:** the tag push fires the prod workflow, which runs build-once-promote (see below) and deploys.
 
+### Weekly cadence: the scheduled release cut
+
+Step 2's "chore: release" PR is merged **automatically every Monday afternoon (US Eastern)** by `.github/workflows/scheduled-release-cut.yml`, so that production — which deploys published releases only in its Monday-night window — has a fresh release to pick up each week. Humans can still merge the Version PR by hand on any day, and a manual dispatch of the workflow cuts a release outside the schedule.
+
+The automated merge stands in for the human review of that one PR, and only that PR, under these conditions: the PR was opened by the release App on exactly `changeset-release/master` from this repository; that branch is closed to everyone but the App by a ruleset, which the job verifies is in force; every check run on the head has completed without failure, no GitHub Actions check suite is still pending, and the head is up to date with `master`; the merge pins the verified head SHA. Branch protection remains the authority on the required checks — the App is on the review-bypass list only. The job checks out nothing and runs no product code; its reads use the workflow's own read-only token and the App token is used only for the refusal comment and the merge. A red or stale Version PR is left unmerged with a comment explaining why and a failed run; no Version PR means nothing to release that week.
+
+Required setup beyond the App token secrets:
+
+- the release App needs **Pull requests: Read and write** (it opens the Version PR too, see `release.yml`);
+- the repository variable `RELEASE_APP_LOGIN` must name the App's bot login;
+- the App must be on `master`'s **"Allow specified actors to bypass required pull requests"** list;
+- a branch ruleset must target `refs/heads/changeset-release/master` with **restrict creations, restrict updates, restrict deletions and block force pushes**, and the release App as its only bypass actor. The job verifies all of that before merging — the four rules in force on the branch, every contributing ruleset active, and no bypass actor other than the App — and refuses otherwise, because a same-repository writer could otherwise push to the release branch after the App opened the PR and have that content merged without review.
+
 The `fabric-app` package in `packages/fabric-app/` is a private meta-package whose sole job is carrying the app version. See its [README](../packages/fabric-app/README.md) for the rationale.
 
 ### Required setup for the auto-tag step
@@ -85,14 +98,14 @@ The auto-tag step in `release.yml` cannot use the default `GITHUB_TOKEN` to push
 
 **Recommended: GitHub App** (short-lived tokens, per-repo scope, no personal-account dependency, audit trail)
 
-1. Create a GitHub App at `https://github.com/organizations/<org>/settings/apps/new` (or `https://github.com/settings/apps/new` for a personal account). Name it e.g. `Fabric Release Bot`. Uncheck the **Active** webhook checkbox. Under **Repository permissions** set **Contents: Read and write** and leave everything else as "No access". Scope it to "Only on this account". Click **Create GitHub App**.
+1. Create a GitHub App at `https://github.com/organizations/<org>/settings/apps/new` (or `https://github.com/settings/apps/new` for a personal account). Name it e.g. `Fabric Release Bot`. Uncheck the **Active** webhook checkbox. Under **Repository permissions** set **Contents: Read and write** and **Pull requests: Read and write** (the Version PR is opened and, on Mondays, merged as the App) and leave everything else as "No access". Scope it to "Only on this account". Click **Create GitHub App**.
 2. On the app's settings page, scroll to **Private keys** → **Generate a private key**. Save the downloaded `.pem` file securely (GitHub does not let you retrieve key contents again). Note the **App ID** shown near the top.
 3. In the app's left sidebar click **Install App** → choose the org/account → **Only select repositories** → pick `Fabric-Pro/fabric-oss` → **Install**.
 4. Add two repo secrets at `https://github.com/Fabric-Pro/fabric-oss/settings/secrets/actions`:
    - `RELEASE_APP_ID` — the integer App ID from step 2.
    - `RELEASE_APP_PRIVATE_KEY` — the entire contents of the `.pem` file, including the `-----BEGIN/END RSA PRIVATE KEY-----` lines.
 
-The workflow's "Mint GitHub App installation token" step uses `actions/create-github-app-token@v2` to exchange these for a ~1-hour token scoped to this installation. No rotation required because keys live for the App's lifetime; rotate by generating a new key in the App settings if it's ever exposed.
+The workflow's "Mint GitHub App installation token" step uses `actions/create-github-app-token` (v3, pinned by commit) to exchange these for a ~1-hour token scoped to this installation. No rotation required because keys live for the App's lifetime; rotate by generating a new key in the App settings if it's ever exposed.
 
 **Alternative: Personal access token** (simpler to set up but tied to a human account)
 
