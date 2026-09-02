@@ -19,6 +19,7 @@
  */
 
 import {
+	ActivityIcon,
 	BotIcon,
 	CalendarDaysIcon,
 	ClipboardCheckIcon,
@@ -113,7 +114,9 @@ export const tabs = [
 	{
 		id: "agent-activity",
 		label: "Agent Activity",
-		icon: BotIcon,
+		// Not BotIcon: Coding Agents already owns it, and the tab bar shows
+		// icons without labels, so two tabs on one glyph are indistinguishable.
+		icon: ActivityIcon,
 	},
 	{
 		id: "diagrams",

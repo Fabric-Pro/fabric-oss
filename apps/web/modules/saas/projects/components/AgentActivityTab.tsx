@@ -9,7 +9,7 @@ import { Badge } from "@ui/components/badge";
 import { Skeleton } from "@ui/components/skeleton";
 import { cn } from "@ui/lib";
 import {
-	BotIcon,
+	ActivityIcon,
 	FilePenLineIcon,
 	ListChecksIcon,
 	MessageSquareReplyIcon,
@@ -78,7 +78,7 @@ export function AgentActivityTab({ projectId }: AgentActivityTabProps) {
 				<div className="flex items-start justify-between gap-4">
 					<div>
 						<div className="mb-2 inline-flex items-center gap-2 rounded-full border border-primary/15 bg-primary/8 px-2.5 py-1 text-xs font-medium text-primary">
-							<BotIcon className="size-3.5" />
+							<ActivityIcon className="size-3.5" />
 							Agent Activity
 						</div>
 						<div className="flex items-center gap-1.5">
@@ -118,7 +118,7 @@ export function AgentActivityTab({ projectId }: AgentActivityTabProps) {
 				) : activities.length === 0 ? (
 					<div className="flex flex-col items-center justify-center px-6 py-16 text-center">
 						<div className="mb-4 flex size-12 items-center justify-center rounded-full bg-muted">
-							<BotIcon className="size-6 text-muted-foreground" />
+							<ActivityIcon className="size-6 text-muted-foreground" />
 						</div>
 						<h3 className="font-medium">
 							No approved agent actions yet

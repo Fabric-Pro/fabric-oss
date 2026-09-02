@@ -62,6 +62,7 @@ import { AgentActivityTab } from "./AgentActivityTab";
 // ProjectHeader is always visible, keep static import
 import { ProjectHeader } from "./ProjectHeader";
 import { ProjectSectionHero } from "./ProjectSectionHero";
+import { ProjectTabButton } from "./ProjectTabButton";
 import {
 	NAVIGATE_TO_SETTINGS_TAB_EVENT,
 	type NavigateToSettingsTabDetail,
@@ -1088,65 +1089,38 @@ export function ProjectDetails({ projectId, organizationSlug }: Props) {
 										onClickCapture={handleClickCapture}
 										className="no-scrollbar flex items-center gap-1 overflow-x-auto p-1.5"
 									>
-										{visibleTabs.map((tab) => {
-											const Icon = tab.icon;
-											const isActive =
-												activeTab === tab.id;
-											return (
-												<button
-													key={tab.id}
-													ref={(el) => {
-														if (el) {
-															tabRefs.current.set(
-																tab.id,
-																el,
-															);
-														} else {
-															tabRefs.current.delete(
-																tab.id,
-															);
-														}
-													}}
-													type="button"
-													data-onboarding-target={`project-tab-${tab.id}`}
-													onClick={() => {
-														startTransition(() =>
-															setActiveTab(
-																tab.id,
-															),
+										{visibleTabs.map((tab) => (
+											<ProjectTabButton
+												key={tab.id}
+												label={
+													tab.id === "atlas"
+														? _t(
+																"projects.atlas.tabLabel",
+															)
+														: tab.label
+												}
+												icon={tab.icon}
+												isActive={activeTab === tab.id}
+												anchor={`project-tab-${tab.id}`}
+												onSelect={() => {
+													startTransition(() =>
+														setActiveTab(tab.id),
+													);
+												}}
+												registerRef={(el) => {
+													if (el) {
+														tabRefs.current.set(
+															tab.id,
+															el,
 														);
-													}}
-													className={cn(
-														"group relative flex shrink-0 items-center gap-2 rounded-xl px-4 py-2.5 font-medium text-sm transition-colors",
-														isActive
-															? "text-foreground"
-															: "text-foreground/60 hover:text-foreground/80",
-													)}
-												>
-													{isActive && (
-														<div
-															aria-hidden="true"
-															className="absolute inset-0 rounded-xl border border-primary/15 bg-primary/10"
-														/>
-													)}
-													<Icon
-														aria-hidden="true"
-														className={cn(
-															"relative z-10 size-4 shrink-0",
-															isActive &&
-																"text-primary",
-														)}
-													/>
-													<span className="relative z-10">
-														{tab.id === "atlas"
-															? _t(
-																	"projects.atlas.tabLabel",
-																)
-															: tab.label}
-													</span>
-												</button>
-											);
-										})}
+													} else {
+														tabRefs.current.delete(
+															tab.id,
+														);
+													}
+												}}
+											/>
+										))}
 									</div>
 								</div>
 								{overflows && (

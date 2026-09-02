@@ -2,14 +2,14 @@
  * Publishing Suite project-tab wiring.
  *
  * The old client env-flag gate (`NEXT_PUBLIC_FABRIC_FEATURE_PUBLISHING_SUITE`)
- * was retired into project-tab customization (card #1837): Publishing Suite is
- * now DEFAULT-HIDDEN, and a project admin's `tabVisibility` override
- * (`{ overrides: { "publishing-suite": true } }`, served by the mocked
- * `projects.tabVisibility.get`) is what makes it render. These tests pin that
- * replacement contract:
+ * was retired into project-tab customization (card #1837): a deployment that
+ * offers the tab shows it to everyone, and a project admin's `tabVisibility`
+ * override (`{ overrides: { "publishing-suite": false } }`, served by the
+ * mocked `projects.tabVisibility.get`) is what takes it away. These tests pin
+ * that replacement contract:
  *
- *   1. No saved config — no "Publishing Suite" tab button renders.
- *   2. Admin override forces it visible — the tab button renders.
+ *   1. No saved config — the "Publishing Suite" tab button renders.
+ *   2. Admin override hides it — the tab button is gone.
  *   3. Clicking it mounts `PublishingSuiteList` (the content branch follows
  *      visibility, not a build-time constant).
  *
@@ -236,7 +236,18 @@ beforeEach(() => {
 // ----------------------------------------------------------------------------
 
 describe("ProjectDetails — Publishing Suite tab (visibility-driven)", () => {
-	it("hides the Publishing Suite tab button when no config opts it in", async () => {
+	it("shows the Publishing Suite tab button when no config hides it", async () => {
+		const { ProjectDetails } = await import("../ProjectDetails");
+
+		renderWithClient(<ProjectDetails projectId="proj-1" />);
+
+		expect(
+			await screen.findByRole("button", { name: /publishing suite/i }),
+		).toBeInTheDocument();
+	});
+
+	it("hides the Publishing Suite tab button when an admin override turns it off", async () => {
+		tabConfigState.config = { overrides: { "publishing-suite": false } };
 		const { ProjectDetails } = await import("../ProjectDetails");
 
 		renderWithClient(<ProjectDetails projectId="proj-1" />);
@@ -251,19 +262,7 @@ describe("ProjectDetails — Publishing Suite tab (visibility-driven)", () => {
 		).toBeNull();
 	});
 
-	it("shows the Publishing Suite tab button when an admin override opts it in", async () => {
-		tabConfigState.config = { overrides: { "publishing-suite": true } };
-		const { ProjectDetails } = await import("../ProjectDetails");
-
-		renderWithClient(<ProjectDetails projectId="proj-1" />);
-
-		expect(
-			await screen.findByRole("button", { name: /publishing suite/i }),
-		).toBeInTheDocument();
-	});
-
 	it("clicking the visible tab mounts PublishingSuiteList (content branch follows visibility)", async () => {
-		tabConfigState.config = { overrides: { "publishing-suite": true } };
 		const { ProjectDetails } = await import("../ProjectDetails");
 		const user = userEvent.setup();
 

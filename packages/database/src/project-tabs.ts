@@ -30,28 +30,14 @@ export function isProtectedProjectTab(tabId: string): boolean {
 	return (PROJECT_TAB_PROTECTED_IDS as readonly string[]).includes(tabId);
 }
 
-/**
- * Tabs hidden until someone with PROJECT_SETTINGS_EDIT turns them on (only
- * while the customization feature flag is on). Card #1837 confirms Atlas,
- * Security and Decisions as off-by-default optionals; Publishing Suite joins
- * them because the env-flag gate that previously hid it was retired into this
- * mechanism. Everything else — including Testing — is visible by default.
- */
-export const PROJECT_TAB_DEFAULT_HIDDEN_IDS = [
-	"atlas",
-	"security",
-	"decisions",
-	"publishing-suite",
-] as const;
-
 /** Admin-level per-tab visibility overrides: `{ tabId: isVisible }`. */
 const tabOverrideMapSchema = z.record(z.string().min(1).max(40), z.boolean());
 
 /**
  * Stored in `Project.projectTabConfig`. A wrapper object so a future key
  * (e.g. an admin default order) can join by extending this schema, without
- * changing the column's meaning. Absent/null → every non-default-hidden tab
- * is visible. Deliberately strict (no passthrough): the inferred type must
+ * changing the column's meaning. Absent/null → every tab this deployment
+ * offers is visible. Deliberately strict (no passthrough): the inferred type must
  * stay assignable to Prisma's InputJsonValue for the write path.
  */
 export const projectTabConfigSchema = z

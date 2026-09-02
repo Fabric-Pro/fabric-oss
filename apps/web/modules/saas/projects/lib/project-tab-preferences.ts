@@ -2,7 +2,6 @@ import {
 	isProtectedProjectTab,
 	normalizeProjectTabConfig,
 	normalizeProjectTabPrefs,
-	PROJECT_TAB_DEFAULT_HIDDEN_IDS,
 	type ProjectTabConfig,
 	type ProjectTabPrefs,
 } from "@repo/database/src/project-tabs";
@@ -19,7 +18,7 @@ export type ProjectTabMeta = {
 
 /**
  * Project-tab customization (Fizzy card #1837): resolves which project tabs a
- * given member sees, and in what order, from FOUR layers, each only ever
+ * given member sees, and in what order, from THREE layers, each only ever
  * narrowing the one above:
  *
  *   0. **Feature flag — does this deployment offer the capability at all?**
@@ -29,15 +28,14 @@ export type ProjectTabMeta = {
  *      user preference can override it, because the backend APIs behind it are
  *      gated by the matching deployment configuration too. App-level
  *      provisioning is deliberately NOT a runtime toggle.
- *   1. the build-time default (optional tabs start hidden — see
- *      `PROJECT_TAB_DEFAULT_HIDDEN_IDS`);
- *   2. the project admin's `tabVisibility` overrides (`Record<tabId, boolean>`
- *      stored on the Project row — force-shows a default-hidden optional, or
- *      hides anything else, for EVERY member);
- *   3. the viewer's own `tabPreferences` (personal hidden list + ordering,
- *      bounded by what survived layer 2).
+ *   1. the project admin's `tabVisibility` overrides (`Record<tabId, boolean>`
+ *      stored on the Project row — hides a tab for EVERY member, or brings
+ *      back one an earlier admin hid). Every offered tab is visible until an
+ *      admin says otherwise;
+ *   2. the viewer's own `tabPreferences` (personal hidden list + ordering,
+ *      bounded by what survived layer 1).
  *
- * The canonical tab list itself lives in `ProjectDetails.tsx` (the get-started
+ * The canonical tab list itself lives in `project-tabs.ts` (the get-started
  * drift test parses its source), so everything here works on generic
  * `{ id }`-shaped metadata: a tab added to that array tomorrow flows through
  * resolution, ordering and the customize UI with zero extra wiring.
@@ -74,18 +72,13 @@ export function resolveAdminTabState(
 	tabIds: readonly string[],
 	config: ProjectTabConfig | null | undefined,
 ): Record<string, boolean> {
-	const defaultHidden = new Set(
-		PROJECT_TAB_DEFAULT_HIDDEN_IDS as readonly string[],
-	);
 	const overrides = config?.overrides ?? {};
 	const state: Record<string, boolean> = {};
 	for (const id of tabIds) {
 		if (!isProjectTabFeatureEnabled(id)) {
 			continue; // Layer 0: not offered by this deployment — no state at all.
 		}
-		state[id] = isProtectedProjectTab(id)
-			? true
-			: (overrides[id] ?? !defaultHidden.has(id));
+		state[id] = isProtectedProjectTab(id) ? true : (overrides[id] ?? true);
 	}
 	return state;
 }
@@ -111,11 +104,7 @@ export function isProjectTabVisibleToViewer(
 	}
 	const overrides = normalizeProjectTabConfig(config)?.overrides ?? {};
 	const hidden = new Set(normalizeProjectTabPrefs(prefs)?.hidden ?? []);
-	const defaultHidden = new Set(
-		PROJECT_TAB_DEFAULT_HIDDEN_IDS as readonly string[],
-	);
-	const projectVisible = overrides[tabId] ?? !defaultHidden.has(tabId);
-	return projectVisible && !hidden.has(tabId);
+	return (overrides[tabId] ?? true) && !hidden.has(tabId);
 }
 
 /**
@@ -140,9 +129,6 @@ export function resolveProjectTabs<T extends { id: string }>(
 	const prefs = normalizeProjectTabPrefs(input.prefs);
 	const overrides = config?.overrides ?? {};
 	const personallyHidden = new Set(prefs?.hidden ?? []);
-	const defaultHidden = new Set(
-		PROJECT_TAB_DEFAULT_HIDDEN_IDS as readonly string[],
-	);
 
 	const visible = tabs.filter((tab) => {
 		// Layer 0: a deployment that doesn't offer the tab hides it from
@@ -155,8 +141,7 @@ export function resolveProjectTabs<T extends { id: string }>(
 		}
 		// An admin-disabled tab beats any personal preference; a personal
 		// hidden entry applies within whatever the project allows.
-		const projectVisible = overrides[tab.id] ?? !defaultHidden.has(tab.id);
-		return projectVisible && !personallyHidden.has(tab.id);
+		return (overrides[tab.id] ?? true) && !personallyHidden.has(tab.id);
 	});
 
 	const savedOrder = prefs?.order;
