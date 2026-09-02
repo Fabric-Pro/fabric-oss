@@ -255,6 +255,56 @@ function markMessageForCaching(
 }
 
 /**
+ * True when a later request is likely to match a prefix ending at the rolling
+ * breakpoint, which is what makes writing one pay for itself.
+ *
+ * WHY: a cache write costs 1.25x the base input price and a read 0.1x, so a
+ * breakpoint that is never read back is a pure 25% surcharge on everything
+ * before it. The rolling breakpoint sits at the tail of `messages`, so the
+ * prefix it caches ends with the newest turn — content that recurs only if this
+ * conversation continues. Two shapes continue: a request carrying `tools` (the
+ * model may call one, and we send the results back on the same prefix), and a
+ * conversation that already holds an assistant turn (a multi-turn exchange
+ * getting another user message). A one-shot completion has neither — a single
+ * user turn, no tools, the shape `generateText({ system, prompt })` produces —
+ * and its trailing content is unique per call, so the entry it writes can never
+ * be read before it expires.
+ *
+ * Measured on Databricks billing: RAG chunk enrichment issues one such call per
+ * chunk, and every call whose prompt cleared the model's minimum cacheable
+ * length wrote a fresh entry that nothing ever read. Caching cost more on that
+ * route than not caching at all.
+ *
+ * The system-run breakpoint is deliberately NOT gated on this. Tools plus the
+ * system prompt are the genuinely shared prefix — reused across unrelated calls
+ * rather than only within one conversation — and when that prefix falls below
+ * the model's minimum cacheable length Anthropic ignores the marker at no cost.
+ *
+ * This is a heuristic, not a proof, and it errs in both directions. It withholds
+ * the breakpoint from one shape that could have read it back: an identical retry
+ * of a one-shot request that failed after reaching the model. It still permits
+ * writes that go unread — a tools-carrying turn that answers without calling a
+ * tool, or the final turn of a multi-turn chat. Both are rarer than the one-shot
+ * case, and paying the surcharge on every successful one-shot to serve the retry
+ * path would cost far more than it saves.
+ */
+function rollingBreakpointCanPayOff(
+	body: Record<string, unknown>,
+	messages: unknown[],
+): boolean {
+	const tools = body.tools;
+	if (Array.isArray(tools) && tools.length > 0) {
+		return true;
+	}
+	return messages.some(
+		(message) =>
+			!!message &&
+			typeof message === "object" &&
+			(message as { role?: unknown }).role === "assistant",
+	);
+}
+
+/**
  * Inject Anthropic prompt-cache breakpoints into a Databricks chat-completions
  * body, in place. Returns true if `body` changed.
  *
@@ -275,6 +325,9 @@ function markMessageForCaching(
  *     extends the cached prefix, so multi-turn agent loops read the previous
  *     turn's cache instead of re-billing the whole history. Earlier breakpoints
  *     keep working as read points (Anthropic matches the longest cached prefix).
+ *     Placed only when a later request could read it back — see
+ *     {@link rollingBreakpointCanPayOff}; on a one-shot completion the write is
+ *     a pure surcharge, because its trailing turn never recurs.
  *
  * Each marker goes on the LAST block of the target message that can hold one —
  * text or image alike — so a `[text, image_url]` turn is cached in full rather
@@ -352,7 +405,7 @@ export function applyDatabricksPromptCacheMarkers(
 		// `tool_calls` elements, not on tool messages — so in an agent loop the
 		// marker lands on the latest assistant tool-calling turn and each new
 		// request extends the cached prefix past the previous turn's results.
-		if (budget > 0) {
+		if (budget > 0 && rollingBreakpointCanPayOff(body, messages)) {
 			for (let i = messages.length - 1; i > lastSystemIndex; i--) {
 				const message = messages[i];
 				if (!message || typeof message !== "object") {
