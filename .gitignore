@@ -141,7 +141,10 @@ cuga.egg-info/
 package-lock.json
 .codex/**
 docs/local-meeting-notes/**
+# Personal agent instructions — untracked on purpose. This repo is public, and
+# these files routinely name real organizations, deployments and internal IDs.
 AGENTS.local.md
+CLAUDE.local.md
 .env.local.ba*
 
 # Fabric Agent workspace (user-specific, may contain secrets)
