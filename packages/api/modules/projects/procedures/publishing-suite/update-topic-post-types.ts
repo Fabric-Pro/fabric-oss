@@ -37,7 +37,7 @@ export const updatePublishingTopicPostTypesProcedure = tenantProtectedProcedure
 		}),
 	)
 	.handler(async ({ input }) => {
-		assertPublishingSuiteFeatureEnabled();
+		await assertPublishingSuiteFeatureEnabled(input.projectId);
 		// AUTHORIZATION: requireProjectPermission(PUBLISHING_TOPIC_UPDATE) gates
 		// project access. The DB helper re-scopes the write to
 		// { id: topicId, projectId } and writes no tenant columns.

@@ -32,7 +32,7 @@ export const setTopicReadStateProcedure = tenantProtectedProcedure
 		}),
 	)
 	.handler(async ({ input, context }) => {
-		assertPublishingSuiteFeatureEnabled();
+		await assertPublishingSuiteFeatureEnabled(input.projectId);
 		// AUTHORIZATION: the marker is always written for the AUTHENTICATED
 		// user. The input carries no userId, so one caller can never set
 		// another's read state.

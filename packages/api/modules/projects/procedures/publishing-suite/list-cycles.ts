@@ -50,7 +50,7 @@ export const listPublishingCyclesProcedure = tenantProtectedProcedure
 		}),
 	)
 	.handler(async ({ input }) => {
-		assertPublishingSuiteFeatureEnabled();
+		await assertPublishingSuiteFeatureEnabled(input.projectId);
 		// AUTHORIZATION: requireProjectPermission(PUBLISHING_TOPIC_READ) gates
 		// project access, exactly as it does for `latestCycle`.
 		const [rows, total, settings] = await Promise.all([

@@ -1,14 +1,19 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+const flagMocks = vi.hoisted(() => ({
+	isFeatureEnabled: vi.fn(),
+	resolveProjectTenant: vi.fn(),
+}));
 vi.mock("@repo/database", () => ({
 	listTopicDecisions: vi.fn(),
 	answerTopicQuestion: vi.fn(),
-}));
-const flagMocks = vi.hoisted(() => ({
-	isPublishingSuiteEnabled: vi.fn(() => true),
-}));
-vi.mock("@repo/utils/feature-flag", () => ({
-	isPublishingSuiteEnabled: flagMocks.isPublishingSuiteEnabled,
+	// The gate resolves the flag per organization and derives the tenant from
+	// the Project row. `resolveProjectTenant` MUST point at flagMocks, not a
+	// bare vi.fn(): the gate reads a null return as "project not resolvable"
+	// and throws NOT_FOUND, so an unconfigured mock would fail every test in
+	// this file for the wrong reason.
+	isFeatureEnabled: flagMocks.isFeatureEnabled,
+	resolveProjectTenant: flagMocks.resolveProjectTenant,
 }));
 // answerTopicQuestionProcedure's ratchet — mocked the same way the handler
 // mocks below mock the DB layer, so this stays a pure handler-level test: the
@@ -85,6 +90,11 @@ async function callAnswer(input: Record<string, unknown>) {
 
 beforeEach(() => {
 	vi.clearAllMocks();
+	flagMocks.isFeatureEnabled.mockResolvedValue(true);
+	flagMocks.resolveProjectTenant.mockResolvedValue({
+		organizationId: "org-1",
+		userId: "user-session",
+	});
 	vi.mocked(listTopicDecisions).mockResolvedValue([]);
 	topicProjectMocks.requireEligibleProjectForTopic.mockResolvedValue({
 		id: "proj-1",

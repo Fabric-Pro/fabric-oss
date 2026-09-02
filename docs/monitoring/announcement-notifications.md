@@ -232,7 +232,7 @@ shipped with.
 `FEATURE_FLAG_REGISTRY` (`packages/utils/lib/feature-flag-registry.ts`) is the registry of
 flags a platform admin can flip from the admin UI, and its own header says registering one
 there "is the deliberate act of declaring it safe to toggle at runtime". This flag is
-**not** registered, matching `FABRIC_FEATURE_PUBLISHING_SUITE`, which is also absent.
+**not** registered.
 
 The reason is the same one that keeps prod off: a UI toggle would let any platform admin
 start irrecoverable customer notifications with one click, bypassing the pipeline gate that

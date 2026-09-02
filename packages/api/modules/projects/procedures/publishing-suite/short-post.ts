@@ -54,7 +54,7 @@ export const generateShortPostProcedure = tenantProtectedProcedure
 		}),
 	)
 	.handler(async ({ input, context }) => {
-		assertPublishingSuiteFeatureEnabled();
+		await assertPublishingSuiteFeatureEnabled(input.projectId);
 
 		// Security ratchet, identical to `generatePlanningAnalysis`: the
 		// permission middleware proved the caller is authorized for THIS project,
@@ -213,7 +213,7 @@ export const selectShortPostOptionProcedure = tenantProtectedProcedure
 		}),
 	)
 	.handler(async ({ input, context }) => {
-		assertPublishingSuiteFeatureEnabled();
+		await assertPublishingSuiteFeatureEnabled(input.projectId);
 
 		const project = await requireEligibleProjectForTopic({
 			projectId: input.projectId,

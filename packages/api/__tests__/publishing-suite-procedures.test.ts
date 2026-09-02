@@ -33,7 +33,8 @@ const dbMocks = vi.hoisted(() => ({
 }));
 
 const flagMocks = vi.hoisted(() => ({
-	isPublishingSuiteEnabled: vi.fn(() => true),
+	isFeatureEnabled: vi.fn(),
+	resolveProjectTenant: vi.fn(),
 }));
 
 // generateNow's handler delegates to this helper after its own project lookup
@@ -132,7 +133,13 @@ vi.mock("@repo/database", () => ({
 	// `z.enum(undefined)` throws at construction — which fails this file at
 	// collection with an error three files away from its cause.
 	PUBLISHING_SNOOZE_PRESETS: ["ONE_WEEK", "ONE_MONTH", "THREE_MONTHS"],
-	resolveProjectTenant: vi.fn(),
+	// Ours: the gate resolves the flag per organization and derives the tenant
+	// from the Project row. `resolveProjectTenant` MUST point at flagMocks, not a
+	// bare vi.fn(): the gate reads a null return as "project not resolvable" and
+	// throws NOT_FOUND, so an unconfigured mock would fail every test in this file
+	// for the wrong reason.
+	isFeatureEnabled: flagMocks.isFeatureEnabled,
+	resolveProjectTenant: flagMocks.resolveProjectTenant,
 	startPlanningAnalysisAttempt: planningMocks.startPlanningAnalysisAttempt,
 	getLatestPlanningAnalysis: planningMocks.getLatestPlanningAnalysis,
 	failPlanningAnalysis: planningMocks.failPlanningAnalysis,
@@ -197,10 +204,6 @@ vi.mock("@repo/database", () => ({
 	// a suite-wide failure whose cause is three files away.
 	normalizePreferenceLabel: (value: unknown) =>
 		typeof value === "string" ? value.trim().replace(/\s+/g, " ") : "",
-}));
-
-vi.mock("@repo/utils/feature-flag", () => ({
-	isPublishingSuiteEnabled: flagMocks.isPublishingSuiteEnabled,
 }));
 
 // `generateNow` (Task 7) now shares this barrel. Its own helper,
@@ -355,7 +358,18 @@ const ctx = {
 
 beforeEach(() => {
 	vi.clearAllMocks();
-	flagMocks.isPublishingSuiteEnabled.mockReturnValue(true);
+	flagMocks.isFeatureEnabled.mockResolvedValue(true);
+	// ADR-018 ("An organization is the only tenant context"): the default
+	// tenant here is org-scoped, not personal — assertPublishingSuiteFeatureEnabled
+	// now refuses a project with no organization outright (see
+	// publishing-suite-org-gate.test.ts), so a null-organization default would
+	// make every procedure test below fail the gate before reaching what it
+	// actually means to exercise. Tests specifically about the gate's own
+	// personal-project refusal live in publishing-suite-org-gate.test.ts.
+	flagMocks.resolveProjectTenant.mockResolvedValue({
+		organizationId: "org1",
+		userId: null,
+	});
 	// 1C-4b: `listCycles` now reads the settings row for `chatChannelsConfigured`.
 	// A default RETURN, not just a `vi.fn()` — every pre-existing listCycles case
 	// would otherwise receive undefined and throw on `settings.chatChannels`,
@@ -890,7 +904,7 @@ describe("generateNow", () => {
 
 describe("feature flag gating — flag OFF is NOT_FOUND for every procedure", () => {
 	beforeEach(() => {
-		flagMocks.isPublishingSuiteEnabled.mockReturnValue(false);
+		flagMocks.isFeatureEnabled.mockResolvedValue(false);
 	});
 
 	it("listTopics", async () => {
@@ -1138,7 +1152,7 @@ describe("listCycles — the cycle history reader (Fizzy #1850, 1C-4a)", () => {
 	});
 
 	it("behaves as if the route does not exist when the feature flag is off", async () => {
-		flagMocks.isPublishingSuiteEnabled.mockReturnValue(false);
+		flagMocks.isFeatureEnabled.mockResolvedValue(false);
 		await expect(listCyclesHandler(page())).rejects.toMatchObject({
 			code: "NOT_FOUND",
 		});
@@ -1358,7 +1372,7 @@ describe("cycleChatDeliveries — the per-channel ledger reader (Fizzy #1850, 1C
 	});
 
 	it("behaves as if the route does not exist when the feature flag is off", async () => {
-		flagMocks.isPublishingSuiteEnabled.mockReturnValue(false);
+		flagMocks.isFeatureEnabled.mockResolvedValue(false);
 		await expect(chatDeliveriesHandler(call())).rejects.toMatchObject({
 			code: "NOT_FOUND",
 		});
@@ -1507,7 +1521,7 @@ describe("setTopicSnooze", () => {
 	});
 
 	it("is invisible when the feature flag is off", async () => {
-		flagMocks.isPublishingSuiteEnabled.mockReturnValueOnce(false);
+		flagMocks.isFeatureEnabled.mockResolvedValueOnce(false);
 		await expect(
 			snoozeHandler.handler({
 				input: { projectId: "p1", topicId: "t1", preset: "ONE_WEEK" },

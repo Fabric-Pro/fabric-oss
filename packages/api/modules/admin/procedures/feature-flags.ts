@@ -142,7 +142,7 @@ export const resetFeatureFlagProcedure = adminProcedure
 		z.object({
 			success: z.boolean(),
 			enabled: z.boolean(),
-			source: z.enum(["override", "env", "default"]),
+			source: z.enum(["org-override", "override", "env", "default"]),
 		}),
 	)
 	.handler(async ({ input, context: { user } }) => {

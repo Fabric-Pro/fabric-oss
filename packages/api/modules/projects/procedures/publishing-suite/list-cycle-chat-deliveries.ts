@@ -55,7 +55,7 @@ export const listCycleChatDeliveriesProcedure = tenantProtectedProcedure
 		}),
 	)
 	.handler(async ({ input }) => {
-		assertPublishingSuiteFeatureEnabled();
+		await assertPublishingSuiteFeatureEnabled(input.projectId);
 
 		const rows = await listPublishingChatDeliveriesForProjectCycle(
 			input.cycleId,

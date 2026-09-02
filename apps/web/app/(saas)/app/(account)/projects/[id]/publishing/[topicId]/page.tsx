@@ -1,64 +1,33 @@
 /**
  * Topic Item Page (personal / account context) — Fizzy #1851, Phase 2A-1.
  *
- * Thin server wrapper for `/projects/{id}/publishing/{topicId}`. Gates on the
- * SAME two flags as the sibling list route and in the same order: the
- * `FABRIC_FEATURE_PUBLISHING_SUITE` server flag plus the
- * `NEXT_PUBLIC_FABRIC_FEATURE_PUBLISHING_SUITE` client UI-rollout flag, both
- * BEFORE any session or project access. A detail route that gated more loosely
- * than its list would be a way to reach Publishing Suite data by guessing a URL
- * while the UI is deliberately hidden.
+ * Refuses unconditionally. Per ADR-018 ("An organization is the only tenant
+ * context", `docs/adr/018-organization-is-the-only-tenant-context.md`),
+ * Publishing Suite — a feature introduced after that ADR — must not route
+ * into the personal arm, and code that finds itself there is a bug in
+ * whatever failed to resolve an organization. This route only ever resolves
+ * a project fetched with `organizationId: null` (it is the personal route
+ * tree), so any project it would serve is, by construction, one with no
+ * organization — exactly the tenant the API's own
+ * `assertPublishingSuiteFeatureEnabled` (see
+ * `packages/api/modules/projects/lib/publishing-suite-feature.ts`) refuses
+ * outright, NOT_FOUND, without even consulting the flag. This page mirrors
+ * that refusal at the route level rather than fetching a project and flag
+ * state it could never legitimately use — there is no organization-scoped
+ * answer to fall through to.
  *
- * The topic itself is NOT fetched here. `TopicItemPage` reads it through
- * `publishingSuite.getTopic`, which re-scopes the read to `{ id, projectId }`
- * and answers NOT_FOUND for a topic in another project (DV16). Fetching it
- * server-side as well would duplicate that authorization in a second place.
- *
- * `canEdit` is `project.canPublish`, already resolved by `getProjectProcedure`
- * via `resolveEffectiveProjectPermissions` — never a raw `userRole` check.
+ * The route file itself is NOT removed here: it was added on master while
+ * this branch was in flight, and master owns it. Only its behavior changes,
+ * from gating on the deleted env-only reader (`isPublishingSuiteEnabled`) to
+ * refusing outright, consistent with the API gate.
  */
 
-import { isPublishingSuiteEnabled } from "@repo/utils/feature-flag";
-import { getSession } from "@saas/auth/lib/server";
-import { TopicItemPage } from "@saas/projects/components/publishing-suite";
-import { orpcClient } from "@shared/lib/orpc-client";
-import { notFound, redirect } from "next/navigation";
+import { notFound } from "next/navigation";
 
 type Props = {
 	params: Promise<{ id: string; topicId: string }>;
 };
 
-export default async function PersonalPublishingTopicPage({ params }: Props) {
-	if (
-		!isPublishingSuiteEnabled() ||
-		process.env.NEXT_PUBLIC_FABRIC_FEATURE_PUBLISHING_SUITE !== "true"
-	) {
-		notFound();
-	}
-
-	const session = await getSession();
-	if (!session) {
-		redirect("/auth/login");
-	}
-
-	const { id, topicId } = await params;
-
-	let projectResult: Awaited<ReturnType<typeof orpcClient.projects.get>>;
-	try {
-		projectResult = await orpcClient.projects.get({
-			id,
-			organizationId: null,
-		});
-	} catch {
-		notFound();
-	}
-
-	return (
-		<TopicItemPage
-			projectId={id}
-			topicId={topicId}
-			organizationId={null}
-			canEdit={projectResult.project.canPublish ?? false}
-		/>
-	);
+export default async function PersonalPublishingTopicPage(_props: Props) {
+	notFound();
 }

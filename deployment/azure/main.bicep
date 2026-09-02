@@ -72,7 +72,7 @@ param enableCodeIndexing bool = false
 @description('Living Documents auto-refresh SWEEP kill switch (FABRIC_FEATURE_LIVING_DOCS_REFRESH) on the temporal worker. TRUE in every environment, prod included — this is deliberately NOT the rollout switch, and since Fizzy #2210 it is registered as LIVING_DOCS_REFRESH_SWEEP rather than being read directly. What it buys is the brakes: the worker re-reads it immediately before it writes, so setting it false stops an AI mid-rollout. Rollout is a SEPARATE registry flag, LIVING_DOCS_REFRESH, whose env var is FABRIC_FEATURE_LIVING_DOCS_REFRESH_ROLLOUT — it governs the masthead control and the enrolment procedures together, and is off unless explicitly set. Both are now flippable from the admin console without a redeploy; this param is only the deployment default the override sits on top of. Set false only to hit the brakes.')
 param enableLivingDocsRefresh bool = true
 
-@description('Publishing Suite daily suggestion sweep (FABRIC_FEATURE_PUBLISHING_SUITE) on the temporal worker. Off by default (prod) — the deploy workflow enables it for non-prod only. Unlike Living Documents there is NO per-project enrollment gate in Phase 1A, so an ON worker runs the daily sweep for every eligible project and spends LLM credits. Keep false until Publishing Suite rolls out to prod.')
+@description('Publishing Suite daily suggestion sweep (FABRIC_FEATURE_PUBLISHING_SUITE) on the temporal worker. Off by default (prod) — the deploy workflow enables it for non-prod only. This param only seeds the GLOBAL flag value; the find-eligible activity layers a per-organization PUBLISHING_SUITE override on top (database-backed, read on every tick, no cache), so it no longer determines who gets swept on its own — the sweep is restricted to organizations with an enabled override, or, when this is true, every organization except one with a disabled override. An organization can be enrolled individually regardless of this value; keep it false in prod until Publishing Suite is ready for a broad rollout.')
 param enablePublishingSuite bool = false
 
 @description('OpenAPI/Swagger specs as project context (FABRIC_FEATURE_OPENAPI_SPEC_CONTEXT) on the temporal worker, which is where every context-ingestion path runs. Off by default (prod) — the deploy workflow enables it for non-prod only. On, a detected spec is chunked per endpoint and per model instead of by character window; off, ingestion is byte-for-byte what it is today, so rollback is this param with no migration. Already-ingested specs keep the chunks they have until re-embedded, so flipping it on only changes what is uploaded next. Fizzy #2236.')
@@ -498,13 +498,21 @@ var livingDocsRefreshEnv = enableLivingDocsRefresh ? [
   { name: 'FABRIC_FEATURE_LIVING_DOCS_REFRESH', value: 'true' }
 ] : []
 
-// Publishing Suite daily suggestion sweep (Phase 1A). The dispatcher's
-// find-eligible activity reads FABRIC_FEATURE_PUBLISHING_SUITE (parseOptInFlag)
-// and returns an empty due-list when off, so flipping this takes effect on the
-// next daily tick with no redeploy. Off by default (prod-safe); the deploy
-// workflow sets it true for non-prod only — there is NO per-project enrollment
-// gate in 1A, so an ON worker sweeps every eligible project. FABRIC_ prefix is
-// load-bearing (turbo passthrough).
+// Publishing Suite daily suggestion sweep (Phase 1A; per-organization scoping
+// added by the org-scoped-flags slice). The dispatcher's find-eligible
+// activity deliberately does NOT resolve this via isFeatureEnabled — an
+// earlier fix replaced that call with getGlobalFlagOverride (an uncached
+// direct read) plus resolveFlag, because isFeatureEnabled's 10-second TTL
+// cache is wrong for a credit-spending decision made once per tick. It reads
+// the PUBLISHING_SUITE registry entry whose envVar is
+// FABRIC_FEATURE_PUBLISHING_SUITE and layers a per-organization database
+// override on top, the same uncached way (see the enablePublishingSuite
+// param description above). This var is only the global seed: with it off,
+// the sweep is restricted to organizations with an enabled override (and
+// returns an empty due-list immediately if none exist); with it on, every
+// organization is swept except one with a disabled override. Off by default
+// (prod-safe); the deploy workflow sets it true for non-prod only. FABRIC_
+// prefix is load-bearing (turbo passthrough).
 var publishingSuiteEnv = enablePublishingSuite ? [
   { name: 'FABRIC_FEATURE_PUBLISHING_SUITE', value: 'true' }
 ] : []

@@ -133,7 +133,7 @@ export const listTopicDraftsProcedure = tenantProtectedProcedure
 		}),
 	)
 	.handler(async ({ input }) => {
-		assertPublishingSuiteFeatureEnabled();
+		await assertPublishingSuiteFeatureEnabled(input.projectId);
 
 		// Scoped by BOTH ids inside the helper. `input.organizationId` is a
 		// guard the middleware already used, never a scoping key here.

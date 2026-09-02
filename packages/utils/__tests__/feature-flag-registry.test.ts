@@ -29,14 +29,22 @@ describe("FEATURE_FLAG_REGISTRY", () => {
 	// not take the read-only personal lane down with it, and vice versa.
 	it("resolves MEETING_CONTEXT_IMPORT independently of PERSONAL_MEETINGS", () => {
 		expect(
-			resolveFlag("MEETING_CONTEXT_IMPORT", true, {
-				FABRIC_FEATURE_PERSONAL_MEETINGS: "false",
-			}).enabled,
+			resolveFlag(
+				"MEETING_CONTEXT_IMPORT",
+				{ global: true },
+				{
+					FABRIC_FEATURE_PERSONAL_MEETINGS: "false",
+				},
+			).enabled,
 		).toBe(true);
 		expect(
-			resolveFlag("MEETING_CONTEXT_IMPORT", undefined, {
-				FABRIC_FEATURE_PERSONAL_MEETINGS: "true",
-			}).enabled,
+			resolveFlag(
+				"MEETING_CONTEXT_IMPORT",
+				{ global: undefined },
+				{
+					FABRIC_FEATURE_PERSONAL_MEETINGS: "true",
+				},
+			).enabled,
 		).toBe(false);
 	});
 
@@ -69,11 +77,13 @@ describe("FEATURE_FLAG_REGISTRY", () => {
 	it("resolves the rollout and sweep gates independently", () => {
 		const env = { FABRIC_FEATURE_LIVING_DOCS_REFRESH: "true" };
 		expect(
-			resolveFlag("LIVING_DOCS_REFRESH_SWEEP", undefined, env).enabled,
+			resolveFlag("LIVING_DOCS_REFRESH_SWEEP", { global: undefined }, env)
+				.enabled,
 		).toBe(true);
-		expect(resolveFlag("LIVING_DOCS_REFRESH", undefined, env).enabled).toBe(
-			false,
-		);
+		expect(
+			resolveFlag("LIVING_DOCS_REFRESH", { global: undefined }, env)
+				.enabled,
+		).toBe(false);
 	});
 
 	// An admin's explicit OFF must beat a truthy env var, or the runtime switch
@@ -81,15 +91,21 @@ describe("FEATURE_FLAG_REGISTRY", () => {
 	// on a deployment whose env var says on.
 	it("lets an explicit LIVING_DOCS_REFRESH override beat a truthy env var", () => {
 		const on = { FABRIC_FEATURE_LIVING_DOCS_REFRESH_ROLLOUT: "true" };
-		expect(resolveFlag("LIVING_DOCS_REFRESH", false, on)).toEqual({
+		expect(
+			resolveFlag("LIVING_DOCS_REFRESH", { global: false }, on),
+		).toEqual({
 			enabled: false,
 			source: "override",
 		});
-		expect(resolveFlag("LIVING_DOCS_REFRESH", undefined, on)).toEqual({
+		expect(
+			resolveFlag("LIVING_DOCS_REFRESH", { global: undefined }, on),
+		).toEqual({
 			enabled: true,
 			source: "env",
 		});
-		expect(resolveFlag("LIVING_DOCS_REFRESH", undefined, {})).toEqual({
+		expect(
+			resolveFlag("LIVING_DOCS_REFRESH", { global: undefined }, {}),
+		).toEqual({
 			enabled: false,
 			source: "default",
 		});
@@ -99,9 +115,13 @@ describe("FEATURE_FLAG_REGISTRY", () => {
 	// in-flight sweep even though every environment sets the env var to true.
 	it("lets an explicit LIVING_DOCS_REFRESH_SWEEP override beat a truthy env var", () => {
 		expect(
-			resolveFlag("LIVING_DOCS_REFRESH_SWEEP", false, {
-				FABRIC_FEATURE_LIVING_DOCS_REFRESH: "true",
-			}),
+			resolveFlag(
+				"LIVING_DOCS_REFRESH_SWEEP",
+				{ global: false },
+				{
+					FABRIC_FEATURE_LIVING_DOCS_REFRESH: "true",
+				},
+			),
 		).toEqual({ enabled: false, source: "override" });
 	});
 
@@ -123,25 +143,31 @@ describe("FEATURE_FLAG_REGISTRY", () => {
 	// recency alone, so a fault on the favorite write surface must not force the
 	// shortcuts off with it.
 	it("keeps the two project-shortcut flags independently resolvable", () => {
-		expect(resolveFlag("PROJECT_FAVORITES", true, {}).enabled).toBe(true);
-		expect(resolveFlag("PROJECT_SHORTCUTS", undefined, {}).enabled).toBe(
-			false,
-		);
+		expect(
+			resolveFlag("PROJECT_FAVORITES", { global: true }, {}).enabled,
+		).toBe(true);
+		expect(
+			resolveFlag("PROJECT_SHORTCUTS", { global: undefined }, {}).enabled,
+		).toBe(false);
 	});
 });
 
 describe("resolveFlag", () => {
 	it("prefers the override row over everything", () => {
 		const env = { FABRIC_FEATURE_PERSONAL_MEETINGS: "false" };
-		expect(resolveFlag("PERSONAL_MEETINGS", true, env)).toEqual({
-			enabled: true,
-			source: "override",
-		});
+		expect(resolveFlag("PERSONAL_MEETINGS", { global: true }, env)).toEqual(
+			{
+				enabled: true,
+				source: "override",
+			},
+		);
 	});
 
 	it("honours an override of false over a truthy env var", () => {
 		const env = { FABRIC_FEATURE_PERSONAL_MEETINGS: "true" };
-		expect(resolveFlag("PERSONAL_MEETINGS", false, env)).toEqual({
+		expect(
+			resolveFlag("PERSONAL_MEETINGS", { global: false }, env),
+		).toEqual({
 			enabled: false,
 			source: "override",
 		});
@@ -149,7 +175,9 @@ describe("resolveFlag", () => {
 
 	it("falls back to the env var when no override exists", () => {
 		const env = { FABRIC_FEATURE_PERSONAL_MEETINGS: "true" };
-		expect(resolveFlag("PERSONAL_MEETINGS", undefined, env)).toEqual({
+		expect(
+			resolveFlag("PERSONAL_MEETINGS", { global: undefined }, env),
+		).toEqual({
 			enabled: true,
 			source: "env",
 		});
@@ -158,15 +186,21 @@ describe("resolveFlag", () => {
 	it("accepts the opt-in aliases the existing reader accepts", () => {
 		for (const raw of ["true", "1", "on", "yes", "TRUE", " yes "]) {
 			expect(
-				resolveFlag("PERSONAL_MEETINGS", undefined, {
-					FABRIC_FEATURE_PERSONAL_MEETINGS: raw,
-				}).enabled,
+				resolveFlag(
+					"PERSONAL_MEETINGS",
+					{ global: undefined },
+					{
+						FABRIC_FEATURE_PERSONAL_MEETINGS: raw,
+					},
+				).enabled,
 			).toBe(true);
 		}
 	});
 
 	it("falls back to the registry default when neither is set", () => {
-		expect(resolveFlag("PERSONAL_MEETINGS", undefined, {})).toEqual({
+		expect(
+			resolveFlag("PERSONAL_MEETINGS", { global: undefined }, {}),
+		).toEqual({
 			enabled: false,
 			source: "default",
 		});
@@ -196,7 +230,7 @@ describe("MEETING_AGENDA", () => {
 	});
 
 	it("reads the flag's own env var when no override row exists", () => {
-		const resolved = resolveFlag("MEETING_AGENDA", undefined, {
+		const resolved = resolveFlag("MEETING_AGENDA", { global: undefined }, {
 			FABRIC_FEATURE_MEETING_AGENDA: "true",
 		} as NodeJS.ProcessEnv);
 		expect(resolved).toEqual({ enabled: true, source: "env" });
@@ -205,7 +239,7 @@ describe("MEETING_AGENDA", () => {
 	it("falls back to the registry default when neither is set", () => {
 		const resolved = resolveFlag(
 			"MEETING_AGENDA",
-			undefined,
+			{ global: undefined },
 			{} as NodeJS.ProcessEnv,
 		);
 		expect(resolved).toEqual({ enabled: false, source: "default" });
@@ -224,23 +258,31 @@ describe("MEETING_ACTION_ITEM_LINKING", () => {
 	});
 
 	it("reads the flag's own env var when no override row exists", () => {
-		const resolved = resolveFlag("MEETING_ACTION_ITEM_LINKING", undefined, {
-			FABRIC_FEATURE_MEETING_ACTION_ITEM_LINKING: "true",
-		} as NodeJS.ProcessEnv);
+		const resolved = resolveFlag(
+			"MEETING_ACTION_ITEM_LINKING",
+			{ global: undefined },
+			{
+				FABRIC_FEATURE_MEETING_ACTION_ITEM_LINKING: "true",
+			} as NodeJS.ProcessEnv,
+		);
 		expect(resolved).toEqual({ enabled: true, source: "env" });
 	});
 
 	it("lets an explicit admin off-override beat a truthy env var", () => {
-		const resolved = resolveFlag("MEETING_ACTION_ITEM_LINKING", false, {
-			FABRIC_FEATURE_MEETING_ACTION_ITEM_LINKING: "true",
-		} as NodeJS.ProcessEnv);
+		const resolved = resolveFlag(
+			"MEETING_ACTION_ITEM_LINKING",
+			{ global: false },
+			{
+				FABRIC_FEATURE_MEETING_ACTION_ITEM_LINKING: "true",
+			} as NodeJS.ProcessEnv,
+		);
 		expect(resolved).toEqual({ enabled: false, source: "override" });
 	});
 
 	it("falls back to the registry default when neither is set", () => {
 		const resolved = resolveFlag(
 			"MEETING_ACTION_ITEM_LINKING",
-			undefined,
+			{ global: undefined },
 			{} as NodeJS.ProcessEnv,
 		);
 		expect(resolved).toEqual({ enabled: false, source: "default" });
@@ -281,7 +323,7 @@ describe("UNIFIED_AGENT_INTERFACE", () => {
 	it("serves the unified interface when nothing is configured", () => {
 		const resolved = resolveFlag(
 			"UNIFIED_AGENT_INTERFACE",
-			undefined,
+			{ global: undefined },
 			{} as NodeJS.ProcessEnv,
 		);
 		expect(resolved).toEqual({ enabled: true, source: "default" });
@@ -290,7 +332,7 @@ describe("UNIFIED_AGENT_INTERFACE", () => {
 	it("rolls back from an admin override, which is the whole point of the flag", () => {
 		const resolved = resolveFlag(
 			"UNIFIED_AGENT_INTERFACE",
-			false,
+			{ global: false },
 			{} as NodeJS.ProcessEnv,
 		);
 		expect(resolved).toEqual({ enabled: false, source: "override" });
@@ -300,16 +342,24 @@ describe("UNIFIED_AGENT_INTERFACE", () => {
 		// The reader only treats the opt-in aliases as true, so any other
 		// value reads false — that is what lets a default-ON flag be turned
 		// off through the same mechanism the opt-in flags use to turn on.
-		const resolved = resolveFlag("UNIFIED_AGENT_INTERFACE", undefined, {
-			FABRIC_FEATURE_UNIFIED_AGENT_INTERFACE: "false",
-		} as NodeJS.ProcessEnv);
+		const resolved = resolveFlag(
+			"UNIFIED_AGENT_INTERFACE",
+			{ global: undefined },
+			{
+				FABRIC_FEATURE_UNIFIED_AGENT_INTERFACE: "false",
+			} as NodeJS.ProcessEnv,
+		);
 		expect(resolved).toEqual({ enabled: false, source: "env" });
 	});
 
 	it("lets an override of true win back over an env rollback", () => {
-		const resolved = resolveFlag("UNIFIED_AGENT_INTERFACE", true, {
-			FABRIC_FEATURE_UNIFIED_AGENT_INTERFACE: "false",
-		} as NodeJS.ProcessEnv);
+		const resolved = resolveFlag(
+			"UNIFIED_AGENT_INTERFACE",
+			{ global: true },
+			{
+				FABRIC_FEATURE_UNIFIED_AGENT_INTERFACE: "false",
+			} as NodeJS.ProcessEnv,
+		);
 		expect(resolved).toEqual({ enabled: true, source: "override" });
 	});
 });
@@ -332,7 +382,7 @@ describe("NEWSLETTER_APPROVAL_CHAT (#2203)", () => {
 		expect(
 			resolveFlag(
 				"NEWSLETTER_APPROVAL_CHAT",
-				undefined,
+				{ global: undefined },
 				{} as NodeJS.ProcessEnv,
 			),
 		).toEqual({ enabled: true, source: "default" });
@@ -340,7 +390,7 @@ describe("NEWSLETTER_APPROVAL_CHAT (#2203)", () => {
 
 	it("rolls back from the env var, so a deploy can disable it with no database write", () => {
 		expect(
-			resolveFlag("NEWSLETTER_APPROVAL_CHAT", undefined, {
+			resolveFlag("NEWSLETTER_APPROVAL_CHAT", { global: undefined }, {
 				FABRIC_FEATURE_NEWSLETTER_APPROVAL_CHAT: "false",
 			} as NodeJS.ProcessEnv),
 		).toEqual({ enabled: false, source: "env" });
@@ -356,7 +406,7 @@ describe("NEWSLETTER_APPROVAL_CHAT (#2203)", () => {
 	// because it covers the entry — the three above do that.
 	it("lets an admin off-override beat a truthy env var", () => {
 		expect(
-			resolveFlag("NEWSLETTER_APPROVAL_CHAT", false, {
+			resolveFlag("NEWSLETTER_APPROVAL_CHAT", { global: false }, {
 				FABRIC_FEATURE_NEWSLETTER_APPROVAL_CHAT: "true",
 			} as NodeJS.ProcessEnv),
 		).toEqual({ enabled: false, source: "override" });
@@ -373,18 +423,27 @@ describe("ROLE_TAG_ENFORCEMENT", () => {
 	});
 
 	it("resolves off when nothing is set, and an admin OFF beats a truthy env var", () => {
-		expect(resolveFlag("ROLE_TAG_ENFORCEMENT", undefined, {}).enabled).toBe(
-			false,
-		);
 		expect(
-			resolveFlag("ROLE_TAG_ENFORCEMENT", undefined, {
-				FABRIC_FEATURE_ROLE_TAG_ENFORCEMENT: "true",
-			}).enabled,
+			resolveFlag("ROLE_TAG_ENFORCEMENT", { global: undefined }, {})
+				.enabled,
+		).toBe(false);
+		expect(
+			resolveFlag(
+				"ROLE_TAG_ENFORCEMENT",
+				{ global: undefined },
+				{
+					FABRIC_FEATURE_ROLE_TAG_ENFORCEMENT: "true",
+				},
+			).enabled,
 		).toBe(true);
 		expect(
-			resolveFlag("ROLE_TAG_ENFORCEMENT", false, {
-				FABRIC_FEATURE_ROLE_TAG_ENFORCEMENT: "true",
-			}).enabled,
+			resolveFlag(
+				"ROLE_TAG_ENFORCEMENT",
+				{ global: false },
+				{
+					FABRIC_FEATURE_ROLE_TAG_ENFORCEMENT: "true",
+				},
+			).enabled,
 		).toBe(false);
 	});
 });
@@ -406,7 +465,9 @@ describe("PUBLISHING_INBOX", () => {
 	// governs staging and production, which is the whole point of flipping it
 	// rather than setting an env var.
 	it("resolves ON when neither an override nor the env var is set", () => {
-		expect(resolveFlag("PUBLISHING_INBOX", undefined, {})).toEqual({
+		expect(
+			resolveFlag("PUBLISHING_INBOX", { global: undefined }, {}),
+		).toEqual({
 			enabled: true,
 			source: "default",
 		});
@@ -414,9 +475,13 @@ describe("PUBLISHING_INBOX", () => {
 
 	it("rolls back from the env var, so a deploy can disable it with no database write", () => {
 		expect(
-			resolveFlag("PUBLISHING_INBOX", undefined, {
-				FABRIC_FEATURE_PUBLISHING_INBOX: "false",
-			}),
+			resolveFlag(
+				"PUBLISHING_INBOX",
+				{ global: undefined },
+				{
+					FABRIC_FEATURE_PUBLISHING_INBOX: "false",
+				},
+			),
 		).toEqual({ enabled: false, source: "env" });
 	});
 
@@ -429,9 +494,76 @@ describe("PUBLISHING_INBOX", () => {
 	// states the kill-switch contract; the three above cover the entry.
 	it("lets an admin off-override beat a truthy env var", () => {
 		expect(
-			resolveFlag("PUBLISHING_INBOX", false, {
-				FABRIC_FEATURE_PUBLISHING_INBOX: "true",
-			}),
+			resolveFlag(
+				"PUBLISHING_INBOX",
+				{ global: false },
+				{
+					FABRIC_FEATURE_PUBLISHING_INBOX: "true",
+				},
+			),
 		).toEqual({ enabled: false, source: "override" });
+	});
+});
+
+describe("PUBLISHING_SUITE org-scoped resolution", () => {
+	it("registers PUBLISHING_SUITE with its env var, default and org marker", () => {
+		expect(FEATURE_FLAG_REGISTRY.PUBLISHING_SUITE.envVar).toBe(
+			"FABRIC_FEATURE_PUBLISHING_SUITE",
+		);
+		expect(FEATURE_FLAG_REGISTRY.PUBLISHING_SUITE.default).toBe(false);
+		expect(FEATURE_FLAG_REGISTRY.PUBLISHING_SUITE.orgScopable).toBe(true);
+	});
+
+	it("prefers an org override over every level beneath it", () => {
+		expect(
+			resolveFlag(
+				"PUBLISHING_SUITE",
+				{ org: true, global: false },
+				{ FABRIC_FEATURE_PUBLISHING_SUITE: "false" },
+			),
+		).toEqual({ enabled: true, source: "org-override" });
+	});
+
+	// The per-organization kill switch. An org-level `false` must beat a global
+	// `true`, or an organization can never be excluded from a globally-enabled
+	// feature — which is the whole reason the row stores a value rather than
+	// being a bare membership entry.
+	it("lets an org override of false beat a global override of true", () => {
+		expect(
+			resolveFlag("PUBLISHING_SUITE", { org: false, global: true }, {}),
+		).toEqual({ enabled: false, source: "org-override" });
+	});
+
+	// `undefined` (no row) and `false` (explicitly disabled) must stay distinct
+	// at the org level, exactly as they already are at the global level. A
+	// resolver that collapsed them would disable the feature for every
+	// organization the moment a global override was cleared.
+	it("inherits when there is no org row, rather than denying", () => {
+		expect(
+			resolveFlag(
+				"PUBLISHING_SUITE",
+				{ org: undefined, global: true },
+				{},
+			),
+		).toEqual({ enabled: true, source: "override" });
+	});
+
+	// Personal context: callers pass no org level at all. This is the whole of
+	// "personal off in production" (spec DEC-1) — production sets neither the
+	// env var nor a global override, so this resolves false.
+	it("falls through to env then default when no org level is supplied", () => {
+		expect(resolveFlag("PUBLISHING_SUITE", {}, {})).toEqual({
+			enabled: false,
+			source: "default",
+		});
+		expect(
+			resolveFlag(
+				"PUBLISHING_SUITE",
+				{},
+				{
+					FABRIC_FEATURE_PUBLISHING_SUITE: "true",
+				},
+			),
+		).toEqual({ enabled: true, source: "env" });
 	});
 });

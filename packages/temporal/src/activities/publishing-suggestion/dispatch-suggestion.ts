@@ -55,7 +55,10 @@ import {
 import { getTemporalClient } from "../../client";
 import type { PublishingSuggestionWorkflowInput } from "../../workflows/publishing-suggestion-generation-workflow";
 import { JOB_STEPS, seedJobSteps } from "../lib/job-progress";
-import type { EligibleProject } from "./find-eligible-projects";
+import {
+	isPublishingSuiteEnabledForOrganizationUncached,
+	type EligibleProject,
+} from "./find-eligible-projects";
 
 // A create→start may not have landed for a just-created cycle; never reclaim
 // one younger than this. Mirrors the daily-brief STALE_GENERATING window's
@@ -341,13 +344,15 @@ export async function runPublishingSuggestionDispatch(
 	// the project may have been deleted, transferred, or org-changed between the
 	// sweep and this dispatch. Every downstream call uses these fresh values.
 	//
-	// F3: re-apply the sweep's eligibility filter (status ACTIVE, deletedAt null —
-	// mirrored VERBATIM from find-eligible-projects.ts, and the same columns F1
-	// re-checks in persistCycleTerminal). A bare `{ id }` lookup would let a
-	// project archived / soft-deleted BETWEEN the sweep and this dispatch still
-	// pass; the eligibility conjuncts make an ineligible project read as null →
-	// skip (no cycle created, no workflow started), distinct from a hard-missing
-	// row (both resolve null here → both skip).
+	// F3: re-apply the sweep's eligibility filter — status ACTIVE, deletedAt null
+	// (mirrored VERBATIM from find-eligible-projects.ts, and the same columns F1
+	// re-checks in persistCycleTerminal) PLUS the organization PUBLISHING_SUITE
+	// gate re-checked just below, against the fresh organizationId, once it is
+	// known. A bare `{ id }` lookup would let a project archived / soft-deleted
+	// BETWEEN the sweep and this dispatch still pass; the eligibility conjuncts
+	// make an ineligible project read as null → skip (no cycle created, no
+	// workflow started), distinct from a hard-missing row (both resolve null
+	// here → both skip).
 	const fresh = await db.project.findFirst({
 		where: { id: projectId, status: "ACTIVE", deletedAt: null },
 		select: { id: true, userId: true, organizationId: true },
@@ -361,6 +366,37 @@ export async function runPublishingSuggestionDispatch(
 	// XOR-normalized so the created cycle satisfies the tenant-XOR CHECK (F1):
 	// org context → userId null; personal context → userId = owner.
 	const tenantUserId = fresh.organizationId ? null : fresh.userId;
+
+	// F3 (organization dimension): re-check PUBLISHING_SUITE against the FRESH
+	// organizationId just read above — never the sweep's. The sweep
+	// (findEligibleProjects) filters by organization, but a project selected
+	// while its organization was allowed can still be transferred into a
+	// disabled organization, or have its organization disabled, between the
+	// sweep and this dispatch; without this re-check that project would create
+	// a cycle and start a generation workflow anyway — the one path that spends
+	// model-inference cost.
+	//
+	// Codex fix round 2 (§E): this MUST be uncached. `isFeatureEnabled` (the
+	// obvious choice) resolves org override > global override > env var >
+	// registry default, but its global read goes through `getFlagOverrides`'s
+	// 10-second TTL cache — and dispatch normally runs within seconds of the
+	// sweep that selected this project, so a cached read here would usually
+	// just be re-reading the SWEEP's own answer, making this re-check a no-op
+	// for exactly the window it exists to close. `resolvePublishingSuiteGlobalUncached`
+	// (via `isPublishingSuiteEnabledForOrganizationUncached`) is the fix
+	// round 2 (§FIX 2) uncached global reader, reused here — the same reasoning
+	// applies with even higher stakes: this is the LAST gate before an LLM
+	// generation actually starts. Per ADR-018 ("An organization is the only
+	// tenant context"), a project that resolves to no organization here — e.g.
+	// transferred OUT of its organization between the sweep and this dispatch
+	// — is refused (`false`, no flag read), the same as at the sweep and the
+	// API gate; it is NOT routed into the global/env/default chain. See that
+	// function's own docstring.
+	const flagEnabled =
+		await isPublishingSuiteEnabledForOrganizationUncached(organizationId);
+	if (!flagEnabled) {
+		return; // organization disabled/removed between sweep and dispatch — skip.
+	}
 
 	// priorCoverage = the last SUCCESSFUL cycle's cumulative coverage. An
 	// intervening INSUFFICIENT_CONTEXT/FAILED cycle advances NO coverage and
