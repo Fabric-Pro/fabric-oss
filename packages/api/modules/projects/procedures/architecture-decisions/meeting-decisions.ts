@@ -194,8 +194,18 @@ export const createDecisionFromMeetingProcedure = tenantProtectedProcedure
 
 		// Best-effort tagging at capture time (Fizzy #2029): suggest type,
 		// duration, priority flag and owner, then apply them to the draft.
-		// A failure leaves the draft untagged — the conversion still succeeds
-		// and a human completes the metadata in the form.
+		//
+		// Capture deliberately does NOT depend on the model succeeding — a
+		// transcript conversion that failed because the AI was down would be a
+		// worse product than an untagged draft. The manual form enforces AC1's
+		// type+duration at the schema; this path cannot, because there is no
+		// honest value to fall back on when the model returns nothing, and
+		// inventing a type would pollute the project's taxonomy.
+		//
+		// So the guarantee here is visibility rather than enforcement: a
+		// decision missing a type or duration carries a "Needs classification"
+		// badge in the log (DecisionTagPills), which is what stops a failed
+		// tagging from reading as a decision nobody needed to classify.
 		const tagged = await applyMeetingDecisionTagging(
 			input.projectId,
 			decision,
