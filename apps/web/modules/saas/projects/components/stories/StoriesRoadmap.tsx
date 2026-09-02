@@ -124,11 +124,13 @@ import { uploadStoryAttachment } from "../../lib/attachment-upload-utils";
 import { uploadStoryImage } from "../../lib/image-upload-utils";
 import {
 	applyRoadmapFilters,
+	partitionByNameMatch,
 	selectHiddenMatches,
 } from "../../lib/roadmap-filters";
 import {
 	compareStoriesByRelevance,
 	computeMatchPercentById,
+	narrowToNameMatches,
 	scoreStoryAgainstQuery,
 } from "../../lib/roadmap-search-relevance";
 import {
@@ -996,7 +998,15 @@ export function StoriesRoadmap({ projectId }: Props) {
 		};
 	}, [visibleStories, groupBy]);
 
-	const sortedStories = useMemo(() => {
+	// Body-only matches are collapsed behind a count, never dropped, and the
+	// reveal is scoped to the query that produced it — retyping starts
+	// collapsed again rather than silently carrying a stale reveal forward.
+	const [bodyMatchesRevealedFor, setBodyMatchesRevealedFor] = useState<
+		string | null
+	>(null);
+	const showBodyMatches = bodyMatchesRevealedFor === roadmapFilters.q;
+
+	const searchResult = useMemo(() => {
 		// AI mode drops the keyword tokens from filtering (FR6: semantic, not
 		// keyword matching); every other facet still applies as usual.
 		let filtered = applyRoadmapFilters(
@@ -1019,6 +1029,11 @@ export function StoriesRoadmap({ projectId }: Props) {
 			sortsGroups ? DEFAULT_ROADMAP_SORT : sort,
 			roadmapOrderMap,
 		);
+		// Revealing keeps the collapsed COUNT so the control can toggle back.
+		const narrow = (ranked: UserStory[]) => {
+			const result = narrowToNameMatches(ranked, roadmapFilters.q);
+			return showBodyMatches ? { ...result, stories: ranked } : result;
+		};
 		// A search query replaces the active sort with title-weighted relevance;
 		// equal scores fall back through the active sort. Clearing the query
 		// restores the plain sort (FR9). Loaded AI results override both — and
@@ -1030,21 +1045,41 @@ export function StoriesRoadmap({ projectId }: Props) {
 			const semanticHits = filtered.filter((s) =>
 				semanticRankById.has(s.id),
 			);
+			// AI ranking is never narrowed by name: it exists to find items
+			// whose titles share no words with the query, so name-gating it
+			// would defeat the mode.
 			if (semanticHits.length > 0) {
-				return semanticHits.sort(
-					(a, b) =>
-						(semanticRankById.get(b.id) ?? 0) -
-						(semanticRankById.get(a.id) ?? 0),
-				);
+				return {
+					stories: semanticHits.sort(
+						(a, b) =>
+							(semanticRankById.get(b.id) ?? 0) -
+							(semanticRankById.get(a.id) ?? 0),
+					),
+					collapsedCount: 0,
+					narrowed: false,
+				};
 			}
-			return filtered.sort(
-				compareStoriesByRelevance(roadmapFilters.q, fallbackSort),
+			// Semantic matched nothing and the list fell back to KEYWORD
+			// ranking — so it narrows like any other keyword ranking.
+			return narrow(
+				filtered.sort(
+					compareStoriesByRelevance(roadmapFilters.q, fallbackSort),
+				),
 			);
 		}
-		return filtered.sort(
-			roadmapFilters.q.trim().length > 0
-				? compareStoriesByRelevance(roadmapFilters.q, fallbackSort)
-				: fallbackSort,
+		if (roadmapFilters.q.trim().length === 0) {
+			return {
+				stories: filtered.sort(fallbackSort),
+				collapsedCount: 0,
+				narrowed: false,
+			};
+		}
+		// Ranking alone reorders; narrowing is what shortens the list to the
+		// items the query actually names (Fizzy #1937 follow-up).
+		return narrow(
+			filtered.sort(
+				compareStoriesByRelevance(roadmapFilters.q, fallbackSort),
+			),
 		);
 	}, [
 		visibleStories,
@@ -1054,7 +1089,10 @@ export function StoriesRoadmap({ projectId }: Props) {
 		getDuplicateInfo,
 		roadmapOrderMap,
 		semanticRankById,
+		showBodyMatches,
 	]);
+	const sortedStories = searchResult.stories;
+	const bodyMatchCount = searchResult.collapsedCount;
 
 	// True when AI mode ran, matched nothing above the floor, and the list
 	// fell back to keyword ranking — the notice says so instead of silently
@@ -1133,15 +1171,23 @@ export function StoriesRoadmap({ projectId }: Props) {
 			);
 		}
 		const matched = selectHiddenMatches(stories, roadmapFilters);
-		return roadmapFilters.duplicatesOnly
+		const scoped = roadmapFilters.duplicatesOnly
 			? matched.filter((s) => getDuplicateInfo(s.id) !== undefined)
 			: matched;
+		// Gate the hidden count exactly where the visible list is gated. Without
+		// this the count could promise more rows than revealing hidden shows —
+		// the revealed rows rejoin the visible list and are narrowed there.
+		return searchResult.narrowed && !showBodyMatches
+			? partitionByNameMatch(scoped, roadmapFilters.q).nameMatches
+			: scoped;
 	}, [
 		stories,
 		showClosed,
 		roadmapFilters,
 		getDuplicateInfo,
 		semanticRankById,
+		searchResult.narrowed,
+		showBodyMatches,
 	]);
 	const hiddenMatchCount = hiddenMatches.length;
 
@@ -2867,6 +2913,13 @@ export function StoriesRoadmap({ projectId }: Props) {
 						showHiddenMatchAffordance ? hiddenMatchCount : 0
 					}
 					onShowHidden={() => setShowClosed(true)}
+					bodyMatchCount={bodyMatchCount}
+					bodyMatchesShown={showBodyMatches}
+					onToggleBodyMatches={() =>
+						setBodyMatchesRevealedFor(
+							showBodyMatches ? null : roadmapFilters.q,
+						)
+					}
 					hasActiveFilters={hasActiveRoadmapFilters}
 					projectId={projectId}
 					organizationId={organizationId}

@@ -357,32 +357,93 @@ export function normalizeStorySource(
 	return FILTERABLE_SOURCE_SET.has(lower) ? (lower as StorySource) : "manual";
 }
 
+type SearchToken = { raw: string; normalized: string };
+
+/**
+ * Split the search into whitespace-delimited tokens. Callers require EVERY
+ * token to appear (as a substring) somewhere in the story's searchable text,
+ * which makes multi-word search order-independent — "login oauth" and "oauth
+ * login" both match "Add OAuth login" — and is a strict superset of the old
+ * exact-contiguous-phrase match, so nothing that matched before disappears.
+ * Each token also carries its identifier-normalized form, so a `B-011` token
+ * still finds a new plain-numeric `11` row. An all-whitespace query trims to
+ * "" → no tokens → no search filter.
+ */
+function buildSearchTokens(query: string): SearchToken[] {
+	const needle = query.trim().toLowerCase();
+	if (!needle) {
+		return [];
+	}
+	return needle
+		.split(/\s+/)
+		.filter(Boolean)
+		.map((token) => {
+			const normalized = normalizeStoryIdentifierQuery(token);
+			return {
+				raw: token,
+				normalized: normalized !== token ? normalized : "",
+			};
+		});
+}
+
+/** AND across tokens (order-independent); each token matches its raw form OR
+ * its identifier-normalized form (`B-011` → `011`). */
+function matchesEveryToken(haystack: string, tokens: SearchToken[]): boolean {
+	return tokens.every(
+		(token) =>
+			haystack.includes(token.raw) ||
+			(token.normalized.length > 0 &&
+				haystack.includes(token.normalized)),
+	);
+}
+
+/**
+ * Split search results into the ones the query reaches BY NAME and the ones it
+ * only reaches through body prose (Fizzy #1937 follow-up).
+ *
+ * Relevance ranking sorts a title hit above a description hit but still lists
+ * every description hit, so a query whose words are common in prose returns a
+ * long tail of rows that only mention them in passing. The roadmap uses this
+ * split to show the name matches and collapse the rest behind a count.
+ *
+ * "By name" is title, identifier and externalId — the fields that identify a
+ * work item. The source label ("Jira", "Manual Entry") is deliberately NOT a
+ * name field: matching every Jira row on "jira" is precisely the noise being
+ * collapsed. The token model is `applyRoadmapFilters`' own, so the split and
+ * the filter can never disagree about WHY a row is in the list.
+ *
+ * With no query every story is a name match and `bodyOnly` is empty, so a
+ * caller that forgets to guard on an empty query narrows nothing.
+ */
+export function partitionByNameMatch(
+	stories: UserStory[],
+	query: string,
+): { nameMatches: UserStory[]; bodyOnly: UserStory[] } {
+	const tokens = buildSearchTokens(query);
+	if (tokens.length === 0) {
+		return { nameMatches: [...stories], bodyOnly: [] };
+	}
+	const nameMatches: UserStory[] = [];
+	const bodyOnly: UserStory[] = [];
+	for (const story of stories) {
+		const name = [story.title, story.identifier, story.externalId ?? ""]
+			.join("\n")
+			.toLowerCase();
+		if (matchesEveryToken(name, tokens)) {
+			nameMatches.push(story);
+		} else {
+			bodyOnly.push(story);
+		}
+	}
+	return { nameMatches, bodyOnly };
+}
+
 export function applyRoadmapFilters(
 	stories: UserStory[],
 	filters: RoadmapFilters,
 	options?: { allowClosedInStageFilter?: boolean },
 ): UserStory[] {
-	const needle = filters.q.trim().toLowerCase();
-	// Split the search into whitespace-delimited tokens and require EVERY token
-	// to appear (as a substring) somewhere in the story's searchable text. This
-	// makes multi-word search order-independent — "login oauth" and "oauth
-	// login" both match "Add OAuth login" — and is a strict superset of the old
-	// exact-contiguous-phrase match, so nothing that matched before disappears.
-	// Each token is also matched via its identifier-normalized form, so a
-	// `B-011` token still finds a new plain-numeric `11` row. An all-whitespace
-	// query trims to "" → no tokens → no search filter.
-	const searchTokens = needle
-		? needle
-				.split(/\s+/)
-				.filter(Boolean)
-				.map((token) => {
-					const normalized = normalizeStoryIdentifierQuery(token);
-					return {
-						raw: token,
-						normalized: normalized !== token ? normalized : "",
-					};
-				})
-		: [];
+	const searchTokens = buildSearchTokens(filters.q);
 	const kindFilter = filters.kind.length > 0 ? new Set(filters.kind) : null;
 	const priorityFilter =
 		filters.priority.length > 0 ? new Set(filters.priority) : null;
@@ -465,15 +526,7 @@ export function applyRoadmapFilters(
 			]
 				.join("\n")
 				.toLowerCase();
-			// AND across tokens (order-independent); each token matches its raw
-			// form OR its identifier-normalized form (`B-011` → `011`).
-			const everyTokenMatches = searchTokens.every(
-				(token) =>
-					haystack.includes(token.raw) ||
-					(token.normalized.length > 0 &&
-						haystack.includes(token.normalized)),
-			);
-			if (!everyTokenMatches) {
+			if (!matchesEveryToken(haystack, searchTokens)) {
 				return false;
 			}
 		}

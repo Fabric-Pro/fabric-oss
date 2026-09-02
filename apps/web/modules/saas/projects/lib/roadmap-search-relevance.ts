@@ -1,3 +1,4 @@
+import { partitionByNameMatch } from "./roadmap-filters";
 import type { UserStory } from "./stories/types";
 
 /**
@@ -114,4 +115,45 @@ export function computeMatchPercentById(
 		}
 	}
 	return out;
+}
+
+/**
+ * Narrow a keyword-ranked result list to the work items the query reaches by
+ * NAME, collapsing the body-only tail behind a count (Fizzy #1937 follow-up).
+ *
+ * Ranking alone reorders; it never shortens. A query whose words are common in
+ * descriptions still lists every row that mentions them in passing, which is
+ * the "multiple unrelated results" the roadmap was reported for. Narrowing to
+ * name matches is what actually shortens the list.
+ *
+ * Two rules keep it from ever hiding the answer. When NOTHING matches by name
+ * the full list is returned untouched, so a body-text search never faces an
+ * empty roadmap. And the collapsed rows are counted, not dropped — the caller
+ * reveals them on demand, the same bargain the hidden-item count already makes.
+ *
+ * Callers pass a list already ranked by relevance; both returned partitions
+ * keep that order.
+ *
+ * `narrowed` reports whether name-gating is in effect at all, which is not the
+ * same question as whether anything was collapsed. Companion lists — the hidden
+ * matches beside the roadmap — read it so their count is gated on exactly the
+ * runs where the visible list is, and can never promise more rows than
+ * revealing them produces.
+ */
+export function narrowToNameMatches(
+	ranked: UserStory[],
+	query: string,
+): { stories: UserStory[]; collapsedCount: number; narrowed: boolean } {
+	if (query.trim().length === 0) {
+		return { stories: ranked, collapsedCount: 0, narrowed: false };
+	}
+	const { nameMatches, bodyOnly } = partitionByNameMatch(ranked, query);
+	if (nameMatches.length === 0) {
+		return { stories: ranked, collapsedCount: 0, narrowed: false };
+	}
+	return {
+		stories: nameMatches,
+		collapsedCount: bodyOnly.length,
+		narrowed: true,
+	};
 }
