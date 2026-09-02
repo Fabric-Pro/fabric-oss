@@ -320,7 +320,10 @@ export async function executeInitializationPhase(
 		// Start with custom system prompt from input (e.g., agent template instructions)
 		let enrichedSystemPrompt = input.systemPrompt || "";
 
-		// Inject current date/time so the LLM knows "today"
+		// Capture today's date so the LLM knows "today". Rendered date-only and
+		// appended as the LAST prompt segment (see Step 5b) so the stable
+		// template/instruction text stays at position 0 for provider prompt
+		// caching — the prefix then invalidates once a day, not every minute.
 		// Use explicit UTC formatting for Temporal workflow determinism
 		// (toLocaleDateString/toLocaleTimeString depend on ICU/locale data)
 		const now = new Date();
@@ -351,13 +354,7 @@ export async function executeInitializationPhase(
 		const monthName = months[now.getUTCMonth()];
 		const day = now.getUTCDate();
 		const year = now.getUTCFullYear();
-		const hours = now.getUTCHours();
-		const minutes = now.getUTCMinutes();
-		const ampm = hours >= 12 ? "PM" : "AM";
-		const h12 = hours % 12 || 12;
-		const mm = String(minutes).padStart(2, "0");
-		const currentDateTimeStr = `${dayName}, ${monthName} ${day}, ${year}, ${String(h12).padStart(2, "0")}:${mm} ${ampm} UTC`;
-		enrichedSystemPrompt = `Today is ${currentDateTimeStr}.\n\n${enrichedSystemPrompt}`;
+		const currentDateContext = `Today is ${dayName}, ${monthName} ${day}, ${year}.`;
 
 		// Track custom system prompt in audit
 		if (input.systemPrompt) {
@@ -672,6 +669,16 @@ export async function executeInitializationPhase(
 				},
 			);
 		}
+
+		// ======================================================================
+		// Step 5b: Append date context LAST
+		// Mirrors agent-execution-core/context-builder.ts — every segment above
+		// is stable across calls within a session, so keeping the date at the
+		// tail leaves the longest possible cacheable prefix for the provider.
+		// ======================================================================
+		enrichedSystemPrompt = enrichedSystemPrompt
+			? `${enrichedSystemPrompt}\n\n${currentDateContext}`
+			: currentDateContext;
 
 		// ======================================================================
 		// Weave Mode: Create Background Agents sandbox only when needed
