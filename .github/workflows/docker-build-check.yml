@@ -65,8 +65,13 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Not in the private staging repo: fabric-oss builds this same image from the
+  # same tree on the relayed pull request, so running it here only duplicated
+  # 45 minutes of 8-core budget. The guard names fabric-dev rather than
+  # allow-listing fabric-oss so every other copy of this tree still builds.
   temporal-worker:
     name: build temporal worker image
+    if: github.repository != 'Fabric-Pro/fabric-dev'
     runs-on: ubuntu-8core
     timeout-minutes: 45
     steps:
@@ -90,8 +95,11 @@ jobs:
           cache-from: type=gha,scope=temporal-worker-pr
           cache-to: type=gha,scope=temporal-worker-pr,mode=max
 
+  # Repo-gated for the same reason as temporal-worker above: the public repo
+  # builds the identical image on the relayed change.
   sandbox-worker:
     name: build sandbox worker image
+    if: github.repository != 'Fabric-Pro/fabric-dev'
     runs-on: ubuntu-8core
     timeout-minutes: 45
     steps:
@@ -116,8 +124,12 @@ jobs:
   # a release tag, so a Dockerfile break in any of them stayed invisible until
   # something downstream tried to build it. Both the migration runner and the web
   # image were in fact broken on master when this gate first ran.
+  #
+  # Repo-gated like the two above: the public repo builds the identical image
+  # on the relayed change.
   mcp-stdio-wrapper:
     name: build mcp stdio wrapper image
+    if: github.repository != 'Fabric-Pro/fabric-dev'
     runs-on: ubuntu-8core
     timeout-minutes: 45
     steps:
@@ -135,8 +147,11 @@ jobs:
           cache-from: type=gha,scope=mcp-stdio-wrapper-pr
           cache-to: type=gha,scope=mcp-stdio-wrapper-pr,mode=max
 
+  # Repo-gated like the jobs above: the public repo builds the identical image
+  # on the relayed change.
   migration-runner:
     name: build migration runner image
+    if: github.repository != 'Fabric-Pro/fabric-dev'
     runs-on: ubuntu-8core
     timeout-minutes: 45
     steps:
@@ -154,8 +169,11 @@ jobs:
           cache-from: type=gha,scope=migration-runner-pr
           cache-to: type=gha,scope=migration-runner-pr,mode=max
 
+  # Repo-gated like the jobs above: the public repo builds the identical image
+  # on the relayed change.
   web:
     name: build web image
+    if: github.repository != 'Fabric-Pro/fabric-dev'
     runs-on: ubuntu-8core
     timeout-minutes: 45
     steps:

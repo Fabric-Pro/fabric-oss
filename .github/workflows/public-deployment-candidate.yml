@@ -1,9 +1,10 @@
 name: Public Deployment Candidate
 
 # Secretless validation for deployment artifacts retained in the public seed.
-# It is deliberately usable in the current private master, seed rehearsals,
-# and the public repository: no repository-name guard or privileged workflow
-# is involved.
+# It is deliberately usable in seed rehearsals and the public repository: no
+# credential and no privileged workflow is involved. The one repository name
+# it does know about is the private staging repo, which skips the job because
+# the public repo already runs it on the relayed change (see the job below).
 on:
   pull_request:
     branches: [master]
@@ -19,8 +20,16 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Not in the private staging repo: fabric-oss runs this identical job on the
+  # relayed change, which is where the assets are actually published from, so
+  # running it here too only duplicated it. This deliberately gives up the
+  # pre-publication rehearsal a private run provided; the public run is
+  # authoritative and blocks the relay's own merge. The guard names fabric-dev
+  # rather than allow-listing fabric-oss so seed rehearsals and every other
+  # copy of this tree still validate.
   validate-public-deployment-assets:
     name: Public deployment candidate
+    if: github.repository != 'Fabric-Pro/fabric-dev'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:

@@ -10,6 +10,30 @@ on:
     branches: [master]
   issue_comment:
     types: [created]
+  # Third wake-up path: a staging check finishing is now a relay-relevant
+  # event, because the relay withholds a head whose staging checks are not yet
+  # green. Without this trigger a PR authorized (labelled + `/relay <sha>`)
+  # before its checks finish would be withheld once and then never re-woken by
+  # anything the author does.
+  #
+  # These six workflow names are the ones fabric-oss master requires; the
+  # names match across repos because this is the same tree. Adding a required
+  # check on the public side means adding its workflow name here.
+  #
+  # Every terminal conclusion wakes the relay, not just success. The ops side
+  # owns the meaning of a head's state: it re-reads the head's check runs and
+  # decides between withholding silently (still pending) and refusing with a
+  # report (failed). A notifier that only woke on success would hide a failed
+  # head from that machinery and leave the author with no relay-side message
+  # at all.
+  #
+  # workflow_run runs the definition from the default branch, so this file is
+  # trusted here for the same reason it is under pull_request_target; the
+  # payload still carries attacker-influenced fields, which is why nothing
+  # below is interpolated into a shell.
+  workflow_run:
+    workflows: ['Type Check', 'Unit Tests', 'Code Quality', 'Changeset check', 'DCO', 'Security']
+    types: [completed]
 
 permissions:
   pull-requests: read
@@ -24,11 +48,78 @@ jobs:
         contains(github.event.pull_request.labels.*.name, 'ready-for-relay')) ||
        (github.event_name == 'issue_comment' &&
         github.event.issue.pull_request != null &&
-        startsWith(github.event.comment.body, '/relay ')))
+        startsWith(github.event.comment.body, '/relay ')) ||
+       (github.event_name == 'workflow_run' &&
+        github.event.workflow_run.event == 'pull_request'))
     runs-on: ubuntu-latest
     timeout-minutes: 5
     environment: oss-relay-notifier
     steps:
+      # workflow_run carries no pull request context of its own beyond a head
+      # SHA and a branch, and what it does carry is a snapshot from when the
+      # checks started. Everything that decides relayability — open,
+      # non-draft, based on master, same-repository head, labelled, and still
+      # at this head — is therefore re-read from the live pull request here
+      # rather than trusted from the payload: a run that finishes after a
+      # force-push, a label removal or a close must not dispatch. Reading is
+      # all this step does; like every other step here it never checks out or
+      # executes any path from the proposed change.
+      #
+      # A branch can legitimately carry more than one open pull request, and
+      # nothing in the payload says which one the author meant. Dispatching a
+      # guess would relay a change nobody authorized, so ambiguity is a no-op
+      # — the author's `/relay` comment and the label event both name the pull
+      # request unambiguously and both still wake the relay.
+      - name: Resolve the pull request behind the completed staging run
+        id: staging-run-pr
+        if: github.event_name == 'workflow_run'
+        env:
+          STAGING_TOKEN: ${{ github.token }}
+          RUN_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          RUN_HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          RUN_PULL_REQUESTS: ${{ toJSON(github.event.workflow_run.pull_requests) }}
+        run: |
+          set -euo pipefail
+          [[ "$RUN_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]] \
+            || { echo "::error::GitHub supplied an invalid workflow run head SHA"; exit 1; }
+          CANDIDATES=$(jq -r '[.[]? | .number] | map(select(. != null)) | unique | .[]' <<<"$RUN_PULL_REQUESTS")
+          if [[ -z "$CANDIDATES" ]]; then
+            # The payload's pull_requests array is empty for fork pull requests
+            # — which the relay never accepts anyway — and for runs GitHub did
+            # not attribute to one. Listing open pull requests for the branch
+            # covers the second case; the same-repository head check below
+            # still rejects the first.
+            [[ -n "$RUN_HEAD_BRANCH" ]] \
+              || { echo "Completed run names neither a pull request nor a head branch; no dispatch."; exit 0; }
+            CANDIDATES=$(GH_TOKEN="$STAGING_TOKEN" gh api --method GET \
+              "repos/$GITHUB_REPOSITORY/pulls" \
+              -f state=open -f "head=${GITHUB_REPOSITORY%%/*}:$RUN_HEAD_BRANCH" \
+              --jq '.[].number')
+          fi
+          SURVIVORS=()
+          for CANDIDATE in $CANDIDATES; do
+            [[ "$CANDIDATE" =~ ^[1-9][0-9]*$ ]] || continue
+            PR=$(GH_TOKEN="$STAGING_TOKEN" gh api "repos/$GITHUB_REPOSITORY/pulls/$CANDIDATE") || continue
+            jq -e --arg repo "$GITHUB_REPOSITORY" --arg head "$RUN_HEAD_SHA" '
+              .state == "open"
+              and (.draft // false) == false
+              and .base.ref == "master"
+              and .head.repo.full_name == $repo
+              and .head.sha == $head
+              and ((.labels | map(.name) | index("ready-for-relay")) != null)
+            ' <<<"$PR" >/dev/null || continue
+            SURVIVORS+=("$CANDIDATE")
+          done
+          if [[ ${#SURVIVORS[@]} -eq 0 ]]; then
+            echo "No open, non-draft, ready-for-relay pull request sits at this run's head; no dispatch."
+            exit 0
+          fi
+          if [[ ${#SURVIVORS[@]} -gt 1 ]]; then
+            echo "Ambiguous: pull requests ${SURVIVORS[*]} all sit at this run's head; no dispatch."
+            exit 0
+          fi
+          echo "staging_pr=${SURVIVORS[0]}" >>"$GITHUB_OUTPUT"
+
       # pull_request_target is load-bearing: the workflow definition comes
       # from trusted master. Do not add checkout, PR artifacts, caches, or
       # execution of any path from the proposed change. The credential can
@@ -41,6 +132,9 @@ jobs:
       # individual's account.
       - name: Mint the dispatch App token
         id: dispatch-token
+        # A workflow_run wake that resolved to no single pull request has
+        # nothing to dispatch, so it does not get a token either.
+        if: github.event_name != 'workflow_run' || steps.staging-run-pr.outputs.staging_pr != ''
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
         with:
           app-id: ${{ secrets.OSS_RELAY_DISPATCH_APP_ID }}
@@ -50,13 +144,18 @@ jobs:
           permission-actions: write
 
       - name: Dispatch identifiers-only wake-up
+        if: github.event_name != 'workflow_run' || steps.staging-run-pr.outputs.staging_pr != ''
         env:
           DISPATCH_TOKEN: ${{ steps.dispatch-token.outputs.token }}
           STAGING_TOKEN: ${{ github.token }}
           EVENT_NAME: ${{ github.event_name }}
           COMMENT_BODY: ${{ github.event.comment.body }}
-          STAGING_PR: ${{ github.event.pull_request.number || github.event.issue.number }}
-          EVENT_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          # Each event names the pull request differently and only one of the
+          # three is ever populated, so the fallback chain resolves to exactly
+          # one value per event. The checks below re-validate whichever it is
+          # against live state, so no event's number is trusted on arrival.
+          STAGING_PR: ${{ github.event.pull_request.number || github.event.issue.number || steps.staging-run-pr.outputs.staging_pr }}
+          EVENT_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.workflow_run.head_sha }}
         run: |
           set -euo pipefail
           [[ "$STAGING_PR" =~ ^[1-9][0-9]*$ ]] \
