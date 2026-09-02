@@ -254,9 +254,30 @@ jobs:
         # `deps changed` path filter and forces a full pnpm audit run.
         run: pnpm exec tsx scripts/tenant-isolation-check.ts
 
+      # packages/database/prisma/zod/index.ts is tracked source that must be
+      # committed exactly as the patching pipeline (`pnpm --filter
+      # @repo/database generate`) writes it. Raw `prisma generate` output,
+      # which `prisma migrate dev` also writes, keeps `z.instanceof(
+      # Prisma.Decimal, ...)` sites that throw "Prisma is not defined"
+      # wherever the committed file is loaded without regenerating first.
+      # That form has reached master three times, and the `test` run below
+      # cannot catch it: its `generate` dependency repairs the file on disk,
+      # or restores the repaired barrel from the turbo cache, before any
+      # suite, including the barrel's own integrity test, reads it. So run
+      # the generate task first and fail if the result differs from what is
+      # committed. The `test` run replays it from cache, so this costs no
+      # extra generation.
+      - name: Committed Prisma zod barrel matches the generate pipeline
+        run: |
+          pnpm turbo run generate --filter=@repo/database
+          if ! git diff --exit-code --stat -- packages/database/prisma/zod; then
+            echo "::error::packages/database/prisma/zod is not the output of 'pnpm --filter @repo/database generate'. Run it and commit the result; never commit raw 'prisma generate' output."
+            exit 1
+          fi
+
       # `^generate` runs as a `test` task dependency in turbo.json, so
       # @repo/database (Prisma client + Zod schemas) is generated before any
-      # package's tests execute. No separate generate step needed here.
+      # package's tests execute; the step above already warmed it.
       #
       # On PRs we filter to packages affected by the diff vs the PR's base
       # branch (whatever the PR is targeting); on workflow_dispatch we run

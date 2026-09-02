@@ -53,4 +53,21 @@ if command -v node >/dev/null 2>&1; then
 	fi
 fi
 
+# ------------------------------------------------------- zod barrel guard
+# packages/database/prisma/zod/index.ts must be committed as the output of
+# `pnpm --filter @repo/database generate`, never as raw `prisma generate`
+# output (which `prisma migrate dev` also writes). The raw form references
+# Prisma.Decimal without importing it and throws "Prisma is not defined"
+# wherever the committed file is loaded. CI's unit-tests workflow enforces the
+# full check (regenerate and diff); this is the cheap staged-content version.
+barrel=packages/database/prisma/zod/index.ts
+if git diff --cached --name-only --diff-filter=ACMR | grep -qx "$barrel"; then
+	if git show ":$barrel" | grep -q 'z\.instanceof(Prisma\.Decimal'; then
+		echo ""
+		echo "BLOCKED: $barrel is raw 'prisma generate' output (it references Prisma.Decimal)."
+		echo "  Run 'pnpm --filter @repo/database generate' and stage the result instead."
+		status=1
+	fi
+fi
+
 exit "$status"
