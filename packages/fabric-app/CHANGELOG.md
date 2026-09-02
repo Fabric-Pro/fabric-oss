@@ -1,5 +1,78 @@
 # fabric-app
 
+## 1.14.2
+
+### Patch Changes
+
+- e9dfb8b: Account-level links follow the organization you belong to, not the one in the URL
+- f38f20b: Allow QA browser runs to complete validated same-origin authentication redirects.
+- 37d4372: Make AI Readiness use type-specific rubrics while excluding engineering-only investigation work from product readiness gaps.
+- 835e154: Amend the answer to an already-resolved question from a feature's Decisions tab.
+- e9dfb8b: Every account now gets an organization
+- 12f2d0a: Update the browser compatibility data dependency to its patched release line.
+- b3742d3: Recover a channel meeting's transcript from its recording even when Microsoft Graph refuses to look the meeting up
+- e9dfb8b: The command-line client retires personal context
+- 821431f: Cap how many rows each Daily Brief collector returns so a busy project cannot outgrow the workflow payload limit
+- 62e3077: A project's owner can be assigned as a decision owner again — the membership check no longer rejects the creator, who has no membership row.
+- 215ea68: Add Design System (`design.md`) as a generated project document.
+- e9dfb8b: Stop the personal-context drop job deleting audit rows that were never personal, and tell the operator when a signup could not get an organization
+- e9dfb8b: Refuse a user whose vector delete was not confirmed, instead of clearing them and orphaning their embeddings
+- e9dfb8b: Stop the personal-context drop from taking global rows, and let its dry run report what it would take
+- e9dfb8b: Sweep every storage bucket when dropping a user's personal files, not just one
+- e9dfb8b: The personal-context drop job runs in two phases, and the inventory agrees with it
+- e9dfb8b: Add the personal-context drop job
+- 9be3e24: Edit an AI-suggested answer before saving it on a feature's Summary + Questions tab.
+- e9dfb8b: Fix four in-app links that addressed an organization by id in a path segment that resolves by slug
+- 047aa2a: Stop a Fizzy board pull from silently dropping a column whose card listing cannot be read
+- e9dfb8b: A project-only guest's chrome names their own organization instead of a personal workspace, and no page's breadcrumb names the host
+- e9dfb8b: Ship the guest-scenario harness that found the guest defects
+- e9dfb8b: Restore project-scoped guests' access to weave, and use the object-level permission check where the procedure is project-scoped
+- e9dfb8b: Remove the dead settings forms and unused exports the personal-context removal left behind, restoring the knip gate
+- 300d915: Make auto-refresh and document regeneration report the failure that actually happened instead of a generic or misattributed one
+- 7342f90: Give a suggestion card its full width by replacing the text Edit button with a pencil icon, and guard the Decision Log against future model-facing leaks of retracted answers.
+- e9dfb8b: Close the last protocol path that ran in no organization
+- e9dfb8b: The protocol server now verifies membership before honouring an organization named on a request
+- e9dfb8b: Never seed a personal tenant, and give every existing account an organization
+- e72c3fa: Backlog analysis now records which context sources its token budget evicted, so context pressure can be measured instead of guessed at (Fizzy #2316)
+- 276f8cf: Repair documents whose organization was left unset, so auto-refresh stops reporting a document it just rendered as missing
+- 3b9c5e3: Meeting transcripts are now stored in full instead of being replaced by an AI summary once they pass a length threshold (Fizzy #2316)
+- e9dfb8b: Extract the project-permission decision so a handler can make it, and record why the last twelve procedures are a product call
+- e9dfb8b: Protocol callers now resolve into an organization, and account settings are reachable from one
+- e9dfb8b: Context is organization-only
+- e9dfb8b: Make twenty-nine permission checks actually evaluate, against the organization the handler acts on
+- e9dfb8b: Add a read-only inventory of what personal context actually holds
+- e9dfb8b: Add the personal-context surface map: what must exist in an organization before personal context can be removed
+- 325476f: Let the identifier guard block a two-word name without blocking the ordinary English word its parts spell
+- 8dbdd95: Fix Newsletter and Daily Brief returning "Project not found" for project members who are not the project's owner
+- 79291fc: Publishing Suite: the topic page's content-generation tabs now show what is recommended, what has been drafted, and what still needs approval
+- 1888cbb: Publishing Suite: answer a topic's AI-raised planning questions and review every decision in a filterable Decision Log
+- bffbfc4: Publishing Suite: make the Topic Item Page's edit controls work, and let the Decision Log fill its tab panel
+- 1785f3b: Publishing Suite topics now open on their own page, with Summary & Questions, Planning & Analysis and Decision Log tabs.
+- 898d090: Publishing Suite: generate a Planning & Analysis worksheet for a topic, and surface its open questions on the topic page
+- 21f79ed: Explain the Publishing Suite topic row's two icon buttons on hover, so the envelope and the alarm clock say what they do
+- eb3f923: Preserve authenticated sessions when QA browser runs follow same-origin redirects.
+- d42643a: Assign project members to open maturation questions, so a question that needs someone else's input can reach them.
+- 193ae07: Make the question-assignment flag a runtime toggle instead of an env var, so turning it on no longer needs a redeploy.
+- 297e05e: Backlog analysis now retrieves context across distinct documents, so one long meeting transcript can no longer hide a project's PRDs and decisions (Fizzy #2316)
+- e095786: The readiness panel now asks for attention when something has actually changed, instead of on every visit.
+- 78aee1a: Readiness calls to action no longer lead nowhere when their destination tab is switched off.
+- 78aee1a: Readiness checklist: connecting a chat app and defining terminal statuses now satisfy their items, instead of silently waiting on an unrelated toggle.
+- dffed97: Asking for help on a readiness item now reaches a support inbox instead of only setting a flag
+- 78aee1a: Readiness rows no longer show two different meanings under the word "not applicable".
+- 78aee1a: The collapsed readiness panel keeps working, blocked items say what would unlock them, and each row's actions move into one menu.
+- 78aee1a: Readiness checklist items now say what is still needed, not only why they matter.
+- b0dfea1: Refresh four pinned GitHub Actions and raise the postcss and uuid floors, collapsing four postcss copies onto one
+- e9dfb8b: The personal settings tree is gone
+- e9dfb8b: Retire the personal route trees under the account group, leaving one redirect where each stood
+- e9dfb8b: Retire the personal agents and frames route trees, which sat outside the account group and had been missed
+- e9dfb8b: Retire the interface strings that name personal tenancy, keeping the ones that name a credential
+- e9dfb8b: Add a revocation pass for personal API keys issued before they resolved into an organization
+- e9dfb8b: Give every session the organization it runs in, and refuse a request that resolves to none
+- e9dfb8b: The versioned REST API resolves an organization instead of honouring a personal-context flag
+- e9dfb8b: Weave procedures now verify membership before honouring an organization named in their input
+- e9dfb8b: Make the last twelve weave permission checks evaluate, and rule what a project guest may do
+- 5478356: Remove duplicate Description, Goals, Project Types, and Tech Stack fields from Settings > General.
+
 ## 1.14.1
 
 ### Patch Changes
