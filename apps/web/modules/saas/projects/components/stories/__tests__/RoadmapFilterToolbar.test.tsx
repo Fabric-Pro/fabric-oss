@@ -219,6 +219,55 @@ describe("RoadmapFilterToolbar — result count", () => {
 			screen.queryByText(/hidden also match/i),
 		).not.toBeInTheDocument();
 	});
+
+	it("offers to reveal description-only matches when some were collapsed", async () => {
+		const user = userEvent.setup();
+		const onToggleBodyMatches = vi.fn();
+		renderToolbar({
+			bodyMatchCount: 9,
+			bodyMatchesShown: false,
+			onToggleBodyMatches,
+		});
+		const btn = screen.getByTestId("roadmap-body-match-toggle");
+		expect(btn).toHaveTextContent("9 more match in description");
+		expect(btn).toHaveAttribute("aria-expanded", "false");
+		await user.click(btn);
+		expect(onToggleBodyMatches).toHaveBeenCalledTimes(1);
+	});
+
+	it("offers to collapse them again once revealed", () => {
+		renderToolbar({
+			bodyMatchCount: 9,
+			bodyMatchesShown: true,
+			onToggleBodyMatches: vi.fn(),
+		});
+		const btn = screen.getByTestId("roadmap-body-match-toggle");
+		expect(btn).toHaveTextContent("hide 9 description matches");
+		expect(btn).toHaveAttribute("aria-expanded", "true");
+	});
+
+	it("stays silent when the search collapsed nothing", () => {
+		renderToolbar({
+			bodyMatchCount: 0,
+			onToggleBodyMatches: vi.fn(),
+		});
+		expect(
+			screen.queryByTestId("roadmap-body-match-toggle"),
+		).not.toBeInTheDocument();
+	});
+
+	it("reports the narrowed count, not the pre-narrowing total", () => {
+		renderToolbar({
+			hasActiveFilters: true,
+			totalCount: 47,
+			filteredCount: 2,
+			bodyMatchCount: 9,
+			onToggleBodyMatches: vi.fn(),
+		});
+		expect(screen.getByTestId("roadmap-filter-count")).toHaveTextContent(
+			"2 of 47 shown",
+		);
+	});
 });
 
 describe("RoadmapFilterToolbar — primary facets (always inline)", () => {

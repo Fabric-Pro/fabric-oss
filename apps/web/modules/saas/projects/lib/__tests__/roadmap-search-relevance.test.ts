@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
 	compareStoriesByRelevance,
 	computeMatchPercentById,
+	narrowToNameMatches,
 	scoreStoryAgainstQuery,
 } from "../roadmap-search-relevance";
 import { compareStoriesBy } from "../roadmap-sorts";
@@ -177,5 +178,131 @@ describe("computeMatchPercentById", () => {
 			]),
 		);
 		expect(out.get("b")).toBe(1);
+	});
+});
+
+describe("narrowToNameMatches", () => {
+	const nameHit = makeStory({
+		id: "n",
+		identifier: "F-212",
+		title: "Improve roadmap search relevance",
+	});
+	const bodyHit = makeStory({
+		id: "b",
+		identifier: "F-118",
+		title: "Publishing suite topic refresh",
+		description:
+			"Once the roadmap settles we will search the archive for relevance signals.",
+	});
+	const otherBodyHit = makeStory({
+		id: "b2",
+		identifier: "F-119",
+		title: "Atlas multi-repo run",
+		description: "Roadmap owners search these graphs for relevance.",
+	});
+
+	it("drops body-only matches from the list when the query matches a name", () => {
+		const { stories } = narrowToNameMatches(
+			[nameHit, bodyHit, otherBodyHit],
+			"roadmap search",
+		);
+		expect(stories.map((s) => s.id)).toEqual(["n"]);
+	});
+
+	it("counts the body-only matches it collapsed", () => {
+		const { collapsedCount } = narrowToNameMatches(
+			[nameHit, bodyHit, otherBodyHit],
+			"roadmap search",
+		);
+		expect(collapsedCount).toBe(2);
+	});
+
+	it("returns the whole list when nothing matches by name", () => {
+		const { stories, collapsedCount } = narrowToNameMatches(
+			[bodyHit, otherBodyHit],
+			"roadmap search",
+		);
+		expect(stories.map((s) => s.id)).toEqual(["b", "b2"]);
+		expect(collapsedCount).toBe(0);
+	});
+
+	it("leaves an empty query alone", () => {
+		const { stories, collapsedCount } = narrowToNameMatches(
+			[nameHit, bodyHit],
+			"   ",
+		);
+		expect(stories.map((s) => s.id)).toEqual(["n", "b"]);
+		expect(collapsedCount).toBe(0);
+	});
+
+	it("keeps an identifier match as a name match", () => {
+		const { stories } = narrowToNameMatches([nameHit, bodyHit], "f-212");
+		expect(stories.map((s) => s.id)).toEqual(["n"]);
+	});
+
+	it("keeps a PM-tool externalId match as a name match", () => {
+		const synced = makeStory({
+			id: "x",
+			title: "Unrelated wording entirely",
+			externalId: "PROJ-4471",
+		});
+		const { stories } = narrowToNameMatches([synced, bodyHit], "proj-4471");
+		expect(stories.map((s) => s.id)).toEqual(["x"]);
+	});
+
+	it("requires EVERY token in the name, matching the filter's AND semantics", () => {
+		const partial = makeStory({
+			id: "p",
+			title: "Roadmap toolbar count",
+			description: "The search box lives here.",
+		});
+		const { stories, collapsedCount } = narrowToNameMatches(
+			[nameHit, partial],
+			"roadmap search",
+		);
+		expect(stories.map((s) => s.id)).toEqual(["n"]);
+		expect(collapsedCount).toBe(1);
+	});
+
+	it("preserves the relevance order it was given", () => {
+		const second = makeStory({
+			id: "n2",
+			title: "Roadmap search autofill",
+		});
+		const { stories } = narrowToNameMatches(
+			[nameHit, second, bodyHit],
+			"roadmap search",
+		);
+		expect(stories.map((s) => s.id)).toEqual(["n", "n2"]);
+	});
+});
+
+describe("narrowToNameMatches — the `narrowed` signal companion lists read", () => {
+	const nameHit = makeStory({ id: "n", title: "Roadmap search relevance" });
+	const bodyHit = makeStory({
+		id: "b",
+		title: "Unrelated",
+		description: "roadmap search mentioned here",
+	});
+
+	it("reports narrowed when a name match exists, even with nothing to collapse", () => {
+		const { narrowed, collapsedCount } = narrowToNameMatches(
+			[nameHit],
+			"roadmap search",
+		);
+		expect(narrowed).toBe(true);
+		expect(collapsedCount).toBe(0);
+	});
+
+	it("reports not narrowed when only body matches exist", () => {
+		expect(narrowToNameMatches([bodyHit], "roadmap search").narrowed).toBe(
+			false,
+		);
+	});
+
+	it("reports not narrowed for an empty query", () => {
+		expect(narrowToNameMatches([nameHit, bodyHit], "  ").narrowed).toBe(
+			false,
+		);
 	});
 });

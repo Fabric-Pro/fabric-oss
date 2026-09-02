@@ -26,6 +26,7 @@ import {
 import { cn } from "@ui/lib";
 import {
 	ChevronDownIcon,
+	ChevronUpIcon,
 	EyeIcon,
 	Loader2Icon,
 	SearchIcon,
@@ -42,11 +43,19 @@ function ResultCount({
 	hasActiveFilters,
 	hiddenMatchCount,
 	onShowHidden,
+	bodyMatchCount,
+	bodyMatchesShown,
+	onToggleBodyMatches,
 }: {
 	totalCount: number;
 	filteredCount: number;
 	hasActiveFilters: boolean;
 	hiddenMatchCount: number;
+	/** Matches the search reaches only through description text, held back so
+	 * the list stays as short as the names the query actually hit. */
+	bodyMatchCount: number;
+	bodyMatchesShown: boolean;
+	onToggleBodyMatches?: () => void;
 	/** When set, the hidden-match count becomes a button that reveals the
 	 * hidden items (activates the Show-hidden eye toggle). */
 	onShowHidden?: () => void;
@@ -100,6 +109,49 @@ function ResultCount({
 						{hiddenMatchCount === 1 ? "matches" : "match"}
 					</span>
 				))}
+			{/* Companion DESCRIPTION-match count. Relevance ranking sorts name
+			    matches to the top but still listed every description hit, so a
+			    common word returned a long unrelated tail. Those rows are held
+			    back here and stay one click away. */}
+			{bodyMatchCount > 0 && onToggleBodyMatches && (
+				<Tooltip>
+					<TooltipTrigger asChild>
+						<button
+							type="button"
+							onClick={onToggleBodyMatches}
+							aria-expanded={bodyMatchesShown}
+							data-testid="roadmap-body-match-toggle"
+							className="inline-flex items-center gap-1 rounded font-normal normal-case tracking-normal text-muted-foreground/70 underline-offset-2 transition-colors hover:text-foreground hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+						>
+							{bodyMatchesShown ? (
+								<>
+									· hide {bodyMatchCount} description{" "}
+									{bodyMatchCount === 1 ? "match" : "matches"}
+									<ChevronUpIcon
+										aria-hidden
+										className="size-3"
+									/>
+								</>
+							) : (
+								<>
+									· {bodyMatchCount} more{" "}
+									{bodyMatchCount === 1 ? "matches" : "match"}{" "}
+									in description
+									<ChevronDownIcon
+										aria-hidden
+										className="size-3"
+									/>
+								</>
+							)}
+						</button>
+					</TooltipTrigger>
+					<TooltipContent>
+						{bodyMatchesShown
+							? "Show only work items whose name matches your search"
+							: `Also show ${bodyMatchCount} work ${bodyMatchCount === 1 ? "item" : "items"} that match only in their description`}
+					</TooltipContent>
+				</Tooltip>
+			)}
 		</span>
 	);
 }
@@ -113,6 +165,9 @@ export type RoadmapFilterToolbarViewProps = {
 	filteredCount: number;
 	hasActiveFilters: boolean;
 	hiddenMatchCount?: number;
+	bodyMatchCount?: number;
+	bodyMatchesShown?: boolean;
+	onToggleBodyMatches?: () => void;
 	/** Reveal the hidden matches (activates the Show-hidden eye toggle). */
 	onShowHidden?: () => void;
 	/** Controlled search text + setter (the container debounces writes). */
@@ -161,6 +216,9 @@ export function RoadmapFilterToolbarView({
 	filteredCount,
 	hasActiveFilters,
 	hiddenMatchCount = 0,
+	bodyMatchCount = 0,
+	bodyMatchesShown = false,
+	onToggleBodyMatches,
 	onShowHidden,
 	searchValue,
 	onSearchValueChange,
@@ -330,6 +388,9 @@ export function RoadmapFilterToolbarView({
 						filteredCount={filteredCount}
 						hasActiveFilters={hasActiveFilters}
 						hiddenMatchCount={hiddenMatchCount}
+						bodyMatchCount={bodyMatchCount}
+						bodyMatchesShown={bodyMatchesShown}
+						onToggleBodyMatches={onToggleBodyMatches}
 						onShowHidden={onShowHidden}
 					/>
 					{/* Announced to screen readers (4.1.3 Status Messages); amber

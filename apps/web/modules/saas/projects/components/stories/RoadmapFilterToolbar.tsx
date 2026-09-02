@@ -26,6 +26,9 @@ export type RoadmapFilterToolbarProps = {
 	hasActiveFilters: boolean;
 	/** HIDDEN (closed) items matching the current view — shown beside the count. */
 	hiddenMatchCount?: number;
+	bodyMatchCount?: number;
+	bodyMatchesShown?: boolean;
+	onToggleBodyMatches?: () => void;
 	/** Reveal the hidden matches (activates the Show-hidden eye toggle). */
 	onShowHidden?: () => void;
 	/** AI (semantic) search mode toggle — rendered beside the search input.
@@ -61,6 +64,9 @@ export function RoadmapFilterToolbar({
 	filteredCount,
 	hasActiveFilters,
 	hiddenMatchCount = 0,
+	bodyMatchCount = 0,
+	bodyMatchesShown = false,
+	onToggleBodyMatches,
 	onShowHidden,
 	aiMode,
 	onToggleAiMode,
@@ -135,6 +141,9 @@ export function RoadmapFilterToolbar({
 			filteredCount={filteredCount}
 			hasActiveFilters={hasActiveFilters}
 			hiddenMatchCount={hiddenMatchCount}
+			bodyMatchCount={bodyMatchCount}
+			bodyMatchesShown={bodyMatchesShown}
+			onToggleBodyMatches={onToggleBodyMatches}
 			onShowHidden={onShowHidden}
 			aiMode={aiMode}
 			onToggleAiMode={onToggleAiMode}
