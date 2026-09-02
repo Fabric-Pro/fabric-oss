@@ -1,12 +1,11 @@
-import { render, fireEvent } from "@testing-library/react";
-import { renderHook } from "@testing-library/react";
+import { fireEvent, render, renderHook } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // Mock sonner at the boundary so we can assert exact toast invocations
 // without rendering an actual Toaster (the Toaster mounts a portal that
 // JSDOM does not lay out reliably). This is the same pattern used by
-// `apps/web/__tests__/modules/saas/prompts/PickDefaultForStageDialog.test.tsx`.
+// `apps/web/__tests__/modules/saas/prompts/NominationQueue.test.tsx`.
 vi.mock("sonner", () => ({
 	toast: {
 		error: vi.fn(),

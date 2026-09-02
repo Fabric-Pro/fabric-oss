@@ -166,6 +166,36 @@ describe("design-token fill / foreground contrast", () => {
 	});
 });
 
+describe("ink tokens on the card surface", () => {
+	/**
+	 * The `-foreground` guard above covers ink on its OWN fill, which is a
+	 * different question from ink on a neutral surface — and the gap let a real
+	 * failure ship: the prompt-tier badge coloured its label `text-primary`
+	 * (4.02:1 on the dark card) and `text-highlight` (3.14:1 on the light one),
+	 * both under AA, with nothing to catch it.
+	 *
+	 * An `-ink` token exists precisely to be read as text on `--card`, so that
+	 * pairing is checkable mechanically. Any new `--X-ink` is covered the moment
+	 * it is added.
+	 */
+	for (const theme of ["light", "dark"] as const) {
+		const tokens = readTokens(theme);
+		const card = tokens.get("card");
+		for (const [name, value] of tokens) {
+			if (!name.endsWith("-ink") || !card) {
+				continue;
+			}
+			it(`${theme}:--${name} clears AA on --card`, () => {
+				const ratio = contrastRatio(parseHex(value), parseHex(card));
+				expect(
+					ratio,
+					`--${name} ${value} on --card ${card} = ${ratio.toFixed(2)}:1`,
+				).toBeGreaterThanOrEqual(AA_NORMAL_TEXT);
+			});
+		}
+	}
+});
+
 describe("the destructive pair specifically", () => {
 	// This is the one this change fixed, and the regression is easy to reintroduce
 	// by "restoring" white text on a red button.

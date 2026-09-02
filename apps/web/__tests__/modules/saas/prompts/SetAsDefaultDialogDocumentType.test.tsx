@@ -98,7 +98,7 @@ describe("SetAsDefaultDialog — persisted document type", () => {
 	});
 
 	it("offers only stage-capable agents when opened from a stage panel", async () => {
-		// StageDefaultRow -> PromptCard passes storyKind through, so the whole
+		// A kind-scoped card passes storyKind through, so the whole
 		// surrounding page is about one drafting stage. An agent with no stages
 		// cannot bind to it; offering one invites a binding that silently has
 		// nothing to do with the stage the user was configuring.

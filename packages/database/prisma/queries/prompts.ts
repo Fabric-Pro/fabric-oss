@@ -1683,7 +1683,11 @@ export async function getBindingStatusForPrompts({
 	projectId,
 }: {
 	promptIds: string[];
-	documentType: string;
+	/** Narrows the badge to one action dimension. Omitted — the library page's
+	 *  case since the scope tabs replaced the document-type tabs — the status
+	 *  resolves across every action: a prompt winning any of them badges Default
+	 *  at its best tier, one merely bound anywhere shows Available. */
+	documentType?: string;
 	userId?: string;
 	organizationId?: string;
 	/** When set, PROJECT-tier bindings for this project join the ranking and
@@ -1725,7 +1729,7 @@ export async function getBindingStatusForPrompts({
 
 	const bindings = await db.promptBinding.findMany({
 		where: {
-			documentType,
+			...(documentType ? { documentType } : {}),
 			targetType: "AGENT",
 			OR: scopeConditions,
 			promptVersion: {

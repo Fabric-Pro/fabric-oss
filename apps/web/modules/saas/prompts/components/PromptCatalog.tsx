@@ -266,10 +266,15 @@ function ActionRow({
 	// the FR8 notification lands on this row expressly so the reader can switch.
 	const [expanded, setExpanded] = useState(false);
 
-	// A deep link that lands above or below the fold has not really arrived.
+	// A deep link that lands above or below the fold has not really arrived —
+	// and one that only scrolls has arrived for sighted mouse users alone.
+	// Moving focus to the row carries the arrival to keyboard and screen-reader
+	// users too: the next Tab continues from the action the link promised, and
+	// the row's accessible name is announced on landing.
 	useEffect(() => {
 		if (isFocused && ref.current) {
 			ref.current.scrollIntoView({ block: "center" });
+			ref.current.focus({ preventScroll: true });
 			setExpanded(true);
 		}
 	}, [isFocused]);
@@ -284,7 +289,17 @@ function ActionRow({
 
 	return (
 		// The ref lives on a wrapper because Card does not forward one.
-		<div ref={ref} data-action-id={action.id}>
+		// tabIndex -1 so the deep-link effect can move focus here without
+		// inserting the row into the tab order for everyone else.
+		<div
+			ref={ref}
+			data-action-id={action.id}
+			tabIndex={-1}
+			aria-label={
+				isFocused ? `${action.label} — from your link` : undefined
+			}
+			className="outline-none"
+		>
 			<Card
 				className={`flex flex-wrap items-center justify-between gap-3 p-3 ${
 					isFocused ? "ring-2 ring-primary" : ""

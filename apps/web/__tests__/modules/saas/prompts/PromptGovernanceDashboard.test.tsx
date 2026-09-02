@@ -153,4 +153,26 @@ describe("PromptGovernanceDashboard (Org Overrides)", () => {
 			expect.stringContaining("/prompts/catalog?action="),
 		);
 	});
+
+	it("announces a stable error and lets the user retry", async () => {
+		catalogList
+			.mockRejectedValueOnce(new Error("database host unavailable"))
+			.mockResolvedValueOnce({ entries: [] });
+
+		const user = userEvent.setup();
+		wrap(<PromptGovernanceDashboard />);
+
+		const alert = await screen.findByRole("alert");
+		expect(alert).toHaveTextContent(
+			"Could not load your organization's prompt configuration.",
+		);
+		expect(alert).not.toHaveTextContent("database host unavailable");
+
+		await user.click(
+			within(alert).getByRole("button", { name: "Try again" }),
+		);
+		expect(
+			await screen.findByText(/actions have no organization prompt/i),
+		).toBeInTheDocument();
+	});
 });

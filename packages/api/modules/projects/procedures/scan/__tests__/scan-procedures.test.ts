@@ -9,7 +9,7 @@
  * `.handler(fn)` hands back `{ _handler: fn }`, which we invoke directly.
  */
 import { ORPCError } from "@orpc/client";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 // --- @repo/database mock (hoisted spies shared across the suite) -------------
 const {
@@ -182,59 +182,62 @@ type Handler = (args: {
 
 const ctx = { user: { id: "user-1" } };
 
-async function loadHandler(
-	module: string,
-	exportName: string,
-): Promise<Handler> {
-	const mod = (await import(module)) as Record<string, { _handler: Handler }>;
-	return mod[exportName]._handler;
+// Cold module transforms are slow and slower still when the CI runner is
+// contended; hooks default to a tighter timeout than tests, which would turn
+// the prewarm below into a new flake of its own.
+vi.setConfig({ hookTimeout: 60_000 });
+
+// Handlers are loaded ONCE per process, not once per test.
+//
+// Every handler here comes from a stateless module over mocked queries, so a
+// fresh import per test bought nothing — and it cost real flakiness. Under CI
+// CPU contention a cold dynamic import could outlive the test's own timeout
+// (reported as a failure at the `it()` declaration line), after which the
+// abandoned continuation still ran and its calls landed inside whatever test
+// came next, inflating that test's mock call counts (the scan-procedures CI
+// flake: one test timing out, the next asserting 1 update and seeing 4).
+// Memoising the promise and prewarming every handler in `beforeAll` keeps all
+// module loading off the per-test clock entirely.
+const handlerCache = new Map<string, Promise<Handler>>();
+
+function loadHandler(module: string, exportName: string): Promise<Handler> {
+	const key = `${module}:${exportName}`;
+	let pending = handlerCache.get(key);
+	if (!pending) {
+		pending = (async () => {
+			const mod = (await import(module)) as Record<
+				string,
+				{ _handler: Handler }
+			>;
+			return mod[exportName]._handler;
+		})();
+		handlerCache.set(key, pending);
+	}
+	return pending;
 }
 
-// `loadHandler` imports inside the test body, so whichever test reaches a
-// handler module FIRST pays that module's cold transform against its own
-// `testTimeout`. The dep graph behind these is the expensive one this package's
-// vitest.config.ts already warns about (Prisma client, ai-sdk, @repo/temporal,
-// slower to transform under Vitest 4's module runner than it was under v3).
-// Measured in this file: the first test to reach `../bulk-update-findings` runs
-// 4077ms against 5-19ms for every other test in it — a cost that belongs to the
-// import, not to anything the test asserts.
-//
-// That is what made this file flaky rather than slow (Fabric item 897). On a
-// loaded CI runner with cold caches the import intermittently tips past 20s,
-// and the failure does not stop there: vitest fails the test at the timeout but
-// cannot cancel the promise, so the abandoned continuation drains the three
-// `mockResolvedValueOnce` values queued by "applies the patch to each id" into
-// whichever test is running when it lands. The next one asserts a single call
-// and sees four. One timeout, two failures, and the second names a mock count
-// rather than the import that actually broke.
-//
-// Warming the graph once here pays the transform before any test runs.
-//
-// This is deliberately TOP-LEVEL rather than a `beforeAll`. A hook would move
-// the same cold import off `testTimeout` and straight onto `hookTimeout`, which
-// this package never sets and which therefore defaults to 10s — half the budget
-// the import was already exceeding, so the fix would have failed sooner than the
-// bug it replaced. Both numbers were measured here rather than read off the
-// docs: a `beforeAll` sleeping 30s reports "Hook timed out in 10000ms", while a
-// 15s top-level await completes, because collection is bound by neither budget.
-//
-// `vi.mock` calls are hoisted above this, so the mocks are registered before
-// these imports evaluate. Isolation is unchanged either way: `vi.resetModules()`
-// still hands each test a fresh module instance, because it resets the module
-// registry and not Vite's transform cache.
-await Promise.all([
-	import("../apply-review"),
-	import("../bulk-update-findings"),
-	import("../cancel-review"),
-	import("../cancel-scan"),
-	import("../list-findings"),
-	import("../start-review"),
-	import("../trigger-scan"),
-]);
+/** Every handler any test below will ask for, loaded before the first one. */
+const ALL_HANDLERS: Array<[string, string]> = [
+	["../apply-review", "applyReviewProcedure"],
+	["../bulk-update-findings", "bulkUpdateFindingsProcedure"],
+	["../cancel-review", "cancelReviewProcedure"],
+	["../cancel-scan", "cancelScanProcedure"],
+	["../list-findings", "listFindingsProcedure"],
+	["../start-review", "startReviewProcedure"],
+	["../trigger-scan", "triggerScanProcedure"],
+];
+
+beforeAll(
+	async () => {
+		await Promise.all(ALL_HANDLERS.map(([m, e]) => loadHandler(m, e)));
+	},
+	// Explicit per-hook ceiling too: vi.setConfig above covers it in spirit,
+	// but a hook's timeout is resolved before its body runs.
+	60_000,
+);
 
 beforeEach(() => {
 	vi.clearAllMocks();
-	vi.resetModules();
 	mockHasProjectAccess.mockResolvedValue(true);
 	mockGetProjectReposForCodeSearch.mockResolvedValue([]);
 	mockRecordScanActivity.mockResolvedValue(undefined);

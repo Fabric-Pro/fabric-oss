@@ -46,6 +46,7 @@ import { PromptBindingManager } from "./PromptBindingManager";
 import { PromptFormatBadge } from "./PromptFormatBadge";
 import { PromptScopeBadge } from "./PromptScopeBadge";
 import { PromptsHero } from "./PromptsHero";
+import { PromptTag } from "./PromptTag";
 
 type Props = {
 	/**
@@ -303,13 +304,9 @@ export function PromptManagementPage({ organizationSlug }: Props) {
 											{prompt.tags
 												.slice(0, 2)
 												.map((tag) => (
-													<Badge
-														key={tag}
-														variant="secondary"
-														className="text-xs"
-													>
+													<PromptTag key={tag}>
 														{tag}
-													</Badge>
+													</PromptTag>
 												))}
 											{prompt.tags.length > 2 && (
 												<Badge

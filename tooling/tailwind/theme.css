@@ -23,6 +23,7 @@
 	--color-ring: var(--ring);
 	--color-highlight: var(--highlight);
 	--color-highlight-foreground: var(--highlight-foreground);
+	--color-highlight-ink: var(--highlight-ink);
 	--radius-lg: var(--radius);
 	--radius-md: calc(var(--radius) - 1px);
 	--radius-sm: calc(var(--radius) - 1px);
@@ -174,6 +175,12 @@
 		--card-foreground: #1f1c19;
 		--highlight: #d97706;
 		--highlight-foreground: #451a03;
+		/* Amber as INK on a light surface, not as a fill. --highlight is tuned
+		 * for filled chips (dark text on amber) and only reaches 3.14:1 as text
+		 * on --card, under the 4.5:1 floor. Mirrors --primary-ink: darken the
+		 * foreground rather than the fill, so the ~existing filled usages keep
+		 * their appearance. 4.94:1 on --card. */
+		--highlight-ink: #b45309;
 		--radius: 0.625rem;
 
 		/* fumadocs */
@@ -245,6 +252,9 @@
 		--card-foreground: #f4f1ec;
 		--highlight: #fbbf24;
 		--highlight-foreground: #1c1917;
+		/* Dark mode's amber is already light enough to read as ink on --card
+		 * (10.41:1), so the ink token simply follows the fill here. */
+		--highlight-ink: #fbbf24;
 
 		/* Enhanced atmospheric background for dark mode */
 		--bg-texture: url("data:image/svg+xml,%3Csvg width='64' height='64' viewBox='0 0 64 64' xmlns='http://www.w3.org/2000/svg'%3E%3Cg fill='%23f4f1ec' fill-opacity='0.012'%3E%3Ccircle cx='1' cy='1' r='1'/%3E%3C/g%3E%3C/svg%3E");
