@@ -54,6 +54,8 @@ export async function sendEmail<T extends TemplateId>(
 				subject: string;
 				text?: string;
 				html?: string;
+				/** Overrides the support inbox default below. */
+				replyTo?: string;
 				headers?: Record<string, string>;
 				idempotencyKey?: string;
 				attachments?: MailAttachment[];
@@ -72,6 +74,21 @@ export async function sendEmail<T extends TemplateId>(
 	// Extract idempotency key (available on both branches) for provider-side dedup
 	const idempotencyKey =
 		"idempotencyKey" in params ? params.idempotencyKey : undefined;
+
+	// Every message goes out from a no-reply sender that has no mailbox behind
+	// it, so replying to one used to reach nobody at all — the same dead end as
+	// publishing an address that does not exist, on the path a user is most
+	// likely to take. Replies land in the support inbox instead.
+	//
+	// Taken from `config.support.email` rather than a dedicated setting: it is
+	// already the address a deployment names for reaching its people, and a
+	// second knob would only be a way for the two to disagree. A deployment
+	// that has named no inbox sends no Reply-To, which is the honest outcome —
+	// better than pointing replies at an address nobody chose.
+	const replyTo =
+		("replyTo" in params ? params.replyTo : undefined) ||
+		config.support.email ||
+		undefined;
 
 	// Resolve correlation ID
 	const correlationId = resolveCorrelationId(callerHeaders);
@@ -115,6 +132,7 @@ export async function sendEmail<T extends TemplateId>(
 			subject,
 			text,
 			html,
+			...(replyTo ? { replyTo } : {}),
 			headers,
 			...(idempotencyKey ? { idempotencyKey } : {}),
 			...(attachments && attachments.length > 0 ? { attachments } : {}),

@@ -694,14 +694,6 @@
 			"intro": "A publishing cycle in {projectName} found {topicCount, plural, one {a topic} other {topics}} you contributed to. Review what it suggested and pick what to write.",
 			"openCta": "Review the topics →"
 		},
-		"readinessHelpRequested": {
-			"subject": "Help needed with {itemName} in {projectName}",
-			"eyebrow": "{projectName} · Readiness",
-			"headline": "Help requested: {itemName}",
-			"intro": "{requesterName} asked for help with this readiness checklist item in {projectName}.",
-			"replyTo": "Reply to {requesterEmail} to pick it up.",
-			"openCta": "Open the project →"
-		},
 		"welcome": {
 			"heading": "Welcome to Fabric AI, {name}",
 			"body": "Your email has been verified and your account is ready. Fabric AI helps you automate software delivery with intelligent agents and workflows.",
@@ -5472,9 +5464,7 @@
 			"snooze": "Snooze",
 			"notApplicable": "Not applicable",
 			"requestHelp": "Request help",
-			"stateHelpRequested": "Help requested",
-			"helpRequestNotified": "Help requested. The support inbox has been notified.",
-			"helpRequestRecorded": "Help requested. The item is flagged for the project, but the message could not be sent — tell the team another way.",
+			"helpRequestRecorded": "Help requested. The item is flagged for the project, but no support address is configured — tell the team another way.",
 			"helpRequestFailed": "Could not request help. Please try again.",
 			"assumedPhase": "Phase assumed from your setup.",
 			"requiredOutstanding": "{count, plural, one {# required item outstanding} other {# required items outstanding}}",

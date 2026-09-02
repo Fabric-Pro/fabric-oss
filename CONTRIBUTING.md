@@ -2,7 +2,7 @@
 
 Thank you for your interest in contributing to Fabric AI. This guide covers the development setup, conventions, and process for submitting changes.
 
-Taking part in this project means following our [Code of Conduct](./CODE_OF_CONDUCT.md). To report a possible violation, email fabric.issues@techfabric.com.
+Taking part in this project means following our [Code of Conduct](./CODE_OF_CONDUCT.md). To report a possible violation, email fabric.help@techfabric.com.
 
 ## Prerequisites
 

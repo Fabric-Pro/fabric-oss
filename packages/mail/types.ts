@@ -22,6 +22,12 @@ export interface SendEmailParams {
 	subject: string;
 	text: string;
 	html?: string;
+	/**
+	 * Where a reply should go. The From address is a no-reply sender with no
+	 * mailbox behind it, so without this a reply — the most natural response to
+	 * a message asking someone to act — reaches nobody.
+	 */
+	replyTo?: string;
 	headers?: Record<string, string>;
 	idempotencyKey?: string;
 	attachments?: MailAttachment[];

@@ -11,7 +11,6 @@ import { NewUser } from "../emails/NewUser";
 import { OrganizationInvitation } from "../emails/OrganizationInvitation";
 import { ProjectInvitation } from "../emails/ProjectInvitation";
 import { PublishingTopicsReady } from "../emails/PublishingTopicsReady";
-import { ReadinessHelpRequested } from "../emails/ReadinessHelpRequested";
 import { ReleaseNotesNewsletter } from "../emails/ReleaseNotesNewsletter";
 import { ReportExecutionFailed } from "../emails/ReportExecutionFailed";
 import { ReportExecutionReady } from "../emails/ReportExecutionReady";
@@ -32,7 +31,6 @@ export const mailTemplates = {
 	emailVerification: EmailVerification,
 	projectInvitation: ProjectInvitation,
 	publishingTopicsReady: PublishingTopicsReady,
-	readinessHelpRequested: ReadinessHelpRequested,
 	releaseNotesNewsletter: ReleaseNotesNewsletter,
 	reportExecutionReady: ReportExecutionReady,
 	reportExecutionFailed: ReportExecutionFailed,

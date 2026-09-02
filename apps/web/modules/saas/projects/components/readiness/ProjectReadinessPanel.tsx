@@ -456,11 +456,11 @@ function ReadinessPanelBody() {
 		onSuccess: () => readiness?.refetch(),
 	});
 
-	// The only action here that leaves the product, so it is the only one that
-	// needs to say what became of it. The server answers whether the request
-	// reached a support inbox; a deployment with none configured, or a send
-	// that failed, gets the honest version rather than a confirmation nobody
-	// can act on.
+	// The only action here that leaves the product. Fabric composes the
+	// message and the person sends it, so the click ends by opening their mail
+	// client rather than by reporting a delivery — what happens after the draft
+	// opens is not something this page can observe, and it will not claim
+	// otherwise.
 	const requestHelp = useMutation({
 		mutationFn: (itemKey: string) =>
 			orpcClient.projects.readiness.requestHelp({
@@ -469,12 +469,16 @@ function ReadinessPanelBody() {
 				organizationId: organizationId ?? null,
 			}),
 		onSuccess: (result) => {
-			// `info` rather than `success` for the second case on purpose: the
-			// request was recorded, but nothing reached anyone, and a green
-			// tick would read as "someone has it".
-			if (result.notified) {
-				toast.success(t("panel.helpRequestNotified"));
+			// Assigning `location.href` rather than opening a window: a
+			// `mailto:` is handed to the OS mail handler and the page stays
+			// where it is, whereas `window.open` leaves a blank tab behind in
+			// several browsers.
+			if (result.mailto) {
+				window.location.href = result.mailto;
 			} else {
+				// No support address configured — the request is still on the
+				// record, and saying so is better than a draft that would be
+				// addressed to nobody.
 				toast.info(t("panel.helpRequestRecorded"));
 			}
 			readiness?.refetch();
@@ -871,9 +875,6 @@ function ReadinessPanelBody() {
 												? t("panel.stateComplete")
 												: null
 								}
-								helpRequested={
-									item.manualState === "HELP_REQUESTED"
-								}
 								t={t}
 								onSnooze={(until) =>
 									snooze.mutate({ itemKey: item.key, until })
@@ -950,7 +951,6 @@ function ReadinessGapRow({
 	onSnooze,
 	onSetNotApplicable,
 	onRequestHelp,
-	helpRequested,
 	canAct,
 }: {
 	item: ReadinessItem;
@@ -985,13 +985,6 @@ function ReadinessGapRow({
 	onSnooze: (until: Date | null) => void;
 	onSetNotApplicable: (notApplicable: boolean) => void;
 	onRequestHelp: () => void;
-	/**
-	 * Someone has already asked for help with this item. Unlike Snoozed and
-	 * Not applicable it does not resolve the item or change what it counts
-	 * for — the gap is still a gap — so it reads as a marker beside the row
-	 * rather than as the row's state.
-	 */
-	helpRequested: boolean;
 	/** Read-only viewers see the state but cannot change it. */
 	canAct: boolean;
 }) {
@@ -1093,14 +1086,6 @@ function ReadinessGapRow({
 							aria-hidden="true"
 						/>
 						{t("panel.stateInProgress")}
-					</span>
-				)}
-				{/* Shown to everyone, including read-only viewers: that someone
-				    has already asked is the thing worth knowing before asking
-				    again. */}
-				{helpRequested && (
-					<span className="font-medium text-primary text-xs">
-						{t("panel.stateHelpRequested")}
 					</span>
 				)}
 				{!canAct ? null : item.manualState === "SNOOZED" ? (
