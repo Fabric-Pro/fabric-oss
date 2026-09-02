@@ -20,7 +20,8 @@ const {
 }));
 
 vi.mock("@repo/database", () => ({
-	listPromptDefaultRecipients: vi.fn().mockResolvedValue([]),
+	listPromptDefaultAudience: vi.fn().mockResolvedValue([]),
+	markOwnOverrides: vi.fn().mockResolvedValue([]),
 	bindPromptVersionToTargets,
 	bindPromptVersion: vi.fn(),
 	clearPromptBinding: vi.fn(),

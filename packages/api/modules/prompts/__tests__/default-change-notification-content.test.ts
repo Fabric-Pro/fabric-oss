@@ -23,7 +23,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const {
 	promptVersionFindUnique,
 	organizationFindUnique,
-	listPromptDefaultRecipients,
+	listPromptDefaultAudience,
+	markOwnOverrides,
 	promptDefaultUpdated,
 	promptNominationPending,
 	declinePromptNomination,
@@ -32,7 +33,8 @@ const {
 } = vi.hoisted(() => ({
 	promptVersionFindUnique: vi.fn(),
 	organizationFindUnique: vi.fn(),
-	listPromptDefaultRecipients: vi.fn(),
+	listPromptDefaultAudience: vi.fn(),
+	markOwnOverrides: vi.fn(),
 	promptDefaultUpdated: vi.fn(),
 	promptNominationPending: vi.fn(),
 	declinePromptNomination: vi.fn(),
@@ -45,7 +47,8 @@ vi.mock("@repo/database", () => ({
 		promptVersion: { findUnique: promptVersionFindUnique },
 		organization: { findUnique: organizationFindUnique },
 	},
-	listPromptDefaultRecipients,
+	listPromptDefaultAudience,
+	markOwnOverrides,
 	declinePromptNomination,
 	getNominationById,
 	approvePromptNomination: vi.fn(),
@@ -96,8 +99,14 @@ beforeEach(() => {
 	// The deep-link resolves the org's slug; default to one so assertions can
 	// pin the org-scoped path.
 	organizationFindUnique.mockResolvedValue({ slug: "acme" });
-	listPromptDefaultRecipients.mockReset();
-	listPromptDefaultRecipients.mockResolvedValue([
+	listPromptDefaultAudience.mockReset();
+	markOwnOverrides.mockReset();
+	// The audience is the tier's people; the per-action framing is the second
+	// call, which is what the announcer actually hands to the fan-out.
+	listPromptDefaultAudience.mockResolvedValue([
+		{ userId: "u-1", organizationId: "org-a" },
+	]);
+	markOwnOverrides.mockResolvedValue([
 		{ userId: "u-1", organizationId: "org-a", hasOwnOverride: false },
 	]);
 	promptDefaultUpdated.mockReset();
