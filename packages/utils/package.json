@@ -29,6 +29,11 @@
 			"import": "./index.ts",
 			"default": "./index.ts"
 		},
+		"./publishing-blog-post-prompt": {
+			"types": "./lib/publishing-blog-post-prompt.ts",
+			"import": "./lib/publishing-blog-post-prompt.ts",
+			"default": "./lib/publishing-blog-post-prompt.ts"
+		},
 		"./publishing-planning-prompt": {
 			"types": "./lib/publishing-planning-prompt.ts",
 			"import": "./lib/publishing-planning-prompt.ts",

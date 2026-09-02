@@ -24,6 +24,9 @@ import {
 	PROMPT_AGENT_TARGETS,
 	promptActionId,
 } from "@repo/utils/prompt-action-catalog";
+import { PUBLISHING_BLOG_POST_AGENT_KEY } from "@repo/utils/publishing-blog-post-prompt";
+import { PUBLISHING_PLANNING_ANALYSIS_AGENT_KEY } from "@repo/utils/publishing-planning-prompt";
+import { PUBLISHING_SHORT_POST_AGENT_KEY } from "@repo/utils/publishing-short-post-prompt";
 import { describe, expect, it } from "vitest";
 
 const SEED = readFileSync(
@@ -44,11 +47,45 @@ const RETIRED_AGENTS = new Set([
 	"task_planner_agent",
 ]);
 
+/**
+ * Agent keys the seed references by CONSTANT rather than as a string literal.
+ *
+ * The Publishing Suite agents define their key once in `@repo/utils` so the
+ * seed, the catalog and the Temporal activity cannot drift apart — which is the
+ * right shape, and which made all three invisible to a parse that only matched
+ * a quoted literal. Worse than invisible in `seededSlots`, where an unmatched
+ * `targetKey` fell through to the `project_document_generator` default: a
+ * publishing agent bound to the wrong slot would have been checked against the
+ * document generator's catalog entry and passed.
+ *
+ * Resolved by name here, and an unknown name THROWS rather than being skipped —
+ * a new constant must be added to this map, not silently dropped out of
+ * coverage.
+ */
+const KEY_CONSTANTS: Record<string, string> = {
+	PUBLISHING_PLANNING_ANALYSIS_AGENT_KEY,
+	PUBLISHING_SHORT_POST_AGENT_KEY,
+	PUBLISHING_BLOG_POST_AGENT_KEY,
+};
+
+function resolveKeyConstant(name: string): string {
+	const resolved = KEY_CONSTANTS[name];
+	if (!resolved) {
+		throw new Error(
+			`The seed references agent-key constant ${name}, which this test cannot resolve. Add it to KEY_CONSTANTS — do not leave it out, or that agent drops out of catalog coverage entirely.`,
+		);
+	}
+	return resolved;
+}
+
 /** Explicit `targetKey: "..."` plus the legacy `bindingTargetKey: "..."` form. */
 function seededTargetKeys(): Set<string> {
 	const keys = new Set<string>();
 	for (const m of SEED.matchAll(/targetKey:\s*"([a-z0-9_]+)"/g)) {
 		keys.add(m[1]);
+	}
+	for (const m of SEED.matchAll(/targetKey:\s*([A-Z][A-Z0-9_]*)\s*,/g)) {
+		keys.add(resolveKeyConstant(m[1]));
 	}
 	for (const m of SEED.matchAll(/bindingTargetKey:\s*"([a-z0-9_]+)"/g)) {
 		keys.add(m[1]);
@@ -92,10 +129,12 @@ function seededSlots(): SeededSlot[] {
 	// is therefore read from its OWN declaration slice, never from the chunk as
 	// a whole, because a neighbour's comment may quote words like CLEAN_SPEC.
 	const slots: SeededSlot[] = [];
-	const chunks = section.split(/\n\t(?=[A-Za-z0-9_]+: \{)/).slice(1);
+	// Computed keys (`[PUBLISHING_BLOG_POST_AGENT_KEY]: {`) are entries too, and
+	// a splitter that only saw bare identifiers dropped them silently.
+	const chunks = section.split(/\n\t(?=\[?[A-Za-z0-9_]+\]?: \{)/).slice(1);
 
 	for (const chunk of chunks) {
-		const keyMatch = chunk.match(/^([A-Za-z0-9_]+): \{/);
+		const keyMatch = chunk.match(/^\[?([A-Za-z0-9_]+)\]?: \{/);
 		if (!keyMatch) {
 			continue;
 		}
@@ -113,13 +152,25 @@ function seededSlots(): SeededSlot[] {
 		if (docTypes.length === 0) {
 			continue;
 		}
-		const targetMatch = chunk.match(/targetKey:\s*"([a-z0-9_]+)"/);
+		const targetLiteral = chunk.match(/targetKey:\s*"([a-z0-9_]+)"/);
+		const targetConstant = chunk.match(
+			/targetKey:\s*([A-Z][A-Z0-9_]*)\s*,/,
+		);
+		// An UNRESOLVED targetKey must not fall through to the document
+		// generator default: that is how a publishing agent bound to the wrong
+		// slot would have been checked against the wrong agent's catalog entry
+		// and passed. Absent is the only case the default is right for.
+		const targetKey = targetLiteral
+			? targetLiteral[1]
+			: targetConstant
+				? resolveKeyConstant(targetConstant[1])
+				: "project_document_generator";
 
 		const kind = kindMatch[1].replaceAll('"', "");
 		for (const documentType of docTypes) {
 			slots.push({
 				promptKey: keyMatch[1],
-				targetKey: targetMatch?.[1] ?? "project_document_generator",
+				targetKey,
 				documentType,
 				storyKind:
 					kind === "FEATURE"

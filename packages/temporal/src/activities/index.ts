@@ -393,6 +393,7 @@ export {
 export * from "./publishing-suggestion";
 // Planning & Analysis activities (Publishing Suite 2A-2 — the topic worksheet's
 // generator and its failure marker).
+export * from "./publishing-blog-post";
 export * from "./publishing-planning";
 export * from "./publishing-short-post";
 // Deep Researcher activities (parallel sub-agent research workflow)

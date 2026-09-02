@@ -6,7 +6,9 @@ import { db } from "../index"; // package root barrel (what consumers import as 
 // reads is produced by Postgres and the driver adapter, not by Prisma types.
 import {
 	saveWorkingDraft,
+	seedWorkingDraftIfAbsent,
 	startTopicDraftAttempt,
+	updateWorkingDraftBody,
 } from "../prisma/queries/projects/publishing-drafts";
 import { uniqueViolationConstraint } from "../prisma/queries/projects/publishing-tenant-lock";
 
@@ -1294,6 +1296,247 @@ it.skipIf(!RUN_DB)(
 				})
 			).body,
 		).toBe("Builds are faster now.");
+	},
+);
+
+it.skipIf(!RUN_DB)(
+	"2B-3 P: the first generation seeds a working draft, and the second leaves it alone",
+	async () => {
+		// FR35/DV10 against a real server. The mocked writer test proves the
+		// helper has no update path; only this can prove that what lands in
+		// Postgres survives a second run — the unique index, the composite
+		// foreign key and the tenant CHECK all apply to this exact insert.
+		const { user, project, topic } = await makeActiveDraftTopic();
+		const first = await db.publishingTopicDraft.create({
+			data: {
+				topicId: topic.id,
+				projectId: project.id,
+				userId: user.id,
+				postType: "BLOG_POST",
+				version: 1,
+				status: "READY",
+			},
+		});
+
+		const seeded = await seedWorkingDraftIfAbsent({
+			topicId: topic.id,
+			projectId: project.id,
+			postType: "BLOG_POST",
+			sourceDraftId: first.id,
+			body: "# A post\n\nFirst generation.",
+			updatedById: user.id,
+		});
+		expect(seeded.status).toBe("seeded");
+
+		const row = await db.publishingTopicWorkingDraft.findUniqueOrThrow({
+			where: {
+				topicId_postType: { topicId: topic.id, postType: "BLOG_POST" },
+			},
+		});
+		expect(row.body).toBe("# A post\n\nFirst generation.");
+		// A blog generation produces one draft, so there is no option to name.
+		expect(row.sourceOptionLabel).toBeNull();
+		expect(row.organizationId).toBeNull();
+		expect(row.userId).toBe(user.id);
+
+		// Someone edits it — the state FR35 exists to protect.
+		const edited = await updateWorkingDraftBody({
+			topicId: topic.id,
+			projectId: project.id,
+			postType: "BLOG_POST",
+			body: "# A post\n\nAn hour of careful editing.",
+			updatedById: user.id,
+			expectedUpdatedAt: row.updatedAt,
+		});
+		expect(edited.status).toBe("saved");
+
+		// Now regenerate. A second READY candidate, and the seeding call the
+		// activity makes after every run.
+		const second = await db.publishingTopicDraft.create({
+			data: {
+				topicId: topic.id,
+				projectId: project.id,
+				userId: user.id,
+				postType: "BLOG_POST",
+				version: 2,
+				status: "READY",
+			},
+		});
+		const again = await seedWorkingDraftIfAbsent({
+			topicId: topic.id,
+			projectId: project.id,
+			postType: "BLOG_POST",
+			sourceDraftId: second.id,
+			body: "# A post\n\nSecond generation, which must not land.",
+			updatedById: user.id,
+		});
+		expect(again).toEqual({ status: "already_exists" });
+
+		// The edit survived, durably.
+		const after = await db.publishingTopicWorkingDraft.findUniqueOrThrow({
+			where: {
+				topicId_postType: { topicId: topic.id, postType: "BLOG_POST" },
+			},
+		});
+		expect(after.body).toBe("# A post\n\nAn hour of careful editing.");
+		expect(after.sourceDraftId).toBe(first.id);
+	},
+);
+
+it.skipIf(!RUN_DB)(
+	"2B-3 Q: the working draft's unique index is nameable from the error it raises",
+	async () => {
+		// The constraint name `seedWorkingDraftIfAbsent` matches on is a MEASURED
+		// claim, not a guess at Prisma's naming convention. 2B-2 shipped a
+		// discriminator written against a plausible-looking error shape that
+		// matched nothing, and its unit test passed because the fixture encoded
+		// the same guess. This is the case that would catch the same mistake
+		// here: only a real server produces the error being read.
+		const { user, project, topic } = await makeActiveDraftTopic();
+		const candidate = await db.publishingTopicDraft.create({
+			data: {
+				topicId: topic.id,
+				projectId: project.id,
+				userId: user.id,
+				postType: "BLOG_POST",
+				version: 1,
+				status: "READY",
+			},
+		});
+		const base = {
+			topicId: topic.id,
+			projectId: project.id,
+			userId: user.id,
+			postType: "BLOG_POST" as const,
+			sourceDraftId: candidate.id,
+			body: "x",
+			updatedById: user.id,
+		};
+		await db.publishingTopicWorkingDraft.create({ data: base });
+
+		const error = await db.publishingTopicWorkingDraft
+			.create({ data: base })
+			.then(
+				() => null,
+				(e: unknown) => e,
+			);
+
+		expect(error).not.toBeNull();
+		expect(uniqueViolationConstraint(error)).toBe(
+			"publishing_topic_working_draft_topicId_postType_key",
+		);
+	},
+);
+
+it.skipIf(!RUN_DB)(
+	"2B-3 R: an edit moves updatedAt, which is what makes the adopt check work",
+	async () => {
+		// The reason the compare-and-set reads `updatedAt` rather than
+		// `sourceDraftId`: an edit changes the body and leaves the source id
+		// alone, so a source-based check would pass while the row HAD changed
+		// and an adoption would silently discard someone's edit. `@updatedAt`
+		// providing that is a Prisma behaviour, so a real write is the only
+		// thing that can confirm it.
+		const { user, project, topic } = await makeActiveDraftTopic();
+		const candidate = await db.publishingTopicDraft.create({
+			data: {
+				topicId: topic.id,
+				projectId: project.id,
+				userId: user.id,
+				postType: "BLOG_POST",
+				version: 1,
+				status: "READY",
+			},
+		});
+		await seedWorkingDraftIfAbsent({
+			topicId: topic.id,
+			projectId: project.id,
+			postType: "BLOG_POST",
+			sourceDraftId: candidate.id,
+			body: "before",
+			updatedById: user.id,
+		});
+		const before = await db.publishingTopicWorkingDraft.findUniqueOrThrow({
+			where: {
+				topicId_postType: { topicId: topic.id, postType: "BLOG_POST" },
+			},
+		});
+
+		const edited = await updateWorkingDraftBody({
+			topicId: topic.id,
+			projectId: project.id,
+			postType: "BLOG_POST",
+			body: "after",
+			updatedById: user.id,
+			expectedUpdatedAt: before.updatedAt,
+		});
+		expect(edited.status).toBe("saved");
+
+		const after = await db.publishingTopicWorkingDraft.findUniqueOrThrow({
+			where: {
+				topicId_postType: { topicId: topic.id, postType: "BLOG_POST" },
+			},
+		});
+		// The source id did NOT move — which is exactly why it cannot be the
+		// concurrency key.
+		expect(after.sourceDraftId).toBe(before.sourceDraftId);
+		expect(after.updatedAt.getTime()).toBeGreaterThan(
+			before.updatedAt.getTime(),
+		);
+
+		// The editor's own compare-and-set refuses the same stale timestamp.
+		// Worth proving on a real server rather than a mock: the check is now a
+		// WHERE predicate, so it rests on `TIMESTAMP(3)` equality matching a
+		// millisecond-precision JS Date exactly. If that assumption were wrong
+		// the failure would be silent and total — every save reporting stale.
+		const staleEdit = await updateWorkingDraftBody({
+			topicId: topic.id,
+			projectId: project.id,
+			postType: "BLOG_POST",
+			body: "an edit that must not land",
+			updatedById: user.id,
+			expectedUpdatedAt: before.updatedAt,
+		});
+		expect(staleEdit).toEqual({ status: "stale" });
+
+		// And the positive half, so the case above cannot pass on a build where
+		// the predicate never matches anything at all.
+		const freshEdit = await updateWorkingDraftBody({
+			topicId: topic.id,
+			projectId: project.id,
+			postType: "BLOG_POST",
+			body: "an edit that SHOULD land",
+			updatedById: user.id,
+			expectedUpdatedAt: after.updatedAt,
+		});
+		expect(freshEdit.status).toBe("saved");
+
+		// So a caller holding the pre-edit timestamp is now correctly stale.
+		const stale = await saveWorkingDraft({
+			topicId: topic.id,
+			projectId: project.id,
+			postType: "BLOG_POST",
+			sourceDraftId: candidate.id,
+			sourceOptionLabel: null,
+			body: "an adoption that must not land",
+			updatedById: user.id,
+			expectedUpdatedAt: before.updatedAt,
+		});
+		expect(stale).toEqual({ status: "stale" });
+		// The last write that SHOULD have landed is the one standing, and
+		// neither refusal left a trace.
+		expect(
+			(
+				await db.publishingTopicWorkingDraft.findUniqueOrThrow({
+					where: {
+						topicId_postType: {
+							topicId: topic.id,
+							postType: "BLOG_POST",
+						},
+					},
+				})
+			).body,
+		).toBe("an edit that SHOULD land");
 	},
 );
 

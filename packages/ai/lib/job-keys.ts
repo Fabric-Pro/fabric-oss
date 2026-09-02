@@ -49,6 +49,15 @@ export const AI_JOB_TYPES = [
 	 * analysing topics at all.
 	 */
 	"publishing-short-post",
+	/**
+	 * Publishing-suite Blog Post drafting (#1853).
+	 *
+	 * Separate from `publishing-short-post` because it is the expensive one in
+	 * the family: long-form output over the same long prompt, so a single run
+	 * costs a multiple of three tweet options. Sharing a key would let blog
+	 * spend hide inside a short-post line item that looks reasonable.
+	 */
+	"publishing-blog-post",
 	/** Slack channel monitor note summarization. */
 	"slack-channel-monitor",
 	/** Security scanning grouping/review/scan model calls. */

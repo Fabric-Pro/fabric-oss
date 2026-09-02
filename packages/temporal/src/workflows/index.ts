@@ -295,6 +295,13 @@ export {
 	type GenerateMeetingAgendaWorkflowOutput,
 	generateMeetingAgendaWorkflow,
 } from "./generate-meeting-agenda";
+// Publishing Suite Blog Post (fire-and-forget — one editable long-form draft
+// for one topic, from its planning analysis and its own provenance). #1853
+export {
+	type GeneratePublishingBlogPostWorkflowInput,
+	type GeneratePublishingBlogPostWorkflowOutput,
+	generatePublishingBlogPostWorkflow,
+} from "./generate-publishing-blog-post";
 // Publishing Suite Planning & Analysis (fire-and-forget — one topic's planning
 // worksheet, from its own provenance). #1851
 export {

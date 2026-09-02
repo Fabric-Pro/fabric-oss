@@ -614,17 +614,36 @@ export type SaveWorkingDraftResult =
  * `source_not_found` answer the API can render, instead of a 500 from a
  * constraint the caller cannot see.
  *
- * This is the ONLY writer of `body`, and generation never touches this table.
- * That is what makes FR33 ("regenerating shall not silently overwrite saved
- * work") a property of where the writes go rather than a rule a later change has
- * to remember not to break.
+ * WHO MAY WRITE `body`, and why the list is short. 2B-2 could say "this is the
+ * only writer, and generation never touches this table", which made FR33
+ * ("regenerating shall not silently overwrite saved work") true by construction.
+ * 2B-3 needs a blog draft to exist after the FIRST generation (DV5) and an
+ * editor for it (FR21), so that sentence can no longer be the guarantee. Three
+ * writers now, and the guarantee is restated as a property each one carries:
+ *
+ *   - `saveWorkingDraft` (here) — adoption. Replaces the body, and refuses
+ *     unless the caller's `expectedUpdatedAt` still matches.
+ *   - `updateWorkingDraftBody` — the editor. Same compare-and-set.
+ *   - `seedWorkingDraftIfAbsent` — generation. CREATE-ONLY: it has no update
+ *     path at all, so a regeneration cannot reach an existing row.
+ *
+ * That is what keeps FR33 and FR35 structural rather than a rule a later change
+ * has to remember: no writer here can replace a body without being handed the
+ * version it believes it is replacing, and the one writer generation calls
+ * cannot replace a body at all.
  */
 export async function saveWorkingDraft(input: {
 	topicId: string;
 	projectId: string;
 	postType: DraftPostType;
 	sourceDraftId: string;
-	sourceOptionLabel: string;
+	/**
+	 * Which prompt-authored option was chosen, or null for a content type whose
+	 * generation produces one draft rather than a set. Nullable because the blog
+	 * post has no options to label — the column has always been `String?`, and
+	 * this signature was the half that had not caught up.
+	 */
+	sourceOptionLabel: string | null;
 	body: string;
 	updatedById: string;
 	/**
@@ -726,6 +745,220 @@ export async function saveWorkingDraft(input: {
 				organizationId: tenant.organizationId,
 				userId: tenant.userId,
 			},
+			select: { updatedAt: true },
+		});
+
+		return { status: "saved" as const, updatedAt: saved.updatedAt };
+	});
+}
+
+export type SeedWorkingDraftResult =
+	| { status: "seeded"; updatedAt: Date }
+	/** A working draft already existed. Nothing was written. */
+	| { status: "already_exists" }
+	| { status: "project_ineligible" }
+	| { status: "source_not_found" };
+
+/**
+ * Create a working draft from a just-generated draft, but ONLY if the topic has
+ * none for that content type yet (DV5/FR21).
+ *
+ * This is the one working-draft writer generation calls, and it exists as a
+ * separate function from `saveWorkingDraft` rather than a flag on it for one
+ * reason: it has NO update path. Not "an update path it declines to take" — no
+ * `upsert`, no `update`, no `updateMany` anywhere in its body. A regeneration
+ * that reaches an existing row can only get `already_exists` back, so FR35
+ * ("regenerating a Blog Post shall not silently overwrite saved work") holds
+ * because of what this function is unable to express, not because of a condition
+ * someone remembered to write.
+ *
+ * The card asks for two things that pull against each other — a blog generation
+ * produces an editable draft by default (DV5), and a regeneration never
+ * overwrites saved work (FR35/DV10) — and create-if-absent is what satisfies
+ * both. The first run seeds; every run after it writes a candidate the reader
+ * adopts explicitly through `saveWorkingDraft`, which is compare-and-set.
+ *
+ * `already_exists` is a NORMAL outcome, not a failure. It is what every
+ * regeneration returns, and the caller logs it at debug rather than warning.
+ */
+export async function seedWorkingDraftIfAbsent(input: {
+	topicId: string;
+	projectId: string;
+	postType: DraftPostType;
+	sourceDraftId: string;
+	body: string;
+	updatedById: string;
+}): Promise<SeedWorkingDraftResult> {
+	return db.$transaction(async (tx) => {
+		const tenant = await lockProjectTenant(
+			tx as unknown as Parameters<typeof lockProjectTenant>[0],
+			input.projectId,
+		);
+		if (!tenant) {
+			return { status: "project_ineligible" as const };
+		}
+
+		// All four ids together, exactly as `saveWorkingDraft` does. The
+		// composite FK would reject a mismatch anyway, but as an opaque failure
+		// rather than an answer.
+		const source = await tx.publishingTopicDraft.findFirst({
+			where: {
+				id: input.sourceDraftId,
+				topicId: input.topicId,
+				projectId: input.projectId,
+				postType: input.postType,
+				status: "READY",
+			},
+			select: { id: true },
+		});
+		if (!source) {
+			return { status: "source_not_found" as const };
+		}
+
+		const existing = await tx.publishingTopicWorkingDraft.findUnique({
+			where: {
+				topicId_postType: {
+					topicId: input.topicId,
+					postType: input.postType,
+				},
+			},
+			select: { id: true },
+		});
+		if (existing) {
+			return { status: "already_exists" as const };
+		}
+
+		try {
+			const seeded = await tx.publishingTopicWorkingDraft.create({
+				data: {
+					topicId: input.topicId,
+					projectId: input.projectId,
+					postType: input.postType,
+					// Tenancy from the LOCKED row, as everywhere else here.
+					organizationId: tenant.organizationId,
+					userId: tenant.userId,
+					sourceDraftId: input.sourceDraftId,
+					// No option to name: a blog generation produces one draft
+					// rather than a labeled set.
+					sourceOptionLabel: null,
+					body: input.body,
+					updatedById: input.updatedById,
+				},
+				select: { updatedAt: true },
+			});
+			return { status: "seeded" as const, updatedAt: seeded.updatedAt };
+		} catch (error) {
+			// The read above and this write are inside the project lock every
+			// other writer of this table also takes, so losing the race needs a
+			// writer that does not — a future one, or a manual query. Answering
+			// `already_exists` keeps that case on the same no-overwrite path
+			// instead of surfacing a constraint the caller cannot see.
+			if (
+				uniqueViolationConstraint(error) ===
+				"publishing_topic_working_draft_topicId_postType_key"
+			) {
+				return { status: "already_exists" as const };
+			}
+			throw error;
+		}
+	});
+}
+
+export type UpdateWorkingDraftBodyResult =
+	| { status: "saved"; updatedAt: Date }
+	| { status: "project_ineligible" }
+	/** No working draft for that topic and content type. */
+	| { status: "not_found" }
+	| { status: "stale" };
+
+/**
+ * Replace the text of an existing working draft (FR21).
+ *
+ * The editor's writer. It changes `body` and nothing else about where the draft
+ * came from: `sourceDraftId` still names the candidate this text STARTED as,
+ * because provenance is the origin of a draft rather than a claim about what it
+ * currently says. A heavily edited post is still a post that began at version 4,
+ * and the panel says so.
+ *
+ * Same `updatedAt` compare-and-set as `saveWorkingDraft`, and the pair is why
+ * that check compares timestamps rather than `sourceDraftId`: an edit moves
+ * `body` and leaves the source id alone, so a source-based check would pass
+ * while the row HAD changed and an adoption would silently discard the edit.
+ * That was unreachable when 2B-2 wrote it and is reachable now.
+ *
+ * Creates nothing. A working draft that does not exist is `not_found`, never an
+ * upsert — the row is created by adoption or by the first generation, and an
+ * editor that could conjure one would let a body reach a topic whose generation
+ * never ran.
+ */
+export async function updateWorkingDraftBody(input: {
+	topicId: string;
+	projectId: string;
+	postType: DraftPostType;
+	body: string;
+	updatedById: string;
+	/** The row's `updatedAt` as the editor last saw it. */
+	expectedUpdatedAt: Date;
+}): Promise<UpdateWorkingDraftBodyResult> {
+	return db.$transaction(async (tx) => {
+		const tenant = await lockProjectTenant(
+			tx as unknown as Parameters<typeof lockProjectTenant>[0],
+			input.projectId,
+		);
+		if (!tenant) {
+			return { status: "project_ineligible" as const };
+		}
+
+		// Scoped by projectId as well as the unique key: a topic id belonging to
+		// another project must not resolve a row here. This read exists to tell
+		// `not_found` from `stale` — it is NOT the concurrency check.
+		const current = await tx.publishingTopicWorkingDraft.findFirst({
+			where: {
+				topicId: input.topicId,
+				projectId: input.projectId,
+				postType: input.postType,
+			},
+			select: { id: true },
+		});
+		if (!current) {
+			return { status: "not_found" as const };
+		}
+
+		// The compare-and-set is the WRITE, not a comparison before it.
+		//
+		// An earlier version read `updatedAt` here and compared it in JS before
+		// issuing an unconditional `update`. That is correct only for as long as
+		// every writer of this table takes the project lock above — a
+		// convention, not a constraint, and the kind that holds until someone
+		// adds a writer that does not. Raised by review. Putting `updatedAt` in
+		// the WHERE makes the check atomic in Postgres, so a row that moved
+		// between the two statements matches nothing and no write happens.
+		//
+		// Equality on the timestamp is exact rather than approximate: the column
+		// is `TIMESTAMP(3)` and a JS `Date` is also millisecond-precision, so the
+		// value that came back from a read round-trips to the same instant.
+		const written = await tx.publishingTopicWorkingDraft.updateMany({
+			where: {
+				id: current.id,
+				updatedAt: input.expectedUpdatedAt,
+			},
+			data: {
+				body: input.body,
+				updatedById: input.updatedById,
+				// Re-stamped for the same reason `saveWorkingDraft` re-stamps:
+				// a row that predates an org transfer otherwise keeps the old
+				// tenant and, under `policy`-mode RLS, becomes invisible to the
+				// project's current members.
+				organizationId: tenant.organizationId,
+				userId: tenant.userId,
+			},
+		});
+		if (written.count === 0) {
+			return { status: "stale" as const };
+		}
+
+		const saved = await tx.publishingTopicWorkingDraft.findUniqueOrThrow({
+			where: { id: current.id },
 			select: { updatedAt: true },
 		});
 

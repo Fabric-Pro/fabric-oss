@@ -343,11 +343,13 @@ describe("GenerationTabs — panel content", () => {
 		expect(listed).not.toContain("who signs the post");
 	});
 
-	it("offers no generate control on the BLOG POST tab yet", async () => {
-		// The 2B-1 version of this case asserted the absence on BOTH live tabs,
-		// which was right for a slice that shipped no generation at all. 2B-2
-		// gives the short post one; blog waits for 2B-3, and the half that still
-		// holds is kept and asserted rather than deleted with the other half.
+	it("DOES offer a generate control on the blog post tab", async () => {
+		// This case has now been inverted twice, and the history is the point.
+		// 2B-1 asserted the absence of a generate control on BOTH live tabs,
+		// which was right for a slice that shipped no generation. 2B-2 kept the
+		// half that still held — blog. 2B-3 ships the blog generation FR11 asks
+		// for, so the assertion flips: what would be a regression now is the
+		// control being missing, not present.
 		const user = userEvent.setup();
 		renderTabs();
 
@@ -355,11 +357,13 @@ describe("GenerationTabs — panel content", () => {
 			within(tablist()).getByRole("tab", { name: /blog post/i }),
 		);
 		expect(
-			screen.queryByRole("button", { name: /generate/i }),
-		).not.toBeInTheDocument();
-		expect(
-			screen.getByText(/arrives in the next release/i),
+			screen.getByRole("button", { name: /generate blog post/i }),
 		).toBeInTheDocument();
+		// And the 2B-1 placeholder it replaced is gone rather than merely
+		// hidden behind it.
+		expect(
+			screen.queryByText(/arrives in the next release/i),
+		).not.toBeInTheDocument();
 	});
 
 	it("DOES offer a generate control on the short post tab", async () => {
@@ -372,13 +376,17 @@ describe("GenerationTabs — panel content", () => {
 		).toBeInTheDocument();
 	});
 
-	it("reports a saved working draft on a tab with no panel of its own", async () => {
-		// Retargeted from TWEET to BLOG_POST in 2B-2. This asserts the GENERIC
-		// draft-state line, and the short post tab no longer renders it — that
-		// tab now shows the saved body itself, which
-		// `publishing-short-post-panel.test.tsx` covers. Pointing this case at
-		// TWEET would silently stop testing the generic branch while still
-		// passing against some other text on the page.
+	it("hands a saved blog draft to the blog panel, which shows the body itself", async () => {
+		// This case used to assert the GENERIC draft-state line ("you have a
+		// saved draft for this content type"), retargeted from TWEET to
+		// BLOG_POST in 2B-2 as each tab got a panel of its own. 2B-3 panelled
+		// the last one, so that line has no remaining caller and the component
+		// behind it was removed with this change.
+		//
+		// What is worth asserting HERE is the wiring rather than the panel's
+		// own rendering: that this component routes the right working draft to
+		// the right tab. The panel's behaviour is
+		// `publishing-blog-post-panel.test.tsx`.
 		const user = userEvent.setup();
 		renderTabs({
 			workingDrafts: [
@@ -386,7 +394,8 @@ describe("GenerationTabs — panel content", () => {
 					postType: "BLOG_POST",
 					hasBody: true,
 					body: "A saved blog draft.",
-					sourceOptionLabel: "Option 1",
+					sourceDraftId: null,
+					sourceOptionLabel: null,
 					updatedAt: new Date(),
 				},
 			],
@@ -395,7 +404,9 @@ describe("GenerationTabs — panel content", () => {
 		await user.click(
 			within(tablist()).getByRole("tab", { name: /blog post/i }),
 		);
-		expect(screen.getByText(/you have a saved draft/i)).toBeInTheDocument();
+		expect(
+			screen.getByRole("textbox", { name: /working blog post/i }),
+		).toHaveValue("A saved blog draft.");
 	});
 });
 

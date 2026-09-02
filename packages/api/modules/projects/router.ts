@@ -269,8 +269,10 @@ import {
 	setProjectTabVisibilityProcedure,
 } from "./procedures/project-tabs";
 import {
+	adoptBlogPostDraftProcedure,
 	answerTopicQuestionProcedure,
 	createPublishingTopicProcedure,
+	generateBlogPostProcedure,
 	generatePlanningAnalysisProcedure,
 	generatePublishingTopicsNowProcedure,
 	generateShortPostProcedure,
@@ -283,6 +285,7 @@ import {
 	listPublishingTopicsProcedure,
 	listTopicDecisionsProcedure,
 	listTopicDraftsProcedure,
+	saveBlogPostBodyProcedure,
 	selectShortPostOptionProcedure,
 	setTopicReadStateProcedure,
 	setTopicSnoozeProcedure,
@@ -1383,6 +1386,15 @@ export const projectsRouter = {
 		// its text, and reads the text from the stored draft.
 		generateShortPost: generateShortPostProcedure,
 		selectShortPostOption: selectShortPostOptionProcedure,
+		// #1853 (2B-3): Blog Post. `generateBlogPost` starts one run the panel
+		// polls for, and the FIRST run seeds the topic's working draft inside
+		// the activity (DV5/FR21) — which is why this pair exists where the
+		// short post needs only one: `adoptBlogPostDraft` replaces a body that
+		// already exists, and `saveBlogPostBody` is the editor. Both are
+		// compare-and-set on the working draft's `updatedAt`.
+		generateBlogPost: generateBlogPostProcedure,
+		adoptBlogPostDraft: adoptBlogPostDraftProcedure,
+		saveBlogPostBody: saveBlogPostBodyProcedure,
 	},
 
 	// User Stories & Tasks (Kanban)

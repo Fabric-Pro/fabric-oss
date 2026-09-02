@@ -237,6 +237,19 @@ vi.mock("@shared/lib/orpc-query-utils", () => {
 					selectShortPostOption: m(
 						"projects.publishingSuite.selectShortPostOption",
 					),
+					// 2B-3's blog panel owns these three, and the warning above
+					// is not hypothetical: omitting them crashed every case in
+					// this file the moment the Blog Post tab stopped rendering
+					// a placeholder and started mounting a real panel.
+					generateBlogPost: m(
+						"projects.publishingSuite.generateBlogPost",
+					),
+					adoptBlogPostDraft: m(
+						"projects.publishingSuite.adoptBlogPostDraft",
+					),
+					saveBlogPostBody: m(
+						"projects.publishingSuite.saveBlogPostBody",
+					),
 					listTopicDecisions: q(
 						"projects.publishingSuite.listTopicDecisions",
 					),
