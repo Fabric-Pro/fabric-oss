@@ -26,6 +26,7 @@ export const send: SendEmailHandler = async ({
 	subject,
 	html,
 	text,
+	replyTo,
 	headers,
 	idempotencyKey,
 	attachments,
@@ -39,6 +40,7 @@ export const send: SendEmailHandler = async ({
 				subject,
 				html,
 				text,
+				...(replyTo ? { replyTo } : {}),
 				...(headers && Object.keys(headers).length > 0
 					? { headers }
 					: {}),

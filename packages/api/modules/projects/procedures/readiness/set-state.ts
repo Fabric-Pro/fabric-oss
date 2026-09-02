@@ -7,7 +7,7 @@ import {
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
 import { gatherReadinessEvidence } from "../../lib/readiness/evidence";
-import { deliverReadinessHelpRequest } from "../../lib/readiness/help-request";
+import { buildReadinessHelpMailto } from "../../lib/readiness/help-request";
 import { READINESS_RULES_BY_KEY } from "../../lib/readiness/registry";
 
 /**
@@ -63,7 +63,14 @@ const StateOutput = z.object({ ok: z.literal(true) });
  * those are the same outcome, and claiming otherwise would be a lie the UI
  * repeats.
  */
-const HelpOutput = z.object({ ok: z.literal(true), notified: z.boolean() });
+const HelpOutput = z.object({
+	ok: z.literal(true),
+	/**
+	 * The draft for the caller to open, or `null` when no support address is
+	 * configured. The request is recorded either way.
+	 */
+	mailto: z.string().nullable(),
+});
 
 /**
  * Upsert the single project-wide row for an item.
@@ -265,7 +272,7 @@ export const requestReadinessHelpProcedure = tenantProtectedProcedure
 		tags: ["Projects", "Readiness"],
 		summary: "Request help for a readiness item",
 		description:
-			"Flags a readiness item as needing help, records that it ever did, and mails the configured support inbox.",
+			"Flags a readiness item as needing help, records that it ever did, and returns a pre-filled mail draft addressed to the configured support inbox.",
 	})
 	.input(
 		z.object({
@@ -310,11 +317,11 @@ export const requestReadinessHelpProcedure = tenantProtectedProcedure
 			data: { everHelpRequested: true },
 		});
 
-		// Awaited rather than fired and forgotten: the answer is part of the
-		// response, and it is one provider call on a deliberate click. A
-		// failure inside is swallowed and reported as `notified: false` — the
-		// record above is the part that must not be lost.
-		const notified = await deliverReadinessHelpRequest({
+		// Composed here rather than on the client: the project name, the
+		// organization and the item's canonical name are all already resolved
+		// server-side, and assembling the draft in one place keeps what the
+		// support inbox receives consistent no matter who clicked.
+		const mailto = await buildReadinessHelpMailto({
 			projectId: input.projectId,
 			itemKey: input.itemKey,
 			requesterName: context.user.name ?? context.user.email,
@@ -322,5 +329,5 @@ export const requestReadinessHelpProcedure = tenantProtectedProcedure
 			requestedAt: now,
 		});
 
-		return { ok: true as const, notified };
+		return { ok: true as const, mailto };
 	});

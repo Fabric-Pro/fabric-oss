@@ -31,6 +31,9 @@ vi.mock("@repo/config", () => ({
 			defaultLocale: "en",
 			locales: { en: "en" },
 		},
+		// Required in the real config shape; `sendEmail` reads it for the
+		// Reply-To header.
+		support: { email: "help@example.com" },
 	},
 }));
 

@@ -5,9 +5,14 @@ export const send: SendEmailHandler = async ({
 	to,
 	subject,
 	text,
+	replyTo,
 	headers,
 }) => {
 	let formattedOutput = `Sending email to ${to} with subject ${subject}\n\n`;
+
+	if (replyTo) {
+		formattedOutput += `Reply-To: ${replyTo}\n\n`;
+	}
 
 	formattedOutput += `Text: ${text}\n\n`;
 

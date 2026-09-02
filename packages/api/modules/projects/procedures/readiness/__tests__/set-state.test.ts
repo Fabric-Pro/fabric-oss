@@ -11,8 +11,8 @@
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { mockDb, mockIsFeatureEnabled, mockGather, mockDeliver } = vi.hoisted(
-	() => ({
+const { mockDb, mockIsFeatureEnabled, mockGather, mockBuildMailto } =
+	vi.hoisted(() => ({
 		mockDb: {
 			projectReadinessItemState: {
 				upsert: vi.fn(),
@@ -25,9 +25,8 @@ const { mockDb, mockIsFeatureEnabled, mockGather, mockDeliver } = vi.hoisted(
 		},
 		mockIsFeatureEnabled: vi.fn(),
 		mockGather: vi.fn(),
-		mockDeliver: vi.fn(),
-	}),
-);
+		mockBuildMailto: vi.fn(),
+	}));
 
 vi.mock("@repo/database", async (importOriginal) => ({
 	...(await importOriginal<Record<string, unknown>>()),
@@ -40,7 +39,7 @@ vi.mock("../../../lib/readiness/evidence", () => ({
 }));
 
 vi.mock("../../../lib/readiness/help-request", () => ({
-	deliverReadinessHelpRequest: (...args: unknown[]) => mockDeliver(...args),
+	buildReadinessHelpMailto: (...args: unknown[]) => mockBuildMailto(...args),
 }));
 
 import {
@@ -55,6 +54,7 @@ const CONTEXT = {
 };
 /** A key that exists in the registry — an unknown one is rejected up front. */
 const ITEM_KEY = "feature-snapshot";
+const MAILTO = "mailto:help@example.com?subject=Help";
 
 function call(
 	procedure: unknown,
@@ -82,7 +82,7 @@ beforeEach(() => {
 	mockDb.projectReadinessItemState.findFirst.mockResolvedValue(null);
 	mockDb.projectReadinessItemState.create.mockResolvedValue({});
 	mockDb.projectReadinessItemState.updateMany.mockResolvedValue({ count: 0 });
-	mockDeliver.mockResolvedValue(true);
+	mockBuildMailto.mockResolvedValue(MAILTO);
 });
 
 describe("snooze", () => {
@@ -180,23 +180,23 @@ describe("not applicable", () => {
 });
 
 describe("request help", () => {
-	it("passes the asker on, so the inbox knows who to answer", async () => {
+	it("passes the asker on, so the draft says who is asking", async () => {
 		const result = await call(requestReadinessHelpProcedure, {
 			projectId: "p1",
 			itemKey: ITEM_KEY,
 			organizationId: null,
 		});
 
-		expect(result).toEqual({ ok: true, notified: true });
-		const delivered = mockDeliver.mock.calls[0][0];
+		expect(result).toEqual({ ok: true, mailto: MAILTO });
+		const delivered = mockBuildMailto.mock.calls[0][0];
 		expect(delivered.projectId).toBe("p1");
 		expect(delivered.itemKey).toBe(ITEM_KEY);
 		expect(delivered.requesterEmail).toBe("alex@example.com");
 		expect(delivered.requesterName).toBe("Alex Doe");
 	});
 
-	it("still records the request when nothing could be mailed", async () => {
-		mockDeliver.mockResolvedValue(false);
+	it("still records the request when there is no draft to open", async () => {
+		mockBuildMailto.mockResolvedValue(null);
 
 		const result = await call(requestReadinessHelpProcedure, {
 			projectId: "p1",
@@ -205,8 +205,9 @@ describe("request help", () => {
 		});
 
 		// The honest answer, and the flag written anyway: an unconfigured
-		// deployment records the friction even though it cannot forward it.
-		expect(result).toEqual({ ok: true, notified: false });
+		// deployment records the friction even though it has no inbox to
+		// address a draft to.
+		expect(result).toEqual({ ok: true, mailto: null });
 		const args = mockDb.projectReadinessItemState.create.mock.calls[0][0];
 		expect(args.data.state).toBe("HELP_REQUESTED");
 		expect(args.data.everHelpRequested).toBe(true);
@@ -219,7 +220,7 @@ describe("request help", () => {
 			{ user: { id: "user-1", name: null, email: "alex@example.com" } },
 		);
 
-		expect(mockDeliver.mock.calls[0][0].requesterName).toBe(
+		expect(mockBuildMailto.mock.calls[0][0].requesterName).toBe(
 			"alex@example.com",
 		);
 	});

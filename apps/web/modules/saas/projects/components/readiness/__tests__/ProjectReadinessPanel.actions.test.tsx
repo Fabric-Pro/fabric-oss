@@ -193,11 +193,30 @@ async function showAll(user: ReturnType<typeof userEvent.setup>) {
 	}
 }
 
+const MAILTO = "mailto:help@example.com?subject=Help%20with%20a%20thing";
+
+// jsdom throws on a real navigation, so the assignment is captured instead of
+// performed — what matters is the draft the panel hands to the mail client.
+let assignedHref: string | null = null;
+Object.defineProperty(window, "location", {
+	configurable: true,
+	value: {
+		...window.location,
+		set href(value: string) {
+			assignedHref = value;
+		},
+		get href() {
+			return assignedHref ?? "http://localhost/";
+		},
+	},
+});
+
 beforeEach(() => {
 	vi.clearAllMocks();
 	snoozeMock.mockResolvedValue({ ok: true });
 	setNotApplicableMock.mockResolvedValue({ ok: true });
-	requestHelpMock.mockResolvedValue({ ok: true, notified: true });
+	requestHelpMock.mockResolvedValue({ ok: true, mailto: MAILTO });
+	assignedHref = null;
 });
 
 describe("snoozing with a chosen duration", () => {
@@ -349,7 +368,7 @@ describe("requesting help", () => {
 		});
 	});
 
-	it("confirms delivery only when the server says it happened", async () => {
+	it("opens the user's own mail client with the draft the server composed", async () => {
 		const user = userEvent.setup();
 		mountWith([item()]);
 
@@ -360,15 +379,14 @@ describe("requesting help", () => {
 			await screen.findByRole("menuitem", { name: "Request help" }),
 		);
 
-		await waitFor(() =>
-			expect(toastMock.success).toHaveBeenCalledWith(
-				"Help requested. The support inbox has been notified.",
-			),
-		);
+		await waitFor(() => expect(assignedHref).toBe(MAILTO));
+		// Nothing is asserted about delivery, because nothing about delivery
+		// is knowable from here once the draft is handed to the mail client.
+		expect(toastMock.success).not.toHaveBeenCalled();
 	});
 
-	it("says plainly when the message did not get out", async () => {
-		requestHelpMock.mockResolvedValue({ ok: true, notified: false });
+	it("says plainly when there is no address to write to", async () => {
+		requestHelpMock.mockResolvedValue({ ok: true, mailto: null });
 		const user = userEvent.setup();
 		mountWith([item()]);
 
@@ -381,9 +399,9 @@ describe("requesting help", () => {
 
 		await waitFor(() =>
 			expect(toastMock.info).toHaveBeenCalledWith(
-				expect.stringContaining("could not be sent"),
+				expect.stringContaining("no support address is configured"),
 			),
 		);
-		expect(toastMock.success).not.toHaveBeenCalled();
+		expect(assignedHref).toBeNull();
 	});
 });
