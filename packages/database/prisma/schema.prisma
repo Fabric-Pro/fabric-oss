@@ -6600,6 +6600,12 @@ model ArchitectureDecision {
   priorityFlagged   Boolean   @default(false)
   priorityFlaggedAt DateTime?
 
+  // The owner's sign-off. Notifying an owner tells them a decision is theirs;
+  // it does not record that they accepted it, so "has the owner acted?" had no
+  // answer to query. Cleared whenever ownerUserId changes — a new owner has not
+  // acknowledged anything.
+  ownerAcknowledgedAt DateTime?
+
   // Tenant isolation (copied from parent Project)
   userId         String?
   organizationId String?

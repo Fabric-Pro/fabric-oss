@@ -17,6 +17,7 @@ import {
 	listArchitectureDecisionCommentsProcedure,
 } from "./procedures/architecture-decisions/comments";
 import {
+	acknowledgeArchitectureDecisionProcedure,
 	createArchitectureDecisionProcedure,
 	deleteArchitectureDecisionProcedure,
 	getArchitectureDecisionProcedure,
@@ -1082,6 +1083,7 @@ export const projectsRouter = {
 		create: createArchitectureDecisionProcedure,
 		update: updateArchitectureDecisionProcedure,
 		delete: deleteArchitectureDecisionProcedure,
+		acknowledge: acknowledgeArchitectureDecisionProcedure,
 		comments: {
 			list: listArchitectureDecisionCommentsProcedure,
 			create: createArchitectureDecisionCommentProcedure,

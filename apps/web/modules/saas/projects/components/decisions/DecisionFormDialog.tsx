@@ -90,6 +90,14 @@ type Props = {
 };
 
 const NONE_VALUE = "__none__";
+
+/**
+ * Narrow the duration select's string state to the enum the create call needs.
+ * Returns null for "Unclassified", which AC1 does not allow on a new decision.
+ */
+function asDecisionDuration(value: string): DecisionDuration | null {
+	return value === "LONG_STANDING" || value === "SHORT_TERM" ? value : null;
+}
 /** Select sentinel that swaps the Type control into "add a new label" mode. */
 const NEW_TYPE_VALUE = "__new__type";
 
@@ -126,6 +134,8 @@ export function DecisionFormDialog({
 	const [ownerUserId, setOwnerUserId] = useState<string>(NONE_VALUE);
 	const [duration, setDuration] = useState<string>(NONE_VALUE);
 	const [priorityFlagged, setPriorityFlagged] = useState(false);
+	// FR4: the ticket or feature this decision came from, when there is one.
+	const [sourceReference, setSourceReference] = useState("");
 	const [suggestionReason, setSuggestionReason] = useState("");
 	const [previewMode, setPreviewMode] = useState(false);
 
@@ -313,7 +323,32 @@ export function DecisionFormDialog({
 				supersededById: status === "SUPERSEDED" ? supersededById : null,
 			});
 		} else {
-			createMutation.mutate({ projectId, organizationId, ...shared });
+			// AC1: a newly captured decision must carry a type and a duration.
+			// Editing stays permissive, so decisions recorded before this rule
+			// can still be opened and corrected.
+			const hasType = addingNewType
+				? Boolean(newTypeName.trim())
+				: typeId !== NONE_VALUE;
+			if (!hasType) {
+				toast.error(
+					"Choose a type, or name a new one — every decision needs one",
+				);
+				return;
+			}
+			const durationValue = asDecisionDuration(duration);
+			if (!durationValue) {
+				toast.error(
+					"Classify the decision as long-standing or short-term",
+				);
+				return;
+			}
+			createMutation.mutate({
+				projectId,
+				organizationId,
+				...shared,
+				duration: durationValue,
+				sourceReference: sourceReference.trim() || null,
+			});
 		}
 	};
 
@@ -685,6 +720,27 @@ export function DecisionFormDialog({
 										</SelectContent>
 									</Select>
 								</div>
+
+								{!isEdit && (
+									<div className="space-y-1.5">
+										<Label htmlFor="adl-source">
+											Source{" "}
+											<span className="font-normal text-muted-foreground text-xs">
+												(optional)
+											</span>
+										</Label>
+										<Input
+											id="adl-source"
+											value={sourceReference}
+											onChange={(e) =>
+												setSourceReference(
+													e.target.value,
+												)
+											}
+											placeholder="Ticket or feature this came from"
+										/>
+									</div>
+								)}
 
 								<div className="flex items-end space-y-1.5">
 									<label

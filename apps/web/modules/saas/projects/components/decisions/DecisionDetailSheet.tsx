@@ -1,5 +1,6 @@
 "use client";
 
+import { useSession } from "@saas/auth/hooks/use-session";
 import { useOrganizationContext } from "@saas/organizations/hooks/use-organization-context";
 import { orpc } from "@shared/lib/orpc-query-utils";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -120,6 +121,7 @@ export function DecisionDetailSheet({
 	onOpenDecision,
 }: Props) {
 	const { organizationId } = useOrganizationContext();
+	const { user } = useSession();
 	const queryClient = useQueryClient();
 	const tTooltips = useTranslations("tooltips.decisions");
 
@@ -135,6 +137,20 @@ export function DecisionDetailSheet({
 		enabled,
 	});
 	const decision = data?.decision;
+	// Only the person accountable for the decision can sign it off; the server
+	// enforces the same rule by matching ownerUserId.
+	const isOwner = Boolean(
+		decision?.ownerUserId && decision.ownerUserId === user?.id,
+	);
+	// The ticket or feature the author named at capture. Stored in
+	// sourceMetadata rather than a column, so it is read defensively.
+	const sourceReference =
+		decision?.sourceMetadata &&
+		typeof decision.sourceMetadata === "object" &&
+		"reference" in decision.sourceMetadata &&
+		typeof decision.sourceMetadata.reference === "string"
+			? decision.sourceMetadata.reference
+			: null;
 	const endorsementCopy = decision?.vouchedByName
 		? tTooltips("endorsedBy", { name: decision.vouchedByName })
 		: tTooltips("humanEndorsed");
@@ -178,6 +194,26 @@ export function DecisionDetailSheet({
 			},
 			onError: (error) =>
 				toast.error(`Failed to endorse: ${error.message}`),
+		}),
+	);
+
+	const acknowledgeMutation = useMutation(
+		orpc.projects.architectureDecisions.acknowledge.mutationOptions({
+			onSuccess: () => {
+				toast.success("Acknowledged — thanks for confirming");
+				queryClient.invalidateQueries({
+					queryKey: orpc.projects.architectureDecisions.get.queryKey({
+						input: {
+							projectId,
+							id: decisionId ?? "",
+							organizationId: organizationId ?? null,
+						},
+					}),
+				});
+				onChanged();
+			},
+			onError: (error) =>
+				toast.error(`Failed to acknowledge: ${error.message}`),
 		}),
 	);
 
@@ -234,6 +270,34 @@ export function DecisionDetailSheet({
 											</span>
 										</span>
 									)}
+									{decision.ownerAcknowledgedAt ? (
+										<span className="inline-flex items-center gap-1 rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-[11px] text-emerald-700 dark:text-emerald-300">
+											<BadgeCheckIcon className="size-3" />
+											Owner acknowledged
+										</span>
+									) : (
+										isOwner && (
+											<Button
+												size="sm"
+												variant="outline"
+												className="h-6 rounded-full px-2.5 text-[11px]"
+												disabled={
+													acknowledgeMutation.isPending
+												}
+												onClick={() =>
+													acknowledgeMutation.mutate({
+														projectId,
+														id: decision.id,
+														organizationId,
+													})
+												}
+											>
+												{acknowledgeMutation.isPending
+													? "Acknowledging…"
+													: "Acknowledge"}
+											</Button>
+										)
+									)}
 									{/* The chip is not focusable, so the tooltip is a
 										pointer affordance; the `sr-only` child carries
 										the same copy for assistive tech and leaves the
@@ -275,6 +339,11 @@ export function DecisionDetailSheet({
 									<span className="inline-flex items-center gap-1 text-primary">
 										<SparklesIcon className="size-3" />
 										captured from a meeting
+									</span>
+								)}
+								{sourceReference && (
+									<span className="truncate text-muted-foreground">
+										from {sourceReference}
 									</span>
 								)}
 							</SheetDescription>
