@@ -30,7 +30,7 @@ export const getPublishingTopicProcedure = tenantProtectedProcedure
 		}),
 	)
 	.handler(async ({ input, context }) => {
-		assertPublishingSuiteFeatureEnabled();
+		await assertPublishingSuiteFeatureEnabled(input.projectId);
 		// AUTHORIZATION: requireProjectPermission(PUBLISHING_TOPIC_READ) gates
 		// project access. The DB helper re-scopes the read to
 		// { id: topicId, projectId }, so a topic id belonging to another

@@ -72,7 +72,7 @@ export const generateBlogPostProcedure = tenantProtectedProcedure
 		}),
 	)
 	.handler(async ({ input, context }) => {
-		assertPublishingSuiteFeatureEnabled();
+		await assertPublishingSuiteFeatureEnabled(input.projectId);
 
 		// Security ratchet, identical to `generateShortPost`: the permission
 		// middleware proved the caller is authorized for THIS project, but it
@@ -236,7 +236,7 @@ export const adoptBlogPostDraftProcedure = tenantProtectedProcedure
 		}),
 	)
 	.handler(async ({ input, context }) => {
-		assertPublishingSuiteFeatureEnabled();
+		await assertPublishingSuiteFeatureEnabled(input.projectId);
 
 		const project = await requireEligibleProjectForTopic({
 			projectId: input.projectId,
@@ -340,7 +340,7 @@ export const saveBlogPostBodyProcedure = tenantProtectedProcedure
 		}),
 	)
 	.handler(async ({ input, context }) => {
-		assertPublishingSuiteFeatureEnabled();
+		await assertPublishingSuiteFeatureEnabled(input.projectId);
 
 		const project = await requireEligibleProjectForTopic({
 			projectId: input.projectId,

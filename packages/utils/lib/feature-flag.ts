@@ -65,17 +65,15 @@ export function isPmAttachmentSyncEnabled(): boolean {
 }
 
 /**
- * Publishing Suite master flag — opt-in, default OFF (Publishing Suite 1A).
- * Server-only gate for the daily suggestion sweep: the dispatcher schedule is
- * registered regardless, but `findEligibleProjects` reads this flag and returns
- * an empty due-list when off, so no cycle is ever created and no LLM cost is
- * incurred (rollback-safe — flipping it on takes effect on the next tick with
- * no redeploy). Read ONLY in server activities, never in workflow code
- * (determinism). Plan 3 adds the `NEXT_PUBLIC_FABRIC_FEATURE_PUBLISHING_SUITE`
- * client mirror; this task ships the server flag only.
+ * Living Documents auto-refresh master flag — opt-in, default OFF. Gates the
+ * enrollment control, the enrollment procedures, and the hourly sweep's
+ * find-due activity. The Temporal schedule is registered regardless; gating
+ * lives in the handler so flipping the flag on takes effect on the next tick
+ * with no redeploy. The UI mirrors it via
+ * `NEXT_PUBLIC_FABRIC_FEATURE_LIVING_DOCS_REFRESH`.
  */
-export function isPublishingSuiteEnabled(): boolean {
-	return parseOptInFlag(process.env.FABRIC_FEATURE_PUBLISHING_SUITE);
+export function isLivingDocsRefreshEnabled(): boolean {
+	return parseOptInFlag(process.env.FABRIC_FEATURE_LIVING_DOCS_REFRESH);
 }
 
 /**

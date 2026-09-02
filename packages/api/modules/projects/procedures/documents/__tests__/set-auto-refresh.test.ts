@@ -174,7 +174,7 @@ beforeEach(() => {
 	flagOverride = undefined;
 	mocks.isFeatureEnabled.mockImplementation(
 		async (key: FeatureFlagKey) =>
-			resolveFlag(key, flagOverride, process.env).enabled,
+			resolveFlag(key, { global: flagOverride }, process.env).enabled,
 	);
 	mocks.hasProjectAccess.mockResolvedValue(true);
 	mocks.getDocumentById.mockResolvedValue(makeDocument());

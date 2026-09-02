@@ -17,7 +17,20 @@ const dbMocks = vi.hoisted(() => ({
 	saveWorkingDraft: vi.fn(),
 	updateWorkingDraftBody: vi.fn(),
 }));
-vi.mock("@repo/database", () => dbMocks);
+const flagMocks = vi.hoisted(() => ({
+	isFeatureEnabled: vi.fn(),
+	resolveProjectTenant: vi.fn(),
+}));
+vi.mock("@repo/database", () => ({
+	...dbMocks,
+	// The gate resolves the flag per organization and derives the tenant from
+	// the Project row. `resolveProjectTenant` MUST point at flagMocks, not a
+	// bare vi.fn(): the gate reads a null return as "project not resolvable"
+	// and throws NOT_FOUND, so an unconfigured mock would fail every test in
+	// this file for the wrong reason.
+	isFeatureEnabled: flagMocks.isFeatureEnabled,
+	resolveProjectTenant: flagMocks.resolveProjectTenant,
+}));
 
 const temporalMocks = vi.hoisted(() => ({
 	isTemporalAvailable: vi.fn(async () => true),
@@ -37,13 +50,6 @@ const projectMocks = vi.hoisted(() => ({
 	})),
 }));
 vi.mock("../../../lib/publishing-topic-project", () => projectMocks);
-
-const flagMocks = vi.hoisted(() => ({
-	isPublishingSuiteEnabled: vi.fn(() => true),
-}));
-vi.mock("@repo/utils/feature-flag", () => ({
-	isPublishingSuiteEnabled: flagMocks.isPublishingSuiteEnabled,
-}));
 
 vi.mock("../../../../../orpc/procedures", () => {
 	const chain: Record<string, unknown> = {};
@@ -105,7 +111,11 @@ const READY_DRAFT = {
 
 beforeEach(() => {
 	vi.clearAllMocks();
-	flagMocks.isPublishingSuiteEnabled.mockReturnValue(true);
+	flagMocks.isFeatureEnabled.mockResolvedValue(true);
+	flagMocks.resolveProjectTenant.mockResolvedValue({
+		organizationId: "org-1",
+		userId: "user-1",
+	});
 	temporalMocks.isTemporalAvailable.mockResolvedValue(true);
 	temporalMocks.workflowStart.mockResolvedValue(undefined);
 	projectMocks.requireEligibleProjectForTopic.mockResolvedValue({

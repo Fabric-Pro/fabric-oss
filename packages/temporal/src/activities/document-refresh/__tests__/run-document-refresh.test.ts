@@ -194,7 +194,7 @@ beforeEach(() => {
 	// The real `resolveFlag` runs, so precedence is the shipped one.
 	flagMock.mockImplementation(
 		async (key: FeatureFlagKey) =>
-			resolveFlag(key, flagOverride, {
+			resolveFlag(key, { global: flagOverride }, {
 				// Both gates. The sweep requires the rollout as well as its own
 				// kill switch, so an environment that only arms the brakes must
 				// NOT be able to run it — that combination would rewrite enrolled

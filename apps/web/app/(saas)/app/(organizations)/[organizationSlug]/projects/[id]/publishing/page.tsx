@@ -2,11 +2,13 @@
  * Publishing Suite deep-link page (organization context).
  *
  * Thin server wrapper for the design-locked `/projects/{id}/publishing`
- * route. Gates on the
- * `FABRIC_FEATURE_PUBLISHING_SUITE` server flag FIRST (off → `notFound()`,
- * before touching session/org/project data), then resolves the active
- * organization from the `[organizationSlug]` segment and fetches the
- * project through the SAME `getProjectById(id, userId, organizationId)`
+ * route. The client UI-rollout flag (`NEXT_PUBLIC_FABRIC_FEATURE_PUBLISHING_SUITE`)
+ * gates FIRST, since it needs no data access. The server gate resolves
+ * per-organization, so it CANNOT run before the organization is known: session
+ * resolves next, then the active organization from the `[organizationSlug]`
+ * segment, then `isFeatureEnabled("PUBLISHING_SUITE", organization.id)` — off →
+ * `notFound()`, still before any project access. Only then does the page fetch
+ * the project through the SAME `getProjectById(id, userId, organizationId)`
  * path `getProjectProcedure` (`projects.get`) uses — passing the RESOLVED
  * org id, never `null`. Passing `null` here would search personal projects
  * only and incorrectly 404 an org member (F2).
@@ -18,7 +20,7 @@
  * depends on this loader (F2).
  */
 
-import { isPublishingSuiteEnabled } from "@repo/utils/feature-flag";
+import { isFeatureEnabled } from "@repo/database";
 import { getActiveOrganization, getSession } from "@saas/auth/lib/server";
 import { PublishingSuiteList } from "@saas/projects/components/publishing-suite";
 import { orpcClient } from "@shared/lib/orpc-client";
@@ -31,18 +33,10 @@ type Props = {
 export default async function OrganizationPublishingSuitePage({
 	params,
 }: Props) {
-	// Gate on BOTH flags FIRST (before session/org/project access). The server
-	// flag (`isPublishingSuiteEnabled()`) gates the backend; the client
-	// UI-rollout flag (`NEXT_PUBLIC_FABRIC_FEATURE_PUBLISHING_SUITE`) is what
-	// hides the tab + onboarding. Honoring it here too means a guessed
-	// /publishing URL can't render the full list while the UI is intentionally
-	// hidden (server-on / client-off = "backend live, UI hidden"). NOTE:
-	// NEXT_PUBLIC_* vars are inlined at build time, so toggling this flag takes
-	// effect on the next rebuild/redeploy — same constraint as the tab gate.
-	if (
-		!isPublishingSuiteEnabled() ||
-		process.env.NEXT_PUBLIC_FABRIC_FEATURE_PUBLISHING_SUITE !== "true"
-	) {
+	// The client UI-rollout flag still gates here (removed in slice 3, when
+	// Layer 0 moves to runtime resolution). Checked first because it needs no
+	// data access.
+	if (process.env.NEXT_PUBLIC_FABRIC_FEATURE_PUBLISHING_SUITE !== "true") {
 		notFound();
 	}
 
@@ -55,6 +49,13 @@ export default async function OrganizationPublishingSuitePage({
 
 	const organization = await getActiveOrganization(organizationSlug);
 	if (!organization) {
+		notFound();
+	}
+
+	// The server gate resolves against THIS organization. It cannot run before
+	// the organization is resolved, which is why it no longer sits above the
+	// session read.
+	if (!(await isFeatureEnabled("PUBLISHING_SUITE", organization.id))) {
 		notFound();
 	}
 

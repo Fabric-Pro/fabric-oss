@@ -23,7 +23,7 @@ export const getPublishingSuiteSettingsProcedure = tenantProtectedProcedure
 		}),
 	)
 	.handler(async ({ input, context }) => {
-		assertPublishingSuiteFeatureEnabled();
+		await assertPublishingSuiteFeatureEnabled(input.projectId);
 
 		// Security ratchet (SOC 2 CC6.1/CC6.3 — see
 		// __tests__/input-org-unverified-ratchet.test.ts): `requireProjectPermission`

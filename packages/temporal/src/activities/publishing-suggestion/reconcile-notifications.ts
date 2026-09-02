@@ -33,12 +33,18 @@
  *
  * ## No feature flag, deliberately
  *
- * publishing_suggestion_cycle holds no PENDING rows while
- * FABRIC_FEATURE_PUBLISHING_SUITE is off -- a cycle enters the notification
- * lifecycle only through the flagged path -- so an ungated sweep is a no-op in
- * that state, and both passes reach a partial index to discover it. Gating it
- * would mean that turning the master flag off during an incident silently
- * stops the ALERT: stale PENDING cycles accumulate with nothing raising them,
+ * publishing_suggestion_cycle is NOT reliably empty while
+ * FABRIC_FEATURE_PUBLISHING_SUITE is off: an organization-level
+ * PUBLISHING_SUITE override alone is enough to produce PENDING rows,
+ * independent of the global flag — the entire point of an org-scoped
+ * override. So this sweep is not a no-op with the flag off; with an
+ * organization opted in, it has real work to reconcile in exactly that
+ * state. It stays ungated anyway because both passes only read and
+ * terminalize rows already in the ledger (reached via a partial index) — no
+ * LLM call, no credit spend — so a flag gate here would buy no protection
+ * against the cost the flag actually guards, only risk. Gating it would
+ * mean that turning the master flag off during an incident silently stops
+ * the ALERT: stale PENDING cycles accumulate with nothing raising them,
  * which is the loss class this card exists to remove. The flag can hide the
  * producer; it must not be able to hide the reader.
  *

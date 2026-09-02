@@ -33,7 +33,7 @@ export const updatePublishingTopicStatusProcedure = tenantProtectedProcedure
 		}),
 	)
 	.handler(async ({ input }) => {
-		assertPublishingSuiteFeatureEnabled();
+		await assertPublishingSuiteFeatureEnabled(input.projectId);
 		// AUTHORIZATION: requireProjectPermission(PUBLISHING_TOPIC_UPDATE) gates
 		// project access. The DB helper re-scopes the write to
 		// { id: topicId, projectId } (Task 1), so this carries no P1 risk — it

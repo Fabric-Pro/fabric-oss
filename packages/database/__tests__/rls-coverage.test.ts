@@ -103,6 +103,16 @@ const EXEMPT: ReadonlyMap<string, string> = new Map([
 	// is enforced at the app layer via membership checks).
 	["member", "Better-Auth-managed; app-layer membership enforced"],
 	["invitation", "Better-Auth-managed; app-layer membership enforced"],
+	// Instance-admin control table, not tenant data. The platform's flag
+	// resolver reads it outside any tenant context — the Publishing Suite
+	// suggestion sweep reads it with no tenant context at all — so an RLS
+	// policy would either break that read or force the resolver to run
+	// elevated. Distinct from the H8 entries below, which are tenant tables
+	// still awaiting their correct policy shape.
+	[
+		"organization_feature_flag_override",
+		"instance-admin control table; read by the platform flag resolver outside tenant context",
+	],
 	// Tracked defense-in-depth backfill — latent until getTenantDb is the app
 	// query path (H8). Each needs its correct per-table policy shape (org-only
 	// vs org+user XOR/both) determined before an RLS policy is applied; adding a

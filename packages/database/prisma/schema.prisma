@@ -752,6 +752,9 @@ model Organization {
   // PM sync log relations (cascade on org delete; tenant erasure)
   pmSyncLogs PmSyncLog[]
 
+  // Per-organization feature-flag overrides (RLS-exempt; see model doc)
+  featureFlagOverrides OrganizationFeatureFlagOverride[]
+
   @@map("organization")
 }
 
@@ -15997,4 +16000,33 @@ model FeatureFlagOverride {
   updatedBy String
 
   @@map("feature_flag_override")
+}
+
+/// Per-organization override of a registry feature flag. Sits ABOVE
+/// FeatureFlagOverride in the resolution chain (org > global > env > default).
+///
+/// Deliberately a separate table rather than a nullable organizationId on
+/// FeatureFlagOverride: that model's `key` is @id, and re-keying a live control
+/// table whose read path runs inside the authenticated app layout risks every
+/// authenticated page rather than one feature. This one is additive.
+///
+/// NOT a tenant table despite carrying organizationId. It is an instance-admin
+/// control table read by the platform's flag resolver outside any tenant
+/// context — the suggestion sweep reads it with no tenant context at all — so
+/// it is RLS-EXEMPT by design, not by omission. See rls-coverage.test.ts.
+model OrganizationFeatureFlagOverride {
+  /// Registry key from packages/utils/lib/feature-flag-registry.ts,
+  /// e.g. "PUBLISHING_SUITE". Not the env-var name.
+  key            String
+  organizationId String
+  /// false is meaningful: it excludes this organization from a globally
+  /// enabled flag. Absence of a row means "inherit", which is different.
+  enabled        Boolean
+  updatedAt      DateTime     @updatedAt
+  /// user.id of the instance admin who last flipped this flag for this org.
+  updatedBy      String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@id([key, organizationId])
+  @@map("organization_feature_flag_override")
 }

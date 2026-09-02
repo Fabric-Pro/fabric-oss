@@ -23,7 +23,7 @@ export const generatePublishingTopicsNowProcedure = tenantProtectedProcedure
 		}),
 	)
 	.handler(async ({ input, context }) => {
-		assertPublishingSuiteFeatureEnabled();
+		await assertPublishingSuiteFeatureEnabled(input.projectId);
 
 		// Security ratchet — see `lib/publishing-topic-project.ts`. Its
 		// `status: "ACTIVE", deletedAt: null` filter keeps this lookup in lockstep
