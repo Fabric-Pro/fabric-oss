@@ -579,13 +579,13 @@ If specific context values (board ID, account slug, project ID, etc.) are alread
 - Get tags, labels, or other classification data
 
 ### Step 2: Fetch Data Per Segment
-APIs often limit results to one page (~15 items) per call. To maximize coverage, you MUST use MULTIPLE strategies:
+Many APIs return one page per call, so a single call rarely covers a segment. Read each tool's own description first, then use the strategy it calls for:
+- If a tool's description says its result is COMPLETE (it fetches every upstream page server-side), trust it: use the result as-is and do NOT re-query it with filters to "check" for more
 - If the tool returns pagination metadata (has_more/next_page/total_count), page through results — stop when has_more is false OR a page comes back empty — instead of guessing from page size
 - If results are not pageable and you have column IDs, call get_cards/get_items for EACH column individually using the \`column_id\` filter
 - If the tool supports a status filter, fetch for EACH status separately
 - If you have categories/groups, fetch for each one
-- If a tool returns exactly 15 items, there are VERY LIKELY more items — try additional filters to get the rest
-- NEVER assume a single API call returns all data — it almost never does
+- Only when a tool returns a full-looking batch AND declares neither pagination metadata nor completeness should you assume more data exists — then try additional filters (column, status, tag, assignee) to reach the rest
 - If columns returned empty, use OTHER filter strategies the tool supports: tags, assignees, search (status only if the tool schema exposes it)
 
 ### Step 3: Deduplicate, Aggregate, and Verify

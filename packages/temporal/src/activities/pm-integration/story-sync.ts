@@ -7004,13 +7004,40 @@ export async function fetchPMItemsByIds(input: {
 }
 
 /**
+ * Hard stop on the per-column `fizzy_get_cards` page walk.
+ *
+ * Page size is server-controlled and variable, so this is a runaway guard,
+ * not a card budget: at the observed sizes 50 pages is several thousand cards
+ * in one column. Hitting it means the server keeps reporting `has_more` on
+ * non-empty pages, which is a broken cursor rather than a big column — and a
+ * broken cursor must fail the listing, never truncate it.
+ */
+const FIZZY_COLUMN_PAGE_CAP = 50;
+
+/**
  * Fetch ALL cards from a Fizzy board using the per-column strategy.
  *
- * The bulk `fizzy_get_cards` API returns only the most recent ~15 cards.
- * To get every card on a board we:
+ * `fizzy_get_cards` returns ONE page per call. Since fizzy-mcp 1.1.0 that is
+ * a `{cards, page, total_count, has_more, next_page}` envelope whose page size
+ * is server-controlled and variable (the first page holds ~15 cards, later
+ * pages more), so neither a board-wide call nor a single per-column call ever
+ * sees a whole board. To get every card we:
  *   1. Call `fizzy_get_columns` to discover board columns
- *   2. Call `fizzy_get_cards` for each column (with `column_id`)
- *   3. Deduplicate by card ID
+ *   2. Call `fizzy_get_cards` for each column (with `column_id`), then walk
+ *      `next_page` until `has_more` is false or a page comes back empty
+ *   3. Deduplicate by card ID, across pages as well as across columns
+ *
+ * The fan-out stays per column even though the envelope would now make a
+ * board-wide walk possible: a column-scoped listing is exactly the set of
+ * cards on the board, excluding triage and not-now cards, which are not
+ * backlog and must not become Fabric stories.
+ *
+ * A column whose walk cannot be completed — a failed call, an unparseable page, or more
+ * pages than `FIZZY_COLUMN_PAGE_CAP` with `has_more` still true — throws
+ * rather than returning what it has. Same rule as the parse-failure note on
+ * `parseFizzyCardsResponse`: a short board is worse than a failed one,
+ * because the pull's orphan cleanup deletes the stories of every card that
+ * is missing from the listing.
  *
  * Returns `null` when required tools or context aren't available so the
  * caller can fall back to the generic `listWorkItemsFromPM` path.
@@ -7196,43 +7223,128 @@ export async function listAllFizzyCards(input: {
 		// Step 2: Fetch cards for each column and deduplicate
 		const allCards: PMWorkItemSummary[] = [];
 		const seenCardIds = new Set<string>();
+		let pagesFetched = 0;
 
 		for (const column of columns) {
 			try {
-				const cardsResult = await executeMcpTool({
-					toolName: getCardsTool,
-					args: {
-						account_slug: accountSlug,
-						column_id: column.id,
-						// Omitted unless explicitly requested — see the note on
-						// this function's contract. An older fizzy-mcp ignores an
-						// unknown `fields` (its guard rejects only the removed
-						// status/due_before/due_after filters), so the worst case
-						// against a stale server is today's full payload.
-						...(fields === "summary" ? { fields: "summary" } : {}),
-					},
-					userId,
-					organizationId,
-					mcpConfigId,
-				});
+				// Page cursor for this column. `null` means "first page": the
+				// request then omits `page` entirely, so it is byte-identical
+				// to the pre-pagination call and a fizzy-mcp predating the
+				// envelope is unaffected.
+				let nextPageArg: number | null = null;
+				let pagesForColumn = 0;
+				let cardsReturnedForColumn = 0;
+				let reportedTotal: number | null = null;
+				// The walk ended because the server said so (has_more false or
+				// an empty page) rather than because we ran out of budget.
+				let walkComplete = false;
 
-				if (!cardsResult.success) {
-					continue;
+				while (pagesForColumn < FIZZY_COLUMN_PAGE_CAP) {
+					const cardsResult = await executeMcpTool({
+						toolName: getCardsTool,
+						args: {
+							account_slug: accountSlug,
+							column_id: column.id,
+							...(nextPageArg != null
+								? { page: nextPageArg }
+								: {}),
+							// Omitted unless explicitly requested — see the note
+							// on this function's contract. An older fizzy-mcp
+							// ignores an unknown `fields` (its guard rejects only
+							// the removed status/due_before/due_after filters), so
+							// the worst case against a stale server is today's
+							// full payload.
+							...(fields === "summary"
+								? { fields: "summary" }
+								: {}),
+						},
+						userId,
+						organizationId,
+						mcpConfigId,
+					});
+
+					pagesForColumn += 1;
+					pagesFetched += 1;
+
+					if (!cardsResult.success) {
+						// A failed call used to skip the column, which is the
+						// same short-board outcome as a lost page: the pull's
+						// orphan cleanup deletes that column's stories. Fail the
+						// listing so the caller falls back instead.
+						const detail =
+							cardsResult.output &&
+							typeof cardsResult.output === "object" &&
+							typeof (cardsResult.output as { error?: unknown })
+								.error === "string"
+								? (cardsResult.output as { error: string })
+										.error
+								: "unknown error";
+						throw new Error(
+							`PM tool failed to list cards for a column (page ${pagesForColumn}): ${detail}`,
+						);
+					}
+
+					// Parse the card page from the MCP response. Stamp the card
+					// `state` with the column name so the UI state filter works
+					// (Fizzy cards don't carry state themselves — the column IS
+					// the state).
+					const page = parseFizzyCardsResponse(cardsResult.output);
+					cardsReturnedForColumn += page.rawCount;
+					if (page.totalCount != null) {
+						reportedTotal = page.totalCount;
+					}
+					for (const card of page.cards) {
+						if (!seenCardIds.has(card.id)) {
+							seenCardIds.add(card.id);
+							allCards.push({
+								...card,
+								state: card.state ?? column.name,
+							});
+						}
+					}
+
+					// Stop conditions come from the tool's own contract: keep
+					// paging until `has_more` is false OR the page comes back
+					// empty — an out-of-range page returns no cards while still
+					// reporting `has_more: true`, so the empty check is what
+					// actually terminates that case. A bare-array response
+					// (pre-envelope server) carries no `has_more`, so it reads
+					// as a single complete page.
+					if (!page.hasMore || page.rawCount === 0) {
+						walkComplete = true;
+						break;
+					}
+
+					nextPageArg = page.nextPage ?? (nextPageArg ?? 1) + 1;
 				}
 
-				// Parse the card list from the MCP response. Stamp the card
-				// `state` with the column name so the UI state filter works
-				// (Fizzy cards don't carry state themselves — the column IS
-				// the state).
-				const cards = parseFizzyCardsResponse(cardsResult.output);
-				for (const card of cards) {
-					if (!seenCardIds.has(card.id)) {
-						seenCardIds.add(card.id);
-						allCards.push({
-							...card,
-							state: card.state ?? column.name,
-						});
-					}
+				if (!walkComplete) {
+					// Budget exhausted with the server still claiming more.
+					// Returning the pages we have would be a short board, which
+					// the full pull turns into deleted stories — fail instead.
+					throw new Error(
+						`PM tool did not finish paging a column within ${FIZZY_COLUMN_PAGE_CAP} pages`,
+					);
+				}
+
+				if (
+					walkComplete &&
+					reportedTotal != null &&
+					reportedTotal !== cardsReturnedForColumn
+				) {
+					// Not fatal: cards can be created, moved or closed while we
+					// page, so the envelope's count is a snapshot from an
+					// earlier page. Worth seeing when a board looks short.
+					logger.warn(
+						"[listAllFizzyCards] Column card count differs from reported total",
+						{
+							columnId: column.id,
+							columnName: column.name,
+							reportedTotal,
+							collected: cardsReturnedForColumn,
+							pages: pagesForColumn,
+						},
+					);
 				}
 			} catch (error) {
 				// A column that cannot be read is NOT an empty column. Letting
@@ -7259,6 +7371,7 @@ export async function listAllFizzyCards(input: {
 			boardId: containerId,
 			totalUniqueCards: allCards.length,
 			columnsQueried: columns.length,
+			pagesFetched,
 		});
 
 		// Derive available types + states from the full per-column result.
@@ -7357,10 +7470,42 @@ function parseFizzyColumnsResponse(
 }
 
 /**
- * Parse a Fizzy cards response into PMWorkItemSummary array.
- * Handles MCP content wrapper and various Fizzy field names.
+ * One page of a Fizzy card listing: the cards plus whatever the response's
+ * pagination envelope declared. A pre-1.1.0 bare-array response yields
+ * `hasMore: false` with null cursors, i.e. a single complete page.
  */
-function parseFizzyCardsResponse(output: unknown): PMWorkItemSummary[] {
+type FizzyCardPage = {
+	cards: PMWorkItemSummary[];
+	/**
+	 * How many entries the page's array held before mapping. The walk's
+	 * "page came back empty" stop condition is about the SERVER's page, not
+	 * about how many entries survived parsing — an id-less entry is skipped
+	 * silently, and reading that as the end of the column would truncate it.
+	 */
+	rawCount: number;
+	hasMore: boolean;
+	nextPage: number | null;
+	totalCount: number | null;
+};
+
+/** Coerce an envelope field to a positive integer, or null when unusable. */
+function asPositiveInt(value: unknown): number | null {
+	const n = typeof value === "string" ? Number(value) : value;
+	return typeof n === "number" && Number.isInteger(n) && n > 0 ? n : null;
+}
+
+/** Coerce an envelope field to a non-negative integer, or null. */
+function asNonNegativeInt(value: unknown): number | null {
+	const n = typeof value === "string" ? Number(value) : value;
+	return typeof n === "number" && Number.isInteger(n) && n >= 0 ? n : null;
+}
+
+/**
+ * Parse one page of a Fizzy cards response.
+ * Handles MCP content wrapper, the `{cards, has_more, next_page, total_count}`
+ * page envelope, and various Fizzy field names.
+ */
+function parseFizzyCardsResponse(output: unknown): FizzyCardPage {
 	const items: PMWorkItemSummary[] = [];
 	let data: unknown = output;
 
@@ -7389,6 +7534,9 @@ function parseFizzyCardsResponse(output: unknown): PMWorkItemSummary[] {
 	}
 
 	let arr: unknown[] = [];
+	let hasMore = false;
+	let nextPage: number | null = null;
+	let totalCount: number | null = null;
 	if (Array.isArray(data)) {
 		arr = data;
 	} else if (data && typeof data === "object") {
@@ -7399,6 +7547,25 @@ function parseFizzyCardsResponse(output: unknown): PMWorkItemSummary[] {
 			(Array.isArray(d.data) ? d.data : null) ??
 			(Array.isArray(d.results) ? d.results : null) ??
 			[];
+		nextPage = asPositiveInt(d.next_page ?? d.nextPage);
+		totalCount = asNonNegativeInt(d.total_count ?? d.totalCount);
+		// `has_more` decides whether the walk continues, so a value we cannot
+		// read must never default to "no more pages": that would end the walk
+		// early and return a short column without throwing. Booleans and
+		// their exact string forms are accepted. An envelope that declares
+		// pagination (a cursor or page number) but no readable `has_more` is
+		// malformed and fails the listing; one that declares nothing at all is
+		// a single complete page, which is what a pre-1.1.0 server sends.
+		const rawHasMore = d.has_more ?? d.hasMore;
+		if (rawHasMore === true || rawHasMore === "true") {
+			hasMore = true;
+		} else if (rawHasMore === false || rawHasMore === "false") {
+			hasMore = false;
+		} else if (rawHasMore != null || nextPage != null || d.page != null) {
+			throw new Error(
+				"PM tool returned a card page whose has_more flag is unreadable",
+			);
+		}
 	}
 
 	for (const item of arr) {
@@ -7458,7 +7625,13 @@ function parseFizzyCardsResponse(output: unknown): PMWorkItemSummary[] {
 		}
 	}
 
-	return items;
+	return {
+		cards: items,
+		rawCount: arr.length,
+		hasMore,
+		nextPage,
+		totalCount,
+	};
 }
 
 /**
