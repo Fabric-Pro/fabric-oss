@@ -161,6 +161,14 @@ jobs:
         env:
           # The App token, not secrets.GITHUB_TOKEN — see the mint step above.
           GITHUB_TOKEN: ${{ steps.version-pr-token.outputs.token }}
+          # npm reports WHY a trusted-publishing (OIDC) token exchange was
+          # refused only at verbose level ("oidc Failed token exchange request
+          # with body message: …" in lib/utils/oidc.js); at the default level
+          # the publish just falls through to ENEEDAUTH with no reason, which
+          # is what the first automated publish did (2026-09-02, run
+          # 33578707540). Verbose costs some log noise on the nine `npm info`
+          # calls; npm redacts credentials in its logs.
+          NPM_CONFIG_LOGLEVEL: verbose
           # Auth is npm trusted publishing (OIDC) — see the npm-upgrade step
           # above. No NODE_AUTH_TOKEN / NPM_TOKEN on purpose; do not add one
           # back, a configured token would silently take precedence over the
