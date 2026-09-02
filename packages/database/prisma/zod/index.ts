@@ -756,7 +756,7 @@ export type MaturationApprovalPreferenceScalarFieldEnum = z.infer<typeof Maturat
 
 // File: ArchitectureDecisionScalarFieldEnum.schema.ts
 
-export const ArchitectureDecisionScalarFieldEnumSchema = z.enum(['id', 'projectId', 'identifier', 'title', 'contextProblem', 'decision', 'rationale', 'decisionDrivers', 'alternativesConsidered', 'consequences', 'status', 'domain', 'decisionDate', 'participantUserIds', 'participantsText', 'supersededById', 'relatedDecisionIds', 'pinnedAt', 'createdById', 'lastEditedById', 'currentVersion', 'vouchedAt', 'vouchedById', 'contextId', 'sourceKind', 'sourceMetadata', 'decisionTypeId', 'ownerUserId', 'duration', 'priorityFlagged', 'priorityFlaggedAt', 'userId', 'organizationId', 'createdAt', 'updatedAt', 'deletedAt'])
+export const ArchitectureDecisionScalarFieldEnumSchema = z.enum(['id', 'projectId', 'identifier', 'title', 'contextProblem', 'decision', 'rationale', 'decisionDrivers', 'alternativesConsidered', 'consequences', 'status', 'domain', 'decisionDate', 'participantUserIds', 'participantsText', 'supersededById', 'relatedDecisionIds', 'pinnedAt', 'createdById', 'lastEditedById', 'currentVersion', 'vouchedAt', 'vouchedById', 'contextId', 'sourceKind', 'sourceMetadata', 'decisionTypeId', 'ownerUserId', 'duration', 'priorityFlagged', 'priorityFlaggedAt', 'ownerAcknowledgedAt', 'userId', 'organizationId', 'createdAt', 'updatedAt', 'deletedAt'])
 
 export type ArchitectureDecisionScalarFieldEnum = z.infer<typeof ArchitectureDecisionScalarFieldEnumSchema>;
 
@@ -6182,6 +6182,7 @@ export const ArchitectureDecisionSchema = z.object({
   duration: DecisionDurationSchema.nullish(),
   priorityFlagged: z.boolean(),
   priorityFlaggedAt: z.date().nullish(),
+  ownerAcknowledgedAt: z.date().nullish(),
   userId: z.string().nullish(),
   organizationId: z.string().nullish(),
   createdAt: z.date(),

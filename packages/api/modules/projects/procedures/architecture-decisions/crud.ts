@@ -1,5 +1,6 @@
 import { ORPCError } from "@orpc/client";
 import {
+	acknowledgeArchitectureDecision,
 	createArchitectureDecision,
 	db,
 	ensureDecisionType,
@@ -304,29 +305,53 @@ export const createArchitectureDecisionProcedure = tenantProtectedProcedure
 		summary: "Create an architecture decision",
 	})
 	.input(
-		z.object({
-			projectId: z.string(),
-			organizationId: z.string().nullable().optional(),
-			title: z.string().min(1).max(255),
-			decision: z.string().min(1),
-			contextProblem: z.string().optional(),
-			rationale: z.string().optional(),
-			decisionDrivers: z.string().nullable().optional(),
-			alternativesConsidered: z.string().nullable().optional(),
-			consequences: z.string().nullable().optional(),
-			status: statusEnum.optional(),
-			domain: domainEnum.nullable().optional(),
-			decisionDate: z.coerce.date().optional(),
-			participantUserIds: z.array(z.string()).optional(),
-			participantsText: z.string().nullable().optional(),
-			relatedDecisionIds: z.array(z.string()).optional(),
-			supersedesIds: z.array(z.string()).optional(),
-			decisionTypeId: z.string().nullable().optional(),
-			newDecisionTypeName: z.string().max(60).nullable().optional(),
-			ownerUserId: z.string().nullable().optional(),
-			duration: durationEnum.nullable().optional(),
-			priorityFlagged: z.boolean().optional(),
-		}),
+		z
+			.object({
+				projectId: z.string(),
+				organizationId: z.string().nullable().optional(),
+				title: z.string().min(1).max(255),
+				decision: z.string().min(1),
+				contextProblem: z.string().optional(),
+				rationale: z.string().optional(),
+				decisionDrivers: z.string().nullable().optional(),
+				alternativesConsidered: z.string().nullable().optional(),
+				consequences: z.string().nullable().optional(),
+				status: statusEnum.optional(),
+				domain: domainEnum.nullable().optional(),
+				decisionDate: z.coerce.date().optional(),
+				participantUserIds: z.array(z.string()).optional(),
+				participantsText: z.string().nullable().optional(),
+				relatedDecisionIds: z.array(z.string()).optional(),
+				supersedesIds: z.array(z.string()).optional(),
+				decisionTypeId: z.string().nullable().optional(),
+				newDecisionTypeName: z.string().max(60).nullable().optional(),
+				ownerUserId: z.string().nullable().optional(),
+				// AC1: a captured decision must carry a duration classification.
+				// Owner is the one field the criterion lets stay unassigned.
+				duration: durationEnum,
+				priorityFlagged: z.boolean().optional(),
+				// FR4: provenance for decisions captured by hand. The meeting path
+				// already records sourceKind/sourceMetadata; without this the other
+				// capture path FR1 names had no source at all.
+				sourceReference: z
+					.string()
+					.trim()
+					.max(500)
+					.nullable()
+					.optional(),
+			})
+			// The half of AC1's type rule a single field cannot express: the type
+			// arrives either as an existing id or as a new label to mint, and one
+			// of the two must be present.
+			.refine(
+				(v) =>
+					Boolean(v.decisionTypeId ?? v.newDecisionTypeName?.trim()),
+				{
+					path: ["decisionTypeId"],
+					message:
+						"A decision needs a type — choose an existing one or name a new one.",
+				},
+			),
 	)
 	.handler(async ({ input, context }) => {
 		const user = context.user;
@@ -376,8 +401,16 @@ export const createArchitectureDecisionProcedure = tenantProtectedProcedure
 			relatedDecisionIds: input.relatedDecisionIds ?? [],
 			decisionTypeId: decisionTypeId ?? null,
 			ownerUserId,
-			duration: input.duration ?? null,
+			duration: input.duration,
 			priorityFlagged: input.priorityFlagged ?? false,
+			// FR4: every decision records where it came from. A hand-captured
+			// one is "manual"; the reference names the ticket or feature behind
+			// it when the author supplies one.
+			sourceKind: "manual",
+			sourceMetadata: {
+				capturedBy: user.id,
+				reference: input.sourceReference?.trim() || null,
+			},
 			userId: user.id,
 			organizationId,
 		});
@@ -684,6 +717,73 @@ export const revertArchitectureDecisionVersionProcedure =
 
 			return { decision: restored };
 		});
+
+/**
+ * The owner signs off on a decision they were assigned (AC3/UC2). Notifying the
+ * owner records that they were told; this records that they accepted, so
+ * "has the owner acted?" is a question the log can answer.
+ *
+ * Gated on READ rather than UPDATE on purpose: acknowledging is not editing the
+ * decision, and an owner who can see a decision assigned to them must be able to
+ * accept it without also holding edit rights. The narrowing that matters is
+ * ownership, and the query enforces it by matching ownerUserId.
+ */
+export const acknowledgeArchitectureDecisionProcedure = tenantProtectedProcedure
+	.use(requireProjectPermission(Permissions.ARCHITECTURE_DECISION_READ))
+	.route({
+		method: "POST",
+		path: "/projects/{projectId}/architecture-decisions/{id}/acknowledge",
+		tags: ["Projects", "Architecture Decisions"],
+		summary: "Acknowledge a decision you own",
+	})
+	.input(
+		z.object({
+			projectId: z.string(),
+			id: z.string(),
+			organizationId: z.string().nullable().optional(),
+		}),
+	)
+	.handler(async ({ input, context }) => {
+		const user = context.user;
+		const organizationId = resolveOrganizationId(
+			input.organizationId,
+			context.session,
+		);
+		const canAccess = await hasProjectAccess(
+			input.projectId,
+			user.id,
+			organizationId,
+		);
+		if (!canAccess) {
+			throw new ORPCError("FORBIDDEN", {
+				message: "You don't have access to this project",
+			});
+		}
+
+		const decision = await acknowledgeArchitectureDecision({
+			id: input.id,
+			projectId: input.projectId,
+			ownerUserId: user.id,
+		});
+		if (!decision) {
+			throw new ORPCError("FORBIDDEN", {
+				message: "Only the decision's owner can acknowledge it",
+			});
+		}
+
+		await emitActivity({
+			projectId: input.projectId,
+			userId: user.id,
+			userName: user.name || user.email || "Anonymous",
+			activityType: "architecture_decision_acknowledged",
+			resourceType: "architecture_decision",
+			resourceId: decision.id,
+			resourceName: decision.identifier,
+			timestamp: new Date().toISOString(),
+		});
+
+		return { decision };
+	});
 
 export const pinArchitectureDecisionProcedure = tenantProtectedProcedure
 	.use(requireProjectPermission(Permissions.ARCHITECTURE_DECISION_UPDATE))

@@ -60,6 +60,7 @@ const decisionListSelect = {
 	decisionTypeId: true,
 	decisionType: { select: { id: true, name: true } },
 	ownerUserId: true,
+	ownerAcknowledgedAt: true,
 	duration: true,
 	priorityFlagged: true,
 	priorityFlaggedAt: true,
@@ -96,6 +97,7 @@ const decisionDetailSelect = {
 	decisionTypeId: true,
 	decisionType: { select: { id: true, name: true } },
 	ownerUserId: true,
+	ownerAcknowledgedAt: true,
 	duration: true,
 	priorityFlagged: true,
 	priorityFlaggedAt: true,
@@ -455,7 +457,9 @@ export async function updateArchitectureDecision(
 				projectId: input.projectId,
 				deletedAt: null,
 			},
-			select: { id: true },
+			// ownerUserId comes back so the write below can tell a genuine
+			// hand-off from a no-op reassignment to the same person.
+			select: { id: true, ownerUserId: true },
 		});
 		if (!existing) {
 			return null;
@@ -509,8 +513,17 @@ export async function updateArchitectureDecision(
 				...(d.decisionTypeId !== undefined
 					? { decisionTypeId: d.decisionTypeId }
 					: {}),
+				// Handing the decision to someone else voids the previous
+				// owner's sign-off — the new owner has acknowledged nothing.
+				// Reassigning to the SAME owner leaves their acknowledgement
+				// standing, so a routine edit does not silently reset it.
 				...(d.ownerUserId !== undefined
-					? { ownerUserId: d.ownerUserId }
+					? {
+							ownerUserId: d.ownerUserId,
+							...(d.ownerUserId !== existing.ownerUserId
+								? { ownerAcknowledgedAt: null }
+								: {}),
+						}
 					: {}),
 				...(d.duration !== undefined ? { duration: d.duration } : {}),
 				...(d.priorityFlagged !== undefined
@@ -658,6 +671,45 @@ export async function revertArchitectureDecisionToVersion(input: {
  * Soft-delete a decision. Returns `{ id, contextId }` so the caller can clean
  * up the mirrored RAG ProjectContext + its embedding, or null if not found.
  */
+/**
+ * Record the owner's sign-off. Scoped by projectId AND ownerUserId, so only the
+ * person the decision is actually assigned to can acknowledge it — the guard is
+ * the query itself, not just the procedure above it.
+ *
+ * Idempotent: an already-acknowledged decision keeps its original timestamp
+ * rather than being re-stamped, so the record says when the owner first
+ * accepted it. Returns null when the caller is not the owner or the decision
+ * does not belong to the project.
+ */
+export async function acknowledgeArchitectureDecision(input: {
+	id: string;
+	projectId: string;
+	ownerUserId: string;
+}): Promise<ArchitectureDecisionDetail | null> {
+	const owned = await db.architectureDecision.findFirst({
+		where: {
+			id: input.id,
+			projectId: input.projectId,
+			ownerUserId: input.ownerUserId,
+			deletedAt: null,
+		},
+		select: { id: true, ownerAcknowledgedAt: true },
+	});
+	if (!owned) {
+		return null;
+	}
+	if (owned.ownerAcknowledgedAt === null) {
+		await db.architectureDecision.update({
+			where: { id: input.id },
+			data: { ownerAcknowledgedAt: new Date() },
+		});
+	}
+	return db.architectureDecision.findUnique({
+		where: { id: input.id },
+		select: decisionDetailSelect,
+	});
+}
+
 export async function softDeleteArchitectureDecision(input: {
 	id: string;
 	projectId: string;

@@ -4,6 +4,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const adFindFirst = vi.fn();
 const adFindMany = vi.fn();
 const adGroupBy = vi.fn();
+const adUpdate = vi.fn();
+const adFindUnique = vi.fn();
 const transcriptFindMany = vi.fn();
 
 vi.mock("../../client", () => ({
@@ -12,6 +14,8 @@ vi.mock("../../client", () => ({
 			findFirst: (...a: unknown[]) => adFindFirst(...a),
 			findMany: (...a: unknown[]) => adFindMany(...a),
 			groupBy: (...a: unknown[]) => adGroupBy(...a),
+			update: (...a: unknown[]) => adUpdate(...a),
+			findUnique: (...a: unknown[]) => adFindUnique(...a),
 		},
 		projectMeetingTranscript: {
 			findMany: (...a: unknown[]) => transcriptFindMany(...a),
@@ -20,6 +24,7 @@ vi.mock("../../client", () => ({
 }));
 
 import {
+	acknowledgeArchitectureDecision,
 	countArchitectureDecisionsByStatus,
 	generateArchitectureDecisionIdentifier,
 	getAcceptedDecisionsForGuidance,
@@ -161,5 +166,67 @@ describe("getAcceptedDecisionsForGuidance", () => {
 				],
 			}),
 		);
+	});
+});
+
+describe("acknowledgeArchitectureDecision", () => {
+	beforeEach(() => {
+		adFindFirst.mockReset();
+		adUpdate.mockReset();
+		adFindUnique.mockReset();
+	});
+
+	// The guard is the query itself: the row is matched on ownerUserId, so a
+	// non-owner cannot acknowledge even if the procedure above it let them in.
+	it("refuses when the caller is not the decision's owner", async () => {
+		adFindFirst.mockResolvedValue(null);
+		const out = await acknowledgeArchitectureDecision({
+			id: "d1",
+			projectId: "p1",
+			ownerUserId: "not-the-owner",
+		});
+		expect(out).toBeNull();
+		expect(adUpdate).not.toHaveBeenCalled();
+		expect(adFindFirst).toHaveBeenCalledWith(
+			expect.objectContaining({
+				where: expect.objectContaining({
+					id: "d1",
+					projectId: "p1",
+					ownerUserId: "not-the-owner",
+				}),
+			}),
+		);
+	});
+
+	it("stamps ownerAcknowledgedAt for the owner", async () => {
+		adFindFirst.mockResolvedValue({ id: "d1", ownerAcknowledgedAt: null });
+		adFindUnique.mockResolvedValue({ id: "d1" });
+		await acknowledgeArchitectureDecision({
+			id: "d1",
+			projectId: "p1",
+			ownerUserId: "owner-1",
+		});
+		expect(adUpdate).toHaveBeenCalledWith(
+			expect.objectContaining({
+				where: { id: "d1" },
+				data: { ownerAcknowledgedAt: expect.any(Date) },
+			}),
+		);
+	});
+
+	// Re-stamping would rewrite when the owner first accepted, which is the
+	// only fact the column exists to record.
+	it("keeps the original timestamp when already acknowledged", async () => {
+		adFindFirst.mockResolvedValue({
+			id: "d1",
+			ownerAcknowledgedAt: new Date("2026-08-01T00:00:00.000Z"),
+		});
+		adFindUnique.mockResolvedValue({ id: "d1" });
+		await acknowledgeArchitectureDecision({
+			id: "d1",
+			projectId: "p1",
+			ownerUserId: "owner-1",
+		});
+		expect(adUpdate).not.toHaveBeenCalled();
 	});
 });
