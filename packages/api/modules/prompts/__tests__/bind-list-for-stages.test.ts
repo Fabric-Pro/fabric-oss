@@ -8,7 +8,8 @@ const { listPromptsForStages, verifyOrganizationMembership } = vi.hoisted(
 );
 
 vi.mock("@repo/database", () => ({
-	listPromptDefaultRecipients: vi.fn().mockResolvedValue([]),
+	listPromptDefaultAudience: vi.fn().mockResolvedValue([]),
+	markOwnOverrides: vi.fn().mockResolvedValue([]),
 	listPromptsForStages,
 	bindPromptVersion: vi.fn(),
 }));

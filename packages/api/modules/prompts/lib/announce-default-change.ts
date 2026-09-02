@@ -1,7 +1,9 @@
 import {
 	db,
 	listActionsForPrompt,
-	listPromptDefaultRecipients,
+	listPromptDefaultAudience,
+	markOwnOverrides,
+	type PromptDefaultAudience,
 } from "@repo/database";
 import { logger } from "@repo/logs";
 import {
@@ -35,6 +37,8 @@ type SharedAnnouncement = {
 	promptName: string;
 	changeNote: string | null;
 	basePath: string;
+	/** Who is subject to this tier — the same people for every action. */
+	audience: PromptDefaultAudience;
 };
 
 function announceContext({
@@ -51,6 +55,18 @@ function announceContext({
 	let pending: Promise<SharedAnnouncement | null> | undefined;
 
 	const resolve = async (): Promise<SharedAnnouncement | null> => {
+		// Audience first: it decides whether any of the rest is worth doing. With
+		// the actor excluded there is often nobody left, and a prompt name and a
+		// base path are wasted work when the answer is "tell no one".
+		const audience = await listPromptDefaultAudience({
+			scope,
+			organizationId,
+			excludeUserId: actorUserId,
+		});
+		if (audience.length === 0) {
+			return null;
+		}
+
 		const version = await db.promptVersion.findUnique({
 			where: { id: promptVersionId },
 			select: {
@@ -73,6 +89,7 @@ function announceContext({
 			promptName: version.prompt.name,
 			changeNote: version.changeNote,
 			basePath,
+			audience,
 		};
 	};
 
@@ -101,20 +118,18 @@ async function announceForAction(
 		storyKind,
 	}: { targetKey: string; documentType: string; storyKind: string | null },
 ) {
-	const recipients = await listPromptDefaultRecipients({
-		scope: context.scope,
-		organizationId: context.organizationId,
-		targetKey,
-		documentType,
-		storyKind,
-		excludeUserId: context.actorUserId,
-	});
-	if (recipients.length === 0) {
+	const shared = await context.shared();
+	if (!shared) {
 		return;
 	}
 
-	const shared = await context.shared();
-	if (!shared) {
+	const recipients = await markOwnOverrides({
+		audience: shared.audience,
+		targetKey,
+		documentType,
+		storyKind,
+	});
+	if (recipients.length === 0) {
 		return;
 	}
 

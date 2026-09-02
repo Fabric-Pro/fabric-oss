@@ -791,6 +791,10 @@ model Member {
   user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@unique([organizationId, userId])
+  // Editing a universal default prompt asks "who administers anything, anywhere"
+  // (queries/prompt-default-recipients.ts). That predicate has no organization to
+  // narrow it, so without this it reads every member row on the platform.
+  @@index([role])
   @@map("member")
 }
 
