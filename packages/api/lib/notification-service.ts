@@ -306,6 +306,20 @@ type QuestionRoutingArgs = {
 	actorName: string;
 	/** Feature link WITHOUT a fragment; the anchor is appended here. */
 	link: string;
+	/**
+	 * The sentence the asker typed alongside the assignment ("could you take the
+	 * second part?"). It becomes the snippet, because the ask is what the
+	 * recipient needs to read — the question itself is one click away behind the
+	 * anchor, and the card only has two lines to spend.
+	 */
+	note?: string;
+	/**
+	 * The Decision Log turn the note was stored as. Folded into the dedupe key so
+	 * a SECOND ask on the same question is a second notice rather than a
+	 * suppressed duplicate: without it the unread-only dedupe swallows the new
+	 * comment and the recipient never sees it.
+	 */
+	noteEntryId?: string | null;
 };
 
 /**
@@ -1058,7 +1072,7 @@ export const fanOut = {
 							type: NotificationType.QUESTION_ASSIGNED,
 							category: NotificationCategory.ASSIGNMENT,
 							title: `${args.actorName} is asking you about ${args.storyTitle}`,
-							snippet: args.questionSummary,
+							snippet: args.note?.trim() || args.questionSummary,
 							link: buildQuestionLink(args),
 							source: {
 								projectId: args.projectId,
@@ -1071,7 +1085,9 @@ export const fanOut = {
 								questionRootId: args.questionRootId,
 								assignedByUserId: args.actorUserId,
 							},
-							dedupeKey: `questionassigned:${args.questionRootId}:${userId}`,
+							dedupeKey: args.noteEntryId
+								? `questionassigned:${args.questionRootId}:${userId}:${args.noteEntryId}`
+								: `questionassigned:${args.questionRootId}:${userId}`,
 							dedupePolicy: "unreadOnly",
 						});
 					} catch (error) {

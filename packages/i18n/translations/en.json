@@ -3081,6 +3081,7 @@
 					"assigneeSearchEmpty": "No project members match.",
 					"mentionSuggestionsLabel": "Mention a project member",
 					"askMention": "Ask {names}",
+					"noteAuthorUnknown": "Unknown",
 					"countAnswered": "{count} answered",
 					"countAssigned": "{count} assigned",
 					"countUnanswered": "{count} unanswered",
