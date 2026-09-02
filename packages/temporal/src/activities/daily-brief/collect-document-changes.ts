@@ -41,6 +41,13 @@ export type CollectDocumentChangesOutput = DocumentChangeItem[];
  * that may be wired in later; today every persisted change produces a new
  * DocumentVersion, so we map to created/version_added.
  */
+/**
+ * Row cap for the query below — bounds what crosses the Temporal activity
+ * boundary (Fizzy #1997). Ordered newest-first, so the cap keeps the most
+ * recent document changes and drops the long tail.
+ */
+const MAX_DOCUMENT_VERSION_ROWS = 200;
+
 export async function collectDocumentChanges(
 	input: CollectDocumentChangesInput,
 ): Promise<CollectDocumentChangesOutput> {
@@ -80,6 +87,7 @@ export async function collectDocumentChanges(
 			},
 		},
 		orderBy: { createdAt: "desc" },
+		take: MAX_DOCUMENT_VERSION_ROWS,
 	});
 
 	const items: DocumentChangeItem[] = versions.map((v) => ({

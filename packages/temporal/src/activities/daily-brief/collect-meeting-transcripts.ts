@@ -35,6 +35,9 @@ export type CollectMeetingTranscriptsOutput = MeetingItem[];
 
 // Keep each summary reasonable for the brief. Full transcripts should never
 // appear in the Daily Brief payload — they live in ProjectContext / RAG.
+/** Row cap — bounds what crosses the Temporal activity boundary (#1997).
+ *  Ordered newest-first, so the cap keeps the most recent meetings. */
+const MAX_TRANSCRIPT_ROWS = 100;
 const MAX_SUMMARY_CHARS = 1_200;
 const MAX_KEYWORDS = 20;
 const MAX_SPEAKERS = 20;
@@ -91,6 +94,7 @@ export async function collectMeetingTranscripts(
 			insightsVersion: true,
 		},
 		orderBy: [{ meetingDate: "desc" }, { syncedAt: "desc" }],
+		take: MAX_TRANSCRIPT_ROWS,
 	});
 
 	const items: MeetingItem[] = transcripts.map((t) => {
