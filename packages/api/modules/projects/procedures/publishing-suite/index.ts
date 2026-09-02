@@ -16,6 +16,10 @@ export {
 export { setTopicReadStateProcedure } from "./set-topic-read-state";
 export { setTopicSnoozeProcedure } from "./set-topic-snooze";
 export {
+	generateShortPostProcedure,
+	selectShortPostOptionProcedure,
+} from "./short-post";
+export {
 	answerTopicQuestionProcedure,
 	listTopicDecisionsProcedure,
 } from "./topic-decisions";

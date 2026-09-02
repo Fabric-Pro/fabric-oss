@@ -11,19 +11,15 @@ import { toast } from "sonner";
 import { GenerationTabs } from "./GenerationTabs";
 import { PlanningAnalysisTab } from "./PlanningAnalysisTab";
 import { PostTypesDialog } from "./PostTypesDialog";
+import { PublishTopicDialog } from "./PublishTopicDialog";
 import {
 	isEmptyAnalysis,
 	readPlanningAnalysis,
 } from "./planning-analysis-content";
-import { PublishTopicDialog } from "./PublishTopicDialog";
 import { TopicDecisionLog } from "./TopicDecisionLog";
 import { TopicDetails } from "./TopicDetails";
 import { TopicQuestionsPanel } from "./TopicQuestionsPanel";
-import {
-	POST_TYPE_LABELS,
-	type PostType,
-	TOPIC_STATUSES,
-} from "./topic-shared";
+import { type PostType, TOPIC_STATUSES } from "./topic-shared";
 
 /**
  * The three review tabs this page owns. Kept as a literal union rather than
@@ -142,9 +138,15 @@ export function TopicItemPage({
 	// 2B-1: the topic's generated-draft state, for the generation tab strip.
 	// Polled on the SAME function-form interval the analysis query uses, so a
 	// run that is in flight refreshes and a finished one stops costing anything.
-	// Nothing in 2B-1 can put a row into GENERATING — the writes arrive in
-	// 2B-2/2B-3 — so this never fires today; it is written alongside the query
-	// rather than bolted on later, when remembering is the failure mode.
+	// Live from 2B-2: the short post's generate button puts a row into
+	// GENERATING and nothing else reports when it finishes. The poll was written
+	// alongside the query in 2B-1, before anything could trigger it, rather than
+	// bolted on later when remembering is the failure mode.
+	//
+	// `isExpired` is part of the predicate, not decoration: a STRANDED row is
+	// terminal in every way that matters — no worker will report on it — so
+	// polling for it forever would be a request every three seconds for the life
+	// of the tab.
 	const draftsQuery = useQuery({
 		...orpc.projects.publishingSuite.listTopicDrafts.queryOptions({
 			input: { projectId, topicId, organizationId },
@@ -418,6 +420,10 @@ export function TopicItemPage({
 			</Tabs>
 
 			<GenerationTabs
+				projectId={projectId}
+				organizationId={organizationId}
+				topicId={topicId}
+				canEdit={canEdit}
 				analysis={
 					latestReady
 						? (() => {

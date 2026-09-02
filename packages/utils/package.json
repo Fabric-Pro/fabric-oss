@@ -34,6 +34,16 @@
 			"import": "./lib/publishing-planning-prompt.ts",
 			"default": "./lib/publishing-planning-prompt.ts"
 		},
+		"./publishing-restrictions": {
+			"types": "./lib/publishing-restrictions.ts",
+			"import": "./lib/publishing-restrictions.ts",
+			"default": "./lib/publishing-restrictions.ts"
+		},
+		"./publishing-short-post-prompt": {
+			"types": "./lib/publishing-short-post-prompt.ts",
+			"import": "./lib/publishing-short-post-prompt.ts",
+			"default": "./lib/publishing-short-post-prompt.ts"
+		},
 		"./template-renderer": {
 			"types": "./template-renderer.ts",
 			"import": "./template-renderer.ts",

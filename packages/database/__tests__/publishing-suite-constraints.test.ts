@@ -1,6 +1,14 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, expect, it } from "vitest";
 import { db } from "../index"; // package root barrel (what consumers import as @repo/database)
+// INTERNAL by design (absent from the queries barrel), so it is imported by
+// path. This is the one place its answer can be proved: the error shape it
+// reads is produced by Postgres and the driver adapter, not by Prisma types.
+import {
+	saveWorkingDraft,
+	startTopicDraftAttempt,
+} from "../prisma/queries/projects/publishing-drafts";
+import { uniqueViolationConstraint } from "../prisma/queries/projects/publishing-tenant-lock";
 
 // REAL-DB integration test proving the Publishing Suite CHECK constraints (Codex F1 tenant-XOR +
 // F2 GENERATING-liveness-deadline). Gated on RUN_DB_INTEGRATION like publishing-suite-schema.test.ts,
@@ -894,6 +902,398 @@ it.skipIf(!RUN_DB)(
 				where: { id: draft.id },
 			}),
 		).not.toBeNull();
+	},
+);
+
+// ---------------------------------------------------------------------------
+// Phase 2B-2 (Fizzy #1853). The two unique constraints on `publishing_topic_draft`
+// must be DISTINGUISHABLE from the error Prisma raises, because
+// `startTopicDraftAttempt` answers "a run is already in flight" for one of them
+// and RETHROWS for the other. 2A could treat any P2002 as in-flight; this table
+// cannot, and a catch-all here would report a version collision as a generation
+// that does not exist and will never report.
+//
+// Only a real server can produce these errors, and this repo's driver adapter
+// leaves `meta.target` undefined for P2002 — so a discriminator written against
+// the documented field alone matches nothing and sends every conflict down the
+// fallback path. That is exactly the bug these two cases exist to catch.
+// ---------------------------------------------------------------------------
+
+it.skipIf(!RUN_DB)(
+	"2B-2 G: the IN-FLIGHT index is nameable from the error it raises",
+	async () => {
+		const { user, project, topic } = await makeDraftTopic();
+		const base = {
+			topicId: topic.id,
+			projectId: project.id,
+			userId: user.id,
+			executionTimeoutAt: new Date(Date.now() + 600_000),
+		};
+
+		await db.publishingTopicDraft.create({
+			data: {
+				...base,
+				postType: "TWEET",
+				version: 1,
+				status: "GENERATING",
+			},
+		});
+
+		let raised: unknown;
+		try {
+			// A SECOND generating row for the same content type. Version differs,
+			// so only the partial index can fire.
+			await db.publishingTopicDraft.create({
+				data: {
+					...base,
+					postType: "TWEET",
+					version: 2,
+					status: "GENERATING",
+				},
+			});
+		} catch (error) {
+			raised = error;
+		}
+
+		expect(raised).toBeDefined();
+		expect(uniqueViolationConstraint(raised)).toBe(
+			"publishing_topic_draft_active",
+		);
+	},
+);
+
+it.skipIf(!RUN_DB)(
+	"2B-2 H: the VERSION unique is nameable, and is NOT the in-flight index",
+	async () => {
+		const { user, project, topic } = await makeDraftTopic();
+		const base = {
+			topicId: topic.id,
+			projectId: project.id,
+			userId: user.id,
+			// READY, so the partial index does not apply and the only constraint
+			// left to violate is the version identity.
+			status: "READY" as const,
+		};
+
+		await db.publishingTopicDraft.create({
+			data: { ...base, postType: "TWEET", version: 1 },
+		});
+
+		let raised: unknown;
+		try {
+			await db.publishingTopicDraft.create({
+				data: { ...base, postType: "TWEET", version: 1 },
+			});
+		} catch (error) {
+			raised = error;
+		}
+
+		expect(raised).toBeDefined();
+		const constraint = uniqueViolationConstraint(raised);
+		// The POSITIVE half is what makes this a real test: asserting only
+		// "not the in-flight index" would pass against a discriminator that
+		// returns null for everything, which is the failure mode that would send
+		// this collision down the in-flight path in production.
+		expect(constraint).toBe(
+			"publishing_topic_draft_topicId_postType_version_key",
+		);
+		expect(constraint).not.toBe("publishing_topic_draft_active");
+	},
+);
+
+it.skipIf(!RUN_DB)(
+	"2B-2 I: two GENERATING rows of DIFFERENT content types are both nameable",
+	async () => {
+		// Guards the discriminator against a lucky match: if it were keying on
+		// something incidental to the first case's fixture rather than on the
+		// constraint, a second content type would answer differently.
+		const { user, project, topic } = await makeDraftTopic();
+		const base = {
+			topicId: topic.id,
+			projectId: project.id,
+			userId: user.id,
+			status: "GENERATING" as const,
+			executionTimeoutAt: new Date(Date.now() + 600_000),
+		};
+
+		await db.publishingTopicDraft.create({
+			data: { ...base, postType: "BLOG_POST", version: 1 },
+		});
+
+		let raised: unknown;
+		try {
+			await db.publishingTopicDraft.create({
+				data: { ...base, postType: "BLOG_POST", version: 2 },
+			});
+		} catch (error) {
+			raised = error;
+		}
+
+		expect(uniqueViolationConstraint(raised)).toBe(
+			"publishing_topic_draft_active",
+		);
+	},
+);
+
+// ---------------------------------------------------------------------------
+// The WRITER against a real server. Cases G/H/I above prove the discriminator
+// can name each constraint; these prove `startTopicDraftAttempt` composes it
+// correctly — that a real partial-index violation comes back as an ANSWER and
+// not as a thrown error. Nothing else joins those two halves: the mocked suite
+// feeds the writer an error this file's own probe had to discover, and the
+// discriminator cases never call the writer.
+// ---------------------------------------------------------------------------
+
+/**
+ * A draft topic whose project is ACTIVE.
+ *
+ * `makePersonalProject` leaves the column at its schema default, which is DRAFT
+ * — fine for every case above, which inserts rows through Prisma directly and
+ * never consults project status. The WRITER does consult it, under its own lock,
+ * and refuses anything that is not ACTIVE. Case N below pins that refusal, which
+ * is how this helper came to exist: the writer cases failed on it first.
+ */
+async function makeActiveDraftTopic() {
+	const fixture = await makeDraftTopic();
+	await db.project.update({
+		where: { id: fixture.project.id },
+		data: { status: "ACTIVE" },
+	});
+	return fixture;
+}
+
+it.skipIf(!RUN_DB)(
+	"2B-2 N: a project that is not ACTIVE cannot start a generation",
+	async () => {
+		// `makeDraftTopic` leaves the project at the schema default of DRAFT.
+		// The refusal is `project_ineligible` and NOT `not_found`: the topic is
+		// perfectly fine, and reporting it missing would send a reader looking
+		// for something that is not the problem.
+		const { user, project, topic } = await makeDraftTopic();
+
+		const result = await startTopicDraftAttempt({
+			topicId: topic.id,
+			projectId: project.id,
+			postType: "TWEET",
+			requestedById: user.id,
+			guidance: null,
+		});
+
+		expect(result).toEqual({ status: "project_ineligible" });
+		expect(
+			await db.publishingTopicDraft.count({
+				where: { topicId: topic.id },
+			}),
+		).toBe(0);
+	},
+);
+
+it.skipIf(!RUN_DB)(
+	"2B-2 J: a second attempt on a live run answers in_flight rather than throwing",
+	async () => {
+		const { user, project, topic } = await makeActiveDraftTopic();
+
+		const first = await startTopicDraftAttempt({
+			topicId: topic.id,
+			projectId: project.id,
+			postType: "TWEET",
+			requestedById: user.id,
+			guidance: null,
+		});
+		expect(first.status).toBe("started");
+
+		const second = await startTopicDraftAttempt({
+			topicId: topic.id,
+			projectId: project.id,
+			postType: "TWEET",
+			requestedById: user.id,
+			guidance: null,
+		});
+
+		// A double-click is routine. If the discriminator fails to name the
+		// partial index the writer rethrows, and this routine action becomes a
+		// 500 — which is exactly the bug the first draft of that function had,
+		// invisible to every mocked case because the mock encoded the same guess.
+		expect(second).toEqual({ status: "in_flight" });
+	},
+);
+
+it.skipIf(!RUN_DB)(
+	"2B-2 K: the row the writer created carries what it claimed to write",
+	async () => {
+		const { user, project, topic } = await makeActiveDraftTopic();
+
+		const started = await startTopicDraftAttempt({
+			topicId: topic.id,
+			projectId: project.id,
+			postType: "TWEET",
+			requestedById: user.id,
+			guidance: "  keep it short  ",
+		});
+		if (started.status !== "started") {
+			throw new Error(`expected started, got ${started.status}`);
+		}
+
+		// Read the durable row back rather than trusting the return value. The
+		// mocked suite asserts the payload handed to Prisma; only this can say
+		// the database accepted it — the tenant XOR and the
+		// GENERATING-implies-deadline CHECKs both apply to this exact insert.
+		const row = await db.publishingTopicDraft.findUniqueOrThrow({
+			where: { id: started.draftId },
+		});
+		expect(row.version).toBe(1);
+		expect(row.status).toBe("GENERATING");
+		expect(row.postType).toBe("TWEET");
+		// Personal project: XOR-normalised to userId, org null.
+		expect(row.organizationId).toBeNull();
+		expect(row.userId).toBe(user.id);
+		// Authorship is a DIFFERENT column from tenancy, which is the whole
+		// reason the XOR CHECK does not reject an org project's row.
+		expect(row.requestedById).toBe(user.id);
+		expect(row.guidance).toBe("  keep it short  ");
+		expect(row.executionTimeoutAt).not.toBeNull();
+	},
+);
+
+it.skipIf(!RUN_DB)(
+	"2B-2 L: a BLOG POST attempt starts while a short post is still generating",
+	async () => {
+		// The positive half of the per-content-type index, driven through the
+		// WRITER rather than through raw creates. A rejection-only case passes
+		// just as well against a writer that refuses everything.
+		const { user, project, topic } = await makeActiveDraftTopic();
+		const base = {
+			topicId: topic.id,
+			projectId: project.id,
+			requestedById: user.id,
+			guidance: null,
+		};
+
+		const tweet = await startTopicDraftAttempt({
+			...base,
+			postType: "TWEET",
+		});
+		const blog = await startTopicDraftAttempt({
+			...base,
+			postType: "BLOG_POST",
+		});
+
+		expect(tweet.status).toBe("started");
+		expect(blog.status).toBe("started");
+		// Versions are per content type, so both are 1 rather than 1 and 2.
+		expect(tweet).toMatchObject({ version: 1 });
+		expect(blog).toMatchObject({ version: 1 });
+	},
+);
+
+it.skipIf(!RUN_DB)(
+	"2B-2 M: a stranded run is reclaimed, and the next attempt gets the next version",
+	async () => {
+		const { user, project, topic } = await makeActiveDraftTopic();
+		const base = {
+			topicId: topic.id,
+			projectId: project.id,
+			postType: "TWEET" as const,
+			requestedById: user.id,
+			guidance: null,
+		};
+
+		const first = await startTopicDraftAttempt(base);
+		if (first.status !== "started") {
+			throw new Error("expected started");
+		}
+		// Push the deadline into the past, which is what a worker that died
+		// between the insert and its terminal marker leaves behind.
+		await db.publishingTopicDraft.update({
+			where: { id: first.draftId },
+			data: { executionTimeoutAt: new Date(Date.now() - 60_000) },
+		});
+
+		const second = await startTopicDraftAttempt(base);
+
+		// Without the reclaim the partial index is a PERMANENT lock on this
+		// content type and no user action recovers it.
+		expect(second).toMatchObject({ status: "started", version: 2 });
+		const reclaimed = await db.publishingTopicDraft.findUniqueOrThrow({
+			where: { id: first.draftId },
+		});
+		expect(reclaimed.status).toBe("FAILED");
+		// Cleared, so the reclaimed row stops matching the expiry predicate and
+		// does not read as perpetually stranded on the page.
+		expect(reclaimed.executionTimeoutAt).toBeNull();
+	},
+);
+
+it.skipIf(!RUN_DB)(
+	"2B-2 O: a selected option lands as the working draft, and a stale caller is refused",
+	async () => {
+		const { user, project, topic } = await makeActiveDraftTopic();
+		const candidate = await db.publishingTopicDraft.create({
+			data: {
+				topicId: topic.id,
+				projectId: project.id,
+				userId: user.id,
+				postType: "TWEET",
+				version: 1,
+				status: "READY",
+			},
+		});
+
+		const saved = await saveWorkingDraft({
+			topicId: topic.id,
+			projectId: project.id,
+			postType: "TWEET",
+			sourceDraftId: candidate.id,
+			sourceOptionLabel: "Direct",
+			body: "Builds are faster now.",
+			updatedById: user.id,
+			expectedUpdatedAt: null,
+		});
+		expect(saved.status).toBe("saved");
+
+		// Read the durable row back. The composite foreign key, the tenant XOR
+		// CHECK and the (topicId, postType) unique all apply to this exact
+		// upsert, and only a real server can say they were satisfied.
+		const row = await db.publishingTopicWorkingDraft.findUniqueOrThrow({
+			where: {
+				topicId_postType: { topicId: topic.id, postType: "TWEET" },
+			},
+		});
+		expect(row.body).toBe("Builds are faster now.");
+		expect(row.sourceDraftId).toBe(candidate.id);
+		expect(row.sourceOptionLabel).toBe("Direct");
+		expect(row.organizationId).toBeNull();
+		expect(row.userId).toBe(user.id);
+
+		// A caller still believing nothing is saved is now stale. Without this
+		// the second of two concurrent selections silently erases the first: the
+		// project lock serialises the writes and says nothing about whether the
+		// second writer knew what it was overwriting.
+		const stale = await saveWorkingDraft({
+			topicId: topic.id,
+			projectId: project.id,
+			postType: "TWEET",
+			sourceDraftId: candidate.id,
+			sourceOptionLabel: "Story-led",
+			body: "A different post.",
+			updatedById: user.id,
+			// Still believing nothing is saved, which is now untrue.
+			expectedUpdatedAt: null,
+		});
+		expect(stale).toEqual({ status: "stale" });
+		// And the refusal wrote nothing.
+		expect(
+			(
+				await db.publishingTopicWorkingDraft.findUniqueOrThrow({
+					where: {
+						topicId_postType: {
+							topicId: topic.id,
+							postType: "TWEET",
+						},
+					},
+				})
+			).body,
+		).toBe("Builds are faster now.");
 	},
 );
 

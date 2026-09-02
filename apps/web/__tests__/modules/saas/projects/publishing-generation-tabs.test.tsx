@@ -1,5 +1,6 @@
 import { GenerationTabs } from "@saas/projects/components/publishing-suite/GenerationTabs";
 import type { PlanningAnalysisDocument } from "@saas/projects/components/publishing-suite/planning-analysis-content";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
@@ -72,17 +73,35 @@ function thread(over: Record<string, unknown> = {}) {
 	} as never;
 }
 
+/**
+ * A QueryClientProvider is required from Phase 2B-2 onward: the Short Post tab's
+ * panel owns its own generate and select mutations, so the strip is no longer a
+ * purely presentational component. Retries off and a fresh client per render, so
+ * one test's cache cannot answer another's question.
+ */
 function renderTabs(over: Partial<Parameters<typeof GenerationTabs>[0]> = {}) {
+	const client = new QueryClient({
+		defaultOptions: {
+			queries: { retry: false },
+			mutations: { retry: false },
+		},
+	});
 	return render(
-		<GenerationTabs
-			analysis={null}
-			drafts={[]}
-			workingDrafts={[]}
-			decisionThreads={[]}
-			isLoading={false}
-			hasError={false}
-			{...over}
-		/>,
+		<QueryClientProvider client={client}>
+			<GenerationTabs
+				projectId="p1"
+				organizationId="org1"
+				topicId="t1"
+				canEdit={true}
+				analysis={null}
+				drafts={[]}
+				workingDrafts={[]}
+				decisionThreads={[]}
+				isLoading={false}
+				hasError={false}
+				{...over}
+			/>
+		</QueryClientProvider>,
 	);
 }
 
@@ -324,7 +343,11 @@ describe("GenerationTabs — panel content", () => {
 		expect(listed).not.toContain("who signs the post");
 	});
 
-	it("offers no generate control in this phase", async () => {
+	it("offers no generate control on the BLOG POST tab yet", async () => {
+		// The 2B-1 version of this case asserted the absence on BOTH live tabs,
+		// which was right for a slice that shipped no generation at all. 2B-2
+		// gives the short post one; blog waits for 2B-3, and the half that still
+		// holds is kept and asserted rather than deleted with the other half.
 		const user = userEvent.setup();
 		renderTabs();
 
@@ -339,18 +362,39 @@ describe("GenerationTabs — panel content", () => {
 		).toBeInTheDocument();
 	});
 
-	it("reports a saved working draft", () => {
+	it("DOES offer a generate control on the short post tab", async () => {
+		// The positive half. Without it the case above passes just as well on a
+		// build where the short post panel failed to mount at all.
+		renderTabs();
+
+		expect(
+			screen.getByRole("button", { name: /generate short post/i }),
+		).toBeInTheDocument();
+	});
+
+	it("reports a saved working draft on a tab with no panel of its own", async () => {
+		// Retargeted from TWEET to BLOG_POST in 2B-2. This asserts the GENERIC
+		// draft-state line, and the short post tab no longer renders it — that
+		// tab now shows the saved body itself, which
+		// `publishing-short-post-panel.test.tsx` covers. Pointing this case at
+		// TWEET would silently stop testing the generic branch while still
+		// passing against some other text on the page.
+		const user = userEvent.setup();
 		renderTabs({
 			workingDrafts: [
 				{
-					postType: "TWEET",
+					postType: "BLOG_POST",
 					hasBody: true,
+					body: "A saved blog draft.",
 					sourceOptionLabel: "Option 1",
 					updatedAt: new Date(),
 				},
 			],
 		});
 
+		await user.click(
+			within(tablist()).getByRole("tab", { name: /blog post/i }),
+		);
 		expect(screen.getByText(/you have a saved draft/i)).toBeInTheDocument();
 	});
 });

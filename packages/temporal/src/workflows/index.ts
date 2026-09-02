@@ -302,6 +302,13 @@ export {
 	type GeneratePublishingPlanningAnalysisWorkflowOutput,
 	generatePublishingPlanningAnalysisWorkflow,
 } from "./generate-publishing-planning-analysis";
+// Publishing Suite Short Post / Tweet (fire-and-forget — three labeled options
+// for one topic, from its planning analysis and its own provenance). #1853
+export {
+	type GeneratePublishingShortPostWorkflowInput,
+	type GeneratePublishingShortPostWorkflowOutput,
+	generatePublishingShortPostWorkflow,
+} from "./generate-publishing-short-post";
 // Goal-Oriented Agent workflow (iterative goal achievement)
 export {
 	cancelSignal as goalOrientedCancelSignal,

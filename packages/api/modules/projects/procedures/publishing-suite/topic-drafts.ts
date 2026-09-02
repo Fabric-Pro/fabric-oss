@@ -2,9 +2,10 @@
  * A topic's generated-draft state, for the Topic Item Page's generation tabs
  * (Publishing Suite Phase 2B-1, Fizzy #1853).
  *
- * READ ONLY. 2B-1 ships no write: generation arrives in 2B-2/2B-3 with the
- * prompts and the workflow that produce it, so this endpoint answers only
- * "what exists, and what does it say about itself".
+ * READ ONLY, and it stays that way: the writes live in `short-post.ts` (2B-2)
+ * and will live beside them for the blog post (2B-3). This endpoint answers only
+ * "what exists, and what does it say about itself" — it is also the poll target
+ * while a generation runs, which is why it must stay cheap.
  *
  * Scoped like every sibling: the DB helper re-scopes to `{ topicId, projectId }`,
  * so a topic id belonging to another project yields the same empty answer a
@@ -39,12 +40,19 @@ const PostTypeSchema = z.enum([
 /**
  * One draft attempt.
  *
- * `content` is deliberately ABSENT. 2B-1 renders no draft body, and shipping the
- * blob to a page that cannot display it is bytes over the wire for nothing;
- * 2B-2 adds it alongside the panel that reads it.
+ * `content` is `z.unknown()` rather than a shape. Each content type stores a
+ * different document — the short post's three labeled options are nothing like a
+ * blog draft — so a union here would make every panel's props carry the other
+ * three's cases, and every new content type a breaking change to this schema.
+ * The panel that renders one is the place that knows which, and each narrows it
+ * defensively for itself.
+ *
+ * 2B-1 omitted it entirely, on the grounds that shipping a blob to a page which
+ * cannot display it is bytes over the wire for nothing. 2B-2 built that page.
  */
 const DraftRowSchema = z.object({
 	id: z.string(),
+	content: z.unknown(),
 	postType: PostTypeSchema,
 	version: z.number().int(),
 	status: z.string(),
@@ -93,17 +101,31 @@ export const listTopicDraftsProcedure = tenantProtectedProcedure
 				z.object({
 					postType: PostTypeSchema,
 					/**
-					 * Existence only — the BODY is deliberately not returned.
-					 *
-					 * Not a privacy hedge: a working draft is SHARED project
-					 * content (see `PublishingTopicWorkingDraft`), so every
-					 * project member is entitled to read one. It is omitted
-					 * because 2B-1 renders no draft text at all, and shipping a
-					 * body to a page that cannot display it is bytes over the
-					 * wire for nothing. 2B-3 adds it alongside the editor that
-					 * reads it.
+					 * Whether the saved draft has any text, derived from `body`
+					 * rather than from the row existing — so an empty body reads
+					 * as "nothing saved" instead of as a draft the panel then
+					 * renders blank.
 					 */
 					hasBody: z.boolean(),
+					/**
+					 * The saved draft text.
+					 *
+					 * Not a privacy question: a working draft is SHARED project
+					 * content (see `PublishingTopicWorkingDraft`), so every
+					 * project member is entitled to read one. 2B-1 withheld it
+					 * only because nothing rendered it then; 2B-2's panel shows
+					 * the option the user adopted.
+					 */
+					body: z.string(),
+					/**
+					 * Which candidate the body came from. The LABEL alone does
+					 * not identify an option across regenerations — the prompt is
+					 * asked for descriptive labels, so the same one recurring
+					 * with different text is the common case, and a reader
+					 * comparing on it marks the new option as already saved and
+					 * makes it unreachable.
+					 */
+					sourceDraftId: z.string().nullable(),
 					sourceOptionLabel: z.string().nullable(),
 					updatedAt: z.date(),
 				}),

@@ -36,6 +36,7 @@ const SCOPE = { topicId: "topic-1", projectId: "project-1" };
 function row(over: Record<string, unknown> = {}) {
 	return {
 		id: "draft-1",
+		content: null,
 		postType: "TWEET",
 		version: 1,
 		status: "READY",
@@ -83,28 +84,36 @@ describe("listTopicDrafts — scoping", () => {
 		expect(workingFindMany).toHaveBeenCalled();
 	});
 
-	it("never selects the draft content blob", async () => {
+	it("selects the draft content, now that a panel renders it", async () => {
 		await listTopicDrafts(SCOPE);
 
-		// 2B-1 renders no draft body. Shipping the blob to a page that cannot
-		// display it is bytes over the wire for nothing, and `content` is the
-		// field 2B-2 will add deliberately when a reader for it exists.
+		// INVERTED IN 2B-2, deliberately. The 2B-1 version of this case asserted
+		// `content` was NOT selected, on the stated grounds that shipping a blob
+		// to a page which cannot display it is bytes over the wire for nothing —
+		// and it named the condition for changing it: "the field 2B-2 will add
+		// deliberately when a reader for it exists". That reader is
+		// `ShortPostPanel`, which renders the three options out of this column.
+		//
+		// Rewritten rather than deleted, and asserted in the positive direction,
+		// because deleting it would leave nothing pinning either answer.
 		for (const call of draftFindMany.mock.calls) {
-			expect(call[0].select?.content).toBeUndefined();
+			expect(call[0].select?.content).toBe(true);
 		}
 	});
 
-	it("never selects the working-draft body", async () => {
+	it("selects the working-draft body, now that a panel renders it", async () => {
 		await listTopicDrafts(SCOPE);
 
-		// PUBLISHING_TOPIC_READ is the weakest publishing permission and
-		// `user_owned` RLS matches every member of the organization, so
-		// returning the body here would ship one person's in-progress writing
-		// to every viewer in the org as a side effect of a slice that does not
-		// display it. Whether a working draft is org-visible or author-private
-		// is 2B-3's question.
+		// Also inverted in 2B-2. The 2B-1 comment framed this partly as a
+		// privacy hedge — the weakest publishing permission plus `user_owned`
+		// RLS meaning every org member can read it — and left "org-visible or
+		// author-private" open. It is settled: a working draft is SHARED project
+		// content (see `PublishingTopicWorkingDraft`), one per topic and content
+		// type with no owner column, so every project member is entitled to it.
+		// Withholding it was never about who may read it, only about nothing
+		// rendering it yet.
 		for (const call of workingFindMany.mock.calls) {
-			expect(call[0].select?.body).toBeUndefined();
+			expect(call[0].select?.body).toBe(true);
 		}
 	});
 });
@@ -218,10 +227,11 @@ describe("listTopicDrafts — isExpired", () => {
 });
 
 describe("listTopicDrafts — working drafts", () => {
-	it("reports existence and provenance without the body", async () => {
+	it("reports the body alongside its provenance", async () => {
 		workingFindMany.mockResolvedValue([
 			{
 				postType: "BLOG_POST",
+				body: "A saved draft.",
 				sourceOptionLabel: null,
 				updatedAt: new Date("2026-09-01T11:00:00Z"),
 			},
@@ -233,10 +243,30 @@ describe("listTopicDrafts — working drafts", () => {
 			{
 				postType: "BLOG_POST",
 				hasBody: true,
+				body: "A saved draft.",
 				sourceOptionLabel: null,
 				updatedAt: new Date("2026-09-01T11:00:00Z"),
 			},
 		]);
+	});
+
+	it("reports an EMPTY body as nothing saved", async () => {
+		// `hasBody` is derived from the text rather than from the row existing.
+		// A row whose body is blank would otherwise read as a saved draft and
+		// the panel would render an empty box under a "Working short post"
+		// heading — the shape of content, with none in it.
+		workingFindMany.mockResolvedValue([
+			{
+				postType: "BLOG_POST",
+				body: "   ",
+				sourceOptionLabel: null,
+				updatedAt: new Date("2026-09-01T11:00:00Z"),
+			},
+		]);
+
+		const result = await listTopicDrafts(SCOPE);
+
+		expect(result.workingDrafts[0].hasBody).toBe(false);
 	});
 
 	it("returns an empty list when the topic has none", async () => {

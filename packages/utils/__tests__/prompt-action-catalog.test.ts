@@ -19,6 +19,7 @@ import {
 	promptActionId,
 } from "../lib/prompt-action-catalog";
 import { PUBLISHING_PLANNING_ANALYSIS_AGENT_KEY } from "../lib/publishing-planning-prompt";
+import { PUBLISHING_SHORT_POST_AGENT_KEY } from "../lib/publishing-short-post-prompt";
 
 const actions = listPromptActions();
 const byId = (id: string) => actions.find((a) => a.id === id);
@@ -184,6 +185,39 @@ describe("Publishing Suite planning prompt (#1851)", () => {
 		expect(target?.actions).toEqual([
 			{ documentType: "GENERAL", storyKind: null },
 		]);
+	});
+
+	// The short post prompt (2B-2) carries the SAME three-site hazard the
+	// planning prompt does — seed, catalog and the Temporal activity that
+	// resolves the binding — and it is a silent one: a key that does not match
+	// resolves no binding, so every run falls back to the default body forever
+	// and the output looks entirely normal. All three import one constant, which
+	// makes drift impossible rather than detectable; these two cases guard the
+	// remaining hole, which is someone re-hardcoding the string in the catalog.
+	it("files the short post prompt under Publishing Suite by the shared key", () => {
+		const target = findPromptAgentTarget(PUBLISHING_SHORT_POST_AGENT_KEY);
+		expect(target).toBeDefined();
+		expect(target?.featureType).toBe("PUBLISHING");
+	});
+
+	it("binds the short post prompt for GENERAL with no story kind", () => {
+		// The activity resolves by exact match on (documentType GENERAL,
+		// storyKind null). A stage-scoped or kind-scoped binding would find
+		// nothing, and finding nothing is the fallback path, not an error.
+		const target = findPromptAgentTarget(PUBLISHING_SHORT_POST_AGENT_KEY);
+		expect(target?.actions).toEqual([
+			{ documentType: "GENERAL", storyKind: null },
+		]);
+	});
+
+	it("keeps the two publishing prompts under DIFFERENT keys", () => {
+		// Both are PUBLISHING/GENERAL/null, so a copy-paste that left the
+		// planning key on the short post entry would satisfy every other case in
+		// this file — and would silently route short post generation to the
+		// planning worksheet's prompt.
+		expect(PUBLISHING_SHORT_POST_AGENT_KEY).not.toBe(
+			PUBLISHING_PLANNING_ANALYSIS_AGENT_KEY,
+		);
 	});
 
 	it("gives Publishing Suite a tier-1 area of its own", () => {

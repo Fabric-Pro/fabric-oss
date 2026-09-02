@@ -23,6 +23,15 @@ import type {
 	ReconcileOutcome,
 } from "./publishing-decisions";
 import { reconcileTopicQuestions } from "./publishing-decisions";
+// The tenant fence lives beside this module rather than in it, because
+// `publishing-drafts.ts` needs the identical check and a second copy of the
+// thing that stops one org's row being written under another's identity is the
+// worst duplication in this subsystem.
+import {
+	isUniqueViolation,
+	lockProjectTenant,
+	sameTenant,
+} from "./publishing-tenant-lock";
 
 /** How long a GENERATING row stays valid before a later attempt may reclaim it. */
 export const PLANNING_ANALYSIS_TIMEOUT_MS = 10 * 60 * 1000;
@@ -48,81 +57,6 @@ export type StartPlanningAnalysisResult =
 	 */
 	| { status: "project_ineligible" }
 	| { status: "not_found" };
-
-/** The Project columns the lock reads. */
-interface LockedProject {
-	organizationId: string | null;
-	userId: string;
-	status: string;
-	deletedAt: Date | null;
-}
-
-/**
- * Lock the Project row and return the XOR-normalised tenant tuple, or null when
- * the project is missing or ineligible.
- *
- * `FOR UPDATE` blocks a concurrent org transfer from committing until the
- * calling transaction does, which CLOSES the window rather than detecting it
- * afterwards. Prisma has no `FOR UPDATE` on `findUnique`, so this is raw SQL —
- * the same shape `persistCycleTerminal` and `createManualPublishingTopic` use.
- *
- * Eligibility (`ACTIVE`, not soft-deleted) is checked on the locked row too,
- * mirroring `persistCycleTerminal`: a project archived after the request must
- * not receive new work.
- */
-async function lockProjectTenant(
-	tx: {
-		$queryRaw: (
-			strings: TemplateStringsArray,
-			...values: unknown[]
-		) => Promise<unknown>;
-	},
-	projectId: string,
-): Promise<{ organizationId: string | null; userId: string | null } | null> {
-	const rows =
-		(await tx.$queryRaw`SELECT "organizationId", "userId", "status", "deletedAt" FROM "project" WHERE "id" = ${projectId} FOR UPDATE`) as LockedProject[];
-	const project = rows?.[0];
-	if (!project || project.status !== "ACTIVE" || project.deletedAt !== null) {
-		return null;
-	}
-	// XOR-normalise the LOCKED row: org project → userId null; personal → org
-	// null. Identical to `resolveProjectTenant`, but derived from a row this
-	// transaction holds a lock on rather than from a separate, race-prone read.
-	const organizationId = project.organizationId ?? null;
-	return {
-		organizationId,
-		userId: organizationId ? null : project.userId,
-	};
-}
-
-/** The tenant tuple a row or a project carries, XOR-normalised. */
-interface TenantTuple {
-	organizationId: string | null;
-	userId: string | null;
-}
-
-/**
- * Whether a stored tuple still describes the project it hangs off.
- *
- * BOTH halves, always. For an organization project the org discriminates and
- * `userId` is null on each side; for a personal project the org is null on each
- * side and `userId` is the only thing telling one owner from another — so
- * comparing the org alone would call two different people's rows a match.
- */
-function sameTenant(a: TenantTuple, b: TenantTuple): boolean {
-	return (
-		(a.organizationId ?? null) === (b.organizationId ?? null) &&
-		(a.userId ?? null) === (b.userId ?? null)
-	);
-}
-
-function isUniqueViolation(error: unknown): boolean {
-	return (
-		typeof error === "object" &&
-		error !== null &&
-		(error as { code?: string }).code === "P2002"
-	);
-}
 
 /**
  * Open a new Planning & Analysis attempt for one topic.
