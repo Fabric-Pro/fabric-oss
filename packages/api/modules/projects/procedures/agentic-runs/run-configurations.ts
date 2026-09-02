@@ -19,6 +19,7 @@ import {
 	listRunConfigurations,
 	updateRunConfiguration,
 } from "@repo/database";
+import { QA_RESOLUTION_PATTERN } from "@repo/utils/qa-resolutions";
 import { z } from "zod";
 import {
 	Permissions,
@@ -29,7 +30,7 @@ import { assertPipelineResultsEnabled } from "../../lib/pipeline-results-feature
 
 /** Same closed sets the QA policy validates against. */
 const browserSchema = z.enum(["chromium", "firefox", "webkit"]);
-const resolutionSchema = z.string().regex(/^\d{3,5}x\d{3,5}$/, {
+const resolutionSchema = z.string().regex(QA_RESOLUTION_PATTERN, {
 	message: "Use WIDTHxHEIGHT, e.g. 1920x1080",
 });
 

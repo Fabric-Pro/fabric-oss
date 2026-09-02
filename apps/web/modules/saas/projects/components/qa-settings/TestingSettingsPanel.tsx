@@ -1,5 +1,6 @@
 "use client";
 
+import { resolveScepticRoles } from "@repo/utils/qa-test-types";
 import { orpc } from "@shared/lib/orpc-query-utils";
 import { useQuery } from "@tanstack/react-query";
 import { Button } from "@ui/components/button";
@@ -157,17 +158,27 @@ export function TestingSettingsPanel({ project, canEdit }: Props) {
 								{settings.indexCoverageEnabled && (
 									<>
 										{" "}
-										· target{" "}
+										· automation target{" "}
 										<b className="font-semibold text-foreground">
 											{settings.coverageTarget}%
 										</b>
 									</>
+								)}
+								{settings.testCoverageTarget > 0 && (
+									<>
+										{" "}
+										· done gate{" "}
+										<b className="font-semibold text-foreground">
+											{settings.testCoverageTarget}%
+										</b>
+									</>
 								)}{" "}
 								·{" "}
+								{/* Effective, not stored: depth silences roles whose
+								    dimension it excludes, and a summary counting them
+								    anyway overstated what a planning run would write. */}
 								<b className="font-semibold text-foreground">
-									{settings.scepticRolesEnabled
-										? settings.scepticRoles.length
-										: 0}
+									{effectiveScepticCount(settings)}
 								</b>{" "}
 								sceptic roles ·{" "}
 								{settings.pipelineSyncEnabled ? (
@@ -258,6 +269,25 @@ export function TestingSettingsPanel({ project, canEdit }: Props) {
 			</div>
 		</div>
 	);
+}
+
+/**
+ * How many sceptic roles a planning run would actually hear from — exactly
+ * what `resolveScepticRoles` computes for the drafting prompt, so the summary
+ * can never drift from what a run does.
+ */
+function effectiveScepticCount(settings: {
+	strategyDepth: string;
+	requiredTestTypes: string[];
+	scepticRolesEnabled: boolean;
+	scepticRoles: string[];
+}): number {
+	return resolveScepticRoles({
+		depth: settings.strategyDepth,
+		requiredTestTypes: settings.requiredTestTypes,
+		scepticRoles: settings.scepticRoles,
+		scepticRolesEnabled: settings.scepticRolesEnabled,
+	}).length;
 }
 
 /**

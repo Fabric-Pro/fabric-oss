@@ -20,16 +20,15 @@ import {
 	SelectTrigger,
 	SelectValue,
 } from "@ui/components/select";
-import { Slider } from "@ui/components/slider";
 import { Switch } from "@ui/components/switch";
 import { Textarea } from "@ui/components/textarea";
 import { cn } from "@ui/lib";
 import { CheckIcon, Loader2Icon } from "lucide-react";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
+import { DevicesSectionBody } from "./DevicesSection";
+import { PercentField } from "./PercentField";
 import {
-	BROWSER_LABEL,
-	BROWSERS,
 	type Browser,
 	EVIDENCE_POLICIES,
 	EVIDENCE_POLICY_LABEL,
@@ -37,14 +36,15 @@ import {
 	knownScepticRoles,
 	PIPELINE_SYNC_INTERVAL_OPTIONS,
 	REQUIRED_TEST_TYPE_LABELS,
+	RESOLUTION_PATTERN,
 	SCEPTIC_DEPTH_INTERACTION_NOTE,
 	SCEPTIC_ROLES,
 	type ScepticRoleKey,
 	STRATEGY_DEPTH_INFO,
 	STRATEGY_DEPTHS,
 	type StrategyDepth,
-	SUGGESTED_RESOLUTIONS,
 } from "./qa-settings-constants";
+import { SignOffSectionBody } from "./SignOffSection";
 import {
 	dirtySections,
 	TESTING_SECTIONS,
@@ -62,7 +62,13 @@ type Draft = {
 	prReviewArchitectureLensEnabled: boolean;
 	prReviewAutoReviewEnabled: boolean;
 	architectureRules: string;
+	/** Reporting target for the automation rings. Blocks nothing. */
 	coverageTarget: number;
+	/**
+	 * The Done-transition gate, in % of acceptance criteria needing a linked
+	 * case. 0 = off — the same convention as `requiredQaSignOffs`.
+	 */
+	testCoverageTarget: number;
 	resolutions: string[];
 	browsers: Browser[];
 	rulesMarkdown: string;
@@ -140,6 +146,10 @@ export function ProjectQaSettingsForm({
 	// say whether anything is genuinely unsaved — and so Discard has something
 	// to return to.
 	const [saved, setSaved] = useState<Draft | null>(null);
+	// Text buffer for the custom-resolution field. Kept separate from the draft
+	// so half-typed values ("2560x1") don't churn the unsaved-changes state;
+	// only a value matching the WxH shape reaches the draft.
+	const [customResolution, setCustomResolution] = useState("");
 
 	// Seed the draft from the server once it arrives (and whenever a save
 	// returns), so the form always reflects what is actually stored.
@@ -163,6 +173,7 @@ export function ProjectQaSettingsForm({
 			prReviewAutoReviewEnabled: loaded.prReviewAutoReviewEnabled,
 			architectureRules: loaded.architectureRules ?? "",
 			coverageTarget: loaded.coverageTarget,
+			testCoverageTarget: loaded.testCoverageTarget,
 			resolutions: loaded.resolutions,
 			browsers: loaded.browsers as Browser[],
 			rulesMarkdown: loaded.rulesMarkdown ?? "",
@@ -178,6 +189,10 @@ export function ProjectQaSettingsForm({
 		};
 		setDraft(fromServer);
 		setSaved(fromServer);
+		// The free-text field is for ENTERING a custom size, never a second
+		// display of the stored one — a non-preset resolution already shows as
+		// its selected chip, and rendering it twice would read as two values.
+		setCustomResolution("");
 	}, [loaded]);
 
 	const saveMutation = useMutation(
@@ -573,9 +588,9 @@ export function ProjectQaSettingsForm({
 					{draft.indexCoverageEnabled && (
 						<div className="mt-4">
 							<PercentField
-								id="coverage-target"
-								label="Coverage target"
-								hint="The level the coverage rings are measured against."
+								id="automation-target"
+								label="Automation target"
+								hint="The level the automation figure on the Testing tab is measured against. Reporting only — it blocks nothing."
 								value={draft.coverageTarget}
 								disabled={!canEdit}
 								onChange={(v) => set("coverageTarget", v)}
@@ -688,51 +703,27 @@ export function ProjectQaSettingsForm({
 			{show("devices") && (
 				<Section
 					title="Devices & browsers"
-					description="Default resolutions and browser engines."
+					description="The one combination a run uses unless it is overridden when the run starts."
 				>
-					<Label>Default resolution</Label>
-					<div className="mt-1.5 flex flex-wrap gap-2">
-						{[
-							...new Set([
-								...SUGGESTED_RESOLUTIONS,
-								...draft.resolutions,
-							]),
-						].map((res) => (
-							<Chip
-								key={res}
-								label={res}
-								selected={draft.resolutions.includes(res)}
-								disabled={!canEdit}
-								onClick={() =>
-									set(
-										"resolutions",
-										toggleIn(draft.resolutions, res),
-									)
-								}
-							/>
-						))}
-					</div>
-
-					<Label className="mt-4 block">Default browser</Label>
-					<div className="mt-1.5 flex flex-wrap gap-2">
-						{BROWSERS.map((browser) => (
-							<Chip
-								key={browser}
-								label={BROWSER_LABEL[browser]}
-								selected={draft.browsers.includes(browser)}
-								disabled={!canEdit}
-								onClick={() =>
-									set(
-										"browsers",
-										toggleIn(
-											draft.browsers,
-											browser,
-										) as Browser[],
-									)
-								}
-							/>
-						))}
-					</div>
+					<DevicesSectionBody
+						resolution={draft.resolutions[0]}
+						browser={draft.browsers[0]}
+						customResolution={customResolution}
+						canEdit={canEdit}
+						onSelectResolution={(res) => {
+							set("resolutions", [res]);
+							setCustomResolution("");
+						}}
+						onSelectBrowser={(browser) =>
+							set("browsers", [browser])
+						}
+						onCustomResolution={(next) => {
+							setCustomResolution(next);
+							if (RESOLUTION_PATTERN.test(next)) {
+								set("resolutions", [next]);
+							}
+						}}
+					/>
 				</Section>
 			)}
 
@@ -893,44 +884,15 @@ export function ProjectQaSettingsForm({
 			{show("signOff") && (
 				<Section
 					title="Sign-off"
-					description="How many people must record a QA sign-off before a feature can move to Done. The gate counts distinct people per feature, so the same person signing twice does not clear a threshold of two."
+					description="What blocks a feature from moving to Done. The sign-off gate counts distinct people per feature, so the same person signing twice does not clear a threshold of two."
 				>
-					<div className="max-w-xs">
-						<Label htmlFor="required-qa-sign-offs">
-							Required sign-offs
-						</Label>
-						<p className="text-muted-foreground text-xs">
-							Zero disables the gate. A feature that has not
-							collected enough sign-offs is refused the move to
-							Done, and the refusal names how many it has.
-						</p>
-						<Input
-							id="required-qa-sign-offs"
-							type="number"
-							inputMode="numeric"
-							min={0}
-							max={10}
-							step={1}
-							className="mt-2"
-							value={draft.requiredQaSignOffs}
-							disabled={!canEdit}
-							onChange={(e) => {
-								// Clamped here as well as server-side: the input
-								// lets a reader type 40, and a value the API will
-								// reject should not sit in the form looking saved.
-								const next = Number.parseInt(
-									e.target.value,
-									10,
-								);
-								set(
-									"requiredQaSignOffs",
-									Number.isNaN(next)
-										? 0
-										: Math.max(0, Math.min(10, next)),
-								);
-							}}
-						/>
-					</div>
+					<SignOffSectionBody
+						requiredQaSignOffs={draft.requiredQaSignOffs}
+						testCoverageTarget={draft.testCoverageTarget}
+						canEdit={canEdit}
+						onSignOffs={(v) => set("requiredQaSignOffs", v)}
+						onGate={(v) => set("testCoverageTarget", v)}
+					/>
 				</Section>
 			)}
 
@@ -1045,7 +1007,13 @@ export function ProjectQaSettingsForm({
 							type="button"
 							variant="ghost"
 							disabled={!isDirty || saveMutation.isPending}
-							onClick={() => setDraft(saved)}
+							onClick={() => {
+								setDraft(saved);
+								// The buffer lives outside the draft, so restoring
+								// the draft alone would leave discarded text in
+								// the custom-resolution field.
+								setCustomResolution("");
+							}}
 						>
 							Discard
 						</Button>
@@ -1102,91 +1070,5 @@ function Section({
 			</div>
 			{children}
 		</section>
-	);
-}
-
-/** A 0–100 slider with its live value — used by both percentage settings. */
-function PercentField({
-	id,
-	label,
-	hint,
-	value,
-	disabled,
-	onChange,
-}: {
-	id: string;
-	label: string;
-	hint: string;
-	value: number;
-	disabled: boolean;
-	onChange: (value: number) => void;
-}) {
-	return (
-		<div>
-			<div className="flex items-baseline justify-between gap-3">
-				<Label htmlFor={id}>{label}</Label>
-				<span className="font-semibold text-sm tabular-nums">
-					{value}%
-				</span>
-			</div>
-			<p className="text-muted-foreground text-xs">{hint}</p>
-			<div className="mt-2 flex items-center gap-3">
-				<Slider
-					id={id}
-					min={0}
-					max={100}
-					step={5}
-					disabled={disabled}
-					value={[value]}
-					onValueChange={([next]) => onChange(next ?? value)}
-					className="flex-1"
-				/>
-				<Input
-					type="number"
-					min={0}
-					max={100}
-					disabled={disabled}
-					value={value}
-					aria-label={`${label} value`}
-					onChange={(e) => {
-						const next = Number.parseInt(e.target.value, 10);
-						if (Number.isFinite(next)) {
-							onChange(Math.max(0, Math.min(100, next)));
-						}
-					}}
-					className="w-20"
-				/>
-			</div>
-		</div>
-	);
-}
-
-function Chip({
-	label,
-	selected,
-	disabled,
-	onClick,
-}: {
-	label: string;
-	selected: boolean;
-	disabled: boolean;
-	onClick: () => void;
-}) {
-	return (
-		<button
-			type="button"
-			disabled={disabled}
-			aria-pressed={selected}
-			onClick={onClick}
-			className={cn(
-				"rounded-full border px-3 py-1 text-xs motion-safe:transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
-				selected
-					? "border-primary bg-primary/10 text-foreground"
-					: "text-muted-foreground hover:bg-accent/50",
-				disabled && "cursor-not-allowed opacity-70",
-			)}
-		>
-			{label}
-		</button>
 	);
 }

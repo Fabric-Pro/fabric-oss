@@ -39,16 +39,25 @@ export const QA_SETTINGS_DEFAULTS = {
 	requiredTestTypes: [] as string[],
 	confidenceThreshold: 80,
 	indexCoverageEnabled: true,
+	// Reporting target for the automation rings only — it blocks nothing.
 	coverageTarget: 80,
+	// The Done gate ships OFF (0), like `requiredQaSignOffs`: a project that
+	// has not chosen a number is not silently blocked. The UI pre-fills 30
+	// when the gate is switched on.
+	testCoverageTarget: 0,
 	requiredQaSignOffs: 0,
-	resolutions: ["1920x1080", "1366x768"],
+	resolutions: ["1920x1080"],
 	browsers: ["chromium"],
 	rulesMarkdown: null as string | null,
 	implementationNotes: null as string | null,
 	evidencePolicy: "SCREENSHOT_REQUIRED" as QaEvidencePolicy,
 	evidenceRetentionDays: 90,
 	scepticRolesEnabled: true,
-	scepticRoles: [...QA_SCEPTIC_ROLES] as string[],
+	// UX Skeptic only. The other four either write nothing at the default
+	// depth (security/performance/accessibility are silenced by it) or add
+	// broad generated noise (edge case) — an unconfigured project should get
+	// the one persona that reliably earns its spend.
+	scepticRoles: ["ux"] as string[],
 	defaultEnvironmentId: null as string | null,
 	// Automatic pipeline-result sync. These defaults reproduce the
 	// shipped behaviour exactly, so a project that never opens the page keeps
@@ -79,6 +88,7 @@ const qaSettingsSelect = {
 	confidenceThreshold: true,
 	indexCoverageEnabled: true,
 	coverageTarget: true,
+	testCoverageTarget: true,
 	requiredQaSignOffs: true,
 	resolutions: true,
 	browsers: true,

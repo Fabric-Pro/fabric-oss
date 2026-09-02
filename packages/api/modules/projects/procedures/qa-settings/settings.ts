@@ -4,6 +4,7 @@ import {
 	QA_SCEPTIC_ROLES,
 	upsertProjectQaSettings,
 } from "@repo/database";
+import { QA_RESOLUTION_PATTERN } from "@repo/utils/qa-resolutions";
 import { QA_TEST_TYPES } from "@repo/utils/qa-test-types";
 import { z } from "zod";
 import { recordAuditFromRequest } from "../../../../lib/audit";
@@ -16,7 +17,7 @@ import {
 /** `1920x1080` — the only resolution shape the run config knows how to use. */
 const resolutionSchema = z
 	.string()
-	.regex(/^\d{3,5}x\d{3,5}$/, "Use WIDTHxHEIGHT, e.g. 1920x1080");
+	.regex(QA_RESOLUTION_PATTERN, "Use WIDTHxHEIGHT, e.g. 1920x1080");
 
 /**
  * Read the project's QA policy. Returns defaults (with `configured: false`) when
@@ -61,6 +62,10 @@ export const updateProjectQaSettingsProcedure = tenantProtectedProcedure
 			confidenceThreshold: z.number().int().min(0).max(100).optional(),
 			indexCoverageEnabled: z.boolean().optional(),
 			coverageTarget: z.number().int().min(0).max(100).optional(),
+			// The Done-transition gate. 0 disables it, like `requiredQaSignOffs`
+			// below; the reporting target above is a different axis and must not
+			// be read by the gate.
+			testCoverageTarget: z.number().int().min(0).max(100).optional(),
 			// 0 disables the gate. Capped at 10 because a threshold nobody can
 			// reach is a footgun, not a policy — a project with 4 members cannot
 			// satisfy 20 and would be permanently unable to mark anything done.

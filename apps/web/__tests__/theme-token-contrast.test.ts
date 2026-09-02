@@ -173,6 +173,39 @@ describe("design-token fill / foreground contrast", () => {
 	});
 });
 
+describe("slider component contrast (WCAG 2.1 1.4.11)", () => {
+	// The shared Slider (`modules/ui/components/slider.tsx`) paints its unfilled
+	// track in `--muted`, its filled range in `--primary`, and its thumb as a
+	// `--primary` disc with a `--background` border. Non-text contrast requires
+	// 3:1 between adjacent parts that convey state — filled vs unfilled, and the
+	// thumb against whichever segment it overlaps. Over the unfilled track the
+	// disc carries it; over the filled range it would vanish into its own
+	// colour, so the border carries that case.
+	const NON_TEXT = 3;
+
+	for (const theme of ["light", "dark"] as const) {
+		const tokens = readTokens(theme);
+
+		it(`${theme}: filled range clears 3:1 against the unfilled track`, () => {
+			const ratio = contrastRatio(
+				parseHex(tokens.get("primary") as string),
+				parseHex(tokens.get("muted") as string),
+			);
+			expect(ratio).toBeGreaterThanOrEqual(NON_TEXT);
+		});
+
+		it(`${theme}: thumb border clears 3:1 against the filled range`, () => {
+			// The case hue alone cannot carry: same-colour thumb on same-colour
+			// range is separated only by the background border.
+			const ratio = contrastRatio(
+				parseHex(tokens.get("primary") as string),
+				parseHex(tokens.get("background") as string),
+			);
+			expect(ratio).toBeGreaterThanOrEqual(NON_TEXT);
+		});
+	}
+});
+
 describe("ink tokens on the neutral surfaces", () => {
 	/**
 	 * The `-foreground` guard above covers ink on its OWN fill, which is a
