@@ -33,8 +33,14 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Not in the private staging repo: fabric-oss runs this identical job on the
+  # relayed change, so running it there too only duplicated the analysis (knip
+  # reads the whole graph, so both runs see exactly the same tree). The guard
+  # names fabric-dev rather than allow-listing fabric-oss so every other copy
+  # of this tree still runs it.
   knip:
     name: Knip (dead code and dependencies)
+    if: github.repository != 'Fabric-Pro/fabric-dev'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
