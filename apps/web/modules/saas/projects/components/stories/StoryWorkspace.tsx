@@ -915,7 +915,11 @@ export function StoryWorkspace({
 	const onMaturationAnswer = (
 		questionId: string,
 		answer: string,
-		opts?: { summary?: string; answerSource?: AnswerSource },
+		opts?: {
+			summary?: string;
+			answerSource?: AnswerSource;
+			mentionedUserIds?: string[];
+		},
 	) =>
 		maturationAnswerMutation.mutate({
 			...maturationEditorInput,
@@ -923,6 +927,11 @@ export function StoryWorkspace({
 			answer,
 			summary: opts?.summary?.trim() ? opts.summary.trim() : undefined,
 			answerSource: opts?.answerSource,
+			// Who the answer CITED (#1751, AC-10). Undefined rather than an empty
+			// array so an answer that names nobody sends no field at all.
+			mentionedUserIds: opts?.mentionedUserIds?.length
+				? opts.mentionedUserIds
+				: undefined,
 		});
 
 	const onMaturationSaveNotes = (content: string) =>

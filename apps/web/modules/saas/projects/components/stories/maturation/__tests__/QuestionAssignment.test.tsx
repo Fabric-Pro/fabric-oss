@@ -211,6 +211,11 @@ describe("the answer box with a mention", () => {
 
 		expect(onAnswer).toHaveBeenCalledTimes(1);
 		expect(onSetAssignees).not.toHaveBeenCalled();
+		// The cited person still has to HEAR they were cited — the notice is
+		// informational, which is the whole difference from being asked.
+		expect(onAnswer.mock.calls[0][2]).toMatchObject({
+			mentionedUserIds: ["u_sam"],
+		});
 	});
 
 	it("names up to two people, then counts", async () => {

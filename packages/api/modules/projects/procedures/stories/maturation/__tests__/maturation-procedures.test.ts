@@ -52,6 +52,9 @@ const { handlers, mocks } = vi.hoisted(() => {
 		assertTestCasesFeatureEnabled: vi.fn(),
 		// Question assignment (#1751)
 		listQuestionAssignees: vi.fn().mockResolvedValue(new Map()),
+		questionAnswered: vi.fn(),
+		questionMentioned: vi.fn(),
+		filterAuthorizedMentionRecipients: vi.fn(),
 		userFindMany: vi.fn().mockResolvedValue([]),
 		isFeatureEnabled: vi.fn().mockResolvedValue(true),
 	};
@@ -154,6 +157,20 @@ vi.mock("@repo/database", () => ({
 	},
 	parseQaAnalysis: mocks.parseQaAnalysis,
 	setQaAnalysis: mocks.setQaAnalysis,
+}));
+
+// The two informational notices an answer raises (#1751, AC-10/AC-14). Mocked
+// rather than exercised: the fan-out helpers have their own coverage, and what
+// these tests pin is WHICH answers reach them.
+vi.mock("../../../../../../lib/notification-service", () => ({
+	fanOut: {
+		questionAnswered: mocks.questionAnswered,
+		questionMentioned: mocks.questionMentioned,
+	},
+}));
+
+vi.mock("../../../../lib/user-mention", () => ({
+	filterAuthorizedMentionRecipients: mocks.filterAuthorizedMentionRecipients,
 }));
 
 // The QA analysis model call is exercised in its own lib; here it is stubbed so
@@ -288,6 +305,11 @@ beforeEach(() => {
 	// Question assignment (#1751) — set here rather than at declaration because
 	// the loop above mockReset()s every implementation.
 	mocks.listQuestionAssignees.mockResolvedValue(new Map());
+	// The narrowing is exercised in `user-mention`'s own tests; here it passes
+	// through, so a test that stubs no members still reaches the fan-out.
+	mocks.filterAuthorizedMentionRecipients.mockImplementation(
+		async (ids: string[]) => ids,
+	);
 	mocks.userFindMany.mockResolvedValue([]);
 	mocks.isFeatureEnabled.mockResolvedValue(true);
 	mocks.getApprovalPreference.mockResolvedValue(null);
@@ -737,6 +759,126 @@ describe("answerQuestion dedupe (AC-2.4)", () => {
 		expect(result.deduped).toBe(false);
 		expect(result.decision.id).toBe("root-open");
 		expect(result.decision.status).toBe("RESOLVED");
+	});
+});
+
+describe("answerQuestion → who hears about it (#1751, AC-10/AC-14)", () => {
+	/**
+	 * The two informational halves of question routing. Neither asks for
+	 * anything — one says a question you handed out is settled, the other says an
+	 * answer named you — which is what separates both from QUESTION_ASSIGNED.
+	 *
+	 * Both were written with the feature and never called: `fanOut.questionAnswered`
+	 * and `fanOut.questionMentioned` had no production caller, so answering a
+	 * question told the person who asked it precisely nothing.
+	 */
+	const openRoot = {
+		id: "root-1",
+		status: "OPEN",
+		summary: "What retention period applies?",
+		content: "What retention period applies?",
+		questionId: "q1",
+		impactedSection: null,
+		createdAt: new Date("2026-06-10"),
+	};
+
+	function resolvedRoot() {
+		return { ...openRoot, status: "RESOLVED", content: "Ninety days." };
+	}
+
+	it("tells whoever ASKED that their question is settled", async () => {
+		mocks.findDecisionByQuestionId.mockResolvedValue(openRoot);
+		mocks.resolveQuestionThread.mockResolvedValue(resolvedRoot());
+		mocks.listQuestionAssignees.mockResolvedValue(
+			new Map([
+				[
+					"root-1",
+					[
+						// Two people on the question, handed over by the SAME
+						// asker — who must hear back exactly once.
+						{
+							assigneeUserId: "user-sam",
+							assignedByUserId: "user-asker",
+						},
+						{
+							assigneeUserId: "user-dana",
+							assignedByUserId: "user-asker",
+						},
+					],
+				],
+			]),
+		);
+
+		await answerQuestion({
+			input: { ...base, questionId: "q1", answer: "Ninety days." },
+			context: ctx,
+		});
+
+		expect(mocks.questionAnswered).toHaveBeenCalledTimes(1);
+		const args = mocks.questionAnswered.mock.calls[0][0];
+		expect(args.recipientUserIds).toEqual(["user-asker"]);
+		// The anchor is the question root, so the notice lands ON the question.
+		expect(args.questionRootId).toBe("root-1");
+	});
+
+	it("tells anyone the answer CITED, narrowed to project members", async () => {
+		mocks.findDecisionByQuestionId.mockResolvedValue(openRoot);
+		mocks.resolveQuestionThread.mockResolvedValue(resolvedRoot());
+		// One of the two named ids no longer belongs to the project.
+		mocks.filterAuthorizedMentionRecipients.mockResolvedValue(["user-sam"]);
+
+		await answerQuestion({
+			input: {
+				...base,
+				questionId: "q1",
+				answer: "As per @Sam R., ninety days.",
+				mentionedUserIds: ["user-sam", "user-stranger"],
+			},
+			context: ctx,
+		});
+
+		expect(mocks.filterAuthorizedMentionRecipients).toHaveBeenCalledWith(
+			["user-sam", "user-stranger"],
+			"project-1",
+			null,
+		);
+		expect(mocks.questionMentioned).toHaveBeenCalledTimes(1);
+		expect(
+			mocks.questionMentioned.mock.calls[0][0].recipientUserIds,
+		).toEqual(["user-sam"]);
+	});
+
+	it("stays silent on a DEDUPED answer — nothing new happened", async () => {
+		// Already settled: the idempotent path returns early. Re-submitting the
+		// same answer must not re-ping the asker.
+		mocks.findDecisionByQuestionId.mockResolvedValue(resolvedRoot());
+
+		const result = (await answerQuestion({
+			input: {
+				...base,
+				questionId: "q1",
+				answer: "Ninety days.",
+				mentionedUserIds: ["user-sam"],
+			},
+			context: ctx,
+		})) as { deduped: boolean };
+
+		expect(result.deduped).toBe(true);
+		expect(mocks.questionAnswered).not.toHaveBeenCalled();
+		expect(mocks.questionMentioned).not.toHaveBeenCalled();
+	});
+
+	it("names nobody when the answer cites nobody and nobody asked", async () => {
+		mocks.findDecisionByQuestionId.mockResolvedValue(openRoot);
+		mocks.resolveQuestionThread.mockResolvedValue(resolvedRoot());
+
+		await answerQuestion({
+			input: { ...base, questionId: "q1", answer: "Ninety days." },
+			context: ctx,
+		});
+
+		expect(mocks.questionAnswered).not.toHaveBeenCalled();
+		expect(mocks.questionMentioned).not.toHaveBeenCalled();
 	});
 });
 
