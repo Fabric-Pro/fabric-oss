@@ -154,7 +154,7 @@ export const updatePublishingSuiteSettingsProcedure = tenantProtectedProcedure
 		}),
 	)
 	.handler(async ({ input, context }) => {
-		assertPublishingSuiteFeatureEnabled();
+		await assertPublishingSuiteFeatureEnabled(input.projectId);
 		// Re-validate against the LIVE linked-channel set. Not a security boundary
 		// — the send path resolves these again and skips anything it cannot find —
 		// but without it the stored list accumulates targets that can never be

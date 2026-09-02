@@ -29,7 +29,10 @@ const {
 	mockGetHandle,
 	mockDescribe,
 	mockGetClient,
-	mockIsEnabled,
+	mockGetGlobalFlagOverride,
+	mockGetEnabledOrgIds,
+	mockGetDisabledOrgIds,
+	mockGetOrgFlagOverride,
 	mockDb,
 	mockGetLastCountedPublishingRuns,
 	mockLastRunHash,
@@ -44,7 +47,24 @@ const {
 	mockGetHandle: vi.fn(),
 	mockDescribe: vi.fn(),
 	mockGetClient: vi.fn(),
-	mockIsEnabled: vi.fn(),
+	// Sweep-level AND dispatch-level global read (fix round 2 §FIX 2, §E) —
+	// the ONE uncached reader both `findEligibleProjects` and the dispatcher's
+	// F3 org re-check consume, through the real (unmocked) `resolveFlag` —
+	// never through the cached `isFeatureEnabled`, which neither call site
+	// uses any more. See the `@repo/database` mock below.
+	mockGetGlobalFlagOverride: vi.fn(),
+	// The org-scoped lists `findEligibleProjects` consults to build its
+	// sweep-wide filter. `findEligibleProjects` is a REAL (unmocked) function
+	// from `../find-eligible-projects` — only the `@repo/database` readers it
+	// calls internally are mocked, via the barrel mock below.
+	mockGetEnabledOrgIds: vi.fn(),
+	mockGetDisabledOrgIds: vi.fn(),
+	// The single-row org-override read `isPublishingSuiteEnabledForOrganizationUncached`
+	// consults for one project's org (Copilot-review follow-up: reshaped from
+	// the two list readers above to a single `findUnique`-shaped read).
+	// `isPublishingSuiteEnabledForOrganizationUncached` is likewise a REAL
+	// (unmocked) function from `../find-eligible-projects`.
+	mockGetOrgFlagOverride: vi.fn(),
 	mockDb: {
 		// findFirst is the F3 eligibility-scoped fresh read; findUnique is retained
 		// so the pre-fix source (RED demonstration) still resolves a project row and
@@ -105,12 +125,33 @@ vi.mock("@repo/database", async () => {
 		getPublishingSuiteSettings: (...a: unknown[]) => mockGetSettings(...a),
 		ensureRunningBackgroundJob: (...a: unknown[]) => mockEnsureJob(...a),
 		failBackgroundJob: (...a: unknown[]) => mockFailJob(...a),
+		// The org-scoped-flags slice's Task 8: findEligibleProjects reads both
+		// through the package barrel now, replacing the old
+		// `@repo/utils/feature-flag` gate mocked here previously. Both touch
+		// `db.organizationFeatureFlagOverride` / `db.featureFlagOverride`
+		// internally via the package's OWN relative `../client` import (like
+		// getPublishingSuiteSettings above), so mocking `db` above does not
+		// reach them either — mock the functions themselves.
+		//
+		// Fix round 2 (§FIX 2, §E): neither the sweep's global read nor the
+		// dispatcher's per-project F3 re-check goes through `isFeatureEnabled`
+		// any more — both resolve through `getGlobalFlagOverride` (UNCACHED)
+		// plus the real, unmocked `resolveFlag` (`@repo/utils/feature-flag-registry`,
+		// imported outside this barrel so `importActual` above never touches
+		// it). `isFeatureEnabled` is intentionally left UNMOCKED here: nothing
+		// under test calls it any more, and a stray call would now fail loudly
+		// (a real DB client with no override) instead of silently succeeding
+		// against a leftover mock.
+		getGlobalFlagOverride: (...a: unknown[]) =>
+			mockGetGlobalFlagOverride(...a),
+		getEnabledOrganizationIds: (...a: unknown[]) =>
+			mockGetEnabledOrgIds(...a),
+		getDisabledOrganizationIds: (...a: unknown[]) =>
+			mockGetDisabledOrgIds(...a),
+		getOrganizationFlagOverrideUncached: (...a: unknown[]) =>
+			mockGetOrgFlagOverride(...a),
 	};
 });
-
-vi.mock("@repo/utils/feature-flag", () => ({
-	isPublishingSuiteEnabled: (...a: unknown[]) => mockIsEnabled(...a),
-}));
 
 // Relative to src/activities/publishing-suggestion/ → resolves to src/client.
 vi.mock("../../../client", () => ({ getTemporalClient: mockGetClient }));
@@ -139,9 +180,11 @@ const NOW = new Date("2026-07-14T06:00:00.000Z");
 const MIN = 60 * 1000;
 
 /** A GENERATING cycle whose startedAt is `agoMs` before NOW. Defaults to the
- *  SAME tenant tuple as the default fresh project (personal, user-1) so the
- *  tri-state reclaim tests exercise the same-tenant path; the F2 cross-tenant
- *  supersede is tested with an explicit mismatched tuple. */
+ *  SAME tenant tuple as the default fresh project (org-1, XOR-normalized
+ *  userId null) so the tri-state reclaim tests exercise the same-tenant path;
+ *  the F2 cross-tenant supersede is tested with an explicit mismatched
+ *  tuple. ADR-018: the default fresh project is org-scoped, not personal —
+ *  see the `setFresh` default in `beforeEach` above. */
 function generating(
 	agoMs: number,
 	overrides: Partial<{
@@ -160,9 +203,9 @@ function generating(
 				: overrides.executionTimeoutAt,
 		organizationId:
 			overrides.organizationId === undefined
-				? null
+				? "org-1"
 				: overrides.organizationId,
-		userId: overrides.userId === undefined ? "user-1" : overrides.userId,
+		userId: overrides.userId === undefined ? null : overrides.userId,
 	};
 }
 
@@ -230,7 +273,22 @@ beforeEach(() => {
 	// inherits a bounded write that can only complete by advancing fake
 	// timers, and times out instead.
 	mockEnsureJob.mockImplementation(() => undefined);
-	mockIsEnabled.mockReturnValue(true);
+	// Globally enabled by default (today's dev/staging path — with nothing
+	// explicitly disabled here, no organization filter is applied). The
+	// OFF+org-scoped path is exercised by its own test below. The
+	// globally-enabled-but-disabled-organization path is NOT exercised in
+	// this file — it is owned by the sibling
+	// find-eligible-projects.org-filter.test.ts, which asserts the exact
+	// where-clause shape for all three branches; duplicating it here with
+	// this file's heavier end-to-end mocks would be redundant and could
+	// drift out of sync with that authoritative version.
+	mockGetGlobalFlagOverride.mockResolvedValue(true);
+	mockGetEnabledOrgIds.mockResolvedValue([]);
+	mockGetDisabledOrgIds.mockResolvedValue([]);
+	// No org override row by default — the F3 re-check falls through to the
+	// global value above, matching the "nothing overridden" default the list
+	// readers express for the sweep.
+	mockGetOrgFlagOverride.mockResolvedValue(undefined);
 	mockCountNew.mockResolvedValue({ hasNew: true });
 	mockStart.mockResolvedValue({
 		workflowId: "publishing-suggestion-cycle-1",
@@ -239,7 +297,15 @@ beforeEach(() => {
 	mockGetClient.mockResolvedValue({
 		workflow: { start: mockStart, getHandle: mockGetHandle },
 	});
-	setFresh({ id: "proj-1", userId: "user-1", organizationId: null });
+	// ADR-018 ("An organization is the only tenant context"): the default
+	// fixture is an organization-owned project, not personal. A personal
+	// project is refused outright by the F3 re-check (see
+	// isPublishingSuiteEnabledForOrganizationUncached), so it can no longer
+	// stand in as this file's generic "happy path" tenant for exercising
+	// reclaim/cost-guard/job-hub/preferences mechanics unrelated to tenant
+	// routing itself — those get their own dedicated tests below (H4 fresh
+	// read / F2 tenant-tuple scoping).
+	setFresh({ id: "proj-1", userId: "user-1", organizationId: "org-1" });
 	mockDb.publishingSuggestionCycle.updateMany.mockResolvedValue({ count: 1 });
 	wireFindFirst({ prior: null, existing: null });
 	// No settings rows, no prior runs. `DEFAULT_PUBLISHING_CADENCE` is MANUAL
@@ -280,8 +346,9 @@ afterEach(() => {
 // findEligibleProjects — flag gate
 // ---------------------------------------------------------------------------
 describe("findEligibleProjects", () => {
-	it("returns no projects and never queries the db when the flag is OFF", async () => {
-		mockIsEnabled.mockReturnValue(false);
+	it("returns no projects and never queries the db when the flag is OFF everywhere", async () => {
+		mockGetGlobalFlagOverride.mockResolvedValue(false);
+		mockGetEnabledOrgIds.mockResolvedValue([]);
 		const out = await findEligibleProjects();
 		expect(out).toEqual({ projects: [] });
 		expect(mockDb.project.findMany).not.toHaveBeenCalled();
@@ -459,8 +526,8 @@ describe("dispatchPublishingSuggestion — happy path", () => {
 		expect(mockCreateOrGet).toHaveBeenCalledWith(
 			expect.objectContaining({
 				projectId: "proj-1",
-				organizationId: null,
-				userId: "user-1", // personal → tenantUserId = fresh.userId
+				organizationId: "org-1",
+				userId: null, // org context → tenantUserId XOR-normalized to null
 				actorUserId: "user-1",
 				coveredThrough: NOW,
 				executionTimeoutAt: new Date(NOW.getTime() + 2 * 60 * MIN),
@@ -483,8 +550,8 @@ describe("dispatchPublishingSuggestion — happy path", () => {
 		expect(startArgs).toEqual({
 			cycleId: "cycle-1",
 			projectId: "proj-1",
-			organizationId: null,
-			tenantUserId: "user-1",
+			organizationId: "org-1",
+			tenantUserId: null,
 			actorUserId: "user-1",
 			coveredThroughIso: NOW.toISOString(),
 			priorCoverage: {},
@@ -505,7 +572,7 @@ describe("dispatchPublishingSuggestion — happy path", () => {
 			existing: null,
 		});
 		await dispatchPublishingSuggestion({ projectId: "proj-1" });
-		expect(mockCountNew).toHaveBeenCalledWith("proj-1", null, {
+		expect(mockCountNew).toHaveBeenCalledWith("proj-1", "org-1", {
 			pullRequests: "2026-07-01T00:00:00.000Z",
 		});
 		const startArgs = mockStart.mock.calls[0][1].args[0];
@@ -636,8 +703,8 @@ describe("dispatchPublishingSuggestion — 1C-1 force/lookback pass-through", ()
 		expect(startArgs).toEqual({
 			cycleId: "cycle-1",
 			projectId: "proj-1",
-			organizationId: null,
-			tenantUserId: "user-1",
+			organizationId: "org-1",
+			tenantUserId: null,
 			actorUserId: "user-1",
 			coveredThroughIso: NOW.toISOString(),
 			priorCoverage: {},
@@ -663,8 +730,8 @@ describe("dispatchPublishingSuggestion — 1C-1 force/lookback pass-through", ()
 		expect(startArgs).toEqual({
 			cycleId: "cycle-1",
 			projectId: "proj-1",
-			organizationId: null,
-			tenantUserId: "user-1",
+			organizationId: "org-1",
+			tenantUserId: null,
 			actorUserId: "user-1",
 			coveredThroughIso: NOW.toISOString(),
 			priorCoverage: {},
@@ -902,6 +969,102 @@ describe("dispatchPublishingSuggestion — H4 fresh read", () => {
 		expect(startArgs.organizationId).toBe("org-9");
 		expect(startArgs.tenantUserId).toBe(null);
 		expect(startArgs.actorUserId).toBe("owner-9");
+	});
+
+	// Codex fix round 2: Task 8 added the organization dimension to the SWEEP's
+	// eligibility filter but the dispatch-time mirror was never extended to
+	// match — a project selected while its organization was allowed could still
+	// create a cycle and start a (cost-incurring) generation workflow if the
+	// organization was disabled, or the project transferred into a disabled
+	// organization, in the window between sweep and dispatch. These two cases
+	// prove the re-check the fix adds, driven by the FRESH organizationId, not
+	// the sweep's.
+	//
+	// Round 2 (§E): the re-check must be UNCACHED — `isFeatureEnabled` (round
+	// 1's choice) shares a 10-second TTL cache with the sweep that ran seconds
+	// earlier, which could make this re-check silently answer with the SWEEP's
+	// own stale value instead of a fresh one. It drives
+	// `getOrganizationFlagOverrideUncached` — a single-row read of this
+	// project's own organization, reshaped from the sweep's list readers in
+	// the Copilot-review follow-up — via
+	// `isPublishingSuiteEnabledForOrganizationUncached`. A present row decides
+	// the question on its own; `getGlobalFlagOverride` (the reader
+	// `findEligibleProjects` itself uses) is only consulted when the row is
+	// absent.
+	it("skips a project whose organization is disabled between sweep and dispatch (F3 organization re-check)", async () => {
+		setFresh({
+			id: "proj-1",
+			userId: "owner-1",
+			organizationId: "org-1",
+		});
+		// The organization's PUBLISHING_SUITE override flips to an explicit
+		// disabled row after the sweep selected this project but before this
+		// dispatch runs. The row alone decides — global stays enabled
+		// (beforeEach default) but must not be consulted.
+		mockGetOrgFlagOverride.mockResolvedValue(false);
+
+		await dispatchPublishingSuggestion({ projectId: "proj-1" });
+
+		expect(mockGetOrgFlagOverride).toHaveBeenCalledWith(
+			"PUBLISHING_SUITE",
+			"org-1",
+		);
+		expect(mockGetGlobalFlagOverride).not.toHaveBeenCalled();
+		expect(mockCountNew).not.toHaveBeenCalled();
+		expect(mockCreateOrGet).not.toHaveBeenCalled();
+		expect(mockStart).not.toHaveBeenCalled();
+	});
+
+	it("skips a project transferred into a disabled organization between sweep and dispatch", async () => {
+		// The sweep selected this project under its OLD organization (allowed);
+		// by dispatch time the fresh read shows it moved into a DIFFERENT
+		// organization that has PUBLISHING_SUITE disabled. The flag re-check
+		// must be driven by this fresh organizationId, never anything carried
+		// from the sweep item.
+		setFresh({
+			id: "proj-1",
+			userId: "owner-1",
+			organizationId: "org-new-disabled",
+		});
+		mockGetOrgFlagOverride.mockResolvedValue(false);
+
+		await dispatchPublishingSuggestion({ projectId: "proj-1" });
+
+		expect(mockGetOrgFlagOverride).toHaveBeenCalledWith(
+			"PUBLISHING_SUITE",
+			"org-new-disabled",
+		);
+		expect(mockCountNew).not.toHaveBeenCalled();
+		expect(mockCreateOrGet).not.toHaveBeenCalled();
+		expect(mockStart).not.toHaveBeenCalled();
+	});
+
+	// ADR-018 ("An organization is the only tenant context"): a project that
+	// resolves with no organization at dispatch time — e.g. transferred OUT of
+	// its organization between sweep and dispatch — is refused outright, the
+	// same as the API gate and the sweep. This INVERTS the pre-ADR-018 pin
+	// ("resolves a personal project against the global value alone"), which
+	// asserted the opposite: that a personal project fell through to the
+	// global answer and dispatched normally. It must not any more — and the
+	// refusal must not even read the global flag: no organization to resolve
+	// against is a bug upstream, not a value to fall back on.
+	it("refuses a personal project outright — no global read, no per-organization lookup, no dispatch", async () => {
+		setFresh({
+			id: "proj-1",
+			userId: "owner-1",
+			organizationId: null,
+		});
+		mockGetGlobalFlagOverride.mockResolvedValue(true);
+
+		await dispatchPublishingSuggestion({ projectId: "proj-1" });
+
+		expect(mockGetGlobalFlagOverride).not.toHaveBeenCalled();
+		expect(mockGetEnabledOrgIds).not.toHaveBeenCalled();
+		expect(mockGetDisabledOrgIds).not.toHaveBeenCalled();
+		expect(mockGetOrgFlagOverride).not.toHaveBeenCalled();
+		expect(mockCountNew).not.toHaveBeenCalled();
+		expect(mockCreateOrGet).not.toHaveBeenCalled();
+		expect(mockStart).not.toHaveBeenCalled();
 	});
 });
 
@@ -1268,11 +1431,11 @@ describe("runPublishingSuggestionDispatch — Job Hub row", () => {
 				kind: "PUBLISHING_TOPIC_GENERATION",
 				title: "Topic suggestions",
 				projectId: "proj-1",
-				// The project OWNER, which is what the Job Hub's personal-context
-				// tenant filter matches on — not whoever triggered the run. A row
-				// keyed to a triggering guest would be invisible to the owner.
+				// The project OWNER, which is what the Job Hub's tenant filter
+				// matches on — not whoever triggered the run. A row keyed to a
+				// triggering guest would be invisible to the owner.
 				userId: "user-1",
-				organizationId: null,
+				organizationId: "org-1",
 				workflowId: "publishing-suggestion-cycle-1",
 				sourceId: null,
 				steps: [
@@ -1477,8 +1640,8 @@ describe("dispatchPublishingSuggestion — preferences fingerprint", () => {
 		await dispatchPublishingSuggestion({ projectId: "proj-1" });
 
 		expect(mockLastRunHash).toHaveBeenCalledWith("proj-1", {
-			organizationId: null,
-			userId: "user-1",
+			organizationId: "org-1",
+			userId: null,
 		});
 	});
 });

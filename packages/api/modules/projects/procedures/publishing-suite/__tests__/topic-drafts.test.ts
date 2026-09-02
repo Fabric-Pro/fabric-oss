@@ -10,14 +10,19 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
  * what it does and does not pass down.
  */
 
+const flagMocks = vi.hoisted(() => ({
+	isFeatureEnabled: vi.fn(),
+	resolveProjectTenant: vi.fn(),
+}));
 vi.mock("@repo/database", () => ({
 	listTopicDrafts: vi.fn(),
-}));
-const flagMocks = vi.hoisted(() => ({
-	isPublishingSuiteEnabled: vi.fn(() => true),
-}));
-vi.mock("@repo/utils/feature-flag", () => ({
-	isPublishingSuiteEnabled: flagMocks.isPublishingSuiteEnabled,
+	// The gate resolves the flag per organization and derives the tenant from
+	// the Project row. `resolveProjectTenant` MUST point at flagMocks, not a
+	// bare vi.fn(): the gate reads a null return as "project not resolvable"
+	// and throws NOT_FOUND, so an unconfigured mock would fail every test in
+	// this file for the wrong reason.
+	isFeatureEnabled: flagMocks.isFeatureEnabled,
+	resolveProjectTenant: flagMocks.resolveProjectTenant,
 }));
 vi.mock("../../../../../orpc/procedures", () => {
 	const chain: Record<string, unknown> = {};
@@ -58,7 +63,16 @@ const INPUT = {
 
 beforeEach(() => {
 	vi.clearAllMocks();
-	flagMocks.isPublishingSuiteEnabled.mockReturnValue(true);
+	flagMocks.isFeatureEnabled.mockResolvedValue(true);
+	// ADR-018 ("An organization is the only tenant context"): the default
+	// tenant here is org-scoped, not personal — assertPublishingSuiteFeatureEnabled
+	// now refuses a project with no organization outright, so a null-organization
+	// default would make every test below fail the gate before reaching what it
+	// actually means to exercise.
+	flagMocks.resolveProjectTenant.mockResolvedValue({
+		organizationId: "org-1",
+		userId: "u1",
+	});
 	(listTopicDrafts as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
 		drafts: [],
 		workingDrafts: [],
@@ -73,7 +87,10 @@ describe("listTopicDrafts procedure", () => {
 	});
 
 	it("refuses when the Publishing Suite feature flag is off", async () => {
-		flagMocks.isPublishingSuiteEnabled.mockReturnValue(false);
+		// resolveProjectTenant still resolves — the project is real, only the
+		// flag is off — so this fails for the flag reason, not because the
+		// project looked unresolvable to the gate.
+		flagMocks.isFeatureEnabled.mockResolvedValue(false);
 
 		await expect(handler({ input: INPUT })).rejects.toThrow(
 			/Publishing Suite is not enabled/,

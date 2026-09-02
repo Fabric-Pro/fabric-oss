@@ -2,10 +2,15 @@
  * Topic Item Page (organization context) — Fizzy #1851, Phase 2A-1.
  *
  * Thin server wrapper for `/projects/{id}/publishing/{topicId}`. Gates on the
- * SAME two flags as the sibling list route and in the same order, BEFORE any
- * session, org or project access — a detail route that gated more loosely than
- * its list would be a way to reach Publishing Suite data by guessing a URL
- * while the UI is deliberately hidden.
+ * SAME flags, in the SAME order, as the sibling list route
+ * (`.../publishing/page.tsx`): the client UI-rollout flag
+ * (`NEXT_PUBLIC_FABRIC_FEATURE_PUBLISHING_SUITE`) first, since it needs no
+ * data access; then session; then the active organization from the
+ * `[organizationSlug]` segment; then the per-organization server gate
+ * (`isFeatureEnabled("PUBLISHING_SUITE", organization.id)`) — off →
+ * `notFound()`, still before any project access. A detail route that gated
+ * more loosely than its list would be a way to reach Publishing Suite data by
+ * guessing a URL while the UI is deliberately hidden.
  *
  * Resolves the project with the ACTIVE org id, never `null`: passing `null`
  * searches personal projects only and would 404 an org member authorized
@@ -16,7 +21,7 @@
  * `publishingSuite.getTopic`, which re-scopes to `{ id, projectId }` (DV16).
  */
 
-import { isPublishingSuiteEnabled } from "@repo/utils/feature-flag";
+import { isFeatureEnabled } from "@repo/database";
 import { getActiveOrganization, getSession } from "@saas/auth/lib/server";
 import { TopicItemPage } from "@saas/projects/components/publishing-suite";
 import { orpcClient } from "@shared/lib/orpc-client";
@@ -33,10 +38,8 @@ type Props = {
 export default async function OrganizationPublishingTopicPage({
 	params,
 }: Props) {
-	if (
-		!isPublishingSuiteEnabled() ||
-		process.env.NEXT_PUBLIC_FABRIC_FEATURE_PUBLISHING_SUITE !== "true"
-	) {
+	// The client UI-rollout flag gates first, since it needs no data access.
+	if (process.env.NEXT_PUBLIC_FABRIC_FEATURE_PUBLISHING_SUITE !== "true") {
 		notFound();
 	}
 
@@ -49,6 +52,12 @@ export default async function OrganizationPublishingTopicPage({
 
 	const organization = await getActiveOrganization(organizationSlug);
 	if (!organization) {
+		notFound();
+	}
+
+	// The server gate resolves against THIS organization, so it cannot run
+	// before the organization is resolved — mirrors the list route.
+	if (!(await isFeatureEnabled("PUBLISHING_SUITE", organization.id))) {
 		notFound();
 	}
 

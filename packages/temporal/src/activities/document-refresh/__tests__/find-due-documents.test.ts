@@ -138,7 +138,7 @@ beforeEach(() => {
 	flagEnvValue = "true";
 	flagMock.mockImplementation(
 		async (key: FeatureFlagKey) =>
-			resolveFlag(key, flagOverride, {
+			resolveFlag(key, { global: flagOverride }, {
 				// Both gates. The sweep requires the rollout as well as its own
 				// kill switch, so an environment that only arms the brakes must
 				// NOT be able to run it — that combination would rewrite enrolled
@@ -170,7 +170,7 @@ describe("feature flag", () => {
 	it("stands down when the brakes are armed but the feature is not rolled out", async () => {
 		flagMock.mockImplementation(
 			async (key: FeatureFlagKey) =>
-				resolveFlag(key, undefined, {
+				resolveFlag(key, { global: undefined }, {
 					FABRIC_FEATURE_LIVING_DOCS_REFRESH: "true",
 					// rollout deliberately unset
 				} as NodeJS.ProcessEnv).enabled,

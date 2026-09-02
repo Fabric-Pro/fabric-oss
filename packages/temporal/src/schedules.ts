@@ -2,7 +2,11 @@
  * Temporal Schedule Registration
  *
  * Registers system schedules during worker startup.
- * Schedules are idempotent — if they already exist, registration is skipped.
+ * Schedules are idempotent — if they already exist, registration is normally
+ * skipped. One exception: the publishing-suggestion-dispatcher schedule
+ * additionally refreshes its Temporal-UI-visible note in place on that
+ * branch (Codex fix round 2, §FIX 4) — see its own registration function
+ * for why.
  */
 
 import * as tls from "node:tls";
@@ -57,14 +61,19 @@ const NEWSLETTER_DISPATCH_WORKFLOW_NAME = "newsletterDispatcherWorkflow";
 // Every hour (UTC); the dispatcher honors each project's sendHourUtc.
 const NEWSLETTER_DISPATCH_CRON_SCHEDULE = "0 * * * *";
 
-const PUBLISHING_SUGGESTION_DISPATCH_SCHEDULE_ID =
+// Exported (unlike most schedule-id/name/cron constants in this file) so
+// packages/temporal/__tests__/publishing-suggestion/schedule-registration.test.ts
+// can assert the registration payload against the same values the function
+// actually uses, not a duplicated literal that could drift.
+export const PUBLISHING_SUGGESTION_DISPATCH_SCHEDULE_ID =
 	"publishing-suggestion-dispatcher";
-const PUBLISHING_SUGGESTION_DISPATCH_WORKFLOW_NAME =
+export const PUBLISHING_SUGGESTION_DISPATCH_WORKFLOW_NAME =
 	"publishingSuggestionDispatcherWorkflow";
 // Daily at 06:00 UTC — the daily content sweep (Publishing Suite 1A §6.1). The
-// findEligibleProjects activity owns "now" + the master flag; each project's
-// dispatch is idempotent (active-GENERATING partial index).
-const PUBLISHING_SUGGESTION_DISPATCH_CRON_SCHEDULE = "0 6 * * *";
+// findEligibleProjects activity owns "now" and resolves the flag itself, both
+// globally and per organization (org-scoped-flags slice, Task 8); each
+// project's dispatch is idempotent (active-GENERATING partial index).
+export const PUBLISHING_SUGGESTION_DISPATCH_CRON_SCHEDULE = "0 6 * * *";
 
 const DOCUMENT_REFRESH_SCHEDULE_ID = "document-refresh-dispatcher";
 const DOCUMENT_REFRESH_WORKFLOW_NAME = "documentRefreshDispatcherWorkflow";
@@ -839,19 +848,35 @@ async function registerDocumentRefreshSchedule(
  * Register the Publishing Suite reconciliation schedule (1C-2d-2a).
  *
  * Registered unconditionally — and, unlike the dispatcher above, there is no
- * flag gate inside the activity either. That is deliberate rather than an
- * oversight: the ledger is empty while FABRIC_FEATURE_PUBLISHING_SUITE is off,
- * so an ungated sweep is a no-op in that state, while gating it would mean that
- * turning the master flag off during an incident silently walks every
- * outstanding obligation to EXPIRED — the exact loss this sweep exists to
- * prevent.
+ * flag gate inside the activity either. That is deliberate, not an
+ * oversight, and NOT because the ledger sits empty with the flag off: an
+ * organization-level PUBLISHING_SUITE override alone produces PENDING rows
+ * regardless of FABRIC_FEATURE_PUBLISHING_SUITE — the entire point of an
+ * org-scoped override — so this sweep can have real work to do with the
+ * global flag off. It stays ungated because gating it would let the flag
+ * hide the READER as well as the producer: this workflow terminalizes stale
+ * PENDING cycles, raises the alert on stuck ledger rows, and — via
+ * `drainDeferredPublishingNotifications` — sends the outbound customer
+ * notifications those rows were already holding. Turning the master flag
+ * off during an incident must not be able to silently stop any of that,
+ * which is the loss class this sweep exists to prevent. The flag can hide
+ * the producer; it must not be able to hide the reader.
  *
  * `args: []` on purpose. The design asked for explicit batch arguments, but
- * every registration in THIS FILE is CREATE-ONLY: this one and its twenty-seven
- * siblings all call `scheduleClient.create()`, swallow `ScheduleAlreadyRunning`,
- * and never touch a schedule that already exists. A redeploy therefore does not
- * reach one, so a value in `args` is frozen at creation while a module constant
- * is picked up by every redeploy. Batch bounds live in @repo/database, not here.
+ * registration in THIS FILE is CREATE-ONLY BY CONVENTION, with exactly ONE
+ * documented exception: `registerPublishingSuggestionDispatcherSchedule`,
+ * below, additionally patches an ALREADY-EXISTING schedule's `note` field
+ * (nothing else — cron/action/policies stay create-only there too) on
+ * conflict, because that note is the one place the org-scoped-flags fix
+ * corrected an operator-facing falsehood, and a note frozen at first
+ * registration would keep telling every environment that already had the
+ * schedule the old, wrong story forever (Codex fix round 2, §FIX 4 — see that
+ * function's own docstring). THIS registration, and every other sibling in
+ * this file, has no such exception: it calls `scheduleClient.create()`,
+ * swallows `ScheduleAlreadyRunning`, and never otherwise touches a schedule
+ * that already exists. A redeploy therefore does not reach one, so a value in
+ * `args` is frozen at creation while a module constant is picked up by every
+ * redeploy. Batch bounds live in @repo/database, not here.
  *
  * CREATE-ONLY IS THIS FILE'S CONVENTION, NOT AN SDK LIMITATION, and the
  * difference is the whole content of the operator procedure. The SDK exposes
@@ -859,21 +884,27 @@ async function registerDocumentRefreshSchedule(
  * ./schedules/workflow-builder-schedule.ts catches the already-exists error and
  * calls `handle.update()` to replace the spec without losing the schedule — same
  * package, one directory down. ./schedules/url-source-schedule.ts names
- * `ScheduleHandle.update` too and declines it, for a reason it states. So the
- * twenty-eight registrations here are a deliberate convention, not the absence
- * of an API, and this one follows them rather than becoming the exception.
+ * `ScheduleHandle.update` too and declines it, for a reason it states. So
+ * CREATE-ONLY here is a deliberate convention, not the absence of an API, and
+ * THIS registration follows it with no exception at all — the one narrow
+ * exception in this file belongs to a different schedule, named below.
  *
  * The consequence is unchanged by that: as registered, changing the cron,
  * overlap, catchup window, note or execution timeout of an ALREADY-REGISTERED
  * schedule means deleting it first, and a delete discards the schedule's run
- * history and recent-actions list along with the values. See
- * docs/runbooks/publishing-reconcile-schedule.md — which must not repeat the
- * sentence this comment used to carry, that there is no `.update()` here. There
- * is none in THIS FILE; there is one in this package.
+ * history and recent-actions list along with the values — true for THIS
+ * schedule without qualification, and true for every OTHER field of the one
+ * schedule with a note exception. (An earlier version of this comment
+ * pointed here at a docs/runbooks/publishing-reconcile-schedule.md that does
+ * not exist in this repository — pre-existing, dropped rather than
+ * recreated, since the fix for a dangling reference to a nonexistent file is
+ * removing the reference, not inventing the file to match it.) There is no
+ * `.update()` anywhere in this file for THIS schedule; there now is,
+ * narrowly, below, for a different one.
  *
- * EXPORTED, which none of the twenty-seven sibling registrations in this file
- * are. That is not consistency for its own sake being broken — it is the only
- * way this payload can be tested at all, and on a CREATE-ONLY schedule an
+ * EXPORTED — like a couple of other registrations in this file, though most
+ * are not. That is not consistency for its own sake being broken — it is the
+ * only way this payload can be tested at all, and on a CREATE-ONLY schedule an
  * untested payload is the most expensive mistake available here: a wrong cron, a
  * missing overlap policy or an omitted execution timeout survives every redeploy
  * until an operator deletes the schedule by hand.
@@ -980,16 +1011,66 @@ async function registerNewsletterDispatcherSchedule(
 }
 
 /**
+ * The Temporal-UI-visible note for the publishing-suggestion-dispatcher
+ * schedule. A named constant, not an inline literal, so the `create()` payload
+ * and the already-exists `update()` below (Codex fix round 2, §FIX 4) can
+ * never drift apart into two different stories about the same schedule.
+ */
+export const PUBLISHING_SUGGESTION_DISPATCH_NOTE =
+	"Daily sweep (06:00 UTC): dispatches publishing-suggestion cycles for eligible projects with new content. Restricted to organizations with an enabled PUBLISHING_SUITE override, or every organization except those with a disabled override, when the flag resolves true globally. FABRIC_FEATURE_PUBLISHING_SUITE is only the global seed — to stop the sweep, disable the organization's override or pause this schedule.";
+
+/**
  * Register the publishing-suggestion-dispatcher schedule (Publishing Suite 1A,
  * Task 10). Runs daily at 06:00 UTC to sweep eligible projects and dispatch a
  * per-project suggestion cycle for those with new content.
  *
- * Registered unconditionally, even though the feature is behind
- * `FABRIC_FEATURE_PUBLISHING_SUITE`: gating lives in the findEligibleProjects
- * activity, not here, so flipping the flag on takes effect on the next tick with
- * no redeploy. With the flag off the sweep runs and returns an empty due-list.
+ * Registered unconditionally. The flag is gated in TWO places, neither of
+ * them here — this schedule only decides WHEN the sweep fires, never
+ * WHETHER it may act:
+ *
+ *  1. The SWEEP itself, in the findEligibleProjects activity:
+ *     `FABRIC_FEATURE_PUBLISHING_SUITE` is only the GLOBAL seed. Globally
+ *     enabled (today's dev/staging path) sweeps every organization EXCEPT
+ *     one with an explicit `PUBLISHING_SUITE` override set to disabled;
+ *     globally disabled restricts the sweep to organizations with an
+ *     enabled override instead. Both levels are read directly from the
+ *     database on every tick, with no cache, so flipping either takes
+ *     effect on the next tick with no redeploy. With the flag off globally
+ *     and no organization enabled, the sweep runs and returns an empty
+ *     due-list before the project table is ever touched.
+ *  2. The per-project DISPATCH activity, added by Codex fix round 2 (§E):
+ *     `runPublishingSuggestionDispatch` re-checks the flag for the
+ *     project's CURRENT organization, via the same uncached readers as (1)
+ *     (`isPublishingSuiteEnabledForOrganizationUncached`,
+ *     find-eligible-projects.ts), immediately before it would create a
+ *     cycle or start a generation workflow — closing the window where a
+ *     project selected by the sweep has its organization disabled, or is
+ *     transferred to a disabled organization, before dispatch runs.
+ *
+ * EXPORTED (unlike most siblings in this file) so this payload — and the
+ * already-exists update below — can be tested directly; see
+ * `packages/temporal/__tests__/publishing-suggestion/schedule-registration.test.ts`.
+ *
+ * The already-exists branch is THIS FILE'S one narrow exception to the
+ * CREATE-ONLY convention documented above
+ * `registerPublishingNotificationReconcileSchedule`: it patches ONLY the
+ * `note` field of an already-registered schedule in place, nothing else
+ * (cron/action/policies are untouched, and the update is skipped entirely if
+ * the note already matches). Registration is create-only everywhere else in
+ * this file, and cron/action/policies stay create-only here too — this is not
+ * a return to full upsert semantics. The reason is specific to this one
+ * schedule: its `note` is operator-visible in the Temporal UI, and the
+ * org-scoped-flags fix corrected that note's text after discovering it told a
+ * money-losing falsehood — that `FABRIC_FEATURE_PUBLISHING_SUITE` alone
+ * gates the sweep. `ScheduleAlreadyRunning` is caught and skipped in every
+ * OTHER registration in this file, which means every environment that
+ * already had this schedule would otherwise keep displaying the ORIGINAL,
+ * uncorrected note forever — the fix would exist in source but never reach a
+ * deployed schedule. The update is failure-tolerant: a failed note update is
+ * logged and swallowed, never rethrown, so it can never take down schedule
+ * registration on worker startup.
  */
-async function registerPublishingSuggestionDispatcherSchedule(
+export async function registerPublishingSuggestionDispatcherSchedule(
 	scheduleClient: ScheduleClient,
 ): Promise<void> {
 	try {
@@ -1007,7 +1088,7 @@ async function registerPublishingSuggestionDispatcherSchedule(
 			policies: { overlap: "SKIP", catchupWindow: "1 hour" },
 			state: {
 				paused: false,
-				note: "Daily sweep (06:00 UTC): dispatches publishing-suggestion cycles for eligible projects with new content. Gated by FABRIC_FEATURE_PUBLISHING_SUITE in the find-eligible activity.",
+				note: PUBLISHING_SUGGESTION_DISPATCH_NOTE,
 			},
 		});
 		console.log(
@@ -1016,11 +1097,61 @@ async function registerPublishingSuggestionDispatcherSchedule(
 	} catch (error) {
 		if (error instanceof ScheduleAlreadyRunning) {
 			console.log(
-				`[Worker] Schedule "${PUBLISHING_SUGGESTION_DISPATCH_SCHEDULE_ID}" already exists, skipping`,
+				`[Worker] Schedule "${PUBLISHING_SUGGESTION_DISPATCH_SCHEDULE_ID}" already exists, skipping create`,
 			);
+			await refreshPublishingSuggestionDispatchNote(scheduleClient);
 		} else {
 			throw error;
 		}
+	}
+}
+
+/**
+ * Patch the ALREADY-REGISTERED publishing-suggestion-dispatcher schedule's
+ * `note` to the current {@link PUBLISHING_SUGGESTION_DISPATCH_NOTE}, so an
+ * environment that registered this schedule before the org-scoped-flags fix
+ * stops displaying the corrected note's predecessor forever. See the
+ * already-exists-branch reasoning on
+ * {@link registerPublishingSuggestionDispatcherSchedule} above.
+ *
+ * `describe()`s first and skips the `update()` call entirely when the note
+ * already matches — true on every worker boot after the first one that
+ * applies this fix in a given environment, which is the steady state. Without
+ * this check, EVERY worker start would re-describe-and-rewrite an
+ * already-correct value against the Temporal server, forever, for no reason.
+ *
+ * Deliberately swallows its own failure: this runs during worker startup, and
+ * an operator-facing string being briefly stale is a far smaller problem than
+ * the worker failing to start. Logs and returns either way — never rethrows.
+ */
+async function refreshPublishingSuggestionDispatchNote(
+	scheduleClient: ScheduleClient,
+): Promise<void> {
+	try {
+		const handle = scheduleClient.getHandle(
+			PUBLISHING_SUGGESTION_DISPATCH_SCHEDULE_ID,
+		);
+		const current = await handle.describe();
+		if (current.state.note === PUBLISHING_SUGGESTION_DISPATCH_NOTE) {
+			return;
+		}
+		await handle.update((previous) => {
+			return {
+				...previous,
+				state: {
+					...previous.state,
+					note: PUBLISHING_SUGGESTION_DISPATCH_NOTE,
+				},
+			};
+		});
+		console.log(
+			`[Worker] Schedule "${PUBLISHING_SUGGESTION_DISPATCH_SCHEDULE_ID}" note refreshed`,
+		);
+	} catch (error) {
+		console.error(
+			`[Worker] Failed to refresh the note on schedule "${PUBLISHING_SUGGESTION_DISPATCH_SCHEDULE_ID}" — leaving it as-is`,
+			error,
+		);
 	}
 }
 

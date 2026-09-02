@@ -918,6 +918,38 @@ jobs:
           }
           EOF
 
+      - name: Run the org-scoped feature-flag suite
+        # The mocked suite in feature-flags.test.ts proves the resolution
+        # rule; the composite key, per-organization independence of a flag
+        # key, and the cascade on organization delete are properties of the
+        # schema that only a real Postgres can confirm.
+        env:
+          RUN_DB_INTEGRATION: '1'
+        run: |
+          pnpm --filter @repo/database exec vitest run \
+            __tests__/org-feature-flags.integration.test.ts \
+            --passWithNoTests=false \
+            --reporter=dot \
+            --reporter=json --outputFile=org-feature-flags-results.json
+
+      - name: 'Guard: assert the org-scoped feature-flag suite executed (zero skips)'
+        # Same anti-false-pass shape as the guards above: the suite self-skips
+        # via `describe.skipIf(!hasReachableDatabaseUrl())`, so a green step
+        # proves nothing on its own.
+        run: |
+          node <<'EOF'
+          const fs = require("node:fs");
+          const r = JSON.parse(fs.readFileSync("packages/database/org-feature-flags-results.json", "utf8"));
+          const passed = r.numPassedTests ?? 0;
+          const skipped = r.numPendingTests ?? 0;
+          // Exactly 3: the unique key, the per-organization independence of
+          // that key, and the cascade. A skip here means the suite self-skipped
+          // on an unreachable DATABASE_URL, which is a green run that proved
+          // nothing.
+          if (skipped > 0) { console.error(`::error::${skipped} test(s) skipped — the suite must not self-skip in CI`); process.exit(1); }
+          if (passed !== 3) { console.error(`::error::Expected exactly 3 passing tests, got ${passed}`); process.exit(1); }
+          EOF
+
   temporal-tests:
     name: Temporal publishing tests (real Postgres)
     needs: changes

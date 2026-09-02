@@ -1852,6 +1852,12 @@ export const FeatureFlagOverrideScalarFieldEnumSchema = z.enum(['key', 'enabled'
 
 export type FeatureFlagOverrideScalarFieldEnum = z.infer<typeof FeatureFlagOverrideScalarFieldEnumSchema>;
 
+// File: OrganizationFeatureFlagOverrideScalarFieldEnum.schema.ts
+
+export const OrganizationFeatureFlagOverrideScalarFieldEnumSchema = z.enum(['key', 'organizationId', 'enabled', 'updatedAt', 'updatedBy'])
+
+export type OrganizationFeatureFlagOverrideScalarFieldEnum = z.infer<typeof OrganizationFeatureFlagOverrideScalarFieldEnumSchema>;
+
 // File: SortOrder.schema.ts
 
 export const SortOrderSchema = z.enum(['asc', 'desc'])
@@ -10315,4 +10321,17 @@ export const FeatureFlagOverrideSchema = z.object({
 });
 
 export type FeatureFlagOverrideType = z.infer<typeof FeatureFlagOverrideSchema>;
+
+
+// File: OrganizationFeatureFlagOverride.schema.ts
+
+export const OrganizationFeatureFlagOverrideSchema = z.object({
+  key: z.string(),
+  organizationId: z.string(),
+  enabled: z.boolean(),
+  updatedAt: z.date(),
+  updatedBy: z.string(),
+});
+
+export type OrganizationFeatureFlagOverrideType = z.infer<typeof OrganizationFeatureFlagOverrideSchema>;
 

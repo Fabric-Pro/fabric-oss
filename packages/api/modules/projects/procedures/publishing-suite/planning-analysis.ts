@@ -43,7 +43,7 @@ export const generatePlanningAnalysisProcedure = tenantProtectedProcedure
 		}),
 	)
 	.handler(async ({ input, context }) => {
-		assertPublishingSuiteFeatureEnabled();
+		await assertPublishingSuiteFeatureEnabled(input.projectId);
 
 		// Security ratchet, identical to generate-now.ts: the permission
 		// middleware proved the caller is authorized for THIS project, but it
@@ -163,7 +163,7 @@ export const getPlanningAnalysisProcedure = tenantProtectedProcedure
 		}),
 	)
 	.handler(async ({ input }) => {
-		assertPublishingSuiteFeatureEnabled();
+		await assertPublishingSuiteFeatureEnabled(input.projectId);
 
 		// TWO rows, deliberately. `latestReady` is what to render; `latestAttempt`
 		// is what to say about it. Collapsing them to "the newest row" would blank

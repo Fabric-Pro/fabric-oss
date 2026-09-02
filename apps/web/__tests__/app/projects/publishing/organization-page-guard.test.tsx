@@ -4,10 +4,13 @@
  * — Publishing Suite Phase 1A, Plan 3, Task 4b, spec §7/GAP-3).
  *
  * The page MUST:
- *   - return `notFound()` when `isPublishingSuiteEnabled()` is false, BEFORE
+ *   - return `notFound()` when the client UI-rollout flag is off, BEFORE
  *     touching session/org/project data
  *   - redirect to `/auth/login` when there is no session
  *   - return `notFound()` when the active organization can't be resolved
+ *   - return `notFound()` when `isFeatureEnabled("PUBLISHING_SUITE",
+ *     organization.id)` is false — resolved AFTER the organization, but
+ *     still before any project access
  *   - return `notFound()` when the project fetch is rejected (unauthorized /
  *     no project access)
  *   - render `PublishingSuiteList` with `canEdit = project.canPublish` on
@@ -43,14 +46,14 @@ const {
 	mockGetActiveOrganization,
 	mockRedirect,
 	mockNotFound,
-	mockIsPublishingSuiteEnabled,
+	mockIsFeatureEnabled,
 	mockProjectsGet,
 } = vi.hoisted(() => ({
 	mockGetSession: vi.fn(),
 	mockGetActiveOrganization: vi.fn(),
 	mockRedirect: vi.fn(),
 	mockNotFound: vi.fn(),
-	mockIsPublishingSuiteEnabled: vi.fn(),
+	mockIsFeatureEnabled: vi.fn(),
 	mockProjectsGet: vi.fn(),
 }));
 
@@ -72,8 +75,8 @@ vi.mock("next/navigation", () => ({
 	},
 }));
 
-vi.mock("@repo/utils/feature-flag", () => ({
-	isPublishingSuiteEnabled: () => mockIsPublishingSuiteEnabled(),
+vi.mock("@repo/database", () => ({
+	isFeatureEnabled: (...args: unknown[]) => mockIsFeatureEnabled(...args),
 }));
 
 vi.mock("@shared/lib/orpc-client", () => ({
@@ -121,22 +124,12 @@ async function callPage() {
 }
 
 describe("Organization Publishing Suite page — route guard", () => {
-	it("returns notFound() when the feature flag is off, before touching session/org/project", async () => {
-		mockIsPublishingSuiteEnabled.mockReturnValue(false);
-
-		await expect(callPage()).rejects.toThrow(/__NOT_FOUND__/);
-
-		expect(mockNotFound).toHaveBeenCalledTimes(1);
-		expect(mockGetSession).not.toHaveBeenCalled();
-		expect(mockGetActiveOrganization).not.toHaveBeenCalled();
-		expect(mockProjectsGet).not.toHaveBeenCalled();
-	});
-
-	it("returns notFound() when the server flag is on but the client UI flag is off (backend-live, UI-hidden), before touching session/org/project", async () => {
+	it("returns notFound() when the client UI flag is off, before touching session/org/project", async () => {
 		// C-Med1: the deep-link route must honor the SAME client UI-rollout flag
 		// that gates the tab + onboarding, so a guessed /publishing URL can't
-		// render the full list while the UI is intentionally hidden.
-		mockIsPublishingSuiteEnabled.mockReturnValue(true);
+		// render the full list while the UI is intentionally hidden. This is
+		// the ONLY gate that runs before session/org/project access — it needs
+		// no data, unlike the per-organization server gate below.
 		process.env.NEXT_PUBLIC_FABRIC_FEATURE_PUBLISHING_SUITE = "false";
 
 		await expect(callPage()).rejects.toThrow(/__NOT_FOUND__/);
@@ -144,30 +137,50 @@ describe("Organization Publishing Suite page — route guard", () => {
 		expect(mockNotFound).toHaveBeenCalledTimes(1);
 		expect(mockGetSession).not.toHaveBeenCalled();
 		expect(mockGetActiveOrganization).not.toHaveBeenCalled();
+		expect(mockIsFeatureEnabled).not.toHaveBeenCalled();
+		expect(mockProjectsGet).not.toHaveBeenCalled();
+	});
+
+	it("returns notFound() when isFeatureEnabled is false for the resolved organization — after the organization is resolved, but still before project access", async () => {
+		// The server gate resolves against the organization, so it cannot run
+		// before the organization is known: session and org resolution both
+		// precede it. It must still run before `orpcClient.projects.get`.
+		mockGetSession.mockResolvedValue({ user: { id: "user-1" } });
+		mockGetActiveOrganization.mockResolvedValue({ id: ORG_ID });
+		mockIsFeatureEnabled.mockResolvedValue(false);
+
+		await expect(callPage()).rejects.toThrow(/__NOT_FOUND__/);
+
+		expect(mockNotFound).toHaveBeenCalledTimes(1);
+		expect(mockGetActiveOrganization).toHaveBeenCalledWith(ORG_SLUG);
+		expect(mockIsFeatureEnabled).toHaveBeenCalledWith(
+			"PUBLISHING_SUITE",
+			ORG_ID,
+		);
 		expect(mockProjectsGet).not.toHaveBeenCalled();
 	});
 
 	it("redirects unauthenticated users to /auth/login", async () => {
-		mockIsPublishingSuiteEnabled.mockReturnValue(true);
 		mockGetSession.mockResolvedValue(null);
 
 		await expect(callPage()).rejects.toThrow(/__REDIRECT__:\/auth\/login/);
 		expect(mockRedirect).toHaveBeenCalledWith("/auth/login");
+		expect(mockIsFeatureEnabled).not.toHaveBeenCalled();
 	});
 
 	it("returns notFound() when the active organization can't be resolved from the slug", async () => {
-		mockIsPublishingSuiteEnabled.mockReturnValue(true);
 		mockGetSession.mockResolvedValue({ user: { id: "user-1" } });
 		mockGetActiveOrganization.mockResolvedValue(null);
 
 		await expect(callPage()).rejects.toThrow(/__NOT_FOUND__/);
 		expect(mockGetActiveOrganization).toHaveBeenCalledWith(ORG_SLUG);
+		expect(mockIsFeatureEnabled).not.toHaveBeenCalled();
 	});
 
 	it("rejects an unauthorized user (no project access) with notFound()", async () => {
-		mockIsPublishingSuiteEnabled.mockReturnValue(true);
 		mockGetSession.mockResolvedValue({ user: { id: "user-1" } });
 		mockGetActiveOrganization.mockResolvedValue({ id: ORG_ID });
+		mockIsFeatureEnabled.mockResolvedValue(true);
 		mockProjectsGet.mockRejectedValue(new Error("NOT_FOUND"));
 
 		await expect(callPage()).rejects.toThrow(/__NOT_FOUND__/);
@@ -175,9 +188,9 @@ describe("Organization Publishing Suite page — route guard", () => {
 	});
 
 	it("renders PublishingSuiteList with canEdit=true and the resolved org id on the happy path", async () => {
-		mockIsPublishingSuiteEnabled.mockReturnValue(true);
 		mockGetSession.mockResolvedValue({ user: { id: "user-1" } });
 		mockGetActiveOrganization.mockResolvedValue({ id: ORG_ID });
+		mockIsFeatureEnabled.mockResolvedValue(true);
 		mockProjectsGet.mockResolvedValue({ project: { canPublish: true } });
 
 		const result = (await callPage()) as { props: Record<string, unknown> };
@@ -185,6 +198,10 @@ describe("Organization Publishing Suite page — route guard", () => {
 		expect(result.props.projectId).toBe(PROJECT_ID);
 		expect(result.props.organizationId).toBe(ORG_ID);
 		expect(result.props.canEdit).toBe(true);
+		expect(mockIsFeatureEnabled).toHaveBeenCalledWith(
+			"PUBLISHING_SUITE",
+			ORG_ID,
+		);
 		// F2: the RESOLVED org id must be passed — never `null` — or an
 		// org-role-only member (no ProjectMember row) would be searched
 		// against personal projects only and incorrectly 404'd.
@@ -195,9 +212,9 @@ describe("Organization Publishing Suite page — route guard", () => {
 	});
 
 	it("renders PublishingSuiteList with canEdit=false for a caller without publish rights", async () => {
-		mockIsPublishingSuiteEnabled.mockReturnValue(true);
 		mockGetSession.mockResolvedValue({ user: { id: "viewer-1" } });
 		mockGetActiveOrganization.mockResolvedValue({ id: ORG_ID });
+		mockIsFeatureEnabled.mockResolvedValue(true);
 		mockProjectsGet.mockResolvedValue({ project: { canPublish: false } });
 
 		const result = (await callPage()) as { props: Record<string, unknown> };
@@ -205,11 +222,11 @@ describe("Organization Publishing Suite page — route guard", () => {
 	});
 
 	it("F2(a): given the loader resolves the project, the org route renders it without extra gating and passes the resolved org id (never null)", async () => {
-		mockIsPublishingSuiteEnabled.mockReturnValue(true);
 		mockGetSession.mockResolvedValue({
 			user: { id: "org-admin-no-member-row" },
 		});
 		mockGetActiveOrganization.mockResolvedValue({ id: ORG_ID });
+		mockIsFeatureEnabled.mockResolvedValue(true);
 		// This test mocks projects.get to isolate the ROUTE's own logic —
 		// it does not simulate or assert anything about how canPublish is
 		// actually resolved for a member-less org caller. See the KNOWN GAP
@@ -228,9 +245,9 @@ describe("Organization Publishing Suite page — route guard", () => {
 	});
 
 	it("F2(b): an invited org-project guest reaches the create UI (canEdit=true)", async () => {
-		mockIsPublishingSuiteEnabled.mockReturnValue(true);
 		mockGetSession.mockResolvedValue({ user: { id: "guest-1" } });
 		mockGetActiveOrganization.mockResolvedValue({ id: ORG_ID });
+		mockIsFeatureEnabled.mockResolvedValue(true);
 		// Simulates canPublish resolved via an active ProjectMember row
 		// (the guest invite path) rather than an org role.
 		mockProjectsGet.mockResolvedValue({ project: { canPublish: true } });

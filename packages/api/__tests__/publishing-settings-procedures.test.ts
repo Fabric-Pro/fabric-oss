@@ -5,7 +5,8 @@ const dbMocks = vi.hoisted(() => ({
 }));
 
 const flagMocks = vi.hoisted(() => ({
-	isPublishingSuiteEnabled: vi.fn(() => true),
+	isFeatureEnabled: vi.fn(),
+	resolveProjectTenant: vi.fn(),
 }));
 
 const { FakeProjectNotFound, FakeTenantMismatch } = vi.hoisted(() => {
@@ -26,6 +27,8 @@ const { FakeProjectNotFound, FakeTenantMismatch } = vi.hoisted(() => {
 
 vi.mock("@repo/database", () => ({
 	db: { project: { findUnique: dbMocks.projectFindUnique } },
+	isFeatureEnabled: flagMocks.isFeatureEnabled,
+	resolveProjectTenant: flagMocks.resolveProjectTenant,
 	getPublishingSuiteSettings: vi.fn(),
 	upsertPublishingSuiteSettings: vi.fn(),
 	PublishingSettingsProjectNotFoundError: FakeProjectNotFound,
@@ -68,10 +71,6 @@ vi.mock("@repo/database", () => ({
 	setPublishingTopicSnooze: vi.fn(),
 	setPublishingTopicReadState: vi.fn(),
 	PUBLISHING_SNOOZE_PRESETS: ["ONE_WEEK", "ONE_MONTH", "THREE_MONTHS"],
-}));
-
-vi.mock("@repo/utils/feature-flag", () => ({
-	isPublishingSuiteEnabled: flagMocks.isPublishingSuiteEnabled,
 }));
 
 // `generateNow` (Task 7) now shares this barrel; its helper imports
@@ -154,7 +153,18 @@ const ctx = {
 
 beforeEach(() => {
 	vi.clearAllMocks();
-	flagMocks.isPublishingSuiteEnabled.mockReturnValue(true);
+	flagMocks.isFeatureEnabled.mockResolvedValue(true);
+	// ADR-018 ("An organization is the only tenant context"): the default
+	// tenant the feature gate resolves is org-scoped, not personal —
+	// assertPublishingSuiteFeatureEnabled now refuses a project with no
+	// organization outright. A null default here would fail every test below
+	// at the gate before it reached what it actually means to exercise. The
+	// dedicated personal-context tests override this explicitly (see
+	// "getSettings" below).
+	flagMocks.resolveProjectTenant.mockResolvedValue({
+		organizationId: "org1",
+		userId: null,
+	});
 	dbMocks.projectFindUnique.mockResolvedValue({
 		id: "p1",
 		organizationId: null,
@@ -265,29 +275,29 @@ describe("getSettings", () => {
 		expect(getPublishingSuiteSettings).not.toHaveBeenCalled();
 	});
 
-	it("null organizationId succeeds for a personal-context project — the guest case must not regress", async () => {
+	// ADR-018 ("An organization is the only tenant context") inverts this: a
+	// truly personal-context project (no organization at all) is now refused
+	// by the feature gate BEFORE this procedure's own org-guard is ever
+	// reached — it is not merely tolerated as a guest-with-no-active-org edge
+	// case any more. This replaces the old pin ("...the guest case must not
+	// regress"), which asserted the opposite.
+	it("is NOT_FOUND for a truly personal-context project — refused by the gate, per ADR-018", async () => {
+		flagMocks.resolveProjectTenant.mockResolvedValue({
+			organizationId: null,
+			userId: "u1",
+		});
 		dbMocks.projectFindUnique.mockResolvedValue({
 			id: "p1",
 			organizationId: null,
 		});
-		vi.mocked(getPublishingSuiteSettings).mockResolvedValue({
-			id: null,
-			projectId: "p1",
-			cadence: "WEEKLY",
-			lookbackDays: null,
-			notificationsEnabled: true,
-			createdAt: null,
-			updatedAt: null,
-		} as never);
 
 		await expect(
 			getHandler({
 				input: { projectId: "p1", organizationId: null },
 				context: ctx,
 			}),
-		).resolves.toEqual({
-			settings: expect.objectContaining({ cadence: "WEEKLY" }),
-		});
+		).rejects.toMatchObject({ code: "NOT_FOUND" });
+		expect(getPublishingSuiteSettings).not.toHaveBeenCalled();
 	});
 
 	it("null organizationId also succeeds for an organization-context project — a guest reading an org project must not regress", async () => {
@@ -597,7 +607,7 @@ describe("updateSettings input schema (the real z.object from update-settings.ts
 
 describe("feature flag gating — flag OFF is NOT_FOUND", () => {
 	beforeEach(() => {
-		flagMocks.isPublishingSuiteEnabled.mockReturnValue(false);
+		flagMocks.isFeatureEnabled.mockResolvedValue(false);
 	});
 
 	it("getSettings", async () => {

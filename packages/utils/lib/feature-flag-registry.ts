@@ -24,6 +24,13 @@ export interface FeatureFlagDefinition {
 	default: boolean;
 	/** Optional risk note surfaced in the admin UI. */
 	note?: string;
+	/**
+	 * Whether this flag may be overridden per organization. Opt-in rather than
+	 * universal: a global rollback lever such as UNIFIED_AGENT_INTERFACE has no
+	 * meaningful per-organization variant, and offering one in the admin UI
+	 * would be actively misleading about what the switch does.
+	 */
+	orgScopable?: true;
 }
 
 export const FEATURE_FLAG_REGISTRY = {
@@ -155,12 +162,21 @@ export const FEATURE_FLAG_REGISTRY = {
 		default: false,
 		note: "Fizzy #1751. Off renders the questions panel exactly as before — no picker, no avatars, no tally, and the answer box is the plain textarea with a single Answer button. Answering and auto-resolution are untouched either way, so this is a pure UI/notification switch with no migration to reverse. Resolved SERVER-side in getEditorState and gated by the absence of `questionAssignees` in the payload: there is deliberately no client-side flag read, because a NEXT_PUBLIC_ mirror is inlined at build time and would put the kill switch back behind a redeploy. Turning it off leaves existing assignment rows in place, so flipping it on again restores them exactly; while off they are simply never read and no notification is emitted.",
 	},
+	PUBLISHING_SUITE: {
+		label: "Publishing Suite",
+		description:
+			"Offers the Publishing Suite — the daily topic-suggestion sweep and the topic list, settings and deep-link pages that go with it.",
+		envVar: "FABRIC_FEATURE_PUBLISHING_SUITE",
+		default: false,
+		orgScopable: true,
+		note: 'Registered so the rollout can be scoped to named organizations rather than to a whole deployment. The env var it names is unchanged and still seeds this flag, so every existing environment resolves exactly as it did before this entry existed. Two things follow from the org level. Off is the safe direction here: default false plus no env var in production means an unreadable override table resolves this OFF for everyone, unlike the default-ON flags above. And an organization with no row INHERITS rather than being denied — the row stores a value precisely so an organization can also be explicitly excluded from a globally-enabled feature, which a bare membership entry could never express. Turning this ON here (the instance-wide override, not an org override) is a real spend switch: it enables the daily sweep for every organization and every personal project on the instance except an organization with an explicit disabled override, and it opens the manual "Generate now" route for every project immediately, regardless of cadence. Read in server activities and procedures only, never in workflow code (determinism).',
+	},
 } as const satisfies Record<string, FeatureFlagDefinition>;
 
 export type FeatureFlagKey = keyof typeof FEATURE_FLAG_REGISTRY;
 
 /** Where a resolved value came from. Surfaced in the admin UI. */
-export type FlagSource = "override" | "env" | "default";
+export type FlagSource = "org-override" | "override" | "env" | "default";
 
 export function isFeatureFlagKey(value: string): value is FeatureFlagKey {
 	return Object.hasOwn(FEATURE_FLAG_REGISTRY, value);
@@ -170,20 +186,40 @@ export const FEATURE_FLAG_KEYS = Object.keys(
 	FEATURE_FLAG_REGISTRY,
 ) as FeatureFlagKey[];
 
+/** The override levels, named rather than positional. */
+export interface FlagOverrides {
+	/** Per-organization row. `undefined` means "no row", not "disabled". */
+	org?: boolean;
+	/** Instance-wide row. `undefined` means "no row", not "disabled". */
+	global?: boolean;
+}
+
 /**
- * Resolve one flag. Order is override row > env var > registry default.
+ * Resolve one flag. Order is org override > global override > env var >
+ * registry default.
  *
- * `override === undefined` means "no row", which is distinct from
- * `override === false` ("an admin explicitly turned it off") — the latter must
- * beat a truthy env var, which is the whole point of the feature.
+ * At BOTH override levels, `undefined` means "no row", which is distinct from
+ * `false` ("an operator explicitly turned it off") — the latter must beat every
+ * level beneath it, which is the whole point of the feature. An org-level
+ * `false` therefore beats a global `true`, and that is the only way to exclude
+ * one organization from a globally-enabled flag.
+ *
+ * The levels arrive as a named object rather than as two positional booleans:
+ * two adjacent `boolean | undefined` parameters accept each other silently, and
+ * getting them the wrong way round would resolve every organization against the
+ * instance-wide value with no visible cause.
  */
 export function resolveFlag(
 	key: FeatureFlagKey,
-	override: boolean | undefined,
+	overrides: FlagOverrides,
 	env: NodeJS.ProcessEnv = process.env,
 ): { enabled: boolean; source: FlagSource } {
-	if (override !== undefined) {
-		return { enabled: override, source: "override" };
+	if (overrides.org !== undefined) {
+		return { enabled: overrides.org, source: "org-override" };
+	}
+
+	if (overrides.global !== undefined) {
+		return { enabled: overrides.global, source: "override" };
 	}
 
 	const definition = FEATURE_FLAG_REGISTRY[key];

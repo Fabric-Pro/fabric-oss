@@ -30,7 +30,7 @@ export const createPublishingTopicProcedure = tenantProtectedProcedure
 		}),
 	)
 	.handler(async ({ input, context }) => {
-		assertPublishingSuiteFeatureEnabled();
+		await assertPublishingSuiteFeatureEnabled(input.projectId);
 		// AUTHORIZATION: requireProjectPermission(PUBLISHING_TOPIC_CREATE) gates
 		// project access — only callers with create rights on this project reach
 		// here.

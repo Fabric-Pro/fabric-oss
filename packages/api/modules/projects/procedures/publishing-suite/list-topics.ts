@@ -31,7 +31,7 @@ export const listPublishingTopicsProcedure = tenantProtectedProcedure
 		}),
 	)
 	.handler(async ({ input, context }) => {
-		assertPublishingSuiteFeatureEnabled();
+		await assertPublishingSuiteFeatureEnabled(input.projectId);
 		// AUTHORIZATION: requireProjectPermission(PUBLISHING_TOPIC_READ) gates
 		// project access; results are scoped to the project by the query layer.
 		const { items } = await listPublishingTopics({

@@ -22,7 +22,7 @@ export const latestPublishingCycleProcedure = tenantProtectedProcedure
 		}),
 	)
 	.handler(async ({ input }) => {
-		assertPublishingSuiteFeatureEnabled();
+		await assertPublishingSuiteFeatureEnabled(input.projectId);
 		// AUTHORIZATION: requireProjectPermission(PUBLISHING_TOPIC_READ) gates
 		// project access.
 		const cycle = await getLatestPublishingCycle(input.projectId);

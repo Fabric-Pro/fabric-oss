@@ -78,7 +78,7 @@ export const listTopicDecisionsProcedure = tenantProtectedProcedure
 		}),
 	)
 	.handler(async ({ input }) => {
-		assertPublishingSuiteFeatureEnabled();
+		await assertPublishingSuiteFeatureEnabled(input.projectId);
 
 		// No project-eligibility ratchet (see module doc): the scoping that
 		// matters for isolation — {topicId, projectId} inside the query below —
@@ -117,7 +117,7 @@ export const answerTopicQuestionProcedure = tenantProtectedProcedure
 		}),
 	)
 	.handler(async ({ input, context }) => {
-		assertPublishingSuiteFeatureEnabled();
+		await assertPublishingSuiteFeatureEnabled(input.projectId);
 
 		// Ratchet, unlike the read above (see module doc): a WRITE must not start
 		// new work — recording a decision counts — on a project that is archived

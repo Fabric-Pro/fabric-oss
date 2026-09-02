@@ -39,15 +39,23 @@ function expectedDetailedFlags(
 }
 
 const findMany = vi.fn();
+const findUnique = vi.fn();
 const upsert = vi.fn();
 const deleteMany = vi.fn();
+const findManyOrg = vi.fn();
+const findUniqueOrg = vi.fn();
 
 vi.mock("../prisma/client", () => ({
 	db: {
 		featureFlagOverride: {
 			findMany: (...args: unknown[]) => findMany(...args),
+			findUnique: (...args: unknown[]) => findUnique(...args),
 			upsert: (...args: unknown[]) => upsert(...args),
 			deleteMany: (...args: unknown[]) => deleteMany(...args),
+		},
+		organizationFeatureFlagOverride: {
+			findMany: (...args: unknown[]) => findManyOrg(...args),
+			findUnique: (...args: unknown[]) => findUniqueOrg(...args),
 		},
 	},
 }));
@@ -63,10 +71,15 @@ vi.mock("@repo/logs", () => ({
 }));
 
 import {
+	__ORG_CACHE_MAX_FOR_TEST,
 	__resetFeatureFlagCacheForTest,
 	clearFlagOverride,
 	getAllFlags,
 	getAllFlagsDetailed,
+	getDisabledOrganizationIds,
+	getEnabledOrganizationIds,
+	getGlobalFlagOverride,
+	getOrganizationFlagOverrideUncached,
 	isFeatureEnabled,
 	isKillSwitchArmed,
 	setFlagOverride,
@@ -279,6 +292,313 @@ describe("feature flag readers", () => {
 			expect(await isKillSwitchArmed("LIVING_DOCS_REFRESH_SWEEP")).toBe(
 				false,
 			);
+		});
+	});
+});
+
+// Fix round 2 (§FIX 2): `isFeatureEnabled`'s global read goes through
+// `getFlagOverrides`'s 10-second TTL cache — correct for hot request paths,
+// wrong for the daily publishing sweep's once-a-tick, credit-spending
+// decision. `getGlobalFlagOverride` is the dedicated escape hatch: a direct,
+// uncached row read, mirroring `getEnabledOrganizationIds` /
+// `getDisabledOrganizationIds`'s shape and no-try/catch stance.
+describe("getGlobalFlagOverride (uncached global reader)", () => {
+	beforeEach(() => {
+		findUnique.mockReset();
+	});
+
+	// The property the whole reader exists for: two consecutive calls must
+	// each see the CURRENT database state, with no TTL wait and no
+	// cache-busting call (no setFlagOverride, no __resetFeatureFlagCacheForTest)
+	// in between — unlike `isFeatureEnabled`, which would still be serving the
+	// first value from its 10-second cache.
+	it("re-reads the database on every call — no TTL, unlike isFeatureEnabled", async () => {
+		findUnique.mockResolvedValueOnce({ enabled: true });
+		await expect(getGlobalFlagOverride("PUBLISHING_SUITE")).resolves.toBe(
+			true,
+		);
+
+		findUnique.mockResolvedValueOnce({ enabled: false });
+		await expect(getGlobalFlagOverride("PUBLISHING_SUITE")).resolves.toBe(
+			false,
+		);
+
+		expect(findUnique).toHaveBeenCalledTimes(2);
+	});
+
+	it("returns undefined when there is no override row — distinct from a stored false", async () => {
+		findUnique.mockResolvedValueOnce(null);
+		await expect(
+			getGlobalFlagOverride("PUBLISHING_SUITE"),
+		).resolves.toBeUndefined();
+	});
+
+	it("queries by key alone, selecting only enabled", async () => {
+		findUnique.mockResolvedValueOnce(null);
+		await getGlobalFlagOverride("PUBLISHING_SUITE");
+		expect(findUnique).toHaveBeenCalledWith({
+			where: { key: "PUBLISHING_SUITE" },
+			select: { enabled: true },
+		});
+	});
+
+	// Mirrors `getEnabledOrganizationIds` / `getDisabledOrganizationIds`: no
+	// try/catch, so a read failure here must throw and let the calling
+	// activity retry, rather than degrading to a default indistinguishable
+	// from a real answer.
+	it("throws rather than degrading, unlike getFlagOverrides' fail-open catch", async () => {
+		findUnique.mockRejectedValueOnce(new Error("relation does not exist"));
+		await expect(getGlobalFlagOverride("PUBLISHING_SUITE")).rejects.toThrow(
+			"relation does not exist",
+		);
+	});
+});
+
+// Copilot-review follow-up: the per-project dispatch-time re-check
+// (`isPublishingSuiteEnabledForOrganizationUncached`,
+// packages/temporal/src/activities/publishing-suggestion/find-eligible-projects.ts)
+// used to answer its one-organization question by fetching every override
+// row for the key via `getEnabledOrganizationIds` / `getDisabledOrganizationIds`
+// and scanning the list with `.includes()`. This reader answers the same
+// question directly, against the table's `(key, organizationId)` primary
+// key — mirroring `getGlobalFlagOverride`'s shape and no-try/catch stance.
+describe("getOrganizationFlagOverrideUncached (uncached org reader)", () => {
+	beforeEach(() => {
+		findUniqueOrg.mockReset();
+	});
+
+	it("re-reads the database on every call — no TTL, unlike isFeatureEnabled", async () => {
+		findUniqueOrg.mockResolvedValueOnce({ enabled: true });
+		await expect(
+			getOrganizationFlagOverrideUncached("PUBLISHING_SUITE", "org_1"),
+		).resolves.toBe(true);
+
+		findUniqueOrg.mockResolvedValueOnce({ enabled: false });
+		await expect(
+			getOrganizationFlagOverrideUncached("PUBLISHING_SUITE", "org_1"),
+		).resolves.toBe(false);
+
+		expect(findUniqueOrg).toHaveBeenCalledTimes(2);
+	});
+
+	it("returns undefined when there is no override row — distinct from a stored false", async () => {
+		findUniqueOrg.mockResolvedValueOnce(null);
+		await expect(
+			getOrganizationFlagOverrideUncached("PUBLISHING_SUITE", "org_1"),
+		).resolves.toBeUndefined();
+	});
+
+	it("queries by the compound (key, organizationId) primary key, selecting only enabled", async () => {
+		findUniqueOrg.mockResolvedValueOnce(null);
+		await getOrganizationFlagOverrideUncached("PUBLISHING_SUITE", "org_1");
+		expect(findUniqueOrg).toHaveBeenCalledWith({
+			where: {
+				key_organizationId: {
+					key: "PUBLISHING_SUITE",
+					organizationId: "org_1",
+				},
+			},
+			select: { enabled: true },
+		});
+	});
+
+	// Mirrors `getGlobalFlagOverride` / `getEnabledOrganizationIds` /
+	// `getDisabledOrganizationIds`: no try/catch, so a read failure here must
+	// throw and let the calling activity retry, rather than degrading to a
+	// default indistinguishable from a real answer.
+	it("throws rather than degrading, unlike getFlagOverrides' fail-open catch", async () => {
+		findUniqueOrg.mockRejectedValueOnce(
+			new Error("relation does not exist"),
+		);
+		await expect(
+			getOrganizationFlagOverrideUncached("PUBLISHING_SUITE", "org_1"),
+		).rejects.toThrow("relation does not exist");
+	});
+});
+
+describe("org-scoped flag reads", () => {
+	beforeEach(() => {
+		__resetFeatureFlagCacheForTest();
+		findMany.mockReset();
+		findManyOrg.mockReset();
+	});
+
+	it("prefers an org row over the global row", async () => {
+		findMany.mockResolvedValue([
+			{ key: "PUBLISHING_SUITE", enabled: false },
+		]);
+		findManyOrg.mockResolvedValue([
+			{ key: "PUBLISHING_SUITE", enabled: true },
+		]);
+
+		await expect(
+			isFeatureEnabled("PUBLISHING_SUITE", "org_1"),
+		).resolves.toBe(true);
+	});
+
+	it("inherits the global value when the organization has no row", async () => {
+		findMany.mockResolvedValue([
+			{ key: "PUBLISHING_SUITE", enabled: true },
+		]);
+		findManyOrg.mockResolvedValue([]);
+
+		await expect(
+			isFeatureEnabled("PUBLISHING_SUITE", "org_1"),
+		).resolves.toBe(true);
+	});
+
+	it("ignores rows for de-registered flag keys", async () => {
+		findMany.mockResolvedValue([]);
+		findManyOrg.mockResolvedValue([{ key: "GONE_FLAG", enabled: true }]);
+
+		await expect(
+			isFeatureEnabled("PUBLISHING_SUITE", "org_1"),
+		).resolves.toBe(false);
+	});
+
+	// Precondition asserted, not assumed: the first call must actually have
+	// populated the cache, or "org B did not see org A's value" passes
+	// vacuously in a run where nothing was cached at all.
+	it("caches per organization and never answers across organizations", async () => {
+		findMany.mockResolvedValue([]);
+		findManyOrg.mockImplementation(({ where }) =>
+			Promise.resolve(
+				where.organizationId === "org_1"
+					? [{ key: "PUBLISHING_SUITE", enabled: true }]
+					: [],
+			),
+		);
+
+		await expect(
+			isFeatureEnabled("PUBLISHING_SUITE", "org_1"),
+		).resolves.toBe(true);
+		const callsAfterFirst = findManyOrg.mock.calls.length;
+
+		// Precondition: a repeat read for org_1 is served from cache.
+		await expect(
+			isFeatureEnabled("PUBLISHING_SUITE", "org_1"),
+		).resolves.toBe(true);
+		expect(findManyOrg.mock.calls.length).toBe(callsAfterFirst);
+
+		// The actual property: org_2 is unaffected by org_1's cached true.
+		await expect(
+			isFeatureEnabled("PUBLISHING_SUITE", "org_2"),
+		).resolves.toBe(false);
+	});
+
+	// Mirrors the global reader's contract exactly: degrade to "no overrides"
+	// and do NOT cache the failure, so recovery is immediate rather than
+	// delayed by a full TTL.
+	it("degrades to no overrides on a read error and does not cache it", async () => {
+		findMany.mockResolvedValue([]);
+		findManyOrg.mockRejectedValueOnce(new Error("relation missing"));
+
+		await expect(
+			isFeatureEnabled("PUBLISHING_SUITE", "org_1"),
+		).resolves.toBe(false);
+
+		findManyOrg.mockResolvedValue([
+			{ key: "PUBLISHING_SUITE", enabled: true },
+		]);
+		await expect(
+			isFeatureEnabled("PUBLISHING_SUITE", "org_1"),
+		).resolves.toBe(true);
+	});
+
+	// The bug this pins: a cache HIT used to return early without moving the
+	// entry, so eviction removed the first key ever inserted regardless of
+	// how recently it had been read. Reading org_0 again after some filler
+	// organizations load must push it to the back of the eviction order —
+	// same as a real refresh — so it survives when the cache is later
+	// driven past ORG_CACHE_MAX, while an organization loaded around the
+	// same time but never re-read does not.
+	it("refreshes recency on a cache hit, so a re-read organization survives eviction", async () => {
+		findMany.mockResolvedValue([]);
+		findManyOrg.mockResolvedValue([
+			{ key: "PUBLISHING_SUITE", enabled: true },
+		]);
+
+		const max = __ORG_CACHE_MAX_FOR_TEST;
+		const fillerBeforeReread = 3;
+
+		// org_0 loads first.
+		await isFeatureEnabled("PUBLISHING_SUITE", "org_0");
+
+		// A few other organizations load right after it, ahead of org_0 in
+		// insertion order.
+		for (let i = 1; i <= fillerBeforeReread; i++) {
+			await isFeatureEnabled("PUBLISHING_SUITE", `org_${i}`);
+		}
+
+		// Re-reading org_0 is a cache hit (no new query) — with the fix it
+		// moves to the back of the insertion order, past org_1..org_3.
+		const callsBeforeReread = findManyOrg.mock.calls.length;
+		await isFeatureEnabled("PUBLISHING_SUITE", "org_0");
+		expect(findManyOrg.mock.calls.length).toBe(callsBeforeReread);
+
+		// Fill the rest of the way to ORG_CACHE_MAX with untouched
+		// organizations, then push one past the cap to force the first
+		// eviction.
+		for (let i = fillerBeforeReread + 1; i <= max - 1; i++) {
+			await isFeatureEnabled("PUBLISHING_SUITE", `org_${i}`);
+		}
+		await isFeatureEnabled("PUBLISHING_SUITE", `org_${max}`);
+
+		// org_0 was read recently (after org_1..org_3) — it must still be
+		// cached and answer with no query.
+		const callsBeforeOrg0Check = findManyOrg.mock.calls.length;
+		await isFeatureEnabled("PUBLISHING_SUITE", "org_0");
+		expect(findManyOrg.mock.calls.length).toBe(callsBeforeOrg0Check);
+
+		// org_1 was loaded around the same time as org_0 but never re-read —
+		// it is the true least-recently-used entry and must have been
+		// evicted to make room, so reading it again issues a fresh query.
+		const callsBeforeOrg1Check = findManyOrg.mock.calls.length;
+		await isFeatureEnabled("PUBLISHING_SUITE", "org_1");
+		expect(findManyOrg.mock.calls.length).toBe(callsBeforeOrg1Check + 1);
+	});
+
+	it("lists the organizations with an enabled row for a key", async () => {
+		findManyOrg.mockResolvedValue([
+			{ organizationId: "org_1" },
+			{ organizationId: "org_2" },
+		]);
+
+		await expect(
+			getEnabledOrganizationIds("PUBLISHING_SUITE"),
+		).resolves.toEqual(["org_1", "org_2"]);
+	});
+
+	it("queries only enabled:true rows for the enabled list", async () => {
+		findManyOrg.mockResolvedValue([]);
+
+		await getEnabledOrganizationIds("PUBLISHING_SUITE");
+
+		expect(findManyOrg).toHaveBeenCalledWith({
+			where: { key: "PUBLISHING_SUITE", enabled: true },
+			select: { organizationId: true },
+		});
+	});
+
+	// Companion to the enabled list (fix round 1 / F2): the deny-list a
+	// globally-enabled sweep consults to honour an organization's explicit
+	// opt-out.
+	it("lists the organizations with an explicitly disabled row for a key", async () => {
+		findManyOrg.mockResolvedValue([{ organizationId: "org_bad" }]);
+
+		await expect(
+			getDisabledOrganizationIds("PUBLISHING_SUITE"),
+		).resolves.toEqual(["org_bad"]);
+	});
+
+	it("queries only enabled:false rows for the disabled list", async () => {
+		findManyOrg.mockResolvedValue([]);
+
+		await getDisabledOrganizationIds("PUBLISHING_SUITE");
+
+		expect(findManyOrg).toHaveBeenCalledWith({
+			where: { key: "PUBLISHING_SUITE", enabled: false },
+			select: { organizationId: true },
 		});
 	});
 });
