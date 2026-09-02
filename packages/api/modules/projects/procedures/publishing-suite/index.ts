@@ -1,6 +1,11 @@
 // Publishing Suite — topic listing, latest-cycle read, manual topic creation,
 // and status transitions (Phase 1A Plan 3 Task 2).
 
+export {
+	adoptBlogPostDraftProcedure,
+	generateBlogPostProcedure,
+	saveBlogPostBodyProcedure,
+} from "./blog-post";
 export { createPublishingTopicProcedure } from "./create-topic";
 export { generatePublishingTopicsNowProcedure } from "./generate-now";
 export { getPublishingSuiteSettingsProcedure } from "./get-settings";

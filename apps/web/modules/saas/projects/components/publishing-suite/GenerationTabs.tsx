@@ -1,13 +1,9 @@
 "use client";
 
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@ui/components/tabs";
-import {
-	AlertTriangleIcon,
-	CheckCircle2Icon,
-	Loader2Icon,
-	StarIcon,
-} from "lucide-react";
+import { AlertTriangleIcon, CheckCircle2Icon, StarIcon } from "lucide-react";
 import { useState } from "react";
+import { BlogPostPanel } from "./BlogPostPanel";
 import type {
 	GenerationTabInfo,
 	GenerationTabState,
@@ -83,13 +79,18 @@ export interface TopicWorkingDraftState {
  *
  * 2B-1 made the Short Post / Tweet and Blog Post tabs SELECTABLE and gave each a
  * panel showing its recommendation context (FR6/FR7), the unresolved questions
- * that will constrain it (FR8/FR9) and whether a draft exists. 2B-2 added
- * generation for the short post, which is why the Short Post tab now mounts
- * `ShortPostPanel` in place of the generic draft-state block. Blog Post keeps
- * that block until 2B-3, whose contract differs in a way that matters: blog
- * generation seeds a working draft on the first run (FR21) where the short post
- * deliberately does not (DV4), so one component serving both would be a flag
- * deciding which product it is.
+ * that will constrain it (FR8/FR9) and whether a draft exists. 2B-2 gave the
+ * short post its own panel, and 2B-3 gave the blog post one — two components
+ * rather than one behind a flag, because their contracts differ where it
+ * matters: blog generation SEEDS a working draft on the first run (DV5/FR21)
+ * and centres on an editor, where the short post produces three candidates that
+ * stay candidates until a person picks one (DV4).
+ *
+ * With both of them panelled, the generic draft-state block 2B-1 shipped had no
+ * remaining caller — `TabsContent` renders only for
+ * `GENERATION_ACTIVE_POST_TYPES`, and every member of that set now has a panel —
+ * so it was removed here rather than left as unreachable code with a test that
+ * could no longer reach it. 2C adds its own panel for Case Study.
  *
  * Case Study and Stakeholder Email stay disabled and still read "Coming soon" —
  * 2A's FR50 still holds for them, and only the two types 2B activates are
@@ -436,82 +437,24 @@ function GenerationPanel({
 					working={working}
 					canEdit={canEdit}
 				/>
-			) : (
-				<>
-					<Section label="Draft">
-						<DraftState draft={draft} working={working} />
-					</Section>
-
-					<p className="rounded-xl border border-border border-dashed bg-muted/40 p-4 text-center text-muted-foreground text-sm">
-						Generating {label} arrives in the next release.
-					</p>
-				</>
-			)}
+			) : postType === "BLOG_POST" ? (
+				<BlogPostPanel
+					projectId={projectId}
+					organizationId={organizationId}
+					topicId={topicId}
+					draft={draft}
+					working={working}
+					canEdit={canEdit}
+				/>
+			) : // Every type in `GENERATION_ACTIVE_POST_TYPES` now has a panel, and
+			// `TabsContent` renders only for those — so nothing reaches this
+			// arm today. It is `null` rather than a shared placeholder on
+			// purpose: 2C activating Case Study must add its own panel here, and
+			// falling through to a neighbour's would render the wrong product
+			// under the right tab, which is worse than rendering nothing.
+			null}
 		</div>
 	);
-}
-
-function DraftState({
-	draft,
-	working,
-}: {
-	draft: TopicDraftState | null;
-	working: TopicWorkingDraftState | null;
-}) {
-	const attempt = draft?.latestAttempt ?? null;
-	// `isExpired` splits GENERATING in two: a LIVE run is genuinely in flight,
-	// a STRANDED one will never report back on its own.
-	const isStranded = attempt?.status === "GENERATING" && attempt.isExpired;
-	const isGenerating = attempt?.status === "GENERATING" && !isStranded;
-
-	if (isGenerating) {
-		return (
-			<p
-				className="flex items-center gap-2 text-muted-foreground text-sm"
-				role="status"
-			>
-				<Loader2Icon
-					className="size-4 motion-safe:animate-spin"
-					aria-hidden="true"
-				/>
-				A draft is being generated.
-			</p>
-		);
-	}
-
-	if (isStranded) {
-		return (
-			<p className="text-muted-foreground text-sm" role="alert">
-				The last run didn't report back within its time limit.
-			</p>
-		);
-	}
-
-	if (attempt?.status === "FAILED") {
-		return (
-			<p className="text-muted-foreground text-sm" role="alert">
-				{attempt.error ?? "The last draft could not be generated."}
-			</p>
-		);
-	}
-
-	if (working?.hasBody) {
-		return (
-			<p className="text-muted-foreground text-sm">
-				You have a saved draft for this content type.
-			</p>
-		);
-	}
-
-	if (draft?.latestReady) {
-		return (
-			<p className="text-muted-foreground text-sm">
-				Version {draft.latestReady.version} is ready.
-			</p>
-		);
-	}
-
-	return <p className="text-muted-foreground text-sm">No draft yet.</p>;
 }
 
 function Section({

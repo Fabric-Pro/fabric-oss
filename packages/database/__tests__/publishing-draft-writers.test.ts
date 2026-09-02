@@ -21,6 +21,11 @@ const h = vi.hoisted(() => ({
 	draftAggregate: vi.fn(),
 	workingUpsert: vi.fn(),
 	workingFindUnique: vi.fn(),
+	workingFindFirst: vi.fn(),
+	workingCreate: vi.fn(),
+	workingUpdate: vi.fn(),
+	workingUpdateMany: vi.fn(),
+	workingFindUniqueOrThrow: vi.fn(),
 }));
 
 vi.mock("../prisma/client", () => {
@@ -35,7 +40,12 @@ vi.mock("../prisma/client", () => {
 		},
 		publishingTopicWorkingDraft: {
 			findUnique: h.workingFindUnique,
+			findFirst: h.workingFindFirst,
 			upsert: h.workingUpsert,
+			create: h.workingCreate,
+			update: h.workingUpdate,
+			updateMany: h.workingUpdateMany,
+			findUniqueOrThrow: h.workingFindUniqueOrThrow,
 		},
 	};
 	return {
@@ -51,7 +61,9 @@ import {
 	completeTopicDraft,
 	failTopicDraft,
 	saveWorkingDraft,
+	seedWorkingDraftIfAbsent,
 	startTopicDraftAttempt,
+	updateWorkingDraftBody,
 } from "../prisma/queries/projects/publishing-drafts";
 
 const ORG_PROJECT = [
@@ -116,6 +128,11 @@ beforeEach(() => {
 	h.draftUpdateMany.mockResolvedValue({ count: 1 });
 	h.workingUpsert.mockResolvedValue({ updatedAt: new Date() });
 	h.workingFindUnique.mockResolvedValue(null);
+	h.workingFindFirst.mockResolvedValue(null);
+	h.workingCreate.mockResolvedValue({ updatedAt: new Date() });
+	h.workingUpdate.mockResolvedValue({ updatedAt: new Date() });
+	h.workingUpdateMany.mockResolvedValue({ count: 1 });
+	h.workingFindUniqueOrThrow.mockResolvedValue({ updatedAt: new Date() });
 });
 
 describe("startTopicDraftAttempt — tenancy", () => {
@@ -697,5 +714,270 @@ describe("saveWorkingDraft", () => {
 				},
 			}),
 		);
+	});
+});
+
+const SEED = {
+	topicId: "topic-1",
+	projectId: "project-1",
+	postType: "BLOG_POST" as const,
+	sourceDraftId: "draft-1",
+	body: "# A post\n\nText.",
+	updatedById: "user-1",
+};
+
+describe("seedWorkingDraftIfAbsent — the create-only writer (DV5/FR35)", () => {
+	it("creates the working draft when the topic has none", async () => {
+		h.draftFindFirst.mockResolvedValue({ id: "draft-1" });
+		h.workingFindUnique.mockResolvedValue(null);
+
+		const result = await seedWorkingDraftIfAbsent(SEED);
+
+		expect(result).toMatchObject({ status: "seeded" });
+		expect(h.workingCreate).toHaveBeenCalled();
+	});
+
+	it("REFUSES to touch an existing draft, and updates nothing", async () => {
+		// FR35. This is the whole point of the helper: a regeneration reaches
+		// this line every time after the first, and the saved body — which
+		// someone may have spent an hour editing — must survive it.
+		h.draftFindFirst.mockResolvedValue({ id: "draft-2" });
+		h.workingFindUnique.mockResolvedValue({ id: "working-1" });
+
+		const result = await seedWorkingDraftIfAbsent({
+			...SEED,
+			sourceDraftId: "draft-2",
+		});
+
+		expect(result).toEqual({ status: "already_exists" });
+		expect(h.workingCreate).not.toHaveBeenCalled();
+		expect(h.workingUpsert).not.toHaveBeenCalled();
+		expect(h.workingUpdate).not.toHaveBeenCalled();
+	});
+
+	it("stamps tenancy from the LOCKED row, never from the caller", async () => {
+		h.draftFindFirst.mockResolvedValue({ id: "draft-1" });
+
+		await seedWorkingDraftIfAbsent(SEED);
+
+		const data = h.workingCreate.mock.calls[0][0].data;
+		expect(data.organizationId).toBe("org-1");
+		// XOR: an org project's row carries a null userId.
+		expect(data.userId).toBeNull();
+	});
+
+	it("locks the project row before reading anything", async () => {
+		h.draftFindFirst.mockResolvedValue({ id: "draft-1" });
+
+		await seedWorkingDraftIfAbsent(SEED);
+
+		const sql = h.queryRaw.mock.calls[0][0].join("?");
+		expect(sql).toMatch(/FOR UPDATE/);
+	});
+
+	it("saves a null option label — a blog generation has no options", async () => {
+		h.draftFindFirst.mockResolvedValue({ id: "draft-1" });
+
+		await seedWorkingDraftIfAbsent(SEED);
+
+		expect(
+			h.workingCreate.mock.calls[0][0].data.sourceOptionLabel,
+		).toBeNull();
+	});
+
+	it("scopes the source lookup by all four ids and READY status", async () => {
+		h.draftFindFirst.mockResolvedValue({ id: "draft-1" });
+
+		await seedWorkingDraftIfAbsent(SEED);
+
+		expect(h.draftFindFirst).toHaveBeenCalledWith(
+			expect.objectContaining({
+				where: {
+					id: "draft-1",
+					topicId: "topic-1",
+					projectId: "project-1",
+					postType: "BLOG_POST",
+					status: "READY",
+				},
+			}),
+		);
+	});
+
+	it("answers source_not_found when the draft is not this topic's READY row", async () => {
+		h.draftFindFirst.mockResolvedValue(null);
+
+		const result = await seedWorkingDraftIfAbsent(SEED);
+
+		expect(result).toEqual({ status: "source_not_found" });
+		expect(h.workingCreate).not.toHaveBeenCalled();
+	});
+
+	it("refuses an archived project", async () => {
+		h.queryRaw.mockResolvedValue([
+			{
+				organizationId: "org-1",
+				userId: null,
+				status: "ARCHIVED",
+				deletedAt: null,
+			},
+		]);
+
+		const result = await seedWorkingDraftIfAbsent(SEED);
+
+		expect(result).toEqual({ status: "project_ineligible" });
+		expect(h.workingCreate).not.toHaveBeenCalled();
+	});
+
+	it("treats a lost create race as already_exists, not as a crash", async () => {
+		// The read and the write are both inside the project lock every other
+		// writer takes, so losing this race needs a writer that does not. The
+		// answer keeps that case on the same no-overwrite path.
+		h.draftFindFirst.mockResolvedValue({ id: "draft-1" });
+		h.workingFindUnique.mockResolvedValue(null);
+		h.workingCreate.mockRejectedValue(
+			uniqueViolation(
+				"publishing_topic_working_draft_topicId_postType_key",
+				["topicId", "postType"],
+			),
+		);
+
+		const result = await seedWorkingDraftIfAbsent(SEED);
+
+		expect(result).toEqual({ status: "already_exists" });
+	});
+
+	it("RETHROWS a unique violation it cannot name", async () => {
+		// Failing loudly on a conflict we cannot explain is the only safe
+		// direction — the alternative is a plausible-looking lie about state.
+		h.draftFindFirst.mockResolvedValue({ id: "draft-1" });
+		h.workingCreate.mockRejectedValue(
+			uniqueViolation("some_other_constraint", ["id"]),
+		);
+
+		await expect(seedWorkingDraftIfAbsent(SEED)).rejects.toThrow();
+	});
+});
+
+const EDIT = {
+	topicId: "topic-1",
+	projectId: "project-1",
+	postType: "BLOG_POST" as const,
+	body: "# Edited\n\nRewritten.",
+	updatedById: "user-2",
+	expectedUpdatedAt: new Date("2026-09-01T12:00:00Z"),
+};
+
+describe("updateWorkingDraftBody — the editor's writer", () => {
+	it("writes the body when the caller's expectation still holds", async () => {
+		h.workingFindFirst.mockResolvedValue({
+			id: "working-1",
+			updatedAt: new Date("2026-09-01T12:00:00Z"),
+		});
+
+		const result = await updateWorkingDraftBody(EDIT);
+
+		expect(result).toMatchObject({ status: "saved" });
+		expect(h.workingUpdateMany.mock.calls[0][0].data.body).toBe(
+			"# Edited\n\nRewritten.",
+		);
+	});
+
+	it("puts the expected version in the WHERE, not in a JS comparison", async () => {
+		// The compare-and-set is the WRITE. An earlier version read `updatedAt`
+		// and compared it in JS before an unconditional update, which is only
+		// correct while every writer takes the project lock — a convention, not
+		// a constraint. Raised by review. Postgres settles the comparison now,
+		// which is also why this is a shape assertion: whether two instants are
+		// equal is no longer this code's business.
+		h.workingFindFirst.mockResolvedValue({ id: "working-1" });
+
+		await updateWorkingDraftBody(EDIT);
+
+		expect(h.workingUpdateMany).toHaveBeenCalledWith(
+			expect.objectContaining({
+				where: {
+					id: "working-1",
+					updatedAt: EDIT.expectedUpdatedAt,
+				},
+			}),
+		);
+	});
+
+	it("REFUSES when the row moved under the caller", async () => {
+		// The conditional write matches nothing, so nothing is written and the
+		// count is what reports the loss.
+		h.workingFindFirst.mockResolvedValue({ id: "working-1" });
+		h.workingUpdateMany.mockResolvedValue({ count: 0 });
+
+		const result = await updateWorkingDraftBody(EDIT);
+
+		expect(result).toEqual({ status: "stale" });
+	});
+
+	it("leaves the draft's provenance alone", async () => {
+		// `sourceDraftId` names where the text STARTED. An edit does not change
+		// that, and it is also what makes the timestamp CAS necessary — a
+		// source-based check would pass while the row HAD changed.
+		h.workingFindFirst.mockResolvedValue({ id: "working-1" });
+
+		await updateWorkingDraftBody(EDIT);
+
+		const data = h.workingUpdateMany.mock.calls[0][0].data;
+		expect(data).not.toHaveProperty("sourceDraftId");
+		expect(data).not.toHaveProperty("sourceOptionLabel");
+	});
+
+	it("CREATES nothing when there is no working draft", async () => {
+		// An editor that could conjure a row would let a body reach a topic
+		// whose generation never ran.
+		h.workingFindFirst.mockResolvedValue(null);
+
+		const result = await updateWorkingDraftBody(EDIT);
+
+		expect(result).toEqual({ status: "not_found" });
+		expect(h.workingCreate).not.toHaveBeenCalled();
+		expect(h.workingUpsert).not.toHaveBeenCalled();
+	});
+
+	it("scopes the lookup by projectId, not by the topic key alone", async () => {
+		h.workingFindFirst.mockResolvedValue({ id: "working-1" });
+
+		await updateWorkingDraftBody(EDIT);
+
+		expect(h.workingFindFirst).toHaveBeenCalledWith(
+			expect.objectContaining({
+				where: {
+					topicId: "topic-1",
+					projectId: "project-1",
+					postType: "BLOG_POST",
+				},
+			}),
+		);
+	});
+
+	it("re-stamps tenancy so a transferred project's row stays visible", async () => {
+		h.workingFindFirst.mockResolvedValue({ id: "working-1" });
+
+		await updateWorkingDraftBody(EDIT);
+
+		const data = h.workingUpdateMany.mock.calls[0][0].data;
+		expect(data.organizationId).toBe("org-1");
+		expect(data.userId).toBeNull();
+	});
+
+	it("refuses an archived project", async () => {
+		h.queryRaw.mockResolvedValue([
+			{
+				organizationId: "org-1",
+				userId: null,
+				status: "ARCHIVED",
+				deletedAt: null,
+			},
+		]);
+
+		const result = await updateWorkingDraftBody(EDIT);
+
+		expect(result).toEqual({ status: "project_ineligible" });
+		expect(h.workingUpdateMany).not.toHaveBeenCalled();
 	});
 });

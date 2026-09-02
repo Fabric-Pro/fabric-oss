@@ -4,6 +4,10 @@ import { logger } from "@repo/logs";
 // kept in step by a test is the arrangement `meeting_agenda_generator` uses,
 // and the test it names does not exist.
 import {
+	PUBLISHING_BLOG_POST_AGENT_KEY,
+	PUBLISHING_BLOG_POST_FALLBACK_BODY,
+} from "@repo/utils/publishing-blog-post-prompt";
+import {
 	PUBLISHING_PLANNING_ANALYSIS_AGENT_KEY,
 	PUBLISHING_PLANNING_ANALYSIS_FALLBACK_BODY,
 } from "@repo/utils/publishing-planning-prompt";
@@ -330,6 +334,17 @@ const PROMPT_DOCUMENT_TYPE_BINDINGS: Record<string, SeedBindingSpec> = {
 		documentTypes: ["GENERAL"],
 		storyKind: null as null,
 		targetKey: PUBLISHING_SHORT_POST_AGENT_KEY,
+	},
+	// publishing_topic_blog_post: GENERAL + null for the same reason its two
+	// publishing siblings use them — one prompt per tenant covers every project
+	// and topic. The activity passes the topic, its planning analysis, its
+	// confirmed decisions and the run's guidance as HANDLEBARS variables; the
+	// one-post output contract and the FR28/FR29 approval rules are appended
+	// code-side and are NOT part of this body, so an override cannot drop them.
+	[PUBLISHING_BLOG_POST_AGENT_KEY]: {
+		documentTypes: ["GENERAL"],
+		storyKind: null as null,
+		targetKey: PUBLISHING_BLOG_POST_AGENT_KEY,
 	},
 	// test_case_step_reviser: re-drafts ONE existing case whose feature has since
 	// changed. Kept separate from `test_case_drafter` because the contract is
@@ -5850,6 +5865,34 @@ Rules:
 		structuredFormat: "JSON" as const,
 		isPublic: true,
 		content: PUBLISHING_SHORT_POST_FALLBACK_BODY,
+	},
+	{
+		// publishing_topic_blog_post: the long-form blog draft written from a
+		// topic (#1853, Phase 2B-3, FR15). Body is the PO's "Blog Post Prompt
+		// v1" attached to the card, with its Markdown-only output rule adapted
+		// the same way its Short Post sibling adapted the tweet prompt's: this
+		// prompt runs with structured output, so the title, the subtitle, the
+		// post body and the publishing suggestions are each a field. The body
+		// field is still Markdown; splitting the suggestions out is what keeps
+		// them from landing in the editable draft as text to delete by hand.
+		//
+		// The grounding rules FR28/FR29 turn on are appended CODE-SIDE so an
+		// org editing tone cannot drop them by accident.
+		//
+		// INSERT-ONLY: once this seeds, changing the text does nothing on an
+		// environment that already ran the seed. Ship wording changes as an
+		// explicit UPDATE migration.
+		key: PUBLISHING_BLOG_POST_AGENT_KEY,
+		name: "Topic Blog Post",
+		description:
+			"Drafts one editable blog post from a Publishing Suite topic, using its planning analysis, confirmed decisions and project source context.",
+		category: "publishing",
+		tags: ["publishing", "publishing-suite", "blog-post", "ai-generation"],
+		format: "HANDLEBARS" as const,
+		promptType: "STRUCTURED" as const,
+		structuredFormat: "JSON" as const,
+		isPublic: true,
+		content: PUBLISHING_BLOG_POST_FALLBACK_BODY,
 	},
 ];
 
