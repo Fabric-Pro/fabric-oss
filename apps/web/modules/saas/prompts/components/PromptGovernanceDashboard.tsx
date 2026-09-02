@@ -206,7 +206,7 @@ export function PromptGovernanceDashboard() {
 				<button
 					type="button"
 					onClick={() => refetch()}
-					className="font-medium text-primary text-sm underline-offset-4 hover:underline"
+					className="font-medium text-primary-ink text-sm underline-offset-4 hover:underline"
 				>
 					Try again
 				</button>
