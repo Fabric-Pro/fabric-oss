@@ -60,7 +60,14 @@ function storyItem(over: Partial<{ state: string; isClosed: boolean | null }>) {
 }
 
 function fabric(
-	over: Partial<{ draftingStage: string; pmAutoHidden: boolean }>,
+	over: Partial<{
+		draftingStage: string;
+		pmAutoHidden: boolean;
+		/** Omit (default) to simulate a hand-built ref that never sets these
+		 *  two — the reconcile then always writes (fail-safe). */
+		pmTicketTerminal: boolean;
+		pmTicketTerminalStatus: string | null;
+	}>,
 ) {
 	return {
 		entityType: "STORY" as const,
@@ -281,6 +288,140 @@ describe("reconcileStoryTerminalStatus", () => {
 			tenant: baseTenant,
 		});
 		expect(mockClearPendingContentDrift).not.toHaveBeenCalled();
+	});
+
+	describe("no-op write skip (hourly-poll write churn)", () => {
+		it("terminal, checkmark already matches target → userStory.update NOT called, rest of the flow still runs", async () => {
+			const r = await reconcileStoryTerminalStatus({
+				projectId: "proj-1",
+				item: storyItem({ state: "Closed" }),
+				fabricItem: fabric({
+					pmTicketTerminal: true,
+					pmTicketTerminalStatus: "Closed",
+				}),
+				terminalLc,
+				autoCloseEnabled: true,
+				tenant: baseTenant,
+			});
+			expect(mockUserStoryUpdate).not.toHaveBeenCalled();
+			// The rest of the terminal flow (content-drift clear, auto-close,
+			// audit, and the returned result) still runs unchanged.
+			expect(mockClearPendingContentDrift).toHaveBeenCalledWith({
+				projectId: "proj-1",
+				entityType: "STORY",
+				entityId: "story-1",
+			});
+			expect(mockApplyTerminalClose).toHaveBeenCalled();
+			expect(r.action).toBe("auto-hidden");
+			expect(r.terminalApplied).toBe(true);
+			expect(r.terminalStatusLabel).toBe("Closed");
+		});
+
+		it("non-terminal passthrough, checkmark already matches target (false/null) → userStory.update NOT called", async () => {
+			const r = await reconcileStoryTerminalStatus({
+				projectId: "proj-1",
+				item: storyItem({ state: "Active", isClosed: false }),
+				fabricItem: fabric({
+					draftingStage: "DRAFT",
+					pmAutoHidden: false,
+					pmTicketTerminal: false,
+					pmTicketTerminalStatus: null,
+				}),
+				terminalLc,
+				autoCloseEnabled: true,
+				tenant: baseTenant,
+			});
+			expect(mockUserStoryUpdate).not.toHaveBeenCalled();
+			expect(r.action).toBe("non-terminal-passthrough");
+		});
+
+		it("terminal flag flips (false → true) → userStory.update IS called with the new values", async () => {
+			const r = await reconcileStoryTerminalStatus({
+				projectId: "proj-1",
+				item: storyItem({ state: "Closed" }),
+				fabricItem: fabric({
+					pmTicketTerminal: false,
+					pmTicketTerminalStatus: null,
+				}),
+				terminalLc,
+				autoCloseEnabled: false,
+				tenant: baseTenant,
+			});
+			expect(mockUserStoryUpdate).toHaveBeenCalledWith({
+				where: { id: "story-1", projectId: "proj-1" },
+				data: {
+					pmTicketTerminal: true,
+					pmTicketTerminalStatus: "Closed",
+				},
+			});
+			expect(r.action).toBe("checkmark-only");
+		});
+
+		it("terminal flag unchanged but status LABEL changed → userStory.update IS called with the new label", async () => {
+			// Same terminal flag (true), but the PM tool's status label moved
+			// (e.g. "Done" → "Closed") — must still be treated as a real change.
+			const r = await reconcileStoryTerminalStatus({
+				projectId: "proj-1",
+				item: storyItem({ state: "Closed" }),
+				fabricItem: fabric({
+					pmTicketTerminal: true,
+					pmTicketTerminalStatus: "Done",
+				}),
+				terminalLc,
+				autoCloseEnabled: false,
+				tenant: baseTenant,
+			});
+			expect(mockUserStoryUpdate).toHaveBeenCalledWith({
+				where: { id: "story-1", projectId: "proj-1" },
+				data: {
+					pmTicketTerminal: true,
+					pmTicketTerminalStatus: "Closed",
+				},
+			});
+			expect(r.action).toBe("checkmark-only");
+		});
+
+		it("ref without pmTicketTerminal/pmTicketTerminalStatus (hand-built site) → userStory.update IS called (existing behaviour, fail-safe)", async () => {
+			// `fabric({})` never sets these two fields, matching the hand-built
+			// FabricItemRef sites (gitlab-rest-story-sync.ts, story-sync.ts) that
+			// don't come from `findFabricItemByExternalId`.
+			await reconcileStoryTerminalStatus({
+				projectId: "proj-1",
+				item: storyItem({ state: "Closed" }),
+				fabricItem: fabric({}),
+				terminalLc,
+				autoCloseEnabled: false,
+				tenant: baseTenant,
+			});
+			expect(mockUserStoryUpdate).toHaveBeenCalledWith({
+				where: { id: "story-1", projectId: "proj-1" },
+				data: {
+					pmTicketTerminal: true,
+					pmTicketTerminalStatus: "Closed",
+				},
+			});
+		});
+
+		it("ref with only pmTicketTerminal (partial snapshot) → userStory.update IS still called (fail-safe)", async () => {
+			// A partial snapshot must not be mistaken for a match: with only the
+			// flag present and a non-terminal target (false/null), a missing
+			// status normalised to null would wrongly look like a no-op.
+			await reconcileStoryTerminalStatus({
+				projectId: "proj-1",
+				item: storyItem({ state: "Active", isClosed: false }),
+				fabricItem: fabric({ pmTicketTerminal: false }),
+				terminalLc,
+				autoCloseEnabled: false,
+				tenant: baseTenant,
+			});
+			expect(mockUserStoryUpdate).toHaveBeenCalledWith({
+				where: { id: "story-1", projectId: "proj-1" },
+				data: {
+					pmTicketTerminal: false,
+					pmTicketTerminalStatus: null,
+				},
+			});
+		});
 	});
 });
 

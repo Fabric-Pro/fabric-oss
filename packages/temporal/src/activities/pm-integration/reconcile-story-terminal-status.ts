@@ -55,6 +55,15 @@ export interface FabricItemRef {
 	lastPmSyncStatus: string | null;
 	/** Auto-hide provenance marker (set on auto-close); drives reopen-unhide. */
 	pmAutoHidden?: boolean;
+	/**
+	 * Current DB values of the terminal-status checkmark, used to skip a no-op
+	 * `userStory.update` when the reconciled values would not change anything.
+	 * OPTIONAL: sites that build this ref by hand (rather than spreading the
+	 * result of `findFabricItemByExternalId`) leave these unset, and the write
+	 * is always performed in that case (fail-safe).
+	 */
+	pmTicketTerminal?: boolean;
+	pmTicketTerminalStatus?: string | null;
 }
 
 export interface ReconcileStoryTerminalInput {
@@ -163,14 +172,31 @@ export async function reconcileStoryTerminalStatus(
 		terminalLc,
 	);
 	const isTerminal = classification === "terminal";
+	const targetTerminalStatus = isTerminal ? terminalStatusLabel : null;
 
-	await db.userStory.update({
-		where: { id: fabricItem.entityId, projectId },
-		data: {
-			pmTicketTerminal: isTerminal,
-			pmTicketTerminalStatus: isTerminal ? terminalStatusLabel : null,
-		},
-	});
+	// Skip the write when the checkmark would not change. The hourly poll runs
+	// this for every linked story every cycle regardless of whether the PM
+	// state moved, which was rewriting all 1,333 rows in a project every hour
+	// (238,993 UPDATEs / 14 days in prod) and bumping `@updatedAt` on stories
+	// that never actually changed, making `updatedAt` meaningless for them.
+	// Either field `undefined` means the caller built this ref by hand (not
+	// from `findFabricItemByExternalId`) — fail safe and always write. Both
+	// must be present: a partial snapshot must not be mistaken for a match.
+	const isNoOpWrite =
+		fabricItem.pmTicketTerminal !== undefined &&
+		fabricItem.pmTicketTerminalStatus !== undefined &&
+		fabricItem.pmTicketTerminal === isTerminal &&
+		fabricItem.pmTicketTerminalStatus === targetTerminalStatus;
+
+	if (!isNoOpWrite) {
+		await db.userStory.update({
+			where: { id: fabricItem.entityId, projectId },
+			data: {
+				pmTicketTerminal: isTerminal,
+				pmTicketTerminalStatus: targetTerminalStatus,
+			},
+		});
+	}
 
 	if (classification === "terminal") {
 		// A Done/Closed ticket must not carry a dangling content-drift review.
