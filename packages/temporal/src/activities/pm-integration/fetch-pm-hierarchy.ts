@@ -925,9 +925,11 @@ export async function fetchPMWorkItemsByType(
 		});
 	}
 
-	// Fizzy: fetch cards per column for complete board coverage
-	// The simple fizzy_list_cards call only returns limited recent cards.
-	// Fetching columns first, then cards per column, gets ALL cards on the board.
+	// Fizzy: fetch cards per column for complete board coverage.
+	// `fizzy_get_cards` answers with one page per call, so a single call —
+	// board-wide or column-scoped — only ever returns part of the board.
+	// Fetching columns first, then walking every page of each column, gets ALL
+	// cards on the board (see `listAllFizzyCards`).
 	if (capabilities.detectedType === "fizzy") {
 		const fizzyResult = await fetchFizzyBoardCards({
 			containerId,
