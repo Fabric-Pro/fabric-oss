@@ -5,6 +5,7 @@ import {
 	findDecisionByQuestionId,
 	getFeatureMaturationState,
 	hasProjectAccess,
+	listQuestionAssignees,
 	type MaturationTenantFilter,
 	optInFeatureToMaturationV2,
 	resolveQuestionThread,
@@ -12,6 +13,7 @@ import {
 } from "@repo/database";
 import { logger } from "@repo/logs";
 import { z } from "zod";
+import { fanOut } from "../../../../../lib/notification-service";
 import {
 	Permissions,
 	requireProjectPermission,
@@ -19,6 +21,7 @@ import {
 	tenantProtectedProcedure,
 } from "../../../../../orpc/procedures";
 import { recordAnswerInSpec } from "../../../lib/record-answer-in-spec";
+import { filterAuthorizedMentionRecipients } from "../../../lib/user-mention";
 import { AnswerSourceSchema, DecisionStatusSchema } from "./schemas";
 
 /** Output-level status for the deterministic spec write. */
@@ -76,6 +79,18 @@ export const answerQuestionProcedure = tenantProtectedProcedure
 			// How the answer was produced relative to the AI recommendation (#7).
 			// Defaults to MANUAL when the client doesn't classify it.
 			answerSource: AnswerSourceSchema.optional(),
+			/**
+			 * Project members the answer CITES ("as per @Sam, ninety days"),
+			 * resolved by the client from the display names it rendered (#1751,
+			 * AC-10). Nothing is asked of them, so this is not an assignment —
+			 * see `setQuestionAssignees` for the half that is.
+			 *
+			 * Client-supplied ids are narrowed to people actually on the project
+			 * before anything is written; matching on the rendered name is what
+			 * keeps the stored answer plain text, so the server cannot re-derive
+			 * them without duplicating the panel's matcher.
+			 */
+			mentionedUserIds: z.array(z.string()).max(50).optional(),
 		}),
 	)
 	.output(
@@ -243,12 +258,124 @@ export const answerQuestionProcedure = tenantProtectedProcedure
 			decision,
 		});
 
+		// AFTER `recordAnswer`: a lost concurrency race throws CONFLICT there, and
+		// an answer that did not land must not tell anybody it did.
+		await dispatchAnswerNotifications({
+			// The thread this answer settled. On the mint branch there is no
+			// prior root, so there are no assignees and nobody asked.
+			questionRootId: existing?.id ?? decision.id,
+			questionSummary: questionText,
+			mentionedUserIds: input.mentionedUserIds ?? [],
+			storyId: input.storyId,
+			storyTitle: feature.title,
+			projectId: input.projectId,
+			organizationId: organizationId ?? null,
+			tenantFilter,
+			actorUserId: context.user.id,
+			actorName: context.user.name,
+		});
+
 		return {
 			decision: serializeDecision(decision),
 			deduped: false,
 			propagation,
 		};
 	});
+
+interface AnswerNotificationParams {
+	questionRootId: string;
+	questionSummary: string;
+	/** Ids the client resolved from the `@` names in the answer text. */
+	mentionedUserIds: string[];
+	storyId: string;
+	storyTitle: string;
+	projectId: string;
+	organizationId: string | null;
+	tenantFilter: MaturationTenantFilter;
+	actorUserId: string;
+	actorName: string;
+}
+
+/**
+ * The two informational notices an answer raises (Fizzy #1751, AC-10 / AC-14).
+ *
+ * Neither asks for anything, which is what separates both from
+ * `QUESTION_ASSIGNED`: one says a question you handed out is settled, the other
+ * says an answer named you. A recipient who cannot tell those apart has to open
+ * all three, which defeats the routing.
+ *
+ * Runs only on a real answer — never on the deduped/idempotent path, where
+ * re-submitting the same answer would re-ping the asker.
+ *
+ * BEST-EFFORT, like every other notification dispatch: the decision is already
+ * durably recorded by the time this runs, so a lookup failure is logged and
+ * swallowed rather than failing a request whose write succeeded.
+ */
+async function dispatchAnswerNotifications(
+	params: AnswerNotificationParams,
+): Promise<void> {
+	const common = {
+		questionRootId: params.questionRootId,
+		questionSummary: params.questionSummary,
+		storyId: params.storyId,
+		storyTitle: params.storyTitle,
+		projectId: params.projectId,
+		organizationId: params.organizationId,
+		actorUserId: params.actorUserId,
+		actorName: params.actorName,
+		// Context-relative on purpose: `resolveNotificationLink` resolves it
+		// against the NOTIFICATION's own workspace, so the destination cannot
+		// depend on whichever organization the recipient happens to be viewing.
+		link: `projects/${params.projectId}/stories/${params.storyId}`,
+	};
+
+	try {
+		// AC-14 — whoever ASKED hears that their question is settled. The
+		// recipients are the `assignedByUserId` values on the assignment rows, so
+		// after a re-assignment it is the person who handed the question on, not
+		// whoever asked first.
+		const byEntry = await listQuestionAssignees({
+			tenantFilter: params.tenantFilter,
+			entryIds: [params.questionRootId],
+		});
+		const askers = [
+			...new Set(
+				(byEntry.get(params.questionRootId) ?? []).map(
+					(row) => row.assignedByUserId,
+				),
+			),
+		];
+		if (askers.length > 0) {
+			await fanOut.questionAnswered({
+				...common,
+				recipientUserIds: askers,
+			});
+		}
+
+		// AC-10 — anyone the answer CITED. Narrowed to people actually on the
+		// project first, so a stale or crafted id cannot mint a notification for
+		// a stranger.
+		if (params.mentionedUserIds.length > 0) {
+			const recipients = await filterAuthorizedMentionRecipients(
+				params.mentionedUserIds,
+				params.projectId,
+				params.organizationId,
+			);
+			if (recipients.length > 0) {
+				await fanOut.questionMentioned({
+					...common,
+					recipientUserIds: recipients,
+				});
+			}
+		}
+	} catch (err) {
+		logger.warn("[maturation] answer notification dispatch failed", {
+			storyId: params.storyId,
+			questionRootId: params.questionRootId,
+			err: err instanceof Error ? err.message : String(err),
+		});
+	}
+}
 
 interface RecordAnswerParams {
 	storyId: string;

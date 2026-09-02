@@ -141,7 +141,16 @@ type Props = {
 	onAnswer: (
 		questionId: string,
 		answer: string,
-		opts?: { summary?: string; answerSource?: AnswerSource },
+		opts?: {
+			summary?: string;
+			answerSource?: AnswerSource;
+			/**
+			 * Project members the answer CITES. Citing is not asking, so these
+			 * raise an informational notice rather than an assignment — the
+			 * author's choice of button is what separates the two.
+			 */
+			mentionedUserIds?: string[];
+		},
 	) => void;
 	/** Per-feature auto-propose-answers toggle state (#7). */
 	autoProposeAnswers?: boolean;
@@ -505,7 +514,9 @@ export function SummaryQuestionsPanel({
 							<Button
 								type="button"
 								size="sm"
-								onClick={() => submit(thread.root.questionId)}
+								onClick={() =>
+									submit(thread.root.questionId, mentioned)
+								}
 								disabled={isAnswering || !answer.trim()}
 								className="gap-1.5"
 							>
@@ -628,13 +639,16 @@ export function SummaryQuestionsPanel({
 		);
 	};
 
-	const submit = (questionId: string | null) => {
+	const submit = (questionId: string | null, mentionedUserIds: string[]) => {
 		if (!answer.trim() || !questionId) {
 			return;
 		}
 		const typed = answer.trim();
 		onAnswer(questionId, typed, {
 			summary,
+			// Only when somebody was actually named. An answer that cites nobody
+			// keeps exactly the payload it always sent.
+			...(mentionedUserIds.length > 0 ? { mentionedUserIds } : {}),
 			// Three outcomes, decided by what the field was seeded with (#1907):
 			// no seed means nothing was taken from the AI, so MANUAL — this covers
 			// "type your own" even when suggestions were on offer. A seed saved
