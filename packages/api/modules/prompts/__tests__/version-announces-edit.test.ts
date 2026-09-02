@@ -23,7 +23,8 @@ const {
 	getPromptById,
 	createPromptVersion,
 	listActionsForPrompt,
-	listPromptDefaultRecipients,
+	listPromptDefaultAudience,
+	markOwnOverrides,
 	findUnique,
 	promptDefaultUpdated,
 	resolveOrgBasePath,
@@ -31,7 +32,8 @@ const {
 	getPromptById: vi.fn(),
 	createPromptVersion: vi.fn(),
 	listActionsForPrompt: vi.fn(),
-	listPromptDefaultRecipients: vi.fn(),
+	listPromptDefaultAudience: vi.fn(),
+	markOwnOverrides: vi.fn(),
 	findUnique: vi.fn(),
 	promptDefaultUpdated: vi.fn(),
 	resolveOrgBasePath: vi.fn(),
@@ -41,7 +43,8 @@ vi.mock("@repo/database", () => ({
 	getPromptById,
 	createPromptVersion,
 	listActionsForPrompt,
-	listPromptDefaultRecipients,
+	listPromptDefaultAudience,
+	markOwnOverrides,
 	db: { promptVersion: { findUnique } },
 }));
 
@@ -120,7 +123,10 @@ beforeEach(() => {
 	vi.clearAllMocks();
 	createPromptVersion.mockResolvedValue({ id: "pv-2" });
 	listActionsForPrompt.mockResolvedValue([]);
-	listPromptDefaultRecipients.mockResolvedValue([
+	listPromptDefaultAudience.mockResolvedValue([
+		{ userId: "member-1", organizationId: "org-a" },
+	]);
+	markOwnOverrides.mockResolvedValue([
 		{ userId: "member-1", organizationId: "org-a", hasOwnOverride: false },
 	]);
 	findUnique.mockResolvedValue({
@@ -170,6 +176,12 @@ describe("editing a bound default announces the change (FR6)", () => {
 		expect(promptDefaultUpdated).toHaveBeenCalledTimes(3);
 		expect(findUnique).toHaveBeenCalledTimes(1);
 		expect(resolveOrgBasePath).toHaveBeenCalledTimes(1);
+		// The audience is a property of the tier, not of the action. Resolving it
+		// per action re-scans the member table N times on the author's save — and
+		// for a universal default that scan has no organization to narrow it.
+		expect(listPromptDefaultAudience).toHaveBeenCalledTimes(1);
+		// The framing genuinely is per action, so this one does run N times.
+		expect(markOwnOverrides).toHaveBeenCalledTimes(3);
 	});
 
 	it("links an org change into that organization's own catalog (FR8)", async () => {
@@ -256,7 +268,7 @@ describe("editing a bound default announces the change (FR6)", () => {
 	it("says nothing when the action has no one left to tell", async () => {
 		getPromptById.mockResolvedValue(ORG_PROMPT);
 		listActionsForPrompt.mockResolvedValue([action("test_case_drafter")]);
-		listPromptDefaultRecipients.mockResolvedValue([]);
+		markOwnOverrides.mockResolvedValue([]);
 
 		await createVersion(ORG_PROMPT);
 

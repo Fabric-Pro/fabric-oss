@@ -47,7 +47,8 @@ vi.mock("@repo/database", () => ({
 	listPendingNominations: vi.fn().mockResolvedValue([]),
 	withdrawPromptNomination: vi.fn(),
 	getBoundPromptVersion: vi.fn().mockResolvedValue(null),
-	listPromptDefaultRecipients: vi.fn().mockResolvedValue([]),
+	listPromptDefaultAudience: vi.fn().mockResolvedValue([]),
+	markOwnOverrides: vi.fn().mockResolvedValue([]),
 	// The reviewing tier is notified on create (FR16); not this file's subject.
 	listPromptNominationReviewers: vi.fn().mockResolvedValue([]),
 	db: {

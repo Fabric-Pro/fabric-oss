@@ -29,6 +29,104 @@ export type PromptDefaultRecipient = {
 	hasOwnOverride: boolean;
 };
 
+/** Everyone subject to a tier, before any single action narrows the framing. */
+export type PromptDefaultAudience = {
+	userId: string;
+	organizationId: string | null;
+}[];
+
+/**
+ * Who is subject to this tier at all.
+ *
+ * Split out from the recipient list because it depends only on the tier, never
+ * on the action: one prompt edit can win several actions, and resolving the same
+ * audience once per action means re-running this scan N times on the author's
+ * save. The SYSTEM branch has no organization to filter by, so it reads every
+ * admin and owner on the platform — the one query here worth not repeating.
+ */
+export async function listPromptDefaultAudience({
+	scope,
+	organizationId,
+	excludeUserId,
+}: {
+	scope: "SYSTEM" | "ORG";
+	organizationId?: string | null;
+	/** The actor. Telling someone about their own edit is noise. */
+	excludeUserId?: string;
+}): Promise<PromptDefaultAudience> {
+	const members =
+		scope === "ORG"
+			? organizationId
+				? await db.member.findMany({
+						where: { organizationId },
+						select: { userId: true, organizationId: true },
+					})
+				: []
+			: await db.member.findMany({
+					where: { role: { in: ["admin", "owner"] } },
+					select: { userId: true, organizationId: true },
+				});
+
+	const seen = new Set<string>();
+	const audience: PromptDefaultAudience = [];
+	for (const m of members) {
+		if (m.userId === excludeUserId || seen.has(m.userId)) {
+			continue;
+		}
+		seen.add(m.userId);
+		audience.push({ userId: m.userId, organizationId: m.organizationId });
+	}
+	return audience;
+}
+
+/**
+ * Frame one action's notice for an audience already resolved.
+ *
+ * This half genuinely is per-action: whether a reader holds their own override
+ * for THIS action decides whether the notice says something moved under them or
+ * that an improvement is available.
+ */
+export async function markOwnOverrides({
+	audience,
+	targetKey,
+	documentType,
+	storyKind,
+}: {
+	audience: PromptDefaultAudience;
+	targetKey: string;
+	documentType: string;
+	storyKind?: string | null;
+}): Promise<PromptDefaultRecipient[]> {
+	if (audience.length === 0) {
+		return [];
+	}
+
+	const overrides = await db.promptBinding.findMany({
+		where: {
+			targetType: "AGENT" as any,
+			targetKey,
+			documentType,
+			storyKind: (storyKind ?? null) as any,
+			scope: "USER" as any,
+			isDefault: true,
+			userId: { in: audience.map((a) => a.userId) },
+		},
+		select: { userId: true },
+	});
+	const overridden = new Set(overrides.map((o) => o.userId));
+
+	return audience.map((a) => ({
+		userId: a.userId,
+		organizationId: a.organizationId,
+		hasOwnOverride: overridden.has(a.userId),
+	}));
+}
+
+/**
+ * The whole answer for a single action. Callers announcing several actions of
+ * one prompt should resolve the audience once and call `markOwnOverrides` per
+ * action instead.
+ */
 export async function listPromptDefaultRecipients({
 	scope,
 	organizationId,
@@ -45,61 +143,10 @@ export async function listPromptDefaultRecipients({
 	/** The actor. Telling someone about their own edit is noise. */
 	excludeUserId?: string;
 }): Promise<PromptDefaultRecipient[]> {
-	const members =
-		scope === "ORG"
-			? organizationId
-				? await db.member.findMany({
-						where: { organizationId },
-						select: { userId: true, organizationId: true },
-					})
-				: []
-			: await db.member.findMany({
-					where: { role: { in: ["admin", "owner"] } },
-					select: { userId: true, organizationId: true },
-				});
-
-	if (members.length === 0) {
-		return [];
-	}
-
-	const candidateIds = [
-		...new Set(
-			members.map((m) => m.userId).filter((id) => id !== excludeUserId),
-		),
-	];
-	if (candidateIds.length === 0) {
-		return [];
-	}
-
-	// A personal override for this exact action means the change does not alter
-	// what this user gets — they still hear, but framed as informational.
-	const overrides = await db.promptBinding.findMany({
-		where: {
-			targetType: "AGENT" as any,
-			targetKey,
-			documentType,
-			storyKind: (storyKind ?? null) as any,
-			scope: "USER" as any,
-			isDefault: true,
-			userId: { in: candidateIds },
-		},
-		select: { userId: true },
+	const audience = await listPromptDefaultAudience({
+		scope,
+		organizationId,
+		excludeUserId,
 	});
-	const overridden = new Set(overrides.map((o) => o.userId));
-
-	const seen = new Set<string>();
-	const recipients: PromptDefaultRecipient[] = [];
-	for (const m of members) {
-		if (m.userId === excludeUserId || seen.has(m.userId)) {
-			continue;
-		}
-		seen.add(m.userId);
-		recipients.push({
-			userId: m.userId,
-			organizationId: m.organizationId,
-			hasOwnOverride: overridden.has(m.userId),
-		});
-	}
-
-	return recipients;
+	return markOwnOverrides({ audience, targetKey, documentType, storyKind });
 }
