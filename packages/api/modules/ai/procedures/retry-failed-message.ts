@@ -104,13 +104,27 @@ export const retryFailedMessage = tenantProtectedProcedure
 			const retryCount = (chat.retryCount || 0) + 1;
 			const workflowId = `message-${chatId}-retry-${retryCount}`;
 
+			// Send only the tail of the conversation (Fizzy #1997). The whole
+			// history travels to the worker inside ONE gRPC message, hard
+			// capped at 4 MiB, and an oversized workflow input is rejected at
+			// scheduling — before any activity code runs, so nothing
+			// downstream can catch it. A long-lived chat accumulates a
+			// permanent RAG-context system message per retrieval turn, so the
+			// history grows without bound even when each message is small.
+			// The model only needs recent turns to continue a conversation.
+			const RETRY_HISTORY_MESSAGE_LIMIT = 60;
+			const recentMessages =
+				messages.length > RETRY_HISTORY_MESSAGE_LIMIT
+					? messages.slice(-RETRY_HISTORY_MESSAGE_LIMIT)
+					: messages;
+
 			const workflowInput: ChatMessageInput = {
 				chatId,
 				userId: user.id,
 				userMessage: userMessageText,
 				model: undefined, // Use default model
 				organizationId: chat.organizationId || undefined,
-				allMessages: messages,
+				allMessages: recentMessages,
 			};
 
 			// Start the workflow
