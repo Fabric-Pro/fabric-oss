@@ -447,8 +447,8 @@ jobs:
             console.error(`::error::${skipped} decision-owner test(s) skipped — the DB gate did not open.`);
             process.exit(1);
           }
-          if (passed < 4) {
-            console.error(`::error::expected at least 4 decision-owner tests, saw ${passed}.`);
+          if (passed < 7) {
+            console.error(`::error::expected at least 7 decision-owner tests, saw ${passed}.`);
             process.exit(1);
           }
           console.log(`decision-owner delivery suite: ${passed} passed, 0 skipped`);
