@@ -40,6 +40,7 @@ import { ProjectImplementationDefaultsSettings } from "./ProjectImplementationDe
 import { ProjectManagementSettings } from "./ProjectManagementSettings";
 import { ProjectMembersSettings } from "./ProjectMembersSettings";
 import { ProjectNewsletterSettings } from "./ProjectNewsletterSettings";
+import { ProjectPromptDefaultsSettings } from "./ProjectPromptDefaultsSettings";
 import { ProjectReadOnlyModeSettings } from "./ProjectReadOnlyModeSettings";
 import { ProjectRepositoryIntegrationSettings } from "./ProjectRepositoryIntegrationSettings";
 import { ProjectSettingsNav, type SettingsTab } from "./ProjectSettingsNav";
@@ -400,6 +401,7 @@ export function ProjectSettings({
 							project={project}
 							canEdit={canEditSettings}
 						/>
+						<ProjectPromptDefaultsSettings projectId={project.id} />
 						<ProjectStageVisibilitySettings
 							project={project}
 							canEdit={canEditStageVisibility}
