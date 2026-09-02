@@ -323,6 +323,9 @@ importers:
       next:
         specifier: 16.2.11
         version: 16.2.11(@opentelemetry/api@1.9.1)(@playwright/test@1.56.1)(@types/node@20.19.27)(react-dom@19.2.0(react@19.2.0))(react@19.2.0)
+      nunjucks:
+        specifier: ^3.2.4
+        version: 3.2.4(chokidar@3.6.0)
       react:
         specifier: 19.2.0
         version: 19.2.0

@@ -40,7 +40,8 @@
 				"hono",
 				"@langchain/groq",
 				"@repo/observability",
-				"undici"
+				"undici",
+				"nunjucks"
 			]
 		},
 		"agents/langchain/document-generator": {
