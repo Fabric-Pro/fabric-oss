@@ -245,6 +245,14 @@ export async function findFabricItemByExternalId(
 	 * and story) — each carries its own `pmAutoHidden` column (#1360 Task 2).
 	 */
 	pmAutoHidden?: boolean;
+	/**
+	 * Current DB values of the terminal-status checkmark, so the reconcile
+	 * activity can skip a no-op `userStory.update` when nothing changed (the
+	 * hourly poll was rewriting every linked story every cycle — see
+	 * `reconcileStoryTerminalStatus`).
+	 */
+	pmTicketTerminal: boolean;
+	pmTicketTerminalStatus: string | null;
 } | null> {
 	const select = {
 		id: true,
@@ -257,7 +265,12 @@ export async function findFabricItemByExternalId(
 	// were dropped.
 	const story = await db.userStory.findFirst({
 		where: { projectId, externalId },
-		select: { ...select, pmAutoHidden: true },
+		select: {
+			...select,
+			pmAutoHidden: true,
+			pmTicketTerminal: true,
+			pmTicketTerminalStatus: true,
+		},
 	});
 	if (story) {
 		return {
@@ -267,6 +280,8 @@ export async function findFabricItemByExternalId(
 			lastSyncedPmHash: story.lastSyncedPmHash,
 			lastPmSyncStatus: story.lastPmSyncStatus,
 			pmAutoHidden: story.pmAutoHidden,
+			pmTicketTerminal: story.pmTicketTerminal,
+			pmTicketTerminalStatus: story.pmTicketTerminalStatus,
 		};
 	}
 

@@ -333,7 +333,24 @@ export async function getAiProviderApiKey({
 }
 
 /**
- * Update last used timestamp for a provider config
+ * Debounce window for `updateProviderLastUsed`. Every AI model call used to
+ * unconditionally `update` this row — measured in prod as the single most
+ * expensive statement in the app (54,102 calls / 14 days, 3.8ms mean, 17% of
+ * app DB time) because a 3-row table means concurrent calls serialize on the
+ * row lock. A "last used" display only needs one-minute granularity, so a
+ * config is touched at most once per interval.
+ */
+const PROVIDER_LAST_USED_DEBOUNCE_MS = 60_000;
+
+/**
+ * Update last used timestamp for a provider config, debounced to at most once
+ * per `PROVIDER_LAST_USED_DEBOUNCE_MS`. Uses a conditional `updateMany` (id +
+ * "never touched or touched before the cutoff") instead of an unconditional
+ * `update` so a call inside the debounce window takes no row lock at all.
+ *
+ * Returns the number of rows actually updated (0 or 1) rather than the row
+ * itself — both call sites (`packages/ai/lib/dynamic-model-selector.ts`) are
+ * fire-and-forget (`.catch(() => {})`) and never read the return value.
  */
 export async function updateProviderLastUsed({
 	configId,
@@ -341,17 +358,26 @@ export async function updateProviderLastUsed({
 }: {
 	configId: string;
 	source: "organization" | "user";
-}) {
+}): Promise<number> {
+	const now = new Date();
+	const cutoff = new Date(now.getTime() - PROVIDER_LAST_USED_DEBOUNCE_MS);
+	const where = {
+		id: configId,
+		OR: [{ lastUsedAt: null }, { lastUsedAt: { lt: cutoff } }],
+	};
+
 	if (source === "organization") {
-		return await db.cloudProviderConfig.update({
-			where: { id: configId },
-			data: { lastUsedAt: new Date() },
+		const { count } = await db.cloudProviderConfig.updateMany({
+			where,
+			data: { lastUsedAt: now },
 		});
+		return count;
 	}
-	return await db.userCloudProviderConfig.update({
-		where: { id: configId },
-		data: { lastUsedAt: new Date() },
+	const { count } = await db.userCloudProviderConfig.updateMany({
+		where,
+		data: { lastUsedAt: now },
 	});
+	return count;
 }
 
 /**
