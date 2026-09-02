@@ -29,9 +29,13 @@ describe("PromptDefaultBadge", () => {
 	it("colours the badge by the tier in force", () => {
 		// Outlined, tier-coloured: scanning the catalog answers both what is in
 		// force and how far up the ladder its authority reaches.
+		//
+		// SYSTEM and ORG read their `-ink` tokens rather than the plain brand
+		// colour: the label is ink on the card, and the fill-tuned values measure
+		// 4.02:1 (primary, dark) and 3.14:1 (highlight, light) there — under AA.
 		const expectations = [
-			["SYSTEM", "text-primary"],
-			["ORG", "text-highlight"],
+			["SYSTEM", "text-primary-ink"],
+			["ORG", "text-highlight-ink"],
 			["PROJECT", "text-blue-600"],
 			["USER", "text-success"],
 		] as const;

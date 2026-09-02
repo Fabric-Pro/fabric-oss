@@ -59,7 +59,11 @@ const TIER_PRESENTATION: Record<
 	NONE: {
 		label: "Built-in",
 		className: "bg-muted text-muted-foreground",
-		hint: "No prompt bound at all; the agent uses its in-code text.",
+		// Deliberately hedged: this bucket holds actions with nothing bound AND
+		// actions whose only default is somebody's personal override, which is
+		// not an organization-level answer (see tierByAction) but is also not
+		// "nothing bound". Claiming the latter outright would be false.
+		hint: "No organization or Fabric default; the agent uses its in-code text unless someone has a personal override.",
 	},
 };
 
@@ -104,7 +108,7 @@ export function PromptGovernanceDashboard() {
 	const [overridesOpen, setOverridesOpen] = useState(true);
 	const [fallbacksOpen, setFallbacksOpen] = useState(true);
 
-	const { data, isLoading } = useQuery({
+	const { data, isLoading, error, refetch } = useQuery({
 		queryKey: ["prompt-catalog", organizationId],
 		queryFn: async () =>
 			await orpcClient.prompts.catalog.list({
@@ -188,6 +192,27 @@ export function PromptGovernanceDashboard() {
 			</li>
 		);
 	};
+
+	// A failed catalog read leaves every action in the fallback bucket, which
+	// would render as the confident claim that the organization has configured
+	// nothing. Say we could not check instead — this page is read as a
+	// governance audit.
+	if (error) {
+		return (
+			<div className="space-y-4 py-8 text-center" role="alert">
+				<p className="text-muted-foreground text-sm">
+					Could not load your organization's prompt configuration.
+				</p>
+				<button
+					type="button"
+					onClick={() => refetch()}
+					className="font-medium text-primary text-sm underline-offset-4 hover:underline"
+				>
+					Try again
+				</button>
+			</div>
+		);
+	}
 
 	return (
 		<div className="space-y-4">

@@ -1,5 +1,10 @@
 import { ORPCError } from "@orpc/server";
-import { createPromptVersion, getPromptById } from "@repo/database";
+import {
+	createPromptVersion,
+	getPromptById,
+	listActionsForPrompt,
+} from "@repo/database";
+import { logger } from "@repo/logs";
 import type { TemplateFormat } from "@repo/utils";
 import { z } from "zod";
 import {
@@ -8,6 +13,7 @@ import {
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
 import { verifyOrganizationMembership } from "../../organizations/lib/membership";
+import { announceDefaultChange } from "../lib/announce-default-change";
 import { assertValidTemplate } from "../lib/assert-valid-template";
 
 export const versionProcedures = {
@@ -83,12 +89,70 @@ export const versionProcedures = {
 			// content and format live on different rows, so they can drift apart.
 			assertValidTemplate(prompt.format as TemplateFormat, input.content);
 
-			return await createPromptVersion({
+			const version = await createPromptVersion({
 				promptId: input.id,
 				content: input.content,
 				variables: input.variables,
 				changeNote: input.changeNote,
 				createdBy: user.id,
 			});
+
+			// FR6, the half that binding alone does not cover: `createPromptVersion`
+			// repoints this prompt's same-scope bindings at the new version, so
+			// everyone subject to it starts running different text the moment it
+			// saves. Publishing a prompt and editing a published one are the same
+			// event from the reader's side, and both have to announce.
+			//
+			// The version is already written, so notification failures must not
+			// turn a successful edit into an error response.
+			if (prompt.scope === "SYSTEM" || prompt.scope === "ORG") {
+				try {
+					const actions = await listActionsForPrompt({
+						promptId: input.id,
+						userId: user.id,
+						organizationId: prompt.organizationId ?? undefined,
+					});
+					const defaultActions = actions.filter(
+						(action) =>
+							action.isDefault && action.scope === prompt.scope,
+					);
+					const announcements = await Promise.allSettled(
+						defaultActions.map((action) =>
+							announceDefaultChange({
+								scope: prompt.scope,
+								organizationId: prompt.organizationId,
+								targetKey: action.targetKey,
+								documentType: action.documentType,
+								storyKind: action.storyKind ?? null,
+								promptVersionId: version.id,
+								actorUserId: user.id,
+							}),
+						),
+					);
+					for (const [
+						index,
+						announcement,
+					] of announcements.entries()) {
+						if (announcement.status === "rejected") {
+							logger.error(
+								{
+									error: announcement.reason,
+									promptId: input.id,
+									versionId: version.id,
+									targetKey: defaultActions[index]?.targetKey,
+								},
+								"[prompts] failed to announce an edited default",
+							);
+						}
+					}
+				} catch (error) {
+					logger.error(
+						{ error, promptId: input.id, versionId: version.id },
+						"[prompts] failed to announce an edited default",
+					);
+				}
+			}
+
+			return version;
 		}),
 };

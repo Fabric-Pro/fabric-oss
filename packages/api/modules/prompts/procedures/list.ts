@@ -95,8 +95,14 @@ export const listProcedure = tenantProtectedProcedure
 			sortOrder: input.sortOrder,
 		});
 
-		// When a document type filter is active, enrich with binding status
-		if (input.documentType && result.prompts.length > 0) {
+		// Enrich with binding status whenever there is anything to enrich. The
+		// library page no longer carries a document-type dimension (the scope
+		// tabs replaced it), and FR4's "which prompt is in force" has to answer
+		// on the page users actually scan — so the status is resolved across
+		// every action when no type filter narrows it. A prompt that wins any
+		// action badges Default at its best tier; one merely bound shows
+		// Available.
+		if (result.prompts.length > 0) {
 			const promptIds = result.prompts.map((p) => p.id);
 			const bindingStatus = await getBindingStatusForPrompts({
 				promptIds,

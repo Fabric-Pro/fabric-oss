@@ -69,15 +69,9 @@ type Prompt = {
 type Props = {
 	prompts: Prompt[];
 	onUpdate: () => void;
-	/** Active document type filter from parent, used for "Set as Default" pre-selection */
-	documentTypeFilter?: string;
 };
 
-export function PromptsListView({
-	prompts,
-	onUpdate,
-	documentTypeFilter,
-}: Props) {
+export function PromptsListView({ prompts, onUpdate }: Props) {
 	return (
 		<TooltipProvider>
 			<div className="space-y-3">
@@ -86,7 +80,6 @@ export function PromptsListView({
 						key={prompt.id}
 						prompt={prompt}
 						onUpdate={onUpdate}
-						documentTypeFilter={documentTypeFilter}
 					/>
 				))}
 			</div>
@@ -97,11 +90,9 @@ export function PromptsListView({
 function PromptListItem({
 	prompt,
 	onUpdate,
-	documentTypeFilter,
 }: {
 	prompt: Prompt;
 	onUpdate: () => void;
-	documentTypeFilter?: string;
 }) {
 	const router = useRouter();
 	const { confirm } = useConfirmationAlert();
@@ -329,7 +320,6 @@ function PromptListItem({
 					promptName={prompt.name}
 					promptVersionId={latestVersionId}
 					promptId={prompt.id}
-					initialDocumentType={documentTypeFilter}
 					onSuccess={onUpdate}
 				/>
 			)}

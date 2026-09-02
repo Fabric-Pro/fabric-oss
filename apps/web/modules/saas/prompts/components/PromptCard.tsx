@@ -59,7 +59,7 @@ function getFormatDisplayName(format: string): string {
 
 type PromptType = "TEXT" | "IMAGE" | "VIDEO" | "AUDIO" | "STRUCTURED" | "SKILL";
 
-export type Prompt = {
+type Prompt = {
 	id: string;
 	name: string;
 	description: string | null;
@@ -109,11 +109,9 @@ type Props = {
 	onUpdate?: () => void;
 	showPinButton?: boolean;
 	isPinned?: boolean;
-	/** Active document type filter from parent, used for "Set as Default" pre-selection */
-	documentTypeFilter?: string;
-	/** Story kind context when the card is rendered inside a kind-scoped panel
-	 *  (e.g. StageDefaultsPanel). Forwarded to SetAsDefaultDialog so re-binding
-	 *  from this card lands in the right kind bucket instead of NULL. */
+	/** Story kind context when the card renders for one work-item kind, so
+	 *  re-binding from this card lands in the right kind bucket instead of
+	 *  NULL. */
 	storyKindContext?: import("@repo/database").StoryKind;
 	/** The binding this card is standing in for, when it is rendered as one.
 	 *  Present only on surfaces that list bindings (the stage defaults panels);
@@ -170,7 +168,6 @@ export function PromptCard({
 	onUpdate,
 	showPinButton: _showPinButton = false,
 	isPinned: _isPinned = false,
-	documentTypeFilter,
 	storyKindContext,
 	binding,
 }: Props) {
@@ -584,7 +581,6 @@ export function PromptCard({
 					promptName={prompt.name}
 					promptVersionId={latestVersionId}
 					promptId={prompt.id}
-					initialDocumentType={documentTypeFilter}
 					storyKind={storyKindContext}
 					onSuccess={onUpdate}
 				/>

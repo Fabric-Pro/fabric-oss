@@ -76,7 +76,7 @@ export function PromptsList({ organizationId }: Props) {
 
 	// Fetch prompts with optional scope filter
 	// IMPORTANT: Pass null for personal context to prevent session fallback
-	const { data, isLoading, refetch } = useQuery(
+	const { data, isLoading, error, refetch } = useQuery(
 		orpc.prompts.list.queryOptions({
 			input: {
 				organizationId: organizationId ?? null,
@@ -198,7 +198,10 @@ export function PromptsList({ organizationId }: Props) {
 							</Button>
 						</div>
 
-						<div className="flex gap-2 items-center">
+						{/* Wraps like its sibling above: in an org context this row
+						    carries the view toggle plus four labelled buttons, which
+						    overflows a phone viewport on one line. */}
+						<div className="flex flex-wrap gap-2 items-center">
 							{/* View Toggle */}
 							<div className="flex gap-1 border rounded-md p-1">
 								<Button
@@ -284,6 +287,21 @@ export function PromptsList({ organizationId }: Props) {
 					{isLoading ? (
 						<div className="flex items-center justify-center py-12">
 							<Spinner />
+						</div>
+					) : error ? (
+						// Distinct from the empty state below: a failed request
+						// telling someone to create their first prompt sends them
+						// to fix a library that may be full.
+						<div
+							className="space-y-4 py-12 text-center"
+							role="alert"
+						>
+							<p className="text-muted-foreground text-sm">
+								Could not load your prompts.
+							</p>
+							<Button variant="outline" onClick={() => refetch()}>
+								Try again
+							</Button>
 						</div>
 					) : prompts.length === 0 ? (
 						<div className="text-center py-12">

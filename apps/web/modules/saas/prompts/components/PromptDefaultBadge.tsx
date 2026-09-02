@@ -25,11 +25,14 @@ const TIER_LABEL: Record<"SYSTEM" | "ORG" | "PROJECT" | "USER", string> = {
 	USER: "Personal",
 };
 
-/** Outlined tier colours. Blue has no token in this theme; the Badge's own
- *  `info` variant set that precedent. */
+/** Outlined tier colours. The label is ink on the card, not a fill, so the tiers
+ *  whose brand colour is tuned for filled chips use their `-ink` variant: plain
+ *  `--primary` measures 4.02:1 on the dark card and `--highlight` 3.14:1 on the
+ *  light one, both under AA for this 12px label. Blue has no token in this
+ *  theme; the Badge's own `info` variant set that precedent. */
 const TIER_STYLE: Record<"SYSTEM" | "ORG" | "PROJECT" | "USER", string> = {
-	SYSTEM: "text-primary border-primary/40",
-	ORG: "text-highlight border-highlight/50",
+	SYSTEM: "text-primary-ink border-primary/40",
+	ORG: "text-highlight-ink border-highlight/50",
 	PROJECT: "text-blue-600 dark:text-blue-400 border-blue-500/40",
 	USER: "text-success border-success/40",
 };
