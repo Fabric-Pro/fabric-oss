@@ -1,0 +1,15 @@
+---
+"fabric-app": patch
+---
+
+Update the rich-text editor core so untrusted HTML attributes can no longer reach an object's prototype when pasted content is merged
+
+`@tiptap/core` 3.14.0 → 3.30.4, closing GHSA-cp6q-959q-f8rh (medium, affects `>= 2.0.0-alpha.0, < 3.30.4`). `mergeAttributes` merged parsed HTML attributes without guarding the prototype keys, so attribute names arriving from pasted or imported markup could reach `Object.prototype`. Every document editor in the app parses external HTML through that path, so the fix is worth taking on its own.
+
+The sibling `@tiptap/*` packages deliberately stay where they are. Only `@tiptap/core` carries the advisory, and the editor family here is already spread across several releases (`3.10.7`, `3.14.0`, `3.22.3`, `3.22.5`). No peer contract regresses: `extension-unique-id` asks for `core ^3.22.3` and goes from unmet to met. `extension-mention` and `html` pin `core` *exactly* at `3.22.5`, so they sat outside their contract at 3.14.0 and still do at 3.30.4 — unchanged, not repaired.
+
+`@tiptap/core@3.30.4` declares an exact `@tiptap/pm: 3.30.4` peer while the tree keeps `@tiptap/pm@3.14.0`. That exact pin is an artifact of upstream's lockstep release process rather than a real API floor, and the same unmet-exact-peer shape already ships today. It was checked rather than assumed: every name 3.30.4 imports from ProseMirror (`prosemirror-transform`, `-commands`, `-state`, `-model`, `-schema-list`, `-view`, `-keymap`) resolves in the installed versions, every name the pinned siblings import from `@tiptap/core` still exists in 3.30.4, and core 3.30.4 loads against the installed `@tiptap/pm@3.14.0` with `mergeAttributes` keeping `__proto__` as an ordinary own property and leaving `Object.prototype` untouched. That establishes resolution, not signature-level compatibility with the newer ProseMirror floors `@tiptap/pm@3.30.4` would have pulled in; no evidence was found that the gap is load-bearing.
+
+Three behaviour changes in the 3.15–3.30 range touch this app. `extendMarkRange('link')` (3.22.0) now takes the attributes of the mark under the cursor, so it no longer spans into an adjacent link with a different href — the toolbar's unset/set link path gets the narrower, correct range. The node-view position-tracking change (3.23.5) lives in `@tiptap/react`, which is unchanged here, so the editor's custom node views keep their current re-render behaviour. `NodeView.getPos()` (3.29.0) now returns `undefined` instead of throwing while the view is still attaching; the pinned React renderer inherits that from core, and both the Excalidraw and Mermaid node views already handle an absent position.
+
+The lockfile edit is deliberately minimal: 294 lines against the 1162 a full re-resolve produces, since peer resolution on this workspace is not reproducible from scratch. Every `@tiptap/core` reference matches what pnpm itself resolved for this bump, and `pnpm install --frozen-lockfile --lockfile-only` validates the result against all 68 manifests without modifying it.
