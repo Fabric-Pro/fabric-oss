@@ -33,7 +33,11 @@ import {
 } from "./procedures/architecture-decisions/meeting-decisions";
 import { listDecisionOverridesProcedure } from "./procedures/architecture-decisions/overrides";
 import { suggestDecisionMetadataProcedure } from "./procedures/architecture-decisions/suggest-metadata";
-import { listDecisionTypesProcedure } from "./procedures/architecture-decisions/types";
+import {
+	archiveDecisionTypeProcedure,
+	listDecisionTypesProcedure,
+	restoreDecisionTypeProcedure,
+} from "./procedures/architecture-decisions/types";
 import { listArchitectureDecisionVersionsProcedure } from "./procedures/architecture-decisions/versions";
 // Azure DevOps code-repo setup procedures
 import {
@@ -1091,6 +1095,8 @@ export const projectsRouter = {
 		},
 		types: {
 			list: listDecisionTypesProcedure,
+			archive: archiveDecisionTypeProcedure,
+			restore: restoreDecisionTypeProcedure,
 		},
 		suggestMetadata: suggestDecisionMetadataProcedure,
 		pin: pinArchitectureDecisionProcedure,

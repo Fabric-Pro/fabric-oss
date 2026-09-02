@@ -98,6 +98,12 @@ jobs:
               # bell rows a reader actually gets), so prompt-API changes
               # are DB-relevant too.
               - 'packages/api/modules/prompts/**'
+              # Same reason for decision ownership: the owner-notification
+              # write path cannot be observed on a shared environment (the
+              # actor is deliberately skipped, so a self-assignment writes
+              # nothing, and one account cannot read another's inbox), so the
+              # only place it is ever proven is here, against real rows.
+              - 'packages/api/modules/projects/**'
               - '.github/workflows/db-integration.yml'
             temporal:
               # publishing-notify-activity.test.ts (Fizzy #1850) reads and
@@ -411,6 +417,41 @@ jobs:
             process.exit(1);
           }
           console.log(`delivery suite: ${passed} passed, 0 skipped`);
+          EOF
+
+      - name: 'Decision owner notification delivery (api package, real Postgres)'
+        # Fizzy #2029 left the same gap one ticket later: the owner-notification
+        # write path was unit-tested only, and the staging rehearsal could not
+        # close it because notifyDecisionOwner skips the actor (a self-assignment
+        # writes nothing) and one account cannot read another's inbox. This suite
+        # pins it against real rows — a row reaching a DIFFERENT member with the
+        # assigned type and org-slug link, the actor excluded, and a burst of
+        # edits coalescing on the version-independent dedupe key.
+        run: |
+          pnpm --filter @repo/api exec vitest run \
+            modules/projects/__tests__/decision-owner-delivery.integration.test.ts \
+            --passWithNoTests=false \
+            --reporter=dot \
+            --reporter=json --outputFile=decision-owner-delivery-results.json
+
+      - name: 'Guard: assert the decision-owner suite executed (zero skips)'
+        run: |
+          node <<'EOF'
+          const fs = require("node:fs");
+          const r = JSON.parse(
+            fs.readFileSync("packages/api/decision-owner-delivery-results.json", "utf8"),
+          );
+          const skipped = r.numPendingTests ?? 0;
+          const passed = r.numPassedTests ?? 0;
+          if (skipped > 0) {
+            console.error(`::error::${skipped} decision-owner test(s) skipped — the DB gate did not open.`);
+            process.exit(1);
+          }
+          if (passed < 4) {
+            console.error(`::error::expected at least 4 decision-owner tests, saw ${passed}.`);
+            process.exit(1);
+          }
+          console.log(`decision-owner delivery suite: ${passed} passed, 0 skipped`);
           EOF
 
       - name: 'Guard: assert the XOR suite actually executed (zero skips)'

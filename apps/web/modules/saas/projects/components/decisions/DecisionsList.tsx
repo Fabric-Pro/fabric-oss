@@ -49,6 +49,7 @@ import {
 	SearchIcon,
 	SlidersHorizontalIcon,
 	SparklesIcon,
+	TagIcon,
 	XIcon,
 } from "lucide-react";
 import { useTranslations } from "next-intl";
@@ -78,6 +79,7 @@ import {
 import { DecisionOverridesStrip } from "./DecisionOverridesStrip";
 import { DecisionStatusSelect } from "./DecisionStatusSelect";
 import { DecisionsTable } from "./DecisionsTable";
+import { DecisionTypesDialog } from "./DecisionTypesDialog";
 import { decisionsToMarkdown, downloadMarkdown } from "./decisionMarkdown";
 import {
 	buildRelationshipIndex,
@@ -344,6 +346,7 @@ export function DecisionsList({
 	const [filtersOpen, setFiltersOpen] = useState(false);
 
 	const [formOpen, setFormOpen] = useState(false);
+	const [typesOpen, setTypesOpen] = useState(false);
 	const [editing, setEditing] = useState<EditableDecision | null>(null);
 	const [detailId, setDetailId] = useState<string | null>(null);
 	const [detailOpen, setDetailOpen] = useState(false);
@@ -579,6 +582,16 @@ export function DecisionsList({
 							Export
 						</Button>
 					)}
+					{canDelete && (
+						<Button
+							variant="outline"
+							onClick={() => setTypesOpen(true)}
+							title="Manage the project's decision types"
+						>
+							<TagIcon className="mr-2 size-4" />
+							Types
+						</Button>
+					)}
 					{canEdit && (
 						<Button
 							data-onboarding-target="decisions-new"
@@ -590,6 +603,14 @@ export function DecisionsList({
 					)}
 				</div>
 			</div>
+
+			<DecisionTypesDialog
+				projectId={projectId}
+				organizationId={organizationId}
+				open={typesOpen}
+				onOpenChange={setTypesOpen}
+				onArchived={() => listQuery.refetch()}
+			/>
 
 			{/* Meeting-extracted candidates (compact, collapsible) */}
 			<MeetingCandidatesStrip

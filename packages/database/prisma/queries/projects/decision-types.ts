@@ -18,6 +18,14 @@ export interface DecisionTypeRow {
 	createdAt: Date;
 }
 
+const decisionTypeSelect = {
+	id: true,
+	name: true,
+	origin: true,
+	archivedAt: true,
+	createdAt: true,
+} as const;
+
 export async function listDecisionTypes(input: {
 	projectId: string;
 }): Promise<DecisionTypeRow[]> {
@@ -27,13 +35,37 @@ export async function listDecisionTypes(input: {
 			archivedAt: null,
 		},
 		orderBy: { name: "asc" },
-		select: {
-			id: true,
-			name: true,
-			origin: true,
-			archivedAt: true,
-			createdAt: true,
+		select: decisionTypeSelect,
+	});
+}
+
+/**
+ * Retire a type from the picker without touching the decisions that carry it.
+ * Decision and version reads resolve `decisionType` through a plain relation,
+ * so an archived type keeps rendering its historical label wherever it was
+ * already applied — only new tagging stops offering it.
+ *
+ * Returns null when the id does not belong to the project, so the caller can
+ * answer NOT_FOUND rather than silently succeeding.
+ */
+export async function archiveDecisionType(input: {
+	id: string;
+	projectId: string;
+}): Promise<DecisionTypeRow | null> {
+	const result = await db.decisionType.updateMany({
+		where: {
+			id: input.id,
+			projectId: input.projectId,
+			archivedAt: null,
 		},
+		data: { archivedAt: new Date() },
+	});
+	if (result.count === 0) {
+		return null;
+	}
+	return db.decisionType.findUnique({
+		where: { id: input.id },
+		select: decisionTypeSelect,
 	});
 }
 
@@ -63,10 +95,50 @@ async function createDecisionType(input: {
 	});
 }
 
+async function revive(id: string): Promise<DecisionTypeRow> {
+	return db.decisionType.update({
+		where: { id },
+		data: { archivedAt: null },
+		select: decisionTypeSelect,
+	});
+}
+
 /**
- * Find a live type by (case-insensitive) name or mint one. Returns the existing
- * row when a name collides modulo case/whitespace so concurrent captures and
+ * Undo an archive. Scoped by projectId for the same reason archiveDecisionType
+ * is: an id alone must not let one project reach into another's taxonomy.
+ * Returns null when the id does not belong to the project or was never archived.
+ */
+export async function restoreDecisionType(input: {
+	id: string;
+	projectId: string;
+}): Promise<DecisionTypeRow | null> {
+	const result = await db.decisionType.updateMany({
+		where: {
+			id: input.id,
+			projectId: input.projectId,
+			archivedAt: { not: null },
+		},
+		data: { archivedAt: null },
+	});
+	if (result.count === 0) {
+		return null;
+	}
+	return db.decisionType.findUnique({
+		where: { id: input.id },
+		select: decisionTypeSelect,
+	});
+}
+
+/**
+ * Find a type by (case-insensitive) name or mint one. Returns the existing row
+ * when a name collides modulo case/whitespace so concurrent captures and
  * repeated suggestions converge on one taxonomy entry instead of fragmenting.
+ *
+ * The lookup deliberately spans archived rows: `@@unique([projectId, name])`
+ * covers them too, so a name that survives only as an archived row cannot be
+ * re-created. Applying that name again revives the original row, which is also
+ * what the user means by it — rather than failing, or handing back an archived
+ * row that no picker would ever show again.
  */
 export async function ensureDecisionType(input: {
 	projectId: string;
@@ -80,18 +152,11 @@ export async function ensureDecisionType(input: {
 		where: {
 			projectId: input.projectId,
 			name: { equals: name, mode: "insensitive" },
-			archivedAt: null,
 		},
-		select: {
-			id: true,
-			name: true,
-			origin: true,
-			archivedAt: true,
-			createdAt: true,
-		},
+		select: decisionTypeSelect,
 	});
 	if (existing) {
-		return existing;
+		return existing.archivedAt === null ? existing : revive(existing.id);
 	}
 	try {
 		return await createDecisionType({
@@ -113,16 +178,10 @@ export async function ensureDecisionType(input: {
 					projectId: input.projectId,
 					name: { equals: name, mode: "insensitive" },
 				},
-				select: {
-					id: true,
-					name: true,
-					origin: true,
-					archivedAt: true,
-					createdAt: true,
-				},
+				select: decisionTypeSelect,
 			});
 			if (winner) {
-				return winner;
+				return winner.archivedAt === null ? winner : revive(winner.id);
 			}
 		}
 		throw error;
