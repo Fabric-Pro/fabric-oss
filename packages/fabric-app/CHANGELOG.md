@@ -1,5 +1,44 @@
 # fabric-app
 
+## 1.14.3
+
+### Patch Changes
+
+- f7d456f: Tell the person who asked a question when it gets answered, and tell anyone an answer cites
+- 192aee5: Pin that an owner-assignment notification reaches the owner's bell, not only the notifications table
+- 69b3538: Pin the Daily Brief collector caps with a test that measures what they prevent
+- e236382: Send only recent chat history when retrying a failed message, so a long conversation cannot outgrow the workflow payload limit
+- 157ae3a: Fix the data-analyst agent crash-looping on startup with "Cannot find package 'nunjucks'" by declaring the dependency its bundle loads at runtime.
+- 7549174: Require a type and duration when capturing a decision, record where it came from, and let the owner acknowledge it
+- a74f13c: Raise the fast-uri pnpm override floor to clear four high-severity advisories
+- 98d9b8f: Raise the fast-xml-parser v5 floor to 5.11.1 so JUnit result parsing picks up upstream's DOCTYPE hardening and malformed-tag fix.
+- 1aff9ff: Fizzy backlog pulls now walk every page of each board column, so columns holding more than one page of cards no longer lose cards or delete their stories.
+- d8dd329: Mark a decision that is missing its type or duration, so a failed AI tagging cannot hide
+- 13fdcae: The prompt library shows Default/Available badges again, tags match in Settings, and dead stage-default code is gone.
+- 103dde1: Refuse the MCP gateway's standalone GET stream with 405 so spec-following clients stop reconnecting once a second
+- a61452c: Stop one `@` mention naming two people when one display name is a prefix of another
+- 42599e9: Render the orchestrator's date context date-only and append it last so provider prompt caching survives across calls within a day
+- 1799be3: Publishing Suite can now be enabled for named organizations rather than for a whole deployment.
+- 07a1344: Skip no-op story writes in the PM poll and debounce the AI provider "last used" write, cutting two top sources of database write load.
+- c049179: Make the migration preflight's long-transaction failure say what each session is doing
+- 3017d89: A project can now be given its own default prompts, from the project's settings.
+- 06ad4c4: Editing a default prompt resolves its audience once instead of once per action, and the universal-tier role lookup is now indexed.
+- 26f2543: Editing a default prompt now costs one lookup instead of one per action it wins, and the contrast guard covers the tier it was written for.
+- 13fdcae: Editing a published default prompt now notifies the people it affects, and the tier badges meet AA contrast.
+- d3700af: Publishing Suite: the Blog Post tab now drafts one editable post for a topic, and a regeneration cannot overwrite the saved one
+- c911f95: Publishing Suite: the Short Post / Tweet tab now drafts three labeled options for a topic, and one can be saved as its working draft
+- 7899528: Retry the app navigation when a completed QA sign-in redirect aborts the first attempt.
+- 20c5955: Testing settings: the coverage target splits into an Automation target (reporting) and a Test Coverage Target Done-gate that ships off; device defaults become one Chrome window size with custom support, and sceptic roles default to UX Skeptic only.
+- 9cc88e7: Show the sentence an asker typed in the question notification and on the question itself, and stop a second `@` mention un-naming the first
+- 0cc6d90: Request help now opens a pre-filled draft in your own mail client instead of sending from Fabric, and replies to Fabric email reach the support inbox
+- 12b9598: Fix a flaky reasoning-trace unit test by sampling the completion time once per reasoning update
+- ca0befc: Remove two never-called AI provider config getters and the result interface only they used
+- c6abaf7: Let a project retire a decision type it no longer uses, and keep the label on decisions that already carry it
+- be2c734: Roadmap keyword search now lists the work items your query names and collapses description-only matches behind a count you can expand.
+- 28d93e8: Saving any Testing setting no longer silently drops the UX Skeptic role from a project that had never configured one.
+- 9420530: Every project tab is now visible by default, and the tab bar shows icons with the tab name on hover.
+- 1277c07: Update the rich-text editor core so untrusted HTML attributes can no longer reach an object's prototype when pasted content is merged
+
 ## 1.14.2
 
 ### Patch Changes
