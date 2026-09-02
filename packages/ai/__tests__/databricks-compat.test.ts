@@ -1126,7 +1126,7 @@ describe("applyDatabricksPromptCacheMarkers", () => {
 		vi.unstubAllEnvs();
 	});
 
-	it("marks the system prompt and the last user turn on a Claude endpoint", () => {
+	it("marks the system prompt but not the lone user turn of a one-shot call", () => {
 		const body: Record<string, unknown> = {
 			model: "databricks-claude-sonnet-4-5",
 			messages: [
@@ -1143,9 +1143,59 @@ describe("applyDatabricksPromptCacheMarkers", () => {
 				cache_control: EPHEMERAL,
 			},
 		]);
+		// No tools and no assistant turn, so no later request can match a prefix
+		// ending here — writing one would be a pure 1.25x surcharge on the whole
+		// prompt, which is what made cached Haiku traffic cost MORE than uncached.
+		expect(user.content).toBe("hello");
+	});
+
+	it("marks the last user turn when the request carries tools (agent loop, first turn)", () => {
+		const body: Record<string, unknown> = {
+			model: "databricks-claude-sonnet-4-5",
+			tools: [{ type: "function", function: { name: "lookup" } }],
+			messages: [
+				{ role: "system", content: "You are a helpful assistant." },
+				{ role: "user", content: "hello" },
+			],
+		};
+		expect(applyDatabricksPromptCacheMarkers(body)).toBe(true);
+		const [system, user] = messagesOf(body);
+		expect((system.content as TextBlock[])[0].cache_control).toEqual(
+			EPHEMERAL,
+		);
+		// The tool results come back on this same prefix, so it gets read.
 		expect(user.content).toEqual([
 			{ type: "text", text: "hello", cache_control: EPHEMERAL },
 		]);
+	});
+
+	it("marks the last user turn once the conversation holds an assistant turn", () => {
+		const body: Record<string, unknown> = {
+			model: "databricks-claude-sonnet-4-5",
+			messages: [
+				{ role: "system", content: "sys" },
+				{ role: "user", content: "one" },
+				{ role: "assistant", content: "two" },
+				{ role: "user", content: "three" },
+			],
+		};
+		expect(applyDatabricksPromptCacheMarkers(body)).toBe(true);
+		expect(messagesOf(body)[3].content).toEqual([
+			{ type: "text", text: "three", cache_control: EPHEMERAL },
+		]);
+	});
+
+	it("treats an empty tools array as no tools", () => {
+		const body: Record<string, unknown> = {
+			model: "databricks-claude-sonnet-4-5",
+			tools: [],
+			messages: [
+				{ role: "system", content: "sys" },
+				{ role: "user", content: "hello" },
+			],
+		};
+		expect(applyDatabricksPromptCacheMarkers(body)).toBe(true);
+		expect(messagesOf(body)[1].content).toBe("hello");
 	});
 
 	it("leaves a non-Claude endpoint untouched (Databricks rejects unknown fields)", () => {
@@ -1167,7 +1217,10 @@ describe("applyDatabricksPromptCacheMarkers", () => {
 	it("matches the model gate case-insensitively", () => {
 		const body: Record<string, unknown> = {
 			model: "Prod-Claude-Endpoint",
-			messages: [{ role: "user", content: "hi" }],
+			messages: [
+				{ role: "system", content: "sys" },
+				{ role: "user", content: "hi" },
+			],
 		};
 		expect(applyDatabricksPromptCacheMarkers(body)).toBe(true);
 	});
@@ -1409,8 +1462,13 @@ describe("applyDatabricksPromptCacheMarkers", () => {
 		vi.stubEnv("DATABRICKS_PROMPT_CACHE_DISABLED", "false");
 		const body: Record<string, unknown> = {
 			model: "databricks-claude-sonnet-4-5",
-			messages: [{ role: "user", content: "hi" }],
+			messages: [
+				{ role: "system", content: "sys" },
+				{ role: "user", content: "hi" },
+			],
 		};
+		// Needs a system run: with a lone user turn the rolling breakpoint is
+		// withheld anyway, which would make this pass for the wrong reason.
 		expect(applyDatabricksPromptCacheMarkers(body)).toBe(true);
 	});
 
@@ -1451,17 +1509,24 @@ describe("stripUnsupportedRequestFields — prompt-cache passthrough", () => {
 			),
 		) as {
 			stream_options?: unknown;
-			messages: { content: TextBlock[] }[];
+			messages: { content: TextBlock[] | string }[];
 		};
 		expect(out.stream_options).toBeUndefined();
-		expect(out.messages[0].content[0].cache_control).toEqual(EPHEMERAL);
-		expect(out.messages[1].content[0].cache_control).toEqual(EPHEMERAL);
+		expect(
+			(out.messages[0].content as TextBlock[])[0].cache_control,
+		).toEqual(EPHEMERAL);
+		// One-shot body (no tools, no assistant turn): the rolling breakpoint is
+		// withheld, so only the system run carries a marker.
+		expect(out.messages[1].content).toBe("hi");
 	});
 
 	it("rewrites a Claude body that has nothing else to strip", () => {
 		const bodyText = JSON.stringify({
 			model: "databricks-claude-sonnet-4-5",
-			messages: [{ role: "user", content: "hi" }],
+			messages: [
+				{ role: "system", content: "sys" },
+				{ role: "user", content: "hi" },
+			],
 		});
 		expect(stripUnsupportedRequestFields(bodyText)).not.toBe(bodyText);
 	});
@@ -1499,11 +1564,14 @@ describe("stripUnsupportedRequestFields — prompt-cache passthrough", () => {
 			(baseFetch.mock.calls[0][1] as { body: string }).body,
 		) as {
 			stream_options?: unknown;
-			messages: { content: TextBlock[] }[];
+			messages: { content: TextBlock[] | string }[];
 		};
 		expect(sent.stream_options).toBeUndefined();
-		expect(sent.messages[0].content[0].cache_control).toEqual(EPHEMERAL);
-		expect(sent.messages[1].content[0].cache_control).toEqual(EPHEMERAL);
+		expect(
+			(sent.messages[0].content as TextBlock[])[0].cache_control,
+		).toEqual(EPHEMERAL);
+		// One-shot body: system run only, per rollingBreakpointCanPayOff.
+		expect(sent.messages[1].content).toBe("hi");
 	});
 });
 
@@ -1533,6 +1601,7 @@ describe("applyDatabricksPromptCacheMarkers — placement edge cases", () => {
 	it("does not treat a system message that follows a user turn as the system breakpoint", () => {
 		const body: Record<string, unknown> = {
 			model: "databricks-claude-sonnet-4-5",
+			tools: [{ type: "function", function: { name: "lookup" } }],
 			messages: [
 				{ role: "user", content: "hi" },
 				{ role: "system", content: "late system" },
@@ -1553,6 +1622,7 @@ describe("applyDatabricksPromptCacheMarkers — placement edge cases", () => {
 	it("marks the trailing image block of a mixed text+image turn", () => {
 		const body: Record<string, unknown> = {
 			model: "databricks-claude-sonnet-4-5",
+			tools: [{ type: "function", function: { name: "lookup" } }],
 			messages: [
 				{ role: "system", content: "sys" },
 				{
