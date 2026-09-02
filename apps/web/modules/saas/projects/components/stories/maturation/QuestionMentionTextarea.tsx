@@ -23,8 +23,22 @@ export function mentionedMemberIds(
 	text: string,
 	members: AssignableMember[],
 ): string[] {
+	// LONGEST LABEL FIRST, and each match claims its span.
+	//
+	// `(?!\w)` stops `@Sam` matching inside `@Sammy`, but it does NOT stop a name
+	// that is a prefix of a longer one when the longer one continues past a
+	// SPACE: in `@Ann Lee`, the char after `Ann` is a space, so a member called
+	// "Ann" satisfies the guard and the single token names two people. Two
+	// accounts whose display names are "Ann" and "Ann Lee" is not a corner case —
+	// a second test account is exactly how it happens.
+	const byLongestLabel = [...members].sort(
+		(a, b) => (b.name?.trim().length ?? 0) - (a.name?.trim().length ?? 0),
+	);
 	const found = new Set<string>();
-	for (const member of members) {
+	// `@` offsets already spoken for, so a shorter name cannot match inside a
+	// longer one's token.
+	const claimed: { start: number; end: number }[] = [];
+	for (const member of byLongestLabel) {
 		const label = member.name?.trim();
 		if (!label) {
 			continue;
@@ -35,11 +49,19 @@ export function mentionedMemberIds(
 		// mention. The trailing guard is `(?!\w)` rather than `\b`, because a name
 		// ending in punctuation ("Sam R.") has no word boundary after it and `\b`
 		// would never match — while `(?!\w)` still rejects `@Sam` inside `@Sammy`.
-		if (new RegExp(`(?:^|\\s)@${escaped}(?!\\w)`, "i").test(text)) {
+		const pattern = new RegExp(`(?:^|\\s)@${escaped}(?!\\w)`, "gi");
+		for (const match of text.matchAll(pattern)) {
+			// The match may start on the preceding whitespace.
+			const at = (match.index ?? 0) + match[0].indexOf("@");
+			if (claimed.some((span) => at >= span.start && at < span.end)) {
+				continue;
+			}
+			claimed.push({ start: at, end: at + label.length + 1 });
 			found.add(member.id);
 		}
 	}
-	return [...found];
+	// Caller order, not match order, so the Ask label reads the same every time.
+	return members.filter((member) => found.has(member.id)).map((m) => m.id);
 }
 
 type Props = {
