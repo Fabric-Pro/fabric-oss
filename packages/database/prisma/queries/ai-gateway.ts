@@ -10,24 +10,6 @@ import { encryptApiKey } from "@repo/utils";
 import { db } from "../client";
 
 /**
- * Full provider configuration returned by query functions
- */
-export interface ProviderConfigResult {
-	id: string;
-	provider: string;
-	apiKey: string | undefined;
-	baseUrl: string | undefined;
-	enabledProviders: string[];
-	displayName: string | null;
-	isDefault: boolean;
-	lastUsedAt: Date | null;
-	/** Service-principal client id (Databricks OAuth M2M), when configured. */
-	clientId: string | null;
-	/** Encrypted service-principal secret (Databricks OAuth M2M). */
-	encryptedClientSecret: string | null;
-}
-
-/**
  * Columns every provider read needs to resolve a credential. Kept as one
  * constant so a new credential field can never be added to some reads and
  * silently missed by others.
@@ -60,98 +42,6 @@ export function hasProviderCredentials(row: {
 	encryptedClientSecret?: string | null;
 }): boolean {
 	return Boolean(row.apiKey || (row.clientId && row.encryptedClientSecret));
-}
-
-/**
- * Get organization's default AI provider configuration (NEW MODEL)
- * Returns the default provider config from cloud_provider_config table
- */
-export async function getOrganizationDefaultProviderConfig(
-	organizationId: string,
-): Promise<ProviderConfigResult | null> {
-	const config = await db.cloudProviderConfig.findFirst({
-		where: {
-			organizationId,
-			isDefault: true,
-			enabled: true,
-		},
-		select: {
-			id: true,
-			provider: true,
-			...PROVIDER_CREDENTIAL_SELECT,
-			config: true,
-			displayName: true,
-			isDefault: true,
-			lastUsedAt: true,
-		},
-	});
-
-	if (!config) {
-		return null;
-	}
-
-	const configData = config.config as Record<string, unknown>;
-	// Prefer new encryptedApiKey column, fall back to legacy config.apiKey for backward compatibility
-	const apiKey =
-		config.encryptedApiKey || (configData?.apiKey as string | undefined);
-	return {
-		id: config.id,
-		provider: config.provider,
-		apiKey,
-		baseUrl: configData?.baseUrl as string | undefined,
-		enabledProviders: (configData?.enabledProviders as string[]) || [],
-		displayName: config.displayName,
-		isDefault: config.isDefault,
-		lastUsedAt: config.lastUsedAt,
-		clientId: config.clientId,
-		encryptedClientSecret: config.encryptedClientSecret,
-	};
-}
-
-/**
- * Get user's default AI provider configuration (NEW MODEL)
- * Returns the default provider config from user_cloud_provider_config table
- */
-export async function getUserDefaultProviderConfig(
-	userId: string,
-): Promise<ProviderConfigResult | null> {
-	const config = await db.userCloudProviderConfig.findFirst({
-		where: {
-			userId,
-			isDefault: true,
-			enabled: true,
-		},
-		select: {
-			id: true,
-			provider: true,
-			...PROVIDER_CREDENTIAL_SELECT,
-			config: true,
-			displayName: true,
-			isDefault: true,
-			lastUsedAt: true,
-		},
-	});
-
-	if (!config) {
-		return null;
-	}
-
-	const configData = config.config as Record<string, unknown>;
-	// Prefer new encryptedApiKey column, fall back to legacy config.apiKey for backward compatibility
-	const apiKey =
-		config.encryptedApiKey || (configData?.apiKey as string | undefined);
-	return {
-		id: config.id,
-		provider: config.provider,
-		apiKey,
-		baseUrl: configData?.baseUrl as string | undefined,
-		enabledProviders: (configData?.enabledProviders as string[]) || [],
-		displayName: config.displayName,
-		isDefault: config.isDefault,
-		lastUsedAt: config.lastUsedAt,
-		clientId: config.clientId,
-		encryptedClientSecret: config.encryptedClientSecret,
-	};
 }
 
 /**

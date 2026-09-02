@@ -19,8 +19,6 @@ vi.mock("@repo/database", () => ({
 	deleteMcpConfig: vi.fn(),
 	createMcpClientSession: vi.fn(),
 	getMcpServerById: vi.fn(),
-	getUserDefaultProviderConfig: vi.fn(),
-	getOrganizationDefaultProviderConfig: vi.fn(),
 }));
 
 // Mock utils
