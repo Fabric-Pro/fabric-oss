@@ -7,6 +7,7 @@ export const DOCUMENT_TAG_OPTIONS = [
 	{ value: "PRD", label: "PRD" },
 	{ value: "PROPOSAL", label: "Proposal" },
 	{ value: "BUSINESS_CASE", label: "Business Case" },
+	{ value: "DESIGN_SYSTEM", label: "Design System" },
 	{ value: "ARCHITECTURE", label: "Architecture" },
 	{ value: "TECHNICAL_SPEC", label: "Technical Spec" },
 	{ value: "API_SPEC", label: "API Spec" },

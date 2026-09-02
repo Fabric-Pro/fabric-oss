@@ -13,6 +13,7 @@ import { useState } from "react";
 const documentTypes: { value: DocumentType; label: string; emoji: string }[] = [
 	{ value: "general", label: "General", emoji: "📄" },
 	{ value: "business_case", label: "Business Case", emoji: "📊" },
+	{ value: "design_system", label: "Design System", emoji: "🎨" },
 	{ value: "prd", label: "PRD", emoji: "📋" },
 	{ value: "proposal", label: "Proposal", emoji: "💼" },
 	{ value: "architecture", label: "Architecture", emoji: "🏗️" },

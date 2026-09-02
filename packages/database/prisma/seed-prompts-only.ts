@@ -73,6 +73,10 @@ const PROMPT_DOCUMENT_TYPE_BINDINGS: Record<string, SeedBindingSpec> = {
 		documentTypes: ["BUSINESS_CASE"],
 		storyKind: null,
 	},
+	design_system_template: {
+		documentTypes: ["DESIGN_SYSTEM"],
+		storyKind: null,
+	},
 	qa_strategy_template: { documentTypes: ["QA_STRATEGY"], storyKind: null },
 	srs_template: { documentTypes: ["SRS"], storyKind: null },
 	// Feature drafting stage prompts.
@@ -1237,6 +1241,771 @@ Example table:
   - If a named capability appears to blend multiple distinct concepts (e.g., “catalog” that includes both internal reference data and external uploads), split it into separate scope items unless the context explicitly states they are the same system.
   - If you keep them combined, add an Open Question explaining the rationale and the risk of conflation.
 - Validate dates; if conflicting, flag as Open Question rather than asserting.  `,
+		bindingTargetKey: null,
+	},
+	{
+		key: "design_system_template",
+		name: "Design System Markdown Document",
+		description:
+			"Generates or updates a complete evidence-grounded design.md with strict TBD handling, accessibility guidance, implementation notes, and source preservation",
+		category: "document-generation",
+		tags: [
+			"design-system",
+			"design-md",
+			"design-tokens",
+			"accessibility",
+			"components",
+		],
+		format: "MARKDOWN" as const,
+		isPublic: true,
+		content: `# Design System Markdown Document — Full Draft v1.0
+
+You are generating or updating a Design System Markdown document for a software product, brand, website, application, or client-facing experience.
+
+A Design System Markdown document is a structured reference that translates available brand, design, product, and UI context into clear design rules that humans and AI agents can apply consistently.
+
+You are given some or all of the following:
+- existing design system documentation,
+- brand guidelines,
+- Figma files or design screenshots,
+- product screenshots,
+- website screenshots,
+- landing page examples,
+- component examples,
+- color palettes,
+- typography references,
+- logo/brand assets,
+- CSS/theme tokens,
+- frontend component code,
+- product requirements,
+- stakeholder comments,
+- design team comments,
+- accessibility notes,
+- prior generated design documents,
+- connected project context.
+
+Goal
+- Produce or update a polished Design System Markdown document.
+- Capture the visual theme, design principles, colors, typography, component styling, spacing, layout, interaction states, responsive behavior, accessibility expectations, and AI-agent guidance.
+- Make the document usable by designers, engineers, product managers, and AI agents.
+- Preserve design-team intent and terminology.
+- Prefer explicit design tokens and concrete rules over vague aesthetic language.
+- Use tables, bullets, examples, and visual references where useful.
+- Keep the output structured and scannable.
+- Support automatic system updates by carefully updating the existing document in place when one already exists.
+
+Hard Rules
+- Output MUST be Markdown only.
+- Return the full updated Design System Markdown document.
+- Do NOT invent brand facts, color values, font names, component states, or layout rules that are not supported by context.
+- If a specific value is unknown, mark it as \`TBD\` rather than guessing.
+- If design assets conflict, call out the conflict in Open Questions or Design Gaps rather than silently choosing.
+- Preserve any existing inline images, links, embedded assets, code blocks, Mermaid diagrams, and source references unless they are stale or contradicted by newer context.
+- Do NOT include hidden reasoning, scratch notes, changelog commentary, or AI analysis.
+- Do NOT produce a generic design system. Ground the output in the provided brand/design/product context.
+- Do NOT overwrite intentional design-team language merely for style.
+- Do NOT create implementation code unless the source context includes code tokens or the user explicitly asks for code.
+- Do NOT mention unavailable assets as if they were reviewed.
+
+Create vs Update Mode
+- If no structured Design System Markdown document exists yet, create the document using the OUTPUT FORMAT below.
+- If an existing Design System Markdown document exists, update it in place:
+  - Preserve the existing section order when it already matches the required structure.
+  - Preserve wording, terminology, and design-team phrasing unless it is stale, contradictory, incomplete, or unclear.
+  - Update only the sections affected by new context or design assets.
+  - Do not rewrite unaffected sections for style.
+  - Remove duplicate, stale, malformed, or contradicted content.
+  - Keep changes targeted so reviewers can understand what changed.
+- If the existing document is missing a required section that is useful for the design system, add it.
+- If an optional section has no supported content, omit it or mark it \`TBD\`.
+
+Context Refresh Pass — Required
+Before generating or updating the document, scan the available context for:
+- brand identity and visual tone,
+- confirmed color values and usage roles,
+- typography rules,
+- component styling,
+- spacing/layout rules,
+- responsive behavior,
+- accessibility requirements,
+- interaction states,
+- design tokens,
+- screenshots or visual assets,
+- frontend implementation reality,
+- design-team comments or corrections,
+- conflicts between current document, assets, and code,
+- stale design rules,
+- missing design decisions,
+- sections that require update due to changed brand/product direction.
+
+Apply findings directly into the relevant document sections. Do not output a separate analysis section.
+
+Design Asset Interpretation Rules
+- Treat design-team-provided examples, Figma exports, screenshots, and approved brand references as high-priority sources.
+- If a screenshot or visual asset shows a clear pattern, describe the pattern and convert it into reusable design guidance.
+- If a value can be directly read from design tokens, code, or provided documentation, use the explicit value.
+- If a value is visually inferred but not confirmed, label it as approximate or \`TBD\`.
+- Do not infer exact hex colors, font sizes, spacing, shadows, or breakpoints from screenshots unless they are provided in the source context or code.
+- When multiple assets disagree, prefer the most recent approved design-team guidance. If recency or approval status is unclear, preserve the conflict as an Open Question.
+
+Automatic Update Rules
+- This document may be refreshed automatically as the system receives new design context.
+- During updates, preserve stable sections and only revise sections that new context affects.
+- If a new design asset introduces a new pattern, add it to the correct section rather than creating a duplicate section.
+- If a new asset contradicts an existing token or rule, do not silently replace the rule unless the new source is explicitly approved or clearly more authoritative.
+- If a rule is superseded, remove or update the stale rule everywhere it appears.
+- Keep section numbering and heading names stable unless the existing structure is malformed or missing required sections.
+- Maintain a single source of truth: each design rule should appear in the most appropriate section and should not be repeated inconsistently across the document.
+
+Design Consistency Validation Pass — Required
+Before returning the final Markdown, perform a document-wide consistency sweep.
+
+Check that:
+- color names, hex values, and usage roles match across all sections,
+- typography sizes, weights, line heights, and font families are consistent,
+- component styling references the same color, radius, spacing, shadow, and typography tokens defined earlier,
+- responsive rules do not contradict base layout rules,
+- accessibility requirements align with color and interaction guidance,
+- Do/Don’t rules do not contradict component rules,
+- Agent Prompt Guide instructions match the main design system sections,
+- no stale, duplicated, or partially merged text remains,
+- no broken Markdown headings, orphan bullets, or malformed tables remain,
+- no unresolved design questions are stated as settled rules.
+
+If a settled design rule changes, update all affected downstream sections, including:
+- Color Palette & Roles
+- Typography Rules
+- Component Styling
+- Layout Principles
+- Depth & Elevation
+- Responsive Behavior
+- Do’s and Don’ts
+- Agent Prompt Guide
+
+Visual Requirements
+- Include visual guidance in Markdown whenever useful.
+- Use Mermaid diagrams when they clarify design relationships, hierarchy, token flow, responsive behavior, or component anatomy.
+- Mermaid diagrams must be syntactically valid.
+- Do not include decorative Mermaid diagrams that add no clarity.
+- Prefer Mermaid for:
+  - design-token hierarchy,
+  - theme inheritance,
+  - component anatomy,
+  - responsive layout behavior,
+  - design-system governance flow,
+  - relationship between brand assets, tokens, components, and AI-agent usage.
+- If the available context includes screenshots or image references, preserve those references in the relevant sections.
+- If visual assets are available but not directly renderable in Markdown, reference them clearly in Assets / Source References.
+- If no visual assets are available, do not pretend screenshots were reviewed.
+
+Mermaid Examples
+Use diagrams like these only when relevant and supported by the document:
+
+\`\`\`mermaid
+flowchart TD
+    A[Brand Identity] --> B[Design Tokens]
+    B --> C[Color Palette]
+    B --> D[Typography]
+    B --> E[Spacing & Radius]
+    C --> F[Components]
+    D --> F
+    E --> F
+    F --> G[Layouts]
+    G --> H[AI Agent Prompt Guide]
+\`\`\`
+
+\`\`\`mermaid
+flowchart LR
+    A[Desktop Layout] --> B[Tablet Layout]
+    B --> C[Mobile Layout]
+    C --> D[Single Column]
+    C --> E[Touch-Optimized Controls]
+\`\`\`
+
+Open Question Rules
+- Include Open Questions only when there are unresolved decisions that materially affect the design system.
+- Each Open Question must begin as a single top-level bullet containing the full question sentence ending in \`?\`.
+- Optional metadata may follow as 4-space-indented sub-bullets.
+- Do NOT use two-space indentation for question metadata.
+- If nothing is unresolved, omit the Open Questions section entirely.
+
+Use this parser-safe format:
+
+## Open Questions
+
+- Q: <Full question sentence ending in a question mark?>
+    - Why it matters: <short explanation>
+    - Owner/decider: <name/role/TBD>
+    - Needed by: <milestone/TBD>
+
+Design Gap Rules
+- Use Design Gaps for unresolved gaps that affect implementation quality but may not be phrased as questions.
+- If a Design Gap requires a decision, approval, missing asset, token definition, accessibility check, or design-team confirmation, create a corresponding Open Question.
+- Do not hide required design decisions only in Design Gaps.
+- If a gap is purely engineering implementation uncertainty, place it under Implementation Notes instead.
+
+Cleanup Rule
+- Remove duplicated headings, broken bullets, orphaned fragments, malformed tables, stale drafts, unresolved edit markers, and partially merged text.
+- Remove artifacts such as ADD_START, ADD_END, DEL_START, DEL_END, escaped headings, duplicate release-style sections, and corrupted Markdown.
+- Do not leave two conflicting versions of the same design rule.
+- If stale text contradicts a settled design decision, consistency takes priority over preserving wording.
+
+OUTPUT FORMAT
+
+# Design System: <Product / Brand / Project Name>
+
+## 1. Visual Theme & Atmosphere
+
+<Describe the overall visual identity, tone, personality, and intended user perception. Ground this in the provided design assets and brand context.>
+
+**Key Characteristics**
+
+- <Characteristic 1>
+- <Characteristic 2>
+- <Characteristic 3>
+- <Characteristic 4>
+- <Characteristic 5>
+
+## 2. Design Token Overview
+
+<Briefly describe how the design system is organized into reusable tokens and patterns. Include this section when token structure is useful or supported by context.>
+
+\`\`\`mermaid
+flowchart TD
+    A[Brand / Product Identity] --> B[Design Tokens]
+    B --> C[Color]
+    B --> D[Typography]
+    B --> E[Spacing]
+    B --> F[Radius]
+    B --> G[Elevation]
+    C --> H[Components]
+    D --> H
+    E --> H
+    F --> H
+    G --> H
+    H --> I[Layouts & Screens]
+\`\`\`
+
+## 3. Color Palette & Roles
+
+### Primary
+
+- **<Color Name>** (\`<hex/rgb/token>\`): <usage role>
+- **<Color Name>** (\`<hex/rgb/token>\`): <usage role>
+
+### Accent Colors
+
+- **<Color Name>** (\`<hex/rgb/token>\`): <usage role>
+- **<Color Name>** (\`<hex/rgb/token>\`): <usage role>
+
+### Semantic / Interactive Colors
+
+- **Success** (\`<hex/rgb/token>\`): <usage role>
+- **Warning** (\`<hex/rgb/token>\`): <usage role>
+- **Error** (\`<hex/rgb/token>\`): <usage role>
+- **Info** (\`<hex/rgb/token>\`): <usage role>
+
+### Neutral Scale
+
+- **<Neutral Name>** (\`<hex/rgb/token>\`): <usage role>
+- **<Neutral Name>** (\`<hex/rgb/token>\`): <usage role>
+
+### Surface & Border Colors
+
+- **<Surface Name>** (\`<hex/rgb/token>\`): <usage role>
+- **<Border Name>** (\`<hex/rgb/token>\`): <usage role>
+
+### Accessibility Notes
+
+- <Contrast guidance>
+- <Color-use restriction>
+- <Known risk or TBD>
+
+## 4. Typography Rules
+
+### Font Families
+
+- **Primary:** <font name and fallback stack>
+- **Secondary:** <font name and fallback stack>
+- **Monospace / Code:** <font name and fallback stack, if applicable>
+
+### Hierarchy
+
+| Role | Font | Size | Weight | Line Height | Letter Spacing | Notes |
+|---|---|---:|---:|---:|---:|---|
+| Display / H1 | <font> | <size> | <weight> | <line height> | <letter spacing> | <usage> |
+| Heading H2 | <font> | <size> | <weight> | <line height> | <letter spacing> | <usage> |
+| Heading H3 | <font> | <size> | <weight> | <line height> | <letter spacing> | <usage> |
+| Body Text | <font> | <size> | <weight> | <line height> | <letter spacing> | <usage> |
+| Links | <font> | <size> | <weight> | <line height> | <letter spacing> | <usage> |
+| Small Text | <font> | <size> | <weight> | <line height> | <letter spacing> | <usage> |
+| Button Text | <font> | <size> | <weight> | <line height> | <letter spacing> | <usage> |
+
+### Principles
+
+- <Typography principle>
+- <Typography principle>
+- <Typography principle>
+
+## 5. Component Styling
+
+<Include only components supported by context. Add components as needed. Use explicit values when known; otherwise use \`TBD\`.>
+
+### Buttons
+
+#### Primary Button
+
+- Background: \`<value>\`
+- Text Color: \`<value>\`
+- Padding: \`<value>\`
+- Border Radius: \`<value>\`
+- Border: \`<value>\`
+- Font: \`<font, size, weight>\`
+- Line Height: \`<value>\`
+- Hover State: \`<value>\`
+- Active State: \`<value>\`
+- Focus State: \`<value>\`
+- Disabled State: \`<value>\`
+
+#### Secondary Button
+
+- Background: \`<value>\`
+- Text Color: \`<value>\`
+- Padding: \`<value>\`
+- Border Radius: \`<value>\`
+- Border: \`<value>\`
+- Font: \`<font, size, weight>\`
+- Line Height: \`<value>\`
+- Hover State: \`<value>\`
+- Active State: \`<value>\`
+- Focus State: \`<value>\`
+- Disabled State: \`<value>\`
+
+#### Ghost / Text Button
+
+- Background: \`<value>\`
+- Text Color: \`<value>\`
+- Padding: \`<value>\`
+- Border Radius: \`<value>\`
+- Border: \`<value>\`
+- Font: \`<font, size, weight>\`
+- Hover State: \`<value>\`
+- Active State: \`<value>\`
+- Disabled State: \`<value>\`
+
+### Cards & Containers
+
+#### Default Card
+
+- Background: \`<value>\`
+- Text Color: \`<value>\`
+- Padding: \`<value>\`
+- Border Radius: \`<value>\`
+- Border: \`<value>\`
+- Box Shadow: \`<value>\`
+- Hover State: \`<value>\`
+
+#### Elevated Card
+
+- Background: \`<value>\`
+- Text Color: \`<value>\`
+- Padding: \`<value>\`
+- Border Radius: \`<value>\`
+- Border: \`<value>\`
+- Box Shadow: \`<value>\`
+
+#### Light Surface Card
+
+- Background: \`<value>\`
+- Text Color: \`<value>\`
+- Padding: \`<value>\`
+- Border Radius: \`<value>\`
+- Border: \`<value>\`
+- Box Shadow: \`<value>\`
+
+### Inputs & Forms
+
+#### Text Input
+
+- Background: \`<value>\`
+- Text Color: \`<value>\`
+- Border: \`<value>\`
+- Border Radius: \`<value>\`
+- Padding: \`<value>\`
+- Font: \`<font, size, weight>\`
+- Focus State: \`<value>\`
+- Error State: \`<value>\`
+
+#### Textarea
+
+- Background: \`<value>\`
+- Text Color: \`<value>\`
+- Border: \`<value>\`
+- Border Radius: \`<value>\`
+- Padding: \`<value>\`
+- Min Height: \`<value>\`
+- Resize: \`<value>\`
+- Focus State: \`<value>\`
+
+#### Label
+
+- Font: \`<font, size, weight>\`
+- Color: \`<value>\`
+- Margin Bottom: \`<value>\`
+- Display: \`<value>\`
+
+#### Helper Text / Error Message
+
+- Font: \`<font, size, weight>\`
+- Color: \`<value>\`
+- Margin Top: \`<value>\`
+
+### Navigation
+
+#### Navigation Bar
+
+- Background: \`<value>\`
+- Text Color: \`<value>\`
+- Padding: \`<value>\`
+- Height: \`<value>\`
+- Display: \`<value>\`
+- Align Items: \`<value>\`
+- Font: \`<font, size, weight>\`
+- Border Bottom: \`<value>\`
+
+#### Navigation Link
+
+- Color: \`<value>\`
+- Text Decoration: \`<value>\`
+- Padding: \`<value>\`
+- Border Radius: \`<value>\`
+- Hover State: \`<value>\`
+- Active State: \`<value>\`
+
+### Links
+
+#### Inline Link
+
+- Color: \`<value>\`
+- Text Decoration: \`<value>\`
+- Font: \`<font, size, weight>\`
+- Hover State: \`<value>\`
+- Visited State: \`<value>\`
+
+### Badges
+
+#### Default Badge
+
+- Background: \`<value>\`
+- Text Color: \`<value>\`
+- Padding: \`<value>\`
+- Border Radius: \`<value>\`
+- Border: \`<value>\`
+- Font: \`<font, size, weight>\`
+
+#### Success Badge
+
+- Background: \`<value>\`
+- Text Color: \`<value>\`
+- Padding: \`<value>\`
+- Border Radius: \`<value>\`
+- Border: \`<value>\`
+- Font: \`<font, size, weight>\`
+
+#### Warning Badge
+
+- Background: \`<value>\`
+- Text Color: \`<value>\`
+- Padding: \`<value>\`
+- Border Radius: \`<value>\`
+- Border: \`<value>\`
+- Font: \`<font, size, weight>\`
+
+#### Error Badge
+
+- Background: \`<value>\`
+- Text Color: \`<value>\`
+- Padding: \`<value>\`
+- Border Radius: \`<value>\`
+- Border: \`<value>\`
+- Font: \`<font, size, weight>\`
+
+## 6. Layout Principles
+
+### Spacing System
+
+<Describe the spacing scale and how it should be applied.>
+
+- **Micro spacing:** \`<values>\` — <usage>
+- **Small spacing:** \`<values>\` — <usage>
+- **Medium spacing:** \`<values>\` — <usage>
+- **Large spacing:** \`<values>\` — <usage>
+- **Extra-large spacing:** \`<values>\` — <usage>
+
+### Usage Context
+
+- Buttons: \`<spacing>\`
+- Cards: \`<spacing>\`
+- Forms: \`<spacing>\`
+- Section gaps: \`<spacing>\`
+- Container padding: \`<spacing>\`
+
+### Grid & Container
+
+- Max Width: \`<value>\`
+- Column Strategy: \`<rule>\`
+- Gutter Width: \`<value>\`
+- Container Padding: \`<value>\`
+- Full-width Sections: \`<rule>\`
+
+### Section Patterns
+
+- Hero: \`<rule>\`
+- Card Grid: \`<rule>\`
+- Content + Sidebar: \`<rule>\`
+- Feature List: \`<rule>\`
+
+### Whitespace Philosophy
+
+<Describe how whitespace should be used to create hierarchy, readability, and visual tone.>
+
+### Border Radius Scale
+
+- **Sharp:** \`<value>\` — <usage>
+- **Subtle:** \`<value>\` — <usage>
+- **Moderate:** \`<value>\` — <usage>
+- **Generous:** \`<value>\` — <usage>
+- **Pill:** \`<value>\` — <usage>
+
+### Border Widths
+
+- **Thin:** \`<value>\` — <usage>
+- **Medium:** \`<value>\` — <usage>
+- **Thick:** \`<value>\` — <usage>
+
+## 7. Depth & Elevation
+
+| Level | Treatment | Use |
+|---|---|---|
+| Base | <treatment> | <usage> |
+| Level 1 | <treatment> | <usage> |
+| Level 2 | <treatment> | <usage> |
+| Level 3 | <treatment> | <usage> |
+| Overlay | <treatment> | <usage> |
+
+### Shadow Philosophy
+
+<Describe how shadows, layering, and elevation should be used.>
+
+### Opacity Levels
+
+- **Full Opacity:** \`<value>\` — <usage>
+- **High Opacity:** \`<value>\` — <usage>
+- **Medium Opacity:** \`<value>\` — <usage>
+- **Low Opacity:** \`<value>\` — <usage>
+
+### Z-Index / Layering
+
+- **Base Layer:** \`<value>\` — <usage>
+- **Raised Layer:** \`<value>\` — <usage>
+- **Floating Layer:** \`<value>\` — <usage>
+- **Sticky Layer:** \`<value>\` — <usage>
+- **Modal Overlay:** \`<value>\` — <usage>
+- **Toast / Notification:** \`<value>\` — <usage>
+
+## 8. Accessibility & Inclusive Design
+
+### Contrast
+
+- <Rule>
+- <Rule>
+
+### Keyboard Navigation
+
+- <Rule>
+- <Rule>
+
+### Focus States
+
+- <Rule>
+- <Rule>
+
+### Motion / Animation
+
+- <Rule>
+- <Rule>
+
+### Touch Targets
+
+- <Rule>
+- <Rule>
+
+### Content Readability
+
+- <Rule>
+- <Rule>
+
+## 9. Do’s and Don’ts
+
+### Do
+
+- **Do <rule>** — <reason>
+- **Do <rule>** — <reason>
+- **Do <rule>** — <reason>
+
+### Don’t
+
+- **Don’t <rule>** — <reason>
+- **Don’t <rule>** — <reason>
+- **Don’t <rule>** — <reason>
+
+## 10. Responsive Behavior
+
+### Breakpoints
+
+| Name | Width | Key Changes |
+|---|---|---|
+| Mobile | \`<range>\` | <key changes> |
+| Tablet | \`<range>\` | <key changes> |
+| Desktop | \`<range>\` | <key changes> |
+| Large Desktop | \`<range>\` | <key changes> |
+
+### Layout Behavior
+
+\`\`\`mermaid
+flowchart LR
+    A[Large Desktop] --> B[Desktop]
+    B --> C[Tablet]
+    C --> D[Mobile]
+    D --> E[Single Column Layouts]
+    D --> F[Touch-Optimized Controls]
+\`\`\`
+
+### Navigation
+
+- Desktop: <rule>
+- Tablet: <rule>
+- Mobile: <rule>
+
+### Card Grids
+
+- Desktop: <rule>
+- Tablet: <rule>
+- Mobile: <rule>
+
+### Typography Scaling
+
+- Desktop: <rule>
+- Tablet: <rule>
+- Mobile: <rule>
+
+### Spacing Scaling
+
+- Desktop: <rule>
+- Tablet: <rule>
+- Mobile: <rule>
+
+### Button Scaling
+
+- Desktop: <rule>
+- Tablet: <rule>
+- Mobile: <rule>
+
+## 11. Component Anatomy Visuals
+
+<Use Mermaid diagrams where component anatomy or layout hierarchy would help. Omit diagrams that are not useful or not supported by source context.>
+
+\`\`\`mermaid
+flowchart TD
+    A[Component] --> B[Container]
+    B --> C[Header / Label]
+    B --> D[Body Content]
+    B --> E[Primary Action]
+    B --> F[Secondary Action]
+    B --> G[State / Feedback]
+\`\`\`
+
+## 12. Implementation Notes
+
+<Include only implementation-relevant guidance supported by context. This may include token names, CSS variables, Tailwind classes, theme files, component-library references, or frontend constraints.>
+
+### Token / CSS Guidance
+
+- <Token or implementation note>
+- <Token or implementation note>
+
+### Frontend Component Notes
+
+- <Component note>
+- <Component note>
+
+### Engineering Constraints
+
+- <Constraint>
+- <Constraint>
+
+## 13. Agent Prompt Guide
+
+Use this section to turn the design system into direct instructions for AI agents generating UI, prototypes, copy, or design-adjacent output.
+
+### Quick Color Reference
+
+- **Primary CTA:** <color name> (\`<value>\`)
+- **Secondary CTA:** <rule>
+- **Background (Dark Sections):** <value>
+- **Background (Light Sections):** <value>
+- **Card Container:** <value>
+- **Heading Text:** <value>
+- **Body Text:** <value>
+- **Accent / Highlights:** <value>
+- **Success State:** <value>
+- **Error State:** <value>
+- **Warning State:** <value>
+- **Info State:** <value>
+- **Borders:** <value>
+
+### Quick Typography Reference
+
+- **Headings:** <font / weight / size guidance>
+- **Body:** <font / weight / size guidance>
+- **Buttons:** <font / weight / size guidance>
+- **Small Text:** <font / weight / size guidance>
+
+### Iteration Guide
+
+1. <Concrete instruction for AI agents>
+2. <Concrete instruction for AI agents>
+3. <Concrete instruction for AI agents>
+4. <Concrete instruction for AI agents>
+5. <Concrete instruction for AI agents>
+6. <Concrete instruction for AI agents>
+7. <Concrete instruction for AI agents>
+8. <Concrete instruction for AI agents>
+9. <Concrete instruction for AI agents>
+10. <Concrete instruction for AI agents>
+
+## 14. Design Gaps
+
+<Include only if applicable. If none, omit this section.>
+
+- Gap:
+    - Impact:
+    - Decision needed / owner:
+    - Corresponding Open Question:
+
+## 15. Open Questions
+
+- Q: <Full question sentence ending in a question mark?>
+    - Why it matters: <short explanation>
+    - Owner/decider: <name/role/TBD>
+    - Needed by: <milestone/TBD>
+
+## 16. Assets / Source References
+
+<Include only sources that exist in the input or connected context. Preserve useful links and asset references.>
+
+- <Design file / screenshot / brand guideline / code file / source document>
+- <Design file / screenshot / brand guideline / code file / source document>`,
 		bindingTargetKey: null,
 	},
 	{

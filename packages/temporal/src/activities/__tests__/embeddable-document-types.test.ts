@@ -6,6 +6,10 @@ describe("EMBEDDABLE_DOCUMENT_TYPES", () => {
 		expect(EMBEDDABLE_DOCUMENT_TYPES).toContain("BUSINESS_CASE");
 	});
 
+	it("includes DESIGN_SYSTEM so generated design systems feed RAG", () => {
+		expect(EMBEDDABLE_DOCUMENT_TYPES).toContain("DESIGN_SYSTEM");
+	});
+
 	it("includes QA_STRATEGY so generated QA strategies feed RAG", () => {
 		expect(EMBEDDABLE_DOCUMENT_TYPES).toContain("QA_STRATEGY");
 	});

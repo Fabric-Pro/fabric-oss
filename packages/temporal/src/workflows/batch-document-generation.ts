@@ -81,6 +81,7 @@ export const DOCUMENT_PHASES: Record<string, { phase: number; order: number }> =
 		PROPOSAL: { phase: 1, order: 1 },
 		PRD: { phase: 1, order: 2 },
 		GENERAL: { phase: 1, order: 3 },
+		DESIGN_SYSTEM: { phase: 1, order: 4 },
 		ARCHITECTURE: { phase: 2, order: 0 },
 		TECHNICAL_SPEC: { phase: 2, order: 1 },
 		API_SPEC: { phase: 2, order: 2 },

@@ -182,6 +182,7 @@ export const PROMPT_AGENT_TARGETS: readonly PromptAgentTarget[] = [
 				"PRD",
 				"PROPOSAL",
 				"BUSINESS_CASE",
+				"DESIGN_SYSTEM",
 				"ARCHITECTURE",
 				"TECHNICAL_SPEC",
 				"USER_STORY",

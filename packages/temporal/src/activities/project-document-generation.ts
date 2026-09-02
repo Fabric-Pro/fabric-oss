@@ -1036,6 +1036,12 @@ Tech Stack: ${project.techStack.join(", ")}
 ❌ FULL FORBIDDEN LIST: ${PROPOSAL_FORBIDDEN_SECTIONS.join(", ")}
 
 🚨 START YOUR RESPONSE WITH: ### **Project Proposal**`,
+			design_system: `${regenerationPrefix}Create or update a complete Design System Markdown document (design.md) for ${project.name} using only the supplied project context.
+
+Return Markdown only and include the required sections from Visual Theme & Atmosphere through Assets / Source References. Preserve relevant assets, links, repository paths, code examples, Mermaid diagrams, and source references. Never guess design values: write TBD for unsupported colors, typography, spacing, breakpoints, component states, or implementation details. Put missing decisions and contradictions in Design Gaps and Open Questions rather than silently resolving them. Validate consistency across tokens, components, responsive behavior, accessibility guidance, and implementation notes before returning the full document.
+
+${featuresLine}
+Tech Stack: ${project.techStack.join(", ")}`,
 			business_case: `${regenerationPrefix}Create a decision-oriented Business Case for ${project.name}. This is NOT a PRD — stay at a decision-making altitude and focus on whether to fund/approve and what to do next.
 
 Use this structure:
@@ -2327,6 +2333,7 @@ export function computeQaDepthFlags(
  */
 export const EMBEDDABLE_DOCUMENT_TYPES = [
 	"BUSINESS_CASE",
+	"DESIGN_SYSTEM",
 	"PRD",
 	"PROPOSAL",
 	"TECHNICAL_SPEC",
@@ -3492,6 +3499,7 @@ export async function createImportedDocument(params: {
 		"PRD",
 		"PROPOSAL",
 		"BUSINESS_CASE",
+		"DESIGN_SYSTEM",
 		"ARCHITECTURE",
 		"TECHNICAL_SPEC",
 		"USER_STORY",

@@ -19,6 +19,7 @@ import {
 	LayoutIcon,
 	LockIcon,
 	ServerIcon,
+	SwatchBookIcon,
 	UsersIcon,
 } from "lucide-react";
 import { useEffect } from "react";
@@ -79,6 +80,15 @@ const DOCUMENT_TYPES = [
 		icon: FileTextIcon,
 		color: "text-amber-600 dark:text-amber-400",
 		bgColor: "bg-amber-100 dark:bg-amber-900/20",
+	},
+	{
+		id: "DESIGN_SYSTEM",
+		title: "Design System (design.md)",
+		description:
+			"Tokens, components, accessibility, responsive behavior, and implementation guidance",
+		icon: SwatchBookIcon,
+		color: "text-fuchsia-600 dark:text-fuchsia-400",
+		bgColor: "bg-fuchsia-100 dark:bg-fuchsia-900/20",
 	},
 	{
 		id: "ARCHITECTURE",

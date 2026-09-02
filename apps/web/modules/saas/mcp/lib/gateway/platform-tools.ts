@@ -631,6 +631,7 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 						"PRD",
 						"PROPOSAL",
 						"BUSINESS_CASE",
+						"DESIGN_SYSTEM",
 						"ARCHITECTURE",
 						"TECHNICAL_SPEC",
 						"USER_STORY",
@@ -698,6 +699,7 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 						"PRD",
 						"PROPOSAL",
 						"BUSINESS_CASE",
+						"DESIGN_SYSTEM",
 						"ARCHITECTURE",
 						"TECHNICAL_SPEC",
 						"USER_STORY",
@@ -3239,6 +3241,7 @@ async function handleListDocuments(
 			| "GENERAL"
 			| "PRD"
 			| "PROPOSAL"
+			| "DESIGN_SYSTEM"
 			| "ARCHITECTURE"
 			| "TECHNICAL_SPEC"
 			| "USER_STORY"
@@ -3348,6 +3351,7 @@ async function handleCreateDocument(
 			| "GENERAL"
 			| "PRD"
 			| "PROPOSAL"
+			| "DESIGN_SYSTEM"
 			| "ARCHITECTURE"
 			| "TECHNICAL_SPEC"
 			| "USER_STORY"

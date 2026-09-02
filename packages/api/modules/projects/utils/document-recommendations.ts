@@ -7,6 +7,7 @@
 type ProjectDocumentType =
 	| "GENERAL"
 	| "BUSINESS_CASE"
+	| "DESIGN_SYSTEM"
 	| "PRD"
 	| "PROPOSAL"
 	| "ARCHITECTURE"
@@ -89,6 +90,23 @@ DO NOT include: Executive Summary, Product Vision, Timeline & Milestones, Append
 		reason: "Frames the decision and funding rationale before a PRD is warranted",
 		promptTemplate: (project) =>
 			`Create a decision-oriented business case for ${project.name}: state the decision ask, options considered, a recommendation, value hypothesis, risks, and next steps. Use only the available project context and tag confidence on non-trivial claims.`,
+	},
+	DESIGN_SYSTEM: {
+		title: "Design System (design.md)",
+		description:
+			"Tokens, components, accessibility, responsive behavior, and implementation guidance",
+		icon: "🎨",
+		triggers: [
+			"design system",
+			"design-system",
+			"design tokens",
+			"brand guidelines",
+			"component library",
+		],
+		priority: 2,
+		reason: "Establishes reusable visual and interaction rules for user-facing products",
+		promptTemplate: (project) =>
+			`Create a complete design.md for ${project.name} from the available project evidence. Preserve source references, use TBD for unsupported values, and surface conflicts in Design Gaps and Open Questions.`,
 	},
 	ARCHITECTURE: {
 		title: "Technical Architecture Document",

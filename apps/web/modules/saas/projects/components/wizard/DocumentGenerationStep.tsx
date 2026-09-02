@@ -31,6 +31,7 @@ import {
 	RefreshCwIcon,
 	SettingsIcon,
 	SparklesIcon,
+	SwatchBookIcon,
 	UsersIcon,
 } from "lucide-react";
 import Link from "next/link";
@@ -107,6 +108,7 @@ const DOCUMENT_TYPE_ICONS: Record<string, any> = {
 	PRD: FileTextIcon,
 	PROPOSAL: LayoutIcon,
 	BUSINESS_CASE: FileTextIcon,
+	DESIGN_SYSTEM: SwatchBookIcon,
 	ARCHITECTURE: CodeIcon,
 	TECHNICAL_SPEC: CodeIcon,
 	USER_STORY: UsersIcon,
@@ -126,6 +128,10 @@ const DOCUMENT_TYPE_COLORS: Record<string, { text: string; bg: string }> = {
 	BUSINESS_CASE: {
 		text: "text-amber-600 dark:text-amber-400",
 		bg: "bg-amber-100 dark:bg-amber-900/20",
+	},
+	DESIGN_SYSTEM: {
+		text: "text-fuchsia-600 dark:text-fuchsia-400",
+		bg: "bg-fuchsia-100 dark:bg-fuchsia-900/20",
 	},
 	ARCHITECTURE: {
 		text: "text-purple-600 dark:text-purple-400",

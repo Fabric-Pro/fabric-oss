@@ -16,6 +16,24 @@ describe("intra-phase ordering", () => {
 		expect(DOCUMENT_PHASES.GENERAL.order).toBeGreaterThan(
 			DOCUMENT_PHASES.PRD.order,
 		);
+		expect(DOCUMENT_PHASES.DESIGN_SYSTEM).toEqual({ phase: 1, order: 4 });
+		expect(DOCUMENT_PHASES.DESIGN_SYSTEM.order).toBeGreaterThan(
+			DOCUMENT_PHASES.GENERAL.order,
+		);
+	});
+
+	it("keeps DESIGN_SYSTEM in Phase 1 before dependent technical documents", () => {
+		const docs = [
+			{ id: "arch", type: "ARCHITECTURE" },
+			{ id: "design", type: "DESIGN_SYSTEM" },
+		];
+		const ordered = orderDocsByPhase(docs);
+		expect(ordered.get(1)?.map((document) => document.type)).toEqual([
+			"DESIGN_SYSTEM",
+		]);
+		expect(ordered.get(2)?.map((document) => document.type)).toEqual([
+			"ARCHITECTURE",
+		]);
 	});
 
 	it("orders a mixed Phase-1 batch BC -> Proposal -> PRD -> General", () => {

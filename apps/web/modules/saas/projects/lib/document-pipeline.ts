@@ -8,6 +8,7 @@ import {
 	PaletteIcon,
 	RocketIcon,
 	ShieldCheckIcon,
+	SwatchBookIcon,
 	WrenchIcon,
 	ZapIcon,
 } from "lucide-react";
@@ -58,6 +59,12 @@ const DOCUMENT_TYPE_META: Record<string, DocumentTypeMeta> = {
 	BUSINESS_CASE: {
 		label: "Business Case",
 		icon: BriefcaseIcon,
+		tileColor: "bg-highlight/10 border-highlight/20",
+		iconColor: "text-highlight",
+	},
+	DESIGN_SYSTEM: {
+		label: "Design System",
+		icon: SwatchBookIcon,
 		tileColor: "bg-highlight/10 border-highlight/20",
 		iconColor: "text-highlight",
 	},
@@ -148,6 +155,7 @@ export function getDocumentMeta(type: string): DocumentTypeMeta {
  */
 const PIPELINE_ORDER: string[] = [
 	"BUSINESS_CASE",
+	"DESIGN_SYSTEM",
 	"PRD",
 	"SRS",
 	"PROPOSAL",
