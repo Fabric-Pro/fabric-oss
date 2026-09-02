@@ -84,8 +84,15 @@ function readTokens(theme: "light" | "dark"): Map<string, string> {
 	const block = css.slice(start, end === -1 ? undefined : end);
 
 	const tokens = new Map<string, string>();
+	// Two shapes, because a token that is themeable at runtime declares its own
+	// default rather than a bare hex: `--primary-ink: var(--primary-ink-light,
+	// #9f2a3a)`. Reading only the bare form silently skipped every such token —
+	// which is how the SYSTEM tier's own ink escaped the guard written to cover
+	// it, leaving one measured tier and one merely asserted. The fallback is the
+	// value that ships whenever an organization has set no theme of its own, so
+	// it is the one worth measuring.
 	for (const [, name, value] of block.matchAll(
-		/^\s*--([\w-]+):\s*(#[0-9a-fA-F]{3,8})\s*;/gm,
+		/^\s*--([\w-]+):\s*(?:var\([^,)]+,\s*)?(#[0-9a-fA-F]{3,8})\s*\)?\s*;/gm,
 	)) {
 		if (name && value) tokens.set(name, value);
 	}
@@ -166,7 +173,7 @@ describe("design-token fill / foreground contrast", () => {
 	});
 });
 
-describe("ink tokens on the card surface", () => {
+describe("ink tokens on the neutral surfaces", () => {
 	/**
 	 * The `-foreground` guard above covers ink on its OWN fill, which is a
 	 * different question from ink on a neutral surface — and the gap let a real
@@ -174,24 +181,35 @@ describe("ink tokens on the card surface", () => {
 	 * (4.02:1 on the dark card) and `text-highlight` (3.14:1 on the light one),
 	 * both under AA, with nothing to catch it.
 	 *
-	 * An `-ink` token exists precisely to be read as text on `--card`, so that
-	 * pairing is checkable mechanically. Any new `--X-ink` is covered the moment
-	 * it is added.
+	 * An `-ink` token exists precisely to be read as text on a neutral surface,
+	 * so that pairing is checkable mechanically. Any new `--X-ink` is covered the
+	 * moment it is added.
+	 *
+	 * Both surfaces, not just `--card`: a page decides its own ground, and the
+	 * two disagree. The prompt grid renders its cards on `--background` with no
+	 * `bg-card` ancestor, and the governance page is a bare `div` — so a guard
+	 * that only knew about `--card` would have called a link on the page
+	 * background covered when nothing had measured it.
 	 */
 	for (const theme of ["light", "dark"] as const) {
 		const tokens = readTokens(theme);
-		const card = tokens.get("card");
-		for (const [name, value] of tokens) {
-			if (!name.endsWith("-ink") || !card) {
-				continue;
+		for (const surface of ["card", "background"] as const) {
+			const ground = tokens.get(surface);
+			for (const [name, value] of tokens) {
+				if (!name.endsWith("-ink") || !ground) {
+					continue;
+				}
+				it(`${theme}:--${name} clears AA on --${surface}`, () => {
+					const ratio = contrastRatio(
+						parseHex(value),
+						parseHex(ground),
+					);
+					expect(
+						ratio,
+						`--${name} ${value} on --${surface} ${ground} = ${ratio.toFixed(2)}:1`,
+					).toBeGreaterThanOrEqual(AA_NORMAL_TEXT);
+				});
 			}
-			it(`${theme}:--${name} clears AA on --card`, () => {
-				const ratio = contrastRatio(parseHex(value), parseHex(card));
-				expect(
-					ratio,
-					`--${name} ${value} on --card ${card} = ${ratio.toFixed(2)}:1`,
-				).toBeGreaterThanOrEqual(AA_NORMAL_TEXT);
-			});
 		}
 	}
 });
