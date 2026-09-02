@@ -1,0 +1,228 @@
+name: Scheduled release cut
+
+# Cuts the weekly release by merging the changesets Version PR ("chore:
+# release", branch changeset-release/master) every Monday afternoon, US
+# Eastern, so the production reconciler finds a published release in its
+# Monday-night deploy window. Nothing here builds, tags, or publishes: the
+# merge is the trigger, and release.yml / release-artifacts.yml /
+# release-bom.yml do the rest exactly as they do for a human merge.
+#
+# What replaces the human review of the Version PR is the weekly clock plus
+# green checks, deliberately and only for THIS pull request:
+# - Only the release App's own PR on exactly `changeset-release/master`, from
+#   this repository, is eligible. Any other PR is ignored, whatever it is
+#   called.
+# - The release branch itself must be closed to everyone but the App by a
+#   ruleset (creation, update, deletion, force-push), and the job verifies
+#   that rule is in force before it merges. Author and head checks only say
+#   who OPENED the PR; without the ref rule a same-repository writer could
+#   push to the branch afterwards and ride this merge past the review
+#   requirement.
+# - Every check run on the head commit must have completed without failure
+#   (a skipped check counts, a pending or failed one does not), no GitHub
+#   Actions check suite may still be pending, the head must be up to date
+#   with master, and the merge pins the exact head SHA that was verified.
+#   Branch protection still enforces the required checks underneath and is
+#   the authority on them; the App bypasses only the review requirement.
+# - The job checks out nothing and runs no product code. Every read runs on
+#   the workflow's own read-only token; the per-run App token, scoped to this
+#   repository with Contents and Pull requests write, is used for exactly two
+#   writes -- the refusal comment and the merge.
+# - A red or stale Version PR is not merged: the run fails visibly and
+#   leaves a comment on the PR saying why. No Version PR at all is a clean
+#   no-op — a week with nothing to release is fine.
+#
+# Timing: GitHub delivers this organisation's scheduled events in waves a few
+# hours apart, so the crons below are chances, not times. A scheduled run
+# proceeds only inside Monday 12:00–20:00 America/New_York; that eight-hour
+# window comfortably contains at least one wave, and a release cut by 20:00
+# is published well before the reconciler's 21:00 window opens. A manual
+# dispatch ignores the window and is the way to cut a release on any other
+# day.
+
+on:
+  schedule:
+    - cron: '0 16 * * 1' # Monday 12:00 EDT / 11:00 EST
+    - cron: '0 19 * * 1' # Monday 15:00 EDT / 14:00 EST
+  workflow_dispatch: {}
+
+# Read-only gates run on the workflow's own token. The App token minted below
+# is used for exactly two writes: the refusal comment and the merge.
+permissions:
+  contents: read
+  pull-requests: read
+  checks: read
+  statuses: read
+
+concurrency: scheduled-release-cut
+
+jobs:
+  cut:
+    name: Merge the Version PR
+    if: github.repository == 'Fabric-Pro/fabric-oss'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Apply the Monday-afternoon window to scheduled runs
+        id: window
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          if [[ "$EVENT_NAME" != "schedule" ]]; then
+            echo "manual dispatch: the weekly window does not apply"
+            echo "proceed=true" >>"$GITHUB_OUTPUT"
+            exit 0
+          fi
+          DOW=$(TZ=America/New_York date +%u)
+          HOUR=$(TZ=America/New_York date +%-H)
+          if [[ "$DOW" == 1 && "$HOUR" -ge 12 && "$HOUR" -lt 20 ]]; then
+            echo "inside the release-cut window (Monday 12:00–20:00 America/New_York)"
+            echo "proceed=true" >>"$GITHUB_OUTPUT"
+          else
+            echo "::notice::outside the release-cut window (Monday 12:00–20:00 America/New_York); nothing to do"
+            echo "proceed=false" >>"$GITHUB_OUTPUT"
+          fi
+
+      - name: Mint the release App token
+        id: app-token
+        if: steps.window.outputs.proceed == 'true'
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+        with:
+          app-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write
+          permission-pull-requests: write
+
+      - name: Merge the Version PR when every check is green
+        if: steps.window.outputs.proceed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          APP_TOKEN: ${{ steps.app-token.outputs.token }}
+          REPO: ${{ github.repository }}
+          OWNER: ${{ github.repository_owner }}
+          # The only author whose PR may be merged here. A repository variable
+          # like dco.yml's exemption; unset means nobody is eligible.
+          RELEASE_APP_LOGIN: ${{ vars.RELEASE_APP_LOGIN }}
+          # The only actor allowed to bypass the release-branch ruleset.
+          RELEASE_APP_ID: ${{ secrets.RELEASE_APP_ID }}
+          RELEASE_BRANCH: changeset-release/master
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          MARKER='<!-- scheduled-release-cut -->'
+
+          refuse() { # <pr number> <reason> — comment, then fail the run
+            local pr="$1" reason="$2" body existing
+            body="$MARKER"$'\n'"**The scheduled release cut did not merge this PR.** $reason"$'\n\n'"Run: $RUN_URL"
+            existing=$(gh api "repos/$REPO/issues/$pr/comments?per_page=100" --paginate \
+              | jq -rs --arg m "$MARKER" 'add // [] | map(select(.body | startswith($m))) | last | .id // empty')
+            if [[ -n "$existing" ]]; then
+              GH_TOKEN="$APP_TOKEN" gh api --method PATCH "repos/$REPO/issues/comments/$existing" -f body="$body" >/dev/null
+            else
+              GH_TOKEN="$APP_TOKEN" gh api --method POST "repos/$REPO/issues/$pr/comments" -f body="$body" >/dev/null
+            fi
+            echo "::error::$reason"
+            exit 1
+          }
+
+          [[ -n "$RELEASE_APP_LOGIN" ]] \
+            || { echo "::error::RELEASE_APP_LOGIN is unset; no author is eligible for an automated merge"; exit 1; }
+
+          gh api "repos/$REPO/pulls?state=open&base=master&head=$OWNER:$RELEASE_BRANCH&per_page=10" >prs.json
+          COUNT=$(jq 'length' prs.json)
+          if [[ "$COUNT" == 0 ]]; then
+            echo "::notice::no open Version PR on $RELEASE_BRANCH; nothing to release this week"
+            exit 0
+          fi
+          [[ "$COUNT" == 1 ]] \
+            || { echo "::error::expected at most one open PR from $RELEASE_BRANCH, found $COUNT"; exit 1; }
+
+          PR=$(jq -r '.[0].number' prs.json)
+          HEAD_SHA=$(jq -r '.[0].head.sha' prs.json)
+          AUTHOR=$(jq -r '.[0].user.login' prs.json)
+          HEAD_REPO=$(jq -r '.[0].head.repo.full_name' prs.json)
+          HEAD_REF=$(jq -r '.[0].head.ref' prs.json)
+          DRAFT=$(jq -r '.[0].draft' prs.json)
+          echo "Version PR #$PR at $HEAD_SHA by $AUTHOR"
+
+          # Eligibility is about identity, not the title: the App's own PR, on
+          # exactly the release branch, from this repository.
+          [[ "$AUTHOR" == "$RELEASE_APP_LOGIN" ]] \
+            || { echo "::error::PR #$PR was opened by $AUTHOR, not the release App; refusing to merge"; exit 1; }
+          [[ "$HEAD_REPO" == "$REPO" && "$HEAD_REF" == "$RELEASE_BRANCH" && "$DRAFT" == "false" ]] \
+            || { echo "::error::PR #$PR is not a ready pull request from $REPO:$RELEASE_BRANCH; refusing to merge"; exit 1; }
+
+          # The branch must be closed to everyone but the App. The checks
+          # above say who OPENED the PR; only a ref rule says who can push to
+          # it afterwards, and a same-repository writer pushing to an
+          # unprotected release branch would ride this merge past the review
+          # requirement. Fail closed until the ruleset is in force.
+          # The endpoint lists the ACTIVE rules in force on the branch, one
+          # object per rule, each naming the ruleset it comes from.
+          gh api "repos/$REPO/rules/branches/$RELEASE_BRANCH" >rules.json
+          RULES=$(jq -r '[.[].type] | sort | join(" ")' rules.json)
+          for RULE in creation update deletion non_fast_forward; do
+            grep -qw "$RULE" <<<"$RULES" \
+              || { echo "::error::$RELEASE_BRANCH is not protected against '$RULE' (effective rules: ${RULES:-none}); refusing to merge until a ruleset restricts the release branch to the release App"; exit 1; }
+          done
+          # A rule the wrong actor can bypass protects nothing: every ruleset
+          # supplying one of those rules must be active and list the release
+          # App as its ONLY bypass actor. A stricter org-level ruleset with a
+          # human bypass would fail this too -- on purpose; widen it here, in
+          # review, not by editing the ruleset.
+          [[ "$RELEASE_APP_ID" =~ ^[0-9]+$ ]] \
+            || { echo "::error::RELEASE_APP_ID is unset; cannot verify who may bypass the release-branch ruleset"; exit 1; }
+          for RULESET_ID in $(jq -r '[.[] | select(.type | IN("creation","update","deletion","non_fast_forward")) | .ruleset_id] | unique | .[]' rules.json); do
+            gh api "repos/$REPO/rulesets/$RULESET_ID" >ruleset.json
+            ENFORCEMENT=$(jq -r '.enforcement' ruleset.json)
+            OTHER_ACTORS=$(jq -r --argjson app "$RELEASE_APP_ID" \
+              '[.bypass_actors[]? | select(.actor_type != "Integration" or .actor_id != $app)] | length' ruleset.json)
+            [[ "$ENFORCEMENT" == active && "$OTHER_ACTORS" == 0 ]] \
+              || { echo "::error::ruleset $RULESET_ID on $RELEASE_BRANCH is '$ENFORCEMENT' with $OTHER_ACTORS bypass actor(s) other than the release App; refusing to merge"; exit 1; }
+          done
+
+          # Up to date with master: the merge would fail anyway (strict
+          # status checks), but a stale head also means changesets has not
+          # re-run for the newest master commit, so the release would be
+          # missing changes.
+          BEHIND=$(gh api "repos/$REPO/compare/master...$HEAD_SHA" --jq '.behind_by')
+          [[ "$BEHIND" == 0 ]] \
+            || refuse "$PR" "Its head \`$HEAD_SHA\` is $BEHIND commit(s) behind master. changesets refreshes the branch on the next master push; the next scheduled run will retry."
+
+          # Every check run on the head must be finished and not failed. Only
+          # skipped, neutral and success are acceptable conclusions; anything
+          # pending is not green yet. Legacy commit statuses are checked too.
+          gh api "repos/$REPO/commits/$HEAD_SHA/check-runs?per_page=100" --paginate \
+            | jq -s '[.[].check_runs[]]' >checks.json
+          NOT_GREEN=$(jq -r '
+            map(select(.status != "completed" or ((.conclusion // "") | IN("success","skipped","neutral") | not)))
+            | map(.name + " (" + .status + "/" + (.conclusion // "-") + ")") | join(", ")' checks.json)
+          TOTAL=$(jq 'length' checks.json)
+          [[ "$TOTAL" -gt 0 ]] \
+            || refuse "$PR" "No check runs were found on \`$HEAD_SHA\`; nothing verified it, so nothing merges."
+          [[ -z "$NOT_GREEN" ]] \
+            || refuse "$PR" "These checks on \`$HEAD_SHA\` are not green: $NOT_GREEN."
+          # A workflow whose suite is still queued has created no check runs
+          # yet, so the run-level view alone cannot see it. Nothing from
+          # GitHub Actions (App 15368) may still be pending on the head.
+          PENDING_SUITES=$(gh api "repos/$REPO/commits/$HEAD_SHA/check-suites?app_id=15368&per_page=100" --paginate \
+            | jq -rs '[.[].check_suites[] | select(.status != "completed")] | length')
+          [[ "$PENDING_SUITES" == 0 ]] \
+            || refuse "$PR" "$PENDING_SUITES GitHub Actions check suite(s) on \`$HEAD_SHA\` have not completed yet; the next scheduled run will retry."
+          gh api "repos/$REPO/commits/$HEAD_SHA/status" >status.json
+          STATUS_STATE=$(jq -r '.state' status.json)
+          STATUS_COUNT=$(jq -r '.total_count' status.json)
+          [[ "$STATUS_COUNT" == 0 || "$STATUS_STATE" == "success" ]] \
+            || refuse "$PR" "The combined commit status on \`$HEAD_SHA\` is \`$STATUS_STATE\`."
+
+          # Merge exactly what was verified: the API refuses if the head moved.
+          GH_TOKEN="$APP_TOKEN" gh api --method PUT "repos/$REPO/pulls/$PR/merge" \
+            -f merge_method=squash \
+            -f sha="$HEAD_SHA" \
+            -f commit_title="chore: release (#$PR)" \
+            -f commit_message="" >merge.json \
+            || refuse "$PR" "GitHub refused the merge (branch protection or a moved head). See the run log."
+          echo "Merged Version PR #$PR as $(jq -r '.sha' merge.json). release.yml now cuts the release from master."
