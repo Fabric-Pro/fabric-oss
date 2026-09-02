@@ -695,7 +695,78 @@ export async function DELETE(request: NextRequest): Promise<NextResponse> {
 
 // ─── GET Handler (Health Check / Server Info) ───────────────────────────────
 
-export async function GET(_request: NextRequest): Promise<NextResponse> {
+/**
+ * Whether an `Accept` header asks for a server-sent event stream.
+ *
+ * A real parse rather than a substring test, because the three ways a
+ * substring test goes wrong all matter here: media types are
+ * case-insensitive, so `Text/Event-Stream` must count; `text/event-stream;q=0`
+ * is a caller saying it will NOT take a stream and must not count; and an
+ * unrelated subtype that happens to contain the string must not count either.
+ * Only the exact media type, with a positive quality, selects the stream.
+ * Wildcards (star-slash-star, `text/*`) deliberately do not: a browser sends a
+ * wildcard with `q=0.8` on every navigation and is not asking for SSE.
+ */
+function acceptsEventStream(acceptHeader: string | null): boolean {
+	if (!acceptHeader) {
+		return false;
+	}
+	for (const range of acceptHeader.split(",")) {
+		const [mediaType, ...params] = range.trim().split(";");
+		if (mediaType.trim().toLowerCase() !== "text/event-stream") {
+			continue;
+		}
+		// Name and value are parsed separately, tolerating whitespace around the
+		// `=`, and the value must be a number in full: `Number("0junk")` is NaN
+		// where `parseFloat` would have read it as 0. An absent, empty or
+		// unparseable q counts as 1, per the documented rule above.
+		let quality = 1;
+		for (const param of params) {
+			const eq = param.indexOf("=");
+			if (eq === -1) {
+				continue;
+			}
+			if (param.slice(0, eq).trim().toLowerCase() !== "q") {
+				continue;
+			}
+			const value = param.slice(eq + 1).trim();
+			const parsed = value === "" ? Number.NaN : Number(value);
+			quality = Number.isNaN(parsed) ? 1 : parsed;
+			break;
+		}
+		if (quality > 0) {
+			return true;
+		}
+	}
+	return false;
+}
+
+export async function GET(request: NextRequest): Promise<NextResponse> {
+	// A Streamable HTTP client opens `GET` with `Accept: text/event-stream` to
+	// listen for server-initiated messages. This gateway has no such stream:
+	// every response is a discrete JSON-RPC reply to a POST. The spec says a
+	// server that offers no stream MUST answer that GET with 405, and official
+	// SDK clients treat 405 as "no standalone stream here" and carry on.
+	//
+	// Answering it with the info page below instead looked harmless and was
+	// not. A 200 with a JSON body reads to the client as a stream that closed
+	// the instant it opened, so it reconnects, and keeps reconnecting, about
+	// once a second for the life of the session. With a coding-agent client
+	// configured against this endpoint on every developer machine, that loop
+	// was the single largest source of requests to the whole deployment — a
+	// couple of hundred thousand function invocations a day, none of which
+	// ever authenticated or reached the database. The sibling `/mcp` route
+	// refuses the same GET for the same reason.
+	//
+	// Plain GETs without the SSE accept header keep the info page, so a
+	// browser or a health check sees what it always did.
+	if (acceptsEventStream(request.headers.get("accept"))) {
+		return new NextResponse(null, {
+			status: 405,
+			headers: { Allow: "POST, DELETE" },
+		});
+	}
+
 	return NextResponse.json({
 		name: GATEWAY_NAME,
 		version: GATEWAY_VERSION,
@@ -706,7 +777,7 @@ export async function GET(_request: NextRequest): Promise<NextResponse> {
 		endpoints: {
 			POST: "JSON-RPC requests (initialize, tools/list, tools/call)",
 			DELETE: "Terminate MCP session",
-			GET: "This server info page",
+			GET: "This server info page (405 for Accept: text/event-stream — no standalone stream is offered)",
 		},
 		documentation: "https://docs.fabric.dev/mcp-gateway",
 	});
