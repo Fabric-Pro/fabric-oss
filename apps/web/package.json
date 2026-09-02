@@ -73,7 +73,7 @@
 		"@scalar/hono-api-reference": "^0.9.23",
 		"@tanstack/react-query": "^5.90.6",
 		"@tanstack/react-table": "^8.21.3",
-		"@tiptap/core": "^3.14.0",
+		"@tiptap/core": "^3.30.4",
 		"@tiptap/extension-code-block-lowlight": "^3.14.0",
 		"@tiptap/extension-collaboration": "^3.14.0",
 		"@tiptap/extension-collaboration-caret": "^3.14.0",
