@@ -20,9 +20,13 @@ import { signInWithForm } from "../browser-driver";
  * navigations, and its locators fill or throw depending on whether the URL it is
  * currently on is the one carrying the form.
  */
-function makePage(options: { formAtUrl: string }) {
+function makePage(options: {
+	formAtUrl: string;
+	abortFirstAppNavigation?: boolean;
+}) {
 	const visited: string[] = [];
 	let current = "";
+	let abortedAppNavigation = false;
 
 	const field = (works: () => boolean) => ({
 		fill: vi.fn(async () => {
@@ -46,6 +50,14 @@ function makePage(options: { formAtUrl: string }) {
 		page: {
 			goto: vi.fn(async (url: string) => {
 				visited.push(url);
+				if (
+					options.abortFirstAppNavigation &&
+					url !== options.formAtUrl &&
+					!abortedAppNavigation
+				) {
+					abortedAppNavigation = true;
+					throw new Error(`page.goto: net::ERR_ABORTED at ${url}`);
+				}
 				current = url;
 			}),
 			getByLabel: () => field(onForm),
@@ -91,6 +103,24 @@ describe("signInWithForm", () => {
 		expect(result.ok).toBe(true);
 		// The case must start on the app, not on wherever the login form left us.
 		expect(visited).toEqual([LOGIN, APP]);
+	});
+
+	it("retries when the sign-in redirect aborts the first app navigation", async () => {
+		const { page, visited } = makePage({
+			formAtUrl: LOGIN,
+			abortFirstAppNavigation: true,
+		});
+
+		const result = await signInWithForm(
+			page,
+			APP,
+			"user@example.com",
+			"pw",
+			LOGIN,
+		);
+
+		expect(result.ok).toBe(true);
+		expect(visited).toEqual([LOGIN, APP, APP]);
 	});
 
 	it("treats a blank sign-in URL as unset rather than navigating to nothing", async () => {

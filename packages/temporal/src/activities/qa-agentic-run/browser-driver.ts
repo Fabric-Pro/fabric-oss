@@ -510,6 +510,47 @@ export async function fillSecret(
 	}
 }
 
+function isAbortedNavigation(error: unknown): boolean {
+	return (
+		error instanceof Error &&
+		(error.message.includes("net::ERR_ABORTED") ||
+			error.message.includes("Navigation interrupted by another one"))
+	);
+}
+
+async function openAppAfterFormSignIn(
+	page: Page,
+	baseUrl: string,
+): Promise<OperationOutcome> {
+	let lastError: unknown;
+	for (let attempt = 0; attempt < 2; attempt += 1) {
+		try {
+			await page.goto(baseUrl, { waitUntil: "domcontentloaded" });
+			return { ok: true, detail: "Opened the app after sign-in." };
+		} catch (error) {
+			lastError = error;
+			if (!isAbortedNavigation(error) || attempt === 1) {
+				break;
+			}
+			try {
+				await page.waitForLoadState("domcontentloaded", {
+					timeout: 5_000,
+				});
+			} catch {
+				// The competing navigation may itself be long-running. The retry
+				// below is still the authoritative attempt to open the app.
+			}
+		}
+	}
+
+	return {
+		ok: false,
+		detail: `Signed in, but could not then open ${baseUrl}: ${
+			lastError instanceof Error ? lastError.message : String(lastError)
+		}`,
+	};
+}
+
 /**
  * Sign in with a FORM credential, deterministically — no model involved.
  *
@@ -609,15 +650,9 @@ export async function signInWithForm(
 	// lived. Skipped when they are the same page — a second navigation there
 	// would throw away a redirect the app just made.
 	if (formUrl !== baseUrl) {
-		try {
-			await page.goto(baseUrl, { waitUntil: "domcontentloaded" });
-		} catch (err) {
-			return {
-				ok: false,
-				detail: `Signed in, but could not then open ${baseUrl}: ${
-					err instanceof Error ? err.message : String(err)
-				}`,
-			};
+		const openedApp = await openAppAfterFormSignIn(page, baseUrl);
+		if (!openedApp.ok) {
+			return openedApp;
 		}
 	}
 
