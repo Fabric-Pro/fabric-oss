@@ -39,16 +39,16 @@ describe("feature-flag availability ceiling", () => {
 	it("legacy env name still unlocks the gated tab", () => {
 		vi.stubEnv("NEXT_PUBLIC_FABRIC_FEATURE_CODE_UNDERSTANDING", "true");
 		expect(isProjectTabFeatureEnabled("atlas")).toBe(true);
-		// Unlocking the feature restores its DEFAULT layer (hidden optional);
-		// visibility still needs an admin override from there.
-		expect(isProjectTabVisibleToViewer("atlas", {}, {})).toBe(false);
+		// Unlocking the feature hands the tab to the admin layer, which shows
+		// it unless an admin has hidden it.
+		expect(isProjectTabVisibleToViewer("atlas", {}, {})).toBe(true);
 		expect(
 			isProjectTabVisibleToViewer(
 				"atlas",
-				{ overrides: { atlas: true } },
+				{ overrides: { atlas: false } },
 				{},
 			),
-		).toBe(true);
+		).toBe(false);
 	});
 
 	it("resolveAdminTabState omits feature-disabled tabs entirely", () => {
@@ -58,15 +58,18 @@ describe("feature-flag availability ceiling", () => {
 		});
 	});
 
-	it("flag on: gated tab behaves like any default-hidden optional", () => {
+	it("flag on: the gated tab obeys the ordinary admin layer", () => {
 		vi.stubEnv(ATLAS, "true");
-		expect(isProjectTabVisibleToViewer("atlas", {}, {})).toBe(false);
-		const resolved = resolveProjectTabs(
-			[{ id: "overview" }, { id: "atlas" }],
-			{
-				config: { overrides: { atlas: true } },
-			},
-		);
-		expect(resolved.map((t) => t.id)).toEqual(["overview", "atlas"]);
+		expect(isProjectTabVisibleToViewer("atlas", {}, {})).toBe(true);
+		expect(
+			resolveProjectTabs([{ id: "overview" }, { id: "atlas" }], {}).map(
+				(t) => t.id,
+			),
+		).toEqual(["overview", "atlas"]);
+		expect(
+			resolveProjectTabs([{ id: "overview" }, { id: "atlas" }], {
+				config: { overrides: { atlas: false } },
+			}).map((t) => t.id),
+		).toEqual(["overview"]);
 	});
 });

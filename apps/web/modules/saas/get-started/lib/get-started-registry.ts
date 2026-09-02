@@ -1,5 +1,6 @@
 import { config } from "@repo/config";
 import {
+	ActivityIcon,
 	BarChart3Icon,
 	BellIcon,
 	BotIcon,
@@ -363,7 +364,7 @@ const PROJECT_GROUP: GsGroup = {
 			label: "Agent Activity",
 			description:
 				"An audit feed of human-approved Fabric Agent actions across the project.",
-			icon: BotIcon,
+			icon: ActivityIcon,
 			projectTab: "agent-activity",
 			anchor: anchorForProjectTab("agent-activity"),
 			href: projectHref("agent-activity"),
@@ -1083,7 +1084,7 @@ export const GET_STARTED_PAGES: readonly GsPage[] = [
 	{
 		tab: "agent-activity",
 		label: "Agent Activity",
-		icon: BotIcon,
+		icon: ActivityIcon,
 		components: [
 			{
 				id: "agent-activity-header",

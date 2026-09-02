@@ -9,6 +9,7 @@ import { LockIcon } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import {
+	isProjectTabFeatureEnabled,
 	type ProjectTabMeta,
 	resolveAdminTabState,
 } from "../lib/project-tab-preferences";
@@ -65,16 +66,21 @@ export function ProjectTabVisibilitySettings({
 	const [draft, setDraft] = useState<Record<string, boolean>>(stored);
 	useEffect(() => setDraft(stored), [stored]);
 
+	const offered = useMemo(
+		() => tabs.filter((t) => isProjectTabFeatureEnabled(t.id)),
+		[tabs],
+	);
+
 	const effective = useMemo(
 		() =>
 			resolveAdminTabState(
-				tabs.map((t) => t.id),
+				offered.map((t) => t.id),
 				{ overrides: stored },
 			),
-		[tabs, stored],
+		[offered, stored],
 	);
 
-	const dirty = tabs.some((t) => {
+	const dirty = offered.some((t) => {
 		if ((PROJECT_TAB_PROTECTED_IDS as readonly string[]).includes(t.id)) {
 			return false;
 		}
@@ -95,7 +101,7 @@ export function ProjectTabVisibilitySettings({
 				</p>
 
 				<ul className="mt-4 divide-y rounded-xl border border-border/70">
-					{tabs.map((tab) => {
+					{offered.map((tab) => {
 						const Icon = tab.icon;
 						const locked = (
 							PROJECT_TAB_PROTECTED_IDS as readonly string[]

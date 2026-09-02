@@ -1,7 +1,6 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { PROJECT_TAB_DEFAULT_HIDDEN_IDS } from "@repo/database/src/project-tabs";
 import { describe, expect, it } from "vitest";
 import {
 	isProjectTabFeatureEnabled,
@@ -16,36 +15,25 @@ const repoRoot = path.resolve(here, "../../../../../..");
 const meta = (ids: string[]) => ids.map((id) => ({ id, label: id }));
 
 describe("resolveProjectTabs", () => {
-	// `decisions` stands in for "default-hidden optional" and `reports` for
-	// "default-visible" in these cases; both are plain layer-1/2 behaviour with
-	// no feature-flag involvement (the flag suite below covers layer 0).
-	const ALL = [
-		"overview",
-		"documents",
-		"decisions",
-		"reports",
-		"atlas",
-		"settings",
-	];
+	// None of these ids is feature-gated, so this suite stays pure layer-1/2
+	// behaviour (the flag suite below covers layer 0).
+	const ALL = ["overview", "documents", "decisions", "reports", "settings"];
 
-	it("hides the optional set by default and keeps everything else", () => {
+	it("shows every offered tab when nothing is configured", () => {
 		const resolved = resolveProjectTabs(meta(ALL), {});
-		expect(resolved.map((t) => t.id)).toEqual([
-			"overview",
-			"documents",
-			"reports",
-			"settings",
-		]);
-		for (const optional of ["atlas", "decisions"]) {
-			expect(PROJECT_TAB_DEFAULT_HIDDEN_IDS).toContain(optional);
-		}
+		expect(resolved.map((t) => t.id)).toEqual(ALL);
 	});
 
-	it("an admin override can force-show a default-hidden tab for everyone", () => {
-		const resolved = resolveProjectTabs(meta(ALL), {
+	it("an admin override can restore a tab an earlier admin hid", () => {
+		const hidden = resolveProjectTabs(meta(ALL), {
+			config: { overrides: { decisions: false } },
+		});
+		expect(hidden.map((t) => t.id)).not.toContain("decisions");
+
+		const restored = resolveProjectTabs(meta(ALL), {
 			config: { overrides: { decisions: true } },
 		});
-		expect(resolved.map((t) => t.id)).toContain("decisions");
+		expect(restored.map((t) => t.id)).toContain("decisions");
 	});
 
 	it("an admin override can hide a default-visible tab for everyone", () => {
@@ -86,7 +74,7 @@ describe("resolveProjectTabs", () => {
 		const ids = resolved.map((t) => t.id);
 		expect(ids.slice(0, 2)).toEqual(["reports", "overview"]);
 		// Everything else keeps its relative default sequence after them.
-		expect(ids.slice(2)).toEqual(["documents", "settings"]);
+		expect(ids.slice(2)).toEqual(["documents", "decisions", "settings"]);
 	});
 
 	it("drops order entries that are hidden, unknown, or duplicated", () => {
@@ -106,6 +94,7 @@ describe("resolveProjectTabs", () => {
 			"settings",
 			"documents",
 			"overview",
+			"decisions",
 		]);
 	});
 
@@ -114,12 +103,7 @@ describe("resolveProjectTabs", () => {
 			config: "garbage",
 			prefs: 42,
 		});
-		expect(resolved.map((t) => t.id)).toEqual([
-			"overview",
-			"documents",
-			"reports",
-			"settings",
-		]);
+		expect(resolved.map((t) => t.id)).toEqual(ALL);
 	});
 });
 
@@ -153,7 +137,7 @@ describe("future-tab coverage (new tabs need no wiring)", () => {
 		return ids;
 	}
 
-	it("resolves every live tab (visible, or intentionally default-hidden)", () => {
+	it("resolves every live tab this deployment offers", () => {
 		const live = liveProjectTabIds();
 		expect(live.length).toBeGreaterThanOrEqual(15); // extractor self-check
 
@@ -162,7 +146,6 @@ describe("future-tab coverage (new tabs need no wiring)", () => {
 		// env leaves them off, which is exactly their intended default state.
 		const accountedFor = new Set([
 			...noConfig,
-			...(PROJECT_TAB_DEFAULT_HIDDEN_IDS as readonly string[]),
 			...live.filter((id) => !isProjectTabFeatureEnabled(id)),
 		]);
 		for (const id of live) {
@@ -197,7 +180,7 @@ describe("resolveAdminTabState", () => {
 		expect(state.settings).toBe(true);
 	});
 
-	it("reflects stored overrides over the default-hidden set", () => {
+	it("reflects stored overrides in both directions", () => {
 		const state = resolveAdminTabState(IDS, {
 			overrides: { decisions: true, documents: false },
 		});
@@ -205,10 +188,13 @@ describe("resolveAdminTabState", () => {
 		expect(state.documents).toBe(false);
 	});
 
-	it("falls back to the default-hidden set without overrides", () => {
+	it("marks every offered tab visible without overrides", () => {
 		const state = resolveAdminTabState(IDS, null);
-		expect(state.overview).toBe(true);
-		expect(state.documents).toBe(true);
-		expect(state.decisions).toBe(false);
+		expect(state).toEqual({
+			overview: true,
+			documents: true,
+			decisions: true,
+			settings: true,
+		});
 	});
 });

@@ -25,6 +25,7 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import {
+	isProjectTabFeatureEnabled,
 	type ProjectTabMeta,
 	resolveAdminTabState,
 } from "../lib/project-tab-preferences";
@@ -152,11 +153,14 @@ export function CustomizeProjectTabsDialog({
 	const metaById = useMemo(() => new Map(tabs.map((t) => [t.id, t])), [tabs]);
 	const visibleRows = sequence.filter((id) => !hidden.has(id));
 	const hiddenRows = sequence.filter((id) => hidden.has(id));
-	// Everything the admin turned off project-wide — shown read-only so the
-	// dialog explains why a tab someone remembers isn't offered.
+	// Everything an admin turned off project-wide — shown read-only so the
+	// dialog explains why a tab someone remembers isn't offered, and where it
+	// can be turned back on. A tab this deployment does not offer is NOT in
+	// here: `resolveAdminTabState` leaves it out entirely, and listing it
+	// would promise an admin toggle that cannot exist.
 	const unavailableRows = tabs
 		.map((t) => t.id)
-		.filter((id) => !adminState[id]);
+		.filter((id) => isProjectTabFeatureEnabled(id) && !adminState[id]);
 
 	const renderRow = (
 		id: string,
@@ -295,6 +299,10 @@ export function CustomizeProjectTabsDialog({
 						<section>
 							<p className="mb-1 px-2 text-[10.5px] font-medium uppercase tracking-[0.12em] text-muted-foreground">
 								Unavailable in this project
+							</p>
+							<p className="mb-1 px-2 text-[11px] text-muted-foreground">
+								A project admin can turn these back on in
+								Settings → General → Tab visibility.
 							</p>
 							<ul>
 								{unavailableRows.map((id) =>
