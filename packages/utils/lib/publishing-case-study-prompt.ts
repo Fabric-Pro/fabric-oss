@@ -23,60 +23,24 @@ export const PUBLISHING_CASE_STUDY_AGENT_KEY = "publishing_topic_case_study";
 // Untrusted-data delimiters
 // =============================================================================
 //
-// The marker and its escape live together on purpose. A delimiter defined in
-// one file and neutralized in another is a fence whose gate is somewhere else:
-// change the marker here and the escape below still guards the old token, with
-// nothing failing. Anything that renders a value INTO the template must put it
+// DEFINED IN `publishing-source-data-markers.ts` and re-exported here.
+//
+// The marker and its escape live together on purpose: a delimiter defined in
+// one file and neutralized in another is a fence whose gate is somewhere else.
+// Phase 2C slice 2 added a SECOND fenced prompt (Stakeholder Email), which is
+// the same defect one level up — two prompts each with their own pair of
+// constants means changing the marker in one leaves the other's escape guarding
+// a token that prompt no longer writes, with nothing failing. So the pair moved
+// to a leaf module both import, and this re-export keeps every 2C-1 importer
+// (the activity, its fence tests, this module's own test) working unchanged.
+//
+// Anything that renders a value INTO the template below must still put it
 // through `neutralizeSourceDataMarkers` first.
-
-/**
- * The opener every source block starts with. Each one carries its own label
- * after the colon, so this is a prefix rather than a whole marker.
- */
-export const SOURCE_DATA_OPEN_PREFIX = "<<<SOURCE DATA:";
-
-/** The one closer. Every block ends with exactly this. */
-export const SOURCE_DATA_CLOSE_MARKER = "<<<END SOURCE DATA>>>";
-
-/**
- * Text shaped like one of the two markers: a run of three or more angle
- * brackets sitting against the words "SOURCE DATA", in either arrangement.
- *
- * Deliberately narrow. Neutralizing every `<<<` and `>>>` would mangle content
- * we are given all the time — a Python doctest (`>>> import os`), a shell
- * here-string (`cat <<< "x"`), a pasted merge conflict (`<<<<<<< HEAD`) — and a
- * fence that visibly corrupts ordinary prose is one an org edits away. Neither
- * marker form can exist without the literal words next to the angles, so
- * matching on that pair is both sufficient and cheap.
- */
-const MARKER_SHAPED_TEXT =
-	/<{3,}\s*(?:end\s+)?source\s+data[^\n]*?>{3,}|<{3,}\s*(?:end\s+)?source\s+data|source\s+data[^\n]*?>{3,}/gi;
-
-/** Break an angle run so it can no longer read as a delimiter: `<<<` → `< < <`. */
-function spaceOutAngleRuns(text: string): string {
-	return text.replace(/<{3,}|>{3,}/g, (run) => run.split("").join(" "));
-}
-
-/**
- * Make an untrusted value safe to interpolate between the markers.
- *
- * The fence below is worth nothing without this. A pull request description, a
- * meeting transcript or a project document that contains the literal
- * `<<<END SOURCE DATA>>>` closes its own block early, and every line after it
- * re-enters the prompt as top-level text — which is exactly the instruction
- * channel the fence exists to deny. Nothing about that failure is visible: the
- * rendered prompt still looks well-formed, and the draft that comes back reads
- * like any other.
- *
- * NEUTRALIZE, never reject. A legitimate document that happens to quote the
- * token — a design note about this very prompt, say — must still generate. It
- * just cannot break out: spacing the angle run apart leaves every character
- * readable while destroying the delimiter, so the model still sees the sentence
- * and still sees it as source data.
- */
-export function neutralizeSourceDataMarkers(value: string): string {
-	return value.replace(MARKER_SHAPED_TEXT, spaceOutAngleRuns);
-}
+export {
+	neutralizeSourceDataMarkers,
+	SOURCE_DATA_CLOSE_MARKER,
+	SOURCE_DATA_OPEN_PREFIX,
+} from "./publishing-source-data-markers";
 
 /**
  * The default Case Study prompt, as an org may edit it.

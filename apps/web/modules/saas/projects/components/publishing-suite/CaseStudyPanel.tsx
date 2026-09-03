@@ -164,9 +164,18 @@ function readCaseStudyDocument(content: unknown): CaseStudyDocument | null {
 		return null;
 	}
 
+	// Trimmed and emptied out, not merely type-checked. A whitespace-only entry
+	// survives `typeof v === "string"` and then renders as a bullet with nothing
+	// in it, and on the export path as a caveat line naming no caveat. The
+	// schema rejects such an entry at write time now, but this reader also sees
+	// rows written before it did, and `audience` below has always done this --
+	// the lists simply were not brought along.
 	const strings = (value: unknown): string[] =>
 		Array.isArray(value)
-			? value.filter((v): v is string => typeof v === "string")
+			? value
+					.filter((v): v is string => typeof v === "string")
+					.map((v) => v.trim())
+					.filter((v) => v.length > 0)
 			: [];
 
 	const generation =
@@ -179,8 +188,8 @@ function readCaseStudyDocument(content: unknown): CaseStudyDocument | null {
 			: {};
 
 	return {
-		title: raw.title,
-		body: raw.body,
+		title: raw.title.trim(),
+		body: raw.body.trim(),
 		customerIdentity: CUSTOMER_IDENTITIES.includes(
 			raw.customerIdentity as CustomerIdentity,
 		)
@@ -195,7 +204,10 @@ function readCaseStudyDocument(content: unknown): CaseStudyDocument | null {
 		categories: strings(raw.categories),
 		keywords: strings(raw.keywords),
 		inputsNeeded: strings(raw.inputsNeeded),
-		safetyNote: typeof raw.safetyNote === "string" ? raw.safetyNote : null,
+		safetyNote:
+			typeof raw.safetyNote === "string" && raw.safetyNote.trim()
+				? raw.safetyNote.trim()
+				: null,
 		// Compared against the SHARED vocabulary, not against a literal spelled
 		// again here. The writer of these values is a Temporal activity in
 		// another package; an unrecognised reason reads as "not clamped", so a

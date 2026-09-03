@@ -397,6 +397,7 @@ export * from "./publishing-blog-post";
 export * from "./publishing-case-study";
 export * from "./publishing-planning";
 export * from "./publishing-short-post";
+export * from "./publishing-stakeholder-email";
 // Deep Researcher activities (parallel sub-agent research workflow)
 export * from "./deep-researcher";
 // Deep Researcher activities (parallel sub-agent research coordination)

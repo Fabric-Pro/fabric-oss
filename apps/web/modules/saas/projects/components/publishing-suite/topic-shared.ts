@@ -68,17 +68,25 @@ export const POST_TYPE_LABELS: ReadonlyArray<{
 /**
  * The content types with a generation panel of their own.
  *
- * Phase 2B activated Tweet and Blog Post; 2C-1 adds Case Study. Stakeholder
- * Email is the one that remains — its tab stays disabled and still reads
- * "Coming soon", because 2A's FR50 holds for every type that cannot yet be
- * generated, and only the types with a working panel are exempt from it.
+ * Phase 2B activated Tweet and Blog Post; 2C-1 added Case Study and 2C-2 adds
+ * Stakeholder Email, so the set is now every member of `POST_TYPE_LABELS` and
+ * no tab reads "Coming soon" any more. 2A's FR50 — a generation tab a user can
+ * activate is a promise the phase has to keep — is satisfied for all four
+ * rather than waived.
  *
- * Membership here is what makes a tab selectable AND what makes `GenerationTabs`
- * mount a `TabsContent` for it, so adding a type without adding its panel would
- * render an empty tab rather than a coming-soon one.
+ * The set stays rather than collapsing into "all of them". Membership here is
+ * what makes a tab selectable AND what makes `GenerationTabs` mount a
+ * `TabsContent` for it, so a FIFTH post type added to the Prisma enum must
+ * arrive disabled until it has a panel — deriving this from `POST_TYPE_LABELS`
+ * would instead render it as an empty tab the moment the enum grew.
  */
 export const GENERATION_ACTIVE_POST_TYPES: ReadonlySet<PostType> =
-	new Set<PostType>(["TWEET", "BLOG_POST", "CASE_STUDY"]);
+	new Set<PostType>([
+		"TWEET",
+		"BLOG_POST",
+		"CASE_STUDY",
+		"STAKEHOLDER_EMAIL",
+	]);
 
 export type WhySuggested = NonNullable<PublishingTopic["whySuggested"]>;
 

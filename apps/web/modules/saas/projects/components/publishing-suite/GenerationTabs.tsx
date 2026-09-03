@@ -18,6 +18,7 @@ import {
 } from "./generation-tab-state";
 import type { PlanningAnalysisDocument } from "./planning-analysis-content";
 import { ShortPostPanel } from "./ShortPostPanel";
+import { StakeholderEmailPanel } from "./StakeholderEmailPanel";
 import type { TopicDecisionThread } from "./TopicQuestionsPanel";
 import {
 	GENERATION_ACTIVE_POST_TYPES,
@@ -97,9 +98,16 @@ export interface TopicWorkingDraftState {
  * 2C-1 (Fizzy #1854) activates Case Study with a panel of its own, for the same
  * reason the other two have theirs: it carries safety fields no other type has
  * — scaffold status, customer identity, results basis, two asset lists — and a
- * shared panel would have to hide them behind a type check anyway. Only
- * Stakeholder Email is still disabled and still reads "Coming soon"; 2A's FR50
- * holds for it, and the three types with a working panel are exempt from it.
+ * shared panel would have to hide them behind a type check anyway. 2C-2
+ * activates Stakeholder Email on the same argument: its safety fields are
+ * release status and audience, which no other type has and which no other
+ * panel could sensibly render.
+ *
+ * With that, every content type has a panel and NO tab reads "Coming soon" —
+ * 2A's FR50 is satisfied for all four rather than waived for one. The
+ * coming-soon branch below stays: `GENERATION_ACTIVE_POST_TYPES` is what makes
+ * a tab selectable, and a fifth post type added to the Prisma enum must arrive
+ * disabled until it has a panel rather than rendering an empty tab.
  *
  * The unresolved-question list is computed PER PANEL rather than once for the
  * strip, and that is a 2C requirement rather than a tidy-up. See
@@ -372,14 +380,19 @@ function GenerationPanel({
 	//
 	// Keyed on this panel's own `postType` via `restrictsPostType`, NOT computed
 	// once for the whole strip. `EXTRA_RESTRICTING_KINDS_BY_POST_TYPE` adds three
-	// kinds for CASE_STUDY that no other type restricts (`CLAIM_STRENGTH`,
-	// `AUDIENCE_SCOPE`, `CODEBASE_DETAIL`), so a hoisted post-type-agnostic list
-	// would leave the Case Study tab wearing an amber "Needs confirmation" badge
-	// for an open claim-strength question while this list named nothing — a
-	// warning with no stated cause, and the same page-promises-one-thing /
+	// kinds for CASE_STUDY that the 2B types do not restrict (`CLAIM_STRENGTH`,
+	// `AUDIENCE_SCOPE`, `CODEBASE_DETAIL`) and two for STAKEHOLDER_EMAIL
+	// (`AUDIENCE_SCOPE`, `CLAIM_STRENGTH` — not `CODEBASE_DETAIL`, which an
+	// email to a sponsor does not run), so a hoisted post-type-agnostic list
+	// would leave those tabs wearing an amber "Needs confirmation" badge for an
+	// open claim-strength question while this list named nothing — a warning
+	// with no stated cause, and the same page-promises-one-thing /
 	// generator-does-another divergence `publishing-restrictions.ts` exists to
-	// prevent. Tweet and Blog Post are unchanged by the move: their extra set is
-	// empty, so `restrictsPostType` reduces to `isRestrictingThread` for them.
+	// prevent. It also has to be per-panel rather than per-phase: the two 2C
+	// types have DIFFERENT extra sets, so one list shared between them would be
+	// wrong for whichever it was not computed for. Tweet and Blog Post are
+	// unchanged by the move: their extra set is empty, so `restrictsPostType`
+	// reduces to `isRestrictingThread` for them.
 	//
 	// Two further reasons for the SHAPE of these lists, both found rather than
 	// foreseen. First, an open question about authorship does not change what a
@@ -514,6 +527,15 @@ function GenerationPanel({
 				/>
 			) : postType === "CASE_STUDY" ? (
 				<CaseStudyPanel
+					projectId={projectId}
+					organizationId={organizationId}
+					topicId={topicId}
+					draft={draft}
+					working={working}
+					canEdit={canEdit}
+				/>
+			) : postType === "STAKEHOLDER_EMAIL" ? (
+				<StakeholderEmailPanel
 					projectId={projectId}
 					organizationId={organizationId}
 					topicId={topicId}
