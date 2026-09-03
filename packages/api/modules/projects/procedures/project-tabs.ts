@@ -8,6 +8,7 @@ import {
 	type ProjectTabPrefs,
 	projectTabConfigSchema,
 	projectTabPrefsSchema,
+	sanitizeProjectTabPrefs,
 } from "@repo/database";
 import { hasPermission } from "@repo/permissions";
 import { z } from "zod";
@@ -267,6 +268,9 @@ export const setProjectTabPreferencesProcedure = tenantProtectedProcedure
 					"Tab preferences are unavailable until the Prisma client is regenerated.",
 			});
 		}
+		// The dialog already refuses both shapes this drops; a direct PATCH
+		// does not, and the column outlives whichever client wrote it.
+		const prefs = sanitizeProjectTabPrefs(input.prefs);
 		const preference = await delegate.upsert({
 			where: {
 				projectId_userId: {
@@ -278,11 +282,11 @@ export const setProjectTabPreferencesProcedure = tenantProtectedProcedure
 				projectId: input.projectId,
 				userId: context.user.id,
 				organizationId: project.organizationId,
-				projectTabPrefs: input.prefs,
+				projectTabPrefs: prefs,
 			},
 			update: {
 				organizationId: project.organizationId,
-				projectTabPrefs: input.prefs,
+				projectTabPrefs: prefs,
 			},
 			select: { projectTabPrefs: true },
 		});

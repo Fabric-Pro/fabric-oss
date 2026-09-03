@@ -13,6 +13,7 @@ import { CustomizeProjectTabsDialog } from "@saas/projects/components/CustomizeP
 import { ProjectReadinessPanel } from "@saas/projects/components/readiness/ProjectReadinessPanel";
 import { useRecordProjectVisit } from "@saas/projects/hooks/use-record-project-visit";
 import {
+	resolveProjectTabPaint,
 	resolveProjectTabs,
 	useProjectTabCustomization,
 	useProjectTabGates,
@@ -1096,6 +1097,10 @@ export function ProjectDetails({ projectId, organizationSlug }: Props) {
 										{visibleTabs.map((tab) => (
 											<ProjectTabButton
 												key={tab.id}
+												{...resolveProjectTabPaint(
+													tab.id,
+													tabCustomization.prefs,
+												)}
 												label={
 													tab.id === "atlas"
 														? _t(

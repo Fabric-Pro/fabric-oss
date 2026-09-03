@@ -3,6 +3,7 @@ import {
 	normalizeProjectTabConfig,
 	normalizeProjectTabPrefs,
 	type ProjectTabConfig,
+	type ProjectTabDisplay,
 	type ProjectTabPrefs,
 } from "@repo/database/src/project-tabs";
 import { useFeatureFlag } from "@saas/shared/components/FeatureFlagProvider";
@@ -165,6 +166,31 @@ export function isProjectTabVisibleToViewer(
 	const overrides = normalizeProjectTabConfig(config)?.overrides ?? {};
 	const hidden = new Set(normalizeProjectTabPrefs(prefs)?.hidden ?? []);
 	return (overrides[tabId] ?? true) && !hidden.has(tabId);
+}
+
+/** What a tab paints for this viewer: its icon, its title, or both. */
+export type ProjectTabPaint = { showIcon: boolean; showTitle: boolean };
+
+/**
+ * Layer 3 — presentation. Narrower than the layers above it: it never decides
+ * whether a tab appears, only what a tab that already survived them paints.
+ * A viewer who wants a tab gone puts it in `hidden`, which is why "neither"
+ * has no representation here and cannot be stored.
+ *
+ * Reads the RAW Json payload like its siblings, so a malformed document
+ * degrades to "both", never to a bar of blank buttons.
+ */
+export function resolveProjectTabPaint(
+	tabId: string,
+	prefs?: unknown,
+): ProjectTabPaint {
+	const display = normalizeProjectTabPrefs(prefs)?.display?.[tabId] as
+		| ProjectTabDisplay
+		| undefined;
+	return {
+		showIcon: display !== "title",
+		showTitle: display !== "icon",
+	};
 }
 
 /**

@@ -1070,6 +1070,35 @@ pnpm --filter web e2e                 # Playwright tests
 
 `pnpm knip` must exit 0 on every PR: unused files, unused/unlisted dependencies, unresolved imports, unused exports/types, and duplicate exports all fail the required `Knip` check. Fix findings at the source (delete dead code, declare the dependency) rather than adding `knip.json` ignores; knip's *configuration hints* are informational and some are known-wrong — see `CLAUDE.md` § "Knip Is a Required CI Check" before acting on one or editing `knip.json`.
 
+## Landing a PR: the OSS relay
+
+Never run `gh pr merge` here; a ruleset blocks it. PRs land by relay and close as `relayed`.
+
+To land a PR, in this order:
+
+1. `HEAD=$(gh pr view <n> --json headRefOid --jq .headRefOid)`
+2. `gh api -X POST repos/Fabric-Pro/fabric-dev/issues/<n>/comments -f body="/relay $HEAD"`
+3. `gh api -X POST repos/Fabric-Pro/fabric-dev/issues/<n>/labels -f 'labels[]=ready-for-relay'`
+
+Do this as soon as the PR is ready; do not wait for checks. The relay waits by itself for the six required checks (type-check, unit-tests, Biome, changeset, DCO, security) on that head, so authorizing early costs nothing, and a red check never wastes a relay attempt.
+
+After any push, repeat steps 1 and 2 with the new head. Never edit a `/relay` comment; an edited one no longer authorizes.
+
+Done means: the PR is closed with the `relayed` label and a comment naming the public PR and squash SHA. Do not poll more often than every few minutes.
+
+If a `fabric-relay[bot]` comment says the relay refused the change: read its reasons. A failed required check means fix, push, and repeat steps 1 and 2. A labeled PR that gets no relay comment at all after its checks finish is missing step 2 for the current head; the relay posts nothing for that, it just waits for the comment. Do not rebase for a stale base; the relay transplants onto current master itself. Never use `gh pr update-branch`; if the relay reports a conflict, rebase or cherry-pick onto current master and force-push so every commit is authored and committed by you, then repeat steps 1 and 2.
+
+An open, labeled PR with no relay comment is usually waiting on checks or on a transient retry; leave it alone. A failed attempt closes its own public PR; nothing to clean up.
+
+**On Git Bash (Windows), step 2 needs care.** MSYS path conversion rewrites a leading `/relay` into `C:/Program Files/Git/relay`, and the mangled comment authorizes nothing while looking like it worked. Write the body as JSON and post it with `--input`, then read the stored comment back and confirm it reads exactly `/relay <40-char sha>`:
+
+```bash
+gh api -X POST repos/Fabric-Pro/fabric-dev/issues/<n>/comments --input relay.json
+gh api repos/Fabric-Pro/fabric-dev/issues/<n>/comments --jq '.[-1].body'
+```
+
+Only the publication paths are allowed through. A change touching `.claude/**` is refused with "changed file N is outside the publication path allowlist" — internal working material such as test checklists belongs on the main checkout, not in the branch you relay.
+
 ## Changesets (required on most PRs)
 
 Every PR that touches code needs a changeset file or the `skip-changeset` label, or the `changeset-check` CI job will fail.

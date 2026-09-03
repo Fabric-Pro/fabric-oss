@@ -4,6 +4,7 @@
 import {
 	isProtectedProjectTab,
 	type ProjectTabConfig,
+	type ProjectTabDisplay,
 	type ProjectTabPrefs,
 } from "@repo/database/src/project-tabs";
 import { Button } from "@ui/components/button";
@@ -16,14 +17,8 @@ import {
 	DialogTitle,
 } from "@ui/components/dialog";
 import { cn } from "@ui/lib";
-import {
-	ChevronDownIcon,
-	ChevronUpIcon,
-	EyeIcon,
-	EyeOffIcon,
-	LockIcon,
-} from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { ChevronDownIcon, ChevronUpIcon, LockIcon } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
 	isProjectTabFeatureEnabled,
 	type ProjectTabMeta,
@@ -38,22 +33,32 @@ type Props = {
 	config: ProjectTabConfig | null;
 	prefs: ProjectTabPrefs | null;
 	/**
-	 * Persists `{ hidden, order }`. The dialog stays open until the owner
-	 * closes it on success, so a failed save never throws the draft away.
+	 * Persists `{ hidden, order, display }`. The dialog stays open until the
+	 * owner closes it on success, so a failed save never throws the draft away.
 	 */
 	onSave: (prefs: ProjectTabPrefs) => void;
 	saving: boolean;
 };
 
+/** What one tab paints. Both false is how this dialog spells "hidden". */
+type Paint = { icon: boolean; title: boolean };
+
+const BOTH: Paint = { icon: true, title: true };
+
 /**
- * Per-user "Customize tabs" dialog (Fizzy card #1837): hide/show tabs within
- * the set the project admin allows, and reorder them. Deliberately NOT
- * drag-on-the-bar — the tab bar already uses mouse drag to scroll, and an
- * explicit up/down control is keyboard-accessible by construction (FR3's
- * "equivalent accessible interaction").
+ * Per-user "Customize tabs" dialog (Fizzy card #1837).
  *
- * Edits are drafted locally and persisted together on "Done", so a failed
- * save leaves both visibility and ordering untouched.
+ * Each tab carries two toggles, Icon and Title. Both on is the default and
+ * needs nothing stored. Turning one off narrows how that tab paints; turning
+ * both off is how the viewer hides it, which is why there is no separate hide
+ * control — one state, one way to reach it.
+ *
+ * Reordering uses explicit up/down buttons rather than drag: the tab bar
+ * already uses mouse drag to scroll, and up/down is keyboard-accessible by
+ * construction.
+ *
+ * Edits draft locally and persist together on "Done", so a failed save leaves
+ * visibility, ordering and paint untouched.
  */
 export function CustomizeProjectTabsDialog({
 	open,
@@ -80,19 +85,17 @@ export function CustomizeProjectTabsDialog({
 		[tabs, adminState],
 	);
 
-	// Draft state: the full visual sequence of admin-visible tab ids, plus the
-	// personal hidden set. Tabs stay in the sequence while hidden so showing
-	// them again restores their previous position. `saved` mirrors what the
-	// draft was seeded FROM — dirty is measured against IT, not against factory
-	// defaults, so Reset stays persistable when saved customizations exist
-	// (Reset makes the draft equal the defaults, which must still count as a
-	// change worth saving).
+	// Draft state: the visual sequence of admin-visible tab ids, plus what each
+	// paints. Hidden tabs stay in the sequence so turning a toggle back on
+	// restores their position. `saved` mirrors what the draft was seeded FROM,
+	// so dirty is measured against IT rather than against factory defaults —
+	// that keeps Reset persistable when saved customizations exist.
 	const [sequence, setSequence] = useState<string[]>(defaultSequence);
-	const [hidden, setHidden] = useState<Set<string>>(new Set());
+	const [paint, setPaint] = useState<Record<string, Paint>>({});
 	const [saved, setSaved] = useState<{
 		sequence: string[];
-		hidden: Set<string>;
-	}>({ sequence: defaultSequence, hidden: new Set() });
+		paint: Record<string, Paint>;
+	}>({ sequence: defaultSequence, paint: {} });
 
 	useEffect(() => {
 		if (!open) {
@@ -108,25 +111,46 @@ export function CustomizeProjectTabsDialog({
 			...uniqueListed,
 			...defaultSequence.filter((id) => !uniqueListed.includes(id)),
 		];
-		const seededHidden = new Set(
-			(prefs?.hidden ?? []).filter((id) => defaultSequence.includes(id)),
-		);
+		const seededPaint: Record<string, Paint> = {};
+		for (const [id, mode] of Object.entries(prefs?.display ?? {})) {
+			if (defaultSequence.includes(id)) {
+				seededPaint[id] = {
+					icon: mode !== "title",
+					title: mode !== "icon",
+				};
+			}
+		}
+		// `hidden` outranks `display`: it is the list every other surface reads
+		// (deep-link fallback, Get Started), so a tab in it is both-off here
+		// whatever a stale display entry says.
+		for (const id of prefs?.hidden ?? []) {
+			if (defaultSequence.includes(id)) {
+				seededPaint[id] = { icon: false, title: false };
+			}
+		}
 		setSequence(seededSequence);
-		setHidden(seededHidden);
-		setSaved({ sequence: seededSequence, hidden: seededHidden });
+		setPaint(seededPaint);
+		setSaved({ sequence: seededSequence, paint: seededPaint });
 	}, [open, prefs, defaultSequence]);
 
-	const sameSet = (a: Set<string>, b: Set<string>) =>
-		a.size === b.size && [...a].every((id) => b.has(id));
-	const dirty =
-		sequence.join(" ") !== saved.sequence.join(" ") ||
-		!sameSet(hidden, saved.hidden);
+	const paintOf = (map: Record<string, Paint>, id: string): Paint =>
+		map[id] ?? BOTH;
+	const serialize = (seq: string[], map: Record<string, Paint>) =>
+		seq
+			.map((id) => {
+				const p = paintOf(map, id);
+				return `${id}:${p.icon ? 1 : 0}${p.title ? 1 : 0}`;
+			})
+			.join(" ");
+
+	const draftKey = serialize(sequence, paint);
+	const dirty = draftKey !== serialize(saved.sequence, saved.paint);
 	// Reset must also be reachable on a pristine open whenever the SAVED state
 	// differs from factory defaults — otherwise "put everything back" is
 	// impossible without first making a throwaway edit.
 	const savedDiffersFromDefaults =
-		saved.sequence.join(" ") !== defaultSequence.join(" ") ||
-		saved.hidden.size > 0;
+		serialize(saved.sequence, saved.paint) !==
+		serialize(defaultSequence, {});
 
 	const move = (id: string, direction: -1 | 1) => {
 		setSequence((prev) => {
@@ -142,20 +166,42 @@ export function CustomizeProjectTabsDialog({
 		});
 	};
 
-	const toggleHidden = (id: string) =>
-		setHidden((prev) => {
-			const next = new Set(prev);
-			if (next.has(id)) {
-				next.delete(id);
-			} else {
-				next.add(id);
-			}
-			return next;
+	// Toggling the last remaining half moves the row into another section, and
+	// React cannot carry a DOM node across two <ul> parents — the button the
+	// viewer just pressed unmounts and focus falls to the dialog. Remember which
+	// toggle was pressed and put focus back on its new node.
+	const toggleRefs = useRef(new Map<string, HTMLButtonElement>());
+	const [refocus, setRefocus] = useState<string | null>(null);
+
+	const togglePaint = (id: string, part: keyof Paint) => {
+		setRefocus(`${id}:${part}`);
+		setPaint((prev) => {
+			const current = paintOf(prev, id);
+			return {
+				...prev,
+				[id]: { ...current, [part]: !current[part] },
+			};
 		});
+	};
+
+	// `draftKey` is in the deps as the trigger, not as a value read here: it
+	// changes on the render that remounted the row, which is exactly when the
+	// new node exists to receive focus.
+	useEffect(() => {
+		if (!refocus) {
+			return;
+		}
+		toggleRefs.current.get(refocus)?.focus();
+		setRefocus(null);
+	}, [refocus, draftKey]);
 
 	const metaById = useMemo(() => new Map(tabs.map((t) => [t.id, t])), [tabs]);
-	const visibleRows = sequence.filter((id) => !hidden.has(id));
-	const hiddenRows = sequence.filter((id) => hidden.has(id));
+	const isShown = (id: string) => {
+		const p = paintOf(paint, id);
+		return p.icon || p.title;
+	};
+	const visibleRows = sequence.filter(isShown);
+	const hiddenRows = sequence.filter((id) => !isShown(id));
 	// Everything an admin turned off project-wide — shown read-only so the
 	// dialog explains why a tab someone remembers isn't offered, and where it
 	// can be turned back on. A tab this deployment does not offer is NOT in
@@ -167,17 +213,58 @@ export function CustomizeProjectTabsDialog({
 			(id) => isProjectTabFeatureEnabled(id, tabGates) && !adminState[id],
 		);
 
+	const renderPaintToggle = (
+		id: string,
+		part: keyof Paint,
+		label: string,
+		tabLabel: string,
+		disabled: boolean,
+	) => {
+		const on = paintOf(paint, id)[part];
+		return (
+			<button
+				type="button"
+				ref={(el) => {
+					const key = `${id}:${part}`;
+					if (el) {
+						toggleRefs.current.set(key, el);
+					} else {
+						toggleRefs.current.delete(key);
+					}
+				}}
+				aria-pressed={on}
+				disabled={disabled}
+				onClick={() => togglePaint(id, part)}
+				aria-label={`${on ? "Hide" : "Show"} the ${tabLabel} ${part}`}
+				title={
+					disabled
+						? `${tabLabel} is always shown, so it needs its icon or its title`
+						: undefined
+				}
+				className={cn(
+					"rounded-md border px-2 py-1 font-medium text-[11px] transition-colors disabled:cursor-not-allowed disabled:opacity-40",
+					on
+						? "border-primary/30 bg-primary/10 text-foreground"
+						: "border-border/60 text-muted-foreground hover:text-foreground",
+				)}
+			>
+				{label}
+			</button>
+		);
+	};
+
 	const renderRow = (
 		id: string,
-		options: { locked?: boolean; hidden?: boolean; unavailable?: boolean },
+		options: { hidden?: boolean; unavailable?: boolean },
 	) => {
 		const meta = metaById.get(id);
 		if (!meta) {
 			return null;
 		}
 		const Icon = meta.icon;
-		const locked = options.locked || isProtectedProjectTab(id);
+		const protectedTab = isProtectedProjectTab(id);
 		const showIndex = visibleRows.indexOf(id);
+		const current = paintOf(paint, id);
 		return (
 			<li
 				key={id}
@@ -186,26 +273,35 @@ export function CustomizeProjectTabsDialog({
 					options.unavailable && "opacity-50",
 				)}
 			>
-				<span className="flex size-7 shrink-0 items-center justify-center rounded-md bg-muted">
+				{/* Only the tab's own icon and name dim when it is hidden. The
+				    toggles stay at full strength because they are the way back,
+				    and dimming them would read like the inert admin-disabled
+				    rows further down. */}
+				<span
+					className={cn(
+						"flex size-7 shrink-0 items-center justify-center rounded-md bg-muted",
+						options.hidden && "opacity-50",
+					)}
+				>
 					<Icon
 						aria-hidden="true"
 						className="size-4 text-muted-foreground"
 					/>
 				</span>
-				<span className="min-w-0 flex-1 truncate font-medium text-[13px]">
+				<span
+					className={cn(
+						"min-w-0 flex-1 truncate font-medium text-[13px]",
+						options.hidden && "opacity-50",
+					)}
+				>
 					{meta.label}
 				</span>
-				{locked ? (
-					<span className="flex shrink-0 items-center gap-1 pr-1 text-[11px] text-muted-foreground">
-						<LockIcon aria-hidden="true" className="size-3" />
-						Always shown
-					</span>
-				) : options.unavailable ? (
+				{options.unavailable ? (
 					<span className="pr-1 text-[11px] text-muted-foreground">
 						Hidden by project admin
 					</span>
 				) : (
-					<span className="flex shrink-0 items-center gap-0.5">
+					<span className="flex shrink-0 items-center gap-1">
 						{!options.hidden && (
 							<>
 								<Button
@@ -238,29 +334,32 @@ export function CustomizeProjectTabsDialog({
 								</Button>
 							</>
 						)}
-						<Button
-							type="button"
-							variant="ghost"
-							size="icon-sm"
-							onClick={() => toggleHidden(id)}
-							aria-label={
-								options.hidden
-									? `Show ${meta.label}`
-									: `Hide ${meta.label}`
-							}
-						>
-							{options.hidden ? (
-								<EyeIcon
+						{/* A protected tab cannot be hidden, so its last
+						    remaining toggle is disabled rather than allowed to
+						    reach the both-off state the API would reject. */}
+						{renderPaintToggle(
+							id,
+							"icon",
+							"Icon",
+							meta.label,
+							protectedTab && current.icon && !current.title,
+						)}
+						{renderPaintToggle(
+							id,
+							"title",
+							"Title",
+							meta.label,
+							protectedTab && current.title && !current.icon,
+						)}
+						{protectedTab && (
+							<span className="flex shrink-0 items-center gap-1 pl-0.5 text-[11px] text-muted-foreground">
+								<LockIcon
 									aria-hidden="true"
-									className="size-4"
+									className="size-3"
 								/>
-							) : (
-								<EyeOffIcon
-									aria-hidden="true"
-									className="size-4"
-								/>
-							)}
-						</Button>
+								Always shown
+							</span>
+						)}
 					</span>
 				)}
 			</li>
@@ -273,15 +372,16 @@ export function CustomizeProjectTabsDialog({
 				<DialogHeader>
 					<DialogTitle>Customize tabs</DialogTitle>
 					<DialogDescription>
-						Choose which tabs you see and in what order — your
-						changes apply only to you. Tabs the project admin
-						disabled can't be turned back on here.
+						Pick what each tab shows and the order they run in —
+						your changes apply only to you. Turn off both Icon and
+						Title to hide a tab. Tabs the project admin disabled
+						can't be turned back on here.
 					</DialogDescription>
 				</DialogHeader>
 
 				<div className="max-h-[60vh] space-y-4 overflow-y-auto pr-1">
 					<section>
-						<p className="mb-1 px-2 text-[10.5px] font-medium uppercase tracking-[0.12em] text-muted-foreground">
+						<p className="mb-1 px-2 font-medium text-[10.5px] text-muted-foreground uppercase tracking-[0.12em]">
 							Shown ({visibleRows.length})
 						</p>
 						<ul>{visibleRows.map((id) => renderRow(id, {}))}</ul>
@@ -289,8 +389,11 @@ export function CustomizeProjectTabsDialog({
 
 					{hiddenRows.length > 0 && (
 						<section>
-							<p className="mb-1 px-2 text-[10.5px] font-medium uppercase tracking-[0.12em] text-muted-foreground">
+							<p className="mb-1 px-2 font-medium text-[10.5px] text-muted-foreground uppercase tracking-[0.12em]">
 								Hidden by you
+							</p>
+							<p className="mb-1 px-2 text-[11px] text-muted-foreground">
+								Turn Icon or Title back on to bring one back.
 							</p>
 							<ul>
 								{hiddenRows.map((id) =>
@@ -302,7 +405,7 @@ export function CustomizeProjectTabsDialog({
 
 					{unavailableRows.length > 0 && (
 						<section>
-							<p className="mb-1 px-2 text-[10.5px] font-medium uppercase tracking-[0.12em] text-muted-foreground">
+							<p className="mb-1 px-2 font-medium text-[10.5px] text-muted-foreground uppercase tracking-[0.12em]">
 								Unavailable in this project
 							</p>
 							<p className="mb-1 px-2 text-[11px] text-muted-foreground">
@@ -328,7 +431,7 @@ export function CustomizeProjectTabsDialog({
 						}
 						onClick={() => {
 							setSequence(defaultSequence);
-							setHidden(new Set());
+							setPaint({});
 						}}
 					>
 						Reset
@@ -347,9 +450,22 @@ export function CustomizeProjectTabsDialog({
 							size="sm"
 							disabled={!dirty || saving}
 							onClick={() => {
+								const display: Record<
+									string,
+									ProjectTabDisplay
+								> = {};
+								for (const id of visibleRows) {
+									const p = paintOf(paint, id);
+									if (!p.title) {
+										display[id] = "icon";
+									} else if (!p.icon) {
+										display[id] = "title";
+									}
+								}
 								onSave({
-									hidden: [...hidden],
+									hidden: hiddenRows,
 									order: sequence,
+									display,
 								});
 							}}
 						>

@@ -12,6 +12,10 @@ type Props = {
 	label: string;
 	icon: LucideIcon;
 	isActive: boolean;
+	/** Paint the icon. False only when the viewer asked for the title alone. */
+	showIcon: boolean;
+	/** Paint the title. False only when the viewer asked for the icon alone. */
+	showTitle: boolean;
 	/** `data-onboarding-target` value — the Get Started anchor for this tab. */
 	anchor: string;
 	onSelect: () => void;
@@ -21,16 +25,21 @@ type Props = {
 /**
  * One tab in the project tab bar.
  *
- * The bar shows icons only so a long tab list stays readable; the name arrives
- * on hover or keyboard focus. The label is therefore always the button's
- * accessible name, never only painted text. The selected tab additionally
- * renders its label inline — it is the bar's only textual "you are here" — and
- * so needs no tooltip repeating it.
+ * A tab paints its icon and its title unless the viewer dropped one of them
+ * for this tab. Dropping both is not a state this component renders: it means
+ * the tab is hidden, and resolution removes it from the bar before we get
+ * here.
+ *
+ * The title is the button's accessible name whichever way it paints, so an
+ * icon-only tab still reads correctly to a screen reader, and the tooltip
+ * carries the name for sighted viewers only when the bar stops showing it.
  */
 export function ProjectTabButton({
 	label,
 	icon: Icon,
 	isActive,
+	showIcon,
+	showTitle,
 	anchor,
 	onSelect,
 	registerRef,
@@ -44,9 +53,10 @@ export function ProjectTabButton({
 			onClick={onSelect}
 			className={cn(
 				"group relative flex shrink-0 items-center gap-2 rounded-xl py-2.5 font-medium text-sm transition-colors",
+				showTitle ? "px-4" : "px-3",
 				isActive
-					? "px-4 text-foreground"
-					: "px-3 text-foreground/60 hover:text-foreground/80",
+					? "text-foreground"
+					: "text-foreground/60 hover:text-foreground/80",
 			)}
 		>
 			{isActive && (
@@ -55,25 +65,26 @@ export function ProjectTabButton({
 					className="absolute inset-0 rounded-xl border border-primary/15 bg-primary/10"
 				/>
 			)}
-			<Icon
-				aria-hidden="true"
-				className={cn(
-					"relative z-10 size-4 shrink-0",
-					isActive && "text-primary",
-				)}
-			/>
-			{isActive && <span className="relative z-10">{label}</span>}
+			{showIcon && (
+				<Icon
+					aria-hidden="true"
+					className={cn(
+						"relative z-10 size-4 shrink-0",
+						isActive && "text-primary",
+					)}
+				/>
+			)}
+			{showTitle && <span className="relative z-10">{label}</span>}
 		</button>
 	);
 
-	if (isActive) {
+	if (showTitle) {
 		return button;
 	}
 
-	// 200ms rather than the shared 500ms default: this bar is scanned by
-	// sweeping across it, and every tab pays the delay independently — the
-	// shared Tooltip mounts its own provider, so there is no skip-delay group
-	// to inherit.
+	// 200ms rather than the shared 500ms default: a viewer scanning a row of
+	// icon-only tabs sweeps across them, and every tab pays the delay on its
+	// own because the shared Tooltip mounts a provider per instance.
 	return (
 		<Tooltip delayDuration={200}>
 			<TooltipTrigger asChild>{button}</TooltipTrigger>
