@@ -1,14 +1,15 @@
 name: Scheduled release cut
 
-# Cuts the weekly release by merging the changesets Version PR ("chore:
-# release", branch changeset-release/master) every Monday afternoon, US
-# Eastern, so the production reconciler finds a published release in its
-# Monday-night deploy window. Nothing here builds, tags, or publishes: the
-# merge is the trigger, and release.yml / release-artifacts.yml /
-# release-bom.yml do the rest exactly as they do for a human merge.
+# Cuts the scheduled release by merging the changesets Version PR ("chore:
+# release", branch changeset-release/master) every Monday and Wednesday
+# afternoon, US Eastern, so the production reconciler finds a published
+# release in each of its Monday- and Wednesday-night deploy windows. Nothing
+# here builds, tags, or publishes: the merge is the trigger, and release.yml /
+# release-artifacts.yml / release-bom.yml do the rest exactly as they do for a
+# human merge.
 #
-# What replaces the human review of the Version PR is the weekly clock plus
-# green checks, deliberately and only for THIS pull request:
+# What replaces the human review of the Version PR is the clock plus green
+# checks, deliberately and only for THIS pull request:
 # - Only the release App's own PR on exactly `changeset-release/master`, from
 #   this repository, is eligible. Any other PR is ignored, whatever it is
 #   called.
@@ -30,20 +31,22 @@ name: Scheduled release cut
 #   writes -- the refusal comment and the merge.
 # - A red or stale Version PR is not merged: the run fails visibly and
 #   leaves a comment on the PR saying why. No Version PR at all is a clean
-#   no-op — a week with nothing to release is fine.
+#   no-op — an afternoon with nothing to release is fine.
 #
 # Timing: GitHub delivers this organisation's scheduled events in waves a few
 # hours apart, so the crons below are chances, not times. A scheduled run
-# proceeds only inside Monday 12:00–20:00 America/New_York; that eight-hour
-# window comfortably contains at least one wave, and a release cut by 20:00
-# is published well before the reconciler's 21:00 window opens. A manual
-# dispatch ignores the window and is the way to cut a release on any other
-# day.
+# proceeds only inside Monday or Wednesday 12:00–20:00 America/New_York; that
+# eight-hour window comfortably contains at least one wave, and a release cut
+# by 20:00 is published well before the reconciler's 21:00 window opens that
+# night. The two cut afternoons and the reconciler's two deploy nights are one
+# schedule and move together — the deploy side is DEPLOY_WINDOW_DAYS in the
+# ops repository's .github/scripts/reconcile/plan.sh. A manual dispatch
+# ignores the window and is the way to cut a release on any other day.
 
 on:
   schedule:
-    - cron: '0 16 * * 1' # Monday 12:00 EDT / 11:00 EST
-    - cron: '0 19 * * 1' # Monday 15:00 EDT / 14:00 EST
+    - cron: '0 16 * * 1,3' # Mon and Wed 12:00 EDT / 11:00 EST
+    - cron: '0 19 * * 1,3' # Mon and Wed 15:00 EDT / 14:00 EST
   workflow_dispatch: {}
 
 # Read-only gates run on the workflow's own token. The App token minted below
@@ -63,24 +66,24 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - name: Apply the Monday-afternoon window to scheduled runs
+      - name: Apply the afternoon cut window to scheduled runs
         id: window
         env:
           EVENT_NAME: ${{ github.event_name }}
         run: |
           set -euo pipefail
           if [[ "$EVENT_NAME" != "schedule" ]]; then
-            echo "manual dispatch: the weekly window does not apply"
+            echo "manual dispatch: the cut window does not apply"
             echo "proceed=true" >>"$GITHUB_OUTPUT"
             exit 0
           fi
           DOW=$(TZ=America/New_York date +%u)
           HOUR=$(TZ=America/New_York date +%-H)
-          if [[ "$DOW" == 1 && "$HOUR" -ge 12 && "$HOUR" -lt 20 ]]; then
-            echo "inside the release-cut window (Monday 12:00–20:00 America/New_York)"
+          if [[ ( "$DOW" == 1 || "$DOW" == 3 ) && "$HOUR" -ge 12 && "$HOUR" -lt 20 ]]; then
+            echo "inside the release-cut window (Monday and Wednesday 12:00–20:00 America/New_York)"
             echo "proceed=true" >>"$GITHUB_OUTPUT"
           else
-            echo "::notice::outside the release-cut window (Monday 12:00–20:00 America/New_York); nothing to do"
+            echo "::notice::outside the release-cut window (Monday and Wednesday 12:00–20:00 America/New_York); nothing to do"
             echo "proceed=false" >>"$GITHUB_OUTPUT"
           fi
 
