@@ -45,7 +45,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Release tag to assemble the BOM for (e.g. v1.13.4). No --ref is required: resolve turns the tag into a commit SHA, the jobs that consume source check that SHA out explicitly, and no job binds a deployment environment.'
+        description: 'Release tag to assemble the BOM for (e.g. v1.13.4). Dispatch with --ref <tag> as well: the manifest attestation records the source ref, and downstream admission requires refs/tags/<tag>. A dispatch from master publishes a release that then fails admission and cannot be repaired.'
         required: true
         type: string
 
