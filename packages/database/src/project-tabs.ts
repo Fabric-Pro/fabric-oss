@@ -54,10 +54,32 @@ export const projectTabConfigSchema = z
 
 export type ProjectTabConfig = z.infer<typeof projectTabConfigSchema>;
 
-/** User-level personalization: which permitted tabs to hide, and their order. */
+/**
+ * How one tab paints itself for this viewer. Absent means both the icon and
+ * the title are shown, so the default costs no stored bytes and every
+ * preference row written before this existed keeps working untouched.
+ * A tab the viewer wants gone lives in `hidden`, not here.
+ */
+export const projectTabDisplaySchema = z.enum(["icon", "title"]);
+
+export type ProjectTabDisplay = z.infer<typeof projectTabDisplaySchema>;
+
+/**
+ * User-level personalization: which permitted tabs to hide, their order, and
+ * which of them paint only their icon or only their title.
+ */
 export const projectTabPrefsSchema = z.object({
 	hidden: z.array(z.string().min(1).max(40)).max(40).optional(),
 	order: z.array(z.string().min(1).max(40)).max(60).optional(),
+	// Same 40-key ceiling as the admin override map, and for the same reason:
+	// this document ships to the viewer on every project page load.
+	display: z
+		.record(z.string().min(1).max(40), projectTabDisplaySchema)
+		.refine(
+			(map) => Object.keys(map).length <= 40,
+			"At most 40 tab display overrides",
+		)
+		.optional(),
 });
 
 export type ProjectTabPrefs = z.infer<typeof projectTabPrefsSchema>;
@@ -72,6 +94,37 @@ export function normalizeProjectTabConfig(
 ): ProjectTabConfig | null {
 	const parsed = projectTabConfigSchema.safeParse(value);
 	return parsed.success ? parsed.data : null;
+}
+
+/**
+ * What a per-user prefs document is allowed to say, applied on the write path.
+ *
+ * Two invariants the UI already upholds but the wire does not: a protected tab
+ * cannot be hidden, and a hidden tab carries no paint entry — `hidden` is the
+ * list every read-side surface consults, so a `display` entry beside it would
+ * be a second opinion nobody reads.
+ *
+ * Corrects rather than rejects. This is the caller's own view of a project
+ * they can already open, the dialog cannot produce either shape, and failing a
+ * whole save over a stray key would cost the viewer their other edits for a
+ * value that changes nothing they see.
+ */
+export function sanitizeProjectTabPrefs(
+	prefs: ProjectTabPrefs,
+): ProjectTabPrefs {
+	const hidden = (prefs.hidden ?? []).filter(
+		(id) => !isProtectedProjectTab(id),
+	);
+	const display = Object.fromEntries(
+		Object.entries(prefs.display ?? {}).filter(
+			([id]) => !hidden.includes(id),
+		),
+	);
+	return {
+		...prefs,
+		...(prefs.hidden === undefined ? {} : { hidden }),
+		...(prefs.display === undefined ? {} : { display }),
+	};
 }
 
 /** Same tolerant normalization for the per-user prefs column. */

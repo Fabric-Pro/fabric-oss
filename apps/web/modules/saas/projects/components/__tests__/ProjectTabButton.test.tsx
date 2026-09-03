@@ -1,10 +1,14 @@
 /**
- * Project tab bar buttons (Fizzy card #1837 follow-up).
+ * Project tab bar buttons (Fizzy card #1837).
  *
- * The bar shows icons only — the tab name arrives on hover or keyboard focus —
- * except for the selected tab, which keeps its label inline. These tests pin
- * both halves, because "icon only" is only acceptable while the label is still
- * the button's accessible name.
+ * Every tab paints its icon and its title by default, selected or not. A
+ * viewer may drop either one per tab: icon-only, or title-only. Dropping both
+ * is not a paint state at all — it means the tab is hidden, which the resolver
+ * handles before this component is ever asked to render.
+ *
+ * The title carries the accessible name whether or not it is painted, so an
+ * icon-only tab is never a mystery to a screen reader, and the tooltip appears
+ * only when the title is missing from the bar.
  */
 
 import { render, screen } from "@testing-library/react";
@@ -15,6 +19,8 @@ import { ProjectTabButton } from "../ProjectTabButton";
 
 function renderButton(overrides: {
 	isActive?: boolean;
+	showIcon?: boolean;
+	showTitle?: boolean;
 	onSelect?: () => void;
 }) {
 	return render(
@@ -22,6 +28,8 @@ function renderButton(overrides: {
 			label="Roadmap"
 			icon={MapIcon}
 			isActive={overrides.isActive ?? false}
+			showIcon={overrides.showIcon ?? true}
+			showTitle={overrides.showTitle ?? true}
 			anchor="project-tab-stories"
 			onSelect={overrides.onSelect ?? (() => {})}
 			registerRef={() => {}}
@@ -29,43 +37,75 @@ function renderButton(overrides: {
 	);
 }
 
-describe("ProjectTabButton", () => {
-	it("paints no label text when it is not the selected tab", () => {
+const button = () => screen.getByRole("button", { name: "Roadmap" });
+const iconOf = (el: HTMLElement) => el.querySelector("svg");
+
+describe("what a tab paints", () => {
+	it("shows both the icon and the title by default", () => {
 		renderButton({});
 
-		const button = screen.getByRole("button", { name: "Roadmap" });
-		expect(button.textContent).toBe("");
+		expect(button().textContent).toBe("Roadmap");
+		expect(iconOf(button())).not.toBeNull();
 	});
 
-	it("keeps the label as the accessible name so the icon is not the only cue", () => {
-		renderButton({});
+	it("keeps the title when the tab is not the selected one", () => {
+		// The pre-refinement bar labelled only the active tab. Andrew asked for
+		// the label by default, so being inactive must not remove it.
+		renderButton({ isActive: false });
 
-		expect(screen.getByRole("button", { name: "Roadmap" })).toHaveAttribute(
-			"aria-label",
-			"Roadmap",
-		);
+		expect(button().textContent).toBe("Roadmap");
 	});
 
-	it("names the tab on hover", async () => {
+	it("paints the icon alone when the viewer drops the title", () => {
+		renderButton({ showTitle: false });
+
+		expect(button().textContent).toBe("");
+		expect(iconOf(button())).not.toBeNull();
+	});
+
+	it("paints the title alone when the viewer drops the icon", () => {
+		renderButton({ showIcon: false });
+
+		expect(button().textContent).toBe("Roadmap");
+		expect(iconOf(button())).toBeNull();
+	});
+});
+
+describe("the name a tab answers to", () => {
+	it("keeps the title as the accessible name when only the icon paints", () => {
+		renderButton({ showTitle: false });
+
+		expect(button()).toHaveAttribute("aria-label", "Roadmap");
+	});
+
+	it("names an icon-only tab on hover", async () => {
 		const user = userEvent.setup();
-		renderButton({});
+		renderButton({ showTitle: false });
 
-		await user.hover(screen.getByRole("button", { name: "Roadmap" }));
+		await user.hover(button());
 
 		expect(await screen.findByRole("tooltip")).toHaveTextContent("Roadmap");
 	});
 
-	it("paints the label inline for the selected tab", () => {
-		renderButton({ isActive: true });
+	it("gives no tooltip to a tab whose title is already on screen", async () => {
+		const user = userEvent.setup();
+		renderButton({ showTitle: true });
 
-		const button = screen.getByRole("button", { name: "Roadmap" });
-		expect(button.textContent).toBe("Roadmap");
+		await user.hover(button());
+		// Past the tooltip's open delay. Asserting straight after the hover
+		// would pass against a button that does have a tooltip and simply has
+		// not opened it yet.
+		await new Promise((resolve) => setTimeout(resolve, 700));
+
+		expect(screen.queryByRole("tooltip")).toBeNull();
 	});
+});
 
+describe("the rest of the button", () => {
 	it("keeps the Get Started anchor on the button itself", () => {
 		renderButton({});
 
-		expect(screen.getByRole("button", { name: "Roadmap" })).toHaveAttribute(
+		expect(button()).toHaveAttribute(
 			"data-onboarding-target",
 			"project-tab-stories",
 		);
@@ -76,7 +116,7 @@ describe("ProjectTabButton", () => {
 		const user = userEvent.setup();
 		renderButton({ onSelect });
 
-		await user.click(screen.getByRole("button", { name: "Roadmap" }));
+		await user.click(button());
 
 		expect(onSelect).toHaveBeenCalledTimes(1);
 	});

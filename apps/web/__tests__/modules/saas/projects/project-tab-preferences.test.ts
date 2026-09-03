@@ -1,11 +1,13 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { sanitizeProjectTabPrefs } from "@repo/database/src/project-tabs";
 import { describe, expect, it } from "vitest";
 import {
 	isProjectTabFeatureEnabled,
 	type ProjectTabGates,
 	resolveAdminTabState,
+	resolveProjectTabPaint,
 	resolveProjectTabs,
 } from "../../../../modules/saas/projects/lib/project-tab-preferences";
 
@@ -224,6 +226,82 @@ describe("resolveAdminTabState", () => {
 			documents: true,
 			decisions: true,
 			settings: true,
+		});
+	});
+});
+
+describe("resolveProjectTabPaint", () => {
+	it("paints both halves when the viewer stored nothing", () => {
+		expect(resolveProjectTabPaint("stories", null)).toEqual({
+			showIcon: true,
+			showTitle: true,
+		});
+	});
+
+	it("drops the title for a tab the viewer set to icon", () => {
+		expect(
+			resolveProjectTabPaint("stories", { display: { stories: "icon" } }),
+		).toEqual({ showIcon: true, showTitle: false });
+	});
+
+	it("drops the icon for a tab the viewer set to title", () => {
+		expect(
+			resolveProjectTabPaint("stories", {
+				display: { stories: "title" },
+			}),
+		).toEqual({ showIcon: false, showTitle: true });
+	});
+
+	it("leaves other tabs alone", () => {
+		const prefs = { display: { stories: "icon" } };
+		expect(resolveProjectTabPaint("documents", prefs)).toEqual({
+			showIcon: true,
+			showTitle: true,
+		});
+	});
+
+	it("falls back to both halves on a malformed payload", () => {
+		// A blank button is the worst possible degradation, so the tolerant
+		// path has to land on "show everything", never on "show nothing".
+		for (const junk of ["garbage", 42, { display: "nope" }, undefined]) {
+			expect(resolveProjectTabPaint("stories", junk)).toEqual({
+				showIcon: true,
+				showTitle: true,
+			});
+		}
+	});
+});
+
+describe("sanitizeProjectTabPrefs", () => {
+	it("refuses to store a protected tab as hidden", () => {
+		// The dialog cannot produce this; a direct PATCH can, and the column
+		// outlives whichever client wrote it.
+		expect(
+			sanitizeProjectTabPrefs({ hidden: ["overview", "reports"] }),
+		).toEqual({ hidden: ["reports"] });
+	});
+
+	it("drops a paint entry for a tab that is hidden", () => {
+		expect(
+			sanitizeProjectTabPrefs({
+				hidden: ["reports"],
+				display: { reports: "icon", stories: "title" },
+			}),
+		).toEqual({ hidden: ["reports"], display: { stories: "title" } });
+	});
+
+	it("keeps a paint entry once the tab stops being hidden", () => {
+		expect(
+			sanitizeProjectTabPrefs({
+				hidden: [],
+				display: { stories: "icon" },
+			}),
+		).toEqual({ hidden: [], display: { stories: "icon" } });
+	});
+
+	it("leaves order and absent keys alone", () => {
+		expect(sanitizeProjectTabPrefs({ order: ["a", "b"] })).toEqual({
+			order: ["a", "b"],
 		});
 	});
 });
