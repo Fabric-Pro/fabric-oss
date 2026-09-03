@@ -13,10 +13,7 @@ import type { Locale } from "@repo/i18n";
 import { logAuditEvent, logger } from "@repo/logs";
 import { sendEmail } from "@repo/mail";
 import { cancelSubscription } from "@repo/payments";
-import {
-	getTemporalClient,
-	type MemberCascadeDeleteWorkflowInput,
-} from "@repo/temporal";
+import { getTemporalClient } from "@repo/temporal";
 import { encryptApiKey, getBaseUrl, isEncryptedApiKey } from "@repo/utils";
 import { type BetterAuthOptions, betterAuth } from "better-auth";
 import { prismaAdapter } from "better-auth/adapters/prisma";
@@ -43,6 +40,10 @@ import {
 import { ensureUserHasOrganization } from "./lib/ensure-user-organization";
 import { buildInvitationToken } from "./lib/invitation-token";
 import { runInviteReconciliationForUser } from "./lib/invite-reconciliation";
+import {
+	revokeDepartingMemberAccess,
+	syncSeatsAfterDeparture,
+} from "./lib/member-offboarding";
 import { notifySignupAttempt } from "./lib/notify-signup-attempt";
 import { updateSeatsInOrganizationSubscription } from "./lib/organization";
 import {
@@ -906,86 +907,40 @@ const authOptions = {
 						);
 					}
 				}
-			} else if (ctx.path.startsWith("/organization/remove-member")) {
-				const { organizationId, memberIdOrEmail } = ctx.body as {
+			} else if (ctx.path === "/organization/leave") {
+				// A member leaving of their own accord.
+				//
+				// Handled here and not through `organizationHooks` because the
+				// plugin has no hook for it: `/organization/leave` calls
+				// `adapter.deleteMember` directly, and none of the fifteen
+				// before/after pairs it does expose covers leaving. So until
+				// better-auth grows one, matching the path is the only way to see
+				// this event at all.
+				//
+				// The ids are safe to take from the request: the endpoint requires
+				// `organizationId` in its body and resolves the member from the
+				// SESSION user, so the person leaving is the caller. An after-hook
+				// only runs on success, which means better-auth already found and
+				// deleted that member row.
+				const { organizationId } = ctx.body as {
 					organizationId?: string;
-					memberIdOrEmail?: string;
 				};
-
-				if (!organizationId) {
-					return;
-				}
-
-				await updateSeatsInOrganizationSubscription(organizationId);
-
-				// Trigger cascade delete workflow to clean up user's data in the org
-				// Find the userId from memberIdOrEmail
-				if (memberIdOrEmail) {
-					try {
-						// memberIdOrEmail can be either a member ID or an email
-						// First try to find as member ID
-						let userId: string | null = null;
-
-						const member = await db.member.findFirst({
-							where: {
-								OR: [
-									{ id: memberIdOrEmail, organizationId },
-									{
-										user: { email: memberIdOrEmail },
-										organizationId,
-									},
-								],
-							},
-							select: { userId: true },
-						});
-
-						userId = member?.userId ?? null;
-
-						if (userId) {
-							logger.info(
-								`[Auth] Triggering cascade delete for user ${userId} removed from org ${organizationId}`,
-							);
-
-							// Start the cascade delete workflow asynchronously
-							// Don't await - let it run in the background
-							void (async () => {
-								try {
-									const client = await getTemporalClient();
-									const workflowId = `member-cascade-delete-${organizationId}-${userId}-${Date.now()}`;
-
-									const input: MemberCascadeDeleteWorkflowInput =
-										{
-											userId,
-											organizationId,
-										};
-
-									// Use string workflow name to avoid minification issues in production builds
-									await client.workflow.start(
-										"memberCascadeDeleteWorkflow",
-										{
-											taskQueue: "ai-chat",
-											workflowId,
-											args: [input],
-										},
-									);
-
-									logger.info(
-										`[Auth] Started cascade delete workflow ${workflowId}`,
-									);
-								} catch (workflowError) {
-									logger.error(
-										`[Auth] Failed to start cascade delete workflow for user ${userId} in org ${organizationId}:`,
-										workflowError,
-									);
-								}
-							})();
-						}
-					} catch (error) {
-						logger.error(
-							"[Auth] Error finding member for cascade delete:",
-							error,
-						);
-					}
+				const leavingUserId = ctx.context.session?.session.userId;
+				if (organizationId && leavingUserId) {
+					// AFTER, not before, and it cannot refuse. A global
+					// `hooks.before` would run ahead of better-auth's own
+					// preconditions — the member row must exist, and the only
+					// owner may not leave — so revoking there would strip a
+					// sole owner's grants on an attempt that then fails.
+					// Replicating those preconditions here would put a second
+					// copy of better-auth's policy in this repo, which is the
+					// class of defect this change exists to remove.
+					await revokeDepartingMemberAccess({
+						organizationId,
+						userId: leavingUserId,
+						trigger: "left",
+					});
+					await syncSeatsAfterDeparture(organizationId);
 				}
 			}
 		}),
@@ -1802,6 +1757,31 @@ const authOptions = {
 						},
 					});
 				},
+				// Revoke the ejected member's project and workspace access
+				// BEFORE better-auth deletes the member row.
+				//
+				// `beforeRemoveMember` runs after every one of better-auth's own
+				// checks — permission, member-belongs-to-org, organization
+				// exists, user exists — and immediately before
+				// `adapter.deleteMember`. That buys two things an after-hook
+				// cannot. A failure REFUSES the removal, so there is no state
+				// where somebody is out of the organization while their project
+				// grants still authorize them; and no admin can re-add and
+				// re-grant in the window, because there is nothing to re-add
+				// yet.
+				//
+				// This is also where the old wiring could not work at all. It
+				// lived in a global `hooks.after` branch and re-read the
+				// `member` row to find the target user — a row better-auth had
+				// already hard-deleted — so the lookup came back null on every
+				// removal.
+				beforeRemoveMember: async ({ member, organization: org }) => {
+					await revokeDepartingMemberAccess({
+						organizationId: org.id,
+						userId: member.userId,
+						trigger: "removed",
+					});
+				},
 				afterRemoveMember: async ({
 					member,
 					user: actingUser,
@@ -1830,6 +1810,13 @@ const authOptions = {
 							previousRole: member.role,
 						},
 					});
+
+					// Seats, and only seats: the access revocation already ran
+					// in `beforeRemoveMember`. This has to be the AFTER hook
+					// because it counts the organization's members, and
+					// counting them before the deletion would keep paying for
+					// somebody on their way out.
+					await syncSeatsAfterDeparture(org.id);
 				},
 			},
 		}),
