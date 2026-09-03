@@ -25,9 +25,15 @@ export function useReviewCenterCount(projectId: string) {
 		// Actionable items are produced by worker syncs out-of-band, so the
 		// roadmap badge must stay current without a page reload: poll, and also
 		// refetch on mount / window focus (overrides the global 60s staleTime).
+		//
+		// The short staleTime (not 0 + `refetchOnMount: "always"`) matters:
+		// the toolbar badge and the review panel both observe this query and
+		// mount in different commits on the roadmap, so "always" made the
+		// second observer re-fetch a result the first had just received.
+		// Within this window a new observer reuses the cached count; a mount
+		// or focus any later than that still refetches.
 		refetchInterval: 60_000,
-		staleTime: 0,
-		refetchOnMount: "always",
+		staleTime: 5_000,
 		refetchOnWindowFocus: true,
 	});
 }
