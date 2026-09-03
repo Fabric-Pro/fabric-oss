@@ -1571,39 +1571,39 @@ export async function bindPromptVersion({
 			});
 		}
 
-		try {
-			return await tx.promptBinding.create({
-				data: { ...identity, promptVersionId, isDefault },
-			});
-		} catch (error) {
-			// Another caller inserted this exact row between the read above and
-			// this write. The unique key rejects it now that NULL columns compare
-			// equal, so adopt the winner's row rather than failing the bind — the
-			// same end state either order would have produced.
-			const lostTheRace =
-				error instanceof Prisma.PrismaClientKnownRequestError &&
-				error.code === "P2002";
-			if (!lostTheRace) {
-				throw error;
-			}
-			const winner = await tx.promptBinding.findFirst({
-				where: identity,
-			});
-			if (!winner) {
-				throw error;
-			}
-			return tx.promptBinding.update({
-				where: { id: winner.id },
-				data: { promptVersionId, isDefault },
-			});
-		}
+		return tx.promptBinding.create({
+			data: { ...identity, promptVersionId, isDefault },
+		});
 	};
 
 	// Demoting the previous default and writing the new one is one change: a
 	// failure between them would leave the action with no default at all. A
 	// caller that already owns a transaction keeps it, so a multi-action bind
 	// still lands as a single unit.
-	return client ? run(client) : db.$transaction((tx) => run(tx));
+	if (client) {
+		return run(client);
+	}
+
+	try {
+		return await db.$transaction((tx) => run(tx));
+	} catch (error) {
+		// Another caller inserted this exact row between our read and our write,
+		// and the unique key rejected ours now that NULL columns compare equal.
+		//
+		// The retry has to be a FRESH transaction. Postgres marks a transaction
+		// aborted the moment a statement in it errors — every later command
+		// returns 25P02 "current transaction is aborted" until it ends — so
+		// recovering inside the failed one cannot work, and the demote it
+		// performed is rolled back with it. Running the whole thing again
+		// re-demotes and then finds the winner's row on the read.
+		const lostTheRace =
+			error instanceof Prisma.PrismaClientKnownRequestError &&
+			error.code === "P2002";
+		if (!lostTheRace) {
+			throw error;
+		}
+		return db.$transaction((tx) => run(tx));
+	}
 }
 
 export type PromptCatalogBinding = {
@@ -2047,7 +2047,11 @@ export async function getPlatformWidePromptDeletionImpact({
  * from where it happened — the catalog's existing switch puts the same row
  * back, no trip to the library and nothing re-authored (FR12 of Fizzy #2068).
  * The composite unique key guarantees at most one row per target+scope+owner,
- * so a cleared row cannot accumulate into clutter.
+ * so a cleared row cannot accumulate into clutter. That guarantee is only real
+ * from migration 20260903100000: before it the key was a plain unique index, and
+ * Postgres treats NULL as distinct there, so every row shape this table actually
+ * writes went unconstrained. Revert that migration and this sentence stops being
+ * true.
  *
  * Identified by the same composite the unique constraint uses, never by row id:
  * a caller cannot reach another tenant's binding by guessing an identifier.
@@ -2638,6 +2642,27 @@ export async function listAvailablePromptsForAgent({
 			},
 		});
 
+		// Order by tier precedence (USER > PROJECT > ORG > SYSTEM), then by
+		// isDefault, BEFORE mapping. Only the first default survives the pass
+		// below, so this order decides which prompt is badged Default and it
+		// has to be the one getBoundPromptVersion would resolve.
+		//
+		// Ranked from the binding through the shared effectiveTier/SCOPE_RANK
+		// helper. The mapped object's `scope` is the bound prompt's own catalog
+		// scope, which is a different thing — a project-tier binding can point
+		// at a SYSTEM prompt — so ranking by that badged the wrong row.
+		bindings.sort((a, b) => {
+			const rankDiff =
+				SCOPE_RANK[effectiveTier(a)] - SCOPE_RANK[effectiveTier(b)];
+			if (rankDiff !== 0) {
+				return rankDiff;
+			}
+			if (a.isDefault !== b.isDefault) {
+				return a.isDefault ? -1 : 1;
+			}
+			return 0;
+		});
+
 		// Map bindings to prompt format
 		const prompts = bindings.map((binding) => {
 			const prompt = binding.promptVersion.prompt;
@@ -2653,10 +2678,6 @@ export async function listAvailablePromptsForAgent({
 				forkedFrom: prompt.forkedFrom,
 				isBound: true,
 				isDefault: binding.isDefault,
-				/** Set when this binding is the PROJECT tier rather than the
-				 *  org-wide one. Both are ORG-scope rows, so without it the
-				 *  ranking below cannot tell which of the two actually runs. */
-				projectId: binding.projectId,
 				contentSnippet:
 					content.length > 200
 						? `${content.slice(0, 200)}...`
@@ -2668,34 +2689,7 @@ export async function listAvailablePromptsForAgent({
 			};
 		});
 
-		// Sort by tier precedence (USER > PROJECT > ORG > SYSTEM), then by
-		// isDefault. Only the first default survives the pass below, so this
-		// order decides which prompt is badged Default — it has to be the one
-		// getBoundPromptVersion would resolve.
-		//
-		// PROJECT is not a scope of its own: a project binding is an ORG row
-		// narrowed by projectId, so it ties with the org-wide row on scope and
-		// needs the projectId to break that tie.
-		const scopeOrder = { USER: 0, ORG: 1, SYSTEM: 2 };
-		const sorted = prompts.sort((a, b) => {
-			const projectDiff = (a.projectId ? 0 : 1) - (b.projectId ? 0 : 1);
-			if (projectDiff !== 0 && a.scope === b.scope) {
-				return projectDiff;
-			}
-			// First, sort by scope (USER first, then ORG, then SYSTEM)
-			const scopeDiff = scopeOrder[a.scope] - scopeOrder[b.scope];
-			if (scopeDiff !== 0) {
-				return scopeDiff;
-			}
-
-			// Within same scope, sort by isDefault (true first)
-			if (a.isDefault !== b.isDefault) {
-				return a.isDefault ? -1 : 1;
-			}
-
-			// If both have same scope and isDefault status, maintain original order
-			return 0;
-		});
+		const sorted = prompts;
 
 		// Only the highest-precedence default should be marked as isDefault.
 		// When a USER binding is default, lower-precedence SYSTEM/ORG defaults
