@@ -85,9 +85,11 @@ const WORKFLOW_NAME_PATTERNS = [
 // Agent name extraction patterns
 const AGENT_NAME_PATTERNS = [
 	/(?:use|ask|delegate\s+to|run|call)\s+(?:the\s+)?["']([^"']+)["']\s*(?:agent)?/i,
-	/(?:use|ask|delegate\s+to|run|call)\s+(?:the\s+)?(\w+(?:[_-]\w+)*)\s+agent/i,
+	// Un-nested character class instead of (\w+(?:[_-]\w+)*): js/redos, js/polynomial-redos
+	/(?:use|ask|delegate\s+to|run|call)\s+(?:the\s+)?([\w-]+)\s+agent/i,
 	/agent\s+(?:called|named)\s+["']?([^"'\s]+)["']?/i,
-	/(?:with|using)\s+(?:the\s+)?(\w+(?:[_-]\w+)*)\s+agent/i,
+	// Un-nested character class instead of (\w+(?:[_-]\w+)*): js/redos, js/polynomial-redos
+	/(?:with|using)\s+(?:the\s+)?([\w-]+)\s+agent/i,
 ];
 
 // External service indicators

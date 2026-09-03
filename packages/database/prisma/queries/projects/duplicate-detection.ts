@@ -499,24 +499,31 @@ export function buildDetectionText(
 		return "";
 	}
 	const segments = [trimmedTitle];
+	// Bounded span: js/polynomial-redos — TEMPLATE_HEADINGS must run on text
+	// already capped to its MAX_*_CHARS bound, not the full unbounded
+	// description/acceptanceCriteria/part text (truncating AFTER stripping
+	// left the regex scanning unbounded input).
 	const trimmedDescription = stripTemplateScaffolding(
-		description ?? "",
-	).slice(0, MAX_DESCRIPTION_CHARS);
+		(description ?? "").slice(0, MAX_DESCRIPTION_CHARS),
+	);
 	if (trimmedDescription) {
 		segments.push(trimmedDescription);
 	}
 	// Unlabelled on purpose: a constant "Acceptance criteria:" prefix would be
 	// identical on every item, i.e. more shared boilerplate in every vector.
 	const trimmedAcceptanceCriteria = stripTemplateScaffolding(
-		acceptanceCriteria ?? "",
-	).slice(0, MAX_ACCEPTANCE_CRITERIA_CHARS);
+		(acceptanceCriteria ?? "").slice(0, MAX_ACCEPTANCE_CRITERIA_CHARS),
+	);
 	if (trimmedAcceptanceCriteria) {
 		segments.push(trimmedAcceptanceCriteria);
 	}
 	for (const part of (parts ?? []).slice(0, MAX_PARTS)) {
 		const partText = stripTemplateScaffolding(
-			[part.title ?? "", part.description ?? ""].join("\n").trim(),
-		).slice(0, MAX_PART_CHARS);
+			[part.title ?? "", part.description ?? ""]
+				.join("\n")
+				.trim()
+				.slice(0, MAX_PART_CHARS),
+		);
 		if (partText) {
 			segments.push(partText);
 		}

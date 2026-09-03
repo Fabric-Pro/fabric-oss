@@ -389,6 +389,111 @@ export function cleanAdoCodeBlocks<T extends string | null | undefined>(
 	return cleaned as T;
 }
 
+// Sticky (`y`) lookaheads used by extractPreBlocks below. Anchoring via
+// `lastIndex` matches "at exactly this position, or not at all" without
+// allocating a copy of the remaining suffix — `html.slice(pos)` inside the
+// scan loop would itself be O(remaining length) per opener, turning an
+// otherwise-linear scan quadratic on input with many openers.
+const PRE_CODE_OPEN_RE = /\s*<code[^>]*>/iy;
+const PRE_CLOSE_AFTER_CODE_RE = /\s*<\/pre>/iy;
+
+/**
+ * Replace `<pre>`/`<pre><code>` blocks in `html` with sentinels produced by
+ * `stash`, via a linear left-to-right scan instead of a backtracking regex.
+ *
+ * For each `<pre ...>` opening tag found: if it is immediately (mod
+ * whitespace) followed by a `<code ...>` opener, look for the matching
+ * `</code>` + `</pre>` close; otherwise look for a matching `</pre>` alone.
+ * The bare-`</pre>` fallback already scans every remaining character of
+ * `html` looking for one; if that comes back empty, no `</pre>` exists
+ * anywhere after this opener, so no LATER opener (which starts even further
+ * along) could find one either. In that case the scan stops entirely,
+ * leaving this opener and the rest of `html` untouched — mirroring the old
+ * regex, which simply failed to match and left the tail for the generic
+ * tag-strip later in the pipeline. Every character is visited O(1) times
+ * across the whole call (tag-boundary lookups use `indexOf` or a sticky
+ * regex anchored via `lastIndex`, never a substring copy of the remaining
+ * suffix), so this is linear in `html.length` regardless of block size or
+ * whether blocks close at all.
+ */
+export function extractPreBlocks(
+	html: string,
+	stash: (code: string) => string,
+): string {
+	const lower = html.toLowerCase();
+	let out = "";
+	let cursor = 0; // start of the not-yet-emitted span
+	let searchFrom = 0;
+	for (;;) {
+		const preOpenIdx = lower.indexOf("<pre", searchFrom);
+		if (preOpenIdx === -1) {
+			break;
+		}
+		const tagCloseIdx = html.indexOf(">", preOpenIdx);
+		if (tagCloseIdx === -1) {
+			// No closing '>' anywhere after this point — no tag can ever
+			// complete from here on.
+			break;
+		}
+		const preOpenEnd = tagCloseIdx + 1;
+
+		// Optional `<code ...>` immediately (mod whitespace) inside the <pre>.
+		PRE_CODE_OPEN_RE.lastIndex = preOpenEnd;
+		const codeOpenMatch = PRE_CODE_OPEN_RE.exec(html);
+
+		let matchEnd = -1;
+		let bodyStart = preOpenEnd;
+		let bodyEnd = -1;
+		if (codeOpenMatch) {
+			const codeBodyStart = preOpenEnd + codeOpenMatch[0].length;
+			let probe = codeBodyStart;
+			for (;;) {
+				const codeCloseIdx = lower.indexOf("</code>", probe);
+				if (codeCloseIdx === -1) {
+					break;
+				}
+				const afterCodeClose = codeCloseIdx + "</code>".length;
+				PRE_CLOSE_AFTER_CODE_RE.lastIndex = afterCodeClose;
+				const preCloseMatch = PRE_CLOSE_AFTER_CODE_RE.exec(html);
+				if (preCloseMatch) {
+					bodyStart = codeBodyStart;
+					bodyEnd = codeCloseIdx;
+					matchEnd = afterCodeClose + preCloseMatch[0].length;
+					break;
+				}
+				probe = codeCloseIdx + 1;
+			}
+		}
+		if (matchEnd === -1) {
+			// No code-wrapped close (or no <code> at all) — fall back to a
+			// bare <pre>…</pre>.
+			const preCloseIdx = lower.indexOf("</pre>", preOpenEnd);
+			if (preCloseIdx !== -1) {
+				bodyStart = preOpenEnd;
+				bodyEnd = preCloseIdx;
+				matchEnd = preCloseIdx + "</pre>".length;
+			}
+		}
+
+		if (matchEnd === -1) {
+			// The fallback above already scanned to the end of `html`
+			// looking for a bare "</pre>" and found none, so no later
+			// opener can find one either (it starts even further along).
+			// Stop scanning entirely — no need to burn time re-discovering
+			// the same absence for every remaining opener.
+			break;
+		}
+
+		out +=
+			html.slice(cursor, preOpenIdx) +
+			stash(html.slice(bodyStart, bodyEnd));
+		cursor = matchEnd;
+		searchFrom = matchEnd;
+	}
+	out += html.slice(cursor);
+	return out;
+}
+
 /**
  * Convert simple HTML (as returned by Fizzy/Trello/etc.) to markdown for storage in Fabric.
  * Mirrors the inverse of markdownToSimpleHtml — handles the common tags those tools produce.
@@ -420,14 +525,14 @@ export function simpleHtmlToMarkdown(html: string): string {
 		codeBlocks.push(`\`\`\`\n${codeBlockText(code)}\n\`\`\``);
 		return `\n\nFABRICCODE${codeBlocks.length - 1}\n\n`;
 	};
-	const htmlNoCode = html
-		.replace(
-			/<pre[^>]*>\s*<code[^>]*>([\s\S]*?)<\/code>\s*<\/pre>/gi,
-			(_m, code: string) => stashCode(code),
-		)
-		.replace(/<pre[^>]*>([\s\S]*?)<\/pre>/gi, (_m, code: string) =>
-			stashCode(code),
-		);
+	// A linear left-to-right scan (indexOf for tag boundaries) replaces both
+	// `<pre><code>` and bare `<pre>` blocks with FABRICCODE sentinels, instead
+	// of a backtracking regex with a lazy `[\s\S]*?` middle. No content-length
+	// cap: the scan finds the matching close in one forward pass — or, for an
+	// unclosed opener, leaves it untouched and keeps scanning after it — so
+	// worst-case time is linear in `html.length` regardless of how large a
+	// legitimately-closed code block is. Bounded span: js/polynomial-redos
+	const htmlNoCode = extractPreBlocks(html, stashCode);
 
 	// Preserve <table> blocks across the generic tag-strip below. Extract them
 	// to sentinels first; otherwise the strip (`/<(?!br>)[^>]+>/g`) drops every

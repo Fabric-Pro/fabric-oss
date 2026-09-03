@@ -671,6 +671,52 @@ describe("downloadTeamsHostedContent", () => {
 		expect(fetchMock).toHaveBeenCalledTimes(3);
 	});
 
+	it("does NOT attempt the root-URL fallback when the primary URL exceeds the redos length bound, even though it is reply-scoped", async () => {
+		vi.useFakeTimers();
+
+		const notFoundResp = () =>
+			new Response(
+				JSON.stringify({
+					error: {
+						code: "NotFound",
+						innerError: { "request-id": "oversized-req-id" },
+					},
+				}),
+				{
+					status: 404,
+					headers: { "content-type": "application/json" },
+				},
+			);
+		fetchMock.mockResolvedValue(notFoundResp());
+
+		// Reply-scoped shape (would normally derive a root fallback), but
+		// padded past the 2048-char bound `deriveRootFallbackUrl` enforces.
+		const padding = "a".repeat(2200);
+		const oversizedReplySrcUrl = `https://graph.microsoft.com/v1.0/teams/T/channels/C/messages/M-root/replies/M-reply/hostedContents/img-1/$value?pad=${padding}`;
+		expect(oversizedReplySrcUrl.length).toBeGreaterThan(2048);
+
+		const errPromise = downloadTeamsHostedContent(
+			{
+				id: "img-1",
+				messageId: "M-reply",
+				parentMessageId: "M-root",
+				contentType: "application/octet-stream",
+				srcUrl: oversizedReplySrcUrl,
+			},
+			"graph-test-token",
+			{ maxBytes: MAX_BYTES, messageUrl: "ignored" },
+		).catch((e: unknown) => e);
+
+		await vi.runAllTimersAsync();
+		const err = await errPromise;
+
+		expect(err).toBeInstanceOf(DownloadFailedError);
+		expect((err as DownloadFailedError).status).toBe(404);
+		// 1 initial + 2 retries = 3 total — the length cap suppresses the
+		// fallback URL that would otherwise have been derived and tried.
+		expect(fetchMock).toHaveBeenCalledTimes(3);
+	});
+
 	it("throws DownloadFailedError('image_too_large') when maxBytes is exceeded", async () => {
 		// Stream three 2KB chunks for a 6KB total; cap at 4KB.
 		const chunk = new Uint8Array(2048);

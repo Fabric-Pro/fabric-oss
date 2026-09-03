@@ -8,6 +8,7 @@
 import { orpcClient } from "@shared/lib/orpc-client";
 import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
+import { htmlEscape, jsString } from "../../github/oauth/callback/sanitize";
 
 export const runtime = "nodejs";
 
@@ -72,8 +73,19 @@ function generateCallbackHtml({
 	providerName,
 	redirectUrl,
 }: CallbackHtmlParams): string {
-	const escapedMessage = message.replace(/"/g, '\\"').replace(/\n/g, "\\n");
+	// `message` carries the provider's unauthenticated `error_description`, so
+	// it is escaped for whichever context it lands in — never interpolated raw.
+	// The replaced hand-rolled quote/newline escape left backslashes untouched,
+	// so a `\"` in the message closed the inline-script string literal.
+	// Guards js/incomplete-sanitization.
+	const messageLiteral = jsString(message);
 	const eventType = success ? "oauth_success" : "oauth_error";
+	// Same treatment for the non-popup fallback href: assembled here so the
+	// whole URL goes into the script as one escaped literal rather than as raw
+	// interpolation. Guards js/incomplete-sanitization.
+	const fallbackHrefLiteral = jsString(
+		`${redirectUrl}${redirectUrl.includes("?") ? "&" : "?"}oauth=${success ? "success" : "error"}&provider=${encodeURIComponent(providerName)}${!success ? `&message=${encodeURIComponent(message)}` : ""}`,
+	);
 
 	return `
 <!DOCTYPE html>
@@ -160,7 +172,7 @@ function generateCallbackHtml({
 		}
       </div>
       <h2>${success ? "Connected Successfully" : "Connection Failed"}</h2>
-      <p>${message}</p>
+      <p>${htmlEscape(message)}</p>
       <p class="close-note">This window will close automatically...</p>
     </div>
     <script>
@@ -170,7 +182,7 @@ function generateCallbackHtml({
           type: "${eventType}",
           provider: "${providerName}",
           success: ${success},
-          message: "${escapedMessage}"
+          message: ${messageLiteral}
         }, window.location.origin);
 
         // Close popup after a short delay
@@ -180,7 +192,7 @@ function generateCallbackHtml({
       } else {
         // Fallback: redirect if not in popup
         setTimeout(() => {
-          window.location.href = "${redirectUrl}${redirectUrl.includes("?") ? "&" : "?"}oauth=${success ? "success" : "error"}&provider=${encodeURIComponent(providerName)}${!success ? `&message=${encodeURIComponent(message)}` : ""}";
+          window.location.href = ${fallbackHrefLiteral};
         }, 2000);
       }
     </script>

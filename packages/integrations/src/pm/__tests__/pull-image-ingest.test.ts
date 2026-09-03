@@ -369,6 +369,15 @@ describe("buildAdoIngestOptions", () => {
 		expect(opts.fetchAuth?.(relUrl)?.Authorization).toMatch(/^Basic /);
 		expect(adoAttachmentId(relUrl)).toBe(ADO_GUID);
 	});
+
+	it("does not match a dev.azure.com URL without the attachments API segment (flattened ADO_ATTACHMENT_RE)", () => {
+		const opts = buildAdoIngestOptions("PAT");
+		expect(
+			opts.urlFilter?.(
+				"https://dev.azure.com/example-org/_apis/wit/workitems/1",
+			),
+		).toBe(false);
+	});
 });
 
 describe("fetchAdoAttachmentRelations", () => {
@@ -465,6 +474,51 @@ describe("appendAdoAttachmentLinks", () => {
 
 	it("returns the description unchanged for no attachments", () => {
 		expect(appendAdoAttachmentLinks("Body", [])).toBe("Body");
+	});
+
+	it("inserts the link BEFORE a back-link past 200,000 chars — the anchor is found by locating its fixed label, not by scanning a bounded prefix (js/polynomial-redos)", () => {
+		// No content-length cap on the back-link search: the anchor is found
+		// via a linear `lastIndexOf` on its fixed "View in Fabric" label, then
+		// only a small window around that index is regex-scanned. The insert-
+		// before-the-anchor contract must hold no matter how long the
+		// description is.
+		const filler = "x".repeat(200_010);
+		const desc = `${filler}\n\n<p><a href="https://fabric.pro/x">View in Fabric</a></p>`;
+		const out = appendAdoAttachmentLinks(desc, [att]);
+		expect(out.indexOf(taggedLink)).toBeGreaterThanOrEqual(0);
+		expect(out.indexOf(taggedLink)).toBeLessThan(
+			out.indexOf("View in Fabric"),
+		);
+		// The filler itself is preserved untouched ahead of the inserted link.
+		expect(out.startsWith(filler)).toBe(true);
+	});
+
+	it("inserts the link before the real back-link even when later prose repeats its label", () => {
+		// The label ("View in Fabric") is plain text, so nothing stops it
+		// from also appearing in a user's own prose — most naturally AFTER
+		// the real back-link, since that's where new edits land. A naive
+		// single `lastIndexOf` would find that later, non-anchor occurrence,
+		// fail its window check, and fall back to appending at the very end
+		// — after the back-link instead of before it.
+		const desc =
+			'Body\n\n<p><a href="https://fabric.pro/x">View in Fabric</a></p>' +
+			"\n\nEditor note: see the View in Fabric link above for context.";
+		const out = appendAdoAttachmentLinks(desc, [att]);
+		const linkIdx = out.indexOf(taggedLink);
+		const anchorIdx = out.indexOf(
+			'<a href="https://fabric.pro/x">View in Fabric</a>',
+		);
+		const proseIdx = out.indexOf("Editor note:");
+		expect(linkIdx).toBeGreaterThanOrEqual(0);
+		// Inserted before the real anchor — not after it, and not after the
+		// trailing prose that also happens to contain the label.
+		expect(linkIdx).toBeLessThan(anchorIdx);
+		expect(anchorIdx).toBeLessThan(proseIdx);
+		// The trailing prose (and its own "View in Fabric" occurrence) is
+		// preserved untouched.
+		expect(out).toContain(
+			"Editor note: see the View in Fabric link above for context.",
+		);
 	});
 });
 
@@ -787,6 +841,31 @@ describe("ingestPulledImages — file attachments", () => {
 		expect(store.put).not.toHaveBeenCalled();
 		expect(result.description).toContain("could not be imported");
 	});
+
+	it("caps a runaway-long attachment display name before sanitizing it into the S3 key (redos bound)", async () => {
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () =>
+				imageResponse({ contentType: "application/pdf" }),
+			),
+		);
+		const store = makeStore();
+		const longName = "a".repeat(5000);
+
+		const result = await ingestPulledImages({
+			description: `[${longName}](/uploads/${GL_HASH}/report.pdf)`,
+			projectId: "p1",
+			storyId: "s1",
+			store,
+			...glOpts(),
+		});
+
+		expect(result.ingested).toBe(1);
+		const key = store.puts[0]?.key ?? "";
+		const sanitizedName = key.slice(`${GL_KEY}/`.length);
+		// Capped to MAX_ATTACHMENT_NAME_CHARS (255), not the full 5000-char name.
+		expect(sanitizedName).toBe("a".repeat(255));
+	});
 });
 
 describe("stripGitLabImageAttributes", () => {
@@ -808,6 +887,15 @@ describe("stripGitLabImageAttributes", () => {
 		const input =
 			"set {width=10} in config\n\n![a](/uploads/abc/a.png) trailing";
 		expect(stripGitLabImageAttributes(input)).toBe(input);
+	});
+
+	it("only processes the leading bounded span; a block beyond it passes through untouched (redos bound)", () => {
+		// Beyond MAX_DESCRIPTION_REGEX_SCAN_CHARS (200_000) the sizing-attribute
+		// regex no longer runs, so this trailing {…} block is left in place.
+		const filler = "a".repeat(200_010);
+		const untouchedTail = "![x.jpg](/uploads/abc/x.jpg){width=10}";
+		const input = `${filler}${untouchedTail}`;
+		expect(stripGitLabImageAttributes(input)).toContain(untouchedTail);
 	});
 });
 
@@ -848,6 +936,16 @@ describe("stripFailedMediaPlaceholders", () => {
 
 	it("is a no-op on empty input", () => {
 		expect(stripFailedMediaPlaceholders("")).toBe("");
+	});
+
+	it("only processes the leading bounded span; a placeholder beyond it passes through untouched (redos bound)", () => {
+		// Beyond MAX_DESCRIPTION_REGEX_SCAN_CHARS (200_000) the strip regexes no
+		// longer run, so this trailing placeholder is left in place verbatim.
+		const filler = "a".repeat(200_010);
+		const untouchedTail =
+			"<p><em>[Image could not be imported: x]</em></p>";
+		const input = `${filler}${untouchedTail}`;
+		expect(stripFailedMediaPlaceholders(input)).toContain(untouchedTail);
 	});
 });
 

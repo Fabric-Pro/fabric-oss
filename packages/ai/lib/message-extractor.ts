@@ -75,7 +75,10 @@ export interface ExtractRelevantExcerptsResult {
 	extractorLatencyMs: number;
 }
 
-const HTML_TAG_RE = /<[^>]*>/g;
+// Bounded tag body — no real HTML tag is anywhere near this long, and bounding
+// it stops an unclosed '<' run in a Teams/Slack payload from scanning
+// quadratically. Bounded span: js/polynomial-redos
+const HTML_TAG_RE = /<[^>]{0,1000}>/g;
 const MULTI_SPACE_RE = /\s+/g;
 
 function stripAndTrim(text: string): string {

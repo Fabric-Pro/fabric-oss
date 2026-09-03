@@ -124,6 +124,37 @@ describe("fetchPmComments", () => {
 		});
 	});
 
+	it("strips tags from an html-only body (no plain_text/text) unchanged by the bound", async () => {
+		vi.mocked(executeMcpTool).mockResolvedValueOnce({
+			success: true,
+			output: [
+				{
+					body: {
+						html: "<div><p>Create database and IOS app</p></div>",
+					},
+					creator: { name: "Vlad" },
+					created_at: "2026-06-18T09:20:00.000Z",
+				},
+			],
+		} as never);
+		const result = await fetchPmComments(baseInput);
+		expect(result[0]?.body).toBe("Create database and IOS app");
+	});
+
+	it("does not hang on an html-only body with a huge unclosed tag run (js/polynomial-redos)", async () => {
+		vi.mocked(executeMcpTool).mockResolvedValueOnce({
+			success: true,
+			output: [
+				{
+					body: { html: `<${"a".repeat(50_000)}` },
+					creator: { name: "Vlad" },
+					created_at: "2026-06-18T09:20:00.000Z",
+				},
+			],
+		} as never);
+		await expect(fetchPmComments(baseInput)).resolves.toBeDefined();
+	});
+
 	it("fills the optional ADO `project` param so the comments tool does not elicit", async () => {
 		vi.mocked(executeMcpTool).mockResolvedValueOnce({
 			success: true,

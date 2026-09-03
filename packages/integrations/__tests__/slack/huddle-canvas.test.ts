@@ -86,6 +86,15 @@ describe("extractMentionUserIds / replaceMentions", () => {
 			"Hi @ada!",
 		);
 	});
+
+	it("resolves mention ids up to the redos-bound cap (12 chars) without truncation", () => {
+		const id = "U0123456789"; // 11 chars — within real Slack id length and the new bound
+		const text = `Assigned to <@${id}|ada>`;
+		expect(extractMentionUserIds(text)).toEqual([id]);
+		expect(replaceMentions(text, new Map([[id, "ada"]]))).toBe(
+			"Assigned to @ada",
+		);
+	});
 });
 
 describe("computeHuddleContentHash", () => {

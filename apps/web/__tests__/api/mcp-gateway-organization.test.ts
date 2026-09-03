@@ -546,3 +546,39 @@ describe("MCP gateway — a session does not outlive its organization", () => {
 		expect(executePlatformTool).not.toHaveBeenCalled();
 	});
 });
+
+describe("MCP gateway — a tool executor failure is logged safely", () => {
+	it("logs the tool name as a %s substitution arg, never spliced into the format string (js/tainted-format-string)", async () => {
+		const consoleError = vi
+			.spyOn(console, "error")
+			.mockImplementation(() => {});
+		signedInAs({ memberships: [ALPHA] });
+		const sessionId = await openSession();
+		executePlatformTool.mockRejectedValueOnce(new Error("boom"));
+
+		const { response, payload } = await post(toolCallBody(), {
+			authorization: PERSONAL_KEY,
+			"mcp-session-id": sessionId,
+		});
+
+		// The route swallows the executor error into a JSON-RPC success whose
+		// result carries isError: true — it does not propagate as an HTTP error.
+		expect(response.status).toBe(200);
+		const rpcResult = (
+			payload as unknown as { result: { isError: boolean } }
+		).result;
+		expect(rpcResult.isError).toBe(true);
+
+		const call = consoleError.mock.calls.find(([msg]) =>
+			typeof msg === "string" ? msg.includes("tools/call") : false,
+		);
+		expect(call).toBeDefined();
+		const [message, ...args] = call as unknown[];
+		// The tool name from toolCallBody() ("fabric_get_identity") must arrive
+		// as a separate argument, not interpolated into the format string.
+		expect(message).not.toContain("fabric_get_identity");
+		expect(args).toContain("fabric_get_identity");
+
+		consoleError.mockRestore();
+	});
+});

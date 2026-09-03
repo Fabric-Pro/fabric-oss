@@ -295,6 +295,11 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
  * reply-scoped shape — root URLs and chat URLs have no fallback.
  */
 function deriveRootFallbackUrl(url: string): string | null {
+	// Bounded span: js/polynomial-redos — a real Graph hostedContent URL is
+	// nowhere near this long; capping keeps the regex off unbounded input.
+	if (url.length > 2048) {
+		return null;
+	}
 	const m = url.match(
 		/^(.+\/messages\/[^/]+)\/replies\/[^/]+(\/hostedContents\/.+)$/,
 	);

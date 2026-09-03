@@ -68,6 +68,29 @@ const ALLOWED_FILE_TYPES: Record<string, true> = {
 const MAX_FILE_BYTES = 25 * 1024 * 1024;
 
 /**
+ * Bound how much of an externally-supplied description the backtracking-prone
+ * regexes below scan in one pass. Real PM-tool descriptions are far smaller
+ * than this; only the leading span is scanned and anything beyond it is left
+ * untouched, so a pathological description can't blow up regex compute time.
+ * Bounded span: js/polynomial-redos
+ */
+const MAX_DESCRIPTION_REGEX_SCAN_CHARS = 200_000;
+
+/** Cap for a single attachment display filename before it is sanitized. */
+const MAX_ATTACHMENT_NAME_CHARS = 255;
+
+/** Split `text` into a regex-safe bounded head and the untouched remainder. */
+function boundedRegexSpan(text: string): { head: string; tail: string } {
+	if (text.length <= MAX_DESCRIPTION_REGEX_SCAN_CHARS) {
+		return { head: text, tail: "" };
+	}
+	return {
+		head: text.slice(0, MAX_DESCRIPTION_REGEX_SCAN_CHARS),
+		tail: text.slice(MAX_DESCRIPTION_REGEX_SCAN_CHARS),
+	};
+}
+
+/**
  * Storage operations the ingester needs. Implemented by
  * `createStoryMediaPullStore` against `@repo/storage`; faked in tests.
  */
@@ -272,7 +295,11 @@ function filenameFromUrl(url: string): string {
 
 /** Make a filename safe as the last segment of an S3 key + URL path. */
 function sanitizeAttachmentName(name: string): string {
-	const cleaned = name
+	// Bounded span: js/polynomial-redos — a filename never legitimately needs
+	// to be KB-scale; capping here keeps the trim regex below off pathological
+	// input regardless of what the PM tool sent as the attachment name.
+	const capped = name.slice(0, MAX_ATTACHMENT_NAME_CHARS);
+	const cleaned = capped
 		.trim()
 		.replace(/[^\w.-]+/g, "_")
 		.replace(/^_+|_+$/g, "");
@@ -321,8 +348,11 @@ export function stripFailedMediaPlaceholders(description: string): string {
 	if (!description) {
 		return description;
 	}
+	// Bounded span: js/polynomial-redos — only the leading span runs through
+	// the regexes below; content beyond it is passed through untouched.
+	const { head, tail } = boundedRegexSpan(description);
 	return (
-		description
+		head
 			// HTML: <p><em>[Image|Attachment could not be imported…]</em></p>
 			.replace(
 				/<p>\s*<em>\s*\[(?:Image|Attachment) could not be imported[^\]]*\]\s*<\/em>\s*<\/p>/gi,
@@ -332,7 +362,7 @@ export function stripFailedMediaPlaceholders(description: string): string {
 			.replace(
 				/\*?\\?\[(?:Image|Attachment) could not be imported[^\]]*?\\?\]\*?/gi,
 				"",
-			)
+			) + tail
 	);
 }
 
@@ -593,9 +623,10 @@ export async function ingestPulledImages(
 // Matches both shapes of ADO attachment URL:
 //   inline-image (description):  dev.azure.com/{org}/_apis/wit/attachments/{guid}
 //   relation (AttachedFile):     dev.azure.com/{org}/{projectGuid}/_apis/wit/attachments/{guid}
-// i.e. one OR MORE path segments before `_apis/wit/attachments/`.
-const ADO_ATTACHMENT_RE =
-	/dev\.azure\.com\/(?:[^/\s?#]+\/)+_apis\/wit\/attachments\//i;
+// Flat span instead of a repeated `(segment/)+` group — the nested quantifier
+// let the engine re-partition the same span many ways on non-matching input.
+// Bounded span: js/polynomial-redos
+const ADO_ATTACHMENT_RE = /dev\.azure\.com\/[^\s?#]*_apis\/wit\/attachments\//i;
 
 /** Pull the stable attachment GUID out of an ADO attachment URL. */
 export function adoAttachmentId(url: string): string | null {
@@ -705,6 +736,60 @@ export async function fetchAdoAttachmentRelations(
  * URLs carry no extension and serve `application/octet-stream`. Idempotent:
  * skips any attachment whose URL is already referenced in the description.
  */
+/** Matches the canonical back-link anchor once it has been localized to a small window. */
+const BACK_LINK_RE =
+	/(?:<p[^>]*>\s*)?(?:<a\b[^>]*>\s*View in Fabric\s*<\/a>|\[View in Fabric\]\([^)]*\))/i;
+
+/** Fixed label text the back-link anchor is always built around (see `fabric-url.ts`). */
+const BACK_LINK_LABEL = "View in Fabric";
+
+/**
+ * Locate the canonical "View in Fabric" back-link anchor's absolute start
+ * index in `description`, or null when none is present.
+ *
+ * Bounded span: js/polynomial-redos — rather than run `BACK_LINK_RE` (which
+ * can backtrack) over the whole description, first find an occurrence of its
+ * fixed label text with a linear `lastIndexOf`. Then run the regex only on a
+ * small window around that occurrence: a few hundred chars before it (enough
+ * for the `<p ...><a ...>` / `[` prefix) through just past the label (enough
+ * for `</a></p>` or the markdown `)`). Worst-case regex work per occurrence is
+ * therefore a small constant, independent of how long the description is.
+ *
+ * `appendFabricBackLink` (`packages/database/prisma/queries/projects/
+ * fabric-url.ts`) is idempotent — it never inserts a second back-link — so
+ * the anchor itself occurs at most once. But the label is plain text
+ * ("View in Fabric"), and nothing stops it from also appearing in a user's
+ * own prose elsewhere in the description — most likely AFTER the real
+ * back-link, since that's where new edits land. `lastIndexOf` alone would
+ * find that later, non-anchor occurrence and fail its window check, making
+ * the whole lookup miss the real (earlier) back-link entirely. So on a
+ * window miss, walk backward to the label's next-earlier occurrence and
+ * retry, until one validates or there are none left. Still linear: each
+ * occurrence is visited once and each window check is the same small
+ * constant as before, so total work is bounded by the number of label
+ * occurrences, not by re-scanning the description.
+ */
+function findBackLinkIndex(description: string): number | null {
+	let fromIndex = description.length - 1;
+	for (;;) {
+		const labelIndex = description.lastIndexOf(BACK_LINK_LABEL, fromIndex);
+		if (labelIndex === -1) {
+			return null;
+		}
+		const windowStart = Math.max(0, labelIndex - 300);
+		const windowEnd = Math.min(
+			description.length,
+			labelIndex + BACK_LINK_LABEL.length + 50,
+		);
+		const window = description.slice(windowStart, windowEnd);
+		const match = BACK_LINK_RE.exec(window);
+		if (match) {
+			return windowStart + match.index;
+		}
+		fromIndex = labelIndex - 1;
+	}
+}
+
 export function appendAdoAttachmentLinks(
 	description: string,
 	attachments: ReadonlyArray<{ name: string; url: string }>,
@@ -724,16 +809,13 @@ export function appendAdoAttachmentLinks(
 	// when present, so they sit with the body rather than after the footer.
 	// No heading — a markdown `## Attachments` would render as literal text in
 	// an ADO (HTML) description. Falls back to appending at the end.
-	const backLink =
-		/(?:<p[^>]*>\s*)?(?:<a\b[^>]*>\s*View in Fabric\s*<\/a>|\[View in Fabric\]\([^)]*\))/i.exec(
-			description,
-		);
-	if (backLink && backLink.index !== undefined) {
-		const head = description.slice(0, backLink.index).replace(/\s+$/, "");
-		const tail = description.slice(backLink.index);
+	const backLinkIndex = findBackLinkIndex(description);
+	if (backLinkIndex !== null) {
+		const head = description.slice(0, backLinkIndex).trimEnd();
+		const tail = description.slice(backLinkIndex);
 		return `${head}\n\n${links}\n\n${tail}`;
 	}
-	return `${description.replace(/\s+$/, "")}\n\n${links}`;
+	return `${description.trimEnd()}\n\n${links}`;
 }
 
 // =============================================================================
@@ -850,9 +932,12 @@ export function stripGitLabImageAttributes(description: string): string {
 	if (!description) {
 		return description;
 	}
-	return description.replace(
-		/(!\[[^\]]*\]\([^)]*\)|<img\b[^>]*>)\{[^}]*\}/gi,
-		"$1",
+	// Bounded span: js/polynomial-redos — only the leading span runs through
+	// the regex below; content beyond it is passed through untouched.
+	const { head, tail } = boundedRegexSpan(description);
+	return (
+		head.replace(/(!\[[^\]]*\]\([^)]*\)|<img\b[^>]*>)\{[^}]*\}/gi, "$1") +
+		tail
 	);
 }
 

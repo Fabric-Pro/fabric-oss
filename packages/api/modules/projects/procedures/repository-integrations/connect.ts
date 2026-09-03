@@ -58,7 +58,10 @@ export const connectRepoIntegrationProcedure = tenantProtectedProcedure
 			organizationId: z.string().nullable().optional(),
 			provider: z.enum(["GITHUB", "GITLAB", "AZURE_DEVOPS"]),
 			authMethod: z.enum(["OAUTH", "PAT"]),
-			repositoryUrl: z.string().url(),
+			// Bounded span: js/polynomial-redos — this value is stored and later
+			// re-parsed by parseAdoRepositoryUrl's legacy-URL regex (update-branch);
+			// no real repository URL is anywhere near this length.
+			repositoryUrl: z.string().url().max(2048),
 			repositoryOwner: z.string(),
 			repositoryName: z.string(),
 			defaultBranch: z.string().optional(),

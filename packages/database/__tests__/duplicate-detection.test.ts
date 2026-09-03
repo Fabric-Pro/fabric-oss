@@ -467,6 +467,17 @@ describe("buildDetectionText", () => {
 		expect(result.length).toBe(1 + 2 + 8000);
 	});
 
+	it("truncates to MAX_DESCRIPTION_CHARS BEFORE stripping template headings, so a heading past the budget is unreachable (js/polynomial-redos)", () => {
+		// TEMPLATE_HEADINGS must run on text already capped to its MAX_*_CHARS
+		// bound, not the full unbounded description — otherwise the regex
+		// scans unbounded input before truncation ever runs.
+		const description = `${"x".repeat(8100)}\n## Should Not Appear\nAC1: unreachable`;
+		const result = buildDetectionText("T", description);
+		expect(result).not.toContain("Should Not Appear");
+		expect(result).not.toContain("unreachable");
+		expect(result).toBe(`T\n\n${"x".repeat(8000)}`);
+	});
+
 	it("keeps the assembled text inside the embedding model's input ceiling", () => {
 		// The one hard limit that cannot be lifted: ~8k tokens. Everything
 		// else is a tuning choice; this is physics.
