@@ -1,5 +1,6 @@
 {
 	"dependencies": {
+		"@ag-ui/langgraph": "0.0.43",
 		"@ai-sdk/react": "^3.0.1",
 		"@bprogress/next": "^3.2.12",
 		"@copilotkit/react-core": "1.70.1",
