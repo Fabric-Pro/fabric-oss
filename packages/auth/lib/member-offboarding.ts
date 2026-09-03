@@ -111,7 +111,8 @@ export async function revokeDepartingMemberAccess(
 		logger.error("[Auth] Offboarding called without both ids", detail);
 		if (trigger === "removed") {
 			throw new APIError("INTERNAL_SERVER_ERROR", {
-				message: "Could not revoke the member's project access",
+				message:
+					"Could not revoke the member's access to this organization",
 				code: "MEMBER_OFFBOARDING_FAILED",
 			});
 		}
@@ -140,7 +141,8 @@ export async function revokeDepartingMemberAccess(
 			// than a member who is out of the organization on paper and still
 			// authorized on its projects.
 			throw new APIError("INTERNAL_SERVER_ERROR", {
-				message: "Could not revoke the member's project access",
+				message:
+					"Could not revoke the member's access to this organization",
 				code: "MEMBER_OFFBOARDING_FAILED",
 			});
 		}

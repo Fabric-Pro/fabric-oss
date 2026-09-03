@@ -922,9 +922,15 @@ const authOptions = {
 				// SESSION user, so the person leaving is the caller. An after-hook
 				// only runs on success, which means better-auth already found and
 				// deleted that member row.
-				const { organizationId } = ctx.body as {
-					organizationId?: string;
-				};
+				// Read defensively, like the other body reads in this file. The
+				// endpoint's schema makes `organizationId` required and an
+				// after-hook only runs on success, so a parsed body is there today
+				// — but a destructure of `undefined` throws, and a throw inside a
+				// global after-hook turns a departure that already committed into a
+				// 500, which is the one outcome this path exists to avoid.
+				const organizationId = (
+					ctx.body as { organizationId?: string } | undefined
+				)?.organizationId;
 				const leavingUserId = ctx.context.session?.session.userId;
 				if (organizationId && leavingUserId) {
 					// AFTER, not before, and it cannot refuse. A global

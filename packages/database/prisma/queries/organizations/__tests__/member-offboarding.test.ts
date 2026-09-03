@@ -9,12 +9,20 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
  * mode this function has to be protected against is an over-broad predicate —
  * one that matches another organization's rows, or every row for the user — and
  * a predicate is exactly what a mock can inspect faithfully. What it cannot
- * prove is that the columns exist and mean what the schema says; the type
- * checker covers that, and no fixture would.
+ * prove is that the columns and relations exist and mean what the schema says;
+ * the type checker covers that, and no fixture would.
  *
- * The scoping claim is the whole point. A person normally belongs to several
- * organizations, and their personal-tenant rows (`organizationId: null`) are
- * their own workspaces — a predicate on `userId` alone would empty those too.
+ * Two claims carry the file.
+ *
+ * SCOPING. A person normally belongs to several organizations, and their
+ * personal-tenant rows (`organizationId: null`) are their own workspaces — a
+ * predicate on `userId` alone would empty those too.
+ *
+ * NO SNAPSHOT. The organization's scope is pushed into each predicate as a
+ * relation filter instead of being collected into an id list first. An id list
+ * is a point-in-time read, so a project or workspace joining the organization
+ * between the read and the delete would keep its grants through an offboarding
+ * that reported success.
  */
 
 const {
@@ -35,6 +43,10 @@ const {
 	stakeholderDeleteMany: vi.fn(),
 }));
 
+// `project.findMany` and `workspace.findMany` are mocked deliberately even
+// though the function must not call them: an unmocked delegate throws, which
+// would fail the "issues no read" case for the wrong reason and read as a
+// missing stub rather than as the regression it is meant to catch.
 vi.mock("../../../client", () => ({
 	db: {
 		session: { updateMany: (...a: unknown[]) => sessionUpdateMany(...a) },
@@ -63,8 +75,8 @@ const INPUT = { organizationId: "org-1", userId: "user-1" };
 beforeEach(() => {
 	vi.clearAllMocks();
 	sessionUpdateMany.mockResolvedValue({ count: 1 });
-	projectFindMany.mockResolvedValue([{ id: "proj-1" }, { id: "proj-2" }]);
-	workspaceFindMany.mockResolvedValue([{ id: "ws-1" }]);
+	projectFindMany.mockResolvedValue([]);
+	workspaceFindMany.mockResolvedValue([]);
 	projectMemberDeleteMany.mockResolvedValue({ count: 2 });
 	administratorDeleteMany.mockResolvedValue({ count: 1 });
 	contributorDeleteMany.mockResolvedValue({ count: 3 });
@@ -72,18 +84,11 @@ beforeEach(() => {
 });
 
 describe("revokeOrganizationMemberAccess", () => {
-	it("deletes project memberships only within the organization's projects", async () => {
+	it("scopes project memberships through the project's own organization", async () => {
 		await revokeOrganizationMemberAccess(INPUT);
 
-		expect(projectFindMany).toHaveBeenCalledWith({
-			where: { organizationId: "org-1" },
-			select: { id: true },
-		});
 		expect(projectMemberDeleteMany).toHaveBeenCalledWith({
-			where: {
-				userId: "user-1",
-				projectId: { in: ["proj-1", "proj-2"] },
-			},
+			where: { userId: "user-1", project: { organizationId: "org-1" } },
 		});
 	});
 
@@ -95,11 +100,24 @@ describe("revokeOrganizationMemberAccess", () => {
 		await revokeOrganizationMemberAccess(INPUT);
 
 		const scope = {
-			where: { userId: "user-1", workspaceId: { in: ["ws-1"] } },
+			where: {
+				userId: "user-1",
+				workspace: { organizationId: "org-1" },
+			},
 		};
 		expect(administratorDeleteMany).toHaveBeenCalledWith(scope);
 		expect(contributorDeleteMany).toHaveBeenCalledWith(scope);
 		expect(stakeholderDeleteMany).toHaveBeenCalledWith(scope);
+	});
+
+	it("collects no id list first — nothing can join the organization mid-flight", async () => {
+		// The window this closes: with a snapshot of project ids, a project
+		// moved into the organization between the read and the delete keeps its
+		// grants while offboarding reports success.
+		await revokeOrganizationMemberAccess(INPUT);
+
+		expect(projectFindMany).not.toHaveBeenCalled();
+		expect(workspaceFindMany).not.toHaveBeenCalled();
 	});
 
 	it("clears the active-organization pointer on every session, not just one", async () => {
@@ -115,11 +133,11 @@ describe("revokeOrganizationMemberAccess", () => {
 	});
 
 	it("never issues a predicate keyed on the user alone", async () => {
-		// The regression that would matter: a `deleteMany` whose only
-		// condition is `userId` empties the person's rows in every other
-		// organization AND their personal workspaces. Asserted over every
-		// destructive call rather than one at a time, so a table added later
-		// is covered by the same claim.
+		// The regression that would matter: a `deleteMany` whose only condition
+		// is `userId` empties the person's rows in every other organization AND
+		// their personal workspaces. Asserted over every destructive call
+		// rather than one at a time, so a table added later is covered by the
+		// same claim.
 		await revokeOrganizationMemberAccess(INPUT);
 
 		const destructive = [
@@ -129,13 +147,15 @@ describe("revokeOrganizationMemberAccess", () => {
 			stakeholderDeleteMany,
 		];
 
-		expect(destructive.every((fn) => fn.mock.calls.length === 1)).toBe(
-			true,
-		);
 		for (const fn of destructive) {
+			expect(fn).toHaveBeenCalledTimes(1);
 			const where = fn.mock.calls[0][0].where as Record<string, unknown>;
 			expect(Object.keys(where).sort()).not.toEqual(["userId"]);
 			expect(where.userId).toBe("user-1");
+			// Whichever relation carries the scope, it must name THIS
+			// organization — a relation filter with the wrong key would satisfy
+			// the shape check above while scoping nothing.
+			expect(JSON.stringify(where)).toContain('"organizationId":"org-1"');
 		}
 	});
 
@@ -149,21 +169,23 @@ describe("revokeOrganizationMemberAccess", () => {
 		});
 	});
 
-	it("issues no delete at all when the organization owns nothing", async () => {
-		// `in: []` is a valid Prisma filter that matches nothing, so the guard
-		// is not about correctness — it is about not sending two pointless
-		// statements per offboarding for an organization with no projects.
-		projectFindMany.mockResolvedValue([]);
-		workspaceFindMany.mockResolvedValue([]);
+	it("reports zeroes without pretending it skipped the work", async () => {
+		// An organization with nothing in it still gets one statement per
+		// table. There is no id list to be empty, so there is no shortcut and
+		// no branch that could be wrong.
+		projectMemberDeleteMany.mockResolvedValue({ count: 0 });
+		administratorDeleteMany.mockResolvedValue({ count: 0 });
+		contributorDeleteMany.mockResolvedValue({ count: 0 });
+		stakeholderDeleteMany.mockResolvedValue({ count: 0 });
+		sessionUpdateMany.mockResolvedValue({ count: 0 });
 
 		const result = await revokeOrganizationMemberAccess(INPUT);
 
-		expect(projectMemberDeleteMany).not.toHaveBeenCalled();
-		expect(administratorDeleteMany).not.toHaveBeenCalled();
 		expect(result).toEqual({
 			projectMemberships: 0,
 			workspaceMemberships: 0,
-			sessionsCleared: 1,
+			sessionsCleared: 0,
 		});
+		expect(projectMemberDeleteMany).toHaveBeenCalledTimes(1);
 	});
 });
