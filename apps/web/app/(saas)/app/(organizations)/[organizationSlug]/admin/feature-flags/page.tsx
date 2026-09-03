@@ -5,15 +5,17 @@ import { redirect } from "next/navigation";
 /**
  * Workspace-scoped feature-flag console — `/app/{organizationSlug}/admin/feature-flags`.
  *
- * Renders the same global FeatureFlagsPanel as the canonical
- * `/app/admin/feature-flags` route. It exists so an admin reaching this page
- * from an organization workspace keeps the slug in the URL — the active
- * workspace is derived purely from that slug, so a slug-less destination would
- * flip the workspace selector to "Personal".
+ * The only route that renders FeatureFlagsPanel: `/app/admin/**` is now a
+ * catch-all redirecting into the organization tree (Fizzy #1875), so the
+ * slug-less console it used to mirror no longer exists. Keeping the slug
+ * matters because the active workspace is derived purely from it.
  *
- * Feature flags are global (instance-wide); the slug only preserves "which
- * workspace you are viewing from" and does not scope the flags. Access control
- * is therefore identical to the personal route: instance admin only.
+ * What this page sets is the DEPLOYMENT-WIDE value, and the slug does not
+ * scope it — an admin viewing from any workspace edits the same rows. A flag
+ * the registry marks `orgScopable` can also carry a per-organization override
+ * that outranks this, edited on that organization's admin page
+ * (`admin/organizations/{id}`) rather than here. Access control either way:
+ * instance admin only.
  */
 export const metadata = {
 	title: "Feature Flags",

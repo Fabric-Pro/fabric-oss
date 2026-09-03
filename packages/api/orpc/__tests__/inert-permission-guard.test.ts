@@ -55,6 +55,8 @@ const ACCEPTED: Record<string, string> = {
 	"admin/procedures/find-organization.ts": "As ai-adoption.",
 	"admin/procedures/list-organizations.ts": "As ai-adoption.",
 	"admin/procedures/list-users.ts": "As ai-adoption.",
+	"admin/procedures/org-feature-flags.ts":
+		"As ai-adoption, but for a different reason than its instance-wide sibling: these DO take an organizationId. It is the SUBJECT of the edit, not the caller's tenant. `requireInputOrgPermission` would be the usual exit and is wrong here — it would demand the instance admin hold a role in the organization being enrolled, so an operator could only grant a feature to organizations they already belong to, which is the opposite of the control. Authorization is adminProcedure's instance-admin gate; the override table is an instance-admin control table with no tenant of its own.",
 	"agent-templates/procedures/templates/create.ts":
 		"adminProcedure; the agent-template catalog is deployment-wide, not owned by a tenant.",
 	"agent-templates/procedures/templates/delete.ts": "As template create.",

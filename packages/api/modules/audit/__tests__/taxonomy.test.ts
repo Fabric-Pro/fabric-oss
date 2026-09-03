@@ -135,7 +135,13 @@ describe("audit.taxonomy handler", () => {
 		// every project member and a transport error naming an internal host is
 		// not something to put in a project's UI. Without the row that first
 		// failure existed only as a warning log line, Fizzy #2210) = 110.
-		expect(result.actions).toHaveLength(110);
+		// + 2 (featureFlag.orgUpdated + featureFlag.orgReset — the
+		// per-organization override that outranks the global row: enrolling or
+		// explicitly excluding one organization, and clearing its row so it
+		// inherits again. Distinct keys rather than reusing the global pair
+		// because these carry a top-level organizationId and appear in that
+		// organization's own log) = 112.
+		expect(result.actions).toHaveLength(112);
 		expect(result.actions).toContain("auth.login.success");
 		expect(result.actions).toContain("project.document_generation.failed");
 		expect(result.actions).toContain("audit.retention.purged");
@@ -229,6 +235,8 @@ describe("audit.taxonomy handler", () => {
 		// Instance-admin global feature-flag toggle (DB-backed override).
 		expect(result.actions).toContain("featureFlag.updated");
 		expect(result.actions).toContain("featureFlag.reset");
+		expect(result.actions).toContain("featureFlag.orgUpdated");
+		expect(result.actions).toContain("featureFlag.orgReset");
 
 		// Starting a run in the customer's own CI with a stored credential.
 		expect(result.actions).toContain("project.ci_run.triggered");

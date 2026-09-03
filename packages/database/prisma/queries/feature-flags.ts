@@ -4,6 +4,8 @@ import {
 	type FeatureFlagKey,
 	type FlagSource,
 	isFeatureFlagKey,
+	isOrgScopableFlag,
+	ORG_SCOPABLE_FLAG_KEYS,
 	resolveFlag,
 } from "@repo/utils/feature-flag-registry";
 import { db } from "../client";
@@ -457,4 +459,166 @@ export async function setFlagOverride(input: {
 export async function clearFlagOverride(key: FeatureFlagKey): Promise<void> {
 	await db.featureFlagOverride.deleteMany({ where: { key } });
 	cache = null;
+}
+
+/**
+ * The write boundary's guard. Throws rather than returning a result because
+ * every caller here is performing a mutation: there is no sensible "did
+ * nothing" answer to return, and silently skipping the write would leave the
+ * caller believing an organization was enrolled.
+ */
+function assertOrgScopable(key: FeatureFlagKey): void {
+	if (!isOrgScopableFlag(key)) {
+		throw new Error(
+			`Feature flag ${key} is not organization-scopable; an override row for it would be ignored by resolveFlag.`,
+		);
+	}
+}
+
+/**
+ * One flag's state for one organization, read with NO cache on either level.
+ *
+ * Exists for the post-write response. The cached readers are right for hot
+ * request paths but wrong for "what did my write just do": the org entry can
+ * be repopulated by a read that started BEFORE the write's eviction and
+ * resolves after it, and the global entry is not evicted by an org write at
+ * all, so it can be up to a TTL stale. Either would make the value this
+ * function's callers hand back to a UI — which patches its cache from it and
+ * does not refetch — quietly wrong until something unrelated refetched.
+ *
+ * Both underlying reads are already the uncached variants used by the
+ * credit-spending Publishing Suite paths, for the same "must be true right
+ * now" reason.
+ */
+export async function getOrgFlagStateUncached(
+	key: FeatureFlagKey,
+	organizationId: string,
+): Promise<{
+	enabled: boolean;
+	source: FlagSource;
+	orgOverride: boolean | undefined;
+}> {
+	const [orgOverride, globalOverride] = await Promise.all([
+		getOrganizationFlagOverrideUncached(key, organizationId),
+		getGlobalFlagOverride(key),
+	]);
+
+	return {
+		orgOverride,
+		...resolveFlag(
+			key,
+			{ org: orgOverride, global: globalOverride },
+			process.env,
+		),
+	};
+}
+
+/**
+ * Every org-scopable flag resolved FOR one organization, with the raw override
+ * row alongside the resolved value.
+ *
+ * Restricted to {@link ORG_SCOPABLE_FLAG_KEYS} rather than the whole registry
+ * because this feeds the admin per-organization panel: a flag the resolver
+ * ignores at the org level must not be offered as a switch there, or an
+ * operator would set a row that changes nothing.
+ *
+ * `orgOverride` is returned as its own tri-state (`true` / `false` /
+ * `undefined` for "no row") rather than left to be inferred from
+ * `source === "org-override"`. The two agree today, but the control this feeds
+ * is itself tri-state, and re-deriving "inherit" from a source string is
+ * exactly the inference that goes wrong when a fourth source appears.
+ */
+export async function getOrgScopableFlagsDetailed(
+	organizationId: string,
+): Promise<
+	Array<{
+		key: FeatureFlagKey;
+		enabled: boolean;
+		source: FlagSource;
+		orgOverride: boolean | undefined;
+	}>
+> {
+	const [globalOverrides, orgOverrides] = await Promise.all([
+		getFlagOverrides(),
+		getOrgFlagOverrides(organizationId),
+	]);
+
+	return ORG_SCOPABLE_FLAG_KEYS.map((key) => ({
+		key,
+		orgOverride: orgOverrides.get(key),
+		...resolveFlag(
+			key,
+			{ org: orgOverrides.get(key), global: globalOverrides.get(key) },
+			process.env,
+		),
+	}));
+}
+
+/**
+ * Write one organization's override row for `key`.
+ *
+ * REFUSES a key that is not `orgScopable`. {@link resolveFlag} ignores an
+ * org-level value for every other flag, so a row written for one is inert: it
+ * would read back as a working switch while changing nothing anywhere else,
+ * and nothing would ever clean it up. The admin procedure rejects such a key
+ * first and turns it into a 400 — this throw is the backstop for every other
+ * caller, since the helper is exported through the `@repo/database` barrel and
+ * seeds and scripts reach it without going through oRPC.
+ *
+ * `false` is a meaningful stored value, not a deletion: it excludes this
+ * organization from a globally-enabled flag, which is the whole reason the
+ * table stores a value instead of a membership. Use
+ * {@link clearOrgFlagOverride} to return the organization to inheriting.
+ *
+ * Busts only this organization's cache entry. The global cache is untouched on
+ * purpose — an org row cannot change what any other organization resolves.
+ */
+export async function setOrgFlagOverride(input: {
+	key: FeatureFlagKey;
+	organizationId: string;
+	enabled: boolean;
+	updatedBy: string;
+}): Promise<void> {
+	assertOrgScopable(input.key);
+
+	await db.organizationFeatureFlagOverride.upsert({
+		where: {
+			key_organizationId: {
+				key: input.key,
+				organizationId: input.organizationId,
+			},
+		},
+		create: {
+			key: input.key,
+			organizationId: input.organizationId,
+			enabled: input.enabled,
+			updatedBy: input.updatedBy,
+		},
+		update: { enabled: input.enabled, updatedBy: input.updatedBy },
+	});
+	orgCache.delete(input.organizationId);
+}
+
+/**
+ * Delete one organization's override row, returning it to inheriting the
+ * global/env/registry value.
+ *
+ * `deleteMany` rather than `delete` so clearing an organization that has no row
+ * is a no-op (count 0) instead of a P2025 — same idempotency contract as
+ * {@link clearFlagOverride}. Errors are NOT swallowed: a failed write must
+ * reject so the admin console shows it rather than reporting success.
+ *
+ * This is the ONLY way to move an organization back to "inherit". `set` always
+ * writes a row, so without it an operator who excluded an organization could
+ * never undo that from the UI — cleanup would need raw SQL, which is precisely
+ * the state this slice exists to end.
+ */
+export async function clearOrgFlagOverride(input: {
+	key: FeatureFlagKey;
+	organizationId: string;
+}): Promise<void> {
+	await db.organizationFeatureFlagOverride.deleteMany({
+		where: { key: input.key, organizationId: input.organizationId },
+	});
+	orgCache.delete(input.organizationId);
 }

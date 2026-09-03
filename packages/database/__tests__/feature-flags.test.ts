@@ -3,6 +3,8 @@ import {
 	FEATURE_FLAG_REGISTRY,
 	type FeatureFlagKey,
 	type FlagSource,
+	isOrgScopableFlag,
+	ORG_SCOPABLE_FLAG_KEYS,
 } from "@repo/utils/feature-flag-registry";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -44,6 +46,8 @@ const upsert = vi.fn();
 const deleteMany = vi.fn();
 const findManyOrg = vi.fn();
 const findUniqueOrg = vi.fn();
+const upsertOrg = vi.fn();
+const deleteManyOrg = vi.fn();
 
 vi.mock("../prisma/client", () => ({
 	db: {
@@ -56,6 +60,8 @@ vi.mock("../prisma/client", () => ({
 		organizationFeatureFlagOverride: {
 			findMany: (...args: unknown[]) => findManyOrg(...args),
 			findUnique: (...args: unknown[]) => findUniqueOrg(...args),
+			upsert: (...args: unknown[]) => upsertOrg(...args),
+			deleteMany: (...args: unknown[]) => deleteManyOrg(...args),
 		},
 	},
 }));
@@ -74,6 +80,7 @@ import {
 	__ORG_CACHE_MAX_FOR_TEST,
 	__resetFeatureFlagCacheForTest,
 	clearFlagOverride,
+	clearOrgFlagOverride,
 	getAllFlags,
 	getAllFlagsDetailed,
 	getAllFlagsForOrganization,
@@ -82,9 +89,12 @@ import {
 	getGlobalFlagOverride,
 	getOrganizationFlagOverrideUncached,
 	getOrgFlagOverrides,
+	getOrgFlagStateUncached,
+	getOrgScopableFlagsDetailed,
 	isFeatureEnabled,
 	isKillSwitchArmed,
 	setFlagOverride,
+	setOrgFlagOverride,
 } from "../prisma/queries/feature-flags";
 
 describe("feature flag readers", () => {
@@ -683,5 +693,301 @@ describe("getAllFlagsForOrganization", () => {
 		expect(await getAllFlagsForOrganization("org-no-row")).toEqual(
 			await getAllFlags(),
 		);
+	});
+});
+
+/**
+ * The per-organization WRITE path — the allowlist mechanism's other half.
+ *
+ * `PUBLISHING_SUITE` appears by name where a concrete org-scopable key is
+ * needed; the set-level assertions derive from `ORG_SCOPABLE_FLAG_KEYS` so
+ * they keep holding when another flag gains the marker.
+ */
+describe("per-organization override writers", () => {
+	beforeEach(() => {
+		findMany.mockReset();
+		findManyOrg.mockReset();
+		upsertOrg.mockReset();
+		deleteManyOrg.mockReset();
+		loggerError.mockReset();
+		__resetFeatureFlagCacheForTest();
+		delete process.env.FABRIC_FEATURE_PUBLISHING_SUITE;
+	});
+
+	it("refuses a key the resolver would ignore at the org level", async () => {
+		const nonScopable = FEATURE_FLAG_KEYS.find(
+			(key) => !isOrgScopableFlag(key),
+		) as FeatureFlagKey;
+		expect(nonScopable).toBeDefined(); // precondition
+
+		await expect(
+			setOrgFlagOverride({
+				key: nonScopable,
+				organizationId: "org-a",
+				enabled: true,
+				updatedBy: "user-1",
+			}),
+		).rejects.toThrow(/not organization-scopable/);
+
+		// The guard has to be BEFORE the write, not a warning after it: an
+		// inert row is invisible to every reader and nothing would clean it up.
+		expect(upsertOrg).not.toHaveBeenCalled();
+	});
+
+	it("stores false as a value rather than deleting the row", async () => {
+		await setOrgFlagOverride({
+			key: "PUBLISHING_SUITE",
+			organizationId: "org-a",
+			enabled: false,
+			updatedBy: "user-1",
+		});
+
+		expect(deleteManyOrg).not.toHaveBeenCalled();
+		expect(upsertOrg).toHaveBeenCalledTimes(1);
+		expect(upsertOrg.mock.calls[0][0]).toMatchObject({
+			where: {
+				key_organizationId: {
+					key: "PUBLISHING_SUITE",
+					organizationId: "org-a",
+				},
+			},
+			create: { enabled: false, updatedBy: "user-1" },
+			update: { enabled: false, updatedBy: "user-1" },
+		});
+	});
+
+	it("clears with deleteMany, so clearing an organization with no row is a no-op", async () => {
+		deleteManyOrg.mockResolvedValue({ count: 0 });
+
+		await expect(
+			clearOrgFlagOverride({
+				key: "PUBLISHING_SUITE",
+				organizationId: "org-without-a-row",
+			}),
+		).resolves.toBeUndefined();
+
+		expect(deleteManyOrg).toHaveBeenCalledWith({
+			where: {
+				key: "PUBLISHING_SUITE",
+				organizationId: "org-without-a-row",
+			},
+		});
+	});
+
+	it("busts the written organization's cache entry", async () => {
+		findManyOrg.mockResolvedValue([
+			{ key: "PUBLISHING_SUITE", enabled: false },
+		]);
+		expect(
+			(await getOrgFlagOverrides("org-a")).get("PUBLISHING_SUITE"),
+		).toBe(false);
+		expect(findManyOrg).toHaveBeenCalledTimes(1); // precondition: cached
+
+		findManyOrg.mockResolvedValue([
+			{ key: "PUBLISHING_SUITE", enabled: true },
+		]);
+		await setOrgFlagOverride({
+			key: "PUBLISHING_SUITE",
+			organizationId: "org-a",
+			enabled: true,
+			updatedBy: "user-1",
+		});
+
+		// Within the 10s TTL, so a re-read can only see the new value if the
+		// write actually evicted the entry.
+		expect(
+			(await getOrgFlagOverrides("org-a")).get("PUBLISHING_SUITE"),
+		).toBe(true);
+		expect(findManyOrg).toHaveBeenCalledTimes(2);
+	});
+
+	it("busts ONLY that organization's entry, not the whole org cache", async () => {
+		findManyOrg.mockResolvedValue([
+			{ key: "PUBLISHING_SUITE", enabled: true },
+		]);
+		await getOrgFlagOverrides("org-a");
+		await getOrgFlagOverrides("org-b");
+		expect(findManyOrg).toHaveBeenCalledTimes(2); // precondition: both cached
+
+		await setOrgFlagOverride({
+			key: "PUBLISHING_SUITE",
+			organizationId: "org-b",
+			enabled: false,
+			updatedBy: "user-1",
+		});
+
+		// org-a was never written, so it must still be served from cache. A
+		// blanket `orgCache.clear()` would pass every assertion above and fail
+		// here — which is the point of the check.
+		await getOrgFlagOverrides("org-a");
+		expect(findManyOrg).toHaveBeenCalledTimes(2);
+
+		await getOrgFlagOverrides("org-b");
+		expect(findManyOrg).toHaveBeenCalledTimes(3);
+	});
+
+	it("clearing busts that organization's entry too", async () => {
+		deleteManyOrg.mockResolvedValue({ count: 1 });
+		findManyOrg.mockResolvedValue([
+			{ key: "PUBLISHING_SUITE", enabled: true },
+		]);
+		await getOrgFlagOverrides("org-a");
+		expect(findManyOrg).toHaveBeenCalledTimes(1); // precondition: cached
+
+		findManyOrg.mockResolvedValue([]);
+		await clearOrgFlagOverride({
+			key: "PUBLISHING_SUITE",
+			organizationId: "org-a",
+		});
+
+		expect((await getOrgFlagOverrides("org-a")).size).toBe(0);
+		expect(findManyOrg).toHaveBeenCalledTimes(2);
+	});
+});
+
+/**
+ * The post-write resolver. Its whole reason to exist is that the panel patches
+ * its query cache from the mutation response and never refetches, so a cached
+ * answer here would leave a wrong control on screen with nothing scheduled to
+ * correct it.
+ */
+describe("getOrgFlagStateUncached", () => {
+	beforeEach(() => {
+		findMany.mockReset();
+		findManyOrg.mockReset();
+		findUnique.mockReset();
+		findUniqueOrg.mockReset();
+		loggerError.mockReset();
+		__resetFeatureFlagCacheForTest();
+		delete process.env.FABRIC_FEATURE_PUBLISHING_SUITE;
+	});
+
+	it("reads through neither the org cache nor the global one", async () => {
+		// Warm both caches with values the uncached reader must not return.
+		findManyOrg.mockResolvedValue([
+			{ key: "PUBLISHING_SUITE", enabled: false },
+		]);
+		findMany.mockResolvedValue([
+			{ key: "PUBLISHING_SUITE", enabled: false },
+		]);
+		await getOrgFlagOverrides("org-a");
+		await getAllFlags();
+		expect(findManyOrg).toHaveBeenCalledTimes(1); // precondition: warmed
+		expect(findMany).toHaveBeenCalledTimes(1);
+
+		// Now the database says something different, well inside the 10s TTL.
+		findUniqueOrg.mockResolvedValue({ enabled: true });
+		findUnique.mockResolvedValue(undefined);
+
+		const result = await getOrgFlagStateUncached(
+			"PUBLISHING_SUITE",
+			"org-a",
+		);
+
+		expect(result).toEqual({
+			enabled: true,
+			source: "org-override",
+			orgOverride: true,
+		});
+		// The cached readers were not consulted again — the fresh answer came
+		// from the findUnique pair, not from a re-read of the cached findMany.
+		expect(findManyOrg).toHaveBeenCalledTimes(1);
+		expect(findMany).toHaveBeenCalledTimes(1);
+	});
+
+	it("sees a global override the org write never evicts", async () => {
+		// The failure this guards: an org write clears only that org's entry,
+		// so a cached global row could still report "env" for a flag an admin
+		// turned off instance-wide seconds ago on another replica.
+		process.env.FABRIC_FEATURE_PUBLISHING_SUITE = "true";
+		findUniqueOrg.mockResolvedValue(null);
+		findUnique.mockResolvedValue({ enabled: false });
+
+		await expect(
+			getOrgFlagStateUncached("PUBLISHING_SUITE", "org-a"),
+		).resolves.toEqual({
+			enabled: false,
+			source: "override",
+			orgOverride: undefined,
+		});
+	});
+});
+
+describe("getOrgScopableFlagsDetailed", () => {
+	beforeEach(() => {
+		findMany.mockReset();
+		findManyOrg.mockReset();
+		loggerError.mockReset();
+		__resetFeatureFlagCacheForTest();
+		delete process.env.FABRIC_FEATURE_PUBLISHING_SUITE;
+	});
+
+	it("offers exactly the registry's org-scopable flags and nothing else", async () => {
+		findMany.mockResolvedValue([]);
+		findManyOrg.mockResolvedValue([]);
+
+		const rows = await getOrgScopableFlagsDetailed("org-a");
+
+		expect(rows.map((r) => r.key)).toEqual(ORG_SCOPABLE_FLAG_KEYS);
+		// A flag the resolver ignores at the org level must never reach the
+		// panel — a switch for one would read back its own write and change
+		// nothing anywhere else.
+		expect(rows.every((r) => isOrgScopableFlag(r.key))).toBe(true);
+		expect(rows.length).toBeLessThan(FEATURE_FLAG_KEYS.length);
+	});
+
+	it("reports an absent row as undefined, distinct from a stored false", async () => {
+		findMany.mockResolvedValue([]);
+		findManyOrg.mockResolvedValue([]);
+		const inheriting = await getOrgScopableFlagsDetailed("org-a");
+		expect(
+			inheriting.find((r) => r.key === "PUBLISHING_SUITE")?.orgOverride,
+		).toBeUndefined();
+
+		__resetFeatureFlagCacheForTest();
+		findManyOrg.mockResolvedValue([
+			{ key: "PUBLISHING_SUITE", enabled: false },
+		]);
+		const excluded = await getOrgScopableFlagsDetailed("org-a");
+		expect(
+			excluded.find((r) => r.key === "PUBLISHING_SUITE")?.orgOverride,
+		).toBe(false);
+	});
+
+	it("lets an org-level true beat a global false — the allowlist case", async () => {
+		findMany.mockResolvedValue([
+			{ key: "PUBLISHING_SUITE", enabled: false },
+		]);
+		findManyOrg.mockResolvedValue([
+			{ key: "PUBLISHING_SUITE", enabled: true },
+		]);
+
+		const row = (await getOrgScopableFlagsDetailed("org-allowed")).find(
+			(r) => r.key === "PUBLISHING_SUITE",
+		);
+
+		expect(row).toMatchObject({
+			enabled: true,
+			source: "org-override",
+			orgOverride: true,
+		});
+	});
+
+	it("lets an org-level false beat an env-level true — the exclusion case", async () => {
+		findMany.mockResolvedValue([]);
+		process.env.FABRIC_FEATURE_PUBLISHING_SUITE = "true";
+		findManyOrg.mockResolvedValue([
+			{ key: "PUBLISHING_SUITE", enabled: false },
+		]);
+
+		const row = (await getOrgScopableFlagsDetailed("org-excluded")).find(
+			(r) => r.key === "PUBLISHING_SUITE",
+		);
+
+		expect(row).toMatchObject({
+			enabled: false,
+			source: "org-override",
+			orgOverride: false,
+		});
 	});
 });
