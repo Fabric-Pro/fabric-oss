@@ -189,13 +189,6 @@ const listAvailablePromptsProcedure = tenantProtectedProcedure
 						.describe(
 							"Whether this prompt is the default for this document type",
 						),
-					projectId: z
-						.string()
-						.nullable()
-						.optional()
-						.describe(
-							"Set when this binding is the PROJECT tier rather than the organization-wide one.",
-						),
 					contentSnippet: z
 						.string()
 						.describe(

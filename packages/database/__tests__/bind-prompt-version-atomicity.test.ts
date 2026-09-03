@@ -105,15 +105,23 @@ describe("the demote and the write land together", () => {
 });
 
 describe("losing the insert race", () => {
-	it("adopts the winner's row instead of failing the bind", async () => {
+	it("retries in a NEW transaction, because the failed one is aborted", async () => {
+		// Postgres marks a transaction aborted the moment a statement in it
+		// errors: every later command returns 25P02 until it ends. Recovering
+		// inside the transaction whose create just raised P2002 therefore
+		// cannot work, however reasonable it looks — proven against
+		// PostgreSQL 17.10, where the read after the violation returns
+		// "current transaction is aborted, commands ignored until end of
+		// transaction block". Only a fresh transaction can adopt the winner.
 		create.mockRejectedValueOnce(new FakeKnownRequestError("P2002"));
-		// The row the winning caller committed while this one was writing.
+		// First transaction sees nothing; the second sees the winner's row.
 		findFirst.mockResolvedValueOnce(null).mockResolvedValueOnce({
 			id: "winner-row",
 		});
 
 		const result = await bindPromptVersion({ ...TARGET, isDefault: true });
 
+		expect(transaction).toHaveBeenCalledTimes(2);
 		expect(update).toHaveBeenCalledWith({
 			where: { id: "winner-row" },
 			data: { promptVersionId: "ver-new", isDefault: true },
@@ -121,11 +129,28 @@ describe("losing the insert race", () => {
 		expect(result).toEqual({ id: "updated" });
 	});
 
+	it("re-demotes on the retry, since the first transaction rolled back", async () => {
+		// The losing transaction's demote is rolled back with it. Skipping it
+		// on the retry would leave the previous default still flagged.
+		create.mockRejectedValueOnce(new FakeKnownRequestError("P2002"));
+		findFirst.mockResolvedValueOnce(null).mockResolvedValueOnce({
+			id: "winner-row",
+		});
+
+		await bindPromptVersion({ ...TARGET, isDefault: true });
+
+		const demotes = updateMany.mock.calls.filter(
+			(c) => c[0]?.data?.isDefault === false,
+		);
+		expect(demotes.length).toBeGreaterThanOrEqual(2);
+	});
+
 	it("rethrows anything that is not a uniqueness collision", async () => {
-		create.mockRejectedValueOnce(new FakeKnownRequestError("P2003"));
+		create.mockRejectedValue(new FakeKnownRequestError("P2003"));
 
 		await expect(
 			bindPromptVersion({ ...TARGET, isDefault: true }),
 		).rejects.toMatchObject({ code: "P2003" });
+		expect(transaction).toHaveBeenCalledTimes(1);
 	});
 });
