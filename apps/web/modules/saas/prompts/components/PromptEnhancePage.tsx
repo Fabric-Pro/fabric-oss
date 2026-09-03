@@ -184,6 +184,7 @@ export function PromptEnhancePage({ promptId, organizationId }: Props) {
 							? `/api/copilotkit?organizationId=${organizationId}`
 							: "/api/copilotkit"
 					}
+					useSingleEndpoint
 					agent="prompt_enhancer"
 					showDevConsole={false}
 					onError={onError}

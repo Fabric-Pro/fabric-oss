@@ -164,6 +164,7 @@ export function TaskPlannerWorkspace() {
 				<AgentErrorBoundary>
 					<CopilotKit
 						runtimeUrl={runtimeUrl}
+						useSingleEndpoint
 						showDevConsole={false}
 						agent="task_planner"
 						onError={onError}
