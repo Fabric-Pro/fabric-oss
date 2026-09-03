@@ -86,7 +86,7 @@ describe("revokeDepartingMemberAccess", () => {
 		revoke.mockRejectedValue(new Error("database down"));
 
 		await expect(revokeDepartingMemberAccess(REMOVED)).rejects.toThrow(
-			/revoke the member's project access/i,
+			/revoke the member's access to this organization/i,
 		);
 		expect(logger.error).toHaveBeenCalledWith(
 			"[Auth] Failed to revoke organization access on offboarding",
@@ -140,7 +140,9 @@ describe("revokeDepartingMemberAccess", () => {
 			// need not be the one it acted on.
 			await expect(
 				revokeDepartingMemberAccess({ ...REMOVED, ...override }),
-			).rejects.toThrow(/revoke the member's project access/i);
+			).rejects.toThrow(
+				/revoke the member's access to this organization/i,
+			);
 
 			expect(revoke).not.toHaveBeenCalled();
 		},

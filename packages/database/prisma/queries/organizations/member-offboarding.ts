@@ -14,14 +14,23 @@
  * This function is only the first half, so a caller can do it inline and let
  * the second half be a workflow that may or may not start.
  *
- * EVERY STATEMENT IS IDEMPOTENT — `deleteMany` / `updateMany` over predicates,
- * never a read-then-write. That is what lets the cascade workflow run the same
- * deletions again a second later without conflicting, and lets a caller retry
- * without checking what already happened. The predicates are deliberately the
- * same ones `clearUserOrgSessionsActivity`,
- * `removeUserProjectMembershipsInOrgActivity` and
- * `removeUserWorkspaceMembershipsInOrgActivity` use; if one side ever changes
- * its definition of "access", the two must move together.
+ * ONE STATEMENT PER TABLE, and no read anywhere. Each membership table is
+ * scoped through its own relation (`project: { organizationId }`,
+ * `workspace: { organizationId }`) rather than by first collecting ids and
+ * feeding them to an `in` filter. That is not a micro-optimisation: an id list
+ * is a snapshot, so a project or workspace entering the organization between
+ * the read and the delete would be missed, and its grants would survive an
+ * offboarding that reported success. Pushing the scope into the predicate
+ * leaves no window to miss.
+ *
+ * Every statement is also idempotent — `deleteMany` / `updateMany` over
+ * predicates, never a read-modify-write of the rows being revoked. That is what
+ * lets the cascade workflow run the same deletions again a second later without
+ * conflicting, and lets a caller retry without checking what already happened.
+ * The predicates are deliberately equivalent to the ones
+ * `clearUserOrgSessionsActivity`, `removeUserProjectMembershipsInOrgActivity`
+ * and `removeUserWorkspaceMembershipsInOrgActivity` use; if one side ever
+ * changes its definition of "access", the two must move together.
  *
  * Scoped to ONE organization on both sides of every join. A user normally
  * belongs to several, and the personal-tenant rows (`organizationId: null`) are
@@ -63,45 +72,25 @@ export async function revokeOrganizationMemberAccess(
 		data: { activeOrganizationId: null },
 	});
 
-	const projects = await db.project.findMany({
-		where: { organizationId },
-		select: { id: true },
+	const projectMemberships = await db.projectMember.deleteMany({
+		where: { userId, project: { organizationId } },
 	});
-	const projectIds = projects.map((project) => project.id);
-
-	const projectMemberships = projectIds.length
-		? (
-				await db.projectMember.deleteMany({
-					where: { userId, projectId: { in: projectIds } },
-				})
-			).count
-		: 0;
-
-	const workspaces = await db.workspace.findMany({
-		where: { organizationId },
-		select: { id: true },
-	});
-	const workspaceIds = workspaces.map((workspace) => workspace.id);
 
 	// All three membership tables, because a person can hold more than one role
 	// on the same workspace and each table is a separate grant. Dropping only
 	// the administrator row would leave contributor access intact and look, from
 	// the outside, like offboarding had worked.
-	let workspaceMemberships = 0;
-	if (workspaceIds.length) {
-		const scope = { userId, workspaceId: { in: workspaceIds } };
-		const [administrators, contributors, stakeholders] = await Promise.all([
-			db.workspaceAdministrator.deleteMany({ where: scope }),
-			db.workspaceContributor.deleteMany({ where: scope }),
-			db.workspaceStakeholder.deleteMany({ where: scope }),
-		]);
-		workspaceMemberships =
-			administrators.count + contributors.count + stakeholders.count;
-	}
+	const workspaceScope = { userId, workspace: { organizationId } };
+	const [administrators, contributors, stakeholders] = await Promise.all([
+		db.workspaceAdministrator.deleteMany({ where: workspaceScope }),
+		db.workspaceContributor.deleteMany({ where: workspaceScope }),
+		db.workspaceStakeholder.deleteMany({ where: workspaceScope }),
+	]);
 
 	return {
-		projectMemberships,
-		workspaceMemberships,
+		projectMemberships: projectMemberships.count,
+		workspaceMemberships:
+			administrators.count + contributors.count + stakeholders.count,
 		sessionsCleared: sessions.count,
 	};
 }
