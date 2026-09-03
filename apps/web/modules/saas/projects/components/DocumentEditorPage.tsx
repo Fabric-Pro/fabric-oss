@@ -37,15 +37,22 @@ import { Component, useCallback, useEffect, useMemo, useState } from "react";
 import { useProjectPresence } from "../hooks";
 import { DocumentAutoRefreshToggle } from "./DocumentAutoRefreshToggle";
 import { DocumentEditor, getDocumentTypeLabel } from "./DocumentEditor";
+import { DocumentEditorAiUnavailable } from "./DocumentEditorAiUnavailable";
 import { DocumentTitleInlineEdit } from "./DocumentTitleInlineEdit";
 
-// Error boundary to catch CopilotKit initialization failures
-// Falls back to rendering the editor without AI features
+// Error boundary to catch CopilotKit initialization failures. The fallback
+// must not mount anything that calls a CopilotKit hook — `<DocumentEditor>`
+// does, unconditionally, and on 1.70 those throw without a provider above
+// them, so it cannot be the fallback (Fizzy #2393). The fallback receives
+// the caught error so the AI-free panel can surface its message.
 class CopilotErrorBoundary extends Component<
-	{ children: ReactNode; fallback: ReactNode },
+	{ children: ReactNode; fallback: (error: Error | null) => ReactNode },
 	{ hasError: boolean; error: Error | null }
 > {
-	constructor(props: { children: ReactNode; fallback: ReactNode }) {
+	constructor(props: {
+		children: ReactNode;
+		fallback: (error: Error | null) => ReactNode;
+	}) {
 		super(props);
 		this.state = { hasError: false, error: null };
 	}
@@ -64,7 +71,7 @@ class CopilotErrorBoundary extends Component<
 
 	render() {
 		if (this.state.hasError) {
-			return this.props.fallback;
+			return this.props.fallback(this.state.error);
 		}
 		return this.props.children;
 	}
@@ -571,25 +578,12 @@ export function DocumentEditorPage({
 			  depends on. */}
 			<div className="flex-1 min-h-0 overflow-hidden [&>.copilotKitSidebarContentWrapper]:h-full">
 				<CopilotErrorBoundary
-					fallback={
-						<DocumentEditor
-							projectId={projectId}
-							documentId={documentId}
-							isAiSidebarExpanded={isAiSidebarExpanded}
-							actionSlot={actionSlotEl}
-							saveSlot={saveSlotEl}
-							documentRefKind={documentRefKind}
-							initialAssistantConversationId={
-								initialAssistantConversationId
-							}
-							initialAssistantVisibility={
-								initialAssistantVisibility
-							}
-							initialAssistantVisibilityLockedAt={
-								initialAssistantVisibilityLockedAt
-							}
+					fallback={(error) => (
+						<DocumentEditorAiUnavailable
+							content={document.content}
+							error={error}
 						/>
-					}
+					)}
 				>
 					<CopilotKit
 						runtimeUrl={copilotRuntimeUrl}
