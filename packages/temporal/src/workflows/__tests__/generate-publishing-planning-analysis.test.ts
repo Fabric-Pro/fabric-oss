@@ -20,6 +20,10 @@ const INPUT = {
 	actorUserId: "u1",
 };
 
+/** What the panel is allowed to show for a failure we did not author. */
+const NEUTRAL_FAILURE =
+	"Generation failed. The reason is recorded in the run log for this project.";
+
 beforeEach(() => {
 	vi.clearAllMocks();
 	activityStubs.generatePlanningAnalysisActivity.mockResolvedValue({
@@ -57,7 +61,7 @@ describe("generatePublishingPlanningAnalysisWorkflow", () => {
 		).toHaveBeenCalledWith({
 			analysisId: "pa_1",
 			projectId: "p1",
-			message: "model timeout",
+			message: NEUTRAL_FAILURE,
 		});
 	});
 

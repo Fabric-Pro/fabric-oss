@@ -7,4 +7,5 @@
  * name it reaches becomes a function Temporal can be asked to schedule.
  */
 
+export { assertGenerationActorAuthorized } from "./assert-generation-actor";
 export { resolveContributorNames } from "./contributor-names";

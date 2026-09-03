@@ -25,6 +25,7 @@
 
 import { log, proxyActivities } from "@temporalio/workflow";
 import type * as activities from "../activities";
+import { publishingFailureDetail } from "./publishing-failure-message";
 
 const { generateBlogPostActivity } = proxyActivities<typeof activities>({
 	// Provenance-scoped reads, up to 20 GitHub PR fetches, and one COMPLEX-tier
@@ -94,9 +95,17 @@ export async function generatePublishingBlogPostWorkflow(
 			seededWorkingDraft: result.seededWorkingDraft,
 		};
 	} catch (error) {
-		const message =
-			error instanceof Error ? error.message : "Unknown error";
+		// Two audiences. `message` is authored by us and is what the panel
+		// renders to anyone who can see the tab; `detail` is the real unwrapped
+		// reason and goes only to the log. Temporal's `ActivityFailure.message`
+		// is the generic "Activity task failed", so reading it stored those four
+		// words on every failed draft in the suite — and walking to the real
+		// cause without this split would instead render whatever a provider or a
+		// driver happened to say. See `publishing-failure-message.ts`.
+		const { message, errorClass, detail } = publishingFailureDetail(error);
 		log.error("[publishing-blog-post] generation failed", {
+			errorClass,
+			detail,
 			draftId: input.draftId,
 			topicId: input.topicId,
 			message,

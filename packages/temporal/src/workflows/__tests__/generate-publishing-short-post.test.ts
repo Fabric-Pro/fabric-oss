@@ -31,6 +31,10 @@ const INPUT = {
 	guidance: null,
 };
 
+/** What the panel is allowed to show for a failure we did not author. */
+const NEUTRAL_FAILURE =
+	"Generation failed. The reason is recorded in the run log for this project.";
+
 beforeEach(() => {
 	vi.clearAllMocks();
 	activityStubs.generateShortPostActivity.mockResolvedValue({
@@ -76,7 +80,7 @@ describe("generatePublishingShortPostWorkflow", () => {
 		expect(activityStubs.markShortPostFailedActivity).toHaveBeenCalledWith({
 			draftId: "d1",
 			projectId: "p1",
-			message: "model timeout",
+			message: NEUTRAL_FAILURE,
 		});
 	});
 
@@ -123,8 +127,13 @@ describe("generatePublishingShortPostWorkflow", () => {
 		const result = await generatePublishingShortPostWorkflow(INPUT);
 
 		expect(result).toEqual({ status: "FAILED" });
+		// Deliberately CHANGED from "Unknown error": the workflow now uses the
+		// repo's cause-chain walk, whose documented fallback for a non-Error
+		// throw is `String(error)` (pinned by `pm-sync-error-unwrap.test.ts`).
+		// See the same case in `generate-publishing-case-study.test.ts` for why
+		// keeping the information is the better answer.
 		expect(activityStubs.markShortPostFailedActivity).toHaveBeenCalledWith(
-			expect.objectContaining({ message: "Unknown error" }),
+			expect.objectContaining({ message: NEUTRAL_FAILURE }),
 		);
 	});
 });

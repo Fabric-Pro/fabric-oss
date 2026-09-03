@@ -5,6 +5,7 @@
 
 import {
 	hasPermission,
+	type Permission,
 	Permissions,
 	resolveOrgPermissions,
 	resolveProjectPermissions,
@@ -1210,6 +1211,129 @@ export async function getProjectMemberRole(
 	});
 
 	return projectMembership?.role ?? null;
+}
+
+/**
+ * A caller's standing on a project: which organization hosts it RIGHT NOW,
+ * what the caller may do there, and which path said so.
+ *
+ * The organization id is read fresh from the row on every call. That is the
+ * half a background caller needs and a request-time caller does not: a queued
+ * job carries the organization it was authorized under, and only a fresh read
+ * can tell whether the project still belongs to it.
+ */
+export interface ProjectAccess {
+	/** The project's host organization RIGHT NOW, or null for a personal one. */
+	organizationId: string | null;
+	/** What the caller may do, by the path that granted it. */
+	permissions: readonly Permission[];
+	/** Which path granted them. `"owner"` is a short-circuit — see below. */
+	source: "owner" | "project-member" | "org" | "none";
+}
+
+/**
+ * Resolve a caller's effective permissions on a project, with the SAME
+ * precedence as `requireProjectPermission`:
+ *
+ *   A. personal-project owner
+ *   C. an active (accepted, non-expired) ProjectMember row is AUTHORITATIVE —
+ *      its role alone decides, and the org role is NOT consulted. This is what
+ *      makes a per-project demotion (an org admin restricted to Viewer on one
+ *      project) actually enforceable.
+ *   B. otherwise, the caller's org role on the project's host organization.
+ *
+ * Returns `null` when the project does not exist.
+ *
+ * ## Callers must apply the owner short-circuit themselves
+ *
+ * This returns a permission SET, and a set is not the gate's answer. The gate
+ * passes a personal-project owner unconditionally — see `assertProjectPermission`
+ * in `packages/api/orpc/middleware/require-permission.ts`, which returns early
+ * on `source === "owner"` because an owner is authorized for ANY project
+ * permission, including ones outside the OWNER set. No project role grants
+ * `AGENT_CREATE`/`AGENT_UPDATE`/`AGENT_DELETE`, so a caller that writes
+ * `hasPermission(access.permissions, AGENT_CREATE)` and stops there answers
+ * "no" where the gate answers "yes".
+ *
+ * So the shape to copy is:
+ *
+ *   access.source === "owner" || hasPermission(access.permissions, P)
+ *
+ * ## Why this exists next to the authority instead of importing it
+ *
+ * `resolveEffectiveProjectPermissions` (`@repo/api`) is the authority for
+ * request-time decisions. `@repo/api` depends on `@repo/database` and not the
+ * reverse, so background callers — Temporal activities, MCP tools, route
+ * handlers — cannot import it, and the ladder gets written out again. It is
+ * written out four times today; this is the one that background callers can
+ * share, and `canEditProject` / `canCreateProjectStory` directly above are the
+ * two that should be folded into it next.
+ *
+ * The fetch is deliberately SERIAL where the authority's is parallel: path A
+ * returns before the ProjectMember lookup is issued at all. The authority runs
+ * on every project-scoped request and trades one discarded point-lookup for a
+ * round trip; a background caller runs once per job, where that trade buys
+ * nothing — and `can-edit-project-precedence.test.ts` asserts the lookup does
+ * not happen on the owner path.
+ */
+export async function resolveProjectAccess(
+	projectId: string,
+	userId: string,
+): Promise<ProjectAccess | null> {
+	const project = await db.project.findUnique({
+		where: { id: projectId },
+		select: { userId: true, organizationId: true },
+	});
+	if (!project) {
+		return null;
+	}
+
+	// Path A
+	if (project.userId === userId && project.organizationId === null) {
+		return {
+			organizationId: null,
+			permissions: resolveProjectPermissions(ProjectMemberRole.OWNER),
+			source: "owner",
+		};
+	}
+
+	// Path C — checked BEFORE Path B so a per-project demotion is honored.
+	const member = await db.projectMember.findUnique({
+		where: { projectId_userId: { projectId, userId } },
+		select: { role: true, acceptedAt: true, expiresAt: true },
+	});
+	const memberActive =
+		member !== null &&
+		member.acceptedAt !== null &&
+		(member.expiresAt === null || member.expiresAt > new Date());
+	if (memberActive) {
+		return {
+			organizationId: project.organizationId,
+			permissions: resolveProjectPermissions(member.role),
+			source: "project-member",
+		};
+	}
+
+	// Path B — fallback to org role when no active project-level row exists.
+	if (project.organizationId) {
+		const orgMember = await db.member.findFirst({
+			where: { organizationId: project.organizationId, userId },
+			select: { role: true },
+		});
+		if (orgMember) {
+			return {
+				organizationId: project.organizationId,
+				permissions: resolveOrgPermissions(orgMember.role),
+				source: "org",
+			};
+		}
+	}
+
+	return {
+		organizationId: project.organizationId,
+		permissions: [],
+		source: "none",
+	};
 }
 
 /**

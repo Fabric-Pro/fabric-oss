@@ -1,4 +1,11 @@
+import { join } from "node:path";
+import {
+	ActivityFailure,
+	ApplicationFailure,
+	RetryState,
+} from "@temporalio/common";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { firstCallPosition } from "../../activities/publishing-shared/__tests__/_ast-guards";
 
 /**
  * The Case Study workflow's DEGRADATION BOUNDARY (Fizzy #1854, Phase 2C).
@@ -21,10 +28,16 @@ const proxyActivities = vi.hoisted(() =>
 	vi.fn((_options: Record<string, unknown>) => activityStubs),
 );
 
-vi.mock("@temporalio/workflow", () => ({
-	proxyActivities,
-	log: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
+// Hoisted so the cases below can read what actually reached the operator log —
+// the other half of the failure contract, and the half the panel never shows.
+const log = vi.hoisted(() => ({
+	info: vi.fn(),
+	warn: vi.fn(),
+	error: vi.fn(),
+	debug: vi.fn(),
 }));
+
+vi.mock("@temporalio/workflow", () => ({ proxyActivities, log }));
 
 import { generatePublishingCaseStudyWorkflow } from "../generate-publishing-case-study";
 
@@ -37,6 +50,10 @@ const INPUT = {
 	guidance: null,
 };
 
+/** What the panel is allowed to show for a failure we did not author. */
+const NEUTRAL_FAILURE =
+	"Generation failed. The reason is recorded in the run log for this project.";
+
 beforeEach(() => {
 	activityStubs.generateCaseStudyActivity.mockReset();
 	activityStubs.markCaseStudyFailedActivity.mockReset();
@@ -45,6 +62,9 @@ beforeEach(() => {
 		seededWorkingDraft: true,
 	});
 	activityStubs.markCaseStudyFailedActivity.mockResolvedValue(undefined);
+	// Reset too: a case that reads `log.error.mock.calls[0]` would otherwise
+	// read the previous case's line and pass on the wrong evidence.
+	log.error.mockReset();
 });
 
 describe("generatePublishingCaseStudyWorkflow", () => {
@@ -121,9 +141,84 @@ describe("generatePublishingCaseStudyWorkflow", () => {
 			expect.objectContaining({
 				draftId: "d1",
 				projectId: "p1",
-				message: "provider timed out",
+				message: NEUTRAL_FAILURE,
 			}),
 		);
+	});
+
+	it("recovers a reason WE authored from inside Temporal's wrapper", async () => {
+		// Temporal delivers an activity throw as `ActivityFailure`, whose own
+		// `.message` is the generic "Activity task failed" — the reason the
+		// activity gave lives on `.cause`. The workflow read `error.message`, so
+		// EVERY failed draft in the suite stored and displayed that one string:
+		// a revoked actor, a bad bound prompt and a provider outage were
+		// indistinguishable to the person looking at the tab.
+		//
+		// A REAL `ActivityFailure` from `@temporalio/common`, not an object
+		// shaped by hand. The neighbouring cases reject with a bare `Error`,
+		// which is a shape production never produces — that encodes what the
+		// author expected the rejection to look like, which is exactly how this
+		// went unnoticed for two phases.
+		//
+		// This case also pins the ROUND TRIP: the string the activity raises and
+		// the string the workflow stores are written in two different files, in
+		// two different sandboxes, and nothing else would notice them drifting.
+		activityStubs.generateCaseStudyActivity.mockRejectedValue(
+			new ActivityFailure(
+				"Activity task failed",
+				"generateCaseStudyActivity",
+				"1",
+				RetryState.NON_RETRYABLE_FAILURE,
+				undefined,
+				ApplicationFailure.nonRetryable(
+					"The account that started this draft is no longer authorized to generate on this project",
+					"PUBLISHING_ACTOR_INVALID",
+				),
+			),
+		);
+
+		const result = await generatePublishingCaseStudyWorkflow(INPUT);
+
+		expect(result).toEqual({ status: "FAILED", seededWorkingDraft: false });
+		expect(activityStubs.markCaseStudyFailedActivity).toHaveBeenCalledWith(
+			expect.objectContaining({
+				message:
+					"The account that started this draft is no longer authorized to generate on this project",
+			}),
+		);
+	});
+
+	it("keeps a reason we did NOT author out of the stored row, and in the log", async () => {
+		// The disclosure boundary. Walking to the deepest cause reaches text
+		// nobody on this side wrote — a provider transport error, a driver
+		// error — and the panel renders the stored string verbatim to everyone
+		// who can see the tab. So the row gets our words and the log gets theirs.
+		activityStubs.generateCaseStudyActivity.mockRejectedValue(
+			new ActivityFailure(
+				"Activity task failed",
+				"generateCaseStudyActivity",
+				"1",
+				RetryState.NON_RETRYABLE_FAILURE,
+				undefined,
+				new Error(
+					"POST https://provider.example.com/v1/x failed: 401 (request 9f2c)",
+				),
+			),
+		);
+
+		await generatePublishingCaseStudyWorkflow(INPUT);
+
+		const stored =
+			activityStubs.markCaseStudyFailedActivity.mock.calls[0]?.[0];
+		expect(stored.message).toBe(NEUTRAL_FAILURE);
+		expect(stored.message).not.toContain("provider.example.com");
+		expect(stored.message).not.toContain("request 9f2c");
+
+		// ...and the operator still gets the real thing.
+		expect(log.error.mock.calls[0]?.[1]).toMatchObject({
+			errorClass: "Error",
+			detail: expect.stringContaining("provider.example.com"),
+		});
 	});
 
 	it("still does not throw when the failure marker ITSELF fails", async () => {
@@ -147,8 +242,13 @@ describe("generatePublishingCaseStudyWorkflow", () => {
 		const result = await generatePublishingCaseStudyWorkflow(INPUT);
 
 		expect(result).toEqual({ status: "FAILED", seededWorkingDraft: false });
+		// Deliberately CHANGED from "Unknown error", and not to the thrown value
+		// either: a rejection with no type of ours gets the neutral message,
+		// because there is no way to know what a non-Error throw contains. The
+		// value itself reaches the log. The thing that must not regress is the
+		// line above — the workflow still returns rather than throwing.
 		expect(activityStubs.markCaseStudyFailedActivity).toHaveBeenCalledWith(
-			expect.objectContaining({ message: "Unknown error" }),
+			expect.objectContaining({ message: NEUTRAL_FAILURE }),
 		);
 	});
 
@@ -172,4 +272,33 @@ describe("generatePublishingCaseStudyWorkflow", () => {
 		expect(marker.startToCloseTimeout).toBe("30s");
 		expect(marker.heartbeatTimeout).toBeUndefined();
 	});
+});
+
+describe("every publishing generation workflow unwraps the wrapper", () => {
+	// The unwrap is one line, repeated in five files, and only ONE of those
+	// files is exercised by the case above — `generate-publishing-stakeholder-email.ts`
+	// has no workflow suite at all. A file-by-file structural check is what
+	// stops the other four regressing silently.
+	//
+	// `firstCallPosition` and not a source-text search: the comment ABOVE each
+	// call describes the mapping in prose, so a grep would stay green after the
+	// call itself was deleted.
+	const WORKFLOWS = [
+		"generate-publishing-blog-post.ts",
+		"generate-publishing-case-study.ts",
+		"generate-publishing-planning-analysis.ts",
+		"generate-publishing-short-post.ts",
+		"generate-publishing-stakeholder-email.ts",
+	];
+
+	for (const file of WORKFLOWS) {
+		it(`${file} routes its failure through the authored mapping`, () => {
+			expect(
+				firstCallPosition(
+					join(__dirname, "..", file),
+					"publishingFailureDetail",
+				),
+			).toBeGreaterThan(-1);
+		});
+	}
 });
