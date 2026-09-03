@@ -39,7 +39,7 @@ vi.mock("@repo/ai/lib/function-tag-context", () => ({
 
 const topicFindFirst = vi.fn();
 const userFindMany = vi.fn();
-const isCurrentOrgMember = vi.fn();
+const checkPublishingGenerationActor = vi.fn();
 const getBoundPromptForAgent = vi.fn();
 const completePlanningAnalysis = vi.fn();
 vi.mock("@repo/database", () => ({
@@ -49,7 +49,8 @@ vi.mock("@repo/database", () => ({
 		},
 		user: { findMany: (...a: unknown[]) => userFindMany(...a) },
 	},
-	isCurrentOrgMember: (...a: unknown[]) => isCurrentOrgMember(...a),
+	checkPublishingGenerationActor: (...a: unknown[]) =>
+		checkPublishingGenerationActor(...a),
 	getBoundPromptForAgent: (...a: unknown[]) => getBoundPromptForAgent(...a),
 	completePlanningAnalysis: (...a: unknown[]) =>
 		completePlanningAnalysis(...a),
@@ -120,7 +121,7 @@ beforeEach(() => {
 	vi.clearAllMocks();
 	topicFindFirst.mockResolvedValue(TOPIC);
 	userFindMany.mockResolvedValue([{ id: "user-2", name: "A Contributor" }]);
-	isCurrentOrgMember.mockResolvedValue(true);
+	checkPublishingGenerationActor.mockResolvedValue({ ok: true });
 	getBoundPromptForAgent.mockResolvedValue(null);
 	collectPlanningContext.mockResolvedValue(CONTEXT_RESULT);
 	getProjectFunctionTagClause.mockResolvedValue("");
@@ -172,19 +173,34 @@ describe("generatePlanningAnalysisActivity — tenancy", () => {
 });
 
 describe("generatePlanningAnalysisActivity — actor revalidation", () => {
-	it("re-checks org membership before resolving a model", async () => {
+	it("re-checks the actor's PROJECT authorization before resolving a model", async () => {
+		// The argument bag, not just "it was called". The defect this replaced
+		// was that the re-check asked a different question than the API gate —
+		// so what has to be pinned is WHICH question, and about which project.
 		await run();
 
-		expect(isCurrentOrgMember).toHaveBeenCalledWith("user-1", "org-1");
+		expect(checkPublishingGenerationActor).toHaveBeenCalledWith({
+			projectId: "proj-1",
+			organizationId: "org-1",
+			actorUserId: "user-1",
+		});
 	});
 
-	it("never reaches the model factory when the actor lost org access", async () => {
+	it("never reaches the model factory when the actor is no longer authorized", async () => {
 		// The assertion that matters is the SECOND one. Throwing is easy to get
 		// right by accident; what this guard exists for is that no model is
-		// resolved under a departed member's identity, and only "the factory was
-		// never called" proves the check runs BEFORE resolution rather than
+		// resolved under a revoked collaborator's identity, and only "the factory
+		// was never called" proves the check runs BEFORE resolution rather than
 		// beside it.
-		isCurrentOrgMember.mockResolvedValue(false);
+		//
+		// Provider resolution is organization-FIRST (`getAiProviderApiKey`), so
+		// the spend a late check would allow is the ORGANIZATION's. The comment
+		// that stood here said the opposite, and the guard was built on it.
+		checkPublishingGenerationActor.mockResolvedValue({
+			ok: false,
+			reason: "NOT_AUTHORIZED",
+			currentOrganizationId: "org-1",
+		});
 
 		await expect(run()).rejects.toMatchObject({
 			type: "PUBLISHING_ACTOR_INVALID",
@@ -194,12 +210,45 @@ describe("generatePlanningAnalysisActivity — actor revalidation", () => {
 		expect(generateObject).not.toHaveBeenCalled();
 	});
 
-	it("skips the membership check for a personal project", async () => {
-		// There is no membership to check, and calling `isCurrentOrgMember` with
-		// a null org would be a lookup that can only answer "no".
+	it("refuses when the project has left the organization the run was queued under", async () => {
+		checkPublishingGenerationActor.mockResolvedValue({
+			ok: false,
+			reason: "TENANT_MISMATCH",
+			currentOrganizationId: "org-2",
+		});
+
+		await expect(run()).rejects.toMatchObject({
+			type: "PUBLISHING_TENANT_MISMATCH",
+			nonRetryable: true,
+		});
+		expect(getAIModelWithMetadata).not.toHaveBeenCalled();
+	});
+
+	it("re-checks the actor even when the run carries no organization", async () => {
+		// The old guard was `if (organizationId != null)`, so a run with no
+		// organization got NO actor re-validation at all — and the case that
+		// stood here asserted only that `isCurrentOrgMember` was not called,
+		// which is true of every possible implementation, including one that
+		// checks nothing.
+		//
+		// The branch is unreachable in production: the feature gate refuses a
+		// project with no organization (ADR-018). A fail-closed unit case, then,
+		// not coverage of a live path — said here so nobody reads it as one.
+		checkPublishingGenerationActor.mockResolvedValue({
+			ok: false,
+			reason: "NOT_AUTHORIZED",
+			currentOrganizationId: null,
+		});
+
+		await expect(run({ organizationId: null })).rejects.toMatchObject({
+			type: "PUBLISHING_ACTOR_INVALID",
+		});
+		expect(generateObject).not.toHaveBeenCalled();
+	});
+
+	it("still generates for an authorized run that carries no organization", async () => {
 		await run({ organizationId: null });
 
-		expect(isCurrentOrgMember).not.toHaveBeenCalled();
 		expect(generateObject).toHaveBeenCalled();
 	});
 });

@@ -52,6 +52,7 @@ export * from "./projects";
 export * from "./publishing-chat-delivery";
 export * from "./publishing-decisions";
 export * from "./publishing-drafts";
+export * from "./publishing-generation-actor";
 export * from "./publishing-last-run";
 export * from "./publishing-notification-delivery";
 export * from "./publishing-notification-drain";

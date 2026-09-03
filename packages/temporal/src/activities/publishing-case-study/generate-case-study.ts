@@ -7,11 +7,12 @@
  *  1. The topic is read re-scoped by `projectId`. A topic id is a client input
  *     everywhere it appears, and a valid id from another project must resolve
  *     to the same nothing a deleted one does (DV16).
- *  2. The actor's org membership is re-checked at the point of use, before any
- *     model is resolved. Org model resolution PREFERS the actor's personal
- *     provider, so an editor who starts a run and then loses org access would
- *     otherwise keep powering org work under their identity. Fail-closed via a
- *     non-retryable throw.
+ *  2. The actor's authorization is re-checked at the point of use, before any
+ *     model is resolved — the SAME question the API gate asked, which is a
+ *     project permission and NOT org membership (only the last of that gate's
+ *     three paths). Provider resolution is organization-first, so a revoked
+ *     collaborator would otherwise keep spending the organization's key and
+ *     credits on its material. Fail-closed via a non-retryable throw.
  *  3. Output is `safeParse`d before anything is written.
  *
  * The bound prompt is resolved HERE, in the activity, never in the workflow —
@@ -41,7 +42,6 @@ import {
 	completeTopicDraft,
 	db,
 	getBoundPromptForAgent,
-	isCurrentOrgMember,
 	listTopicDecisions,
 	seedWorkingDraftIfAbsent,
 } from "@repo/database";
@@ -62,7 +62,10 @@ import {
 import { heartbeat } from "@temporalio/activity";
 import { ApplicationFailure } from "@temporalio/common";
 import { collectPlanningContext } from "../publishing-planning/collect-planning-context";
-import { resolveContributorNames } from "../publishing-shared";
+import {
+	assertGenerationActorAuthorized,
+	resolveContributorNames,
+} from "../publishing-shared";
 import {
 	type CaseStudyDecision,
 	composeCaseStudyPrompt,
@@ -139,19 +142,14 @@ export async function generateCaseStudyActivity(
 	}
 
 	// (2) Point-of-use actor re-validation (TOCTOU). Before ANYTHING that
-	// resolves a model or spends the actor's provider quota.
-	if (organizationId != null) {
-		const stillMember = await isCurrentOrgMember(
-			actorUserId,
-			organizationId,
-		);
-		if (!stillMember) {
-			throw ApplicationFailure.nonRetryable(
-				"AI actor is no longer an org member",
-				"PUBLISHING_ACTOR_INVALID",
-			);
-		}
-	}
+	// resolves a model or spends the organization's provider quota. Asks the
+	// API gate's own question; see `assertGenerationActorAuthorized`.
+	await assertGenerationActorAuthorized({
+		projectId,
+		organizationId,
+		actorUserId,
+		activity: "generateCaseStudyActivity",
+	});
 
 	const [
 		boundPrompt,

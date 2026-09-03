@@ -1,7 +1,6 @@
-import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import ts from "typescript";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { databaseValueImports } from "../../publishing-shared/__tests__/_ast-guards";
 
 /**
  * The Case Study LLM activity (Fizzy #1854, Phase 2C).
@@ -61,7 +60,7 @@ vi.mock("@repo/ai/lib/function-tag-context", () => ({
 const topicFindFirst = vi.fn();
 const analysisFindFirst = vi.fn();
 const userFindMany = vi.fn();
-const isCurrentOrgMember = vi.fn();
+const checkPublishingGenerationActor = vi.fn();
 const getBoundPromptForAgent = vi.fn();
 const listTopicDecisions = vi.fn();
 const completeTopicDraft = vi.fn();
@@ -76,7 +75,8 @@ vi.mock("@repo/database", () => ({
 		},
 		user: { findMany: (...a: unknown[]) => userFindMany(...a) },
 	},
-	isCurrentOrgMember: (...a: unknown[]) => isCurrentOrgMember(...a),
+	checkPublishingGenerationActor: (...a: unknown[]) =>
+		checkPublishingGenerationActor(...a),
 	getBoundPromptForAgent: (...a: unknown[]) => getBoundPromptForAgent(...a),
 	listTopicDecisions: (...a: unknown[]) => listTopicDecisions(...a),
 	completeTopicDraft: (...a: unknown[]) => completeTopicDraft(...a),
@@ -179,7 +179,7 @@ beforeEach(() => {
 	topicFindFirst.mockResolvedValue(TOPIC);
 	analysisFindFirst.mockResolvedValue(null);
 	userFindMany.mockResolvedValue([{ id: "user-2", name: "A Contributor" }]);
-	isCurrentOrgMember.mockResolvedValue(true);
+	checkPublishingGenerationActor.mockResolvedValue({ ok: true });
 	getBoundPromptForAgent.mockResolvedValue(null);
 	listTopicDecisions.mockResolvedValue([]);
 	collectPlanningContext.mockResolvedValue(CONTEXT_RESULT);
@@ -234,11 +234,21 @@ describe("generateCaseStudyActivity — tenancy and actor revalidation", () => {
 		expect(getAIModelWithMetadata).not.toHaveBeenCalled();
 	});
 
-	it("never reaches the model factory when the actor lost org access", async () => {
-		// The second assertion is the one that matters: org model resolution
-		// PREFERS the actor's personal provider, so only "the factory was never
-		// called" proves the check runs BEFORE resolution rather than beside it.
-		isCurrentOrgMember.mockResolvedValue(false);
+	it("never reaches the model factory when the actor is no longer authorized", async () => {
+		// The second assertion is the one that matters. Throwing is easy to get
+		// right by accident; what this guard exists for is that no model is
+		// resolved and no source collected under a revoked collaborator's
+		// identity, and only "the factory was never called" proves the check
+		// runs BEFORE resolution rather than beside it.
+		//
+		// Provider resolution is organization-FIRST (`getAiProviderApiKey`), so
+		// the spend a late check would allow is the ORGANIZATION's. The comment
+		// that stood here said the opposite, and the guard was built on it.
+		checkPublishingGenerationActor.mockResolvedValue({
+			ok: false,
+			reason: "NOT_AUTHORIZED",
+			currentOrganizationId: "org-1",
+		});
 
 		await expect(run()).rejects.toMatchObject({
 			type: "PUBLISHING_ACTOR_INVALID",
@@ -248,10 +258,52 @@ describe("generateCaseStudyActivity — tenancy and actor revalidation", () => {
 		expect(generateObject).not.toHaveBeenCalled();
 	});
 
-	it("skips the membership check for a personal project", async () => {
+	it("refuses when the project has left the organization the run was queued under", async () => {
+		checkPublishingGenerationActor.mockResolvedValue({
+			ok: false,
+			reason: "TENANT_MISMATCH",
+			currentOrganizationId: "org-2",
+		});
+
+		await expect(run()).rejects.toMatchObject({
+			type: "PUBLISHING_TENANT_MISMATCH",
+			nonRetryable: true,
+		});
+		expect(getAIModelWithMetadata).not.toHaveBeenCalled();
+	});
+
+	it("re-checks the actor even when the run carries no organization", async () => {
+		// The old guard was `if (organizationId != null)`, so a run with no
+		// organization got NO actor re-validation at all — and the case that
+		// stood here asserted only that `isCurrentOrgMember` was not called,
+		// which is true of every possible implementation, including one that
+		// checks nothing.
+		//
+		// The branch is unreachable in production: the feature gate refuses a
+		// project with no organization (ADR-018). A fail-closed unit case, then,
+		// not coverage of a live path — said here so nobody reads it as one.
+		checkPublishingGenerationActor.mockResolvedValue({
+			ok: false,
+			reason: "NOT_AUTHORIZED",
+			currentOrganizationId: null,
+		});
+
+		await expect(run({ organizationId: null })).rejects.toMatchObject({
+			type: "PUBLISHING_ACTOR_INVALID",
+		});
+		expect(checkPublishingGenerationActor).toHaveBeenCalledWith({
+			projectId: "proj-1",
+			organizationId: null,
+			actorUserId: "user-1",
+		});
+		expect(getAIModelWithMetadata).not.toHaveBeenCalled();
+	});
+
+	it("passes a null organization through to prompt resolution", async () => {
+		// Kept from the case this block replaced: `organizationId ?? undefined`
+		// is load-bearing in `getBoundPromptForAgent`, and nothing else pins it.
 		await run({ organizationId: null });
 
-		expect(isCurrentOrgMember).not.toHaveBeenCalled();
 		expect(getBoundPromptForAgent.mock.calls[0]?.[0]?.organizationId).toBe(
 			undefined,
 		);
@@ -696,71 +748,9 @@ describe("generateCaseStudyActivity — the clamp", () => {
 	});
 });
 
-/**
- * Every VALUE this module imports from `@repo/database`, as source.
- *
- * Type-only imports are excluded on purpose — a type cannot write a row, so
- * adding one is not a change to the write surface and should not fail this.
- * A namespace import (`* as`) or a dynamic `import("@repo/database")` WOULD
- * defeat the check, so both are recorded as their own entries and the expected
- * set below contains neither.
- */
-function databaseValueImports(file: string): string[] {
-	const source = ts.createSourceFile(
-		file,
-		readFileSync(file, "utf8"),
-		ts.ScriptTarget.Latest,
-		true,
-	);
-	const found = new Set<string>();
-
-	const visit = (node: ts.Node): void => {
-		if (
-			ts.isImportDeclaration(node) &&
-			ts.isStringLiteral(node.moduleSpecifier) &&
-			node.moduleSpecifier.text === "@repo/database"
-		) {
-			const clause = node.importClause;
-			if (!clause) {
-				found.add("<side-effect import>");
-			} else if (!clause.isTypeOnly) {
-				if (clause.name) {
-					found.add(`<default> ${clause.name.text}`);
-				}
-				const bindings = clause.namedBindings;
-				if (bindings && ts.isNamespaceImport(bindings)) {
-					found.add(`<namespace> ${bindings.name.text}`);
-				}
-				if (bindings && ts.isNamedImports(bindings)) {
-					for (const element of bindings.elements) {
-						if (!element.isTypeOnly) {
-							found.add(
-								(element.propertyName ?? element.name).text,
-							);
-						}
-					}
-				}
-			}
-		}
-		if (
-			ts.isCallExpression(node) &&
-			node.expression.kind === ts.SyntaxKind.ImportKeyword
-		) {
-			const [arg] = node.arguments;
-			if (
-				arg &&
-				ts.isStringLiteral(arg) &&
-				arg.text === "@repo/database"
-			) {
-				found.add("<dynamic import>");
-			}
-		}
-		ts.forEachChild(node, visit);
-	};
-
-	visit(source);
-	return [...found].sort();
-}
+// `databaseValueImports` now lives in `publishing-shared/__tests__` — the
+// authorization read moved into `assert-generation-actor.ts`, which needs
+// the same guard, and the walker does not follow imports.
 
 describe("generateCaseStudyActivity — the write surface", () => {
 	// The card's guarantee: generating a case study publishes nothing, pushes
@@ -789,7 +779,6 @@ describe("generateCaseStudyActivity — the write surface", () => {
 			// Reads.
 			"db",
 			"getBoundPromptForAgent",
-			"isCurrentOrgMember",
 			"listTopicDecisions",
 			"seedWorkingDraftIfAbsent",
 		]);
