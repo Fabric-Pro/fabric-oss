@@ -32,6 +32,7 @@ import { PUBLISHING_BLOG_POST_AGENT_KEY } from "./publishing-blog-post-prompt";
 import { PUBLISHING_CASE_STUDY_AGENT_KEY } from "./publishing-case-study-prompt";
 import { PUBLISHING_PLANNING_ANALYSIS_AGENT_KEY } from "./publishing-planning-prompt";
 import { PUBLISHING_SHORT_POST_AGENT_KEY } from "./publishing-short-post-prompt";
+import { PUBLISHING_STAKEHOLDER_EMAIL_AGENT_KEY } from "./publishing-stakeholder-email-prompt";
 
 export type PromptStoryKind = "FEATURE" | "BUG" | null;
 
@@ -464,6 +465,18 @@ export const PROMPT_AGENT_TARGETS: readonly PromptAgentTarget[] = [
 		// those are appended code-side.
 		key: PUBLISHING_CASE_STUDY_AGENT_KEY,
 		label: "Topic Case Study",
+		featureType: "PUBLISHING",
+		actions: nonStage("GENERAL"),
+	},
+	{
+		// The stakeholder update email written from a publishing topic. Editing
+		// it changes tone, formality, the audience framing and how much project
+		// context reaches the draft. It cannot remove the output contract (one
+		// email, not a set of alternatives) or the grounding rules — nothing
+		// invented, and no shipped-implying language unless the release status
+		// says SHIPPED — those are appended code-side.
+		key: PUBLISHING_STAKEHOLDER_EMAIL_AGENT_KEY,
+		label: "Topic Stakeholder Email",
 		featureType: "PUBLISHING",
 		actions: nonStage("GENERAL"),
 	},

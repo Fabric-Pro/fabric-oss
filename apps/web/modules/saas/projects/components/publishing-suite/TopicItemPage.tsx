@@ -52,9 +52,9 @@ const REVIEW_TABS: ReadonlyArray<{ value: ReviewTab; label: string }> = [
  * Content generation is `GenerationTabs` (2B-1), which replaced 2A's disabled
  * placeholder. It gives each live content type its recommendation context, the
  * unresolved questions that constrain a draft OF THAT TYPE, and a panel that
- * generates and edits one: Short Post / Tweet and Blog Post from 2B-2/2B-3, and
- * Case Study from 2C-1 (#1854). Stakeholder Email is the last one still
- * disabled and still reading "Coming soon".
+ * generates and edits one: Short Post / Tweet and Blog Post from 2B-2/2B-3,
+ * Case Study from 2C-1 and Stakeholder Email from 2C-2 (#1854). All four are
+ * live; no tab reads "Coming soon" any more.
  *
  * FOUR queries, all fetched HERE rather than inside the tabs that read them.
  * `latestAttempt` drives both the Planning & Analysis panel and Summary &

@@ -324,6 +324,14 @@ export {
 	type GeneratePublishingShortPostWorkflowOutput,
 	generatePublishingShortPostWorkflow,
 } from "./generate-publishing-short-post";
+// Publishing Suite Stakeholder Email (fire-and-forget — one editable stakeholder
+// update for one topic, from its planning analysis and its own provenance).
+// #1854
+export {
+	type GeneratePublishingStakeholderEmailWorkflowInput,
+	type GeneratePublishingStakeholderEmailWorkflowOutput,
+	generatePublishingStakeholderEmailWorkflow,
+} from "./generate-publishing-stakeholder-email";
 // Goal-Oriented Agent workflow (iterative goal achievement)
 export {
 	cancelSignal as goalOrientedCancelSignal,

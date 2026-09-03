@@ -271,6 +271,7 @@ import {
 import {
 	adoptBlogPostDraftProcedure,
 	adoptCaseStudyDraftProcedure,
+	adoptStakeholderEmailDraftProcedure,
 	answerTopicQuestionProcedure,
 	createPublishingTopicProcedure,
 	generateBlogPostProcedure,
@@ -278,6 +279,7 @@ import {
 	generatePlanningAnalysisProcedure,
 	generatePublishingTopicsNowProcedure,
 	generateShortPostProcedure,
+	generateStakeholderEmailProcedure,
 	getPlanningAnalysisProcedure,
 	getPublishingSuiteSettingsProcedure,
 	getPublishingTopicProcedure,
@@ -289,6 +291,7 @@ import {
 	listTopicDraftsProcedure,
 	saveBlogPostBodyProcedure,
 	saveCaseStudyBodyProcedure,
+	saveStakeholderEmailBodyProcedure,
 	selectShortPostOptionProcedure,
 	setTopicReadStateProcedure,
 	setTopicSnoozeProcedure,
@@ -1409,6 +1412,17 @@ export const projectsRouter = {
 		generateCaseStudy: generateCaseStudyProcedure,
 		adoptCaseStudyDraft: adoptCaseStudyDraftProcedure,
 		saveCaseStudyBody: saveCaseStudyBodyProcedure,
+		// #1854 (2C slice 2): Stakeholder Email, the fourth and last content
+		// type. Same three-endpoint shape as the Case Study — the FIRST run
+		// seeds the working draft inside the activity, so
+		// `adoptStakeholderEmailDraft` replaces a body that already exists and
+		// `saveStakeholderEmailBody` is the editor; both are compare-and-set on
+		// the working draft's `updatedAt`. Adoption composes the body with the
+		// SHARED `composeStakeholderEmailWorkingDraftBody`, the same function
+		// the activity seeds with, so the two texts cannot drift.
+		generateStakeholderEmail: generateStakeholderEmailProcedure,
+		adoptStakeholderEmailDraft: adoptStakeholderEmailDraftProcedure,
+		saveStakeholderEmailBody: saveStakeholderEmailBodyProcedure,
 	},
 
 	// User Stories & Tasks (Kanban)

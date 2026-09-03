@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
 	neutralizeSourceDataMarkers,
@@ -98,5 +99,64 @@ describe("neutralizeSourceDataMarkers", () => {
 			"Builds used to start cold. The p95 fell after the cache landed.";
 
 		expect(neutralizeSourceDataMarkers(value)).toBe(value);
+	});
+
+	it("stays linear on a value built to make the scan quadratic", () => {
+		// A ReDoS regression, flagged by CodeQL on the public mirror.
+		//
+		// The last alternative starts at every occurrence of the words and
+		// scanned the rest of the line for a closing run, so a value repeating
+		// them cost O(n^2): measured 2.9ms / 12.1ms / 50.9ms / 183.3ms at 1600
+		// / 3200 / 6400 / 12800 repetitions — four times the work for twice the
+		// input. The gap is bounded now and the same series is 0.4 / 0.8 / 1.5
+		// / 3.1ms.
+		//
+		// This input is not hypothetical. It is a transcript, a project
+		// document or a pull request description — the attacker-influenced
+		// string this whole module exists to make safe. A fence that hangs the
+		// worker on hostile input is not a fence.
+		//
+		// The budget is deliberately loose. The fixed version needs about 25ms
+		// here and the unfixed one about eleven seconds, so two seconds
+		// separates them by two orders of magnitude in both directions and
+		// cannot flake on a loaded runner.
+		const hostile = "source data".repeat(100_000);
+
+		const startedAt = performance.now();
+		const result = neutralizeSourceDataMarkers(hostile);
+		const elapsedMs = performance.now() - startedAt;
+
+		expect(elapsedMs).toBeLessThan(2000);
+		// And it still did the right thing: no closing run, nothing to break.
+		expect(result).toBe(hostile);
+	});
+
+	it("bounds the gap in the pattern itself", () => {
+		// The structural half. The timing case above is the one that matters,
+		// but it can only ever say "this was fast enough today"; this one names
+		// the shape of the defect, so a future edit that reintroduces an
+		// unbounded lazy scan fails on the reason rather than on a stopwatch.
+		//
+		// Read from the source rather than from the module, because the pattern
+		// is private and exporting it just to assert on it would widen the API
+		// for a test's convenience.
+		const source = readFileSync(
+			new URL(
+				"../lib/publishing-source-data-markers.ts",
+				import.meta.url,
+			),
+			"utf8",
+		);
+		const pattern = source
+			.split("\n")
+			.find((line) => line.includes("source") && line.includes("/gi;"));
+
+		expect(pattern).toBeDefined();
+		// An unbounded lazy run between the words and the closing angle run is
+		// the exact quadratic shape CodeQL flagged.
+		expect(pattern).not.toContain("]*?");
+		// Two gaps, both bounded: one in the full-marker alternative and one in
+		// the closer-without-opener alternative.
+		expect(pattern?.match(/\{0,\d+\}\?/g)).toHaveLength(2);
 	});
 });

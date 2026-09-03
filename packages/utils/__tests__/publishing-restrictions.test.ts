@@ -121,19 +121,128 @@ describe("restrictsPostType", () => {
 		).toBe(false);
 	});
 
-	it("ignores a post type with no extra set", () => {
-		// STAKEHOLDER_EMAIL's entry lands in a later slice; until it does, the
-		// lookup must miss cleanly rather than throw or fall back to another
-		// type's set.
+	it("ignores a post type with no extra set at all", () => {
+		// Two of the four types have no entry, and the lookup must MISS cleanly
+		// for them rather than throw or fall back to a neighbour's set. Asserted
+		// on TWEET now that STAKEHOLDER_EMAIL has an entry of its own — the case
+		// this replaces used STAKEHOLDER_EMAIL for exactly this purpose, and
+		// leaving it there would have turned a real guarantee into a stale
+		// assertion about a type that has since acquired a set.
 		expect(
 			restrictsPostType(
 				thread({ decisionKind: "CLAIM_STRENGTH" }),
+				"TWEET",
+			),
+		).toBe(false);
+		expect(EXTRA_RESTRICTING_KINDS_BY_POST_TYPE.TWEET).toBeUndefined();
+		expect(EXTRA_RESTRICTING_KINDS_BY_POST_TYPE.BLOG_POST).toBeUndefined();
+	});
+
+	it("misses cleanly on a post type nobody has heard of", () => {
+		// A `Record<string, …>` lookup on an unknown key returns undefined, and
+		// the guard for that is what stops a future post type — or a typo at a
+		// call site — throwing inside a prompt build.
+		expect(
+			restrictsPostType(
+				thread({ decisionKind: "CLAIM_STRENGTH" }),
+				"NOT_A_POST_TYPE",
+			),
+		).toBe(false);
+	});
+});
+
+describe("restrictsPostType — Stakeholder Email (Phase 2C slice 2)", () => {
+	it("restricts on audience scope and claim strength", () => {
+		// An email is ADDRESSED: leadership, a client sponsor and the delivery
+		// team need different things said about the same work, so an unsettled
+		// AUDIENCE_SCOPE question is a decision about the whole message rather
+		// than a detail to omit. CLAIM_STRENGTH decides whether the "why it
+		// matters" paragraph may assert a result or has to describe one.
+		for (const kind of ["AUDIENCE_SCOPE", "CLAIM_STRENGTH"]) {
+			expect(
+				restrictsPostType(
+					thread({ decisionKind: kind }),
+					"STAKEHOLDER_EMAIL",
+				),
+			).toBe(true);
+		}
+	});
+
+	it("leaves a Tweet and a Blog Post alone on those same questions", () => {
+		// THE control, in the same shape the Case Study's has. Without it, a
+		// `restrictsPostType` that ignored `postType` and restricted everything
+		// would satisfy the positive case above.
+		for (const kind of ["AUDIENCE_SCOPE", "CLAIM_STRENGTH"]) {
+			expect(
+				restrictsPostType(thread({ decisionKind: kind }), "TWEET"),
+			).toBe(false);
+			expect(
+				restrictsPostType(thread({ decisionKind: kind }), "BLOG_POST"),
+			).toBe(false);
+		}
+	});
+
+	it("does NOT restrict on codebase detail, unlike the case study", () => {
+		// The deliberate difference between the two 2C sets, and the case that
+		// pins it as a decision rather than an omission. An email to a sponsor
+		// is not where a codebase detail leaks — the format pushes toward
+		// business value already, and the disclosure rule in the locked clauses
+		// covers the residue. Listing it would add a third entry to "open
+		// questions that constrain this type" on nearly every technical topic,
+		// for a risk this format does not run, and over-warning is how a reader
+		// learns to skip the two warnings that do apply.
+		expect(
+			restrictsPostType(
+				thread({ decisionKind: "CODEBASE_DETAIL" }),
 				"STAKEHOLDER_EMAIL",
 			),
 		).toBe(false);
+		// …while the case study, which describes the implementation, still does.
 		expect(
-			EXTRA_RESTRICTING_KINDS_BY_POST_TYPE.STAKEHOLDER_EMAIL,
-		).toBeUndefined();
+			restrictsPostType(
+				thread({ decisionKind: "CODEBASE_DETAIL" }),
+				"CASE_STUDY",
+			),
+		).toBe(true);
+	});
+
+	it("still restricts on every shared safety-critical kind", () => {
+		// The additive half must not have displaced the shared half.
+		for (const kind of [
+			"CUSTOMER_NAME",
+			"ASSET_APPROVAL",
+			"METRICS_APPROVAL",
+			"INTERNAL_UI",
+			"VIDEO_WALKTHROUGH",
+			"CONTENT_TYPE",
+		]) {
+			expect(
+				restrictsPostType(
+					thread({ decisionKind: kind }),
+					"STAKEHOLDER_EMAIL",
+				),
+			).toBe(true);
+		}
+	});
+
+	it("ignores an answered audience-scope decision", () => {
+		for (const status of ["ANSWERED", "RESOLVED"]) {
+			expect(
+				restrictsPostType(
+					thread({ decisionKind: "AUDIENCE_SCOPE", status }),
+					"STAKEHOLDER_EMAIL",
+				),
+			).toBe(false);
+		}
+	});
+
+	it("ignores an AI_UPDATE carrying an audience-scope kind", () => {
+		expect(
+			restrictsPostType(
+				thread({ kind: "AI_UPDATE", decisionKind: "AUDIENCE_SCOPE" }),
+				"STAKEHOLDER_EMAIL",
+			),
+		).toBe(false);
 	});
 });
 

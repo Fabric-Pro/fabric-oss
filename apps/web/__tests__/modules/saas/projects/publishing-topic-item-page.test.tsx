@@ -262,6 +262,19 @@ vi.mock("@shared/lib/orpc-query-utils", () => {
 					saveCaseStudyBody: m(
 						"projects.publishingSuite.saveCaseStudyBody",
 					),
+					// 2C-2's stakeholder email panel owns these three, and it
+					// made the warning above concrete for a FOURTH time: the tab
+					// test crashed with `undefined.mutationOptions` the moment
+					// Stakeholder Email stopped being a placeholder.
+					generateStakeholderEmail: m(
+						"projects.publishingSuite.generateStakeholderEmail",
+					),
+					adoptStakeholderEmailDraft: m(
+						"projects.publishingSuite.adoptStakeholderEmailDraft",
+					),
+					saveStakeholderEmailBody: m(
+						"projects.publishingSuite.saveStakeholderEmailBody",
+					),
 					listTopicDecisions: q(
 						"projects.publishingSuite.listTopicDecisions",
 					),
@@ -432,19 +445,18 @@ describe("TopicItemPage — tabs", () => {
 
 	// SUPERSEDED, deliberately. Phase 2A's FR50 said a generation tab a user can
 	// activate is a promise 2A cannot keep, and this case pinned that for all
-	// four content types. Phase 2B's FR1/FR2 activated two of them and 2C-1
-	// (#1854) activates Case Study, so the old assertion is no longer true for
-	// three of the four — and the part that IS still true, Stakeholder Email, is
-	// kept rather than dropped.
+	// four content types. Phase 2B's FR1/FR2 activated two of them, 2C-1
+	// (#1854) activated Case Study and 2C-2 activates Stakeholder Email, so the
+	// old assertion is no longer true for any of the four — FR50 is now
+	// satisfied for every type rather than waived for one.
 	//
 	// This is the documented exception to the repository's standing rule that a
 	// failing test caught a real regression: the contract changed on purpose,
-	// the requirement that changed it is named, and the still-valid half is
-	// asserted right below.
+	// the requirement that changed it is named, and the guarantee that replaces
+	// it is asserted right below.
 	it("activates every generation tab that has a panel (FR1, FR2)", async () => {
-		// Case Study joined this list in 2C-1 (#1854), for the same reason the
-		// two 2B types are in it: the tab is selectable exactly when the type
-		// has a panel behind it.
+		// All four now. The tab is selectable exactly when the type has a panel
+		// behind it, and after 2C-2 every type does.
 		const user = userEvent.setup();
 		renderPage();
 		const tablist = screen.getByRole("tablist", {
@@ -455,6 +467,7 @@ describe("TopicItemPage — tabs", () => {
 			/short post \/ tweet/i,
 			/blog post/i,
 			/case study/i,
+			/stakeholder email/i,
 		]) {
 			const tab = within(tablist).getByRole("tab", { name: label });
 			expect(tab).toBeEnabled();
@@ -463,19 +476,23 @@ describe("TopicItemPage — tabs", () => {
 		}
 	});
 
-	it("leaves the one unimplemented generation tab disabled and Coming Soon", () => {
-		// The surviving half of the 2A assertion, now down to a single type.
-		// Stakeholder Email has no panel, so FR50 still holds for it — and
-		// asserting it here is what stops a later phase quietly activating a tab
-		// it does not implement.
+	it("leaves NO generation tab disabled or Coming Soon", () => {
+		// What replaces the surviving half of the 2A assertion. It still guards
+		// the same thing from the other side: a FIFTH post type added to the
+		// Prisma enum without a panel would appear here disabled and
+		// coming-soon, and this case is what says so out loud rather than
+		// letting it ship as an empty tab.
 		renderPage();
 		const tablist = screen.getByRole("tablist", {
 			name: /content generation/i,
 		});
-		const tab = within(tablist).getByRole("tab", {
-			name: /stakeholder email.*coming soon/i,
-		});
-		expect(tab).toBeDisabled();
+
+		expect(
+			within(tablist).queryByRole("tab", { name: /coming soon/i }),
+		).not.toBeInTheDocument();
+		for (const tab of within(tablist).getAllByRole("tab")) {
+			expect(tab).toBeEnabled();
+		}
 	});
 });
 
