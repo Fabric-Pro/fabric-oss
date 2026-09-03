@@ -792,8 +792,16 @@ describe("always-open band editor + per-item AI sparkle", () => {
 describe("Re-prioritize — scope + cap", () => {
 	const openReprio = async (user: ReturnType<typeof userEvent.setup>) => {
 		// canEdit resolves from the async project query — await the button.
+		// The wait is longer than Testing Library's 1s default because the
+		// large-list cases render a hundred rows first, and on a loaded CI
+		// runner that alone has outlasted the default (fabric-oss run
+		// 33738973241) while the button was still on its way.
 		await user.click(
-			await screen.findByRole("button", { name: /^Re-prioritize$/ }),
+			await screen.findByRole(
+				"button",
+				{ name: /^Re-prioritize$/ },
+				{ timeout: 5_000 },
+			),
 		);
 	};
 
