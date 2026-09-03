@@ -77,35 +77,43 @@ jobs:
           BASE_REF: ${{ github.event.pull_request.base.ref }}
         run: |
           # Two-layer check:
-          # 1. `changeset status` exits non-zero if no changeset files are
-          #    present since base — catches the "forgot to add one" case.
+          # 1. A non-zero exit from `changeset status` is a CLI failure (an
+          #    unreadable changeset, a bad --since ref) — surface it as-is.
+          #    It is NOT how a missing changeset shows up: with `--output`
+          #    the command exits 0 and writes `"releases": []` whether the
+          #    range has no changeset file or one with empty frontmatter.
           # 2. Parse the JSON output and require at least one package bump
-          #    in `.releases` — catches malformed changesets with empty
-          #    frontmatter (file exists but bumps nothing, so the bot
-          #    consumes it without producing a CHANGELOG entry; release
-          #    notes silently lost).
+          #    in `.releases` — this is the gate for both the "forgot to add
+          #    one" case and the malformed-frontmatter case (file exists but
+          #    bumps nothing, so the bot consumes it without producing a
+          #    CHANGELOG entry; release notes silently lost).
+          # `fabric-app` is a private package, and Changesets v3 leaves
+          # private packages out of `.releases` unless
+          # `.changeset/config.json` opts them in (`privatePackages.version`).
+          # Without that key every fabric-app changeset reads as "no bumps"
+          # here and the bot never bumps it either.
           # Pin to the version in package.json so a future Changesets
           # release can't silently change the `--output` JSON schema
           # (which the `jq .releases | length` check below depends on)
           # or alter `status` exit-code semantics. Keep in sync with the
           # `@changesets/cli` devDependency in the root package.json.
           set +e
-          OUTPUT=$(pnpm dlx @changesets/cli@2.31.0 status --since="origin/$BASE_REF" --output=changeset-status.json 2>&1)
+          OUTPUT=$(pnpm dlx @changesets/cli@3.0.1 status --since="origin/$BASE_REF" --output=changeset-status.json 2>&1)
           STATUS=$?
           set -e
           echo "$OUTPUT"
           if [ $STATUS -ne 0 ]; then
             echo ""
-            echo "::error::No changeset detected on this PR."
-            echo "::error::Run \`pnpm changeset\` locally and commit the generated .changeset/*.md file,"
-            echo "::error::or apply the \`skip-changeset\` label if this PR has no user-visible impact."
+            echo "::error::\`changeset status\` failed (exit $STATUS); see its output above."
             exit 1
           fi
           RELEASE_COUNT=$(jq '.releases | length' changeset-status.json)
           if [ "$RELEASE_COUNT" -eq 0 ]; then
             echo ""
-            echo "::error::Changeset file(s) present but declare no package bumps."
-            echo "::error::Each .changeset/*.md must include frontmatter like:"
+            echo "::error::No changeset on this PR declares a package bump."
+            echo "::error::Run \`pnpm changeset\` locally and commit the generated .changeset/*.md file,"
+            echo "::error::or apply the \`skip-changeset\` label if this PR has no user-visible impact."
+            echo "::error::If a changeset file IS present, its frontmatter must name a package, like:"
             echo "::error::"
             echo "::error::  ---"
             echo "::error::  \"fabric-app\": patch"

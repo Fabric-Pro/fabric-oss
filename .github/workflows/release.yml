@@ -25,13 +25,15 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
-          # Leave NO credential in the git config. changesets/action pushes
-          # the Version PR branch through the ~/.netrc it writes from its
-          # GITHUB_TOKEN env (the App token minted below); a persisted
-          # GITHUB_TOKEN header would take precedence over that, push as
-          # github-actions, and fire no pull_request events — so the Version
-          # PR would carry no check runs. Every later `git push` in this job
-          # supplies its own credential per invocation.
+          # Leave NO credential in the git config. Nothing in this job pushes
+          # with git's own credential: changesets/action creates the Version
+          # PR's commit, the per-package tags and the GitHub releases through
+          # the GitHub API as the release App (its `github-token` input, minted
+          # below), and the deploy-tag push further down swaps the App
+          # credential in per invocation. A persisted GITHUB_TOKEN header is
+          # the one credential git would fall back to, and anything pushed
+          # with it is done as github-actions and fires no downstream events —
+          # a Version PR pushed that way carries no check runs.
           persist-credentials: false
 
       - name: Setup pnpm
@@ -87,41 +89,6 @@ jobs:
       - name: Type-check publishable packages
         run: pnpm turbo type-check --filter="@fabricorg/*"
 
-      # MUST stay immediately before the changesets step — it undoes something
-      # `pnpm install` does, so any install placed between the two would put it
-      # back and the failure returns.
-      #
-      # The root `prepare` script points core.hooksPath at .githooks. Since
-      # 2026-08-19 one of those hooks — commit-msg — requires a DCO
-      # `Signed-off-by:` trailer, and the step below commits as
-      # github-actions[bot] with the fixed message `chore: release`, which has
-      # none. The hook rejects it, `git commit` exits 1, and the action fails
-      # BEFORE the version bump. That takes `Auto-tag fabric-app deploy tag`
-      # down with it, so no `v*.*.*` tag is pushed and PRODUCTION NEVER DEPLOYS
-      # — quietly, since this job is the only thing that goes red.
-      #
-      # Unsetting the hooks path is the fix, NOT giving the bot a sign-off.
-      # .github/workflows/dco.yml is the authority: it exempts this exact PR
-      # under "Trusted-automation allowlist (GitHub Apps cannot sign off)".
-      # Writing a trailer here would fabricate a certification on behalf of an
-      # identity that gate says cannot make one — and .githooks/commit-msg
-      # declines to auto-append one for humans for precisely that reason.
-      #
-      # Scoped to this job's own checkout, and the only commit it affects is
-      # the bot's, whose message is the fixed literal above — so the identifier
-      # guard in the same hook has nothing to inspect either.
-      - name: Unset local git hooks for the release bot's commit
-        run: |
-          git config --unset core.hooksPath || true
-          # Positive control: an unset that silently did nothing looks exactly
-          # like one that worked, and the symptom would only reappear on the
-          # next master push.
-          if path=$(git config --get core.hooksPath); then
-            echo "::error::core.hooksPath is still set to '$path'. The release commit will be rejected by commit-msg. Did a step between the install and here re-run the root 'prepare' script?"
-            exit 1
-          fi
-          echo "core.hooksPath is unset — the bot's 'chore: release' commit will not run commit-msg."
-
       # The Version PR is opened, and its branch pushed, AS THE RELEASE APP —
       # never as GITHUB_TOKEN. Two reasons, both deliberate:
       # 1. This repository forbids Actions from creating pull requests
@@ -137,7 +104,8 @@ jobs:
       # third-party package scripts never coexist with it — only the repo's
       # own version/publish scripts do, which already run as master. It is
       # separate from the tag-step token below, which stays late and
-      # contents-only.
+      # contents-only. It reaches the action through its `github-token`
+      # INPUT (see the step below) — not an env var.
       - name: Mint the Version-PR App token
         id: version-pr-token
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
@@ -149,18 +117,53 @@ jobs:
           permission-contents: write
           permission-pull-requests: write
 
+      # changesets/action v2 (pairs with Changesets CLI v3 — the action refuses
+      # to run against CLI v2, and the CLI pin lives in the root package.json
+      # and in changeset-check.yml; move all three together). Every input was
+      # renamed in v2 and the OLD NAMES ARE HARD ERRORS, so do not "tidy" them
+      # back: version-script / publish-script / commit-message / pr-title /
+      # create-github-releases. The App token goes through the `github-token`
+      # INPUT: v2 does not read a GITHUB_TOKEN env var as the token, and one
+      # that disagrees with the input fails the step at startup, so the token
+      # must not be repeated under `env:` either. The action itself exports
+      # GITHUB_TOKEN (= github-token) into the publish script's environment.
+      #
+      # Release changes go through the GitHub API (v2's default,
+      # `push-with-git-cli: false`): the Version PR commit, the per-package
+      # tags and the GitHub releases are all created with the App token, so
+      # they are attributed to the release App and signed by GitHub. No local
+      # `git commit` runs at all, which is why the "unset core.hooksPath" step
+      # that used to sit before this one is gone. The root `prepare` script
+      # points core.hooksPath at .githooks, whose commit-msg hook requires a
+      # DCO `Signed-off-by:` trailer that the bot's fixed `chore: release`
+      # message cannot carry (dco.yml exempts this PR at the PR-creator level
+      # instead). Under the git CLI that hook rejected the release commit, the
+      # action failed before the version bump, no `v*.*.*` tag was pushed and
+      # PRODUCTION QUIETLY STOPPED DEPLOYING. If `push-with-git-cli: true` is
+      # ever set, the hooksPath unset must come back with it, immediately
+      # before this step.
+      #
+      # Published-package detection: the action hands the publish script a
+      # CHANGESETS_OUTPUT file path in its environment, and `changeset publish`
+      # (CLI v3) appends one NDJSON `git-tag` event per package it published.
+      # The variable is inherited through `pnpm release` → shell → `&&` →
+      # `changeset publish` like any other, so the script needs nothing
+      # extra — it only must not scrub its environment. If the file is
+      # missing, a custom publish script makes the action WARN and create no
+      # tags or releases; the positive control after this step turns that
+      # into a failure.
       - name: Create release PR or publish to npm
         id: changesets
-        uses: changesets/action@a45c4d594aa4e2c509dc14a9f2b3b67ba3780d0d # v1
+        uses: changesets/action@8488615a623b1b9c987934bb89eae8af6a946ac1 # v2.1.1
         with:
-          version: pnpm version-packages
-          publish: pnpm release
-          commit: "chore: release"
-          title: "chore: release"
-          createGithubReleases: true
-        env:
+          version-script: pnpm version-packages
+          publish-script: pnpm release
+          commit-message: "chore: release"
+          pr-title: "chore: release"
+          create-github-releases: true
           # The App token, not secrets.GITHUB_TOKEN — see the mint step above.
-          GITHUB_TOKEN: ${{ steps.version-pr-token.outputs.token }}
+          github-token: ${{ steps.version-pr-token.outputs.token }}
+        env:
           # npm reports WHY a trusted-publishing (OIDC) token exchange was
           # refused only at verbose level ("oidc Failed token exchange request
           # with body message: …" in lib/utils/oidc.js); at the default level
@@ -181,6 +184,46 @@ jobs:
           # supported" — so this line lands only once the repository is public.
           # If the repository ever goes private again, set the STRING "false".
           NPM_CONFIG_PROVENANCE: "true"
+
+      # Positive control for the publish path. changesets/action v2 learns
+      # what `changeset publish` released from the CHANGESETS_OUTPUT file, and
+      # when that file is missing under a custom publish script it only warns:
+      # the npm publish succeeds, this job goes green, and no
+      # `<package>@<version>` tag or GitHub release is ever created. Make that
+      # a failure instead: every public package whose version changed in this
+      # exact master commit must have its tag on the remote once the step is
+      # done. The tags are looked up, never created, so a re-run after a
+      # partial failure passes as soon as they exist.
+      - name: Verify published packages were tagged
+        if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          CHECKED=0
+          MISSING=0
+          while IFS= read -r -d '' MANIFEST; do
+            # A removed package has nothing to publish.
+            git cat-file -e "${GITHUB_SHA}:${MANIFEST}" 2>/dev/null || continue
+            NAME=$(git show "${GITHUB_SHA}:${MANIFEST}" | jq -r '.name // empty')
+            VERSION=$(git show "${GITHUB_SHA}:${MANIFEST}" | jq -r '.version // empty')
+            PRIVATE=$(git show "${GITHUB_SHA}:${MANIFEST}" | jq -r '.private == true')
+            [[ "$NAME" == @fabricorg/* && "$PRIVATE" == "false" && -n "$VERSION" ]] || continue
+            if git cat-file -e "${GITHUB_SHA}^:${MANIFEST}" 2>/dev/null; then
+              PREVIOUS=$(git show "${GITHUB_SHA}^:${MANIFEST}" | jq -r '.version // empty')
+              [ "$PREVIOUS" != "$VERSION" ] || continue
+            fi
+            CHECKED=$((CHECKED + 1))
+            TAG="${NAME}@${VERSION}"
+            if gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${TAG}" --silent 2>/dev/null; then
+              echo "Tag $TAG exists."
+            else
+              echo "::error::$NAME changed to $VERSION in ${GITHUB_SHA:0:7} but tag $TAG is not on the remote. changesets/action creates it from the CHANGESETS_OUTPUT file that 'changeset publish' writes — look for the output-file warning in the step above."
+              MISSING=$((MISSING + 1))
+            fi
+          done < <(git diff --name-only -z "${GITHUB_SHA}^" "${GITHUB_SHA}" -- 'packages/*/package.json')
+          echo "$CHECKED public package version change(s) checked, $MISSING missing tag(s)."
+          [ "$MISSING" -eq 0 ]
 
       # A fresh repository has no v* tags yet. Tagging merely because the
       # current version has no corresponding tag would therefore publish the
@@ -283,9 +326,11 @@ jobs:
           repositories: ${{ github.event.repository.name }}
 
       # Auto-tag the fabric-app deploy tag (v<version>) after the Version PR
-      # is merged. The changesets action creates per-package tags like
-      # `fabric-app@0.5.2`, which do NOT match the `v*.*.*` trigger pattern
-      # on deploy-azure-container-apps.yml. This step reads the current
+      # is merged. Changesets versions `fabric-app` but neither publishes nor
+      # tags it (`privatePackages.tag: false` in .changeset/config.json), and
+      # the `<name>@<version>` tags it does create for published packages do
+      # NOT match the `v*.*.*` trigger pattern on
+      # deploy-azure-container-apps.yml. This step reads the current
       # fabric-app version and pushes `v<version>` so the prod deploy fires.
       #
       # `published: true` is only set when a *public* npm package is published;
@@ -368,11 +413,13 @@ jobs:
         # the team. Only runs when the previous step actually created a new
         # tag (not the "already exists" no-op path).
         #
-        # `changesets/action`'s `createGithubReleases: true` is ineffective for
-        # our deploy meta-package because `fabric-app` is `"private": true` —
-        # changesets only creates GitHub Releases for packages it publishes to
-        # npm, which fabric-app isn't. So we do it here, extracting the
-        # just-published section from `packages/fabric-app/CHANGELOG.md`.
+        # `changesets/action`'s `create-github-releases: true` never covers our
+        # deploy meta-package: `fabric-app` is `"private": true`, and
+        # `.changeset/config.json` opts private packages into versioning but
+        # not tagging (`privatePackages.tag: false`), so changesets publishes
+        # nothing for it and creates neither a tag nor a release. So we do it
+        # here, extracting the just-published section from
+        # `packages/fabric-app/CHANGELOG.md`.
         #
         # CREATED AS A DRAFT — open-sourcing plan §4.1, "artifacts first,
         # publish last". At this moment the release's bill of materials does
