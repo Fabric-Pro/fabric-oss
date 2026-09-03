@@ -44,7 +44,10 @@ vi.mock("../prisma/client", () => ({
 	},
 }));
 
-import { canEditProject } from "../prisma/queries/projects/projects";
+import {
+	canCreateProjectStory,
+	canEditProject,
+} from "../prisma/queries/projects/projects";
 
 const PROJECT_ID = "proj-1";
 const ORG_ID = "org-A";
@@ -201,5 +204,79 @@ describe("canEditProject precedence", () => {
 		mocks.memberFindFirst.mockResolvedValue(null);
 
 		expect(await canEditProject(PROJECT_ID, USER_ID)).toBe(false);
+	});
+});
+
+describe("canCreateProjectStory walks the SAME ladder", () => {
+	/**
+	 * This helper had no precedence coverage at all until the two of them were
+	 * collapsed onto `resolveProjectAccess`. That is the shape the gap took:
+	 * one of two byte-identical copies was tested, so the tested one was right
+	 * and nothing said anything about the other.
+	 *
+	 * Kept as its own block rather than folded into a parameterised sweep,
+	 * because the two helpers ask about DIFFERENT permissions and a sweep would
+	 * quietly stop proving that.
+	 */
+
+	it("lets a personal-project owner create", async () => {
+		mocks.projectFindUnique.mockResolvedValue({
+			userId: OWNER_ID,
+			organizationId: null,
+		});
+
+		expect(await canCreateProjectStory(PROJECT_ID, OWNER_ID)).toBe(true);
+		// The owner path answers without consulting membership at all.
+		expect(mocks.projectMemberFindUnique).not.toHaveBeenCalled();
+	});
+
+	it("honours a per-project demotion over the org role", async () => {
+		// The load-bearing case, and the one an org-first ordering gets wrong:
+		// an org ADMIN explicitly restricted to VIEWER on this project.
+		orgProject();
+		mocks.projectMemberFindUnique.mockResolvedValue({
+			role: "VIEWER",
+			acceptedAt: new Date("2020-01-01"),
+			expiresAt: null,
+		});
+		mocks.memberFindFirst.mockResolvedValue({ role: "admin" });
+
+		expect(await canCreateProjectStory(PROJECT_ID, USER_ID)).toBe(false);
+		// Path C is authoritative: the org role must not even be consulted.
+		expect(mocks.memberFindFirst).not.toHaveBeenCalled();
+	});
+
+	it("falls back to the org role when no active project row exists", async () => {
+		orgProject();
+		mocks.projectMemberFindUnique.mockResolvedValue(null);
+		mocks.memberFindFirst.mockResolvedValue({ role: "admin" });
+
+		expect(await canCreateProjectStory(PROJECT_ID, USER_ID)).toBe(true);
+	});
+
+	it("treats an expired project row as no row, not as a denial", async () => {
+		orgProject();
+		mocks.projectMemberFindUnique.mockResolvedValue({
+			role: "VIEWER",
+			acceptedAt: new Date("2020-01-01"),
+			expiresAt: new Date("2020-06-01"),
+		});
+		mocks.memberFindFirst.mockResolvedValue({ role: "admin" });
+
+		expect(await canCreateProjectStory(PROJECT_ID, USER_ID)).toBe(true);
+	});
+
+	it("denies a stranger to the organization", async () => {
+		orgProject();
+		mocks.projectMemberFindUnique.mockResolvedValue(null);
+		mocks.memberFindFirst.mockResolvedValue(null);
+
+		expect(await canCreateProjectStory(PROJECT_ID, USER_ID)).toBe(false);
+	});
+
+	it("returns false when the project does not exist", async () => {
+		mocks.projectFindUnique.mockResolvedValue(null);
+
+		expect(await canCreateProjectStory(PROJECT_ID, USER_ID)).toBe(false);
 	});
 });

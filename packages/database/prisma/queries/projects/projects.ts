@@ -1337,74 +1337,63 @@ export async function resolveProjectAccess(
 }
 
 /**
+ * Whether `userId` holds `permission` on `projectId`, by the same ladder
+ * `requireProjectPermission` walks.
+ *
+ * ONE implementation, deliberately. This file used to carry three copies of
+ * that ladder — `resolveProjectAccess`, `canEditProject` and
+ * `canCreateProjectStory` — identical but for the permission constant. Two
+ * copies of an authorization policy is the defect that let a project editor
+ * through the API gate and then refused them at the runtime re-check; three is
+ * the same defect with more places to fix and more chances to fix only some.
+ *
+ * The `source === "owner"` short-circuit is `resolveProjectAccess`'s documented
+ * caller contract: the gate grants a personal-project owner ANY project
+ * permission, including ones outside the OWNER role's own set, so a caller
+ * reading only `hasPermission` answers "no" where the gate says "yes".
+ *
+ * Be precise about what it is doing HERE, because a negative control showed
+ * that removing it breaks no test. For the two permissions these helpers ask
+ * about it is currently equivalent to the plain check, since the OWNER project
+ * role holds both — the difference only appears for a permission outside that
+ * set, and nothing asks these helpers for one. It is kept because it is what
+ * makes the delegation exactly behaviour-preserving (both helpers previously
+ * returned an unconditional `true` on the owner path) and because the day one
+ * of them is pointed at such a permission is not the day to rediscover that the
+ * gate and the helper disagree.
+ */
+async function projectPermissionHolds(
+	projectId: string,
+	userId: string,
+	permission: Permission,
+): Promise<boolean> {
+	const access = await resolveProjectAccess(projectId, userId);
+	if (!access) {
+		return false;
+	}
+	return (
+		access.source === "owner" ||
+		hasPermission(access.permissions, permission)
+	);
+}
+
+/**
  * Returns `true` if `userId` may edit `projectId`, matching the
  * authorization paths of `requireProjectPermission(PROJECT_UPDATE)`.
  *
  * For non-oRPC surfaces (Next.js route handlers, MCP gateway, etc.) that
  * cannot use the middleware directly. oRPC procedures should still prefer
  * `requireProjectPermission`.
- *
- * Resolution order mirrors the middleware exactly:
- *   A. Personal-project owner.
- *   C. Active ProjectMember row (accepted, non-expired) is authoritative —
- *      its role alone determines access, even if the org role would grant
- *      more. This is what makes a per-project demotion (e.g. org admin
- *      restricted to Viewer on a specific project) actually enforceable.
- *   B. Fallback: caller is an OrgMember of the project's host org AND that
- *      org role grants the permission. Only consulted when there is no
- *      active project-level row.
  */
 export async function canEditProject(
 	projectId: string,
 	userId: string,
 ): Promise<boolean> {
-	const project = await db.project.findUnique({
-		where: { id: projectId },
-		select: { userId: true, organizationId: true },
-	});
-	if (!project) {
-		return false;
-	}
-
-	// Path A
-	if (project.userId === userId && project.organizationId === null) {
-		return true;
-	}
-
-	// Path C — checked BEFORE Path B so a per-project demotion is honored.
-	const member = await db.projectMember.findUnique({
-		where: { projectId_userId: { projectId, userId } },
-		select: { role: true, acceptedAt: true, expiresAt: true },
-	});
-	const memberActive =
-		member !== null &&
-		member.acceptedAt !== null &&
-		(member.expiresAt === null || member.expiresAt > new Date());
-	if (memberActive) {
-		return hasPermission(
-			resolveProjectPermissions(member.role),
-			Permissions.PROJECT_UPDATE,
-		);
-	}
-
-	// Path B — fallback to org role when no active project-level row exists.
-	if (project.organizationId) {
-		const orgMember = await db.member.findFirst({
-			where: { organizationId: project.organizationId, userId },
-			select: { role: true },
-		});
-		if (
-			orgMember &&
-			hasPermission(
-				resolveOrgPermissions(orgMember.role),
-				Permissions.PROJECT_UPDATE,
-			)
-		) {
-			return true;
-		}
-	}
-
-	return false;
+	return projectPermissionHolds(
+		projectId,
+		userId,
+		Permissions.PROJECT_UPDATE,
+	);
 }
 
 /**
@@ -1413,68 +1402,12 @@ export async function canEditProject(
  *
  * For non-oRPC surfaces (agent built-in tools, MCP gateway, etc.) that
  * cannot use the middleware directly.
- *
- * Resolution order mirrors the middleware exactly:
- *   A. Personal-project owner.
- *   C. Active ProjectMember row (accepted, non-expired) is authoritative —
- *      its role alone determines access, even if the org role would grant
- *      more. This is what makes a per-project demotion (e.g. org admin
- *      restricted to Viewer on a specific project) actually enforceable.
- *   B. Fallback: caller is an OrgMember of the project's host org AND that
- *      org role grants the permission. Only consulted when there is no
- *      active project-level row.
  */
 export async function canCreateProjectStory(
 	projectId: string,
 	userId: string,
 ): Promise<boolean> {
-	const project = await db.project.findUnique({
-		where: { id: projectId },
-		select: { userId: true, organizationId: true },
-	});
-	if (!project) {
-		return false;
-	}
-
-	// Path A
-	if (project.userId === userId && project.organizationId === null) {
-		return true;
-	}
-
-	// Path C — checked BEFORE Path B so a per-project demotion is honored.
-	const member = await db.projectMember.findUnique({
-		where: { projectId_userId: { projectId, userId } },
-		select: { role: true, acceptedAt: true, expiresAt: true },
-	});
-	const memberActive =
-		member !== null &&
-		member.acceptedAt !== null &&
-		(member.expiresAt === null || member.expiresAt > new Date());
-	if (memberActive) {
-		return hasPermission(
-			resolveProjectPermissions(member.role),
-			Permissions.STORY_CREATE,
-		);
-	}
-
-	// Path B — fallback to org role when no active project-level row exists.
-	if (project.organizationId) {
-		const orgMember = await db.member.findFirst({
-			where: { organizationId: project.organizationId, userId },
-			select: { role: true },
-		});
-		if (
-			orgMember &&
-			hasPermission(
-				resolveOrgPermissions(orgMember.role),
-				Permissions.STORY_CREATE,
-			)
-		) {
-			return true;
-		}
-	}
-
-	return false;
+	return projectPermissionHolds(projectId, userId, Permissions.STORY_CREATE);
 }
 
 /**
