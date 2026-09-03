@@ -45,9 +45,17 @@
 
 import { db } from "../../client";
 import {
+	type DraftCommitOutcome,
 	lockProjectTenant,
 	sameTenant,
 	uniqueViolationConstraint,
+} from "./publishing-tenant-lock";
+
+// Re-exported so `@repo/temporal` can name the reason it is switching on:
+// `publishing-tenant-lock` is internal and absent from the barrel on purpose.
+export type {
+	DraftCommitOutcome,
+	DraftCommitRefusal,
 } from "./publishing-tenant-lock";
 
 /** The four `PublishingTopicPostType` values, in the UI's fixed display order. */
@@ -489,14 +497,14 @@ export async function completeTopicDraft(input: {
 	promptSource: TopicDraftPromptSource;
 	promptId: string | null;
 	promptVersion: number | null;
-}): Promise<{ persisted: boolean }> {
+}): Promise<DraftCommitOutcome> {
 	return db.$transaction(async (tx) => {
 		const tenant = await lockProjectTenant(
 			tx as unknown as Parameters<typeof lockProjectTenant>[0],
 			input.projectId,
 		);
 		if (!tenant) {
-			return { persisted: false };
+			return { persisted: false, reason: "project_ineligible" };
 		}
 
 		// TENANT FENCE. The lock proves the project is still eligible; it does
@@ -509,8 +517,11 @@ export async function completeTopicDraft(input: {
 			where: { id: input.id, projectId: input.projectId },
 			select: { organizationId: true, userId: true },
 		});
-		if (!stored || !sameTenant(stored, tenant)) {
-			return { persisted: false };
+		if (!stored) {
+			return { persisted: false, reason: "attempt_missing" };
+		}
+		if (!sameTenant(stored, tenant)) {
+			return { persisted: false, reason: "tenant_changed" };
 		}
 
 		const updated = await tx.publishingTopicDraft.updateMany({
@@ -535,7 +546,9 @@ export async function completeTopicDraft(input: {
 			},
 		});
 
-		return { persisted: updated.count > 0 };
+		return updated.count > 0
+			? { persisted: true }
+			: { persisted: false, reason: "superseded" };
 	});
 }
 
@@ -552,22 +565,25 @@ export async function failTopicDraft(input: {
 	id: string;
 	projectId: string;
 	error: string;
-}): Promise<{ persisted: boolean }> {
+}): Promise<DraftCommitOutcome> {
 	return db.$transaction(async (tx) => {
 		const tenant = await lockProjectTenant(
 			tx as unknown as Parameters<typeof lockProjectTenant>[0],
 			input.projectId,
 		);
 		if (!tenant) {
-			return { persisted: false };
+			return { persisted: false, reason: "project_ineligible" };
 		}
 
 		const stored = await tx.publishingTopicDraft.findFirst({
 			where: { id: input.id, projectId: input.projectId },
 			select: { organizationId: true, userId: true },
 		});
-		if (!stored || !sameTenant(stored, tenant)) {
-			return { persisted: false };
+		if (!stored) {
+			return { persisted: false, reason: "attempt_missing" };
+		}
+		if (!sameTenant(stored, tenant)) {
+			return { persisted: false, reason: "tenant_changed" };
 		}
 
 		const updated = await tx.publishingTopicDraft.updateMany({
@@ -585,7 +601,9 @@ export async function failTopicDraft(input: {
 			},
 		});
 
-		return { persisted: updated.count > 0 };
+		return updated.count > 0
+			? { persisted: true }
+			: { persisted: false, reason: "superseded" };
 	});
 }
 

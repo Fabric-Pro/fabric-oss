@@ -34,11 +34,12 @@ import { getProjectFunctionTagClause } from "@repo/ai/lib/function-tag-context";
 import { computeMaxOutputTokenBudget } from "@repo/ai/lib/output-token-budget";
 import {
 	completeTopicDraft,
+	type DraftCommitRefusal,
 	db,
 	getBoundPromptForAgent,
 	listTopicDecisions,
+	logDraftRefusal,
 } from "@repo/database";
-import { logger } from "@repo/logs";
 import type { TemplateFormat } from "@repo/utils";
 import {
 	isRestrictingThread,
@@ -80,6 +81,14 @@ export interface GenerateShortPostOutput {
 	 * attempt is the one a reader should see.
 	 */
 	status: "READY" | "SUPERSEDED";
+	/**
+	 * Which refusal produced a non-READY status.
+	 *
+	 * OPTIONAL on purpose. A Temporal history recorded before this field
+	 * existed replays without it, and a workflow that read it as required
+	 * would fail that replay. Absent means "an older run that could not say".
+	 */
+	refusalReason?: DraftCommitRefusal;
 }
 
 export async function generateShortPostActivity(
@@ -300,7 +309,7 @@ export async function generateShortPostActivity(
 		},
 	};
 
-	const { persisted } = await completeTopicDraft({
+	const commit = await completeTopicDraft({
 		id: draftId,
 		projectId,
 		content,
@@ -311,12 +320,20 @@ export async function generateShortPostActivity(
 		promptVersion: boundPrompt?.version?.version ?? null,
 	});
 
-	if (!persisted) {
-		logger.warn(
-			"[publishing-short-post] draft superseded before it could be committed",
-			{ draftId, topicId, projectId },
+	if (!commit.persisted) {
+		// The reason, not the guess. All three refusals used to log
+		// "superseded", which sent an operator looking for a newer attempt
+		// that in two of the three cases does not exist.
+		logDraftRefusal(
+			"[publishing-short-post] draft not committed",
+			commit.reason,
+			{
+				draftId,
+				topicId,
+				projectId,
+			},
 		);
-		return { status: "SUPERSEDED" };
+		return { status: "SUPERSEDED", refusalReason: commit.reason };
 	}
 
 	return { status: "READY" };

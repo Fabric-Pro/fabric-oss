@@ -18,6 +18,7 @@ const dbMocks = vi.hoisted(() => {
 	};
 });
 vi.mock("@repo/database", () => ({
+	logDraftRefusal: vi.fn(),
 	db: dbMocks.db,
 	failBackgroundJob: dbMocks.failBackgroundJob,
 	failRunningBackgroundJobStep: dbMocks.failRunningBackgroundJobStep,

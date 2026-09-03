@@ -26,6 +26,7 @@ const listTopicDecisions = vi.fn();
 const completeTopicDraft = vi.fn();
 const seedWorkingDraftIfAbsent = vi.fn();
 vi.mock("@repo/database", () => ({
+	logDraftRefusal: vi.fn(),
 	db: {
 		publishingTopic: {
 			findFirst: (...a: unknown[]) => topicFindFirst(...a),

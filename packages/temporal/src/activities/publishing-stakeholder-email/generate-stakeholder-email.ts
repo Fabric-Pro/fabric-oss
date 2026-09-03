@@ -80,9 +80,11 @@ import { getProjectFunctionTagClause } from "@repo/ai/lib/function-tag-context";
 import { computeMaxOutputTokenBudget } from "@repo/ai/lib/output-token-budget";
 import {
 	completeTopicDraft,
+	type DraftCommitRefusal,
 	db,
 	getBoundPromptForAgent,
 	listTopicDecisions,
+	logDraftRefusal,
 	seedWorkingDraftIfAbsent,
 } from "@repo/database";
 import { logger } from "@repo/logs";
@@ -129,6 +131,14 @@ export interface GenerateStakeholderEmailOutput {
 	 * attempt is the one a reader should see.
 	 */
 	status: "READY" | "SUPERSEDED";
+	/**
+	 * Which refusal produced a non-READY status.
+	 *
+	 * OPTIONAL on purpose. A Temporal history recorded before this field
+	 * existed replays without it, and a workflow that read it as required
+	 * would fail that replay. Absent means "an older run that could not say".
+	 */
+	refusalReason?: DraftCommitRefusal;
 	/**
 	 * Whether this run created the topic's working draft.
 	 *
@@ -409,7 +419,7 @@ export async function generateStakeholderEmailActivity(
 		},
 	};
 
-	const { persisted } = await completeTopicDraft({
+	const commit = await completeTopicDraft({
 		id: draftId,
 		projectId,
 		content,
@@ -420,12 +430,24 @@ export async function generateStakeholderEmailActivity(
 		promptVersion: boundPrompt?.version?.version ?? null,
 	});
 
-	if (!persisted) {
-		logger.warn(
-			"[publishing-stakeholder-email] draft superseded before it could be committed",
-			{ draftId, topicId, projectId },
+	if (!commit.persisted) {
+		// The reason, not the guess. All three refusals used to log
+		// "superseded", which sent an operator looking for a newer attempt
+		// that in two of the three cases does not exist.
+		logDraftRefusal(
+			"[publishing-stakeholder-email] draft not committed",
+			commit.reason,
+			{
+				draftId,
+				topicId,
+				projectId,
+			},
 		);
-		return { status: "SUPERSEDED", seededWorkingDraft: false };
+		return {
+			status: "SUPERSEDED",
+			seededWorkingDraft: false,
+			refusalReason: commit.reason,
+		};
 	}
 
 	// DV5/FR21: the first generation leaves the reader with something editable.

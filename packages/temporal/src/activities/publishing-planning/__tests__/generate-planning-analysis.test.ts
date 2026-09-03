@@ -43,6 +43,7 @@ const checkPublishingGenerationActor = vi.fn();
 const getBoundPromptForAgent = vi.fn();
 const completePlanningAnalysis = vi.fn();
 vi.mock("@repo/database", () => ({
+	logDraftRefusal: vi.fn(),
 	db: {
 		publishingTopic: {
 			findFirst: (...a: unknown[]) => topicFindFirst(...a),
@@ -476,9 +477,18 @@ describe("generatePlanningAnalysisActivity — what it persists", () => {
 		// The attempt was reclaimed by a deadline sweep while the model ran. Its
 		// row is already terminal and a newer attempt owns the topic — writing
 		// over that would silently make the older result the current one.
-		completePlanningAnalysis.mockResolvedValue({ persisted: false });
+		// A refusal now carries WHICH fence refused. The reasonless shape
+		// this used to mock is no longer one the writer can return, and it
+		// passed the old assertion while handing the reporter `undefined`.
+		completePlanningAnalysis.mockResolvedValue({
+			persisted: false,
+			reason: "superseded",
+		});
 
-		await expect(run()).resolves.toEqual({ status: "SUPERSEDED" });
+		await expect(run()).resolves.toEqual({
+			status: "SUPERSEDED",
+			refusalReason: "superseded",
+		});
 	});
 
 	it("reports READY on the happy path", async () => {

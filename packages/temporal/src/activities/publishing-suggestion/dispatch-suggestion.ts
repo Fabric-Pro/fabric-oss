@@ -36,13 +36,13 @@
  */
 
 import {
+	buildPublishingPreferencesSnapshot,
+	computePublishingPreferencesHash,
 	countNewContextSince,
 	createOrGetPublishingCycle,
 	db,
 	ensureRunningBackgroundJob,
 	failBackgroundJob,
-	buildPublishingPreferencesSnapshot,
-	computePublishingPreferencesHash,
 	getLastCountedPublishingRunPreferencesHash,
 	getPublishingSuiteSettings,
 	type SourceCoverage,
@@ -56,8 +56,8 @@ import { getTemporalClient } from "../../client";
 import type { PublishingSuggestionWorkflowInput } from "../../workflows/publishing-suggestion-generation-workflow";
 import { JOB_STEPS, seedJobSteps } from "../lib/job-progress";
 import {
-	isPublishingSuiteEnabledForOrganizationUncached,
 	type EligibleProject,
+	isPublishingSuiteEnabledForOrganizationUncached,
 } from "./find-eligible-projects";
 
 // A create→start may not have landed for a just-created cycle; never reclaim

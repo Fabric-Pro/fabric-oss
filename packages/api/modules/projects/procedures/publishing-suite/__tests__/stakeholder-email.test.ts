@@ -19,6 +19,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const dbMocks = vi.hoisted(() => ({
 	startTopicDraftAttempt: vi.fn(),
 	failTopicDraft: vi.fn(),
+	logDraftRefusal: vi.fn(),
 	listTopicDrafts: vi.fn(),
 	saveWorkingDraft: vi.fn(),
 	updateWorkingDraftBody: vi.fn(),
@@ -120,6 +121,11 @@ const READY_DRAFT = {
 
 beforeEach(() => {
 	vi.clearAllMocks();
+	// The rollback writer returns an outcome the handler reads. A bare
+	// `vi.fn()` resolves to `undefined`, which is a shape the real writer
+	// cannot produce — and a fixture that encodes an impossible shape is how
+	// a handler change gets found by CI instead of by a test.
+	dbMocks.failTopicDraft.mockResolvedValue({ persisted: true });
 	flagMocks.isFeatureEnabled.mockResolvedValue(true);
 	flagMocks.resolveProjectTenant.mockResolvedValue({
 		organizationId: "org-1",

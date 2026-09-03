@@ -48,6 +48,7 @@ const markPublishingChatDelivery = vi.fn(
 );
 
 vi.mock("@repo/database", () => ({
+	logDraftRefusal: vi.fn(),
 	isProjectReadOnly: (...a: unknown[]) => isProjectReadOnly(...(a as [])),
 	assertPublishingCycleTenant: (...a: unknown[]) =>
 		assertPublishingCycleTenant(...a),

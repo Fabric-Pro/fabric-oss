@@ -18,6 +18,7 @@ import { composeWorkingDraftBody } from "../../../../../../temporal/src/activiti
 const dbMocks = vi.hoisted(() => ({
 	startTopicDraftAttempt: vi.fn(),
 	failTopicDraft: vi.fn(),
+	logDraftRefusal: vi.fn(),
 	listTopicDrafts: vi.fn(),
 	saveWorkingDraft: vi.fn(),
 	updateWorkingDraftBody: vi.fn(),
@@ -116,6 +117,11 @@ const READY_DRAFT = {
 
 beforeEach(() => {
 	vi.clearAllMocks();
+	// The rollback writer returns an outcome the handler reads. A bare
+	// `vi.fn()` resolves to `undefined`, which is a shape the real writer
+	// cannot produce — and a fixture that encodes an impossible shape is how
+	// a handler change gets found by CI instead of by a test.
+	dbMocks.failTopicDraft.mockResolvedValue({ persisted: true });
 	flagMocks.isFeatureEnabled.mockResolvedValue(true);
 	flagMocks.resolveProjectTenant.mockResolvedValue({
 		organizationId: "org-1",
@@ -231,6 +237,42 @@ describe("generateBlogPost", () => {
 		expect(dbMocks.failTopicDraft).toHaveBeenCalledWith(
 			expect.objectContaining({ id: "draft-1" }),
 		);
+	});
+
+	it("reports a rollback that was itself refused", async () => {
+		// The rollback can fail to land — the project was archived, or a sweep
+		// already terminalised the attempt. Discarding that outcome, which this
+		// handler used to do, leaves a GENERATING row with nothing recorded
+		// about why while the caller gets a 500 and the panel keeps polling.
+		// Nothing is retried: every refusal reason means the row is no longer
+		// this request's to write.
+		temporalMocks.workflowStart.mockRejectedValue(new Error("no worker"));
+		dbMocks.failTopicDraft.mockResolvedValue({
+			persisted: false,
+			reason: "project_ineligible",
+		});
+
+		await expect(
+			generate.handler({ input: INPUT, context: CONTEXT }),
+		).rejects.toMatchObject({ code: "INTERNAL_SERVER_ERROR" });
+
+		expect(dbMocks.logDraftRefusal).toHaveBeenCalledWith(
+			expect.stringContaining("start rollback skipped"),
+			"project_ineligible",
+			expect.objectContaining({ draftId: "draft-1" }),
+		);
+	});
+
+	it("says nothing when the rollback landed", async () => {
+		// The negative half: a report on every rollback would be noise, and an
+		// operator learns to ignore a line that fires on the normal path.
+		temporalMocks.workflowStart.mockRejectedValue(new Error("no worker"));
+
+		await expect(
+			generate.handler({ input: INPUT, context: CONTEXT }),
+		).rejects.toMatchObject({ code: "INTERNAL_SERVER_ERROR" });
+
+		expect(dbMocks.logDraftRefusal).not.toHaveBeenCalled();
 	});
 
 	it("stores whitespace-only guidance as null", async () => {

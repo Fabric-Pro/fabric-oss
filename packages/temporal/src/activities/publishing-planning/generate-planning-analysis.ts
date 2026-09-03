@@ -34,10 +34,11 @@ import { getProjectFunctionTagClause } from "@repo/ai/lib/function-tag-context";
 import { computeMaxOutputTokenBudget } from "@repo/ai/lib/output-token-budget";
 import {
 	completePlanningAnalysis,
+	type DraftCommitRefusal,
 	db,
 	getBoundPromptForAgent,
+	logDraftRefusal,
 } from "@repo/database";
-import { logger } from "@repo/logs";
 import type { TemplateFormat } from "@repo/utils";
 import { heartbeat } from "@temporalio/activity";
 import { ApplicationFailure } from "@temporalio/common";
@@ -73,6 +74,14 @@ export interface GeneratePlanningAnalysisOutput {
 	 * the one a reader should see.
 	 */
 	status: "READY" | "SUPERSEDED";
+	/**
+	 * Which refusal produced a non-READY status.
+	 *
+	 * OPTIONAL on purpose. A Temporal history recorded before this field
+	 * existed replays without it, and a workflow that read it as required
+	 * would fail that replay. Absent means "an older run that could not say".
+	 */
+	refusalReason?: DraftCommitRefusal;
 }
 
 export async function generatePlanningAnalysisActivity(
@@ -254,7 +263,7 @@ export async function generatePlanningAnalysisActivity(
 		},
 	};
 
-	const { persisted } = await completePlanningAnalysis({
+	const commit = await completePlanningAnalysis({
 		id: analysisId,
 		projectId,
 		content,
@@ -275,12 +284,20 @@ export async function generatePlanningAnalysisActivity(
 		})),
 	});
 
-	if (!persisted) {
-		logger.warn(
-			"[publishing-planning] analysis superseded before it could be committed",
-			{ analysisId, topicId, projectId },
+	if (!commit.persisted) {
+		// The reason, not the guess. All three refusals used to log
+		// "superseded", which sent an operator looking for a newer attempt
+		// that in two of the three cases does not exist.
+		logDraftRefusal(
+			"[publishing-planning] analysis not committed",
+			commit.reason,
+			{
+				analysisId,
+				topicId,
+				projectId,
+			},
 		);
-		return { status: "SUPERSEDED" };
+		return { status: "SUPERSEDED", refusalReason: commit.reason };
 	}
 
 	return { status: "READY" };
