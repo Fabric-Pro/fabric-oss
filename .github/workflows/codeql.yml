@@ -1,0 +1,73 @@
+name: CodeQL
+
+# CodeQL static analysis of the public repository.
+#
+# Runs only in the public mirror. CodeQL's SARIF upload needs GitHub Advanced
+# Security on a private repository, which the staging repository does not
+# have, so the `if:` on the job turns this file into a no-op there. The
+# Semgrep job in security.yml remains the PR-time SAST gate for both
+# repositories.
+#
+# Triggers are push-to-master, a weekly schedule and manual dispatch — never
+# `pull_request`. With PR scanning on, code scanning posts each new alert as a
+# review thread under github-advanced-security. Protection on `master`
+# requires conversation resolution, that rule has no App bypass, and nobody
+# reviews the relay's staging PRs, so the relay's squash was refused (HTTP 405
+# "All comments must be resolved") the one time PR scanning was enabled.
+# Scanning the merged result instead puts alerts in the Security tab, where
+# they are triaged per SECURITY.md § Code scanning, and never in the relay's
+# path. Once the baseline stays clean this can become a required check by
+# adding a `pull_request` trigger AND moving conversation resolution into a
+# ruleset that lists the relay App as a bypass actor — not before.
+#
+# The query suite matches the default-setup scan that produced the triaged
+# baseline, so existing dismissals carry over to this workflow's uploads.
+#
+# C# under aspire/ is not scanned: it needs a .NET build inside the job, and
+# the baseline scan produced no findings in that tree. Add a `csharp` matrix
+# entry with a build step if that changes.
+
+on:
+  push:
+    branches: [master]
+  schedule:
+    # Weekly, an hour after the security.yml cron, to pick up query-pack
+    # updates on code no push has touched.
+    - cron: '0 9 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: codeql-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    if: github.repository == 'Fabric-Pro/fabric-oss'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [javascript-typescript, python, actions]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - uses: github/codeql-action/init@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: none
+          queries: security-extended
+
+      - uses: github/codeql-action/analyze@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9
+        with:
+          category: /language:${{ matrix.language }}

@@ -81,7 +81,12 @@ function getFrameContentType(kind: "frame" | "slideshow") {
 }
 
 function buildFramePath(title: string, kind: "frame" | "slideshow") {
+	// Bounded span: js/polynomial-redos — `title` has no zod max() bound
+	// upstream; cap comfortably above any real title before the slug
+	// regexes run (the slug itself is already sliced to 60 chars below).
+	const MAX_TITLE_CHARS = 200;
 	const slug = title
+		.slice(0, MAX_TITLE_CHARS)
 		.toLowerCase()
 		.trim()
 		.replace(/[^a-z0-9]+/g, "-")

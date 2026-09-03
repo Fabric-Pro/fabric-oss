@@ -16,7 +16,7 @@
  * 3. Parallel-safe (uses database table for hash tracking)
  */
 
-import { execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -93,7 +93,10 @@ async function storeHash(seedName: string, hash: string): Promise<void> {
  */
 function runSeed(file: string): void {
 	const filePath = join(PRISMA_DIR, file);
-	execSync(`npx tsx ${filePath}`, {
+	// No shell involved: filePath is passed as an argv element, not spliced
+	// into a shell command string, so it can't be reinterpreted as shell
+	// syntax. js/shell-command-injection-from-environment.
+	execFileSync("npx", ["tsx", filePath], {
 		cwd: PKG_ROOT,
 		stdio: "inherit",
 		env: process.env,

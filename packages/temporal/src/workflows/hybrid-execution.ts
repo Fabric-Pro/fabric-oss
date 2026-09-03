@@ -125,7 +125,11 @@ export interface HybridExecutionResult {
 // =============================================================================
 
 function interpolate(template: string, vars: Record<string, unknown>): string {
-	return template.replace(/\{\{([^}]+)\}\}/g, (_, key) => {
+	// Bounded placeholder name — no real `{{var}}` interpolation key is
+	// anywhere near this long, and bounding it stops repeated unmatched '{{'
+	// in a project-configured step.url from scanning quadratically.
+	// Bounded span: js/polynomial-redos
+	return template.replace(/\{\{([^}]{1,500})\}\}/g, (_, key) => {
 		const value = vars[key.trim()];
 		return value !== undefined ? String(value) : `{{${key}}}`;
 	});

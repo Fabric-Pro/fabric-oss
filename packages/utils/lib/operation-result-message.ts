@@ -115,11 +115,19 @@ const PARA_SEP = "\n\n";
  */
 const STACK_TRACE_RE = /(\n\s*at\s+[\w$.<>]+\s*\(?|^\s*(Type)?Error:)/m;
 
+/**
+ * Bounded scan prefix for {@link looksLikeStackTrace}: `summary`/`errorCode`
+ * have no zod max() bound upstream, and this runs before MAX_CONTENT_LENGTH
+ * truncation — a stack-trace marker always appears near the start.
+ * Bounded span: js/polynomial-redos
+ */
+const MAX_STACK_TRACE_SCAN_CHARS = 4000;
+
 function looksLikeStackTrace(value: string | undefined): boolean {
 	if (!value) {
 		return false;
 	}
-	return STACK_TRACE_RE.test(value);
+	return STACK_TRACE_RE.test(value.slice(0, MAX_STACK_TRACE_SCAN_CHARS));
 }
 
 function genericFailureCopy(outcome: OperationOutcome): string {

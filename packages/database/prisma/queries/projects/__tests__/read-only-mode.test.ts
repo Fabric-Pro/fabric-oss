@@ -49,4 +49,16 @@ describe("isProjectReadOnly", () => {
 		expect(warn).toHaveBeenCalled();
 		warn.mockRestore();
 	});
+
+	it("passes projectId as a %s substitution arg, never spliced into the format string (js/tainted-format-string)", async () => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		// A project id containing a stray %-directive must not be reinterpreted
+		// by util.format because it splices into the log's first argument.
+		queryRaw.mockRejectedValue(new Error("connection terminated"));
+		await isProjectReadOnly("proj-%s-%d");
+		const [message, ...args] = warn.mock.calls[0] ?? [];
+		expect(message).not.toContain("proj-%s-%d");
+		expect(args).toContain("proj-%s-%d");
+		warn.mockRestore();
+	});
 });

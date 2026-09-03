@@ -125,8 +125,26 @@ function classifyError(error: string): ErrorClassification {
 		errorLower.includes("too many requests") ||
 		errorLower.includes("429")
 	) {
-		// Extract wait time if present
-		const waitMatch = error.match(/(\d+)\s*(seconds?|s)/i);
+		// Extract wait time if present. `error` can be an arbitrarily large,
+		// possibly adversarial string (a compromised MCP/integration response
+		// can shape it), and scanning the whole thing with an unanchored digit
+		// regex is quadratic on a long unbroken digit run with no
+		// "seconds"/"s" suffix. Bound the scan to a small window around
+		// whichever rate-limit keyword matched — wide enough to still catch
+		// realistic phrasing on either side ("retry after 30 seconds" /
+		// "30 seconds until the rate limit resets") without re-scanning the
+		// full message. Bounded span: js/polynomial-redos
+		const keywordIndices = [
+			errorLower.indexOf("rate limit"),
+			errorLower.indexOf("too many requests"),
+			errorLower.indexOf("429"),
+		].filter((index) => index >= 0);
+		const keywordIndex =
+			keywordIndices.length > 0 ? Math.min(...keywordIndices) : 0;
+		const windowStart = Math.max(0, keywordIndex - 50);
+		const windowEnd = keywordIndex + 200;
+		const searchWindow = error.slice(windowStart, windowEnd);
+		const waitMatch = searchWindow.match(/(\d+)\s*(seconds?|s)/i);
 		const waitMs = waitMatch
 			? Number.parseInt(waitMatch[1], 10) * 1000
 			: 10000;

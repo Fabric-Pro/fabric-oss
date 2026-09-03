@@ -57,8 +57,11 @@ function extractCommentBody(raw: Record<string, unknown>): string {
 			return obj.text.trim();
 		}
 		if (typeof obj.html === "string" && obj.html.trim()) {
+			// Bounded tag body — no real HTML tag is anywhere near this long, and
+			// bounding it stops an unclosed '<' run from scanning quadratically.
+			// Bounded span: js/polynomial-redos
 			return obj.html
-				.replace(/<[^>]*>/g, " ")
+				.replace(/<[^>]{0,1000}>/g, " ")
 				.replace(/\s+/g, " ")
 				.trim();
 		}

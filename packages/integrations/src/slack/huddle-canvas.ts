@@ -210,7 +210,11 @@ export function quipHtmlToMarkdown(html: string | null | undefined): string {
 // Slack mention resolution
 // ---------------------------------------------------------------------------
 
-const MENTION_RE = /<@([A-Z0-9]+)(?:\|[^>]*)?>|(?<![\w])@(U[A-Z0-9]{6,})/g;
+// Bounded id/pipe-suffix spans: js/polynomial-redos — real Slack user/bot ids
+// are 9-11 chars and display-name suffixes are short, so these bounds are far
+// above any legitimate value while preventing per-position backtracking scans.
+const MENTION_RE =
+	/<@([A-Z0-9]{1,12})(?:\|[^>\n]{0,100})?>|(?<![\w])@(U[A-Z0-9]{6,})/g;
 
 /**
  * Extract the distinct Slack user ids referenced by `<@U…>` or bare `@U…`

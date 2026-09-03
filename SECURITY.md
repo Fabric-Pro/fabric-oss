@@ -68,6 +68,24 @@ The following are out of scope:
 - Issues in third-party dependencies (report to the upstream project)
 - Issues requiring physical access to infrastructure
 
+## Code Scanning
+
+The public repository runs CodeQL (`security-extended` suite) on every push to `master` and weekly, from [`.github/workflows/codeql.yml`](./.github/workflows/codeql.yml). It deliberately does not run on pull requests: PR annotations post as review threads that the conversation-resolution rule on `master` would make the relay unable to squash. Alerts land in the Security tab, where they are visible only to people with write access, and are triaged there. The Semgrep job in `security.yml` remains the PR-time SAST gate for both repositories.
+
+### Triage policy
+
+Every alert is either fixed or dismissed in the alert itself with a reason that names the data source and the sink — never a bare "false positive". These are the standing rules, written when the initial baseline (250 alerts) was triaged:
+
+- **`js/request-forgery`** — fixed wherever the *host* of an outbound request can be influenced by a caller. A caller-influenced path segment on a host that is a literal or comes from a stored, validated integration configuration is dismissed as a false positive, naming the fixed host.
+- **`js/polynomial-redos`, `js/redos`** — fixed when the regex runs over unbounded input a caller can author directly: request bodies and parameters, user documents or chat text, uploads, third-party integration payloads, fetched web content. Dismissed as *won't fix* when the input is developer-authored (prompt templates, config, model identifiers, repository paths), length-bounded before matching, or model output, which is bounded by the model's maximum output tokens and cannot be shaped precisely by a caller. Client-only code, where the cost falls on the caller's own browser tab, is also *won't fix*.
+- **Sanitization rules** (`js/incomplete-*-sanitization`, `js/bad-tag-filter`, `js/double-escaping`, `js/xss-through-dom`) — real only when the result reaches an HTML or DOM sink, a host-trust decision, or a shell. A `.replace()` that formats text for a prompt, a markdown document, a log line, a slug, a hash input or a JSON field is a false positive, and the dismissal names that sink. A substring host check that gates trust is fixed by parsing the URL and comparing the hostname exactly.
+- **`js/insufficient-password-hash`** — SHA-256 or HMAC of a random API key or bearer token for lookup and constant-time comparison is not a password hash and is a false positive. Only a user-chosen secret needs a key-derivation function.
+- **`js/insecure-randomness`** — fixed when the value must be unguessable or collision-free and nothing else checks ownership (session handles, identifiers persisted as keys). A false positive when it is jitter, a display id, a sample choice, or a handle whose every use re-checks the caller's identity.
+- **`js/tainted-format-string`** — fixed: the request-derived value moves out of the `console.*` format string. The impact is log confusion only, so it never blocks a release on its own.
+- Test files are dismissed as *used in tests*.
+
+A dismissal describes the code as it is. When a dismissed sink later gains an untrusted input, the alert is reopened and fixed rather than left under the old reason.
+
 ## Dependency Vulnerability Management
 
 This section governs how we respond to Dependabot / osv-scanner alerts on our own dependency graph.

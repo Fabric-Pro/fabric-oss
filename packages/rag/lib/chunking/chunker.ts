@@ -68,6 +68,16 @@ const RECURSIVE_SEPARATORS = [
 const MARKDOWN_HEADER_REGEX = /^(#{1,6})\s+(.+)$/gm;
 
 /**
+ * Bounded prefix length for the per-line ATX header match in
+ * {@link chunkMarkdown} and the content-type sniff in
+ * {@link detectContentType}. A real markdown header or content-type signal
+ * never needs anywhere near this many characters to show itself.
+ * Bounded span: js/polynomial-redos
+ */
+const MAX_HEADER_LINE_CHARS = 2000;
+const MAX_CONTENT_TYPE_SNIFF_CHARS = 5000;
+
+/**
  * Sentence boundary pattern
  */
 const _SENTENCE_REGEX = /[.!?]+[\s]+|[.!?]+$/g;
@@ -441,7 +451,9 @@ function chunkMarkdown(
 	let index = 0;
 
 	for (const line of lines) {
-		const headerMatch = line.match(/^(#{1,6})\s+(.+)$/);
+		const headerMatch = line
+			.slice(0, MAX_HEADER_LINE_CHARS)
+			.match(/^(#{1,6})\s+(.+)$/);
 
 		if (headerMatch) {
 			const level = headerMatch[1].length;
@@ -659,7 +671,14 @@ function splitIntoSentences(text: string): string[] {
 	const sentences: string[] = [];
 	let lastEnd = 0;
 
-	const regex = /[.!?]+[\s]+|[.!?]+$/g;
+	// The `|[.!?]+$` alternative was redundant: JS `$` (no `m` flag) only
+	// matches the absolute end of `text`, and the `lastEnd < text.length`
+	// fallback below already emits whatever trails the final matched
+	// separator — including a final punctuation run with no trailing
+	// whitespace. Dropping it removes the dollar-anchor backtracking blowup
+	// without changing which sentences are produced.
+	// Bounded span: js/polynomial-redos
+	const regex = /[.!?]+\s+/g;
 	let match: RegExpExecArray | null;
 
 	while (
@@ -695,14 +714,18 @@ function findLastSentenceBoundary(text: string): number {
  * Detect content type from text
  */
 export function detectContentType(text: string): ContentTypeInfo {
-	const hasMarkdownHeaders = MARKDOWN_HEADER_REGEX.test(text);
-	const hasCodeBlocks = /```[\s\S]*?```/g.test(text);
-	const hasHtmlTags = /<[a-z][\s\S]*?>/i.test(text);
+	// Bounded span: js/polynomial-redos — detectContentType only needs to
+	// sniff a prefix of unbounded user-uploaded document text; every regex
+	// below runs against this bounded prefix instead of the full text.
+	const sniffText = text.slice(0, MAX_CONTENT_TYPE_SNIFF_CHARS);
+	const hasMarkdownHeaders = MARKDOWN_HEADER_REGEX.test(sniffText);
+	const hasCodeBlocks = /```[\s\S]*?```/g.test(sniffText);
+	const hasHtmlTags = /<[a-z][\s\S]*?>/i.test(sniffText);
 
 	// Detect programming language patterns
-	const hasImports = /^(import|from|require|using|#include)/m.test(text);
+	const hasImports = /^(import|from|require|using|#include)/m.test(sniffText);
 	const hasFunctions = /^(function|def|fn|func|public|private|class)/m.test(
-		text,
+		sniffText,
 	);
 
 	if (hasMarkdownHeaders || hasCodeBlocks) {
@@ -717,8 +740,8 @@ export function detectContentType(text: string): ContentTypeInfo {
 	if (hasHtmlTags) {
 		return {
 			type: "html",
-			hasHeaders: /<h[1-6]/i.test(text),
-			hasCodeBlocks: /<pre|<code/i.test(text),
+			hasHeaders: /<h[1-6]/i.test(sniffText),
+			hasCodeBlocks: /<pre|<code/i.test(sniffText),
 			suggestedStrategy: "DOCUMENT",
 		};
 	}

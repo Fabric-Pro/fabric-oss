@@ -110,6 +110,26 @@ describe("extractConfigOrgKey", () => {
 			}),
 		).toBe("acme.atlassian.net");
 	});
+	it("reads the ADO org from a *.visualstudio.com baseUrl", () => {
+		expect(
+			extractConfigOrgKey("azure-devops", {
+				commandArgs: null,
+				baseUrl: "https://contoso.visualstudio.com",
+				defaultUrl: null,
+				atlassianCloudSiteUrl: null,
+			}),
+		).toBe("contoso");
+	});
+	it("rejects a lookalike host that merely ends in visualstudio.com", () => {
+		expect(
+			extractConfigOrgKey("azure-devops", {
+				commandArgs: null,
+				baseUrl: "https://evilvisualstudio.com",
+				defaultUrl: null,
+				atlassianCloudSiteUrl: null,
+			}),
+		).toBeNull();
+	});
 	it("returns null for proxied/unknown tools (forces within-project fallback)", () => {
 		expect(
 			extractConfigOrgKey("fizzy", {

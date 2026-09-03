@@ -232,7 +232,9 @@ export async function POST(req: NextRequest) {
 		});
 	} catch (err) {
 		console.error(
-			`[/api/mcp-app/invoke] Tool execution failed: config=${body.configId} tool=${body.toolName}`,
+			"[/api/mcp-app/invoke] Tool execution failed: config=%s tool=%s",
+			body.configId,
+			body.toolName,
 			err,
 		);
 		return new Response(

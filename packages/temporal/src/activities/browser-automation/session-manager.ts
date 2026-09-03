@@ -5,6 +5,7 @@
  * Each session is isolated by userId + organizationId for security.
  */
 
+import { randomUUID } from "node:crypto";
 import type { Browser, BrowserContext, Page } from "playwright";
 import type { BrowserSessionOptions } from "./types";
 
@@ -36,16 +37,32 @@ let cleanupInterval: NodeJS.Timeout | null = null;
 // Session Manager Functions
 // =============================================================================
 
+/** The tenant a session id is minted for. */
+function sessionScope(userId: string, organizationId?: string): string {
+	return organizationId ? `org:${organizationId}` : `user:${userId}`;
+}
+
 /**
- * Generate unique session ID scoped to tenant
+ * Generate unique session ID scoped to tenant.
+ *
+ * The id is the only thing standing between one tenant's live browser session
+ * and another caller that names it, so its random part must be unguessable:
+ * `Math.random()` is neither uniformly distributed nor unpredictable (V8's
+ * xorshift state can be recovered from a handful of outputs), and the rest of
+ * the id — the scope and a millisecond timestamp — carries little entropy of
+ * its own. `randomUUID()` is CSPRNG-backed; the hyphens are stripped so the
+ * shape of the id (four `_`-separated parts, lowercase alphanumeric tail) is
+ * unchanged.
+ *
+ * Guards js/insecure-randomness.
  */
 export function generateSessionId(
 	userId: string,
 	organizationId?: string,
 ): string {
-	const scope = organizationId ? `org:${organizationId}` : `user:${userId}`;
+	const scope = sessionScope(userId, organizationId);
 	const timestamp = Date.now();
-	const random = Math.random().toString(36).substring(2, 8);
+	const random = randomUUID().replace(/-/g, "");
 	return `browser_${scope}_${timestamp}_${random}`;
 }
 
@@ -58,6 +75,19 @@ export async function createSession(
 	organizationId: string | undefined,
 	options: BrowserSessionOptions = {},
 ): Promise<BrowserSession> {
+	// The session id is registered as-is, and every later lookup is by id alone,
+	// so an id minted for one tenant must never be registered against another's
+	// browser: refuse anything that does not carry this owner's scope.
+	if (
+		!sessionId.startsWith(
+			`browser_${sessionScope(userId, organizationId)}_`,
+		)
+	) {
+		throw new Error(
+			"Browser session id does not match the requesting tenant.",
+		);
+	}
+
 	// Dynamically import Playwright to avoid bundling issues
 	const { chromium } = await import("playwright");
 
@@ -120,7 +150,14 @@ export async function createSession(
 }
 
 /**
- * Get an existing session
+ * Get an existing session.
+ *
+ * Isolation here rests entirely on the session id: the activity inputs that
+ * reach this function (navigate, action, extract, screenshot, authenticate)
+ * carry no caller identity to compare against `session.userId`, so the id has
+ * to be treated as a bearer token — hence the CSPRNG id above. Adding a real
+ * owner check means threading userId/organizationId through those input types
+ * and their workflow call sites.
  */
 export function getSession(sessionId: string): BrowserSession | undefined {
 	const session = sessions.get(sessionId);

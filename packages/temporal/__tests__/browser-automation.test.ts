@@ -42,6 +42,32 @@ describe("Browser Session Manager", () => {
 			expect(timestamp).toBeGreaterThan(0);
 			expect(timestamp).toBeLessThanOrEqual(Date.now());
 		});
+
+		it("should use a CSPRNG-sized random suffix, not Math.random", async () => {
+			const { generateSessionId } = await import(
+				"../src/activities/browser-automation/session-manager"
+			);
+
+			// 128 bits of randomUUID, hyphens stripped — the id is a bearer
+			// token, so a guessable suffix would let one tenant name another's
+			// live session.
+			const suffix = generateSessionId("user-1", "org-1").split("_")[3];
+			expect(suffix).toMatch(/^[0-9a-f]{32}$/);
+		});
+	});
+
+	describe("createSession", () => {
+		it("should reject a session id minted for another tenant", async () => {
+			const { createSession, generateSessionId } = await import(
+				"../src/activities/browser-automation/session-manager"
+			);
+
+			const foreignId = generateSessionId("user-1", "org-other");
+
+			await expect(
+				createSession(foreignId, "user-1", "org-1"),
+			).rejects.toThrow(/does not match the requesting tenant/);
+		});
 	});
 });
 

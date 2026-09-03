@@ -34,7 +34,8 @@ export async function isProjectReadOnly(projectId: string): Promise<boolean> {
 		return rows[0]?.readOnlyMode === true;
 	} catch (error) {
 		console.warn(
-			`[read-only-mode] lookup failed for project ${projectId}; allowing write (fail-open)`,
+			"[read-only-mode] lookup failed for project %s; allowing write (fail-open)",
+			projectId,
 			error instanceof Error ? error.message : error,
 		);
 		return false;

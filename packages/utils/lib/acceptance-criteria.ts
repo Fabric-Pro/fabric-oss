@@ -44,6 +44,9 @@ export interface ParsedCriterion {
  */
 const AC_MARKER = /^AC\s*\d+\s*[-–—:.)][^\S\r\n]+(?=\S)/i;
 
+/** See the `listMarkerMatch` comment in {@link parseAcceptanceCriteria}. */
+const MAX_LIST_MARKER_LINE_CHARS = 2000;
+
 /**
  * Split the acceptance-criteria markdown into ordered criteria.
  *
@@ -136,10 +139,20 @@ export function parseAcceptanceCriteria(
 		// A markdown serializer escapes the period when a list item has lost
 		// its list role upstream; without this the whole section silently
 		// collapses into paragraph mode and every "AC N" reference shifts.
-		const listMatch = line.match(/^(\s*)(?:[-*+]|\d+\\?[.)])\s+(.*)$/);
-		if (listMatch) {
-			const indent = listMatch[1].length;
-			const text = listMatch[2];
+		//
+		// Bounded span: js/polynomial-redos — `line` comes from unbounded
+		// PM-tool-authored acceptance-criteria text; a real bullet/numbered
+		// MARKER is never this long, so only the marker+indent prefix is
+		// matched against a bounded slice. The criterion TEXT is then read
+		// from the full, unsliced `line` at the marker's end offset, so a
+		// long criterion is never truncated — only the marker-detection span
+		// is bounded.
+		const listMarkerMatch = line
+			.slice(0, MAX_LIST_MARKER_LINE_CHARS)
+			.match(/^(\s*)(?:[-*+]|\d+\\?[.)])\s+/);
+		if (listMarkerMatch) {
+			const indent = listMarkerMatch[1].length;
+			const text = line.slice(listMarkerMatch[0].length);
 			if (topIndent === null || indent < topIndent) {
 				topIndent = indent;
 			}

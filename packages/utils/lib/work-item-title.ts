@@ -88,7 +88,12 @@ export function stripLeadingDuplicateTitleHeading(
 		return body;
 	}
 
-	const headingMatch = lines[headingIndex].match(ATX_H1_LINE);
+	// Bounded span: js/polynomial-redos — `body` is unbounded AI-Update story
+	// content with no length cap; a real ATX heading line is never this long.
+	const MAX_HEADING_LINE_CHARS = 2000;
+	const headingMatch = lines[headingIndex]
+		.slice(0, MAX_HEADING_LINE_CHARS)
+		.match(ATX_H1_LINE);
 	if (!headingMatch) {
 		return body;
 	}

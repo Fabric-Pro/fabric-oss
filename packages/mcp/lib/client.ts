@@ -849,7 +849,8 @@ export async function getCachedMcpClientForConfig(
 	} catch (error) {
 		// Log but don't crash - let the caller handle the error
 		console.error(
-			`[MCP Client Cache] Failed to create client for config ${configId}:`,
+			"[MCP Client Cache] Failed to create client for config %s:",
+			configId,
 			error,
 		);
 		throw error;

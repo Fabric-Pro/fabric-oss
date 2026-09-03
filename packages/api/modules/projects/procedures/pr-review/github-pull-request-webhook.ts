@@ -77,7 +77,13 @@ export function repositoryUrlCandidates(
 		if (!url) {
 			continue;
 		}
-		const withoutSlash = url.replace(/\/+$/, "");
+		// Non-regex loop: js/polynomial-redos — clone_url/html_url come from
+		// the inbound PR webhook JSON payload with no length validation; a
+		// bounded loop has no backtracking behavior regardless of input size.
+		let withoutSlash = url;
+		while (withoutSlash.endsWith("/")) {
+			withoutSlash = withoutSlash.slice(0, -1);
+		}
 		seen.add(withoutSlash);
 		seen.add(withoutSlash.replace(/\.git$/, ""));
 		if (!withoutSlash.endsWith(".git")) {
