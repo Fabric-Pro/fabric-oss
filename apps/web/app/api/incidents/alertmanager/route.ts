@@ -59,15 +59,20 @@ interface IncomingAlert {
  * Drop `undefined` values so the record satisfies `Record<string, string>`.
  * Alertmanager sends absent labels as missing keys, but a hand-rolled poster can
  * send explicit `undefined`.
+ *
+ * Built with `Object.fromEntries` rather than by assigning `out[key] = value` —
+ * js/remote-property-injection. Label and annotation names come off the wire, so
+ * assignment would run them through `Object.prototype`'s setters; `fromEntries`
+ * defines own data properties and never reaches the prototype chain.
  */
 function definedOnly(
 	input: Record<string, string | undefined> | undefined,
 ): Record<string, string> {
-	const out: Record<string, string> = {};
-	for (const [k, v] of Object.entries(input ?? {})) {
-		if (typeof v === "string") out[k] = v;
-	}
-	return out;
+	return Object.fromEntries(
+		Object.entries(input ?? {}).filter(
+			(entry): entry is [string, string] => typeof entry[1] === "string",
+		),
+	);
 }
 
 /**

@@ -133,6 +133,28 @@ describe("errorRate alerts reach the incident writer", () => {
 		});
 	});
 
+	it("keeps a wire-supplied `__proto__` label off the prototype chain", async () => {
+		// Label names arrive over the webhook, so copying them with
+		// `out[key] = value` would run `__proto__` through Object.prototype's
+		// setter. The record is built with Object.fromEntries instead, which
+		// defines an own data property. js/remote-property-injection
+		// A computed key, so the literal creates an own `__proto__` property
+		// instead of using the object-literal prototype-setter syntax.
+		const hostileLabels: Record<string, string> = {
+			...FIRING.labels,
+			["__proto__"]: "polluted",
+		};
+
+		await POST(request([{ ...FIRING, labels: hostileLabels }]));
+
+		const arg = upsertAlertmanagerIncident.mock.calls[0]?.[0] as {
+			labels: Record<string, string>;
+		};
+		expect(Object.getPrototypeOf(arg.labels)).toBe(Object.prototype);
+		expect(Object.hasOwn(arg.labels, "__proto__")).toBe(true);
+		expect(arg.labels.severity).toBe("critical");
+	});
+
 	it("does not fail the whole request when the write throws", async () => {
 		upsertAlertmanagerIncident.mockRejectedValue(new Error("db down"));
 

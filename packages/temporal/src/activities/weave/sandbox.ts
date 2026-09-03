@@ -6,6 +6,7 @@
  * to create and manage coding execution sessions.
  */
 
+import { repoForgeFromUrl } from "../../lib/repo-forge";
 import { getBackgroundAgentsProvider } from "./get-background-provider";
 
 export interface CreateSandboxInput {
@@ -25,6 +26,12 @@ export interface SandboxInfo {
  * Handles both HTTPS and SSH formats:
  *   https://github.com/owner/repo.git
  *   git@github.com:owner/repo.git
+ *
+ * The API-side gate this replicates (`start-execution.ts`) decides the forge
+ * by parsing the URL's `hostname`, not by substring-testing the whole string —
+ * a substring test also matches a URL whose real host is somewhere else, e.g.
+ * `https://example.com/github.com/owner/repo`. `repoForgeFromUrl` makes the
+ * same hostname decision here so the two parsers cannot disagree.
  */
 // A well-formed GitHub URL is far shorter than this; reject anything longer
 // up front so the unanchored [^/]+ groups below can't backtrack over an
@@ -38,6 +45,12 @@ function parseRepoUrl(repoUrl: string): {
 	if (repoUrl.length > MAX_REPO_URL_LENGTH) {
 		throw new Error(
 			`Cannot parse repository URL: URL exceeds maximum length of ${MAX_REPO_URL_LENGTH} characters. Expected GitHub HTTPS or SSH format.`,
+		);
+	}
+
+	if (repoForgeFromUrl(repoUrl) !== "github") {
+		throw new Error(
+			`Cannot parse repository URL: ${repoUrl}. Expected GitHub HTTPS or SSH format.`,
 		);
 	}
 

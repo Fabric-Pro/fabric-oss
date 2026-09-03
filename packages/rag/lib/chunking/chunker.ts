@@ -677,8 +677,15 @@ function splitIntoSentences(text: string): string[] {
 	// separator — including a final punctuation run with no trailing
 	// whitespace. Dropping it removes the dollar-anchor backtracking blowup
 	// without changing which sentences are produced.
+	//
+	// `[.!?](?![.!?])` matches only the LAST character of a punctuation run
+	// instead of the whole run. The end of the match — the only thing used
+	// below — is identical, because `\s+` still consumes the same trailing
+	// whitespace; what goes away is the `[.!?]+` span the engine re-scanned
+	// from every position inside a long punctuation run ("!!!!!…" with no
+	// whitespace after it was quadratic in its length).
 	// Bounded span: js/polynomial-redos
-	const regex = /[.!?]+\s+/g;
+	const regex = /[.!?](?![.!?])\s+/g;
 	let match: RegExpExecArray | null;
 
 	while (

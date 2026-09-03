@@ -110,7 +110,23 @@ export function FrameVizShell({
 		: embedUrl;
 
 	useEffect(() => {
+		// Only the embed this shell framed may drive it. Without the check any
+		// window with a handle on this one — an opener, another frame — could
+		// post a `set-height` or resolve a pending export/code RPC with its own
+		// payload. `embedUrl` is app-relative today, so this resolves to this
+		// app's own origin; resolving it rather than hardcoding keeps the check
+		// correct if the embed is ever served from elsewhere.
+		let expectedOrigin = window.location.origin;
+		try {
+			expectedOrigin = new URL(embedUrl, window.location.href).origin;
+		} catch {
+			// Unparseable embed URL — fall back to this app's own origin.
+		}
+
 		const onMessage = (event: MessageEvent) => {
+			if (event.origin !== expectedOrigin) {
+				return;
+			}
 			if (!isFrameEmbedToHostMessage(event.data)) {
 				return;
 			}
@@ -154,7 +170,7 @@ export function FrameVizShell({
 
 		window.addEventListener("message", onMessage);
 		return () => window.removeEventListener("message", onMessage);
-	}, []);
+	}, [embedUrl]);
 
 	useEffect(() => {
 		setIframeLoading(true);

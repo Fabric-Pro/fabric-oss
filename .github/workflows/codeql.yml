@@ -20,8 +20,15 @@ name: CodeQL
 # adding a `pull_request` trigger AND moving conversation resolution into a
 # ruleset that lists the relay App as a bypass actor — not before.
 #
-# The query suite matches the default-setup scan that produced the triaged
-# baseline, so existing dismissals carry over to this workflow's uploads.
+# The `security-extended` suite is wider than the default-setup scan that
+# produced the first triaged baseline (that scan ran the default suite: 87
+# JavaScript rules against this suite's 103). Dismissals carry over between
+# the two — alerts are matched by rule and location, not by upload source —
+# but the extra medium-precision families (log-injection, missing-regexp-
+# anchor, user-controlled-bypass, insecure-temporary-file, file-system-race
+# and friends) first appeared with this workflow's initial upload and were
+# triaged separately. Do not read a non-empty alert list as a regression of
+# the baseline without checking the rule family first.
 #
 # C# under aspire/ is not scanned: it needs a .NET build inside the job, and
 # the baseline scan produced no findings in that tree. Add a `csharp` matrix

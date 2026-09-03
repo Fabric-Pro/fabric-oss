@@ -619,14 +619,33 @@ export async function ingestPulledImages(
 // Azure DevOps wiring
 // =============================================================================
 
-/** ADO attachment URLs are org-scoped on `dev.azure.com`. */
-// Matches both shapes of ADO attachment URL:
-//   inline-image (description):  dev.azure.com/{org}/_apis/wit/attachments/{guid}
-//   relation (AttachedFile):     dev.azure.com/{org}/{projectGuid}/_apis/wit/attachments/{guid}
-// Flat span instead of a repeated `(segment/)+` group — the nested quantifier
-// let the engine re-partition the same span many ways on non-matching input.
-// Bounded span: js/polynomial-redos
-const ADO_ATTACHMENT_RE = /dev\.azure\.com\/[^\s?#]*_apis\/wit\/attachments\//i;
+/**
+ * ADO attachment URLs are org-scoped on `dev.azure.com`. Both shapes:
+ *   inline-image (description):  dev.azure.com/{org}/_apis/wit/attachments/{guid}
+ *   relation (AttachedFile):     dev.azure.com/{org}/{projectGuid}/_apis/wit/attachments/{guid}
+ *
+ * Parsed rather than pattern-matched. The URL comes straight out of an
+ * `<img src>` / `<a href>` in a work-item description — third-party text of
+ * unbounded length — and this predicate decides whether the ADO PAT is sent
+ * to it, so it has to answer "is this host exactly dev.azure.com", which a
+ * substring test cannot: `https://other.example/?u=dev.azure.com/_apis/wit/
+ * attachments/` satisfied the old regex. Parsing also removes the unbounded
+ * `[^\s?#]*` span the engine re-scanned from every candidate start position.
+ * Bounded span: js/polynomial-redos
+ */
+function isAdoAttachmentUrl(url: string): boolean {
+	let parsed: URL;
+	try {
+		parsed = new URL(url);
+	} catch {
+		return false;
+	}
+	return (
+		parsed.protocol === "https:" &&
+		parsed.hostname.toLowerCase() === "dev.azure.com" &&
+		parsed.pathname.includes("/_apis/wit/attachments/")
+	);
+}
 
 /** Pull the stable attachment GUID out of an ADO attachment URL. */
 export function adoAttachmentId(url: string): string | null {
@@ -647,9 +666,9 @@ export function buildAdoIngestOptions(
 > {
 	const auth = `Basic ${Buffer.from(`:${pat}`).toString("base64")}`;
 	return {
-		urlFilter: (url) => ADO_ATTACHMENT_RE.test(url),
+		urlFilter: (url) => isAdoAttachmentUrl(url),
 		fetchAuth: (url) =>
-			ADO_ATTACHMENT_RE.test(url)
+			isAdoAttachmentUrl(url)
 				? {
 						Authorization: auth,
 						"User-Agent": "Fabric-Sync/1.0 (pm-sync pull)",
@@ -829,6 +848,38 @@ const FIZZY_ATTACHMENT_RE =
 /** Fizzy's web origin — account-relative ActiveStorage URLs resolve against it. */
 const FIZZY_BASE_URL = "https://app.fizzy.do";
 
+/** Hostname `isFizzyAttachmentUrl` pins absolute URLs to. */
+const FIZZY_BASE_HOSTNAME = new URL(FIZZY_BASE_URL).hostname;
+
+/**
+ * `FIZZY_ATTACHMENT_RE` is path-only, with no host component — an `<img
+ * src="https://attacker.example/rails/active_storage/blobs/redirect/x/y.png">`
+ * in a card body satisfied it just as well as a real Fizzy URL, and since
+ * `resolveFetchUrl` returned any absolute `http(s)://` URL unchanged, that
+ * would send the Fizzy Bearer API key straight to `attacker.example`. This
+ * predicate is what `urlFilter`, `fetchAuth` and `resolveFetchUrl` gate on
+ * instead: an absolute URL only qualifies when it parses, is `https:`, and
+ * its hostname equals `FIZZY_BASE_URL`'s own; a relative path keeps the
+ * existing slug-insertion behavior and is always in-scope (mirrors the
+ * `dev.azure.com` host pin in `isAdoAttachmentUrl`).
+ */
+function isFizzyAttachmentUrl(url: string): boolean {
+	if (/^https?:\/\//i.test(url)) {
+		let parsed: URL;
+		try {
+			parsed = new URL(url);
+		} catch {
+			return false;
+		}
+		return (
+			parsed.protocol === "https:" &&
+			parsed.hostname.toLowerCase() === FIZZY_BASE_HOSTNAME &&
+			FIZZY_ATTACHMENT_RE.test(parsed.pathname)
+		);
+	}
+	return FIZZY_ATTACHMENT_RE.test(url);
+}
+
 /** Pull the Rails signed blob id out of a Fizzy ActiveStorage redirect URL. */
 export function fizzyBlobId(url: string): string | null {
 	return (
@@ -861,9 +912,9 @@ export function buildFizzyIngestOptions(
 	const auth = `Bearer ${apiKey}`;
 	const slug = accountSlug.replace(/^\/+|\/+$/g, "");
 	return {
-		urlFilter: (url) => FIZZY_ATTACHMENT_RE.test(url),
+		urlFilter: (url) => isFizzyAttachmentUrl(url),
 		fetchAuth: (url) =>
-			FIZZY_ATTACHMENT_RE.test(url)
+			isFizzyAttachmentUrl(url)
 				? {
 						Authorization: auth,
 						"User-Agent": "Fabric-Sync/1.0 (pm-sync pull)",
@@ -872,6 +923,11 @@ export function buildFizzyIngestOptions(
 				: null,
 		resolveFetchUrl: (url) => {
 			if (/^https?:\/\//i.test(url)) {
+				// Already gated by isFizzyAttachmentUrl above (via urlFilter) — a
+				// qualifying absolute URL is already same-host and needs no rewrite.
+				// A non-qualifying one is inert here too: fetchAuth returns null for
+				// it, so it is fetched with no credentials, if it is ever reached at
+				// all — urlFilter stops `handle()` before resolveFetchUrl runs.
 				return url;
 			}
 			let path = url.startsWith("/") ? url : `/${url}`;

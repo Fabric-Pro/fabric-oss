@@ -188,6 +188,18 @@ describe("buildEnrichmentSystemPrompt", () => {
 		expect(rule).toBeLessThan(prompt.indexOf("<full_document>"));
 	});
 
+	it("stays linear on a title that is one '<' followed by a long whitespace run (js/polynomial-redos)", () => {
+		// The document title is not length-capped. With the escape's optional
+		// slash written between two `\s*` runs, "<" + 120k tabs took time
+		// quadratic in the run. Speed is enforced by the runner's normal
+		// timeout; the assertion is that nothing was escaped, since no tag
+		// name ever follows.
+		const title = `<${"\t".repeat(120_000)}`;
+		const prompt = buildEnrichmentSystemPrompt(title, "body");
+		expect(prompt).toContain(title);
+		expect(prompt).not.toContain("&lt;");
+	});
+
 	it("honours an explicit cap and leaves shorter documents intact", () => {
 		expect(buildEnrichmentSystemPrompt("t", "abcdef", 3)).toContain(
 			"abc...\n[Document truncated — 6 total chars]",

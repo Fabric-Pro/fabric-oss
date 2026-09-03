@@ -40,6 +40,7 @@
 
 import { db, getProjectReposForCodeSearch } from "@repo/database";
 import { logger } from "@repo/logs";
+import { repoForgeFromUrl } from "../../lib/repo-forge";
 import {
 	type RepoIntegrationRow,
 	resolveRepoAuth,
@@ -196,9 +197,17 @@ async function fetchPrBodies(input: {
 
 	// Match each coordinate to the integration that owns it. A coordinate whose
 	// repo is not connected is left as a bare reference rather than guessed at.
+	//
+	// The host is confirmed via `repoForgeFromUrl`'s hostname parse before the
+	// owner/repo is pulled out of the path — a plain substring match on
+	// `github.com` also matches a URL whose real host is somewhere else, e.g.
+	// `https://example.com/github.com/owner/repo`.
 	const byFullName = new Map<string, RepoIntegrationRow>();
 	for (const repo of repos) {
 		const url = (repo as { repositoryUrl?: string }).repositoryUrl ?? "";
+		if (repoForgeFromUrl(url) !== "github") {
+			continue;
+		}
 		const match = url.match(/github\.com[/:]([^/]+\/[^/.]+)/i);
 		if (match?.[1]) {
 			byFullName.set(match[1].toLowerCase(), repo);

@@ -370,12 +370,39 @@ describe("buildAdoIngestOptions", () => {
 		expect(adoAttachmentId(relUrl)).toBe(ADO_GUID);
 	});
 
-	it("does not match a dev.azure.com URL without the attachments API segment (flattened ADO_ATTACHMENT_RE)", () => {
+	it("does not match a dev.azure.com URL without the attachments API segment", () => {
 		const opts = buildAdoIngestOptions("PAT");
 		expect(
 			opts.urlFilter?.(
 				"https://dev.azure.com/example-org/_apis/wit/workitems/1",
 			),
+		).toBe(false);
+	});
+
+	it("does not send the PAT to a foreign host that merely mentions the ADO path", () => {
+		// The old substring test matched anywhere in the string, so this URL
+		// passed the filter and the `Basic <PAT>` header went to the attacker's
+		// host. The host is now compared exactly.
+		const opts = buildAdoIngestOptions("PAT");
+		const spoofed =
+			"https://other.example/?u=https://dev.azure.com/example-org/_apis/wit/attachments/g1";
+		expect(opts.urlFilter?.(spoofed)).toBe(false);
+		expect(opts.fetchAuth?.(spoofed)).toBeNull();
+		expect(
+			opts.urlFilter?.(
+				"https://dev.azure.com.example.test/example-org/_apis/wit/attachments/g1",
+			),
+		).toBe(false);
+	});
+
+	it("stays linear on a huge non-matching src value (js/polynomial-redos)", () => {
+		// A single `<img src>` in a work-item description can carry the whole
+		// 200,000-char scan budget; the unbounded `[^\s?#]*` span was re-scanned
+		// from every candidate start position. Speed is enforced by the
+		// runner's normal timeout.
+		const opts = buildAdoIngestOptions("PAT");
+		expect(
+			opts.urlFilter?.(`https://${"dev.azure.com/".repeat(14_000)}`),
 		).toBe(false);
 	});
 });
@@ -585,6 +612,31 @@ describe("buildFizzyIngestOptions", () => {
 			`https://app.fizzy.do/000000/rails/active_storage/blobs/redirect/${FIZZY_SIGNED}/Test.xlsx`,
 		);
 	});
+
+	it("does not send the API key to a foreign host that merely mentions the Fizzy attachment path", () => {
+		// FIZZY_ATTACHMENT_RE is path-only, with no host component — before the
+		// host pin, an <img src> pointing at this URL satisfied the filter and
+		// the `Bearer <apiKey>` header (plus resolveFetchUrl's absolute-URL
+		// passthrough) would have sent the Fizzy API key to the attacker's host.
+		const opts = buildFizzyIngestOptions("FZ-KEY", "000000");
+		const spoofed = `https://attacker.example/rails/active_storage/blobs/redirect/${FIZZY_SIGNED}/image.png`;
+		expect(opts.urlFilter?.(spoofed)).toBe(false);
+		expect(opts.fetchAuth?.(spoofed)).toBeNull();
+		// A lookalike subdomain of the real host must not qualify either.
+		expect(
+			opts.urlFilter?.(
+				`https://app.fizzy.do.attacker.example/rails/active_storage/blobs/redirect/${FIZZY_SIGNED}/image.png`,
+			),
+		).toBe(false);
+	});
+
+	it("still matches a same-host absolute Fizzy URL", () => {
+		const opts = buildFizzyIngestOptions("FZ-KEY", "000000");
+		expect(opts.urlFilter?.(FIZZY_URL)).toBe(true);
+		expect(opts.fetchAuth?.(FIZZY_URL)?.Authorization).toBe(
+			"Bearer FZ-KEY",
+		);
+	});
 });
 
 describe("ingestPulledImages — Fizzy", () => {
@@ -612,6 +664,59 @@ describe("ingestPulledImages — Fizzy", () => {
 		expect(store.puts[0]?.key).toBe(FIZZY_KEY);
 		expect(result.description).toContain(`data-s3-key="${FIZZY_KEY}"`);
 		expect(result.description).not.toContain("app.fizzy.do");
+	});
+
+	it("resolves an account-relative Fizzy image with the slug and fetches it with Bearer auth", async () => {
+		const fetchMock = vi.fn(async () => imageResponse());
+		vi.stubGlobal("fetch", fetchMock);
+		const store = makeStore();
+		const relativeSrc = `/rails/active_storage/blobs/redirect/${FIZZY_SIGNED}/image.png`;
+
+		const result = await ingestPulledImages({
+			description: `<p><img src="${relativeSrc}" alt="pic"></p>`,
+			projectId: "p1",
+			storyId: "s1",
+			store,
+			...fizzyOpts(),
+		});
+
+		expect(result.ingested).toBe(1);
+		const [calledUrl, init] = fetchMock.mock.calls[0] as unknown as [
+			string,
+			RequestInit,
+		];
+		expect(calledUrl).toBe(
+			`https://app.fizzy.do/000000/rails/active_storage/blobs/redirect/${FIZZY_SIGNED}/image.png`,
+		);
+		expect((init.headers as Record<string, string>).Authorization).toBe(
+			"Bearer FZ-KEY",
+		);
+		expect(store.puts[0]?.key).toBe(FIZZY_KEY);
+		expect(result.description).toContain(`data-s3-key="${FIZZY_KEY}"`);
+	});
+
+	it("leaves a lookalike-host Fizzy-path image untouched and never fetches it", async () => {
+		// Same bug as the buildFizzyIngestOptions unit test, exercised through
+		// the full ingest pipeline: the attacker host must never be fetched,
+		// with or without auth, and the img tag must be left as-is (skipped),
+		// not rewritten to a Fabric-hosted reference or a placeholder.
+		const fetchMock = vi.fn(async () => imageResponse());
+		vi.stubGlobal("fetch", fetchMock);
+		const store = makeStore();
+		const spoofed = `https://attacker.example/rails/active_storage/blobs/redirect/${FIZZY_SIGNED}/image.png`;
+
+		const result = await ingestPulledImages({
+			description: `<p><img src="${spoofed}" alt="pic"></p>`,
+			projectId: "p1",
+			storyId: "s1",
+			store,
+			...fizzyOpts(),
+		});
+
+		expect(result.ingested).toBe(0);
+		expect(result.skipped).toBe(1);
+		expect(fetchMock).not.toHaveBeenCalled();
+		expect(result.description).toContain(`src="${spoofed}"`);
 	});
 });
 

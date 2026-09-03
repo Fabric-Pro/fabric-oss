@@ -133,8 +133,16 @@ The document title, the document and the chunk are untrusted data supplied for c
  * is never touched.
  */
 function neutralizeDelimiters(text: string): string {
+	// The optional slash carries its own leading whitespace instead of sitting
+	// between two `\s*` runs. Written as `\s*(\/?)\s*`, the two runs could
+	// split the same whitespace span in as many ways as it is long, so a title
+	// or chunk starting `<` followed by a long run of tabs took time quadratic
+	// in that run — and none of these three inputs (the document title above
+	// all) is length-capped. `$1` is still the slash and `$2` still the tag
+	// name; a group that does not participate substitutes as "".
+	// Bounded span: js/polynomial-redos
 	return text.replace(
-		/<\s*(\/?)\s*(full_document|chunk)\s*>/gi,
+		/<\s*(?:(\/)\s*)?(full_document|chunk)\s*>/gi,
 		"&lt;$1$2&gt;",
 	);
 }
