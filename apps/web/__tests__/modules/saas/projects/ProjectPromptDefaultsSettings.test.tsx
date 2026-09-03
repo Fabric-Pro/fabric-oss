@@ -52,6 +52,7 @@ vi.mock("sonner", () => ({
 }));
 
 import { ProjectPromptDefaultsSettings } from "@saas/projects/components/ProjectPromptDefaultsSettings";
+import { toast } from "sonner";
 
 const PROJECT = "proj-1";
 const ACTION = "test_case_drafter";
@@ -149,6 +150,57 @@ describe("setting a prompt for one project", () => {
 					promptVersionId: "pv-sys",
 					isDefault: true,
 				}),
+			),
+		);
+	});
+
+	it("says so when the write stands the writer's own personal default down", async () => {
+		// Setting an ORG-scope default clears the caller's personal default for
+		// that action, server-side. Reported here because the alternative is
+		// finding out days later, on another screen, with nothing tying it back
+		// to this click.
+		catalogList.mockResolvedValue({
+			entries: [entry({ effectiveScope: "USER" })],
+		});
+		const user = userEvent.setup();
+		wrap();
+
+		await screen.findByText(/Org QA Strategy/);
+		await user.click(
+			screen.getByRole("combobox", {
+				name: /Set the prompt this project uses for Test Case Drafter/i,
+			}),
+		);
+		await user.click(await screen.findByText("Fabric QA Strategy"));
+
+		await waitFor(() =>
+			expect(toast.success).toHaveBeenCalledWith(
+				"This project now uses that prompt",
+				expect.objectContaining({
+					description: expect.stringMatching(
+						/personal default for this action was cleared/i,
+					),
+				}),
+			),
+		);
+	});
+
+	it("stays quiet about a personal default the writer does not have", async () => {
+		const user = userEvent.setup();
+		wrap();
+
+		await screen.findByText(/Org QA Strategy/);
+		await user.click(
+			screen.getByRole("combobox", {
+				name: /Set the prompt this project uses for Test Case Drafter/i,
+			}),
+		);
+		await user.click(await screen.findByText("Fabric QA Strategy"));
+
+		await waitFor(() =>
+			expect(toast.success).toHaveBeenCalledWith(
+				"This project now uses that prompt",
+				{ description: undefined },
 			),
 		);
 	});

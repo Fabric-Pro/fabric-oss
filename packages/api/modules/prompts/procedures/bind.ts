@@ -3,7 +3,6 @@ import {
 	bindPromptVersion,
 	bindPromptVersionToTargets,
 	clearPromptBinding,
-	db,
 	listActionsForPrompt,
 	listMyPromptOverrides,
 	listPromptsForStages,
@@ -24,6 +23,7 @@ import {
 import { verifyOrganizationMembership } from "../../organizations/lib/membership";
 import { announceDefaultChange } from "../lib/announce-default-change";
 import { assertPromptVersionReachable } from "../lib/prompt-version-access";
+import { resolveProjectForOrg } from "../lib/resolve-project-for-org";
 
 /**
  * May this caller write a binding at this tier?
@@ -35,35 +35,6 @@ import { assertPromptVersionReachable } from "../lib/prompt-version-access";
  *
  * Shared by every write path so a second one cannot be added with a weaker gate.
  */
-/**
- * A PROJECT binding is an ORG binding narrowed to one project. The project
- * MUST belong to the caller's organization — otherwise pairing one org's id
- * with another org's project id would stamp cross-tenant reach onto a row.
- * Resolved here rather than trusted from the request.
- */
-async function resolveProjectForOrg(
-	projectId: string | null | undefined,
-	organizationId: string | null | undefined,
-): Promise<string | null> {
-	if (!projectId) {
-		return null;
-	}
-	const project = await db.project.findFirst({
-		where: { id: projectId, deletedAt: null },
-		select: { id: true, organizationId: true },
-	});
-	if (
-		!project ||
-		!organizationId ||
-		project.organizationId !== organizationId
-	) {
-		throw new ORPCError("BAD_REQUEST", {
-			message:
-				"That project does not belong to this organization, so it cannot receive its prompt defaults",
-		});
-	}
-	return project.id;
-}
 
 async function assertMayBindAtScope({
 	scope,

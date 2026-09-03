@@ -146,6 +146,9 @@ export function PromptSelector({
 				documentType,
 				storyKind,
 				organizationId: organizationId ?? null,
+				// Inside a project, the list has to rank that project's default
+				// the way the agent will when it runs there.
+				projectId: projectId ?? null,
 			},
 		}),
 	);

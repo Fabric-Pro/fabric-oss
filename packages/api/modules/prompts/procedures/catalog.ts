@@ -1,5 +1,5 @@
 import { ORPCError } from "@orpc/client";
-import { db, listPromptCatalog } from "@repo/database";
+import { listPromptCatalog } from "@repo/database";
 import { z } from "zod";
 import {
 	Permissions,
@@ -8,6 +8,7 @@ import {
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
 import { verifyOrganizationMembership } from "../../organizations/lib/membership";
+import { resolveProjectForOrg } from "../lib/resolve-project-for-org";
 
 export const catalogProcedures = {
 	/**
@@ -44,26 +45,10 @@ export const catalogProcedures = {
 				context.session,
 			);
 
-			let projectId: string | null = null;
-			if (input.projectId) {
-				if (!organizationId) {
-					throw new ORPCError("BAD_REQUEST", {
-						message:
-							"A project scope applies only inside an organization",
-					});
-				}
-				const project = await db.project.findFirst({
-					where: { id: input.projectId, deletedAt: null },
-					select: { id: true, organizationId: true },
-				});
-				if (!project || project.organizationId !== organizationId) {
-					throw new ORPCError("BAD_REQUEST", {
-						message:
-							"That project does not belong to this organization",
-					});
-				}
-				projectId = project.id;
-			}
+			const projectId = await resolveProjectForOrg(
+				input.projectId,
+				organizationId,
+			);
 
 			if (organizationId) {
 				const membership = await verifyOrganizationMembership(

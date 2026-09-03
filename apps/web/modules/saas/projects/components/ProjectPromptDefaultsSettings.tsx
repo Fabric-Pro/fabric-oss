@@ -67,7 +67,9 @@ type CatalogEntry = {
 const ALL_ACTIONS = listPromptActions();
 
 const TIER_LABEL: Record<string, string> = {
-	PROJECT: "This project",
+	// The same word PromptDefaultBadge uses. Two names for one tier read as two
+	// concepts once you have seen both screens.
+	PROJECT: "Project",
 	ORG: "Organization",
 	SYSTEM: "System",
 	USER: "Personal",
@@ -135,6 +137,9 @@ export function ProjectPromptDefaultsSettings({
 		}: {
 			action: (typeof ALL_ACTIONS)[number];
 			promptVersionId: string;
+			/** Whether the writer's own personal default was in force for this
+			 *  action, and so is about to be stood down by this write. */
+			clearsOwnPersonal: boolean;
 		}) =>
 			await orpcClient.prompts.bind.set({
 				targetType: "AGENT",
@@ -146,8 +151,16 @@ export function ProjectPromptDefaultsSettings({
 				promptVersionId,
 				isDefault: true,
 			}),
-		onSuccess: async () => {
-			toast.success("This project now uses that prompt");
+		onSuccess: async (_result, { clearsOwnPersonal }) => {
+			// Setting an org-scope default stands the writer's own personal
+			// default for that action down, so that what they just chose is
+			// what they get. Saying nothing left them to discover it later,
+			// somewhere else, with no way to connect it to this click.
+			toast.success("This project now uses that prompt", {
+				description: clearsOwnPersonal
+					? "Your personal default for this action was cleared, so this is what you will get too. You can set it again from the prompt catalog."
+					: undefined,
+			});
 			await refetch();
 		},
 		onError: (e) =>
@@ -325,6 +338,8 @@ export function ProjectPromptDefaultsSettings({
 								setForProject.mutate({
 									action,
 									promptVersionId,
+									clearsOwnPersonal:
+										entry?.effectiveScope === "USER",
 								});
 							}}
 						>
@@ -360,7 +375,7 @@ export function ProjectPromptDefaultsSettings({
 				<p className="mt-1 text-muted-foreground text-sm">
 					{isLoading
 						? "Checking every action…"
-						: `${overridden.length} of ${ALL_ACTIONS.length} actions use a prompt chosen for this project. The rest follow the organization, then Fabric.`}
+						: `${overridden.length} of ${ALL_ACTIONS.length} actions use a prompt chosen for this project. The rest follow the organization, then the system default. Anyone who has set their own prompt for an action keeps it here.`}
 				</p>
 				{!canEdit && (
 					<p className="mt-1 text-muted-foreground text-xs">

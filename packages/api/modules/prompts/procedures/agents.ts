@@ -11,6 +11,7 @@ import {
 	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
+import { resolveProjectForOrg } from "../lib/resolve-project-for-org";
 
 /**
  * Get bound prompt for a specific agent and document type
@@ -149,6 +150,13 @@ const listAvailablePromptsProcedure = tenantProtectedProcedure
 				.describe(
 					"Organization ID for tenant isolation. Pass null for personal context.",
 				),
+			projectId: z
+				.string()
+				.nullable()
+				.optional()
+				.describe(
+					"When generating inside a project, that project's id. Its PROJECT-tier prompt joins the list and can be the one marked default, matching what the agent resolves there. Must belong to the organization.",
+				),
 		}),
 	)
 	.output(
@@ -181,6 +189,13 @@ const listAvailablePromptsProcedure = tenantProtectedProcedure
 						.describe(
 							"Whether this prompt is the default for this document type",
 						),
+					projectId: z
+						.string()
+						.nullable()
+						.optional()
+						.describe(
+							"Set when this binding is the PROJECT tier rather than the organization-wide one.",
+						),
 					contentSnippet: z
 						.string()
 						.describe(
@@ -206,12 +221,18 @@ const listAvailablePromptsProcedure = tenantProtectedProcedure
 			session,
 		);
 
+		const projectId = await resolveProjectForOrg(
+			input.projectId,
+			organizationId,
+		);
+
 		const prompts = await listAvailablePromptsForAgent({
 			agentName,
 			userId: user.id,
 			organizationId,
 			documentType,
 			storyKind,
+			projectId,
 		});
 
 		logger.info("[prompts.agents.available] resolved", {
