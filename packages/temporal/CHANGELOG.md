@@ -1,5 +1,11 @@
 # @repo/temporal
 
+## 0.0.4
+
+### Patch Changes
+
+- a7feb71: Stop sending the internal staging hostname in the PM-sync worker's User-Agent
+
 ## 0.0.3
 
 ### Patch Changes

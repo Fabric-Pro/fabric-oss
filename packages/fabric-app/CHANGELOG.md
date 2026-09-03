@@ -1,5 +1,11 @@
 # fabric-app
 
+## 1.14.4
+
+### Patch Changes
+
+- 63d9fe3: Stop writing Databricks prompt-cache entries on one-shot completions, where they can never be read back
+
 ## 1.14.3
 
 ### Patch Changes
