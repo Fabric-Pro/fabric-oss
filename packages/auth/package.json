@@ -34,6 +34,6 @@
 		"type-check": "tsc --noEmit"
 	},
 	"types": "./index.ts",
-	"version": "0.0.3",
+	"version": "0.0.4",
 	"license": "Apache-2.0"
 }
