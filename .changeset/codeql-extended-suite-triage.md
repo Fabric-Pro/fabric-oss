@@ -1,0 +1,9 @@
+---
+"fabric-app": patch
+---
+
+Fix the CodeQL findings that the security-extended suite raised beyond the default-suite baseline and write the per-rule policy for them
+
+The first CodeQL baseline (192 dismissed, 53 fixed) was triaged against GitHub default setup, which ran only the default suite (87 JavaScript rules). `.github/workflows/codeql.yml` runs `security-extended` (103 rules), so its first upload raised 119 alerts in medium-precision families the baseline never ran, plus 7 leftovers. This change covers the 56 alerts in the regex-anchor, user-controlled-bypass, polynomial-redos, request-forgery, missing-origin-check, remote-property-injection, double-escaping and untrusted-checkout families (the log-injection and temp-file families are a sibling change); a companion SECURITY.md update records the policy applied to every family, and the workflow header no longer claims suite parity with the default-setup scan.
+
+Fixed here: substring GitHub-host checks that selected which stored credential or sandbox a repository URL was handed to (now parsed and compared by hostname, with the two unflagged sibling copies in the worker); an ADO attachment predicate that also gated where the ADO token was sent, so a lookalike host received it (now pinned to scheme and hostname), and the same shape for Fizzy attachments; polynomial-backtracking regexes over document text, PM payloads and repository URLs that the baseline rewrite had not actually bounded; a Teams HTML entity decoder that unescaped `&amp;` before `&lt;`; Alertmanager label copying via `out[key] = value`; two frame embed `message` listeners with no origin check; and two internal AI-token search routes that skipped the project-access and tenant-equality check their four sibling routes perform. Everything else in these families was dismissed on the alert with a reason naming source and sink.

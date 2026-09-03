@@ -38,6 +38,17 @@ describe("truncateContent", () => {
 		expect(truncateContent(undefined)).toBe("");
 	});
 
+	it("does not re-create markup from a double-escaped body", () => {
+		// A sender whose message text literally reads `&lt;script&gt;` arrives
+		// from Graph as `&amp;lt;script&amp;gt;`. Decoding `&amp;` before `&lt;`
+		// would collapse that back into a real `<script>` tag. js/double-escaping
+		const html =
+			"<p>&amp;lt;script&amp;gt;alert(1)&amp;lt;/script&amp;gt;</p>";
+		expect(truncateContent(html, 500)).toBe(
+			"&lt;script&gt;alert(1)&lt;/script&gt;",
+		);
+	});
+
 	it("appends the truncation marker only when the stripped text exceeds maxLength", () => {
 		const short = truncateContent("<p>short</p>", 500);
 		expect(short).not.toContain("[truncated]");

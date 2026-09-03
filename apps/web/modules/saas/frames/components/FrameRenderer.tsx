@@ -249,6 +249,16 @@ export function FrameRenderer({
 		};
 
 		const handleMessage = async (event: MessageEvent) => {
+			// The embed view is deliberately framable by any origin (proxy.ts
+			// exempts `.../embed` from `frame-ancestors 'self'`), so any page
+			// that frames it can post to it. Only this app drives the RPC —
+			// `request-export-png` answers with a PNG of the rendered frame,
+			// which a foreign framing page must not be able to ask for. The
+			// outbound `ready` / `set-height` notices below stay broadcast, so
+			// third-party auto-sizing keeps working.
+			if (event.origin !== window.location.origin) {
+				return;
+			}
 			if (!isFrameHostToEmbedMessage(event.data)) {
 				return;
 			}

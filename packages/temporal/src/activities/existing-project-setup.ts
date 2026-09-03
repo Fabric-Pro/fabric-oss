@@ -18,6 +18,7 @@ import {
 import { logger } from "@repo/logs";
 import { embedProjectContext } from "@repo/rag/lib/project-contexts/auto-embed";
 import { documentTypeLabel } from "@repo/utils/document-type-catalog";
+import { repoForgeFromUrl } from "../lib/repo-forge";
 import type { PMHierarchyResult } from "./pm-integration/fetch-pm-hierarchy";
 import { fetchPMWorkItemsByType } from "./pm-integration/fetch-pm-hierarchy";
 import { discoverPMToolCapabilities } from "./pm-integration/story-sync";
@@ -386,11 +387,10 @@ export async function createAnalysisContextRecord(
 			? repoUrls[0]
 			: `https://github.com/${repositoryOwner}/${repositoryName}`;
 
-	const source = repoUrls?.some((u) =>
-		/dev\.azure\.com|visualstudio\.com/i.test(u),
-	)
+	// Keyed on the URL's parsed hostname, not a substring of the whole URL.
+	const source = repoUrls?.some((u) => repoForgeFromUrl(u) === "azure-devops")
 		? "azure-devops"
-		: repoUrls?.some((u) => /gitlab\.com/i.test(u))
+		: repoUrls?.some((u) => repoForgeFromUrl(u) === "gitlab")
 			? "gitlab"
 			: "github";
 

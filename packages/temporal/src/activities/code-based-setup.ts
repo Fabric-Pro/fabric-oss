@@ -19,6 +19,7 @@ import {
 	getMcpServerByKey,
 	type ProjectDocumentType,
 } from "@repo/database";
+import { repoForgeFromUrl } from "../lib/repo-forge";
 
 // ============================================================================
 // 1. findGitHubMcpConfig
@@ -429,13 +430,13 @@ export async function findMcpConfigsForRepos(
 			continue;
 		}
 
-		const isGitHub =
-			/github\.com/i.test(trimmed) ||
-			/githubusercontent\.com/i.test(trimmed);
-		const isGitLab = /gitlab\.com/i.test(trimmed);
-		const isAdo =
-			/dev\.azure\.com/i.test(trimmed) ||
-			/visualstudio\.com/i.test(trimmed);
+		// Keyed on the URL's parsed hostname: this picks which stored
+		// credentials a repository is handed to, so a URL that merely mentions
+		// a forge host elsewhere in the string must not claim it.
+		const forge = repoForgeFromUrl(trimmed);
+		const isGitHub = forge === "github";
+		const isGitLab = forge === "gitlab";
+		const isAdo = forge === "azure-devops";
 
 		// Step 1: Check project-level integration first
 		if (projectId) {
@@ -683,12 +684,10 @@ export async function saveCodeAnalysisContext(
 			? repoUrls[0]
 			: `https://github.com/${repositoryOwner}/${repositoryName}`;
 
-	// Detect source provider from URL
-	const source = repoUrls?.some((u) =>
-		/dev\.azure\.com|visualstudio\.com/i.test(u),
-	)
+	// Detect source provider from the URL's parsed hostname
+	const source = repoUrls?.some((u) => repoForgeFromUrl(u) === "azure-devops")
 		? "azure-devops"
-		: repoUrls?.some((u) => /gitlab\.com/i.test(u))
+		: repoUrls?.some((u) => repoForgeFromUrl(u) === "gitlab")
 			? "gitlab"
 			: "github";
 

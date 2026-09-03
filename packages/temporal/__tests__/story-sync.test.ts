@@ -4543,6 +4543,26 @@ describe("simpleHtmlToMarkdown — code block preservation (Fizzy pull — card 
 		const result = extractPreBlocks(html, (code) => `STASH(${code})`);
 		expect(result).toBe(html);
 	});
+
+	it("stays linear when a huge whitespace run follows every <pre> opener (js/polynomial-redos)", () => {
+		// The `<code>` lookahead's leading `\s*` used to be unbounded: the
+		// engine walked the whole whitespace run, failed to find `<code`, and
+		// gave the run back one character at a time — once per opener. Speed
+		// is enforced by the runner's normal timeout.
+		const block = `<pre>${"\t".repeat(2_000)}code();</pre>`;
+		const html = block.repeat(200); // 200 openers, ~400KB of tabs
+		const result = extractPreBlocks(html, () => "STASH");
+		expect(result).toBe("STASH".repeat(200));
+	});
+
+	it("still fences a <pre><code> block separated by ordinary whitespace", () => {
+		// The bounded lookahead must keep matching the shape real PM tools
+		// emit — a newline and indentation between the two tags.
+		const md = simpleHtmlToMarkdown(
+			'<pre>\n\t<code class="language-ts">const x = 1;</code>\n</pre>',
+		);
+		expect(md).toContain("```\nconst x = 1;\n```");
+	});
 });
 
 describe("cleanAdoCodeBlocks — ADO code-block pull (card #236)", () => {

@@ -322,4 +322,26 @@ describe("parseAdoRepositoryUrl (exported)", () => {
 	it("returns null for non-ADO URLs", () => {
 		expect(parseAdoRepositoryUrl("https://github.com/o/r")).toBeNull();
 	});
+	it("does not parse an ADO URL embedded inside another URL (anchored)", () => {
+		// Unanchored, this matched and reported `my-org` as the organization
+		// for a URL that is not an ADO repository at all.
+		expect(
+			parseAdoRepositoryUrl(
+				"https://example.com/?next=https://dev.azure.com/my-org/Proj/_git/widgets",
+			),
+		).toBeNull();
+		expect(
+			parseAdoRepositoryUrl(
+				"https://example.com/?next=https://my-org.visualstudio.com/Proj/_git/widgets",
+			),
+		).toBeNull();
+	});
+	it("stays linear on a long non-matching URL (js/polynomial-redos)", () => {
+		// 200k of dot-free, slash-free filler after an http:// prefix: the
+		// unanchored form re-scanned that span from every candidate start
+		// position. Speed is enforced by the runner's normal timeout.
+		expect(
+			parseAdoRepositoryUrl(`http://${"http://-".repeat(25_000)}`),
+		).toBeNull();
+	});
 });

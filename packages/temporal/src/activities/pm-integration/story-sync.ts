@@ -394,8 +394,18 @@ export function cleanAdoCodeBlocks<T extends string | null | undefined>(
 // allocating a copy of the remaining suffix — `html.slice(pos)` inside the
 // scan loop would itself be O(remaining length) per opener, turning an
 // otherwise-linear scan quadratic on input with many openers.
-const PRE_CODE_OPEN_RE = /\s*<code[^>]*>/iy;
-const PRE_CLOSE_AFTER_CODE_RE = /\s*<\/pre>/iy;
+//
+// Every repetition is bounded so one lookahead costs constant time no matter
+// what the work item's HTML holds: unbounded, `\s*` in front of a literal it
+// never finds is scanned and then given back one character at a time, which
+// is linear in the whitespace run for a single lookahead and quadratic once
+// the scan loop repeats it. No real `<pre><code>` puts more than a line
+// break between the tags, or 512 characters of attributes inside one; HTML
+// that does simply falls through to the bare `<pre>…</pre>` arm below, which
+// strips the inner tags and fences the same code.
+// Bounded span: js/polynomial-redos
+const PRE_CODE_OPEN_RE = /\s{0,32}<code[^>]{0,512}>/iy;
+const PRE_CLOSE_AFTER_CODE_RE = /\s{0,32}<\/pre>/iy;
 
 /**
  * Replace `<pre>`/`<pre><code>` blocks in `html` with sentinels produced by

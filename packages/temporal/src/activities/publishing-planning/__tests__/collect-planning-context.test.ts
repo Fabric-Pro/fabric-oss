@@ -252,6 +252,49 @@ describe("collectPlanningContext — pull requests", () => {
 	});
 });
 
+describe("collectPlanningContext — repo URL host matching", () => {
+	// `repoForgeFromUrl` decides which integration owns a PR coordinate by
+	// parsing the stored `repositoryUrl`'s hostname, not by substring-testing
+	// it for "github.com" — a substring test also matches a URL whose real
+	// host is somewhere else.
+	it("matches a real https GitHub repository URL", async () => {
+		reposMock.mockResolvedValue([
+			{ repositoryUrl: "https://github.com/example-org/example-repo" },
+		] as never);
+
+		const { context } = await collect();
+
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+		expect(context.repoPrs[0]?.body).toContain("per execution");
+	});
+
+	it("matches an scp-style GitHub repository URL", async () => {
+		reposMock.mockResolvedValue([
+			{ repositoryUrl: "git@github.com:example-org/example-repo.git" },
+		] as never);
+
+		const { context } = await collect();
+
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+		expect(context.repoPrs[0]?.body).toContain("per execution");
+	});
+
+	it("does not match a lookalike host that only names github.com in the path", async () => {
+		reposMock.mockResolvedValue([
+			{
+				repositoryUrl:
+					"https://example.com/github.com/example-org/example-repo",
+			},
+		] as never);
+
+		const { context } = await collect();
+
+		expect(fetchMock).not.toHaveBeenCalled();
+		expect(context.repoPrs).toHaveLength(1);
+		expect(context.repoPrs[0]?.body).toBeNull();
+	});
+});
+
 describe("collectPlanningContext — sourceRefs", () => {
 	it("records what resolved, so a thin analysis can be explained", async () => {
 		const { sourceRefs } = await collect();
