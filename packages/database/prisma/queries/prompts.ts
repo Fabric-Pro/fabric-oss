@@ -328,7 +328,10 @@ export async function getPromptById(
 		});
 	}
 
-	if (opts.userId && !opts.organizationId) {
+	// A personal prompt belongs to its author in every context, an organization
+	// included — the same exception the binding resolvers make. The userId filter
+	// is what isolates it: nobody ever reaches a prompt that is not their own.
+	if (opts.userId) {
 		conditions.push({
 			scope: "USER" as any,
 			userId: opts.userId,

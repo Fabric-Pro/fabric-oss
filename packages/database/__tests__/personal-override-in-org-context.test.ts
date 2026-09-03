@@ -28,14 +28,23 @@
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { findFirst } = vi.hoisted(() => ({ findFirst: vi.fn() }));
+const { findFirst, promptFindFirst } = vi.hoisted(() => ({
+	findFirst: vi.fn(),
+	promptFindFirst: vi.fn(),
+}));
 
 vi.mock("../prisma/client", () => ({
-	db: { promptBinding: { findFirst } },
+	db: {
+		promptBinding: { findFirst },
+		prompt: { findFirst: promptFindFirst },
+	},
 	Prisma: {},
 }));
 
-import { getBoundPromptVersion } from "../prisma/queries/prompts";
+import {
+	getBoundPromptVersion,
+	getPromptById,
+} from "../prisma/queries/prompts";
 
 const TARGET = {
 	targetType: "AGENT" as const,
@@ -145,5 +154,63 @@ describe("personal context is unchanged", () => {
 		await getBoundPromptVersion({ ...TARGET, userId: "user-1" });
 
 		expect(queriesMade().map((q) => q.scope)).toEqual(["USER", "SYSTEM"]);
+	});
+});
+
+/**
+ * The resolver honouring a personal binding is only half the promise: the person
+ * who set it has to be able to open the prompt too. `getPromptById` admitted
+ * USER scope only outside an organization, so on staging a personal prompt was
+ * listed in the catalog and its own page answered "Prompt not found" — every
+ * account has an organization since ADR-018, so that branch was always taken.
+ */
+describe("reading a personal prompt inside an organization", () => {
+	const scopesOffered = () =>
+		promptFindFirst.mock.calls[0][0].where.OR.map(
+			(c: { scope: string }) => c.scope,
+		);
+
+	beforeEach(() => {
+		promptFindFirst.mockReset();
+		promptFindFirst.mockResolvedValue(null);
+	});
+
+	it("offers the caller's own personal prompts alongside the org's", async () => {
+		await getPromptById("prompt-1", {
+			userId: "user-1",
+			organizationId: "org-1",
+		});
+
+		expect(scopesOffered()).toContain("USER");
+	});
+
+	it("scopes that personal condition to the caller alone", async () => {
+		await getPromptById("prompt-1", {
+			userId: "user-1",
+			organizationId: "org-1",
+		});
+
+		const personal = promptFindFirst.mock.calls[0][0].where.OR.find(
+			(c: { scope: string }) => c.scope === "USER",
+		);
+		expect(personal.userId).toBe("user-1");
+	});
+
+	it("still never offers another tenant's organization prompts", async () => {
+		await getPromptById("prompt-1", {
+			userId: "user-1",
+			organizationId: "org-1",
+		});
+
+		const org = promptFindFirst.mock.calls[0][0].where.OR.find(
+			(c: { scope: string }) => c.scope === "ORG",
+		);
+		expect(org.organizationId).toBe("org-1");
+	});
+
+	it("offers no personal condition when there is no caller", async () => {
+		await getPromptById("prompt-1", { organizationId: "org-1" });
+
+		expect(scopesOffered()).toEqual(["SYSTEM", "ORG"]);
 	});
 });
