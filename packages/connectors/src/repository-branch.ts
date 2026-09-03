@@ -120,9 +120,15 @@ export function parseAdoRepositoryUrl(repositoryUrl: string): {
 	project: string;
 	host: string;
 } | null {
+	// Both patterns are anchored at `^`: a repository URL is parsed from its
+	// start, never found somewhere inside a longer string. Anchoring also
+	// removes the polynomial blow-up an unanchored search has on a caller-
+	// supplied URL — every position in the string was a candidate start, and
+	// the unbounded `[^.]+` / `[^/]+` span was re-scanned from each one.
+	// Bounded span: js/polynomial-redos
 	// https://dev.azure.com/{org}/{project}/_git/{repo}
 	const devAzure =
-		/https?:\/\/dev\.azure\.com\/([^/]+)\/([^/]+)\/_git\/[^/]+/i.exec(
+		/^https?:\/\/dev\.azure\.com\/([^/]+)\/([^/]+)\/_git\/[^/]+/i.exec(
 			repositoryUrl,
 		);
 	if (devAzure) {
@@ -134,7 +140,7 @@ export function parseAdoRepositoryUrl(repositoryUrl: string): {
 	}
 	// https://{org}.visualstudio.com/{project}/_git/{repo}
 	const legacy =
-		/https?:\/\/([^.]+)\.visualstudio\.com\/([^/]+)\/_git\/[^/]+/i.exec(
+		/^https?:\/\/([^.]+)\.visualstudio\.com\/([^/]+)\/_git\/[^/]+/i.exec(
 			repositoryUrl,
 		);
 	if (legacy) {

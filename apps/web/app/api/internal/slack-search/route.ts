@@ -11,6 +11,7 @@
  */
 
 import { AI_TOKEN_HEADER, verifyAIToken } from "@repo/ai-token";
+import { db, hasProjectAccess } from "@repo/database";
 import {
 	type SearchProjectSlackMessagesInput,
 	searchProjectSlackMessages,
@@ -50,6 +51,40 @@ export async function POST(req: Request) {
 
 		const userId = payload.claims.sub;
 		const organizationId = payload.claims.org;
+
+		// Verify user has access AND tenant context matches (XOR isolation)
+		const access = await hasProjectAccess(
+			projectId,
+			userId,
+			organizationId,
+		);
+		if (!access) {
+			return NextResponse.json(
+				{ error: "You do not have access to this project" },
+				{ status: 403 },
+			);
+		}
+
+		// Enforce tenant XOR isolation: the project's organizationId must match
+		// the token's org context. Prevents org A token from querying org B or
+		// personal projects even if the user has membership in both.
+		const project = await db.project.findUnique({
+			where: { id: projectId },
+			select: { organizationId: true },
+		});
+		if (!project) {
+			return NextResponse.json(
+				{ error: "Project not found" },
+				{ status: 404 },
+			);
+		}
+		const projectOrgId = project.organizationId ?? undefined;
+		if (projectOrgId !== organizationId) {
+			return NextResponse.json(
+				{ error: "Tenant context mismatch" },
+				{ status: 403 },
+			);
+		}
 
 		const input: SearchProjectSlackMessagesInput = {
 			projectId,

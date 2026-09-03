@@ -170,11 +170,14 @@ export function truncateContent(
 	const stripped = bounded
 		.replace(/<[^>]*>/g, " ")
 		.replace(/&nbsp;/g, " ")
-		.replace(/&amp;/g, "&")
 		.replace(/&lt;/g, "<")
 		.replace(/&gt;/g, ">")
 		.replace(/&quot;/g, '"')
 		.replace(/&#39;/g, "'")
+		// `&amp;` is decoded LAST — js/double-escaping. Decoding it first turns
+		// a sender's literal `&amp;lt;` into `&lt;`, which the pass below then
+		// turns into `<`, re-creating markup the sender had escaped.
+		.replace(/&amp;/g, "&")
 		.replace(/\s+/g, " ")
 		.trim();
 	if (stripped.length <= maxLength) {

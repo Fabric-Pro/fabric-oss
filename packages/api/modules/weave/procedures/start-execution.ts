@@ -26,21 +26,41 @@ const StartExecutionInputSchema = z.object({
 });
 
 /**
- * GitHub owner/repo URL patterns accepted by the Background Agents sandbox
- * (HTTPS and SSH forms). Replicated from the worker-side sandbox parser
+ * GitHub owner/repo URL forms accepted by the Background Agents sandbox
+ * (HTTPS, SSH and scp-style). Replicated from the worker-side sandbox parser
  * rather than imported, because importing the worker's coding-execution
  * module would run its module-load environment validation inside the API
  * process, where the worker-scoped variables legitimately do not exist.
+ *
+ * The host is compared against the URL's parsed `hostname`. A substring match
+ * would also accept a URL whose real host is somewhere else —
+ * `https://example.com/github.com/owner/repo`, or
+ * `https://github.com@example.com/owner/repo` — and hand it to the sandbox as
+ * a GitHub repository.
  */
-const GITHUB_HTTPS_REPO_PATTERN =
-	/(?:https?:\/\/)?(?:www\.)?github\.com\/([^/]+)\/([^/.]+)/;
-const GITHUB_SSH_REPO_PATTERN = /git@github\.com:([^/]+)\/([^/.]+)/;
+const GITHUB_HOSTNAMES = new Set(["github.com", "www.github.com"]);
 
 function isGitHubRepoUrl(repoUrl: string): boolean {
-	return (
-		GITHUB_HTTPS_REPO_PATTERN.test(repoUrl) ||
-		GITHUB_SSH_REPO_PATTERN.test(repoUrl)
-	);
+	const trimmed = repoUrl.trim();
+	const scpStyle = trimmed.match(/^git@([^:]+):(.+)$/i);
+	const candidate = scpStyle
+		? `https://${scpStyle[1]}/${scpStyle[2]}`
+		: /^[a-z][a-z\d+.-]*:\/\//i.test(trimmed)
+			? trimmed
+			: `https://${trimmed}`;
+
+	let parsed: URL;
+	try {
+		parsed = new URL(candidate);
+	} catch {
+		return false;
+	}
+
+	if (!GITHUB_HOSTNAMES.has(parsed.hostname.toLowerCase())) {
+		return false;
+	}
+	// The sandbox parser needs both an owner and a repo segment.
+	return parsed.pathname.split("/").filter(Boolean).length >= 2;
 }
 
 export const startExecutionProcedure = protectedProcedure

@@ -248,6 +248,32 @@ describe("startExecutionProcedure — preflight failures (no row, no workflow)",
 		expect(mockExecutionCreate).not.toHaveBeenCalled();
 	});
 
+	it.each([
+		"https://example.com/github.com/acme/widgets",
+		"https://github.com@example.com/acme/widgets",
+		"https://github.com.example.com/acme/widgets",
+	])(
+		"BACKGROUND_AGENTS rejects %s — the host is not github.com",
+		async (repositoryUrl) => {
+			// The gate decides whether a repository is handed to the Background
+			// Agents sandbox, so it compares the parsed hostname rather than
+			// testing the URL for a `github.com` substring.
+			mockProjectFindUnique.mockResolvedValue({ repositoryUrl });
+
+			const error = await callExpectingError({
+				planId: "plan-1",
+				organizationId: "org-1",
+				executionProvider: "BACKGROUND_AGENTS",
+			});
+
+			expect(error.code).toBe("BAD_REQUEST");
+			expect(error.message).toBe(
+				"Background Agents need a GitHub repository URL (https://github.com/owner/repo). Update the project repository URL.",
+			);
+			expect(mockExecutionCreate).not.toHaveBeenCalled();
+		},
+	);
+
 	it("defaults to BACKGROUND_AGENTS when the provider is omitted", async () => {
 		mockProjectFindUnique.mockResolvedValue({
 			repositoryUrl: "https://gitlab.com/acme/widgets",
@@ -341,20 +367,26 @@ describe("startExecutionProcedure — prerequisites satisfied (existing behavior
 		});
 	});
 
-	it("accepts the SSH GitHub form for BACKGROUND_AGENTS", async () => {
-		mockProjectFindUnique.mockResolvedValue({
-			repositoryUrl: "git@github.com:acme/widgets.git",
-		});
+	it.each([
+		"git@github.com:acme/widgets.git",
+		"https://www.github.com/acme/widgets.git",
+		"github.com/acme/widgets",
+		"https://github.com/acme/widgets/tree/main",
+	])(
+		"accepts the GitHub URL form %s for BACKGROUND_AGENTS",
+		async (repositoryUrl) => {
+			mockProjectFindUnique.mockResolvedValue({ repositoryUrl });
 
-		const handler = await loadHandler();
-		const result = await handler({
-			input: { planId: "plan-1", organizationId: "org-1" },
-			context,
-		});
+			const handler = await loadHandler();
+			const result = await handler({
+				input: { planId: "plan-1", organizationId: "org-1" },
+				context,
+			});
 
-		expect(result.success).toBe(true);
-		expect(mockExecutionCreate).toHaveBeenCalledTimes(1);
-	});
+			expect(result.success).toBe(true);
+			expect(mockExecutionCreate).toHaveBeenCalledTimes(1);
+		},
+	);
 
 	it("KANBAN_LOCAL with the secret set does not require a GitHub-parseable URL", async () => {
 		process.env.AGENT_SERVICE_SECRET = "secret-value";

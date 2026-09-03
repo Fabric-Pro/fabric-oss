@@ -237,6 +237,35 @@ describe("RAG Chunking Module", () => {
 			expect(chunks).toHaveLength(1);
 			expect(chunks[0].content).toBe(text);
 		});
+
+		it("splits after a multi-character punctuation run exactly as before", () => {
+			// `[.!?](?![.!?])\s+` matches only the run's LAST character, but
+			// the END of the match — the only thing the splitter uses — is
+			// unchanged. The first sentence must therefore still be the whole
+			// "Wow!!!" run, not "Wow!" with "!!" spilling into the next one.
+			const text = "Wow!!!  Really?! Yes. Done.";
+			const chunks = chunkText(text, "test.txt", {
+				strategy: "SENTENCE",
+				chunkSize: 12,
+				chunkOverlap: 0,
+				minChunkSize: 1,
+			});
+			expect(chunks[0].content).toBe("Wow!!!");
+			expect(chunks.at(-1)?.content).toContain("Yes. Done.");
+		});
+
+		it("stays linear on a long punctuation run (js/polynomial-redos)", () => {
+			// 100k of "!" with no whitespace after it: the old `[.!?]+\s+`
+			// re-scanned the whole run from every position inside it. Speed is
+			// enforced by the runner's normal timeout.
+			const text = `Start. ${"!".repeat(100_000)}`;
+			const chunks = chunkText(text, "test.txt", {
+				strategy: "SENTENCE",
+				chunkSize: 1_000_000,
+				minChunkSize: 1,
+			});
+			expect(chunks).toHaveLength(1);
+		});
 	});
 
 	describe("Token Estimation", () => {
