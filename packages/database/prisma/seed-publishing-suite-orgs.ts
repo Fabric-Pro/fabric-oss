@@ -2,9 +2,16 @@
  * Enrols organizations into the Publishing Suite by writing per-organization
  * feature-flag overrides.
  *
- * Exists because the admin picker is slice 4 while the feature goes live in
- * slice 3: between those, an organization has to be enrolled by some reviewable
- * means. Prefer the admin UI once it exists.
+ * SUPERSEDED for routine use: the admin console now has a per-organization
+ * control on `admin/organizations/{id}`, which is the preferred way to enrol
+ * or exclude an organization. Prefer it — it audits the change, can set an
+ * explicit exclusion, and can undo itself.
+ *
+ * This script is kept for the two things that control cannot do: seeding a
+ * fresh environment before anyone can sign in, and enrolling several
+ * organizations in one reviewable, re-runnable step. Note it is create-only
+ * (`skipDuplicates`), so it never overwrites a row an operator set by hand —
+ * including a deliberate `enabled: false`.
  *
  * Organization ids come from FABRIC_PUBLISHING_SUITE_SEED_ORG_IDS
  * (comma-separated) and never from a literal in this file — this repository is
@@ -12,9 +19,24 @@
  *
  *   corepack pnpm --filter @repo/database seed:publishing-orgs
  */
+import { isOrgScopableFlag } from "@repo/utils/feature-flag-registry";
 import { db } from "./client";
 
 const FLAG_KEY = "PUBLISHING_SUITE";
+
+// This script writes through `createMany` rather than `setOrgFlagOverride`,
+// because one statement for the whole batch is what makes the enrolment
+// all-or-nothing without a transaction (see `createOverrides` below). That
+// bypasses the helper's own guard, so the guard is restated here: an override
+// row for a flag the registry does not mark `orgScopable` is ignored by
+// `resolveFlag`, so it would sit in the table forever looking like an
+// enrolment that never took effect. Checked at module load, so a bad edit
+// fails the script immediately rather than after it has written rows.
+if (!isOrgScopableFlag(FLAG_KEY)) {
+	throw new Error(
+		`${FLAG_KEY} is not organization-scopable; enrolling organizations into it would write rows that resolveFlag ignores.`,
+	);
+}
 const ENV_VAR = "FABRIC_PUBLISHING_SUITE_SEED_ORG_IDS";
 const UPDATED_BY = "seed:publishing-suite-orgs";
 

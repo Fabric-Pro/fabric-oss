@@ -278,7 +278,7 @@ export const AUDIT_ACTIONS = [
 	// maps 1:1 to decisions; all rows for one accept share `metadata.artifactId`.
 	// Category derives from the `decision.` prefix.
 	"decision.override_accepted",
-	// featureFlag (2) — instance-admin global feature-flag changes (DB-backed
+	// featureFlag (4) — instance-admin feature-flag changes (DB-backed
 	// override replacing env-var-only flags). `updated` is one row per set-flag
 	// call; `reset` is one row per clear-override call (returning a flag to its
 	// env/registry default). `metadata` carries the before/after value and
@@ -286,6 +286,15 @@ export const AUDIT_ACTIONS = [
 	// was coming from.
 	"featureFlag.updated",
 	"featureFlag.reset",
+	// The `org` pair is the per-organization override that outranks the global
+	// row: `orgUpdated` enrols or explicitly excludes one organization,
+	// `orgReset` deletes its row so it inherits again. Unlike the global pair
+	// these rows DO carry a top-level `organizationId` — the subject of the
+	// change is that organization, and the organization audit log filters
+	// strictly on that column, so putting it in metadata alone would hide the
+	// event from the very tenant whose features it altered.
+	"featureFlag.orgUpdated",
+	"featureFlag.orgReset",
 	// statusUpdate (2) — customer-facing status announcements. Publishing text
 	// that every customer reads, and every subsequent revision of it, is a
 	// public-communication act and belongs in the forensic trail: "who told
