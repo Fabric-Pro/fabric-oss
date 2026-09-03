@@ -19,16 +19,26 @@
  *      agent name closed over from the factory
  */
 
-import { render, screen } from "@testing-library/react";
+import { render as rtlRender, screen } from "@testing-library/react";
+import { CopilotChatSessionProvider } from "../CopilotChatSessionProvider";
+
+// Every component under test reads its CopilotKit chat state from
+// `<CopilotChatSessionProvider>` (one `useCopilotChatInternal()` per surface —
+// see the provider's doc-comment and Fizzy #2389), so each render mounts the
+// real provider over this file's mocked `useCopilotChatInternal`.
+function render(ui: Parameters<typeof rtlRender>[0]) {
+	return rtlRender(ui, { wrapper: CopilotChatSessionProvider });
+}
+
 import { describe, expect, it, vi } from "vitest";
 
 const useCoAgentMock = vi.fn();
-const useCopilotChatMock = vi.fn();
+const useCopilotChatInternalMock = vi.fn();
 const useChatContextMock = vi.fn();
 
 vi.mock("@copilotkit/react-core", () => ({
 	useCoAgent: (args: { name: string }) => useCoAgentMock(args),
-	useCopilotChat: () => useCopilotChatMock(),
+	useCopilotChatInternal: () => useCopilotChatInternalMock(),
 }));
 
 vi.mock("@copilotkit/react-ui", () => ({
@@ -61,7 +71,7 @@ import {
 
 function setupHookDefaults() {
 	useCoAgentMock.mockReturnValue({ state: {} });
-	useCopilotChatMock.mockReturnValue({ visibleMessages: [] });
+	useCopilotChatInternalMock.mockReturnValue({ visibleMessages: [] });
 	useChatContextMock.mockReturnValue({
 		icons: {
 			regenerateIcon: null,
@@ -289,7 +299,7 @@ describe("Module-scope exports — runtime useCoAgent wiring", () => {
 		});
 		// Supply visibleMessages so turnIndex resolves to 1 (one user message
 		// preceding the assistant message m5).
-		useCopilotChatMock.mockReturnValueOnce({
+		useCopilotChatInternalMock.mockReturnValueOnce({
 			visibleMessages: [
 				{ role: "user", id: "u1" },
 				{ role: "assistant", id: "m5" },

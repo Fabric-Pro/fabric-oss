@@ -14,6 +14,7 @@
 import { CopilotKit, useCoAgent, useCopilotChat } from "@copilotkit/react-core";
 import { CopilotSidebar } from "@copilotkit/react-ui";
 import { CopilotAssistantMessage } from "@saas/shared/components/copilot/CopilotAssistantMessage";
+import { CopilotChatSessionProvider } from "@saas/shared/components/copilot/CopilotChatSessionProvider";
 import { useCopilotErrorHandler } from "@saas/shared/components/copilot/use-copilot-error-handler";
 import "@copilotkit/react-ui/styles.css";
 import { Badge } from "@ui/components/badge";
@@ -50,7 +51,9 @@ export function AgentChatCode({ agent, runtimeUrl }: AgentChatCodeProps) {
 				showDevConsole={false}
 				onError={onError}
 			>
-				<CodeEditorContent agent={agent} />
+				<CopilotChatSessionProvider>
+					<CodeEditorContent agent={agent} />
+				</CopilotChatSessionProvider>
 			</CopilotKit>
 		</div>
 	);

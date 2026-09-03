@@ -23,6 +23,7 @@ import {
 	useAiSidebarExpanded,
 } from "@saas/shared/components/copilot/ai-sidebar-layout";
 import { CopilotAssistantMessageForTaskPlanner } from "@saas/shared/components/copilot/CopilotAssistantMessage";
+import { CopilotChatSessionProvider } from "@saas/shared/components/copilot/CopilotChatSessionProvider";
 import { useCopilotErrorHandler } from "@saas/shared/components/copilot/use-copilot-error-handler";
 import { PageBreadcrumbs } from "@saas/shared/components/PageBreadcrumbs";
 import { useFullscreen } from "@saas/shared/contexts/FullscreenContext";
@@ -169,7 +170,9 @@ export function TaskPlannerWorkspace() {
 						agent="task_planner"
 						onError={onError}
 					>
-						<TaskPlannerEditor />
+						<CopilotChatSessionProvider>
+							<TaskPlannerEditor />
+						</CopilotChatSessionProvider>
 					</CopilotKit>
 				</AgentErrorBoundary>
 			</div>

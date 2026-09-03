@@ -7,6 +7,7 @@ import {
 	AI_SIDEBAR_CONTENT_SHIFT_CLASS,
 	useAiSidebarExpanded,
 } from "@saas/shared/components/copilot/ai-sidebar-layout";
+import { CopilotChatSessionProvider } from "@saas/shared/components/copilot/CopilotChatSessionProvider";
 import type { MessageAttachmentListItem } from "@saas/shared/components/copilot/MessageAttachmentList";
 import { useCopilotErrorHandler } from "@saas/shared/components/copilot/use-copilot-error-handler";
 import { useFullscreen } from "@saas/shared/contexts/FullscreenContext";
@@ -597,35 +598,42 @@ export function DocumentEditorPage({
 						showDevConsole={false}
 						onError={onCopilotError}
 					>
-						<DocumentEditor
-							projectId={projectId}
-							documentId={documentId}
-							isAiSidebarExpanded={isAiSidebarExpanded}
-							actionSlot={actionSlotEl}
-							saveSlot={saveSlotEl}
-							syncSlot={syncSlotEl}
-							documentRefKind={documentRefKind}
-							initialAssistantConversationId={
-								initialAssistantConversationId
-							}
-							initialAssistantVisibility={
-								initialAssistantVisibility
-							}
-							initialAssistantVisibilityLockedAt={
-								initialAssistantVisibilityLockedAt
-							}
-							initialAssistantMessages={
-								initialAssistantMessages as ReadonlyArray<
-									Record<string, unknown>
-								>
-							}
-							initialPersistedMessageIds={
-								initialPersistedMessageIds
-							}
-							initialAttachmentsByMessageId={
-								initialAttachmentsByMessageId
-							}
-						/>
+						{/* One `useCopilotChatInternal()` for the whole
+						  surface — every call site of that hook (and of
+						  `useCopilotChat`) opens its own agent/connect on
+						  1.70, so the consumers inside share this one
+						  instead of each connecting (Fizzy #2389). */}
+						<CopilotChatSessionProvider>
+							<DocumentEditor
+								projectId={projectId}
+								documentId={documentId}
+								isAiSidebarExpanded={isAiSidebarExpanded}
+								actionSlot={actionSlotEl}
+								saveSlot={saveSlotEl}
+								syncSlot={syncSlotEl}
+								documentRefKind={documentRefKind}
+								initialAssistantConversationId={
+									initialAssistantConversationId
+								}
+								initialAssistantVisibility={
+									initialAssistantVisibility
+								}
+								initialAssistantVisibilityLockedAt={
+									initialAssistantVisibilityLockedAt
+								}
+								initialAssistantMessages={
+									initialAssistantMessages as ReadonlyArray<
+										Record<string, unknown>
+									>
+								}
+								initialPersistedMessageIds={
+									initialPersistedMessageIds
+								}
+								initialAttachmentsByMessageId={
+									initialAttachmentsByMessageId
+								}
+							/>
+						</CopilotChatSessionProvider>
 					</CopilotKit>
 				</CopilotErrorBoundary>
 			</div>

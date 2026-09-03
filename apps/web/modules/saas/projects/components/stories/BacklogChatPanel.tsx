@@ -1,6 +1,7 @@
 "use client";
 
 import { CopilotKit } from "@copilotkit/react-core";
+import { CopilotChatSessionProvider } from "@saas/shared/components/copilot/CopilotChatSessionProvider";
 import { useCopilotErrorHandler } from "@saas/shared/components/copilot/use-copilot-error-handler";
 import type { ComponentProps } from "react";
 import { BacklogChat } from "./BacklogChat";
@@ -34,7 +35,9 @@ export function BacklogChatPanel({
 			showDevConsole={false}
 			onError={onCopilotError}
 		>
-			<BacklogChat {...chatProps} />
+			<CopilotChatSessionProvider>
+				<BacklogChat {...chatProps} />
+			</CopilotChatSessionProvider>
 		</CopilotKit>
 	);
 }

@@ -27,13 +27,23 @@
  * a filter that silently matches nothing fails here.
  */
 
+import { CopilotChatSessionProvider } from "@saas/shared/components/copilot/CopilotChatSessionProvider";
 import {
 	act,
 	fireEvent,
-	render,
+	render as rtlRender,
 	screen,
 	waitFor,
 } from "@testing-library/react";
+
+// Every component under test reads its CopilotKit chat state from
+// `<CopilotChatSessionProvider>` (one `useCopilotChatInternal()` per surface —
+// see the provider's doc-comment and Fizzy #2389), so each render mounts the
+// real provider over this file's mocked `useCopilotChatInternal`.
+function render(ui: Parameters<typeof rtlRender>[0]) {
+	return rtlRender(ui, { wrapper: CopilotChatSessionProvider });
+}
+
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import enMessages from "../../../../../../../../packages/i18n/translations/en.json";

@@ -108,6 +108,7 @@ vi.mock("../ReviewSourcesSelector", () => ({
 	ReviewSourcesSelector: () => null,
 }));
 
+import { CopilotChatSessionProvider } from "@saas/shared/components/copilot/CopilotChatSessionProvider";
 import { BacklogChat } from "../BacklogChat";
 
 function renderBacklogChat() {
@@ -117,19 +118,24 @@ function renderBacklogChat() {
 			mutations: { retry: false },
 		},
 	});
+	// The real provider, over the mocked `useCopilotChatInternal` above —
+	// `BacklogChatPanel` mounts it in production, and `BacklogChat` reads the
+	// live messages through it.
 	const utils = render(
 		<QueryClientProvider client={client}>
-			<BacklogChat
-				projectId="project_1"
-				projectName="Test Project"
-				hasTeamsIntegration={false}
-				hasSlackIntegration={false}
-				hasNotionIntegration={false}
-				hasPMTool={false}
-				backlogSummary="0 features"
-				onClose={vi.fn()}
-				onChangesApplied={vi.fn()}
-			/>
+			<CopilotChatSessionProvider>
+				<BacklogChat
+					projectId="project_1"
+					projectName="Test Project"
+					hasTeamsIntegration={false}
+					hasSlackIntegration={false}
+					hasNotionIntegration={false}
+					hasPMTool={false}
+					backlogSummary="0 features"
+					onClose={vi.fn()}
+					onChangesApplied={vi.fn()}
+				/>
+			</CopilotChatSessionProvider>
 		</QueryClientProvider>,
 	);
 	return { ...utils, client };

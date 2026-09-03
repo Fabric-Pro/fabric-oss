@@ -3,6 +3,7 @@
 import { CopilotKit } from "@copilotkit/react-core";
 import "@copilotkit/react-ui/styles.css";
 import { useOrganizationContext } from "@saas/organizations/hooks/use-organization-context";
+import { CopilotChatSessionProvider } from "@saas/shared/components/copilot/CopilotChatSessionProvider";
 import { useCopilotErrorHandler } from "@saas/shared/components/copilot/use-copilot-error-handler";
 import { orpcClient } from "@shared/lib/orpc-client";
 import { orpc } from "@shared/lib/orpc-query-utils";
@@ -189,19 +190,21 @@ export function PromptEnhancePage({ promptId, organizationId }: Props) {
 					showDevConsole={false}
 					onError={onError}
 				>
-					<PromptContentEnhancer
-						promptId={promptId}
-						promptName={prompt.name}
-						promptDescription={prompt.description || undefined}
-						format={prompt.format as any}
-						category={prompt.category || undefined}
-						tags={prompt.tags}
-						initialContent={latestVersion?.content}
-						onSave={handleSave}
-						onCancel={handleCancel}
-						isLoading={updateContentMutation.isPending}
-						showTitle={true}
-					/>
+					<CopilotChatSessionProvider>
+						<PromptContentEnhancer
+							promptId={promptId}
+							promptName={prompt.name}
+							promptDescription={prompt.description || undefined}
+							format={prompt.format as any}
+							category={prompt.category || undefined}
+							tags={prompt.tags}
+							initialContent={latestVersion?.content}
+							onSave={handleSave}
+							onCancel={handleCancel}
+							isLoading={updateContentMutation.isPending}
+							showTitle={true}
+						/>
+					</CopilotChatSessionProvider>
 				</CopilotKit>
 			</div>
 		</div>

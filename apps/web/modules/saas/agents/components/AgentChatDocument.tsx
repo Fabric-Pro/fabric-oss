@@ -19,6 +19,7 @@
 
 import { CopilotKit } from "@copilotkit/react-core";
 import { makeCopilotAssistantMessage } from "@saas/shared/components/copilot/CopilotAssistantMessage";
+import { CopilotChatSessionProvider } from "@saas/shared/components/copilot/CopilotChatSessionProvider";
 import { useCopilotErrorHandler } from "@saas/shared/components/copilot/use-copilot-error-handler";
 import { useMemo } from "react";
 import { DocumentGeneratorEditor } from "./DocumentGeneratorEditor";
@@ -56,34 +57,36 @@ export function AgentChatDocument({
 				showDevConsole={false}
 				onError={onError}
 			>
-				<DocumentGeneratorEditor
-					agentId={effectiveAgentId}
-					title={agent?.displayName || "Document Generator"}
-					AssistantMessage={AssistantMessage}
-					initialMessage={`Hi! I'm ${agent?.displayName || "your AI assistant"}. I can help you create and edit documents. What would you like to work on?`}
-					suggestions={[
-						{
-							title: "Create a PRD for user authentication",
-							message:
-								"Write a product requirements document for implementing user authentication with social login, email/password, and 2FA support",
-						},
-						{
-							title: "Design a microservices architecture",
-							message:
-								"Create an architecture document for migrating our monolith to microservices, including service boundaries, communication patterns, and data management strategies",
-						},
-						{
-							title: "Document API endpoints",
-							message:
-								"Generate technical documentation for our REST API, including authentication, rate limiting, request/response formats, and error handling",
-						},
-						{
-							title: "Write onboarding guide",
-							message:
-								"Create a comprehensive onboarding guide for new developers joining the team, covering setup, architecture overview, coding standards, and deployment process",
-						},
-					]}
-				/>
+				<CopilotChatSessionProvider>
+					<DocumentGeneratorEditor
+						agentId={effectiveAgentId}
+						title={agent?.displayName || "Document Generator"}
+						AssistantMessage={AssistantMessage}
+						initialMessage={`Hi! I'm ${agent?.displayName || "your AI assistant"}. I can help you create and edit documents. What would you like to work on?`}
+						suggestions={[
+							{
+								title: "Create a PRD for user authentication",
+								message:
+									"Write a product requirements document for implementing user authentication with social login, email/password, and 2FA support",
+							},
+							{
+								title: "Design a microservices architecture",
+								message:
+									"Create an architecture document for migrating our monolith to microservices, including service boundaries, communication patterns, and data management strategies",
+							},
+							{
+								title: "Document API endpoints",
+								message:
+									"Generate technical documentation for our REST API, including authentication, rate limiting, request/response formats, and error handling",
+							},
+							{
+								title: "Write onboarding guide",
+								message:
+									"Create a comprehensive onboarding guide for new developers joining the team, covering setup, architecture overview, coding standards, and deployment process",
+							},
+						]}
+					/>
+				</CopilotChatSessionProvider>
 			</CopilotKit>
 		</div>
 	);

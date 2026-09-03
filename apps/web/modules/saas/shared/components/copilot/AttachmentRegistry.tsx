@@ -36,7 +36,6 @@
  * so no consumer breaks.
  */
 
-import { useCopilotChatInternal } from "@copilotkit/react-core";
 import {
 	createContext,
 	type ReactNode,
@@ -47,6 +46,7 @@ import {
 	useRef,
 	useState,
 } from "react";
+import { useCopilotChatSession } from "./CopilotChatSessionProvider";
 import type { MessageAttachmentListItem } from "./MessageAttachmentList";
 
 interface AttachmentRegistryApi {
@@ -116,8 +116,9 @@ export function AttachmentRegistryProvider({
 	// `messages` is the live array CopilotKit's `<CopilotSidebar>` renders
 	// from. We subscribe ONLY to watch for new user-role ids appearing —
 	// the registry is a derivation of (FIFO queue, messages stream), not a
-	// new source of truth.
-	const { messages } = useCopilotChatInternal();
+	// new source of truth. Read through the shared session provider so this
+	// mount doesn't open an `agent/connect` of its own (Fizzy #2389).
+	const { messages } = useCopilotChatSession();
 
 	// CopilotKit's `useCopilotChatInternal` returns the messages array via
 	// `useMemo([agent?.messages])`. When the live `agent.addMessage` runs,

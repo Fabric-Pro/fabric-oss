@@ -13,6 +13,7 @@
 import { CopilotKit } from "@copilotkit/react-core";
 import { CopilotSidebar } from "@copilotkit/react-ui";
 import { CopilotAssistantMessage } from "@saas/shared/components/copilot/CopilotAssistantMessage";
+import { CopilotChatSessionProvider } from "@saas/shared/components/copilot/CopilotChatSessionProvider";
 import { useCopilotErrorHandler } from "@saas/shared/components/copilot/use-copilot-error-handler";
 import "@copilotkit/react-ui/styles.css";
 import { FabricLogo } from "@saas/shared/components/FabricLogo";
@@ -150,12 +151,14 @@ export function AgentChatGeneral({
 				showDevConsole={false}
 				onError={onError}
 			>
-				<AgentChatGeneralContent
-					agent={agent}
-					reasoningMode={reasoningMode}
-					suggestions={suggestions}
-					useOrchestrator={useOrchestrator}
-				/>
+				<CopilotChatSessionProvider>
+					<AgentChatGeneralContent
+						agent={agent}
+						reasoningMode={reasoningMode}
+						suggestions={suggestions}
+						useOrchestrator={useOrchestrator}
+					/>
+				</CopilotChatSessionProvider>
 			</CopilotKit>
 		</div>
 	);

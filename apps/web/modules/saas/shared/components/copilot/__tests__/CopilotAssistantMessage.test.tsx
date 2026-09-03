@@ -1,11 +1,21 @@
-import { render, screen } from "@testing-library/react";
+import { render as rtlRender, screen } from "@testing-library/react";
+import { CopilotChatSessionProvider } from "../CopilotChatSessionProvider";
+
+// Every component under test reads its CopilotKit chat state from
+// `<CopilotChatSessionProvider>` (one `useCopilotChatInternal()` per surface —
+// see the provider's doc-comment and Fizzy #2389), so each render mounts the
+// real provider over this file's mocked `useCopilotChatInternal`.
+function render(ui: Parameters<typeof rtlRender>[0]) {
+	return rtlRender(ui, { wrapper: CopilotChatSessionProvider });
+}
+
 import { describe, expect, it, vi } from "vitest";
 import { CopilotAssistantMessage } from "../CopilotAssistantMessage";
 
 // Mock CopilotKit hooks
 vi.mock("@copilotkit/react-core", () => ({
 	useCoAgent: vi.fn(),
-	useCopilotChat: vi.fn(),
+	useCopilotChatInternal: vi.fn(),
 }));
 vi.mock("@copilotkit/react-ui", () => ({
 	Markdown: ({ content }: { content: string }) => (
@@ -53,7 +63,7 @@ vi.mock("../../../../../components/ai-elements/McpAppFrame", () => ({
 	McpAppFrame: () => <div data-testid="mcp-frame" />,
 }));
 
-import { useCoAgent, useCopilotChat } from "@copilotkit/react-core";
+import { useCoAgent, useCopilotChatInternal } from "@copilotkit/react-core";
 
 const baseProps = {
 	message: { id: "a1", content: "Assistant reply" } as any,
@@ -69,7 +79,7 @@ const baseProps = {
 
 describe("CopilotAssistantMessage — reasoning lookup", () => {
 	it("renders ReasoningCollapsible when useCoAgent has matching turn entry", () => {
-		(useCopilotChat as any).mockReturnValue({
+		(useCopilotChatInternal as any).mockReturnValue({
 			visibleMessages: [
 				{ id: "u1", role: "user" },
 				{ id: "a1", role: "assistant" },
@@ -89,7 +99,7 @@ describe("CopilotAssistantMessage — reasoning lookup", () => {
 	});
 
 	it("does not render ReasoningCollapsible when no matching turn entry", () => {
-		(useCopilotChat as any).mockReturnValue({
+		(useCopilotChatInternal as any).mockReturnValue({
 			visibleMessages: [
 				{ id: "u1", role: "user" },
 				{ id: "a1", role: "assistant" },
@@ -105,7 +115,7 @@ describe("CopilotAssistantMessage — reasoning lookup", () => {
 	});
 
 	it("does not render ReasoningCollapsible on non-agent page (useCoAgent returns empty state)", () => {
-		(useCopilotChat as any).mockReturnValue({
+		(useCopilotChatInternal as any).mockReturnValue({
 			visibleMessages: [
 				{ id: "u1", role: "user" },
 				{ id: "a1", role: "assistant" },
@@ -123,7 +133,7 @@ describe("CopilotAssistantMessage — reasoning lookup", () => {
 	});
 
 	it("computes turnIndex correctly for a later turn", () => {
-		(useCopilotChat as any).mockReturnValue({
+		(useCopilotChatInternal as any).mockReturnValue({
 			visibleMessages: [
 				{ id: "u1", role: "user" },
 				{ id: "a-old", role: "assistant" },
@@ -150,7 +160,7 @@ describe("CopilotAssistantMessage — reasoning lookup", () => {
 	});
 
 	it("returns null when message.id missing or not found in visibleMessages", () => {
-		(useCopilotChat as any).mockReturnValue({
+		(useCopilotChatInternal as any).mockReturnValue({
 			visibleMessages: [],
 		});
 		(useCoAgent as any).mockReturnValue({
@@ -167,7 +177,9 @@ describe("CopilotAssistantMessage — reasoning lookup", () => {
 
 describe("CopilotAssistantMessage — Thinking spinner", () => {
 	it("shows a Thinking spinner during the loading gap (no content yet)", () => {
-		(useCopilotChat as any).mockReturnValue({ visibleMessages: [] });
+		(useCopilotChatInternal as any).mockReturnValue({
+			visibleMessages: [],
+		});
 		(useCoAgent as any).mockReturnValue({ state: {} });
 		render(
 			<CopilotAssistantMessage
@@ -180,7 +192,9 @@ describe("CopilotAssistantMessage — Thinking spinner", () => {
 	});
 
 	it("hides the spinner once content has streamed in", () => {
-		(useCopilotChat as any).mockReturnValue({ visibleMessages: [] });
+		(useCopilotChatInternal as any).mockReturnValue({
+			visibleMessages: [],
+		});
 		(useCoAgent as any).mockReturnValue({ state: {} });
 		render(
 			<CopilotAssistantMessage
@@ -195,7 +209,7 @@ describe("CopilotAssistantMessage — Thinking spinner", () => {
 
 describe("CopilotAssistantMessage — tool calls lookup", () => {
 	it("renders ReasoningCollapsible with toolCalls when current turn has entries", () => {
-		(useCopilotChat as any).mockReturnValue({
+		(useCopilotChatInternal as any).mockReturnValue({
 			visibleMessages: [
 				{ id: "u1", role: "user" },
 				{ id: "a1", role: "assistant" },
@@ -230,7 +244,7 @@ describe("CopilotAssistantMessage — tool calls lookup", () => {
 	});
 
 	it("renders ReasoningCollapsible with BOTH reasoning AND toolCalls", () => {
-		(useCopilotChat as any).mockReturnValue({
+		(useCopilotChatInternal as any).mockReturnValue({
 			visibleMessages: [
 				{ id: "u1", role: "user" },
 				{ id: "a1", role: "assistant" },
@@ -260,7 +274,7 @@ describe("CopilotAssistantMessage — tool calls lookup", () => {
 	});
 
 	it("does not render when neither reasoning nor toolCalls have current turn entry", () => {
-		(useCopilotChat as any).mockReturnValue({
+		(useCopilotChatInternal as any).mockReturnValue({
 			visibleMessages: [
 				{ id: "u1", role: "user" },
 				{ id: "a1", role: "assistant" },
@@ -279,7 +293,7 @@ describe("CopilotAssistantMessage — tool calls lookup", () => {
 	});
 
 	it("treats empty toolCalls array for current turn as 'no entries'", () => {
-		(useCopilotChat as any).mockReturnValue({
+		(useCopilotChatInternal as any).mockReturnValue({
 			visibleMessages: [
 				{ id: "u1", role: "user" },
 				{ id: "a1", role: "assistant" },
@@ -295,7 +309,7 @@ describe("CopilotAssistantMessage — tool calls lookup", () => {
 	});
 
 	it("looks up toolCalls for a later turn correctly", () => {
-		(useCopilotChat as any).mockReturnValue({
+		(useCopilotChatInternal as any).mockReturnValue({
 			visibleMessages: [
 				{ id: "u1", role: "user" },
 				{ id: "a-old", role: "assistant" },
@@ -344,7 +358,9 @@ describe("CopilotAssistantMessage — footer (timestamp + controls)", () => {
 		messageOverride: Record<string, unknown> = {},
 		extraProps: Record<string, unknown> = {},
 	) {
-		(useCopilotChat as any).mockReturnValue({ visibleMessages: [] });
+		(useCopilotChatInternal as any).mockReturnValue({
+			visibleMessages: [],
+		});
 		(useCoAgent as any).mockReturnValue({ state: {} });
 		return render(
 			<CopilotAssistantMessage

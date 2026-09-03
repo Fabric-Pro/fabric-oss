@@ -18,7 +18,7 @@
  * that fires once per terminal turn (see the destructure list of
  * `useCopilotChatInternal` in `@copilotkit/react-core/dist/index.d.mts`
  * line ~954). We therefore subscribe to BOTH `messages` and `isLoading`
- * via `useCopilotChatInternal` and detect terminal turns by diffing the
+ * via `useCopilotChatSession()` and detect terminal turns by diffing the
  * messages array on every meaningful change. A message is "ready to persist"
  * the FIRST time it is observed with `status.code !== "Pending"`.
  * Cancellation (no clean event in v1.52) is inferred when `isLoading`
@@ -77,7 +77,11 @@
 // `useCopilotChatInternal` is exported and used by `<CopilotSidebar>`
 // itself for rendering, so subscribing here observes the exact same
 // stream the user sees on screen.
-import { useCopilotChatInternal } from "@copilotkit/react-core";
+//
+// Since CopilotKit 1.70 that hook also OPENS an `agent/connect` per call
+// site (Fizzy #2389), so this component no longer calls it directly — it
+// reads the surface's single instance through
+// `<CopilotChatSessionProvider>`, which publishes the identical value.
 // NOTE: Client component — must not import @repo/logs (it pulls in node:fs
 // via pino transports and breaks the browser bundle). Use console for the
 // rare best-effort log line; this matches how the rest of the saas client
@@ -87,6 +91,7 @@ import {
 	useAppendDocumentAssistantTurn,
 } from "@saas/projects/hooks/useDocumentAssistantHistory";
 import { useAttachmentRegistry } from "@saas/shared/components/copilot/AttachmentRegistry";
+import { useCopilotChatSession } from "@saas/shared/components/copilot/CopilotChatSessionProvider";
 import { useEffect, useRef } from "react";
 import { toast } from "sonner";
 
@@ -433,7 +438,7 @@ export function CopilotPersistenceHook({
 	pendingAttachmentsRef,
 	initialPersistedMessageIds,
 }: CopilotPersistenceHookProps) {
-	const { messages, isLoading } = useCopilotChatInternal();
+	const { messages, isLoading } = useCopilotChatSession();
 	const appendTurn = useAppendDocumentAssistantTurn();
 	// Read attachments through the registry — `<AttachmentRegistryProvider>`
 	// drains the `pendingAttachmentsRef` FIFO when each new user message

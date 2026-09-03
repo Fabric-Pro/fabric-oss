@@ -8,6 +8,7 @@ import {
 } from "@copilotkit/react-core";
 import { CopilotSidebar } from "@copilotkit/react-ui";
 import { CopilotAssistantMessageForPromptEnhancer } from "@saas/shared/components/copilot/CopilotAssistantMessage";
+import { CopilotChatSessionProvider } from "@saas/shared/components/copilot/CopilotChatSessionProvider";
 import { useCopilotErrorHandler } from "@saas/shared/components/copilot/use-copilot-error-handler";
 import "@copilotkit/react-ui/styles.css";
 import { EditorToolbar } from "@saas/projects/components/EditorToolbar";
@@ -303,7 +304,9 @@ export function PromptEditorAI(props: Props) {
 			showDevConsole={false}
 			onError={onError}
 		>
-			<PromptEditorAIInner {...props} />
+			<CopilotChatSessionProvider>
+				<PromptEditorAIInner {...props} />
+			</CopilotChatSessionProvider>
 		</CopilotKit>
 	);
 }

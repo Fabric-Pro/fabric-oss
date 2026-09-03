@@ -52,9 +52,26 @@ vi.mock("../StoryWorkspace", () => ({
 }));
 
 // --- CopilotKit (the page wraps both modes in it) -----------------------
-vi.mock("@copilotkit/react-core", () => ({
-	CopilotKit: ({ children }: { children: ReactNode }) => children,
-}));
+// `<CopilotChatSessionProvider>` (mounted by the page inside `<CopilotKit>`)
+// calls `useCopilotChatInternal()` once for the whole surface, so the mock has
+// to expose it. The session object is built inside the factory and returned by
+// reference — a fresh literal per call would hand every consumer a new value on
+// every render.
+vi.mock("@copilotkit/react-core", () => {
+	const session = {
+		messages: [],
+		visibleMessages: [],
+		isLoading: false,
+		appendMessage: async () => {},
+		setMessages: () => {},
+		interrupt: null,
+		agent: undefined,
+	};
+	return {
+		CopilotKit: ({ children }: { children: ReactNode }) => children,
+		useCopilotChatInternal: () => session,
+	};
+});
 vi.mock("@copilotkit/react-ui/styles.css", () => ({}));
 
 // --- AgentErrorBoundary → pass-through ----------------------------------
