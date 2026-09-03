@@ -4,6 +4,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@ui/components/tabs";
 import { AlertTriangleIcon, CheckCircle2Icon, StarIcon } from "lucide-react";
 import { useState } from "react";
 import { BlogPostPanel } from "./BlogPostPanel";
+import { CaseStudyPanel } from "./CaseStudyPanel";
 import type {
 	GenerationTabInfo,
 	GenerationTabState,
@@ -13,6 +14,7 @@ import {
 	isRestrictingThread,
 	resolveGenerationTabStates,
 	resolveRestrictions,
+	restrictsPostType,
 } from "./generation-tab-state";
 import type { PlanningAnalysisDocument } from "./planning-analysis-content";
 import { ShortPostPanel } from "./ShortPostPanel";
@@ -90,11 +92,18 @@ export interface TopicWorkingDraftState {
  * remaining caller — `TabsContent` renders only for
  * `GENERATION_ACTIVE_POST_TYPES`, and every member of that set now has a panel —
  * so it was removed here rather than left as unreachable code with a test that
- * could no longer reach it. 2C adds its own panel for Case Study.
+ * could no longer reach it.
  *
- * Case Study and Stakeholder Email stay disabled and still read "Coming soon" —
- * 2A's FR50 still holds for them, and only the two types 2B activates are
- * exempt from it.
+ * 2C-1 (Fizzy #1854) activates Case Study with a panel of its own, for the same
+ * reason the other two have theirs: it carries safety fields no other type has
+ * — scaffold status, customer identity, results basis, two asset lists — and a
+ * shared panel would have to hide them behind a type check anyway. Only
+ * Stakeholder Email is still disabled and still reads "Coming soon"; 2A's FR50
+ * holds for it, and the three types with a working panel are exempt from it.
+ *
+ * The unresolved-question list is computed PER PANEL rather than once for the
+ * strip, and that is a 2C requirement rather than a tidy-up. See
+ * `GenerationPanel`.
  */
 export function GenerationTabs({
 	projectId,
@@ -141,31 +150,6 @@ export function GenerationTabs({
 		restrictions,
 	});
 	const byPostType = new Map(tabs.map((t) => [t.postType, t]));
-
-	// Only the questions that actually CONSTRAIN a draft, and only named by
-	// their subject — never by their full text.
-	//
-	// Two reasons, and both were found rather than foreseen. First, an open
-	// question about authorship does not change what a draft may assert, so
-	// listing it here would bury the ones that do — and the predicate is
-	// `isRestrictingThread`, shared with the resolver, precisely because an
-	// earlier version filtered on the AGGREGATED `restrictions.global` flag.
-	// That is a property of the whole thread set, so one safety-critical
-	// question let every open thread through, including the authorship ones
-	// this filter exists to exclude. Every test fixture happened to hold a
-	// single homogeneous kind, so none of them noticed.
-	//
-	// Second, `TopicQuestionsPanel` on the Summary & Questions tab renders the
-	// full question text and the control that ANSWERS it; both panels are
-	// mounted at once, so restating the text here put the same sentence on the
-	// page twice with only one of them actionable. Naming the subject says what
-	// the draft will avoid and leaves answering where the answering happens.
-	const restrictingSubjects = decisionThreads
-		.filter(isRestrictingThread)
-		.map((t) => ({
-			id: t.root.id,
-			label: t.root.subject ?? humanizeKind(t.root.decisionKind),
-		}));
 
 	return (
 		<div className="space-y-2">
@@ -237,7 +221,7 @@ export function GenerationTabs({
 										(w) => w.postType === t.value,
 									) ?? null
 								}
-								restrictingSubjects={restrictingSubjects}
+								decisionThreads={decisionThreads}
 								isLoading={isLoading}
 								hasAnalysis={analysis !== null}
 							/>
@@ -365,7 +349,7 @@ function GenerationPanel({
 	info,
 	draft,
 	working,
-	restrictingSubjects,
+	decisionThreads,
 	isLoading,
 	hasAnalysis,
 }: {
@@ -378,10 +362,69 @@ function GenerationPanel({
 	info: GenerationTabInfo | null;
 	draft: TopicDraftState | null;
 	working: TopicWorkingDraftState | null;
-	restrictingSubjects: { id: string; label: string }[];
+	decisionThreads: TopicDecisionThread[];
 	isLoading: boolean;
 	hasAnalysis: boolean;
 }) {
+	// Only the questions that actually CONSTRAIN a draft OF THIS TYPE, and only
+	// named by their subject — never by their full text. TWO lists rather than
+	// one; the last paragraph below says why.
+	//
+	// Keyed on this panel's own `postType` via `restrictsPostType`, NOT computed
+	// once for the whole strip. `EXTRA_RESTRICTING_KINDS_BY_POST_TYPE` adds three
+	// kinds for CASE_STUDY that no other type restricts (`CLAIM_STRENGTH`,
+	// `AUDIENCE_SCOPE`, `CODEBASE_DETAIL`), so a hoisted post-type-agnostic list
+	// would leave the Case Study tab wearing an amber "Needs confirmation" badge
+	// for an open claim-strength question while this list named nothing — a
+	// warning with no stated cause, and the same page-promises-one-thing /
+	// generator-does-another divergence `publishing-restrictions.ts` exists to
+	// prevent. Tweet and Blog Post are unchanged by the move: their extra set is
+	// empty, so `restrictsPostType` reduces to `isRestrictingThread` for them.
+	//
+	// Two further reasons for the SHAPE of these lists, both found rather than
+	// foreseen. First, an open question about authorship does not change what a
+	// draft may assert, so listing it here would bury the ones that do — and
+	// this filters per THREAD rather than on an aggregated flag, because an
+	// earlier version filtered on `restrictions.global`, a property of the whole
+	// thread set, so one safety-critical question let every open thread through.
+	//
+	// Second, `TopicQuestionsPanel` on the Summary & Questions tab renders the
+	// full question text and the control that ANSWERS it; both panels are
+	// mounted at once, so restating the text here put the same sentence on the
+	// page twice with only one of them actionable. Naming the subject says what
+	// the draft will avoid and leaves answering where the answering happens.
+	//
+	// TWO lists, not one, and the split mirrors the generator's own. The
+	// activity feeds `buildCaseStudyLockedClauses` two blocks: the threads that
+	// pass `isRestrictingThread` become "NOT approved for use … write around
+	// each one … or leave it out", and the ones that pass only the per-type
+	// extra become "these are unsettled — do not resolve them by assumption, do
+	// not assert either side". The builder's own comment calls applying the
+	// first framing to the second category "actively harmful": an open
+	// AUDIENCE_SCOPE question under "leave it out" instructs the model to strip
+	// the audience framing, and an open CLAIM_STRENGTH one to drop the result,
+	// when the correct behaviour is to state it qualitatively and say the
+	// strength is unsettled.
+	//
+	// A single list headed "these will be generalized rather than asserted"
+	// therefore told the reader exactly the reading the prompt rejects, for
+	// exactly the two kinds it rejects it for — the page-promises-one-thing /
+	// generator-does-another divergence `publishing-restrictions.ts` exists to
+	// prevent, in the one direction a shared PREDICATE cannot catch on its own.
+	const restrictingThreads = decisionThreads.filter((t) =>
+		restrictsPostType(t, postType),
+	);
+	const asSubject = (t: (typeof restrictingThreads)[number]) => ({
+		id: t.root.id,
+		label: t.root.subject ?? humanizeKind(t.root.decisionKind),
+	});
+	const unapprovedSubjects = restrictingThreads
+		.filter((t) => isRestrictingThread(t))
+		.map(asSubject);
+	const openQuestionSubjects = restrictingThreads
+		.filter((t) => !isRestrictingThread(t))
+		.map(asSubject);
+
 	if (isLoading) {
 		return (
 			<p className="text-muted-foreground text-sm">
@@ -410,18 +453,41 @@ function GenerationPanel({
 				)}
 			</Section>
 
-			{restrictingSubjects.length > 0 ? (
-				<Section label="Unresolved before drafting">
+			{unapprovedSubjects.length > 0 ? (
+				<Section label="Unresolved approvals">
 					{/* FR8/FR9. Shown rather than used to block: generation
 					    will produce a safe, generalized draft and say so, which
 					    is what UC4 asks for. Answering happens on the Summary &
-					    Questions tab — this only names what is outstanding. */}
+					    Questions tab — this only names what is outstanding.
+					    Wording tracks the locked clause it describes. */}
 					<p className="text-muted-foreground text-sm leading-relaxed">
-						These are still unapproved, so a draft will generalize
-						rather than assert them:
+						These are still unapproved, so a draft will write around
+						each one — generalizing it, using a neutral placeholder,
+						or leaving it out — rather than assert it:
 					</p>
 					<ul className="list-disc space-y-1.5 pl-5 text-muted-foreground text-sm leading-relaxed">
-						{restrictingSubjects.map((r) => (
+						{unapprovedSubjects.map((r) => (
+							<li key={r.id}>{r.label}</li>
+						))}
+					</ul>
+				</Section>
+			) : null}
+
+			{openQuestionSubjects.length > 0 ? (
+				<Section label="Open questions that constrain this type">
+					{/* Deliberately NOT the wording above. These decide how the
+					    piece is framed, and a draft that "leaves out" its
+					    audience or the strength of its result is vaguer, not
+					    safer. */}
+					<p className="text-muted-foreground text-sm leading-relaxed">
+						These are unsettled, so a draft will not resolve them by
+						assumption or assert either side. Where one decides how
+						strongly a result may be stated it stays qualitative,
+						and what the draft assumed is recorded under inputs
+						needed:
+					</p>
+					<ul className="list-disc space-y-1.5 pl-5 text-muted-foreground text-sm leading-relaxed">
+						{openQuestionSubjects.map((r) => (
 							<li key={r.id}>{r.label}</li>
 						))}
 					</ul>
@@ -446,12 +512,21 @@ function GenerationPanel({
 					working={working}
 					canEdit={canEdit}
 				/>
-			) : // Every type in `GENERATION_ACTIVE_POST_TYPES` now has a panel, and
+			) : postType === "CASE_STUDY" ? (
+				<CaseStudyPanel
+					projectId={projectId}
+					organizationId={organizationId}
+					topicId={topicId}
+					draft={draft}
+					working={working}
+					canEdit={canEdit}
+				/>
+			) : // Every type in `GENERATION_ACTIVE_POST_TYPES` has a panel, and
 			// `TabsContent` renders only for those — so nothing reaches this
 			// arm today. It is `null` rather than a shared placeholder on
-			// purpose: 2C activating Case Study must add its own panel here, and
-			// falling through to a neighbour's would render the wrong product
-			// under the right tab, which is worse than rendering nothing.
+			// purpose: falling through to a neighbour's panel would render the
+			// wrong product under the right tab, which is worse than rendering
+			// nothing.
 			null}
 		</div>
 	);

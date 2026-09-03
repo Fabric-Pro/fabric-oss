@@ -50,10 +50,11 @@ const REVIEW_TABS: ReadonlyArray<{ value: ReviewTab; label: string }> = [
  * two tabs.
  *
  * Content generation is `GenerationTabs` (2B-1), which replaced 2A's disabled
- * placeholder. It makes the Short Post / Tweet and Blog Post tabs selectable
- * and gives each its recommendation context, unresolved questions and draft
- * state; the generate action itself lands in 2B-2/2B-3. Case Study and
- * Stakeholder Email remain disabled until Phase 2C.
+ * placeholder. It gives each live content type its recommendation context, the
+ * unresolved questions that constrain a draft OF THAT TYPE, and a panel that
+ * generates and edits one: Short Post / Tweet and Blog Post from 2B-2/2B-3, and
+ * Case Study from 2C-1 (#1854). Stakeholder Email is the last one still
+ * disabled and still reading "Coming soon".
  *
  * FOUR queries, all fetched HERE rather than inside the tabs that read them.
  * `latestAttempt` drives both the Planning & Analysis panel and Summary &

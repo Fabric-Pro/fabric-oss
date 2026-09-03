@@ -29,6 +29,7 @@
 
 import { documentTypeShortLabel } from "./document-type-catalog";
 import { PUBLISHING_BLOG_POST_AGENT_KEY } from "./publishing-blog-post-prompt";
+import { PUBLISHING_CASE_STUDY_AGENT_KEY } from "./publishing-case-study-prompt";
 import { PUBLISHING_PLANNING_ANALYSIS_AGENT_KEY } from "./publishing-planning-prompt";
 import { PUBLISHING_SHORT_POST_AGENT_KEY } from "./publishing-short-post-prompt";
 
@@ -451,6 +452,18 @@ export const PROMPT_AGENT_TARGETS: readonly PromptAgentTarget[] = [
 		// alternatives) or the approval rules — those are appended code-side.
 		key: PUBLISHING_BLOG_POST_AGENT_KEY,
 		label: "Topic Blog Post",
+		featureType: "PUBLISHING",
+		actions: nonStage("GENERAL"),
+	},
+	{
+		// The evidence-grounded case study written from a publishing topic.
+		// Editing it changes voice, the narrative structure and how much project
+		// context reaches the draft. It cannot remove the output contract (one
+		// case study, not a set of alternatives) or the approval rules — no
+		// unapproved customer name, quote, metric or claim is publishable —
+		// those are appended code-side.
+		key: PUBLISHING_CASE_STUDY_AGENT_KEY,
+		label: "Topic Case Study",
 		featureType: "PUBLISHING",
 		actions: nonStage("GENERAL"),
 	},

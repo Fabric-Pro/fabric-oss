@@ -270,9 +270,11 @@ import {
 } from "./procedures/project-tabs";
 import {
 	adoptBlogPostDraftProcedure,
+	adoptCaseStudyDraftProcedure,
 	answerTopicQuestionProcedure,
 	createPublishingTopicProcedure,
 	generateBlogPostProcedure,
+	generateCaseStudyProcedure,
 	generatePlanningAnalysisProcedure,
 	generatePublishingTopicsNowProcedure,
 	generateShortPostProcedure,
@@ -286,6 +288,7 @@ import {
 	listTopicDecisionsProcedure,
 	listTopicDraftsProcedure,
 	saveBlogPostBodyProcedure,
+	saveCaseStudyBodyProcedure,
 	selectShortPostOptionProcedure,
 	setTopicReadStateProcedure,
 	setTopicSnoozeProcedure,
@@ -1395,6 +1398,17 @@ export const projectsRouter = {
 		generateBlogPost: generateBlogPostProcedure,
 		adoptBlogPostDraft: adoptBlogPostDraftProcedure,
 		saveBlogPostBody: saveBlogPostBodyProcedure,
+		// #1854 (2C): Case Study. Same three-endpoint shape as the Blog Post —
+		// the FIRST run seeds the working draft inside the activity, so
+		// `adoptCaseStudyDraft` replaces a body that already exists and
+		// `saveCaseStudyBody` is the editor; both are compare-and-set on the
+		// working draft's `updatedAt`. The difference from the sibling is one
+		// layer down: adoption composes the body with the SHARED
+		// `composeCaseStudyWorkingDraftBody`, the same function the activity
+		// seeds with, so the two texts cannot drift.
+		generateCaseStudy: generateCaseStudyProcedure,
+		adoptCaseStudyDraft: adoptCaseStudyDraftProcedure,
+		saveCaseStudyBody: saveCaseStudyBodyProcedure,
 	},
 
 	// User Stories & Tasks (Kanban)

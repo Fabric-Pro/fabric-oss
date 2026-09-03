@@ -65,9 +65,20 @@ export const POST_TYPE_LABELS: ReadonlyArray<{
 	{ value: "STAKEHOLDER_EMAIL", label: "Stakeholder Email" },
 ];
 
-/** The content types Phase 2B activates. The other two belong to Phase 2C. */
+/**
+ * The content types with a generation panel of their own.
+ *
+ * Phase 2B activated Tweet and Blog Post; 2C-1 adds Case Study. Stakeholder
+ * Email is the one that remains — its tab stays disabled and still reads
+ * "Coming soon", because 2A's FR50 holds for every type that cannot yet be
+ * generated, and only the types with a working panel are exempt from it.
+ *
+ * Membership here is what makes a tab selectable AND what makes `GenerationTabs`
+ * mount a `TabsContent` for it, so adding a type without adding its panel would
+ * render an empty tab rather than a coming-soon one.
+ */
 export const GENERATION_ACTIVE_POST_TYPES: ReadonlySet<PostType> =
-	new Set<PostType>(["TWEET", "BLOG_POST"]);
+	new Set<PostType>(["TWEET", "BLOG_POST", "CASE_STUDY"]);
 
 export type WhySuggested = NonNullable<PublishingTopic["whySuggested"]>;
 

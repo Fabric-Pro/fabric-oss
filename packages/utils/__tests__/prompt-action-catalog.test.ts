@@ -18,6 +18,8 @@ import {
 	promptActionFeatureType,
 	promptActionId,
 } from "../lib/prompt-action-catalog";
+import { PUBLISHING_BLOG_POST_AGENT_KEY } from "../lib/publishing-blog-post-prompt";
+import { PUBLISHING_CASE_STUDY_AGENT_KEY } from "../lib/publishing-case-study-prompt";
 import { PUBLISHING_PLANNING_ANALYSIS_AGENT_KEY } from "../lib/publishing-planning-prompt";
 import { PUBLISHING_SHORT_POST_AGENT_KEY } from "../lib/publishing-short-post-prompt";
 
@@ -157,7 +159,7 @@ describe("promptActionFeatureType", () => {
 	});
 });
 
-describe("Publishing Suite planning prompt (#1851)", () => {
+describe("Publishing Suite prompts (#1851, #1853, #1854)", () => {
 	// The agent key must be the SAME string in the seed's SYSTEM prompt, the
 	// seed's binding, this catalog, and the Temporal activity that resolves the
 	// binding. A mismatch resolves no binding and silently falls back to the
@@ -210,14 +212,55 @@ describe("Publishing Suite planning prompt (#1851)", () => {
 		]);
 	});
 
-	it("keeps the two publishing prompts under DIFFERENT keys", () => {
-		// Both are PUBLISHING/GENERAL/null, so a copy-paste that left the
-		// planning key on the short post entry would satisfy every other case in
-		// this file — and would silently route short post generation to the
-		// planning worksheet's prompt.
-		expect(PUBLISHING_SHORT_POST_AGENT_KEY).not.toBe(
+	// The blog post prompt (2B-3) carries the same hazard as the two above, and
+	// shipped with no case of its own at all — the two below are that backfill.
+	it("files the blog post prompt under Publishing Suite by the shared key", () => {
+		const target = findPromptAgentTarget(PUBLISHING_BLOG_POST_AGENT_KEY);
+		expect(target).toBeDefined();
+		expect(target?.featureType).toBe("PUBLISHING");
+	});
+
+	it("binds the blog post prompt for GENERAL with no story kind", () => {
+		// Same exact-match resolution as its siblings: (documentType GENERAL,
+		// storyKind null). Anything narrower resolves nothing, and resolving
+		// nothing is the silent fallback path rather than an error.
+		const target = findPromptAgentTarget(PUBLISHING_BLOG_POST_AGENT_KEY);
+		expect(target?.actions).toEqual([
+			{ documentType: "GENERAL", storyKind: null },
+		]);
+	});
+
+	// The case study prompt (2C) is the fourth member of the family and carries
+	// the identical three-site hazard: seed SYSTEM prompt, seed binding, catalog
+	// entry and the Temporal activity must all name one key.
+	it("files the case study prompt under Publishing Suite by the shared key", () => {
+		const target = findPromptAgentTarget(PUBLISHING_CASE_STUDY_AGENT_KEY);
+		expect(target).toBeDefined();
+		expect(target?.featureType).toBe("PUBLISHING");
+	});
+
+	it("binds the case study prompt for GENERAL with no story kind", () => {
+		// One prompt per tenant covers every project and topic, and the activity
+		// resolves by exact match on (documentType GENERAL, storyKind null).
+		const target = findPromptAgentTarget(PUBLISHING_CASE_STUDY_AGENT_KEY);
+		expect(target?.actions).toEqual([
+			{ documentType: "GENERAL", storyKind: null },
+		]);
+	});
+
+	it("keeps all four publishing prompts under DIFFERENT keys", () => {
+		// Every one of them is PUBLISHING/GENERAL/null, so a copy-paste that
+		// left a sibling's key on another entry would satisfy every other case
+		// in this file — and would silently route one content type's generation
+		// to another's prompt. Uniqueness across the whole set is the only check
+		// that catches it whichever pair was duplicated.
+		const keys = [
 			PUBLISHING_PLANNING_ANALYSIS_AGENT_KEY,
-		);
+			PUBLISHING_SHORT_POST_AGENT_KEY,
+			PUBLISHING_BLOG_POST_AGENT_KEY,
+			PUBLISHING_CASE_STUDY_AGENT_KEY,
+		];
+		expect(new Set(keys).size).toBe(keys.length);
 	});
 
 	it("gives Publishing Suite a tier-1 area of its own", () => {

@@ -122,16 +122,27 @@ describe("GenerationTabs — which tabs are live", () => {
 		).toBeEnabled();
 	});
 
-	it("leaves the Phase 2C content types disabled and Coming Soon", () => {
+	it("activates Case Study and leaves only Stakeholder Email Coming Soon", () => {
+		// Inverted rather than deleted. This case asserted that BOTH 2C types
+		// were disabled and read "Coming soon", which was right while neither
+		// had a panel. 2C-1 (#1854) ships the Case Study one, so what would be a
+		// regression now is the tab being disabled — and a "Coming soon" badge
+		// where a real state badge belongs, which is the half a mere
+		// `toBeEnabled()` would not catch.
 		renderTabs();
 
-		for (const label of ["Case Study", "Stakeholder Email"]) {
-			expect(
-				within(tablist()).getByRole("tab", {
-					name: new RegExp(`${label}.*coming soon`, "i"),
-				}),
-			).toBeDisabled();
-		}
+		const caseStudy = within(tablist()).getByRole("tab", {
+			name: /case study/i,
+		});
+		expect(caseStudy).toBeEnabled();
+		expect(caseStudy).toHaveAccessibleName(/case study.*available/i);
+		expect(caseStudy).not.toHaveAccessibleName(/coming soon/i);
+
+		expect(
+			within(tablist()).getByRole("tab", {
+				name: /stakeholder email.*coming soon/i,
+			}),
+		).toBeDisabled();
 	});
 
 	it("uses the card's name for the short-post tab without renaming the Inbox chip", () => {
@@ -341,6 +352,141 @@ describe("GenerationTabs — panel content", () => {
 		expect(listed).toContain("the architecture diagram");
 		expect(listed).toContain("Blog Post");
 		expect(listed).not.toContain("who signs the post");
+	});
+
+	it("lists a CASE-STUDY-only restriction on that tab and NOWHERE else", async () => {
+		// THE control for 2C-1's other half. `restrictingSubjects` used to be
+		// computed ONCE for the whole strip with the post-type-agnostic
+		// `isRestrictingThread` and handed as the same array to every panel; it
+		// is now computed per panel with `restrictsPostType(thread, postType)`.
+		//
+		// `CLAIM_STRENGTH` is one of the three kinds that restrict ONLY a case
+		// study, so it is the one thread that can tell the two implementations
+		// apart. Both halves are asserted: without the negative one, "no 2B
+		// behaviour changed" is unverified — a build that listed the question on
+		// every tab would pass the positive half alone.
+		const user = userEvent.setup();
+		renderTabs({
+			decisionThreads: [
+				thread({
+					id: "t-claim",
+					decisionKind: "CLAIM_STRENGTH",
+					subject: "how strongly the result may be stated",
+					content: "Is this number strong enough to claim?",
+				}),
+			],
+		});
+
+		// Tweet is the default tab. A claim-strength question does not constrain
+		// a tweet — a tweet that cannot yet claim a number simply omits it — so
+		// neither restriction section appears at all.
+		expect(
+			screen.queryByText(/unresolved approvals/i),
+		).not.toBeInTheDocument();
+		expect(
+			screen.queryByText(/open questions that constrain this type/i),
+		).not.toBeInTheDocument();
+		expect(
+			screen.queryByText("how strongly the result may be stated"),
+		).not.toBeInTheDocument();
+
+		await user.click(
+			within(tablist()).getByRole("tab", { name: /case study/i }),
+		);
+
+		expect(
+			screen.getByText(/open questions that constrain this type/i),
+		).toBeInTheDocument();
+		expect(
+			screen.getAllByRole("listitem").map((li) => li.textContent),
+		).toContain("how strongly the result may be stated");
+	});
+
+	it("splits the two restriction kinds the way the prompt does", async () => {
+		// `buildCaseStudyLockedClauses` emits TWO blocks and its own comment
+		// calls merging them "actively harmful". The approvals block says "NOT
+		// approved for use … write around each one … or leave it out"; the
+		// open-questions block says "these are unsettled — do not resolve them
+		// by assumption, do not assert either side". For an open CLAIM_STRENGTH
+		// or AUDIENCE_SCOPE question nothing is awaiting approval and the
+		// generator does not generalize it away, so one merged list headed "a
+		// draft will generalize rather than assert them" stated on the page
+		// exactly the reading the prompt builder rejects — the
+		// page-promises-one-thing / generator-does-another divergence
+		// `publishing-restrictions.ts` exists to prevent.
+		const user = userEvent.setup();
+		renderTabs({
+			decisionThreads: [
+				thread({
+					id: "t-customer",
+					decisionKind: "CUSTOMER_NAME",
+					subject: "the customer name",
+				}),
+				thread({
+					id: "t-audience",
+					decisionKind: "AUDIENCE_SCOPE",
+					subject: "who the piece is for",
+				}),
+			],
+		});
+
+		await user.click(
+			within(tablist()).getByRole("tab", { name: /case study/i }),
+		);
+
+		// Scoped to each section, so a build that rendered both subjects under
+		// one heading cannot pass.
+		const approvals = screen
+			.getByText(/unresolved approvals/i)
+			.closest("section") as HTMLElement;
+		const questions = screen
+			.getByText(/open questions that constrain this type/i)
+			.closest("section") as HTMLElement;
+
+		expect(
+			within(approvals)
+				.getAllByRole("listitem")
+				.map((li) => li.textContent),
+		).toEqual(["the customer name"]);
+		expect(
+			within(questions)
+				.getAllByRole("listitem")
+				.map((li) => li.textContent),
+		).toEqual(["who the piece is for"]);
+
+		// And each section says what its own locked clause says. "Write around
+		// each one" is right for an unapproved customer name and wrong for an
+		// audience question, which is the whole reason for the split.
+		expect(approvals).toHaveTextContent(/write around each one/i);
+		expect(questions).toHaveTextContent(/not resolve them by assumption/i);
+		expect(questions).not.toHaveTextContent(/write around each one/i);
+	});
+
+	it("still shows a shared restriction on every tab, 2C included", async () => {
+		// The other direction: `restrictsPostType` starts with the shared
+		// predicate, so moving the computation must not have narrowed a
+		// safety-critical question to one tab.
+		const user = userEvent.setup();
+		renderTabs({ decisionThreads: [thread()] });
+
+		expect(screen.getByText("the customer name")).toBeInTheDocument();
+
+		await user.click(
+			within(tablist()).getByRole("tab", { name: /case study/i }),
+		);
+		expect(screen.getByText("the customer name")).toBeInTheDocument();
+	});
+
+	it("DOES offer a generate control on the case study tab", async () => {
+		const user = userEvent.setup();
+		renderTabs();
+
+		await user.click(
+			within(tablist()).getByRole("tab", { name: /case study/i }),
+		);
+		expect(
+			screen.getByRole("button", { name: /generate case study/i }),
+		).toBeInTheDocument();
 	});
 
 	it("DOES offer a generate control on the blog post tab", async () => {

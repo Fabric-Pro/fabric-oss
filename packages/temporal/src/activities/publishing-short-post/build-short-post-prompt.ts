@@ -22,7 +22,10 @@ import {
 	renderTemplate,
 	type TemplateFormat,
 } from "@repo/utils";
-import { humanizeDecisionKind } from "@repo/utils/publishing-restrictions";
+import {
+	humanizeDecisionKind,
+	toSingleLineSubject,
+} from "@repo/utils/publishing-restrictions";
 import {
 	PUBLISHING_SHORT_POST_AGENT_KEY,
 	PUBLISHING_SHORT_POST_FALLBACK_BODY,
@@ -326,7 +329,7 @@ export function buildShortPostLockedClauses(
 	restrictedSubjects: string[] = [],
 ): string {
 	const restricted = restrictedSubjects
-		.map((s) => s.trim())
+		.map((s) => toSingleLineSubject(s))
 		.filter((s) => s.length > 0);
 
 	const restrictedBlock =

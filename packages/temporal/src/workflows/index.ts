@@ -302,6 +302,14 @@ export {
 	type GeneratePublishingBlogPostWorkflowOutput,
 	generatePublishingBlogPostWorkflow,
 } from "./generate-publishing-blog-post";
+// Publishing Suite Case Study (fire-and-forget — one editable evidence-aware
+// case study for one topic, from its planning analysis and its own
+// provenance). #1854
+export {
+	type GeneratePublishingCaseStudyWorkflowInput,
+	type GeneratePublishingCaseStudyWorkflowOutput,
+	generatePublishingCaseStudyWorkflow,
+} from "./generate-publishing-case-study";
 // Publishing Suite Planning & Analysis (fire-and-forget — one topic's planning
 // worksheet, from its own provenance). #1851
 export {
