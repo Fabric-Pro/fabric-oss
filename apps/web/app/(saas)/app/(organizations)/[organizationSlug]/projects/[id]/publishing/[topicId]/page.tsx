@@ -1,16 +1,21 @@
 /**
  * Topic Item Page (organization context) — Fizzy #1851, Phase 2A-1.
  *
- * Thin server wrapper for `/projects/{id}/publishing/{topicId}`. Gates on the
- * SAME flags, in the SAME order, as the sibling list route
- * (`.../publishing/page.tsx`): the client UI-rollout flag
- * (`NEXT_PUBLIC_FABRIC_FEATURE_PUBLISHING_SUITE`) first, since it needs no
- * data access; then session; then the active organization from the
- * `[organizationSlug]` segment; then the per-organization server gate
- * (`isFeatureEnabled("PUBLISHING_SUITE", organization.id)`) — off →
+ * Thin server wrapper for `/projects/{id}/publishing/{topicId}`. Gates exactly
+ * as the sibling list route (`.../publishing/page.tsx`) does, in the same
+ * order: session, then the active organization from the `[organizationSlug]`
+ * segment, then the single availability gate
+ * `isFeatureEnabled("PUBLISHING_SUITE", organization.id)` — off →
  * `notFound()`, still before any project access. A detail route that gated
  * more loosely than its list would be a way to reach Publishing Suite data by
- * guessing a URL while the UI is deliberately hidden.
+ * guessing a URL while the feature is deliberately unavailable to that
+ * organization.
+ *
+ * The two routes now have exactly one gate to keep in step. The build-time
+ * `NEXT_PUBLIC_*` guard that used to run above the pair was removed from both
+ * together when the flag became org-scoped: a build-time value carries one
+ * answer for every organization, so all it could still do was refuse an
+ * enrolled one.
  *
  * Resolves the project with the ACTIVE org id, never `null`: passing `null`
  * searches personal projects only and would 404 an org member authorized
@@ -38,11 +43,6 @@ type Props = {
 export default async function OrganizationPublishingTopicPage({
 	params,
 }: Props) {
-	// The client UI-rollout flag gates first, since it needs no data access.
-	if (process.env.NEXT_PUBLIC_FABRIC_FEATURE_PUBLISHING_SUITE !== "true") {
-		notFound();
-	}
-
 	const session = await getSession();
 	if (!session) {
 		redirect("/auth/login");
@@ -55,8 +55,8 @@ export default async function OrganizationPublishingTopicPage({
 		notFound();
 	}
 
-	// The server gate resolves against THIS organization, so it cannot run
-	// before the organization is resolved — mirrors the list route.
+	// The only availability gate, resolved against THIS organization, so it
+	// cannot run before the organization is resolved — mirrors the list route.
 	if (!(await isFeatureEnabled("PUBLISHING_SUITE", organization.id))) {
 		notFound();
 	}

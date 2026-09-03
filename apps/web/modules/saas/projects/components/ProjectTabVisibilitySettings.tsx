@@ -12,6 +12,7 @@ import {
 	isProjectTabFeatureEnabled,
 	type ProjectTabMeta,
 	resolveAdminTabState,
+	useProjectTabGates,
 } from "../lib/project-tab-preferences";
 
 type Props = {
@@ -28,9 +29,10 @@ type Props = {
 
 /**
  * Admin panel for project-wide tab visibility (Fizzy card #1837): one switch
- * per non-protected tab. Turning a tab off here hides it for EVERY member —
- * personal preferences can't bring it back; turning a default-hidden optional
- * on opts the whole project into it. Overview and Settings are locked: the
+ * per non-protected tab. Every tab this deployment offers starts on; turning
+ * one off here hides it for EVERY member — personal preferences can't bring
+ * it back — and turning it on again restores it for the whole project.
+ * Overview and Settings are locked: the
  * overview is every project's landing page and settings is where a hidden tab
  * gets re-enabled.
  *
@@ -66,9 +68,10 @@ export function ProjectTabVisibilitySettings({
 	const [draft, setDraft] = useState<Record<string, boolean>>(stored);
 	useEffect(() => setDraft(stored), [stored]);
 
+	const tabGates = useProjectTabGates();
 	const offered = useMemo(
-		() => tabs.filter((t) => isProjectTabFeatureEnabled(t.id)),
-		[tabs],
+		() => tabs.filter((t) => isProjectTabFeatureEnabled(t.id, tabGates)),
+		[tabs, tabGates],
 	);
 
 	const effective = useMemo(
@@ -76,8 +79,9 @@ export function ProjectTabVisibilitySettings({
 			resolveAdminTabState(
 				offered.map((t) => t.id),
 				{ overrides: stored },
+				tabGates,
 			),
-		[offered, stored],
+		[offered, stored, tabGates],
 	);
 
 	const dirty = offered.some((t) => {

@@ -54,8 +54,15 @@ vi.mock("../ProjectReadinessProvider", () => ({
 	useProjectReadiness: () => readinessRef.current,
 }));
 
+// Hoisted to a module constant, not rebuilt per call: the real hook memoizes
+// its return value precisely so downstream `useMemo`s keep a stable identity,
+// and a mock that hands back a fresh object each render would model the very
+// thing that memoization exists to prevent.
+const GATES = { publishingSuiteEnabled: true };
+
 vi.mock("@saas/projects/lib/project-tab-preferences", () => ({
 	useProjectTabCustomization: () => ({ config: undefined, prefs: undefined }),
+	useProjectTabGates: () => GATES,
 	resolveProjectTabs: (tabs: readonly { id: string }[]) =>
 		tabs.filter((tab) => !hiddenTabs.current.has(tab.id)),
 }));

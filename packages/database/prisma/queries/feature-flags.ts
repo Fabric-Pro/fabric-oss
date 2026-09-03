@@ -214,6 +214,48 @@ export async function getOrgFlagOverrides(
 	return overrides;
 }
 
+/**
+ * The whole registry resolved for ONE organization: org override > global
+ * override > env var > registry default — subject to the same `orgScopable`
+ * constraint {@link resolveFlag} enforces, since every key here is resolved
+ * through it. An org override row for a flag that is not `orgScopable` is
+ * therefore ignored exactly as it is in {@link isFeatureEnabled}, so the two
+ * can never disagree about the same row.
+ *
+ * Deliberately a separate function rather than an optional argument on
+ * {@link getAllFlags}. The base `(saas)/app` layout sits above the
+ * `[organizationSlug]` segment and genuinely has no organization; an optional
+ * parameter would make that correct call indistinguishable from a call site
+ * that forgot to pass one, which is exactly the mistake this feature exists to
+ * prevent.
+ *
+ * Both underlying reads are cached on the same 10s clock, so mounting this in
+ * the organization layout — which is `force-dynamic` — costs at most one extra
+ * query per 10 seconds per organization, not one per navigation.
+ */
+export async function getAllFlagsForOrganization(
+	organizationId: string,
+): Promise<Record<FeatureFlagKey, boolean>> {
+	const [globalOverrides, orgOverrides] = await Promise.all([
+		getFlagOverrides(),
+		getOrgFlagOverrides(organizationId),
+	]);
+
+	return Object.fromEntries(
+		FEATURE_FLAG_KEYS.map((key) => [
+			key,
+			resolveFlag(
+				key,
+				{
+					org: orgOverrides.get(key),
+					global: globalOverrides.get(key),
+				},
+				process.env,
+			).enabled,
+		]),
+	) as Record<FeatureFlagKey, boolean>;
+}
+
 export async function isFeatureEnabled(
 	key: FeatureFlagKey,
 	organizationId?: string,

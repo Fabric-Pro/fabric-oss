@@ -86,6 +86,7 @@ describe("get-started drawer — account settings in organization context", () =
 				onClose={vi.fn()}
 				onStartTour={vi.fn()}
 				onShowComponent={vi.fn()}
+				gates={{ publishingSuite: false }}
 			/>,
 		);
 
@@ -102,6 +103,7 @@ describe("get-started drawer — account settings in organization context", () =
 				onClose={vi.fn()}
 				onStartTour={vi.fn()}
 				onShowComponent={vi.fn()}
+				gates={{ publishingSuite: false }}
 			/>,
 		);
 
@@ -118,6 +120,7 @@ describe("get-started drawer — account settings in organization context", () =
 				onClose={onClose}
 				onStartTour={vi.fn()}
 				onShowComponent={vi.fn()}
+				gates={{ publishingSuite: false }}
 			/>,
 		);
 
@@ -131,5 +134,43 @@ describe("get-started drawer — account settings in organization context", () =
 		await userEvent.click(open as HTMLElement);
 
 		expect(push).toHaveBeenCalledWith("/app/example-org/settings/security");
+	});
+
+	/**
+	 * The Publishing entry is scoped to named organizations, so it carries a
+	 * `runtimeGate` rather than a build-time `enabled` — the drawer has to read
+	 * the `gates` prop for it to be hidden at all. Both directions are asserted
+	 * so a drawer that ignored the prop (or dropped the check) fails here: with
+	 * no build-time `enabled` left on the entry, ignoring the gate shows the
+	 * row in the OFF case.
+	 */
+	it("shows the Publishing item only when its runtime gate is on", async () => {
+		// It lives in the "Inside a project" group, which is collapsed here —
+		// this file's pathname makes Settings the active context.
+		const expandProjectGroup = () =>
+			userEvent.click(screen.getByText("Inside a project"));
+
+		const { unmount } = render(
+			<GetStartedDrawer
+				onClose={vi.fn()}
+				onStartTour={vi.fn()}
+				onShowComponent={vi.fn()}
+				gates={{ publishingSuite: false }}
+			/>,
+		);
+		await expandProjectGroup();
+		expect(screen.queryByText("Publishing Suite")).toBeNull();
+		unmount();
+
+		render(
+			<GetStartedDrawer
+				onClose={vi.fn()}
+				onStartTour={vi.fn()}
+				onShowComponent={vi.fn()}
+				gates={{ publishingSuite: true }}
+			/>,
+		);
+		await expandProjectGroup();
+		expect(screen.getByText("Publishing Suite")).toBeDefined();
 	});
 });

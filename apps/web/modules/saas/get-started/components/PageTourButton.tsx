@@ -1,5 +1,6 @@
 "use client";
 
+import { useFeatureFlag } from "@saas/shared/components/FeatureFlagProvider";
 import { isMonitoringFeatureEnabled } from "@saas/shared/lib/feature-flags";
 import {
 	Tooltip,
@@ -30,7 +31,14 @@ export function PageTourButton({
 }) {
 	// Declared before the flag/coverage early return so the hook order is stable.
 	const t = useTranslations("tooltips.common");
-	if (!GET_STARTED_ENABLED || !pageForTab(pageId)) {
+	// Same rule: this hook runs unconditionally, above the early return. A
+	// covered page can be gated per organization, so the coverage check below
+	// needs a runtime answer the registry cannot supply for itself.
+	const publishingSuiteEnabled = useFeatureFlag("PUBLISHING_SUITE");
+	if (
+		!GET_STARTED_ENABLED ||
+		!pageForTab(pageId, { publishingSuite: publishingSuiteEnabled })
+	) {
 		return null;
 	}
 	return (

@@ -76,10 +76,12 @@ import {
 	clearFlagOverride,
 	getAllFlags,
 	getAllFlagsDetailed,
+	getAllFlagsForOrganization,
 	getDisabledOrganizationIds,
 	getEnabledOrganizationIds,
 	getGlobalFlagOverride,
 	getOrganizationFlagOverrideUncached,
+	getOrgFlagOverrides,
 	isFeatureEnabled,
 	isKillSwitchArmed,
 	setFlagOverride,
@@ -600,5 +602,86 @@ describe("org-scoped flag reads", () => {
 			where: { key: "PUBLISHING_SUITE", enabled: false },
 			select: { organizationId: true },
 		});
+	});
+});
+
+describe("getAllFlagsForOrganization", () => {
+	beforeEach(() => {
+		__resetFeatureFlagCacheForTest();
+		findMany.mockReset();
+		findManyOrg.mockReset();
+	});
+
+	it("an organization override beats the global override", async () => {
+		// Global override says OFF for everyone; this organization says ON.
+		findMany.mockResolvedValue([
+			{ key: "PUBLISHING_SUITE", enabled: false },
+		]);
+		findManyOrg.mockResolvedValue([
+			{ key: "PUBLISHING_SUITE", enabled: true },
+		]);
+
+		const flags = await getAllFlagsForOrganization("org-enrolled");
+
+		expect(flags.PUBLISHING_SUITE).toBe(true);
+	});
+
+	it("an explicit organization `false` beats a global `true` (the kill switch)", async () => {
+		findMany.mockResolvedValue([
+			{ key: "PUBLISHING_SUITE", enabled: true },
+		]);
+		findManyOrg.mockResolvedValue([
+			{ key: "PUBLISHING_SUITE", enabled: false },
+		]);
+
+		const flags = await getAllFlagsForOrganization("org-excluded");
+
+		expect(flags.PUBLISHING_SUITE).toBe(false);
+	});
+
+	it("no organization row INHERITS the global value; it does not deny", async () => {
+		// The distinction that carries the design: absent !== false. A resolver
+		// that collapsed them would switch the feature off for every
+		// organization the moment the global override was cleared.
+		findMany.mockResolvedValue([
+			{ key: "PUBLISHING_SUITE", enabled: true },
+		]);
+		findManyOrg.mockResolvedValue([]);
+
+		const flags = await getAllFlagsForOrganization("org-no-row");
+
+		expect(flags.PUBLISHING_SUITE).toBe(true);
+	});
+
+	it("returns a value for EVERY registry key, not only overridden ones", async () => {
+		// The provider hands this straight to FeatureFlagProvider, whose
+		// context type is Record<FeatureFlagKey, boolean>. A partial object
+		// would make useFeatureFlag return undefined for an unlisted key,
+		// which reads as `false` at every call site without ever throwing.
+		findMany.mockResolvedValue([]);
+		findManyOrg.mockResolvedValue([]);
+
+		const flags = await getAllFlagsForOrganization("org-empty");
+
+		for (const key of FEATURE_FLAG_KEYS) {
+			expect(typeof flags[key]).toBe("boolean");
+		}
+	});
+
+	it("resolves the same as getAllFlags when the organization has no rows", async () => {
+		// Negative control with its precondition asserted: the org read must
+		// actually have returned nothing, or this passes vacuously against a
+		// resolver that ignores the organization entirely.
+		findMany.mockResolvedValue([
+			{ key: "PUBLISHING_SUITE", enabled: true },
+		]);
+		findManyOrg.mockResolvedValue([]);
+
+		const orgOverrides = await getOrgFlagOverrides("org-no-row");
+		expect(orgOverrides.size).toBe(0); // precondition
+
+		expect(await getAllFlagsForOrganization("org-no-row")).toEqual(
+			await getAllFlags(),
+		);
 	});
 });

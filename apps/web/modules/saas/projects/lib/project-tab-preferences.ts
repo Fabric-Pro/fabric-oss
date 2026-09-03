@@ -5,9 +5,10 @@ import {
 	type ProjectTabConfig,
 	type ProjectTabPrefs,
 } from "@repo/database/src/project-tabs";
+import { useFeatureFlag } from "@saas/shared/components/FeatureFlagProvider";
 import { orpc } from "@shared/lib/orpc-query-utils";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { ComponentType } from "react";
+import { type ComponentType, useMemo } from "react";
 
 /** Tab-bar metadata shape shared by the customize dialog and admin panel. */
 export type ProjectTabMeta = {
@@ -21,13 +22,16 @@ export type ProjectTabMeta = {
  * given member sees, and in what order, from THREE layers, each only ever
  * narrowing the one above:
  *
- *   0. **Feature flag — does this deployment offer the capability at all?**
- *      Build-time `NEXT_PUBLIC_*` vars (the same gates that hid these pages
- *      before customization existed). A tab excluded here is invisible
+ *   0. **Feature flag — is this capability offered to this viewer at all?**
+ *      Atlas and Test Cases are build-time `NEXT_PUBLIC_*` vars, one answer
+ *      per deployment. Publishing Suite resolves per organization at request
+ *      time, so the same build offers it to an enrolled organization and
+ *      withholds it from every other one. A tab excluded here is invisible
  *      everywhere — bar, dialog, admin panel, Get Started — and no admin or
- *      user preference can override it, because the backend APIs behind it are
- *      gated by the matching deployment configuration too. App-level
- *      provisioning is deliberately NOT a runtime toggle.
+ *      user preference can override it, because the API behind it is gated on
+ *      the same flag, or, for Atlas and Test Cases, on its server-side twin
+ *      (`FABRIC_FEATURE_*`, which a deployment is expected to keep in step
+ *      with the `NEXT_PUBLIC_*` value; nothing enforces the pair).
  *   1. the project admin's `tabVisibility` overrides (`Record<tabId, boolean>`
  *      stored on the Project row — hides a tab for EVERY member, or brings
  *      back one an earlier admin hid). Every offered tab is visible until an
@@ -41,13 +45,65 @@ export type ProjectTabMeta = {
  * resolution, ordering and the customize UI with zero extra wiring.
  */
 
-// Layer 0 — per-deployment availability ceiling. Same env reads and legacy
-// fallbacks the old client gates used in `ProjectDetails.tsx`, so restoring
-// this layer preserves the exact pre-customization behaviour per environment.
-// Read lazily (a function, not a module constant): NEXT_PUBLIC_* values are
-// inlined per build either way, and lazy reads keep the ceiling testable via
-// vi.stubEnv without module-reload gymnastics.
-function featureGatedProjectTabs(): Record<string, boolean> {
+/**
+ * Layer 0 gates that cannot be read from the environment.
+ *
+ * `NEXT_PUBLIC_*` values are inlined by Next at build time, so one build can
+ * only ever carry one answer. Publishing Suite is scoped to named
+ * organizations, so its ceiling is resolved per request and handed in.
+ *
+ * The field is REQUIRED on every resolver below, deliberately. An optional
+ * gate defaulting to `false` would silently hide the tab wherever a caller
+ * forgot it; defaulting to `true` would silently show it to an organization
+ * that was never enrolled. Required means the compiler lists the call sites.
+ */
+export type ProjectTabGates = {
+	/** `PUBLISHING_SUITE`, resolved for the viewer's organization. */
+	publishingSuiteEnabled: boolean;
+};
+
+/**
+ * The gates for the current organization, from the nearest FeatureFlagProvider
+ * (the organization layout mounts one resolved for that organization).
+ *
+ * Memoized on purpose: this returns an object, and a fresh identity on every
+ * render would defeat the `useMemo`s in `ProjectDetails` and
+ * `ProjectReadinessPanel` that depend on it — handing a new tab array to
+ * downstream effects on every render, not merely recomputing a cheap filter.
+ */
+export function useProjectTabGates(): ProjectTabGates {
+	const publishingSuiteEnabled = useFeatureFlag("PUBLISHING_SUITE");
+	return useMemo(
+		() => ({ publishingSuiteEnabled }),
+		[publishingSuiteEnabled],
+	);
+}
+
+// Layer 0 — the availability ceiling. Atlas and Test Cases keep the build-time
+// env reads and legacy fallbacks the old client gates used in
+// `ProjectDetails.tsx`, so those two behave exactly as they did per
+// environment. Read lazily (a function, not a module constant) so the env
+// gates stay testable via vi.stubEnv without module-reload gymnastics.
+function featureGatedProjectTabs(
+	gates: ProjectTabGates,
+): Record<string, boolean> {
+	// Guarded at runtime, not only by types. `apps/web/tsconfig.json` excludes
+	// every test file, so a stale positional call left in a test — passing a
+	// config object, or `{}`, where the gates now go — compiles, runs, and can
+	// still pass, because a tab gated on an env var never reads this object.
+	// Throwing turns that into a named failure in the one gate that does cover
+	// tests. Same reasoning as `useFeatureFlag`, which throws on a missing
+	// provider rather than reporting the feature as off.
+	// Not exhaustive, though: a protected tab id returns from
+	// `isProjectTabVisibleToViewer` before this function is ever called, and an
+	// empty tab list makes `resolveAdminTabState` / `resolveProjectTabs` skip
+	// it entirely — both are harmless only because the protected and gated id
+	// sets are disjoint today.
+	if (typeof gates?.publishingSuiteEnabled !== "boolean") {
+		throw new Error(
+			"project-tab Layer 0 needs resolved ProjectTabGates; pass useProjectTabGates() (components) or an explicit { publishingSuiteEnabled } (tests)",
+		);
+	}
 	return {
 		atlas:
 			process.env.NEXT_PUBLIC_FABRIC_FEATURE_ATLAS === "true" ||
@@ -56,14 +112,16 @@ function featureGatedProjectTabs(): Record<string, boolean> {
 				"true",
 		"test-cases":
 			process.env.NEXT_PUBLIC_FABRIC_FEATURE_TEST_CASES === "true",
-		"publishing-suite":
-			process.env.NEXT_PUBLIC_FABRIC_FEATURE_PUBLISHING_SUITE === "true",
+		"publishing-suite": gates.publishingSuiteEnabled,
 	};
 }
 
-/** Layer 0 check: is this tab offered by THIS deployment at all? */
-export function isProjectTabFeatureEnabled(tabId: string): boolean {
-	const gated = featureGatedProjectTabs();
+/** Layer 0 check: is this tab offered to THIS viewer's organization at all? */
+export function isProjectTabFeatureEnabled(
+	tabId: string,
+	gates: ProjectTabGates,
+): boolean {
+	const gated = featureGatedProjectTabs(gates);
 	return !(tabId in gated) || gated[tabId];
 }
 
@@ -71,12 +129,13 @@ export function isProjectTabFeatureEnabled(tabId: string): boolean {
 export function resolveAdminTabState(
 	tabIds: readonly string[],
 	config: ProjectTabConfig | null | undefined,
+	gates: ProjectTabGates,
 ): Record<string, boolean> {
 	const overrides = config?.overrides ?? {};
 	const state: Record<string, boolean> = {};
 	for (const id of tabIds) {
-		if (!isProjectTabFeatureEnabled(id)) {
-			continue; // Layer 0: not offered by this deployment — no state at all.
+		if (!isProjectTabFeatureEnabled(id, gates)) {
+			continue; // Layer 0: not offered to this viewer — no state at all.
 		}
 		state[id] = isProtectedProjectTab(id) ? true : (overrides[id] ?? true);
 	}
@@ -92,14 +151,15 @@ export function resolveAdminTabState(
  */
 export function isProjectTabVisibleToViewer(
 	tabId: string,
+	gates: ProjectTabGates,
 	config?: unknown,
 	prefs?: unknown,
 ): boolean {
 	if (isProtectedProjectTab(tabId)) {
 		return true;
 	}
-	// Layer 0: a deployment that doesn't offer the tab hides it from everyone.
-	if (!isProjectTabFeatureEnabled(tabId)) {
+	// Layer 0: a ceiling that doesn't offer the tab hides it from everyone.
+	if (!isProjectTabFeatureEnabled(tabId, gates)) {
 		return false;
 	}
 	const overrides = normalizeProjectTabConfig(config)?.overrides ?? {};
@@ -123,6 +183,7 @@ export function resolveProjectTabs<T extends { id: string }>(
 	input: {
 		config?: unknown;
 		prefs?: unknown;
+		gates: ProjectTabGates;
 	},
 ): T[] {
 	const config = normalizeProjectTabConfig(input.config);
@@ -131,9 +192,9 @@ export function resolveProjectTabs<T extends { id: string }>(
 	const personallyHidden = new Set(prefs?.hidden ?? []);
 
 	const visible = tabs.filter((tab) => {
-		// Layer 0: a deployment that doesn't offer the tab hides it from
+		// Layer 0: a ceiling that doesn't offer the tab hides it from
 		// everyone, ahead of every other layer.
-		if (!isProjectTabFeatureEnabled(tab.id)) {
+		if (!isProjectTabFeatureEnabled(tab.id, input.gates)) {
 			return false;
 		}
 		if (isProtectedProjectTab(tab.id)) {

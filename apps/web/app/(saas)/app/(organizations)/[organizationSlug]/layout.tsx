@@ -1,5 +1,8 @@
 import { config } from "@repo/config";
-import { getOrganizationRequireTwoFactor } from "@repo/database";
+import {
+	getAllFlagsForOrganization,
+	getOrganizationRequireTwoFactor,
+} from "@repo/database";
 import {
 	getActiveOrganization,
 	getSession,
@@ -11,6 +14,7 @@ import { shouldEnforceOrgTwoFactor } from "@saas/organizations/lib/mfa-enforceme
 import { OrganizationGuestProvider } from "@saas/organizations/lib/organization-guest-context";
 import { AiCreditsBanner } from "@saas/payments/components/AiCreditsStatus";
 import { AppWrapper } from "@saas/shared/components/AppWrapper";
+import { FeatureFlagProvider } from "@saas/shared/components/FeatureFlagProvider";
 import { MfaSetupBanner } from "@saas/shared/components/MfaSetupBanner";
 import { orpc } from "@shared/lib/orpc-query-utils";
 import { getServerQueryClient } from "@shared/lib/server";
@@ -127,28 +131,48 @@ export default async function OrganizationLayout({
 		);
 	}
 
-	await Promise.all(prefetchPromises);
+	// Feature flags, resolved for THIS organization.
+	//
+	// The account-wide provider in `(saas)/app/layout.tsx` sits above the
+	// `[organizationSlug]` segment and therefore cannot know which organization
+	// the viewer is in — it resolves global override > env > default only. This
+	// second provider re-resolves with the organization and, because
+	// `useFeatureFlag` reads the NEAREST context, shadows it for everything
+	// under `/app/{slug}` with no change at any call site.
+	//
+	// It is the same component, not a variant: "nested provider, org-resolved
+	// values" is the entire behaviour, and a second component would be a second
+	// context to keep in sync for no gain.
+	//
+	// Fetched alongside the prefetch queries above rather than after them —
+	// same async-parallel rule, independent read, no reason to serialize it.
+	const [featureFlags] = await Promise.all([
+		getAllFlagsForOrganization(organization.id),
+		Promise.all(prefetchPromises),
+	]);
 
 	const brandColor = getOrganizationBrandColor(organization.metadata);
 
 	return (
-		<OrganizationThemeProvider brandColor={brandColor}>
-			<OrganizationGuestProvider
-				organizationSlug={organizationSlug}
-				isGuest={guest}
-			>
-				<AppWrapper>
-					{/* Guests see THEIR personal credits (explicit null —
-					 * multi-tenant XOR), matching the personal-style shell
-					 * they get everywhere else; the org-scoped call would
-					 * 403 for them. */}
-					<AiCreditsBanner
-						organizationId={guest ? null : organization.id}
-					/>
-					<MfaSetupBanner />
-					{children}
-				</AppWrapper>
-			</OrganizationGuestProvider>
-		</OrganizationThemeProvider>
+		<FeatureFlagProvider value={featureFlags}>
+			<OrganizationThemeProvider brandColor={brandColor}>
+				<OrganizationGuestProvider
+					organizationSlug={organizationSlug}
+					isGuest={guest}
+				>
+					<AppWrapper>
+						{/* Guests see THEIR personal credits (explicit null —
+						 * multi-tenant XOR), matching the personal-style shell
+						 * they get everywhere else; the org-scoped call would
+						 * 403 for them. */}
+						<AiCreditsBanner
+							organizationId={guest ? null : organization.id}
+						/>
+						<MfaSetupBanner />
+						{children}
+					</AppWrapper>
+				</OrganizationGuestProvider>
+			</OrganizationThemeProvider>
+		</FeatureFlagProvider>
 	);
 }

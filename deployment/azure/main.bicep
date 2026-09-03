@@ -66,25 +66,36 @@ param enableFabricGitHubOAuth bool = false
 @description('Wire the Cloudflare sandbox worker (sandbox-worker-url, sandbox-auth-secret) from Key Vault into the temporal worker, which is what runs scripted QA cases. Enable ONLY after both secrets exist in the environment Key Vault — otherwise the deployment fails on unresolved references, the same trap enableFabricGitHubOAuth documents. While disabled, a scripted run blocks with "SANDBOX_WORKER_URL environment variable is required" rather than failing the deploy.')
 param enableSandboxWorker bool = false
 
-@description('Enable AST-aware code indexing (FEATURE_CODE_INDEXING) on the temporal worker. Enabled in every environment via the deploy workflow; a full re-embed consumes embedding credits (per-project opt-in still gates actual indexing via codeSearchEnabled).')
+// HOW THE FLAG PARAMETERS BELOW ARE ACTUALLY SET
+// Two copies of this template exist. The automated deployment pipeline lives
+// outside this repository and deploys ITS OWN copy, so a parameter added here
+// does not exist for that deploy until the copy is updated too. deploy.sh --
+// the only deployer in this repository -- passes just envName, imageTag,
+// uniqueSuffix, databaseAuthProvider and workerRlsMode, taking every default
+// below as-is.
+// Each parameter records what the pipeline passes today. That is a note which
+// can go stale, not a guarantee: verify against the running Container App
+// before relying on a value.
+
+@description('Enable AST-aware code indexing (FEATURE_CODE_INDEXING) on the temporal worker. Enabled in every environment via the deployment pipeline; a full re-embed consumes embedding credits (per-project opt-in still gates actual indexing via codeSearchEnabled).')
 param enableCodeIndexing bool = false
 
 @description('Living Documents auto-refresh SWEEP kill switch (FABRIC_FEATURE_LIVING_DOCS_REFRESH) on the temporal worker. TRUE in every environment, prod included — this is deliberately NOT the rollout switch, and since Fizzy #2210 it is registered as LIVING_DOCS_REFRESH_SWEEP rather than being read directly. What it buys is the brakes: the worker re-reads it immediately before it writes, so setting it false stops an AI mid-rollout. Rollout is a SEPARATE registry flag, LIVING_DOCS_REFRESH, whose env var is FABRIC_FEATURE_LIVING_DOCS_REFRESH_ROLLOUT — it governs the masthead control and the enrolment procedures together, and is off unless explicitly set. Both are now flippable from the admin console without a redeploy; this param is only the deployment default the override sits on top of. Set false only to hit the brakes.')
 param enableLivingDocsRefresh bool = true
 
-@description('Publishing Suite daily suggestion sweep (FABRIC_FEATURE_PUBLISHING_SUITE) on the temporal worker. Off by default (prod) — the deploy workflow enables it for non-prod only. This param only seeds the GLOBAL flag value; the find-eligible activity layers a per-organization PUBLISHING_SUITE override on top (database-backed, read on every tick, no cache), so it no longer determines who gets swept on its own — the sweep is restricted to organizations with an enabled override, or, when this is true, every organization except one with a disabled override. An organization can be enrolled individually regardless of this value; keep it false in prod until Publishing Suite is ready for a broad rollout.')
+@description('Publishing Suite daily suggestion sweep (FABRIC_FEATURE_PUBLISHING_SUITE) on the temporal worker. Defaults off here, but the deployment pipeline passes true for every non-prod environment and false for prod, so a staging-like environment runs with the global seed ON. This param only seeds the GLOBAL flag value; the find-eligible activity layers a per-organization PUBLISHING_SUITE override on top (database-backed, read on every tick, no cache), so it no longer determines who gets swept on its own — the sweep is restricted to organizations with an enabled override, or, when this is true, every organization except one with a disabled override. An organization can be enrolled individually regardless of this value; keep it false in prod until Publishing Suite is ready for a broad rollout.')
 param enablePublishingSuite bool = false
 
-@description('OpenAPI/Swagger specs as project context (FABRIC_FEATURE_OPENAPI_SPEC_CONTEXT) on the temporal worker, which is where every context-ingestion path runs. Off by default (prod) — the deploy workflow enables it for non-prod only. On, a detected spec is chunked per endpoint and per model instead of by character window; off, ingestion is byte-for-byte what it is today, so rollback is this param with no migration. Already-ingested specs keep the chunks they have until re-embedded, so flipping it on only changes what is uploaded next. Fizzy #2236.')
+@description('OpenAPI/Swagger specs as project context (FABRIC_FEATURE_OPENAPI_SPEC_CONTEXT) on the temporal worker, which is where every context-ingestion path runs. Off in EVERY environment: the deployment pipeline neither passes this parameter nor declares it in the copy it deploys, so the worker receives no FABRIC_FEATURE_OPENAPI_SPEC_CONTEXT at all. Enabling it anywhere takes a pipeline change, not just a flag flip. On, a detected spec is chunked per endpoint and per model instead of by character window; off, ingestion is byte-for-byte what it is today, so rollback is this param with no migration. Already-ingested specs keep the chunks they have until re-embedded, so flipping it on only changes what is uploaded next. Fizzy #2236.')
 param enableOpenApiSpecContext bool = false
 
-@description('Application-log context in bug analysis (FABRIC_FEATURE_BUG_ANALYSIS_LOG_CONTEXT) on the temporal worker. Off in prod; the deploy workflow enables it for non-prod only. Fizzy #1234 gates production rollout on the ADR-017 mechanism review, so this stays false for prod until that review lands. When true the worker also receives the provider selection and that provider\'s settings, pointing at THIS environment\'s workspace. The Log Analytics Reader grant is NOT made by this template: the deploy service principal cannot create role assignments, and giving it that right would let it grant any role in the resource group. It is a one-time operator step per environment (see the note where the assignment used to live). Until it is run the connector receives a 403, which degrades to "logs were not available" and affects nothing else. Reading is gated per request on the project-settings permission, structured properties are dropped unless explicitly allowlisted, and every entry is redacted before it reaches a model.')
+@description('Application-log context in bug analysis (FABRIC_FEATURE_BUG_ANALYSIS_LOG_CONTEXT) on the temporal worker. Off in EVERY environment, non-prod included: the deployment pipeline neither passes this parameter nor declares it in the copy it deploys, so the worker receives no FABRIC_FEATURE_BUG_ANALYSIS_LOG_CONTEXT at all. Mind the gap: ADR-017 records the production rollout as APPROVED on 2026-08-24, flag true in EVERY environment, so the approved posture is not the deployed one. Closing that takes a pipeline change, not a flip here. When true the worker also receives the provider selection and that provider\'s settings, pointing at THIS environment\'s workspace. The Log Analytics Reader grant is NOT made by this template: the deploy service principal cannot create role assignments, and giving it that right would let it grant any role in the resource group. It is a one-time operator step per environment (see the note where the assignment used to live). Until it is run the connector receives a 403, which degrades to "logs were not available" and affects nothing else. Reading is gated per request on the project-settings permission, structured properties are dropped unless explicitly allowlisted, and every entry is redacted before it reaches a model.')
 param enableBugAnalysisLogContext bool = false
 
 @description('Whether the deployment\'s own telemetry workspace may serve bug-analysis log lookups at all (FABRIC_BUG_ANALYSIS_LOG_ALLOW_SHARED_WORKSPACE on the temporal worker). The security review of Fizzy #1234 held that an environment-wide workspace "shouldn\'t be a customer-facing source": scoping queries to an organization id alone would make it live the moment telemetry starts tagging org records, so serving it is a deliberate operator choice rather than a default. Off by default in every environment (prod included) — with it off every project gets FR3\'s "no log source configured" and only project bindings or tenant-connected MCP sources provide logs. Enable per environment once whoever owns the estate accepts that workspace as a customer-facing source for THIS deployment; the org predicate on shared-store queries still applies when it is on.')
 param enableBugAnalysisLogSharedWorkspace bool = false
 
-@description('QA / Test Cases suite (FABRIC_FEATURE_TEST_CASES) on the temporal worker, read with the STRICT literal-"true" reader. Gates the automatic pipeline-result sync sweep and QA evidence retention; the web app carries its own copy of the flag (Vercel) for the API gate and UI tab, so this param is what keeps the worker side of the feature alive across deploys rather than being a second rollout gate. Enabled in every environment via the deploy workflow (Fizzy #2144). Set false to stop the sweeps on the next tick.')
+@description('QA / Test Cases suite (FABRIC_FEATURE_TEST_CASES) on the temporal worker, read with the STRICT literal-"true" reader. Gates the automatic pipeline-result sync sweep and QA evidence retention; the web app carries its own copy of the flag (Vercel) for the API gate and UI tab, so this param is what keeps the worker side of the feature alive across deploys rather than being a second rollout gate. The deployment pipeline passes true for every non-prod environment; prod gets true only when an operator-set pipeline secret enables it, so prod is off unless someone did that (Fizzy #2144). Set false to stop the sweeps on the next tick.')
 param enableTestCases bool = false
 
 @description('Status-announcement notifications (FABRIC_STATUS_ANNOUNCEMENT_NOTIFICATIONS_ENABLED) on the temporal worker. TRUE in every environment, prod included — this is the KILL SWITCH, not the rollout switch, same shape as enableLivingDocsRefresh. The gate that decides whether customers hear anything is publishing the announcement itself: that is admin-only, human-authored, reviewed, and already customer-visible on the status page, so a separate default-off gate on the notification bought nothing except a feature nobody would ever switch on. What this param buys is the brakes — the sweeper re-reads the flag before it writes, so setting it false stops delivery on the next tick with no redeploy. Set false only to stop a misfire.')
@@ -102,7 +113,7 @@ param databaseAuthProvider string = 'password'
 @allowed(['bypassrls', 'policy'])
 param workerRlsMode string = 'bypassrls'
 
-@description('Encryption key version that NEW data is encrypted with (SOC 2 CC6.1 key rotation). Empty leaves rotation inactive, which is a fully supported setup: encryption falls back to BETTER_AUTH_SECRET and every existing ciphertext still decrypts. The deploy workflow sets this only once the environment\'s Key Vault actually holds that version\'s material, because activating a version whose material is absent fails EVERY stored-credential read (the lookup is lazy, so the process boots clean and then poisons the work it accepts). Defaults empty so a freshly-provisioned environment is never born broken. See your operator\'s key-rotation runbook.')
+@description('Encryption key version that NEW data is encrypted with (SOC 2 CC6.1 key rotation). Empty leaves rotation inactive, which is a fully supported setup: encryption falls back to BETTER_AUTH_SECRET and every existing ciphertext still decrypts. Nothing in this repository sets it, and the copy the deployment pipeline deploys has no such parameter — it still hardcodes a non-prod key version instead. Set this only once the environment\'s Key Vault actually holds that version\'s material, because activating a version whose material is absent fails EVERY stored-credential read (the lookup is lazy, so the process boots clean and then poisons the work it accepts). Defaults empty so a freshly-provisioned environment is never born broken. See your operator\'s key-rotation runbook.')
 param encryptionActiveKeyVersion string = ''
 
 // Tags for resources
@@ -307,8 +318,11 @@ var kvBaseUrl = 'https://${keyVaultName}${az.environment().suffixes.keyvaultDns}
 // Base secrets required for temporal worker
 var temporalWorkerBaseSecrets = [
   // Worker-specific connection string (fabric_worker role on Lakebase). The
-  // deploy workflow syncs it from the WORKER_DATABASE_URL GitHub secret,
-  // falling back to DATABASE_URL when unset — so Neon environments are unchanged.
+  // deployment pipeline syncs it from the WORKER_DATABASE_URL secret, falling
+  // back to DATABASE_URL when unset — so Neon environments are unchanged. When
+  // neither resolves it writes the literal string "placeholder" rather than
+  // leaving the secret absent, so a worker that cannot reach the database may
+  // be holding that literal: check the secret's value, not its presence.
   { name: 'worker-database-url', keyVaultUrl: '${kvBaseUrl}/worker-database-url', identity: managedIdentity.id }
   { name: 'temporal-address', keyVaultUrl: '${kvBaseUrl}/temporal-address', identity: managedIdentity.id }
   { name: 'temporal-namespace', keyVaultUrl: '${kvBaseUrl}/temporal-namespace', identity: managedIdentity.id }
@@ -482,7 +496,7 @@ var fabricGitHubEnv = enableFabricGitHubOAuth ? [
 ] : []
 
 // Code indexing (Phase 2 AST-aware). The worker workflow gate reads
-// FEATURE_CODE_INDEXING; the deploy workflow now sets enableCodeIndexing=true in
+// FEATURE_CODE_INDEXING; the deployment pipeline sets enableCodeIndexing=true in
 // every environment (prod included). Actual indexing per project is still gated
 // by the project's codeSearchEnabled RAG setting (opt-in).
 var codeIndexingEnv = enableCodeIndexing ? [
@@ -510,9 +524,12 @@ var livingDocsRefreshEnv = enableLivingDocsRefresh ? [
 // param description above). This var is only the global seed: with it off,
 // the sweep is restricted to organizations with an enabled override (and
 // returns an empty due-list immediately if none exist); with it on, every
-// organization is swept except one with a disabled override. Off by default
-// (prod-safe); the deploy workflow sets it true for non-prod only. FABRIC_
-// prefix is load-bearing (turbo passthrough).
+// organization is swept except one with a disabled override. Off by default,
+// and not overridden by anything tracked in this repository — an environment
+// that needs the global seed on must set the parameter at deploy time. This
+// governs the WORKER only; the web app is a separate deployment, so what a
+// member actually sees is decided by that deployment plus the per-organization
+// override rows. FABRIC_ prefix is load-bearing (turbo passthrough).
 var publishingSuiteEnv = enablePublishingSuite ? [
   { name: 'FABRIC_FEATURE_PUBLISHING_SUITE', value: 'true' }
 ] : []
@@ -627,11 +644,15 @@ var temporalWorkerBaseEnv = [
   // Versioned encryption keys for at-rest secret columns (SOC 2 CC6.1).
   // Decrypt-capability only until ENCRYPTION_ACTIVE_KEY_VERSION is also set.
   { name: 'ENCRYPTION_KEYS', secretRef: 'encryption-keys' }
-  // Key-rotation flip (SOC 2 CC6.1). Resolved by the deploy workflow from what
-  // this environment's vault actually holds, never hardcoded here: the previous
-  // literal '2' for every non-prod environment guaranteed that a newly-created
-  // environment — whose `encryption-keys` secret the deploy only ever seeds as
-  // the `{}` placeholder — activated a version it had no material for.
+  // Key-rotation flip (SOC 2 CC6.1). Taken from the parameter and never
+  // hardcoded here, because a literal '2' for every non-prod environment means
+  // a newly-created environment — whose `encryption-keys` secret the deploy
+  // only ever seeds as the `{}` placeholder — activates a version it has no
+  // material for, and every stored-credential read then fails.
+  // That hazard is NOT retired. The parameter exists only in this copy of the
+  // template; the copy the deployment pipeline actually deploys still hardcodes
+  // the non-prod literal, so any environment that pipeline creates is still
+  // exposed. Retiring it means changing that copy too.
   // '' is treated as unset — see your operator's key-rotation runbook for
   // the rotation procedure.
   { name: 'ENCRYPTION_ACTIVE_KEY_VERSION', value: encryptionActiveKeyVersion }

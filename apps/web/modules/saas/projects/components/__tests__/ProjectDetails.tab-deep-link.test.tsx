@@ -113,6 +113,16 @@ vi.mock("@saas/shared/components/ConfirmationAlertProvider", () => ({
 	useConfirmationAlert: () => ({ confirm: vi.fn() }),
 }));
 
+// The tab bar's Layer 0 ceiling reads `PUBLISHING_SUITE` from the nearest
+// FeatureFlagProvider, and these renders wrap only `QueryClientProvider`
+// (see the comment on `renderWithClient`) — without this the real hook throws.
+// Keyed on the flag name rather than a blanket `() => true`: this tree reads
+// other flags too, and switching all of them on would exercise branches this
+// file does not describe.
+vi.mock("@saas/shared/components/FeatureFlagProvider", () => ({
+	useFeatureFlag: (key: string) => key === "PUBLISHING_SUITE",
+}));
+
 vi.mock("@saas/shared/components/PageBreadcrumbs", () => ({
 	PageBreadcrumbs: () => <nav data-testid="breadcrumbs-stub" />,
 }));

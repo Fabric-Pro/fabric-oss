@@ -4,17 +4,23 @@
  * — Publishing Suite Phase 1A, Plan 3, Task 4b, spec §7/GAP-3).
  *
  * The page MUST:
- *   - return `notFound()` when the client UI-rollout flag is off, BEFORE
- *     touching session/org/project data
  *   - redirect to `/auth/login` when there is no session
  *   - return `notFound()` when the active organization can't be resolved
  *   - return `notFound()` when `isFeatureEnabled("PUBLISHING_SUITE",
- *     organization.id)` is false — resolved AFTER the organization, but
- *     still before any project access
+ *     organization.id)` is false — resolved AFTER the organization, because
+ *     it needs the org id, but still before any project access
  *   - return `notFound()` when the project fetch is rejected (unauthorized /
  *     no project access)
  *   - render `PublishingSuiteList` with `canEdit = project.canPublish` on
  *     the happy path
+ *
+ * That per-organization gate is the ONLY availability gate on this route. A
+ * build-time `NEXT_PUBLIC_*` guard used to run above all of it; it was
+ * removed when the flag became org-scoped, because a build-time value
+ * carries one answer for every organization and would have let a
+ * deployment-wide switch refuse an enrolled one. The first test below pins
+ * BOTH directions of the surviving gate — off refuses, on renders — so a
+ * re-added second gate fails the suite just as loudly as a deleted first one.
  *
  * F2 (must-have, route-level scope only): this route adds NO gating beyond
  * whatever `projects.get` (`getProjectProcedure`) resolves — it never passes
@@ -99,15 +105,10 @@ const ORG_SLUG = "acme";
 
 beforeEach(() => {
 	vi.clearAllMocks();
-	// Default the client UI-rollout flag ON so the existing tests exercise the
-	// server-flag / session / org / project logic. C-Med1 adds a dedicated test
-	// for the server-on / client-off ("backend live, UI hidden") state below.
-	process.env.NEXT_PUBLIC_FABRIC_FEATURE_PUBLISHING_SUITE = "true";
 });
 
 afterEach(() => {
 	vi.resetModules();
-	delete process.env.NEXT_PUBLIC_FABRIC_FEATURE_PUBLISHING_SUITE;
 });
 
 async function callPage() {
@@ -124,21 +125,33 @@ async function callPage() {
 }
 
 describe("Organization Publishing Suite page — route guard", () => {
-	it("returns notFound() when the client UI flag is off, before touching session/org/project", async () => {
-		// C-Med1: the deep-link route must honor the SAME client UI-rollout flag
-		// that gates the tab + onboarding, so a guessed /publishing URL can't
-		// render the full list while the UI is intentionally hidden. This is
-		// the ONLY gate that runs before session/org/project access — it needs
-		// no data, unlike the per-organization server gate below.
-		process.env.NEXT_PUBLIC_FABRIC_FEATURE_PUBLISHING_SUITE = "false";
+	it("the per-organization gate is the only availability gate", async () => {
+		// The build-time NEXT_PUBLIC_* guard is gone. Nothing outside
+		// `isFeatureEnabled` can keep the route open, and nothing outside it
+		// can close the route for an organization that IS enrolled — so this
+		// asserts both directions, not just the refusal. The refusal half
+		// fails if the gate is ever deleted; the render half fails if a
+		// second, non-org-scoped gate is ever re-added above it (that is
+		// exactly what the deleted `NEXT_PUBLIC_*` read was, and nothing in
+		// this suite stubs an env var any more).
+		mockGetSession.mockResolvedValue({ user: { id: "user-1" } });
+		mockGetActiveOrganization.mockResolvedValue({ id: ORG_ID });
+		mockProjectsGet.mockResolvedValue({ project: { canPublish: true } });
 
+		mockIsFeatureEnabled.mockResolvedValue(false);
 		await expect(callPage()).rejects.toThrow(/__NOT_FOUND__/);
-
 		expect(mockNotFound).toHaveBeenCalledTimes(1);
-		expect(mockGetSession).not.toHaveBeenCalled();
-		expect(mockGetActiveOrganization).not.toHaveBeenCalled();
-		expect(mockIsFeatureEnabled).not.toHaveBeenCalled();
 		expect(mockProjectsGet).not.toHaveBeenCalled();
+
+		mockIsFeatureEnabled.mockResolvedValue(true);
+		await expect(callPage()).resolves.toBeDefined();
+		// Consulted — not merely un-consulted-and-open: a route that stopped
+		// calling the gate entirely would pass the render half on its own.
+		expect(mockIsFeatureEnabled).toHaveBeenLastCalledWith(
+			"PUBLISHING_SUITE",
+			ORG_ID,
+		);
+		expect(mockNotFound).toHaveBeenCalledTimes(1);
 	});
 
 	it("returns notFound() when isFeatureEnabled is false for the resolved organization — after the organization is resolved, but still before project access", async () => {
