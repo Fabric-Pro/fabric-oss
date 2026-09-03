@@ -7,6 +7,7 @@
  * `list-personal-meetings.test.ts` (`procedure["~orpc"].handler(...)` for
  * direct unit invocation, bypassing the oRPC middleware chain).
  */
+import { ORG_SCOPABLE_FLAG_KEYS } from "@repo/utils/feature-flag-registry";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
@@ -82,6 +83,39 @@ describe("admin.featureFlags.list", () => {
 			label: "Personal meetings in Meeting Digest",
 			envVar: "FABRIC_FEATURE_PERSONAL_MEETINGS",
 		});
+	});
+
+	// The registry declares `orgScopable` as an optional `true`, so most
+	// entries do not carry the property at all. The wire answer must be a
+	// boolean on EVERY flag — a client deciding whether to offer a
+	// per-organization control should not have to distinguish `false` from
+	// absent.
+	it("answers orgScopable as a boolean for a flag that is not scopable", async () => {
+		mocks.getAllFlagsDetailed.mockResolvedValue([
+			{ key: "PERSONAL_MEETINGS", enabled: true, source: "override" },
+		]);
+
+		const result = (await callHandler(listFeatureFlagsProcedure, {})) as {
+			flags: Array<Record<string, unknown>>;
+		};
+
+		expect(result.flags[0].orgScopable).toBe(false);
+	});
+
+	it("answers orgScopable as true for a flag the resolver honours per organization", async () => {
+		mocks.getAllFlagsDetailed.mockResolvedValue([
+			{
+				key: ORG_SCOPABLE_FLAG_KEYS[0],
+				enabled: false,
+				source: "default",
+			},
+		]);
+
+		const result = (await callHandler(listFeatureFlagsProcedure, {})) as {
+			flags: Array<Record<string, unknown>>;
+		};
+
+		expect(result.flags[0].orgScopable).toBe(true);
 	});
 });
 

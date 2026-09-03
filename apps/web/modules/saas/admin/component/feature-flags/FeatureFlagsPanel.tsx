@@ -19,6 +19,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@ui/components/button";
 import { Switch } from "@ui/components/switch";
 import { toast } from "sonner";
+import { FlagEnrolmentDisclosure } from "./FlagEnrolmentDisclosure";
 
 const SOURCE_LABEL: Record<string, string> = {
 	override: "Set here",
@@ -183,6 +184,13 @@ export function FeatureFlagsPanel() {
 							<p className="text-highlight text-xs">
 								{flag.note}
 							</p>
+						)}
+						{/* Only for a flag the resolver actually honours per
+						    organization. Rendering it for the others would
+						    imply an override level that does not exist for
+						    them — the same reason the registry marks them. */}
+						{flag.orgScopable && (
+							<FlagEnrolmentDisclosure flagKey={flag.key} />
 						)}
 					</div>
 					<div className="flex items-center gap-3">

@@ -21,6 +21,7 @@ const mocks = vi.hoisted(() => ({
 	setOrgFlagOverride: vi.fn(),
 	clearOrgFlagOverride: vi.fn(),
 	getOrganizationById: vi.fn(),
+	getFlagEnrolment: vi.fn(),
 	recordAuditDurable: vi.fn(),
 	markCuratedAuditWritten: vi.fn(),
 }));
@@ -34,6 +35,7 @@ vi.mock("@repo/database", async (importOriginal) => {
 		setOrgFlagOverride: mocks.setOrgFlagOverride,
 		clearOrgFlagOverride: mocks.clearOrgFlagOverride,
 		getOrganizationById: mocks.getOrganizationById,
+		getFlagEnrolment: mocks.getFlagEnrolment,
 		recordAuditDurable: mocks.recordAuditDurable,
 	};
 });
@@ -66,6 +68,7 @@ vi.mock("@repo/payments", () => ({
 
 import {
 	clearOrgFeatureFlagProcedure,
+	listFlagEnrolmentProcedure,
 	listOrgFeatureFlagsProcedure,
 	setOrgFeatureFlagProcedure,
 } from "../org-feature-flags";
@@ -444,5 +447,93 @@ describe("admin.featureFlags.clearForOrg", () => {
 			}),
 		);
 		expect(mocks.markCuratedAuditWritten).toHaveBeenCalledTimes(1);
+	});
+});
+
+describe("admin.featureFlags.organizations", () => {
+	beforeEach(() => {
+		mocks.getFlagEnrolment.mockReset();
+	});
+
+	it("returns both counts and the rows, echoing the key back", async () => {
+		mocks.getFlagEnrolment.mockResolvedValue({
+			enabledCount: 2,
+			excludedCount: 1,
+			organizations: [
+				{
+					organizationId: "org-a",
+					name: "Alpha",
+					enabled: true,
+					updatedAt: new Date("2026-09-01T00:00:00Z"),
+				},
+			],
+			truncated: false,
+		});
+
+		const result = (await callHandler(listFlagEnrolmentProcedure, {
+			key: SCOPABLE_KEY,
+		})) as Record<string, unknown>;
+
+		expect(result).toMatchObject({
+			key: SCOPABLE_KEY,
+			enabledCount: 2,
+			excludedCount: 1,
+			truncated: false,
+		});
+		expect(result.organizations).toHaveLength(1);
+	});
+
+	// The bound is the procedure's decision, not the query's default — the
+	// query takes it as an argument precisely so this stays visible here.
+	it("asks the query for a bounded list", async () => {
+		mocks.getFlagEnrolment.mockResolvedValue({
+			enabledCount: 0,
+			excludedCount: 0,
+			organizations: [],
+			truncated: false,
+		});
+
+		await callHandler(listFlagEnrolmentProcedure, { key: SCOPABLE_KEY });
+
+		const [, limit] = mocks.getFlagEnrolment.mock.calls[0];
+		expect(typeof limit).toBe("number");
+		expect(limit).toBeGreaterThan(0);
+	});
+
+	it("refuses a key the resolver ignores per organization", async () => {
+		await expect(
+			callHandler(listFlagEnrolmentProcedure, {
+				key: NON_SCOPABLE_KEY,
+			}),
+		).rejects.toThrow(/not organization-scopable/i);
+
+		// The refusal must come BEFORE the read, or a non-scopable flag's stale
+		// rows would be fetched and only then discarded.
+		expect(mocks.getFlagEnrolment).not.toHaveBeenCalled();
+	});
+
+	it("refuses a key that is not in the registry", async () => {
+		await expect(
+			callHandler(listFlagEnrolmentProcedure, { key: "NO_SUCH_FLAG" }),
+		).rejects.toThrow(/unknown feature flag/i);
+
+		expect(mocks.getFlagEnrolment).not.toHaveBeenCalled();
+	});
+
+	// Read-only: the duplicate-audit-row contract only applies to mutations,
+	// and claiming a curated row here would suppress a generic event that
+	// should never have been generated in the first place.
+	it("writes no audit row", async () => {
+		mocks.getFlagEnrolment.mockResolvedValue({
+			enabledCount: 0,
+			excludedCount: 0,
+			organizations: [],
+			truncated: false,
+		});
+
+		await callHandler(listFlagEnrolmentProcedure, { key: SCOPABLE_KEY });
+
+		expect(mocks.recordAuditDurable).not.toHaveBeenCalled();
+		expect(mocks.markCuratedAuditWritten).not.toHaveBeenCalled();
 	});
 });

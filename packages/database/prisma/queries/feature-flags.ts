@@ -622,3 +622,99 @@ export async function clearOrgFlagOverride(input: {
 	});
 	orgCache.delete(input.organizationId);
 }
+
+/** One organization that carries an explicit override row for a flag. */
+export interface FlagEnrolmentRow {
+	organizationId: string;
+	name: string;
+	/** `true` = enrolled, `false` = explicitly excluded. Never "inherit". */
+	enabled: boolean;
+	updatedAt: Date;
+}
+
+export interface FlagEnrolment {
+	enabledCount: number;
+	excludedCount: number;
+	/** Bounded by the caller's `limit`; see `truncated`. */
+	organizations: FlagEnrolmentRow[];
+	truncated: boolean;
+}
+
+/**
+ * Who has an explicit row for `key`, and how many — the aggregate the admin
+ * console needs to answer "which organizations is this flag on for".
+ *
+ * The per-organization panel cannot answer that: it is reached from one
+ * organization's page and only ever reads that organization's row. Before this
+ * existed the allowlist was real but unreadable as a whole — an operator could
+ * set enrolment one organization at a time and had nowhere to see the result.
+ *
+ * Deliberately NOT built on {@link getEnabledOrganizationIds} and
+ * {@link getDisabledOrganizationIds}. Those return bare ids for the daily
+ * sweep, which needs nothing else; a console needs names, so composing them
+ * would mean two queries that still could not render a row, plus a third to
+ * resolve the names.
+ *
+ * **Counts are exact; the list is bounded.** They come from a `groupBy` over
+ * the whole key rather than from `organizations.length`, so a deployment with
+ * thousands of enrolled organizations reports the true number while rendering
+ * at most `limit` rows. Truncation is detected by asking for one row more than
+ * the limit rather than by comparing the list against the counts — the two
+ * statements are not one snapshot, and a write landing between them would
+ * otherwise show as a phantom "and 1 more".
+ *
+ * An organization with NO row appears in neither list and in neither count.
+ * That is the third state — inherit — and it is the majority case; the caller
+ * must not present "not enrolled" and "excluded" as the same thing.
+ *
+ * Uncached, like its two sibling aggregates: an operator who has just changed
+ * a row on the organization page must see it here on the next load, not up to
+ * a TTL later. No try/catch either — a read failure must reach the caller
+ * rather than degrade to an empty allowlist, which is a screen an operator
+ * could act on.
+ */
+export async function getFlagEnrolment(
+	key: FeatureFlagKey,
+	limit: number,
+): Promise<FlagEnrolment> {
+	const [counts, rows] = await Promise.all([
+		db.organizationFeatureFlagOverride.groupBy({
+			by: ["enabled"],
+			where: { key },
+			_count: { _all: true },
+		}),
+		db.organizationFeatureFlagOverride.findMany({
+			where: { key },
+			// Enrolled first, then alphabetical: the enrolled set is what an
+			// operator came to read, and it must not be pushed past the limit
+			// by a longer exclusion list.
+			orderBy: [{ enabled: "desc" }, { organization: { name: "asc" } }],
+			take: limit + 1,
+			select: {
+				organizationId: true,
+				enabled: true,
+				updatedAt: true,
+				// `slug` is deliberately absent: it is nullable on Organization and
+				// nothing here reads it — the console links by id.
+				organization: { select: { name: true } },
+			},
+		}),
+	]);
+
+	// A state with no rows produces no grouping row at all — `find` returning
+	// `undefined` is the normal case here, not an error case.
+	const countFor = (enabled: boolean) =>
+		counts.find((group) => group.enabled === enabled)?._count._all ?? 0;
+
+	return {
+		enabledCount: countFor(true),
+		excludedCount: countFor(false),
+		organizations: rows.slice(0, limit).map((row) => ({
+			organizationId: row.organizationId,
+			name: row.organization.name,
+			enabled: row.enabled,
+			updatedAt: row.updatedAt,
+		})),
+		truncated: rows.length > limit,
+	};
+}

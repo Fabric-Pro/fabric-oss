@@ -22,6 +22,8 @@ const flagRow = (over = {}) => ({
 	envVar: "FABRIC_FEATURE_PERSONAL_MEETINGS",
 	default: false,
 	note: "Privacy-sensitive (#1899).",
+	// The list procedure normalizes this to a boolean for every flag.
+	orgScopable: false,
 	...over,
 });
 
@@ -52,6 +54,16 @@ const { toastErrorMock, LIST_PATH } = vi.hoisted(() => ({
 }));
 
 vi.mock("sonner", () => ({ toast: { error: toastErrorMock } }));
+
+// Stubbed: the disclosure fetches its own enrolment data, and this file's orpc
+// mock deliberately models only the three instance-wide procedures. What the
+// panel owns is WHETHER the child is mounted, which the stub answers exactly;
+// what the child renders has its own test file.
+vi.mock("../FlagEnrolmentDisclosure", () => ({
+	FlagEnrolmentDisclosure: ({ flagKey }: { flagKey: string }) => (
+		<span data-testid="flag-enrolment">{flagKey}</span>
+	),
+}));
 
 // Mirrors @orpc/tanstack-query's REAL key semantics. The three builders are
 // NOT interchangeable:
@@ -117,6 +129,28 @@ describe("FeatureFlagsPanel", () => {
 		expect(
 			screen.getByText(/FABRIC_FEATURE_PERSONAL_MEETINGS/),
 		).toBeInTheDocument();
+	});
+
+	// The disclosure below is what makes the allowlist readable, and it is
+	// offered ONLY for a flag the resolver honours per organization —
+	// rendering it elsewhere would imply an override level that does not
+	// exist there. Both directions, because the interesting failure is it
+	// appearing where it should not.
+	it("offers no per-organization enrolment for a flag that is not org-scopable", async () => {
+		renderPanel();
+		await screen.findByText("Personal meetings in Meeting Digest");
+
+		expect(screen.queryByTestId("flag-enrolment")).toBeNull();
+	});
+
+	it("offers per-organization enrolment for an org-scopable flag", async () => {
+		listQueryFn = async () => ({
+			flags: [flagRow({ orgScopable: true })],
+		});
+		renderPanel();
+		await screen.findByText("Personal meetings in Meeting Digest");
+
+		expect(await screen.findByTestId("flag-enrolment")).toBeInTheDocument();
 	});
 
 	it("shows the risk note when the registry declares one", async () => {

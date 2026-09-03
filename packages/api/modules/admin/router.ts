@@ -13,6 +13,7 @@ import { listOrganizations } from "./procedures/list-organizations";
 import { listUsers } from "./procedures/list-users";
 import {
 	clearOrgFeatureFlagProcedure,
+	listFlagEnrolmentProcedure,
 	listOrgFeatureFlagsProcedure,
 	setOrgFeatureFlagProcedure,
 } from "./procedures/org-feature-flags";
@@ -42,5 +43,8 @@ export const adminRouter = {
 		listForOrg: listOrgFeatureFlagsProcedure,
 		setForOrg: setOrgFeatureFlagProcedure,
 		clearForOrg: clearOrgFeatureFlagProcedure,
+		// The other direction of the same question: `listForOrg` reads one
+		// organization's row, this reads every organization that has one.
+		organizations: listFlagEnrolmentProcedure,
 	},
 };

@@ -1,6 +1,7 @@
 import { ORPCError } from "@orpc/server";
 import {
 	clearOrgFlagOverride,
+	getFlagEnrolment,
 	getOrganizationById,
 	getOrgFlagStateUncached,
 	getOrgScopableFlagsDetailed,
@@ -297,4 +298,75 @@ export const clearOrgFeatureFlagProcedure = adminProcedure
 			source: after.source,
 			orgOverride: after.orgOverride ?? null,
 		};
+	});
+
+/**
+ * How many organizations one flag's enrolment list renders.
+ *
+ * A bound rather than a page: the control this feeds is a disclosure under one
+ * flag row, not a browsable table, and an operator who has enrolled more
+ * organizations than this is past the point where reading them as a list helps.
+ * The COUNTS stay exact past the bound, so the answer to "how many" is never
+ * the truncated one — see `getFlagEnrolment`.
+ */
+const ENROLMENT_LIST_LIMIT = 100;
+
+/**
+ * Which organizations carry an explicit override for one flag.
+ *
+ * The read the console had no way to perform. `listForOrg` answers "what does
+ * THIS organization resolve", which is the wrong question when the operator is
+ * holding a rollout: enrolment was set one organization at a time and could
+ * only be read back the same way, so the allowlist existed without ever being
+ * visible as a list.
+ *
+ * Read-only, so no audit row and no `markCuratedAuditWritten` — the activity
+ * middleware appends generic events for mutations, and this is not one.
+ */
+export const listFlagEnrolmentProcedure = adminProcedure
+	// AUTHORIZATION IS `adminProcedure`, exactly as in the three procedures
+	// above; this decorator is INERT for the same reason and is present for
+	// the same permission-coverage requirement. It reads across EVERY tenant
+	// by design — that is the whole point of an instance-wide allowlist view —
+	// which is precisely why it must never move to a tenant-scoped guard.
+	.use(requirePermission(Permissions.ORG_SETTINGS_READ))
+	.route({
+		method: "GET",
+		path: "/admin/feature-flags/{key}/organizations",
+		tags: ["Admin"],
+		summary: "List the organizations with an override for a feature flag",
+		description:
+			"List the organizations explicitly enrolled in or excluded from one organization-scopable feature flag, with exact counts for each. Organizations with no override row appear in neither list and inherit the deployment-wide value.",
+	})
+	.input(z.object({ key: z.string() }))
+	.output(
+		z.object({
+			key: z.string(),
+			enabledCount: z.number(),
+			excludedCount: z.number(),
+			organizations: z.array(
+				z.object({
+					organizationId: z.string(),
+					name: z.string(),
+					enabled: z.boolean(),
+					updatedAt: z.date(),
+				}),
+			),
+			truncated: z.boolean(),
+		}),
+	)
+	.handler(async ({ input }) => {
+		// Rejects an unknown key AND a registered one the resolver ignores per
+		// organization. The second matters as much here as on the write path:
+		// a non-orgScopable flag can still have stale rows in the table, and
+		// reporting them as an allowlist would describe enrolment that
+		// `resolveFlag` does not honour.
+		assertOrgScopableKey(input.key);
+
+		const enrolment = await getFlagEnrolment(
+			input.key,
+			ENROLMENT_LIST_LIMIT,
+		);
+
+		return { key: input.key, ...enrolment };
 	});

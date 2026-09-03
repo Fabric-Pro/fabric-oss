@@ -8,6 +8,7 @@ import {
 import {
 	FEATURE_FLAG_REGISTRY,
 	isFeatureFlagKey,
+	isOrgScopableFlag,
 } from "@repo/utils/feature-flag-registry";
 import { z } from "zod";
 import {
@@ -52,6 +53,14 @@ export const listFeatureFlagsProcedure = adminProcedure
 			flags: resolved.map((flag) => ({
 				...FEATURE_FLAG_REGISTRY[flag.key],
 				...flag,
+				// Normalized to a real boolean, and stated LAST so it wins
+				// over the spread above. In the registry `orgScopable` is an
+				// optional `true`, so only the one entry that declares it
+				// carries the property at all — across the union of every
+				// entry the field does not exist, and a client asking "is
+				// this flag org-scopable" would have to know that shape to
+				// ask. The wire answer should be a boolean for every flag.
+				orgScopable: isOrgScopableFlag(flag.key),
 			})),
 		};
 	});
