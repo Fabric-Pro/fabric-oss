@@ -206,6 +206,32 @@ describe("extractRelevantExcerpts", () => {
 		}
 	});
 
+	it("does not hang on a message body with a huge unclosed HTML tag run (js/polynomial-redos)", async () => {
+		generateObjectMock.mockRejectedValue(new Error("provider 500"));
+		const unclosedTag = `<${"a".repeat(50_000)}`;
+		const input = [
+			{
+				messageId: "m0",
+				from: "user0",
+				createdAt: new Date().toISOString(),
+				webLink: "https://teams/m0",
+				content: unclosedTag,
+			},
+			...raw(4),
+		];
+
+		const res = await extractRelevantExcerpts({
+			rawMessages: input,
+			query: "anything",
+			userId: "u",
+			maxExcerpts: 5,
+			maxCharsPerExcerpt: 100,
+		});
+
+		expect(res.fallback).toBe(true);
+		expect(res.excerpts.length).toBeGreaterThan(0);
+	});
+
 	it("falls back when the LLM returns malformed output (Zod rejects)", async () => {
 		generateObjectMock.mockRejectedValue(
 			new Error("Expected object, got undefined at .excerpts"),

@@ -50,4 +50,15 @@ describe("repositoryUrlCandidates", () => {
 		expect(repositoryUrlCandidates(undefined)).toEqual([]);
 		expect(repositoryUrlCandidates({})).toEqual([]);
 	});
+
+	it("strips multiple trailing slashes, matching the old `/+$/` regex (js/polynomial-redos: replaced with a loop)", () => {
+		expect(
+			repositoryUrlCandidates({
+				html_url: "https://github.com/acme/widgets///",
+			}),
+		).toEqual([
+			"https://github.com/acme/widgets",
+			"https://github.com/acme/widgets.git",
+		]);
+	});
 });

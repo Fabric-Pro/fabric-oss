@@ -146,3 +146,23 @@ describe("AC-marker criteria", () => {
 		).toHaveLength(3);
 	});
 });
+
+describe("bounded list-marker match (js/polynomial-redos)", () => {
+	it("still parses a bulleted criterion comfortably within the bound", () => {
+		const text = `- ${"x".repeat(1900)}`;
+		const parsed = parseAcceptanceCriteria(text);
+		expect(parsed).toHaveLength(1);
+		expect(parsed[0].text).toBe("x".repeat(1900));
+	});
+
+	it("returns a 5,000-char bulleted line in full — only the marker match is bounded, not the content", () => {
+		const longLine = `- ${"x".repeat(5000)}`;
+		const parsed = parseAcceptanceCriteria(longLine);
+		expect(parsed).toHaveLength(1);
+		// The bound applies only to detecting the `- ` marker itself; the
+		// criterion text is read from the full, unsliced line, so nothing is
+		// lost for a legitimately long criterion.
+		expect(parsed[0].text).toBe("x".repeat(5000));
+		expect(parsed[0].text.length).toBe(5000);
+	});
+});

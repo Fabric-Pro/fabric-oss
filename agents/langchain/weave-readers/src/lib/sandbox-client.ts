@@ -146,6 +146,15 @@ export function createSandboxClient(context: SandboxContext): SandboxClient {
 				throw new Error("Invalid characters in command arguments");
 			}
 
+			// Args are LLM tool-call input. Double quoting cannot carry them
+			// safely: a backslash escapes the escape and reopens the literal, and
+			// `$(…)` / backticks still substitute inside double quotes. Single
+			// quoting has no such escapes — the only sequence that ends the
+			// literal is the quote itself, closed and re-opened as '\'' — so no
+			// character in an arg can reach the shell as syntax.
+			// Guards js/incomplete-sanitization.
+			const quote = (arg: string) => `'${arg.replace(/'/g, "'\\''")}'`;
+
 			const response = await fetch(
 				`${baseUrl}/sandbox/${context.sessionId}/exec`,
 				{
@@ -155,7 +164,7 @@ export function createSandboxClient(context: SandboxContext): SandboxClient {
 						userId: context.userId,
 						org: context.organizationId,
 						command:
-							`${command} ${args.map((arg) => `"${arg.replace(/"/g, '\\"')}"`).join(" ")}`.trim(),
+							`${command} ${args.map(quote).join(" ")}`.trim(),
 						workDir: context.workDir,
 					}),
 				},

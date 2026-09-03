@@ -232,4 +232,22 @@ describe("stripLeadingDuplicateTitleHeading", () => {
 	it("returns empty string for an empty body without throwing", () => {
 		expect(stripLeadingDuplicateTitleHeading("", "My title")).toBe("");
 	});
+
+	describe("bounded heading-line match (js/polynomial-redos)", () => {
+		it("does not throw on a pathologically long first line", () => {
+			const longLine = `#${" ".repeat(10)}${"y".repeat(5000)}`;
+			const body = `${longLine}\nrest of body`;
+			expect(() =>
+				stripLeadingDuplicateTitleHeading(body, "unrelated title"),
+			).not.toThrow();
+		});
+
+		it("still matches and strips a heading comfortably within the bound", () => {
+			const heading = "x".repeat(1900); // well inside the 2000-char cap
+			const body = `# ${heading}\n\nrest`;
+			expect(stripLeadingDuplicateTitleHeading(body, heading)).toBe(
+				"rest",
+			);
+		});
+	});
 });

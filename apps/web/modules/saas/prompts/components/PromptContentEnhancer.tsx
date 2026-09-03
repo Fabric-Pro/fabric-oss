@@ -107,6 +107,23 @@ function getTemplateFormatGuide(format: PromptFormat): string {
 	return guides[format];
 }
 
+/**
+ * `displayContent` is rendered through dangerouslySetInnerHTML whenever the
+ * diff view is on, so everything stored in it has to be HTML-escaped already.
+ * The diff paths get that from `diffToHtml`, which escapes these same three
+ * characters before inserting its own `<ins>`/`<del>` tags; the plain paths
+ * (initial value, user edits, accept/reject) escape here, so the two kinds of
+ * value are interchangeable and a prompt body can never reach the DOM as markup.
+ *
+ * Guards js/xss-through-dom.
+ */
+function escapeForDisplay(text: string): string {
+	return text
+		.replace(/&/g, "&amp;")
+		.replace(/</g, "&lt;")
+		.replace(/>/g, "&gt;");
+}
+
 export function PromptContentEnhancer({
 	promptId,
 	promptName,
@@ -122,7 +139,9 @@ export function PromptContentEnhancer({
 }: Props) {
 	// State for editor content
 	const [currentContent, setCurrentContent] = useState(initialContent);
-	const [displayContent, setDisplayContent] = useState(initialContent);
+	const [displayContent, setDisplayContent] = useState(() =>
+		escapeForDisplay(initialContent),
+	);
 	const { isLoading: isAILoading } = useCopilotChat();
 
 	// Refs to store latest values for callbacks
@@ -265,11 +284,7 @@ export function PromptContentEnhancer({
 				setDisplayContent(diffHtml);
 			} else {
 				// No baseline - just show content (escaped for HTML display)
-				const escapedContent = newContent
-					.replace(/&/g, "&amp;")
-					.replace(/</g, "&lt;")
-					.replace(/>/g, "&gt;");
-				setDisplayContent(escapedContent);
+				setDisplayContent(escapeForDisplay(newContent));
 			}
 		}
 		// eslint-disable-next-line react-hooks/exhaustive-deps
@@ -283,7 +298,7 @@ export function PromptContentEnhancer({
 			return;
 		}
 		// Only sync when user is actually editing
-		setDisplayContent(currentContent);
+		setDisplayContent(escapeForDisplay(currentContent));
 		setAgentState({
 			...agentState,
 			streamingContent: currentContent,
@@ -296,7 +311,7 @@ export function PromptContentEnhancer({
 		// User is editing - reset diff state
 		showingDiffRef.current = false;
 		setCurrentContent(value);
-		setDisplayContent(value);
+		setDisplayContent(escapeForDisplay(value));
 	};
 
 	// Extract current template variables from content for preservation
@@ -362,7 +377,7 @@ export function PromptContentEnhancer({
 						const newContent =
 							agentStateRef.current?.streamingContent || "";
 						setCurrentContent(newContent);
-						setDisplayContent(newContent);
+						setDisplayContent(escapeForDisplay(newContent));
 						// Update baseline to new content
 						baselineRef.current = newContent;
 						if (agentStateRef.current) {
@@ -379,7 +394,7 @@ export function PromptContentEnhancer({
 						// Reset diff state - user rejected changes
 						showingDiffRef.current = false;
 						const oldContent = currentContentRef.current;
-						setDisplayContent(oldContent);
+						setDisplayContent(escapeForDisplay(oldContent));
 						if (agentStateRef.current) {
 							setAgentState({
 								...agentStateRef.current,
@@ -530,11 +545,13 @@ export function PromptContentEnhancer({
 				{/* Editor Area */}
 				<div className="flex-1 overflow-hidden bg-background p-6 flex flex-col">
 					{showDiffHighlighting ? (
-						// Show diff-highlighted content during AI streaming
-						// displayContent already contains <em> and <s> tags from diffPartialText
+						// Show diff-highlighted content during AI streaming.
+						// displayContent carries the <ins>/<del> tags diffToHtml
+						// produced; every other writer runs escapeForDisplay, so
+						// the string is always escaped text plus internal tags.
 						<div
 							className="prompt-diff-display font-mono text-sm whitespace-pre-wrap flex-1 min-h-0 w-full p-4 border rounded-md bg-muted/30 overflow-auto"
-							// biome-ignore lint/security/noDangerouslySetInnerHtml: Diff HTML is generated internally from diffPartialText, not user input
+							// biome-ignore lint/security/noDangerouslySetInnerHtml: every setDisplayContent path HTML-escapes its input (diffToHtml or escapeForDisplay), so this never receives raw content
 							dangerouslySetInnerHTML={{ __html: displayContent }}
 						/>
 					) : (

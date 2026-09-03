@@ -19,7 +19,9 @@ import {
 } from "../../../orpc/procedures";
 
 const inputSchema = z.object({
-	repositoryUrl: z.string().url(),
+	// Bounded span: js/polynomial-redos — parseGitHubRepoUrl regex-matches this
+	// string; no real GitHub repository URL is anywhere near this length.
+	repositoryUrl: z.string().url().max(2048),
 	filePath: z.string(),
 	ref: z.string().optional(), // branch/tag/commit
 });

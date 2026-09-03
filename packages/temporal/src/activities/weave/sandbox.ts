@@ -26,10 +26,21 @@ export interface SandboxInfo {
  *   https://github.com/owner/repo.git
  *   git@github.com:owner/repo.git
  */
+// A well-formed GitHub URL is far shorter than this; reject anything longer
+// up front so the unanchored [^/]+ groups below can't backtrack over an
+// attacker-supplied string with no '/' in it. Bounded span: js/polynomial-redos
+const MAX_REPO_URL_LENGTH = 2048;
+
 function parseRepoUrl(repoUrl: string): {
 	repoOwner: string;
 	repoName: string;
 } {
+	if (repoUrl.length > MAX_REPO_URL_LENGTH) {
+		throw new Error(
+			`Cannot parse repository URL: URL exceeds maximum length of ${MAX_REPO_URL_LENGTH} characters. Expected GitHub HTTPS or SSH format.`,
+		);
+	}
+
 	// Try HTTPS format: https://github.com/owner/repo(.git)
 	const httpsMatch = repoUrl.match(
 		/(?:https?:\/\/)?(?:www\.)?github\.com\/([^/]+)\/([^/.]+)/,

@@ -258,7 +258,8 @@ export async function POST(request: NextRequest) {
 		}
 
 		console.log(
-			`[MCP Tool API] Executing ${toolName} with params:`,
+			"[MCP Tool API] Executing %s with params:",
+			toolName,
 			params,
 		);
 
@@ -266,7 +267,8 @@ export async function POST(request: NextRequest) {
 
 		if (!tool) {
 			console.error(
-				`[MCP Tool API] Tool ${toolName} not found. Available:`,
+				"[MCP Tool API] Tool %s not found. Available:",
+				toolName,
 				availableTools,
 			);
 			return NextResponse.json(
@@ -316,13 +318,14 @@ export async function POST(request: NextRequest) {
 		}
 
 		console.log(
-			`[MCP Tool API] ${toolName} raw result:`,
+			"[MCP Tool API] %s raw result:",
+			toolName,
 			JSON.stringify(result, null, 2),
 		);
 
 		// Parse MCP content format
 		const parsed = parseMcpResult(result);
-		console.log(`[MCP Tool API] ${toolName} parsed result:`, parsed);
+		console.log("[MCP Tool API] %s parsed result:", toolName, parsed);
 
 		return NextResponse.json({ result: parsed, toolName, serverName });
 	} catch (error) {

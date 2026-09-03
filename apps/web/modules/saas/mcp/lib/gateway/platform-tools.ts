@@ -1502,7 +1502,7 @@ export async function executePlatformTool(
 	} catch (error) {
 		const message =
 			error instanceof Error ? error.message : "Internal error";
-		console.error(`[MCP Gateway] Platform tool ${toolName} error:`, error);
+		console.error("[MCP Gateway] Platform tool %s error:", toolName, error);
 		return errorResult(message);
 	}
 }
