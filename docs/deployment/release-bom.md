@@ -81,30 +81,28 @@ Every step is idempotent: assets upload with `--clobber`, and publishing an alre
 release is a no-op.
 
 ```bash
-gh workflow run release-bom.yml -f tag=v1.13.4
+gh workflow run release-bom.yml --ref v1.13.4 -f tag=v1.13.4
 gh run watch "$(gh run list --workflow=release-bom.yml --limit 1 --json databaseId -q '.[0].databaseId')"
 ```
 
-**No `--ref` is required.** `resolve` turns the tag into a commit SHA, and the jobs that consume
-source (`collect`, `publish`) check out that SHA explicitly — no job trusts the ref it was
-dispatched from — and none of them bind a cloud deployment environment. A dispatch defaults to running whichever copy of
-`release-bom.yml` lives on the repository's default branch, which is what makes the recovery
-case below simple.
+**Pass `--ref <tag>`, not just `-f tag=`.** GitHub itself does not need it: `resolve` turns the
+tag into a commit SHA, the jobs that consume source (`collect`, `publish`) check that SHA out
+explicitly, and no job binds a deployment environment. The downstream admission gate does need
+it. The manifest's build-provenance attestation records the source ref the workflow ran from,
+and a deployer that admits releases by that attestation requires `refs/tags/<tag>`. A dispatch
+from `master` produces an attestation whose source ref is `refs/heads/master`: the release
+publishes normally and is then refused at admission with
+`expected SourceRepositoryRef to be refs/tags/<tag>, got refs/heads/master`. Because a published
+release is immutable, that cannot be repaired afterwards — the only remedy is a new tag.
+(Observed on `v1.14.4`, 2026-09-03.)
 
 ### Recovering a draft whose tag contains a broken BOM workflow
 
-If `release-bom.yml` itself had a bug at the time a tag was pushed, merge the fix to `master`
-and dispatch again with no `--ref`:
-
-```bash
-gh workflow run release-bom.yml -f tag=v1.13.4
-```
-
-Because a dispatch runs the default branch's copy of the workflow while the source-consuming jobs
-still check out the *original tag's* commit, this picks up the fix without needing to move,
-delete or recreate the protected release tag — which must keep identifying the exact source and
-artifacts that were already built. Only do this once the underlying failure is actually fixed;
-re-running before that just reproduces the same failure.
+If `release-bom.yml` itself had a bug at the time a tag was pushed, do **not** dispatch the fixed
+default-branch copy against the old tag: `--ref <tag>` would run the broken copy again, and a
+dispatch from `master` would publish a release that fails admission (previous section). Merge
+the fix to `master` and cut a new release. The old draft stays a draft and is never published;
+the protected tag is never moved, deleted or recreated.
 
 If a build workflow itself failed (not the BOM workflow), **re-run that run** instead — from the
 Actions UI, or `gh run rerun <run-id>` / `gh run rerun <run-id> --failed`. The assembler reads
