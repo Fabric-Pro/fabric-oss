@@ -1,4 +1,4 @@
-<Project Sdk="Aspire.AppHost.Sdk/13.4.6">
+<Project Sdk="Aspire.AppHost.Sdk/13.5.3">
 
   <PropertyGroup>
     <!-- Emits packages.lock.json so the NuGet graph is scannable by the
@@ -14,19 +14,19 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Aspire.Hosting.PostgreSQL" Version="13.4.6" />
-    <PackageReference Include="Aspire.Hosting.Redis" Version="13.4.6" />
-    <PackageReference Include="Aspire.Hosting.JavaScript" Version="13.4.6" />
-    <!-- Preview channel: Browsers is still gated behind ASPIREBROWSERLOGS001 in 13.4.x -->
-    <PackageReference Include="Aspire.Hosting.Browsers" Version="13.4.6-preview.1.26319.6" />
+    <PackageReference Include="Aspire.Hosting.PostgreSQL" Version="13.5.3" />
+    <PackageReference Include="Aspire.Hosting.Redis" Version="13.5.3" />
+    <PackageReference Include="Aspire.Hosting.JavaScript" Version="13.5.3" />
+    <!-- Preview channel: Browsers is still gated behind ASPIREBROWSERLOGS001 in 13.5.x -->
+    <PackageReference Include="Aspire.Hosting.Browsers" Version="13.5.3-preview.1.26425.3" />
     <PackageReference Include="DotNetEnv" Version="3.1.1" />
 
     <!-- Azure hosting packages for cloud deployment -->
-    <PackageReference Include="Aspire.Hosting.Azure" Version="13.4.6" />
-    <PackageReference Include="Aspire.Hosting.Azure.AppContainers" Version="13.4.6" />
-    <PackageReference Include="Aspire.Hosting.Azure.Redis" Version="13.4.6" />
-    <PackageReference Include="Aspire.Hosting.Azure.PostgreSQL" Version="13.4.6" />
-    <PackageReference Include="Aspire.Hosting.Azure.KeyVault" Version="13.4.6" />
+    <PackageReference Include="Aspire.Hosting.Azure" Version="13.5.3" />
+    <PackageReference Include="Aspire.Hosting.Azure.AppContainers" Version="13.5.3" />
+    <PackageReference Include="Aspire.Hosting.Azure.Redis" Version="13.5.3" />
+    <PackageReference Include="Aspire.Hosting.Azure.PostgreSQL" Version="13.5.3" />
+    <PackageReference Include="Aspire.Hosting.Azure.KeyVault" Version="13.5.3" />
   </ItemGroup>
 
 </Project>

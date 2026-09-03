@@ -1186,7 +1186,7 @@ if (!isPublishMode)
 
     // Web App (deployed to Vercel in production)
     // Use HTTP protocol for OTLP to avoid gRPC credentials issues with self-signed certs
-#pragma warning disable ASPIREBROWSERLOGS001 // WithBrowserLogs is experimental in 13.3
+#pragma warning disable ASPIREBROWSERLOGS001 // WithBrowserLogs is experimental in 13.5
     var web = builder.AddExecutable("web", "pnpm", "../../apps/web", "run", "dev")
         .WithBrowserLogs()
         .WithHttpEndpoint(port: 3001, env: "PORT", isProxied: false)
