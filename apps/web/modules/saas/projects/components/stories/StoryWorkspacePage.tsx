@@ -9,6 +9,7 @@ import {
 	AI_SIDEBAR_CONTENT_SHIFT_CLASS,
 	useAiSidebarExpanded,
 } from "@saas/shared/components/copilot/ai-sidebar-layout";
+import { CopilotChatSessionProvider } from "@saas/shared/components/copilot/CopilotChatSessionProvider";
 import type { MessageAttachmentListItem } from "@saas/shared/components/copilot/MessageAttachmentList";
 import { useCopilotErrorHandler } from "@saas/shared/components/copilot/use-copilot-error-handler";
 import { useFocusMode } from "@saas/shared/contexts/FocusModeContext";
@@ -758,54 +759,61 @@ export function StoryWorkspacePage({
 						showDevConsole={false}
 						onError={onCopilotError}
 					>
-						{/* StoryWorkspace is ALWAYS rendered — both v1 and v2 —
+						{/* One `useCopilotChatInternal()` for the whole
+						  surface. On 1.70 every call site of that hook (and
+						  of `useCopilotChat`) opens its own agent/connect,
+						  so the read-only consumers below share this one
+						  instead of each connecting — Fizzy #2389. */}
+						<CopilotChatSessionProvider>
+							{/* StoryWorkspace is ALWAYS rendered — both v1 and v2 —
 						  so the maturation stage dropdown, Enhance, Start work,
 						  and all surrounding chrome stay intact. When
 						  `maturationV2` is true the editor region is fronted by
 						  the three-tab control (Clean Spec tab IS this same
 						  TipTap editor); when false it renders the classic
 						  single editor unchanged. */}
-						<StoryWorkspace
-							story={story}
-							canEdit={canEdit}
-							canAddTags={canAddTags}
-							canManageAllTags={canManageAllTags}
-							maturationV2={showMaturationV2}
-							projectId={projectId}
-							projectName={project.name}
-							projectRepository={{
-								url: project.repositoryUrl,
-								owner: project.repositoryOwner,
-								name: project.repositoryName,
-								branch: project.defaultBranch,
-							}}
-							onClose={handleClose}
-							onStoryUpdated={() => refetchStory()}
-							titleSlot={titleSlotEl}
-							actionSlot={actionSlotEl}
-							saveSlot={saveSlotEl}
-							documentRefKind={documentRefKind}
-							initialAssistantConversationId={
-								initialAssistantConversationId
-							}
-							initialAssistantVisibility={
-								initialAssistantVisibility
-							}
-							initialAssistantVisibilityLockedAt={
-								initialAssistantVisibilityLockedAt
-							}
-							initialAssistantMessages={
-								initialAssistantMessages as ReadonlyArray<
-									Record<string, unknown>
-								>
-							}
-							initialPersistedMessageIds={
-								initialPersistedMessageIds
-							}
-							initialAttachmentsByMessageId={
-								initialAttachmentsByMessageId
-							}
-						/>
+							<StoryWorkspace
+								story={story}
+								canEdit={canEdit}
+								canAddTags={canAddTags}
+								canManageAllTags={canManageAllTags}
+								maturationV2={showMaturationV2}
+								projectId={projectId}
+								projectName={project.name}
+								projectRepository={{
+									url: project.repositoryUrl,
+									owner: project.repositoryOwner,
+									name: project.repositoryName,
+									branch: project.defaultBranch,
+								}}
+								onClose={handleClose}
+								onStoryUpdated={() => refetchStory()}
+								titleSlot={titleSlotEl}
+								actionSlot={actionSlotEl}
+								saveSlot={saveSlotEl}
+								documentRefKind={documentRefKind}
+								initialAssistantConversationId={
+									initialAssistantConversationId
+								}
+								initialAssistantVisibility={
+									initialAssistantVisibility
+								}
+								initialAssistantVisibilityLockedAt={
+									initialAssistantVisibilityLockedAt
+								}
+								initialAssistantMessages={
+									initialAssistantMessages as ReadonlyArray<
+										Record<string, unknown>
+									>
+								}
+								initialPersistedMessageIds={
+									initialPersistedMessageIds
+								}
+								initialAttachmentsByMessageId={
+									initialAttachmentsByMessageId
+								}
+							/>
+						</CopilotChatSessionProvider>
 					</CopilotKit>
 				</AgentErrorBoundary>
 			</div>

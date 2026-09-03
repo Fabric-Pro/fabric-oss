@@ -19,7 +19,17 @@
  * The button is stubbed via `vi.mock` to capture its props.
  */
 
-import { render, screen } from "@testing-library/react";
+import { render as rtlRender, screen } from "@testing-library/react";
+import { CopilotChatSessionProvider } from "../CopilotChatSessionProvider";
+
+// Every component under test reads its CopilotKit chat state from
+// `<CopilotChatSessionProvider>` (one `useCopilotChatInternal()` per surface —
+// see the provider's doc-comment and Fizzy #2389), so each render mounts the
+// real provider over this file's mocked `useCopilotChatInternal`.
+function render(ui: Parameters<typeof rtlRender>[0]) {
+	return rtlRender(ui, { wrapper: CopilotChatSessionProvider });
+}
+
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // ---------------------------------------------------------------------------
@@ -28,7 +38,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@copilotkit/react-core", () => ({
 	useCoAgent: vi.fn(),
-	useCopilotChat: vi.fn(),
+	useCopilotChatInternal: vi.fn(),
 }));
 
 vi.mock("@copilotkit/react-ui", () => ({
@@ -183,7 +193,7 @@ vi.mock(
 	}),
 );
 
-import { useCoAgent, useCopilotChat } from "@copilotkit/react-core";
+import { useCoAgent, useCopilotChatInternal } from "@copilotkit/react-core";
 import { CopilotAssistantMessage } from "../CopilotAssistantMessage";
 
 // ---------------------------------------------------------------------------
@@ -232,7 +242,7 @@ beforeEach(() => {
 	(useCoAgent as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
 		state: {},
 	});
-	(useCopilotChat as unknown as ReturnType<typeof vi.fn>).mockReset();
+	(useCopilotChatInternal as unknown as ReturnType<typeof vi.fn>).mockReset();
 });
 
 // ---------------------------------------------------------------------------
@@ -241,36 +251,36 @@ beforeEach(() => {
 
 describe("CopilotAssistantMessage -- Excalidraw auto-insert button render gate", () => {
 	it("renders the button when the envelope's resourceUri contains 'excalidraw'", () => {
-		(useCopilotChat as unknown as ReturnType<typeof vi.fn>).mockReturnValue(
-			{
-				visibleMessages: [
-					{
-						id: "u1",
-						role: "user",
-						content: "Draw a system diagram",
-					},
-					{
-						id: "r1",
-						type: "ResultMessage",
-						role: "tool",
-						result: envelopeJson({
-							resourceUri: "ui://excalidraw/scene-1",
-							configId: "cfg_excalidraw",
-							checkpointId: "cp_xyz",
-							toolArgs: {
-								elements: [{ type: "rect" }],
-								appState: {},
-							},
-						}),
-					},
-					{
-						id: "a1",
-						role: "assistant",
-						content: "Here's the diagram.",
-					},
-				],
-			},
-		);
+		(
+			useCopilotChatInternal as unknown as ReturnType<typeof vi.fn>
+		).mockReturnValue({
+			visibleMessages: [
+				{
+					id: "u1",
+					role: "user",
+					content: "Draw a system diagram",
+				},
+				{
+					id: "r1",
+					type: "ResultMessage",
+					role: "tool",
+					result: envelopeJson({
+						resourceUri: "ui://excalidraw/scene-1",
+						configId: "cfg_excalidraw",
+						checkpointId: "cp_xyz",
+						toolArgs: {
+							elements: [{ type: "rect" }],
+							appState: {},
+						},
+					}),
+				},
+				{
+					id: "a1",
+					role: "assistant",
+					content: "Here's the diagram.",
+				},
+			],
+		});
 
 		render(<CopilotAssistantMessage {...baseProps} />);
 
@@ -286,28 +296,28 @@ describe("CopilotAssistantMessage -- Excalidraw auto-insert button render gate",
 	});
 
 	it("does NOT render the button when the envelope's resourceUri is non-Excalidraw", () => {
-		(useCopilotChat as unknown as ReturnType<typeof vi.fn>).mockReturnValue(
-			{
-				visibleMessages: [
-					{ id: "u1", role: "user", content: "Search the docs" },
-					{
-						id: "r1",
-						type: "ResultMessage",
-						role: "tool",
-						result: envelopeJson({
-							resourceUri: "ui://mermaid/abc",
-							configId: "cfg_mermaid",
-							checkpointId: "cp_xyz",
-						}),
-					},
-					{
-						id: "a1",
-						role: "assistant",
-						content: "Here are the docs.",
-					},
-				],
-			},
-		);
+		(
+			useCopilotChatInternal as unknown as ReturnType<typeof vi.fn>
+		).mockReturnValue({
+			visibleMessages: [
+				{ id: "u1", role: "user", content: "Search the docs" },
+				{
+					id: "r1",
+					type: "ResultMessage",
+					role: "tool",
+					result: envelopeJson({
+						resourceUri: "ui://mermaid/abc",
+						configId: "cfg_mermaid",
+						checkpointId: "cp_xyz",
+					}),
+				},
+				{
+					id: "a1",
+					role: "assistant",
+					content: "Here are the docs.",
+				},
+			],
+		});
 
 		render(<CopilotAssistantMessage {...baseProps} />);
 
@@ -320,14 +330,14 @@ describe("CopilotAssistantMessage -- Excalidraw auto-insert button render gate",
 	});
 
 	it("does NOT render the button when there is no inline-MCP envelope", () => {
-		(useCopilotChat as unknown as ReturnType<typeof vi.fn>).mockReturnValue(
-			{
-				visibleMessages: [
-					{ id: "u1", role: "user", content: "Plain question" },
-					{ id: "a1", role: "assistant", content: "Plain answer." },
-				],
-			},
-		);
+		(
+			useCopilotChatInternal as unknown as ReturnType<typeof vi.fn>
+		).mockReturnValue({
+			visibleMessages: [
+				{ id: "u1", role: "user", content: "Plain question" },
+				{ id: "a1", role: "assistant", content: "Plain answer." },
+			],
+		});
 
 		render(<CopilotAssistantMessage {...baseProps} />);
 
@@ -354,25 +364,25 @@ describe("CopilotAssistantMessage -- Excalidraw auto-insert wiring", () => {
 			editor: samePageEditor,
 		};
 
-		(useCopilotChat as unknown as ReturnType<typeof vi.fn>).mockReturnValue(
-			{
-				visibleMessages: [
-					{ id: "u1", role: "user", content: "Draw it" },
-					{
-						id: "r1",
-						type: "ResultMessage",
-						role: "tool",
-						result: envelopeJson({
-							resourceUri: "ui://excalidraw/scene-1",
-							configId: "cfg_excalidraw",
-							checkpointId: "cp_xyz",
-							toolArgs: { elements: [{ type: "rect" }] },
-						}),
-					},
-					{ id: "a1", role: "assistant", content: "Here it is." },
-				],
-			},
-		);
+		(
+			useCopilotChatInternal as unknown as ReturnType<typeof vi.fn>
+		).mockReturnValue({
+			visibleMessages: [
+				{ id: "u1", role: "user", content: "Draw it" },
+				{
+					id: "r1",
+					type: "ResultMessage",
+					role: "tool",
+					result: envelopeJson({
+						resourceUri: "ui://excalidraw/scene-1",
+						configId: "cfg_excalidraw",
+						checkpointId: "cp_xyz",
+						toolArgs: { elements: [{ type: "rect" }] },
+					}),
+				},
+				{ id: "a1", role: "assistant", content: "Here it is." },
+			],
+		});
 
 		render(<CopilotAssistantMessage {...baseProps} />);
 
@@ -398,24 +408,24 @@ describe("CopilotAssistantMessage -- Excalidraw auto-insert wiring", () => {
 	});
 
 	it("wires the chat-scope adapter with route projectId + active organizationId", () => {
-		(useCopilotChat as unknown as ReturnType<typeof vi.fn>).mockReturnValue(
-			{
-				visibleMessages: [
-					{ id: "u1", role: "user", content: "Draw it" },
-					{
-						id: "r1",
-						type: "ResultMessage",
-						role: "tool",
-						result: envelopeJson({
-							resourceUri: "ui://excalidraw/scene-1",
-							configId: "cfg_excalidraw",
-							checkpointId: "cp_xyz",
-						}),
-					},
-					{ id: "a1", role: "assistant", content: "Here it is." },
-				],
-			},
-		);
+		(
+			useCopilotChatInternal as unknown as ReturnType<typeof vi.fn>
+		).mockReturnValue({
+			visibleMessages: [
+				{ id: "u1", role: "user", content: "Draw it" },
+				{
+					id: "r1",
+					type: "ResultMessage",
+					role: "tool",
+					result: envelopeJson({
+						resourceUri: "ui://excalidraw/scene-1",
+						configId: "cfg_excalidraw",
+						checkpointId: "cp_xyz",
+					}),
+				},
+				{ id: "a1", role: "assistant", content: "Here it is." },
+			],
+		});
 
 		render(<CopilotAssistantMessage {...baseProps} />);
 
@@ -436,28 +446,28 @@ describe("CopilotAssistantMessage -- Excalidraw auto-insert wiring", () => {
 			(_id: string) => "Sketch a sequence diagram for the login flow",
 		);
 
-		(useCopilotChat as unknown as ReturnType<typeof vi.fn>).mockReturnValue(
-			{
-				visibleMessages: [
-					{
-						id: "u1",
-						role: "user",
-						content: "Sketch a sequence diagram for the login flow",
-					},
-					{
-						id: "r1",
-						type: "ResultMessage",
-						role: "tool",
-						result: envelopeJson({
-							resourceUri: "ui://excalidraw/scene-1",
-							configId: "cfg_excalidraw",
-							checkpointId: "cp_xyz",
-						}),
-					},
-					{ id: "a1", role: "assistant", content: "Here it is." },
-				],
-			},
-		);
+		(
+			useCopilotChatInternal as unknown as ReturnType<typeof vi.fn>
+		).mockReturnValue({
+			visibleMessages: [
+				{
+					id: "u1",
+					role: "user",
+					content: "Sketch a sequence diagram for the login flow",
+				},
+				{
+					id: "r1",
+					type: "ResultMessage",
+					role: "tool",
+					result: envelopeJson({
+						resourceUri: "ui://excalidraw/scene-1",
+						configId: "cfg_excalidraw",
+						checkpointId: "cp_xyz",
+					}),
+				},
+				{ id: "a1", role: "assistant", content: "Here it is." },
+			],
+		});
 
 		render(<CopilotAssistantMessage {...baseProps} />);
 

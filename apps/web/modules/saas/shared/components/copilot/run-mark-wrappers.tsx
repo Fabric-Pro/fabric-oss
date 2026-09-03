@@ -1,11 +1,11 @@
 "use client";
 
-import {
-	type AssistantMessageProps,
-	RenderSuggestionsList as DefaultSuggestionsList,
-	type RenderSuggestionsListProps,
+import type {
+	AssistantMessageProps,
+	RenderSuggestionsListProps,
 } from "@copilotkit/react-ui";
 import type { ComponentType } from "react";
+import { useCopilotChatSession } from "./CopilotChatSessionProvider";
 
 /**
  * Suggestion chips and the assistant bubble's "Regenerate" button both start
@@ -19,24 +19,57 @@ import type { ComponentType } from "react";
  */
 
 /**
- * Wraps CopilotKit's default suggestions renderer so a chip click marks the
- * upcoming run as user-initiated before forwarding the click to CopilotKit's
- * own handler (which sends the suggestion's message).
+ * Renders the suggestion chips so a chip click marks the upcoming run as
+ * user-initiated before forwarding the click to CopilotKit's own handler
+ * (which sends the suggestion's message).
+ *
+ * The chips are rendered here rather than through `@copilotkit/react-ui`'s
+ * `RenderSuggestionsList`, because on 1.70 that list mounts one `Suggestion`
+ * button per chip and every one of them calls `useCopilotChatInternal()` for
+ * `isLoading`, which opens its own `agent/connect` (Fizzy #2389 — three
+ * static chips measured as three connects). This list reads `isLoading` once
+ * from the surface's `<CopilotChatSessionProvider>` instead. The markup and
+ * class names (`suggestions`, `suggestion`, `loading`) match react-ui's so
+ * the existing stylesheet applies unchanged.
  */
 export function makeSuggestionsListWithRunMark(
 	markUserRunInitiated: () => void,
 ): ComponentType<RenderSuggestionsListProps> {
-	return function SuggestionsListWithRunMark(
-		props: RenderSuggestionsListProps,
-	) {
+	return function SuggestionsListWithRunMark({
+		suggestions,
+		onSuggestionClick,
+		isLoading: suggestionsLoading,
+	}: RenderSuggestionsListProps) {
+		const { isLoading: chatLoading } = useCopilotChatSession();
 		return (
-			<DefaultSuggestionsList
-				{...props}
-				onSuggestionClick={(message) => {
-					markUserRunInitiated();
-					props.onSuggestionClick(message);
-				}}
-			/>
+			<div className="suggestions">
+				{suggestions.map((suggestion, index) => {
+					if (!suggestion.title) {
+						return null;
+					}
+					const partial =
+						suggestion.isLoading ??
+						suggestion.partial ??
+						suggestionsLoading;
+					return (
+						<button
+							key={index}
+							type="button"
+							disabled={partial || chatLoading}
+							aria-busy={partial || undefined}
+							className={`suggestion ${suggestion.className ?? ""} ${partial ? "loading" : ""}`}
+							data-test-id="suggestion"
+							onClick={(event) => {
+								event.preventDefault();
+								markUserRunInitiated();
+								onSuggestionClick(suggestion.message);
+							}}
+						>
+							<span>{suggestion.title}</span>
+						</button>
+					);
+				})}
+			</div>
 		);
 	};
 }

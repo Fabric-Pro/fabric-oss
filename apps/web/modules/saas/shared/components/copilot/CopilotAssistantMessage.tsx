@@ -1,6 +1,6 @@
 "use client";
 
-import { useCoAgent, useCopilotChat } from "@copilotkit/react-core";
+import { useCoAgent } from "@copilotkit/react-core";
 import type { AssistantMessageProps } from "@copilotkit/react-ui";
 import { Markdown, useChatContext } from "@copilotkit/react-ui";
 import {
@@ -20,6 +20,7 @@ import { ChatMessageInsertDiagramButton } from "../../../projects/components/exc
 import { deriveDiagramTitle } from "../../../projects/components/excalidraw-auto-insert/deriveDiagramTitle";
 import { useActiveTipTapEditor } from "../../../projects/components/excalidraw-auto-insert/useActiveTipTapEditor";
 import { useChatScopedProjectFromCopilotChat } from "../../../projects/components/excalidraw-auto-insert/useChatScopedProject";
+import { useCopilotChatSession } from "./CopilotChatSessionProvider";
 import {
 	formatMessageTimestamp,
 	type TimestampSource,
@@ -313,11 +314,17 @@ export function makeCopilotAssistantMessage(
 		// AssistantMessage component, and the `messages` prop CopilotKit
 		// passes here contains the same filtered list, so we can't find
 		// the tool result via props. The full stream (including
-		// ResultMessages) lives in `useCopilotChat().visibleMessages`,
+		// ResultMessages) lives in `visibleMessages`,
 		// which is what we scan. Scope: only the LATEST tool result before
 		// this assistant message — so each canvas appears exactly once,
 		// next to the assistant turn that produced it.
-		const { visibleMessages } = useCopilotChat();
+		//
+		// Read from the surface-wide session rather than a local
+		// `useCopilotChat()`: this component renders once per assistant
+		// message, and on 1.70 each such call opened its own
+		// `agent/connect` (Fizzy #2389). `visibleMessages` is the same
+		// field carrying the same value.
+		const { visibleMessages } = useCopilotChatSession();
 
 		const inlineMcpEnvelope =
 			useMemo<FabricMcpRenderEnvelope | null>(() => {
@@ -396,7 +403,7 @@ export function makeCopilotAssistantMessage(
 				return null;
 			}
 			// Primary: count user messages in visibleMessages preceding this
-			// assistant message. Works when useCopilotChat returns populated
+			// assistant message. Works when the session returns populated
 			// visibleMessages.
 			const all = (visibleMessages || []) as unknown[];
 			if (all.length > 0) {
@@ -418,7 +425,7 @@ export function makeCopilotAssistantMessage(
 					}
 				}
 			}
-			// Fallback: useCopilotChat().visibleMessages returns [] inside
+			// Fallback: `visibleMessages` comes back [] inside
 			// CopilotAssistantMessage in some CopilotKit configurations (the
 			// hook subscribes to a different context than the surrounding
 			// RenderMessage tree). Derive turnIndex from agentState.messages

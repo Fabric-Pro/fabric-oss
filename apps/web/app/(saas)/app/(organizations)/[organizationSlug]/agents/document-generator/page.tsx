@@ -30,6 +30,7 @@ import {
 	AI_SIDEBAR_CONTENT_SHIFT_CLASS,
 	useAiSidebarExpanded,
 } from "@saas/shared/components/copilot/ai-sidebar-layout";
+import { CopilotChatSessionProvider } from "@saas/shared/components/copilot/CopilotChatSessionProvider";
 import { useCopilotErrorHandler } from "@saas/shared/components/copilot/use-copilot-error-handler";
 import { PageBreadcrumbs } from "@saas/shared/components/PageBreadcrumbs";
 import { useFullscreen } from "@saas/shared/contexts/FullscreenContext";
@@ -113,30 +114,34 @@ export default function DocumentGeneratorPage() {
 						agent="document_generator"
 						onError={onError}
 					>
-						<AiLoadingSync onLoadingChange={handleAiLoadingChange}>
-							<DocumentGeneratorEditor
-								agentId="document_generator"
-								title="AI Assistant"
-								initialMessage="Hi! I can help you write and edit documents. Try asking me to:\n\n• Write a story or document\n• Expand a specific section\n• Add more details\n• Refine the language"
-								suggestions={[
-									{
-										title: "Write a pirate story",
-										message:
-											"Please write a story about a pirate named Candy Beard.",
-									},
-									{
-										title: "Write a mermaid story",
-										message:
-											"Please write a story about a mermaid named Luna.",
-									},
-									{
-										title: "Add character",
-										message:
-											"Please add a character named Courage.",
-									},
-								]}
-							/>
-						</AiLoadingSync>
+						<CopilotChatSessionProvider>
+							<AiLoadingSync
+								onLoadingChange={handleAiLoadingChange}
+							>
+								<DocumentGeneratorEditor
+									agentId="document_generator"
+									title="AI Assistant"
+									initialMessage="Hi! I can help you write and edit documents. Try asking me to:\n\n• Write a story or document\n• Expand a specific section\n• Add more details\n• Refine the language"
+									suggestions={[
+										{
+											title: "Write a pirate story",
+											message:
+												"Please write a story about a pirate named Candy Beard.",
+										},
+										{
+											title: "Write a mermaid story",
+											message:
+												"Please write a story about a mermaid named Luna.",
+										},
+										{
+											title: "Add character",
+											message:
+												"Please add a character named Courage.",
+										},
+									]}
+								/>
+							</AiLoadingSync>
+						</CopilotChatSessionProvider>
 					</CopilotKit>
 				</AgentErrorBoundary>
 			</div>

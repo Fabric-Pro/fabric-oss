@@ -14,7 +14,17 @@
  * against a stub RenderMessage that prints each row that reaches it.
  */
 
-import { render, screen } from "@testing-library/react";
+import { CopilotChatSessionProvider } from "@saas/shared/components/copilot/CopilotChatSessionProvider";
+import { render as rtlRender, screen } from "@testing-library/react";
+
+// Every component under test reads its CopilotKit chat state from
+// `<CopilotChatSessionProvider>` (one `useCopilotChatInternal()` per surface —
+// see the provider's doc-comment and Fizzy #2389), so each render mounts the
+// real provider over this file's mocked `useCopilotChatInternal`.
+function render(ui: Parameters<typeof rtlRender>[0]) {
+	return rtlRender(ui, { wrapper: CopilotChatSessionProvider });
+}
+
 import { describe, expect, it, vi } from "vitest";
 
 const liveMessages: unknown[] = [];

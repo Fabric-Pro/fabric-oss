@@ -17,9 +17,11 @@
  *      `<HydratedMessagesProvider>` from the SSR-loaded conversation
  *      blob. Frozen at mount. Persistent across CopilotKit's internal
  *      agent swaps because it lives outside CopilotKit.
- *   2. **Live**   — `useCopilotChatInternal().messages`, the standard
- *      live store CopilotKit owns. New turns the user sends, plus any
- *      streaming assistant turn, flow through this path normally.
+ *   2. **Live**   — `useCopilotChatSession().messages`, the standard
+ *      live store CopilotKit owns, republished by the surface's single
+ *      `useCopilotChatInternal()` instance. New turns the user sends,
+ *      plus any streaming assistant turn, flow through this path
+ *      normally.
  *
  * Merged and rendered in document order: greeting → historical →
  * live. Live messages whose id is already in the historical set are
@@ -33,8 +35,9 @@
  *   const messages = [...initialMessages, ...visibleMessages];
  *
  * The default ignores the `messages` prop entirely and reads from the
- * internal hook. So this component reads from the same hook + our
- * historical context, then renders via the same `RenderMessage` /
+ * internal hook. So this component reads the same store (through the
+ * shared session provider) + our historical context, then renders via
+ * the same `RenderMessage` /
  * `AssistantMessage` / `UserMessage` pipeline the default uses — full
  * compatibility with our customized `<CopilotAssistantMessage>` and
  * `<CopilotUserMessage>` renderers.
@@ -50,8 +53,8 @@
  *     on screen.
  */
 
-import { useCopilotChatInternal } from "@copilotkit/react-core";
 import { type MessagesProps, useChatContext } from "@copilotkit/react-ui";
+import { useCopilotChatSession } from "@saas/shared/components/copilot/CopilotChatSessionProvider";
 import { useEffect, useMemo, useRef } from "react";
 import {
 	SystemMessage,
@@ -247,7 +250,7 @@ export const CustomMessages = ({
 	chatError,
 }: MessagesProps) => {
 	const { labels, icons } = useChatContext();
-	const { messages: liveMessages, interrupt } = useCopilotChatInternal();
+	const { messages: liveMessages, interrupt } = useCopilotChatSession();
 	const hydrated = useHydratedMessages();
 
 	const initialGreetings = useMemo(

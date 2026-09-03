@@ -3,14 +3,13 @@
 import {
 	useCoAgent,
 	useCopilotAction,
-	useCopilotChat,
-	useCopilotChatInternal,
 	useCopilotReadable,
 } from "@copilotkit/react-core";
 import { CopilotSidebar, useChatContext } from "@copilotkit/react-ui";
 import { MessageRole, TextMessage } from "@copilotkit/runtime-client-gql";
 import { AttachmentRegistryProvider } from "@saas/shared/components/copilot/AttachmentRegistry";
 import { CopilotAssistantMessage } from "@saas/shared/components/copilot/CopilotAssistantMessage";
+import { useCopilotChatSession } from "@saas/shared/components/copilot/CopilotChatSessionProvider";
 import { AI_REQUEST_TOO_LARGE_EVENT } from "@saas/shared/components/copilot/CopilotFetchErrorInterceptor";
 import { createCopilotSidebarInput } from "@saas/shared/components/copilot/CopilotSidebarInput";
 import { CopilotUserMessage } from "@saas/shared/components/copilot/CopilotUserMessage";
@@ -1746,8 +1745,16 @@ export function StoryWorkspace({
 	// (`handleRefreshCleanSpec`, the FeatureTransitionDialog enhance flow).
 	// See the hook's doc-comment for the transition-clear and
 	// reload-mid-run semantics.
-	const { isLoading: isAiLoading, appendMessage } = useCopilotChat();
-	const { agent } = useCopilotChatInternal();
+	//
+	// Both reads come from the surface-wide `<CopilotChatSessionProvider>`
+	// rather than a local `useCopilotChat()` / `useCopilotChatInternal()`
+	// pair: on 1.70 each of those call sites opens its own `agent/connect`
+	// (Fizzy #2389). Same fields, same values, one connect.
+	const {
+		isLoading: isAiLoading,
+		appendMessage,
+		agent,
+	} = useCopilotChatSession();
 	const { isUserGenerationActive, markUserRunInitiated, clearUserRunMark } =
 		useUserRunSignal(isAiLoading);
 
@@ -5234,8 +5241,9 @@ export function StoryWorkspace({
 	// CopilotKit 1.52 routes the live store through the internal hook)
 	// is the writer that surfaces in the sidebar's LIVE half. The
 	// historical half (`<HydratedMessagesProvider>`) is cleared
-	// implicitly when `activeAssistantConversationId` flips.
-	const { setMessages: setCopilotMessages } = useCopilotChatInternal();
+	// implicitly when `activeAssistantConversationId` flips. Read via the
+	// shared session so this call site doesn't open its own connect.
+	const { setMessages: setCopilotMessages } = useCopilotChatSession();
 
 	// Group E — "New conversation" affordance handler (FR-10).
 	// Mirrors `DocumentEditor.handleNewConversation` so both surfaces behave
@@ -5431,7 +5439,7 @@ export function StoryWorkspace({
 			    message via `appendTurnForDocument` (FR-2,
 			    AC-5/AC-6/AC-7). Side-effect-only component (renders
 			    `null`). Mounted inside <CopilotSidebar> so the
-			    `useCopilotChatInternal` hook resolves against the same
+			    `useCopilotChatSession()` read resolves against the same
 			    provider the sidebar consumes. Gated on the feature flag
 			    to mirror the sidebar header + history drawer mounts.
 			    `agentId` matches the `useCoAgent` config above

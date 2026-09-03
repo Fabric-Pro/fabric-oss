@@ -8,6 +8,7 @@
  */
 
 import { CopilotKit } from "@copilotkit/react-core";
+import { CopilotChatSessionProvider } from "@saas/shared/components/copilot/CopilotChatSessionProvider";
 import { useCopilotErrorHandler } from "@saas/shared/components/copilot/use-copilot-error-handler";
 import { orpcClient } from "@shared/lib/orpc-client";
 import { useQuery } from "@tanstack/react-query";
@@ -160,19 +161,21 @@ export default function OrganizationPromptEnhancerAgentPage() {
 					showDevConsole={false}
 					onError={onError}
 				>
-					<PromptContentEnhancer
-						promptId="try-agent"
-						promptName="Try Prompt Enhancer"
-						promptDescription="Enter a prompt below and use the AI assistant to enhance it"
-						format="MARKDOWN"
-						category="general"
-						tags={["enhancement", "ai"]}
-						initialContent=""
-						onSave={handleSave}
-						onCancel={handleCancel}
-						isLoading={false}
-						showTitle={true}
-					/>
+					<CopilotChatSessionProvider>
+						<PromptContentEnhancer
+							promptId="try-agent"
+							promptName="Try Prompt Enhancer"
+							promptDescription="Enter a prompt below and use the AI assistant to enhance it"
+							format="MARKDOWN"
+							category="general"
+							tags={["enhancement", "ai"]}
+							initialContent=""
+							onSave={handleSave}
+							onCancel={handleCancel}
+							isLoading={false}
+							showTitle={true}
+						/>
+					</CopilotChatSessionProvider>
 				</CopilotKit>
 			</div>
 		</div>

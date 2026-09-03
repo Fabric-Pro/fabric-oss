@@ -20,13 +20,23 @@
  * Mount scaffold adapted from `__tests__/copilot/story-workspace-priority-draft-sync.test.tsx`.
  */
 
+import { CopilotChatSessionProvider } from "@saas/shared/components/copilot/CopilotChatSessionProvider";
 import {
 	act,
 	fireEvent,
-	render,
+	render as rtlRender,
 	screen,
 	waitFor,
 } from "@testing-library/react";
+
+// Every component under test reads its CopilotKit chat state from
+// `<CopilotChatSessionProvider>` (one `useCopilotChatInternal()` per surface —
+// see the provider's doc-comment and Fizzy #2389), so each render mounts the
+// real provider over this file's mocked `useCopilotChatInternal`.
+function render(ui: Parameters<typeof rtlRender>[0]) {
+	return rtlRender(ui, { wrapper: CopilotChatSessionProvider });
+}
+
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -71,15 +81,18 @@ vi.mock("@copilotkit/react-core", () => ({
 		nodeName: undefined,
 	}),
 	useCopilotAction: vi.fn(),
-	useCopilotChat: () => ({
-		isLoading: false,
-		visibleMessages: [],
-		appendMessage: mockAppendMessage,
-	}),
+	// One hook, one connect: the workspace reads `isLoading`,
+	// `appendMessage`, `agent` and `setMessages` from the surface's
+	// `<CopilotChatSessionProvider>`, which is fed by this hook alone.
+	// `agent` is read off the mutable ref at call time so the in-flight
+	// latch below can flip `isRunning` between renders.
 	useCopilotChatInternal: () => ({
 		messages: [],
+		visibleMessages: [],
 		isLoading: false,
+		appendMessage: mockAppendMessage,
 		setMessages: vi.fn(),
+		interrupt: null,
 		agent: agentRef.current,
 	}),
 	useCopilotReadable: vi.fn(),

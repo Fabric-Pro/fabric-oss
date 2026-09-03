@@ -1,13 +1,10 @@
 "use client";
 
-import {
-	useCoAgent,
-	useCopilotAction,
-	useCopilotChatInternal,
-} from "@copilotkit/react-core";
+import { useCoAgent, useCopilotAction } from "@copilotkit/react-core";
 import { CopilotSidebar, useChatContext } from "@copilotkit/react-ui";
 import type { DecisionPrecheckResult } from "@repo/agent-types";
 import { CopilotAssistantMessageForBacklogUpdater } from "@saas/shared/components/copilot/CopilotAssistantMessage";
+import { useCopilotChatSession } from "@saas/shared/components/copilot/CopilotChatSessionProvider";
 import "@copilotkit/react-ui/styles.css";
 import { useOrganizationContext } from "@saas/organizations/hooks/use-organization-context";
 import { useQueryClient } from "@tanstack/react-query";
@@ -411,9 +408,11 @@ export function BacklogChat({
 
 	// Live CopilotKit chat messages, mirrored into a ref so the apply callback
 	// can snapshot the conversation into the Session history without a
-	// re-render race. `useCopilotChatInternal` is the supported read hook in
-	// CopilotKit 1.52 (the same one <CopilotSidebar> uses). Read-only here.
-	const { messages: liveCopilotMessages } = useCopilotChatInternal();
+	// re-render race. Read from the surface's `<CopilotChatSessionProvider>`
+	// (mounted by `BacklogChatPanel`) rather than a local
+	// `useCopilotChatInternal()`: on 1.70 each call of that hook opens its
+	// own `agent/connect` (Fizzy #2389). Read-only here.
+	const { messages: liveCopilotMessages } = useCopilotChatSession();
 	const liveMessagesRef = useRef<unknown[]>([]);
 	useEffect(() => {
 		liveMessagesRef.current = Array.isArray(liveCopilotMessages)

@@ -1,7 +1,7 @@
 "use client";
 
-import { useCopilotChatInternal } from "@copilotkit/react-core";
 import { useChatContext } from "@copilotkit/react-ui";
+import { useCopilotChatSession } from "@saas/shared/components/copilot/CopilotChatSessionProvider";
 import { orpcClient } from "@shared/lib/orpc-client";
 import { Button } from "@ui/components/button";
 import {
@@ -147,7 +147,7 @@ function VisibilityChip({
 	//   - explicitly set on the prop (SSR-hydrated from DB, or set by a
 	//     server response we DO propagate one day), OR
 	//   - inferred from the live message store the sidebar reads from.
-	const { messages: liveMessages } = useCopilotChatInternal();
+	const { messages: liveMessages } = useCopilotChatSession();
 	const liveHasUserMessage = liveMessages.some(
 		(m) => (m as { role?: unknown }).role === "user",
 	);
