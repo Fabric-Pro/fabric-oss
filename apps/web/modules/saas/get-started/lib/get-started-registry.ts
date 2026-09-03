@@ -49,20 +49,23 @@ import { anchorForProjectTab, type ProjectTabId } from "./tour-steps";
  * When you add / rename / remove a nav destination, project tab, or settings
  * page, update the matching entry here (and, for a "Show me" spotlight, its
  * `data-onboarding-target` anchor on the live component). Gate anything a
- * feature flag can hide with `enabled`. `drift.test.ts` fails when an item's
- * anchor no longer exists or a required area loses coverage. See the
+ * build-time feature flag can hide with `enabled`, and anything a
+ * per-organization flag can hide with `runtimeGate` (see `GsRuntimeGates` —
+ * the rendering component supplies the value). `drift.test.ts` fails when an
+ * item's anchor no longer exists or a required area loses coverage. See the
  * "Get Started upkeep" rule in CLAUDE.md / AGENTS.md.
  */
 
 // ── Build-time feature-flag resolution ────────────────────────────────────
 // Opt-in flags (default OFF) use literal env reads so Next.js can inline them.
+// A flag scoped to named organizations cannot live here — one build carries one
+// value — so those entries carry `runtimeGate` instead and are resolved by the
+// component that renders them. See `GsRuntimeGates` below.
 const ATLAS_ENABLED =
 	process.env.NEXT_PUBLIC_FABRIC_FEATURE_ATLAS === "true" ||
 	process.env.NEXT_PUBLIC_FABRIC_FEATURE_CODE_UNDERSTANDING === "true";
 const TEST_CASES_ENABLED =
 	process.env.NEXT_PUBLIC_FABRIC_FEATURE_TEST_CASES === "true";
-const PUBLISHING_SUITE_ENABLED =
-	process.env.NEXT_PUBLIC_FABRIC_FEATURE_PUBLISHING_SUITE === "true";
 const PROMPTS_ENABLED = config.prompts.enabled;
 const ACCOUNT_BILLING_ENABLED = config.users.enableBilling;
 
@@ -76,6 +79,51 @@ type GsHrefContext = {
 	projectId?: string | null;
 };
 
+/**
+ * Flag values the registry cannot resolve for itself.
+ *
+ * A `NEXT_PUBLIC_*` read is inlined at build time, so it can only carry one
+ * answer per deployment. A flag scoped to named organizations needs a different
+ * answer per request, so its entries name the gate here and the rendering
+ * component supplies the value.
+ *
+ * Known limitation, deliberate. `AppWrapper` mounts the controller, and the
+ * account routes (`app/(saas)/app/(account)/layout.tsx`) render it OUTSIDE the
+ * `[organizationSlug]` layout — so there the value comes from the account-wide
+ * provider in `app/(saas)/app/layout.tsx` (global override > env > default)
+ * with no organization applied. There is no organization to apply at that
+ * position, and the nearest substitute, `session.activeOrganizationId`, is
+ * shared across tabs and is already documented as the wrong answer by the
+ * billing gate in that same layout. It fails safe: the flag's registry default
+ * is off, so unless an operator turns it on account-wide the drawer
+ * under-reports on those routes and can never advertise the feature to a
+ * member of an organization that was never enrolled.
+ */
+export type GsRuntimeGates = {
+	/** `PUBLISHING_SUITE`, resolved for the viewer's organization. */
+	publishingSuite: boolean;
+};
+
+/**
+ * Is this drawer item / page tour available to this viewer?
+ *
+ * `enabled: false` is absolute and is checked first: a build-time exclusion
+ * cannot be reopened by a runtime gate. `runtimeGate` then defers to the
+ * supplied value. An entry with neither is always available.
+ */
+export function isGsEntryEnabled(
+	entry: { enabled?: boolean; runtimeGate?: keyof GsRuntimeGates },
+	gates: GsRuntimeGates,
+): boolean {
+	if (entry.enabled === false) {
+		return false;
+	}
+	if (entry.runtimeGate) {
+		return gates[entry.runtimeGate];
+	}
+	return true;
+}
+
 export type GsItem = {
 	/** Stable id (used for progress + drift test). */
 	id: string;
@@ -85,6 +133,8 @@ export type GsItem = {
 	icon: ComponentType<{ className?: string }>;
 	/** false → hidden because a feature flag turns the component off. */
 	enabled?: boolean;
+	/** Gate behind a flag that is resolved per request, not at build time. */
+	runtimeGate?: keyof GsRuntimeGates;
 	/** Hide unless the signed-in user has this role. */
 	requiresRole?: "admin";
 	/** Only show in this workspace context. */
@@ -334,7 +384,7 @@ const PROJECT_GROUP: GsGroup = {
 			description:
 				"Fabric surfaces publishing topics from your project's work — triage them here or add your own.",
 			icon: MegaphoneIcon,
-			enabled: PUBLISHING_SUITE_ENABLED,
+			runtimeGate: "publishingSuite",
 			projectTab: "publishing-suite",
 			anchor: anchorForProjectTab("publishing-suite"),
 			href: projectHref("publishing-suite"),
@@ -630,6 +680,8 @@ export type GsPage = {
 	icon: ComponentType<{ className?: string }>;
 	/** Gate the whole page tour behind a feature flag. */
 	enabled?: boolean;
+	/** Gate behind a flag that is resolved per request, not at build time. */
+	runtimeGate?: keyof GsRuntimeGates;
 	/**
 	 * ISO date the page's tour was introduced. A page added AFTER
 	 * `ONBOARDING_PAGE_BASELINE` auto-opens once for EXISTING users too — not
@@ -999,7 +1051,7 @@ export const GET_STARTED_PAGES: readonly GsPage[] = [
 		tab: "publishing-suite",
 		label: "Publishing Suite",
 		icon: MegaphoneIcon,
-		enabled: PUBLISHING_SUITE_ENABLED,
+		runtimeGate: "publishingSuite",
 		since: "2026-07-13T00:00:00.000Z",
 		components: [
 			{
@@ -1509,13 +1561,16 @@ export const GET_STARTED_PAGES: readonly GsPage[] = [
 	},
 ];
 
-/** Look up the detailed page tour for a project tab (if one exists + enabled). */
-export function pageForTab(tab: string | null | undefined): GsPage | null {
+/** Look up the detailed page tour for a project tab (if one exists + enabled per `gates`). */
+export function pageForTab(
+	tab: string | null | undefined,
+	gates: GsRuntimeGates,
+): GsPage | null {
 	if (!tab) {
 		return null;
 	}
 	const page = GET_STARTED_PAGES.find((p) => p.tab === tab);
-	return page && page.enabled !== false ? page : null;
+	return page && isGsEntryEnabled(page, gates) ? page : null;
 }
 
 /**

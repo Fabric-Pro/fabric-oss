@@ -99,45 +99,45 @@ export async function enrolOrganizations(
 		);
 	}
 
-	// A documented sequencing consequence, not a code defect, printed at the
-	// point of enrolment because a note in a plan is not where an operator
-	// stands at 3am — but it must say what actually happens, not an
-	// approximation of it (round 3: the round-2 wording under-warned after
-	// over-warning in round 1; both were wrong in different directions).
+	// A documented consequence of what this write does, not a code defect,
+	// printed at the point of enrolment because a note in a plan is not where
+	// an operator stands at 3am — and it must say what actually happens, not
+	// an approximation of it.
 	//
-	// Enrolment opens TWO doors, and they are gated differently:
+	// Enrolment is the availability switch, and nothing more. Until slice 3 the
+	// Publishing UI was additionally gated by a build-time flag this script
+	// could not touch, so a write here changed nothing an operator could see.
+	// That gate is gone, so this write now decides three surfaces: the
+	// deep-link Publishing page stops calling `notFound()`, the project
+	// Settings → Publishing sub-tab appears (gated on the flag alone, through
+	// `showPublishing`), and `assertPublishingSuiteFeatureEnabled` stops
+	// refusing the API.
 	//
-	//  1. The manual "Generate now" route (POST
-	//     /projects/{projectId}/publishing-topics/generate,
-	//     packages/api/modules/projects/procedures/publishing-suite/generate-now.ts)
-	//     checks ONLY `assertPublishingSuiteFeatureEnabled` — the PUBLISHING_SUITE
-	//     flag — before calling `requestPublishingGeneration`, which passes
-	//     `force: true` into the dispatch core. Per that core's own doc
-	//     comment, a forced run "bypasses BOTH spend guards — the dispatcher's
-	//     cost guard and the workflow's F7 freshness gate" — and cadence was
-	//     never one of those guards to begin with; it is a SWEEP-selection
-	//     filter only, never re-derived on this path. So the moment this
-	//     write lands, ANY project in these organizations can trigger a
-	//     model-inference generation on demand, MANUAL cadence or not,
-	//     bounded only by a one-hour per-project cooldown.
-	//  2. The daily sweep (findEligibleProjects) is narrower: it filters to
-	//     non-MANUAL scheduled ids only, and `DEFAULT_PUBLISHING_CADENCE` is
-	//     MANUAL with no row written on a settings read
-	//     (publishingSuiteSettingsDefaults, matching getNewsletterSettings) —
-	//     so passive, unattended sweeping does NOT start until a project's
-	//     cadence is deliberately set away from MANUAL.
+	// It ALSO switches the project TAB on. `publishing-suite` used to sit in
+	// `PROJECT_TAB_DEFAULT_HIDDEN_IDS`, so enrolment could not turn the tab on
+	// across an organization and a project admin had to force-show it. Card
+	// #1837's follow-up retired that default-hidden set — a project now shows
+	// every tab the deployment offers — which leaves this flag as the ONLY
+	// thing between enrolment and a visible tab, in every project the
+	// organization owns, at once. An admin turns it OFF now, not on. The
+	// warning below says so: under-stating this is the expensive direction.
 	//
-	// Either way there is nothing to see: the Settings tab that would set that
-	// cadence is HIDDEN (filtered out of ProjectSettingsNav's tab list by
-	// `showPublishing`; it is client-side tab state with no route to 404 at
-	// all), and the deep-link Publishing page
-	// (projects/[id]/publishing/page.tsx) genuinely calls `notFound()`. Both
-	// gates are the same separate, build-time
-	// `NEXT_PUBLIC_FABRIC_FEATURE_PUBLISHING_SUITE` flag this seed cannot
-	// touch. Printed unconditionally, with no prompt: this runs from deploy
-	// tooling where stdin is not a terminal.
+	// Two distinct spends follow, and they start at different times:
+	//   - the manual "Generate now" route is reachable the moment this write
+	//     lands (bounded by a one-hour per-project cooldown). It gates on the
+	//     flag, on `Permissions.PUBLISHING_TOPIC_CREATE`, and on an ACTIVE,
+	//     non-deleted project — but never on cadence. See
+	//     packages/api/modules/projects/procedures/publishing-suite/generate-now.ts
+	//   - the daily sweep additionally requires a project's cadence to be set
+	//     away from MANUAL, which is the default and is only changed through
+	//     Settings. MANUAL is `DEFAULT_PUBLISHING_CADENCE`, applied by
+	//     `publishingSuiteSettingsDefaults` without writing a row; the sweep's
+	//     `findEligibleProjects` is what filters on it.
+	//
+	// Printed unconditionally, with no prompt: this runs from deploy tooling
+	// where stdin is not a terminal.
 	log(
-		`[seed:publishing-orgs] WARNING: enrolling ${ids.length} organization(s) opens the manual "Generate now" route immediately — it checks only the PUBLISHING_SUITE flag, not a project's cadence, so any project in these organizations can trigger a model-inference generation on demand once this write lands (bounded only by a one-hour per-project cooldown). The daily sweep is narrower: it additionally requires a project's cadence to be set away from MANUAL through Settings. Either way nothing is visible yet — the deep-link Publishing page 404s and the Settings tab that sets cadence is hidden, both behind the separate, build-time NEXT_PUBLIC_FABRIC_FEATURE_PUBLISHING_SUITE flag this seed cannot touch.`,
+		`[seed:publishing-orgs] WARNING: enrolling ${ids.length} organization(s) makes the Publishing Suite visible to members of those organizations — the deep-link Publishing page stops 404ing, the project Settings → Publishing sub-tab appears, the API stops refusing, and the project TAB appears in EVERY project those organizations own (a project admin now has to turn it off, not on). It also opens the manual "Generate now" route immediately: that route gates on the PUBLISHING_SUITE flag, the caller's PUBLISHING_TOPIC_CREATE permission and an active project, but never on cadence, so any active project in these organizations can trigger a model-inference generation on demand once this write lands (bounded only by a one-hour per-project cooldown). The daily sweep is narrower: it additionally requires a project's cadence to be set away from MANUAL through Settings.`,
 	);
 
 	// One statement for every row: atomic by construction, so there is no

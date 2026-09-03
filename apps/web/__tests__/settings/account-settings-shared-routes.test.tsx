@@ -84,18 +84,27 @@ import OrgNotificationsPage from "../../app/(saas)/app/(organizations)/[organiza
 import OrgSecurityPage from "../../app/(saas)/app/(organizations)/[organizationSlug]/settings/account/security/page";
 import { AccountNotificationSettings } from "../../modules/saas/settings/components/AccountNotificationSettings";
 import { AccountSecuritySettings } from "../../modules/saas/settings/components/AccountSecuritySettings";
+import { FeatureFlagProvider } from "../../modules/saas/shared/components/FeatureFlagProvider";
 
 /**
  * These surfaces are React Server Components, so RTL cannot render the element
  * a route returns directly — it resolves one level first, which is exactly what
  * the server does before streaming the page.
+ *
+ * The provider stands in for the `(saas)/app` layout: these surfaces carry a
+ * `PageHeader`, whose page-tour launcher reads a per-organization flag, and the
+ * hook deliberately throws rather than defaulting when nobody supplies one.
  */
 async function renderPage(page: ReactElement) {
 	const Surface = page.type as (
 		props: unknown,
 	) => ReactElement | Promise<ReactElement>;
 
-	return render(await Surface(page.props));
+	return render(
+		<FeatureFlagProvider value={{ PUBLISHING_SUITE: false }}>
+			{await Surface(page.props)}
+		</FeatureFlagProvider>,
+	);
 }
 
 describe("account settings routes — account-global, inside an organization", () => {

@@ -5,13 +5,19 @@
  * was retired into project-tab customization (card #1837): a deployment that
  * offers the tab shows it to everyone, and a project admin's `tabVisibility`
  * override (`{ overrides: { "publishing-suite": false } }`, served by the
- * mocked `projects.tabVisibility.get`) is what takes it away. These tests pin
- * that replacement contract:
+ * mocked `projects.tabVisibility.get`) is what takes it away. Layer 0 did not
+ * go away — it moved: the `PUBLISHING_SUITE` flag is now resolved per
+ * organization at request time and read from the nearest
+ * `FeatureFlagProvider`, mocked below off a mutable `flagState` so both
+ * directions of that ceiling are exercised here. These tests pin both halves
+ * as ProjectDetails wires them:
  *
  *   1. No saved config — the "Publishing Suite" tab button renders.
  *   2. Admin override hides it — the tab button is gone.
  *   3. Clicking it mounts `PublishingSuiteList` (the content branch follows
  *      visibility, not a build-time constant).
+ *   4. The ceiling itself: with the organization's gate OFF, not even an
+ *      admin override that force-shows the tab brings it back.
  *
  * All of ProjectDetails' other tab bodies are loaded via `next/dynamic`;
  * mocking that module out entirely (a generic stub, ignoring the loader)
@@ -68,6 +74,23 @@ vi.mock("@saas/auth/hooks/use-session", () => ({
 // tests depend on flag state they do not care about.
 vi.mock("@saas/get-started/components/ProjectRoleConfirmationPrompt", () => ({
 	ProjectRoleConfirmationPrompt: () => null,
+}));
+
+// Publishing Suite's Layer 0 ceiling is now resolved at runtime from the
+// nearest FeatureFlagProvider, which the organization layout mounts. Mutable
+// (same shape as `tabConfigState` below) so one case can drive the OFF
+// direction — otherwise every rendered case pins the gate on, and a component
+// that hardcoded `{ publishingSuiteEnabled: true }` instead of calling
+// `useProjectTabGates()` would still pass. Keyed on the flag name rather than
+// a blanket `() => true`: this component reads other flags too, and switching
+// all of them on would exercise branches this file does not describe.
+const { flagState } = vi.hoisted(() => ({
+	flagState: { publishingSuiteEnabled: true },
+}));
+
+vi.mock("@saas/shared/components/FeatureFlagProvider", () => ({
+	useFeatureFlag: (key: string) =>
+		key === "PUBLISHING_SUITE" ? flagState.publishingSuiteEnabled : false,
 }));
 
 vi.mock("@saas/organizations/hooks/use-organization-context", () => ({
@@ -206,13 +229,6 @@ vi.mock("sonner", () => ({
 	},
 }));
 
-// Layer 0 of tab resolution reads this env lazily; the suite's scenarios
-// assume a deployment that OFFERS Publishing Suite (the visibility-driven
-// behaviour under test), so the flag is stubbed on for every test.
-beforeEach(() => {
-	vi.stubEnv("NEXT_PUBLIC_FABRIC_FEATURE_PUBLISHING_SUITE", "true");
-});
-
 // ----------------------------------------------------------------------------
 // Render helpers
 // ----------------------------------------------------------------------------
@@ -228,6 +244,8 @@ function renderWithClient(ui: ReactNode) {
 
 beforeEach(() => {
 	tabConfigState.config = null;
+	// Default: an enrolled organization, which is what cases 1-3 assume.
+	flagState.publishingSuiteEnabled = true;
 	window.sessionStorage.clear();
 });
 
@@ -279,5 +297,29 @@ describe("ProjectDetails — Publishing Suite tab (visibility-driven)", () => {
 		expect(
 			await screen.findByTestId("dynamic-tab-stub-PublishingSuiteList"),
 		).toBeInTheDocument();
+	});
+
+	it("keeps the tab hidden when the organization's gate is off, admin override notwithstanding", async () => {
+		// The OFF direction of the Layer 0 ceiling. Since #1837's follow-up an
+		// offered tab renders by default, which makes this a real control: with
+		// the gate ON this exact config renders the tab (the first case in this
+		// file). The admin override is left explicitly true to make the
+		// strongest version of the claim — not even a deliberate force-show
+		// survives Layer 0. What it pins is that ProjectDetails asks
+		// `useProjectTabGates()` rather than assuming an answer; the failure it
+		// guards is a tab appearing for an organization never enrolled.
+		flagState.publishingSuiteEnabled = false;
+		tabConfigState.config = { overrides: { "publishing-suite": true } };
+		const { ProjectDetails } = await import("../ProjectDetails");
+
+		renderWithClient(<ProjectDetails projectId="proj-1" />);
+
+		// Wait for the tab bar before asserting the absence, so "hidden" cannot
+		// just mean "not rendered yet" (same guard as case 1).
+		await screen.findByRole("button", { name: /^overview$/i });
+
+		expect(
+			screen.queryByRole("button", { name: /publishing suite/i }),
+		).toBeNull();
 	});
 });

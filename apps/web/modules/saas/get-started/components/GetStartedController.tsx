@@ -3,6 +3,7 @@
 import {
 	isProjectTabVisibleToViewer,
 	useProjectTabCustomization,
+	useProjectTabGates,
 } from "@saas/projects/lib/project-tab-preferences";
 import { useFeatureFlag } from "@saas/shared/components/FeatureFlagProvider";
 import { useRoleTagSnapshot } from "@saas/shared/components/RoleTagSnapshotProvider";
@@ -15,6 +16,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
 	type GsItem,
 	type GsPage,
+	type GsRuntimeGates,
 	isNewlyIntroducedPage,
 	pageForTab,
 } from "../lib/get-started-registry";
@@ -60,7 +62,7 @@ type Mode =
 	| "tagsPrompt";
 
 /** Build a one-off spotlight step for a drawer item's "Show me". */
-function adHocStepFor(item: GsItem): OnboardingStep {
+function adHocStepFor(item: GsItem, gates: GsRuntimeGates): OnboardingStep {
 	const base: Omit<OnboardingStep, "target"> = {
 		id: `show-${item.id}`,
 		area: "welcome",
@@ -71,7 +73,7 @@ function adHocStepFor(item: GsItem): OnboardingStep {
 	if (item.projectTab) {
 		// Prefer spotlighting the page's primary in-page component over the tab
 		// itself, so "Show me" points at the real thing the user will use.
-		const page = pageForTab(item.projectTab);
+		const page = pageForTab(item.projectTab, gates);
 		const primary = page?.components[0];
 		return {
 			...base,
@@ -153,16 +155,26 @@ export function GetStartedController() {
 		projectId: activeProjectId ?? "",
 		enabled: activeProjectId !== null,
 	});
+	const tabGates = useProjectTabGates();
+	// Publishing Suite's availability is per-organization, so the registry
+	// hands the decision to whoever renders it. Derived from `tabGates` — the
+	// same flag read, not a second one — and threaded down; the drawer takes
+	// the same object.
+	const gsGates: GsRuntimeGates = useMemo(
+		() => ({ publishingSuite: tabGates.publishingSuiteEnabled }),
+		[tabGates],
+	);
 	// A tour step / drawer entry pointing at a project tab this viewer can't
 	// see would navigate nowhere or spotlight a missing anchor — drop it.
 	const isTabVisible = useCallback(
 		(tab: string) =>
 			isProjectTabVisibleToViewer(
 				tab,
+				tabGates,
 				tabCustomization.config,
 				tabCustomization.prefs,
 			),
-		[tabCustomization.config, tabCustomization.prefs],
+		[tabGates, tabCustomization.config, tabCustomization.prefs],
 	);
 
 	const tourSteps = useMemo(
@@ -337,11 +349,14 @@ export function GetStartedController() {
 		persist({ type: "start" });
 	}, [persist]);
 
-	const showComponent = useCallback((item: GsItem) => {
-		spotlightFromDrawerRef.current = true;
-		setAdHocStep(adHocStepFor(item));
-		setMode("spotlight");
-	}, []);
+	const showComponent = useCallback(
+		(item: GsItem) => {
+			spotlightFromDrawerRef.current = true;
+			setAdHocStep(adHocStepFor(item, gsGates));
+			setMode("spotlight");
+		},
+		[gsGates],
+	);
 
 	const launchPageTour = useCallback(
 		(page: GsPage, auto: boolean) => {
@@ -363,21 +378,21 @@ export function GetStartedController() {
 	// Open a specific page's tour by id (from a page's "Get started" launcher).
 	const startPageTourById = useCallback(
 		(pageId: string) => {
-			const page = pageForTab(pageId);
+			const page = pageForTab(pageId, gsGates);
 			if (page) {
 				launchPageTour(page, false);
 			}
 		},
-		[launchPageTour],
+		[launchPageTour, gsGates],
 	);
 
 	// "Tour this page" from the drawer — walks the current page's components.
 	const startPageTour = useCallback(() => {
-		const page = pageForTab(activeTab);
+		const page = pageForTab(activeTab, gsGates);
 		if (page) {
 			launchPageTour(page, false);
 		}
-	}, [activeTab, launchPageTour]);
+	}, [activeTab, launchPageTour, gsGates]);
 
 	// First-login auto-launch — opens the welcome dialog once for the eligible
 	// (new) cohort, then marks itself so it never auto-opens again. It replaces
@@ -492,7 +507,7 @@ export function GetStartedController() {
 		) {
 			return;
 		}
-		const page = pageForTab(activeTab);
+		const page = pageForTab(activeTab, gsGates);
 		if (!page) {
 			return;
 		}
@@ -537,6 +552,7 @@ export function GetStartedController() {
 		functionTagsPromptPending,
 		roleTagGateUp,
 		isTabVisible,
+		gsGates,
 	]);
 
 	// Launchers: the sidebar item opens the drawer; the per-page "?" button on a
@@ -688,7 +704,7 @@ export function GetStartedController() {
 		endPageTour();
 	}, [persist, endPageTour]);
 
-	const pageTourAvailable = pageForTab(activeTab) !== null;
+	const pageTourAvailable = pageForTab(activeTab, gsGates) !== null;
 
 	if (!GET_STARTED_ENABLED || !user) {
 		return null;
@@ -709,6 +725,7 @@ export function GetStartedController() {
 					onShowComponent={showComponent}
 					onTourPage={pageTourAvailable ? startPageTour : undefined}
 					isTabVisible={isTabVisible}
+					gates={gsGates}
 				/>
 			)}
 			{mode === "tour" && tourSteps[index] && (

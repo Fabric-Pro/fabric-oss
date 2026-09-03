@@ -5,6 +5,7 @@ import { PageTourButton } from "@saas/get-started/components/PageTourButton";
 import { useOrganizationContext } from "@saas/organizations/hooks/use-organization-context";
 import { useConfirmationAlert } from "@saas/shared/components/ConfirmationAlertProvider";
 import type { ClarifyingQuestionFrequency } from "@saas/shared/components/copilot/useClarifyingQuestions";
+import { useFeatureFlag } from "@saas/shared/components/FeatureFlagProvider";
 import { isMonitoringFeatureEnabled } from "@saas/shared/lib/feature-flags";
 import { GoogleDriveIcon } from "@saas/workflows/lib/plugins/google-drive/icon";
 import { orpcClient } from "@shared/lib/orpc-client";
@@ -158,16 +159,17 @@ const DEEP_LINKABLE_SETTINGS_TABS: SettingsTab[] = ["newsletter"];
 const QA_SETTINGS_ENABLED =
 	process.env.NEXT_PUBLIC_FABRIC_FEATURE_TEST_CASES === "true";
 
-// The Publishing Suite project tab is gated on this flag, and the settings
-// sub-tab configures that page and nothing else. Read once at module scope
-// for the same reason as `QA_SETTINGS_ENABLED` above — `NEXT_PUBLIC_*` is
-// inlined at build time, so this is a constant, not a runtime lookup. One
-// flag read drives both the nav's `showPublishing` prop and the gates object
-// below.
-const PUBLISHING_SUITE_ENABLED =
-	process.env.NEXT_PUBLIC_FABRIC_FEATURE_PUBLISHING_SUITE === "true";
+// Publishing Suite is scoped to named organizations, so — unlike
+// `QA_SETTINGS_ENABLED` above — it cannot be a module constant: `NEXT_PUBLIC_*`
+// is inlined at build time and one build serves every organization. The value
+// is read inside the component from the nearest FeatureFlagProvider, which the
+// organization layout mounts resolved for that organization.
 
-function useSettingsTab(projectId: string, pmFieldMappingEnabled: boolean) {
+function useSettingsTab(
+	projectId: string,
+	pmFieldMappingEnabled: boolean,
+	publishingEnabled: boolean,
+) {
 	const [tab, setTabState] = useState<SettingsTab>(() => {
 		if (typeof window === "undefined") {
 			return "general";
@@ -180,7 +182,7 @@ function useSettingsTab(projectId: string, pmFieldMappingEnabled: boolean) {
 				resolveStoredSettingsTab(stored, {
 					pmFieldMappingEnabled,
 					qaEnabled: QA_SETTINGS_ENABLED,
-					publishingEnabled: PUBLISHING_SUITE_ENABLED,
+					publishingEnabled,
 				}) ?? "general"
 			);
 		} catch {
@@ -226,7 +228,7 @@ function useSettingsTab(projectId: string, pmFieldMappingEnabled: boolean) {
 			const resolved = resolveStoredSettingsTab(detail.settingsTab, {
 				pmFieldMappingEnabled,
 				qaEnabled: QA_SETTINGS_ENABLED,
-				publishingEnabled: PUBLISHING_SUITE_ENABLED,
+				publishingEnabled,
 			});
 			// `null` means the requested tab is gated off for this viewer —
 			// leave them where they are rather than bouncing them to General.
@@ -240,7 +242,7 @@ function useSettingsTab(projectId: string, pmFieldMappingEnabled: boolean) {
 				NAVIGATE_TO_SETTINGS_TAB_EVENT,
 				onNavigate,
 			);
-	}, [projectId, pmFieldMappingEnabled, setTab]);
+	}, [projectId, pmFieldMappingEnabled, publishingEnabled, setTab]);
 
 	return [tab, setTab] as const;
 }
@@ -255,9 +257,11 @@ export function ProjectSettings({
 		projectId: project.id,
 	});
 	const pmFieldMappingEnabled = project.pmFieldMappingEnabled ?? false;
+	const publishingSuiteEnabled = useFeatureFlag("PUBLISHING_SUITE");
 	const [settingsTab, setSettingsTab] = useSettingsTab(
 		project.id,
 		pmFieldMappingEnabled,
+		publishingSuiteEnabled,
 	);
 	// Honor a `?settingsTab=<id>` deep link so the approval notification (and any
 	// future cross-page CTA) can land directly on the Newsletter sub-tab instead
@@ -380,7 +384,7 @@ export function ProjectSettings({
 				showDanger={canDelete}
 				showProjectManagement={pmFieldMappingEnabled}
 				showQa={QA_SETTINGS_ENABLED}
-				showPublishing={PUBLISHING_SUITE_ENABLED}
+				showPublishing={publishingSuiteEnabled}
 			/>
 
 			<div

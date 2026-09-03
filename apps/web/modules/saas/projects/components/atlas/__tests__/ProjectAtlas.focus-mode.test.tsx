@@ -1,3 +1,4 @@
+import { FeatureFlagProvider } from "@saas/shared/components/FeatureFlagProvider";
 import { FocusModeProvider } from "@saas/shared/contexts/FocusModeContext";
 import { SidebarCollapseProvider } from "@saas/shared/contexts/SidebarCollapseContext";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -241,9 +242,14 @@ describe("Atlas Focus Mode Integration", () => {
 	function Wrapper({ children }: PropsWithChildren) {
 		return (
 			<QueryClientProvider client={queryClient}>
-				<SidebarCollapseProvider>
-					<FocusModeProvider>{children}</FocusModeProvider>
-				</SidebarCollapseProvider>
+				{/* Stands in for the `(saas)/app` layout: the Atlas header's
+				    page-tour launcher reads a per-organization flag, and the
+				    hook throws rather than defaulting when none is supplied. */}
+				<FeatureFlagProvider value={{ PUBLISHING_SUITE: false }}>
+					<SidebarCollapseProvider>
+						<FocusModeProvider>{children}</FocusModeProvider>
+					</SidebarCollapseProvider>
+				</FeatureFlagProvider>
 			</QueryClientProvider>
 		);
 	}

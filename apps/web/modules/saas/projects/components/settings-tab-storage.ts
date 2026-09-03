@@ -21,7 +21,9 @@ export type SettingsTabGates = {
 	pmFieldMappingEnabled: boolean;
 	/** `NEXT_PUBLIC_FABRIC_FEATURE_TEST_CASES` — gates Environments and Testing. */
 	qaEnabled: boolean;
-	/** `NEXT_PUBLIC_FABRIC_FEATURE_PUBLISHING_SUITE` — gates Publishing Suite. */
+	/** `PUBLISHING_SUITE` — gates Publishing Suite. Resolved per organization
+	 *  at request time, so the caller reads it from the feature-flag context
+	 *  rather than from the environment. */
 	publishingEnabled: boolean;
 };
 

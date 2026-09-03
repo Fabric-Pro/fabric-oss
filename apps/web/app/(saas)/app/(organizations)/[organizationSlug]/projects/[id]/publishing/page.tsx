@@ -1,23 +1,28 @@
 /**
  * Publishing Suite deep-link page (organization context).
  *
- * Thin server wrapper for the design-locked `/projects/{id}/publishing`
- * route. The client UI-rollout flag (`NEXT_PUBLIC_FABRIC_FEATURE_PUBLISHING_SUITE`)
- * gates FIRST, since it needs no data access. The server gate resolves
- * per-organization, so it CANNOT run before the organization is known: session
- * resolves next, then the active organization from the `[organizationSlug]`
- * segment, then `isFeatureEnabled("PUBLISHING_SUITE", organization.id)` — off →
- * `notFound()`, still before any project access. Only then does the page fetch
- * the project through the SAME `getProjectById(id, userId, organizationId)`
- * path `getProjectProcedure` (`projects.get`) uses — passing the RESOLVED
- * org id, never `null`. Passing `null` here would search personal projects
- * only and incorrectly 404 an org member (F2).
+ * Thin server wrapper for the design-locked `/projects/{id}/publishing` route.
+ * Availability is decided by ONE gate: `isFeatureEnabled("PUBLISHING_SUITE",
+ * organization.id)`. It cannot run before the organization is known, so session
+ * resolves first, then the active organization from the `[organizationSlug]`
+ * segment, then the gate — off → `notFound()`, still before any project access.
+ *
+ * There was a second, build-time `NEXT_PUBLIC_*` guard above all of this until
+ * the flag became org-scoped. It was removed rather than kept as a belt: a
+ * build-time value carries one answer for every organization, so leaving it in
+ * place would have meant an enrolled organization could still be refused by a
+ * deployment-wide switch nobody would think to look at.
+ *
+ * The project fetch happens only after that gate passes, through the SAME
+ * `getProjectById(id, userId, organizationId)` path `getProjectProcedure`
+ * (`projects.get`) uses — passing the RESOLVED org id, never `null`. Passing
+ * `null` here would search personal projects only and incorrectly 404 an org
+ * member (F2).
  *
  * `canEdit` is `project.canPublish`, already resolved by `getProjectProcedure`
- * via `resolveEffectiveProjectPermissions` (Task 4a) — never a raw
- * `project.userRole` string check. Topic *creation* itself re-derives its
- * tenant tuple from the Project row (`resolveProjectTenant`), so it never
- * depends on this loader (F2).
+ * via `resolveEffectiveProjectPermissions` — never a raw `project.userRole`
+ * string check. Topic *creation* itself re-derives its tenant tuple from the
+ * Project row (`resolveProjectTenant`), so it never depends on this loader (F2).
  */
 
 import { isFeatureEnabled } from "@repo/database";
@@ -33,13 +38,6 @@ type Props = {
 export default async function OrganizationPublishingSuitePage({
 	params,
 }: Props) {
-	// The client UI-rollout flag still gates here (removed in slice 3, when
-	// Layer 0 moves to runtime resolution). Checked first because it needs no
-	// data access.
-	if (process.env.NEXT_PUBLIC_FABRIC_FEATURE_PUBLISHING_SUITE !== "true") {
-		notFound();
-	}
-
 	const session = await getSession();
 	if (!session) {
 		redirect("/auth/login");
@@ -52,9 +50,9 @@ export default async function OrganizationPublishingSuitePage({
 		notFound();
 	}
 
-	// The server gate resolves against THIS organization. It cannot run before
-	// the organization is resolved, which is why it no longer sits above the
-	// session read.
+	// The only availability gate, and it resolves against THIS organization —
+	// which is why it sits below the session and organization reads rather
+	// than above them: there is no org id to resolve against until they run.
 	if (!(await isFeatureEnabled("PUBLISHING_SUITE", organization.id))) {
 		notFound();
 	}

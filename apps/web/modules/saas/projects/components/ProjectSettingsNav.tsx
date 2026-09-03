@@ -121,8 +121,9 @@ type Props = {
 	 *  project tab. Both configure QA only, so showing them while the QA page is
 	 *  hidden offers settings for a surface the user cannot open. */
 	showQa?: boolean;
-	/** Gates the Publishing Suite tab behind `NEXT_PUBLIC_FABRIC_FEATURE_PUBLISHING_SUITE`,
-	 *  same reasoning as `showQa` — no settings for a surface the flag hides. */
+	/** Gates the Publishing Suite tab on the `PUBLISHING_SUITE` flag as resolved
+	 *  for the viewer's organization, same reasoning as `showQa` — no settings
+	 *  for a surface the flag hides. */
 	showPublishing?: boolean;
 };
 

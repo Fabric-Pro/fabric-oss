@@ -15,6 +15,7 @@ import { useRecordProjectVisit } from "@saas/projects/hooks/use-record-project-v
 import {
 	resolveProjectTabs,
 	useProjectTabCustomization,
+	useProjectTabGates,
 } from "@saas/projects/lib/project-tab-preferences";
 import { isTabId, type TabId, tabs } from "@saas/projects/lib/project-tabs";
 import { useConfirmationAlert } from "@saas/shared/components/ConfirmationAlertProvider";
@@ -386,16 +387,19 @@ export function ProjectDetails({ projectId, organizationSlug }: Props) {
 		setIsFocusMode(false);
 	}, [rawActiveTab, setIsFocusMode]);
 
-	// The tab set this viewer can see, in their saved order. While the flag is
-	// off (or before the preference queries resolve) this is simply the full
-	// static list in its default order.
+	const tabGates = useProjectTabGates();
+
+	// The tab set this viewer can see, in their saved order. While a tab's
+	// feature gate is off (or before the preference queries resolve) this is
+	// simply the full static list in its default order.
 	const visibleTabs = useMemo(
 		() =>
 			resolveProjectTabs(tabs, {
 				config: tabCustomization.config,
 				prefs: tabCustomization.prefs,
+				gates: tabGates,
 			}),
-		[tabCustomization.config, tabCustomization.prefs],
+		[tabCustomization.config, tabCustomization.prefs, tabGates],
 	);
 
 	// The active tab as THIS viewer should see it: a stored or deep-linked tab

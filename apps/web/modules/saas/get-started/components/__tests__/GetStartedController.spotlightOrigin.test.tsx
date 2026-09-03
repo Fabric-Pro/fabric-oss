@@ -97,9 +97,12 @@ vi.mock("@shared/lib/orpc-query-utils", () => ({
 }));
 
 vi.mock("@saas/shared/components/FeatureFlagProvider", () => ({
-	useFeatureFlag: () => {
+	useFeatureFlag: (key: string) => {
 		const [value] = useMockFlagState(false);
-		return value;
+		// Publishing Suite is a different gate from the one this file drives.
+		// Answering per key keeps a future flip of the shared value from
+		// switching it on as a side effect.
+		return key === "PUBLISHING_SUITE" ? false : value;
 	},
 }));
 vi.mock("@saas/shared/components/RoleTagSnapshotProvider", () => ({

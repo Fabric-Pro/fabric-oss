@@ -1,0 +1,15 @@
+---
+"fabric-app": patch
+---
+
+Publishing Suite visibility now resolves per organization at runtime instead of from a build-time flag baked into the deployment.
+
+Slice 3 of the org-scoped feature-flag work. The client availability ceiling was `NEXT_PUBLIC_FABRIC_FEATURE_PUBLISHING_SUITE`, which Next inlines at build time — one build could only ever carry one answer for every organization, so slices 1–2 could make the server safe but could not make the feature visible to one organization only.
+
+The organization layout now mounts a second `FeatureFlagProvider` whose values come from `getAllFlagsForOrganization(organization.id)`; `useFeatureFlag` reads the nearest context, so every client consumer under `/app/{slug}` picks up the org-scoped answer without a call-site change. Four surfaces stopped reading the environment: project-tab Layer 0 (now takes a required `ProjectTabGates` argument, so the compiler enumerates its call sites), the Get Started registry (`runtimeGate: "publishingSuite"` on the drawer item and the page tour), project settings, and the two publishing routes, whose build-time guard was removed so a deployment-wide switch can no longer refuse an enrolled organization.
+
+Because the new resolver feeds every registry key to the client provider, `resolveFlag` now applies an organization override only to a flag the registry marks `orgScopable`. That marker was documentation until this slice; leaving it unenforced would have let one stray override row re-skin an organization's whole UI rather than affect the single gate it used to reach.
+
+Operational note: `NEXT_PUBLIC_FABRIC_FEATURE_PUBLISHING_SUITE` is now inert. An environment relying on it, with no server-side `FABRIC_FEATURE_PUBLISHING_SUITE` (parsed as an opt-in flag, so `1`/`on`/`yes` count) and no global or organization override row, loses the feature on deploy. The reverse is the more dangerous direction: an environment where the server-side value is already on — a global override row (shared with the temporal worker's sweep) or `FABRIC_FEATURE_PUBLISHING_SUITE` set on the deployment — while the client build had `NEXT_PUBLIC_*` off used to keep the UI fully hidden there regardless. After this change, `resolveFlag` returns that server-side value before it ever reads the environment variable, so every organization without an explicit `false` override row gets the full Publishing Suite UI at once on deploy — the instance-wide exposure this work exists to prevent.
+
+Also corrects the enrolment seed script's operator warning. It used to say enrolment had no visible effect because a separate build-time flag kept the UI hidden; it now names what enrolment actually opens — the deep-link Publishing page stops 404ing, the project Settings → Publishing sub-tab appears, and the API stops refusing — and says explicitly that the project tab now appears in every project those organizations own. That last clause changed while this branch was open: card #1837's follow-up retired the default-hidden tab set, so this flag is the only thing left between enrolment and a visible tab, and a project admin turns it off rather than on.

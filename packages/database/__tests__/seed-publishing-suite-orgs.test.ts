@@ -125,33 +125,39 @@ describe("enrolOrganizations", () => {
 		expect(log).toHaveBeenCalledWith(expect.stringContaining("0 of 1"));
 	});
 
-	// The warning went through three rounds, wrong in three different ways —
-	// which is why this comment is written as ONE unit describing the CURRENT
-	// truth, not as a stack of "round N said X, round N+1 corrected it"
-	// paragraphs (round 3 flagged exactly that pattern in this file: two
-	// adjacent paragraphs that each stood alone and contradicted each other).
+	// This is a cost-and-exposure notice an operator reads mid-deploy, so the
+	// test pins the CURRENT truth in one unit, and pins both directions the
+	// wording has been wrong in before.
 	//
-	// Round 1 over-warned: "starts the daily sweep and its model-inference
-	// cost … from the next scheduled tick" — false, because the sweep filters
-	// to non-MANUAL scheduled ids only and nothing sets a project's cadence
-	// automatically.
+	// Over-warning: claiming the daily sweep starts spending from the next
+	// tick. False — the sweep filters to non-MANUAL scheduled ids only, and
+	// nothing sets a project's cadence automatically.
 	//
-	// Round 2 corrected the sweep claim but under-warned in the process,
-	// on a cost path where under-warning is the worse direction: it implied
-	// NO cost accrues until cadence changes, and mislabeled the settings tab
-	// (which is merely HIDDEN — client-side tab state with no route to 404 —
-	// filtered out of ProjectSettingsNav's tab list) as the thing that 404s.
-	// The 404 belongs to the deep-link Publishing page, a different surface.
+	// Under-warning, the worse direction on a cost path: implying NO cost
+	// accrues until a cadence changes. False — the manual "Generate now" route
+	// (generate-now.ts) checks ONLY the PUBLISHING_SUITE flag. Cadence was
+	// never one of `requestPublishingGeneration`'s "BOTH spend guards" that a
+	// forced run bypasses; it is a sweep-selection filter, never re-derived on
+	// the manual path. Any project in a newly enrolled organization can spend
+	// on demand immediately, MANUAL or not.
 	//
-	// Round 3's fact, verified against source rather than restated: enrolment
-	// opens TWO doors. The manual "Generate now" route
-	// (generate-now.ts) checks ONLY the PUBLISHING_SUITE flag — cadence was
-	// never one of `requestPublishingGeneration`'s "BOTH spend guards" a
-	// forced run bypasses; it is a sweep-selection filter only, never
-	// re-derived on the manual path. So any project in a newly enrolled
-	// organization can spend on demand immediately, MANUAL or not. The daily
-	// sweep alone is the narrower, cadence-gated door.
-	it("warns about the immediate manual-generate exposure and the narrower sweep gate, before writing", async () => {
+	// Slice 3 changed what enrolment does, and the correction has to land in
+	// the middle of two failure modes rather than at one end.
+	//
+	// The retired wording said enrolment changed nothing an operator could see,
+	// because a separate build-time flag kept the deep-link page 404ing and the
+	// Settings sub-tab hidden. That flag is gone, so the warning must name what
+	// enrolment now opens: the deep-link page, the Settings sub-tab, the API.
+	//
+	// This test used to ALSO pin a "the tab stays hidden" clause, because
+	// `publishing-suite` sat in `PROJECT_TAB_DEFAULT_HIDDEN_IDS` and a project
+	// admin had to force-show it. Card #1837's follow-up retired that set: a
+	// project shows every tab the deployment offers, so enrolment now switches
+	// the tab on across every project the organization owns. The clause worth
+	// pinning is the opposite one, and it is pinned in BOTH directions — the
+	// new claim present, the retired one absent — because under-warning an
+	// operator about a fleet-wide UI change is the expensive failure here.
+	it("names the surfaces enrolment opens, says the project tab now appears across every project, and states both spend paths, before writing", async () => {
 		const events: string[] = [];
 		const createOverrides = vi.fn(async () => {
 			events.push("write");
@@ -169,23 +175,37 @@ describe("enrolOrganizations", () => {
 
 		const noteEvent = events.find((e) => e.includes("WARNING"));
 		expect(noteEvent).toBeDefined();
+		// The surfaces enrolment actually opens, named individually rather
+		// than summarised as "visible".
+		expect(noteEvent).toMatch(/deep-link/i);
+		expect(noteEvent).toMatch(/settings/i);
+		// ...including the project tab, which is now the loudest surface of
+		// all: it appears across every project the organization owns.
+		expect(noteEvent).toMatch(/tab/i);
+		expect(noteEvent).toMatch(/every project/i);
+		// The retired "stays hidden" clause must not survive: it now
+		// under-warns, which is the expensive direction for an operator.
+		expect(noteEvent).not.toMatch(/tab.*stays hidden|tab.*remains hidden/i);
+		// The original "nothing is visible yet" wording must not survive
+		// either. Pinned as PHRASES, not words: the accurate warning
+		// legitimately contains "404" (the deep-link page stops 404ing), so a
+		// word-level ban would have forbidden the correct text. These three
+		// are the retired claim's own sentences.
+		expect(noteEvent).not.toMatch(
+			/nothing is visible|nothing to see|not visible yet/i,
+		);
+		expect(noteEvent).not.toMatch(
+			/Settings tab that sets cadence|behind the separate|seed cannot touch/i,
+		);
+		expect(noteEvent).not.toMatch(/NEXT_PUBLIC/);
 		// Must name the manual-generate exposure — the immediate,
-		// cadence-independent spend path both earlier rounds omitted.
+		// cadence-independent spend path.
 		expect(noteEvent).toMatch(/generate now/i);
-		// Must NOT claim cost is gated on cadence generally — that was
-		// round 2's under-warning defect.
+		// Must NOT claim cost is gated on cadence generally.
 		expect(noteEvent).not.toMatch(/no cost accrues until/i);
 		// The sweep's OWN gate must still be stated accurately.
 		expect(noteEvent).toMatch(/sweep/i);
 		expect(noteEvent).toMatch(/MANUAL/);
-		// The settings tab is HIDDEN, not 404 — the 404 belongs to the
-		// deep-link page, a different surface. Pin each claim to its correct
-		// surface directly, rather than a negative regex trying to rule out
-		// every wrong pairing (a round-2-style mislabel can survive a bare
-		// `.not.toMatch(/settings.*404/)` simply by having a sentence
-		// boundary or word order the regex did not anticipate).
-		expect(noteEvent).toMatch(/deep-link.*404|404.*deep-link/i);
-		expect(noteEvent).toMatch(/settings tab.*hidden|hidden.*settings tab/i);
 		// "Before it writes": the warning event must precede the write
 		// event, not merely the final summary log that follows the write.
 		expect(events.indexOf(noteEvent as string)).toBeLessThan(

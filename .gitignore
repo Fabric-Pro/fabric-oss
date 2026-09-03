@@ -13,6 +13,8 @@ fabric/specs/*/
 # public-bound tree in Fizzy #2079 — keep them local so they cannot be
 # re-added by a planning workflow. Durable lessons belong in docs/solutions/.
 docs/plans/
+# Working specs and plans: kept locally, never a publication path.
+docs/superpowers/
 
 # Claude Code git worktrees — never commit these (they get committed as
 # stray gitlinks when `git add` is run while a worktree dir is present)

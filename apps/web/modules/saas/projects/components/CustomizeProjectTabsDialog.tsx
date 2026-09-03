@@ -28,6 +28,7 @@ import {
 	isProjectTabFeatureEnabled,
 	type ProjectTabMeta,
 	resolveAdminTabState,
+	useProjectTabGates,
 } from "../lib/project-tab-preferences";
 
 type Props = {
@@ -63,13 +64,15 @@ export function CustomizeProjectTabsDialog({
 	onSave,
 	saving,
 }: Props) {
+	const tabGates = useProjectTabGates();
 	const adminState = useMemo(
 		() =>
 			resolveAdminTabState(
 				tabs.map((t) => t.id),
 				config,
+				tabGates,
 			),
-		[tabs, config],
+		[tabs, config, tabGates],
 	);
 
 	const defaultSequence = useMemo(
@@ -160,7 +163,9 @@ export function CustomizeProjectTabsDialog({
 	// would promise an admin toggle that cannot exist.
 	const unavailableRows = tabs
 		.map((t) => t.id)
-		.filter((id) => isProjectTabFeatureEnabled(id) && !adminState[id]);
+		.filter(
+			(id) => isProjectTabFeatureEnabled(id, tabGates) && !adminState[id],
+		);
 
 	const renderRow = (
 		id: string,

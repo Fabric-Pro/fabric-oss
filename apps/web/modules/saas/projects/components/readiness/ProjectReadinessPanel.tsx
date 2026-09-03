@@ -9,6 +9,7 @@ import { useOrganizationContext } from "@saas/organizations/hooks/use-organizati
 import {
 	resolveProjectTabs,
 	useProjectTabCustomization,
+	useProjectTabGates,
 } from "@saas/projects/lib/project-tab-preferences";
 import { tabs as PROJECT_TABS } from "@saas/projects/lib/project-tabs";
 import { orpcClient } from "@shared/lib/orpc-client";
@@ -410,15 +411,17 @@ function ReadinessPanelBody() {
 	 * bar's own hook, so this costs no extra requests.
 	 */
 	const tabCustomization = useProjectTabCustomization({ projectId });
+	const tabGates = useProjectTabGates();
 	const reachableTabIds = useMemo(
 		() =>
 			new Set(
 				resolveProjectTabs(PROJECT_TABS, {
 					config: tabCustomization.config,
 					prefs: tabCustomization.prefs,
+					gates: tabGates,
 				}).map((tab) => tab.id as string),
 			),
-		[tabCustomization.config, tabCustomization.prefs],
+		[tabCustomization.config, tabCustomization.prefs, tabGates],
 	);
 
 	const setPhase = useMutation({

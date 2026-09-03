@@ -25,6 +25,8 @@ import {
 	GET_STARTED_GROUPS,
 	type GsContext,
 	type GsItem,
+	type GsRuntimeGates,
+	isGsEntryEnabled,
 } from "../lib/get-started-registry";
 
 /** Where you can read the full product documentation. */
@@ -41,6 +43,15 @@ type Props = {
 	 * pointing at a hidden tab would "Show me" an absent anchor.
 	 */
 	isTabVisible?: (tab: string) => boolean;
+	/**
+	 * Flag values the registry cannot resolve for itself, because they are
+	 * scoped to the viewer's organization rather than to the build. Required:
+	 * an absent object throws — `isGsEntryEnabled` reads
+	 * `gates[entry.runtimeGate]` on the first runtime-gated item, so a caller
+	 * that forgot to pass it fails loudly instead of silently hiding an entry
+	 * from an organization that has the feature.
+	 */
+	gates: GsRuntimeGates;
 };
 
 function activeContextFor(pathname: string | null): GsContext {
@@ -60,6 +71,7 @@ export function GetStartedDrawer({
 	onShowComponent,
 	onTourPage,
 	isTabVisible,
+	gates,
 }: Props) {
 	const t = useTranslations("onboarding.getStarted");
 	const pathname = usePathname();
@@ -77,7 +89,9 @@ export function GetStartedDrawer({
 	// Active context first, then the rest.
 	const orderedGroups = useMemo(() => {
 		const isVisible = (item: GsItem) => {
-			if (item.enabled === false) {
+			// Covers BOTH the build-time `enabled` and the per-request
+			// `runtimeGate` — one call, so neither can be forgotten later.
+			if (!isGsEntryEnabled(item, gates)) {
 				return false;
 			}
 			if (item.requiresRole === "admin" && !isAdmin) {
@@ -107,7 +121,7 @@ export function GetStartedDrawer({
 			const bw = b.group.context === activeContext ? 0 : 1;
 			return aw - bw;
 		});
-	}, [activeContext, isOrgContext, isAdmin, isTabVisible]);
+	}, [activeContext, isOrgContext, isAdmin, isTabVisible, gates]);
 
 	const openHref = (item: GsItem) => {
 		if (item.href) {

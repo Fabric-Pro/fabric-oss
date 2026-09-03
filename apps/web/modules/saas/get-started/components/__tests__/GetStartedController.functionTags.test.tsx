@@ -136,9 +136,12 @@ vi.mock("@saas/shared/components/FeatureFlagProvider", () => ({
 	// would. A plain `() => flagValue` mock has no hook slot of its own and
 	// would make the "loading -> eligible transition" test below pass
 	// regardless of whether the real bug is present.
-	useFeatureFlag: () => {
+	useFeatureFlag: (key: string) => {
 		const [value] = useMockFlagState(flagValue);
-		return value;
+		// Publishing Suite is a different gate from the one these tests drive.
+		// Pinning it off keeps toggling the role-tag flag from switching it on
+		// as a side effect.
+		return key === "PUBLISHING_SUITE" ? false : value;
 	},
 }));
 vi.mock("@saas/shared/components/RoleTagSnapshotProvider", () => ({

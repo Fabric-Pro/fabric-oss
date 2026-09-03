@@ -9,8 +9,10 @@
  * admin can, which is the complaint that opened this ticket.
  */
 
+import { FeatureFlagProvider } from "@saas/shared/components/FeatureFlagProvider";
 import { render, screen } from "@testing-library/react";
 import { BotIcon, MapIcon, NetworkIcon } from "lucide-react";
+import type { ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CustomizeProjectTabsDialog } from "../CustomizeProjectTabsDialog";
 import { ProjectTabVisibilitySettings } from "../ProjectTabVisibilitySettings";
@@ -27,11 +29,21 @@ afterEach(() => {
 	vi.unstubAllEnvs();
 });
 
+// Both surfaces resolve Layer 0 through `useProjectTabGates`, which reads the
+// Publishing gate from context and throws without a provider. Atlas is the tab
+// under test here and stays env-gated, so Publishing is simply held off.
+const renderWithFlags = (ui: ReactNode) =>
+	render(
+		<FeatureFlagProvider value={{ PUBLISHING_SUITE: false }}>
+			{ui}
+		</FeatureFlagProvider>,
+	);
+
 describe("a tab this deployment does not offer", () => {
 	it("is not listed as admin-hidden in the customize dialog", () => {
 		vi.stubEnv("NEXT_PUBLIC_FABRIC_FEATURE_ATLAS", "false");
 
-		render(
+		renderWithFlags(
 			<CustomizeProjectTabsDialog
 				open
 				onOpenChange={() => {}}
@@ -50,7 +62,7 @@ describe("a tab this deployment does not offer", () => {
 	it("gets no switch in the admin panel, because saving one would do nothing", () => {
 		vi.stubEnv("NEXT_PUBLIC_FABRIC_FEATURE_ATLAS", "false");
 
-		render(
+		renderWithFlags(
 			<ProjectTabVisibilitySettings
 				tabs={TABS}
 				config={null}
@@ -69,7 +81,7 @@ describe("a tab an admin actually hid", () => {
 	it("is listed in the dialog with the route to turning it back on", () => {
 		vi.stubEnv("NEXT_PUBLIC_FABRIC_FEATURE_ATLAS", "true");
 
-		render(
+		renderWithFlags(
 			<CustomizeProjectTabsDialog
 				open
 				onOpenChange={() => {}}

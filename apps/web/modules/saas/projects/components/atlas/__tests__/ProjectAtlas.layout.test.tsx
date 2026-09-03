@@ -313,6 +313,7 @@ vi.mock("../AtlasModeToggle", () => ({
 }));
 
 // Import AFTER mocks so the component picks up the stubs.
+import { FeatureFlagProvider } from "@saas/shared/components/FeatureFlagProvider";
 import { ProjectAtlas } from "../ProjectAtlas";
 
 // ----------------------------------------------------------------------------
@@ -329,7 +330,12 @@ async function renderGraphView() {
 	const user = userEvent.setup();
 	const utils = render(
 		<QueryClientProvider client={queryClient}>
-			<ProjectAtlas projectId="proj-1" />
+			{/* Stands in for the `(saas)/app` layout: the Atlas header's
+			    page-tour launcher reads a per-organization flag, and the hook
+			    throws rather than defaulting when none is supplied. */}
+			<FeatureFlagProvider value={{ PUBLISHING_SUITE: false }}>
+				<ProjectAtlas projectId="proj-1" />
+			</FeatureFlagProvider>
 		</QueryClientProvider>,
 	);
 	// READY state lands on the Overview dashboard first.
@@ -463,7 +469,9 @@ describe("ProjectAtlas — floating node panel", () => {
 		const user = userEvent.setup();
 		render(
 			<QueryClientProvider client={queryClient}>
-				<ProjectAtlas projectId="proj-1" />
+				<FeatureFlagProvider value={{ PUBLISHING_SUITE: false }}>
+					<ProjectAtlas projectId="proj-1" />
+				</FeatureFlagProvider>
 			</QueryClientProvider>,
 		);
 		await screen.findByTestId("overview-stub");

@@ -196,7 +196,9 @@ export interface FlagOverrides {
 
 /**
  * Resolve one flag. Order is org override > global override > env var >
- * registry default.
+ * registry default — but the org level applies only to a flag whose
+ * definition declares `orgScopable`; every other flag resolves as if no org
+ * level were ever supplied.
  *
  * At BOTH override levels, `undefined` means "no row", which is distinct from
  * `false` ("an operator explicitly turned it off") — the latter must beat every
@@ -214,7 +216,21 @@ export function resolveFlag(
 	overrides: FlagOverrides,
 	env: NodeJS.ProcessEnv = process.env,
 ): { enabled: boolean; source: FlagSource } {
-	if (overrides.org !== undefined) {
+	// Typed explicitly as `FeatureFlagDefinition` rather than left as the
+	// indexed-access union `(typeof FEATURE_FLAG_REGISTRY)[FeatureFlagKey]`:
+	// most entries never write `orgScopable` at all (it is optional), so that
+	// union's members do not uniformly have the property and a direct
+	// `FEATURE_FLAG_REGISTRY[key].orgScopable` fails to compile.
+	const definition: FeatureFlagDefinition = FEATURE_FLAG_REGISTRY[key];
+
+	// `orgScopable` is a constraint, not a label. A flag that does not declare
+	// it has no meaningful per-organization variant — several are instance-wide
+	// rollback levers — and an override row for one can only have arrived by a
+	// direct write. Ignoring it here rather than at each caller is deliberate:
+	// the client provider and the server gates both resolve through this
+	// function, and a check in only one of them would let the UI and the
+	// runtime disagree about the same row.
+	if (overrides.org !== undefined && definition.orgScopable) {
 		return { enabled: overrides.org, source: "org-override" };
 	}
 
@@ -222,7 +238,6 @@ export function resolveFlag(
 		return { enabled: overrides.global, source: "override" };
 	}
 
-	const definition = FEATURE_FLAG_REGISTRY[key];
 	const raw = env[definition.envVar];
 	if (raw !== undefined) {
 		return { enabled: parseOptInFlag(raw), source: "env" };

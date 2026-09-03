@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
+	FEATURE_FLAG_KEYS,
 	FEATURE_FLAG_REGISTRY,
+	type FeatureFlagDefinition,
 	isFeatureFlagKey,
 	resolveFlag,
 } from "../lib/feature-flag-registry";
@@ -565,5 +567,37 @@ describe("PUBLISHING_SUITE org-scoped resolution", () => {
 				},
 			),
 		).toEqual({ enabled: true, source: "env" });
+	});
+});
+
+describe("orgScopable is a constraint, not documentation", () => {
+	it("an org override is ignored for a flag not marked orgScopable", () => {
+		// Pick any registered key whose definition omits `orgScopable`. A row
+		// for it can only arrive by a direct write; the resolver must not act
+		// on one, or a single stray row re-skins that organization's whole UI
+		// once getAllFlagsForOrganization feeds every key to the provider.
+		const key = FEATURE_FLAG_KEYS.find(
+			(k) =>
+				!(FEATURE_FLAG_REGISTRY[k] as FeatureFlagDefinition)
+					.orgScopable,
+		);
+		if (!key) {
+			throw new Error(
+				"precondition failed: every registry entry is orgScopable, so this test proves nothing",
+			);
+		}
+
+		const withOrgRow = resolveFlag(key, { org: true, global: false }, {});
+		const withoutOrgRow = resolveFlag(key, { global: false }, {});
+
+		expect(withOrgRow).toEqual(withoutOrgRow);
+		expect(withOrgRow.source).not.toBe("org-override");
+	});
+
+	it("an org override still wins for a flag that IS orgScopable", () => {
+		expect(FEATURE_FLAG_REGISTRY.PUBLISHING_SUITE.orgScopable).toBe(true);
+		expect(
+			resolveFlag("PUBLISHING_SUITE", { org: true, global: false }, {}),
+		).toEqual({ enabled: true, source: "org-override" });
 	});
 });
