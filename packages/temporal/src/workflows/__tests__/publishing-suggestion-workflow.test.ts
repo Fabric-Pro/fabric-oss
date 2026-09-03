@@ -21,6 +21,10 @@
  */
 
 import { resolve } from "node:path";
+import {
+	buildPublishingPreferencesSnapshot,
+	type PublishingPreferencesSnapshot,
+} from "@repo/database";
 import { TestWorkflowEnvironment } from "@temporalio/testing";
 import {
 	bundleWorkflowCode,
@@ -28,10 +32,6 @@ import {
 	type WorkflowBundleWithSourceMap,
 } from "@temporalio/worker";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import {
-	buildPublishingPreferencesSnapshot,
-	type PublishingPreferencesSnapshot,
-} from "@repo/database";
 import type {
 	PublishingSuggestionStatus,
 	PublishingSuggestionWorkflowInput,

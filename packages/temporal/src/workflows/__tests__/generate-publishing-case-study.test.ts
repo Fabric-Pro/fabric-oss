@@ -65,6 +65,7 @@ beforeEach(() => {
 	// Reset too: a case that reads `log.error.mock.calls[0]` would otherwise
 	// read the previous case's line and pass on the wrong evidence.
 	log.error.mockReset();
+	log.info.mockReset();
 });
 
 describe("generatePublishingCaseStudyWorkflow", () => {
@@ -114,6 +115,7 @@ describe("generatePublishingCaseStudyWorkflow", () => {
 		activityStubs.generateCaseStudyActivity.mockResolvedValue({
 			status: "SUPERSEDED",
 			seededWorkingDraft: false,
+			refusalReason: "superseded",
 		});
 
 		const result = await generatePublishingCaseStudyWorkflow(INPUT);
@@ -125,6 +127,50 @@ describe("generatePublishingCaseStudyWorkflow", () => {
 		expect(
 			activityStubs.markCaseStudyFailedActivity,
 		).not.toHaveBeenCalled();
+	});
+
+	it("does not call an archived project's refusal a supersession", async () => {
+		// The status is still SUPERSEDED — renaming it would change a branch
+		// condition and break replay for anything already in flight — so the
+		// truth has to reach the operator some other way. It reaches them here.
+		activityStubs.generateCaseStudyActivity.mockResolvedValue({
+			status: "SUPERSEDED",
+			seededWorkingDraft: false,
+			refusalReason: "project_ineligible",
+		});
+
+		await generatePublishingCaseStudyWorkflow(INPUT);
+
+		const [line, bag] = log.info.mock.calls.at(-1) as [
+			string,
+			Record<string, unknown>,
+		];
+		expect(line).not.toMatch(/supersed/i);
+		expect(bag).toMatchObject({ reason: "project_ineligible" });
+	});
+
+	it("survives a history recorded before the reason field existed", async () => {
+		// The replay case. `refusalReason` is optional precisely so an
+		// execution started by the previous build — whose history has no such
+		// field — replays without the workflow reading `undefined` into a log
+		// line or, worse, branching differently on it.
+		activityStubs.generateCaseStudyActivity.mockResolvedValue({
+			status: "SUPERSEDED",
+			seededWorkingDraft: false,
+		});
+
+		const result = await generatePublishingCaseStudyWorkflow(INPUT);
+
+		expect(result).toEqual({
+			status: "SUPERSEDED",
+			seededWorkingDraft: false,
+		});
+		expect(
+			activityStubs.markCaseStudyFailedActivity,
+		).not.toHaveBeenCalled();
+		expect(log.info.mock.calls.at(-1)?.[1]).toMatchObject({
+			reason: "unknown",
+		});
 	});
 
 	it("marks the row FAILED rather than throwing", async () => {

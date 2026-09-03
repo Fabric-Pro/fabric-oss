@@ -542,7 +542,14 @@ export function checkIterationBudget(
 	if (totalTokensUsed > maxTokens) {
 		return {
 			withinBudget: false,
-			reason: `Token budget exceeded: ${totalTokensUsed.toLocaleString()}/${maxTokens.toLocaleString()} tokens used`,
+			// Pinned to en-US rather than the host's locale. This string is
+			// recorded on a run and read by whoever is working out why an agent
+			// stopped, so it must not change shape with the machine that
+			// produced it — a Russian-locale host formats the same number as
+			// "12 000" with a narrow no-break space, which reads as a different
+			// value and does not match a search for "12,000". Same convention as
+			// `ai-chat-attachment.ts`, whose marker is parsed back.
+			reason: `Token budget exceeded: ${totalTokensUsed.toLocaleString("en-US")}/${maxTokens.toLocaleString("en-US")} tokens used`,
 			totalTokensUsed,
 			iterationsUsed,
 			remainingTokens: 0,

@@ -77,15 +77,23 @@ export async function generatePublishingBlogPostWorkflow(
 			guidance: input.guidance,
 		});
 
-		// SUPERSEDED is a normal outcome, not a failure: a deadline sweep
-		// reclaimed this attempt while the model ran and a newer one owns the
-		// content type. Marking it FAILED would be a write to a row this run no
-		// longer owns — the CAS would refuse it, and the log line would be
-		// untrue.
+		// A non-READY status is a normal outcome, not a failure. The write was
+		// refused — usually because a deadline sweep reclaimed this attempt and
+		// a newer one owns the content type.
+		// Marking it FAILED would be a write to a row this run no longer owns:
+		// the CAS would refuse it, and the log line would be untrue.
+		//
+		// The STATUS is deliberately still "SUPERSEDED" for every refusal.
+		// Renaming it would change a branch condition, and an execution already
+		// in flight would replay against a history that says "SUPERSEDED", take
+		// the other branch, and issue a command the history does not contain
+		// (TMPRL1100). So the honest part travels as `refusalReason`, a new
+		// OPTIONAL field — absent on any history recorded before it existed.
 		if (result.status === "SUPERSEDED") {
-			log.info("[publishing-blog-post] attempt superseded", {
+			log.info("[publishing-blog-post] attempt did not commit", {
 				draftId: input.draftId,
 				topicId: input.topicId,
+				reason: result.refusalReason ?? "unknown",
 			});
 			return { status: "SUPERSEDED", seededWorkingDraft: false };
 		}

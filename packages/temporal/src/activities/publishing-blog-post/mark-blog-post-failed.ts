@@ -15,8 +15,7 @@
  * report a crash where there was only a race the database already settled.
  */
 
-import { failTopicDraft } from "@repo/database";
-import { logger } from "@repo/logs";
+import { failTopicDraft, logDraftRefusal } from "@repo/database";
 
 export interface MarkBlogPostFailedInput {
 	draftId: string;
@@ -27,16 +26,22 @@ export interface MarkBlogPostFailedInput {
 export async function markBlogPostFailedActivity(
 	input: MarkBlogPostFailedInput,
 ): Promise<void> {
-	const { persisted } = await failTopicDraft({
+	const commit = await failTopicDraft({
 		id: input.draftId,
 		projectId: input.projectId,
 		error: input.message,
 	});
 
-	if (!persisted) {
-		logger.info(
-			"[publishing-blog-post] failure marker skipped; attempt was already terminal",
-			{ draftId: input.draftId, projectId: input.projectId },
+	if (!commit.persisted) {
+		// Why the marker was skipped, not just that it was. A superseded
+		// attempt is routine; an archived project is somebody's action.
+		logDraftRefusal(
+			"[publishing-blog-post] failure marker skipped",
+			commit.reason,
+			{
+				draftId: input.draftId,
+				projectId: input.projectId,
+			},
 		);
 	}
 }

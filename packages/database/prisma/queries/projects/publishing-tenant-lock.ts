@@ -15,6 +15,51 @@
  * that still looks defended at the site anyone happens to read.
  */
 
+/**
+ * Why a terminal write to a generation row was refused.
+ *
+ * Three separate things used to arrive at the caller as the same bare
+ * `{ persisted: false }`, and every caller in the suite logged all three as
+ * "superseded". Only one of them is:
+ *
+ *  - `superseded` — the CAS lost. A deadline sweep reclaimed this attempt while
+ *    the model ran and a newer one owns the content type now. Routine, and the
+ *    run is right to say nothing more about it.
+ *  - `project_ineligible` — the project was archived or soft-deleted while the
+ *    attempt was in flight, so `lockProjectTenant` refuses it. Nothing
+ *    superseded anything; somebody archived a project mid-generation, and the
+ *    row stays GENERATING for the expiry reclaim to pick up if the project
+ *    comes back.
+ *  - `tenant_changed` — the stored row's tenant tuple no longer matches the
+ *    project's. Defence in depth against a transfer landing mid-run, which no
+ *    production code path can currently perform.
+ *  - `attempt_missing` — the attempt row is not there at all. Kept separate from
+ *    `tenant_changed` even though the same guard catches both, because a row
+ *    that does not exist has no tenant tuple to have changed: reporting it as a
+ *    transfer would be a statement about something that is not there. Reachable
+ *    when the topic is deleted mid-run and takes its attempts with it.
+ *
+ * The distinction is not cosmetic. An operator reading "attempt superseded"
+ * looks for the newer attempt that supposedly took over; for two of these three
+ * there is no such attempt, and the search ends in confusion rather than in an
+ * answer.
+ */
+export type DraftCommitRefusal =
+	| "superseded"
+	| "project_ineligible"
+	| "tenant_changed"
+	| "attempt_missing";
+
+/**
+ * The result of a terminal write to a generation row.
+ *
+ * A refusal is NOT an error — all three reasons are states the system reaches
+ * legitimately — so this is a return value rather than a throw.
+ */
+export type DraftCommitOutcome =
+	| { persisted: true }
+	| { persisted: false; reason: DraftCommitRefusal };
+
 /** The Project columns the lock reads. */
 interface LockedProject {
 	organizationId: string | null;

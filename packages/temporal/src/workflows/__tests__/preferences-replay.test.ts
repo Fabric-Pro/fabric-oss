@@ -27,6 +27,7 @@
  */
 
 import { resolve } from "node:path";
+import { buildPublishingPreferencesSnapshot } from "@repo/database";
 import { TestWorkflowEnvironment } from "@temporalio/testing";
 import {
 	bundleWorkflowCode,
@@ -34,7 +35,6 @@ import {
 	type WorkflowBundleWithSourceMap,
 } from "@temporalio/worker";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { buildPublishingPreferencesSnapshot } from "@repo/database";
 import type { PublishingSuggestionWorkflowInput } from "../publishing-suggestion-generation-workflow";
 
 const WORKFLOWS_PATH = resolve(__dirname, "..");

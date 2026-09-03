@@ -11,6 +11,7 @@ const mockProjectFindMany = vi.fn();
 const mockGetLastCountedPublishingRuns = vi.fn(async () => new Map());
 
 vi.mock("@repo/database", () => ({
+	logDraftRefusal: vi.fn(),
 	db: {
 		project: { findMany: (...a: unknown[]) => mockProjectFindMany(...a) },
 		// Every page reads settings for the ids on that page (see

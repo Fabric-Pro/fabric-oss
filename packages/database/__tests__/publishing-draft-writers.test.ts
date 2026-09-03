@@ -461,7 +461,15 @@ describe("completeTopicDraft", () => {
 			promptVersion: null,
 		});
 
-		expect(result).toEqual({ persisted: false });
+		// The REASON, not just the refusal. All three refusals used to be
+		// the same bare `{ persisted: false }`, and every caller in the
+		// suite logged all three as "superseded" — which sent an operator
+		// looking for a newer attempt that in two of the three cases does
+		// not exist.
+		expect(result).toEqual({
+			persisted: false,
+			reason: "tenant_changed",
+		});
 		expect(h.draftUpdateMany).not.toHaveBeenCalled();
 	});
 
@@ -479,8 +487,72 @@ describe("completeTopicDraft", () => {
 			promptVersion: null,
 		});
 
-		// Supersession is a normal outcome, not an error.
-		expect(result).toEqual({ persisted: false });
+		// Supersession is a normal outcome, not an error — and it is the ONE
+		// refusal that word is true of.
+		expect(result).toEqual({ persisted: false, reason: "superseded" });
+	});
+
+	it("names an archived project as such, not as a supersession", async () => {
+		// The case that had no name before this. Somebody archives a project
+		// while a generation is in flight; the lock refuses, and the caller used
+		// to log "attempt superseded" — sending whoever read that line looking
+		// for a newer attempt that does not exist. The row stays GENERATING on
+		// purpose, for the expiry reclaim to pick up if the project comes back.
+		h.queryRaw.mockResolvedValue([
+			{
+				organizationId: "org-1",
+				userId: "owner-1",
+				status: "ARCHIVED",
+				deletedAt: null,
+			},
+		]);
+
+		const result = await completeTopicDraft({
+			id: "d1",
+			projectId: "project-1",
+			content: {},
+			sourceRefs: {},
+			model: null,
+			promptSource: "BOUND",
+			promptId: null,
+			promptVersion: null,
+		});
+
+		expect(result).toEqual({
+			persisted: false,
+			reason: "project_ineligible",
+		});
+		expect(h.draftUpdateMany).not.toHaveBeenCalled();
+	});
+
+	it("distinguishes a soft-deleted project from an archived one only by the log", async () => {
+		// Both are `project_ineligible`: the lock's eligibility rule is one
+		// predicate, and splitting the reason further would promise a
+		// distinction the query does not make.
+		h.queryRaw.mockResolvedValue([
+			{
+				organizationId: "org-1",
+				userId: "owner-1",
+				status: "ACTIVE",
+				deletedAt: new Date(),
+			},
+		]);
+
+		const result = await completeTopicDraft({
+			id: "d1",
+			projectId: "project-1",
+			content: {},
+			sourceRefs: {},
+			model: null,
+			promptSource: "BOUND",
+			promptId: null,
+			promptVersion: null,
+		});
+
+		expect(result).toEqual({
+			persisted: false,
+			reason: "project_ineligible",
+		});
 	});
 });
 
@@ -528,7 +600,10 @@ describe("failTopicDraft", () => {
 			error: "e",
 		});
 
-		expect(result).toEqual({ persisted: false });
+		expect(result).toEqual({
+			persisted: false,
+			reason: "tenant_changed",
+		});
 		expect(h.draftUpdateMany).not.toHaveBeenCalled();
 	});
 });

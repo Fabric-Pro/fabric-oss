@@ -66,6 +66,7 @@ const listTopicDecisions = vi.fn();
 const completeTopicDraft = vi.fn();
 const seedWorkingDraftIfAbsent = vi.fn();
 vi.mock("@repo/database", () => ({
+	logDraftRefusal: vi.fn(),
 	db: {
 		publishingTopic: {
 			findFirst: (...a: unknown[]) => topicFindFirst(...a),
@@ -654,6 +655,10 @@ describe("generateStakeholderEmailActivity — the write surface", () => {
 			"db",
 			"getBoundPromptForAgent",
 			"listTopicDecisions",
+			// NOT a write. `logDraftRefusal` only formats and emits the log
+			// line for a refused terminal write; it takes no client and
+			// touches no row. Added deliberately, as this guard requires.
+			"logDraftRefusal",
 			"seedWorkingDraftIfAbsent",
 		]);
 	});
@@ -730,11 +735,20 @@ describe("generateStakeholderEmailActivity — the write surface", () => {
 	});
 
 	it("does not seed after a lost CAS, and reports SUPERSEDED rather than throwing", async () => {
-		completeTopicDraft.mockResolvedValue({ persisted: false });
+		// A refusal now carries WHICH fence refused. The reasonless shape
+		// this used to mock is no longer one the writer can return, and it
+		// passed the old assertion while handing the reporter `undefined`.
+		completeTopicDraft.mockResolvedValue({
+			persisted: false,
+			reason: "superseded",
+		});
 
+		// The reason rides along on an OPTIONAL field, so a history recorded
+		// before it existed still replays.
 		await expect(run()).resolves.toEqual({
 			status: "SUPERSEDED",
 			seededWorkingDraft: false,
+			refusalReason: "superseded",
 		});
 		expect(seedWorkingDraftIfAbsent).not.toHaveBeenCalled();
 	});

@@ -19,6 +19,7 @@ import { ORPCError } from "@orpc/client";
 import {
 	failTopicDraft,
 	listTopicDrafts,
+	logDraftRefusal,
 	saveWorkingDraft,
 	startTopicDraftAttempt,
 	updateWorkingDraftBody,
@@ -170,7 +171,12 @@ export const generateCaseStudyProcedure = tenantProtectedProcedure
 			// Roll the row back, or the UI polls a GENERATING row no workflow will
 			// ever complete — and the partial unique index refuses every retry
 			// until the deadline sweep clears it.
-			await failTopicDraft({
+			// The rollback can itself be refused, and silently dropping that is
+			// how a row ends up GENERATING with nothing recorded about why: the
+			// caller gets a 500, the panel keeps polling, and the deadline sweep
+			// is the only thing that ever clears it. Reported, not retried —
+			// every refusal reason means this attempt is no longer ours to write.
+			const rollback = await failTopicDraft({
 				id: attempt.draftId,
 				projectId: project.id,
 				error:
@@ -178,6 +184,13 @@ export const generateCaseStudyProcedure = tenantProtectedProcedure
 						? `Could not start generation: ${error.message}`
 						: "Could not start generation",
 			});
+			if (!rollback.persisted) {
+				logDraftRefusal(
+					"[publishing-case-study] start rollback skipped",
+					rollback.reason,
+					{ draftId: attempt.draftId, projectId: project.id },
+				);
+			}
 			throw new ORPCError("INTERNAL_SERVER_ERROR", {
 				message: "Could not start the case study",
 			});

@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const failPlanningAnalysis = vi.fn();
 vi.mock("@repo/database", () => ({
+	logDraftRefusal: vi.fn(),
 	failPlanningAnalysis: (...a: unknown[]) => failPlanningAnalysis(...a),
 }));
 vi.mock("@repo/logs", () => ({
@@ -34,7 +35,13 @@ describe("markPlanningAnalysisFailedActivity", () => {
 		// A deadline sweep reclaimed the attempt while the model ran, so the CAS
 		// refuses. Throwing would make the workflow's last-resort catch report a
 		// crash where there was only a race the database already settled.
-		failPlanningAnalysis.mockResolvedValue({ persisted: false });
+		// A refusal now carries WHICH fence refused. The reasonless shape
+		// this used to mock is no longer one the writer can return, and it
+		// passed the old assertion while handing the reporter `undefined`.
+		failPlanningAnalysis.mockResolvedValue({
+			persisted: false,
+			reason: "superseded",
+		});
 
 		await expect(
 			markPlanningAnalysisFailedActivity({

@@ -28,6 +28,8 @@ import { reconcileTopicQuestions } from "./publishing-decisions";
 // thing that stops one org's row being written under another's identity is the
 // worst duplication in this subsystem.
 import {
+	type DraftCommitOutcome,
+	type DraftCommitRefusal,
 	isUniqueViolation,
 	lockProjectTenant,
 	sameTenant,
@@ -216,14 +218,21 @@ export async function completePlanningAnalysis(input: {
 	// passes a value, so an explicit array costs it nothing and removes a mode
 	// that can silently wipe a topic's open questions.
 	questions: ReconcilableQuestion[];
-}): Promise<{ persisted: boolean; reconciled: ReconcileOutcome | null }> {
+}): Promise<
+	| { persisted: true; reconciled: ReconcileOutcome | null }
+	| { persisted: false; reason: DraftCommitRefusal; reconciled: null }
+> {
 	return db.$transaction(async (tx) => {
 		const tenant = await lockProjectTenant(
 			tx as unknown as Parameters<typeof lockProjectTenant>[0],
 			input.projectId,
 		);
 		if (!tenant) {
-			return { persisted: false, reconciled: null };
+			return {
+				persisted: false,
+				reason: "project_ineligible",
+				reconciled: null,
+			};
 		}
 
 		// TENANT FENCE. The lock above proves the project is still eligible; it
@@ -242,8 +251,19 @@ export async function completePlanningAnalysis(input: {
 				version: true,
 			},
 		});
-		if (!stored || !sameTenant(stored, tenant)) {
-			return { persisted: false, reconciled: null };
+		if (!stored) {
+			return {
+				persisted: false,
+				reason: "attempt_missing",
+				reconciled: null,
+			};
+		}
+		if (!sameTenant(stored, tenant)) {
+			return {
+				persisted: false,
+				reason: "tenant_changed",
+				reconciled: null,
+			};
 		}
 
 		const { count } = await tx.publishingTopicPlanningAnalysis.updateMany({
@@ -268,7 +288,7 @@ export async function completePlanningAnalysis(input: {
 		if (count === 0) {
 			// A reclaimed attempt. Its analysis is not the one the topic will show,
 			// so its questions must not be minted either.
-			return { persisted: false, reconciled: null };
+			return { persisted: false, reason: "superseded", reconciled: null };
 		}
 
 		// Reconcile inside THIS transaction. Outside it, a crash between the READY
@@ -310,22 +330,25 @@ export async function failPlanningAnalysis(input: {
 	id: string;
 	projectId: string;
 	error: string;
-}): Promise<{ persisted: boolean }> {
+}): Promise<DraftCommitOutcome> {
 	return db.$transaction(async (tx) => {
 		const tenant = await lockProjectTenant(
 			tx as unknown as Parameters<typeof lockProjectTenant>[0],
 			input.projectId,
 		);
 		if (!tenant) {
-			return { persisted: false };
+			return { persisted: false, reason: "project_ineligible" };
 		}
 
 		const stored = await tx.publishingTopicPlanningAnalysis.findFirst({
 			where: { id: input.id, projectId: input.projectId },
 			select: { organizationId: true, userId: true },
 		});
-		if (!stored || !sameTenant(stored, tenant)) {
-			return { persisted: false };
+		if (!stored) {
+			return { persisted: false, reason: "attempt_missing" };
+		}
+		if (!sameTenant(stored, tenant)) {
+			return { persisted: false, reason: "tenant_changed" };
 		}
 
 		const { count } = await tx.publishingTopicPlanningAnalysis.updateMany({
@@ -340,7 +363,9 @@ export async function failPlanningAnalysis(input: {
 				executionTimeoutAt: null,
 			},
 		});
-		return { persisted: count > 0 };
+		return count > 0
+			? { persisted: true }
+			: { persisted: false, reason: "superseded" };
 	});
 }
 

@@ -522,7 +522,11 @@ describe("terminal writes — cross-tenant fence", () => {
 
 		// Phase 2A-3: the fence refuses before reconciliation ever runs, so
 		// `reconciled` is null rather than an outcome — see `publishing-decisions.ts`.
-		expect(result).toEqual({ persisted: false, reconciled: null });
+		expect(result).toEqual({
+			persisted: false,
+			reason: "tenant_changed",
+			reconciled: null,
+		});
 		expect(analysisUpdateMany).not.toHaveBeenCalled();
 	});
 
@@ -575,7 +579,11 @@ describe("terminal writes — cross-tenant fence", () => {
 		});
 
 		// Phase 2A-3: the fence refuses before reconciliation ever runs.
-		expect(result).toEqual({ persisted: false, reconciled: null });
+		expect(result).toEqual({
+			persisted: false,
+			reason: "tenant_changed",
+			reconciled: null,
+		});
 		expect(analysisUpdateMany).not.toHaveBeenCalled();
 	});
 
@@ -590,7 +598,13 @@ describe("terminal writes — cross-tenant fence", () => {
 			error: "model timeout",
 		});
 
-		expect(result).toEqual({ persisted: false });
+		// The reason names WHICH fence refused. A bare `persisted: false` read
+		// the same for a cross-tenant row, an archived project and a lost CAS,
+		// and every caller in the suite logged all three as "superseded".
+		expect(result).toEqual({
+			persisted: false,
+			reason: "tenant_changed",
+		});
 		expect(analysisUpdateMany).not.toHaveBeenCalled();
 		// It must LOCK, not merely filter: without the lock the tuple it compares
 		// can change between the read and the write.
