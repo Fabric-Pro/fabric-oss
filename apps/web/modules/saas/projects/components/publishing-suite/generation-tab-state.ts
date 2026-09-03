@@ -16,7 +16,9 @@
  */
 
 import {
+	EXTRA_RESTRICTING_KINDS_BY_POST_TYPE,
 	isRestrictingThread,
+	restrictsPostType,
 	SAFETY_CRITICAL_KINDS,
 } from "@repo/utils/publishing-restrictions";
 import type { PlanningAnalysisDocument } from "./planning-analysis-content";
@@ -152,11 +154,26 @@ export interface Restrictions {
  *
  * Re-exported so this module stays the one import site for everything about
  * generation tab state.
+ *
+ * `restrictsPostType` rides along for the same reason. It answers the
+ * per-tab question — "does this thread constrain a draft of THIS type" — which
+ * `GenerationPanel` asks once per panel, where `isRestrictingThread` answers the
+ * type-agnostic one the badges are computed from. Both predicates, one import
+ * site, so a panel cannot reach for the wrong one by reaching for the nearer
+ * one.
  */
-export { isRestrictingThread };
+export { isRestrictingThread, restrictsPostType };
 
 /**
  * What the topic's OPEN questions restrict, across the whole thread set.
+ *
+ * Feeds `needsAttention` — the BADGE. The per-panel LIST is built separately,
+ * in `GenerationPanel`, from `restrictsPostType`. Both are needed and neither
+ * substitutes for the other, which was learned the expensive way in 2C: fixing
+ * only the list left the panel warning about an open `CLAIM_STRENGTH` question
+ * while the tab strip beside it read a plain "Available". That is under-warning
+ * at the one level whose stated purpose is to be seen on a tab the reader has
+ * NOT opened, so it is the worse direction of the two to get wrong.
  */
 export function resolveRestrictions(
 	threads: readonly RestrictionThread[],
@@ -165,6 +182,19 @@ export function resolveRestrictions(
 	const byPostType = new Set<string>();
 
 	for (const thread of threads) {
+		// The per-type extras first, and NOT as an `else` — a thread can be
+		// restricting for every type by its kind and named by a type's extra
+		// set at the same time, and the shared branches below `continue`.
+		if (thread.root.kind === "QUESTION" && thread.root.status === "OPEN") {
+			const kind = thread.root.decisionKind ?? "";
+			for (const [postType, extra] of Object.entries(
+				EXTRA_RESTRICTING_KINDS_BY_POST_TYPE,
+			)) {
+				if (extra.has(kind)) {
+					byPostType.add(postType);
+				}
+			}
+		}
 		if (!isRestrictingThread(thread)) {
 			continue;
 		}

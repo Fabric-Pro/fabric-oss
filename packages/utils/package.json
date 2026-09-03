@@ -34,6 +34,21 @@
 			"import": "./lib/publishing-blog-post-prompt.ts",
 			"default": "./lib/publishing-blog-post-prompt.ts"
 		},
+		"./publishing-case-study-prompt": {
+			"types": "./lib/publishing-case-study-prompt.ts",
+			"import": "./lib/publishing-case-study-prompt.ts",
+			"default": "./lib/publishing-case-study-prompt.ts"
+		},
+		"./publishing-case-study-clamp": {
+			"types": "./lib/publishing-case-study-clamp.ts",
+			"import": "./lib/publishing-case-study-clamp.ts",
+			"default": "./lib/publishing-case-study-clamp.ts"
+		},
+		"./publishing-case-study-body": {
+			"types": "./lib/publishing-case-study-body.ts",
+			"import": "./lib/publishing-case-study-body.ts",
+			"default": "./lib/publishing-case-study-body.ts"
+		},
 		"./publishing-planning-prompt": {
 			"types": "./lib/publishing-planning-prompt.ts",
 			"import": "./lib/publishing-planning-prompt.ts",

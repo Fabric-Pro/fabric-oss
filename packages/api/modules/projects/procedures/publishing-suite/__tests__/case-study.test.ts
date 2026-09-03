@@ -1,18 +1,19 @@
+import { composeCaseStudyWorkingDraftBody } from "@repo/utils/publishing-case-study-body";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-// The Temporal-side composer, by RELATIVE path on purpose: `@repo/temporal` is
-// module-mocked below, so importing the package specifier would hand back the
-// stub and the parity assertion would compare against `undefined`. This file is
-// not part of the mocked module, so it loads for real.
-import { composeWorkingDraftBody } from "../../../../../../temporal/src/activities/publishing-blog-post/build-blog-post-prompt";
 
 /**
- * `generateBlogPost`, `adoptBlogPostDraft` and `saveBlogPostBody`
- * (Fizzy #1853, Phase 2B-3).
+ * `generateCaseStudy`, `adoptCaseStudyDraft` and `saveCaseStudyBody`
+ * (Fizzy #1854, Phase 2C).
  *
- * Handler-level, mirroring `short-post.test.ts`: the procedure chain, the DB
+ * Handler-level, mirroring `blog-post.test.ts`: the procedure chain, the DB
  * layer and Temporal are all mocked, so what is under test is the handler's own
  * contract — which permission gates it, what it refuses, what it passes down,
  * and which of its several "did not start" answers each situation produces.
+ *
+ * `@repo/utils/publishing-case-study-body` is deliberately NOT mocked. The
+ * composer is the shared one the generation activity seeds with, and asserting
+ * against the real function is what makes "the adopted text is the seeded text"
+ * a checked claim rather than a comment.
  */
 
 const dbMocks = vi.hoisted(() => ({
@@ -79,15 +80,15 @@ vi.mock("../../../../../orpc/procedures", () => {
 });
 
 import {
-	adoptBlogPostDraftProcedure,
-	generateBlogPostProcedure,
-	saveBlogPostBodyProcedure,
-} from "../blog-post";
+	adoptCaseStudyDraftProcedure,
+	generateCaseStudyProcedure,
+	saveCaseStudyBodyProcedure,
+} from "../case-study";
 
 type Handled = { handler: Function; __permission: string };
-const generate = generateBlogPostProcedure as unknown as Handled;
-const adopt = adoptBlogPostDraftProcedure as unknown as Handled;
-const saveBody = saveBlogPostBodyProcedure as unknown as Handled;
+const generate = generateCaseStudyProcedure as unknown as Handled;
+const adopt = adoptCaseStudyDraftProcedure as unknown as Handled;
+const saveBody = saveCaseStudyBodyProcedure as unknown as Handled;
 
 const CONTEXT = { user: { id: "user-1" } };
 const INPUT = {
@@ -100,16 +101,24 @@ const SAVED_AT = new Date("2026-09-01T12:00:00Z");
 
 const READY_DRAFT = {
 	id: "draft-1",
-	postType: "BLOG_POST",
+	postType: "CASE_STUDY",
 	version: 2,
 	status: "READY",
 	content: {
-		title: "Faster incremental builds",
-		subtitle: "How a warm cache changed the inner loop",
-		body: "## Why this matters\n\nBuilds used to start cold.",
-		categories: ["Toolchain"],
-		keywords: ["ci-pipeline"],
-		inputsNeeded: [],
+		title: "Cutting release lead time in half",
+		body: "## Executive Summary\n\nA client shipped weekly and wanted daily.",
+		// The field names `PublishingCaseStudySchema` actually writes. An
+		// earlier fixture invented `supportingAssets` / `assetsToConfirm`,
+		// which no schema, activity or panel has ever produced — so the
+		// "leaves the publishing suggestions out" case below asserted that a
+		// body omits text no document would have contained, and would have
+		// stayed green through a composer that pasted both real asset lists
+		// into the draft.
+		confirmedAssets: ["Deployment frequency dashboard"],
+		assetsNeedingConfirmation: ["Customer quote pending approval"],
+		categories: ["Delivery"],
+		keywords: ["lead-time"],
+		inputsNeeded: ["[metric TBD]"],
 		safetyNote: null,
 	},
 };
@@ -135,7 +144,7 @@ beforeEach(() => {
 	dbMocks.listTopicDrafts.mockResolvedValue({
 		drafts: [
 			{
-				postType: "BLOG_POST",
+				postType: "CASE_STUDY",
 				latestAttempt: READY_DRAFT,
 				latestReady: READY_DRAFT,
 			},
@@ -152,7 +161,7 @@ beforeEach(() => {
 	});
 });
 
-describe("generateBlogPost", () => {
+describe("generateCaseStudy", () => {
 	it("requires the UPDATE permission, not READ", () => {
 		// Generation spends the actor's provider quota and writes a row. A read
 		// permission would let a viewer do both.
@@ -173,36 +182,39 @@ describe("generateBlogPost", () => {
 		expect(dbMocks.startTopicDraftAttempt).not.toHaveBeenCalled();
 	});
 
-	it("opens the attempt as BLOG_POST, not TWEET", async () => {
+	it("opens the attempt as CASE_STUDY, not BLOG_POST", async () => {
 		await generate.handler({ input: INPUT, context: CONTEXT });
 
 		expect(dbMocks.startTopicDraftAttempt).toHaveBeenCalledWith(
-			expect.objectContaining({ postType: "BLOG_POST" }),
+			expect.objectContaining({ postType: "CASE_STUDY" }),
 		);
 	});
 
-	it("keys the workflow on the ATTEMPT and uses the blog workflow", async () => {
+	it("keys the workflow on the ATTEMPT and uses the case study workflow", async () => {
 		await generate.handler({ input: INPUT, context: CONTEXT });
 
 		expect(temporalMocks.workflowStart).toHaveBeenCalledWith(
-			"generatePublishingBlogPostWorkflow",
+			"generatePublishingCaseStudyWorkflow",
 			expect.objectContaining({
-				workflowId: "publishing-topic-bp:draft-1",
+				workflowId: "publishing-topic-cs:draft-1",
 			}),
 		);
 	});
 
-	it("does not collide with the short post's workflow id", async () => {
-		// Both are keyed on a draft id, and draft ids are unique per attempt —
-		// but the prefixes differ too, so a reader grepping Temporal can tell
-		// the two families apart.
+	it("uses the case study's own workflow-id prefix", async () => {
+		// Asserted as a POSITIVE match on `-cs:`, deliberately unlike the blog
+		// sibling's `not.toContain("publishing-topic-sp:")`. A negative against
+		// one wrong prefix still passes when the id carries a DIFFERENT wrong
+		// prefix — copying this file from `blog-post.ts` and leaving `-bp:` in
+		// place is exactly the mistake most likely to happen here, and the
+		// sibling's form would not catch it.
 		await generate.handler({ input: INPUT, context: CONTEXT });
 
 		const [, options] = temporalMocks.workflowStart.mock.calls[0] as [
 			string,
 			{ workflowId: string },
 		];
-		expect(options.workflowId).not.toContain("publishing-topic-sp:");
+		expect(options.workflowId).toMatch(/^publishing-topic-cs:/);
 	});
 
 	it("reports an in-flight run as an answer rather than an error", async () => {
@@ -233,6 +245,22 @@ describe("generateBlogPost", () => {
 		);
 	});
 
+	it("treats an already-started workflow as in-progress, not a failure", async () => {
+		const already = new Error("already started");
+		already.name = "WorkflowExecutionAlreadyStartedError";
+		temporalMocks.workflowStart.mockRejectedValue(already);
+
+		const result = await generate.handler({
+			input: INPUT,
+			context: CONTEXT,
+		});
+
+		expect(result).toEqual({ started: false, reason: "in-progress" });
+		// The row belongs to the run that IS in flight — rolling it back would
+		// fail the attempt the caller is about to poll.
+		expect(dbMocks.failTopicDraft).not.toHaveBeenCalled();
+	});
+
 	it("stores whitespace-only guidance as null", async () => {
 		await generate.handler({
 			input: { ...INPUT, guidance: "   " },
@@ -253,9 +281,23 @@ describe("generateBlogPost", () => {
 			generate.handler({ input: INPUT, context: CONTEXT }),
 		).rejects.toMatchObject({ message: "Project not found" });
 	});
+
+	it("never rewrites the draft rows' content — they are evidence of the model's output", async () => {
+		// Generation opens an attempt and hands the writing to the activity. If
+		// this handler ever started composing content itself, the stored row
+		// would stop being a faithful record of what the model produced.
+		await generate.handler({ input: INPUT, context: CONTEXT });
+
+		expect(dbMocks.updateWorkingDraftBody).not.toHaveBeenCalled();
+		const [attemptArgs] = dbMocks.startTopicDraftAttempt.mock.calls[0] as [
+			Record<string, unknown>,
+		];
+		expect(attemptArgs).not.toHaveProperty("content");
+		expect(attemptArgs).not.toHaveProperty("body");
+	});
 });
 
-describe("adoptBlogPostDraft", () => {
+describe("adoptCaseStudyDraft", () => {
 	it("requires the UPDATE permission", () => {
 		expect(adopt.__permission).toBe("publishing-topic:update");
 	});
@@ -271,6 +313,7 @@ describe("adoptBlogPostDraft", () => {
 				expectedUpdatedAt: null,
 				// A caller trying to smuggle text in.
 				body: "Arbitrary text the model never wrote.",
+				title: "A headline the model never wrote",
 			},
 			context: CONTEXT,
 		});
@@ -279,13 +322,16 @@ describe("adoptBlogPostDraft", () => {
 			body: string;
 		};
 		expect(call.body).not.toContain("Arbitrary text");
-		expect(call.body).toContain("Builds used to start cold.");
+		expect(call.body).not.toContain("never wrote");
+		expect(call.body).toContain(
+			"A client shipped weekly and wanted daily.",
+		);
 	});
 
-	it("composes the title and subtitle into the adopted body", async () => {
-		// The literal text, pinned so a reader can see the shape without
-		// running the composer. The claim that it matches what the seed writes
-		// is checked separately, immediately below.
+	it("composes the adopted body with the SHARED composer the activity seeds with", async () => {
+		// Not a restatement of the expected string: the assertion calls the very
+		// function `@repo/temporal` uses to seed the working draft, so a change
+		// to that composer cannot leave the adopted text behind.
 		await adopt.handler({
 			input: { ...INPUT, draftId: "draft-1", expectedUpdatedAt: null },
 			context: CONTEXT,
@@ -295,17 +341,16 @@ describe("adoptBlogPostDraft", () => {
 			body: string;
 		};
 		expect(call.body).toBe(
-			"# Faster incremental builds\n\n_How a warm cache changed the inner loop_\n\n## Why this matters\n\nBuilds used to start cold.",
+			composeCaseStudyWorkingDraftBody({
+				title: READY_DRAFT.content.title,
+				body: READY_DRAFT.content.body,
+			}),
 		);
 	});
 
-	it("adopts byte-for-byte the text the Temporal seed writes", async () => {
-		// The parity test `blog-post.ts`'s own doc comment claims exists.
-		// It did not: `readBlogBody` duplicates `composeWorkingDraftBody`, and
-		// until now nothing compared the copies — the one place the two could
-		// silently diverge and make an adopted version differ from the body the
-		// first run saved. Backfilled with #1854 (2C), whose case study
-		// equivalent avoids the duplication entirely by sharing one function.
+	it("leaves the publishing suggestions out of the adopted body", async () => {
+		// They are advice about the draft, not part of it. A body that carried
+		// them is a body whose author deletes four sections after every run.
 		await adopt.handler({
 			input: { ...INPUT, draftId: "draft-1", expectedUpdatedAt: null },
 			context: CONTEXT,
@@ -314,23 +359,14 @@ describe("adoptBlogPostDraft", () => {
 		const call = dbMocks.saveWorkingDraft.mock.calls[0]?.[0] as {
 			body: string;
 		};
-		expect(call.body).toBe(composeWorkingDraftBody(READY_DRAFT.content));
+		expect(call.body).not.toContain("Deployment frequency dashboard");
+		expect(call.body).not.toContain("Customer quote pending approval");
+		expect(call.body).not.toContain("Delivery");
+		expect(call.body).not.toContain("lead-time");
+		expect(call.body).not.toContain("[metric TBD]");
 	});
 
-	it("leaves the suggestions out of the adopted body", async () => {
-		await adopt.handler({
-			input: { ...INPUT, draftId: "draft-1", expectedUpdatedAt: null },
-			context: CONTEXT,
-		});
-
-		const call = dbMocks.saveWorkingDraft.mock.calls[0]?.[0] as {
-			body: string;
-		};
-		expect(call.body).not.toContain("Toolchain");
-		expect(call.body).not.toContain("ci-pipeline");
-	});
-
-	it("saves a null option label — a blog has no options to name", async () => {
+	it("saves a null option label — a case study has no options to name", async () => {
 		await adopt.handler({
 			input: { ...INPUT, draftId: "draft-1", expectedUpdatedAt: null },
 			context: CONTEXT,
@@ -338,7 +374,7 @@ describe("adoptBlogPostDraft", () => {
 
 		expect(dbMocks.saveWorkingDraft).toHaveBeenCalledWith(
 			expect.objectContaining({
-				postType: "BLOG_POST",
+				postType: "CASE_STUDY",
 				sourceOptionLabel: null,
 			}),
 		);
@@ -372,8 +408,19 @@ describe("adoptBlogPostDraft", () => {
 		).rejects.toMatchObject({ message: "Draft not found" });
 	});
 
-	it("reports a lost race as CONFLICT, not a failure", async () => {
-		dbMocks.saveWorkingDraft.mockResolvedValue({ status: "stale" });
+	it("does not adopt the BLOG_POST draft when no case study exists", async () => {
+		// The drafts list carries every content type for the topic. Picking the
+		// wrong entry would seed a case study's working draft with blog text.
+		dbMocks.listTopicDrafts.mockResolvedValue({
+			drafts: [
+				{
+					postType: "BLOG_POST",
+					latestAttempt: { ...READY_DRAFT, postType: "BLOG_POST" },
+					latestReady: { ...READY_DRAFT, postType: "BLOG_POST" },
+				},
+			],
+			workingDrafts: [],
+		});
 
 		await expect(
 			adopt.handler({
@@ -381,6 +428,23 @@ describe("adoptBlogPostDraft", () => {
 					...INPUT,
 					draftId: "draft-1",
 					expectedUpdatedAt: null,
+				},
+				context: CONTEXT,
+			}),
+		).rejects.toMatchObject({ message: "Draft not found" });
+
+		expect(dbMocks.saveWorkingDraft).not.toHaveBeenCalled();
+	});
+
+	it("reports a stale expectedUpdatedAt as CONFLICT, not a failure", async () => {
+		dbMocks.saveWorkingDraft.mockResolvedValue({ status: "stale" });
+
+		await expect(
+			adopt.handler({
+				input: {
+					...INPUT,
+					draftId: "draft-1",
+					expectedUpdatedAt: new Date("2026-08-31T09:00:00Z"),
 				},
 				context: CONTEXT,
 			}),
@@ -393,7 +457,7 @@ describe("adoptBlogPostDraft", () => {
 		dbMocks.listTopicDrafts.mockResolvedValue({
 			drafts: [
 				{
-					postType: "BLOG_POST",
+					postType: "CASE_STUDY",
 					latestAttempt: null,
 					latestReady: {
 						...READY_DRAFT,
@@ -417,9 +481,40 @@ describe("adoptBlogPostDraft", () => {
 
 		expect(dbMocks.saveWorkingDraft).not.toHaveBeenCalled();
 	});
+
+	it("REFUSES a document whose title or body is blank", async () => {
+		// A whitespace-only title would compose to a bare `# ` heading — a
+		// working draft that looks generated and carries nothing.
+		dbMocks.listTopicDrafts.mockResolvedValue({
+			drafts: [
+				{
+					postType: "CASE_STUDY",
+					latestAttempt: null,
+					latestReady: {
+						...READY_DRAFT,
+						content: { ...READY_DRAFT.content, title: "   " },
+					},
+				},
+			],
+			workingDrafts: [],
+		});
+
+		await expect(
+			adopt.handler({
+				input: {
+					...INPUT,
+					draftId: "draft-1",
+					expectedUpdatedAt: null,
+				},
+				context: CONTEXT,
+			}),
+		).rejects.toMatchObject({ code: "INTERNAL_SERVER_ERROR" });
+
+		expect(dbMocks.saveWorkingDraft).not.toHaveBeenCalled();
+	});
 });
 
-describe("saveBlogPostBody", () => {
+describe("saveCaseStudyBody", () => {
 	it("requires the UPDATE permission", () => {
 		expect(saveBody.__permission).toBe("publishing-topic:update");
 	});
@@ -436,7 +531,7 @@ describe("saveBlogPostBody", () => {
 
 		expect(dbMocks.updateWorkingDraftBody).toHaveBeenCalledWith(
 			expect.objectContaining({
-				postType: "BLOG_POST",
+				postType: "CASE_STUDY",
 				body: "# My own headline\n\nRewritten entirely.",
 				updatedById: "user-1",
 				expectedUpdatedAt: SAVED_AT,
@@ -473,7 +568,7 @@ describe("saveBlogPostBody", () => {
 		).rejects.toMatchObject({ code: "CONFLICT" });
 	});
 
-	it("reports NOT_FOUND when there is no draft to edit rather than creating one", async () => {
+	it("reports NOT_FOUND when there is no working draft to edit rather than creating one", async () => {
 		// An editor that could conjure a row would let a body reach a topic
 		// whose generation never ran.
 		dbMocks.updateWorkingDraftBody.mockResolvedValue({

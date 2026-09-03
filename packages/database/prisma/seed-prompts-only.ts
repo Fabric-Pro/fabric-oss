@@ -8,6 +8,10 @@ import {
 	PUBLISHING_BLOG_POST_FALLBACK_BODY,
 } from "@repo/utils/publishing-blog-post-prompt";
 import {
+	PUBLISHING_CASE_STUDY_AGENT_KEY,
+	PUBLISHING_CASE_STUDY_FALLBACK_BODY,
+} from "@repo/utils/publishing-case-study-prompt";
+import {
 	PUBLISHING_PLANNING_ANALYSIS_AGENT_KEY,
 	PUBLISHING_PLANNING_ANALYSIS_FALLBACK_BODY,
 } from "@repo/utils/publishing-planning-prompt";
@@ -345,6 +349,19 @@ const PROMPT_DOCUMENT_TYPE_BINDINGS: Record<string, SeedBindingSpec> = {
 		documentTypes: ["GENERAL"],
 		storyKind: null as null,
 		targetKey: PUBLISHING_BLOG_POST_AGENT_KEY,
+	},
+	// publishing_topic_case_study: GENERAL + null for the same reason its three
+	// publishing siblings use them — one prompt per tenant covers every project
+	// and topic. The activity passes the topic, its planning analysis, its
+	// confirmed decisions and the run's guidance as HANDLEBARS variables; the
+	// one-case-study output contract and the approval rules (no unapproved
+	// customer name, quote, metric, asset or implementation claim is
+	// publishable) are appended code-side and are NOT part of this body, so an
+	// override cannot drop them.
+	[PUBLISHING_CASE_STUDY_AGENT_KEY]: {
+		documentTypes: ["GENERAL"],
+		storyKind: null as null,
+		targetKey: PUBLISHING_CASE_STUDY_AGENT_KEY,
 	},
 	// test_case_step_reviser: re-drafts ONE existing case whose feature has since
 	// changed. Kept separate from `test_case_drafter` because the contract is
@@ -5893,6 +5910,37 @@ Rules:
 		structuredFormat: "JSON" as const,
 		isPublic: true,
 		content: PUBLISHING_BLOG_POST_FALLBACK_BODY,
+	},
+	{
+		// publishing_topic_case_study: the evidence-grounded case study written
+		// from a topic (#1854, Phase 2C). Body is the PO's "Case Study Prompt
+		// v1.1" attached to the card, with its Markdown-only output rule adapted
+		// the same way its Blog Post sibling adapted v1's: this prompt runs with
+		// structured output, so the title, the narrative body, the two
+		// supporting-asset lists, the suggested categories, the suggested
+		// keywords and the inputs needed are each a field. The body field is
+		// still Markdown; splitting the rest out is what keeps the publishing
+		// advice from landing in the editable draft as text to delete by hand —
+		// and what keeps "confirmed" versus "needs confirmation" a structural
+		// distinction rather than a regex over prose.
+		//
+		// The grounding and approval rules are appended CODE-SIDE so an org
+		// editing tone cannot drop them by accident.
+		//
+		// INSERT-ONLY: once this seeds, changing the text does nothing on an
+		// environment that already ran the seed. Ship wording changes as an
+		// explicit UPDATE migration.
+		key: PUBLISHING_CASE_STUDY_AGENT_KEY,
+		name: "Topic Case Study",
+		description:
+			"Drafts one evidence-grounded case study from a Publishing Suite topic, using its planning analysis, confirmed decisions and project source context.",
+		category: "publishing",
+		tags: ["publishing", "publishing-suite", "case-study", "ai-generation"],
+		format: "HANDLEBARS" as const,
+		promptType: "STRUCTURED" as const,
+		structuredFormat: "JSON" as const,
+		isPublic: true,
+		content: PUBLISHING_CASE_STUDY_FALLBACK_BODY,
 	},
 ];
 

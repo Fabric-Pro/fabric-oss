@@ -250,6 +250,18 @@ vi.mock("@shared/lib/orpc-query-utils", () => {
 					saveBlogPostBody: m(
 						"projects.publishingSuite.saveBlogPostBody",
 					),
+					// 2C-1's case study panel owns these three, and it made the
+					// warning above concrete for a third time: the tab test
+					// crashed the moment Case Study started mounting a panel.
+					generateCaseStudy: m(
+						"projects.publishingSuite.generateCaseStudy",
+					),
+					adoptCaseStudyDraft: m(
+						"projects.publishingSuite.adoptCaseStudyDraft",
+					),
+					saveCaseStudyBody: m(
+						"projects.publishingSuite.saveCaseStudyBody",
+					),
 					listTopicDecisions: q(
 						"projects.publishingSuite.listTopicDecisions",
 					),
@@ -420,22 +432,30 @@ describe("TopicItemPage — tabs", () => {
 
 	// SUPERSEDED, deliberately. Phase 2A's FR50 said a generation tab a user can
 	// activate is a promise 2A cannot keep, and this case pinned that for all
-	// four content types. Phase 2B's FR1/FR2 activate exactly TWO of them, so
-	// the old assertion is no longer true — and the half that IS still true is
+	// four content types. Phase 2B's FR1/FR2 activated two of them and 2C-1
+	// (#1854) activates Case Study, so the old assertion is no longer true for
+	// three of the four — and the part that IS still true, Stakeholder Email, is
 	// kept rather than dropped.
 	//
 	// This is the documented exception to the repository's standing rule that a
 	// failing test caught a real regression: the contract changed on purpose,
 	// the requirement that changed it is named, and the still-valid half is
 	// asserted right below.
-	it("activates the two Phase 2B generation tabs (FR1, FR2)", async () => {
+	it("activates every generation tab that has a panel (FR1, FR2)", async () => {
+		// Case Study joined this list in 2C-1 (#1854), for the same reason the
+		// two 2B types are in it: the tab is selectable exactly when the type
+		// has a panel behind it.
 		const user = userEvent.setup();
 		renderPage();
 		const tablist = screen.getByRole("tablist", {
 			name: /content generation/i,
 		});
 
-		for (const label of [/short post \/ tweet/i, /blog post/i]) {
+		for (const label of [
+			/short post \/ tweet/i,
+			/blog post/i,
+			/case study/i,
+		]) {
 			const tab = within(tablist).getByRole("tab", { name: label });
 			expect(tab).toBeEnabled();
 			await user.click(tab);
@@ -443,21 +463,19 @@ describe("TopicItemPage — tabs", () => {
 		}
 	});
 
-	it("leaves the Phase 2C generation tabs disabled and Coming Soon", () => {
-		// The surviving half of the 2A assertion. Case Study and Stakeholder
-		// Email are owned by Phase 2C, so FR50 still holds for them — and
-		// asserting it here is what stops 2B quietly activating a tab it does
-		// not implement.
+	it("leaves the one unimplemented generation tab disabled and Coming Soon", () => {
+		// The surviving half of the 2A assertion, now down to a single type.
+		// Stakeholder Email has no panel, so FR50 still holds for it — and
+		// asserting it here is what stops a later phase quietly activating a tab
+		// it does not implement.
 		renderPage();
 		const tablist = screen.getByRole("tablist", {
 			name: /content generation/i,
 		});
-		for (const label of ["Case Study", "Stakeholder Email"]) {
-			const tab = within(tablist).getByRole("tab", {
-				name: new RegExp(`${label}.*coming soon`, "i"),
-			});
-			expect(tab).toBeDisabled();
-		}
+		const tab = within(tablist).getByRole("tab", {
+			name: /stakeholder email.*coming soon/i,
+		});
+		expect(tab).toBeDisabled();
 	});
 });
 

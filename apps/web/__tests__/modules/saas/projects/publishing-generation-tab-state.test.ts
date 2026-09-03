@@ -437,4 +437,35 @@ describe("resolveRestrictions", () => {
 		expect(r.global).toBe(false);
 		expect(r.byPostType.size).toBe(0);
 	});
+
+	// #1854 (2C). The BADGE half of the per-type restriction set.
+	//
+	// `GenerationPanel` builds its own per-panel LIST from `restrictsPostType`;
+	// this is the other half, and neither substitutes for the other. Shipping
+	// only the list left the panel warning about an open CLAIM_STRENGTH question
+	// while the tab strip beside it read a plain "Available" — under-warning at
+	// the one level whose stated purpose is to be seen on a tab the reader has
+	// NOT opened.
+	it("marks a CASE_STUDY-only kind on the badge, and only for that type", () => {
+		const r = resolveRestrictions([
+			thread({ decisionKind: "CLAIM_STRENGTH" }),
+		]);
+
+		expect(r.byPostType.has("CASE_STUDY")).toBe(true);
+		// The negative control that makes the assertion above mean something:
+		// a widened SHARED set would light every tab, which is what the
+		// per-type set exists to avoid.
+		expect(r.byPostType.has("TWEET")).toBe(false);
+		expect(r.byPostType.has("BLOG_POST")).toBe(false);
+		// Not global either — `isRestrictingThread` is deliberately unchanged.
+		expect(r.global).toBe(false);
+	});
+
+	it("still marks a shared safety-critical kind for every type", () => {
+		const r = resolveRestrictions([
+			thread({ decisionKind: "CUSTOMER_NAME" }),
+		]);
+
+		expect(r.global).toBe(true);
+	});
 });

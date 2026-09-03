@@ -25,6 +25,7 @@ import {
 	PUBLISHING_BLOG_POST_AGENT_KEY,
 	PUBLISHING_BLOG_POST_FALLBACK_BODY,
 } from "@repo/utils/publishing-blog-post-prompt";
+import { toSingleLineSubject } from "@repo/utils/publishing-restrictions";
 import { z } from "zod";
 import {
 	buildPlanningAnalysisVariables,
@@ -141,7 +142,7 @@ export function buildBlogPostLockedClauses(
 	restrictedSubjects: string[] = [],
 ): string {
 	const restricted = restrictedSubjects
-		.map((s) => s.trim())
+		.map((s) => toSingleLineSubject(s))
 		.filter((s) => s.length > 0);
 
 	const restrictedBlock =

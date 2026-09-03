@@ -58,6 +58,17 @@ export const AI_JOB_TYPES = [
 	 * spend hide inside a short-post line item that looks reasonable.
 	 */
 	"publishing-blog-post",
+	/**
+	 * Publishing-suite Case Study drafting (#1854).
+	 *
+	 * Its own key for the reason the whole family is split: a case study is the
+	 * approval-sensitive format, so it is the one most likely to be regenerated
+	 * after a question is answered. Sharing the blog post's key would let that
+	 * re-run pattern hide inside a line item that already looks expensive, and
+	 * "which format did the spend go on" is the question this list exists to
+	 * answer.
+	 */
+	"publishing-case-study",
 	/** Slack channel monitor note summarization. */
 	"slack-channel-monitor",
 	/** Security scanning grouping/review/scan model calls. */

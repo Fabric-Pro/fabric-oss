@@ -6,6 +6,11 @@ export {
 	generateBlogPostProcedure,
 	saveBlogPostBodyProcedure,
 } from "./blog-post";
+export {
+	adoptCaseStudyDraftProcedure,
+	generateCaseStudyProcedure,
+	saveCaseStudyBodyProcedure,
+} from "./case-study";
 export { createPublishingTopicProcedure } from "./create-topic";
 export { generatePublishingTopicsNowProcedure } from "./generate-now";
 export { getPublishingSuiteSettingsProcedure } from "./get-settings";

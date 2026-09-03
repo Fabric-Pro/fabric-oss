@@ -46,6 +46,7 @@ import {
 import { heartbeat } from "@temporalio/activity";
 import { ApplicationFailure } from "@temporalio/common";
 import { collectPlanningContext } from "../publishing-planning/collect-planning-context";
+import { resolveContributorNames } from "../publishing-shared";
 import {
 	type BlogPostDecision,
 	composeBlogPostPrompt,
@@ -375,25 +376,4 @@ export async function generateBlogPostActivity(
 		status: "READY",
 		seededWorkingDraft: seeded.status === "seeded",
 	};
-}
-
-/**
- * Display names for the topic's already-resolved contributors.
- *
- * The ids are server-written by the 1A contributor resolver from the project's
- * own stories and documents, so this is a name lookup for people the topic
- * already names — not a membership query. Skipped entirely when the list is
- * empty, which is both common and valid.
- */
-async function resolveContributorNames(
-	contributorUserIds: string[],
-): Promise<{ id: string; name: string | null }[]> {
-	if (contributorUserIds.length === 0) {
-		return [];
-	}
-	const users = await db.user.findMany({
-		where: { id: { in: contributorUserIds } },
-		select: { id: true, name: true },
-	});
-	return users.map((u) => ({ id: u.id, name: u.name ?? null }));
 }
