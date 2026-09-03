@@ -12,12 +12,19 @@
  * at the runtime level.
  */
 
+// `LangGraphHttpAgent` must come from `@ag-ui/langgraph` (bundled by Turbopack),
+// not from the `@copilotkit/runtime/langgraph` re-export of the same class. The
+// runtime is a server-external package, so Node would load that subpath itself and
+// reach `@langchain/langgraph-sdk`'s vendored ESM helpers, which sit under a
+// `dist/node_modules/` directory with no package.json. Node cannot classify those
+// files on runtimes that disable module-syntax detection (AWS Lambda, i.e. Vercel
+// functions) and fails the whole route at module load with ERR_REQUIRE_CYCLE_MODULE.
+import { LangGraphHttpAgent } from "@ag-ui/langgraph";
 import {
 	CopilotRuntime,
 	copilotRuntimeNextJSAppRouterEndpoint,
 	OpenAIAdapter,
 } from "@copilotkit/runtime";
-import { LangGraphHttpAgent } from "@copilotkit/runtime/langgraph";
 import {
 	AgentRegistry,
 	LangGraphAgentAdapter,
