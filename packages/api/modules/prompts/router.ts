@@ -4,6 +4,7 @@ import { browseProcedures } from "./procedures/browse";
 import { catalogProcedures } from "./procedures/catalog";
 import { createProcedure } from "./procedures/create";
 import { deleteProcedure } from "./procedures/delete";
+import { deletionImpactProcedure } from "./procedures/deletion-impact";
 import { forkProcedures } from "./procedures/fork";
 import { getProcedures } from "./procedures/get";
 import {
@@ -35,6 +36,9 @@ export const promptsRouter = {
 	create: createProcedure,
 	update: updateProcedure,
 	delete: deleteProcedure,
+	// Platform-wide, tenant-unscoped preview of what `delete` would remove.
+	// Gated by the deletion's own authority and SYSTEM-only — see the procedure.
+	deletionImpact: deletionImpactProcedure,
 	render: renderProcedure,
 
 	// Agent-specific procedures

@@ -1,9 +1,7 @@
 "use client";
 
 import { useOrganizationContext } from "@saas/organizations/hooks/use-organization-context";
-import { useConfirmationAlert } from "@saas/shared/components/ConfirmationAlertProvider";
-import { orpcClient } from "@shared/lib/orpc-client";
-import { useMutation } from "@tanstack/react-query";
+import { Spinner } from "@shared/components/Spinner";
 import { Badge } from "@ui/components/badge";
 import { Button } from "@ui/components/button";
 import { Card } from "@ui/components/card";
@@ -32,7 +30,7 @@ import {
 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
-import { toast } from "sonner";
+import { usePromptDeletion } from "../hooks/use-prompt-deletion";
 import { PromptDefaultBadge } from "./PromptDefaultBadge";
 import { PromptFormatBadge } from "./PromptFormatBadge";
 import { PromptPreviewSheet } from "./PromptPreviewSheet";
@@ -45,6 +43,15 @@ type Prompt = {
 	name: string;
 	description: string | null;
 	scope: "SYSTEM" | "ORG" | "USER";
+	/**
+	 * Who owns the prompt. Required, not optional: the delete predicate cannot
+	 * judge an ORG or USER prompt without them, and defaulting a missing owner
+	 * to null would quietly withhold Delete on personal prompts that offer it
+	 * today. `prompts.list` returns whole prompt rows, so both are already on
+	 * the wire — this only names them.
+	 */
+	organizationId: string | null;
+	userId: string | null;
 	format:
 		| "PLAIN_TEXT"
 		| "MARKDOWN"
@@ -95,43 +102,21 @@ function PromptListItem({
 	onUpdate: () => void;
 }) {
 	const router = useRouter();
-	const { confirm } = useConfirmationAlert();
 	const { basePath: orgBasePath } = useOrganizationContext();
 	const [setDefaultOpen, setSetDefaultOpen] = useState(false);
 	const [previewOpen, setPreviewOpen] = useState(false);
 
 	// Organization-aware base path for prompts
 	const basePath = `${orgBasePath}/prompts`;
+	// Edit and Delete were one question with one answer, and they are not the
+	// same question. `isEditable` stays exactly what it was — repointing it at
+	// the delete predicate would quietly turn Edit on for SYSTEM prompts, which
+	// R3 forbids. Delete gets its own answer, from the shared hook every
+	// listing surface asks (Fizzy #2328).
 	const isEditable = prompt.scope !== "SYSTEM";
 	const latestVersionId = prompt.versions?.[0]?.id;
 
-	// Delete mutation
-	const deleteMutation = useMutation({
-		mutationFn: async () => {
-			return await orpcClient.prompts.delete({ id: prompt.id });
-		},
-		onSuccess: () => {
-			toast.success("Prompt deleted successfully");
-			onUpdate();
-		},
-		onError: (error) => {
-			toast.error("Failed to delete prompt", {
-				description:
-					error instanceof Error ? error.message : String(error),
-			});
-		},
-	});
-
-	const handleDelete = () => {
-		confirm({
-			title: "Delete Prompt",
-			message: `Are you sure you want to delete "${prompt.name}"? This action cannot be undone.`,
-			confirmLabel: "Delete",
-			cancelLabel: "Cancel",
-			destructive: true,
-			onConfirm: () => deleteMutation.mutate(),
-		});
-	};
+	const deletion = usePromptDeletion({ prompt, onDeleted: onUpdate });
 
 	const handleDuplicate = () => {
 		router.push(`${basePath}/new?duplicateFrom=${prompt.id}`);
@@ -225,6 +210,9 @@ function PromptListItem({
 
 					<div className="flex items-center gap-2">
 						<DropdownMenu>
+							{/* Stays visible while it is busy: the menu has
+							    already closed, so a trigger that faded out
+							    would leave the wait with no on-screen home. */}
 							<DropdownMenuTrigger
 								asChild
 								onClick={(e) => e.stopPropagation()}
@@ -232,9 +220,18 @@ function PromptListItem({
 								<Button
 									variant="ghost"
 									size="sm"
-									className="md:opacity-0 md:group-hover:opacity-100 transition-opacity focus:opacity-100"
+									{...deletion.triggerProps}
+									className={`transition-opacity focus:opacity-100 ${
+										deletion.isPreparing
+											? "opacity-100"
+											: "md:opacity-0 md:group-hover:opacity-100"
+									}`}
 								>
-									<MoreVerticalIcon className="h-4 w-4" />
+									{deletion.isPreparing ? (
+										<Spinner className="motion-reduce:animate-none" />
+									) : (
+										<MoreVerticalIcon className="h-4 w-4" />
+									)}
 								</Button>
 							</DropdownMenuTrigger>
 							<DropdownMenuContent align="end">
@@ -291,13 +288,13 @@ function PromptListItem({
 									<LibraryIcon className="mr-2 h-4 w-4" />
 									View in Catalog
 								</DropdownMenuItem>
-								{isEditable && (
+								{deletion.canDelete && (
 									<>
 										<DropdownMenuSeparator />
 										<DropdownMenuItem
 											onClick={(e) => {
 												e.stopPropagation();
-												handleDelete();
+												deletion.requestDelete();
 											}}
 											className="text-destructive"
 										>
@@ -308,6 +305,7 @@ function PromptListItem({
 								)}
 							</DropdownMenuContent>
 						</DropdownMenu>
+						{deletion.announcement}
 					</div>
 				</div>
 			</div>

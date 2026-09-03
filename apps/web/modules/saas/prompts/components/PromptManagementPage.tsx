@@ -42,6 +42,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { useDebounceValue } from "usehooks-ts";
+import { usePromptDeletion } from "../hooks/use-prompt-deletion";
 import { PromptBindingManager } from "./PromptBindingManager";
 import { PromptFormatBadge } from "./PromptFormatBadge";
 import { PromptScopeBadge } from "./PromptScopeBadge";
@@ -115,23 +116,6 @@ export function PromptManagementPage({ organizationSlug }: Props) {
 	const prompts = data?.prompts ?? [];
 	const categories = categoriesData?.categories ?? [];
 
-	// Delete mutation
-	const deleteMutation = useMutation({
-		mutationFn: async (id: string) => {
-			return await orpcClient.prompts.delete({ id });
-		},
-		onSuccess: () => {
-			toast.success("Prompt deleted successfully");
-			refetch();
-		},
-		onError: (error) => {
-			toast.error("Failed to delete prompt", {
-				description:
-					error instanceof Error ? error.message : String(error),
-			});
-		},
-	});
-
 	// Fork mutation
 	const forkMutation = useMutation({
 		mutationFn: async ({
@@ -161,12 +145,6 @@ export function PromptManagementPage({ organizationSlug }: Props) {
 			});
 		},
 	});
-
-	const handleDelete = (id: string) => {
-		if (confirm("Are you sure you want to delete this prompt?")) {
-			deleteMutation.mutate(id);
-		}
-	};
 
 	const handleFork = (promptId: string, scope: "SYSTEM" | "ORG" | "USER") => {
 		// System prompts can be forked to USER or ORG
@@ -336,56 +314,21 @@ export function PromptManagementPage({ organizationSlug }: Props) {
 													organizationId ?? undefined
 												}
 											/>
-											<DropdownMenu>
-												<DropdownMenuTrigger asChild>
-													<Button
-														variant="ghost"
-														size="sm"
-													>
-														<MoreVerticalIcon className="h-4 w-4" />
-													</Button>
-												</DropdownMenuTrigger>
-												<DropdownMenuContent align="end">
-													<DropdownMenuItem
-														onClick={() =>
-															router.push(
-																`${basePath}/prompts/${prompt.id}`,
-															)
-														}
-													>
-														<EditIcon className="mr-2 h-4 w-4" />
-														View/Edit
-													</DropdownMenuItem>
-													<DropdownMenuItem
-														onClick={() =>
-															handleFork(
-																prompt.id,
-																prompt.scope as any,
-															)
-														}
-													>
-														<GitFork className="mr-2 h-4 w-4" />
-														Fork
-													</DropdownMenuItem>
-													{prompt.scope !==
-														"SYSTEM" && (
-														<>
-															<DropdownMenuSeparator />
-															<DropdownMenuItem
-																onClick={() =>
-																	handleDelete(
-																		prompt.id,
-																	)
-																}
-																className="text-destructive"
-															>
-																<TrashIcon className="mr-2 h-4 w-4" />
-																Delete
-															</DropdownMenuItem>
-														</>
-													)}
-												</DropdownMenuContent>
-											</DropdownMenu>
+											<PromptRowActions
+												prompt={prompt}
+												onEdit={() =>
+													router.push(
+														`${basePath}/prompts/${prompt.id}`,
+													)
+												}
+												onFork={() =>
+													handleFork(
+														prompt.id,
+														prompt.scope as any,
+													)
+												}
+												onDeleted={refetch}
+											/>
 										</div>
 									</TableCell>
 								</TableRow>
@@ -395,5 +338,89 @@ export function PromptManagementPage({ organizationSlug }: Props) {
 				)}
 			</div>
 		</div>
+	);
+}
+
+/**
+ * One row's overflow menu.
+ *
+ * A component of its own because the deletion is a hook, and a hook cannot be
+ * called inside the row loop above. That is the whole reason for the split —
+ * everything it renders was inline in the table a moment ago.
+ *
+ * This surface used to confirm through the browser's native `confirm()`, which
+ * cannot carry the impact sentence and looked nothing like any other
+ * destructive action in the product. It now uses the same shared dialog as its
+ * two sibling surfaces (KTD7).
+ */
+function PromptRowActions({
+	prompt,
+	onEdit,
+	onFork,
+	onDeleted,
+}: {
+	/**
+	 * Structural, and deliberately minimal. `organizationId` and `userId` are
+	 * required: the delete predicate cannot judge an ORG or USER prompt without
+	 * them, and `prompts.list` returns whole prompt rows, so both are already
+	 * on the wire.
+	 */
+	prompt: {
+		id: string;
+		name: string;
+		scope: string;
+		organizationId: string | null;
+		userId: string | null;
+	};
+	onEdit: () => void;
+	onFork: () => void;
+	onDeleted: () => void;
+}) {
+	const deletion = usePromptDeletion({ prompt, onDeleted });
+
+	return (
+		<>
+			<DropdownMenu>
+				{/* Stays visible while it is busy: the menu has already
+				    closed, so a trigger that faded out would leave the wait
+				    with no on-screen home. */}
+				<DropdownMenuTrigger asChild>
+					<Button
+						variant="ghost"
+						size="sm"
+						{...deletion.triggerProps}
+					>
+						{deletion.isPreparing ? (
+							<Spinner className="motion-reduce:animate-none" />
+						) : (
+							<MoreVerticalIcon className="h-4 w-4" />
+						)}
+					</Button>
+				</DropdownMenuTrigger>
+				<DropdownMenuContent align="end">
+					<DropdownMenuItem onClick={onEdit}>
+						<EditIcon className="mr-2 h-4 w-4" />
+						View/Edit
+					</DropdownMenuItem>
+					<DropdownMenuItem onClick={onFork}>
+						<GitFork className="mr-2 h-4 w-4" />
+						Fork
+					</DropdownMenuItem>
+					{deletion.canDelete && (
+						<>
+							<DropdownMenuSeparator />
+							<DropdownMenuItem
+								onClick={() => deletion.requestDelete()}
+								className="text-destructive"
+							>
+								<TrashIcon className="mr-2 h-4 w-4" />
+								Delete
+							</DropdownMenuItem>
+						</>
+					)}
+				</DropdownMenuContent>
+			</DropdownMenu>
+			{deletion.announcement}
+		</>
 	);
 }

@@ -223,6 +223,23 @@ A prompt that lives as a literal in code has no binding, cannot be edited by an 
 and is invisible to this resolution — which is why a ticket skeleton written in code is a
 routing gap even when its text happens to be right.
 
+### Prompt retirement
+A recorded decision that a system prompt key must not come back. Deleting a SYSTEM-scope prompt
+writes the key down, and every path that creates one — both seed catalogues and the product's own
+create endpoint — refuses that key afterwards. Without the record the deletion is undone by the
+next catalogue run, which recreates the prompt under its seed name rather than the name it was
+renamed to when it was marked dead.
+
+Retirement is a veto on the **key**, not on a row. Duplicate SYSTEM rows may share a key and
+resolution takes the first match, so deleting one row while its twin survives is a deletion that
+is reported, recorded and ineffective — which is why the deletion removes every SYSTEM row
+carrying the key at once.
+
+The veto does not reach other scopes. An organization may still create its own prompt under a
+retired key, and a fork an organization made of the retired prompt survives its parent. That is
+deliberate: a platform action does not remove a tenant's data. "This key is retired" therefore
+means the platform will not serve it again, not that nobody anywhere can use it.
+
 ## Reports
 
 ### Report Template Instance

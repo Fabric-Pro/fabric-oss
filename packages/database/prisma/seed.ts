@@ -4,7 +4,14 @@ import { fileURLToPath } from "node:url";
 import { logger } from "@repo/logs";
 import { hashPassword } from "better-auth/crypto";
 import { db } from "../prisma/client";
+// The retirement guard every SYSTEM-scope insert goes through, and the batched
+// lookup that keeps the skip decision to one query per run (Fizzy #2328, R9).
+import {
+	getRetiredPromptKeys,
+	insertSystemPromptUnlessRetired,
+} from "../prisma/queries/prompts";
 import { getUserByEmail } from "../prisma/queries/users";
+import { isDirectRun } from "./lib/is-direct-run";
 
 /**
  * Document type bindings for system prompts
@@ -1085,7 +1092,12 @@ async function seedMcpServers() {
 	logger.success(`MCP Servers - created: ${created}, updated: ${updated}`);
 }
 
-async function seedSystemPrompts() {
+/**
+ * EXPORTED so the retirement skip is a behavioural assertion rather than a
+ * source-reading one; `seedAll()` below still runs for a direct `tsx` run. The
+ * prompt array itself is untouched.
+ */
+export async function seedSystemPrompts() {
 	logger.info("\nSeeding System Prompts...");
 	const prompts = [
 		{
@@ -2288,28 +2300,63 @@ Continue with F-003, F-004, etc. for 15-25 total features.
 	let versionsCreated = 0;
 	let bindingsCreated = 0;
 	let bindingsUpdated = 0;
+	let skippedRetired = 0;
+
+	// ONE query for the whole catalogue, not one per entry (R9). This is a
+	// pre-filter that saves opening a transaction per retired key and gives the
+	// operator a log line; the decision that actually binds is re-made inside
+	// `insertSystemPromptUnlessRetired`, under the per-key lock.
+	const retiredKeys = await getRetiredPromptKeys(prompts.map((p) => p.key));
 
 	for (const p of prompts) {
 		const existing = await db.prompt.findFirst({
 			where: { key: p.key, scope: "SYSTEM" as any },
 		});
+
+		// The guard gates the INSERT only. An existing row is left alone
+		// whether or not its key is recorded: a retirement vetoes re-creating a
+		// prompt, it does not delete one somebody has since put back
+		// deliberately.
+		if (!existing && retiredKeys.has(p.key)) {
+			logger.warn(
+				`  Skipping ${p.key}: its key is recorded as retired. Remove the retired_prompt_key record first if this prompt is meant to come back.`,
+			);
+			skippedRetired++;
+			continue;
+		}
+
 		let promptId: string;
 		if (existing) {
 			promptId = existing.id;
 		} else {
-			const createdPrompt = await db.prompt.create({
-				data: {
-					key: p.key,
-					name: p.name,
-					description: p.description,
-					scope: "SYSTEM" as any,
-					format: (p as any).format || "MARKDOWN",
-					category: (p as any).category,
-					tags: (p as any).tags || [],
-					isPublic: (p as any).isPublic || false,
-					createdBy: "system",
-				},
+			const createdPrompt = await insertSystemPromptUnlessRetired({
+				key: p.key,
+				insert: (tx) =>
+					tx.prompt.create({
+						data: {
+							key: p.key,
+							name: p.name,
+							description: p.description,
+							scope: "SYSTEM" as any,
+							format: (p as any).format || "MARKDOWN",
+							category: (p as any).category,
+							tags: (p as any).tags || [],
+							isPublic: (p as any).isPublic || false,
+							createdBy: "system",
+						},
+					}),
 			});
+
+			// Null means a deletion committed between the batched read above
+			// and this insert — the guard re-checked under the lock and refused.
+			if (!createdPrompt) {
+				logger.warn(
+					`  Skipping ${p.key}: its key was retired while this seed was running.`,
+				);
+				skippedRetired++;
+				continue;
+			}
+
 			promptId = createdPrompt.id;
 			created++;
 		}
@@ -2443,7 +2490,7 @@ Continue with F-003, F-004, etc. for 15-25 total features.
 	}
 
 	logger.success(
-		`Prompts - created: ${created}, updated: ${updated}, versions: ${versionsCreated}, bindings created: ${bindingsCreated}, bindings updated: ${bindingsUpdated}`,
+		`Prompts - created: ${created}, updated: ${updated}, versions: ${versionsCreated}, bindings created: ${bindingsCreated}, bindings updated: ${bindingsUpdated}, skipped (retired): ${skippedRetired}`,
 	);
 }
 
@@ -3153,12 +3200,13 @@ async function seedAll() {
 	await seedDefaultMcpConfigsForExistingTenants();
 }
 
-// Run the seed function
-seedAll()
-	.catch((error) => {
-		logger.error("Seed failed:", error);
-		process.exit(1);
-	})
-	.finally(() => {
-		process.exit(0);
-	});
+if (isDirectRun(import.meta.url)) {
+	seedAll()
+		.catch((error) => {
+			logger.error("Seed failed:", error);
+			process.exit(1);
+		})
+		.finally(() => {
+			process.exit(0);
+		});
+}

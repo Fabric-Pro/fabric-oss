@@ -141,13 +141,26 @@ describe("audit.taxonomy handler", () => {
 		// inherits again. Distinct keys rather than reusing the global pair
 		// because these carry a top-level organizationId and appear in that
 		// organization's own log) = 112.
-		expect(result.actions).toHaveLength(112);
+		// + 1 prompt.deletion_impact_viewed (the platform-wide prompt-deletion
+		// impact read — an un-scoped, cross-tenant traversal behind the
+		// deletion's own authority. It is a GET, so automatic activity capture
+		// drops it and the row is the only trace the read leaves, Fizzy #2328)
+		// = 113.
+		// + 1 prompt.system_deleted (a SYSTEM prompt was deleted from the
+		// catalogue — the one action in that module that REMOVES rows belonging
+		// to other tenants, and it takes every SYSTEM row carrying the key
+		// rather than the one the operator selected. The row carries what was
+		// actually removed, derived from the deletion rather than from the
+		// snapshot the confirmation showed, Fizzy #2328) = 114.
+		expect(result.actions).toHaveLength(114);
 		expect(result.actions).toContain("auth.login.success");
 		expect(result.actions).toContain("project.document_generation.failed");
 		expect(result.actions).toContain("audit.retention.purged");
 		expect(result.actions).toContain("project.pull_request.comment_posted");
 		expect(result.actions).toContain("statusUpdate.published");
 		expect(result.actions).toContain("statusUpdate.revised");
+		expect(result.actions).toContain("prompt.deletion_impact_viewed");
+		expect(result.actions).toContain("prompt.system_deleted");
 		// PM terminal-status auto-close + reopen-unhide (#1360).
 		expect(result.actions).toContain("story.auto_hidden");
 		expect(result.actions).toContain("story.auto_unhidden");

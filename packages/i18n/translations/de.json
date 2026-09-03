@@ -1270,6 +1270,10 @@
 				"userActivity": {
 					"viewed": "Nutzeraktivität angesehen"
 				},
+				"prompt": {
+					"deletion_impact_viewed": "Auswirkungen der Prompt-Löschung angesehen",
+					"system_deleted": "System-Prompt gelöscht"
+				},
 				"admin": {
 					"auditLog": {
 						"viaApiKey": "Kunden-Audit-Log abgefragt (Staff)"

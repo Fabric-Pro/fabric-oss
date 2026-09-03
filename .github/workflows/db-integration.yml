@@ -351,10 +351,19 @@ jobs:
         # two drifting apart fails here — that drift shipped once already.
         # Verified by disabling the personal-first branch: `expected 'USER' to be
         # 'ORG'`.
+        #
+        # The retirement suite (Fizzy #2328) is here for the same reason: whether
+        # two concurrent deletions of one prompt really serialize is a property
+        # of `pg_advisory_xact_lock`, whether a fork survives its parent with a
+        # null reference is a property of the foreign key, and whether a
+        # retirement outlives the administrator who wrote it is a property of
+        # that column having NO foreign key at all. A double reproduces whatever
+        # its author believed the DDL does, which is the belief under test.
         run: |
           pnpm --filter @repo/database exec vitest run \
             __tests__/prompt-nominations.integration.test.ts \
             __tests__/prompt-tier-resolution.integration.test.ts \
+            __tests__/prompt-retirement.integration.test.ts \
             --passWithNoTests=false \
             --reporter=dot \
             --reporter=json --outputFile=prompt-nominations-results.json
