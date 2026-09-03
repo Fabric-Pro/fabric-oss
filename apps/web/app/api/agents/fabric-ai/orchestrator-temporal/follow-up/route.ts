@@ -168,9 +168,12 @@ export async function POST(request: NextRequest) {
 			isModification,
 		});
 
-		console.log(
-			`[Orchestrator:FollowUp] Signal sent: executionId=${executionId}, isModification=${isModification}, userId=${userId}, timestamp=${new Date().toISOString()}`,
-		);
+		console.log("[Orchestrator:FollowUp] Signal sent", {
+			executionId,
+			isModification,
+			userId,
+			timestamp: new Date().toISOString(),
+		});
 
 		return new Response(
 			JSON.stringify({

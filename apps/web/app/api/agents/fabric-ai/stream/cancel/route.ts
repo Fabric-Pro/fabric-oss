@@ -194,9 +194,12 @@ export async function POST(request: NextRequest) {
 		await handle.cancel();
 
 		// Audit log the cancellation
-		console.log(
-			`[DirectChat:Audit] Workflow cancelled: executionId=${executionId}, cancelledBy=${userId}, reason=${reason || "user_clicked_stop"}, timestamp=${new Date().toISOString()}`,
-		);
+		console.log("[DirectChat:Audit] Workflow cancelled", {
+			executionId,
+			cancelledBy: userId,
+			reason: reason || "user_clicked_stop",
+			timestamp: new Date().toISOString(),
+		});
 
 		return new Response(
 			JSON.stringify({

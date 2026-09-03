@@ -1026,7 +1026,7 @@ async function handleToolsCall(
 	} catch (error) {
 		const message =
 			error instanceof Error ? error.message : "Tool execution failed";
-		console.error("[MCP Gateway] tools/call %s error:", toolName, error);
+		console.error("[MCP Gateway] tools/call error:", { toolName }, error);
 
 		return jsonRpcSuccess(
 			id,

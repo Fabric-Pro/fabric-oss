@@ -162,9 +162,12 @@ export async function POST(request: NextRequest) {
 		await handle.cancel();
 
 		// Audit log the cancellation
-		console.log(
-			`[Orchestrator:Audit] Workflow cancelled: executionId=${executionId}, cancelledBy=${userId}, reason=${reason || "timeout"}, timestamp=${new Date().toISOString()}`,
-		);
+		console.log("[Orchestrator:Audit] Workflow cancelled", {
+			executionId,
+			cancelledBy: userId,
+			reason: reason || "timeout",
+			timestamp: new Date().toISOString(),
+		});
 
 		return new Response(
 			JSON.stringify({

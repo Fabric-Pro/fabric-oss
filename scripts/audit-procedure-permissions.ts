@@ -8,13 +8,14 @@
  *   pnpm tsx scripts/audit-procedure-permissions.ts
  *
  * Options:
- *   --csv        Output CSV to /tmp/procedure-audit.csv (in addition to stdout)
+ *   --csv        Also write a CSV into a fresh temp directory (path is printed)
  *   --quiet      Only print the summary line
  *   --exit-code  Exit 1 if any procedures are missing a permission declaration
  */
 
-import { readdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, relative, resolve, sep } from "node:path";
+import { mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -156,8 +157,12 @@ if (csv) {
 				`${r.file},${r.module},${r.procedureCount},${r.hasPermissionDecorator}`,
 		),
 	];
-	writeFileSync("/tmp/procedure-audit.csv", csvLines.join("\n"));
-	console.log("Wrote /tmp/procedure-audit.csv");
+	const csvPath = join(
+		mkdtempSync(join(tmpdir(), "procedure-audit-")),
+		"procedure-audit.csv",
+	);
+	writeFileSync(csvPath, csvLines.join("\n"));
+	console.log(`Wrote ${csvPath}`);
 }
 
 if (exitCode && proceduresMissingPermission > 0) {

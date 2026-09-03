@@ -360,11 +360,14 @@ describe("POST /api/agents/fabric-ai/stream/cancel", () => {
 			String(call[0]).startsWith("[DirectChat:Audit]"),
 		);
 		expect(auditLogCall).toBeDefined();
-		expect(String(auditLogCall?.[0])).toContain(
-			`executionId=${VALID_EXECUTION_ID}`,
-		);
-		expect(String(auditLogCall?.[0])).toContain(`cancelledBy=${USER_ID}`);
-		expect(String(auditLogCall?.[0])).toContain("reason=user_clicked_stop");
+		// The request-derived fields travel as a structured argument, never
+		// interpolated into the message string (CodeQL js/log-injection).
+		expect(auditLogCall?.[0]).not.toContain(VALID_EXECUTION_ID);
+		expect(auditLogCall?.[1]).toMatchObject({
+			executionId: VALID_EXECUTION_ID,
+			cancelledBy: USER_ID,
+			reason: "user_clicked_stop",
+		});
 
 		consoleLogSpy.mockRestore();
 	});

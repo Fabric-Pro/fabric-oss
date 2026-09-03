@@ -167,9 +167,7 @@ export async function searchProjectSlackMessages(
 	const errors: string[] = [];
 	const searchedChannels: string[] = [];
 
-	console.log(
-		`[SearchProjectSlackMessages] Searching for "${query}" in project ${projectId}`,
-	);
+	console.log("[SearchProjectSlackMessages] Searching", { query, projectId });
 
 	// Fetch INTEGRATION type contexts for this project
 	const integrationContexts = await db.projectContext.findMany({

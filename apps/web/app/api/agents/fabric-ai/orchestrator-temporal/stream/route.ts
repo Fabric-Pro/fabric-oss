@@ -152,18 +152,11 @@ export async function POST(request: NextRequest) {
 		} = body;
 
 		// Debug: Log workspace IDs received
-		console.log(
-			"[Orchestrator API] Received workspaceIds:",
+		console.log("[Orchestrator API] Received request context:", {
 			providedWorkspaceIds,
-		);
-		console.log(
-			"[Orchestrator API] Received conversationId:",
 			conversationId,
-		);
-		console.log(
-			"[Orchestrator API] Received projectId:",
 			providedProjectId,
-		);
+		});
 		console.log("[Orchestrator API] Received prioritization:", {
 			prioritizedToolIds,
 			prioritizedAgentIds,
@@ -178,7 +171,7 @@ export async function POST(request: NextRequest) {
 		) {
 			console.log(
 				"[Orchestrator API] Fetching attached workspaces for conversation:",
-				conversationId,
+				{ conversationId },
 			);
 			const { getConversationWorkspaces } = await import(
 				"@repo/database"
@@ -278,7 +271,7 @@ export async function POST(request: NextRequest) {
 				if (!canAccess) {
 					console.warn(
 						"[Orchestrator API] User does not have access to project:",
-						projectId,
+						{ projectId },
 					);
 					projectId = undefined; // Strip unauthorized projectId
 				}
@@ -308,7 +301,8 @@ export async function POST(request: NextRequest) {
 			});
 			if (!member) {
 				console.warn(
-					`[Orchestrator Stream] User ${userId} not a member of organization ${organizationId}`,
+					"[Orchestrator Stream] User not a member of organization",
+					{ userId, organizationId },
 				);
 				return new Response(
 					JSON.stringify({

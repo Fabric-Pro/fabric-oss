@@ -162,15 +162,11 @@ export async function generateEvidenceProject(
  */
 async function createTempProjectDir(projectName: string): Promise<string> {
 	const sanitizedName = sanitizeSourceName(projectName);
-	const timestamp = Date.now();
-	const tempDir = path.join(
-		os.tmpdir(),
-		`fabric-evidence-${sanitizedName}-${timestamp}`,
+	// mkdtemp: a unique, freshly created directory that nothing could have
+	// pre-created under the shared temp dir (the worker runs on shared infra).
+	return fs.mkdtemp(
+		path.join(os.tmpdir(), `fabric-evidence-${sanitizedName}-`),
 	);
-
-	await fs.mkdir(tempDir, { recursive: true });
-
-	return tempDir;
 }
 
 /**

@@ -315,9 +315,10 @@ export async function POST(request: NextRequest) {
 					},
 				});
 				if (count > 0) {
-					console.log(
-						`[Teams Events] Cleaned up ${count} old receipt(s) for channel ${channelKey}`,
-					);
+					console.log("[Teams Events] Cleaned up old receipts", {
+						count,
+						channelKey,
+					});
 				}
 			}
 		} catch (err) {

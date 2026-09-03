@@ -208,9 +208,10 @@ export async function POST(request: NextRequest) {
 				);
 			}
 
-			console.log(
-				`[MCP Tool API] Reading resource: ${resourceUri} from ${serverName}`,
-			);
+			console.log("[MCP Tool API] Reading resource", {
+				resourceUri,
+				serverName,
+			});
 
 			// Use the client's readResource method (available on STDIO wrapper clients)
 			const clientAny = client as unknown as {
@@ -257,20 +258,15 @@ export async function POST(request: NextRequest) {
 			);
 		}
 
-		console.log(
-			"[MCP Tool API] Executing %s with params:",
-			toolName,
-			params,
-		);
+		console.log("[MCP Tool API] Executing tool:", { toolName, params });
 
 		const tool = tools[toolName];
 
 		if (!tool) {
-			console.error(
-				"[MCP Tool API] Tool %s not found. Available:",
+			console.error("[MCP Tool API] Tool not found:", {
 				toolName,
 				availableTools,
-			);
+			});
 			return NextResponse.json(
 				{
 					error: `Tool "${toolName}" not found on ${serverName}`,
@@ -318,14 +314,14 @@ export async function POST(request: NextRequest) {
 		}
 
 		console.log(
-			"[MCP Tool API] %s raw result:",
-			toolName,
+			"[MCP Tool API] Raw result:",
+			{ toolName },
 			JSON.stringify(result, null, 2),
 		);
 
 		// Parse MCP content format
 		const parsed = parseMcpResult(result);
-		console.log("[MCP Tool API] %s parsed result:", toolName, parsed);
+		console.log("[MCP Tool API] Parsed result:", { toolName }, parsed);
 
 		return NextResponse.json({ result: parsed, toolName, serverName });
 	} catch (error) {

@@ -437,7 +437,7 @@ export async function createMcpClientForConfig(
 
 	// Avoid logging config IDs in production
 	if (process.env.NODE_ENV === "development") {
-		console.log(`[MCP Client] Creating client for config ${configId}`);
+		console.log("[MCP Client] Creating client for config", { configId });
 	}
 
 	const mcpConfig = await getMcpConfigById(configId, {
@@ -849,8 +849,8 @@ export async function getCachedMcpClientForConfig(
 	} catch (error) {
 		// Log but don't crash - let the caller handle the error
 		console.error(
-			"[MCP Client Cache] Failed to create client for config %s:",
-			configId,
+			"[MCP Client Cache] Failed to create client for config:",
+			{ configId },
 			error,
 		);
 		throw error;
@@ -887,9 +887,10 @@ export async function invalidateMcpClientCache(
 	const cacheKey = getMcpCacheKey(configId, userId, organizationId);
 	const cached = mcpClientCache.get(cacheKey);
 	if (cached) {
-		console.log(
-			`[MCP Client Cache] Invalidating cache for ${cached.serverName} (config: ${configId})`,
-		);
+		console.log("[MCP Client Cache] Invalidating cache", {
+			serverName: cached.serverName,
+			configId,
+		});
 		try {
 			await cached.client.close();
 		} catch {
