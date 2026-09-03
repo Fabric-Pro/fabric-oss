@@ -102,7 +102,7 @@ param databaseAuthProvider string = 'password'
 @allowed(['bypassrls', 'policy'])
 param workerRlsMode string = 'bypassrls'
 
-@description('Encryption key version that NEW data is encrypted with (SOC 2 CC6.1 key rotation). Empty leaves rotation inactive, which is a fully supported setup: encryption falls back to BETTER_AUTH_SECRET and every existing ciphertext still decrypts. The deploy workflow sets this only once the environment\'s Key Vault actually holds that version\'s material, because activating a version whose material is absent fails EVERY stored-credential read (the lookup is lazy, so the process boots clean and then poisons the work it accepts). Defaults empty so a freshly-provisioned environment is never born broken. See docs/runbooks/encryption-key-rotation.md.')
+@description('Encryption key version that NEW data is encrypted with (SOC 2 CC6.1 key rotation). Empty leaves rotation inactive, which is a fully supported setup: encryption falls back to BETTER_AUTH_SECRET and every existing ciphertext still decrypts. The deploy workflow sets this only once the environment\'s Key Vault actually holds that version\'s material, because activating a version whose material is absent fails EVERY stored-credential read (the lookup is lazy, so the process boots clean and then poisons the work it accepts). Defaults empty so a freshly-provisioned environment is never born broken. See your operator\'s key-rotation runbook.')
 param encryptionActiveKeyVersion string = ''
 
 // Tags for resources
@@ -632,7 +632,8 @@ var temporalWorkerBaseEnv = [
   // literal '2' for every non-prod environment guaranteed that a newly-created
   // environment — whose `encryption-keys` secret the deploy only ever seeds as
   // the `{}` placeholder — activated a version it had no material for.
-  // '' is treated as unset, per docs/runbooks/encryption-key-rotation.md.
+  // '' is treated as unset — see your operator's key-rotation runbook for
+  // the rotation procedure.
   { name: 'ENCRYPTION_ACTIVE_KEY_VERSION', value: encryptionActiveKeyVersion }
   // Public-facing site origin used to build absolute share URLs in
   // fabric_create_frame and other activities that emit user-clickable links.

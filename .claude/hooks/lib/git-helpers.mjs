@@ -13,9 +13,9 @@ const TEST_BRANCH_ENV = "FABRIC_TEST_BRANCH";
  */
 const TEST_DIRTY_ENV = "FABRIC_TEST_IS_DIRTY";
 
-// `ops` is the long-lived operations branch (deploy workflows + ledger, see
-// docs/open-source/open-sourcing-plan.md §4.2) — like main/master it is
-// pushed to directly, not via prefixed feature branches.
+// `ops` is the long-lived operations branch (deploy workflows + ledger) —
+// like main/master it is pushed to directly, not via prefixed feature
+// branches.
 const PROTECTED_BRANCHES = new Set(["main", "master", "ops"]);
 
 /**

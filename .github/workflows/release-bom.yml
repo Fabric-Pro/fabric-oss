@@ -23,7 +23,7 @@ name: Release BOM
 # `.draft == false and .prerelease == false`), only ever see complete releases.
 #
 # What a stuck draft does and does not block — read this before panicking at
-# 2am, and see docs/runbooks/release-bom.md:
+# 2am, and see docs/deployment/release-bom.md:
 #   - BLOCKED: client-delivery.yml (keys on `release: published`) and the ops
 #     reconciler's admission of the release into the deployment ledger.
 #   - ALSO BLOCKED, and deliberately: the production rollout. Nothing in this
@@ -45,7 +45,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Release tag to assemble the BOM for (e.g. v1.13.4). No --ref is required: every job resolves the tag to its commit and checks that commit out explicitly, and no job binds a deployment environment any more.'
+        description: 'Release tag to assemble the BOM for (e.g. v1.13.4). No --ref is required: resolve turns the tag into a commit SHA, the jobs that consume source check that SHA out explicitly, and no job binds a deployment environment.'
         required: true
         type: string
 
@@ -235,7 +235,7 @@ jobs:
             EXISTING=$(find_release)
             [ -n "$EXISTING" ] && break
             if [ "$(date +%s)" -ge "$DEADLINE" ]; then
-              echo "::error::No VISIBLE GitHub Release for $TAG appeared within ${WAIT_SECONDS}s. First verify this job still has contents: write: GitHub omits drafts from release listings for callers without push access. If that permission is intact, check release.yml for a failure between 'Auto-tag' and 'Create draft GitHub Release'. If the tag was pushed by hand, create the draft first, then re-run this workflow — see docs/runbooks/release-bom.md § Publishing by hand."
+              echo "::error::No VISIBLE GitHub Release for $TAG appeared within ${WAIT_SECONDS}s. First verify this job still has contents: write: GitHub omits drafts from release listings for callers without push access. If that permission is intact, check release.yml for a failure between 'Auto-tag' and 'Create draft GitHub Release'. If the tag was pushed by hand, create the draft first, then re-run this workflow — see docs/deployment/release-bom.md § Publishing by hand, when the gate itself is wrong."
               exit 1
             fi
             echo "Release $TAG does not exist yet — release.yml is probably still creating the draft. Waiting..."
@@ -247,7 +247,7 @@ jobs:
           if [ "$DRAFT" = "true" ]; then
             echo "Release $TAG is a draft — this run decides whether it gets published."
           else
-            echo "::warning::Release $TAG is ALREADY published. This run will still assemble, attest and attach the manifest, but the publish step is then a no-op and re-publishing emits no \`release: published\` event. See docs/runbooks/release-bom.md."
+            echo "::warning::Release $TAG is ALREADY published. This run will still assemble, attest and attach the manifest, but the publish step is then a no-op and re-publishing emits no \`release: published\` event. See docs/deployment/release-bom.md."
           fi
 
   # ==========================================================================
@@ -379,7 +379,7 @@ jobs:
               for WF in "${PENDING[@]}"; do
                 DISPATCHED=$(dispatched_runs "$WF" || true)
                 if [ -n "$DISPATCHED" ]; then
-                  echo "::error::  PRODUCER NOT FROM A PUSH: $WF has no push run on $(expected_branch "$WF") at ${SHA:0:7}, only non-push run(s): $DISPATCHED. Those are ignored, never used: a dispatched run decides for itself what it checks out, so its artifacts cannot be assumed to come from this commit. Dispatching another one will not help. See docs/runbooks/release-bom.md § No tag-push run exists."
+                  echo "::error::  PRODUCER NOT FROM A PUSH: $WF has no push run on $(expected_branch "$WF") at ${SHA:0:7}, only non-push run(s): $DISPATCHED. Those are ignored, never used: a dispatched run decides for itself what it checks out, so its artifacts cannot be assumed to come from this commit. Dispatching another one will not help. See docs/deployment/release-bom.md § No push run exists."
                 else
                   echo "::error::  $WF — expected a push run on $(expected_branch "$WF"); runs seen at ${SHA:0:7}: $(other_runs "$WF" || echo 'none')"
                 fi
@@ -1188,7 +1188,7 @@ jobs:
           check_rows '.type == "platform-source"' check_platform_source
 
           if [ ${#FAILURES[@]} -gt 0 ]; then
-            echo "::error::${#FAILURES[@]} completeness check(s) failed — release $TAG stays a DRAFT and is NOT published. Each failure is listed above; see docs/runbooks/release-bom.md."
+            echo "::error::${#FAILURES[@]} completeness check(s) failed — release $TAG stays a DRAFT and is NOT published. Each failure is listed above; see docs/deployment/release-bom.md."
             exit 1
           fi
           echo "Manifest for $TAG is complete: $(jq '.components | length' "$MANIFEST_FILE") components, all producers green."
@@ -1338,7 +1338,7 @@ jobs:
               NON_PUSH=$(printf '%s' "$RUNS_JSON" | jq -r --arg b "$WANT_BRANCH" --arg s "$SHA" \
                 '[.workflow_runs[] | select(.head_sha == $s and .head_branch == $b and .event != "push")] | length')
               if [ "${NON_PUSH:-0}" -gt 0 ]; then
-                fail "PRODUCER NOT FROM A PUSH: $WF no longer has a push run on $WANT_BRANCH at this commit — only ${NON_PUSH} non-push run(s), which are ignored because a dispatched run decides for itself what it checks out. The manifest records run $WANT_ID; if that run was deleted, this release cannot be verified without re-creating it. See docs/runbooks/release-bom.md § No tag-push run exists."
+                fail "PRODUCER NOT FROM A PUSH: $WF no longer has a push run on $WANT_BRANCH at this commit — only ${NON_PUSH} non-push run(s), which are ignored because a dispatched run decides for itself what it checks out. The manifest records run $WANT_ID; if that run was deleted, this release cannot be verified without re-creating it. See docs/deployment/release-bom.md § No push run exists."
               else
                 fail "PRODUCER GONE: no push run of $WF on $WANT_BRANCH at $SHA is visible any more, though the manifest records run $WANT_ID. Re-run $WF at that commit, then re-run this workflow."
               fi
@@ -1442,7 +1442,7 @@ jobs:
           fi
 
           if [ ${#FAILURES[@]} -gt 0 ]; then
-            echo "::error::${#FAILURES[@]} pre-publish check(s) failed — release $TAG stays a DRAFT and is NOT published. See docs/runbooks/release-bom.md § Reading a failure."
+            echo "::error::${#FAILURES[@]} pre-publish check(s) failed — release $TAG stays a DRAFT and is NOT published. See docs/deployment/release-bom.md § Reading a failure."
             exit 1
           fi
           echo "Tag, producer runs and attached manifest all re-verified."
@@ -1471,7 +1471,7 @@ jobs:
             if [ "$OUTCOME" = "success" ]; then
               printf -- '**PUBLISHED.** The manifest is complete and attached.\n\n'
             else
-              printf -- '**NOT PUBLISHED — the release is still a DRAFT.** The failing check is in the log above; nothing was half-published. See `docs/runbooks/release-bom.md`.\n\n'
+              printf -- '**NOT PUBLISHED — the release is still a DRAFT.** The failing check is in the log above; nothing was half-published. See `docs/deployment/release-bom.md`.\n\n'
             fi
             printf -- '- Source commit: `%s`\n' "$SHA"
             printf -- '- Release: %s/%s/releases/tag/%s\n\n' "$SERVER_URL" "$REPO" "$TAG"

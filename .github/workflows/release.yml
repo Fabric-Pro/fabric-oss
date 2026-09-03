@@ -437,7 +437,7 @@ jobs:
             if [ "$(printf '%s' "$EXISTING" | jq -r '.draft')" = "true" ]; then
               echo "GitHub Release $TAG already exists as a draft — leaving it for release-bom.yml to complete."
             else
-              echo "::warning::GitHub Release $TAG already exists and is already PUBLISHED — not recreating it. If that was not a deliberate manual backfill, find out how it was published without the §4.1 BOM gate. See docs/runbooks/release-bom.md."
+              echo "::warning::GitHub Release $TAG already exists and is already PUBLISHED — not recreating it. If that was not a deliberate manual backfill, find out how it was published without the §4.1 BOM gate. See docs/deployment/release-bom.md."
             fi
             exit 0
           fi

@@ -1487,7 +1487,7 @@ async function buildAtlassianCloudChainHop({
 
 	// Resolve the Cloud callback URL from the primary callback's
 	// origin. The Rovo callback redirect_uri looks like
-	// `https://staging.fabric.pro/api/mcp/oauth/callback`; swap the
+	// `https://your-fabric-host.example/api/mcp/oauth/callback`; swap the
 	// path for the Cloud variant on the same origin.
 	if (!callbackBaseUrl) {
 		return null;

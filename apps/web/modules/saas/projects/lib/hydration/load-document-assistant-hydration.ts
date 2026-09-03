@@ -47,7 +47,7 @@
  * conversation history server-side. Every other path (drawer list, drawer
  * viewer, persistence on send) goes through the regular oRPC client from
  * the browser, where the same `fetch` works because the browser resolves
- * `staging.fabric.pro` / `localhost` correctly and there's no
+ * `your-fabric-host.example` / `localhost` correctly and there's no
  * function-fetches-itself loop.
  */
 

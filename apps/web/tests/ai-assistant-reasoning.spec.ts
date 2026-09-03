@@ -1,7 +1,7 @@
 /**
  * AI Assistant reasoning trace — E2E (Task 9).
  *
- * Spec: `docs/superpowers/plans/2026-05-15-ai-assistant-reasoning-trace.md`
+ * Plan: an internal implementation plan for the AI Assistant reasoning trace feature (2026-05-15).
  *
  * What this spec locks in:
  *   - When the agent's AG-UI state stream carries `reasoningByTurn`, the

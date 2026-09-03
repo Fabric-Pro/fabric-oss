@@ -895,10 +895,10 @@ async function registerDocumentRefreshSchedule(
  * history and recent-actions list along with the values — true for THIS
  * schedule without qualification, and true for every OTHER field of the one
  * schedule with a note exception. (An earlier version of this comment
- * pointed here at a docs/runbooks/publishing-reconcile-schedule.md that does
- * not exist in this repository — pre-existing, dropped rather than
- * recreated, since the fix for a dangling reference to a nonexistent file is
- * removing the reference, not inventing the file to match it.) There is no
+ * pointed here at a runbook path that does not exist in this repository —
+ * pre-existing, dropped rather than recreated, since the fix for a dangling
+ * reference to a nonexistent file is removing the reference, not inventing
+ * the file to match it.) There is no
  * `.update()` anywhere in this file for THIS schedule; there now is,
  * narrowly, below, for a different one.
  *

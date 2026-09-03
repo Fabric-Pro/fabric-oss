@@ -883,11 +883,15 @@ That buys the number, the shape of a configurable window, the grace period, and 
 
 ### Internal references
 
-*These paths are not in this repository — the compliance tree was cut when it was sanitised for open-source handoff. They resolve in the internal tree, and are listed here rather than cited above.*
+*Fabric's internal SaaS SOC 2 policy set is not included in this repository — see
+`docs/compliance/soc2/self-hosted/README.md` for how the compliance material here relates to
+that internal package. The items below name which internal policy each point rests on, for a
+reader with access to the internal tree; there is no self-hosted equivalent covering the same
+ground, since these are Fabric's own operational policies, not the self-hosted deployment path.*
 
-- `docs/compliance/soc2/policies/data-retention-and-disposal-policy.md` — the attachment retention default and grace period; the open items on unattested managed-database backup and on the absent organization-wide schedule; the engineering duty on new data categories.
-- `docs/compliance/soc2/policies/backup-policy.md` — the open item recording that no restore test has been performed.
-- `docs/compliance/soc2/policies/access-control-policy.md` — least privilege.
+- The internal data-retention-and-disposal policy — the attachment retention default and grace period; the open items on unattested managed-database backup and on the absent organization-wide schedule; the engineering duty on new data categories.
+- The internal backup policy — the open item recording that no restore test has been performed.
+- The internal access-control policy — least privilege.
 
 ---
 
@@ -970,7 +974,7 @@ The architecture guidance's tenancy-class table has already diverged from the qu
 
 *Not in this repository — the compliance tree was cut when it was sanitised. Cited here rather than in the body so a reader with access to the internal tree can find the source.*
 
-- The compliance access-control, data-classification, data-retention, and secure-development policies under `docs/compliance/soc2/policies/` — each carries a scope or statement naming the personal-versus-organization boundary.
+- Fabric's internal access-control, data-classification, data-retention, and secure-development policies (not in this repository — see `docs/compliance/soc2/self-hosted/README.md`) — each carries a scope or statement naming the personal-versus-organization boundary.
 - The export prune rules that previously made the above internal-only lived under an open-source directory that no longer exists in this repository; publication is now decided outside it.
 
 ---
