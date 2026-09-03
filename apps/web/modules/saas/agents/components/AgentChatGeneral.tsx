@@ -145,6 +145,7 @@ export function AgentChatGeneral({
 		<div className="h-full w-full">
 			<CopilotKit
 				runtimeUrl={runtimeUrl}
+				useSingleEndpoint
 				agent={useOrchestrator ? "orchestrator" : agent?.agentId}
 				showDevConsole={false}
 				onError={onError}

@@ -29,6 +29,7 @@ export function BacklogChatPanel({
 					? `/api/copilotkit?organizationId=${organizationId}`
 					: "/api/copilotkit"
 			}
+			useSingleEndpoint
 			agent="backlog_updater"
 			showDevConsole={false}
 			onError={onCopilotError}

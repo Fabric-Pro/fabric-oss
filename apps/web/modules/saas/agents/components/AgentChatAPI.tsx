@@ -49,6 +49,7 @@ export function AgentChatAPI({ agent, runtimeUrl }: AgentChatAPIProps) {
 		<div className="h-full w-full">
 			<CopilotKit
 				runtimeUrl={runtimeUrl}
+				useSingleEndpoint
 				agent={agent?.agentId}
 				showDevConsole={false}
 				onError={onError}

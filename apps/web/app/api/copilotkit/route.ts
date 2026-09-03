@@ -620,6 +620,21 @@ async function getTenantConfig(
 	return promise;
 }
 
+/**
+ * POST is the ONLY method this route exports — do not add a `GET`.
+ *
+ * `copilotRuntimeNextJSAppRouterEndpoint` builds a *single-route* endpoint:
+ * every client call (`info`, `agent/connect`, `agent/run`, `agent/stop`)
+ * arrives as a POST to this one path carrying a `{ method, params, body }`
+ * envelope. Every `<CopilotKit>` mount passes `useSingleEndpoint` so the
+ * client uses that transport directly and never probes for a REST runtime.
+ *
+ * Keep the mounts and this route in step. Drop the prop from a mount and
+ * the 1.70+ client defaults to `transport: "auto"`, probing
+ * `GET <runtimeUrl>/info` first; this POST-only route answers with a 405,
+ * and the app's fetch interceptor surfaces that as an error toast before
+ * the client falls back to single-route transport.
+ */
 export async function POST(req: NextRequest) {
 	try {
 		// Get user session for authentication

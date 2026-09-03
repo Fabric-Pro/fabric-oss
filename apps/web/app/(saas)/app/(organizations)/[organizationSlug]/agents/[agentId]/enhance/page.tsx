@@ -155,6 +155,7 @@ export default function OrganizationPromptEnhancerAgentPage() {
 			<div className="h-[calc(100vh-53px)]">
 				<CopilotKit
 					runtimeUrl="/api/copilotkit"
+					useSingleEndpoint
 					agent="prompt_enhancer"
 					showDevConsole={false}
 					onError={onError}

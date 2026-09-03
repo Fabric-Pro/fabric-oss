@@ -592,6 +592,7 @@ export function DocumentEditorPage({
 				>
 					<CopilotKit
 						runtimeUrl={copilotRuntimeUrl}
+						useSingleEndpoint
 						agent="project_document_generator"
 						showDevConsole={false}
 						onError={onCopilotError}

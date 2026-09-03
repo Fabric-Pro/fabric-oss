@@ -748,6 +748,12 @@ export function StoryWorkspacePage({
 				>
 					<CopilotKit
 						runtimeUrl={copilotRuntimeUrl}
+						// The 1.70 client defaults to probing GET <runtimeUrl>/info
+						// before falling back to single-route POST; our route is
+						// POST-only, so that probe 405s and surfaces as an error
+						// toast. useSingleEndpoint skips the probe — keep every
+						// <CopilotKit> mount in sync with this one.
+						useSingleEndpoint
 						agent="project_document_generator"
 						showDevConsole={false}
 						onError={onCopilotError}

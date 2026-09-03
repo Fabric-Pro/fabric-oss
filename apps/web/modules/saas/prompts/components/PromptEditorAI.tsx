@@ -298,6 +298,7 @@ export function PromptEditorAI(props: Props) {
 					? `/api/copilotkit?organizationId=${organizationId}`
 					: "/api/copilotkit"
 			}
+			useSingleEndpoint
 			agent="prompt_enhancer"
 			showDevConsole={false}
 			onError={onError}

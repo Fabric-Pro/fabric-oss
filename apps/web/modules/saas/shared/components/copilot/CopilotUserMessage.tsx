@@ -33,6 +33,37 @@ const ATTACHED_LINE_RE = /\n*\[Attached:\s*([^\]\n]+)\]\s*$/;
 type UserMessageContent = NonNullable<UserMessageProps["message"]>["content"];
 type ContentPart = Extract<UserMessageContent, readonly unknown[]>[number];
 
+/**
+ * The `image` payload `ImageRenderer` accepts, derived from the renderer's own
+ * props so we never import `@copilotkit/shared` (not a dependency of this app).
+ */
+type ImageRendererImage = NonNullable<
+	React.ComponentProps<UserMessageProps["ImageRenderer"]>["image"]
+>;
+
+/**
+ * CopilotKit's user-message type stopped declaring the legacy `image` field in
+ * 1.70 — inline images now travel as `{ type: "image", source }` content parts.
+ * The bubble still honours a message that carries the old field (persisted
+ * history can), so narrow it structurally instead of trusting the static type.
+ */
+function getLegacyImage(
+	message: UserMessageProps["message"],
+): ImageRendererImage | null {
+	if (!message || !("image" in message)) {
+		return null;
+	}
+	const image = (message as { image?: unknown }).image;
+	if (!image || typeof image !== "object") {
+		return null;
+	}
+	const { format, bytes } = image as { format?: unknown; bytes?: unknown };
+	if (typeof format !== "string" || typeof bytes !== "string") {
+		return null;
+	}
+	return { format, bytes };
+}
+
 function getTextContent(
 	content: UserMessageContent | undefined,
 ): string | undefined {
@@ -144,8 +175,7 @@ function renderMessageTimestamp(
  */
 export function CopilotUserMessage(props: UserMessageProps) {
 	const { message, ImageRenderer } = props;
-	const isImageMessage =
-		message && "image" in message && Boolean(message.image);
+	const legacyImage = getLegacyImage(message);
 
 	const rawContent = getTextContent(message?.content) ?? "";
 	const withoutEnvelope = rawContent
@@ -180,15 +210,11 @@ export function CopilotUserMessage(props: UserMessageProps) {
 	// formatter takes both shapes so we don't need to coerce here.
 	const timestampSource = (message ?? {}) as TimestampSource;
 
-	if (isImageMessage) {
-		const imageMessage = message!;
+	if (legacyImage) {
 		return (
 			<>
 				<div className="copilotKitMessage copilotKitUserMessage">
-					<ImageRenderer
-						image={imageMessage.image!}
-						content={cleanText}
-					/>
+					<ImageRenderer image={legacyImage} content={cleanText} />
 				</div>
 				{hasRichAttachments ? (
 					<MessageAttachmentList

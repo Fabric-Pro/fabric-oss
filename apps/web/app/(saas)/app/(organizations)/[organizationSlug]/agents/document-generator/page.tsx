@@ -108,6 +108,7 @@ export default function DocumentGeneratorPage() {
 				<AgentErrorBoundary>
 					<CopilotKit
 						runtimeUrl={runtimeUrl}
+						useSingleEndpoint
 						showDevConsole={false}
 						agent="document_generator"
 						onError={onError}
