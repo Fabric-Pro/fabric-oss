@@ -141,7 +141,11 @@ export async function POST(request: NextRequest) {
 
 			if (!member) {
 				console.warn(
-					`[Orchestrator] User ${userId} not a member of organization ${organizationId}`,
+					"[Orchestrator] User not a member of organization",
+					{
+						userId,
+						organizationId,
+					},
 				);
 				return new Response(
 					JSON.stringify({

@@ -548,7 +548,7 @@ describe("MCP gateway — a session does not outlive its organization", () => {
 });
 
 describe("MCP gateway — a tool executor failure is logged safely", () => {
-	it("logs the tool name as a %s substitution arg, never spliced into the format string (js/tainted-format-string)", async () => {
+	it("logs the tool name as a structured object argument, never in the message or a %s placeholder (js/log-injection)", async () => {
 		const consoleError = vi
 			.spyOn(console, "error")
 			.mockImplementation(() => {});
@@ -575,9 +575,10 @@ describe("MCP gateway — a tool executor failure is logged safely", () => {
 		expect(call).toBeDefined();
 		const [message, ...args] = call as unknown[];
 		// The tool name from toolCallBody() ("fabric_get_identity") must arrive
-		// as a separate argument, not interpolated into the format string.
+		// as a structured argument, not interpolated into the message (a %s
+		// placeholder counts as interpolation for CodeQL js/log-injection).
 		expect(message).not.toContain("fabric_get_identity");
-		expect(args).toContain("fabric_get_identity");
+		expect(args).toContainEqual({ toolName: "fabric_get_identity" });
 
 		consoleError.mockRestore();
 	});

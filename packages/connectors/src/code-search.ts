@@ -171,9 +171,11 @@ async function getAzureDevOpsFile(
 	});
 
 	if (!response.ok) {
-		console.error(
-			`[code-search] ADO get file failed: ${response.status} ${response.statusText} (${path})`,
-		);
+		console.error("[code-search] ADO get file failed", {
+			status: response.status,
+			statusText: response.statusText,
+			path,
+		});
 		return {
 			path,
 			content: "",

@@ -161,9 +161,11 @@ async function getGitHubFile(
 	});
 
 	if (!response.ok) {
-		console.error(
-			`[github-code-search] Get file failed: ${response.status} ${response.statusText} (${path})`,
-		);
+		console.error("[github-code-search] Get file failed", {
+			status: response.status,
+			statusText: response.statusText,
+			path,
+		});
 		return {
 			path,
 			content: "",
@@ -200,9 +202,9 @@ async function getGitHubFile(
 	try {
 		decoded = Buffer.from(data.content, "base64").toString("utf-8");
 	} catch {
-		console.error(
-			`[github-code-search] Failed to decode base64 content for ${path}`,
-		);
+		console.error("[github-code-search] Failed to decode base64 content", {
+			path,
+		});
 		return {
 			path,
 			content: "",

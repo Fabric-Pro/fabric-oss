@@ -207,9 +207,7 @@ export async function searchProjectTeamsMessages(
 	const errors: string[] = [];
 	const searchedChats: string[] = [];
 
-	console.log(
-		`[SearchProjectTeamsMessages] Searching for "${query}" in project ${projectId}`,
-	);
+	console.log("[SearchProjectTeamsMessages] Searching", { query, projectId });
 
 	// Fetch INTEGRATION type contexts for this project
 	const integrationContexts = await db.projectContext.findMany({
