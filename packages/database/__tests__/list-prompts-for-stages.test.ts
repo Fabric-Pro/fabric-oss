@@ -225,9 +225,13 @@ describe("listPromptsForStages", () => {
 		expect(callArgs.where.targetType).toBe("AGENT");
 		expect(callArgs.where.targetKey).toBe("project_document_generator");
 		expect(callArgs.where.documentType).toEqual({ in: STAGES });
+		// The ORG arm carries `projectId: null`: with no project in scope this
+		// tier is the org-WIDE row only, matching getBoundPromptVersion. An
+		// earlier revision asserted the unfiltered shape and so pinned the
+		// drift in place. See prompt-reader-project-parity.
 		expect(callArgs.where.OR).toEqual([
 			{ scope: "SYSTEM" },
-			{ scope: "ORG", organizationId: "org1" },
+			{ scope: "ORG", organizationId: "org1", projectId: null },
 			{ scope: "USER", userId: "u1" },
 		]);
 		// Scoped to the caller: one person's override is never another's.
@@ -291,8 +295,11 @@ describe("listPromptsForStages", () => {
 		const callArgs = findMany.mock.calls[0][0] as {
 			where: { OR: Array<Record<string, unknown>> };
 		};
+		// `projectId: null` is the org-WIDE tier. A project-narrowed row is an
+		// ORG row too, and admitting it here would surface a prompt the runtime
+		// resolves only inside that project. See prompt-reader-project-parity.
 		expect(callArgs.where.OR).toEqual([
-			{ scope: "ORG", organizationId: "org1" },
+			{ scope: "ORG", organizationId: "org1", projectId: null },
 		]);
 	});
 

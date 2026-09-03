@@ -1488,102 +1488,122 @@ export async function bindPromptVersion({
 	client?: PromptBindingClient;
 }) {
 	const storyKindFilter = storyKind ?? null;
-	const tx = client ?? db;
 
-	// If setting as default, unset any existing default for this combination
-	if (isDefault) {
-		await tx.promptBinding.updateMany({
-			where: {
-				targetType: targetType as any,
-				targetKey,
-				documentType,
-				storyKind: storyKindFilter,
-				scope: scope as any,
-				userId: userId ?? null,
-				organizationId: organizationId ?? null,
-				projectId: projectId ?? null,
-				isDefault: true,
-			},
-			data: {
-				isDefault: false,
-			},
-		});
+	/** The row this bind owns, by the columns the unique key is built on. */
+	const identity = {
+		targetType: targetType as any,
+		targetKey,
+		documentType,
+		storyKind: storyKindFilter,
+		scope: scope as any,
+		userId: userId ?? null,
+		organizationId: organizationId ?? null,
+		projectId: projectId ?? null,
+	};
 
-		// When setting a SYSTEM default, stand the caller's USER override down
-		// so the system default takes effect through natural precedence. The
-		// row is kept with its default flag dropped — the same state a bind
-		// saved without "set as default" produces — so the person can put
-		// their preference back from the catalog later.
-		if (scope === "SYSTEM" && callerUserId) {
+	const run = async (tx: PromptBindingClient) => {
+		// If setting as default, unset any existing default for this combination
+		if (isDefault) {
 			await tx.promptBinding.updateMany({
 				where: {
 					targetType: targetType as any,
 					targetKey,
 					documentType,
 					storyKind: storyKindFilter,
-					scope: "USER" as any,
-					userId: callerUserId,
+					scope: scope as any,
+					userId: userId ?? null,
+					organizationId: organizationId ?? null,
+					projectId: projectId ?? null,
 					isDefault: true,
 				},
-				data: { isDefault: false },
+				data: {
+					isDefault: false,
+				},
+			});
+
+			// When setting a SYSTEM default, stand the caller's USER override down
+			// so the system default takes effect through natural precedence. The
+			// row is kept with its default flag dropped — the same state a bind
+			// saved without "set as default" produces — so the person can put
+			// their preference back from the catalog later.
+			if (scope === "SYSTEM" && callerUserId) {
+				await tx.promptBinding.updateMany({
+					where: {
+						targetType: targetType as any,
+						targetKey,
+						documentType,
+						storyKind: storyKindFilter,
+						scope: "USER" as any,
+						userId: callerUserId,
+						isDefault: true,
+					},
+					data: { isDefault: false },
+				});
+			}
+
+			// When setting an ORG default, do the same within that org context.
+			// CRITICAL: Constrain by organizationId so personal USER bindings (organizationId: null)
+			// are NOT touched when setting an ORG default
+			if (scope === "ORG" && callerUserId && organizationId) {
+				await tx.promptBinding.updateMany({
+					where: {
+						targetType: targetType as any,
+						targetKey,
+						documentType,
+						storyKind: storyKindFilter,
+						scope: "USER" as any,
+						userId: callerUserId,
+						organizationId,
+						isDefault: true,
+					},
+					data: { isDefault: false },
+				});
+			}
+		}
+
+		// Upsert binding by unique composite (including documentType + storyKind)
+		const existing = await tx.promptBinding.findFirst({ where: identity });
+
+		if (existing) {
+			return tx.promptBinding.update({
+				where: { id: existing.id },
+				data: { promptVersionId, isDefault },
 			});
 		}
 
-		// When setting an ORG default, do the same within that org context.
-		// CRITICAL: Constrain by organizationId so personal USER bindings (organizationId: null)
-		// are NOT touched when setting an ORG default
-		if (scope === "ORG" && callerUserId && organizationId) {
-			await tx.promptBinding.updateMany({
-				where: {
-					targetType: targetType as any,
-					targetKey,
-					documentType,
-					storyKind: storyKindFilter,
-					scope: "USER" as any,
-					userId: callerUserId,
-					organizationId,
-					isDefault: true,
-				},
-				data: { isDefault: false },
+		try {
+			return await tx.promptBinding.create({
+				data: { ...identity, promptVersionId, isDefault },
+			});
+		} catch (error) {
+			// Another caller inserted this exact row between the read above and
+			// this write. The unique key rejects it now that NULL columns compare
+			// equal, so adopt the winner's row rather than failing the bind — the
+			// same end state either order would have produced.
+			const lostTheRace =
+				error instanceof Prisma.PrismaClientKnownRequestError &&
+				error.code === "P2002";
+			if (!lostTheRace) {
+				throw error;
+			}
+			const winner = await tx.promptBinding.findFirst({
+				where: identity,
+			});
+			if (!winner) {
+				throw error;
+			}
+			return tx.promptBinding.update({
+				where: { id: winner.id },
+				data: { promptVersionId, isDefault },
 			});
 		}
-	}
+	};
 
-	// Upsert binding by unique composite (including documentType + storyKind)
-	const existing = await tx.promptBinding.findFirst({
-		where: {
-			targetType: targetType as any,
-			targetKey,
-			documentType,
-			storyKind: storyKindFilter,
-			scope: scope as any,
-			userId: userId ?? null,
-			organizationId: organizationId ?? null,
-			projectId: projectId ?? null,
-		},
-	});
-
-	if (existing) {
-		return tx.promptBinding.update({
-			where: { id: existing.id },
-			data: { promptVersionId, isDefault },
-		});
-	}
-
-	return tx.promptBinding.create({
-		data: {
-			targetType: targetType as any,
-			targetKey,
-			documentType,
-			storyKind: storyKindFilter,
-			scope: scope as any,
-			userId: userId ?? null,
-			organizationId: organizationId ?? null,
-			projectId: projectId ?? null,
-			promptVersionId,
-			isDefault,
-		},
-	});
+	// Demoting the previous default and writing the new one is one change: a
+	// failure between them would leave the action with no default at all. A
+	// caller that already owns a transaction keeps it, so a multi-action bind
+	// still lands as a single unit.
+	return client ? run(client) : db.$transaction((tx) => run(tx));
 }
 
 export type PromptCatalogBinding = {
@@ -1700,6 +1720,33 @@ export function groupPromptCatalogBindings(
 }
 
 /**
+ * The ORG arm of a binding lookup, defined once because four readers have to
+ * agree on it.
+ *
+ * A PROJECT binding is an ORG row narrowed by `projectId`, so "the org-wide
+ * tier" means `projectId: null` and nothing else. Omitting that filter lets a
+ * project-narrowed row into a ranking nobody scoped to that project, which is
+ * how the catalog came to badge a prompt the runtime would never resolve.
+ * `getBoundPromptVersion` keeps its own inline copy: it queries the two tiers
+ * as separate statements rather than as arms of one OR.
+ *
+ * `in: [id, null]` is not valid Prisma for a nullable column — the null needs
+ * its own OR arm.
+ */
+function orgScopeCondition(
+	organizationId: string,
+	projectId?: string | null,
+): Record<string, unknown> {
+	return projectId
+		? {
+				scope: "ORG",
+				organizationId,
+				OR: [{ projectId }, { projectId: null }],
+			}
+		: { scope: "ORG", organizationId, projectId: null };
+}
+
+/**
  * Every binding visible to the caller, grouped by action.
  *
  * TENANT ISOLATION: SYSTEM plus the caller's own tier — ORG in organization
@@ -1723,15 +1770,7 @@ export async function listPromptCatalog({
 	// caller, never to anyone else.
 	const scopeConditions: any[] = [{ scope: "SYSTEM" }];
 	if (organizationId) {
-		scopeConditions.push(
-			projectId
-				? {
-						scope: "ORG",
-						organizationId,
-						OR: [{ projectId }, { projectId: null }],
-					}
-				: { scope: "ORG", organizationId },
-		);
+		scopeConditions.push(orgScopeCondition(organizationId, projectId));
 	}
 	if (userId) {
 		scopeConditions.push({ scope: "USER", userId });
@@ -2481,17 +2520,8 @@ export async function getBindingStatusForPrompts({
 	const scopeConditions: any[] = [{ scope: "SYSTEM" }];
 	if (organizationId) {
 		// Project bindings ride beside org-wide ones; the pure ranker below
-		// decides which tier actually wins. (`in: [id, null]` is not valid
-		// Prisma — null inside an `in` list needs its own OR arm.)
-		scopeConditions.push(
-			projectId
-				? {
-						scope: "ORG",
-						organizationId,
-						OR: [{ projectId }, { projectId: null }],
-					}
-				: { scope: "ORG", organizationId, projectId: null },
-		);
+		// decides which tier actually wins.
+		scopeConditions.push(orgScopeCondition(organizationId, projectId));
 	}
 	if (userId) {
 		scopeConditions.push({ scope: "USER", userId });
@@ -2538,6 +2568,7 @@ export async function listAvailablePromptsForAgent({
 	organizationId,
 	documentType,
 	storyKind,
+	projectId,
 }: {
 	agentName: string;
 	userId?: string;
@@ -2546,6 +2577,10 @@ export async function listAvailablePromptsForAgent({
 	/** Kind discriminator for stage bindings. When provided, only bindings
 	 *  with this exact storyKind match — no cross-bucket fallback. */
 	storyKind?: StoryKind | null;
+	/** When set, this project's PROJECT-tier bindings join the list and can be
+	 *  the one in force, matching what the agent resolves inside it. Without it
+	 *  the list is the org-wide tier only — never another project's. */
+	projectId?: string | null;
 }) {
 	// If documentType is provided, use binding-first architecture
 	if (documentType) {
@@ -2555,7 +2590,9 @@ export async function listAvailablePromptsForAgent({
 		const bindingConditions: any[] = [{ scope: "SYSTEM" }];
 
 		if (organizationId) {
-			bindingConditions.push({ scope: "ORG", organizationId });
+			bindingConditions.push(
+				orgScopeCondition(organizationId, projectId),
+			);
 		}
 
 		if (userId) {
@@ -2616,6 +2653,10 @@ export async function listAvailablePromptsForAgent({
 				forkedFrom: prompt.forkedFrom,
 				isBound: true,
 				isDefault: binding.isDefault,
+				/** Set when this binding is the PROJECT tier rather than the
+				 *  org-wide one. Both are ORG-scope rows, so without it the
+				 *  ranking below cannot tell which of the two actually runs. */
+				projectId: binding.projectId,
 				contentSnippet:
 					content.length > 200
 						? `${content.slice(0, 200)}...`
@@ -2627,10 +2668,20 @@ export async function listAvailablePromptsForAgent({
 			};
 		});
 
-		// Sort by scope precedence (USER > ORG > SYSTEM), then by isDefault, then by createdAt
-		// This ensures USER-scoped defaults take precedence over SYSTEM-scoped defaults
+		// Sort by tier precedence (USER > PROJECT > ORG > SYSTEM), then by
+		// isDefault. Only the first default survives the pass below, so this
+		// order decides which prompt is badged Default — it has to be the one
+		// getBoundPromptVersion would resolve.
+		//
+		// PROJECT is not a scope of its own: a project binding is an ORG row
+		// narrowed by projectId, so it ties with the org-wide row on scope and
+		// needs the projectId to break that tie.
 		const scopeOrder = { USER: 0, ORG: 1, SYSTEM: 2 };
 		const sorted = prompts.sort((a, b) => {
+			const projectDiff = (a.projectId ? 0 : 1) - (b.projectId ? 0 : 1);
+			if (projectDiff !== 0 && a.scope === b.scope) {
+				return projectDiff;
+			}
 			// First, sort by scope (USER first, then ORG, then SYSTEM)
 			const scopeDiff = scopeOrder[a.scope] - scopeOrder[b.scope];
 			if (scopeDiff !== 0) {
@@ -2818,7 +2869,7 @@ export async function listPromptsForStages({
 		if (!organizationId) {
 			return emptyResult();
 		}
-		scopeConditions = [{ scope: "ORG", organizationId }];
+		scopeConditions = [orgScopeCondition(organizationId, projectId)];
 	} else if (scope === "USER") {
 		// Reachable in either context now: a personal binding is what runs for
 		// this caller even inside an organization.
@@ -2829,15 +2880,7 @@ export async function listPromptsForStages({
 	} else {
 		scopeConditions = [{ scope: "SYSTEM" }];
 		if (organizationId) {
-			scopeConditions.push(
-				projectId
-					? {
-							scope: "ORG",
-							organizationId,
-							OR: [{ projectId }, { projectId: null }],
-						}
-					: { scope: "ORG", organizationId },
-			);
+			scopeConditions.push(orgScopeCondition(organizationId, projectId));
 		}
 		if (userId) {
 			scopeConditions.push({ scope: "USER", userId });
