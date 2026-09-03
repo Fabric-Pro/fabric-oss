@@ -48,6 +48,7 @@ const findManyOrg = vi.fn();
 const findUniqueOrg = vi.fn();
 const upsertOrg = vi.fn();
 const deleteManyOrg = vi.fn();
+const groupByOrg = vi.fn();
 
 vi.mock("../prisma/client", () => ({
 	db: {
@@ -62,6 +63,7 @@ vi.mock("../prisma/client", () => ({
 			findUnique: (...args: unknown[]) => findUniqueOrg(...args),
 			upsert: (...args: unknown[]) => upsertOrg(...args),
 			deleteMany: (...args: unknown[]) => deleteManyOrg(...args),
+			groupBy: (...args: unknown[]) => groupByOrg(...args),
 		},
 	},
 }));
@@ -86,6 +88,7 @@ import {
 	getAllFlagsForOrganization,
 	getDisabledOrganizationIds,
 	getEnabledOrganizationIds,
+	getFlagEnrolment,
 	getGlobalFlagOverride,
 	getOrganizationFlagOverrideUncached,
 	getOrgFlagOverrides,
@@ -989,5 +992,130 @@ describe("getOrgScopableFlagsDetailed", () => {
 			source: "org-override",
 			orgOverride: false,
 		});
+	});
+});
+
+// The aggregate the admin console reads to answer "who is on this flag" — the
+// one question the per-organization page cannot answer, because it only ever
+// looks at one organization.
+describe("getFlagEnrolment", () => {
+	beforeEach(() => {
+		findManyOrg.mockReset();
+		groupByOrg.mockReset();
+		__resetFeatureFlagCacheForTest();
+	});
+
+	it("counts both sides and splits the rows by what they store", async () => {
+		groupByOrg.mockResolvedValue([
+			{ enabled: true, _count: { _all: 2 } },
+			{ enabled: false, _count: { _all: 1 } },
+		]);
+		findManyOrg.mockResolvedValue([
+			{
+				organizationId: "org-a",
+				enabled: true,
+				updatedAt: new Date("2026-09-01T00:00:00Z"),
+				organization: { name: "Alpha" },
+			},
+			{
+				organizationId: "org-b",
+				enabled: true,
+				updatedAt: new Date("2026-09-02T00:00:00Z"),
+				organization: { name: "Beta" },
+			},
+			{
+				organizationId: "org-c",
+				enabled: false,
+				updatedAt: new Date("2026-09-03T00:00:00Z"),
+				organization: { name: "Gamma" },
+			},
+		]);
+
+		const result = await getFlagEnrolment("PUBLISHING_SUITE", 50);
+
+		expect(result.enabledCount).toBe(2);
+		expect(result.excludedCount).toBe(1);
+		expect(result.truncated).toBe(false);
+		expect(result.organizations.map((o) => o.organizationId)).toEqual([
+			"org-a",
+			"org-b",
+			"org-c",
+		]);
+		expect(result.organizations[0]).toMatchObject({
+			name: "Alpha",
+			enabled: true,
+		});
+	});
+
+	// A grouping row is absent, not zero, when nothing is in that state —
+	// reading `_count` off `undefined` is the obvious way to get this wrong.
+	it("reports zero for a side that has no rows at all", async () => {
+		groupByOrg.mockResolvedValue([{ enabled: true, _count: { _all: 4 } }]);
+		findManyOrg.mockResolvedValue([]);
+
+		const result = await getFlagEnrolment("PUBLISHING_SUITE", 50);
+
+		expect(result.enabledCount).toBe(4);
+		expect(result.excludedCount).toBe(0);
+	});
+
+	it("returns nothing at all for a flag no organization has a row for", async () => {
+		groupByOrg.mockResolvedValue([]);
+		findManyOrg.mockResolvedValue([]);
+
+		const result = await getFlagEnrolment("PUBLISHING_SUITE", 50);
+
+		expect(result).toEqual({
+			enabledCount: 0,
+			excludedCount: 0,
+			organizations: [],
+			truncated: false,
+		});
+	});
+
+	// The counts stay exact while the LIST is bounded, so a deployment with
+	// thousands of enrolled organizations cannot turn one admin page into a
+	// full table scan rendered into the DOM.
+	it("bounds the list without distorting the counts", async () => {
+		groupByOrg.mockResolvedValue([
+			{ enabled: true, _count: { _all: 900 } },
+		]);
+		findManyOrg.mockResolvedValue([
+			{
+				organizationId: "org-a",
+				enabled: true,
+				updatedAt: new Date("2026-09-01T00:00:00Z"),
+				organization: { name: "Alpha" },
+			},
+			{
+				organizationId: "org-b",
+				enabled: true,
+				updatedAt: new Date("2026-09-02T00:00:00Z"),
+				organization: { name: "Beta" },
+			},
+		]);
+
+		const result = await getFlagEnrolment("PUBLISHING_SUITE", 1);
+
+		expect(result.enabledCount).toBe(900);
+		expect(result.organizations).toHaveLength(1);
+		expect(result.truncated).toBe(true);
+		// One more than the limit, so truncation is detected by what came back
+		// rather than by comparing against a count that could race with it.
+		expect(findManyOrg).toHaveBeenCalledWith(
+			expect.objectContaining({ take: 2 }),
+		);
+	});
+
+	// Same stance as its two sibling aggregates: no try/catch. A read failure
+	// must reach the caller rather than degrade to "nobody is enrolled", which
+	// would render an empty allowlist an operator could act on.
+	it("lets a read failure through instead of reporting an empty list", async () => {
+		groupByOrg.mockRejectedValue(new Error("db down"));
+		findManyOrg.mockResolvedValue([]);
+
+		await expect(getFlagEnrolment("PUBLISHING_SUITE", 50)).rejects.toThrow(
+			"db down",
+		);
 	});
 });
