@@ -1,5 +1,11 @@
 # fabric-app
 
+## 1.14.5
+
+### Patch Changes
+
+- b00ed14: Patch GHSA-ggr8-5vv4-36mx by overriding `deepmerge-ts` to 8.0.2 and retire its documented dismissal
+
 ## 1.14.4
 
 ### Patch Changes
