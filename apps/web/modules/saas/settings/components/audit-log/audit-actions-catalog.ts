@@ -1035,6 +1035,20 @@ export const AUDIT_ACTIONS: AuditActionEntry[] = [
 			"An administrator reset a feature flag to its default value.",
 	},
 	{
+		key: "featureFlag.orgUpdated",
+		categoryId: "admin",
+		labelKey: "settings.auditLog.actions.featureFlag.orgUpdated",
+		description:
+			"An administrator enabled or disabled a feature flag for a single organization, overriding the deployment-wide value for it alone.",
+	},
+	{
+		key: "featureFlag.orgReset",
+		categoryId: "admin",
+		labelKey: "settings.auditLog.actions.featureFlag.orgReset",
+		description:
+			"An administrator cleared an organization's feature-flag override, so it follows the deployment-wide value again.",
+	},
+	{
 		key: "statusUpdate.published",
 		categoryId: "admin",
 		labelKey: "settings.auditLog.actions.statusUpdate.published",

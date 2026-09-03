@@ -169,7 +169,7 @@ export const FEATURE_FLAG_REGISTRY = {
 		envVar: "FABRIC_FEATURE_PUBLISHING_SUITE",
 		default: false,
 		orgScopable: true,
-		note: 'Registered so the rollout can be scoped to named organizations rather than to a whole deployment. The env var it names is unchanged and still seeds this flag, so every existing environment resolves exactly as it did before this entry existed. Two things follow from the org level. Off is the safe direction here: default false plus no env var in production means an unreadable override table resolves this OFF for everyone, unlike the default-ON flags above. And an organization with no row INHERITS rather than being denied — the row stores a value precisely so an organization can also be explicitly excluded from a globally-enabled feature, which a bare membership entry could never express. Turning this ON here (the instance-wide override, not an org override) is a real spend switch: it enables the daily sweep for every organization and every personal project on the instance except an organization with an explicit disabled override, and it opens the manual "Generate now" route for every project immediately, regardless of cadence. Read in server activities and procedures only, never in workflow code (determinism).',
+		note: 'Registered so the rollout can be scoped to named organizations rather than to a whole deployment. The env var it names is unchanged and still seeds this flag, so every existing environment resolves exactly as it did before this entry existed. Off is the safe direction here: the registry default is false, and an unreadable override table degrades to "no overrides", which sends this flag to its env/default value rather than on. An organization with no row INHERITS rather than being denied — the row stores a value precisely so an organization can also be explicitly excluded from a globally-enabled feature, which a bare membership entry could never express. Turning this ON here (the instance-wide override, not a per-organization one) is a real spend switch: it starts the daily topic sweep for every organization that has no explicit disabled row, and opens the manual "Generate now" route for every one of their projects immediately, regardless of cadence. It is a VISIBILITY switch as well as a server one: the client availability ceiling now resolves at runtime, so this value reaches the browser through the organization layout\'s flag provider and decides the project Publishing tab, the Publishing section of project settings, and the Get started drawer entry and page tour — a change here alters what users see on their next page load, with no redeploy. Do not read it in workflow code: resolve it in an activity and pass the result in, so that flipping it cannot make a replayed workflow non-deterministic.',
 	},
 } as const satisfies Record<string, FeatureFlagDefinition>;
 
@@ -185,6 +185,34 @@ export function isFeatureFlagKey(value: string): value is FeatureFlagKey {
 export const FEATURE_FLAG_KEYS = Object.keys(
 	FEATURE_FLAG_REGISTRY,
 ) as FeatureFlagKey[];
+
+/**
+ * Whether `key` may carry a per-organization override row.
+ *
+ * Lives here rather than at each call site for the same reason
+ * {@link resolveFlag} applies the constraint internally: the resolver, the
+ * admin write procedures and the admin UI all need the same answer, and a
+ * check that disagreed in one of them would either offer a switch that does
+ * nothing or refuse a row the resolver would have honoured.
+ *
+ * The explicit `FeatureFlagDefinition` annotation is required, not stylistic:
+ * `orgScopable` is optional and most registry entries omit it, so the
+ * indexed-access union `(typeof FEATURE_FLAG_REGISTRY)[FeatureFlagKey]` has
+ * members without the property and a direct read fails to compile.
+ */
+export function isOrgScopableFlag(key: FeatureFlagKey): boolean {
+	const definition: FeatureFlagDefinition = FEATURE_FLAG_REGISTRY[key];
+	return definition.orgScopable === true;
+}
+
+/**
+ * Every flag an organization may override, in registry order. The admin
+ * per-organization panel renders exactly this list — deriving it here means a
+ * flag becomes per-org configurable by declaring `orgScopable` and nothing
+ * else, with no second list to keep in step.
+ */
+export const ORG_SCOPABLE_FLAG_KEYS =
+	FEATURE_FLAG_KEYS.filter(isOrgScopableFlag);
 
 /** The override levels, named rather than positional. */
 export interface FlagOverrides {

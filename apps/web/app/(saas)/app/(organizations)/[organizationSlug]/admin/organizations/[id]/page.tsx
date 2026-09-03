@@ -1,4 +1,5 @@
 import { auth } from "@repo/auth";
+import { OrgFeatureFlagsPanel } from "@saas/admin/component/feature-flags/OrgFeatureFlagsPanel";
 import { OrganizationForm } from "@saas/admin/component/organizations/OrganizationForm";
 import { getAdminPath } from "@saas/admin/lib/links";
 import { fullOrganizationQueryKey } from "@saas/organizations/lib/api";
@@ -14,13 +15,19 @@ import { getTranslations } from "next-intl/server";
  * Workspace-scoped admin organization form —
  * `/app/{organizationSlug}/admin/organizations/{id}`.
  *
- * Mirror of the personal `(account)/admin/organizations/[id]/page.tsx`. The
- * only difference: the "back to list" fallback keeps the current org slug
+ * The only such page: `/app/admin/**` is now a catch-all that redirects into
+ * the organization tree (Fizzy #1875), so the personal mirror this once had is
+ * gone. The "back to list" fallback keeps the current org slug
  * (`/app/{organizationSlug}/admin/organizations`) so navigating back from the
- * form doesn't drop the admin into the personal workspace. This is a Server
+ * form doesn't drop the admin out of the workspace. This is a Server
  * Component, so it cannot use the `useAdminPath()` hook — instead it threads
  * the workspace base into `getAdminPath()` from the route's `organizationSlug`
  * param.
+ *
+ * Also the home of the per-organization feature-flag overrides. They live here
+ * rather than on the instance-wide `admin/feature-flags` console because the
+ * subject of the edit is this organization: the console answers "what does the
+ * deployment do", this page answers "what does this organization do instead".
  */
 export default async function OrganizationAdminOrganizationFormPage({
 	params,
@@ -66,6 +73,15 @@ export default async function OrganizationAdminOrganizationFormPage({
 					</Button>
 				</div>
 				<OrganizationForm organizationId={id} />
+
+				<section className="mt-10">
+					<h2 className="editorial-label mb-1">Feature flags</h2>
+					<p className="mb-4 text-muted-foreground text-sm">
+						Scope a rollout to this organization, or hold it out of
+						a deployment-wide one.
+					</p>
+					<OrgFeatureFlagsPanel organizationId={id} />
+				</section>
 			</div>
 		</HydrationBoundary>
 	);

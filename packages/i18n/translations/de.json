@@ -1371,7 +1371,9 @@
 				},
 				"featureFlag": {
 					"updated": "Feature flag updated",
-					"reset": "Feature flag reset"
+					"reset": "Feature flag reset",
+					"orgUpdated": "Feature flag set for an organization",
+					"orgReset": "Organization feature flag override cleared"
 				},
 				"statusUpdate": {
 					"published": "Statusmeldung veröffentlicht",

@@ -11,6 +11,11 @@ import {
 import { findOrganization } from "./procedures/find-organization";
 import { listOrganizations } from "./procedures/list-organizations";
 import { listUsers } from "./procedures/list-users";
+import {
+	clearOrgFeatureFlagProcedure,
+	listOrgFeatureFlagsProcedure,
+	setOrgFeatureFlagProcedure,
+} from "./procedures/org-feature-flags";
 
 export const adminRouter = {
 	aiAdoption: {
@@ -31,5 +36,11 @@ export const adminRouter = {
 		list: listFeatureFlagsProcedure,
 		set: setFeatureFlagProcedure,
 		reset: resetFeatureFlagProcedure,
+		// Per-organization overrides. Grouped under the same namespace as the
+		// instance-wide trio because they are two levels of one mechanism —
+		// an operator reasoning about "who has this flag" needs both.
+		listForOrg: listOrgFeatureFlagsProcedure,
+		setForOrg: setOrgFeatureFlagProcedure,
+		clearForOrg: clearOrgFeatureFlagProcedure,
 	},
 };

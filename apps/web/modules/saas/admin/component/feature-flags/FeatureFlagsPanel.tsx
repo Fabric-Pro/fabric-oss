@@ -1,11 +1,17 @@
 "use client";
 
 /**
- * Instance-admin feature-flag console.
+ * Instance-admin feature-flag console — the DEPLOYMENT-WIDE value.
  *
- * Flags are global — there is no per-organization scope. `source` is shown per
- * row because "off" means something different depending on whether it came from
- * an explicit override, an env var, or the registry default.
+ * A flag the registry marks `orgScopable` can additionally carry a
+ * per-organization override that outranks whatever is set here; those are
+ * edited by `OrgFeatureFlagsPanel` on the admin organization page. So a value
+ * shown here is what an organization resolves only in the absence of its own
+ * row — turning a flag off here does not guarantee it is off for everyone.
+ *
+ * `source` is shown per row because "off" means something different depending
+ * on whether it came from an explicit override, an env var, or the registry
+ * default.
  */
 import type { ApiRouterClient } from "@repo/api/orpc/router";
 import { orpc } from "@shared/lib/orpc-query-utils";
