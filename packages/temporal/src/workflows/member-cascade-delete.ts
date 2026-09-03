@@ -1,14 +1,40 @@
 /**
  * Workflow for cascading deletion when a user is removed from an organization
  *
- * This workflow is triggered when a user is removed from an organization and handles
- * the cleanup of all user-owned entities in that organization to ensure:
- * 1. No orphaned data remains
- * 2. Users cannot access org data after removal
- * 3. Cleanup is durable and retryable
+ * Handles the cleanup of all user-owned entities in that organization so that
+ * no orphaned data remains, durably and retryably: if it fails partway through
+ * it resumes from where it left off.
  *
- * The workflow uses Temporal for durability - if it fails partway through,
- * it will resume from where it left off when retried.
+ * ## NOTHING STARTS THIS WORKFLOW TODAY
+ *
+ * It has never run. The only code that started it lived in a global
+ * `hooks.after` branch in `packages/auth/auth.ts` matching
+ * `/organization/remove-member`, and it re-read the `member` row to discover
+ * which user had been removed — but better-auth's handler calls
+ * `adapter.delete` on that row and returns BEFORE any global after-hook fires,
+ * so the lookup always came back null and the start was skipped every time.
+ *
+ * That wiring is gone. Access revocation — the part whose loss is a security
+ * problem rather than a housekeeping one — now happens inline in
+ * `packages/auth/lib/member-offboarding.ts`, on both the removal and the
+ * voluntary-leave path. What is left here is the DESTRUCTIVE half: hard-deleting
+ * the departed member's projects, workspaces, workflows, MCP configs, agent
+ * template instances and chats in the organization, plus their attachments from
+ * object storage.
+ *
+ * Two things to settle before wiring it back up, neither of them cosmetic:
+ *
+ *  1. **No fence against remove-then-re-add.** Every step matches on
+ *     `{ userId, organizationId }` with no epoch, generation or tombstone. A
+ *     member removed and then re-invited before this workflow runs would have
+ *     their FRESH data deleted.
+ *  2. **The activities swallow their own failures.** Each one catches, pushes a
+ *     string into `errors[]` and returns normally, so Temporal never retries
+ *     and the workflow reports `success: false` to a caller that does not
+ *     await it. It is not the durable retry its own doc comment claims to be.
+ *
+ * Turning this on is therefore a first activation of destructive behaviour, not
+ * a repair of a regression.
  */
 
 import { log, patched, proxyActivities } from "@temporalio/workflow";
