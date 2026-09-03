@@ -124,7 +124,10 @@ export function extractConfigOrgKey(
 					return decodeURIComponent(m[1]).toLowerCase();
 				}
 				const host = safeHost(url);
-				if (host?.endsWith("visualstudio.com")) {
+				// Leading dot required, matching extractEntityOrgKey above:
+				// a bare suffix test also accepts `evilvisualstudio.com`.
+				// Guards js/incomplete-url-substring-sanitization.
+				if (host?.endsWith(".visualstudio.com")) {
 					return host.split(".")[0]?.toLowerCase() ?? null;
 				}
 			}

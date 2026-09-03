@@ -287,6 +287,37 @@ describe("buildOperationResultMessage — error masking", () => {
 	});
 });
 
+describe("buildOperationResultMessage — bounded stack-trace scan (js/polynomial-redos)", () => {
+	it("still masks a stack trace found within the bounded scan window", () => {
+		const stackish = `${"context ".repeat(200)}\n    at handler (/app/src/index.ts:1:1)`;
+		expect(stackish.length).toBeLessThan(4000);
+		const out = buildOperationResultMessage({
+			outcome: "failure",
+			operationLabel: "Run agent",
+			summary: stackish,
+		});
+		expect(out.content).toContain("Check the activity log for details");
+		expect(out.content).not.toContain("at handler");
+	});
+
+	it("does not scan past the bounded prefix for a stack marker far past it", () => {
+		// A stack-trace marker beyond the scan window is not detected as
+		// such — the heuristic only needs to catch a marker near the start
+		// (FR-11), which is what keeps the regex bounded rather than
+		// scanning unbounded content.
+		const farStackTrace = `${"x".repeat(4500)}\n    at handler (/app/src/index.ts:1:1)`;
+		const out = buildOperationResultMessage({
+			outcome: "failure",
+			operationLabel: "Run agent",
+			summary: farStackTrace,
+		});
+		// Not masked: the raw (truncated) summary passes through instead of
+		// the generic failure copy.
+		expect(out.content).not.toContain("Check the activity log for details");
+		expect(out.content.endsWith(TRUNCATION_SUFFIX)).toBe(true);
+	});
+});
+
 describe("buildOperationResultMessage — edges", () => {
 	it("empty summary still produces valid content (header + empty body)", () => {
 		const out = buildOperationResultMessage({

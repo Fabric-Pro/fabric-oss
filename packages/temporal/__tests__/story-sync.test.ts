@@ -185,6 +185,7 @@ import {
 	createOrUpdateStoryFromPMItem,
 	discoverPMToolCapabilities,
 	extractFizzyTables,
+	extractPreBlocks,
 	getWorkItemsByIdsFromPM,
 	listAllFizzyCards,
 	listWorkItemsFromPM,
@@ -4492,6 +4493,55 @@ describe("simpleHtmlToMarkdown — code block preservation (Fizzy pull — card 
 	it("still handles the classic <pre><code> shape (ADO pull)", () => {
 		const md = simpleHtmlToMarkdown("<pre><code>const x = 1;</code></pre>");
 		expect(md).toContain("```\nconst x = 1;\n```");
+	});
+
+	it("fences a large but realistic code block unchanged (bounded lazy-quantifier guard)", () => {
+		const body = "line();<br>".repeat(500);
+		const md = simpleHtmlToMarkdown(`<pre>${body}</pre>`);
+		expect(md).toContain("```\n");
+		expect(md).not.toContain("<pre");
+	});
+
+	it("does not hang on an unclosed <pre> in a huge payload (js/polynomial-redos)", () => {
+		// No closing </pre> anywhere: the linear scan must fail to find a
+		// match (falling through to the generic tag-strip) rather than
+		// backtrack quadratically over it.
+		const unclosed = `<pre>${"a".repeat(50_000)}`;
+		expect(() => simpleHtmlToMarkdown(unclosed)).not.toThrow();
+	});
+
+	it("fences a 50,000-char code block in full — no content-length cap (js/polynomial-redos)", () => {
+		// The old regex bounded the lazy middle to 20,000 chars, which
+		// silently degraded any code block larger than that. The linear scan
+		// has no such cap: a legitimately-closed block of any size must be
+		// fenced in its entirety.
+		const line = "console.log('line');<br>";
+		const body = line.repeat(Math.ceil(50_000 / line.length));
+		const html = `<pre>${body}</pre>`;
+		const md = simpleHtmlToMarkdown(html);
+		const expectedCode = body
+			.replace(/<br\s*\/?>/gi, "\n")
+			.replace(/^\n+|\n+$/g, "");
+		expect(md).toContain(`\`\`\`\n${expectedCode}\n\`\`\``);
+		expect(md).not.toContain("<pre");
+		expect(md).not.toContain("<br>");
+	});
+
+	it("stays linear with 2,000 unclosed <pre> openers in ~200KB (js/polynomial-redos)", () => {
+		// Each earlier fix (the </pre> break and the sticky-regex <code>
+		// lookahead) only matters once there are MANY openers with no
+		// matching close — a single unclosed opener already passed before
+		// those fixes. Regression guard for both: this must complete fast
+		// (not the old per-opener O(remaining suffix) rescans) and, because
+		// none of the 2,000 openers ever close, extractPreBlocks must give
+		// back the exact input untouched (the same "unclosed opener falls
+		// through to the generic tag-strip" contract as the single-opener
+		// case above, just at a scale that used to be quadratic). Speed is
+		// enforced by the runner's normal timeout, not a wall-clock assert.
+		const opener = `<pre id="block">${"z".repeat(80)}`;
+		const html = opener.repeat(2_000); // ~200KB, 2,000 openers, no closer
+		const result = extractPreBlocks(html, (code) => `STASH(${code})`);
+		expect(result).toBe(html);
 	});
 });
 

@@ -6,7 +6,12 @@ vi.mock("../prisma/client", () => ({
 vi.mock("@repo/utils", () => ({ getBaseUrl: () => "https://app.test" }));
 
 import { db } from "../prisma/client";
-import { buildReleaseNotesUrl } from "../prisma/queries/projects/fabric-url";
+import {
+	buildReleaseNotesUrl,
+	formatBackLinkForProvider,
+	normalizeBackLinkFromProvider,
+	placeFabricBackLink,
+} from "../prisma/queries/projects/fabric-url";
 
 beforeEach(() => {
 	vi.clearAllMocks();
@@ -65,5 +70,35 @@ describe("buildReleaseNotesUrl", () => {
 		expect(url).toBe(
 			"https://fabric.pro/app/projects/p1?tab=release-notes",
 		);
+	});
+});
+
+describe("back-link regex bounds (js/polynomial-redos)", () => {
+	it("formatBackLinkForProvider leaves a long description with no back-link unchanged", () => {
+		const longDescription = `${"x".repeat(10_000)} no back-link here`;
+		expect(formatBackLinkForProvider(longDescription, "fizzy")).toBe(
+			longDescription,
+		);
+	});
+
+	it("normalizeBackLinkFromProvider leaves a long description with no back-link unchanged", () => {
+		const longDescription = `${"y".repeat(10_000)} no back-link here`;
+		expect(normalizeBackLinkFromProvider(longDescription, "fizzy")).toBe(
+			longDescription,
+		);
+	});
+
+	it("placeFabricBackLink still finds and repositions the anchor in a long description", () => {
+		const fabricUrl = "https://app.example.com/app/projects/p1/stories/s1";
+		const longDescription = `${"z".repeat(10_000)}\n<p><a href="${fabricUrl}">View in Fabric</a></p>`;
+		const result = placeFabricBackLink({
+			description: longDescription,
+			acceptanceCriteria: null,
+			fabricUrl,
+		});
+		expect(result.description).toContain(
+			`<p><a href="${fabricUrl}">View in Fabric</a></p>`,
+		);
+		expect(result.description.match(/View in Fabric/g)).toHaveLength(1);
 	});
 });

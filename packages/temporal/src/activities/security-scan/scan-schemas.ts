@@ -443,6 +443,108 @@ export function computeFindingFingerprint(
 	return createHash("sha256").update(parts.join("|")).digest("hex");
 }
 
+const PEM_BEGIN = "-----BEGIN";
+const PEM_END = "-----END";
+const PEM_LABEL_CLOSE = "-----";
+const PEM_PRIVATE_KEY_PLACEHOLDER = "[REDACTED private key]";
+
+/**
+ * Linear-time replacement for a lazy-quantifier PEM regex
+ * (`-----BEGIN[^-]*PRIVATE KEY-----[\s\S]{0,10000}?-----END[^-]*PRIVATE
+ * KEY-----`) that had to bound its middle to 10,000 chars to stay out of
+ * polynomial backtracking on an unclosed BEGIN — which silently let a real
+ * private-key body over that bound through unredacted. This scans left to
+ * right with `indexOf` only, so it has no backtracking to bound in the first
+ * place: every character is visited O(1) times across the whole call,
+ * regardless of body size or whether a BEGIN is ever closed.
+ *
+ * For each `-----BEGIN` found: read the label up to the next `-----` (mirrors
+ * the regex's `[^-]*` — a run with no dash, so the first `-----` after BEGIN
+ * is unambiguously the label's close). A label not ending in "PRIVATE KEY"
+ * isn't a private-key block (e.g. a public key or certificate); leave it
+ * untouched and resume scanning right after the "-----BEGIN" keyword — a
+ * later, independent BEGIN can still match. A label that does end in
+ * "PRIVATE KEY" needs a later `-----END` whose own label also ends in
+ * "PRIVATE KEY" (with its closing `-----`) to complete the block; an END for
+ * some other block type, such as a certificate embedded in the key material,
+ * is skipped so the key's remainder is never left in the clear. If scanning
+ * to the very end of the input finds no such END, no BEGIN found afterward
+ * could find one either (there's nothing left to find), so the scan stops
+ * entirely and leaves the remainder as-is — matching the old regex's
+ * behavior of simply failing to match an unclosed block. The END search
+ * keeps a single forward cursor, so every character is still visited O(1)
+ * times.
+ */
+function redactPemPrivateKeyBlocks(text: string): string {
+	let result = "";
+	let pos = 0;
+	for (;;) {
+		const beginIdx = text.indexOf(PEM_BEGIN, pos);
+		if (beginIdx === -1) {
+			result += text.slice(pos);
+			return result;
+		}
+		const labelStart = beginIdx + PEM_BEGIN.length;
+		const labelCloseIdx = text.indexOf(PEM_LABEL_CLOSE, labelStart);
+		if (labelCloseIdx === -1) {
+			// No closing "-----" anywhere after this BEGIN — none can exist
+			// for a later BEGIN either, since it would need that same
+			// closing text further along, which isn't there. Nothing left
+			// to redact.
+			result += text.slice(pos);
+			return result;
+		}
+		const label = text.slice(labelStart, labelCloseIdx);
+		if (!label.endsWith("PRIVATE KEY")) {
+			// Not a private-key block — leave it untouched and keep
+			// scanning past this BEGIN keyword (a later BEGIN may still
+			// start inside what we just read as this one's "label").
+			result += text.slice(pos, labelStart);
+			pos = labelStart;
+			continue;
+		}
+		let endSearchFrom = labelCloseIdx + PEM_LABEL_CLOSE.length;
+		let blockEnd = -1;
+		for (;;) {
+			const endIdx = text.indexOf(PEM_END, endSearchFrom);
+			if (endIdx === -1) {
+				// No private-key END anywhere after this BEGIN — no later
+				// BEGIN can find one either. Stop scanning; leave the
+				// remainder untouched.
+				result += text.slice(pos);
+				return result;
+			}
+			const endLabelStart = endIdx + PEM_END.length;
+			const endLabelCloseIdx = text.indexOf(
+				PEM_LABEL_CLOSE,
+				endLabelStart,
+			);
+			if (endLabelCloseIdx === -1) {
+				// "-----END" with no closing "-----" anywhere after it —
+				// same reasoning as the no-END case: nothing later can
+				// complete either. Stop scanning.
+				result += text.slice(pos);
+				return result;
+			}
+			if (
+				text
+					.slice(endLabelStart, endLabelCloseIdx)
+					.endsWith("PRIVATE KEY")
+			) {
+				blockEnd = endLabelCloseIdx + PEM_LABEL_CLOSE.length;
+				break;
+			}
+			// An END for another block type (e.g. a certificate inside the
+			// key material): not this key's terminator. Keep looking, from
+			// just past this END keyword, so the key's remainder is never
+			// left in the clear.
+			endSearchFrom = endLabelStart;
+		}
+		result += text.slice(pos, beginIdx) + PEM_PRIVATE_KEY_PLACEHOLDER;
+		pos = blockEnd;
+	}
+}
+
 /**
  * Defense-in-depth: a scan must never PERSIST a secret it happened to read in
  * the scanned content (or, for the Semgrep code path, matched in source). Every
@@ -460,24 +562,29 @@ export function redactSecrets(input: string): string {
 		return input;
 	}
 	return (
-		input
-			// PEM private key blocks.
-			.replace(
-				/-----BEGIN[^-]*PRIVATE KEY-----[\s\S]*?-----END[^-]*PRIVATE KEY-----/g,
-				"[REDACTED private key]",
-			)
+		// PEM private key blocks, via the linear indexOf-based scanner above —
+		// no lazy-quantifier middle to bound, so no body-length cap: a real
+		// private-key block of any size is fully redacted. Bounded span (by
+		// construction, not by a length cap): js/polynomial-redos
+		redactPemPrivateKeyBlocks(input)
 			// Recognizable provider tokens (GitHub, Slack, OpenAI, AWS, Google).
+			// Alternation of fixed-literal prefixes, each followed by a single
+			// quantifier over one character class — linear in input length.
 			.replace(
 				/\b(?:gh[pousr]_[A-Za-z0-9]{20,}|xox[baprs]-[A-Za-z0-9-]{10,}|sk-[A-Za-z0-9]{16,}|AKIA[0-9A-Z]{16}|AIza[0-9A-Za-z_-]{30,}|ya29\.[0-9A-Za-z_-]{20,})\b/g,
 				"[REDACTED]",
 			)
-			// JWTs (three base64url segments).
+			// JWTs (three base64url segments) — three fixed segments each a
+			// single quantified character class separated by literal dots.
+			// Linear in input length.
 			.replace(
 				/\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g,
 				"[REDACTED token]",
 			)
 			// Generic high-entropy token: ≥24 chars containing BOTH a digit and a
 			// letter (catches API keys / hashes copied verbatim; ignores prose).
+			// Each lookahead is a single quantifier over one character class with
+			// no nesting — linear in input length.
 			.replace(
 				/\b(?=[A-Za-z0-9_\-+/=]{24,}\b)(?=[A-Za-z0-9_\-+/=]*[0-9])(?=[A-Za-z0-9_\-+/=]*[A-Za-z])[A-Za-z0-9_\-+/=]{24,}\b/g,
 				"[REDACTED]",

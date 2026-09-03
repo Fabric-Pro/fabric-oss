@@ -176,6 +176,29 @@ async function executeAlwaysEnabledTool(input: {
 }
 
 /**
+ * Whether a clone URL is genuinely GitHub's, and so may carry the
+ * organization's stored GitHub token. `repoUrl` is an agent tool-call argument,
+ * and the token is spliced into the URL before the clone, so a substring test
+ * would hand it to `github.com.example-attacker.test`. Only `https:` matters:
+ * the sandbox embeds the token solely into an https URL.
+ *
+ * Guards js/incomplete-url-substring-sanitization.
+ */
+function isGitHubCloneUrl(repoUrl: string): boolean {
+	let parsed: URL;
+	try {
+		parsed = new URL(repoUrl);
+	} catch {
+		return false;
+	}
+	if (parsed.protocol !== "https:") {
+		return false;
+	}
+	const host = parsed.hostname.toLowerCase();
+	return host === "github.com" || host === "www.github.com";
+}
+
+/**
  * Execute a Sandbox tool using direct sandbox activities
  */
 async function executeSandboxTool(
@@ -196,7 +219,7 @@ async function executeSandboxTool(
 			let githubToken = args.githubToken as string | undefined;
 			const repoUrl = args.repoUrl as string | undefined;
 
-			if (repoUrl?.includes("github.com") && !githubToken) {
+			if (repoUrl && isGitHubCloneUrl(repoUrl) && !githubToken) {
 				// Try to get GitHub token from user's integrations (XOR tenant isolation)
 				const integration = organizationId
 					? await db.workflowIntegration.findFirst({

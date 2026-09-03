@@ -191,6 +191,52 @@ describe("RAG Chunking Module", () => {
 			expect(result.type).toBe("text");
 			expect(result.suggestedStrategy).toBe("RECURSIVE");
 		});
+
+		it("does not scan past the bounded sniff prefix (js/polynomial-redos cap)", () => {
+			// detectContentType only samples a bounded prefix of unbounded
+			// uploaded text — a markdown header appearing only past that
+			// window is not used to classify the document.
+			const text = `${"x".repeat(6000)}\n# Heading far past the sniff window`;
+			expect(detectContentType(text).type).toBe("text");
+		});
+	});
+
+	describe("Markdown header matching (bounded per-line regex)", () => {
+		it("still splits at headers well within the bounded line length", () => {
+			const text = [
+				"# Title",
+				"Intro text.",
+				"## Section",
+				"Section body text that is long enough to keep as its own chunk content here.",
+			].join("\n");
+			const chunks = chunkText(text, "test.md", {
+				strategy: "DOCUMENT",
+				contentType: "markdown",
+				chunkSize: 500,
+				minChunkSize: 1,
+			});
+			expect(
+				chunks.some((c) => c.metadata.headings?.includes("Title")),
+			).toBe(true);
+			expect(
+				chunks.some((c) => c.metadata.headings?.includes("Section")),
+			).toBe(true);
+		});
+	});
+
+	describe("Sentence splitting (bounded regex parity)", () => {
+		it("keeps the final sentence when text has no trailing whitespace after the last period", () => {
+			// Regression for dropping the redundant `|[.!?]+$` alternative:
+			// the post-loop fallback must still emit this trailing sentence.
+			const text = "First sentence. Second sentence. Third sentence.";
+			const chunks = chunkText(text, "test.txt", {
+				strategy: "SENTENCE",
+				chunkSize: 1000,
+				minChunkSize: 1,
+			});
+			expect(chunks).toHaveLength(1);
+			expect(chunks[0].content).toBe(text);
+		});
 	});
 
 	describe("Token Estimation", () => {

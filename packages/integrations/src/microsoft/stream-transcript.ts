@@ -213,20 +213,84 @@ export function selectRecordingForOccurrence(
 }
 
 /**
+ * The two SharePoint hostnames one tenant can serve its recordings from,
+ * derived from that tenant's own root site — `https://example.sharepoint.com`
+ * yields `example.sharepoint.com` (team sites) and `example-my.sharepoint.com`
+ * (OneDrive, where a private meeting's recording lands).
+ *
+ * A suffix test against `.sharepoint.com` is deliberately *not* enough: every
+ * Microsoft 365 tenant on Earth is `<something>.sharepoint.com`, so it would
+ * admit `attacker.sharepoint.com` and hand a foreign tenant a token minted for
+ * — and sent to — its own host. The allowlist has to be the caller's own tenant,
+ * which only Graph can tell us.
+ *
+ * Returns null when the root URL is not a commercial-cloud SharePoint host in
+ * the `<tenant>.sharepoint.com` shape; commercial cloud is the only one this
+ * module can serve anyway, since the token exchange targets
+ * `login.microsoftonline.com`.
+ */
+function trustedTenantHosts(tenantRootWebUrl: string): Set<string> | null {
+	let parsed: URL;
+	try {
+		parsed = new URL(tenantRootWebUrl);
+	} catch {
+		return null;
+	}
+	if (parsed.protocol !== "https:") {
+		return null;
+	}
+	const suffix = ".sharepoint.com";
+	const host = parsed.hostname.toLowerCase();
+	if (!host.endsWith(suffix)) {
+		return null;
+	}
+	const label = host.slice(0, -suffix.length);
+	// Exactly one label under sharepoint.com. A dotted label would mean this is
+	// not the tenant root we think it is, and guessing at it is how a pin turns
+	// back into a suffix test.
+	if (label.length === 0 || label.includes(".")) {
+		return null;
+	}
+	const tenant = label.endsWith("-my")
+		? label.slice(0, -"-my".length)
+		: label;
+	if (tenant.length === 0) {
+		return null;
+	}
+	return new Set([`${tenant}${suffix}`, `${tenant}-my${suffix}`]);
+}
+
+/**
  * Split a driveItem's webUrl into the SharePoint origin and site path the
  * `_api/v2.1` endpoints live under — `https://host/sites/Foo/…` yields
  * `https://host` and `/sites/Foo`. Both are per-tenant and must always be
- * derived, never assumed.
+ * derived, never assumed — but only within the caller's *own* tenant, whose
+ * root site `tenantRootWebUrl` names: this origin becomes both the audience the
+ * delegated token is minted for and the host it is then sent to, so a webUrl
+ * naming any other tenant is refused rather than followed.
+ *
+ * Guards js/request-forgery.
  *
  * Exported for testing.
  */
 export function parseSharePointSite(
 	webUrl: string,
+	tenantRootWebUrl: string,
 ): { origin: string; sitePath: string } | null {
+	const trustedHosts = trustedTenantHosts(tenantRootWebUrl);
+	if (!trustedHosts) {
+		return null;
+	}
 	let parsed: URL;
 	try {
 		parsed = new URL(webUrl);
 	} catch {
+		return null;
+	}
+	if (
+		parsed.protocol !== "https:" ||
+		!trustedHosts.has(parsed.hostname.toLowerCase())
+	) {
 		return null;
 	}
 	const segments = parsed.pathname.split("/").filter(Boolean);
@@ -242,6 +306,40 @@ export function parseSharePointSite(
 		origin: parsed.origin,
 		sitePath: `/${first}/${decodeURIComponent(second)}`,
 	};
+}
+
+/**
+ * Ask Graph for the connected account's own tenant root site, whose `webUrl` is
+ * `https://<tenant>.sharepoint.com`. That is the anchor every SharePoint host
+ * check in this module is measured against, and it has to come from Graph:
+ * nothing stored on the integration records the tenant, and every other
+ * candidate (the recording's webUrl, a download URL) is exactly the value being
+ * validated.
+ *
+ * `GET /sites/root` is covered by the already-consented `Sites.Read.All`, so
+ * this adds no permission. Deliberately no `$select`: the same reasoning as the
+ * resolution walk above — a query option Graph declines would read here as
+ * "cannot derive the tenant" and fail the whole fallback in a real tenant while
+ * every test stayed green.
+ *
+ * Resolved once per download rather than memoized: it is one hop against a
+ * response the caller's own token already authorizes, and a cached trust anchor
+ * is a thing that can go stale in the one direction that matters.
+ */
+async function resolveTenantRootWebUrl(params: {
+	graphFetch: GraphFetch;
+	graphBaseUrl: string;
+}): Promise<string | null> {
+	const { graphFetch, graphBaseUrl } = params;
+	const res = await graphFetch(`${graphBaseUrl}/sites/root`);
+	if (!res.ok) {
+		console.warn(
+			`[MicrosoftTeams] Could not resolve the tenant's root SharePoint site: ${res.status}`,
+		);
+		return null;
+	}
+	const data = (await res.json()) as { webUrl?: string };
+	return data.webUrl ?? null;
 }
 
 /** Resolve a channel thread id to the team, channel and drive that back it. */
@@ -669,6 +767,13 @@ export async function listRecordingTranscripts(
 }
 
 export interface GetRecordingTranscriptContentParams {
+	/**
+	 * Graph, for one hop: the tenant's own root site, which pins every
+	 * SharePoint host this call is willing to send the delegated token to.
+	 * `recordingWebUrl` names the host, so it cannot also vouch for it.
+	 */
+	graphFetch: GraphFetch;
+	graphBaseUrl: string;
 	driveId: string;
 	recordingItemId: string;
 	recordingWebUrl: string;
@@ -694,6 +799,8 @@ export async function getRecordingTranscriptContent(
 	params: GetRecordingTranscriptContentParams,
 ): Promise<GetRecordingTranscriptContentResult> {
 	const {
+		graphFetch,
+		graphBaseUrl,
 		driveId,
 		recordingItemId,
 		recordingWebUrl,
@@ -702,7 +809,17 @@ export async function getRecordingTranscriptContent(
 		onRefreshTokenRotated,
 	} = params;
 
-	const site = parseSharePointSite(recordingWebUrl);
+	// Resolved before anything is minted or sent: an unresolvable tenant, or a
+	// recording URL naming a host outside it, both fail here — one message for
+	// both, since "which tenant is yours" is not a thing to report back to a
+	// caller who just named a foreign one.
+	const tenantRootWebUrl = await resolveTenantRootWebUrl({
+		graphFetch,
+		graphBaseUrl,
+	});
+	const site = tenantRootWebUrl
+		? parseSharePointSite(recordingWebUrl, tenantRootWebUrl)
+		: null;
 	if (!site) {
 		throw new Error(
 			"Could not derive the SharePoint site from the recording URL.",
@@ -726,6 +843,24 @@ export async function getRecordingTranscriptContent(
 	const primary = pickPrimaryTranscript(transcripts);
 	if (!primary?.temporaryDownloadUrl) {
 		return { entries: [], speakerCount: 0 };
+	}
+
+	// The download URL is an absolute URL named by the previous response, and the
+	// SharePoint bearer token rides along with it. Pinned tighter than the site
+	// itself: not merely the same tenant but the exact origin already validated
+	// above, since a transcript of an item on this site is served by this site.
+	let downloadUrl: URL;
+	try {
+		downloadUrl = new URL(primary.temporaryDownloadUrl);
+	} catch {
+		throw new Error(
+			"SharePoint returned an unusable transcript download URL.",
+		);
+	}
+	if (downloadUrl.origin.toLowerCase() !== site.origin.toLowerCase()) {
+		throw new Error(
+			"Refusing to download a transcript from a host other than the recording's own SharePoint site.",
+		);
 	}
 
 	const separator = primary.temporaryDownloadUrl.includes("?") ? "&" : "?";

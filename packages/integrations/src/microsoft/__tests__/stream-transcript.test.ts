@@ -10,10 +10,11 @@
  * it uses its own userId — otherwise one test's result would answer the next.
  */
 
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	extractChannelThreadId,
 	type GraphFetch,
+	getRecordingTranscriptContent,
 	listRecordingTranscripts,
 	parseRecordingTimestamp,
 	parseSharePointSite,
@@ -26,6 +27,13 @@ const ORDINARY_JOIN_URL =
 	"https://teams.microsoft.com/l/meetup-join/19%3ameeting_ZmFrZQ%40thread.v2/0?context=%7b%22Tid%22%3a%22t%22%7d";
 
 const GRAPH_BASE = "https://graph.microsoft.com/v1.0";
+
+/**
+ * The connected account's own tenant, as `GET /sites/root` reports it. Every
+ * host check in this module is measured against this and nothing else — a
+ * `.sharepoint.com` suffix is not a tenant.
+ */
+const TENANT_ROOT = "https://example.sharepoint.com";
 
 function jsonResponse(body: unknown, status = 200): Response {
 	return new Response(JSON.stringify(body), {
@@ -131,6 +139,7 @@ describe("parseSharePointSite", () => {
 		expect(
 			parseSharePointSite(
 				"https://example.sharepoint.com/sites/EngTeam/Shared%20Documents/General/Recordings/x.mp4",
+				TENANT_ROOT,
 			),
 		).toEqual({
 			origin: "https://example.sharepoint.com",
@@ -142,12 +151,83 @@ describe("parseSharePointSite", () => {
 		expect(
 			parseSharePointSite(
 				"https://example.sharepoint.com/teams/Delivery/Shared%20Documents/x.mp4",
+				TENANT_ROOT,
 			)?.sitePath,
 		).toBe("/teams/Delivery");
 	});
 
+	it("accepts the tenant's OneDrive host, where a private meeting's recording lands", () => {
+		expect(
+			parseSharePointSite(
+				"https://example-my.sharepoint.com/personal/dev_example_com/Documents/Recordings/x.mp4",
+				TENANT_ROOT,
+			)?.origin,
+		).toBe("https://example-my.sharepoint.com");
+	});
+
 	it("returns null for something that is not a URL", () => {
-		expect(parseSharePointSite("not a url")).toBeNull();
+		expect(parseSharePointSite("not a url", TENANT_ROOT)).toBeNull();
+	});
+
+	it("rejects a host outside sharepoint.com, which would be handed the token", () => {
+		expect(
+			parseSharePointSite(
+				"https://example.com/sites/EngTeam/Shared%20Documents/x.mp4",
+				TENANT_ROOT,
+			),
+		).toBeNull();
+		expect(
+			parseSharePointSite(
+				"https://evil-sharepoint.com/sites/EngTeam/x.mp4",
+				TENANT_ROOT,
+			),
+		).toBeNull();
+	});
+
+	it("rejects another tenant's SharePoint host — every tenant is *.sharepoint.com", () => {
+		expect(
+			parseSharePointSite(
+				"https://attacker.sharepoint.com/sites/EngTeam/x.mp4",
+				TENANT_ROOT,
+			),
+		).toBeNull();
+		// A prefix of the real tenant is still not the real tenant.
+		expect(
+			parseSharePointSite(
+				"https://example.attacker.sharepoint.com/sites/EngTeam/x.mp4",
+				TENANT_ROOT,
+			),
+		).toBeNull();
+		expect(
+			parseSharePointSite(
+				"https://example-attacker.sharepoint.com/sites/EngTeam/x.mp4",
+				TENANT_ROOT,
+			),
+		).toBeNull();
+	});
+
+	it("rejects a non-https SharePoint URL", () => {
+		expect(
+			parseSharePointSite(
+				"http://example.sharepoint.com/sites/EngTeam/x.mp4",
+				TENANT_ROOT,
+			),
+		).toBeNull();
+	});
+
+	it("refuses to pin against a root site it cannot read as one tenant", () => {
+		expect(
+			parseSharePointSite(
+				"https://example.sharepoint.com/sites/EngTeam/x.mp4",
+				"not a url",
+			),
+		).toBeNull();
+		expect(
+			parseSharePointSite(
+				"https://example.sharepoint.com/sites/EngTeam/x.mp4",
+				"https://example.com",
+			),
+		).toBeNull();
 	});
 });
 
@@ -322,5 +402,220 @@ describe("listRecordingTranscripts", () => {
 		expect(first.transcripts).toHaveLength(1);
 		// Only the recordings listing repeats; the three resolution hops do not.
 		expect(callsAfterSecond - callsAfterFirst).toBe(1);
+	});
+});
+
+/**
+ * The host pin, from the outside.
+ *
+ * Two bearer tokens leave this function — one minted for the recording's origin
+ * and one sent to the download URL — so every rejection here is asserted twice:
+ * that it threw, and that nothing was minted for or sent to the rejected host.
+ * A check that fires after the request is not a fix.
+ */
+describe("getRecordingTranscriptContent", () => {
+	const TEAM_SITE_RECORDING =
+		"https://example.sharepoint.com/sites/EngTeam/Shared%20Documents/General/Recordings/rec.mp4";
+
+	function graphWithRoot(webUrl: string | null = TENANT_ROOT): GraphFetch {
+		return vi.fn(async (url: string) => {
+			if (url.endsWith("/sites/root")) {
+				return webUrl === null
+					? jsonResponse({ error: { message: "denied" } }, 403)
+					: jsonResponse({ webUrl });
+			}
+			return jsonResponse({}, 404);
+		});
+	}
+
+	/** Stands in for the Entra token exchange, the media listing and the download. */
+	function scriptFetch(
+		downloadUrl = "https://example.sharepoint.com/_layouts/download.aspx?t=abc",
+	) {
+		return vi
+			.spyOn(globalThis, "fetch")
+			.mockImplementation(async (input) => {
+				const url = String(input);
+				if (url.startsWith("https://login.microsoftonline.com")) {
+					return jsonResponse({
+						access_token: "sharepoint-token",
+						expires_in: 3600,
+					});
+				}
+				if (url.includes("/_api/v2.1/drives/")) {
+					return jsonResponse({
+						value: [
+							{
+								id: "transcript-1",
+								size: 4096,
+								temporaryDownloadUrl: downloadUrl,
+							},
+						],
+					});
+				}
+				if (url.includes("format=json")) {
+					return jsonResponse({
+						entries: [
+							{ text: "Morning.", speakerDisplayName: "Ada" },
+							{ text: "Morning.", speakerDisplayName: "Grace" },
+						],
+					});
+				}
+				return jsonResponse({}, 404);
+			});
+	}
+
+	function requestedUrls(spy: ReturnType<typeof scriptFetch>): string[] {
+		return spy.mock.calls.map((call) => String(call[0]));
+	}
+
+	const baseParams = {
+		graphBaseUrl: GRAPH_BASE,
+		driveId: "drive-1",
+		recordingItemId: "rec-20",
+		refreshToken: "refresh-1",
+		onRefreshTokenRotated: async () => {},
+	};
+
+	beforeEach(() => {
+		vi.stubEnv("MICROSOFT_GRAPH_CLIENT_ID", "client-id");
+		vi.stubEnv("MICROSOFT_GRAPH_CLIENT_SECRET", "client-secret");
+	});
+
+	afterEach(() => {
+		vi.unstubAllEnvs();
+		vi.restoreAllMocks();
+	});
+
+	it("reads a recording on the caller's own tenant", async () => {
+		const fetchSpy = scriptFetch();
+
+		const result = await getRecordingTranscriptContent({
+			...baseParams,
+			graphFetch: graphWithRoot(),
+			integrationId: "int-happy",
+			recordingWebUrl: TEAM_SITE_RECORDING,
+		});
+
+		expect(result.entries).toHaveLength(2);
+		expect(result.speakerCount).toBe(2);
+		expect(
+			requestedUrls(fetchSpy).some((url) =>
+				url.startsWith(
+					"https://example.sharepoint.com/sites/EngTeam/_api/v2.1/drives/drive-1/items/rec-20/media/transcripts",
+				),
+			),
+		).toBe(true);
+	});
+
+	it("reads a recording on the tenant's own OneDrive host", async () => {
+		const fetchSpy = scriptFetch(
+			"https://example-my.sharepoint.com/_layouts/download.aspx?t=abc",
+		);
+
+		const result = await getRecordingTranscriptContent({
+			...baseParams,
+			graphFetch: graphWithRoot(),
+			integrationId: "int-onedrive",
+			recordingWebUrl:
+				"https://example-my.sharepoint.com/personal/dev_example_com/Documents/Recordings/rec.mp4",
+		});
+
+		expect(result.entries).toHaveLength(2);
+		expect(
+			requestedUrls(fetchSpy).some((url) =>
+				url.startsWith("https://example-my.sharepoint.com/_api/v2.1/"),
+			),
+		).toBe(true);
+	});
+
+	it("refuses another tenant's SharePoint host, and mints no token for it", async () => {
+		const fetchSpy = scriptFetch();
+
+		await expect(
+			getRecordingTranscriptContent({
+				...baseParams,
+				graphFetch: graphWithRoot(),
+				integrationId: "int-attacker",
+				recordingWebUrl:
+					"https://attacker.sharepoint.com/sites/EngTeam/Shared%20Documents/rec.mp4",
+			}),
+		).rejects.toThrow(/could not derive the sharepoint site/i);
+
+		// `${origin}/.default` would have made the attacker's host the audience
+		// of the caller's delegated token, and the very next call would have
+		// sent it there.
+		expect(fetchSpy).not.toHaveBeenCalled();
+	});
+
+	it("refuses a non-https recording URL", async () => {
+		const fetchSpy = scriptFetch();
+
+		await expect(
+			getRecordingTranscriptContent({
+				...baseParams,
+				graphFetch: graphWithRoot(),
+				integrationId: "int-plaintext",
+				recordingWebUrl:
+					"http://example.sharepoint.com/sites/EngTeam/rec.mp4",
+			}),
+		).rejects.toThrow(/could not derive the sharepoint site/i);
+		expect(fetchSpy).not.toHaveBeenCalled();
+	});
+
+	it("refuses a download URL on a different tenant, before sending the token", async () => {
+		const fetchSpy = scriptFetch(
+			"https://attacker.sharepoint.com/_layouts/download.aspx?t=abc",
+		);
+
+		await expect(
+			getRecordingTranscriptContent({
+				...baseParams,
+				graphFetch: graphWithRoot(),
+				integrationId: "int-baddownload",
+				recordingWebUrl: TEAM_SITE_RECORDING,
+			}),
+		).rejects.toThrow(/other than the recording's own SharePoint site/i);
+
+		expect(
+			requestedUrls(fetchSpy).some((url) => url.includes("attacker")),
+		).toBe(false);
+	});
+
+	it("refuses a download URL that leaves the validated origin for a sibling host", async () => {
+		// Same tenant, still not this site: the transcript of an item on this
+		// site is served by this site.
+		const fetchSpy = scriptFetch(
+			"https://example-my.sharepoint.com/_layouts/download.aspx?t=abc",
+		);
+
+		await expect(
+			getRecordingTranscriptContent({
+				...baseParams,
+				graphFetch: graphWithRoot(),
+				integrationId: "int-siblinghost",
+				recordingWebUrl: TEAM_SITE_RECORDING,
+			}),
+		).rejects.toThrow(/other than the recording's own SharePoint site/i);
+
+		expect(
+			requestedUrls(fetchSpy).some((url) =>
+				url.includes("example-my.sharepoint.com"),
+			),
+		).toBe(false);
+	});
+
+	it("fails closed when the tenant's root site cannot be resolved", async () => {
+		const fetchSpy = scriptFetch();
+
+		await expect(
+			getRecordingTranscriptContent({
+				...baseParams,
+				graphFetch: graphWithRoot(null),
+				integrationId: "int-noroot",
+				recordingWebUrl: TEAM_SITE_RECORDING,
+			}),
+		).rejects.toThrow(/could not derive the sharepoint site/i);
+		expect(fetchSpy).not.toHaveBeenCalled();
 	});
 });

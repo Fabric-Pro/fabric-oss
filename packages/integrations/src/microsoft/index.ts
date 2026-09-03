@@ -163,7 +163,11 @@ export function truncateContent(
 	if (!content) {
 		return "";
 	}
-	const stripped = content
+	// Bounded span: js/polynomial-redos — callers pass at most a 2000-char
+	// maxLength (fetch-new-messages.ts), so a 20000-char prefix is comfortably
+	// generous while keeping the tag-strip regex off unbounded raw HTML.
+	const bounded = content.slice(0, 20_000);
+	const stripped = bounded
 		.replace(/<[^>]*>/g, " ")
 		.replace(/&nbsp;/g, " ")
 		.replace(/&amp;/g, "&")
@@ -2494,6 +2498,8 @@ export async function executeMicrosoftTeamsTool(
 
 			const { entries, speakerCount } =
 				await getRecordingTranscriptContent({
+					graphFetch: graphRequest,
+					graphBaseUrl,
 					driveId,
 					recordingItemId,
 					recordingWebUrl,

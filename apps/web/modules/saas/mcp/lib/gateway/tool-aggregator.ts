@@ -382,7 +382,8 @@ export async function executeConnectedServerTool(
 		const message =
 			error instanceof Error ? error.message : "Tool execution failed";
 		console.error(
-			`[MCP Gateway] Connected tool ${namespacedToolName} error:`,
+			"[MCP Gateway] Connected tool %s error:",
+			namespacedToolName,
 			error,
 		);
 		return {

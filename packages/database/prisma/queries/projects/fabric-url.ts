@@ -123,12 +123,17 @@ export function appendFabricBackLink(
  * casing or context is untouched.
  */
 function stripFabricBackLinkFromText(text: string): string {
+	// Bounded spans: js/polynomial-redos — `text` is unbounded user story
+	// description/acceptance-criteria content. Every `[^>]*`/`\s*` group
+	// below is capped to a span comfortably larger than the anchor this
+	// file's own builders ever emit (see HTML_BACK_LINK_RE), so backtracking
+	// can't scale with input size.
 	return text
 		.replace(
-			/<p>\s*<a\s+[^>]*href=["'][^"']+["'][^>]*>\s*View in Fabric\s*<\/a>\s*<\/p>/gi,
+			/<p>\s{0,20}<a\s{1,20}[^>]{0,200}href=["'][^"']+["'][^>]{0,200}>\s{0,20}View in Fabric\s{0,20}<\/a>\s{0,20}<\/p>/gi,
 			"",
 		)
-		.replace(/\[View in Fabric\]\(([^)]+)\)/g, "")
+		.replace(/\[View in Fabric\]\(([^)\n]{1,2000})\)/g, "")
 		.replace(/\n{3,}/g, "\n\n")
 		.trim();
 }
@@ -223,14 +228,20 @@ export function placeFabricBackLink(args: {
  * back-link. The `i` flag covers only the wrapping tags / whitespace.
  */
 export const HTML_BACK_LINK_RE =
-	/<p>\s*<a\s+[^>]*href=["']([^"']+)["'][^>]*>\s*View in Fabric\s*<\/a>\s*<\/p>/i;
+	// Bounded span: js/polynomial-redos — the two `[^>]*` classes are capped
+	// to 200 chars (the anchor's own attribute span above is 0 chars; 200 is
+	// comfortably larger), so backtracking can't scale with input size.
+	/<p>\s*<a\s+[^>]{0,200}href=["']([^"']+)["'][^>]{0,200}>\s*View in Fabric\s*<\/a>\s*<\/p>/i;
 
 /**
  * Match the markdown form we emit for Fizzy. Same exact-label invariant —
  * user's own markdown links elsewhere in the description (e.g. `[Spec](…)`)
  * never match.
  */
-const MARKDOWN_BACK_LINK_RE = /\[View in Fabric\]\(([^)]+)\)/;
+// Bounded span: js/polynomial-redos — the href capture is capped to 2000
+// chars, comfortably above any URL `buildFabricStoryUrl` in this file
+// produces, so backtracking can't scale with input size.
+const MARKDOWN_BACK_LINK_RE = /\[View in Fabric\]\(([^)\n]{1,2000})\)/;
 
 function isFizzy(providerDetectedType: string | null | undefined): boolean {
 	return (providerDetectedType ?? "").toLowerCase() === "fizzy";

@@ -200,7 +200,16 @@ const FAKE_JWT = [`eyJ${"a".repeat(16)}`, "b".repeat(20), "c".repeat(22)].join(
 	".",
 );
 const FAKE_ENTROPY = "a1".repeat(20); // 40 chars, mixed letters+digits
-const FAKE_PEM = `-----BEGIN RSA PRIVATE KEY-----\n${"M".repeat(24)}\n-----END RSA PRIVATE KEY-----`;
+// PEM markers are assembled at runtime so this file never contains a literal
+// "-----BEGIN ... PRIVATE KEY-----": the OSS relay's publication scan runs
+// gitleaks with its default rules and no test-path allowlist (unlike the
+// repo's own /.gitleaks.toml), and the default private-key rule matches from
+// a BEGIN header across lines to the next "KEY-----" it finds.
+const pemMarker = (kind: "BEGIN" | "END", label = "RSA PRIVATE KEY") =>
+	`-----${kind} ${label}-----`;
+const PEM_BEGIN = pemMarker("BEGIN");
+const PEM_END = pemMarker("END");
+const FAKE_PEM = `${PEM_BEGIN}\n${"M".repeat(24)}\n${PEM_END}`;
 
 describe("redactSecrets — never persist a found credential", () => {
 	it("redacts recognizable provider tokens", () => {
@@ -239,6 +248,74 @@ describe("redactSecrets — never persist a found credential", () => {
 				"Store credentials in a secrets manager, not in code.",
 			),
 		).toBe("Store credentials in a secrets manager, not in code.");
+	});
+
+	it("an unclosed PEM marker does not hang (js/polynomial-redos)", () => {
+		// This is the regression guard for the confirmed quadratic backtrack on
+		// scanned code with a "-----BEGIN...PRIVATE KEY-----" and no matching
+		// END marker: the bounded lazy middle must keep this from hanging.
+		const unclosedPem = `${PEM_BEGIN}${"M".repeat(25_000)}`;
+		expect(() => redactSecrets(unclosedPem)).not.toThrow();
+	});
+
+	it("fully redacts a PEM block whose body is over 12,000 chars (no length cap)", () => {
+		// Regression guard: the old regex bounded its lazy middle to 10,000
+		// chars so it wouldn't backtrack quadratically on an unclosed BEGIN —
+		// which meant a real private-key body longer than that silently
+		// passed through unredacted and got persisted. The linear scanner has
+		// no such cap.
+		const bigBody = "M".repeat(12_000);
+		const bigPem = `${PEM_BEGIN}\n${bigBody}\n${PEM_END}`;
+		const result = redactSecrets(`leaked ${bigPem}`);
+		expect(result).toBe("leaked [REDACTED private key]");
+		expect(result).not.toContain("M");
+	});
+
+	it("skips an END for another block type inside the key material", () => {
+		// A certificate END embedded in the key body is not the key's own
+		// terminator. Stopping there would leave the rest of the key in the
+		// clear, so the scanner keeps looking for an END whose label is a
+		// private key.
+		const pem = [
+			PEM_BEGIN,
+			"MIIE-first-half",
+			pemMarker("END", "CERTIFICATE"),
+			"MIIE-second-half",
+			PEM_END,
+		].join("\n");
+		const result = redactSecrets(`before ${pem} after`);
+		expect(result).toBe("before [REDACTED private key] after");
+		expect(result).not.toContain("second-half");
+	});
+
+	it("many BEGIN markers with no END do not hang (js/polynomial-redos)", () => {
+		// 2,000 openers, none closed, in ~200KB. The old regex's lazy middle
+		// was bounded, but a NEW BEGIN starting inside a prior unbounded scan
+		// range is exactly the shape that turns per-opener scanning
+		// quadratic if each opener re-scans the whole remaining input. The
+		// linear scanner must finish within the runner's normal timeout.
+		const opener = `${PEM_BEGIN}${"M".repeat(80)}`;
+		const input = opener.repeat(2_000); // ~200KB, 2,000 openers, no END
+		const result = redactSecrets(input);
+		// No END anywhere — nothing qualifies for redaction, so the PEM step
+		// leaves the input untouched. (It contains no other secret shapes
+		// either: not a token/JWT/high-entropy pattern.)
+		expect(result).toBe(input);
+	});
+
+	it("does not drop content: a secret at the end of a 30,000-char field is redacted and everything else is preserved in full", () => {
+		// No content-length cap — every byte of a finding's title/evidence/
+		// description/remediation must survive redaction, however long the
+		// field is. Only the regex spans themselves are bounded. A space
+		// separates the filler from the secret so the `\b` word boundary the
+		// token regex requires is actually present (matching how a real
+		// evidence/description field embeds a token in prose).
+		const filler = "y".repeat(30_000 - FAKE_GH.length - 1);
+		const input = `${filler} ${FAKE_GH}`;
+		const result = redactSecrets(input);
+		expect(result.startsWith(filler)).toBe(true);
+		expect(result).not.toContain("ghp_");
+		expect(result.endsWith("[REDACTED]")).toBe(true);
 	});
 
 	it("mapRawFindingToDraft scrubs secrets from every persisted field", () => {

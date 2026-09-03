@@ -101,4 +101,20 @@ describe("first-class frames queries", () => {
 		expect(shared?.id).toBe(frame.id);
 		expect(shared?.document.title).toBe("Shareable Frame");
 	});
+
+	it("creates a frame with an oversized, non-alphanumeric title without hanging (bounded slug regex — js/polynomial-redos)", async () => {
+		// `title` has no zod max() bound upstream; a pathologically long,
+		// mostly-punctuation title must still resolve to a valid, bounded
+		// path rather than scanning the whole title through the slug regex
+		// chain.
+		const longTitle = "!".repeat(5000);
+		const frame = await createFrame({
+			userId: USER_ID,
+			title: longTitle,
+			blocks: [{ id: "block-1", type: "markdown", content: "# Hello" }],
+		});
+		// No alphanumeric chars survive within the bounded prefix, so the
+		// slug falls back to the frame kind.
+		expect(frame.path).toMatch(/^\/frames\/frame-\d+\.frame\.json$/);
+	});
 });

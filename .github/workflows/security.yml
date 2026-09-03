@@ -11,9 +11,11 @@ name: Security
 # the stable status check name to require in branch protection — individual
 # scan jobs may be skipped on irrelevant PRs, but `security` always reports.
 #
-# SAST uses Semgrep CE instead of CodeQL because this is a private repo
-# without GitHub Advanced Security. CodeQL's SARIF upload requires GHAS on
-# private repos; Semgrep runs purely in Actions with no upload dependency.
+# SAST uses Semgrep CE here because the staging repository is private and has
+# no GitHub Advanced Security: CodeQL's SARIF upload requires GHAS on private
+# repos, while Semgrep runs purely in Actions with no upload dependency. The
+# public mirror additionally runs CodeQL on master pushes (codeql.yml) — never
+# on pull requests, for the reason given in that file.
 
 on:
   pull_request:
