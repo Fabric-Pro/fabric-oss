@@ -30,6 +30,11 @@ export {
 	selectShortPostOptionProcedure,
 } from "./short-post";
 export {
+	adoptStakeholderEmailDraftProcedure,
+	generateStakeholderEmailProcedure,
+	saveStakeholderEmailBodyProcedure,
+} from "./stakeholder-email";
+export {
 	answerTopicQuestionProcedure,
 	listTopicDecisionsProcedure,
 } from "./topic-decisions";

@@ -22,6 +22,7 @@ import { PUBLISHING_BLOG_POST_AGENT_KEY } from "../lib/publishing-blog-post-prom
 import { PUBLISHING_CASE_STUDY_AGENT_KEY } from "../lib/publishing-case-study-prompt";
 import { PUBLISHING_PLANNING_ANALYSIS_AGENT_KEY } from "../lib/publishing-planning-prompt";
 import { PUBLISHING_SHORT_POST_AGENT_KEY } from "../lib/publishing-short-post-prompt";
+import { PUBLISHING_STAKEHOLDER_EMAIL_AGENT_KEY } from "../lib/publishing-stakeholder-email-prompt";
 
 const actions = listPromptActions();
 const byId = (id: string) => actions.find((a) => a.id === id);
@@ -248,7 +249,27 @@ describe("Publishing Suite prompts (#1851, #1853, #1854)", () => {
 		]);
 	});
 
-	it("keeps all four publishing prompts under DIFFERENT keys", () => {
+	// The stakeholder email prompt (2C slice 2) is the fifth member, with the
+	// identical three-site hazard: seed SYSTEM prompt, seed binding, catalog
+	// entry and the Temporal activity must all name one key.
+	it("files the stakeholder email prompt under Publishing Suite by the shared key", () => {
+		const target = findPromptAgentTarget(
+			PUBLISHING_STAKEHOLDER_EMAIL_AGENT_KEY,
+		);
+		expect(target).toBeDefined();
+		expect(target?.featureType).toBe("PUBLISHING");
+	});
+
+	it("binds the stakeholder email prompt for GENERAL with no story kind", () => {
+		const target = findPromptAgentTarget(
+			PUBLISHING_STAKEHOLDER_EMAIL_AGENT_KEY,
+		);
+		expect(target?.actions).toEqual([
+			{ documentType: "GENERAL", storyKind: null },
+		]);
+	});
+
+	it("keeps all five publishing prompts under DIFFERENT keys", () => {
 		// Every one of them is PUBLISHING/GENERAL/null, so a copy-paste that
 		// left a sibling's key on another entry would satisfy every other case
 		// in this file — and would silently route one content type's generation
@@ -259,6 +280,7 @@ describe("Publishing Suite prompts (#1851, #1853, #1854)", () => {
 			PUBLISHING_SHORT_POST_AGENT_KEY,
 			PUBLISHING_BLOG_POST_AGENT_KEY,
 			PUBLISHING_CASE_STUDY_AGENT_KEY,
+			PUBLISHING_STAKEHOLDER_EMAIL_AGENT_KEY,
 		];
 		expect(new Set(keys).size).toBe(keys.length);
 	});

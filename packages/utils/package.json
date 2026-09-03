@@ -49,6 +49,21 @@
 			"import": "./lib/publishing-case-study-body.ts",
 			"default": "./lib/publishing-case-study-body.ts"
 		},
+		"./publishing-source-data-markers": {
+			"types": "./lib/publishing-source-data-markers.ts",
+			"import": "./lib/publishing-source-data-markers.ts",
+			"default": "./lib/publishing-source-data-markers.ts"
+		},
+		"./publishing-stakeholder-email-prompt": {
+			"types": "./lib/publishing-stakeholder-email-prompt.ts",
+			"import": "./lib/publishing-stakeholder-email-prompt.ts",
+			"default": "./lib/publishing-stakeholder-email-prompt.ts"
+		},
+		"./publishing-stakeholder-email-body": {
+			"types": "./lib/publishing-stakeholder-email-body.ts",
+			"import": "./lib/publishing-stakeholder-email-body.ts",
+			"default": "./lib/publishing-stakeholder-email-body.ts"
+		},
 		"./publishing-planning-prompt": {
 			"types": "./lib/publishing-planning-prompt.ts",
 			"import": "./lib/publishing-planning-prompt.ts",

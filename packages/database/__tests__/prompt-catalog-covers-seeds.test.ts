@@ -28,6 +28,7 @@ import { PUBLISHING_BLOG_POST_AGENT_KEY } from "@repo/utils/publishing-blog-post
 import { PUBLISHING_CASE_STUDY_AGENT_KEY } from "@repo/utils/publishing-case-study-prompt";
 import { PUBLISHING_PLANNING_ANALYSIS_AGENT_KEY } from "@repo/utils/publishing-planning-prompt";
 import { PUBLISHING_SHORT_POST_AGENT_KEY } from "@repo/utils/publishing-short-post-prompt";
+import { PUBLISHING_STAKEHOLDER_EMAIL_AGENT_KEY } from "@repo/utils/publishing-stakeholder-email-prompt";
 import { describe, expect, it } from "vitest";
 
 const SEED = readFileSync(
@@ -68,6 +69,7 @@ const KEY_CONSTANTS: Record<string, string> = {
 	PUBLISHING_SHORT_POST_AGENT_KEY,
 	PUBLISHING_BLOG_POST_AGENT_KEY,
 	PUBLISHING_CASE_STUDY_AGENT_KEY,
+	PUBLISHING_STAKEHOLDER_EMAIL_AGENT_KEY,
 };
 
 function resolveKeyConstant(name: string): string {

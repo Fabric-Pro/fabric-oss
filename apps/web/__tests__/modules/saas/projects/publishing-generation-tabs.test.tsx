@@ -122,27 +122,34 @@ describe("GenerationTabs — which tabs are live", () => {
 		).toBeEnabled();
 	});
 
-	it("activates Case Study and leaves only Stakeholder Email Coming Soon", () => {
-		// Inverted rather than deleted. This case asserted that BOTH 2C types
-		// were disabled and read "Coming soon", which was right while neither
-		// had a panel. 2C-1 (#1854) ships the Case Study one, so what would be a
-		// regression now is the tab being disabled — and a "Coming soon" badge
-		// where a real state badge belongs, which is the half a mere
+	it("activates BOTH 2C types, leaving no tab Coming Soon", () => {
+		// Inverted twice, and the history is the assertion. 2A asserted all four
+		// tabs were disabled and read "Coming soon"; 2B activated two; 2C-1
+		// (#1854) activated Case Study and this case became "Case Study is live,
+		// Stakeholder Email is not"; 2C-2 activates the last one. What would be
+		// a regression now is either 2C tab being disabled — and a "Coming soon"
+		// badge where a real state badge belongs, which is the half a mere
 		// `toBeEnabled()` would not catch.
 		renderTabs();
 
-		const caseStudy = within(tablist()).getByRole("tab", {
-			name: /case study/i,
-		});
-		expect(caseStudy).toBeEnabled();
-		expect(caseStudy).toHaveAccessibleName(/case study.*available/i);
-		expect(caseStudy).not.toHaveAccessibleName(/coming soon/i);
+		for (const name of [/case study/i, /stakeholder email/i]) {
+			const tab = within(tablist()).getByRole("tab", { name });
+			expect(tab).toBeEnabled();
+			expect(tab).toHaveAccessibleName(/available/i);
+			expect(tab).not.toHaveAccessibleName(/coming soon/i);
+		}
+	});
+
+	it("leaves NO tab reading Coming Soon at all", () => {
+		// The whole-strip form of the case above. Asserting the two 2C tabs
+		// individually would still pass on a build that regressed one of the 2B
+		// ones back to a placeholder, and "every content type is live" is the
+		// claim 2C-2 actually makes.
+		renderTabs();
 
 		expect(
-			within(tablist()).getByRole("tab", {
-				name: /stakeholder email.*coming soon/i,
-			}),
-		).toBeDisabled();
+			within(tablist()).queryByRole("tab", { name: /coming soon/i }),
+		).not.toBeInTheDocument();
 	});
 
 	it("uses the card's name for the short-post tab without renaming the Inbox chip", () => {
@@ -477,6 +484,67 @@ describe("GenerationTabs — panel content", () => {
 		expect(screen.getByText("the customer name")).toBeInTheDocument();
 	});
 
+	it("gives the two 2C types DIFFERENT restriction sets on the same thread", async () => {
+		// The one case that can tell the two 2C extra sets apart.
+		// `CODEBASE_DETAIL` restricts a Case Study — it describes the
+		// implementation — and deliberately does NOT restrict a Stakeholder
+		// Email, which is not where a codebase detail leaks and where a third
+		// entry under "open questions" on every technical topic would train the
+		// reader past the two that do apply.
+		//
+		// Without this, a build that computed the list ONCE per phase rather
+		// than once per panel — the tempting shortcut when a second 2C type
+		// arrives — would pass every other case in this file.
+		const user = userEvent.setup();
+		renderTabs({
+			decisionThreads: [
+				thread({
+					id: "t-codebase",
+					decisionKind: "CODEBASE_DETAIL",
+					subject: "how much of the resolver to show",
+					content: "How much implementation may we describe?",
+				}),
+				thread({
+					id: "t-audience",
+					decisionKind: "AUDIENCE_SCOPE",
+					subject: "who this update is addressed to",
+					content: "Internal or external?",
+				}),
+			],
+		});
+
+		await user.click(
+			within(tablist()).getByRole("tab", { name: /case study/i }),
+		);
+		const onCaseStudy = screen
+			.getAllByRole("listitem")
+			.map((li) => li.textContent);
+		expect(onCaseStudy).toContain("how much of the resolver to show");
+		expect(onCaseStudy).toContain("who this update is addressed to");
+
+		await user.click(
+			within(tablist()).getByRole("tab", { name: /stakeholder email/i }),
+		);
+		const onEmail = screen
+			.getAllByRole("listitem")
+			.map((li) => li.textContent);
+		expect(onEmail).toContain("who this update is addressed to");
+		expect(onEmail).not.toContain("how much of the resolver to show");
+	});
+
+	it("still shows a shared restriction on the stakeholder email tab", async () => {
+		// The other direction: `restrictsPostType` starts with the shared
+		// predicate, so giving this type an extra set must not have narrowed a
+		// safety-critical question away from it.
+		const user = userEvent.setup();
+		renderTabs({ decisionThreads: [thread()] });
+
+		await user.click(
+			within(tablist()).getByRole("tab", { name: /stakeholder email/i }),
+		);
+		expect(screen.getByText("the customer name")).toBeInTheDocument();
+	});
+
 	it("DOES offer a generate control on the case study tab", async () => {
 		const user = userEvent.setup();
 		renderTabs();
@@ -486,6 +554,21 @@ describe("GenerationTabs — panel content", () => {
 		);
 		expect(
 			screen.getByRole("button", { name: /generate case study/i }),
+		).toBeInTheDocument();
+	});
+
+	it("DOES offer a generate control on the stakeholder email tab", async () => {
+		// The positive half of activating the tab. `toBeEnabled()` above passes
+		// just as well on a build where the panel failed to mount at all and the
+		// tab opened onto nothing.
+		const user = userEvent.setup();
+		renderTabs();
+
+		await user.click(
+			within(tablist()).getByRole("tab", { name: /stakeholder email/i }),
+		);
+		expect(
+			screen.getByRole("button", { name: /generate stakeholder email/i }),
 		).toBeInTheDocument();
 	});
 

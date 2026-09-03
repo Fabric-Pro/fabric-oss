@@ -78,6 +78,23 @@ export function isRestrictingThread(thread: RestrictionThreadRoot): boolean {
  * to say. Left out, a case study asserts exactly the things still awaiting a
  * decision.
  *
+ * A Stakeholder Email restricts on TWO of those three. `AUDIENCE_SCOPE` decides
+ * the whole shape of the message — an email to leadership, to a client sponsor
+ * and to the delivery team say different things about the same work, and one
+ * addressed before that is settled is the format most likely to reach the wrong
+ * reader, because it is ADDRESSED and usually sent without a second pair of
+ * eyes. `CLAIM_STRENGTH` decides whether the "why it matters" paragraph may
+ * assert a result or has to describe one.
+ *
+ * `CODEBASE_DETAIL` is deliberately NOT in the email's set, and the omission is
+ * the point rather than an oversight. An email to a sponsor is not where a
+ * codebase detail leaks: the format's own rules already push it toward business
+ * value over implementation, and the disclosure rule in the locked clauses
+ * covers the residue. Listing it anyway would put a third entry under "open
+ * questions that constrain this type" on nearly every technical topic, for a
+ * risk this format does not run — and a warning that fires where it does not
+ * apply is how a reader learns to skip the two that do.
+ *
  * ADDITIVE, deliberately — not a widening of `SAFETY_CRITICAL_KINDS`. Moving
  * `CLAIM_STRENGTH` into the shared set would make one open claim question
  * caution the Tweet and Blog Post tabs too, and a warning that fires on formats
@@ -93,6 +110,7 @@ export const EXTRA_RESTRICTING_KINDS_BY_POST_TYPE: Readonly<
 		"AUDIENCE_SCOPE",
 		"CODEBASE_DETAIL",
 	]),
+	STAKEHOLDER_EMAIL: new Set(["AUDIENCE_SCOPE", "CLAIM_STRENGTH"]),
 };
 
 /**

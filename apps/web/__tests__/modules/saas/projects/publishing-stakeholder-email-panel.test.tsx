@@ -1,18 +1,18 @@
-import { CASE_STUDY_CLAMP_REASON } from "@repo/utils/publishing-case-study-clamp";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 /**
- * The Case Study generation panel (Fizzy #1854, Phase 2C-1).
+ * The Stakeholder Email generation panel (Fizzy #1854, Phase 2C-2).
  *
  * Assertions are on ROLES and TEXT, never on classes. What this panel owes a
  * reader is that the saved draft is editable, that an unadopted version is
  * offered rather than applied, that the controls a viewer must not have are
- * absent, and — the part no other panel has — that every approval-sensitive
- * fact about the draft is VISIBLE, on screen and in the file that leaves the
- * app. None of that is provable from a class name.
+ * absent, and — the part this content type turns on — that the release state
+ * the draft asserts is VISIBLE, on screen and in the file that leaves the app,
+ * and is never presented as something Fabric verified. None of that is provable
+ * from a class name.
  */
 
 const mutate = vi.hoisted(() => ({
@@ -51,9 +51,9 @@ vi.mock("@tanstack/react-query", () => ({
 		const key = opts.mutationKey[0];
 		captured[key] = opts;
 		const byKey: Record<string, ReturnType<typeof vi.fn>> = {
-			generateCaseStudy: mutate.generate,
-			adoptCaseStudyDraft: mutate.adopt,
-			saveCaseStudyBody: mutate.saveBody,
+			generateStakeholderEmail: mutate.generate,
+			adoptStakeholderEmailDraft: mutate.adopt,
+			saveStakeholderEmailBody: mutate.saveBody,
 		};
 		return { mutate: byKey[key], isPending: false };
 	},
@@ -76,9 +76,9 @@ vi.mock("@shared/lib/orpc-query-utils", () => {
 							input,
 						],
 					},
-					generateCaseStudy: m("generateCaseStudy"),
-					adoptCaseStudyDraft: m("adoptCaseStudyDraft"),
-					saveCaseStudyBody: m("saveCaseStudyBody"),
+					generateStakeholderEmail: m("generateStakeholderEmail"),
+					adoptStakeholderEmailDraft: m("adoptStakeholderEmailDraft"),
+					saveStakeholderEmailBody: m("saveStakeholderEmailBody"),
 				},
 			},
 		},
@@ -128,74 +128,40 @@ vi.mock("@ui/components/dropdown-menu", () => {
 	};
 });
 
-import { CaseStudyPanel } from "@saas/projects/components/publishing-suite/CaseStudyPanel";
+import { StakeholderEmailPanel } from "@saas/projects/components/publishing-suite/StakeholderEmailPanel";
 
-/** A finished, fully-approved case study: nothing left to caveat. */
+/** A finished email: a confirmed release state, an audience, nothing outstanding. */
 const DOCUMENT = {
-	title: "Cutting release lead time at example-org",
-	body: "## Executive summary\n\nRelease lead time fell from days to hours.",
-	customerIdentity: "APPROVED",
-	metricsBasis: "CONFIRMED",
-	isScaffold: false,
-	confirmedAssets: ["the deployment timeline chart"],
-	assetsNeedingConfirmation: [],
-	categories: ["Delivery"],
-	keywords: ["lead-time"],
+	subject: "Release lead time is down by half",
+	body: "Hi team,\n\nWe cut release lead time from days to hours.\n\nThanks,\nDelivery",
+	audience: "Internal leadership",
+	releaseStatus: "SHIPPED",
 	inputsNeeded: [],
 	safetyNote: null,
-	generation: { clamped: {} },
 };
 
-/** The same story with every safety field in its cautious state. */
-const SCAFFOLD_DOCUMENT = {
+/** The same update with every safety field in its cautious state. */
+const UNCONFIRMED_DOCUMENT = {
 	...DOCUMENT,
-	isScaffold: true,
-	customerIdentity: "ANONYMIZED",
-	metricsBasis: "QUALITATIVE",
-	assetsNeedingConfirmation: ["the architecture diagram"],
-	inputsNeeded: ["Adoption numbers for the rollout"],
+	releaseStatus: "UNCONFIRMED",
+	audience: null,
+	inputsNeeded: ["Confirm whether the rollout has completed"],
 	safetyNote: "Generalized the customer reference.",
 };
 
 /**
- * A draft whose claims the ACTIVITY lowered against open approvals.
+ * Hedged but complete: the release state is KNOWN to be in progress, and the
+ * email says so in its own prose.
  *
- * Built FROM `CASE_STUDY_CLAMP_REASON` rather than by restating its values.
- * The panel decides whether to show the clamp note by comparing the stored
- * reason against that constant, and an unrecognised reason reads as "not
- * clamped" — so a fixture with its own copy of the strings would keep passing
- * after a rename that made the warning vanish in production. This is the only
- * place either side of the package boundary is exercised at all.
+ * The document that separates "the draft could not establish a release state"
+ * from "the draft established a non-shipped one" — an export that caveated both
+ * would put a warning on most drafts, and one that caveated neither would hand
+ * out a clean-looking file whose release state nobody ever confirmed.
  */
-const CLAMPED_DOCUMENT = {
+const IN_PROGRESS_DOCUMENT = {
 	...DOCUMENT,
-	customerIdentity: "APPROVAL_NEEDED",
-	metricsBasis: "PLACEHOLDER",
-	confirmedAssets: [],
-	assetsNeedingConfirmation: ["the customer logo"],
-	generation: {
-		clamped: {
-			customerIdentity: CASE_STUDY_CLAMP_REASON.customerIdentity,
-			metricsBasis: CASE_STUDY_CLAMP_REASON.metricsBasis,
-			assets: ["the customer logo"],
-		},
-	},
-};
-
-/**
- * Clean on every other axis, with ONE disputed asset still sitting in the
- * cleared list and nothing in the needs-confirmation list.
- *
- * Today's activity moves a clamped asset across as it records the clamp, so the
- * two are non-empty together — but that coupling lives in another package, and
- * an export whose "is this clean" test reads only the needs-confirmation list
- * would hand out a caveat-free file for this document.
- */
-const CLAMPED_ASSET_ONLY_DOCUMENT = {
-	...DOCUMENT,
-	confirmedAssets: ["the customer logo"],
-	assetsNeedingConfirmation: [],
-	generation: { clamped: { assets: ["the customer logo"] } },
+	releaseStatus: "IN_PROGRESS",
+	body: "Hi team,\n\nWe're working on cutting release lead time.\n\nThanks,\nDelivery",
 };
 
 /** The sentence every safety surface carries when it describes other text. */
@@ -203,12 +169,12 @@ const OTHER_VERSION = /not the version this text was saved from/i;
 
 const SAVED_AT = new Date("2026-09-01T12:00:00Z");
 const BODY =
-	"# Cutting release lead time at example-org\n\n## Executive summary\n\nRelease lead time fell from days to hours.";
+	"## Subject\n\nRelease lead time is down by half\n\n## Email Draft\n\nHi team,\n\nWe cut release lead time from days to hours.\n\nThanks,\nDelivery";
 
 function readyDraft(content: unknown = DOCUMENT, id = "d1") {
 	const row = {
 		id,
-		postType: "CASE_STUDY" as const,
+		postType: "STAKEHOLDER_EMAIL" as const,
 		version: 1,
 		status: "READY",
 		error: null,
@@ -217,7 +183,7 @@ function readyDraft(content: unknown = DOCUMENT, id = "d1") {
 		content,
 	};
 	return {
-		postType: "CASE_STUDY" as const,
+		postType: "STAKEHOLDER_EMAIL" as const,
 		latestAttempt: row,
 		latestReady: row,
 	};
@@ -225,7 +191,7 @@ function readyDraft(content: unknown = DOCUMENT, id = "d1") {
 
 function working(over: Record<string, unknown> = {}) {
 	return {
-		postType: "CASE_STUDY" as const,
+		postType: "STAKEHOLDER_EMAIL" as const,
 		hasBody: true,
 		body: BODY,
 		sourceDraftId: "d1",
@@ -237,7 +203,7 @@ function working(over: Record<string, unknown> = {}) {
 
 function renderPanel(over: Record<string, unknown> = {}) {
 	return render(
-		<CaseStudyPanel
+		<StakeholderEmailPanel
 			projectId="p1"
 			organizationId="org1"
 			topicId="t1"
@@ -253,8 +219,7 @@ function renderPanel(over: Record<string, unknown> = {}) {
  * jsdom ships no clipboard, and `userEvent.setup()` installs a stub of its own
  * over whatever is there — so this has to run AFTER setup in every case that
  * cares, or the assertion lands on user-event's stub instead of the panel's
- * behaviour. Every environment shape has to be reachable: present, absent, and
- * present-but-refusing.
+ * behaviour.
  */
 function setClipboard(value: unknown) {
 	Object.defineProperty(globalThis.navigator, "clipboard", {
@@ -281,7 +246,7 @@ function setupWithClipboard(clipboard: unknown) {
 const workingClipboard = () => ({ writeText: mutate.writeText });
 
 const editor = () =>
-	screen.getByRole("textbox", { name: /working case study/i });
+	screen.getByRole("textbox", { name: /working stakeholder email/i });
 
 beforeEach(() => {
 	vi.clearAllMocks();
@@ -296,12 +261,12 @@ beforeEach(() => {
 	setClipboard({ writeText: mutate.writeText });
 });
 
-describe("CaseStudyPanel — the generate control", () => {
+describe("StakeholderEmailPanel — the generate control", () => {
 	it("offers Generate when nothing has been drafted", () => {
 		renderPanel();
 
 		expect(
-			screen.getByRole("button", { name: /generate case study/i }),
+			screen.getByRole("button", { name: /generate stakeholder email/i }),
 		).toBeEnabled();
 	});
 
@@ -311,16 +276,16 @@ describe("CaseStudyPanel — the generate control", () => {
 
 		await user.type(
 			screen.getByLabelText(/guidance/i),
-			"Lead with the deploy frequency.",
+			"Address it to the steering group.",
 		);
 		await user.click(
-			screen.getByRole("button", { name: /generate case study/i }),
+			screen.getByRole("button", { name: /generate stakeholder email/i }),
 		);
 
 		expect(mutate.generate).toHaveBeenCalledWith(
 			expect.objectContaining({
 				topicId: "t1",
-				guidance: "Lead with the deploy frequency.",
+				guidance: "Address it to the steering group.",
 			}),
 		);
 	});
@@ -332,7 +297,9 @@ describe("CaseStudyPanel — the generate control", () => {
 			screen.getByRole("button", { name: /regenerate draft/i }),
 		).toBeEnabled();
 		expect(
-			screen.getByText(/case study you have saved is not affected/i),
+			screen.getByText(
+				/stakeholder email you have saved is not affected/i,
+			),
 		).toBeInTheDocument();
 	});
 
@@ -353,7 +320,7 @@ describe("CaseStudyPanel — the generate control", () => {
 		});
 
 		expect(
-			screen.getByRole("button", { name: /generate case study/i }),
+			screen.getByRole("button", { name: /generate stakeholder email/i }),
 		).toBeEnabled();
 		expect(screen.getByRole("alert")).toHaveTextContent(
 			/didn't report back/i,
@@ -375,7 +342,7 @@ describe("CaseStudyPanel — the generate control", () => {
 		});
 
 		expect(
-			screen.getByRole("button", { name: /generate case study/i }),
+			screen.getByRole("button", { name: /generate stakeholder email/i }),
 		).toBeDisabled();
 		expect(screen.getByRole("status")).toHaveTextContent(/writing/i);
 	});
@@ -383,7 +350,7 @@ describe("CaseStudyPanel — the generate control", () => {
 	it("reports an unavailable generator as information, not an error", () => {
 		renderPanel();
 
-		captured.generateCaseStudy.onSuccess?.({
+		captured.generateStakeholderEmail.onSuccess?.({
 			started: false,
 			reason: "unavailable",
 		});
@@ -412,7 +379,7 @@ describe("CaseStudyPanel — the generate control", () => {
 	});
 });
 
-describe("CaseStudyPanel — the editor", () => {
+describe("StakeholderEmailPanel — the editor", () => {
 	it("shows the saved draft in an editable field", () => {
 		renderPanel({ working: working() });
 
@@ -452,7 +419,7 @@ describe("CaseStudyPanel — the editor", () => {
 		await user.clear(editor());
 		await user.type(editor(), "Rewritten.");
 
-		captured.saveCaseStudyBody.onError?.({ code: "CONFLICT" });
+		captured.saveStakeholderEmailBody.onError?.({ code: "CONFLICT" });
 
 		expect(editor()).toHaveValue("Rewritten.");
 		expect(mutate.invalidate).not.toHaveBeenCalled();
@@ -485,7 +452,7 @@ describe("CaseStudyPanel — the editor", () => {
 	});
 });
 
-describe("CaseStudyPanel — adopting a later version (FR34/FR35)", () => {
+describe("StakeholderEmailPanel — adopting a later version (FR34/FR35)", () => {
 	it("offers the generated version when it is not the saved one", () => {
 		renderPanel({
 			draft: readyDraft(DOCUMENT, "d2"),
@@ -578,144 +545,209 @@ describe("CaseStudyPanel — adopting a later version (FR34/FR35)", () => {
 	});
 });
 
-describe("CaseStudyPanel — the approval-sensitive fields", () => {
-	it("says so in WORDS when the draft is a scaffold", () => {
-		// Not a tint. A reader who cannot see colour must still learn that this
-		// is an outline, which is the most consequential fact about the draft.
-		renderPanel({ draft: readyDraft(SCAFFOLD_DOCUMENT, "d2") });
+describe("StakeholderEmailPanel — the release status", () => {
+	it("says so in WORDS when the release state was never established", () => {
+		// Not a tint. A reader who cannot see colour must still learn that
+		// nobody confirmed whether this shipped, which is the most consequential
+		// fact about the draft on this content type.
+		renderPanel({ draft: readyDraft(UNCONFIRMED_DOCUMENT, "d2") });
 
-		expect(screen.getByText(/scaffold draft/i)).toBeInTheDocument();
 		expect(
-			screen.getByText(/outline with placeholders/i),
+			screen.getByText(/release status not confirmed/i),
+		).toBeInTheDocument();
+		expect(
+			screen.getByText(/didn't say whether this work has\s+shipped/i),
 		).toBeInTheDocument();
 	});
 
-	it("does not cry scaffold over a finished draft", () => {
-		renderPanel({ draft: readyDraft(DOCUMENT, "d2") });
-
-		expect(screen.queryByText(/scaffold draft/i)).not.toBeInTheDocument();
-	});
-
-	it("renders a CLAMPED status differently from one the draft claimed", () => {
-		// THE case for this panel. The activity lowers an APPROVED identity or a
-		// CONFIRMED metrics basis against an open approval thread and records
-		// which question did it. This is the ONLY reader of that record — without
-		// it the clamp is write-only telemetry, and nobody can tell a model that
-		// complied with the locked clause from one that ignored it.
-		renderPanel({ draft: readyDraft(CLAMPED_DOCUMENT, "d2") });
-
-		expect(
-			screen.getByText(
-				/approval needed before the customer can be named/i,
-			),
-		).toHaveTextContent(/set by Fabric from an open approval thread/i);
-		expect(screen.getByText(/placeholder figures/i)).toHaveTextContent(
-			/set by Fabric from an open approval thread/i,
-		);
-	});
-
-	it("does not claim Fabric set a status the draft chose for itself", () => {
+	it("does not cry unconfirmed over a draft that established one", () => {
 		// The negative half. Without it the case above passes on a build that
-		// prints the clamp note unconditionally.
+		// shows the banner unconditionally — and a banner on every draft is one
+		// nobody reads.
 		renderPanel({ draft: readyDraft(DOCUMENT, "d2") });
 
-		expect(screen.getByText(/named with approval/i)).toBeInTheDocument();
 		expect(
-			screen.queryByText(/set by Fabric from an open approval thread/i),
+			screen.queryByText(/release status not confirmed/i),
 		).not.toBeInTheDocument();
 	});
 
-	it("reads a garbled status as the cautious value, never as approved", () => {
+	it("does not cry unconfirmed over a correctly hedged in-progress draft", () => {
+		// IN_PROGRESS is a KNOWN state, not a missing one, and the email's own
+		// prose carries it. Warning here would be the over-warning that trains a
+		// reader past the UNCONFIRMED banner that matters.
+		renderPanel({ draft: readyDraft(IN_PROGRESS_DOCUMENT, "d2") });
+
+		expect(
+			screen.queryByText(/release status not confirmed/i),
+		).not.toBeInTheDocument();
+		expect(
+			screen.getByText(/the work is underway, not finished/i),
+		).toBeInTheDocument();
+	});
+
+	it("renders each release state in its own words", () => {
+		for (const [status, phrase] of [
+			["SHIPPED", /delivered and in use/i],
+			["IN_PROGRESS", /underway, not finished/i],
+			["PLANNED", /agreed but not started/i],
+			["UPCOMING", /a release is close/i],
+		] as const) {
+			const view = render(
+				<StakeholderEmailPanel
+					projectId="p1"
+					organizationId="org1"
+					topicId="t1"
+					draft={
+						readyDraft(
+							{ ...DOCUMENT, releaseStatus: status },
+							"d2",
+						) as never
+					}
+					working={null}
+					canEdit={true}
+				/>,
+			);
+			expect(screen.getByText(phrase)).toBeInTheDocument();
+			view.unmount();
+		}
+	});
+
+	it("attributes every status to the DRAFT, never to Fabric", () => {
+		// The difference from the Case Study panel, and it is load-bearing.
+		// `customerIdentity` and `metricsBasis` are clamped server-side against
+		// the topic's own open approval threads, so that panel can say "Set by
+		// Fabric". Nothing checks a release claim — Fabric stores no record of
+		// what has shipped — so a reader told this was verified stops verifying
+		// it, on the one content type that gets sent to a sponsor.
+		renderPanel({ draft: readyDraft(DOCUMENT, "d2") });
+
+		expect(
+			screen.getByText(
+				/the draft says the work is delivered and in use/i,
+			),
+		).toBeInTheDocument();
+		expect(
+			screen.getByText(
+				/nothing here was checked against a release record/i,
+			),
+		).toBeInTheDocument();
+		expect(screen.queryByText(/set by Fabric/i)).not.toBeInTheDocument();
+	});
+
+	it("reads a garbled status as unconfirmed, never as shipped", () => {
 		// `content` is a JSON column. A storage defect must not become a claim
-		// that a customer approved being named.
+		// that work is live.
+		renderPanel({
+			draft: readyDraft({ ...DOCUMENT, releaseStatus: "YES" }, "d2"),
+		});
+
+		expect(
+			screen.getByText(/release status not confirmed/i),
+		).toBeInTheDocument();
+	});
+
+	it("names the audience the draft wrote for", () => {
+		renderPanel({ draft: readyDraft(DOCUMENT, "d2") });
+
+		expect(
+			screen.getByText(/written for Internal leadership/i),
+		).toBeInTheDocument();
+	});
+
+	it("says the draft named no audience rather than inventing one", () => {
+		// The schema lets `audience` be null on purpose: "no particular reader"
+		// is the honest answer for a thin topic. A panel that filled the gap
+		// would be inventing the one label a reader uses to decide whether the
+		// email is safe to forward.
+		renderPanel({ draft: readyDraft(UNCONFIRMED_DOCUMENT, "d2") });
+
+		expect(
+			screen.getByText(/doesn't name an audience/i),
+		).toBeInTheDocument();
+	});
+
+	it("treats a whitespace-only audience as no audience", () => {
+		renderPanel({
+			draft: readyDraft({ ...DOCUMENT, audience: "   " }, "d2"),
+		});
+
+		expect(
+			screen.getByText(/doesn't name an audience/i),
+		).toBeInTheDocument();
+	});
+
+	it("drops a whitespace-only entry rather than drawing an empty bullet", () => {
+		// `audience` above has always been trimmed to null; the LISTS were not
+		// brought along, so an entry of spaces survived the type check and drew
+		// a bullet with nothing in it. Worse on the export path, where the same
+		// entry makes the draft count as unclean and prints a caveat line that
+		// names no caveat.
 		renderPanel({
 			draft: readyDraft(
-				{ ...DOCUMENT, customerIdentity: "YES", metricsBasis: 7 },
+				{
+					...UNCONFIRMED_DOCUMENT,
+					inputsNeeded: ["   ", "Confirm the rollout completed"],
+				},
 				"d2",
 			),
 		});
 
 		expect(
-			screen.getByText(
-				/approval needed before the customer can be named/i,
-			),
+			screen.getByText(/confirm the rollout completed/i),
 		).toBeInTheDocument();
-		expect(screen.getByText(/placeholder figures/i)).toBeInTheDocument();
+		// One item rendered, not two: the blank one is gone, and the real one
+		// is untouched. Asserting only the second would pass on a build that
+		// dropped nothing.
+		expect(screen.getAllByRole("listitem")).toHaveLength(1);
 	});
 
-	it("keeps the two asset lists apart, in words as well as in layout", () => {
-		renderPanel({ draft: readyDraft(SCAFFOLD_DOCUMENT, "d2") });
+	it("treats a whitespace-only safety note as no safety note", () => {
+		renderPanel({
+			draft: readyDraft({ ...DOCUMENT, safetyNote: "   " }, "d2"),
+		});
 
-		expect(screen.getByText(/assets cleared for use/i)).toBeInTheDocument();
-		expect(
-			screen.getByText(/assets awaiting confirmation/i),
-		).toBeInTheDocument();
-		expect(
-			screen.getByText("the deployment timeline chart"),
-		).toBeInTheDocument();
-		expect(
-			screen.getByText("the architecture diagram"),
-		).toBeInTheDocument();
+		// A note of spaces is not a note. Rendering it puts a heading over a
+		// blank line and makes an otherwise clean draft export a caveat block.
+		expect(screen.queryByText(/safety note/i)).not.toBeInTheDocument();
 	});
 
-	it("does not call a cleared asset safe to publish", () => {
-		// The list is the MODEL's account of the source material — nothing
-		// consulted an approval record to build it, and the two enum fields
-		// beside it are at least clamped against open threads while this is
-		// not. A reader told "safe to publish" stops checking, which is the one
-		// behaviour this list must not cause.
-		renderPanel({ draft: readyDraft(SCAFFOLD_DOCUMENT, "d2") });
-
-		expect(screen.getByText(/not an approval record/i)).toBeInTheDocument();
-		expect(
-			screen.queryByText(/safe to publish with the draft/i),
-		).not.toBeInTheDocument();
-	});
-
-	it("names the assets Fabric took OFF the cleared list", () => {
-		// Without this, an asset the model was merely unsure about and one an
-		// open approval thread contradicts are the same line — and only the
-		// second says the draft claimed something it should not have.
-		renderPanel({ draft: readyDraft(CLAMPED_DOCUMENT, "d2") });
+	it("shows the safety note and the inputs still needed", () => {
+		renderPanel({ draft: readyDraft(UNCONFIRMED_DOCUMENT, "d2") });
 
 		expect(
-			screen.getByText(/moved out of the cleared list by Fabric/i),
-		).toHaveTextContent("the customer logo");
-	});
-
-	it("does not say Fabric moved an asset the draft placed itself", () => {
-		// The negative half: without it the case above passes on a build that
-		// prints the note whenever the needs-confirmation list is non-empty.
-		renderPanel({ draft: readyDraft(SCAFFOLD_DOCUMENT, "d2") });
-
-		expect(
-			screen.getByText("the architecture diagram"),
+			screen.getByText(/generalized the customer reference/i),
 		).toBeInTheDocument();
 		expect(
-			screen.queryByText(/moved out of the cleared list by Fabric/i),
-		).not.toBeInTheDocument();
+			screen.getByText(/confirm whether the rollout has completed/i),
+		).toBeInTheDocument();
 	});
 
 	it("degrades to an empty state on a document shape it cannot read", () => {
-		// A panel that throws takes the whole Topic Item Page with it.
-		renderPanel({ draft: readyDraft({ options: [{ label: "Direct" }] }) });
+		// A panel that throws takes the whole Topic Item Page with it. A case
+		// study document is the realistic instance: same table, `title` where
+		// this reader wants `subject`.
+		renderPanel({
+			draft: readyDraft({ title: "A case study", body: "text" }),
+		});
 
 		expect(
-			screen.getByText(/no case study draft yet/i),
+			screen.getByText(/no stakeholder email draft yet/i),
 		).toBeInTheDocument();
 	});
 });
 
-describe("CaseStudyPanel — when the notes describe a different version", () => {
+describe("StakeholderEmailPanel — when the notes describe a different version", () => {
 	/**
 	 * `doc` is the latest READY generation; the editor, the copy button and the
 	 * download all hold the WORKING draft. A regeneration nobody adopted makes
-	 * those two different documents, and every one of these cases is reachable
-	 * without misuse — an open customer-name question clamps v1's LABEL while
-	 * v1's prose still names the customer, the question is answered "we are not
-	 * naming them" and closed, and the unclamped v2 honestly reports APPROVED.
+	 * those two different documents, and it is reachable without misuse — v1 is
+	 * written while nothing says the work is live, so it reports UNCONFIRMED and
+	 * hedges throughout; the release lands; a regeneration produces a v2 that
+	 * honestly reports SHIPPED. The panel would then read "delivered and in use"
+	 * over an email that carefully says nothing of the kind, and the amber
+	 * banner disappears at the same moment.
 	 */
-	it("qualifies the approval status when the editor holds other text", () => {
+	it("qualifies the release status when the editor holds other text", () => {
 		renderPanel({
 			draft: readyDraft(DOCUMENT, "d2"),
 			working: working({ sourceDraftId: "d1" }),
@@ -723,17 +755,22 @@ describe("CaseStudyPanel — when the notes describe a different version", () =>
 
 		// The status itself still reports v2 — it is not wrong, it is about
 		// something else, and saying which is the whole fix.
-		expect(screen.getByText(/named with approval/i)).toBeInTheDocument();
+		expect(
+			screen.getByText(
+				/the draft says the work is delivered and in use/i,
+			),
+		).toBeInTheDocument();
 		expect(screen.getAllByText(OTHER_VERSION).length).toBeGreaterThan(0);
 	});
 
-	it("qualifies the scaffold banner and the inputs list, not only the status", () => {
-		// Three surfaces, and the scaffold one matters most in the other
-		// direction: when the newer version is NOT a scaffold the amber banner
-		// disappears altogether while the text about to be shared still is one,
-		// so the status qualifier is the only thing left saying so.
+	it("qualifies the unconfirmed banner and the inputs list, not only the status", () => {
+		// Three surfaces. The banner matters most in the other direction: when
+		// the newer version is NOT unconfirmed the amber block disappears
+		// altogether while the text about to be sent was written under an
+		// unknown release state, so the status qualifier is the only thing left
+		// saying so.
 		renderPanel({
-			draft: readyDraft(SCAFFOLD_DOCUMENT, "d2"),
+			draft: readyDraft(UNCONFIRMED_DOCUMENT, "d2"),
 			working: working({ sourceDraftId: "d1" }),
 		});
 
@@ -753,13 +790,13 @@ describe("CaseStudyPanel — when the notes describe a different version", () =>
 	it("stays quiet when there is no saved text for it to be about", () => {
 		// "The version this text was saved from" names nothing when no working
 		// draft exists, so the sentence would be false rather than cautious.
-		renderPanel({ draft: readyDraft(SCAFFOLD_DOCUMENT, "d2") });
+		renderPanel({ draft: readyDraft(UNCONFIRMED_DOCUMENT, "d2") });
 
 		expect(screen.queryByText(OTHER_VERSION)).not.toBeInTheDocument();
 	});
 });
 
-describe("CaseStudyPanel — copying the draft", () => {
+describe("StakeholderEmailPanel — copying the draft", () => {
 	it("copies exactly the text the reader is looking at", async () => {
 		const user = setupWithClipboard(workingClipboard());
 		renderPanel({ draft: readyDraft(DOCUMENT, "d1"), working: working() });
@@ -779,14 +816,14 @@ describe("CaseStudyPanel — copying the draft", () => {
 		// this has to be a decision rather than an oversight, and pinned as one:
 		// the download suite below asserts the caveat block on this very
 		// document. A download becomes a file that travels on its own, where a
-		// copy lands in a buffer whose owner is looking at the scaffold banner
-		// and the approval status right now, and is usually pasted back into an
-		// editor mid-sentence. Text the reader never saw appearing in their
-		// clipboard is its own surprise, and it makes this button's contract —
+		// copy lands in a buffer whose owner is looking at the unconfirmed
+		// banner right now, and is usually pasted straight into a mail client.
+		// Four lines the reader never saw appearing in a message they are about
+		// to send is its own surprise, and it makes this button's contract —
 		// "copies exactly what you are looking at" — false.
 		const user = setupWithClipboard(workingClipboard());
 		renderPanel({
-			draft: readyDraft(SCAFFOLD_DOCUMENT, "d1"),
+			draft: readyDraft(UNCONFIRMED_DOCUMENT, "d1"),
 			working: working(),
 		});
 
@@ -848,16 +885,16 @@ describe("CaseStudyPanel — copying the draft", () => {
 	});
 });
 
-describe("CaseStudyPanel — downloading the draft", () => {
-	it("carries the caveats a scaffold draft cannot show in its body", async () => {
+describe("StakeholderEmailPanel — downloading the draft", () => {
+	it("carries the caveats an unconfirmed draft cannot show in its body", async () => {
 		// The whole reason this panel composes its own export. The safety fields
-		// live OUTSIDE the editable body, so a naive export hands someone a clean
-		// PDF of a draft that is a scaffold, whose customer identity is still
-		// awaiting approval, and that is missing three proof points — at exactly
-		// the moment the draft becomes an email attachment.
+		// live OUTSIDE the editable body, so a naive export hands someone a
+		// clean DOCX of an email whose release state nobody confirmed and that
+		// is missing a fact — at exactly the moment the draft becomes an
+		// attachment that gets forwarded.
 		const user = userEvent.setup();
 		renderPanel({
-			draft: readyDraft(SCAFFOLD_DOCUMENT, "d1"),
+			draft: readyDraft(UNCONFIRMED_DOCUMENT, "d1"),
 			working: working(),
 		});
 
@@ -865,85 +902,12 @@ describe("CaseStudyPanel — downloading the draft", () => {
 
 		const exported = mutate.renderPdf.mock.calls[0][0] as string;
 		expect(exported).toContain("Draft caveats");
-		expect(exported).toContain("scaffold");
-		expect(exported).toContain(
-			"Anonymized — the draft does not name the customer.",
-		);
-		expect(exported).toContain(
-			"Described qualitatively — the draft claims no figures.",
-		);
+		expect(exported).toContain("didn't say whether this has shipped");
+		expect(exported).toContain("the draft doesn't name one");
 		expect(exported).toContain("Generalized the customer reference.");
-		expect(exported).toContain("the architecture diagram");
-		expect(exported).toContain("Adoption numbers for the rollout");
+		expect(exported).toContain("Confirm whether the rollout has completed");
 		// And the draft itself is still in the file, below the caveats.
 		expect(exported).toContain(BODY);
-	});
-
-	it("drops whitespace-only list entries rather than drawing empty bullets", () => {
-		// The reader type-checked list items but did not trim them, so an entry
-		// of spaces survived and drew a bullet with nothing in it — and, since
-		// a non-empty `inputsNeeded` makes a draft count as unclean, printed a
-		// caveat line naming no caveat. The schema now rejects such an entry at
-		// write time; this covers the rows written before it did.
-		renderPanel({
-			draft: readyDraft(
-				{
-					...SCAFFOLD_DOCUMENT,
-					inputsNeeded: ["   ", "Adoption numbers for the rollout"],
-					assetsNeedingConfirmation: [
-						"\t\n",
-						"the architecture diagram",
-					],
-				},
-				"d2",
-			),
-		});
-
-		expect(
-			screen.getByText(/adoption numbers for the rollout/i),
-		).toBeInTheDocument();
-		expect(
-			screen.getByText(/the architecture diagram/i),
-		).toBeInTheDocument();
-		// The real entries survive untouched and the blanks are gone. Asserting
-		// only the survivors would pass on a build that dropped nothing.
-		for (const item of screen.getAllByRole("listitem")) {
-			expect(item.textContent?.trim()).not.toBe("");
-		}
-	});
-
-	it("names the question that lowered a claim, in the file too", async () => {
-		const user = userEvent.setup();
-		renderPanel({
-			draft: readyDraft(CLAMPED_DOCUMENT, "d1"),
-			working: working(),
-		});
-
-		await user.click(screen.getByRole("button", { name: /markdown/i }));
-
-		const blob = mutate.triggerDownload.mock.calls[0][0] as Blob;
-		await expect(blob.text()).resolves.toContain(
-			"Set by Fabric from an open approval thread",
-		);
-	});
-
-	it("caveats a disputed asset still sitting in the cleared list", async () => {
-		// Everything else about this document is clean and the
-		// needs-confirmation list is EMPTY, so an export whose "is this clean"
-		// test read only that list would hand out a caveat-free file with an
-		// asset an open approval thread contradicts presented as cleared.
-		const user = userEvent.setup();
-		renderPanel({
-			draft: readyDraft(CLAMPED_ASSET_ONLY_DOCUMENT, "d1"),
-			working: working({ sourceDraftId: "d1" }),
-		});
-
-		await user.click(screen.getByRole("button", { name: /pdf/i }));
-
-		const exported = mutate.renderPdf.mock.calls[0][0] as string;
-		expect(exported).toContain("Draft caveats");
-		expect(exported).toContain("Moved out of the cleared list by Fabric");
-		expect(exported).toContain("the customer logo");
 	});
 
 	it("exports a clean draft with NO caveat block", async () => {
@@ -959,8 +923,25 @@ describe("CaseStudyPanel — downloading the draft", () => {
 		expect(mutate.renderPdf).toHaveBeenCalledWith(BODY);
 	});
 
+	it("exports a correctly hedged in-progress draft clean too", async () => {
+		// THE line the export draws. Only UNCONFIRMED is uncaveated-unsafe: the
+		// other four release states are carried by the email's own prose, so a
+		// reader of the file learns them from the sentence in front of them.
+		// Caveating all five would put a warning on almost every export and
+		// train the reader past the one that matters.
+		const user = userEvent.setup();
+		renderPanel({
+			draft: readyDraft(IN_PROGRESS_DOCUMENT, "d1"),
+			working: working({ sourceDraftId: "d1" }),
+		});
+
+		await user.click(screen.getByRole("button", { name: /pdf/i }));
+
+		expect(mutate.renderPdf).toHaveBeenCalledWith(BODY);
+	});
+
 	it("says the notes describe a version this text did not come from", async () => {
-		// Attaching the latest version's safety notes to text saved from an
+		// Attaching the latest version's release status to text saved from an
 		// earlier one, silently, is the under-warning the block exists to stop.
 		const user = userEvent.setup();
 		renderPanel({
@@ -984,10 +965,25 @@ describe("CaseStudyPanel — downloading the draft", () => {
 
 		await user.click(screen.getByRole("button", { name: /word/i }));
 
-		expect(mutate.renderDocx).toHaveBeenCalledWith(BODY, DOCUMENT.title);
+		expect(mutate.renderDocx).toHaveBeenCalledWith(BODY, DOCUMENT.subject);
 		expect(mutate.triggerDownload).toHaveBeenCalledWith(
 			expect.anything(),
-			"cutting-release-lead-time-at-example-org.docx",
+			"release-lead-time-is-down-by-half.docx",
+		);
+	});
+
+	it("names the question that is still open, in the file too", async () => {
+		const user = userEvent.setup();
+		renderPanel({
+			draft: readyDraft(UNCONFIRMED_DOCUMENT, "d1"),
+			working: working(),
+		});
+
+		await user.click(screen.getByRole("button", { name: /markdown/i }));
+
+		const blob = mutate.triggerDownload.mock.calls[0][0] as Blob;
+		await expect(blob.text()).resolves.toContain(
+			"Still needed before sending",
 		);
 	});
 
@@ -1008,29 +1004,28 @@ describe("CaseStudyPanel — downloading the draft", () => {
 	});
 });
 
-describe("CaseStudyPanel — what a viewer sees", () => {
-	it("gives a viewer the draft and the approval status, and no controls", () => {
-		// PR2. The status matters MORE to a reader than to an editor: they are
-		// the one likeliest to forward it.
+describe("StakeholderEmailPanel — what a viewer sees", () => {
+	it("gives a viewer the draft and the release status, and no controls", () => {
+		// PR2. The release status matters MORE to a reader than to an editor:
+		// they are the one likeliest to forward it.
 		renderPanel({
-			draft: readyDraft(SCAFFOLD_DOCUMENT, "d2"),
+			draft: readyDraft(UNCONFIRMED_DOCUMENT, "d2"),
 			working: working({ sourceDraftId: "d1" }),
 			canEdit: false,
 		});
 
-		expect(screen.getByText(/scaffold draft/i)).toBeInTheDocument();
 		expect(
-			screen.getByText(
-				/anonymized — the draft does not name the customer/i,
-			),
+			screen.getByText(/release status not confirmed/i),
 		).toBeInTheDocument();
 		expect(
-			screen.getAllByText(/Release lead time fell from days to hours/)
+			screen.getAllByText(/We cut release lead time from days to hours/)
 				.length,
 		).toBeGreaterThan(0);
 
 		expect(
-			screen.queryByRole("textbox", { name: /working case study/i }),
+			screen.queryByRole("textbox", {
+				name: /working stakeholder email/i,
+			}),
 		).not.toBeInTheDocument();
 		expect(
 			screen.queryByRole("button", {

@@ -69,6 +69,18 @@ export const AI_JOB_TYPES = [
 	 * answer.
 	 */
 	"publishing-case-study",
+	/**
+	 * Publishing-suite Stakeholder Email drafting (#1854).
+	 *
+	 * Its own key rather than folded into the case study's, even though both
+	 * arrived in the same phase: an email is the CHEAP one in the family — a
+	 * short output over the same long prompt — and it is the one people run
+	 * repeatedly, once per audience. Sharing a key would average a high
+	 * per-run cost against a high run count and make both numbers meaningless,
+	 * and "which format did the spend go on" is the question this list exists
+	 * to answer.
+	 */
+	"publishing-stakeholder-email",
 	/** Slack channel monitor note summarization. */
 	"slack-channel-monitor",
 	/** Security scanning grouping/review/scan model calls. */
