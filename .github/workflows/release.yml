@@ -15,7 +15,9 @@ jobs:
   release:
     name: Release
     if: github.repository == 'Fabric-Pro/fabric-oss'
-    runs-on: ubuntu-8core
+    # Public repository only, so the standard runner is free; the job builds and
+    # type-checks the nine client packages and finishes in a few minutes.
+    runs-on: ubuntu-latest
     permissions:
       contents: write
       pull-requests: write

@@ -67,12 +67,14 @@ concurrency:
 jobs:
   # Not in the private staging repo: fabric-oss builds this same image from the
   # same tree on the relayed pull request, so running it here only duplicated
-  # 45 minutes of 8-core budget. The guard names fabric-dev rather than
-  # allow-listing fabric-oss so every other copy of this tree still builds.
+  # the build. The guard names fabric-dev rather than allow-listing fabric-oss
+  # so every other copy of this tree still builds. They use the standard
+  # runner: free in the public repository, and the 45-minute timeout leaves
+  # room for the smaller machine anywhere else this tree is built.
   temporal-worker:
     name: build temporal worker image
     if: github.repository != 'Fabric-Pro/fabric-dev'
-    runs-on: ubuntu-8core
+    runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -100,7 +102,7 @@ jobs:
   sandbox-worker:
     name: build sandbox worker image
     if: github.repository != 'Fabric-Pro/fabric-dev'
-    runs-on: ubuntu-8core
+    runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -130,7 +132,7 @@ jobs:
   mcp-stdio-wrapper:
     name: build mcp stdio wrapper image
     if: github.repository != 'Fabric-Pro/fabric-dev'
-    runs-on: ubuntu-8core
+    runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -152,7 +154,7 @@ jobs:
   migration-runner:
     name: build migration runner image
     if: github.repository != 'Fabric-Pro/fabric-dev'
-    runs-on: ubuntu-8core
+    runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -174,7 +176,7 @@ jobs:
   web:
     name: build web image
     if: github.repository != 'Fabric-Pro/fabric-dev'
-    runs-on: ubuntu-8core
+    runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
