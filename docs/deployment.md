@@ -120,7 +120,7 @@ If a GitHub App isn't an option, replace the App-mint step in `release.yml` with
 
 PAT options: **fine-grained** (preferred) scoped to this repo with `Contents: Read and write`, or **classic** with the `repo` scope. Either requires periodic rotation.
 
-The App / PAT secrets are referenced only in the auto-tag chain; `changesets/action` and the rest of the release workflow continue to use the default `GITHUB_TOKEN`.
+The App secrets are referenced twice in `release.yml`: in the auto-tag chain above, and once more before the `changesets/action` step, where a second, PR-scoped token is minted and passed through the action's `github-token` input so that the Version PR commit, the per-package tags and the GitHub releases are all created as the App (the comments in `release.yml` explain why the default `GITHUB_TOKEN` cannot open that PR).
 
 ### Branch cutover (complete)
 

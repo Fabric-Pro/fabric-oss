@@ -18,6 +18,8 @@ This package provides that version. It carries no code: only a `package.json` wi
 3. Generate `CHANGELOG.md` entries here.
 4. Trigger the post-publish auto-tag step in `.github/workflows/release.yml` that pushes a `v<version>` git tag, which in turn fires `deploy-azure-container-apps.yml` for the prod release.
 
+Because the package is `"private": true`, `.changeset/config.json` opts it into versioning explicitly (`"privatePackages": { "version": true, "tag": false }`). Changesets CLI v3 skips private packages by default, which would leave every Version PR without a `fabric-app` bump — and so without a deploy tag — while CI stayed green. `tag: false` keeps changesets from creating `fabric-app@<version>` tags of its own; the `v<version>` deploy tag comes from `release.yml`.
+
 ## How to add a changelog entry
 
 From the repo root, with your PR branch checked out:
