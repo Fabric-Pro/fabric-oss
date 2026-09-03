@@ -174,12 +174,13 @@ jobs:
           # back, a configured token would silently take precedence over the
           # OIDC exchange.
           #
-          # Provenance must stay explicitly OFF while this repo is private:
-          # under trusted publishing npm turns provenance on by default, and
-          # the registry rejects provenance from private source repos (E422
-          # "Only public source repositories are supported"). The value must
-          # be the STRING "false". Flip to "true" at the public cutover.
-          NPM_CONFIG_PROVENANCE: "false"
+          # Provenance is ON: the registry generates a Sigstore attestation for
+          # every publish, tied to this workflow and commit. It requires the
+          # source repository to be PUBLIC — the registry rejects provenance
+          # from private repos with E422 "Only public source repositories are
+          # supported" — so this line lands only once the repository is public.
+          # If the repository ever goes private again, set the STRING "false".
+          NPM_CONFIG_PROVENANCE: "true"
 
       # A fresh repository has no v* tags yet. Tagging merely because the
       # current version has no corresponding tag would therefore publish the
