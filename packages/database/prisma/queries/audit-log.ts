@@ -257,6 +257,32 @@ export const AUDIT_ACTIONS = [
 	// is explicitly "audit" (same forensic bucket as `audit.viewed`) rather than
 	// derived from the action prefix.
 	"userActivity.viewed",
+	// prompt (1) — the platform-wide deletion impact read. `prompts.deletionImpact`
+	// traverses prompt bindings with NO tenant predicate, because a SYSTEM prompt's
+	// versions are bound by organizations and individuals other than the caller's.
+	// It is a GET, so automatic activity capture drops it, which would leave the
+	// only un-scoped cross-tenant read in that module with no trace at all.
+	// `metadata` carries the totals returned — row/binding/organization/personal
+	// override counts and the document types — and, like the read itself, names no
+	// organization and no person. Category is explicitly "audit" (the forensic
+	// bucket shared with `audit.viewed` and `userActivity.viewed`) rather than
+	// derived from the action prefix.
+	"prompt.deletion_impact_viewed",
+	// prompt (1) — a SYSTEM prompt was deleted from the catalogue. The one
+	// action in the prompts module that removes rows belonging to organizations
+	// and individuals other than the caller's, and it takes every SYSTEM row
+	// carrying the key rather than the single row the operator selected.
+	// `metadata` carries what was ACTUALLY removed — derived from the deletion
+	// itself rather than from the pre-flight impact snapshot, which a binding
+	// written in between would have made stale — plus whether the key's
+	// retirement record was written, since that is what stops the next
+	// catalogue seed bringing the prompt back. Like the impact read above it,
+	// the row names no organization and no person. Category is explicitly
+	// "audit" so both halves of one operator decision sit in the same forensic
+	// bucket; an ORG or USER prompt deletion is not recorded here, because it
+	// is an ordinary tenant mutation the automatic activity capture already
+	// covers.
+	"prompt.system_deleted",
 	// mcp (4) — MCP data-source credential-config lifecycle (SOC 2 CC7.2). A
 	// tenant creating/updating/deleting an MCP config manages stored credentials,
 	// so each mutation is recorded in the audit ledger.

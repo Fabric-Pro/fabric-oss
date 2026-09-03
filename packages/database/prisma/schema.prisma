@@ -9655,6 +9655,9 @@ model PromptBinding {
   @@index([targetType, targetKey, documentType, storyKind])
   @@index([scope, userId, organizationId])
   @@index([projectId])
+  // Every access by version: the platform-wide deletion impact read, and the
+  // two binding deletes inside the deletion's advisory-locked transaction.
+  @@index([promptVersionId])
   @@index([isDefault])
   @@map("prompt_binding")
 }
@@ -9842,6 +9845,42 @@ enum PromptNominationStatus {
   WITHDRAWN
   /// Closed because a competing nomination for the same action was approved.
   SUPERSEDED
+}
+
+/// A SYSTEM prompt key that has been deleted through the product and must not
+/// come back (Fizzy #2328, R9).
+///
+/// Two independent seed scripts recreate a missing SYSTEM prompt from its key,
+/// under the name in their arrays rather than the retirement-prefixed name a
+/// deletion left in the database. A retirement is therefore recorded here, and
+/// every path that creates a SYSTEM prompt consults this table first. It is a
+/// KEY-level veto, not a row identity: duplicate SYSTEM keys are legal (the
+/// Prompt unique index spans two nullable owner columns and Postgres treats
+/// NULLs as distinct), so the record vetoes the key rather than one row.
+///
+/// Removing a record is an operator action and the only way a retired prompt
+/// comes back — deliberately not exposed in any UI.
+model RetiredPromptKey {
+  id        String   @id @default(cuid())
+  /// The retired prompt's `key`. Unique, and the write is an upsert, so
+  /// retiring the same key twice refreshes the record rather than failing.
+  key       String   @unique
+  /// When the deletion that retired this key committed. Refreshed by a repeat
+  /// retirement, so it always names the most recent one.
+  retiredAt DateTime @default(now())
+  /// The acting user's id, as a PLAIN STRING with NO relation to `User` — and
+  /// that is load-bearing, not an oversight. Every user relation in this schema
+  /// is `onDelete: Cascade`, so a foreign key here would delete the retirement
+  /// when the administrator who performed it is offboarded, and the next
+  /// catalogue seed would resurrect a prompt somebody deliberately removed. The
+  /// record has to outlive the account that wrote it.
+  retiredBy String
+
+  /// No organizationId, no userId: this table is NOT tenant data. It records a
+  /// platform-level catalogue decision that applies to every tenant equally, so
+  /// it needs no row-level-security policy (and the RLS coverage guard in
+  /// `__tests__/rls-coverage.test.ts` correctly does not ask for one).
+  @@map("retired_prompt_key")
 }
 
 // Prompt Connections (Chains/Workflows)

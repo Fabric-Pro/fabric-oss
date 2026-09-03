@@ -670,6 +670,20 @@ export const AUDIT_ACTIONS: AuditActionEntry[] = [
 		description:
 			"A user opened the User Activity dashboard (org member list or a single member's login history). `metadata.endpoint` distinguishes the two, and `metadata.targetUserId` names the viewed member for the history view.",
 	},
+	{
+		key: "prompt.deletion_impact_viewed",
+		categoryId: "audit",
+		labelKey: "settings.auditLog.actions.prompt.deletion_impact_viewed",
+		description:
+			"A platform administrator previewed what deleting a system prompt would remove, across every tenant on the platform rather than only their own. `metadata` carries the totals they were shown \u2014 how many prompt rows share the key, how many bindings and document types go with them, how many organizations and how many people with a personal override are affected \u2014 and names none of them.",
+	},
+	{
+		key: "prompt.system_deleted",
+		categoryId: "audit",
+		labelKey: "settings.auditLog.actions.prompt.system_deleted",
+		description:
+			"A platform administrator deleted a system prompt. Every prompt row carrying the same key goes together, along with the bindings that hung off their versions in any organization or personal library. `metadata` carries what was actually removed \u2014 not the preview shown beforehand \u2014 and whether the key was recorded as retired, which is what stops a later catalogue seed recreating the prompt.",
+	},
 	// ---- Admin / staff --------------------------------------------------
 	{
 		key: "admin.auditLog.viaApiKey",

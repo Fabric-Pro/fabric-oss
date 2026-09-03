@@ -57,6 +57,8 @@ const prompt = {
 	name: "Test prompt",
 	description: null,
 	scope: "ORG" as const,
+	organizationId: "org-1",
+	userId: null,
 	format: "PLAIN_TEXT" as const,
 	category: null,
 	tags: [],

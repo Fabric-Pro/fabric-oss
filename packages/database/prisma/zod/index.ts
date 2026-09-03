@@ -1132,6 +1132,12 @@ export const PromptNominationScalarFieldEnumSchema = z.enum(['id', 'promptVersio
 
 export type PromptNominationScalarFieldEnum = z.infer<typeof PromptNominationScalarFieldEnumSchema>;
 
+// File: RetiredPromptKeyScalarFieldEnum.schema.ts
+
+export const RetiredPromptKeyScalarFieldEnumSchema = z.enum(['id', 'key', 'retiredAt', 'retiredBy'])
+
+export type RetiredPromptKeyScalarFieldEnum = z.infer<typeof RetiredPromptKeyScalarFieldEnumSchema>;
+
 // File: PromptConnectionScalarFieldEnum.schema.ts
 
 export const PromptConnectionScalarFieldEnumSchema = z.enum(['id', 'sourceId', 'targetId', 'label', 'order', 'createdAt', 'updatedAt', 'organizationId'])
@@ -7617,6 +7623,18 @@ export const PromptNominationSchema = z.object({
 });
 
 export type PromptNominationType = z.infer<typeof PromptNominationSchema>;
+
+
+// File: RetiredPromptKey.schema.ts
+
+export const RetiredPromptKeySchema = z.object({
+  id: z.string(),
+  key: z.string(),
+  retiredAt: z.date(),
+  retiredBy: z.string(),
+});
+
+export type RetiredPromptKeyType = z.infer<typeof RetiredPromptKeySchema>;
 
 
 // File: PromptConnection.schema.ts

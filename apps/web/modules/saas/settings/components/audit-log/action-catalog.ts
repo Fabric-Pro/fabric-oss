@@ -476,6 +476,27 @@ export const ACTION_CATALOG: Record<string, ActionDescriptor> = {
 		"info",
 		"audit",
 	),
+	// A platform operator previewed what deleting a SYSTEM prompt would remove
+	// across every tenant. Forensic bucket, not a "prompt" one: the event is a
+	// privileged READ, like the two above it.
+	"prompt.deletion_impact_viewed": D(
+		"prompt.deletion_impact_viewed",
+		"Prompt deletion impact viewed",
+		Eye,
+		"info",
+		"audit",
+	),
+	// A platform operator deleted a SYSTEM prompt from the catalogue, removing
+	// every row carrying its key along with bindings in other tenants. Warning
+	// severity: it is destructive and cross-tenant, and the only way back is an
+	// operator removing the key's retirement record.
+	"prompt.system_deleted": D(
+		"prompt.system_deleted",
+		"System prompt deleted",
+		Trash2,
+		"warning",
+		"audit",
+	),
 
 	// error (8) — open namespace bridged by automatic capture middleware
 	"error.permission_denied": D(

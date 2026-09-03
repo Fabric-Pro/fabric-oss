@@ -1,5 +1,8 @@
+import { logger } from "@repo/logs";
+import { promptDocumentTypeLabel } from "@repo/utils/prompt-action-catalog";
 import { db, Prisma } from "../client";
 import type { PromptFormat, PromptScope, StoryKind } from "../generated/client";
+import { advisoryObjectKey } from "./lib/refresh-lock-key";
 
 /**
  * Normalize a tag for case-insensitive comparison
@@ -428,7 +431,18 @@ export async function getPromptByKey({
 }
 
 /**
- * Create a new prompt
+ * Create a new prompt.
+ *
+ * A SYSTEM-scope insert goes through {@link insertSystemPromptUnlessRetired}
+ * and is REFUSED when the key carries a retirement record (R9): creating a
+ * prompt under a retired key through the product API would be an unaudited
+ * restore by a different name. The operator path — remove the record, then run
+ * a catalogue seed — stays the only way back.
+ *
+ * ORG and USER scopes are untouched by that guard. A retirement is a statement
+ * about the platform's own catalogue key, and a tenant's own prompt happening
+ * to share the key is nobody else's business (the deletion leaves it alone for
+ * the same reason).
  */
 export async function createPrompt({
 	key,
@@ -459,38 +473,63 @@ export async function createPrompt({
 	initialContent?: string;
 	initialVariables?: any;
 }) {
-	const prompt = await db.prompt.create({
-		data: {
-			key,
-			name,
-			description,
-			scope,
-			userId: scope === "USER" ? userId : null,
-			organizationId: scope === "ORG" ? organizationId : null,
-			format,
-			category,
-			tags,
-			isPublic,
-			createdBy,
-		},
-	});
+	const data = {
+		key,
+		name,
+		description,
+		scope,
+		userId: scope === "USER" ? userId : null,
+		organizationId: scope === "ORG" ? organizationId : null,
+		format,
+		category,
+		tags,
+		isPublic,
+		createdBy,
+	};
 
 	// Create initial version if content provided.
 	// TENANT ISOLATION: version row must mirror parent Prompt's tenancy exactly
 	// (XOR pattern) so version-level access checks and RLS stay consistent.
+	const versionData = (promptId: string, content: string) => ({
+		promptId,
+		version: 1,
+		content,
+		variables: initialVariables ?? {},
+		createdBy,
+		scope,
+		userId: scope === "USER" ? (userId ?? null) : null,
+		organizationId: scope === "ORG" ? (organizationId ?? null) : null,
+	});
+
+	if (scope === "SYSTEM") {
+		// The prompt row and its first version are written INSIDE the guarded
+		// transaction, so a deletion committing mid-create cannot leave a
+		// version orphaned on a row it is about to remove.
+		const prompt = await insertSystemPromptUnlessRetired({
+			key,
+			insert: async (tx) => {
+				const created = await tx.prompt.create({ data });
+				if (initialContent) {
+					await tx.promptVersion.create({
+						data: versionData(created.id, initialContent),
+					});
+				}
+				return created;
+			},
+		});
+
+		if (!prompt) {
+			throw new PromptKeyRetiredError(key);
+		}
+
+		return prompt;
+	}
+
+	const prompt = await db.prompt.create({ data });
+
 	if (initialContent) {
 		await db.promptVersion.create({
-			data: {
-				promptId: prompt.id,
-				version: 1,
-				content: initialContent,
-				variables: initialVariables ?? {},
-				createdBy,
-				scope,
-				userId: scope === "USER" ? (userId ?? null) : null,
-				organizationId:
-					scope === "ORG" ? (organizationId ?? null) : null,
-			},
+			data: versionData(prompt.id, initialContent),
 		});
 	}
 
@@ -533,13 +572,636 @@ export async function updatePrompt({
 	});
 }
 
+// ============================================================================
+// SYSTEM prompt key retirement (Fizzy #2328 — R9, R14, KTD4, KTD5)
+// ============================================================================
+
 /**
- * Delete a prompt
+ * Advisory-lock class id namespacing SYSTEM-prompt key retirement (arbitrary
+ * but stable). A DISTINCT class from `REFRESH_ADVISORY_CLASS` in
+ * `./lib/refresh-lock-key.ts` and from the pipeline-sync class in
+ * `./projects/pipeline-results.ts` — Postgres keeps
+ * `pg_advisory_xact_lock(int4, int4)` id spaces separate per class, so this
+ * domain needs its own rather than accidentally sharing one.
+ *
+ * Deliberately stays in the `(int4, int4)` space the rest of this repo uses
+ * rather than the bigint form: `lib/refresh-lock-key.ts` documents an incident
+ * caused by the same logical lock living in BOTH spaces, where neither ever
+ * blocked the other. The residual risk of the shared 32-bit hash is contention
+ * only — two unrelated keys colliding briefly serialize — never correctness,
+ * because every statement inside the lock still keys off the full prompt key.
+ */
+const PROMPT_KEY_RETIREMENT_ADVISORY_CLASS = 0x50524b52; // "PRKR"
+
+/** How long a deletion may hold the key lock before the transaction gives up.
+ *  Sized above the largest plausible cascade: a SYSTEM prompt's versions can
+ *  carry bindings in every tenant on the platform, and all of them go in this
+ *  one transaction. */
+const PROMPT_DELETE_TRANSACTION_TIMEOUT_MS = 60_000;
+/** How long to wait for a POOL CONNECTION, before the transaction opens.
+ *  Prisma's `maxWait` bounds acquiring the transaction and nothing that
+ *  happens inside it — the key lock is taken in the transaction body, so this
+ *  number says nothing about waiting for it (see
+ *  {@link PROMPT_CREATE_LOCK_TIMEOUT_MS}, which does). */
+const PROMPT_DELETE_MAX_WAIT_MS = 10_000;
+
+/**
+ * Take the per-key retirement lock inside an already-open transaction.
+ *
+ * The deletion takes it before it reads anything, and every path that CREATES a
+ * SYSTEM prompt takes the same lock before its own insert (U5). That is what
+ * stops a creator reading "not retired", losing the race to a deletion, and
+ * then inserting on a decision that is already stale.
+ *
+ * MUST use `$executeRaw`, not `$queryRaw`: `pg_advisory_xact_lock()` returns
+ * `void`, which the Postgres driver adapter's `$queryRaw` cannot deserialize
+ * ("Failed to deserialize column of type 'void'"). Mirrors `withRefreshLock`
+ * in `./lib/refresh-lock.ts`, where that throw silently aborted every token
+ * refresh.
+ */
+export async function acquirePromptKeyRetirementLock(
+	tx: Prisma.TransactionClient,
+	key: string,
+): Promise<void> {
+	await tx.$executeRaw`SELECT pg_advisory_xact_lock(${PROMPT_KEY_RETIREMENT_ADVISORY_CLASS}::int, ${advisoryObjectKey(key)}::int)`;
+}
+
+/**
+ * Did the database tell us `retired_prompt_key` does not exist?
+ *
+ * A seed run against a database that predates this table's migration must
+ * degrade to "nothing is retired" rather than throw: the ordered seed runner
+ * (`scripts/deploy-seeds.ts`) aborts every later entry when one fails, so a
+ * missing table would take the whole catalogue down instead of one guard.
+ */
+function isMissingRetirementTable(error: unknown): boolean {
+	const code = (error as { code?: unknown } | null | undefined)?.code;
+	// P2021 is Prisma's own "table does not exist in the current database".
+	// 42P01 is Postgres' `undefined_table` SQLSTATE, which is what surfaces
+	// when the driver adapter passes the database's error through untranslated.
+	if (code === "P2021" || code === "42P01") {
+		return true;
+	}
+	const message = error instanceof Error ? error.message : "";
+	return message.includes("retired_prompt_key") && message.includes("exist");
+}
+
+/**
+ * Which of these prompt keys have been retired.
+ *
+ * ONE query for the whole set, never one per prompt: both seeds walk an array
+ * of dozens of catalogue entries, and a per-entry lookup would turn a single
+ * round trip into dozens on every deploy. Callers pass the keys they are about
+ * to consider and read the answer out of the returned set.
+ *
+ * Pass no argument to read every retirement (operator tooling, tests).
+ *
+ * TOLERATES THE TABLE NOT EXISTING. See {@link isMissingRetirementTable}: a
+ * database that predates the migration logs a warning and reports "nothing is
+ * retired", which is the pre-change behaviour, rather than failing the seed and
+ * taking every later seed entry with it. The warning is the detection signal —
+ * a key that stops being skipped between two runs means either the migration is
+ * missing or a record was removed.
+ */
+export async function getRetiredPromptKeys(
+	keys?: string[],
+): Promise<Set<string>> {
+	if (keys && keys.length === 0) {
+		return new Set();
+	}
+
+	try {
+		const rows = await db.retiredPromptKey.findMany({
+			where: keys ? { key: { in: keys } } : undefined,
+			select: { key: true },
+		});
+		return new Set(rows.map((row) => row.key));
+	} catch (error) {
+		if (isMissingRetirementTable(error)) {
+			logger.warn(
+				"[prompts] retired_prompt_key is missing — treating every key as not retired. Run the pending migration before the next catalogue seed.",
+				{
+					error:
+						error instanceof Error ? error.message : String(error),
+				},
+			);
+			return new Set();
+		}
+		throw error;
+	}
+}
+
+/**
+ * Record that a SYSTEM prompt key has been retired.
+ *
+ * An UPSERT keyed by `key`, so retiring the same key twice refreshes the record
+ * rather than failing on the unique index — which is what happens whenever a
+ * duplicate SYSTEM row is created after a retirement and then deleted again.
+ *
+ * `client` exists so the deletion can pass its own transaction: a retirement
+ * that commits apart from the deletion (or the other way round) is the exact
+ * failure this record exists to prevent — a prompt deleted with no record is
+ * silently resurrectable, and a record with no deletion vetoes a live prompt.
+ */
+export async function recordPromptKeyRetirement({
+	key,
+	retiredBy,
+	client = db,
+}: {
+	key: string;
+	retiredBy: string;
+	client?: Prisma.TransactionClient;
+}) {
+	return client.retiredPromptKey.upsert({
+		where: { key },
+		create: { key, retiredBy },
+		update: { retiredBy, retiredAt: new Date() },
+	});
+}
+
+/**
+ * A creation was refused because the key is recorded as retired (R9).
+ *
+ * Carries a stable `code` because that is how the procedures in this module
+ * classify a database failure — see the `P2025` duck-typing in
+ * `packages/api/modules/prompts/procedures/delete.ts`. The handler never
+ * imports this class, so a test can hand it a plain object carrying the code
+ * and the refusal survives module mocking.
+ */
+export class PromptKeyRetiredError extends Error {
+	readonly code = "PROMPT_KEY_RETIRED";
+	readonly promptKey: string;
+
+	constructor(key: string) {
+		super(
+			`The prompt key "${key}" is recorded as retired; creating it again would undo a deliberate deletion.`,
+		);
+		this.name = "PromptKeyRetiredError";
+		this.promptKey = key;
+	}
+}
+
+/**
+ * A SYSTEM deletion was refused because `retired_prompt_key` is not there to
+ * record it (R9).
+ *
+ * The read paths degrade to "nothing is retired" when the table is missing, and
+ * that is right for them: the worst case is a prompt that could have been
+ * skipped getting seeded. A DELETION cannot degrade the same way. Removing the
+ * rows without the record produces precisely the state the record exists to
+ * prevent — a prompt the next catalogue seed puts back under its seed name,
+ * with nothing anywhere saying it was deliberately retired.
+ *
+ * Carries a stable `code` for the same reason {@link PromptKeyRetiredError}
+ * does: the delete procedure duck-types on codes (`P2025`, and this) rather
+ * than importing error classes, so the classification survives module mocking.
+ */
+export class PromptRetirementUnavailableError extends Error {
+	readonly code = "PROMPT_RETIREMENT_UNAVAILABLE";
+	readonly promptKey: string;
+
+	constructor(key: string) {
+		super(
+			`The prompt key "${key}" cannot be retired: retired_prompt_key does not exist in this database. Run the pending migration, then delete again.`,
+		);
+		this.name = "PromptRetirementUnavailableError";
+		this.promptKey = key;
+	}
+}
+
+/** How long a guarded creation may hold the key lock. Far below the deletion's
+ *  budget: a creation writes two rows, while a deletion cascades through every
+ *  binding on the platform. What it mostly waits for is a deletion in flight,
+ *  and the ceiling is deliberately lower than that deletion's — a creation that
+ *  waited the full cascade would hold a request open for a minute to be told
+ *  the key is now retired. It fails instead, and the retry gets the refusal. */
+const PROMPT_CREATE_TRANSACTION_TIMEOUT_MS = 15_000;
+/** How long to wait for a POOL CONNECTION, before the transaction opens.
+ *  Prisma's `maxWait` bounds acquiring the transaction and nothing that
+ *  happens inside it. */
+const PROMPT_CREATE_MAX_WAIT_MS = 10_000;
+/** How long a creation may WAIT FOR THE KEY LOCK, applied inside the
+ *  transaction because nothing outside it can bound a statement in its body.
+ *  Without this the wait is bounded only by the transaction budget — and
+ *  arguably not even by that, since the connection stays pinned to Postgres
+ *  until the lock is granted whatever the client has given up on. A deletion
+ *  can hold the key for a minute, so creations arriving behind one would each
+ *  pin a pool connection for the whole cascade. Sized well inside the creation
+ *  budget so contention surfaces as a prompt, catchable failure (SQLSTATE
+ *  55P03) and the retry gets a real answer — usually the refusal, because what
+ *  a creation mostly waits behind is the deletion that retires its key. */
+const PROMPT_CREATE_LOCK_TIMEOUT_MS = 5_000;
+
+/**
+ * Does `retired_prompt_key` exist, asked from INSIDE an open transaction?
+ *
+ * A PROBE rather than a try/catch, and that is load-bearing. Querying a table
+ * that does not exist raises inside the transaction, and Postgres then refuses
+ * every later statement in it ("current transaction is aborted") — so the
+ * tolerate-a-missing-table degradation {@link getRetiredPromptKeys} performs
+ * with a try/catch cannot be written that way in here: catching the error would
+ * leave a transaction that can no longer write anything. `to_regclass` returns
+ * NULL for an absent relation instead of raising, so this is safe to run before
+ * the table is guaranteed to exist. Unqualified on purpose, so it resolves
+ * against the same `search_path` the rest of the client uses.
+ *
+ * The two callers do OPPOSITE things with the answer, and both are right: a
+ * creation carries on unguarded (a database that predates the migration behaves
+ * as it did before), while a deletion refuses outright, because a SYSTEM
+ * deletion whose record cannot be written is exactly the silently-resurrectable
+ * prompt the record exists to prevent.
+ */
+async function retirementTableExists(
+	tx: Prisma.TransactionClient,
+): Promise<boolean> {
+	const probe = await tx.$queryRaw<{ present: boolean }[]>`
+		SELECT to_regclass('retired_prompt_key') IS NOT NULL AS present
+	`;
+
+	return probe[0]?.present === true;
+}
+
+/**
+ * Is this key retired, asked from INSIDE an open transaction?
+ *
+ * Deliberately not {@link getRetiredPromptKeys}: that one reads through the
+ * top-level client, so its answer is taken outside whatever transaction the
+ * caller is in and can go stale before the insert lands. This one reads under
+ * the caller's advisory lock, which is what makes the decision and the insert
+ * one atomic step.
+ *
+ * PROBES THE CATALOG FIRST — see {@link retirementTableExists} for why that
+ * ordering cannot be replaced by a try/catch.
+ */
+async function isPromptKeyRetiredWithin(
+	tx: Prisma.TransactionClient,
+	key: string,
+): Promise<boolean> {
+	if (!(await retirementTableExists(tx))) {
+		logger.warn(
+			"[prompts] retired_prompt_key is missing — creating without the retirement guard. Run the pending migration before the next catalogue seed.",
+			{ key },
+		);
+		return false;
+	}
+
+	const record = await tx.retiredPromptKey.findUnique({
+		where: { key },
+		select: { key: true },
+	});
+
+	return record !== null;
+}
+
+/**
+ * Insert a SYSTEM prompt unless its key has been retired — the ONE creation
+ * boundary every SYSTEM-scope insert goes through (R9, KTD5).
+ *
+ * Returns `null` when the key is recorded, having written nothing. A seed turns
+ * that into a logged skip and carries on with the rest of the catalogue;
+ * `createPrompt` turns it into a {@link PromptKeyRetiredError} for the product
+ * API. Neither decides for itself whether the key is retired.
+ *
+ * THE CHECK AND THE INSERT SHARE ONE TRANSACTION, serialized per key by the
+ * same advisory lock the deletion takes. A read followed by an insert would be
+ * a decision made on state that can change in between: a deletion committing in
+ * that window leaves the caller inserting a prompt whose retirement is already
+ * recorded, which is exactly the resurrection this guard exists to prevent.
+ * A caller may pre-filter with {@link getRetiredPromptKeys} to avoid opening a
+ * transaction per catalogue entry — the seeds do — but that read is an
+ * optimization, never the decision.
+ *
+ * The callback receives the transaction client and MUST write through it.
+ */
+export async function insertSystemPromptUnlessRetired<T>({
+	key,
+	insert,
+}: {
+	key: string;
+	insert: (tx: Prisma.TransactionClient) => Promise<T>;
+}): Promise<T | null> {
+	return db.$transaction(
+		async (tx) => {
+			// Bound the wait for the key lock BEFORE asking for it. Nothing
+			// outside the transaction can do this: `maxWait` is spent by the
+			// time this callback runs. `set_config(..., true)` is `SET LOCAL`
+			// in a form that takes a bind parameter — the utility statement
+			// does not — so it dies with this transaction and no value is ever
+			// interpolated into SQL.
+			await tx.$executeRaw`SELECT set_config('lock_timeout', ${`${PROMPT_CREATE_LOCK_TIMEOUT_MS}ms`}, true)`;
+
+			await acquirePromptKeyRetirementLock(tx, key);
+
+			if (await isPromptKeyRetiredWithin(tx, key)) {
+				return null;
+			}
+
+			return insert(tx);
+		},
+		{
+			timeout: PROMPT_CREATE_TRANSACTION_TIMEOUT_MS,
+			maxWait: PROMPT_CREATE_MAX_WAIT_MS,
+		},
+	);
+}
+
+/**
+ * What a deletion actually removed — not what a pre-flight snapshot predicted
+ * it would (R15).
+ *
+ * Field names mirror {@link PlatformWidePromptDeletionImpact} on purpose: the
+ * confirmation dialog and the completion message describe the same quantities,
+ * so one formatter serves both and a reader can compare the two figures
+ * directly when a binding was written between them.
+ */
+export type PromptDeletionResult = {
+	/** The deleted prompt's key — the key a retirement record now carries. */
+	promptKey: string;
+	/** The deleted prompt's scope, so a caller can report a SYSTEM retirement
+	 *  differently from an ordinary tenant deletion. */
+	scope: PromptScope;
+	/** Prompt rows removed. More than one only for SYSTEM, where every row
+	 *  carrying the key goes together (R14). */
+	promptRowCount: number;
+	/** Bindings removed, of every target type, in every tenant. Derived from
+	 *  the deletion itself, so a binding written after the pre-flight snapshot
+	 *  is in this number. */
+	bindingCount: number;
+	/** Distinct organizations that lost at least one binding. */
+	organizationCount: number;
+	/** Distinct PEOPLE who lost a personal override. */
+	personalOverrideUserCount: number;
+	/** De-duplicated, sorted, already humanized for display. */
+	documentTypeLabels: string[];
+	/** True when a retirement record was written — SYSTEM deletions only. */
+	retirementRecorded: boolean;
+};
+
+/**
+ * The error a caller maps to "this prompt has already been deleted".
+ *
+ * Raised with Prisma's own `P2025` code rather than a bespoke class so the
+ * procedure above has ONE not-found shape to handle: the single-row delete
+ * raises `P2025` by itself, and the multi-row SYSTEM path — which removes zero
+ * rows SILENTLY rather than raising anything — raises the same thing through
+ * the in-transaction recheck. Without that, "somebody deleted it a moment ago"
+ * would surface as an internal error on one path and a cheerful success on the
+ * other (R11).
+ */
+function promptAlreadyDeleted(id: string): Error {
+	return new Prisma.PrismaClientKnownRequestError(
+		`Prompt ${id} no longer exists`,
+		{ code: "P2025", clientVersion: "n/a" },
+	);
+}
+
+/**
+ * Split prompt bindings into the three figures an operator is shown.
+ *
+ * Identifiers are gathered to be COUNTED and then dropped; none of these sets
+ * leaves this function.
+ *
+ * No organization leaves two cases, and they are not the same thing. A row with
+ * a userId is one person's own override (bind.ts writes USER bindings with the
+ * caller's id and no organization). A row with neither is the platform's OWN
+ * SYSTEM-tier binding — the one both seeds create for every seeded prompt.
+ * Folding those into the personal figure would tell an operator that people hold
+ * overrides they have never set. Both stay in the binding total; only the first
+ * is a person.
+ *
+ * Shared by the pre-flight impact read and the deletion itself so the two can
+ * never disagree about what a binding means.
+ */
+function tallyBindingImpact(
+	bindings: {
+		documentType: string;
+		organizationId: string | null;
+		userId: string | null;
+	}[],
+): {
+	organizationCount: number;
+	personalOverrideUserCount: number;
+	documentTypeLabels: string[];
+} {
+	const organizationIds = new Set<string>();
+	const overrideUserIds = new Set<string>();
+	const documentTypeLabels = new Set<string>();
+
+	for (const binding of bindings) {
+		documentTypeLabels.add(promptDocumentTypeLabel(binding.documentType));
+
+		if (binding.organizationId) {
+			organizationIds.add(binding.organizationId);
+			continue;
+		}
+
+		if (binding.userId) {
+			overrideUserIds.add(binding.userId);
+		}
+	}
+
+	return {
+		organizationCount: organizationIds.size,
+		personalOverrideUserCount: overrideUserIds.size,
+		documentTypeLabels: [...documentTypeLabels].sort(),
+	};
+}
+
+/**
+ * Delete a prompt, and for a SYSTEM prompt record that its key is retired.
  *
  * Authorization is enforced by the delete procedure before calling this.
+ *
+ * ONE TRANSACTION, in this order:
+ *
+ *  1. Take the per-key advisory lock, so a creation of the same key cannot
+ *     interleave with this deletion (KTD5). U5 takes the same lock on the
+ *     creation side; the two are useless apart.
+ *  2. Re-read the selected row INSIDE the transaction. The SYSTEM path deletes
+ *     by key, and a multi-row delete that matches nothing removes zero rows
+ *     silently instead of raising not-found — so without this recheck a
+ *     deletion of an already-deleted prompt would report success. The recheck
+ *     is what makes that outcome reportable (R11).
+ *  3. Lock the versions the bindings hang off (FOR UPDATE), so no other
+ *     session can commit a binding against them while this runs — an insert
+ *     takes FOR KEY SHARE on the version it references, and that conflicts.
+ *     The window this closes is narrow and one-directional: a binding written
+ *     after the delete below is cascaded away by the version delete, removed
+ *     and unreportable.
+ *  4. Delete the bindings EXPLICITLY, twice, and take every figure from those
+ *     deletions' own RETURNING rows. A count taken before the delete would miss
+ *     a binding inserted in between — the report has to be an account of what
+ *     happened, not a prediction that preceded it (R15). The second delete
+ *     catches anything attached to a version created after the lock, and
+ *     RETURNS it rather than counting it, so the organization, personal-override
+ *     and document-type figures cover the same rows the total does.
+ *  5. Delete the versions and the prompt rows, and for SYSTEM write the
+ *     retirement record ONCE. A deletion that commits without its record is
+ *     silently resurrectable by the next catalogue seed, which is why the two
+ *     share a transaction rather than being two statements in a row — and why a
+ *     SYSTEM deletion is refused outright when the record's table is missing.
+ *
+ * SCOPE DECIDES HOW MANY ROWS, NOT WHICH TABLES. A SYSTEM deletion takes every
+ * SYSTEM row carrying the key — duplicate SYSTEM keys are legal, the unique
+ * index spans two nullable owner columns and Postgres treats NULLs as distinct,
+ * and resolution takes the first match, so leaving a survivor would be a
+ * deletion that is reported, recorded and ineffective (R14). An ORG or USER
+ * deletion takes exactly the row it was given. Prompts at another scope that
+ * happen to share the key are never touched, and only SYSTEM writes a record.
  */
-export async function deletePrompt(id: string) {
-	return db.prompt.delete({ where: { id } });
+export async function deletePrompt({
+	id,
+	deletedBy,
+}: {
+	id: string;
+	deletedBy: string;
+}): Promise<PromptDeletionResult> {
+	// Read the key OUTSIDE the transaction only to address the lock — every
+	// decision below is re-made inside it, against rows read under the lock.
+	const selected = await db.prompt.findUnique({
+		where: { id },
+		select: { id: true, key: true },
+	});
+
+	if (!selected) {
+		throw promptAlreadyDeleted(id);
+	}
+
+	return db.$transaction(
+		async (tx) => {
+			// 1. Serialize against every creation of this key (KTD5).
+			await acquirePromptKeyRetirementLock(tx, selected.key);
+
+			// 2. Whatever we read before the lock may be gone by now.
+			const prompt = await tx.prompt.findUnique({
+				where: { id },
+				select: { id: true, key: true, scope: true },
+			});
+
+			if (!prompt) {
+				throw promptAlreadyDeleted(id);
+			}
+
+			const isSystem = prompt.scope === "SYSTEM";
+
+			// A SYSTEM key can name several rows; every other scope names one.
+			const promptIds = isSystem
+				? (
+						await tx.prompt.findMany({
+							where: { key: prompt.key, scope: "SYSTEM" },
+							select: { id: true },
+						})
+					).map((row) => row.id)
+				: [prompt.id];
+
+			// A SYSTEM deletion that cannot record its retirement is refused,
+			// and refused HERE — before the locks and the cascade — so a
+			// database missing the table costs one probe rather than a full
+			// deletion that is then rolled back. The read paths tolerate the
+			// table being absent; this path cannot, because rows removed
+			// without a record are exactly the silently-resurrectable prompt
+			// the record exists to prevent. Probed rather than caught: see
+			// `retirementTableExists` for why a try/catch is not available
+			// inside a transaction.
+			if (isSystem && !(await retirementTableExists(tx))) {
+				throw new PromptRetirementUnavailableError(prompt.key);
+			}
+
+			// 3. Shut the door before removing anything. Inserting a
+			// prompt_binding takes FOR KEY SHARE on the prompt_version row
+			// its foreign key names, and FOR KEY SHARE conflicts with FOR
+			// UPDATE — so from here on no other session can COMMIT a new
+			// binding against a version this transaction is about to
+			// delete. Without it, a binding inserted between the delete
+			// below and the version delete is cascaded away by that version
+			// delete: removed, and gone before any statement here could
+			// have seen it.
+			await tx.$queryRaw<{ id: string }[]>`
+				SELECT "id" FROM "prompt_version"
+				WHERE "promptId" IN (${Prisma.join(promptIds)})
+				FOR UPDATE
+			`;
+
+			// 4. The bindings, removed and counted in the same statement.
+			// `deleteMany` reports only a count, and a count cannot say which
+			// organizations lost a default — so this is raw SQL with RETURNING
+			// rather than a read followed by a delete.
+			const removed = await tx.$queryRaw<
+				{
+					documentType: string;
+					organizationId: string | null;
+					userId: string | null;
+				}[]
+			>`
+				DELETE FROM "prompt_binding"
+				WHERE "promptVersionId" IN (
+					SELECT "id" FROM "prompt_version"
+					WHERE "promptId" IN (${Prisma.join(promptIds)})
+				)
+				RETURNING "documentType", "organizationId", "userId"
+			`;
+
+			// The lock above covers the versions that EXISTED when it was
+			// taken; a version created after it is outside it and can still
+			// gain a binding. So sweep again — and sweep with a DELETE that
+			// RETURNS, never a count. A count would raise `bindingCount`
+			// while `organizationCount`, `personalOverrideUserCount` and
+			// `documentTypeLabels` went on describing the first batch alone:
+			// "1 binding removed, affecting 0 organizations", for a deletion
+			// that has just taken an organization's default away. Both
+			// batches feed ONE tally below, so all four figures describe the
+			// same set of rows (R15).
+			const stragglers = await tx.$queryRaw<
+				{
+					documentType: string;
+					organizationId: string | null;
+					userId: string | null;
+				}[]
+			>`
+				DELETE FROM "prompt_binding"
+				WHERE "promptVersionId" IN (
+					SELECT "id" FROM "prompt_version"
+					WHERE "promptId" IN (${Prisma.join(promptIds)})
+				)
+				RETURNING "documentType", "organizationId", "userId"
+			`;
+
+			const removedBindings = [...removed, ...stragglers];
+			const tally = tallyBindingImpact(removedBindings);
+
+			// 5. The versions, then the prompt rows themselves.
+			await tx.promptVersion.deleteMany({
+				where: { promptId: { in: promptIds } },
+			});
+
+			const { count: promptRowCount } = await tx.prompt.deleteMany({
+				where: { id: { in: promptIds } },
+			});
+
+			if (isSystem) {
+				await recordPromptKeyRetirement({
+					key: prompt.key,
+					retiredBy: deletedBy,
+					client: tx,
+				});
+			}
+
+			return {
+				promptKey: prompt.key,
+				scope: prompt.scope,
+				promptRowCount,
+				bindingCount: removedBindings.length,
+				organizationCount: tally.organizationCount,
+				personalOverrideUserCount: tally.personalOverrideUserCount,
+				documentTypeLabels: tally.documentTypeLabels,
+				retirementRecorded: isSystem,
+			};
+		},
+		{
+			timeout: PROMPT_DELETE_TRANSACTION_TIMEOUT_MS,
+			maxWait: PROMPT_DELETE_MAX_WAIT_MS,
+		},
+	);
 }
 
 /**
@@ -1226,6 +1888,111 @@ export async function listActionsForPrompt({
 		scope: b.scope as "SYSTEM" | "ORG" | "USER",
 		isDefault: b.isDefault,
 	}));
+}
+
+/**
+ * What deleting a SYSTEM prompt would take with it, counted across the whole
+ * platform (Fizzy #2328, R5/R6).
+ */
+export type PlatformWidePromptDeletionImpact = {
+	/** How many prompt rows carry the key and would be removed together (R14). */
+	promptRowCount: number;
+	/** Every binding the cascade would remove, of every target type, in every
+	 *  tenant — including the personal overrides counted separately below. */
+	bindingCount: number;
+	/** Distinct organizations losing at least one binding. Never includes a
+	 *  binding that has no organization. */
+	organizationCount: number;
+	/** Distinct PEOPLE losing a personal override, not the number of override
+	 *  rows: one person can override the same prompt for several actions. */
+	personalOverrideUserCount: number;
+	/** De-duplicated, sorted, already humanized for display. */
+	documentTypeLabels: string[];
+};
+
+/**
+ * Everything a prompt deletion would remove, across every tenant on the
+ * platform.
+ *
+ * UNSCOPED ON PURPOSE — there is no tenant predicate anywhere below. A SYSTEM
+ * prompt's versions can be bound by any organization and by any individual, so
+ * an impact built from the ordinary tenant-scoped read would report zero while
+ * the cascade removed several. That makes reading this a privileged act:
+ * CALL IT ONLY BEHIND THE SAME AUTHORITY THE DELETION ITSELF REQUIRES, never
+ * from an ordinary tenant-facing procedure.
+ *
+ * It mirrors `listActionsForPrompt` above and departs from it exactly twice,
+ * both deliberately: no scope/tenant condition, and no `targetType: "AGENT"`
+ * filter. The cascade removes bindings of EVERY target type, so an impact
+ * counting only AGENT rows would understate the thing it exists to warn about.
+ *
+ * Duplicate SYSTEM keys are legal — the unique index spans two nullable owner
+ * columns and Postgres treats NULLs as distinct, which is why every lookup by
+ * key uses `findFirst`. Resolution takes the first row matching a key, so a
+ * deletion has to take every SYSTEM row carrying it or a survivor keeps
+ * answering that key. The impact is therefore computed over that whole set,
+ * and reports `promptRowCount` so the confirmation can say how many rows are
+ * going (R14).
+ *
+ * Returns counts and display labels only: no organization id, no user id,
+ * nothing that lets the caller name a tenant or a person.
+ *
+ * RLS: `prompt_binding` carries no row-level-security policy yet — it is listed
+ * as a latent-RLS backfill in `__tests__/rls-coverage.test.ts`. When RLS
+ * activates on that table this read will start being filtered and will
+ * under-report exactly the cross-tenant rows it exists to surface, so it will
+ * need an explicit bypass (a privileged connection) or a recorded exemption at
+ * that point. Whoever activates RLS there: this is the call site to fix.
+ *
+ * The figures are a SNAPSHOT. A binding written between this read and the
+ * deletion is not in them, which is why the deletion reports its own totals
+ * rather than replaying these (R15).
+ *
+ * Returns null when no prompt carries the id, so a caller can report not-found
+ * rather than an empty impact.
+ */
+export async function getPlatformWidePromptDeletionImpact({
+	promptId,
+}: {
+	promptId: string;
+}): Promise<PlatformWidePromptDeletionImpact | null> {
+	const prompt = await db.prompt.findUnique({
+		where: { id: promptId },
+		select: { id: true, key: true, scope: true },
+	});
+	if (!prompt) {
+		return null;
+	}
+
+	// A SYSTEM deletion takes every SYSTEM row carrying the key (R14). Any
+	// other scope owns exactly one row: its key is unique within its owner.
+	const promptIds =
+		prompt.scope === "SYSTEM"
+			? (
+					await db.prompt.findMany({
+						where: { key: prompt.key, scope: "SYSTEM" },
+						select: { id: true },
+					})
+				).map((row) => row.id)
+			: [prompt.id];
+
+	// Bindings hang off VERSIONS, and a binding may point at any version, not
+	// just the newest — so the question is asked of the prompt ids, never of a
+	// version. No targetType filter, no tenant filter: see the doc-comment.
+	const bindings = await db.promptBinding.findMany({
+		where: { promptVersion: { promptId: { in: promptIds } } },
+		select: { documentType: true, organizationId: true, userId: true },
+	});
+
+	const tally = tallyBindingImpact(bindings);
+
+	return {
+		promptRowCount: promptIds.length,
+		bindingCount: bindings.length,
+		organizationCount: tally.organizationCount,
+		personalOverrideUserCount: tally.personalOverrideUserCount,
+		documentTypeLabels: tally.documentTypeLabels,
+	};
 }
 
 /**

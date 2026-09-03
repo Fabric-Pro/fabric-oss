@@ -326,16 +326,13 @@ export function PromptsList({ organizationId }: Props) {
 							{prompts.map((prompt) => (
 								<PromptCard
 									key={prompt.id}
-									prompt={prompt as any}
+									prompt={prompt}
 									onUpdate={refetch}
 								/>
 							))}
 						</div>
 					) : (
-						<PromptsListView
-							prompts={prompts as any}
-							onUpdate={refetch}
-						/>
+						<PromptsListView prompts={prompts} onUpdate={refetch} />
 					)}
 				</TabsContent>
 

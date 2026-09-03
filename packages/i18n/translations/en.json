@@ -1494,6 +1494,10 @@
 				"userActivity": {
 					"viewed": "User activity viewed"
 				},
+				"prompt": {
+					"deletion_impact_viewed": "Prompt deletion impact viewed",
+					"system_deleted": "System prompt deleted"
+				},
 				"admin": {
 					"auditLog": {
 						"viaApiKey": "Customer audit log queried (staff)"

@@ -24,6 +24,13 @@ import {
 	PUBLISHING_STAKEHOLDER_EMAIL_FALLBACK_BODY,
 } from "@repo/utils/publishing-stakeholder-email-prompt";
 import { db } from "../prisma/client";
+import { isDirectRun } from "./lib/is-direct-run";
+// The retirement guard every SYSTEM-scope insert goes through, and the batched
+// lookup that keeps the skip decision to one query per run (Fizzy #2328, R9).
+import {
+	getRetiredPromptKeys,
+	insertSystemPromptUnlessRetired,
+} from "./queries/prompts";
 import type { StoryKind } from "./zod";
 
 /**
@@ -5998,48 +6005,98 @@ Rules:
 	},
 ];
 
-async function seedSystemPrompts() {
+/**
+ * Walk the catalogue and create what is missing.
+ *
+ * EXPORTED so the retirement skip is a behavioural assertion rather than a
+ * source-reading one; the top-level invocation below still runs the seed for a
+ * direct `tsx` run. The array itself stays exactly where it is — a pinned test
+ * (`__tests__/seed-prompts/feature-placeholder.test.ts`) reads this file's
+ * source and asserts specific entries are still present.
+ */
+export async function seedSystemPrompts() {
 	logger.info("Seeding System Prompts...");
 
 	let created = 0;
 	let versionsCreated = 0;
 	let bindingsCreated = 0;
+	let skippedRetired = 0;
+
+	// ONE query for the whole catalogue, not one per entry (R9). This is a
+	// pre-filter that saves opening a transaction per retired key and gives the
+	// operator a log line; the decision that actually binds is re-made inside
+	// `insertSystemPromptUnlessRetired`, under the per-key lock.
+	const retiredKeys = await getRetiredPromptKeys(
+		SYSTEM_PROMPTS.map((p) => p.key),
+	);
 
 	for (const p of SYSTEM_PROMPTS) {
 		const existing = await db.prompt.findFirst({
 			where: { key: p.key, scope: "SYSTEM" as any },
 		});
+
+		// INSERT-ONLY, AND THE GUARD ONLY GATES THE INSERT. An existing row is
+		// left alone whether or not its key is recorded: a retirement vetoes
+		// re-creating a prompt, it does not delete one somebody has since put
+		// back deliberately.
+		if (!existing && retiredKeys.has(p.key)) {
+			logger.warn(
+				`  Skipping ${p.key}: its key is recorded as retired. Remove the retired_prompt_key record first if this prompt is meant to come back.`,
+			);
+			skippedRetired++;
+			continue;
+		}
+
 		let promptId: string;
 		if (existing) {
 			promptId = existing.id;
 		} else {
-			const createdPrompt = await db.prompt.create({
-				data: {
-					key: p.key,
-					name: p.name,
-					description: p.description,
-					scope: "SYSTEM" as any,
-					format: p.format || "MARKDOWN",
-					// promptType / structuredFormat are optional — only set when
-					// the seed entry declares them (e.g., story_title_generator
-					// emits STRUCTURED/JSON; classic MARKDOWN prompts leave both
-					// at the schema default per insert-only contract).
-					...((p as { promptType?: string }).promptType
-						? { promptType: (p as { promptType: any }).promptType }
-						: {}),
-					...((p as { structuredFormat?: string }).structuredFormat
-						? {
-								structuredFormat: (
-									p as { structuredFormat: any }
-								).structuredFormat,
-							}
-						: {}),
-					category: p.category,
-					tags: p.tags || [],
-					isPublic: p.isPublic || false,
-					createdBy: "system",
-				},
+			const createdPrompt = await insertSystemPromptUnlessRetired({
+				key: p.key,
+				insert: (tx) =>
+					tx.prompt.create({
+						data: {
+							key: p.key,
+							name: p.name,
+							description: p.description,
+							scope: "SYSTEM" as any,
+							format: p.format || "MARKDOWN",
+							// promptType / structuredFormat are optional — only set when
+							// the seed entry declares them (e.g., story_title_generator
+							// emits STRUCTURED/JSON; classic MARKDOWN prompts leave both
+							// at the schema default per insert-only contract).
+							...((p as { promptType?: string }).promptType
+								? {
+										promptType: (p as { promptType: any })
+											.promptType,
+									}
+								: {}),
+							...((p as { structuredFormat?: string })
+								.structuredFormat
+								? {
+										structuredFormat: (
+											p as { structuredFormat: any }
+										).structuredFormat,
+									}
+								: {}),
+							category: p.category,
+							tags: p.tags || [],
+							isPublic: p.isPublic || false,
+							createdBy: "system",
+						},
+					}),
 			});
+
+			// Null means a deletion committed between the batched read above
+			// and this insert — the guard re-checked under the lock and refused.
+			if (!createdPrompt) {
+				logger.warn(
+					`  Skipping ${p.key}: its key was retired while this seed was running.`,
+				);
+				skippedRetired++;
+				continue;
+			}
+
 			promptId = createdPrompt.id;
 			created++;
 		}
@@ -6144,16 +6201,17 @@ async function seedSystemPrompts() {
 	}
 
 	logger.success(
-		`Prompts - created: ${created}, versions: ${versionsCreated}, bindings created: ${bindingsCreated} (insert-only: existing SYSTEM prompts left untouched)`,
+		`Prompts - created: ${created}, versions: ${versionsCreated}, bindings created: ${bindingsCreated}, skipped (retired): ${skippedRetired} (insert-only: existing SYSTEM prompts left untouched)`,
 	);
 }
 
-// Run the seed function
-seedSystemPrompts()
-	.catch((error) => {
-		logger.error("Seed failed:", error);
-		process.exit(1);
-	})
-	.finally(() => {
-		process.exit(0);
-	});
+if (isDirectRun(import.meta.url)) {
+	seedSystemPrompts()
+		.catch((error) => {
+			logger.error("Seed failed:", error);
+			process.exit(1);
+		})
+		.finally(() => {
+			process.exit(0);
+		});
+}

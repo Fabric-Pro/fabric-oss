@@ -1,0 +1,12 @@
+-- `prompt_binding` is reached BY VERSION in three places and indexed for none
+-- of them: the platform-wide impact read the confirmation dialog opens with,
+-- and the two binding deletes inside the deletion's advisory-locked
+-- transaction. The last two pay a sequential scan while the per-key advisory
+-- lock and a pooled connection are held, and the table grows with every
+-- organization's and every person's overrides.
+--
+-- Single CONCURRENTLY statement, alone in its own migration, exactly as the
+-- projectId index on this table (20260823090030) is: Prisma does not wrap a
+-- single-statement migration in a transaction, and CONCURRENTLY cannot run
+-- inside one.
+CREATE INDEX CONCURRENTLY "prompt_binding_promptVersionId_idx" ON "prompt_binding"("promptVersionId");
