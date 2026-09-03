@@ -19,27 +19,17 @@
 
 # extract-zip has no fixed release to move to: 2.0.1 is simultaneously the
 # last affected version and the newest ever published, and the current
-# @langchain/langgraph-cli (1.4.4) still declares `extract-zip: ^2.0.1` — so
-# neither the package nor its parent can be upgraded out of this one.
+# @langchain/langgraph-cli (1.4.5, re-checked 2026-09-02) still declares
+# `extract-zip: ^2.0.1` — so neither the package nor its parent can be
+# upgraded out of this one.
 [[IgnoredVulns]]
 id = "GHSA-jmr9-qjv8-65gv"
 ignoreUntil = 2026-11-12
 reason = "extract-zip@2.0.1 via @langchain/langgraph-cli; no patched release exists upstream. Sole call site is the CLI's Python dev path, which this repo never invokes. See SECURITY.md § Documented dismissals."
 
-# deepmerge-ts is patchable and we are declining the patch, not stuck with it:
-# a `pnpm.overrides` entry does move @prisma/config's exact "7.1.5" pin to 8.0.1
-# (verified), the way `undici@^5.0.0` → `^6.27.0` already does elsewhere. We
-# decline because it forces an unsupported major into a third-party CLI's own
-# config loader — a worse trade than an availability-only flaw on a build-time
-# path fed by our own config. Nothing else in the lockfile depends on
-# deepmerge-ts, and @prisma/client has no dependencies of its own.
-#
-# Expect renewal rather than removal at the expiry: @prisma/config still pins
-# 7.1.5 exactly as of its 7.9.1 release. If renewing again, take the override.
-[[IgnoredVulns]]
-id = "GHSA-ggr8-5vv4-36mx"
-ignoreUntil = 2026-11-17
-reason = "deepmerge-ts@7.1.5 via the Prisma CLI's config loader. Patchable by a pnpm override to 8.0.1; declined because it forces an unsupported major into a third-party CLI's own loader. Stack exhaustion (availability only) on a build-time path fed by our own config. See SECURITY.md § Documented dismissals."
+# The former deepmerge-ts entry (GHSA-ggr8-5vv4-36mx) was removed 2026-09-02:
+# the `deepmerge-ts` -> `^8.0.2` override in the root package.json moves
+# @prisma/config's exact 7.1.5 pin past the first fixed release (8.0.0).
 
 # @opentelemetry/core has two copies in the lockfile. The v2 copy is already
 # patched — the existing `@opentelemetry/core@^2.0.0` -> `^2.8.0` override
