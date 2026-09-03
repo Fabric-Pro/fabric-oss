@@ -100,6 +100,7 @@
 			"@grpc/grpc-js": "^1.14.4",
 			"tmp": "^0.2.6",
 			"deepmerge-ts": "^8.0.2",
+			"toml": "^4.3.0",
 			"linkify-it": "^5.0.1",
 			"vite@^7.0.0": "^7.3.6",
 			"brace-expansion@^1.0.0": "^1.1.17",
