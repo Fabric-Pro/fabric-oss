@@ -1,6 +1,6 @@
 # Fabric Portal - .NET Aspire Orchestration
 
-This directory contains the .NET Aspire 13.3 orchestration layer for the Fabric Portal polyglot agent architecture.
+This directory contains the .NET Aspire 13.5 orchestration layer for the Fabric Portal polyglot agent architecture.
 
 ## Overview
 
@@ -18,7 +18,7 @@ This directory contains the .NET Aspire 13.3 orchestration layer for the Fabric 
    dotnet --version
    ```
 
-2. **Aspire CLI 13.3+** (required for MCP tool discovery; 13.3 ships as a NativeAOT global tool with instant startup)
+2. **Aspire CLI 13.5+** (required for MCP tool discovery; the CLI ships as a NativeAOT global tool with instant startup)
    ```bash
    aspire --version
    # Install/update: dotnet tool install -g Aspire.Cli
@@ -142,7 +142,7 @@ This single command starts:
 
 - **Web App**: http://localhost:3001
 - **Aspire Dashboard**: https://localhost:17134 *(No authentication required in development)*
-  - The `web` resource exposes a child `web-browser-logs` resource (Aspire 13.3 `Aspire.Hosting.Browsers`). Use **Open tracked browser** to launch a Chromium tab whose console logs, errors, and network events stream into the dashboard alongside server-side OTLP. Requires a Chromium-based browser (Edge or Chrome) installed locally.
+  - The `web` resource exposes a child `web-browser-logs` resource (Aspire 13.5 `Aspire.Hosting.Browsers`). Use **Open tracked browser** to launch a Chromium tab whose console logs, errors, and network events stream into the dashboard alongside server-side OTLP. Requires a Chromium-based browser (Edge or Chrome) installed locally.
 - **Document Generator**: http://localhost:8124/health
 - **Project Document Generator**: http://localhost:8125/health
 - **Temporal UI**: http://localhost:8233
