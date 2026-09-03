@@ -13,6 +13,7 @@ import { AlertTriangleIcon, PlusIcon, RefreshCwIcon } from "lucide-react";
 import { type ReactNode, useState } from "react";
 import { toast } from "sonner";
 import { CreateTopicDialog } from "./CreateTopicDialog";
+import { PublishingBetaBadge } from "./PublishingBetaBadge";
 import { PublishingCycleHistory } from "./PublishingCycleHistory";
 import type { SnoozePreset } from "./SnoozeTopicDialog";
 import { TopicRow } from "./TopicRow";
@@ -394,9 +395,12 @@ export function PublishingSuiteList({
 			data-onboarding-target="publishing-suite-list"
 		>
 			<div className="flex items-center justify-between gap-4">
-				<h2 className="font-serif text-2xl font-normal text-foreground">
-					Publishing Suite
-				</h2>
+				<div className="flex items-center gap-2.5">
+					<h2 className="font-serif text-2xl font-normal text-foreground">
+						Publishing Suite
+					</h2>
+					<PublishingBetaBadge />
+				</div>
 				<div className="flex items-center gap-2">
 					<PageTourButton pageId="publishing-suite" />
 					{canEdit && (

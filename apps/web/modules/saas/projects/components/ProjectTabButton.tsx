@@ -18,6 +18,8 @@ type Props = {
 	showTitle: boolean;
 	/** `data-onboarding-target` value — the Get Started anchor for this tab. */
 	anchor: string;
+	/** Mark this tab's feature as still work in progress (Fizzy #2348). */
+	beta: boolean;
 	onSelect: () => void;
 	registerRef: (element: HTMLButtonElement | null) => void;
 };
@@ -33,6 +35,11 @@ type Props = {
  * The title is the button's accessible name whichever way it paints, so an
  * icon-only tab still reads correctly to a screen reader, and the tooltip
  * carries the name for sighted viewers only when the bar stops showing it.
+ *
+ * A beta tab says so in that same name, for the same reason: the name is the
+ * only thing every paint mode has. What it paints varies, because there is no
+ * one mark that works in both modes — a chip beside a title that may not be
+ * there is invisible, and a dot on an icon that may not be there is too.
  */
 export function ProjectTabButton({
 	label,
@@ -41,14 +48,16 @@ export function ProjectTabButton({
 	showIcon,
 	showTitle,
 	anchor,
+	beta,
 	onSelect,
 	registerRef,
 }: Props) {
+	const accessibleName = beta ? `${label} (Beta)` : label;
 	const button = (
 		<button
 			ref={registerRef}
 			type="button"
-			aria-label={label}
+			aria-label={accessibleName}
 			data-onboarding-target={anchor}
 			onClick={onSelect}
 			className={cn(
@@ -66,15 +75,36 @@ export function ProjectTabButton({
 				/>
 			)}
 			{showIcon && (
-				<Icon
-					aria-hidden="true"
-					className={cn(
-						"relative z-10 size-4 shrink-0",
-						isActive && "text-primary",
+				<span className="relative z-10 flex shrink-0">
+					<Icon
+						aria-hidden="true"
+						className={cn(
+							"size-4 shrink-0",
+							isActive && "text-primary",
+						)}
+					/>
+					{/* Only when no title is painted — otherwise the chip
+					 * below says it in words, and both at once reads as two
+					 * different claims. */}
+					{beta && !showTitle && (
+						<span
+							aria-hidden="true"
+							data-testid="tab-beta-dot"
+							className="-right-0.5 -top-0.5 absolute size-1.5 rounded-full bg-highlight"
+						/>
 					)}
-				/>
+				</span>
 			)}
-			{showTitle && <span className="relative z-10">{label}</span>}
+			{showTitle && (
+				<span className="relative z-10 flex items-center gap-1.5">
+					{label}
+					{beta && (
+						<span className="rounded-sm bg-highlight/15 px-1 py-px font-medium text-[10px] text-highlight uppercase tracking-wide">
+							Beta
+						</span>
+					)}
+				</span>
+			)}
 		</button>
 	);
 
@@ -88,7 +118,7 @@ export function ProjectTabButton({
 	return (
 		<Tooltip delayDuration={200}>
 			<TooltipTrigger asChild>{button}</TooltipTrigger>
-			<TooltipContent side="bottom">{label}</TooltipContent>
+			<TooltipContent side="bottom">{accessibleName}</TooltipContent>
 		</Tooltip>
 	);
 }
