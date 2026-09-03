@@ -10,7 +10,7 @@
  */
 
 import { PassThrough, Readable } from "node:stream";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // ---------------------------------------------------------------------------
 // Mocks — set up BEFORE the procedure is imported.
@@ -477,6 +477,10 @@ async function runHandler(args: {
 // ---------------------------------------------------------------------------
 
 describe("createContextsBatchDownloadUrl", () => {
+	afterEach(() => {
+		vi.useRealTimers();
+	});
+
 	beforeEach(() => {
 		mockListContextsForDownload.mockReset();
 		mockGetProjectForDownload.mockReset();
@@ -1643,6 +1647,12 @@ describe("createContextsBatchDownloadUrl", () => {
 	});
 
 	it("truncation takes the ordered prefix, so a repeat export produces the same archive", async () => {
+		// The manifest carries an "Exported at" second, so two exports that
+		// straddle a second boundary differ by that line alone. Freeze the
+		// clock (Date only: the archive streams still need real timers) so the
+		// assertion below compares the archive, not the wall clock.
+		vi.useFakeTimers({ toFake: ["Date"] });
+		vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
 		const rows = Array.from({ length: 202 }, (_, i) =>
 			makeClassBContext({
 				id: `ctx_${String(i).padStart(3, "0")}`,
