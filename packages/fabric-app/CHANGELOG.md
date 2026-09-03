@@ -1,5 +1,34 @@
 # fabric-app
 
+## 1.14.6
+
+### Patch Changes
+
+- ab450ce: Update the Aspire AppHost to 13.5.3, picking up the interaction service, dashboard refresh, and polyglot AppHost fixes.
+- 8865562: Migrate the release pipeline to Changesets CLI v3 and changesets/action v2.
+- 4fdddd1: Fix the CodeQL baseline findings and scan the public repository on every master push without blocking the relay
+- 8b80325: Stop the context-export repeat-archive test from failing when its two exports straddle a second boundary.
+- 6c0d705: Revoke a departing member's project access before the removal commits, and on the voluntary-leave path too
+- e28ca2c: Scope offboarding revocation through the relation instead of a snapshot of ids, and stop understating what it revoked
+- 6a2bf28: Collapse the three copies of the project-authorization ladder in projects.ts into one
+- 57430c9: Show which organizations a feature flag is enrolled in or excluded from, on the instance feature-flag console
+- de6bba9: Add a per-organization feature-flag control to the admin console, so a rollout can be scoped to named organizations without a deploy-time script.
+- 33157de: Publishing Suite visibility now resolves per organization at runtime instead of from a build-time flag baked into the deployment.
+- 4f1ea79: Open a personal prompt from inside an organization instead of answering "Prompt not found"
+- 19572b5: Stop the project page sending a leave/join/heartbeat burst on every tab change, and fetch the review-center badge count once per mount instead of once per observer.
+- 29ace65: Recover a lost prompt-bind race in a fresh transaction, and rank the picker's default by the binding's tier
+- 4ed9532: Make every prompt-default screen agree with the prompt the agent actually runs, and give the binding key real uniqueness
+- 19efde4: Draft a case study from a publishing topic, and keep its unapproved claims generalized rather than asserted
+- 59eaf86: Publishing generation now re-checks the permission the API gate actually checked, so an invited project editor can use the five generation tabs
+- 4e13cbd: Say why a publishing draft was not committed instead of calling every refusal a supersession
+- 6d25c4e: Draft a stakeholder update email for a publishing topic, and say plainly when nobody confirmed whether the work shipped
+- b5aee49: Mark the Publishing Suite as Beta on its project tab and page heading while the rollout is still work in progress
+- 7eee292: Make the shared document prefix of RAG chunk enrichment cacheable, so each chunk no longer re-bills the whole document (Fizzy #2362)
+- 7c59382: Give the Re-prioritize roadmap test a longer wait for its button, so a loaded CI runner is far less likely to fail it before the project query resolves.
+- dbbcb72: Platform administrators can now delete system prompts from the Prompt Management UI, with a platform-wide impact warning, and a deleted prompt no longer returns on the next catalogue seed.
+- a6d656c: Each project tab can now show its icon, its title, both, or neither, chosen per tab by each member.
+- fd2f2d8: Cover the authorization branch that decides who may hide a project tab for everyone.
+
 ## 1.14.5
 
 ### Patch Changes
