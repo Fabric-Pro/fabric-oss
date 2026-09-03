@@ -23,7 +23,7 @@ import { getBaseUrl } from "@repo/utils";
 /**
  * Build the OpenAPI document for the audit-log REST API. The `servers`
  * entry uses the runtime base URL so the spec works whether the
- * deployment is at `https://fabric.pro`, `https://staging.fabric.pro`, or
+ * deployment is at `https://fabric.pro`, `https://your-fabric-host.example`, or
  * `http://localhost:3001`.
  */
 export function getAuditLogOpenApiSpec(

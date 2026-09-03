@@ -93,8 +93,8 @@ interface TrajectoryStepsProps {
 	 * — same intent, different rendering layer. Without this, PR 1093's
 	 * `<Tool expandable={false}>` only collapses the bottom "skill ·
 	 * Completed" card; the inline trajectory steps inside the Reasoning
-	 * Trace box still expanded to raw JSON, which the user observed in
-	 * production on staging.fabric.pro.
+	 * Trace box still expanded to raw JSON, which the user observed on a
+	 * staging deployment.
 	 */
 	stepsExpandable?: boolean;
 }

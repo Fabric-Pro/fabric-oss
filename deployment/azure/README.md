@@ -264,7 +264,7 @@ All agents expose `/health` endpoints:
 
 ```bash
 # Check agent health
-curl https://fabric-dev-document-generator.{region}.azurecontainerapps.io/health
+curl https://YOUR-DOCUMENT-GENERATOR.{region}.azurecontainerapps.io/health
 ```
 
 ## Cost Estimation

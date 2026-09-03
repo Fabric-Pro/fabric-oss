@@ -115,7 +115,7 @@ VARS_TO_SYNC=(
     # the suffix is the ACR_SUFFIX repository variable). The web
     # tier must be able to decrypt k<version>-tagged ciphertext written by the
     # worker, so sync this BEFORE ENCRYPTION_ACTIVE_KEY_VERSION is ever set.
-    # See docs/runbooks/encryption-key-rotation.md.
+    # See your operator's key-rotation runbook.
     "ENCRYPTION_KEYS"
     "ENCRYPTION_ACTIVE_KEY_VERSION"
     # Vector DB

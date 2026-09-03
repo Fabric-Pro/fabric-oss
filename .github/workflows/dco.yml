@@ -3,8 +3,7 @@ name: DCO
 # Enforces the Developer Certificate of Origin: every human-authored,
 # non-merge commit on a PR must carry a `Signed-off-by:` trailer whose
 # email matches the commit author (`git commit -s`). See CONTRIBUTING.md
-# § Developer Certificate of Origin and
-# docs/open-source/open-sourcing-plan.md §6.4.
+# § Developer Certificate of Origin.
 #
 # Exemptions (disclosed in CONTRIBUTING.md):
 # - An explicit allowlist of trusted automation PRs: the changesets

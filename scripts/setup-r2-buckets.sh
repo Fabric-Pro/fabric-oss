@@ -17,6 +17,9 @@
 # Environment variables (optional):
 #   CLOUDFLARE_ACCOUNT_ID - Cloudflare account ID
 #   CLOUDFLARE_API_TOKEN  - Cloudflare API token
+#   STAGING_ORIGIN        - CORS origin allowed for the staging/dev buckets
+#                           (default: a YOUR-STAGING-DOMAIN placeholder — set
+#                           this to your actual staging host before running)
 #
 # ============================================================================
 # WARNING — read before running, especially for the `staging` profile.
@@ -63,16 +66,20 @@ NC='\033[0m' # No Color
 # Determine environment
 ENV="${1:-dev}"
 
+# CORS origin for the staging/dev buckets. Override with your own staging
+# host; the placeholder below will not resolve to anything.
+STAGING_ORIGIN="${STAGING_ORIGIN:-https://YOUR-STAGING-DOMAIN.example}"
+
 # Set bucket names and CORS origins based on environment
 if [[ "$ENV" == "prod" ]]; then
   BUCKETS=("prod-avatars" "prod-chat-documents" "prod-project-contexts" "prod-workspace-documents" "prod-orchestrator-artifacts")
   ORIGINS='["https://fabric.pro","https://www.fabric.pro"]'
 elif [[ "$ENV" == "staging" ]]; then
   BUCKETS=("avatars" "chat-documents" "project-contexts" "workspace-documents" "orchestrator-artifacts")
-  ORIGINS='["https://staging.fabric.pro"]'
+  ORIGINS="[\"$STAGING_ORIGIN\"]"
 else
   BUCKETS=("avatars" "chat-documents" "project-contexts" "workspace-documents" "orchestrator-artifacts")
-  ORIGINS='["https://staging.fabric.pro","http://localhost:3000","http://localhost:3001"]'
+  ORIGINS="[\"$STAGING_ORIGIN\",\"http://localhost:3000\",\"http://localhost:3001\"]"
 fi
 
 CORS_CONFIG="{\"rules\":[{\"allowed\":{\"origins\":$ORIGINS,\"methods\":[\"GET\",\"PUT\",\"POST\",\"DELETE\",\"HEAD\"],\"headers\":[\"*\"]},\"exposeHeaders\":[\"ETag\",\"Content-Length\",\"Content-Type\"],\"maxAgeSeconds\":3600}]}"

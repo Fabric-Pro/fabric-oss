@@ -1239,7 +1239,7 @@ async function uploadOneImageToAdo(
 		const res = await fetch(src, {
 			headers: {
 				"User-Agent":
-					"Fabric-Sync/1.0 (+https://staging.fabric.pro; pm-sync worker)",
+					"Fabric-Sync/1.0 (+https://fabric.pro; pm-sync worker)",
 				Accept: "image/*,*/*;q=0.8",
 			},
 		});
@@ -1711,7 +1711,7 @@ export async function fetchImageAsBase64DataUrl(
 		const res = await fetch(src, {
 			headers: {
 				"User-Agent":
-					"Fabric-Sync/1.0 (+https://staging.fabric.pro; pm-sync worker)",
+					"Fabric-Sync/1.0 (+https://fabric.pro; pm-sync worker)",
 				Accept: "image/*,*/*;q=0.8",
 			},
 		});
@@ -2031,7 +2031,7 @@ async function uploadOneUrlToFizzy(
 		const res = await fetch(src, {
 			headers: {
 				"User-Agent":
-					"Fabric-Sync/1.0 (+https://staging.fabric.pro; pm-sync worker)",
+					"Fabric-Sync/1.0 (+https://fabric.pro; pm-sync worker)",
 				Accept: opts.accept,
 			},
 		});
