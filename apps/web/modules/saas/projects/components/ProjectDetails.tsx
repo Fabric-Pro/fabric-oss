@@ -18,8 +18,14 @@ import {
 	useProjectTabCustomization,
 	useProjectTabGates,
 } from "@saas/projects/lib/project-tab-preferences";
-import { isTabId, type TabId, tabs } from "@saas/projects/lib/project-tabs";
+import {
+	isBetaTab,
+	isTabId,
+	type TabId,
+	tabs,
+} from "@saas/projects/lib/project-tabs";
 import { useConfirmationAlert } from "@saas/shared/components/ConfirmationAlertProvider";
+import { useFeatureFlag } from "@saas/shared/components/FeatureFlagProvider";
 import { PageBreadcrumbs } from "@saas/shared/components/PageBreadcrumbs";
 import { useFocusMode } from "@saas/shared/contexts/FocusModeContext";
 import { orpcClient } from "@shared/lib/orpc-client";
@@ -389,6 +395,10 @@ export function ProjectDetails({ projectId, organizationSlug }: Props) {
 	}, [rawActiveTab, setIsFocusMode]);
 
 	const tabGates = useProjectTabGates();
+
+	// Decoration, not a gate — deliberately separate from `tabGates`, which
+	// decides which tabs EXIST for this viewer. A beta tab is a visible tab.
+	const showBetaLabel = useFeatureFlag("PUBLISHING_SUITE_BETA_LABEL");
 
 	// The tab set this viewer can see, in their saved order. While a tab's
 	// feature gate is off (or before the preference queries resolve) this is
@@ -1111,6 +1121,10 @@ export function ProjectDetails({ projectId, organizationSlug }: Props) {
 												icon={tab.icon}
 												isActive={activeTab === tab.id}
 												anchor={`project-tab-${tab.id}`}
+												beta={
+													showBetaLabel &&
+													isBetaTab(tab.id)
+												}
 												onSelect={() => {
 													startTransition(() =>
 														setActiveTab(tab.id),

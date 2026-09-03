@@ -160,3 +160,20 @@ export type TabId = (typeof tabs)[number]["id"];
 /** Whether a stored or deep-linked value names a tab that exists at all. */
 export const isTabId = (value: string): value is TabId =>
 	tabs.some((t) => t.id === value);
+
+/**
+ * Tabs whose feature is still work in progress (Fizzy #2348).
+ *
+ * A set beside the array rather than a `beta` field inside it: `tabs` is
+ * `as const`, so a field on one entry is absent from the union every other
+ * entry belongs to, and reading it would mean either a narrowing dance at each
+ * call site or `beta: false` on twenty tabs that are not beta. Three tests also
+ * parse that array by source, and this keeps it untouched.
+ *
+ * Membership only says the feature is unfinished. Whether the marker is
+ * PAINTED is the `PUBLISHING_SUITE_BETA_LABEL` flag, read by the component —
+ * so general availability is a switch in the admin console, not an edit here.
+ */
+const BETA_TAB_IDS: ReadonlySet<TabId> = new Set<TabId>(["publishing-suite"]);
+
+export const isBetaTab = (id: TabId): boolean => BETA_TAB_IDS.has(id);
