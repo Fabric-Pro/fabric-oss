@@ -12,6 +12,14 @@ import {
 } from "../../../../orpc/procedures";
 
 /**
+ * Mirrors `DEFAULT_LOOKBACK_DAYS` in the sync activity. The preflight is only
+ * honest while it reads the same window the sync reads — a meeting with no
+ * occurrence inside it is one the sync would not have picked up either, so
+ * reporting it as reachable would be the same lie in the other direction.
+ */
+const SYNC_LOOKBACK_DAYS = 30;
+
+/**
  * AUTHORIZATION: `PROJECT_UPDATE` (EDITOR+), deliberately looser than
  * unlinking. Repair destroys nothing, and editors lost the unlink-and-relink
  * workaround when unlinking became admin-only — this is what replaces it
@@ -86,35 +94,63 @@ export const repairSyncProcedure = tenantProtectedProcedure
 			});
 		}
 
-		// Resolve every meeting under the CALLING user's token. A meeting the
-		// caller cannot see would go quiet after the rebind with no error at
-		// all, so it has to be named before they commit, not discovered weeks
-		// later as an absence.
-		const unreachable: { subject: string | null }[] = [];
-		for (const meeting of meetings) {
-			try {
-				const resolved = (await executeMicrosoftTeamsTool(
-					"get_meeting_by_join_url",
-					{ joinUrl: meeting.joinUrl },
-					user.id,
-					organizationId ?? undefined,
-				)) as { id?: string } | null;
+		// Ask the question the SYNC will ask, with the same call and the same
+		// match: one calendar read over the same lookback, then linked join
+		// URLs matched case-insensitively — mirroring
+		// `listRecentMeetingInstancesForLinkedUrls`.
+		//
+		// This used to resolve each meeting through `get_meeting_by_join_url`,
+		// which answers a DIFFERENT question: that endpoint is
+		// `/me/onlineMeetings?$filter=JoinWebUrl eq ...`, and Graph returns a
+		// row there only for the meeting's ORGANIZER. Every meeting somebody
+		// else organized — which is most of them — came back empty and was
+		// reported as invisible, so the preflight told people their whole
+		// project would stop syncing when nothing was wrong with it at all.
+		const lookbackDays = SYNC_LOOKBACK_DAYS;
+		const startDate = new Date(
+			Date.now() - lookbackDays * 24 * 60 * 60 * 1000,
+		).toISOString();
 
-				if (!resolved?.id) {
-					unreachable.push({ subject: meeting.subject });
-				}
-			} catch (error) {
-				// A throw here is the same outcome as an unresolvable meeting:
-				// this user cannot reach it. Reported, never fatal — one
-				// unreachable meeting must not block repairing the rest.
-				logger.warn("meeting.repair.preflight_unresolved", {
-					projectId: input.projectId,
-					linkedMeetingId: meeting.id,
-					error,
-				});
-				unreachable.push({ subject: meeting.subject });
-			}
+		let calendar: {
+			meetings?: Array<{ joinUrl?: string | null }>;
+			error?: string;
+		};
+		try {
+			calendar = (await executeMicrosoftTeamsTool(
+				"list_calendar_meetings",
+				{ daysBack: lookbackDays, startDate },
+				user.id,
+				organizationId ?? undefined,
+			)) as typeof calendar;
+		} catch (error) {
+			// "We could not check" is not "you can see nothing". Reporting the
+			// latter is what made the old preflight recommend against a repair
+			// that would have worked.
+			logger.error("meeting.repair.preflight_calendar_failed", {
+				projectId: input.projectId,
+				error,
+			});
+			throw new ORPCError("SERVICE_UNAVAILABLE", {
+				message:
+					"Could not read your Microsoft calendar, so we cannot tell which meetings would keep syncing. Try again.",
+			});
 		}
+
+		if (calendar?.error) {
+			throw new ORPCError("BAD_REQUEST", {
+				message: `Could not read your Microsoft calendar: ${calendar.error}`,
+			});
+		}
+
+		const visibleJoinUrls = new Set(
+			(calendar?.meetings ?? [])
+				.map((m) => m.joinUrl?.toLowerCase())
+				.filter((url): url is string => Boolean(url)),
+		);
+
+		const unreachable = meetings
+			.filter((m) => !visibleJoinUrls.has(m.joinUrl.toLowerCase()))
+			.map((m) => ({ subject: m.subject }));
 
 		const reachableCount = meetings.length - unreachable.length;
 
