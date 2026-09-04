@@ -44,7 +44,15 @@ permissions:
 
 concurrency:
   group: type-check-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  # Superseded PR pushes are cancelled; master pushes are not. The master
+  # run exists to seed the cache (see header), and a cancelled run saves
+  # nothing — two PRs landing minutes apart cancelled the first cold sweep
+  # before it could save, and would again on every busy afternoon. Without
+  # cancellation GitHub keeps one master run in flight and one pending,
+  # so the newest push still runs; it just waits for the sweep before it.
+  # (workflow_dispatch runs are not cancelled either, which is what a
+  # manual full sweep wants.)
+  cancel-in-progress: ${{ github.event_name != 'push' }}
 
 jobs:
   type-check:
@@ -80,6 +88,11 @@ jobs:
           node-version: '22'
           cache: 'pnpm'
 
+      # Only the typecheck prefix, no generic `<os>-turbo-` fallback:
+      # GitHub tries every restore key in the PR's own scope before it looks
+      # at master, so the broad fallback would hand a PR its own Vitest
+      # entry ahead of the master typecheck entry that holds the `^build`
+      # outputs this job replays.
       - name: Restore Turbo cache
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -87,7 +100,6 @@ jobs:
           key: ${{ runner.os }}-turbo-typecheck-${{ github.sha }}
           restore-keys: |
             ${{ runner.os }}-turbo-typecheck-
-            ${{ runner.os }}-turbo-
 
       # Turbo's cache only replays whole tasks; on a miss the task re-runs
       # cold. TypeScript's own incremental state is what makes a miss cheap
