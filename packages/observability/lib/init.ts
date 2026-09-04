@@ -197,6 +197,141 @@ function getResourceDetectors(): ResourceDetector[] | undefined {
 	return [envDetector, processDetector];
 }
 
+/** gRPC status code grpc-js reports when it cannot reach the collector at all. */
+const GRPC_STATUS_UNAVAILABLE = 14;
+
+/**
+ * Socket-level codes that all mean "the collector's socket went away".
+ *
+ * `ENOTFOUND` is deliberately absent: a name that never resolved is a
+ * misconfigured endpoint rather than a collector that shut down first, and that
+ * is worth an error-level line with its stack.
+ */
+const UNREACHABLE_SYSCALL_CODES = ["ECONNREFUSED", "ECONNRESET", "EPIPE"];
+
+/**
+ * gRPC renders its status into the message as "14 UNAVAILABLE: ...", and Node
+ * renders a socket failure as "<syscall> <CODE> <address>". Both are matched in
+ * that shape rather than as bare substrings, so an unrelated failure whose text
+ * merely happens to contain the word UNAVAILABLE or a code name — a TypeError
+ * reading a property of that name, say — keeps its error-level line.
+ */
+const GRPC_UNAVAILABLE_STATUS = /(?:^|\s)(?:14 )?UNAVAILABLE:/;
+const SOCKET_FAILURE = new RegExp(
+	`\\b(?:connect|read|write|shutdown) (?:${UNREACHABLE_SYSCALL_CODES.join("|")})\\b`,
+);
+
+function messageLooksUnreachable(message: string): boolean {
+	return (
+		GRPC_UNAVAILABLE_STATUS.test(message) || SOCKET_FAILURE.test(message)
+	);
+}
+
+/**
+ * Decide whether a shutdown failure is just "the collector went away first".
+ *
+ * Both the structured fields and the message text are checked: the OTLP gRPC
+ * exporter usually surfaces the failure as a plain `Error` whose message
+ * carries the status ("14 UNAVAILABLE: No connection established. Last error:
+ * Error: connect ECONNREFUSED ..."), so `code` alone misses the common case.
+ *
+ * `depth` bounds the cause/aggregate walk — an error chain that loops back on
+ * itself would otherwise recurse forever inside a shutdown hook.
+ */
+function isCollectorUnreachable(error: unknown, depth = 0): boolean {
+	if (depth > 5) {
+		return false;
+	}
+	if (typeof error === "string") {
+		return messageLooksUnreachable(error);
+	}
+	if (!error || typeof error !== "object") {
+		return false;
+	}
+
+	const candidate = error as {
+		code?: unknown;
+		message?: unknown;
+		cause?: unknown;
+		errors?: unknown;
+	};
+
+	if (candidate.code === GRPC_STATUS_UNAVAILABLE) {
+		return true;
+	}
+	if (
+		typeof candidate.code === "string" &&
+		UNREACHABLE_SYSCALL_CODES.includes(candidate.code)
+	) {
+		return true;
+	}
+	if (
+		typeof candidate.message === "string" &&
+		messageLooksUnreachable(candidate.message)
+	) {
+		return true;
+	}
+	// Every member has to qualify, and an empty list qualifies nothing: an
+	// aggregate mixing a dead collector with a real processor failure is still a
+	// real failure and has to keep its error-level line.
+	if (
+		Array.isArray(candidate.errors) &&
+		candidate.errors.length > 0 &&
+		candidate.errors.every((nested) =>
+			isCollectorUnreachable(nested, depth + 1),
+		)
+	) {
+		return true;
+	}
+	return (
+		candidate.cause !== undefined &&
+		isCollectorUnreachable(candidate.cause, depth + 1)
+	);
+}
+
+/**
+ * Report a failed shutdown flush at a level that matches what it means.
+ *
+ * A container runtime tears the local OTLP collector down alongside the
+ * application container, so a final flush that arrives after it has gone is
+ * expected and unactionable — it was logged at error level on stderr, which put
+ * a recurring `ECONNREFUSED` line in front of every production log triage pass
+ * for something nobody can fix. Any other shutdown failure is still a genuine
+ * error and keeps the error-level line and its stack.
+ */
+function reportShutdownFailure(error: unknown): void {
+	if (isCollectorUnreachable(error)) {
+		const detail = error instanceof Error ? error.message : String(error);
+		originalConsole.log(
+			`[Observability] Collector unreachable at shutdown, final flush skipped: ${detail}`,
+		);
+		return;
+	}
+	originalConsole.error("[Observability] Shutdown error:", error);
+}
+
+/**
+ * Wind down the logger provider and the SDK, reporting whatever fails.
+ *
+ * The two settle independently rather than in sequence: a collector that has
+ * already gone rejects the first shutdown, and awaiting them one after the
+ * other both cancelled the second flush outright and stacked two exporter
+ * timeouts back to back — long enough to matter against a container's
+ * termination grace period.
+ */
+async function flushAndShutdown(): Promise<void> {
+	const outcomes = await Promise.allSettled([
+		loggerProvider?.shutdown() ?? Promise.resolve(),
+		sdk?.shutdown() ?? Promise.resolve(),
+	]);
+
+	for (const outcome of outcomes) {
+		if (outcome.status === "rejected") {
+			reportShutdownFailure(outcome.reason);
+		}
+	}
+}
+
 /**
  * Set up console interception to forward logs to OTLP
  *
@@ -425,17 +560,8 @@ export function initObservability(config: ObservabilityConfig): void {
 	// Handle graceful shutdown
 	const shutdown = async () => {
 		originalConsole.log("[Observability] Shutting down...");
-		try {
-			if (loggerProvider) {
-				await loggerProvider.shutdown();
-			}
-			if (sdk) {
-				await sdk.shutdown();
-			}
-			originalConsole.log("[Observability] Shutdown complete");
-		} catch (error) {
-			originalConsole.error("[Observability] Shutdown error:", error);
-		}
+		await flushAndShutdown();
+		originalConsole.log("[Observability] Shutdown complete");
 	};
 
 	process.on("SIGTERM", shutdown);
@@ -480,15 +606,9 @@ export async function shutdownObservability(): Promise<void> {
 		return;
 	}
 
-	try {
-		if (loggerProvider) {
-			await loggerProvider.shutdown();
-		}
-		if (sdk) {
-			await sdk.shutdown();
-		}
-		isInitialized = false;
-	} catch (error) {
-		originalConsole.error("[Observability] Shutdown error:", error);
-	}
+	await flushAndShutdown();
+	// Cleared even when a flush failed: the providers are torn down either way,
+	// and leaving the flag set only invites a second shutdown that can no longer
+	// export anything.
+	isInitialized = false;
 }
