@@ -2,6 +2,8 @@ import {
 	CompassIcon,
 	FileTextIcon,
 	FolderKanbanIcon,
+	KeyIcon,
+	KeyRoundIcon,
 	LayoutDashboardIcon,
 	LightbulbIcon,
 	MapIcon,
@@ -110,6 +112,7 @@ export type ProjectTabId =
 
 export type OnboardingArea =
 	| "welcome"
+	| "aiKey"
 	| "assistant"
 	| "projects"
 	| "overview"
@@ -117,6 +120,7 @@ export type OnboardingArea =
 	| "roadmap"
 	| "proposals"
 	| "atlas"
+	| "apiKey"
 	| "wrapup";
 
 /** `data-onboarding-target` values placed on always-present global chrome. */
@@ -133,11 +137,31 @@ export function anchorForProjectTab(tab: ProjectTabId): string {
 	return `project-tab-${tab}`;
 }
 
+/**
+ * Who is taking the tour, for steps whose destination depends on it.
+ *
+ * Only role so far. The organization AI-provider page renders read-only for
+ * everyone but an admin, so a step that sends every viewer to the same URL
+ * strands a member on a form they cannot submit.
+ */
+type TourViewer = { isOrganizationAdmin: boolean };
+
 /** Builds a href from the active workspace base path (`/app` or `/app/{slug}`). */
-type NavHref = (basePath: string) => string;
+type NavHref = (basePath: string, viewer: TourViewer) => string;
 
 type OnboardingStepTarget =
-	| { kind: "center" }
+	| {
+			kind: "center";
+			/**
+			 * Optional destination for the card's "Take me there" link.
+			 *
+			 * A centered step has nothing to spotlight, but it can still be
+			 * actionable. Both key steps (Fizzy #2361) point at a settings page
+			 * that has no persistent chrome to anchor to — the settings nav only
+			 * mounts once you are already in settings — so the link IS the step.
+			 */
+			navigate?: NavHref;
+	  }
 	| {
 			kind: "anchor";
 			anchorId: string;
@@ -178,6 +202,36 @@ export const ONBOARDING_STEPS: readonly OnboardingStep[] = [
 		area: "welcome",
 		icon: RocketIcon,
 		target: { kind: "center" },
+	},
+	// Fizzy #2361. The first thing the tour actually SAYS, ahead of every
+	// feature step: nothing here works until an AI provider key exists.
+	//
+	// Shown unconditionally, including to a viewer who already has a key.
+	// Skipping it would need a third tri-state probe in the controller
+	// alongside `hasProject`, and #2360 is the standing lesson on what an
+	// unsettled probe does to a step list — it must never strip steps. The
+	// slide is one sentence and the tour is replayable; the trade is not
+	// close.
+	//
+	// The DESTINATION is not unconditional, though. Fizzy #1875 already
+	// established that these are two pages for two audiences: the
+	// organization page is where an admin configures the keys the whole
+	// tenant runs on and renders read-only for everyone else, while the
+	// account page is where any member adds a key of their own — which
+	// resolves for them when their organization has none. Sending both
+	// audiences to the org page would put a form a member cannot submit
+	// behind a button that promises they can.
+	{
+		id: "aiKey",
+		area: "aiKey",
+		icon: KeyRoundIcon,
+		target: {
+			kind: "center",
+			navigate: (base, viewer) =>
+				viewer.isOrganizationAdmin
+					? `${base}/settings/ai-providers`
+					: `${base}/settings/account/ai-providers`,
+		},
 	},
 	{
 		id: "assistant",
@@ -253,6 +307,19 @@ export const ONBOARDING_STEPS: readonly OnboardingStep[] = [
 		icon: NetworkIcon,
 		requiresFeature: "atlas",
 		target: { kind: "projectTab", tab: "atlas", side: "bottom" },
+	},
+	// Fizzy #2361. Sits at the END, not next to `aiKey`: a provider key is
+	// required for Fabric to work at all, while a Fabric API key is an optional
+	// way to drive it from outside. Stacking both at the top would open the tour
+	// with two settings detours before the viewer has seen a single feature.
+	{
+		id: "apiKey",
+		area: "apiKey",
+		icon: KeyIcon,
+		target: {
+			kind: "center",
+			navigate: (base) => `${base}/settings/api-keys`,
+		},
 	},
 	{
 		id: "wrapup",
@@ -394,6 +461,7 @@ export function resolveTourPosition(
  * each has at least one enabled step; dropping one fails CI.
  */
 export const ONBOARDING_REQUIRED_AREAS: readonly OnboardingArea[] = [
+	"aiKey",
 	"assistant",
 	"projects",
 	"overview",
@@ -401,6 +469,7 @@ export const ONBOARDING_REQUIRED_AREAS: readonly OnboardingArea[] = [
 	"roadmap",
 	"proposals",
 	"atlas",
+	"apiKey",
 ];
 
 /** Every `data-onboarding-target` id a step depends on (for the drift test). */

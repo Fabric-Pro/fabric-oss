@@ -55,7 +55,9 @@ type Rect = { x: number; y: number; w: number; h: number };
 type Phase = "resolving" | "spotlight" | "center";
 
 // Wide enough to keep the progress dots and Back/Skip/Next on one line at the
-// longest step (9 dots + all three buttons needs ~337px inside the p-4 padding).
+// longest step (11 dots + all three buttons needs ~332px inside the p-4
+// padding). Past that the dot row wraps rather than overflowing — see the
+// `flex-wrap` / `cardClamped` handling where the dots are rendered.
 const CARD_MAX_W = 380;
 const GAP = 14;
 const MARGIN = 14;
@@ -145,7 +147,7 @@ export function GetStartedSpotlight({
 	const t = useTranslations();
 	const router = useRouter();
 	const pathname = usePathname();
-	const { basePath } = useOrganizationContext();
+	const { basePath, isOrganizationAdmin } = useOrganizationContext();
 	const organizationId = useOrganizationId();
 
 	const step = steps[index];
@@ -304,6 +306,16 @@ export function GetStartedSpotlight({
 
 			if (target.kind === "center") {
 				if (!cancelled) {
+					// A centered step has no anchor to spotlight, but it can
+					// still send you somewhere — the "Take me there" link is
+					// the whole point of the two key steps (Fizzy #2361).
+					if (target.navigate) {
+						setCtaHref(
+							target.navigate(basePath, {
+								isOrganizationAdmin,
+							}),
+						);
+					}
 					setPhase("center");
 				}
 				return;
@@ -339,7 +351,7 @@ export function GetStartedSpotlight({
 					);
 				}
 			} else if (target.navigate) {
-				setCtaHref(target.navigate(basePath));
+				setCtaHref(target.navigate(basePath, { isOrganizationAdmin }));
 			}
 
 			const anchorId = anchorIdForStep(step);
@@ -392,6 +404,7 @@ export function GetStartedSpotlight({
 	}, [
 		step,
 		basePath,
+		isOrganizationAdmin,
 		pathname,
 		router,
 		resolveProjectId,
