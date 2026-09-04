@@ -98,7 +98,6 @@ jobs:
             dockerfile: packages/database/Dockerfile.migrate
     env:
       IMAGE_NAME: ghcr.io/fabric-pro/fabric-oss-snapshots/${{ matrix.component }}
-      CACHE_IMAGE: ${{ env.CACHE_NAMESPACE }}/${{ matrix.component }}
       SOURCE_URL: ${{ github.server_url }}/${{ github.repository }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -146,8 +145,10 @@ jobs:
           # runs overwrite each other's export, which costs cache freshness and
           # nothing else; and ignore-error keeps a cache push problem from
           # failing a build whose image is already pushed.
-          cache-from: type=registry,ref=${{ env.CACHE_IMAGE }}:master
-          cache-to: type=registry,ref=${{ env.CACHE_IMAGE }}:master,mode=max,ignore-error=true
+          # The env context is only available to steps, not to a job's env
+          # block, so the per-component ref is assembled here.
+          cache-from: type=registry,ref=${{ env.CACHE_NAMESPACE }}/${{ matrix.component }}:master
+          cache-to: type=registry,ref=${{ env.CACHE_NAMESPACE }}/${{ matrix.component }}:master,mode=max,ignore-error=true
 
       - name: Reclaim BuildKit space before SBOM scan
         run: docker buildx prune --all --force

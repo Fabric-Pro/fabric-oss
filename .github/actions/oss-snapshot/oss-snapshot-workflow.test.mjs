@@ -88,22 +88,25 @@ test("the layer cache lives in the registry, not the shared Actions cache", () =
 	// Fourteen mode=max caches exceed the repository's 10 GB Actions cache and
 	// evict the caches pull-request jobs depend on. See CACHE_NAMESPACE.
 	assert.doesNotMatch(workflow, /type=gha/);
+	const cacheRef =
+		"\\$\\{\\{ env\\.CACHE_NAMESPACE \\}\\}\\/\\$\\{\\{ matrix\\.component \\}\\}:master";
 	assert.match(
 		workflow,
-		/cache-from: type=registry,ref=\$\{\{ env\.CACHE_IMAGE \}\}:master/,
+		new RegExp(`cache-from: type=registry,ref=${cacheRef}\\n`),
 	);
 	assert.match(
 		workflow,
-		/cache-to: type=registry,ref=\$\{\{ env\.CACHE_IMAGE \}\}:master,mode=max,ignore-error=true/,
+		new RegExp(
+			`cache-to: type=registry,ref=${cacheRef},mode=max,ignore-error=true\\n`,
+		),
 	);
 	assert.match(
 		workflow,
 		/^ {2}CACHE_NAMESPACE: ghcr\.io\/fabric-pro\/fabric-oss-buildcache$/m,
 	);
-	assert.match(
-		workflow,
-		/CACHE_IMAGE: \$\{\{ env\.CACHE_NAMESPACE \}\}\/\$\{\{ matrix\.component \}\}/,
-	);
+	// The env context is not available in a job's env block; a job-level
+	// CACHE_IMAGE derived from it made every master build fail to parse.
+	assert.doesNotMatch(workflow, /^ {6}CACHE_IMAGE:/m);
 });
 
 test("permissions are limited to repository read and snapshot publication", () => {
