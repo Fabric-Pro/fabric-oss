@@ -31,6 +31,7 @@ import { PUBLISHING_RECONCILE_TASK_QUEUE } from "./schedules";
 import {
 	getTelemetryInterceptors,
 	initTelemetry,
+	installTemporalRuntime,
 	isTelemetryEnabled,
 	shutdownTelemetry,
 } from "./telemetry";
@@ -256,6 +257,10 @@ async function run() {
 	if (encryptionProblem) {
 		console.warn(`[Worker] ${encryptionProblem.message}`);
 	}
+
+	// Install the Temporal runtime with core metrics export before any native
+	// call (connect / Worker.create) creates the default, exporter-less one.
+	installTemporalRuntime();
 
 	// Initialize OpenTelemetry before starting the worker
 	initTelemetry();
