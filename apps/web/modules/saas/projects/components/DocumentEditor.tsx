@@ -2711,6 +2711,17 @@ function DocumentEditorInner({
 	// Effect 1: Capture baseline when loading STARTS (transition from false to true)
 	// Uses ref to detect the transition and capture baseline synchronously
 	useEffect(() => {
+		// Do not advance the loading-edge ref until the editor exists.
+		// `useEditor` runs with `immediatelyRender: false`, so `editor` is
+		// null on the first commit, while `isLoading` tracks the assistant's
+		// connect handshake rather than a user request and can already be
+		// true. Serializing a null editor returns null, which the branch
+		// below would report as a failed AI review; consuming the transition
+		// would also lose the baseline for the run that follows. `editor` is
+		// a dependency, so this re-runs once the instance exists.
+		if (!editor) {
+			return;
+		}
 		// Only capture baseline on transition: wasLoading=false → isLoading=true
 		if (isLoading && !wasLoadingRef.current && !isRegenerating) {
 			// Reset scroll tracking for new streaming session
@@ -2734,7 +2745,7 @@ function DocumentEditorInner({
 			}
 		}
 		wasLoadingRef.current = isLoading;
-		editor?.setEditable(!isLoading && !isRegenerating);
+		editor.setEditable(!isLoading && !isRegenerating);
 	}, [isLoading, isRegenerating, editor]);
 
 	// Effect 2: Final diff when nodeName becomes "end"
