@@ -10,7 +10,7 @@
  */
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -22,8 +22,9 @@ vi.mock("sonner", () => ({
 	toast: { error: toastErrorMock, success: toastSuccessMock },
 }));
 
+const confirmMock = vi.fn();
 vi.mock("@saas/shared/components/ConfirmationAlertProvider", () => ({
-	useConfirmationAlert: () => ({ confirm: vi.fn() }),
+	useConfirmationAlert: () => ({ confirm: confirmMock }),
 }));
 
 vi.mock("next-intl", () => {
@@ -68,6 +69,7 @@ const unlinkMeetingMock = vi.fn();
 const setMeetingSyncActiveMock = vi.fn();
 const listDeletedMeetingsMock = vi.fn();
 const restoreMeetingMock = vi.fn();
+const repairSyncMock = vi.fn();
 
 vi.mock("@shared/lib/orpc-client", () => ({
 	orpcClient: {
@@ -86,6 +88,7 @@ vi.mock("@shared/lib/orpc-client", () => ({
 				listDeletedMeetings: (...a: unknown[]) =>
 					listDeletedMeetingsMock(...a),
 				restoreMeeting: (...a: unknown[]) => restoreMeetingMock(...a),
+				repairSync: (...a: unknown[]) => repairSyncMock(...a),
 			},
 		},
 	},
@@ -179,6 +182,22 @@ describe("MeetingTranscriptSyncSettings — restore", () => {
 		unlinkMeetingMock.mockResolvedValue({});
 		setMeetingSyncActiveMock.mockResolvedValue({ success: true });
 		listDeletedMeetingsMock.mockResolvedValue([archive]);
+		confirmMock.mockImplementation(
+			async (opts: { onConfirm: () => Promise<void> }) =>
+				await opts.onConfirm(),
+		);
+		repairSyncMock.mockImplementation(
+			async (args: { preflightOnly: boolean }) =>
+				args.preflightOnly
+					? {
+							mode: "preflight",
+							totalMeetings: 1,
+							reachableCount: 1,
+							unreachableSubjects: [],
+							currentlyBoundTo: "someone_else",
+						}
+					: { mode: "repaired", workflowStatus: "RUNNING" },
+		);
 		restoreMeetingMock.mockResolvedValue({
 			success: true,
 			transcriptsRestored: 12,
@@ -255,5 +274,120 @@ describe("MeetingTranscriptSyncSettings — restore", () => {
 		// A recycle bin that is always on screen is permanent chrome, not a
 		// recovery affordance.
 		expect(screen.queryByText("Recently deleted")).not.toBeInTheDocument();
+	});
+});
+
+describe("MeetingTranscriptSyncSettings — reconnect entry point", () => {
+	beforeEach(() => {
+		vi.clearAllMocks();
+		listTranscriptsMock.mockResolvedValue([]);
+		enableMock.mockResolvedValue({});
+		disableMock.mockResolvedValue({});
+		setAutoAnalyzeMock.mockResolvedValue({});
+		triggerSyncMock.mockResolvedValue({});
+		unlinkMeetingMock.mockResolvedValue({});
+		setMeetingSyncActiveMock.mockResolvedValue({ success: true });
+		listDeletedMeetingsMock.mockResolvedValue([]);
+		confirmMock.mockImplementation(
+			async (opts: { onConfirm: () => Promise<void> }) =>
+				await opts.onConfirm(),
+		);
+		repairSyncMock.mockImplementation(
+			async (args: { preflightOnly: boolean }) =>
+				args.preflightOnly
+					? {
+							mode: "preflight",
+							totalMeetings: 1,
+							reachableCount: 1,
+							unreachableSubjects: [],
+							currentlyBoundTo: "someone_else",
+						}
+					: { mode: "repaired", workflowStatus: "RUNNING" },
+		);
+	});
+
+	async function openSyncOptions(user: ReturnType<typeof userEvent.setup>) {
+		await user.click(
+			await screen.findByRole("button", { name: "Sync options" }),
+		);
+	}
+
+	it("offers reconnect on a HEALTHY sync, not only a failing one", async () => {
+		// The whole point. The failure counter only reflects what the app can
+		// detect, and a token that still works but has lost access to some
+		// meetings returns an empty list rather than an error — so the person
+		// who suspects it needs a route that does not wait for the app to agree.
+		listLinkedMeetingsMock.mockResolvedValue([syncingMeeting]);
+		const user = userEvent.setup();
+		renderSettings();
+
+		// No failure anywhere: the banner is absent.
+		expect(
+			screen.queryByText(/meeting sync is not running/i),
+		).not.toBeInTheDocument();
+
+		await openSyncOptions(user);
+
+		expect(
+			await screen.findByRole("menuitem", {
+				name: /Reconnect sync to me/,
+			}),
+		).toBeInTheDocument();
+	});
+
+	it("checks coverage before it rebinds anything", async () => {
+		listLinkedMeetingsMock.mockResolvedValue([syncingMeeting]);
+		const user = userEvent.setup();
+		renderSettings();
+
+		await openSyncOptions(user);
+		await user.click(
+			await screen.findByRole("menuitem", {
+				name: /Reconnect sync to me/,
+			}),
+		);
+
+		// Preflight first, and it must be the read-only call.
+		await waitFor(() => {
+			expect(repairSyncMock).toHaveBeenCalledWith(
+				expect.objectContaining({ preflightOnly: true }),
+			);
+		});
+		expect(confirmMock).toHaveBeenCalled();
+	});
+
+	it("says why it cannot run when nothing is syncing", async () => {
+		// The procedure refuses outright in this state; saying so beats
+		// offering an action whose only outcome is an error toast.
+		listLinkedMeetingsMock.mockResolvedValue([stoppedMeeting]);
+		const user = userEvent.setup();
+		renderSettings();
+
+		await openSyncOptions(user);
+
+		const item = await screen.findByRole("menuitem", {
+			name: /Reconnect sync to me/,
+		});
+		expect(item).toHaveAttribute("aria-disabled", "true");
+		expect(
+			within(item).getByText("No meetings are syncing right now"),
+		).toBeInTheDocument();
+	});
+
+	it("stays hidden from someone who cannot manage the sync", async () => {
+		listLinkedMeetingsMock.mockResolvedValue([syncingMeeting]);
+		const user = userEvent.setup();
+		renderSettings({ canEdit: false });
+
+		await openSyncOptions(user);
+
+		// The backfill options are ungated today; rebinding whose account the
+		// WHOLE project collects under is not.
+		expect(
+			await screen.findByText("Sync last 30 days"),
+		).toBeInTheDocument();
+		expect(
+			screen.queryByRole("menuitem", { name: /Reconnect sync to me/ }),
+		).not.toBeInTheDocument();
 	});
 });

@@ -378,6 +378,12 @@ export function MeetingTranscriptSyncSettings({
 
 	const totalTranscripts = transcripts?.length ?? 0;
 	const hasLinkedMeetings = (linkedMeetings?.length ?? 0) > 0;
+	// Repair rebinds only meetings that are still syncing, and the procedure
+	// refuses outright when there are none — so the control says so up front
+	// rather than offering an action that can only fail.
+	const activeMeetingCount = (linkedMeetings ?? []).filter(
+		(m) => !m.deactivatedAt,
+	).length;
 
 	// A broken sync used to be invisible: the Graph call threw, the activity
 	// swallowed it, and the run still stamped a clean lastRun. This is the
@@ -1034,6 +1040,42 @@ export function MeetingTranscriptSyncSettings({
 											>
 												Backfill last 180 days
 											</DropdownMenuItem>
+											{/* Always reachable, not only once the
+											    failure counter has noticed. A sync
+											    can be broken in ways nothing here
+											    can detect — a token that still works
+											    but has lost access to some meetings
+											    returns an empty list, not an error —
+											    and handing a project over before the
+											    bound account dies has no other route
+											    at all (#2355). */}
+											{/* Gated where the sync actions above are
+											    not: rebinding changes whose account
+											    the WHOLE project collects under. */}
+											{canEdit && (
+												<>
+													<DropdownMenuSeparator />
+													<DropdownMenuItem
+														className="flex-col items-start gap-0.5"
+														disabled={
+															activeMeetingCount ===
+																0 ||
+															repairMutation.isPending
+														}
+														onSelect={handleRepair}
+													>
+														<span className="font-medium">
+															Reconnect sync to me
+														</span>
+														<span className="text-muted-foreground text-xs">
+															{activeMeetingCount ===
+															0
+																? "No meetings are syncing right now"
+																: "Checks what your account can see before changing anything"}
+														</span>
+													</DropdownMenuItem>
+												</>
+											)}
 										</DropdownMenuContent>
 									</DropdownMenu>
 								</div>
