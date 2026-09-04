@@ -43,6 +43,27 @@ const OTEL_ENDPOINT = process.env.OTEL_EXPORTER_OTLP_ENDPOINT;
 const SERVICE_NAME = process.env.OTEL_SERVICE_NAME || "temporal-worker";
 const OTEL_ENABLED = process.env.OTEL_ENABLED !== "false";
 
+/**
+ * The SDK's workflow-side OpenTelemetry interceptors, as the absolute module
+ * path the workflow bundler takes. Resolved once, here, so the bundle options
+ * and the replay gate register the same file.
+ *
+ * It is never registered on the worker: `WorkerOptions.interceptors.
+ * workflowModules` is discarded on any worker created from a prebuilt bundle
+ * (Fizzy #2400). `getTelemetryInterceptors()` returns it under that key only
+ * so `buildWorkflowBundleOptions()` can pass it to `bundleWorkflowCode`, the
+ * one registration point the SDK honours here.
+ *
+ * Inside the sandbox the module is replay-safe by construction: span and
+ * trace IDs come from a named workflow random stream that does not consume
+ * the workflow's `Math.random()` sequence, `performance.now()` is polyfilled
+ * from workflow time, and spans leave the isolate through the `exporter`
+ * sink, which the worker never invokes while replaying.
+ */
+export const OTEL_WORKFLOW_INTERCEPTOR_MODULE = require.resolve(
+	"@temporalio/interceptors-opentelemetry-v2/lib/workflow-interceptors",
+);
+
 let sdk: NodeSDK | null = null;
 let traceExporter: OTLPTraceExporter | null = null;
 let resource: Resource | undefined;
@@ -268,8 +289,12 @@ export async function shutdownTelemetry(): Promise<void> {
 }
 
 /**
- * Get Temporal worker interceptors for OpenTelemetry tracing
- * These interceptors automatically trace workflow and activity executions
+ * Temporal worker options for OpenTelemetry tracing: the activity-side
+ * interceptor, the workflow-side interceptor module, and the sink the
+ * workflow side exports its spans through.
+ *
+ * Empty until `initTelemetry()` has run, so nothing here is registered or
+ * bundled when telemetry is off.
  */
 export function getTelemetryInterceptors(): Partial<WorkerOptions> {
 	if (!OTEL_ENABLED || !OTEL_ENDPOINT || !resource) {
@@ -308,6 +333,12 @@ export function getTelemetryInterceptors(): Partial<WorkerOptions> {
 			activityInbound: [
 				(ctx) => new OpenTelemetryActivityInboundInterceptor(ctx),
 			],
+			// Consumed by buildWorkflowBundleOptions(), never by the worker —
+			// see OTEL_WORKFLOW_INTERCEPTOR_MODULE. Without it the `exporter`
+			// sink below is registered but never called: the SDK's
+			// workflow-side SpanExporter is that sink's only caller, and only
+			// this module constructs it (Fizzy #2401).
+			workflowModules: [OTEL_WORKFLOW_INTERCEPTOR_MODULE],
 		},
 		sinks: {
 			exporter: makeWorkflowExporter(workflowSpanProcessor, resource),
