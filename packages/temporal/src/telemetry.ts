@@ -32,7 +32,11 @@ import {
 	makeWorkflowExporter,
 	OpenTelemetryActivityInboundInterceptor,
 } from "@temporalio/interceptors-opentelemetry";
-import type { WorkerOptions } from "@temporalio/worker";
+import {
+	Runtime,
+	type RuntimeOptions,
+	type WorkerOptions,
+} from "@temporalio/worker";
 
 const OTEL_ENDPOINT = process.env.OTEL_EXPORTER_OTLP_ENDPOINT;
 const SERVICE_NAME = process.env.OTEL_SERVICE_NAME || "temporal-worker";
@@ -119,6 +123,72 @@ export function initTelemetry(): void {
 	sdk.start();
 	originalConsole.log(
 		"[Telemetry] OpenTelemetry SDK started with logs export",
+	);
+}
+
+/**
+ * Options for exporting the metrics the SDK's native core emits: task-slot
+ * usage, sticky-cache size, workflow-task schedule-to-start latency, activity
+ * latency and the rest of the `temporal_*` series. None of them exist until
+ * the runtime is installed with an exporter — `initTelemetry()` only covers
+ * the metrics this process records itself through the Node OpenTelemetry SDK.
+ *
+ * Pure so the env → options mapping is unit-testable without instantiating
+ * the native runtime. Returns null when telemetry is off or no collector is
+ * configured; the SDK then creates its default runtime with no exporter.
+ */
+export interface RuntimeMetricsEnv {
+	OTEL_ENABLED?: string;
+	OTEL_EXPORTER_OTLP_ENDPOINT?: string;
+	// Index signature so `process.env` (index-signature only) is assignable.
+	[key: string]: string | undefined;
+}
+
+export function buildRuntimeMetricsOptions(
+	env: RuntimeMetricsEnv = process.env,
+): RuntimeOptions | null {
+	if (env.OTEL_ENABLED === "false" || !env.OTEL_EXPORTER_OTLP_ENDPOINT) {
+		return null;
+	}
+	return {
+		telemetryOptions: {
+			metrics: {
+				otel: {
+					// The same gRPC collector endpoint the Node SDK exporters use,
+					// so core metrics join the stream the collector already forwards.
+					url: env.OTEL_EXPORTER_OTLP_ENDPOINT,
+					// The SDK default is 1 s. Match the 60 s reader in
+					// initTelemetry(): every export is billed ingestion once the
+					// collector forwards it to Azure Monitor.
+					metricsExportInterval: "60s",
+				},
+			},
+		},
+	};
+}
+
+/**
+ * Install the Temporal runtime with core metrics export.
+ *
+ * Must run before the first native call (`NativeConnection.connect`,
+ * `Worker.create`): the SDK creates a default runtime lazily on that call and
+ * `Runtime.install` throws once one exists. Deliberately not wrapped in
+ * try/catch: an install failure means either that ordering was violated or
+ * the native runtime rejected its configuration, and both should fail the
+ * boot loudly rather than let the worker run with every core metric silently
+ * missing.
+ */
+export function installTemporalRuntime(): void {
+	const options = buildRuntimeMetricsOptions(process.env);
+	if (!options) {
+		originalConsole.log(
+			"[Telemetry] Temporal core metrics export disabled (OTEL_ENABLED=false or no OTLP endpoint)",
+		);
+		return;
+	}
+	Runtime.install(options);
+	originalConsole.log(
+		`[Telemetry] Temporal core metrics exporting to ${OTEL_ENDPOINT}`,
 	);
 }
 
