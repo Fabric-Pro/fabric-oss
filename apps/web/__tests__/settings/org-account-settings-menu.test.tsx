@@ -146,6 +146,39 @@ describe("organization settings menu — account group", () => {
 		);
 	});
 
+	it("offers the member's own AI providers, which they can edit without being an admin", async () => {
+		// `isOrganizationAdmin` is mocked false for this whole file — the entry
+		// must be there anyway. It is the destination the "AI provider
+		// required" notice sends a member who cannot touch the organization's
+		// own providers (Fizzy #1875, R12/AE7), so hiding it from non-admins
+		// would leave that notice pointing at nothing again.
+		const menuItems = await buildMenu();
+		const hrefs = menuItems.flatMap((group) =>
+			group.items.map((item) => item.href),
+		);
+
+		expect(hrefs).toContain(
+			"/app/example-org/settings/account/ai-providers",
+		);
+	});
+
+	it("does not reuse the organization page's label for the account one", async () => {
+		// Two links with the same accessible name pointing at different pages
+		// — one editable by this member, one read-only for them — is exactly
+		// the ambiguity this notice's remedy cannot afford.
+		const menuItems = await buildMenu();
+		const orgProviders = menuItems[0].items.find(
+			(item) => item.href === "/app/example-org/settings/ai-providers",
+		);
+		const accountProviders = menuItems[1].items.find(
+			(item) =>
+				item.href === "/app/example-org/settings/account/ai-providers",
+		);
+
+		expect(orgProviders?.title).toBe("AI Providers");
+		expect(accountProviders?.title).toBe("Personal AI Providers");
+	});
+
 	it("appends the account group AFTER the organization's own group", async () => {
 		const menuItems = await buildMenu();
 
@@ -153,15 +186,17 @@ describe("organization settings menu — account group", () => {
 		// menuItems[0] drives the sidebar header — it must stay the org.
 		expect(menuItems[0].title).toBe("Example Org");
 		expect(menuItems[1].title).toBe("Account");
-		// Four now, not two. The personal settings tree is gone, so the two
-		// account-global pages that lived only there — the profile and account
-		// deletion — moved here with the other two. Both would have collided
-		// with an organization page of the same slug at the top level, which is
-		// why the whole group is nested under `account/`.
+		// Five now, not two. The personal settings tree is gone, so the
+		// account-global pages that lived only there — the profile, account
+		// deletion, and the member's own AI provider keys — moved here with the
+		// other two. Each would have collided with an organization page of the
+		// same slug at the top level, which is why the whole group is nested
+		// under `account/`.
 		expect(menuItems[1].items.map((item) => item.title)).toEqual([
 			"settings.menu.account.general",
 			"Security",
 			"Notifications",
+			"Personal AI Providers",
 			"settings.menu.account.dangerZone",
 		]);
 	});

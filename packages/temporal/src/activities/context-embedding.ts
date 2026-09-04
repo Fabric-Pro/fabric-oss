@@ -5,7 +5,10 @@
  * into Qdrant for RAG retrieval.
  */
 
-import { AIProviderNotConfiguredError, getRAGProviderConfig } from "@repo/ai";
+import {
+	AIProviderNotConfiguredError,
+	getSystemRAGProviderConfig,
+} from "@repo/ai";
 import {
 	db,
 	recordContextIndexingFailure,
@@ -92,7 +95,7 @@ export async function embedSingleContextActivity(
 		}
 
 		// Get AI provider configuration
-		const providerConfig = await getRAGProviderConfig({
+		const providerConfig = await getSystemRAGProviderConfig({
 			userId,
 			organizationId,
 		});

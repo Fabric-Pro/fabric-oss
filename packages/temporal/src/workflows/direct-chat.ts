@@ -32,6 +32,7 @@ import type {
 	DirectChatWorkflowInput,
 	DirectChatWorkflowOutput,
 } from "../types";
+import { AI_NON_RETRYABLE_ERROR_TYPES } from "./ai-non-retryable-errors";
 import {
 	type DirectChatPostOperationInput,
 	directChatPostOperationWorkflow,
@@ -94,15 +95,18 @@ const { executeDirectChatActivity } = proxyActivities<
 		maximumInterval: "60s",
 		backoffCoefficient: 2,
 		maximumAttempts: 3,
-		// When the activity rethrows AiUsageLimitExceededError, Temporal records
-		// the failure type as `error.constructor?.name ?? error.name` (see
-		// @temporalio/common ensureApplicationFailure). Listing it here tells
-		// the server to treat that failure as non-retryable immediately, avoiding
-		// the 3-attempt × ~2 s wasted latency before the workflow sees the error.
-		// The error object itself is NOT altered, so extractAiUsageLimitExceededError
-		// in the route layer still detects it via the message-regex fallback (the
-		// original error is nested as ApplicationFailure.cause inside ActivityFailure).
-		nonRetryableErrorTypes: ["AiUsageLimitExceededError"],
+		// When the activity rethrows AiUsageLimitExceededError — or the
+		// AIProviderNotConfiguredError a keyless tenant now gets instead of a
+		// platform-key fallback — Temporal records the failure type as
+		// `error.constructor?.name ?? error.name` (see @temporalio/common
+		// ensureApplicationFailure). Listing them here tells the server to treat
+		// that failure as non-retryable immediately, avoiding the 3-attempt
+		// × ~2 s wasted latency before the workflow sees the error. The error
+		// object itself is NOT altered, so extractAiUsageLimitExceededError in the
+		// route layer still detects it via the message-regex fallback (the
+		// original error is nested as ApplicationFailure.cause inside
+		// ActivityFailure).
+		nonRetryableErrorTypes: [...AI_NON_RETRYABLE_ERROR_TYPES],
 	},
 });
 

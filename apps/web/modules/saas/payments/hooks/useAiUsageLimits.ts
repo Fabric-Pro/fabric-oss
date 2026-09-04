@@ -8,7 +8,7 @@
  * - `aiUsageLimits.delete` — soft-archive a single limit
  * Cadence:
  * - `status` refetches on window focus and every 30s (matches the
- * existing `AiCreditsBanner` cadence — gentle on the chokepoint).
+ * cadence the retired credits banner used — gentle on the chokepoint).
  * `staleTime: 10_000` so back-to-back navigations within a 10s
  * window reuse the cache.
  * - `list` is more static — `staleTime: 60_000`, refetches on window
@@ -31,10 +31,10 @@
  */
 import { orpcClient } from "@shared/lib/orpc-client";
 import {
-	useMutation,
 	type UseMutationResult,
-	useQuery,
 	type UseQueryResult,
+	useMutation,
+	useQuery,
 	useQueryClient,
 } from "@tanstack/react-query";
 import { useTranslations } from "next-intl";
@@ -119,7 +119,7 @@ export function useAiUsageLimits(
 
 /**
  * Fetch the live counter value + percent for every active limit. Cadence
- * — 30s polling matches `AiCreditsBanner` to keep load
+ * — 30s polling, inherited from the retired credits banner, to keep load
  * gentle on the chokepoint.
  */
 /**

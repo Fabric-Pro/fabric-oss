@@ -32,6 +32,81 @@ import { ActiveOrganizationContext } from "../lib/active-organization-context";
 // after this long so the switcher and progress bar can't get stuck.
 const SWITCH_WATCHDOG_MS = 12_000;
 
+// How hard we try to persist `user.lastActiveOrganizationId`. Three attempts
+// with a short linear backoff covers a transient network blip without keeping
+// a doomed request alive long enough to matter.
+const LAST_ACTIVE_WORKSPACE_ATTEMPTS = 3;
+const LAST_ACTIVE_WORKSPACE_RETRY_BASE_MS = 300;
+
+/**
+ * Record the workspace the user just switched into.
+ *
+ * `user.lastActiveOrganizationId` is not a cache — it is the durable record of
+ * where this person works. `resolveUserOrganization` reads it to decide which
+ * organization a multi-organization account resolves into, including when a
+ * brand-new session is seeded at sign-in, so a lost write means the next login
+ * silently opens the workspace they just switched *away* from, with no error
+ * and no trace. Hence: retried, and a final failure is logged rather than
+ * swallowed.
+ *
+ * `isSuperseded` reports whether a newer switch has started since this one. It
+ * is re-checked before every attempt, because the retry keeps this call alive
+ * across the backoff and a person can switch again inside that window: a stale
+ * retry that landed afterwards would overwrite the newer workspace with the one
+ * they already left — the very bug this function exists to prevent.
+ *
+ * Never rejects — callers fire this and forget it, off the critical path.
+ */
+async function persistLastActiveWorkspace(
+	organizationId: string | null,
+	isSuperseded: () => boolean,
+) {
+	let lastError: unknown;
+
+	for (
+		let attempt = 1;
+		attempt <= LAST_ACTIVE_WORKSPACE_ATTEMPTS;
+		attempt++
+	) {
+		// A newer switch now owns the field. Abandon quietly: this is not a
+		// failure, and writing would move the user back to a stale workspace.
+		if (isSuperseded()) {
+			return;
+		}
+
+		try {
+			await orpcClient.users.updateLastActiveWorkspace({
+				organizationId,
+			});
+			return;
+		} catch (error) {
+			lastError = error;
+			if (attempt < LAST_ACTIVE_WORKSPACE_ATTEMPTS) {
+				await new Promise((resolve) =>
+					setTimeout(
+						resolve,
+						LAST_ACTIVE_WORKSPACE_RETRY_BASE_MS * attempt,
+					),
+				);
+			}
+		}
+	}
+
+	// Superseded on the last attempt — a newer switch has since recorded its
+	// own workspace, so nothing was lost and there is nothing to report.
+	if (isSuperseded()) {
+		return;
+	}
+
+	// Client component — `@repo/logs` is server-only (its pino transports pull
+	// in node:fs and break the browser bundle), so the console is how the rest
+	// of the saas client modules log.
+	console.error(
+		`[ActiveOrganizationProvider] Failed to persist the last active workspace after ${LAST_ACTIVE_WORKSPACE_ATTEMPTS} attempts — the user's next sign-in will open the workspace they switched away from`,
+		lastError,
+	);
+}
+
 export function ActiveOrganizationProvider({
 	children,
 }: {
@@ -200,15 +275,17 @@ export function ActiveOrganizationProvider({
 				};
 			});
 
-			// Persist for cross-session redirect on next login. Fire-and-forget —
-			// a failure here does not block navigation.
-			orpcClient.users
-				.updateLastActiveWorkspace({
-					organizationId: newActiveOrganization?.id ?? null,
-				})
-				.catch(() => {
-					// silent — non-critical persistence, will be updated on next switch
-				});
+			// Record where this person is now working. This field decides which
+			// organization their *next* sign-in opens, so losing it silently is
+			// the bug — the helper retries and logs rather than swallowing the
+			// failure. Still fire-and-forget: the switch has already succeeded,
+			// so this must never delay navigation or roll it back. The
+			// generation check rides along so a retry that outlives this switch
+			// abandons instead of overwriting a newer one.
+			void persistLastActiveWorkspace(
+				newActiveOrganization?.id ?? null,
+				() => switchGenerationRef.current !== generation,
+			);
 
 			// Warm the billing cache in the background (org context only).
 			if (newActiveOrganization && config.organizations.enableBilling) {
@@ -261,6 +338,72 @@ export function ActiveOrganizationProvider({
 			}
 		};
 	}, []);
+
+	// Organizations we have already tried to reconcile the session onto, so a
+	// refusal is not retried on every render.
+	const reconciledOrganizationsRef = useRef(new Set<string>());
+
+	// Make the session name the organization the URL is already showing.
+	//
+	// Landing on /app/{slug} does not by itself move `session.activeOrganizationId`:
+	// the post-login hop writes the session row directly, and a bare /app load
+	// redirects into the first membership without writing anything at all. Either
+	// way the row and the URL can agree while the API still disagrees with both,
+	// because `protectedProcedure` reads the session through Better Auth's signed
+	// `session_data` cookie — a five-minute snapshot that a Prisma write cannot
+	// touch. Until it expires, `tenantContextMiddleware` builds its tenant context
+	// from the organization the caller has left. Most calls are unaffected because
+	// they pass an explicit, URL-derived organization id, but the ones that fall
+	// back to the session resolve against the wrong tenant.
+	//
+	// Only a caller that can set cookies can close that, which a Server Component
+	// cannot — so the client does it, through the same `setActive` the switcher
+	// uses. It refreshes the cookie cache and the row together.
+	//
+	// Deliberately quiet: the page is already rendering the right organization and
+	// the user asked for nothing here. A failure leaves the pre-existing staleness
+	// in place rather than interrupting them, and is not retried — the next switch
+	// or sign-in writes the field anyway.
+	useEffect(() => {
+		if (!activeOrganization || switchTarget || switchInFlightRef.current) {
+			return;
+		}
+		if (session?.activeOrganizationId === activeOrganization.id) {
+			return;
+		}
+		if (reconciledOrganizationsRef.current.has(activeOrganization.id)) {
+			return;
+		}
+		reconciledOrganizationsRef.current.add(activeOrganization.id);
+
+		void authClient.organization
+			.setActive({ organizationId: activeOrganization.id })
+			.then(({ error }) => {
+				if (error) {
+					throw error;
+				}
+				// Keep the cached session in step so this effect settles instead
+				// of firing again on the next render.
+				queryClient.setQueryData(sessionQueryKey, (data: any) => ({
+					...data,
+					session: {
+						...data?.session,
+						activeOrganizationId: activeOrganization.id,
+					},
+				}));
+			})
+			.catch((error) => {
+				console.error(
+					"[ActiveOrganizationProvider] Failed to align the session with the workspace on screen — API calls that fall back to the session may resolve against the previous organization until its cached session expires",
+					error,
+				);
+			});
+	}, [
+		activeOrganization,
+		session?.activeOrganizationId,
+		switchTarget,
+		queryClient,
+	]);
 
 	const [loaded, setLoaded] = useState(activeOrganization !== undefined);
 

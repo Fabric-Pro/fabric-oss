@@ -34,6 +34,7 @@ import type { generateSummaryActivity as GenerateFn } from "../activities/contex
 import type { markSummaryGeneratingActivity as MarkGeneratingFn } from "../activities/context-summarization/mark-summary-generating";
 import type { notifySummaryFailureActivity as NotifyFailureFn } from "../activities/context-summarization/notify-summary-failure";
 import type { persistSummaryActivity as PersistFn } from "../activities/context-summarization/persist-summary";
+import { AI_NON_RETRYABLE_ERROR_TYPES } from "./ai-non-retryable-errors";
 
 export interface ContextSummarizationInput {
 	projectId: string;
@@ -80,7 +81,14 @@ const { generateSummaryActivity } = proxyActivities<{
 }>({
 	startToCloseTimeout: "30 minutes",
 	heartbeatTimeout: "2 minutes",
-	retry: { initialInterval: "5s", backoffCoefficient: 2, maximumAttempts: 3 },
+	retry: {
+		initialInterval: "5s",
+		backoffCoefficient: 2,
+		maximumAttempts: 3,
+		// See backlog-context-analysis-workflow: a configuration refusal is
+		// deterministic, so the retry budget buys nothing but delay.
+		nonRetryableErrorTypes: [...AI_NON_RETRYABLE_ERROR_TYPES],
+	},
 });
 
 const { persistSummaryActivity } = proxyActivities<{

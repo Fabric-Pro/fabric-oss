@@ -33,6 +33,7 @@ import {
 	workflowInfo,
 } from "@temporalio/workflow";
 import type * as slackChannelMonitorActivities from "../activities/slack-channel-monitor";
+import { AI_NON_RETRYABLE_ERROR_TYPES } from "./ai-non-retryable-errors";
 
 // =============================================================================
 // Types
@@ -123,7 +124,11 @@ const activities = proxyActivities<typeof slackChannelMonitorActivities>({
 		backoffCoefficient: 2,
 		maximumInterval: "60s",
 		maximumAttempts: 3,
-		nonRetryableErrorTypes: ["ValidationError", "TenantViolation"],
+		nonRetryableErrorTypes: [
+			"ValidationError",
+			"TenantViolation",
+			...AI_NON_RETRYABLE_ERROR_TYPES,
+		],
 	},
 });
 

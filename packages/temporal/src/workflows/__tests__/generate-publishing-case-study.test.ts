@@ -311,7 +311,14 @@ describe("generatePublishingCaseStudyWorkflow", () => {
 		expect(generation.heartbeatTimeout).toBe("2 minutes");
 		expect(generation.retry).toMatchObject({
 			maximumAttempts: 3,
-			nonRetryableErrorTypes: ["ValidationError", "TenantViolation"],
+			nonRetryableErrorTypes: [
+				"ValidationError",
+				"TenantViolation",
+				// A tenant with no configured provider gets the same refusal on
+				// every attempt — see `ai-non-retryable-errors.ts`.
+				"AIProviderNotConfiguredError",
+				"AiUsageLimitExceededError",
+			],
 		});
 
 		const marker = bags[1];

@@ -243,8 +243,15 @@ async function enhanceFeatureWithAI({
 		}
 		return separated;
 	} catch (error) {
+		// Deliberately NOT collapsed into the `null` below. `null` means "the
+		// model ran and produced nothing usable", and the caller answers that
+		// by advancing the drafting stage anyway. A tenant with no configured
+		// provider never ran a model at all, so advancing on it moves the
+		// feature forward with no output and no error — a silent data loss the
+		// PO only discovers on the next stage. Rethrow and let the handler map
+		// it to the same refusal every other AI procedure returns.
 		if (error instanceof AIProviderNotConfiguredError) {
-			return null;
+			throw error;
 		}
 		console.error("AI feature enhancement failed:", error);
 		return null;
@@ -626,21 +633,35 @@ export const enhanceFeatureProcedure = tenantProtectedProcedure
 			decisionLogContextChars: decisionLogContext?.length ?? 0,
 		});
 
-		const enhanced = await enhanceFeatureWithAI({
-			title: story.title,
-			description: story.description ?? "",
-			acceptanceCriteria: story.acceptanceCriteria,
-			storyKind: story.kind,
-			prompt: rendered.rendered,
-			projectContext,
-			ragContext: ragWithAttachments ?? undefined,
-			liveIntegrationContext: liveResult ?? undefined,
-			liveUrlContext: liveUrlResult ?? undefined,
-			featureDecisionContext: decisionLogContext ?? undefined,
-			userId: user.id,
-			organizationId,
-			projectId: input.projectId,
-		});
+		let enhanced: Awaited<ReturnType<typeof enhanceFeatureWithAI>>;
+		try {
+			enhanced = await enhanceFeatureWithAI({
+				title: story.title,
+				description: story.description ?? "",
+				acceptanceCriteria: story.acceptanceCriteria,
+				storyKind: story.kind,
+				prompt: rendered.rendered,
+				projectContext,
+				ragContext: ragWithAttachments ?? undefined,
+				liveIntegrationContext: liveResult ?? undefined,
+				liveUrlContext: liveUrlResult ?? undefined,
+				featureDecisionContext: decisionLogContext ?? undefined,
+				userId: user.id,
+				organizationId,
+				projectId: input.projectId,
+			});
+		} catch (error) {
+			// Nothing ran, so nothing moves: no stage advance, no version, no
+			// auto-draft trigger. Same mapping as `generateTasksProcedure` —
+			// PRECONDITION_FAILED carrying the resolver's own message, which
+			// names the settings page that fixes it.
+			if (error instanceof AIProviderNotConfiguredError) {
+				throw new ORPCError("PRECONDITION_FAILED", {
+					message: error.message,
+				});
+			}
+			throw error;
+		}
 
 		if (!enhanced) {
 			// AI failed. A refresh leaves the spec/stage untouched; a transition

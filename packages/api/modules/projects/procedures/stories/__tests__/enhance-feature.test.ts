@@ -529,3 +529,73 @@ describe("context-only attachment delivery (U3)", () => {
 		);
 	});
 });
+
+/**
+ * A tenant with no configured provider is not "the model returned nothing".
+ *
+ * `enhanceFeatureWithAI` used to answer both with `null`, and the handler
+ * answers `null` by advancing the drafting stage anyway — a deliberate choice
+ * for a model that ran and produced nothing usable. Applied to a refusal that
+ * ran no model at all, it moved the feature to the next stage with no output
+ * and no error, so the PO saw a stage change and an unchanged spec, and only
+ * discovered the missing provider later (Fizzy #1875).
+ */
+describe("enhanceFeatureProcedure — AI could not run at all", () => {
+	const enhanceInput = {
+		projectId: "project-1",
+		storyId: "story-sb",
+		organizationId: null,
+		targetStage: "PASSIVE_ANALYSIS",
+	};
+
+	async function errorFrom(promise: Promise<unknown>) {
+		try {
+			await promise;
+			throw new Error("expected the handler to reject");
+		} catch (err) {
+			return err as { code?: string; message?: string };
+		}
+	}
+
+	it("refuses instead of advancing the drafting stage", async () => {
+		const { AIProviderNotConfiguredError } = await import("@repo/ai");
+		mocks.getAIModelWithMetadata.mockRejectedValue(
+			new AIProviderNotConfiguredError(
+				"No AI provider configured. Please configure an AI provider in Settings → AI Providers.",
+			),
+		);
+
+		const err = await errorFrom(
+			handlers.enhance({ input: enhanceInput, context: ctx }),
+		);
+
+		// Same mapping `generateTasksProcedure` returns, carrying the
+		// resolver's own message so the remedy names one settings page.
+		expect(err.code).toBe("PRECONDITION_FAILED");
+		expect(err.message).toContain("Settings → AI Providers");
+
+		// Nothing moved: no stage advance, no version, no spec write.
+		expect(mocks.updateStoryDraftingStage).not.toHaveBeenCalled();
+		expect(mocks.updateStory).not.toHaveBeenCalled();
+		expect(mocks.createFeatureVersion).not.toHaveBeenCalled();
+	});
+
+	it("still advances the stage when the model ran and produced nothing", async () => {
+		// The contrast that keeps the fix targeted: a genuine generation
+		// failure is the case the advance-anyway behaviour was written for,
+		// and it is unchanged.
+		mocks.updateStoryDraftingStage.mockResolvedValue({
+			id: "story-sb",
+			draftingStage: "PASSIVE_ANALYSIS",
+		});
+		mocks.generateObject.mockRejectedValue(new Error("provider timeout"));
+
+		const result = (await handlers.enhance({
+			input: enhanceInput,
+			context: ctx,
+		})) as { aiEnhanced: boolean };
+
+		expect(result.aiEnhanced).toBe(false);
+		expect(mocks.updateStoryDraftingStage).toHaveBeenCalled();
+	});
+});

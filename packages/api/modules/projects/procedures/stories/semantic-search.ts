@@ -1,6 +1,10 @@
 import { createHash } from "node:crypto";
 import { ORPCError } from "@orpc/client";
-import { resolveModelWithProvider } from "@repo/ai";
+import {
+	AIProviderNotConfiguredError,
+	hasProviderCredentials,
+	resolveModelWithProvider,
+} from "@repo/ai";
 import {
 	baseModelName,
 	cosineSimilarity,
@@ -59,6 +63,23 @@ const MAX_INLINE_EMBEDS = 200;
 
 const EMBEDDING_UNAVAILABLE_MESSAGE =
 	"Could not generate embeddings. Ensure an embedding model is configured in Settings → AI Models.";
+
+/**
+ * A tenant with no configured provider is not a server error, and it is not
+ * this procedure's private problem: it is the same refusal `generateTasks`,
+ * `enhanceFeature` and the Atlas chat return, and it carries the resolver's own
+ * message so every surface names the same remedy. Mapping it to
+ * INTERNAL_SERVER_ERROR (with copy pointing at a settings page that does not
+ * fix it) told the user their search had broken when nothing had.
+ */
+function refuseWhenProviderNotConfigured(error: unknown): never {
+	if (error instanceof AIProviderNotConfiguredError) {
+		throw new ORPCError("PRECONDITION_FAILED", { message: error.message });
+	}
+	throw new ORPCError("INTERNAL_SERVER_ERROR", {
+		message: EMBEDDING_UNAVAILABLE_MESSAGE,
+	});
+}
 
 /**
  * Short-lived per-project vector corpus. Ranking compares the query against
@@ -183,6 +204,19 @@ export const semanticSearchProcedure = tenantProtectedProcedure
 				userId: user.id,
 				organizationId: organizationId ?? undefined,
 			});
+			// `resolveModelWithProvider` does NOT throw when nothing resolves —
+			// it RETURNS `{ apiKey: null, _error }`. So the catch below could
+			// never see the keyless tenant, and the empty model string it hands
+			// back flowed on to be compared against every cached vector's model
+			// (matching none), marking the whole corpus stale and sending the
+			// request to the embedder purely to fail there instead. Refuse here,
+			// where the refusal is cheap and the reason is known.
+			if (!hasProviderCredentials(resolved)) {
+				throw new AIProviderNotConfiguredError(
+					resolved._error ??
+						"No embedding provider configured. Please configure an AI provider with embedding support in Settings → AI Providers.",
+				);
+			}
 			currentModel = baseModelName(resolved.modelString);
 		} catch (err) {
 			logger.error(
@@ -192,9 +226,7 @@ export const semanticSearchProcedure = tenantProtectedProcedure
 					err: err instanceof Error ? err.message : String(err),
 				},
 			);
-			throw new ORPCError("INTERNAL_SERVER_ERROR", {
-				message: EMBEDDING_UNAVAILABLE_MESSAGE,
-			});
+			refuseWhenProviderNotConfigured(err);
 		}
 
 		// Staleness mirrors runDuplicateScanCore: a story needs re-embedding
@@ -272,9 +304,7 @@ export const semanticSearchProcedure = tenantProtectedProcedure
 				texts: texts.length,
 				err: err instanceof Error ? err.message : String(err),
 			});
-			throw new ORPCError("INTERNAL_SERVER_ERROR", {
-				message: EMBEDDING_UNAVAILABLE_MESSAGE,
-			});
+			refuseWhenProviderNotConfigured(err);
 		}
 
 		const queryVector = embeddings[0];

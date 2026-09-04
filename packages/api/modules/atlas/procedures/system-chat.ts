@@ -58,9 +58,12 @@ export const systemChatProcedure = tenantProtectedProcedure
 			})();
 		} catch (error) {
 			if (error instanceof AIProviderNotConfiguredError) {
-				throw new ORPCError("BAD_REQUEST", {
-					message:
-						"No AI model is configured. Add one in Settings → AI Models.",
+				// Same mapping as the sibling chat procedure: this is a
+				// provider problem, so it carries the resolver's own message
+				// and points at provider settings. The former copy sent people
+				// to the model-preferences page, which cannot fix it.
+				throw new ORPCError("PRECONDITION_FAILED", {
+					message: error.message,
 				});
 			}
 			mapAtlasError(error);

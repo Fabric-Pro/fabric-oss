@@ -3,7 +3,6 @@
 import { config } from "@repo/config";
 import { useSession } from "@saas/auth/hooks/use-session";
 import { ProjectInviteWelcomeWidget } from "@saas/dashboard/components/ProjectInviteWelcomeWidget";
-import { AiGatewayWarningBanner } from "@saas/shared/components/AiGatewayWarningBanner";
 import { PendingInvitationsBanner } from "@saas/shared/components/PendingInvitationsBanner";
 import { orpcClient } from "@shared/lib/orpc-client";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -325,8 +324,16 @@ export function UserDashboard() {
 				onRefresh={handleRefresh}
 			/>
 
-			{/* Setup reminders */}
-			<AiGatewayWarningBanner />
+			{/* The AI-provider notice used to mount here. It now lives in
+			 * the app chrome (`AppWrapper`), which the account layout above
+			 * this dashboard also mounts — so this page keeps the notice and
+			 * every other page gains it (Fizzy #1875, R5).
+			 *
+			 * This dashboard is config-gated, not dead: `/app` renders it only
+			 * when `config.organizations.requireOrganization` is false, and
+			 * redirects into an organization otherwise. The flag-flipping test
+			 * at `__tests__/organizations/personal-app-start-page.test.tsx`
+			 * keeps the path in the import graph. */}
 
 			{/* KPI cards */}
 			<div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">

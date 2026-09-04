@@ -3,7 +3,7 @@
  * Activities are non-deterministic operations that can fail and be retried
  */
 
-import { getRAGProviderConfig } from "@repo/ai";
+import { getSystemRAGProviderConfig } from "@repo/ai";
 import {
 	createDocumentChunks,
 	db,
@@ -226,7 +226,7 @@ export async function processWorkspaceDocument(
 		await updateWorkspaceDocument(documentId, { status: "EMBEDDING" });
 
 		// Step 9: Generate embeddings and store chunks using centralized config
-		const providerConfig = await getRAGProviderConfig({
+		const providerConfig = await getSystemRAGProviderConfig({
 			userId,
 			organizationId,
 		});

@@ -3,7 +3,6 @@
 import { config } from "@repo/config";
 import { useSession } from "@saas/auth/hooks/use-session";
 import { ProjectInviteWelcomeWidget } from "@saas/dashboard/components/ProjectInviteWelcomeWidget";
-import { AiGatewayWarningBanner } from "@saas/shared/components/AiGatewayWarningBanner";
 import { PendingInvitationsBanner } from "@saas/shared/components/PendingInvitationsBanner";
 import { orpcClient } from "@shared/lib/orpc-client";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -358,8 +357,11 @@ export function OrganizationDashboard({
 				onRefresh={handleRefresh}
 			/>
 
-			{/* Setup reminders */}
-			<AiGatewayWarningBanner />
+			{/* The AI-provider notice moved to the app chrome (`AppWrapper`),
+			 * which wraps this page and every other page in the organization.
+			 * A tenant with no provider has nothing AI-shaped working
+			 * anywhere, so the dashboard was the wrong place to be the only
+			 * one saying so (Fizzy #1875, R5). */}
 
 			{/* KPI cards */}
 			<div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">

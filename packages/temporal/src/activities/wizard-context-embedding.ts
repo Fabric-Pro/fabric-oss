@@ -6,7 +6,7 @@
  * project creation wizard flow.
  */
 
-import { getRAGProviderConfig } from "@repo/ai";
+import { getSystemRAGProviderConfig } from "@repo/ai";
 import { db, updateWizardTempContextEmbedding } from "@repo/database";
 import { logger } from "@repo/logs";
 import {
@@ -166,7 +166,7 @@ export async function generateWizardContextEmbeddings(params: {
 	);
 
 	// Get AI provider configuration using centralized function
-	const providerConfig = await getRAGProviderConfig({
+	const providerConfig = await getSystemRAGProviderConfig({
 		userId,
 		organizationId,
 	});

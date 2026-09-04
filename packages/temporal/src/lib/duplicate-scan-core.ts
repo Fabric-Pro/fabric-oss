@@ -39,6 +39,7 @@
  */
 
 import {
+	AIProviderNotConfiguredError,
 	generateObject,
 	getAIModelWithMetadata,
 	resolveModelWithProvider,
@@ -51,6 +52,7 @@ import {
 	type DetectionItem,
 	detectionTextForStory,
 	hashDetectionText,
+	hasProviderCredentials,
 	listActiveStoriesForDetection,
 	listDismissedDuplicatePairKeys,
 	listStoryDuplicateEmbeddingMetadata,
@@ -202,8 +204,28 @@ export async function runDuplicateScanCore(
 			userId,
 			organizationId: organizationId ?? undefined,
 		});
+		// `resolveModelWithProvider` does not throw for a keyless tenant — it
+		// RETURNS `{ apiKey: null, _error }` with an empty model string. Left
+		// unchecked, that empty string matches no cached row's model, marks the
+		// entire corpus stale, and sends every story to the embedder purely to
+		// fail there. Refuse here instead, and refuse with the type Temporal
+		// matches: the catch below rewraps into `EmbeddingUnavailableError`,
+		// which is absent from `AI_NON_RETRYABLE_ERROR_TYPES`, so a
+		// configuration refusal would burn the whole retry budget on an answer
+		// that cannot change. Mirrors the guard in `semantic-search.ts`.
+		if (!hasProviderCredentials(resolved)) {
+			throw new AIProviderNotConfiguredError(
+				resolved._error ??
+					"No embedding provider configured. Add one in Settings → AI Providers.",
+			);
+		}
 		currentModel = baseModelName(resolved.modelString);
 	} catch (err) {
+		// A configuration refusal is deterministic — pass it through with its
+		// own type rather than rewrapping it as a transient embedding failure.
+		if (err instanceof AIProviderNotConfiguredError) {
+			throw err;
+		}
 		logger.error(`${logPrefix} embedding model resolution failed`, {
 			projectId,
 			err: err instanceof Error ? err.message : String(err),

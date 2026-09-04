@@ -23,7 +23,7 @@ import {
 	embed,
 	getAIEmbeddingModelWithMetadata,
 	getAIModelWithMetadata,
-	getRAGProviderConfig,
+	getSystemRAGProviderConfig,
 	logEmbeddingUsageAsync,
 	logModelUsageAsync,
 	readTokenCount,
@@ -2439,7 +2439,7 @@ export async function embedProjectDocumentActivity(params: {
 		}
 
 		// Get provider config for embedding
-		const providerConfig = await getRAGProviderConfig({
+		const providerConfig = await getSystemRAGProviderConfig({
 			userId,
 			organizationId,
 		});

@@ -61,6 +61,14 @@ vi.mock("@repo/rag", () => ({
 }));
 
 vi.mock("@repo/ai", () => ({
+	// A real class: the scan rethrows a configuration refusal by `instanceof`
+	// rather than rewrapping it, and `instanceof` against a stub is never true.
+	AIProviderNotConfiguredError: class AIProviderNotConfiguredError extends Error {
+		constructor(message: string) {
+			super(message);
+			this.name = "AIProviderNotConfiguredError";
+		}
+	},
 	generateObject: (...a: unknown[]) => mockGenerateObject(...a),
 	getAIModelWithMetadata: (...a: unknown[]) =>
 		mockGetAIModelWithMetadata(...a),
@@ -81,6 +89,15 @@ vi.mock("@repo/database", async () => {
 	>("@repo/database/prisma/queries/projects/duplicate-detection");
 	return {
 		...pure,
+		// The real predicate — the scan's provider guard is under test here, so
+		// a stub would decide it instead of the rule. Pinned at the source by
+		// `@repo/database`'s own ai-gateway tests.
+		hasProviderCredentials: (row: {
+			apiKey?: string | null;
+			clientId?: string | null;
+			encryptedClientSecret?: string | null;
+		}) =>
+			Boolean(row.apiKey || (row.clientId && row.encryptedClientSecret)),
 		hasProjectAccess: (...a: unknown[]) => mockHasProjectAccess(...a),
 		listActiveStoriesForDetection: (...a: unknown[]) =>
 			mockListActiveStoriesForDetection(...a),
@@ -196,8 +213,12 @@ beforeEach(() => {
 		metadata: {},
 		trackUsage: vi.fn(),
 	});
+	// A CONFIGURED tenant, which every test here assumes. The apiKey matters:
+	// the scan refuses up front when the resolver returns no credentials.
 	mockResolveModelWithProvider.mockResolvedValue({
 		modelString: `openai/${EMBEDDING_MODEL}`,
+		apiKey: "encrypted:sk-test",
+		source: "organization",
 	});
 	// Empty cache by default: every item is stale, so first-run behaviour is
 	// a full scan (embed everything, compare every pair).

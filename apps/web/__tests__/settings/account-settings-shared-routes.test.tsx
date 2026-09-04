@@ -7,6 +7,11 @@
  *
  * The personal routes are asserted here too, because R10 requires them to keep
  * working unchanged: no redirect, no behaviour change.
+ *
+ * The account AI-providers route (R12/AE7) joins them at the bottom of this
+ * file for the same reason: a provider key saved without an organization is
+ * the person's, resolves inside whichever organization they are working in,
+ * and has nothing about it to scope per tenant.
  */
 
 import { render, screen } from "@testing-library/react";
@@ -29,12 +34,15 @@ vi.mock("@repo/config", () => ({
 const getSession = vi.fn();
 const getUserAccounts = vi.fn();
 const getUserPasskeys = vi.fn();
+const getOrganizationList = vi.fn();
 const prefetchQuery = vi.fn();
 
 vi.mock("@saas/auth/lib/server", () => ({
 	getSession: (...args: unknown[]) => getSession(...args),
 	getUserAccounts: (...args: unknown[]) => getUserAccounts(...args),
 	getUserPasskeys: (...args: unknown[]) => getUserPasskeys(...args),
+	// Read by the catch-all that answers for the retired personal tree.
+	getOrganizationList: (...args: unknown[]) => getOrganizationList(...args),
 }));
 
 vi.mock("@shared/lib/server", () => ({
@@ -79,7 +87,15 @@ vi.mock("@saas/settings/components/NotificationPreferencesForm", () => ({
 vi.mock("@saas/settings/components/NotificationDeliveryForm", () => ({
 	NotificationDeliveryForm: () => <div>Notification delivery</div>,
 }));
+// The provider form is a ~2200-line client tree with its own oRPC graph. This
+// suite is about WHICH surface the route mounts and with what tenant, so it is
+// stubbed at its module boundary like the security blocks above.
+vi.mock("@saas/settings/components/AiProvidersSettingsForm", () => ({
+	AiProvidersSettingsForm: () => <div>Personal AI provider keys</div>,
+}));
 
+import PersonalSettingsRedirect from "../../app/(saas)/app/(account)/settings/[[...path]]/page";
+import OrgAccountAiProvidersPage from "../../app/(saas)/app/(organizations)/[organizationSlug]/settings/account/ai-providers/page";
 import OrgNotificationsPage from "../../app/(saas)/app/(organizations)/[organizationSlug]/settings/account/notifications/page";
 import OrgSecurityPage from "../../app/(saas)/app/(organizations)/[organizationSlug]/settings/account/security/page";
 import { AccountNotificationSettings } from "../../modules/saas/settings/components/AccountNotificationSettings";
@@ -209,5 +225,95 @@ describe("account settings routes — account-global, inside an organization", (
 				/Your organization requires two-factor authentication/,
 			),
 		).toBeDefined();
+	});
+});
+
+/**
+ * Fizzy #1875 (R12, AE7): the "AI provider required" notice tells a member who
+ * cannot edit the organization's providers that they may add a key of their
+ * own. That was true of the resolver and false of the interface — the form
+ * existed, complete, and was mounted nowhere. This is the page that closes it.
+ */
+describe("account AI providers route — the personal key has a home", () => {
+	beforeEach(() => {
+		vi.clearAllMocks();
+		getSession.mockResolvedValue({ user: { id: "user-1" } });
+	});
+
+	it("lets a member who cannot edit the organization's providers add their own key", async () => {
+		// Nothing about this route consults membership or role: it is the page
+		// a NON-admin is sent to, so gating it on being one would defeat it.
+		render(
+			<FeatureFlagProvider value={{ PUBLISHING_SUITE: false }}>
+				{await OrgAccountAiProvidersPage()}
+			</FeatureFlagProvider>,
+		);
+
+		expect(screen.getByText("Your AI Providers")).toBeDefined();
+		expect(screen.getByText("Personal AI provider keys")).toBeDefined();
+	});
+
+	it("refuses an unauthenticated caller the way its siblings do", async () => {
+		getSession.mockResolvedValue(null);
+
+		await expect(OrgAccountAiProvidersPage()).rejects.toThrow(
+			"redirect:/auth/login",
+		);
+	});
+
+	it("threads no organization into the surface — the key is the person's", async () => {
+		// The route takes no `params`, so there is no slug it could pass down
+		// even by accident, and it reads the session with no tenant argument.
+		// A key scoped to the tenant would be the organization's page, not this.
+		expect(OrgAccountAiProvidersPage.length).toBe(0);
+
+		await OrgAccountAiProvidersPage();
+
+		expect(getSession).toHaveBeenCalledWith();
+	});
+});
+
+/**
+ * Fizzy #1875 (R12): a link saved before the personal settings tree was retired
+ * must still land somewhere, and for provider keys "somewhere" is now a real
+ * choice rather than the only page left standing.
+ */
+describe("the retired personal provider path, through the catch-all", () => {
+	beforeEach(() => {
+		vi.clearAllMocks();
+		getSession.mockResolvedValue({
+			user: { id: "user-1" },
+			session: { activeOrganizationId: "org-1" },
+		});
+		getOrganizationList.mockResolvedValue([
+			{ id: "org-1", slug: "example-org", name: "Example Org" },
+		]);
+	});
+
+	it("takes an old /app/settings/ai-providers link to the ACCOUNT page", async () => {
+		// Not the organization's page of the same slug. A key saved without an
+		// organization is not personal-context data being dropped — it is the
+		// person's, and it still resolves for them. Sending the bookmark to the
+		// organization's page would show them a different set of keys, owned by
+		// someone else and read-only to most members.
+		await expect(
+			PersonalSettingsRedirect({
+				params: Promise.resolve({ path: ["ai-providers"] }),
+				searchParams: Promise.resolve({}),
+			}),
+		).rejects.toThrow(
+			"redirect:/app/example-org/settings/account/ai-providers",
+		);
+	});
+
+	it("still lets every other settings slug keep its name", async () => {
+		// The guard against over-mapping: only the account-global pages are
+		// rewritten, and everything else merges into the organization's page.
+		await expect(
+			PersonalSettingsRedirect({
+				params: Promise.resolve({ path: ["ai-models"] }),
+				searchParams: Promise.resolve({}),
+			}),
+		).rejects.toThrow("redirect:/app/example-org/settings/ai-models");
 	});
 });

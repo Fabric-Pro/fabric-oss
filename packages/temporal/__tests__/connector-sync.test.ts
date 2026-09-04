@@ -46,7 +46,7 @@ vi.mock("@repo/database", () => ({
 }));
 
 vi.mock("@repo/ai", () => ({
-	getRAGProviderConfig: vi.fn().mockResolvedValue({
+	getSystemRAGProviderConfig: vi.fn().mockResolvedValue({
 		apiKey: "test-key",
 		provider: "OPENAI_DIRECT",
 	}),

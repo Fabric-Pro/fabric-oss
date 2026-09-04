@@ -275,8 +275,9 @@ async function fetchProjectPrdText(projectId?: string): Promise<string> {
  *   8. Clean the title; cap at 255.
  *   9. Any thrown error in the pipeline → timestamped fallback.
  *
- * Tenant rate gating is delegated to `assertTenantCanUseAi` (called inside
- * `getAIModelWithMetadata`); no per-feature rate limit is added here.
+ * Tenant gating is delegated to `getAIModelWithMetadata`, which refuses with
+ * `AIProviderNotConfiguredError` when the tenant configured no provider and
+ * enforces AI usage limits; no per-feature rate limit is added here.
  */
 export async function generateStoryTitleFromDescription(
 	description: string,

@@ -66,10 +66,14 @@ export const atlasChatProcedure = tenantProtectedProcedure
 				}
 			})();
 		} catch (error) {
+			// Same mapping as `generateTasksProcedure`: PRECONDITION_FAILED
+			// carrying the resolver's own message. The hand-written copy this
+			// replaces named "Settings → AI Models", a different page from the
+			// one that actually fixes it, and BAD_REQUEST reads as "your input
+			// was wrong" for a condition the caller's input had no part in.
 			if (error instanceof AIProviderNotConfiguredError) {
-				throw new ORPCError("BAD_REQUEST", {
-					message:
-						"No AI model is configured. Add one in Settings → AI Models.",
+				throw new ORPCError("PRECONDITION_FAILED", {
+					message: error.message,
 				});
 			}
 			mapAtlasError(error);

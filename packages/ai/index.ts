@@ -130,6 +130,7 @@ export {
 	getModelForTaskDynamic,
 	getProvidersForModel,
 	getRAGProviderConfig,
+	getSystemRAGProviderConfig,
 	isModelAvailableForProvider,
 	resolveModelConfiguration,
 	resolveModelWithProvider,

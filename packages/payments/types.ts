@@ -11,22 +11,11 @@ export type CreateCheckoutLink = (params: {
 	seats?: number;
 }) => Promise<string | null>;
 
-export type CreatePaymentMethodSetupLink = (params: {
-	email?: string;
-	name?: string;
-	redirectUrl?: string;
-	customerId?: string;
-	organizationId?: string;
-	userId?: string;
-}) => Promise<string | null>;
-
 export type CreateCustomerPortalLink = (params: {
 	subscriptionId?: string;
 	customerId: string;
 	redirectUrl?: string;
 }) => Promise<string | null>;
-
-export type HasPaymentMethod = (customerId: string) => Promise<boolean>;
 
 export type SetSubscriptionSeats = (params: {
 	id: string;
@@ -39,8 +28,6 @@ export type WebhookHandler = (req: Request) => Promise<Response>;
 
 export type PaymentProvider = {
 	createCheckoutLink: CreateCheckoutLink;
-	createPaymentMethodSetupLink: CreatePaymentMethodSetupLink;
 	createCustomerPortalLink: CreateCustomerPortalLink;
-	hasPaymentMethod: HasPaymentMethod;
 	webhookHandler: WebhookHandler;
 };

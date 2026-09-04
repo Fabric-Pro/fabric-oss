@@ -47,9 +47,6 @@ vi.mock("@repo/database", () => ({
 	},
 	generateTaskIdentifier: mocks.generateTaskIdentifier,
 }));
-vi.mock("@repo/payments", () => ({
-	AiCreditLimitExceededError: class extends Error {},
-}));
 vi.mock("../../../../../orpc/procedures", () => {
 	const chainable: Record<string, unknown> = {};
 	Object.assign(chainable, {

@@ -43,6 +43,7 @@ import type {
 	summarizeDailyBriefActivity as SummarizeDailyBriefFn,
 	summarizeReleaseNotesActivity as SummarizeReleaseNotesFn,
 } from "../activities/daily-brief";
+import { AI_NON_RETRYABLE_ERROR_TYPES } from "./ai-non-retryable-errors";
 import {
 	applyDeploymentsResult,
 	assembleFinalBrief,
@@ -214,6 +215,7 @@ const { summarizeDailyBriefActivity } = proxyActivities<{
 		nonRetryableErrorTypes: [
 			"DAILY_BRIEF_SCHEMA_VALIDATION_FAILED",
 			...PROGRAMMING_ERROR_TYPES,
+			...AI_NON_RETRYABLE_ERROR_TYPES,
 		],
 	},
 });
@@ -225,7 +227,10 @@ const { extractMeetingInsightsActivity } = proxyActivities<{
 	retry: {
 		maximumAttempts: 2,
 		initialInterval: "5s",
-		nonRetryableErrorTypes: [...PROGRAMMING_ERROR_TYPES],
+		nonRetryableErrorTypes: [
+			...PROGRAMMING_ERROR_TYPES,
+			...AI_NON_RETRYABLE_ERROR_TYPES,
+		],
 	},
 });
 
@@ -236,7 +241,10 @@ const { summarizeReleaseNotesActivity } = proxyActivities<{
 	retry: {
 		maximumAttempts: 2,
 		initialInterval: "5s",
-		nonRetryableErrorTypes: [...PROGRAMMING_ERROR_TYPES],
+		nonRetryableErrorTypes: [
+			...PROGRAMMING_ERROR_TYPES,
+			...AI_NON_RETRYABLE_ERROR_TYPES,
+		],
 	},
 });
 

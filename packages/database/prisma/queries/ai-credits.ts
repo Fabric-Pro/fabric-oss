@@ -1,39 +1,13 @@
-import { db, Prisma } from "../client";
+import { db } from "../client";
 import type {
 	AIProvider,
 	AiTaskType,
 	AiUsageBillingCategory,
 } from "../generated/client";
 
-export const FREE_AI_CREDIT_LIMIT_USD = 5;
-
-// Do NOT construct this at module load. `Prisma` is re-exported from `../client`
-// off the CJS generated client; in the Turbopack production bundle the
-// `@repo/database` barrel can evaluate this module before that binding is
-// initialized, throwing `ReferenceError: Prisma is not defined` during Next's
-// page-data collection (masked for weeks by turbo build-cache hits until an
-// unrelated dependency change busted @repo/web's cache). Build it lazily so the
-// `Prisma` value is only read at call time, after all modules have initialized.
-let freeAiCreditLimitDecimalMemo: Prisma.Decimal | undefined;
-const freeAiCreditLimitDecimal = (): Prisma.Decimal => {
-	if (!freeAiCreditLimitDecimalMemo) {
-		freeAiCreditLimitDecimalMemo = new Prisma.Decimal(
-			FREE_AI_CREDIT_LIMIT_USD.toFixed(6),
-		);
-	}
-	return freeAiCreditLimitDecimalMemo;
-};
-
 type TenantCreditParams =
 	| { organizationId: string; userId?: string }
 	| { userId: string; organizationId?: null | undefined };
-
-export interface AiCreditStatus {
-	usedCreditUsd: number;
-	remainingCreditUsd: number;
-	creditLimitUsd: number;
-	isLimitReached: boolean;
-}
 
 export interface AiUsageCostEstimate {
 	userId?: string;
@@ -108,10 +82,6 @@ const pricingCache = new Map<
 	string,
 	Promise<{ inputCostPer1M: number; outputCostPer1M: number } | null>
 >();
-
-function normalizeUsd(value: Prisma.Decimal | number | string): number {
-	return Number(new Prisma.Decimal(value).toFixed(6));
-}
 
 function createUsageSummary(data: {
 	totalCostMicroUsd: number | null | undefined;
@@ -355,87 +325,19 @@ export async function estimateAiUsageCostUsd(
 	return Number((inputCostUsd + outputCostUsd).toFixed(6));
 }
 
-export async function incrementTenantAiCreditUsage(
-	params: TenantCreditParams & { costUsd: number },
-) {
-	if (!(params.costUsd > 0)) {
-		return null;
-	}
-
-	const costUsd = new Prisma.Decimal(params.costUsd.toFixed(6));
-
-	if ("organizationId" in params && params.organizationId) {
-		return db.aiCreditAccount.upsert({
-			where: {
-				organizationId: params.organizationId,
-			},
-			create: {
-				organizationId: params.organizationId,
-				userId: null,
-				usedCreditUsd: costUsd,
-			},
-			update: {
-				usedCreditUsd: {
-					increment: costUsd,
-				},
-			},
-		});
-	}
-
-	return db.aiCreditAccount.upsert({
-		where: {
-			userId: params.userId,
-		},
-		create: {
-			userId: params.userId,
-			organizationId: null,
-			usedCreditUsd: costUsd,
-		},
-		update: {
-			usedCreditUsd: {
-				increment: costUsd,
-			},
-		},
-	});
-}
-
-export async function getTenantAiCreditStatus(
-	params: TenantCreditParams,
-): Promise<AiCreditStatus> {
-	const account =
-		"organizationId" in params && params.organizationId
-			? await db.aiCreditAccount.findUnique({
-					where: {
-						organizationId: params.organizationId,
-					},
-					select: {
-						usedCreditUsd: true,
-					},
-				})
-			: await db.aiCreditAccount.findUnique({
-					where: {
-						userId: params.userId,
-					},
-					select: {
-						usedCreditUsd: true,
-					},
-				});
-
-	const usedCreditUsd = normalizeUsd(account?.usedCreditUsd ?? 0);
-	const remainingCreditUsd = Math.max(
-		0,
-		Number((FREE_AI_CREDIT_LIMIT_USD - usedCreditUsd).toFixed(6)),
-	);
-
-	return {
-		usedCreditUsd,
-		remainingCreditUsd,
-		creditLimitUsd: FREE_AI_CREDIT_LIMIT_USD,
-		isLimitReached: new Prisma.Decimal(usedCreditUsd.toFixed(6)).gte(
-			freeAiCreditLimitDecimal(),
-		),
-	};
-}
+// The per-tenant credit ledger (`AiCreditAccount`) is no longer read from here.
+//
+// Nothing writes it either (Fizzy #1875): the accrual that incremented it after
+// every usage record counted spend on a tenant's own provider key against a
+// platform allowance that never funded it, and the allowance granted no access.
+// With the credit-status procedure and the external balance route gone, the
+// reader had no consumer left and went with them.
+//
+// The table and its rows are deliberately kept — see
+// `docs/plans/2026-09-03-001-feat-byok-only-remove-trial-credit-plan.md` KTD3.
+// They are history, and nothing in the product consults them.
+//
+// Usage reporting below is unaffected: it reads `AiUsageLog`, not this ledger.
 
 export async function getTenantAiUsageBreakdown(
 	params: TenantCreditParams & {

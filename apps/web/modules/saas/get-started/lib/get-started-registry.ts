@@ -16,6 +16,7 @@ import {
 	HeartPulseIcon,
 	HomeIcon,
 	KeyIcon,
+	KeyRoundIcon,
 	LayersIcon,
 	LayoutDashboardIcon,
 	LinkIcon,
@@ -535,14 +536,31 @@ const SETTINGS_GROUP: GsGroup = {
 			scope: "org",
 			href: settingsHref("members"),
 		},
+		// Two entries, not one amended entry: these are different destinations
+		// for different audiences (Fizzy #1875, R12). The organization's page
+		// is where an admin configures the keys the whole tenant runs on and
+		// renders read-only for everyone else; the account page is where any
+		// member — admin or not — adds a key of their own, which resolves for
+		// them inside an organization that has none. Folding them together
+		// would put the same "Configure" button in front of a member who
+		// cannot use it, which is the gap this unit exists to close.
 		{
 			id: "settings-ai-providers",
 			label: "AI Providers",
 			description:
-				"Connect LLM providers and API keys (OpenAI, Anthropic, Azure, and more).",
+				"Connect the LLM providers and API keys your organization runs on (OpenAI, Anthropic, Azure, and more). Organization admins configure these; everyone else sees them read-only.",
 			icon: BrainCircuitIcon,
 			cluster: "AI configuration",
 			href: settingsHref("ai-providers"),
+		},
+		{
+			id: "settings-account-ai-providers",
+			label: "Personal AI Providers",
+			description:
+				"Add an AI provider key of your own. It travels with you into every organization you work in, and is used when the one you are in has no provider configured.",
+			icon: KeyRoundIcon,
+			cluster: "AI configuration",
+			href: settingsHref("account/ai-providers"),
 		},
 		{
 			id: "settings-ai-models",

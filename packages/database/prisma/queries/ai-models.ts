@@ -14,10 +14,7 @@ import type {
 	SpeedTier,
 	TaskComplexity,
 } from "../generated/client";
-import {
-	estimateAiUsageCostUsd,
-	incrementTenantAiCreditUsage,
-} from "./ai-credits";
+import { estimateAiUsageCostUsd } from "./ai-credits";
 import { aiModelCatalogCache, aiTaskDefaultsCache } from "./cache";
 
 // ============================================================================
@@ -1005,17 +1002,13 @@ export async function logAiUsage(data: AiUsageLogData) {
 		},
 	});
 
-	if (data.organizationId) {
-		await incrementTenantAiCreditUsage({
-			organizationId: data.organizationId,
-			costUsd,
-		});
-	} else if (data.userId) {
-		await incrementTenantAiCreditUsage({
-			userId: data.userId,
-			costUsd,
-		});
-	}
+	// NOTE: this used to increment a per-tenant credit ledger here, after every
+	// usage record and without regard to who paid for the call. That was the
+	// bug as much as the feature: spend on a tenant's OWN provider key accrued
+	// against a platform allowance it was never funded by, so the ledger
+	// counted money the platform never spent. The allowance no longer grants
+	// anything (Fizzy #1875), so nothing accrues. The ledger table and the rows
+	// already in it are left untouched; nothing reads them.
 
 	// Post-record AI usage-limit accounting — fire-and-forget. Invoked via
 	// the registry hook installed by `@repo/payments` (see
@@ -1024,8 +1017,7 @@ export async function logAiUsage(data: AiUsageLogData) {
 	// database → payments → api → database). The registered recorder
 	// increments per-limit counters and fans out 80% / 100% threshold
 	// notifications. Wrapped in `.catch` so failures in the limits subsystem
-	// can never break the `AiUsageLog` row insert or credit-leaderboard
-	// increment.
+	// can never break the `AiUsageLog` row insert.
 	// Zero-token rows (image/transcription invocation markers, failure
 	// markers) can never move a limit counter — skip the recorder chain
 	// instead of paying its timezone + limits queries for a BigInt(0) delta.

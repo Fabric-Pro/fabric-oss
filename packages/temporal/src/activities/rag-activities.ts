@@ -3,7 +3,7 @@
  * Activities are non-deterministic operations that can fail and be retried
  */
 
-import { getRAGProviderConfig } from "@repo/ai";
+import { getSystemRAGProviderConfig } from "@repo/ai";
 import { waitForDocumentsReady } from "@repo/database";
 import { logger } from "@repo/logs";
 import { formatContextForLLM, retrieveContext } from "@repo/rag";
@@ -47,7 +47,7 @@ export async function waitForDocumentsReadyActivity(
  * Combines embedding generation, vector search, and context formatting
  *
  * SECURITY: This activity fetches its own API key from the database using
- * the centralized getRAGProviderConfig() function. API keys should never
+ * the centralized getSystemRAGProviderConfig() function. API keys should never
  * be passed as workflow arguments as they would be stored in Temporal history.
  *
  * @param chatId - Chat ID to search within
@@ -79,7 +79,7 @@ export async function retrieveRagContextActivity(
 		// This ensures keys are never passed through Temporal workflow history
 		let apiKey: string | undefined;
 		try {
-			const providerConfig = await getRAGProviderConfig({
+			const providerConfig = await getSystemRAGProviderConfig({
 				userId,
 				organizationId,
 			});

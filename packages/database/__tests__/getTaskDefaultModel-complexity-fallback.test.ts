@@ -49,7 +49,6 @@ vi.mock("../prisma/queries/cache", () => ({
 // blow up in the test environment.
 vi.mock("../prisma/queries/ai-credits", () => ({
 	estimateAiUsageCostUsd: vi.fn(),
-	incrementTenantAiCreditUsage: vi.fn(),
 }));
 
 // The query module reaches for `db` from `../client`. We give it a stub

@@ -14,7 +14,10 @@
  * 4. Auto-sync when registry version changes
  */
 
-import { AIProviderNotConfiguredError, getRAGProviderConfig } from "@repo/ai";
+import {
+	AIProviderNotConfiguredError,
+	getSystemRAGProviderConfig,
+} from "@repo/ai";
 import { db } from "@repo/database";
 import { logger } from "@repo/logs";
 import {
@@ -216,10 +219,10 @@ export async function ingestOAuthIntegrationToolsActivity(
 			organizationId || integration.organizationId || undefined;
 
 		let providerConfig:
-			| Awaited<ReturnType<typeof getRAGProviderConfig>>
+			| Awaited<ReturnType<typeof getSystemRAGProviderConfig>>
 			| undefined;
 		try {
-			providerConfig = await getRAGProviderConfig({
+			providerConfig = await getSystemRAGProviderConfig({
 				userId: effectiveUserId,
 				organizationId: effectiveOrgId,
 			});
@@ -486,10 +489,10 @@ export async function ingestOAuthServerActivity(
 			organizationId || integration.organizationId || undefined;
 
 		let providerConfig:
-			| Awaited<ReturnType<typeof getRAGProviderConfig>>
+			| Awaited<ReturnType<typeof getSystemRAGProviderConfig>>
 			| undefined;
 		try {
-			providerConfig = await getRAGProviderConfig({
+			providerConfig = await getSystemRAGProviderConfig({
 				userId: effectiveUserId,
 				organizationId: effectiveOrgId,
 			});

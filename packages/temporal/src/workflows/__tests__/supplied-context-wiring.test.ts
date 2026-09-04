@@ -449,10 +449,20 @@ describe("supplied-context wiring (source assertions)", () => {
 	it("introduces no new patch gate", () => {
 		// Adding an optional input field consumed by an already-scheduled
 		// activity call adds no command to the workflow's command stream, so it
-		// needs no `patched()` gate. The existing marker is there because it
-		// added an activity CALL.
-		const markers = child.match(/patched\("/g) ?? [];
-		expect(markers).toHaveLength(1);
-		expect(child).toContain('patched("document-decision-precheck-v1")');
+		// needs no `patched()` gate.
+		//
+		// Asserted as an exact SET of marker ids rather than a count, so this
+		// stays a guard on THIS unit's scope. Both existing gates earned their
+		// place: `document-decision-precheck-v1` added an activity CALL, and
+		// `document-provider-refusal-fatal-v1` widened which context-retrieval
+		// failures abort the run (Fizzy #1875) — a history recorded before it
+		// carried on without RAG and must keep replaying that way. Neither is
+		// supplied-context's, and a marker appearing here for a change that
+		// adds no command is still the regression this test is looking for.
+		const markers = (child.match(/patched\("([^"]+)"\)/g) ?? []).sort();
+		expect(markers).toEqual([
+			'patched("document-decision-precheck-v1")',
+			'patched("document-provider-refusal-fatal-v1")',
+		]);
 	});
 });

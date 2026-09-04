@@ -63,7 +63,7 @@ vi.mock("@repo/ai", () => ({
 	getAIEmbeddingModelWithMetadata: (...args: unknown[]) =>
 		mocks.getAIEmbeddingModelWithMetadata(...args),
 	getAIModelWithMetadata: vi.fn(),
-	getRAGProviderConfig: vi.fn(),
+	getSystemRAGProviderConfig: vi.fn(),
 	logEmbeddingUsageAsync: (...args: unknown[]) =>
 		mocks.logEmbeddingUsageAsync(...args),
 	logModelUsageAsync: vi.fn(),

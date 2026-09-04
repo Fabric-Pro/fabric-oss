@@ -35,6 +35,7 @@ import {
 	proxyActivities,
 } from "@temporalio/workflow";
 import type * as acts from "../activities/publishing-suggestion";
+import { AI_NON_RETRYABLE_ERROR_TYPES } from "./ai-non-retryable-errors";
 // Runtime helper from a local, workflow-safe pure module (no imports at all →
 // sandbox-safe, deterministic), importable into the workflow exactly like
 // `./daily-brief-release-note-exclusions`.
@@ -101,6 +102,7 @@ const { summarizeTopicSuggestions } = proxyActivities<typeof acts>({
 			"PUBLISHING_SCHEMA_VALIDATION_FAILED",
 			"PUBLISHING_ACTOR_INVALID",
 			...PROG,
+			...AI_NON_RETRYABLE_ERROR_TYPES,
 		],
 	},
 });

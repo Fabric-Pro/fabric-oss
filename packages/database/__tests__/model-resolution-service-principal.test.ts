@@ -11,8 +11,11 @@
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { getAiProviderApiKey, getModelForTask } = vi.hoisted(() => ({
-	getAiProviderApiKey: vi.fn(),
+const { getSystemAiProviderApiKey, getModelForTask } = vi.hoisted(() => ({
+	// The SYSTEM entry point, not the tenant-facing one: `resolveModelWithCredentials`
+	// backs background work (Temporal activities, agent runtimes), which keeps the
+	// platform-gateway fallback the user-facing resolver no longer has.
+	getSystemAiProviderApiKey: vi.fn(),
 	getModelForTask: vi.fn(),
 }));
 
@@ -20,7 +23,7 @@ vi.mock("../prisma/queries/ai-gateway", async (importOriginal) => {
 	// Keep the real `hasProviderCredentials` — it is the predicate under test.
 	const actual =
 		await importOriginal<typeof import("../prisma/queries/ai-gateway")>();
-	return { ...actual, getAiProviderApiKey };
+	return { ...actual, getSystemAiProviderApiKey };
 });
 
 vi.mock("../prisma/queries/ai-models", () => ({ getModelForTask }));
@@ -56,7 +59,7 @@ beforeEach(() => {
 
 describe("resolveModelWithCredentials", () => {
 	it("resolves for an OAuth-only config instead of throwing 'no API key'", async () => {
-		getAiProviderApiKey.mockResolvedValue(servicePrincipalConfig);
+		getSystemAiProviderApiKey.mockResolvedValue(servicePrincipalConfig);
 
 		const resolved = await resolveModelWithCredentials({
 			userId: "user-1",
@@ -73,7 +76,7 @@ describe("resolveModelWithCredentials", () => {
 	});
 
 	it("still resolves a PAT config unchanged (regression guard)", async () => {
-		getAiProviderApiKey.mockResolvedValue({
+		getSystemAiProviderApiKey.mockResolvedValue({
 			...servicePrincipalConfig,
 			apiKey: "encrypted:dapi-token",
 			clientId: null,
@@ -92,7 +95,7 @@ describe("resolveModelWithCredentials", () => {
 	});
 
 	it("throws when the config carries no credentials at all", async () => {
-		getAiProviderApiKey.mockResolvedValue({
+		getSystemAiProviderApiKey.mockResolvedValue({
 			...servicePrincipalConfig,
 			apiKey: null,
 			clientId: null,
@@ -109,7 +112,7 @@ describe("resolveModelWithCredentials", () => {
 	});
 
 	it("throws when only HALF a service principal is stored", async () => {
-		getAiProviderApiKey.mockResolvedValue({
+		getSystemAiProviderApiKey.mockResolvedValue({
 			...servicePrincipalConfig,
 			encryptedClientSecret: null,
 		});
@@ -124,7 +127,7 @@ describe("resolveModelWithCredentials", () => {
 	});
 
 	it("throws when no provider is configured at all", async () => {
-		getAiProviderApiKey.mockResolvedValue({
+		getSystemAiProviderApiKey.mockResolvedValue({
 			...servicePrincipalConfig,
 			provider: null,
 		});

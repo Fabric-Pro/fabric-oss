@@ -25,6 +25,7 @@
 
 import { log, proxyActivities } from "@temporalio/workflow";
 import type * as activities from "../activities";
+import { AI_NON_RETRYABLE_ERROR_TYPES } from "./ai-non-retryable-errors";
 import { publishingFailureDetail } from "./publishing-failure-message";
 
 const { generatePlanningAnalysisActivity } = proxyActivities<typeof activities>(
@@ -38,7 +39,11 @@ const { generatePlanningAnalysisActivity } = proxyActivities<typeof activities>(
 			backoffCoefficient: 2,
 			maximumInterval: "1m",
 			maximumAttempts: 3,
-			nonRetryableErrorTypes: ["ValidationError", "TenantViolation"],
+			nonRetryableErrorTypes: [
+				"ValidationError",
+				"TenantViolation",
+				...AI_NON_RETRYABLE_ERROR_TYPES,
+			],
 		},
 	},
 );

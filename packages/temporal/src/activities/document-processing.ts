@@ -4,7 +4,7 @@
  */
 
 import { GetObjectCommand, S3Client } from "@aws-sdk/client-s3";
-import { getRAGProviderConfig } from "@repo/ai";
+import { getSystemRAGProviderConfig } from "@repo/ai";
 import { db, tenantWhere } from "@repo/database";
 import type { ExtractionResult, TextChunk } from "@repo/rag";
 import {
@@ -194,7 +194,7 @@ export async function generateChunkEmbeddings(
 
 	try {
 		// Get AI provider configuration using centralized function
-		const providerConfig = await getRAGProviderConfig({
+		const providerConfig = await getSystemRAGProviderConfig({
 			userId,
 			organizationId,
 		});
@@ -372,7 +372,7 @@ export async function processAndStoreChunks(
 		console.log(`[Activity] Created ${chunks.length} chunks`);
 
 		// Get AI provider configuration using centralized function
-		const providerConfig = await getRAGProviderConfig({
+		const providerConfig = await getSystemRAGProviderConfig({
 			userId,
 			organizationId,
 		});
@@ -561,7 +561,7 @@ export async function chunkAndStoreWebContent(input: {
 	}
 
 	// Step 2: Generate embeddings using centralized config
-	const providerConfig = await getRAGProviderConfig({
+	const providerConfig = await getSystemRAGProviderConfig({
 		userId,
 		organizationId,
 	});

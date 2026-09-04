@@ -21,7 +21,7 @@
 
 import {
 	getAIModelWithMetadata,
-	getRAGProviderConfig,
+	getSystemRAGProviderConfig,
 	logModelUsageAsync,
 } from "@repo/ai";
 import { logger } from "@repo/logs";
@@ -220,13 +220,16 @@ export async function executePatternDelegated(
 		// Track usage (fire-and-forget)
 		trackUsage();
 
-		// 3. Get raw credentials for delegated mode (passing to Fabric AI server)
-		const providerConfig = await getRAGProviderConfig({
+		// 3. Get raw credentials for delegated mode (passing to Fabric AI server).
+		// SYSTEM side: Fabric pattern execution is reached only from the
+		// `executeFabricPattern` temporal activity and the orchestrator handlers
+		// that call it — background work, not a response a person is waiting on.
+		const providerConfig = await getSystemRAGProviderConfig({
 			userId: userContext.userId,
 			organizationId: userContext.organizationId,
 		});
 
-		// providerConfig.apiKey is already decrypted by getRAGProviderConfig()
+		// providerConfig.apiKey is already decrypted by getSystemRAGProviderConfig()
 		const apiKey = providerConfig.apiKey;
 		const modelString = metadata.modelString;
 
@@ -442,13 +445,16 @@ export async function* executePatternDelegatedStream(
 		// Track usage (fire-and-forget)
 		trackUsage();
 
-		// 3. Get raw credentials for delegated mode (passing to Fabric AI server)
-		const providerConfig = await getRAGProviderConfig({
+		// 3. Get raw credentials for delegated mode (passing to Fabric AI server).
+		// SYSTEM side: Fabric pattern execution is reached only from the
+		// `executeFabricPattern` temporal activity and the orchestrator handlers
+		// that call it — background work, not a response a person is waiting on.
+		const providerConfig = await getSystemRAGProviderConfig({
 			userId: userContext.userId,
 			organizationId: userContext.organizationId,
 		});
 
-		// providerConfig.apiKey is already decrypted by getRAGProviderConfig()
+		// providerConfig.apiKey is already decrypted by getSystemRAGProviderConfig()
 		const apiKey = providerConfig.apiKey;
 		const modelString = metadata.modelString;
 		const provider = metadata.provider || providerConfig.provider;

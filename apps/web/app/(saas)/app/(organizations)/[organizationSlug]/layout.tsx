@@ -12,7 +12,6 @@ import { OrganizationThemeProvider } from "@saas/organizations/components/Organi
 import { activeOrganizationQueryKey } from "@saas/organizations/lib/api";
 import { shouldEnforceOrgTwoFactor } from "@saas/organizations/lib/mfa-enforcement";
 import { OrganizationGuestProvider } from "@saas/organizations/lib/organization-guest-context";
-import { AiCreditsBanner } from "@saas/payments/components/AiCreditsStatus";
 import { AppWrapper } from "@saas/shared/components/AppWrapper";
 import { FeatureFlagProvider } from "@saas/shared/components/FeatureFlagProvider";
 import { MfaSetupBanner } from "@saas/shared/components/MfaSetupBanner";
@@ -161,13 +160,6 @@ export default async function OrganizationLayout({
 					isGuest={guest}
 				>
 					<AppWrapper>
-						{/* Guests see THEIR personal credits (explicit null —
-						 * multi-tenant XOR), matching the personal-style shell
-						 * they get everywhere else; the org-scoped call would
-						 * 403 for them. */}
-						<AiCreditsBanner
-							organizationId={guest ? null : organization.id}
-						/>
 						<MfaSetupBanner />
 						{children}
 					</AppWrapper>

@@ -12,8 +12,6 @@ import type {
 	CancelSubscription,
 	CreateCheckoutLink,
 	CreateCustomerPortalLink,
-	CreatePaymentMethodSetupLink,
-	HasPaymentMethod,
 	SetSubscriptionSeats,
 	WebhookHandler,
 } from "../../types";
@@ -34,41 +32,6 @@ export function getStripeClient() {
 	stripeClient = new Stripe(stripeSecretKey);
 
 	return stripeClient;
-}
-
-async function getOrCreateStripeCustomer(options: {
-	customerId?: string;
-	email?: string;
-	name?: string;
-	organizationId?: string;
-	userId?: string;
-}) {
-	const stripeClient = getStripeClient();
-
-	if (options.customerId) {
-		return options.customerId;
-	}
-
-	const customer = await withProviderBreaker(
-		"stripe",
-		"customer_create",
-		() =>
-			stripeClient.customers.create({
-				email: options.email,
-				name: options.name,
-				metadata: {
-					organization_id: options.organizationId || "",
-					user_id: options.userId || "",
-				},
-			}),
-	);
-
-	await setCustomerIdToEntity(customer.id, {
-		organizationId: options.organizationId,
-		userId: options.userId,
-	});
-
-	return customer.id;
 }
 
 export const createCheckoutLink: CreateCheckoutLink = async (options) => {
@@ -145,59 +108,6 @@ export const createCustomerPortalLink: CreateCustomerPortalLink = async ({
 	return response.url;
 };
 
-export const createPaymentMethodSetupLink: CreatePaymentMethodSetupLink =
-	async (options) => {
-		const stripeClient = getStripeClient();
-		const customerId = await getOrCreateStripeCustomer({
-			customerId: options.customerId,
-			email: options.email,
-			name: options.name,
-			organizationId: options.organizationId,
-			userId: options.userId,
-		});
-
-		const response = await withProviderBreaker(
-			"stripe",
-			"checkout_session_create_setup",
-			() =>
-				stripeClient.checkout.sessions.create({
-					mode: "setup",
-					customer: customerId,
-					success_url: options.redirectUrl ?? "",
-					cancel_url: options.redirectUrl ?? "",
-					payment_method_types: ["card"],
-					setup_intent_data: {
-						metadata: {
-							organization_id: options.organizationId || null,
-							user_id: options.userId || null,
-						},
-					},
-					metadata: {
-						organization_id: options.organizationId || null,
-						user_id: options.userId || null,
-					},
-				}),
-		);
-
-		return response.url;
-	};
-
-export const hasPaymentMethod: HasPaymentMethod = async (customerId) => {
-	const stripeClient = getStripeClient();
-	const paymentMethods = await withProviderBreaker(
-		"stripe",
-		"payment_methods_list",
-		() =>
-			stripeClient.paymentMethods.list({
-				customer: customerId,
-				type: "card",
-				limit: 1,
-			}),
-	);
-
-	return paymentMethods.data.length > 0;
-};
-
 export const setSubscriptionSeats: SetSubscriptionSeats = async ({
 	id,
 	seats,
@@ -269,14 +179,6 @@ export const webhookHandler: WebhookHandler = async (req) => {
 				const { mode, metadata, customer, id } = event.data.object;
 
 				if (mode === "subscription") {
-					break;
-				}
-
-				if (mode === "setup") {
-					await setCustomerIdToEntity(customer as string, {
-						organizationId: metadata?.organization_id,
-						userId: metadata?.user_id,
-					});
 					break;
 				}
 

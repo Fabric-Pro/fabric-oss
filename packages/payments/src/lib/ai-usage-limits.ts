@@ -15,9 +15,8 @@
  *
  * Chokepoint surface (called from `packages/ai/lib/`):
  * - {@link AiUsageLimitExceededError} — structured error thrown by the
- *   pre-call gate; mirrors `AiCreditLimitExceededError` and carries the
- *   rich payload so the client can render a destructive toast with a
- *   "Manage limits" deep link.
+ *   pre-call gate; carries the rich payload so the client can render a
+ *   destructive toast with a "Manage limits" deep link.
  * - {@link assertWithinAiUsageLimits} — pre-call gate. Short-circuits when
  *   no limits exist for the tenant; throws on the first HARD limit that
  *   would be exceeded.
@@ -655,9 +654,7 @@ export async function loadApplicableLimits(
  * client surface (Nexus chat, document AI, daily brief, embeddings …)
  * relies on to render a single destructive toast with a "Manage limits"
  * deep link.
- * Mirrors the shape precedent set by `AiCreditLimitExceededError`
- * (`packages/payments/src/lib/ai-credits.ts:6`) and extends it with the
- * structured payload that the rich client UI needs.
+ * Carries the structured payload that the rich client UI needs.
  */
 export class AiUsageLimitExceededError extends Error {
 	readonly code = "AI_USAGE_LIMIT_EXCEEDED" as const;

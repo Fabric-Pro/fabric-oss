@@ -243,7 +243,7 @@ export interface DirectChatProgressEvent {
  *
  * SECURITY: API keys are NOT passed in workflow inputs to avoid storing
  * them in Temporal's workflow history. Activities fetch credentials
- * internally using getAIModelWithMetadata() or getRAGProviderConfig().
+ * internally using getAIModelWithMetadata() or getSystemRAGProviderConfig().
  */
 export interface DirectChatWorkflowInput {
 	/** Unique execution ID for tracking */

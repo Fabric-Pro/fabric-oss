@@ -16,7 +16,7 @@ vi.mock("@repo/ai", async (orig) => ({
 		metadata: fakeMetadata,
 		trackUsage: fakeTrackUsage,
 	})),
-	getRAGProviderConfig: vi.fn(() => undefined),
+	getSystemRAGProviderConfig: vi.fn(() => undefined),
 }));
 
 // Minimal stubs required at module-load time

@@ -46,6 +46,7 @@ import type { fetchPMWorkItemsByType as FetchPMWorkItemsByTypeFn } from "../acti
 import type * as postOperationResultModule from "../activities/post-operation-result";
 import { BACKLOG_ANALYSIS_CANCELLED_TYPE } from "./backlog-constants";
 import { unwrapPmSyncError } from "./pm-sync-error-unwrap";
+import { AI_NON_RETRYABLE_ERROR_TYPES } from "./ai-non-retryable-errors";
 
 // Re-export the ChangeProposal type for consumers
 export type { ChangeProposal } from "../activities/backlog-context/analyze-context";
@@ -201,6 +202,10 @@ const { analyzeContextAndPropose } = proxyActivities<{
 		initialInterval: "5s",
 		backoffCoefficient: 2,
 		maximumAttempts: 2,
+		// A tenant with no provider of its own is now a deterministic refusal
+		// rather than the rare case it was while the platform key backed every
+		// call, so retrying one only delays the same answer.
+		nonRetryableErrorTypes: [...AI_NON_RETRYABLE_ERROR_TYPES],
 	},
 });
 

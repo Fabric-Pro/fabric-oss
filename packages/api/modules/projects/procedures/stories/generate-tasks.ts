@@ -3,7 +3,6 @@ import { getLockedAttachmentRulesClause } from "@repo/agent-prompts";
 import { AIProviderNotConfiguredError } from "@repo/ai";
 import { getProjectFunctionTagClause } from "@repo/ai/lib/function-tag-context";
 import { db, generateTaskIdentifier } from "@repo/database";
-import { AiCreditLimitExceededError } from "@repo/payments";
 import { z } from "zod";
 import {
 	Permissions,
@@ -215,11 +214,6 @@ async function generateTasksWithAI(
 	} catch (error) {
 		if (error instanceof AIProviderNotConfiguredError) {
 			throw new ORPCError("PRECONDITION_FAILED", {
-				message: error.message,
-			});
-		}
-		if (error instanceof AiCreditLimitExceededError) {
-			throw new ORPCError("PAYMENT_REQUIRED", {
 				message: error.message,
 			});
 		}

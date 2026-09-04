@@ -259,7 +259,13 @@ async function generateWithGateway(params: {
 		}
 	}
 
-	// Get gateway API key via centralized config
+	// TENANT resolver, not the system one. Every caller of this activity has a
+	// person waiting on it — direct chat's image tool, the agent executor, an
+	// MCP tool call, the orchestrator's Fabric-AI handler — and the system half
+	// is reserved for work where nobody is (indexing, embedding, tool
+	// ingestion). Image generation is also the most expensive call the product
+	// makes, so serving it on the deployment's key is the single largest hole
+	// a "runs on the tenant's own provider" claim could carry.
 	const { getRAGProviderConfig } = await import("@repo/ai");
 	const providerConfig = await getRAGProviderConfig({
 		userId,

@@ -147,7 +147,19 @@ export async function retrieveRagContextForDirectChatActivity(
 			});
 		}
 
-		// Get AI provider API key for embedding generation
+		// TENANT side, though this is an embedding step. R13 leaves embedding on
+		// the system resolver because indexing must keep working for a keyless
+		// tenant — but nobody is waiting on indexing, and someone is waiting on
+		// this. Retrieval here serves a chat turn that the generation step will
+		// refuse anyway when the tenant has configured nothing, so resolving on
+		// the system half bought nothing and cost twice: it embedded the
+		// person's message and their attached documents with the deployment's
+		// key, sending that content to a provider the tenant never chose, to
+		// build context for a reply that never comes.
+		//
+		// For a tenant that HAS a key nothing changes — the system resolver
+		// would have returned that same key. Only the keyless case differs, and
+		// there the honest answer is the one the chat is about to give.
 		const { retrieveContext, formatContextForLLM } = await import(
 			"@repo/rag"
 		);
@@ -348,7 +360,8 @@ export async function retrieveWorkspaceDocumentsActivity(
 			"@repo/rag"
 		);
 
-		// Get AI provider configuration using centralized function
+		// TENANT side, same reasoning as the project-document retrieval above:
+		// a workspace search runs for a chat turn someone is waiting on.
 		const providerConfig = await getRAGProviderConfig({
 			userId,
 			organizationId,

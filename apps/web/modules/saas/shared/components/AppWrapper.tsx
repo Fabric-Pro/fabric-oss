@@ -6,6 +6,7 @@ import { FunctionTagsRequiredGate } from "@saas/get-started/components/FunctionT
 import { GetStartedController } from "@saas/get-started/components/GetStartedController";
 import { AiUsageLimitBanner } from "@saas/payments/components/AiUsageLimitBanner";
 import { TiptapEditorRegistryProvider } from "@saas/projects/components/excalidraw-auto-insert/TiptapEditorRegistry";
+import { AiGatewayWarningBanner } from "@saas/shared/components/AiGatewayWarningBanner";
 import { NavBar } from "@saas/shared/components/NavBar";
 import { FocusModeProvider } from "@saas/shared/contexts/FocusModeContext";
 import {
@@ -108,11 +109,27 @@ function AppWrapperContent({ children }: PropsWithChildren) {
 								: "px-6",
 						)}
 					>
-						{/* AI usage limit warning banner — mounted here so it
-						 * sits inside the sidebar-offset content area (the
-						 * outer (saas) layout would render it full-width and
-						 * overlap the fixed NavBar). Renders nothing when no
-						 * limits are crossed. */}
+						{/* Three advisory banners share this column, and their
+						 * order is fixed here by the urgency of the block each
+						 * describes — never by whichever component happens to
+						 * sit higher in the markup. With no provider
+						 * configured no user-facing AI runs at all, so that
+						 * notice leads; a usage limit bites only some calls; a
+						 * stale build bites nothing yet. All three can render
+						 * at once (an organization can lose its provider and
+						 * carry a usage breach in the same hour).
+						 *
+						 * Mounted here rather than in the organization layout,
+						 * for the reason recorded when the usage-limit banner
+						 * arrived: this point sits inside the sidebar-offset
+						 * content area, and the outer (saas) layout would
+						 * render them full-width and overlap the fixed NavBar.
+						 * It is also the ONE mount that serves both the
+						 * organization layout and the account layout, which is
+						 * what the AI notice needs — it was mounted per
+						 * dashboard before, and said nothing anywhere else.
+						 * Each renders nothing when it has nothing to say. */}
+						<AiGatewayWarningBanner />
 						<AiUsageLimitBanner />
 						{/* Detects a stale build; its backstop countdown
 						 * banner renders here in flow, never as a fixed
