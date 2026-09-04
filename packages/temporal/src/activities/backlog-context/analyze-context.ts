@@ -2104,7 +2104,7 @@ export async function analyzeContextAndPropose(
 		const classified = classifyBacklogAnalysisError(error);
 		logger.error("[Backlog Analysis] generate failed", {
 			...classified.logFields,
-			workflowId: Context.current().info.workflowExecution.workflowId,
+			workflowId: Context.current().info.workflowExecution?.workflowId,
 			projectId,
 			approxPromptChars: prompt.length,
 			// Spec §4: per-source context sizes for self-diagnosis. teams/slack/

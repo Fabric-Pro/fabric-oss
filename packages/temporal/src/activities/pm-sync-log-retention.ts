@@ -56,7 +56,7 @@ import { activityInfo } from "@temporalio/activity";
  */
 function readActivityCorrelationId(): string | null {
 	try {
-		return activityInfo().workflowExecution.runId;
+		return activityInfo().workflowExecution?.runId ?? null;
 	} catch {
 		return null;
 	}

@@ -24,6 +24,7 @@ import {
 } from "@opentelemetry/sdk-logs";
 import { PeriodicExportingMetricReader } from "@opentelemetry/sdk-metrics";
 import { NodeSDK } from "@opentelemetry/sdk-node";
+import { BatchSpanProcessor } from "@opentelemetry/sdk-trace-base";
 import {
 	ATTR_SERVICE_NAME,
 	ATTR_SERVICE_VERSION,
@@ -31,7 +32,7 @@ import {
 import {
 	makeWorkflowExporter,
 	OpenTelemetryActivityInboundInterceptor,
-} from "@temporalio/interceptors-opentelemetry";
+} from "@temporalio/interceptors-opentelemetry-v2";
 import {
 	Runtime,
 	type RuntimeOptions,
@@ -46,6 +47,7 @@ let sdk: NodeSDK | null = null;
 let traceExporter: OTLPTraceExporter | null = null;
 let resource: Resource | undefined;
 let loggerProvider: LoggerProvider | null = null;
+let workflowSpanProcessor: BatchSpanProcessor | null = null;
 
 // Store original console methods
 const originalConsole = {
@@ -240,6 +242,24 @@ export async function shutdownTelemetry(): Promise<void> {
 		originalConsole.log("[Telemetry] Shutting down logger provider...");
 		await loggerProvider.shutdown();
 	}
+	if (workflowSpanProcessor) {
+		originalConsole.log("[Telemetry] Flushing workflow span processor...");
+		// A bare BatchSpanProcessor rejects when the final export fails —
+		// unlike NodeSDK.shutdown() and LoggerProvider.shutdown(), which
+		// swallow it. The caller in worker.ts runs `process.exit(0)` after
+		// this, so letting an unreachable collector reject here would hang
+		// the worker on SIGTERM until it is killed. Losing the last batch of
+		// workflow spans is the cheaper failure.
+		try {
+			await workflowSpanProcessor.shutdown();
+		} catch (error) {
+			originalConsole.warn(
+				"[Telemetry] Workflow span processor failed to flush:",
+				error,
+			);
+		}
+		workflowSpanProcessor = null;
+	}
 	if (sdk) {
 		originalConsole.log("[Telemetry] Shutting down OpenTelemetry SDK...");
 		await sdk.shutdown();
@@ -252,14 +272,36 @@ export async function shutdownTelemetry(): Promise<void> {
  * These interceptors automatically trace workflow and activity executions
  */
 export function getTelemetryInterceptors(): Partial<WorkerOptions> {
-	if (!OTEL_ENABLED || !OTEL_ENDPOINT || !traceExporter || !resource) {
+	if (!OTEL_ENABLED || !OTEL_ENDPOINT || !resource) {
 		return {};
 	}
 
-	const workflowExporter = makeWorkflowExporter(
-		traceExporter as any,
-		resource as any,
-	);
+	// The v2 interceptors take a SpanProcessor rather than a raw exporter:
+	// spans copied out of the workflow isolate are handed to `onEnd`, so
+	// batching and flushing are ours to own. Built once and memoised — the
+	// worker spreads one interceptor set across every task queue, and a
+	// processor per worker would mean a queue and a flush timer per worker.
+	//
+	// It gets its own exporter instead of sharing `traceExporter` with the
+	// NodeSDK: a shared one is shut down by whichever of the two owners gets
+	// there first, and the loser's final flush then fails silently.
+	//
+	// The queue is sized rather than left at the SDK default. Batching is
+	// what we want — the v1 path fired one unbounded gRPC export per sink
+	// call, and every export is billed ingestion downstream — but a
+	// BatchSpanProcessor queue is bounded and drops on overflow, which the
+	// v1 path could not do. At the 2048-span default a stalled collector
+	// discards spans after roughly 400/s sustained; 8192 gives the eleven
+	// workers real headroom to ride out a collector blip for a few tens of
+	// MB of buffer at worst. Dropping under sustained backpressure is still
+	// the deliberate outcome: unbounded growth in a worker process is worse
+	// than losing traces.
+	if (!workflowSpanProcessor) {
+		workflowSpanProcessor = new BatchSpanProcessor(
+			new OTLPTraceExporter({ url: OTEL_ENDPOINT }),
+			{ maxQueueSize: 8192 },
+		);
+	}
 
 	return {
 		interceptors: {
@@ -268,7 +310,7 @@ export function getTelemetryInterceptors(): Partial<WorkerOptions> {
 			],
 		},
 		sinks: {
-			exporter: workflowExporter,
+			exporter: makeWorkflowExporter(workflowSpanProcessor, resource),
 		},
 	};
 }

@@ -51,7 +51,7 @@ export type RecordPmSyncLogInput = Omit<
  */
 function readRunId(): string | null {
 	try {
-		return activityInfo().workflowExecution.runId;
+		return activityInfo().workflowExecution?.runId ?? null;
 	} catch {
 		return null;
 	}

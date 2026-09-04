@@ -164,23 +164,27 @@ export async function streamAndSaveMessage(
 				// activity.info().workflowExecution.workflowId is the durable
 				// id of the workflow run for this assistant turn — exactly one
 				// notification per run via the `agentReply:${runId}` dedupe
-				// key.
+				// key. Unset only for a standalone Activity (SDK 1.23+), which
+				// nothing here starts; skip the ping rather than invent a
+				// dedupe key that would let duplicates through.
 				const workflowId =
-					Context.current().info.workflowExecution.workflowId;
-				void createAgentReplyReadyNotifications({
-					runId: workflowId,
-					recipientUserId: userId,
-					organizationId: chat.organizationId ?? null,
-					agentName: chat.title?.trim() || "Assistant",
-					finalMessage: text,
-					link: `app/chats/${chatId}?project=${chat.projectId}`,
-					projectId: chat.projectId,
-				}).catch((error) => {
-					console.warn(
-						"[Activity] agentReplyReady notification dispatch failed:",
-						error,
-					);
-				});
+					Context.current().info.workflowExecution?.workflowId;
+				if (workflowId) {
+					void createAgentReplyReadyNotifications({
+						runId: workflowId,
+						recipientUserId: userId,
+						organizationId: chat.organizationId ?? null,
+						agentName: chat.title?.trim() || "Assistant",
+						finalMessage: text,
+						link: `app/chats/${chatId}?project=${chat.projectId}`,
+						projectId: chat.projectId,
+					}).catch((error) => {
+						console.warn(
+							"[Activity] agentReplyReady notification dispatch failed:",
+							error,
+						);
+					});
+				}
 			} catch (error) {
 				console.warn(
 					"[Activity] agentReplyReady notification dispatch failed:",

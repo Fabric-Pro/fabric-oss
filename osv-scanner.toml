@@ -31,20 +31,9 @@ reason = "extract-zip@2.0.1 via @langchain/langgraph-cli; no patched release exi
 # the `deepmerge-ts` -> `^8.0.2` override in the root package.json moves
 # @prisma/config's exact 7.1.5 pin past the first fixed release (8.0.0).
 
-# @opentelemetry/core has two copies in the lockfile. The v2 copy is already
-# patched — the existing `@opentelemetry/core@^2.0.0` -> `^2.8.0` override
-# resolves it to 2.10.0 — so only the v1 copy is flagged, and it cannot be
-# moved: the 1.x line ended at 1.30.1 and 2.8.0 is the first fixed release.
-# @temporalio/interceptors-opentelemetry is the only top-level package that
-# introduces the v1 island, and its current latest (1.22.0) still declares
-# `@opentelemetry/core: ^1.25.1`, so upgrading Temporal does not move it. An
-# override forcing v2 breaks that island at require time, not in theory: v2
-# dropped 20 of v1's 64 exports, and sdk-trace-base@1.30.1/config.js
-# dereferences the removed `TracesSamplerValues` at module top level.
-#
-# Note: once ignored, a medium finding also stops appearing in the CI severity
-# summary, so this advisory is tracked here rather than in the job output.
-[[IgnoredVulns]]
-id = "GHSA-8988-4f7v-96qf"
-ignoreUntil = 2026-11-19
-reason = "@opentelemetry/core@1.30.1 via @temporalio/interceptors-opentelemetry. No 1.x fix exists and an override to v2 breaks the v1 island at require time. The vulnerable W3CBaggagePropagator is never constructed from this copy: provider creation is lazy behind getTracer(), which only Temporal's OTel workflow interceptors call, and this repo never registers them. See SECURITY.md § Documented dismissals."
+# The former @opentelemetry/core entry (GHSA-8988-4f7v-96qf) was removed
+# 2026-09-04: `@temporalio/interceptors-opentelemetry` was the only
+# top-level introducer of the OpenTelemetry v1 island, and moving to
+# `@temporalio/interceptors-opentelemetry-v2` (which requires
+# `@opentelemetry/core: ^2.2.0`) removed that island from the lockfile,
+# leaving nothing for the ignore to cover.
