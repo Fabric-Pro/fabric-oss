@@ -268,6 +268,128 @@ export const ONBOARDING_STEPS: readonly OnboardingStep[] = [
 ] as const;
 
 /**
+ * The project tab a step lives on, or `null` if it isn't project-scoped.
+ *
+ * One spelling of "does this step need a project": the two target kinds that
+ * do both carry a `tab`, and every caller wants either the tab or the fact
+ * that there isn't one.
+ */
+function projectTabOf(step: OnboardingStep): ProjectTabId | null {
+	const { target } = step;
+	return target.kind === "projectTab" || target.kind === "projectComponent"
+		? target.tab
+		: null;
+}
+
+type TourStepContext = {
+	/**
+	 * Whether the viewer has at least one project. `undefined` while the
+	 * lookup is still in flight — see the collapse rule below.
+	 */
+	hasProject: boolean | undefined;
+	/** Tab-visibility predicate for this viewer (card #1837). */
+	isTabVisible: (tab: string) => boolean;
+};
+
+/**
+ * The steps a given viewer should actually be walked through.
+ *
+ * Two filters, in this order:
+ *
+ * 1. Drop any project-scoped step whose tab is hidden from this viewer — it
+ *    would navigate nowhere or spotlight a missing anchor.
+ * 2. When the viewer has NO project, keep only the FIRST surviving
+ *    project-scoped step and drop the rest.
+ *
+ * Step 2 is the fix for Fizzy #2360. Five steps target a project, and the
+ * spotlight falls back to the same "Create your first project" card whenever
+ * it cannot resolve one — correct for a single step, but it meant a brand-new
+ * account saw that identical card five times in a row at positions 4-8. The
+ * spotlight renders one step at a time and cannot know it is about to repeat
+ * itself; only the step list can. Keeping one step preserves the call to
+ * action in its natural position, right after "Projects hold your work".
+ *
+ * "First SURVIVING" matters: tab customization can hide Overview, and keeping
+ * a step the viewer cannot reach would trade one bug for another.
+ *
+ * `hasProject: undefined` deliberately does NOT collapse. Stripping real steps
+ * from a viewer who does have projects, because a query had not settled yet,
+ * is a worse failure than the repeated card.
+ *
+ * Kept pure and exported so it can be tested directly over arrays, the way
+ * `anchorIdsUsedBySteps` is.
+ */
+export function resolveTourSteps({
+	hasProject,
+	isTabVisible,
+}: TourStepContext): readonly OnboardingStep[] {
+	const visible = ONBOARDING_STEPS.filter((step) => {
+		const tab = projectTabOf(step);
+		return tab === null || isTabVisible(tab);
+	});
+
+	if (hasProject !== false) {
+		return visible;
+	}
+
+	const firstProjectStep = visible.find(
+		(step) => projectTabOf(step) !== null,
+	);
+	return visible.filter(
+		(step) => projectTabOf(step) === null || step === firstProjectStep,
+	);
+}
+
+/**
+ * Where a tour sits, given the step it was last on.
+ *
+ * The visible list is live — tab visibility resolves per project, only once
+ * the tour has navigated into one — so steps can vanish underneath a run. A
+ * bare array index cannot survive that: drop a step BEFORE the current one and
+ * every later index shifts down, silently moving the viewer somewhere else.
+ *
+ * So the position is resolved from the step's id:
+ *
+ * - the step is still there -> its new position, wherever it moved to;
+ * - it was removed -> the first step AFTER it in REGISTRY order that survived.
+ *
+ * That second rule has to consult the registry rather than reuse the old
+ * index, because one visibility result can remove several steps at once. If
+ * the viewer is on `documents` and both `overview` and `documents` disappear,
+ * the old index no longer addresses `documents`' successor at all — it points
+ * a step further on, skipping `roadmap`.
+ *
+ * Falls back to the last step when nothing after it survived, and to the first
+ * when there is no id yet. Never returns an out-of-range index, which is what
+ * keeps the tour mounted: its render gate is `steps[index]`.
+ */
+export function resolveTourPosition(
+	steps: readonly OnboardingStep[],
+	stepId: string | null,
+): number {
+	if (steps.length === 0) {
+		return 0;
+	}
+	if (!stepId) {
+		return 0;
+	}
+	const surviving = steps.findIndex((step) => step.id === stepId);
+	if (surviving !== -1) {
+		return surviving;
+	}
+	const wasAt = ONBOARDING_STEPS.findIndex((step) => step.id === stepId);
+	for (let i = wasAt + 1; i >= 0 && i < ONBOARDING_STEPS.length; i++) {
+		const next = steps.findIndex(
+			(step) => step.id === ONBOARDING_STEPS[i].id,
+		);
+		if (next !== -1) {
+			return next;
+		}
+	}
+	return steps.length - 1;
+}
+
+/**
  * Areas the tour MUST always cover. The drift test asserts
  * each has at least one enabled step; dropping one fails CI.
  */

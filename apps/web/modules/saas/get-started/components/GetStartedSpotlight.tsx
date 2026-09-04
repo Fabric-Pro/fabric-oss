@@ -267,6 +267,14 @@ export function GetStartedSpotlight({
 			const res = await orpcClient.projects.list({
 				organizationId,
 				limit: 1,
+				// Explicit, and must match the controller's existence probe:
+				// the two have to answer the same question or the repeated
+				// create-a-project card comes back (Fizzy #2360). Drafts stay
+				// out — `list` orders by `updatedAt DESC` and takes one, so
+				// counting them would let a half-finished draft outrank a
+				// real project and send the tour to components it has not
+				// reached yet.
+				includeDraft: false,
 			});
 			const id = res.projects?.[0]?.id ?? null;
 			projectIdRef.current = id;

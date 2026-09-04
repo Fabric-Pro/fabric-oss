@@ -104,6 +104,15 @@ vi.mock("@shared/lib/orpc-query-utils", () => ({
 		// Tab customization (card #1837) — the controller reads viewer-visible
 		// tabs to filter tour steps; nothing configured in this suite.
 		projects: {
+			// Existence probe the controller reads to collapse the
+			// project-scoped tour steps (Fizzy #2360). These files don't drive
+			// the tour, so one project keeps them on the pre-#2360 path.
+			list: {
+				queryOptions: ({ input }: { input: unknown }) => ({
+					queryKey: ["projects.list", input],
+					queryFn: async () => ({ projects: [{ id: "project-1" }] }),
+				}),
+			},
 			tabVisibility: {
 				get: {
 					queryOptions: ({ input }: { input: unknown }) => ({
@@ -144,6 +153,10 @@ vi.mock("@saas/shared/components/FeatureFlagProvider", () => ({
 		return key === "PUBLISHING_SUITE" ? false : value;
 	},
 }));
+vi.mock("@saas/organizations/hooks/use-organization-context", () => ({
+	useOrganizationId: () => "org-1",
+}));
+
 vi.mock("@saas/shared/components/RoleTagSnapshotProvider", () => ({
 	useRoleTagSnapshot: () => snapshotValue,
 }));
