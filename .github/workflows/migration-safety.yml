@@ -172,6 +172,11 @@ jobs:
       - name: Setup pnpm
         if: steps.scope.outputs.relevant == 'true'
         uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6
+        env:
+          # The action bootstraps pnpm with `npm ci`, whose audit request has stalled for
+          # up to npm's 5-minute fetch timeout on hosted runners before `pnpm self-update`
+          # switches to the packageManager pin. The audit adds nothing here: skip it.
+          npm_config_audit: "false"
 
       - name: Setup Node.js
         if: steps.scope.outputs.relevant == 'true'
