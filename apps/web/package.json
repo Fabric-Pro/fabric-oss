@@ -16,7 +16,7 @@
 		"@hookform/resolvers": "^5.2.2",
 		"@marsidev/react-turnstile": "^1.4.2",
 		"@modelcontextprotocol/ext-apps": "^1.2.0",
-		"@modelcontextprotocol/sdk": "^1.26.0",
+		"@modelcontextprotocol/sdk": "^1.30.0",
 		"@orpc/client": "^1.13.9",
 		"@orpc/openapi": "^1.13.9",
 		"@orpc/tanstack-query": "^1.13.9",

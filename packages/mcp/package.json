@@ -16,7 +16,7 @@
 	},
 	"dependencies": {
 		"@ai-sdk/mcp": "^1.0.0",
-		"@modelcontextprotocol/sdk": "^1.26.0",
+		"@modelcontextprotocol/sdk": "^1.30.0",
 		"@repo/ai": "workspace:*",
 		"@repo/database": "workspace:*",
 		"@repo/utils": "workspace:*",
