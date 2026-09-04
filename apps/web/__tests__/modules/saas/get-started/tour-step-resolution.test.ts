@@ -1,16 +1,22 @@
 /**
- * Which tour steps a given viewer actually sees (Fizzy #2360).
+ * Which tour steps a given viewer actually sees (Fizzy #2360, #2361).
  *
- * Five of the nine registry steps target a project. When the viewer has none,
+ * Five of the eleven registry steps target a project. When the viewer has none,
  * each of them independently fell back to the spotlight's "Create your first
  * project" card, so the same slide rendered five times in a row at positions
  * 4-8. `resolveTourSteps` collapses that run to a single step; these tests pin
  * both that collapse AND the far more important case it must not disturb —
  * a viewer who does have a project still sees every step.
+ *
+ * Fizzy #2361 added two centered key steps around that run. They are NOT
+ * project-scoped, so the collapse must leave them alone — the enumerations
+ * below are what proves it, and what would fail if a later change made the
+ * collapse coarser than "drop project steps".
  */
 
 import { describe, expect, it } from "vitest";
 import {
+	ONBOARDING_REQUIRED_AREAS,
 	ONBOARDING_STEPS,
 	type OnboardingStep,
 	resolveTourPosition,
@@ -29,6 +35,69 @@ const ids = (steps: readonly OnboardingStep[]) => steps.map((s) => s.id);
 const isProjectScoped = (step: OnboardingStep) =>
 	step.target.kind === "projectTab" ||
 	step.target.kind === "projectComponent";
+
+const BASE = "/app/example-org";
+
+/** Where a step's "Take me there" points for this viewer, or null if nowhere. */
+const hrefOf = (id: string, isOrganizationAdmin: boolean) => {
+	const { target } = ONBOARDING_STEPS.find((s) => s.id === id) ?? {};
+	if (
+		!target ||
+		(target.kind !== "center" && target.kind !== "anchor") ||
+		!target.navigate
+	) {
+		return null;
+	}
+	return target.navigate(BASE, { isOrganizationAdmin });
+};
+
+describe("the two key steps (Fizzy #2361)", () => {
+	it("opens the tour with the AI provider key, right after the greeting", () => {
+		// FR1/AC1. `welcome` is a greeting, not a content slide — `aiKey` is
+		// the first thing the tour actually says.
+		expect(ids(ONBOARDING_STEPS).slice(0, 2)).toEqual(["welcome", "aiKey"]);
+	});
+
+	it("puts the API key step last, just before the wrap-up", () => {
+		// FR5. Deliberately NOT next to `aiKey`: a provider key is required
+		// for Fabric to work, a Fabric API key is an optional way to drive it
+		// from outside. See the comment on the step itself.
+		expect(ids(ONBOARDING_STEPS).slice(-2)).toEqual(["apiKey", "wrapup"]);
+	});
+
+	it("sends an admin to the organization AI provider page", () => {
+		// FR2/AC2.
+		expect(hrefOf("aiKey", true)).toBe(`${BASE}/settings/ai-providers`);
+	});
+
+	it("sends a member to the page they can actually submit", () => {
+		// The org page renders read-only for everyone but an admin, so a
+		// member sent there is told to add a key and then handed a form they
+		// cannot use — the exact trap Fizzy #1875 split these two pages to
+		// avoid. The account page works for any member.
+		expect(hrefOf("aiKey", false)).toBe(
+			`${BASE}/settings/account/ai-providers`,
+		);
+	});
+
+	it("sends everyone to the same API key page", () => {
+		// FR5. Unlike AI providers, this page is not admin-gated — a member
+		// creates and revokes their own keys there.
+		expect(hrefOf("apiKey", true)).toBe(`${BASE}/settings/api-keys`);
+		expect(hrefOf("apiKey", false)).toBe(`${BASE}/settings/api-keys`);
+	});
+
+	it("leaves the greeting with nowhere to go", () => {
+		expect(hrefOf("welcome", true)).toBeNull();
+	});
+
+	it("guards both areas so neither can be silently dropped", () => {
+		// The drift test asserts every required area has a step; listing these
+		// is what makes removing either slide fail CI rather than pass quietly.
+		expect(ONBOARDING_REQUIRED_AREAS).toContain("aiKey");
+		expect(ONBOARDING_REQUIRED_AREAS).toContain("apiKey");
+	});
+});
 
 describe("resolveTourSteps — viewer has a project", () => {
 	it("returns the full registry, untouched, in order", () => {
@@ -63,11 +132,43 @@ describe("resolveTourSteps — viewer has no project", () => {
 
 		expect(ids(steps)).toEqual([
 			"welcome",
+			"aiKey",
 			"assistant",
 			"projects",
 			"overview",
+			"apiKey",
 			"wrapup",
 		]);
+	});
+
+	it("keeps both key steps — the collapse only touches project steps", () => {
+		// Fizzy #2361. `aiKey` and `apiKey` are centered steps with no project
+		// tab, so `projectTabOf` returns null for them and the no-project
+		// collapse must pass them straight through.
+		const steps = resolveTourSteps({
+			hasProject: false,
+			isTabVisible: allVisible,
+		});
+
+		for (const id of ["aiKey", "apiKey"]) {
+			expect(ids(steps).filter((s) => s === id)).toEqual([id]);
+		}
+	});
+
+	it("never shows two project-scoped steps back to back", () => {
+		// The #2360 repeat restated as an invariant rather than a sequence:
+		// consecutive project steps are what let the same fallback card render
+		// twice, whatever else the registry gains around them.
+		const steps = resolveTourSteps({
+			hasProject: false,
+			isTabVisible: allVisible,
+		});
+
+		for (let i = 1; i < steps.length; i++) {
+			expect(
+				isProjectScoped(steps[i]) && isProjectScoped(steps[i - 1]),
+			).toBe(false);
+		}
 	});
 
 	it("keeps exactly one project-scoped step", () => {
@@ -112,8 +213,10 @@ describe("resolveTourSteps — viewer has no project", () => {
 
 		expect(ids(steps)).toEqual([
 			"welcome",
+			"aiKey",
 			"assistant",
 			"projects",
+			"apiKey",
 			"wrapup",
 		]);
 	});
@@ -202,7 +305,15 @@ describe("resolveTourPosition — the viewer keeps their place", () => {
 
 	it("lands on the last step when nothing after it survived", () => {
 		const steps = without("wrapup");
-		expect(steps[resolveTourPosition(steps, "wrapup")].id).toBe("atlas");
+		expect(steps[resolveTourPosition(steps, "wrapup")].id).toBe("apiKey");
+	});
+
+	it("moves a viewer off a hidden atlas onto the next survivor", () => {
+		// Fizzy #2361: apiKey sits between atlas and wrapup, so a viewer whose
+		// atlas tab is hidden mid-run lands there rather than skipping to the
+		// end. Pins that the new step is reachable from a resumed position.
+		const steps = without("atlas");
+		expect(steps[resolveTourPosition(steps, "atlas")].id).toBe("apiKey");
 	});
 
 	it("starts at the beginning with no remembered step", () => {

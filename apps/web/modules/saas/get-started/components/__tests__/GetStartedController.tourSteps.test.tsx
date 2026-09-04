@@ -154,6 +154,7 @@ import { makeOnboardingStateData as makeStateData } from "../../lib/__tests__/on
 import {
 	GET_STARTED_OPEN_EVENT,
 	GET_STARTED_PROJECT_TAB_EVENT,
+	ONBOARDING_STEPS,
 	type ProjectTabEventDetail,
 } from "../../lib/tour-steps";
 import { GetStartedController } from "../GetStartedController";
@@ -260,14 +261,49 @@ beforeEach(() => {
 
 // ----------------------------------------------------------------------------
 
+/**
+ * Walk the tour forward until the named step is on screen.
+ *
+ * Counting clicks to a fixed position is what made inserting a step (Fizzy
+ * #2361 added two, one of them at index 1) shift every later assertion by one.
+ * These tests care WHICH step the viewer is on when something changes
+ * underneath them, never how far along it sits.
+ */
+async function advanceTo(id: string) {
+	const current = () => screen.getByTestId("current").textContent;
+	for (let i = 0; i < ONBOARDING_STEPS.length && current() !== id; i++) {
+		await userEvent.click(screen.getByRole("button", { name: "Next" }));
+	}
+	expect(current()).toBe(id);
+}
+
+/*
+ * Step totals, derived rather than written down.
+ *
+ * These assertions are about the CONTROLLER's wiring — that it hands the
+ * spotlight the whole list, or the collapsed one — not about how many steps
+ * the registry happens to hold. Hardcoding the numbers made every insertion
+ * (Fizzy #2361 added two) fail a dozen tests for no signal. The literal step
+ * sequences in the tests are the teeth; these are just the arithmetic.
+ */
+const isProjectScoped = (step: (typeof ONBOARDING_STEPS)[number]) =>
+	step.target.kind === "projectTab" ||
+	step.target.kind === "projectComponent";
+
+const FULL_TOTAL = ONBOARDING_STEPS.length;
+/** The collapse keeps the first project-scoped step and drops the rest. */
+const COLLAPSED_TOTAL =
+	FULL_TOTAL - (ONBOARDING_STEPS.filter(isProjectScoped).length - 1);
+
 describe("GetStartedController — the viewer has a project", () => {
-	it("walks the full nine-step tour, unchanged", async () => {
+	it("walks the full tour, unchanged", async () => {
 		renderController();
 		await startTour();
 
-		await waitFor(() => expect(total()).toBe(9));
+		await waitFor(() => expect(total()).toBe(FULL_TOTAL));
 		expect(stepIds()).toEqual([
 			"welcome",
+			"aiKey",
 			"assistant",
 			"projects",
 			"overview",
@@ -275,6 +311,7 @@ describe("GetStartedController — the viewer has a project", () => {
 			"roadmap",
 			"proposals",
 			"atlas",
+			"apiKey",
 			"wrapup",
 		]);
 	});
@@ -289,12 +326,14 @@ describe("GetStartedController — the viewer has no project", () => {
 		renderController();
 		await startTour();
 
-		await waitFor(() => expect(total()).toBe(5));
+		await waitFor(() => expect(total()).toBe(COLLAPSED_TOTAL));
 		expect(stepIds()).toEqual([
 			"welcome",
+			"aiKey",
 			"assistant",
 			"projects",
 			"overview",
+			"apiKey",
 			"wrapup",
 		]);
 	});
@@ -303,24 +342,32 @@ describe("GetStartedController — the viewer has no project", () => {
 		renderController();
 		await startTour();
 
-		await waitFor(() => expect(total()).toBe(5));
+		await waitFor(() => expect(total()).toBe(COLLAPSED_TOTAL));
 		// The counter and the dot navigation both derive from `steps.length`,
-		// so a five-step list is what makes "Step 4 / 5" correct.
+		// so the list and the total have to agree for "Step 5 / 7" to be true.
 		expect(stepIds()).toHaveLength(total());
 	});
 
-	it("advances from the create-a-project step to the wrap-up", async () => {
+	it("advances from the create-a-project step through to the wrap-up", async () => {
 		renderController();
 		await startTour();
-		await waitFor(() => expect(total()).toBe(5));
+		await waitFor(() => expect(total()).toBe(COLLAPSED_TOTAL));
 
-		for (let i = 0; i < 3; i++) {
-			await userEvent.click(screen.getByRole("button", { name: "Next" }));
+		// Walk the whole collapsed list rather than counting clicks to a fixed
+		// position — the point is that every kept step is reachable in order
+		// and the run ends on the wrap-up, not that overview sits at index 4.
+		const next = () =>
+			userEvent.click(screen.getByRole("button", { name: "Next" }));
+		const walked = [screen.getByTestId("current").textContent];
+		for (let i = 1; i < COLLAPSED_TOTAL; i++) {
+			await next();
+			walked.push(screen.getByTestId("current").textContent);
 		}
-		expect(screen.getByTestId("current").textContent).toBe("overview");
 
-		await userEvent.click(screen.getByRole("button", { name: "Next" }));
-		expect(screen.getByTestId("current").textContent).toBe("wrapup");
+		expect(walked).toEqual(stepIds());
+		expect(walked.at(-1)).toBe("wrapup");
+		// The one surviving project step is still passed through, once.
+		expect(walked.filter((id) => id === "overview")).toEqual(["overview"]);
 	});
 });
 
@@ -333,7 +380,7 @@ describe("GetStartedController — the probe has not answered", () => {
 		await startTour();
 
 		// Unsettled must read as "unknown", never as "no projects".
-		expect(total()).toBe(9);
+		expect(total()).toBe(FULL_TOTAL);
 
 		await act(async () => {
 			pending.resolve(projects(1));
@@ -356,7 +403,7 @@ describe("GetStartedController — the probe has not answered", () => {
 		// A failure is not an answer. The spotlight's own lookup runs later and
 		// may well succeed, so dropping four real steps here would hide
 		// project guidance from someone who does have projects.
-		expect(total()).toBe(9);
+		expect(total()).toBe(FULL_TOTAL);
 	});
 });
 
@@ -367,33 +414,34 @@ describe("GetStartedController — a tour that started too early", () => {
 
 		const { client } = renderController();
 		await startTour();
-		expect(total()).toBe(9);
+		expect(total()).toBe(FULL_TOTAL);
 
-		// Walk PAST the end of the collapsed list (5 steps, indices 0-4).
-		// This is the position where a shrinking list used to leave
-		// `steps[index]` undefined and unmount the tour outright.
-		for (let i = 0; i < 5; i++) {
-			await userEvent.click(screen.getByRole("button", { name: "Next" }));
-		}
-		expect(screen.getByTestId("current").textContent).toBe("roadmap");
+		// Walk PAST the end of the collapsed list. This is the position where a
+		// shrinking list used to leave `steps[index]` undefined and unmount the
+		// tour outright. `atlas` is the last step the collapse removes, so it
+		// stays past the end however many steps get inserted before it.
+		await advanceTo("atlas");
 
 		await act(async () => {
 			pending.resolve(projects(0));
 		});
 		await probeSettled(client);
 
-		// Freezing the unresolved list would have stranded this run on nine
-		// steps and shown the duplicate card five times anyway.
+		// Freezing the unresolved list would have stranded this run on the full
+		// list and shown the duplicate card four extra times anyway.
 		expect(screen.getByTestId("spotlight")).toBeTruthy();
-		await waitFor(() => expect(total()).toBe(5));
-		// Clamped to the last real step rather than rendering nothing.
-		expect(screen.getByTestId("current").textContent).toBe("wrapup");
+		await waitFor(() => expect(total()).toBe(COLLAPSED_TOTAL));
+		// Resolved to a real step rather than rendering nothing. Since Fizzy
+		// #2361 that is `apiKey` — the first survivor after `atlas` in registry
+		// order — and no longer the wrap-up, which is a better landing anyway:
+		// the viewer gets a content step instead of "that's the tour".
+		expect(screen.getByTestId("current").textContent).toBe("apiKey");
 	});
 
 	it("stops moving once the probe has answered", async () => {
 		const { client } = renderController();
 		await startTour();
-		await waitFor(() => expect(total()).toBe(9));
+		await waitFor(() => expect(total()).toBe(FULL_TOTAL));
 
 		// A later refetch that disagrees must not reshape a run in progress.
 		listProjects.mockResolvedValue(projects(0));
@@ -402,13 +450,13 @@ describe("GetStartedController — a tour that started too early", () => {
 		});
 		await probeReports(client, 0);
 
-		expect(total()).toBe(9);
+		expect(total()).toBe(FULL_TOTAL);
 
 		// Proves the assertion above was not vacuous: the same disagreeing
 		// answer DOES take effect on the next run.
 		await userEvent.click(screen.getByRole("button", { name: "Done" }));
 		await startTour();
-		await waitFor(() => expect(total()).toBe(5));
+		await waitFor(() => expect(total()).toBe(COLLAPSED_TOTAL));
 	});
 });
 
@@ -416,7 +464,7 @@ describe("GetStartedController — tab visibility stays live", () => {
 	it("drops steps for a tab hidden by a customization that lands mid-tour", async () => {
 		const { client } = renderController();
 		await startTour();
-		await waitFor(() => expect(total()).toBe(9));
+		await waitFor(() => expect(total()).toBe(FULL_TOTAL));
 
 		// Visibility is per project and the query is disabled until one is on
 		// screen, so a tour launched from the sidebar starts with every tab
@@ -436,7 +484,7 @@ describe("GetStartedController — tab visibility stays live", () => {
 		// roadmap and proposals both live on `stories`. Freezing the whole
 		// list would have kept them and left the tour waiting on anchors that
 		// never render.
-		await waitFor(() => expect(total()).toBe(7));
+		await waitFor(() => expect(total()).toBe(FULL_TOTAL - 2));
 		expect(stepIds()).not.toContain("roadmap");
 		expect(stepIds()).not.toContain("proposals");
 		expect(screen.getByTestId("spotlight")).toBeTruthy();
@@ -465,32 +513,25 @@ describe("GetStartedController — a live change keeps the viewer's place", () =
 	it("stays on the same step when EARLIER steps are removed", async () => {
 		renderController();
 		await startTour();
-		await waitFor(() => expect(total()).toBe(9));
+		await waitFor(() => expect(total()).toBe(FULL_TOTAL));
 
-		// Walk to atlas (index 7).
-		for (let i = 0; i < 7; i++) {
-			await userEvent.click(screen.getByRole("button", { name: "Next" }));
-		}
-		expect(screen.getByTestId("current").textContent).toBe("atlas");
+		await advanceTo("atlas");
 
 		// roadmap and proposals sit BEFORE atlas and both live on `stories`.
-		// Removing them shifts atlas from index 7 to 5 — a bare index would
-		// leave the viewer on the wrap-up, silently skipping atlas entirely.
+		// Removing them shifts atlas two slots earlier — a bare index would
+		// leave the viewer past it, silently skipping atlas entirely.
 		await hideTab("stories");
 
-		await waitFor(() => expect(total()).toBe(7));
+		await waitFor(() => expect(total()).toBe(FULL_TOTAL - 2));
 		expect(screen.getByTestId("current").textContent).toBe("atlas");
 	});
 
 	it("does not jump backward if the removed step later comes back", async () => {
 		renderController();
 		await startTour();
-		await waitFor(() => expect(total()).toBe(9));
+		await waitFor(() => expect(total()).toBe(FULL_TOTAL));
 
-		for (let i = 0; i < 5; i++) {
-			await userEvent.click(screen.getByRole("button", { name: "Next" }));
-		}
-		expect(screen.getByTestId("current").textContent).toBe("roadmap");
+		await advanceTo("roadmap");
 
 		await hideTab("stories");
 		await waitFor(() =>
@@ -510,26 +551,24 @@ describe("GetStartedController — a live change keeps the viewer's place", () =
 			);
 		});
 
-		await waitFor(() => expect(total()).toBe(9));
+		await waitFor(() => expect(total()).toBe(FULL_TOTAL));
 		expect(screen.getByTestId("current").textContent).toBe("atlas");
 	});
 
 	it("moves to the next surviving step when the current one is removed", async () => {
 		renderController();
 		await startTour();
-		await waitFor(() => expect(total()).toBe(9));
+		await waitFor(() => expect(total()).toBe(FULL_TOTAL));
 
-		// Walk to roadmap (index 5), which lives on `stories`.
-		for (let i = 0; i < 5; i++) {
-			await userEvent.click(screen.getByRole("button", { name: "Next" }));
-		}
-		expect(screen.getByTestId("current").textContent).toBe("roadmap");
+		// roadmap lives on `stories`, so hiding that tab removes the very step
+		// the viewer is standing on.
+		await advanceTo("roadmap");
 
 		await hideTab("stories");
 
 		// roadmap is gone. Registry order is preserved, so the old slot now
 		// holds the next survivor rather than nothing.
-		await waitFor(() => expect(total()).toBe(7));
+		await waitFor(() => expect(total()).toBe(FULL_TOTAL - 2));
 		expect(screen.getByTestId("current").textContent).toBe("atlas");
 	});
 });
@@ -538,7 +577,7 @@ describe("GetStartedController — the probe and the spotlight must agree", () =
 	it("asks the same question the spotlight asks", async () => {
 		renderController();
 		await startTour();
-		await waitFor(() => expect(total()).toBe(9));
+		await waitFor(() => expect(total()).toBe(FULL_TOTAL));
 
 		// These two values are load-bearing and are duplicated by design in
 		// `GetStartedSpotlight`'s `resolveProjectId`. If the two lookups ever

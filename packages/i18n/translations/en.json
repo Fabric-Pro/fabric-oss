@@ -853,6 +853,14 @@
 			"skipTour": "Skip tour",
 			"stepCounter": "Step {current} of {total}",
 			"steps": {
+				"aiKey": {
+					"body": "Fabric runs on an AI provider you connect — without a key, most features stay quiet. Add one in Settings, for the whole organization if you are an admin or just for yourself otherwise; a personal key applies wherever your organization has none.",
+					"title": "First, add an AI provider key"
+				},
+				"apiKey": {
+					"body": "Create an API key under Settings → API Keys to let an external AI or command-line tool work with this organization over MCP — your projects, documents, and roadmap, from wherever you already work.",
+					"title": "Connect your own tools"
+				},
 				"assistant": {
 					"body": "Nexus is your always-on AI teammate. Ask it to plan work, draft specs, or answer questions about your projects — right from the sidebar.",
 					"title": "Meet Nexus, your AI assistant"
