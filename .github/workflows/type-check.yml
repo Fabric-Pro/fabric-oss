@@ -19,9 +19,23 @@ name: Type Check
 # Security: no user-controlled fields are interpolated into run: blocks;
 # BASE_REF is github.base_ref (GitHub-controlled) and guarded by the
 # EVENT_NAME check.
+#
+# Why this also runs on pushes to master: GitHub only lets a workflow run
+# restore caches saved on its own branch or on the base branch. A PR's
+# first run therefore only finds a warm Turbo/tsbuildinfo cache if a run
+# on master saved one, and without this trigger nothing ever did — every
+# fresh branch started cold (measured 4m31s cold vs 39s warm on the same
+# head). The relay PRs in the public repo are one-shot branches, so they
+# were cold every time and the relay waited on them. The master run is a
+# full sweep (there is no base to scope against); with the previous
+# master entry restored Turbo replays every unchanged package, so it
+# costs about what a PR run does, and it re-seeds everything from scratch
+# whenever the cache chain was evicted.
 
 on:
   pull_request:
+    branches: [master]
+  push:
     branches: [master]
   workflow_dispatch:
 
@@ -108,8 +122,11 @@ jobs:
           BASE_REF: ${{ github.base_ref }}
         run: |
           # On PRs: only the packages affected by the diff vs the PR base
-          # (and their dependents). On workflow_dispatch: full sweep.
-          # `^generate`/`^build` run as turbo type-check dependencies.
+          # (and their dependents). On push to master and on
+          # workflow_dispatch: full sweep — the master run is what seeds
+          # the cache PRs restore (see the header), so it must cover every
+          # package. `^generate`/`^build` run as turbo type-check
+          # dependencies.
           if [[ "$EVENT_NAME" == "pull_request" ]]; then
             pnpm turbo type-check --concurrency=4 --filter="...[origin/${BASE_REF}]"
           else
