@@ -1,5 +1,6 @@
 "use client";
 
+import { useOrganizationId } from "@saas/organizations/hooks/use-organization-context";
 import {
 	isProjectTabVisibleToViewer,
 	useProjectTabCustomization,
@@ -28,10 +29,11 @@ import {
 	GET_STARTED_SPOTLIGHT_EVENT,
 	GET_STARTED_SURFACE_EVENT,
 	GET_STARTED_TOUR_PAGE_EVENT,
-	ONBOARDING_STEPS,
 	type OnboardingStep,
 	type PagesRevealedEventDetail,
 	type ProjectTabEventDetail,
+	resolveTourPosition,
+	resolveTourSteps,
 	type SpotlightEventDetail,
 	type SurfaceEventDetail,
 	type TourPageEventDetail,
@@ -177,19 +179,51 @@ export function GetStartedController() {
 		[tabGates, tabCustomization.config, tabCustomization.prefs],
 	);
 
-	const tourSteps = useMemo(
-		() =>
-			ONBOARDING_STEPS.filter((s) => {
-				if (
-					s.target.kind === "projectTab" ||
-					s.target.kind === "projectComponent"
-				) {
-					return isTabVisible(s.target.tab);
-				}
-				return true;
-			}),
-		[isTabVisible],
+	// Does this viewer have a project at all? `resolveTourSteps` needs the
+	// answer to collapse the project-scoped steps (Fizzy #2360 — the reasoning
+	// lives on that function). Read on mount rather than lazily, so it has
+	// usually settled before the welcome dialog's "Start tour" is reachable,
+	// and `limit: 1` because existence is the only question.
+	//
+	// `includeDraft: false` is explicit, not incidental, and MUST stay in step
+	// with `GetStartedSpotlight`'s own lookup — the two have to answer the
+	// same question or the repeat comes straight back. If this one counted
+	// drafts and that one did not, the controller would keep all five project
+	// steps while the spotlight still failed to resolve a project.
+	//
+	// Excluding them is also the right answer on its own. `list` orders by
+	// `updatedAt DESC` and takes one, so counting drafts would let a
+	// half-finished draft outrank a real project and send the tour to
+	// spotlight components that may not be there yet. An account whose only
+	// project is still a draft hasn't finished making one — pointing it at
+	// "Create your first project", once, is the correct guidance.
+	const organizationId = useOrganizationId();
+	const projectProbe = useQuery(
+		orpc.projects.list.queryOptions({
+			input: { organizationId, limit: 1, includeDraft: false },
+		}),
 	);
+	// Only a SUCCESSFUL empty response collapses. Pending and failed both read
+	// as "don't know", which `resolveTourSteps` leaves uncollapsed.
+	//
+	// The tempting alternative — treat a failure as "no project", since the
+	// spotlight resolves through the same endpoint and turns its own errors
+	// into the same card — is wrong, and the trade is worth writing down so it
+	// doesn't get flipped back. Sharing an endpoint is not sharing an outcome:
+	// the spotlight's lookup happens later and can succeed where this one
+	// failed. Collapsing on a transient error would then hide four real steps
+	// from someone who does have projects, and the freeze below would hold
+	// that mistake for the whole run.
+	//
+	// Residual, accepted: while this endpoint is failing outright, the five
+	// project steps each fall back to the same card again — the pre-#2360
+	// behaviour. Nothing here can tell "no projects" from "can't reach the
+	// API", and during an outage the tour is already degraded (it navigates to
+	// project pages that won't load). Narrowing that to a real outage, instead
+	// of every new account, is the win.
+	const hasProject = projectProbe.isSuccess
+		? (projectProbe.data?.projects?.length ?? 0) > 0
+		: undefined;
 
 	// Per-user session key for the recurring prompt. `user` is nullable here
 	// (the hooks run before the `!user` guard), so fall back to "" — when there
@@ -255,6 +289,42 @@ export function GetStartedController() {
 
 	const [mode, setMode] = useState<Mode>("idle");
 	const [index, setIndex] = useState(0);
+
+	// Freeze the COLLAPSE DECISION for a run — one boolean, not the step list.
+	//
+	// Freezing the whole list is tempting and wrong. Tab visibility resolves
+	// per project (`useProjectTabCustomization` is disabled until
+	// `activeProjectId` is set), and a tour launched from the sidebar starts
+	// outside any project — so at that moment every tab still looks visible.
+	// A frozen list would keep steps for tabs this viewer turns out not to
+	// have, and then wait on anchors that never render. Visibility has to stay
+	// live; the index clamp below is what makes a shrinking list safe.
+	//
+	// The decision itself is frozen so a routine refetch can't reshape a run
+	// in progress, and it is taken only once the probe has answered — freezing
+	// "don't know" would strand a tour that started during a slow request on
+	// the uncollapsed nine steps for its whole duration.
+	const [frozenHasProject, setFrozenHasProject] = useState<
+		boolean | undefined
+	>(undefined);
+	useEffect(() => {
+		if (
+			mode === "tour" &&
+			frozenHasProject === undefined &&
+			hasProject !== undefined
+		) {
+			setFrozenHasProject(hasProject);
+		}
+	}, [mode, frozenHasProject, hasProject]);
+
+	const tourSteps = useMemo(
+		() =>
+			resolveTourSteps({
+				hasProject: mode === "tour" ? frozenHasProject : hasProject,
+				isTabVisible,
+			}),
+		[mode, frozenHasProject, hasProject, isTabVisible],
+	);
 	const [adHocStep, setAdHocStep] = useState<OnboardingStep | null>(null);
 	const [pageTourSteps, setPageTourSteps] = useState<OnboardingStep[]>([]);
 	// The project tab currently on screen (client state in ProjectDetails, so
@@ -345,9 +415,11 @@ export function GetStartedController() {
 
 	const startTour = useCallback(() => {
 		setIndex(0);
+		setTourStepId(tourSteps[0]?.id ?? null);
+		setFrozenHasProject(hasProject);
 		setMode("tour");
 		persist({ type: "start" });
-	}, [persist]);
+	}, [persist, hasProject, tourSteps]);
 
 	const showComponent = useCallback(
 		(item: GsItem) => {
@@ -621,10 +693,41 @@ export function GetStartedController() {
 		);
 	}, [mode]);
 
+	// Where the viewer is, resolved by STEP rather than by slot — the list is
+	// live and steps can vanish mid-run. See `resolveTourPosition`.
+	const [tourStepId, setTourStepId] = useState<string | null>(null);
+	const tourIndex = resolveTourPosition(tourSteps, tourStepId);
+	const shownStepId = tourSteps[tourIndex]?.id;
+	// Adopt whatever is actually on screen as the new anchor. When the
+	// remembered step was removed, the resolver moves the viewer to its
+	// successor — and the id has to follow, or a later visibility result that
+	// RESTORES the removed step (a refetch, or a different project's config)
+	// would find it again and jump the viewer backwards to a step they have
+	// already been walked past. Converges in one render: once the id matches
+	// what is shown, the resolver returns that same index and this no-ops.
+	useEffect(() => {
+		if (mode === "tour" && shownStepId && shownStepId !== tourStepId) {
+			setTourStepId(shownStepId);
+		}
+	}, [mode, shownStepId, tourStepId]);
+
+	/** Move to `target`, remembering the step there rather than the number. */
+	const goToIndex = useCallback(
+		(target: number, steps: readonly OnboardingStep[]) => {
+			const clamped = Math.min(
+				Math.max(0, target),
+				Math.max(0, steps.length - 1),
+			);
+			setIndex(clamped);
+			setTourStepId(steps[clamped]?.id ?? null);
+		},
+		[],
+	);
+
 	const advance = useCallback(
 		(outcome: "completed" | "skipped") => {
-			const current = tourSteps[index];
-			const next = tourSteps[index + 1];
+			const current = tourSteps[tourIndex];
+			const next = tourSteps[tourIndex + 1];
 			if (current) {
 				persist({
 					type: "step",
@@ -633,43 +736,50 @@ export function GetStartedController() {
 					currentStepId: next?.id ?? current.id,
 				});
 			}
-			setIndex((i) => Math.min(tourSteps.length - 1, i + 1));
+			goToIndex(tourIndex + 1, tourSteps);
 		},
-		[tourSteps, index, persist],
+		[tourSteps, tourIndex, persist, goToIndex],
 	);
 
 	const goBack = useCallback(() => {
-		const prev = tourSteps[index - 1];
+		const prev = tourSteps[tourIndex - 1];
 		if (prev) {
 			persist({ type: "setCurrent", stepId: prev.id });
 		}
-		setIndex((i) => Math.max(0, i - 1));
-	}, [tourSteps, index, persist]);
+		goToIndex(tourIndex - 1, tourSteps);
+	}, [tourSteps, tourIndex, persist, goToIndex]);
 
 	const goTo = useCallback(
 		(target: number) => {
 			const s = tourSteps[target];
 			if (s) {
 				persist({ type: "setCurrent", stepId: s.id });
-				setIndex(target);
+				goToIndex(target, tourSteps);
 			}
 		},
-		[tourSteps, persist],
+		[tourSteps, persist, goToIndex],
 	);
+
+	// Thaw on exit so the next run decides fresh.
+	const endTour = useCallback(() => {
+		setFrozenHasProject(undefined);
+		setTourStepId(null);
+		setMode("idle");
+	}, []);
 
 	const dismissTour = useCallback(() => {
 		persist({ type: "dismiss" });
-		setMode("idle");
-	}, [persist]);
+		endTour();
+	}, [persist, endTour]);
 
 	const finishTour = useCallback(() => {
-		const current = tourSteps[index];
+		const current = tourSteps[tourIndex];
 		if (current) {
 			persist({ type: "step", stepId: current.id, outcome: "completed" });
 		}
 		persist({ type: "complete" });
-		setMode("idle");
-	}, [tourSteps, index, persist]);
+		endTour();
+	}, [tourSteps, tourIndex, persist, endTour]);
 
 	// A one-off "Show me" ends by returning to the drawer so users keep exploring.
 	const endSpotlight = useCallback(
@@ -728,10 +838,10 @@ export function GetStartedController() {
 					gates={gsGates}
 				/>
 			)}
-			{mode === "tour" && tourSteps[index] && (
+			{mode === "tour" && tourSteps[tourIndex] && (
 				<GetStartedSpotlight
 					steps={tourSteps}
-					index={index}
+					index={tourIndex}
 					onNext={() => advance("completed")}
 					onSkipStep={() => advance("skipped")}
 					onBack={goBack}
