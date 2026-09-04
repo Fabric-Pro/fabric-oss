@@ -21,11 +21,24 @@ name: Unit Tests
 # (PR title, body, branch name, commit message, etc.) into run: blocks.
 # Only github.event_name and numeric github.event.pull_request.number are
 # referenced in expressions, both of which are GitHub-controlled.
+#
+# Pushes to master run a cache-warming variant of the `vitest` job, not
+# the tests: GitHub only lets a run restore caches saved on its own
+# branch or on the base branch, so a PR's first run finds a warm pnpm
+# store and Turbo cache only if a run on master saved one. Nothing did
+# before this trigger existed, and the one-shot relay PRs in the public
+# repo never get a second push, so they paid for a cold pnpm install and
+# a cold Prisma generate on every run. Running the suite on master would
+# warm nothing extra — a PR only executes packages affected by its diff,
+# whose test hashes differ from master's by definition — so the master
+# run stops after `generate` and runs on the small runner.
 
 on:
   pull_request:
     # Canonical upstream branch is `master` (post-cutover); see
     # docs/deployment.md § Branch cutover checklist.
+    branches: [master]
+  push:
     branches: [master]
   workflow_dispatch:
 
@@ -41,6 +54,8 @@ concurrency:
 jobs:
   changes:
     name: Detect changed paths
+    # Not needed for the cache-warming run on master (see header).
+    if: github.event_name != 'push'
     runs-on: ubuntu-latest
     outputs:
       code: ${{ steps.filter.outputs.code }}
@@ -85,13 +100,18 @@ jobs:
               - '.github/workflows/unit-tests.yml'
 
   vitest:
-    name: Vitest
+    name: ${{ github.event_name == 'push' && 'Warm caches' || 'Vitest' }}
     needs: changes
     # Always run on workflow_dispatch (full sweep). On PRs, only run when
-    # test-relevant paths changed.
+    # test-relevant paths changed. On push to master, always run — as the
+    # cache-warming variant (see header); `!cancelled()` is what lets it
+    # run there, since the `changes` job it needs is skipped on push.
     if: >-
-      github.event_name == 'workflow_dispatch' ||
-      needs.changes.outputs.code == 'true'
+      !cancelled() && (
+        github.event_name == 'push' ||
+        github.event_name == 'workflow_dispatch' ||
+        needs.changes.outputs.code == 'true'
+      )
     # Larger runner: this monorepo runs vitest across ~27 packages in
     # parallel via turbo. On the standard 4-core runner the cold-cache
     # TS transform routinely starves CPU and times tests out. 8-core
@@ -129,8 +149,10 @@ jobs:
     #                                                 thread, 67% slower
     #   deps.optimizer                 -21s local     24 files failed, breaks
     #                                                 module mocking
-    #   ubuntu-16core                  n/a            label is not provisioned
-    #                                                 in this org
+    #   ubuntu-16core                  n/a            label not provisioned at
+    #                                                 the time; it was created
+    #                                                 later and is the runner
+    #                                                 this job uses now
     #   --concurrency 4 -> 6 and 12    aborted        @repo/rag times out at
     #                                                 15s under the extra load
     #                                                 and turbo kills the run,
@@ -193,19 +215,36 @@ jobs:
     # isolation. Making it hermetic means auditing all ~766 files.
     #
     # Runner labels, checked empirically because the REST API needs admin:org to
-    # list them: this org has exactly `ubuntu-latest` and `ubuntu-8core`. A probe
-    # matrix over ubuntu-4core / 16core / 32core and the GitHub default-style
-    # ubuntu-latest-{4,8,16}-cores left every one of them queued and unassigned
-    # for 4.5 minutes while the two real labels finished in seconds. A bigger
-    # runner therefore needs an org admin to create the label first.
+    # list them: at the time this org had exactly `ubuntu-latest` and
+    # `ubuntu-8core`. A probe matrix over ubuntu-4core / 16core / 32core and the
+    # GitHub default-style ubuntu-latest-{4,8,16}-cores left every one of them
+    # queued and unassigned for 4.5 minutes while the two real labels finished
+    # in seconds. `ubuntu-16core` has since been created (the 8-core -> 16-core
+    # measurements above ran on it); anything bigger still needs an org admin
+    # to create the label first.
     #
     # @repo/temporal was measured the same way and is also NOT a candidate —
     # `--no-isolate` fails 8 files / 69 tests there.
     #
     # Please do not spend another round on worker counts, pools, environments
     # or cache warming; those are settled above.
-    runs-on: ubuntu-16core
+    #
+    # The cache-warming run on master only installs and generates, so it
+    # takes the small runner.
+    runs-on: ${{ github.event_name == 'push' && 'ubuntu-latest' || 'ubuntu-16core' }}
     timeout-minutes: 30
+    env:
+      # Placeholder so @repo/database's prisma singleton, which throws at
+      # module load when DATABASE_URL is unset, can initialize. Tests that
+      # touch the DB mock it; this URL is never connected to.
+      #
+      # Job-level, not on the test step alone: both variables are in
+      # turbo.json's `globalEnv`, so they feed every task hash. When only
+      # the test step set them, the `generate` the barrel check below ran
+      # and the `generate` the test run depended on hashed differently and
+      # Prisma generated twice (~77s each).
+      DATABASE_URL: 'postgresql://test:test@localhost:5432/test'
+      DIRECT_URL: 'postgresql://test:test@localhost:5432/test'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -254,6 +293,7 @@ jobs:
       # organizationId coercion (tenant-isolation foot-gun). Runs on every PR
       # regardless of which packages changed — it is a cross-cutting security check.
       - name: Tenant isolation check
+        if: github.event_name != 'push'
         # Invoked directly (not via an npm script) to keep root package.json
         # unchanged — adding a script entry trips the security workflow's
         # `deps changed` path filter and forces a full pnpm audit run.
@@ -270,8 +310,10 @@ jobs:
       # or restores the repaired barrel from the turbo cache, before any
       # suite, including the barrel's own integrity test, reads it. So run
       # the generate task first and fail if the result differs from what is
-      # committed. The `test` run replays it from cache, so this costs no
-      # extra generation.
+      # committed. The `test` run replays it from cache (same job env, so
+      # the same task hash), so this costs no extra generation. On push to
+      # master this step is also the cache warm: it is the last thing the
+      # run does before the Turbo cache is saved.
       - name: Committed Prisma zod barrel matches the generate pipeline
         run: |
           pnpm turbo run generate --filter=@repo/database
@@ -292,14 +334,10 @@ jobs:
       # branch name, e.g. `master`) and is empty on non-PR
       # events — which we guard via the EVENT_NAME check.
       - name: Run unit tests
+        if: github.event_name != 'push'
         env:
           EVENT_NAME: ${{ github.event_name }}
           BASE_REF: ${{ github.base_ref }}
-          # Placeholder so @repo/database's prisma singleton, which throws
-          # at module load when DATABASE_URL is unset, can initialize. Tests
-          # that touch the DB mock it; this URL is never connected to.
-          DATABASE_URL: 'postgresql://test:test@localhost:5432/test'
-          DIRECT_URL: 'postgresql://test:test@localhost:5432/test'
         run: |
           # --concurrency=4 caps parallel turbo tasks so each gets ~2 cores
           # of the 8-core runner. Default would let 8+ heavy vitest workers
@@ -317,7 +355,10 @@ jobs:
   unit-tests:
     name: unit-tests
     needs: [changes, vitest]
-    if: always()
+    # Not on push: the master run warms caches and runs no tests, so it
+    # has no verdict to report (and `changes` is skipped there, which the
+    # fail-closed check below would otherwise flag).
+    if: always() && github.event_name != 'push'
     runs-on: ubuntu-latest
     env:
       EVENT_NAME: ${{ github.event_name }}
