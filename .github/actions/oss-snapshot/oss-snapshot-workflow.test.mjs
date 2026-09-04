@@ -84,6 +84,28 @@ test("the build uses only full-SHA private snapshot coordinates and source linka
 	]);
 });
 
+test("the layer cache lives in the registry, not the shared Actions cache", () => {
+	// Fourteen mode=max caches exceed the repository's 10 GB Actions cache and
+	// evict the caches pull-request jobs depend on. See CACHE_NAMESPACE.
+	assert.doesNotMatch(workflow, /type=gha/);
+	assert.match(
+		workflow,
+		/cache-from: type=registry,ref=\$\{\{ env\.CACHE_IMAGE \}\}:master/,
+	);
+	assert.match(
+		workflow,
+		/cache-to: type=registry,ref=\$\{\{ env\.CACHE_IMAGE \}\}:master,mode=max,ignore-error=true/,
+	);
+	assert.match(
+		workflow,
+		/^ {2}CACHE_NAMESPACE: ghcr\.io\/fabric-pro\/fabric-oss-buildcache$/m,
+	);
+	assert.match(
+		workflow,
+		/CACHE_IMAGE: \$\{\{ env\.CACHE_NAMESPACE \}\}\/\$\{\{ matrix\.component \}\}/,
+	);
+});
+
 test("permissions are limited to repository read and snapshot publication", () => {
 	assert.doesNotMatch(workflow, /^\s+contents: write/m);
 	assert.doesNotMatch(workflow, /^\s+actions:/m);
