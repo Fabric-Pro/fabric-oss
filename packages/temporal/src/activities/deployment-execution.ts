@@ -20,7 +20,7 @@ import {
 	updateExecutionStatus,
 } from "@repo/database";
 import { logger } from "@repo/logs";
-import { Client, Connection } from "@temporalio/client";
+import { getTemporalClient } from "../client";
 
 // Import shared agent execution utilities
 import {
@@ -601,12 +601,10 @@ export async function signalSupervisorCompletion(params: {
 	});
 
 	try {
-		// Connect to Temporal and signal the supervisor
-		const connection = await Connection.connect({
-			address: process.env.TEMPORAL_ADDRESS || "localhost:7233",
-		});
-
-		const client = new Client({ connection });
+		// Signal the supervisor through the shared client so this path
+		// inherits the TLS / API-key / fail-closed policy and the configured
+		// namespace instead of a bare plaintext connection.
+		const client = await getTemporalClient();
 
 		const handle = client.workflow.getHandle(supervisorWorkflowId);
 		await handle.signal("executionCompleted", { executionId, success });

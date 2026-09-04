@@ -2723,9 +2723,6 @@ importers:
       '@repo/utils':
         specifier: workspace:*
         version: link:../utils
-      '@temporalio/client':
-        specifier: ~1.23.0
-        version: 1.23.0
       ai:
         specifier: ^6.0.116
         version: 6.0.116(zod@4.1.12)
