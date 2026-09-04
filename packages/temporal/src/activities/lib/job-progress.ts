@@ -108,7 +108,12 @@ export interface JobEnsureArgs {
  */
 function currentExecution(): { workflowId: string; runId: string } | null {
 	try {
+		// Unset for a standalone Activity (SDK 1.23+), which nothing here
+		// starts. Same no-op path as running outside an activity entirely.
 		const execution = Context.current().info.workflowExecution;
+		if (!execution) {
+			return null;
+		}
 		return { workflowId: execution.workflowId, runId: execution.runId };
 	} catch {
 		return null;

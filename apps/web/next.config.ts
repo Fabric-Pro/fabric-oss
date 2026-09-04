@@ -487,7 +487,7 @@ const nextConfig: NextConfig = {
 		"@temporalio/workflow",
 		"@temporalio/activity",
 		"@temporalio/worker",
-		"@temporalio/interceptors-opentelemetry",
+		"@temporalio/interceptors-opentelemetry-v2",
 		"@temporalio/nexus",
 		"@temporalio/core-bridge",
 		"protobufjs",

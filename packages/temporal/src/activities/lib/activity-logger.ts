@@ -37,6 +37,13 @@ interface ActivityContext {
 function getActivityContext(): ActivityContext | null {
 	try {
 		const info = activityInfo();
+		// Both are unset for a standalone Activity — one started directly by a
+		// client rather than by a workflow (SDK 1.23+). Nothing here starts
+		// activities that way, and a log line with no workflow identity is
+		// worth less than the `null` the caller already handles.
+		if (!info.workflowExecution || !info.workflowType) {
+			return null;
+		}
 		return {
 			workflowId: info.workflowExecution.workflowId,
 			runId: info.workflowExecution.runId,
