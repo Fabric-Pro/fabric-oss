@@ -69,6 +69,7 @@ import {
 import { AgentActivityTab } from "./AgentActivityTab";
 // ProjectHeader is always visible, keep static import
 import { ProjectHeader } from "./ProjectHeader";
+import { ProjectPresenceProvider } from "./ProjectPresenceProvider";
 import { ProjectSectionHero } from "./ProjectSectionHero";
 import { ProjectTabButton } from "./ProjectTabButton";
 import {
@@ -750,8 +751,12 @@ export function ProjectDetails({ projectId, organizationSlug }: Props) {
 		[refetch],
 	);
 
-	// Connect to real-time presence (tracks active tab)
-	useProjectPresence({
+	// The project page's ONE presence connection. It stays here, above the
+	// loading / not-found / deleted branches, so join and leave don't churn as
+	// those branches flip. Everything else on the page that needs presence
+	// reads it from the provider below instead of calling the hook again —
+	// a second call is a second join, heartbeat interval and SSE stream.
+	const presence = useProjectPresence({
 		projectId,
 		activeTab,
 		onDocumentChange: handleDocumentChange,
@@ -1023,16 +1028,21 @@ export function ProjectDetails({ projectId, organizationSlug }: Props) {
 						]}
 					/>
 
-					<ProjectHeader
-						project={project}
-						currentUserId={user?.id}
-						currentTab={activeTab}
-						organizationId={organizationId}
-						canEdit={
-							project.userRole === "owner" ||
-							project.userRole === "editor"
-						}
-					/>
+					{/* The provider has to enclose every presence consumer on
+					    the page. Today that is just the avatar stack inside
+					    ProjectHeader; anything else that needs presence goes
+					    inside here too rather than calling the hook again. */}
+					<ProjectPresenceProvider value={presence}>
+						<ProjectHeader
+							project={project}
+							currentUserId={user?.id}
+							organizationId={organizationId}
+							canEdit={
+								project.userRole === "owner" ||
+								project.userRole === "editor"
+							}
+						/>
+					</ProjectPresenceProvider>
 
 					{/* Readiness panel. Sits in the banner slot directly beneath the
 					    title — the "project header/title area" the criteria ask for

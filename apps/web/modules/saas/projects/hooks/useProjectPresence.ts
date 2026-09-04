@@ -37,7 +37,7 @@ interface UseProjectPresenceOptions {
 	onActivity?: (event: ActivityEvent) => void;
 }
 
-interface UseProjectPresenceReturn {
+export interface UseProjectPresenceReturn {
 	activeUsers: ActiveUser[];
 	recentActivity: ActivityEvent[];
 	status: ConnectionStatus;
