@@ -88,7 +88,7 @@
 			"undici@^8.0.0": "^8.9.0",
 			"underscore@^1.0.0": "^1.13.8",
 			"socket.io-parser@^4.0.0": "^4.2.7",
-			"@modelcontextprotocol/sdk@^1.10.0": "^1.26.0",
+			"@modelcontextprotocol/sdk@^1.10.0": "^1.30.0",
 			"@opentelemetry/exporter-prometheus": ">=0.217.0",
 			"@opentelemetry/propagator-jaeger": ">=2.9.0 <3",
 			"rollup@^4.0.0": "^4.59.0",
