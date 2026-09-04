@@ -1,16 +1,16 @@
 /**
- * "Stop syncing" — the non-destructive half of the unlink pair (Fizzy #2355).
+ * Restoring a deleted meeting from the 7-day recovery window (Fizzy #2355).
  *
- * The point of this action is that it is NOT unlink: it stops future
- * occurrences arriving and keeps every transcript already captured. These tests
- * pin the three properties that make that true from the user's side — the
- * action exists, it never calls the destructive mutation, and a stopped meeting
- * says so and offers the way back. Plus the gate: someone who cannot manage
- * context sources gets no menu at all.
+ * The property that matters most here is WHERE the recycle bin lives. It used
+ * to be nested inside the branch that renders the linked-meetings list, so
+ * deleting the LAST meeting in a project flipped `hasLinkedMeetings` to false,
+ * swapped in the empty state, and took the only route back with it — the
+ * archive was still there, still inside its window, and completely unreachable.
+ * The one case where recovery matters most was the one case it was missing.
  */
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -66,6 +66,8 @@ const setAutoAnalyzeMock = vi.fn();
 const triggerSyncMock = vi.fn();
 const unlinkMeetingMock = vi.fn();
 const setMeetingSyncActiveMock = vi.fn();
+const listDeletedMeetingsMock = vi.fn();
+const restoreMeetingMock = vi.fn();
 
 vi.mock("@shared/lib/orpc-client", () => ({
 	orpcClient: {
@@ -81,6 +83,9 @@ vi.mock("@shared/lib/orpc-client", () => ({
 				unlinkMeeting: (...a: unknown[]) => unlinkMeetingMock(...a),
 				setMeetingSyncActive: (...a: unknown[]) =>
 					setMeetingSyncActiveMock(...a),
+				listDeletedMeetings: (...a: unknown[]) =>
+					listDeletedMeetingsMock(...a),
+				restoreMeeting: (...a: unknown[]) => restoreMeetingMock(...a),
 			},
 		},
 	},
@@ -152,7 +157,18 @@ async function openRowMenu(user: ReturnType<typeof userEvent.setup>) {
 	await user.click(trigger);
 }
 
-describe("MeetingTranscriptSyncSettings — stop syncing", () => {
+const archive = {
+	id: "arch_1",
+	subject: "Weekly sync",
+	transcriptCount: 12,
+	deletedAt: new Date().toISOString(),
+	scheduledPurgeAt: new Date(Date.now() + 6 * 864e5).toISOString(),
+	payloadTruncated: false,
+	deletedByName: "Test User",
+	deletedByYou: true,
+};
+
+describe("MeetingTranscriptSyncSettings — restore", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
 		listTranscriptsMock.mockResolvedValue([]);
@@ -162,101 +178,82 @@ describe("MeetingTranscriptSyncSettings — stop syncing", () => {
 		triggerSyncMock.mockResolvedValue({});
 		unlinkMeetingMock.mockResolvedValue({});
 		setMeetingSyncActiveMock.mockResolvedValue({ success: true });
-	});
-
-	it("stops syncing without touching the destructive mutation", async () => {
-		listLinkedMeetingsMock.mockResolvedValue([syncingMeeting]);
-		const user = userEvent.setup();
-		renderSettings();
-
-		await openRowMenu(user);
-		await user.click(
-			await screen.findByRole("menuitem", { name: /Stop syncing/ }),
-		);
-
-		await waitFor(() => {
-			expect(setMeetingSyncActiveMock).toHaveBeenCalledTimes(1);
+		listDeletedMeetingsMock.mockResolvedValue([archive]);
+		restoreMeetingMock.mockResolvedValue({
+			success: true,
+			transcriptsRestored: 12,
+			reindexing: 12,
 		});
-		expect(setMeetingSyncActiveMock).toHaveBeenCalledWith(
-			expect.objectContaining({
-				projectId: PROJECT_ID,
-				organizationId: null,
-				linkedMeetingId: "linked_1",
-				active: false,
-			}),
-		);
-		// The whole point of the action: nothing is deleted.
-		expect(unlinkMeetingMock).not.toHaveBeenCalled();
 	});
 
-	it("tells the user what it keeps, by count", async () => {
-		listLinkedMeetingsMock.mockResolvedValue([syncingMeeting]);
-		const user = userEvent.setup();
+	it("offers the way back after the LAST meeting is deleted", async () => {
+		// Nothing linked any more — the empty state renders. The archive is
+		// still inside its window, so the recycle bin has to survive that
+		// switch or the deletion is effectively permanent.
+		listLinkedMeetingsMock.mockResolvedValue([]);
 		renderSettings();
-
-		await openRowMenu(user);
 
 		expect(
-			await screen.findByText("Keeps all 12 transcripts"),
+			await screen.findByText("No meetings linked to this project"),
+		).toBeInTheDocument();
+
+		expect(await screen.findByText("Recently deleted")).toBeInTheDocument();
+		expect(
+			await screen.findByRole("button", { name: /Restore/ }),
 		).toBeInTheDocument();
 	});
 
-	it("puts the hint on its own line instead of against the label", async () => {
-		listLinkedMeetingsMock.mockResolvedValue([syncingMeeting]);
+	it("restores from the empty state, not just alongside a populated list", async () => {
+		listLinkedMeetingsMock.mockResolvedValue([]);
 		const user = userEvent.setup();
 		renderSettings();
 
-		await openRowMenu(user);
-
-		// Shipped to staging reading "Stop syncingKeeps all 12 transcripts".
-		// DropdownMenuItem is a flex ROW, so the hint — a `block` span next to
-		// a bare text node — stayed on the label's line and inherited no gap.
-		// Asserting the text alone cannot see this: it passed throughout.
-		const hint = await screen.findByText("Keeps all 12 transcripts");
-		const item = hint.closest('[role="menuitem"]');
-
-		expect(item).not.toBeNull();
-		expect(item).toHaveClass("flex-col");
-
-		// And the label is its own element, so the two can never re-merge into
-		// one run of text.
-		expect(hint.parentElement).toBe(item);
-		expect(within(item as HTMLElement).getByText("Stop syncing")).not.toBe(
-			hint,
-		);
-	});
-
-	it("marks a stopped meeting and offers the way back", async () => {
-		listLinkedMeetingsMock.mockResolvedValue([stoppedMeeting]);
-		const user = userEvent.setup();
-		renderSettings();
-
-		// State is carried by a text label, not by the muted styling alone.
-		expect(await screen.findByText("Not syncing")).toBeInTheDocument();
-
-		await openRowMenu(user);
 		await user.click(
-			await screen.findByRole("menuitem", { name: /Resume syncing/ }),
+			await screen.findByRole("button", { name: /Restore/ }),
 		);
 
 		await waitFor(() => {
-			expect(setMeetingSyncActiveMock).toHaveBeenCalledWith(
-				expect.objectContaining({
-					linkedMeetingId: "linked_1",
-					active: true,
-				}),
-			);
+			expect(restoreMeetingMock).toHaveBeenCalledTimes(1);
 		});
+		expect(restoreMeetingMock).toHaveBeenCalledWith(
+			expect.objectContaining({
+				projectId: PROJECT_ID,
+				organizationId: null,
+				archiveId: "arch_1",
+			}),
+		);
 	});
 
-	it("hides the whole menu from someone who cannot manage context sources", async () => {
+	it("still shows the bin next to a populated list", async () => {
 		listLinkedMeetingsMock.mockResolvedValue([syncingMeeting]);
+		renderSettings();
+
+		expect(await screen.findByText("Recently deleted")).toBeInTheDocument();
+
+		// The subject appears twice on purpose — once as the live meeting, once
+		// as the archived one. Asserting a single match would be asserting that
+		// the bin is absent.
+		expect(await screen.findAllByText("Weekly sync")).toHaveLength(2);
+	});
+
+	it("stays hidden from someone who cannot manage context sources", async () => {
+		listLinkedMeetingsMock.mockResolvedValue([]);
 		renderSettings({ canEdit: false });
 
-		// The meeting is still listed — read access is unaffected.
-		expect(await screen.findByText("Weekly sync")).toBeInTheDocument();
-		expect(
-			screen.queryByRole("button", { name: "Options for Weekly sync" }),
-		).not.toBeInTheDocument();
+		await screen.findByText("No meetings linked to this project");
+
+		expect(screen.queryByText("Recently deleted")).not.toBeInTheDocument();
+	});
+
+	it("shows nothing when the window holds no archives", async () => {
+		listLinkedMeetingsMock.mockResolvedValue([syncingMeeting]);
+		listDeletedMeetingsMock.mockResolvedValue([]);
+		renderSettings();
+
+		await screen.findByText("Weekly sync");
+
+		// A recycle bin that is always on screen is permanent chrome, not a
+		// recovery affordance.
+		expect(screen.queryByText("Recently deleted")).not.toBeInTheDocument();
 	});
 });

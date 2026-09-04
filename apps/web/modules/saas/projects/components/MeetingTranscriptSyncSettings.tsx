@@ -1224,6 +1224,11 @@ export function MeetingTranscriptSyncSettings({
 																    is how a meeting's whole history got deleted
 																    by someone who only meant to stop it (#2355). */}
 																<DropdownMenuItem
+																	// The item is a flex ROW, so a `block` child
+																	// still sits beside the label instead of
+																	// under it — the hint ran straight into the
+																	// title with no space. Stack it.
+																	className="flex-col items-start gap-0.5"
 																	onSelect={() =>
 																		setSyncActiveMutation.mutate(
 																			{
@@ -1234,10 +1239,12 @@ export function MeetingTranscriptSyncSettings({
 																		)
 																	}
 																>
-																	{isDeactivated
-																		? "Resume syncing"
-																		: "Stop syncing"}
-																	<span className="block text-muted-foreground text-xs">
+																	<span className="font-medium">
+																		{isDeactivated
+																			? "Resume syncing"
+																			: "Stop syncing"}
+																	</span>
+																	<span className="text-muted-foreground text-xs">
 																		{isDeactivated
 																			? "Start collecting new transcripts again"
 																			: `Keeps all ${meeting._count.transcripts} transcript${meeting._count.transcripts === 1 ? "" : "s"}`}
@@ -1346,83 +1353,6 @@ export function MeetingTranscriptSyncSettings({
 
 						{/* Recently deleted — collapsed away entirely when empty,
 						    so it is a recycle bin rather than permanent chrome. */}
-						{canEdit && (deletedMeetings?.length ?? 0) > 0 && (
-							<div className="border-t border-foreground/10">
-								<div className="flex items-center justify-between gap-3 bg-muted/40 px-4 py-2">
-									<span className="font-semibold text-[11px] text-muted-foreground uppercase tracking-[0.14em]">
-										Recently deleted
-									</span>
-									<span className="text-muted-foreground text-xs">
-										Removed after 7 days
-									</span>
-								</div>
-								<div className="divide-y divide-foreground/10">
-									{deletedMeetings?.map((archive) => {
-										const daysLeft = Math.max(
-											0,
-											Math.ceil(
-												(new Date(
-													archive.scheduledPurgeAt,
-												).getTime() -
-													Date.now()) /
-													(24 * 60 * 60 * 1000),
-											),
-										);
-										return (
-											<div
-												key={archive.id}
-												className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2 px-4 py-3"
-											>
-												<div className="min-w-0 grow">
-													<p className="truncate font-medium text-sm">
-														{archive.subject ??
-															"Untitled meeting"}
-													</p>
-													<p className="text-muted-foreground text-xs">
-														{
-															archive.transcriptCount
-														}{" "}
-														transcript
-														{archive.transcriptCount ===
-														1
-															? ""
-															: "s"}{" "}
-														&middot; deleted by{" "}
-														{archive.deletedByYou
-															? "you"
-															: (archive.deletedByName ??
-																"someone")}
-														{archive.payloadTruncated &&
-															" · transcript text was too large to keep"}
-													</p>
-												</div>
-												{/* A recovery window nobody can
-												    see is one nobody uses. */}
-												<span className="shrink-0 text-highlight text-xs tabular-nums">
-													{daysLeft} day
-													{daysLeft === 1 ? "" : "s"}{" "}
-													left
-												</span>
-												<Button
-													variant="outline"
-													size="sm"
-													onClick={() =>
-														restoreMutation.mutate(
-															archive.id,
-														)
-													}
-													disabled={
-														restoreMutation.isPending
-													}
-												>
-													Restore
-												</Button>
-											</div>
-										);
-									})}
-								</div>
-							</div>
-						)}
 
 						{/* Auto-sync + auto-create controls (grouped muted section) */}
 						<div className="space-y-4 border-t border-foreground/10 bg-muted/40 p-4 sm:p-5">
@@ -1580,6 +1510,82 @@ export function MeetingTranscriptSyncSettings({
 							</p>
 						</div>
 					</>
+				)}
+
+				{/* Outside the has-meetings branch on purpose: deleting the LAST
+				    meeting flips `hasLinkedMeetings` to false, and nesting this
+				    inside it took the recycle bin away at the exact moment the
+				    loss was total and the archive was the only copy left. */}
+				{canEdit && (deletedMeetings?.length ?? 0) > 0 && (
+					<div className="border-t border-foreground/10">
+						<div className="flex items-center justify-between gap-3 bg-muted/40 px-4 py-2">
+							<span className="font-semibold text-[11px] text-muted-foreground uppercase tracking-[0.14em]">
+								Recently deleted
+							</span>
+							<span className="text-muted-foreground text-xs">
+								Removed after 7 days
+							</span>
+						</div>
+						<div className="divide-y divide-foreground/10">
+							{deletedMeetings?.map((archive) => {
+								const daysLeft = Math.max(
+									0,
+									Math.ceil(
+										(new Date(
+											archive.scheduledPurgeAt,
+										).getTime() -
+											Date.now()) /
+											(24 * 60 * 60 * 1000),
+									),
+								);
+								return (
+									<div
+										key={archive.id}
+										className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2 px-4 py-3"
+									>
+										<div className="min-w-0 grow">
+											<p className="truncate font-medium text-sm">
+												{archive.subject ??
+													"Untitled meeting"}
+											</p>
+											<p className="text-muted-foreground text-xs">
+												{archive.transcriptCount}{" "}
+												transcript
+												{archive.transcriptCount === 1
+													? ""
+													: "s"}{" "}
+												&middot; deleted by{" "}
+												{archive.deletedByYou
+													? "you"
+													: (archive.deletedByName ??
+														"someone")}
+												{archive.payloadTruncated &&
+													" · transcript text was too large to keep"}
+											</p>
+										</div>
+										{/* A recovery window nobody can
+										    see is one nobody uses. */}
+										<span className="shrink-0 text-highlight text-xs tabular-nums">
+											{daysLeft} day
+											{daysLeft === 1 ? "" : "s"} left
+										</span>
+										<Button
+											variant="outline"
+											size="sm"
+											onClick={() =>
+												restoreMutation.mutate(
+													archive.id,
+												)
+											}
+											disabled={restoreMutation.isPending}
+										>
+											Restore
+										</Button>
+									</div>
+								);
+							})}
+						</div>
+					</div>
 				)}
 			</Card>
 
