@@ -1607,6 +1607,88 @@ describe("PublishingSuiteList", () => {
 		);
 	});
 
+	// The dialog has always saved several types at once, but it did not LOOK
+	// multi-select — four bare checkboxes in a column read as a radio group,
+	// and review reported it as one. These three pin the signals that say
+	// otherwise, so a later restyle cannot quietly take them away again.
+	it("keeps both post types checked when a second one is picked", async () => {
+		const user = userEvent.setup();
+		state.topics = [
+			makeTopic({
+				id: "tMulti",
+				title: "Two types",
+				suggestedPostTypes: [],
+				userPostTypes: [],
+			}),
+		];
+		renderList({ canEdit: true });
+		await user.click(
+			screen.getByRole("button", { name: "Edit post types" }),
+		);
+		// Click the option TEXT, not the 16px control — scoped to the dialog so
+		// the card's own post-type chips cannot match instead.
+		const dialog = within(screen.getByRole("dialog"));
+		await user.click(dialog.getByText("Tweet"));
+		await user.click(dialog.getByText("Case Study"));
+		// The radio behaviour this guards against would have cleared Tweet.
+		expect(screen.getByLabelText("Tweet")).toBeChecked();
+		expect(screen.getByLabelText("Case Study")).toBeChecked();
+		// Clicking the text does NOT on its own prove the row is the click
+		// target: the previous markup also kept the text inside a `<label>`,
+		// just not the row, so that click passed there too. What changed is
+		// that the control and its text now share ONE label — which is the row.
+		// Asserting that is the only part of this a restyle cannot silently
+		// undo; against the previous markup `closest("label")` was null.
+		expect(
+			screen.getByLabelText("Tweet").closest("label"),
+		).toHaveTextContent("Tweet");
+		await user.click(screen.getByRole("button", { name: "Save" }));
+		await waitFor(() =>
+			expect(updatePostTypesMutate).toHaveBeenCalledWith(
+				expect.objectContaining({
+					topicId: "tMulti",
+					postTypes: ["TWEET", "CASE_STUDY"],
+				}),
+			),
+		);
+	});
+
+	it("reports how many post types are selected", async () => {
+		const user = userEvent.setup();
+		state.topics = [
+			makeTopic({
+				title: "Count",
+				suggestedPostTypes: [],
+				userPostTypes: [],
+			}),
+		];
+		renderList({ canEdit: true });
+		await user.click(
+			screen.getByRole("button", { name: "Edit post types" }),
+		);
+		const count = () =>
+			screen.getByTestId("post-types-selected-count").textContent;
+		expect(count()).toBe("None selected");
+		await user.click(screen.getByLabelText("Tweet"));
+		expect(count()).toBe("1 of 4 selected");
+		await user.click(screen.getByLabelText("Blog Post"));
+		expect(count()).toBe("2 of 4 selected");
+	});
+
+	it("tells the reviewer that more than one post type may be picked", async () => {
+		const user = userEvent.setup();
+		state.topics = [
+			makeTopic({ title: "Cue", suggestedPostTypes: ["TWEET"] }),
+		];
+		renderList({ canEdit: true });
+		await user.click(
+			screen.getByRole("button", { name: "Edit post types" }),
+		);
+		expect(
+			screen.getByText(/select all that apply/i, { selector: "p" }),
+		).toBeInTheDocument();
+	});
+
 	it("hides Reset when the topic is not overridden", async () => {
 		const user = userEvent.setup();
 		state.topics = [
