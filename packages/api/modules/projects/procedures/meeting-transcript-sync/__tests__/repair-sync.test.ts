@@ -104,7 +104,10 @@ beforeEach(() => {
 	});
 	dbMock.project.update.mockResolvedValue({});
 	dbMock.projectLinkedMeeting.findMany.mockResolvedValue(MEETINGS);
-	executeTeamsToolMock.mockResolvedValue({ id: "graph_meeting" });
+	// The calendar the SYNC reads, answering with every linked meeting.
+	executeTeamsToolMock.mockResolvedValue({
+		meetings: MEETINGS.map((m) => ({ joinUrl: m.joinUrl })),
+	});
 	clearFailuresMock.mockResolvedValue({ count: 0 });
 	startWorkflowMock.mockResolvedValue({ workflowId: "wf_new" });
 	describeMock.mockResolvedValue({ status: { name: "RUNNING" } });
@@ -124,12 +127,14 @@ const COMMIT = { ...PREFLIGHT, preflightOnly: false };
 
 describe("repairSyncProcedure", () => {
 	it("names the meetings the new account cannot see, and changes nothing", async () => {
-		// The third meeting resolves to nothing — Microsoft's way of saying
-		// "not yours", which is NOT an error.
-		executeTeamsToolMock
-			.mockResolvedValueOnce({ id: "g1" })
-			.mockResolvedValueOnce({ id: "g2" })
-			.mockResolvedValueOnce(null);
+		// The third is simply absent from this account's calendar — Microsoft's
+		// way of saying "not yours", which is NOT an error.
+		executeTeamsToolMock.mockResolvedValue({
+			meetings: [
+				{ joinUrl: MEETINGS[0].joinUrl },
+				{ joinUrl: MEETINGS[1].joinUrl },
+			],
+		});
 
 		const result = await handler({ input: PREFLIGHT, context: CONTEXT });
 
@@ -143,17 +148,60 @@ describe("repairSyncProcedure", () => {
 		expect(dbMock.project.update).not.toHaveBeenCalled();
 	});
 
-	it("treats a throw from Graph as unreachable rather than fatal", async () => {
-		executeTeamsToolMock
-			.mockResolvedValueOnce({ id: "g1" })
-			.mockRejectedValueOnce(new Error("403 Forbidden"))
-			.mockResolvedValueOnce({ id: "g3" });
+	it("says it could not check rather than reporting everything invisible", async () => {
+		executeTeamsToolMock.mockRejectedValue(
+			new Error("503 Service Unavailable"),
+		);
+
+		// "We could not read your calendar" and "you can see none of these"
+		// are opposite recommendations. The old preflight collapsed the first
+		// into the second and told people not to repair a healthy project.
+		await expect(
+			handler({ input: PREFLIGHT, context: CONTEXT }),
+		).rejects.toMatchObject({ code: "SERVICE_UNAVAILABLE" });
+	});
+
+	it("surfaces a calendar the tool refused to read", async () => {
+		executeTeamsToolMock.mockResolvedValue({
+			error: "Microsoft not connected. Please connect your Microsoft account.",
+		});
+
+		await expect(
+			handler({ input: PREFLIGHT, context: CONTEXT }),
+		).rejects.toMatchObject({ code: "BAD_REQUEST" });
+	});
+
+	it("asks Microsoft the same question the sync asks", async () => {
+		// The bug this pins: the preflight used `get_meeting_by_join_url`,
+		// which is `/me/onlineMeetings?$filter=JoinWebUrl eq ...` and returns a
+		// row ONLY for the meeting's organizer — so every meeting someone else
+		// ran came back empty and was reported invisible. It also passed
+		// `joinUrl` where that tool reads `joinWebUrl`, so it threw before it
+		// could even be wrong. Mocking the tool hides both: the only defence is
+		// asserting the call itself.
+		await handler({ input: PREFLIGHT, context: CONTEXT });
+
+		expect(executeTeamsToolMock).toHaveBeenCalledTimes(1);
+		const [tool, args] = executeTeamsToolMock.mock.calls[0];
+		expect(tool).toBe("list_calendar_meetings");
+		// `startDate` is the key the handler reads; a different name silently
+		// falls back to its own default window.
+		expect(args).toEqual(
+			expect.objectContaining({ startDate: expect.any(String) }),
+		);
+	});
+
+	it("matches join URLs case-insensitively, as the sync does", async () => {
+		executeTeamsToolMock.mockResolvedValue({
+			meetings: MEETINGS.map((m) => ({
+				joinUrl: m.joinUrl.toUpperCase(),
+			})),
+		});
 
 		const result = await handler({ input: PREFLIGHT, context: CONTEXT });
 
-		// One unreachable meeting must not block repairing the rest.
-		expect(result.reachableCount).toBe(2);
-		expect(result.unreachableSubjects).toEqual(["Design review"]);
+		expect(result.unreachableSubjects).toEqual([]);
+		expect(result.reachableCount).toBe(MEETINGS.length);
 	});
 
 	it("rebinds to the caller and confirms the workflow is actually running", async () => {
@@ -210,7 +258,7 @@ describe("repairSyncProcedure", () => {
 	});
 
 	it("refuses a rebind that would leave the project collecting nothing", async () => {
-		executeTeamsToolMock.mockResolvedValue(null);
+		executeTeamsToolMock.mockResolvedValue({ meetings: [] });
 
 		await expect(
 			handler({ input: COMMIT, context: CONTEXT }),
