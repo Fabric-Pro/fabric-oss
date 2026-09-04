@@ -1387,9 +1387,13 @@ export function BacklogChat({
 		return null;
 	}
 
-	// Render as a full-screen overlay via portal so the sidebar covers the entire page
+	// Render as a full-screen overlay via portal so the sidebar covers the entire page.
+	// The direct-child selectors give the two auto-height divs CopilotKit
+	// injects around the backdrop (`.copilotKitSidebarContentWrapper` and its
+	// `.copilotKitModalChildrenWrapper`) a definite height, so the backdrop's
+	// `h-full` resolves to the viewport instead of collapsing to nothing.
 	return createPortal(
-		<div className="fixed inset-0 z-50">
+		<div className="fixed inset-0 z-50 [&>.copilotKitSidebarContentWrapper]:h-full [&>.copilotKitSidebarContentWrapper>.copilotKitModalChildrenWrapper]:h-full">
 			<CopilotSidebar
 				AssistantMessage={CopilotAssistantMessageForBacklogUpdater}
 				defaultOpen={true}

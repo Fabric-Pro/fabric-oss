@@ -569,14 +569,18 @@ export function DocumentEditorPage({
 			  Collaborative editing with live cursors is handled by PartyKit +
 			  Yjs inside DocumentEditor.
 			  `overflow-hidden` prevents the body from leaking. The Tailwind
-			  arbitrary direct-child selector (`[&>...]`) forces
-			  `.copilotKitSidebarContentWrapper` — a real DOM div CopilotKit
-			  injects as the immediate child between this wrapper and
-			  DocumentEditor — to be `height: 100%`, otherwise it collapses
-			  to `height: auto` and breaks the height chain that
-			  DocumentEditor's inner `overflow-y-auto` scroll container
-			  depends on. */}
-			<div className="flex-1 min-h-0 overflow-hidden [&>.copilotKitSidebarContentWrapper]:h-full">
+			  arbitrary direct-child selectors (`[&>...]`) force the two
+			  real DOM divs CopilotKit injects between this wrapper and
+			  DocumentEditor — `.copilotKitSidebarContentWrapper` and, inside
+			  it, `.copilotKitModalChildrenWrapper` — to be `height: 100%`.
+			  Both are auto-height blocks by default (react-ui's own
+			  stylesheet says so), and one auto-height block anywhere in
+			  the chain collapses DocumentEditor's percentage height and
+			  leaves its inner `overflow-y-auto` scroll container unbounded:
+			  wheel scrolling dies and the scrollbar disappears while keyboard
+			  scrolling still works. Every wrapper between this element and the
+			  workspace root must carry a definite height. */}
+			<div className="flex-1 min-h-0 overflow-hidden [&>.copilotKitSidebarContentWrapper]:h-full [&>.copilotKitSidebarContentWrapper>.copilotKitModalChildrenWrapper]:h-full">
 				<CopilotErrorBoundary
 					fallback={(error) => (
 						<DocumentEditorAiUnavailable

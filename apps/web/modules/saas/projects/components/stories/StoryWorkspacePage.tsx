@@ -697,14 +697,18 @@ export function StoryWorkspacePage({
 
 			{/* Editor body fills the remaining viewport. `overflow-hidden`
 			  prevents the body from leaking. The Tailwind arbitrary
-			  direct-child selector (`[&>...]`) forces
-			  `.copilotKitSidebarContentWrapper` — a real DOM div CopilotKit
-			  injects as the immediate child between this wrapper and
-			  StoryWorkspace — to be `height: 100%`, otherwise it collapses
-			  to `height: auto` and breaks the height chain that
-			  StoryWorkspace's inner `overflow-y-auto` scroll container
-			  depends on. */}
-			<div className="flex-1 min-h-0 overflow-hidden [&>.copilotKitSidebarContentWrapper]:h-full">
+			  direct-child selectors (`[&>...]`) force the two
+			  real DOM divs CopilotKit injects between this wrapper and
+			  StoryWorkspace — `.copilotKitSidebarContentWrapper` and, inside
+			  it, `.copilotKitModalChildrenWrapper` — to be `height: 100%`.
+			  Both are auto-height blocks by default (react-ui's own
+			  stylesheet says so), and one auto-height block anywhere in
+			  the chain collapses StoryWorkspace's percentage height and
+			  leaves its inner `overflow-y-auto` scroll container unbounded:
+			  wheel scrolling dies and the scrollbar disappears while keyboard
+			  scrolling still works. Every wrapper between this element and the
+			  workspace root must carry a definite height. */}
+			<div className="flex-1 min-h-0 overflow-hidden [&>.copilotKitSidebarContentWrapper]:h-full [&>.copilotKitSidebarContentWrapper>.copilotKitModalChildrenWrapper]:h-full">
 				{/* AgentErrorBoundary catches the `useAgent: Agent
 				    'project_document_generator' not found` throw that fires
 				    when the CopilotKit runtime returns 400 because no AI
