@@ -62,6 +62,16 @@ vi.mock("@repo/rag", () => ({
 }));
 
 vi.mock("@repo/ai", () => ({
+	// A real class, not a stub: the scan rethrows it by `instanceof` so a
+	// configuration refusal keeps its own type instead of being rewrapped as a
+	// transient embedding failure, and `instanceof` against a `vi.fn()` is
+	// always false.
+	AIProviderNotConfiguredError: class AIProviderNotConfiguredError extends Error {
+		constructor(message: string) {
+			super(message);
+			this.name = "AIProviderNotConfiguredError";
+		}
+	},
 	generateObject: mockGenerateObject,
 	getAIModelWithMetadata: mockGetAIModelWithMetadata,
 	resolveModelWithProvider: mockResolveModelWithProvider,
@@ -78,6 +88,16 @@ vi.mock("@repo/database", async () => {
 	>("@repo/database/prisma/queries/projects/duplicate-detection");
 	return {
 		...pure,
+		// The real predicate — the scan's provider guard is one of the things
+		// these tests exercise, and a stub would decide it instead of the rule.
+		// Kept in step with `@repo/database` by its own tests
+		// (`ai-gateway-legacy-config-key`, `ai-gateway-service-principal`).
+		hasProviderCredentials: (row: {
+			apiKey?: string | null;
+			clientId?: string | null;
+			encryptedClientSecret?: string | null;
+		}) =>
+			Boolean(row.apiKey || (row.clientId && row.encryptedClientSecret)),
 		listActiveStoriesForDetection: mockListActiveStoriesForDetection,
 		listDismissedDuplicatePairKeys: mockListDismissedDuplicatePairKeys,
 		listVerdictValidPairKeys: mockListVerdictValidPairKeys,
@@ -141,8 +161,14 @@ beforeEach(() => {
 	mockUpsertStoryDuplicateEmbeddings.mockResolvedValue(undefined);
 	mockUpsertPendingDuplicateLink.mockResolvedValue({});
 	mockRecordDistinctVerdict.mockResolvedValue(undefined);
+	// A CONFIGURED tenant, which is what every test below assumes. The apiKey
+	// matters: the scan now refuses up front when the resolver comes back
+	// without credentials, because `resolveModelWithProvider` returns
+	// `{ apiKey: null, _error }` for a keyless tenant rather than throwing.
 	mockResolveModelWithProvider.mockResolvedValue({
 		modelString: "openai/text-embedding-3-small",
+		apiKey: "encrypted:sk-test",
+		source: "organization",
 	});
 	mockGetAIModelWithMetadata.mockResolvedValue({
 		model: {},
@@ -682,5 +708,32 @@ describe("detectAndFlagDuplicateStories", () => {
 		const [, persistedRows] = mockUpsertStoryDuplicateEmbeddings.mock
 			.calls[0] as [string, Array<{ storyId: string }>];
 		expect(persistedRows.map((r) => r.storyId)).toEqual(["n2"]);
+	});
+
+	it("refuses a keyless tenant with a type Temporal will not retry", async () => {
+		// `resolveModelWithProvider` does not throw for a tenant with no
+		// provider — it returns `{ apiKey: null, _error }` with an empty model
+		// string. Unchecked, that string matches no cached row's model, marks
+		// the whole corpus stale, and ships every story to the embedder purely
+		// to fail there. It must refuse up front, and refuse as
+		// AIProviderNotConfiguredError: the surrounding catch rewraps anything
+		// else into EmbeddingUnavailableError, which is not in
+		// AI_NON_RETRYABLE_ERROR_TYPES, so the activity would spend its entire
+		// retry budget on an answer that cannot change.
+		mockResolveModelWithProvider.mockResolvedValue({
+			modelString: "",
+			apiKey: null,
+			source: null,
+			_error: "No embedding provider configured.",
+		});
+
+		await expect(
+			detectAndFlagDuplicateStories({
+				projectId: "p1",
+				userId: "u1",
+				organizationId: "o1",
+				targetStoryIds: ["new"],
+			}),
+		).rejects.toMatchObject({ name: "AIProviderNotConfiguredError" });
 	});
 });

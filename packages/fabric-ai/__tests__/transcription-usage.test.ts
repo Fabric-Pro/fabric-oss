@@ -4,7 +4,7 @@ const { logAiUsageAsync } = vi.hoisted(() => ({ logAiUsageAsync: vi.fn() }));
 
 vi.mock("@repo/database", () => ({ logAiUsageAsync }));
 vi.mock("@repo/ai", () => ({
-	getRAGProviderConfig: vi.fn().mockResolvedValue({
+	getSystemRAGProviderConfig: vi.fn().mockResolvedValue({
 		apiKey: "test-key",
 		provider: "OPENAI_DIRECT",
 		baseUrl: null,

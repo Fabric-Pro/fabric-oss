@@ -24,6 +24,7 @@
 
 import { proxyActivities } from "@temporalio/workflow";
 import type * as activities from "../activities";
+import { AI_NON_RETRYABLE_ERROR_TYPES } from "./ai-non-retryable-errors";
 
 const { linkMeetingActionItemsActivity } = proxyActivities<typeof activities>({
 	// One embedding batch plus up to one LLM call per action item. The card's
@@ -36,7 +37,11 @@ const { linkMeetingActionItemsActivity } = proxyActivities<typeof activities>({
 		backoffCoefficient: 2,
 		maximumInterval: "1m",
 		maximumAttempts: 3,
-		nonRetryableErrorTypes: ["ValidationError", "TenantViolation"],
+		nonRetryableErrorTypes: [
+			"ValidationError",
+			"TenantViolation",
+			...AI_NON_RETRYABLE_ERROR_TYPES,
+		],
 	},
 });
 

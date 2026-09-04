@@ -748,7 +748,7 @@ export class AtlasService {
 		if (!described) {
 			throw new AtlasError(
 				"NO_AI_PROVIDER",
-				"No AI model is configured. Add one in Settings → AI Models.",
+				"No AI provider is configured. Add one in Settings → AI Providers.",
 			);
 		}
 		await queries.updateNodeDescription(this.ctx, {

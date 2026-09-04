@@ -53,7 +53,7 @@ vi.mock("@repo/ai", () => ({
 		trackUsage: vi.fn(),
 	}),
 	getAIModelWithMetadata: vi.fn().mockReturnValue({ model: {} }),
-	getRAGProviderConfig: vi.fn().mockReturnValue({}),
+	getSystemRAGProviderConfig: vi.fn().mockReturnValue({}),
 	logEmbeddingUsageAsync: vi.fn().mockResolvedValue({ trackUsage: vi.fn() }),
 	logModelUsageAsync: vi.fn(),
 	streamText: vi.fn(),

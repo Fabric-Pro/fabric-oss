@@ -329,10 +329,10 @@ export async function findRelevantServersBySemantic(
 		const { searchCapabilities } = await import(
 			"@repo/rag/lib/vector-store/capability-store"
 		);
-		const { getRAGProviderConfig } = await import("@repo/ai");
+		const { getSystemRAGProviderConfig } = await import("@repo/ai");
 
 		// Generate embedding for query
-		const providerConfig = await getRAGProviderConfig({
+		const providerConfig = await getSystemRAGProviderConfig({
 			userId,
 			organizationId,
 		});

@@ -10,12 +10,18 @@
  * - Automatic cleanup when MCP configs are removed
  *
  * IMPORTANT: This activity follows the established pattern for AI provider configuration:
- * - Fetches provider config from database using getAiProviderApiKey()
+ * - Fetches provider config with getSystemRAGProviderConfig() — the SYSTEM half
+ *   of the resolver pair. Tool ingestion is indexing work, which R13 leaves on
+ *   the deployment's own gateway key when a tenant has none of its own; the
+ *   tenant-facing half would refuse and leave the tenant's tools unsearchable.
  * - Decrypts the API key before use
  * - Passes provider info to embedding generator for proper routing
  */
 
-import { AIProviderNotConfiguredError, getRAGProviderConfig } from "@repo/ai";
+import {
+	AIProviderNotConfiguredError,
+	getSystemRAGProviderConfig,
+} from "@repo/ai";
 import {
 	type CachedTool,
 	getMcpConfigByIdInternal,
@@ -455,10 +461,10 @@ export async function ingestMcpToolsActivity(
 			organizationId || config.organizationId || undefined;
 
 		let providerConfig:
-			| Awaited<ReturnType<typeof getRAGProviderConfig>>
+			| Awaited<ReturnType<typeof getSystemRAGProviderConfig>>
 			| undefined;
 		try {
-			providerConfig = await getRAGProviderConfig({
+			providerConfig = await getSystemRAGProviderConfig({
 				userId: effectiveUserId,
 				organizationId: effectiveOrgId,
 			});
@@ -874,10 +880,10 @@ export async function ingestMcpServerActivity(
 			organizationId || config.organizationId || undefined;
 
 		let providerConfig:
-			| Awaited<ReturnType<typeof getRAGProviderConfig>>
+			| Awaited<ReturnType<typeof getSystemRAGProviderConfig>>
 			| undefined;
 		try {
-			providerConfig = await getRAGProviderConfig({
+			providerConfig = await getSystemRAGProviderConfig({
 				userId: effectiveUserId,
 				organizationId: effectiveOrgId,
 			});

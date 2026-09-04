@@ -34,10 +34,27 @@ vi.mock("@repo/rag", () => ({
 	generateEmbeddings: (...a: unknown[]) => mockGenerateEmbeddings(...a),
 }));
 
-vi.mock("@repo/ai", () => ({
-	resolveModelWithProvider: (...a: unknown[]) =>
-		mockResolveModelWithProvider(...a),
-}));
+vi.mock("@repo/ai", () => {
+	class AIProviderNotConfiguredError extends Error {
+		constructor(message: string) {
+			super(message);
+			this.name = "AIProviderNotConfiguredError";
+		}
+	}
+	return {
+		AIProviderNotConfiguredError,
+		// Mirrors the real predicate: an API key, or a complete Databricks
+		// service-principal pair.
+		hasProviderCredentials: (c: {
+			apiKey?: string | null;
+			clientId?: string | null;
+			encryptedClientSecret?: string | null;
+		}) =>
+			Boolean(c.apiKey) || Boolean(c.clientId && c.encryptedClientSecret),
+		resolveModelWithProvider: (...a: unknown[]) =>
+			mockResolveModelWithProvider(...a),
+	};
+});
 
 vi.mock("@repo/logs", () => ({
 	logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
@@ -185,8 +202,13 @@ beforeEach(() => {
 	// Personal project by default; the org-project billing path is covered by
 	// the tenant-derivation assertions below.
 	mockGetProjectTenantId.mockResolvedValue({ organizationId: null });
+	// A tenant that HAS a provider: `resolveModelWithProvider` returns a
+	// credential-bearing config. The keyless shape it returns instead — an
+	// empty modelString, a null apiKey and an `_error` hint — is exercised in
+	// the failure-mapping block below.
 	mockResolveModelWithProvider.mockResolvedValue({
 		modelString: "openai/text-embedding-3-small",
+		apiKey: "encrypted-provider-key",
 	});
 	mockListStoryDuplicateEmbeddingMetadata.mockResolvedValue([]);
 	mockListStoryDuplicateEmbeddings.mockResolvedValue([]);
@@ -382,5 +404,55 @@ describe("semanticSearchProcedure — failure mapping", () => {
 		const err = await errorFrom(runSearch());
 		expect(err.code).toBe("INTERNAL_SERVER_ERROR");
 		expect(err.message).toContain("Settings → AI Models");
+	});
+});
+
+/**
+ * A tenant that has configured no provider is a precondition, not a server
+ * fault. This surface used to answer it with INTERNAL_SERVER_ERROR and copy
+ * naming "Settings → AI Models" — a different page from the one that fixes it,
+ * and a different answer from the one `generateTasks`, `enhanceFeature` and the
+ * Atlas chat give for the same condition (Fizzy #1875).
+ */
+describe("semanticSearchProcedure — no provider configured", () => {
+	const REFUSAL =
+		"No embedding provider configured. Please set an embedding provider in Settings → AI Providers.";
+
+	it("refuses at resolution, which RETURNS the verdict rather than throwing it", async () => {
+		// The shape `resolveModelWithProvider` actually produces for a keyless
+		// tenant: no exception, an empty model string, a null key and an
+		// `_error` hint. The old try/catch could never fire on it, so the empty
+		// model string flowed on — matching no cached vector's model, marking
+		// the entire corpus stale, and reaching the embedder only to fail there.
+		mockListSearchableStories.mockResolvedValue([makeStory({ id: "a" })]);
+		mockResolveModelWithProvider.mockResolvedValue({
+			modelString: "",
+			apiKey: null,
+			clientId: null,
+			encryptedClientSecret: null,
+			_error: REFUSAL,
+		});
+
+		const err = await errorFrom(runSearch());
+
+		expect(err.code).toBe("PRECONDITION_FAILED");
+		expect(err.message).toBe(REFUSAL);
+		// Refused before spending anything with the provider.
+		expect(mockGenerateEmbeddings).not.toHaveBeenCalled();
+	});
+
+	it("returns the same refusal when the embedder is the one that refuses", async () => {
+		// Resolution can succeed and `generateEmbeddings` still refuse — it
+		// resolves the embedding model again through its own entry point.
+		const { AIProviderNotConfiguredError } = await import("@repo/ai");
+		mockListSearchableStories.mockResolvedValue([makeStory({ id: "a" })]);
+		mockGenerateEmbeddings.mockRejectedValue(
+			new AIProviderNotConfiguredError(REFUSAL),
+		);
+
+		const err = await errorFrom(runSearch());
+
+		expect(err.code).toBe("PRECONDITION_FAILED");
+		expect(err.message).toBe(REFUSAL);
 	});
 });

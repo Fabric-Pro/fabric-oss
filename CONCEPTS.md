@@ -137,6 +137,36 @@ The switch that stops work already in motion, distinct from the Rollout gate and
 
 Two consequences follow from what it is for. It reads fail-closed: a switch whose stored state cannot be read resolves to stopped, because the moment its store is faulting is the moment someone is most likely to be reaching for it. And it cannot authorise work on its own — an unattended writer requires its Rollout gate as well, or a capability nobody can see or reach would still be acting on their documents.
 
+## Workspace context
+
+### Workspace
+The organization a person is working in. **Workspace** is the user-facing word and **organization** the internal one; they name the same thing, and the surrounding code uses whichever its layer historically used. Prefer *workspace* in anything a user reads.
+
+Every account belongs to one. There is no longer a personal context to work in, so an absent workspace is a failure to resolve one rather than a place someone can be — code that finds itself without one should treat that as a bug, not as a mode.
+
+### Last-active workspace
+The durable, per-user record of the workspace someone was last working in. It is not a cache: it is the only thing that remembers where a person works between sessions, and losing it is unrecoverable rather than merely inconvenient.
+
+It decides more than where a sign-in lands. A fresh session is given a workspace by consulting it, so a credential with no workspace of its own — an API key, a protocol client — resolves through it too. A write lost in the background therefore moves a person's next sign-in *and* the tenant their non-browser credentials operate in, with nothing anywhere to explain either.
+
+Distinct from the **active workspace** carried on a session, which is one last-write-wins value shared by every browser tab on that session and can outlive several switches. When the two disagree, the last-active record is the honest one.
+
+### Ambiguous resolution
+The answer a workspace resolver gives when a person belongs to several and nothing authorised names one of them. It is deliberately distinct from *belongs nowhere*: the first is answerable by the caller naming a workspace, the second is not, and collapsing them turns one into a lockout and the other into a lie.
+
+An ambiguous answer is a refusal, not a default. A caller that converts it into "the first one" has undone the refusal — and where that list has no defined order, has done so unpredictably.
+
+## AI access
+
+### BYOK
+"Bring your own key": the access model in which a **user-facing** AI operation runs on a provider the tenant configured, and on nothing else. Not a billing arrangement — no allowance, no card, no platform credential stands behind such a request, so a tenant without a configured provider is refused as *not configured* rather than as *out of credit* or *needing a card*.
+
+BYOK is enforced by which resolver a caller reaches, not by a flag it passes. Two named pairs exist: a tenant-facing resolver that cannot reach the platform's own gateway key at all, and a system one that can. An untouched caller therefore stays on the tenant half by default, and the two cannot be passed the wrong way round.
+
+The boundary is **whether a person is waiting**, not what kind of operation it is. Background work keeps the platform key so a keyless tenant's uploads still index; anything a person triggered refuses until they configure a provider. The distinction is easy to misapply, because the same *kind* of work falls on both sides: embedding a document during ingestion is background, while embedding a chat message to retrieve context for a reply is not. Reading the rule by its category rather than its reason is how a waiting user ends up on the platform's key.
+
+A member's own key counts — it resolves inside an organization that has none.
+
 ## Feature specs
 
 ### Clean Spec

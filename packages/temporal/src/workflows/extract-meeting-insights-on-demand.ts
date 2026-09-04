@@ -20,6 +20,7 @@
 
 import { proxyActivities } from "@temporalio/workflow";
 import type * as activities from "../activities";
+import { AI_NON_RETRYABLE_ERROR_TYPES } from "./ai-non-retryable-errors";
 
 const { extractMeetingInsightsActivity } = proxyActivities<typeof activities>({
 	// One transcript, one LLM call — generous headroom over observed latency.
@@ -30,7 +31,11 @@ const { extractMeetingInsightsActivity } = proxyActivities<typeof activities>({
 		backoffCoefficient: 2,
 		maximumInterval: "1m",
 		maximumAttempts: 3,
-		nonRetryableErrorTypes: ["ValidationError", "TenantViolation"],
+		nonRetryableErrorTypes: [
+			"ValidationError",
+			"TenantViolation",
+			...AI_NON_RETRYABLE_ERROR_TYPES,
+		],
 	},
 });
 

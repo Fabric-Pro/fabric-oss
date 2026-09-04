@@ -7,7 +7,12 @@ const CODE_MAP = {
 	NO_REPOSITORY: "BAD_REQUEST",
 	REPOSITORY_REAUTH_REQUIRED: "CONFLICT",
 	REPOSITORY_UNAVAILABLE: "CONFLICT",
-	NO_AI_PROVIDER: "BAD_REQUEST",
+	// PRECONDITION_FAILED, not BAD_REQUEST: the caller sent nothing wrong,
+	// the tenant has not configured a provider yet. Every Atlas procedure
+	// routes its refusal through this map, so a different code here would put
+	// the same condition under two different semantics depending on which
+	// procedure the user happened to reach (Fizzy #1875).
+	NO_AI_PROVIDER: "PRECONDITION_FAILED",
 	PERSISTENCE_FAILED: "INTERNAL_SERVER_ERROR",
 	BAD_REQUEST: "BAD_REQUEST",
 } as const;

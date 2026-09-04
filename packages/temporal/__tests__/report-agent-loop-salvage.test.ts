@@ -20,7 +20,7 @@ vi.mock("@repo/ai", async (orig) => ({
 	...(await orig<typeof import("@repo/ai")>()),
 	streamText: (...args: unknown[]) => streamTextMock(...args),
 	getAIModelWithMetadata: vi.fn(async () => fakeAiModel),
-	getRAGProviderConfig: vi.fn(() => undefined),
+	getSystemRAGProviderConfig: vi.fn(() => undefined),
 }));
 vi.mock("@repo/mcp", () => ({ getCachedMcpClientForConfig: vi.fn() }));
 vi.mock("@temporalio/activity", () => ({ heartbeat: vi.fn() }));

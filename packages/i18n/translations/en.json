@@ -2665,7 +2665,7 @@
 				"scopeDialogTitleFiltered": "Re-prioritize which items?",
 				"scopeDialogTitleAll": "Re-prioritize all {count} items?",
 				"scopeDialogBodyFiltered": "Your filters are narrowing this list. Choose whether to re-assess just the filtered items or the entire roadmap.",
-				"scopeDialogBodyAll": "The AI re-assesses every item in this list together and writes back only the ones it moves. This uses AI credits and can take a little longer for large lists.",
+				"scopeDialogBodyAll": "The AI re-assesses every item in this list together and writes back only the ones it moves. This runs against your AI provider and can take a little longer for large lists.",
 				"scopeDialogCeiling": "This list is very large — this run re-assesses the first {cap} items (oldest first). Run it again to cover the rest.",
 				"scopeDialogCeilingChoice": "Scopes over {cap} items are re-assessed {cap} at a time (oldest first) — run again to cover the rest.",
 				"scopeRunFiltered": "Filtered only ({count})",
@@ -2712,7 +2712,7 @@
 					"criteriaStage": "How far the item is drafted"
 				},
 				"changePriorityTooltip": "Set this item's priority by hand, with an optional note explaining why.",
-				"reprioritizeTooltip": "Ask the AI to re-assess priority bands from each item's blockers, security exposure, open questions, age and drafting stage, plus the team's confirmed decisions. Ranks the whole list together, up to 500 items per run ({count} in this list), and uses AI credits. Only bands it actually moves are changed, and each change is recorded in that item's history.",
+				"reprioritizeTooltip": "Ask the AI to re-assess priority bands from each item's blockers, security exposure, open questions, age and drafting stage, plus the team's confirmed decisions. Ranks the whole list together, up to 500 items per run ({count} in this list), and runs against your AI provider. Only bands it actually moves are changed, and each change is recorded in that item's history.",
 				"restoreSuggestedOrderTooltip": "Clear the team's hand-placed order for this list — features and bugs are pinned separately — and go back to the scored ranking. Priority bands are not affected.",
 				"historyError": "Couldn't load this item's priority history.",
 				"historyDialogTitle": "Priority history",

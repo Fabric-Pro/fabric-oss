@@ -51,8 +51,9 @@ export async function executeAiGenerateImageStep(
 	let interpolatedPrompt = interpolateTemplate(imagePrompt, params.inputs);
 
 	try {
-		// Get API key for image gateway using centralized config
-		// Image generation requires gateway access which needs the raw API key
+		// TENANT resolver: a workflow-builder image step runs because someone
+		// executed the workflow, so this is not the background work the system
+		// half is reserved for. Same rule as `image-generation.ts`.
 		const providerConfig = await getRAGProviderConfig({
 			userId: params.userId,
 			organizationId: params.organizationId,

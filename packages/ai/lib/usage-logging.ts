@@ -41,6 +41,29 @@ interface LogEmbeddingUsageParams {
 	errorMessage?: string;
 }
 
+/**
+ * Maps a resolved call's billing mode to the `AiUsageBillingCategory` written
+ * on its usage row.
+ *
+ * Two of the four inputs can no longer be produced (Fizzy #1875): the
+ * allowance and the Stripe-metered overage are gone, so
+ * `getTenantAiGatewayBillingState` now returns only `external_provider` (every
+ * user-facing call) and `platform_unbilled` (background and ingestion work,
+ * which keeps its own resolver — R13). Their cases stay on purpose, and the
+ * mode union stays four-wide with them, for two reasons:
+ *
+ *  - Rows already written carry `INCLUDED_CREDIT` and `STRIPE_METERED`, and
+ *    reporting still groups by them (`getProjectUsageSummary` buckets the full
+ *    enum; the project usage view reads those two buckets by name). The
+ *    categories are history, not live states.
+ *  - The out-of-process agent path round-trips the mode as an opaque string —
+ *    `/api/ai/keys/exchange` hands `billingMode` to a runtime, which returns it
+ *    to `/api/internal/ai-usage`. Keeping the mapping total means a token
+ *    minted before this change cannot land an unclassifiable row.
+ *
+ * Do not narrow this to the two live modes without also retiring the historical
+ * enum members, which KTD3 deliberately keeps.
+ */
 export function getAiBillingCategory(metadata: AIModelMetadata) {
 	switch (metadata.billingMode) {
 		case "included_credit":

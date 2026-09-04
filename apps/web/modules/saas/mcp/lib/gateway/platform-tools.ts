@@ -3918,16 +3918,15 @@ async function handleQueryWorkspace(
 		});
 	} catch (error) {
 		// Reflect the real cause in the primary message. generateEmbedding can
-		// fail for reasons other than "RAG not set up": an AI usage/credit limit
-		// was hit, or no embedding provider is configured. Branch on the error
-		// name (each class sets a distinctive `name`) so we don't misattribute a
+		// fail for reasons other than "RAG not set up": an AI usage limit was
+		// hit, or no embedding provider is configured. Branch on the error name
+		// (each class sets a distinctive `name`) so we don't misattribute a
 		// quota block to missing config; the raw reason is always kept in `error`.
 		const reason =
 			error instanceof Error ? error.message : "RAG query failed";
 		const name = error instanceof Error ? error.name : "";
 		const message =
-			name === "AiUsageLimitExceededError" ||
-			name === "AiCreditLimitExceededError"
+			name === "AiUsageLimitExceededError"
 				? `Semantic search is unavailable: ${reason}`
 				: name === "AIProviderNotConfiguredError"
 					? reason

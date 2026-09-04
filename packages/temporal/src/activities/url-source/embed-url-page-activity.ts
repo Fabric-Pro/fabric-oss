@@ -15,7 +15,7 @@
  * On success the activity bumps `embeddedAt`, `chunkCount`, `qdrantId`,
  * and flips `extractionStatus` to COMPLETED on the page row.
  */
-import { getRAGProviderConfig } from "@repo/ai";
+import { getSystemRAGProviderConfig } from "@repo/ai";
 import { db } from "@repo/database/prisma/client";
 import { embedProjectContext } from "@repo/rag";
 import { ApplicationFailure, heartbeat } from "@temporalio/activity";
@@ -68,7 +68,7 @@ export async function embedUrlPageActivity(
 		return { success: true, chunkCount: 0 };
 	}
 
-	const providerConfig = await getRAGProviderConfig({
+	const providerConfig = await getSystemRAGProviderConfig({
 		userId,
 		organizationId,
 	});

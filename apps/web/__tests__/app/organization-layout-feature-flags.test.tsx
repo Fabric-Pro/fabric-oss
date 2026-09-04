@@ -54,19 +54,20 @@ vi.mock("@saas/shared/components/AppWrapper", () => ({
 		<>{children}</>
 	),
 }));
-vi.mock("@saas/payments/components/AiCreditsStatus", () => ({
+vi.mock("@saas/shared/components/MfaSetupBanner", () => ({
 	// Not a null stub: this banner is a sibling ABOVE {children}, so it is the
 	// only probe that can tell "provider wraps the whole tree" apart from
 	// "provider wraps only children". A provider narrowed to {children} leaves
 	// this component with no context at all, and useFeatureFlag throws.
-	AiCreditsBanner: () => (
+	//
+	// It carries the probe because it is the banner left in that slot — the
+	// credits banner that used to hold it is gone. Whatever occupies the slot
+	// next inherits the probe; the slot must never go unprobed.
+	MfaSetupBanner: () => (
 		<span data-testid="banner-probe">
 			{useFeatureFlag("PUBLISHING_SUITE") ? "on" : "off"}
 		</span>
 	),
-}));
-vi.mock("@saas/shared/components/MfaSetupBanner", () => ({
-	MfaSetupBanner: () => null,
 }));
 vi.mock("@shared/lib/server", () => ({
 	getServerQueryClient: () => ({

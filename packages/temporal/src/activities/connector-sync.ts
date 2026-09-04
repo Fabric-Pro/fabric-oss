@@ -5,7 +5,7 @@
  * These handle external API calls, database operations, and embedding generation.
  */
 
-import { getRAGProviderConfig } from "@repo/ai";
+import { getSystemRAGProviderConfig } from "@repo/ai";
 import {
 	createDocumentChunks,
 	createSyncJob,
@@ -1416,7 +1416,7 @@ export async function generateEmbeddings(_input: {
 	const workspaceId = _input.workspaceIds[0];
 	let created = 0;
 	let updated = 0;
-	const providerConfig = await getRAGProviderConfig({
+	const providerConfig = await getSystemRAGProviderConfig({
 		userId: _input.userId,
 		organizationId: _input.organizationId,
 	});

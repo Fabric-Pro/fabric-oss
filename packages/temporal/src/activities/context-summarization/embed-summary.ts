@@ -1,4 +1,4 @@
-import { getRAGProviderConfig } from "@repo/ai";
+import { getSystemRAGProviderConfig } from "@repo/ai";
 import {
 	type SummaryTenancy,
 	setContextSummaryEmbedding,
@@ -27,7 +27,7 @@ export async function embedSummaryActivity(input: {
 	const userId = input.tenancy.userId ?? "";
 	const organizationId = input.tenancy.organizationId ?? undefined;
 	try {
-		const providerConfig = await getRAGProviderConfig({
+		const providerConfig = await getSystemRAGProviderConfig({
 			userId,
 			organizationId,
 			projectId: input.projectId,

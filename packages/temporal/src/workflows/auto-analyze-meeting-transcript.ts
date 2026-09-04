@@ -27,6 +27,7 @@
 
 import { patched, proxyActivities } from "@temporalio/workflow";
 import type * as activities from "../activities";
+import { AI_NON_RETRYABLE_ERROR_TYPES } from "./ai-non-retryable-errors";
 
 const { autoAnalyzeMeetingTranscriptActivity } = proxyActivities<
 	typeof activities
@@ -39,7 +40,11 @@ const { autoAnalyzeMeetingTranscriptActivity } = proxyActivities<
 		backoffCoefficient: 2,
 		maximumInterval: "2m",
 		maximumAttempts: 3,
-		nonRetryableErrorTypes: ["ValidationError", "TenantViolation"],
+		nonRetryableErrorTypes: [
+			"ValidationError",
+			"TenantViolation",
+			...AI_NON_RETRYABLE_ERROR_TYPES,
+		],
 	},
 });
 

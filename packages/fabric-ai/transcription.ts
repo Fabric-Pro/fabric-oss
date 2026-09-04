@@ -21,7 +21,7 @@
 
 import { createGroq } from "@ai-sdk/groq";
 import { createOpenAI } from "@ai-sdk/openai";
-import { getRAGProviderConfig } from "@repo/ai";
+import { getSystemRAGProviderConfig } from "@repo/ai";
 import { logAiUsageAsync } from "@repo/database";
 import type { AIProvider } from "@repo/database/prisma/generated/client";
 import { logger } from "@repo/logs";
@@ -264,13 +264,16 @@ async function transcribeHybrid(
 			throw new Error("User context required for hybrid mode");
 		}
 
-		// Get user's AI provider configuration using centralized entry point
-		const providerConfig = await getRAGProviderConfig({
+		// Get user's AI provider configuration using centralized entry point.
+		// SYSTEM side: nobody is waiting here — transcription is only reachable
+		// through the `transcribeAudio` temporal activity, where a refusal is
+		// retried five times before failing the workflow.
+		const providerConfig = await getSystemRAGProviderConfig({
 			userId: userContext.userId,
 			organizationId: userContext.organizationId ?? undefined,
 		});
 
-		// providerConfig.apiKey is already decrypted by getRAGProviderConfig()
+		// providerConfig.apiKey is already decrypted by getSystemRAGProviderConfig()
 		const apiKey = providerConfig.apiKey;
 
 		// Determine which provider to use for transcription
@@ -396,13 +399,15 @@ async function transcribeDelegated(
 			throw new Error("User context required for delegated mode");
 		}
 
-		// Get user's API key for delegation using centralized entry point
-		const providerConfig = await getRAGProviderConfig({
+		// Get user's API key for delegation using centralized entry point.
+		// SYSTEM side, same reason as the hybrid path above: this runs inside the
+		// transcription activity, not on a request a person is holding open.
+		const providerConfig = await getSystemRAGProviderConfig({
 			userId: userContext.userId,
 			organizationId: userContext.organizationId ?? undefined,
 		});
 
-		// providerConfig.apiKey is already decrypted by getRAGProviderConfig()
+		// providerConfig.apiKey is already decrypted by getSystemRAGProviderConfig()
 		const apiKey = providerConfig.apiKey;
 
 		// Create Fabric client

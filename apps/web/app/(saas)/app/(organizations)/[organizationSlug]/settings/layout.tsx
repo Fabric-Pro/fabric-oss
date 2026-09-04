@@ -212,9 +212,11 @@ export default async function SettingsLayout({
 			],
 		},
 		// Account-global settings that an organization member must still be able
-		// to reach (Fizzy #1875, R7/R8). Both pages are properties of the
-		// ACCOUNT, not of this organization — no organization is passed into
-		// either, and nothing about them is scoped per tenant (R9).
+		// to reach (Fizzy #1875, R7/R8/R12). Every page here is a property of
+		// the ACCOUNT, not of this organization — no organization is passed into
+		// any of them, and nothing about them is scoped per tenant (R9). That
+		// includes the personal provider keys: a key belongs to the person and
+		// resolves inside whichever organization they are working in.
 		//
 		// APPENDED, never prepended: SettingsMenu renders its compact sidebar
 		// header from `menuItems[0].title` / `.avatar`, so putting this group
@@ -253,6 +255,17 @@ export default async function SettingsLayout({
 					title: "Notifications",
 					href: `${organizationSettingsBasePath}/account/notifications`,
 					icon: <BellIcon className="size-4 opacity-50" />,
+				},
+				// Named "Personal AI Providers", not "AI Providers": the
+				// organization's own provider page sits in the group above
+				// under that exact label, and two links with the same
+				// accessible name pointing at different destinations is the
+				// kind of ambiguity a group heading does not resolve for a
+				// screen reader moving through links.
+				{
+					title: "Personal AI Providers",
+					href: `${organizationSettingsBasePath}/account/ai-providers`,
+					icon: <BrainCircuitIcon className="size-4 opacity-50" />,
 				},
 				{
 					title: t("settings.menu.account.dangerZone"),

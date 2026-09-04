@@ -288,6 +288,42 @@ describe("classifyBacklogAnalysisError", () => {
 		expect(r.userMessage).toMatch(/No AI provider is configured/);
 	});
 
+	/**
+	 * `AIProviderNotConfiguredError` carries FOUR different messages depending
+	 * on which resolver refused. Both refusals below are terminal — nothing a
+	 * retry can do configures a provider — so both must reach
+	 * `provider_not_configured` and NOT `transient_or_unknown`, whose copy
+	 * ("Please retry; details were logged") is advice that cannot work.
+	 */
+	describe.each([
+		[
+			"the language-model refusal",
+			"No AI provider configured. Please configure an AI provider in Settings → AI Providers.",
+		],
+		[
+			"the embedding refusal",
+			"No embedding provider configured. Please set an embedding provider in Settings → AI Providers.",
+		],
+	])("%s", (_label, message) => {
+		it("classifies as terminal when it arrives with its class name", () => {
+			const e = new Error(message);
+			(e as Error & { name: string }).name =
+				"AIProviderNotConfiguredError";
+			const r = classifyBacklogAnalysisError(e);
+			expect(r.errorClass).toBe("provider_not_configured");
+		});
+
+		it("classifies as terminal on the message alone", () => {
+			// The fallback for an error that reached here as a plain `Error` —
+			// a rethrow, or a serialization round-trip that dropped the name.
+			// The embedding wording shares NO substring with the other, which
+			// is how it used to fall through to the retry-this bucket.
+			const r = classifyBacklogAnalysisError(new Error(message));
+			expect(r.errorClass).toBe("provider_not_configured");
+			expect(r.errorClass).not.toBe("transient_or_unknown");
+		});
+	});
+
 	it("maps provider 5xx (HTTP 503) to provider_unavailable", () => {
 		const r = classifyBacklogAnalysisError({
 			name: "AI_APICallError",

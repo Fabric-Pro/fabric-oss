@@ -14,7 +14,6 @@
 import { createHash, randomBytes } from "node:crypto";
 import { getAIModelWithMetadata } from "@repo/ai/model-selector";
 import { createUserApiKey, db } from "@repo/database";
-import { getTenantAiCreditAccess } from "@repo/payments";
 import { streamText } from "ai";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
@@ -211,7 +210,15 @@ export function createVscodeAuthRoutes() {
 
 	/**
 	 * GET /api/profile/balance
-	 * Returns account balance (AI credits). Returns 0 for plans without credits.
+	 * Returns account balance (AI credits). Always zero: Fabric no longer sells
+	 * or grants AI credits — a user-facing AI call runs on a provider the tenant
+	 * configured, or it does not run (Fizzy #1875).
+	 *
+	 * The route itself stays. It is consumed by released versions of the VS Code
+	 * extension that this repository cannot upgrade, and its own contract already
+	 * anticipated this outcome ("returns 0 for plans without credits"), so
+	 * answering zero keeps every deployed client working. Deleting it would turn
+	 * a well-defined zero into a 404 for clients that have no way to know better.
 	 */
 	app.get("/profile/balance", async (c) => {
 		const userId = await authFromBearer(c.req.header("Authorization"));
@@ -219,11 +226,7 @@ export function createVscodeAuthRoutes() {
 			return c.json({ error: "Unauthorized" }, 401);
 		}
 
-		const access = await getTenantAiCreditAccess({ userId }).catch(
-			() => null,
-		);
-
-		return c.json({ balance: access?.remainingCreditUsd ?? 0 });
+		return c.json({ balance: 0 });
 	});
 
 	// =========================================================================

@@ -6,7 +6,7 @@
  */
 
 import type { AiJobKey } from "@repo/ai";
-import { getAIModelWithMetadata, getRAGProviderConfig } from "@repo/ai";
+import { getAIModelWithMetadata, getSystemRAGProviderConfig } from "@repo/ai";
 
 /**
  * Embedding provider configuration for RAG
@@ -121,7 +121,10 @@ export async function getEmbeddingConfig(
 ): Promise<EmbeddingProviderConfig> {
 	try {
 		// Use centralized RAG provider config
-		const config = await getRAGProviderConfig({ userId, organizationId });
+		const config = await getSystemRAGProviderConfig({
+			userId,
+			organizationId,
+		});
 
 		return {
 			apiKey: config.apiKey,

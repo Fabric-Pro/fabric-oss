@@ -6,7 +6,7 @@
  */
 
 import { QdrantClient } from "@qdrant/js-client-rest";
-import { getRAGProviderConfig } from "@repo/ai";
+import { getSystemRAGProviderConfig } from "@repo/ai";
 import { db } from "@repo/database/prisma/client";
 import { reembedProjectContext as ragReembed } from "@repo/rag";
 import {
@@ -45,7 +45,7 @@ export async function validateRAGProviderConfig(params: {
 
 	try {
 		// This will throw if no provider configured or credentials invalid
-		await getRAGProviderConfig({ userId, organizationId });
+		await getSystemRAGProviderConfig({ userId, organizationId });
 		console.log("[ReprocessActivity] RAG provider configuration validated");
 	} catch (error) {
 		const message =
@@ -199,7 +199,7 @@ export async function deleteProjectContextsFromQdrant(params: {
  * Re-embed a single project context with new RAG settings
  *
  * This activity resolves the AI provider config internally using the
- * centralized getRAGProviderConfig function, which handles:
+ * centralized getSystemRAGProviderConfig function, which handles:
  * - User/org preference lookup
  * - API key decryption
  * - Proper tenant isolation
@@ -230,7 +230,7 @@ export async function reembedProjectContext(params: {
 	console.log(`[ReprocessActivity] Re-embedding context ${contextId}`);
 
 	// Resolve AI provider config internally (handles user/org preferences, decryption)
-	const providerConfig = await getRAGProviderConfig({
+	const providerConfig = await getSystemRAGProviderConfig({
 		userId,
 		organizationId,
 	});

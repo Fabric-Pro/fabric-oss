@@ -27,6 +27,7 @@ import {
 	proxyActivities,
 } from "@temporalio/workflow";
 import type * as activities from "../activities";
+import { AI_NON_RETRYABLE_ERROR_TYPES } from "./ai-non-retryable-errors";
 
 // Configure activity retry policies for document generation
 const {
@@ -44,6 +45,11 @@ const {
 		maximumInterval: "60s",
 		backoffCoefficient: 2,
 		maximumAttempts: 5,
+		// Retrieval, generation and embedding all resolve a provider first.
+		// Without this a tenant that configured none pays five attempts and
+		// close to four minutes of backoff PER activity to reach the verdict
+		// the first millisecond already had.
+		nonRetryableErrorTypes: [...AI_NON_RETRYABLE_ERROR_TYPES],
 	},
 });
 
@@ -250,16 +256,30 @@ export async function documentGenerationChildWorkflow(
 
 				await reportProgress(documentId, 15);
 			} catch (contextError) {
-				const errorMessage =
+				const rawMessage =
 					contextError instanceof Error
 						? contextError.message
 						: "Unknown error";
+				// The raw `.message` of an ActivityFailure is the generic
+				// "Activity task failed"; the provider's own words live further
+				// down the cause chain.
+				const errorMessage = extractActivityError(contextError);
 
-				// Configuration errors are fatal
-				if (
-					errorMessage.includes("No AI provider configured") ||
-					errorMessage.includes("Please configure")
-				) {
+				// Configuration errors are fatal.
+				//
+				// `patched()` is REQUIRED — this WIDENS which failures take the
+				// throw. A history recorded before this change carried on
+				// without RAG after a provider refusal (the old test read the
+				// wrapper's generic message and matched nothing), and replaying
+				// it down the new branch would fail with a non-determinism
+				// error. Old executions keep the old test; new ones get the one
+				// that works.
+				const fatal = patched("document-provider-refusal-fatal-v1")
+					? isProviderNotConfiguredFailure(contextError)
+					: rawMessage.includes("No AI provider configured") ||
+						rawMessage.includes("Please configure");
+
+				if (fatal) {
 					log.error(
 						"AI provider configuration error - cannot proceed",
 						{
@@ -732,4 +752,51 @@ function extractActivityError(error: unknown): string {
 		return error.message;
 	}
 	return String(error);
+}
+
+/**
+ * Is this failure the "this tenant configured no provider" refusal?
+ *
+ * The branch that consults this decides whether a failed context retrieval is
+ * fatal or merely means "generate without RAG", and it used to decide by
+ * matching two substrings — `"No AI provider configured"` and
+ * `"Please configure"`. `@repo/ai` throws FOUR distinct messages behind one
+ * error class, and the embedding variant that context retrieval actually hits
+ * ("No embedding provider configured. Please set an embedding provider in
+ * Settings → AI Providers.") matches NEITHER. The workflow therefore treated a
+ * deterministic configuration verdict as a transient RAG outage, carried on,
+ * and failed at generation instead — after five more retried attempts.
+ *
+ * Match on the error's IDENTITY first: Temporal records the activity failure
+ * type as the thrown class's name, so `AIProviderNotConfiguredError` survives
+ * the ActivityFailure -> ApplicationFailure wrapping as `.type`. The message
+ * test is kept only as a fallback for an error that reaches here unwrapped or
+ * re-thrown as a plain `Error`, and it now covers every message the class
+ * carries — both "No AI provider configured" and "No embedding provider
+ * configured".
+ */
+const PROVIDER_NOT_CONFIGURED_ERROR_NAME = "AIProviderNotConfiguredError";
+
+function isProviderNotConfiguredFailure(error: unknown): boolean {
+	let current: unknown = error;
+	let depth = 0;
+	while (current != null && depth < 8) {
+		if (
+			current instanceof ApplicationFailure &&
+			current.type === PROVIDER_NOT_CONFIGURED_ERROR_NAME
+		) {
+			return true;
+		}
+		if (
+			current instanceof Error &&
+			current.name === PROVIDER_NOT_CONFIGURED_ERROR_NAME
+		) {
+			return true;
+		}
+		current = (current as { cause?: unknown }).cause;
+		depth += 1;
+	}
+	return /No (AI|embedding) provider configured/i.test(
+		extractActivityError(error),
+	);
 }

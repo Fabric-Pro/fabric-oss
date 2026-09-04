@@ -619,7 +619,7 @@ const m = vi.hoisted(() => ({
 	jobStep: vi.fn(),
 	// RAG / provider
 	embedProjectContext: vi.fn(),
-	getRAGProviderConfig: vi.fn(),
+	getSystemRAGProviderConfig: vi.fn(),
 }));
 
 vi.mock("@repo/database/prisma/client", async (importOriginal) => {
@@ -838,7 +838,7 @@ vi.mock("@qdrant/js-client-rest", () => ({
 }));
 
 vi.mock("@repo/ai", () => ({
-	getRAGProviderConfig: m.getRAGProviderConfig,
+	getSystemRAGProviderConfig: m.getSystemRAGProviderConfig,
 	AIProviderNotConfiguredError: class extends Error {},
 }));
 
@@ -1086,7 +1086,7 @@ beforeEach(() => {
 	m.fetchSlackThreadContext.mockResolvedValue(slackThread(SLACK_MESSAGES));
 	m.markTeamsMessagesAsSeen.mockResolvedValue(undefined);
 	m.markTeamsChatMessagesAsSeen.mockResolvedValue(undefined);
-	m.getRAGProviderConfig.mockResolvedValue({ apiKey: "key" });
+	m.getSystemRAGProviderConfig.mockResolvedValue({ apiKey: "key" });
 	m.embedProjectContext.mockResolvedValue({
 		success: true,
 		qdrantId: "point-1",
@@ -1743,7 +1743,7 @@ describe("embedding is a separately claimable step", () => {
 		expect(m.embedProjectContext.mock.calls[0][0].organizationId).toBe(
 			"org_1",
 		);
-		expect(m.getRAGProviderConfig).toHaveBeenCalledWith(
+		expect(m.getSystemRAGProviderConfig).toHaveBeenCalledWith(
 			expect.objectContaining({ organizationId: "org_1" }),
 		);
 	});
@@ -2706,7 +2706,7 @@ describe("recovering bundles whose embedding never completed", () => {
 		loseTheEmbed(orgBundle.bundleId as string);
 		loseTheEmbed(personalBundle.bundleId as string);
 		m.embedProjectContext.mockClear();
-		m.getRAGProviderConfig.mockClear();
+		m.getSystemRAGProviderConfig.mockClear();
 
 		const result = await sweepConversationBundleEmbeddingsActivity();
 		expect(result).toMatchObject({ scanned: 2, embedded: 2 });
@@ -2741,10 +2741,10 @@ describe("recovering bundles whose embedding never completed", () => {
 		).toBe("project-contexts");
 
 		// The provider config is resolved per tenant for the same reason.
-		expect(m.getRAGProviderConfig).toHaveBeenCalledWith(
+		expect(m.getSystemRAGProviderConfig).toHaveBeenCalledWith(
 			expect.objectContaining({ organizationId: "org_1" }),
 		);
-		expect(m.getRAGProviderConfig).toHaveBeenCalledWith(
+		expect(m.getSystemRAGProviderConfig).toHaveBeenCalledWith(
 			expect.objectContaining({ organizationId: undefined }),
 		);
 		// An organization bundle carries no `userId` of its own, so the tenant

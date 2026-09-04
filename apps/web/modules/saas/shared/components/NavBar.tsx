@@ -866,9 +866,6 @@ export function NavBar({
 						}
 						expandLabel="Expand sidebar"
 						collapseLabel="Collapse sidebar"
-						style={{
-							top: "calc(50% + var(--ai-banner-height, 0px) / 2)",
-						}}
 					/>
 				) : null}
 			</nav>

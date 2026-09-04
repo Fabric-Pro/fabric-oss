@@ -20,12 +20,10 @@ import {
 	getEmbeddingProviderConfig,
 	getModelForTask,
 	getProviderModelIdForCanonical,
+	getSystemAiProviderApiKey,
 	getTaskDefaultModel,
 } from "@repo/database";
-import {
-	assertTenantCanUseAi,
-	assertWithinAiUsageLimits,
-} from "@repo/payments";
+import { assertWithinAiUsageLimits } from "@repo/payments";
 import type { AiFeatureKey } from "./feature-keys";
 import type { AiJobKey } from "./job-keys";
 
@@ -623,14 +621,21 @@ export async function resolveModelWithProvider(
 		if (embeddingProvider.provider) {
 			providerConfig = embeddingProvider;
 		} else {
-			// Fall back to default provider if no embedding provider is configured
-			providerConfig = await getAiProviderApiKey({
+			// Fall back to default provider if no embedding provider is configured.
+			// SYSTEM entry point on purpose: embedding is indexing work —
+			// document and context ingestion, tool ingestion, orchestrator
+			// memory — which R13 leaves on its current resolution, including the
+			// deployment's own gateway key. Generation below does not.
+			providerConfig = await getSystemAiProviderApiKey({
 				userId: context.userId,
 				organizationId: context.organizationId || undefined,
 			});
 		}
 	} else {
-		// For all other tasks, use the default provider
+		// For all other tasks, use the default provider. TENANT entry point:
+		// this is the user-facing generation path, and it must resolve on a
+		// provider the tenant configured or not at all — the platform gateway
+		// key is structurally out of reach here (Fizzy #1875).
 		providerConfig = await getAiProviderApiKey({
 			userId: context.userId,
 			organizationId: context.organizationId || undefined,
@@ -768,10 +773,32 @@ export async function resolveModelWithProvider(
 				provider: result.provider,
 			});
 
+			// Refuse a platform-served key here. This block is generation-only —
+			// an embedding task with a provider mismatch has already returned
+			// above — so the tenant rule applies to everything that reaches it.
+			//
+			// It is the one rung by which generation could still reach the
+			// deployment's gateway key. `getAiProviderApiKeyByProvider` is
+			// deliberately unsplit: it refuses in organization context, but its
+			// personal branch ends in `getPlatformGatewayProviderConfig()`, and
+			// the call above passes `context.organizationId || undefined`. After
+			// the org-only elimination a falsy organization id does not mean the
+			// caller is working personally — it means something failed to
+			// resolve one, which is exactly when this must not quietly succeed.
+			//
+			// `source` is the discriminator: the gateway returns a real working
+			// key while leaving `source` unset, so credentials with a null
+			// `source` are the platform-served shape and nothing else.
+			const fallbackIsPlatformServed =
+				fallbackProviderConfig.source === null;
+
 			// A Databricks service-principal config has no apiKey, so check for
 			// EITHER credential shape — an apiKey-only check would report the
 			// fallback provider as unconfigured and null out a valid config.
-			if (hasProviderCredentials(fallbackProviderConfig)) {
+			if (
+				hasProviderCredentials(fallbackProviderConfig) &&
+				!fallbackIsPlatformServed
+			) {
 				finalApiKey = fallbackProviderConfig.apiKey;
 				finalClientId = fallbackProviderConfig.clientId ?? null;
 				finalEncryptedClientSecret =
@@ -1030,7 +1057,13 @@ export interface AIModelMetadata {
 	 * `maxOutputTokens`: the override model's context window may differ.
 	 */
 	contextWindow?: number;
-	/** How this request is treated for platform billing */
+	/**
+	 * How this request is treated for platform billing.
+	 *
+	 * Only the last two can be produced now (Fizzy #1875) — see the reasoning
+	 * on `getAiBillingCategory` in `./usage-logging.ts` for why the union stays
+	 * four-wide rather than narrowing to them.
+	 */
 	billingMode:
 		| "included_credit"
 		| "metered_stripe"
@@ -1135,10 +1168,9 @@ export async function getAIModelWithMetadata(
 	const { taskType, complexity, requiresToolCalling, modelOverride } =
 		options;
 
-	const access = await assertTenantCanUseAi({
-		userId: context.userId,
-		organizationId: context.organizationId,
-	});
+	// No credit/payment pre-check: whether this tenant may use AI is decided
+	// solely by whether a provider resolves below, and the refusal is
+	// `AIProviderNotConfiguredError` in step 2 (Fizzy #1875).
 
 	// Step 1: Resolve model configuration (model string, API key, provider, baseUrl)
 	const config = await resolveModelWithProvider(
@@ -1161,7 +1193,6 @@ export async function getAIModelWithMetadata(
 	// Downstream sees a plain string either way.
 	const decryptedApiKey = await resolveProviderApiKey(config);
 	const billingState = getTenantAiGatewayBillingState({
-		access,
 		provider: config.provider,
 		configSource: config.configSource,
 	});
@@ -1234,10 +1265,9 @@ export async function getAIModelWithMetadata(
 		maxOutputTokens: modelOverride ? undefined : config.maxOutputTokens,
 		contextWindow: modelOverride ? undefined : config.contextWindow,
 		billingMode: billingState.mode,
-		billingCustomerId:
-			billingState.mode === "metered_stripe"
-				? (access.customerId ?? null)
-				: null,
+		// Always null: the Stripe-metered mode is unreachable now that the
+		// allowance and the saved-card path are gone.
+		billingCustomerId: null,
 	};
 
 	// Step 7: Create trackUsage helper
@@ -1312,10 +1342,8 @@ export async function getAIEmbeddingModel(
 export async function getAIEmbeddingModelWithMetadata(
 	context: AIOperationContext,
 ): Promise<AIEmbeddingModelResult> {
-	const access = await assertTenantCanUseAi({
-		userId: context.userId,
-		organizationId: context.organizationId,
-	});
+	// No credit/payment pre-check — see `getAIModelWithMetadata`. A missing
+	// provider surfaces as `AIProviderNotConfiguredError` below.
 
 	// Use EMBEDDING task type
 	const config = await resolveModelWithProvider("EMBEDDING", {
@@ -1359,7 +1387,6 @@ export async function getAIEmbeddingModelWithMetadata(
 	// access token) and create the model.
 	const decryptedApiKey = await resolveProviderApiKey(config);
 	const billingState = getTenantAiGatewayBillingState({
-		access,
 		provider: config.provider,
 		configSource: config.configSource,
 	});
@@ -1380,10 +1407,9 @@ export async function getAIEmbeddingModelWithMetadata(
 		selectionSource: config.selectionSource,
 		canonicalName: config.canonicalName,
 		billingMode: billingState.mode,
-		billingCustomerId:
-			billingState.mode === "metered_stripe"
-				? (access.customerId ?? null)
-				: null,
+		// Always null: the Stripe-metered mode is unreachable now that the
+		// allowance and the saved-card path are gone.
+		billingCustomerId: null,
 	};
 
 	// Create trackUsage helper
@@ -1433,40 +1459,15 @@ export interface RAGProviderConfig {
 }
 
 /**
- * GET PROVIDER CONFIG FOR RAG OPERATIONS - Single Entry Point for generateEmbeddings
- * Returns the decrypted provider configuration ready for use with generateEmbeddings
- * and other RAG functions that need apiKey/provider/baseUrl parameters.
- * This centralizes the boilerplate:
- * - Fetching provider config from database
- * - Checking for null API key
- * - Decrypting the API key
- * - Error handling with clear messages
- * @example
- * ```typescript
- * import { getRAGProviderConfig } from "@repo/ai";
- * import { generateEmbeddings } from "@repo/rag";
- * // Before (repeated in every file):
- * // const providerConfig = await getAiProviderApiKey({ userId, organizationId });
- * // if (!providerConfig?.apiKey) throw new Error("..");
- * // const apiKey = decryptApiKey(providerConfig.apiKey);
- * // await generateEmbeddings(texts, context, { apiKey, provider: providerConfig.provider,.. });
- * // After (clean and centralized):
- * const config = await getRAGProviderConfig({ userId, organizationId });
- * await generateEmbeddings(texts, { userId, organizationId }, config);
- * ```
- * @param context - User/org context for preference lookup
- * @returns Provider config with decrypted API key ready for RAG operations
- * @throws AIProviderNotConfiguredError if no AI provider is configured
+ * Turn a resolved provider config into the decrypted, ready-to-use RAG shape,
+ * or refuse when nothing usable resolved.
+ *
+ * Shared by the two public entry points below, so the ONLY difference between
+ * them is which resolver produced the config that reaches this.
  */
-export async function getRAGProviderConfig(
-	context: AIOperationContext,
+async function toRAGProviderConfig(
+	providerConfig: Awaited<ReturnType<typeof getAiProviderApiKey>>,
 ): Promise<RAGProviderConfig> {
-	// Get the full provider config directly (includes enabledProviders)
-	const providerConfig = await getAiProviderApiKey({
-		userId: context.userId,
-		organizationId: context.organizationId || undefined,
-	});
-
 	// Validate configuration. A Databricks service-principal config has no
 	// apiKey — check for either credential shape.
 	if (!hasProviderCredentials(providerConfig)) {
@@ -1487,4 +1488,107 @@ export async function getRAGProviderConfig(
 		source: providerConfig.source || "user",
 		deploymentName: providerConfig.deploymentName || null,
 	};
+}
+
+/**
+ * GET PROVIDER CONFIG FOR RAG OPERATIONS — TENANT-FACING entry point for
+ * generateEmbeddings and friends.
+ *
+ * Returns the decrypted provider configuration ready for use with
+ * generateEmbeddings and other RAG functions that need
+ * apiKey/provider/baseUrl parameters. This centralizes the boilerplate:
+ * - Fetching provider config from database
+ * - Checking for null API key
+ * - Decrypting the API key
+ * - Error handling with clear messages
+ *
+ * **This entry point cannot reach the platform gateway credential at all.** A
+ * user-facing RAG operation runs on a provider the tenant configured — its
+ * organization's, or the caller's own personal key used inside it — or it does
+ * not run, and the refusal is `AIProviderNotConfiguredError` naming the
+ * provider settings as the remedy.
+ *
+ * Background and system work keeps the platform fallback through
+ * {@link getSystemRAGProviderConfig}. The two are separate, differently-named
+ * functions rather than one function with a flag precisely so a call site
+ * cannot be handed the wrong policy.
+ *
+ * @example
+ * ```typescript
+ * import { getRAGProviderConfig } from "@repo/ai";
+ * import { generateEmbeddings } from "@repo/rag";
+ * // Before (repeated in every file):
+ * // const providerConfig = await getAiProviderApiKey({ userId, organizationId });
+ * // if (!providerConfig?.apiKey) throw new Error("..");
+ * // const apiKey = decryptApiKey(providerConfig.apiKey);
+ * // await generateEmbeddings(texts, context, { apiKey, provider: providerConfig.provider,.. });
+ * // After (clean and centralized):
+ * const config = await getRAGProviderConfig({ userId, organizationId });
+ * await generateEmbeddings(texts, { userId, organizationId }, config);
+ * ```
+ * @param context - User/org context for preference lookup
+ * @returns Provider config with decrypted API key ready for RAG operations
+ * @throws AIProviderNotConfiguredError if the tenant configured no AI provider
+ */
+export async function getRAGProviderConfig(
+	context: AIOperationContext,
+): Promise<RAGProviderConfig> {
+	// Get the full provider config directly (includes enabledProviders).
+	// TENANT entry point: this resolver backs user-facing surfaces (the
+	// assistant/CopilotKit route, the agent relay, the AI key exchange) that
+	// build their own client instead of going through the instrumented model,
+	// so it must refuse rather than reach the platform gateway key.
+	return toRAGProviderConfig(
+		await getAiProviderApiKey({
+			userId: context.userId,
+			organizationId: context.organizationId || undefined,
+		}),
+	);
+}
+
+/**
+ * GET PROVIDER CONFIG FOR RAG OPERATIONS — BACKGROUND / SYSTEM work.
+ *
+ * Identical to {@link getRAGProviderConfig} except for the last rung of key
+ * resolution: this one goes through `getSystemAiProviderApiKey`, so when the
+ * tenant configured nothing it still resolves the deployment's own gateway key
+ * (when one is set and the gateway is enabled).
+ *
+ * Use it ONLY where nobody is waiting on the response — the temporal
+ * activities behind document processing, context and wizard embedding,
+ * connector sync, tool ingestion, orchestrator memory and the workflows that
+ * drive them. Anything a person triggered and is waiting on — an API route
+ * under the web app, an oRPC procedure, an MCP sampling request — must use
+ * {@link getRAGProviderConfig} instead, which cannot reach the platform key at
+ * all.
+ *
+ * DO NOT reunite these behind a boolean flag. Twenty-eight call sites reach
+ * this pair; a flag makes every one of them restate a policy judgement that a
+ * typo can invert, and it is the kind of argument that gets copied from a
+ * neighbouring call. Two functions cannot be passed the wrong way round.
+ *
+ * Note the shape difference that made the old single-function fallback
+ * invisible: `getSystemAiProviderApiKey`'s platform branch hands back a real,
+ * working key but leaves `source` null, while the organization and personal
+ * branches stamp a source. Callers asking "did the tenant configure this?"
+ * read `source`, so a platform-served request looked unconfigured while still
+ * being served — and here that null is additionally coalesced to `"user"` on
+ * the way out, which is why nothing downstream ever noticed. That coalesce is
+ * preserved deliberately: background callers behave exactly as they did before
+ * the split.
+ *
+ * @param context - User/org context for preference lookup
+ * @returns Provider config with decrypted API key ready for RAG operations
+ * @throws AIProviderNotConfiguredError if neither the tenant nor the
+ *   deployment has a usable provider credential
+ */
+export async function getSystemRAGProviderConfig(
+	context: AIOperationContext,
+): Promise<RAGProviderConfig> {
+	return toRAGProviderConfig(
+		await getSystemAiProviderApiKey({
+			userId: context.userId,
+			organizationId: context.organizationId || undefined,
+		}),
+	);
 }

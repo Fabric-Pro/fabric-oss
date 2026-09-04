@@ -10,6 +10,13 @@
  * NO HARDCODED FALLBACKS - if the database doesn't have a model configured,
  * this module throws a clear error instead of silently using a wrong model.
  *
+ * SYSTEM-LEVEL RESOLUTION: these helpers back background and system work
+ * (Temporal activities, agent runtimes, indexing), so they resolve provider
+ * credentials through `getSystemAiProviderApiKey` — the entry point that may
+ * end in the deployment's own gateway key. A user-facing AI operation must
+ * NOT resolve through here: it uses `getAiProviderApiKey`, which cannot reach
+ * that credential at all (Fizzy #1875).
+ *
  * Usage:
  * ```typescript
  * import { resolveModel, resolveModelString } from "@repo/database";
@@ -37,7 +44,7 @@ import type {
 } from "../generated/client";
 import {
 	type AiProviderConfig,
-	getAiProviderApiKey,
+	getSystemAiProviderApiKey,
 	hasProviderCredentials,
 } from "./ai-gateway";
 import { getModelForTask } from "./ai-models";
@@ -161,7 +168,7 @@ export async function resolveModel(
 		// See: server-cache-react rule from Vercel React Best Practices
 		const providerConfig =
 			_providerConfig ??
-			(await getAiProviderApiKey({
+			(await getSystemAiProviderApiKey({
 				userId,
 				organizationId: organizationId ?? undefined,
 			}));
@@ -272,7 +279,7 @@ export async function resolveModelWithCredentials(
 	// See: server-cache-react rule from Vercel React Best Practices
 	const providerConfig =
 		_providerConfig ??
-		(await getAiProviderApiKey({
+		(await getSystemAiProviderApiKey({
 			userId,
 			organizationId: organizationId ?? undefined,
 		}));

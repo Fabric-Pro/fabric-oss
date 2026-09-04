@@ -58,7 +58,7 @@ const {
 
 vi.mock("@repo/ai", () => ({
 	AIProviderNotConfiguredError: TestAIProviderNotConfiguredError,
-	getRAGProviderConfig: mockGetRAGProviderConfig,
+	getSystemRAGProviderConfig: mockGetRAGProviderConfig,
 }));
 
 vi.mock("@repo/database", () => ({

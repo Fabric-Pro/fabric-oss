@@ -373,10 +373,20 @@ export function classifyBacklogAnalysisError(
 		return build("schema_parse", probe, {});
 	}
 
-	// 5) Provider not configured.
+	// 5) Provider not configured — terminal, never `transient_or_unknown`:
+	// retrying cannot configure a provider, and the copy has to say so.
+	//
+	// The name check carries this on its own for anything thrown by
+	// `@repo/ai`. The message alternatives are the fallback for an error that
+	// reaches here as a plain `Error` (a rethrow, a serialization round-trip),
+	// and they must cover BOTH refusals the one class carries — the
+	// language-model one ("No AI provider configured…") and the embedding one
+	// ("No embedding provider configured. Please set an embedding provider…"),
+	// which shares neither wording with the other and used to fall through to
+	// the "please retry" bucket.
 	if (
 		name === "AIProviderNotConfiguredError" ||
-		/no ai provider|provider not configured/i.test(message)
+		/no (ai|embedding) provider|provider not configured/i.test(message)
 	) {
 		return build("provider_not_configured", probe, {});
 	}

@@ -50,7 +50,16 @@ export async function resolveAIProviderApiKey(
 	organizationId?: string,
 ): Promise<ResolvedAIConfig> {
 	try {
-		// Use centralized RAG provider config
+		// Use centralized RAG provider config.
+		// TENANT side, chosen rather than read off the path: this helper is
+		// exported from `@repo/agent-core/backend` for "API routes AND Temporal
+		// activities" and has no live caller to settle it, so it takes the
+		// fail-closed half of the pair. It also already owns a platform-key
+		// fallback of its own — the `AI_GATEWAY_API_KEY` catch below, which is
+		// the very credential `getSystemRAGProviderConfig` would resolve
+		// (`config.ai.gatewayApiKey` reads that env var). Routing this through
+		// the system sibling would give one function two overlapping platform
+		// fallbacks; this way there is exactly one, in the file that documents it.
 		// Note: getRAGProviderConfig() already decrypts the API key
 		const config = await getRAGProviderConfig({ userId, organizationId });
 

@@ -26,6 +26,7 @@ import type {
 	sendNewsletterChatMessagesActivity as SendChatFn,
 	sendNewsletterEmailsActivity as SendEmailsFn,
 } from "../activities/newsletter";
+import { AI_NON_RETRYABLE_ERROR_TYPES } from "./ai-non-retryable-errors";
 import { APPROVAL_CHAT_RETRY } from "./newsletter-approval-chat-retry";
 import { APPROVAL_EMAIL_RETRY } from "./newsletter-approval-email-retry";
 import { computeDeliveryOutcome } from "./newsletter-delivery-outcome";
@@ -88,7 +89,10 @@ const { curateStakeholderReleaseNotesActivity } = proxyActivities<{
 	retry: {
 		maximumAttempts: 2,
 		initialInterval: "5s",
-		nonRetryableErrorTypes: [...PROGRAMMING_ERROR_TYPES],
+		nonRetryableErrorTypes: [
+			...PROGRAMMING_ERROR_TYPES,
+			...AI_NON_RETRYABLE_ERROR_TYPES,
+		],
 	},
 });
 
@@ -115,7 +119,10 @@ const { curateNewsletterFromReleasesActivity } = proxyActivities<{
 	retry: {
 		maximumAttempts: 2,
 		initialInterval: "5s",
-		nonRetryableErrorTypes: [...PROGRAMMING_ERROR_TYPES],
+		nonRetryableErrorTypes: [
+			...PROGRAMMING_ERROR_TYPES,
+			...AI_NON_RETRYABLE_ERROR_TYPES,
+		],
 	},
 });
 

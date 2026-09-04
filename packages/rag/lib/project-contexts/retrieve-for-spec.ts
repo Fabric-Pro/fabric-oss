@@ -436,6 +436,12 @@ export async function retrieveRelevantContextsForSpec(
 		return applySummary([]);
 	}
 
+	// TENANT entry point, deliberately, for a helper that genuinely serves both
+	// sides: an oRPC procedure and the v1 REST route call it with a person
+	// waiting, and `update-with-context-core` calls it from a workflow. The
+	// human/unattended split is already carried by `throwOnRetrievalError`
+	// below rather than by which key is resolved, and a keyless tenant should
+	// see "no context found" here, not context retrieved on the platform's key.
 	let providerConfig: Awaited<ReturnType<typeof getRAGProviderConfig>>;
 	try {
 		providerConfig = await getRAGProviderConfig({ userId, organizationId });
