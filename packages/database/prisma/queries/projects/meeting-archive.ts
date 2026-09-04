@@ -51,6 +51,12 @@ export type MeetingArchivePayload = {
 		includedInDigest: boolean;
 		linkedAt: Date;
 		deactivatedAt: Date | null;
+		/**
+		 * Who linked the meeting. Optional because archives written before this
+		 * field existed do not carry it — a restore from one of those cannot
+		 * recover the attribution and must not invent it.
+		 */
+		linkedByUserId?: string | null;
 	};
 	transcripts: ArchivedTranscript[];
 };
@@ -81,6 +87,11 @@ export async function buildMeetingArchivePayload(params: {
 			includedInDigest: true,
 			linkedAt: true,
 			deactivatedAt: true,
+			// On a linked meeting this is WHO LINKED IT, not the tenant: linking
+			// writes the caller's id here whether the project is org-owned or
+			// personal (the table's RLS is user_owned, and an org row carries
+			// both columns). Archiving it is what lets a restore put it back.
+			userId: true,
 		},
 	});
 
@@ -138,7 +149,15 @@ export async function buildMeetingArchivePayload(params: {
 	return {
 		payload: {
 			version: 1,
-			meeting,
+			meeting: {
+				joinUrl: meeting.joinUrl,
+				subject: meeting.subject,
+				organizer: meeting.organizer,
+				includedInDigest: meeting.includedInDigest,
+				linkedAt: meeting.linkedAt,
+				deactivatedAt: meeting.deactivatedAt,
+				linkedByUserId: meeting.userId,
+			},
 			transcripts: transcripts.map((t) => {
 				const ctx = t.contextId
 					? contextById.get(t.contextId)

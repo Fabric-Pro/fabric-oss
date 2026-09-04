@@ -85,6 +85,7 @@ const CONTEXT = {
 const PAYLOAD = {
 	version: 1 as const,
 	meeting: {
+		linkedByUserId: "linker_1",
 		joinUrl: "https://teams.microsoft.com/l/meetup-join/abc",
 		subject: "Weekly sync",
 		organizer: "dev@example.com",
@@ -199,19 +200,29 @@ describe("restoreMeetingProcedure", () => {
 			organizationId: "org_real",
 		});
 
-		const created: Record<string, unknown>[] = [];
-		const capture = (id: string) => ({
+		const contentRows: Record<string, unknown>[] = [];
+		let linkedRow: Record<string, unknown> | undefined;
+		const capture = (
+			id: string,
+			sink: (d: Record<string, unknown>) => void,
+		) => ({
 			create: async (args: { data: Record<string, unknown> }) => {
-				created.push(args.data);
+				sink(args.data);
 				return { id };
 			},
 		});
 		dbMock.$transaction.mockImplementation(
 			async (fn: (tx: unknown) => Promise<unknown>) =>
 				fn({
-					projectLinkedMeeting: capture("linked_new"),
-					projectContext: capture("ctx_1"),
-					projectMeetingTranscript: capture("tr_1"),
+					projectLinkedMeeting: capture("linked_new", (d) => {
+						linkedRow = d;
+					}),
+					projectContext: capture("ctx_1", (d) => {
+						contentRows.push(d);
+					}),
+					projectMeetingTranscript: capture("tr_1", (d) => {
+						contentRows.push(d);
+					}),
 				}),
 		);
 
@@ -224,9 +235,13 @@ describe("restoreMeetingProcedure", () => {
 		// from the input let the caller choose which tenant a restore wrote
 		// into — the project lookup happened to fail closed, but only because
 		// it also filtered on the claim.
-		expect(created.length).toBeGreaterThan(0);
-		for (const data of created) {
-			expect(data.organizationId).toBe("org_real");
+		expect(contentRows.length).toBeGreaterThan(0);
+		for (const data of [...contentRows, linkedRow]) {
+			expect(data?.organizationId).toBe("org_real");
+		}
+		// Content rows carry the tenant. The linked meeting is the exception:
+		// its `userId` is the LINKER, asserted in its own test below.
+		for (const data of contentRows) {
 			expect(data.userId).toBeNull();
 		}
 
@@ -258,17 +273,17 @@ describe("restoreMeetingProcedure", () => {
 			organizationId: null,
 		});
 
-		const created: Record<string, unknown>[] = [];
+		const contentRows: Record<string, unknown>[] = [];
 		const capture = (id: string) => ({
 			create: async (args: { data: Record<string, unknown> }) => {
-				created.push(args.data);
+				contentRows.push(args.data);
 				return { id };
 			},
 		});
 		dbMock.$transaction.mockImplementation(
 			async (fn: (tx: unknown) => Promise<unknown>) =>
 				fn({
-					projectLinkedMeeting: capture("linked_new"),
+					projectLinkedMeeting: { create: async () => ({ id: "l" }) },
 					projectContext: capture("ctx_1"),
 					projectMeetingTranscript: capture("tr_1"),
 				}),
@@ -279,11 +294,47 @@ describe("restoreMeetingProcedure", () => {
 		// themselves.
 		await handler({ input: INPUT, context: CONTEXT });
 
-		expect(created.length).toBeGreaterThan(0);
-		for (const data of created) {
+		expect(contentRows.length).toBeGreaterThan(0);
+		for (const data of contentRows) {
 			expect(data.userId).toBe("owner_1");
 			expect(data.organizationId).toBeUndefined();
 		}
+	});
+
+	it("puts the meeting back under whoever linked it", async () => {
+		dbMock.project.findFirst.mockResolvedValue({
+			id: "proj_1",
+			userId: "owner_1",
+			organizationId: "org_real",
+		});
+
+		let linked: Record<string, unknown> | undefined;
+		dbMock.$transaction.mockImplementation(
+			async (fn: (tx: unknown) => Promise<unknown>) =>
+				fn({
+					projectLinkedMeeting: {
+						create: async (args: {
+							data: Record<string, unknown>;
+						}) => {
+							linked = args.data;
+							return { id: "linked_new" };
+						},
+					},
+					projectContext: {
+						create: async () => ({ id: "ctx_1" }),
+					},
+					projectMeetingTranscript: { create: async () => ({}) },
+				}),
+		);
+
+		await handler({ input: INPUT, context: CONTEXT });
+
+		// On this table `userId` is who LINKED the meeting, not the tenant —
+		// linking writes it for org projects too. Restoring through the tenant
+		// expression replaced it with null, losing the attribution silently,
+		// because nothing reads the column yet.
+		expect(linked?.userId).toBe("linker_1");
+		expect(linked?.organizationId).toBe("org_real");
 	});
 
 	it("refuses a missing archive", async () => {

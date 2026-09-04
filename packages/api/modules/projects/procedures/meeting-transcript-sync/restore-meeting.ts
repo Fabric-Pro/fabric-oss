@@ -138,6 +138,14 @@ export const restoreMeetingProcedure = tenantProtectedProcedure
 					deactivatedAt: new Date(),
 					deactivatedById: user.id,
 					...tenant,
+					// AFTER the tenant spread, deliberately. On this table
+					// `userId` records who LINKED the meeting, and linking sets
+					// it for org projects too — so restoring through the tenant
+					// expression quietly replaced the linker with null every
+					// time. Nothing reads the column yet, which is exactly why
+					// it could rot unnoticed. An archive too old to carry it
+					// keeps the tenant value rather than inventing an owner.
+					userId: payload.meeting.linkedByUserId ?? tenant.userId,
 				},
 				select: { id: true },
 			});
