@@ -49,7 +49,15 @@ permissions:
 
 concurrency:
   group: unit-tests-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  # Superseded PR pushes are cancelled; master pushes are not. The master
+  # run exists to seed the cache (see header), and a cancelled run saves
+  # nothing — two PRs landing minutes apart cancelled the first cold sweep
+  # before it could save, and would again on every busy afternoon. Without
+  # cancellation GitHub keeps one master run in flight and one pending,
+  # so the newest push still runs; it just waits for the sweep before it.
+  # (workflow_dispatch runs are not cancelled either, which is what a
+  # manual full sweep wants.)
+  cancel-in-progress: ${{ github.event_name != 'push' }}
 
 jobs:
   changes:
@@ -278,13 +286,27 @@ jobs:
       # unchanged: Turbo's cache keys hash each package's inputs (sources,
       # deps, lockfile, task env) — the same semantics local `turbo test`
       # already relies on.
+      #
+      # The key carries a `vitest` segment because the SHA alone is not
+      # unique across workflows: in the public mirror release.yml saves its
+      # own `.turbo` under `<os>-turbo-<sha>` on the same push to master,
+      # and a cache key can be reserved once — the first warming run on
+      # master lost that race ("Unable to reserve cache with key … another
+      # job may be creating this cache") and master kept release.yml's
+      # near-empty entry instead of the generate warm. type-check.yml
+      # namespaces its key the same way.
+      #
+      # No generic `<os>-turbo-` fallback: GitHub tries every restore key
+      # in the PR's own scope before it looks at master, so a fallback that
+      # broad would hand a PR its own type-check entry ahead of the master
+      # vitest entry this job actually wants.
       - name: Restore Turbo cache
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .turbo
-          key: ${{ runner.os }}-turbo-${{ github.sha }}
+          key: ${{ runner.os }}-turbo-vitest-${{ github.sha }}
           restore-keys: |
-            ${{ runner.os }}-turbo-
+            ${{ runner.os }}-turbo-vitest-
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
