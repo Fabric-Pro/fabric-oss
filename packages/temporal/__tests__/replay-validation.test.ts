@@ -16,6 +16,7 @@ import { join, resolve } from "node:path";
 import type { HistoryAndWorkflowId } from "@temporalio/client";
 import { Worker } from "@temporalio/worker";
 import { describe, expect, it } from "vitest";
+import { buildWorkflowBundleOptions } from "../src/lib/workflow-bundle-options";
 
 const FIXTURES_DIR = join(__dirname, "__fixtures__", "histories");
 // Absolute path to the workflows directory. We avoid `require.resolve` here
@@ -136,7 +137,21 @@ describe("Replay validation", () => {
 			}
 
 			const results = await Worker.runReplayHistories(
-				{ workflowsPath: WORKFLOWS_PATH },
+				{
+					workflowsPath: WORKFLOWS_PATH,
+					// Replay the same interceptor stack production runs.
+					// This path builds its own bundle from workflowsPath, so
+					// unlike the worker (which uses a prebuilt bundle) it does
+					// honour interceptors.workflowModules. Without this the
+					// gate would replay workflows that never see the
+					// correlation interceptor, and so could not catch a
+					// determinism problem the interceptor introduced.
+					interceptors: {
+						workflowModules:
+							buildWorkflowBundleOptions(WORKFLOWS_PATH)
+								.workflowInterceptorModules,
+					},
+				},
 				histories,
 			);
 

@@ -27,6 +27,7 @@ import { validateAuditRetentionDays } from "./lib/audit-log-env";
 import { CorrelationActivityInboundInterceptor } from "./lib/correlation-interceptor";
 import { validatePmSyncLogRetentionDays } from "./lib/pm-sync-log-env";
 import { ProjectContextActivityInboundInterceptor } from "./lib/project-context-interceptor";
+import { buildWorkflowBundleOptions } from "./lib/workflow-bundle-options";
 import { PUBLISHING_RECONCILE_TASK_QUEUE } from "./schedules";
 import {
 	getTelemetryInterceptors,
@@ -39,12 +40,16 @@ import { startWorkerRuntime } from "./worker-startup";
 
 /**
  * Combine our correlation interceptors with whatever the OTEL telemetry
- * layer produces. Single registration, every worker gets both:
+ * layer produces. Single registration, every worker gets:
  *   - activity inbound: correlation re-enters AsyncLocalStorage so the
  *     global logger + audit-write helpers auto-stamp correlationId
- *   - workflowModules: bundled file that registers a workflow outbound
- *     interceptor; it propagates the workflow's header onto every child
- *     activity / child workflow call
+ *
+ * The workflow half of the chain is deliberately NOT registered here.
+ * The SDK ignores `interceptors.workflowModules` on any worker built
+ * from a prebuilt `workflowBundle` — it only warns — so those modules
+ * go to `bundleWorkflowCode` in getWorkflowBundle() instead. This
+ * function strips the key rather than forwarding it so the discard
+ * cannot silently come back.
  *
  * Covers every current AND every future workflow + activity with zero
  * per-callsite work.
@@ -54,11 +59,13 @@ function getCombinedInterceptors(): Partial<
 > {
 	const tele = getTelemetryInterceptors();
 	const existingActivityInbound = tele.interceptors?.activityInbound ?? [];
-	const existingWorkflowModules = tele.interceptors?.workflowModules ?? [];
+	// Bundled in getWorkflowBundle() instead — see the note above.
+	const { workflowModules: _bundledAtBuildTime, ...existingInterceptors } =
+		tele.interceptors ?? {};
 	return {
 		...tele,
 		interceptors: {
-			...(tele.interceptors ?? {}),
+			...existingInterceptors,
 			activityInbound: [
 				...existingActivityInbound,
 				() => new CorrelationActivityInboundInterceptor(),
@@ -69,10 +76,6 @@ function getCombinedInterceptors(): Partial<
 				// or renames the id gets no ambient context and must thread it
 				// to the gate explicitly (post-ship review finding).
 				() => new ProjectContextActivityInboundInterceptor(),
-			],
-			workflowModules: [
-				...existingWorkflowModules,
-				require.resolve("./workflows/correlation-workflow-interceptor"),
 			],
 		},
 	};
@@ -166,33 +169,16 @@ let shuttingDown = false;
 const SHUTDOWN_DRAIN_TIMEOUT_MS = 25_000;
 
 /**
- * Bundle workflows with webpack config to fix publicPath issue
- * Temporal's VM sandbox doesn't support webpack's auto publicPath detection
- *
- * IMPORTANT: Minification must be disabled to preserve workflow function names.
- * When NODE_ENV=production, webpack defaults to minifying code, which renames
- * workflow functions (e.g., "directChatWorkflow" -> "i"). This breaks Temporal
- * because workflows are referenced by their function name at runtime.
+ * Bundle workflows once at boot; every task queue below is created from
+ * the result. The options — including the workflow interceptor modules,
+ * which only take effect when passed here — live in
+ * ./lib/workflow-bundle-options so a test can assert against the same
+ * object this passes to the bundler.
  */
 async function getWorkflowBundle() {
-	return await bundleWorkflowCode({
-		workflowsPath: require.resolve("./workflows"),
-		webpackConfigHook: (config) => {
-			// Set publicPath to empty string to avoid "Automatic publicPath is not supported" error
-			config.output = {
-				...config.output,
-				publicPath: "",
-			};
-			// Disable minification to preserve workflow function names
-			// This is critical - Temporal looks up workflows by their exported function name
-			// If minified, "directChatWorkflow" becomes "i" which breaks workflow lookup
-			config.optimization = {
-				...config.optimization,
-				minimize: false,
-			};
-			return config;
-		},
-	});
+	return await bundleWorkflowCode(
+		buildWorkflowBundleOptions(require.resolve("./workflows")),
+	);
 }
 
 /**
