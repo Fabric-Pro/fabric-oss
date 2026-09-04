@@ -15,12 +15,7 @@ import {
 	TooltipTrigger,
 } from "@ui/components/tooltip";
 import { cn } from "@ui/lib";
-import {
-	type ActivityEvent,
-	type ContextChangeEvent,
-	type DocumentChangeEvent,
-	useProjectPresence,
-} from "../hooks";
+import { useProjectPresenceContext } from "./ProjectPresenceProvider";
 
 // The presence payload carries the raw tab id (e.g. "atlas", "overview"). Map
 // the ids whose display name differs from a simple capitalization to their
@@ -45,31 +40,19 @@ function tabDisplayLabel(tabId: string): string {
 }
 
 interface ProjectPresenceBarProps {
-	projectId: string;
 	currentUserId: string;
-	currentTab?: string;
 	className?: string;
-	onDocumentChange?: (event: DocumentChangeEvent) => void;
-	onContextChange?: (event: ContextChangeEvent) => void;
-	onActivity?: (event: ActivityEvent) => void;
 }
 
 export function ProjectPresenceBar({
-	projectId,
 	currentUserId,
-	currentTab,
 	className,
-	onDocumentChange,
-	onContextChange,
-	onActivity,
 }: ProjectPresenceBarProps) {
-	const { activeUsers, isConnected } = useProjectPresence({
-		projectId,
-		activeTab: currentTab,
-		onDocumentChange,
-		onContextChange,
-		onActivity,
-	});
+	// Reads the project page's single presence subscription rather than opening
+	// its own. Calling `useProjectPresence` here as well gave this component a
+	// second SSE stream, a second join and a second heartbeat interval for the
+	// project the surrounding `ProjectDetails` was already tracking.
+	const { activeUsers, isConnected } = useProjectPresenceContext();
 
 	// Filter out current user
 	const otherUsers = activeUsers.filter((u) => u.userId !== currentUserId);

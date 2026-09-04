@@ -47,7 +47,6 @@ type Project = {
 type Props = {
 	project: Project;
 	currentUserId?: string;
-	currentTab?: string;
 	organizationId?: string | null;
 	canEdit?: boolean;
 };
@@ -55,7 +54,6 @@ type Props = {
 export function ProjectHeader({
 	project,
 	currentUserId,
-	currentTab,
 	organizationId,
 	canEdit,
 }: Props) {
@@ -146,11 +144,7 @@ export function ProjectHeader({
 						variant="inline"
 					/>
 					{currentUserId && (
-						<ProjectPresenceBar
-							projectId={project.id}
-							currentUserId={currentUserId}
-							currentTab={currentTab}
-						/>
+						<ProjectPresenceBar currentUserId={currentUserId} />
 					)}
 					{project.status !== "COMPLETED" && (
 						<Tooltip>
