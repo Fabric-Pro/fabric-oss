@@ -177,6 +177,63 @@ describe("ChangeProposalSchema — salvaging a partly malformed response", () =>
 });
 
 /**
+ * Fizzy #2395: prod logged the array arriving double-encoded — `changes` as a
+ * JSON string rather than a list. The content was fine; only the packaging was
+ * wrong, and rejecting it cost the entire run.
+ *
+ * A missing `changes` stays a rejection. The distinction is the point: one is a
+ * provider encoding the right answer twice, the other is the model failing to
+ * answer at all, and defaulting the second to `[]` would report "0 proposed"
+ * for a run that generated nothing.
+ */
+describe("ChangeProposalSchema — a double-encoded changes array", () => {
+	it("parses a changes array the model returned as a JSON string", () => {
+		const result = ChangeProposalSchema.safeParse({
+			changes: JSON.stringify([
+				minimalChange(),
+				minimalChange({ title: "Second item" }),
+			]),
+		});
+
+		expect(result.success).toBe(true);
+		expect(result.data?.changes).toHaveLength(2);
+		expect(result.data?.changes[0]?.title?.to).toBe(minimalChange().title);
+	});
+
+	it("still drops the unusable elements inside a JSON-string array", () => {
+		const result = ChangeProposalSchema.safeParse({
+			changes: JSON.stringify([minimalChange(), null, 42]),
+		});
+
+		expect(result.success).toBe(true);
+		expect(result.data?.changes).toHaveLength(1);
+	});
+
+	it("rejects a string that is not JSON at all", () => {
+		expect(
+			ChangeProposalSchema.safeParse({
+				changes: "I could not find anything to propose.",
+			}).success,
+		).toBe(false);
+	});
+
+	it("rejects a JSON string that does not hold an array", () => {
+		expect(
+			ChangeProposalSchema.safeParse({
+				changes: JSON.stringify({ changes: [] }),
+			}).success,
+		).toBe(false);
+		expect(ChangeProposalSchema.safeParse({ changes: "42" }).success).toBe(
+			false,
+		);
+	});
+
+	it("does not turn a missing changes into an empty proposal", () => {
+		expect(ChangeProposalSchema.safeParse({}).success).toBe(false);
+	});
+});
+
+/**
  * The salvage wraps `changes` in `z.preprocess`, and this schema is not only a
  * validator — the AI SDK converts it to JSON Schema to TELL the model what to
  * produce. A wrapper that flattened the element shape would still pass every

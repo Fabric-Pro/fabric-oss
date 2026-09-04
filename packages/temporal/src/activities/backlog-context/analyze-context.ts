@@ -301,6 +301,37 @@ export const backlogChangeItemSchema = z.object({
 });
 
 /**
+ * Fizzy #2395: accept a `changes` the model handed back double-encoded.
+ *
+ * Prod logged both malformed top-level shapes on 2 Sep 2026 — `changes` missing
+ * entirely, and `changes` arriving as a string. The second one is recoverable:
+ * the payload inside is a perfectly good list of changes that a provider
+ * JSON-encoded a second time, and rejecting it costs the whole run for a defect
+ * of packaging rather than of content. Parsing it here salvages that run for
+ * the same reason the element filter below salvages part of one.
+ *
+ * Deliberately narrow. A string that does not parse, or parses to something
+ * that is not an array, is handed back untouched so `z.array` still rejects it.
+ * A MISSING `changes` is never defaulted to `[]` — see the note below: quietly
+ * reporting 'nothing proposed' for a wholesale generation failure hides it.
+ */
+function coerceChangesArray(value: unknown): unknown[] | undefined {
+	if (Array.isArray(value)) {
+		return value;
+	}
+	if (typeof value !== "string") {
+		return undefined;
+	}
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(value);
+	} catch {
+		return undefined;
+	}
+	return Array.isArray(parsed) ? parsed : undefined;
+}
+
+/**
  * Drop the changes the model malformed; keep the ones it got right.
  *
  * `generateObject` validates the WHOLE response, so anything wrong anywhere in
@@ -322,22 +353,33 @@ export const backlogChangeItemSchema = z.object({
  * hide it; only individual elements are salvageable.
  */
 function dropUnusableChanges(value: unknown): unknown {
-	if (!Array.isArray(value)) {
+	const changes = coerceChangesArray(value);
+	if (changes === undefined) {
 		// Not our problem to fix — let the array schema reject it.
 		return value;
 	}
 
-	const usable = value.filter(
+	if (!Array.isArray(value)) {
+		// Never silent, for the same reason a dropped element isn't: the model
+		// broke its output contract, and the run succeeding anyway is exactly
+		// what would keep that invisible.
+		logger.warn(
+			"[Backlog Analysis] Parsed a JSON-encoded changes array from the model response",
+			{ parsed: changes.length },
+		);
+	}
+
+	const usable = changes.filter(
 		(entry) => backlogChangeItemSchema.safeParse(entry).success,
 	);
 
-	if (usable.length !== value.length) {
+	if (usable.length !== changes.length) {
 		// Never silent: the operator log is the only place a dropped change is
 		// visible, since the user just sees a smaller (but valid) proposal.
 		logger.warn(
 			"[Backlog Analysis] Discarded malformed changes from the model response",
 			{
-				discarded: value.length - usable.length,
+				discarded: changes.length - usable.length,
 				kept: usable.length,
 			},
 		);
