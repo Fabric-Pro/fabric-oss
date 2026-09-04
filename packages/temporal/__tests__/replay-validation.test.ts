@@ -17,6 +17,7 @@ import type { HistoryAndWorkflowId } from "@temporalio/client";
 import { Worker } from "@temporalio/worker";
 import { describe, expect, it } from "vitest";
 import { buildWorkflowBundleOptions } from "../src/lib/workflow-bundle-options";
+import { OTEL_WORKFLOW_INTERCEPTOR_MODULE } from "../src/telemetry";
 
 const FIXTURES_DIR = join(__dirname, "__fixtures__", "histories");
 // Absolute path to the workflows directory. We avoid `require.resolve` here
@@ -144,12 +145,30 @@ describe("Replay validation", () => {
 					// unlike the worker (which uses a prebuilt bundle) it does
 					// honour interceptors.workflowModules. Without this the
 					// gate would replay workflows that never see the
-					// correlation interceptor, and so could not catch a
-					// determinism problem the interceptor introduced.
+					// interceptors, and so could not catch a determinism
+					// problem one of them introduced.
+					//
+					// The OpenTelemetry module is added explicitly: the bundle
+					// options only carry it once initTelemetry() has run, which
+					// never happens in a test, while every production worker
+					// has it. The Set is because the union is a no-op when
+					// telemetry is initialised (Fizzy #2401).
 					interceptors: {
-						workflowModules:
-							buildWorkflowBundleOptions(WORKFLOWS_PATH)
-								.workflowInterceptorModules,
+						workflowModules: [
+							...new Set([
+								...(buildWorkflowBundleOptions(WORKFLOWS_PATH)
+									.workflowInterceptorModules ?? []),
+								OTEL_WORKFLOW_INTERCEPTOR_MODULE,
+							]),
+						],
+					},
+					// A replay worker never invokes a sink unless it opted in
+					// with callDuringReplay, and this one has not — but the
+					// worker checks that a sink is registered before it checks
+					// that, and logs an error per span otherwise. Register the
+					// shape production registers so the replay log stays clean.
+					sinks: {
+						exporter: { export: { fn: () => undefined } },
 					},
 				},
 				histories,
