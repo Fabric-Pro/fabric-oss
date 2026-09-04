@@ -1456,6 +1456,11 @@
 						"inclusion_changed": "Meeting digest inclusion changed",
 						"action_item_toggled": "Meeting action item completion toggled"
 					},
+					"meeting": {
+						"deleted": "Meeting deleted",
+						"restored": "Meeting restored",
+						"sync_stopped": "Meeting syncing stopped or resumed"
+					},
 					"invitation": {
 						"widget_dismissed": "Invitation widget dismissed"
 					},
@@ -5066,7 +5071,7 @@
 			"togglePerMeetingTranscripts": "Show or hide the synced transcripts for this meeting.",
 			"unlinkMeeting": {
 				"label": "Unlink this meeting from the project.",
-				"warning": "Warning: future transcripts stop syncing, and transcripts already synced are permanently deleted along with their indexed context. Relinking does not restore them."
+				"warning": "Warning: this permanently deletes the transcripts already synced and their indexed context. You can undo it for 7 days. To stop future syncing without losing anything, choose Stop syncing instead."
 			},
 			"autoSyncToggle": "Turn automatic transcript syncing on or off. When on, Fabric checks for new transcripts on the chosen interval.",
 			"clearPrdSource": {

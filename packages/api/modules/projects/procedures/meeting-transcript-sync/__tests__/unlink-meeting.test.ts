@@ -21,6 +21,10 @@ const { handlers, mocks } = vi.hoisted(() => {
 		contextFindMany: vi.fn(),
 		contextDeleteMany: vi.fn(),
 		unlinkMeetingFromProject: vi.fn(),
+		buildMeetingArchivePayload: vi.fn(),
+		createMeetingArchive: vi.fn(),
+		recordAuditFromRequest: vi.fn(),
+		requireContextSourceAdmin: vi.fn(),
 		workflowStart: vi.fn(),
 		getTemporalClient: vi.fn(),
 		requireProjectPermission: vi.fn(() => (c: unknown) => c),
@@ -49,8 +53,24 @@ vi.mock("@repo/database", async (importOriginal) => {
 		},
 		unlinkMeetingFromProject: (...a: unknown[]) =>
 			mocks.unlinkMeetingFromProject(...a),
+		// Archiving runs BEFORE the deletion now (#2355) — unmocked it would
+		// reach for a real Prisma client.
+		buildMeetingArchivePayload: (...a: unknown[]) =>
+			mocks.buildMeetingArchivePayload(...a),
+		createMeetingArchive: (...a: unknown[]) =>
+			mocks.createMeetingArchive(...a),
 	};
 });
+
+vi.mock("../../../../../lib/audit", () => ({
+	recordAuditFromRequest: (...a: unknown[]) =>
+		mocks.recordAuditFromRequest(...a),
+}));
+
+vi.mock("../../../lib/require-context-source-admin", () => ({
+	requireContextSourceAdmin: (...a: unknown[]) =>
+		mocks.requireContextSourceAdmin(...a),
+}));
 
 vi.mock("@repo/temporal", () => ({
 	getTemporalClient: (...a: unknown[]) => mocks.getTemporalClient(...a),
@@ -113,6 +133,10 @@ beforeEach(() => {
 	mocks.contextFindMany.mockReset();
 	mocks.contextDeleteMany.mockReset();
 	mocks.unlinkMeetingFromProject.mockReset();
+	mocks.buildMeetingArchivePayload.mockReset();
+	mocks.createMeetingArchive.mockReset();
+	mocks.recordAuditFromRequest.mockReset();
+	mocks.requireContextSourceAdmin.mockReset();
 	mocks.workflowStart.mockReset();
 	mocks.getTemporalClient.mockReset();
 	mocks.loggerError.mockReset();
@@ -123,6 +147,18 @@ beforeEach(() => {
 	mocks.workflowStart.mockResolvedValue({ workflowId: "wf-1" });
 	mocks.getTemporalClient.mockResolvedValue({
 		workflow: { start: (...a: unknown[]) => mocks.workflowStart(...a) },
+	});
+	mocks.requireContextSourceAdmin.mockResolvedValue(undefined);
+	mocks.buildMeetingArchivePayload.mockResolvedValue({
+		payload: { version: 1, meeting: {}, transcripts: [] },
+		transcriptCount: 0,
+		truncated: false,
+		joinUrl: "https://teams.microsoft.com/l/meetup-join/abc",
+		subject: "Weekly sync",
+	});
+	mocks.createMeetingArchive.mockResolvedValue({
+		id: "arch-1",
+		scheduledPurgeAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
 	});
 });
 
@@ -211,5 +247,24 @@ describe("unlinkMeetingProcedure — context cleanup", () => {
 		);
 		expect(mocks.contextFindMany).not.toHaveBeenCalled();
 		expect(mocks.contextDeleteMany).not.toHaveBeenCalled();
+	});
+	it("archives before it deletes, and aborts the delete if archiving finds nothing (#2355)", async () => {
+		// A meeting that cannot be archived must not be deleted: a failed
+		// deletion is retryable, a deletion with no archive behind it is not.
+		mocks.buildMeetingArchivePayload.mockResolvedValue(null);
+
+		await expect(
+			handlers.unlinkMeeting({
+				input: {
+					projectId: "project-1",
+					organizationId: null,
+					linkedMeetingId: "linked-1",
+				},
+				context: { user: { id: "user-1" }, session: {} },
+			}),
+		).rejects.toMatchObject({ code: "NOT_FOUND" });
+
+		expect(mocks.unlinkMeetingFromProject).not.toHaveBeenCalled();
+		expect(mocks.createMeetingArchive).not.toHaveBeenCalled();
 	});
 });

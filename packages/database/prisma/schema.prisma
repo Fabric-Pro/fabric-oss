@@ -353,6 +353,7 @@ model User {
   lastFailedLoginAt   DateTime?
 
   @@map("user")
+  deletedMeetingArchives DeletedMeetingArchive[]
 }
 
 model Session {
@@ -756,6 +757,7 @@ model Organization {
   featureFlagOverrides OrganizationFeatureFlagOverride[]
 
   @@map("organization")
+  deletedMeetingArchives DeletedMeetingArchive[]
 }
 
 // Organization RAG Settings - Default settings that apply to all workspaces in the organization
@@ -1598,6 +1600,11 @@ model Project {
   meetingTranscriptSyncIntervalMin      Int?
   meetingTranscriptSyncLastRun          DateTime?
   meetingTranscriptSyncWorkflowId       String?
+  /// Which user's delegated Microsoft token the sync runs on. Frozen into the
+  /// Temporal workflow's arguments at enable-time and unreachable from SQL
+  /// until now, so nothing could show whose account a project's sync depended
+  /// on — or that it had left (#2355).
+  meetingTranscriptSyncUserId          String?
   // Auto-analyze freshly-synced meeting transcripts into feature proposals (opt-in; only effective when meetingTranscriptSyncEnabled is also true)
   meetingTranscriptAutoAnalyzeEnabled   Boolean                            @default(false)
   // Create-vs-Enrich routing for action items extracted from ingested meetings
@@ -1862,6 +1869,7 @@ model Project {
   // (PostgreSQL treats NULLs as distinct in standard unique indexes)
   @@index([userId, draftKey, organizationId], map: "project_userId_draftKey_composite_idx")
   @@map("project")
+  deletedMeetingArchives DeletedMeetingArchive[]
 }
 
 model ProjectDocument {
@@ -3816,6 +3824,18 @@ model ProjectLinkedMeeting {
   // all currently-linked meetings show up immediately.
   includedInDigest Boolean  @default(true)
   linkedAt         DateTime @default(now())
+  // Stopped syncing but deliberately kept: the row, its transcripts and their
+  // extracted context all stay live and readable — only the sync stops looking
+  // at it. Distinct from unlinking, which destroys the context (Fizzy #2355).
+  // Null = actively syncing.
+  deactivatedAt    DateTime?
+  deactivatedById  String?
+  // Failure state, mirroring the three channel-monitor models. Meetings had
+  // none, which is why a dead sync looked healthy: the fetch threw, the
+  // activity swallowed it, and the run still stamped a clean lastRun (#2355).
+  consecutiveFailures Int      @default(0)
+  lastErrorMessage    String?
+  lastErrorAt         DateTime?
   userId           String?
   organizationId   String?
 
@@ -3829,6 +3849,51 @@ model ProjectLinkedMeeting {
   @@unique([projectId, joinUrl])
   @@index([projectId])
   @@map("project_linked_meeting")
+}
+
+/// Recovery window for a destructively unlinked meeting (Fizzy #2355).
+///
+/// Deliberately an ARCHIVE rather than a `deletedAt` on the live rows. A soft
+/// delete would need a `deletedAt IS NULL` predicate at 100+ read sites across
+/// meetings, transcripts, agendas and contexts — six of which use `findUnique`
+/// and cannot take one, two of which (`isTranscriptAlreadySynced`,
+/// `hasTranscriptNearOccurrence`) must keep SEEING deleted rows or a restore
+/// re-fetches and re-embeds everything, and all of which sit under a unique key
+/// (`projectId, joinUrl`) that a tombstone would occupy so re-linking the same
+/// meeting would silently resurrect it. Every one of those is a silent leak or
+/// silent corruption in a feature whose whole purpose is that deleted content
+/// stops informing answers. Copying the rows out and deleting for real leaves
+/// the live tables clean, so there is no predicate anywhere to forget.
+///
+/// `payload` holds the meeting, its transcripts and their context bodies. The
+/// row is read ONLY by the restore procedure and the recently-deleted list — it
+/// must never be added to a RAG or context read path.
+model DeletedMeetingArchive {
+  id              String   @id @default(cuid())
+  projectId       String
+  /// Denormalised so the recently-deleted list renders without rehydrating the payload.
+  joinUrl         String
+  subject         String?
+  transcriptCount Int      @default(0)
+  deletedAt       DateTime @default(now())
+  deletedById     String
+  /// deletedAt + 7 days, matching the Project soft-delete window.
+  scheduledPurgeAt DateTime
+  /// True when the transcript bodies were too large to archive and only
+  /// metadata was kept — a deletion is never blocked by an oversized meeting.
+  payloadTruncated Boolean @default(false)
+  payload         Json
+
+  userId         String?
+  organizationId String?
+
+  project      Project       @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  user         User?         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organization Organization? @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([projectId])
+  @@index([scheduledPurgeAt])
+  @@map("deleted_meeting_archive")
 }
 
 // Meeting Transcripts - Tracks synced transcript instances for dedup and metadata

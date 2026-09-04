@@ -27,6 +27,18 @@ type ConfirmOptions = {
 	confirmLabel?: string;
 	destructive?: boolean;
 	onConfirm: () => Promise<void> | void;
+	/**
+	 * An optional third action, rendered between Cancel and the primary.
+	 *
+	 * Exists so a destructive confirmation can offer the safe thing the user
+	 * probably meant — "stop syncing" beside "delete the transcripts" — instead
+	 * of only yes/no. When present it takes focus on open, so the reflex of
+	 * hitting Enter on a dialog does the reversible thing (#2355).
+	 */
+	secondaryAction?: {
+		label: string;
+		onSelect: () => Promise<void> | void;
+	};
 };
 
 // No default value: a `useConfirmationAlert()` outside the provider must throw
@@ -50,6 +62,25 @@ export function ConfirmationAlertProvider({ children }: PropsWithChildren) {
 	const confirm = useCallback((options: ConfirmOptions) => {
 		setConfirmOptions(options);
 	}, []);
+
+	const handleSecondary = useCallback(async () => {
+		if (pendingRef.current) {
+			return;
+		}
+		pendingRef.current = true;
+		setPending(true);
+		try {
+			await confirmOptions?.secondaryAction?.onSelect();
+		} catch (error) {
+			// Same contract as handleConfirm: callers own the toast, the dialog
+			// must not be left open with a live button after a rejection.
+			console.error("Confirmation secondary action failed", error);
+		} finally {
+			pendingRef.current = false;
+			setPending(false);
+			setConfirmOptions(null);
+		}
+	}, [confirmOptions]);
 
 	const handleConfirm = useCallback(async () => {
 		if (pendingRef.current) {
@@ -109,17 +140,35 @@ export function ConfirmationAlertProvider({ children }: PropsWithChildren) {
 							{confirmOptions?.cancelLabel ??
 								t("common.confirmation.cancel")}
 						</AlertDialogCancel>
+						{/* Destructive is deliberately the PLAINER button when a
+						    safe alternative exists: reachable, never reflexive.
+						    Radix focuses Cancel by default, so the safe action
+						    takes `autoFocus` explicitly — that is the property
+						    the whole three-action shape exists for (#2355). */}
 						<Button
 							variant={
-								confirmOptions?.destructive
-									? "error"
-									: "primary"
+								confirmOptions?.secondaryAction
+									? "outline"
+									: confirmOptions?.destructive
+										? "error"
+										: "primary"
 							}
 							onClick={handleConfirm}
+							disabled={pending}
 						>
 							{confirmOptions?.confirmLabel ??
 								t("common.confirmation.confirm")}
 						</Button>
+						{confirmOptions?.secondaryAction && (
+							<Button
+								variant="primary"
+								autoFocus
+								onClick={handleSecondary}
+								disabled={pending}
+							>
+								{confirmOptions.secondaryAction.label}
+							</Button>
+						)}
 					</AlertDialogFooter>
 				</AlertDialogContent>
 			</AlertDialog>

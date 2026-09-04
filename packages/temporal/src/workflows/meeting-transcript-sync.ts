@@ -164,6 +164,7 @@ export async function meetingTranscriptSyncWorkflow(
 					organizationId,
 					linkedJoinUrls,
 					daysBack,
+					projectId,
 				});
 		} catch (error) {
 			// A one-shot has no next cycle to recover in, and its failure belongs

@@ -212,6 +212,8 @@ export function WizardFinishStep({
 						and add meetings anytime from settings.
 					</p>
 				</div>
+				{/* `canEdit` deliberately left at its default: whoever is on this
+				    step just created the project and is therefore its owner. */}
 				<MeetingTranscriptSyncSettings
 					projectId={projectId}
 					organizationId={organizationId}

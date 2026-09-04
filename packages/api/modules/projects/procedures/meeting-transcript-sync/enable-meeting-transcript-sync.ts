@@ -1,5 +1,5 @@
 import { ORPCError } from "@orpc/server";
-import { db } from "@repo/database";
+import { countSyncableLinkedMeetings, db } from "@repo/database";
 import { z } from "zod";
 import { withCorrelationMemo } from "../../../../lib/temporal-correlation";
 import {
@@ -61,9 +61,11 @@ export const enableMeetingTranscriptSyncProcedure = tenantProtectedProcedure
 		}
 
 		// Validate at least one linked meeting exists
-		const linkedMeetingCount = await db.projectLinkedMeeting.count({
-			where: { projectId: input.projectId },
-		});
+		// Only meetings that would actually be synced count: a project whose
+		// every linked meeting has been stopped has nothing to sync (#2355).
+		const linkedMeetingCount = await countSyncableLinkedMeetings(
+			input.projectId,
+		);
 
 		if (linkedMeetingCount === 0) {
 			throw new ORPCError("BAD_REQUEST", {
@@ -116,6 +118,10 @@ export const enableMeetingTranscriptSyncProcedure = tenantProtectedProcedure
 				meetingTranscriptSyncEnabled: true,
 				meetingTranscriptSyncIntervalMin: input.intervalMinutes,
 				meetingTranscriptSyncWorkflowId: handle.workflowId,
+				// Whose token this sync now runs on. Until #2355 this lived only
+				// inside the workflow's arguments, so nothing could show whose
+				// account a project depended on.
+				meetingTranscriptSyncUserId: user.id,
 			},
 		});
 

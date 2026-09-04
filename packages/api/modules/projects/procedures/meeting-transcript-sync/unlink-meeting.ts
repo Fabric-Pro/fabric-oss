@@ -1,10 +1,16 @@
 import { ORPCError } from "@orpc/server";
-import { db, unlinkMeetingFromProject } from "@repo/database";
+import {
+	buildMeetingArchivePayload,
+	createMeetingArchive,
+	db,
+	unlinkMeetingFromProject,
+} from "@repo/database";
 import { logger } from "@repo/logs";
 // Type-only: erased at compile time, so the runtime `await import("@repo/temporal")`
 // below stays a dynamic import.
 import type { getTemporalClient } from "@repo/temporal";
 import { z } from "zod";
+import { recordAuditFromRequest } from "../../../../lib/audit";
 import { withCorrelationMemo } from "../../../../lib/temporal-correlation";
 import {
 	Permissions,
@@ -12,9 +18,13 @@ import {
 	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
+import { requireContextSourceAdmin } from "../../lib/require-context-source-admin";
 
 /**
- * AUTHORIZATION: Uses canEditProject() - only project owners/editors can unlink meetings.
+ * AUTHORIZATION: `PROJECT_UPDATE` on the middleware, escalated to
+ * `PROJECT_SETTINGS_EDIT` in the handler by `requireContextSourceAdmin` while
+ * the `MEETING_SYNC_CONTROLS` flag is on — see that helper for why the raise
+ * lives there rather than on the middleware.
  *
  * Unlinks a meeting from a project. Cascading deletes remove associated
  * ProjectMeetingTranscript records via the DB relation. Also cleans up any
@@ -65,6 +75,41 @@ export const unlinkMeetingProcedure = tenantProtectedProcedure
 				message: "Project not found",
 			});
 		}
+
+		// Destructive: raises the floor to PROJECT_ADMIN while the flag is on.
+		// After the tenant check so a non-member still gets NOT_FOUND rather
+		// than FORBIDDEN, which would confirm the project exists.
+		await requireContextSourceAdmin({
+			projectId: input.projectId,
+			userId: user.id,
+		});
+
+		// Archive BEFORE deleting, and abort if archiving fails. A failed
+		// deletion is recoverable by clicking again; a deletion whose archive
+		// silently did not happen is exactly the outcome this card exists to
+		// prevent (#2355).
+		const archived = await buildMeetingArchivePayload({
+			projectId: input.projectId,
+			linkedMeetingId: input.linkedMeetingId,
+		});
+
+		if (!archived) {
+			throw new ORPCError("NOT_FOUND", {
+				message: "Linked meeting not found",
+			});
+		}
+
+		const archive = await createMeetingArchive({
+			projectId: input.projectId,
+			joinUrl: archived.joinUrl,
+			subject: archived.subject,
+			transcriptCount: archived.transcriptCount,
+			payloadTruncated: archived.truncated,
+			payload: archived.payload,
+			deletedById: user.id,
+			userId: organizationId ? null : user.id,
+			organizationId,
+		});
 
 		// Find transcript records that have associated ProjectContext entries
 		// so we can clean those up after unlinking (including Qdrant embeddings)
@@ -178,5 +223,25 @@ export const unlinkMeetingProcedure = tenantProtectedProcedure
 			}
 		}
 
-		return { success: true };
+		// Metadata carries the count, never the subject: a meeting title can name
+		// a real client, and this row outlives the meeting it describes.
+		recordAuditFromRequest(context, {
+			action: "project.meeting.deleted",
+			category: "project",
+			organizationId,
+			projectId: input.projectId,
+			resource: { type: "linked_meeting", id: input.linkedMeetingId },
+			metadata: {
+				transcriptCount: archived.transcriptCount,
+				archiveId: archive.id,
+				payloadTruncated: archived.truncated,
+			},
+		});
+
+		return {
+			success: true,
+			archiveId: archive.id,
+			recoverableUntil: archive.scheduledPurgeAt,
+			transcriptCount: archived.transcriptCount,
+		};
 	});

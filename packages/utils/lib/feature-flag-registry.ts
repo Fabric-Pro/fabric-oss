@@ -179,6 +179,14 @@ export const FEATURE_FLAG_REGISTRY = {
 		default: true,
 		note: 'Fizzy #2348. A pre-GA marker, not a gate. It decorates the Publishing Suite tab and page heading and changes nothing else — access is governed by PUBLISHING_SUITE alone, so turning this off never grants or removes anything, and turning it on never reveals the feature to an organization that does not already have it. Default ON because the feature reaches its first organizations while it is still work in progress; turn it OFF here at general availability, which is a console change rather than a deploy. Nothing sets its env var in any deployed environment, so this default is what governs there; a deployment can still force it either way through the env var, and an override here beats that. Deliberately NOT orgScopable: "is this feature finished" is a property of the deployment, not of a tenant, and a per-organization variant would let one organization be told the feature is finished while another is told it is not. One consequence of defaulting ON: getFlagOverrides swallows a read error from the override table and returns an empty map, so a fault there resolves this back ON rather than off, and an admin\'s OFF is not durable against it — the same trade PUBLISHING_INBOX makes, and harmless in the same way, because the worst case is a label that should have gone away.',
 	},
+	MEETING_SYNC_CONTROLS: {
+		label: "Meeting sync controls",
+		description:
+			"Adds a non-destructive Stop syncing action to linked meetings, and restricts unlinking a meeting or channel to project admins and owners.",
+		envVar: "FABRIC_FEATURE_MEETING_SYNC_CONTROLS",
+		default: false,
+		note: "Fizzy #2355. This flag gates a capability REMOVAL, which is why it is registered here rather than read from the env: with it on, an EDITOR can no longer unlink a meeting or a monitored channel, and a kill switch that needs a redeploy is not a kill switch. Off restores today's floor exactly — unlink stays on PROJECT_UPDATE and the row renders the single unlink button — and any meeting already stopped keeps its deactivatedAt untouched, so flipping it back on restores that state. Linking is deliberately NOT gated either way: a team member may need to add a meeting the owner was not in.",
+	},
 } as const satisfies Record<string, FeatureFlagDefinition>;
 
 export type FeatureFlagKey = keyof typeof FEATURE_FLAG_REGISTRY;

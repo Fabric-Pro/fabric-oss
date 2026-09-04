@@ -12,12 +12,14 @@
 import { generateText, getAIModelWithMetadata } from "@repo/ai";
 import { computeScaledOutputTokenBudget } from "@repo/ai/lib/output-token-budget";
 import {
+	clearMeetingSyncFailures,
 	createMeetingTranscriptRecord,
 	db,
 	updateMeetingTranscriptSyncLastRun as dbUpdateMeetingTranscriptSyncLastRun,
 	getLinkedMeetingJoinUrls,
 	hasTranscriptNearOccurrence,
 	isTranscriptAlreadySynced,
+	recordMeetingSyncFailure,
 } from "@repo/database";
 import {
 	executeMicrosoftTeamsTool,
@@ -47,6 +49,11 @@ export interface ListRecentMeetingInstancesInput {
 	organizationId?: string;
 	linkedJoinUrls: string[];
 	daysBack?: number;
+	/**
+	 * Needed only to record or clear this project's sync failure state — the
+	 * fetch itself is keyed on the user's token, not the project (#2355).
+	 */
+	projectId?: string;
 }
 
 const DEFAULT_LOOKBACK_DAYS = 30;
@@ -241,7 +248,7 @@ export async function getLinkedMeetingJoinUrlsActivity(
 export async function listRecentMeetingInstancesForLinkedUrls(
 	input: ListRecentMeetingInstancesInput,
 ): Promise<MeetingInstance[]> {
-	const { userId, organizationId, linkedJoinUrls } = input;
+	const { userId, organizationId, linkedJoinUrls, projectId } = input;
 	const window = resolveLookbackWindow(input.daysBack, new Date());
 
 	logger.info(
@@ -282,6 +289,14 @@ export async function listRecentMeetingInstancesForLinkedUrls(
 			throw new Error(
 				`Could not read the calendar to match linked meetings: ${result.error}`,
 			);
+		}
+
+		// The calendar answered, so whatever was wrong with this project's
+		// Microsoft connection is over. Clearing here rather than on a
+		// transcript arriving means a project that recovers while genuinely
+		// quiet does not keep its banner forever (#2311's bug, on meetings).
+		if (projectId) {
+			await clearMeetingSyncFailures(projectId);
 		}
 
 		// Build a set for efficient lookup (normalize URLs to lowercase for comparison)
@@ -325,6 +340,18 @@ export async function listRecentMeetingInstancesForLinkedUrls(
 				"[MeetingTranscriptSync] Microsoft is not connected for the syncing account",
 				{ userId, error: errorMessage },
 			);
+			// Still not a workflow failure — hourly failures over a settled
+			// state help no one. But it must stop looking HEALTHY: before
+			// this, the throw was swallowed, `[]` came back, and the run
+			// stamped a clean lastRun, so a project whose syncing account had
+			// left showed no sign of it anywhere (#2355).
+			if (projectId) {
+				await recordMeetingSyncFailure({
+					projectId,
+					errorMessage:
+						"Microsoft is not connected for the account this sync runs on. Reconnect it to resume.",
+				});
+			}
 			return [];
 		}
 

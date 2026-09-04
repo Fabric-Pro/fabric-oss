@@ -22,6 +22,7 @@ import {
 	DropdownMenu,
 	DropdownMenuContent,
 	DropdownMenuItem,
+	DropdownMenuSeparator,
 	DropdownMenuTrigger,
 } from "@ui/components/dropdown-menu";
 import { Label } from "@ui/components/label";
@@ -50,14 +51,20 @@ import {
 	InfoIcon,
 	LinkIcon,
 	Loader2Icon,
+	MoreVerticalIcon,
 	PlusIcon,
 	RefreshCwIcon,
-	UnlinkIcon,
 	VideoIcon,
 } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
+
+/** Cache key for the recently-deleted list (#2355). */
+const DELETED_MEETINGS_QUERY_KEY = "meeting-transcript-sync-deleted";
+
+/** Matches the channel monitors' threshold, so the two read the same way. */
+const MEETING_FAILURE_THRESHOLD = 5;
 
 const AUTO_SYNC_INTERVALS = [
 	{ value: "60", label: "Every hour" },
@@ -70,6 +77,13 @@ const AUTO_SYNC_INTERVALS = [
 type Props = {
 	projectId: string;
 	organizationId: string | null;
+	/**
+	 * Whether the viewer may change context sources. Unlinking is admin-only
+	 * (#2355); the server enforces it either way, this only hides the control.
+	 * Defaults to true so the two existing call sites keep today's behaviour
+	 * until they pass it.
+	 */
+	canEdit?: boolean;
 	project: {
 		meetingTranscriptSyncEnabled?: boolean;
 		meetingTranscriptSyncIntervalMin?: number | null;
@@ -85,11 +99,27 @@ type LinkedMeeting = {
 	subject: string | null;
 	organizer: string | null;
 	linkedAt: string | Date;
+	/** Set = sync stopped, everything already captured kept (#2355). */
+	deactivatedAt?: string | Date | null;
+	consecutiveFailures?: number;
+	lastErrorMessage?: string | null;
+	lastErrorAt?: string | Date | null;
 	userId: string | null;
 	organizationId: string | null;
 	_count: {
 		transcripts: number;
 	};
+};
+
+type DeletedMeeting = {
+	id: string;
+	subject: string | null;
+	transcriptCount: number;
+	deletedAt: string | Date;
+	scheduledPurgeAt: string | Date;
+	payloadTruncated: boolean;
+	deletedByName: string | null;
+	deletedByYou: boolean;
 };
 
 type SyncedTranscript = {
@@ -231,6 +261,7 @@ function TranscriptScanStatusPill({
 export function MeetingTranscriptSyncSettings({
 	projectId,
 	organizationId,
+	canEdit = true,
 	project,
 }: Props) {
 	const queryClient = useQueryClient();
@@ -294,6 +325,19 @@ export function MeetingTranscriptSyncSettings({
 		},
 	});
 
+	// Recently deleted, still inside the recovery window.
+	const { data: deletedMeetings } = useQuery({
+		queryKey: [DELETED_MEETINGS_QUERY_KEY, projectId, organizationId],
+		queryFn: async () => {
+			const result =
+				await orpcClient.projects.meetingTranscriptSync.listDeletedMeetings(
+					{ projectId, organizationId },
+				);
+			return (result ?? []) as DeletedMeeting[];
+		},
+		enabled: canEdit,
+	});
+
 	// Fetch synced transcripts
 	const { data: transcripts } = useQuery({
 		queryKey: [
@@ -334,7 +378,109 @@ export function MeetingTranscriptSyncSettings({
 
 	const totalTranscripts = transcripts?.length ?? 0;
 	const hasLinkedMeetings = (linkedMeetings?.length ?? 0) > 0;
+
+	// A broken sync used to be invisible: the Graph call threw, the activity
+	// swallowed it, and the run still stamped a clean lastRun. This is the
+	// signal that was missing (#2355). Mirrors the channel monitors' threshold.
+	const syncFailure = useMemo(() => {
+		const failing = (linkedMeetings ?? []).find(
+			(m) => (m.consecutiveFailures ?? 0) >= MEETING_FAILURE_THRESHOLD,
+		);
+		if (!failing) {
+			return null;
+		}
+		return {
+			message: failing.lastErrorMessage ?? "Recent runs have failed.",
+			lastErrorAt: failing.lastErrorAt ?? null,
+		};
+	}, [linkedMeetings]);
 	const autoSyncEnabled = localSyncEnabled;
+
+	// Undo a deletion from within its 7-day window.
+	const restoreMutation = useMutation({
+		mutationFn: async (archiveId: string) => {
+			return await orpcClient.projects.meetingTranscriptSync.restoreMeeting(
+				{ projectId, organizationId, archiveId },
+			);
+		},
+		onSuccess: (result) => {
+			toast.success("Meeting restored", {
+				description: result.reindexing
+					? "Its transcripts are being re-indexed for search."
+					: undefined,
+			});
+			queryClient.invalidateQueries({
+				queryKey: [
+					LINKED_MEETINGS_QUERY_KEY,
+					projectId,
+					organizationId,
+				],
+			});
+			queryClient.invalidateQueries({
+				queryKey: [
+					DELETED_MEETINGS_QUERY_KEY,
+					projectId,
+					organizationId,
+				],
+			});
+		},
+		onError: (error) => {
+			toast.error("Could not restore the meeting", {
+				description:
+					error instanceof Error ? error.message : "Unknown error",
+			});
+		},
+	});
+
+	// Reconnect this project's sync to the current user. Panel-level, not
+	// per-row: the sync is ONE workflow bound to one account, so there is no
+	// per-meeting owner to transfer (#2355).
+	const repairMutation = useMutation({
+		mutationFn: async (preflightOnly: boolean) => {
+			return await orpcClient.projects.meetingTranscriptSync.repairSync({
+				projectId,
+				organizationId,
+				preflightOnly,
+			});
+		},
+		onError: (error) => {
+			toast.error("Could not reconnect the sync", {
+				description:
+					error instanceof Error ? error.message : "Unknown error",
+			});
+		},
+	});
+
+	const handleRepair = useCallback(async () => {
+		const check = await repairMutation.mutateAsync(true);
+		if (check.mode !== "preflight") {
+			return;
+		}
+
+		const unreachable = check.unreachableSubjects.filter(
+			(subject): subject is string => Boolean(subject),
+		);
+
+		confirm({
+			title: "Reconnect this project's sync?",
+			message:
+				unreachable.length > 0
+					? `Transcripts will be fetched using your Microsoft account from now on. Nothing already collected is affected. We checked all ${check.totalMeetings} meetings — ${unreachable.join(", ")} ${unreachable.length === 1 ? "is" : "are"} not visible to you and will stop collecting new transcripts. The other ${check.reachableCount} will resume.`
+					: `Transcripts will be fetched using your Microsoft account from now on. Nothing already collected is affected. All ${check.totalMeetings} meetings are visible to you.`,
+			confirmLabel: `Reconnect ${check.reachableCount} meeting${check.reachableCount === 1 ? "" : "s"}`,
+			onConfirm: async () => {
+				await repairMutation.mutateAsync(false);
+				toast.success("Sync reconnected");
+				queryClient.invalidateQueries({
+					queryKey: [
+						LINKED_MEETINGS_QUERY_KEY,
+						projectId,
+						organizationId,
+					],
+				});
+			},
+		});
+	}, [confirm, repairMutation, queryClient, projectId, organizationId]);
 
 	// Unlink meeting mutation
 	const unlinkMutation = useMutation({
@@ -353,8 +499,25 @@ export function MeetingTranscriptSyncSettings({
 		onSettled: () => {
 			setUnlinkingMeetingId(null);
 		},
-		onSuccess: () => {
-			toast.success("Meeting unlinked");
+		onSuccess: (result) => {
+			// The realisation is almost always immediate — this is the cheapest
+			// place to catch it, well before anyone thinks to open a list of
+			// deleted meetings (#2355).
+			toast.success(
+				result.transcriptCount > 0
+					? `Deleted ${result.transcriptCount} transcript${result.transcriptCount === 1 ? "" : "s"}`
+					: "Meeting removed",
+				{
+					description: `Recoverable until ${new Date(result.recoverableUntil).toLocaleDateString()}`,
+					// The Toaster's 5s default is too short to be a real undo
+					// window.
+					duration: 15000,
+					action: {
+						label: "Undo",
+						onClick: () => restoreMutation.mutate(result.archiveId),
+					},
+				},
+			);
 			queryClient.invalidateQueries({
 				queryKey: [
 					LINKED_MEETINGS_QUERY_KEY,
@@ -378,24 +541,92 @@ export function MeetingTranscriptSyncSettings({
 		},
 	});
 
+	// Stop / resume syncing. The non-destructive counterpart to unlinking: it
+	// writes one timestamp, so every transcript and context the meeting already
+	// produced stays exactly where it is (#2355).
+	const setSyncActiveMutation = useMutation({
+		mutationFn: async (params: {
+			linkedMeetingId: string;
+			active: boolean;
+		}) => {
+			return await orpcClient.projects.meetingTranscriptSync.setMeetingSyncActive(
+				{
+					projectId,
+					organizationId,
+					linkedMeetingId: params.linkedMeetingId,
+					active: params.active,
+				},
+			);
+		},
+		onSuccess: (_result, params) => {
+			toast.success(
+				params.active ? "Syncing resumed" : "Syncing stopped",
+				{
+					description: params.active
+						? undefined
+						: "Transcripts already captured are kept and stay searchable.",
+				},
+			);
+			queryClient.invalidateQueries({
+				queryKey: [
+					LINKED_MEETINGS_QUERY_KEY,
+					projectId,
+					organizationId,
+				],
+			});
+		},
+		onError: (error) => {
+			toast.error("Could not change syncing", {
+				description:
+					error instanceof Error ? error.message : "Unknown error",
+			});
+		},
+	});
+
 	// Unlink is not reversible by relinking: the procedure cascade-deletes the
 	// synced transcripts, deletes the ProjectContext rows derived from them and
 	// purges their Qdrant vectors. Copy is kept in step with the Digest tab's
 	// dialog for the same action (#1905).
 	const requestUnlink = useCallback(
-		(meeting: { id: string; subject: string | null }) => {
+		(meeting: {
+			id: string;
+			subject: string | null;
+			_count: { transcripts: number };
+		}) => {
+			const count = meeting._count.transcripts;
 			confirm({
-				title: `Unlink ${meeting.subject ?? "this meeting"}?`,
+				title:
+					count > 0
+						? `Delete ${count} transcript${count === 1 ? "" : "s"}?`
+						: `Remove ${meeting.subject ?? "this meeting"}?`,
 				message:
-					"This removes the meeting from the project and permanently deletes its synced transcripts and their indexed context. Project answers that cite this meeting will lose that source.",
-				confirmLabel: "Unlink meeting",
+					count > 0
+						? `Removing ${meeting.subject ?? "this meeting"} also deletes ${count} transcript${count === 1 ? "" : "s"} and everything drawn from them. Project answers that cite this meeting will lose that source. You can undo this for 7 days.`
+						: "This removes the meeting from the project. It has no synced transcripts yet, so nothing else is lost.",
+				confirmLabel: "Delete transcripts",
 				destructive: true,
+				// The safe option, offered in place rather than as a separate
+				// menu item: the reflex that loses a meeting's history is
+				// dismissing this dialog, so the thing the user probably meant
+				// has to be reachable from inside it (#2355).
+				secondaryAction:
+					count > 0
+						? {
+								label: "Stop syncing, keep them",
+								onSelect: async () => {
+									await setSyncActiveMutation.mutateAsync({
+										linkedMeetingId: meeting.id,
+										active: false,
+									});
+								},
+							}
+						: undefined,
 				onConfirm: async () => {
 					await unlinkMutation.mutateAsync(meeting.id);
 				},
 			});
 		},
-		[confirm, unlinkMutation],
+		[confirm, unlinkMutation, setSyncActiveMutation],
 	);
 
 	// Enable auto-sync mutation
@@ -617,6 +848,41 @@ export function MeetingTranscriptSyncSettings({
 	return (
 		<>
 			<Card className="overflow-hidden border-foreground/10">
+				{/* A sync whose bound Microsoft account has gone away. Stated at
+				    the panel, not per row: one workflow, one account, so when it
+				    breaks every meeting stops together (#2355). */}
+				{syncFailure && canEdit && (
+					<div
+						role="status"
+						className="flex items-start gap-3 border-highlight border-l-[3px] bg-highlight/10 px-4 py-3"
+					>
+						<AlertTriangleIcon
+							aria-hidden="true"
+							className="mt-0.5 size-4 shrink-0 text-highlight"
+						/>
+						<div className="min-w-0 grow">
+							<p className="font-semibold text-foreground text-sm">
+								This project&rsquo;s meeting sync is not running
+							</p>
+							<p className="mt-0.5 text-muted-foreground text-xs">
+								{syncFailure.message}
+								{syncFailure.lastErrorAt
+									? ` Last attempt ${formatDistanceToNow(new Date(syncFailure.lastErrorAt), { addSuffix: true })}.`
+									: ""}
+							</p>
+						</div>
+						<Button
+							variant="outline"
+							size="sm"
+							className="shrink-0"
+							onClick={handleRepair}
+							disabled={repairMutation.isPending}
+						>
+							Reconnect as me
+						</Button>
+					</div>
+				)}
+
 				{/* Header */}
 				<div className="flex items-start justify-between gap-3 p-4 sm:p-5">
 					<div className="flex min-w-0 items-center gap-3">
@@ -781,6 +1047,9 @@ export function MeetingTranscriptSyncSettings({
 									const isExpanded = expandedMeetings.has(
 										meeting.id,
 									);
+									const isDeactivated = Boolean(
+										meeting.deactivatedAt,
+									);
 									// Compute last synced time from transcripts
 									const latestSyncedAt =
 										meetingTranscripts.length > 0
@@ -790,24 +1059,54 @@ export function MeetingTranscriptSyncSettings({
 									return (
 										<div
 											key={meeting.id}
-											className="rounded-xl border border-foreground/10 bg-card"
+											className={`rounded-xl border border-foreground/10 ${
+												isDeactivated
+													? "bg-muted"
+													: "bg-card"
+											}`}
 										>
 											<div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2 p-3">
 												<div className="flex min-w-0 grow shrink-0 basis-[60%] items-center gap-3">
-													<div className="shrink-0 rounded-lg bg-primary/10 p-2">
-														<VideoIcon className="size-4 text-primary" />
+													<div
+														className={`shrink-0 rounded-lg p-2 ${
+															isDeactivated
+																? "bg-foreground/5"
+																: "bg-primary/10"
+														}`}
+													>
+														<VideoIcon
+															className={`size-4 ${
+																isDeactivated
+																	? "text-muted-foreground"
+																	: "text-primary"
+															}`}
+														/>
 													</div>
 													<div className="min-w-0">
-														<p
-															className="truncate text-sm font-semibold"
-															title={
-																meeting.subject ??
-																"Untitled meeting"
-															}
-														>
-															{meeting.subject ??
-																"Untitled meeting"}
-														</p>
+														<div className="flex items-center gap-2">
+															<p
+																className={`truncate text-sm font-semibold ${
+																	isDeactivated
+																		? "text-muted-foreground"
+																		: ""
+																}`}
+																title={
+																	meeting.subject ??
+																	"Untitled meeting"
+																}
+															>
+																{meeting.subject ??
+																	"Untitled meeting"}
+															</p>
+															{/* State is carried by the label, not the
+															    muting alone — colour is never the only
+															    signal (WCAG 2.1 AA). */}
+															{isDeactivated && (
+																<span className="shrink-0 rounded-full border border-foreground/10 bg-background px-1.5 py-0.5 font-medium text-[10px] text-muted-foreground">
+																	Not syncing
+																</span>
+															)}
+														</div>
 														<div className="mt-0.5 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs text-muted-foreground">
 															{meeting.organizer && (
 																<>
@@ -902,26 +1201,71 @@ export function MeetingTranscriptSyncSettings({
 															</TooltipContent>
 														</Tooltip>
 													)}
-													<DestructiveTooltip
-														copy={unlinkMeetingCopy}
-													>
-														<Button
-															variant="ghost"
-															size="icon"
-															onClick={() =>
-																requestUnlink(
-																	meeting,
-																)
-															}
-															disabled={
-																unlinkingMeetingId ===
-																meeting.id
-															}
-															aria-label={`Unlink ${meeting.subject ?? "meeting"}`}
-														>
-															<UnlinkIcon className="size-4 text-muted-foreground" />
-														</Button>
-													</DestructiveTooltip>
+													{canEdit && (
+														<DropdownMenu>
+															<DropdownMenuTrigger
+																asChild
+															>
+																<Button
+																	variant="ghost"
+																	size="icon"
+																	disabled={
+																		unlinkingMeetingId ===
+																		meeting.id
+																	}
+																	aria-label={`Options for ${meeting.subject ?? "meeting"}`}
+																>
+																	<MoreVerticalIcon className="size-4 text-muted-foreground" />
+																</Button>
+															</DropdownMenuTrigger>
+															<DropdownMenuContent align="end">
+																{/* Reversible action first, destructive last and
+																    separated: they were one control before, which
+																    is how a meeting's whole history got deleted
+																    by someone who only meant to stop it (#2355). */}
+																<DropdownMenuItem
+																	onSelect={() =>
+																		setSyncActiveMutation.mutate(
+																			{
+																				linkedMeetingId:
+																					meeting.id,
+																				active: isDeactivated,
+																			},
+																		)
+																	}
+																>
+																	{isDeactivated
+																		? "Resume syncing"
+																		: "Stop syncing"}
+																	<span className="block text-muted-foreground text-xs">
+																		{isDeactivated
+																			? "Start collecting new transcripts again"
+																			: `Keeps all ${meeting._count.transcripts} transcript${meeting._count.transcripts === 1 ? "" : "s"}`}
+																	</span>
+																</DropdownMenuItem>
+																<DropdownMenuSeparator />
+																<DestructiveTooltip
+																	copy={
+																		unlinkMeetingCopy
+																	}
+																>
+																	<DropdownMenuItem
+																		className="text-destructive"
+																		onSelect={() =>
+																			requestUnlink(
+																				meeting,
+																			)
+																		}
+																	>
+																		Remove
+																		and
+																		delete
+																		transcripts
+																	</DropdownMenuItem>
+																</DestructiveTooltip>
+															</DropdownMenuContent>
+														</DropdownMenu>
+													)}
 												</div>
 											</div>
 
@@ -999,6 +1343,86 @@ export function MeetingTranscriptSyncSettings({
 								})}
 							</div>
 						</div>
+
+						{/* Recently deleted — collapsed away entirely when empty,
+						    so it is a recycle bin rather than permanent chrome. */}
+						{canEdit && (deletedMeetings?.length ?? 0) > 0 && (
+							<div className="border-t border-foreground/10">
+								<div className="flex items-center justify-between gap-3 bg-muted/40 px-4 py-2">
+									<span className="font-semibold text-[11px] text-muted-foreground uppercase tracking-[0.14em]">
+										Recently deleted
+									</span>
+									<span className="text-muted-foreground text-xs">
+										Removed after 7 days
+									</span>
+								</div>
+								<div className="divide-y divide-foreground/10">
+									{deletedMeetings?.map((archive) => {
+										const daysLeft = Math.max(
+											0,
+											Math.ceil(
+												(new Date(
+													archive.scheduledPurgeAt,
+												).getTime() -
+													Date.now()) /
+													(24 * 60 * 60 * 1000),
+											),
+										);
+										return (
+											<div
+												key={archive.id}
+												className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2 px-4 py-3"
+											>
+												<div className="min-w-0 grow">
+													<p className="truncate font-medium text-sm">
+														{archive.subject ??
+															"Untitled meeting"}
+													</p>
+													<p className="text-muted-foreground text-xs">
+														{
+															archive.transcriptCount
+														}{" "}
+														transcript
+														{archive.transcriptCount ===
+														1
+															? ""
+															: "s"}{" "}
+														&middot; deleted by{" "}
+														{archive.deletedByYou
+															? "you"
+															: (archive.deletedByName ??
+																"someone")}
+														{archive.payloadTruncated &&
+															" · transcript text was too large to keep"}
+													</p>
+												</div>
+												{/* A recovery window nobody can
+												    see is one nobody uses. */}
+												<span className="shrink-0 text-highlight text-xs tabular-nums">
+													{daysLeft} day
+													{daysLeft === 1 ? "" : "s"}{" "}
+													left
+												</span>
+												<Button
+													variant="outline"
+													size="sm"
+													onClick={() =>
+														restoreMutation.mutate(
+															archive.id,
+														)
+													}
+													disabled={
+														restoreMutation.isPending
+													}
+												>
+													Restore
+												</Button>
+											</div>
+										);
+									})}
+								</div>
+							</div>
+						)}
 
 						{/* Auto-sync + auto-create controls (grouped muted section) */}
 						<div className="space-y-4 border-t border-foreground/10 bg-muted/40 p-4 sm:p-5">

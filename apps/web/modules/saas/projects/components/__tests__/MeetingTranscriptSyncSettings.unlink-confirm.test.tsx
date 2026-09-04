@@ -26,6 +26,7 @@ type CapturedConfirm = {
 	message?: string;
 	confirmLabel?: string;
 	destructive?: boolean;
+	secondaryAction?: { label: string; onSelect: () => Promise<void> | void };
 	onConfirm: () => Promise<void> | void;
 };
 
@@ -83,6 +84,9 @@ const disableMock = vi.fn();
 const setAutoAnalyzeMock = vi.fn();
 const triggerSyncMock = vi.fn();
 const unlinkMeetingMock = vi.fn();
+const setMeetingSyncActiveMock = vi.fn();
+const restoreMeetingMock = vi.fn();
+const listDeletedMeetingsMock = vi.fn();
 
 vi.mock("@shared/lib/orpc-client", () => ({
 	orpcClient: {
@@ -96,6 +100,11 @@ vi.mock("@shared/lib/orpc-client", () => ({
 				setAutoAnalyze: (...a: unknown[]) => setAutoAnalyzeMock(...a),
 				triggerSync: (...a: unknown[]) => triggerSyncMock(...a),
 				unlinkMeeting: (...a: unknown[]) => unlinkMeetingMock(...a),
+				setMeetingSyncActive: (...a: unknown[]) =>
+					setMeetingSyncActiveMock(...a),
+				restoreMeeting: (...a: unknown[]) => restoreMeetingMock(...a),
+				listDeletedMeetings: (...a: unknown[]) =>
+					listDeletedMeetingsMock(...a),
 			},
 		},
 	},
@@ -133,7 +142,7 @@ const linkedMeeting = {
 	linkedAt: new Date().toISOString(),
 	userId: "user_1",
 	organizationId: null,
-	_count: { transcripts: 0 },
+	_count: { transcripts: 12 },
 };
 
 function renderSettings() {
@@ -154,12 +163,22 @@ function renderSettings() {
 	);
 }
 
+/**
+ * Unlink moved behind a per-row menu in #2355: it used to be a bare icon button
+ * sitting next to the expand control, which is how it got clicked by people who
+ * only meant to stop a meeting syncing. Reaching it now takes two deliberate
+ * steps, and the reversible "Stop syncing" action sits above it.
+ */
 async function clickUnlink(user: ReturnType<typeof userEvent.setup>) {
-	const button = await screen.findByRole("button", {
-		name: "Unlink Weekly sync",
+	const trigger = await screen.findByRole("button", {
+		name: "Options for Weekly sync",
 	});
-	await user.click(button);
-	return button;
+	await user.click(trigger);
+	const item = await screen.findByRole("menuitem", {
+		name: /Remove and delete transcripts/,
+	});
+	await user.click(item);
+	return item;
 }
 
 describe("MeetingTranscriptSyncSettings — unlink confirmation", () => {
@@ -172,7 +191,15 @@ describe("MeetingTranscriptSyncSettings — unlink confirmation", () => {
 		disableMock.mockResolvedValue({});
 		setAutoAnalyzeMock.mockResolvedValue({});
 		triggerSyncMock.mockResolvedValue({});
-		unlinkMeetingMock.mockResolvedValue({});
+		unlinkMeetingMock.mockResolvedValue({
+			success: true,
+			archiveId: "arch_1",
+			transcriptCount: 12,
+			recoverableUntil: new Date(Date.now() + 7 * 864e5).toISOString(),
+		});
+		setMeetingSyncActiveMock.mockResolvedValue({ success: true });
+		restoreMeetingMock.mockResolvedValue({ success: true, reindexing: 1 });
+		listDeletedMeetingsMock.mockResolvedValue([]);
 	});
 
 	it("asks for confirmation and does not unlink on click (FR1/AC1)", async () => {
@@ -185,18 +212,43 @@ describe("MeetingTranscriptSyncSettings — unlink confirmation", () => {
 		expect(unlinkMeetingMock).not.toHaveBeenCalled();
 	});
 
-	it("names the meeting and its consequence, and is marked destructive (FR2/FR3)", async () => {
+	it("names the count at risk, offers the safe option, and is destructive (FR2/FR3)", async () => {
 		const user = userEvent.setup();
 		renderSettings();
 
 		await clickUnlink(user);
 
-		expect(captured.current?.title).toBe("Unlink Weekly sync?");
-		expect(captured.current?.message).toBe(
-			"This removes the meeting from the project and permanently deletes its synced transcripts and their indexed context. Project answers that cite this meeting will lose that source.",
-		);
-		expect(captured.current?.confirmLabel).toBe("Unlink meeting");
+		// The count, not "its context": 12 transcripts is arresting in a way
+		// an abstraction is not (#2355).
+		expect(captured.current?.title).toBe("Delete 12 transcripts?");
+		expect(captured.current?.message).toContain("12 transcripts");
+		expect(captured.current?.message).toContain("undo this for 7 days");
+		expect(captured.current?.confirmLabel).toBe("Delete transcripts");
 		expect(captured.current?.destructive).toBe(true);
+
+		// The fork: the reversible option is reachable from inside the dialog,
+		// because dismissing it is the reflex that loses a meeting's history.
+		expect(captured.current?.secondaryAction?.label).toBe(
+			"Stop syncing, keep them",
+		);
+	});
+
+	it("keeps the transcripts when the safe option is taken, and never deletes", async () => {
+		const user = userEvent.setup();
+		renderSettings();
+
+		await clickUnlink(user);
+		await captured.current?.secondaryAction?.onSelect();
+
+		await waitFor(() => {
+			expect(setMeetingSyncActiveMock).toHaveBeenCalledWith(
+				expect.objectContaining({
+					linkedMeetingId: "linked_1",
+					active: false,
+				}),
+			);
+		});
+		expect(unlinkMeetingMock).not.toHaveBeenCalled();
 	});
 
 	it("unlinks the right meeting once confirmed (FR5/AC3)", async () => {
@@ -229,7 +281,9 @@ describe("MeetingTranscriptSyncSettings — unlink confirmation", () => {
 
 		expect(unlinkMeetingMock).not.toHaveBeenCalled();
 		expect(
-			await screen.findByRole("button", { name: "Unlink Weekly sync" }),
+			await screen.findByRole("button", {
+				name: "Options for Weekly sync",
+			}),
 		).toBeInTheDocument();
 	});
 });

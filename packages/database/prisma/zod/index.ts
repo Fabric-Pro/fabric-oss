@@ -222,7 +222,7 @@ export type SDLCPipelineScalarFieldEnum = z.infer<typeof SDLCPipelineScalarField
 
 // File: ProjectScalarFieldEnum.schema.ts
 
-export const ProjectScalarFieldEnumSchema = z.enum(['id', 'name', 'description', 'heroEmojis', 'heroImageUrl', 'goals', 'techStack', 'features', 'projectTypes', 'status', 'projectPhase', 'expectedDevelopmentStartDate', 'tags', 'color', 'icon', 'userId', 'organizationId', 'projectManagementMcpServerId', 'projectManagementMcpConfigId', 'projectManagementContainerId', 'projectManagementContainerName', 'projectManagementAdditionalContext', 'logSourceProvider', 'logSourceConfig', 'adoStatePollActive', 'autoPushPmSync', 'syncAttachments', 'attachmentRetentionDays', 'attachmentRetentionDaysUpdatedAt', 'readOnlyMode', 'lastAdoStatePollAt', 'pmTerminalStatuses', 'pmAutoCloseEnabled', 'pmFieldMappingEnabled', 'prdSourceTitle', 'prdSourceUrl', 'prdSourceContextId', 'prdSourceSyncedAt', 'meetingTranscriptSyncEnabled', 'meetingTranscriptSyncIntervalMin', 'meetingTranscriptSyncLastRun', 'meetingTranscriptSyncWorkflowId', 'meetingTranscriptAutoAnalyzeEnabled', 'actionItemRoutingEnabled', 'teamsChannelMonitorEnabled', 'teamsChannelMonitorIntervalMin', 'teamsChannelMonitorQuietWindowMin', 'teamsChannelMonitorLastRun', 'teamsChannelMonitorWorkflowId', 'teamsChatMonitorEnabled', 'teamsChatMonitorIntervalMin', 'teamsChatMonitorQuietWindowMin', 'teamsChatMonitorLastRun', 'teamsChatMonitorWorkflowId', 'slackChannelMonitorEnabled', 'slackChannelMonitorWorkflowId', 'slackChannelMonitorLastRun', 'slackChannelMonitorDebounceMs', 'slackChannelMonitorMaxHoldMs', 'slackHuddleIngestEnabled', 'slackHuddleIngestEnabledAt', 'slackHuddleIngestIntervalMin', 'slackHuddleIngestLastRun', 'slackHuddleIngestWorkflowId', 'repositoryUrl', 'repositoryOwner', 'repositoryName', 'defaultBranch', 'implementationDefaultChannel', 'implementationDefaultProvider', 'implementationDefaultWorkingDirectory', 'primaryWebsiteUrl', 'additionalWebsiteUrls', 'codeAnalysisStatus', 'codeAnalysisWorkflowId', 'draftKey', 'wizardState', 'nextStoryNumber', 'lastDuplicateScanAt', 'hiddenMaturationStatuses', 'clarifyingQuestionFrequency', 'qaStrategyLevel', 'generateManualTestCases', 'applyTddApproach', 'projectTabConfig', 'autoCreateBugsFromFailures', 'createdAt', 'updatedAt', 'deletedAt', 'deletedBy', 'scheduledPermanentDeleteAt', 'deletionReminderSentAt'])
+export const ProjectScalarFieldEnumSchema = z.enum(['id', 'name', 'description', 'heroEmojis', 'heroImageUrl', 'goals', 'techStack', 'features', 'projectTypes', 'status', 'projectPhase', 'expectedDevelopmentStartDate', 'tags', 'color', 'icon', 'userId', 'organizationId', 'projectManagementMcpServerId', 'projectManagementMcpConfigId', 'projectManagementContainerId', 'projectManagementContainerName', 'projectManagementAdditionalContext', 'logSourceProvider', 'logSourceConfig', 'adoStatePollActive', 'autoPushPmSync', 'syncAttachments', 'attachmentRetentionDays', 'attachmentRetentionDaysUpdatedAt', 'readOnlyMode', 'lastAdoStatePollAt', 'pmTerminalStatuses', 'pmAutoCloseEnabled', 'pmFieldMappingEnabled', 'prdSourceTitle', 'prdSourceUrl', 'prdSourceContextId', 'prdSourceSyncedAt', 'meetingTranscriptSyncEnabled', 'meetingTranscriptSyncIntervalMin', 'meetingTranscriptSyncLastRun', 'meetingTranscriptSyncWorkflowId', 'meetingTranscriptSyncUserId', 'meetingTranscriptAutoAnalyzeEnabled', 'actionItemRoutingEnabled', 'teamsChannelMonitorEnabled', 'teamsChannelMonitorIntervalMin', 'teamsChannelMonitorQuietWindowMin', 'teamsChannelMonitorLastRun', 'teamsChannelMonitorWorkflowId', 'teamsChatMonitorEnabled', 'teamsChatMonitorIntervalMin', 'teamsChatMonitorQuietWindowMin', 'teamsChatMonitorLastRun', 'teamsChatMonitorWorkflowId', 'slackChannelMonitorEnabled', 'slackChannelMonitorWorkflowId', 'slackChannelMonitorLastRun', 'slackChannelMonitorDebounceMs', 'slackChannelMonitorMaxHoldMs', 'slackHuddleIngestEnabled', 'slackHuddleIngestEnabledAt', 'slackHuddleIngestIntervalMin', 'slackHuddleIngestLastRun', 'slackHuddleIngestWorkflowId', 'repositoryUrl', 'repositoryOwner', 'repositoryName', 'defaultBranch', 'implementationDefaultChannel', 'implementationDefaultProvider', 'implementationDefaultWorkingDirectory', 'primaryWebsiteUrl', 'additionalWebsiteUrls', 'codeAnalysisStatus', 'codeAnalysisWorkflowId', 'draftKey', 'wizardState', 'nextStoryNumber', 'lastDuplicateScanAt', 'hiddenMaturationStatuses', 'clarifyingQuestionFrequency', 'qaStrategyLevel', 'generateManualTestCases', 'applyTddApproach', 'projectTabConfig', 'autoCreateBugsFromFailures', 'createdAt', 'updatedAt', 'deletedAt', 'deletedBy', 'scheduledPermanentDeleteAt', 'deletionReminderSentAt'])
 
 export type ProjectScalarFieldEnum = z.infer<typeof ProjectScalarFieldEnumSchema>;
 
@@ -450,9 +450,15 @@ export type AtlasEdgeOverrideHistoryScalarFieldEnum = z.infer<typeof AtlasEdgeOv
 
 // File: ProjectLinkedMeetingScalarFieldEnum.schema.ts
 
-export const ProjectLinkedMeetingScalarFieldEnumSchema = z.enum(['id', 'projectId', 'joinUrl', 'subject', 'organizer', 'includedInDigest', 'linkedAt', 'userId', 'organizationId'])
+export const ProjectLinkedMeetingScalarFieldEnumSchema = z.enum(['id', 'projectId', 'joinUrl', 'subject', 'organizer', 'includedInDigest', 'linkedAt', 'deactivatedAt', 'deactivatedById', 'consecutiveFailures', 'lastErrorMessage', 'lastErrorAt', 'userId', 'organizationId'])
 
 export type ProjectLinkedMeetingScalarFieldEnum = z.infer<typeof ProjectLinkedMeetingScalarFieldEnumSchema>;
+
+// File: DeletedMeetingArchiveScalarFieldEnum.schema.ts
+
+export const DeletedMeetingArchiveScalarFieldEnumSchema = z.enum(['id', 'projectId', 'joinUrl', 'subject', 'transcriptCount', 'deletedAt', 'deletedById', 'scheduledPurgeAt', 'payloadTruncated', 'payload', 'userId', 'organizationId'])
+
+export type DeletedMeetingArchiveScalarFieldEnum = z.infer<typeof DeletedMeetingArchiveScalarFieldEnumSchema>;
 
 // File: ProjectMeetingTranscriptScalarFieldEnum.schema.ts
 
@@ -4013,6 +4019,7 @@ export const ProjectSchema = z.object({
   meetingTranscriptSyncIntervalMin: z.number().int().nullish(),
   meetingTranscriptSyncLastRun: z.date().nullish(),
   meetingTranscriptSyncWorkflowId: z.string().nullish(),
+  meetingTranscriptSyncUserId: z.string().nullish(),
   meetingTranscriptAutoAnalyzeEnabled: z.boolean(),
   actionItemRoutingEnabled: z.boolean(),
   teamsChannelMonitorEnabled: z.boolean(),
@@ -5017,11 +5024,36 @@ export const ProjectLinkedMeetingSchema = z.object({
   organizer: z.string().nullish(),
   includedInDigest: z.boolean().default(true),
   linkedAt: z.date(),
+  deactivatedAt: z.date().nullish(),
+  deactivatedById: z.string().nullish(),
+  consecutiveFailures: z.number().int(),
+  lastErrorMessage: z.string().nullish(),
+  lastErrorAt: z.date().nullish(),
   userId: z.string().nullish(),
   organizationId: z.string().nullish(),
 });
 
 export type ProjectLinkedMeetingType = z.infer<typeof ProjectLinkedMeetingSchema>;
+
+
+// File: DeletedMeetingArchive.schema.ts
+
+export const DeletedMeetingArchiveSchema = z.object({
+  id: z.string(),
+  projectId: z.string(),
+  joinUrl: z.string(),
+  subject: z.string().nullish(),
+  transcriptCount: z.number().int(),
+  deletedAt: z.date(),
+  deletedById: z.string(),
+  scheduledPurgeAt: z.date(),
+  payloadTruncated: z.boolean(),
+  payload: z.unknown().refine((val) => { const getDepth = (obj: unknown, depth: number = 0): number => { if (depth > 10) return depth; if (obj === null || typeof obj !== 'object') return depth; const values = Object.values(obj as Record<string, unknown>); if (values.length === 0) return depth; return Math.max(...values.map(v => getDepth(v, depth + 1))); }; return getDepth(val) <= 10; }, "JSON nesting depth exceeds maximum of 10"),
+  userId: z.string().nullish(),
+  organizationId: z.string().nullish(),
+});
+
+export type DeletedMeetingArchiveType = z.infer<typeof DeletedMeetingArchiveSchema>;
 
 
 // File: ProjectMeetingTranscript.schema.ts
