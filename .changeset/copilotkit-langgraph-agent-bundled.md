@@ -1,9 +1,0 @@
----
-"fabric-app": patch
----
-
-Fix every POST to /api/copilotkit failing at module load on Vercel after the CopilotKit 1.70 upgrade (ERR_REQUIRE_CYCLE_MODULE)
-
-The route imported `LangGraphHttpAgent` from `@copilotkit/runtime/langgraph`. `@copilotkit/runtime` is a server-external package, so Node loaded that subpath at request time: runtime → `@ag-ui/langgraph` 0.0.43 → `@langchain/langgraph-sdk` 1.10.0, whose build vendors p-retry / p-queue / is-network-error as ESM under `dist/node_modules/.pnpm/…` with no package.json of their own. Node's ESM package-scope lookup stops at a `node_modules` boundary, so it sees no `type` for those files and relies on module-syntax detection to call them ESM; the CommonJS loader walks further up and sees the SDK's `"type": "module"`. AWS Lambda (Vercel functions) runs Node with syntax detection disabled, so the ESM loader hands the vendored file to the CJS translator, which rediscovers it is ESM and hits its own in-flight module job: `Cannot require() ES Module …/p-retry/index.js in a cycle`, with no `(from …)` suffix because the translator's module has no parent. Reproduced locally with `node --no-experimental-detect-module --input-type=module -e "await import('@copilotkit/runtime/langgraph')"` against both the workspace install and the traced standalone output; the same import loads cleanly with detection on, which is why plain local runs never showed it.
-
-Fix: take `LangGraphHttpAgent` from `@ag-ui/langgraph` directly (the runtime's `langgraph` entry re-exports that exact class unchanged) and declare it as a web dependency, so Turbopack bundles the adapter chain and the SDK's vendored files never go through Node's loader. `@copilotkit/runtime` itself stays external; its main entry does not touch the SDK and loads fine with detection off. Lockfile hand-edited (3 lines, importer entry only) pointing at the variant the runtime already resolves; verified with `pnpm install --frozen-lockfile --lockfile-only`.

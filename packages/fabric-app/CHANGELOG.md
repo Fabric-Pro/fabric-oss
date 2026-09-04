@@ -1,5 +1,43 @@
 # fabric-app
 
+## 1.14.7
+
+### Patch Changes
+
+- 9e1ef8f: AI Update no longer surfaces a raw Zod error dump when the model's structured output fails validation
+- f72d683: Members can create and revoke their own API keys, and a key can no longer do anything its owner could not do in the app.
+- 38db6f3: AI now runs on the provider key you configure — the included $5 allowance, the card collection behind it, and the platform-key fallback are gone
+- 09ca36d: Fix the CodeQL findings that the security-extended suite raised beyond the default-suite baseline and write the per-rule policy for them
+- 3c726ed: Log request-derived values as structured arguments and create evidence/audit temp directories with mkdtemp (CodeQL log-injection, insecure-temporary-file)
+- 527cd96: Upgrade CopilotKit to 1.70.1 so opening a feature makes one runtime handshake instead of ~55 connects
+- cb86a71: Fix every POST to /api/copilotkit failing at module load on Vercel after the CopilotKit 1.70 upgrade (ERR_REQUIRE_CYCLE_MODULE)
+- cc64956: Share one CopilotKit chat hook per page so opening a feature makes two agent connects instead of one per mounted message
+- a3bc0f0: Fix feature and document workspaces not scrolling with the mouse (no scrollbar, keyboard scroll only) after the CopilotKit 1.70 upgrade
+- 82a2bed: Show the document read-only with a reload option when the document assistant fails to start, instead of losing the editor
+- 82be1b3: Stop the document editor reporting a failed AI review when the assistant handshake starts before the editor has mounted
+- bb9a425: Fix a mentioned user seeing "Document not found" inside an opened document, and stop each document open costing two identical fetches.
+- 38db6f3: Make every AI surface refuse a missing provider the same way, and stop the provider notice from hiding while calls fail.
+- d55e271: Bump @modelcontextprotocol/sdk from 1.26 to 1.30 so CopilotKit react-core 1.70 runs on the MCP SDK floor it declares
+- dab0a26: Keep the meeting recycle bin reachable after the last meeting is deleted, count a disconnect the Graph tool reports rather than throws, and stop the sync menu's hint running into its label.
+- 96667dc: Meetings can be stopped without deleting their transcripts, deleted meetings are recoverable for 7 days, and a broken sync is now visible and repairable.
+- e1019d6: The onboarding tour now opens by telling you an AI provider key is required, and closes with how to connect external AI tools over MCP.
+- 9b2b3fa: Show the onboarding tour's "Create your first project" card once instead of five times in a row when the account has no project yet (Fizzy #2360).
+- 7f84c34: Stop the OpenTelemetry shutdown flush from logging an error when the local OTLP collector has already been torn down
+- 38db6f3: Signing in now returns you to the workspace you last worked in, instead of whichever organization the session or the query happened to name.
+- 160fc6b: Fix the reconnect preflight reporting every meeting as invisible, so repairing a healthy sync no longer offers "Reconnect 0 meetings".
+- 5a879d7: Offer "Reconnect sync to me" from the sync menu at any time, not only once five consecutive failures have been recorded.
+- 5266ecc: Open one presence connection per project page instead of two, halving the join, heartbeat and SSE traffic a project detail page generates.
+- 143ab43: Make the publishing topic's post-type editor read as the multi-select it already is, instead of as a radio group
+- d44f216: Remove the unused repo-root vercel.json so the live Ignored Build Step policy in apps/web/vercel.json is the only one in the tree
+- 5baa4a6: Keep who linked a meeting when it is restored from the recovery archive, instead of silently clearing it.
+- 077fba6: Export the Temporal SDK's core worker metrics (task slots, sticky cache, schedule-to-start latency) to the OTLP collector so worker saturation is observable.
+- c9aec0d: Upgrade the Temporal TypeScript SDK to 1.23 and move worker tracing to the OpenTelemetry v2 interceptors
+- 7526821: Register the correlation workflow interceptor with the workflow bundler so workflow → activity correlation-ID propagation actually runs
+- 38db6f3: Close two gaps found in review: a user-facing AI path that could still reach the platform key, and a post-login redirect the API could not see.
+- 6344bbc: Override the transitive `toml` parser to 4.3.0 so a crafted TOML front matter block can no longer pollute `Object.prototype` (GHSA-v5mp-jgw5-2x6j).
+- 38db6f3: Image generation and chat retrieval now run on the tenant's own key, closing the last paths where a waiting user was served on the platform's.
+- 0773873: Stop deploying the changesets staging ref, which spent an orphan full build on every master merge
+
 ## 1.14.6
 
 ### Patch Changes
