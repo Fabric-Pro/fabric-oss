@@ -2434,8 +2434,20 @@ export function StoryWorkspace({
 
 	// Effect 1: Capture baseline when loading STARTS (transition from false to true)
 	useEffect(() => {
+		// Do not advance the loading-edge ref until the editor exists.
+		// `useEditor` runs with `immediatelyRender: false`, so `editor` is
+		// null on the first commit, while `isAiLoading` tracks the
+		// assistant's connect handshake rather than a user request and can
+		// already be true. Guarding only the capture still consumed the
+		// transition below, so a run that started first lost its baseline —
+		// and Effect 3 treats an empty baseline as "no prior content" and
+		// replaces the editor with the AI's raw output. `editor` is a
+		// dependency, so the capture happens once the instance exists.
+		if (!editor) {
+			return;
+		}
 		// Only capture baseline on transition: wasLoading=false → isAiLoading=true
-		if (isAiLoading && !wasLoadingRef.current && editor) {
+		if (isAiLoading && !wasLoadingRef.current) {
 			// The pending auto-save must not fire *during* AI review
 			// (it would persist unconfirmed diff content) — but discarding it
 			// threw away real user edits. Flush it first, then cancel.
@@ -2495,7 +2507,7 @@ export function StoryWorkspace({
 			}
 		}
 		wasLoadingRef.current = isAiLoading;
-		editor?.setEditable(!isAiLoading);
+		editor.setEditable(!isAiLoading);
 	}, [isAiLoading, editor]);
 
 	// Effect 2: Final diff when nodeName becomes "end"
