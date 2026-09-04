@@ -6,8 +6,13 @@
  */
 
 import { classifyLimitError } from "@repo/ai/limits";
-import { type FinishReason, NoObjectGeneratedError } from "ai";
+import {
+	type FinishReason,
+	NoObjectGeneratedError,
+	TypeValidationError,
+} from "ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { z } from "zod";
 import { classifyBacklogAnalysisError } from "../classify-analysis-error";
 
 /**
@@ -18,9 +23,11 @@ import { classifyBacklogAnalysisError } from "../classify-analysis-error";
 function makeNoObjectGeneratedError(
 	finishReason: FinishReason,
 	message: string,
+	cause?: Error,
 ): NoObjectGeneratedError {
 	return new NoObjectGeneratedError({
 		message,
+		cause,
 		text: "partial output",
 		response: {
 			id: "resp-1",
@@ -40,6 +47,30 @@ function makeNoObjectGeneratedError(
 		},
 		finishReason,
 	});
+}
+
+/**
+ * Build the chain `generateObject` really throws when the model's output fails
+ * the Zod schema: `NoObjectGeneratedError` → `.cause` `TypeValidationError` →
+ * `.cause` `ZodError`.
+ *
+ * Every earlier schema_parse test built a bare `Error` merely NAMED
+ * "NoObjectGeneratedError", with no cause chain — which is precisely why the
+ * #2395 miss survived them: the classifier descends the chain before matching,
+ * so only a real three-link error reaches the leaf that broke it.
+ */
+function makeSchemaRejection(value: unknown): NoObjectGeneratedError {
+	const parsed = z
+		.object({ changes: z.array(z.object({ title: z.string() })) })
+		.safeParse(value);
+	return makeNoObjectGeneratedError(
+		"stop",
+		"No object generated: response did not match schema.",
+		new TypeValidationError({
+			value,
+			cause: parsed.success ? undefined : parsed.error,
+		}),
+	);
 }
 
 vi.mock("@repo/ai/limits", async (importOriginal) => {
@@ -157,6 +188,96 @@ describe("classifyBacklogAnalysisError", () => {
 		(wrapper as Error & { cause?: unknown }).cause = inner;
 		const r = classifyBacklogAnalysisError(wrapper);
 		expect(r.errorClass).toBe("output_limit");
+	});
+
+	// Fizzy #2395. Prod surfaced both of these to users as the
+	// `transient_or_unknown` copy with a raw Zod issue dump appended, because
+	// the classifier matched on the descended `ZodError` leaf alone.
+	it("maps a real generateObject schema rejection (changes missing) to schema_parse", () => {
+		const r = classifyBacklogAnalysisError(makeSchemaRejection({}));
+
+		expect(r.errorClass).toBe("schema_parse");
+		expect(r.userMessage).toMatch(/malformed result/);
+		// The whole point: no raw Zod dump reaches the user.
+		expect(r.userMessage).not.toContain("ZodError");
+		expect(r.userMessage).not.toMatch(/details were logged/);
+		// Operators keep the detail the user no longer gets.
+		expect(r.logFields.rawCause).toContain("changes");
+	});
+
+	it("maps a real generateObject schema rejection (changes as a string) to schema_parse", () => {
+		const r = classifyBacklogAnalysisError(
+			makeSchemaRejection({ changes: "not an array" }),
+		);
+
+		expect(r.errorClass).toBe("schema_parse");
+		expect(r.userMessage).not.toContain("ZodError");
+	});
+
+	it("maps a schema rejection wrapped in Temporal's activity failure", () => {
+		const wrapper = new Error("Activity task failed");
+		(wrapper as Error & { cause?: unknown }).cause = makeSchemaRejection(
+			{},
+		);
+
+		expect(classifyBacklogAnalysisError(wrapper).errorClass).toBe(
+			"schema_parse",
+		);
+	});
+
+	it("maps a bare ZodError that reaches the classifier unwrapped", () => {
+		const parsed = z.object({ changes: z.array(z.string()) }).safeParse({});
+
+		expect(
+			classifyBacklogAnalysisError(
+				parsed.success ? new Error("unreachable") : parsed.error,
+			).errorClass,
+		).toBe("schema_parse");
+	});
+
+	it("still prefers output_limit over schema_parse for a length cut-off", () => {
+		// A cut-off response is ALSO a NoObjectGeneratedError, so the marker walk
+		// must not overtake branch 3 — retrying an output-limit failure at the
+		// same size cannot work, and schema_parse's copy says retrying helps.
+		const e = makeNoObjectGeneratedError(
+			"length",
+			"No object generated: response cut off",
+			new TypeValidationError({ value: {}, cause: undefined }),
+		);
+
+		expect(classifyBacklogAnalysisError(e).errorClass).toBe("output_limit");
+	});
+
+	it("classifies a content-filtered completion as provider_content_filter, not schema_parse", () => {
+		// A filtered completion is stopped mid-flight, so no object forms and the
+		// SDK reports it as a NoObjectGeneratedError like any other. It is a
+		// policy rejection though: deterministic for the same input, so the
+		// marker walk must not claim it and tell the user to retry.
+		const e = makeNoObjectGeneratedError(
+			"content-filter",
+			"No object generated: could not parse the response.",
+			new TypeValidationError({ value: "", cause: undefined }),
+		);
+		const r = classifyBacklogAnalysisError(e);
+
+		expect(r.errorClass).toBe("provider_content_filter");
+		expect(r.userMessage).toMatch(/content policy/i);
+		expect(r.userMessage).toMatch(/won't help/i);
+		expect(r.userMessage).not.toMatch(/usually transient/i);
+	});
+
+	it("still prefers a provider limit over schema_parse when the chain carries a status code", () => {
+		const e = makeNoObjectGeneratedError(
+			"stop",
+			"No object generated: response did not match schema.",
+			Object.assign(new Error("Rate limit exceeded"), {
+				statusCode: 429,
+			}),
+		);
+
+		expect(classifyBacklogAnalysisError(e).errorClass).toBe(
+			"provider_rate_limit",
+		);
 	});
 
 	it("maps provider-not-configured failures", () => {

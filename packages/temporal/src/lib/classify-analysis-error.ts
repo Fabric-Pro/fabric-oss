@@ -14,7 +14,7 @@ import { classifyLimitError, sanitizeProviderMessage } from "@repo/ai/limits";
 // Imported directly from the `ai` package (not the @repo/ai root) so this
 // module stays light — its test doesn't mock @repo/ai. `isInstance` matches on
 // a symbol marker, so the class identity is the same one @repo/ai re-exports.
-import { NoObjectGeneratedError } from "ai";
+import { NoObjectGeneratedError, TypeValidationError } from "ai";
 
 export type BacklogAnalysisErrorClass =
 	| "context_length"
@@ -217,6 +217,76 @@ function isOutputLengthError(error: unknown): boolean {
 	return false;
 }
 
+/**
+ * A `NoObjectGeneratedError` whose `finishReason` is "content-filter" is a
+ * policy rejection, not malformed output: the provider stopped the completion
+ * mid-flight, so no object could form. The cause is deterministic for the same
+ * input, which is exactly what the `provider_content_filter` copy exists to
+ * say — and both `schema_parse` and `transient_or_unknown` would instead tell
+ * the user to retry, which cannot work.
+ *
+ * Same shape and the same reasoning as `isOutputLengthError` above: read
+ * `finishReason` off the ORIGINAL error, since it lives on the SDK wrapper
+ * rather than the descended leaf. It has to run BEFORE the schema-parse branch,
+ * whose marker walk would otherwise claim every `NoObjectGeneratedError`.
+ */
+function isContentFilterFinish(error: unknown): boolean {
+	let current: unknown = error;
+	let depth = 0;
+	while (current != null && depth < 8) {
+		if (
+			NoObjectGeneratedError.isInstance(current) &&
+			current.finishReason === "content-filter"
+		) {
+			return true;
+		}
+		current = (current as { cause?: unknown }).cause;
+		depth += 1;
+	}
+	return false;
+}
+
+/**
+ * Fizzy #2395: recognise a structured-output validation failure anywhere in the
+ * cause chain, not just at the leaf `descendToProviderError` lands on.
+ *
+ * `generateObject` reports a schema rejection as a three-link chain —
+ * `NoObjectGeneratedError` → `.cause` `TypeValidationError` → `.cause`
+ * `ZodError`. `descendToProviderError` (added for #1681 to reach a provider
+ * `statusCode`) walks straight past both wrappers to that `ZodError` leaf
+ * whenever no node in the chain carries a status code, and the branch-4 regex
+ * below only ever saw the leaf's `name` and `message` — "ZodError" plus a JSON
+ * dump of Zod issues, which matches none of its three alternatives. So every
+ * malformed-output run fell through to `transient_or_unknown`, the one class
+ * that appends the raw cause, and users were handed a Zod issue dump with copy
+ * that named no cause. Prod logged it twice on 2 Sep 2026 as
+ * `ZodError: invalid_type` on path `["changes"]`.
+ *
+ * Walk the ORIGINAL error rather than the descended leaf, and match on the AI
+ * SDK's symbol markers — the same mechanism `isOutputLengthError` above relies
+ * on, and stable in a way the `name` string is not. The `ZodError` check covers
+ * a validation failure that reaches us with the SDK wrappers already stripped.
+ */
+function isSchemaValidationError(error: unknown): boolean {
+	let current: unknown = error;
+	let depth = 0;
+	while (current != null && depth < 8) {
+		if (
+			NoObjectGeneratedError.isInstance(current) ||
+			TypeValidationError.isInstance(current)
+		) {
+			return true;
+		}
+		const e = current as { name?: unknown; issues?: unknown };
+		if (e.name === "ZodError" && Array.isArray(e.issues)) {
+			return true;
+		}
+		current = (current as { cause?: unknown }).cause;
+		depth += 1;
+	}
+	return false;
+}
+
 function pickStatusCode(error: unknown): number | undefined {
 	if (error && typeof error === "object") {
 		const e = error as { statusCode?: unknown; status?: unknown };
@@ -284,8 +354,20 @@ export function classifyBacklogAnalysisError(
 	const { name, message } = unwrap(probe);
 	const haystack = `${name} ${message}`;
 
-	// 4) Structured-output parse failure from `generateObject`.
+	// 3b) Content-policy rejection reported through the structured-output path
+	// rather than as an outright 400 (branch 6 owns that shape). The completion
+	// was filtered mid-flight, so no object formed — deterministic, and it must
+	// not fall into branch 4's "retry — usually transient" copy below.
+	if (isContentFilterFinish(error)) {
+		return build("provider_content_filter", probe, { statusCode });
+	}
+
+	// 4) Structured-output parse failure from `generateObject`. The marker walk
+	// runs on the original error and catches the real AI SDK chain (#2395); the
+	// regex stays for the name-only shapes that reach here without markers —
+	// a re-thrown or serialized error, and the tests that construct one.
 	if (
+		isSchemaValidationError(error) ||
 		/NoObjectGenerated|TypeValidation|did not match schema/i.test(haystack)
 	) {
 		return build("schema_parse", probe, {});
