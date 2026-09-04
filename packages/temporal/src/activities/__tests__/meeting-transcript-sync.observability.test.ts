@@ -21,6 +21,8 @@ const mocks = vi.hoisted(() => ({
 	projectContextCreateMock: vi.fn(),
 	projectFindUniqueMock: vi.fn(),
 	getTemporalClientMock: vi.fn(),
+	recordMeetingSyncFailureMock: vi.fn(),
+	clearMeetingSyncFailuresMock: vi.fn(),
 	workflowStartMock: vi.fn(),
 }));
 
@@ -42,6 +44,10 @@ vi.mock("@repo/database", () => ({
 	updateMeetingTranscriptSyncLastRun: (...a: unknown[]) =>
 		mocks.updateLastRunMock(...a),
 	getLinkedMeetingJoinUrls: vi.fn(),
+	recordMeetingSyncFailure: (...a: unknown[]) =>
+		mocks.recordMeetingSyncFailureMock(...a),
+	clearMeetingSyncFailures: (...a: unknown[]) =>
+		mocks.clearMeetingSyncFailuresMock(...a),
 }));
 
 vi.mock("@repo/integrations/microsoft", () => ({
@@ -562,6 +568,32 @@ describe("listRecentMeetingInstancesForLinkedUrls", () => {
 		await expect(
 			listRecentMeetingInstancesForLinkedUrls(input),
 		).resolves.toEqual([]);
+	});
+
+	it("counts a disconnected account the tool REPORTS, not only one it throws", async () => {
+		// The tool signals a dead connection two ways: it throws, or it answers
+		// with an `error` field. Only the throw was counted, so a sync that
+		// died this way sat on zero failures — no banner, and the Reconnect
+		// button that exists for exactly this never appeared. The sibling test
+		// above misses it because its input carries no projectId, so neither
+		// recording branch is reachable there.
+		mocks.executeMicrosoftTeamsToolMock.mockResolvedValue({
+			error: "Microsoft not connected. Please connect your Microsoft account in Settings > Integrations.",
+		});
+
+		await expect(
+			listRecentMeetingInstancesForLinkedUrls({
+				...input,
+				projectId: "proj-1",
+			}),
+		).resolves.toEqual([]);
+
+		expect(mocks.recordMeetingSyncFailureMock).toHaveBeenCalledWith(
+			expect.objectContaining({ projectId: "proj-1" }),
+		);
+		// Still not a workflow failure: an hourly throw over a settled state
+		// helps nobody. Visible, not fatal.
+		expect(mocks.clearMeetingSyncFailuresMock).not.toHaveBeenCalled();
 	});
 
 	it("matches linked meetings when the calendar reads normally", async () => {

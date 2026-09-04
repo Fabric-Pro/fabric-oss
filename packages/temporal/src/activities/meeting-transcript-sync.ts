@@ -284,6 +284,20 @@ export async function listRecentMeetingInstancesForLinkedUrls(
 					"[MeetingTranscriptSync] Microsoft is not connected for the syncing account",
 					{ userId, error: result.error },
 				);
+				// The SAME state as the thrown case below, and it must be
+				// recorded the same way. The tool reports a dead connection
+				// either by throwing or by answering with an `error` field,
+				// and only the throw was counted — so a sync that died this
+				// way stayed on zero failures, never raised the banner, and
+				// never offered the Reconnect button that exists for exactly
+				// this (#2355).
+				if (projectId) {
+					await recordMeetingSyncFailure({
+						projectId,
+						errorMessage:
+							"Microsoft is not connected for the account this sync runs on. Reconnect it to resume.",
+					});
+				}
 				return [];
 			}
 			throw new Error(
