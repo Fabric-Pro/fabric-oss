@@ -4,6 +4,7 @@
  * GET  /projects/:id      get project details
  */
 import {
+	canEditProject,
 	createProject,
 	getProjectAccessById,
 	getProjectByIdForExternalApi,
@@ -13,7 +14,13 @@ import {
 import type { Hono } from "hono";
 import { requireScope } from "../external-api/middleware/api-key-auth";
 import type { ExternalApiVariables } from "../external-api/types";
-import { badRequest, notFound, ok, resolveV1Context } from "./helpers";
+import {
+	badRequest,
+	forbidden,
+	notFound,
+	ok,
+	resolveV1Context,
+} from "./helpers";
 
 export function registerProjectRoutes(
 	app: Hono<{ Variables: ExternalApiVariables }>,
@@ -185,6 +192,18 @@ export function registerProjectRoutes(
 		);
 		if (!existing) {
 			return c.json(notFound("Project"), 404);
+		}
+
+		// `getProjectAccessById` answers "may this caller see the project",
+		// which is what produces the 404 above rather than leaking existence.
+		// It is true for a Viewer and a Commenter, so it cannot also stand in
+		// for "may they change it". The documents routes on this same surface
+		// already make the distinction; these did not.
+		if (!(await canEditProject(id, ctx.userId))) {
+			return c.json(
+				forbidden("No edit permission for this project"),
+				403,
+			);
 		}
 
 		let body: {

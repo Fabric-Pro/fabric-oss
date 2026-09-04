@@ -348,6 +348,7 @@ describe("MCP gateway — a personal key resolves an organization", () => {
 			organizationId: ALPHA,
 			createdByUserId: USER_ID,
 		});
+		isOrganizationMember.mockResolvedValue(true);
 
 		const { response, sessionId } = await post(initializeBody(), {
 			authorization: `Bearer ${ORG_KEY}`,
@@ -358,9 +359,9 @@ describe("MCP gateway — a personal key resolves an organization", () => {
 		expect(getOrganizationApiKeyByPrefix).toHaveBeenCalledWith(
 			ORG_KEY_PREFIX,
 		);
-		// Neither question is asked on this branch: the key already answers it.
+		// The resolver is not asked — the key names its own tenant, and the
+		// header is ignored, which is what this test is really about.
 		expect(resolveUserOrganization).not.toHaveBeenCalled();
-		expect(isOrganizationMember).not.toHaveBeenCalled();
 
 		await post(toolCallBody(), {
 			authorization: `Bearer ${ORG_KEY}`,
@@ -369,6 +370,35 @@ describe("MCP gateway — a personal key resolves an organization", () => {
 		});
 
 		expect(lastToolSession().organizationId).toBe(ALPHA);
+	});
+
+	// This test previously asserted the opposite — that membership was NEVER
+	// checked on the organization-key branch, on the reasoning that a key
+	// carrying its own tenant had nothing left to verify. That is true of the
+	// tenant and false of the person: the key outlived its creator's
+	// membership, so removing someone from the organization left every key
+	// they had minted working until a human found and deleted the row.
+	// Membership is now re-read on every request (Fizzy #2380).
+	it("refuses an organization key whose creator has left the organization", async () => {
+		getOrganizationApiKeyByPrefix.mockResolvedValue({
+			id: "key-1",
+			isActive: true,
+			expiresAt: null,
+			keyHash: ORG_KEY_HASH,
+			organizationId: ALPHA,
+			createdByUserId: USER_ID,
+		});
+		isOrganizationMember.mockResolvedValue(false);
+
+		const { response } = await post(initializeBody(), {
+			authorization: `Bearer ${ORG_KEY}`,
+		});
+
+		expect(isOrganizationMember).toHaveBeenCalledWith(USER_ID, ALPHA);
+		// 401, the same answer a revoked or expired key gets: a caller holding
+		// a departed member's still-valid secret learns nothing about which of
+		// the two happened.
+		expect(response.status).toBe(401);
 	});
 
 	// This asserted that such a session stayed in no organization and the

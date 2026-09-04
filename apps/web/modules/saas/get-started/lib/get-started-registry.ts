@@ -602,7 +602,7 @@ const SETTINGS_GROUP: GsGroup = {
 			id: "settings-api-keys",
 			label: "API Keys",
 			description:
-				"Create and revoke Fabric API keys for programmatic access.",
+				"Create and revoke your own keys for connecting external tools to this organization.",
 			icon: KeyIcon,
 			cluster: "Tools & connections",
 			href: settingsHref("api-keys"),

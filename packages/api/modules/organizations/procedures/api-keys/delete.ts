@@ -18,7 +18,12 @@ import {
 import { requireOrgMembership } from "../../lib/membership";
 
 export const deleteOrganizationApiKeyProcedure = tenantProtectedProcedure
-	.use(requirePermission(Permissions.ORG_DELETE))
+	// `ORG_DELETE` is the permission for deleting the *organization*, and it is
+	// granted to owners alone. Mounted here it meant no admin could revoke an
+	// API key — while the settings page rendered them a delete button, because
+	// the client gate asked a different question. A live 403 nobody had
+	// reported, sitting on the one control that retires a leaked credential.
+	.use(requirePermission(Permissions.ORG_API_KEYS_DELETE))
 	.route({
 		method: "DELETE",
 		path: "/organizations/{organizationId}/api-keys/{id}",
@@ -45,21 +50,25 @@ export const deleteOrganizationApiKeyProcedure = tenantProtectedProcedure
 			session,
 		);
 
-		// Check if user is admin/owner of the organization
+		// Membership only; the role question is settled by the middleware above.
+		// What still matters here is *whose* key may be deleted, which the
+		// owner narrowing below answers.
 		const membership = await requireOrgMembership(
 			user.id,
 			// biome-ignore lint/style/noNonNullAssertion: organizationId is guaranteed by org-protected procedure
 			organizationId!,
-			["owner", "admin"],
 		);
 
 		if (!membership) {
 			throw new ORPCError("FORBIDDEN", {
-				message: "Only organization admins can delete API keys",
+				message: "You must be a member of this organization",
 			});
 		}
 
-		// Owners can delete any key; admins can only delete keys they created.
+		// Owners can delete any key in the organization; everyone else can only
+		// delete keys they created themselves. That narrowing is what makes it
+		// safe to let a member revoke at all — the permission says "may retire
+		// a credential", and this says "yours".
 		const canDeleteAnyKey = membership.role === "owner";
 
 		// Snapshot the key's user-meaningful identifier (name) BEFORE the

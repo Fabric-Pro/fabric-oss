@@ -19,6 +19,10 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
 	getUserApiKeyByPrefixIncludingRevoked: vi.fn(),
 	getOrganizationApiKeyByPrefixIncludingRevoked: vi.fn(),
+	// An organization key is only good while its creator is still a member.
+	// These cases are about tenant scoping, not offboarding, so default to
+	// membership holding.
+	isOrganizationMember: vi.fn().mockResolvedValue(true),
 	listAuditLog: vi.fn(),
 	countAuditLog: vi.fn(),
 	fetchAuditLogForExport: vi.fn(),
@@ -39,6 +43,7 @@ vi.mock("@repo/database", async (importOriginal) => {
 			mocks.getUserApiKeyByPrefixIncludingRevoked,
 		getOrganizationApiKeyByPrefixIncludingRevoked:
 			mocks.getOrganizationApiKeyByPrefixIncludingRevoked,
+		isOrganizationMember: mocks.isOrganizationMember,
 		listAuditLog: mocks.listAuditLog,
 		countAuditLog: mocks.countAuditLog,
 		fetchAuditLogForExport: mocks.fetchAuditLogForExport,

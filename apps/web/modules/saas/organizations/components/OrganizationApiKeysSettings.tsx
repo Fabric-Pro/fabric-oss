@@ -1,5 +1,6 @@
 "use client";
 
+import { useSession } from "@saas/auth/hooks/use-session";
 import { useOrganizationContext } from "@saas/organizations/hooks/use-organization-context";
 import { SettingsItem } from "@saas/shared/components/SettingsItem";
 import { orpcClient } from "@shared/lib/orpc-client";
@@ -44,7 +45,7 @@ import { useEffect, useState } from "react";
 import { toast } from "sonner";
 
 // Available scopes with descriptions
-const AVAILABLE_SCOPES = [
+export const AVAILABLE_SCOPES = [
 	{
 		id: "mcp:read",
 		label: "MCP Read",
@@ -91,12 +92,93 @@ const AVAILABLE_SCOPES = [
 		label: "Agents Stream",
 		description: "Access real-time agent execution streams",
 	},
+	{
+		id: "orgs:read",
+		label: "Organizations Read",
+		description: "List organizations and read your identity",
+	},
+	{
+		id: "features:read",
+		label: "Features Read",
+		description: "Read features, bugs and their decision history",
+	},
+	{
+		id: "features:write",
+		label: "Features Write",
+		description: "Create and update features, bugs and their tasks",
+	},
+	{
+		id: "workspaces:read",
+		label: "Workspaces Read",
+		description: "Read workspaces and run knowledge queries",
+	},
+	{
+		id: "workflows:read",
+		label: "Workflows Read",
+		description: "Read workflows and their execution history",
+	},
+	{
+		id: "workflows:run",
+		label: "Workflows Run",
+		description: "Trigger workflow executions",
+	},
+	{
+		id: "frames:read",
+		label: "Frames Read",
+		description: "Read frames and slideshows",
+	},
+	{
+		id: "frames:write",
+		label: "Frames Write",
+		description: "Create, update and share frames",
+	},
+	{
+		id: "chats:read",
+		label: "Chats Read",
+		description: "Read AI chat threads",
+	},
+	{
+		id: "audit_log:read",
+		label: "Audit Log Read",
+		description: "Read this organization's audit log",
+	},
+	{
+		id: "audit_log:export",
+		label: "Audit Log Export",
+		description: "Export the full audit trail in bulk",
+	},
+	{
+		id: "system_health:read",
+		label: "System Health Read",
+		description: "Read health signals for this organization",
+	},
+	{
+		id: "status_updates:read",
+		label: "Status Updates Read",
+		description: "Read platform status announcements",
+	},
 ] as const;
+
+type ApiKeyScope = (typeof AVAILABLE_SCOPES)[number]["id"];
 
 export function OrganizationApiKeysSettings() {
 	const queryClient = useQueryClient();
-	const { organizationId, isOrgContext, isOrganizationAdmin } =
-		useOrganizationContext();
+	const { organizationId, isOrgContext, userRole } = useOrganizationContext();
+	const { user } = useSession();
+
+	// Creating a key is a member capability: the key carries only the access
+	// its creator already has, so minting one grants nothing new. It used to be
+	// admin-gated, which left members no way to connect an editor or AI tool
+	// short of being promoted — a far larger grant than the key itself.
+	const canCreateKey = Boolean(organizationId);
+
+	// Revocation mirrors the server: an owner may retire any key in the
+	// organization, everyone else only their own. Rendering a button the API
+	// would refuse is how the delete control came to 403 for admins in the
+	// first place.
+	const isOrganizationOwner = userRole === "owner";
+	const canRevokeKey = (createdByUserId: string) =>
+		isOrganizationOwner || createdByUserId === user?.id;
 	const [isCreateOpen, setIsCreateOpen] = useState(false);
 	const [newKeyName, setNewKeyName] = useState("");
 	const [selectedScopes, setSelectedScopes] = useState<string[]>([
@@ -142,15 +224,10 @@ export function OrganizationApiKeysSettings() {
 			return await orpcClient.organizations.apiKeys.create({
 				organizationId,
 				name,
-				scopes: scopes as (
-					| "mcp:read"
-					| "mcp:write"
-					| "ai:models:read"
-					| "ai:models:resolve"
-					| "projects:read"
-					| "projects:write"
-					| "*"
-				)[],
+				// Derived from the list above rather than re-typed: the hand
+				// written union had fallen five scopes behind what the
+				// procedure accepts, and nothing could notice.
+				scopes: scopes as ApiKeyScope[],
 			});
 		},
 		onSuccess: (data) => {
@@ -261,12 +338,16 @@ export function OrganizationApiKeysSettings() {
 
 	return (
 		<SettingsItem
-			title="Organization API Keys"
-			description="Manage API keys for external agents and integrations. These keys allow external services to access organization resources with specific permissions."
+			title="Your API Keys"
+			description={
+				isOrganizationOwner
+					? "Keys carry the access of whoever created them — they are personal, not shared. As an owner you can see and revoke every key in this organization."
+					: "Connect external tools to Fabric. A key carries your own access to this organization and nothing more, and only you can see the keys you create."
+			}
 		>
 			<div className="space-y-4">
 				{/* Create Key Dialog */}
-				{isOrganizationAdmin && (
+				{canCreateKey && (
 					<Dialog
 						open={isCreateOpen}
 						onOpenChange={handleCreateDialogOpenChange}
@@ -282,7 +363,7 @@ export function OrganizationApiKeysSettings() {
 								<DialogTitle>
 									{newKey
 										? "API Key Created"
-										: "Create Organization API Key"}
+										: "Create API Key"}
 								</DialogTitle>
 								<DialogDescription>
 									{newKey
@@ -402,6 +483,13 @@ export function OrganizationApiKeysSettings() {
 				)}
 
 				{/* API Keys Table */}
+				{!isLoading && apiKeys && apiKeys.length > 0 && (
+					<h3 className="font-medium text-sm">
+						{isOrganizationOwner
+							? "All keys in this organization"
+							: "Your keys"}
+					</h3>
+				)}
 				{isLoading ? (
 					<div className="text-muted-foreground text-sm">
 						Loading...
@@ -416,9 +504,9 @@ export function OrganizationApiKeysSettings() {
 									<TableHead>Scopes</TableHead>
 									<TableHead>Created By</TableHead>
 									<TableHead>Last Used</TableHead>
-									{isOrganizationAdmin && (
-										<TableHead className="w-[50px]" />
-									)}
+									{apiKeys.some((key) =>
+										canRevokeKey(key.createdBy.id),
+									) && <TableHead className="w-[50px]" />}
 								</TableRow>
 							</TableHeader>
 							<TableBody>
@@ -500,7 +588,7 @@ export function OrganizationApiKeysSettings() {
 										<TableCell className="text-muted-foreground text-sm">
 											{formatDate(key.lastUsedAt)}
 										</TableCell>
-										{isOrganizationAdmin && (
+										{canRevokeKey(key.createdBy.id) && (
 											<TableCell>
 												<Button
 													variant="ghost"
@@ -527,12 +615,10 @@ export function OrganizationApiKeysSettings() {
 				) : (
 					<div className="rounded-lg border border-dashed p-8 text-center">
 						<KeyIcon className="mx-auto size-8 text-muted-foreground" />
-						<h3 className="mt-4 font-medium">
-							No Organization API Keys
-						</h3>
+						<h3 className="mt-4 font-medium">No API keys yet</h3>
 						<p className="mt-1 text-muted-foreground text-sm">
-							Create an API key to allow external agents to access
-							organization resources.
+							Create one to connect an editor, an AI assistant or
+							a script to this organization.
 						</p>
 					</div>
 				)}
@@ -543,7 +629,7 @@ export function OrganizationApiKeysSettings() {
 						<InfoIcon className="mt-0.5 size-4 text-muted-foreground" />
 						<div>
 							<h4 className="font-medium text-sm">
-								Using Organization API Keys
+								Using your API key
 							</h4>
 							<p className="mt-1 text-muted-foreground text-xs">
 								External agents can use these keys to resolve AI

@@ -18,6 +18,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
 	getUserApiKeyByPrefixIncludingRevoked: vi.fn(),
 	getOrganizationApiKeyByPrefixIncludingRevoked: vi.fn(),
+	isOrganizationMember: vi.fn(),
 }));
 
 vi.mock("@repo/database", async (importOriginal) => {
@@ -28,6 +29,7 @@ vi.mock("@repo/database", async (importOriginal) => {
 			mocks.getUserApiKeyByPrefixIncludingRevoked,
 		getOrganizationApiKeyByPrefixIncludingRevoked:
 			mocks.getOrganizationApiKeyByPrefixIncludingRevoked,
+		isOrganizationMember: mocks.isOrganizationMember,
 	};
 });
 
@@ -45,6 +47,12 @@ function hashFor(key: string): string {
 beforeEach(() => {
 	mocks.getUserApiKeyByPrefixIncludingRevoked.mockReset();
 	mocks.getOrganizationApiKeyByPrefixIncludingRevoked.mockReset();
+	// An organization key now also has to prove its creator still belongs to
+	// the organization it speaks for. Default to "yes" so the existing cases
+	// keep testing what they were written to test; the departure case sets it
+	// to false explicitly.
+	mocks.isOrganizationMember.mockReset();
+	mocks.isOrganizationMember.mockResolvedValue(true);
 });
 
 describe("verifyAuditApiKey — error paths", () => {
@@ -170,6 +178,40 @@ describe("verifyAuditApiKey — happy path", () => {
 			expect(r.key.owner.organizationId).toBe("org-123");
 			expect(r.key.owner.userId).toBe("user-99");
 		}
+	});
+
+	// The key row says nothing about whether its creator still belongs to the
+	// organization it speaks for, and membership is where the permissions come
+	// from. Read live, an offboarded creator loses the key on their next
+	// request instead of keeping it until a human deletes the row (Fizzy #2380).
+	it("refuses an organization key whose creator has left the organization", async () => {
+		const raw = "org_def67890_secret";
+		mocks.getOrganizationApiKeyByPrefixIncludingRevoked.mockResolvedValue({
+			id: "key-2",
+			organizationId: "org-123",
+			createdByUserId: "user-99",
+			keyHash: hashFor(raw),
+			keyPrefix: "org_def67890",
+			name: "SRE laptop",
+			scopes: ["audit_log:read"],
+			isActive: true,
+			expiresAt: null,
+		});
+		mocks.isOrganizationMember.mockResolvedValue(false);
+
+		const r = await verifyAuditApiKey(raw);
+
+		expect(mocks.isOrganizationMember).toHaveBeenCalledWith(
+			"user-99",
+			"org-123",
+		);
+		expect(r.ok).toBe(false);
+		expect(r.error).toBe("NOT_A_MEMBER");
+		// Attributed, because the secret verified: the attempt belongs in the
+		// tenant's own audit trail, which is where an operator would look to
+		// find out that a departed member's key is still being presented.
+		expect(r.provenOwner?.organizationId).toBe("org-123");
+		expect(r.provenOwner?.userId).toBe("user-99");
 	});
 
 	it("accepts a key whose expiresAt is in the future", async () => {

@@ -84,6 +84,8 @@ const session: GatewaySession = {
 	userName: "Example Agent",
 	email: "agent@example.com",
 	role: "user",
+	credential: "personal-key",
+	scopes: ["*"],
 	createdAt: new Date("2026-01-01T00:00:00Z"),
 	expiresAt: new Date("2026-01-02T00:00:00Z"),
 };

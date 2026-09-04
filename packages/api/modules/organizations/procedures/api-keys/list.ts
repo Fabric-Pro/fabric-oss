@@ -17,7 +17,11 @@ import {
 import { requireOrgMembership } from "../../lib/membership";
 
 export const listOrganizationApiKeysProcedure = tenantProtectedProcedure
-	.use(requirePermission(Permissions.ORG_READ))
+	// Behaviour is unchanged — `ORG_API_KEYS_READ` and `ORG_READ` are both
+	// granted from the viewer set up — but the procedure now names the
+	// permission it is actually about, so a future change to who may see keys
+	// is a change to that permission rather than to organization reads at large.
+	.use(requirePermission(Permissions.ORG_API_KEYS_READ))
 	.route({
 		method: "GET",
 		path: "/organizations/{organizationId}/api-keys",

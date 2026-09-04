@@ -73,6 +73,15 @@ function mapVerificationError(error: AuditApiKeyError): MappedError {
 				code: "API_KEY_EXPIRED",
 				message: "API key has expired.",
 			};
+		case "NOT_A_MEMBER":
+			// 401, not 403. A 403 would confirm the secret is good and only
+			// the person is gone, which is more than a caller holding a
+			// departed employee's key should be told.
+			return {
+				status: 401,
+				code: "API_KEY_REVOKED",
+				message: "API key has been revoked.",
+			};
 		case "NOT_FOUND":
 		case "HASH_MISMATCH":
 			// Collapsed on purpose so probing cannot distinguish "no such key

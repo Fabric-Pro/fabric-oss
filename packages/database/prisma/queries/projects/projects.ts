@@ -1411,6 +1411,25 @@ export async function canCreateProjectStory(
 }
 
 /**
+ * Returns `true` if `userId` may modify stories — and the tasks hanging off
+ * them — on `projectId`, matching the authorization paths of
+ * `requireProjectPermission(STORY_UPDATE)`.
+ *
+ * Distinct from `canEditProject`, which asks about `PROJECT_UPDATE`. The two
+ * coincide for OWNER and PROJECT_ADMIN and part company at EDITOR, so gating a
+ * story or task write on the project permission is close enough to look right
+ * and wrong for exactly the roles this helper exists to separate. The oRPC
+ * procedures for task update and toggle both require `STORY_UPDATE`; anything
+ * reaching the same rows from a non-oRPC surface has to ask the same question.
+ */
+export async function canUpdateProjectStory(
+	projectId: string,
+	userId: string,
+): Promise<boolean> {
+	return projectPermissionHolds(projectId, userId, Permissions.STORY_UPDATE);
+}
+
+/**
  * Upsert a DRAFT project by client-generated draftKey (idempotent)
  * Uses XOR tenant isolation: personal (organizationId IS NULL) vs org context
  */

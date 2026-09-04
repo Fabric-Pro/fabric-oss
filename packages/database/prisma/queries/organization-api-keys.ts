@@ -143,7 +143,23 @@ export async function getOrganizationApiKeyByPrefixIncludingRevoked(
 }
 
 /**
- * Verify an API key by hash and return organization context
+ * Verify an API key by hash and return organization context.
+ *
+ * Three things have to hold, and only two of them live on the key row. The key
+ * must exist, be active and unexpired — and its creator must *still* be a
+ * member of the organization it was issued for.
+ *
+ * That last one is the whole point of verifying rather than merely looking up.
+ * A key is a claim about who is asking; it is never a claim about what they may
+ * do. Permissions come from membership, membership changes, and it changes
+ * without anyone thinking about the API keys that person happens to hold. Read
+ * live, an offboarded creator loses the key on their next request. Read from
+ * the key row, they keep it until a human notices — which is not a revocation
+ * story anyone should have to run.
+ *
+ * Returns `null` for a revoked member, the same answer an inactive or expired
+ * key gets, so no caller has to learn a new failure mode and none can
+ * distinguish "dead key" from "departed person".
  */
 export async function verifyOrganizationApiKey(keyHash: string) {
 	const apiKey = await db.organizationApiKey.findFirst({
@@ -161,6 +177,18 @@ export async function verifyOrganizationApiKey(keyHash: string) {
 	});
 
 	if (!apiKey) {
+		return null;
+	}
+
+	const membership = await db.member.findFirst({
+		where: {
+			organizationId: apiKey.organizationId,
+			userId: apiKey.createdByUserId,
+		},
+		select: { id: true },
+	});
+
+	if (!membership) {
 		return null;
 	}
 

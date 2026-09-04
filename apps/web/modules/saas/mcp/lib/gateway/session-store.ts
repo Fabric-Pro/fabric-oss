@@ -9,7 +9,7 @@
  * multi-instance deployments, this should be backed by Redis.
  */
 
-import type { GatewaySession } from "./types";
+import type { GatewayCredential, GatewaySession } from "./types";
 
 /** Session TTL: 24 hours */
 const SESSION_TTL_MS = 24 * 60 * 60 * 1000;
@@ -41,6 +41,8 @@ export async function createGatewaySession(params: {
 	userName: string;
 	email: string;
 	role: "user" | "admin";
+	credential: GatewayCredential;
+	scopes: string[];
 }): Promise<GatewaySession> {
 	const sessionId = generateSessionToken();
 	const now = new Date();
@@ -53,6 +55,8 @@ export async function createGatewaySession(params: {
 		userName: params.userName,
 		email: params.email,
 		role: params.role,
+		credential: params.credential,
+		scopes: params.scopes,
 		createdAt: now,
 		expiresAt,
 	};

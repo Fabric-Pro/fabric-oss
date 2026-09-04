@@ -268,7 +268,9 @@ describe("hosted MCP server — caller-supplied organization", () => {
 			id: "key-1",
 			organizationId: MEMBER_ORG,
 			createdByUserId: "user-1",
+			scopes: ["*"],
 		});
+		isOrganizationMember.mockResolvedValue(true);
 
 		const { POST } = await loadRoute();
 		const { response, sessionId } = await initialize({
@@ -277,7 +279,16 @@ describe("hosted MCP server — caller-supplied organization", () => {
 		});
 
 		expect(response.status).toBe(200);
-		expect(isOrganizationMember).not.toHaveBeenCalled();
+		// Membership IS now consulted on this branch — the key proves who its
+		// creator is, never that they still belong here (Fizzy #2380). What
+		// this case is about is the header, and the header is still ignored:
+		// the question asked is about the key's own organization, not the one
+		// the caller named.
+		expect(isOrganizationMember).toHaveBeenCalledWith("user-1", MEMBER_ORG);
+		expect(isOrganizationMember).not.toHaveBeenCalledWith(
+			"user-1",
+			OUTSIDE_ORG,
+		);
 
 		const call = await POST(
 			new Request(MCP_URL, {

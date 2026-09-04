@@ -1400,6 +1400,109 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 
 // ─── Tool Handlers ──────────────────────────────────────────────────────────
 
+// ─── Scope Enforcement ──────────────────────────────────────────────────────
+
+/**
+ * What a key must hold to call each platform tool.
+ *
+ * The scopes chosen when a key is created were stored and never read on this
+ * surface: `GatewaySession` carried no scope list at all, so a key ticked "MCP
+ * Read" and nothing else could still call every write tool here. On the REST v1
+ * surface the same scopes have always been enforced. This is that check, in the
+ * one place every platform tool passes through.
+ *
+ * `kind` is what makes the umbrella work. Keys in the wild default to
+ * `["mcp:read", "mcp:write"]` (see `createOrganizationApiKey`), and demanding
+ * `projects:write` from them the day this deploys would break every one. So a
+ * tool is reachable with its own specific scope OR with the coarse `mcp:*`
+ * scope for its direction — which is also what `AGENTS.md` § Scope vocabulary
+ * describes `mcp:read` / `mcp:write` as granting. Reads accept either coarse
+ * scope, because a key permitted to write is not meaningfully denied a read.
+ */
+type ToolScope = { scope: string; kind: "read" | "write" };
+
+export const TOOL_SCOPES: Record<string, ToolScope> = {
+	// Identity and organizations
+	fabric_get_identity: { scope: "orgs:read", kind: "read" },
+	fabric_list_organizations: { scope: "orgs:read", kind: "read" },
+	fabric_switch_organization: { scope: "orgs:read", kind: "write" },
+
+	// Projects, documents and context
+	fabric_list_projects: { scope: "projects:read", kind: "read" },
+	fabric_get_project: { scope: "projects:read", kind: "read" },
+	fabric_get_project_statuses: { scope: "projects:read", kind: "read" },
+	fabric_list_documents: { scope: "projects:read", kind: "read" },
+	fabric_get_document: { scope: "projects:read", kind: "read" },
+	fabric_list_project_contexts: { scope: "projects:read", kind: "read" },
+	fabric_get_project_context: { scope: "projects:read", kind: "read" },
+	fabric_create_project: { scope: "projects:write", kind: "write" },
+	fabric_update_project: { scope: "projects:write", kind: "write" },
+	fabric_create_document: { scope: "projects:write", kind: "write" },
+	fabric_update_document: { scope: "projects:write", kind: "write" },
+
+	// Features, bugs and their tasks
+	fabric_list_features: { scope: "features:read", kind: "read" },
+	fabric_get_feature: { scope: "features:read", kind: "read" },
+	fabric_get_feature_decisions: { scope: "features:read", kind: "read" },
+	fabric_get_feature_versions: { scope: "features:read", kind: "read" },
+	fabric_create_feature: { scope: "features:write", kind: "write" },
+	fabric_create_bug: { scope: "features:write", kind: "write" },
+	fabric_create_feature_task: { scope: "features:write", kind: "write" },
+	fabric_update_feature_status: { scope: "features:write", kind: "write" },
+	fabric_complete_task: { scope: "features:write", kind: "write" },
+	fabric_update_task: { scope: "features:write", kind: "write" },
+
+	// Workspaces
+	fabric_list_workspaces: { scope: "workspaces:read", kind: "read" },
+	fabric_get_workspace: { scope: "workspaces:read", kind: "read" },
+	fabric_query_workspace: { scope: "workspaces:read", kind: "read" },
+
+	// Workflows
+	fabric_list_workflows: { scope: "workflows:read", kind: "read" },
+	fabric_get_workflow: { scope: "workflows:read", kind: "read" },
+	fabric_get_workflow_execution: { scope: "workflows:read", kind: "read" },
+	fabric_execute_workflow: { scope: "workflows:run", kind: "write" },
+
+	// Frames
+	fabric_list_frames: { scope: "frames:read", kind: "read" },
+	fabric_get_frame: { scope: "frames:read", kind: "read" },
+	fabric_create_frame: { scope: "frames:write", kind: "write" },
+	fabric_create_slideshow: { scope: "frames:write", kind: "write" },
+	fabric_update_frame: { scope: "frames:write", kind: "write" },
+	fabric_share_frame: { scope: "frames:write", kind: "write" },
+
+	// Chats
+	fabric_list_chats: { scope: "chats:read", kind: "read" },
+
+	// MCP plumbing and delegated authority. Authority is granted to a specific
+	// gateway session for a bounded time, so requesting or revoking it changes
+	// what this session may reach — a write, whatever it reads afterwards.
+	fabric_list_connected_servers: { scope: "mcp:read", kind: "read" },
+	fabric_check_authority: { scope: "mcp:read", kind: "read" },
+	fabric_request_authority: { scope: "mcp:write", kind: "write" },
+	fabric_revoke_authority: { scope: "mcp:write", kind: "write" },
+};
+
+/**
+ * A tool with no entry above is treated as a write needing `mcp:write`.
+ *
+ * Unmapped means unclassified, and the safe reading of "we do not know what
+ * this does" is the stricter one. The drift test asserts every exported tool
+ * definition has an entry, so this should never be reached in practice — it is
+ * the behaviour if it ever is.
+ */
+const UNMAPPED_TOOL_SCOPE: ToolScope = { scope: "mcp:write", kind: "write" };
+
+function scopeSatisfied(granted: string[], required: ToolScope): boolean {
+	if (granted.includes("*") || granted.includes(required.scope)) {
+		return true;
+	}
+	if (granted.includes("mcp:write")) {
+		return true;
+	}
+	return required.kind === "read" && granted.includes("mcp:read");
+}
+
 /**
  * Execute a platform tool by name.
  * All DB imports are dynamic to avoid pulling Prisma into the module scope.
@@ -1409,6 +1512,13 @@ export async function executePlatformTool(
 	args: Record<string, unknown>,
 	session: GatewaySession,
 ): Promise<ToolCallResult> {
+	const required = TOOL_SCOPES[toolName] ?? UNMAPPED_TOOL_SCOPE;
+	if (!scopeSatisfied(session.scopes, required)) {
+		return errorResult(
+			`This API key does not have the "${required.scope}" scope required by ${toolName}.`,
+		);
+	}
+
 	try {
 		switch (toolName) {
 			case "fabric_get_identity":
@@ -1621,6 +1731,21 @@ async function handleSwitchOrganization(
 		);
 	}
 
+	// An organization key names its tenant in the key record, and the protocol
+	// routes already refuse to let a request header move it. This tool was the
+	// way around that: it checks the *creator's* memberships, so a key issued
+	// for one organization could be walked into any other its creator belongs
+	// to — which made the key's `organizationId` look like a boundary while
+	// being a starting position. A key issued for an organization belongs to
+	// that organization; callers who need to move between tenants authenticate
+	// as themselves.
+	if (session.credential === "organization-key") {
+		return errorResult(
+			"This API key is issued for a single organization and cannot switch to another. " +
+				"Use a key issued for the organization you want, or authenticate as yourself.",
+		);
+	}
+
 	// Same verifier the protocol routes use on a caller-supplied
 	// organization, so the two selectors cannot drift into disagreeing
 	// about who is a member of what.
@@ -1731,11 +1856,34 @@ async function handleCreateProject(
 	args: Record<string, unknown>,
 	session: GatewaySession,
 ): Promise<ToolCallResult> {
-	const { createProject } = await import("@repo/database");
+	const { createProject, canCreateProjectInOrganization } = await import(
+		"@repo/database"
+	);
 
 	const name = args.name as string;
 	if (!name) {
 		return errorResult("name is required");
+	}
+
+	// This handler had no authorization at all — a name check, then a write.
+	// Its oRPC counterpart gates on PROJECT_CREATE, which the viewer role does
+	// not hold, so the tool let through exactly the callers the UI refuses.
+	// Asked at the organization level rather than the project level because
+	// there is no project yet to have a role on.
+	if (!session.organizationId) {
+		return errorResult(
+			"No organization in this session. Call fabric_list_organizations and switch into one first.",
+		);
+	}
+	if (
+		!(await canCreateProjectInOrganization(
+			session.userId,
+			session.organizationId,
+		))
+	) {
+		return errorResult(
+			"No permission to create projects in this organization",
+		);
 	}
 
 	const project = await createProject({
@@ -2232,7 +2380,8 @@ async function handleCompleteTask(
 	args: Record<string, unknown>,
 	session: GatewaySession,
 ): Promise<ToolCallResult> {
-	const { updateTask, hasProjectAccess, db } = await import("@repo/database");
+	const { updateTask, hasProjectAccess, canUpdateProjectStory, db } =
+		await import("@repo/database");
 
 	const taskId = args.taskId as string;
 	const projectId = args.projectId as string;
@@ -2251,6 +2400,16 @@ async function handleCompleteTask(
 	);
 	if (!hasAccess) {
 		return errorResult("Project not found or access denied");
+	}
+
+	// `hasProjectAccess` answers "may this caller see the project", which is
+	// the right question for the refusal above — it is what lets a stranger be
+	// told "not found" rather than "forbidden". It is the wrong question for a
+	// write: it is true for a Viewer and a Commenter, neither of whom may touch
+	// a task through the UI. The oRPC counterpart of this tool
+	// (stories/tasks/toggle-task) requires STORY_UPDATE, so this asks the same.
+	if (!(await canUpdateProjectStory(projectId, session.userId))) {
+		return errorResult("No permission to update tasks in this project");
 	}
 
 	// Verify task belongs to a story in this project
@@ -2275,7 +2434,8 @@ async function handleUpdateTask(
 	args: Record<string, unknown>,
 	session: GatewaySession,
 ): Promise<ToolCallResult> {
-	const { updateTask, hasProjectAccess, db } = await import("@repo/database");
+	const { updateTask, hasProjectAccess, canUpdateProjectStory, db } =
+		await import("@repo/database");
 
 	const taskId = args.taskId as string;
 	const projectId = args.projectId as string;
@@ -2293,6 +2453,12 @@ async function handleUpdateTask(
 	);
 	if (!hasAccess) {
 		return errorResult("Project not found or access denied");
+	}
+
+	// Visibility is not permission — see the note in handleCompleteTask. The
+	// oRPC counterpart (stories/tasks/update-task) requires STORY_UPDATE.
+	if (!(await canUpdateProjectStory(projectId, session.userId))) {
+		return errorResult("No permission to update tasks in this project");
 	}
 
 	// Verify task belongs to a story in this project

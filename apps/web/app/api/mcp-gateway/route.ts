@@ -44,6 +44,7 @@ import {
 	generateRequestFingerprint,
 	resolveProviderKeyFromToolPrefix,
 } from "@saas/mcp/lib/gateway/authority-service";
+import type { GatewayCredential } from "@saas/mcp/lib/gateway/types";
 import { recordOrganizationRefusal } from "@saas/mcp/lib/record-organization-refusal";
 import { type NextRequest, NextResponse } from "next/server";
 
@@ -72,6 +73,14 @@ interface AuthResult {
 	userName: string;
 	email: string;
 	role: "user" | "admin";
+	/** What proved this identity. See `GatewayCredential`. */
+	credential: GatewayCredential;
+	/**
+	 * Scopes the presenting key was granted. A browser session gets `["*"]`:
+	 * no key chose scopes, and the interactive checks that already govern the
+	 * UI are not loosened by anything here.
+	 */
+	scopes: string[];
 }
 
 /**
@@ -181,6 +190,8 @@ async function authenticateRequest(request: NextRequest): Promise<AuthOutcome> {
 			userName: user.name || "Unknown",
 			email: user.email,
 			role: (user.role as "user" | "admin") || "user",
+			credential: "personal-key" as const,
+			scopes: result.scopes ?? [],
 		};
 
 		// The caller-supplied organization is verified HERE, against the user
@@ -241,10 +252,15 @@ async function authenticateRequest(request: NextRequest): Promise<AuthOutcome> {
 	}
 
 	// 1b. Organization API key (Bearer org_xxx) — organizationId comes from the
-	// key record itself, so there is nothing caller-supplied to resolve or to
-	// verify on this branch, and the organization header is deliberately not
-	// consulted: a key that carries its own tenant cannot be pointed at
-	// another one by a request header.
+	// key record itself, so there is nothing caller-supplied to resolve, and
+	// the organization header is deliberately not consulted: a key that
+	// carries its own tenant cannot be pointed at another one by a request
+	// header.
+	//
+	// There is still something to verify, though, and this branch used to say
+	// there was not. The tenant is settled by the key; the *person* is not. A
+	// key proves who its creator is, never that they still belong here, so
+	// membership is re-read below on every request.
 	if (authHeader?.startsWith("Bearer org_")) {
 		const apiKey = authHeader.substring(7);
 		const parts = apiKey.split("_");
@@ -256,6 +272,7 @@ async function authenticateRequest(request: NextRequest): Promise<AuthOutcome> {
 		const {
 			getOrganizationApiKeyByPrefix,
 			updateOrganizationApiKeyUsage,
+			isOrganizationMember,
 			db,
 		} = await import("@repo/database");
 
@@ -283,12 +300,33 @@ async function authenticateRequest(request: NextRequest): Promise<AuthOutcome> {
 			return UNAUTHENTICATED;
 		}
 
+		// Offboarding has to reach the API, and until now it did not: the key
+		// outlived its creator's membership, so someone removed from the
+		// organization kept every capability this key carries until a human
+		// found the row and deleted it. Permissions resolve live — from
+		// membership, on each request — and a key is only ever the claim about
+		// *who* is asking.
+		//
+		// 401 rather than a readable refusal, deliberately: the same answer an
+		// inactive or expired key gets, so a caller holding a still-valid
+		// secret cannot tell "this key is dead" from "this person is out".
+		if (
+			!(await isOrganizationMember(
+				storedKey.createdByUserId,
+				storedKey.organizationId,
+			))
+		) {
+			return UNAUTHENTICATED;
+		}
+
 		return authenticatedAs({
 			userId: storedKey.createdByUserId,
 			organizationId: storedKey.organizationId,
 			userName: user.name || "Unknown",
 			email: user.email,
 			role: (user.role as "user" | "admin") || "user",
+			credential: "organization-key",
+			scopes: storedKey.scopes,
 		});
 	}
 
@@ -353,6 +391,8 @@ async function authenticateRequest(request: NextRequest): Promise<AuthOutcome> {
 					userName: session.user.name || "Unknown",
 					email: session.user.email,
 					role: (session.user.role as "user" | "admin") || "user",
+					credential: "session",
+					scopes: ["*"],
 				});
 		}
 	}
@@ -363,6 +403,8 @@ async function authenticateRequest(request: NextRequest): Promise<AuthOutcome> {
 		userName: session.user.name || "Unknown",
 		email: session.user.email,
 		role: (session.user.role as "user" | "admin") || "user",
+		credential: "session",
+		scopes: ["*"],
 	});
 }
 
@@ -486,6 +528,8 @@ async function getOrCreateSession(
 		userName: authResult.userName,
 		email: authResult.email,
 		role: authResult.role,
+		credential: authResult.credential,
+		scopes: authResult.scopes,
 	});
 
 	return { session, sessionId: session.sessionId, isNew: true };
