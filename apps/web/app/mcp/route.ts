@@ -39,6 +39,7 @@ import {
 	PLATFORM_TOOL_DEFINITIONS,
 } from "../../modules/saas/mcp/lib/gateway/platform-tools";
 import type {
+	GatewayCredential,
 	GatewaySession,
 	GatewayToolDefinition,
 } from "../../modules/saas/mcp/lib/gateway/types";
@@ -61,6 +62,14 @@ interface AuthResult {
 	userName: string;
 	email: string;
 	role: "user" | "admin";
+	/** What proved this identity. See `GatewayCredential`. */
+	credential: GatewayCredential;
+	/**
+	 * Scopes the presenting key was granted. A browser session gets `["*"]`:
+	 * no key chose scopes, and the interactive checks that already govern the
+	 * UI are not loosened by anything here.
+	 */
+	scopes: string[];
 }
 
 /**
@@ -580,6 +589,7 @@ async function authenticateRequest(request: NextRequest): Promise<AuthOutcome> {
 				id: true,
 				organizationId: true,
 				createdByUserId: true,
+				scopes: true,
 			},
 		});
 
@@ -598,14 +608,34 @@ async function authenticateRequest(request: NextRequest): Promise<AuthOutcome> {
 				return ANONYMOUS_AUTH;
 			}
 
-			// The organization comes from the key record itself, so there is
-			// nothing caller-supplied to verify on this branch.
+			// The organization comes from the key record, so there is nothing
+			// caller-supplied to resolve here — but the key says only who its
+			// creator is, never that they still belong to that organization.
+			// Membership is the permission, and permissions resolve live, so
+			// an offboarded creator loses this key on their next request
+			// instead of keeping it until someone deletes the row by hand.
+			//
+			// Falls through to the anonymous public session, as every other
+			// failure on this route does: the caller keeps a working MCP
+			// connection and loses every organization-scoped capability,
+			// which is exactly what losing membership should mean.
+			if (
+				!(await isOrganizationMember(
+					orgKey.createdByUserId,
+					orgKey.organizationId,
+				))
+			) {
+				return ANONYMOUS_AUTH;
+			}
+
 			return authenticatedAs({
 				userId: orgKey.createdByUserId,
 				organizationId: orgKey.organizationId,
 				userName: user.name || "Unknown",
 				email: user.email,
 				role: (user.role as "user" | "admin") || "user",
+				credential: "organization-key",
+				scopes: orgKey.scopes,
 			});
 		}
 
@@ -630,6 +660,8 @@ async function authenticateRequest(request: NextRequest): Promise<AuthOutcome> {
 			userName: user.name || "Unknown",
 			email: user.email,
 			role: (user.role as "user" | "admin") || "user",
+			credential: "personal-key" as const,
+			scopes: result.scopes ?? [],
 		};
 
 		// The tenant on this branch is whatever the request asked for, so it is
@@ -788,6 +820,8 @@ async function authenticateRequest(request: NextRequest): Promise<AuthOutcome> {
 					userName: session.user.name || "Unknown",
 					email: session.user.email,
 					role: (session.user.role as "user" | "admin") || "user",
+					credential: "session",
+					scopes: ["*"],
 				});
 		}
 	}
@@ -798,6 +832,8 @@ async function authenticateRequest(request: NextRequest): Promise<AuthOutcome> {
 		userName: session.user.name || "Unknown",
 		email: session.user.email,
 		role: (session.user.role as "user" | "admin") || "user",
+		credential: "session",
+		scopes: ["*"],
 	});
 }
 
@@ -878,6 +914,13 @@ function authResultToSessionInput(authResult: AuthResult | null) {
 		userName: "Public MCP Session",
 		email: "public@fabric.local",
 		role: "user" as const,
+		// No key was presented, so there are no key scopes to honour. What
+		// this session cannot reach, it cannot reach because it has no tenant:
+		// every organization-scoped query already returns nothing for it.
+		// Narrowing here instead would be a behaviour change smuggled in under
+		// an unrelated fix.
+		credential: "session" as const,
+		scopes: ["*"],
 	};
 }
 
@@ -892,6 +935,14 @@ function restoreAuthResult(session: McpSession): AuthResult | null {
 		userName: session.userName,
 		email: session.email,
 		role: session.role,
+		// The persisted session carries neither field, and it does not need to:
+		// this value exists only to be compared against a freshly authenticated
+		// one (`checkStoredSessionAuth` looks at userId and organizationId, and
+		// nothing else). Authorization always comes from the live result. These
+		// grant nothing, so if that ever changes it fails closed rather than
+		// open.
+		credential: "session" as const,
+		scopes: [],
 	};
 }
 
@@ -1212,6 +1263,8 @@ function buildGatewaySession(
 		userName: authResult.userName,
 		email: authResult.email,
 		role: authResult.role,
+		credential: authResult.credential,
+		scopes: authResult.scopes,
 		createdAt: now,
 		expiresAt: new Date(now.getTime() + 24 * 60 * 60 * 1000),
 	};

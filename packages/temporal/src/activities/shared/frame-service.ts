@@ -1,6 +1,8 @@
 import { getAIModelWithMetadata } from "@repo/ai";
 import { computeMaxOutputTokenBudget } from "@repo/ai/lib/output-token-budget";
 import {
+	canCreateOrganizationFrames,
+	canUpdateOrganizationFrames,
 	createFrame,
 	type FrameBlock,
 	getFrameById,
@@ -566,6 +568,46 @@ async function generateFrameBlock(input: {
 	};
 }
 
+/**
+ * Refuse a frame write the caller's organization role does not allow, or return
+ * `null` to let it through.
+ *
+ * Frames are organization resources, and the oRPC procedures behind the UI gate
+ * them on WORKSPACE_CREATE and WORKSPACE_UPDATE — permissions a viewer does not
+ * hold. Nothing enforced that here, so every non-oRPC path into this service —
+ * the MCP gateway, the agent executor, direct-chat built-in tools, the
+ * orchestrator's MCP tool execution, and the Fabric AI handler — could create,
+ * edit and publish frames that the same person could not touch through the
+ * interface.
+ *
+ * The check lives in the service rather than in each of those five callers
+ * precisely because there are five of them: gating the entry points one at a
+ * time is how a surface ends up covered everywhere except the path someone
+ * added last.
+ *
+ * A missing organization fails closed. Every session runs inside exactly one
+ * organization since the personal-context removal, so an absent one is a
+ * resolution bug upstream, and the safe reading of a bug is not "write anyway".
+ */
+async function frameWriteRefusal(
+	userId: string,
+	organizationId: string | undefined,
+	action: "create" | "update",
+): Promise<string | null> {
+	if (!organizationId) {
+		return "No organization context for this frame operation.";
+	}
+
+	const allowed =
+		action === "create"
+			? await canCreateOrganizationFrames(userId, organizationId)
+			: await canUpdateOrganizationFrames(userId, organizationId);
+
+	return allowed
+		? null
+		: `No permission to ${action} frames in this organization.`;
+}
+
 export async function createFirstClassFrame(input: {
 	args: Record<string, unknown> | undefined;
 	userId: string;
@@ -579,6 +621,15 @@ export async function createFirstClassFrame(input: {
 	const validated = validateCreateFrameArgs(input.args);
 	if (!validated.ok) {
 		return { error: validated.error };
+	}
+
+	const refusal = await frameWriteRefusal(
+		input.userId,
+		input.organizationId,
+		"create",
+	);
+	if (refusal) {
+		return { error: refusal };
 	}
 
 	let blocks: FrameBlock[];
@@ -675,6 +726,16 @@ export async function updateFirstClassFrame(input: {
 	if (!validated.ok) {
 		return { error: validated.error };
 	}
+
+	const refusal = await frameWriteRefusal(
+		input.userId,
+		input.organizationId,
+		"update",
+	);
+	if (refusal) {
+		return { error: refusal };
+	}
+
 	const frame = await updateFrame({
 		id: validated.value.frameId,
 		userId: input.userId,
@@ -790,6 +851,19 @@ export async function shareFirstClassFrame(input: {
 	if (!frameId) {
 		return { error: "Frame ID is required. Provide `frameId`." };
 	}
+
+	// Sharing publishes a frame outward, so it is gated as an update rather
+	// than as a read: WORKSPACE_UPDATE is what the oRPC publish path requires,
+	// and making something visible is a change to it.
+	const refusal = await frameWriteRefusal(
+		input.userId,
+		input.organizationId,
+		"update",
+	);
+	if (refusal) {
+		return { error: refusal };
+	}
+
 	const frame = await publishFrame({
 		id: frameId,
 		userId: input.userId,

@@ -4,6 +4,8 @@
  * GET /projects/:projectId/features/:id    get feature details
  */
 import {
+	canCreateProjectStory,
+	canUpdateProjectStory,
 	createStory,
 	getProjectAccessById,
 	getStoryById,
@@ -17,7 +19,13 @@ import type { Hono } from "hono";
 import { requireScope } from "../external-api/middleware/api-key-auth";
 import type { ExternalApiVariables } from "../external-api/types";
 import { enqueuePmSync } from "../projects/lib/enqueue-pm-sync";
-import { badRequest, notFound, ok, resolveV1Context } from "./helpers";
+import {
+	badRequest,
+	forbidden,
+	notFound,
+	ok,
+	resolveV1Context,
+} from "./helpers";
 
 export function registerFeatureRoutes(
 	app: Hono<{ Variables: ExternalApiVariables }>,
@@ -139,6 +147,20 @@ export function registerFeatureRoutes(
 				return c.json(notFound("Project"), 404);
 			}
 
+			// Visibility produced the 404 above; it cannot also stand in for
+			// permission. `getProjectAccessById` is true for a Viewer and a
+			// Commenter, and creating a feature is a story write — the same
+			// question `requireProjectPermission(STORY_CREATE)` asks of the
+			// interactive path.
+			if (!(await canCreateProjectStory(projectId, ctx.userId))) {
+				return c.json(
+					forbidden(
+						"No permission to create features in this project",
+					),
+					403,
+				);
+			}
+
 			let body: {
 				title?: string;
 				description?: string;
@@ -236,6 +258,15 @@ export function registerFeatureRoutes(
 			);
 			if (!project) {
 				return c.json(notFound("Project"), 404);
+			}
+
+			if (!(await canUpdateProjectStory(projectId, ctx.userId))) {
+				return c.json(
+					forbidden(
+						"No permission to update features in this project",
+					),
+					403,
+				);
 			}
 
 			const storyId = c.req.param("id")!;

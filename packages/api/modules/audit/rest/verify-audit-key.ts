@@ -45,6 +45,7 @@ import { createHash, timingSafeEqual } from "node:crypto";
 import {
 	getOrganizationApiKeyByPrefixIncludingRevoked,
 	getUserApiKeyByPrefixIncludingRevoked,
+	isOrganizationMember,
 } from "@repo/database";
 
 export type AuditApiKeyOwner =
@@ -70,6 +71,11 @@ export type AuditApiKeyError =
 	| "NOT_FOUND"
 	| "EXPIRED"
 	| "INACTIVE"
+	// The key is live and the secret matched, but its creator no longer
+	// belongs to the organization it speaks for. Distinct from INACTIVE on
+	// purpose: the credential was never revoked, the person was, and an
+	// operator reading the audit trail wants to see which of the two happened.
+	| "NOT_A_MEMBER"
 	| "HASH_MISMATCH";
 
 export interface VerifyAuditApiKeyResult {
@@ -234,6 +240,17 @@ export async function verifyAuditApiKey(
 	}
 	if (record.expiresAt && record.expiresAt <= now) {
 		return { ok: false, error: "EXPIRED", provenOwner: owner };
+	}
+	// Membership is read live, never from the key row. An organization key
+	// speaks for its creator, and the day that person is removed is the day it
+	// should stop speaking — not the day someone remembers to delete the row.
+	if (
+		!(await isOrganizationMember(
+			record.createdByUserId,
+			record.organizationId,
+		))
+	) {
+		return { ok: false, error: "NOT_A_MEMBER", provenOwner: owner };
 	}
 	return {
 		ok: true,

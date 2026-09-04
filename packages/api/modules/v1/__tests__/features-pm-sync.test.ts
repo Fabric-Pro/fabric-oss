@@ -17,6 +17,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const { mocks } = vi.hoisted(() => ({
 	mocks: {
 		getProjectAccessById: vi.fn(),
+		canUpdateProjectStory: vi.fn(),
 		getStoryById: vi.fn(),
 		getUserById: vi.fn(),
 		updateStory: vi.fn(),
@@ -33,6 +34,7 @@ vi.mock("@repo/database", () => ({
 	})),
 	createStory: vi.fn(),
 	getProjectAccessById: mocks.getProjectAccessById,
+	canUpdateProjectStory: mocks.canUpdateProjectStory,
 	getStoryById: mocks.getStoryById,
 	// The PATCH route resolves the API key's user so the edit it writes carries a
 	// human name rather than landing unattributed.
@@ -91,6 +93,10 @@ beforeEach(() => {
 		organizationId: null,
 	});
 	mocks.getProjectAccessById.mockResolvedValue({ id: "project-1" });
+	// Seeing the project is not permission to change it — these cases are
+	// about the PM-sync gate, so the caller is given the story-write
+	// permission the route now requires.
+	mocks.canUpdateProjectStory.mockResolvedValue(true);
 	mocks.getStoryById.mockResolvedValue({
 		id: "story-1",
 		projectId: "project-1",

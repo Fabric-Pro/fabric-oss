@@ -95,6 +95,11 @@ function freshSession(overrides: Partial<GatewaySession> = {}): GatewaySession {
 		userName: "Example Agent",
 		email: "agent@example.com",
 		role: "user",
+		// Switching is a personal-key and browser capability. An organization
+		// key is pinned to the tenant it was issued for — see the case at the
+		// end of this file.
+		credential: "personal-key",
+		scopes: ["*"],
 		createdAt: new Date("2026-01-01T00:00:00Z"),
 		expiresAt: new Date("2026-01-02T00:00:00Z"),
 		...overrides,
@@ -457,5 +462,44 @@ describe("work-item refusals", () => {
 		expect(result.isError).toBe(true);
 		expect(payload(result).error).toContain("fabric_switch_organization");
 		expect(payload(result).error).toContain("org-2");
+	});
+});
+
+describe("an organization key is pinned to the organization it was issued for", () => {
+	// The protocol routes already refuse to let a request header move an
+	// organization key's tenant. This tool was the way around that: it checks
+	// the creator's memberships, so a key issued for one organization could be
+	// walked into any other its creator belongs to — which made the key record's
+	// organizationId read like a boundary while being a starting position
+	// (Fizzy #2380).
+	it("refuses to switch, without consulting membership or touching last-active", async () => {
+		const session = freshSession({ credential: "organization-key" });
+
+		const result = await executePlatformTool(
+			"fabric_switch_organization",
+			{ organizationId: "org-2" },
+			session,
+		);
+
+		expect(result.isError).toBe(true);
+		expect(payload(result).error).toContain("single organization");
+		expect(session.organizationId).toBe("org-1");
+		// The refusal is about which credential is asking, not about who the
+		// creator happens to belong to — so neither question is asked.
+		expect(mocks.isOrganizationMember).not.toHaveBeenCalled();
+		expect(mocks.userUpdate).not.toHaveBeenCalled();
+	});
+
+	it("still allows a personal key to switch", async () => {
+		const session = freshSession({ credential: "personal-key" });
+
+		const result = await executePlatformTool(
+			"fabric_switch_organization",
+			{ organizationId: "org-2" },
+			session,
+		);
+
+		expect(result.isError).toBeFalsy();
+		expect(session.organizationId).toBe("org-2");
 	});
 });

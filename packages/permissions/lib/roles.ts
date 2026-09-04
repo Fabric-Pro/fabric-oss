@@ -118,6 +118,15 @@ const MEMBER_ORG_PERMISSIONS: readonly Permission[] = [
 	P.TEST_CASE_UPDATE,
 	P.PUBLISHING_TOPIC_CREATE,
 	P.PUBLISHING_TOPIC_UPDATE,
+	// An API key carries its creator's own access and nobody else's, so
+	// creating one grants a member nothing they did not already have — it only
+	// changes which client they can reach it from. Holding this at admin meant
+	// the only way for a member to connect an editor or an AI tool was to be
+	// promoted, which grants far more than the key ever would (Fizzy #2380).
+	// Revocation is the counterpart: whoever may mint a credential must be able
+	// to retire it, and the procedure narrows a non-owner to their own keys.
+	P.ORG_API_KEYS_CREATE,
+	P.ORG_API_KEYS_DELETE,
 ];
 
 const ADMIN_ORG_PERMISSIONS: readonly Permission[] = [
@@ -127,8 +136,6 @@ const ADMIN_ORG_PERMISSIONS: readonly Permission[] = [
 	P.ORG_MEMBERS_REMOVE,
 	P.ORG_MEMBERS_UPDATE_ROLE,
 	P.ORG_SETTINGS_EDIT,
-	P.ORG_API_KEYS_CREATE,
-	P.ORG_API_KEYS_DELETE,
 	P.ORG_AUDIT_LOG_READ,
 	P.ORG_AUDIT_LOG_EXPORT,
 	P.ORG_INTEGRATIONS_MANAGE,

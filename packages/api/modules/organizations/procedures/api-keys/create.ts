@@ -1,9 +1,13 @@
 /**
  * Create Organization API Key Procedure
  *
- * Generates a new API key for the organization with specified name and scopes.
- * The raw key is returned only once - it cannot be retrieved later.
- * Only org admins/owners can create API keys.
+ * Generates a new API key scoped to its creator's own access within the
+ * organization, with the given name and scopes. The raw key is returned only
+ * once — it cannot be retrieved later.
+ *
+ * Any member may create one. The key carries no more than its creator already
+ * has, so minting it grants nothing new; it changes which client that access
+ * can be reached from, and nothing else.
  */
 
 import { createHash, randomBytes } from "node:crypto";
@@ -19,8 +23,15 @@ import {
 } from "../../../../orpc/procedures";
 import { requireOrgMembership } from "../../lib/membership";
 
-// Available scopes for organization API keys
-const ORG_API_KEY_SCOPES = [
+/**
+ * Scopes an organization key may be granted.
+ *
+ * Exported so the settings picker and the MCP tool map can be checked against
+ * it: a scope the API accepts but the picker never offers is unreachable, and a
+ * scope a tool demands but the API rejects is a key that cannot be made. Both
+ * had happened.
+ */
+export const ORG_API_KEY_SCOPES = [
 	"mcp:read", // Read MCP tools/resources
 	"mcp:write", // Execute MCP tools
 	"ai:models:read", // Read available AI models
@@ -30,6 +41,20 @@ const ORG_API_KEY_SCOPES = [
 	"agents:read", // Read agent metadata, list available agents
 	"agents:execute", // Trigger agent executions via API
 	"agents:stream", // Access real-time execution streams
+	// The MCP tool surface. Until scopes were enforced there, `mcp:read` and
+	// `mcp:write` were the only way to describe any of it, so an organization
+	// key could not be narrowed to, say, reading features without also being
+	// able to read everything else. These name the areas the platform tools
+	// actually divide into; the coarse `mcp:*` pair still covers all of them.
+	"orgs:read", // List and read organizations
+	"features:read", // Read features, bugs and their decision history
+	"features:write", // Create and update features, bugs and their tasks
+	"workspaces:read", // Read workspaces and run RAG queries
+	"workflows:read", // Read workflows and their executions
+	"workflows:run", // Trigger workflow executions
+	"frames:read", // Read frames and slideshows
+	"frames:write", // Create, update and share frames
+	"chats:read", // Read AI chat threads
 	"audit_log:read", // Read the org's audit log via GET /api/v1/audit-log
 	"audit_log:export", // Export the org's audit log via GET /api/v1/audit-log/export
 	"system_health:read", // GET /api/v1/system-health (includes the org's own signals)
@@ -65,14 +90,18 @@ function generateApiKey(): {
 }
 
 export const createOrganizationApiKeyProcedure = tenantProtectedProcedure
-	.use(requirePermission(Permissions.ORG_UPDATE))
+	// `ORG_API_KEYS_CREATE`, not `ORG_UPDATE`. The dedicated permission has
+	// existed since the matrix was written and was never enforced anywhere;
+	// borrowing the generic one instead is what tied "may mint a key" to "may
+	// rename the organization" and left members with no path but promotion.
+	.use(requirePermission(Permissions.ORG_API_KEYS_CREATE))
 	.route({
 		method: "POST",
 		path: "/organizations/{organizationId}/api-keys",
 		tags: ["Organizations", "API Keys"],
 		summary: "Create a new organization API key",
 		description:
-			"Generate a new API key for the organization. Only admins/owners can create keys.",
+			"Generate an API key carrying your own access within this organization. Any member may create one.",
 	})
 	.input(
 		z.object({
@@ -105,17 +134,19 @@ export const createOrganizationApiKeyProcedure = tenantProtectedProcedure
 			session,
 		);
 
-		// Check if user is admin/owner of the organization
+		// Membership, with no role list. The role question is settled above by
+		// the permission middleware; repeating it here as a hardcoded pair was
+		// the second of two gates, and relaxing only one of them would have
+		// left the procedure refusing members for a reason nobody could find.
 		const membership = await requireOrgMembership(
 			user.id,
 			// biome-ignore lint/style/noNonNullAssertion: organizationId is guaranteed by org-protected procedure
 			organizationId!,
-			["owner", "admin"],
 		);
 
 		if (!membership) {
 			throw new ORPCError("FORBIDDEN", {
-				message: "Only organization admins can create API keys",
+				message: "You must be a member of this organization",
 			});
 		}
 

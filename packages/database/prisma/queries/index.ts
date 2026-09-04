@@ -64,6 +64,7 @@ export * from "./orchestrator-memory";
 export * from "./orchestrator-memory-evaluation";
 export * from "./orchestrator-preferences";
 export * from "./organization-api-keys";
+export * from "./organization-permissions";
 export * from "./organization-security";
 // `./organizations` resolves to the FILE `organizations.ts`, which shadows the
 // `organizations/` directory — so `organizations/index.ts` is unreachable

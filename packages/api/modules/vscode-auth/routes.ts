@@ -610,7 +610,16 @@ export async function approveDeviceCode(
 		name: "Fabric Code - VS Code",
 		keyHash,
 		keyPrefix,
-		scopes: ["*"], // Full access for the user's own VS Code extension
+		// The extension needs MCP, and `mcp:read` / `mcp:write` reach every MCP
+		// tool. `"*"` reached rather more: the audit log, agent execution, and
+		// system health, none of which this key was issued to do. It also meant
+		// the broadest credential in the product was the one handed out with a
+		// single click, to anyone, with no screen that could list or revoke it.
+		//
+		// Safe to narrow: this module's own routes authenticate through
+		// `verifyUserApiKey` with no required scope (see `authFromBearer`), so
+		// nothing the extension already calls reads scopes at all.
+		scopes: ["mcp:read", "mcp:write"],
 	});
 
 	// Mark the code as approved
