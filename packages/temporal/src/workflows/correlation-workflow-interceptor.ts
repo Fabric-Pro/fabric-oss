@@ -104,8 +104,12 @@ class CorrelationWorkflowOutboundInterceptor
 }
 
 /**
- * Factory exported under the name `interceptors` so the worker can
- * register it via `interceptors.workflowModules: [require.resolve(...)]`.
+ * Factory exported under the name `interceptors` so this module can be
+ * registered via `bundleWorkflowCode({ workflowInterceptorModules })` —
+ * see ../lib/workflow-interceptor-modules. NOT via the worker's
+ * `interceptors.workflowModules`, which the SDK silently discards for a
+ * worker built from a prebuilt bundle; registering it there is why this
+ * interceptor never ran (Fizzy #2400).
  * One instance pair per workflow execution; the shared `inbound` ref
  * provides the workflow-scoped storage for the captured header.
  */
