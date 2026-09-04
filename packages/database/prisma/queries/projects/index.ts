@@ -36,6 +36,7 @@ export * from "./list-guest-projects";
 export * from "./log-source";
 export * from "./meeting-action-item-keys";
 export * from "./meeting-action-item-links";
+export * from "./meeting-archive";
 export * from "./meeting-transcripts";
 export * from "./members";
 export * from "./newsletter";

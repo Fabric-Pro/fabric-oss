@@ -483,6 +483,7 @@ export function ProjectSettings({
 									organizationId={
 										project.organizationId ?? null
 									}
+									canEdit={canEditSettings}
 									project={project}
 								/>
 							</div>

@@ -78,14 +78,105 @@ export async function getLinkedMeetings(projectId: string) {
 
 /**
  * Get just the join URLs for linked meetings (used by the sync workflow)
+ *
+ * Deactivated meetings are excluded here and ONLY here. "Stop syncing" means
+ * exactly this query stops seeing the row — the meeting, its transcripts and
+ * their context stay live and readable everywhere else, which is what makes it
+ * the non-destructive alternative to unlinking (Fizzy #2355).
  */
 export async function getLinkedMeetingJoinUrls(projectId: string) {
 	return await db.projectLinkedMeeting.findMany({
-		where: { projectId },
+		where: { projectId, deactivatedAt: null },
 		select: {
 			id: true,
 			joinUrl: true,
 			subject: true,
+		},
+	});
+}
+
+/**
+ * Count the meetings a sync would actually pull from.
+ *
+ * Gates "is there anything to sync": a project whose only linked meeting is
+ * deactivated must not be able to start a sync that would find nothing.
+ */
+export async function countSyncableLinkedMeetings(projectId: string) {
+	return await db.projectLinkedMeeting.count({
+		where: { projectId, deactivatedAt: null },
+	});
+}
+
+/**
+ * Stop syncing a meeting without touching anything it has already captured.
+ *
+ * Deliberately an `update` with a `projectId` guard rather than a bare update
+ * by id: the id alone would let a caller in one project stop a meeting in
+ * another.
+ */
+export async function deactivateLinkedMeeting(params: {
+	projectId: string;
+	linkedMeetingId: string;
+	userId: string;
+}) {
+	return await db.projectLinkedMeeting.update({
+		where: { id: params.linkedMeetingId, projectId: params.projectId },
+		data: {
+			deactivatedAt: new Date(),
+			deactivatedById: params.userId,
+		},
+	});
+}
+
+/** Resume syncing a previously stopped meeting. */
+export async function reactivateLinkedMeeting(params: {
+	projectId: string;
+	linkedMeetingId: string;
+}) {
+	return await db.projectLinkedMeeting.update({
+		where: { id: params.linkedMeetingId, projectId: params.projectId },
+		data: {
+			deactivatedAt: null,
+			deactivatedById: null,
+		},
+	});
+}
+
+/**
+ * Record that a project's meeting sync could not reach Microsoft.
+ *
+ * Mirrors `recordTeamsChannelFailure`. Applied across the project's meetings
+ * rather than one row, because the sync is a single project-level workflow
+ * bound to a single account — when that account goes, every meeting stops at
+ * once, and blaming one row would misdescribe the outage (#2355).
+ */
+export async function recordMeetingSyncFailure(params: {
+	projectId: string;
+	errorMessage: string;
+}) {
+	return await db.projectLinkedMeeting.updateMany({
+		where: { projectId: params.projectId, deactivatedAt: null },
+		data: {
+			consecutiveFailures: { increment: 1 },
+			lastErrorMessage: params.errorMessage.slice(0, 4000),
+			lastErrorAt: new Date(),
+		},
+	});
+}
+
+/**
+ * Clear the failure state after a pass that actually reached Microsoft.
+ *
+ * Without this a project that recovers while quiet keeps its banner forever —
+ * the exact bug the channel monitors hit in #2311.
+ */
+export async function clearMeetingSyncFailures(projectId: string) {
+	return await db.projectLinkedMeeting.updateMany({
+		where: { projectId, consecutiveFailures: { gt: 0 } },
+		data: {
+			consecutiveFailures: 0,
+			lastErrorMessage: null,
+			lastErrorAt: null,
 		},
 	});
 }

@@ -326,6 +326,29 @@ export const ACTION_CATALOG: Record<string, ActionDescriptor> = {
 		"info",
 		"project",
 	),
+	"project.meeting.deleted": D(
+		"project.meeting.deleted",
+		"Meeting deleted",
+		Trash2,
+		// Warning, not info: this takes every transcript the meeting captured
+		// and is only reversible for 7 days.
+		"warning",
+		"project",
+	),
+	"project.meeting.restored": D(
+		"project.meeting.restored",
+		"Meeting restored",
+		Archive,
+		"info",
+		"project",
+	),
+	"project.meeting.sync_stopped": D(
+		"project.meeting.sync_stopped",
+		"Meeting syncing stopped or resumed",
+		Unplug,
+		"info",
+		"project",
+	),
 
 	"project.meeting_digest.action_item_toggled": D(
 		"project.meeting_digest.action_item_toggled",

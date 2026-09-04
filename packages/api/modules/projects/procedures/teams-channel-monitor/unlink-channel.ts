@@ -8,6 +8,7 @@ import {
 	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
+import { requireContextSourceAdmin } from "../../lib/require-context-source-admin";
 
 /**
  * AUTHORIZATION: Uses canEditProject() - only project owners/editors can
@@ -63,6 +64,14 @@ export const unlinkChannelProcedure = tenantProtectedProcedure
 				message: "Project not found",
 			});
 		}
+
+		// Destructive: raises the floor to PROJECT_ADMIN while the flag is on.
+		// After the tenant check so a non-member still gets NOT_FOUND rather
+		// than FORBIDDEN, which would confirm the project exists.
+		await requireContextSourceAdmin({
+			projectId: input.projectId,
+			userId: user.id,
+		});
 
 		// The monitor row is what carries the provider identity — the input is
 		// this row's own id, which no context's metadata records. Read it while

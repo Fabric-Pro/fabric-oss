@@ -116,6 +116,7 @@ const USER_OWNED_TABLES = new Set([
 	"Diagram", // Excalidraw diagrams - per-user within org, optionally scoped to project
 	"ProjectDocument", // Project documents
 	"ProjectContext", // Project context files / RAG contexts
+	"DeletedMeetingArchive", // 7-day recovery window for unlinked meetings (#2355)
 	"ProjectContextUrlPage", // Per-page child rows for URL context sources (PATH_PREFIX scope)
 	"ProjectContextConversationBundle", // Captured Teams/Slack channel bundles under a monitored channel context
 	// The per-message claim companion. Registered in its own right, not left to
@@ -262,6 +263,7 @@ const PROJECT_SCOPED_TABLES: Record<string, string> = {
 	ProjectRagSettings: "projectId",
 	ProjectDatabricksKnowledgeBinding: "projectId",
 	ProjectLinkedMeeting: "projectId",
+	DeletedMeetingArchive: "projectId",
 	ProjectMeetingTranscript: "projectId",
 	ProjectMeetingAgenda: "projectId",
 	DecisionType: "projectId",

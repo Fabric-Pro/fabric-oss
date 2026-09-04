@@ -1,5 +1,5 @@
 import { ORPCError } from "@orpc/server";
-import { db } from "@repo/database";
+import { countSyncableLinkedMeetings, db } from "@repo/database";
 import { z } from "zod";
 import { withCorrelationMemo } from "../../../../lib/temporal-correlation";
 import {
@@ -64,9 +64,11 @@ export const triggerSyncNowProcedure = tenantProtectedProcedure
 		}
 
 		// Validate at least one linked meeting exists
-		const linkedMeetingCount = await db.projectLinkedMeeting.count({
-			where: { projectId: input.projectId },
-		});
+		// Stopped meetings are not syncable, so they must not satisfy the
+		// "is there anything to sync" gate (#2355).
+		const linkedMeetingCount = await countSyncableLinkedMeetings(
+			input.projectId,
+		);
 
 		if (linkedMeetingCount === 0) {
 			throw new ORPCError("BAD_REQUEST", {

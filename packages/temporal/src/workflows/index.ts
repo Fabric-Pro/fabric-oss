@@ -370,6 +370,7 @@ export {
 	onMcpConfigChangedWorkflow,
 	onMcpConfigDeletedWorkflow,
 } from "./mcp-tool-ingestion";
+export { meetingArchiveRetentionWorkflow } from "./meeting-archive-retention";
 // Meeting Transcript Auto-Sync workflow (scheduled Teams transcript resync)
 export {
 	cancelMeetingTranscriptSyncSignal,

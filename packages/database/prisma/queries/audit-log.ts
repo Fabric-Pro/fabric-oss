@@ -141,6 +141,13 @@ export const AUDIT_ACTIONS = [
 	"project.invitation.widget_dismissed",
 	"project.meeting_digest.inclusion_changed",
 	"project.meeting_digest.action_item_toggled",
+	// Meeting context lifecycle (#2355). Unlinking destroys every transcript a
+	// meeting produced and the context extracted from them; a project lost ~200
+	// meetings that way with no record of who did it or when. These three are
+	// that record.
+	"project.meeting.sync_stopped",
+	"project.meeting.deleted",
+	"project.meeting.restored",
 	// Document generation fell back because the generation agent could not be
 	// reached. Written whether or not the fallback then succeeded: a generation
 	// that quietly ran on the degraded path is exactly what nobody could see.

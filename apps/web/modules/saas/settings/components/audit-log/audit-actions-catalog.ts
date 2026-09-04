@@ -540,6 +540,27 @@ export const AUDIT_ACTIONS: AuditActionEntry[] = [
 			"A project member checked or unchecked a Meeting Digest action item. `metadata.completed` carries the new state.",
 	},
 	{
+		key: "project.meeting.deleted",
+		categoryId: "project",
+		labelKey: "settings.auditLog.actions.project.meeting.deleted",
+		description:
+			"A meeting was unlinked, which permanently deletes every transcript, action item and agenda it captured along with their search vectors. An archive is written first and the deletion can be undone for 7 days. `metadata.transcriptCount` carries how much was taken, `metadata.archiveId` identifies the archive to restore from, and `metadata.payloadTruncated` is true when the transcripts were too large to archive — in which case the meeting can come back but its text cannot. The subject is deliberately absent: a meeting title can name a real client, and this row outlives the meeting it describes.",
+	},
+	{
+		key: "project.meeting.restored",
+		categoryId: "project",
+		labelKey: "settings.auditLog.actions.project.meeting.restored",
+		description:
+			"A deleted meeting was rebuilt from its archive inside the 7-day recovery window and its transcripts re-embedded, so the content answers questions again. `metadata.transcriptsRestored` carries how much came back and `metadata.archiveId` which archive was consumed. It comes back with syncing stopped: resuming is a separate, deliberate act. Action items, agendas and the links from meeting action items to work items are NOT restored — the work items themselves were never affected, but a restored meeting no longer shows as their source.",
+	},
+	{
+		key: "project.meeting.sync_stopped",
+		categoryId: "project",
+		labelKey: "settings.auditLog.actions.project.meeting.sync_stopped",
+		description:
+			"Syncing was stopped or resumed for a linked meeting; `metadata.active` carries the new state. Stopping destroys nothing — every transcript and context already captured stays and keeps answering questions — it only ends the pull of new occurrences. This has its own key because a meeting that quietly stopped feeding a project is indistinguishable from one that was never linked, and that silence is what this row exists to break.",
+	},
+	{
 		key: "project.document_generation.failed",
 		categoryId: "project",
 		labelKey:

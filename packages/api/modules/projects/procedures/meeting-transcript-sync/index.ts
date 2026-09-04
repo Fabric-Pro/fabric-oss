@@ -3,8 +3,12 @@ export { enableMeetingTranscriptSyncProcedure } from "./enable-meeting-transcrip
 export { getTranscriptContentProcedure } from "./get-transcript-content";
 export { getTranscriptContextProcedure } from "./get-transcript-context";
 export { linkMeetingProcedure } from "./link-meeting";
+export { listDeletedMeetingsProcedure } from "./list-deleted-meetings";
 export { listLinkedMeetingsProcedure } from "./list-linked-meetings";
 export { listSyncedTranscriptsProcedure } from "./list-synced-transcripts";
+export { repairSyncProcedure } from "./repair-sync";
+export { restoreMeetingProcedure } from "./restore-meeting";
 export { setAutoAnalyzeProcedure } from "./set-auto-analyze";
+export { setMeetingSyncActiveProcedure } from "./set-meeting-sync-active";
 export { triggerSyncNowProcedure } from "./trigger-sync-now";
 export { unlinkMeetingProcedure } from "./unlink-meeting";

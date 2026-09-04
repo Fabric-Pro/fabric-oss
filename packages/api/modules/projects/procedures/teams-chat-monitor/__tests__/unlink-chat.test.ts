@@ -59,6 +59,12 @@ vi.mock("../../../../../orpc/procedures", () => {
 	};
 });
 
+// The destructive-action gate added in #2355. A no-op here: these suites
+// exercise the unlink mechanics, and the gate has its own focused tests.
+vi.mock("../../../lib/require-context-source-admin", () => ({
+	requireContextSourceAdmin: vi.fn(async () => undefined),
+}));
+
 await import("../unlink-chat");
 
 const ctx = {

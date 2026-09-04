@@ -1331,3 +1331,4 @@ export {
 	reprocessWorkspaceDocument,
 	updateWorkspaceDocumentStatus,
 } from "./workspace-document-activities";
+export { purgeExpiredMeetingArchivesActivity } from "./meeting-archive-retention";

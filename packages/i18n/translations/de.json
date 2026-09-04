@@ -1232,6 +1232,11 @@
 						"inclusion_changed": "Meeting-Digest-Aufnahme geändert",
 						"action_item_toggled": "Erledigt-Status einer Meeting-Aktion geändert"
 					},
+					"meeting": {
+						"deleted": "Meeting gelöscht",
+						"restored": "Meeting wiederhergestellt",
+						"sync_stopped": "Meeting-Synchronisierung gestoppt oder fortgesetzt"
+					},
 					"invitation": {
 						"widget_dismissed": "Invitation widget dismissed"
 					},

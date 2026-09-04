@@ -266,6 +266,14 @@ const BACKLOG_APPLY_WATCHDOG_WORKFLOW_NAME = "backlogApplyWatchdogWorkflow";
 // Runs on the default `fabric-worker` queue.
 const BACKLOG_APPLY_WATCHDOG_CRON_SCHEDULE = "*/5 * * * *";
 
+const MEETING_ARCHIVE_RETENTION_SCHEDULE_ID = "meeting-archive-retention";
+const MEETING_ARCHIVE_RETENTION_WORKFLOW_NAME =
+	"meetingArchiveRetentionWorkflow";
+// Daily at 05:30 UTC — purges meeting-recovery archives past their own
+// scheduledPurgeAt. Offset from the 03:00-05:00 retention cluster so the
+// batched DELETEs do not stack on one queue.
+const MEETING_ARCHIVE_RETENTION_CRON_SCHEDULE = "30 5 * * *";
+
 const BACKGROUND_JOB_RETENTION_SCHEDULE_ID = "background-job-retention";
 const BACKGROUND_JOB_RETENTION_WORKFLOW_NAME = "backgroundJobRetentionWorkflow";
 // Daily at 05:00 UTC — deletes Job Hub rows older than
@@ -393,6 +401,7 @@ export async function registerSystemSchedules(): Promise<void> {
 		await registerBacklogApplyWatchdogSchedule(scheduleClient);
 		await registerDocumentGenerationWatchdogSchedule(scheduleClient);
 		await registerBackgroundJobRetentionSchedule(scheduleClient);
+		await registerMeetingArchiveRetentionSchedule(scheduleClient);
 		await registerBackgroundJobWatchdogSchedule(scheduleClient);
 		await registerAttachmentTempOrphanSweepSchedule(scheduleClient);
 		await registerAttachmentFinalOrphanSweepSchedule(scheduleClient);
@@ -1997,6 +2006,45 @@ async function registerDocumentGenerationWatchdogSchedule(
  * are ephemeral progress telemetry and the panel already hides anything past
  * the retention window.
  */
+async function registerMeetingArchiveRetentionSchedule(
+	scheduleClient: ScheduleClient,
+): Promise<void> {
+	try {
+		await scheduleClient.create({
+			scheduleId: MEETING_ARCHIVE_RETENTION_SCHEDULE_ID,
+			spec: {
+				cronExpressions: [MEETING_ARCHIVE_RETENTION_CRON_SCHEDULE],
+			},
+			action: {
+				type: "startWorkflow",
+				workflowType: MEETING_ARCHIVE_RETENTION_WORKFLOW_NAME,
+				taskQueue: TASK_QUEUE,
+				args: [],
+			},
+			policies: {
+				// A slow purge should not be paralleled by the next day's run.
+				overlap: "SKIP",
+				catchupWindow: "12 hours",
+			},
+			state: {
+				paused: false,
+				note: "Deletes deleted_meeting_archive rows past their scheduledPurgeAt, in batches. The 7-day window is stamped per row at deletion time, not read from config, so a row's fate cannot be changed retroactively (Fizzy #2355).",
+			},
+		});
+		console.log(
+			`[Worker] Schedule "${MEETING_ARCHIVE_RETENTION_SCHEDULE_ID}" registered (daily at 05:30 UTC)`,
+		);
+	} catch (error) {
+		if (error instanceof ScheduleAlreadyRunning) {
+			console.log(
+				`[Worker] Schedule "${MEETING_ARCHIVE_RETENTION_SCHEDULE_ID}" already exists, skipping`,
+			);
+		} else {
+			throw error;
+		}
+	}
+}
+
 async function registerBackgroundJobRetentionSchedule(
 	scheduleClient: ScheduleClient,
 ): Promise<void> {
