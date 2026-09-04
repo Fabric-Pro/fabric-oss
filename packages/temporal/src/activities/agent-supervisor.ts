@@ -20,7 +20,7 @@ import {
 	updateCurrentExecutions,
 	updateExecutionStatus,
 } from "@repo/database";
-import { Client, Connection } from "@temporalio/client";
+import { getTemporalClient } from "../client";
 
 // =============================================================================
 // DEPLOYMENT STATUS MANAGEMENT
@@ -162,11 +162,10 @@ export async function startAgentExecution(
 		// Start child workflow for actual agent execution
 		const childWorkflowId = `deployment-exec-${executionId}`;
 
-		const connection = await Connection.connect({
-			address: process.env.TEMPORAL_ADDRESS || "localhost:7233",
-		});
-
-		const client = new Client({ connection });
+		// Shared client: carries the TLS / API-key / fail-closed connection
+		// policy and the configured namespace (a bare `new Client()` would
+		// silently target "default").
+		const client = await getTemporalClient();
 
 		// Get the deployment's task queue and instance config for workflow routing
 		const deployment = await getAgentDeploymentById(deploymentId, {

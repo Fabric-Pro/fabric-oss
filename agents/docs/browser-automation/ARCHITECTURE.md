@@ -227,10 +227,16 @@ New step types registered in `step-registry.ts`:
 
 | Component | Location | Status |
 |-----------|----------|--------|
-| BrowserExtractor | `packages/rag/lib/extraction/extractors/browser-extractor.ts` | ✅ Complete |
-| BrowserExtractorClient | `packages/rag/lib/extraction/extractors/browser-extractor-client.ts` | ✅ Complete |
 | Browser RAG Ingestion Workflow | `packages/temporal/src/workflows/browser-rag-ingestion.ts` | ✅ Complete |
 | chunkAndStoreWebContent Activity | `packages/temporal/src/activities/document-processing.ts` | ✅ Complete |
+
+Browser-based RAG ingestion runs entirely inside the Temporal worker: the
+ingestion workflow drives the browser activities and hands the page text to
+`chunkAndStoreWebContent`. A former `BrowserExtractor` in `@repo/rag` that
+started `browserExtractContentWorkflow` over its own unauthenticated Temporal
+connection was never registered with the extraction factory and has been
+removed; all Temporal client connections now come from
+`packages/temporal/src/client.ts`.
 
 ### Phase 3: Hybrid Execution Mode ✅
 

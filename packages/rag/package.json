@@ -23,7 +23,6 @@
 		"@repo/logs": "workspace:*",
 		"@repo/openapi-tools": "workspace:*",
 		"@repo/utils": "workspace:*",
-		"@temporalio/client": "~1.23.0",
 		"ai": "^6.0.116",
 		"code-chunk": "^0.1.13",
 		"exceljs": "^4.4.0",

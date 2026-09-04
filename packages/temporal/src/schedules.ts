@@ -9,13 +9,8 @@
  * for why.
  */
 
-import * as tls from "node:tls";
-import {
-	Connection,
-	ScheduleAlreadyRunning,
-	ScheduleClient,
-} from "@temporalio/client";
-import { getTemporalConfig } from "./client";
+import { ScheduleAlreadyRunning, ScheduleClient } from "@temporalio/client";
+import { createConnection, getTemporalConfig } from "./client";
 import { ensureAiUsageSchedules } from "./scripts/ensure-ai-usage-schedules";
 import { ensureContextSummarizationSchedules } from "./scripts/ensure-context-summarization-schedules";
 import { ensureMonitoringSchedules } from "./scripts/ensure-monitoring-schedules";
@@ -332,43 +327,13 @@ const QA_EVIDENCE_RETENTION_CRON_SCHEDULE = "45 4 * * *";
  * Register all system Temporal schedules.
  *
  * Uses its own Connection (not the worker's NativeConnection) because
- * ScheduleClient requires a @temporalio/client Connection.
+ * ScheduleClient requires a @temporalio/client Connection. The connection
+ * comes from the shared factory so it carries the same TLS / API-key /
+ * fail-closed policy as every other client connection.
  */
 export async function registerSystemSchedules(): Promise<void> {
 	const config = getTemporalConfig();
-
-	const connectionOptions: Parameters<typeof Connection.connect>[0] = {
-		address: config.address,
-	};
-
-	if (config.apiKey) {
-		connectionOptions.apiKey = config.apiKey;
-		const rootCerts = tls.rootCertificates.join("\n");
-		connectionOptions.tls = {
-			serverRootCACertificate: Buffer.from(rootCerts),
-		};
-		connectionOptions.metadata = {
-			"temporal-namespace": config.namespace,
-		};
-	} else if (
-		config.tls &&
-		process.env.TEMPORAL_CLIENT_CERT &&
-		process.env.TEMPORAL_CLIENT_KEY
-	) {
-		connectionOptions.tls = {
-			clientCertPair: {
-				crt: Buffer.from(process.env.TEMPORAL_CLIENT_CERT),
-				key: Buffer.from(process.env.TEMPORAL_CLIENT_KEY),
-			},
-		};
-		connectionOptions.metadata = {
-			"temporal-namespace": config.namespace,
-		};
-	} else if (config.tls) {
-		connectionOptions.tls = true;
-	}
-
-	const connection = await Connection.connect(connectionOptions);
+	const connection = await createConnection();
 
 	try {
 		const scheduleClient = new ScheduleClient({

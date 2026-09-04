@@ -22,7 +22,7 @@ import {
 	Worker,
 } from "@temporalio/worker";
 import * as activities from "./activities";
-import { getTemporalConfig } from "./client";
+import { assertInsecureConnectionAllowed, getTemporalConfig } from "./client";
 import { validateAuditRetentionDays } from "./lib/audit-log-env";
 import { CorrelationActivityInboundInterceptor } from "./lib/correlation-interceptor";
 import { validatePmSyncLogRetentionDays } from "./lib/pm-sync-log-env";
@@ -314,6 +314,7 @@ async function run() {
 			connectionOptions.tls = true;
 			console.log("[Worker] Using TLS without authentication");
 		} else {
+			assertInsecureConnectionAllowed("[Worker]");
 			console.log(
 				"[Worker] Using insecure connection (local development)",
 			);

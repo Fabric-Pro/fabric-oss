@@ -30,9 +30,40 @@ export function getTemporalConfig(): TemporalConfig {
 }
 
 /**
- * Create Temporal connection with proper configuration
+ * SOC 2 CC6.7 (encryption in transit): FAIL-CLOSED in production — refuse a
+ * plaintext Temporal connection. Staging and production use Temporal Cloud,
+ * where the API-key branch enables TLS, so this only fires on a
+ * misconfiguration that would silently downgrade the control channel.
+ * Emergency escape hatch: TEMPORAL_ALLOW_INSECURE=true.
+ *
+ * Shared by the client `Connection` (this file) and the worker's
+ * `NativeConnection` (worker.ts) so both channels fail closed the same way.
  */
-async function createConnection(): Promise<Connection> {
+export function assertInsecureConnectionAllowed(logPrefix: string): void {
+	if (
+		process.env.NODE_ENV === "production" &&
+		process.env.TEMPORAL_ALLOW_INSECURE !== "true"
+	) {
+		throw new Error(
+			`${logPrefix} Refusing to start in production without a TLS/authenticated ` +
+				"connection. Set TEMPORAL_CLOUD_API_KEY (Temporal Cloud), mTLS certs, " +
+				"or TEMPORAL_TLS=true. Set TEMPORAL_ALLOW_INSECURE=true to override in " +
+				"an emergency (SOC 2 CC6.7).",
+		);
+	}
+}
+
+/**
+ * Create a Temporal connection with the repo-wide connection policy:
+ * Temporal Cloud API key, mTLS, plain TLS, or — outside production only —
+ * an insecure local connection.
+ *
+ * Every `@temporalio/client` connection in the repo must come from here (or
+ * from the singleton accessors below) so TLS, auth and the production
+ * fail-closed guard cannot be bypassed by one caller. Enforced by
+ * `__tests__/temporal-connection-policy.test.ts`.
+ */
+export async function createConnection(): Promise<Connection> {
 	const config = getTemporalConfig();
 
 	const connectionOptions: Parameters<typeof Connection.connect>[0] = {
@@ -76,22 +107,7 @@ async function createConnection(): Promise<Connection> {
 		connectionOptions.tls = true;
 		console.log("[Temporal] Using TLS without authentication");
 	} else {
-		// SOC 2 CC6.7 (encryption in transit): FAIL-CLOSED in production — refuse a
-		// plaintext Temporal connection. Staging and production use Temporal Cloud,
-		// where the API-key branch above enables TLS, so this only fires on a
-		// misconfiguration that would silently downgrade the control channel.
-		// Emergency escape hatch: TEMPORAL_ALLOW_INSECURE=true.
-		if (
-			process.env.NODE_ENV === "production" &&
-			process.env.TEMPORAL_ALLOW_INSECURE !== "true"
-		) {
-			throw new Error(
-				"[Temporal] Refusing to start in production without a TLS/authenticated " +
-					"connection. Set TEMPORAL_CLOUD_API_KEY (Temporal Cloud), mTLS certs, " +
-					"or TEMPORAL_TLS=true. Set TEMPORAL_ALLOW_INSECURE=true to override in " +
-					"an emergency (SOC 2 CC6.7).",
-			);
-		}
+		assertInsecureConnectionAllowed("[Temporal]");
 		console.log("[Temporal] Using insecure connection (local development)");
 	}
 
