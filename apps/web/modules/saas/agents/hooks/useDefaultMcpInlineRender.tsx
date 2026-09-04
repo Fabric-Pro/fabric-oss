@@ -200,23 +200,73 @@ export function useDefaultMcpInlineRender(
 		Record<string, string>
 	>({});
 
+	// The request this instance already has in flight, with the org it was
+	// issued for. React StrictMode runs effect setup → cleanup → setup on the
+	// SAME fiber in development, so this ref survives between the two runs and
+	// they share one request instead of firing two identical ones.
+	//
+	// Per-instance on purpose, not a module-level cache keyed by org: the
+	// endpoint scopes its response by session user AND organization, so an
+	// org-keyed cache shared across the realm could hand one user's configs to
+	// another if the account changed while a request was still in flight.
+	const inFlightRef = useRef<{
+		key: string;
+		promise: Promise<DefaultConfig[] | null>;
+	} | null>(null);
+
 	useEffect(() => {
 		let cancelled = false;
-		const url = new URL(
-			"/api/mcp-app/default-configs",
-			window.location.origin,
-		);
-		if (organizationId) {
-			url.searchParams.set("organizationId", organizationId);
+		const key = organizationId ?? "";
+		let entry = inFlightRef.current;
+		if (!entry || entry.key !== key) {
+			const url = new URL(
+				"/api/mcp-app/default-configs",
+				window.location.origin,
+			);
+			if (organizationId) {
+				url.searchParams.set("organizationId", organizationId);
+			}
+			// Held only while in flight. Without the release below a failed or
+			// empty response would be pinned for the life of the instance: the
+			// personal and unresolved cases share the "" key, so a request
+			// issued before the org resolved would be reused rather than
+			// retried, leaving the hook permanently without configs.
+			//
+			// `finally` is chained INTO the stored promise, not attached to it
+			// as a separate chain, so the rejection stays handled by each
+			// consumer's own `catch` instead of surfacing as an unhandled one.
+			// Releasing on settle does not weaken the StrictMode dedup: React
+			// runs setup → cleanup → setup synchronously, so the second run
+			// attaches long before the request can settle.
+			let created: {
+				key: string;
+				promise: Promise<DefaultConfig[] | null>;
+			} | null = null;
+			const promise = fetch(url.toString(), { credentials: "include" })
+				.then((r) => (r.ok ? r.json() : null))
+				.then(
+					(data: { configs?: DefaultConfig[] } | null) =>
+						data?.configs ?? null,
+				)
+				.finally(() => {
+					// Identity-guarded: a later request for a different org
+					// must not be cleared by this one finishing after it.
+					if (created && inFlightRef.current === created) {
+						inFlightRef.current = null;
+					}
+				});
+			created = { key, promise };
+			inFlightRef.current = created;
+			entry = created;
 		}
-		fetch(url.toString(), { credentials: "include" })
-			.then((r) => (r.ok ? r.json() : null))
-			.then((data: { configs?: DefaultConfig[] } | null) => {
-				if (cancelled || !data?.configs) {
+
+		entry.promise
+			.then((configs) => {
+				if (cancelled || !configs) {
 					return;
 				}
 				const map: Record<string, string> = {};
-				for (const c of data.configs) {
+				for (const c of configs) {
 					map[c.serverKey] = c.configId;
 				}
 				setConfigsByServer(map);

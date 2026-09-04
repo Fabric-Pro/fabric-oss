@@ -386,8 +386,16 @@ export function DocumentEditor({
 		dataUpdatedAt: documentDataUpdatedAt,
 	} = useQuery({
 		...orpc.projects.documents.get.queryOptions({
-			input: { id: documentId, projectId },
+			// `organizationId` is part of the query key. Omitting it here
+			// while DocumentEditorPage passes it cached the same document
+			// under two keys, so opening one document cost two identical
+			// round-trips. It is also required for correctness: without it
+			// the fetch falls back to the viewer's session active-org, which
+			// 404s for a mentioned user whose active org differs from the
+			// route (Fizzy #1187, fixed in DocumentEditorPage but not here).
+			input: { id: documentId, projectId, organizationId },
 		}),
+		enabled: orgContextReady,
 		refetchInterval: isRegenerating ? 3000 : false, // Poll every 3 seconds when regenerating
 		// "always" bypasses the 60s default staleTime so a user who tabs
 		// away mid-generation always sees the completed document on return.
@@ -408,7 +416,12 @@ export function DocumentEditor({
 
 	const project = projectData?.project;
 
-	if (isLoading) {
+	// `!orgContextReady` belongs in the loading test, not beside it: the two
+	// queries above are disabled until the org resolves, and a disabled query
+	// does not report `isLoading`, so without this the render falls straight
+	// through to "Document not found" on every org-route load. Mirrors the
+	// combined flag in DocumentEditorPage.
+	if (isLoading || !orgContextReady) {
 		return (
 			<div className="flex items-center justify-center h-96">
 				<div className="text-muted-foreground">Loading document...</div>
@@ -3078,8 +3091,13 @@ function DocumentEditorInner({
 	}, [viewMode, rawContent]);
 
 	// Save mutation with optimistic update to avoid flicker between confirm and server write
+	// Must carry `organizationId` because the `documents.get` query itself
+	// now does. `setQueryData` / `getQueryData` match the key EXACTLY (unlike
+	// invalidate/cancel, which match by prefix), so a key missing this field
+	// would write the optimistic save into a phantom cache entry and make the
+	// error rollback a silent no-op.
 	const documentGetQueryKey = orpc.projects.documents.get.queryKey({
-		input: { id: documentId, projectId },
+		input: { id: documentId, projectId, organizationId },
 	});
 	const saveMutation = useMutation(
 		orpc.projects.documents.update.mutationOptions({
@@ -3441,7 +3459,7 @@ function DocumentEditorInner({
 				regenerationAckAtRef.current = Date.now();
 
 				const documentQueryKey = orpc.projects.documents.get.queryKey({
-					input: { id: documentId, projectId },
+					input: { id: documentId, projectId, organizationId },
 				});
 				// Force a refetch now so it supersedes any poll that was
 				// already in flight when the mutation resolved — an in-flight
@@ -3543,7 +3561,7 @@ function DocumentEditorInner({
 				// render instead of leaving the user with only this toast.
 				void queryClient.invalidateQueries({
 					queryKey: orpc.projects.documents.get.queryKey({
-						input: { id: documentId, projectId },
+						input: { id: documentId, projectId, organizationId },
 					}),
 				});
 			},
@@ -5803,6 +5821,7 @@ function DocumentEditorInner({
 													input: {
 														id: documentId,
 														projectId,
+														organizationId,
 													},
 												},
 											),
