@@ -27,6 +27,16 @@ permissions:
 
 env:
   SNAPSHOT_NAMESPACE: ghcr.io/fabric-pro/fabric-oss-snapshots
+  # BuildKit layer cache. It lives in the registry, in a namespace of its own,
+  # rather than in the GitHub Actions cache: the fourteen mode=max caches
+  # together are larger than the repository's 10 GB Actions cache budget, so
+  # with the Actions-cache backend every master build evicted the Type Check / Unit Tests
+  # caches that pull-request jobs depend on, and then lost its own blobs to the
+  # same eviction (the index survived, the layers did not, and BuildKit rebuilt
+  # from scratch after paying for the export). A registry cache has no shared
+  # budget and keeps index and layers together. The namespace is separate so
+  # the attested snapshot packages carry only full-SHA tags.
+  CACHE_NAMESPACE: ghcr.io/fabric-pro/fabric-oss-buildcache
 
 jobs:
   policy-tests:
@@ -88,6 +98,7 @@ jobs:
             dockerfile: packages/database/Dockerfile.migrate
     env:
       IMAGE_NAME: ghcr.io/fabric-pro/fabric-oss-snapshots/${{ matrix.component }}
+      CACHE_IMAGE: ${{ env.CACHE_NAMESPACE }}/${{ matrix.component }}
       SOURCE_URL: ${{ github.server_url }}/${{ github.repository }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -130,8 +141,13 @@ jobs:
           # BuildKit predicates avoids a second, differently shaped claim.
           provenance: false
           sbom: false
-          cache-from: type=gha,scope=oss-snapshot-${{ matrix.component }}
-          cache-to: type=gha,scope=oss-snapshot-${{ matrix.component }},mode=max
+          # One mutable cache tag per component (see CACHE_NAMESPACE above). A
+          # missing cache is a cold build, not a failure; overlapping master
+          # runs overwrite each other's export, which costs cache freshness and
+          # nothing else; and ignore-error keeps a cache push problem from
+          # failing a build whose image is already pushed.
+          cache-from: type=registry,ref=${{ env.CACHE_IMAGE }}:master
+          cache-to: type=registry,ref=${{ env.CACHE_IMAGE }}:master,mode=max,ignore-error=true
 
       - name: Reclaim BuildKit space before SBOM scan
         run: docker buildx prune --all --force
