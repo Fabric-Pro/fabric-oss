@@ -66,7 +66,7 @@ jobs:
     # it duplicated. The public run is slower (see TURBO_CONCURRENCY) and
     # the timeout is widened to match; that latency only lands on the
     # relay wait, never on a developer.
-    runs-on: ${{ github.repository == 'Fabric-Pro/fabric-dev' && 'ubuntu-8core' || 'ubuntu-latest' }}
+    runs-on: ${{ github.repository == 'Fabric-Pro/fabric-dev' && 'ubuntu-8core-arm' || 'ubuntu-latest' }}
     timeout-minutes: ${{ github.repository == 'Fabric-Pro/fabric-dev' && 30 || 90 }}
     env:
       # Placeholder so @repo/database's prisma singleton (throws at module
