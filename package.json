@@ -141,13 +141,27 @@
 			"prisma-zod-generator"
 		],
 		"ignoredBuiltDependencies": [
+			"@parcel/watcher",
 			"@prisma/client",
 			"@prisma/engines",
+			"@scarf/scarf",
 			"@swc/core",
 			"@temporalio/core-bridge",
+			"bufferutil",
+			"core-js",
 			"esbuild",
+			"onnxruntime-node",
 			"protobufjs",
-			"sharp"
+			"sharp",
+			"tree-sitter-go",
+			"tree-sitter-java",
+			"tree-sitter-javascript",
+			"tree-sitter-python",
+			"tree-sitter-rust",
+			"tree-sitter-typescript",
+			"unrs-resolver",
+			"utf-8-validate",
+			"workerd"
 		]
 	}
 }
