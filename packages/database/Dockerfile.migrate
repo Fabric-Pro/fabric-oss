@@ -35,7 +35,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     openssl \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
-    && npm install -g pnpm@10.14.0
+    && npm install -g pnpm@10.34.5
 
 WORKDIR /app
 
@@ -91,7 +91,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     openssl \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
-    && npm install -g pnpm@10.14.0 tsx@4.19.2
+    && npm install -g pnpm@10.34.5 tsx@4.19.2
 
 WORKDIR /app
 
@@ -114,12 +114,14 @@ ENV NODE_ENV=production
 # The migration connects to the database and nothing else, so it needs no
 # writable application state — only a HOME for tsx's transform cache. Numeric uid
 # matches the other images so a Kubernetes runAsNonRoot admission check can
-# verify it (a named user cannot be verified).
+# verify it (a named user cannot be verified). The home lives under /var/lib, not
+# /home: the publication scan that guards the public relay rejects any
+# path under /home as a developer home directory.
 RUN addgroup --system --gid 1001 nodejs \
-    && adduser --system --uid 1001 --ingroup nodejs --home /home/appuser appuser \
-    && mkdir -p /home/appuser \
-    && chown appuser:nodejs /home/appuser
-ENV HOME=/home/appuser
+    && adduser --system --uid 1001 --ingroup nodejs --home /var/lib/appuser appuser \
+    && mkdir -p /var/lib/appuser \
+    && chown appuser:nodejs /var/lib/appuser
+ENV HOME=/var/lib/appuser
 USER appuser
 
 WORKDIR /app/packages/database
