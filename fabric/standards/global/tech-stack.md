@@ -11,7 +11,7 @@ This document defines the official technology stack for the Fabric Portal projec
 | **Application Framework** | Next.js | 16.0.1 | React framework with App Router |
 | **Language** | TypeScript | 5.9.3 | Type-safe JavaScript |
 | **Runtime** | Node.js | ≥22 | Server runtime |
-| **Package Manager** | pnpm | 10.14.0 | Monorepo package management |
+| **Package Manager** | pnpm | 10.34.5 | Monorepo package management |
 | **Build System** | Turbo | 2.6.0 | Monorepo build orchestration |
 
 ## Frontend
