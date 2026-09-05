@@ -1,7 +1,7 @@
 ---
 "fabric-app": patch
 ---
-Pin the data-analyst playground's @ai-sdk/react to the release built on its own ai@6, removing the unsound message-type cast (Fizzy #2409)
+Pin the data-analyst playground's @ai-sdk/react to the release built on its own ai@6, removing the unsound message-type cast
 
 The data-analyst agent declared `@ai-sdk/react@^2.0.109`, which resolved to 2.0.123 and carried a private nested `ai@5.0.121`, while the agent's own `ai` dependency and its `useStreamingChat` hook resolved `ai@6.0.116`. The two majors define different `UIMessage` part unions, so `app/page.tsx` bridged `setMessages` between the two hooks with a cast through `unknown` that was only safe for the persisted text-message subset.
 

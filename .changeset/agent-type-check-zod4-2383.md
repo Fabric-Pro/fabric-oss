@@ -2,7 +2,7 @@
 "fabric-app": patch
 ---
 
-Type-check all seven LangChain agents in CI; fix the zod 3 tool-schema blow-up that made two of them impossible to check (Fizzy #2383)
+Type-check all seven LangChain agents in CI; fix the zod 3 tool-schema blow-up that made two of them impossible to check
 
 Seven agents under `agents/langchain/` had no `type-check` script (`weave-readers` and `weave-shuttle` had one misnamed `typecheck`, which turbo's `type-check` task never matched), so the root type-check silently skipped them and a type-level regression in a dependency bump could ship unseen.
 

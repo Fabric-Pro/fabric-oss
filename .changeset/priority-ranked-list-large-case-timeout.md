@@ -2,7 +2,7 @@
 "fabric-app": patch
 ---
 
-Give the PriorityRankedList large no-filter re-prioritize test its own 30 s ceiling so it stops timing out under the CI fan-out (Fizzy #2367)
+Give the PriorityRankedList large no-filter re-prioritize test its own 30 s ceiling so it stops timing out under the CI fan-out
 
 The case "confirms a large no-filter list before running, then sends the whole set (no ceiling caution below 500)" renders 101 full story rows in jsdom, drives the confirmation dialog with userEvent, and then waits for the mocked reprioritize call. `PriorityRow` is memoised, so the clicks do not re-render the whole list; the initial render is the expensive part. On a quiet machine the case takes about 1 s; under the unit-tests job, where four packages' vitest workers share the runner's eight cores, it has run past vitest's 10 s default. fabric-oss run 33724214428 clocked it at 12 s, and fabric-dev runs 33711689286, 33714245799 and 33711699779 failed the same way on 2026-09-03 on branches that touched no web code. Every other web test passed in each run, and a rerun got past it.
 
