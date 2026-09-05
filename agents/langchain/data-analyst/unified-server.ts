@@ -21,6 +21,7 @@ import {
 import {
 	createUnifiedServer,
 	type AgentSkill,
+	type Artifact,
 	type LangGraphStreamEvent,
 	type AgentRuntimeConfig,
 } from "@repo/agent-core";
@@ -165,6 +166,24 @@ function normalizeMessages(
 			}
 		})
 		.filter((msg): msg is NonNullable<typeof msg> => msg !== null);
+}
+
+/**
+ * Convert LangChain BaseMessage[] back to the plain {role, content} shape
+ * the LangGraphExecutor contract (and A2A/CopilotKit consumers) expect.
+ */
+function serializeMessages(
+	messages: BaseMessage[],
+): Array<{ role: string; content: string }> {
+	return messages.map((msg) => {
+		const role =
+			msg.type === "human"
+				? "user"
+				: msg.type === "ai"
+					? "assistant"
+					: msg.type;
+		return { role, content: msg.text };
+	});
 }
 
 /**
@@ -384,7 +403,7 @@ const { app, start } = createUnifiedServer(
 
 		return {
 			response: result.response || "",
-			messages: result.messages,
+			messages: serializeMessages(result.messages),
 			error: result.error,
 			artifacts: chartArtifacts,
 			connectionSuggestions,
@@ -398,17 +417,19 @@ const { app, start } = createUnifiedServer(
 			(output.connectionSuggestions as ConnectionSuggestionArtifact[]) ||
 			[];
 
-		// Combine all artifacts
-		const allArtifacts = [
+		// Combine all artifacts into the A2A Artifact shape (id/name/mimeType/parts)
+		const allArtifacts: Artifact[] = [
 			...chartArtifacts.map((a) => ({
-				type: a.type,
 				id: a.id,
-				data: a,
+				name: a.type,
+				mimeType: "application/json",
+				parts: [{ type: "data" as const, data: { ...a } }],
 			})),
 			...connectionSuggestions.map((a) => ({
-				type: a.type,
 				id: a.id,
-				data: a,
+				name: a.type,
+				mimeType: "application/json",
+				parts: [{ type: "data" as const, data: { ...a } }],
 			})),
 		];
 

@@ -9,6 +9,7 @@
 		"dev:server": "PORT=8130 tsx unified-server.ts",
 		"dev:all": "concurrently \"npm run dev\" \"npm run dev:server\"",
 		"build": "tsup --config tsup.config.ts",
+		"type-check": "tsc --noEmit",
 		"build:next": "next build",
 		"build:all": "next build && tsup --config tsup.config.ts",
 		"start": "next start",

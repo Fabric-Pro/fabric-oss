@@ -164,10 +164,14 @@ export function reconcileToolCalls(
 			return entry;
 		}
 		const toolMsg = messages.find((m) => {
-			if (!isToolMessage(m)) {
+			// Widen to `unknown` first: the guard's predicate type is wider than
+			// `BaseMessage`, so TypeScript would otherwise keep `m` as
+			// `BaseMessage`, which has no `tool_call_id`.
+			const candidate: unknown = m;
+			if (!isToolMessage(candidate)) {
 				return false;
 			}
-			return m.tool_call_id === entry.id;
+			return candidate.tool_call_id === entry.id;
 		});
 		if (!toolMsg) {
 			return entry;

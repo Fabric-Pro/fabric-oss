@@ -18,7 +18,7 @@ import { DynamicStructuredTool } from "@langchain/core/tools";
 import { ToolNode } from "@langchain/langgraph/prebuilt";
 import { SYNTHETIC_TOOL_IMAGE_MESSAGE_FLAG } from "@repo/agent-core/recursion";
 import { logger } from "@repo/logs";
-import { z } from "zod";
+import { z } from "zod/v4";
 import type { AgentState } from "../state";
 
 // Mirrors packages/integrations/src/microsoft/config/limits.ts. Duplicated here

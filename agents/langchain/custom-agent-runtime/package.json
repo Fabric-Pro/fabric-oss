@@ -8,6 +8,7 @@
 	"scripts": {
 		"dev": "PORT=8240 tsx server.ts",
 		"build": "tsup --config tsup.config.ts",
+		"type-check": "tsc --noEmit",
 		"start": "PORT=8240 node dist/server.js"
 	},
 	"dependencies": {

@@ -17,10 +17,10 @@ import {
 	SystemMessage,
 	ToolMessage,
 } from "@langchain/core/messages";
+import type { AgentSkill } from "@repo/agent-core";
 import { PredictiveToolArgsAccumulator } from "@repo/agent-core/predictive-tool-args";
 import {
 	type AgentRuntimeConfig,
-	type AgentSkill,
 	createUnifiedServer,
 	type LangGraphStreamEvent,
 } from "@repo/agent-core/unified-server";
@@ -573,7 +573,16 @@ const { app, start } = createUnifiedServer(
 		});
 		const copilotkit =
 			actions.length > 0
-				? { actions, context: readableContexts }
+				? {
+						actions,
+						context: readableContexts,
+						// CopilotKit's LangGraph middleware owns these two fields: it
+						// sets them after a model turn that intercepted frontend tool
+						// calls and clears them before the next one. Its runtime guard
+						// treats an empty array / empty id as "not set".
+						interceptedToolCalls: [],
+						originalAIMessageId: "",
+					}
 				: undefined;
 
 		// Extract AI config from input (passed via A2A metadata or CopilotKit configurable)
@@ -962,7 +971,16 @@ const { app, start } = createUnifiedServer(
 		});
 		const copilotkit =
 			actions.length > 0
-				? { actions, context: readableContexts }
+				? {
+						actions,
+						context: readableContexts,
+						// CopilotKit's LangGraph middleware owns these two fields: it
+						// sets them after a model turn that intercepted frontend tool
+						// calls and clears them before the next one. Its runtime guard
+						// treats an empty array / empty id as "not set".
+						interceptedToolCalls: [],
+						originalAIMessageId: "",
+					}
 				: undefined;
 
 		console.log(

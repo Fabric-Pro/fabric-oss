@@ -1,4 +1,4 @@
-import { z } from "zod";
+import { z } from "zod/v4";
 
 const envSchema = z.object({
 	// Fabric API (required for MCP tools via Fabric tool router)
