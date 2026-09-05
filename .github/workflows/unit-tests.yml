@@ -239,8 +239,20 @@ jobs:
     #
     # The cache-warming run on master only installs and generates, so it
     # takes the small runner.
-    runs-on: ${{ github.event_name == 'push' && 'ubuntu-latest' || 'ubuntu-16core' }}
-    timeout-minutes: 30
+    #
+    # The paid 16-core runner is only used in the private staging repo,
+    # where developers wait on this check. The public repo runs the same
+    # PR job on the standard runner: GitHub provides it free and unlimited
+    # to public repositories at 4 CPU / 16 GB, whereas larger runners are
+    # billed even there, and the relayed re-run on ubuntu-16core was
+    # costing as much as the staging run it duplicated. A 4-core box under
+    # TURBO_CONCURRENCY=1 gives each package the same four cores it gets
+    # from 16 cores at concurrency 4, so per-test timeouts hold; only the
+    # wall clock grows, roughly by the number of heavy packages in scope,
+    # and that lands on the relay wait rather than on a developer. The
+    # timeout is widened accordingly.
+    runs-on: ${{ github.event_name == 'push' && 'ubuntu-latest' || (github.repository == 'Fabric-Pro/fabric-dev' && 'ubuntu-16core' || 'ubuntu-latest') }}
+    timeout-minutes: ${{ github.repository == 'Fabric-Pro/fabric-dev' && 30 || 90 }}
     env:
       # Placeholder so @repo/database's prisma singleton, which throws at
       # module load when DATABASE_URL is unset, can initialize. Tests that
@@ -360,14 +372,17 @@ jobs:
         env:
           EVENT_NAME: ${{ github.event_name }}
           BASE_REF: ${{ github.base_ref }}
+          # Parallel turbo tasks. 4 on the 16-core runner gives each package
+          # ~4 cores; the default would let 8+ heavy vitest workers compete
+          # and starve each other on cold-cache TS transform. The 4-core
+          # standard runner in the public repo runs one package at a time
+          # for the same per-package allocation (see runs-on above).
+          TURBO_CONCURRENCY: ${{ github.repository == 'Fabric-Pro/fabric-dev' && '4' || '1' }}
         run: |
-          # --concurrency=4 caps parallel turbo tasks so each gets ~2 cores
-          # of the 8-core runner. Default would let 8+ heavy vitest workers
-          # compete and starve each other on cold-cache TS transform.
           if [[ "$EVENT_NAME" == "pull_request" ]]; then
-            pnpm turbo run test --concurrency=4 --filter="...[origin/${BASE_REF}]"
+            pnpm turbo run test --concurrency="$TURBO_CONCURRENCY" --filter="...[origin/${BASE_REF}]"
           else
-            pnpm turbo run test --concurrency=4
+            pnpm turbo run test --concurrency="$TURBO_CONCURRENCY"
           fi
 
   # Stable status check name reported on every PR to the canonical branch
