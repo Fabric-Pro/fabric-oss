@@ -57,8 +57,17 @@ concurrency:
 jobs:
   type-check:
     name: type-check
-    runs-on: ubuntu-8core
-    timeout-minutes: 30
+    # Runner: the private staging repo keeps the paid 8-core (32 GB) runner
+    # because that is where developers wait on the check. The public repo
+    # runs the identical job on the standard runner, which GitHub provides
+    # free and unlimited to public repositories at 4 CPU / 16 GB; larger
+    # runners are billed even on public repositories, and re-running this
+    # job there on the 8-core label was costing as much as the staging run
+    # it duplicated. The public run is slower (see TURBO_CONCURRENCY) and
+    # the timeout is widened to match; that latency only lands on the
+    # relay wait, never on a developer.
+    runs-on: ${{ github.repository == 'Fabric-Pro/fabric-dev' && 'ubuntu-8core' || 'ubuntu-latest' }}
+    timeout-minutes: ${{ github.repository == 'Fabric-Pro/fabric-dev' && 30 || 90 }}
     env:
       # Placeholder so @repo/database's prisma singleton (throws at module
       # load when DATABASE_URL is unset) can initialize during generate.
@@ -66,7 +75,15 @@ jobs:
       DIRECT_URL: 'postgresql://test:test@localhost:5432/test'
       # CI-only headroom for the heaviest changed-package graphs. Never
       # imposed on contributors (not in the shared script).
-      NODE_OPTIONS: '--max-old-space-size=16384'
+      #
+      # The heap ceiling is per tsc process, so it has to be read together
+      # with TURBO_CONCURRENCY: four 16 GB ceilings fit the 32 GB 8-core
+      # runner because the heaviest package tops out around 8 GB and the
+      # rest are far smaller. The 16 GB standard runner cannot host two of
+      # the heavy packages at once, so it runs one task at a time under a
+      # 12 GB ceiling that leaves room for the OS and pnpm.
+      NODE_OPTIONS: ${{ github.repository == 'Fabric-Pro/fabric-dev' && '--max-old-space-size=16384' || '--max-old-space-size=12288' }}
+      TURBO_CONCURRENCY: ${{ github.repository == 'Fabric-Pro/fabric-dev' && '4' || '1' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -140,7 +157,7 @@ jobs:
           # package. `^generate`/`^build` run as turbo type-check
           # dependencies.
           if [[ "$EVENT_NAME" == "pull_request" ]]; then
-            pnpm turbo type-check --concurrency=4 --filter="...[origin/${BASE_REF}]"
+            pnpm turbo type-check --concurrency="$TURBO_CONCURRENCY" --filter="...[origin/${BASE_REF}]"
           else
-            pnpm turbo type-check --concurrency=4
+            pnpm turbo type-check --concurrency="$TURBO_CONCURRENCY"
           fi
