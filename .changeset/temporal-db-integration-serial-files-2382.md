@@ -2,7 +2,7 @@
 "fabric-app": patch
 ---
 
-Run @repo/temporal's real-Postgres test files one at a time so the publishing drain and redrive suites stop failing each other in CI (Fizzy #2382)
+Run @repo/temporal's real-Postgres test files one at a time so the publishing drain and redrive suites stop failing each other in CI
 
 The non-required `Temporal publishing tests (real Postgres)` job failed three times on 2026-09-03 on PRs that touched nothing near publishing. db-integration.yml runs `publishing-reconcile-activity`, `redrive-publishing-notification` and `publishing-drain-activity` in one vitest invocation, and `packages/temporal/vitest.config.ts` ran test files in parallel workers against the one shared database.
 
