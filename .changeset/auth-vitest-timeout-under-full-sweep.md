@@ -1,0 +1,13 @@
+---
+"fabric-app": patch
+---
+
+Give the auth package's Better Auth harness suites a 30 s per-test ceiling so they survive the full parallel monorepo sweep (Fizzy #2410)
+
+`packages/auth` was one of the few workspaces with no `testTimeout` in its vitest config, so every case ran under vitest's 5 s default. Seven suites there drive Better Auth's real in-process request cycle through `better-auth/test`, and each case pays for a fresh instance plus a sign-up/enrol/verify round trip, which makes them CPU-bound rather than slow by design.
+
+In isolation (`pnpm --filter @repo/auth test`) the step-up lockout behavioural file finishes in about 8.5 s and its slowest case stays well under a second. Under the root `pnpm test --force` sweep, with thirty-plus uncached suites sharing the machine, the same file took about 55 s and two cases crossed 5 s by a few tens of milliseconds ("reaches the threshold on backup codes alone", "keeps the step-up lock and the sign-in lock from blocking each other"). Which cases fail varies run to run, the signature of CPU starvation, not a logic defect.
+
+The fix is a package-level `testTimeout: 30000`, the same ceiling `@repo/database`, `@repo/integrations`, `@repo/agent-core` and `@repo/mcp-registry` already use, rather than a per-file override, since all seven harness-driven suites carry the same latent risk. Trimming the per-attempt cost was rejected: it would mean mocking away the request cycle the suites exist to exercise. CI has two protections the local sweep lacks: the unit-tests job scopes turbo to packages changed since the base ref, and it caps turbo at `--concurrency=4` so each task gets about two of the runner's eight cores. Those keep contention far lower than an uncapped root sweep, which is why CI has stayed green; the ceiling makes the suites hold on any machine rather than depending on that.
+
+Proving the change with the root sweep exposed a second, unrelated reason the auth suite fails only there: `brute-force.test.ts` never mocked `../redis-client`, and root `pnpm test` runs under `dotenv -c`, so on a machine whose `.env.local` carries Upstash credentials the "locks account after 5 consecutive failures" case increments a real `bf:ip-locks:<ip>` counter (one-hour TTL) on every sweep. Once that counter passes the IP cap, `recordFailedLogin` takes the black-hole branch and "does not increment counter when already locked" gets `locked: false`. The isolated package run and CI never load those credentials, so the client is null there and the path never runs. The file now mocks the Redis client to null, the same fail-open state the isolated run already tests under; the sibling `brute-force-ip-cap.test.ts` already mocks that module and is unchanged.
