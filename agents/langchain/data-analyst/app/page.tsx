@@ -1,7 +1,6 @@
 "use client";
 
 import { useChat } from "@ai-sdk/react";
-import type { UIMessage } from "ai";
 import { useState, useEffect, FormEvent, useCallback, useRef } from "react";
 import { Loader } from "@/components/ui/loader";
 import { ChatMessage } from "@/components/chat/chat-message";
@@ -72,39 +71,17 @@ export default function Chat() {
 
 	const streamingChat = useStreamingChat();
 
-	// Choose appropriate chat hook based on framework
+	// Choose appropriate chat hook based on framework. Both hooks share the
+	// single "ai" UIMessage type: @ai-sdk/react and "ai" are pinned to
+	// releases that resolve one "ai" copy, so setMessages can come straight
+	// from the ternary with no per-branch dispatch or cast.
 	const {
 		messages,
 		sendMessage,
 		status,
 		error: chatError,
+		setMessages,
 	} = useAiSdk ? aiSdkChat : streamingChat;
-	// setMessages is destructured separately and dispatched explicitly
-	// instead of being pulled out of the ternary above: aiSdkChat.setMessages
-	// and streamingChat.setMessages are two structurally different function
-	// types (this monorepo's dependency tree carries two major versions of
-	// "ai" — @ai-sdk/react resolves its own UIMessage against ai@5, while
-	// this agent's direct "ai" dependency and useStreamingChat resolve
-	// against ai@6), so a union of the two can't be invoked directly:
-	// TypeScript would require the call argument to satisfy an
-	// unsatisfiable intersection of both signatures. Dispatching per-branch
-	// lets the streamingChat (ai@6) path type-check with no cast at all,
-	// and isolates the one narrow, explicit bridge the genuine ai@5/ai@6
-	// version split requires.
-	const setMessages = useCallback(
-		(next: UIMessage[]) => {
-			if (useAiSdk) {
-				aiSdkChat.setMessages(
-					next as unknown as Parameters<
-						typeof aiSdkChat.setMessages
-					>[0],
-				);
-			} else {
-				streamingChat.setMessages(next);
-			}
-		},
-		[useAiSdk, aiSdkChat, streamingChat],
-	);
 
 	const isLoading = status === "submitted" || status === "streaming";
 	const saveMessagesRef = useRef(saveMessages);
