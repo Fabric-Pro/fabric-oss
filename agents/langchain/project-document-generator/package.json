@@ -11,6 +11,7 @@
 		"dev:all": "concurrently \"npm run dev\" \"npm run dev:a2a\"",
 		"dev:proxy": "PORT=8129 tsx proxy-server.ts",
 		"build": "tsup --config tsup.config.ts",
+		"type-check": "tsc --noEmit",
 		"start": "node dist/unified-server.js",
 		"start:a2a": "PORT=8229 node dist/a2a-server.js",
 		"start:proxy": "PORT=8129 node dist/proxy-server.js",

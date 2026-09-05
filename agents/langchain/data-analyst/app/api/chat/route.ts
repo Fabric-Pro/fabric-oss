@@ -9,7 +9,7 @@ import { openai } from "@ai-sdk/openai";
 import { anthropic } from "@ai-sdk/anthropic";
 import { google } from "@ai-sdk/google";
 import { createMCPClient } from "@ai-sdk/mcp";
-import { z } from "zod";
+import { z } from "zod/v4";
 import { auth } from "@/lib/auth";
 import { DEFAULT_MODEL } from "@/lib/constants";
 import { handleClaudeAgentsFramework } from "@/lib/frameworks/claude-agents";
@@ -290,7 +290,7 @@ async function handleClaudeAgents(
 }
 
 const chatRequestSchema = z.object({
-	messages: z.array(z.record(z.unknown())).min(1).max(100),
+	messages: z.array(z.record(z.string(), z.unknown())).min(1).max(100),
 	model: z.string().optional(),
 	framework: z.string().optional(),
 	chatId: z.string().optional(),
@@ -359,7 +359,7 @@ export async function POST(req: Request) {
 		});
 
 		const mcpTools = await client.tools();
-		const coreMessages = convertToModelMessages(messages);
+		const coreMessages = await convertToModelMessages(messages);
 
 		const result = streamText({
 			model,

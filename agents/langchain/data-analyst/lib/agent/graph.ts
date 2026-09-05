@@ -16,7 +16,7 @@ import {
 } from "@langchain/core/messages";
 import { ToolNode } from "@langchain/langgraph/prebuilt";
 import { DynamicStructuredTool } from "@langchain/core/tools";
-import { z } from "zod";
+import { z } from "zod/v4";
 import {
 	getAgentModelAsync,
 	logAgentUsageFromRunnableConfig,
@@ -213,7 +213,7 @@ function createChartTool(
 					"Type of chart. Use 'line' for trends, 'bar' for comparisons, 'pie' for proportions, 'area' for cumulative data, 'scatter' for correlations.",
 				),
 			data: z
-				.array(z.record(z.unknown()))
+				.array(z.record(z.string(), z.unknown()))
 				.describe(
 					"Array of data objects with keys matching xAxis and yAxis fields.",
 				),
@@ -437,6 +437,19 @@ async function discoverMcpTools(
 						description?: string;
 						inputSchema?: Record<string, unknown>;
 					};
+					// The AI SDK MCPClient interface intentionally doesn't
+					// expose a generic callTool() method; each tool from
+					// client.tools() carries its own execute() that funnels
+					// into the underlying tools/call request.
+					const mcpTool = toolDef as unknown as {
+						execute: (
+							args: Record<string, unknown>,
+							context: {
+								toolCallId: string;
+								messages: unknown[];
+							},
+						) => Promise<unknown>;
+					};
 
 					// Convert MCP tool to LangChain DynamicStructuredTool
 					const lcTool = new DynamicStructuredTool({
@@ -448,9 +461,9 @@ async function discoverMcpTools(
 						func: async (input: Record<string, unknown>) => {
 							try {
 								// Execute the MCP tool
-								const result = await client.callTool({
-									name: toolName,
-									arguments: input,
+								const result = await mcpTool.execute(input, {
+									toolCallId: `${toolName}-${Date.now()}`,
+									messages: [],
 								});
 
 								// Extract text content from result
@@ -555,7 +568,7 @@ function convertJsonSchemaToZod(
 	schema?: Record<string, unknown>,
 ): z.ZodObject<any> {
 	if (!schema || !schema.properties) {
-		return z.object({}).passthrough();
+		return z.object({}).loose();
 	}
 
 	const properties = schema.properties as Record<
@@ -586,7 +599,7 @@ function convertJsonSchemaToZod(
 				zodType = z.array(z.unknown());
 				break;
 			case "object":
-				zodType = z.record(z.unknown());
+				zodType = z.record(z.string(), z.unknown());
 				break;
 			default:
 				zodType = z.unknown();
@@ -705,9 +718,10 @@ async function agentNode(
 		const toolRounds = countToolRoundsSinceLastHuman(state.messages);
 		const finalizeMode = toolRounds >= MAX_TOOL_ITERATIONS;
 
-		// Bind MCP tools to the model
+		// Bind MCP tools to the model (bindTools is optional on BaseChatModel —
+		// not every provider implementation supports tool calling)
 		const modelWithTools =
-			state.mcpTools.length > 0 && !finalizeMode
+			state.mcpTools.length > 0 && !finalizeMode && model.bindTools
 				? model.bindTools(state.mcpTools)
 				: model;
 

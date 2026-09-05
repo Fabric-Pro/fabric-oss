@@ -10,7 +10,7 @@
  */
 
 import { DynamicStructuredTool } from "@langchain/core/tools";
-import { z } from "zod";
+import { z } from "zod/v4";
 
 /**
  * Connection suggestion artifact for prompting user to connect an integration
@@ -246,7 +246,7 @@ export function createCalculateStatisticsTool(): DynamicStructuredTool {
 		}),
 		func: async (input) => {
 			const data = input.data.filter(
-				(n) => !Number.isNaN(n) && Number.isFinite(n),
+				(n: number) => !Number.isNaN(n) && Number.isFinite(n),
 			);
 			const fieldName = input.fieldName || "values";
 			const percentilesRequested = input.percentiles || [25, 50, 75, 90];
@@ -263,7 +263,7 @@ export function createCalculateStatisticsTool(): DynamicStructuredTool {
 
 			// Basic statistics
 			const count = data.length;
-			const sum = data.reduce((a, b) => a + b, 0);
+			const sum = data.reduce((a: number, b: number) => a + b, 0);
 			const mean = sum / count;
 			const min = sorted[0];
 			const max = sorted[sorted.length - 1];
@@ -276,9 +276,9 @@ export function createCalculateStatisticsTool(): DynamicStructuredTool {
 					: sorted[mid];
 
 			// Standard deviation
-			const squaredDiffs = data.map((n) => Math.pow(n - mean, 2));
+			const squaredDiffs = data.map((n: number) => Math.pow(n - mean, 2));
 			const avgSquaredDiff =
-				squaredDiffs.reduce((a, b) => a + b, 0) / count;
+				squaredDiffs.reduce((a: number, b: number) => a + b, 0) / count;
 			const stdDev = Math.sqrt(avgSquaredDiff);
 
 			// Percentiles
@@ -328,7 +328,7 @@ export function createAggregateDataTool(): DynamicStructuredTool {
 		].join(" "),
 		schema: z.object({
 			data: z
-				.array(z.record(z.unknown()))
+				.array(z.record(z.string(), z.unknown()))
 				.describe("Array of data objects to aggregate"),
 			groupBy: z.string().describe("Field name to group by"),
 			aggregations: z
@@ -481,7 +481,9 @@ export function createDetectTrendsTool(): DynamicStructuredTool {
 			for (let i = 0; i < data.length; i++) {
 				const start = Math.max(0, i - windowSize + 1);
 				const window = data.slice(start, i + 1);
-				const avg = window.reduce((a, b) => a + b, 0) / window.length;
+				const avg =
+					window.reduce((a: number, b: number) => a + b, 0) /
+					window.length;
 				movingAverage.push(Math.round(avg * 100) / 100);
 			}
 
@@ -533,8 +535,12 @@ export function createJoinDatasetsTool(): DynamicStructuredTool {
 			"Use this to combine data from multiple sources.",
 		].join(" "),
 		schema: z.object({
-			leftData: z.array(z.record(z.unknown())).describe("Left dataset"),
-			rightData: z.array(z.record(z.unknown())).describe("Right dataset"),
+			leftData: z
+				.array(z.record(z.string(), z.unknown()))
+				.describe("Left dataset"),
+			rightData: z
+				.array(z.record(z.string(), z.unknown()))
+				.describe("Right dataset"),
 			leftKey: z.string().describe("Key field in left dataset"),
 			rightKey: z.string().describe("Key field in right dataset"),
 			joinType: z
