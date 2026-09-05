@@ -863,6 +863,10 @@ describe("Re-prioritize — scope + cap", () => {
 
 	it("confirms a large no-filter list before running, then sends the whole set (no ceiling caution below 500)", async () => {
 		const user = userEvent.setup();
+		// 101 is the smallest list that crosses REPRIORITIZE_ASK_THRESHOLD
+		// (100), and with no filter active every one of those rows is
+		// rendered — the entire-roadmap trick the >500 case below uses does
+		// not apply here. That is what makes this the file's one slow case.
 		const many = Array.from({ length: 101 }, (_, i) =>
 			story({ id: `s${i}` }),
 		);
@@ -886,7 +890,13 @@ describe("Re-prioritize — scope + cap", () => {
 				}),
 			),
 		);
-	});
+		// Rendering 101 full story rows in jsdom, plus the dialog interaction
+		// around them, takes ~1s on a quiet machine but has run past vitest's
+		// 10s default under the CI fan-out, where several packages' vitest
+		// workers share the runner's cores. The budget is per-test on
+		// purpose: a global raise would let a real hang anywhere in the
+		// suite sit for that long.
+	}, 30_000);
 
 	it("shows the ceiling caution only above 500, and still sends the whole selected set", async () => {
 		const user = userEvent.setup();
