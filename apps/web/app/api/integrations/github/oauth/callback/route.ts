@@ -1,7 +1,12 @@
 import { orpcClient } from "@shared/lib/orpc-client";
 import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
-import { htmlEscape, jsString, sanitizeReturnUrl } from "./sanitize";
+import {
+	appendQuery,
+	htmlEscape,
+	jsString,
+	sanitizeReturnUrl,
+} from "./sanitize";
 
 export const runtime = "nodejs";
 
@@ -60,14 +65,18 @@ export async function GET(req: NextRequest) {
 		const headingClass = result.success ? "success" : "error";
 
 		const safeReturnUrl = sanitizeReturnUrl(result.returnUrl);
-		const sep = safeReturnUrl.includes("?") ? "&" : "?";
 		const statusParam = result.success ? "success" : "error";
 		// Success verdicts can carry a caveat too (repo connected but not
 		// readable) — the fallback path must preserve it like the popup does.
 		const messageParam = message
 			? `&message=${encodeURIComponent(message)}`
 			: "";
-		const fallbackRedirect = `${safeReturnUrl}${sep}github_oauth=${statusParam}${messageParam}`;
+		// `appendQuery` keeps a `#fragment` on the return path after the
+		// parameters, so the landing page can still read `?github_oauth=`.
+		const fallbackRedirect = appendQuery(
+			safeReturnUrl,
+			`github_oauth=${statusParam}${messageParam}`,
+		);
 
 		const html = `
       <!DOCTYPE html>

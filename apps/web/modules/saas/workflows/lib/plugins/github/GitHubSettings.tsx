@@ -131,7 +131,12 @@ export function GitHubSettings({
 	const handleConnectGitHub = useCallback(async () => {
 		try {
 			const callbackUrl = `${window.location.origin}/api/integrations/github/oauth/callback`;
-			const returnUrl = window.location.href;
+			// Relative on purpose: the callback page rejects absolute URLs, even
+			// same-origin ones, and falls back to the settings page.
+			const returnUrl =
+				window.location.pathname +
+				window.location.search +
+				window.location.hash;
 
 			const result = await orpcClient.integrations.github.start({
 				redirectUri: callbackUrl,
