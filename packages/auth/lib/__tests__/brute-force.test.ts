@@ -21,6 +21,15 @@ vi.mock("@repo/logs", () => ({
 	},
 }));
 
+// The IP-cap layer reads Upstash credentials from the environment and fails
+// open without them. Pin it to that state: the root `pnpm test` runs under
+// dotenv, and an unmocked client would bump a real `bf:ip-locks:<ip>` counter
+// on every run until the black-hole branch swallowed the assertions below.
+// The IP-cap behaviour itself is covered by brute-force-ip-cap.test.ts.
+vi.mock("../redis-client", () => ({
+	getAuthRedisClient: () => null,
+}));
+
 // ---------------------------------------------------------------------------
 // Imports (AFTER mocks are set up)
 // ---------------------------------------------------------------------------
