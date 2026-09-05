@@ -1,5 +1,10 @@
+using System.Diagnostics;
+using System.Text.Json;
+using System.Text.RegularExpressions;
 using Aspire.Hosting;
 using DotNetEnv;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 
 var builder = DistributedApplication.CreateBuilder(args);
 
@@ -18,6 +23,22 @@ var isPublishMode = builder.ExecutionContext.IsPublishMode;
 
 // Load .env.local file from repository root (for local development)
 var repoRoot = Path.GetFullPath(Path.Combine(builder.AppHostDirectory, "../.."));
+
+// Host-side pnpm binary used by the database resource commands further down.
+// Windows resolves pnpm through a .cmd shim, which ProcessStartInfo cannot launch
+// without the extension when UseShellExecute is false.
+var pnpmExecutable = OperatingSystem.IsWindows() ? "pnpm.cmd" : "pnpm";
+
+// Container runtime CLI used by the agent "Rebuild & restart" command to exec into
+// a running container. `DcpPublisher:ContainerRuntime` is the key Aspire itself
+// binds to choose podman over the docker default; the env var is the form the
+// Aspire docs use for the same switch. Unlike pnpm, both CLIs resolve without a
+// .cmd suffix on Windows.
+var containerRuntimeExecutable = (
+    builder.Configuration["DcpPublisher:ContainerRuntime"]
+    ?? Environment.GetEnvironmentVariable("DOTNET_ASPIRE_CONTAINER_RUNTIME")
+    ?? "docker").ToLowerInvariant();
+
 var envFilePath = Path.Combine(repoRoot, ".env.local");
 Console.WriteLine($"[DEBUG] Looking for .env.local at: {envFilePath}");
 Console.WriteLine($"[DEBUG] File exists: {File.Exists(envFilePath)}");
@@ -299,6 +320,154 @@ if (!isPublishMode)
 }
 
 // ============================================================================
+// DATABASE RESOURCE COMMANDS (local development only)
+// ============================================================================
+// Fizzy #2373. Two dashboard buttons on the `postgres` resource for the chores
+// that otherwise need a second terminal: running a seed script and re-applying
+// the RLS policies.
+//
+// Both run on the host via pnpm, so they hit whatever DATABASE_URL/DIRECT_URL
+// .env.local points at — the local Aspire Postgres container unless
+// FABRIC_LOCAL_EXTERNAL_DB is on, in which case it is the external database
+// configured there. Identical to running the same script from a terminal; the
+// commands are attached to `postgres` because that is where a developer looks
+// for them, not because they are scoped to that container.
+if (!isPublishMode && postgres is not null)
+{
+    // The seed choices are read from packages/database/package.json at app-host
+    // startup so a newly added seed script shows up without editing this file.
+    // The `:staging` / `:prod` variants load .env.staging / .env.production and
+    // are deliberately never offered from the dashboard.
+    List<string> ReadLocalSeedScripts()
+    {
+        var discovered = new List<string>();
+        var packageJsonPath = Path.Combine(repoRoot, "packages", "database", "package.json");
+
+        try
+        {
+            using var packageJson = JsonDocument.Parse(File.ReadAllText(packageJsonPath));
+            if (packageJson.RootElement.TryGetProperty("scripts", out var scripts)
+                && scripts.ValueKind == JsonValueKind.Object)
+            {
+                foreach (var script in scripts.EnumerateObject())
+                {
+                    var scriptName = script.Name;
+                    if (scriptName != "seed" && !scriptName.StartsWith("seed:", StringComparison.Ordinal))
+                    {
+                        continue;
+                    }
+                    if (scriptName.EndsWith(":staging", StringComparison.Ordinal)
+                        || scriptName.EndsWith(":prod", StringComparison.Ordinal))
+                    {
+                        continue;
+                    }
+                    discovered.Add(scriptName);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[WARN] Could not read seed scripts from {packageJsonPath}: {ex.Message}");
+        }
+
+        discovered.Sort(StringComparer.Ordinal);
+        return discovered;
+    }
+
+    var seedScripts = ReadLocalSeedScripts();
+    var seedScriptOptions = seedScripts
+        .Select(scriptName => new KeyValuePair<string, string>(scriptName, scriptName))
+        .ToArray();
+
+    postgres.WithCommand(
+        "seed",
+        "Run seed",
+        async context =>
+        {
+            var script = context.Arguments.GetString("script");
+            if (string.IsNullOrWhiteSpace(script) || !seedScripts.Contains(script))
+            {
+                return CommandResults.Failure(
+                    $"'{script}' is not one of the local seed scripts in packages/database/package.json.");
+            }
+
+            var (exitCode, tail, _) = await RunHostCommandAsync(
+                context,
+                pnpmExecutable,
+                ["--filter", "@repo/database", script],
+                repoRoot);
+
+            return exitCode == 0
+                ? CommandResults.Success($"`pnpm --filter @repo/database {script}` completed.")
+                : CommandResults.Failure(
+                    $"`pnpm --filter @repo/database {script}` exited with code {exitCode}.{Environment.NewLine}{tail}");
+        },
+        new CommandOptions
+        {
+            Description = "Runs one of the local seed scripts from packages/database on the host.",
+            IconName = "DatabaseArrowUp",
+            ConfirmationMessage = "Run the selected seed script against the database that .env.local points at?",
+            Arguments =
+            [
+                new InteractionInput
+                {
+                    Name = "script",
+                    Label = "Seed script",
+                    InputType = InputType.Choice,
+                    Options = seedScriptOptions,
+                    Required = true,
+                },
+            ],
+            // Belt and braces: the dashboard restricts the choice, but the CLI and
+            // MCP paths can submit an arbitrary string for a Choice argument.
+            ValidateArguments = validationContext =>
+            {
+                var script = validationContext.Inputs.GetString("script");
+                if (string.IsNullOrWhiteSpace(script) || !seedScripts.Contains(script))
+                {
+                    validationContext.AddValidationError(
+                        "script",
+                        "Choose one of the local seed scripts declared in packages/database/package.json.");
+                }
+                return Task.CompletedTask;
+            },
+            Progress = new CommandProgressOptions
+            {
+                Title = "Run seed",
+                Message = "Running the selected seed script on the host...",
+            },
+        });
+
+    postgres.WithCommand(
+        "apply-rls",
+        "Apply RLS policies",
+        async context =>
+        {
+            var (exitCode, tail, _) = await RunHostCommandAsync(
+                context,
+                pnpmExecutable,
+                ["--filter", "@repo/database", "apply:rls"],
+                repoRoot);
+
+            return exitCode == 0
+                ? CommandResults.Success("`pnpm --filter @repo/database apply:rls` completed.")
+                : CommandResults.Failure(
+                    $"`pnpm --filter @repo/database apply:rls` exited with code {exitCode}.{Environment.NewLine}{tail}");
+        },
+        new CommandOptions
+        {
+            Description = "Runs `pnpm --filter @repo/database apply:rls` on the host to re-apply the row-level security policies.",
+            IconName = "ShieldCheckmark",
+            ConfirmationMessage = "Re-apply the RLS policies to the database that .env.local points at?",
+            Progress = new CommandProgressOptions
+            {
+                Title = "Apply RLS policies",
+                Message = "Applying row-level security policies...",
+            },
+        });
+}
+
+// ============================================================================
 // LANGGRAPH AGENTS
 // ============================================================================
 // Port Assignments:
@@ -404,6 +573,243 @@ IResourceBuilder<ContainerResource> AddHostGateway(IResourceBuilder<ContainerRes
         return container.WithContainerRuntimeArgs("--add-host", "host.docker.internal:host-gateway");
     }
     return container;
+}
+
+// ============================================================================
+// DASHBOARD RESOURCE COMMAND HELPERS (local development only)
+// ============================================================================
+// Fizzy #2373. These back the custom commands the dashboard shows on a resource.
+// Every one starts a process on the *host*: either the pnpm script directly (the
+// database commands) or the container runtime CLI exec'ing into a running agent
+// container (the rebuild command).
+
+// Runs a host process, streaming each output line into the resource's console log
+// and keeping a bounded tail so a failure result can carry the last few lines.
+// Cancelling the command (dashboard progress dialog, or app-host shutdown) kills
+// the process tree rather than leaving an orphaned build behind.
+//
+// captureStdout additionally retains every stdout line for callers that need to
+// read the output back (resolving a container id). It stays off for builds, whose
+// output can run to thousands of lines that nothing reads.
+async Task<(int ExitCode, string Tail, IReadOnlyList<string> StdoutLines)> RunHostCommandAsync(
+    ExecuteCommandContext ctx,
+    string fileName,
+    string[] arguments,
+    string workingDirectory,
+    bool captureStdout = false)
+{
+    const int tailCapacity = 40;
+
+    var startInfo = new ProcessStartInfo
+    {
+        FileName = fileName,
+        WorkingDirectory = workingDirectory,
+        UseShellExecute = false,
+        RedirectStandardOutput = true,
+        RedirectStandardError = true,
+        CreateNoWindow = true,
+    };
+    foreach (var argument in arguments)
+    {
+        startInfo.ArgumentList.Add(argument);
+    }
+
+    var tail = new Queue<string>(tailCapacity);
+    var stdoutLines = new List<string>();
+    void Capture(string? line, bool isStdout)
+    {
+        if (line is null)
+        {
+            return;
+        }
+
+        ctx.Logger.LogInformation("{Line}", line);
+        lock (tail)
+        {
+            if (tail.Count == tailCapacity)
+            {
+                tail.Dequeue();
+            }
+            tail.Enqueue(line);
+
+            if (captureStdout && isStdout)
+            {
+                stdoutLines.Add(line);
+            }
+        }
+    }
+
+    using var process = new Process { StartInfo = startInfo };
+    process.OutputDataReceived += (_, e) => Capture(e.Data, isStdout: true);
+    process.ErrorDataReceived += (_, e) => Capture(e.Data, isStdout: false);
+
+    ctx.Logger.LogInformation(
+        "$ {FileName} {Arguments}   (cwd: {WorkingDirectory})",
+        fileName,
+        string.Join(' ', arguments),
+        workingDirectory);
+
+    process.Start();
+    process.BeginOutputReadLine();
+    process.BeginErrorReadLine();
+
+    try
+    {
+        await process.WaitForExitAsync(ctx.CancellationToken);
+    }
+    catch (OperationCanceledException)
+    {
+        try
+        {
+            process.Kill(entireProcessTree: true);
+        }
+        catch (Exception ex)
+        {
+            ctx.Logger.LogWarning("Could not kill {FileName} after cancellation: {Message}", fileName, ex.Message);
+        }
+        throw;
+    }
+
+    string tailText;
+    string[] capturedStdout;
+    lock (tail)
+    {
+        tailText = string.Join(Environment.NewLine, tail);
+        capturedStdout = stdoutLines.ToArray();
+    }
+
+    return (process.ExitCode, tailText, capturedStdout);
+}
+
+// Adds the "Rebuild & restart" command to a dev-mode agent container. The dev
+// entrypoint only runs `pnpm build` when dist/ is missing, so picking up a source
+// change otherwise means a build followed by a manual restart; this collapses
+// that into one dashboard button.
+//
+// The build runs *inside* the container rather than on the host. The container's
+// own first-run build executes as root against the bind-mounted checkout, so on
+// Linux every agent's dist/ ends up root-owned and a host-side tsup build cannot
+// unlink the previous chunks (EACCES). Building where the entrypoint builds keeps
+// the ownership consistent.
+IResourceBuilder<ContainerResource> WithAgentRebuildCommand(IResourceBuilder<ContainerResource> agent)
+{
+    // The model name ("task-planner") is what the label and the agents/langchain
+    // directory carry. context.ResourceName is the runtime instance id
+    // ("task-planner-<suffix>"), which is only right for addressing the instance
+    // itself — the restart call below.
+    var resourceName = agent.Resource.Name;
+
+    return agent.WithCommand(
+        "rebuild",
+        "Rebuild & restart",
+        async context =>
+        {
+            // Resolve the container id by two filters that must both hold: the
+            // compose-service label the AppHost stamps on every dev-mode agent
+            // container (the model resource name), and the container name, which
+            // for an Aspire container is the instance id in context.ResourceName
+            // ("task-planner-<suffix>", where the suffix is stable per AppHost
+            // checkout). The label alone is not enough — a persistent container
+            // left behind by another checkout of this repo carries the same label —
+            // so the lookup fails closed unless exactly one container matches.
+            // (ResourceNotificationService.WaitForResourceAsync keyed by
+            // context.ResourceName never completes, because that is the instance
+            // id, not a model resource name.)
+            context.Logger.LogInformation(
+                "Resolving the running container for {ResourceName}...", context.ResourceName);
+
+            var label = $"com.docker.compose.service={resourceName}";
+            var namePattern = $"^/?{Regex.Escape(context.ResourceName)}$";
+            var (lookupExitCode, lookupTail, lookupStdout) = await RunHostCommandAsync(
+                context,
+                containerRuntimeExecutable,
+                [
+                    "ps", "-q",
+                    "--filter", $"label={label}",
+                    "--filter", $"name={namePattern}",
+                    "--filter", "status=running",
+                ],
+                repoRoot,
+                captureStdout: true);
+
+            if (lookupExitCode != 0)
+            {
+                return CommandResults.Failure(
+                    $"Could not list containers for {context.ResourceName} (exit code {lookupExitCode}).{Environment.NewLine}{lookupTail}");
+            }
+
+            var containerIds = lookupStdout
+                .Select(line => line.Trim())
+                .Where(line => line.Length > 0)
+                .ToArray();
+
+            if (containerIds.Length != 1)
+            {
+                return CommandResults.Failure(containerIds.Length == 0
+                    ? $"No running container named {context.ResourceName} with label {label}; is the resource running?"
+                    : $"Expected exactly one running container named {context.ResourceName} with label {label}, found {containerIds.Length}: {string.Join(", ", containerIds)}. Remove the stale ones and retry.");
+            }
+
+            var containerId = containerIds[0];
+
+            // The agent directory under agents/langchain matches the resource name
+            // for every agent that has this command.
+            context.Logger.LogInformation(
+                "Building {ResourceName} in container {ContainerId}...", resourceName, containerId);
+
+            var (exitCode, tail, _) = await RunHostCommandAsync(
+                context,
+                containerRuntimeExecutable,
+                [
+                    "exec",
+                    containerId,
+                    "sh",
+                    "-c",
+                    $"corepack enable && cd /app/agents/langchain/{resourceName} && pnpm build",
+                ],
+                repoRoot);
+
+            if (exitCode != 0)
+            {
+                return CommandResults.Failure(
+                    $"`pnpm build` inside {resourceName} exited with code {exitCode}.{Environment.NewLine}{tail}");
+            }
+
+            context.Logger.LogInformation("Restarting {ResourceName}...", resourceName);
+
+            var commandService = context.Services.GetRequiredService<ResourceCommandService>();
+            var restart = await commandService.ExecuteCommandAsync(
+                context.ResourceName, // instance id: the restart targets this instance
+                KnownResourceCommands.RestartCommand,
+                context.CancellationToken);
+
+            if (restart.Canceled)
+            {
+                return CommandResults.Canceled();
+            }
+
+            if (!restart.Success)
+            {
+                return CommandResults.Failure(
+                    $"Rebuilt {resourceName}, but restarting it failed: {restart.Message ?? "no error message"}");
+            }
+
+            return CommandResults.Success($"Rebuilt and restarted {resourceName}.");
+        },
+        new CommandOptions
+        {
+            Description = "Runs `pnpm build` inside the container, then restarts it so the new bundle is picked up.",
+            IconName = "ArrowSync",
+            UpdateState = stateContext =>
+                stateContext.ResourceSnapshot.State?.Text == KnownResourceStates.Running
+                    ? ResourceCommandState.Enabled
+                    : ResourceCommandState.Disabled,
+            Progress = new CommandProgressOptions
+            {
+                Title = "Rebuild & restart",
+                Message = "Running `pnpm build` inside the container, then restarting it...",
+            },
+        });
 }
 
 // ============================================================================
@@ -1065,6 +1471,42 @@ else
         if (!useExternalDb && (key == "DATABASE_URL" || key == "DIRECT_URL")) continue;
         if (key.StartsWith("OTEL_")) continue;
         customAgentRuntime = customAgentRuntime.WithEnvironment(key, value);
+    }
+}
+
+// ============================================================================
+// AGENT REBUILD COMMANDS (local development only)
+// ============================================================================
+// Fizzy #2373. Adds a "Rebuild & restart" button to every dev-mode agent, since
+// the dev entrypoint only builds when dist/ is missing.
+//
+// The build runs inside the container, not on the host: the container owns dist/
+// on a Linux bind mount (its first-run build runs as root), so a host-side build
+// cannot replace those files.
+//
+// data-analyst is deliberately absent: it runs `pnpm exec tsx unified-server.ts`
+// straight from source, so there is no bundle to rebuild and the stock Restart
+// command already picks up a source change.
+if (!isPublishMode)
+{
+    IResourceBuilder<ContainerResource>[] rebuildableAgents =
+    [
+        weaveReaders,
+        weaveShuttle,
+        weavePlanners,
+        documentGenerator,
+        projectDocumentGenerator,
+        taskPlanner,
+        storyBreakdown,
+        apiAgent,
+        promptEnhancer,
+        backlogUpdater,
+        customAgentRuntime,
+    ];
+
+    foreach (var agent in rebuildableAgents)
+    {
+        WithAgentRebuildCommand(agent);
     }
 }
 
