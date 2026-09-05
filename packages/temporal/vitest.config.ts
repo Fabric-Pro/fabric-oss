@@ -1,6 +1,13 @@
 import path from "node:path";
 import { defineConfig } from "vitest/config";
 
+// Set only by the real-Postgres CI gate (`.github/workflows/db-integration.yml`)
+// and by a developer targeting a DB-backed suite by hand. Neither
+// unit-tests.yml nor `pnpm test` ever sets it, so the default run is
+// unaffected by anything keyed on this flag. Same contract as
+// packages/database/vitest.config.ts.
+const runDbIntegration = process.env.RUN_DB_INTEGRATION === "1";
+
 export default defineConfig({
 	test: {
 		environment: "node",
@@ -63,6 +70,32 @@ export default defineConfig({
 		// Leave `isolate` at its default (true). Do NOT set isolate:false —
 		// measured directly, it fails 8 files / 69 tests in this suite.
 		maxWorkers: "50%",
+		// ONE DATABASE, SO ONE FILE AT A TIME (Fizzy #2382). Every
+		// RUN_DB_INTEGRATION suite in this package shares a single Postgres, and
+		// `maxWorkers` above runs test FILES concurrently. That is safe only while
+		// every suite scopes every read to rows it created — and the publishing
+		// drain deliberately does not: `drainDeferredPublishingNotifications`
+		// pages EVERY DEFERRED email row in the table, because that is the shape
+		// production runs. db-integration.yml runs publishing-drain-activity,
+		// redrive-publishing-notification and publishing-reconcile-activity in
+		// one invocation, and the two collide in both directions:
+		//   - the drain test mocks sendEmail to succeed, so when it runs first it
+		//     marks the redrive test's freshly seeded DEFERRED row SENT, the
+		//     redrive script's 24h duplicate guard counts zero outstanding
+		//     obligations, and "refuses an old DEFERRED obligation" sees exit 0
+		//     instead of 1;
+		//   - when the redrive row lands inside the drain's scan instead, the
+		//     "EXACTLY full backlog" case's budget rows become budget + 1 and
+		//     moreWorkRemains flips to true.
+		// Three CI failures on 2026-09-03 from PRs that touched nothing near
+		// publishing, split between exactly those two assertions.
+		//
+		// Fixed here rather than as a `--no-file-parallelism` flag on that one CI
+		// step, for the reason packages/database/vitest.config.ts gives: the
+		// collision is a property of SHARING A DATABASE, not of those files, and a
+		// step that forgets the flag reopens it. The default unit run never sets
+		// RUN_DB_INTEGRATION, so `pnpm test` keeps full file parallelism.
+		fileParallelism: !runDbIntegration,
 		coverage: {
 			provider: "v8",
 			reporter: ["text", "json", "html"],
