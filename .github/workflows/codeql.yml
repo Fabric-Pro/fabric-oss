@@ -46,9 +46,15 @@ on:
 permissions:
   contents: read
 
+# One run per ref, but never cancel a run that has already started. The relay
+# lands pushes to master minutes apart while the JavaScript/TypeScript scan
+# takes ~15 minutes, and a cancelled analyze step still uploads a failed-status
+# record for its category, which the Security tab surfaces as "Code scanning
+# configuration error". Without cancel-in-progress GitHub keeps the running run
+# plus the newest pending one and drops the pending runs in between, so nothing
+# is scanned twice and no half-finished scan is recorded.
 concurrency:
   group: codeql-${{ github.ref }}
-  cancel-in-progress: true
 
 jobs:
   analyze:
