@@ -6,7 +6,9 @@
     "grafana-admin-password": "admin",
     "ai-token-secret": "dev-ai-token-secret-for-local-development-only-32bytes",
     "agent-api-key": "dev-agent-api-key-for-local-development-only",
-    "fabric-server-api-key": "dev-fabric-server-api-key-for-local-development-only"
+    "fabric-server-api-key": "dev-fabric-server-api-key-for-local-development-only",
+    "ngrok-domain": "",
+    "ngrok-auth-token": ""
   },
   "Aspire": {
     "Dashboard": {

@@ -1,6 +1,19 @@
 import { logger } from "@repo/logs";
 
-const NGROK_HOST_SUFFIXES = [".ngrok-free.app", ".ngrok.app", ".ngrok.io"];
+/**
+ * Host families a local dev tunnel may serve from, with the number of DNS
+ * labels that must precede the suffix. ngrok hands out one label
+ * (`abc.ngrok-free.app`); Microsoft dev tunnels use two
+ * (`abc-3001.usw2.devtunnels.ms`). Anything else, including extra labels, is
+ * rejected so a value like `evil.com.ngrok.io` never becomes a trusted origin.
+ */
+const DEV_TUNNEL_HOST_RULES: ReadonlyArray<{ suffix: string; labels: number }> =
+	[
+		{ suffix: ".ngrok-free.app", labels: 1 },
+		{ suffix: ".ngrok.app", labels: 1 },
+		{ suffix: ".ngrok.io", labels: 1 },
+		{ suffix: ".devtunnels.ms", labels: 2 },
+	];
 
 function reject(
 	value: string,
@@ -12,13 +25,16 @@ function reject(
 	);
 }
 
-function isValidNgrokHost(hostname: string): boolean {
-	return NGROK_HOST_SUFFIXES.some((suffix) => {
+function isValidDevTunnelHost(hostname: string): boolean {
+	return DEV_TUNNEL_HOST_RULES.some(({ suffix, labels }) => {
 		if (!hostname.endsWith(suffix)) {
 			return false;
 		}
-		const label = hostname.slice(0, hostname.length - suffix.length);
-		return label.length > 0 && !label.includes(".");
+		const prefix = hostname.slice(0, hostname.length - suffix.length);
+		const parts = prefix.split(".");
+		return (
+			parts.length === labels && parts.every((part) => part.length > 0)
+		);
 	});
 }
 
@@ -30,12 +46,12 @@ function addLocalhostAlias(origins: Set<string>, appUrl: string): void {
 	}
 }
 
-function addNgrok(origins: Set<string>, env: NodeJS.ProcessEnv): void {
-	const raw = env.NGROK_URL;
+function addDevTunnel(origins: Set<string>, env: NodeJS.ProcessEnv): void {
+	const raw = env.DEV_TUNNEL_URL;
 	if (!raw) {
 		return;
 	}
-	// Never trust ngrok tunnels in production — they are local dev tools only
+	// Never trust dev tunnels in production — they are local dev tools only
 	if (env.NODE_ENV === "production") {
 		return;
 	}
@@ -51,7 +67,7 @@ function addNgrok(origins: Set<string>, env: NodeJS.ProcessEnv): void {
 		reject(raw, "non-https");
 		return;
 	}
-	if (!isValidNgrokHost(parsed.hostname)) {
+	if (!isValidDevTunnelHost(parsed.hostname)) {
 		reject(raw, "bad-host");
 		return;
 	}
@@ -93,6 +109,6 @@ export function buildTrustedOrigins(
 	addLocalhostAlias(origins, appUrl);
 	addExtraOrigins(origins, env);
 	addVercelPreview(origins, env);
-	addNgrok(origins, env);
+	addDevTunnel(origins, env);
 	return Array.from(origins);
 }

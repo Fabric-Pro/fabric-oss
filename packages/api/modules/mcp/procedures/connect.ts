@@ -8,6 +8,7 @@
 
 import { ORPCError } from "@orpc/server";
 import { db } from "@repo/database";
+import { getBaseUrl } from "@repo/utils";
 import { z } from "zod";
 import {
 	Permissions,
@@ -385,9 +386,11 @@ export const connectProcedures = {
 				});
 			}
 
-			// Build redirect URI - use a generic callback that handles all OAuth providers
-			const baseUrl =
-				process.env.NEXT_PUBLIC_APP_URL || process.env.APP_URL;
+			// Build redirect URI - use a generic callback that handles all OAuth providers.
+			// NEXT_PUBLIC_APP_URL stays as an explicit override; otherwise use the
+			// canonical site URL so local dev (where neither NEXT_PUBLIC_APP_URL nor
+			// APP_URL is set) and the Aspire dev tunnel produce a usable callback.
+			const baseUrl = process.env.NEXT_PUBLIC_APP_URL || getBaseUrl();
 			const redirectUri = `${baseUrl}/api/integrations/${provider.toLowerCase()}/oauth/callback`;
 
 			// Encode state for security

@@ -94,6 +94,32 @@ else if (useExternalDb)
     Console.WriteLine("[DEBUG] FABRIC_LOCAL_EXTERNAL_DB=true — app services will use DATABASE_URL/DIRECT_URL from .env.local, not the local Postgres container.");
 }
 
+// Opt-in (default OFF) public tunnel for OAuth callbacks and inbound webhooks.
+// Set Parameters:ngrok-domain (a reserved ngrok domain, e.g. example-org.ngrok-free.app)
+// and Parameters:ngrok-auth-token in appsettings.Development.json or user-secrets.
+// When both are present the AppHost runs the ngrok agent as a container, serves
+// the web app through it, points NEXT_PUBLIC_SITE_URL at the tunnel so redirect
+// URIs and links derived from the site URL use the public origin, and shows the
+// URL on the resource in the dashboard. A reserved domain is required because
+// the URL must be known before the web app starts (and OAuth providers need a
+// stable callback anyway). Local-dev only — publish mode never runs a tunnel.
+var ngrokDomain = builder.Configuration["Parameters:ngrok-domain"]?.Trim();
+var hasNgrokAuthToken = !string.IsNullOrWhiteSpace(builder.Configuration["Parameters:ngrok-auth-token"]);
+string? devTunnelUrl = null;
+if (!isPublishMode && !string.IsNullOrWhiteSpace(ngrokDomain))
+{
+    if (!hasNgrokAuthToken)
+    {
+        Console.WriteLine("[WARN] Parameters:ngrok-domain is set but Parameters:ngrok-auth-token is empty — starting without a public tunnel.");
+    }
+    else
+    {
+        var tunnelHost = Regex.Replace(ngrokDomain, "^https?://", "").TrimEnd('/');
+        devTunnelUrl = $"https://{tunnelHost}";
+        Console.WriteLine($"[DEBUG] Public tunnel enabled — the web app will be served at {devTunnelUrl}");
+    }
+}
+
 // ============================================================================
 // AZURE DEPLOYMENT CONFIGURATION
 // ============================================================================
@@ -1629,10 +1655,15 @@ if (!isPublishMode)
     // Web App (deployed to Vercel in production)
     // Use HTTP protocol for OTLP to avoid gRPC credentials issues with self-signed certs
 #pragma warning disable ASPIREBROWSERLOGS001 // WithBrowserLogs is experimental in 13.5
+    // The canonical origin the web app derives absolute URLs from (Better Auth
+    // baseURL, OAuth redirect URIs, magic links, webhook targets). Localhost
+    // unless the opt-in public tunnel is on.
+    var webSiteUrl = devTunnelUrl ?? "http://localhost:3001";
     var web = builder.AddExecutable("web", "pnpm", "../../apps/web", "run", "dev")
         .WithBrowserLogs()
         .WithHttpEndpoint(port: 3001, env: "PORT", isProxied: false)
         .WithEnvironment("NODE_ENV", "development")
+        .WithEnvironment("NEXT_PUBLIC_SITE_URL", webSiteUrl)
         .WithEnvironment("MCP_STDIO_WRAPPER_URL", "http://localhost:3100")  // MCP STDIO wrapper for Azure DevOps, etc.
         .WithEnvironment("WEAVE_READERS_URL", "http://localhost:8140")
         .WithEnvironment("WEAVE_SHUTTLE_URL", "http://localhost:8141")
@@ -1668,10 +1699,30 @@ if (!isPublishMode)
     {
         if (!useExternalDb && (key == "DATABASE_URL" || key == "DIRECT_URL")) continue;
         if (key.StartsWith("OTEL_")) continue;
-        if (key == "NEXT_PUBLIC_SITE_URL")
-            web = web.WithEnvironment(key, "http://localhost:3001");
-        else
-            web = web.WithEnvironment(key, value);
+        if (key == "NEXT_PUBLIC_SITE_URL") continue; // pinned to webSiteUrl above
+        web = web.WithEnvironment(key, value);
+    }
+
+    if (devTunnelUrl is not null)
+    {
+        // DEV_TUNNEL_URL adds the tunnel to Better Auth's trusted origins
+        // (packages/auth/lib/trusted-origins.ts) and to Next's allowedDevOrigins
+        // (apps/web/next.config.ts). Set after the .env.local loop so it wins.
+        web = web.WithEnvironment("DEV_TUNNEL_URL", devTunnelUrl);
+
+        var ngrokAuthToken = builder.AddParameter("ngrok-auth-token", secret: true);
+        var tunnel = builder.AddContainer("tunnel", "ngrok/ngrok", "3")
+            .WithContainerRuntimeArgs("--label", $"com.docker.compose.project={dockerProjectName}")
+            .WithContainerRuntimeArgs("--label", "com.docker.compose.service=tunnel")
+            .WithEnvironment("NGROK_AUTHTOKEN", ngrokAuthToken)
+            // The web app is a host process, so the agent reaches it through
+            // host.docker.internal (mapped by AddHostGateway on Linux).
+            .WithArgs("http", "--url", devTunnelUrl, "--log", "stdout", "http://host.docker.internal:3001")
+            // ngrok's local inspector and status API; the image binds it to 0.0.0.0:4040.
+            .WithHttpEndpoint(targetPort: 4040, name: "inspect")
+            .WithUrl(devTunnelUrl, "Public URL")
+            .WaitFor(web);
+        AddHostGateway(tunnel);
     }
 }
 

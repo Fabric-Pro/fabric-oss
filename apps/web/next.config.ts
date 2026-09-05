@@ -311,7 +311,30 @@ function resolveAppVersion(): string {
 
 const appVersion = resolveAppVersion();
 
+/**
+ * Hostname of the local dev tunnel (ngrok or Microsoft dev tunnels), when one
+ * is on. Next blocks cross-origin requests to `/_next/*` in dev unless the host
+ * is in `allowedDevOrigins`, which breaks assets and HMR through a tunnel. The
+ * Aspire AppHost sets `DEV_TUNNEL_URL` when its opt-in tunnel resource is on;
+ * set it in `.env.local` when starting a tunnel by hand (docs/ASPIRE_USAGE.md).
+ */
+function resolveDevTunnelHost(): string | undefined {
+	const raw = process.env.DEV_TUNNEL_URL;
+	if (!raw) {
+		return undefined;
+	}
+	try {
+		return new URL(raw).hostname;
+	} catch {
+		return undefined;
+	}
+}
+
+const devTunnelHost = resolveDevTunnelHost();
+
 const nextConfig: NextConfig = {
+	allowedDevOrigins: devTunnelHost ? [devTunnelHost] : undefined,
+
 	// Expose the resolved build version to the client bundle and the
 	// /api/version route so stale-build detection can compare loaded vs latest.
 	env: {

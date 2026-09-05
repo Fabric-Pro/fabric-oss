@@ -123,14 +123,14 @@ describe("buildTrustedOrigins — Vercel preview URLs", () => {
 	});
 });
 
-describe("buildTrustedOrigins — NGROK_URL", () => {
+describe("buildTrustedOrigins — DEV_TUNNEL_URL", () => {
 	beforeEach(() => vi.resetAllMocks());
 
 	it("accepts a valid https ngrok-free.app host in development", () => {
 		const r = buildTrustedOrigins(
 			{
 				NODE_ENV: "development",
-				NGROK_URL: "https://abc.ngrok-free.app",
+				DEV_TUNNEL_URL: "https://abc.ngrok-free.app",
 			} as never,
 			APP_URL,
 		);
@@ -141,7 +141,7 @@ describe("buildTrustedOrigins — NGROK_URL", () => {
 		const a = buildTrustedOrigins(
 			{
 				NODE_ENV: "development",
-				NGROK_URL: "https://abc.ngrok.app",
+				DEV_TUNNEL_URL: "https://abc.ngrok.app",
 			} as never,
 			APP_URL,
 		);
@@ -149,18 +149,18 @@ describe("buildTrustedOrigins — NGROK_URL", () => {
 		const b = buildTrustedOrigins(
 			{
 				NODE_ENV: "development",
-				NGROK_URL: "https://xyz.ngrok.io",
+				DEV_TUNNEL_URL: "https://xyz.ngrok.io",
 			} as never,
 			APP_URL,
 		);
 		expect(b).toContain("https://xyz.ngrok.io");
 	});
 
-	it("rejects http NGROK_URL and warns", () => {
+	it("rejects http DEV_TUNNEL_URL and warns", () => {
 		const r = buildTrustedOrigins(
 			{
 				NODE_ENV: "development",
-				NGROK_URL: "http://abc.ngrok.io",
+				DEV_TUNNEL_URL: "http://abc.ngrok.io",
 			} as never,
 			APP_URL,
 		);
@@ -174,11 +174,11 @@ describe("buildTrustedOrigins — NGROK_URL", () => {
 		);
 	});
 
-	it("rejects NGROK_URL with non-ngrok host suffix", () => {
+	it("rejects DEV_TUNNEL_URL with a non-tunnel host suffix", () => {
 		const r = buildTrustedOrigins(
 			{
 				NODE_ENV: "development",
-				NGROK_URL: "https://abc.evil.com",
+				DEV_TUNNEL_URL: "https://abc.evil.com",
 			} as never,
 			APP_URL,
 		);
@@ -192,9 +192,9 @@ describe("buildTrustedOrigins — NGROK_URL", () => {
 		);
 	});
 
-	it("rejects malformed NGROK_URL", () => {
+	it("rejects malformed DEV_TUNNEL_URL", () => {
 		const r = buildTrustedOrigins(
-			{ NODE_ENV: "development", NGROK_URL: "not a url" } as never,
+			{ NODE_ENV: "development", DEV_TUNNEL_URL: "not a url" } as never,
 			APP_URL,
 		);
 		expect(r).not.toContain("not a url");
@@ -207,22 +207,22 @@ describe("buildTrustedOrigins — NGROK_URL", () => {
 		);
 	});
 
-	it("ignores NGROK_URL in production", () => {
+	it("ignores DEV_TUNNEL_URL in production", () => {
 		const r = buildTrustedOrigins(
 			{
 				NODE_ENV: "production",
-				NGROK_URL: "https://abc.ngrok-free.app",
+				DEV_TUNNEL_URL: "https://abc.ngrok-free.app",
 			} as never,
 			APP_URL,
 		);
 		expect(r).not.toContain("https://abc.ngrok-free.app");
 	});
 
-	it("rejects multi-label NGROK hostname like evil.com.ngrok.io", () => {
+	it("rejects multi-label ngrok hostname like evil.com.ngrok.io", () => {
 		const r = buildTrustedOrigins(
 			{
 				NODE_ENV: "development",
-				NGROK_URL: "https://evil.com.ngrok.io",
+				DEV_TUNNEL_URL: "https://evil.com.ngrok.io",
 			} as never,
 			APP_URL,
 		);
@@ -240,13 +240,45 @@ describe("buildTrustedOrigins — NGROK_URL", () => {
 		const r = buildTrustedOrigins(
 			{
 				NODE_ENV: "development",
-				NGROK_URL: "https://.ngrok.io",
+				DEV_TUNNEL_URL: "https://.ngrok.io",
 			} as never,
 			APP_URL,
 		);
 		expect(r).not.toContain("https://.ngrok.io");
 		expect(logger.warn).toHaveBeenCalledWith(
 			expect.objectContaining({ event: "trusted_origins.rejected" }),
+			expect.any(String),
+		);
+	});
+
+	it("accepts a two-label devtunnels.ms host in development", () => {
+		const r = buildTrustedOrigins(
+			{
+				NODE_ENV: "development",
+				DEV_TUNNEL_URL: "https://abc-3001.usw2.devtunnels.ms",
+			} as never,
+			APP_URL,
+		);
+		expect(r).toContain("https://abc-3001.usw2.devtunnels.ms");
+	});
+
+	it("rejects a devtunnels.ms host with the wrong label count", () => {
+		for (const url of [
+			"https://abc.devtunnels.ms",
+			"https://a.b.c.devtunnels.ms",
+			"https://.usw2.devtunnels.ms",
+		]) {
+			const r = buildTrustedOrigins(
+				{ NODE_ENV: "development", DEV_TUNNEL_URL: url } as never,
+				APP_URL,
+			);
+			expect(r).not.toContain(url);
+		}
+		expect(logger.warn).toHaveBeenCalledWith(
+			expect.objectContaining({
+				event: "trusted_origins.rejected",
+				reason: "bad-host",
+			}),
 			expect.any(String),
 		);
 	});
