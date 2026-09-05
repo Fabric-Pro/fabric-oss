@@ -159,8 +159,9 @@ jobs:
     #                                                 module mocking
     #   ubuntu-16core                  n/a            label not provisioned at
     #                                                 the time; it was created
-    #                                                 later and is the runner
-    #                                                 this job uses now
+    #                                                 later and carried this
+    #                                                 job until the move to
+    #                                                 its arm64 twin (below)
     #   --concurrency 4 -> 6 and 12    aborted        @repo/rag times out at
     #                                                 15s under the extra load
     #                                                 and turbo kills the run,
@@ -228,8 +229,12 @@ jobs:
     # GitHub default-style ubuntu-latest-{4,8,16}-cores left every one of them
     # queued and unassigned for 4.5 minutes while the two real labels finished
     # in seconds. `ubuntu-16core` has since been created (the 8-core -> 16-core
-    # measurements above ran on it); anything bigger still needs an org admin
-    # to create the label first.
+    # measurements above ran on it), and the private repo now runs this job on
+    # `ubuntu-16core-arm`: the same 16 cores / 64 GB on arm64 at about 60% of
+    # the x64 per-minute rate, with every native module in the lockfile
+    # shipping a linux-arm64 build. Anything bigger, or any new label, still
+    # needs an org admin to create it first, and a label that does not exist
+    # leaves the job queued for 24 hours rather than failing.
     #
     # @repo/temporal was measured the same way and is also NOT a candidate —
     # `--no-isolate` fails 8 files / 69 tests there.
@@ -251,7 +256,7 @@ jobs:
     # wall clock grows, roughly by the number of heavy packages in scope,
     # and that lands on the relay wait rather than on a developer. The
     # timeout is widened accordingly.
-    runs-on: ${{ github.event_name == 'push' && 'ubuntu-latest' || (github.repository == 'Fabric-Pro/fabric-dev' && 'ubuntu-16core' || 'ubuntu-latest') }}
+    runs-on: ${{ github.event_name == 'push' && 'ubuntu-latest' || (github.repository == 'Fabric-Pro/fabric-dev' && 'ubuntu-16core-arm' || 'ubuntu-latest') }}
     timeout-minutes: ${{ github.repository == 'Fabric-Pro/fabric-dev' && 30 || 90 }}
     env:
       # Placeholder so @repo/database's prisma singleton, which throws at
