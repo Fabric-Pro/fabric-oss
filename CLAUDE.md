@@ -24,7 +24,7 @@ pnpm format                           # Biome format (with write)
 pnpm knip                             # Dead-code / dependency check (required CI gate — run from repo root)
 
 # Testing
-pnpm test                                         # Full monorepo sweep. Sources only .env.test.local (meant to hold just the DB URLs; copy .env.test.local.example), never .env.local; shell-exported vars still cross
+pnpm test                                         # Full monorepo sweep, one turbo task at a time (--concurrency=1): the heavy vitest suites each saturate the host on their own, so parallel tasks starved suites past their per-test ceilings; on a 32-core box the serialized sweep finished in comparable time with no timeouts (turbo rejects a second --concurrency, override with `pnpm dotenv -e .env.test.local -- turbo test --concurrency=N`). Sources only .env.test.local (meant to hold just the DB URLs; copy .env.test.local.example), never .env.local; shell-exported vars still cross
 pnpm --filter web test                            # Run all Vitest unit tests
 pnpm --filter web test __tests__/path/to/file     # Run a single test file
 pnpm --filter web test --watch path/to/file       # Watch mode for a single test
