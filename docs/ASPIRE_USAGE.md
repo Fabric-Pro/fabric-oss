@@ -280,6 +280,52 @@ dotnet user-secrets list
 
 Secrets are stored in: `~/.microsoft/usersecrets/fabric-apphost-secrets/`
 
+### Public Tunnel (OAuth callbacks and webhooks)
+
+OAuth providers that insist on an https redirect URI, and any service that posts
+webhooks to you, cannot reach `http://localhost:3001`. The AppHost can run the
+ngrok agent as a resource and serve the web app through it. It is off by default
+and needs two parameters, set in `appsettings.Development.json` (or via
+`dotnet user-secrets`):
+
+```json
+"Parameters": {
+  "ngrok-domain": "example-org.ngrok-free.app",
+  "ngrok-auth-token": "<your ngrok auth token>"
+}
+```
+
+- `ngrok-domain` is a reserved domain from your ngrok account (free accounts
+  include one static domain). A reserved domain is required: the URL has to be
+  known before the web app starts, and OAuth providers need a stable callback.
+- `ngrok-auth-token` is your personal ngrok auth token. It only reaches the
+  `tunnel` container, never the web app or the agents.
+
+When both are set the AppHost:
+
+1. Starts a `tunnel` container running the ngrok agent, forwarding
+   `https://<ngrok-domain>` to the web app on the host, and shows the public URL
+   on the resource in the dashboard.
+2. Sets `NEXT_PUBLIC_SITE_URL` for the web app to the tunnel URL, so Better
+   Auth, the MCP OAuth client and the integration connect flow build redirect
+   URIs, magic links and webhook targets on the public origin. (Setting
+   `NEXT_PUBLIC_APP_URL` in `.env.local` still overrides the integration
+   callbacks.)
+3. Sets `DEV_TUNNEL_URL`, which adds the tunnel to Better Auth's trusted origins
+   and to Next's `allowedDevOrigins`.
+
+Register `https://<ngrok-domain>/api/...` callback URLs with your OAuth
+providers, and use the app through the tunnel URL while it is on: session
+cookies, OAuth state and passkeys are bound to the host you sign in on, so a flow
+started on `localhost:3001` will not complete on the tunnel. Blank either
+parameter to go back to plain localhost.
+
+Starting a tunnel by hand instead, outside Aspire? Set both `DEV_TUNNEL_URL`
+and `NEXT_PUBLIC_SITE_URL` in `.env.local` to its https URL: the first adds the
+host to the trusted origins and `allowedDevOrigins`, the second makes redirect
+URIs and links use it. Only ngrok and Microsoft dev tunnel hosts are accepted
+for `DEV_TUNNEL_URL`, and it is ignored in production.
+
 ## Startup Behavior
 
 ### Non-Blocking Agent Initialization
