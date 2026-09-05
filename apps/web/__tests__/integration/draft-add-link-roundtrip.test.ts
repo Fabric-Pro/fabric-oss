@@ -173,12 +173,15 @@ async function seedFirecrawlProvider() {
 	});
 }
 
-// Direct handler invocation pattern — matches the existing unit tests
-// in `packages/api/modules/projects/procedures/contexts/__tests__/`.
-// oRPC procedures expose `.handler` so we can drive them as pure
-// functions of `{input, context}`. The `context.user`/`context.session`
-// shape mirrors what `tenantProtectedProcedure` synthesises in
-// production.
+// Direct handler invocation pattern — the same idea as the unit tests
+// in `packages/api/modules/projects/procedures/contexts/__tests__/`,
+// except those mock the oRPC builder. Here the real builder is used, so
+// the handler lives on the procedure's `"~orpc"` definition (the shape
+// the other DB-backed tests read, e.g.
+// `packages/api/__tests__/mcp-tenant-isolation.test.ts`). We drive the
+// handlers as pure functions of `{input, context}`; the
+// `context.user`/`context.session` shape mirrors what
+// `tenantProtectedProcedure` synthesises in production.
 const personalCtx = {
 	user: { id: USER_ID },
 	session: { activeOrganizationId: undefined as string | undefined },
@@ -200,7 +203,7 @@ type ProcessLinkHandler = (args: {
 type CreateProjectHandler = (args: {
 	input: Record<string, unknown>;
 	context: typeof personalCtx;
-}) => Promise<{ id: string; status: string }>;
+}) => Promise<{ project: { id: string; status: string } }>;
 
 type CancelDraftCrawlsHandler = (args: {
 	input: { projectId: string; organizationId?: string | null };
@@ -211,20 +214,20 @@ type CancelDraftCrawlsHandler = (args: {
 	errors: Array<{ contextId: string; message: string }>;
 }>;
 
+type OrpcProcedure<H> = { "~orpc": { handler: H } };
+
 const saveDraftHandler = (
-	saveDraftProjectProcedure as unknown as { handler: SaveDraftHandler }
-).handler;
+	saveDraftProjectProcedure as unknown as OrpcProcedure<SaveDraftHandler>
+)["~orpc"].handler;
 const processLinkHandler = (
-	processContextLinkProcedure as unknown as { handler: ProcessLinkHandler }
-).handler;
+	processContextLinkProcedure as unknown as OrpcProcedure<ProcessLinkHandler>
+)["~orpc"].handler;
 const createProjectHandler = (
-	createProjectProcedure as unknown as { handler: CreateProjectHandler }
-).handler;
+	createProjectProcedure as unknown as OrpcProcedure<CreateProjectHandler>
+)["~orpc"].handler;
 const cancelDraftCrawlsHandler = (
-	cancelDraftCrawlsProcedure as unknown as {
-		handler: CancelDraftCrawlsHandler;
-	}
-).handler;
+	cancelDraftCrawlsProcedure as unknown as OrpcProcedure<CancelDraftCrawlsHandler>
+)["~orpc"].handler;
 
 // ─────────────────────────────────────────────────────────────────────
 // Cleanup helper — tear down everything created by a single test run,
@@ -429,7 +432,7 @@ describe.skipIf(!hasReachableDatabaseUrl())(
 			//     draftKey. The procedure finds the DRAFT and flips it to
 			//     ACTIVE in place (per create-project.ts:117-172) — same
 			//     projectId, no row moves on ProjectContext.
-			const created = await createProjectHandler({
+			const { project: created } = await createProjectHandler({
 				input: {
 					name: "Activation parity (12.2)",
 					draftKey,
@@ -441,6 +444,7 @@ describe.skipIf(!hasReachableDatabaseUrl())(
 			// AC2: "Create Project completes immediately" with the existing
 			// DRAFT's context rows.
 			expect(created.id).toBe(draftProjectId);
+			expect(created.status).toBe("ACTIVE");
 
 			const activated = await db.project.findUnique({
 				where: { id: draftProjectId },
