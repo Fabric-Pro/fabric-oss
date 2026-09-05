@@ -133,6 +133,53 @@ redis-67728638             Up 5 minutes    0.0.0.0:6379->6379/tcp
 ...
 ```
 
+### Resource Commands
+
+Local development adds three custom commands to the Aspire dashboard, on top of the
+built-in Start / Stop / Restart. They are dev-only — none of them exist in publish mode.
+Open a resource in the dashboard and use its **⋯** menu, or the resource's detail page.
+
+| Resource | Command | What it does |
+|----------|---------|--------------|
+| Each LangGraph agent | **Rebuild & restart** | Runs `pnpm build` inside the container, streams the build output into the resource's console log, then restarts the container. |
+| `postgres` | **Run seed** | Prompts for one of the local `seed*` scripts from `packages/database/package.json`, then runs `pnpm --filter @repo/database <script>`. |
+| `postgres` | **Apply RLS policies** | Runs `pnpm --filter @repo/database apply:rls`. |
+
+**Why "Rebuild & restart" exists**: in dev mode each agent container runs
+`if [ ! -f dist/<entry> ]; then pnpm build; fi`, so it only builds when the bundle is
+missing. Picking up a source change otherwise means a build followed by a manual
+restart — this collapses those into one button. It is offered only while the resource
+is Running.
+
+The build runs **inside** the container (`docker exec` into the running container, found
+by the `com.docker.compose.service=<resource-name>` label the AppHost stamps on every
+dev-mode agent container *and* the container name, which is the Aspire instance id
+`<resource-name>-<suffix>`; the command refuses to run unless exactly one container
+matches both, so a stale container left by another checkout cannot be built by
+mistake), not on your host. The container's own first-run
+build executes as root against the bind-mounted checkout, so on Linux each agent's
+`dist/` is root-owned and a host-side `tsup` build fails with `EACCES` trying to unlink
+the previous chunks. Building where the entrypoint builds keeps the ownership consistent.
+If you use podman, set `DcpPublisher:ContainerRuntime` (or `DOTNET_ASPIRE_CONTAINER_RUNTIME`)
+as you already would for Aspire itself — the command follows the same setting.
+
+`data-analyst` has no rebuild command: it runs `pnpm exec tsx unified-server.ts` straight
+from source, so the plain **Restart** already picks up a source change.
+
+The two database commands run on the host, so they act on whatever `DATABASE_URL` /
+`DIRECT_URL` your `.env.local` points at — the local Aspire Postgres container unless
+`FABRIC_LOCAL_EXTERNAL_DB` is enabled. That is identical to running the same script from
+a terminal. Only the local seed scripts are offered; the `:staging` and `:prod` variants
+are never listed.
+
+The same commands are available over MCP:
+
+```
+execute_resource_command(resourceName: "task-planner", commandName: "rebuild")
+execute_resource_command(resourceName: "postgres", commandName: "seed", arguments: { script: "seed:prompts" })
+execute_resource_command(resourceName: "postgres", commandName: "apply-rls")
+```
+
 ### Cleanup Orphaned Containers
 
 If containers don't stop properly (rare):
