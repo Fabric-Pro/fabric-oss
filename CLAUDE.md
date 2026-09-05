@@ -24,6 +24,8 @@ pnpm format                           # Biome format (with write)
 pnpm knip                             # Dead-code / dependency check (required CI gate — run from repo root)
 
 # Testing
+pnpm test                                         # Full monorepo sweep. Does NOT load .env.local (CI doesn't either; CI additionally sets a placeholder DATABASE_URL)
+pnpm dotenv -c -- turbo test                      # Opt in to .env.local: DB-gated suites run against local Postgres, and every credential turbo.json permits into task env reaches every suite
 pnpm --filter web test                            # Run all Vitest unit tests
 pnpm --filter web test __tests__/path/to/file     # Run a single test file
 pnpm --filter web test --watch path/to/file       # Watch mode for a single test
