@@ -13,7 +13,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     openssl \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
-    && npm install -g pnpm@10.14.0
+    && npm install -g pnpm@10.34.5
 
 WORKDIR /app
 
@@ -118,7 +118,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
         | tar -xz -C /usr/local/bin gitleaks \
     && chmod +x /usr/local/bin/gitleaks \
-    && npm install -g pnpm@10.14.0 tsx@4.19.2
+    && npm install -g pnpm@10.34.5 tsx@4.19.2
 
 # Chromium + its shared libraries, for every activity that drives a browser.
 #
@@ -213,11 +213,13 @@ WORKDIR /app/packages/temporal
 # for tsx's transform cache and git's config, so the root-owned, world-readable app
 # files need no chown. The numeric uid (1001, matching web + the agents) is what
 # lets Kubernetes verify runAsNonRoot at admission (a named user cannot be verified).
+# The home lives under /var/lib, not /home: the publication scan that guards the
+# public relay rejects any path under /home as a developer home directory.
 RUN addgroup --system --gid 1001 nodejs \
-    && adduser --system --uid 1001 --ingroup nodejs --home /home/appuser appuser \
-    && mkdir -p /home/appuser \
-    && chown appuser:nodejs /home/appuser
-ENV HOME=/home/appuser
+    && adduser --system --uid 1001 --ingroup nodejs --home /var/lib/appuser appuser \
+    && mkdir -p /var/lib/appuser \
+    && chown appuser:nodejs /var/lib/appuser
+ENV HOME=/var/lib/appuser
 USER appuser
 
 # Health check - verify the worker can start (simple check)

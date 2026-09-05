@@ -72,8 +72,10 @@ RUN corepack enable && corepack prepare pnpm@10 --activate
 # Create non-root user with home directory. The uid/gid are pinned to a NUMERIC
 # 1001 (SOC 2 CC7.1, card 1721 FR-7): Kubernetes can only verify runAsNonRoot
 # against a numeric user, so an auto-assigned system uid would fail admission when
-# the pod securityContext asserts non-root.
-RUN groupadd -r -g 1001 mcpwrapper && useradd -r -u 1001 -g mcpwrapper -m -d /home/mcpwrapper mcpwrapper
+# the pod securityContext asserts non-root. The home lives under /var/lib, not
+# /home: the publication scan that guards the public relay rejects any
+# path under /home as a developer home directory.
+RUN groupadd -r -g 1001 mcpwrapper && useradd -r -u 1001 -g mcpwrapper -m -d /var/lib/mcpwrapper mcpwrapper
 
 WORKDIR /app
 
@@ -130,7 +132,7 @@ RUN PW_VER=$(node -p "require('$(npm root -g)/@playwright/mcp/package.json').dep
 RUN mkdir -p /app/mcp-servers && chown mcpwrapper:mcpwrapper /app/mcp-servers
 
 # Create npm cache directory in user's home (for npx -y dynamic installations)
-RUN mkdir -p /home/mcpwrapper/.npm && chown -R mcpwrapper:mcpwrapper /home/mcpwrapper
+RUN mkdir -p /var/lib/mcpwrapper/.npm && chown -R mcpwrapper:mcpwrapper /var/lib/mcpwrapper
 
 # Set environment variables
 ENV NODE_ENV=production
@@ -138,8 +140,8 @@ ENV PORT=3100
 ENV MAX_PROCESSES=50
 ENV IDLE_TTL_MS=60000
 # Ensure npm uses the user's home directory for caching
-ENV HOME=/home/mcpwrapper
-ENV NPM_CONFIG_CACHE=/home/mcpwrapper/.npm
+ENV HOME=/var/lib/mcpwrapper
+ENV NPM_CONFIG_CACHE=/var/lib/mcpwrapper/.npm
 
 # Expose port
 EXPOSE 3100

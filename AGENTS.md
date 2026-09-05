@@ -1048,7 +1048,7 @@ STRIPE_SECRET_KEY="sk_test_..."
 
 > **Checking Logs**: When the user says "check logs", always use the **Aspire MCP tools** (`mcp__aspire__list_console_logs`, `mcp__aspire__list_structured_logs`, `mcp__aspire__list_traces`, etc.) to inspect application logs, traces, and resource status. Do NOT use `docker logs` or other manual approaches.
 
-Requires `pnpm@10.14.0` and Node `>=22.11.0`. First run: `pnpm install`. See `CLAUDE.md` for the full command reference.
+Requires `pnpm@10.34.5` and Node `>=22.19.0`. First run: `pnpm install`. See `CLAUDE.md` for the full command reference.
 
 ```bash
 # Development
