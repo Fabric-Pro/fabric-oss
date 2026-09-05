@@ -2,7 +2,7 @@
 "fabric-app": patch
 ---
 
-Give the auth package's Better Auth harness suites a 30 s per-test ceiling so they survive the full parallel monorepo sweep (Fizzy #2410)
+Give the auth package's Better Auth harness suites a 30 s per-test ceiling so they survive the full parallel monorepo sweep
 
 `packages/auth` was one of the few workspaces with no `testTimeout` in its vitest config, so every case ran under vitest's 5 s default. Seven suites there drive Better Auth's real in-process request cycle through `better-auth/test`, and each case pays for a fresh instance plus a sign-up/enrol/verify round trip, which makes them CPU-bound rather than slow by design.
 

@@ -2,7 +2,7 @@
 "fabric-app": patch
 ---
 
-Stop the root `pnpm test` sweep from automatically sourcing `.env.local`, so local credentials no longer flow into unit tests (Fizzy #2412)
+Stop the root `pnpm test` sweep from automatically sourcing `.env.local`, so local credentials no longer flow into unit tests
 
 The root `test` script was `dotenv -c -- turbo test`, so every workspace's `vitest run` under the root sweep inherited whatever `turbo.json` permits into the task environment from the developer's `.env.local`: database URLs, but also Upstash, Anthropic, Resend, Stripe and Qdrant credentials (turbo runs in strict env mode, so only variables declared in `globalEnv` and the pass-through lists cross into a task). CI runs `turbo run test` bare and the per-package `pnpm --filter <pkg> test` scripts are bare `vitest run`, so the root sweep was the only path on which an environment-gated client resolved to a real instance. Fizzy #2410 was the concrete failure: `brute-force.test.ts` left `../redis-client` unmocked and incremented a real `bf:ip-locks` counter on every sweep until the IP black-hole branch flipped three assertions, while the isolated run and CI stayed green.
 

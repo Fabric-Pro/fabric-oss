@@ -1168,6 +1168,7 @@ If your change genuinely needs to publish a new public-npm release of a `@fabric
 The published CHANGELOG entry is built from **the opening paragraph of the body only** — the formatter at `.changeset/changelog-formatter.cjs` drops everything after it. The paragraph ends at the first blank line or the first Markdown block marker (list, heading, blockquote, table). Two implications:
 
 - **Write the headline as one complete, scannable sentence**, and put nothing load-bearing below it. A reader skimming the release notes sees only this line. (The formatter re-joins a soft-wrapped headline rather than publishing a fragment, but don't rely on that.)
+- **No ticket numbers in the headline.** It is published verbatim to the public CHANGELOG; cite `Fizzy #N` in the commit message and the PR. The body below may reference the ticket, as a commit body does.
 - **Bodies can be as detailed as you like past the headline.** That content survives in git history (`git log -- .changeset/<slug>.md`) after the file is deleted on release — useful for incident archaeology, but not noise the release notes need.
 
 #### Breaking changes belong in the headline
