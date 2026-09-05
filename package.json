@@ -7,7 +7,7 @@
 		"dev": "dotenv -c -- turbo dev --concurrency 25",
 		"type-check": "dotenv -c -v NEXT_TYPECHECK_SPLIT=true -- turbo type-check --concurrency=4",
 		"type-check:changed": "dotenv -c -- turbo type-check --concurrency=4 --filter=...[origin/master]",
-		"test": "dotenv -e .env.test.local -- turbo test",
+		"test": "dotenv -e .env.test.local -- turbo test --concurrency=1",
 		"start": "dotenv -c -- turbo start",
 		"lint": "biome lint . ",
 		"check": "biome check",
