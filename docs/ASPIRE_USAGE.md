@@ -180,6 +180,31 @@ execute_resource_command(resourceName: "postgres", commandName: "seed", argument
 execute_resource_command(resourceName: "postgres", commandName: "apply-rls")
 ```
 
+### Shell Into a Running Container
+
+Aspire names each container `<resource-name>-<suffix>`, and the suffix differs per
+checkout, so `docker exec weave-planners sh` never matches. Skip the name: every
+dev-mode container carries a `com.docker.compose.service=<resource-name>` label, so
+resolve the id by label instead.
+
+```bash
+docker exec -it "$(docker ps -q --filter label=com.docker.compose.service=weave-planners --filter status=running)" sh
+```
+
+Any resource name shown in the dashboard works in place of `weave-planners`,
+infrastructure containers included (`postgres`, `temporal`, `qdrant`, ...). The shell
+runs inside the live container, so it sees that container's environment
+(`DATABASE_URL`, `REDIS_URI`, ...) and, for the agents, the bind-mounted checkout at
+`/app`. If the substitution expands to more than one id, a persistent container from
+another checkout of this repo is still running under the same label; list them with
+`docker ps --filter label=com.docker.compose.service=<resource-name>` and stop the stale
+one.
+
+Aspire 13.5's experimental `WithTerminal()` is not a substitute for this. It runs the
+resource's own entrypoint under a pseudo-terminal and lets the dashboard attach to that
+process; for an agent that is the Node server, not a shell, so it cannot exec into a
+running container.
+
 ### Cleanup Orphaned Containers
 
 If containers don't stop properly (rare):
