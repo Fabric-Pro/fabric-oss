@@ -8,7 +8,12 @@
 import { orpcClient } from "@shared/lib/orpc-client";
 import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
-import { htmlEscape, jsString } from "../../github/oauth/callback/sanitize";
+import {
+	appendQuery,
+	htmlEscape,
+	jsString,
+	sanitizeReturnUrl,
+} from "../../github/oauth/callback/sanitize";
 
 export const runtime = "nodejs";
 
@@ -30,7 +35,10 @@ export async function GET(req: NextRequest) {
 		});
 
 		const providerName = result.provider || "OAuth";
-		const redirectUrl = result.returnUrl || "/app/settings/integrations";
+		// `returnUrl` is caller-chosen at `start` time and only HMAC-signed, never
+		// validated, so constrain it to a same-origin path before it becomes the
+		// non-popup fallback redirect (open redirect, Fizzy #2370).
+		const redirectUrl = sanitizeReturnUrl(result.returnUrl);
 
 		// Return HTML that sends message to parent window and closes popup
 		const html = generateCallbackHtml({
@@ -82,9 +90,14 @@ function generateCallbackHtml({
 	const eventType = success ? "oauth_success" : "oauth_error";
 	// Same treatment for the non-popup fallback href: assembled here so the
 	// whole URL goes into the script as one escaped literal rather than as raw
-	// interpolation. Guards js/incomplete-sanitization.
+	// interpolation. Guards js/incomplete-sanitization. `appendQuery` keeps a
+	// `#fragment` on the return path after the parameters, so the landing
+	// page's return banner can still read `?oauth=`.
 	const fallbackHrefLiteral = jsString(
-		`${redirectUrl}${redirectUrl.includes("?") ? "&" : "?"}oauth=${success ? "success" : "error"}&provider=${encodeURIComponent(providerName)}${!success ? `&message=${encodeURIComponent(message)}` : ""}`,
+		appendQuery(
+			redirectUrl,
+			`oauth=${success ? "success" : "error"}&provider=${encodeURIComponent(providerName)}${!success ? `&message=${encodeURIComponent(message)}` : ""}`,
+		),
 	);
 
 	return `

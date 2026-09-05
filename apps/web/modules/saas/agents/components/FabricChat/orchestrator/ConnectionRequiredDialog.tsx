@@ -463,7 +463,12 @@ export function ConnectionRequiredDialog({
 							| "MICROSOFT_GRAPH"
 							| "NOTION",
 						organizationId: organizationId ?? null,
-						returnUrl: window.location.href,
+						// Relative on purpose: the callback page rejects absolute
+						// URLs, even same-origin ones.
+						returnUrl:
+							window.location.pathname +
+							window.location.search +
+							window.location.hash,
 					});
 
 				// Open OAuth popup
