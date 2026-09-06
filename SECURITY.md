@@ -70,7 +70,7 @@ The following are out of scope:
 
 ## Code Scanning
 
-The public repository runs CodeQL (`security-extended` suite) on every push to `master` and weekly, from [`.github/workflows/codeql.yml`](./.github/workflows/codeql.yml). It deliberately does not run on pull requests: PR annotations post as review threads that the conversation-resolution rule on `master` would make the relay unable to squash. Alerts land in the Security tab, where they are visible only to people with write access, and are triaged there. The Semgrep job in `security.yml` remains the PR-time SAST gate for both repositories.
+The public repository runs CodeQL (`security-extended` suite) on every push to `master` and weekly, from [`.github/workflows/codeql.yml`](./.github/workflows/codeql.yml). It deliberately does not run on pull requests: PR annotations post as review threads that the conversation-resolution rule on `master` would make the relay unable to squash. Alerts land in the Security tab, where they are visible only to people with write access, and are triaged there. The Semgrep step in `security.yml`'s single `security` job remains the PR-time SAST gate for both repositories.
 
 ### Triage policy
 
@@ -126,7 +126,7 @@ Run `osv-scanner scan source --lockfile=pnpm-lock.yaml` to list advisories again
 
 ### CI enforcement
 
-High and critical advisories must stay clean on `master`. The gate is the `Dependency audit (high+)` job in [`.github/workflows/security.yml`](./.github/workflows/security.yml): osv-scanner reads the lockfiles against osv.dev, and [`tooling/scripts/src/osv-severity-gate.mjs`](./tooling/scripts/src/osv-severity-gate.mjs) fails the build on any undismissed high or critical. Medium-or-below findings are reported in the job summary and tracked in Dependabot, but do not block.
+High and critical advisories must stay clean on `master`. The gate is the pair of dependency-audit steps in the `security` job of [`.github/workflows/security.yml`](./.github/workflows/security.yml): osv-scanner reads the lockfiles against osv.dev, and [`tooling/scripts/src/osv-severity-gate.mjs`](./tooling/scripts/src/osv-severity-gate.mjs) fails the build on any undismissed high or critical. Medium-or-below findings are reported in the job summary and tracked in Dependabot, but do not block.
 
 **What the gate actually covers.** Lockfiles are named explicitly in the workflow, so coverage is whatever that list says:
 

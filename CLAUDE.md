@@ -230,7 +230,7 @@ A ticket's title, description and comments often name a real organization, deplo
 - **Branch names, commit subjects and bodies, PR titles and descriptions** — write a specific, descriptive subject; a vague one is worse. Cite the ticket by number (`Fizzy #1263`) so the reference stays stable. Reusing a ticket's own title is fine — just check it for a real name first, since that is the usual way one arrives
 - **Changeset bodies** — the rich internal context below line 1 is wanted and stays, but keep real names, hostnames and internal URLs out of it; that detail belongs in the ticket
 
-Enforced by the `Identifiers` CI check and the local `pre-commit` / `commit-msg` hooks, which report a rule number without echoing the matched text. Treat a hit as a real finding: rewrite it generically rather than looking for a way around the check. See `CONTRIBUTING.md` § Placeholder Data.
+Enforced by the identifier scan in the `security` CI check and the local `pre-commit` / `commit-msg` hooks, which report a rule number without echoing the matched text. Treat a hit as a real finding: rewrite it generically rather than looking for a way around the check. See `CONTRIBUTING.md` § Placeholder Data.
 
 **Screenshots:** capture from a demo environment with synthetic data. Never attach an image of a real deployment to a PR — one screenshot exposes the organization name, project names and live data at once, and GitHub keeps attachment URLs reachable after the comment is deleted.
 

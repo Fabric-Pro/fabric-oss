@@ -43,21 +43,39 @@ name: DB Integration
 # sets RUN_DB_INTEGRATION) and vitest exits 0 — the activity implementing
 # the whole notification lifecycle would have zero CI signal.
 #
-# Branch-protection note: mirrors unit-tests.yml's 3-job pattern, plus one
-# more parallel test job (`temporal-tests`) gated on its own path filter.
-# This workflow always runs on PRs to the canonical branch so the
-# `db-integration` status check is reported on every PR; the expensive
-# `db-tests` / `temporal-tests` jobs only run when their relevant paths
-# actually changed (or on workflow_dispatch). The aggregate job fails
-# closed if the path-filter didn't succeed, so `db-integration` is safe to
-# mark as a required check even though both test jobs are conditionally
-# skipped.
+# Branch-protection note: THIS WORKFLOW IS NOT A REQUIRED CHECK, and it must
+# not become one while the trigger below is path-filtered. A job skipped by a
+# job-level `if:` counts as passing; a job that never registers because its
+# workflow was filtered out by `on.paths` stays pending forever and would
+# block every PR that touches nothing near the database.
+#
+# It used to run on every PR to the canonical branch purely so an aggregate
+# `db-integration` job could report a stable status. Nothing required that
+# status, so the aggregate job is gone and the trigger is filtered to the
+# union of the two path filters below: an unrelated PR now bills no jobs here
+# at all instead of two one-minute jobs on every push. When the workflow does
+# run, `changes` still decides which of the two expensive test jobs are
+# relevant, so a PR touching only Temporal paths still skips the DB job.
 
 on:
   pull_request:
     # Canonical upstream branch is `master` (post-cutover); see
     # docs/deployment.md § Branch cutover checklist.
     branches: [master]
+    # The UNION of the `db` and `temporal` filters in the `changes` job. Keep
+    # the two in step: a path that reaches a dorny filter but not this list is
+    # a test that silently never runs. The per-job filters below still split
+    # this set into "DB-relevant" and "Temporal-relevant".
+    paths:
+      - 'packages/database/**'
+      - 'packages/database/prisma/schema.prisma'
+      - 'packages/database/prisma/migrations/**'
+      - 'packages/api/modules/prompts/**'
+      - 'packages/api/modules/projects/**'
+      - 'packages/temporal/**'
+      - '.github/workflows/db-integration.yml'
+  # Deliberately unfiltered: a manual run must be able to exercise both suites
+  # regardless of what changed.
   workflow_dispatch:
 
 permissions:
@@ -1206,71 +1224,3 @@ jobs:
             process.exit(1);
           }
           EOF
-
-  # Stable status check name reported on every PR to the canonical branch
-  # (`master`). Configure this as the required check in branch protection —
-  # not `db-tests` or `temporal-tests`, both of which are conditionally
-  # skipped on PRs that don't touch their relevant files.
-  db-integration:
-    name: db-integration
-    needs: [changes, db-tests, temporal-tests]
-    if: always()
-    runs-on: ubuntu-latest
-    env:
-      EVENT_NAME: ${{ github.event_name }}
-      CHANGES_RESULT: ${{ needs.changes.result }}
-      DB_CHANGED: ${{ needs.changes.outputs.db }}
-      DB_TESTS_RESULT: ${{ needs.db-tests.result }}
-      TEMPORAL_CHANGED: ${{ needs.changes.outputs.temporal }}
-      TEMPORAL_TESTS_RESULT: ${{ needs.temporal-tests.result }}
-    steps:
-      - name: Aggregate
-        run: |
-          # The path-filter job is a prerequisite. If it failed (or was
-          # cancelled), DB_CHANGED/TEMPORAL_CHANGED are empty and we can't
-          # trust a "no changes" answer — fail closed so PRs don't bypass
-          # the gate.
-          if [[ "$CHANGES_RESULT" != "success" ]]; then
-            echo "::error::Path-filter job did not succeed (result: $CHANGES_RESULT). Cannot determine whether DB-integration tests are required."
-            exit 1
-          fi
-
-          failed=0
-
-          # On PRs: db-tests is required only when DB-relevant paths changed.
-          # On workflow_dispatch: db-tests always runs, propagate its result.
-          if [[ "$EVENT_NAME" == "workflow_dispatch" || "$DB_CHANGED" == "true" ]]; then
-            if [[ "$DB_TESTS_RESULT" == "skipped" ]]; then
-              echo "::error::DB-relevant changes detected but the db-tests job did not run."
-              failed=1
-            elif [[ "$DB_TESTS_RESULT" != "success" ]]; then
-              echo "::error::DB-integration tests failed (db-tests job result: $DB_TESTS_RESULT)."
-              failed=1
-            else
-              echo "DB-integration tests passed."
-            fi
-          else
-            echo "No DB-relevant changes — DB-integration tests not required."
-          fi
-
-          # Same two-state gate for the temporal publishing suite: required
-          # only when packages/temporal/** or packages/database/** changed
-          # (or on workflow_dispatch), independent of the db-tests gate above
-          # so a PR touching only packages/temporal/** still blocks on this.
-          if [[ "$EVENT_NAME" == "workflow_dispatch" || "$TEMPORAL_CHANGED" == "true" ]]; then
-            if [[ "$TEMPORAL_TESTS_RESULT" == "skipped" ]]; then
-              echo "::error::Temporal- or database-relevant changes detected but the temporal-tests job did not run."
-              failed=1
-            elif [[ "$TEMPORAL_TESTS_RESULT" != "success" ]]; then
-              echo "::error::Temporal publishing tests failed (temporal-tests job result: $TEMPORAL_TESTS_RESULT)."
-              failed=1
-            else
-              echo "Temporal publishing tests passed."
-            fi
-          else
-            echo "No temporal- or database-relevant changes — temporal publishing tests not required."
-          fi
-
-          if [[ "$failed" -ne 0 ]]; then
-            exit 1
-          fi
