@@ -14,13 +14,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
     && corepack disable \
-    && npm install -g pnpm@10.34.5
+    && npm install -g pnpm@11.25.0
 
 # Set working directory
 WORKDIR /app
 
 # Copy workspace configuration
-COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc ./
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 
 # Copy tooling configs (needed for build)
 COPY tooling ./tooling
@@ -78,12 +78,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
     && corepack disable \
-    && npm install -g pnpm@10.34.5
+    && npm install -g pnpm@11.25.0
 
 WORKDIR /app
 
 # Copy workspace configuration for pnpm install
-COPY --from=builder /app/package.json /app/pnpm-lock.yaml /app/pnpm-workspace.yaml /app/.npmrc ./
+COPY --from=builder /app/package.json /app/pnpm-lock.yaml /app/pnpm-workspace.yaml ./
 COPY --from=builder /app/tooling ./tooling
 
 # Copy package.json files for all workspace packages (needed for pnpm to resolve workspace deps)

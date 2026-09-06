@@ -99,7 +99,7 @@ Access: http://localhost:3001 | Aspire Dashboard: https://localhost:17134
 
 | Category | Technologies |
 |----------|-------------|
-| Core | Next.js 16, React 19, TypeScript 5.9, pnpm 10 |
+| Core | Next.js 16, React 19, TypeScript 5.9, pnpm 11 |
 | Backend | oRPC, Hono, Better Auth, Prisma 6, Zod 4 |
 | Database | PostgreSQL, Redis, Qdrant (vectors), MinIO (S3) |
 | Frontend | Tailwind CSS 4, Shadcn UI, Radix UI, TipTap |

@@ -17,9 +17,11 @@ name: Docker Build Check
 #   * the Dockerfile itself — where the #2336 break actually lived;
 #   * `packages/temporal/package.json` — its direct dependencies, and the bins
 #     pnpm links for them, which is what the broken layer relied on;
-#   * the root `package.json` — `onlyBuiltDependencies` lives there, and
-#     `playwright` being absent from it is why the browser binaries were never
-#     downloaded in the first place;
+#   * `pnpm-workspace.yaml` — the build-script allow list (`allowBuilds`) lives
+#     there since the pnpm 11 migration, and `playwright` being absent from it
+#     is why the browser binaries were never downloaded in the first place. It
+#     also carries the overrides and hoist patterns the install resolves with;
+#   * the root `package.json` — the pnpm version pin and the root dependencies;
 #   * `pnpm-lock.yaml` — resolution changes under any of the above.
 #
 # Deliberately NOT the deploy pipeline's full shared-package set. That fires on
@@ -48,6 +50,7 @@ on:
       - 'packages/temporal/Dockerfile'
       - 'packages/temporal/package.json'
       - 'package.json'
+      - 'pnpm-workspace.yaml'
       - 'pnpm-lock.yaml'
       - 'services/sandbox-worker/Dockerfile'
       - 'services/sandbox-worker/package.json'

@@ -13,7 +13,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     openssl \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
-    && npm install -g pnpm@10.34.5
+    && npm install -g pnpm@11.25.0
 
 WORKDIR /app
 
@@ -118,13 +118,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
         | tar -xz -C /usr/local/bin gitleaks \
     && chmod +x /usr/local/bin/gitleaks \
-    && npm install -g pnpm@10.34.5 tsx@4.19.2
+    && npm install -g pnpm@11.25.0 tsx@4.19.2
 
 # Chromium + its shared libraries, for every activity that drives a browser.
 #
 # This image previously had NO browser binary at all. `playwright` is a
 # dependency of @repo/temporal, but pnpm blocks its postinstall (it is absent
-# from `onlyBuiltDependencies` in the root package.json), so the browsers were
+# from `allowBuilds` in pnpm-workspace.yaml), so the browsers were
 # never downloaded — and node:22-slim lacks the shared libraries Chromium needs
 # regardless. Anything calling `chromium.launch()` therefore failed at runtime
 # with "Executable doesn't exist".
