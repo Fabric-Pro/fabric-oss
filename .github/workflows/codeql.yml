@@ -5,8 +5,8 @@ name: CodeQL
 # Runs only in the public mirror. CodeQL's SARIF upload needs GitHub Advanced
 # Security on a private repository, which the staging repository does not
 # have, so the `if:` on the job turns this file into a no-op there. The
-# Semgrep job in security.yml remains the PR-time SAST gate for both
-# repositories.
+# Semgrep step of the single `security` job in security.yml remains the
+# PR-time SAST gate for both repositories.
 #
 # Triggers are push-to-master, a weekly schedule and manual dispatch — never
 # `pull_request`. With PR scanning on, code scanning posts each new alert as a

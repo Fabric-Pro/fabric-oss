@@ -29,6 +29,14 @@ name: Temporal Replay Validation
 # eligible relevant PRs. Denied private forks and malformed Relay App PRs
 # intentionally receive a same-name trusted failure as well: both contexts
 # must pass, so contributor-controlled YAML cannot forge the denial away.
+#
+# Change detection and that metadata gate share one job (`authorize`). Both
+# are trusted, neither reads or executes PR content, and they were two
+# parallel jobs only because they were written separately — GitHub bills a
+# minimum of one minute per job, so the split cost a minute on every push and
+# bought no isolation. The trust boundary has not moved: it sits between that
+# job and `replay`, still the only job that checks out the PR head or holds a
+# secret.
 
 on:
   # pull_request_target loads this workflow from the default branch. Do not
@@ -49,57 +57,28 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  changes:
-    name: Detect workflow changes
+  # One trusted job does both halves of the gate: it validates the
+  # authenticated event metadata and detects whether any replay-relevant path
+  # changed. Neither half reads, checks out or executes PR content, so they
+  # need no isolation from each other — and one job bills one minute where two
+  # billed two.
+  authorize:
+    name: Detect workflow changes and authorize private replay
     runs-on: ubuntu-latest
+    # The union of what the two halves need: paths-filter reads the Pulls API
+    # on pull_request_target, and its git-based detection on workflow_dispatch
+    # needs the trusted default-branch checkout below.
     permissions:
       contents: read
-      # dorny/paths-filter uses the Pulls API on pull_request_target events.
       pull-requests: read
     outputs:
       workflows: ${{ steps.filter.outputs.workflows }}
-    steps:
-      # On pull_request_target events dorny/paths-filter detects changed files
-      # via the Pulls API and does not need the repo on disk. Checkout is only
-      # required for the git-based detection used on workflow_dispatch runs.
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        if: github.event_name == 'workflow_dispatch'
-        with:
-          ref: ${{ github.sha }}
-          fetch-depth: 1
-          persist-credentials: false
-      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4
-        id: filter
-        with:
-          filters: |
-            workflows:
-              # Workflow code imports helpers transitively across the package
-              # (e.g. src/workflows/template-execution.ts imports
-              # ../activities/lib/safe-expression-evaluator, and the
-              # orchestrator workflows pull from ../orchestrator-config,
-              # ../risk-assessment, ../execution-waves). Those helpers are
-              # bundled into the workflow sandbox by bundleWorkflowCode, so
-              # changing them can change deterministic workflow behavior
-              # without touching src/workflows/ itself. Scope the filter to
-              # the whole package's src/ to avoid silent gaps in coverage.
-              - 'packages/temporal/src/**'
-              - 'packages/temporal/__tests__/replay-validation.test.ts'
-              - 'packages/temporal/scripts/fetch-replay-histories.ts'
-              - '.github/scripts/temporal-replay/**'
-              - '.github/workflows/temporal-replay-pr-check.yml'
-              - '.github/workflows/temporal-replay-validation.yml'
-
-  authorize:
-    name: Authorize private replay
-    runs-on: ubuntu-latest
-    permissions: {}
-    outputs:
       secret_eligible: ${{ steps.gate.outputs.secret_eligible }}
       reason: ${{ steps.gate.outputs.reason }}
     steps:
-      # This job intentionally has no checkout, environment, secrets, or
-      # dependency installation. Event fields enter the script only through
-      # env so branch/login text cannot alter shell syntax.
+      # This job intentionally has no environment, secrets, dependency
+      # installation, or checkout of PR content. Event fields enter the script
+      # only through env so branch/login text cannot alter shell syntax.
       - name: Validate authenticated event metadata
         id: gate
         env:
@@ -149,22 +128,52 @@ jobs:
             emit_decision false repository_not_allowlisted
           fi
 
+      # On pull_request_target events dorny/paths-filter detects changed files
+      # via the Pulls API and does not need the repo on disk. Checkout is only
+      # required for the git-based detection used on workflow_dispatch runs,
+      # and it takes the trusted default-branch commit — never a PR ref.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        if: github.event_name == 'workflow_dispatch'
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4
+        id: filter
+        with:
+          filters: |
+            workflows:
+              # Workflow code imports helpers transitively across the package
+              # (e.g. src/workflows/template-execution.ts imports
+              # ../activities/lib/safe-expression-evaluator, and the
+              # orchestrator workflows pull from ../orchestrator-config,
+              # ../risk-assessment, ../execution-waves). Those helpers are
+              # bundled into the workflow sandbox by bundleWorkflowCode, so
+              # changing them can change deterministic workflow behavior
+              # without touching src/workflows/ itself. Scope the filter to
+              # the whole package's src/ to avoid silent gaps in coverage.
+              - 'packages/temporal/src/**'
+              - 'packages/temporal/__tests__/replay-validation.test.ts'
+              - 'packages/temporal/scripts/fetch-replay-histories.ts'
+              - '.github/scripts/temporal-replay/**'
+              - '.github/workflows/temporal-replay-pr-check.yml'
+              - '.github/workflows/temporal-replay-validation.yml'
+
   publish_denial:
     # A pull_request workflow is contributor-controlled. For cases that must
     # block, this trusted legacy failure intentionally shares the required
     # context with any automatic CheckRun: branch protection requires both to
     # pass, so renaming or greening PR-controlled YAML cannot bypass denial.
     name: Publish trusted replay denial
-    needs: [changes, authorize]
+    needs: authorize
     if: >-
       always() &&
       github.event_name == 'pull_request_target' &&
-      (needs.changes.result != 'success' ||
-       (needs.changes.outputs.workflows != 'true' &&
-        needs.changes.outputs.workflows != 'false') ||
-       (needs.changes.outputs.workflows == 'true' &&
-        (needs.authorize.result != 'success' ||
-         ((github.repository == 'Fabric-Pro/fabric' ||
+      (needs.authorize.result != 'success' ||
+       (needs.authorize.outputs.workflows != 'true' &&
+        needs.authorize.outputs.workflows != 'false') ||
+       (needs.authorize.outputs.workflows == 'true' &&
+        (((github.repository == 'Fabric-Pro/fabric' ||
            github.repository == 'Fabric-Pro/fabric-dev') &&
           needs.authorize.outputs.secret_eligible != 'true') ||
          (github.repository == 'Fabric-Pro/fabric-oss' &&
@@ -177,9 +186,8 @@ jobs:
       PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
       RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
       GH_TOKEN: ${{ github.token }}
-      CHANGES_RESULT: ${{ needs.changes.result }}
-      WORKFLOWS_CHANGED: ${{ needs.changes.outputs.workflows }}
-      AUTHORIZATION_RESULT: ${{ needs.authorize.result }}
+      GATE_RESULT: ${{ needs.authorize.result }}
+      WORKFLOWS_CHANGED: ${{ needs.authorize.outputs.workflows }}
       SECRET_ELIGIBLE: ${{ needs.authorize.outputs.secret_eligible }}
       AUTHORIZATION_REASON: ${{ needs.authorize.outputs.reason }}
     steps:
@@ -188,16 +196,16 @@ jobs:
           set -euo pipefail
 
           description="Temporal replay denied by trusted policy"
-          if [[ "$CHANGES_RESULT" != "success" ]]; then
-            description="Trusted Temporal change detection failed"
+          # One gate job now performs both change detection and authorization,
+          # so a failure of either half arrives as the same job result.
+          if [[ "$GATE_RESULT" != "success" ]]; then
+            description="Trusted Temporal change detection or authorization failed"
           elif [[ "$WORKFLOWS_CHANGED" != "true" &&
                   "$WORKFLOWS_CHANGED" != "false" ]]; then
             description="Trusted Temporal change detection was invalid"
           elif [[ "$WORKFLOWS_CHANGED" == "false" ]]; then
             echo "::error::Trusted denial must not run when no relevant files changed."
             exit 1
-          elif [[ "$AUTHORIZATION_RESULT" != "success" ]]; then
-            description="Trusted Temporal replay authorization failed"
           elif [[ ("$REPOSITORY" == "Fabric-Pro/fabric" ||
                    "$REPOSITORY" == "Fabric-Pro/fabric-dev") &&
                   "$SECRET_ELIGIBLE" != "true" ]]; then
@@ -226,12 +234,11 @@ jobs:
 
   initialize_status:
     name: Initialize eligible PR-head replay status
-    needs: [changes, authorize]
+    needs: authorize
     if: >-
       github.event_name == 'workflow_dispatch' ||
-      (needs.changes.result == 'success' &&
-       needs.changes.outputs.workflows == 'true' &&
-       needs.authorize.result == 'success' &&
+      (needs.authorize.result == 'success' &&
+       needs.authorize.outputs.workflows == 'true' &&
        needs.authorize.outputs.secret_eligible == 'true')
     runs-on: ubuntu-latest
     permissions:
@@ -264,17 +271,16 @@ jobs:
 
   replay:
     name: Replay dev histories against exact PR code
-    needs: [initialize_status, changes, authorize]
+    needs: [initialize_status, authorize]
     # All preceding jobs execute trusted default-branch workflow code. Only an
     # eligible event reaches this environment-bearing job and its exact-SHA
     # checkout. replay-eligibility.test.mjs pins this expression to the policy.
     if: >-
       needs.initialize_status.result == 'success' &&
-      needs.changes.result == 'success' &&
       needs.authorize.result == 'success' &&
       needs.authorize.outputs.secret_eligible == 'true' &&
       (github.event_name == 'workflow_dispatch' ||
-       needs.changes.outputs.workflows == 'true')
+       needs.authorize.outputs.workflows == 'true')
     runs-on: ubuntu-latest
     environment: dev
     timeout-minutes: 20
@@ -379,13 +385,12 @@ jobs:
 
   publish_outcome:
     name: Publish replay outcome
-    needs: [initialize_status, changes, authorize, replay]
+    needs: [initialize_status, authorize, replay]
     if: >-
       always() &&
       (github.event_name == 'workflow_dispatch' ||
-       (needs.changes.result == 'success' &&
-        needs.changes.outputs.workflows == 'true' &&
-        needs.authorize.result == 'success' &&
+       (needs.authorize.result == 'success' &&
+        needs.authorize.outputs.workflows == 'true' &&
         needs.authorize.outputs.secret_eligible == 'true'))
     runs-on: ubuntu-latest
     permissions:
@@ -397,9 +402,8 @@ jobs:
       RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
       GH_TOKEN: ${{ github.token }}
       INITIAL_STATUS_RESULT: ${{ needs.initialize_status.result }}
-      CHANGES_RESULT: ${{ needs.changes.result }}
-      WORKFLOWS_CHANGED: ${{ needs.changes.outputs.workflows }}
-      AUTHORIZATION_RESULT: ${{ needs.authorize.result }}
+      GATE_RESULT: ${{ needs.authorize.result }}
+      WORKFLOWS_CHANGED: ${{ needs.authorize.outputs.workflows }}
       SECRET_ELIGIBLE: ${{ needs.authorize.outputs.secret_eligible }}
       REPLAY_RESULT: ${{ needs.replay.result }}
     steps:
@@ -412,10 +416,8 @@ jobs:
 
           if [[ "$INITIAL_STATUS_RESULT" != "success" ]]; then
             description="Replay status initialization failed"
-          elif [[ "$AUTHORIZATION_RESULT" != "success" ]]; then
-            description="Replay authorization failed"
-          elif [[ "$CHANGES_RESULT" != "success" ]]; then
-            description="Temporal change detection failed"
+          elif [[ "$GATE_RESULT" != "success" ]]; then
+            description="Temporal change detection or replay authorization failed"
           elif [[ "$SECRET_ELIGIBLE" != "true" ]]; then
             description="Trusted replay publisher ran for an ineligible event"
           elif [[ "$REPLAY_RESULT" == "success" ]]; then

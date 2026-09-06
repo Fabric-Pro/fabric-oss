@@ -1,15 +1,27 @@
 name: Security
 
-# PR-time security scans for changes targeting master:
-#  - Semgrep         static analysis (JS/TS, community rule packs)
-#  - osv-scanner     dependency CVEs from osv.dev (gated at high+)
-#  - TruffleHog      secrets in the diff (verified only)
+# PR-time security scans for changes targeting master, all in ONE job:
+#  - Identifiers    blocked-term guard on the diff, branch, PR title and body
+#  - Gitleaks       pattern scan of the full HEAD history
+#  - TruffleHog     secrets in the diff (verified only)
+#  - osv-scanner    dependency CVEs from osv.dev (gated at high+)
+#  - Semgrep        static analysis (JS/TS, community rule packs)
+#
+# Why one job: GitHub bills a minimum of one minute per job. The previous
+# shape was seven jobs — a path-detector, five scanners in parallel, and an
+# aggregator — so a PR that finished every scan in seconds was still billed
+# seven minutes. Run sequentially in a single job they share one checkout and
+# bill for the wall time they actually use. Nothing here fans out wide enough
+# for the lost parallelism to matter; the scans are seconds to low minutes.
+#
+# `security` is the job name AND the stable status check name required on the
+# public mirror's master. Do not rename it. Each scan is a step, so a failing
+# scan fails the job directly — the old aggregator existed only to turn five
+# job results into one status and is gone with them.
 #
 # Runs on every PR to master. `master` is branch-protected so there's no
 # push-to-master trigger; a weekly scheduled run catches Semgrep rule-pack
-# drift on code that isn't touched by PRs. The aggregate `security` job is
-# the stable status check name to require in branch protection — individual
-# scan jobs may be skipped on irrelevant PRs, but `security` always reports.
+# drift on code that isn't touched by PRs.
 #
 # SAST uses Semgrep CE here because the staging repository is private and has
 # no GitHub Advanced Security: CodeQL's SARIF upload requires GHAS on private
@@ -21,6 +33,11 @@ on:
   pull_request:
     # Canonical upstream branch is `master` (post-cutover); see
     # docs/deployment.md § Branch cutover checklist.
+    #
+    # Deliberately NOT path-filtered: this workflow produces a required status
+    # check, and a job that never registers because its workflow was filtered
+    # out stays pending forever. Per-scan relevance is decided by the
+    # paths-filter STEP below, which reports a skip as a pass.
     branches: [master]
   workflow_dispatch:
   schedule:
@@ -30,7 +47,8 @@ on:
 
 permissions:
   contents: read
-  # dorny/paths-filter uses the Pulls API on PR events.
+  # dorny/paths-filter uses the Pulls API on PR events; the identifier guard
+  # reads the PR's labels for its override.
   pull-requests: read
 
 concurrency:
@@ -38,21 +56,39 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  changes:
-    name: Detect changed paths
+  security:
+    name: security
     runs-on: ubuntu-latest
-    outputs:
-      code: ${{ steps.filter.outputs.code }}
-      deps: ${{ steps.filter.outputs.deps }}
+    # The five old jobs allowed 45 minutes between them (15 + 10 + 5 + 10 + 5).
+    # Sequential execution does not need that much headroom, and a scan that
+    # hangs should fail this required check inside half an hour.
+    timeout-minutes: 30
     steps:
-      # On pull_request events dorny/paths-filter detects changed files via
-      # the Pulls API (the `pull-requests: read` permission above) and does
-      # not need the repo on disk. Checkout is only required for the
-      # git-based detection used on workflow_dispatch and schedule runs.
+      # One checkout for every scan. fetch-depth: 0 is required by four of
+      # them: Semgrep's --baseline-commit walks the merge base, TruffleHog
+      # scans the PR diff range, Gitleaks walks the full HEAD history, and the
+      # identifier guard diffs against the PR base SHA.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        if: github.event_name != 'pull_request'
+        id: checkout
         with:
-          fetch-depth: 1
+          fetch-depth: 0
+          persist-credentials: false
+
+      # Every scanner below carries a `!cancelled()` condition chained to the
+      # steps it actually depends on, instead of the default "previous step
+      # succeeded". One run therefore reports every finding — an identifier
+      # hit no longer hides a leaked secret or a Semgrep error from the
+      # author — while the job still fails on the first red step, so the
+      # `security` check stays fail-closed.
+
+      # On pull_request events dorny/paths-filter detects changed files via
+      # the Pulls API (the `pull-requests: read` permission above); on
+      # schedule and workflow_dispatch runs it uses the checkout above.
+      #
+      # `deps` is not consumed: the dependency audit runs on every PR (see
+      # its step). It stays here because it documents which paths make a PR
+      # dependency-relevant, and dropping it would be a policy change rather
+      # than a cleanup.
       - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4
         id: filter
         with:
@@ -66,7 +102,7 @@ jobs:
               - '**/*.cjs'
               # YAML too: `p/default` carries the GitHub Actions rules, so a
               # workflow is scannable code here. Without these globs a
-              # workflow-only PR skips the SAST job entirely and a finding it
+              # workflow-only PR skips the SAST step entirely and a finding it
               # introduces stays invisible until the weekly cron — which is
               # exactly how the `secrets: inherit` in ops-reconcile-dispatch
               # reached master.
@@ -77,276 +113,8 @@ jobs:
               - 'pnpm-lock.yaml'
               - 'pnpm-workspace.yaml'
 
-  sast:
-    name: Semgrep (SAST)
-    needs: changes
-    # Always run on workflow_dispatch and schedule (full-repo coverage).
-    # On PRs, only run when JS/TS or YAML changed.
-    if: >-
-      github.event_name != 'pull_request' ||
-      needs.changes.outputs.code == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    container:
-      # Official Semgrep image, pinned for reproducible scans. Bump
-      # intentionally after validating a newer release locally.
-      image: semgrep/semgrep:1.161.0
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          # Full history so --baseline-commit can resolve `origin/$BASE_REF`
-          # (the PR's target branch — `master`)
-          # and walk the merge base. Without this, Semgrep can't compute
-          # what's "new" in the PR vs what already exists on the base.
-          fetch-depth: 0
-
-      # Rule packs are chosen for this stack: curated defaults, TS/JS, React,
-      # Next.js, Node.js, and the OWASP Top 10. --severity=ERROR filters to
-      # high-severity findings only, keeping false positives low while the
-      # team gets calibrated to the tool. --error makes Semgrep exit non-zero
-      # when any qualifying finding is present.
-      #
-      # --baseline-commit is conditional: on PRs we want diff-aware scanning
-      # so the gate only fails on NEW findings vs the target branch. On
-      # schedule and workflow_dispatch, HEAD already equals the canonical
-      # branch (the cron checks it out) — passing --baseline-commit there
-      # would compare the branch against itself, producing an empty diff
-      # and silently reporting zero findings. The whole point of the cron
-      # is to surface rule-pack drift on stable code, so it must run a
-      # full scan.
-      # The semgrep/semgrep image is Alpine — no bash. GitHub Actions runs
-      # `run:` blocks under `sh -e`, so this script must be POSIX-compliant:
-      # positional parameters via `set --` instead of bash arrays, and
-      # `[ "$x" = "$y" ]` instead of `[[ "$x" == "$y" ]]`.
-      #
-      # `semgrep scan` takes `--baseline-commit <SHA>` (NOT `--baseline-ref` —
-      # that flag only exists on `semgrep ci`), so resolve origin/$BASE_REF
-      # to a commit SHA via git first.
-      - name: Scan
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          BASE_REF: ${{ github.base_ref }}
-        run: |
-          set -- \
-            --config=p/default \
-            --config=p/typescript \
-            --config=p/javascript \
-            --config=p/react \
-            --config=p/nextjs \
-            --config=p/nodejs \
-            --config=p/owasp-top-ten \
-            --severity=ERROR \
-            --error
-          if [ "$EVENT_NAME" = "pull_request" ]; then
-            # Inside the semgrep container, the workspace mounted by
-            # actions/checkout is owned by a different uid than the one
-            # running git, which trips git's safe.directory protection.
-            # Mark this workspace safe before any git invocation.
-            git config --global --add safe.directory "$GITHUB_WORKSPACE"
-            BASELINE_COMMIT=$(git rev-parse "origin/$BASE_REF")
-            set -- "$@" --baseline-commit="$BASELINE_COMMIT"
-          fi
-          semgrep scan "$@"
-
-  audit:
-    name: Dependency audit (high+)
-    needs: changes
-    # Always run on PRs (SOC 2 CC7.1): a newly disclosed CVE against an
-    # UNCHANGED dependency must still fail PR CI, not only the weekly cron.
-    # osv-scanner reads pnpm-lock.yaml directly (no install), so running it
-    # on every PR is cheap.
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          fetch-depth: 1
-
-      # osv-scanner resolves pnpm-lock.yaml against osv.dev, which is a live
-      # advisory source.
-      #
-      # This replaced `pnpm audit --audit-level=high --ignore-registry-errors`,
-      # which could not fail: npm retired the legacy quick-audit endpoint that
-      # `pnpm audit` posts to and it now returns HTTP 410, which
-      # `--ignore-registry-errors` converts into exit 0. The gate reported
-      # success on every run — including the twelve consecutive weekly crons
-      # from 2026-04-27 — while 4 high advisories sat open in Dependabot.
-      # A check that structurally cannot fail is worse than no check: it
-      # produces misleading CC7.1 evidence.
-      #
-      # Gating on high+critical matches the previous intent (`--audit-level=high`)
-      # and Dependabot's own severity split for this repo. Findings below high
-      # are reported by Dependabot and triaged there, not gated here.
-      #
-      # Dismissals live in osv-scanner.toml, which osv-scanner applies itself,
-      # so a dismissed advisory never reaches the gate. Their reasoning stays
-      # in SECURITY.md § Documented dismissals.
-      #
-      # `continue-on-error` covers only the scan: osv-scanner exits non-zero on
-      # ANY finding, including the mediums and lows this gate deliberately does
-      # not block on. The pass/fail decision belongs to the gate step, which
-      # reads the report and fails closed if it is missing or unparseable.
-      # Lockfiles are listed EXPLICITLY rather than discovered with `-r`, so the
-      # coverage is auditable from this file: if a lockfile is not named here,
-      # it is not scanned. Add new ones to this list.
-      #
-      # Read coverage from STDERR ("Scanned <file> ... found N packages"), not
-      # from the JSON `results` array — that array only contains sources that
-      # produced findings, so a clean lockfile is indistinguishable there from
-      # one that was never scanned. Verified 2026-07-21: pnpm-lock.yaml 3458
-      # packages, uv.lock 52.
-      #
-      # Docker base-image OS packages remain outside this gate — they are not a
-      # source manifest and are covered by the Trivy image scan instead. See
-      # SECURITY.md § CI enforcement.
-      - name: Scan lockfiles (osv.dev)
-        continue-on-error: true
-        run: |
-          docker run --rm -v "$PWD:/src" \
-            ghcr.io/google/osv-scanner:v2.4.0 \
-            scan source \
-            --lockfile=/src/pnpm-lock.yaml \
-            --lockfile=/src/packages/fabric-agent-python/uv.lock \
-            --lockfile=/src/aspire/Fabric.AppHost/packages.lock.json \
-            --lockfile=/src/aspire/Fabric.ServiceDefaults/packages.lock.json \
-            --config=/src/osv-scanner.toml --format=json > osv.json
-
-      - name: Gate on high+ advisories
-        run: node tooling/scripts/src/osv-severity-gate.mjs osv.json
-
-  secrets:
-    name: TruffleHog (secrets)
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          # Full history so the action can scan the full PR diff range, not
-          # just the merge commit.
-          fetch-depth: 0
-
-      # TruffleHog is free for organizations and auto-detects base/head from
-      # the event context. With this workflow's triggers:
-      #   - pull_request: scans the diff between base and head SHAs
-      #   - workflow_dispatch / schedule: `base` below pins the scan range
-      #
-      # `--results=verified` restricts findings to those that authenticate
-      # against the live service, giving near-zero false positives — what
-      # makes this a safe required check. The TruffleHog CLI's default
-      # is verified+unverified+unknown, which would cause noisy failures
-      # without this flag.
-      #
-      # Both the action tag AND the `version:` input are pinned. The action
-      # tag controls the action wrapper; `version:` controls the TruffleHog
-      # binary the action downloads. Without `version:`, the action defaults
-      # to `latest`, which would let upstream changes alter the behavior of
-      # this required gate.
-      #
-      # The two pins are independent and are deliberately NOT held equal. The
-      # wrapper is kept current — bumping it only ever changes how the
-      # container is invoked — while the binary moves on its own schedule,
-      # because a detector change alters what this required gate finds and can
-      # redden master for every other pull request. Bump `version:` as its own
-      # reviewed change, not as a side effect of a wrapper bump.
-      - uses: trufflesecurity/trufflehog@20652fbbdefffcdaa493a5bf57ab2ac6b1db715b # v3.97.1
-        with:
-          # GHCR Docker tag for the scanner binary — note the missing `v`
-          # prefix. TruffleHog's git tags carry one (v3.95.8) but the published
-          # image does not (`ghcr.io/trufflesecurity/trufflehog:3.95.8`),
-          # matching the release binary naming. This tracks the binary, not the
-          # wrapper tag above; see the note there before changing it.
-          version: 3.95.8
-          # `head` scopes non-PR scans to the branch being checked out. The
-          # action always passes `--branch $HEAD` to the CLI, but on schedule
-          # and workflow_dispatch it sets HEAD empty — so `--branch ''` walks
-          # every ref the `fetch-depth: 0` checkout pulled down. That includes
-          # the `v0.5.0`–`v1.3.3` release tags and the pre-cutover branches
-          # (~395 refs) that still carry the credentials #1000 scrubbed, which
-          # is why all twelve scheduled runs from 2026-04-27 to 2026-07-13
-          # exited 183 on the same known findings.
-          #
-          # Set it via `head:` rather than `extra_args:` — the CLI rejects a
-          # repeated `--branch` ("flag 'branch' cannot be repeated"), so
-          # passing it through extra_args fails the job outright.
-          #
-          # Leave empty on pull_request so the action keeps deriving base/head
-          # from the PR context and scans the diff.
-          #
-          # This does not narrow what the control covers on the branch that
-          # ships: `master` is a mid-2026 orphan re-root that never carried
-          # the old history, so its FULL history is scanned and is clean
-          # (0 verified, 0 unverified — 24.8k chunks, measured 2026-07-15).
-          # A secret committed to master and later deleted is still caught.
-          #
-          # The old refs are a separate, already-tracked exposure. They are
-          # not closed by this and not silently dropped —
-          # docs/security/git-history-secret-remediation.md is the authority
-          # on rotation and ref-deletion status. Rotation, not scan scoping,
-          # is what neutralises them.
-          head: ${{ github.event_name != 'pull_request' && github.ref_name || '' }}
-          extra_args: --results=verified
-
-  gitleaks:
-    name: Gitleaks (secrets)
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          # Full history so the scan covers every commit reachable from the
-          # PR head, not just the merge commit.
-          fetch-depth: 0
-
-      # Complements TruffleHog: TruffleHog gates on VERIFIED secrets (live
-      # credentials) in the PR diff; gitleaks pattern-scans the full HEAD
-      # history with the repo's own /.gitleaks.toml — the same config Fabric's
-      # in-product git-history scan and the local pre-commit hook use, so CI,
-      # product, and hook agree on what counts as a finding. This is the
-      # required-check called for by the open-sourcing plan (Phase 0, B1).
-      #
-      # The binary is downloaded from the pinned release and checksum-verified
-      # rather than via gitleaks-action, which requires a GITLEAKS_LICENSE key
-      # for organization-owned repos.
-      - name: Install gitleaks (pinned + checksum-verified)
-        run: |
-          curl -sSfL -o gitleaks.tgz \
-            https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz
-          echo "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb  gitleaks.tgz" | sha256sum -c -
-          tar -xzf gitleaks.tgz gitleaks
-
-      # --log-opts scopes the walk to HEAD's history. Without it gitleaks
-      # walks `git log --all`, and the fetch-depth: 0 checkout pulls down
-      # every ref — including the pre-cutover branches and v0.5.0–v1.3.3
-      # tags that still carry the already-tracked historical exposure
-      # (docs/security/git-history-secret-remediation.md). That is the same
-      # all-refs trap that broke TruffleHog's scheduled runs (see `head:`
-      # above). Once those refs are deleted per the remediation runbook, the
-      # scoping becomes a no-op but stays correct.
-      #
-      # `-m` makes git show per-parent patches for merge commits — without it
-      # `git log -p` emits no patch for merges, so a secret introduced only
-      # in a conflict resolution (an "evil merge") would never be scanned.
-      #
-      # --redact keeps any future finding out of CI logs; the JSON report is
-      # not uploaded anywhere for the same reason.
-      - name: Scan full HEAD history
-        run: |
-          ./gitleaks git --config .gitleaks.toml \
-            --log-opts="--full-history -m HEAD" --redact --no-banner -v .
-
-  identifiers:
-    name: Identifiers
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    if: github.event_name == 'pull_request'
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          # Need the base branch to diff against for the changed-file list.
-          fetch-depth: 0
-          persist-credentials: false
-
       - name: Setup Node.js
+        id: node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "22"
@@ -355,7 +123,11 @@ jobs:
       # matcher still works even on PRs where the secret is absent. Without it a
       # logic regression would look identical to "no findings" — the checker
       # exits 0 both when nothing matches and when it has no list to match with.
-      - name: Verify the matcher itself
+      - name: Verify the identifier matcher itself
+        id: identifier-matcher
+        if: >-
+          !cancelled() && steps.checkout.outcome == 'success' &&
+          steps.node.outcome == 'success' && github.event_name == 'pull_request'
         run: find tooling/identifier-guard/__tests__ -name '*.test.mjs' -print0 | xargs -0 node --test
 
       # Keeps real organization, deployment and person names out of everything
@@ -363,15 +135,19 @@ jobs:
       # and the PR body. Ticket titles are the usual source — a name rides along
       # into a commit subject or a code comment.
       #
+      # PR-only: on schedule and workflow_dispatch there is no branch, title or
+      # body to scan and no diff to scope it to.
+      #
       # The term list is not part of the repo; it is supplied as a repository
-      # secret. Fork PRs receive no secrets, so this job passes trivially there
+      # secret. Fork PRs receive no secrets, so this step passes trivially there
       # — deliberate, and not a hole: the risk being guarded against is authors
       # who have the ticket context in front of them.
       #
       # Matched terms are never echoed. A finding reports the rule index and
       # location only, because this output lands on a public PR. That guarantee
       # is what makes it safe to mirror findings into the step summary below.
-      - name: Scan diff, branch name, PR title and body
+      - name: Identifiers — scan diff, branch name, PR title and body
+        if: ${{ !cancelled() && steps.identifier-matcher.outcome == 'success' }}
         env:
           FABRIC_BLOCKED_TERMS: ${{ secrets.FABRIC_BLOCKED_TERMS }}
           # Passed through the environment, never interpolated into the script:
@@ -421,7 +197,7 @@ jobs:
             | tee -a "$findings" || status=1
 
           # Mirror findings onto the PR's checks page. Reading them should not
-          # require opening a log — that is the failure mode this whole job
+          # require opening a log — that is the failure mode this whole step
           # exists to avoid.
           if [ "$status" -ne 0 ]; then
             {
@@ -458,62 +234,230 @@ jobs:
 
           exit "$status"
 
-  # Stable status check name reported on every PR. Configure this as the
-  # required check in branch protection — not the individual scan jobs, which
-  # are conditionally skipped on PRs that don't touch code/deps.
-  security:
-    name: security
-    needs: [changes, sast, audit, secrets, gitleaks, identifiers]
-    if: always()
-    runs-on: ubuntu-latest
-    env:
-      EVENT_NAME: ${{ github.event_name }}
-      CODE_CHANGED: ${{ needs.changes.outputs.code }}
-      DEPS_CHANGED: ${{ needs.changes.outputs.deps }}
-      SAST_RESULT: ${{ needs.sast.result }}
-      AUDIT_RESULT: ${{ needs.audit.result }}
-      SECRETS_RESULT: ${{ needs.secrets.result }}
-      GITLEAKS_RESULT: ${{ needs.gitleaks.result }}
-      IDENTIFIERS_RESULT: ${{ needs.identifiers.result }}
-    steps:
-      - name: Aggregate
+      # Complements TruffleHog: TruffleHog gates on VERIFIED secrets (live
+      # credentials) in the PR diff; gitleaks pattern-scans the full HEAD
+      # history with the repo's own /.gitleaks.toml — the same config Fabric's
+      # in-product git-history scan and the local pre-commit hook use, so CI,
+      # product, and hook agree on what counts as a finding. This is the
+      # required-check called for by the open-sourcing plan (Phase 0, B1).
+      #
+      # The binary is downloaded from the pinned release and checksum-verified
+      # rather than via gitleaks-action, which requires a GITLEAKS_LICENSE key
+      # for organization-owned repos.
+      - name: Install gitleaks (pinned + checksum-verified)
+        id: gitleaks-install
+        if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
         run: |
-          fail=0
+          curl -sSfL -o gitleaks.tgz \
+            https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz
+          echo "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb  gitleaks.tgz" | sha256sum -c -
+          tar -xzf gitleaks.tgz gitleaks
 
-          check() {
-            local name="$1" result="$2" required="$3"
-            if [[ "$required" != "true" ]]; then
-              echo "$name: not required for this PR (skipped)."
-              return
-            fi
-            case "$result" in
-              success) echo "$name: passed." ;;
-              skipped) echo "::error::$name was required but did not run."; fail=1 ;;
-              *)       echo "::error::$name failed (result: $result)."; fail=1 ;;
-            esac
-          }
+      # --log-opts scopes the walk to HEAD's history. Without it gitleaks
+      # walks `git log --all`, and the fetch-depth: 0 checkout pulls down
+      # every ref — including the pre-cutover branches and v0.5.0–v1.3.3
+      # tags that still carry the already-tracked historical exposure
+      # (docs/security/git-history-secret-remediation.md). That is the same
+      # all-refs trap that broke TruffleHog's scheduled runs (see `head:`
+      # below). Once those refs are deleted per the remediation runbook, the
+      # scoping becomes a no-op but stays correct.
+      #
+      # `-m` makes git show per-parent patches for merge commits — without it
+      # `git log -p` emits no patch for merges, so a secret introduced only
+      # in a conflict resolution (an "evil merge") would never be scanned.
+      #
+      # --redact keeps any future finding out of CI logs; the JSON report is
+      # not uploaded anywhere for the same reason.
+      - name: Gitleaks — scan full HEAD history
+        if: ${{ !cancelled() && steps.gitleaks-install.outcome == 'success' }}
+        run: |
+          ./gitleaks git --config .gitleaks.toml \
+            --log-opts="--full-history -m HEAD" --redact --no-banner -v .
 
-          # On workflow_dispatch and schedule, every scan is required.
-          # On PRs, code-scoped scans are required only when their paths changed.
-          if [[ "$EVENT_NAME" == "pull_request" ]]; then
-            sast_required="$CODE_CHANGED"
-            # Always require the audit gate on PRs (SOC 2 CC7.1): a CVE against
-            # an unchanged dependency must still block, not just the weekly cron.
-            audit_required=true
-          else
-            sast_required=true
-            audit_required=true
+      # TruffleHog is free for organizations and auto-detects base/head from
+      # the event context. With this workflow's triggers:
+      #   - pull_request: scans the diff between base and head SHAs
+      #   - workflow_dispatch / schedule: `base` below pins the scan range
+      #
+      # `--results=verified` restricts findings to those that authenticate
+      # against the live service, giving near-zero false positives — what
+      # makes this a safe required check. The TruffleHog CLI's default
+      # is verified+unverified+unknown, which would cause noisy failures
+      # without this flag.
+      #
+      # Both the action tag AND the `version:` input are pinned. The action
+      # tag controls the action wrapper; `version:` controls the TruffleHog
+      # binary the action downloads. Without `version:`, the action defaults
+      # to `latest`, which would let upstream changes alter the behavior of
+      # this required gate.
+      #
+      # The two pins are independent and are deliberately NOT held equal. The
+      # wrapper is kept current — bumping it only ever changes how the
+      # container is invoked — while the binary moves on its own schedule,
+      # because a detector change alters what this required gate finds and can
+      # redden master for every other pull request. Bump `version:` as its own
+      # reviewed change, not as a side effect of a wrapper bump.
+      - name: TruffleHog — verified secrets
+        if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
+        uses: trufflesecurity/trufflehog@20652fbbdefffcdaa493a5bf57ab2ac6b1db715b # v3.97.1
+        with:
+          # GHCR Docker tag for the scanner binary — note the missing `v`
+          # prefix. TruffleHog's git tags carry one (v3.95.8) but the published
+          # image does not (`ghcr.io/trufflesecurity/trufflehog:3.95.8`),
+          # matching the release binary naming. This tracks the binary, not the
+          # wrapper tag above; see the note there before changing it.
+          version: 3.95.8
+          # `head` scopes non-PR scans to the branch being checked out. The
+          # action always passes `--branch $HEAD` to the CLI, but on schedule
+          # and workflow_dispatch it sets HEAD empty — so `--branch ''` walks
+          # every ref the `fetch-depth: 0` checkout pulled down. That includes
+          # the `v0.5.0`–`v1.3.3` release tags and the pre-cutover branches
+          # (~395 refs) that still carry the credentials #1000 scrubbed, which
+          # is why all twelve scheduled runs from 2026-04-27 to 2026-07-13
+          # exited 183 on the same known findings.
+          #
+          # Set it via `head:` rather than `extra_args:` — the CLI rejects a
+          # repeated `--branch` ("flag 'branch' cannot be repeated"), so
+          # passing it through extra_args fails the job outright.
+          #
+          # Leave empty on pull_request so the action keeps deriving base/head
+          # from the PR context and scans the diff.
+          #
+          # This does not narrow what the control covers on the branch that
+          # ships: `master` is a mid-2026 orphan re-root that never carried
+          # the old history, so its FULL history is scanned and is clean
+          # (0 verified, 0 unverified — 24.8k chunks, measured 2026-07-15).
+          # A secret committed to master and later deleted is still caught.
+          #
+          # The old refs are a separate, already-tracked exposure. They are
+          # not closed by this and not silently dropped —
+          # docs/security/git-history-secret-remediation.md is the authority
+          # on rotation and ref-deletion status. Rotation, not scan scoping,
+          # is what neutralises them.
+          head: ${{ github.event_name != 'pull_request' && github.ref_name || '' }}
+          extra_args: --results=verified
+
+      # osv-scanner resolves pnpm-lock.yaml against osv.dev, which is a live
+      # advisory source. It runs on EVERY PR (SOC 2 CC7.1), not only when a
+      # manifest changed: a newly disclosed CVE against an UNCHANGED dependency
+      # must still fail PR CI, not only the weekly cron. It reads the lockfiles
+      # directly (no install), so that is cheap.
+      #
+      # This replaced `pnpm audit --audit-level=high --ignore-registry-errors`,
+      # which could not fail: npm retired the legacy quick-audit endpoint that
+      # `pnpm audit` posts to and it now returns HTTP 410, which
+      # `--ignore-registry-errors` converts into exit 0. The gate reported
+      # success on every run — including the twelve consecutive weekly crons
+      # from 2026-04-27 — while 4 high advisories sat open in Dependabot.
+      # A check that structurally cannot fail is worse than no check: it
+      # produces misleading CC7.1 evidence.
+      #
+      # Gating on high+critical matches the previous intent (`--audit-level=high`)
+      # and Dependabot's own severity split for this repo. Findings below high
+      # are reported by Dependabot and triaged there, not gated here.
+      #
+      # Dismissals live in osv-scanner.toml, which osv-scanner applies itself,
+      # so a dismissed advisory never reaches the gate. Their reasoning stays
+      # in SECURITY.md § Documented dismissals.
+      #
+      # `continue-on-error` covers only the scan: osv-scanner exits non-zero on
+      # ANY finding, including the mediums and lows this gate deliberately does
+      # not block on. The pass/fail decision belongs to the gate step, which
+      # reads the report and fails closed if it is missing or unparseable.
+      # Lockfiles are listed EXPLICITLY rather than discovered with `-r`, so the
+      # coverage is auditable from this file: if a lockfile is not named here,
+      # it is not scanned. Add new ones to this list.
+      #
+      # Read coverage from STDERR ("Scanned <file> ... found N packages"), not
+      # from the JSON `results` array — that array only contains sources that
+      # produced findings, so a clean lockfile is indistinguishable there from
+      # one that was never scanned. Verified 2026-07-21: pnpm-lock.yaml 3458
+      # packages, uv.lock 52.
+      #
+      # Docker base-image OS packages remain outside this gate — they are not a
+      # source manifest and are covered by the Trivy image scan instead. See
+      # SECURITY.md § CI enforcement.
+      - name: Dependency audit — scan lockfiles (osv.dev)
+        id: osv-scan
+        if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
+        continue-on-error: true
+        run: |
+          docker run --rm -v "$PWD:/src" \
+            ghcr.io/google/osv-scanner:v2.4.0 \
+            scan source \
+            --lockfile=/src/pnpm-lock.yaml \
+            --lockfile=/src/packages/fabric-agent-python/uv.lock \
+            --lockfile=/src/aspire/Fabric.AppHost/packages.lock.json \
+            --lockfile=/src/aspire/Fabric.ServiceDefaults/packages.lock.json \
+            --config=/src/osv-scanner.toml --format=json > osv.json
+
+      - name: Dependency audit — gate on high+ advisories
+        # The scan step is continue-on-error (osv-scanner exits non-zero on any
+        # finding), so "ran" rather than "succeeded" is the right dependency.
+        if: >-
+          !cancelled() && steps.osv-scan.outcome != 'skipped' &&
+          steps.node.outcome == 'success'
+        run: node tooling/scripts/src/osv-severity-gate.mjs osv.json
+
+      # Rule packs are chosen for this stack: curated defaults, TS/JS, React,
+      # Next.js, Node.js, and the OWASP Top 10. --severity=ERROR filters to
+      # high-severity findings only, keeping false positives low while the
+      # team gets calibrated to the tool. --error makes Semgrep exit non-zero
+      # when any qualifying finding is present.
+      #
+      # Runs on every schedule/workflow_dispatch (full-repo coverage) and, on
+      # PRs, only when JS/TS or YAML changed — the condition the old job-level
+      # `if:` carried.
+      #
+      # Semgrep runs in its own pinned container via `docker run` rather than
+      # the job-level `container:` it used when it had a job of its own: the
+      # other scans need the runner's own toolchain (node, curl, the
+      # TruffleHog action), so the job cannot live inside the Semgrep image.
+      # Bump the tag intentionally after validating a newer release locally.
+      #
+      # --baseline-commit is conditional: on PRs we want diff-aware scanning
+      # so the gate only fails on NEW findings vs the target branch. On
+      # schedule and workflow_dispatch, HEAD already equals the canonical
+      # branch (the cron checks it out) — passing --baseline-commit there
+      # would compare the branch against itself, producing an empty diff
+      # and silently reporting zero findings. The whole point of the cron
+      # is to surface rule-pack drift on stable code, so it must run a
+      # full scan.
+      #
+      # `semgrep scan` takes `--baseline-commit <SHA>` (NOT `--baseline-ref` —
+      # that flag only exists on `semgrep ci`), so resolve origin/$BASE_REF to
+      # a commit SHA first. That resolution now happens on the RUNNER, where
+      # the checkout is owned by the user running git.
+      #
+      # Inside the container the workspace is owned by a different uid than
+      # root, which trips git's safe.directory protection, so the entrypoint is
+      # replaced with `sh` to mark /src safe before exec'ing semgrep. The flags
+      # are handed to that `sh` as positional parameters — never interpolated
+      # into the script text.
+      - name: Semgrep (SAST)
+        if: >-
+          !cancelled() && steps.checkout.outcome == 'success' &&
+          (github.event_name != 'pull_request' || steps.filter.outputs.code == 'true')
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          set -euo pipefail
+          set -- \
+            --config=p/default \
+            --config=p/typescript \
+            --config=p/javascript \
+            --config=p/react \
+            --config=p/nextjs \
+            --config=p/nodejs \
+            --config=p/owasp-top-ten \
+            --severity=ERROR \
+            --error
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            BASELINE_COMMIT=$(git rev-parse "origin/$BASE_REF")
+            set -- "$@" --baseline-commit="$BASELINE_COMMIT"
           fi
-
-          check "Semgrep"      "$SAST_RESULT"    "$sast_required"
-          check "OSV-Scanner"  "$AUDIT_RESULT"   "$audit_required"
-          check "TruffleHog" "$SECRETS_RESULT" "true"
-          check "Gitleaks"   "$GITLEAKS_RESULT" "true"
-
-          # PR-only: the job doesn't run on schedule/dispatch, where there is no
-          # branch, title or body to scan and no diff to scope it to.
-          if [[ "$EVENT_NAME" == "pull_request" ]]; then
-            check "Identifiers" "$IDENTIFIERS_RESULT" "true"
-          fi
-
-          exit "$fail"
+          docker run --rm -v "$PWD:/src" -w /src \
+            --entrypoint sh semgrep/semgrep:1.161.0 \
+            -c 'git config --global --add safe.directory /src && exec semgrep scan "$@"' \
+            semgrep "$@"

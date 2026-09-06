@@ -12,11 +12,10 @@ const RELAY_HEAD_PREFIX = "relay/";
 // the executable helper or only the secret-bearing job.
 export const REPLAY_JOB_CONDITION = `
 needs.initialize_status.result == 'success' &&
-needs.changes.result == 'success' &&
 needs.authorize.result == 'success' &&
 needs.authorize.outputs.secret_eligible == 'true' &&
 (github.event_name == 'workflow_dispatch' ||
- needs.changes.outputs.workflows == 'true')
+ needs.authorize.outputs.workflows == 'true')
 `.trim();
 
 export const REQUIRED_CHECK_NAME = "replay-validation";
@@ -37,15 +36,18 @@ github.event.pull_request.head.repo.full_name == github.repository &&
 'replay-validation-unprivileged' || 'replay-validation'
 `.trim();
 
+// `authorize` performs change detection and metadata authorization in one
+// trusted job, so a failure of either half arrives as one job result and the
+// old separate `needs.authorize.result != 'success'` clause is subsumed by the
+// first line of the disjunction.
 export const TRUSTED_DENIAL_JOB_CONDITION = `
 always() &&
 github.event_name == 'pull_request_target' &&
-(needs.changes.result != 'success' ||
- (needs.changes.outputs.workflows != 'true' &&
-  needs.changes.outputs.workflows != 'false') ||
- (needs.changes.outputs.workflows == 'true' &&
-  (needs.authorize.result != 'success' ||
-   ((github.repository == 'Fabric-Pro/fabric' ||
+(needs.authorize.result != 'success' ||
+ (needs.authorize.outputs.workflows != 'true' &&
+  needs.authorize.outputs.workflows != 'false') ||
+ (needs.authorize.outputs.workflows == 'true' &&
+  (((github.repository == 'Fabric-Pro/fabric' ||
      github.repository == 'Fabric-Pro/fabric-dev') &&
     needs.authorize.outputs.secret_eligible != 'true') ||
    (github.repository == 'Fabric-Pro/fabric-oss' &&

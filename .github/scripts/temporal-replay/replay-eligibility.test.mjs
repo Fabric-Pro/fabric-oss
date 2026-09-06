@@ -64,7 +64,8 @@ function blockExpression(job, followingKey) {
 		.trim();
 }
 
-const trustedChangesJob = jobBody(trustedWorkflow, "changes", "authorize");
+// One trusted job detects changed paths AND authorizes; `publish_denial` is
+// the job that follows it in the file.
 const authorizeJob = jobBody(trustedWorkflow, "authorize", "publish_denial");
 const denialJob = jobBody(
 	trustedWorkflow,
@@ -126,18 +127,18 @@ test("trusted denial gate exactly matches the tested blocking policy", () => {
 		normalizeExpression(blockExpression(denialJob, "runs-on")),
 		normalizeExpression(TRUSTED_DENIAL_JOB_CONDITION),
 	);
-	assert.match(denialJob, /needs: \[changes, authorize\]/);
+	assert.match(denialJob, /needs: authorize/);
 });
 
 test("pending and final replay statuses run only for eligible relevant PRs or manual dispatch", () => {
 	for (const job of [initializeJob, publishJob]) {
-		assert.match(job, /needs\.changes\.outputs\.workflows == 'true'/);
+		assert.match(job, /needs\.authorize\.outputs\.workflows == 'true'/);
 		assert.match(
 			job,
 			/needs\.authorize\.outputs\.secret_eligible == 'true'/,
 		);
 	}
-	assert.match(initializeJob, /needs: \[changes, authorize\]/);
+	assert.match(initializeJob, /needs: authorize/);
 	assert.match(publishJob, /if: >-\n {6}always\(\)/);
 	assert.equal(
 		[...trustedWorkflow.matchAll(/statuses\/\$PR_HEAD_SHA/g)].length,
@@ -156,7 +157,6 @@ test("pending and final replay statuses run only for eligible relevant PRs or ma
 
 test("trusted gate executes no PR code before authorization", () => {
 	for (const [name, body] of [
-		["authorize", authorizeJob],
 		["publish_denial", denialJob],
 		["initialize_status", initializeJob],
 	]) {
@@ -170,12 +170,23 @@ test("trusted gate executes no PR code before authorization", () => {
 			`${name} must not execute an action`,
 		);
 	}
+	// The merged gate detects changed paths as well as authorizing, so unlike
+	// the publisher jobs it does run two pinned actions. It still installs
+	// nothing, holds no secret and no environment, and its single checkout
+	// takes the trusted default-branch commit on workflow_dispatch only —
+	// never a PR ref, and never on a pull_request_target event.
+	assert.doesNotMatch(authorizeJob, /pnpm install|secrets\.|environment:/);
+	assert.equal(
+		[...authorizeJob.matchAll(/actions\/checkout/g)].length,
+		1,
+		"the gate must have exactly one checkout",
+	);
 	assert.match(
-		trustedChangesJob,
-		/if: github\.event_name == 'workflow_dispatch'/,
+		authorizeJob,
+		/if: github\.event_name == 'workflow_dispatch'\n {8}with:\n {10}ref: \$\{\{ github\.sha \}\}/,
 	);
 	assert.doesNotMatch(
-		trustedChangesJob,
+		authorizeJob,
 		/ref: \$\{\{ github\.event\.pull_request\.head/,
 	);
 	assert.doesNotMatch(credentialChangesJob, /actions\/checkout/);

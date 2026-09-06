@@ -151,7 +151,7 @@ Write descriptive commit messages and PR titles; a specific subject line is wort
 
 This applies to everything that becomes public on push, not just source files: commit messages, branch names, PR titles and PR bodies are all permanent and are indexed.
 
-An `Identifiers` check enforces this on every PR, alongside `pre-commit` and `commit-msg` hooks that `pnpm install` wires up. It is configuration-driven and inert without that configuration, so it will not fire on fork PRs. When it does fire it reports a rule number and a location rather than the matched text, both in the log and on the PR's checks page.
+An identifier scan inside the `security` check enforces this on every PR, alongside `pre-commit` and `commit-msg` hooks that `pnpm install` wires up. It is configuration-driven and inert without that configuration, so it will not fire on fork PRs. When it does fire it reports a rule number and a location rather than the matched text, both in the log and on the PR's checks page.
 
 Every term blocks; there is no severity that merely warns. A warning attached to a passing check is not a control — nobody reads the output of something green.
 

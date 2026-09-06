@@ -5,8 +5,14 @@
 name: OSS Relay Notifier
 
 on:
+  # No `synchronize`. The relay only ever acts on a `/relay <sha>` comment
+  # naming the pull request's CURRENT head, so a freshly pushed head cannot be
+  # relayed until the author posts a new comment for it — and the
+  # `issue_comment` trigger below wakes the notifier the moment they do. Waking
+  # on the push itself only re-ran the head check, found the comment stale, and
+  # billed a job minute to say so on every push of every labelled PR.
   pull_request_target:
-    types: [labeled, synchronize, reopened, ready_for_review]
+    types: [labeled, reopened, ready_for_review]
     branches: [master]
   issue_comment:
     types: [created]
@@ -37,6 +43,17 @@ on:
 
 permissions:
   pull-requests: read
+
+# Every wake-up for one pull request does the same work: re-read its live
+# state and dispatch if it is still relayable. A newer wake-up therefore
+# supersedes an older one outright, so cancelling costs nothing and saves a
+# job minute whenever two events land together (a label plus the `/relay`
+# comment, or several staging checks finishing at once). A workflow_run wake
+# carries no pull request number of its own, so it falls back to its run id
+# and cancels nothing.
+concurrency:
+  group: oss-relay-notify-${{ github.event.pull_request.number || github.event.issue.number || github.run_id }}
+  cancel-in-progress: true
 
 jobs:
   notify:
@@ -198,7 +215,7 @@ jobs:
               || { echo "Comment targets a stale PR head; no dispatch"; exit 0; }
           else
             [[ "$EVENT_HEAD_SHA" == "$EXPECTED_HEAD_SHA" ]] \
-              || { echo "PR head moved during notifier execution; a synchronize event will retry"; exit 0; }
+              || { echo "PR head moved during notifier execution; the next /relay comment for the new head will retry"; exit 0; }
           fi
           [[ -n "$DISPATCH_TOKEN" ]] \
             || { echo "::error::the dispatch App token was not minted"; exit 1; }
