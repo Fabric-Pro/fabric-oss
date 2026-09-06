@@ -244,7 +244,7 @@ To land a PR, in this order:
 2. `gh api -X POST repos/Fabric-Pro/fabric-dev/issues/<n>/comments -f body="/relay $HEAD"`
 3. `gh api -X POST repos/Fabric-Pro/fabric-dev/issues/<n>/labels -f 'labels[]=ready-for-relay'`
 
-Do this as soon as the PR is ready; do not wait for checks. The relay waits by itself for the six required checks (type-check, unit-tests, Biome, changeset, DCO, security) on that head, so authorizing early costs nothing, and a red check never wastes a relay attempt.
+Do this as soon as the PR is ready; do not wait for checks. The relay waits by itself for the six required checks (type-check, unit-tests, Biome, changeset, DCO, security) on that head, so authorizing early costs nothing, and a red check never wastes a relay attempt. Four of those — type-check, unit-tests, Biome and the changeset check — run only on the public relay PR and are skipped in this repo, so a failure in any of them surfaces here as a relay refusal comment rather than a red check on this PR.
 
 After any push, repeat steps 1 and 2 with the new head. Never edit a `/relay` comment; an edited one no longer authorizes.
 

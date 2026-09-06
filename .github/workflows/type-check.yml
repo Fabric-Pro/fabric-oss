@@ -1,23 +1,34 @@
 name: Type Check
 
-# Scoped TypeScript type-check on every PR to `master`, plus a full sweep on
-# every push to `master` to seed the caches those PR runs restore.
+# Scoped TypeScript type-check on every PR to `master` in the public mirror,
+# plus a full sweep on every push to `master` there to seed the caches those
+# PR runs restore.
 #
-# TWO PATHS, ONE CHECK NAME.
+# WHERE THIS RUNS. The private staging repo (`Fabric-Pro/fabric-dev`) runs no
+# type-check job on `pull_request` at all, and none on `push` either. Every
+# fabric-dev PR lands through the OSS relay, which opens a public PR on the
+# same commit in the mirror, and that public PR's `type-check` run is the
+# required gate — see CLAUDE.md § Landing a PR: the OSS relay. Running the
+# sweep in fabric-dev too would only pay twice (it used to, on a paid 8-core
+# arm64 runner) for a verdict the public PR already gives. `workflow_dispatch`
+# is exempt from that: a manual dispatch in the staging repo still runs the
+# full plan/shard pipeline below, on the `ubuntu-8core-arm` label (that
+# repo's standard runner, 2 CPU / 7 GB, cannot hold the type-check heap), so
+# a change to this workflow file can be validated before it reaches the
+# public mirror.
 #
-#   * The private staging repo runs the whole sweep as a single job on its
-#     paid 8-core (32 GB) arm64 runner — `Type check (staging)` below. That
-#     is where developers wait on the verdict, four Turbo tasks fit in the
-#     RAM at once, and there is no free tier to shard onto.
-#   * Everywhere else — the public mirror, forks, any other copy of this
-#     tree — the sweep is split across several standard runners, which
-#     GitHub provides free and unlimited to public repositories at
-#     4 CPU / 16 GB. Larger runners are billed even on public repositories.
+# Everywhere else — the public mirror, forks, any other copy of this tree —
+# the sweep is split across several standard runners, which GitHub provides
+# free and unlimited to public repositories at 4 CPU / 16 GB. Larger runners
+# are billed even on public repositories.
 #
-# The two paths meet at the `type-check` job at the bottom, which carries the
-# status-check name and does nothing but report. Configure THAT as the
-# required check: the staging job and the shards are conditional, and the
-# shards' names and count depend on what the PR touched.
+# The `type-check` job at the bottom carries the status-check name and does
+# nothing but report. Configure THAT as the required check: the shards are
+# conditional and their names and count depend on what the PR touched, and
+# the whole pipeline is skipped outright in the staging repo outside
+# `workflow_dispatch` (a job skipped by a job-level `if:` counts as passing
+# for the relay gate — see unit-tests.yml's header for the full reasoning,
+# which applies here unchanged).
 #
 # WHY SHARD. A standard runner cannot host two of the heavy packages at once
 # — apps/web caps its own tsc at 10 GiB and several packages need ~8 GB — so
@@ -55,14 +66,14 @@ name: Type Check
 # master push runs the full sweep, so it seeds every family at once; a PR
 # shard then restores the family holding its own packages' `generate`,
 # `^build` and `type-check` entries (turbo.json makes all three part of this
-# task). The staging job keeps the unsuffixed keys it has always used.
+# task).
 #
-# The shard families deliberately do not share a prefix with the staging
-# job's `<os>-turbo-typecheck-` / `<os>-tsbuildinfo-` keys: a prefix
-# restore takes the newest matching entry, and after a manual
-# workflow_dispatch in the staging repo that could have been one shard's
-# partial cache. Slower, never wrong (Turbo keys entries by task hash), but
-# avoidable for free by keeping the families disjoint.
+# The shard families used to avoid sharing a prefix with the staging job's
+# `<os>-turbo-typecheck-` / `<os>-tsbuildinfo-` keys, so a prefix restore
+# during a manual staging `workflow_dispatch` could never pick up one
+# shard's partial cache instead of its own. That job is gone (see WHERE THIS
+# RUNS above), so nothing writes those unsuffixed keys any more — the shard
+# families are just what remains, unchanged.
 #
 # WHY MASTER PUSHES RUN AT ALL. GitHub only lets a workflow run restore
 # caches saved on its own branch or on the base branch. A PR's first run
@@ -87,11 +98,13 @@ name: Type Check
 # runners with the RAM to spare) — it is deliberately NOT baked into the
 # shared `type-check` script, so contributors' machines are never forced to a
 # 12 GB floor. The ceiling is per tsc process and has to be read together
-# with the Turbo concurrency beside it: four 16 GB ceilings fit the 32 GB
-# staging runner because the heaviest package tops out around 8 GB and the
-# rest are far smaller, while a 16 GB standard runner runs one task at a time
-# under a 12 GB ceiling that leaves room for the OS and pnpm. The
-# heavy-package memory blow-up is tracked for a compiled-packages migration.
+# with the Turbo concurrency beside it: every shard runs one heavy tsc at a
+# time (`TURBO_CONCURRENCY: 1`) under a 12 GB ceiling that leaves room for
+# the OS and pnpm on the 16 GB standard runner. The staging repo's
+# `workflow_dispatch` path reuses that same ceiling on the bigger
+# `ubuntu-8core-arm` label purely for headroom, not for extra concurrency.
+# The heavy-package memory blow-up is tracked for a compiled-packages
+# migration.
 #
 # SECURITY. No user-controlled field (PR title, body, branch name, commit
 # message) is interpolated into a run: block. BASE_REF is github.base_ref
@@ -101,11 +114,11 @@ name: Type Check
 # only through quoted environment variables and become `--filter=` arguments,
 # never shell code.
 #
-# VALIDATING A CHANGE TO THIS FILE. `workflow_dispatch` inverts the two paths
-# in the staging repo: the single staging job is skipped and the
-# plan / shard / aggregate path runs there instead, on the 8-core label
-# because that repo's standard runner (2 CPU / 7 GB) cannot hold the heap. So
-# the sharded pipeline can be exercised before it lands.
+# VALIDATING A CHANGE TO THIS FILE. `pull_request` and `push` run nothing in
+# the staging repo (see WHERE THIS RUNS above), so `workflow_dispatch` is the
+# only way to exercise this workflow there — it runs the full
+# plan / shard / aggregate pipeline on the `ubuntu-8core-arm` label, because
+# that repo's standard runner (2 CPU / 7 GB) cannot hold the heap.
 
 on:
   pull_request:
@@ -132,105 +145,6 @@ concurrency:
   cancel-in-progress: ${{ github.event_name != 'push' }}
 
 jobs:
-  # The private staging repo's path: one job, one big runner, unchanged from
-  # before sharding existed. Skipped on workflow_dispatch so a dispatch there
-  # exercises the sharded path instead (see the header).
-  type-check-staging:
-    name: Type check (staging)
-    if: >-
-      github.repository == 'Fabric-Pro/fabric-dev' &&
-      github.event_name != 'workflow_dispatch'
-    runs-on: ubuntu-8core-arm
-    timeout-minutes: 30
-    env:
-      # Placeholder so @repo/database's prisma singleton (throws at module
-      # load when DATABASE_URL is unset) can initialize during generate.
-      # Both are in turbo.json's `globalEnv`, so they feed every task hash.
-      # This job's caches are deliberately separate from the shards' (see the
-      # header), so matching values only matter within this job's own history.
-      DATABASE_URL: 'postgresql://test:test@localhost:5432/test'
-      DIRECT_URL: 'postgresql://test:test@localhost:5432/test'
-      # CI-only headroom for the heaviest changed-package graphs; read it
-      # together with TURBO_CONCURRENCY (see MEMORY in the header).
-      NODE_OPTIONS: '--max-old-space-size=16384'
-      TURBO_CONCURRENCY: '4'
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          # Full history so Turbo's [origin/<base>] filter resolves the
-          # merge base; shallow checkout falls back to running everything.
-          fetch-depth: 0
-
-      - name: Setup pnpm
-        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6
-        env:
-          # The action bootstraps pnpm with `npm ci`, whose audit request has stalled for
-          # up to npm's 5-minute fetch timeout on hosted runners before `pnpm self-update`
-          # switches to the packageManager pin. The audit adds nothing here: skip it.
-          npm_config_audit: "false"
-
-      - name: Setup Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: '22'
-          cache: 'pnpm'
-
-      # Only the typecheck prefix, no generic `<os>-turbo-` fallback:
-      # GitHub tries every restore key in the PR's own scope before it looks
-      # at master, so the broad fallback would hand a PR its own Vitest
-      # entry ahead of the master typecheck entry that holds the `^build`
-      # outputs this job replays.
-      - name: Restore Turbo cache
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: .turbo
-          key: ${{ runner.os }}-turbo-typecheck-${{ github.sha }}
-          restore-keys: |
-            ${{ runner.os }}-turbo-typecheck-
-
-      # Turbo's cache only replays whole tasks; on a miss the task re-runs
-      # cold. TypeScript's own incremental state is what makes a miss cheap
-      # (deploy-vercel-prod.yml relies on the same thing for apps/web, where
-      # it measured 138s cold vs 23s warm). Paths are enumerated rather than
-      # globbed as `**/*.tsbuildinfo` so the cache action never walks
-      # node_modules. A .tsbuildinfo restored from a different commit is safe:
-      # tsc version-checks every file it recorded and re-checks what moved.
-      - name: Restore TypeScript incremental state
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: |
-            apps/*/.next/cache/*.tsbuildinfo
-            apps/*/tsconfig.tsbuildinfo
-            packages/*/tsconfig.tsbuildinfo
-            agents/langchain/*/tsconfig.tsbuildinfo
-            services/*/tsconfig.tsbuildinfo
-            tooling/*/tsconfig.tsbuildinfo
-            config/tsconfig.tsbuildinfo
-            party/tsconfig.tsbuildinfo
-            party-cf/tsconfig.tsbuildinfo
-          key: ${{ runner.os }}-tsbuildinfo-${{ github.sha }}
-          restore-keys: |
-            ${{ runner.os }}-tsbuildinfo-
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Type check (scoped to changed packages)
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          BASE_REF: ${{ github.base_ref }}
-        run: |
-          # On PRs: only the packages affected by the diff vs the PR base
-          # (and their dependents). On push to master: full sweep — the
-          # master run is what seeds the cache PRs restore (see the header),
-          # so it must cover every package. `generate`/`^generate`/`^build`
-          # run as turbo type-check dependencies.
-          if [[ "$EVENT_NAME" == "pull_request" ]]; then
-            pnpm turbo type-check --concurrency="$TURBO_CONCURRENCY" --filter="...[origin/${BASE_REF}]"
-          else
-            pnpm turbo type-check --concurrency="$TURBO_CONCURRENCY"
-          fi
-
   # Resolves the set of packages whose `type-check` task Turbo would actually
   # run and buckets it into shards (see WHY SHARD in the header).
   #
@@ -527,21 +441,24 @@ jobs:
           done
           pnpm turbo run type-check --concurrency="$TURBO_CONCURRENCY" "${filters[@]}"
 
-  # Stable status check name reported on every PR to `master`, in both repos.
-  # Configure THIS as the required check — not the staging job and not the
-  # shards, whose names and count depend on the repository and on what the PR
-  # touched.
+  # Stable status check name reported on every PR to `master` in the public
+  # mirror. Skipped entirely in the staging repo outside a manual
+  # `workflow_dispatch` (see WHERE THIS RUNS in the header — a job skipped by
+  # a job-level `if:` counts as passing for the relay gate). Configure THIS
+  # as the required check — not the shards, whose names and count depend on
+  # what the PR touched.
   type-check:
     name: type-check
-    needs: [type-check-staging, plan, shard]
+    needs: [plan, shard]
     # Not on push: a master run has no PR to report on, and an aggregate job
-    # per push is billed Actions minutes for nothing.
-    if: always() && github.event_name != 'push'
+    # per push is billed Actions minutes for nothing. Skipped in the staging
+    # repo outside workflow_dispatch, same guard as `plan` and `shard`.
+    if: >-
+      always() && github.event_name != 'push' &&
+      (github.repository != 'Fabric-Pro/fabric-dev' ||
+       github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest
     env:
-      EVENT_NAME: ${{ github.event_name }}
-      REPOSITORY: ${{ github.repository }}
-      STAGING_RESULT: ${{ needs.type-check-staging.result }}
       PLAN_RESULT: ${{ needs.plan.result }}
       HAS_SHARDS: ${{ needs.plan.outputs.has_shards }}
       SHARD_RESULT: ${{ needs.shard.result }}
@@ -550,20 +467,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          # Staging path: one job carries the whole verdict. Anything other
-          # than success — including a skip, which would mean the guard above
-          # stopped matching — fails closed.
-          if [[ "$REPOSITORY" == "Fabric-Pro/fabric-dev" && "$EVENT_NAME" != "workflow_dispatch" ]]; then
-            if [[ "$STAGING_RESULT" == "success" ]]; then
-              echo "Type check passed on the staging runner."
-              exit 0
-            fi
-            echo "::error::Type check did not succeed on the staging runner (result: $STAGING_RESULT)."
-            exit 1
-          fi
-
-          # Sharded path. Without a plan there is no shard set, so a green
-          # verdict here would mean nothing.
+          # Without a plan there is no shard set, so a green verdict here
+          # would mean nothing.
           if [[ "$PLAN_RESULT" != "success" ]]; then
             echo "::error::Shard planning did not succeed (result: $PLAN_RESULT). Cannot determine which packages need type-checking."
             exit 1
@@ -591,7 +496,7 @@ jobs:
           # the verdict below is already decided.
           FAILED="$(gh api \
             "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/attempts/${GITHUB_RUN_ATTEMPT}/jobs?per_page=100" \
-            --jq '[.jobs[] | select(.conclusion == "failure" or .conclusion == "cancelled") | select(.name | startswith("Type check (")) | select(.name != "Type check (staging)") | .name] | join(", ")' \
+            --jq '[.jobs[] | select(.conclusion == "failure" or .conclusion == "cancelled") | select(.name | startswith("Type check (")) | .name] | join(", ")' \
             || true)"
           if [[ -n "$FAILED" ]]; then
             echo "::error::Type check failed (matrix result: $SHARD_RESULT) — $FAILED"

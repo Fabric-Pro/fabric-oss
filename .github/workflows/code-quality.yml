@@ -35,6 +35,10 @@ concurrency:
 jobs:
   biome:
     name: Biome (format + lint)
+    # The public relay PR runs this same required check on the identical
+    # commit, so a skip here (which counts as passing for the relay gate)
+    # costs nothing and saves a redundant standard-runner run in fabric-dev.
+    if: github.repository != 'Fabric-Pro/fabric-dev' || github.event_name == 'workflow_dispatch'
     # arm64: every step here is architecture-neutral (JS actions, pnpm/node
     # commands, Biome — @biomejs/cli-linux-arm64 ships in pnpm-lock.yaml).
     runs-on: ubuntu-24.04-arm

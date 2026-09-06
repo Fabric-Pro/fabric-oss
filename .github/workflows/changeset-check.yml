@@ -33,9 +33,15 @@ jobs:
     #   (head branch `changeset-release/<base>`) — that PR consumes
     #   changesets rather than adding them, so requiring one would
     #   deadlock the release. The release PR head branch is
-    #   `changeset-release/master` (post-cutover canonical base).
+    #   `changeset-release/master` (post-cutover canonical base). OR
+    # - this is fabric-dev: the public relay PR carries the same label
+    #   (the relay propagates `skip-changeset`) and runs this identical
+    #   check, so a skip here — which counts as passing for the relay
+    #   gate — costs nothing. No workflow_dispatch escape hatch here, unlike
+    #   type-check and unit-tests: this workflow only runs on pull_request.
     if: ${{ !contains(github.event.pull_request.labels.*.name, 'skip-changeset')
-            && github.event.pull_request.head.ref != 'changeset-release/master' }}
+            && github.event.pull_request.head.ref != 'changeset-release/master'
+            && github.repository != 'Fabric-Pro/fabric-dev' }}
     steps:
       - name: Checkout PR
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
