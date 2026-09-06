@@ -87,6 +87,33 @@ pnpm lint          # Biome linting
 pnpm format        # Biome formatting
 ```
 
+### Dependency updates
+
+A version has to be a day old before pnpm will resolve it (`minimumReleaseAge`
+in `pnpm-workspace.yaml`). Compromised releases are usually caught and pulled
+within hours, so the wait keeps most of that window out of the lockfile.
+
+This applies to plain `pnpm install` as well as `pnpm add` / `pnpm update`: since
+pnpm 11.1.3, an install re-checks the versions already in `pnpm-lock.yaml`, so a
+lockfile resolved with the policy switched off fails in CI rather than installing
+quietly. Two errors name the same cause:
+
+- `ERR_PNPM_NO_MATURE_MATCHING_VERSION` — your `pnpm add` / `pnpm update` picked
+  a version published in the last day.
+- `ERR_PNPM_MINIMUM_RELEASE_AGE_VIOLATION` — the lockfile already carries one.
+
+Wait for the version to age, or pick an older one. If a fix genuinely cannot wait
+— a security patch published hours ago, say — add the exact version to
+`minimumReleaseAgeExclude` in `pnpm-workspace.yaml`, land it in the same PR as
+the lockfile, and explain in the PR why waiting was not an option. That entry is
+part of the diff on purpose: an exemption should be reviewed like any other
+change. The instructions above the setting cover the details.
+
+A Dependabot PR can trip this, since Dependabot picks a version the day it
+publishes and cannot wait or grant itself an exemption. Its PR simply stays red
+until the pick matures — re-run the checks then. Nothing needs fixing on the
+branch.
+
 ### Claude Code hooks
 
 This repo ships Claude Code PreToolUse hooks that enforce destructive-command, secret-file, DB-migration, branch-naming, and pre-PR quality rules. See [`.claude/README.md`](./.claude/README.md) for the full list and the escape-path policy.

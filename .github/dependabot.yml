@@ -4,6 +4,13 @@ version: 2
 # `pnpm audit` job in security.yml: the audit blocks merges on known CVEs;
 # Dependabot opens the PRs that resolve them.
 #
+# `minimumReleaseAge` in pnpm-workspace.yaml quarantines a version for its first
+# day, and a frozen install re-checks the lockfile against that policy — so a
+# Dependabot PR that picks a same-day release fails CI with
+# ERR_PNPM_MINIMUM_RELEASE_AGE_VIOLATION until the pick matures. Dependabot
+# cannot wait or exempt itself. Re-run the checks a day later; the branch itself
+# is fine. See CONTRIBUTING.md § Dependency updates.
+#
 # `directories` (plural) with globs covers every workspace package.json so
 # Dependabot edits the manifest that actually declares the dep, not just the
 # root. Glob set mirrors pnpm-workspace.yaml. The single update entry plus
