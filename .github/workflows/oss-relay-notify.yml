@@ -58,6 +58,8 @@ concurrency:
 jobs:
   notify:
     name: Wake the private relay
+    # arm64: actions/create-github-app-token is a JS action, and every other
+    # step is `gh api` / `jq` — architecture-neutral throughout.
     if: >-
       github.repository == 'Fabric-Pro/fabric-dev' &&
       ((github.event_name == 'pull_request_target' &&
@@ -68,7 +70,7 @@ jobs:
         startsWith(github.event.comment.body, '/relay ')) ||
        (github.event_name == 'workflow_run' &&
         github.event.workflow_run.event == 'pull_request'))
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 5
     environment: oss-relay-notifier
     steps:

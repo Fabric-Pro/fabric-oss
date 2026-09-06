@@ -42,7 +42,9 @@ concurrency:
 jobs:
   check:
     name: DCO check
-    runs-on: ubuntu-latest
+    # arm64: this job only runs `gh api` and `jq` — no checkout, no compiled
+    # binaries.
+    runs-on: ubuntu-24.04-arm
     # Trusted-automation allowlist (GitHub Apps cannot sign off). A skipped
     # job reports success, so this stays compatible with a required check.
     if: >-
