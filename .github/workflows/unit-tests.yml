@@ -3,35 +3,83 @@ name: Unit Tests
 # Runs Vitest unit tests on every PR to the upstream canonical branch
 # (`master` — see docs/deployment.md § Branch cutover checklist).
 #
-# Branch-protection note: this workflow always runs on PRs to the
-# canonical branch so the `unit-tests` status check is reported on every
-# PR. The expensive `vitest` job only runs when test-relevant files
-# actually change; for all other PRs the aggregate job returns success
-# immediately. This is what lets the check be safely required in branch
-# protection — a simple `on.paths:` filter would block merges on PRs that
-# don't touch source/tests (the check would never run at all).
+# WHERE THIS RUNS — the public mirror, not the private staging repo.
+# Every job below carries `github.repository != 'Fabric-Pro/fabric-dev'`,
+# the same guard shape knip.yml uses: it names the staging repo rather than
+# allow-listing one mirror, so any other copy of this tree still runs the
+# suite. Three reasons, in order of weight:
 #
-# Scoping: `pnpm turbo run test --filter=...[origin/<base>]` only executes
-# packages affected by the diff against the PR's base branch (and their
-# dependents) per Turbo's dependency graph. workflow_dispatch runs the
-# full sweep with no filter — use it to manually validate tooling
-# changes that don't show up as code diffs.
+#   * Cost. GitHub gives PUBLIC repositories unlimited free standard runners
+#     at 4 CPU / 16 GB. Larger runners are billed everywhere, and the private
+#     staging repo has no free tier at all — so running the identical commit
+#     in both repos paid twice for one verdict.
+#   * The relay gate treats a job skipped by a job-level `if:` as passing, so
+#     skipping here cannot wedge a staging PR. (A workflow filtered out by
+#     `on.paths` would instead leave a required check pending forever — do
+#     NOT "simplify" this guard into a trigger filter.)
+#   * The mirror's own `unit-tests` check is the authority: nothing lands
+#     publicly without it, and the two masters are kept ref-equal, so a green
+#     verdict there is a green verdict for the staging commit it came from.
+#
+# `workflow_dispatch` is exempt from the guard on every job, so the whole
+# pipeline — detector, planner, shards, aggregate — can still be exercised in
+# the staging repo before a change to this file lands.
+#
+# Branch-protection note: this workflow always runs on PRs to the canonical
+# branch so the `unit-tests` status check is reported on every PR. The
+# expensive shards only run when test-relevant files actually change and the
+# plan resolves to at least one package; for all other PRs the aggregate job
+# returns success immediately. That is what lets the check be safely required.
+#
+# Scoping: `turbo run test --filter=...[origin/<base>]` only executes packages
+# affected by the diff against the PR's base branch (and their dependents) per
+# Turbo's dependency graph. workflow_dispatch plans the full sweep with no
+# filter — use it to validate tooling changes that don't show up as code diffs.
+#
+# SHARDING. A 4-core runner must give each package four cores (see the tuning
+# history below), which means one Turbo task at a time — a serial sweep of the
+# whole monorepo. So the sweep is split across several free standard runners
+# instead: the `plan` job resolves the affected package set and buckets it,
+# and `vitest` fans out over that bucketing. Buckets, deterministic so a
+# re-run reproduces them exactly:
+#
+#   @repo/web       2 shards, via Vitest's own `--shard=N/2` file splitting
+#   @repo/api       1 shard
+#   @repo/temporal  1 shard
+#   everything else 1 "rest" shard, 2 when more than 15 packages land in it
+#
+# Those three are the heavy packages (~1758 test files between them, each
+# `vitest run`); the other ~33 are small. A bucket only exists when the plan
+# actually contains its package, so a PR touching one leaf package runs one
+# short shard rather than six.
+#
+# Vitest shard args reach the suite as Turbo pass-through (`-- --shard=1/2`),
+# and Turbo folds pass-through args into the task hash, so the two web shards
+# get distinct cache entries and cannot alias each other. The same hashing
+# means a shard carrying pass-through args also re-keys the `generate` task it
+# depends on and therefore misses the master-warmed Prisma entry: the two web
+# shards pay one Prisma generate each (~77s, in parallel with the other
+# shards). Measured, deliberate, and cheap against a serial sweep — do not
+# "fix" it by dropping the pass-through, which would make both web shards run
+# the whole suite.
 #
 # Security: this workflow does not interpolate any user-controlled fields
 # (PR title, body, branch name, commit message, etc.) into run: blocks.
-# Only github.event_name and numeric github.event.pull_request.number are
-# referenced in expressions, both of which are GitHub-controlled.
+# Only github.event_name, github.repository and the plan job's computed
+# matrix are referenced in expressions. The matrix is derived from the PR
+# checkout (Turbo reads the package graph the PR defines), so its values are
+# PR-controlled data; they reach the shell only through environment
+# variables, quoted, and become `--filter=` arguments, never shell code.
 #
-# Pushes to master run a cache-warming variant of the `vitest` job, not
-# the tests: GitHub only lets a run restore caches saved on its own
-# branch or on the base branch, so a PR's first run finds a warm pnpm
-# store and Turbo cache only if a run on master saved one. Nothing did
-# before this trigger existed, and the one-shot relay PRs in the public
-# repo never get a second push, so they paid for a cold pnpm install and
-# a cold Prisma generate on every run. Running the suite on master would
-# warm nothing extra — a PR only executes packages affected by its diff,
-# whose test hashes differ from master's by definition — so the master
-# run stops after `generate` and runs on the small runner.
+# Pushes to master run a cache-warming job, not the tests: GitHub only lets a
+# run restore caches saved on its own branch or on the base branch, so a PR's
+# first run finds a warm pnpm store and Turbo cache only if a run on master
+# saved one. Nothing did before this trigger existed, and the one-shot relay
+# PRs in the public repo never get a second push, so they paid for a cold pnpm
+# install and a cold Prisma generate on every run. Running the suite on master
+# would warm nothing extra — a PR only executes packages affected by its diff,
+# whose test hashes differ from master's by definition — so the master run
+# stops after `generate`.
 
 on:
   pull_request:
@@ -46,6 +94,8 @@ permissions:
   contents: read
   # dorny/paths-filter uses the Pulls API on PR events.
   pull-requests: read
+  # The aggregate job lists this run's jobs to name the shard that failed.
+  actions: read
 
 concurrency:
   group: unit-tests-${{ github.event.pull_request.number || github.ref }}
@@ -62,8 +112,12 @@ concurrency:
 jobs:
   changes:
     name: Detect changed paths
-    # Not needed for the cache-warming run on master (see header).
-    if: github.event_name != 'push'
+    # Not needed for the cache-warming run on master (see header), and not
+    # run in the staging repo at all except on workflow_dispatch.
+    if: >-
+      github.event_name != 'push' &&
+      (github.repository != 'Fabric-Pro/fabric-dev' ||
+       github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest
     outputs:
       code: ${{ steps.filter.outputs.code }}
@@ -107,89 +161,244 @@ jobs:
               - 'packages/database/prisma/schema.prisma'
               - '.github/workflows/unit-tests.yml'
 
-  vitest:
-    name: ${{ github.event_name == 'push' && 'Warm caches' || 'Vitest' }}
+  # Resolves the set of packages whose `test` task Turbo would actually run,
+  # and buckets it into shards (see SHARDING in the header).
+  #
+  # This job installs nothing: `pnpm dlx turbo@<pinned>` fetches the CLI into
+  # the pnpm store and Turbo reads the workspace graph straight from the
+  # package.json files on disk, so the plan is ready in well under a minute
+  # instead of behind a full `pnpm install`. `--dry-run=json` lists every task
+  # in scope including the ones with no script, which surface as the literal
+  # command `<NONEXISTENT>` and are dropped below.
+  plan:
+    name: Plan shards
     needs: changes
-    # Always run on workflow_dispatch (full sweep). On PRs, only run when
-    # test-relevant paths changed. On push to master, always run — as the
-    # cache-warming variant (see header); `!cancelled()` is what lets it
-    # run there, since the `changes` job it needs is skipped on push.
     if: >-
-      !cancelled() && (
-        github.event_name == 'push' ||
-        github.event_name == 'workflow_dispatch' ||
-        needs.changes.outputs.code == 'true'
-      )
-    # Larger runner: this monorepo runs vitest across ~27 packages in
-    # parallel via turbo. On the standard 4-core runner the cold-cache
-    # TS transform routinely starves CPU and times tests out. 8-core
-    # halved wall-clock time and removed the parallel-load flakes; 16-core
-    # halved it again, which is what the note below is about.
+      (github.repository != 'Fabric-Pro/fabric-dev' ||
+       github.event_name == 'workflow_dispatch') &&
+      (github.event_name == 'workflow_dispatch' ||
+       needs.changes.outputs.code == 'true')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      has_shards: ${{ steps.plan.outputs.has_shards }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # Full history so Turbo's `[origin/<base>]` filter can resolve the
+          # merge base and compute affected packages. With a shallow checkout
+          # the filter silently falls back to running everything.
+          fetch-depth: 0
+
+      - name: Setup pnpm
+        # Version is read from root package.json's `packageManager` field.
+        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6
+        env:
+          # The action bootstraps pnpm with `npm ci`, whose audit request has stalled for
+          # up to npm's 5-minute fetch timeout on hosted runners before `pnpm self-update`
+          # switches to the packageManager pin. The audit adds nothing here: skip it.
+          npm_config_audit: "false"
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+          # No `cache: 'pnpm'` on purpose: this job never installs, so it has
+          # no store to save, and a save here would race the shards' own.
+
+      # BASE_REF is `github.base_ref` (the PR's target branch name) and is
+      # empty on non-PR events, which the EVENT_NAME check guards. The
+      # branching is done in shell rather than in a `${{ }}` template so the
+      # run: block contains no expression interpolation.
+      - name: Compute shard matrix
+        id: plan
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          set -euo pipefail
+
+          # Pin the planner to the exact Turbo the shards will install: the
+          # version pnpm resolved for the root importer in the lockfile, not
+          # the caret floor in package.json, which a lockfile refresh can
+          # leave behind. Fail loudly if the lockfile shape ever changes so
+          # the planner and the shards can never drift apart silently.
+          TURBO_VERSION="$(node -e '
+            const lock = require("node:fs").readFileSync("pnpm-lock.yaml", "utf8");
+            const m = lock.match(/\n {6}turbo:\n {8}specifier: [^\n]+\n {8}version: ([0-9][^\s(]*)/);
+            if (!m) { console.error("turbo version not found in pnpm-lock.yaml importers"); process.exit(1); }
+            process.stdout.write(m[1]);
+          ')"
+          echo "Planning with turbo@${TURBO_VERSION}"
+
+          if [[ "$EVENT_NAME" == "pull_request" ]]; then
+            pnpm dlx "turbo@${TURBO_VERSION}" run test \
+              --filter="...[origin/${BASE_REF}]" --dry-run=json > turbo-plan.json
+          else
+            pnpm dlx "turbo@${TURBO_VERSION}" run test --dry-run=json > turbo-plan.json
+          fi
+
+          node <<'NODE'
+          const fs = require("node:fs");
+
+          // Packages Turbo would actually execute: `test` tasks that have a
+          // real script. Everything else in the dry run is graph padding.
+          const plan = JSON.parse(fs.readFileSync("turbo-plan.json", "utf8"));
+          const packages = [
+            ...new Set(
+              (plan.tasks || [])
+                .filter(
+                  (t) =>
+                    t.task === "test" &&
+                    t.command &&
+                    t.command !== "<NONEXISTENT>",
+                )
+                .map((t) => t.package),
+            ),
+          ].sort();
+
+          // Heavy packages get dedicated runners; @repo/web is split further
+          // by Vitest's own file sharding. Keep this table and the SHARDING
+          // note in the header in step.
+          const HEAVY = [
+            ["@repo/web", 2],
+            ["@repo/api", 1],
+            ["@repo/temporal", 1],
+          ];
+          // Above this many small packages the rest bucket is split in two.
+          const REST_SPLIT_ABOVE = 15;
+
+          const shards = [];
+          for (const [pkg, count] of HEAVY) {
+            if (!packages.includes(pkg)) continue;
+            if (count === 1) {
+              shards.push({ name: pkg, packages: pkg, passthrough: "" });
+              continue;
+            }
+            for (let i = 1; i <= count; i++) {
+              shards.push({
+                name: `${pkg} ${i}/${count}`,
+                packages: pkg,
+                passthrough: `--shard=${i}/${count}`,
+              });
+            }
+          }
+
+          const heavyNames = HEAVY.map(([pkg]) => pkg);
+          const rest = packages.filter((p) => !heavyNames.includes(p));
+          const chunks =
+            rest.length === 0
+              ? []
+              : rest.length > REST_SPLIT_ABOVE
+                ? [
+                    rest.slice(0, Math.ceil(rest.length / 2)),
+                    rest.slice(Math.ceil(rest.length / 2)),
+                  ]
+                : [rest];
+          chunks.forEach((chunk, i) => {
+            shards.push({
+              name:
+                chunks.length > 1 ? `rest ${i + 1}/${chunks.length}` : "rest",
+              packages: chunk.join(" "),
+              passthrough: "",
+            });
+          });
+
+          // The two cross-cutting checks (tenant isolation, Prisma zod
+          // barrel) are repo-wide, not per-package, so exactly one shard
+          // carries them. The rest shard when there is one — it is the
+          // cheapest — otherwise the first shard in the plan.
+          const primary = Math.max(
+            shards.findIndex((s) => s.name.startsWith("rest")),
+            0,
+          );
+          shards.forEach((s, i) => {
+            s.checks = i === primary ? "true" : "false";
+          });
+
+          for (const s of shards) {
+            console.log(
+              `shard ${s.name}: ${s.packages}${s.passthrough ? ` ${s.passthrough}` : ""}${s.checks === "true" ? " (+repo-wide checks)" : ""}`,
+            );
+          }
+          if (shards.length === 0) {
+            console.log(
+              "No affected package has a test script — nothing to shard.",
+            );
+          }
+
+          fs.appendFileSync(
+            process.env.GITHUB_OUTPUT,
+            `matrix=${JSON.stringify({ include: shards })}\n` +
+              `has_shards=${shards.length > 0 ? "true" : "false"}\n`,
+          );
+          NODE
+
+  vitest:
+    name: Vitest (${{ matrix.name }})
+    needs: plan
+    # No `always()`/`!cancelled()`: the implicit success() on `needs` is what
+    # keeps the shards from starting when the plan failed, and the plan is
+    # itself skipped on push and on PRs with no code changes.
+    if: >-
+      (github.repository != 'Fabric-Pro/fabric-dev' ||
+       github.event_name == 'workflow_dispatch') &&
+      needs.plan.outputs.has_shards == 'true'
+    strategy:
+      # Every shard reports independently; one red package must not hide the
+      # state of the others, which is the whole point of splitting them up.
+      fail-fast: false
+      # No max-parallel: shards are free on a public repo and the wall clock
+      # is the entire reason this job is a matrix.
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
     #
-    # 8-core -> 16-core, measured against a workflow_dispatch control on
-    # master (`Run unit tests` = 616s, job 670s):
+    # RUNNER AND CONCURRENCY — settled, please read before changing either.
     #
-    #   step 616s -> 365s (-41%), job 670s -> 414s (-38%), 36/36 tasks clean.
-    #   apps/web 530s -> 221s, @repo/api 440s -> 207s,
-    #   @repo/temporal 400s -> 200s — all three roughly halve and end up
-    #   balanced, which is what you expect when the constraint was CPU.
+    # This monorepo's per-test timeouts were calibrated with roughly four
+    # cores per package. On the free 4-core standard runner that means ONE
+    # Turbo task at a time; TURBO_CONCURRENCY 2 would halve each package's
+    # allocation and start tripping the same timeouts documented below.
+    # Parallelism comes from the shard matrix instead, where every shard is
+    # its own 4-core box.
     #
-    # Cost: 16-core is $0.042/min against $0.022, and billing rounds each job
-    # up to a whole minute, so 670s (12 min, $0.264) becomes 414s (7 min,
-    # $0.294) — about +$0.03 per run. It would have been CHEAPER as well as
-    # faster below 360s; the ~49s of setup either side of the test step is
-    # what keeps it in the 7th minute.
+    # The measurements that pinned "four cores per package", from when this
+    # job still ran the whole sweep on one large runner:
     #
-    # This job is the binding constraint on PR wall clock — it finished last
-    # on 5 of 5 sampled PRs — and it is now SATURATED on 8 cores. Three heavy
-    # packages (apps/web, @repo/api, @repo/temporal, ~1758 test files between
-    # them) run concurrently under `--concurrency=4` below, so cutting any one
-    # phase's cost just hands the freed CPU to the other two and the step
-    # lands in the same place. Measured against a workflow_dispatch control on
-    # master (`Run unit tests` = 616s), 2026-08-19:
+    #   8-core -> 16-core, against a workflow_dispatch control on master
+    #   (`Run unit tests` = 616s, job 670s):
+    #     step 616s -> 365s (-41%), job 670s -> 414s (-38%), 36/36 clean.
+    #     apps/web 530s -> 221s, @repo/api 440s -> 207s,
+    #     @repo/temporal 400s -> 200s — all three roughly halve and end up
+    #     balanced, which is what you expect when the constraint was CPU.
     #
-    #   vitest maxWorkers 1 -> "50%"   645s -> 617s   parallelism 0.9x -> 3.5x,
-    #                                                 no wall-clock gain
-    #   node/jsdom env split           616s -> 621s   `environment` fell
-    #                                                 938s -> 686s as predicted,
-    #                                                 wall clock did not move
-    #   pool: "threads"                249s -> 415s   local; jsdom realm per
-    #                                                 thread, 67% slower
-    #   deps.optimizer                 -21s local     24 files failed, breaks
-    #                                                 module mocking
-    #   ubuntu-16core                  n/a            label not provisioned at
-    #                                                 the time; it was created
-    #                                                 later and carried this
-    #                                                 job until the move to
-    #                                                 its arm64 twin (below)
-    #   --concurrency 4 -> 6 and 12    aborted        @repo/rag times out at
-    #                                                 15s under the extra load
-    #                                                 and turbo kills the run,
-    #                                                 at BOTH values
+    #   --concurrency 4 -> 6 and 12    aborted    @repo/rag times out at 15s
+    #                                             under the extra load and
+    #                                             turbo kills the run, at
+    #                                             BOTH values. The control at
+    #                                             4 completes 36/36; 6 and 12
+    #                                             stop at 25/36 and 29/36.
     #
-    # That last one matters for anyone eyeing the ~90s gap between the step
-    # (~620s) and the largest package (~530s) and assuming the ~33 small tasks
-    # are queueing behind one free slot. They may well be, but the box has no
-    # headroom to let them through: the three heavy packages already put ~15
-    # vitest workers on 8 cores, so 4 is not a conservative cap, it is the
-    # ceiling. The control at 4 completes 36/36; 6 and 12 both stop at 25/36
-    # and 29/36 respectively.
+    # So 4 was never a conservative cap, it was the ceiling, and starving a
+    # package below four cores is what makes the suite flaky rather than slow.
     #
-    # Turbo caching cannot help either, and this is structural rather than a
-    # cold cache: PR runs DO restore a master-scoped entry and still report
-    # `0 cached` every time, because `--filter=...[origin/<base>]` scopes the
-    # run to AFFECTED packages and affected means hash-changed by definition.
-    # A `36 cached >>> FULL TURBO` replay only happens re-running an identical
-    # SHA. (Dependency source changes do propagate into dependents' hashes —
-    # verified by hashing @repo/api#test before and after a one-line edit to
+    # Also settled, and not worth another round: vitest maxWorkers 1 -> "50%"
+    # (645s -> 617s, parallelism 0.9x -> 3.5x, no wall-clock gain); a
+    # node/jsdom environment split (616s -> 621s; `environment` itself fell
+    # 938s -> 686s and the wall clock did not move); pool: "threads" (249s ->
+    # 415s locally, a jsdom realm per thread, 67% slower); deps.optimizer (-21s
+    # locally, 24 files failed, breaks module mocking).
+    #
+    # Turbo caching cannot help a PR either, and this is structural rather
+    # than a cold cache: PR runs DO restore a master-scoped entry and still
+    # report `0 cached`, because the filter scopes the run to AFFECTED
+    # packages and affected means hash-changed by definition. A `36 cached >>>
+    # FULL TURBO` replay only happens re-running an identical SHA. (Dependency
+    # source changes do propagate into dependents' hashes — verified by
+    # hashing @repo/api#test before and after a one-line edit to
     # packages/database — so there is no false-green hazard here either.)
     #
-    # Two levers cost money rather than config: a bigger runner (needs an org
-    # admin to provision the label), or sharding this job across a matrix
-    # (~420s instead of ~680s, at roughly +28% on this workflow's runner
-    # spend).
-    #
-    # The ONE config-only lever with a real payoff is `isolate: false` on
+    # The one config-only lever with a real payoff is `isolate: false` on
     # apps/web. Measured on the full suite: 268s -> 133s, a clean 2x, because
     # `setup` collapses 584s -> 39s and `import` 1840s -> 1033s when 766 files
     # stop each paying for their own fork. It is not landable as-is — it fails
@@ -223,41 +432,17 @@ jobs:
     # not a list — it is the suite's general reliance on per-file process
     # isolation. Making it hermetic means auditing all ~766 files.
     #
-    # Runner labels, checked empirically because the REST API needs admin:org to
-    # list them: at the time this org had exactly `ubuntu-latest` and
-    # `ubuntu-8core`. A probe matrix over ubuntu-4core / 16core / 32core and the
-    # GitHub default-style ubuntu-latest-{4,8,16}-cores left every one of them
-    # queued and unassigned for 4.5 minutes while the two real labels finished
-    # in seconds. `ubuntu-16core` has since been created (the 8-core -> 16-core
-    # measurements above ran on it), and the private repo now runs this job on
-    # `ubuntu-16core-arm`: the same 16 cores / 64 GB on arm64 at about 60% of
-    # the x64 per-minute rate, with every native module in the lockfile
-    # shipping a linux-arm64 build. Anything bigger, or any new label, still
-    # needs an org admin to create it first, and a label that does not exist
-    # leaves the job queued for 24 hours rather than failing.
-    #
     # @repo/temporal was measured the same way and is also NOT a candidate —
     # `--no-isolate` fails 8 files / 69 tests there.
     #
-    # Please do not spend another round on worker counts, pools, environments
-    # or cache warming; those are settled above.
-    #
-    # The cache-warming run on master only installs and generates, so it
-    # takes the small runner.
-    #
-    # The paid 16-core runner is only used in the private staging repo,
-    # where developers wait on this check. The public repo runs the same
-    # PR job on the standard runner: GitHub provides it free and unlimited
-    # to public repositories at 4 CPU / 16 GB, whereas larger runners are
-    # billed even there, and the relayed re-run on ubuntu-16core was
-    # costing as much as the staging run it duplicated. A 4-core box under
-    # TURBO_CONCURRENCY=1 gives each package the same four cores it gets
-    # from 16 cores at concurrency 4, so per-test timeouts hold; only the
-    # wall clock grows, roughly by the number of heavy packages in scope,
-    # and that lands on the relay wait rather than on a developer. The
-    # timeout is widened accordingly.
-    runs-on: ${{ github.event_name == 'push' && 'ubuntu-latest' || (github.repository == 'Fabric-Pro/fabric-dev' && 'ubuntu-16core-arm' || 'ubuntu-latest') }}
-    timeout-minutes: ${{ github.repository == 'Fabric-Pro/fabric-dev' && 30 || 90 }}
+    # Runner labels: larger runners are billed on public repositories too, and
+    # a label that does not exist leaves a job queued for 24 hours rather than
+    # failing, so this job stays on `ubuntu-latest` — free and unlimited here
+    # at 4 CPU / 16 GB. The private staging repo used to run the same sweep on
+    # a paid 16-core arm64 label; it no longer runs this workflow at all (see
+    # the header), so no job in this file needs a provisioned label.
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
     env:
       # Placeholder so @repo/database's prisma singleton, which throws at
       # module load when DATABASE_URL is unset, can initialize. Tests that
@@ -273,10 +458,10 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          # Full history so Turbo's `[origin/<base>]` filter can resolve
-          # the merge base and compute affected packages. With shallow
-          # checkout the filter falls back to running everything.
-          fetch-depth: 0
+          # Shallow is enough here: the `plan` job already resolved the
+          # affected set against the merge base, and a shard addresses its
+          # packages by name, so nothing in this job walks history.
+          fetch-depth: 1
 
       - name: Setup pnpm
         # Version is read from root package.json's `packageManager` field.
@@ -304,14 +489,21 @@ jobs:
       # deps, lockfile, task env) — the same semantics local `turbo test`
       # already relies on.
       #
+      # The key is deliberately NOT shard-scoped. Turbo cache entries are
+      # keyed per task hash, so every shard restoring the same snapshot gets
+      # exactly the entries that apply to it and ignores the rest; what the
+      # shards want from this cache is the `generate` entry master warmed.
+      # Saving is the part that overlaps — the first shard to finish reserves
+      # the key and the others log "Unable to reserve cache with key …" and
+      # move on. That warning is expected, not a failure.
+      #
       # The key carries a `vitest` segment because the SHA alone is not
       # unique across workflows: in the public mirror release.yml saves its
       # own `.turbo` under `<os>-turbo-<sha>` on the same push to master,
       # and a cache key can be reserved once — the first warming run on
-      # master lost that race ("Unable to reserve cache with key … another
-      # job may be creating this cache") and master kept release.yml's
-      # near-empty entry instead of the generate warm. type-check.yml
-      # namespaces its key the same way.
+      # master lost that race and master kept release.yml's near-empty entry
+      # instead of the generate warm. type-check.yml namespaces its key the
+      # same way.
       #
       # No generic `<os>-turbo-` fallback: GitHub tries every restore key
       # in the PR's own scope before it looks at master, so a fallback that
@@ -329,10 +521,12 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       # Hard gate: fail PRs that introduce Prisma queries without explicit
-      # organizationId coercion (tenant-isolation foot-gun). Runs on every PR
-      # regardless of which packages changed — it is a cross-cutting security check.
+      # organizationId coercion (tenant-isolation foot-gun). It is a
+      # cross-cutting security check rather than a per-package one, so it runs
+      # on exactly one shard (see the planner's `checks` flag) — running it on
+      # all of them would just repeat the same verdict.
       - name: Tenant isolation check
-        if: github.event_name != 'push'
+        if: matrix.checks == 'true'
         # Invoked directly (not via an npm script) to keep root package.json
         # unchanged — adding a script entry trips the security workflow's
         # `deps changed` path filter and forces a full pnpm audit run.
@@ -349,11 +543,9 @@ jobs:
       # or restores the repaired barrel from the turbo cache, before any
       # suite, including the barrel's own integrity test, reads it. So run
       # the generate task first and fail if the result differs from what is
-      # committed. The `test` run replays it from cache (same job env, so
-      # the same task hash), so this costs no extra generation. On push to
-      # master this step is also the cache warm: it is the last thing the
-      # run does before the Turbo cache is saved.
+      # committed. Also repo-wide, so also on one shard only.
       - name: Committed Prisma zod barrel matches the generate pipeline
+        if: matrix.checks == 'true'
         run: |
           pnpm turbo run generate --filter=@repo/database
           if ! git diff --exit-code --stat -- packages/database/prisma/zod; then
@@ -363,52 +555,123 @@ jobs:
 
       # `^generate` runs as a `test` task dependency in turbo.json, so
       # @repo/database (Prisma client + Zod schemas) is generated before any
-      # package's tests execute; the step above already warmed it.
+      # package's tests execute.
       #
-      # On PRs we filter to packages affected by the diff vs the PR's base
-      # branch (whatever the PR is targeting); on workflow_dispatch we run
-      # everything by passing no filter. The branching is done in shell
-      # rather than in a `${{ }}` template so the run: block contains no
-      # expression interpolation. BASE_REF is `github.base_ref` (PR target
-      # branch name, e.g. `master`) and is empty on non-PR
-      # events — which we guard via the EVENT_NAME check.
+      # The shard's packages arrive as a space-separated list and become one
+      # explicit `--filter=<pkg>` per package: the affected set was already
+      # resolved by the `plan` job, so re-deriving it here from the merge base
+      # would be both redundant and a second chance to disagree with the plan.
+      # SHARD_PASSTHROUGH is a single Vitest flag or empty, and an empty one
+      # must not be forwarded — `-- ""` reaches vitest as an empty argument.
       - name: Run unit tests
-        if: github.event_name != 'push'
         env:
-          EVENT_NAME: ${{ github.event_name }}
-          BASE_REF: ${{ github.base_ref }}
-          # Parallel turbo tasks. 4 on the 16-core runner gives each package
-          # ~4 cores; the default would let 8+ heavy vitest workers compete
-          # and starve each other on cold-cache TS transform. The 4-core
-          # standard runner in the public repo runs one package at a time
-          # for the same per-package allocation (see runs-on above).
-          TURBO_CONCURRENCY: ${{ github.repository == 'Fabric-Pro/fabric-dev' && '4' || '1' }}
+          SHARD_PACKAGES: ${{ matrix.packages }}
+          SHARD_PASSTHROUGH: ${{ matrix.passthrough }}
+          # One Turbo task at a time: on a 4-core runner that is what gives
+          # each package the four cores its per-test timeouts were calibrated
+          # for (see the note above runs-on).
+          TURBO_CONCURRENCY: '1'
         run: |
-          if [[ "$EVENT_NAME" == "pull_request" ]]; then
-            pnpm turbo run test --concurrency="$TURBO_CONCURRENCY" --filter="...[origin/${BASE_REF}]"
+          set -euo pipefail
+          read -r -a shard_packages <<< "$SHARD_PACKAGES"
+          filters=()
+          for pkg in "${shard_packages[@]}"; do
+            filters+=("--filter=$pkg")
+          done
+          if [[ -n "$SHARD_PASSTHROUGH" ]]; then
+            pnpm turbo run test --concurrency="$TURBO_CONCURRENCY" "${filters[@]}" -- "$SHARD_PASSTHROUGH"
           else
-            pnpm turbo run test --concurrency="$TURBO_CONCURRENCY"
+            pnpm turbo run test --concurrency="$TURBO_CONCURRENCY" "${filters[@]}"
+          fi
+
+  # Seeds the caches a relay PR's one and only run restores (see header).
+  # Installs and generates; runs no tests, so it takes minutes rather than
+  # the sweep's wall clock. Not run in the staging repo: nothing there
+  # restores these caches any more. workflow_dispatch needs no exemption
+  # here — a dispatch is never a push, so this job is not part of the manual
+  # validation path.
+  warm-caches:
+    name: Warm caches
+    if: >-
+      github.event_name == 'push' &&
+      github.repository != 'Fabric-Pro/fabric-dev'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      # Same placeholders as the shards, and job-level for the same reason:
+      # both are in turbo.json's `globalEnv`, so a mismatch here would make
+      # the warmed `generate` entry unreachable from the shards.
+      DATABASE_URL: 'postgresql://test:test@localhost:5432/test'
+      DIRECT_URL: 'postgresql://test:test@localhost:5432/test'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 1
+
+      - name: Setup pnpm
+        # Version is read from root package.json's `packageManager` field.
+        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6
+        env:
+          # The action bootstraps pnpm with `npm ci`, whose audit request has stalled for
+          # up to npm's 5-minute fetch timeout on hosted runners before `pnpm self-update`
+          # switches to the packageManager pin. The audit adds nothing here: skip it.
+          npm_config_audit: "false"
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+
+      - name: Restore Turbo cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .turbo
+          key: ${{ runner.os }}-turbo-vitest-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-turbo-vitest-
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # The same generate + barrel comparison the primary shard runs on PRs.
+      # Here it doubles as the cache warm: it is the last thing this run does
+      # before the Turbo cache is saved.
+      - name: Committed Prisma zod barrel matches the generate pipeline
+        run: |
+          pnpm turbo run generate --filter=@repo/database
+          if ! git diff --exit-code --stat -- packages/database/prisma/zod; then
+            echo "::error::packages/database/prisma/zod is not the output of 'pnpm --filter @repo/database generate'. Run it and commit the result; never commit raw 'prisma generate' output."
+            exit 1
           fi
 
   # Stable status check name reported on every PR to the canonical branch
   # (`master`). Configure this as the required check in branch protection —
-  # not the `vitest` job, which is conditionally skipped on PRs that don't
-  # touch test-relevant files.
+  # not the `vitest` shards, whose names and count depend on what the PR
+  # touched, and which are conditionally skipped altogether.
   unit-tests:
     name: unit-tests
-    needs: [changes, vitest]
-    # Not on push: the master run warms caches and runs no tests, so it
-    # has no verdict to report (and `changes` is skipped there, which the
-    # fail-closed check below would otherwise flag).
-    if: always() && github.event_name != 'push'
+    needs: [changes, plan, vitest]
+    # Not on push: the master run warms caches and runs no tests, so it has
+    # no verdict to report (and `changes` is skipped there, which the
+    # fail-closed check below would otherwise flag). Skipped entirely in the
+    # staging repo, where a skipped job is what the relay gate expects.
+    if: >-
+      always() && github.event_name != 'push' &&
+      (github.repository != 'Fabric-Pro/fabric-dev' ||
+       github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest
     env:
       EVENT_NAME: ${{ github.event_name }}
       CHANGES_RESULT: ${{ needs.changes.result }}
       CODE_CHANGED: ${{ needs.changes.outputs.code }}
+      PLAN_RESULT: ${{ needs.plan.result }}
+      HAS_SHARDS: ${{ needs.plan.outputs.has_shards }}
       VITEST_RESULT: ${{ needs.vitest.result }}
     steps:
       - name: Aggregate
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           # The path-filter job is a prerequisite. If it failed (or was
           # cancelled), CODE_CHANGED is empty and we can't trust a "no
@@ -418,21 +681,47 @@ jobs:
             exit 1
           fi
 
-          # On PRs: vitest is required only when test-relevant paths changed.
-          # On workflow_dispatch: vitest always runs, propagate its result.
+          # On PRs: tests are required only when test-relevant paths changed.
+          # On workflow_dispatch: the full sweep is always planned.
           if [[ "$EVENT_NAME" == "pull_request" && "$CODE_CHANGED" != "true" ]]; then
             echo "No test-relevant changes — unit tests not required."
             exit 0
           fi
 
+          # Same fail-closed reasoning: without a plan there is no shard set,
+          # so a green verdict here would mean nothing.
+          if [[ "$PLAN_RESULT" != "success" ]]; then
+            echo "::error::Shard planning did not succeed (result: $PLAN_RESULT). Cannot determine which unit tests are required."
+            exit 1
+          fi
+
+          # A code change can still leave no package with a test script in
+          # scope — a workflow edit, or a leaf package that has no suite.
+          if [[ "$HAS_SHARDS" != "true" ]]; then
+            echo "No affected package has unit tests — nothing to run."
+            exit 0
+          fi
+
+          if [[ "$VITEST_RESULT" == "success" ]]; then
+            echo "Unit tests passed on every shard."
+            exit 0
+          fi
+
           if [[ "$VITEST_RESULT" == "skipped" ]]; then
-            echo "::error::Test-relevant changes detected but the vitest job did not run."
+            echo "::error::Shards were planned but the vitest matrix did not run."
             exit 1
           fi
 
-          if [[ "$VITEST_RESULT" != "success" ]]; then
-            echo "::error::Unit tests failed (vitest job result: $VITEST_RESULT)."
-            exit 1
+          # Name the shard rather than making a reader open the run graph.
+          # `|| true` because a summary is not worth failing a report over:
+          # the verdict below is already decided.
+          FAILED="$(gh api \
+            "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/attempts/${GITHUB_RUN_ATTEMPT}/jobs?per_page=100" \
+            --jq '[.jobs[] | select(.conclusion == "failure" or .conclusion == "cancelled") | select(.name | startswith("Vitest (")) | .name] | join(", ")' \
+            || true)"
+          if [[ -n "$FAILED" ]]; then
+            echo "::error::Unit tests failed (matrix result: $VITEST_RESULT) — $FAILED"
+          else
+            echo "::error::Unit tests failed (matrix result: $VITEST_RESULT). See the Vitest shard jobs in this run."
           fi
-
-          echo "Unit tests passed."
+          exit 1
