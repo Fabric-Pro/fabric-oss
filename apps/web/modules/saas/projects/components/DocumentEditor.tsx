@@ -102,6 +102,10 @@ import {
 	repairMarkdownDocument,
 	resetScrollTracking,
 } from "../lib/diff-utils";
+import {
+	isDocumentGenerationStale,
+	resolveGenerationTimestamp,
+} from "../lib/document-generation-timestamp";
 import { getEditorMarkdownForSave } from "../lib/editor-markdown-save";
 import { extractMentionIdsFromHtml } from "../lib/extract-mention-ids";
 import { uploadImage } from "../lib/image-upload-utils";
@@ -122,6 +126,7 @@ import { DiffViewModeToggle } from "./DiffViewModeToggle";
 import { DocumentAssetsPanel } from "./DocumentAssetFrame";
 import { DocumentDecisionPrecheckBanner } from "./DocumentDecisionPrecheckBanner";
 import { DocumentGenerationFailedNotice } from "./DocumentGenerationFailedNotice";
+import { DocumentGenerationProgress } from "./DocumentGenerationProgress";
 import { DocumentTocRail } from "./DocumentTocRail";
 import { DocumentVersionHistory } from "./DocumentVersionHistory";
 import { useUpdateDocumentWithContext } from "./documents/useUpdateDocumentWithContext";
@@ -396,10 +401,38 @@ export function DocumentEditor({
 			input: { id: documentId, projectId, organizationId },
 		}),
 		enabled: orgContextReady,
-		refetchInterval: isRegenerating ? 3000 : false, // Poll every 3 seconds when regenerating
+		// Poll when actively regenerating OR when document status is GENERATING.
+		// Floor cap: stop polling if generation runs longer than 10 minutes without completion.
+		refetchInterval: (query) => {
+			const doc = query.state.data?.document;
+			if (!isRegenerating && doc?.status !== "GENERATING") {
+				return false;
+			}
+			const startedAt = resolveGenerationTimestamp(
+				doc?.generationStartedAt,
+				doc?.updatedAt,
+			);
+			if (Date.now() - startedAt > 10 * 60 * 1000) {
+				return false;
+			}
+			return 3000;
+		},
 		// "always" bypasses the 60s default staleTime so a user who tabs
 		// away mid-generation always sees the completed document on return.
-		refetchOnWindowFocus: isRegenerating ? "always" : false,
+		refetchOnWindowFocus: (query) => {
+			const doc = query.state.data?.document;
+			if (!isRegenerating && doc?.status !== "GENERATING") {
+				return false;
+			}
+			const startedAt = resolveGenerationTimestamp(
+				doc?.generationStartedAt,
+				doc?.updatedAt,
+			);
+			if (Date.now() - startedAt > 10 * 60 * 1000) {
+				return false;
+			}
+			return "always";
+		},
 	});
 
 	const document = documentData?.document;
@@ -812,6 +845,9 @@ interface DocumentEditorInnerProps {
 		version?: number;
 		status?: string;
 		generationError?: string | null;
+		generationProgress?: number;
+		generationStartedAt?: Date | string | null;
+		updatedAt?: Date | string | null;
 		// Async decision pre-check result + the content hash it was judged
 		// against, surfaced by the editor's inline contradiction banner.
 		decisionPrecheck?: unknown;
@@ -1015,6 +1051,11 @@ function DocumentEditorInner({
 	// Group E — local drawer state. Group F's `<CopilotHistoryDrawer>`
 	// reads it; the header flips it open.
 	const [historyDrawerOpen, setHistoryDrawerOpen] = useState(false);
+	const [isProgressDismissed, setIsProgressDismissed] = useState(false);
+
+	useEffect(() => {
+		setIsProgressDismissed(false);
+	}, [documentId]);
 	// `documentRefKind` is read by `<CopilotSidebarHeader>` (Group E),
 	// `<CopilotHistoryDrawer>` (Group F), and will be consumed by
 	// `appendTurnForDocument` in Group H.
@@ -2485,6 +2526,23 @@ function DocumentEditorInner({
 			// CRITICAL: Also set baselineRef so diff highlighting works correctly
 			// Without this, the first streaming would see an empty baseline and show all content as additions
 			baselineRef.current = markdownContent;
+
+			// If TipTap editor was initialized empty (because document was generating),
+			// populate the editor canvas immediately once generated content arrives.
+			if (
+				editorMarkdown !== null &&
+				editorMarkdown.trim().length === 0 &&
+				!enableCollaboration
+			) {
+				try {
+					applyProgrammaticContent(
+						editor,
+						fromMarkdown(markdownContent),
+					);
+				} catch {
+					/* leave canvas as-is on programmatic update error */
+				}
+			}
 		}
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [editor, document?.content]);
@@ -3638,6 +3696,7 @@ function DocumentEditorInner({
 		// mutation resolves and (re)arms it — otherwise the FAILED watcher
 		// could momentarily see a stale ackAt from before this retry began.
 		regenerationAckAtRef.current = null;
+		setIsProgressDismissed(false);
 		setIsRegenerating(true);
 
 		try {
@@ -5250,27 +5309,97 @@ function DocumentEditorInner({
 									/>
 								)}
 
-								{/* Regeneration Loading Overlay */}
-								{isRegenerating && !showConfirmDialog && (
-									<div className="fixed inset-0 bg-background/80 backdrop-blur-sm z-40 flex items-center justify-center">
-										<div className="bg-card border border-border rounded-lg p-8 shadow-2xl max-w-md">
-											<div className="flex flex-col items-center gap-4">
-												<Loader2 className="h-12 w-12 animate-spin text-primary" />
-												<div className="text-center">
-													<h3 className="text-lg font-semibold mb-2">
-														Regenerating Document
-													</h3>
-													<p className="text-sm text-muted-foreground">
-														This will take a few
-														minutes. Please wait
-														while we generate your
-														document...
-													</p>
-												</div>
+								{/* Non-blocking banner when generation progress overlay is dismissed */}
+								{isProgressDismissed &&
+									document?.status === "GENERATING" &&
+									(!document.content ||
+										document.content.trim().length ===
+											0) && (
+										<div className="mx-6 mt-4 flex items-center justify-between rounded-lg border border-primary/20 bg-primary/5 px-4 py-2.5 text-xs text-primary">
+											<div className="flex items-center gap-2">
+												<Loader2 className="h-3.5 w-3.5 animate-spin" />
+												<span>
+													Document generation in
+													progress...
+												</span>
+											</div>
+											<div className="flex items-center gap-2">
+												<Button
+													size="sm"
+													variant="ghost"
+													className="h-6 px-2 text-xs text-primary hover:text-primary"
+													onClick={() =>
+														setIsProgressDismissed(
+															false,
+														)
+													}
+												>
+													Show Progress
+												</Button>
+												{(() => {
+													const isStale =
+														isDocumentGenerationStale(
+															document?.generationStartedAt,
+															document?.updatedAt,
+														);
+													if (!isStale) {
+														return null;
+													}
+													return (
+														<Button
+															size="sm"
+															variant="outline"
+															className="h-6 px-2 text-xs border-primary/30"
+															disabled={
+																isRegenerating
+															}
+															onClick={
+																handleDirectRegenerate
+															}
+														>
+															Retry
+														</Button>
+													);
+												})()}
 											</div>
 										</div>
-									</div>
-								)}
+									)}
+
+								{/* Generation & Regeneration Progress Overlay */}
+								{!isProgressDismissed &&
+									!showImportedRegenWarning &&
+									((isRegenerating && !showConfirmDialog) ||
+										(document?.status === "GENERATING" &&
+											(!document.content ||
+												document.content.trim()
+													.length === 0))) && (
+										<div className="fixed inset-0 bg-background/80 backdrop-blur-sm z-40 flex items-center justify-center p-4">
+											<DocumentGenerationProgress
+												status={
+													document?.status ||
+													"GENERATING"
+												}
+												progress={
+													document?.generationProgress ??
+													0
+												}
+												title={document?.title}
+												error={
+													document?.generationError
+												}
+												generationStartedAt={
+													document?.generationStartedAt
+												}
+												updatedAt={document?.updatedAt}
+												onRetry={handleDirectRegenerate}
+												onDismiss={() =>
+													setIsProgressDismissed(true)
+												}
+												isRetrying={isRegenerating}
+												isRegenerating={isRegenerating}
+											/>
+										</div>
+									)}
 
 								{/* Failed-generation notice — surfaces a persisted FAILED
 					    status so a failed generation isn't shown as an empty
