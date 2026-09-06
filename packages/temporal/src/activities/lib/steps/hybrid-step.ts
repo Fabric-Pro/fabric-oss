@@ -144,6 +144,8 @@ async function executeBrowserStep(
 			// Navigate
 			await navigateToUrl({
 				sessionId: session.sessionId,
+				userId,
+				organizationId,
 				url,
 				waitForSelector: config.waitForSelector,
 			});
@@ -153,6 +155,8 @@ async function executeBrowserStep(
 				for (const action of config.actions) {
 					await executeAction({
 						sessionId: session.sessionId,
+						userId,
+						organizationId,
 						action,
 					});
 				}
@@ -163,6 +167,8 @@ async function executeBrowserStep(
 			if (config.extractors?.length) {
 				extracted = await extractContent({
 					sessionId: session.sessionId,
+					userId,
+					organizationId,
 					extractors: config.extractors,
 				});
 			}
@@ -175,7 +181,11 @@ async function executeBrowserStep(
 				},
 			};
 		} finally {
-			await closeBrowserSession({ sessionId: session.sessionId });
+			await closeBrowserSession({
+				sessionId: session.sessionId,
+				userId,
+				organizationId,
+			});
 		}
 	} catch (error) {
 		return {

@@ -58,6 +58,8 @@ export async function executeBrowserActionStep(
 		// Navigate to URL
 		const navResult = await navigateToUrl({
 			sessionId,
+			userId: params.userId,
+			organizationId: params.organizationId,
 			url: interpolatedUrl,
 			waitForSelector: config.waitForSelector,
 			timeout: config.timeout,
@@ -90,6 +92,8 @@ export async function executeBrowserActionStep(
 
 			const result = await executeAction({
 				sessionId,
+				userId: params.userId,
+				organizationId: params.organizationId,
 				action: interpolatedAction,
 			});
 
@@ -97,7 +101,11 @@ export async function executeBrowserActionStep(
 
 			if (!result.success) {
 				// Close session before returning error
-				await closeBrowserSession({ sessionId });
+				await closeBrowserSession({
+					sessionId,
+					userId: params.userId,
+					organizationId: params.organizationId,
+				});
 				return {
 					success: false,
 					error: `Action ${action.type} failed: ${result.error}`,
@@ -111,12 +119,18 @@ export async function executeBrowserActionStep(
 		if (config.extractors && config.extractors.length > 0) {
 			extraction = await extractContent({
 				sessionId,
+				userId: params.userId,
+				organizationId: params.organizationId,
 				extractors: config.extractors,
 			});
 		}
 
 		// Close session
-		await closeBrowserSession({ sessionId });
+		await closeBrowserSession({
+			sessionId,
+			userId: params.userId,
+			organizationId: params.organizationId,
+		});
 
 		return {
 			success: true,
@@ -130,7 +144,11 @@ export async function executeBrowserActionStep(
 		// Cleanup session on error
 		if (sessionId) {
 			try {
-				await closeBrowserSession({ sessionId });
+				await closeBrowserSession({
+					sessionId,
+					userId: params.userId,
+					organizationId: params.organizationId,
+				});
 			} catch {
 				// Ignore cleanup errors
 			}

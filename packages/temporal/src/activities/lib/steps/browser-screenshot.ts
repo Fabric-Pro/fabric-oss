@@ -56,6 +56,8 @@ export async function executeBrowserScreenshotStep(
 		// Navigate to URL
 		const navResult = await navigateToUrl({
 			sessionId,
+			userId: params.userId,
+			organizationId: params.organizationId,
 			url: interpolatedUrl,
 			waitForSelector: config.waitForSelector,
 			timeout: config.timeout,
@@ -71,13 +73,19 @@ export async function executeBrowserScreenshotStep(
 		// Take screenshot
 		const screenshotResult = await takeScreenshot({
 			sessionId,
+			userId: params.userId,
+			organizationId: params.organizationId,
 			taskId,
 			fullPage: config.fullPage ?? true,
 			name: config.name || `screenshot-${Date.now()}`,
 		});
 
 		// Close session
-		await closeBrowserSession({ sessionId });
+		await closeBrowserSession({
+			sessionId,
+			userId: params.userId,
+			organizationId: params.organizationId,
+		});
 
 		if (!screenshotResult.url) {
 			return {
@@ -97,7 +105,11 @@ export async function executeBrowserScreenshotStep(
 		// Cleanup session on error
 		if (sessionId) {
 			try {
-				await closeBrowserSession({ sessionId });
+				await closeBrowserSession({
+					sessionId,
+					userId: params.userId,
+					organizationId: params.organizationId,
+				});
 			} catch {
 				// Ignore cleanup errors
 			}

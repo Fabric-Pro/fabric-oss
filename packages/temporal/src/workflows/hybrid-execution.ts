@@ -191,6 +191,8 @@ async function executeBrowserCall(
 	step: BrowserStep,
 	variables: Record<string, unknown>,
 	sessionId: string,
+	userId: string,
+	organizationId: string | undefined,
 ): Promise<StepResult> {
 	const startTime = Date.now();
 	const url = interpolate(step.url, variables);
@@ -199,6 +201,8 @@ async function executeBrowserCall(
 		// Navigate to URL
 		await navigateToUrl({
 			sessionId,
+			userId,
+			organizationId,
 			url,
 			waitForSelector: step.waitForSelector,
 			timeout: step.timeout,
@@ -207,7 +211,12 @@ async function executeBrowserCall(
 		// Execute actions if provided
 		if (step.actions?.length) {
 			for (const action of step.actions) {
-				await executeAction({ sessionId, action });
+				await executeAction({
+					sessionId,
+					userId,
+					organizationId,
+					action,
+				});
 			}
 		}
 
@@ -216,6 +225,8 @@ async function executeBrowserCall(
 		if (step.extractors?.length) {
 			data = await extractContent({
 				sessionId,
+				userId,
+				organizationId,
 				extractors: step.extractors,
 			});
 		}
@@ -375,6 +386,8 @@ export async function hybridExecutionWorkflow(
 						},
 						aggregatedData,
 						sessionId,
+						input.userId,
+						input.organizationId,
 					);
 					fallbackResult.fallback = true;
 					result = fallbackResult;
@@ -394,6 +407,8 @@ export async function hybridExecutionWorkflow(
 						step as BrowserStep,
 						aggregatedData,
 						sessionId,
+						input.userId,
+						input.organizationId,
 					);
 				}
 			}
@@ -426,7 +441,11 @@ export async function hybridExecutionWorkflow(
 
 		// Close browser session
 		if (sessionId) {
-			await closeBrowserSession({ sessionId });
+			await closeBrowserSession({
+				sessionId,
+				userId: input.userId,
+				organizationId: input.organizationId,
+			});
 		}
 
 		return {
@@ -441,7 +460,11 @@ export async function hybridExecutionWorkflow(
 		// Cleanup browser session on error
 		if (sessionId) {
 			try {
-				await closeBrowserSession({ sessionId });
+				await closeBrowserSession({
+					sessionId,
+					userId: input.userId,
+					organizationId: input.organizationId,
+				});
 			} catch {
 				// Ignore cleanup errors
 			}

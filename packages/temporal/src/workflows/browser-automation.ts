@@ -112,6 +112,8 @@ export async function browserAutomationWorkflow(
 			console.log("[Workflow] Authenticating...");
 			const authResult = await longTimeoutActivities.authenticate({
 				sessionId,
+				userId: input.userId,
+				organizationId: input.organizationId,
 				config: input.auth,
 				loginUrl: input.url,
 			});
@@ -123,6 +125,8 @@ export async function browserAutomationWorkflow(
 			// Navigate to target URL after auth
 			const navResult = await longTimeoutActivities.navigateToUrl({
 				sessionId,
+				userId: input.userId,
+				organizationId: input.organizationId,
 				url: input.url,
 			});
 			actionResults.push(navResult);
@@ -135,6 +139,8 @@ export async function browserAutomationWorkflow(
 			console.log(`[Workflow] Navigating to ${input.url}`);
 			const navResult = await longTimeoutActivities.navigateToUrl({
 				sessionId,
+				userId: input.userId,
+				organizationId: input.organizationId,
 				url: input.url,
 			});
 			actionResults.push(navResult);
@@ -152,6 +158,8 @@ export async function browserAutomationWorkflow(
 			if (action.type === "screenshot") {
 				const screenshotResult = await takeScreenshot({
 					sessionId,
+					userId: input.userId,
+					organizationId: input.organizationId,
 					taskId: input.taskId,
 					fullPage: action.screenshotOptions?.fullPage,
 					name: action.screenshotOptions?.name,
@@ -168,7 +176,12 @@ export async function browserAutomationWorkflow(
 				continue;
 			}
 
-			const result = await executeAction({ sessionId, action });
+			const result = await executeAction({
+				sessionId,
+				userId: input.userId,
+				organizationId: input.organizationId,
+				action,
+			});
 			actionResults.push(result);
 
 			if (!result.success) {
@@ -176,6 +189,8 @@ export async function browserAutomationWorkflow(
 				if (input.takeScreenshotOnError) {
 					const errorScreenshot = await takeScreenshot({
 						sessionId,
+						userId: input.userId,
+						organizationId: input.organizationId,
 						taskId: input.taskId,
 						name: `error-${action.type}-${Date.now()}`,
 					});
@@ -192,6 +207,8 @@ export async function browserAutomationWorkflow(
 			if (input.takeScreenshotAfterEachAction) {
 				const actionScreenshot = await takeScreenshot({
 					sessionId,
+					userId: input.userId,
+					organizationId: input.organizationId,
 					taskId: input.taskId,
 					name: `after-${action.type}-${Date.now()}`,
 				});
@@ -210,6 +227,8 @@ export async function browserAutomationWorkflow(
 			console.log("[Workflow] Extracting content...");
 			extraction = await extractContent({
 				sessionId,
+				userId: input.userId,
+				organizationId: input.organizationId,
 				extractors: input.extractors,
 			});
 		}
@@ -217,6 +236,8 @@ export async function browserAutomationWorkflow(
 		// 6. Close session
 		await closeBrowserSession({
 			sessionId,
+			userId: input.userId,
+			organizationId: input.organizationId,
 			persistStorage: input.options?.persistStorage,
 		});
 
@@ -233,7 +254,11 @@ export async function browserAutomationWorkflow(
 		// Cleanup session on error
 		if (sessionId) {
 			try {
-				await closeBrowserSession({ sessionId });
+				await closeBrowserSession({
+					sessionId,
+					userId: input.userId,
+					organizationId: input.organizationId,
+				});
 			} catch (cleanupError) {
 				console.error(
 					"[Workflow] Session cleanup failed:",

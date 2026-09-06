@@ -63,6 +63,8 @@ export async function executeBrowserExtractStep(
 		// Navigate to URL
 		const navResult = await navigateToUrl({
 			sessionId,
+			userId: params.userId,
+			organizationId: params.organizationId,
 			url: interpolatedUrl,
 			waitForSelector: config.waitForSelector,
 			timeout: config.timeout,
@@ -78,11 +80,17 @@ export async function executeBrowserExtractStep(
 		// Extract content
 		const extraction = await extractContent({
 			sessionId,
+			userId: params.userId,
+			organizationId: params.organizationId,
 			extractors: config.extractors,
 		});
 
 		// Close session
-		await closeBrowserSession({ sessionId });
+		await closeBrowserSession({
+			sessionId,
+			userId: params.userId,
+			organizationId: params.organizationId,
+		});
 
 		return {
 			success: true,
@@ -95,7 +103,11 @@ export async function executeBrowserExtractStep(
 		// Cleanup session on error
 		if (sessionId) {
 			try {
-				await closeBrowserSession({ sessionId });
+				await closeBrowserSession({
+					sessionId,
+					userId: params.userId,
+					organizationId: params.organizationId,
+				});
 			} catch {
 				// Ignore cleanup errors
 			}
