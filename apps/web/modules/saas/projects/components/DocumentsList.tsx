@@ -26,6 +26,7 @@ import {
 	AlertTriangleIcon,
 	CheckCircleIcon,
 	ClipboardListIcon,
+	ClockIcon,
 	CodeIcon,
 	EyeIcon,
 	FileTextIcon,
@@ -45,6 +46,7 @@ import { useTranslations } from "next-intl";
 import type { ReactNode } from "react";
 import { useState } from "react";
 import { toast } from "sonner";
+import { resolveGenerationTimestamp } from "../lib/document-generation-timestamp";
 import { CreateDocumentDialog } from "./CreateDocumentDialog";
 import { DocumentDownloadDropdown } from "./DocumentDownloadDropdown";
 import { DocumentTitleInlineEdit } from "./DocumentTitleInlineEdit";
@@ -350,11 +352,31 @@ export function DocumentsList({
 	>(null);
 	const [editingDocId, setEditingDocId] = useState<string | null>(null);
 
-	const { data, isLoading, error } = useQuery(
-		orpc.projects.documents.list.queryOptions({
+	const { data, isLoading, error, refetch, isFetching } = useQuery({
+		...orpc.projects.documents.list.queryOptions({
 			input: { projectId, organizationId },
 		}),
-	);
+		refetchInterval: (query) => {
+			const docs = query.state.data?.documents;
+			const hasActiveGenerating = docs?.some((d) => {
+				if (d.status !== "GENERATING") {
+					return false;
+				}
+				const started = resolveGenerationTimestamp(
+					d.generationStartedAt,
+					d.updatedAt,
+				);
+				return Date.now() - started <= 10 * 60 * 1000;
+			});
+			return hasActiveGenerating ? 3000 : false;
+		},
+		refetchOnWindowFocus: (query) => {
+			const docs = query.state.data?.documents;
+			return docs?.some((d) => d.status === "GENERATING")
+				? "always"
+				: true;
+		},
+	});
 
 	const deleteMutation = useMutation(
 		orpc.projects.documents.delete.mutationOptions({
@@ -578,6 +600,22 @@ export function DocumentsList({
 										Delete All
 									</Button>
 								)}
+								<Button
+									onClick={() => refetch()}
+									variant="outline"
+									size="icon"
+									className="size-9 border-border/60 hover:bg-accent"
+									aria-label="Refresh documents list"
+									disabled={isFetching}
+								>
+									<RefreshCwIcon
+										className={cn(
+											"size-4",
+											isFetching &&
+												"animate-spin text-primary",
+										)}
+									/>
+								</Button>
 								<Button
 									onClick={() => setCreateDialogOpen(true)}
 									variant="outline"
@@ -881,34 +919,67 @@ export function DocumentsList({
 											renders. The badge is not focusable, so the copy
 											also lives in an `sr-only` child; `aria-label`
 											would replace the visible status label. */}
-										<StatusBadge
-											className={cn(
-												"inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 font-medium text-xs",
-												status.className,
-											)}
-											failureCopy={
-												doc.status === "FAILED" &&
-												doc.generationError
-													? tTooltips(
-															"generationError",
-															{
-																error: doc.generationError,
-															},
-														)
-													: null
-											}
-										>
-											<span
-												className={cn(
-													"size-1.5 rounded-full",
-													doc.status === "GENERATING"
-														? "animate-pulse"
-														: undefined,
-													status.dotClassName,
-												)}
-											/>
-											{status.label}
-										</StatusBadge>
+										{(() => {
+											const isQueued =
+												doc.status === "GENERATING" &&
+												(doc.generationProgress ==
+													null ||
+													doc.generationProgress <=
+														0);
+											return (
+												<StatusBadge
+													className={cn(
+														"inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 font-medium text-xs",
+														isQueued
+															? "border-amber-500/30 bg-amber-500/10 text-amber-600 dark:text-amber-400"
+															: status.className,
+													)}
+													failureCopy={
+														doc.status ===
+															"FAILED" &&
+														doc.generationError
+															? tTooltips(
+																	"generationError",
+																	{
+																		error: doc.generationError,
+																	},
+																)
+															: null
+													}
+												>
+													{isQueued ? (
+														<>
+															<ClockIcon className="size-3 animate-pulse text-amber-500" />
+															Queued
+														</>
+													) : doc.status ===
+														"GENERATING" ? (
+														<>
+															<span
+																className={cn(
+																	"size-1.5 rounded-full animate-pulse",
+																	status.dotClassName,
+																)}
+															/>
+															Generating (
+															{doc.generationProgress ??
+																0}
+															%)
+														</>
+													) : (
+														<>
+															<span
+																className={cn(
+																	"size-1.5 rounded-full",
+																	status.dotClassName,
+																)}
+															/>
+															{status.label}
+														</>
+													)}
+												</StatusBadge>
+											);
+										})()}
 
 										{/* Show error message for failed documents */}
 										{doc.status === "FAILED" &&
