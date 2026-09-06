@@ -22,11 +22,50 @@ packages:
 # override and hoist pattern would have silently stopped applying.
 # ---------------------------------------------------------------------------
 
-# Deliberately the pnpm 10 behaviour. pnpm 11 defaults this to 1440 (a 24h
-# quarantine on freshly published versions); this migration is a config move and
-# must not change what resolves. Whether to adopt a delay — and with which
-# window and exclusions — is decided separately on Fizzy #2419.
-minimumReleaseAge: 0
+# A freshly published version of any dependency, direct or transitive, is not
+# resolved until it is a day old. A hijacked release is usually caught and pulled
+# within hours, so waiting a day keeps most of that window out of the lockfile.
+# It buys exposure reduction, not a guarantee — a compromise nobody notices ages
+# into eligibility like any other release. 1440 is pnpm 11's own default;
+# nothing about this repo argues for a shorter window.
+#
+# Contrary to the usual assumption, this is NOT confined to `pnpm add` / `pnpm
+# update`. Since pnpm 11.1.3, `pnpm install` re-verifies every existing lockfile
+# entry against the policy before fetching a tarball, so any workspace install
+# with `--frozen-lockfile` — the CI jobs and the agent Dockerfiles, which copy
+# this file — fails with ERR_PNPM_MINIMUM_RELEASE_AGE_VIOLATION when the lockfile
+# carries a version younger than the cutoff. That is the point: it is what stops
+# a lockfile resolved on a laptop with the policy off from installing anyway in
+# CI. It also means a dependency bump cannot land until the version it pins is a
+# day old — including a Dependabot PR, which cannot wait or exempt itself and so
+# will sit red until its pick matures.
+minimumReleaseAge: 1440
+
+# Fail rather than self-exempt. In loose mode pnpm answers an immature pick by
+# writing it into minimumReleaseAgeExclude below and carrying on, which punches
+# a hole in the policy without anyone deciding to. Strict mode prompts in a
+# terminal and aborts in CI (ERR_PNPM_NO_MATURE_MATCHING_VERSION), naming every
+# offending version, so the exemption is always a reviewable diff.
+#
+# pnpm already turns this on whenever minimumReleaseAge is set explicitly; it is
+# written out so the behaviour does not silently invert if that coupling changes.
+minimumReleaseAgeStrict: true
+
+# The escape hatch, for a fix that genuinely cannot wait a day — an advisory
+# whose patch published this morning, with the security check blocking every
+# relay. Add the exact version, land it in the same PR as the lockfile, and say
+# in the PR why the wait was not affordable:
+#
+#   minimumReleaseAgeExclude:
+#     - "some-package@1.2.3"
+#
+# Pin a version, never a bare name or a pattern: a bare rule matches every
+# version of that package, now and forever. Prune keeps the list from silting
+# up — pnpm drops an entry once the version it names leaves the lockfile.
+#
+# For a local one-off that is never committed and must never reach a workflow,
+# PNPM_CONFIG_MINIMUM_RELEASE_AGE=0 overrides the policy for a single command.
+minimumReleaseAgeExcludePrune: true
 
 # pnpm 11 defaults this to `install`, which runs an install before `pnpm run` /
 # `pnpm exec` whenever it judges node_modules stale. Our shipped images run pnpm
