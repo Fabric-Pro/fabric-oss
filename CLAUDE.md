@@ -261,7 +261,7 @@ gh api -X POST repos/Fabric-Pro/fabric-dev/issues/<n>/comments --input relay.jso
 gh api repos/Fabric-Pro/fabric-dev/issues/<n>/comments --jq '.[-1].body'
 ```
 
-Only the publication paths are allowed through. A change touching `.claude/**` is refused with "changed file N is outside the publication path allowlist" — internal working material such as test checklists belongs on the main checkout, not in the branch you relay.
+Only the publication paths are allowed through; anything outside them is refused with "changed file N is outside the publication path allowlist". `.claude/` itself publishes — its agents, commands, hooks and skills are all in the public repo — but `.claude/checklists/` and `.claude/docs/` are denied prefixes, so internal working material such as test checklists belongs on the main checkout, not in the branch you relay. A brand-new top-level directory or root file is refused until the relay's path policy lists it.
 
 ## Git Commit and PR Guidelines
 
