@@ -16,7 +16,7 @@
 FROM node:22-slim AS deps
 
 # Install pnpm
-RUN corepack enable && corepack prepare pnpm@10 --activate
+RUN corepack enable && corepack prepare pnpm@11 --activate
 
 WORKDIR /app
 
@@ -38,7 +38,7 @@ RUN pnpm install --frozen-lockfile --ignore-scripts
 FROM node:22-slim AS builder
 
 # Install pnpm
-RUN corepack enable && corepack prepare pnpm@10 --activate
+RUN corepack enable && corepack prepare pnpm@11 --activate
 
 WORKDIR /app
 
@@ -67,7 +67,7 @@ FROM node:22-slim AS production
 RUN apt-get update && apt-get upgrade -y && rm -rf /var/lib/apt/lists/*
 
 # Install pnpm for dynamic package installation
-RUN corepack enable && corepack prepare pnpm@10 --activate
+RUN corepack enable && corepack prepare pnpm@11 --activate
 
 # Create non-root user with home directory. The uid/gid are pinned to a NUMERIC
 # 1001 (SOC 2 CC7.1, card 1721 FR-7): Kubernetes can only verify runAsNonRoot

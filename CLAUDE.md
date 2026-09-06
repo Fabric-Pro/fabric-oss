@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Common Commands
 
-Requires `pnpm@10.34.5` and Node `>=22.19.0`. First run: `pnpm install`.
+Requires `pnpm@11.25.0` and Node `>=22.19.0`. First run: `pnpm install`.
 
 ```bash
 # Development

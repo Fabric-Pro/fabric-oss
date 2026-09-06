@@ -13,7 +13,7 @@ IMPORTANT: Also read and follow all instructions in AGENTS.local.md if available
 
 | Category | Technologies |
 |----------|-------------|
-| **Core** | Next.js 16, React 19, TypeScript 5.9, Node.js >=22, pnpm 10 |
+| **Core** | Next.js 16, React 19, TypeScript 5.9, Node.js >=22, pnpm 11 |
 | **Backend** | oRPC, Hono, Better Auth 1.6, Prisma 6.18, Zod 4.x |
 | **Database** | PostgreSQL, AWS S3, Qdrant (RAG) |
 | **Frontend** | Tailwind CSS 4, Shadcn UI, Radix UI, TanStack Query 5 |
@@ -1048,7 +1048,7 @@ STRIPE_SECRET_KEY="sk_test_..."
 
 > **Checking Logs**: When the user says "check logs", always use the **Aspire MCP tools** (`mcp__aspire__list_console_logs`, `mcp__aspire__list_structured_logs`, `mcp__aspire__list_traces`, etc.) to inspect application logs, traces, and resource status. Do NOT use `docker logs` or other manual approaches.
 
-Requires `pnpm@10.34.5` and Node `>=22.19.0`. First run: `pnpm install`. See `CLAUDE.md` for the full command reference.
+Requires `pnpm@11.25.0` and Node `>=22.19.0`. First run: `pnpm install`. See `CLAUDE.md` for the full command reference.
 
 ```bash
 # Development
