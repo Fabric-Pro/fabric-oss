@@ -56,6 +56,23 @@ name: DB Integration
 # at all instead of two one-minute jobs on every push. When the workflow does
 # run, `changes` still decides which of the two expensive test jobs are
 # relevant, so a PR touching only Temporal paths still skips the DB job.
+#
+# WHERE THIS RUNS — the public mirror, not the private staging repo. Both
+# jobs below carry `github.repository != 'Fabric-Pro/fabric-dev'`, the same
+# guard shape knip.yml and unit-tests.yml use: it names the staging repo
+# rather than allow-listing one mirror, so any other copy of this tree still
+# runs these suites. The reasoning is the one in unit-tests.yml — GitHub
+# gives PUBLIC repositories unlimited free standard runners, the staging repo
+# has no free tier, and the relay gate treats a job skipped by a job-level
+# `if:` as passing — with one extra reason of its own: these jobs each stand
+# up a real Postgres service container, so the duplicate run was the most
+# expensive minute-for-minute of the lot. `workflow_dispatch` is exempt on
+# every job so both suites can still be exercised in staging on demand.
+#
+# The guard goes on the JOBS, not on the trigger, for the same reason the
+# path filter above is safe only while this workflow is not required: a job
+# skipped by an `if:` reports as passing, a workflow that never registers a
+# check does not.
 
 on:
   pull_request:
@@ -90,6 +107,10 @@ concurrency:
 jobs:
   changes:
     name: Detect changed paths
+    # Public mirror only, except on workflow_dispatch (see header).
+    if: >-
+      github.repository != 'Fabric-Pro/fabric-dev' ||
+      github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     outputs:
       db: ${{ steps.filter.outputs.db }}
@@ -136,11 +157,14 @@ jobs:
   db-tests:
     name: DB/RLS/XOR tests (real Postgres)
     needs: changes
-    # Always run on workflow_dispatch (manual validation); on PRs only when
-    # DB-relevant paths changed.
+    # Public mirror only, except on workflow_dispatch (see header). Within
+    # that: always run on workflow_dispatch (manual validation); on PRs only
+    # when DB-relevant paths changed.
     if: >-
-      github.event_name == 'workflow_dispatch' ||
-      needs.changes.outputs.db == 'true'
+      (github.repository != 'Fabric-Pro/fabric-dev' ||
+       github.event_name == 'workflow_dispatch') &&
+      (github.event_name == 'workflow_dispatch' ||
+       needs.changes.outputs.db == 'true')
     runs-on: ubuntu-latest
     timeout-minutes: 20
     services:
@@ -985,11 +1009,14 @@ jobs:
   temporal-tests:
     name: Temporal publishing tests (real Postgres)
     needs: changes
-    # Always run on workflow_dispatch (manual validation); on PRs only when
-    # temporal- or database-relevant paths changed.
+    # Public mirror only, except on workflow_dispatch (see header). Within
+    # that: always run on workflow_dispatch (manual validation); on PRs only
+    # when temporal- or database-relevant paths changed.
     if: >-
-      github.event_name == 'workflow_dispatch' ||
-      needs.changes.outputs.temporal == 'true'
+      (github.repository != 'Fabric-Pro/fabric-dev' ||
+       github.event_name == 'workflow_dispatch') &&
+      (github.event_name == 'workflow_dispatch' ||
+       needs.changes.outputs.temporal == 'true')
     runs-on: ubuntu-latest
     timeout-minutes: 20
     services:
