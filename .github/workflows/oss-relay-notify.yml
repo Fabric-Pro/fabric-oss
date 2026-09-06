@@ -44,16 +44,45 @@ on:
 permissions:
   pull-requests: read
 
-# Every wake-up for one pull request does the same work: re-read its live
-# state and dispatch if it is still relayable. A newer wake-up therefore
-# supersedes an older one outright, so cancelling costs nothing and saves a
-# job minute whenever two events land together (a label plus the `/relay`
-# comment, or several staging checks finishing at once). A workflow_run wake
-# carries no pull request number of its own, so it falls back to its run id
-# and cancels nothing.
-concurrency:
-  group: oss-relay-notify-${{ github.event.pull_request.number || github.event.issue.number || github.run_id }}
-  cancel-in-progress: true
+# Deliberately no `concurrency:` block. Every wake-up gets its own run, and no
+# wake-up can cancel or replace another through concurrency configuration.
+#
+# Grouping every wake-up by pull request number and cancelling in progress made
+# fully successful pull requests end on a red check: a cancelled run surfaces as
+# an unsuccessful check, which reads to everyone as a failure. Workflow-level
+# concurrency applies independently of, and ahead of, a job-level `if` that
+# would have skipped the job — so a run that was going to do nothing still
+# cancelled a live one. Only `pull_request_target` runs surface on the pull
+# request's own checks list, so they were the only corpses anyone could see.
+# The relay's own closing comment killed the `relayed` label event's run on
+# every single relayed pull request, and the authorizing `/relay` comment and
+# `ready-for-relay` label, posted a second apart, killed whichever of the two
+# GitHub happened to create first.
+#
+# Cancelling bought nothing in exchange. Partial job minutes are rounded up, so
+# for jobs this short, once execution had started, cancelling after two seconds
+# consumed the same single billable minute as finishing within twenty.
+#
+# Nor did it prevent duplicate dispatches, which are normal here and already
+# absorbed. Every terminal staging check wakes the notifier separately, so one
+# authorization routinely dispatches many times over; a single relay was
+# observed absorbing seven. Those redundant wakes bypass no authorization —
+# the ops relay re-derives all of it from live state — and its `oss-relay`
+# group absorbs the pending duplicates.
+#
+# Grouping only the `/relay` comments was tried and rejected. `cancel-in-progress: false`
+# does not mean nothing is cancelled: GitHub holds at most one pending run per
+# group, and a newer arrival replaces — cancels — the one already waiting. The
+# available `startsWith('/relay ')` predicate also admits malformed commands,
+# which fail the exact-command test in the dispatch step, so such a comment
+# could displace a queued valid command and then dispatch nothing in its place.
+# Collapsing redundant wakes is not worth a path that silently drops a real one.
+#
+# The accepted cost of no grouping: a staging-repository commenter can spawn
+# concurrent jobs by posting bodies beginning `/relay `, each minting the App
+# token before the exact-command test rejects it. That spends runner minutes,
+# but executes no caller-controlled code and exposes no credential, and every
+# ordinary comment still skips the job before a runner is allocated.
 
 jobs:
   notify:
@@ -64,6 +93,8 @@ jobs:
       github.repository == 'Fabric-Pro/fabric-dev' &&
       ((github.event_name == 'pull_request_target' &&
         github.event.pull_request.head.repo.full_name == github.repository &&
+        (github.event.action != 'labeled' ||
+         github.event.label.name == 'ready-for-relay') &&
         contains(github.event.pull_request.labels.*.name, 'ready-for-relay')) ||
        (github.event_name == 'issue_comment' &&
         github.event.issue.pull_request != null &&
