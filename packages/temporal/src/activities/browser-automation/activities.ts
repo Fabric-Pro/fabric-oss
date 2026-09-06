@@ -120,10 +120,14 @@ export async function closeBrowserSession(
 	let storageState: unknown;
 
 	if (input.persistStorage) {
-		storageState = await getStorageState(input.sessionId);
+		storageState = await getStorageState(
+			input.sessionId,
+			input.userId,
+			input.organizationId,
+		);
 	}
 
-	await closeSession(input.sessionId);
+	await closeSession(input.sessionId, input.userId, input.organizationId);
 
 	return { success: true, storageState };
 }
@@ -139,7 +143,11 @@ export async function navigateToUrl(
 	input: NavigateInput,
 ): Promise<BrowserActionResult> {
 	const startTime = Date.now();
-	const session = getSession(input.sessionId);
+	const session = getSession(
+		input.sessionId,
+		input.userId,
+		input.organizationId,
+	);
 
 	if (!session) {
 		return {
@@ -194,7 +202,11 @@ export async function executeAction(
 	input: ExecuteActionInput,
 ): Promise<BrowserActionResult> {
 	const startTime = Date.now();
-	const session = getSession(input.sessionId);
+	const session = getSession(
+		input.sessionId,
+		input.userId,
+		input.organizationId,
+	);
 
 	if (!session) {
 		return {
@@ -314,7 +326,11 @@ export async function executeAction(
 export async function extractContent(
 	input: ExtractContentInput,
 ): Promise<BrowserExtractionResult> {
-	const session = getSession(input.sessionId);
+	const session = getSession(
+		input.sessionId,
+		input.userId,
+		input.organizationId,
+	);
 
 	if (!session) {
 		throw new Error(`Session ${input.sessionId} not found`);
@@ -386,7 +402,11 @@ export async function extractContent(
 export async function takeScreenshot(
 	input: TakeScreenshotInput,
 ): Promise<{ url: string | null }> {
-	const session = getSession(input.sessionId);
+	const session = getSession(
+		input.sessionId,
+		input.userId,
+		input.organizationId,
+	);
 
 	if (!session) {
 		throw new Error(`Session ${input.sessionId} not found`);
@@ -425,7 +445,11 @@ export async function authenticate(
 	input: AuthenticateInput,
 ): Promise<BrowserActionResult> {
 	const startTime = Date.now();
-	const session = getSession(input.sessionId);
+	const session = getSession(
+		input.sessionId,
+		input.userId,
+		input.organizationId,
+	);
 
 	if (!session) {
 		return {

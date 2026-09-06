@@ -163,8 +163,17 @@ export interface CreateBrowserSessionInput {
 	options?: BrowserSessionOptions;
 }
 
+// Every input that names an existing session also carries the caller's
+// identity, which the session manager checks against the session's recorded
+// owner before handing back a live browser. `userId` is deliberately REQUIRED:
+// an optional field would let a call site silently skip the ownership check,
+// whereas a required one makes the compiler enumerate every call site.
+// `organizationId` stays optional, matching `CreateBrowserSessionInput`.
+
 export interface NavigateInput {
 	sessionId: string;
+	userId: string;
+	organizationId?: string;
 	url: string;
 	waitForSelector?: string;
 	timeout?: number;
@@ -172,16 +181,22 @@ export interface NavigateInput {
 
 export interface ExecuteActionInput {
 	sessionId: string;
+	userId: string;
+	organizationId?: string;
 	action: BrowserAction;
 }
 
 export interface ExtractContentInput {
 	sessionId: string;
+	userId: string;
+	organizationId?: string;
 	extractors: ContentExtractor[];
 }
 
 export interface TakeScreenshotInput {
 	sessionId: string;
+	userId: string;
+	organizationId?: string;
 	taskId: string;
 	fullPage?: boolean;
 	name?: string;
@@ -189,11 +204,15 @@ export interface TakeScreenshotInput {
 
 export interface AuthenticateInput {
 	sessionId: string;
+	userId: string;
+	organizationId?: string;
 	config: BrowserAuthConfig;
 	loginUrl?: string;
 }
 
 export interface CloseBrowserSessionInput {
 	sessionId: string;
+	userId: string;
+	organizationId?: string;
 	persistStorage?: boolean;
 }

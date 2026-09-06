@@ -124,6 +124,8 @@ async function executeTemplateStep(
 	step: TemplateStep,
 	sessionId: string,
 	variables: Record<string, unknown>,
+	userId: string,
+	organizationId: string | undefined,
 ): Promise<{ success: boolean; output?: unknown; error?: string }> {
 	const config = step.config as Record<string, unknown>;
 
@@ -131,6 +133,8 @@ async function executeTemplateStep(
 		case "navigate": {
 			await navigateToUrl({
 				sessionId,
+				userId,
+				organizationId,
 				url: config.url as string,
 				waitForSelector: config.waitForSelector as string | undefined,
 				timeout: config.timeout as number | undefined,
@@ -141,6 +145,8 @@ async function executeTemplateStep(
 		case "action": {
 			await executeAction({
 				sessionId,
+				userId,
+				organizationId,
 				action: config as unknown as BrowserAction,
 			});
 			return { success: true };
@@ -148,13 +154,20 @@ async function executeTemplateStep(
 
 		case "extract": {
 			const extractors = config.extractors as ContentExtractor[];
-			const output = await extractContent({ sessionId, extractors });
+			const output = await extractContent({
+				sessionId,
+				userId,
+				organizationId,
+				extractors,
+			});
 			return { success: true, output };
 		}
 
 		case "screenshot": {
 			const result = await takeScreenshot({
 				sessionId,
+				userId,
+				organizationId,
 				taskId: config.taskId as string,
 				fullPage: config.fullPage as boolean | undefined,
 				name: config.name as string | undefined,
@@ -344,6 +357,8 @@ export async function templateExecutionWorkflow(
 						step,
 						sessionId,
 						aggregatedOutput,
+						input.userId,
+						input.organizationId,
 					);
 					if (result.success) {
 						break;
@@ -375,6 +390,8 @@ export async function templateExecutionWorkflow(
 				try {
 					const screenshot = await takeScreenshot({
 						sessionId,
+						userId: input.userId,
+						organizationId: input.organizationId,
 						taskId: input.taskId,
 						name: `step-${step.id}`,
 					});
@@ -407,7 +424,11 @@ export async function templateExecutionWorkflow(
 
 		// 6. Cleanup
 		if (sessionId) {
-			await closeBrowserSession({ sessionId });
+			await closeBrowserSession({
+				sessionId,
+				userId: input.userId,
+				organizationId: input.organizationId,
+			});
 		}
 
 		return {
@@ -425,7 +446,11 @@ export async function templateExecutionWorkflow(
 		// Cleanup on error
 		if (sessionId) {
 			try {
-				await closeBrowserSession({ sessionId });
+				await closeBrowserSession({
+					sessionId,
+					userId: input.userId,
+					organizationId: input.organizationId,
+				});
 			} catch {
 				// Ignore cleanup errors
 			}

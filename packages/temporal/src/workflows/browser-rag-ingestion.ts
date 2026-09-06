@@ -124,6 +124,8 @@ export async function browserRagIngestionWorkflow(
 				// Step 2: Navigate to URL
 				await browser.navigateToUrl({
 					sessionId: sessionResult.sessionId,
+					userId,
+					organizationId,
 					url,
 					waitForSelector,
 					timeout: 30000,
@@ -133,6 +135,8 @@ export async function browserRagIngestionWorkflow(
 				const extractors = buildExtractors(selectors);
 				const extracted = await browser.extractContent({
 					sessionId: sessionResult.sessionId,
+					userId,
+					organizationId,
 					extractors,
 				});
 
@@ -167,6 +171,8 @@ export async function browserRagIngestionWorkflow(
 				// Always close the browser session
 				await browser.closeBrowserSession({
 					sessionId: sessionResult.sessionId,
+					userId,
+					organizationId,
 					persistStorage: false,
 				});
 			}

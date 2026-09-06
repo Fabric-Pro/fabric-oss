@@ -5,7 +5,35 @@
  * Includes session management, actions, content extraction, and RAG integration.
  */
 
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+// `createSession` launches a real Chromium, which a unit test must not depend
+// on. The session manager imports Playwright dynamically, so this module mock
+// intercepts that too. Everything the manager touches on the browser/context/
+// page is stubbed; nothing else in this file exercises Playwright.
+vi.mock("playwright", () => ({
+	chromium: {
+		launch: vi.fn(async () => {
+			const page = {
+				setDefaultTimeout: vi.fn(),
+				close: vi.fn(async () => undefined),
+			};
+			const context = {
+				newPage: vi.fn(async () => page),
+				route: vi.fn(async () => undefined),
+				storageState: vi.fn(async () => ({
+					cookies: [],
+					origins: [],
+				})),
+				close: vi.fn(async () => undefined),
+			};
+			return {
+				newContext: vi.fn(async () => context),
+				close: vi.fn(async () => undefined),
+			};
+		}),
+	},
+}));
 
 describe("Browser Session Manager", () => {
 	describe("generateSessionId", () => {
@@ -67,6 +95,169 @@ describe("Browser Session Manager", () => {
 			await expect(
 				createSession(foreignId, "user-1", "org-1"),
 			).rejects.toThrow(/does not match the requesting tenant/);
+		});
+	});
+
+	describe("caller-identity (owner) check", () => {
+		async function sessionManager() {
+			return await import(
+				"../src/activities/browser-automation/session-manager"
+			);
+		}
+
+		/** Register a live session owned by `userId` (+ optional org). */
+		async function openSession(userId: string, organizationId?: string) {
+			const { createSession, generateSessionId } = await sessionManager();
+			const sessionId = generateSessionId(userId, organizationId);
+			await createSession(sessionId, userId, organizationId);
+			return sessionId;
+		}
+
+		beforeEach(() => {
+			// The manager arms a 60s cleanup interval on first create; fake
+			// timers keep that out of the real event loop.
+			vi.useFakeTimers();
+			vi.spyOn(console, "error").mockImplementation(() => undefined);
+			vi.spyOn(console, "warn").mockImplementation(() => undefined);
+			vi.spyOn(console, "log").mockImplementation(() => undefined);
+		});
+
+		afterEach(async () => {
+			const { closeAllSessions } = await sessionManager();
+			await closeAllSessions();
+			vi.useRealTimers();
+			vi.restoreAllMocks();
+		});
+
+		it("returns the session for its true owner", async () => {
+			const { getSession } = await sessionManager();
+			const sessionId = await openSession("user-1", "org-1");
+
+			const session = getSession(sessionId, "user-1", "org-1");
+
+			expect(session).toBeDefined();
+			expect(session?.id).toBe(sessionId);
+			expect(session?.userId).toBe("user-1");
+		});
+
+		it("refuses a different user inside the SAME organization", async () => {
+			// The property this whole change exists for. `sessionScope()`
+			// collapses to `org:<id>` when an org is present, so a scope
+			// comparison would hand a colleague someone else's live browser —
+			// with its authenticated third-party cookies. The check is
+			// per-user, and a non-owner sees exactly what a caller naming a
+			// non-existent session sees.
+			const { getSession } = await sessionManager();
+			const sessionId = await openSession("user-1", "org-1");
+
+			expect(getSession(sessionId, "user-2", "org-1")).toBeUndefined();
+			// Still the owner's session — the rejection changed nothing.
+			expect(getSession(sessionId, "user-1", "org-1")).toBeDefined();
+		});
+
+		it("refuses a different organization", async () => {
+			const { getSession } = await sessionManager();
+			const sessionId = await openSession("user-1", "org-1");
+
+			expect(getSession(sessionId, "user-1", "org-2")).toBeUndefined();
+		});
+
+		it("logs a mismatch as a security event rather than throwing", async () => {
+			// A distinguishable error would be an existence oracle for other
+			// tenants' session ids, so the mismatch surfaces in the worker log
+			// instead of the return value.
+			const { getSession } = await sessionManager();
+			const sessionId = await openSession("user-1", "org-1");
+
+			expect(getSession(sessionId, "user-2", "org-1")).toBeUndefined();
+			expect(console.error).toHaveBeenCalledWith(
+				expect.stringContaining("Ownership check failed"),
+			);
+		});
+
+		it("returns null from getStorageState for a non-owner", async () => {
+			// Cookies and localStorage — the worst thing here to hand to the
+			// wrong caller.
+			const { getStorageState } = await sessionManager();
+			const sessionId = await openSession("user-1", "org-1");
+
+			await expect(
+				getStorageState(sessionId, "user-2", "org-1"),
+			).resolves.toBeNull();
+			await expect(
+				getStorageState(sessionId, "user-1", "org-1"),
+			).resolves.toEqual({ cookies: [], origins: [] });
+		});
+
+		it("does not let a non-owner close someone else's session", async () => {
+			// Closing is a mutation: an unchecked close is a cross-tenant DoS.
+			const { closeSession, getSession } = await sessionManager();
+			const sessionId = await openSession("user-1", "org-1");
+
+			await closeSession(sessionId, "user-2", "org-1");
+
+			expect(getSession(sessionId, "user-1", "org-1")).toBeDefined();
+
+			// The real owner can still close it.
+			await closeSession(sessionId, "user-1", "org-1");
+			expect(getSession(sessionId, "user-1", "org-1")).toBeUndefined();
+		});
+
+		// `sessionScope` normalizes every falsy organization to "no
+		// organization", so the owner check must too, or a legitimate caller
+		// passing one spelling gets rejected for a session stored under
+		// another. `null` is not in the declared type but does arrive at
+		// runtime — an unresolved tenant is `organizationId: null` in the data
+		// layer — so it is cast in deliberately rather than left untested.
+		const NO_ORG = [
+			["undefined", undefined],
+			["null", null],
+			["empty string", ""],
+		] as const;
+
+		for (const [storedLabel, stored] of NO_ORG) {
+			for (const [callerLabel, caller] of NO_ORG) {
+				it(`resolves a session stored with ${storedLabel} for a caller passing ${callerLabel}`, async () => {
+					const { getSession } = await sessionManager();
+					const sessionId = await openSession(
+						"user-1",
+						stored as unknown as string | undefined,
+					);
+
+					expect(
+						getSession(
+							sessionId,
+							"user-1",
+							caller as unknown as string | undefined,
+						),
+					).toBeDefined();
+				});
+			}
+		}
+
+		it("still refuses a real organization against a session with none", async () => {
+			const { getSession } = await sessionManager();
+			const sessionId = await openSession("user-1", undefined);
+
+			// Omitting the argument entirely is the same as "no organization".
+			expect(getSession(sessionId, "user-1")).toBeDefined();
+			// A real organization is a different tenant, not another falsy.
+			expect(getSession(sessionId, "user-1", "org-1")).toBeUndefined();
+		});
+
+		it("refuses a falsy organization against a session that has one", async () => {
+			const { getSession } = await sessionManager();
+			const sessionId = await openSession("user-1", "org-1");
+
+			for (const [, caller] of NO_ORG) {
+				expect(
+					getSession(
+						sessionId,
+						"user-1",
+						caller as unknown as string | undefined,
+					),
+				).toBeUndefined();
+			}
 		});
 	});
 });
