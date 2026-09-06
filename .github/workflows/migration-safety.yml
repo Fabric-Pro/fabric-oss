@@ -33,7 +33,10 @@ concurrency:
 jobs:
   lint-migrations:
     name: Lint migrations
-    runs-on: ubuntu-latest
+    # arm64: checkout, pnpm/node setup, and the tsx-based lint:migrations
+    # script (reads migration SQL off disk, no database, no native deps) are
+    # all architecture-neutral.
+    runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:

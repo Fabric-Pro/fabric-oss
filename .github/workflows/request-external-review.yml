@@ -20,7 +20,8 @@ permissions:
 
 jobs:
   request-review:
-    runs-on: ubuntu-latest
+    # arm64: this job only runs `gh api` — architecture-neutral.
+    runs-on: ubuntu-24.04-arm
     steps:
       - name: Request review from the sanctioned maintainer for external authors
         env:

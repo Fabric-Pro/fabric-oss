@@ -24,7 +24,9 @@ concurrency:
 jobs:
   check:
     name: Require changeset
-    runs-on: ubuntu-latest
+    # arm64: checkout, pnpm/node setup, `pnpm dlx @changesets/cli`, and jq/git
+    # are all architecture-neutral.
+    runs-on: ubuntu-24.04-arm
     # Skip the check if:
     # - PR carries the opt-out label, OR
     # - PR is the auto-generated release PR from changesets/action

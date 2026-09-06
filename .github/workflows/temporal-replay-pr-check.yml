@@ -21,7 +21,9 @@ concurrency:
 jobs:
   changes:
     name: Detect Temporal replay changes (credential-free)
-    runs-on: ubuntu-latest
+    # arm64: dorny/paths-filter is a JS action reading the Pulls API — no
+    # checkout, no compiled binaries.
+    runs-on: ubuntu-24.04-arm
     permissions:
       pull-requests: read
     outputs:
@@ -57,7 +59,8 @@ jobs:
           'replay-validation-unprivileged' || 'replay-validation' }}
     needs: changes
     if: always()
-    runs-on: ubuntu-latest
+    # arm64: pure shell against env vars — no checkout, no PR code execution.
+    runs-on: ubuntu-24.04-arm
     permissions: {}
     env:
       REPOSITORY: ${{ github.repository }}

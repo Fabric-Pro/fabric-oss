@@ -64,7 +64,10 @@ jobs:
   # billed two.
   authorize:
     name: Detect workflow changes and authorize private replay
-    runs-on: ubuntu-latest
+    # arm64: trusted metadata gate — shell against env vars, an optional
+    # trusted-default-branch checkout, and dorny/paths-filter (a JS action).
+    # No PR code execution, no compiled binaries.
+    runs-on: ubuntu-24.04-arm
     # The union of what the two halves need: paths-filter reads the Pulls API
     # on pull_request_target, and its git-based detection on workflow_dispatch
     # needs the trusted default-branch checkout below.
@@ -178,7 +181,11 @@ jobs:
           needs.authorize.outputs.secret_eligible != 'true') ||
          (github.repository == 'Fabric-Pro/fabric-oss' &&
           needs.authorize.outputs.reason == 'public_pr_outside_relay_namespace'))))
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
+    # arm64: publishes a commit status via `gh api` — no checkout, no PR code.
+    # (Kept below runs-on: the eligibility pin test reads the `if:` block as
+    # everything up to the runs-on line, so a comment above it would be
+    # compared as part of the expression.)
     permissions:
       statuses: write
     env:
@@ -240,7 +247,11 @@ jobs:
       (needs.authorize.result == 'success' &&
        needs.authorize.outputs.workflows == 'true' &&
        needs.authorize.outputs.secret_eligible == 'true')
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
+    # arm64: publishes a commit status via `gh api` — no checkout, no PR code.
+    # (Kept below runs-on: the eligibility pin test reads the `if:` block as
+    # everything up to the runs-on line, so a comment above it would be
+    # compared as part of the expression.)
     permissions:
       statuses: write
     steps:
@@ -392,7 +403,11 @@ jobs:
        (needs.authorize.result == 'success' &&
         needs.authorize.outputs.workflows == 'true' &&
         needs.authorize.outputs.secret_eligible == 'true'))
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
+    # arm64: publishes a commit status via `gh api` — no checkout, no PR code.
+    # (Kept below runs-on: the eligibility pin test reads the `if:` block as
+    # everything up to the runs-on line, so a comment above it would be
+    # compared as part of the expression.)
     permissions:
       statuses: write
     env:
