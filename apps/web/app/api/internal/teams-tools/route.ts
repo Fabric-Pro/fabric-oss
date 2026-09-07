@@ -9,7 +9,11 @@
  */
 
 import { AI_TOKEN_HEADER, verifyAIToken } from "@repo/ai-token";
-import { db, hasProjectAccess, type ProjectContextType } from "@repo/database";
+import {
+	db,
+	getProjectAccessContext,
+	type ProjectContextType,
+} from "@repo/database";
 import { executeMicrosoftTeamsTool } from "@repo/integrations/microsoft";
 import { NextResponse } from "next/server";
 
@@ -124,30 +128,17 @@ export async function POST(req: Request) {
 		const userId = payload.claims.sub;
 		const organizationId = payload.claims.org;
 
-		// Verify user has access to this project with tenant XOR isolation
-		const access = await hasProjectAccess(
-			projectId,
-			userId,
-			organizationId,
-		);
-		if (!access) {
+		// Verify user has access to this project with tenant XOR isolation.
+		// One query resolves both the access decision and organizationId.
+		const accessContext = await getProjectAccessContext(projectId, userId);
+		if (!accessContext) {
 			return NextResponse.json(
 				{ error: "You do not have access to this project" },
 				{ status: 403 },
 			);
 		}
 
-		const project = await db.project.findUnique({
-			where: { id: projectId },
-			select: { organizationId: true },
-		});
-		if (!project) {
-			return NextResponse.json(
-				{ error: "Project not found" },
-				{ status: 404 },
-			);
-		}
-		if ((project.organizationId ?? undefined) !== organizationId) {
+		if ((accessContext.organizationId ?? undefined) !== organizationId) {
 			return NextResponse.json(
 				{ error: "Tenant context mismatch" },
 				{ status: 403 },

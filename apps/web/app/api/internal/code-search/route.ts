@@ -20,8 +20,8 @@ import {
 } from "@repo/connectors";
 import {
 	db,
+	getProjectAccessContext,
 	getProjectReposForCodeSearch,
-	hasProjectAccess,
 	parseRepoUrl,
 } from "@repo/database";
 import type { WorkflowIntegrationProvider } from "@repo/database/prisma/zod";
@@ -229,24 +229,22 @@ export async function POST(req: Request) {
 		const userId = payload.claims.sub;
 		const organizationId = payload.claims.org;
 
-		// Verify user has access AND tenant context matches (XOR isolation)
-		const access = await hasProjectAccess(
-			projectId,
-			userId,
-			organizationId,
-		);
-		if (!access) {
+		// Verify user has access AND tenant context matches (XOR isolation).
+		// This resolves organizationId too, so the repo-info fetch below no
+		// longer needs to re-select it from the same row.
+		const accessContext = await getProjectAccessContext(projectId, userId);
+		if (!accessContext) {
 			return NextResponse.json(
 				{ error: "You do not have access to this project" },
 				{ status: 403 },
 			);
 		}
 
-		// Enforce tenant XOR isolation + get repo info
+		// Repo info isn't part of the access context — still need this fetch,
+		// just without the duplicate organizationId column.
 		const project = await db.project.findUnique({
 			where: { id: projectId },
 			select: {
-				organizationId: true,
 				repositoryUrl: true,
 				repositoryOwner: true,
 				repositoryName: true,
@@ -259,7 +257,7 @@ export async function POST(req: Request) {
 				{ status: 404 },
 			);
 		}
-		const projectOrgId = project.organizationId ?? undefined;
+		const projectOrgId = accessContext.organizationId ?? undefined;
 		if (projectOrgId !== organizationId) {
 			return NextResponse.json(
 				{ error: "Tenant context mismatch" },
