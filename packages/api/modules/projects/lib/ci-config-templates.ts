@@ -98,7 +98,7 @@ export function buildCiConfigTemplate(input: CiConfigInput): CiConfigTemplate {
 				].join("\n"),
 				notes: [
 					"Connect this repository under Project Settings ▸ Development, then open the QA tab and press Sync now.",
-					"The token Fabric uses needs the Actions: read scope — a Contents-only token lists no workflow runs.",
+					"The token Fabric uses needs the Actions: read scope — a Contents-only token lists no workflow runs. For private repositories, fine-grained PATs may refuse repo-wide run listings; use a classic PAT (with the repo scope) or install a GitHub App if refused.",
 					"Rename the artifact only to something still matching junit|test|report|result, or Fabric will not find it.",
 				],
 			};

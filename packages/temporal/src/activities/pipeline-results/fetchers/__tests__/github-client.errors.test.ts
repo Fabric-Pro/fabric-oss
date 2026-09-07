@@ -72,6 +72,24 @@ describe("createGithubTokenClient error reporting", () => {
 		expect((err as Error).message).not.toContain('{"message"');
 	});
 
+	it("quotes x-accepted-github-permissions in the error message when GitHub sends it", async () => {
+		mockFetch(
+			403,
+			{ "x-accepted-github-permissions": "actions=read" },
+			'{"message":"Resource not accessible by personal access token"}',
+		);
+		const client = createGithubTokenClient("tok");
+
+		const err = await client
+			.get("/repos/a/b/actions/runs")
+			.catch((e: unknown) => e);
+
+		expect(err).toBeInstanceOf(ProviderHttpError);
+		expect((err as ProviderHttpError).message).toContain(
+			'the provider reports this endpoint accepts permissions: "actions=read"',
+		);
+	});
+
 	it("hands back the SSO authorisation URL when GitHub offers one", async () => {
 		mockFetch(
 			403,

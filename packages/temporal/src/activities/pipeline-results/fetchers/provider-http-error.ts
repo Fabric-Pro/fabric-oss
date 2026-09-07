@@ -36,6 +36,9 @@ import { scrubAndTrim } from "@repo/utils/scrub-secrets";
 /** Enough of a provider's own message to diagnose, bounded so a log stays readable. */
 const MAX_BODY_CHARS = 300;
 
+/** Enough of a provider's permission header to diagnose without inflating logs. */
+const MAX_HEADER_CHARS = 120;
+
 export type ProviderKind = "github" | "gitlab" | "azure-devops";
 
 /**
@@ -234,6 +237,21 @@ export function classifyProviderHttpFailure(input: {
 	}
 
 	if (status === 403) {
+		// Quote what the provider says this endpoint accepts as evidence rather
+		// than guessing a cause: a token can hold the named permission and still
+		// be refused. Scrubbed and bounded like the body — the header is the
+		// provider's text, not ours, and it is quoted into a stored message.
+		const rawAccepted = readHeader(
+			headers,
+			"x-accepted-github-permissions",
+		);
+		const acceptedPermissions = rawAccepted
+			? scrubAndTrim(rawAccepted, secrets, MAX_HEADER_CHARS)
+			: null;
+		const requirementDetail = acceptedPermissions
+			? `the provider reports this endpoint accepts permissions: "${acceptedPermissions}"`
+			: `it may be missing the "${REQUIRED_SCOPE[provider]}" permission`;
+
 		return {
 			kind: "FORBIDDEN",
 			providerDetail,
@@ -243,7 +261,7 @@ export function classifyProviderHttpFailure(input: {
 			// permission has to be granted. For a GitHub App that is an install-time
 			// permission, not an OAuth scope string, and no amount of reconnecting
 			// adds it.
-			message: `${label} authenticated the credential but refused this resource — it is missing the "${REQUIRED_SCOPE[provider]}" permission, or the app is not installed on this repository. Reconnecting will not add a permission; grant it on the token or app first.`,
+			message: `${label} authenticated the credential but refused this resource — ${requirementDetail}, or the app is not installed on this repository. Reconnecting will not add a permission; grant it on the token or app first.`,
 		};
 	}
 

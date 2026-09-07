@@ -49,9 +49,11 @@ describe("buildCiConfigTemplate", () => {
 	});
 
 	it("warns about the scope each provider actually needs", () => {
-		expect(
-			buildCiConfigTemplate({ provider: "GITHUB" }).notes.join(" "),
-		).toContain("Actions: read");
+		const githubNotes = buildCiConfigTemplate({
+			provider: "GITHUB",
+		}).notes.join(" ");
+		expect(githubNotes).toContain("Actions: read");
+		expect(githubNotes).toContain("classic PAT");
 		expect(
 			buildCiConfigTemplate({ provider: "AZURE_DEVOPS" }).notes.join(" "),
 		).toContain("Test Management: Read");
