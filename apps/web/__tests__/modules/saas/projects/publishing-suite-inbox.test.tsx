@@ -39,6 +39,12 @@ const {
 		// for the SAME topic can be made pending at once and released in a
 		// chosen order.
 		readStateMutationGate: null as Promise<void> | null,
+		// Task 6: the project's members, for the contributors picker. This
+		// file does not exercise the contributors dialog itself (that lives
+		// in publishing-suite-list.test.tsx) — this exists only so the
+		// component's now-unconditional `members.list` query has something to
+		// resolve rather than crashing every case in the file.
+		members: [] as Array<Record<string, unknown>>,
 	},
 	updateStatusMutate: vi.fn(),
 	setReadStateMutate: vi.fn(),
@@ -52,6 +58,18 @@ const {
 }));
 
 vi.mock("sonner", () => ({ toast: { error: toastError } }));
+
+// Task 6: PublishingSuiteList now reads the viewer's own id via this hook.
+// This exists only so it does not throw outside a SessionProvider — no test
+// in this file exercises the contributors dialog.
+vi.mock("@saas/auth/hooks/use-session", () => ({
+	useSession: () => ({
+		user: { id: "viewer-1" },
+		session: { id: "test-session" },
+		loaded: true,
+		reloadSession: vi.fn(),
+	}),
+}));
 
 vi.mock("@saas/shared/components/FeatureFlagProvider", () => ({
 	useFeatureFlag: () => true,
@@ -74,6 +92,15 @@ vi.mock("@tanstack/react-query", () => ({
 		if (procedure === "projects.publishingSuite.latestCycle") {
 			return {
 				data: { cycle: state.cycle },
+				isPending: false,
+				isLoading: false,
+				isError: false,
+				refetch: vi.fn(),
+			};
+		}
+		if (procedure === "projects.members.list") {
+			return {
+				data: { members: state.members },
 				isPending: false,
 				isLoading: false,
 				isError: false,
@@ -184,6 +211,17 @@ vi.mock("@shared/lib/orpc-query-utils", () => {
 					cycleChatDeliveries: proc(
 						"projects.publishingSuite.cycleChatDeliveries",
 					),
+					// Task 6: the contributors override write. Constructed
+					// unconditionally by the component, same obligation as
+					// every entry above.
+					updateTopicContributors: proc(
+						"projects.publishingSuite.updateTopicContributors",
+					),
+				},
+				// Task 6: the contributors picker's member list. Same
+				// obligation as listCycles/cycleChatDeliveries above.
+				members: {
+					list: proc("projects.members.list"),
 				},
 			},
 		},
@@ -220,6 +258,7 @@ function makeTopic(overrides: Record<string, unknown> = {}) {
 		authorRecommendation: null,
 		subject: null,
 		userPostTypes: null,
+		userContributorUserIds: null,
 		whySuggested: null,
 		meetingSpeakers: null,
 		...overrides,

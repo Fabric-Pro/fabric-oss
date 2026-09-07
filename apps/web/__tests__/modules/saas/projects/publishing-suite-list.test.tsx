@@ -28,6 +28,7 @@ const {
 	state,
 	updateStatusMutate,
 	updatePostTypesMutate,
+	updateContributorsMutate,
 	createTopicMutate,
 	toastError,
 	refetchTopics,
@@ -37,6 +38,15 @@ const {
 	state: {
 		topics: [] as Array<Record<string, unknown>>,
 		cycle: null as CycleFixture,
+		// Task 6: the project's members, for the contributors picker.
+		members: [] as Array<Record<string, unknown>>,
+		// Task 7: the members.list query's own readiness — a topic's
+		// contributors editor must not treat a not-yet-loaded or failed
+		// members list as "nobody" (`?? []`).
+		membersPending: false,
+		membersError: false,
+		// Task 6: the signed-in user's id, mirrored by the mocked useSession.
+		viewerUserId: "viewer-1" as string | null,
 		// C-Med3: query readiness the component must honor before deriving any
 		// zero-topic business state.
 		topicsPending: false,
@@ -54,6 +64,7 @@ const {
 	},
 	updateStatusMutate: vi.fn(),
 	updatePostTypesMutate: vi.fn(),
+	updateContributorsMutate: vi.fn(),
 	createTopicMutate: vi.fn(),
 	toastError: vi.fn(),
 	refetchTopics: vi.fn(),
@@ -62,6 +73,18 @@ const {
 }));
 
 vi.mock("sonner", () => ({ toast: { error: toastError } }));
+
+// Task 6: PublishingSuiteList now reads the viewer's own id (for the
+// contributors picker's "(You)" label) via this hook, mirroring
+// ProjectMembersSettings' existing use of it.
+vi.mock("@saas/auth/hooks/use-session", () => ({
+	useSession: () => ({
+		user: state.viewerUserId ? { id: state.viewerUserId } : null,
+		session: { id: "test-session" },
+		loaded: true,
+		reloadSession: vi.fn(),
+	}),
+}));
 
 // Every assertion in this file predates the Inbox and describes flag-OFF
 // behaviour, which section 7.6 of the design requires to stay unchanged. This
@@ -93,6 +116,21 @@ vi.mock("@tanstack/react-query", () => ({
 				isLoading: state.cyclePending,
 				isError: state.cycleError,
 				refetch: refetchCycle,
+			};
+		}
+		// Task 6: the contributors picker's member list. A missing entry here
+		// is not a failing assertion, it's `undefined` data — the component
+		// unconditionally constructs this query regardless of which test is
+		// running.
+		if (procedure === "projects.members.list") {
+			return {
+				data: state.membersError
+					? undefined
+					: { members: state.members },
+				isPending: state.membersPending,
+				isLoading: state.membersPending,
+				isError: state.membersError,
+				refetch: vi.fn(),
 			};
 		}
 		return {
@@ -144,6 +182,20 @@ vi.mock("@tanstack/react-query", () => ({
 		if (procedure === "projects.publishingSuite.updateTopicPostTypes") {
 			const run = async (vars: unknown) => {
 				updatePostTypesMutate(vars);
+				await opts.onSuccess?.(undefined, vars, undefined);
+				return undefined;
+			};
+			return {
+				mutate: (vars: unknown) => {
+					void run(vars).catch(() => {});
+				},
+				mutateAsync: run,
+				isPending: false,
+			};
+		}
+		if (procedure === "projects.publishingSuite.updateTopicContributors") {
+			const run = async (vars: unknown) => {
+				updateContributorsMutate(vars);
 				await opts.onSuccess?.(undefined, vars, undefined);
 				return undefined;
 			};
@@ -227,6 +279,16 @@ vi.mock("@shared/lib/orpc-query-utils", () => {
 					setTopicSnooze: m(
 						"projects.publishingSuite.setTopicSnooze",
 					),
+					// Task 6: the contributors override write.
+					updateTopicContributors: m(
+						"projects.publishingSuite.updateTopicContributors",
+					),
+				},
+				// Task 6: the contributors picker's member list. Same
+				// obligation as every other entry in this mock — a missing
+				// one is `undefined.queryOptions`, not a failing assertion.
+				members: {
+					list: q("projects.members.list"),
 				},
 			},
 		},
@@ -278,6 +340,7 @@ function makeTopic(overrides: Record<string, unknown> = {}) {
 		angle: null as string | null,
 		subject: null as string | null,
 		userPostTypes: null as string[] | null,
+		userContributorUserIds: null as string[] | null,
 		whySuggested: null as {
 			named: Array<{
 				type: "story" | "document" | "meeting";
@@ -296,6 +359,28 @@ function makeTopic(overrides: Record<string, unknown> = {}) {
 		} | null,
 		isSnoozed: false,
 		isRead: false,
+		...overrides,
+	};
+}
+
+/** A project member row as `projects.members.list` returns it — the
+ *  contributors picker's option shape (Task 6). */
+function makeMember(overrides: Record<string, unknown> = {}) {
+	return {
+		userId: "u1",
+		role: "EDITOR",
+		user: {
+			id: "u1",
+			name: "Ada",
+			email: "ada@example.com",
+			image: null as string | null,
+		},
+		isOwner: false,
+		isCreator: false,
+		isGuest: false,
+		invitedAt: null,
+		acceptedAt: null,
+		expiresAt: null,
 		...overrides,
 	};
 }
@@ -330,6 +415,10 @@ function renderList(
 beforeEach(() => {
 	state.topics = [];
 	state.cycle = null;
+	state.members = [];
+	state.membersPending = false;
+	state.membersError = false;
+	state.viewerUserId = "viewer-1";
 	state.topicsPending = false;
 	state.topicsError = false;
 	state.cyclePending = false;
@@ -339,6 +428,7 @@ beforeEach(() => {
 	pendingGate.resolve = null;
 	updateStatusMutate.mockReset();
 	updatePostTypesMutate.mockReset();
+	updateContributorsMutate.mockReset();
 	createTopicMutate.mockReset();
 	toastError.mockReset();
 	refetchTopics.mockReset();
@@ -1705,5 +1795,561 @@ describe("PublishingSuiteList", () => {
 		expect(
 			screen.queryByRole("button", { name: "Reset to AI suggestion" }),
 		).not.toBeInTheDocument();
+	});
+
+	// -----------------------------------------------------------------------
+	// Task 6: the contributors editor — assign, remove yourself, reset.
+	// -----------------------------------------------------------------------
+	describe("contributors editor", () => {
+		it("lists the project's members with the current contributors checked", async () => {
+			const user = userEvent.setup();
+			state.members = [
+				makeMember({
+					userId: "u1",
+					user: {
+						id: "u1",
+						name: "Ada",
+						email: "ada@example.com",
+						image: null,
+					},
+				}),
+				makeMember({
+					userId: "u2",
+					user: {
+						id: "u2",
+						name: "Bob",
+						email: "bob@example.com",
+						image: null,
+					},
+				}),
+			];
+			state.topics = [
+				makeTopic({
+					id: "t1",
+					title: "Alpha topic",
+					contributors: [
+						{ id: "u1", name: "Ada", image: null, username: "ada" },
+					],
+				}),
+			];
+			renderList({ canEdit: true });
+
+			await user.click(
+				screen.getByRole("button", { name: "Edit contributors" }),
+			);
+
+			const dialog = await screen.findByRole("dialog");
+			expect(within(dialog).getByText("Ada")).toBeInTheDocument();
+			expect(within(dialog).getByText("Bob")).toBeInTheDocument();
+			expect(
+				within(dialog).getByRole("checkbox", { name: /^Ada$/ }),
+			).toBeChecked();
+			expect(
+				within(dialog).getByRole("checkbox", { name: /^Bob$/ }),
+			).not.toBeChecked();
+		});
+
+		it("checking a second member leaves the first checked and Save submits both ids", async () => {
+			const user = userEvent.setup();
+			state.members = [
+				makeMember({
+					userId: "u1",
+					user: {
+						id: "u1",
+						name: "Ada",
+						email: "ada@example.com",
+						image: null,
+					},
+				}),
+				makeMember({
+					userId: "u2",
+					user: {
+						id: "u2",
+						name: "Bob",
+						email: "bob@example.com",
+						image: null,
+					},
+				}),
+			];
+			state.topics = [
+				makeTopic({
+					id: "t1",
+					title: "Alpha topic",
+					contributors: [
+						{ id: "u1", name: "Ada", image: null, username: "ada" },
+					],
+				}),
+			];
+			renderList({ canEdit: true });
+
+			await user.click(
+				screen.getByRole("button", { name: "Edit contributors" }),
+			);
+			const dialog = within(await screen.findByRole("dialog"));
+			await user.click(dialog.getByText("Bob"));
+
+			expect(
+				dialog.getByRole("checkbox", { name: /^Ada$/ }),
+			).toBeChecked();
+			expect(
+				dialog.getByRole("checkbox", { name: /^Bob$/ }),
+			).toBeChecked();
+
+			await user.click(dialog.getByRole("button", { name: "Save" }));
+
+			await waitFor(() =>
+				expect(updateContributorsMutate).toHaveBeenCalledWith(
+					expect.objectContaining({
+						topicId: "t1",
+						contributorUserIds: ["u1", "u2"],
+					}),
+				),
+			);
+		});
+
+		it("unchecking yourself submits a list without your id", async () => {
+			const user = userEvent.setup();
+			state.viewerUserId = "viewer-1";
+			state.members = [
+				makeMember({
+					userId: "viewer-1",
+					user: {
+						id: "viewer-1",
+						name: "Me",
+						email: "me@example.com",
+						image: null,
+					},
+				}),
+				makeMember({
+					userId: "u2",
+					user: {
+						id: "u2",
+						name: "Bob",
+						email: "bob@example.com",
+						image: null,
+					},
+				}),
+			];
+			state.topics = [
+				makeTopic({
+					id: "t1",
+					title: "Alpha topic",
+					contributors: [
+						{
+							id: "viewer-1",
+							name: "Me",
+							image: null,
+							username: "me",
+						},
+						{ id: "u2", name: "Bob", image: null, username: "bob" },
+					],
+				}),
+			];
+			renderList({ canEdit: true });
+
+			await user.click(
+				screen.getByRole("button", { name: "Edit contributors" }),
+			);
+			const dialog = within(await screen.findByRole("dialog"));
+			// The viewer's own row is labelled "(You)" so this is findable by
+			// name rather than merely inferred from matching your own name.
+			await user.click(
+				dialog.getByRole("checkbox", { name: /Me \(You\)/ }),
+			);
+			await user.click(dialog.getByRole("button", { name: "Save" }));
+
+			await waitFor(() =>
+				expect(updateContributorsMutate).toHaveBeenCalledWith(
+					expect.objectContaining({
+						topicId: "t1",
+						contributorUserIds: ["u2"],
+					}),
+				),
+			);
+		});
+
+		it("Save with everything unchecked submits [], not null", async () => {
+			const user = userEvent.setup();
+			state.members = [
+				makeMember({
+					userId: "u1",
+					user: {
+						id: "u1",
+						name: "Ada",
+						email: "ada@example.com",
+						image: null,
+					},
+				}),
+			];
+			state.topics = [
+				makeTopic({
+					id: "t1",
+					title: "Alpha topic",
+					contributors: [
+						{ id: "u1", name: "Ada", image: null, username: "ada" },
+					],
+				}),
+			];
+			renderList({ canEdit: true });
+
+			await user.click(
+				screen.getByRole("button", { name: "Edit contributors" }),
+			);
+			const dialog = within(await screen.findByRole("dialog"));
+			await user.click(dialog.getByRole("checkbox", { name: /^Ada$/ }));
+			await user.click(dialog.getByRole("button", { name: "Save" }));
+
+			await waitFor(() =>
+				expect(updateContributorsMutate).toHaveBeenCalledWith(
+					expect.objectContaining({
+						topicId: "t1",
+						contributorUserIds: [],
+					}),
+				),
+			);
+		});
+
+		// The post-type row's guard, ported: an override of `[]` empties the
+		// contributor list, and the Edit control must not have lived inside
+		// that same conditional or the editor would be stranded with no way
+		// back to add anyone or reset.
+		it("after an empty override, the Edit control is still reachable", () => {
+			state.topics = [
+				makeTopic({
+					id: "t1",
+					title: "Empty editable",
+					contributors: [],
+					userContributorUserIds: [],
+				}),
+			];
+			renderList({ canEdit: true });
+
+			expect(
+				screen.getByRole("button", { name: "Edit contributors" }),
+			).toBeInTheDocument();
+			expect(
+				screen.queryByLabelText("Contributors"),
+			).not.toBeInTheDocument();
+		});
+
+		it("Reset submits null", async () => {
+			const user = userEvent.setup();
+			state.members = [
+				makeMember({
+					userId: "u1",
+					user: {
+						id: "u1",
+						name: "Ada",
+						email: "ada@example.com",
+						image: null,
+					},
+				}),
+			];
+			state.topics = [
+				makeTopic({
+					id: "t1",
+					title: "Alpha topic",
+					contributors: [
+						{ id: "u1", name: "Ada", image: null, username: "ada" },
+					],
+					userContributorUserIds: ["u1"],
+				}),
+			];
+			renderList({ canEdit: true });
+
+			await user.click(
+				screen.getByRole("button", { name: "Edit contributors" }),
+			);
+			const dialog = within(await screen.findByRole("dialog"));
+			await user.click(
+				dialog.getByRole("button", { name: "Reset to AI suggestion" }),
+			);
+
+			await waitFor(() =>
+				expect(updateContributorsMutate).toHaveBeenCalledWith(
+					expect.objectContaining({
+						topicId: "t1",
+						contributorUserIds: null,
+					}),
+				),
+			);
+		});
+
+		// Whole-branch review, IMPORTANT 1: `initialSelected` was previously
+		// `topic.contributors.map((c) => c.id)` inline in JSX — a fresh array
+		// on EVERY render regardless of whether the topic's data changed. The
+		// dialog re-seeds its selection whenever that reference changes, so
+		// any unrelated parent re-render silently reverted an in-progress
+		// selection back to the AI set. `TopicRow` now memoizes it; this test
+		// fails without that fix.
+		it("Regression: a parent re-render while the dialog is open does not discard an in-progress selection", async () => {
+			const user = userEvent.setup();
+			state.members = [
+				makeMember({
+					userId: "u1",
+					user: {
+						id: "u1",
+						name: "Ada",
+						email: "ada@example.com",
+						image: null,
+					},
+				}),
+			];
+			// The PRIMARY case cited by the finding: no override yet, so the
+			// fallback `topic.contributors.map(...)` is what runs.
+			state.topics = [
+				makeTopic({ id: "t1", title: "Alpha topic", contributors: [] }),
+			];
+			const { rerender } = renderList({ canEdit: true });
+
+			await user.click(
+				screen.getByRole("button", { name: "Edit contributors" }),
+			);
+			const dialog = within(await screen.findByRole("dialog"));
+			await user.click(dialog.getByRole("checkbox", { name: /^Ada$/ }));
+			expect(
+				dialog.getByRole("checkbox", { name: /^Ada$/ }),
+			).toBeChecked();
+
+			// Force a parent re-render that carries NO topic/member data
+			// change — reproducing "any parent re-render" directly rather
+			// than via one specific unrelated interaction.
+			rerender(
+				<PublishingSuiteList
+					projectId="proj-1"
+					organizationId={null}
+					canEdit
+				/>,
+			);
+
+			expect(
+				dialog.getByRole("checkbox", { name: /^Ada$/ }),
+			).toBeChecked();
+		});
+
+		// Whole-branch review, IMPORTANT 2: the AI contributor set is NOT
+		// membership-scoped (`resolveProjectContributorIds` resolves
+		// story/document/PR authors via any linked account), so a topic
+		// routinely names someone who isn't a current project member. Before
+		// the fix, Save intersected the selection with `members`, so an
+		// editor who opened the dialog only to ADD someone silently REMOVED
+		// every such contributor.
+		it("renders a non-member contributor as its own labelled row and keeps them on Save when only a member is added", async () => {
+			const user = userEvent.setup();
+			state.members = [
+				makeMember({
+					userId: "u1",
+					user: {
+						id: "u1",
+						name: "Ada",
+						email: "ada@example.com",
+						image: null,
+					},
+				}),
+				makeMember({
+					userId: "u2",
+					user: {
+						id: "u2",
+						name: "Bob",
+						email: "bob@example.com",
+						image: null,
+					},
+				}),
+			];
+			state.topics = [
+				makeTopic({
+					id: "t1",
+					title: "Alpha topic",
+					// Charlie is a PR author the AI resolver found — not a
+					// current project member.
+					contributors: [
+						{ id: "u1", name: "Ada", image: null, username: "ada" },
+						{
+							id: "u9",
+							name: "Charlie",
+							image: null,
+							username: "charlie",
+						},
+					],
+				}),
+			];
+			renderList({ canEdit: true });
+
+			await user.click(
+				screen.getByRole("button", { name: "Edit contributors" }),
+			);
+			const dialog = within(await screen.findByRole("dialog"));
+
+			expect(
+				dialog.getByText("Not a project member"),
+			).toBeInTheDocument();
+			expect(
+				dialog.getByRole("checkbox", { name: /Charlie/ }),
+			).toBeChecked();
+
+			// Add Bob — the editor's only intended change.
+			await user.click(dialog.getByRole("checkbox", { name: /^Bob$/ }));
+			await user.click(dialog.getByRole("button", { name: "Save" }));
+
+			// Charlie (non-member) must survive the save even though the
+			// editor never touched their row.
+			await waitFor(() =>
+				expect(updateContributorsMutate).toHaveBeenCalledWith(
+					expect.objectContaining({
+						topicId: "t1",
+						contributorUserIds: ["u1", "u2", "u9"],
+					}),
+				),
+			);
+		});
+
+		it("unchecking a non-member contributor's row removes them from the saved set", async () => {
+			const user = userEvent.setup();
+			state.members = [
+				makeMember({
+					userId: "u1",
+					user: {
+						id: "u1",
+						name: "Ada",
+						email: "ada@example.com",
+						image: null,
+					},
+				}),
+			];
+			state.topics = [
+				makeTopic({
+					id: "t1",
+					title: "Alpha topic",
+					contributors: [
+						{ id: "u1", name: "Ada", image: null, username: "ada" },
+						{
+							id: "u9",
+							name: "Charlie",
+							image: null,
+							username: "charlie",
+						},
+					],
+				}),
+			];
+			renderList({ canEdit: true });
+
+			await user.click(
+				screen.getByRole("button", { name: "Edit contributors" }),
+			);
+			const dialog = within(await screen.findByRole("dialog"));
+			await user.click(dialog.getByRole("checkbox", { name: /Charlie/ }));
+			await user.click(dialog.getByRole("button", { name: "Save" }));
+
+			await waitFor(() =>
+				expect(updateContributorsMutate).toHaveBeenCalledWith(
+					expect.objectContaining({
+						topicId: "t1",
+						contributorUserIds: ["u1"],
+					}),
+				),
+			);
+		});
+
+		// Whole-branch review, residual finding 3: Postgres arrays carry no
+		// uniqueness constraint and the input schema doesn't dedupe either,
+		// so a duplicate non-member contributor id can already exist in
+		// stored data. Without a dedupe, two rows would share
+		// `id="contributor-u9"` — a broken `htmlFor` on the second row and
+		// Save echoing the duplicate back.
+		it("dedupes a duplicated non-member contributor id into a single row", async () => {
+			const user = userEvent.setup();
+			state.members = [];
+			state.topics = [
+				makeTopic({
+					id: "t1",
+					title: "Alpha topic",
+					contributors: [
+						{
+							id: "u9",
+							name: "Charlie",
+							image: null,
+							username: "charlie",
+						},
+						{
+							id: "u9",
+							name: "Charlie",
+							image: null,
+							username: "charlie",
+						},
+					],
+				}),
+			];
+			renderList({ canEdit: true });
+
+			await user.click(
+				screen.getByRole("button", { name: "Edit contributors" }),
+			);
+			const dialog = within(await screen.findByRole("dialog"));
+
+			expect(
+				dialog.getAllByRole("checkbox", { name: /Charlie/ }),
+			).toHaveLength(1);
+
+			await user.click(dialog.getByRole("button", { name: "Save" }));
+			await waitFor(() =>
+				expect(updateContributorsMutate).toHaveBeenCalledWith(
+					expect.objectContaining({
+						topicId: "t1",
+						contributorUserIds: ["u9"],
+					}),
+				),
+			);
+		});
+
+		it("disables Save while the project's members list has not loaded yet", async () => {
+			const user = userEvent.setup();
+			state.membersPending = true;
+			state.topics = [
+				makeTopic({
+					id: "t1",
+					title: "Alpha topic",
+					contributors: [
+						{ id: "u1", name: "Ada", image: null, username: "ada" },
+					],
+				}),
+			];
+			renderList({ canEdit: true });
+
+			await user.click(
+				screen.getByRole("button", { name: "Edit contributors" }),
+			);
+			const dialog = within(await screen.findByRole("dialog"));
+
+			expect(
+				dialog.getByText(/loading project members/i),
+			).toBeInTheDocument();
+			expect(dialog.getByRole("button", { name: "Save" })).toBeDisabled();
+		});
+
+		it("disables Save and surfaces the failure when the members query errors, instead of silently emptying the override", async () => {
+			const user = userEvent.setup();
+			state.membersError = true;
+			state.topics = [
+				makeTopic({
+					id: "t1",
+					title: "Alpha topic",
+					contributors: [
+						{ id: "u1", name: "Ada", image: null, username: "ada" },
+					],
+				}),
+			];
+			renderList({ canEdit: true });
+
+			await user.click(
+				screen.getByRole("button", { name: "Edit contributors" }),
+			);
+			const dialog = within(await screen.findByRole("dialog"));
+
+			expect(dialog.getByRole("alert")).toHaveTextContent(
+				/couldn't load this project's members/i,
+			);
+			expect(dialog.getByRole("button", { name: "Save" })).toBeDisabled();
+			expect(updateContributorsMutate).not.toHaveBeenCalled();
+		});
 	});
 });

@@ -1,12 +1,14 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { db } from "../index";
 import * as membersModule from "../prisma/queries/projects/members";
 import {
 	countPublishingCycleRecipients,
 	countPublishingCycles,
 	createManualPublishingTopic,
+	effectiveContributorUserIds,
 	getLatestPublishingCycle,
+	getPublishingTopicEffectiveContributorIds,
 	listPublishingCycles,
 	listPublishingTopics,
 	type PublishingCycleStatusFilter,
@@ -15,6 +17,7 @@ import {
 	resolveProjectTenant,
 	setPublishingTopicReadState,
 	setPublishingTopicSnooze,
+	updatePublishingTopicContributors,
 	updatePublishingTopicPostTypes,
 	updatePublishingTopicStatus,
 } from "../prisma/queries/projects/publishing-suite";
@@ -1265,6 +1268,246 @@ it.skipIf(!RUN_DB)(
 );
 
 it.skipIf(!RUN_DB)(
+	"updatePublishingTopicContributors sets a non-empty override that round-trips and dedupes",
+	async () => {
+		const user = await seedUser("ptcc-set");
+		const project = await seedProject(user);
+		const contributorA = await seedUser("ptcc-contrib-a");
+		const contributorB = await seedUser("ptcc-contrib-b");
+		const { topic } = await createManualPublishingTopic({
+			projectId: project.id,
+			createdById: user.id,
+			title: "PTCC set",
+		});
+		const res = await updatePublishingTopicContributors({
+			id: topic.id,
+			projectId: project.id,
+			contributorUserIds: [
+				contributorA.id,
+				contributorA.id,
+				contributorB.id,
+			],
+		});
+		expect(res).not.toBeNull();
+		const { items } = await listPublishingTopics({
+			projectId: project.id,
+			viewerUserId: user.id,
+		});
+		expect(
+			items.find((t) => t.id === topic.id)?.userContributorUserIds,
+		).toEqual([contributorA.id, contributorB.id]);
+	},
+);
+
+it.skipIf(!RUN_DB)(
+	"passing null resets the contributor override — userContributorUserIds projects back to null",
+	async () => {
+		const user = await seedUser("ptcc-reset");
+		const project = await seedProject(user);
+		const contributor = await seedUser("ptcc-reset-contrib");
+		const { topic } = await createManualPublishingTopic({
+			projectId: project.id,
+			createdById: user.id,
+			title: "PTCC reset",
+		});
+		await updatePublishingTopicContributors({
+			id: topic.id,
+			projectId: project.id,
+			contributorUserIds: [contributor.id],
+		});
+		await updatePublishingTopicContributors({
+			id: topic.id,
+			projectId: project.id,
+			contributorUserIds: null,
+		});
+		const { items } = await listPublishingTopics({
+			projectId: project.id,
+			viewerUserId: user.id,
+		});
+		expect(
+			items.find((t) => t.id === topic.id)?.userContributorUserIds,
+		).toBeNull();
+	},
+);
+
+it.skipIf(!RUN_DB)(
+	"updatePublishingTopicContributors is project-scoped: a foreign projectId writes nothing and returns null",
+	async () => {
+		const user = await seedUser("ptcc-scope");
+		const project = await seedProject(user);
+		const other = await seedProject(user);
+		const originalContributor = await seedUser("ptcc-scope-orig");
+		const rejectedContributor = await seedUser("ptcc-scope-rejected");
+		const { topic } = await createManualPublishingTopic({
+			projectId: project.id,
+			createdById: user.id,
+			title: "PTCC scope",
+		});
+		// Establish a known, non-default state first so the next call can be
+		// proven to have changed nothing — not merely "still the initial null".
+		await updatePublishingTopicContributors({
+			id: topic.id,
+			projectId: project.id,
+			contributorUserIds: [originalContributor.id],
+		});
+		const res = await updatePublishingTopicContributors({
+			id: topic.id,
+			projectId: other.id, // wrong project
+			contributorUserIds: [rejectedContributor.id],
+		});
+		expect(res).toBeNull();
+		const { items } = await listPublishingTopics({
+			projectId: project.id,
+			viewerUserId: user.id,
+		});
+		expect(
+			items.find((t) => t.id === topic.id)?.userContributorUserIds,
+		).toEqual([originalContributor.id]);
+	},
+);
+
+it.skipIf(!RUN_DB)(
+	"updatePublishingTopicContributors: an empty override is stored and projects as [] (distinct from null)",
+	async () => {
+		const user = await seedUser("ptcc-empty");
+		const project = await seedProject(user);
+		const { topic } = await createManualPublishingTopic({
+			projectId: project.id,
+			createdById: user.id,
+			title: "PTCC empty",
+		});
+		await updatePublishingTopicContributors({
+			id: topic.id,
+			projectId: project.id,
+			contributorUserIds: [],
+		});
+		const { items } = await listPublishingTopics({
+			projectId: project.id,
+			viewerUserId: user.id,
+		});
+		const foundTopic = items.find((t) => t.id === topic.id);
+		expect(foundTopic?.userContributorUserIds).toEqual([]);
+		expect(foundTopic?.contributors).toEqual([]);
+	},
+);
+
+// getPublishingTopicEffectiveContributorIds backs updateTopicContributors'
+// grandfather check (see the doc-comment above the helper in
+// publishing-suite.ts). Every prior reference to it in the repo was a mock,
+// so its two security-relevant properties — project scoping and reading the
+// EFFECTIVE set rather than the raw AI column — were unpinned. Real-DB only,
+// like every it.skipIf(!RUN_DB) case in this file.
+it.skipIf(!RUN_DB)(
+	"getPublishingTopicEffectiveContributorIds: no override returns the AI contributorUserIds",
+	async () => {
+		const user = await seedUser("ptec-ai");
+		const project = await seedProject(user);
+		const aiContributor = await seedUser("ptec-ai-contrib");
+		const topic = await db.publishingTopic.create({
+			data: {
+				projectId: project.id,
+				userId: user.id,
+				title: "PTEC AI",
+				status: "SUGGESTION",
+				origin: "AI",
+				dedupeKey: computeDedupeKey(project.id, "PTEC AI"),
+				contributorUserIds: [aiContributor.id],
+			},
+		});
+		const result = await getPublishingTopicEffectiveContributorIds({
+			id: topic.id,
+			projectId: project.id,
+		});
+		expect(result).toEqual([aiContributor.id]);
+	},
+);
+
+it.skipIf(!RUN_DB)(
+	"getPublishingTopicEffectiveContributorIds: an override returns the override, not the AI column",
+	async () => {
+		const user = await seedUser("ptec-ov");
+		const project = await seedProject(user);
+		const aiContributor = await seedUser("ptec-ov-ai");
+		const overrideContributor = await seedUser("ptec-ov-override");
+		const { topic } = await createManualPublishingTopic({
+			projectId: project.id,
+			createdById: user.id,
+			title: "PTEC override",
+		});
+		// Manual topics start with contributorUserIds: [] (schema default) —
+		// stamp a non-empty AI column directly so the assertion below can prove
+		// the OVERRIDE, not the AI column, comes back.
+		await db.publishingTopic.update({
+			where: { id: topic.id },
+			data: { contributorUserIds: [aiContributor.id] },
+		});
+		await updatePublishingTopicContributors({
+			id: topic.id,
+			projectId: project.id,
+			contributorUserIds: [overrideContributor.id],
+		});
+		const result = await getPublishingTopicEffectiveContributorIds({
+			id: topic.id,
+			projectId: project.id,
+		});
+		expect(result).toEqual([overrideContributor.id]);
+	},
+);
+
+it.skipIf(!RUN_DB)(
+	"getPublishingTopicEffectiveContributorIds: an explicit empty override returns [], not the AI column",
+	async () => {
+		const user = await seedUser("ptec-empty");
+		const project = await seedProject(user);
+		const aiContributor = await seedUser("ptec-empty-ai");
+		const { topic } = await createManualPublishingTopic({
+			projectId: project.id,
+			createdById: user.id,
+			title: "PTEC empty override",
+		});
+		await db.publishingTopic.update({
+			where: { id: topic.id },
+			data: { contributorUserIds: [aiContributor.id] },
+		});
+		await updatePublishingTopicContributors({
+			id: topic.id,
+			projectId: project.id,
+			contributorUserIds: [],
+		});
+		const result = await getPublishingTopicEffectiveContributorIds({
+			id: topic.id,
+			projectId: project.id,
+		});
+		expect(result).toEqual([]);
+	},
+);
+
+it.skipIf(!RUN_DB)(
+	"getPublishingTopicEffectiveContributorIds is project-scoped: a correct topic id with a different project's id returns nothing",
+	async () => {
+		const user = await seedUser("ptec-scope");
+		const project = await seedProject(user);
+		const other = await seedProject(user);
+		const contributor = await seedUser("ptec-scope-contrib");
+		const { topic } = await createManualPublishingTopic({
+			projectId: project.id,
+			createdById: user.id,
+			title: "PTEC scope",
+		});
+		await updatePublishingTopicContributors({
+			id: topic.id,
+			projectId: project.id,
+			contributorUserIds: [contributor.id],
+		});
+		const result = await getPublishingTopicEffectiveContributorIds({
+			id: topic.id,
+			projectId: other.id, // wrong project
+		});
+		expect(result).toBeNull();
+	},
+);
+
+it.skipIf(!RUN_DB)(
 	"whySuggested: resolves an in-project document title + PR count (real read)",
 	async () => {
 		const user = await seedUser("pub-q-ws-doc");
@@ -2198,12 +2441,48 @@ it.skipIf(!RUN_DB)(
 	},
 );
 
+// Pure-function unit tests (no DB): run unconditionally, unlike every
+// `it.skipIf(!RUN_DB)` case above — the no-Postgres suite is where this
+// resolver's contract must be pinned.
+describe("effectiveContributorUserIds", () => {
+	it("returns the AI list when not overridden", () => {
+		expect(
+			effectiveContributorUserIds({
+				contributorUserIds: ["u1", "u2"],
+				contributorsOverridden: false,
+				userContributorUserIds: ["u9"],
+			}),
+		).toEqual(["u1", "u2"]);
+	});
+
+	it("returns the override when overridden, including an empty one", () => {
+		expect(
+			effectiveContributorUserIds({
+				contributorUserIds: ["u1"],
+				contributorsOverridden: true,
+				userContributorUserIds: [],
+			}),
+		).toEqual([]);
+	});
+});
+
 afterAll(async () => {
-	// Deletes cascade to publishing_topic / publishing_suggestion_cycle rows
-	// (both onDelete: Cascade on projectId).
-	await db.project.deleteMany({ where: { id: { in: projectIds } } });
-	await db.organization.deleteMany({ where: { id: { in: createdOrgIds } } });
-	await db.user.deleteMany({ where: { id: { in: createdUserIds } } });
+	// Guarded on RUN_DB like every it.skipIf(!RUN_DB) case above: the
+	// unconditional `effectiveContributorUserIds` describe block just above
+	// gives this file its first non-skipped test in the no-Postgres run, so
+	// vitest now actually executes this hook there too (previously the whole
+	// file — every case skipIf'd — was skipped file-wide, hooks included).
+	// Without this guard the no-Postgres run tries these deletes against the
+	// CI placeholder DATABASE_URL, which nothing is listening on.
+	if (RUN_DB) {
+		// Deletes cascade to publishing_topic / publishing_suggestion_cycle rows
+		// (both onDelete: Cascade on projectId).
+		await db.project.deleteMany({ where: { id: { in: projectIds } } });
+		await db.organization.deleteMany({
+			where: { id: { in: createdOrgIds } },
+		});
+		await db.user.deleteMany({ where: { id: { in: createdUserIds } } });
+	}
 	if (priorFunctionTagsFlag === undefined) {
 		delete process.env.FABRIC_FEATURE_FUNCTION_TAGS;
 	} else {

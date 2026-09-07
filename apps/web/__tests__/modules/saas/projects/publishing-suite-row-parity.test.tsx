@@ -29,6 +29,7 @@ const {
 	state,
 	updateStatusMutate,
 	updatePostTypesMutate,
+	updateContributorsMutate,
 	createTopicMutate,
 	toastError,
 	refetchTopics,
@@ -38,6 +39,8 @@ const {
 	state: {
 		topics: [] as Array<Record<string, unknown>>,
 		cycle: null as CycleFixture,
+		// Task 6: the project's members, for the contributors picker.
+		members: [] as Array<Record<string, unknown>>,
 		// C-Med3: query readiness the component must honor before deriving any
 		// zero-topic business state.
 		topicsPending: false,
@@ -55,6 +58,7 @@ const {
 	},
 	updateStatusMutate: vi.fn(),
 	updatePostTypesMutate: vi.fn(),
+	updateContributorsMutate: vi.fn(),
 	createTopicMutate: vi.fn(),
 	toastError: vi.fn(),
 	refetchTopics: vi.fn(),
@@ -63,6 +67,19 @@ const {
 }));
 
 vi.mock("sonner", () => ({ toast: { error: toastError } }));
+
+// Task 6: PublishingSuiteList now reads the viewer's own id via this hook.
+// The snapshot fixture below has no member to match it against, so it never
+// renders "(You)" — this mock exists only so the hook does not throw outside
+// a SessionProvider.
+vi.mock("@saas/auth/hooks/use-session", () => ({
+	useSession: () => ({
+		user: { id: "viewer-1" },
+		session: { id: "test-session" },
+		loaded: true,
+		reloadSession: vi.fn(),
+	}),
+}));
 
 // Every assertion in this file predates the Inbox and describes flag-OFF
 // behaviour, which section 7.6 of the design requires to stay unchanged. This
@@ -94,6 +111,15 @@ vi.mock("@tanstack/react-query", () => ({
 				isLoading: state.cyclePending,
 				isError: state.cycleError,
 				refetch: refetchCycle,
+			};
+		}
+		if (procedure === "projects.members.list") {
+			return {
+				data: { members: state.members },
+				isPending: false,
+				isLoading: false,
+				isError: false,
+				refetch: vi.fn(),
 			};
 		}
 		return {
@@ -145,6 +171,20 @@ vi.mock("@tanstack/react-query", () => ({
 		if (procedure === "projects.publishingSuite.updateTopicPostTypes") {
 			const run = async (vars: unknown) => {
 				updatePostTypesMutate(vars);
+				await opts.onSuccess?.(undefined, vars, undefined);
+				return undefined;
+			};
+			return {
+				mutate: (vars: unknown) => {
+					void run(vars).catch(() => {});
+				},
+				mutateAsync: run,
+				isPending: false,
+			};
+		}
+		if (procedure === "projects.publishingSuite.updateTopicContributors") {
+			const run = async (vars: unknown) => {
+				updateContributorsMutate(vars);
 				await opts.onSuccess?.(undefined, vars, undefined);
 				return undefined;
 			};
@@ -228,6 +268,12 @@ vi.mock("@shared/lib/orpc-query-utils", () => {
 					setTopicSnooze: m(
 						"projects.publishingSuite.setTopicSnooze",
 					),
+					updateTopicContributors: m(
+						"projects.publishingSuite.updateTopicContributors",
+					),
+				},
+				members: {
+					list: q("projects.members.list"),
 				},
 			},
 		},
@@ -279,6 +325,7 @@ function makeTopic(overrides: Record<string, unknown> = {}) {
 		angle: null as string | null,
 		subject: null as string | null,
 		userPostTypes: null as string[] | null,
+		userContributorUserIds: null as string[] | null,
 		whySuggested: null as {
 			named: Array<{
 				type: "story" | "document" | "meeting";
@@ -321,6 +368,7 @@ function renderList(
 beforeEach(() => {
 	state.topics = [];
 	state.cycle = null;
+	state.members = [];
 	state.topicsPending = false;
 	state.topicsError = false;
 	state.cyclePending = false;
@@ -330,6 +378,7 @@ beforeEach(() => {
 	pendingGate.resolve = null;
 	updateStatusMutate.mockReset();
 	updatePostTypesMutate.mockReset();
+	updateContributorsMutate.mockReset();
 	createTopicMutate.mockReset();
 	toastError.mockReset();
 	refetchTopics.mockReset();

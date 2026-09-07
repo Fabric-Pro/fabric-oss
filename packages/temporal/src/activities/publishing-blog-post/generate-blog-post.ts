@@ -34,6 +34,7 @@ import {
 	completeTopicDraft,
 	type DraftCommitRefusal,
 	db,
+	effectiveContributorUserIds,
 	getBoundPromptForAgent,
 	listTopicDecisions,
 	logDraftRefusal,
@@ -120,6 +121,8 @@ export async function generateBlogPostActivity(
 			relevantFunctionTags: true,
 			postTypeRecommendations: true,
 			contributorUserIds: true,
+			contributorsOverridden: true,
+			userContributorUserIds: true,
 			provenance: true,
 		},
 	});
@@ -165,7 +168,7 @@ export async function generateBlogPostActivity(
 			topicId,
 			provenance: topic.provenance,
 		}),
-		resolveContributorNames(topic.contributorUserIds as string[]),
+		resolveContributorNames(effectiveContributorUserIds(topic)),
 		getProjectFunctionTagClause({
 			projectId,
 			requesterUserId: actorUserId,

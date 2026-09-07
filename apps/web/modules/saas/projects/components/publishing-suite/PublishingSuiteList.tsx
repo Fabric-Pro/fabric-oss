@@ -1,6 +1,7 @@
 "use client";
 
 import { composeInboxSections } from "@repo/database/src/publishing-inbox";
+import { useSession } from "@saas/auth/hooks/use-session";
 import { PageTourButton } from "@saas/get-started/components/PageTourButton";
 import { useBasePath } from "@saas/organizations/hooks/use-organization-context";
 import { buildPublishingTopicRoute } from "@saas/projects/lib/publishing/routes";
@@ -40,6 +41,8 @@ export function PublishingSuiteList({
 }) {
 	const queryClient = useQueryClient();
 	const basePath = useBasePath();
+	const { user } = useSession();
+	const viewerUserId = user?.id ?? null;
 	const inboxEnabled = useFeatureFlag("PUBLISHING_INBOX");
 	const [createOpen, setCreateOpen] = useState(false);
 	const [statusFilter, setStatusFilter] = useState<
@@ -94,6 +97,15 @@ export function PublishingSuiteList({
 			input: { projectId, organizationId },
 		}),
 	);
+	// For the contributors picker (Task 6). Fetched ONCE here, not inside
+	// `TopicRow` — a query per rendered row would fire once per topic instead
+	// of once for the whole list.
+	const membersQuery = useQuery(
+		orpc.projects.members.list.queryOptions({
+			input: { projectId, organizationId },
+		}),
+	);
+	const members = membersQuery.data?.members ?? [];
 	const invalidate = () =>
 		queryClient.invalidateQueries({
 			queryKey: orpc.projects.publishingSuite.listTopics.queryKey({
@@ -161,6 +173,41 @@ export function PublishingSuiteList({
 				organizationId,
 				topicId,
 				postTypes,
+			});
+		} finally {
+			endPending(topicId);
+		}
+	};
+
+	const updateContributors = useMutation(
+		orpc.projects.publishingSuite.updateTopicContributors.mutationOptions({
+			// The mutation response deliberately omits the override columns
+			// (Task 4) — never read `response.topic` here. Refresh the same
+			// way `updatePostTypes` does: invalidate and let the list re-fetch
+			// the effective set.
+			onSuccess: invalidate,
+			onError: () => {
+				toast.error(
+					"We couldn't update the contributors. Please try again.",
+				);
+			},
+		}),
+	);
+
+	// Mirrors changePostTypes: per-topic in-flight tracking so the Edit button
+	// + dialog for THIS topic block a second racing write. Returns the promise
+	// so the dialog can close only after success.
+	const changeContributors = async (
+		topicId: string,
+		contributorUserIds: string[] | null,
+	) => {
+		beginPending(topicId);
+		try {
+			await updateContributors.mutateAsync({
+				projectId,
+				organizationId,
+				topicId,
+				contributorUserIds,
 			});
 		} finally {
 			endPending(topicId);
@@ -266,10 +313,17 @@ export function PublishingSuiteList({
 			inbox={inboxEnabled}
 			isPending={(pendingTopicIds.get(t.id) ?? 0) > 0}
 			topicHref={buildPublishingTopicRoute(basePath, projectId, t.id)}
+			members={members}
+			membersPending={membersQuery.isPending}
+			membersError={membersQuery.isError}
+			viewerUserId={viewerUserId}
 			onChangeStatus={(status, declineReason, publishedUrl) =>
 				changeStatus(t.id, status, declineReason, publishedUrl)
 			}
 			onChangePostTypes={(postTypes) => changePostTypes(t.id, postTypes)}
+			onChangeContributors={(contributorUserIds) =>
+				changeContributors(t.id, contributorUserIds)
+			}
 			onSetReadState={(read) => changeReadState(t.id, read)}
 			onSetSnooze={(preset, reason) => changeSnooze(t.id, preset, reason)}
 		/>

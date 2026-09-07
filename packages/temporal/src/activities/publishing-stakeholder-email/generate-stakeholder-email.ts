@@ -82,6 +82,7 @@ import {
 	completeTopicDraft,
 	type DraftCommitRefusal,
 	db,
+	effectiveContributorUserIds,
 	getBoundPromptForAgent,
 	listTopicDecisions,
 	logDraftRefusal,
@@ -175,6 +176,8 @@ export async function generateStakeholderEmailActivity(
 			relevantFunctionTags: true,
 			postTypeRecommendations: true,
 			contributorUserIds: true,
+			contributorsOverridden: true,
+			userContributorUserIds: true,
 			provenance: true,
 		},
 	});
@@ -220,7 +223,7 @@ export async function generateStakeholderEmailActivity(
 			topicId,
 			provenance: topic.provenance,
 		}),
-		resolveContributorNames(topic.contributorUserIds as string[]),
+		resolveContributorNames(effectiveContributorUserIds(topic)),
 		getProjectFunctionTagClause({
 			projectId,
 			requesterUserId: actorUserId,

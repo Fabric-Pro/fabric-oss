@@ -42,20 +42,29 @@ const userFindMany = vi.fn();
 const checkPublishingGenerationActor = vi.fn();
 const getBoundPromptForAgent = vi.fn();
 const completePlanningAnalysis = vi.fn();
-vi.mock("@repo/database", () => ({
-	logDraftRefusal: vi.fn(),
-	db: {
-		publishingTopic: {
-			findFirst: (...a: unknown[]) => topicFindFirst(...a),
+vi.mock("@repo/database", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("@repo/database")>();
+	return {
+		// `effectiveContributorUserIds` is the REAL implementation, not a
+		// hand-rolled stand-in — a second copy here would encode this file's
+		// guess of the override semantics instead of measuring them, and the
+		// empty-override case is exactly where a guess goes wrong.
+		effectiveContributorUserIds: actual.effectiveContributorUserIds,
+		logDraftRefusal: vi.fn(),
+		db: {
+			publishingTopic: {
+				findFirst: (...a: unknown[]) => topicFindFirst(...a),
+			},
+			user: { findMany: (...a: unknown[]) => userFindMany(...a) },
 		},
-		user: { findMany: (...a: unknown[]) => userFindMany(...a) },
-	},
-	checkPublishingGenerationActor: (...a: unknown[]) =>
-		checkPublishingGenerationActor(...a),
-	getBoundPromptForAgent: (...a: unknown[]) => getBoundPromptForAgent(...a),
-	completePlanningAnalysis: (...a: unknown[]) =>
-		completePlanningAnalysis(...a),
-}));
+		checkPublishingGenerationActor: (...a: unknown[]) =>
+			checkPublishingGenerationActor(...a),
+		getBoundPromptForAgent: (...a: unknown[]) =>
+			getBoundPromptForAgent(...a),
+		completePlanningAnalysis: (...a: unknown[]) =>
+			completePlanningAnalysis(...a),
+	};
+});
 
 vi.mock("@repo/logs", () => ({
 	logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
@@ -79,6 +88,8 @@ const TOPIC = {
 	relevantFunctionTags: ["BACKEND"],
 	postTypeRecommendations: [],
 	contributorUserIds: ["user-2"],
+	contributorsOverridden: false,
+	userContributorUserIds: [],
 };
 
 const MODEL_OUTPUT = {
@@ -330,6 +341,55 @@ describe("generatePlanningAnalysisActivity — prompt resolution", () => {
 
 		expect(generateObject.mock.calls[0]?.[0]?.prompt).toContain(
 			"ROLE COMPOSITION: backend",
+		);
+	});
+});
+
+describe("generatePlanningAnalysisActivity — contributor override", () => {
+	// `effectiveContributorUserIds` is the ONLY thing that may decide who the
+	// prompt calls a contributor — never `topic.contributorUserIds` directly.
+	it("builds the prompt from the override, not the AI list", async () => {
+		topicFindFirst.mockResolvedValue({
+			...TOPIC,
+			contributorUserIds: ["ai-user"],
+			contributorsOverridden: true,
+			userContributorUserIds: ["chosen-user"],
+		});
+		userFindMany.mockResolvedValue([
+			{ id: "chosen-user", name: "Chosen Contributor" },
+		]);
+
+		await run();
+
+		expect(userFindMany).toHaveBeenCalledWith(
+			expect.objectContaining({
+				where: { id: { in: ["chosen-user"] } },
+			}),
+		);
+		expect(generateObject.mock.calls[0]?.[0]?.prompt).toContain(
+			"Chosen Contributor",
+		);
+	});
+
+	it("yields no contributor names when the override is deliberately empty", async () => {
+		// `contributorsOverridden: true` with an empty `userContributorUserIds`
+		// is "nobody", not "fall back to the AI list" — the case a hand-rolled
+		// mock of `effectiveContributorUserIds` would be most likely to get
+		// wrong.
+		topicFindFirst.mockResolvedValue({
+			...TOPIC,
+			contributorUserIds: ["ai-user"],
+			contributorsOverridden: true,
+			userContributorUserIds: [],
+		});
+
+		await run();
+
+		// `resolveContributorNames` short-circuits on an empty list, so the
+		// lookup never runs at all.
+		expect(userFindMany).not.toHaveBeenCalled();
+		expect(generateObject.mock.calls[0]?.[0]?.prompt).not.toContain(
+			"People associated with the work behind this topic",
 		);
 	});
 });

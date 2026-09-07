@@ -15,11 +15,10 @@
  * discloses, and the unread announcement survives the move.
  */
 
+import { TopicRow } from "@saas/projects/components/publishing-suite/TopicRow";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
-
-import { TopicRow } from "@saas/projects/components/publishing-suite/TopicRow";
 
 function topic(overrides: Record<string, unknown> = {}) {
 	return {
@@ -47,6 +46,7 @@ function topic(overrides: Record<string, unknown> = {}) {
 		subject: null,
 		whySuggested: null,
 		userPostTypes: null,
+		userContributorUserIds: null,
 		meetingSpeakers: null,
 		...overrides,
 	};
@@ -69,8 +69,13 @@ function renderRow({
 				inbox={inbox}
 				isPending={false}
 				topicHref={topicHref}
+				members={[]}
+				membersPending={false}
+				membersError={false}
+				viewerUserId={null}
 				onChangeStatus={vi.fn().mockResolvedValue(undefined)}
 				onChangePostTypes={vi.fn().mockResolvedValue(undefined)}
+				onChangeContributors={vi.fn().mockResolvedValue(undefined)}
 				onSetReadState={vi.fn().mockResolvedValue(undefined)}
 				onSetSnooze={vi.fn().mockResolvedValue(undefined)}
 			/>
@@ -147,8 +152,13 @@ describe("TopicRow — the disclosure survives the move to a chevron", () => {
 					inbox
 					isPending={false}
 					topicHref="/app/projects/proj-1/publishing/topic-1"
+					members={[]}
+					membersPending={false}
+					membersError={false}
+					viewerUserId={null}
 					onChangeStatus={vi.fn().mockResolvedValue(undefined)}
 					onChangePostTypes={vi.fn().mockResolvedValue(undefined)}
+					onChangeContributors={vi.fn().mockResolvedValue(undefined)}
 					onSetReadState={onSetReadState}
 					onSetSnooze={vi.fn().mockResolvedValue(undefined)}
 				/>

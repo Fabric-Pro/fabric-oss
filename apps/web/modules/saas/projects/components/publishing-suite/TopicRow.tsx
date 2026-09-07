@@ -23,7 +23,8 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import { useTranslations } from "next-intl";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { ContributorsDialog } from "./ContributorsDialog";
 import { DeclineTopicDialog } from "./DeclineTopicDialog";
 import { PostTypesDialog } from "./PostTypesDialog";
 import { PublishTopicDialog } from "./PublishTopicDialog";
@@ -31,6 +32,7 @@ import { type SnoozePreset, SnoozeTopicDialog } from "./SnoozeTopicDialog";
 import { TopicDetails } from "./TopicDetails";
 import {
 	type PostType,
+	type ProjectMember,
 	type PublishingTopic,
 	TOPIC_STATUSES,
 	type TopicStatus,
@@ -62,8 +64,13 @@ export function TopicRow({
 	inbox,
 	isPending,
 	topicHref,
+	members,
+	membersPending,
+	membersError,
+	viewerUserId,
 	onChangeStatus,
 	onChangePostTypes,
+	onChangeContributors,
 	onSetReadState,
 	onSetSnooze,
 }: {
@@ -80,12 +87,30 @@ export function TopicRow({
 	topicHref: string;
 	/** True while THIS topic's status mutation is in flight (C-Med2). */
 	isPending: boolean;
+	/**
+	 * The project's members, for the contributors picker. Fetched ONCE in
+	 * `PublishingSuiteList` and passed down — a query here would fire once
+	 * per rendered topic instead of once per list.
+	 */
+	members: readonly ProjectMember[];
+	/** Whether that shared `members.list` query has not settled, or failed —
+	 *  threaded through to `ContributorsDialog` so it can block Save on an
+	 *  untrustworthy members list instead of treating `?? []` as "nobody". */
+	membersPending: boolean;
+	membersError: boolean;
+	/** The signed-in user's id, so the contributors picker can label their
+	 *  own row ("(You)") and so removing yourself is an obviously available
+	 *  action. `null` while the session has not resolved yet. */
+	viewerUserId: string | null;
 	onChangeStatus: (
 		status: TopicStatus,
 		declineReason: string | null,
 		publishedUrl: string | null,
 	) => Promise<void>;
 	onChangePostTypes: (postTypes: PostType[] | null) => Promise<void>;
+	onChangeContributors: (
+		contributorUserIds: string[] | null,
+	) => Promise<void>;
 	onSetReadState: (read: boolean) => Promise<void>;
 	onSetSnooze: (
 		preset: SnoozePreset | null,
@@ -103,6 +128,8 @@ export function TopicRow({
 	const [publishPending, setPublishPending] = useState(false);
 	const [postTypesOpen, setPostTypesOpen] = useState(false);
 	const [postTypesPending, setPostTypesPending] = useState(false);
+	const [contributorsOpen, setContributorsOpen] = useState(false);
+	const [contributorsPending, setContributorsPending] = useState(false);
 	const [snoozeOpen, setSnoozeOpen] = useState(false);
 	const [snoozePending, setSnoozePending] = useState(false);
 	const [expanded, setExpanded] = useState(false);
@@ -183,6 +210,22 @@ export function TopicRow({
 			// open so the user's checkbox choices aren't lost (mirrors decline).
 		} finally {
 			setPostTypesPending(false);
+		}
+	};
+
+	const handleContributorsSubmit = async (
+		contributorUserIds: string[] | null,
+	) => {
+		setContributorsPending(true);
+		try {
+			await onChangeContributors(contributorUserIds);
+			setContributorsOpen(false);
+		} catch {
+			// Surfaced by the shared mutation's onError toast; keep the dialog
+			// open so the user's checkbox choices aren't lost (mirrors
+			// handlePostTypesSubmit above).
+		} finally {
+			setContributorsPending(false);
 		}
 	};
 
@@ -282,6 +325,23 @@ export function TopicRow({
 	// on the same page never collide.
 	const detailsRegionId = `topic-details-${topic.id}`;
 
+	// STABLE across any re-render that carries no real change — mirrors
+	// `topic.userPostTypes ?? topic.suggestedPostTypes` in the post-types
+	// dialog wiring below. Without the memo, `topic.contributors.map(...)`
+	// would allocate a NEW array on every render of this row (a parent state
+	// change unrelated to contributors, a background refetch that changed
+	// nothing, etc.), and `ContributorsDialog` re-seeds its selection whenever
+	// this reference changes — silently discarding whatever the user had just
+	// checked. `topic.contributors` and `topic.userContributorUserIds`
+	// themselves stay referentially stable across a no-op refetch (TanStack
+	// Query's structural sharing), so this memo only recomputes when the
+	// topic's contributor data has ACTUALLY changed.
+	const contributorIds = useMemo(
+		() =>
+			topic.userContributorUserIds ?? topic.contributors.map((c) => c.id),
+		[topic.userContributorUserIds, topic.contributors],
+	);
+
 	const details = (
 		<TopicDetails
 			topic={topic}
@@ -289,6 +349,7 @@ export function TopicRow({
 			isPending={isPending}
 			onEditUrl={() => setPublishOpen(true)}
 			onEditPostTypes={() => setPostTypesOpen(true)}
+			onEditContributors={() => setContributorsOpen(true)}
 		/>
 	);
 
@@ -368,6 +429,20 @@ export function TopicRow({
 				hasAiSuggestion={topic.suggestedPostTypes.length > 0}
 				onSubmit={handlePostTypesSubmit}
 				isPending={postTypesPending}
+			/>
+			<ContributorsDialog
+				topicTitle={topic.title}
+				open={contributorsOpen}
+				onOpenChange={setContributorsOpen}
+				members={members}
+				contributors={topic.contributors}
+				initialSelected={contributorIds}
+				hasOverride={topic.userContributorUserIds !== null}
+				viewerUserId={viewerUserId}
+				onSubmit={handleContributorsSubmit}
+				isPending={contributorsPending}
+				membersPending={membersPending}
+				membersError={membersError}
 			/>
 			<SnoozeTopicDialog
 				topicTitle={topic.title}

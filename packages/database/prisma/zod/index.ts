@@ -792,7 +792,7 @@ export type PublishingSuggestionCycleScalarFieldEnum = z.infer<typeof Publishing
 
 // File: PublishingTopicScalarFieldEnum.schema.ts
 
-export const PublishingTopicScalarFieldEnumSchema = z.enum(['id', 'projectId', 'organizationId', 'userId', 'cycleId', 'title', 'pitch', 'status', 'origin', 'createdById', 'declineReason', 'snoozedUntil', 'snoozeReason', 'publishedUrl', 'provenance', 'suggestedPostTypes', 'contributorUserIds', 'relevantFunctionTags', 'postTypeRecommendations', 'postTypesOverridden', 'userPostTypes', 'angle', 'subject', 'subjectKey', 'dedupeKey', 'createdAt', 'updatedAt'])
+export const PublishingTopicScalarFieldEnumSchema = z.enum(['id', 'projectId', 'organizationId', 'userId', 'cycleId', 'title', 'pitch', 'status', 'origin', 'createdById', 'declineReason', 'snoozedUntil', 'snoozeReason', 'publishedUrl', 'provenance', 'suggestedPostTypes', 'contributorUserIds', 'contributorsOverridden', 'userContributorUserIds', 'relevantFunctionTags', 'postTypeRecommendations', 'postTypesOverridden', 'userPostTypes', 'angle', 'subject', 'subjectKey', 'dedupeKey', 'createdAt', 'updatedAt'])
 
 export type PublishingTopicScalarFieldEnum = z.infer<typeof PublishingTopicScalarFieldEnumSchema>;
 
@@ -6363,6 +6363,8 @@ export const PublishingTopicSchema = z.object({
   provenance: z.unknown().refine((val) => { const getDepth = (obj: unknown, depth: number = 0): number => { if (depth > 10) return depth; if (obj === null || typeof obj !== 'object') return depth; const values = Object.values(obj as Record<string, unknown>); if (values.length === 0) return depth; return Math.max(...values.map(v => getDepth(v, depth + 1))); }; return getDepth(val) <= 10; }, "JSON nesting depth exceeds maximum of 10").nullish(),
   suggestedPostTypes: z.array(PublishingTopicPostTypeSchema),
   contributorUserIds: z.array(z.string()),
+  contributorsOverridden: z.boolean(),
+  userContributorUserIds: z.array(z.string()),
   relevantFunctionTags: z.array(FunctionTagSchema),
   postTypeRecommendations: z.unknown().refine((val) => { const getDepth = (obj: unknown, depth: number = 0): number => { if (depth > 10) return depth; if (obj === null || typeof obj !== 'object') return depth; const values = Object.values(obj as Record<string, unknown>); if (values.length === 0) return depth; return Math.max(...values.map(v => getDepth(v, depth + 1))); }; return getDepth(val) <= 10; }, "JSON nesting depth exceeds maximum of 10").default("[]"),
   postTypesOverridden: z.boolean(),

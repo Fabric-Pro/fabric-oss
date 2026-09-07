@@ -9,6 +9,7 @@ import {
 	getEnabledRecipientsForCategory,
 	getRecipientsWithEmailFlagEnabled,
 } from "../notification-preferences";
+import { effectiveContributorUserIds } from "./publishing-suite";
 
 /**
  * Batched recipient resolution for publishing notifications (§9.2).
@@ -156,9 +157,10 @@ export async function resolvePublishingEligibleRecipients(input: {
 }
 
 /**
- * Relevance (§9.2(b)) — PERSISTED SIGNALS ONLY, over the topics this cycle inserted:
- * `contributorUserIds` containing the user, union `relevantFunctionTags` intersecting the user's
- * function tags, and the second only when the function-tags flag is on.
+ * Relevance (§9.2(b)) — PERSISTED SIGNALS ONLY, over the topics this cycle inserted: the topic's
+ * EFFECTIVE contributor set (`effectiveContributorUserIds` — the user's override when one exists,
+ * the AI resolver's answer otherwise) containing the user, union `relevantFunctionTags`
+ * intersecting the user's function tags, and the second only when the function-tags flag is on.
  *
  * The per-viewer author-recommendation fit is deliberately NOT in this union. authorRecommendation,
  * rankReason, whySuggested and meetingSpeakers are computed per request and per viewer inside
@@ -167,7 +169,9 @@ export async function resolvePublishingEligibleRecipients(input: {
  * the product owner declined the extraction.
  *
  * The consequence is recorded rather than glossed: with the flag off, reach is attribution-only, a
- * topic with empty contributorUserIds notifies nobody, and a cycle may legitimately notify nobody.
+ * topic whose effective contributor set is empty notifies nobody — whether because the AI resolver
+ * found nobody or because a user override deliberately named nobody — and a cycle may legitimately
+ * notify nobody.
  */
 export async function selectRelevantRecipientIds(input: {
 	projectId: string;
@@ -180,14 +184,19 @@ export async function selectRelevantRecipientIds(input: {
 
 	const topics = await db.publishingTopic.findMany({
 		where: { projectId: input.projectId, cycleId: input.cycleId },
-		select: { contributorUserIds: true, relevantFunctionTags: true },
+		select: {
+			contributorUserIds: true,
+			contributorsOverridden: true,
+			userContributorUserIds: true,
+			relevantFunctionTags: true,
+		},
 	});
 
 	const candidates = new Set(input.candidateUserIds);
 	const relevant = new Set<string>();
 	const cycleTags = new Set<string>();
 	for (const topic of topics) {
-		for (const userId of topic.contributorUserIds) {
+		for (const userId of effectiveContributorUserIds(topic)) {
 			if (candidates.has(userId)) {
 				relevant.add(userId);
 			}

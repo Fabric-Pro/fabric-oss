@@ -588,6 +588,187 @@ describe("listPublishingTopics — AC6 degrade-safe on handle-lookup failure", (
 	});
 });
 
+describe("listPublishingTopics — contributor override (effectiveContributorUserIds)", () => {
+	// The override names someone the AI never picked, so `byId` (populated from
+	// the AI `contributorUserIds`) would otherwise never resolve a handle for
+	// them and the override-only contributor silently disappears from the
+	// emitted list. Asserts BOTH what went into the lookup and what came out —
+	// asserting only the output would pass for the wrong reason if a fixture
+	// happened to list the id in both the AI set and the override.
+	it("hydrates a handle for an override-only contributor", async () => {
+		publishingTopicFindMany.mockResolvedValue([
+			{
+				id: "topic-1",
+				title: "Overridden topic",
+				pitch: "p",
+				status: "SUGGESTION",
+				origin: "AI",
+				declineReason: null,
+				publishedUrl: null,
+				createdById: null,
+				createdAt: new Date("2026-07-16T00:00:00Z"),
+				suggestedPostTypes: [],
+				contributorUserIds: [],
+				contributorsOverridden: true,
+				userContributorUserIds: ["override-only"],
+				relevantFunctionTags: [],
+				postTypeRecommendations: [],
+			},
+		]);
+		userFindMany.mockResolvedValue([
+			{
+				id: "override-only",
+				name: "Ex Ample",
+				image: null,
+				username: "ex",
+			},
+		]);
+
+		const { items } = await listPublishingTopics({
+			projectId: "proj-1",
+			viewerUserId: "viewer-1",
+		});
+
+		// (a) the id reached the lookup at all
+		expect(userFindMany).toHaveBeenCalledWith(
+			expect.objectContaining({
+				where: {
+					id: { in: expect.arrayContaining(["override-only"]) },
+				},
+			}),
+		);
+		// (b) and survived the filter into the emitted list
+		expect(items[0].contributors).toEqual([
+			expect.objectContaining({ id: "override-only" }),
+		]);
+	});
+
+	// The requester's own scenario (Fizzy contributor-override brief): removing
+	// yourself as a contributor must drop the topic out of the Inbox's tier 1
+	// and stop stamping the "Based on your contribution" reason. Fixture makes
+	// the two algorithms disagree on ORDER (not just on rankReason), the same
+	// discriminating shape the role-match tier-2 tests above use: under the raw
+	// `contributorUserIds` read, "removed-by-override" (older) is tier 1 and
+	// leads; under the fix it falls to tier 3 and the newer, unrelated topic
+	// leads instead.
+	it("excludes a viewer from tier 1 and the contributed rank reason once their override removes them", async () => {
+		// `publishingTopicFindMany` is a bare mock (no real Postgres `orderBy`
+		// behind it), so the fixture supplies rows PRE-SORTED createdAt desc,
+		// the same order the real query would return — "not-viewers" (newer)
+		// leads, "removed-by-override" (older) follows.
+		publishingTopicFindMany.mockResolvedValue([
+			{
+				id: "not-viewers",
+				title: "Unrelated topic",
+				pitch: "p",
+				status: "SUGGESTION",
+				origin: "AI",
+				declineReason: null,
+				publishedUrl: null,
+				createdById: null,
+				createdAt: new Date("2026-07-16T00:00:00Z"), // newer
+				suggestedPostTypes: [],
+				contributorUserIds: ["other-user"],
+				relevantFunctionTags: [],
+				postTypeRecommendations: [],
+			},
+			{
+				id: "removed-by-override",
+				title: "Viewer removed themselves",
+				pitch: "p",
+				status: "SUGGESTION",
+				origin: "AI",
+				declineReason: null,
+				publishedUrl: null,
+				createdById: null,
+				createdAt: new Date("2026-07-14T00:00:00Z"), // older
+				suggestedPostTypes: [],
+				// The AI still lists the viewer...
+				contributorUserIds: ["viewer-1"],
+				// ...but the viewer overrode the topic to remove everyone (DV: an
+				// empty override is deliberate "nobody", not absence).
+				contributorsOverridden: true,
+				userContributorUserIds: [],
+				relevantFunctionTags: [],
+				postTypeRecommendations: [],
+			},
+		]);
+		userFindMany.mockResolvedValue([
+			{
+				id: "other-user",
+				name: "Other User",
+				image: null,
+				username: "ou",
+			},
+		]);
+
+		const { items } = await listPublishingTopics({
+			projectId: "proj-1",
+			viewerUserId: "viewer-1",
+		});
+
+		// Buggy (raw-list) order would be ["removed-by-override", "not-viewers"]
+		// with tier 1 leading regardless of recency. Fixed order falls back to
+		// plain recency, since neither topic is tier 1 or tier 2 any more.
+		expect(items.map((i) => i.id)).toEqual([
+			"not-viewers",
+			"removed-by-override",
+		]);
+		expect(
+			items.find((i) => i.id === "removed-by-override")?.rankReason,
+		).toBeNull();
+	});
+
+	it("computes author recommendations from the override, not the AI list, once overridden", async () => {
+		publishingTopicFindMany.mockResolvedValue([
+			{
+				id: "topic-1",
+				title: "Overridden topic",
+				pitch: "p",
+				status: "SUGGESTION",
+				origin: "AI",
+				declineReason: null,
+				publishedUrl: null,
+				createdById: null,
+				createdAt: new Date("2026-07-16T00:00:00Z"),
+				suggestedPostTypes: [],
+				contributorUserIds: ["ai-pick"],
+				contributorsOverridden: true,
+				userContributorUserIds: ["override-pick"],
+				relevantFunctionTags: ["DEVELOPER"],
+				postTypeRecommendations: [],
+			},
+		]);
+		userFindMany.mockResolvedValue([
+			{
+				id: "ai-pick",
+				name: "AI PICK",
+				image: null,
+				username: "ai-pick",
+			},
+			{
+				id: "override-pick",
+				name: "OVERRIDE PICK",
+				image: null,
+				username: "override-pick",
+			},
+		]);
+		getProjectMemberFunctionTags.mockResolvedValue([
+			{ userId: "ai-pick", tags: ["DEVELOPER"] },
+			{ userId: "override-pick", tags: ["DEVELOPER"] },
+		]);
+
+		const { items } = await listPublishingTopics({
+			projectId: "proj-1",
+			viewerUserId: "viewer",
+		});
+
+		expect(items[0].authorRecommendation?.authors.map((a) => a.id)).toEqual(
+			["override-pick"],
+		);
+	});
+});
+
 describe("listPublishingTopics — author recommendations (FR4-8, UC2/UC3)", () => {
 	// Two contributors on ONE topic; a roster tags each with a discipline. The
 	// topic's relevantFunctionTags decide who is a candidate.

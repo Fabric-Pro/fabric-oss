@@ -758,6 +758,64 @@ it.skipIf(!RUN_DB)(
 );
 
 it.skipIf(!RUN_DB)(
+	"an overridden topic notifies the OVERRIDE contributor, not the AI one (contributor override)",
+	async () => {
+		const { user: aiContributor, project, cycle } = await seedOrgProject();
+		const chosenContributor = await seedUser("Chosen contributor");
+		await addProjectMember(project.id, chosenContributor.id, "EDITOR");
+		await db.publishingTopic.create({
+			data: {
+				projectId: project.id,
+				organizationId: cycle.organizationId,
+				cycleId: cycle.id,
+				title: "Overridden topic",
+				origin: "AI",
+				status: "SUGGESTION",
+				dedupeKey: `dk-${randomUUID()}`,
+				contributorUserIds: [aiContributor.id],
+				contributorsOverridden: true,
+				userContributorUserIds: [chosenContributor.id],
+			},
+		});
+		const relevant = await selectRelevantRecipientIds({
+			projectId: project.id,
+			cycleId: cycle.id,
+			candidateUserIds: [aiContributor.id, chosenContributor.id],
+		});
+		expect(relevant).toEqual([chosenContributor.id]);
+	},
+);
+
+it.skipIf(!RUN_DB)(
+	"an override of [] notifies nobody even though the AI column is non-empty (contributor override)",
+	async () => {
+		// The case the docblock used to get wrong: `contributorUserIds` is non-empty here, but the
+		// override says "nobody", and the effective set — not the raw column — is what must decide.
+		const { user: aiContributor, project, cycle } = await seedOrgProject();
+		await db.publishingTopic.create({
+			data: {
+				projectId: project.id,
+				organizationId: cycle.organizationId,
+				cycleId: cycle.id,
+				title: "Overridden to nobody",
+				origin: "AI",
+				status: "SUGGESTION",
+				dedupeKey: `dk-${randomUUID()}`,
+				contributorUserIds: [aiContributor.id],
+				contributorsOverridden: true,
+				userContributorUserIds: [],
+			},
+		});
+		const relevant = await selectRelevantRecipientIds({
+			projectId: project.id,
+			cycleId: cycle.id,
+			candidateUserIds: [aiContributor.id],
+		});
+		expect(relevant).toEqual([]);
+	},
+);
+
+it.skipIf(!RUN_DB)(
 	"with the flag OFF the function-tag lookup is not merely filtered — it never runs (1C-2b)",
 	async () => {
 		const { orgId, user, project, cycle } = await seedOrgProject();

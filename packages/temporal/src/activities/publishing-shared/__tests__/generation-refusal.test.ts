@@ -25,25 +25,33 @@ const getBoundPromptForAgent = vi.fn();
 const listTopicDecisions = vi.fn();
 const completeTopicDraft = vi.fn();
 const seedWorkingDraftIfAbsent = vi.fn();
-vi.mock("@repo/database", () => ({
-	logDraftRefusal: vi.fn(),
-	db: {
-		publishingTopic: {
-			findFirst: (...a: unknown[]) => topicFindFirst(...a),
+vi.mock("@repo/database", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("@repo/database")>();
+	return {
+		// The REAL implementation, not a hand-rolled stand-in — a second copy
+		// here would encode this file's guess of the override semantics
+		// instead of measuring them.
+		effectiveContributorUserIds: actual.effectiveContributorUserIds,
+		logDraftRefusal: vi.fn(),
+		db: {
+			publishingTopic: {
+				findFirst: (...a: unknown[]) => topicFindFirst(...a),
+			},
+			publishingTopicPlanningAnalysis: {
+				findFirst: (...a: unknown[]) => analysisFindFirst(...a),
+			},
+			user: { findMany: (...a: unknown[]) => userFindMany(...a) },
 		},
-		publishingTopicPlanningAnalysis: {
-			findFirst: (...a: unknown[]) => analysisFindFirst(...a),
-		},
-		user: { findMany: (...a: unknown[]) => userFindMany(...a) },
-	},
-	checkPublishingGenerationActor: (...a: unknown[]) =>
-		checkPublishingGenerationActor(...a),
-	getBoundPromptForAgent: (...a: unknown[]) => getBoundPromptForAgent(...a),
-	listTopicDecisions: (...a: unknown[]) => listTopicDecisions(...a),
-	completeTopicDraft: (...a: unknown[]) => completeTopicDraft(...a),
-	seedWorkingDraftIfAbsent: (...a: unknown[]) =>
-		seedWorkingDraftIfAbsent(...a),
-}));
+		checkPublishingGenerationActor: (...a: unknown[]) =>
+			checkPublishingGenerationActor(...a),
+		getBoundPromptForAgent: (...a: unknown[]) =>
+			getBoundPromptForAgent(...a),
+		listTopicDecisions: (...a: unknown[]) => listTopicDecisions(...a),
+		completeTopicDraft: (...a: unknown[]) => completeTopicDraft(...a),
+		seedWorkingDraftIfAbsent: (...a: unknown[]) =>
+			seedWorkingDraftIfAbsent(...a),
+	};
+});
 
 const getAIModelWithMetadata = vi.fn();
 const generateObject = vi.fn();
@@ -87,6 +95,8 @@ const TOPIC = {
 	relevantFunctionTags: ["BACKEND"],
 	postTypeRecommendations: [],
 	contributorUserIds: ["user-2"],
+	contributorsOverridden: false,
+	userContributorUserIds: [],
 	provenance: {},
 };
 

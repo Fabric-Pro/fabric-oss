@@ -99,6 +99,13 @@ exports[`PublishingSuiteList row parity > renders the flag-off row exactly as it
           </span>
         </li>
       </ul>
+      <button
+        class="inline-flex items-center justify-center whitespace-nowrap text-sm font-medium tracking-wide transition-colors duration-200 cursor-pointer disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg:not([class*='size-'])]:size-4 shrink-0 [&_svg]:shrink-0 outline-none focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px] aria-invalid:ring-destructive/20 dark:aria-invalid:ring-destructive/40 aria-invalid:border-destructive active:scale-[0.98] hover:bg-muted hover:text-foreground dark:hover:bg-accent/50 h-8 rounded-md gap-1.5 px-3 has-[>svg]:px-2.5"
+        data-slot="button"
+        type="button"
+      >
+        Edit contributors
+      </button>
       <div
         aria-label="Post types"
         class="flex flex-wrap items-center gap-1.5 pt-1"

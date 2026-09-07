@@ -65,25 +65,34 @@ const getBoundPromptForAgent = vi.fn();
 const listTopicDecisions = vi.fn();
 const completeTopicDraft = vi.fn();
 const seedWorkingDraftIfAbsent = vi.fn();
-vi.mock("@repo/database", () => ({
-	logDraftRefusal: vi.fn(),
-	db: {
-		publishingTopic: {
-			findFirst: (...a: unknown[]) => topicFindFirst(...a),
+vi.mock("@repo/database", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("@repo/database")>();
+	return {
+		// The REAL implementation, not a hand-rolled stand-in — a second copy
+		// here would encode this file's guess of the override semantics
+		// instead of measuring them, and the empty-override case is exactly
+		// where a guess goes wrong.
+		effectiveContributorUserIds: actual.effectiveContributorUserIds,
+		logDraftRefusal: vi.fn(),
+		db: {
+			publishingTopic: {
+				findFirst: (...a: unknown[]) => topicFindFirst(...a),
+			},
+			publishingTopicPlanningAnalysis: {
+				findFirst: (...a: unknown[]) => analysisFindFirst(...a),
+			},
+			user: { findMany: (...a: unknown[]) => userFindMany(...a) },
 		},
-		publishingTopicPlanningAnalysis: {
-			findFirst: (...a: unknown[]) => analysisFindFirst(...a),
-		},
-		user: { findMany: (...a: unknown[]) => userFindMany(...a) },
-	},
-	checkPublishingGenerationActor: (...a: unknown[]) =>
-		checkPublishingGenerationActor(...a),
-	getBoundPromptForAgent: (...a: unknown[]) => getBoundPromptForAgent(...a),
-	listTopicDecisions: (...a: unknown[]) => listTopicDecisions(...a),
-	completeTopicDraft: (...a: unknown[]) => completeTopicDraft(...a),
-	seedWorkingDraftIfAbsent: (...a: unknown[]) =>
-		seedWorkingDraftIfAbsent(...a),
-}));
+		checkPublishingGenerationActor: (...a: unknown[]) =>
+			checkPublishingGenerationActor(...a),
+		getBoundPromptForAgent: (...a: unknown[]) =>
+			getBoundPromptForAgent(...a),
+		listTopicDecisions: (...a: unknown[]) => listTopicDecisions(...a),
+		completeTopicDraft: (...a: unknown[]) => completeTopicDraft(...a),
+		seedWorkingDraftIfAbsent: (...a: unknown[]) =>
+			seedWorkingDraftIfAbsent(...a),
+	};
+});
 
 vi.mock("@repo/logs", () => ({
 	logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
@@ -107,6 +116,8 @@ const TOPIC = {
 	relevantFunctionTags: ["BACKEND"],
 	postTypeRecommendations: [],
 	contributorUserIds: ["user-2"],
+	contributorsOverridden: false,
+	userContributorUserIds: [],
 	provenance: {},
 };
 
@@ -329,6 +340,49 @@ describe("generateStakeholderEmailActivity — tenancy and actor revalidation", 
 			expect.objectContaining({
 				jobType: "publishing-stakeholder-email",
 			}),
+		);
+	});
+});
+
+describe("generateStakeholderEmailActivity — contributor override", () => {
+	// `effectiveContributorUserIds` is the ONLY thing that may decide who the
+	// prompt calls a contributor — never `topic.contributorUserIds` directly.
+	it("builds the prompt from the override, not the AI list", async () => {
+		topicFindFirst.mockResolvedValue({
+			...TOPIC,
+			contributorUserIds: ["ai-user"],
+			contributorsOverridden: true,
+			userContributorUserIds: ["chosen-user"],
+		});
+		userFindMany.mockResolvedValue([
+			{ id: "chosen-user", name: "Chosen Contributor" },
+		]);
+
+		await run();
+
+		expect(userFindMany).toHaveBeenCalledWith(
+			expect.objectContaining({
+				where: { id: { in: ["chosen-user"] } },
+			}),
+		);
+		expect(generateObject.mock.calls[0]?.[0]?.prompt).toContain(
+			"Chosen Contributor",
+		);
+	});
+
+	it("yields no contributor names when the override is deliberately empty", async () => {
+		topicFindFirst.mockResolvedValue({
+			...TOPIC,
+			contributorUserIds: ["ai-user"],
+			contributorsOverridden: true,
+			userContributorUserIds: [],
+		});
+
+		await run();
+
+		expect(userFindMany).not.toHaveBeenCalled();
+		expect(generateObject.mock.calls[0]?.[0]?.prompt).not.toContain(
+			"People associated with the work behind this topic",
 		);
 	});
 });
@@ -653,6 +707,10 @@ describe("generateStakeholderEmailActivity — the write surface", () => {
 			"completeTopicDraft",
 			// Reads.
 			"db",
+			// A pure function, not a database call — it decides which of the
+			// topic's already-selected columns is the effective contributor
+			// list. Added deliberately, as this guard requires.
+			"effectiveContributorUserIds",
 			"getBoundPromptForAgent",
 			"listTopicDecisions",
 			// NOT a write. `logDraftRefusal` only formats and emits the log

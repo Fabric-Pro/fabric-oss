@@ -28,6 +28,7 @@ const {
 	setReadStateMutate,
 	updatePostTypesMutate,
 	updateStatusMutate,
+	updateContributorsMutate,
 	toastError,
 } = vi.hoisted(() => ({
 	state: {
@@ -49,6 +50,15 @@ const {
 		drafts: [] as Record<string, unknown>[],
 		workingDrafts: [] as Record<string, unknown>[],
 		draftsError: false,
+		// Task 6: the project's members, for the contributors picker.
+		members: [] as Array<Record<string, unknown>>,
+		// Task 7: the members.list query's own readiness — a topic's
+		// contributors editor must not treat a not-yet-loaded or failed
+		// members list as "nobody" (`?? []`).
+		membersPending: false,
+		membersError: false,
+		// Task 6: the signed-in user's id, mirrored by the mocked useSession.
+		viewerUserId: "viewer-1" as string | null,
 		pending: false,
 		error: false,
 		// Drive the read-marker write to reject, so the failure path is
@@ -62,10 +72,23 @@ const {
 	setReadStateMutate: vi.fn(),
 	updatePostTypesMutate: vi.fn(),
 	updateStatusMutate: vi.fn(),
+	updateContributorsMutate: vi.fn(),
 	toastError: vi.fn(),
 }));
 
 vi.mock("sonner", () => ({ toast: { error: toastError } }));
+
+// Task 6: TopicItemPage now reads the viewer's own id (for the contributors
+// picker's "(You)" label) via this hook, mirroring ProjectMembersSettings'
+// existing use of it.
+vi.mock("@saas/auth/hooks/use-session", () => ({
+	useSession: () => ({
+		user: state.viewerUserId ? { id: state.viewerUserId } : null,
+		session: { id: "test-session" },
+		loaded: true,
+		reloadSession: vi.fn(),
+	}),
+}));
 
 vi.mock("@tanstack/react-query", () => ({
 	useQuery: (opts: { queryKey?: unknown[] }) => {
@@ -115,6 +138,20 @@ vi.mock("@tanstack/react-query", () => ({
 				isPending: false,
 				isLoading: false,
 				isError: false,
+				refetch: vi.fn(),
+			};
+		}
+		// Task 6: the contributors picker's member list. Constructed
+		// unconditionally by the component, same obligation as every other
+		// entry above.
+		if (procedure === "projects.members.list") {
+			return {
+				data: state.membersError
+					? undefined
+					: { members: state.members },
+				isPending: state.membersPending,
+				isLoading: state.membersPending,
+				isError: state.membersError,
 				refetch: vi.fn(),
 			};
 		}
@@ -174,6 +211,20 @@ vi.mock("@tanstack/react-query", () => ({
 		if (procedure === "projects.publishingSuite.updateTopicStatus") {
 			const run = async (vars: unknown) => {
 				updateStatusMutate(vars);
+				await opts.onSuccess?.(undefined, vars, undefined);
+				return undefined;
+			};
+			return {
+				mutate: (vars: unknown) => {
+					void run(vars).catch(() => {});
+				},
+				mutateAsync: run,
+				isPending: false,
+			};
+		}
+		if (procedure === "projects.publishingSuite.updateTopicContributors") {
+			const run = async (vars: unknown) => {
+				updateContributorsMutate(vars);
 				await opts.onSuccess?.(undefined, vars, undefined);
 				return undefined;
 			};
@@ -287,6 +338,16 @@ vi.mock("@shared/lib/orpc-query-utils", () => {
 					updateTopicStatus: m(
 						"projects.publishingSuite.updateTopicStatus",
 					),
+					// Task 6: the contributors override write.
+					updateTopicContributors: m(
+						"projects.publishingSuite.updateTopicContributors",
+					),
+				},
+				// Task 6: the contributors picker's member list. Same
+				// obligation as every entry above — a missing one is
+				// `undefined.queryOptions`, not a failing assertion.
+				members: {
+					list: q("projects.members.list"),
 				},
 			},
 		},
@@ -326,7 +387,30 @@ function topic(overrides: Record<string, unknown> = {}) {
 		subject: null,
 		whySuggested: null,
 		userPostTypes: null,
+		userContributorUserIds: null,
 		meetingSpeakers: null,
+		...overrides,
+	};
+}
+
+/** A project member row as `projects.members.list` returns it — the
+ *  contributors picker's option shape (Task 6). */
+function makeMember(overrides: Record<string, unknown> = {}) {
+	return {
+		userId: "u1",
+		role: "EDITOR",
+		user: {
+			id: "u1",
+			name: "Ada",
+			email: "ada@example.com",
+			image: null as string | null,
+		},
+		isOwner: false,
+		isCreator: false,
+		isGuest: false,
+		invitedAt: null,
+		acceptedAt: null,
+		expiresAt: null,
 		...overrides,
 	};
 }
@@ -347,6 +431,10 @@ beforeEach(() => {
 	state.latestAttempt = null;
 	state.latestReady = null;
 	state.decisionThreads = [];
+	state.members = [];
+	state.membersPending = false;
+	state.membersError = false;
+	state.viewerUserId = "viewer-1";
 	state.pending = false;
 	state.error = false;
 	state.readStateRejects = false;
@@ -355,6 +443,7 @@ beforeEach(() => {
 	setReadStateMutate.mockReset();
 	updatePostTypesMutate.mockReset();
 	updateStatusMutate.mockReset();
+	updateContributorsMutate.mockReset();
 	toastError.mockReset();
 });
 
@@ -806,5 +895,273 @@ describe("TopicItemPage — editing topic metadata", () => {
 		expect(
 			screen.queryByRole("button", { name: "Edit URL" }),
 		).not.toBeInTheDocument();
+	});
+});
+
+/**
+ * Task 6: the contributors editor, wired on the Item Page independently of
+ * `PublishingSuiteList` — this page owns its own `members.list` query and its
+ * own `updateTopicContributors` mutation rather than going through the list's
+ * parent. Test 7 of the task brief's seven: "the same edit works from the
+ * item page, not only the list row" — proven here by actually clicking the
+ * button and asserting the mutation fires, not merely that the button exists
+ * (the failure this page already shipped once for post types/URL, see the
+ * block comment above the "editing topic metadata" describe).
+ */
+describe("TopicItemPage — editing contributors (Task 6)", () => {
+	it("opens the contributors editor listing members with the current contributors checked", async () => {
+		const user = userEvent.setup();
+		state.members = [
+			makeMember({
+				userId: "u1",
+				user: {
+					id: "u1",
+					name: "Ada",
+					email: "ada@example.com",
+					image: null,
+				},
+			}),
+			makeMember({
+				userId: "u2",
+				user: {
+					id: "u2",
+					name: "Bob",
+					email: "bob@example.com",
+					image: null,
+				},
+			}),
+		];
+		state.topic = topic({
+			contributors: [
+				{ id: "u1", name: "Ada", image: null, username: "ada" },
+			],
+		});
+		renderPage();
+
+		await user.click(
+			screen.getByRole("button", { name: "Edit contributors" }),
+		);
+
+		const dialog = within(await screen.findByRole("dialog"));
+		expect(dialog.getByRole("checkbox", { name: /^Ada$/ })).toBeChecked();
+		expect(
+			dialog.getByRole("checkbox", { name: /^Bob$/ }),
+		).not.toBeChecked();
+	});
+
+	it("saves the checked set through updateTopicContributors", async () => {
+		const user = userEvent.setup();
+		state.members = [
+			makeMember({
+				userId: "u1",
+				user: {
+					id: "u1",
+					name: "Ada",
+					email: "ada@example.com",
+					image: null,
+				},
+			}),
+			makeMember({
+				userId: "u2",
+				user: {
+					id: "u2",
+					name: "Bob",
+					email: "bob@example.com",
+					image: null,
+				},
+			}),
+		];
+		state.topic = topic({
+			contributors: [
+				{ id: "u1", name: "Ada", image: null, username: "ada" },
+			],
+		});
+		renderPage();
+
+		await user.click(
+			screen.getByRole("button", { name: "Edit contributors" }),
+		);
+		const dialog = within(await screen.findByRole("dialog"));
+		await user.click(dialog.getByRole("checkbox", { name: /^Bob$/ }));
+		await user.click(dialog.getByRole("button", { name: "Save" }));
+
+		await waitFor(() =>
+			expect(updateContributorsMutate).toHaveBeenCalledWith(
+				expect.objectContaining({
+					projectId: "proj-1",
+					topicId: "topic-1",
+					contributorUserIds: ["u1", "u2"],
+				}),
+			),
+		);
+	});
+
+	it("resets an override back to the AI-resolved set", async () => {
+		const user = userEvent.setup();
+		state.members = [
+			makeMember({
+				userId: "u1",
+				user: {
+					id: "u1",
+					name: "Ada",
+					email: "ada@example.com",
+					image: null,
+				},
+			}),
+		];
+		state.topic = topic({
+			contributors: [
+				{ id: "u1", name: "Ada", image: null, username: "ada" },
+			],
+			userContributorUserIds: ["u1"],
+		});
+		renderPage();
+
+		await user.click(
+			screen.getByRole("button", { name: "Edit contributors" }),
+		);
+		const dialog = within(await screen.findByRole("dialog"));
+		await user.click(
+			dialog.getByRole("button", { name: "Reset to AI suggestion" }),
+		);
+
+		await waitFor(() =>
+			expect(updateContributorsMutate).toHaveBeenCalledWith(
+				expect.objectContaining({ contributorUserIds: null }),
+			),
+		);
+	});
+
+	// Whole-branch review, residual finding 2: unlike `TopicRow`, this page
+	// previously memoized `contributorIds` on `[topic]` alone rather than the
+	// two contributor fields themselves. TanStack's structural sharing keeps
+	// `topic` referentially stable across a NO-OP refetch, but ANY field
+	// changing (a read marker, a status edit, `updatedAt`) mints a NEW `topic`
+	// object — which re-ran the `[topic]` memo and re-seeded the dialog's
+	// selection, discarding an in-progress checkbox pick. Fails against the
+	// `[topic]` version.
+	it("Regression: a parent re-render that mints a new topic object (same contributor data) does not discard an in-progress selection", async () => {
+		const user = userEvent.setup();
+		state.members = [
+			makeMember({
+				userId: "u1",
+				user: {
+					id: "u1",
+					name: "Ada",
+					email: "ada@example.com",
+					image: null,
+				},
+			}),
+			makeMember({
+				userId: "u2",
+				user: {
+					id: "u2",
+					name: "Bob",
+					email: "bob@example.com",
+					image: null,
+				},
+			}),
+		];
+		// The SAME array reference is reused below — mirroring what TanStack
+		// Query's structural sharing actually does: an unchanged nested field
+		// keeps its old reference even when the wrapping object is replaced.
+		// A test that instead built a new, merely-equal array each time would
+		// pass even against the unfixed `[topic]` memo, proving nothing.
+		const contributors = [
+			{ id: "u1", name: "Ada", image: null, username: "ada" },
+		];
+		state.topic = topic({ contributors });
+		const { rerender } = renderPage();
+
+		await user.click(
+			screen.getByRole("button", { name: "Edit contributors" }),
+		);
+		const dialog = within(await screen.findByRole("dialog"));
+		await user.click(dialog.getByRole("checkbox", { name: /^Bob$/ }));
+		expect(dialog.getByRole("checkbox", { name: /^Bob$/ })).toBeChecked();
+
+		// A NEW topic object — as a refetch would produce — but carrying the
+		// SAME contributor data (same array reference); only an unrelated
+		// field (`isRead`) changed.
+		state.topic = topic({ contributors, isRead: true });
+		rerender(
+			<TopicItemPage
+				projectId="proj-1"
+				topicId="topic-1"
+				organizationId={null}
+				canEdit
+			/>,
+		);
+
+		expect(dialog.getByRole("checkbox", { name: /^Bob$/ })).toBeChecked();
+	});
+
+	it("offers a read-only viewer no contributors edit control", () => {
+		state.topic = topic({
+			contributors: [
+				{ id: "u1", name: "Ada", image: null, username: "ada" },
+			],
+		});
+		renderPage(false);
+
+		expect(
+			screen.queryByRole("button", { name: "Edit contributors" }),
+		).not.toBeInTheDocument();
+	});
+
+	// Whole-branch review, IMPORTANT 2: this page is the OTHER mount of
+	// `ContributorsDialog` and owns its own `members.list` query
+	// independently of `PublishingSuiteList` — it must thread the same
+	// non-member-contributor rendering and Save-guard, not only the list row.
+	it("renders a non-member contributor (a PR author who is not a project member) as its own labelled, checked row", async () => {
+		const user = userEvent.setup();
+		state.members = [
+			makeMember({
+				userId: "u1",
+				user: {
+					id: "u1",
+					name: "Ada",
+					email: "ada@example.com",
+					image: null,
+				},
+			}),
+		];
+		state.topic = topic({
+			contributors: [
+				{ id: "u1", name: "Ada", image: null, username: "ada" },
+				{ id: "u9", name: "Charlie", image: null, username: "charlie" },
+			],
+		});
+		renderPage();
+
+		await user.click(
+			screen.getByRole("button", { name: "Edit contributors" }),
+		);
+		const dialog = within(await screen.findByRole("dialog"));
+
+		expect(dialog.getByText("Not a project member")).toBeInTheDocument();
+		expect(dialog.getByRole("checkbox", { name: /Charlie/ })).toBeChecked();
+	});
+
+	it("disables Save and surfaces the failure when the members query errors, instead of silently emptying the override", async () => {
+		const user = userEvent.setup();
+		state.membersError = true;
+		state.topic = topic({
+			contributors: [
+				{ id: "u1", name: "Ada", image: null, username: "ada" },
+			],
+		});
+		renderPage();
+
+		await user.click(
+			screen.getByRole("button", { name: "Edit contributors" }),
+		);
+		const dialog = within(await screen.findByRole("dialog"));
+
+		expect(dialog.getByRole("alert")).toHaveTextContent(
+			/couldn't load this project's members/i,
+		);
+		expect(dialog.getByRole("button", { name: "Save" })).toBeDisabled();
+		expect(updateContributorsMutate).not.toHaveBeenCalled();
 	});
 });

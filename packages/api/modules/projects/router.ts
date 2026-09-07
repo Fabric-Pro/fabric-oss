@@ -300,6 +300,7 @@ import {
 	setTopicReadStateProcedure,
 	setTopicSnoozeProcedure,
 	updatePublishingSuiteSettingsProcedure,
+	updatePublishingTopicContributorsProcedure,
 	updatePublishingTopicPostTypesProcedure,
 	updatePublishingTopicStatusProcedure,
 } from "./procedures/publishing-suite";
@@ -1385,6 +1386,7 @@ export const projectsRouter = {
 		createTopic: createPublishingTopicProcedure,
 		updateTopicStatus: updatePublishingTopicStatusProcedure,
 		updateTopicPostTypes: updatePublishingTopicPostTypesProcedure,
+		updateTopicContributors: updatePublishingTopicContributorsProcedure,
 		setTopicSnooze: setTopicSnoozeProcedure,
 		setTopicReadState: setTopicReadStateProcedure,
 		getSettings: getPublishingSuiteSettingsProcedure,

@@ -36,6 +36,7 @@ import {
 	completePlanningAnalysis,
 	type DraftCommitRefusal,
 	db,
+	effectiveContributorUserIds,
 	getBoundPromptForAgent,
 	logDraftRefusal,
 } from "@repo/database";
@@ -104,6 +105,8 @@ export async function generatePlanningAnalysisActivity(
 			relevantFunctionTags: true,
 			postTypeRecommendations: true,
 			contributorUserIds: true,
+			contributorsOverridden: true,
+			userContributorUserIds: true,
 			provenance: true,
 		},
 	});
@@ -143,7 +146,7 @@ export async function generatePlanningAnalysisActivity(
 				topicId,
 				provenance: topic.provenance,
 			}),
-			resolveContributorNames(topic.contributorUserIds),
+			resolveContributorNames(effectiveContributorUserIds(topic)),
 			// Flag-gated and self-authorizing inside the helper: a no-op when
 			// function tags are off or no roster member holds one.
 			getProjectFunctionTagClause({
