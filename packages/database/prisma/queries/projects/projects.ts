@@ -974,7 +974,8 @@ export async function getProjectStats(userId: string, organizationId?: string) {
 }
 
 /**
- * Check if user has access to project
+ * Resolve project access and return the project's tenant context in one
+ * shot.
  *
  * Access is granted if:
  * 1. For personal projects: User is the project owner OR accepted project member
@@ -982,12 +983,17 @@ export async function getProjectStats(userId: string, organizationId?: string) {
  *
  * SECURITY: For organization projects, we verify org membership first.
  * This ensures users removed from an org lose access to all org projects.
+ *
+ * Callers that only need the boolean should use `hasProjectAccess`, which
+ * wraps this helper. This is the one that runs the single `Project` fetch —
+ * both exist so a caller that also needs `organizationId` (e.g. for a
+ * tenant-XOR check) is not forced into a second, duplicate query for the
+ * same row.
  */
-export async function hasProjectAccess(
+export async function getProjectAccessContext(
 	projectId: string,
 	userId: string,
-	_organizationId?: string,
-): Promise<boolean> {
+): Promise<{ organizationId: string | null } | null> {
 	const project = await db.project.findFirst({
 		where: {
 			id: projectId,
@@ -1000,14 +1006,17 @@ export async function hasProjectAccess(
 	});
 
 	if (!project) {
-		return false;
+		return null;
 	}
 
 	// Personal projects (no organizationId) - owner or accepted project member can access
 	if (!project.organizationId) {
-		// Owner has access
+		// Owner has access. Return the stored value (not a hardcoded `null`):
+		// the column is a nullable String with no non-empty constraint, so a
+		// row can hold `""` rather than `null` — a caller doing a tenant-XOR
+		// comparison needs that exact stored value, not a normalized one.
 		if (project.userId === userId) {
-			return true;
+			return { organizationId: project.organizationId };
 		}
 
 		// Check if user is a project member (collaborator)
@@ -1021,7 +1030,9 @@ export async function hasProjectAccess(
 			select: { id: true },
 		});
 
-		return !!projectMembership;
+		return projectMembership
+			? { organizationId: project.organizationId }
+			: null;
 	}
 
 	// Organization project — two paths:
@@ -1048,17 +1059,34 @@ export async function hasProjectAccess(
 		}),
 	]);
 
+	const organizationId = project.organizationId;
+
 	if (orgMembership) {
 		if (project.userId === userId) {
-			return true;
+			return { organizationId };
 		}
-		return !!projectMembership;
+		return projectMembership ? { organizationId } : null;
 	}
 
 	// No OrgMember — allow only if this is an accepted project-scoped
 	// guest. The caller is never the project owner here (owners always
 	// belong to the host org).
-	return !!projectMembership;
+	return projectMembership ? { organizationId } : null;
+}
+
+/**
+ * Check if user has access to project.
+ *
+ * Thin wrapper over `getProjectAccessContext` — kept so every existing
+ * caller that only needs the boolean (not `organizationId`) is unaffected.
+ * The two cannot drift because this is the only body either has.
+ */
+export async function hasProjectAccess(
+	projectId: string,
+	userId: string,
+	_organizationId?: string,
+): Promise<boolean> {
+	return (await getProjectAccessContext(projectId, userId)) !== null;
 }
 
 /**
