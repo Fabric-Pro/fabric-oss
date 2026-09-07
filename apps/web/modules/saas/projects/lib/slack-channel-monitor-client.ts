@@ -9,7 +9,7 @@
 
 import { orpcClient } from "@shared/lib/orpc-client";
 
-export type LinkedSlackChannel = {
+type LinkedSlackChannel = {
 	id: string;
 	projectId: string;
 	slackTeamId: string;
@@ -26,6 +26,7 @@ export type LinkedSlackChannel = {
 	lastErrorAt: string | Date | null;
 	userId: string | null;
 	organizationId: string | null;
+	deactivatedAt: string | Date | null;
 	_count?: {
 		seenMessages: number;
 	};
@@ -64,6 +65,22 @@ export type SlackChannelMonitorClient = {
 		projectId: string;
 		organizationId: string | null;
 	}) => Promise<unknown>;
+	setChannelActive: (input: {
+		projectId: string;
+		organizationId: string | null;
+		linkedChannelId: string;
+		active: boolean;
+	}) => Promise<unknown>;
+	reconnect: (input: {
+		projectId: string;
+		organizationId: string | null;
+		preflightOnly: boolean;
+	}) => Promise<{
+		total: number;
+		reachableCount: number;
+		unreachableLabels: string[];
+		indeterminateLabels: string[];
+	}>;
 };
 
 export function getSlackChannelMonitorClient(): SlackChannelMonitorClient {

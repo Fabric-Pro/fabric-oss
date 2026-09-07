@@ -8,6 +8,7 @@ import {
 	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
+import { throwNoActiveContextSources } from "../../lib/no-active-context-sources";
 
 /**
  * AUTHORIZATION: Uses canEditProject() - only project owners/editors can
@@ -63,13 +64,23 @@ export const enableTeamsChatMonitorProcedure = tenantProtectedProcedure
 		}
 
 		const linkedChatCount = await db.projectLinkedTeamsChat.count({
-			where: { projectId: input.projectId },
+			where: { projectId: input.projectId, deactivatedAt: null },
 		});
 
 		if (linkedChatCount === 0) {
-			throw new ORPCError("BAD_REQUEST", {
-				message:
-					"At least one Teams chat must be linked before enabling the monitor",
+			// A second count only on the error path: with pausing, "nothing to
+			// scan" and "nothing linked" are different situations and only one
+			// of them is the user's mistake.
+			const pausedCount = await db.projectLinkedTeamsChat.count({
+				where: {
+					projectId: input.projectId,
+					NOT: { deactivatedAt: null },
+				},
+			});
+			throwNoActiveContextSources({
+				pausedCount,
+				noun: "Teams chat",
+				action: "enabling the monitor",
 			});
 		}
 

@@ -93,7 +93,11 @@ export async function getLinkedTeamsChats(projectId: string) {
  */
 export async function getLinkedTeamsChatsForMonitor(projectId: string) {
 	return await db.projectLinkedTeamsChat.findMany({
-		where: { projectId },
+		// Paused conversations are excluded HERE and only here: this is the
+		// monitor's own lookup, so filtering it is what makes pausing stop the
+		// scanning without touching the row, its cursor, its seen-message
+		// ledger or the context it already produced (Fizzy #2355).
+		where: { projectId, deactivatedAt: null },
 		select: {
 			id: true,
 			chatId: true,
@@ -102,6 +106,42 @@ export async function getLinkedTeamsChatsForMonitor(projectId: string) {
 			lastMessageCreatedAt: true,
 			lastMessageId: true,
 			scanPageToken: true,
+		},
+	});
+}
+
+/**
+ * Stop scanning one linked chat without touching anything it has already
+ * captured.
+ *
+ * Deliberately an `update` with a `projectId` guard rather than a bare update by
+ * id: the id alone would let a caller in one project pause a chat linked to
+ * another.
+ */
+export async function deactivateLinkedTeamsChat(params: {
+	projectId: string;
+	linkedChatId: string;
+	userId: string;
+}) {
+	return await db.projectLinkedTeamsChat.update({
+		where: { id: params.linkedChatId, projectId: params.projectId },
+		data: {
+			deactivatedAt: new Date(),
+			deactivatedById: params.userId,
+		},
+	});
+}
+
+/** Resume scanning a previously paused chat. */
+export async function reactivateLinkedTeamsChat(params: {
+	projectId: string;
+	linkedChatId: string;
+}) {
+	return await db.projectLinkedTeamsChat.update({
+		where: { id: params.linkedChatId, projectId: params.projectId },
+		data: {
+			deactivatedAt: null,
+			deactivatedById: null,
 		},
 	});
 }
