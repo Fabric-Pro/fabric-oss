@@ -563,29 +563,67 @@ const string agentRetryScriptMacOS = """
     fi
     """;
 
-// Simple startup script for Linux (host node_modules already has Linux binaries)
+// Simple startup script for Linux. The host node_modules is reused directly: the
+// container image is node:22-slim (Debian/glibc), the same libc the host install
+// targets, so the native optional dependencies (rollup, esbuild, ...) resolve. An
+// alpine/musl image would not — pnpm installs only the host platform's native
+// binaries, so tsup fails on load with a missing @rollup/rollup-linux-x64-musl.
+// The same reasoning assumes a glibc host: Linux development on a musl host (Alpine)
+// would need the container-managed volume too, and is not supported.
 // No reinstallation needed - just enable corepack and run
-// NOTE: We force rebuild on first run after switching from macOS builds because
-// the existing dist/ may have been built with macOS volume mounting (different bundling)
 const string agentRetryScriptLinux = """
     cd /app
     echo 'Linux host detected - using host node_modules directly...'
     corepack enable
     """;
 
-// Select the appropriate script based on platform
-var agentRetryScript = isLinux ? agentRetryScriptLinux : agentRetryScriptMacOS;
+// Shell helpers shared by every dev-mode agent entrypoint and by the dashboard
+// "Rebuild & restart" command. Each of those is a single `sh -c` string, so a
+// function defined at its top is in scope for everything after it.
+//
+// fix_dist_owner: the container runs as root, so on Linux an in-container build
+// leaves dist/ root-owned on the bind-mounted checkout, and a later host-side
+// `pnpm --filter <name>-agent build` fails with EACCES (tsup's `clean: true`
+// cannot unlink the old chunks). Hand dist/ back to the checkout's owner:
+// after every build, successful or not (a failed build can still have recreated
+// files), and on every start, so a dist/ left root-owned by an older AppHost is
+// repaired without forcing a rebuild. A chown failure stops the agent instead of
+// being masked. On macOS/Windows the file-sharing layer maps ownership itself.
+//
+// build_agent: `pnpm build` plus the handback. A build failure is reported ahead
+// of a chown failure; a chown failure alone still fails the call.
+// ensure_agent_built <bundle>: build only when the bundle is missing, otherwise
+// just repair ownership.
+const string agentShellHelpersLinux = """
+    fix_dist_owner() { if [ -e dist ] || [ -L dist ]; then chown -hR --reference=/app -- dist; fi; }
+    """;
+const string agentShellHelpersOther = """
+    fix_dist_owner() { :; }
+    """;
+const string agentShellHelpersCommon = """
+    build_agent() { status=0; owner_status=0; pnpm build || status=$?; fix_dist_owner || owner_status=$?; [ "$status" -ne 0 ] || status=$owner_status; return $status; }
+    ensure_agent_built() { if [ ! -f "$1" ]; then echo "Building $(basename "$PWD")..."; build_agent; else fix_dist_owner; fi; }
+    """;
+var agentShellHelpers = (isLinux ? agentShellHelpersLinux : agentShellHelpersOther) + "\n" + agentShellHelpersCommon;
+
+// Select the appropriate script based on platform, with the helpers in front.
+var agentRetryScript = agentShellHelpers + "\n" + (isLinux ? agentRetryScriptLinux : agentRetryScriptMacOS);
 
 // Helper extension to conditionally add node_modules volume (macOS only)
-// On Linux, the host node_modules already has Linux binaries, so no volume shadowing needed
+// On Linux, the host node_modules already has glibc Linux binaries that match the
+// node:22-slim image, so no volume shadowing needed
 IResourceBuilder<ContainerResource> AddNodeModulesVolume(IResourceBuilder<ContainerResource> container)
 {
     if (!isLinux)
     {
-        // macOS/Windows: Shadow host node_modules with a Docker volume containing Linux binaries
-        return container.WithVolume("fabric-linux-node-modules", "/app/node_modules");
+        // macOS/Windows: Shadow host node_modules with a Docker volume containing Linux binaries.
+        // The name carries the libc: the volume this replaced ("fabric-linux-node-modules")
+        // was populated by node:22-alpine containers with musl binaries, and its
+        // .linux-installed marker would have made the node:22-slim containers skip the
+        // reinstall and run glibc Node against musl native modules.
+        return container.WithVolume("fabric-glibc-node-modules", "/app/node_modules");
     }
-    // Linux: Use host node_modules directly (already has correct binaries)
+    // Linux: Use host node_modules directly (glibc binaries, valid in node:22-slim)
     return container;
 }
 
@@ -712,11 +750,10 @@ async Task<(int ExitCode, string Tail, IReadOnlyList<string> StdoutLines)> RunHo
 // change otherwise means a build followed by a manual restart; this collapses
 // that into one dashboard button.
 //
-// The build runs *inside* the container rather than on the host. The container's
-// own first-run build executes as root against the bind-mounted checkout, so on
-// Linux every agent's dist/ ends up root-owned and a host-side tsup build cannot
-// unlink the previous chunks (EACCES). Building where the entrypoint builds keeps
-// the ownership consistent.
+// The build runs *inside* the container rather than on the host, where the
+// entrypoint's own first-run build happens, so the bundle is produced by the same
+// Node and the same libc the agent then runs on. Both paths go through build_agent,
+// which on Linux hands dist/ back to the checkout's owner afterwards.
 IResourceBuilder<ContainerResource> WithAgentRebuildCommand(IResourceBuilder<ContainerResource> agent)
 {
     // The model name ("task-planner") is what the label and the agents/langchain
@@ -791,7 +828,7 @@ IResourceBuilder<ContainerResource> WithAgentRebuildCommand(IResourceBuilder<Con
                     containerId,
                     "sh",
                     "-c",
-                    $"corepack enable && cd /app/agents/langchain/{resourceName} && pnpm build",
+                    $"{agentShellHelpers}\ncorepack enable && cd /app/agents/langchain/{resourceName} && build_agent",
                 ],
                 repoRoot);
 
@@ -857,12 +894,12 @@ if (isPublishMode)
 }
 else
 {
-    var weaveReadersBase = builder.AddContainer("weave-readers", "node", "22-alpine")
+    var weaveReadersBase = builder.AddContainer("weave-readers", "node", "22-slim")
         .WithHttpEndpoint(port: 8140, targetPort: 8140, name: "http")
         .WithBindMount("../../", "/app");
     weaveReaders = AddHostGateway(AddNodeModulesVolume(weaveReadersBase))
         .WithEntrypoint("/bin/sh")
-        .WithArgs("-c", $"{agentRetryScript} && corepack enable && cd /app/agents/langchain/weave-readers && if [ ! -f dist/index.js ]; then echo 'Building weave-readers...' && pnpm build; fi && echo 'Starting weave-readers...' && node dist/index.js")
+        .WithArgs("-c", $"{agentRetryScript} && corepack enable && cd /app/agents/langchain/weave-readers && ensure_agent_built dist/index.js && echo 'Starting weave-readers...' && node dist/index.js")
         .WithEnvironment("NODE_ENV", "development")
         .WithEnvironment("PORT", "8140")
         .WithEnvironment("HOST", "0.0.0.0")
@@ -919,12 +956,12 @@ if (isPublishMode)
 }
 else
 {
-    var weaveShuttleBase = builder.AddContainer("weave-shuttle", "node", "22-alpine")
+    var weaveShuttleBase = builder.AddContainer("weave-shuttle", "node", "22-slim")
         .WithHttpEndpoint(port: 8141, targetPort: 8141, name: "http")
         .WithBindMount("../../", "/app");
     weaveShuttle = AddHostGateway(AddNodeModulesVolume(weaveShuttleBase))
         .WithEntrypoint("/bin/sh")
-        .WithArgs("-c", $"{agentRetryScript} && corepack enable && cd /app/agents/langchain/weave-shuttle && if [ ! -f dist/index.js ]; then echo 'Building weave-shuttle...' && pnpm build; fi && echo 'Starting weave-shuttle...' && node dist/index.js")
+        .WithArgs("-c", $"{agentRetryScript} && corepack enable && cd /app/agents/langchain/weave-shuttle && ensure_agent_built dist/index.js && echo 'Starting weave-shuttle...' && node dist/index.js")
         .WithEnvironment("NODE_ENV", "development")
         .WithEnvironment("PORT", "8141")
         .WithEnvironment("HOST", "0.0.0.0")
@@ -972,12 +1009,12 @@ if (isPublishMode)
 }
 else
 {
-    var weavePlannersBase = builder.AddContainer("weave-planners", "node", "22-alpine")
+    var weavePlannersBase = builder.AddContainer("weave-planners", "node", "22-slim")
         .WithHttpEndpoint(port: 8142, targetPort: 8142, name: "http")
         .WithBindMount("../../", "/app");
     weavePlanners = AddHostGateway(AddNodeModulesVolume(weavePlannersBase))
         .WithEntrypoint("/bin/sh")
-        .WithArgs("-c", $"{agentRetryScript} && corepack enable && cd /app/agents/langchain/weave-planners && if [ ! -f dist/index.js ]; then echo 'Building weave-planners...' && pnpm build; fi && echo 'Starting weave-planners...' && node dist/index.js")
+        .WithArgs("-c", $"{agentRetryScript} && corepack enable && cd /app/agents/langchain/weave-planners && ensure_agent_built dist/index.js && echo 'Starting weave-planners...' && node dist/index.js")
         .WithEnvironment("NODE_ENV", "development")
         .WithEnvironment("PORT", "8142")
         .WithEnvironment("HOST", "0.0.0.0")
@@ -1040,13 +1077,14 @@ else
     // Development: Bind mount with hot reload
     // NOTE: On macOS, we use a Docker volume to shadow node_modules for cross-platform compatibility.
     // This allows the container to have Linux-native binaries while the host keeps macOS binaries.
-    // On Linux, the host node_modules already has correct binaries, so we skip the volume.
-    var docGenBase = builder.AddContainer("document-generator", "node", "22-alpine")
+    // On Linux, the host node_modules already has the right (glibc) binaries for the
+    // node:22-slim image, so we skip the volume.
+    var docGenBase = builder.AddContainer("document-generator", "node", "22-slim")
         .WithHttpEndpoint(port: 8124, targetPort: 8124, name: "http")
         .WithBindMount("../../", "/app");
     documentGenerator = AddHostGateway(AddNodeModulesVolume(docGenBase))
         .WithEntrypoint("/bin/sh")
-        .WithArgs("-c", $"{agentRetryScript} && corepack enable && cd /app/agents/langchain/document-generator && if [ ! -f dist/unified-server.js ]; then echo 'Building document-generator...' && pnpm build; fi && echo 'Starting Unified Server (AG-UI + A2A)...' && node dist/unified-server.js")
+        .WithArgs("-c", $"{agentRetryScript} && corepack enable && cd /app/agents/langchain/document-generator && ensure_agent_built dist/unified-server.js && echo 'Starting Unified Server (AG-UI + A2A)...' && node dist/unified-server.js")
         .WithEnvironment("NODE_ENV", "development")
         .WithEnvironment("PORT", "8124")
         .WithEnvironment("HOST", "0.0.0.0")
@@ -1095,12 +1133,12 @@ if (isPublishMode)
 }
 else
 {
-    var projDocGenBase = builder.AddContainer("project-document-generator", "node", "22-alpine")
+    var projDocGenBase = builder.AddContainer("project-document-generator", "node", "22-slim")
         .WithHttpEndpoint(port: 8125, targetPort: 8125, name: "http")
         .WithBindMount("../../", "/app");
     projectDocumentGenerator = AddHostGateway(AddNodeModulesVolume(projDocGenBase))
         .WithEntrypoint("/bin/sh")
-        .WithArgs("-c", $"{agentRetryScript} && corepack enable && cd /app/agents/langchain/project-document-generator && if [ ! -f dist/unified-server.js ]; then echo 'Building project-document-generator...' && pnpm build; fi && echo 'Starting Unified Server (AG-UI + A2A)...' && node dist/unified-server.js")
+        .WithArgs("-c", $"{agentRetryScript} && corepack enable && cd /app/agents/langchain/project-document-generator && ensure_agent_built dist/unified-server.js && echo 'Starting Unified Server (AG-UI + A2A)...' && node dist/unified-server.js")
         .WithEnvironment("NODE_ENV", "development")
         .WithEnvironment("PORT", "8125")
         .WithEnvironment("HOST", "0.0.0.0")
@@ -1148,12 +1186,12 @@ if (isPublishMode)
 }
 else
 {
-    var taskPlannerBase = builder.AddContainer("task-planner", "node", "22-alpine")
+    var taskPlannerBase = builder.AddContainer("task-planner", "node", "22-slim")
         .WithHttpEndpoint(port: 8126, targetPort: 8126, name: "http")
         .WithBindMount("../../", "/app");
     taskPlanner = AddHostGateway(AddNodeModulesVolume(taskPlannerBase))
         .WithEntrypoint("/bin/sh")
-        .WithArgs("-c", $"{agentRetryScript} && corepack enable && cd /app/agents/langchain/task-planner && if [ ! -f dist/unified-server.js ]; then echo 'Building task-planner...' && pnpm build; fi && echo 'Starting Unified server (AG-UI + A2A)...' && node dist/unified-server.js")
+        .WithArgs("-c", $"{agentRetryScript} && corepack enable && cd /app/agents/langchain/task-planner && ensure_agent_built dist/unified-server.js && echo 'Starting Unified server (AG-UI + A2A)...' && node dist/unified-server.js")
         .WithEnvironment("NODE_ENV", "development")
         .WithEnvironment("PORT", "8126")
         .WithEnvironment("HOST", "0.0.0.0")
@@ -1201,12 +1239,12 @@ if (isPublishMode)
 }
 else
 {
-    var storyBreakdownBase = builder.AddContainer("story-breakdown", "node", "22-alpine")
+    var storyBreakdownBase = builder.AddContainer("story-breakdown", "node", "22-slim")
         .WithHttpEndpoint(port: 8127, targetPort: 8127, name: "http")
         .WithBindMount("../../", "/app");
     storyBreakdown = AddHostGateway(AddNodeModulesVolume(storyBreakdownBase))
         .WithEntrypoint("/bin/sh")
-        .WithArgs("-c", $"{agentRetryScript} && corepack enable && cd /app/agents/langchain/story-breakdown && if [ ! -f dist/unified-server.js ]; then echo 'Building story-breakdown...' && pnpm build; fi && echo 'Starting Unified server (AG-UI + A2A)...' && node dist/unified-server.js")
+        .WithArgs("-c", $"{agentRetryScript} && corepack enable && cd /app/agents/langchain/story-breakdown && ensure_agent_built dist/unified-server.js && echo 'Starting Unified server (AG-UI + A2A)...' && node dist/unified-server.js")
         .WithEnvironment("NODE_ENV", "development")
         .WithEnvironment("PORT", "8127")
         .WithEnvironment("HOST", "0.0.0.0")
@@ -1254,7 +1292,7 @@ if (isPublishMode)
 }
 else
 {
-    var dataAnalystBase = builder.AddContainer("data-analyst", "node", "22-alpine")
+    var dataAnalystBase = builder.AddContainer("data-analyst", "node", "22-slim")
         .WithHttpEndpoint(port: 8130, targetPort: 8130, name: "http")
         .WithBindMount("../../", "/app");
     dataAnalyst = AddHostGateway(AddNodeModulesVolume(dataAnalystBase))
@@ -1307,12 +1345,12 @@ if (isPublishMode)
 }
 else
 {
-    var apiAgentBase = builder.AddContainer("api-agent", "node", "22-alpine")
+    var apiAgentBase = builder.AddContainer("api-agent", "node", "22-slim")
         .WithHttpEndpoint(port: 8131, targetPort: 8131, name: "http")
         .WithBindMount("../../", "/app");
     apiAgent = AddHostGateway(AddNodeModulesVolume(apiAgentBase))
         .WithEntrypoint("/bin/sh")
-        .WithArgs("-c", $"{agentRetryScript} && corepack enable && cd /app/agents/langchain/api-agent && if [ ! -f dist/unified-server.js ]; then echo 'Building api-agent...' && pnpm build; fi && echo 'Starting Unified server (AG-UI + A2A)...' && node dist/unified-server.js")
+        .WithArgs("-c", $"{agentRetryScript} && corepack enable && cd /app/agents/langchain/api-agent && ensure_agent_built dist/unified-server.js && echo 'Starting Unified server (AG-UI + A2A)...' && node dist/unified-server.js")
         .WithEnvironment("NODE_ENV", "development")
         .WithEnvironment("PORT", "8131")
         .WithEnvironment("HOST", "0.0.0.0")
@@ -1360,12 +1398,12 @@ if (isPublishMode)
 }
 else
 {
-    var promptEnhancerBase = builder.AddContainer("prompt-enhancer", "node", "22-alpine")
+    var promptEnhancerBase = builder.AddContainer("prompt-enhancer", "node", "22-slim")
         .WithHttpEndpoint(port: 8134, targetPort: 8134, name: "http")
         .WithBindMount("../../", "/app");
     promptEnhancer = AddHostGateway(AddNodeModulesVolume(promptEnhancerBase))
         .WithEntrypoint("/bin/sh")
-        .WithArgs("-c", $"{agentRetryScript} && corepack enable && cd /app/agents/langchain/prompt-enhancer && if [ ! -f dist/unified-server.js ]; then echo 'Building prompt-enhancer...' && pnpm build; fi && echo 'Starting Unified Server (AG-UI + A2A)...' && node dist/unified-server.js")
+        .WithArgs("-c", $"{agentRetryScript} && corepack enable && cd /app/agents/langchain/prompt-enhancer && ensure_agent_built dist/unified-server.js && echo 'Starting Unified Server (AG-UI + A2A)...' && node dist/unified-server.js")
         .WithEnvironment("NODE_ENV", "development")
         .WithEnvironment("PORT", "8134")
         .WithEnvironment("HOST", "0.0.0.0")
@@ -1413,12 +1451,12 @@ if (isPublishMode)
 }
 else
 {
-    var backlogUpdaterBase = builder.AddContainer("backlog-updater", "node", "22-alpine")
+    var backlogUpdaterBase = builder.AddContainer("backlog-updater", "node", "22-slim")
         .WithHttpEndpoint(port: 8135, targetPort: 8135, name: "http")
         .WithBindMount("../../", "/app");
     backlogUpdater = AddHostGateway(AddNodeModulesVolume(backlogUpdaterBase))
         .WithEntrypoint("/bin/sh")
-        .WithArgs("-c", $"{agentRetryScript} && corepack enable && cd /app/agents/langchain/backlog-updater && if [ ! -f dist/unified-server.js ]; then echo 'Building backlog-updater...' && pnpm build; fi && echo 'Starting Unified Server (AG-UI + A2A)...' && node dist/unified-server.js")
+        .WithArgs("-c", $"{agentRetryScript} && corepack enable && cd /app/agents/langchain/backlog-updater && ensure_agent_built dist/unified-server.js && echo 'Starting Unified Server (AG-UI + A2A)...' && node dist/unified-server.js")
         .WithEnvironment("NODE_ENV", "development")
         .WithEnvironment("PORT", "8135")
         .WithEnvironment("HOST", "0.0.0.0")
@@ -1466,12 +1504,12 @@ if (isPublishMode)
 }
 else
 {
-    var customAgentBase = builder.AddContainer("custom-agent-runtime", "node", "22-alpine")
+    var customAgentBase = builder.AddContainer("custom-agent-runtime", "node", "22-slim")
         .WithHttpEndpoint(port: 8240, targetPort: 8240, name: "http")
         .WithBindMount("../../", "/app");
     customAgentRuntime = AddHostGateway(AddNodeModulesVolume(customAgentBase))
         .WithEntrypoint("/bin/sh")
-        .WithArgs("-c", $"{agentRetryScript} && corepack enable && cd /app/agents/langchain/custom-agent-runtime && if [ ! -f dist/server.js ]; then echo 'Building custom-agent-runtime...' && pnpm build; fi && echo 'Starting Custom Agent Runtime...' && node dist/server.js")
+        .WithArgs("-c", $"{agentRetryScript} && corepack enable && cd /app/agents/langchain/custom-agent-runtime && ensure_agent_built dist/server.js && echo 'Starting Custom Agent Runtime...' && node dist/server.js")
         .WithEnvironment("NODE_ENV", "development")
         .WithEnvironment("PORT", "8240")
         .WithEnvironment("HOST", "0.0.0.0")
@@ -1506,9 +1544,9 @@ else
 // Fizzy #2373. Adds a "Rebuild & restart" button to every dev-mode agent, since
 // the dev entrypoint only builds when dist/ is missing.
 //
-// The build runs inside the container, not on the host: the container owns dist/
-// on a Linux bind mount (its first-run build runs as root), so a host-side build
-// cannot replace those files.
+// The build runs inside the container, not on the host, so the bundle is produced
+// by the same Node and libc the agent then runs on. build_agent hands dist/ back
+// to the checkout's owner afterwards, so on Linux it stays host-owned either way.
 //
 // data-analyst is deliberately absent: it runs `pnpm exec tsx unified-server.ts`
 // straight from source, so there is no bundle to rebuild and the stock Restart
