@@ -1,5 +1,44 @@
 # fabric-app
 
+## 1.14.8
+
+### Patch Changes
+
+- 2c1c9f9: Bound the LangGraph agents' model-call retries and share one retry helper across the agents.
+- 52688cf: Type-check all seven LangChain agents in CI; fix the zod 3 tool-schema blow-up that made two of them impossible to check
+- 88b1d21: Run the dev-mode LangGraph agent containers on node:22-slim so in-container builds work against the host's node_modules and dist/ stays host-owned.
+- 4631e71: Drop the five unused Aspire.Hosting.Azure packages from the AppHost so the security-scanned .NET lock file no longer carries the Azure SDK graph.
+- 60166ef: Add an opt-in ngrok tunnel resource to the Aspire AppHost so OAuth callbacks and webhooks reach local development without a hand-fed URL.
+- bdc89ff: Add Aspire dashboard commands to rebuild-and-restart each agent, run database seeds, and apply RLS policies
+- de9e7f9: Give the auth package's Better Auth harness suites a 30 s per-test ceiling so they survive the full parallel monorepo sweep
+- a663ab6: Browser-automation sessions now verify the calling user owns the session before navigating, extracting, screenshotting or closing it.
+- c0347ad: Pin the data-analyst playground's @ai-sdk/react to the release built on its own ai@6, removing the unsound message-type cast
+- 96f20df: Speed up project document generation by reusing prompt settings across a run and recording usage asynchronously.
+- 77ff2a3: Reuse the document generator's tool definitions across a generation run instead of rebuilding them on every tool call.
+- 772bdca: Bring the DB-gated wizard draft integration test back in line with the oRPC procedure shape so it runs green again
+- 6048731: Speed up AI agent tools by eliminating redundant project lookups.
+- 9cfcd91: Update the LangChain 1.x packages (core, langgraph, openai, anthropic, groq, sdk) to their current releases.
+- d80ba12: Fix every MCP tool call failing with a missing-scope error on the hosted `/mcp` server.
+- b106702: Teams and Slack conversations can be paused without deleting their context, and a monitor whose bound account has gone can be reconnected.
+- 899528e: Put the pause control next to unlink on a linked channel or chat, instead of stranded in the middle of the row.
+- 63141c1: Constrain the OAuth callback redirect target to a same-origin path so a caller-chosen returnUrl can no longer send the user off-site
+- d2fcb15: Say "Every linked Teams chat is paused", not "teams chat", when a monitor has nothing left to scan.
+- 65f75b9: Bump the pinned pnpm from 10.14.0 to 10.34.5, the current 10.x release.
+- 738dfea: Migrate the toolchain to pnpm 11 and move pnpm settings from package.json/.npmrc into pnpm-workspace.yaml
+- 7cb70d9: Record the fourteen dependencies whose install scripts pnpm skips, silencing the "Ignored build scripts" warning on every install
+- 85ea4ae: Quarantine freshly published dependency versions for 24 hours before pnpm will resolve or install them
+- b9ce279: Give the PriorityRankedList large no-filter re-prioritize test its own 30 s ceiling so it stops timing out under the CI fan-out
+- 85ab03d: Let editors choose a publishing topic's contributors, and feed that choice — not the AI-resolved list — to every content-generation prompt
+- db0956a: Run the root `pnpm test` sweep one turbo task at a time so CPU-bound suites stop timing out from starvation (Fizzy #2411)
+- cf7b0e6: Stop the root `pnpm test` sweep from automatically sourcing `.env.local`, so local credentials no longer flow into unit tests
+- 4bbdd19: Add real-time progress indicator, dynamic query polling, and queue status badges for document generation and regeneration jobs.
+- 6fc1b0b: Run @repo/temporal's real-Postgres test files one at a time so the publishing drain and redrive suites stop failing each other in CI
+- cc66127: Bundle the OpenTelemetry workflow interceptor so Temporal workflow spans are actually produced and exported
+- 4fe4590: Temporal: route every client connection through the shared TLS/API-key/fail-closed policy and remove the dead @repo/rag browser extractor
+- 38ba40d: Raise pnpm override floors for the dompurify, postcss-selector-parser and uuid transitive dependency advisories.
+- 9be51df: Resolve open dependency advisories for qs, @xmldom/xmldom, @humanfs/node, fflate and @simplewebauthn/server via root pnpm overrides.
+- 4152ee7: Bump wrangler in both Cloudflare workers to 4.107.1 so its bundled esbuild moves off the 0.27.x advisory range
+
 ## 1.14.7
 
 ### Patch Changes
