@@ -1241,12 +1241,14 @@ export function createProviderModel(
 				fetch: gatewayFetch,
 			},
 			// reasoning lives in modelKwargs so it spreads at the body root
-			// (verified at @langchain/openai@1.2.7
-			// /dist/chat_models/completions.cjs:47).
+			// (verified at @langchain/openai@1.5.11
+			// /dist/chat_models/completions.cjs:51).
 			...(enrollReasoning ? { modelKwargs: gatewayReasoning } : {}),
 			// __includeRawResponse preserves the gateway's `choices[].message.reasoning`
 			// text in `additional_kwargs.__raw_response` — without this flag, LangChain's
-			// converter (converters/completions.cjs:163-199) drops it. The agent
+			// converter (dist/converters/completions.cjs:157-195) drops it: it reads
+			// `message.reasoning_content` but never `message.reasoning`, so the
+			// gateway's field survives only inside the raw envelope. The agent
 			// extractReasoningFromMessage helper reads it back from there.
 			...(enrollReasoning ? { __includeRawResponse: true } : {}),
 		});
