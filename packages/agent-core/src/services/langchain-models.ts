@@ -930,16 +930,28 @@ export function applyReasoningConfig(
 }
 
 /**
- * Default max retries for rate limit errors (429).
+ * Default max retries for the SDK-level per-request retry.
  *
- * OpenAI/Azure return Retry-After headers with 429 responses.
- * The SDK respects these headers and waits appropriately.
- * Setting to 10 provides resilience for high-traffic scenarios.
+ * LangChain core's `AsyncCaller` wraps every `invoke` in `pRetry` with
+ * `minTimeout` 1 s, `factor` 2, `randomize: true` (each delay multiplied by
+ * a jitter factor in [1, 2)), and `maxTimeout` Infinity (uncapped). At 10
+ * retries that backoff alone summed to 17–34 minutes of pure sleep per model
+ * call in the worst case; at 3 retries it's bounded to roughly 14 seconds.
  *
- * Note: This is separate from Temporal's activity retry policy.
- * SDK retries handle transient rate limits within a single activity execution.
+ * The LangGraph agents under `agents/langchain/` are the only callers of
+ * this factory, and several of them add their own whole-node retry above
+ * this layer (a state-driven `Command` that re-enters the graph node on
+ * failure) — so every application-level retry attempt re-enters this whole
+ * SDK envelope, including its own backoff.
+ *
+ * 429/Retry-After: core's `AsyncCaller` retries a 429 only when it carries
+ * a usable retry hint of 60 seconds or less (a `Retry-After` header, or a
+ * "try again in N seconds" phrase in the message), and then waits the
+ * larger of the backoff above and the hinted value. A 429 without such a
+ * hint is surfaced immediately as a capacity error and is not retried at
+ * this layer.
  */
-const DEFAULT_MAX_RETRIES = 10;
+const DEFAULT_MAX_RETRIES = 3;
 
 /**
  * Extended timeout for long-running OpenAI-compatible HTTP requests (15 minutes).

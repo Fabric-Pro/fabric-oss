@@ -10,7 +10,7 @@ import { Command } from "@langchain/langgraph";
 import { getDependencyAnalysisPrompt } from "../prompts";
 import type { TaskPlannerStateType } from "../state";
 import type { DependencyGraph } from "../types";
-import { getAgentModelSync, type ProviderConfig, withRetry } from "../utils";
+import { getAgentModelSync, type ProviderConfig } from "../utils";
 
 /**
  * Build Dependencies Node
@@ -61,12 +61,10 @@ ${JSON.stringify(state.decomposedTasks, null, 2)}
 
 Return a JSON object with "dependencyGraph" containing nodes, edges, and criticalPath.`;
 
-		const response = await withRetry(async () => {
-			return model.invoke([
-				new SystemMessage(systemPrompt),
-				new HumanMessage(userMessage),
-			]);
-		});
+		const response = await model.invoke([
+			new SystemMessage(systemPrompt),
+			new HumanMessage(userMessage),
+		]);
 
 		const content = response.content?.toString() || "{}";
 		const jsonMatch = content.match(/\{[\s\S]*\}/);

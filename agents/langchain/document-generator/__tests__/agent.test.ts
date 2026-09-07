@@ -19,7 +19,6 @@ import {
 	isRetryableError,
 	MAX_RETRIES,
 	predictiveStateUpdatesGraph,
-	RETRY_DELAY_MS,
 	sleep,
 } from "../agent";
 
@@ -90,10 +89,6 @@ describe("Document Generator Agent Module", () => {
 
 		it("should export MAX_RETRIES", () => {
 			expect(MAX_RETRIES).toBe(3);
-		});
-
-		it("should export RETRY_DELAY_MS", () => {
-			expect(RETRY_DELAY_MS).toBe(1000);
 		});
 
 		it("should export getAgentModel", () => {

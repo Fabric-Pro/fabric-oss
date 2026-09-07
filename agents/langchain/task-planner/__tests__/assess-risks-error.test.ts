@@ -10,8 +10,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
  * behavior: the underlying error message is surfaced in `recommendations[0]`
  * (truncated to 240 chars to keep the recommendation card readable).
  *
- * Mocks `getAgentModelSync` + `withRetry` via `../utils` so we can
- * deterministically force the LLM call to throw without hitting the network.
+ * Mocks `getAgentModelSync` via `../utils` so we can deterministically force
+ * the LLM call to throw without hitting the network.
  */
 
 const invokeMock = vi.fn();
@@ -25,10 +25,6 @@ vi.mock("../utils", async (importOriginal) => {
 		getAgentModelSync: vi.fn(() => ({
 			invoke: invokeMock,
 		})),
-		// withRetry: pass-through so the thrown error reaches the catch
-		// without artificial delay. The real implementation already exhausts
-		// retries before throwing, so this models the post-retry state.
-		withRetry: vi.fn(async (fn: () => unknown) => fn()),
 	};
 });
 

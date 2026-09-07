@@ -10,7 +10,7 @@ import { Command } from "@langchain/langgraph";
 import { getRiskAssessmentPrompt } from "../prompts";
 import type { TaskPlannerStateType } from "../state";
 import type { RiskAnalysis } from "../types";
-import { getAgentModelSync, type ProviderConfig, withRetry } from "../utils";
+import { getAgentModelSync, type ProviderConfig } from "../utils";
 
 /**
  * Truncate threshold for user-visible error messages (PR 1090 review I-3).
@@ -109,12 +109,10 @@ ${JSON.stringify(state.decomposedTasks, null, 2)}
 
 Return a JSON object with "riskAnalysis" containing factors, mitigations, and recommendations.`;
 
-		const response = await withRetry(async () => {
-			return model.invoke([
-				new SystemMessage(systemPrompt),
-				new HumanMessage(userMessage),
-			]);
-		});
+		const response = await model.invoke([
+			new SystemMessage(systemPrompt),
+			new HumanMessage(userMessage),
+		]);
 
 		const content = response.content?.toString() || "{}";
 		const jsonMatch = content.match(/\{[\s\S]*\}/);

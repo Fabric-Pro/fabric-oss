@@ -198,6 +198,17 @@ export {
 } from "./reflection";
 // Registry
 export { AgentRegistry, globalAgentRegistry } from "./registry";
+// Agent Retry Helpers (application-level, whole-node retry — sits above the
+// SDK per-request retry in ./services/langchain-models.ts)
+export {
+	calculateRetryDelay,
+	isJsonParseError,
+	isRetryableError,
+	MAX_NODE_RETRIES,
+	RETRY_BASE_DELAY_MS,
+	RETRY_MAX_DELAY_MS,
+	sleep,
+} from "./retry";
 // Services (agent loader - no database dependency)
 export type {
 	AgentLoadContext,

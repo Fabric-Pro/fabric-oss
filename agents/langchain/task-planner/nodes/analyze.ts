@@ -11,7 +11,7 @@ import { Command, END } from "@langchain/langgraph";
 import { detectAndCompose } from "@repo/agent-core";
 import { getAnalyzeSystemPrompt } from "../prompts";
 import type { TaskPlannerStateType } from "../state";
-import { getAgentModelSync, type ProviderConfig, withRetry } from "../utils";
+import { getAgentModelSync, type ProviderConfig } from "../utils";
 
 /**
  * Analyze Node
@@ -102,13 +102,11 @@ ${state.userStory}
 
 Return a JSON object with "decomposedTasks" array.`;
 
-		const response = await withRetry(async () => {
-			return model.invoke([
-				new SystemMessage(systemPrompt),
-				...state.messages,
-				new HumanMessage(userMessage),
-			]);
-		});
+		const response = await model.invoke([
+			new SystemMessage(systemPrompt),
+			...state.messages,
+			new HumanMessage(userMessage),
+		]);
 
 		// Parse the JSON response
 		const content = response.content?.toString() || "{}";

@@ -6,6 +6,10 @@
 
 import type { BaseMessage } from "@langchain/core/messages";
 
+// Retry helpers now live in @repo/agent-core (shared across the LangGraph
+// agents) — re-exported here under the names this agent's nodes and tests
+// already use.
+export { calculateRetryDelay, isJsonParseError, sleep } from "@repo/agent-core";
 // Deterministically stamp the active org id onto emitted <excalidraw-embed>
 // tags so the saved diagram resolves its org-scoped MCP config on reload.
 export { injectOrgIdIntoToolArgs } from "./excalidraw-embed-org-id";
@@ -73,23 +77,6 @@ export const DEFAULT_RECURSION_LIMIT =
  * Keep low to avoid excessive token consumption
  */
 export const MAX_JSON_RETRIES = 3;
-
-/**
- * Check if an error is a JSON parse error
- *
- * JSON parse errors get extra retry attempts.
- *
- * @param error - The error to check
- * @returns Whether it's a JSON parse error
- */
-export function isJsonParseError(error: Error): boolean {
-	const errorMsg = error.message;
-	return (
-		errorMsg.includes("Failed to parse tool call arguments as JSON") ||
-		errorMsg.includes("Invalid JSON") ||
-		errorMsg.includes("JSON parse error")
-	);
-}
 
 /**
  * Check whether an error is a provider-side "prompt too long / context
@@ -197,25 +184,6 @@ export function isVisionUnsupportedError(error: Error): boolean {
 		return true;
 	}
 	return false;
-}
-
-/**
- * Calculate retry delay with exponential backoff
- *
- * @param retryCount - Current retry count
- * @returns Delay in milliseconds (capped at 4000ms)
- */
-export function calculateRetryDelay(retryCount: number): number {
-	return Math.min(500 * 2 ** retryCount, 4000);
-}
-
-/**
- * Wait for the specified delay
- *
- * @param ms - Milliseconds to wait
- */
-export async function sleep(ms: number): Promise<void> {
-	return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 /** Per-message shape summary produced by {@link summarizeMessagesForLogging}. */
