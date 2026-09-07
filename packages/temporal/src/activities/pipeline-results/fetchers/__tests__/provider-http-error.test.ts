@@ -17,12 +17,14 @@ const github = (
 	status: number,
 	headers: Record<string, string> = {},
 	body = "",
+	secrets: readonly string[] = [],
 ) =>
 	classifyProviderHttpFailure({
 		provider: "github",
 		status,
 		headers,
 		body,
+		secrets,
 	});
 
 describe("classifyProviderHttpFailure", () => {
@@ -124,7 +126,51 @@ describe("classifyProviderHttpFailure", () => {
 			expect(kind).toBe("FORBIDDEN");
 			expect(message).toMatch(/Reconnecting will not add a permission/i);
 			expect(message).toContain("Actions: read");
+			expect(message).toContain("may be missing");
 			expect(message).not.toMatch(/expired/i);
+		});
+
+		it("quotes x-accepted-github-permissions when GitHub sends it", () => {
+			const { kind, message } = github(
+				403,
+				{ "x-accepted-github-permissions": "actions=read" },
+				"Resource not accessible by personal access token",
+			);
+
+			expect(kind).toBe("FORBIDDEN");
+			expect(message).toContain(
+				'the provider reports this endpoint accepts permissions: "actions=read"',
+			);
+			expect(message).not.toMatch(/it is missing/i);
+			expect(message).toMatch(/Reconnecting will not add a permission/i);
+		});
+
+		it("scrubs secrets found inside permission headers", () => {
+			const { kind, message } = github(
+				403,
+				{
+					"x-accepted-github-permissions":
+						"actions=read, ghp_SECRET123",
+				},
+				"Forbidden",
+				["ghp_SECRET123"],
+			);
+
+			expect(kind).toBe("FORBIDDEN");
+			expect(message).toContain("[REDACTED]");
+			expect(message).not.toContain("ghp_SECRET123");
+		});
+
+		it("caps long permission headers to MAX_HEADER_CHARS", () => {
+			const longHeader = "a".repeat(500);
+			const { kind, message } = github(
+				403,
+				{ "x-accepted-github-permissions": longHeader },
+				"Forbidden",
+			);
+
+			expect(kind).toBe("FORBIDDEN");
+			expect(message).not.toContain("a".repeat(121));
 		});
 	});
 
