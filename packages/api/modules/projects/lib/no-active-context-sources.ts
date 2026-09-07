@@ -19,8 +19,11 @@ export function throwNoActiveContextSources(params: {
 	action: string;
 }): never {
 	if (params.pausedCount > 0) {
+		// The noun arrives already cased for prose ("Teams chat", "Slack
+		// channel"). Lowercasing it rendered "Every linked teams chat is
+		// paused", which reads as a typo for a product name.
 		throw new ORPCError("BAD_REQUEST", {
-			message: `Every linked ${params.noun.toLowerCase()} is paused, so there is nothing to scan. Resume at least one before ${params.action}.`,
+			message: `Every linked ${params.noun} is paused, so there is nothing to scan. Resume at least one before ${params.action}.`,
 		});
 	}
 
