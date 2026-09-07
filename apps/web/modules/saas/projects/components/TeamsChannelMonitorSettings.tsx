@@ -14,7 +14,6 @@ import {
 	findJobForSource,
 	useProjectJobProgress,
 } from "@saas/jobs/hooks/use-project-job-progress";
-import { useConfirmationAlert } from "@saas/shared/components/ConfirmationAlertProvider";
 import { orpcClient } from "@shared/lib/orpc-client";
 import { orpc } from "@shared/lib/orpc-query-utils";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -45,6 +44,9 @@ import {
 	HashIcon,
 	LinkIcon,
 	Loader2Icon,
+	PauseIcon,
+	PlayIcon,
+	PlugZapIcon,
 	PlusIcon,
 	RefreshCwIcon,
 	UnlinkIcon,
@@ -53,6 +55,10 @@ import { useTranslations } from "next-intl";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { TeamsChannelPickerDialog } from "./TeamsChannelPickerDialog";
+import {
+	type MonitorRow,
+	useMonitorContextControls,
+} from "./useMonitorContextControls";
 
 const MONITOR_INTERVALS = [
 	{ value: "60", label: "Every hour" },
@@ -104,6 +110,7 @@ type LinkedChannel = {
 	lastErrorAt: string | Date | null;
 	userId: string | null;
 	organizationId: string | null;
+	deactivatedAt: string | Date | null;
 	_count: {
 		seenMessages: number;
 	};
@@ -116,7 +123,6 @@ export function TeamsChannelMonitorSettings({
 }: Props) {
 	const queryClient = useQueryClient();
 	const runningJobs = useProjectJobProgress(projectId);
-	const { confirm } = useConfirmationAlert();
 	const t = useTranslations("tooltips.projectSettings");
 	const unlinkCopy = t.raw("unlinkTeamsChannel") as DestructiveTooltipCopy;
 	const [pickerOpen, setPickerOpen] = useState(false);
@@ -183,45 +189,36 @@ export function TeamsChannelMonitorSettings({
 		});
 	}, [queryClient, projectId, organizationId]);
 
-	// Unlink mutation (wrapped in confirmation dialog)
-	const unlinkMutation = useMutation({
-		mutationFn: async (linkedChannelId: string) => {
-			return await orpcClient.projects.teamsChannelMonitor.unlinkChannel({
+	const {
+		requestUnlink,
+		toggleScanning,
+		requestReconnect,
+		isUnlinking,
+		isTogglingScanning,
+		isReconnecting,
+	} = useMonitorContextControls({
+		noun: "channel",
+		setActive: ({ id, active }) =>
+			orpcClient.projects.teamsChannelMonitor.setChannelActive({
+				projectId,
+				organizationId,
+				linkedChannelId: id,
+				active,
+			}),
+		unlink: (linkedChannelId) =>
+			orpcClient.projects.teamsChannelMonitor.unlinkChannel({
 				projectId,
 				organizationId,
 				linkedChannelId,
-			});
-		},
-		onSuccess: () => {
-			toast.success("Channel unlinked");
-			invalidateLinked();
-		},
-		onError: (error) => {
-			toast.error("Failed to unlink channel", {
-				description:
-					error instanceof Error ? error.message : "Unknown error",
-			});
-		},
+			}),
+		reconnect: (preflightOnly) =>
+			orpcClient.projects.teamsChannelMonitor.reconnect({
+				projectId,
+				organizationId,
+				preflightOnly,
+			}),
+		invalidate: invalidateLinked,
 	});
-
-	const requestUnlink = useCallback(
-		(channel: LinkedChannel) => {
-			const label =
-				channel.teamName && channel.channelName
-					? `${channel.teamName} - ${channel.channelName}`
-					: (channel.channelName ?? "this channel");
-			confirm({
-				title: "Unlink channel",
-				message: `Remove ${label} from the monitor? Seen-message history will be deleted. Existing proposals are kept.`,
-				destructive: true,
-				confirmLabel: "Unlink",
-				onConfirm: async () => {
-					await unlinkMutation.mutateAsync(channel.id);
-				},
-			});
-		},
-		[confirm, unlinkMutation],
-	);
 
 	// Enable mutation
 	const enableMutation = useMutation({
@@ -479,6 +476,32 @@ export function TeamsChannelMonitorSettings({
 											{t("teamsMonitorRunNow")}
 										</TooltipContent>
 									</Tooltip>
+									{/* Reconnect is panel-level because the
+									    binding is: one workflow carries one
+									    user's token for every linked channel,
+									    so there is no per-channel owner to
+									    move. */}
+									<Tooltip>
+										<TooltipTrigger asChild>
+											<Button
+												variant="ghost"
+												size="sm"
+												onClick={requestReconnect}
+												disabled={isReconnecting}
+												aria-label="Reconnect channel monitor to me"
+											>
+												{isReconnecting ? (
+													<Loader2Icon className="mr-2 size-4 animate-spin" />
+												) : (
+													<PlugZapIcon className="mr-2 size-4" />
+												)}
+												Reconnect to me
+											</Button>
+										</TooltipTrigger>
+										<TooltipContent>
+											{t("reconnectMonitor")}
+										</TooltipContent>
+									</Tooltip>
 								</div>
 
 								<div className="max-h-[260px] space-y-1.5 overflow-y-auto pr-1">
@@ -489,6 +512,14 @@ export function TeamsChannelMonitorSettings({
 												? `${channel.teamName} - ${channel.channelName}`
 												: (channel.channelName ??
 													"Unnamed channel");
+										const isPaused =
+											channel.deactivatedAt !== null;
+										const monitorRow: MonitorRow = {
+											id: channel.id,
+											label: displayLabel,
+											deactivatedAt:
+												channel.deactivatedAt,
+										};
 										// Surface a failure as soon as one happens —
 										// gating the box on the threshold meant a hard
 										// auth failure, which the Job Hub reports
@@ -531,6 +562,11 @@ export function TeamsChannelMonitorSettings({
 																{displayLabel}
 															</p>
 															<div className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+																{isPaused && (
+																	<span className="rounded bg-muted px-1.5 py-0.5 font-medium text-foreground">
+																		Paused
+																	</span>
+																)}
 																<span>
 																	{
 																		channel
@@ -573,6 +609,42 @@ export function TeamsChannelMonitorSettings({
 															</div>
 														</div>
 													</div>
+													<Tooltip>
+														<TooltipTrigger asChild>
+															<Button
+																variant="ghost"
+																size="icon"
+																onClick={() =>
+																	toggleScanning(
+																		monitorRow,
+																	)
+																}
+																disabled={
+																	isTogglingScanning
+																}
+																aria-label={
+																	isPaused
+																		? `Resume scanning ${displayLabel}`
+																		: `Pause scanning ${displayLabel}`
+																}
+															>
+																{isPaused ? (
+																	<PlayIcon className="size-4 text-muted-foreground" />
+																) : (
+																	<PauseIcon className="size-4 text-muted-foreground" />
+																)}
+															</Button>
+														</TooltipTrigger>
+														<TooltipContent>
+															{isPaused
+																? t(
+																		"resumeContextSource",
+																	)
+																: t(
+																		"pauseContextSource",
+																	)}
+														</TooltipContent>
+													</Tooltip>
 													<DestructiveTooltip
 														copy={unlinkCopy}
 													>
@@ -581,11 +653,11 @@ export function TeamsChannelMonitorSettings({
 															size="icon"
 															onClick={() =>
 																requestUnlink(
-																	channel,
+																	monitorRow,
 																)
 															}
 															disabled={
-																unlinkMutation.isPending
+																isUnlinking
 															}
 															aria-label={`Unlink ${displayLabel}`}
 														>

@@ -18,7 +18,6 @@ import {
 	findJobForSource,
 	useProjectJobProgress,
 } from "@saas/jobs/hooks/use-project-job-progress";
-import { useConfirmationAlert } from "@saas/shared/components/ConfirmationAlertProvider";
 import { orpcClient } from "@shared/lib/orpc-client";
 import { orpc } from "@shared/lib/orpc-query-utils";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -49,6 +48,9 @@ import {
 	LinkIcon,
 	Loader2Icon,
 	MessageSquareIcon,
+	PauseIcon,
+	PlayIcon,
+	PlugZapIcon,
 	PlusIcon,
 	RefreshCwIcon,
 	UnlinkIcon,
@@ -57,6 +59,10 @@ import { useTranslations } from "next-intl";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { TeamsChatPickerDialog } from "./TeamsChatPickerDialog";
+import {
+	type MonitorRow,
+	useMonitorContextControls,
+} from "./useMonitorContextControls";
 
 const MONITOR_INTERVALS = [
 	{ value: "60", label: "Every hour" },
@@ -106,6 +112,7 @@ type LinkedChat = {
 	lastErrorAt: string | Date | null;
 	userId: string | null;
 	organizationId: string | null;
+	deactivatedAt: string | Date | null;
 	_count: {
 		seenMessages: number;
 	};
@@ -118,7 +125,6 @@ export function TeamsChatMonitorSettings({
 }: Props) {
 	const queryClient = useQueryClient();
 	const runningJobs = useProjectJobProgress(projectId);
-	const { confirm } = useConfirmationAlert();
 	const t = useTranslations("tooltips.projectSettings");
 	const unlinkCopy = t.raw("unlinkTeamsChat") as DestructiveTooltipCopy;
 	const [pickerOpen, setPickerOpen] = useState(false);
@@ -176,41 +182,36 @@ export function TeamsChatMonitorSettings({
 		});
 	}, [queryClient, projectId, organizationId]);
 
-	const unlinkMutation = useMutation({
-		mutationFn: async (linkedChatId: string) => {
-			return await orpcClient.projects.teamsChatMonitor.unlinkChat({
+	const {
+		requestUnlink,
+		toggleScanning,
+		requestReconnect,
+		isUnlinking,
+		isTogglingScanning,
+		isReconnecting,
+	} = useMonitorContextControls({
+		noun: "chat",
+		setActive: ({ id, active }) =>
+			orpcClient.projects.teamsChatMonitor.setChatActive({
+				projectId,
+				organizationId,
+				linkedChatId: id,
+				active,
+			}),
+		unlink: (linkedChatId) =>
+			orpcClient.projects.teamsChatMonitor.unlinkChat({
 				projectId,
 				organizationId,
 				linkedChatId,
-			});
-		},
-		onSuccess: () => {
-			toast.success("Chat unlinked");
-			invalidateLinked();
-		},
-		onError: (error) => {
-			toast.error("Failed to unlink chat", {
-				description:
-					error instanceof Error ? error.message : "Unknown error",
-			});
-		},
+			}),
+		reconnect: (preflightOnly) =>
+			orpcClient.projects.teamsChatMonitor.reconnect({
+				projectId,
+				organizationId,
+				preflightOnly,
+			}),
+		invalidate: invalidateLinked,
 	});
-
-	const requestUnlink = useCallback(
-		(chat: LinkedChat) => {
-			const label = chat.chatTopic ?? "this chat";
-			confirm({
-				title: "Unlink chat",
-				message: `Remove ${label} from the monitor? Seen-message history will be deleted. Existing proposals are kept.`,
-				destructive: true,
-				confirmLabel: "Unlink",
-				onConfirm: async () => {
-					await unlinkMutation.mutateAsync(chat.id);
-				},
-			});
-		},
-		[confirm, unlinkMutation],
-	);
 
 	const enableMutation = useMutation({
 		mutationFn: async (payload: {
@@ -456,12 +457,44 @@ export function TeamsChatMonitorSettings({
 											{t("teamsMonitorRunNow")}
 										</TooltipContent>
 									</Tooltip>
+									{/* Reconnect is panel-level because the
+									    binding is: one workflow carries one
+									    user's token for every linked chat, so
+									    there is no per-chat owner to move. */}
+									<Tooltip>
+										<TooltipTrigger asChild>
+											<Button
+												variant="ghost"
+												size="sm"
+												onClick={requestReconnect}
+												disabled={isReconnecting}
+												aria-label="Reconnect chat monitor to me"
+											>
+												{isReconnecting ? (
+													<Loader2Icon className="mr-2 size-4 animate-spin" />
+												) : (
+													<PlugZapIcon className="mr-2 size-4" />
+												)}
+												Reconnect to me
+											</Button>
+										</TooltipTrigger>
+										<TooltipContent>
+											{t("reconnectMonitor")}
+										</TooltipContent>
+									</Tooltip>
 								</div>
 
 								<div className="max-h-[260px] space-y-1.5 overflow-y-auto pr-1">
 									{linkedChats.map((chat) => {
 										const displayLabel =
 											chat.chatTopic ?? "Group chat";
+										const isPaused =
+											chat.deactivatedAt !== null;
+										const monitorRow: MonitorRow = {
+											id: chat.id,
+											label: displayLabel,
+											deactivatedAt: chat.deactivatedAt,
+										};
 										// Surface a failure as soon as one happens —
 										// gating the box on the threshold meant a hard
 										// auth failure, which the Job Hub reports
@@ -504,6 +537,11 @@ export function TeamsChatMonitorSettings({
 																{displayLabel}
 															</p>
 															<div className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+																{isPaused && (
+																	<span className="rounded bg-muted px-1.5 py-0.5 font-medium text-foreground">
+																		Paused
+																	</span>
+																)}
 																<span>
 																	{
 																		chat
@@ -545,6 +583,42 @@ export function TeamsChatMonitorSettings({
 															</div>
 														</div>
 													</div>
+													<Tooltip>
+														<TooltipTrigger asChild>
+															<Button
+																variant="ghost"
+																size="icon"
+																onClick={() =>
+																	toggleScanning(
+																		monitorRow,
+																	)
+																}
+																disabled={
+																	isTogglingScanning
+																}
+																aria-label={
+																	isPaused
+																		? `Resume scanning ${displayLabel}`
+																		: `Pause scanning ${displayLabel}`
+																}
+															>
+																{isPaused ? (
+																	<PlayIcon className="size-4 text-muted-foreground" />
+																) : (
+																	<PauseIcon className="size-4 text-muted-foreground" />
+																)}
+															</Button>
+														</TooltipTrigger>
+														<TooltipContent>
+															{isPaused
+																? t(
+																		"resumeContextSource",
+																	)
+																: t(
+																		"pauseContextSource",
+																	)}
+														</TooltipContent>
+													</Tooltip>
 													<DestructiveTooltip
 														copy={unlinkCopy}
 													>
@@ -553,11 +627,11 @@ export function TeamsChatMonitorSettings({
 															size="icon"
 															onClick={() =>
 																requestUnlink(
-																	chat,
+																	monitorRow,
 																)
 															}
 															disabled={
-																unlinkMutation.isPending
+																isUnlinking
 															}
 															aria-label={`Unlink ${displayLabel}`}
 														>

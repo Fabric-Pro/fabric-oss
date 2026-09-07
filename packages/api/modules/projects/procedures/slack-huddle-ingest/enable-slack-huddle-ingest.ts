@@ -8,6 +8,7 @@ import {
 	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
+import { throwNoActiveContextSources } from "../../lib/no-active-context-sources";
 
 /**
  * AUTHORIZATION: requireProjectPermission(PROJECT_UPDATE) — only project
@@ -62,12 +63,22 @@ export const enableSlackHuddleIngestProcedure = tenantProtectedProcedure
 
 		// Require at least one linked Slack channel (huddle ingest rides them).
 		const linkedChannelCount = await db.projectLinkedSlackChannel.count({
-			where: { projectId: input.projectId },
+			where: { projectId: input.projectId, deactivatedAt: null },
 		});
 		if (linkedChannelCount === 0) {
-			throw new ORPCError("BAD_REQUEST", {
-				message:
-					"Link a Slack channel first before enabling huddle notes ingestion",
+			// A second count only on the error path: with pausing, "nothing to
+			// scan" and "nothing linked" are different situations and only one
+			// of them is the user's mistake.
+			const pausedCount = await db.projectLinkedSlackChannel.count({
+				where: {
+					projectId: input.projectId,
+					NOT: { deactivatedAt: null },
+				},
+			});
+			throwNoActiveContextSources({
+				pausedCount,
+				noun: "Slack channel",
+				action: "enabling huddle notes ingestion",
 			});
 		}
 

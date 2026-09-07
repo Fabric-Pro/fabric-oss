@@ -1482,6 +1482,10 @@
 					},
 					"document_generation": {
 						"failed": "Document generation failed"
+					},
+					"context_source": {
+						"scan_stopped": "Channel or chat scanning stopped or resumed",
+						"reconnected": "Channel or chat monitor reconnected"
 					}
 				},
 				"story": {
@@ -5102,12 +5106,12 @@
 			"teamsMonitorDisable": "Stop the scheduled monitor. Linked channels and seen-message history are preserved and scanning can be re-enabled any time.",
 			"unlinkTeamsChannel": {
 				"label": "Remove this Teams channel from the monitor.",
-				"warning": "Warning: seen-message history for this channel is deleted. Existing proposals are kept."
+				"warning": "Warning: this permanently deletes the conversation context captured from this channel and its indexed content, along with the seen-message history. Existing proposals are kept. This cannot be undone. To stop scanning without losing anything, choose Pause scanning instead."
 			},
 			"teamsMonitorLinkChats": "Open the Microsoft Teams chat picker to add group chats to the monitor.",
 			"unlinkTeamsChat": {
 				"label": "Remove this Teams chat from the monitor.",
-				"warning": "Warning: seen-message history for this chat is deleted. Existing proposals are kept."
+				"warning": "Warning: this permanently deletes the conversation context captured from this chat and its indexed content, along with the seen-message history. Existing proposals are kept. This cannot be undone. To stop scanning without losing anything, choose Pause scanning instead."
 			},
 			"deleteProject": {
 				"label": "Move this project to trash.",
@@ -5120,7 +5124,14 @@
 			"repositoryAddFromUrl": "Connect the repository at this URL to this project. GitHub and GitLab open an OAuth popup; Azure DevOps opens a PAT form.",
 			"repositoryClosePatForm": "Close the Azure DevOps PAT form without connecting.",
 			"repositoryTestConnectPat": "Validate the personal access token against Azure DevOps and, if it works, connect this repository.",
-			"brandColorSwatch": "Use {color} as this organization's dashboard accent color. The change applies right away."
+			"brandColorSwatch": "Use {color} as this organization's dashboard accent color. The change applies right away.",
+			"unlinkSlackChannel": {
+				"label": "Remove this Slack channel from the monitor.",
+				"warning": "Warning: this permanently deletes the conversation context captured from this channel and its indexed content, along with the seen-message history. Existing proposals are kept. This cannot be undone. To stop scanning without losing anything, choose Pause scanning instead."
+			},
+			"pauseContextSource": "Stop scanning this conversation, keeping every message and every piece of context it has already captured.",
+			"reconnectMonitor": "Run this monitor under your account instead. Checks first which conversations you can see.",
+			"resumeContextSource": "Resume scanning this conversation from where it stopped."
 		},
 		"prompts": {
 			"viewPrompt": "Open a read-only preview of the selected prompt's full content.",

@@ -1250,6 +1250,10 @@
 					},
 					"document_generation": {
 						"failed": "Dokumenterstellung fehlgeschlagen"
+					},
+					"context_source": {
+						"scan_stopped": "Kanal- oder Chat-Scan gestoppt oder fortgesetzt",
+						"reconnected": "Kanal- oder Chat-Monitor neu verbunden"
 					}
 				},
 				"story": {

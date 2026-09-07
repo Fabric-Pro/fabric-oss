@@ -349,6 +349,20 @@ export const ACTION_CATALOG: Record<string, ActionDescriptor> = {
 		"info",
 		"project",
 	),
+	"project.context_source.scan_stopped": D(
+		"project.context_source.scan_stopped",
+		"Channel or chat scanning stopped or resumed",
+		Unplug,
+		"info",
+		"project",
+	),
+	"project.context_source.reconnected": D(
+		"project.context_source.reconnected",
+		"Channel or chat monitor reconnected",
+		Unplug,
+		"info",
+		"project",
+	),
 
 	"project.meeting_digest.action_item_toggled": D(
 		"project.meeting_digest.action_item_toggled",
