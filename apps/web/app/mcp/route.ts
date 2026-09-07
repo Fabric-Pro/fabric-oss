@@ -935,15 +935,49 @@ function restoreAuthResult(session: McpSession): AuthResult | null {
 		userName: session.userName,
 		email: session.email,
 		role: session.role,
-		// The persisted session carries neither field, and it does not need to:
-		// this value exists only to be compared against a freshly authenticated
-		// one (`checkStoredSessionAuth` looks at userId and organizationId, and
-		// nothing else). Authorization always comes from the live result. These
-		// grant nothing, so if that ever changes it fails closed rather than
-		// open.
+		// The persisted session carries neither field. Read them off this value
+		// and you get "no credential, no scopes" — which is why it must never be
+		// used as authority on its own. `effectiveAuthResult` below is the only
+		// supported way to turn a restored session into something a request can
+		// run as; it takes these two from the live authentication.
+		//
+		// An earlier version of this comment claimed authorization always came
+		// from the live result. It did not: the callers wrote
+		// `storedAuthResult ?? authResult`, so a restored session ran with an
+		// empty scope set and every scoped tool call on this route was refused,
+		// while `initialize` — which checks no scope — kept succeeding.
 		credential: "session" as const,
 		scopes: [],
 	};
+}
+
+/**
+ * The identity a request with a stored session should run as.
+ *
+ * Identity and tenant come from the stored session — that is what makes a
+ * session a session, and `checkStoredSessionAuth` has already confirmed the
+ * live caller matches it. What the presented credential may *do* is re-read
+ * from this request's own authentication every time, because that is the only
+ * place it is true: the durable session has no scopes to carry.
+ *
+ * Splitting the two is what stops a restored session from either over- or
+ * under-granting. Under-granting is what actually happened, and it is not the
+ * harmless direction it sounds like — it took out every tool call on this route.
+ */
+function effectiveAuthResult(
+	stored: AuthResult | null,
+	live: AuthResult | null,
+): AuthResult | null {
+	if (!stored) {
+		return live;
+	}
+	if (!live) {
+		// Unreachable in practice: `checkStoredSessionAuth` refuses a stored
+		// session that no live identity matches. Kept as the closed answer, so a
+		// future caller that skips that check cannot silently open this up.
+		return stored;
+	}
+	return { ...stored, credential: live.credential, scopes: live.scopes };
 }
 
 function getSessionExpiry(expiresAt: string): number {
@@ -2475,7 +2509,7 @@ async function handlePostRequest(
 				}
 
 				const session = createRequestSession(
-					storedAuthResult ?? authResult,
+					effectiveAuthResult(storedAuthResult, authResult),
 					{
 						sessionId,
 						enableSessionManagement: true,
@@ -2548,15 +2582,17 @@ async function handlePostRequest(
 		return authFailure;
 	}
 
-	const effectiveAuthResult = storedAuthResult ?? authResult;
-	const session = createRequestSession(effectiveAuthResult, {
-		sessionId,
-		enableSessionManagement: true,
-		hydrateExistingSession: true,
-		subscriptions: durableSession.subscriptions,
-		sessionExpiresAt: durableSession.core.expiresAt,
-		routeOptions,
-	});
+	const session = createRequestSession(
+		effectiveAuthResult(storedAuthResult, authResult),
+		{
+			sessionId,
+			enableSessionManagement: true,
+			hydrateExistingSession: true,
+			subscriptions: durableSession.subscriptions,
+			sessionExpiresAt: durableSession.core.expiresAt,
+			routeOptions,
+		},
+	);
 	await session.server.connect(session.transport);
 	const response = await session.transport.handleRequest(request, {
 		parsedBody,
@@ -2593,7 +2629,7 @@ async function handleGetRequest(
 	}
 
 	const session = createRequestSession(
-		storedAuthResult ?? authResultOf(authOutcome),
+		effectiveAuthResult(storedAuthResult, authResultOf(authOutcome)),
 		{
 			sessionId,
 			enableSessionManagement: true,
@@ -2637,7 +2673,7 @@ async function handleDeleteRequest(
 	}
 
 	const session = createRequestSession(
-		storedAuthResult ?? authResultOf(authOutcome),
+		effectiveAuthResult(storedAuthResult, authResultOf(authOutcome)),
 		{
 			sessionId,
 			enableSessionManagement: true,

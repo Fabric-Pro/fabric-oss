@@ -24,32 +24,13 @@ export interface ListOrganizationApiKeysParams {
 	createdByUserId?: string;
 }
 
-/**
- * Available scopes for organization API keys
- */
-export const ORGANIZATION_API_KEY_SCOPES = {
-	// MCP scopes
-	"mcp:read": "Read MCP server configurations",
-	"mcp:write": "Modify MCP server configurations",
-
-	// AI model scopes
-	"ai:models:read": "Read available AI models",
-	"ai:models:resolve": "Resolve AI model configuration for tasks",
-
-	// Project scopes
-	"projects:read": "Read project data",
-	"projects:write": "Modify project data",
-
-	// Agent API scopes
-	"agents:read": "Read agent metadata and list available agents",
-	"agents:execute": "Trigger agent executions via API",
-	"agents:stream": "Access real-time execution streams",
-
-	// Wildcard
-	"*": "Full access to all organization resources",
-} as const;
-
-export type OrganizationApiKeyScope = keyof typeof ORGANIZATION_API_KEY_SCOPES;
+// The scope vocabulary deliberately does not live here. It is the input
+// contract of the create procedure, which owns the `z.enum` that validates it
+// (`api/modules/organizations/procedures/api-keys/create.ts`), and it is
+// checked against the settings picker and the MCP tool map by test. A second
+// copy in this file was unreferenced, listed ten scopes where the procedure
+// accepts twenty-two, and omitted `orgs:read` — so the first thing anyone
+// debugging a scope problem found was a stale list that pointed the wrong way.
 
 /**
  * Create a new API key for an organization
