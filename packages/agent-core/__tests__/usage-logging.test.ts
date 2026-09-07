@@ -1,5 +1,8 @@
-import { describe, expect, it } from "vitest";
-import { extractUsageFromLangChainResponse } from "../src/services/usage-logging";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+	extractUsageFromLangChainResponse,
+	logAgentUsageFromRunnableConfig,
+} from "../src/services/usage-logging";
 
 describe("extractUsageFromLangChainResponse", () => {
 	it("reads token counts + cache/reasoning breakdown + gateway generationId", () => {
@@ -116,5 +119,58 @@ describe("extractUsageFromLangChainResponse", () => {
 			extractUsageFromLangChainResponse(message)
 				?.cacheCreationInputTokens,
 		).toBeUndefined();
+	});
+});
+
+/**
+ * `logAgentUsageFromRunnableConfig` is called without `await` on the
+ * project-document-generator's hot path (the usage row is observability and
+ * nothing reads it back), so a rejection there would surface as an unhandled
+ * rejection and take the agent process down rather than losing one row. The
+ * function's contract is therefore that it never rejects.
+ */
+describe("logAgentUsageFromRunnableConfig — never rejects", () => {
+	const config = {
+		configurable: {
+			ai_token: "token",
+			ai_provider: "OPENAI_DIRECT",
+			ai_model: "gpt-4o-mini",
+		},
+	};
+
+	afterEach(() => {
+		vi.unstubAllGlobals();
+	});
+
+	it("resolves when the transport rejects", async () => {
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () => {
+				throw new Error("connection refused");
+			}),
+		);
+
+		await expect(
+			logAgentUsageFromRunnableConfig(
+				config,
+				{ usage_metadata: { input_tokens: 1, output_tokens: 2 } },
+				{ taskType: "TOOL_CALLING" },
+			),
+		).resolves.toBeUndefined();
+	});
+
+	it("resolves when shaping the payload throws", async () => {
+		const exploding = {};
+		Object.defineProperty(exploding, "usage_metadata", {
+			get() {
+				throw new Error("boom");
+			},
+		});
+
+		await expect(
+			logAgentUsageFromRunnableConfig(config, exploding, {
+				taskType: "TOOL_CALLING",
+			}),
+		).resolves.toBeUndefined();
 	});
 });
