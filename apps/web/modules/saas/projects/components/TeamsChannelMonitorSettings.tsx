@@ -622,61 +622,65 @@ export function TeamsChannelMonitorSettings({
 															</div>
 														</div>
 													</div>
-													<Tooltip>
-														<TooltipTrigger asChild>
+													<div className="flex shrink-0 items-center gap-0.5">
+														<Tooltip>
+															<TooltipTrigger
+																asChild
+															>
+																<Button
+																	variant="ghost"
+																	size="icon"
+																	onClick={() =>
+																		toggleScanning(
+																			monitorRow,
+																		)
+																	}
+																	disabled={
+																		isTogglingScanning
+																	}
+																	aria-label={
+																		isPaused
+																			? `Resume scanning ${displayLabel}`
+																			: `Pause scanning ${displayLabel}`
+																	}
+																>
+																	{isPaused ? (
+																		<PlayIcon className="size-4 text-muted-foreground" />
+																	) : (
+																		<PauseIcon className="size-4 text-muted-foreground" />
+																	)}
+																</Button>
+															</TooltipTrigger>
+															<TooltipContent>
+																{isPaused
+																	? t(
+																			"resumeContextSource",
+																		)
+																	: t(
+																			"pauseContextSource",
+																		)}
+															</TooltipContent>
+														</Tooltip>
+														<DestructiveTooltip
+															copy={unlinkCopy}
+														>
 															<Button
 																variant="ghost"
 																size="icon"
 																onClick={() =>
-																	toggleScanning(
+																	requestUnlink(
 																		monitorRow,
 																	)
 																}
 																disabled={
-																	isTogglingScanning
+																	isUnlinking
 																}
-																aria-label={
-																	isPaused
-																		? `Resume scanning ${displayLabel}`
-																		: `Pause scanning ${displayLabel}`
-																}
+																aria-label={`Unlink ${displayLabel}`}
 															>
-																{isPaused ? (
-																	<PlayIcon className="size-4 text-muted-foreground" />
-																) : (
-																	<PauseIcon className="size-4 text-muted-foreground" />
-																)}
+																<UnlinkIcon className="size-4 text-muted-foreground" />
 															</Button>
-														</TooltipTrigger>
-														<TooltipContent>
-															{isPaused
-																? t(
-																		"resumeContextSource",
-																	)
-																: t(
-																		"pauseContextSource",
-																	)}
-														</TooltipContent>
-													</Tooltip>
-													<DestructiveTooltip
-														copy={unlinkCopy}
-													>
-														<Button
-															variant="ghost"
-															size="icon"
-															onClick={() =>
-																requestUnlink(
-																	monitorRow,
-																)
-															}
-															disabled={
-																isUnlinking
-															}
-															aria-label={`Unlink ${displayLabel}`}
-														>
-															<UnlinkIcon className="size-4 text-muted-foreground" />
-														</Button>
-													</DestructiveTooltip>
+														</DestructiveTooltip>
+													</div>
 												</div>
 												{hasFailures && (
 													<div
