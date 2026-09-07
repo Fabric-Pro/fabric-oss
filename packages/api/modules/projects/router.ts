@@ -395,7 +395,9 @@ import {
 	linkChannelProcedure as linkSlackChannelProcedure,
 	listLinkedChannelsProcedure as listLinkedSlackChannelsProcedure,
 	listPendingProposalsProcedure as listSlackPendingProposalsProcedure,
+	reconnectMonitorProcedure as reconnectSlackChannelMonitorProcedure,
 	rejectPendingProposalProcedure as rejectSlackPendingProposalProcedure,
+	setChannelActiveProcedure as setSlackChannelActiveProcedure,
 	triggerMonitorNowProcedure as triggerSlackMonitorNowProcedure,
 	unlinkChannelProcedure as unlinkSlackChannelProcedure,
 } from "./procedures/slack-channel-monitor";
@@ -547,7 +549,9 @@ import {
 	linkChannelProcedure,
 	listLinkedChannelsProcedure,
 	listPendingProposalsProcedure,
+	reconnectMonitorProcedure as reconnectTeamsChannelMonitorProcedure,
 	rejectPendingProposalProcedure,
+	setChannelActiveProcedure as setTeamsChannelActiveProcedure,
 	triggerMonitorNowProcedure,
 	unlinkChannelProcedure,
 } from "./procedures/teams-channel-monitor";
@@ -563,7 +567,9 @@ import {
 	linkChatProcedure,
 	listPendingProposalsProcedure as listChatPendingProposalsProcedure,
 	listLinkedChatsProcedure,
+	reconnectMonitorProcedure as reconnectTeamsChatMonitorProcedure,
 	rejectPendingProposalProcedure as rejectChatPendingProposalProcedure,
+	setChatActiveProcedure,
 	triggerMonitorNowProcedure as triggerChatMonitorNowProcedure,
 	unlinkChatProcedure,
 } from "./procedures/teams-chat-monitor";
@@ -923,6 +929,8 @@ export const projectsRouter = {
 		enable: enableTeamsChannelMonitorProcedure,
 		disable: disableTeamsChannelMonitorProcedure,
 		triggerMonitor: triggerMonitorNowProcedure,
+		setChannelActive: setTeamsChannelActiveProcedure,
+		reconnect: reconnectTeamsChannelMonitorProcedure,
 		pendingProposals: {
 			list: listPendingProposalsProcedure,
 			get: getPendingProposalProcedure,
@@ -942,6 +950,8 @@ export const projectsRouter = {
 		enable: enableSlackChannelMonitorProcedure,
 		disable: disableSlackChannelMonitorProcedure,
 		triggerMonitor: triggerSlackMonitorNowProcedure,
+		setChannelActive: setSlackChannelActiveProcedure,
+		reconnect: reconnectSlackChannelMonitorProcedure,
 		pendingProposals: {
 			list: listSlackPendingProposalsProcedure,
 			get: getSlackPendingProposalProcedure,
@@ -968,6 +978,8 @@ export const projectsRouter = {
 		enable: enableTeamsChatMonitorProcedure,
 		disable: disableTeamsChatMonitorProcedure,
 		triggerMonitor: triggerChatMonitorNowProcedure,
+		setChatActive: setChatActiveProcedure,
+		reconnect: reconnectTeamsChatMonitorProcedure,
 		pendingProposals: {
 			list: listChatPendingProposalsProcedure,
 			get: getChatPendingProposalProcedure,

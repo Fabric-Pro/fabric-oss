@@ -161,7 +161,14 @@ describe("audit.taxonomy handler", () => {
 		// meeting that quietly stopped feeding the project looks identical to
 		// one that was never linked, and that silence is the failure this card
 		// exists to make visible, Fizzy #2355) = 117.
-		expect(result.actions).toHaveLength(117);
+		// + 2 project.context_source.scan_stopped /
+		// project.context_source.reconnected (the same two intentions for the
+		// Teams and Slack monitors. `reconnected` is the one nothing could see
+		// before: each monitor runs as one workflow carrying one user's
+		// delegated token, so the account a project collects under lived only in
+		// a Temporal workflow argument and could change with no trace,
+		// Fizzy #2355) = 119.
+		expect(result.actions).toHaveLength(119);
 		expect(result.actions).toContain("auth.login.success");
 		expect(result.actions).toContain("project.document_generation.failed");
 		expect(result.actions).toContain("audit.retention.purged");
@@ -174,6 +181,10 @@ describe("audit.taxonomy handler", () => {
 		expect(result.actions).toContain("project.meeting.deleted");
 		expect(result.actions).toContain("project.meeting.restored");
 		expect(result.actions).toContain("project.meeting.sync_stopped");
+		// Channel/chat context-source lifecycle: pause-or-resume, and the
+		// rebind of whose account a monitor collects under.
+		expect(result.actions).toContain("project.context_source.scan_stopped");
+		expect(result.actions).toContain("project.context_source.reconnected");
 		// PM terminal-status auto-close + reopen-unhide (#1360).
 		expect(result.actions).toContain("story.auto_hidden");
 		expect(result.actions).toContain("story.auto_unhidden");

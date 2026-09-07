@@ -8,6 +8,7 @@ import {
 	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
+import { throwNoActiveContextSources } from "../../lib/no-active-context-sources";
 
 /**
  * AUTHORIZATION: Uses canEditProject() — only project owners/editors can
@@ -84,7 +85,7 @@ export const enableSlackChannelMonitorProcedure = tenantProtectedProcedure
 		}
 
 		const linkedChannels = await db.projectLinkedSlackChannel.findMany({
-			where: { projectId: input.projectId },
+			where: { projectId: input.projectId, deactivatedAt: null },
 			select: {
 				id: true,
 				slackTeamId: true,
@@ -98,9 +99,19 @@ export const enableSlackChannelMonitorProcedure = tenantProtectedProcedure
 		});
 
 		if (linkedChannels.length === 0) {
-			throw new ORPCError("BAD_REQUEST", {
-				message:
-					"At least one Slack channel must be linked before enabling the monitor",
+			// A second count only on the error path: with pausing, "nothing to
+			// scan" and "nothing linked" are different situations and only one
+			// of them is the user's mistake.
+			const pausedCount = await db.projectLinkedSlackChannel.count({
+				where: {
+					projectId: input.projectId,
+					NOT: { deactivatedAt: null },
+				},
+			});
+			throwNoActiveContextSources({
+				pausedCount,
+				noun: "Slack channel",
+				action: "enabling the monitor",
 			});
 		}
 
@@ -176,6 +187,11 @@ export const enableSlackChannelMonitorProcedure = tenantProtectedProcedure
 				},
 			}),
 			db.projectLinkedSlackChannel.updateMany({
+				// Paused rows are flipped too, deliberately: `monitorEnabled`
+				// and `deactivatedAt` are independent, and the monitor's own
+				// read requires BOTH. Skipping them here would mean resuming a
+				// paused channel silently did nothing until someone re-enabled
+				// the whole monitor.
 				where: { projectId: input.projectId },
 				data: {
 					monitorEnabled: true,

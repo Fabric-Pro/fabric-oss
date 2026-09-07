@@ -20,7 +20,6 @@ import {
 	findJobForSource,
 	useProjectJobProgress,
 } from "@saas/jobs/hooks/use-project-job-progress";
-import { useConfirmationAlert } from "@saas/shared/components/ConfirmationAlertProvider";
 import { orpc } from "@shared/lib/orpc-query-utils";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@ui/components/button";
@@ -52,6 +51,9 @@ import {
 	HashIcon,
 	LinkIcon,
 	Loader2Icon,
+	PauseIcon,
+	PlayIcon,
+	PlugZapIcon,
 	PlusIcon,
 	RefreshCwIcon,
 	UnlinkIcon,
@@ -59,12 +61,13 @@ import {
 import { useTranslations } from "next-intl";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
-import {
-	getSlackChannelMonitorClient,
-	type LinkedSlackChannel,
-} from "../lib/slack-channel-monitor-client";
+import { getSlackChannelMonitorClient } from "../lib/slack-channel-monitor-client";
 import { getSlackHuddleIngestClient } from "../lib/slack-huddle-ingest-client";
 import { SlackChannelPickerDialog } from "./SlackChannelPickerDialog";
+import {
+	type MonitorRow,
+	useMonitorContextControls,
+} from "./useMonitorContextControls";
 
 // Debounce options — how long to wait after the last signal before flushing
 // the queued messages for analysis. Lower values surface proposals faster but
@@ -136,11 +139,8 @@ export function SlackChannelMonitorSettings({
 }: Props) {
 	const queryClient = useQueryClient();
 	const runningJobs = useProjectJobProgress(projectId);
-	const { confirm } = useConfirmationAlert();
 	const t = useTranslations("tooltips.projectSettings");
-	// Reuse the Teams unlink copy translation — semantically identical action.
-	// A Slack-specific entry can be added later if product wants distinct copy.
-	const unlinkCopy = t.raw("unlinkTeamsChannel") as DestructiveTooltipCopy;
+	const unlinkCopy = t.raw("unlinkSlackChannel") as DestructiveTooltipCopy;
 	const [pickerOpen, setPickerOpen] = useState(false);
 	const [advancedOpen, setAdvancedOpen] = useState(false);
 	const [debounceValue, setDebounceValue] = useState(
@@ -222,42 +222,36 @@ export function SlackChannelMonitorSettings({
 		});
 	}, [queryClient, projectId, organizationId]);
 
-	const unlinkMutation = useMutation({
-		mutationFn: async (linkedChannelId: string) => {
-			const client = getSlackChannelMonitorClient();
-			return await client.unlinkChannel({
+	const {
+		requestUnlink,
+		toggleScanning,
+		requestReconnect,
+		isUnlinking,
+		isTogglingScanning,
+		isReconnecting,
+	} = useMonitorContextControls({
+		noun: "channel",
+		setActive: ({ id, active }) =>
+			getSlackChannelMonitorClient().setChannelActive({
+				projectId,
+				organizationId,
+				linkedChannelId: id,
+				active,
+			}),
+		unlink: (linkedChannelId) =>
+			getSlackChannelMonitorClient().unlinkChannel({
 				projectId,
 				organizationId,
 				linkedChannelId,
-			});
-		},
-		onSuccess: () => {
-			toast.success("Channel unlinked");
-			invalidateLinked();
-		},
-		onError: (error) => {
-			toast.error("Failed to unlink channel", {
-				description:
-					error instanceof Error ? error.message : "Unknown error",
-			});
-		},
+			}),
+		reconnect: (preflightOnly) =>
+			getSlackChannelMonitorClient().reconnect({
+				projectId,
+				organizationId,
+				preflightOnly,
+			}),
+		invalidate: invalidateLinked,
 	});
-
-	const requestUnlink = useCallback(
-		(channel: LinkedSlackChannel) => {
-			const label = channel.channelName ?? "this channel";
-			confirm({
-				title: "Unlink channel",
-				message: `Remove #${label} from the monitor? Seen-message history will be deleted. Existing proposals are kept.`,
-				destructive: true,
-				confirmLabel: "Unlink",
-				onConfirm: async () => {
-					await unlinkMutation.mutateAsync(channel.id);
-				},
-			});
-		},
-		[confirm, unlinkMutation],
-	);
 
 	const enableMutation = useMutation({
 		mutationFn: async (payload: {
@@ -602,6 +596,37 @@ export function SlackChannelMonitorSettings({
 											message and analyze any new threads.
 										</TooltipContent>
 									</Tooltip>
+									{/* Reconnect is panel-level because the
+									    binding is: one workflow carries one
+									    user's token for every linked channel,
+									    so there is no per-channel owner to
+									    move. Huddle ingest moves with it. */}
+									<Tooltip>
+										<TooltipTrigger asChild>
+											<Button
+												variant="ghost"
+												size="sm"
+												onClick={requestReconnect}
+												disabled={
+													isReconnecting ||
+													!localEnabled
+												}
+												aria-label="Reconnect channel monitor to me"
+											>
+												{isReconnecting ? (
+													<Loader2Icon className="mr-2 size-4 animate-spin" />
+												) : (
+													<PlugZapIcon className="mr-2 size-4" />
+												)}
+												Reconnect to me
+											</Button>
+										</TooltipTrigger>
+										<TooltipContent>
+											{localEnabled
+												? t("reconnectMonitor")
+												: "Turn the monitor on first — there is nothing running to reconnect."}
+										</TooltipContent>
+									</Tooltip>
 								</div>
 
 								<div className="max-h-[260px] space-y-1.5 overflow-y-auto pr-1">
@@ -609,6 +634,14 @@ export function SlackChannelMonitorSettings({
 										const displayLabel =
 											channel.channelName ??
 											"Unnamed channel";
+										const isPaused =
+											channel.deactivatedAt !== null;
+										const monitorRow: MonitorRow = {
+											id: channel.id,
+											label: `#${displayLabel}`,
+											deactivatedAt:
+												channel.deactivatedAt,
+										};
 										// Surface a failure as soon as one happens —
 										// gating the box on the threshold meant a hard
 										// auth failure, which the Job Hub reports
@@ -634,10 +667,18 @@ export function SlackChannelMonitorSettings({
 										const needsRelink =
 											channel.consecutiveFailures >=
 											FAILURE_THRESHOLD;
+										// A paused row's counters describe
+										// scanning that is no longer happening.
+										// Keeping the red box and its "relink
+										// this" advice on something the user
+										// deliberately stopped reads as still
+										// broken (Fizzy #2355).
 										const hasFailures =
-											needsRelink ||
-											(channel.consecutiveFailures > 0 &&
-												failureIsRecent);
+											!isPaused &&
+											(needsRelink ||
+												(channel.consecutiveFailures >
+													0 &&
+													failureIsRecent));
 										const seenCount =
 											channel._count?.seenMessages ?? 0;
 										return (
@@ -653,6 +694,11 @@ export function SlackChannelMonitorSettings({
 																{displayLabel}
 															</p>
 															<div className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+																{isPaused && (
+																	<span className="rounded bg-muted px-1.5 py-0.5 font-medium text-foreground">
+																		Paused
+																	</span>
+																)}
 																<span>
 																	{seenCount}{" "}
 																	thread
@@ -689,6 +735,42 @@ export function SlackChannelMonitorSettings({
 															</div>
 														</div>
 													</div>
+													<Tooltip>
+														<TooltipTrigger asChild>
+															<Button
+																variant="ghost"
+																size="icon"
+																onClick={() =>
+																	toggleScanning(
+																		monitorRow,
+																	)
+																}
+																disabled={
+																	isTogglingScanning
+																}
+																aria-label={
+																	isPaused
+																		? `Resume scanning #${displayLabel}`
+																		: `Pause scanning #${displayLabel}`
+																}
+															>
+																{isPaused ? (
+																	<PlayIcon className="size-4 text-muted-foreground" />
+																) : (
+																	<PauseIcon className="size-4 text-muted-foreground" />
+																)}
+															</Button>
+														</TooltipTrigger>
+														<TooltipContent>
+															{isPaused
+																? t(
+																		"resumeContextSource",
+																	)
+																: t(
+																		"pauseContextSource",
+																	)}
+														</TooltipContent>
+													</Tooltip>
 													<DestructiveTooltip
 														copy={unlinkCopy}
 													>
@@ -697,11 +779,11 @@ export function SlackChannelMonitorSettings({
 															size="icon"
 															onClick={() =>
 																requestUnlink(
-																	channel,
+																	monitorRow,
 																)
 															}
 															disabled={
-																unlinkMutation.isPending
+																isUnlinking
 															}
 															aria-label={`Unlink #${displayLabel}`}
 														>

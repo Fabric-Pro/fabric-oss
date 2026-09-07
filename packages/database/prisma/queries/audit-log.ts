@@ -148,6 +148,14 @@ export const AUDIT_ACTIONS = [
 	"project.meeting.sync_stopped",
 	"project.meeting.deleted",
 	"project.meeting.restored",
+	// Channel/chat context-source lifecycle (#2355). The same two intentions the
+	// meeting rows record, for the Teams and Slack monitors: scanning was paused
+	// or resumed, and the account a monitor collects under was changed. The second
+	// is the one nothing could see before — the bound account lived only in a
+	// Temporal workflow argument, so a project could silently switch whose access
+	// it depended on with no trace at all.
+	"project.context_source.scan_stopped",
+	"project.context_source.reconnected",
 	// Document generation fell back because the generation agent could not be
 	// reached. Written whether or not the fallback then succeeded: a generation
 	// that quietly ran on the degraded path is exactly what nobody could see.

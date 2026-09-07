@@ -15,5 +15,7 @@ export { getPendingProposalProcedure } from "./get-pending-proposal";
 export { linkChatProcedure } from "./link-chat";
 export { listLinkedChatsProcedure } from "./list-linked-chats";
 export { listPendingProposalsProcedure } from "./list-pending-proposals";
+export { reconnectMonitorProcedure } from "./reconnect-monitor";
+export { setChatActiveProcedure } from "./set-chat-active";
 export { triggerMonitorNowProcedure } from "./trigger-monitor-now";
 export { unlinkChatProcedure } from "./unlink-chat";

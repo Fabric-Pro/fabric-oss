@@ -561,6 +561,22 @@ export const AUDIT_ACTIONS: AuditActionEntry[] = [
 			"Syncing was stopped or resumed for a linked meeting; `metadata.active` carries the new state. Stopping destroys nothing — every transcript and context already captured stays and keeps answering questions — it only ends the pull of new occurrences. This has its own key because a meeting that quietly stopped feeding a project is indistinguishable from one that was never linked, and that silence is what this row exists to break.",
 	},
 	{
+		key: "project.context_source.scan_stopped",
+		categoryId: "project",
+		labelKey:
+			"settings.auditLog.actions.project.context_source.scan_stopped",
+		description:
+			"Scanning was paused or resumed for one linked Teams channel, Teams chat or Slack channel; `metadata.provider` names which and `metadata.active` carries the new state. Pausing destroys nothing — the conversation context already captured stays and keeps answering questions, and the seen-message ledger and polling cursor survive so resuming continues rather than rescanning. It has its own key because a conversation that quietly stopped feeding a project is indistinguishable from one that was never linked.",
+	},
+	{
+		key: "project.context_source.reconnected",
+		categoryId: "project",
+		labelKey:
+			"settings.auditLog.actions.project.context_source.reconnected",
+		description:
+			"A channel or chat monitor was rebound to a different account. `metadata.previouslyBoundTo` carries the account it left, `metadata.reachableCount` and `metadata.unreachableCount` what the preflight found, and for Slack `metadata.huddleIngestRebound` whether huddle ingest moved with it. Each monitor runs as one workflow carrying one user's delegated token, so this row records a change of whose access the whole project collects under — which previously existed only inside a Temporal workflow argument and left no trace anywhere.",
+	},
+	{
 		key: "project.document_generation.failed",
 		categoryId: "project",
 		labelKey:

@@ -7,6 +7,8 @@ export { getPendingProposalProcedure } from "./get-pending-proposal";
 export { linkChannelProcedure } from "./link-channel";
 export { listLinkedChannelsProcedure } from "./list-linked-channels";
 export { listPendingProposalsProcedure } from "./list-pending-proposals";
+export { reconnectMonitorProcedure } from "./reconnect-monitor";
 export { rejectPendingProposalProcedure } from "./reject-pending-proposal";
+export { setChannelActiveProcedure } from "./set-channel-active";
 export { triggerMonitorNowProcedure } from "./trigger-monitor-now";
 export { unlinkChannelProcedure } from "./unlink-channel";

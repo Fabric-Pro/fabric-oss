@@ -31,7 +31,9 @@ export async function getLinkedSlackHuddleChannels(
 	projectId: string,
 ): Promise<LinkedSlackHuddleChannel[]> {
 	return await db.projectLinkedSlackChannel.findMany({
-		where: { projectId },
+		// A paused channel is not scanned for huddle notes either — pausing means
+		// stop ingesting from this conversation, not stop one of two paths.
+		where: { projectId, deactivatedAt: null },
 		select: {
 			id: true,
 			channelId: true,

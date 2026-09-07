@@ -1620,18 +1620,33 @@ model Project {
   teamsChannelMonitorQuietWindowMin     Int?                               @default(60)
   teamsChannelMonitorLastRun            DateTime?
   teamsChannelMonitorWorkflowId         String?
+  // Which user's delegated token this monitor runs on. It was frozen into the
+  // Temporal workflow's arguments at enable-time and unreachable from SQL, so
+  // nothing could show whose account a project depended on, or that it had gone
+  // (Fizzy #2355).
+  teamsChannelMonitorUserId             String?
   // Teams Chat Monitor (feature extraction from linked Teams group chats)
   teamsChatMonitorEnabled               Boolean                            @default(false)
   teamsChatMonitorIntervalMin           Int?
   teamsChatMonitorQuietWindowMin        Int?                               @default(60)
   teamsChatMonitorLastRun               DateTime?
   teamsChatMonitorWorkflowId            String?
+  // Which user's delegated token this monitor runs on. It was frozen into the
+  // Temporal workflow's arguments at enable-time and unreachable from SQL, so
+  // nothing could show whose account a project depended on, or that it had gone
+  // (Fizzy #2355).
+  teamsChatMonitorUserId                String?
   // Slack Channel Monitor (feature extraction from linked Slack channels via Events API)
   slackChannelMonitorEnabled            Boolean                            @default(false)
   slackChannelMonitorWorkflowId         String?
   slackChannelMonitorLastRun            DateTime?
   slackChannelMonitorDebounceMs         Int?                               @default(30000)
   slackChannelMonitorMaxHoldMs          Int?                               @default(300000)
+  // Which user's delegated token this monitor runs on. It was frozen into the
+  // Temporal workflow's arguments at enable-time and unreachable from SQL, so
+  // nothing could show whose account a project depended on, or that it had gone
+  // (Fizzy #2355).
+  slackChannelMonitorUserId             String?
   // Slack Huddle Notes Ingestion (passive AI-Updates context from huddle AI-notes
   // canvases in linked Slack channels — poll-based, forward-only, independent of
   // the event-driven slackChannelMonitor above)
@@ -4199,6 +4214,14 @@ model ProjectLinkedTeamsChannel {
   // backlogs progress forward every tick instead of starving.
   scanPageToken String? @db.Text
 
+  // Stop scanning this conversation without deleting anything it has already
+  // captured (Fizzy #2355). Only the monitor's own lookup filters on this, which
+  // is what makes pausing the non-destructive alternative to unlinking. Nullable
+  // with no default: NULL means "actively scanned", correct for every existing
+  // row, so no backfill is needed.
+  deactivatedAt   DateTime?
+  deactivatedById String?
+
   // Per-channel fault isolation state
   consecutiveFailures Int       @default(0)
   lastErrorMessage    String?   @db.Text
@@ -4257,6 +4280,14 @@ model ProjectLinkedTeamsChat {
   // Graph @odata.nextLink resume token persisted between ticks when the
   // activity-level scan budget runs out before reaching unseen messages.
   scanPageToken String? @db.Text
+
+  // Stop scanning this conversation without deleting anything it has already
+  // captured (Fizzy #2355). Only the monitor's own lookup filters on this, which
+  // is what makes pausing the non-destructive alternative to unlinking. Nullable
+  // with no default: NULL means "actively scanned", correct for every existing
+  // row, so no backfill is needed.
+  deactivatedAt   DateTime?
+  deactivatedById String?
 
   // Per-chat fault isolation state
   consecutiveFailures Int       @default(0)
@@ -4320,6 +4351,14 @@ model ProjectLinkedSlackChannel {
   // Slack `ts` of the newest message ingested. String-comparable lexicographically
   // (Slack guarantees zero-padded "seconds.microseconds" format).
   lastMessageTs String?
+
+  // Stop scanning this conversation without deleting anything it has already
+  // captured (Fizzy #2355). Only the monitor's own lookup filters on this, which
+  // is what makes pausing the non-destructive alternative to unlinking. Nullable
+  // with no default: NULL means "actively scanned", correct for every existing
+  // row, so no backfill is needed.
+  deactivatedAt   DateTime?
+  deactivatedById String?
 
   // Per-channel fault isolation state
   consecutiveFailures Int       @default(0)

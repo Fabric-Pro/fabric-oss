@@ -96,7 +96,11 @@ export async function getLinkedTeamsChannels(projectId: string) {
  */
 export async function getLinkedTeamsChannelsForMonitor(projectId: string) {
 	return await db.projectLinkedTeamsChannel.findMany({
-		where: { projectId },
+		// Paused conversations are excluded HERE and only here: this is the
+		// monitor's own lookup, so filtering it is what makes pausing stop the
+		// scanning without touching the row, its cursor, its seen-message
+		// ledger or the context it already produced (Fizzy #2355).
+		where: { projectId, deactivatedAt: null },
 		select: {
 			id: true,
 			teamId: true,
@@ -107,6 +111,42 @@ export async function getLinkedTeamsChannelsForMonitor(projectId: string) {
 			lastMessageCreatedAt: true,
 			lastMessageId: true,
 			scanPageToken: true,
+		},
+	});
+}
+
+/**
+ * Stop scanning one linked channel without touching anything it has already
+ * captured.
+ *
+ * Deliberately an `update` with a `projectId` guard rather than a bare update by
+ * id: the id alone would let a caller in one project pause a channel linked to
+ * another.
+ */
+export async function deactivateLinkedTeamsChannel(params: {
+	projectId: string;
+	linkedChannelId: string;
+	userId: string;
+}) {
+	return await db.projectLinkedTeamsChannel.update({
+		where: { id: params.linkedChannelId, projectId: params.projectId },
+		data: {
+			deactivatedAt: new Date(),
+			deactivatedById: params.userId,
+		},
+	});
+}
+
+/** Resume scanning a previously paused channel. */
+export async function reactivateLinkedTeamsChannel(params: {
+	projectId: string;
+	linkedChannelId: string;
+}) {
+	return await db.projectLinkedTeamsChannel.update({
+		where: { id: params.linkedChannelId, projectId: params.projectId },
+		data: {
+			deactivatedAt: null,
+			deactivatedById: null,
 		},
 	});
 }
