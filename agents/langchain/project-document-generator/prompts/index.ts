@@ -150,6 +150,143 @@ async function getFabricContext(name: string): Promise<string | null> {
 }
 
 // =============================================================================
+// Fabric AI prompt-fragment cache
+// =============================================================================
+
+/**
+ * TTL for a fragment that was fetched successfully.
+ *
+ * The composed fragment (persona context + pattern) depends only on the
+ * pattern/context names the document type resolves to, so it is a run-level
+ * value. `buildSystemPromptAsync` however runs once per tool round — up to
+ * `MAX_TOOL_ITERATIONS + 1` times per run, plus once more per retryable model
+ * error that re-enters `chat_node` — and each call used to re-run the health
+ * probe and both fetches. Every one of those is a fresh TCP/TLS handshake
+ * (`keepAlive: false` above), so a run paid the round trips ~21 times over.
+ */
+const FABRIC_FRAGMENT_TTL_MS = 5 * 60 * 1000;
+
+/**
+ * TTL for "no fragment" — the server was unavailable, or it answered but had
+ * no pattern under that name. Shorter than the positive TTL so a server that
+ * comes back mid-run is picked up quickly, but long enough that a server that
+ * is down costs one 3 s health-probe timeout per minute instead of two 3 s
+ * timeouts per turn.
+ */
+const FABRIC_FRAGMENT_NEGATIVE_TTL_MS = 60 * 1000;
+
+interface FabricFragmentCacheEntry {
+	/**
+	 * The in-flight or settled fetch. Stored as the promise rather than the
+	 * resolved value so callers that arrive while a fetch is running share it
+	 * instead of starting a second one.
+	 */
+	promise: Promise<string | null>;
+	/** Epoch ms after which this entry is stale. */
+	expiresAt: number;
+}
+
+const fabricFragmentCache = new Map<string, FabricFragmentCacheEntry>();
+
+/**
+ * Probe Fabric AI and compose the prompt fragment. Never rejects — every
+ * failure degrades to `null`, which is what the caller treats as "no Fabric AI
+ * enhancement", exactly as before.
+ */
+async function fetchFabricPromptFragment(
+	patternName: string,
+	contextName: string | undefined,
+): Promise<string | null> {
+	try {
+		const fabricAvailable = await isFabricAvailable();
+
+		if (!fabricAvailable) {
+			logger.info(
+				"[Project Document Generator] Fabric AI server not available",
+			);
+			return null;
+		}
+
+		logger.info(
+			"[Project Document Generator] Fabric AI available, fetching pattern",
+			{ pattern: patternName },
+		);
+
+		// Fetch pattern and optionally context from Fabric AI
+		const [pattern, context] = await Promise.all([
+			getFabricPattern(patternName),
+			contextName ? getFabricContext(contextName) : null,
+		]);
+
+		if (!pattern) {
+			return null;
+		}
+
+		// Compose Fabric AI prompt: context (persona) + pattern
+		const parts: string[] = [];
+		if (context) {
+			parts.push(context);
+		}
+		parts.push(pattern);
+		const fragment = parts.join("\n\n");
+
+		logger.info("[Project Document Generator] Fabric AI pattern loaded", {
+			pattern: patternName,
+			context: contextName,
+			patternLength: fragment.length,
+		});
+
+		return fragment;
+	} catch (error) {
+		logger.warn(
+			"[Project Document Generator] Fabric AI error (graceful degradation)",
+			{ error },
+		);
+		return null;
+	}
+}
+
+/**
+ * Memoized accessor for the Fabric AI prompt fragment, keyed by the resolved
+ * pattern and context names (the only inputs the fetched content depends on).
+ * Never rejects, for the same reason `fetchFabricPromptFragment` doesn't.
+ */
+async function getFabricPromptFragment(
+	patternName: string,
+	contextName: string | undefined,
+): Promise<string | null> {
+	// NUL-delimited so no pattern/context pair can collide with another.
+	const key = `${patternName}\u0000${contextName ?? ""}`;
+	const cached = fabricFragmentCache.get(key);
+	if (cached && cached.expiresAt > Date.now()) {
+		return cached.promise;
+	}
+
+	const entry: FabricFragmentCacheEntry = {
+		promise: fetchFabricPromptFragment(patternName, contextName),
+		// Provisional bound, replaced with the outcome-specific TTL once the
+		// fetch settles. Both fetches are timeout-bounded well inside it, so
+		// this only guards against an entry pinned by a promise that somehow
+		// never settles.
+		expiresAt: Date.now() + FABRIC_FRAGMENT_NEGATIVE_TTL_MS,
+	};
+	fabricFragmentCache.set(key, entry);
+
+	const fragment = await entry.promise;
+	// Only extend the entry this call created — a concurrent eviction or
+	// refresh must not have its TTL overwritten by an older fetch.
+	if (fabricFragmentCache.get(key) === entry) {
+		entry.expiresAt =
+			Date.now() +
+			(fragment === null
+				? FABRIC_FRAGMENT_NEGATIVE_TTL_MS
+				: FABRIC_FRAGMENT_TTL_MS);
+	}
+
+	return fragment;
+}
+
+// =============================================================================
 // Fabric AI Pattern Mapping
 // =============================================================================
 
@@ -498,54 +635,12 @@ export async function buildSystemPromptAsync(
 	const fabricConfig =
 		FABRIC_PATTERN_MAP[documentType] || FABRIC_PATTERN_MAP.general;
 
-	// Try to get Fabric AI enhancement
-	let fabricPattern: string | null = null;
-	try {
-		const fabricAvailable = await isFabricAvailable();
-
-		if (fabricAvailable) {
-			logger.info(
-				"[Project Document Generator] Fabric AI available, fetching pattern",
-				{ pattern: fabricConfig.pattern },
-			);
-
-			// Fetch pattern and optionally context from Fabric AI
-			const [pattern, context] = await Promise.all([
-				getFabricPattern(fabricConfig.pattern),
-				fabricConfig.context
-					? getFabricContext(fabricConfig.context)
-					: null,
-			]);
-
-			if (pattern) {
-				// Compose Fabric AI prompt: context (persona) + pattern
-				const parts: string[] = [];
-				if (context) {
-					parts.push(context);
-				}
-				parts.push(pattern);
-				fabricPattern = parts.join("\n\n");
-
-				logger.info(
-					"[Project Document Generator] Fabric AI pattern loaded",
-					{
-						pattern: fabricConfig.pattern,
-						context: fabricConfig.context,
-						patternLength: fabricPattern.length,
-					},
-				);
-			}
-		} else {
-			logger.info(
-				"[Project Document Generator] Fabric AI server not available",
-			);
-		}
-	} catch (error) {
-		logger.warn(
-			"[Project Document Generator] Fabric AI error (graceful degradation)",
-			{ error },
-		);
-	}
+	// Try to get Fabric AI enhancement. Cached per (pattern, context) — this
+	// runs once per tool round and the answer cannot change within a run.
+	const fabricPattern = await getFabricPromptFragment(
+		fabricConfig.pattern,
+		fabricConfig.context,
+	);
 
 	// Use unified prompt builder with Fabric AI pattern
 	logger.info(

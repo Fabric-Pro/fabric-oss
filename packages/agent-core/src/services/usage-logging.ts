@@ -139,7 +139,30 @@ export function extractUsageFromLangChainResponse(
 	};
 }
 
+/**
+ * Report one model call's token usage to the Fabric API.
+ *
+ * Guaranteed never to reject: every failure — transport, non-OK response, or
+ * anything thrown while shaping the payload — is caught and logged here. That
+ * is a contract callers rely on, because usage logging is observability and
+ * nothing downstream reads the row back: callers may (and in the
+ * project-document-generator hot path do) fire this without awaiting it, so a
+ * rejection would surface as an unhandled rejection rather than a failed
+ * request.
+ */
 export async function logAgentUsageFromRunnableConfig(
+	config: AgentUsageLoggerConfig | null | undefined,
+	response: unknown,
+	options: AgentUsageLogOptions,
+): Promise<void> {
+	try {
+		await sendAgentUsageEvent(config, response, options);
+	} catch (error) {
+		console.error("[AgentUsage] Failed to send usage event", error);
+	}
+}
+
+async function sendAgentUsageEvent(
 	config: AgentUsageLoggerConfig | null | undefined,
 	response: unknown,
 	options: AgentUsageLogOptions,
