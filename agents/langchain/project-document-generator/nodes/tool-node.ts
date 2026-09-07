@@ -8,13 +8,21 @@
  * - get_full_message: Get untruncated content of a specific message
  * - list_message_replies: Get threaded replies under a channel message
  *
- * Pattern: Same as data-analyst agent's tool node using ToolNode from
- * @langchain/langgraph/prebuilt with DynamicStructuredTool.
+ * Pattern: every tool is a module-level `tool()` instance (from
+ * @langchain/core/tools) that reads graph state and the run's AI token off
+ * the `ToolRuntime` LangGraph hands it on invocation, instead of a factory
+ * rebuilt on every tool-node call. `ToolNode`s are built lazily, one per
+ * gate combination (integration flags + active skill), and cached in a
+ * module-level map so an invocation never constructs tools or a node.
  */
 
 import type { BaseMessage } from "@langchain/core/messages";
 import { HumanMessage, ToolMessage } from "@langchain/core/messages";
-import { DynamicStructuredTool } from "@langchain/core/tools";
+import {
+	type StructuredToolInterface,
+	type ToolRuntime,
+	tool,
+} from "@langchain/core/tools";
 import { ToolNode } from "@langchain/langgraph/prebuilt";
 import { SYNTHETIC_TOOL_IMAGE_MESSAGE_FLAG } from "@repo/agent-core/recursion";
 import { logger } from "@repo/logs";
@@ -109,6 +117,11 @@ function getApiUrl(): string {
 	);
 }
 
+/** Resolve the run's AI token from the ToolRuntime's RunnableConfig. */
+function getAiToken(runtime: ToolRuntime<AgentState>): string | undefined {
+	return runtime.configurable?.ai_token as string | undefined;
+}
+
 /**
  * A 401 from an internal API almost always means the run's AI token expired
  * mid-generation (a long model call outliving the token TTL), not a
@@ -180,13 +193,120 @@ async function callTeamsTool(
  * This tool calls the internal Teams search API endpoint, which reuses
  * the existing searchProjectTeamsMessages activity logic.
  */
-function createSearchTeamsMessagesTool(
-	state: AgentState,
-	aiToken?: string,
-): DynamicStructuredTool {
-	const apiUrl = getApiUrl();
+const searchTeamsMessagesTool = tool(
+	async (
+		{ query, alternateQuery, limit = 15 },
+		runtime: ToolRuntime<AgentState>,
+	) => {
+		const apiUrl = getApiUrl();
+		const aiToken = getAiToken(runtime);
+		const { projectId, userId, organizationId, systemPrompt } =
+			runtime.state;
 
-	return new DynamicStructuredTool({
+		if (!projectId || !userId) {
+			logger.warn(
+				"[ToolNode] Missing projectId or userId for Teams search",
+				{ projectId, userId },
+			);
+			return "Teams search skipped: missing project or user context.";
+		}
+
+		const clampedLimit = Math.min(Math.max(1, limit), 50);
+
+		logger.info("[ToolNode] Executing search_teams_messages", {
+			projectId,
+			query,
+			alternateQuery: alternateQuery || null,
+			hasStagePrompt: !!systemPrompt,
+			limit: clampedLimit,
+		});
+
+		try {
+			const headers: Record<string, string> = {
+				"Content-Type": "application/json",
+			};
+			if (aiToken) {
+				headers["X-AI-Token"] = aiToken;
+			}
+
+			const response = await fetch(
+				`${apiUrl}/api/internal/teams-search`,
+				{
+					method: "POST",
+					headers,
+					body: JSON.stringify({
+						projectId,
+						query,
+						alternateQuery,
+						stagePrompt: systemPrompt,
+						userId,
+						organizationId,
+						limit: clampedLimit,
+					}),
+				},
+			);
+
+			if (!response.ok) {
+				if (response.status === 401) {
+					return internalApiFailure(
+						"search_teams_messages",
+						response.status,
+					);
+				}
+				logger.warn("[ToolNode] Teams search API returned error", {
+					status: response.status,
+				});
+				return `Teams search failed (${response.status}). Continuing without Teams context.`;
+			}
+
+			const result = (await response.json()) as {
+				excerpts?: ExtractedExcerpt[];
+				messages?: Array<{
+					id: string;
+					from: string;
+					createdAt?: string;
+					content: string;
+					chatId?: string;
+					teamId?: string;
+					channelId?: string;
+				}>;
+				twoPass?: boolean;
+			};
+
+			if (result.excerpts && result.excerpts.length > 0) {
+				logger.info("[ToolNode] Teams search returned excerpts", {
+					excerptCount: result.excerpts.length,
+					twoPass: !!result.twoPass,
+					query,
+				});
+				return formatExcerpts(result.excerpts);
+			}
+
+			if (!result.messages || result.messages.length === 0) {
+				return `No Teams messages found for "${query}".`;
+			}
+
+			logger.info("[ToolNode] Teams search returned legacy messages", {
+				messageCount: result.messages.length,
+				query,
+			});
+
+			return result.messages
+				.map(
+					(m) =>
+						`[messageId: ${m.id}${m.chatId ? `, chatId: ${m.chatId}` : ""}${m.teamId ? `, teamId: ${m.teamId}` : ""}${m.channelId ? `, channelId: ${m.channelId}` : ""}] **${m.from}** (${m.createdAt || "unknown time"}): ${m.content}`,
+				)
+				.join("\n\n");
+		} catch (error) {
+			const errorMessage =
+				error instanceof Error ? error.message : "Unknown error";
+			logger.error("[ToolNode] Teams search failed", {
+				error: errorMessage,
+			});
+			return `Teams search encountered an error: ${errorMessage}. Continuing without Teams context.`;
+		}
+	},
+	{
 		name: "search_teams_messages",
 		description: `Search for messages in Microsoft Teams chats that are linked to this project.
 Use this tool when you need to find relevant context from team discussions, decisions, or conversations.
@@ -228,117 +348,8 @@ Tips for effective searches:
 					"Maximum number of raw Graph messages per pass before relevance filtering (default: 15, max: 50)",
 				),
 		}),
-		func: async ({ query, alternateQuery, limit = 15 }) => {
-			const { projectId, userId, organizationId, systemPrompt } = state;
-
-			if (!projectId || !userId) {
-				logger.warn(
-					"[ToolNode] Missing projectId or userId for Teams search",
-					{ projectId, userId },
-				);
-				return "Teams search skipped: missing project or user context.";
-			}
-
-			const clampedLimit = Math.min(Math.max(1, limit), 50);
-
-			logger.info("[ToolNode] Executing search_teams_messages", {
-				projectId,
-				query,
-				alternateQuery: alternateQuery || null,
-				hasStagePrompt: !!systemPrompt,
-				limit: clampedLimit,
-			});
-
-			try {
-				const headers: Record<string, string> = {
-					"Content-Type": "application/json",
-				};
-				if (aiToken) {
-					headers["X-AI-Token"] = aiToken;
-				}
-
-				const response = await fetch(
-					`${apiUrl}/api/internal/teams-search`,
-					{
-						method: "POST",
-						headers,
-						body: JSON.stringify({
-							projectId,
-							query,
-							alternateQuery,
-							stagePrompt: systemPrompt,
-							userId,
-							organizationId,
-							limit: clampedLimit,
-						}),
-					},
-				);
-
-				if (!response.ok) {
-					if (response.status === 401) {
-						return internalApiFailure(
-							"search_teams_messages",
-							response.status,
-						);
-					}
-					logger.warn("[ToolNode] Teams search API returned error", {
-						status: response.status,
-					});
-					return `Teams search failed (${response.status}). Continuing without Teams context.`;
-				}
-
-				const result = (await response.json()) as {
-					excerpts?: ExtractedExcerpt[];
-					messages?: Array<{
-						id: string;
-						from: string;
-						createdAt?: string;
-						content: string;
-						chatId?: string;
-						teamId?: string;
-						channelId?: string;
-					}>;
-					twoPass?: boolean;
-				};
-
-				if (result.excerpts && result.excerpts.length > 0) {
-					logger.info("[ToolNode] Teams search returned excerpts", {
-						excerptCount: result.excerpts.length,
-						twoPass: !!result.twoPass,
-						query,
-					});
-					return formatExcerpts(result.excerpts);
-				}
-
-				if (!result.messages || result.messages.length === 0) {
-					return `No Teams messages found for "${query}".`;
-				}
-
-				logger.info(
-					"[ToolNode] Teams search returned legacy messages",
-					{
-						messageCount: result.messages.length,
-						query,
-					},
-				);
-
-				return result.messages
-					.map(
-						(m) =>
-							`[messageId: ${m.id}${m.chatId ? `, chatId: ${m.chatId}` : ""}${m.teamId ? `, teamId: ${m.teamId}` : ""}${m.channelId ? `, channelId: ${m.channelId}` : ""}] **${m.from}** (${m.createdAt || "unknown time"}): ${m.content}`,
-					)
-					.join("\n\n");
-			} catch (error) {
-				const errorMessage =
-					error instanceof Error ? error.message : "Unknown error";
-				logger.error("[ToolNode] Teams search failed", {
-					error: errorMessage,
-				});
-				return `Teams search encountered an error: ${errorMessage}. Continuing without Teams context.`;
-			}
-		},
-	});
-}
+	},
+);
 
 /**
  * Create the get_chat_messages tool.
@@ -346,11 +357,79 @@ Tips for effective searches:
  * Fetches recent messages from a specific Teams chat linked to the project.
  * Useful when the agent wants to browse a particular chat rather than search.
  */
-function createGetChatMessagesTool(
-	state: AgentState,
-	aiToken?: string,
-): DynamicStructuredTool {
-	return new DynamicStructuredTool({
+const getChatMessagesTool = tool(
+	async ({ chatId, query, limit = 20 }, runtime: ToolRuntime<AgentState>) => {
+		const aiToken = getAiToken(runtime);
+		logger.info("[ToolNode] Executing get_chat_messages", {
+			chatId,
+			query: query || null,
+			hasStagePrompt: !!runtime.state.systemPrompt,
+			limit,
+		});
+
+		try {
+			const clampedLimit = Math.min(Math.max(1, limit), 50);
+			const result = (await callTeamsTool(
+				"get_chat_messages",
+				{
+					chatId,
+					limit: clampedLimit,
+					...(query ? { query } : {}),
+					...(runtime.state.systemPrompt
+						? { stagePrompt: runtime.state.systemPrompt }
+						: {}),
+				},
+				runtime.state,
+				aiToken,
+			)) as
+				| string
+				| {
+						mode?: string;
+						excerpts?: ExtractedExcerpt[];
+						messages?: Array<{
+							id: string;
+							from: string;
+							createdAt?: string;
+							content: string;
+						}>;
+						count?: number;
+				  };
+
+			if (typeof result === "string") {
+				return result;
+			}
+
+			if (result.excerpts && result.excerpts.length > 0) {
+				logger.info("[ToolNode] get_chat_messages returned excerpts", {
+					excerptCount: result.excerpts.length,
+				});
+				return formatExcerpts(result.excerpts);
+			}
+
+			if (!result.messages || result.messages.length === 0) {
+				return "No messages found in this chat.";
+			}
+
+			logger.info("[ToolNode] get_chat_messages returned results", {
+				messageCount: result.messages.length,
+			});
+
+			return result.messages
+				.map(
+					(m) =>
+						`[messageId: ${m.id}] **${m.from}** (${m.createdAt || "unknown time"}): ${m.content}`,
+				)
+				.join("\n\n");
+		} catch (error) {
+			const errorMessage =
+				error instanceof Error ? error.message : "Unknown error";
+			logger.error("[ToolNode] get_chat_messages failed", {
+				error: errorMessage,
+			});
+			return `Failed to get chat messages: ${errorMessage}`;
+		}
+	},
+	{
 		name: "get_chat_messages",
 		description: `Get recent messages from a specific Microsoft Teams chat linked to this project.
 Use this when you want to browse recent messages in a particular chat rather than search by keywords.
@@ -377,79 +456,8 @@ the response is the raw recent messages (each pre-truncated to ~500 chars).`,
 					"Maximum number of messages to return (default: 20, max: 50)",
 				),
 		}),
-		func: async ({ chatId, query, limit = 20 }) => {
-			logger.info("[ToolNode] Executing get_chat_messages", {
-				chatId,
-				query: query || null,
-				hasStagePrompt: !!state.systemPrompt,
-				limit,
-			});
-
-			try {
-				const clampedLimit = Math.min(Math.max(1, limit), 50);
-				const result = (await callTeamsTool(
-					"get_chat_messages",
-					{
-						chatId,
-						limit: clampedLimit,
-						...(query ? { query } : {}),
-						...(state.systemPrompt
-							? { stagePrompt: state.systemPrompt }
-							: {}),
-					},
-					state,
-					aiToken,
-				)) as
-					| string
-					| {
-							mode?: string;
-							excerpts?: ExtractedExcerpt[];
-							messages?: Array<{
-								id: string;
-								from: string;
-								createdAt?: string;
-								content: string;
-							}>;
-							count?: number;
-					  };
-
-				if (typeof result === "string") {
-					return result;
-				}
-
-				if (result.excerpts && result.excerpts.length > 0) {
-					logger.info(
-						"[ToolNode] get_chat_messages returned excerpts",
-						{ excerptCount: result.excerpts.length },
-					);
-					return formatExcerpts(result.excerpts);
-				}
-
-				if (!result.messages || result.messages.length === 0) {
-					return "No messages found in this chat.";
-				}
-
-				logger.info("[ToolNode] get_chat_messages returned results", {
-					messageCount: result.messages.length,
-				});
-
-				return result.messages
-					.map(
-						(m) =>
-							`[messageId: ${m.id}] **${m.from}** (${m.createdAt || "unknown time"}): ${m.content}`,
-					)
-					.join("\n\n");
-			} catch (error) {
-				const errorMessage =
-					error instanceof Error ? error.message : "Unknown error";
-				logger.error("[ToolNode] get_chat_messages failed", {
-					error: errorMessage,
-				});
-				return `Failed to get chat messages: ${errorMessage}`;
-			}
-		},
-	});
-}
+	},
+);
 
 /**
  * Create the list_linked_chats tool.
@@ -457,73 +465,71 @@ the response is the raw recent messages (each pre-truncated to ~500 chars).`,
  * Returns all Microsoft Teams chats/channels linked to this project.
  * The agent uses this to discover chatIds before calling get_chat_messages.
  */
-function createListLinkedChatsTool(
-	state: AgentState,
-	aiToken?: string,
-): DynamicStructuredTool {
-	return new DynamicStructuredTool({
+const listLinkedChatsTool = tool(
+	async (_input, runtime: ToolRuntime<AgentState>) => {
+		const aiToken = getAiToken(runtime);
+		logger.info("[ToolNode] Executing list_linked_chats", {
+			projectId: runtime.state.projectId,
+		});
+
+		try {
+			const result = (await callTeamsTool(
+				"list_linked_chats",
+				{},
+				runtime.state,
+				aiToken,
+			)) as
+				| string
+				| {
+						chats?: Array<{
+							chatId?: string;
+							chatType?: string;
+							chatTopic?: string;
+							teamId?: string;
+							channelId?: string;
+							channelName?: string;
+							teamName?: string;
+						}>;
+						count?: number;
+				  };
+
+			if (typeof result === "string") {
+				return result;
+			}
+
+			if (!result.chats || result.chats.length === 0) {
+				return "No Teams chats or channels are linked to this project.";
+			}
+
+			logger.info("[ToolNode] list_linked_chats returned results", {
+				chatCount: result.chats.length,
+			});
+
+			return result.chats
+				.map((chat) => {
+					if (chat.chatId) {
+						return `- **${chat.chatTopic || "Group Chat"}** (type: ${chat.chatType || "group"}, chatId: ${chat.chatId})`;
+					}
+					return `- **${chat.channelName || "Channel"}** in ${chat.teamName || "Team"} (teamId: ${chat.teamId}, channelId: ${chat.channelId})`;
+				})
+				.join("\n");
+		} catch (error) {
+			const errorMessage =
+				error instanceof Error ? error.message : "Unknown error";
+			logger.error("[ToolNode] list_linked_chats failed", {
+				error: errorMessage,
+			});
+			return `Failed to list linked chats: ${errorMessage}`;
+		}
+	},
+	{
 		name: "list_linked_chats",
 		description: `List all Microsoft Teams chats and channels linked to this project.
 Returns chat IDs, names, and types so you can then use get_chat_messages to fetch recent messages.
 Use this FIRST when the user asks about recent/latest Teams messages, before calling get_chat_messages.`,
 		schema: z.object({}),
-		func: async () => {
-			logger.info("[ToolNode] Executing list_linked_chats", {
-				projectId: state.projectId,
-			});
-
-			try {
-				const result = (await callTeamsTool(
-					"list_linked_chats",
-					{},
-					state,
-					aiToken,
-				)) as
-					| string
-					| {
-							chats?: Array<{
-								chatId?: string;
-								chatType?: string;
-								chatTopic?: string;
-								teamId?: string;
-								channelId?: string;
-								channelName?: string;
-								teamName?: string;
-							}>;
-							count?: number;
-					  };
-
-				if (typeof result === "string") {
-					return result;
-				}
-
-				if (!result.chats || result.chats.length === 0) {
-					return "No Teams chats or channels are linked to this project.";
-				}
-
-				logger.info("[ToolNode] list_linked_chats returned results", {
-					chatCount: result.chats.length,
-				});
-
-				return result.chats
-					.map((chat) => {
-						if (chat.chatId) {
-							return `- **${chat.chatTopic || "Group Chat"}** (type: ${chat.chatType || "group"}, chatId: ${chat.chatId})`;
-						}
-						return `- **${chat.channelName || "Channel"}** in ${chat.teamName || "Team"} (teamId: ${chat.teamId}, channelId: ${chat.channelId})`;
-					})
-					.join("\n");
-			} catch (error) {
-				const errorMessage =
-					error instanceof Error ? error.message : "Unknown error";
-				logger.error("[ToolNode] list_linked_chats failed", {
-					error: errorMessage,
-				});
-				return `Failed to list linked chats: ${errorMessage}`;
-			}
-		},
-	});
-}
+	},
+);
 
 /**
  * Create the get_teams_channel_messages tool.
@@ -531,11 +537,88 @@ Use this FIRST when the user asks about recent/latest Teams messages, before cal
  * Fetches recent messages from a Teams channel linked to the project.
  * Uses the list_messages Graph API method with teamId/channelId.
  */
-function createGetTeamsChannelMessagesTool(
-	state: AgentState,
-	aiToken?: string,
-): DynamicStructuredTool {
-	return new DynamicStructuredTool({
+const getTeamsChannelMessagesTool = tool(
+	async (
+		{ teamId, channelId, query, limit = 20 },
+		runtime: ToolRuntime<AgentState>,
+	) => {
+		const aiToken = getAiToken(runtime);
+		logger.info("[ToolNode] Executing get_teams_channel_messages", {
+			teamId,
+			channelId,
+			query: query || null,
+			hasStagePrompt: !!runtime.state.systemPrompt,
+			limit,
+		});
+
+		try {
+			const clampedLimit = Math.min(Math.max(1, limit), 50);
+			const result = (await callTeamsTool(
+				"list_messages",
+				{
+					teamId,
+					channelId,
+					limit: clampedLimit,
+					...(query ? { query } : {}),
+					...(runtime.state.systemPrompt
+						? { stagePrompt: runtime.state.systemPrompt }
+						: {}),
+				},
+				runtime.state,
+				aiToken,
+			)) as
+				| string
+				| {
+						mode?: string;
+						excerpts?: ExtractedExcerpt[];
+						messages?: Array<{
+							id: string;
+							from: string;
+							createdAt?: string;
+							content: string;
+						}>;
+						count?: number;
+				  };
+
+			if (typeof result === "string") {
+				return result;
+			}
+
+			if (result.excerpts && result.excerpts.length > 0) {
+				logger.info(
+					"[ToolNode] get_teams_channel_messages returned excerpts",
+					{ excerptCount: result.excerpts.length },
+				);
+				return formatExcerpts(result.excerpts);
+			}
+
+			if (!result.messages || result.messages.length === 0) {
+				return "No messages found in this channel.";
+			}
+
+			logger.info(
+				"[ToolNode] get_teams_channel_messages returned results",
+				{
+					messageCount: result.messages.length,
+				},
+			);
+
+			return result.messages
+				.map(
+					(m) =>
+						`[messageId: ${m.id}] **${m.from}** (${m.createdAt || "unknown time"}): ${m.content}`,
+				)
+				.join("\n\n");
+		} catch (error) {
+			const errorMessage =
+				error instanceof Error ? error.message : "Unknown error";
+			logger.error("[ToolNode] get_teams_channel_messages failed", {
+				error: errorMessage,
+			});
+			return `Failed to get channel messages: ${errorMessage}`;
+		}
+	},
+	{
 		name: "get_teams_channel_messages",
 		description: `Get recent messages from a Microsoft Teams channel linked to this project.
 Use this when you want to browse recent messages in a channel. Requires teamId and channelId from list_linked_chats.
@@ -563,84 +646,8 @@ the response is the raw recent messages (each pre-truncated to ~500 chars).`,
 					"Maximum number of messages to return (default: 20, max: 50)",
 				),
 		}),
-		func: async ({ teamId, channelId, query, limit = 20 }) => {
-			logger.info("[ToolNode] Executing get_teams_channel_messages", {
-				teamId,
-				channelId,
-				query: query || null,
-				hasStagePrompt: !!state.systemPrompt,
-				limit,
-			});
-
-			try {
-				const clampedLimit = Math.min(Math.max(1, limit), 50);
-				const result = (await callTeamsTool(
-					"list_messages",
-					{
-						teamId,
-						channelId,
-						limit: clampedLimit,
-						...(query ? { query } : {}),
-						...(state.systemPrompt
-							? { stagePrompt: state.systemPrompt }
-							: {}),
-					},
-					state,
-					aiToken,
-				)) as
-					| string
-					| {
-							mode?: string;
-							excerpts?: ExtractedExcerpt[];
-							messages?: Array<{
-								id: string;
-								from: string;
-								createdAt?: string;
-								content: string;
-							}>;
-							count?: number;
-					  };
-
-				if (typeof result === "string") {
-					return result;
-				}
-
-				if (result.excerpts && result.excerpts.length > 0) {
-					logger.info(
-						"[ToolNode] get_teams_channel_messages returned excerpts",
-						{ excerptCount: result.excerpts.length },
-					);
-					return formatExcerpts(result.excerpts);
-				}
-
-				if (!result.messages || result.messages.length === 0) {
-					return "No messages found in this channel.";
-				}
-
-				logger.info(
-					"[ToolNode] get_teams_channel_messages returned results",
-					{
-						messageCount: result.messages.length,
-					},
-				);
-
-				return result.messages
-					.map(
-						(m) =>
-							`[messageId: ${m.id}] **${m.from}** (${m.createdAt || "unknown time"}): ${m.content}`,
-					)
-					.join("\n\n");
-			} catch (error) {
-				const errorMessage =
-					error instanceof Error ? error.message : "Unknown error";
-				logger.error("[ToolNode] get_teams_channel_messages failed", {
-					error: errorMessage,
-				});
-				return `Failed to get channel messages: ${errorMessage}`;
-			}
-		},
-	});
-}
+	},
+);
 
 /**
  * Create the get_full_message tool.
@@ -648,11 +655,80 @@ the response is the raw recent messages (each pre-truncated to ~500 chars).`,
  * Gets the complete, untruncated content of a specific Teams message.
  * Search results may return truncated content — use this to get the full text.
  */
-function createGetFullMessageTool(
-	state: AgentState,
-	aiToken?: string,
-): DynamicStructuredTool {
-	return new DynamicStructuredTool({
+const getFullMessageTool = tool(
+	async (
+		{ messageId, chatId, teamId, channelId },
+		runtime: ToolRuntime<AgentState>,
+	) => {
+		const aiToken = getAiToken(runtime);
+		logger.info("[ToolNode] Executing get_full_message", {
+			messageId,
+			chatId,
+			teamId,
+			channelId,
+		});
+
+		if (!chatId && !(teamId && channelId)) {
+			return "Error: You must provide either chatId (for group chat messages) or both teamId and channelId (for channel messages). Get these from search_teams_messages, get_chat_messages, or list_linked_chats results.";
+		}
+
+		try {
+			const args: Record<string, unknown> = { messageId };
+			if (chatId) {
+				args.chatId = chatId;
+			}
+			if (teamId) {
+				args.teamId = teamId;
+			}
+			if (channelId) {
+				args.channelId = channelId;
+			}
+
+			const result = (await callTeamsTool(
+				"get_full_message",
+				args,
+				runtime.state,
+				aiToken,
+			)) as
+				| string
+				| {
+						content?: string;
+						from?: string;
+						createdAt?: string;
+						importance?: string;
+				  };
+
+			if (typeof result === "string") {
+				return result;
+			}
+
+			if (!result.content) {
+				return "Message content not found or empty.";
+			}
+
+			const parts: string[] = [];
+			if (result.from) {
+				parts.push(`**From:** ${result.from}`);
+			}
+			if (result.createdAt) {
+				parts.push(`**Date:** ${result.createdAt}`);
+			}
+			if (result.importance && result.importance !== "normal") {
+				parts.push(`**Importance:** ${result.importance}`);
+			}
+			parts.push(`\n${result.content}`);
+
+			return parts.join("\n");
+		} catch (error) {
+			const errorMessage =
+				error instanceof Error ? error.message : "Unknown error";
+			logger.error("[ToolNode] get_full_message failed", {
+				error: errorMessage,
+			});
+			return `Failed to get full message: ${errorMessage}`;
+		}
+	},
+	{
 		name: "get_full_message",
 		description: `Get the full content of a specific Microsoft Teams message (capped at 10KB).
 Use this when search results or excerpts show a promising messageId and you need the
@@ -674,76 +750,8 @@ Requires the messageId and either a chatId (for group chats) or teamId+channelId
 				.optional()
 				.describe("Channel ID if the message is from a channel"),
 		}),
-		func: async ({ messageId, chatId, teamId, channelId }) => {
-			logger.info("[ToolNode] Executing get_full_message", {
-				messageId,
-				chatId,
-				teamId,
-				channelId,
-			});
-
-			if (!chatId && !(teamId && channelId)) {
-				return "Error: You must provide either chatId (for group chat messages) or both teamId and channelId (for channel messages). Get these from search_teams_messages, get_chat_messages, or list_linked_chats results.";
-			}
-
-			try {
-				const args: Record<string, unknown> = { messageId };
-				if (chatId) {
-					args.chatId = chatId;
-				}
-				if (teamId) {
-					args.teamId = teamId;
-				}
-				if (channelId) {
-					args.channelId = channelId;
-				}
-
-				const result = (await callTeamsTool(
-					"get_full_message",
-					args,
-					state,
-					aiToken,
-				)) as
-					| string
-					| {
-							content?: string;
-							from?: string;
-							createdAt?: string;
-							importance?: string;
-					  };
-
-				if (typeof result === "string") {
-					return result;
-				}
-
-				if (!result.content) {
-					return "Message content not found or empty.";
-				}
-
-				const parts: string[] = [];
-				if (result.from) {
-					parts.push(`**From:** ${result.from}`);
-				}
-				if (result.createdAt) {
-					parts.push(`**Date:** ${result.createdAt}`);
-				}
-				if (result.importance && result.importance !== "normal") {
-					parts.push(`**Importance:** ${result.importance}`);
-				}
-				parts.push(`\n${result.content}`);
-
-				return parts.join("\n");
-			} catch (error) {
-				const errorMessage =
-					error instanceof Error ? error.message : "Unknown error";
-				logger.error("[ToolNode] get_full_message failed", {
-					error: errorMessage,
-				});
-				return `Failed to get full message: ${errorMessage}`;
-			}
-		},
-	});
-}
+	},
+);
 
 /**
  * Create the list_message_replies tool.
@@ -751,11 +759,85 @@ Requires the messageId and either a chatId (for group chats) or teamId+channelId
  * Gets reply messages (thread) for a channel message.
  * Useful for following threaded discussions about specific topics.
  */
-function createListMessageRepliesTool(
-	state: AgentState,
-	aiToken?: string,
-): DynamicStructuredTool {
-	return new DynamicStructuredTool({
+const listMessageRepliesTool = tool(
+	async (
+		{ teamId, channelId, messageId, query, limit = 25 },
+		runtime: ToolRuntime<AgentState>,
+	) => {
+		const aiToken = getAiToken(runtime);
+		logger.info("[ToolNode] Executing list_message_replies", {
+			teamId,
+			channelId,
+			messageId,
+			query: query || null,
+			hasStagePrompt: !!runtime.state.systemPrompt,
+			limit,
+		});
+
+		try {
+			const result = (await callTeamsTool(
+				"list_message_replies",
+				{
+					teamId,
+					channelId,
+					messageId,
+					limit,
+					...(query ? { query } : {}),
+					...(runtime.state.systemPrompt
+						? { stagePrompt: runtime.state.systemPrompt }
+						: {}),
+				},
+				runtime.state,
+				aiToken,
+			)) as
+				| string
+				| {
+						mode?: string;
+						excerpts?: ExtractedExcerpt[];
+						replies?: Array<{
+							from: string;
+							createdAt?: string;
+							content: string;
+						}>;
+						count?: number;
+				  };
+
+			if (typeof result === "string") {
+				return result;
+			}
+
+			if (result.excerpts && result.excerpts.length > 0) {
+				logger.info(
+					"[ToolNode] list_message_replies returned excerpts",
+					{ excerptCount: result.excerpts.length },
+				);
+				return formatExcerpts(result.excerpts);
+			}
+
+			if (!result.replies || result.replies.length === 0) {
+				return "No replies found for this message.";
+			}
+
+			logger.info("[ToolNode] list_message_replies returned results", {
+				replyCount: result.replies.length,
+			});
+
+			return result.replies
+				.map(
+					(m) =>
+						`**${m.from}** (${m.createdAt || "unknown time"}): ${m.content}`,
+				)
+				.join("\n\n");
+		} catch (error) {
+			const errorMessage =
+				error instanceof Error ? error.message : "Unknown error";
+			logger.error("[ToolNode] list_message_replies failed", {
+				error: errorMessage,
+			});
+			return `Failed to get message replies: ${errorMessage}`;
+		}
+	},
+	{
 		name: "list_message_replies",
 		description: `Get replies in a thread under a specific Microsoft Teams channel message.
 Use this to follow threaded discussions when you find a relevant message in a channel.
@@ -782,84 +864,8 @@ the response is the raw replies (each pre-truncated to ~500 chars).`,
 				.optional()
 				.describe("Maximum number of replies to return (default: 25)"),
 		}),
-		func: async ({ teamId, channelId, messageId, query, limit = 25 }) => {
-			logger.info("[ToolNode] Executing list_message_replies", {
-				teamId,
-				channelId,
-				messageId,
-				query: query || null,
-				hasStagePrompt: !!state.systemPrompt,
-				limit,
-			});
-
-			try {
-				const result = (await callTeamsTool(
-					"list_message_replies",
-					{
-						teamId,
-						channelId,
-						messageId,
-						limit,
-						...(query ? { query } : {}),
-						...(state.systemPrompt
-							? { stagePrompt: state.systemPrompt }
-							: {}),
-					},
-					state,
-					aiToken,
-				)) as
-					| string
-					| {
-							mode?: string;
-							excerpts?: ExtractedExcerpt[];
-							replies?: Array<{
-								from: string;
-								createdAt?: string;
-								content: string;
-							}>;
-							count?: number;
-					  };
-
-				if (typeof result === "string") {
-					return result;
-				}
-
-				if (result.excerpts && result.excerpts.length > 0) {
-					logger.info(
-						"[ToolNode] list_message_replies returned excerpts",
-						{ excerptCount: result.excerpts.length },
-					);
-					return formatExcerpts(result.excerpts);
-				}
-
-				if (!result.replies || result.replies.length === 0) {
-					return "No replies found for this message.";
-				}
-
-				logger.info(
-					"[ToolNode] list_message_replies returned results",
-					{
-						replyCount: result.replies.length,
-					},
-				);
-
-				return result.replies
-					.map(
-						(m) =>
-							`**${m.from}** (${m.createdAt || "unknown time"}): ${m.content}`,
-					)
-					.join("\n\n");
-			} catch (error) {
-				const errorMessage =
-					error instanceof Error ? error.message : "Unknown error";
-				logger.error("[ToolNode] list_message_replies failed", {
-					error: errorMessage,
-				});
-				return `Failed to get message replies: ${errorMessage}`;
-			}
-		},
-	});
-}
+	},
+);
 
 /**
  * Create the get_message_hosted_content tool.
@@ -867,11 +873,94 @@ the response is the raw replies (each pre-truncated to ~500 chars).`,
  * Fetches images (hosted content) from a Teams message and returns them as base64.
  * The LLM can then describe or reference the image content.
  */
-function createGetMessageHostedContentTool(
-	state: AgentState,
-	aiToken?: string,
-): DynamicStructuredTool {
-	return new DynamicStructuredTool({
+const getMessageHostedContentTool = tool(
+	async (
+		{ messageId, chatId, teamId, channelId },
+		runtime: ToolRuntime<AgentState>,
+	) => {
+		const aiToken = getAiToken(runtime);
+		logger.info("[ToolNode] Executing get_message_hosted_content", {
+			messageId,
+			chatId,
+			teamId,
+			channelId,
+		});
+
+		if (!chatId && !(teamId && channelId)) {
+			return "Error: You must provide either chatId (for group chat messages) or both teamId and channelId (for channel messages). Get these from search_teams_messages, get_chat_messages, or list_linked_chats results.";
+		}
+
+		try {
+			const args: Record<string, unknown> = { messageId };
+			if (chatId) {
+				args.chatId = chatId;
+			}
+			if (teamId) {
+				args.teamId = teamId;
+			}
+			if (channelId) {
+				args.channelId = channelId;
+			}
+
+			const result = (await callTeamsTool(
+				"get_message_hosted_content",
+				args,
+				runtime.state,
+				aiToken,
+			)) as
+				| string
+				| {
+						images?: Array<{
+							id: string;
+							contentType: string;
+							base64: string;
+						}>;
+						count?: number;
+						message?: string;
+				  };
+
+			if (typeof result === "string") {
+				return result;
+			}
+
+			if (!result.images || result.images.length === 0) {
+				return result.message || "No images found in this message.";
+			}
+
+			// Return JSON with the __images marker so toolNode can split it
+			// into a text-only ToolMessage (satisfying this tool_call) plus
+			// a synthetic HumanMessage carrying the image_url parts —
+			// image parts are not valid inside a tool-role message.
+			return JSON.stringify({
+				__images: true,
+				text: `Found ${result.images.length} image(s) in this message.`,
+				images: result.images
+					.filter((img: { base64: string }) => img.base64)
+					.map(
+						(img: {
+							id: string;
+							contentType: string;
+							base64: string;
+						}) => ({
+							id: img.id,
+							contentType: img.contentType,
+							base64: img.base64,
+						}),
+					),
+				skipped: result.images.filter(
+					(img: { base64: string }) => !img.base64,
+				).length,
+			});
+		} catch (error) {
+			const errorMessage =
+				error instanceof Error ? error.message : "Unknown error";
+			logger.error("[ToolNode] get_message_hosted_content failed", {
+				error: errorMessage,
+			});
+			return `Failed to get message images: ${errorMessage}`;
+		}
+	},
+	{
 		name: "get_message_hosted_content",
 		description: `Get images and hosted content from a Microsoft Teams message.
 Use this when a message contains images (e.g., screenshots, diagrams) and you need to see them.
@@ -894,90 +983,8 @@ Requires the messageId and either a chatId (for group chats) or teamId+channelId
 				.optional()
 				.describe("Channel ID if the message is from a channel"),
 		}),
-		func: async ({ messageId, chatId, teamId, channelId }) => {
-			logger.info("[ToolNode] Executing get_message_hosted_content", {
-				messageId,
-				chatId,
-				teamId,
-				channelId,
-			});
-
-			if (!chatId && !(teamId && channelId)) {
-				return "Error: You must provide either chatId (for group chat messages) or both teamId and channelId (for channel messages). Get these from search_teams_messages, get_chat_messages, or list_linked_chats results.";
-			}
-
-			try {
-				const args: Record<string, unknown> = { messageId };
-				if (chatId) {
-					args.chatId = chatId;
-				}
-				if (teamId) {
-					args.teamId = teamId;
-				}
-				if (channelId) {
-					args.channelId = channelId;
-				}
-
-				const result = (await callTeamsTool(
-					"get_message_hosted_content",
-					args,
-					state,
-					aiToken,
-				)) as
-					| string
-					| {
-							images?: Array<{
-								id: string;
-								contentType: string;
-								base64: string;
-							}>;
-							count?: number;
-							message?: string;
-					  };
-
-				if (typeof result === "string") {
-					return result;
-				}
-
-				if (!result.images || result.images.length === 0) {
-					return result.message || "No images found in this message.";
-				}
-
-				// Return JSON with the __images marker so toolNode can split it
-				// into a text-only ToolMessage (satisfying this tool_call) plus
-				// a synthetic HumanMessage carrying the image_url parts —
-				// image parts are not valid inside a tool-role message.
-				return JSON.stringify({
-					__images: true,
-					text: `Found ${result.images.length} image(s) in this message.`,
-					images: result.images
-						.filter((img: { base64: string }) => img.base64)
-						.map(
-							(img: {
-								id: string;
-								contentType: string;
-								base64: string;
-							}) => ({
-								id: img.id,
-								contentType: img.contentType,
-								base64: img.base64,
-							}),
-						),
-					skipped: result.images.filter(
-						(img: { base64: string }) => !img.base64,
-					).length,
-				});
-			} catch (error) {
-				const errorMessage =
-					error instanceof Error ? error.message : "Unknown error";
-				logger.error("[ToolNode] get_message_hosted_content failed", {
-					error: errorMessage,
-				});
-				return `Failed to get message images: ${errorMessage}`;
-			}
-		},
-	});
-}
+	},
+);
 
 /**
  * Helper to call the generic /api/internal/slack-tools endpoint.
@@ -1036,69 +1043,64 @@ async function callSlackTool(
  * Returns all Slack channels linked to this project.
  * The agent uses this to discover channelIds before calling get_channel_messages.
  */
-function createListLinkedChannelsTool(
-	state: AgentState,
-	aiToken?: string,
-): DynamicStructuredTool {
-	return new DynamicStructuredTool({
+const listLinkedChannelsTool = tool(
+	async (_input, runtime: ToolRuntime<AgentState>) => {
+		const aiToken = getAiToken(runtime);
+		logger.info("[ToolNode] Executing list_linked_channels", {
+			projectId: runtime.state.projectId,
+		});
+
+		try {
+			const result = (await callSlackTool(
+				"list_linked_channels",
+				{},
+				runtime.state,
+				aiToken,
+			)) as
+				| string
+				| {
+						channels?: Array<{
+							channelId?: string;
+							channelName?: string;
+						}>;
+						count?: number;
+				  };
+
+			if (typeof result === "string") {
+				return result;
+			}
+
+			if (!result.channels || result.channels.length === 0) {
+				return "No Slack channels are linked to this project.";
+			}
+
+			logger.info("[ToolNode] list_linked_channels returned results", {
+				channelCount: result.channels.length,
+			});
+
+			return result.channels
+				.map(
+					(ch) =>
+						`- **#${ch.channelName || "unknown"}** (channelId: ${ch.channelId})`,
+				)
+				.join("\n");
+		} catch (error) {
+			const errorMessage =
+				error instanceof Error ? error.message : "Unknown error";
+			logger.error("[ToolNode] list_linked_channels failed", {
+				error: errorMessage,
+			});
+			return `Failed to list linked channels: ${errorMessage}`;
+		}
+	},
+	{
 		name: "list_linked_channels",
 		description: `List all Slack channels linked to this project.
 Returns channel IDs and names so you can then use get_channel_messages to fetch recent messages.
 Use this FIRST when the user asks about recent/latest Slack messages, before calling get_channel_messages.`,
 		schema: z.object({}),
-		func: async () => {
-			logger.info("[ToolNode] Executing list_linked_channels", {
-				projectId: state.projectId,
-			});
-
-			try {
-				const result = (await callSlackTool(
-					"list_linked_channels",
-					{},
-					state,
-					aiToken,
-				)) as
-					| string
-					| {
-							channels?: Array<{
-								channelId?: string;
-								channelName?: string;
-							}>;
-							count?: number;
-					  };
-
-				if (typeof result === "string") {
-					return result;
-				}
-
-				if (!result.channels || result.channels.length === 0) {
-					return "No Slack channels are linked to this project.";
-				}
-
-				logger.info(
-					"[ToolNode] list_linked_channels returned results",
-					{
-						channelCount: result.channels.length,
-					},
-				);
-
-				return result.channels
-					.map(
-						(ch) =>
-							`- **#${ch.channelName || "unknown"}** (channelId: ${ch.channelId})`,
-					)
-					.join("\n");
-			} catch (error) {
-				const errorMessage =
-					error instanceof Error ? error.message : "Unknown error";
-				logger.error("[ToolNode] list_linked_channels failed", {
-					error: errorMessage,
-				});
-				return `Failed to list linked channels: ${errorMessage}`;
-			}
-		},
-	});
-}
+	},
+);
 
 /**
  * Create the search_slack_messages tool for server-side execution.
@@ -1106,13 +1108,110 @@ Use this FIRST when the user asks about recent/latest Slack messages, before cal
  * This tool calls the internal Slack search API endpoint, which reuses
  * the existing searchProjectSlackMessages activity logic.
  */
-function createSearchSlackMessagesTool(
-	state: AgentState,
-	aiToken?: string,
-): DynamicStructuredTool {
-	const apiUrl = getApiUrl();
+const searchSlackMessagesTool = tool(
+	async ({ query, limit = 15 }, runtime: ToolRuntime<AgentState>) => {
+		const apiUrl = getApiUrl();
+		const aiToken = getAiToken(runtime);
+		const { projectId, userId, organizationId } = runtime.state;
 
-	return new DynamicStructuredTool({
+		if (!projectId || !userId) {
+			logger.warn(
+				"[ToolNode] Missing projectId or userId for Slack search",
+				{ projectId, userId },
+			);
+			return "Slack search skipped: missing project or user context.";
+		}
+
+		const clampedLimit = Math.min(Math.max(1, limit), 50);
+
+		logger.info("[ToolNode] Executing search_slack_messages", {
+			projectId,
+			query,
+			limit: clampedLimit,
+		});
+
+		try {
+			const headers: Record<string, string> = {
+				"Content-Type": "application/json",
+			};
+			if (aiToken) {
+				headers["X-AI-Token"] = aiToken;
+			}
+
+			const response = await fetch(
+				`${apiUrl}/api/internal/slack-search`,
+				{
+					method: "POST",
+					headers,
+					body: JSON.stringify({
+						projectId,
+						query,
+						userId,
+						organizationId,
+						limit: clampedLimit,
+					}),
+				},
+			);
+
+			if (!response.ok) {
+				if (response.status === 401) {
+					return internalApiFailure(
+						"search_slack_messages",
+						response.status,
+					);
+				}
+				logger.warn("[ToolNode] Slack search API returned error", {
+					status: response.status,
+				});
+				return `Slack search failed (${response.status}). Continuing without Slack context.`;
+			}
+
+			const result = (await response.json()) as {
+				messages?: Array<{
+					id?: string;
+					from: string;
+					createdAt?: string;
+					content: string;
+					channelId?: string;
+					channelName?: string;
+					threadTs?: string;
+					permalink?: string;
+				}>;
+			};
+
+			if (!result.messages || result.messages.length === 0) {
+				return `No Slack messages found for "${query}".`;
+			}
+
+			logger.info("[ToolNode] Slack search returned results", {
+				messageCount: result.messages.length,
+				query,
+			});
+
+			return result.messages
+				.map((m) =>
+					formatSlackMessageLine({
+						messageId: m.id,
+						channelId: m.channelId,
+						channelName: m.channelName || "unknown",
+						threadTs: m.threadTs,
+						from: m.from,
+						createdAt: m.createdAt,
+						permalink: m.permalink,
+						content: m.content,
+					}),
+				)
+				.join("\n\n");
+		} catch (error) {
+			const errorMessage =
+				error instanceof Error ? error.message : "Unknown error";
+			logger.error("[ToolNode] Slack search failed", {
+				error: errorMessage,
+			});
+			return `Slack search encountered an error: ${errorMessage}. Continuing without Slack context.`;
+		}
+	},
+	{
 		name: "search_slack_messages",
 		description: `Search for messages in Slack channels that are linked to this project.
 Use this tool when you need to find relevant context from Slack discussions, decisions, or conversations.
@@ -1151,108 +1250,8 @@ Tips for effective searches:
 					"Maximum number of messages to return (default: 15, max: 50)",
 				),
 		}),
-		func: async ({ query, limit = 15 }) => {
-			const { projectId, userId, organizationId } = state;
-
-			if (!projectId || !userId) {
-				logger.warn(
-					"[ToolNode] Missing projectId or userId for Slack search",
-					{ projectId, userId },
-				);
-				return "Slack search skipped: missing project or user context.";
-			}
-
-			const clampedLimit = Math.min(Math.max(1, limit), 50);
-
-			logger.info("[ToolNode] Executing search_slack_messages", {
-				projectId,
-				query,
-				limit: clampedLimit,
-			});
-
-			try {
-				const headers: Record<string, string> = {
-					"Content-Type": "application/json",
-				};
-				if (aiToken) {
-					headers["X-AI-Token"] = aiToken;
-				}
-
-				const response = await fetch(
-					`${apiUrl}/api/internal/slack-search`,
-					{
-						method: "POST",
-						headers,
-						body: JSON.stringify({
-							projectId,
-							query,
-							userId,
-							organizationId,
-							limit: clampedLimit,
-						}),
-					},
-				);
-
-				if (!response.ok) {
-					if (response.status === 401) {
-						return internalApiFailure(
-							"search_slack_messages",
-							response.status,
-						);
-					}
-					logger.warn("[ToolNode] Slack search API returned error", {
-						status: response.status,
-					});
-					return `Slack search failed (${response.status}). Continuing without Slack context.`;
-				}
-
-				const result = (await response.json()) as {
-					messages?: Array<{
-						id?: string;
-						from: string;
-						createdAt?: string;
-						content: string;
-						channelId?: string;
-						channelName?: string;
-						threadTs?: string;
-						permalink?: string;
-					}>;
-				};
-
-				if (!result.messages || result.messages.length === 0) {
-					return `No Slack messages found for "${query}".`;
-				}
-
-				logger.info("[ToolNode] Slack search returned results", {
-					messageCount: result.messages.length,
-					query,
-				});
-
-				return result.messages
-					.map((m) =>
-						formatSlackMessageLine({
-							messageId: m.id,
-							channelId: m.channelId,
-							channelName: m.channelName || "unknown",
-							threadTs: m.threadTs,
-							from: m.from,
-							createdAt: m.createdAt,
-							permalink: m.permalink,
-							content: m.content,
-						}),
-					)
-					.join("\n\n");
-			} catch (error) {
-				const errorMessage =
-					error instanceof Error ? error.message : "Unknown error";
-				logger.error("[ToolNode] Slack search failed", {
-					error: errorMessage,
-				});
-				return `Slack search encountered an error: ${errorMessage}. Continuing without Slack context.`;
-			}
-		},
-	});
-}
+	},
+);
 
 /**
  * Create the get_channel_messages tool.
@@ -1260,11 +1259,69 @@ Tips for effective searches:
  * Fetches recent messages from a specific Slack channel linked to the project.
  * Useful when the agent wants to browse a particular channel rather than search.
  */
-function createGetChannelMessagesTool(
-	state: AgentState,
-	aiToken?: string,
-): DynamicStructuredTool {
-	return new DynamicStructuredTool({
+const getChannelMessagesTool = tool(
+	async ({ channelId, limit = 20 }, runtime: ToolRuntime<AgentState>) => {
+		const aiToken = getAiToken(runtime);
+		logger.info("[ToolNode] Executing get_channel_messages", {
+			channelId,
+			limit,
+		});
+
+		try {
+			const clampedLimit = Math.min(Math.max(1, limit), 50);
+			const result = (await callSlackTool(
+				"get_channel_messages",
+				{ channel: channelId, channelId, limit: clampedLimit },
+				runtime.state,
+				aiToken,
+			)) as
+				| string
+				| {
+						messages?: Array<{
+							id?: string;
+							from: string;
+							createdAt?: string;
+							content: string;
+							threadTs?: string;
+							replyCount?: number;
+						}>;
+						count?: number;
+				  };
+
+			if (typeof result === "string") {
+				return result;
+			}
+
+			if (!result.messages || result.messages.length === 0) {
+				return "No messages found in this channel.";
+			}
+
+			logger.info("[ToolNode] get_channel_messages returned results", {
+				messageCount: result.messages.length,
+			});
+
+			return result.messages
+				.map((m) =>
+					formatSlackMessageLine({
+						messageId: m.id,
+						threadTs: m.threadTs,
+						replyCount: m.replyCount,
+						from: m.from,
+						createdAt: m.createdAt,
+						content: m.content,
+					}),
+				)
+				.join("\n\n");
+		} catch (error) {
+			const errorMessage =
+				error instanceof Error ? error.message : "Unknown error";
+			logger.error("[ToolNode] get_channel_messages failed", {
+				error: errorMessage,
+			});
+			return `Failed to get channel messages: ${errorMessage}`;
+		}
+	},
+	{
 		name: "get_channel_messages",
 		description: `Get recent messages from a specific Slack channel linked to this project.
 Use this when you want to browse recent messages in a particular channel rather than search by keywords.
@@ -1287,79 +1344,87 @@ the channelId + threadTs to drill into the discussion.`,
 					"Maximum number of messages to return (default: 20, max: 50)",
 				),
 		}),
-		func: async ({ channelId, limit = 20 }) => {
-			logger.info("[ToolNode] Executing get_channel_messages", {
-				channelId,
-				limit,
+	},
+);
+
+// threadTs values are discovered from prior search_slack_messages results
+// (search excerpts include threadTs only when the matched message is in a thread).
+const getSlackThreadRepliesTool = tool(
+	async (
+		{ channelId, threadTs, limit = 50 },
+		runtime: ToolRuntime<AgentState>,
+	) => {
+		const aiToken = getAiToken(runtime);
+		logger.info("[ToolNode] Executing get_thread_replies", {
+			channelId,
+			threadTs,
+			limit,
+		});
+
+		try {
+			const clampedLimit = Math.min(Math.max(1, limit), 200);
+			const result = (await callSlackTool(
+				"get_thread_replies",
+				{
+					channel: channelId,
+					channelId,
+					threadTs,
+					limit: clampedLimit,
+				},
+				runtime.state,
+				aiToken,
+			)) as
+				| string
+				| {
+						messages?: Array<{
+							id: string;
+							from: string;
+							createdAt?: string;
+							content: string;
+						}>;
+						count?: number;
+						hasMore?: boolean;
+				  };
+
+			if (typeof result === "string") {
+				return result;
+			}
+
+			if (!result.messages || result.messages.length === 0) {
+				return "No replies found in this thread.";
+			}
+
+			logger.info("[ToolNode] get_thread_replies returned results", {
+				messageCount: result.messages.length,
+				hasMore: !!result.hasMore,
 			});
 
-			try {
-				const clampedLimit = Math.min(Math.max(1, limit), 50);
-				const result = (await callSlackTool(
-					"get_channel_messages",
-					{ channel: channelId, channelId, limit: clampedLimit },
-					state,
-					aiToken,
-				)) as
-					| string
-					| {
-							messages?: Array<{
-								id?: string;
-								from: string;
-								createdAt?: string;
-								content: string;
-								threadTs?: string;
-								replyCount?: number;
-							}>;
-							count?: number;
-					  };
+			const moreSuffix = result.hasMore
+				? "\n\n_(more replies exist — re-call with a higher limit to fetch them)_"
+				: "";
 
-				if (typeof result === "string") {
-					return result;
-				}
-
-				if (!result.messages || result.messages.length === 0) {
-					return "No messages found in this channel.";
-				}
-
-				logger.info(
-					"[ToolNode] get_channel_messages returned results",
-					{
-						messageCount: result.messages.length,
-					},
-				);
-
-				return result.messages
+			return (
+				result.messages
 					.map((m) =>
 						formatSlackMessageLine({
 							messageId: m.id,
-							threadTs: m.threadTs,
-							replyCount: m.replyCount,
 							from: m.from,
 							createdAt: m.createdAt,
 							content: m.content,
 						}),
 					)
-					.join("\n\n");
-			} catch (error) {
-				const errorMessage =
-					error instanceof Error ? error.message : "Unknown error";
-				logger.error("[ToolNode] get_channel_messages failed", {
-					error: errorMessage,
-				});
-				return `Failed to get channel messages: ${errorMessage}`;
-			}
-		},
-	});
-}
-
-// threadTs values are discovered from prior search_slack_messages results
-// (search excerpts include threadTs only when the matched message is in a thread).
-function createGetSlackThreadRepliesTool(
-	state: AgentState,
-	aiToken?: string,
-): DynamicStructuredTool {
-	return new DynamicStructuredTool({
+					.join("\n\n") + moreSuffix
+			);
+		} catch (error) {
+			const errorMessage =
+				error instanceof Error ? error.message : "Unknown error";
+			logger.error("[ToolNode] get_thread_replies failed", {
+				error: errorMessage,
+			});
+			return `Failed to get thread replies: ${errorMessage}`;
+		}
+	},
+	{
 		name: "get_thread_replies",
 		description: `Get replies under a Slack message thread linked to this project.
 Use this AFTER search_slack_messages returns an excerpt with a threadTs — Slack discussions and
@@ -1381,85 +1446,89 @@ misses the substance. Pass channelId + threadTs from the search result.`,
 					"Maximum number of replies to return (default: 50, max: 200)",
 				),
 		}),
-		func: async ({ channelId, threadTs, limit = 50 }) => {
-			logger.info("[ToolNode] Executing get_thread_replies", {
-				channelId,
-				threadTs,
-				limit,
-			});
-
-			try {
-				const clampedLimit = Math.min(Math.max(1, limit), 200);
-				const result = (await callSlackTool(
-					"get_thread_replies",
-					{
-						channel: channelId,
-						channelId,
-						threadTs,
-						limit: clampedLimit,
-					},
-					state,
-					aiToken,
-				)) as
-					| string
-					| {
-							messages?: Array<{
-								id: string;
-								from: string;
-								createdAt?: string;
-								content: string;
-							}>;
-							count?: number;
-							hasMore?: boolean;
-					  };
-
-				if (typeof result === "string") {
-					return result;
-				}
-
-				if (!result.messages || result.messages.length === 0) {
-					return "No replies found in this thread.";
-				}
-
-				logger.info("[ToolNode] get_thread_replies returned results", {
-					messageCount: result.messages.length,
-					hasMore: !!result.hasMore,
-				});
-
-				const moreSuffix = result.hasMore
-					? "\n\n_(more replies exist — re-call with a higher limit to fetch them)_"
-					: "";
-
-				return (
-					result.messages
-						.map((m) =>
-							formatSlackMessageLine({
-								messageId: m.id,
-								from: m.from,
-								createdAt: m.createdAt,
-								content: m.content,
-							}),
-						)
-						.join("\n\n") + moreSuffix
-				);
-			} catch (error) {
-				const errorMessage =
-					error instanceof Error ? error.message : "Unknown error";
-				logger.error("[ToolNode] get_thread_replies failed", {
-					error: errorMessage,
-				});
-				return `Failed to get thread replies: ${errorMessage}`;
-			}
-		},
-	});
-}
+	},
+);
 
 // Returns file metadata + Slack permalinks only — binary content is not fetched.
-function createGetSlackSharedFilesTool(
-	state: AgentState,
-	aiToken?: string,
-): DynamicStructuredTool {
-	return new DynamicStructuredTool({
+const getSlackSharedFilesTool = tool(
+	async (
+		{ channelId, limit = 20, types },
+		runtime: ToolRuntime<AgentState>,
+	) => {
+		const aiToken = getAiToken(runtime);
+		logger.info("[ToolNode] Executing get_shared_files", {
+			channelId,
+			limit,
+			types: types || null,
+		});
+
+		try {
+			const clampedLimit = Math.min(Math.max(1, limit), 100);
+			const result = (await callSlackTool(
+				"get_shared_files",
+				{
+					channel: channelId,
+					channelId,
+					limit: clampedLimit,
+					...(types ? { types } : {}),
+				},
+				runtime.state,
+				aiToken,
+			)) as
+				| string
+				| {
+						files?: Array<{
+							id: string;
+							name?: string;
+							title?: string;
+							mimetype?: string;
+							filetype?: string;
+							size?: number;
+							createdBy?: string;
+							createdAt?: string;
+							permalink?: string;
+							urlPrivate?: string;
+						}>;
+						count?: number;
+						total?: number;
+				  };
+
+			if (typeof result === "string") {
+				return result;
+			}
+
+			if (!result.files || result.files.length === 0) {
+				return "No files found in this channel.";
+			}
+
+			logger.info("[ToolNode] get_shared_files returned results", {
+				fileCount: result.files.length,
+				total: result.total ?? result.files.length,
+			});
+
+			return result.files
+				.map((f) => {
+					const link = f.permalink ? ` <${f.permalink}>` : "";
+					const size =
+						typeof f.size === "number"
+							? ` ${Math.round(f.size / 1024)}KB`
+							: "";
+					const type = f.filetype || f.mimetype || "file";
+					const by = f.createdBy ? ` by **${f.createdBy}**` : "";
+					const when = f.createdAt ? ` (${f.createdAt})` : "";
+					return `- ${f.name || f.id} [${type}${size}]${by}${when}${link}`;
+				})
+				.join("\n");
+		} catch (error) {
+			const errorMessage =
+				error instanceof Error ? error.message : "Unknown error";
+			logger.error("[ToolNode] get_shared_files failed", {
+				error: errorMessage,
+			});
+			return `Failed to get shared files: ${errorMessage}`;
+		}
+	},
+	{
 		name: "get_shared_files",
 		description: `List files shared in a Slack channel linked to this project.
 Use this when the user asks about attachments, screenshots, PDFs, or diagrams in a Slack channel,
@@ -1485,81 +1554,8 @@ spaces, gdocs, zips, etc.). Omit 'types' to return all file types.`,
 					"Optional comma-separated Slack file types filter (e.g. 'images,pdfs').",
 				),
 		}),
-		func: async ({ channelId, limit = 20, types }) => {
-			logger.info("[ToolNode] Executing get_shared_files", {
-				channelId,
-				limit,
-				types: types || null,
-			});
-
-			try {
-				const clampedLimit = Math.min(Math.max(1, limit), 100);
-				const result = (await callSlackTool(
-					"get_shared_files",
-					{
-						channel: channelId,
-						channelId,
-						limit: clampedLimit,
-						...(types ? { types } : {}),
-					},
-					state,
-					aiToken,
-				)) as
-					| string
-					| {
-							files?: Array<{
-								id: string;
-								name?: string;
-								title?: string;
-								mimetype?: string;
-								filetype?: string;
-								size?: number;
-								createdBy?: string;
-								createdAt?: string;
-								permalink?: string;
-								urlPrivate?: string;
-							}>;
-							count?: number;
-							total?: number;
-					  };
-
-				if (typeof result === "string") {
-					return result;
-				}
-
-				if (!result.files || result.files.length === 0) {
-					return "No files found in this channel.";
-				}
-
-				logger.info("[ToolNode] get_shared_files returned results", {
-					fileCount: result.files.length,
-					total: result.total ?? result.files.length,
-				});
-
-				return result.files
-					.map((f) => {
-						const link = f.permalink ? ` <${f.permalink}>` : "";
-						const size =
-							typeof f.size === "number"
-								? ` ${Math.round(f.size / 1024)}KB`
-								: "";
-						const type = f.filetype || f.mimetype || "file";
-						const by = f.createdBy ? ` by **${f.createdBy}**` : "";
-						const when = f.createdAt ? ` (${f.createdAt})` : "";
-						return `- ${f.name || f.id} [${type}${size}]${by}${when}${link}`;
-					})
-					.join("\n");
-			} catch (error) {
-				const errorMessage =
-					error instanceof Error ? error.message : "Unknown error";
-				logger.error("[ToolNode] get_shared_files failed", {
-					error: errorMessage,
-				});
-				return `Failed to get shared files: ${errorMessage}`;
-			}
-		},
-	});
-}
+	},
+);
 
 /**
  * Tool node that executes server-side Teams and Slack tools.
@@ -1573,13 +1569,87 @@ spaces, gdocs, zips, etc.). Omit 'types' to return all file types.`,
  * Searches all embedded project context (meeting transcripts, documents, codebase, etc.)
  * via Qdrant vector search. Same core logic as the orchestrator's project_rag_query.
  */
-function createSearchProjectKnowledgeTool(
-	state: AgentState,
-	aiToken?: string,
-): DynamicStructuredTool {
-	const apiUrl = getApiUrl();
+const searchProjectKnowledgeTool = tool(
+	async ({ query, topK = 10 }, runtime: ToolRuntime<AgentState>) => {
+		const apiUrl = getApiUrl();
+		const aiToken = getAiToken(runtime);
+		const { projectId, userId } = runtime.state;
 
-	return new DynamicStructuredTool({
+		if (!projectId || !userId) {
+			logger.warn(
+				"[ToolNode] Missing projectId or userId for project knowledge search",
+				{ projectId, userId },
+			);
+			return "Project knowledge search skipped: missing project or user context.";
+		}
+
+		logger.info("[ToolNode] Executing search_project_knowledge", {
+			projectId,
+			query,
+			topK,
+		});
+
+		try {
+			const headers: Record<string, string> = {
+				"Content-Type": "application/json",
+			};
+			if (aiToken) {
+				headers["X-AI-Token"] = aiToken;
+			}
+
+			const response = await fetch(
+				`${apiUrl}/api/internal/project-context-search`,
+				{
+					method: "POST",
+					headers,
+					body: JSON.stringify({
+						projectId,
+						query,
+						topK: Math.min(Math.max(1, topK), 20),
+					}),
+				},
+			);
+
+			if (!response.ok) {
+				if (response.status === 401) {
+					return internalApiFailure(
+						"search_project_knowledge",
+						response.status,
+					);
+				}
+				logger.warn("[ToolNode] project-context-search API error", {
+					status: response.status,
+				});
+				return `Project knowledge search failed (${response.status}). Continuing without this context.`;
+			}
+
+			const result = (await response.json()) as {
+				formatted: string;
+				totalCount: number;
+			};
+
+			if (result.totalCount === 0) {
+				return "No relevant project knowledge found for this query. Try different search terms or check if project context has been uploaded.";
+			}
+
+			logger.info(
+				"[ToolNode] search_project_knowledge returned results",
+				{
+					resultCount: result.totalCount,
+					contentLength: result.formatted.length,
+				},
+			);
+
+			return result.formatted;
+		} catch (error) {
+			logger.error(
+				"[ToolNode] search_project_knowledge failed:",
+				error instanceof Error ? error.message : error,
+			);
+			return "Project knowledge search failed. Continuing without this context.";
+		}
+	},
+	{
 		name: "search_project_knowledge",
 		description:
 			"Search the project's knowledge base for relevant information including meeting transcripts, uploaded documents, codebase analysis, and integration content.",
@@ -1596,97 +1666,101 @@ function createSearchProjectKnowledgeTool(
 					"Maximum number of results to return (default: 10, max: 20)",
 				),
 		}),
-		func: async ({ query, topK = 10 }) => {
-			const { projectId, userId } = state;
-
-			if (!projectId || !userId) {
-				logger.warn(
-					"[ToolNode] Missing projectId or userId for project knowledge search",
-					{ projectId, userId },
-				);
-				return "Project knowledge search skipped: missing project or user context.";
-			}
-
-			logger.info("[ToolNode] Executing search_project_knowledge", {
-				projectId,
-				query,
-				topK,
-			});
-
-			try {
-				const headers: Record<string, string> = {
-					"Content-Type": "application/json",
-				};
-				if (aiToken) {
-					headers["X-AI-Token"] = aiToken;
-				}
-
-				const response = await fetch(
-					`${apiUrl}/api/internal/project-context-search`,
-					{
-						method: "POST",
-						headers,
-						body: JSON.stringify({
-							projectId,
-							query,
-							topK: Math.min(Math.max(1, topK), 20),
-						}),
-					},
-				);
-
-				if (!response.ok) {
-					if (response.status === 401) {
-						return internalApiFailure(
-							"search_project_knowledge",
-							response.status,
-						);
-					}
-					logger.warn("[ToolNode] project-context-search API error", {
-						status: response.status,
-					});
-					return `Project knowledge search failed (${response.status}). Continuing without this context.`;
-				}
-
-				const result = (await response.json()) as {
-					formatted: string;
-					totalCount: number;
-				};
-
-				if (result.totalCount === 0) {
-					return "No relevant project knowledge found for this query. Try different search terms or check if project context has been uploaded.";
-				}
-
-				logger.info(
-					"[ToolNode] search_project_knowledge returned results",
-					{
-						resultCount: result.totalCount,
-						contentLength: result.formatted.length,
-					},
-				);
-
-				return result.formatted;
-			} catch (error) {
-				logger.error(
-					"[ToolNode] search_project_knowledge failed:",
-					error instanceof Error ? error.message : error,
-				);
-				return "Project knowledge search failed. Continuing without this context.";
-			}
-		},
-	});
-}
+	},
+);
 
 // ============================================================================
 // Code Search Tools (search_repository_code, get_repository_file, list_repository_structure)
 // ============================================================================
 
-function createSearchRepositoryCodeTool(
-	state: AgentState,
-	aiToken?: string,
-): DynamicStructuredTool {
-	const apiUrl = getApiUrl();
+const searchRepositoryCodeTool = tool(
+	async (
+		{ query, path, language, maxResults },
+		runtime: ToolRuntime<AgentState>,
+	) => {
+		const apiUrl = getApiUrl();
+		const aiToken = getAiToken(runtime);
+		const { projectId } = runtime.state;
+		if (!projectId) {
+			return "Code search skipped: no project context.";
+		}
 
-	return new DynamicStructuredTool({
+		logger.info("[ToolNode] Executing search_repository_code", {
+			projectId,
+			query,
+			path,
+			language,
+		});
+
+		try {
+			const headers: Record<string, string> = {
+				"Content-Type": "application/json",
+			};
+			if (aiToken) {
+				headers["X-AI-Token"] = aiToken;
+			}
+
+			const response = await fetch(`${apiUrl}/api/internal/code-search`, {
+				method: "POST",
+				headers,
+				body: JSON.stringify({
+					projectId,
+					action: "search",
+					query,
+					path,
+					language,
+					maxResults: Math.min(maxResults ?? 10, 30),
+				}),
+			});
+
+			if (!response.ok) {
+				if (response.status === 401) {
+					return internalApiFailure(
+						"search_repository_code",
+						response.status,
+					);
+				}
+				logger.warn("[ToolNode] code-search API error", {
+					status: response.status,
+				});
+				return `Code search failed (${response.status}). Continuing without code context.`;
+			}
+
+			const result = (await response.json()) as {
+				results: Array<{
+					filePath: string;
+					fileName: string;
+					repository: string;
+					htmlUrl?: string;
+					matchedSnippets: string[];
+				}>;
+				totalCount: number;
+			};
+
+			if (result.totalCount === 0) {
+				return "No code matches found. Try different search terms.";
+			}
+
+			const formatted = result.results
+				.map((r) => {
+					const snippets =
+						r.matchedSnippets.length > 0
+							? r.matchedSnippets.join("\n---\n")
+							: "(no preview available)";
+					return `### ${r.filePath}\n${snippets}`;
+				})
+				.join("\n\n");
+
+			return `Found ${result.totalCount} code matches:\n\n${formatted}`;
+		} catch (error) {
+			logger.error(
+				"[ToolNode] search_repository_code failed:",
+				error instanceof Error ? error.message : error,
+			);
+			return "Code search failed. Continuing without code context.";
+		}
+	},
+	{
 		name: "search_repository_code",
 		description:
 			"Search the project's repository for code matching a query. Returns file paths, matched snippets, and relevance scores. Use this to find specific functions, patterns, or implementations in the codebase.",
@@ -1713,100 +1787,83 @@ function createSearchRepositoryCodeTool(
 				.optional()
 				.describe("Maximum number of results (default: 10, max: 30)"),
 		}),
-		func: async ({ query, path, language, maxResults }) => {
-			const { projectId } = state;
-			if (!projectId) {
-				return "Code search skipped: no project context.";
+	},
+);
+
+const getRepositoryFileTool = tool(
+	async ({ path, branch }, runtime: ToolRuntime<AgentState>) => {
+		const apiUrl = getApiUrl();
+		const aiToken = getAiToken(runtime);
+		const { projectId } = runtime.state;
+		if (!projectId) {
+			return "File retrieval skipped: no project context.";
+		}
+
+		logger.info("[ToolNode] Executing get_repository_file", {
+			projectId,
+			path,
+		});
+
+		try {
+			const headers: Record<string, string> = {
+				"Content-Type": "application/json",
+			};
+			if (aiToken) {
+				headers["X-AI-Token"] = aiToken;
 			}
 
-			logger.info("[ToolNode] Executing search_repository_code", {
-				projectId,
-				query,
-				path,
-				language,
+			const response = await fetch(`${apiUrl}/api/internal/code-search`, {
+				method: "POST",
+				headers,
+				body: JSON.stringify({
+					projectId,
+					action: "get-file",
+					path,
+					branch,
+				}),
 			});
 
-			try {
-				const headers: Record<string, string> = {
-					"Content-Type": "application/json",
-				};
-				if (aiToken) {
-					headers["X-AI-Token"] = aiToken;
+			if (!response.ok) {
+				if (response.status === 401) {
+					return internalApiFailure(
+						"get_repository_file",
+						response.status,
+					);
 				}
-
-				const response = await fetch(
-					`${apiUrl}/api/internal/code-search`,
-					{
-						method: "POST",
-						headers,
-						body: JSON.stringify({
-							projectId,
-							action: "search",
-							query,
-							path,
-							language,
-							maxResults: Math.min(maxResults ?? 10, 30),
-						}),
-					},
-				);
-
-				if (!response.ok) {
-					if (response.status === 401) {
-						return internalApiFailure(
-							"search_repository_code",
-							response.status,
-						);
-					}
-					logger.warn("[ToolNode] code-search API error", {
-						status: response.status,
-					});
-					return `Code search failed (${response.status}). Continuing without code context.`;
-				}
-
-				const result = (await response.json()) as {
-					results: Array<{
-						filePath: string;
-						fileName: string;
-						repository: string;
-						htmlUrl?: string;
-						matchedSnippets: string[];
-					}>;
-					totalCount: number;
-				};
-
-				if (result.totalCount === 0) {
-					return "No code matches found. Try different search terms.";
-				}
-
-				const formatted = result.results
-					.map((r) => {
-						const snippets =
-							r.matchedSnippets.length > 0
-								? r.matchedSnippets.join("\n---\n")
-								: "(no preview available)";
-						return `### ${r.filePath}\n${snippets}`;
-					})
-					.join("\n\n");
-
-				return `Found ${result.totalCount} code matches:\n\n${formatted}`;
-			} catch (error) {
-				logger.error(
-					"[ToolNode] search_repository_code failed:",
-					error instanceof Error ? error.message : error,
-				);
-				return "Code search failed. Continuing without code context.";
+				return `File retrieval failed (${response.status}).`;
 			}
-		},
-	});
-}
 
-function createGetRepositoryFileTool(
-	state: AgentState,
-	aiToken?: string,
-): DynamicStructuredTool {
-	const apiUrl = getApiUrl();
+			const result = (await response.json()) as {
+				file: {
+					path: string;
+					content: string;
+					size: number;
+					isBinary: boolean;
+					isTruncated: boolean;
+				};
+			};
 
-	return new DynamicStructuredTool({
+			if (result.file.isBinary) {
+				return `File ${path} is a binary file and cannot be displayed.`;
+			}
+
+			if (!result.file.content) {
+				return `File ${path} not found or is empty.`;
+			}
+
+			const truncNote = result.file.isTruncated
+				? "\n\n(File truncated at 100KB)"
+				: "";
+			return `### ${result.file.path} (${result.file.size} bytes)\n\`\`\`\n${result.file.content}\n\`\`\`${truncNote}`;
+		} catch (error) {
+			logger.error(
+				"[ToolNode] get_repository_file failed:",
+				error instanceof Error ? error.message : error,
+			);
+			return "File retrieval failed.";
+		}
+	},
+	{
 		name: "get_repository_file",
 		description:
 			"Fetch the full content of a specific file from the project's repository by its path. Use after search_repository_code to read the full source of a relevant file.",
@@ -1823,89 +1880,90 @@ function createGetRepositoryFileTool(
 					"Branch name (defaults to the repository's default branch)",
 				),
 		}),
-		func: async ({ path, branch }) => {
-			const { projectId } = state;
-			if (!projectId) {
-				return "File retrieval skipped: no project context.";
+	},
+);
+
+const listRepositoryStructureTool = tool(
+	async ({ directory }, runtime: ToolRuntime<AgentState>) => {
+		const apiUrl = getApiUrl();
+		const aiToken = getAiToken(runtime);
+		const { projectId } = runtime.state;
+		if (!projectId) {
+			return "Structure listing skipped: no project context.";
+		}
+
+		logger.info("[ToolNode] Executing list_repository_structure", {
+			projectId,
+			directory,
+		});
+
+		try {
+			const headers: Record<string, string> = {
+				"Content-Type": "application/json",
+			};
+			if (aiToken) {
+				headers["X-AI-Token"] = aiToken;
 			}
 
-			logger.info("[ToolNode] Executing get_repository_file", {
-				projectId,
-				path,
+			const response = await fetch(`${apiUrl}/api/internal/code-search`, {
+				method: "POST",
+				headers,
+				body: JSON.stringify({
+					projectId,
+					action: "list-structure",
+					directory,
+				}),
 			});
 
-			try {
-				const headers: Record<string, string> = {
-					"Content-Type": "application/json",
-				};
-				if (aiToken) {
-					headers["X-AI-Token"] = aiToken;
+			if (!response.ok) {
+				if (response.status === 401) {
+					return internalApiFailure(
+						"list_repository_structure",
+						response.status,
+					);
 				}
-
-				const response = await fetch(
-					`${apiUrl}/api/internal/code-search`,
-					{
-						method: "POST",
-						headers,
-						body: JSON.stringify({
-							projectId,
-							action: "get-file",
-							path,
-							branch,
-						}),
-					},
-				);
-
-				if (!response.ok) {
-					if (response.status === 401) {
-						return internalApiFailure(
-							"get_repository_file",
-							response.status,
-						);
-					}
-					return `File retrieval failed (${response.status}).`;
-				}
-
-				const result = (await response.json()) as {
-					file: {
-						path: string;
-						content: string;
-						size: number;
-						isBinary: boolean;
-						isTruncated: boolean;
-					};
-				};
-
-				if (result.file.isBinary) {
-					return `File ${path} is a binary file and cannot be displayed.`;
-				}
-
-				if (!result.file.content) {
-					return `File ${path} not found or is empty.`;
-				}
-
-				const truncNote = result.file.isTruncated
-					? "\n\n(File truncated at 100KB)"
-					: "";
-				return `### ${result.file.path} (${result.file.size} bytes)\n\`\`\`\n${result.file.content}\n\`\`\`${truncNote}`;
-			} catch (error) {
-				logger.error(
-					"[ToolNode] get_repository_file failed:",
-					error instanceof Error ? error.message : error,
-				);
-				return "File retrieval failed.";
+				return `Structure listing failed (${response.status}).`;
 			}
-		},
-	});
-}
 
-function createListRepositoryStructureTool(
-	state: AgentState,
-	aiToken?: string,
-): DynamicStructuredTool {
-	const apiUrl = getApiUrl();
+			const result = (await response.json()) as {
+				structure: {
+					entries: Array<{
+						path: string;
+						type: "file" | "directory";
+						size?: number;
+					}>;
+					truncated: boolean;
+				};
+				totalFiles: number;
+				totalDirectories: number;
+			};
 
-	return new DynamicStructuredTool({
+			if (result.structure.entries.length === 0) {
+				return "No files found in the repository (or directory).";
+			}
+
+			const tree = result.structure.entries
+				.map((e) => {
+					const icon = e.type === "directory" ? "📁" : "📄";
+					const size = e.size ? ` (${e.size}B)` : "";
+					return `${icon} ${e.path}${size}`;
+				})
+				.join("\n");
+
+			const truncNote = result.structure.truncated
+				? "\n\n(Tree was truncated — repository has too many files)"
+				: "";
+
+			return `Repository structure (${result.totalFiles} files, ${result.totalDirectories} directories):\n\n${tree}${truncNote}`;
+		} catch (error) {
+			logger.error(
+				"[ToolNode] list_repository_structure failed:",
+				error instanceof Error ? error.message : error,
+			);
+			return "Structure listing failed.";
+		}
+	},
+	{
 		name: "list_repository_structure",
 		description:
 			"List the directory tree of the project's repository. Useful for understanding the project structure before searching for specific files.",
@@ -1917,88 +1975,8 @@ function createListRepositoryStructureTool(
 					"Filter to a specific directory (e.g., 'src/components'). Omit for full tree.",
 				),
 		}),
-		func: async ({ directory }) => {
-			const { projectId } = state;
-			if (!projectId) {
-				return "Structure listing skipped: no project context.";
-			}
-
-			logger.info("[ToolNode] Executing list_repository_structure", {
-				projectId,
-				directory,
-			});
-
-			try {
-				const headers: Record<string, string> = {
-					"Content-Type": "application/json",
-				};
-				if (aiToken) {
-					headers["X-AI-Token"] = aiToken;
-				}
-
-				const response = await fetch(
-					`${apiUrl}/api/internal/code-search`,
-					{
-						method: "POST",
-						headers,
-						body: JSON.stringify({
-							projectId,
-							action: "list-structure",
-							directory,
-						}),
-					},
-				);
-
-				if (!response.ok) {
-					if (response.status === 401) {
-						return internalApiFailure(
-							"list_repository_structure",
-							response.status,
-						);
-					}
-					return `Structure listing failed (${response.status}).`;
-				}
-
-				const result = (await response.json()) as {
-					structure: {
-						entries: Array<{
-							path: string;
-							type: "file" | "directory";
-							size?: number;
-						}>;
-						truncated: boolean;
-					};
-					totalFiles: number;
-					totalDirectories: number;
-				};
-
-				if (result.structure.entries.length === 0) {
-					return "No files found in the repository (or directory).";
-				}
-
-				const tree = result.structure.entries
-					.map((e) => {
-						const icon = e.type === "directory" ? "📁" : "📄";
-						const size = e.size ? ` (${e.size}B)` : "";
-						return `${icon} ${e.path}${size}`;
-					})
-					.join("\n");
-
-				const truncNote = result.structure.truncated
-					? "\n\n(Tree was truncated — repository has too many files)"
-					: "";
-
-				return `Repository structure (${result.totalFiles} files, ${result.totalDirectories} directories):\n\n${tree}${truncNote}`;
-			} catch (error) {
-				logger.error(
-					"[ToolNode] list_repository_structure failed:",
-					error instanceof Error ? error.message : error,
-				);
-				return "Structure listing failed.";
-			}
-		},
-	});
-}
+	},
+);
 
 /**
  * Create the write_document_asset tool.
@@ -2009,13 +1987,85 @@ function createListRepositoryStructureTool(
  * POSTs to /api/internal/document-assets which authenticates via the
  * X-AI-Token header and validates tenant ownership of the document.
  */
-function createWriteDocumentAssetTool(
-	state: AgentState,
-	aiToken?: string,
-): DynamicStructuredTool {
-	const apiUrl = getApiUrl();
+const writeDocumentAssetTool = tool(
+	async (
+		{ filename, contentType, content, encoding },
+		runtime: ToolRuntime<AgentState>,
+	) => {
+		const apiUrl = getApiUrl();
+		const aiToken = getAiToken(runtime);
+		const { documentId, userId } = runtime.state;
 
-	return new DynamicStructuredTool({
+		if (!documentId || !userId) {
+			logger.warn(
+				"[ToolNode] write_document_asset skipped — missing documentId/userId",
+				{ documentId, userId },
+			);
+			return "write_document_asset skipped: missing document or user context.";
+		}
+
+		if (!aiToken) {
+			return "write_document_asset failed: missing AI token.";
+		}
+
+		try {
+			const response = await fetch(
+				`${apiUrl}/api/internal/document-assets`,
+				{
+					method: "POST",
+					headers: {
+						"Content-Type": "application/json",
+						"X-AI-Token": aiToken,
+					},
+					body: JSON.stringify({
+						documentId,
+						filename,
+						contentType,
+						content,
+						encoding: encoding ?? "utf-8",
+					}),
+				},
+			);
+
+			if (!response.ok) {
+				if (response.status === 401) {
+					await response.text().catch(() => "");
+					return internalApiFailure(
+						"write_document_asset",
+						response.status,
+					);
+				}
+				const errText = await response.text().catch(() => "");
+				logger.warn("[ToolNode] write_document_asset API error", {
+					status: response.status,
+					error: errText.slice(0, 200),
+				});
+				return `write_document_asset failed (${response.status}): ${errText.slice(0, 200) || "unknown error"}`;
+			}
+
+			const result = (await response.json()) as {
+				assetId: string;
+				filename: string;
+				sizeBytes: number;
+			};
+
+			logger.info("[ToolNode] write_document_asset succeeded", {
+				assetId: result.assetId,
+				filename: result.filename,
+				sizeBytes: result.sizeBytes,
+			});
+
+			return `Asset saved: ${result.filename} (${result.sizeBytes} bytes). Reference it in the markdown body with: <!-- asset:${result.filename} -->`;
+		} catch (error) {
+			const errorMessage =
+				error instanceof Error ? error.message : "Unknown error";
+			logger.error("[ToolNode] write_document_asset failed", {
+				error: errorMessage,
+			});
+			return `write_document_asset failed: ${errorMessage}`;
+		}
+	},
+	{
 		name: "write_document_asset",
 		description: `Save a non-markdown artifact (e.g. a self-contained HTML diagram) as a file attached to the current document. Use this when an active skill produces HTML, SVG, or binary output instead of markdown.
 
@@ -2045,122 +2095,109 @@ The document viewer renders it inline at that anchor.`,
 				.optional()
 				.describe("Content encoding. Defaults to utf-8."),
 		}),
-		func: async ({ filename, contentType, content, encoding }) => {
-			const { documentId, userId } = state;
+	},
+);
 
-			if (!documentId || !userId) {
-				logger.warn(
-					"[ToolNode] write_document_asset skipped — missing documentId/userId",
-					{ documentId, userId },
-				);
-				return "write_document_asset skipped: missing document or user context.";
-			}
-
-			if (!aiToken) {
-				return "write_document_asset failed: missing AI token.";
-			}
-
-			try {
-				const response = await fetch(
-					`${apiUrl}/api/internal/document-assets`,
-					{
-						method: "POST",
-						headers: {
-							"Content-Type": "application/json",
-							"X-AI-Token": aiToken,
-						},
-						body: JSON.stringify({
-							documentId,
-							filename,
-							contentType,
-							content,
-							encoding: encoding ?? "utf-8",
-						}),
-					},
-				);
-
-				if (!response.ok) {
-					if (response.status === 401) {
-						await response.text().catch(() => "");
-						return internalApiFailure(
-							"write_document_asset",
-							response.status,
-						);
-					}
-					const errText = await response.text().catch(() => "");
-					logger.warn("[ToolNode] write_document_asset API error", {
-						status: response.status,
-						error: errText.slice(0, 200),
-					});
-					return `write_document_asset failed (${response.status}): ${errText.slice(0, 200) || "unknown error"}`;
-				}
-
-				const result = (await response.json()) as {
-					assetId: string;
-					filename: string;
-					sizeBytes: number;
-				};
-
-				logger.info("[ToolNode] write_document_asset succeeded", {
-					assetId: result.assetId,
-					filename: result.filename,
-					sizeBytes: result.sizeBytes,
-				});
-
-				return `Asset saved: ${result.filename} (${result.sizeBytes} bytes). Reference it in the markdown body with: <!-- asset:${result.filename} -->`;
-			} catch (error) {
-				const errorMessage =
-					error instanceof Error ? error.message : "Unknown error";
-				logger.error("[ToolNode] write_document_asset failed", {
-					error: errorMessage,
-				});
-				return `write_document_asset failed: ${errorMessage}`;
-			}
-		},
-	});
+/**
+ * Derive the cache key for a state's tool-gate combination: one character
+ * per gate, in a fixed order, `"1"`/`"0"` for on/off. Four independent
+ * boolean gates means at most 16 distinct keys exist for the life of the
+ * process.
+ */
+function toolGateKey(state: AgentState): string {
+	const hasAsset = !!(state.activeSkill && state.documentId);
+	return [
+		hasAsset ? "1" : "0",
+		state.hasTeamsIntegration ? "1" : "0",
+		state.hasSlackIntegration ? "1" : "0",
+		state.hasRepoIntegration ? "1" : "0",
+	].join("");
 }
 
-export async function toolNode(
-	state: AgentState,
-	config?: { configurable?: Record<string, unknown> },
-): Promise<Partial<AgentState>> {
-	const tools: DynamicStructuredTool[] = [];
-	const aiToken = config?.configurable?.ai_token as string | undefined;
-
-	// Always available — searches all embedded project context
-	tools.push(createSearchProjectKnowledgeTool(state, aiToken));
+/** Build the tool list for one gate combination — mirrors master's old conditional push order. */
+function toolsForGates(state: AgentState): StructuredToolInterface[] {
+	const tools: StructuredToolInterface[] = [searchProjectKnowledgeTool];
 
 	// Always available when an active skill is present — lets the skill
 	// persist generated HTML/SVG/binary artifacts alongside the document.
 	if (state.activeSkill && state.documentId) {
-		tools.push(createWriteDocumentAssetTool(state, aiToken));
+		tools.push(writeDocumentAssetTool);
 	}
 
 	if (state.hasTeamsIntegration) {
-		tools.push(createListLinkedChatsTool(state, aiToken));
-		tools.push(createSearchTeamsMessagesTool(state, aiToken));
-		tools.push(createGetChatMessagesTool(state, aiToken));
-		tools.push(createGetTeamsChannelMessagesTool(state, aiToken));
-		tools.push(createGetFullMessageTool(state, aiToken));
-		tools.push(createListMessageRepliesTool(state, aiToken));
-		tools.push(createGetMessageHostedContentTool(state, aiToken));
+		tools.push(
+			listLinkedChatsTool,
+			searchTeamsMessagesTool,
+			getChatMessagesTool,
+			getTeamsChannelMessagesTool,
+			getFullMessageTool,
+			listMessageRepliesTool,
+			getMessageHostedContentTool,
+		);
 	}
 
 	if (state.hasSlackIntegration) {
-		tools.push(createListLinkedChannelsTool(state, aiToken));
-		tools.push(createSearchSlackMessagesTool(state, aiToken));
-		tools.push(createGetChannelMessagesTool(state, aiToken));
-		tools.push(createGetSlackThreadRepliesTool(state, aiToken));
-		tools.push(createGetSlackSharedFilesTool(state, aiToken));
+		tools.push(
+			listLinkedChannelsTool,
+			searchSlackMessagesTool,
+			getChannelMessagesTool,
+			getSlackThreadRepliesTool,
+			getSlackSharedFilesTool,
+		);
 	}
 
 	if (state.hasRepoIntegration) {
-		tools.push(createSearchRepositoryCodeTool(state, aiToken));
-		tools.push(createGetRepositoryFileTool(state, aiToken));
-		tools.push(createListRepositoryStructureTool(state, aiToken));
+		tools.push(
+			searchRepositoryCodeTool,
+			getRepositoryFileTool,
+			listRepositoryStructureTool,
+		);
 	}
 
-	const node = new ToolNode(tools);
+	return tools;
+}
+
+// One ToolNode per gate combination, built the first time that combination
+// is seen and reused for every later call that shares it. The tools
+// themselves are always the shared module-level `tool()` instances above —
+// only the (at most 16) small per-combination ToolNode wrappers are cached.
+const TOOL_NODE_CACHE = new Map<string, ToolNode>();
+
+function getToolNodeForState(state: AgentState): ToolNode {
+	const key = toolGateKey(state);
+	const cached = TOOL_NODE_CACHE.get(key);
+	if (cached) {
+		return cached;
+	}
+
+	const node = new ToolNode(toolsForGates(state));
+	TOOL_NODE_CACHE.set(key, node);
+	return node;
+}
+
+/**
+ * Tool node that executes server-side Teams, Slack, project-knowledge, and
+ * repository tools.
+ *
+ * Re-applies the same four gates `chat-node.ts` uses when deciding which
+ * tools to offer the model (`model.bindTools(...)`, gated by
+ * hasTeamsIntegration, hasSlackIntegration, hasRepoIntegration, and
+ * activeSkill/documentId) when selecting which tools the underlying
+ * `ToolNode` knows about for this call. That's a guard against tool calls
+ * the model was never offered, not a duplicate of the model-side gate:
+ * `stripDisallowedToolCalls` in chat-node.ts documents that "gateways do
+ * return calls to tools that were never sent", so a stale or hallucinated
+ * call to a disallowed tool must still land here as LangGraph's normal
+ * `Tool "<name>" not found.` error ToolMessage instead of reaching the
+ * network. `getToolNodeForState` builds at most 16 `ToolNode`s (one per
+ * gate combination) over the life of the process and reuses them — no tool
+ * or `ToolNode` is constructed per call.
+ */
+export async function toolNode(
+	state: AgentState,
+	config?: { configurable?: Record<string, unknown> },
+): Promise<Partial<AgentState>> {
+	const node = getToolNodeForState(state);
 	const result = (await node.invoke(state, config)) as Record<string, any>;
 
 	return { messages: splitImageToolMessages(result.messages || []) };
