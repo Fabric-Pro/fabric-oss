@@ -65,7 +65,8 @@ function incompleteReason(meta: Record<string, unknown>): unknown {
  * `model_provider` and `usage`, no `stop_reason`/`finish_reason` under any
  * name. This is consistent with a gateway that proxies Anthropic's native
  * `stop_reason` key through its OpenAI-compat choice object UNTRANSLATED:
- * `@langchain/openai`'s own `_generate()` (chat_models/completions.cjs, v1.2.7)
+ * `@langchain/openai`'s own `_generate()` (chat_models/completions.cjs:209-210,
+ * v1.5.11)
  * unconditionally copies `choices[0].finish_reason` into
  * `response_metadata.finish_reason` — but only that key; it never looks at
  * `choices[0].stop_reason`, so a Claude-native reason silently reaches
