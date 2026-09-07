@@ -13,8 +13,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
  * reasoning — they don't import or call the reasoning helpers, so we
  * assert the static fact that only generate-document.ts imports them.
  *
- * Mocks `getAgentModelSync` + `withRetry` via `../utils` so the test
- * doesn't need network/DB and can deterministically choose responses.
+ * Mocks `getAgentModelSync` via `../utils` so the test doesn't need
+ * network/DB and can deterministically choose responses.
  */
 
 const invokeMock = vi.fn();
@@ -32,8 +32,6 @@ vi.mock("../utils", async (importOriginal) => {
 				invoke: invokeMock,
 			})),
 		})),
-		// withRetry: pass-through, no retry delay
-		withRetry: vi.fn(async (fn: () => unknown) => fn()),
 	};
 });
 

@@ -30,7 +30,6 @@ import {
 	generateFallbackDocument,
 	getAgentModelSync,
 	type ProviderConfig,
-	withRetry,
 } from "../utils";
 
 /** Default recursion limit for the graph */
@@ -323,21 +322,20 @@ Use write_task_plan tool to output ALL data including the markdown document and 
 		// messages to prevent Anthropic 400 errors from malformed CopilotKit history
 		const sanitizedMessages = sanitizeMessagesForModel(state.messages);
 
-		// turnStart captured BEFORE invoke (protocol P3); the withRetry
-		// wrapper can replay invoke on transient failures, in which case
-		// durationMs reflects total wall-clock time across retries — that
-		// matches the user-observed "Thinking · X.Ys" feel.
+		// turnStart captured BEFORE invoke (protocol P3); the SDK's own
+		// retry loop (the `maxRetries` set in @repo/agent-core's model
+		// factory) can replay the request on transient failures, in which
+		// case durationMs reflects total wall-clock time across retries —
+		// that matches the user-observed "Thinking · X.Ys" feel.
 		const turnStart = Date.now();
-		const response = await withRetry(async () => {
-			return modelWithTools.invoke(
-				[
-					new SystemMessage(systemPrompt),
-					...sanitizedMessages,
-					new HumanMessage(userMessage),
-				],
-				runnableConfig,
-			);
-		});
+		const response = await modelWithTools.invoke(
+			[
+				new SystemMessage(systemPrompt),
+				...sanitizedMessages,
+				new HumanMessage(userMessage),
+			],
+			runnableConfig,
+		);
 		await logAgentUsageFromRunnableConfig(runnableConfig, response, {
 			taskType: "TOOL_CALLING",
 			agentId: "task_planner",

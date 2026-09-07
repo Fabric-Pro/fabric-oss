@@ -18,7 +18,6 @@ import {
 	isJsonParseError,
 	isRetryableError,
 	MAX_RETRIES,
-	RETRY_DELAY_MS,
 	StoryBreakdownState,
 	sleep,
 	storyBreakdownGraph,
@@ -91,10 +90,6 @@ describe("Story Breakdown Agent Module", () => {
 
 		it("should export MAX_RETRIES", () => {
 			expect(MAX_RETRIES).toBe(3);
-		});
-
-		it("should export RETRY_DELAY_MS", () => {
-			expect(RETRY_DELAY_MS).toBe(1000);
 		});
 
 		it("should export createModel", () => {

@@ -2,6 +2,17 @@
  * Backlog Updater Utils Module
  */
 
+// Retry helpers now live in @repo/agent-core (shared across the LangGraph
+// agents) — re-exported here under the names this agent's nodes already
+// use. NOTE: isRetryableError now also matches "JSON parse error" and
+// "network" (the shared predicate's union of substrings), which this agent
+// did not previously check for.
+export {
+	calculateRetryDelay,
+	isRetryableError,
+	MAX_NODE_RETRIES as MAX_RETRIES,
+	sleep,
+} from "@repo/agent-core";
 export { getAgentModelAsync } from "./model-factory";
 
 /**
@@ -10,24 +21,3 @@ export { getAgentModelAsync } from "./model-factory";
  * generous headroom set deliberately rather than LangGraph's implicit 25.
  */
 export const DEFAULT_RECURSION_LIMIT = 30;
-export const MAX_RETRIES = 3;
-const RETRY_DELAY_MS = 1000;
-
-export function isRetryableError(error: Error): boolean {
-	const msg = error.message;
-	return (
-		msg.includes("Failed to parse tool call arguments as JSON") ||
-		msg.includes("Invalid JSON") ||
-		msg.includes("timeout") ||
-		msg.includes("rate limit") ||
-		msg.includes("ECONNREFUSED")
-	);
-}
-
-export function calculateRetryDelay(retryCount: number): number {
-	return RETRY_DELAY_MS * 2 ** retryCount;
-}
-
-export async function sleep(ms: number): Promise<void> {
-	return new Promise((resolve) => setTimeout(resolve, ms));
-}

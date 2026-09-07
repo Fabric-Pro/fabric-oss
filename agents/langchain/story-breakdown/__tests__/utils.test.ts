@@ -10,7 +10,6 @@ import {
 	isJsonParseError,
 	isRetryableError,
 	MAX_RETRIES,
-	RETRY_DELAY_MS,
 	sleep,
 } from "../utils";
 
@@ -22,10 +21,6 @@ describe("Utils Module", () => {
 
 		it("should have MAX_RETRIES defined", () => {
 			expect(MAX_RETRIES).toBe(3);
-		});
-
-		it("should have RETRY_DELAY_MS defined", () => {
-			expect(RETRY_DELAY_MS).toBe(1000);
 		});
 	});
 
@@ -89,13 +84,17 @@ describe("Utils Module", () => {
 
 	describe("calculateRetryDelay", () => {
 		it("should return base delay for first retry", () => {
-			expect(calculateRetryDelay(0)).toBe(1000);
+			expect(calculateRetryDelay(0)).toBe(500);
 		});
 
 		it("should double delay for each retry", () => {
-			expect(calculateRetryDelay(1)).toBe(2000);
-			expect(calculateRetryDelay(2)).toBe(4000);
-			expect(calculateRetryDelay(3)).toBe(8000);
+			expect(calculateRetryDelay(1)).toBe(1000);
+			expect(calculateRetryDelay(2)).toBe(2000);
+			expect(calculateRetryDelay(3)).toBe(4000);
+		});
+
+		it("should cap high retry counts at 4000ms", () => {
+			expect(calculateRetryDelay(5)).toBe(4000);
 		});
 	});
 
