@@ -45,6 +45,23 @@ export type PublishingTopic = Awaited<
 // cast-free).
 export type PostType = PublishingTopic["suggestedPostTypes"][number];
 
+// Inferred from the oRPC list-members output (`projects.members.list`) —
+// never `any`. Type-only, so it is erased at build time and adds no runtime
+// coupling to the API package. Shared by `ContributorsDialog` and `TopicRow`
+// so the contributor picker's row shape has one source of truth rather than
+// a hand-typed copy in each.
+export type ProjectMember = Awaited<
+	ReturnType<ApiRouterClient["projects"]["members"]["list"]>
+>["members"][number];
+
+// A topic's resolved contributor handle — one entry of `PublishingTopic`'s own
+// `contributors` field, which is already the topic's CURRENT EFFECTIVE set
+// (`effectiveContributorUserIds`), not the raw AI-resolved list. Reused by
+// `ContributorsDialog` to render a contributor who is not (or no longer) a
+// project member as its own labelled row, since that picker's `members` list
+// alone has no name/avatar for them.
+export type TopicContributor = PublishingTopic["contributors"][number];
+
 // 1B: the four `PublishingTopicPostType` values, in fixed display order, with
 // UI labels — an AI topic's suggested-post-type chip row renders in this
 // order regardless of the array order the API returns.

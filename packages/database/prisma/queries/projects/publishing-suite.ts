@@ -680,6 +680,29 @@ const TOPIC_SELECT = {
 } as const;
 
 /**
+ * The contributors that COUNT for a topic — what the page shows and what every
+ * generation prompt is given.
+ *
+ * `contributorUserIds` is the 1A resolver's answer from the project's stories
+ * and documents; the override pair is the user's. An override of `[]` is a
+ * deliberate "nobody", not a missing value, which is why the boolean exists
+ * instead of treating an empty array as absence.
+ *
+ * Every reader must call this. The badge, the list and the five generation
+ * prompts each reach the same column by a different path, and this module has
+ * already shipped one defect where two of those paths disagreed.
+ */
+export function effectiveContributorUserIds(t: {
+	contributorUserIds: string[];
+	contributorsOverridden: boolean;
+	userContributorUserIds: string[];
+}): string[] {
+	return t.contributorsOverridden
+		? t.userContributorUserIds
+		: t.contributorUserIds;
+}
+
+/**
  * FR14: per-viewer "why ranked" reason. Computed per request (viewer-dependent),
  * NEVER stored. `null` = tier 3 (the rest) OR any ranking degrade.
  */
@@ -690,9 +713,10 @@ export type PublishingTopicRankReason =
 
 /**
  * Display-only, per-topic author recommendation (FR4-8, UC2/UC3). Computed at
- * request time from contributorUserIds ∩ relevantFunctionTags ∩ roster tags;
- * NEVER stored. `null` = no function-tag fit, flag off, or any roster-read
- * degrade. Per-topic (identical for every viewer), unlike `rankReason`.
+ * request time from effectiveContributorUserIds() ∩ relevantFunctionTags ∩
+ * roster tags; NEVER stored. `null` = no function-tag fit, flag off, or any
+ * roster-read degrade. Per-topic (identical for every viewer), unlike
+ * `rankReason`.
  */
 export type PublishingTopicAuthorRecommendation = {
 	model: "single" | "co_author";
@@ -762,6 +786,10 @@ export interface PublishingTopicListItem {
 	subject: string | null;
 	whySuggested: PublishingWhySuggested;
 	userPostTypes: PublishingTopicPostType[] | null;
+	/** Same tri-state → nullable wire shape as `userPostTypes`: null = not
+	 *  overridden (client falls back to `contributors`); [] or a set = override.
+	 *  `contributorsOverridden` itself never leaves the query layer. */
+	userContributorUserIds: string[] | null;
 	meetingSpeakers: MeetingSpeakers;
 	updatedAt: Date;
 	snoozedUntil: Date | null;
@@ -779,6 +807,8 @@ const TOPIC_LIST_SELECT = {
 	...TOPIC_SELECT,
 	suggestedPostTypes: true,
 	contributorUserIds: true,
+	contributorsOverridden: true,
+	userContributorUserIds: true,
 	relevantFunctionTags: true,
 	postTypeRecommendations: true,
 	angle: true,
@@ -890,7 +920,15 @@ export async function listPublishingTopics(o: {
 	// reranked-but-untagged list — the raw `contributorUserIds` column survives
 	// the lookup failure, so ranking on it would silently reorder the list during
 	// the very failure path meant to fall back safely.
-	const allIds = [...new Set(rows.flatMap((r) => r.contributorUserIds))];
+	//
+	// Collected from the EFFECTIVE ids (AI list or override, per row), not the
+	// raw `contributorUserIds` alone — an override can name someone the AI
+	// never picked, and a lookup scoped to the AI list would leave that
+	// contributor's handle unresolved (silently dropped by the `.filter()`
+	// below, right when the person who just assigned it looks for it).
+	const allIds = [
+		...new Set(rows.flatMap((r) => effectiveContributorUserIds(r))),
+	];
 	let byId = new Map<
 		string,
 		{
@@ -965,7 +1003,7 @@ export async function listPublishingTopics(o: {
 					username: string | null;
 					matchedTags: FunctionTag[];
 				}[] = [];
-				for (const id of r.contributorUserIds) {
+				for (const id of effectiveContributorUserIds(r)) {
 					if (seenAuthor.has(id)) {
 						continue; // dedupe duplicate ids
 					}
@@ -1282,6 +1320,8 @@ export async function listPublishingTopics(o: {
 			provenance,
 			postTypesOverridden,
 			userPostTypes: userPostTypesRaw,
+			contributorsOverridden,
+			userContributorUserIds: userContributorsRaw,
 			...rest
 		} = r;
 		void provenance;
@@ -1291,6 +1331,12 @@ export async function listPublishingTopics(o: {
 			// (client falls back to suggestedPostTypes); [] or a set = override.
 			// `postTypesOverridden` is destructured out so it never leaks.
 			userPostTypes: postTypesOverridden ? userPostTypesRaw : null,
+			// Same tri-state → nullable wire shape as `userPostTypes` above:
+			// null = not overridden (client falls back to the AI set); [] or a
+			// set = override. `contributorsOverridden` never leaks.
+			userContributorUserIds: contributorsOverridden
+				? userContributorsRaw
+				: null,
 			// FR14 default — overwritten ONLY on the successful partition path
 			// (atomic graft below). Degrade paths keep this null.
 			rankReason: null,
@@ -1308,7 +1354,15 @@ export async function listPublishingTopics(o: {
 			// surface (Plan 2) stays cast-free.
 			postTypeRecommendations:
 				rest.postTypeRecommendations as PublishingTopicListItem["postTypeRecommendations"],
-			contributors: contributorUserIds
+			// Contributors that COUNT (badge, list, generation prompts) — the
+			// override when set, the AI list otherwise. Never the raw AI list
+			// alone, or a viewer who overrode a topic would still see the set
+			// they just replaced.
+			contributors: effectiveContributorUserIds({
+				contributorUserIds,
+				contributorsOverridden,
+				userContributorUserIds: userContributorsRaw,
+			})
 				.map((id) => byId.get(id))
 				.filter((u): u is NonNullable<typeof u> => u != null),
 		};
@@ -1360,7 +1414,9 @@ export async function listPublishingTopics(o: {
 	try {
 		const viewerContributes = new Set(
 			rows
-				.filter((r) => r.contributorUserIds.includes(o.viewerUserId))
+				.filter((r) =>
+					effectiveContributorUserIds(r).includes(o.viewerUserId),
+				)
 				.map((r) => r.id),
 		);
 		const viewerTagSet = new Set<FunctionTag>(viewerTags);
@@ -1785,6 +1841,75 @@ export async function updatePublishingTopicPostTypes(i: {
 				};
 	const { count } = await db.publishingTopic.updateMany({
 		where: { id: i.id, projectId: i.projectId }, // project-scoped guard
+		data,
+	});
+	if (count === 0) {
+		return null;
+	}
+	const topic = await db.publishingTopic.findFirst({
+		where: { id: i.id, projectId: i.projectId },
+		select: TOPIC_SELECT,
+	});
+	return topic ? { topic } : null;
+}
+
+/**
+ * The topic's CURRENT effective contributor ids (`effectiveContributorUserIds`)
+ * — the override when set, the AI-resolved set otherwise. Project-scoped;
+ * returns `null` when the topic does not exist (or belongs to another
+ * project).
+ *
+ * Backs the "grandfather" rule in `update-topic-contributors.ts`: an id
+ * already in a topic's effective set was either written by the server's own
+ * `resolveProjectContributorIds` resolver or passed this same membership
+ * check at an earlier write, so allowing it back in on a resubmit discloses
+ * nothing new — see that procedure for the full security argument. A
+ * deliberately minimal, direct read (rather than `getPublishingTopic`,
+ * which also resolves display handles and per-viewer ranking this check has
+ * no use for).
+ */
+export async function getPublishingTopicEffectiveContributorIds(o: {
+	id: string;
+	projectId: string;
+}): Promise<string[] | null> {
+	const topic = await db.publishingTopic.findFirst({
+		where: { id: o.id, projectId: o.projectId },
+		select: {
+			contributorUserIds: true,
+			contributorsOverridden: true,
+			userContributorUserIds: true,
+		},
+	});
+	return topic ? effectiveContributorUserIds(topic) : null;
+}
+
+/**
+ * Set or reset a topic's user contributor override. `contributorUserIds === null`
+ * resets to the AI-resolved set (`contributorsOverridden=false`,
+ * `userContributorUserIds=[]`); a non-null array (possibly empty) is an explicit
+ * override. Project-scoped and writes NO tenant columns.
+ *
+ * Membership is NOT checked here — the procedure does it, because it is the
+ * layer that knows the caller's organization. Do not call this helper from a
+ * new caller without repeating that check: see the note in
+ * `update-topic-contributors.ts`.
+ */
+export async function updatePublishingTopicContributors(i: {
+	id: string;
+	projectId: string;
+	contributorUserIds: string[] | null;
+}): Promise<{ topic: PublishingTopicRecord } | null> {
+	const data =
+		i.contributorUserIds === null
+			? { contributorsOverridden: false, userContributorUserIds: [] }
+			: {
+					contributorsOverridden: true,
+					userContributorUserIds: Array.from(
+						new Set(i.contributorUserIds),
+					),
+				};
+	const { count } = await db.publishingTopic.updateMany({
+		where: { id: i.id, projectId: i.projectId },
 		data,
 	});
 	if (count === 0) {

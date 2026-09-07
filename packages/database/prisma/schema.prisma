@@ -6986,6 +6986,8 @@ model PublishingTopic {
   provenance              Json? // {repoPrs:[{repoFullName,prNumber}], storyIds, featureVersionIds, transcriptIds, docIds}
   suggestedPostTypes      PublishingTopicPostType[] @default([]) // AI topics only; [] for manual
   contributorUserIds      String[]                  @default([]) // resolved Fabric user ids (stories+docs); [] valid
+  contributorsOverridden  Boolean                   @default(false) // false → effective contributors = contributorUserIds (AI); true → userContributorUserIds (may be [])
+  userContributorUserIds  String[]                  @default([]) // user override set; meaningful only when contributorsOverridden = true; every id is a project member at write time
   relevantFunctionTags    FunctionTag[]             @default([]) // AI-stamped disciplines the topic serves (FR2/FR3 ranking signal, NOT an angle); [] for manual
   postTypeRecommendations Json                      @default("[]") // [{type,theme,rationale}] display-only enrichment; suggestedPostTypes is derived from this
   postTypesOverridden     Boolean                   @default(false) // false → effective post types = suggestedPostTypes (AI); true → userPostTypes (may be [])

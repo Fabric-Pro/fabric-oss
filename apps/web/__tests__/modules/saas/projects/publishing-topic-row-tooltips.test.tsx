@@ -59,6 +59,7 @@ function makeTopic(overrides: Record<string, unknown> = {}) {
 		authorRecommendation: null,
 		subject: null,
 		userPostTypes: null,
+		userContributorUserIds: null,
 		whySuggested: null,
 		meetingSpeakers: null,
 		...overrides,
@@ -73,8 +74,13 @@ function renderRow(overrides: Record<string, unknown> = {}) {
 			inbox
 			isPending={false}
 			topicHref="/topic/t1"
+			members={[]}
+			membersPending={false}
+			membersError={false}
+			viewerUserId={null}
 			onChangeStatus={async () => {}}
 			onChangePostTypes={async () => {}}
+			onChangeContributors={async () => {}}
 			onSetReadState={async () => {}}
 			onSetSnooze={async () => {}}
 		/>,

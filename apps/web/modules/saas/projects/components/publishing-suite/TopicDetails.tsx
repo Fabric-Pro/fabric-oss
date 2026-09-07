@@ -30,12 +30,14 @@ export function TopicDetails({
 	isPending,
 	onEditUrl,
 	onEditPostTypes,
+	onEditContributors,
 }: {
 	topic: PublishingTopic;
 	canEdit: boolean;
 	isPending: boolean;
 	onEditUrl: () => void;
 	onEditPostTypes: () => void;
+	onEditContributors: () => void;
 }) {
 	return (
 		<>
@@ -149,6 +151,25 @@ export function TopicDetails({
 						</li>
 					))}
 				</ul>
+			) : null}
+			{/* Gated on `canEdit` ONLY — deliberately NOT nested inside the
+			    `<ul>` conditional above. The post-type row already shipped
+			    this exact bug: an override of `[]` empties the chip row, and
+			    if the only Edit affordance lived inside that same
+			    conditional, saving "nobody" would strand the editor with no
+			    way back to add anyone or reset. See the post-type row's
+			    "shows the Edit button but no chips…" test for the guard this
+			    mirrors. */}
+			{canEdit ? (
+				<Button
+					type="button"
+					variant="ghost"
+					size="sm"
+					disabled={isPending}
+					onClick={onEditContributors}
+				>
+					Edit contributors
+				</Button>
 			) : null}
 			{topic.authorRecommendation ? (
 				<p

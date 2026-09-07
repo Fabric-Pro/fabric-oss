@@ -1,13 +1,15 @@
 "use client";
 
+import { useSession } from "@saas/auth/hooks/use-session";
 import { useBasePath } from "@saas/organizations/hooks/use-organization-context";
 import { orpc } from "@shared/lib/orpc-query-utils";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@ui/components/tabs";
 import { ArrowLeftIcon } from "lucide-react";
 import Link from "next/link";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
+import { ContributorsDialog } from "./ContributorsDialog";
 import { GenerationTabs } from "./GenerationTabs";
 import { PlanningAnalysisTab } from "./PlanningAnalysisTab";
 import { PostTypesDialog } from "./PostTypesDialog";
@@ -76,8 +78,10 @@ export function TopicItemPage({
 }) {
 	const basePath = useBasePath();
 	const queryClient = useQueryClient();
+	const { user } = useSession();
+	const viewerUserId = user?.id ?? null;
 	const [tab, setTab] = useState<ReviewTab>("summaryQuestions");
-	// The two metadata editors `TopicDetails` triggers. Held here rather than
+	// The three metadata editors `TopicDetails` triggers. Held here rather than
 	// inside that component because it is the SAME block the Inbox row mounts:
 	// giving it its own dialogs would put two of each in the tree whenever both
 	// surfaces are open, and would stop the row owning its own pending state.
@@ -85,6 +89,8 @@ export function TopicItemPage({
 	const [postTypesPending, setPostTypesPending] = useState(false);
 	const [urlOpen, setUrlOpen] = useState(false);
 	const [urlPending, setUrlPending] = useState(false);
+	const [contributorsOpen, setContributorsOpen] = useState(false);
+	const [contributorsPending, setContributorsPending] = useState(false);
 
 	const topicQuery = useQuery(
 		orpc.projects.publishingSuite.getTopic.queryOptions({
@@ -92,6 +98,35 @@ export function TopicItemPage({
 		}),
 	);
 	const topic = topicQuery.data?.topic;
+
+	// STABLE across any re-render that carries no real change — see the same
+	// memo in `TopicRow.tsx` for the full reasoning. Keyed on the two
+	// contributor fields themselves, NOT on `topic` — TanStack Query's
+	// structural sharing keeps `topic` referentially stable across a no-op
+	// refetch, but ANY OTHER field changing (a read marker, a status edit,
+	// `updatedAt`) mints a new `topic` object and would re-run this memo,
+	// re-seeding `ContributorsDialog`'s selection and discarding whatever the
+	// user had just checked. Called unconditionally (before the early returns
+	// below), so it has to tolerate `topic` being undefined while the query is
+	// still pending.
+	const contributorIds = useMemo(
+		() =>
+			topic
+				? (topic.userContributorUserIds ??
+					topic.contributors.map((c) => c.id))
+				: [],
+		[topic?.userContributorUserIds, topic?.contributors],
+	);
+
+	// For the contributors picker (Task 6). This page owns its own queries and
+	// mutations rather than going through `PublishingSuiteList` — it is the
+	// OTHER mount, not a child of the list.
+	const membersQuery = useQuery(
+		orpc.projects.members.list.queryOptions({
+			input: { projectId, organizationId },
+		}),
+	);
+	const members = membersQuery.data?.members ?? [];
 
 	// Fetched HERE rather than inside the Planning & Analysis panel: the
 	// worksheet needs the SAME `latestAttempt` row the Summary & Questions
@@ -253,6 +288,20 @@ export function TopicItemPage({
 		}),
 	);
 
+	const updateContributors = useMutation(
+		orpc.projects.publishingSuite.updateTopicContributors.mutationOptions({
+			// Same contract as `updatePostTypes` above: the mutation response
+			// deliberately omits the override columns (Task 4), so refresh by
+			// invalidating rather than reading `response.topic`.
+			onSuccess: invalidateTopic,
+			onError: () => {
+				toast.error(
+					"We couldn't update the contributors. Please try again.",
+				);
+			},
+		}),
+	);
+
 	// Both handlers close the dialog only AFTER the write lands, so a failure
 	// keeps the user's checkboxes / typed URL instead of discarding them —
 	// the contract `TopicRow.handlePostTypesSubmit` established in Task 6.
@@ -270,6 +319,27 @@ export function TopicItemPage({
 			// Surfaced by this mutation's onError toast above.
 		} finally {
 			setPostTypesPending(false);
+		}
+	};
+
+	// This page's copy of `TopicRow.handleContributorsSubmit`: close only after
+	// the write lands, so a failure keeps the user's checkbox choices.
+	const handleContributorsSubmit = async (
+		contributorUserIds: string[] | null,
+	) => {
+		setContributorsPending(true);
+		try {
+			await updateContributors.mutateAsync({
+				projectId,
+				organizationId,
+				topicId,
+				contributorUserIds,
+			});
+			setContributorsOpen(false);
+		} catch {
+			// Surfaced by this mutation's onError toast above.
+		} finally {
+			setContributorsPending(false);
 		}
 	};
 
@@ -385,9 +455,14 @@ export function TopicItemPage({
 					<TopicDetails
 						topic={topic}
 						canEdit={canEdit}
-						isPending={postTypesPending || urlPending}
+						isPending={
+							postTypesPending ||
+							urlPending ||
+							contributorsPending
+						}
 						onEditUrl={() => setUrlOpen(true)}
 						onEditPostTypes={() => setPostTypesOpen(true)}
+						onEditContributors={() => setContributorsOpen(true)}
 					/>
 					<TopicQuestionsPanel
 						projectId={projectId}
@@ -473,6 +548,20 @@ export function TopicItemPage({
 						initialUrl={topic.publishedUrl}
 						title="Edit published URL"
 						confirmLabel="Save"
+					/>
+					<ContributorsDialog
+						topicTitle={topic.title}
+						open={contributorsOpen}
+						onOpenChange={setContributorsOpen}
+						members={members}
+						contributors={topic.contributors}
+						initialSelected={contributorIds}
+						hasOverride={topic.userContributorUserIds !== null}
+						viewerUserId={viewerUserId}
+						membersPending={membersQuery.isPending}
+						membersError={membersQuery.isError}
+						onSubmit={handleContributorsSubmit}
+						isPending={contributorsPending}
 					/>
 				</>
 			) : null}

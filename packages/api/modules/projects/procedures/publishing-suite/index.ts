@@ -40,5 +40,6 @@ export {
 } from "./topic-decisions";
 export { listTopicDraftsProcedure } from "./topic-drafts";
 export { updatePublishingSuiteSettingsProcedure } from "./update-settings";
+export { updatePublishingTopicContributorsProcedure } from "./update-topic-contributors";
 export { updatePublishingTopicPostTypesProcedure } from "./update-topic-post-types";
 export { updatePublishingTopicStatusProcedure } from "./update-topic-status";
