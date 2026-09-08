@@ -31,6 +31,7 @@ import {
 } from "@ui/components/tooltip";
 import { ChevronsUpDownIcon, PlusIcon } from "lucide-react";
 import Link from "next/link";
+import { useParams } from "next/navigation";
 import { useTranslations } from "next-intl";
 import { useEffect, useState } from "react";
 import { OrganizationLogo } from "./OrganizationLogo";
@@ -63,6 +64,10 @@ export function OrganzationSelect({
 	// never been among them.
 	const isGuest = useIsGuestInOrg();
 	const accountOrg = useAccountOrganization();
+	// Read from the URL, not from the resolved context: the context reports a
+	// null organization both while one is loading and when the page names none,
+	// and those two need different presentations.
+	const urlNamesAnOrganization = !!useParams()?.organizationSlug;
 	const [mounted, setMounted] = useState(false);
 
 	// While a switch is in flight, optimistically present the *target*
@@ -113,7 +118,25 @@ export function OrganzationSelect({
 	// to, so rendering it would assert something false about who the viewer is.
 	// Excluded during a switch, which has its own optimistic presentation (the
 	// target organization plus a spinner) that this would otherwise blank out.
-	const isAwaitingOrganization = isResolvingOrganization && !isSwitching;
+	//
+	// And once more for the pages that name no organization at all. `/app` and
+	// the retired account routes render this same shell, and with
+	// `requireOrganization` on not one of them is a destination: every one
+	// redirects into an organization. The post-login hop is the visible case —
+	// `router.replace("/app?postLogin=1")` is a CLIENT navigation, so the router
+	// paints this shell (the layouts do not redirect, only the page does) for a
+	// few hundred milliseconds before the redirect lands, and the switcher spent
+	// that window naming a personal account. Measured on a deployed build: ~450ms
+	// of "Your account" between the login form and the organization.
+	//
+	// Keyed on the URL rather than on the resolved organization so a page that
+	// DOES name one can still fall through to the account presentation if its
+	// query fails, instead of holding a skeleton that never resolves.
+	const isAwaitingOrganization =
+		!isSwitching &&
+		(isResolvingOrganization ||
+			(config.organizations.requireOrganization &&
+				!urlNamesAnOrganization));
 	if (
 		!user ||
 		!mounted ||
