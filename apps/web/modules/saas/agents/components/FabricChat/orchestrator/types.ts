@@ -12,6 +12,7 @@ import type {
 	TaskPlan,
 	TaskStep,
 } from "@repo/temporal";
+import type { ClarificationTurn } from "../../../lib/clarification-turns";
 
 interface ConversationDetail {
 	id: string;
@@ -155,6 +156,13 @@ export interface CompletedExecution {
 	stepResults: StepResult[];
 	response?: string;
 	completedAt: Date;
+	/**
+	 * Clarifying questions answered during this execution, oldest first. Kept
+	 * on the execution because the execution record — not the message array —
+	 * is what rehydrates a conversation after a reload, and these have to reach
+	 * the next turn's `history` or the clarity gate re-asks them (Fizzy #2406).
+	 */
+	clarifications?: ClarificationTurn[];
 	plan?: {
 		id: string;
 		description: string;

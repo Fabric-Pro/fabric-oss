@@ -21,6 +21,7 @@ import {
 } from "@saas/payments/lib/ai-usage-limit-toast";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { emitCancelEvent } from "../lib/cancel-telemetry";
+import { formatClarificationTurn } from "../lib/clarification-turns";
 import type { StreamStatus } from "./useDirectStream";
 import { useOrchestratorPartyKit } from "./useOrchestratorPartyKit";
 
@@ -197,6 +198,14 @@ export interface OrchestratorStreamState {
 		question: string;
 		options?: string[];
 	} | null;
+	/**
+	 * Clarifying questions the user answered during THIS execution, oldest
+	 * first. Persisted with the execution so the exchange survives a reload and
+	 * travels in the next turn's `history` — without that the clarity gate is
+	 * blind to its own prior question and re-asks it (Fizzy #2406). Dismissed
+	 * questions are not recorded: there is no answer to carry forward.
+	 */
+	answeredClarifications: Array<{ question: string; answer: string }>;
 	planningAudit: PlanningAuditSummary | null;
 	artifacts: WorkflowArtifact[];
 	/**
@@ -457,6 +466,7 @@ export function useOrchestratorStream(
 		result: null,
 		pendingApproval: null,
 		pendingClarification: null,
+		answeredClarifications: [],
 		planningAudit: null,
 		artifacts: [],
 		limitSignals: [],
@@ -728,6 +738,10 @@ export function useOrchestratorStream(
 				plan: null,
 				result: null,
 				pendingApproval: null,
+				// Scoped to one execution: the previous turn's answers were
+				// already persisted with that execution and now travel in
+				// `history`, so carrying them here would double-count them.
+				answeredClarifications: [],
 				planningAudit: null,
 				artifacts: [],
 				limitSignals: [],
@@ -1927,10 +1941,52 @@ export function useOrchestratorStream(
 						error.error || "Failed to send clarification",
 					);
 				}
+				// Add the answered question to the live transcript. This is the
+				// path that fixes the reported case: the next message in the
+				// same session builds its history from `messages` plus a
+				// `completedExecutions` that React has not re-rendered yet, so
+				// an answer recorded only on the execution record would not
+				// reach the following turn (Fizzy #2406). It also leaves the
+				// exchange visible after the card is dismissed, instead of the
+				// question and answer vanishing from the thread.
+				const answeredQuestion = state.pendingClarification?.question;
+				if (!dismissed && answer.trim() && answeredQuestion) {
+					setMessages((prev) => [
+						...prev,
+						{
+							id: `msg-${Date.now()}-clarification`,
+							role: "user",
+							content: formatClarificationTurn({
+								question: answeredQuestion,
+								answer: answer.trim(),
+							}),
+							timestamp: new Date(),
+						},
+					]);
+				}
+
 				setState((prev) => ({
 					...prev,
 					status: "running",
 					pendingClarification: null,
+					// Also record it on the execution, which is what rebuilds
+					// history after a page reload — `messages` is not the
+					// authoritative source there (Fizzy #2406). Read from
+					// `prev` so this needs no extra dependency. A dismissal
+					// carries no answer, so nothing to record.
+					answeredClarifications:
+						dismissed ||
+						!answer.trim() ||
+						!prev.pendingClarification
+							? prev.answeredClarifications
+							: [
+									...prev.answeredClarifications,
+									{
+										question:
+											prev.pendingClarification.question,
+										answer: answer.trim(),
+									},
+								],
 				}));
 				setCurrentPhase("executing");
 				return true;
@@ -1942,7 +1998,7 @@ export function useOrchestratorStream(
 				return false;
 			}
 		},
-		[state.executionId],
+		[state.executionId, state.pendingClarification],
 	);
 
 	/**
@@ -2147,6 +2203,7 @@ export function useOrchestratorStream(
 			result: null,
 			pendingApproval: null,
 			pendingClarification: null,
+			answeredClarifications: [],
 			planningAudit: null,
 			artifacts: [],
 			limitSignals: [],

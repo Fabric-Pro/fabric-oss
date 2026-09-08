@@ -122,6 +122,7 @@ import {
 	useOrchestratorConversation,
 } from "../../hooks/useOrchestratorConversation";
 import { useOrchestratorStream } from "../../hooks/useOrchestratorStream";
+import { formatClarificationTurn } from "../../lib/clarification-turns";
 import {
 	getSelectedOrchestratorToolIds,
 	mergeOrchestratorConversationMetadata,
@@ -952,6 +953,13 @@ export function FabricTemporalOrchestratorChat({
 						imageUrls: exec.imageUrls,
 						stepResults: exec.stepResults || [],
 						response: exec.finalResponse,
+						// Rehydrate answered clarifications: after a reload the
+						// execution records — not the message array — are what
+						// rebuild `history`, so dropping these here would
+						// silently reintroduce the re-ask (Fizzy #2406).
+						clarifications: Array.isArray(exec.clarifications)
+							? exec.clarifications
+							: undefined,
 						completedAt: new Date(
 							exec.completedAt || exec.startedAt,
 						),
@@ -1193,6 +1201,13 @@ export function FabricTemporalOrchestratorChat({
 					completedAt: new Date().toISOString(),
 					finalResponse: assistantContent,
 					error: errorMessage,
+					// Clarifying questions answered mid-run. Persisted with the
+					// execution so they reach the next turn's `history` and the
+					// clarity gate stops re-asking them (Fizzy #2406).
+					clarifications:
+						state.answeredClarifications.length > 0
+							? state.answeredClarifications
+							: undefined,
 					// Include artifacts for persistence
 					artifacts: artifacts?.filter(
 						(a) => a.content && a.content.length > 100,
@@ -1208,6 +1223,22 @@ export function FabricTemporalOrchestratorChat({
 					content: userContent,
 					timestamp: execution.startedAt,
 				};
+
+				// Clarifying questions answered during this run, recorded as
+				// their own user-role turns between the request and the reply.
+				// They are the user's words, they belong in the transcript, and
+				// persisting them is what lets the next turn's clarity gate see
+				// that the question is already settled (Fizzy #2406). The
+				// wording matches what the workflow writes into its own journey
+				// transcript, so both sides read identically.
+				const clarificationMsgs = state.answeredClarifications.map(
+					(c) => ({
+						id: generateMessageId(),
+						role: "user" as const,
+						content: formatClarificationTurn(c),
+						timestamp: execution.startedAt,
+					}),
+				);
 
 				// Stream lifecycle metadata persisted alongside the message
 				// body so a page reload still surfaces the inline `Stopped`
@@ -1275,7 +1306,7 @@ export function FabricTemporalOrchestratorChat({
 					await saveExecution(
 						result.id,
 						execution,
-						[userMsg, assistantMsg],
+						[userMsg, ...clarificationMsgs, assistantMsg],
 						selectedConversationMcpIds,
 					);
 				} else {
@@ -1290,6 +1321,7 @@ export function FabricTemporalOrchestratorChat({
 					const allMessages = [
 						...existingMessages,
 						userMsg,
+						...clarificationMsgs,
 						assistantMsg,
 					];
 
@@ -1319,6 +1351,7 @@ export function FabricTemporalOrchestratorChat({
 			state.status,
 			state.result,
 			state.plan,
+			state.answeredClarifications,
 			stepResults,
 			artifacts,
 			messages,
@@ -1383,6 +1416,15 @@ export function FabricTemporalOrchestratorChat({
 				stepResults: [...stepResults],
 				response: responseMessage,
 				completedAt: new Date(),
+				// The in-session path: the next message in this same tab builds
+				// its history from `completedExecutions`, which comes from here.
+				// Omitting this would leave the reported case — the question
+				// repeating minutes later in the same chat — unfixed even
+				// though the persisted copy is correct (Fizzy #2406).
+				clarifications:
+					state.answeredClarifications.length > 0
+						? [...state.answeredClarifications]
+						: undefined,
 				plan: state.plan
 					? {
 							id: state.plan.id,
@@ -1423,6 +1465,7 @@ export function FabricTemporalOrchestratorChat({
 		stepResults,
 		state.result?.response,
 		state.result?.error,
+		state.answeredClarifications,
 		persistConversation,
 	]);
 
@@ -2044,6 +2087,17 @@ export function FabricTemporalOrchestratorChat({
 							threadMessages.push({
 								role: "user",
 								content: execution.userMessage,
+							});
+						}
+
+						// Answers the user gave to clarifying questions in that
+						// turn. Without these the clarity gate on the NEXT turn
+						// cannot tell it already asked, and asks again — the
+						// reported bug (Fizzy #2406).
+						for (const c of execution.clarifications ?? []) {
+							threadMessages.push({
+								role: "user",
+								content: formatClarificationTurn(c),
 							});
 						}
 

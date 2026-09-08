@@ -121,4 +121,102 @@ describe("analyzeIntentClarityActivity", () => {
 		expect(res.needsClarification).toBe(true);
 		expect(res.options).toEqual(["valid", "trimmed"]);
 	});
+
+	// The gate used to be called with only the current message, so it re-asked
+	// questions the conversation had already answered (Fizzy #2406). These pin
+	// that the conversation actually reaches the model, and that the prompt
+	// tells it what to do with it — in BOTH directions, since suppressing a
+	// genuinely needed question is also a failure (AC-3).
+	describe("conversation context", () => {
+		const clearResponse = JSON.stringify({
+			needsClarification: false,
+			reasoning: "clear",
+		});
+
+		function promptFor(call: unknown) {
+			const args = call as {
+				system: string;
+				messages: Array<{ content: string }>;
+			};
+			return { system: args.system, user: args.messages[0].content };
+		}
+
+		it("sends the conversation to the model, ahead of the request", async () => {
+			generateText.mockResolvedValue({ text: clearResponse });
+
+			await analyzeIntentClarityActivity({
+				message: "generate 10 of them",
+				conversationSummary:
+					"User: Let's talk about Fabric Open source\nAssistant: Sure.",
+				userId: "u",
+			});
+
+			const { user } = promptFor(generateText.mock.calls[0][0]);
+			expect(user).toContain("## Conversation so far");
+			expect(user).toContain("Let's talk about Fabric Open source");
+			// Context must precede the request, or the reviewer anchors on the
+			// bare message and re-asks what the conversation settled.
+			expect(user.indexOf("## Conversation so far")).toBeLessThan(
+				user.indexOf("## User request"),
+			);
+		});
+
+		it("omits the conversation section entirely when there is none", async () => {
+			generateText.mockResolvedValue({ text: clearResponse });
+
+			await analyzeIntentClarityActivity({
+				message: "deploy it",
+				userId: "u",
+			});
+
+			const { user } = promptFor(generateText.mock.calls[0][0]);
+			expect(user).not.toContain("## Conversation so far");
+			expect(user).toContain("## User request");
+		});
+
+		it("instructs the model never to re-ask what the conversation answered", async () => {
+			generateText.mockResolvedValue({ text: clearResponse });
+
+			await analyzeIntentClarityActivity({
+				message: "anything",
+				userId: "u",
+			});
+
+			const { system } = promptFor(generateText.mock.calls[0][0]);
+			expect(system).toContain("NEVER ask something the conversation");
+			expect(system).toContain("Clarification —");
+		});
+
+		it("still instructs the model to ask when the conversation does not settle it", async () => {
+			generateText.mockResolvedValue({ text: clearResponse });
+
+			await analyzeIntentClarityActivity({
+				message: "anything",
+				userId: "u",
+			});
+
+			const { system } = promptFor(generateText.mock.calls[0][0]);
+			// Guards AC-3: the fix must not turn into blanket suppression.
+			expect(system).toContain("do NOT stay silent on a real gap");
+		});
+
+		it("still asks when the model judges the conversation insufficient", async () => {
+			generateText.mockResolvedValue({
+				text: JSON.stringify({
+					needsClarification: true,
+					question: "Which project should I target?",
+					options: ["Project A", "Project B"],
+				}),
+			});
+
+			const res = await analyzeIntentClarityActivity({
+				message: "ship it",
+				conversationSummary: "User: hello\nAssistant: hi",
+				userId: "u",
+			});
+
+			expect(res.needsClarification).toBe(true);
+			expect(res.question).toBe("Which project should I target?");
+		});
+	});
 });

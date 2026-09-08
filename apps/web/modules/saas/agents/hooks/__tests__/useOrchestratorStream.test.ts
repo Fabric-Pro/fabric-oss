@@ -1666,3 +1666,111 @@ describe("useOrchestratorStream — model override (#2040)", () => {
 		});
 	});
 });
+
+/**
+ * Answered clarifying questions have to reach the NEXT turn (Fizzy #2406).
+ *
+ * The subtle failure this guards: recording the answer only on the execution
+ * record is not enough in-session, because the next send builds its history
+ * from `messages` plus a `completedExecutions` that React has not re-rendered
+ * yet. If the answer is not pushed into `messages` here, the reported bug —
+ * the same question again minutes later in one chat — survives the fix while
+ * every other test still passes.
+ */
+describe("useOrchestratorStream clarifying questions", () => {
+	const originalFetch = global.fetch;
+
+	afterEach(() => {
+		global.fetch = originalFetch;
+		vi.restoreAllMocks();
+	});
+
+	async function raiseClarification(question: string) {
+		const { response, enqueueLine } = makeSseResponse();
+		vi.spyOn(global, "fetch").mockImplementation(((..._a: unknown[]) =>
+			Promise.resolve({
+				...(response as object),
+				ok: true,
+				json: async () => ({ success: true }),
+			})) as unknown as typeof fetch);
+
+		const { result } = renderHook(() => useOrchestratorStream());
+
+		act(() => {
+			void result.current.sendMessage("generate 10 of them");
+		});
+		await act(async () => {
+			enqueueLine('data: {"type":"started","executionId":"orch-clar"}');
+		});
+		await act(async () => {
+			enqueueLine(
+				`data: ${JSON.stringify({
+					type: "clarifying_question",
+					clarificationId: "clarify-upfront-orch-clar",
+					question,
+					options: ["a", "b"],
+				})}`,
+			);
+		});
+
+		await waitFor(() => {
+			expect(result.current.state.pendingClarification?.question).toBe(
+				question,
+			);
+		});
+
+		return result;
+	}
+
+	it("puts the answered question into the transcript so the next turn's history carries it", async () => {
+		const question = "What is the purpose of these quotes?";
+		const result = await raiseClarification(question);
+
+		await act(async () => {
+			await result.current.sendClarification("Fabric Open source");
+		});
+
+		await waitFor(() => {
+			expect(
+				result.current.messages.some((m) =>
+					m.content.includes(
+						`Clarification — ${question}: Fabric Open source`,
+					),
+				),
+			).toBe(true);
+		});
+	});
+
+	it("also records the answer on the execution, for rebuilding history after a reload", async () => {
+		const question = "Which project?";
+		const result = await raiseClarification(question);
+
+		await act(async () => {
+			await result.current.sendClarification("Project A");
+		});
+
+		await waitFor(() => {
+			expect(result.current.state.answeredClarifications).toEqual([
+				{ question, answer: "Project A" },
+			]);
+		});
+	});
+
+	it("records nothing when the user dismisses the question", async () => {
+		const result = await raiseClarification("Which project?");
+
+		await act(async () => {
+			await result.current.sendClarification("", true);
+		});
+
+		await waitFor(() => {
+			expect(result.current.state.pendingClarification).toBeNull();
+		});
+		expect(result.current.state.answeredClarifications).toEqual([]);
+		expect(
+			result.current.messages.some((m) =>
+				m.content.startsWith("Clarification —"),
+			),
+		).toBe(false);
+	});
+});
