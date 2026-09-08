@@ -1,7 +1,7 @@
 #!/usr/bin/env sh
 # Fabric commit-msg guard.
 #
-# Two checks, cheapest first. The identifier guard runs LAST on purpose: this
+# Three checks, cheapest first. The identifier guard runs LAST on purpose: this
 # script has no `set -e`, so the hook's exit status is whatever the final
 # command returns. Anything appended after that node call would mask its
 # failures.
@@ -26,6 +26,81 @@ if [ ! -f "$(git rev-parse --git-dir)/MERGE_HEAD" ]; then
 		echo "  new commit:  git commit -s" >&2
 		echo "  last commit: git commit --amend -s --no-edit" >&2
 		echo "  whole branch: git rebase --signoff origin/master" >&2
+		exit 1
+	fi
+fi
+
+# --- Subject length ----------------------------------------------------------
+# A commit subject longer than 120 characters is refused when the change is
+# published, and the refusal only arrives after every required check has already
+# passed -- so it costs a full cycle: amend, force-push, re-authorize. One change
+# was refused at 121 characters, a single character over, with every check green.
+# Catching it at authorship removes that round trip entirely, which is the same
+# argument the DCO block above makes for itself.
+#
+# The body has no limit, so detail that does not fit belongs below line 1.
+# Merge commits are exempt: their subject is never the published one.
+#
+# A commit-msg hook cannot know which line git will end up using as the subject.
+# Cleanup mode decides whether comment lines and trailing whitespace survive, and
+# it is not observable from here: `commit.cleanup=default` means `strip` when the
+# message was edited but `whitespace` when it was not, `scissors` keeps comments,
+# and `git commit --cleanup=<mode>` overrides the config this hook could read.
+#
+# So measure every plausible reading and reject only when ALL of them are too
+# long. That can never reject a commit git would have accepted, while still
+# catching the ordinary case, where all three readings are the same line. A
+# subject over the limit under only some readings is left to the published-side
+# check -- a miss there is recoverable, and a false rejection here is not, since
+# the author cannot get past this hook without `--no-verify`.
+
+# Length of $1 in characters, or 0 when it cannot be measured safely.
+#
+# Pure ASCII is counted as bytes: exact, and independent of locale. Anything
+# else stands down, because `wc -m` counts BYTES under LC_ALL=C and POSIX
+# guarantees no UTF-8 locale to switch to, so a non-ASCII subject cannot be
+# counted reliably here -- and an over-count rejects a valid commit. Nothing in
+# this repository's history has a non-ASCII subject, so this gives up nothing.
+#
+# Every failure path answers 0, which stands the check down. Each measuring
+# command's status is therefore checked before its output is used: a `tr` that
+# fails while printing nothing would otherwise look like "no non-ASCII bytes",
+# and a `wc` that fails after emitting partial digits would otherwise supply a
+# usable-looking number. Both are far-fetched, and both would reject a commit.
+subject_length() {
+	if ! non_ascii=$(printf '%s' "$1" | LC_ALL=C tr -d '\000-\177'); then
+		echo 0
+		return
+	fi
+	if [ -n "$non_ascii" ]; then
+		echo 0
+		return
+	fi
+	if ! measured=$(printf '%s' "$1" | wc -c); then
+		echo 0
+		return
+	fi
+	measured=$(printf '%s' "$measured" | tr -cd '0-9')
+	echo "${measured:-0}"
+}
+
+if [ ! -f "$(git rev-parse --git-dir)/MERGE_HEAD" ]; then
+	length_verbatim=$(subject_length "$(sed -n '/./{p;q;}' "$1")")
+	length_whitespace=$(subject_length "$(git stripspace <"$1" | sed -n '/./{p;q;}')")
+	length_stripped=$(subject_length "$(git stripspace --strip-comments <"$1" | sed -n '/./{p;q;}')")
+
+	shortest=$length_verbatim
+	if [ "$length_whitespace" -lt "$shortest" ]; then
+		shortest=$length_whitespace
+	fi
+	if [ "$length_stripped" -lt "$shortest" ]; then
+		shortest=$length_stripped
+	fi
+
+	if [ "$shortest" -gt 120 ]; then
+		echo "commit-msg: subject is $shortest characters; the limit is 120." >&2
+		echo "  amend it:    git commit --amend" >&2
+		echo "  move detail: keep line 1 short, put the rest in the body" >&2
 		exit 1
 	fi
 fi
