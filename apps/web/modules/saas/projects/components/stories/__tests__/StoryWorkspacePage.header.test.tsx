@@ -13,9 +13,10 @@
  *    contract that produces it is, and that is what a future edit would drop.
  */
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
-import { beforeAll, describe, expect, it, vi } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@shared/lib/orpc-client", () => ({
 	orpcClient: { projects: { stories: { listAttachments: vi.fn() } } },
@@ -75,7 +76,10 @@ vi.mock("@saas/shared/contexts/FullscreenContext", () => ({
 vi.mock("@saas/shared/components/copilot/use-copilot-error-handler", () => ({
 	useCopilotErrorHandler: () => vi.fn(),
 }));
-vi.mock("next/navigation", () => ({ useRouter: () => ({ push: vi.fn() }) }));
+// Hoisted so `pushMock` is the SAME `vi.fn()` across every `useRouter()`
+// call — the roadmap-return tests below assert against it directly.
+const { pushMock } = vi.hoisted(() => ({ pushMock: vi.fn() }));
+vi.mock("next/navigation", () => ({ useRouter: () => ({ push: pushMock }) }));
 
 vi.mock("../../../lib/stories/types", async (importActual) => {
 	const actual = await importActual<Record<string, unknown>>();
@@ -133,7 +137,13 @@ vi.mock("@shared/lib/orpc-query-utils", () => {
 	};
 });
 
+import { rememberRoadmapQuery } from "../../../lib/stories/roadmap-return";
 import { StoryWorkspacePage } from "../StoryWorkspacePage";
+
+// The projectId `renderPage()` mounts the page with — kept in one place so
+// the roadmap-return tests below seed sessionStorage under the same key
+// `readRoadmapQuery(projectId)` will read it back with.
+const TEST_PROJECT_ID = "p1";
 
 beforeAll(() => {
 	if (typeof globalThis.ResizeObserver === "undefined") {
@@ -145,6 +155,11 @@ beforeAll(() => {
 	}
 });
 
+beforeEach(() => {
+	window.sessionStorage.clear();
+	pushMock.mockClear();
+});
+
 function renderPage() {
 	const client = new QueryClient({
 		defaultOptions: {
@@ -154,7 +169,7 @@ function renderPage() {
 	return render(
 		<QueryClientProvider client={client}>
 			<StoryWorkspacePage
-				projectId="p1"
+				projectId={TEST_PROJECT_ID}
 				storyId="s1"
 				organizationSlug="acme"
 			/>
@@ -241,5 +256,54 @@ describe("StoryWorkspacePage header — narrow-viewport layout", () => {
 		});
 		expect(crumb.className).toContain("truncate");
 		expect(crumb.closest("li")?.className).toContain("min-w-0");
+	});
+});
+
+describe("StoryWorkspacePage header — roadmap return", () => {
+	// The read happens in an effect (never a render-time sessionStorage read,
+	// which would mismatch server-rendered HTML — see `roadmap-return.ts`),
+	// so the href only reflects the remembered query after that effect runs.
+
+	it("returns to the roadmap with no filter query when nothing was remembered", async () => {
+		renderPage();
+
+		const crumb = await screen.findByRole("link", { name: "Roadmap" });
+		await waitFor(() => {
+			expect(crumb.getAttribute("href")).toBe(
+				`/app/acme/projects/${TEST_PROJECT_ID}?tab=stories`,
+			);
+		});
+	});
+
+	it("restores the remembered roadmap filter query on the Roadmap breadcrumb", async () => {
+		rememberRoadmapQuery(TEST_PROJECT_ID, "?q=login&kind=BUG");
+		renderPage();
+
+		const crumb = await screen.findByRole("link", { name: "Roadmap" });
+		await waitFor(() => {
+			expect(crumb.getAttribute("href")).toBe(
+				`/app/acme/projects/${TEST_PROJECT_ID}?tab=stories&q=login&kind=BUG`,
+			);
+		});
+	});
+
+	it("'Back to roadmap' pushes to that same remembered-filter URL", async () => {
+		rememberRoadmapQuery(TEST_PROJECT_ID, "?q=login&kind=BUG");
+		const user = userEvent.setup();
+		renderPage();
+
+		// Deliberately NOT waiting for the breadcrumb href to settle first:
+		// `handleClose` reads sessionStorage fresh at click time rather than
+		// the effect-driven `backUrl` state, so the click must be correct
+		// even in the window before that effect (or a stale closure) has
+		// caught up.
+		const button = await screen.findByRole("button", {
+			name: /back to roadmap/i,
+		});
+		await user.click(button);
+
+		expect(pushMock).toHaveBeenCalledWith(
+			`/app/acme/projects/${TEST_PROJECT_ID}?tab=stories&q=login&kind=BUG`,
+		);
 	});
 });

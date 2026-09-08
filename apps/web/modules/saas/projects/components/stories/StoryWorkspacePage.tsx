@@ -42,6 +42,10 @@ import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useFeatureMaturationV2Enabled } from "../../hooks/useFeatureMaturationV2Enabled";
 import { useMaturationViewMode } from "../../hooks/useMaturationViewMode";
+import {
+	buildRoadmapReturnRoute,
+	readRoadmapQuery,
+} from "../../lib/stories/roadmap-return";
 import { getPriorityLabel, transformStory } from "../../lib/stories/types";
 import { StoryTestCoverageLine } from "../test-cases/StoryTestCoverageLine";
 import { MaturationViewToggle } from "./maturation/MaturationViewToggle";
@@ -273,13 +277,34 @@ export function StoryWorkspacePage({
 	const canManageAllTags: boolean = storyData?.canManageAllTags ?? false;
 	const project = projectData?.project;
 
-	// Build the back URL using basePath from context. Mirrors the breadcrumb
-	// trail-end (Roadmap) so deletion-redirects land where the user came from.
-	const backUrl = `${basePath}/projects/${projectId}?tab=stories`;
+	// Build the back URL using basePath from context, with the roadmap filter
+	// query the user left behind re-applied (see `roadmap-return.ts`). Feeds
+	// the breadcrumb's Roadmap crumb href and the deletion-redirect effect
+	// below, so both land where the user came from.
+	//
+	// The read happens in an effect, not a lazy `useState` initializer: this
+	// component is server-rendered (see the route's `page.tsx`, which mounts
+	// it inside `<Suspense>`), and a sessionStorage read during render would
+	// produce a hydration mismatch on the breadcrumb `href`.
+	const [roadmapQuery, setRoadmapQuery] = useState("");
+	useEffect(() => {
+		setRoadmapQuery(readRoadmapQuery(projectId));
+	}, [projectId]);
+	const backUrl = buildRoadmapReturnRoute(basePath, projectId, roadmapQuery);
 	const priorityLabel = story ? getPriorityLabel(story.priority) : "";
 
 	const handleClose = () => {
-		router.push(backUrl);
+		// Reads sessionStorage fresh rather than using `backUrl`'s memoized
+		// state: until the mount effect above has run, `backUrl` is still the
+		// unfiltered literal, and a click in that window (or from a stale
+		// closure) must not navigate without the user's filters.
+		router.push(
+			buildRoadmapReturnRoute(
+				basePath,
+				projectId,
+				readRoadmapQuery(projectId),
+			),
+		);
 	};
 
 	// Redirect to feature list when story is deleted (story transitions from loaded to null)
@@ -437,7 +462,7 @@ export function StoryWorkspacePage({
 								<BreadcrumbSeparator className="hidden sm:block" />
 								<BreadcrumbItem className="hidden sm:inline-flex">
 									<BreadcrumbLink
-										href={`${basePath}/projects/${projectId}?tab=stories`}
+										href={backUrl}
 										className="text-xs"
 									>
 										Roadmap

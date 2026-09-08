@@ -1,13 +1,14 @@
 "use client";
 
 import {
+	createSerializer,
 	parseAsArrayOf,
 	parseAsBoolean,
 	parseAsString,
 	parseAsStringEnum,
 	useQueryStates,
 } from "nuqs";
-import { useCallback, useMemo } from "react";
+import { useCallback, useEffect, useMemo } from "react";
 import {
 	FILTERABLE_KINDS,
 	FILTERABLE_PRIORITIES,
@@ -23,6 +24,7 @@ import {
 	type StorySource,
 	type SyncFilter,
 } from "../lib/roadmap-filters";
+import { rememberRoadmapQuery } from "../lib/stories/roadmap-return";
 import type {
 	MaturationStatus,
 	StoryKind,
@@ -82,11 +84,26 @@ const filterParsers = {
 
 export type RoadmapFilterKey = keyof RoadmapFilters;
 
-export function useRoadmapFilters() {
+// Built once at module level (not per-render/per-hook-call): `createSerializer`
+// only closes over `filterParsers`, which is static, so there is nothing to
+// re-create. `clearOnDefault` defaults to `true` in nuqs, which is exactly
+// what "remember the roadmap's query" needs — an all-default state serializes
+// to `""` rather than replaying every default into the stored string.
+export const serializeRoadmapQuery = createSerializer(filterParsers);
+
+export function useRoadmapFilters(projectId: string) {
 	const [state, setState] = useQueryStates(filterParsers, {
 		history: "replace",
 		clearOnDefault: true,
 	});
+
+	// Remember the roadmap's filter query so "Back to roadmap" (from the
+	// feature workspace, a different route) can restore it. See
+	// `lib/stories/roadmap-return.ts` for why this exists and why
+	// sessionStorage.
+	useEffect(() => {
+		rememberRoadmapQuery(projectId, serializeRoadmapQuery(state));
+	}, [projectId, state]);
 
 	const filters: RoadmapFilters = useMemo(
 		() => ({
