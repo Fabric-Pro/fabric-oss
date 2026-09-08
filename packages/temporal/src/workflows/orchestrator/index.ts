@@ -28,6 +28,7 @@ import {
 
 import type * as allActivities from "../../activities";
 import type * as orchestratorActivities from "../../activities/orchestrator";
+import { buildConversationSummary } from "./conversation-summary";
 import {
 	buildWorkflowOutput,
 	executeCompletionPhase,
@@ -520,8 +521,15 @@ export async function orchestratorExecutionWorkflow(
 			patched("orchestrator-upfront-clarification-v1") &&
 			input.surface === "loom-orchestrator";
 		if (upfrontClarificationEnabled && !isResuming && !state.cancelled) {
+			// The prior turns MUST travel with the message. Each completed turn
+			// ends its execution, so without them this gate re-evaluates from a
+			// blank slate every turn and re-asks what the user already answered
+			// (Fizzy #2406). `input.history` is the same history planning and
+			// iterative execution already consume — it was simply never handed
+			// to the clarity check.
 			const clarity = await analyzeIntentClarityActivity({
 				message: state.enrichedMessage || input.message,
+				conversationSummary: buildConversationSummary(input.history),
 				userId: input.userId,
 				organizationId: input.organizationId,
 			});
@@ -710,13 +718,24 @@ export async function orchestratorExecutionWorkflow(
 			state.taskPlan.steps.length > 0
 		) {
 			const steps = state.taskPlan.steps;
+			// Prior turns + the current (already clarification-enriched)
+			// request, rendered once and shared by every step's check — same
+			// blindness as the up-front gate, same fix (Fizzy #2406). Hoisted
+			// out of the map so a plan with N steps renders it once, not N
+			// times.
+			const stepConversationSummary = buildConversationSummary([
+				...(input.history ?? []),
+				{
+					role: "user",
+					content: state.enrichedMessage || input.message,
+				},
+			]);
 			const clarities = await Promise.all(
 				steps.map(async (step) => {
 					try {
 						return await analyzeIntentClarityActivity({
 							message: step.description,
-							conversationSummary:
-								state.enrichedMessage || input.message,
+							conversationSummary: stepConversationSummary,
 							userId: input.userId,
 							organizationId: input.organizationId,
 						});

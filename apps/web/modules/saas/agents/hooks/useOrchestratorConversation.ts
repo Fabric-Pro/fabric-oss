@@ -39,6 +39,12 @@ export interface OrchestratorExecution {
 	workflowId?: string;
 	userMessage: string;
 	imageUrls?: string[];
+	/**
+	 * Clarifying questions answered during this execution, oldest first.
+	 * Persisted so the exchange survives a reload and reaches the next turn's
+	 * `history` — the clarity gate re-asks anything it cannot see (Fizzy #2406).
+	 */
+	clarifications?: Array<{ question: string; answer: string }>;
 	routingDecision?: {
 		primaryAgent: string;
 		agentName: string;
