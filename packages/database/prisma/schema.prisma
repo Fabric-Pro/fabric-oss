@@ -1914,6 +1914,15 @@ model ProjectDocument {
   // stale hash marks findings the UI ignores until the check reruns.
   decisionPrecheck      Json?
 
+  // The coarse dependency category the run is currently waiting on, rendered to
+  // the user as the reason the document has not started yet. Null whenever the
+  // run is not waiting, including every row that predates queueing.
+  generationQueueReason           String?
+  // Exactly-once claim on the completion/failure notification for the current
+  // run. Whoever writes this from null owns emitting it, so a retried activity
+  // or a second terminal path cannot notify the requester twice.
+  generationNotificationEmittedAt DateTime?
+
   // Document source tracking
   source          DocumentSource @default(GENERATED)
   sourceContextId String? // Links to original ProjectContext if imported
@@ -10389,6 +10398,16 @@ enum ProjectDocumentType {
 
 enum ProjectDocumentStatus {
   DRAFT
+  /// The generation request is accepted and waiting on the project's own
+  /// context-building work to finish before the model call may start. It is a
+  /// separate state from GENERATING on purpose: three mechanisms sweep or
+  /// reinterpret GENERATING on a timer — the stale-generation watchdog that
+  /// fails a row whose workflow never started, the setup-status roll-up that
+  /// reads one as work in flight, and the client progress poll — and none of
+  /// them can tell a wait that is working as intended from a run that died.
+  /// A deliberate wait must not trip any of the three, so it does not borrow
+  /// their state.
+  QUEUED
   GENERATING
   IN_PROGRESS
   REVIEW
@@ -15271,6 +15290,13 @@ enum BackgroundJobKind {
   // chat delivery happen after the cycle terminalizes and are reported by the
   // refresh history's Notified column instead.
   PUBLISHING_TOPIC_GENERATION
+  // One document-generation run, from the moment the request is accepted to its
+  // terminal state. The run's first step is a wait on the project's dependency
+  // work, so it can sit doing nothing visible for as long as that takes — which
+  // is exactly the stretch that reads as a lost request. The row is what gives
+  // the Job Hub something to show for it, and what names the dependency the run
+  // is currently blocked on.
+  DOCUMENT_GENERATION
 }
 
 enum BackgroundJobStatus {
@@ -16019,6 +16045,15 @@ enum NotificationType {
   QUESTION_MENTIONED
   /// Sent back to whoever created the assignment once the question is answered.
   QUESTION_ANSWERED
+
+  /// A document-generation run the recipient started reached its terminal
+  /// state. Split into two types rather than one "finished" type, mirroring
+  /// REPORT_COMPLETED / REPORT_FAILED: a run that queued behind its
+  /// dependencies may land long after the requester stopped watching, so the
+  /// notification is the whole outcome — it has to say which outcome it is
+  /// without being opened.
+  DOCUMENT_GENERATION_COMPLETED
+  DOCUMENT_GENERATION_FAILED
 }
 
 model Notification {

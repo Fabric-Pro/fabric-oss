@@ -1,6 +1,7 @@
 ---
 title: "Cancelling a Temporal-backed job: terminal-state guards, self-abort, and safe tenant gates"
 date: 2026-07-02
+last_updated: 2026-09-07
 category: docs/solutions/architecture-patterns
 module: reports
 problem_type: architecture_pattern
@@ -102,7 +103,7 @@ The whole point of a Cancel button on a long AI/compute job is to stop runaway c
 ## When to Apply
 
 - Any user-triggered cancel/stop on a Temporal or other durable-workflow job.
-- Any time you add a terminal status that a concurrently-running worker must not overwrite — the compare-and-set + "terminal wins" guard generalizes beyond cancel.
+- Any time you add a terminal status that a concurrently-running worker must not overwrite — the compare-and-set + "terminal wins" guard generalizes beyond cancel, **provided the terminal status has no legitimate re-entry path**. Confirm that first: if a user action can deliberately restart work *from* that status (regenerate, retry, resubmit), a status-scoped guard silently refuses the restart. Guard on the attempt's identity instead — see `a-terminal-status-guard-blocks-the-retry-that-starts-from-it.md`.
 - Any tenant-scoped mutation whose entity is fetched by an unscoped id (report executions/instances are user/organization-scoped, not project-scoped).
 
 ## Examples

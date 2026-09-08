@@ -127,6 +127,23 @@ How supplied material is meant to be used at the moment a document is created: a
 
 The two differ in what survives. Used as background, the material is kept as project context and stays available to later generations, and the AI is free to ignore its wording entirely. Used as the body, the words are the document, nothing is generated, and the material is not added to the retrieval corpus a second time — the document already is it.
 
+## Document generation
+
+### Generation attempt
+One request to produce a document, identified by the moment it was requested rather than by the document's status. The identity is minted before the work starts and threaded through every write the run makes, so any write can ask *is this row still mine* — a question a status cannot answer, because every attempt on a document passes through the same statuses.
+
+An attempt that finds the document already claimed by a later one is superseded and stops rather than competing for the row. Guards keyed to the attempt are what let a document be regenerated from a finished state at all: a guard keyed to status would have to admit the finished state, and then could no longer tell a legitimate new attempt from a stale one.
+
+### Queued
+A generation that has been requested and is deliberately waiting for the project's context work to finish before it starts.
+
+Not a failure and not a state a person needs to act on: it advances on its own and offers nothing to retry. The product's wording is careful about this because someone who reads it as *stuck* will retry, and the retry starts a second attempt that supersedes the healthy first one.
+
+### Generation dependency
+A kind of project context work that a generation waits for before it may start — indexing a codebase, extracting a supplied source, and their siblings — drawn from a closed set rather than discovered per document.
+
+A waiting document is told which kinds of work are outstanding and how many of each, never which particular source is responsible. That is deliberate: the explanation is visible to everyone who can see the document, and naming the source would disclose material the reader may not be entitled to. One kind of dependency is another document — a prerequisite that must exist before this type can be generated at all.
+
 ## Capability gates
 
 ### Rollout gate
@@ -335,6 +352,7 @@ Distinct from the recent-project list the orchestrator keeps for session continu
 
 ## Flagged ambiguities
 
+- "Queued" had been used for both a generation deliberately holding until the project's context work completes, and a job step that simply has not been reached yet — these are distinct. The first advances on its own and offers nothing to retry; the second is only a step's position in a list. Copy that blurs them invites a retry that supersedes a healthy attempt.
 - "Feature flag" had been used for both the Rollout gate and the Kill switch — these are distinct, and a capability can need one of each. Merging them turns an always-armed brake into a switch that launches the feature.
 
 *Source usage* and an attachment's *designation* are different axes and must not be

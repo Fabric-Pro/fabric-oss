@@ -1,0 +1,12 @@
+-- AlterEnum
+-- One document-generation run, from the moment the request is accepted through
+-- to its terminal state, as a Job Hub row.
+--
+-- The run's first step is a wait on the project's dependency work, so it can sit
+-- doing nothing visible for as long as that takes — which is exactly the
+-- stretch a user reads as a lost request. The row is what the Job Hub shows for
+-- it, and what names the dependency the run is currently blocked on.
+--
+-- Its own migration for the same reason as the status above: a value added by
+-- ALTER TYPE cannot be referenced in the transaction that adds it.
+ALTER TYPE "BackgroundJobKind" ADD VALUE IF NOT EXISTS 'DOCUMENT_GENERATION';

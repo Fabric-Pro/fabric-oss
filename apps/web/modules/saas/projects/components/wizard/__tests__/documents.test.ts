@@ -1,7 +1,12 @@
+import {
+	DOCUMENT_TIERS as SHARED_DOCUMENT_TIERS,
+	isDocumentAvailable as sharedIsDocumentAvailable,
+} from "@repo/database/src/document-dependency-graph";
 import { describe, expect, it } from "vitest";
 import {
 	DEFAULT_DOCUMENT_META,
 	DOCUMENT_TIERS,
+	getPrerequisiteHint,
 	isDocumentAvailable,
 } from "../documents";
 
@@ -17,6 +22,26 @@ describe("design system onboarding document", () => {
 	it("uses the design.md document metadata", () => {
 		expect(DEFAULT_DOCUMENT_META.DESIGN_SYSTEM.title).toBe(
 			"Design System (design.md)",
+		);
+	});
+});
+
+describe("wizard prerequisite graph", () => {
+	it("hands out the shared graph rather than a second copy", () => {
+		// Identity, not equality. A structurally-equal copy is exactly the state
+		// this module was in before — matching the workflow's phases by hand and
+		// free to drift from them.
+		expect(DOCUMENT_TIERS).toBe(SHARED_DOCUMENT_TIERS);
+		expect(isDocumentAvailable).toBe(sharedIsDocumentAvailable);
+	});
+
+	it("still gates the technical documents behind a requirements doc", () => {
+		expect(isDocumentAvailable("ARCHITECTURE", new Set())).toBe(false);
+		expect(isDocumentAvailable("ARCHITECTURE", new Set(["PROPOSAL"]))).toBe(
+			true,
+		);
+		expect(getPrerequisiteHint("ARCHITECTURE")).toBe(
+			"Generate PRD or Proposal first",
 		);
 	});
 });

@@ -122,6 +122,77 @@ function resolveAiAvailability({
 }
 
 /**
+ * Which success sentence a finished create earned.
+ *
+ * The server no longer answers "did it generate?" with a boolean — it hands
+ * back the dispatch's own discriminated outcome, and the three arms mean three
+ * different things to the person who just clicked Create:
+ *
+ *  - `started`           — this call began a run. Whether that run is *doing*
+ *                          anything yet is a separate question, answered by the
+ *                          document row: a generation now waits on the
+ *                          project's own context work before the model is
+ *                          called, and that wait can run for the better part of
+ *                          an hour. Calling it "generating" would start a
+ *                          progress story the editor cannot tell.
+ *  - `alreadyInProgress` — an equivalent run already holds this document's
+ *                          workflow id, so nothing new started. Saying
+ *                          "generating…" here is the failure this arm exists to
+ *                          prevent: the user is sent to a document that looks
+ *                          like it is working on their request when it is
+ *                          working on the earlier identical one.
+ *  - `statusUnknown`     — the dispatcher could not tell whether the start
+ *                          landed, and deliberately reports success-like so the
+ *                          client keeps watching rather than offering a retry
+ *                          that could race a live run. It is not a new failure
+ *                          path, so it keeps the copy it had.
+ *
+ * The document's status is read, never inferred. `alreadyInProgress` is named
+ * after the run, not after a state, precisely because the live run may already
+ * have moved past its wait — hardcoding "queued" here would tell a user their
+ * generation is waiting while the model is mid-sentence.
+ *
+ * The discriminant is read as a plain string rather than as the server's union
+ * so that a fourth arm — or a response from a deploy this bundle predates —
+ * reaches the default branch at runtime instead of being a compile error here
+ * and a dead toast there.
+ */
+function resolveCreateOutcomeKey({
+	generation,
+	documentStatus,
+}: {
+	/** The dispatch's answer, or null when no generation was requested. */
+	generation: { outcome?: string | null } | null;
+	/** The created document's own status, which is what says "waiting". */
+	documentStatus: string | null;
+}): string {
+	if (!generation) {
+		return "created";
+	}
+
+	const isWaiting = documentStatus === "QUEUED";
+
+	switch (generation.outcome) {
+		case "started":
+			return isWaiting ? "createdQueued" : "createdWithAi";
+		case "alreadyInProgress":
+			return isWaiting
+				? "generationAlreadyQueued"
+				: "generationAlreadyRunning";
+		case "statusUnknown":
+			return "createdWithAi";
+		default:
+			// An arm this client does not know about. Reported the way the
+			// unknown-status arm is, and for the same reason: the document
+			// demonstrably exists and a run was asked for, so anything that
+			// reads as a failure would push the user to create or regenerate
+			// on top of a run that may well be live. Deliberately not silence
+			// — the loading toast has to be resolved or it never goes away.
+			return "createdWithAi";
+	}
+}
+
+/**
  * Ties the visible "Prompt" label to the selector's trigger.
  *
  * The selector falls back to a generic accessible name when no caller supplies
@@ -584,10 +655,22 @@ export function CreateDocumentDialog({ projectId, open, onOpenChange }: Props) {
 				}),
 			});
 
-			const generated = Boolean(data.generation);
-			toast.success(generated ? t("createdWithAi") : t("created"), {
-				id: toastId,
-			});
+			/*
+			 * Not a boolean any more. A create-and-generate call has three
+			 * distinguishable endings and one of them — an equivalent run
+			 * already under way — used to read as "opening the editor to
+			 * generate its content", which is the one sentence that is
+			 * definitely false there. See `resolveCreateOutcomeKey`.
+			 */
+			toast.success(
+				t(
+					resolveCreateOutcomeKey({
+						generation: data.generation ?? null,
+						documentStatus: data.document.status ?? null,
+					}),
+				),
+				{ id: toastId },
+			);
 
 			// This one took over as the active document of its type, standing an
 			// earlier one down. Said out loud: only active documents reach
@@ -617,6 +700,12 @@ export function CreateDocumentDialog({ projectId, open, onOpenChange }: Props) {
 			 * prompt rather than the one chosen here. The row is marked
 			 * generating before the workflow starts, so the editor picks its
 			 * in-flight state up from the document's status instead.
+			 *
+			 * One destination for every outcome, including `alreadyInProgress`:
+			 * the workflow id a duplicate start collides on is derived from
+			 * this very document, so the run already under way is a run over
+			 * `data.document` — the editor it opens is where that run's
+			 * progress, or its wait, is visible.
 			 */
 			router.push(
 				`${basePath}/projects/${projectId}/documents/${data.document.id}`,

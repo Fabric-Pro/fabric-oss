@@ -93,6 +93,16 @@ function resolveIcon(notification: {
 	if (notification.type === "REPORT_FAILED") {
 		return AlertCircleIcon;
 	}
+	// Document generation outcomes (Fizzy #2199) — same shape as the report pair
+	// above and the same reason for the override: both are SYSTEM, whose default
+	// glyph (CircleAlert) would render a document that generated perfectly well
+	// as an alert.
+	if (notification.type === "DOCUMENT_GENERATION_COMPLETED") {
+		return CheckCircleIcon;
+	}
+	if (notification.type === "DOCUMENT_GENERATION_FAILED") {
+		return AlertCircleIcon;
+	}
 	// STORY_SHARED reuses the MENTION category (so it stays out of the Mentions
 	// tab), but a "shared a feature with you" row reads better with a share
 	// glyph than the `@` mention glyph — override per-type here.

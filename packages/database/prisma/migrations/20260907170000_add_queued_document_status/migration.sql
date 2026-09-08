@@ -1,0 +1,17 @@
+-- AlterEnum
+-- A document-generation request that is accepted but still waiting on the
+-- project's own context-building work, before any model call has been made.
+--
+-- It is deliberately not GENERATING. Three mechanisms sweep or reinterpret that
+-- state on a timer — the stale-generation watchdog that fails a row whose
+-- workflow never started, the setup-status roll-up that reads one as work in
+-- flight, and the client progress poll — and none of them can distinguish a
+-- wait that is working as intended from a run that died. A deliberate wait
+-- therefore gets its own state rather than borrowing theirs.
+--
+-- Kept in its own migration, mirroring 20260901123000_add_design_system_document_type:
+-- a value added by ALTER TYPE cannot be referenced in the transaction that adds it.
+-- Enum additions are additive and cannot be safely removed while rows may hold
+-- the value; IF NOT EXISTS makes recovery from a partially applied deployment
+-- idempotent.
+ALTER TYPE "ProjectDocumentStatus" ADD VALUE IF NOT EXISTS 'QUEUED';

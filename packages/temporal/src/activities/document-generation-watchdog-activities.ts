@@ -1,11 +1,19 @@
 /**
  * Stale-generation watchdog activities.
  *
- * The dispatch path marks a document GENERATING *before* it starts the
- * workflow. That ordering is deliberate and load-bearing — reversing it was
- * issue #720 — but it means a start that never took leaves the row GENERATING
- * with nothing left to write a terminal status, because the workflow that would
- * have written one does not exist.
+ * A generation dispatch writes the document a non-terminal status and then
+ * relies on the workflow to replace it. When the start never took, or the run
+ * vanished, nothing is left to write a terminal one — the workflow that would
+ * have is not there — and the row sits mid-generation forever.
+ *
+ * The status that is left behind depends on the path. The API's dispatch marks
+ * the row QUEUED *after* its start attempt (see `dispatch-document-generation.ts`
+ * for why that ordering, not the mark-before-start of issue #720), so a run it
+ * loses track of is usually QUEUED; the workflow itself flips that to GENERATING
+ * when its dependency wait clears. The separate upload-extraction flow still
+ * marks GENERATING up front via `markDocumentGenerationStarted`, because the row
+ * exists before there is any run to wait on. This sweep therefore has to cover
+ * both states rather than assume either one.
  *
  * The dispatch helper already recovers every case it can prove. What it will not
  * do is guess: when `describe()` is itself unreachable, it cannot distinguish
@@ -18,6 +26,12 @@
  * and the row still reads as generating. This sweep is the server-side half —
  * the only thing that can tell the difference later, once Temporal is reachable
  * again and the answer is no longer ambiguous.
+ *
+ * The same sweep also covers QUEUED rows — a generation accepted but held back
+ * until the project's context-building work finishes — because they leak the
+ * same way and nothing else would ever close them. What does not carry over is
+ * the age ceiling: a wait of an hour is the queue working, so a queued row is
+ * judged purely on whether its workflow is still there.
  *
  * Activity boundary: every Prisma write and Temporal client call lives here, not
  * in the workflow, so the workflow stays replay-safe. Mirrors
@@ -39,6 +53,12 @@ import { getTemporalClient } from "../client";
  * multi-minute run, and this sweep writes a terminal FAILED that the user sees —
  * killing a live run is a worse outcome than a stale row lingering a while
  * longer. Override per-deployment via `FABRIC_DOCUMENT_GENERATION_STALE_MINUTES`.
+ *
+ * It applies to GENERATING rows only. A QUEUED row is waiting on the project's
+ * own context-building work before its model call may start, and that wait can
+ * legitimately run for an hour — no ceiling could separate a healthy wait from a
+ * dead one, so the queued arm of the query does not use one. See
+ * `findStaleGeneratingDocuments`.
  */
 const DEFAULT_STALE_MINUTES = 30;
 
@@ -46,6 +66,12 @@ export interface StaleGeneratingDocument {
 	documentId: string;
 	projectId: string;
 	organizationId: string | null;
+	/**
+	 * Which arm of the sweep produced this row: GENERATING rows are here because
+	 * they are past the age ceiling, QUEUED rows because a wait has a workflow
+	 * whose liveness can be checked. Both fail the same way.
+	 */
+	status: "QUEUED" | "GENERATING";
 	workflowId: string | null;
 	/**
 	 * Passed back to `markDocumentGenerationFailed`, whose write is scoped to
@@ -69,6 +95,11 @@ export interface FindStaleGeneratingDocumentsOutput {
  * `FABRIC_DOCUMENT_GENERATION_STALE_MINUTES` when `input.staleAfterMinutes` is
  * zero or negative, so the workflow body stays free of `process.env` reads,
  * which are non-deterministic under SDK 1.16 with `reuseV8Context`.
+ *
+ * The cutoff bounds the GENERATING arm only. Queued rows come back at any age
+ * and are decided entirely by the liveness check downstream, which is what lets
+ * an intentionally long dependency wait sit here untouched while an orphaned one
+ * — a row whose workflow is gone — is still recovered.
  */
 export async function findStaleGeneratingDocumentsActivity(
 	input: FindStaleGeneratingDocumentsInput,
@@ -91,16 +122,28 @@ export async function findStaleGeneratingDocumentsActivity(
 	});
 
 	return {
-		rows: stale
-			.filter((row) => row.generationStartedAt !== null)
-			.map<StaleGeneratingDocument>((row) => ({
-				documentId: row.id,
-				projectId: row.projectId,
-				organizationId: row.project?.organizationId ?? null,
-				workflowId: row.workflowId,
-				// biome-ignore lint/style/noNonNullAssertion: filtered above
-				generationStartedAtMs: row.generationStartedAt!.getTime(),
-			})),
+		rows: stale.flatMap<StaleGeneratingDocument>((row) => {
+			// A row with no start timestamp cannot be swept at all: the write
+			// that would fail it is scoped to that exact value. The status is
+			// checked rather than asserted so a later widening of the query
+			// cannot quietly relabel a third status as one of these two.
+			if (
+				row.generationStartedAt === null ||
+				(row.status !== "QUEUED" && row.status !== "GENERATING")
+			) {
+				return [];
+			}
+			return [
+				{
+					documentId: row.id,
+					projectId: row.projectId,
+					organizationId: row.project?.organizationId ?? null,
+					status: row.status,
+					workflowId: row.workflowId,
+					generationStartedAtMs: row.generationStartedAt.getTime(),
+				},
+			];
+		}),
 	};
 }
 
@@ -116,6 +159,10 @@ export interface IsGenerationWorkflowLiveInput {
  * those would kill work the user is still waiting for, with the model spend
  * already incurred. So a row is only swept once Temporal confirms nothing is
  * running under its workflow id.
+ *
+ * For a QUEUED row it is the ONLY guard, since a wait has no age at which it
+ * becomes suspicious. That is the whole recovery story for an orphaned queue
+ * entry, and the whole protection for a healthy one.
  *
  * Errs toward live on every uncertainty: an unreachable Temporal, an unexpected
  * describe error, or a client that will not construct all answer "live", which
@@ -153,10 +200,12 @@ export interface MarkGenerationTimedOutInput {
 }
 
 /**
- * Flip the stuck document GENERATING -> FAILED, scoped to the attempt that was
- * scanned. The message is written for the person who opens the document, not
- * for an operator: it says the run did not start and that retrying is safe,
- * because from the reader's side an abandoned row and a failed one look alike.
+ * Flip the stuck document (GENERATING or QUEUED) to FAILED, scoped to the
+ * attempt that was scanned. The message is written for the person who opens the
+ * document, not for an operator: it says the run did not start and that retrying
+ * is safe, because from the reader's side an abandoned row and a failed one look
+ * alike — and a queue entry whose workflow is gone is abandoned in exactly that
+ * way, however recently it was written.
  */
 export async function markGenerationTimedOutActivity(
 	input: MarkGenerationTimedOutInput,

@@ -372,6 +372,22 @@ const decisionOwnerPayload = z.object({
 	actorUserId: z.string(),
 });
 
+// DOCUMENT_GENERATION_COMPLETED / DOCUMENT_GENERATION_FAILED payload — written
+// directly by the @repo/database `emitDocumentGenerationNotification` helper
+// (which cannot import this @repo/api validator without a workspace cycle, since
+// its caller is a Temporal activity), but registered here so the validator stays
+// total over NotificationType. Fizzy #2199.
+//
+// Identifiers only, and no error field. A queued generation can fail on a model
+// call, an activity or a dependency refusal, and the list API hands payloads
+// back to the client verbatim — the humanized reason lives on the document page,
+// read from `ProjectDocument.generationError`, which is where the row links.
+const documentGenerationPayload = z.object({
+	documentId: z.string(),
+	projectId: z.string(),
+	status: z.enum(["COMPLETED", "FAILED"]),
+});
+
 const NotificationPayloadByType = {
 	[NotificationType.STORY_MENTION]: mentionLikeBase,
 	[NotificationType.TASK_MENTION]: mentionLikeBase,
@@ -403,6 +419,8 @@ const NotificationPayloadByType = {
 		projectServiceAlertDigestPayload,
 	[NotificationType.REPORT_COMPLETED]: reportExecutionPayload,
 	[NotificationType.REPORT_FAILED]: reportExecutionPayload,
+	[NotificationType.DOCUMENT_GENERATION_COMPLETED]: documentGenerationPayload,
+	[NotificationType.DOCUMENT_GENERATION_FAILED]: documentGenerationPayload,
 	[NotificationType.SECURITY_TICKETS_GENERATED]:
 		securityTicketsGeneratedPayload,
 	[NotificationType.DOCUMENT_UPDATED]: subscriptionUpdateBase,

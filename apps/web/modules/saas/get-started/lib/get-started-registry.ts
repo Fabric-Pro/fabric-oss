@@ -745,7 +745,7 @@ export const GET_STARTED_PAGES: readonly GsPage[] = [
 				id: "documents-create",
 				anchor: "documents-create",
 				title: "Draft a doc with AI",
-				body: "Pick a typed kind (PRD, architecture, tech spec, API spec…) — Generate with AI starts on by default, drafting from a type-scoped prompt plus any instructions you add. Paste in source text to steer the draft, or use it verbatim instead. No AI configured? A title alone still creates it.",
+				body: "Pick a typed kind (PRD, architecture, tech spec, API spec…) — Generate with AI starts on by default, drafting from a type-scoped prompt plus any instructions you add. Paste in source text to steer the draft, or use it verbatim instead. If the project's context is still arriving — a repository indexing, a site being crawled, a document this one builds on — the request is accepted and waits, showing what it is waiting for; it starts on its own when that clears. No AI configured? A title alone still creates it.",
 			},
 			{
 				id: "documents-list",

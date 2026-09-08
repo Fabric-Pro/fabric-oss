@@ -197,7 +197,7 @@
 				"failed": "Failed"
 			},
 			"stepStatus": {
-				"pending": "Queued",
+				"pending": "Not started",
 				"running": "Running",
 				"completed": "Complete",
 				"failed": "Failed",
@@ -211,7 +211,8 @@
 				"CODE_INDEXING": "Repository ingestion",
 				"CONTEXT_PROCESSING": "Document ingestion",
 				"STORY_KIND_REGENERATION": "Rewriting for the new type",
-				"PUBLISHING_TOPIC_GENERATION": "Topic suggestions"
+				"PUBLISHING_TOPIC_GENERATION": "Topic suggestions",
+				"DOCUMENT_GENERATION": "Document generation"
 			},
 			"steps": {
 				"fetch": "Fetch messages",
@@ -230,7 +231,9 @@
 				"store": "Store for search",
 				"collect": "Collect project activity",
 				"summarize": "Draft topics",
-				"persist": "Save topics"
+				"persist": "Save topics",
+				"awaitContext": "Wait for project context",
+				"generate": "Write the document"
 			},
 			"counts": {
 				"messagesScanned": "{count, plural, one {# message scanned} other {# messages scanned}}",
@@ -2396,12 +2399,30 @@
 				"creating": "Creating document…",
 				"created": "Document created.",
 				"createdWithAi": "Document created — opening the editor to generate its content…",
+				"createdQueued": "Document created and queued. Generation starts on its own once this project's context work finishes; there is nothing to retry.",
+				"generationAlreadyQueued": "A generation for this document is already queued, so no second one was started. Opening that one.",
+				"generationAlreadyRunning": "A generation for this document is already running, so no second one was started. Opening that one.",
 				"createFailed": "Couldn't create the document. Nothing was saved — try again.",
 				"promptLabel": "Prompt",
 				"promptPlaceholder": "Use this document type's default prompt",
 				"displacedActive": "This is now the active document of its type. The previous one was kept, but is no longer used for AI generation.",
 				"sourceTruncated": "Your source text was long, so only the first part was used.",
 				"blockedEmptyCreation": "Add source content or turn on Generate with AI to create this document."
+			},
+			"queued": {
+				"waitingOn": "Waiting on {what}",
+				"checking": "Working out what this is waiting for…",
+				"detail": "Queued — waiting on {what}. Generation starts on its own as soon as that finishes; there is nothing to retry.",
+				"detailChecking": "Queued — still working out what this document is waiting for. Generation starts on its own as soon as the project's context work finishes.",
+				"reasons": {
+					"codebaseIndexing": "repository indexing",
+					"sourceExtraction": "uploaded sources being processed",
+					"linkedSiteCrawl": "linked pages being crawled",
+					"securityScan": "the security scan",
+					"monitorIngestion": "connected channels being imported",
+					"prerequisiteDocument": "a document this one is written from",
+					"unknown": "the project's context work"
+				}
 			}
 		},
 		"stories": {
@@ -4966,7 +4987,8 @@
 			"assistantVisibilityShared": "Visible to all project members",
 			"assistantVisibilityPrivate": "Private — only you",
 			"assistantVisibilityLocked": "Visibility locked after the first message.",
-			"generationError": "Generation failed for this document: {error}"
+			"generationError": "Generation failed for this document: {error}",
+			"generationQueued": "This document is waiting on the project's context work before it can be generated. It starts on its own when that finishes — there is nothing to retry."
 		},
 		"contextSources": {
 			"addContext": "Add a file, link, text snippet, or integration source as project context.",

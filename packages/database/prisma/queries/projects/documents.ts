@@ -836,6 +836,186 @@ export async function markDocumentGenerationStarted(documentId: string) {
 }
 
 /**
+ * Accept a generation request that is not allowed to start yet, because the
+ * project's own context-building work has to finish first.
+ *
+ * QUEUED rather than GENERATING because a wait can legitimately last an hour,
+ * and three mechanisms reinterpret GENERATING on a timer — the stale-generation
+ * watchdog, the readiness roll-up and the client's staleness/retry affordance.
+ * None can tell a deliberate wait from a run that died, so a deliberate wait
+ * does not borrow their state.
+ *
+ * Guarded, unlike {@link markDocumentGenerationStarted} — but on FRESHNESS, not
+ * on status: the write only applies to a row that nothing has touched since
+ * this attempt began (`updatedAt < generationStartedAt`).
+ *
+ * A status guard is the wrong instrument, and the obvious one broke the main
+ * path. Regeneration starts from exactly COMPLETE and FAILED — those are the
+ * only two states the editor even offers the control in — so a guard excluding
+ * the terminal pair refused every regeneration's queue mark, and the document
+ * never showed as queued at all.
+ *
+ * What actually has to be stopped is narrower: a write from THIS attempt
+ * landing after this attempt's own workflow already terminalized the row. A
+ * workflow that fails inside its very first dependency probe writes FAILED
+ * within milliseconds, and an unguarded later queue write would drag it back to
+ * QUEUED — a state the watchdog's age ceiling skips and the retry affordance
+ * hides, so nothing would ever recover it. Freshness says precisely that: the
+ * dispatcher mints `generationStartedAt` before `workflow.start` and marks
+ * after it, so any write the run made in between moves `updatedAt` past the
+ * timestamp and the mark stands down. A row COMPLETE since last week is older
+ * than this attempt and queues normally.
+ *
+ * It closes a second race for free. A LIVE GENERATING row whose workflow has
+ * just written progress is newer than a concurrently-dispatched, differently-
+ * keyed regeneration's timestamp, so that request can no longer drag an
+ * in-flight run back to QUEUED either.
+ *
+ * The accepted cost: an unrelated write inside that window — an embed stamping
+ * `embeddedAt`, a human save — also declines the mark. The run itself is
+ * unaffected and still writes its own outcome; the row simply never advertises
+ * the wait. Losing a status label is the cheap side of this trade, and
+ * resurrecting a terminal row is the expensive one.
+ *
+ * Returns whether it applied, and the `generationStartedAt` it wrote — that
+ * timestamp is this attempt's identity, and every later write in the run
+ * ({@link markDocumentGenerationRunning}, {@link markDocumentGenerationFailed})
+ * is scoped to it.
+ *
+ * Both options exist for the dispatcher, which starts the workflow BEFORE it
+ * marks the row (it cannot mark first: a start Temporal refuses as a duplicate
+ * must not stamp a fresh identity over the live attempt's):
+ *
+ *  - `generationStartedAt` lets the caller supply the identity it already
+ *    handed the workflow at start time, so the run's own QUEUED → GENERATING
+ *    flip matches the row. Defaults to now for callers that mark first.
+ *  - `workflowId` is persisted because the stale-generation watchdog's liveness
+ *    check reads it, and for a QUEUED row — which has no age ceiling, since a
+ *    dependency wait can legitimately last an hour — that check is the only
+ *    thing that can ever recover an orphan.
+ */
+export async function markDocumentGenerationQueued(
+	documentId: string,
+	options: { generationStartedAt?: Date; workflowId?: string } = {},
+): Promise<{ applied: boolean; generationStartedAt: Date }> {
+	const generationStartedAt = options.generationStartedAt ?? new Date();
+	const { count } = await db.projectDocument.updateMany({
+		where: {
+			id: documentId,
+			// This attempt's freshness window. `ProjectDocument.updatedAt` is
+			// `@updatedAt`, so every write to the row moves it — including the
+			// terminal one a fast-failing workflow makes between the start and
+			// this mark, which is the write this guard exists to lose to.
+			updatedAt: { lt: generationStartedAt },
+		},
+		data: {
+			status: "QUEUED",
+			generationProgress: 0,
+			generationError: null,
+			generationStartedAt,
+			// Released here, not on the way out. The claim makes a notification
+			// exactly-once per RUN, not per document: a regeneration a week
+			// later is a new outcome its requester is owed. Clearing it as the
+			// new attempt is accepted keeps the claim's whole lifetime inside
+			// one run, so a late terminal write from the previous one still
+			// finds its own claim taken.
+			generationNotificationEmittedAt: null,
+			// Only when supplied: a caller with no workflow to point at must
+			// not blank out the id an earlier attempt left behind.
+			...(options.workflowId ? { workflowId: options.workflowId } : {}),
+		},
+	});
+	return { applied: count > 0, generationStartedAt };
+}
+
+/**
+ * Flip a queued document to actively generating, once its dependency wait has
+ * cleared and the model call may start.
+ *
+ * Attempt-scoped exactly like {@link markDocumentGenerationFailed}: `startedAt`
+ * must be the timestamp {@link markDocumentGenerationQueued} returned for THIS
+ * run. A wait that outlives its own row — the user cancelled and re-ran, the
+ * watchdog swept it, the workflow already failed — must not be resurrected as
+ * GENERATING by a probe that resolves late, so a write that no longer matches
+ * this attempt's identity is silently a no-op.
+ *
+ * Clears `generationQueueReason` in the same write: the row is no longer
+ * waiting on anything, and a stale reason would keep telling the reader it is.
+ */
+export type GenerationRunStartOutcome =
+	/** The row was this attempt's, and is now GENERATING. */
+	| "started"
+	/**
+	 * The row is not this attempt's any more. Something else owns it: the
+	 * watchdog terminalized it, or a newer dispatch replaced the identity.
+	 */
+	| "superseded"
+	/**
+	 * The attempt's own queue write has not landed yet.
+	 *
+	 * The dispatcher stamps QUEUED *after* `workflow.start` returns, so a
+	 * worker that picks the run up immediately — the common case when nothing
+	 * is outstanding — can reach this write first. That is a two-process
+	 * ordering gap, not a lost race for ownership, and the two are
+	 * indistinguishable from the update's count alone. Reported apart so the
+	 * caller can wait for its own mark instead of concluding it was replaced.
+	 */
+	| "not-yet-visible";
+
+export async function markDocumentGenerationRunning(
+	documentId: string,
+	startedAt: Date,
+): Promise<GenerationRunStartOutcome> {
+	const { count } = await db.projectDocument.updateMany({
+		where: {
+			id: documentId,
+			status: "QUEUED",
+			generationStartedAt: startedAt,
+		},
+		data: {
+			status: "GENERATING",
+			generationQueueReason: null,
+		},
+	});
+	if (count > 0) {
+		return "started";
+	}
+
+	// Nothing was written, and WHY decides whether the run may continue. Read
+	// the identity the row actually carries: anything at or after this
+	// attempt's means a later writer owns it, anything before it — or nothing
+	// at all — means this attempt's own mark is still in flight.
+	const row = await db.projectDocument.findUnique({
+		where: { id: documentId },
+		select: { generationStartedAt: true },
+	});
+	if (!row) {
+		return "superseded";
+	}
+	const current = row.generationStartedAt?.getTime() ?? 0;
+	return current > startedAt.getTime() ? "superseded" : "not-yet-visible";
+}
+
+/**
+ * Record the coarse category the run is currently waiting on, so the document
+ * can tell its reader why it has not started.
+ *
+ * Scoped to QUEUED so it can only ever describe a row that is actually waiting.
+ * A dependency probe can resolve after the wait cleared or after the run died,
+ * and a reason written onto a GENERATING, COMPLETE or FAILED row would be read
+ * as current by the UI — a finished document explaining what it is waiting for.
+ */
+export async function setDocumentGenerationQueueReason(
+	documentId: string,
+	reason: string,
+): Promise<void> {
+	await db.projectDocument.updateMany({
+		where: { id: documentId, status: "QUEUED" },
+		data: { generationQueueReason: reason },
+	});
+}
+
+/**
  * Mark a document's generation as failed. Used by the generate-document
  * procedure when starting the Temporal workflow itself throws (the workflow
  * never got a chance to write its own FAILED status via its activities), so
@@ -863,7 +1043,15 @@ export async function markDocumentGenerationFailed(
 	await db.projectDocument.updateMany({
 		where: {
 			id: documentId,
-			status: "GENERATING",
+			// Both non-terminal states one attempt passes through: a run that
+			// is waiting on its dependencies is QUEUED, not GENERATING, and it
+			// fails the same way — from the dispatch path when the start throws,
+			// and from the watchdog when the workflow turns out to be gone.
+			// Narrowing this to GENERATING would leave a queued orphan waiting
+			// forever, since nothing else would ever write it a terminal status.
+			// The guard exists to protect COMPLETE/FAILED and newer attempts,
+			// which `generationStartedAt` still does.
+			status: { in: ["QUEUED", "GENERATING"] },
 			generationStartedAt: startedAt,
 		},
 		data: {
@@ -963,8 +1151,22 @@ export async function failGeneratingDocument({
 }
 
 /**
- * Documents whose generation was dispatched before `cutoff` and never reached a
- * terminal status.
+ * Everything the sweep needs off a stalled row. Shared by the two reads below
+ * so the arms cannot drift into returning different shapes.
+ */
+const STALE_GENERATION_SELECT = {
+	id: true,
+	projectId: true,
+	status: true,
+	generationStartedAt: true,
+	workflowId: true,
+	project: { select: { organizationId: true } },
+} as const satisfies Prisma.ProjectDocumentSelect;
+
+/**
+ * Documents whose generation never reached a terminal status: dispatched before
+ * `cutoff` and still GENERATING, or waiting in the queue with a workflow to ask
+ * about.
  *
  * The dispatch path marks a row GENERATING *before* starting the workflow, on
  * purpose — see `markDocumentGenerationStarted`. That ordering is right, but it
@@ -975,9 +1177,21 @@ export async function failGeneratingDocument({
  * than risk failing a run that is actually alive. This query feeds the sweep
  * that closes what that leaves behind.
  *
+ * The two arms are deliberately asymmetric — see the queries below. Age is a
+ * usable signal for a run that is working and a meaningless one for a run that
+ * is waiting, so the queued arm trades the ceiling for the liveness check.
+ *
+ * They are also queried SEPARATELY rather than as one `OR` under one `take`,
+ * because a single page shared by both lets either starve the other: a project
+ * sitting on a backlog of perfectly healthy live QUEUED rows fills the page on
+ * `generationStartedAt asc`, and the aged GENERATING rows — the ones that
+ * demonstrably need sweeping — never enter the batch at all. Two bounded reads
+ * concatenated cost one extra round trip and remove that failure mode.
+ *
  * `generationStartedAt` is returned because the caller must pass it back to
  * `markDocumentGenerationFailed`: the write is scoped to one attempt, so a row
- * that has since been re-dispatched is skipped rather than clobbered.
+ * that has since been re-dispatched is skipped rather than clobbered. `status`
+ * comes back with it so the sweep can report which arm it swept.
  */
 export async function findStaleGeneratingDocuments({
 	cutoff,
@@ -986,21 +1200,46 @@ export async function findStaleGeneratingDocuments({
 	cutoff: Date;
 	limit: number;
 }) {
-	return await db.projectDocument.findMany({
-		where: {
-			status: "GENERATING",
-			generationStartedAt: { lt: cutoff },
-		},
-		select: {
-			id: true,
-			projectId: true,
-			generationStartedAt: true,
-			workflowId: true,
-			project: { select: { organizationId: true } },
-		},
-		orderBy: { generationStartedAt: "asc" },
-		take: limit,
-	});
+	const [agedCandidates, queuedCandidates] = await Promise.all([
+		// A run that is actually working is only suspicious once it has been at
+		// it for longer than any real run takes.
+		db.projectDocument.findMany({
+			where: {
+				status: "GENERATING",
+				generationStartedAt: { lt: cutoff },
+			},
+			select: STALE_GENERATION_SELECT,
+			orderBy: { generationStartedAt: "asc" },
+			take: limit,
+		}),
+		// A run that is waiting on its dependencies has no such ceiling: an
+		// hour-long wait is the feature working as designed, and an age test
+		// would fail exactly the runs it was meant to protect. The liveness
+		// check takes the ceiling's place as the sole guard, so a queued row is
+		// only a candidate when there is a workflow to ask Temporal about —
+		// with nothing to ask, the sweep cannot tell a live wait from an
+		// orphan, and leaves it alone.
+		db.projectDocument.findMany({
+			where: {
+				status: "QUEUED",
+				workflowId: { not: null },
+			},
+			select: STALE_GENERATION_SELECT,
+			orderBy: { generationStartedAt: "asc" },
+			take: limit,
+		}),
+	]);
+
+	// The batch stays bounded by `limit`, and neither arm can crowd the other
+	// out: each is guaranteed half of it, and whatever the shorter arm leaves
+	// unused is handed to the longer one — so a quiet queue still lets the
+	// sweep work through a full page of aged rows.
+	const reserved = Math.floor(limit / 2);
+	const aged = agedCandidates.slice(
+		0,
+		Math.max(reserved, limit - queuedCandidates.length),
+	);
+	return [...aged, ...queuedCandidates.slice(0, limit - aged.length)];
 }
 
 /**

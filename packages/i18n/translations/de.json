@@ -177,7 +177,7 @@
 				"failed": "Fehlgeschlagen"
 			},
 			"stepStatus": {
-				"pending": "Wartet",
+				"pending": "Nicht begonnen",
 				"running": "Läuft",
 				"completed": "Fertig",
 				"failed": "Fehlgeschlagen",
@@ -191,7 +191,8 @@
 				"CODE_INDEXING": "Repository-Erfassung",
 				"CONTEXT_PROCESSING": "Dokumenterfassung",
 				"STORY_KIND_REGENERATION": "Neufassung für den neuen Typ",
-				"PUBLISHING_TOPIC_GENERATION": "Themenvorschläge"
+				"PUBLISHING_TOPIC_GENERATION": "Themenvorschläge",
+				"DOCUMENT_GENERATION": "Dokumenterstellung"
 			},
 			"steps": {
 				"fetch": "Nachrichten abrufen",
@@ -207,7 +208,9 @@
 				"download": "Datei herunterladen",
 				"extract": "Text extrahieren",
 				"chunk": "In Abschnitte teilen",
-				"store": "Für die Suche speichern"
+				"store": "Für die Suche speichern",
+				"awaitContext": "Auf Projektkontext warten",
+				"generate": "Dokument schreiben"
 			},
 			"counts": {
 				"messagesScanned": "{count, plural, one {# Nachricht geprüft} other {# Nachrichten geprüft}}",
@@ -2009,6 +2012,28 @@
 		"description": "Um weiterzumachen, wähle bitte einen Plan aus."
 	},
 	"projects": {
+		"documents": {
+			"create": {
+				"createdQueued": "Dokument erstellt und in die Warteschlange gestellt. Die Generierung startet von selbst, sobald die Kontextarbeit des Projekts abgeschlossen ist; ein erneuter Versuch ist nicht nötig.",
+				"generationAlreadyQueued": "Für dieses Dokument steht bereits eine Generierung in der Warteschlange, es wurde keine zweite gestartet. Diese wird geöffnet.",
+				"generationAlreadyRunning": "Für dieses Dokument läuft bereits eine Generierung, es wurde keine zweite gestartet. Diese wird geöffnet."
+			},
+			"queued": {
+				"waitingOn": "Wartet auf {what}",
+				"checking": "Wird ermittelt, worauf gewartet wird…",
+				"detail": "In der Warteschlange — wartet auf {what}. Die Generierung startet von selbst, sobald das abgeschlossen ist; ein erneuter Versuch ist nicht nötig.",
+				"detailChecking": "In der Warteschlange — es wird noch ermittelt, worauf dieses Dokument wartet. Die Generierung startet von selbst, sobald die Kontextarbeit des Projekts abgeschlossen ist.",
+				"reasons": {
+					"codebaseIndexing": "die Indizierung des Repositorys",
+					"sourceExtraction": "die Verarbeitung hochgeladener Quellen",
+					"linkedSiteCrawl": "das Crawlen verknüpfter Seiten",
+					"securityScan": "den Sicherheitsscan",
+					"monitorIngestion": "den Import verbundener Kanäle",
+					"prerequisiteDocument": "ein Dokument, auf dem dieses aufbaut",
+					"unknown": "die Kontextarbeit des Projekts"
+				}
+			}
+		},
 		"sharedWithMe": {
 			"title": "Für mich freigegeben",
 			"description": "Projekte in anderen Organisationen, zu denen du als Gast eingeladen wurdest."
@@ -3775,6 +3800,11 @@
 				"systemSuccess": "Beziehungen neu zugeordnet",
 				"error": "Neuzuordnung fehlgeschlagen. Bitte erneut versuchen."
 			}
+		}
+	},
+	"tooltips": {
+		"documentEditor": {
+			"generationQueued": "Dieses Dokument wartet auf die Kontextarbeit des Projekts, bevor es generiert werden kann. Es startet von selbst, sobald das abgeschlossen ist — ein erneuter Versuch ist nicht nötig."
 		}
 	}
 }

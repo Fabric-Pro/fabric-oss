@@ -27,10 +27,19 @@ const row = (over: Record<string, unknown> = {}) => ({
 	documentId: "doc-1",
 	projectId: "proj-1",
 	organizationId: "org-1",
+	status: "GENERATING" as const,
 	workflowId: "wf-1",
 	generationStartedAtMs: 1_000,
 	...over,
 });
+
+/** An hour-old queued row — the age a healthy dependency wait can reach. */
+const queuedRow = (over: Record<string, unknown> = {}) =>
+	row({
+		status: "QUEUED",
+		generationStartedAtMs: Date.now() - 60 * 60_000,
+		...over,
+	});
 
 beforeEach(() => {
 	activityStubs.findStaleGeneratingDocumentsActivity.mockReset();
@@ -90,6 +99,42 @@ describe("documentGenerationWatchdogWorkflow", () => {
 		expect(out.failed).toBe(1);
 		expect(
 			activityStubs.isGenerationWorkflowLiveActivity,
+		).not.toHaveBeenCalled();
+	});
+
+	/**
+	 * The queued arm. A row waiting on its dependencies has no age at which it
+	 * becomes suspicious — the query hands it over at any age precisely so this
+	 * check, and only this check, decides. A workflow that is gone means the
+	 * wait is never going to end on its own.
+	 */
+	it("fails a queued row whose workflow is gone, however recent it is", async () => {
+		activityStubs.findStaleGeneratingDocumentsActivity.mockResolvedValue({
+			rows: [queuedRow({ generationStartedAtMs: Date.now() })],
+		});
+		activityStubs.isGenerationWorkflowLiveActivity.mockResolvedValue(false);
+
+		const out = await documentGenerationWatchdogWorkflow();
+
+		expect(out).toEqual({ failed: 1, skippedLive: 0, scanned: 1 });
+	});
+
+	/**
+	 * The whole reason QUEUED is a separate status. An hour-long wait is the
+	 * queue working as designed; sweeping it would kill a run the user is still
+	 * waiting for and hand them a failure they cannot explain.
+	 */
+	it("leaves an hour-old queued row alone while its workflow is live", async () => {
+		activityStubs.findStaleGeneratingDocumentsActivity.mockResolvedValue({
+			rows: [queuedRow()],
+		});
+		activityStubs.isGenerationWorkflowLiveActivity.mockResolvedValue(true);
+
+		const out = await documentGenerationWatchdogWorkflow();
+
+		expect(out).toEqual({ failed: 0, skippedLive: 1, scanned: 1 });
+		expect(
+			activityStubs.markGenerationTimedOutActivity,
 		).not.toHaveBeenCalled();
 	});
 

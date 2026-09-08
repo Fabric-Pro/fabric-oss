@@ -102,6 +102,7 @@ export interface FabricDocumentSummary {
 	title: string;
 	status:
 		| "DRAFT"
+		| "QUEUED"
 		| "GENERATING"
 		| "IN_PROGRESS"
 		| "REVIEW"
