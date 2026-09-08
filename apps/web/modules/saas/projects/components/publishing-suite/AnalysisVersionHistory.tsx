@@ -30,7 +30,11 @@ import type { ApiRouterClient } from "@repo/api/orpc/router";
 import type { DocumentVersionAuthor } from "@repo/utils/document-version-author";
 import { VersionDiffViewer } from "@saas/projects/components/VersionDiffViewer";
 import { orpc } from "@shared/lib/orpc-query-utils";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+	useInfiniteQuery,
+	useMutation,
+	useQueryClient,
+} from "@tanstack/react-query";
 import { Badge } from "@ui/components/badge";
 import { Button } from "@ui/components/button";
 import {
@@ -144,14 +148,33 @@ export function AnalysisVersionHistory({
 	const queryClient = useQueryClient();
 	const listInput = { projectId, topicId, organizationId };
 
-	const { data, isLoading } = useQuery({
-		...orpc.projects.publishingSuite.listAnalysisRevisions.queryOptions({
-			input: listInput,
+	// Paged rather than one read of the whole history. The table is
+	// append-only and every row carries a `body` the writer bounds at 40,000
+	// characters, so an unpaged read grows without limit for exactly the
+	// topics that have been worked on hardest — the ones whose history a
+	// person is most likely to open.
+	const listQuery = useInfiniteQuery({
+		...orpc.projects.publishingSuite.listAnalysisRevisions.infiniteOptions({
+			input: (cursor: number | undefined) => ({
+				...listInput,
+				cursor,
+			}),
+			initialPageParam: undefined as number | undefined,
+			// The server decides where the boundary is; this only forwards it.
+			// Deriving "is there more" from `revisions.length` here would be a
+			// second opinion about a page only the query saw whole.
+			getNextPageParam: (lastPage: {
+				nextCursor: number | null;
+			}): number | undefined => lastPage.nextCursor ?? undefined,
 		}),
 		enabled: open,
 	});
 
-	const revisions = data?.revisions ?? [];
+	const { isLoading } = listQuery;
+	const revisions = useMemo(
+		() => listQuery.data?.pages.flatMap((page) => page.revisions) ?? [],
+		[listQuery.data],
+	);
 
 	// What "current" means for the diff viewer's left-hand pane. The highest
 	// version IS the saved current state — nothing but this save path ever
@@ -183,9 +206,21 @@ export function AnalysisVersionHistory({
 			onSuccess: (result: SaveAnalysisRevisionResult) => {
 				toast.success(`Restored to version ${result.version}`);
 				queryClient.invalidateQueries({
+					// `key()`, NOT `queryKey()`. The two are not
+					// interchangeable, and the difference is invisible at
+					// runtime: `queryKey({ input })` stamps `type: "query"`
+					// into the key, so once this list became an infinite
+					// query — whose cache entry is stamped `type: "infinite"`
+					// — that key matched nothing. The restore would have kept
+					// succeeding, kept toasting, and left the drawer showing
+					// history without the version it had just written.
+					// `key()` is the partial form built for invalidation and
+					// matches whatever type the entry carries.
 					queryKey:
-						orpc.projects.publishingSuite.listAnalysisRevisions.queryKey(
-							{ input: listInput },
+						orpc.projects.publishingSuite.listAnalysisRevisions.key(
+							{
+								input: listInput,
+							},
 						),
 				});
 				setRestoreConfirmOpen(false);
@@ -454,6 +489,30 @@ export function AnalysisVersionHistory({
 											</div>
 										);
 									})}
+									{listQuery.hasNextPage ? (
+										<Button
+											variant="outline"
+											className="w-full"
+											onClick={() =>
+												listQuery.fetchNextPage()
+											}
+											disabled={
+												listQuery.isFetchingNextPage
+											}
+										>
+											{listQuery.isFetchingNextPage ? (
+												<>
+													<Loader2Icon
+														className="mr-2 size-4 motion-safe:animate-spin"
+														aria-hidden="true"
+													/>
+													Loading older versions
+												</>
+											) : (
+												"Load older versions"
+											)}
+										</Button>
+									) : null}
 								</div>
 							</ScrollArea>
 						)}

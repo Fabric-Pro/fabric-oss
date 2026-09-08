@@ -203,14 +203,81 @@ export async function getCurrentAnalysisRevision(input: {
 	});
 }
 
-/** Full history, newest first. */
+/**
+ * Page size for the history read when the caller names none.
+ *
+ * Deliberately below the 50 the audit-history sibling takes, because a page
+ * here is not a page of rows: `REVISION_SELECT` carries `body`, which the
+ * writer bounds at 40,000 characters. The response is therefore rows times
+ * prose, and 25 is what keeps the worst case near a megabyte while still
+ * filling a tall drawer on the first request.
+ */
+const DEFAULT_PAGE_SIZE = 25;
+
+/**
+ * Ceiling on a caller-named page size, matching the API schema at
+ * `analysis-revision.ts`. Duplicated on purpose rather than shared: this is
+ * the floor for any caller that does not come through oRPC, and a helper
+ * exported from `@repo/database` cannot assume its input was validated.
+ */
+const MAX_PAGE_SIZE = 100;
+
+/**
+ * One page of history, newest first.
+ *
+ * A KEYSET cursor on `version` — not an offset, and not the opaque encoded
+ * string the `listAuditLog` sibling uses. That sibling encodes `(createdAt,
+ * id)` because its order has no single monotonic key; this table has one.
+ * `version` is assigned by the compare-and-set in `saveAnalysisRevision`
+ * under the project lock and is unique per topic, so it orders the history
+ * completely on its own. Base64 around one integer would hide nothing and
+ * cost every reader of a log or a URL the ability to see where they are.
+ *
+ * `take: limit + 1` asks for one row past the page on purpose. Its presence
+ * is the whole of "is there more", so that answer comes from the same query
+ * and the same snapshot as the rows themselves — a separate count could be
+ * taken after a concurrent save and disagree with the page it describes.
+ */
 export async function listAnalysisRevisions(input: {
 	topicId: string;
 	projectId: string;
+	/**
+	 * The oldest version the caller already holds. The next page is strictly
+	 * below it. Omit for the newest page.
+	 */
+	cursor?: number | null;
+	limit?: number | null;
 }) {
-	return db.publishingTopicAnalysisRevision.findMany({
-		where: { topicId: input.topicId, projectId: input.projectId },
+	const limit = Math.min(
+		Math.max(input.limit ?? DEFAULT_PAGE_SIZE, 1),
+		MAX_PAGE_SIZE,
+	);
+
+	const rows = await db.publishingTopicAnalysisRevision.findMany({
+		where: {
+			topicId: input.topicId,
+			projectId: input.projectId,
+			// Strictly less-than. The cursor names a row the caller has
+			// already been given, never one to send again — an inclusive
+			// bound would repeat a revision at every page boundary, which in
+			// a version list reads as a duplicate save rather than as a
+			// paging artefact.
+			...(input.cursor != null ? { version: { lt: input.cursor } } : {}),
+		},
 		orderBy: { version: "desc" },
+		take: limit + 1,
 		select: REVISION_SELECT,
 	});
+
+	const hasMore = rows.length > limit;
+	const revisions = hasMore ? rows.slice(0, limit) : rows;
+
+	return {
+		revisions,
+		// Null means "this is the last page", never "start again": the caller
+		// stops when it is null rather than treating it as an absent filter.
+		nextCursor: hasMore
+			? (revisions[revisions.length - 1]?.version ?? null)
+			: null,
+	};
 }

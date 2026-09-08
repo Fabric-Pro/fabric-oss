@@ -56,18 +56,42 @@ const { saveMutationMock, mutationState, capturedMutationOptionsRef } =
 		},
 	}));
 
-const { queryStateRef, invalidateQueriesMock } = vi.hoisted(() => ({
-	queryStateRef: {
-		current: {
-			data: undefined as { revisions: unknown[] } | undefined,
-			isLoading: false,
+const { queryStateRef, invalidateQueriesMock, fetchNextPageMock } = vi.hoisted(
+	() => ({
+		queryStateRef: {
+			current: {
+				data: undefined as
+					| {
+							pages: {
+								revisions: unknown[];
+								nextCursor: number | null;
+							}[];
+					  }
+					| undefined,
+				isLoading: false,
+				hasNextPage: false,
+				isFetchingNextPage: false,
+				fetchNextPage: () => {},
+			},
 		},
-	},
-	invalidateQueriesMock: vi.fn(),
-}));
+		invalidateQueriesMock: vi.fn(),
+		fetchNextPageMock: vi.fn(),
+	}),
+);
+
+/**
+ * Wrap revisions as the single first page of an infinite query.
+ *
+ * A helper rather than a literal at each site so a test that cares only about
+ * a row does not have to restate the paging shape, and so the shape lives in
+ * one place when it changes again.
+ */
+function onePage(revisions: unknown[], nextCursor: number | null = null) {
+	return { pages: [{ revisions, nextCursor }] };
+}
 
 vi.mock("@tanstack/react-query", () => ({
-	useQuery: () => queryStateRef.current,
+	useInfiniteQuery: () => queryStateRef.current,
 	useMutation: (opts: {
 		onSuccess?: (result: unknown) => void;
 		onError?: (error: unknown) => void;
@@ -84,16 +108,16 @@ vi.mock("@tanstack/react-query", () => ({
 }));
 
 // Spies (not plain functions) so a test can read back what the drawer's own
-// `useQuery` call actually registered as its key, instead of hand-typing a
-// second literal to compare against — see the "invalidates the list query
-// with exactly the key..." test below.
+// list query actually registered, instead of hand-typing a second literal to
+// compare against — see the "invalidates the list by the same topic the list
+// query read" test below.
 const { orpcSpies } = vi.hoisted(() => ({
 	orpcSpies: {
-		queryOptions: vi.fn((o: Record<string, unknown>) => ({
+		infiniteOptions: vi.fn((o: Record<string, unknown>) => ({
 			queryKey: ["listAnalysisRevisions", o],
 			queryFn: vi.fn(),
 		})),
-		queryKey: vi.fn((o: Record<string, unknown>) => [
+		key: vi.fn((o: Record<string, unknown>) => [
 			"listAnalysisRevisions",
 			o,
 		]),
@@ -105,8 +129,13 @@ vi.mock("@shared/lib/orpc-query-utils", () => ({
 		projects: {
 			publishingSuite: {
 				listAnalysisRevisions: {
-					queryOptions: orpcSpies.queryOptions,
-					queryKey: orpcSpies.queryKey,
+					infiniteOptions: orpcSpies.infiniteOptions,
+					// `key`, not `queryKey`: the drawer must invalidate with
+					// the PARTIAL form, because the exact form stamps
+					// `type: "query"` and would miss an infinite entry. A
+					// mock exposing `queryKey` here would let that regression
+					// back in without a red test.
+					key: orpcSpies.key,
 				},
 				saveAnalysisRevision: {
 					mutationOptions: (o: Record<string, unknown>) => ({
@@ -159,8 +188,11 @@ beforeEach(() => {
 	capturedMutationOptionsRef.current = null;
 	diffViewerPropsRef.current = null;
 	queryStateRef.current = {
-		data: { revisions: [CURRENT_REVISION, RESTORABLE_REVISION] },
+		data: onePage([CURRENT_REVISION, RESTORABLE_REVISION]),
 		isLoading: false,
+		hasNextPage: false,
+		isFetchingNextPage: false,
+		fetchNextPage: fetchNextPageMock,
 	};
 });
 
@@ -211,10 +243,75 @@ describe("AnalysisVersionHistory — author fallback", () => {
 
 describe("AnalysisVersionHistory — empty state", () => {
 	it("shows an empty state instead of a blank drawer when there is no history yet", () => {
-		queryStateRef.current = { data: { revisions: [] }, isLoading: false };
+		queryStateRef.current = {
+			...queryStateRef.current,
+			data: onePage([]),
+		};
 		render(<AnalysisVersionHistory {...baseProps} currentVersion={null} />);
 
 		expect(screen.getByText(/no version history yet/i)).toBeInTheDocument();
+	});
+});
+
+describe("AnalysisVersionHistory — paging", () => {
+	it("offers to load older versions only while the server says there are more", () => {
+		queryStateRef.current = {
+			...queryStateRef.current,
+			data: onePage([CURRENT_REVISION], 2),
+			hasNextPage: true,
+		};
+		render(<AnalysisVersionHistory {...baseProps} currentVersion={3} />);
+
+		expect(
+			screen.getByRole("button", { name: /load older versions/i }),
+		).toBeInTheDocument();
+	});
+
+	it("hides the control on the last page, so a full final page does not invite an empty fetch", () => {
+		// `hasNextPage` comes from the server's `nextCursor`, never from the
+		// row count: a last page that happens to be exactly full looks
+		// identical to a middle one from here.
+		queryStateRef.current = {
+			...queryStateRef.current,
+			data: onePage([CURRENT_REVISION, RESTORABLE_REVISION]),
+			hasNextPage: false,
+		};
+		render(<AnalysisVersionHistory {...baseProps} currentVersion={3} />);
+
+		expect(
+			screen.queryByRole("button", { name: /load older versions/i }),
+		).not.toBeInTheDocument();
+	});
+
+	it("renders every page as one list, so a restored version from page two is reachable", () => {
+		queryStateRef.current = {
+			...queryStateRef.current,
+			data: {
+				pages: [
+					{ revisions: [CURRENT_REVISION], nextCursor: 2 },
+					{ revisions: [RESTORABLE_REVISION], nextCursor: null },
+				],
+			},
+		};
+		render(<AnalysisVersionHistory {...baseProps} currentVersion={3} />);
+
+		expect(screen.getByText("v3")).toBeInTheDocument();
+		expect(screen.getByText("v1")).toBeInTheDocument();
+	});
+
+	it("asks for the next page when the control is used", async () => {
+		queryStateRef.current = {
+			...queryStateRef.current,
+			data: onePage([CURRENT_REVISION], 2),
+			hasNextPage: true,
+		};
+		render(<AnalysisVersionHistory {...baseProps} currentVersion={3} />);
+
+		await userEvent.click(
+			screen.getByRole("button", { name: /load older versions/i }),
+		);
+
+		expect(fetchNextPageMock).toHaveBeenCalled();
 	});
 });
 
@@ -353,17 +450,18 @@ describe("AnalysisVersionHistory — restore success", () => {
 		expect(toast.success).toHaveBeenCalledWith("Restored to version 4");
 	});
 
-	it("invalidates the list query with exactly the key the list query itself registered, not a hand-copied lookalike", async () => {
+	it("invalidates the list by the same topic the list query read, through the partial key form", async () => {
 		render(<AnalysisVersionHistory {...baseProps} currentVersion={3} />);
 
-		// What the drawer's OWN `useQuery` call actually registered as its
-		// key — read back off the real `queryOptions()` call the component
-		// made during render, never re-typed by hand here. If restore's
-		// invalidate call and the list query's own registration ever
-		// diverge in shape, this stops matching.
-		const registeredQueryKey =
-			orpcSpies.queryOptions.mock.results.at(-1)?.value.queryKey;
-		expect(registeredQueryKey).toBeDefined();
+		// The input the drawer's OWN list query registered, read back off its
+		// real `infiniteOptions()` call and never re-typed here. `input` is a
+		// function of the cursor, so the first page is what it returns for
+		// "no cursor yet".
+		const registeredInput = (
+			orpcSpies.infiniteOptions.mock.calls.at(-1)?.[0] as {
+				input: (cursor: number | undefined) => Record<string, unknown>;
+			}
+		).input(undefined);
 
 		await userEvent.click(
 			screen.getAllByRole("button", { name: /restore/i })[0],
@@ -374,8 +472,20 @@ describe("AnalysisVersionHistory — restore success", () => {
 			capturedMutationOptionsRef.current?.onSuccess?.({ version: 4 });
 		});
 
+		// Same topic as the read, and NO cursor: a key carrying one would
+		// match a single page and leave the rest of the list stale. The exact
+		// `queryKey()` form is not merely unused here, it is absent from the
+		// mock — it stamps `type: "query"` and would silently match nothing
+		// now that the list is an infinite query.
+		expect(orpcSpies.key).toHaveBeenCalledWith({
+			input: {
+				projectId: registeredInput.projectId,
+				topicId: registeredInput.topicId,
+				organizationId: registeredInput.organizationId,
+			},
+		});
 		expect(invalidateQueriesMock).toHaveBeenCalledWith({
-			queryKey: registeredQueryKey,
+			queryKey: orpcSpies.key.mock.results.at(-1)?.value,
 		});
 	});
 

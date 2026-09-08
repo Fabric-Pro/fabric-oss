@@ -50,8 +50,10 @@ import { requireEligibleProjectForTopic } from "../../lib/publishing-topic-proje
  * that reasoning does not transfer — a planning analysis is a working document
  * of eight headed sections, the same shape as the drafts those two cap. It
  * exists to stop an unbounded write reaching a `@db.Text` column on an
- * append-only table whose whole history `listAnalysisRevisions` returns
- * unpaginated, not to impose a house style.
+ * append-only table that keeps every revision forever, not to impose a house
+ * style. It is also one of the two factors that bound a history response:
+ * `listAnalysisRevisions` pages the rows, this caps each row, and only both
+ * together make that endpoint bounded — the page carries whole bodies.
  *
  * Deliberately NO `.min(1)`, unlike those siblings. An emptied document is a
  * legitimate authoring decision here — telling "somebody removed this on
@@ -141,6 +143,20 @@ export const listAnalysisRevisionsProcedure = tenantProtectedProcedure
 			projectId: z.string(),
 			topicId: z.string(),
 			organizationId: z.string().nullable().optional(),
+			/**
+			 * The oldest version the caller already holds; the next page is
+			 * strictly below it. A version, not an opaque token — see the
+			 * keyset note on `listAnalysisRevisions`.
+			 *
+			 * Unvalidatable against this topic on purpose. A cursor naming a
+			 * version that never existed, or one from another topic, yields an
+			 * empty page rather than an error: it is a position in an ordering,
+			 * not a claim about a row, and rejecting it would let a caller probe
+			 * which versions exist.
+			 */
+			cursor: z.number().int().positive().optional(),
+			/** Page size. The query clamps too, for non-oRPC callers. */
+			limit: z.number().int().min(1).max(100).optional(),
 		}),
 	)
 	.handler(async ({ input }) => {
@@ -150,10 +166,15 @@ export const listAnalysisRevisionsProcedure = tenantProtectedProcedure
 		// matters for isolation — {topicId, projectId} inside the query below —
 		// stays; requireProjectPermission above already proved the caller is
 		// authorized for this project.
-		const revisions = await listAnalysisRevisions({
+		const { revisions, nextCursor } = await listAnalysisRevisions({
 			topicId: input.topicId,
 			projectId: input.projectId,
+			cursor: input.cursor,
+			limit: input.limit,
 		});
 
-		return { revisions };
+		// `nextCursor` is part of the contract even when null, so a client can
+		// tell "no more pages" from "this server does not page" without
+		// inspecting the row count against a limit it may not have sent.
+		return { revisions, nextCursor };
 	});
