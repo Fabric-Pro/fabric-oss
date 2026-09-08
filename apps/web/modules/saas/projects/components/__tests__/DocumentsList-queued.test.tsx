@@ -20,6 +20,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen } from "@testing-library/react";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
+import de from "../../../../../../../packages/i18n/translations/de.json";
 import en from "../../../../../../../packages/i18n/translations/en.json";
 
 // ── jsdom polyfills ──────────────────────────────────────────────────────
@@ -165,7 +166,7 @@ import {
 	canBeMadeActive,
 	DocumentsList,
 	resolveQueueReasonKey,
-	resolveRegenerateToastMessage,
+	resolveRegenerateToastKey,
 } from "../DocumentsList";
 
 // ── Helpers ──────────────────────────────────────────────────────────────
@@ -523,24 +524,23 @@ describe("getDocumentsPollInterval", () => {
  * here — two tabs, or one double-click — and the fixed "regeneration started"
  * that used to be shown regardless is false in exactly that case.
  */
-describe("resolveRegenerateToastMessage", () => {
+describe("resolveRegenerateToastKey", () => {
 	it("says a run began when one did", () => {
 		expect(
-			resolveRegenerateToastMessage({
+			resolveRegenerateToastKey({
 				outcome: "started",
 				documentStatus: "QUEUED",
 			}),
-		).toBe("Document regeneration started");
+		).toBe("started");
 	});
 
 	it("does not claim a generation started when none did", () => {
-		const message = resolveRegenerateToastMessage({
-			outcome: "alreadyInProgress",
-			documentStatus: "GENERATING",
-		});
-
-		expect(message).not.toMatch(/regeneration started/i);
-		expect(message).toMatch(/already running/i);
+		expect(
+			resolveRegenerateToastKey({
+				outcome: "alreadyInProgress",
+				documentStatus: "GENERATING",
+			}),
+		).toBe("alreadyRunning");
 	});
 
 	it("words the duplicate from the live run's own state, not from a guess", () => {
@@ -548,17 +548,17 @@ describe("resolveRegenerateToastMessage", () => {
 		// project's context work, the other is mid-sentence. Hardcoding either
 		// word tells half the users something false.
 		expect(
-			resolveRegenerateToastMessage({
+			resolveRegenerateToastKey({
 				outcome: "alreadyInProgress",
 				documentStatus: "QUEUED",
 			}),
-		).toMatch(/already queued/i);
+		).toBe("alreadyQueued");
 		expect(
-			resolveRegenerateToastMessage({
+			resolveRegenerateToastKey({
 				outcome: "alreadyInProgress",
 				documentStatus: "GENERATING",
 			}),
-		).toMatch(/already running/i);
+		).toBe("alreadyRunning");
 	});
 
 	it("resolves an unknown or absent outcome rather than throwing", () => {
@@ -571,11 +571,35 @@ describe("resolveRegenerateToastMessage", () => {
 			undefined,
 		]) {
 			expect(
-				resolveRegenerateToastMessage({
+				resolveRegenerateToastKey({
 					outcome,
 					documentStatus: "GENERATING",
 				}),
-			).toBe("Document regeneration started");
+			).toBe("started");
+		}
+	});
+
+	it("names only keys the shipped locales define", () => {
+		// The helper returns a key now, so a typo would surface to users as a
+		// raw key rather than as copy. Both shipped locales must carry every
+		// key it can return, plus the interpolated failure message.
+		for (const messages of [en, de]) {
+			const group = (
+				messages as unknown as {
+					projects: {
+						documents: { regenerateToast: Record<string, string> };
+					};
+				}
+			).projects.documents.regenerateToast;
+			for (const key of [
+				"started",
+				"alreadyQueued",
+				"alreadyRunning",
+				"failed",
+			]) {
+				expect(group[key]).toBeTruthy();
+			}
+			expect(group.failed).toContain("{message}");
 		}
 	});
 });

@@ -2032,6 +2032,12 @@
 					"prerequisiteDocument": "ein Dokument, auf dem dieses aufbaut",
 					"unknown": "die Kontextarbeit des Projekts"
 				}
+			},
+			"regenerateToast": {
+				"started": "Regenerierung des Dokuments gestartet",
+				"alreadyQueued": "Für dieses Dokument steht bereits eine Generierung in der Warteschlange — es wurde keine zweite gestartet",
+				"alreadyRunning": "Für dieses Dokument läuft bereits eine Generierung — es wurde keine zweite gestartet",
+				"failed": "Regenerierung fehlgeschlagen: {message}"
 			}
 		},
 		"sharedWithMe": {

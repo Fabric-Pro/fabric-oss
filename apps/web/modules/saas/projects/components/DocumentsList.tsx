@@ -399,19 +399,28 @@ export function canBeMadeActive(status: string | null | undefined): boolean {
  * invalidation is about to refetch is where the truth lives regardless. Mirrors
  * `resolveCreateOutcomeKey` in `CreateDocumentDialog`.
  */
-export function resolveRegenerateToastMessage({
+/**
+ * Which message the regenerate toast should carry, as a translation key rather
+ * than the copy itself. The distinction the caller cannot make for itself is
+ * "already queued" versus "already running": both come back as the same
+ * `alreadyInProgress` outcome, and only the document's own status separates a
+ * run still waiting on the project's context from one already writing.
+ *
+ * Returning a key keeps this decision unit-testable without pinning English
+ * into the assertion, and keeps the two shipped locales the single place the
+ * wording lives.
+ */
+export function resolveRegenerateToastKey({
 	outcome,
 	documentStatus,
 }: {
 	outcome: string | null | undefined;
 	documentStatus: string | null | undefined;
-}): string {
+}): "started" | "alreadyQueued" | "alreadyRunning" {
 	if (outcome === "alreadyInProgress") {
-		return documentStatus === "QUEUED"
-			? "A generation for this document is already queued — a second one was not started"
-			: "A generation for this document is already running — a second one was not started";
+		return documentStatus === "QUEUED" ? "alreadyQueued" : "alreadyRunning";
 	}
-	return "Document regeneration started";
+	return "started";
 }
 
 export function DocumentsList({
@@ -423,6 +432,9 @@ export function DocumentsList({
 }: Props) {
 	const tTooltips = useTranslations("tooltips.documentEditor");
 	const tDocuments = useTranslations("projects.documents");
+	const tRegenerateToast = useTranslations(
+		"projects.documents.regenerateToast",
+	);
 	const router = useRouter();
 	const { basePath: orgBasePath, organizationId } = useOrganizationContext();
 	const basePath = `${orgBasePath}/projects`;
@@ -491,10 +503,12 @@ export function DocumentsList({
 					(doc) => doc.id === variables.id,
 				);
 				toast.success(
-					resolveRegenerateToastMessage({
-						outcome: result?.outcome,
-						documentStatus: existing?.status ?? null,
-					}),
+					tRegenerateToast(
+						resolveRegenerateToastKey({
+							outcome: result?.outcome,
+							documentStatus: existing?.status ?? null,
+						}),
+					),
 				);
 				queryClient.invalidateQueries({
 					queryKey: orpc.projects.documents.list.queryKey({
@@ -503,7 +517,9 @@ export function DocumentsList({
 				});
 			},
 			onError: (error) => {
-				toast.error(`Failed to regenerate: ${error.message}`);
+				toast.error(
+					tRegenerateToast("failed", { message: error.message }),
+				);
 			},
 			onSettled: () => {
 				setRegeneratingDocId(null);
