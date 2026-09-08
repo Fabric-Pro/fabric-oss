@@ -31,18 +31,21 @@ vi.mock("@repo/database", () => ({
 }));
 
 import { markProviderNotConfigured } from "../mark-provider-not-configured";
+import { PROVIDER_HEARTBEAT_MIN_INTERVAL_MS } from "../touch-provider-registry";
 
 beforeEach(() => {
 	findUnique.mockReset();
 	update.mockReset();
-	update.mockReturnValue({
-		catch: () => Promise.resolve(),
-	});
+	update.mockResolvedValue({});
 });
 
 describe("markProviderNotConfigured — activity behavior", () => {
 	it("flips the registry row to NOT_CONFIGURED and reports updated:true on first call", async () => {
-		findUnique.mockResolvedValueOnce({ currentHealth: "MAJOR_OUTAGE" });
+		findUnique.mockResolvedValueOnce({
+			currentHealth: "MAJOR_OUTAGE",
+			lastIncidentId: null,
+			lastPolledAt: null,
+		});
 
 		const result = await markProviderNotConfigured({
 			providerKey: "aws_s3",
@@ -61,15 +64,22 @@ describe("markProviderNotConfigured — activity behavior", () => {
 	});
 
 	it("reports updated:false when the row is already NOT_CONFIGURED (idempotent)", async () => {
-		findUnique.mockResolvedValueOnce({ currentHealth: "NOT_CONFIGURED" });
+		findUnique.mockResolvedValueOnce({
+			currentHealth: "NOT_CONFIGURED",
+			lastIncidentId: null,
+			// Stale heartbeat, so this call still writes — the assertion
+			// under test is the return value, not the write.
+			lastPolledAt: new Date(Date.now() - 10 * 60_000),
+		});
 
 		const result = await markProviderNotConfigured({
 			providerKey: "stripe",
 			reason: "STRIPE_SECRET_KEY not set",
 		});
 
-		// The activity still issues the update (to refresh lastPolledAt)
-		// but reports updated:false so the workflow doesn't spam logs.
+		// `updated` means "transitioned into NOT_CONFIGURED", so a
+		// heartbeat-only refresh reports false and the workflow doesn't
+		// spam logs.
 		expect(result.updated).toBe(false);
 		expect(update).toHaveBeenCalledTimes(1);
 	});
@@ -86,18 +96,74 @@ describe("markProviderNotConfigured — activity behavior", () => {
 		expect(update).not.toHaveBeenCalled();
 	});
 
-	it("refreshes lastPolledAt every call so the admin UI does not show stale 'last poll' time", async () => {
+	it("refreshes lastPolledAt when the stored one is older than the heartbeat interval", async () => {
 		// The original staging bug was the opposite: AWS S3 read "Last poll
-		// 5 hours ago" because the activity was never reachable. This
-		// assertion locks in that every successful flip refreshes the
-		// timestamp.
-		findUnique.mockResolvedValueOnce({ currentHealth: "NOT_CONFIGURED" });
+		// 5 hours ago" because the activity was never reachable. The
+		// heartbeat still has to advance — just not on every single tick.
+		findUnique.mockResolvedValueOnce({
+			currentHealth: "NOT_CONFIGURED",
+			lastIncidentId: null,
+			lastPolledAt: new Date(
+				Date.now() - PROVIDER_HEARTBEAT_MIN_INTERVAL_MS - 1_000,
+			),
+		});
 		const before = Date.now();
 		await markProviderNotConfigured({ providerKey: "stripe" });
 		const args = update.mock.calls[0][0] as {
 			data: { lastPolledAt: Date };
 		};
 		expect(args.data.lastPolledAt.getTime()).toBeGreaterThanOrEqual(before);
+	});
+
+	it("reports updated:false when the registry write rejects", async () => {
+		// The transition never landed, so the activity must not claim it —
+		// otherwise the workflow logs a flip that is not in the database and
+		// the next tick, seeing the old health, logs it a second time.
+		findUnique.mockResolvedValueOnce({
+			currentHealth: "MAJOR_OUTAGE",
+			lastIncidentId: null,
+			lastPolledAt: null,
+		});
+		update.mockRejectedValueOnce(new Error("registry write failed"));
+
+		const result = await markProviderNotConfigured({
+			providerKey: "aws_s3",
+			reason: "AWS_S3_BUCKET not set in this environment",
+		});
+
+		expect(update).toHaveBeenCalledTimes(1);
+		expect(result.updated).toBe(false);
+	});
+
+	it("does not throw when the registry read rejects", async () => {
+		findUnique.mockRejectedValueOnce(new Error("registry read failed"));
+
+		const result = await markProviderNotConfigured({
+			providerKey: "aws_s3",
+		});
+
+		expect(result.updated).toBe(false);
+		expect(update).not.toHaveBeenCalled();
+	});
+
+	it("skips the write entirely when the row is already NOT_CONFIGURED and the heartbeat is fresh", async () => {
+		// This is the behaviour change: a synthetic probe that keeps
+		// reporting the same missing env var no longer rewrites the durable
+		// row on every tick. `updated` is false either way, so the
+		// workflow's logging contract is unaffected.
+		findUnique.mockResolvedValueOnce({
+			currentHealth: "NOT_CONFIGURED",
+			lastIncidentId: null,
+			lastPolledAt: new Date(Date.now() - 30_000),
+		});
+
+		const result = await markProviderNotConfigured({
+			providerKey: "stripe",
+			reason: "STRIPE_SECRET_KEY not set",
+		});
+
+		expect(result.updated).toBe(false);
+		expect(update).not.toHaveBeenCalled();
 	});
 });
 

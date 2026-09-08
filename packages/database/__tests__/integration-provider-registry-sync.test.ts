@@ -1,8 +1,13 @@
 /**
  * Integration Provider Registry — DB sync unit tests
  *
- * Verifies idempotency, that the update path does NOT clobber runtime
+ * Verifies that the sync compares before writing (an unchanged row costs
+ * no write at all), that the update path does NOT clobber runtime
  * columns, and that DB errors are swallowed without crashing the boot.
+ *
+ * The compare pass is the point of the file: the web app runs
+ * serverless, so a Prisma `upsert` per registration meant every cold
+ * start rewrote all 33 rows. Staging saw four boots in six minutes.
  *
  * Tests pass a representative registration set in directly as argument.
  * The sync function under test is package-agnostic — it does not import
@@ -12,12 +17,16 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const upsertMock = vi.fn();
+const findManyMock = vi.fn();
+const createMock = vi.fn();
+const updateMock = vi.fn();
 
 vi.mock("../prisma/client", () => ({
 	db: {
 		integrationProviderRegistry: {
-			upsert: (args: unknown) => upsertMock(args),
+			findMany: (args: unknown) => findManyMock(args),
+			create: (args: unknown) => createMock(args),
+			update: (args: unknown) => updateMock(args),
 		},
 	},
 }));
@@ -107,103 +116,120 @@ const TEST_REGISTRATIONS: IntegrationProviderRegistrationInput[] = [
 	},
 ];
 
+/**
+ * The exact row shape `findMany` returns for a registration whose stored
+ * config already matches — i.e. the steady state on every boot after the
+ * first.
+ */
+function storedRowFor(
+	reg: IntegrationProviderRegistrationInput,
+): Record<string, unknown> {
+	return {
+		providerKey: reg.key,
+		displayName: reg.displayName,
+		statusPageUrl: reg.statusPageUrl ?? null,
+		statusPageApiUrl: reg.statusPageApiUrl ?? null,
+		statusPagePolling: reg.statusPagePolling !== false,
+		syntheticProbeEnabled: reg.syntheticProbe !== undefined,
+		syntheticProbeInterval: reg.syntheticProbe?.interval ?? null,
+		breakerKey: reg.breakerKey ?? null,
+		affectedFeatures: [...reg.affectedFeatures],
+		dataConnectionProvider: reg.dataConnectionProvider ?? null,
+	};
+}
+
+/** Every registration already stored, unchanged. */
+function allRowsStored(): Record<string, unknown>[] {
+	return TEST_REGISTRATIONS.map(storedRowFor);
+}
+
 beforeEach(() => {
-	upsertMock.mockReset();
-	// Default: every upsert call resolves to an object — the actual
-	// returned row isn't read by `syncIntegrationProviderRegistry`.
-	upsertMock.mockResolvedValue({});
+	findManyMock.mockReset();
+	createMock.mockReset();
+	updateMock.mockReset();
+	// Default: empty table — every registration takes the create path.
+	findManyMock.mockResolvedValue([]);
+	createMock.mockResolvedValue({});
+	updateMock.mockResolvedValue({});
 });
 
 afterEach(() => {
 	vi.clearAllMocks();
 });
 
-describe("syncIntegrationProviderRegistry", () => {
-	it("upserts one row per registration", async () => {
-		const count = await syncIntegrationProviderRegistry(TEST_REGISTRATIONS);
+describe("syncIntegrationProviderRegistry — first boot (empty table)", () => {
+	it("creates one row per registration", async () => {
+		const summary =
+			await syncIntegrationProviderRegistry(TEST_REGISTRATIONS);
 
-		expect(count).toBe(TEST_REGISTRATIONS.length);
-		expect(upsertMock).toHaveBeenCalledTimes(TEST_REGISTRATIONS.length);
+		expect(summary).toEqual({
+			created: TEST_REGISTRATIONS.length,
+			updated: 0,
+			skipped: 0,
+			failed: 0,
+		});
+		expect(createMock).toHaveBeenCalledTimes(TEST_REGISTRATIONS.length);
+		expect(updateMock).not.toHaveBeenCalled();
 	});
 
-	it("matches on providerKey unique constraint", async () => {
+	it("reads the existing rows exactly once, not once per registration", async () => {
 		await syncIntegrationProviderRegistry(TEST_REGISTRATIONS);
-
-		// Spot-check one call.
-		const openaiCall = upsertMock.mock.calls.find(
-			(c) =>
-				(c[0] as { where?: { providerKey?: string } }).where
-					?.providerKey === "openai",
-		);
-		expect(openaiCall).toBeDefined();
-		expect(openaiCall?.[0].where).toEqual({ providerKey: "openai" });
+		expect(findManyMock).toHaveBeenCalledTimes(1);
 	});
 
 	it("create path includes providerKey + static config columns", async () => {
 		await syncIntegrationProviderRegistry(TEST_REGISTRATIONS);
 
-		const openaiCall = upsertMock.mock.calls.find(
+		const openaiCall = createMock.mock.calls.find(
 			(c) =>
-				(c[0] as { where?: { providerKey?: string } }).where
+				(c[0] as { data?: { providerKey?: string } }).data
 					?.providerKey === "openai",
 		);
 		expect(openaiCall).toBeDefined();
-		const args = openaiCall?.[0] as {
-			create: Record<string, unknown>;
-			update: Record<string, unknown>;
-		};
+		const data = (openaiCall?.[0] as { data: Record<string, unknown> })
+			.data;
 
-		expect(args.create.providerKey).toBe("openai");
-		expect(args.create.displayName).toBe("OpenAI");
-		expect(args.create.statusPageUrl).toBe("https://status.openai.com");
-		expect(args.create.statusPageApiUrl).toBe(
+		expect(data.providerKey).toBe("openai");
+		expect(data.displayName).toBe("OpenAI");
+		expect(data.statusPageUrl).toBe("https://status.openai.com");
+		expect(data.statusPageApiUrl).toBe(
 			"https://status.openai.com/api/v2/summary.json",
 		);
-		expect(args.create.statusPagePolling).toBe(true);
-		expect(args.create.syntheticProbeEnabled).toBe(true);
-		expect(args.create.syntheticProbeInterval).toBe("5m");
-		expect(args.create.breakerKey).toBe("openai_completions");
-		expect(args.create.affectedFeatures).toEqual(["ai_generation"]);
-		expect(args.create.dataConnectionProvider).toBeNull();
+		expect(data.statusPagePolling).toBe(true);
+		expect(data.syntheticProbeEnabled).toBe(true);
+		expect(data.syntheticProbeInterval).toBe("5m");
+		expect(data.breakerKey).toBe("openai_completions");
+		expect(data.affectedFeatures).toEqual(["ai_generation"]);
+		expect(data.dataConnectionProvider).toBeNull();
 	});
 
-	it("update path does NOT include currentHealth, lastPolledAt, lastIncidentId", async () => {
+	it("create path does NOT set currentHealth, lastPolledAt, lastIncidentId", async () => {
 		await syncIntegrationProviderRegistry(TEST_REGISTRATIONS);
 
-		// Every update path must omit the runtime columns so re-boot
-		// does not clobber poller state.
-		for (const call of upsertMock.mock.calls) {
-			const { update } = call[0] as { update: Record<string, unknown> };
-			expect(update).not.toHaveProperty("currentHealth");
-			expect(update).not.toHaveProperty("lastPolledAt");
-			expect(update).not.toHaveProperty("lastIncidentId");
+		for (const call of createMock.mock.calls) {
+			const { data } = call[0] as { data: Record<string, unknown> };
+			expect(data).not.toHaveProperty("currentHealth");
+			expect(data).not.toHaveProperty("lastPolledAt");
+			expect(data).not.toHaveProperty("lastIncidentId");
 		}
 	});
 
 	it("statusPagePolling defaults to true unless explicitly false", async () => {
 		await syncIntegrationProviderRegistry(TEST_REGISTRATIONS);
 
-		// aws_s3 has explicit `statusPagePolling: false`.
-		const awsCall = upsertMock.mock.calls.find(
-			(c) =>
-				(c[0] as { where?: { providerKey?: string } }).where
-					?.providerKey === "aws_s3",
+		const byKey = new Map(
+			createMock.mock.calls.map((c) => {
+				const { data } = c[0] as {
+					data: { providerKey: string; statusPagePolling: boolean };
+				};
+				return [data.providerKey, data.statusPagePolling];
+			}),
 		);
-		expect(awsCall).toBeDefined();
-		const aws = (awsCall?.[0] as { create: { statusPagePolling: boolean } })
-			.create;
-		expect(aws.statusPagePolling).toBe(false);
 
+		// aws_s3 has explicit `statusPagePolling: false`.
+		expect(byKey.get("aws_s3")).toBe(false);
 		// github implicitly defaults — statusPagePolling: true.
-		const ghCall = upsertMock.mock.calls.find(
-			(c) =>
-				(c[0] as { where?: { providerKey?: string } }).where
-					?.providerKey === "github",
-		);
-		expect(ghCall).toBeDefined();
-		const gh = (ghCall?.[0] as { create: { statusPagePolling: boolean } })
-			.create;
-		expect(gh.statusPagePolling).toBe(true);
+		expect(byKey.get("github")).toBe(true);
 	});
 
 	it("syntheticProbeEnabled tracks whether syntheticProbe is set", async () => {
@@ -217,16 +243,14 @@ describe("syncIntegrationProviderRegistry", () => {
 			"aws_s3",
 		]);
 
-		for (const call of upsertMock.mock.calls) {
-			const args = call[0] as {
-				where: { providerKey: string };
-				create: { syntheticProbeEnabled: boolean };
+		for (const call of createMock.mock.calls) {
+			const { data } = call[0] as {
+				data: { providerKey: string; syntheticProbeEnabled: boolean };
 			};
-			const expected = probed.has(args.where.providerKey);
 			expect(
-				args.create.syntheticProbeEnabled,
-				`syntheticProbeEnabled mismatch for ${args.where.providerKey}`,
-			).toBe(expected);
+				data.syntheticProbeEnabled,
+				`syntheticProbeEnabled mismatch for ${data.providerKey}`,
+			).toBe(probed.has(data.providerKey));
 		}
 	});
 
@@ -241,40 +265,167 @@ describe("syncIntegrationProviderRegistry", () => {
 			"aws_s3",
 		]);
 
-		for (const call of upsertMock.mock.calls) {
-			const args = call[0] as {
-				where: { providerKey: string };
-				create: { dataConnectionProvider: string | null };
+		for (const call of createMock.mock.calls) {
+			const { data } = call[0] as {
+				data: {
+					providerKey: string;
+					dataConnectionProvider: string | null;
+				};
 			};
-			if (mvp5.has(args.where.providerKey)) {
-				expect(args.create.dataConnectionProvider).toBeNull();
+			if (mvp5.has(data.providerKey)) {
+				expect(data.dataConnectionProvider).toBeNull();
 			} else {
-				expect(args.create.dataConnectionProvider).toBeTruthy();
+				expect(data.dataConnectionProvider).toBeTruthy();
 			}
 		}
 	});
+});
 
-	it("is idempotent — re-running does not duplicate logic, just re-issues upserts", async () => {
-		const first = await syncIntegrationProviderRegistry(TEST_REGISTRATIONS);
-		expect(first).toBe(TEST_REGISTRATIONS.length);
-		expect(upsertMock).toHaveBeenCalledTimes(TEST_REGISTRATIONS.length);
+describe("syncIntegrationProviderRegistry — compare before writing", () => {
+	it("writes nothing when every stored row already matches", async () => {
+		findManyMock.mockResolvedValue(allRowsStored());
 
-		upsertMock.mockClear();
-
-		const second =
+		const summary =
 			await syncIntegrationProviderRegistry(TEST_REGISTRATIONS);
-		expect(second).toBe(TEST_REGISTRATIONS.length);
-		expect(upsertMock).toHaveBeenCalledTimes(TEST_REGISTRATIONS.length);
+
+		expect(summary).toEqual({
+			created: 0,
+			updated: 0,
+			skipped: TEST_REGISTRATIONS.length,
+			failed: 0,
+		});
+		expect(createMock).not.toHaveBeenCalled();
+		expect(updateMock).not.toHaveBeenCalled();
 	});
 
-	it("swallows per-row errors and continues — best-effort boot", async () => {
-		// Fail the first 3 calls, succeed the rest.
+	it("updates only the row whose config drifted", async () => {
+		const rows = allRowsStored();
+		const stripe = rows.find((r) => r.providerKey === "stripe");
+		if (stripe) {
+			stripe.displayName = "Stripe (old name)";
+		}
+		findManyMock.mockResolvedValue(rows);
+
+		const summary =
+			await syncIntegrationProviderRegistry(TEST_REGISTRATIONS);
+
+		expect(summary).toEqual({
+			created: 0,
+			updated: 1,
+			skipped: TEST_REGISTRATIONS.length - 1,
+			failed: 0,
+		});
+		expect(updateMock).toHaveBeenCalledTimes(1);
+		const args = updateMock.mock.calls[0][0] as {
+			where: { providerKey: string };
+			data: Record<string, unknown>;
+		};
+		expect(args.where).toEqual({ providerKey: "stripe" });
+		expect(args.data.displayName).toBe("Stripe");
+	});
+
+	it("creates the row that is missing and leaves the matching ones alone", async () => {
+		findManyMock.mockResolvedValue(
+			allRowsStored().filter((r) => r.providerKey !== "github"),
+		);
+
+		const summary =
+			await syncIntegrationProviderRegistry(TEST_REGISTRATIONS);
+
+		expect(summary).toEqual({
+			created: 1,
+			updated: 0,
+			skipped: TEST_REGISTRATIONS.length - 1,
+			failed: 0,
+		});
+		expect(createMock).toHaveBeenCalledTimes(1);
+		const { data } = createMock.mock.calls[0][0] as {
+			data: { providerKey: string };
+		};
+		expect(data.providerKey).toBe("github");
+	});
+
+	it("treats a reordered affectedFeatures array as a change", async () => {
+		const rows = allRowsStored();
+		const aws = rows.find((r) => r.providerKey === "aws_s3");
+		if (aws) {
+			aws.affectedFeatures = ["document_processing", "file_storage"];
+		}
+		findManyMock.mockResolvedValue(rows);
+
+		const summary =
+			await syncIntegrationProviderRegistry(TEST_REGISTRATIONS);
+
+		expect(summary.updated).toBe(1);
+		const args = updateMock.mock.calls[0][0] as {
+			where: { providerKey: string };
+			data: { affectedFeatures: string[] };
+		};
+		expect(args.where).toEqual({ providerKey: "aws_s3" });
+		expect(args.data.affectedFeatures).toEqual([
+			"file_storage",
+			"document_processing",
+		]);
+	});
+
+	it("detects a nullable column that gained a value", async () => {
+		const rows = allRowsStored();
+		const gh = rows.find((r) => r.providerKey === "github");
+		if (gh) {
+			gh.breakerKey = "github_api";
+		}
+		findManyMock.mockResolvedValue(rows);
+
+		const summary =
+			await syncIntegrationProviderRegistry(TEST_REGISTRATIONS);
+
+		expect(summary.updated).toBe(1);
+		const args = updateMock.mock.calls[0][0] as {
+			data: { breakerKey: string | null };
+		};
+		expect(args.data.breakerKey).toBeNull();
+	});
+
+	it("update path does NOT include currentHealth, lastPolledAt, lastIncidentId", async () => {
+		// Every stored row differs, so every registration takes the update
+		// path — the runtime columns must be absent from all of them.
+		findManyMock.mockResolvedValue(
+			allRowsStored().map((row) => ({ ...row, displayName: "stale" })),
+		);
+
+		await syncIntegrationProviderRegistry(TEST_REGISTRATIONS);
+
+		expect(updateMock).toHaveBeenCalledTimes(TEST_REGISTRATIONS.length);
+		for (const call of updateMock.mock.calls) {
+			const { data } = call[0] as { data: Record<string, unknown> };
+			expect(data).not.toHaveProperty("currentHealth");
+			expect(data).not.toHaveProperty("lastPolledAt");
+			expect(data).not.toHaveProperty("lastIncidentId");
+		}
+	});
+
+	it("is idempotent — a second run over unchanged rows writes nothing", async () => {
+		findManyMock.mockResolvedValue(allRowsStored());
+
+		const first = await syncIntegrationProviderRegistry(TEST_REGISTRATIONS);
+		const second =
+			await syncIntegrationProviderRegistry(TEST_REGISTRATIONS);
+
+		expect(first.skipped).toBe(TEST_REGISTRATIONS.length);
+		expect(second.skipped).toBe(TEST_REGISTRATIONS.length);
+		expect(createMock).not.toHaveBeenCalled();
+		expect(updateMock).not.toHaveBeenCalled();
+	});
+});
+
+describe("syncIntegrationProviderRegistry — best-effort boot", () => {
+	it("swallows per-row errors and continues", async () => {
 		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {
 			/* silence */
 		});
 
 		let calls = 0;
-		upsertMock.mockImplementation(async () => {
+		createMock.mockImplementation(async () => {
 			calls++;
 			if (calls <= 3) {
 				throw new Error(`simulated DB error ${calls}`);
@@ -282,33 +433,78 @@ describe("syncIntegrationProviderRegistry", () => {
 			return {};
 		});
 
-		const upserted =
+		const summary =
 			await syncIntegrationProviderRegistry(TEST_REGISTRATIONS);
 
-		expect(upsertMock).toHaveBeenCalledTimes(TEST_REGISTRATIONS.length);
-		expect(upserted).toBe(TEST_REGISTRATIONS.length - 3); // 3 failed
+		expect(createMock).toHaveBeenCalledTimes(TEST_REGISTRATIONS.length);
+		expect(summary.created).toBe(TEST_REGISTRATIONS.length - 3);
+		expect(summary.failed).toBe(3);
 		expect(errorSpy).toHaveBeenCalledTimes(3);
 		// First error message should reference the providerKey for
 		// debuggability.
 		const firstLog = errorSpy.mock.calls[0]?.[0] as string;
-		expect(firstLog).toMatch(/Failed to upsert provider/);
+		expect(firstLog).toMatch(/Failed to sync provider/);
 	});
 
-	it("never throws even when every upsert fails", async () => {
+	it("never throws even when every write fails", async () => {
 		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {
 			/* silence */
 		});
-		upsertMock.mockRejectedValue(new Error("DB unreachable"));
+		createMock.mockRejectedValue(new Error("DB unreachable"));
 
-		await expect(
-			syncIntegrationProviderRegistry(TEST_REGISTRATIONS),
-		).resolves.toBe(0);
+		const summary =
+			await syncIntegrationProviderRegistry(TEST_REGISTRATIONS);
+
+		expect(summary.failed).toBe(TEST_REGISTRATIONS.length);
+		expect(summary.created).toBe(0);
 		expect(errorSpy).toHaveBeenCalledTimes(TEST_REGISTRATIONS.length);
 	});
 
-	it("returns 0 when given an empty registration list", async () => {
-		const count = await syncIntegrationProviderRegistry([]);
-		expect(count).toBe(0);
-		expect(upsertMock).not.toHaveBeenCalled();
+	it("attempts no writes when the read of existing rows fails", async () => {
+		// A failed read means the database is unreachable, so the writes
+		// would only reproduce the same failure N times. Log once, count
+		// everything as failed, and let the next boot reconcile.
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {
+			/* silence */
+		});
+		findManyMock.mockRejectedValue(new Error("read failed"));
+
+		const summary =
+			await syncIntegrationProviderRegistry(TEST_REGISTRATIONS);
+
+		expect(summary).toEqual({
+			created: 0,
+			updated: 0,
+			skipped: 0,
+			failed: TEST_REGISTRATIONS.length,
+		});
+		expect(createMock).not.toHaveBeenCalled();
+		expect(updateMock).not.toHaveBeenCalled();
+		expect(errorSpy).toHaveBeenCalledTimes(1);
+	});
+
+	it("does not throw when the read of existing rows fails", async () => {
+		vi.spyOn(console, "error").mockImplementation(() => {
+			/* silence */
+		});
+		findManyMock.mockRejectedValue(new Error("read failed"));
+
+		await expect(
+			syncIntegrationProviderRegistry(TEST_REGISTRATIONS),
+		).resolves.toBeDefined();
+	});
+
+	it("returns an all-zero summary and reads nothing for an empty registration list", async () => {
+		const summary = await syncIntegrationProviderRegistry([]);
+
+		expect(summary).toEqual({
+			created: 0,
+			updated: 0,
+			skipped: 0,
+			failed: 0,
+		});
+		expect(findManyMock).not.toHaveBeenCalled();
+		expect(createMock).not.toHaveBeenCalled();
+		expect(updateMock).not.toHaveBeenCalled();
 	});
 });

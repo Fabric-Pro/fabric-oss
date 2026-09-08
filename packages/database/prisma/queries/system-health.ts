@@ -104,8 +104,13 @@ export async function countTenantServerFaults(args: {
 /**
  * Most recent moment background processing demonstrably completed work.
  *
- * `IntegrationProviderRegistry.lastPolledAt` is written by the status-page
- * poller every two minutes. Reading the maximum across the registry is an
+ * `IntegrationProviderRegistry.lastPolledAt` is a throttled heartbeat, not a
+ * per-poll timestamp: the status-page poller runs every two minutes, but the
+ * monitoring activities only rewrite the row when the provider's health or
+ * incident actually changed, or when the stored heartbeat has gone stale
+ * (`PROVIDER_HEARTBEAT_MIN_INTERVAL_MS` in `@repo/temporal`). In practice a
+ * given row is stamped at least every ~5 minutes, and the maximum across the
+ * whole registry moves at least that often. Reading that maximum is still an
  * end-to-end liveness signal: the schedule fired, the workflow ran, the
  * activity committed. Returns `null` when nothing has ever polled, which the
  * resolver treats as UNKNOWN rather than healthy.

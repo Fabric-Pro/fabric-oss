@@ -7,7 +7,9 @@
  *     the existing row (no duplicate).
  *   - Re-fire transition: AUTO_RESOLVED→FIRED within 1h records
  *     IncidentEvent.RE_FIRED on the new row.
- *   - Registry row update on every upsert.
+ *   - Registry row reconciliation: written when health or the incident
+ *     pointer changed, or when the throttled heartbeat went stale —
+ *     skipped otherwise.
  *   - Close path resolves only when an active row exists; idempotent if
  *     no row to close.
  */
@@ -37,7 +39,29 @@ const state = {
 		payload: unknown;
 		createdAt: Date;
 	}>,
-	registry: new Map<string, { providerKey: string; currentHealth: string }>(),
+	registry: new Map<
+		string,
+		{
+			providerKey: string;
+			currentHealth: string;
+			lastIncidentId?: string | null;
+			lastPolledAt?: Date | null;
+		}
+	>(),
+	/**
+	 * Every `integrationProviderRegistry.update` the activities issued.
+	 * The registry is now written through `touchProviderRegistry`, which
+	 * skips the UPDATE when nothing changed and the heartbeat is fresh —
+	 * so "did this poll rewrite the durable row?" is itself under test.
+	 */
+	registryUpdates: [] as Array<Record<string, unknown>>,
+	/**
+	 * Flip to make the registry read throw. The registry write happens
+	 * AFTER the incident row and its event are committed, so a registry
+	 * failure must never fail the activity — see the best-effort cases
+	 * below.
+	 */
+	registryReadFails: false,
 };
 
 let idCounter = 0;
@@ -149,6 +173,20 @@ vi.mock("@repo/database", () => ({
 			}),
 		},
 		integrationProviderRegistry: {
+			findUnique: vi.fn(async ({ where }: any) => {
+				if (state.registryReadFails) {
+					throw new Error("registry unreachable");
+				}
+				const reg = state.registry.get(where.providerKey);
+				if (!reg) {
+					return null;
+				}
+				return {
+					currentHealth: reg.currentHealth,
+					lastIncidentId: reg.lastIncidentId ?? null,
+					lastPolledAt: reg.lastPolledAt ?? null,
+				};
+			}),
 			update: vi.fn(async ({ where, data }: any) => {
 				const reg = state.registry.get(where.providerKey);
 				if (!reg) {
@@ -156,6 +194,7 @@ vi.mock("@repo/database", () => ({
 						code: "P2025",
 					});
 				}
+				state.registryUpdates.push(data);
 				Object.assign(reg, data);
 				return reg;
 			}),
@@ -175,10 +214,16 @@ beforeEach(() => {
 	state.incidents.length = 0;
 	state.events.length = 0;
 	state.registry.clear();
-	// Seed a registry row so the update succeeds for the happy path.
+	state.registryUpdates.length = 0;
+	state.registryReadFails = false;
+	// Seed a registry row so the update succeeds for the happy path. A
+	// null `lastPolledAt` reads as a stale heartbeat, so the first touch
+	// of each test always writes.
 	state.registry.set("openai", {
 		providerKey: "openai",
 		currentHealth: "OPERATIONAL",
+		lastIncidentId: null,
+		lastPolledAt: null,
 	});
 	idCounter = 0;
 });
@@ -283,6 +328,45 @@ describe("upsertIntegrationIncident", () => {
 		expect(state.registry.get("openai")?.currentHealth).toBe(
 			"PARTIAL_OUTAGE",
 		);
+		expect(state.registryUpdates.at(-1)).toMatchObject({
+			currentHealth: "PARTIAL_OUTAGE",
+			lastIncidentId: "incident-1",
+		});
+	});
+
+	it("does NOT rewrite the registry on a continuation poll when health and incident are unchanged and the heartbeat is fresh", async () => {
+		// The churn this guards: the status-page poller re-runs every 2
+		// minutes for as long as an incident stays open, and every one of
+		// those ticks used to rewrite the durable registry row purely to
+		// move `lastPolledAt` forward.
+		await upsertIntegrationIncident(baseInput);
+		expect(state.registryUpdates).toHaveLength(1);
+
+		const second = await upsertIntegrationIncident(baseInput);
+
+		expect(second.wasNew).toBe(false);
+		// The first upsert stamped `lastPolledAt`, so the second poll finds
+		// a fresh heartbeat with identical health / incident id and skips
+		// the write entirely.
+		expect(state.registryUpdates).toHaveLength(1);
+	});
+
+	it("still refreshes the registry heartbeat once the stored timestamp goes stale", async () => {
+		await upsertIntegrationIncident(baseInput);
+		expect(state.registryUpdates).toHaveLength(1);
+
+		// Age the stored heartbeat past the throttle window.
+		const reg = state.registry.get("openai");
+		if (reg) {
+			reg.lastPolledAt = new Date(Date.now() - 10 * 60_000);
+		}
+
+		await upsertIntegrationIncident(baseInput);
+
+		expect(state.registryUpdates).toHaveLength(2);
+		expect(state.registryUpdates[1]).toEqual({
+			lastPolledAt: expect.any(Date),
+		});
 	});
 
 	// Regression #1021 follow-up: when a pre-fix parser wrote a literal
@@ -373,6 +457,23 @@ describe("upsertIntegrationIncident", () => {
 		expect(event?.eventType).toBe("RE_FIRED");
 	});
 
+	it("still reports wasNew:true when the registry read fails after the incident is persisted", async () => {
+		// The registry touch runs after the incident row and its FIRED
+		// event are committed. If a registry failure propagated, the
+		// activity would fail, and the retry would find the incident
+		// already present and return `wasNew: false` — at which point
+		// status-page-poller.ts never starts the lifecycle workflow and
+		// nobody is notified about a live outage.
+		state.registryReadFails = true;
+
+		const result = await upsertIntegrationIncident(baseInput);
+
+		expect(result.wasNew).toBe(true);
+		expect(state.incidents).toHaveLength(1);
+		expect(state.events[0].eventType).toBe("FIRED");
+		expect(state.registryUpdates).toHaveLength(0);
+	});
+
 	it("does NOT mark RE_FIRED when the previous incident is older than 1h", async () => {
 		// Seed a resolved row from 2 hours ago.
 		state.incidents.push({
@@ -435,11 +536,68 @@ describe("closeIntegrationIncident", () => {
 	});
 
 	it("flips the registry row to OPERATIONAL even when no active incident", async () => {
+		state.registry.set("openai", {
+			providerKey: "openai",
+			currentHealth: "MAJOR_OUTAGE",
+			lastIncidentId: null,
+			lastPolledAt: null,
+		});
+
 		await closeIntegrationIncident({
 			providerKey: "openai",
 			reason: "STATUSPAGE_RESOLVED",
 		});
 		expect(state.registry.get("openai")?.currentHealth).toBe("OPERATIONAL");
+	});
+
+	it("does NOT rewrite the registry on a repeat healthy close when the heartbeat is fresh", async () => {
+		// A healthy provider reaches this branch every time the poller's
+		// 2-poll operational hysteresis clears. Once the row already reads
+		// OPERATIONAL with a fresh heartbeat there is nothing to write.
+		await closeIntegrationIncident({
+			providerKey: "openai",
+			reason: "STATUSPAGE_RESOLVED",
+		});
+		expect(state.registryUpdates).toHaveLength(1);
+
+		await closeIntegrationIncident({
+			providerKey: "openai",
+			reason: "STATUSPAGE_RESOLVED",
+		});
+		expect(state.registryUpdates).toHaveLength(1);
+	});
+
+	it("still reports resolved:true when the registry read fails after the incident is resolved", async () => {
+		// Same invariant as the upsert path: the registry touch is the last
+		// thing this activity does, long after the incident row flipped to
+		// RESOLVED and the AUTO_RESOLVED event was written. A registry
+		// failure must not fail the activity and force a retry over
+		// already-committed work.
+		state.incidents.push({
+			id: "live",
+			providerKey: "openai",
+			providerName: "OpenAI",
+			status: "FIRING",
+			severity: "SEV2",
+			health: "PARTIAL_OUTAGE",
+			detectionMethod: "STATUSPAGE_POLL",
+			statusPageIncidentId: "inc-live",
+			affectedComponents: [],
+			summary: null,
+			startedAt: new Date(),
+			resolvedAt: null,
+		});
+		state.registryReadFails = true;
+
+		const result = await closeIntegrationIncident({
+			providerKey: "openai",
+			reason: "STATUSPAGE_RESOLVED",
+		});
+
+		expect(result.resolved).toBe(true);
+		expect(result.incidentId).toBe("live");
+		expect(state.incidents[0].status).toBe("RESOLVED");
+		expect(state.registryUpdates).toHaveLength(0);
 	});
 
 	// Bug 2: when the close reason is NOT_CONFIGURED, the registry row's
@@ -452,6 +610,10 @@ describe("closeIntegrationIncident", () => {
 			state.registry.set("stripe", {
 				providerKey: "stripe",
 				currentHealth: "NOT_CONFIGURED",
+				// Non-null so "lastIncidentId is preserved" is actually
+				// exercised rather than passing because it was never set.
+				lastIncidentId: "stripe-stale",
+				lastPolledAt: null,
 			});
 			state.incidents.push({
 				id: "stripe-stale",
@@ -483,10 +645,27 @@ describe("closeIntegrationIncident", () => {
 			// NOT_CONFIGURED — not "OPERATIONAL" — so the audit trail
 			// preserves the cause.
 			expect(state.incidents[0].health).toBe("NOT_CONFIGURED");
-			// Registry row stays NOT_CONFIGURED.
+			// Registry row stays NOT_CONFIGURED, and the deep-link target
+			// survives the close.
 			expect(state.registry.get("stripe")?.currentHealth).toBe(
 				"NOT_CONFIGURED",
 			);
+			expect(state.registry.get("stripe")?.lastIncidentId).toBe(
+				"stripe-stale",
+			);
+			// Asserting on the written payload directly: neither column may
+			// appear in it at all, so this cannot pass by coincidence of the
+			// stored value already matching.
+			expect(state.registryUpdates).toHaveLength(1);
+			expect(state.registryUpdates[0]).not.toHaveProperty(
+				"currentHealth",
+			);
+			expect(state.registryUpdates[0]).not.toHaveProperty(
+				"lastIncidentId",
+			);
+			expect(state.registryUpdates[0]).toEqual({
+				lastPolledAt: expect.any(Date),
+			});
 			// AUTO_RESOLVED event written with the NOT_CONFIGURED reason.
 			const event = state.events.find(
 				(e) => e.eventType === "AUTO_RESOLVED",
@@ -501,6 +680,8 @@ describe("closeIntegrationIncident", () => {
 			state.registry.set("aws_s3", {
 				providerKey: "aws_s3",
 				currentHealth: "NOT_CONFIGURED",
+				lastIncidentId: "aws-old-incident",
+				lastPolledAt: null,
 			});
 
 			const result = await closeIntegrationIncident({
@@ -510,11 +691,18 @@ describe("closeIntegrationIncident", () => {
 
 			expect(result.resolved).toBe(false);
 			expect(result.incidentId).toBeNull();
-			// The mock doesn't track which fields were written, but the
-			// invariant under test is that NOT_CONFIGURED stays —
-			// regardless of incident-row state.
+			// The write payload is captured, so this asserts the columns were
+			// never written rather than merely that they still read the same:
+			// the heartbeat is the only thing this branch may touch.
+			expect(state.registryUpdates).toHaveLength(1);
+			expect(state.registryUpdates[0]).toEqual({
+				lastPolledAt: expect.any(Date),
+			});
 			expect(state.registry.get("aws_s3")?.currentHealth).toBe(
 				"NOT_CONFIGURED",
+			);
+			expect(state.registry.get("aws_s3")?.lastIncidentId).toBe(
+				"aws-old-incident",
 			);
 		});
 	});

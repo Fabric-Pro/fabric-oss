@@ -14,6 +14,7 @@
  */
 import { db, recordAudit } from "@repo/database";
 import { activityInfo } from "@temporalio/activity";
+import { touchProviderRegistry } from "./touch-provider-registry";
 
 /** Pull workflow runId for correlation. `null` outside an activity. */
 function readWorkflowRunId(): string | null {
@@ -83,24 +84,21 @@ export async function closeIntegrationIncident(
 		input.reason === "NOT_CONFIGURED" ? "NOT_CONFIGURED" : "OPERATIONAL";
 
 	if (!active) {
-		// Still touch the registry row — keeps `lastPolledAt` fresh so the
-		// admin UI doesn't show stale "last poll Xh ago" timestamps. Skip
-		// the `currentHealth` write when the reason is NOT_CONFIGURED so
-		// we don't fight `markProviderNotConfigured`'s prior write.
-		await db.integrationProviderRegistry
-			.update({
-				where: { providerKey: input.providerKey },
-				data:
-					input.reason === "NOT_CONFIGURED"
-						? { lastPolledAt: new Date() }
-						: {
-								currentHealth: "OPERATIONAL",
-								lastPolledAt: new Date(),
-							},
-			})
-			.catch(() => {
-				/* registry row may not exist yet */
-			});
+		// Still offer the registry row a heartbeat so the admin UI doesn't
+		// show stale "last poll Xh ago" timestamps. `touchProviderRegistry`
+		// decides whether that is worth an UPDATE: it writes when the
+		// health actually flips, and otherwise only once the stored
+		// `lastPolledAt` is older than the heartbeat interval — so the
+		// steady state of a healthy provider polled every couple of
+		// minutes no longer rewrites the row on every pass. Omitting
+		// `currentHealth` for NOT_CONFIGURED leaves
+		// `markProviderNotConfigured`'s prior write alone.
+		await touchProviderRegistry({
+			providerKey: input.providerKey,
+			...(input.reason === "NOT_CONFIGURED"
+				? {}
+				: { currentHealth: "OPERATIONAL" as const }),
+		});
 
 		return { incidentId: null, resolved: false };
 	}
@@ -159,28 +157,16 @@ export async function closeIntegrationIncident(
 		},
 	});
 
-	await db.integrationProviderRegistry
-		.update({
-			where: { providerKey: input.providerKey },
-			data:
-				input.reason === "NOT_CONFIGURED"
-					? {
-							lastPolledAt: new Date(),
-							// `currentHealth` stays NOT_CONFIGURED (set by
-							// markProviderNotConfigured). `lastIncidentId`
-							// is preserved so the UI can deep-link.
-						}
-					: {
-							currentHealth: "OPERATIONAL",
-							lastPolledAt: new Date(),
-							// lastIncidentId stays set so the UI can deep-link to
-							// the recently-resolved incident from the provider
-							// card.
-						},
-		})
-		.catch(() => {
-			/* registry row may not exist yet */
-		});
+	// `lastIncidentId` is deliberately not passed: it stays set so the UI
+	// can deep-link to the just-resolved incident from the provider card.
+	// For NOT_CONFIGURED, `currentHealth` is left alone too — it stays
+	// NOT_CONFIGURED, as set by `markProviderNotConfigured`.
+	await touchProviderRegistry({
+		providerKey: input.providerKey,
+		...(input.reason === "NOT_CONFIGURED"
+			? {}
+			: { currentHealth: "OPERATIONAL" as const }),
+	});
 
 	return { incidentId: active.id, resolved: true };
 }
