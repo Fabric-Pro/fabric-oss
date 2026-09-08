@@ -182,6 +182,18 @@ vi.mock("@tanstack/react-query", () => ({
 			refetch: vi.fn(),
 		};
 	},
+	// The analysis version-history drawer inside this tree reads its list as
+	// a paged query. Nothing in THIS file asserts on that list, so an empty
+	// first page is the right stand-in — but the export has to exist, because
+	// a missing one is a module-load error that takes down cases about tabs
+	// and headings, which is how it surfaced.
+	useInfiniteQuery: () => ({
+		data: { pages: [{ revisions: [], nextCursor: null }] },
+		isLoading: false,
+		hasNextPage: false,
+		isFetchingNextPage: false,
+		fetchNextPage: vi.fn(),
+	}),
 	useMutation: (opts: {
 		mutationKey?: unknown[];
 		onSuccess?: (...args: unknown[]) => unknown;
@@ -261,12 +273,25 @@ vi.mock("@tanstack/react-query", () => ({
 }));
 
 vi.mock("@shared/lib/orpc-query-utils", () => {
+	// Every read shape oRPC exposes, not just the two this page happened to
+	// use when the helper was written. It stands in for EVERY procedure in
+	// the tree below, so a component switching one of them to a paged read —
+	// `infiniteOptions` to register, the partial `key` to invalidate, since
+	// the exact `queryKey` carries `type: "query"` and misses an infinite
+	// entry — must not take this file down with it. It did: adding paging to
+	// the analysis history reddened two cases here that have nothing to do
+	// with paging.
 	const q = (procedure: string) => ({
 		queryOptions: ({ input }: { input?: unknown }) => ({
 			queryKey: [procedure, input],
 			queryFn: async () => undefined,
 		}),
+		infiniteOptions: ({ input }: { input?: unknown }) => ({
+			queryKey: [procedure, input],
+			queryFn: async () => undefined,
+		}),
 		queryKey: ({ input }: { input?: unknown }) => [procedure, input],
+		key: ({ input }: { input?: unknown } = {}) => [procedure, input],
 	});
 	const m = (procedure: string) => ({
 		mutationOptions: (opts: Record<string, unknown>) => ({

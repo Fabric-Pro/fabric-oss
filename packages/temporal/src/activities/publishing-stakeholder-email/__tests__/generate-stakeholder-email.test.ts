@@ -1002,6 +1002,15 @@ describe("generateStakeholderEmailActivity — the effective analysis reaches th
 		const prompt = generateObject.mock.calls[0]?.[0]?.prompt as string;
 		expect(prompt).toContain("USER PROSE");
 		expect(prompt).not.toContain("AI ANGLE");
+		// The two assertions above pin the ANSWER; this one pins the
+		// QUESTION. An activity that still ran the inline
+		// `publishingTopicPlanningAnalysis.findFirst` it used to carry and
+		// then discarded the row would satisfy both of them, so they cannot
+		// tell a single-resolver read apart from a double read whose second
+		// answer is thrown away. `getEffectivePlanningAnalysis` is the one
+		// place the prose/data split is applied; a second source of truth
+		// reintroduced here would drift from it silently.
+		expect(analysisFindFirst).not.toHaveBeenCalled();
 	});
 
 	it("scopes the resolver read by BOTH ids", async () => {

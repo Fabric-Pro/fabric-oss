@@ -3,7 +3,10 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { afterAll, beforeAll, beforeEach, expect, it } from "vitest";
 import { db } from "../index"; // package root barrel (what consumers import as @repo/database)
 import { PrismaClient } from "../prisma/generated/client";
-import { saveAnalysisRevision } from "../prisma/queries/projects/publishing-analysis-revision";
+import {
+	listAnalysisRevisions,
+	saveAnalysisRevision,
+} from "../prisma/queries/projects/publishing-analysis-revision";
 import { getEffectivePlanningAnalysis } from "../prisma/queries/projects/publishing-planning";
 // INTERNAL by design (absent from the queries barrel), so it is imported by
 // path. Only a real server can produce the error shape it reads, so this is the
@@ -562,5 +565,106 @@ it.skipIf(!RUN_DB)(
 		});
 		expect(r.sourceAnalysisVersion).toBe(1);
 		expect(r.aiVersion).toBe(2);
+	},
+);
+
+/**
+ * `listAnalysisRevisions` — the paged history read.
+ *
+ * Against real Postgres rather than a mocked `findMany`, because what these
+ * pin is ORDER and a BOUNDARY: that the keyset descends by `version`, that a
+ * page never repeats the row its cursor names, and that a final page which
+ * happens to be exactly full still reports no next page. A mock returns
+ * whatever the test already believed and can prove none of the three.
+ */
+
+/** Append `count` revisions in order, honouring the compare-and-set. */
+async function seedRevisions(count: number): Promise<void> {
+	for (let i = 0; i < count; i += 1) {
+		const result = await saveAnalysisRevision({
+			topicId: primary.topicId,
+			projectId: primary.projectId,
+			body: `revision body ${i + 1}`,
+			expectedVersion: i === 0 ? null : i,
+			sourceAnalysisVersion: 1,
+			authorUserId: primary.userId,
+		});
+		// Asserted rather than ignored: a refusal here would leave every later
+		// iteration writing against the wrong expected version, and the case
+		// would then fail somewhere that says nothing about why.
+		expect(result).toEqual({ status: "saved", version: i + 1 });
+	}
+}
+
+it.skipIf(!RUN_DB)(
+	"returns a page of the newest revisions and a cursor at its oldest",
+	async () => {
+		await seedRevisions(5);
+
+		const page = await listAnalysisRevisions({
+			topicId: primary.topicId,
+			projectId: primary.projectId,
+			limit: 2,
+		});
+
+		expect(page.revisions.map((r) => r.version)).toEqual([5, 4]);
+		expect(page.nextCursor).toBe(4);
+	},
+);
+
+it.skipIf(!RUN_DB)(
+	"starts the next page strictly below the cursor, with no repeat and no gap",
+	async () => {
+		await seedRevisions(5);
+
+		const first = await listAnalysisRevisions({
+			topicId: primary.topicId,
+			projectId: primary.projectId,
+			limit: 2,
+		});
+		const second = await listAnalysisRevisions({
+			topicId: primary.topicId,
+			projectId: primary.projectId,
+			limit: 2,
+			cursor: first.nextCursor,
+		});
+
+		expect(second.revisions.map((r) => r.version)).toEqual([3, 2]);
+	},
+);
+
+it.skipIf(!RUN_DB)(
+	"reports no next page when the last page is exactly full",
+	async () => {
+		// The off-by-one the `take: limit + 1` shape exists to prevent. Four
+		// rows read two at a time make the second page exactly full: a
+		// `rows.length === limit` test for "is there more" would hand back a
+		// cursor, and a client following it would fetch an empty third page.
+		await seedRevisions(4);
+
+		const second = await listAnalysisRevisions({
+			topicId: primary.topicId,
+			projectId: primary.projectId,
+			limit: 2,
+			cursor: 3,
+		});
+
+		expect(second.revisions.map((r) => r.version)).toEqual([2, 1]);
+		expect(second.nextCursor).toBeNull();
+	},
+);
+
+it.skipIf(!RUN_DB)(
+	"scopes the page by project, not by the topic id alone",
+	async () => {
+		await seedRevisions(2);
+
+		const page = await listAnalysisRevisions({
+			topicId: primary.topicId,
+			projectId: secondary.projectId,
+		});
+
+		expect(page.revisions).toEqual([]);
+		expect(page.nextCursor).toBeNull();
 	},
 );

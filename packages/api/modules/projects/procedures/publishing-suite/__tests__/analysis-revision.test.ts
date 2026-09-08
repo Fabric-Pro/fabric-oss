@@ -92,6 +92,8 @@ const listHandler = (
 const listPermission = (
 	listAnalysisRevisionsProcedure as unknown as HandlerBearing
 ).__permission;
+const listInput = (listAnalysisRevisionsProcedure as unknown as HandlerBearing)
+	.__input;
 
 const ctx = {
 	user: { id: "user-session", name: "U", email: "u@example.com" },
@@ -140,7 +142,10 @@ beforeEach(() => {
 		status: "saved",
 		version: 4,
 	});
-	dbMocks.listAnalysisRevisions.mockResolvedValue([]);
+	dbMocks.listAnalysisRevisions.mockResolvedValue({
+		revisions: [],
+		nextCursor: null,
+	});
 });
 
 describe("saveAnalysisRevision procedure", () => {
@@ -333,19 +338,24 @@ describe("listAnalysisRevisions procedure", () => {
 		expect(dbMocks.listAnalysisRevisions).toHaveBeenCalledWith({
 			projectId: "proj-1",
 			topicId: "topic-1",
+			cursor: undefined,
+			limit: undefined,
 		});
 	});
 
 	it("answers a topic from another project exactly as a topic with no revisions", async () => {
 		// DV16: existence must not leak through a difference in the answer.
-		dbMocks.listAnalysisRevisions.mockResolvedValue([]);
+		dbMocks.listAnalysisRevisions.mockResolvedValue({
+			revisions: [],
+			nextCursor: null,
+		});
 
 		const result = await callList({
 			projectId: "proj-1",
 			topicId: "elsewhere",
 		});
 
-		expect(result).toEqual({ revisions: [] });
+		expect(result).toEqual({ revisions: [], nextCursor: null });
 	});
 
 	it("returns the revisions the DB helper produces, wrapped", async () => {
@@ -359,13 +369,75 @@ describe("listAnalysisRevisions procedure", () => {
 			createdAt: new Date("2026-09-01T00:00:00Z"),
 			author: { id: "user-session", name: "Author Name" },
 		};
-		dbMocks.listAnalysisRevisions.mockResolvedValue([revision]);
+		dbMocks.listAnalysisRevisions.mockResolvedValue({
+			revisions: [revision],
+			nextCursor: null,
+		});
 
 		const result = await callList({
 			projectId: "proj-1",
 			topicId: "topic-1",
 		});
 
-		expect(result).toEqual({ revisions: [revision] });
+		expect(result).toEqual({ revisions: [revision], nextCursor: null });
+	});
+
+	it("forwards the caller's cursor and limit to the query", async () => {
+		// Distinctive values, not 1 and 10: a handler that dropped one and let
+		// the query default would still satisfy a test that used the defaults.
+		await callList({
+			projectId: "proj-1",
+			topicId: "topic-1",
+			cursor: 7,
+			limit: 3,
+		});
+
+		expect(dbMocks.listAnalysisRevisions).toHaveBeenCalledWith({
+			projectId: "proj-1",
+			topicId: "topic-1",
+			cursor: 7,
+			limit: 3,
+		});
+	});
+
+	it("passes the query's nextCursor through instead of deriving one", async () => {
+		// The page boundary is the query's to know — it is the only layer that
+		// saw the extra row. A handler that recomputed it from the returned
+		// rows (say, the last version it can see) would report "more pages"
+		// on a full final page and loop a client forever.
+		dbMocks.listAnalysisRevisions.mockResolvedValue({
+			revisions: [],
+			nextCursor: 12,
+		});
+
+		const result = await callList({
+			projectId: "proj-1",
+			topicId: "topic-1",
+		});
+
+		expect(result).toEqual({ revisions: [], nextCursor: 12 });
+	});
+
+	it("rejects a non-positive cursor at the schema, before any query", async () => {
+		// Version numbering starts at 1, so 0 names no row and cannot be a
+		// position in the ordering either. Refusing it here keeps the query
+		// free of a case it would otherwise have to define.
+		const parsed = listInput?.safeParse({
+			projectId: "proj-1",
+			topicId: "topic-1",
+			cursor: 0,
+		});
+
+		expect(parsed?.success).toBe(false);
+	});
+
+	it("rejects a page size above the ceiling the query also enforces", async () => {
+		const parsed = listInput?.safeParse({
+			projectId: "proj-1",
+			topicId: "topic-1",
+			limit: 101,
+		});
+
+		expect(parsed?.success).toBe(false);
 	});
 });
