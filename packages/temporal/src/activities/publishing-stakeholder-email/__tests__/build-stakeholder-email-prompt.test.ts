@@ -487,6 +487,31 @@ describe("composeStakeholderEmailPrompt", () => {
 		expect(composed.prompt).toContain("A concrete, measurable change.");
 	});
 
+	it("keeps the structured half in the RENDERED prompt when prose exceeds the budget", async () => {
+		// Fizzy #1851 slice 2. The fix lives in `buildShortPostVariables`, which
+		// this wrapper spreads — but the wrapper then renders through a template
+		// and post-processes every value through `neutralizeSourceDataMarkers`.
+		// This guard is what proves the reserved data block survives THAT, not
+		// just the composition.
+		const composed = await composeStakeholderEmailPrompt({
+			...base,
+			templateBody:
+				"{{#if has_planning_analysis}}{{{planning_analysis}}}{{/if}}",
+			format: "HANDLEBARS",
+			analysisProse: "z".repeat(9000),
+			analysisData: {
+				contentTypes: { recommended: [{ type: "Tweet" }] },
+			},
+		});
+		expect(composed.prompt).toContain("### Content types");
+		// `UNRENDERED_TEMPLATE` is tested against the RENDERED body, so a
+		// doubled brace arriving inside `planning_analysis` would discard the
+		// org's bound prompt and fall back to the recovered one — and the
+		// assertion above would still pass, because the fallback renders the
+		// same variable. This is what makes that path observable.
+		expect(composed.bodyRecovered).toBe(false);
+	});
+
 	it("says plainly when there is no source context at all", async () => {
 		// The thin-topic branch. An email built from nothing but a title is a
 		// legitimate result — it just has to report the release status as
