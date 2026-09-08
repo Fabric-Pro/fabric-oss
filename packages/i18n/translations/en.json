@@ -2423,6 +2423,12 @@
 					"prerequisiteDocument": "a document this one is written from",
 					"unknown": "the project's context work"
 				}
+			},
+			"regenerateToast": {
+				"started": "Document regeneration started",
+				"alreadyQueued": "A generation for this document is already queued — a second one was not started",
+				"alreadyRunning": "A generation for this document is already running — a second one was not started",
+				"failed": "Failed to regenerate: {message}"
 			}
 		},
 		"stories": {

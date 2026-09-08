@@ -213,7 +213,12 @@ describe("Use as Context, still reachable only by rows written before the refusa
 					expect.objectContaining({
 						documentId: "doc-1",
 						suppliedContext: "# Formatted\n\ntext",
-						suppliedContextId: "ctx-1",
+						// `excludeContextId` is the field the child declares.
+						// This assertion previously named `suppliedContextId`,
+						// which the input has never had — written from the same
+						// reading as the call site it was checking, so it
+						// certified the misspelling instead of catching it.
+						excludeContextId: "ctx-1",
 						aiToken: "tok",
 					}),
 				],

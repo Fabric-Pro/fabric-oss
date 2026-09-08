@@ -516,3 +516,83 @@ describe("supplied-context wiring (source assertions)", () => {
 		]);
 	});
 });
+
+/**
+ * The same untyped-args hazard, one level out.
+ *
+ * The block above pins the parent→child hop. This one pins every OTHER caller
+ * that starts `projectDocumentGenerationWorkflow` by string name, because that
+ * hop has the identical property and one more failure mode: the parent at least
+ * destructures from a typed `input`, so a wrong identifier fails to compile. An
+ * outside caller builds the args object from scratch, so a *misspelled key* is
+ * accepted silently — the field never arrives and nothing anywhere goes red.
+ *
+ * That is not hypothetical. `project-context-processing.ts` passed
+ * `suppliedContextId` for a field the input has only ever called
+ * `excludeContextId`, so the context row that run had just ingested was never
+ * excluded from the run's own retrieval, and the model was handed the same
+ * source twice — once directly, once out of the corpus.
+ */
+describe("outside callers name fields the generation input actually declares", () => {
+	const types = readFileSync(join(__dirname, "../../types.ts"), "utf8");
+
+	/** Field names declared on `ProjectDocumentGenerationInput`. */
+	const declaredFields = (() => {
+		const start = types.indexOf(
+			"export interface ProjectDocumentGenerationInput {",
+		);
+		expect(start).toBeGreaterThan(-1);
+		// The interface ends at the first closing brace in column 0.
+		const end = types.indexOf("\n}", start);
+		expect(end).toBeGreaterThan(start);
+		const body = types.slice(start, end);
+		return new Set(
+			[...body.matchAll(/^\t([a-zA-Z_$][\w$]*)\??:/gm)].map((m) => m[1]),
+		);
+	})();
+
+	/** Top-level keys of the args object a caller hands the workflow. */
+	const keysAtCallSite = (source: string) => {
+		const nameIdx = source.indexOf('"projectDocumentGenerationWorkflow"');
+		expect(nameIdx).toBeGreaterThan(-1);
+		const argsIdx = source.indexOf("args: [", nameIdx);
+		expect(argsIdx).toBeGreaterThan(-1);
+		const block = source
+			.slice(argsIdx, source.indexOf("workflowId:", argsIdx))
+			// Comments carry colons of their own and would read as keys.
+			.replace(/\/\/[^\n]*/g, "");
+		return [...block.matchAll(/^\s*([a-zA-Z_$][\w$]*)\s*:/gm)]
+			.map((m) => m[1])
+			.filter((key) => key !== "args" && key !== "taskQueue");
+	};
+
+	it("declares the fields this file asserts on", () => {
+		expect(declaredFields.has("excludeContextId")).toBe(true);
+		expect(declaredFields.has("suppliedContext")).toBe(true);
+		// The key the bug used has never been part of the contract.
+		expect(declaredFields.has("suppliedContextId")).toBe(false);
+	});
+
+	it("context processing excludes the row it just ingested, by its real name", () => {
+		const source = readFileSync(
+			join(__dirname, "../project-context-processing.ts"),
+			"utf8",
+		);
+		expect(source).toContain("excludeContextId: contextId,");
+		// Comments stripped first: the call site names the old key in prose to
+		// explain why it is not the code, and that mention is not a regression.
+		const code = source.replace(/\/\/[^\n]*/g, "");
+		expect(code).not.toContain("suppliedContextId");
+	});
+
+	it("passes no field the generation input does not declare", () => {
+		const source = readFileSync(
+			join(__dirname, "../project-context-processing.ts"),
+			"utf8",
+		);
+		const unknown = keysAtCallSite(source).filter(
+			(key) => !declaredFields.has(key),
+		);
+		expect(unknown).toEqual([]);
+	});
+});

@@ -330,7 +330,19 @@ export async function projectContextProcessingWorkflow(
 										aiToken,
 										prompt: "",
 										suppliedContext: documentContent,
-										suppliedContextId: contextId,
+										// `excludeContextId`, not
+										// `suppliedContextId` — the child's
+										// input has never had a field by that
+										// name, and `executeChild` starts it by
+										// string name with untyped args, so the
+										// wrong key raised no type error and
+										// simply never arrived. The row this
+										// run just ingested was therefore left
+										// in the child's retrieval, which
+										// handed the model the same source
+										// twice: once as `suppliedContext`
+										// above, and again out of the corpus.
+										excludeContextId: contextId,
 										// The generation waits for the
 										// project's outstanding context work
 										// before it runs. This run IS that
