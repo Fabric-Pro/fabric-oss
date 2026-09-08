@@ -118,6 +118,20 @@ export function ConfirmationAlertProvider({ children }: PropsWithChildren) {
 				}}
 			>
 				<AlertDialogContent
+					// The three-action fork does not fit the default width.
+					// Cancel plus a destructive label plus a safe-alternative
+					// label runs past `max-w-lg`, and the footer is a grid item
+					// that cannot shrink below its content, so the last button
+					// overhung the card's right edge on staging (#2355). The
+					// footer wraps as a backstop; widening is what keeps the
+					// intended one-row reading order — cancel, destructive,
+					// safe — instead of orphaning the safe action onto its own
+					// line.
+					className={
+						confirmOptions?.secondaryAction
+							? "sm:max-w-2xl"
+							: undefined
+					}
 					onEscapeKeyDown={(event) => {
 						if (pendingRef.current) {
 							event.preventDefault();

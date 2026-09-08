@@ -51,6 +51,30 @@ function Trigger({ onConfirm }: { onConfirm: () => Promise<void> | void }) {
 	);
 }
 
+function ForkTrigger() {
+	const { confirm } = useConfirmationAlert();
+	return (
+		<button
+			type="button"
+			onClick={() =>
+				confirm({
+					title: "Unlink channel",
+					message: "This permanently deletes the captured context.",
+					confirmLabel: "Unlink and delete context",
+					destructive: true,
+					secondaryAction: {
+						label: "Pause scanning, keep context",
+						onSelect: () => {},
+					},
+					onConfirm: () => {},
+				})
+			}
+		>
+			open fork
+		</button>
+	);
+}
+
 function renderWithProvider(onConfirm: () => Promise<void> | void) {
 	return render(
 		<ConfirmationAlertProvider>
@@ -167,6 +191,63 @@ describe("ConfirmationAlertProvider", () => {
 		release?.();
 		await waitFor(() => {
 			expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+		});
+	});
+
+	/**
+	 * Layout, not behaviour — but the failure is a user-visible one that no
+	 * behavioural test can reach. The footer is a grid item, so its min-width
+	 * is its own content: three buttons whose labels sum past `max-w-lg` push
+	 * the row wider than the card and the last one renders outside the
+	 * dialog's right border. Seen on staging with "Cancel / Unlink and delete
+	 * context / Pause scanning, keep context".
+	 */
+	describe("the three-action fork fits inside the dialog", () => {
+		it("widens the dialog only when a secondary action exists", async () => {
+			const user = userEvent.setup();
+
+			const { unmount } = render(
+				<ConfirmationAlertProvider>
+					<ForkTrigger />
+				</ConfirmationAlertProvider>,
+			);
+			await user.click(screen.getByRole("button", { name: "open fork" }));
+
+			expect(screen.getByRole("alertdialog").className).toContain(
+				"sm:max-w-2xl",
+			);
+
+			unmount();
+
+			renderWithProvider(vi.fn());
+			await user.click(screen.getByRole("button", { name: "open" }));
+
+			// The two-action dialog fits the default width; widening every
+			// confirmation would be a visual regression on the common case.
+			expect(screen.getByRole("alertdialog").className).not.toContain(
+				"sm:max-w-2xl",
+			);
+		});
+
+		it("lets the action row wrap instead of overflowing the card", async () => {
+			const user = userEvent.setup();
+
+			render(
+				<ConfirmationAlertProvider>
+					<ForkTrigger />
+				</ConfirmationAlertProvider>,
+			);
+			await user.click(screen.getByRole("button", { name: "open fork" }));
+
+			const footer = screen
+				.getByRole("button", { name: "Pause scanning, keep context" })
+				.closest("div");
+
+			expect(footer?.className).toContain("sm:flex-wrap");
+			// A horizontal margin utility does nothing to the stacked mobile
+			// layout, which is why this is `gap`, not `space-x`.
+			expect(footer?.className).toContain("gap-2");
+			expect(footer?.className).not.toContain("space-x");
 		});
 	});
 
