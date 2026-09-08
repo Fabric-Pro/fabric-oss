@@ -15,7 +15,7 @@
 import { ORPCError } from "@orpc/server";
 import { createId } from "@paralleldrive/cuid2";
 import { extractAgentMetadata, validateA2AEndpoint } from "@repo/agent-core";
-import { db } from "@repo/database";
+import { db, mergeRegisteredAgentMetadata } from "@repo/database";
 import { z } from "zod";
 import {
 	Permissions,
@@ -421,27 +421,34 @@ export const refreshDynamicAgent = protectedProcedure
 			}
 		}
 
-		// Update the agent
-		const updated = await db.registeredAgent.update({
-			where: { id: agent.id },
-			data: {
-				config: updatedCapabilities as unknown as Parameters<
-					typeof db.registeredAgent.update
-				>[0]["data"]["config"],
-				status:
-					healthStatus === "healthy"
-						? "ACTIVE"
-						: healthStatus === "unhealthy"
-							? "ERROR"
-							: "PENDING",
-				lastHealthCheck: new Date(),
-				metadata: {
-					...((agent.metadata as Record<string, unknown>) || {}),
-					lastRefreshedAt: new Date().toISOString(),
-				} as unknown as Parameters<
-					typeof db.registeredAgent.update
-				>[0]["data"]["metadata"],
-			},
+		// Merge the refresh marker atomically rather than re-writing the whole
+		// metadata object from the row read above: the health monitor and agent
+		// search write other metadata keys concurrently, and a spread of a stale
+		// read would silently drop them. Both writes share one transaction so
+		// `lastRefreshedAt` cannot advance if the status update fails, and the
+		// merge runs first so the returned row carries the merged metadata.
+		const updated = await db.$transaction(async (tx) => {
+			await mergeRegisteredAgentMetadata(
+				{ id: agent.id },
+				{ lastRefreshedAt: new Date().toISOString() },
+				tx,
+			);
+
+			return tx.registeredAgent.update({
+				where: { id: agent.id },
+				data: {
+					config: updatedCapabilities as unknown as Parameters<
+						typeof db.registeredAgent.update
+					>[0]["data"]["config"],
+					status:
+						healthStatus === "healthy"
+							? "ACTIVE"
+							: healthStatus === "unhealthy"
+								? "ERROR"
+								: "PENDING",
+					lastHealthCheck: new Date(),
+				},
+			});
 		});
 
 		return {
