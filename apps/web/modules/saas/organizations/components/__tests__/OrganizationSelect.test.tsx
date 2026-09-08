@@ -71,15 +71,28 @@ vi.mock("@shared/hooks/router", () => ({
 	}),
 }));
 
-vi.mock("@repo/config", () => ({
-	config: {
-		organizations: {
-			enableBilling: false,
-			requireOrganization: false,
-			enableUsersToCreateOrganizations: false,
-		},
-		users: { enableBilling: false },
+// Mutable: `requireOrganization` decides whether a personal account is a state
+// the switcher may rest in at all, so tests need both settings.
+const configMock = {
+	organizations: {
+		enableBilling: false,
+		requireOrganization: false,
+		enableUsersToCreateOrganizations: false,
 	},
+	users: { enableBilling: false },
+};
+vi.mock("@repo/config", () => ({
+	get config() {
+		return configMock;
+	},
+}));
+
+// The switcher reads the URL directly to tell "this page names no organization"
+// apart from "the organization has not loaded yet" — the query-derived context
+// reports null for both.
+const paramsMock = vi.fn(() => ({}) as Record<string, string>);
+vi.mock("next/navigation", () => ({
+	useParams: () => paramsMock(),
 }));
 
 vi.mock("next-intl", () => ({
@@ -174,6 +187,8 @@ function setupNoOrgContext() {
 
 beforeEach(() => {
 	vi.clearAllMocks();
+	configMock.organizations.requireOrganization = false;
+	paramsMock.mockReturnValue({ organizationSlug: "acme" });
 });
 
 describe("OrganzationSelect — guest org concealment", () => {
@@ -216,6 +231,54 @@ describe("OrganzationSelect — guest org concealment", () => {
 		expect(
 			screen.queryByTestId("organization-logo"),
 		).not.toBeInTheDocument();
+	});
+});
+
+describe("OrganzationSelect — the account shell, which names no organization", () => {
+	// `/app` and the retired account routes render the app shell with no
+	// organization in the URL at all. With `requireOrganization` on none of them
+	// is a destination — every one redirects into an organization, and the
+	// post-login hop rests there for a few hundred milliseconds on its way — so
+	// the account presentation is only ever in transit there, never at rest.
+	function setupAccountShell() {
+		sessionMock.mockReturnValue({
+			user: {
+				id: "u-1",
+				name: "Pat Member",
+				email: "pat@example.test",
+				image: null,
+			},
+		});
+		orgContextMock.mockReturnValue({
+			organizationId: null,
+			organizationSlug: null,
+			organization: null,
+			isResolvingOrganization: false,
+		});
+		guestMock.mockReturnValue(false);
+		accountOrgMock.mockReturnValue(null);
+		paramsMock.mockReturnValue({});
+	}
+
+	it("holds the skeleton instead of naming a personal account", () => {
+		configMock.organizations.requireOrganization = true;
+		setupAccountShell();
+		render(<OrganzationSelect />);
+
+		expect(screen.queryByText(OWN_ACCOUNT_KEY)).not.toBeInTheDocument();
+		expect(screen.queryByTestId("user-avatar")).not.toBeInTheDocument();
+		expect(screen.queryByRole("button")).not.toBeInTheDocument();
+	});
+
+	it("still shows the account presentation when organizations are optional", () => {
+		// Without `requireOrganization`, /app is a real destination and a
+		// personal account is a state the switcher may legitimately rest in.
+		configMock.organizations.requireOrganization = false;
+		setupAccountShell();
+		render(<OrganzationSelect />);
+
+		expect(screen.getByText(OWN_ACCOUNT_KEY)).toBeInTheDocument();
+		expect(screen.getByTestId("user-avatar")).toBeInTheDocument();
 	});
 });
 

@@ -24,6 +24,10 @@ vi.mock("next/navigation", () => ({
 	}),
 	usePathname: () => "/",
 	useSearchParams: () => new URLSearchParams(),
+	// Route params, empty by default to match `usePathname`'s "/". Components
+	// that branch on a param (the workspace switcher reads `organizationSlug`)
+	// override this locally.
+	useParams: () => ({}),
 }));
 
 // Mock next-intl globally — components throughout the SaaS app use
