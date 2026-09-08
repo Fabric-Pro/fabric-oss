@@ -389,11 +389,29 @@ export async function updateAgentCardCache(
 }
 
 /**
+ * Advance the agent card's freshness stamp without rewriting the card itself.
+ *
+ * Used by the health probe when the live card it just fetched is
+ * byte-identical to the one already stored — the content hasn't changed, so
+ * only `agentCardCachedAt` needs to move forward to keep the TTL from
+ * expiring on every cycle.
+ */
+export async function touchAgentCardCache(
+	agentId: string,
+	cachedAt: Date,
+): Promise<void> {
+	await mergeRegisteredAgentMetadata(
+		{ agentId },
+		{ agentCardCachedAt: cachedAt.toISOString() },
+	);
+}
+
+/**
  * Update the description embedding stored in the metadata JSON field.
  *
  * Merges only the `descriptionEmbedding`, `embeddingGeneratedAt` and (when
- * given) `embeddingModelId` keys so that other metadata fields are preserved.
- * Same atomic merge as updateAgentCardCache.
+ * given) `embeddingModelId` and `embeddingSourceHash` keys so that other
+ * metadata fields are preserved. Same atomic merge as updateAgentCardCache.
  */
 export async function updateAgentEmbedding(
 	agentId: string,
@@ -401,6 +419,8 @@ export async function updateAgentEmbedding(
 	embeddingGeneratedAt: Date,
 	/** The embedding model ID used to generate this vector (e.g. "openai/text-embedding-3-small"). */
 	embeddingModelId?: string,
+	/** sha256 hex of the search text the vector was generated from — lets the health probe skip regeneration when the text is unchanged. */
+	embeddingSourceHash?: string,
 ): Promise<void> {
 	await mergeRegisteredAgentMetadata(
 		{ agentId },
@@ -408,6 +428,7 @@ export async function updateAgentEmbedding(
 			descriptionEmbedding: embedding,
 			embeddingGeneratedAt: embeddingGeneratedAt.toISOString(),
 			...(embeddingModelId && { embeddingModelId }),
+			...(embeddingSourceHash && { embeddingSourceHash }),
 		},
 	);
 }
