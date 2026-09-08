@@ -17,6 +17,7 @@ import { FeatureFlagProvider } from "@saas/shared/components/FeatureFlagProvider
 import { MfaSetupBanner } from "@saas/shared/components/MfaSetupBanner";
 import { orpc } from "@shared/lib/orpc-query-utils";
 import { getServerQueryClient } from "@shared/lib/server";
+import { dehydrate, HydrationBoundary } from "@tanstack/react-query";
 import { notFound, redirect } from "next/navigation";
 import type { PropsWithChildren } from "react";
 
@@ -152,19 +153,36 @@ export default async function OrganizationLayout({
 
 	const brandColor = getOrganizationBrandColor(organization.metadata);
 
+	// Hand the prefetches above to the browser.
+	//
+	// `getServerQueryClient` is request-scoped, so it is tempting to read the
+	// prefetch alone as the handover — it is not. What ships is the snapshot a
+	// `<HydrationBoundary>` takes, and `(saas)/layout.tsx` takes its snapshot
+	// while building its own JSX, which happens BEFORE this layout runs. Every
+	// prefetch made here therefore lands in the shared cache after that snapshot
+	// was already sealed, and without a boundary of its own it never leaves the
+	// server: the client starts cold and refetches an organization the server
+	// had in hand, and the switcher names a personal account until it lands.
+	//
+	// Nesting is the intended shape here, not a workaround — the same one
+	// `admin/organizations/[id]/page.tsx` already uses for its own prefetch.
+	// Re-serializing what the parent boundary also carries is cheap next to the
+	// round-trip it removes, and hydrating a key twice is a no-op.
 	return (
-		<FeatureFlagProvider value={featureFlags}>
-			<OrganizationThemeProvider brandColor={brandColor}>
-				<OrganizationGuestProvider
-					organizationSlug={organizationSlug}
-					isGuest={guest}
-				>
-					<AppWrapper>
-						<MfaSetupBanner />
-						{children}
-					</AppWrapper>
-				</OrganizationGuestProvider>
-			</OrganizationThemeProvider>
-		</FeatureFlagProvider>
+		<HydrationBoundary state={dehydrate(queryClient)}>
+			<FeatureFlagProvider value={featureFlags}>
+				<OrganizationThemeProvider brandColor={brandColor}>
+					<OrganizationGuestProvider
+						organizationSlug={organizationSlug}
+						isGuest={guest}
+					>
+						<AppWrapper>
+							<MfaSetupBanner />
+							{children}
+						</AppWrapper>
+					</OrganizationGuestProvider>
+				</OrganizationThemeProvider>
+			</FeatureFlagProvider>
+		</HydrationBoundary>
 	);
 }

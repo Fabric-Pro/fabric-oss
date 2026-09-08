@@ -149,12 +149,16 @@ export function ActiveOrganizationProvider({
 	}, []);
 
 	// Query is only enabled when we have an org slug in the URL
-	const { data: queriedOrganization } = useActiveOrganizationQuery(
-		activeOrganizationSlug ?? "",
-		{
-			enabled: !!activeOrganizationSlug,
-		},
-	);
+	const {
+		data: queriedOrganization,
+		// `isLoading`, not `isPending`: a DISABLED query is pending forever, so
+		// `isPending` would report a personal page as permanently resolving. This
+		// is true only while a first fetch is actually in flight, and goes false
+		// on failure as well as on success.
+		isLoading: isResolvingOrganization,
+	} = useActiveOrganizationQuery(activeOrganizationSlug ?? "", {
+		enabled: !!activeOrganizationSlug,
+	});
 
 	// CRITICAL: When not in org context (no slug in URL), explicitly set to null
 	// This prevents stale React Query data from leaking org context to personal pages
@@ -420,6 +424,7 @@ export function ActiveOrganizationProvider({
 	const contextValue = useMemo(
 		() => ({
 			loaded,
+			isResolvingOrganization,
 			activeOrganization: activeOrganization ?? null,
 			activeOrganizationUserRole: activeOrganizationUserRole ?? null,
 			isOrganizationAdmin:
@@ -433,6 +438,7 @@ export function ActiveOrganizationProvider({
 		}),
 		[
 			loaded,
+			isResolvingOrganization,
 			activeOrganization,
 			activeOrganizationUserRole,
 			user,

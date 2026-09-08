@@ -9,9 +9,11 @@
  * mounted in the wrong place, and nesting order is the whole point here.
  */
 
+import { QueryClientProvider } from "@tanstack/react-query";
 import { render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useFeatureFlag } from "../../modules/saas/shared/components/FeatureFlagProvider";
+import { createQueryClient } from "../../modules/shared/lib/query-client";
 
 const getAllFlagsForOrganization = vi.fn();
 
@@ -69,11 +71,11 @@ vi.mock("@saas/shared/components/MfaSetupBanner", () => ({
 		</span>
 	),
 }));
+// A real client, not a hand-rolled stub: the layout now dehydrates it into a
+// `<HydrationBoundary>`, and dehydration reads defaults a stub does not carry.
+let serverQueryClient: ReturnType<typeof createQueryClient>;
 vi.mock("@shared/lib/server", () => ({
-	getServerQueryClient: () => ({
-		prefetchQuery: vi.fn(async () => undefined),
-		removeQueries: vi.fn(),
-	}),
+	getServerQueryClient: () => serverQueryClient,
 }));
 vi.mock("@shared/lib/orpc-query-utils", () => ({
 	orpc: {
@@ -105,11 +107,18 @@ async function renderLayout() {
 		children: <Probe />,
 		params: Promise.resolve({ organizationSlug: "example-org" }),
 	});
-	render(tree);
+	// The layout's own `<HydrationBoundary>` reads the surrounding client, so
+	// the tree needs a provider here the way it has one in the real app.
+	render(
+		<QueryClientProvider client={createQueryClient()}>
+			{tree}
+		</QueryClientProvider>,
+	);
 }
 
 beforeEach(() => {
 	vi.clearAllMocks();
+	serverQueryClient = createQueryClient();
 });
 
 describe("organization layout feature flags", () => {

@@ -114,6 +114,7 @@ function setupOrgContext({ isGuest }: { isGuest: boolean }) {
 			name: "Acme Corp",
 			logo: null,
 		},
+		isResolvingOrganization: false,
 	});
 	guestMock.mockReturnValue(isGuest);
 	// A guest is by definition not a member of the host, so the organization
@@ -124,6 +125,32 @@ function setupOrgContext({ isGuest }: { isGuest: boolean }) {
 		name: "Pat's workspace",
 		logo: null,
 	});
+}
+
+/**
+ * The URL names an organization, but the client has not resolved it yet — the
+ * state a page load passes through before the active-organization query lands.
+ * `organization` is null here for the same reason it is null in
+ * `setupNoOrgContext`, which is exactly why the two must be told apart by
+ * something other than its absence.
+ */
+function setupResolvingOrgContext() {
+	sessionMock.mockReturnValue({
+		user: {
+			id: "u-1",
+			name: "Pat Member",
+			email: "pat@example.test",
+			image: null,
+		},
+	});
+	orgContextMock.mockReturnValue({
+		organizationId: null,
+		organizationSlug: null,
+		organization: null,
+		isResolvingOrganization: true,
+	});
+	guestMock.mockReturnValue(false);
+	accountOrgMock.mockReturnValue(null);
 }
 
 function setupNoOrgContext() {
@@ -139,6 +166,7 @@ function setupNoOrgContext() {
 		organizationId: null,
 		organizationSlug: null,
 		organization: null,
+		isResolvingOrganization: false,
 	});
 	guestMock.mockReturnValue(false);
 	accountOrgMock.mockReturnValue(null);
@@ -185,6 +213,37 @@ describe("OrganzationSelect — guest org concealment", () => {
 
 		expect(screen.getByText(OWN_ACCOUNT_KEY)).toBeInTheDocument();
 		expect(screen.getByTestId("user-avatar")).toBeInTheDocument();
+		expect(
+			screen.queryByTestId("organization-logo"),
+		).not.toBeInTheDocument();
+	});
+});
+
+describe("OrganzationSelect — while the organization is still resolving", () => {
+	// Personal context is retired: with `requireOrganization` on, a bare /app
+	// redirects into an organization and every /app/{slug} load has one. So the
+	// account presentation is never a resting state on these pages — reaching it
+	// means the organization has not arrived yet, and naming a personal account
+	// meanwhile tells the user something about their identity that is false.
+	it("holds the skeleton rather than naming a personal account", () => {
+		setupResolvingOrgContext();
+		render(<OrganzationSelect />);
+
+		expect(screen.queryByText(OWN_ACCOUNT_KEY)).not.toBeInTheDocument();
+		expect(screen.queryByTestId("user-avatar")).not.toBeInTheDocument();
+		expect(
+			screen.queryByTestId("organization-logo"),
+		).not.toBeInTheDocument();
+		// The skeleton is inert — no trigger to open a switcher that has
+		// nothing to switch between yet.
+		expect(screen.queryByRole("button")).not.toBeInTheDocument();
+	});
+
+	it("holds the skeleton in the collapsed rail too", () => {
+		setupResolvingOrgContext();
+		render(<OrganzationSelect collapsed />);
+
+		expect(screen.queryByTestId("user-avatar")).not.toBeInTheDocument();
 		expect(
 			screen.queryByTestId("organization-logo"),
 		).not.toBeInTheDocument();

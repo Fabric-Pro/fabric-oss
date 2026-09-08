@@ -37,6 +37,7 @@ export const useActiveOrganization = () => {
 			activeOrganizationUserRole: null,
 			isOrganizationAdmin: false,
 			loaded: true,
+			isResolvingOrganization: false,
 			isSwitching: false,
 			switchingToSlug: null,
 		} satisfies ActiveOrganizationContextType;
