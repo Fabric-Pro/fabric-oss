@@ -7,9 +7,15 @@
  * that renders nothing is a bad afternoon, a panel that crashes the Topic Item
  * Page takes the whole topic with it.
  *
- * The section ORDER lives here too, and it is the same order the seeded prompt
- * asks the model to produce, so the page reads the way the prompt was written.
+ * The section ORDER lives here too, in the same order the seeded prompt asks
+ * the model to produce. Since Fizzy #1851 the PROSE half is no longer rendered
+ * from these lists — `renderAnalysisProse` in `@repo/utils` owns that, and it
+ * is the document a person now edits — so what this module still renders is
+ * the DATA half: the content-type and supporting-asset buckets, and the source
+ * signals.
  */
+
+import type { EffectiveAnalysis } from "@repo/utils/publishing-analysis-prose";
 
 interface ClassifiedRecommendation {
 	type: string;
@@ -160,6 +166,15 @@ export function readPlanningAnalysis(
 			: [];
 	});
 
+	// Since Fizzy #1851 Task 11 every live caller feeds
+	// `EffectiveAnalysis["data"]` — the media-tab gate in `TopicItemPage.tsx`
+	// and the data sections in `PlanningAnalysisTab.tsx` — so the prose-only
+	// keys (`topicAngle`, `risks`, `preDraftGuidance`, …) are simply absent
+	// from the input and what comes back is the DATA half: buckets and source
+	// signals. The prose-side branches below are kept, not dead-stripped,
+	// because they are how this parser stays total over the schema: fed a raw
+	// analysis row it still returns both halves, and no branch has to know
+	// which of the two it was handed.
 	return {
 		prose,
 		keyDetails,
@@ -209,22 +224,54 @@ function readPlanningQuestions(content: unknown): PlanningQuestion[] {
 }
 
 /**
- * True when the document has nothing worth rendering.
+ * A lenient, structure-agnostic "is there anything here at all" walk over an
+ * `EffectiveAnalysis["data"]` value.
  *
- * `doc.questions` is deliberately NOT part of this check. Since 2A-3,
- * `PlanningAnalysisTab` never renders `doc.questions` — the decision-thread
- * rows `TopicQuestionsPanel` reads are the display surface now (see this
- * file's own doc comment on `readPlanningQuestions`). Counting it here meant
- * an analysis whose only content was questions passed as "not empty" and
- * then rendered a worksheet with no sections at all.
+ * Deliberately NOT `readPlanningAnalysis` + `isEmptyDocument`: that pair
+ * validates each bucket item against the full recommendation shape (`type`
+ * AND `rationale`), which is right for deciding what to RENDER but wrong for
+ * deciding what counts as SUBSTANCE — a malformed or partial item is still
+ * evidence the model (or a future producer of `data`) wrote something. This
+ * walk only asks whether any leaf survives trimming.
  */
-export function isEmptyAnalysis(doc: PlanningAnalysisDocument): boolean {
-	return (
-		doc.prose.length === 0 &&
-		doc.keyDetails.length === 0 &&
-		doc.buckets.length === 0 &&
-		doc.sourceSignals.length === 0 &&
-		doc.risks.length === 0 &&
-		doc.preDraftGuidance === null
-	);
+function isEmptyValue(value: unknown): boolean {
+	if (value == null) {
+		return true;
+	}
+	if (typeof value === "string") {
+		return value.trim().length === 0;
+	}
+	if (Array.isArray(value)) {
+		return value.every(isEmptyValue);
+	}
+	if (typeof value === "object") {
+		return Object.values(value as Record<string, unknown>).every(
+			isEmptyValue,
+		);
+	}
+	// Numbers and booleans (e.g. `0`, `false`) are still real content.
+	return false;
+}
+
+/**
+ * True when there is nothing worth rendering.
+ *
+ * Takes the RESOLVER's output — AI text, or the author's own override — and
+ * nothing else. It used to also accept a parsed `PlanningAnalysisDocument`,
+ * because `PlanningAnalysisTab` still read the raw AI row directly; that
+ * overload was scaffolding for Tasks 9-11 and went with Task 11, the commit
+ * that moved the tab onto the resolver.
+ *
+ * Both halves have to be empty. `risks` and `preDraftGuidance` moved from
+ * fields this file parsed off the raw AI JSON to PROSE (Fizzy #1851, Task 8),
+ * so a check that inspected only the DATA half would call a risk-heavy
+ * analysis "empty" the moment its substance moved into prose — which is
+ * exactly the analysis the media-tab gate in `TopicItemPage.tsx` must NOT
+ * suppress the generation tabs for.
+ */
+export function isEmptyAnalysis(effective: EffectiveAnalysis | null): boolean {
+	if (effective === null) {
+		return true;
+	}
+	return effective.prose.trim().length === 0 && isEmptyValue(effective.data);
 }

@@ -17,7 +17,15 @@
  *    failed regeneration must not blank a good previous analysis.
  */
 
+import {
+	type EffectiveAnalysis,
+	effectivePlanningAnalysis,
+} from "@repo/utils/publishing-analysis-prose";
 import { db } from "../../client";
+// The current revision is the other half of "what is this topic's analysis
+// right now" — imported by path rather than re-derived, so the two readers
+// cannot drift into disagreeing about which row is current.
+import { getCurrentAnalysisRevision } from "./publishing-analysis-revision";
 import type {
 	ReconcilableQuestion,
 	ReconcileOutcome,
@@ -460,5 +468,59 @@ export async function getLatestPlanningAnalysis(input: {
 	return {
 		latestAttempt: withExpiry(latestAttempt),
 		latestReady: withExpiry(latestReady),
+	};
+}
+
+/**
+ * The ONE answer to "what is this topic's planning analysis right now".
+ *
+ * Every reader goes through here — the four generation activities, the API read,
+ * the worksheet and the media-tab gate. Before this existed the four activities
+ * each ran their own copy of the same query, and a user edit that reached five
+ * of the seven readers would look entirely correct in the UI while the
+ * generators kept writing from the AI's original words.
+ */
+export async function getEffectivePlanningAnalysis(input: {
+	topicId: string;
+	projectId: string;
+}): Promise<{
+	effective: EffectiveAnalysis | null;
+	aiVersion: number | null;
+	revisionVersion: number | null;
+	sourceAnalysisVersion: number | null;
+	author: { id: string; name: string } | null;
+	revisionCreatedAt: Date | null;
+}> {
+	const [{ latestReady }, revision] = await Promise.all([
+		getLatestPlanningAnalysis(input),
+		getCurrentAnalysisRevision(input),
+	]);
+	return {
+		effective: effectivePlanningAnalysis({
+			ai: latestReady?.content ?? null,
+			revision: revision
+				? {
+						body: revision.body,
+						sourceAnalysisVersion: revision.sourceAnalysisVersion,
+					}
+				: null,
+		}),
+		aiVersion: latestReady?.version ?? null,
+		revisionVersion: revision?.version ?? null,
+		// What the NEXT save must send. Falling back to the current AI version
+		// is what makes the first edit possible at all: before any revision
+		// exists there is nothing to inherit, and the editor was seeded from
+		// whatever analysis is on screen. Returning null here and requiring a
+		// positive integer at the API would make the first save unsendable.
+		sourceAnalysisVersion:
+			revision?.sourceAnalysisVersion ?? latestReady?.version ?? null,
+		// Only the stale banner needs the distinction between "inherited from a
+		// revision" and "defaulted to the current analysis", and it gets it by
+		// comparing against `aiVersion` — equal means not stale, which is the
+		// correct answer for a document nobody has edited yet.
+		author: revision?.author
+			? { id: revision.author.id, name: revision.author.name }
+			: null,
+		revisionCreatedAt: revision?.createdAt ?? null,
 	};
 }

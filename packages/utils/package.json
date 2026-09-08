@@ -79,6 +79,11 @@
 			"import": "./lib/publishing-short-post-prompt.ts",
 			"default": "./lib/publishing-short-post-prompt.ts"
 		},
+		"./publishing-analysis-prose": {
+			"types": "./lib/publishing-analysis-prose.ts",
+			"import": "./lib/publishing-analysis-prose.ts",
+			"default": "./lib/publishing-analysis-prose.ts"
+		},
 		"./template-renderer": {
 			"types": "./template-renderer.ts",
 			"import": "./template-renderer.ts",

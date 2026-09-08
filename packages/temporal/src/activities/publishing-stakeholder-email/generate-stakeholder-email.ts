@@ -84,6 +84,7 @@ import {
 	db,
 	effectiveContributorUserIds,
 	getBoundPromptForAgent,
+	getEffectivePlanningAnalysis,
 	listTopicDecisions,
 	logDraftRefusal,
 	seedWorkingDraftIfAbsent,
@@ -204,7 +205,7 @@ export async function generateStakeholderEmailActivity(
 		contributors,
 		roleClause,
 		threads,
-		latestAnalysis,
+		effectiveAnalysis,
 	] = await Promise.all([
 		// `organizationId ?? undefined` is load-bearing: falsy takes the
 		// personal USER → SYSTEM path, truthy takes ORG → SYSTEM, and the two
@@ -230,15 +231,17 @@ export async function generateStakeholderEmailActivity(
 			surface: "publishing-suite",
 		}),
 		listTopicDecisions({ topicId, projectId }),
-		// The topic's latest READY analysis. Scoped by projectId like every
-		// other read here; absent is a NORMAL answer, not a failure — UC3's
-		// precondition is "sufficient planning context OR source context", so
-		// a topic nobody has analysed still drafts from its raw sources.
-		db.publishingTopicPlanningAnalysis.findFirst({
-			where: { topicId, projectId, status: "READY" },
-			orderBy: { version: "desc" },
-			select: { content: true },
-		}),
+		// The topic's EFFECTIVE analysis: the author's edited prose when a
+		// revision exists, otherwise the AI's own, plus the structured half
+		// nobody edits. Resolved through the ONE reader rather than read off
+		// the analysis row here — a second inline query is how the editable
+		// document silently stops reaching the model (Fizzy #1851).
+		//
+		// Scoped by projectId like every other read here; absent is a NORMAL
+		// answer, not a failure — UC3's precondition is "sufficient planning
+		// context OR source context", so a topic nobody has analysed still
+		// drafts from its raw sources.
+		getEffectivePlanningAnalysis({ topicId, projectId }),
 	]);
 
 	heartbeat(`stakeholderEmail: context assembled for ${draftId}`);
@@ -314,7 +317,8 @@ export async function generateStakeholderEmailActivity(
 			contributors,
 		},
 		context: contextResult.context,
-		planningAnalysis: latestAnalysis?.content ?? null,
+		analysisProse: effectiveAnalysis.effective?.prose ?? "",
+		analysisData: effectiveAnalysis.effective?.data ?? {},
 		decisions,
 		guidance: input.guidance,
 		restrictedSubjects: restricted.map((r) => r.label),

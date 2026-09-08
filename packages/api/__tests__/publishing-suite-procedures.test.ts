@@ -54,6 +54,13 @@ const generateNowMocks = vi.hoisted(() => ({
 const planningMocks = vi.hoisted(() => ({
 	startPlanningAnalysisAttempt: vi.fn(),
 	getLatestPlanningAnalysis: vi.fn(),
+	// Task 7 (#1851): `getPlanningAnalysisProcedure` now also resolves the
+	// effective (AI-or-revision) analysis alongside the two raw rows. Left
+	// unconfigured in the tests below that predate the revision feature — an
+	// unconfigured `vi.fn()` resolves to `undefined`, and spreading that into
+	// the handler's return object is a no-op, so those tests keep asserting
+	// exactly the two-row shape they always have.
+	getEffectivePlanningAnalysis: vi.fn(),
 	failPlanningAnalysis: vi.fn(),
 	isTemporalAvailable: vi.fn(),
 	workflowStart: vi.fn(),
@@ -142,6 +149,7 @@ vi.mock("@repo/database", () => ({
 	resolveProjectTenant: flagMocks.resolveProjectTenant,
 	startPlanningAnalysisAttempt: planningMocks.startPlanningAnalysisAttempt,
 	getLatestPlanningAnalysis: planningMocks.getLatestPlanningAnalysis,
+	getEffectivePlanningAnalysis: planningMocks.getEffectivePlanningAnalysis,
 	failPlanningAnalysis: planningMocks.failPlanningAnalysis,
 	// 2A-3 (#1851): the decision thread — read it, and answer an open question
 	// on it. `listTopicDecisionsProcedure` (a read) carries NO
@@ -274,9 +282,9 @@ import {
 	getLatestPublishingCycle,
 	getLinkedChannelNames,
 	getPublishingSuiteSettings,
+	getPublishingTopic,
 	listPublishingChatDeliveriesForProjectCycle,
 	listPublishingCycles,
-	getPublishingTopic,
 	listPublishingTopics,
 	listTopicDecisions,
 	Prisma,
@@ -1802,16 +1810,20 @@ describe("generatePlanningAnalysis", () => {
 });
 
 describe("getPlanningAnalysis", () => {
-	it("scopes the read by projectId and returns both rows", async () => {
-		// TWO rows, because one cannot carry both meanings: `latestReady` is what
-		// to render, `latestAttempt` is what to say about it. Returning only the
-		// newest would blank a good analysis the moment a regeneration failed.
+	it("returns the attempt scoped by projectId, and never the raw READY row", async () => {
+		// `latestAttempt` is what to SAY about the analysis — running, failed,
+		// stranded. What to RENDER comes from the effective-analysis resolver
+		// spread in below. The newest READY row itself is deliberately absent
+		// from the response since Fizzy #1851 Task 11: returning it would keep a
+		// supported path to the un-overridden AI text, and a caller that
+		// rendered it would silently ignore the author's own edit.
 		const ready = { id: "pa-1", version: 1, status: "READY" };
 		const attempt = { id: "pa-2", version: 2, status: "FAILED" };
 		planningMocks.getLatestPlanningAnalysis.mockResolvedValue({
 			latestAttempt: attempt,
 			latestReady: ready,
 		});
+		planningMocks.getEffectivePlanningAnalysis.mockResolvedValue({});
 
 		const res = await getPlanningHandler({
 			input: { projectId: "p1", topicId: "t1", organizationId: null },
@@ -1822,7 +1834,99 @@ describe("getPlanningAnalysis", () => {
 			topicId: "t1",
 			projectId: "p1",
 		});
-		expect(res).toEqual({ latestAttempt: attempt, latestReady: ready });
+		expect(res).toEqual({
+			latestAttempt: attempt,
+			aiModel: null,
+			aiPromptSource: null,
+		});
+		// Said twice on purpose: the equality above already fails on an extra
+		// key, but this names WHICH key must never come back.
+		expect(res).not.toHaveProperty("latestReady");
+	});
+
+	it("carries the READY row's provenance as scalars when the newest attempt FAILED", async () => {
+		// The row is withheld; its provenance is not. `latestAttempt` here is a
+		// failed regeneration sitting on top of a good analysis — and FAILED is
+		// terminal, so a client that read the model name and the prompt note
+		// off the attempt would lose both until somebody retried, on exactly
+		// the analysis a reader has most reason to scrutinise. Scalars say how
+		// the text was produced without carrying the text.
+		planningMocks.getLatestPlanningAnalysis.mockResolvedValue({
+			latestAttempt: {
+				id: "pa-2",
+				version: 2,
+				status: "FAILED",
+				model: null,
+				promptSource: null,
+			},
+			latestReady: {
+				id: "pa-1",
+				version: 1,
+				status: "READY",
+				model: "test-model",
+				promptSource: "DEFAULT_RENDER_FAILED",
+			},
+		});
+		planningMocks.getEffectivePlanningAnalysis.mockResolvedValue({
+			aiVersion: 1,
+		});
+
+		const res = await getPlanningHandler({
+			input: { projectId: "p1", topicId: "t1", organizationId: null },
+			context: ctx,
+		});
+
+		expect(res).toMatchObject({
+			aiModel: "test-model",
+			aiPromptSource: "DEFAULT_RENDER_FAILED",
+		});
+		// Still no path to the un-overridden AI text: two scalars, not a row.
+		expect(res).not.toHaveProperty("latestReady");
+	});
+
+	it("spreads every field the effective-analysis resolver returns, not a hand-picked subset", async () => {
+		// Task 7 (#1851): the resolver returns SIX fields, and a prior draft of
+		// this handler enumerated only four — silently dropping `author` and
+		// `revisionCreatedAt`. Spreading the resolver's result, rather than
+		// naming its fields one by one, is what this test pins: it fails the
+		// moment the handler goes back to picking fields by name and one of
+		// them is missed.
+		planningMocks.getLatestPlanningAnalysis.mockResolvedValue({
+			latestAttempt: null,
+			latestReady: null,
+		});
+		const revisionCreatedAt = new Date("2026-09-01T00:00:00Z");
+		planningMocks.getEffectivePlanningAnalysis.mockResolvedValue({
+			effective: { body: "Edited prose.", isStale: false },
+			aiVersion: 2,
+			revisionVersion: 1,
+			sourceAnalysisVersion: 2,
+			author: { id: "user-1", name: "Author Name" },
+			revisionCreatedAt,
+		});
+
+		const res = await getPlanningHandler({
+			input: { projectId: "p1", topicId: "t1", organizationId: null },
+			context: ctx,
+		});
+
+		expect(planningMocks.getEffectivePlanningAnalysis).toHaveBeenCalledWith(
+			{
+				topicId: "t1",
+				projectId: "p1",
+			},
+		);
+		expect(res).toEqual({
+			latestAttempt: null,
+			aiModel: null,
+			aiPromptSource: null,
+			effective: { body: "Edited prose.", isStale: false },
+			aiVersion: 2,
+			revisionVersion: 1,
+			sourceAnalysisVersion: 2,
+			author: { id: "user-1", name: "Author Name" },
+			revisionCreatedAt,
+		});
 	});
 
 	it("answers a topic from another project exactly as it answers a topic with no analysis", async () => {
@@ -1831,6 +1935,14 @@ describe("getPlanningAnalysis", () => {
 		planningMocks.getLatestPlanningAnalysis.mockResolvedValue({
 			latestAttempt: null,
 			latestReady: null,
+		});
+		planningMocks.getEffectivePlanningAnalysis.mockResolvedValue({
+			effective: null,
+			aiVersion: null,
+			revisionVersion: null,
+			sourceAnalysisVersion: null,
+			author: null,
+			revisionCreatedAt: null,
 		});
 
 		await expect(
@@ -1842,7 +1954,17 @@ describe("getPlanningAnalysis", () => {
 				},
 				context: ctx,
 			}),
-		).resolves.toEqual({ latestAttempt: null, latestReady: null });
+		).resolves.toEqual({
+			latestAttempt: null,
+			aiModel: null,
+			aiPromptSource: null,
+			effective: null,
+			aiVersion: null,
+			revisionVersion: null,
+			sourceAnalysisVersion: null,
+			author: null,
+			revisionCreatedAt: null,
+		});
 	});
 });
 

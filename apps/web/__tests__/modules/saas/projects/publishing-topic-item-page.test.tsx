@@ -37,7 +37,21 @@ const {
 		// topic. Two rows, because a failed regeneration must not blank a
 		// good analysis — see PlanningAnalysisTab's own test file.
 		latestAttempt: null as Record<string, unknown> | null,
-		latestReady: null as Record<string, unknown> | null,
+		// Tasks 8/11 (Fizzy #1851): the resolver's one answer to "what is this
+		// topic's analysis right now" — AI text, or the author's own override.
+		// Independent of `latestAttempt` above on purpose: a real override can
+		// disagree with the raw AI row, and that disagreement is exactly what
+		// the media-tab gate test below exercises. The newest READY row itself
+		// is no longer part of the response — Task 11 removed it so no caller
+		// can render the un-overridden AI text by accident.
+		effective: null as {
+			prose: string;
+			data: unknown;
+			overridden: boolean;
+		} | null,
+		aiVersion: null as number | null,
+		revisionVersion: null as number | null,
+		sourceAnalysisVersion: null as number | null,
 		// 2A-3: the decision-thread rows `TopicQuestionsPanel` renders. The
 		// source of truth for the Summary & Questions tab's questions moved
 		// here from the analysis blob above — see the FR39 block below.
@@ -111,7 +125,12 @@ vi.mock("@tanstack/react-query", () => ({
 			return {
 				data: {
 					latestAttempt: state.latestAttempt,
-					latestReady: state.latestReady,
+					effective: state.effective,
+					aiVersion: state.aiVersion,
+					revisionVersion: state.revisionVersion,
+					sourceAnalysisVersion: state.sourceAnalysisVersion,
+					author: null,
+					revisionCreatedAt: null,
 				},
 				isPending: false,
 				isLoading: false,
@@ -275,6 +294,18 @@ vi.mock("@shared/lib/orpc-query-utils", () => {
 					generatePlanningAnalysis: m(
 						"projects.publishingSuite.generatePlanningAnalysis",
 					),
+					// Task 11: the Planning & Analysis tab now mounts the
+					// version-history drawer, which reads this list and writes a
+					// restore through the same save path. Same obligation as every
+					// entry here — a missing one is `undefined.queryOptions`, which
+					// fails every case in this file at once rather than one
+					// assertion.
+					listAnalysisRevisions: q(
+						"projects.publishingSuite.listAnalysisRevisions",
+					),
+					saveAnalysisRevision: m(
+						"projects.publishingSuite.saveAnalysisRevision",
+					),
 					listTopicDrafts: q(
 						"projects.publishingSuite.listTopicDrafts",
 					),
@@ -429,7 +460,10 @@ function renderPage(canEdit = true) {
 beforeEach(() => {
 	state.topic = topic();
 	state.latestAttempt = null;
-	state.latestReady = null;
+	state.effective = null;
+	state.aiVersion = null;
+	state.revisionVersion = null;
+	state.sourceAnalysisVersion = null;
 	state.decisionThreads = [];
 	state.members = [];
 	state.membersPending = false;
@@ -582,6 +616,58 @@ describe("TopicItemPage — tabs", () => {
 		for (const tab of within(tablist).getAllByRole("tab")) {
 			expect(tab).toBeEnabled();
 		}
+	});
+});
+
+describe("TopicItemPage — media-tab gate (Fizzy #1851, Task 8)", () => {
+	it("keeps a generation tab's recommendation reading the resolved analysis, not the stale AI row", async () => {
+		// The raw AI row came back with no structured recommendation at all —
+		// as bare as a topic whose sources gave the model nothing to bucket —
+		// while the resolver's `effective` view (what the author actually
+		// edited) carries a substantial, prose-only risks section. A gate that
+		// read the raw AI row directly would call this "no analysis" and
+		// blank every tab's recommendation; the whole point of Task 8 is
+		// that the gate reads `effective` instead.
+		state.latestAttempt = {
+			id: "pa-1",
+			version: 1,
+			status: "READY",
+			content: {},
+			sourceRefs: {},
+			model: "test-model",
+			promptSource: "BOUND",
+			error: null,
+			createdAt: new Date("2026-08-30T10:00:00Z"),
+			updatedAt: new Date("2026-08-30T10:04:00Z"),
+		};
+		state.aiVersion = 1;
+		state.sourceAnalysisVersion = 1;
+		state.effective = {
+			prose: "### Risks\n\nNames a customer the author flagged after editing.",
+			data: {},
+			overridden: true,
+		};
+
+		const user = userEvent.setup();
+		renderPage();
+
+		const tablist = screen.getByRole("tablist", {
+			name: /content generation/i,
+		});
+		await user.click(
+			within(tablist).getByRole("tab", { name: /short post \/ tweet/i }),
+		);
+
+		// hasAnalysis === true: the panel says the analysis is silent on this
+		// type, NOT that there is no analysis to read yet.
+		expect(
+			screen.getByText(
+				/the planning analysis doesn't say anything about/i,
+			),
+		).toBeInTheDocument();
+		expect(
+			screen.queryByText(/no planning analysis yet/i),
+		).not.toBeInTheDocument();
 	});
 });
 
@@ -745,8 +831,16 @@ describe("TopicItemPage — open questions (FR39)", () => {
 	});
 
 	it("renders the analysis itself on the Planning & Analysis tab", async () => {
-		state.latestReady = readyAnalysis([QUESTION]);
-		state.latestAttempt = state.latestReady;
+		state.latestAttempt = readyAnalysis([QUESTION]);
+		state.aiVersion = 1;
+		state.sourceAnalysisVersion = 1;
+		// What the tab renders since Task 11 is the RESOLVER's document,
+		// not the raw AI row — so the prose has to come from here.
+		state.effective = {
+			prose: "### Topic angle\n\nA reliability story.",
+			data: {},
+			overridden: false,
+		};
 
 		const user = userEvent.setup();
 		renderPage();

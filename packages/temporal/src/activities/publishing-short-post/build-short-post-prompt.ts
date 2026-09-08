@@ -23,6 +23,11 @@ import {
 	type TemplateFormat,
 } from "@repo/utils";
 import {
+	type AnalysisData,
+	humanizeKey,
+	renderValue,
+} from "@repo/utils/publishing-analysis-prose";
+import {
 	humanizeDecisionKind,
 	toSingleLineSubject,
 } from "@repo/utils/publishing-restrictions";
@@ -178,6 +183,11 @@ export const GUIDANCE_CHAR_CAP = 2000;
  * is the single largest block here. Left uncapped, a long worksheet plus the
  * source context it was derived FROM can push one request past the provider's
  * input window — which fails the whole run rather than degrading it.
+ *
+ * Since Fizzy #1851 it bounds the COMPOSED block — the author's prose plus the
+ * structured sections — and not either half alone. Half of it is now
+ * user-authored Markdown with no bound of its own, so a cap covering only the
+ * structured half would be a budget in name only.
  */
 export const PLANNING_ANALYSIS_CHAR_CAP = 8000;
 
@@ -187,14 +197,25 @@ function clamp(text: string, cap: number): string {
 }
 
 /**
- * Flatten the planning analysis document into the prose block the prompt reads.
+ * Flatten the STRUCTURED half of a planning analysis into the block the prompt
+ * reads underneath the author's prose.
  *
- * Deliberately structure-agnostic: it walks whatever the stored JSON holds
- * rather than naming the fields of `PublishingPlanningAnalysisSchema`. 2A owns
- * that schema and will keep evolving it; a field list duplicated here would go
- * stale silently — the prompt would simply stop passing on whichever section 2A
- * added last, and no test on either side would fail. Walking the object means a
- * new section reaches the writer the day 2A ships it.
+ * Deliberately structure-agnostic: it walks whatever it is handed rather than
+ * naming the fields of `PublishingPlanningAnalysisSchema`. 2A owns that schema
+ * and will keep evolving it; a field list duplicated here would go stale
+ * silently — the prompt would simply stop passing on whichever section 2A added
+ * last, and no test on either side would fail. Walking the object means a new
+ * section reaches the writer the day 2A ships it.
+ *
+ * Since Fizzy #1851 it no longer sees the whole document: the caller hands it
+ * only `analysisData`, and the prose half arrives already rendered. The walk is
+ * unchanged, but it can no longer catch a schema field in NEITHER
+ * `PROSE_FIELDS` nor `DATA_FIELDS` — such a field is never handed here at all.
+ * `publishing-planning/__tests__/analysis-field-partition.test.ts` is the guard
+ * for that, and it is the only one.
+ *
+ * Its own clamp still applies to this half. The caller re-clamps the COMPOSED
+ * block, which is what keeps the total budget unchanged.
  */
 export function flattenPlanningAnalysis(analysis: unknown): string {
 	if (analysis == null || typeof analysis !== "object") {
@@ -202,34 +223,6 @@ export function flattenPlanningAnalysis(analysis: unknown): string {
 	}
 
 	const lines: string[] = [];
-
-	const renderValue = (value: unknown, depth: number): string[] => {
-		const pad = "  ".repeat(depth);
-		if (value == null) {
-			return [];
-		}
-		if (typeof value === "string") {
-			const trimmed = value.trim();
-			return trimmed ? [`${pad}${trimmed}`] : [];
-		}
-		if (typeof value === "number" || typeof value === "boolean") {
-			return [`${pad}${String(value)}`];
-		}
-		if (Array.isArray(value)) {
-			return value.flatMap((item) => renderValue(item, depth));
-		}
-		if (typeof value === "object") {
-			return Object.entries(value as Record<string, unknown>).flatMap(
-				([key, nested]) => {
-					const body = renderValue(nested, depth + 1);
-					return body.length > 0
-						? [`${pad}${humanizeKey(key)}:`, ...body]
-						: [];
-				},
-			);
-		}
-		return [];
-	};
 
 	for (const [key, value] of Object.entries(
 		analysis as Record<string, unknown>,
@@ -244,22 +237,6 @@ export function flattenPlanningAnalysis(analysis: unknown): string {
 }
 
 /**
- * `keyDetailsToUse` → `Key details to use`.
- *
- * Sentence case, not Title Case: these become headings inside a prompt the model
- * reads as prose, and `Key Details To Use` reads as a proper noun — something to
- * quote rather than a label over the content beneath it.
- */
-function humanizeKey(key: string): string {
-	const spaced = key
-		.replace(/([a-z0-9])([A-Z])/g, "$1 $2")
-		.replace(/[_-]+/g, " ")
-		.trim()
-		.toLowerCase();
-	return spaced.charAt(0).toUpperCase() + spaced.slice(1);
-}
-
-/**
  * The short-post-specific half of the prompt's data.
  *
  * Pure and synchronous, like its planning sibling, so it stays testable without
@@ -269,15 +246,47 @@ function humanizeKey(key: string): string {
  * rather than rendered as a bare heading the model would feel invited to fill.
  */
 export function buildShortPostVariables({
-	planningAnalysis,
+	analysisProse,
+	analysisData,
 	decisions,
 	guidance,
 }: {
-	planningAnalysis: unknown;
+	/**
+	 * The document half of the topic's Planning & Analysis, already resolved:
+	 * the author's revision when one exists, otherwise the AI's own prose
+	 * rendered by `renderAnalysisProse`. Resolution happens in the activity via
+	 * `getEffectivePlanningAnalysis` — this function is deliberately not told
+	 * which of the two it received, because a prompt that varied on that would
+	 * mean a reader's draft depended on whether anyone had opened the editor.
+	 */
+	analysisProse: string;
+	/** The structured half, which nobody edits. */
+	analysisData: AnalysisData;
 	decisions: ShortPostDecision[];
 	guidance: string | null;
 }): ShortPostPromptVariables {
-	const analysisBlock = flattenPlanningAnalysis(planningAnalysis);
+	// Prose first, then whatever structured sections the analysis carries.
+	// The section ORDER differs from the pre-#1851 prompt, because the schema
+	// interleaved the two halves (risks and preDraftGuidance sat after
+	// sourceSignals). That is a deliberate one-time change: what must not vary
+	// is the prompt for one analysis depending on whether anyone opened the
+	// editor, and that is what the invariant test pins.
+	//
+	// The cap MOVED here and that is not cosmetic. `flattenPlanningAnalysis`
+	// keeps its own clamp, but after the split that clamp covers only the
+	// structured half — leaving `analysisProse`, now arbitrary user-authored
+	// Markdown, unbounded into a model input. Clamping the COMPOSED block keeps
+	// the total budget exactly what it was. Prose is clamped last rather than
+	// given a fixed sub-budget: the author's own words are the part they expect
+	// to survive, and a sub-budget would truncate a short edit to make room for
+	// structured sections nobody reads directly.
+	const dataBlock = flattenPlanningAnalysis(analysisData);
+	const analysisBlock = clamp(
+		[analysisProse, dataBlock]
+			.filter((section) => section.trim().length > 0)
+			.join("\n\n"),
+		PLANNING_ANALYSIS_CHAR_CAP,
+	);
 
 	const decisionLines = decisions
 		.filter((d) => d.answer.trim().length > 0)
@@ -420,7 +429,8 @@ export async function composeShortPostPrompt({
 	format,
 	topic,
 	context,
-	planningAnalysis,
+	analysisProse,
+	analysisData,
 	decisions,
 	guidance,
 	restrictedSubjects,
@@ -429,14 +439,20 @@ export async function composeShortPostPrompt({
 	format: TemplateFormat;
 	topic: PlanningAnalysisTopic;
 	context: PlanningAnalysisContext;
-	planningAnalysis: unknown;
+	analysisProse: string;
+	analysisData: AnalysisData;
 	decisions: ShortPostDecision[];
 	guidance: string | null;
 	restrictedSubjects: string[];
 }): Promise<ComposedShortPostPrompt> {
 	const variables = {
 		...buildPlanningAnalysisVariables({ topic, context }),
-		...buildShortPostVariables({ planningAnalysis, decisions, guidance }),
+		...buildShortPostVariables({
+			analysisProse,
+			analysisData,
+			decisions,
+			guidance,
+		}),
 	};
 
 	let effectiveFormat = format;

@@ -802,6 +802,12 @@ export const PublishingTopicPlanningAnalysisScalarFieldEnumSchema = z.enum(['id'
 
 export type PublishingTopicPlanningAnalysisScalarFieldEnum = z.infer<typeof PublishingTopicPlanningAnalysisScalarFieldEnumSchema>;
 
+// File: PublishingTopicAnalysisRevisionScalarFieldEnum.schema.ts
+
+export const PublishingTopicAnalysisRevisionScalarFieldEnumSchema = z.enum(['id', 'topicId', 'projectId', 'organizationId', 'userId', 'version', 'body', 'sourceAnalysisVersion', 'authorUserId', 'changeSummary', 'createdAt'])
+
+export type PublishingTopicAnalysisRevisionScalarFieldEnum = z.infer<typeof PublishingTopicAnalysisRevisionScalarFieldEnumSchema>;
+
 // File: PublishingTopicDraftScalarFieldEnum.schema.ts
 
 export const PublishingTopicDraftScalarFieldEnumSchema = z.enum(['id', 'topicId', 'projectId', 'organizationId', 'userId', 'postType', 'version', 'status', 'content', 'guidance', 'sourceRefs', 'model', 'promptSource', 'promptId', 'promptVersion', 'error', 'requestedById', 'executionTimeoutAt', 'createdAt', 'updatedAt'])
@@ -6402,6 +6408,25 @@ export const PublishingTopicPlanningAnalysisSchema = z.object({
 });
 
 export type PublishingTopicPlanningAnalysisType = z.infer<typeof PublishingTopicPlanningAnalysisSchema>;
+
+
+// File: PublishingTopicAnalysisRevision.schema.ts
+
+export const PublishingTopicAnalysisRevisionSchema = z.object({
+  id: z.string(),
+  topicId: z.string(),
+  projectId: z.string(),
+  organizationId: z.string().nullish(),
+  userId: z.string().nullish(),
+  version: z.number().int(),
+  body: z.string(),
+  sourceAnalysisVersion: z.number().int(),
+  authorUserId: z.string().nullish(),
+  changeSummary: z.string().nullish(),
+  createdAt: z.date(),
+});
+
+export type PublishingTopicAnalysisRevisionType = z.infer<typeof PublishingTopicAnalysisRevisionSchema>;
 
 
 // File: PublishingTopicDraft.schema.ts

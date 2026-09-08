@@ -23,6 +23,7 @@ import {
 	renderTemplate,
 	type TemplateFormat,
 } from "@repo/utils";
+import type { AnalysisData } from "@repo/utils/publishing-analysis-prose";
 import { toSingleLineSubject } from "@repo/utils/publishing-restrictions";
 import { neutralizeSourceDataMarkers } from "@repo/utils/publishing-source-data-markers";
 import {
@@ -350,7 +351,8 @@ export async function composeStakeholderEmailPrompt({
 	format,
 	topic,
 	context,
-	planningAnalysis,
+	analysisProse,
+	analysisData,
 	decisions,
 	guidance,
 	restrictedSubjects,
@@ -360,7 +362,14 @@ export async function composeStakeholderEmailPrompt({
 	format: TemplateFormat;
 	topic: PlanningAnalysisTopic;
 	context: PlanningAnalysisContext;
-	planningAnalysis: unknown;
+	/**
+	 * The resolved document half of the topic's Planning & Analysis (the
+	 * author's revision when one exists, else the AI's own prose) and the
+	 * structured half nobody edits. Resolved by the activity through
+	 * `getEffectivePlanningAnalysis`; see `buildShortPostVariables`.
+	 */
+	analysisProse: string;
+	analysisData: AnalysisData;
 	decisions: StakeholderEmailDecision[];
 	guidance: string | null;
 	restrictedSubjects: string[];
@@ -390,7 +399,8 @@ export async function composeStakeholderEmailPrompt({
 		Object.entries({
 			...buildPlanningAnalysisVariables({ topic, context }),
 			...buildShortPostVariables({
-				planningAnalysis,
+				analysisProse,
+				analysisData,
 				decisions,
 				guidance,
 			}),

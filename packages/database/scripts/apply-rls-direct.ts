@@ -432,6 +432,10 @@ async function applyRLS() {
 				name: "publishing_topic_working_draft",
 				policy: "user_owned",
 			}, // Publishing Suite user-owned working drafts
+			{
+				name: "publishing_topic_analysis_revision",
+				policy: "user_owned",
+			}, // Publishing Suite user-owned analysis prose
 			{ name: "document_version", policy: "user_owned" }, // Document history
 			{ name: "document_auto_refresh_settings", policy: "user_owned" }, // Per-document auto-refresh enrollment
 			{ name: "feature_version", policy: "user_owned" }, // Feature version history
