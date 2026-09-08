@@ -10,11 +10,13 @@
  *   Avoids redundant DB reads within the same workflow execution / worker process.
  *   Lost on worker restart, so it is purely a performance micro-cache.
  *
- * L2 — Database (5-minute TTL, stored in RegisteredAgent.metadata.agentCard):
+ * L2 — Database (30-minute TTL, stored in RegisteredAgent.metadata.agentCard):
  *   Persists across worker restarts and deployments. The health monitor
- *   proactively refreshes this cache after every successful health check.
- *   On an L1 miss we read from here; only fetch from the live agent when
- *   the DB entry is missing or older than DB_CACHE_TTL_MS.
+ *   refreshes the stored card at most once per TTL, and only rewrites it
+ *   when its content actually changed — an unchanged card just bumps the
+ *   freshness timestamp. On an L1 miss we read from here; only fetch from
+ *   the live agent when the DB entry is missing or older than
+ *   DB_CACHE_TTL_MS.
  */
 
 import { A2AClient } from "@repo/agent-core";
@@ -36,8 +38,8 @@ const a2aClient = new A2AClient({ timeout: 120000 });
 /** L1: in-memory micro-cache TTL — survives within a single worker process */
 const MEMORY_CACHE_TTL_MS = 30_000; // 30 seconds
 
-/** L2: DB-backed persistent cache TTL */
-const DB_CACHE_TTL_MS = 5 * 60_000; // 5 minutes
+/** L2: DB-backed persistent cache TTL — derived from the single source of truth. */
+const DB_CACHE_TTL_MS = CacheTTL.agentCard * 1000;
 
 // =============================================================================
 // L1 in-memory cache
@@ -173,7 +175,7 @@ function buildCapabilitiesFromCard(
  *
  * Uses a two-level cache strategy:
  * - L1 (in-memory, 30 s): avoids redundant DB reads within the same process
- * - L2 (database, 5 min): persists across worker restarts
+ * - L2 (database, 30 min): persists across worker restarts
  *
  * The live agent card is only fetched when both caches are cold or stale.
  *
@@ -211,12 +213,6 @@ export async function getAgentCapabilities(
 		const result = buildCapabilitiesFromCard(agentId, redisCard);
 		// Populate L1 so subsequent calls within this execution skip Redis
 		setInMemoryCache(agentId, result);
-		// Refresh Redis TTL opportunistically
-		RedisCache.set(
-			CacheKeys.agentCard(agentId),
-			redisCard,
-			CacheTTL.agentCard,
-		).catch(() => {});
 		return result;
 	}
 
@@ -238,7 +234,9 @@ export async function getAgentCapabilities(
 			const cachedAt = new Date(cachedAtStr).getTime();
 			const ageMs = Date.now() - cachedAt;
 
-			if (ageMs < DB_CACHE_TTL_MS) {
+			// A negative age means a future timestamp (clock skew or a
+			// hand-edited row) — that must not count as fresh.
+			if (ageMs >= 0 && ageMs < DB_CACHE_TTL_MS) {
 				console.log(
 					`[Orchestrator] L2 DB cache hit for agent capabilities: ${agentId} ` +
 						`(age: ${Math.round(ageMs / 1000)}s)`,

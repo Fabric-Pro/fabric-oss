@@ -82,8 +82,13 @@ export const CacheTTL = {
 	queryEmbedding: 600,
 	/** 30 minutes — agent embeddings are stable within a deploy cycle */
 	agentEmbedding: 1800,
-	/** 5 minutes — mirrors DB_CACHE_TTL_MS in agent-capabilities.ts */
-	agentCard: 300,
+	/**
+	 * 30 minutes — single source of truth for the agent-card cache TTL. The
+	 * health probe (health-probe.ts) refreshes the stored card at most once per
+	 * this TTL, and agent-capabilities.ts derives its L2 DB-cache TTL from this
+	 * same value so the two layers never disagree on freshness.
+	 */
+	agentCard: 1800,
 	/** 7 days — a finalized meeting transcript never changes */
 	meetingTranscript: 7 * 24 * 60 * 60,
 } as const;

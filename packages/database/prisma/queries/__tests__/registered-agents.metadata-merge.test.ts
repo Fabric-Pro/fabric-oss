@@ -49,6 +49,7 @@ vi.mock("../../client", async () => {
 
 import {
 	mergeRegisteredAgentMetadata,
+	touchAgentCardCache,
 	updateAgentCardCache,
 	updateAgentEmbedding,
 } from "../registered-agents";
@@ -122,6 +123,46 @@ describe("registered_agent.metadata writers — single atomic jsonb merge", () =
 
 		expect(boundPatch(lastStatement())).toMatchObject({
 			embeddingModelId: "openai/text-embedding-3-small",
+		});
+	});
+
+	it("updateAgentEmbedding includes embeddingSourceHash only when given", async () => {
+		await updateAgentEmbedding(
+			"agent-2",
+			[0.3],
+			new Date("2026-09-08T11:00:00.000Z"),
+		);
+		expect(boundPatch(lastStatement())).not.toHaveProperty(
+			"embeddingSourceHash",
+		);
+
+		executeRaw.mockClear();
+		await updateAgentEmbedding(
+			"agent-2",
+			[0.3],
+			new Date("2026-09-08T11:00:00.000Z"),
+			"openai/text-embedding-3-small",
+			"deadbeef",
+		);
+		expect(boundPatch(lastStatement())).toMatchObject({
+			embeddingModelId: "openai/text-embedding-3-small",
+			embeddingSourceHash: "deadbeef",
+		});
+	});
+
+	it("touchAgentCardCache issues exactly one $executeRaw whose patch is only agentCardCachedAt", async () => {
+		const cachedAt = new Date("2026-09-08T13:00:00.000Z");
+		await touchAgentCardCache("agent-1", cachedAt);
+
+		const statement = lastStatement();
+		expect(findUnique).not.toHaveBeenCalled();
+		expect(update).not.toHaveBeenCalled();
+		expect(statement.sql).toContain(
+			"SET metadata = COALESCE(metadata, '{}'::jsonb) || ?::jsonb",
+		);
+		expect(statement.values).toContain("agent-1");
+		expect(boundPatch(statement)).toEqual({
+			agentCardCachedAt: "2026-09-08T13:00:00.000Z",
 		});
 	});
 
