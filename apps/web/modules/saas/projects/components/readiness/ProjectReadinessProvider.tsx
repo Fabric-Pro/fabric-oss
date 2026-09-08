@@ -152,6 +152,9 @@ export function ProjectReadinessProvider({
 			)
 				? 15_000
 				: false,
+		// The default — stated so the intent (don't spend this poll on a
+		// backgrounded tab) is explicit rather than incidental.
+		refetchIntervalInBackground: false,
 	});
 
 	/**
@@ -168,22 +171,48 @@ export function ProjectReadinessProvider({
 	 * be forgotten. Readiness is a single cheap read, so re-running it after an
 	 * unrelated mutation costs little; missing one costs a user staring at an
 	 * item they have already done.
+	 *
+	 * The filter has to key on the event *type*, not the mutation's current
+	 * state: `useMutation` calls `observer.setOptions(options)` from its own
+	 * effect on every render, and that emits an `observerOptionsUpdated` cache
+	 * event whenever `options` is not shallow-equal to last render's — which,
+	 * for any mutation with an inline `mutationFn`/`onSuccess`, is every
+	 * render. Once such a mutation has succeeded once, `event.mutation` is set
+	 * and its `state.status` stays `"success"` forever after, so a filter that
+	 * only checks `state.status` treats every later re-render of that
+	 * mutation's component as a fresh success and refetches on it. `type ===
+	 * "updated" && action.type === "success"` only matches the one event the
+	 * mutation itself fires the moment it actually completes.
 	 */
 	useEffect(() => {
 		const cache = queryClient.getMutationCache();
+		const queryKey = ["project-readiness", projectId, organizationId];
 		let queued: ReturnType<typeof setTimeout> | null = null;
-		const unsubscribe = cache.subscribe((event) => {
-			if (event.mutation?.state.status !== "success") {
-				return;
-			}
-			// Coalesce: a save can fire several mutations in a burst, and one
-			// re-read afterwards answers all of them.
+		const schedule = () => {
 			if (queued) {
 				clearTimeout(queued);
 			}
 			queued = setTimeout(() => {
+				queued = null;
+				// A success that lands while a fetch is already in flight must
+				// not cancel and restart it (`refetch()` defaults to
+				// `cancelRefetch: true`) — but it cannot be dropped either, because
+				// that request may have read the database before the mutation
+				// committed. Wait for it to finish, then read once more.
+				if (queryClient.isFetching({ queryKey }) > 0) {
+					schedule();
+					return;
+				}
 				void refetch();
 			}, 400);
+		};
+		const unsubscribe = cache.subscribe((event) => {
+			if (event.type !== "updated" || event.action.type !== "success") {
+				return;
+			}
+			// Coalesce: a save can fire several mutations in a burst, and one
+			// re-read afterwards answers all of them.
+			schedule();
 		});
 		return () => {
 			if (queued) {
@@ -191,7 +220,7 @@ export function ProjectReadinessProvider({
 			}
 			unsubscribe();
 		};
-	}, [queryClient, refetch]);
+	}, [queryClient, refetch, projectId, organizationId]);
 
 	/**
 	 * Re-read readiness when the user moves between project tabs.
