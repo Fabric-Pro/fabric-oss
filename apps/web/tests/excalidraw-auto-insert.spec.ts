@@ -1058,15 +1058,16 @@ test.describe("Excalidraw chat -> editor auto-insert", () => {
 		skipUnlessDocumentSeeded();
 		const strings = getAutoInsertStrings();
 
-		await page.goto(TEST_DOCUMENT_PATH);
-		await page.waitForLoadState("networkidle");
-
-		// Toggle theme to dark via next-themes' localStorage handle.
-		await page.evaluate(() => {
-			document.documentElement.classList.add("dark");
-			window.localStorage.setItem("theme", "dark");
+		// Force dark mode through next-themes' own storage. The key MUST match
+		// `storageKey="fabric-theme"` in ClientProviders.tsx -- next-themes reads
+		// nothing else -- and the seed MUST run before navigation so the theme is
+		// resolved on first paint. Writing it after `goto` would be too late: the
+		// app default is light, so the page would already have painted light.
+		await page.addInitScript(() => {
+			window.localStorage.setItem("fabric-theme", "dark");
 		});
-		await page.reload();
+
+		await page.goto(TEST_DOCUMENT_PATH);
 		await page.waitForLoadState("networkidle");
 
 		const sidebarToggle = page
