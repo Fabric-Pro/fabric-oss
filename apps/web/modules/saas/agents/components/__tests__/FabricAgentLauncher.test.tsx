@@ -29,6 +29,7 @@ vi.mock("next/dynamic", async () => {
 		initialInput,
 		attachedProjectId,
 		attachedCodeContext,
+		systemPrompt,
 	}: {
 		initialInput?: string;
 		attachedProjectId?: string | null;
@@ -38,6 +39,7 @@ vi.mock("next/dynamic", async () => {
 			lineEnd?: number | null;
 			snippet?: string | null;
 		} | null;
+		systemPrompt?: string;
 	}) {
 		const [mockInput, setMockInput] = React.useState(initialInput ?? "");
 
@@ -50,6 +52,7 @@ vi.mock("next/dynamic", async () => {
 				<div>mock direct chat</div>
 				<div>initial input: {mockInput}</div>
 				<div>attached project: {attachedProjectId ?? ""}</div>
+				<div data-testid="system-prompt">{systemPrompt ?? ""}</div>
 				<div>
 					attached code: {attachedCodeContext?.filePath ?? ""}
 					{attachedCodeContext?.lineStart
@@ -176,6 +179,56 @@ describe("FabricAgentLauncher", () => {
 		expectLauncherOpen();
 		expect(screen.getByText("Quick page copilot")).toBeInTheDocument();
 		expect(await screen.findByText("mock direct chat")).toBeInTheDocument();
+	});
+
+	/**
+	 * The panel's prepended prompt is the only place that describes the surface
+	 * to the model, and it outranks nothing that follows it. Copy claiming the
+	 * panel is toolless, or naming a surface the UI no longer has, comes back
+	 * as an answer that refuses work it can do and sends the user somewhere
+	 * that does not exist.
+	 */
+	it("does not tell the model it is toolless or send it to a retired surface", async () => {
+		render(
+			<FabricAgentLauncherProvider>
+				<LauncherHarness />
+			</FabricAgentLauncherProvider>,
+		);
+
+		fireEvent.click(
+			screen.getByRole("button", { name: /Open with context/i }),
+		);
+
+		const prompt = (await screen.findByTestId("system-prompt")).textContent;
+
+		expect(prompt).toBeTruthy();
+		// #2040 merged Nexus, Loom Direct and Loom Orchestrator into one page;
+		// "Loom" survives only as an internal workflow name.
+		expect(prompt).not.toMatch(/Loom/i);
+		expect(prompt).not.toMatch(/lightweight/i);
+		// The escape hatch the panel actually has.
+		expect(prompt).toContain("Expand");
+	});
+
+	/**
+	 * The contextless turn is the one that used to fall through: with no
+	 * project, story or code selection there were no details to describe, the
+	 * builder returned nothing, and the model introduced itself with the
+	 * direct-chat activity's own opening line — "You are Fabric Loom".
+	 */
+	it("still frames the surface when the drawer opens with no page context", async () => {
+		render(
+			<FabricAgentLauncherProvider>
+				<div>page content</div>
+			</FabricAgentLauncherProvider>,
+		);
+
+		fireEvent.click(screen.getByRole("button", { name: /Fabric Agent/i }));
+
+		const prompt = (await screen.findByTestId("system-prompt")).textContent;
+
+		expect(prompt).toContain("You are Fabric Agent");
+		expect(prompt).not.toMatch(/Loom/i);
 	});
 
 	it("shows visible context chips and prefilled prompt for contextual launches", async () => {
