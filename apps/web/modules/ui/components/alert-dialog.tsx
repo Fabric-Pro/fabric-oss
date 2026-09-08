@@ -60,7 +60,13 @@ const AlertDialogFooter = ({
 }: React.HTMLAttributes<HTMLDivElement>) => (
 	<div
 		className={cn(
-			"flex flex-col-reverse sm:flex-row sm:justify-end sm:space-x-2",
+			// `gap-2` rather than `sm:space-x-2`: the stacked mobile layout had
+			// no separation at all, because a horizontal margin utility does
+			// nothing to a column. `sm:flex-wrap` because the row is a grid
+			// item, so its min-width is its content — a footer wider than the
+			// card cannot shrink, and instead renders its last button hanging
+			// past the dialog's right border.
+			"flex flex-col-reverse gap-2 sm:flex-row sm:flex-wrap sm:justify-end",
 			className,
 		)}
 		{...props}
