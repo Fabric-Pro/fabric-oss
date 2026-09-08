@@ -414,7 +414,7 @@ export function StoriesRoadmap({ projectId }: Props) {
 		isActive: hasActiveRoadmapFilters,
 		aiSearch,
 		setAiSearch,
-	} = useRoadmapFilters();
+	} = useRoadmapFilters(projectId);
 	const handleViewDuplicates = useCallback(() => {
 		setRoadmapFilters({ duplicatesOnly: true });
 	}, [setRoadmapFilters]);
