@@ -291,9 +291,15 @@ export async function projectContextProcessingWorkflow(
 						};
 					}
 
+					// Fifteen minutes, matching the API's own dispatch. The
+					// issuer's default is five, which is shorter than the
+					// generation activity this token has to survive — a run
+					// that takes longer than the credential it was handed dies
+					// on an expiry nobody would think to look for.
 					const { aiToken } = await issueGenerationToken({
 						userId,
 						organizationId,
+						expirySeconds: 900,
 					});
 
 					// Same queue the API dispatches generation on. A child
@@ -325,6 +331,24 @@ export async function projectContextProcessingWorkflow(
 										prompt: "",
 										suppliedContext: documentContent,
 										suppliedContextId: contextId,
+										// The generation waits for the
+										// project's outstanding context work
+										// before it runs. This run IS that
+										// work: the extraction it would wait
+										// on is the activity a few steps up
+										// this function, and the context row
+										// it would count as outstanding is the
+										// one being ingested right now.
+										// Leaving the wait on would deadlock
+										// the run against its own source until
+										// the queue's ceiling ended it.
+										//
+										// Safe precisely because that source
+										// is the one input this run needs, and
+										// it is already in hand —
+										// `documentContent` is handed over
+										// directly above, not looked up.
+										skipDependencyWait: true,
 									},
 								],
 								workflowId: `document-generation-${result.targetDocumentId}-${contextId}`,

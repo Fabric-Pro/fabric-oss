@@ -20,6 +20,7 @@ export type FabricDocumentType =
 
 export type FabricDocumentStatus =
 	| "DRAFT"
+	| "QUEUED"
 	| "GENERATING"
 	| "IN_PROGRESS"
 	| "REVIEW"

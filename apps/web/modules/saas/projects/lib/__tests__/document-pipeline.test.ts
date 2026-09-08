@@ -4,6 +4,8 @@ import {
 	getDocumentMeta,
 	getDocumentStatusView,
 	getPipelineDocuments,
+	isDocumentGenerationRunning,
+	isDocumentInFlight,
 	type PipelineDocument,
 } from "../document-pipeline";
 
@@ -177,9 +179,48 @@ describe("getDocumentStatusView", () => {
 		expect(getDocumentStatusView("IN_PROGRESS").label).toBe("Active");
 	});
 
+	/**
+	 * Fizzy #2199 — a queued run has been accepted and is waiting on the
+	 * project's own context work. Falling through to "Pending" told the reader
+	 * the generation had never been asked for.
+	 */
+	it("maps QUEUED to Active, not Pending", () => {
+		expect(getDocumentStatusView("QUEUED")).toEqual({
+			label: "Active",
+			tone: "active",
+		});
+	});
+
 	it("maps everything else to Pending", () => {
 		for (const status of ["DRAFT", "REVIEW", "FAILED", "UNKNOWN"]) {
 			expect(getDocumentStatusView(status).label).toBe("Pending");
+		}
+	});
+});
+
+/**
+ * The two predicates the queue split apart (Fizzy #2199). `isDocumentInFlight`
+ * answers "is this document being worked on" — it drives roll-up counts and the
+ * status badge, and a human editing a draft counts. `isDocumentGenerationRunning`
+ * answers "is a generation run under way" — it drives polling and closes off
+ * every control that would start a second run, and a human editing a draft does
+ * not count, because no amount of polling advances one.
+ */
+describe("in-flight predicates", () => {
+	it("counts a queued run as both in flight and generation-running", () => {
+		expect(isDocumentInFlight("QUEUED")).toBe(true);
+		expect(isDocumentGenerationRunning("QUEUED")).toBe(true);
+	});
+
+	it("counts an editing draft as in flight but not generation-running", () => {
+		expect(isDocumentInFlight("IN_PROGRESS")).toBe(true);
+		expect(isDocumentGenerationRunning("IN_PROGRESS")).toBe(false);
+	});
+
+	it("counts neither for settled or untouched statuses", () => {
+		for (const status of ["DRAFT", "REVIEW", "COMPLETE", "FAILED"]) {
+			expect(isDocumentInFlight(status)).toBe(false);
+			expect(isDocumentGenerationRunning(status)).toBe(false);
 		}
 	});
 });

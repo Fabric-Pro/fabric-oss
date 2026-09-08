@@ -41,13 +41,23 @@ import {
 	type SkillContext,
 } from "@repo/ai/skills";
 import {
+	type DocumentGenerationOutcome,
 	db,
+	emitDocumentGenerationNotification,
+	type GenerationDependencies,
+	GenerationDependencyProjectNotFoundError,
+	type GenerationRunStartOutcome,
 	getProjectRagSettings,
 	hasProjectAccess,
 	listEmbeddedDocumentsForSweep,
+	markDocumentGenerationFailed,
+	markDocumentGenerationRunning,
 	type Prisma,
 	type ProjectDocumentType,
 	recordAuditDurable,
+	resolveGenerationDependencies,
+	resolveProjectAccess,
+	setDocumentGenerationQueueReason,
 } from "@repo/database";
 import {
 	applyContextSummary,
@@ -71,6 +81,15 @@ import { ApplicationFailure, Context, heartbeat } from "@temporalio/activity";
 import { runDecisionPrecheck } from "../lib/decision-precheck";
 import { buildRetrievedContextBlock } from "../lib/retrieved-context-block";
 import { activityLogger } from "./lib/activity-logger";
+import {
+	type BackgroundJobStepStatus,
+	JOB_STEPS,
+	jobComplete,
+	jobEnsure,
+	jobFail,
+	jobStep,
+	seedJobSteps,
+} from "./lib/job-progress";
 
 // =============================================================================
 // Agent Skills resolution
@@ -3414,14 +3433,422 @@ ${truncated}`;
 export async function issueGenerationToken(params: {
 	userId: string;
 	organizationId?: string;
+	/**
+	 * How long the token stays valid, in seconds.
+	 *
+	 * Passed by the caller rather than defaulted here, because the lifetime is
+	 * a property of the RUN the token is for and only the caller knows that.
+	 * Omitting it takes `issueAIToken`'s own default, which is minutes — far
+	 * shorter than a document generation, whose child activity alone allows
+	 * fifteen minutes per attempt and retries. A caller feeding a generation
+	 * should hand over the same window the API's dispatch mints for.
+	 */
+	expirySeconds?: number;
 }): Promise<{ aiToken: string }> {
 	const { issueAIToken } = await import("@repo/ai-token");
 	const aiToken = await issueAIToken({
 		userId: params.userId,
 		organizationId: params.organizationId,
 		source: "project-document-generation",
+		expirySeconds: params.expirySeconds,
 	});
 	return { aiToken };
+}
+
+/**
+ * Ask, once, whether anything this generation reads is still on its way.
+ *
+ * A thin wrapper on `resolveGenerationDependencies` and deliberately nothing
+ * more: the workflow polls this for as long as the wait lasts, so the answer
+ * crosses the activity boundary on every cycle and has to stay JSON-safe. The
+ * decision of what counts as outstanding — and of which failures are fatal
+ * rather than merely inconvenient — lives in the query, beside the rows it
+ * reads.
+ */
+/**
+ * The probe's own permanent refusal, kept distinct from the run's other
+ * failures so a reader can tell "the wait ended badly" from "the wait could
+ * never have started".
+ *
+ * Deliberately absent from the workflow's self-written message list: the
+ * underlying text names a project and an organization, which is internal
+ * topology, so the surfaces show the generic line instead.
+ */
+const DEPENDENCY_PROBE_REFUSED_FAILURE_TYPE =
+	"DOCUMENT_GENERATION_PROBE_REFUSED";
+
+export async function probeGenerationDependencies(params: {
+	projectId: string;
+	/**
+	 * The organization the run was authorized under, from the workflow input.
+	 *
+	 * Load-bearing, not decoration: it is the query's fail-closed scope, so a
+	 * project the organization does not own yields no verdict at all rather
+	 * than a clear one. Dropping it here would quietly turn every probe into
+	 * "nothing to wait for".
+	 */
+	organizationId?: string | null;
+	documentType: string;
+	excludeDocumentId?: string | null;
+	excludeContextId?: string | null;
+	/**
+	 * When this attempt was accepted, as the ISO string the workflow carries.
+	 *
+	 * Bounds the arms that can REFUSE the run rather than merely delay it. A
+	 * source that failed months ago is not something this run waited on, and
+	 * left unbounded a single such row refuses every generation the project
+	 * would ever ask for. Omitted, the query falls back to a liveness window,
+	 * which is safe but blunter than the truth the workflow already holds.
+	 */
+	generationStartedAt?: string | null;
+}): Promise<GenerationDependencies> {
+	try {
+		return await resolveGenerationDependencies({
+			projectId: params.projectId,
+			organizationId: params.organizationId ?? null,
+			documentType: params.documentType,
+			excludeDocumentId: params.excludeDocumentId,
+			excludeContextId: params.excludeContextId,
+			generationStartedAt: params.generationStartedAt,
+		});
+	} catch (error) {
+		// A project the organization does not own is a permanent answer, not a
+		// blip, so it must not spend the proxy's retry budget arriving at the
+		// same refusal five times. `@repo/database` cannot raise a Temporal
+		// failure itself — it does not depend on the SDK — so it marks the
+		// condition and this boundary translates it, the same shape
+		// `assertRequesterMayGenerate` below uses for its own permanent refusal.
+		if (
+			error instanceof GenerationDependencyProjectNotFoundError ||
+			(error as { nonRetryable?: boolean })?.nonRetryable === true
+		) {
+			throw ApplicationFailure.nonRetryable(
+				error instanceof Error ? error.message : String(error),
+				DEPENDENCY_PROBE_REFUSED_FAILURE_TYPE,
+			);
+		}
+		throw error;
+	}
+}
+
+/**
+ * The permission `generate-document.ts` checks at dispatch, written out as its
+ * literal.
+ *
+ * This package deliberately does not depend on `@repo/permissions` — see
+ * `checkPublishingGenerationActor` in `@repo/database`, which says why the
+ * permission vocabulary is not something a workflow worker should be able to
+ * reinterpret. The literal is still checked at compile time: `permissions` is
+ * `readonly Permission[]`, so a string that has left the vocabulary fails
+ * type-check here instead of silently never matching.
+ */
+const DOCUMENT_UPDATE_PERMISSION = "document:update";
+
+/**
+ * Re-establish that the person who asked for this document may still have it,
+ * at the moment the run is finally allowed to start.
+ *
+ * The dispatch authorized them; the dependency wait then ran for an unbounded
+ * time, and the run's next act is to mint a FRESH AI token. `issueAIToken`
+ * signs whatever it is handed, so a requester removed from the organization —
+ * or demoted to a role without DOCUMENT_UPDATE — while they waited would
+ * otherwise be issued a new key to that organization's provider on the strength
+ * of an authorization that has since lapsed.
+ *
+ * Asks the gate's own question by the gate's own ladder: `resolveProjectAccess`
+ * is the background-caller copy of `resolveEffectiveProjectPermissions`
+ * (owner → active ProjectMember → org role), and the owner short-circuit is
+ * that function's documented caller contract, not an optimization.
+ *
+ * The tenant comparison is defence in depth. Nothing moves a project between
+ * organizations today, but the token about to be minted is minted for the
+ * organization in the WORKFLOW INPUT, so a project that had moved would hand
+ * this run a key to an organization it no longer belongs to.
+ */
+export async function assertRequesterMayGenerate(params: {
+	documentId: string;
+	userId: string;
+	organizationId?: string | null;
+}): Promise<void> {
+	const document = await db.projectDocument.findUnique({
+		where: { id: params.documentId },
+		select: { projectId: true },
+	});
+	if (!document) {
+		throw ApplicationFailure.nonRetryable(
+			"The document this run was generating no longer exists.",
+			"DOCUMENT_GENERATION_NOT_AUTHORIZED",
+		);
+	}
+
+	const access = await resolveProjectAccess(
+		document.projectId,
+		params.userId,
+	);
+	// A project that is gone leaves nothing to be authorized against. Saying
+	// "you are not allowed" about a deleted row would be a false statement
+	// about a person, so it is reported as the absence it is.
+	if (!access) {
+		throw ApplicationFailure.nonRetryable(
+			"The project this run was generating for no longer exists.",
+			"DOCUMENT_GENERATION_NOT_AUTHORIZED",
+		);
+	}
+
+	const authorizedOrganizationId = params.organizationId ?? null;
+	if (access.organizationId !== authorizedOrganizationId) {
+		activityLogger.warn(
+			"Refusing a queued generation whose project changed organization",
+			{
+				documentId: params.documentId,
+				projectId: document.projectId,
+				authorizedOrganizationId,
+				currentOrganizationId: access.organizationId,
+			},
+		);
+		throw ApplicationFailure.nonRetryable(
+			"This project is no longer in the organization the run was started for.",
+			"DOCUMENT_GENERATION_NOT_AUTHORIZED",
+		);
+	}
+
+	const authorized =
+		access.source === "owner" ||
+		access.permissions.includes(DOCUMENT_UPDATE_PERMISSION);
+	if (!authorized) {
+		activityLogger.warn(
+			"Refusing a queued generation whose requester lost access while it waited",
+			{
+				documentId: params.documentId,
+				projectId: document.projectId,
+				source: access.source,
+			},
+		);
+		throw ApplicationFailure.nonRetryable(
+			"The person who requested this document no longer has permission to generate it.",
+			"DOCUMENT_GENERATION_NOT_AUTHORIZED",
+		);
+	}
+}
+
+/**
+ * Record the coarse category the run is waiting on, so the document can tell
+ * its reader why it has not started.
+ *
+ * The category vocabulary crosses this boundary verbatim — it is the same six
+ * buckets the probe returns, and the reason a bucket carries no name, path or
+ * title is that whoever reads it may not be allowed to see one.
+ */
+export async function recordGenerationQueueReason(params: {
+	documentId: string;
+	reason: string;
+}): Promise<void> {
+	await setDocumentGenerationQueueReason(params.documentId, params.reason);
+}
+
+/**
+ * Flip this run's row from QUEUED to GENERATING, now that the wait has cleared
+ * and the model call is about to happen.
+ *
+ * `startedAt` is this attempt's identity, not merely a timestamp: the write
+ * applies only to a row still QUEUED at exactly that `generationStartedAt`, so
+ * a run whose row was cancelled, swept or re-dispatched while it waited cannot
+ * resurrect somebody else's attempt as GENERATING. `applied: false` is that
+ * outcome, and it is information rather than an error.
+ */
+export async function startGenerationRun(params: {
+	documentId: string;
+	/** ISO-8601 — a `Date` does not survive the payload converter as one. */
+	startedAt: string;
+}): Promise<{ outcome: GenerationRunStartOutcome }> {
+	const startedAt = new Date(params.startedAt);
+	if (Number.isNaN(startedAt.getTime())) {
+		// Not thrown: an unparseable identity means nobody can prove this row
+		// belongs to this attempt, and a guessed write is worse than none.
+		// Reported as superseded rather than not-yet-visible because waiting
+		// cannot make an unparseable value parse.
+		activityLogger.warn(
+			"Skipping the queued→generating write: unparseable attempt identity",
+			{ documentId: params.documentId, startedAt: params.startedAt },
+		);
+		return { outcome: "superseded" };
+	}
+	const outcome = await markDocumentGenerationRunning(
+		params.documentId,
+		startedAt,
+	);
+	return { outcome };
+}
+
+/**
+ * Write this attempt's terminal FAILED onto the document row.
+ *
+ * The other half of `startGenerationRun`, for the run that never reaches its
+ * model call. The generation child writes its own FAILED, so every failure that
+ * happens INSIDE it is already accounted for — but a run refused before the
+ * child starts (a dependency that will not arrive, a requester who lost access
+ * while they waited) has no child to write anything, and its row would sit
+ * QUEUED until the stale sweep noticed, showing "waiting" for a run that has
+ * already given up.
+ *
+ * Attempt-scoped by the same identity `startGenerationRun` uses, and that is
+ * what makes the call safe to make unconditionally on the failure path:
+ * `markDocumentGenerationFailed` applies only to a row still QUEUED or
+ * GENERATING at exactly this `generationStartedAt`, so a row the child already
+ * failed, one a user has since completed, and one a newer attempt owns are all
+ * left alone.
+ *
+ * `reason` is rendered to the person who opens the document, so the caller is
+ * responsible for handing over a sentence written for them rather than a raw
+ * error.
+ */
+export async function failGenerationRun(params: {
+	documentId: string;
+	/** ISO-8601 — a `Date` does not survive the payload converter as one. */
+	startedAt: string;
+	reason: string;
+}): Promise<void> {
+	const startedAt = new Date(params.startedAt);
+	if (Number.isNaN(startedAt.getTime())) {
+		// Not thrown, for the reason `startGenerationRun` gives: an identity
+		// nobody can parse cannot prove this row belongs to this attempt, and a
+		// terminal write on a guess is worse than none.
+		activityLogger.warn(
+			"Skipping the terminal failure write: unparseable attempt identity",
+			{ documentId: params.documentId, startedAt: params.startedAt },
+		);
+		return;
+	}
+	await markDocumentGenerationFailed(
+		params.documentId,
+		startedAt,
+		params.reason,
+	);
+}
+
+/**
+ * Open (or adopt) this run's Job Hub row.
+ *
+ * An ACTIVITY rather than a call from the workflow body, and that is not a
+ * style preference: `job-progress` resolves the row from the ACTIVITY context,
+ * so the identical call made from workflow code takes its "outside an activity"
+ * branch and writes nothing at all — a job that never appears, with every
+ * mocked test still green. See that module's header for the whole rule.
+ *
+ * The title is the document's own. A list of rows all reading "Product
+ * Requirements Document" is not something a user can act on, and the type label
+ * is only the fallback for a lookup that could not answer.
+ */
+export async function reportGenerationJobOpened(params: {
+	projectId: string;
+	documentId: string;
+	documentType: string;
+	userId: string;
+	organizationId?: string | null;
+}): Promise<void> {
+	let title = documentTypeLabel(params.documentType);
+	try {
+		const document = await db.projectDocument.findUnique({
+			where: { id: params.documentId },
+			select: { title: true },
+		});
+		const documentTitle = document?.title?.trim();
+		if (documentTitle) {
+			title = documentTitle;
+		}
+	} catch (error) {
+		// Swallowed, not rethrown. A row named by its type is worse than one
+		// named by its document and far better than no row at all — and this
+		// activity failing would put a generation through its retry budget for
+		// the sake of a caption.
+		activityLogger.warn(
+			"Could not read the document title for its Job Hub row",
+			{
+				documentId: params.documentId,
+				error: error instanceof Error ? error.message : "Unknown error",
+			},
+		);
+	}
+
+	await jobEnsure({
+		kind: "DOCUMENT_GENERATION",
+		title,
+		projectId: params.projectId,
+		userId: params.userId,
+		organizationId: params.organizationId,
+		// Scoped to the document rather than left workflow-wide: two documents
+		// generating at once are two rows, and every later write below names
+		// the same `sourceId` so neither can close the other's.
+		sourceId: params.documentId,
+		steps: seedJobSteps([...JOB_STEPS.documentGeneration]),
+	});
+}
+
+/**
+ * Move one step of this run's row and, on the workflow's terminal paths, close
+ * the row along with it.
+ *
+ * Closing rides on the step transition rather than living in a third activity
+ * so that the two cannot disagree: a row closed COMPLETED whose last step still
+ * reads `running` is a state the Job Hub has no way to explain, and it is
+ * exactly what two separate calls produce when the second one is lost.
+ */
+export async function reportGenerationJobStep(params: {
+	documentId: string;
+	step: string;
+	status: BackgroundJobStepStatus;
+	/** Also terminalize the row — for the workflow's success and failure exits. */
+	closesJob?: boolean;
+	error?: string;
+}): Promise<void> {
+	const sourceId = params.documentId;
+	await jobStep(params.step, params.status, {
+		sourceId,
+		error: params.error,
+	});
+
+	if (!params.closesJob) {
+		return;
+	}
+	if (params.status === "failed") {
+		await jobFail(params.error ?? "Document generation failed", {
+			sourceId,
+		});
+		return;
+	}
+	await jobComplete({ sourceId });
+}
+
+/**
+ * Tell the requester how their generation ended.
+ *
+ * A thin wrapper on `emitDocumentGenerationNotification`, and deliberately
+ * nothing more: the decision of who is notified, whether this run is the one
+ * that gets to notify, and what the row is allowed to say all live in the
+ * writer, beside the claim column it competes on. The writer is in
+ * `@repo/database` rather than behind `fanOut.*` in `@repo/api` because
+ * `@repo/api` depends on this package — see that file's header.
+ *
+ * The outcome is a discriminator, not a message. Nothing about the run's error
+ * crosses this boundary, because nothing about it belongs in the bell.
+ */
+export async function notifyGenerationOutcome(params: {
+	documentId: string;
+	/** The person who asked for the document, from the workflow input. */
+	userId: string;
+	outcome: DocumentGenerationOutcome;
+	/**
+	 * Which attempt is reporting. Scopes the claim so a run superseded while it
+	 * waited cannot spend the claim its replacement needs.
+	 */
+	generationStartedAt?: string | null;
+}): Promise<void> {
+	await emitDocumentGenerationNotification({
+		documentId: params.documentId,
+		userId: params.userId,
+		outcome: params.outcome,
+		generationStartedAt: params.generationStartedAt,
+	});
 }
 
 export async function fillTargetDocument(params: {

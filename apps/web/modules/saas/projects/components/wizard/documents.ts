@@ -1,3 +1,8 @@
+import {
+	DOCUMENT_TIERS,
+	isDocumentAvailable,
+} from "@repo/database/src/document-dependency-graph";
+
 export type ProjectDocumentType =
 	| "GENERAL"
 	| "BUSINESS_CASE"
@@ -10,45 +15,17 @@ export type ProjectDocumentType =
 	| "API_SPEC";
 
 /**
- * Document generation tiers: PRD/Proposal first, Technical docs second, Features last.
- * Higher tiers require at least one prerequisite (OR) to be selected or exist.
+ * The prerequisite graph now lives in `@repo/database/src/document-dependency-graph`,
+ * beside nothing that can pull Prisma into this bundle, so the batch generation
+ * workflow sequences documents off the SAME table this step gates its
+ * checkboxes on. Re-exported here rather than repointed at every call site:
+ * `DocumentsStep` asks this module for the wizard's vocabulary, and where the
+ * graph is stored is not its business.
  */
-
-export const DOCUMENT_TIERS: Record<
-	string,
-	{ tier: number; prerequisites: string[] }
-> = {
-	PRD: { tier: 1, prerequisites: [] },
-	BUSINESS_CASE: { tier: 1, prerequisites: [] },
-	DESIGN_SYSTEM: { tier: 1, prerequisites: [] },
-	PROPOSAL: { tier: 1, prerequisites: [] },
-	ARCHITECTURE: { tier: 2, prerequisites: ["PRD", "PROPOSAL"] },
-	TECHNICAL_SPEC: { tier: 2, prerequisites: ["PRD", "PROPOSAL"] },
-	API_SPEC: { tier: 2, prerequisites: ["PRD", "PROPOSAL"] },
-	USER_STORY: {
-		tier: 3,
-		prerequisites: ["ARCHITECTURE", "TECHNICAL_SPEC", "API_SPEC"],
-	},
-	GENERAL: { tier: 1, prerequisites: [] },
-};
+export { DOCUMENT_TIERS, isDocumentAvailable };
 
 function getDocumentPrerequisites(type: string): string[] {
 	return DOCUMENT_TIERS[type]?.prerequisites ?? [];
-}
-
-/**
- * Returns true if the document type can be selected given the set of satisfied types
- * (selected or existing). Prerequisites are OR: at least one must be satisfied.
- */
-export function isDocumentAvailable(
-	type: string,
-	satisfiedTypes: Set<string>,
-): boolean {
-	const config = DOCUMENT_TIERS[type];
-	if (!config || config.prerequisites.length === 0) {
-		return true;
-	}
-	return config.prerequisites.some((p) => satisfiedTypes.has(p));
 }
 
 /** Returns the prerequisite hint for unavailable docs (e.g. "Generate PRD or Proposal first") */

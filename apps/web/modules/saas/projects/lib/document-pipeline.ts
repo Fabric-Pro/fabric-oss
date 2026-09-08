@@ -13,6 +13,8 @@ import {
 	ZapIcon,
 } from "lucide-react";
 
+import { resolveGenerationClock } from "./document-generation-timestamp";
+
 /**
  * Derives the Document Pipeline section on the Project Overview tab from the
  * project's actual documents instead of a hard-coded preset. Presentation-
@@ -186,15 +188,143 @@ export type DocumentStatusView = {
 };
 
 /**
- * Maps a ProjectDocumentStatus to the badge shown on the card. Unchanged from
- * the previous per-card logic: COMPLETE -> Ready, GENERATING/IN_PROGRESS ->
- * Active, everything else (DRAFT/REVIEW/FAILED/missing) -> Pending.
+ * Whether a generation run has been accepted and has not finished.
+ *
+ * QUEUED belongs here alongside GENERATING: the request was taken, a workflow
+ * is alive, and the only thing between it and the model call is the project's
+ * own context work clearing. Reading QUEUED as "not started" is how a document
+ * that is doing exactly what it was asked to do ends up presented as idle.
+ *
+ * Deliberately narrower than `isDocumentInFlight` — this one drives polling,
+ * and IN_PROGRESS is a human editing a draft, which no amount of polling will
+ * advance.
+ */
+export function isDocumentGenerationRunning(status: string): boolean {
+	return status === "QUEUED" || status === "GENERATING";
+}
+
+/**
+ * Whether a document counts as work in motion on a roll-up or badge — a
+ * generation run under way, or a draft someone is actively working through.
+ */
+export function isDocumentInFlight(status: string): boolean {
+	return isDocumentGenerationRunning(status) || status === "IN_PROGRESS";
+}
+
+/** Opening cadence: fast enough that a state change reads as immediate. */
+export const DOCUMENT_POLL_BASE_MS = 3000;
+
+/**
+ * Widest cadence for a document that is still legitimately waiting. Half a
+ * minute, not the server's five: the row this poll paints changes at most once
+ * more, so the delay a reader can perceive is bounded by this number alone.
+ */
+const DOCUMENT_POLL_MAX_MS = 30_000;
+
+/**
+ * How long a GENERATING document may go SILENT before polling stops. The
+ * ceiling exists to stop hammering the API for a run that died mid-flight and
+ * will never report again, so it is measured from the run's last server write,
+ * not from when its request was accepted — see `resolveGenerationClock`. QUEUED
+ * is deliberately exempt: it is waiting on the project's own context work — an
+ * index, a crawl, a sibling document — which can legitimately run for an hour,
+ * and ageing it out would freeze the card on "Queued" for the rest of the
+ * session.
+ */
+const DOCUMENT_POLL_CEILING_MS = 10 * 60 * 1000;
+
+export type PollableDocument = {
+	status: string;
+	generationStartedAt?: Date | string | null;
+	updatedAt?: Date | string | null;
+};
+
+/**
+ * How long to wait before asking about this document again, or `false` to stop
+ * asking. Mirrors the shape of the server's own dependency probe
+ * (`DEPENDENCY_PROBE_INITIAL_DELAY_MS` doubling toward
+ * `DEPENDENCY_PROBE_MAX_DELAY_MS` in `project-document-generation.ts`), and for
+ * the same reason.
+ *
+ * The client is a VIEWER of a wait the server owns, not the mechanism that ends
+ * it. The workflow's own backoff is what governs when the work actually
+ * resumes; nothing here makes that happen sooner. So a queued document opens at
+ * the base cadence — a wait that clears in seconds still looks instant — and
+ * widens toward `DOCUMENT_POLL_MAX_MS` as the wait proves to be a long one. An
+ * hour-long index wait costs a hundred-odd requests instead of the twelve
+ * hundred a flat 3s poll issued, for a row that changes exactly once.
+ *
+ * GENERATING keeps the flat base cadence: that run is writing content the
+ * viewer is watching arrive, and it is bounded by the ten-minute silence
+ * ceiling.
+ *
+ * `since` is whichever clock the status is judged by — the accepted-at stamp
+ * for a QUEUED wait, the last server write for a run under way. Callers get it
+ * from `resolveGenerationClock`, which is where that choice is explained.
+ */
+export function getDocumentPollInterval(
+	status: string,
+	since: number,
+	now: number = Date.now(),
+): number | false {
+	if (status === "QUEUED") {
+		// Doubling on the elapsed wait, so the schedule matches what a
+		// doubling-per-poll backoff would have produced: 3s, 6s, 12s, 24s,
+		// then the ceiling from roughly the first minute onward.
+		const elapsed = Math.max(0, now - since);
+		const doublings = Math.floor(
+			Math.log2(elapsed / DOCUMENT_POLL_BASE_MS + 1),
+		);
+		return Math.min(
+			DOCUMENT_POLL_BASE_MS * 2 ** doublings,
+			DOCUMENT_POLL_MAX_MS,
+		);
+	}
+	if (status === "GENERATING") {
+		return now - since > DOCUMENT_POLL_CEILING_MS
+			? false
+			: DOCUMENT_POLL_BASE_MS;
+	}
+	return false;
+}
+
+/**
+ * The cadence for a LIST of documents: the shortest interval any one of them
+ * asks for, or `false` when none of them is still worth polling. The list is
+ * one request, so the most impatient document sets the pace.
+ */
+export function getDocumentsPollInterval(
+	documents: PollableDocument[] | undefined | null,
+	now: number = Date.now(),
+): number | false {
+	let interval: number | false = false;
+	for (const doc of documents ?? []) {
+		const next = getDocumentPollInterval(
+			doc.status,
+			resolveGenerationClock(
+				doc.status,
+				doc.generationStartedAt,
+				doc.updatedAt,
+			),
+			now,
+		);
+		if (next !== false && (interval === false || next < interval)) {
+			interval = next;
+		}
+	}
+	return interval;
+}
+
+/**
+ * Maps a ProjectDocumentStatus to the badge shown on the card: COMPLETE ->
+ * Ready, QUEUED/GENERATING/IN_PROGRESS -> Active, everything else
+ * (DRAFT/REVIEW/FAILED/missing) -> Pending.
  */
 export function getDocumentStatusView(status: string): DocumentStatusView {
 	if (status === "COMPLETE") {
 		return { label: "Ready", tone: "complete" };
 	}
-	if (status === "GENERATING" || status === "IN_PROGRESS") {
+	if (isDocumentInFlight(status)) {
 		return { label: "Active", tone: "active" };
 	}
 	return { label: "Pending", tone: "pending" };

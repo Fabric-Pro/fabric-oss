@@ -171,6 +171,38 @@ export interface ProjectDocumentGenerationInput {
 	 * accepted from a client.
 	 */
 	excludeContextId?: string;
+	/**
+	 * This attempt's identity — the `generationStartedAt` the queue write
+	 * returned — as an ISO-8601 string.
+	 *
+	 * The run flips its own row QUEUED → GENERATING once the dependency wait
+	 * clears, and that write is scoped to this exact value. A wait can outlive
+	 * its row (the user cancelled and re-ran, the watchdog swept it, a second
+	 * dispatch took over), and without the identity a late-resolving probe would
+	 * drag a newer attempt's row back into GENERATING.
+	 *
+	 * A string and not a `Date` because a `Date` does not survive the payload
+	 * converter as one — it arrives on the other side as an ISO string anyway,
+	 * and saying so here keeps the two ends agreeing.
+	 *
+	 * Absent on a run whose dispatcher still marks the row GENERATING up front:
+	 * there is no queued row to flip, and the run does not try.
+	 */
+	generationStartedAt?: string;
+	/**
+	 * Generate immediately, without waiting for the project's outstanding
+	 * context work.
+	 *
+	 * Settable only by in-process Temporal callers, and never to be accepted
+	 * from an API input schema — a client able to set it would walk straight
+	 * past the queue this exists to enforce.
+	 *
+	 * The one caller is `project-context-processing`, which starts a generation
+	 * as a child of the ingestion that produced its source. That run would
+	 * otherwise wait on the very extraction that spawned it: a deadlock, not a
+	 * queue.
+	 */
+	skipDependencyWait?: boolean;
 }
 
 /**

@@ -64,6 +64,11 @@ export const generateDocumentProcedure = tenantProtectedProcedure
 				.describe(
 					"Specific prompt version ID for attribution tracking",
 				),
+			// Deliberately no `skipDependencyWait`. The workflow input carries
+			// that flag for one in-process Temporal caller only; accepting it
+			// here would hand every client a "generate anyway" switch past the
+			// dependency queue. zod strips unknown keys, so a caller that sends
+			// it gets it dropped rather than honoured.
 		}),
 	)
 	.handler(async ({ input, context }) => {
@@ -108,12 +113,18 @@ export const generateDocumentProcedure = tenantProtectedProcedure
 		}
 
 		try {
-			// The dispatch itself — token issuance, the
-			// mark-GENERATING-before-start ordering, and the tri-state
-			// recovery when `workflow.start` throws ambiguously — lives in
-			// one shared helper, because the Documents-tab create flow now
-			// dispatches generation too and a second copy of those rules
+			// The dispatch itself — token issuance, the deterministic
+			// workflow id, the guarded queue write after the start, and the
+			// tri-state recovery when `workflow.start` throws ambiguously —
+			// lives in one shared helper, because the Documents-tab create
+			// flow dispatches generation too and a second copy of those rules
 			// would drift silently.
+			//
+			// Its discriminated result is returned as-is. `alreadyInProgress`
+			// is a normal answer here, not an error: regenerating with exactly
+			// the settings a live run already has joins that run instead of
+			// racing it, and the editor says so by reading the document's own
+			// status rather than being told a second run began.
 			return await dispatchDocumentGeneration({
 				documentId: document.id,
 				projectId: document.projectId,

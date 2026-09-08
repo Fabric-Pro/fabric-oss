@@ -232,6 +232,44 @@ describe("JobHubPanel", () => {
 		expect(screen.getByText("Recent · 1")).toBeInTheDocument();
 	});
 
+	/**
+	 * A generation waiting on its project's ingestion (Fizzy #2199). The wait is
+	 * carried as a STEP, not as a fourth `BackgroundJobStatus` — so the row is
+	 * RUNNING throughout and lands in Active on exactly the same rule as
+	 * everything else. Pinned here because the alternative (a QUEUED status)
+	 * would have needed `isJobRunning` changed, and nothing else would have
+	 * complained until a user found their request in "Recent".
+	 */
+	it("files a generation that is still waiting for context under Active", () => {
+		mockJobs([
+			makeJob({
+				id: "queued-generation",
+				kind: "DOCUMENT_GENERATION",
+				title: "Payments PRD",
+				sourceType: null,
+				sourceId: "doc-1",
+				counts: {},
+				steps: [
+					{ key: "awaitContext", status: "running" },
+					{ key: "generate", status: "pending" },
+				],
+			}),
+		]);
+
+		render(<JobHubPanel open onOpenChange={() => {}} />);
+
+		expect(screen.getByText("Active · 1")).toBeInTheDocument();
+		expect(screen.queryByText(/Recent/)).not.toBeInTheDocument();
+		expect(
+			screen.getByText(/Document generation · Fabric/),
+		).toBeInTheDocument();
+		// What it is waiting for, in the panel's own words.
+		expect(
+			screen.getByText("Wait for project context"),
+		).toBeInTheDocument();
+		expect(screen.getByText("0/2 steps")).toBeInTheDocument();
+	});
+
 	it("expands a running job's subtasks by default, with per-step status", () => {
 		mockJobs([makeJob()]);
 

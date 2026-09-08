@@ -1,5 +1,6 @@
 "use client";
 
+import { GENERATION_DEPENDENCY_CATEGORIES } from "@repo/database/src/generation-dependency-categories";
 import { useOrganizationContext } from "@saas/organizations/hooks/use-organization-context";
 import { orpc } from "@shared/lib/orpc-query-utils";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -46,7 +47,10 @@ import { useTranslations } from "next-intl";
 import type { ReactNode } from "react";
 import { useState } from "react";
 import { toast } from "sonner";
-import { resolveGenerationTimestamp } from "../lib/document-generation-timestamp";
+import {
+	getDocumentsPollInterval,
+	isDocumentGenerationRunning,
+} from "../lib/document-pipeline";
 import { CreateDocumentDialog } from "./CreateDocumentDialog";
 import { DocumentDownloadDropdown } from "./DocumentDownloadDropdown";
 import { DocumentTitleInlineEdit } from "./DocumentTitleInlineEdit";
@@ -192,6 +196,18 @@ const statusConfig: Record<
 		className: "border-border/70 bg-muted/60 text-muted-foreground",
 		dotClassName: "bg-muted-foreground/70",
 	},
+	/**
+	 * A real entry, not an inference. The queued pill used to be derived from
+	 * `GENERATING` with zero progress, which meant the genuine QUEUED status
+	 * missed this map entirely — and the `?? DRAFT` fallback below would have
+	 * rendered a document that is actively waiting as an untouched draft.
+	 */
+	QUEUED: {
+		label: "Queued",
+		className:
+			"border-amber-500/30 bg-amber-500/10 text-amber-600 dark:text-amber-400",
+		dotClassName: "bg-amber-500 dark:bg-amber-400",
+	},
 	GENERATING: {
 		label: "Generating",
 		className:
@@ -270,20 +286,26 @@ const actionButtonClassName =
 	"size-8 border border-border bg-background text-muted-foreground transition-colors hover:bg-accent hover:text-foreground";
 
 /**
- * The document status pill. When the document failed generation we have a
- * reason worth surfacing, so the pill becomes a tooltip trigger; otherwise it
- * stays a plain `<span>` and no tooltip renders at all.
+ * The document status pill. When there is something to say beyond the status
+ * word — why a generation failed, what a queued one is waiting on — the pill
+ * becomes a tooltip trigger; otherwise it stays a plain `<span>` and no tooltip
+ * renders at all.
+ *
+ * The copy is repeated in an `sr-only` child rather than an `aria-label`, which
+ * would replace the visible status word instead of extending it. That child is
+ * also the reason the pill reads as more than "Queued" to a screen reader: the
+ * pill is not focusable, so the tooltip alone would never be announced.
  */
 function StatusBadge({
 	className,
-	failureCopy,
+	detailCopy,
 	children,
 }: {
 	className?: string;
-	failureCopy: string | null;
+	detailCopy: string | null;
 	children: ReactNode;
 }) {
-	if (!failureCopy) {
+	if (!detailCopy) {
 		return <span className={className}>{children}</span>;
 	}
 	return (
@@ -291,12 +313,38 @@ function StatusBadge({
 			<TooltipTrigger asChild>
 				<span className={className}>
 					{children}
-					<span className="sr-only">{failureCopy}</span>
+					<span className="sr-only">{detailCopy}</span>
 				</span>
 			</TooltipTrigger>
-			<TooltipContent>{failureCopy}</TooltipContent>
+			<TooltipContent>{detailCopy}</TooltipContent>
 		</Tooltip>
 	);
+}
+
+/**
+ * Resolves the stored queue category to the copy key that explains it.
+ *
+ * The column is a plain `String?` on the wire, so the union has to be checked
+ * rather than trusted — but it is the SAME union the probe writes, imported
+ * from the client-safe module both ends share.
+ *
+ * `null` means the first dependency probe has not reported yet — a real state
+ * that lasts a poll interval or two after the request is accepted, and one the
+ * card has to say something about rather than showing an empty reason. A
+ * category this build does not recognise falls back to the generic key instead
+ * of claiming we are still checking.
+ */
+export function resolveQueueReasonKey(
+	reason: string | null | undefined,
+): string | null {
+	if (!reason) {
+		return null;
+	}
+	return (GENERATION_DEPENDENCY_CATEGORIES as readonly string[]).includes(
+		reason,
+	)
+		? reason
+		: "unknown";
 }
 
 function _toSlug(input: string): string {
@@ -316,14 +364,54 @@ function _toSlug(input: string): string {
  * document lands inactive whenever one of its type is already active, and that
  * happens at any status — so anything that can end up inactive must be
  * restorable. What is excluded is only what has no body to be canonical with:
- * a run still writing, and a run that failed.
+ * a run still writing, a run that failed, and a run still waiting to start.
  *
  * This was COMPLETE-only, which left an inactive draft with no way back at all.
  * Found on a deployed environment, where two drafts were inactive and neither
  * card offered the action.
  */
 export function canBeMadeActive(status: string | null | undefined): boolean {
-	return status !== "GENERATING" && status !== "FAILED";
+	return (
+		status !== "QUEUED" && status !== "GENERATING" && status !== "FAILED"
+	);
+}
+
+/**
+ * The sentence a finished regenerate has actually earned.
+ *
+ * The dispatcher stopped answering "did it start?" with a boolean — it hands
+ * back its own discriminated outcome — and the workflow id is now derived from
+ * the request instead of salted with the clock, which makes the duplicate arm
+ * genuinely reachable from this list: the same document regenerated from two
+ * tabs, or one impatient double-click, lands on the id a live run already holds
+ * and starts nothing. "Document regeneration started" is then the single
+ * sentence that is definitely false, and it is the one that leaves a user
+ * waiting for output their click never asked for.
+ *
+ * `alreadyInProgress` is named after the run rather than after a state, so the
+ * state is READ from the document row instead of assumed. The live run may
+ * already have cleared its dependency wait, and saying "queued" while the model
+ * is mid-sentence is the same lie pointing the other way.
+ *
+ * The discriminant is taken as a plain string and an unrecognised arm resolves
+ * to the start copy rather than throwing: a response from a deploy this bundle
+ * predates still has to leave the list saying something, and the row the
+ * invalidation is about to refetch is where the truth lives regardless. Mirrors
+ * `resolveCreateOutcomeKey` in `CreateDocumentDialog`.
+ */
+export function resolveRegenerateToastMessage({
+	outcome,
+	documentStatus,
+}: {
+	outcome: string | null | undefined;
+	documentStatus: string | null | undefined;
+}): string {
+	if (outcome === "alreadyInProgress") {
+		return documentStatus === "QUEUED"
+			? "A generation for this document is already queued — a second one was not started"
+			: "A generation for this document is already running — a second one was not started";
+	}
+	return "Document regeneration started";
 }
 
 export function DocumentsList({
@@ -334,6 +422,7 @@ export function DocumentsList({
 	onDeleted,
 }: Props) {
 	const tTooltips = useTranslations("tooltips.documentEditor");
+	const tDocuments = useTranslations("projects.documents");
 	const router = useRouter();
 	const { basePath: orgBasePath, organizationId } = useOrganizationContext();
 	const basePath = `${orgBasePath}/projects`;
@@ -356,26 +445,17 @@ export function DocumentsList({
 		...orpc.projects.documents.list.queryOptions({
 			input: { projectId, organizationId },
 		}),
-		refetchInterval: (query) => {
-			const docs = query.state.data?.documents;
-			const hasActiveGenerating = docs?.some((d) => {
-				if (d.status !== "GENERATING") {
-					return false;
-				}
-				const started = resolveGenerationTimestamp(
-					d.generationStartedAt,
-					d.updatedAt,
-				);
-				return Date.now() - started <= 10 * 60 * 1000;
-			});
-			return hasActiveGenerating ? 3000 : false;
-		},
-		refetchOnWindowFocus: (query) => {
-			const docs = query.state.data?.documents;
-			return docs?.some((d) => d.status === "GENERATING")
+		// Cadence, not a flat tick: a queued document is watching a wait the
+		// server owns and backs off from on its own, so the list widens toward
+		// 30s rather than asking twenty times a minute for an hour.
+		refetchInterval: (query) =>
+			getDocumentsPollInterval(query.state.data?.documents),
+		refetchOnWindowFocus: (query) =>
+			query.state.data?.documents?.some((d) =>
+				isDocumentGenerationRunning(d.status),
+			)
 				? "always"
-				: true;
-		},
+				: true,
 	});
 
 	const deleteMutation = useMutation(
@@ -403,8 +483,19 @@ export function DocumentsList({
 
 	const regenerateMutation = useMutation(
 		orpc.projects.documents.generate.mutationOptions({
-			onSuccess: () => {
-				toast.success("Document regeneration started");
+			onSuccess: (result, variables) => {
+				// The row as the list last saw it. For a duplicate start that
+				// IS the run under way, so it is what decides between "already
+				// queued" and "already running".
+				const existing = data?.documents?.find(
+					(doc) => doc.id === variables.id,
+				);
+				toast.success(
+					resolveRegenerateToastMessage({
+						outcome: result?.outcome,
+						documentStatus: existing?.status ?? null,
+					}),
+				);
 				queryClient.invalidateQueries({
 					queryKey: orpc.projects.documents.list.queryKey({
 						input: { projectId, organizationId },
@@ -509,7 +600,7 @@ export function DocumentsList({
 		(doc) => doc.status === "COMPLETE",
 	).length;
 	const activeCount = documents.filter((doc) =>
-		["GENERATING", "IN_PROGRESS", "REVIEW"].includes(doc.status),
+		["QUEUED", "GENERATING", "IN_PROGRESS", "REVIEW"].includes(doc.status),
 	).length;
 	const openCount = Math.max(
 		documents.length - completeCount - activeCount,
@@ -665,6 +756,37 @@ export function DocumentsList({
 						const Icon = style.icon;
 						const status =
 							statusConfig[doc.status] || statusConfig.DRAFT;
+
+						/*
+						 * Queue copy, resolved once: the badge's screen-reader
+						 * supplement and the visible reason beside it say the
+						 * same thing at two different lengths. A null reason
+						 * key means the first dependency probe has not reported
+						 * back yet — a wait of its own, and one that needs
+						 * saying, because an empty reason beside a "Queued"
+						 * pill reads as a bug rather than as a state.
+						 */
+						const isQueued = doc.status === "QUEUED";
+						const queueReasonKey = isQueued
+							? resolveQueueReasonKey(doc.generationQueueReason)
+							: null;
+						const queueReasonWhat = queueReasonKey
+							? tDocuments(`queued.reasons.${queueReasonKey}`)
+							: null;
+						const queueDetail = !isQueued
+							? null
+							: queueReasonWhat
+								? tDocuments("queued.detail", {
+										what: queueReasonWhat,
+									})
+								: tDocuments("queued.detailChecking");
+						const queueSummary = !isQueued
+							? null
+							: queueReasonWhat
+								? tDocuments("queued.waitingOn", {
+										what: queueReasonWhat,
+									})
+								: tDocuments("queued.checking");
 
 						// Check if document has content (failed docs with 0 words have no content)
 						const hasContent =
@@ -913,73 +1035,85 @@ export function DocumentsList({
 
 									{/* Footer */}
 									<div className="mt-4 flex flex-wrap items-center gap-2">
-										{/* Status badge with gradient. The failure reason is
-											only attached when the document actually failed —
-											otherwise there is nothing to say and no tooltip
-											renders. The badge is not focusable, so the copy
-											also lives in an `sr-only` child; `aria-label`
-											would replace the visible status label. */}
-										{(() => {
-											const isQueued =
-												doc.status === "GENERATING" &&
-												(doc.generationProgress ==
-													null ||
-													doc.generationProgress <=
-														0);
-											return (
-												<StatusBadge
-													className={cn(
-														"inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 font-medium text-xs",
-														isQueued
-															? "border-amber-500/30 bg-amber-500/10 text-amber-600 dark:text-amber-400"
-															: status.className,
-													)}
-													failureCopy={
-														doc.status ===
-															"FAILED" &&
-														doc.generationError
-															? tTooltips(
-																	"generationError",
-																	{
-																		error: doc.generationError,
-																	},
-																)
-															: null
-													}
-												>
-													{isQueued ? (
-														<>
-															<ClockIcon className="size-3 animate-pulse text-amber-500" />
-															Queued
-														</>
-													) : doc.status ===
-														"GENERATING" ? (
-														<>
-															<span
-																className={cn(
-																	"size-1.5 rounded-full animate-pulse",
-																	status.dotClassName,
-																)}
-															/>
-															Generating (
-															{doc.generationProgress ??
-																0}
-															%)
-														</>
-													) : (
-														<>
-															<span
-																className={cn(
-																	"size-1.5 rounded-full",
-																	status.dotClassName,
-																)}
-															/>
-															{status.label}
-														</>
-													)}
-												</StatusBadge>
-											);
-										})()}
+										{/* Status badge with gradient. The detail copy is
+											only attached when there is something to say
+											beyond the status word — a failure reason, or
+											what a queued run is waiting on — otherwise no
+											tooltip renders. The badge is not focusable, so
+											the copy also lives in an `sr-only` child;
+											`aria-label` would replace the visible status
+											label. */}
+										<StatusBadge
+											className={cn(
+												"inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 font-medium text-xs",
+												status.className,
+											)}
+											detailCopy={
+												queueDetail ??
+												(doc.status === "FAILED" &&
+												doc.generationError
+													? tTooltips(
+															"generationError",
+															{
+																error: doc.generationError,
+															},
+														)
+													: null)
+											}
+										>
+											{isQueued ? (
+												<>
+													{/* Indefinite by design: the wait this marks
+														can outlast an hour, which is exactly the
+														animation `prefers-reduced-motion` exists
+														to stop. */}
+													<ClockIcon
+														aria-hidden="true"
+														className="size-3 motion-safe:animate-pulse text-amber-500"
+													/>
+													{status.label}
+												</>
+											) : doc.status === "GENERATING" ? (
+												<>
+													<span
+														className={cn(
+															"size-1.5 rounded-full animate-pulse",
+															status.dotClassName,
+														)}
+													/>
+													Generating (
+													{doc.generationProgress ??
+														0}
+													%)
+												</>
+											) : (
+												<>
+													<span
+														className={cn(
+															"size-1.5 rounded-full",
+															status.dotClassName,
+														)}
+													/>
+													{status.label}
+												</>
+											)}
+										</StatusBadge>
+
+										{/* What a queued document is waiting on, as visible
+											text rather than tooltip-only. The badge above is
+											a non-focusable span, so a hover tooltip would put
+											the whole point of the state out of reach of
+											keyboard and touch users. Mirrors the failure
+											reason below it; the untruncated copy is in the
+											`title` and in the badge's `sr-only` child. */}
+										{queueSummary && (
+											<span
+												className="max-w-[200px] truncate text-xs text-amber-600 dark:text-amber-400"
+												title={queueDetail ?? undefined}
+											>
+												{queueSummary}
+											</span>
+										)}
 
 										{/* Show error message for failed documents */}
 										{doc.status === "FAILED" &&

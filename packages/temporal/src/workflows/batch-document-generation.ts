@@ -18,6 +18,7 @@
  * - Bulk document generation
  */
 
+import { DOCUMENT_TIERS } from "@repo/database/src/document-dependency-graph";
 import {
 	ApplicationFailure,
 	executeChild,
@@ -72,21 +73,36 @@ export interface BatchDocumentGenerationOutput {
 	}>;
 }
 
-// Document generation phases — must match DOCUMENT_TIERS in apps/web.
-// `phase` runs sequentially (1 before 2 before 3). `order` sequences docs
-// WITHIN a phase (lower first). Business Case leads Phase 1 (AC-11).
+// Intra-phase ordering (lower first). A pure batch-sequencing concern with no
+// prerequisite meaning — nothing here says one document NEEDS another, only
+// which of two equally-ready documents goes first — so it is written out rather
+// than derived. Business Case leads Phase 1 (AC-11). A type absent from this map
+// sorts first in its phase.
+const DOCUMENT_PHASE_ORDER: Record<string, number> = {
+	BUSINESS_CASE: 0,
+	PROPOSAL: 1,
+	PRD: 2,
+	GENERAL: 3,
+	DESIGN_SYSTEM: 4,
+	ARCHITECTURE: 0,
+	TECHNICAL_SPEC: 1,
+	API_SPEC: 2,
+	USER_STORY: 0,
+};
+
+// Document generation phases. `phase` runs sequentially (1 before 2 before 3)
+// and is NOT written here: it is the document's tier in the shared dependency
+// graph, the same table the project wizard gates its checkboxes on, so the batch
+// can no longer sequence a document ahead of the input the UI told the user it
+// needs. That module's only Prisma reference is `import type`, which is what
+// lets the workflow sandbox bundle it.
 export const DOCUMENT_PHASES: Record<string, { phase: number; order: number }> =
-	{
-		BUSINESS_CASE: { phase: 1, order: 0 },
-		PROPOSAL: { phase: 1, order: 1 },
-		PRD: { phase: 1, order: 2 },
-		GENERAL: { phase: 1, order: 3 },
-		DESIGN_SYSTEM: { phase: 1, order: 4 },
-		ARCHITECTURE: { phase: 2, order: 0 },
-		TECHNICAL_SPEC: { phase: 2, order: 1 },
-		API_SPEC: { phase: 2, order: 2 },
-		USER_STORY: { phase: 3, order: 0 },
-	};
+	Object.fromEntries(
+		Object.entries(DOCUMENT_TIERS).map(([type, node]) => [
+			type,
+			{ phase: node.tier, order: DOCUMENT_PHASE_ORDER[type] ?? 0 },
+		]),
+	);
 
 /** Groups docs by phase and sorts each phase's docs by intra-phase `order`. */
 export function orderDocsByPhase<T extends { type: string }>(

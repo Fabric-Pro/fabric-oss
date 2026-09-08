@@ -17,6 +17,7 @@ import {
 	getDocumentStatusView,
 	getPipelineDocuments,
 	isActiveDocument,
+	isDocumentInFlight,
 } from "../lib/document-pipeline";
 import {
 	type EditSection,
@@ -74,17 +75,19 @@ export function ProjectOverview({
 	const completedDocs = activeDocs.filter(
 		(doc) => doc.status === "COMPLETE",
 	).length;
-	const generatingDocs = activeDocs.filter(
-		(doc) => doc.status === "GENERATING",
-	).length;
-	const inProgressDocs = activeDocs.filter(
-		(doc) => doc.status === "IN_PROGRESS",
+	/*
+	 * One "Active" count rather than two summed at the point of display. It has
+	 * to include QUEUED: a document whose generation has been accepted and is
+	 * waiting on the project's own context work is neither ready nor untouched,
+	 * and counting it under "Open" said the run had never been requested.
+	 */
+	const inFlightDocs = activeDocs.filter((doc) =>
+		isDocumentInFlight(doc.status),
 	).length;
 
 	// Total strictly matches the number of active documents
 	const totalDocs = activeDocs.length > 0 ? activeDocs.length : 1;
-	const remainingDocs =
-		totalDocs - completedDocs - generatingDocs - inProgressDocs;
+	const remainingDocs = totalDocs - completedDocs - inFlightDocs;
 	const topFeatures = project.features?.slice(0, 6) ?? [];
 	const metrics = [
 		{
@@ -167,7 +170,7 @@ export function ProjectOverview({
 								</div>
 								<div className="rounded-2xl border border-border/60 bg-card/70 p-3 text-center shadow-sm shadow-foreground/5">
 									<p className="text-2xl font-semibold tabular-nums text-primary">
-										{generatingDocs + inProgressDocs}
+										{inFlightDocs}
 									</p>
 									<p className="mt-1 text-xs text-muted-foreground">
 										Active

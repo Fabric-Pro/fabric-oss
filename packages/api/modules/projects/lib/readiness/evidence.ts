@@ -19,8 +19,13 @@ const USABLE_DOCUMENT_STATUSES = ["COMPLETE", "REVIEW"] as const;
  * Statuses a document passes through while a run is working on it. A row in one
  * of these still counts when it already holds content — see the document read
  * below for why.
+ *
+ * QUEUED belongs here for exactly the same reason GENERATING does: a re-run that
+ * is waiting on the project's context-building work has not touched the existing
+ * content yet, so dropping the row would resurface a long-satisfied checklist
+ * item the moment someone hit Refresh — and a dependency wait can last an hour.
  */
-const RERUNNING_DOCUMENT_STATUSES = ["GENERATING", "FAILED"] as const;
+const RERUNNING_DOCUMENT_STATUSES = ["QUEUED", "GENERATING", "FAILED"] as const;
 
 /**
  * Context sources only count once extraction has finished successfully — a
@@ -200,11 +205,16 @@ export async function gatherReadinessEvidence(
 			where: { projectId, status: { in: ["PENDING", "INDEXING"] } },
 			select: { id: true },
 		}),
+		// QUEUED counts as in flight alongside GENERATING: the request was
+		// accepted and is waiting on its dependencies, which is work already
+		// happening from the user's side. Reading only GENERATING would leave a
+		// queued document neither ready nor in progress — the checklist would
+		// offer "Create PRD" for a PRD that is already on its way.
 		db.projectDocument.findMany({
 			where: {
 				projectId,
 				isActive: true,
-				status: { in: ["GENERATING"] },
+				status: { in: ["QUEUED", "GENERATING"] },
 			},
 			select: { type: true },
 		}),

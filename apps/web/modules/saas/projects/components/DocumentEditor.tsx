@@ -61,6 +61,7 @@ import {
 	AlertTriangle,
 	CheckIcon,
 	ChevronDown,
+	ClockIcon,
 	Code2Icon,
 	EyeIcon,
 	HistoryIcon,
@@ -74,6 +75,7 @@ import {
 	X as XIcon,
 } from "lucide-react";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
+import { useTranslations } from "next-intl";
 import {
 	startTransition,
 	useCallback,
@@ -104,8 +106,12 @@ import {
 } from "../lib/diff-utils";
 import {
 	isDocumentGenerationStale,
-	resolveGenerationTimestamp,
+	resolveGenerationClock,
 } from "../lib/document-generation-timestamp";
+import {
+	getDocumentPollInterval,
+	isDocumentGenerationRunning,
+} from "../lib/document-pipeline";
 import { getEditorMarkdownForSave } from "../lib/editor-markdown-save";
 import { extractMentionIdsFromHtml } from "../lib/extract-mention-ids";
 import { uploadImage } from "../lib/image-upload-utils";
@@ -401,34 +407,56 @@ export function DocumentEditor({
 			input: { id: documentId, projectId, organizationId },
 		}),
 		enabled: orgContextReady,
-		// Poll when actively regenerating OR when document status is GENERATING.
-		// Floor cap: stop polling if generation runs longer than 10 minutes without completion.
+		// Poll when actively regenerating OR when the run is under way — QUEUED
+		// as well as GENERATING, since a document waiting on the project's
+		// context work never polled at all and so never noticed it started.
+		//
+		// The cadence is `getDocumentPollInterval`'s, shared with the Documents
+		// tab and the pipeline: GENERATING keeps the flat 3s and its ten-minute
+		// floor cap (which exists to give up on a run that died mid-flight),
+		// while QUEUED is exempt from that cap and widens toward 30s instead.
+		// The wait belongs to the server, which backs off from it on its own;
+		// this poll only has to notice when it ends.
 		refetchInterval: (query) => {
 			const doc = query.state.data?.document;
-			if (!isRegenerating && doc?.status !== "GENERATING") {
-				return false;
-			}
-			const startedAt = resolveGenerationTimestamp(
-				doc?.generationStartedAt,
-				doc?.updatedAt,
+			// A regenerate whose mutation is still in flight has no server
+			// status to read yet, so it polls on the GENERATING schedule until
+			// the row catches up.
+			const pollStatus =
+				doc?.status === "QUEUED"
+					? "QUEUED"
+					: isRegenerating
+						? "GENERATING"
+						: (doc?.status ?? "");
+			return getDocumentPollInterval(
+				pollStatus,
+				resolveGenerationClock(
+					pollStatus,
+					doc?.generationStartedAt,
+					doc?.updatedAt,
+				),
 			);
-			if (Date.now() - startedAt > 10 * 60 * 1000) {
-				return false;
-			}
-			return 3000;
 		},
 		// "always" bypasses the 60s default staleTime so a user who tabs
 		// away mid-generation always sees the completed document on return.
 		refetchOnWindowFocus: (query) => {
 			const doc = query.state.data?.document;
+			if (doc?.status === "QUEUED") {
+				return "always";
+			}
 			if (!isRegenerating && doc?.status !== "GENERATING") {
 				return false;
 			}
-			const startedAt = resolveGenerationTimestamp(
+			// The same ten-minute silence ceiling the poll uses, measured the
+			// same way: from the run's last server write, not from when its
+			// request was accepted. A run that spent its first fifty minutes
+			// waiting on the project's context work is not a dead one.
+			const lastSignOfLife = resolveGenerationClock(
+				"GENERATING",
 				doc?.generationStartedAt,
 				doc?.updatedAt,
 			);
-			if (Date.now() - startedAt > 10 * 60 * 1000) {
+			if (Date.now() - lastSignOfLife > 10 * 60 * 1000) {
 				return false;
 			}
 			return "always";
@@ -989,6 +1017,19 @@ function DocumentEditorInner({
 	ssrConversationId,
 	documentDataUpdatedAt,
 }: DocumentEditorInnerProps) {
+	const tTooltips = useTranslations("tooltips.documentEditor");
+
+	/*
+	 * A generation run is already under way — waiting on the project's context
+	 * work, or actually writing. Every control that would start another one is
+	 * closed off while this holds: the Regenerate button was the one live way
+	 * to restart a wait that was working exactly as designed.
+	 */
+	const isGenerationRunning = isDocumentGenerationRunning(
+		document?.status ?? "",
+	);
+	const isWaitingForContext = document?.status === "QUEUED";
+
 	// Group E — feature flag (FR-27) for the chat-history header. Returns
 	// true for personal context and for orgs with the flag ON. When
 	// false, the `Header` prop on `<CopilotSidebar>` is left at its
@@ -5104,7 +5145,8 @@ function DocumentEditorInner({
 																	}
 																	disabled={
 																		isSaving ||
-																		isRegenerating
+																		isRegenerating ||
+																		isGenerationRunning
 																	}
 																	className="h-8 gap-1.5 text-xs"
 																>
@@ -5117,19 +5159,32 @@ function DocumentEditorInner({
 																</Button>
 															</TooltipTrigger>
 															<TooltipContent>
-																<p>
-																	Regenerate
-																	the entire
-																	document
-																	using AI
-																</p>
-																<p className="text-xs text-muted-foreground">
-																	Uses
-																	Temporal
-																	workflow for
-																	reliable
-																	processing
-																</p>
+																{isWaitingForContext ? (
+																	<p>
+																		{tTooltips(
+																			"generationQueued",
+																		)}
+																	</p>
+																) : (
+																	<>
+																		<p>
+																			Regenerate
+																			the
+																			entire
+																			document
+																			using
+																			AI
+																		</p>
+																		<p className="text-xs text-muted-foreground">
+																			Uses
+																			Temporal
+																			workflow
+																			for
+																			reliable
+																			processing
+																		</p>
+																	</>
+																)}
 															</TooltipContent>
 														</Tooltip>
 													</TooltipProvider>
@@ -5259,13 +5314,18 @@ function DocumentEditorInner({
 															align="end"
 															className="w-56"
 														>
+															{/* Same gate as the wide-tier button
+																above — this is that action at a
+																narrower breakpoint, not a second
+																opinion on it. */}
 															<DropdownMenuItem
 																onSelect={() =>
 																	handleDirectRegenerate()
 																}
 																disabled={
 																	isSaving ||
-																	isRegenerating
+																	isRegenerating ||
+																	isGenerationRunning
 																}
 															>
 																<RefreshCw
@@ -5311,17 +5371,35 @@ function DocumentEditorInner({
 
 								{/* Non-blocking banner when generation progress overlay is dismissed */}
 								{isProgressDismissed &&
-									document?.status === "GENERATING" &&
+									isGenerationRunning &&
 									(!document.content ||
 										document.content.trim().length ===
 											0) && (
 										<div className="mx-6 mt-4 flex items-center justify-between rounded-lg border border-primary/20 bg-primary/5 px-4 py-2.5 text-xs text-primary">
 											<div className="flex items-center gap-2">
-												<Loader2 className="h-3.5 w-3.5 animate-spin" />
-												<span>
-													Document generation in
-													progress...
-												</span>
+												{/* A queued run is not in progress, and
+													saying so with a spinner would claim
+													work that has not begun. */}
+												{document.status ===
+												"QUEUED" ? (
+													<>
+														<ClockIcon className="h-3.5 w-3.5 motion-safe:animate-pulse" />
+														<span>
+															Waiting on the
+															project's context
+															work before
+															generating...
+														</span>
+													</>
+												) : (
+													<>
+														<Loader2 className="h-3.5 w-3.5 animate-spin" />
+														<span>
+															Document generation
+															in progress...
+														</span>
+													</>
+												)}
 											</div>
 											<div className="flex items-center gap-2">
 												<Button
@@ -5337,8 +5415,13 @@ function DocumentEditorInner({
 													Show Progress
 												</Button>
 												{(() => {
+													// Status first: a QUEUED
+													// document is waiting, not
+													// stalled, so it is never
+													// offered a retry.
 													const isStale =
 														isDocumentGenerationStale(
+															document?.status,
 															document?.generationStartedAt,
 															document?.updatedAt,
 														);
@@ -5365,11 +5448,15 @@ function DocumentEditorInner({
 										</div>
 									)}
 
-								{/* Generation & Regeneration Progress Overlay */}
+								{/* Generation & Regeneration Progress Overlay.
+									QUEUED counts: a document waiting on the project's
+									context work has no content yet either, and gating
+									on GENERATING alone left it staring at an empty
+									editor with nothing saying why. */}
 								{!isProgressDismissed &&
 									!showImportedRegenWarning &&
 									((isRegenerating && !showConfirmDialog) ||
-										(document?.status === "GENERATING" &&
+										(isGenerationRunning &&
 											(!document.content ||
 												document.content.trim()
 													.length === 0))) && (

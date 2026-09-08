@@ -81,7 +81,11 @@ describe("markDocumentGenerationFailed", () => {
 		expect(updateMany).toHaveBeenCalledWith({
 			where: {
 				id: DOCUMENT_ID,
-				status: "GENERATING",
+				// Both non-terminal states of one attempt: a run waiting on its
+				// dependencies is QUEUED, and it fails the same way. Narrowing
+				// this back to GENERATING would strand every queued orphan,
+				// since nothing else writes those a terminal status.
+				status: { in: ["QUEUED", "GENERATING"] },
 				generationStartedAt: STARTED_AT,
 			},
 			data: {
@@ -91,7 +95,7 @@ describe("markDocumentGenerationFailed", () => {
 		});
 	});
 
-	it("is a silent no-op when a newer attempt already moved the row off this exact GENERATING/startedAt state", async () => {
+	it("is a silent no-op when a newer attempt already moved the row off this exact status/startedAt state", async () => {
 		// Simulates the race: a second, newer attempt re-marked the row
 		// (fresh generationStartedAt, or the workflow itself progressed the
 		// status) before this stale request's write lands.

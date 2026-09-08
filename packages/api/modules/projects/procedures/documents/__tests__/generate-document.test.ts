@@ -1,5 +1,5 @@
 /**
- * Unit tests for `generateDocumentProcedure` — the GENERATING/FAILED status
+ * Unit tests for `generateDocumentProcedure` — the QUEUED/FAILED status
  * writes around the Temporal workflow start (issue #720).
  *
  * Before this fix, the row was never touched by this procedure: a failed
@@ -8,19 +8,29 @@
  * the editor's poller — which only watches for new content — had nothing to
  * react to.
  *
+ * The ordering has since inverted, and deliberately: the row is marked QUEUED
+ * AFTER the start attempt, with a guarded write. The workflow id is now a hash
+ * of the run's inputs, so an equivalent repeat request is refused by Temporal
+ * as a duplicate — and a mark written before that refusal would have stamped a
+ * fresh `generationStartedAt` over the live attempt's own identity. The guard
+ * (`markDocumentGenerationQueued` declines to write over a COMPLETE/FAILED row)
+ * is what makes marking afterwards safe, and is what now protects the
+ * fast-failing run's own FAILED write that issue #720 was about.
+ *
  * Covered surfaces:
- *   - Happy path marks the row GENERATING (progress 0, error cleared)
- *     BEFORE `workflow.start` is called.
+ *   - Happy path marks the row QUEUED (progress 0, error cleared) AFTER
+ *     `workflow.start` is called, carrying this attempt's identity and the
+ *     workflow id.
  *   - `workflow.start` throwing marks the row FAILED with a generic message
  *     (never the raw internal error) and still surfaces
  *     INTERNAL_SERVER_ERROR to the caller.
- *   - The GENERATING write happens even when the workflow never starts —
+ *   - The QUEUED write happens even when the workflow never starts —
  *     it must not be skipped when access checks pass but the start throws.
  *   - The FAILED write is attempt-scoped: the `generationStartedAt` the
  *     procedure passes to `markDocumentGenerationFailed` is exactly the one
- *     `markDocumentGenerationStarted` returned for THIS attempt (the query
- *     helper itself — not this file — owns the guarded-write mechanism; see
- *     `mark-document-generation-status.test.ts` in `packages/database`).
+ *     it queued the row with for THIS attempt (the query helper itself — not
+ *     this file — owns the guarded-write mechanism; see
+ *     `documents-generation-status.test.ts` in `packages/database`).
  *   - `workflow.start` throwing does NOT mean the workflow didn't start —
  *     a lost response or a racing identical workflowId can leave it live.
  *     When `client.workflow.getHandle(workflowId).describe()` proves the
@@ -49,8 +59,8 @@
  * not a stand-in.
  *
  * Note on scope after the Documents-tab create flow landed: the dispatch
- * sequence itself — token issuance, the mark-GENERATING-before-start
- * ordering, and the tri-state recovery — now lives in
+ * sequence itself — token issuance, the deterministic workflow id, the guarded
+ * queue write after the start, and the tri-state recovery — now lives in
  * `modules/projects/lib/dispatch-document-generation.ts`, because the create
  * flow dispatches generation too and a second copy of those rules would
  * drift. These tests deliberately still drive it THROUGH this procedure: the
@@ -60,13 +70,16 @@
  * cannot express.
  */
 
-import { WorkflowNotFoundError } from "@temporalio/client";
+import {
+	WorkflowExecutionAlreadyStartedError,
+	WorkflowNotFoundError,
+} from "@temporalio/client";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const { mocks, captured } = vi.hoisted(() => ({
 	mocks: {
 		getDocumentById: vi.fn(),
-		markDocumentGenerationStarted: vi.fn(),
+		markDocumentGenerationQueued: vi.fn(),
 		markDocumentGenerationFailed: vi.fn(),
 		resolveEffectiveProjectPermissions: vi.fn(),
 		issueAIToken: vi.fn(),
@@ -83,7 +96,7 @@ const { mocks, captured } = vi.hoisted(() => ({
 
 vi.mock("@repo/database/prisma/queries/projects/documents", () => ({
 	getDocumentById: mocks.getDocumentById,
-	markDocumentGenerationStarted: mocks.markDocumentGenerationStarted,
+	markDocumentGenerationQueued: mocks.markDocumentGenerationQueued,
 	markDocumentGenerationFailed: mocks.markDocumentGenerationFailed,
 }));
 
@@ -165,10 +178,29 @@ function makeDocument(overrides: Record<string, unknown> = {}) {
 
 const ctx = { user: { id: "user-1" } };
 
-// The generationStartedAt markDocumentGenerationStarted reports back for
-// this attempt — the procedure must thread this exact value through to
-// markDocumentGenerationFailed, not regenerate its own timestamp.
-const STARTED_AT = new Date("2026-08-16T00:00:00.000Z");
+/**
+ * The workflow id shape: the document, then a truncated sha256 of the run's
+ * inputs. Pinned here because a regression to the old `Date.now()` salt would
+ * leave every other assertion in this file green while quietly restoring the
+ * duplicate-run behaviour the deterministic id exists to stop.
+ */
+const WORKFLOW_ID_PATTERN = new RegExp(
+	`^project-document-generation-${DOCUMENT_ID}-[0-9a-f]{16}$`,
+);
+
+/**
+ * This attempt's identity, as the dispatch minted it and handed it to the
+ * queued mark. Read back rather than fixed to a constant: the dispatcher owns
+ * the timestamp now, because the workflow has to be told it at start time and
+ * the row cannot be marked until the start is known not to be a duplicate.
+ */
+function queuedIdentity(): Date {
+	const [, options] = mocks.markDocumentGenerationQueued.mock.calls[0] as [
+		string,
+		{ generationStartedAt: Date; workflowId: string },
+	];
+	return options.generationStartedAt;
+}
 
 function input(overrides: Record<string, unknown> = {}) {
 	return { id: DOCUMENT_ID, prompt: "", ...overrides };
@@ -185,18 +217,21 @@ beforeEach(() => {
 		organizationId: "org-1",
 	});
 	mocks.issueAIToken.mockResolvedValue("ai-token");
-	mocks.markDocumentGenerationStarted.mockResolvedValue({
-		id: DOCUMENT_ID,
-		status: "GENERATING",
-		generationProgress: 0,
-		generationError: null,
-		generationStartedAt: STARTED_AT,
-	});
+	mocks.markDocumentGenerationQueued.mockImplementation(
+		async (_id: string, options: { generationStartedAt?: Date } = {}) => ({
+			applied: true,
+			generationStartedAt: options.generationStartedAt ?? new Date(),
+		}),
+	);
 	mocks.markDocumentGenerationFailed.mockResolvedValue(undefined);
-	mocks.workflowStart.mockResolvedValue({
-		workflowId: "wf-1",
-		firstExecutionRunId: "run-1",
-	});
+	// Echoes the id back, the way Temporal does — the deterministic id the
+	// dispatcher computed is what a started run reports.
+	mocks.workflowStart.mockImplementation(
+		async (_name: string, options: { workflowId: string }) => ({
+			workflowId: options.workflowId,
+			firstExecutionRunId: "run-1",
+		}),
+	);
 	// Default: the workflow genuinely doesn't exist when we go looking for
 	// it — a REAL WorkflowNotFoundError, so the procedure's `instanceof`
 	// check actually exercises the definite-absence branch. Matches the
@@ -217,33 +252,53 @@ beforeEach(() => {
 });
 
 describe("generateDocumentProcedure — happy path", () => {
-	it("marks the row GENERATING before starting the workflow", async () => {
+	it("marks the row QUEUED after starting the workflow, never GENERATING before it", async () => {
 		await handler({ input: input(), context: ctx });
 
-		expect(mocks.markDocumentGenerationStarted).toHaveBeenCalledWith(
-			DOCUMENT_ID,
-		);
+		expect(mocks.markDocumentGenerationQueued).toHaveBeenCalledTimes(1);
 		expect(mocks.workflowStart).toHaveBeenCalledTimes(1);
 
-		// Ordering: GENERATING must be written before the workflow starts,
-		// so a fast-failing workflow's own FAILED write can never be
-		// clobbered by this one landing after it.
-		const startedOrder =
-			mocks.markDocumentGenerationStarted.mock.invocationCallOrder[0];
+		// Ordering: the start goes first, so a duplicate Temporal refuses can
+		// never stamp a fresh identity over the live attempt's. What protects
+		// a fast-failing run's own FAILED write is now the guard inside
+		// markDocumentGenerationQueued, not the ordering.
+		const queuedOrder =
+			mocks.markDocumentGenerationQueued.mock.invocationCallOrder[0];
 		const workflowStartOrder =
 			mocks.workflowStart.mock.invocationCallOrder[0];
-		expect(startedOrder).toBeLessThan(workflowStartOrder);
+		expect(workflowStartOrder).toBeLessThan(queuedOrder);
 
 		expect(mocks.markDocumentGenerationFailed).not.toHaveBeenCalled();
 	});
 
-	it("returns the started workflow's id and run id", async () => {
+	it("returns the deterministic workflow id and the run id", async () => {
 		const result = await handler({ input: input(), context: ctx });
 
-		expect(result).toMatchObject({
-			workflowId: "wf-1",
-			runId: "run-1",
-		});
+		expect(result.outcome).toBe("started");
+		expect(result.workflowId).toMatch(WORKFLOW_ID_PATTERN);
+		expect(result.runId).toBe("run-1");
+	});
+
+	it("hands the workflow this attempt's identity and writes it to the row with the workflow id", async () => {
+		// Two silent breakages in one assertion. Without `generationStartedAt`
+		// in the args the run SKIPS its QUEUED → GENERATING flip and the
+		// document queues forever; without the workflow id on the row, the
+		// watchdog's liveness check — the only guard that can recover an
+		// orphaned QUEUED row, which has no age ceiling — has nothing to probe.
+		const result = await handler({ input: input(), context: ctx });
+
+		const [documentId, options] = mocks.markDocumentGenerationQueued.mock
+			.calls[0] as [
+			string,
+			{ generationStartedAt: Date; workflowId: string },
+		];
+		expect(documentId).toBe(DOCUMENT_ID);
+		expect(options.workflowId).toBe(result.workflowId);
+
+		const args = mocks.workflowStart.mock.calls[0]?.[1].args[0];
+		expect(args.generationStartedAt).toBe(
+			options.generationStartedAt.toISOString(),
+		);
 	});
 });
 
@@ -268,9 +323,7 @@ describe("generateDocumentProcedure — workflow-start failure", () => {
 			"internal-host",
 		);
 
-		expect(mocks.markDocumentGenerationStarted).toHaveBeenCalledWith(
-			DOCUMENT_ID,
-		);
+		expect(mocks.markDocumentGenerationQueued).toHaveBeenCalledTimes(1);
 		expect(mocks.markDocumentGenerationFailed).toHaveBeenCalledTimes(1);
 
 		const [failedDocId, failedStartedAt, failedMessage] = mocks
@@ -280,11 +333,11 @@ describe("generateDocumentProcedure — workflow-start failure", () => {
 			string,
 		];
 		expect(failedDocId).toBe(DOCUMENT_ID);
-		// Attempt-scoped: the exact generationStartedAt this attempt's
-		// markDocumentGenerationStarted call returned, not a freshly
-		// generated timestamp — this is what lets the query-layer guard
-		// (packages/database) reject a write from a superseded attempt.
-		expect(failedStartedAt).toBe(STARTED_AT);
+		// Attempt-scoped: the exact generationStartedAt this attempt queued
+		// the row with, not a freshly generated timestamp — this is what lets
+		// the query-layer guard (packages/database) reject a write from a
+		// superseded attempt.
+		expect(failedStartedAt).toBe(queuedIdentity());
 		// Never leak the raw internal error into the persisted message.
 		expect(failedMessage).not.toContain("internal-host");
 		expect(failedMessage.length).toBeGreaterThan(0);
@@ -323,9 +376,8 @@ describe("generateDocumentProcedure — ambiguous describe() failure", () => {
 
 		const result = await handler({ input: input(), context: ctx });
 
-		expect(result.workflowId).toMatch(
-			new RegExp(`^project-document-generation-${DOCUMENT_ID}-\\d+$`),
-		);
+		expect(result.outcome).toBe("statusUnknown");
+		expect(result.workflowId).toMatch(WORKFLOW_ID_PATTERN);
 		expect(result.runId).toBeNull();
 		expect(mocks.markDocumentGenerationFailed).not.toHaveBeenCalled();
 
@@ -346,9 +398,7 @@ describe("generateDocumentProcedure — ambiguous describe() failure", () => {
 
 		const result = await handler({ input: input(), context: ctx });
 
-		expect(result.workflowId).toMatch(
-			new RegExp(`^project-document-generation-${DOCUMENT_ID}-\\d+$`),
-		);
+		expect(result.workflowId).toMatch(WORKFLOW_ID_PATTERN);
 		expect(result.runId).toBeNull();
 		expect(mocks.markDocumentGenerationFailed).not.toHaveBeenCalled();
 		expect(mocks.loggerWarn).toHaveBeenCalledTimes(1);
@@ -371,15 +421,54 @@ describe("generateDocumentProcedure — workflow.start throws but the workflow a
 
 		// The success shape, built from the LOCAL workflowId (there is no
 		// `handle` from `workflow.start` to read it off — start threw).
-		expect(result.workflowId).toMatch(
-			new RegExp(`^project-document-generation-${DOCUMENT_ID}-\\d+$`),
-		);
+		expect(result.workflowId).toMatch(WORKFLOW_ID_PATTERN);
 		expect(result.runId).toBe("live-run-id");
 		expect(mocks.getHandle).toHaveBeenCalledWith(result.workflowId);
 
 		// A false FAILED here would tell the editor a live run had died —
 		// must never happen once describe() confirms the workflow exists.
 		expect(mocks.markDocumentGenerationFailed).not.toHaveBeenCalled();
+	});
+});
+
+/**
+ * Regenerating with settings a live run already holds. The deterministic
+ * workflow id lands the second request on the first run's id, Temporal refuses
+ * the duplicate start, and the endpoint reports that rather than pretending a
+ * second run began.
+ */
+describe("generateDocumentProcedure — an equivalent run is already live", () => {
+	beforeEach(() => {
+		mocks.workflowStart.mockRejectedValue(
+			new WorkflowExecutionAlreadyStartedError(
+				"Workflow execution already started",
+				"unused-placeholder-workflow-id",
+				"projectDocumentGenerationWorkflow",
+			),
+		);
+	});
+
+	it("resolves with alreadyInProgress instead of failing the call", async () => {
+		const result = await handler({ input: input(), context: ctx });
+
+		expect(result.outcome).toBe("alreadyInProgress");
+		expect(result.workflowId).toMatch(WORKFLOW_ID_PATTERN);
+		expect(result.runId).toBeNull();
+		// A duplicate is not an infrastructure failure; nothing to log or
+		// generalize at the procedure boundary.
+		expect(mocks.loggerError).not.toHaveBeenCalled();
+	});
+
+	it("leaves the live attempt's row and identity untouched", async () => {
+		await handler({ input: input(), context: ctx });
+
+		expect(mocks.markDocumentGenerationQueued).not.toHaveBeenCalled();
+		expect(mocks.markDocumentGenerationFailed).not.toHaveBeenCalled();
+		// Decided before the probe: describe() would RESOLVE here — the other
+		// run really is live — and the tri-state recovery would then report a
+		// started run, a silent success where the caller needs to know it
+		// joined an existing one.
+		expect(mocks.workflowDescribe).not.toHaveBeenCalled();
 	});
 });
 
@@ -391,7 +480,7 @@ describe("generateDocumentProcedure — guard rejections", () => {
 			handler({ input: input(), context: ctx }),
 		).rejects.toMatchObject({ code: "NOT_FOUND" });
 
-		expect(mocks.markDocumentGenerationStarted).not.toHaveBeenCalled();
+		expect(mocks.markDocumentGenerationQueued).not.toHaveBeenCalled();
 		expect(mocks.workflowStart).not.toHaveBeenCalled();
 	});
 
@@ -406,7 +495,7 @@ describe("generateDocumentProcedure — guard rejections", () => {
 			handler({ input: input(), context: ctx }),
 		).rejects.toMatchObject({ code: "FORBIDDEN" });
 
-		expect(mocks.markDocumentGenerationStarted).not.toHaveBeenCalled();
+		expect(mocks.markDocumentGenerationQueued).not.toHaveBeenCalled();
 		expect(mocks.workflowStart).not.toHaveBeenCalled();
 	});
 });
@@ -430,7 +519,7 @@ describe("generateDocumentProcedure — project-authoritative authorization", ()
 			handler({ input: input(), context: ctx }),
 		).rejects.toMatchObject({ code: "FORBIDDEN" });
 
-		expect(mocks.markDocumentGenerationStarted).not.toHaveBeenCalled();
+		expect(mocks.markDocumentGenerationQueued).not.toHaveBeenCalled();
 		expect(mocks.workflowStart).not.toHaveBeenCalled();
 	});
 
@@ -587,5 +676,46 @@ describe("generateDocumentProcedure — instruction ceiling", () => {
 		expect(parse("a".repeat(MAX_RUN_INSTRUCTIONS_CHARS + 1)).success).toBe(
 			false,
 		);
+	});
+});
+
+/**
+ * The one workflow input a client must never reach.
+ *
+ * `skipDependencyWait` tells the run to generate without waiting for the
+ * project's outstanding context work. It exists for a single in-process
+ * Temporal caller — the ingestion workflow that spawns a generation as a child
+ * of the extraction producing its source, and would otherwise deadlock on it.
+ * Arriving through the API it is the "generate anyway" switch this feature
+ * forbids, so the schema must not carry it and the dispatcher must not forward
+ * it.
+ */
+describe("generateDocumentProcedure — skipDependencyWait is not a client input", () => {
+	it("drops the flag at the schema boundary", () => {
+		const parsed = (
+			captured.inputSchema as {
+				safeParse: (v: unknown) => {
+					success: boolean;
+					data?: Record<string, unknown>;
+				};
+			}
+		).safeParse({
+			id: DOCUMENT_ID,
+			prompt: "",
+			skipDependencyWait: true,
+		});
+
+		expect(parsed.success).toBe(true);
+		expect(parsed.data?.skipDependencyWait).toBeUndefined();
+	});
+
+	it("never lets it reach the workflow arguments", async () => {
+		await handler({
+			input: input({ skipDependencyWait: true }),
+			context: ctx,
+		});
+
+		const args = mocks.workflowStart.mock.calls[0]?.[1].args[0];
+		expect(args.skipDependencyWait).toBeUndefined();
 	});
 });

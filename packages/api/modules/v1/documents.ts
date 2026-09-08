@@ -51,6 +51,7 @@ type DocumentType =
 
 type DocumentStatus =
 	| "DRAFT"
+	| "QUEUED"
 	| "GENERATING"
 	| "IN_PROGRESS"
 	| "REVIEW"
@@ -76,6 +77,7 @@ const DOCUMENT_TYPES: ReadonlySet<DocumentType> = new Set([
 
 const DOCUMENT_STATUSES: ReadonlySet<DocumentStatus> = new Set([
 	"DRAFT",
+	"QUEUED",
 	"GENERATING",
 	"IN_PROGRESS",
 	"REVIEW",

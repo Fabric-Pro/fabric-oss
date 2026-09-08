@@ -228,7 +228,7 @@ export type ProjectScalarFieldEnum = z.infer<typeof ProjectScalarFieldEnumSchema
 
 // File: ProjectDocumentScalarFieldEnum.schema.ts
 
-export const ProjectDocumentScalarFieldEnumSchema = z.enum(['id', 'projectId', 'type', 'title', 'content', 'status', 'version', 'generationPrompt', 'generationError', 'generationProgress', 'generationStartedAt', 'generationCompletedAt', 'workflowId', 'runId', 'wordCount', 'lastEditedBy', 'decisionPrecheck', 'source', 'sourceContextId', 'isActive', 'qdrantId', 'embeddedAt', 'contentHash', 'createdAt', 'updatedAt', 'userId', 'organizationId'])
+export const ProjectDocumentScalarFieldEnumSchema = z.enum(['id', 'projectId', 'type', 'title', 'content', 'status', 'version', 'generationPrompt', 'generationError', 'generationProgress', 'generationStartedAt', 'generationCompletedAt', 'workflowId', 'runId', 'wordCount', 'lastEditedBy', 'decisionPrecheck', 'generationQueueReason', 'generationNotificationEmittedAt', 'source', 'sourceContextId', 'isActive', 'qdrantId', 'embeddedAt', 'contentHash', 'createdAt', 'updatedAt', 'userId', 'organizationId'])
 
 export type ProjectDocumentScalarFieldEnum = z.infer<typeof ProjectDocumentScalarFieldEnumSchema>;
 
@@ -2058,7 +2058,7 @@ export type ProjectDocumentType = z.infer<typeof ProjectDocumentTypeSchema>;
 
 // File: ProjectDocumentStatus.schema.ts
 
-export const ProjectDocumentStatusSchema = z.enum(['DRAFT', 'GENERATING', 'IN_PROGRESS', 'REVIEW', 'COMPLETE', 'FAILED'])
+export const ProjectDocumentStatusSchema = z.enum(['DRAFT', 'QUEUED', 'GENERATING', 'IN_PROGRESS', 'REVIEW', 'COMPLETE', 'FAILED'])
 
 export type ProjectDocumentStatus = z.infer<typeof ProjectDocumentStatusSchema>;
 
@@ -3108,7 +3108,7 @@ export type SyncJobType = z.infer<typeof SyncJobTypeSchema>;
 
 // File: BackgroundJobKind.schema.ts
 
-export const BackgroundJobKindSchema = z.enum(['TEAMS_CHANNEL_MONITOR', 'TEAMS_CHAT_MONITOR', 'SLACK_CHANNEL_MONITOR', 'SLACK_BACKFILL', 'CODE_INDEXING', 'CONTEXT_PROCESSING', 'STORY_KIND_REGENERATION', 'PUBLISHING_TOPIC_GENERATION'])
+export const BackgroundJobKindSchema = z.enum(['TEAMS_CHANNEL_MONITOR', 'TEAMS_CHAT_MONITOR', 'SLACK_CHANNEL_MONITOR', 'SLACK_BACKFILL', 'CODE_INDEXING', 'CONTEXT_PROCESSING', 'STORY_KIND_REGENERATION', 'PUBLISHING_TOPIC_GENERATION', 'DOCUMENT_GENERATION'])
 
 export type BackgroundJobKind = z.infer<typeof BackgroundJobKindSchema>;
 
@@ -3180,7 +3180,7 @@ export type ChatArtifactType = z.infer<typeof ChatArtifactTypeSchema>;
 
 // File: NotificationType.schema.ts
 
-export const NotificationTypeSchema = z.enum(['STORY_MENTION', 'STORY_COMMENT_REPLY', 'STORY_ASSIGNED', 'TASK_MENTION', 'TASK_COMMENT_REPLY', 'COMMENT_MENTION', 'DOCUMENT_MENTION', 'AGENT_REPLY_READY', 'STORY_STATUS_CHANGED', 'PM_SYNC_CONFLICT', 'AI_USAGE_LIMIT_WARNING', 'AI_USAGE_LIMIT_REACHED', 'INTEGRATION_INCIDENT', 'SYSTEM_INCIDENT', 'CONTEXT_INDEXING_STARTED', 'CONTEXT_INDEXING_COMPLETED', 'REPO_INTEGRATION_TOKEN_EXPIRED', 'SECURITY_SCAN_COMPLETED', 'PROJECT_SERVICE_ALERT_DIGEST', 'REPORT_COMPLETED', 'REPORT_FAILED', 'SECURITY_TICKETS_GENERATED', 'DOCUMENT_UPDATED', 'FEATURE_UPDATED', 'STORY_SHARED', 'NEWSLETTER_APPROVAL_PENDING', 'TEST_CASES_DRAFTED', 'STATUS_ANNOUNCEMENT', 'PUBLISHING_TOPICS_READY', 'PROMPT_DEFAULT_UPDATED', 'PROMPT_NOMINATION_PENDING', 'PM_ATTACHMENT_SYNC_FAILED', 'DECISION_OWNER_ASSIGNED', 'DECISION_OWNER_UPDATED', 'QUESTION_ASSIGNED', 'QUESTION_MENTIONED', 'QUESTION_ANSWERED'])
+export const NotificationTypeSchema = z.enum(['STORY_MENTION', 'STORY_COMMENT_REPLY', 'STORY_ASSIGNED', 'TASK_MENTION', 'TASK_COMMENT_REPLY', 'COMMENT_MENTION', 'DOCUMENT_MENTION', 'AGENT_REPLY_READY', 'STORY_STATUS_CHANGED', 'PM_SYNC_CONFLICT', 'AI_USAGE_LIMIT_WARNING', 'AI_USAGE_LIMIT_REACHED', 'INTEGRATION_INCIDENT', 'SYSTEM_INCIDENT', 'CONTEXT_INDEXING_STARTED', 'CONTEXT_INDEXING_COMPLETED', 'REPO_INTEGRATION_TOKEN_EXPIRED', 'SECURITY_SCAN_COMPLETED', 'PROJECT_SERVICE_ALERT_DIGEST', 'REPORT_COMPLETED', 'REPORT_FAILED', 'SECURITY_TICKETS_GENERATED', 'DOCUMENT_UPDATED', 'FEATURE_UPDATED', 'STORY_SHARED', 'NEWSLETTER_APPROVAL_PENDING', 'TEST_CASES_DRAFTED', 'STATUS_ANNOUNCEMENT', 'PUBLISHING_TOPICS_READY', 'PROMPT_DEFAULT_UPDATED', 'PROMPT_NOMINATION_PENDING', 'PM_ATTACHMENT_SYNC_FAILED', 'DECISION_OWNER_ASSIGNED', 'DECISION_OWNER_UPDATED', 'QUESTION_ASSIGNED', 'QUESTION_MENTIONED', 'QUESTION_ANSWERED', 'DOCUMENT_GENERATION_COMPLETED', 'DOCUMENT_GENERATION_FAILED'])
 
 export type NotificationType = z.infer<typeof NotificationTypeSchema>;
 
@@ -4104,6 +4104,8 @@ export const ProjectDocumentSchema = z.object({
   wordCount: z.number().int().nullish(),
   lastEditedBy: z.string().nullish(),
   decisionPrecheck: z.unknown().refine((val) => { const getDepth = (obj: unknown, depth: number = 0): number => { if (depth > 10) return depth; if (obj === null || typeof obj !== 'object') return depth; const values = Object.values(obj as Record<string, unknown>); if (values.length === 0) return depth; return Math.max(...values.map(v => getDepth(v, depth + 1))); }; return getDepth(val) <= 10; }, "JSON nesting depth exceeds maximum of 10").nullish(),
+  generationQueueReason: z.string().nullish(),
+  generationNotificationEmittedAt: z.date().nullish(),
   source: DocumentSourceSchema.default("GENERATED"),
   sourceContextId: z.string().nullish(),
   isActive: z.boolean().default(true),

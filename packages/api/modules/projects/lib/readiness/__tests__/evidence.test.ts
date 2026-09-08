@@ -85,6 +85,43 @@ beforeEach(() => {
 	mockDb.projectLinkedTeamsChat.count.mockResolvedValue(0);
 });
 
+describe("gatherReadinessEvidence — documents in flight", () => {
+	/**
+	 * A generation that is waiting on its dependencies is QUEUED, not
+	 * GENERATING, and the wait can last an hour. Reading only GENERATING left a
+	 * queued document reading as neither ready nor in progress — the checklist
+	 * offering to create a document that is already on its way.
+	 */
+	it("counts a QUEUED document as in flight", async () => {
+		mockDb.projectDocument.findMany.mockResolvedValue([{ type: "prd" }]);
+
+		const result = await gatherReadinessEvidence("p1");
+
+		expect(result?.evidence.inFlight.documentTypes.has("prd")).toBe(true);
+		expect(mockDb.projectDocument.findMany).toHaveBeenCalledWith(
+			expect.objectContaining({
+				where: expect.objectContaining({
+					status: { in: ["QUEUED", "GENERATING"] },
+				}),
+			}),
+		);
+	});
+
+	/**
+	 * The other half: a queued RE-run must not drop the document the project
+	 * already has, for the same reason a GENERATING one must not.
+	 */
+	it("keeps a queued re-run that still holds content in the completed set", async () => {
+		await gatherReadinessEvidence("p1");
+
+		const [{ where }] = mockDb.projectDocument.groupBy.mock.calls[0];
+		expect(where.OR).toContainEqual({
+			status: { in: ["QUEUED", "GENERATING", "FAILED"] },
+			content: { not: "" },
+		});
+	});
+});
+
 describe("gatherReadinessEvidence — codebase connection", () => {
 	it("counts an ACTIVE repository integration as a connected codebase", async () => {
 		mockDb.projectRepositoryIntegration.count.mockResolvedValue(1);

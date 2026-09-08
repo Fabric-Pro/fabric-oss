@@ -7,7 +7,7 @@ import {
 } from "../DocumentGenerationProgress";
 
 describe("DocumentGenerationProgress", () => {
-	it("renders queued badge and step 1 description when progress is 0", () => {
+	it("renders the worker-wait badge and step 1 description when progress is 0", () => {
 		render(
 			<DocumentGenerationProgress
 				status="GENERATING"
@@ -16,14 +16,78 @@ describe("DocumentGenerationProgress", () => {
 			/>,
 		);
 
-		expect(screen.getByText("Queued in Job Queue")).toBeInTheDocument();
+		expect(screen.getByText("Waiting for a worker")).toBeInTheDocument();
 		expect(
 			screen.getByText("System Architecture Spec"),
 		).toBeInTheDocument();
 		expect(
-			screen.getByText(/Step 1 of 4: Queued in Job Queue/i),
+			screen.getByText(/Step 1 of 4: Waiting for a worker/i),
 		).toBeInTheDocument();
 		expect(screen.getByText("0%")).toBeInTheDocument();
+	});
+
+	/**
+	 * Fizzy #2199 — the two waits a run can sit in before its first milestone
+	 * are not the same wait. One is a free worker, minutes away; the other is
+	 * the project's own context work, which can run for an hour. The component
+	 * keyed almost entirely on progress, and both read as 0.
+	 */
+	it("distinguishes the context wait from the worker wait", () => {
+		const { rerender } = render(
+			<DocumentGenerationProgress
+				status="QUEUED"
+				progress={0}
+				title="System Architecture Spec"
+			/>,
+		);
+
+		expect(
+			screen.getByText("Waiting for project context"),
+		).toBeInTheDocument();
+		expect(
+			screen.getByText(/Step 1 of 4: Waiting for project context/i),
+		).toBeInTheDocument();
+		expect(
+			screen.queryByText("Waiting for a worker"),
+		).not.toBeInTheDocument();
+
+		rerender(
+			<DocumentGenerationProgress
+				status="GENERATING"
+				progress={0}
+				title="System Architecture Spec"
+			/>,
+		);
+
+		expect(screen.getByText("Waiting for a worker")).toBeInTheDocument();
+		expect(
+			screen.queryByText("Waiting for project context"),
+		).not.toBeInTheDocument();
+	});
+
+	it("neither describes a queued document as generating nor promises minutes", () => {
+		render(<DocumentGenerationProgress status="QUEUED" progress={0} />);
+
+		expect(screen.getByText("Waiting to Start")).toBeInTheDocument();
+		expect(
+			screen.queryByText("Generating Document"),
+		).not.toBeInTheDocument();
+		expect(
+			screen.queryByText(/This will take a few minutes/i),
+		).not.toBeInTheDocument();
+		expect(
+			screen.getByText(/waiting on the project's own context work/i),
+		).toBeInTheDocument();
+	});
+
+	it("keeps the ladder at four steps, with step 1 named for either wait", () => {
+		render(<DocumentGenerationProgress status="QUEUED" progress={0} />);
+
+		expect(screen.getByText("Waiting to start")).toBeInTheDocument();
+		expect(screen.getByText("Context Retrieval")).toBeInTheDocument();
+		expect(screen.getByText("AI Drafting")).toBeInTheDocument();
+		expect(screen.getByText("Finalizing")).toBeInTheDocument();
+		expect(screen.queryByText("Job Queued")).not.toBeInTheDocument();
 	});
 
 	it("renders the preserved reassurance message", () => {
@@ -321,11 +385,20 @@ describe("DocumentGenerationProgress", () => {
 	});
 
 	describe("getGenerationStage helper", () => {
-		it("returns queued stage when progress is 0", () => {
+		it("returns the worker-wait stage when progress is 0", () => {
 			const stage = getGenerationStage(0, "GENERATING");
 			expect(stage.isQueued).toBe(true);
 			expect(stage.step).toBe(1);
-			expect(stage.label).toBe("Queued in Job Queue");
+			expect(stage.label).toBe("Waiting for a worker");
+		});
+
+		it("returns the context-wait stage for QUEUED, whatever the progress", () => {
+			for (const progress of [0, 42, 100]) {
+				const stage = getGenerationStage(progress, "QUEUED");
+				expect(stage.isQueued).toBe(true);
+				expect(stage.step).toBe(1);
+				expect(stage.label).toBe("Waiting for project context");
+			}
 		});
 
 		it("returns retrieving context stage for progress 15", () => {

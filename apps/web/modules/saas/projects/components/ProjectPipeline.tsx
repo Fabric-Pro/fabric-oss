@@ -54,6 +54,7 @@ import {
 	CheckIcon,
 	ChevronDownIcon,
 	ChevronRightIcon,
+	ClockIcon,
 	CodeIcon,
 	ExternalLinkIcon,
 	FileTextIcon,
@@ -74,6 +75,11 @@ import { useTranslations } from "next-intl";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { PromptSelector } from "../../prompts/components/PromptSelector";
+import {
+	DOCUMENT_POLL_BASE_MS,
+	getDocumentsPollInterval,
+	isDocumentGenerationRunning,
+} from "../lib/document-pipeline";
 import type { StoryTask, UserStory } from "../lib/stories/types";
 import {
 	getPriorityColor,
@@ -264,12 +270,30 @@ export function ProjectPipeline({
 	// Track whether docs are generating for polling (state triggers re-render for refetchInterval)
 	const [isGenerating, setIsGenerating] = useState(false);
 
-	// Fetch project documents (poll every 3s while any doc is generating or pipeline running)
+	// Fetch project documents, polling while any doc is generating or the
+	// pipeline run is live.
+	//
+	// The document arm goes through the shared cadence the Documents tab and
+	// the editor use, rather than a flat 3s with no ceiling at all: this poll
+	// now fires on QUEUED too, and a queued document is watching a wait the
+	// server owns and backs off from on its own. A viewer of that wait does not
+	// need to ask at the rate the mechanism runs at — so it widens toward 30s,
+	// and a generating run still ages out at the ten-minute ceiling.
 	const { data: documentsData, isLoading: isLoadingDocs } = useQuery({
 		...orpc.projects.documents.list.queryOptions({
 			input: { projectId, organizationId },
 		}),
-		refetchInterval: isGenerating || status === "running" ? 3000 : false,
+		refetchInterval: (query) => {
+			const documentsInterval = isGenerating
+				? getDocumentsPollInterval(query.state.data?.documents)
+				: false;
+			if (documentsInterval !== false) {
+				return documentsInterval;
+			}
+			// The run itself can be live with no document row in flight — a
+			// stage between documents — so keep watching it at the base rate.
+			return status === "running" ? DOCUMENT_POLL_BASE_MS : false;
+		},
 	});
 
 	// Fetch existing stories
@@ -344,12 +368,16 @@ export function ProjectPipeline({
 			if (!PIPELINE_TYPES.includes(doc.type)) {
 				continue;
 			}
-			// Keep the most relevant doc per type (GENERATING > COMPLETE > others)
+			// Keep the most relevant doc per type (running > COMPLETE > others).
+			// QUEUED ranks with GENERATING: the run has been accepted and is
+			// waiting on the project's own context work, so it outranks a
+			// finished sibling for "what is happening to this type right now".
 			const existing = statuses.get(doc.type);
 			if (
 				!existing ||
-				doc.status === "GENERATING" ||
-				(doc.status === "COMPLETE" && existing.status !== "GENERATING")
+				isDocumentGenerationRunning(doc.status) ||
+				(doc.status === "COMPLETE" &&
+					!isDocumentGenerationRunning(existing.status))
 			) {
 				statuses.set(doc.type, {
 					status: doc.status,
@@ -365,8 +393,11 @@ export function ProjectPipeline({
 		return statuses;
 	}, [documents]);
 
-	const hasAnyGenerating = [...pipelineDocStatuses.values()].some(
-		(d) => d.status === "GENERATING",
+	// Drives the 3s poll below. A queued document belongs here: it is the state
+	// most in need of a live view, since the whole point is to notice the
+	// moment the wait clears and generation actually starts.
+	const hasAnyGenerating = [...pipelineDocStatuses.values()].some((d) =>
+		isDocumentGenerationRunning(d.status),
 	);
 	const completedPipelineDocs = [...pipelineDocStatuses.values()].filter(
 		(d) => d.status === "COMPLETE",
@@ -1043,6 +1074,18 @@ export function ProjectPipeline({
 											</div>
 										) : (
 											<div className="flex-1" />
+										)}
+										{/* Without this a queued document rendered no badge
+											at all — the row simply went blank rather than
+											saying it was waiting. */}
+										{docStatus.status === "QUEUED" && (
+											<Badge
+												variant="outline"
+												className="text-xs border-highlight/30 text-highlight"
+											>
+												<ClockIcon className="w-3 h-3 mr-1" />
+												Queued
+											</Badge>
 										)}
 										{docStatus.status === "GENERATING" && (
 											<Badge

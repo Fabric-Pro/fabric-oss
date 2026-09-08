@@ -55,15 +55,34 @@ function StatusBadge({ status }: { status: JobListItem["status"] }) {
 		);
 	}
 
+	if (status === "COMPLETED") {
+		return (
+			<Badge
+				variant="success"
+				role="status"
+				aria-label={t("status.completed")}
+				className="gap-1.5"
+			>
+				<CheckCircle2Icon className="size-3" aria-hidden="true" />
+				{t("status.completed")}
+			</Badge>
+		);
+	}
+
+	// A status this build has no name for — a new `BackgroundJobStatus` shipped
+	// ahead of the panel, say. This used to be the fallthrough for "Completed",
+	// which meant an unknown state was announced as success: the one claim the
+	// panel must never make on a run nobody here can vouch for. Neutral, and
+	// showing the raw value, so it reads as unrecognised rather than as fine.
 	return (
 		<Badge
-			variant="success"
+			variant="outline"
 			role="status"
-			aria-label={t("status.completed")}
+			aria-label={status}
 			className="gap-1.5"
 		>
-			<CheckCircle2Icon className="size-3" aria-hidden="true" />
-			{t("status.completed")}
+			<CircleIcon className="size-3" aria-hidden="true" />
+			{status}
 		</Badge>
 	);
 }

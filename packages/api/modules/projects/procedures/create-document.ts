@@ -79,6 +79,15 @@ const PASTED_VERSION_DESCRIPTION = "Created from pasted source content";
 interface CreateDocumentResult {
 	document: ProjectDocument;
 	sourceContextId: string | null;
+	/**
+	 * Null when no generation was requested; otherwise the dispatch's own
+	 * discriminated answer — `started`, `alreadyInProgress`, or
+	 * `statusUnknown`. All three are successful calls: only a thrown dispatch
+	 * fails the request. `alreadyInProgress` is near-impossible on this route,
+	 * since the document id is minted moments earlier and is part of the
+	 * workflow id, but it is passed through rather than flattened so the client
+	 * branches on the same shape it gets from the regenerate route.
+	 */
 	generation: DispatchDocumentGenerationResult | null;
 	/**
 	 * R31 — an existing active document of this type was stood down for this
@@ -154,6 +163,10 @@ export const createDocumentProcedure = tenantProtectedProcedure
 				.describe(
 					"Specific prompt version ID for attribution tracking",
 				),
+			// Deliberately no `skipDependencyWait`. The workflow input carries
+			// that flag for one in-process Temporal caller only; accepting it
+			// on either dispatch route would hand every client a "generate
+			// anyway" switch past the dependency queue.
 		}),
 	)
 	.handler(async ({ input, context }) => {
@@ -413,7 +426,33 @@ export const createDocumentProcedure = tenantProtectedProcedure
 		generation = dispatchResult.value;
 
 		const result: CreateDocumentResult = {
-			document,
+			// `document` is the row as it was written, before the dispatcher
+			// marked it queued — so returning it unchanged tells the client the
+			// document is still a draft and hides the wait it is about to sit
+			// in. The status is carried over from the dispatch outcome rather
+			// than re-read, which would cost a query to learn something the
+			// dispatch already answered.
+			//
+			// Both arms that reach the dispatcher's queue mark are covered.
+			// `statusUnknown` marks exactly as `started` does — the mark runs
+			// after the start attempt and before the `describe()` probe that
+			// decides between the two — so reporting DRAFT for it would
+			// contradict the row the client is about to poll.
+			// `alreadyInProgress` is the one arm that is excluded, and it
+			// returns before the mark on purpose: the live attempt's own
+			// `generationStartedAt` must not be overwritten, and that
+			// document's status belongs to the run already underway.
+			//
+			// Optimistic, not certain: the mark is guarded on freshness, so a
+			// run that terminalized the row between the start and the mark
+			// keeps its own status. That is a sub-second window and the
+			// client's first poll corrects it; the alternative — reporting
+			// DRAFT for a row that is queued — is wrong for the whole wait.
+			document:
+				generation?.outcome === "started" ||
+				generation?.outcome === "statusUnknown"
+					? { ...document, status: "QUEUED" as const }
+					: document,
 			sourceContextId: sourceContext?.id ?? null,
 			generation,
 			displacedActive: created.displacedCount > 0,

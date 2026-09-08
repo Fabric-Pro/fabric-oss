@@ -42,6 +42,14 @@ const { activityMocks, executeChildMock, startChildMock } = vi.hoisted(() => ({
 		updateAgentTaskWorkflow: vi.fn(),
 		updateAgentTaskStatus: vi.fn(),
 		updateProjectWorkflowStatus: vi.fn(),
+		// The parent's dependency queue. Mocked here only so this file's two
+		// parent tests can reach the child call at all — the queue's own
+		// behaviour is pinned by `document-generation-dependency-wait.test.ts`.
+		probeGenerationDependencies: vi.fn(),
+		assertRequesterMayGenerate: vi.fn(),
+		issueGenerationToken: vi.fn(),
+		recordGenerationQueueReason: vi.fn(),
+		startGenerationRun: vi.fn(),
 		// Child workflow's generation activities
 		retrieveProjectContexts: vi.fn(),
 		retrieveAndFormatEpisodicMemory: vi.fn(),
@@ -86,7 +94,16 @@ vi.mock("@temporalio/workflow", () => {
 		},
 		patched: () => true,
 		proxyActivities: () => activityMocks,
-		workflowInfo: () => ({ workflowId: "wf_1", runId: "run_1" }),
+		// `sleep` and `continueAsNewSuggested` are the parent's dependency
+		// queue: with `patched()` stubbed true the queue runs on every parent
+		// case here, and a missing export would read as the workflow crashing
+		// rather than as this mock being incomplete.
+		sleep: vi.fn(async () => undefined),
+		workflowInfo: () => ({
+			workflowId: "wf_1",
+			runId: "run_1",
+			continueAsNewSuggested: false,
+		}),
 	};
 });
 
@@ -158,6 +175,20 @@ beforeEach(() => {
 	activityMocks.updateAgentTaskWorkflow.mockResolvedValue(undefined);
 	activityMocks.updateAgentTaskStatus.mockResolvedValue(undefined);
 	activityMocks.updateProjectWorkflowStatus.mockResolvedValue(undefined);
+
+	// Nothing outstanding: the parent falls straight through its queue to the
+	// child, which is the only thing these two parent cases are about.
+	activityMocks.probeGenerationDependencies.mockResolvedValue({
+		verdict: "clear",
+		outstanding: [],
+		failed: [],
+	});
+	activityMocks.assertRequesterMayGenerate.mockResolvedValue(undefined);
+	activityMocks.issueGenerationToken.mockResolvedValue({
+		aiToken: "re-issued-token",
+	});
+	activityMocks.recordGenerationQueueReason.mockResolvedValue(undefined);
+	activityMocks.startGenerationRun.mockResolvedValue({ applied: true });
 
 	activityMocks.retrieveProjectContexts.mockResolvedValue([
 		"retrieved context A",
@@ -446,23 +477,42 @@ describe("supplied-context wiring (source assertions)", () => {
 		expect(retrievalCall).toContain("excludeContextId,");
 	});
 
-	it("introduces no new patch gate", () => {
+	it("introduces no new patch gate in the child, and exactly one in the parent", () => {
 		// Adding an optional input field consumed by an already-scheduled
 		// activity call adds no command to the workflow's command stream, so it
 		// needs no `patched()` gate.
 		//
-		// Asserted as an exact SET of marker ids rather than a count, so this
-		// stays a guard on THIS unit's scope. Both existing gates earned their
-		// place: `document-decision-precheck-v1` added an activity CALL, and
+		// Asserted as an exact SET of marker ids — DEDUPED, because `patched()`
+		// answers identically for every call within one execution, so naming the
+		// same marker at two sites is a re-read rather than a second gate (see
+		// `template-instance-execution.ts`, which does exactly that). Counting
+		// textual occurrences instead would force the answer to be smuggled out
+		// in a boolean and threaded to every later read site, for no replay
+		// benefit. This stays a guard on THIS unit's scope. Both existing gates
+		// in the child earned their place: `document-decision-precheck-v1`
+		// added an activity CALL, and
 		// `document-provider-refusal-fatal-v1` widened which context-retrieval
 		// failures abort the run (Fizzy #1875) — a history recorded before it
 		// carried on without RAG and must keep replaying that way. Neither is
 		// supplied-context's, and a marker appearing here for a change that
 		// adds no command is still the regression this test is looking for.
-		const markers = (child.match(/patched\("([^"]+)"\)/g) ?? []).sort();
+		const markers = [
+			...new Set(child.match(/patched\("([^"]+)"\)/g) ?? []),
+		].sort();
 		expect(markers).toEqual([
 			'patched("document-decision-precheck-v1")',
 			'patched("document-provider-refusal-fatal-v1")',
+		]);
+
+		// The parent's one gate is the dependency queue (Fizzy #2199), which
+		// genuinely does add commands: a probe activity on every run, and a
+		// timer on every run that waits. Pinned as a set here too, so the
+		// parent is not the file where an ungated activity call slips in.
+		const parentMarkers = [
+			...new Set(parent.match(/patched\("([^"]+)"\)/g) ?? []),
+		].sort();
+		expect(parentMarkers).toEqual([
+			'patched("document-generation-dependency-wait-2026-09-07")',
 		]);
 	});
 });

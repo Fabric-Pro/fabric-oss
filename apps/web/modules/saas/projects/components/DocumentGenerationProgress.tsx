@@ -16,8 +16,15 @@ import {
 
 import { isDocumentGenerationStale } from "../lib/document-generation-timestamp";
 
+/**
+ * Step 1 covers both waits a run can sit in before its first milestone: for a
+ * free worker, and — since the queue landed — for the project's own context
+ * work to finish. Naming it "Job Queued" claimed the first of those for both,
+ * which is wrong about the wait that can last an hour. The ladder deliberately
+ * stays at four: the stage label and description below say which wait it is.
+ */
 const GENERATION_STEPS = [
-	{ step: 1, name: "Job Queued" },
+	{ step: 1, name: "Waiting to start" },
 	{ step: 2, name: "Context Retrieval" },
 	{ step: 3, name: "AI Drafting" },
 	{ step: 4, name: "Finalizing" },
@@ -62,6 +69,22 @@ export function getGenerationStage(
 	progress: number,
 	status: string,
 ): GenerationStage {
+	// Status first, ahead of every progress branch. A queued run is waiting on
+	// the project's own context work — an index, a crawl, a sibling document —
+	// not on a worker slot, and its progress reads 0 for however long that
+	// takes. The progress ladder below cannot tell the two waits apart, so it
+	// never gets the chance to guess.
+	if (status === "QUEUED") {
+		return {
+			label: "Waiting for project context",
+			step: 1,
+			totalSteps: TOTAL_STEPS,
+			description:
+				"Queued behind the project's own context work — indexing, extraction, or a document this one is written from. Generation starts on its own as soon as that finishes.",
+			isQueued: true,
+		};
+	}
+
 	if (status === "COMPLETE" || progress >= 100) {
 		return {
 			label: "Generation Complete",
@@ -72,11 +95,13 @@ export function getGenerationStage(
 		};
 	}
 
-	// Queued in worker queue: progress is 0 until the worker begins execution
-	// and reports its first milestone (15% project context / 30% direct context).
+	// Queued in the worker queue: progress is 0 until the worker begins
+	// execution and reports its first milestone (15% project context / 30%
+	// direct context). Reached only for GENERATING — the dependency wait above
+	// has already claimed its own state.
 	if (progress <= 0) {
 		return {
-			label: "Queued in Job Queue",
+			label: "Waiting for a worker",
 			step: 1,
 			totalSteps: TOTAL_STEPS,
 			description:
@@ -138,12 +163,18 @@ export function DocumentGenerationProgress({
 	const isFailed = status === "FAILED";
 	const isComplete = status === "COMPLETE" || clampedProgress >= 100;
 	const stage = getGenerationStage(clampedProgress, status);
+	// Distinct from `stage.isQueued`, which also covers a run waiting on a free
+	// worker. This one is the dependency wait: nothing is being generated yet
+	// and the wait has no few-minute expectation to promise.
+	const isWaitingForContext = status === "QUEUED";
 
-	// Detect if job has been generating for > 3 minutes (180s), falling back to updatedAt
+	// Detect if job has been generating for > 3 minutes (180s), falling back to
+	// updatedAt. A QUEUED document is exempt — it is waiting on its dependencies
+	// rather than running, and that wait has no deadline the client can judge.
 	const isStale =
 		!isComplete &&
 		!isFailed &&
-		isDocumentGenerationStale(generationStartedAt, updatedAt);
+		isDocumentGenerationStale(status, generationStartedAt, updatedAt);
 
 	return (
 		<section
@@ -157,7 +188,9 @@ export function DocumentGenerationProgress({
 			<div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4 mb-6">
 				<div className="flex items-start gap-3 min-w-0">
 					<div className="p-2.5 rounded-lg bg-primary/10 text-primary shrink-0 mt-0.5">
-						{isRegenerating ? (
+						{isWaitingForContext ? (
+							<Clock className="h-5 w-5" />
+						) : isRegenerating ? (
 							<RefreshCw className="h-5 w-5" />
 						) : (
 							<Sparkles className="h-5 w-5" />
@@ -166,13 +199,19 @@ export function DocumentGenerationProgress({
 					<div className="min-w-0">
 						<h3 className="font-semibold text-base md:text-lg truncate">
 							{title ||
-								(isRegenerating
-									? "Regenerating Document"
-									: "Generating Document")}
+								(isWaitingForContext
+									? "Waiting to Start"
+									: isRegenerating
+										? "Regenerating Document"
+										: "Generating Document")}
 						</h3>
+						{/* A document waiting on an hour-long index must not be
+							promised a few minutes, and must not be described as
+							something that is already being written. */}
 						<p className="text-sm text-muted-foreground mt-1">
-							This will take a few minutes. Please wait while we
-							generate your document...
+							{isWaitingForContext
+								? "Nothing has started yet — the request is waiting on the project's own context work. That can take a while; you can close this and come back."
+								: "This will take a few minutes. Please wait while we generate your document..."}
 						</p>
 					</div>
 				</div>
@@ -200,8 +239,10 @@ export function DocumentGenerationProgress({
 							variant="secondary"
 							className="gap-1.5 px-2.5 py-1 text-xs bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20"
 						>
-							<Clock className="h-3.5 w-3.5 animate-pulse" />
-							Queued in Job Queue
+							{/* motion-safe: the dependency wait this can mark
+								runs for as long as the project's own work does. */}
+							<Clock className="h-3.5 w-3.5 motion-safe:animate-pulse" />
+							{stage.label}
 						</Badge>
 					) : (
 						<Badge

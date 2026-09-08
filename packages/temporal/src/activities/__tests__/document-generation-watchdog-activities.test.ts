@@ -58,6 +58,7 @@ describe("findStaleGeneratingDocumentsActivity", () => {
 			{
 				id: "doc-1",
 				projectId: "proj-1",
+				status: "GENERATING",
 				generationStartedAt: STARTED_AT,
 				workflowId: "wf-1",
 				project: { organizationId: "org-1" },
@@ -74,10 +75,40 @@ describe("findStaleGeneratingDocumentsActivity", () => {
 				documentId: "doc-1",
 				projectId: "proj-1",
 				organizationId: "org-1",
+				status: "GENERATING",
 				workflowId: "wf-1",
 				generationStartedAtMs: STARTED_AT.getTime(),
 			},
 		]);
+	});
+
+	/**
+	 * Queued rows ride the same sweep. They arrive with no age ceiling applied —
+	 * that asymmetry lives in the query — so the status has to survive the
+	 * mapping for the sweep to report which arm it swept.
+	 */
+	it("carries a queued row's status through", async () => {
+		mocks.findStaleMock.mockResolvedValue([
+			{
+				id: "doc-2",
+				projectId: "proj-1",
+				status: "QUEUED",
+				generationStartedAt: STARTED_AT,
+				workflowId: "wf-2",
+				project: { organizationId: null },
+			},
+		]);
+
+		const out = await findStaleGeneratingDocumentsActivity({
+			staleAfterMinutes: 30,
+			batchSize: 50,
+		});
+
+		expect(out.rows[0]).toMatchObject({
+			documentId: "doc-2",
+			status: "QUEUED",
+			workflowId: "wf-2",
+		});
 	});
 
 	/**
@@ -89,6 +120,7 @@ describe("findStaleGeneratingDocumentsActivity", () => {
 			{
 				id: "doc-1",
 				projectId: "proj-1",
+				status: "GENERATING",
 				generationStartedAt: null,
 				workflowId: "wf-1",
 				project: { organizationId: null },

@@ -64,6 +64,13 @@ export const JOB_STEPS = {
 		"finalize",
 	],
 	contextProcessing: ["download", "extract", "chunk", "embed", "store"],
+	// Two steps, and the first one is a wait. A generation dispatched while its
+	// project is still ingesting sits in `awaitContext` for as long as that
+	// takes — the stretch that otherwise reads as a lost request. It is a STEP
+	// rather than a new `BackgroundJobStatus` on purpose: the row is genuinely
+	// RUNNING throughout, it is simply not reading anything yet, and the panel's
+	// active-versus-recent split already keys off RUNNING.
+	documentGeneration: ["awaitContext", "generate"],
 	// Publishing topic generation stops at `persist` on purpose: notification and
 	// chat delivery run after the cycle terminalizes, each behind its own
 	// patched() marker and its own try/catch, so there is no statically-known
@@ -85,7 +92,8 @@ export interface JobEnsureArgs {
 		| "SLACK_BACKFILL"
 		| "CODE_INDEXING"
 		| "CONTEXT_PROCESSING"
-		| "PUBLISHING_TOPIC_GENERATION";
+		| "PUBLISHING_TOPIC_GENERATION"
+		| "DOCUMENT_GENERATION";
 	title: string;
 	projectId: string;
 	userId: string;
