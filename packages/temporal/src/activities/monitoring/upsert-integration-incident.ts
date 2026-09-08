@@ -11,8 +11,10 @@
  * If no active incident matches, a new row is inserted and an
  * `IncidentEvent(FIRED)` is recorded.
  *
- * The `IntegrationProviderRegistry` row for this provider is updated with
- * the latest `currentHealth`, `lastPolledAt`, and `lastIncidentId`.
+ * The `IntegrationProviderRegistry` row for this provider is reconciled
+ * with the latest `currentHealth` and `lastIncidentId` through
+ * `touchProviderRegistry`, which also carries the throttled
+ * `lastPolledAt` heartbeat and skips the UPDATE when nothing changed.
  *
  * Returns the resolved incident id + a `wasNew` flag the workflow uses to
  * decide whether to start an `incidentLifecycleWorkflow`.
@@ -24,6 +26,7 @@ import type {
 	IncidentSeverity,
 	ProviderHealthStatus,
 } from "./shared-types";
+import { touchProviderRegistry } from "./touch-provider-registry";
 
 /**
  * Pull workflow runId for correlation. Falls back to `null` outside of an
@@ -186,18 +189,11 @@ async function recordIncidentFiring(
 		},
 	});
 
-	await db.integrationProviderRegistry
-		.update({
-			where: { providerKey: input.providerKey },
-			data: {
-				currentHealth: input.health,
-				lastPolledAt: new Date(),
-				lastIncidentId: incidentId,
-			},
-		})
-		.catch(() => {
-			/* registry row may not exist yet — best-effort */
-		});
+	await touchProviderRegistry({
+		providerKey: input.providerKey,
+		currentHealth: input.health,
+		lastIncidentId: incidentId,
+	});
 }
 
 export async function upsertIntegrationIncident(
@@ -285,18 +281,15 @@ export async function upsertIntegrationIncident(
 			});
 		}
 
-		await db.integrationProviderRegistry
-			.update({
-				where: { providerKey: input.providerKey },
-				data: {
-					currentHealth: input.health,
-					lastPolledAt: new Date(),
-					lastIncidentId: existing.id,
-				},
-			})
-			.catch(() => {
-				/* registry row may not exist yet — best-effort */
-			});
+		// Continuation poll. The helper skips the write entirely when the
+		// row already points at this incident with this health and its
+		// heartbeat is fresh — which is the steady state for an incident
+		// that stays open across many 2-minute ticks.
+		await touchProviderRegistry({
+			providerKey: input.providerKey,
+			currentHealth: input.health,
+			lastIncidentId: existing.id,
+		});
 
 		return {
 			incidentId: existing.id,

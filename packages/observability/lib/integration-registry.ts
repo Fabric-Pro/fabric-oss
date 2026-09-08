@@ -7,9 +7,11 @@
  *
  * Registry rows are mirrored to the `IntegrationProviderRegistry` Prisma
  * model on every Hono boot via
- * `@repo/database`'s `syncIntegrationProviderRegistry(getRegisteredProviders())`
- * (idempotent upsert). Frontend reads health from the DB row — never from
- * this module — so we can keep the registry out of the client bundle.
+ * `@repo/database`'s `syncIntegrationProviderRegistry(getRegisteredProviders())`,
+ * which compares before writing: it creates a missing row, updates one
+ * whose config drifted, and skips one that already matches. Frontend
+ * reads health from the DB row — never from this module — so we can keep
+ * the registry out of the client bundle.
  *
  * Plug-in pattern: adding a v2 provider is a config-only change — append
  * one `registerIntegrationProvider({...})` call and the boot path picks

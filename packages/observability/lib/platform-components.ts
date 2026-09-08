@@ -65,8 +65,12 @@ export type PlatformComponentSignal =
 	  }
 	/**
 	 * Freshness of work background processing demonstrably completed. Reads
-	 * `max(IntegrationProviderRegistry.lastPolledAt)` — written every two
-	 * minutes by the existing status-page poller.
+	 * `max(IntegrationProviderRegistry.lastPolledAt)`. The status-page
+	 * poller runs every two minutes, but that column is a throttled
+	 * heartbeat — rewritten on a real health change, and otherwise only
+	 * once its stored timestamp is a few minutes old — so the maximum
+	 * advances at least every ~5 minutes and a 10-minute threshold means at
+	 * least two missed heartbeats.
 	 *
 	 * Chosen over pinging the workflow engine directly because a reachable
 	 * engine that is not executing anything is exactly the failure a ping

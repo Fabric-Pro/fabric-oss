@@ -40,10 +40,13 @@ registerPlatformComponent({
 	description:
 		"Scheduled and long-running work: syncs, analysis runs, scans, and report generation.",
 	group: "AUTOMATION",
-	// The status-page poller writes `lastPolledAt` every 2 minutes. Ten minutes
-	// without a write is four missed ticks — a real stall rather than a slow
-	// tick. Thirty minutes means we can no longer claim to know anything, so
-	// the component reports UNKNOWN instead of guessing.
+	// The status-page poller runs every 2 minutes, but `lastPolledAt` is a
+	// throttled heartbeat: a row is rewritten on a real change, and otherwise
+	// only once its stored timestamp is a few minutes old, so the registry
+	// maximum advances at least every ~5 minutes. Ten minutes without a write
+	// is therefore at least two missed heartbeats — a real stall rather than a
+	// slow tick. Thirty minutes means we can no longer claim to know anything,
+	// so the component reports UNKNOWN instead of guessing.
 	signal: {
 		kind: "background-work-freshness",
 		degradedAfterMinutes: 10,

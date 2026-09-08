@@ -44,7 +44,7 @@ export const GLOSSARY = {
 		"Synthetic probe disabled because a required environment variable (e.g., STRIPE_SECRET_KEY, AWS_S3_BUCKET) is missing in this environment. The provider itself is not necessarily down — we just can't probe it from here. Check the provider's status page directly to confirm.",
 
 	lastPoll:
-		"When our service last successfully polled this provider's health endpoint. Statuspage feeds are polled every 2 minutes.",
+		"When our service last recorded a successful poll of this provider's health endpoint. Statuspage feeds are polled every 2 minutes; this timestamp is refreshed a few minutes at a time to avoid rewriting the record on every poll.",
 	affectedFeatures:
 		"The product features that depend on this provider. If the provider goes down, these are the areas of the app to watch.",
 
