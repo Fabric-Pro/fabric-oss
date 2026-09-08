@@ -23,6 +23,7 @@ const userFindMany = vi.fn();
 const checkPublishingGenerationActor = vi.fn();
 const getBoundPromptForAgent = vi.fn();
 const listTopicDecisions = vi.fn();
+const getEffectivePlanningAnalysis = vi.fn();
 const completeTopicDraft = vi.fn();
 const seedWorkingDraftIfAbsent = vi.fn();
 vi.mock("@repo/database", async (importOriginal) => {
@@ -46,6 +47,8 @@ vi.mock("@repo/database", async (importOriginal) => {
 			checkPublishingGenerationActor(...a),
 		getBoundPromptForAgent: (...a: unknown[]) =>
 			getBoundPromptForAgent(...a),
+		getEffectivePlanningAnalysis: (...a: unknown[]) =>
+			getEffectivePlanningAnalysis(...a),
 		listTopicDecisions: (...a: unknown[]) => listTopicDecisions(...a),
 		completeTopicDraft: (...a: unknown[]) => completeTopicDraft(...a),
 		seedWorkingDraftIfAbsent: (...a: unknown[]) =>
@@ -148,6 +151,17 @@ beforeEach(() => {
 	checkPublishingGenerationActor.mockResolvedValue({ ok: true });
 	getBoundPromptForAgent.mockResolvedValue(null);
 	listTopicDecisions.mockResolvedValue([]);
+	// A topic with no analysis at all: the refusal path never depends on
+	// one, and the resolver is stubbed here only so the activity can get as
+	// far as the model factory this file’s positive control asserts.
+	getEffectivePlanningAnalysis.mockResolvedValue({
+		effective: null,
+		aiVersion: null,
+		revisionVersion: null,
+		sourceAnalysisVersion: null,
+		author: null,
+		revisionCreatedAt: null,
+	});
 	collectPlanningContext.mockResolvedValue(CONTEXT_RESULT);
 	getProjectFunctionTagClause.mockResolvedValue("");
 	computeMaxOutputTokenBudget.mockReturnValue(8192);

@@ -156,7 +156,14 @@ export function TopicItemPage({
 		},
 	});
 	const latestAttempt = analysisQuery.data?.latestAttempt ?? null;
-	const latestReady = analysisQuery.data?.latestReady ?? null;
+	// `effective` is the resolver's one answer to "what is this topic's
+	// analysis right now" (AI text, or the author's own override). BOTH the
+	// Planning & Analysis tab and the media-tab gate below read it, so an
+	// author who edits a risk-heavy analysis neither loses their generation
+	// tabs nor sees the raw AI text they replaced (Fizzy #1851, Tasks 8/11).
+	// The newest READY row itself is no longer part of the response at all —
+	// shipping it would keep a supported path to the un-overridden AI text.
+	const effective = analysisQuery.data?.effective ?? null;
 
 	// The topic's decision thread (2A-3) — the source of truth for the
 	// Summary & Questions tab's open and answered questions AND, read here as
@@ -483,7 +490,22 @@ export function TopicItemPage({
 						canEdit={canEdit}
 						isLoading={analysisQuery.isLoading}
 						latestAttempt={latestAttempt}
-						latestReady={latestReady}
+						effective={effective}
+						aiVersion={analysisQuery.data?.aiVersion ?? null}
+						aiModel={analysisQuery.data?.aiModel ?? null}
+						aiPromptSource={
+							analysisQuery.data?.aiPromptSource ?? null
+						}
+						revisionVersion={
+							analysisQuery.data?.revisionVersion ?? null
+						}
+						sourceAnalysisVersion={
+							analysisQuery.data?.sourceAnalysisVersion ?? null
+						}
+						author={analysisQuery.data?.author ?? null}
+						revisionCreatedAt={
+							analysisQuery.data?.revisionCreatedAt ?? null
+						}
 					/>
 				</TabsContent>
 
@@ -501,16 +523,23 @@ export function TopicItemPage({
 				topicId={topicId}
 				canEdit={canEdit}
 				analysis={
-					latestReady
+					effective
 						? (() => {
+								// `effective.data` never carries the prose keys
+								// (`topicAngle`, `risks`, `preDraftGuidance`, …),
+								// so this parses the DATA half only — exactly
+								// what the content-type buckets below need.
 								const doc = readPlanningAnalysis(
-									latestReady.content,
+									effective.data,
 								);
 								// An analysis that came back empty carries no
 								// recommendation, so treating it as "no analysis"
 								// is the honest answer rather than rendering four
-								// silently unexplained AVAILABLE tabs.
-								return isEmptyAnalysis(doc) ? null : doc;
+								// silently unexplained AVAILABLE tabs. Empty is
+								// judged against BOTH halves — the resolved prose
+								// AND the data — so a risk-heavy analysis with no
+								// structured recommendations still counts as one.
+								return isEmptyAnalysis(effective) ? null : doc;
 							})()
 						: null
 				}

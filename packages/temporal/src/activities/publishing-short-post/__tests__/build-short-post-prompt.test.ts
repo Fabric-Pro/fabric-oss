@@ -1,9 +1,15 @@
+import {
+	type AnalysisData,
+	effectivePlanningAnalysis,
+	renderAnalysisProse,
+} from "@repo/utils/publishing-analysis-prose";
 import { describe, expect, it } from "vitest";
 import {
 	buildShortPostLockedClauses,
 	buildShortPostVariables,
 	composeShortPostPrompt,
 	flattenPlanningAnalysis,
+	PLANNING_ANALYSIS_CHAR_CAP,
 	PublishingShortPostSchema,
 	SHORT_POST_OPTION_COUNT,
 } from "../build-short-post-prompt";
@@ -156,8 +162,17 @@ describe("PublishingShortPostSchema", () => {
 describe("flattenPlanningAnalysis", () => {
 	it("walks whatever the document holds rather than a known field list", () => {
 		// The point of walking: 2A owns that schema and keeps evolving it. A
-		// field list duplicated here would silently stop passing on whichever
-		// section 2A added last, with no test on either side going red.
+		// field list duplicated here would stop passing on whichever section
+		// 2A added last; walking means a field assigned to `DATA_FIELDS`
+		// reaches the writer the day 2A ships it, with no edit here.
+		//
+		// The drop is no longer silent, though. Since Fizzy #1851 this
+		// function is handed only the data half, so a new schema section
+		// reaches nothing at all until it is assigned to `PROSE_FIELDS` or
+		// `DATA_FIELDS` — and
+		// `publishing-planning/__tests__/analysis-field-partition.test.ts`
+		// reddens until it is. That guard owns the assignment; this test owns
+		// what the walk does with what it is handed.
 		const out = flattenPlanningAnalysis({
 			keyDetailsToUse: ["Cache reuse", "No config change"],
 			aSectionInventedLater: { nested: "still reaches the writer" },
@@ -195,7 +210,8 @@ describe("flattenPlanningAnalysis", () => {
 describe("buildShortPostVariables", () => {
 	it("omits each section when it has nothing", () => {
 		const vars = buildShortPostVariables({
-			planningAnalysis: null,
+			analysisProse: "",
+			analysisData: {},
 			decisions: [],
 			guidance: null,
 		});
@@ -208,7 +224,8 @@ describe("buildShortPostVariables", () => {
 		// An unanswered decision is not a settled instruction. Rendering one
 		// would present an open question to the model as though it were decided.
 		const vars = buildShortPostVariables({
-			planningAnalysis: null,
+			analysisProse: "",
+			analysisData: {},
 			decisions: [
 				{
 					subject: "Customer name",
@@ -223,7 +240,8 @@ describe("buildShortPostVariables", () => {
 
 	it("names a decision by its kind when it carries no subject", () => {
 		const vars = buildShortPostVariables({
-			planningAnalysis: null,
+			analysisProse: "",
+			analysisData: {},
 			decisions: [
 				{
 					subject: null,
@@ -239,7 +257,8 @@ describe("buildShortPostVariables", () => {
 
 	it("caps the guidance", () => {
 		const vars = buildShortPostVariables({
-			planningAnalysis: null,
+			analysisProse: "",
+			analysisData: {},
 			decisions: [],
 			guidance: "y".repeat(9000),
 		});
@@ -248,11 +267,161 @@ describe("buildShortPostVariables", () => {
 
 	it("treats whitespace-only guidance as none", () => {
 		const vars = buildShortPostVariables({
-			planningAnalysis: null,
+			analysisProse: "",
+			analysisData: {},
 			decisions: [],
 			guidance: "   \n  ",
 		});
 		expect(vars.has_guidance).toBe(false);
+	});
+});
+
+describe("buildShortPostVariables — the prose/data split (Fizzy #1851)", () => {
+	// The AI's analysis, with a field from each half so the composition is
+	// visible: `topicAngle` and `risks` are prose, `contentTypes` is data.
+	const AI = {
+		topicAngle: "Angle",
+		risks: ["r1"],
+		contentTypes: { recommended: [{ type: "Tweet" }] },
+	};
+
+	const analysisBlockFor = (input: { prose: string; data: AnalysisData }) =>
+		buildShortPostVariables({
+			analysisProse: input.prose,
+			analysisData: input.data,
+			decisions: [],
+			guidance: null,
+		}).planning_analysis;
+
+	it("produces the same prompt whether or not the prose was edited, when the text is identical", () => {
+		// THE invariant of this whole feature, driven through the REAL resolver
+		// rather than two hand-built inputs — a hand-built pair would agree by
+		// construction and could not observe the resolver disagreeing.
+		//
+		// A revision whose body is exactly what the AI would have rendered must
+		// produce a byte-identical prompt to having no revision at all.
+		// Otherwise a reader's draft silently depends on whether anyone ever
+		// opened the editor.
+		const notEdited = effectivePlanningAnalysis({ ai: AI, revision: null });
+		const edited = effectivePlanningAnalysis({
+			ai: AI,
+			revision: {
+				body: renderAnalysisProse(AI),
+				sourceAnalysisVersion: 1,
+			},
+		});
+		if (!notEdited || !edited) {
+			throw new Error(
+				"the resolver returned null for a present analysis",
+			);
+		}
+
+		// The two resolutions genuinely differ — one is an override and one is
+		// not. Without this the assertion below could pass on two identical
+		// objects and prove nothing.
+		expect(notEdited.overridden).toBe(false);
+		expect(edited.overridden).toBe(true);
+
+		expect(analysisBlockFor(edited)).toBe(analysisBlockFor(notEdited));
+	});
+
+	it("passes the user's prose through verbatim", () => {
+		// Not re-rendered, not re-flattened, not reformatted. What the author
+		// wrote is what the model reads.
+		const vars = buildShortPostVariables({
+			analysisProse: "### My own heading\n\nmy words",
+			analysisData: {},
+			decisions: [],
+			guidance: null,
+		});
+
+		expect(vars.planning_analysis).toContain("### My own heading");
+		expect(vars.planning_analysis).toContain("my words");
+	});
+
+	it("drops the AI's prose entirely when a revision replaced it", () => {
+		// The other half of the point: an edit is not additive. If the AI's
+		// original angle survived alongside the author's rewrite, the model
+		// would read both and the edit would be advisory rather than binding.
+		const edited = effectivePlanningAnalysis({
+			ai: AI,
+			revision: { body: "USER PROSE", sourceAnalysisVersion: 1 },
+		});
+		if (!edited) {
+			throw new Error(
+				"the resolver returned null for a present analysis",
+			);
+		}
+
+		const block = analysisBlockFor(edited);
+		expect(block).toContain("USER PROSE");
+		expect(block).not.toContain("Angle");
+		// The structured half is NOT the author's to delete, and survives.
+		expect(block).toContain("Content types");
+	});
+
+	it("still renders the structured sections after the prose", () => {
+		const vars = buildShortPostVariables({
+			analysisProse: "PROSE",
+			analysisData: {
+				contentTypes: { recommended: [{ type: "Tweet" }] },
+			},
+			decisions: [],
+			guidance: null,
+		});
+
+		expect(vars.planning_analysis.indexOf("PROSE")).toBeLessThan(
+			vars.planning_analysis.indexOf("Content types"),
+		);
+	});
+
+	it("omits the section when BOTH halves are empty", () => {
+		const vars = buildShortPostVariables({
+			analysisProse: "   ",
+			analysisData: {},
+			decisions: [],
+			guidance: null,
+		});
+
+		expect(vars.has_planning_analysis).toBe(false);
+		expect(vars.planning_analysis).toBe("");
+	});
+
+	it("renders the prose alone when the analysis carries no structured half", () => {
+		const vars = buildShortPostVariables({
+			analysisProse: "Just prose.",
+			analysisData: {},
+			decisions: [],
+			guidance: null,
+		});
+
+		expect(vars.has_planning_analysis).toBe(true);
+		expect(vars.planning_analysis).toBe("Just prose.");
+	});
+
+	it("CAPS the composed block, not just the structured half", () => {
+		// The regression this guards: `flattenPlanningAnalysis` clamps its own
+		// output, and before the split that clamp covered the WHOLE analysis.
+		// After it, the clamp covers only `analysisData` — and `analysisProse`
+		// is arbitrary user-authored Markdown going straight into a model input.
+		// Every other prompt test in this file still passes with the budget
+		// gone, which is exactly why this one exists.
+		const vars = buildShortPostVariables({
+			analysisProse: "z".repeat(20_000),
+			analysisData: {
+				contentTypes: { recommended: [{ type: "Tweet" }] },
+			},
+			decisions: [],
+			guidance: null,
+		});
+
+		// `clamp` appends ONE ellipsis when it truncates, so the ceiling is the
+		// cap plus that character — and the ellipsis itself is asserted, so a
+		// version that simply returned a short string could not pass this.
+		expect(vars.planning_analysis.length).toBeLessThanOrEqual(
+			PLANNING_ANALYSIS_CHAR_CAP + 1,
+		);
+		expect(vars.planning_analysis.endsWith("…")).toBe(true);
 	});
 });
 
@@ -309,7 +478,8 @@ describe("composeShortPostPrompt", () => {
 	const base = {
 		topic: TOPIC,
 		context: EMPTY_CONTEXT,
-		planningAnalysis: null,
+		analysisProse: "",
+		analysisData: {},
 		decisions: [],
 		guidance: null,
 		restrictedSubjects: [],

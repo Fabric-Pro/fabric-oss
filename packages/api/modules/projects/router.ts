@@ -288,11 +288,13 @@ import {
 	getPublishingSuiteSettingsProcedure,
 	getPublishingTopicProcedure,
 	latestPublishingCycleProcedure,
+	listAnalysisRevisionsProcedure,
 	listCycleChatDeliveriesProcedure,
 	listPublishingCyclesProcedure,
 	listPublishingTopicsProcedure,
 	listTopicDecisionsProcedure,
 	listTopicDraftsProcedure,
+	saveAnalysisRevisionProcedure,
 	saveBlogPostBodyProcedure,
 	saveCaseStudyBodyProcedure,
 	saveStakeholderEmailBodyProcedure,
@@ -1397,6 +1399,14 @@ export const projectsRouter = {
 		// failed regeneration cannot blank a good analysis the reader still wants.
 		generatePlanningAnalysis: generatePlanningAnalysisProcedure,
 		getPlanningAnalysis: getPlanningAnalysisProcedure,
+		// #1851: the editable Planning & Analysis document. `saveAnalysisRevision`
+		// is a compare-and-set on the current version — the same reason
+		// `saveBlogPostBody` below is one — and `listAnalysisRevisions` is the
+		// version history the editor's drawer reads, with the same
+		// read/write eligibility asymmetry as `listTopicDecisions` and
+		// `answerTopicQuestion` below (see `analysis-revision.ts`'s module doc).
+		saveAnalysisRevision: saveAnalysisRevisionProcedure,
+		listAnalysisRevisions: listAnalysisRevisionsProcedure,
 		// #1851 (2A-3): the topic's decision thread — questions, their answers,
 		// and the AI Updates a regeneration writes.
 		listTopicDecisions: listTopicDecisionsProcedure,

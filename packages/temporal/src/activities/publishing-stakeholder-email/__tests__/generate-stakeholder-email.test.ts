@@ -1,4 +1,8 @@
 import { join } from "node:path";
+import {
+	effectivePlanningAnalysis,
+	renderAnalysisProse,
+} from "@repo/utils/publishing-analysis-prose";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { databaseValueImports } from "../../publishing-shared/__tests__/_ast-guards";
 
@@ -63,6 +67,7 @@ const userFindMany = vi.fn();
 const checkPublishingGenerationActor = vi.fn();
 const getBoundPromptForAgent = vi.fn();
 const listTopicDecisions = vi.fn();
+const getEffectivePlanningAnalysis = vi.fn();
 const completeTopicDraft = vi.fn();
 const seedWorkingDraftIfAbsent = vi.fn();
 vi.mock("@repo/database", async (importOriginal) => {
@@ -87,6 +92,8 @@ vi.mock("@repo/database", async (importOriginal) => {
 			checkPublishingGenerationActor(...a),
 		getBoundPromptForAgent: (...a: unknown[]) =>
 			getBoundPromptForAgent(...a),
+		getEffectivePlanningAnalysis: (...a: unknown[]) =>
+			getEffectivePlanningAnalysis(...a),
 		listTopicDecisions: (...a: unknown[]) => listTopicDecisions(...a),
 		completeTopicDraft: (...a: unknown[]) => completeTopicDraft(...a),
 		seedWorkingDraftIfAbsent: (...a: unknown[]) =>
@@ -181,6 +188,15 @@ function answeredQuestion(
 	};
 }
 
+const NO_ANALYSIS = {
+	effective: null,
+	aiVersion: null,
+	revisionVersion: null,
+	sourceAnalysisVersion: null,
+	author: null,
+	revisionCreatedAt: null,
+};
+
 beforeEach(() => {
 	vi.clearAllMocks();
 	topicFindFirst.mockResolvedValue(TOPIC);
@@ -189,6 +205,7 @@ beforeEach(() => {
 	checkPublishingGenerationActor.mockResolvedValue({ ok: true });
 	getBoundPromptForAgent.mockResolvedValue(null);
 	listTopicDecisions.mockResolvedValue([]);
+	getEffectivePlanningAnalysis.mockResolvedValue(NO_ANALYSIS);
 	collectPlanningContext.mockResolvedValue(CONTEXT_RESULT);
 	getProjectFunctionTagClause.mockResolvedValue("");
 	computeMaxOutputTokenBudget.mockReturnValue(8192);
@@ -712,6 +729,10 @@ describe("generateStakeholderEmailActivity — the write surface", () => {
 			// list. Added deliberately, as this guard requires.
 			"effectiveContributorUserIds",
 			"getBoundPromptForAgent",
+			// The topic's effective Planning & Analysis: a READ, and the only
+			// reader that knows about an author's revision. Added deliberately,
+			// as this guard requires (Fizzy #1851).
+			"getEffectivePlanningAnalysis",
 			"listTopicDecisions",
 			// NOT a write. `logDraftRefusal` only formats and emits the log
 			// line for a refused terminal write; it takes no client and
@@ -933,5 +954,82 @@ describe("generateStakeholderEmailActivity — the model call", () => {
 		expect(generateObject.mock.calls[0]?.[0]).not.toHaveProperty(
 			"maxOutputTokens",
 		);
+	});
+});
+
+describe("generateStakeholderEmailActivity — the effective analysis reaches the prompt", () => {
+	// Fizzy #1851. The activity must resolve the topic's analysis through
+	// `getEffectivePlanningAnalysis` — the ONE reader that knows about the
+	// author's revision — and not off the AI row it used to query inline.
+	//
+	// This lives at the ACTIVITY level and not on the prompt builder on
+	// purpose: a builder test receives its input already resolved, so it passes
+	// identically whether this activity calls the resolver or still queries the
+	// table. It cannot observe the bug it is named after.
+	const AI = {
+		topicAngle: "AI ANGLE: the model's own framing.",
+		contentTypes: { recommended: [{ type: "Tweet" }] },
+	};
+
+	it("feeds the user's edited prose to the prompt, not the AI's original", async () => {
+		// BOTH sources are stocked deliberately. The inline
+		// `publishingTopicPlanningAnalysis.findFirst` this activity used to run
+		// still answers with the AI document; the resolver answers with the
+		// author's override. With only one stocked, an activity reading the
+		// wrong one would get nothing and the `not.toContain` would pass for
+		// the wrong reason.
+		analysisFindFirst.mockResolvedValue({ content: AI });
+		getEffectivePlanningAnalysis.mockResolvedValue({
+			// The REAL resolver, not a hand-built shape — a hand-built one
+			// would encode this file's guess about which half a revision
+			// replaces, which is exactly the thing under test.
+			effective: effectivePlanningAnalysis({
+				ai: AI,
+				revision: {
+					body: "USER PROSE: what the author actually wants said.",
+					sourceAnalysisVersion: 1,
+				},
+			}),
+			aiVersion: 1,
+			revisionVersion: 1,
+			sourceAnalysisVersion: 1,
+			author: { id: "user-1", name: "An Author" },
+			revisionCreatedAt: new Date(),
+		});
+
+		await run();
+
+		const prompt = generateObject.mock.calls[0]?.[0]?.prompt as string;
+		expect(prompt).toContain("USER PROSE");
+		expect(prompt).not.toContain("AI ANGLE");
+	});
+
+	it("scopes the resolver read by BOTH ids", async () => {
+		await run();
+
+		expect(getEffectivePlanningAnalysis).toHaveBeenCalledWith({
+			topicId: "topic-1",
+			projectId: "proj-1",
+		});
+	});
+
+	it("falls back to the AI's own prose when nobody has edited it", async () => {
+		// The unedited path must still reach the model. A resolver wired in
+		// but never producing prose would look identical to no analysis at
+		// all, and every other test in this file passes either way.
+		getEffectivePlanningAnalysis.mockResolvedValue({
+			effective: effectivePlanningAnalysis({ ai: AI, revision: null }),
+			aiVersion: 1,
+			revisionVersion: null,
+			sourceAnalysisVersion: 1,
+			author: null,
+			revisionCreatedAt: null,
+		});
+
+		await run();
+
+		const prompt = generateObject.mock.calls[0]?.[0]?.prompt as string;
+		expect(prompt).toContain("AI ANGLE");
+		expect(prompt).toContain(renderAnalysisProse(AI));
 	});
 });

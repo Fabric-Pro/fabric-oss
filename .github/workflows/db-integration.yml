@@ -313,7 +313,13 @@ jobs:
           // error raised. Both directions for the same reason the chat-delivery
           // bump above records: a negative alone passes just as well against a
           // table that is simply empty.
-          const EXPECTED = 45;
+          // 45 -> 47: Fizzy #1851 adds publishing_topic_analysis_revision, the
+          // user-owned prose half of a topic's planning analysis, pinned in BOTH
+          // directions in org context for the reason the 41 -> 45 note records.
+          // Its own tenant-db registration is proved separately in
+          // publishing-suite-tenant-db.test.ts — this suite never calls
+          // getTenantDb(), so a green run here says nothing about that registry.
+          const EXPECTED = 47;
           const j = JSON.parse(fs.readFileSync("packages/database/rls-isolation-results.json","utf8"));
           const files = j.testResults?.length ?? 0;
           const total = j.numTotalTests ?? 0;
@@ -852,6 +858,7 @@ jobs:
             __tests__/publishing-chat-delivery.test.ts \
             __tests__/publishing-preferences-hash-write.test.ts \
             __tests__/publishing-preference-fields.test.ts \
+            __tests__/publishing-analysis-revision.test.ts \
             --passWithNoTests=false \
             --reporter=dot \
             --reporter=json --outputFile=publishing-suite-schema-results.json
@@ -867,7 +874,7 @@ jobs:
           const skipped = (report.numSkippedTests ?? 0) + (report.numPendingTests ?? 0);
           const todo = report.numTodoTests ?? 0;
           console.log(`publishing-suite-schema: ${files} file(s), total=${total} passed=${passed} skipped=${skipped} todo=${todo}`);
-          if (files !== 19) { console.error("::error::Expected exactly 19 test files (publishing-suite-schema.test.ts + publishing-suite-constraints.test.ts + publishing-suite-createorget.test.ts + publishing-suite-persist.test.ts + publishing-suite-costguard.test.ts + publishing-suite-queries.test.ts + publishing-suite-contributors.test.ts + publishing-settings-schema.test.ts + publishing-settings-queries.test.ts + publishing-last-run.test.ts + publishing-notifications.test.ts + publishing-deferral-index-smoke.test.ts + publishing-reconcile-sweep.test.ts + publishing-reconcile-contention.test.ts + publishing-clock-rule.test.ts + publishing-drain-page.test.ts + publishing-chat-delivery.test.ts + publishing-preferences-hash-write.test.ts + publishing-preference-fields.test.ts)"); process.exit(1); }
+          if (files !== 20) { console.error("::error::Expected exactly 20 test files (publishing-suite-schema.test.ts + publishing-suite-constraints.test.ts + publishing-suite-createorget.test.ts + publishing-suite-persist.test.ts + publishing-suite-costguard.test.ts + publishing-suite-queries.test.ts + publishing-suite-contributors.test.ts + publishing-settings-schema.test.ts + publishing-settings-queries.test.ts + publishing-last-run.test.ts + publishing-notifications.test.ts + publishing-deferral-index-smoke.test.ts + publishing-reconcile-sweep.test.ts + publishing-reconcile-contention.test.ts + publishing-clock-rule.test.ts + publishing-drain-page.test.ts + publishing-chat-delivery.test.ts + publishing-preferences-hash-write.test.ts + publishing-preference-fields.test.ts + publishing-analysis-revision.test.ts)"); process.exit(1); }
           if (skipped > 0) { console.error("::error::smoke test self-skipped — RUN_DB_INTEGRATION not honored — false pass"); process.exit(1); }
           if (todo > 0) { console.error(`::error::${todo} case(s) are .todo — coverage was silently dropped. vitest reports numTodoTests separately from numPendingTests, so the zero-skips check above cannot see them.`); process.exit(1); }
           // Engine-derived, so it sits ahead of the hand-maintained floor
@@ -877,15 +884,15 @@ jobs:
           // a pending case, a failing one, and any future vitest counter that
           // keeps a collected case out of the passed total without either
           // named check seeing it. The floor cannot catch any of those — as
-          // soon as any of the nineteen files gains one passing case, 19 files
-          // / 360 passed / zero skipped is satisfied again with an assertion
+          // soon as any of the twenty files gains one passing case, 20 files
+          // / 369 passed / zero skipped is satisfied again with an assertion
           // silently gone.
           if (total !== passed) { console.error(`::error::${total} test(s) collected but only ${passed} passed — a case was left pending, or a counter this guard does not name has appeared. (A .todo exits at the check above, so it is not the cause here.) Every collected case in this list must pass.`); process.exit(1); }
           // This is a floor, not the exact-count pin the sibling guards in this
           // file use, and deliberately so. Each sibling pins ONE file — any
           // change to that suite's count is a change to that file, so an exact
           // EXPECTED is the right instrument. This step aggregates the results
-          // of FIFTEEN files that different Publishing Suite slices grow
+          // of TWENTY files that different Publishing Suite slices grow
           // independently; an exact count here would make every unrelated PR
           // that adds a case to any one of them fail this guard until someone
           // remembers to bump the constant. The floor is the right instrument

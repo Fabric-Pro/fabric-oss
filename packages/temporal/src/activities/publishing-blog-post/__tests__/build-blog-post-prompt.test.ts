@@ -192,7 +192,8 @@ describe("composeBlogPostPrompt", () => {
 	const base = {
 		topic: TOPIC,
 		context: EMPTY_CONTEXT,
-		planningAnalysis: null,
+		analysisProse: "",
+		analysisData: {},
 		decisions: [],
 		guidance: null,
 		restrictedSubjects: [],

@@ -21,6 +21,7 @@ import {
 	renderTemplate,
 	type TemplateFormat,
 } from "@repo/utils";
+import type { AnalysisData } from "@repo/utils/publishing-analysis-prose";
 import {
 	PUBLISHING_BLOG_POST_AGENT_KEY,
 	PUBLISHING_BLOG_POST_FALLBACK_BODY,
@@ -235,7 +236,8 @@ export async function composeBlogPostPrompt({
 	format,
 	topic,
 	context,
-	planningAnalysis,
+	analysisProse,
+	analysisData,
 	decisions,
 	guidance,
 	restrictedSubjects,
@@ -244,14 +246,26 @@ export async function composeBlogPostPrompt({
 	format: TemplateFormat;
 	topic: PlanningAnalysisTopic;
 	context: PlanningAnalysisContext;
-	planningAnalysis: unknown;
+	/**
+	 * The resolved document half of the topic's Planning & Analysis (the
+	 * author's revision when one exists, else the AI's own prose) and the
+	 * structured half nobody edits. Resolved by the activity through
+	 * `getEffectivePlanningAnalysis`; see `buildShortPostVariables`.
+	 */
+	analysisProse: string;
+	analysisData: AnalysisData;
 	decisions: BlogPostDecision[];
 	guidance: string | null;
 	restrictedSubjects: string[];
 }): Promise<ComposedBlogPostPrompt> {
 	const variables = {
 		...buildPlanningAnalysisVariables({ topic, context }),
-		...buildShortPostVariables({ planningAnalysis, decisions, guidance }),
+		...buildShortPostVariables({
+			analysisProse,
+			analysisData,
+			decisions,
+			guidance,
+		}),
 	};
 
 	let effectiveFormat = format;

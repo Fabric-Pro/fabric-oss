@@ -1,13 +1,13 @@
 /**
- * `isEmptyAnalysis` — whether a planning analysis document has anything
- * worth rendering (Publishing Suite Phase 2A-2/2A-3, Fizzy #1851).
+ * `isEmptyAnalysis` — whether a topic's planning analysis has anything worth
+ * rendering (Publishing Suite, Fizzy #1851).
  *
- * Pins a final-review regression: `doc.questions` used to count toward
- * "not empty", but `PlanningAnalysisTab` has never rendered `doc.questions`
- * since 2A-3 moved question display to the decision-thread rows
- * (`TopicQuestionsPanel`). An analysis whose only content was questions
- * therefore passed the not-empty check and rendered a worksheet with no
- * sections at all — a blank body instead of the "came back empty" message.
+ * It takes the RESOLVER's output and nothing else. Until Task 11 it also
+ * accepted a parsed `PlanningAnalysisDocument`, because `PlanningAnalysisTab`
+ * still read the raw AI row for its own rendering; that overload was
+ * scaffolding for Tasks 9-11 and went with the commit that moved the tab onto
+ * the resolver. The cases below are the ones that survived, plus the parser's
+ * own contract on the DATA half it is now always fed.
  */
 
 import {
@@ -16,35 +16,78 @@ import {
 } from "@saas/projects/components/publishing-suite/planning-analysis-content";
 import { describe, expect, it } from "vitest";
 
-describe("isEmptyAnalysis", () => {
-	it("treats an analysis whose only content is questions as empty", () => {
-		const doc = readPlanningAnalysis({
-			questions: [
-				{
-					questionId: "q1",
-					decisionKind: "CUSTOMER_NAME",
-					subject: "the named customer",
-					question: "May we name the customer?",
-					recommendedResponse: null,
-					whyItMatters: null,
-					source: "MODEL",
-				},
-			],
-		});
-
-		expect(doc.questions).toHaveLength(1);
-		expect(isEmptyAnalysis(doc)).toBe(true);
+describe("isEmptyAnalysis — against the resolver's output", () => {
+	// `risks` and `preDraftGuidance` moved from data this file parsed off the
+	// raw JSON to PROSE, resolved (AI text, or the author's own override) by
+	// `effectivePlanningAnalysis`. A check that only looked at the parsed DATA
+	// half would call an analysis whose entire substance is a rich risks
+	// section "empty" — and, through the media-tab gate in `TopicItemPage.tsx`,
+	// take the user's generation tabs with it.
+	it("is NOT empty when all the substance is in the prose", () => {
+		expect(
+			isEmptyAnalysis({
+				prose: "### Risks\n\nNames a customer",
+				data: {},
+				overridden: false,
+			}),
+		).toBe(false);
 	});
 
-	it("is not empty when a real section is filled in", () => {
-		const doc = readPlanningAnalysis({
-			topicAngle: "An engineering reliability story.",
-		});
-
-		expect(isEmptyAnalysis(doc)).toBe(false);
+	it("is NOT empty when all the substance is in the data", () => {
+		expect(
+			isEmptyAnalysis({
+				prose: "",
+				data: { contentTypes: { recommended: [{ type: "Tweet" }] } },
+				overridden: false,
+			}),
+		).toBe(false);
 	});
 
-	it("is empty when nothing at all was filled in", () => {
-		expect(isEmptyAnalysis(readPlanningAnalysis({}))).toBe(true);
+	it("is empty only when BOTH halves are empty", () => {
+		expect(
+			isEmptyAnalysis({ prose: "   ", data: {}, overridden: true }),
+		).toBe(true);
+	});
+
+	it("is empty when there is no analysis at all", () => {
+		expect(isEmptyAnalysis(null)).toBe(true);
+	});
+});
+
+describe("readPlanningAnalysis — fed the resolver's data half", () => {
+	// The tab's data sections and the media-tab gate both call it this way
+	// now. Only the structured keys survive the split, so the parser has to
+	// return the buckets and the signals and nothing else — an accessor that
+	// went looking for prose keys here would find them all missing.
+	it("returns the structured buckets and signals", () => {
+		const doc = readPlanningAnalysis({
+			contentTypes: {
+				recommended: [
+					{ type: "Blog post", rationale: "Enough depth to teach." },
+				],
+			},
+			sourceSignals: ["Three merged pull requests."],
+		});
+
+		expect(doc.buckets).toHaveLength(1);
+		expect(doc.buckets[0].buckets[0].items).toEqual([
+			{ type: "Blog post", rationale: "Enough depth to teach." },
+		]);
+		expect(doc.sourceSignals).toEqual(["Three merged pull requests."]);
+	});
+
+	it("drops a bucket item missing either half of its shape", () => {
+		// A recommendation with no rationale is not a recommendation — it
+		// would render as a bare type with a dangling em dash.
+		const doc = readPlanningAnalysis({
+			contentTypes: {
+				recommended: [
+					{ type: "Blog post" },
+					{ rationale: "No type given." },
+				],
+			},
+		});
+
+		expect(doc.buckets).toEqual([]);
 	});
 });

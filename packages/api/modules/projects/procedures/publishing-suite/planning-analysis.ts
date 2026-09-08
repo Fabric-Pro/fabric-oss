@@ -15,6 +15,7 @@
 import { ORPCError } from "@orpc/client";
 import {
 	failPlanningAnalysis,
+	getEffectivePlanningAnalysis,
 	getLatestPlanningAnalysis,
 	logDraftRefusal,
 	startPlanningAnalysisAttempt,
@@ -178,20 +179,69 @@ export const getPlanningAnalysisProcedure = tenantProtectedProcedure
 	.handler(async ({ input }) => {
 		await assertPublishingSuiteFeatureEnabled(input.projectId);
 
-		// TWO rows, deliberately. `latestReady` is what to render; `latestAttempt`
-		// is what to say about it. Collapsing them to "the newest row" would blank
-		// a perfectly good analysis the moment a regeneration failed, and hide it
+		// TWO reads, deliberately. `latestAttempt` is what to SAY about the
+		// analysis — running, failed, stranded past its deadline — and the
+		// resolver below is what to RENDER. Collapsing them would blank a
+		// perfectly good analysis the moment a regeneration failed, and hide it
 		// again while the next one runs — precisely when a reader most wants the
 		// last good one.
 		//
-		// Both are scoped by projectId inside the helper, so a topic from another
+		// The newest READY row itself is deliberately NOT returned. It was, as
+		// `latestReady`, until the web tab moved onto the resolver (Fizzy #1851,
+		// Task 11), and a caller that rendered it alongside `effective` would
+		// silently ignore the author's own edit.
+		//
+		// Dropping it NARROWS that path; it does not close it, and reading this
+		// as a guarantee would be wrong. `latestAttempt` is selected WITH
+		// `content`, and whenever the newest attempt is READY — the steady state
+		// — that row IS the newest READY row, so `latestAttempt.content` is the
+		// same raw AI JSON `latestReady` used to carry. The web tab reads exactly
+		// that, on purpose, as the seed for "replace with the newer analysis".
+		// What is gone is the UNCONDITIONAL field: reaching the un-overridden
+		// text now means taking it off an attempt row and owning the question of
+		// whether that attempt is READY and is the version `aiVersion` names —
+		// the check the tab's own `readyRow` guard makes, and the one that keeps
+		// the row from being rendered as though it were the document.
+		//
+		// What a caller legitimately needs from that row travels as SCALARS
+		// instead: its version, as the resolver's `aiVersion`, and its
+		// provenance, as `aiModel` / `aiPromptSource` below.
+		//
+		// Both are scoped by projectId inside the helpers, so a topic from another
 		// project yields the same empty answer a topic with no analysis does. No
 		// separate existence check, because one would reintroduce the distinction
 		// this deliberately erases.
-		const { latestAttempt, latestReady } = await getLatestPlanningAnalysis({
-			topicId: input.topicId,
-			projectId: input.projectId,
-		});
+		const [{ latestAttempt, latestReady }, resolved] = await Promise.all([
+			getLatestPlanningAnalysis({
+				topicId: input.topicId,
+				projectId: input.projectId,
+			}),
+			getEffectivePlanningAnalysis({
+				topicId: input.topicId,
+				projectId: input.projectId,
+			}),
+		]);
 
-		return { latestAttempt, latestReady };
+		return {
+			latestAttempt,
+			// Provenance of the analysis on screen, taken from the READY row and
+			// NOT from `latestAttempt`. The two are the same row only while
+			// nothing newer has been tried; FAILED and stranded are terminal, so
+			// a client that read provenance off the attempt would permanently
+			// lose the model name and the prompt note on exactly the analyses a
+			// reader is most likely to be scrutinising. Scalars, not the row:
+			// they say how the text was produced without carrying the text.
+			aiModel: latestReady?.model ?? null,
+			// Whether the run fell back to the default prompt body — the one fact
+			// about a run a reader cannot recover from the output itself, because
+			// an analysis built from the default body because a bound prompt
+			// would not render reads exactly like one built from the bound one.
+			aiPromptSource: latestReady?.promptSource ?? null,
+			// Spread, not enumerated: `getEffectivePlanningAnalysis` is the ONE
+			// answer to "what is this topic's planning analysis right now", and
+			// naming its fields one by one here would let a future field it adds
+			// (it already grew `author` and `revisionCreatedAt` once) silently
+			// fail to reach this response.
+			...resolved,
+		};
 	});

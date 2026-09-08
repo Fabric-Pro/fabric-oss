@@ -23,6 +23,7 @@ import {
 	renderTemplate,
 	type TemplateFormat,
 } from "@repo/utils";
+import type { AnalysisData } from "@repo/utils/publishing-analysis-prose";
 import {
 	neutralizeSourceDataMarkers,
 	PUBLISHING_CASE_STUDY_AGENT_KEY,
@@ -335,7 +336,8 @@ export async function composeCaseStudyPrompt({
 	format,
 	topic,
 	context,
-	planningAnalysis,
+	analysisProse,
+	analysisData,
 	decisions,
 	guidance,
 	restrictedSubjects,
@@ -345,7 +347,14 @@ export async function composeCaseStudyPrompt({
 	format: TemplateFormat;
 	topic: PlanningAnalysisTopic;
 	context: PlanningAnalysisContext;
-	planningAnalysis: unknown;
+	/**
+	 * The resolved document half of the topic's Planning & Analysis (the
+	 * author's revision when one exists, else the AI's own prose) and the
+	 * structured half nobody edits. Resolved by the activity through
+	 * `getEffectivePlanningAnalysis`; see `buildShortPostVariables`.
+	 */
+	analysisProse: string;
+	analysisData: AnalysisData;
 	decisions: CaseStudyDecision[];
 	guidance: string | null;
 	restrictedSubjects: string[];
@@ -373,7 +382,8 @@ export async function composeCaseStudyPrompt({
 		Object.entries({
 			...buildPlanningAnalysisVariables({ topic, context }),
 			...buildShortPostVariables({
-				planningAnalysis,
+				analysisProse,
+				analysisData,
 				decisions,
 				guidance,
 			}),

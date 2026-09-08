@@ -360,7 +360,8 @@ describe("composeStakeholderEmailPrompt", () => {
 	const base = {
 		topic: TOPIC,
 		context: EMPTY_CONTEXT,
-		planningAnalysis: null,
+		analysisProse: "",
+		analysisData: {},
 		decisions: [],
 		guidance: null,
 		restrictedSubjects: [],
@@ -477,9 +478,11 @@ describe("composeStakeholderEmailPrompt", () => {
 			templateBody:
 				"{{#if has_planning_analysis}}{{{planning_analysis}}}{{/if}}",
 			format: "HANDLEBARS",
-			planningAnalysis: {
-				whyWorthPublishing: "A concrete, measurable change.",
-			},
+			// A resolved document, exactly as the activity now supplies it:
+			// prose on one side, structured sections on the other.
+			analysisProse:
+				"### Why worth publishing\n\nA concrete, measurable change.",
+			analysisData: {},
 		});
 		expect(composed.prompt).toContain("A concrete, measurable change.");
 	});
@@ -617,7 +620,8 @@ const SOURCED = {
 			},
 		],
 	},
-	planningAnalysis: { whyWorthPublishing: "ANALYSIS-CANARY: measurable." },
+	analysisProse: "### Why worth publishing\n\nANALYSIS-CANARY: measurable.",
+	analysisData: {},
 	decisions: [
 		{
 			subject: "Naming the customer",

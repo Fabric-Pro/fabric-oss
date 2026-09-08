@@ -277,6 +277,8 @@ model User {
   publishingTopicDraftsRequested PublishingTopicDraft[]          @relation("PublishingTopicDraftRequestedBy")
   publishingWorkingDrafts      PublishingTopicWorkingDraft[]     @relation("PublishingWorkingDraftTenant")
   publishingWorkingDraftsUpdated PublishingTopicWorkingDraft[]   @relation("PublishingWorkingDraftUpdatedBy")
+  publishingAnalysisRevisionsTenant PublishingTopicAnalysisRevision[] @relation("PublishingAnalysisRevisionTenant")
+  publishingAnalysisRevisionsAuthored PublishingTopicAnalysisRevision[] @relation("PublishingAnalysisRevisionAuthor")
   publishingTopicDecisions     PublishingTopicDecisionEntry[]
   authoredPublishingTopicDecisions PublishingTopicDecisionEntry[] @relation("PublishingTopicDecisionAuthor")
 
@@ -699,6 +701,7 @@ model Organization {
   publishingTopicDecisions                PublishingTopicDecisionEntry[]
   publishingTopicDrafts                   PublishingTopicDraft[]
   publishingWorkingDrafts                 PublishingTopicWorkingDraft[]
+  publishingAnalysisRevisions             PublishingTopicAnalysisRevision[]
 
   // Dynamic agent relations
   offloadedToolOutputs   OffloadedToolOutput[]
@@ -1778,6 +1781,7 @@ model Project {
   publishingTopicDecisions   PublishingTopicDecisionEntry[]
   publishingTopicDrafts      PublishingTopicDraft[]
   publishingWorkingDrafts    PublishingTopicWorkingDraft[]
+  publishingAnalysisRevisions PublishingTopicAnalysisRevision[]
   publishingSuiteSettings    PublishingSuiteSettings?
 
   // Episodic memory relation (conversations scoped to project)
@@ -7009,6 +7013,7 @@ model PublishingTopic {
   publishingTopicDecisions PublishingTopicDecisionEntry[]
   drafts       PublishingTopicDraft[]
   workingDrafts PublishingTopicWorkingDraft[]
+  analysisRevisions PublishingTopicAnalysisRevision[]
 
   @@unique([projectId, dedupeKey]) // project-wide dedup across ALL statuses (dedupeKey is non-null)
   @@index([projectId, status])
@@ -7079,6 +7084,71 @@ enum PublishingPlanningAnalysisStatus {
   GENERATING
   READY
   FAILED
+}
+
+/// One saved revision of a topic's Planning & Analysis PROSE (Fizzy #1851).
+///
+/// Append-only: the current text is the highest `version`, history is every
+/// row, restore writes a new row carrying an old body. One table rather than
+/// a current-plus-history pair because that keeps optimistic concurrency a
+/// real compare-and-set in the database: the writer (`saveAnalysisRevision`)
+/// reads the current highest version inside the same transaction that holds
+/// the project lock and requires it to equal the caller's `expectedVersion`
+/// before inserting `version + 1` — a stale or forged `expectedVersion` is
+/// refused before any write happens, not after. The unique index on
+/// `(topicId, version)` is only the backstop for the window between that read
+/// and the insert; it is not the concurrency control itself. Arithmetic on the
+/// client's `expectedVersion` plus the index alone would NOT be optimistic
+/// concurrency — a caller holding a stale or forged `expectedVersion: 99`
+/// against a current version of 1 would insert version 100 and win, because
+/// the index only rejects a version that already exists. The sibling
+/// `PublishingTopicWorkingDraft` does the same job as an application-level
+/// compare-and-set on `updatedAt`, which a raw query can bypass.
+///
+/// `body` is Markdown, NOT the analysis JSON. The AI's structured half stays on
+/// `PublishingTopicPlanningAnalysis` and is never copied here: `contentTypes`
+/// decides which media tabs a topic offers, and a stale copy would silently
+/// disagree with the live one.
+///
+/// `sourceAnalysisVersion` is supplied by the CLIENT — the AI version its editor
+/// was seeded from — and never derived server-side. Deriving it would stamp the
+/// newest READY version onto a body seeded from an older one, which reads as
+/// "already reconciled" and permanently suppresses the stale banner.
+///
+/// Two things Prisma cannot express, both in the migration:
+///   - a composite FK `(topicId, projectId)` onto `publishing_topic (id, projectId)`.
+///     The single-column FKs prove each id names a real row and nothing about the
+///     two AGREEING, so a revision could otherwise attach to a topic in a
+///     different project;
+///   - `CHECK (("organizationId" IS NULL) <> ("userId" IS NULL))` — strict XOR,
+///     matching `publishing_topic_tenant_xor`. RLS does NOT substitute: its org
+///     branch permits any `userId`, it does not require null.
+model PublishingTopicAnalysisRevision {
+  id                    String   @id @default(cuid())
+  topicId               String
+  projectId             String
+  organizationId        String? // denormalized from the parent topic (XOR)
+  userId                String? // denormalized from the parent topic (XOR)
+  version               Int
+  body                  String   @db.Text // Markdown the user owns
+  sourceAnalysisVersion Int
+  authorUserId          String? // authorship, never tenancy
+  changeSummary         String?
+  createdAt             DateTime @default(now())
+
+  topic        PublishingTopic @relation(fields: [topicId], references: [id], onDelete: Cascade)
+  project      Project         @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  organization Organization?   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User?           @relation("PublishingAnalysisRevisionTenant", fields: [userId], references: [id], onDelete: Cascade)
+  author       User?           @relation("PublishingAnalysisRevisionAuthor", fields: [authorUserId], references: [id], onDelete: SetNull)
+
+  @@unique([topicId, version])
+  @@index([topicId, createdAt])
+  @@index([projectId])
+  @@index([organizationId])
+  @@index([userId])
+  @@index([authorUserId])
+  @@map("publishing_topic_analysis_revision")
 }
 
 /// One AI generation ATTEMPT for one content type of one publishing topic

@@ -161,3 +161,36 @@ it("adds the projectId carve-out for PublishingTopicWorkingDraft (project-scoped
 		],
 	});
 });
+
+// Fizzy #1851: the analysis-revision table, in BOTH registries — same reason
+// as the two draft tables above. This file is the ONLY thing that proves
+// registration; rls-isolation.test.ts never calls getTenantDb().
+it("filters PublishingTopicAnalysisRevision by tenant XOR (user-owned)", () => {
+	const personal = runWithTenantContext(createPersonalContext("u_1"), () =>
+		mergeWithTenantFilter("PublishingTopicAnalysisRevision", undefined),
+	);
+	expect(personal).toEqual({ userId: "u_1", organizationId: null });
+
+	const org = runWithTenantContext(
+		createOrganizationContext("org_1", "u_1"),
+		() =>
+			mergeWithTenantFilter("PublishingTopicAnalysisRevision", undefined),
+	);
+	expect(org).toEqual({ organizationId: "org_1" });
+});
+
+it("adds the projectId carve-out for PublishingTopicAnalysisRevision (project-scoped)", () => {
+	const merged = runWithTenantContext(createPersonalContext("u_1"), () => {
+		grantProjectAccess("proj_A");
+		return mergeWithTenantFilter(
+			"PublishingTopicAnalysisRevision",
+			undefined,
+		);
+	});
+	expect(merged).toEqual({
+		OR: [
+			{ userId: "u_1", organizationId: null },
+			{ projectId: { in: ["proj_A"] } },
+		],
+	});
+});

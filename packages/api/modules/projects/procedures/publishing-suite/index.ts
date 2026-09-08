@@ -2,6 +2,10 @@
 // and status transitions (Phase 1A Plan 3 Task 2).
 
 export {
+	listAnalysisRevisionsProcedure,
+	saveAnalysisRevisionProcedure,
+} from "./analysis-revision";
+export {
 	adoptBlogPostDraftProcedure,
 	generateBlogPostProcedure,
 	saveBlogPostBodyProcedure,
