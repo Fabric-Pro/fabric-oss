@@ -5,8 +5,8 @@
  * These are separate from the internal Agent model which is for LangGraph agents.
  */
 
-import { db } from "../client";
-import type { Prisma, RegisteredAgent } from "../generated/client";
+import { db, Prisma } from "../client";
+import type { RegisteredAgent } from "../generated/client";
 
 /**
  * List registered agents for a tenant with XOR isolation.
@@ -329,44 +329,71 @@ export async function reactivateNonProbeableAgents(): Promise<number> {
 }
 
 /**
+ * Merge keys into a registered agent's `metadata` JSON column atomically.
+ *
+ * A single `UPDATE … SET metadata = metadata || patch` so there is no read
+ * leg: the previous findUnique → spread → update sequence dropped keys when
+ * two writers overlapped (the card cache is rewritten on every successful
+ * health probe, and embeddings are persisted fire-and-forget from agent
+ * search), and the loss was silent. The merge is shallow, matching the
+ * object spread it replaces. Same pattern as `incrementBackgroundJobCounts`.
+ *
+ * Pass `client` to run inside a caller's transaction, so the merge commits or
+ * rolls back with the writes around it.
+ *
+ * A zero-row update raises Prisma's own `P2025` (as the `update` it replaces
+ * did) rather than a bespoke error, so the API audit middleware still files a
+ * vanished agent as `error.not_found` and callers keep one not-found shape.
+ */
+export async function mergeRegisteredAgentMetadata(
+	where: { agentId: string } | { id: string },
+	patch: Record<string, unknown>,
+	client: Prisma.TransactionClient = db,
+): Promise<void> {
+	const rowFilter =
+		"agentId" in where
+			? Prisma.sql`"agentId" = ${where.agentId}`
+			: Prisma.sql`id = ${where.id}`;
+
+	const updated = await client.$executeRaw(Prisma.sql`
+		UPDATE "registered_agent"
+		SET metadata = COALESCE(metadata, '{}'::jsonb) || ${JSON.stringify(patch)}::jsonb,
+			"updatedAt" = now()
+		WHERE ${rowFilter}
+	`);
+
+	if (updated === 0) {
+		throw new Prisma.PrismaClientKnownRequestError(
+			`Registered agent not found: ${"agentId" in where ? where.agentId : where.id}`,
+			{ code: "P2025", clientVersion: "n/a" },
+		);
+	}
+}
+
+/**
  * Update the agent card cache stored in the metadata JSON field.
  *
- * Merges only the `agentCard` and `agentCardCachedAt` keys into the existing
- * metadata object so that other metadata fields (skills, tags, protocols, etc.)
- * are preserved.
+ * Merges only the `agentCard` and `agentCardCachedAt` keys so that other
+ * metadata fields (skills, tags, protocols, embeddings, etc.) are preserved,
+ * including under concurrent writers — see `mergeRegisteredAgentMetadata`.
  */
 export async function updateAgentCardCache(
 	agentId: string,
 	agentCard: Record<string, unknown>,
 	cachedAt: Date,
 ): Promise<void> {
-	// Read current metadata first, then merge to avoid overwriting other keys
-	const agent = await db.registeredAgent.findUnique({
-		where: { agentId },
-		select: { metadata: true },
-	});
-
-	const existingMetadata =
-		(agent?.metadata as Record<string, unknown> | null) ?? {};
-
-	const updatedMetadata: Record<string, unknown> = {
-		...existingMetadata,
-		agentCard,
-		agentCardCachedAt: cachedAt.toISOString(),
-	};
-
-	await db.registeredAgent.update({
-		where: { agentId },
-		data: { metadata: updatedMetadata as Prisma.InputJsonValue },
-	});
+	await mergeRegisteredAgentMetadata(
+		{ agentId },
+		{ agentCard, agentCardCachedAt: cachedAt.toISOString() },
+	);
 }
 
 /**
  * Update the description embedding stored in the metadata JSON field.
  *
- * Merges only the `descriptionEmbedding` and `embeddingGeneratedAt` keys into
- * the existing metadata object so that other metadata fields are preserved.
- * Same pattern as updateAgentCardCache.
+ * Merges only the `descriptionEmbedding`, `embeddingGeneratedAt` and (when
+ * given) `embeddingModelId` keys so that other metadata fields are preserved.
+ * Same atomic merge as updateAgentCardCache.
  */
 export async function updateAgentEmbedding(
 	agentId: string,
@@ -375,25 +402,14 @@ export async function updateAgentEmbedding(
 	/** The embedding model ID used to generate this vector (e.g. "openai/text-embedding-3-small"). */
 	embeddingModelId?: string,
 ): Promise<void> {
-	const agent = await db.registeredAgent.findUnique({
-		where: { agentId },
-		select: { metadata: true },
-	});
-
-	const existingMetadata =
-		(agent?.metadata as Record<string, unknown> | null) ?? {};
-
-	const updatedMetadata: Record<string, unknown> = {
-		...existingMetadata,
-		descriptionEmbedding: embedding,
-		embeddingGeneratedAt: embeddingGeneratedAt.toISOString(),
-		...(embeddingModelId && { embeddingModelId }),
-	};
-
-	await db.registeredAgent.update({
-		where: { agentId },
-		data: { metadata: updatedMetadata as Prisma.InputJsonValue },
-	});
+	await mergeRegisteredAgentMetadata(
+		{ agentId },
+		{
+			descriptionEmbedding: embedding,
+			embeddingGeneratedAt: embeddingGeneratedAt.toISOString(),
+			...(embeddingModelId && { embeddingModelId }),
+		},
+	);
 }
 
 /**
