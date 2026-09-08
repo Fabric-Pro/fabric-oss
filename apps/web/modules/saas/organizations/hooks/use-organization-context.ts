@@ -229,6 +229,7 @@ export function useOrganizationContext() {
 	const {
 		activeOrganization,
 		loaded,
+		isResolvingOrganization,
 		isOrganizationAdmin,
 		activeOrganizationUserRole,
 	} = useActiveOrganization();
@@ -262,6 +263,10 @@ export function useOrganizationContext() {
 
 			// Loading state
 			loaded,
+			// True only while the URL's organization is being fetched for the
+			// first time — `organizationId`/`organization` are null in that
+			// window without meaning there is no organization.
+			isResolvingOrganization,
 
 			// Full organization object (for cases where you need more)
 			organization: activeOrganization,
@@ -269,6 +274,7 @@ export function useOrganizationContext() {
 		[
 			activeOrganization,
 			loaded,
+			isResolvingOrganization,
 			isOrganizationAdmin,
 			activeOrganizationUserRole,
 			seededIsGuest,

@@ -45,8 +45,12 @@ export function OrganzationSelect({
 	const t = useTranslations();
 	const { user } = useSession();
 	const _router = useRouter();
-	const { organizationId, organizationSlug, organization } =
-		useOrganizationContext();
+	const {
+		organizationId,
+		organizationSlug,
+		organization,
+		isResolvingOrganization,
+	} = useOrganizationContext();
 	const { setActiveOrganization, isSwitching, switchingToSlug } =
 		useActiveOrganization();
 	const { data: allOrganizations, isPending: isOrganizationListPending } =
@@ -101,7 +105,21 @@ export function OrganzationSelect({
 	// rather than let the fallback label flash on every page load. Keyed on
 	// `isPending`, not on the absence of data, so a failed fetch falls through
 	// to the fallback instead of spinning forever.
-	if (!user || !mounted || (isGuest && isOrganizationListPending)) {
+	//
+	// The same reasoning, one step earlier, for everyone else: until the URL's
+	// organization has been fetched once, `organization` is null for a reason
+	// that has nothing to do with the account presentation below — and with
+	// `requireOrganization` on there is no personal context left to fall back
+	// to, so rendering it would assert something false about who the viewer is.
+	// Excluded during a switch, which has its own optimistic presentation (the
+	// target organization plus a spinner) that this would otherwise blank out.
+	const isAwaitingOrganization = isResolvingOrganization && !isSwitching;
+	if (
+		!user ||
+		!mounted ||
+		isAwaitingOrganization ||
+		(isGuest && isOrganizationListPending)
+	) {
 		if (collapsed) {
 			return (
 				<div className="size-9 shrink-0 animate-pulse rounded-full bg-muted" />
