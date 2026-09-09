@@ -21,6 +21,46 @@ import {
 	isReasoningModelName,
 } from "./databricks-compat";
 
+/**
+ * Shared emergency kill switch for Anthropic prompt caching.
+ *
+ * The Databricks OpenAI-compat shim already honors this exact contract. Keep
+ * the direct Anthropic path on the same switch so an operator can disable all
+ * Anthropic cache writes without changing model configuration. `false`, `0`,
+ * and an empty value deliberately remain opt-in values, matching the existing
+ * Databricks behavior.
+ */
+const PROMPT_CACHE_DISABLED_ENV = "DATABRICKS_PROMPT_CACHE_DISABLED";
+
+function isAnthropicPromptCacheDisabled(): boolean {
+	const raw = process.env[PROMPT_CACHE_DISABLED_ENV];
+	if (raw === undefined) {
+		return false;
+	}
+	const normalized = raw.trim().toLowerCase();
+	return normalized !== "" && normalized !== "0" && normalized !== "false";
+}
+
+/**
+ * Direct Anthropic model with a cache breakpoint at the native invocation
+ * boundary. `ChatAnthropic` builds requests for invoke, stream, and
+ * tool-bound runnables through `invocationParams`, so this preserves their
+ * behavior while ensuring every normal call opts into Anthropic's rolling
+ * top-level cache control. A caller-supplied cache_control wins unchanged.
+ */
+class PromptCachingChatAnthropic extends ChatAnthropic {
+	override invocationParams(options?: this["ParsedCallOptions"]) {
+		const params = super.invocationParams(options);
+		if (
+			options?.cache_control !== undefined ||
+			isAnthropicPromptCacheDisabled()
+		) {
+			return params;
+		}
+		return { ...params, cache_control: { type: "ephemeral" as const } };
+	}
+}
+
 // NOTE: AI config (provider, apiKey, baseUrl, model) must come from:
 // 1. Runtime headers (X-AI-* headers from CopilotKit)
 // 2. API call to /api/agents/ai-config (which queries the database)
@@ -1581,8 +1621,8 @@ export function createProviderModel(
 				"ANTHROPIC_DIRECT",
 			);
 			const baseKwargs: Record<string, unknown> = {
-				modelName: resolvedName,
-				anthropicApiKey: apiKey,
+				model: resolvedName,
+				apiKey,
 				temperature,
 				maxTokens,
 				maxRetries,
@@ -1592,7 +1632,7 @@ export function createProviderModel(
 				reasoningConfig,
 				"ANTHROPIC_DIRECT",
 			);
-			return new ChatAnthropic(
+			return new PromptCachingChatAnthropic(
 				finalKwargs as ConstructorParameters<typeof ChatAnthropic>[0],
 			);
 		}
