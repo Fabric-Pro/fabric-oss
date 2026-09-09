@@ -1467,6 +1467,17 @@ export async function upsertDraftProjectByKey(data: {
 	userId: string;
 	organizationId?: string | null;
 	description?: string;
+	/**
+	 * Persisted as typed columns rather than ridden along in `wizardState`
+	 * (Fizzy #2247): the simplified creation form makes both REQUIRED, so a
+	 * draft that lost them would resume unable to submit. `null` clears the
+	 * column — which is how a draft switched to Development drops a start date
+	 * it no longer has a use for — while `undefined` leaves it untouched, so
+	 * the five-step wizard's own autosave, which sends neither, cannot wipe a
+	 * value the simplified form saved.
+	 */
+	projectPhase?: "DISCOVERY_PLANNING" | "DEVELOPMENT_EXECUTION" | null;
+	expectedDevelopmentStartDate?: Date | null;
 	techStack?: string[];
 	features?: string[];
 	projectTypes?: string[];
@@ -1497,6 +1508,13 @@ export async function upsertDraftProjectByKey(data: {
 		};
 		if (data.description !== undefined) {
 			updateData.description = data.description;
+		}
+		if (data.projectPhase !== undefined) {
+			updateData.projectPhase = data.projectPhase;
+		}
+		if (data.expectedDevelopmentStartDate !== undefined) {
+			updateData.expectedDevelopmentStartDate =
+				data.expectedDevelopmentStartDate;
 		}
 		if (data.techStack !== undefined) {
 			updateData.techStack = data.techStack;
@@ -1603,6 +1621,8 @@ export async function upsertDraftProjectByKey(data: {
 				organizationId: orgId,
 				status: "DRAFT",
 				description: data.description,
+				projectPhase: data.projectPhase,
+				expectedDevelopmentStartDate: data.expectedDevelopmentStartDate,
 				techStack: data.techStack ?? [],
 				features: data.features ?? [],
 				projectTypes: data.projectTypes ?? [],

@@ -601,3 +601,48 @@ describe("orgScopable is a constraint, not documentation", () => {
 		).toEqual({ enabled: true, source: "org-override" });
 	});
 });
+
+describe("SIMPLIFIED_PROJECT_CREATION", () => {
+	it("registers the flag with its env var, default and org marker", () => {
+		expect(FEATURE_FLAG_REGISTRY.SIMPLIFIED_PROJECT_CREATION.envVar).toBe(
+			"FABRIC_FEATURE_SIMPLIFIED_PROJECT_CREATION",
+		);
+		expect(FEATURE_FLAG_REGISTRY.SIMPLIFIED_PROJECT_CREATION.default).toBe(
+			false,
+		);
+		expect(
+			FEATURE_FLAG_REGISTRY.SIMPLIFIED_PROJECT_CREATION.orgScopable,
+		).toBe(true);
+	});
+
+	// The rollback direction is the one that has to be reliable: with no
+	// override and no env var the five-step wizard is what serves, so a
+	// deployment that has never heard of this flag is unaffected by it.
+	it("falls back to the wizard when nothing is configured", () => {
+		expect(resolveFlag("SIMPLIFIED_PROJECT_CREATION", {}, {})).toEqual({
+			enabled: false,
+			source: "default",
+		});
+	});
+
+	// The whole point of registering it: an operator turns the simplified form
+	// off from the admin console and the wizard is back on the next page load,
+	// without a redeploy — even where the env var says otherwise.
+	it("lets a global override of false beat an enabling env var", () => {
+		expect(
+			resolveFlag(
+				"SIMPLIFIED_PROJECT_CREATION",
+				{ global: false },
+				{ FABRIC_FEATURE_SIMPLIFIED_PROJECT_CREATION: "true" },
+			),
+		).toEqual({ enabled: false, source: "override" });
+	});
+
+	// Piloting one organization is the reason this flag is orgScopable: 4A's
+	// PROJECT_READINESS is not, so there was no pilot tenant for either before.
+	it("lets one organization be piloted ahead of the deployment", () => {
+		expect(
+			resolveFlag("SIMPLIFIED_PROJECT_CREATION", { org: true }, {}),
+		).toEqual({ enabled: true, source: "org-override" });
+	});
+});

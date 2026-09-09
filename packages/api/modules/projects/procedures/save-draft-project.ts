@@ -35,6 +35,16 @@ export const saveDraftProjectProcedure = tenantProtectedProcedure
 			organizationId: z.string().nullable().optional(),
 			// Typed columns — persisted directly
 			description: z.string().max(5000).optional(),
+			// Fizzy #2247. Both are typed columns rather than wizardState
+			// ephemera: the simplified creation form makes them required, so a
+			// draft that did not carry them would resume unable to submit.
+			// Nullable so switching a draft to Development can drop a start date
+			// that no longer applies; absent still means "leave the column alone".
+			projectPhase: z
+				.enum(["DISCOVERY_PLANNING", "DEVELOPMENT_EXECUTION"])
+				.nullable()
+				.optional(),
+			expectedDevelopmentStartDate: z.coerce.date().nullable().optional(),
 			techStack: z.array(z.string()).optional(),
 			features: z.array(z.string()).optional(),
 			projectTypes: z.array(z.string()).optional(),
@@ -186,6 +196,9 @@ export const saveDraftProjectProcedure = tenantProtectedProcedure
 				userId: context.user.id,
 				organizationId,
 				description: input.description,
+				projectPhase: input.projectPhase,
+				expectedDevelopmentStartDate:
+					input.expectedDevelopmentStartDate,
 				techStack: input.techStack,
 				features: input.features,
 				projectTypes: input.projectTypes,
