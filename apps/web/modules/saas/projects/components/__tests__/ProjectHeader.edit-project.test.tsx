@@ -20,9 +20,14 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { pushMock, useFeatureFlagMock } = vi.hoisted(() => ({
+const { pushMock, useFeatureFlagMock, tooltipKeyMock } = vi.hoisted(() => ({
 	pushMock: vi.fn(),
 	useFeatureFlagMock: vi.fn(),
+	// Records which tooltip copy the header asks for. The tooltip itself is a
+	// Radix popover that does not open under jsdom without a pointer harness,
+	// and the branch worth pinning is which string is chosen, not whether Radix
+	// can render it.
+	tooltipKeyMock: vi.fn(),
 }));
 
 vi.mock("next/navigation", () => ({
@@ -37,7 +42,12 @@ vi.mock("next/navigation", () => ({
 }));
 
 vi.mock("next-intl", () => ({
-	useTranslations: () => (key: string) => key,
+	useTranslations: (namespace?: string) => (key: string) => {
+		if (namespace === "tooltips.projectHeader") {
+			tooltipKeyMock(key);
+		}
+		return key;
+	},
 }));
 
 vi.mock("@saas/organizations/hooks", () => ({
@@ -124,6 +134,24 @@ describe("Edit Project — simplified creation on", () => {
 		);
 	});
 
+	// The wizard's tooltip names the repository link and integrations, which
+	// the edit screen does not touch — they live in the project's own tabs and
+	// settings now. Wrong copy under the new flow, right copy under the old.
+	it("describes what the edit screen actually edits", async () => {
+		renderHeader("ACTIVE");
+
+		expect(tooltipKeyMock).toHaveBeenCalledWith("editProjectBasics");
+		expect(tooltipKeyMock).not.toHaveBeenCalledWith("editProject");
+	});
+
+	// A DRAFT still resumes in the creation flow, where the wizard's own copy
+	// is the accurate one.
+	it("keeps the wizard's copy for a DRAFT", async () => {
+		renderHeader("DRAFT");
+
+		expect(tooltipKeyMock).toHaveBeenCalledWith("editProject");
+	});
+
 	it("reads the flag it claims to read", async () => {
 		renderHeader("ACTIVE");
 		expect(useFeatureFlagMock).toHaveBeenCalledWith(
@@ -146,6 +174,13 @@ describe("Edit Project — simplified creation off", () => {
 		expect(pushMock).toHaveBeenCalledWith(
 			"/app/example-org/projects/new?step=1&projectId=proj-1",
 		);
+	});
+
+	it("keeps the wizard's tooltip, which is accurate for the wizard", async () => {
+		renderHeader("ACTIVE");
+
+		expect(tooltipKeyMock).toHaveBeenCalledWith("editProject");
+		expect(tooltipKeyMock).not.toHaveBeenCalledWith("editProjectBasics");
 	});
 
 	it("sends a DRAFT to the wizard with no step", async () => {

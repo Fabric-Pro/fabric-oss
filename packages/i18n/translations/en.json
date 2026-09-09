@@ -5170,7 +5170,8 @@
 		},
 		"projectHeader": {
 			"markComplete": "Mark this project as complete. The status flips to Completed and it is flagged as delivered.",
-			"editProject": "Edit project name, description, repository link, and integrations."
+			"editProject": "Edit project name, description, repository link, and integrations.",
+			"editProjectBasics": "Edit the project's title, brief and phase. Repository links and integrations live in the project's own tabs and settings."
 		},
 		"stories": {
 			"updateCleanSpec": "Runs the maturation prompt in the AI Assistant: pulls in the latest connected context, folds in answered questions, then re-surfaces anything still open. You review the changes before they apply.",
