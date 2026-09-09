@@ -1,6 +1,7 @@
 import { getRecentSlackMessagesProcedure } from "./procedures/get-recent-slack-messages";
 import { getRecentTeamsMessagesProcedure } from "./procedures/get-recent-teams-messages";
 import { getSlackContextProcedure } from "./procedures/get-slack-context";
+import { getTeamsContextAccessProcedure } from "./procedures/get-teams-context-access";
 import { githubOAuthProcedures } from "./procedures/github-oauth";
 import { gitlabOAuthProcedures } from "./procedures/gitlab-oauth";
 import { genericOAuthProcedures } from "./procedures/oauth";
@@ -16,6 +17,7 @@ export const integrationsRouter = {
 	},
 	teams: {
 		getRecentMessages: getRecentTeamsMessagesProcedure,
+		contextAccess: getTeamsContextAccessProcedure,
 		getEventsStatus: getTeamsEventsStatusProcedure,
 	},
 };

@@ -20,6 +20,7 @@ import {
 import { db, type ProjectContextType } from "@repo/database";
 import {
 	executeMicrosoftTeamsTool,
+	isMicrosoftAccessDeniedError,
 	isMicrosoftNotConnectedError,
 	TEAMS_TOOL_LIMITS,
 } from "@repo/integrations/microsoft";
@@ -463,9 +464,18 @@ export async function searchProjectTeamsMessages(
 		// Not-connected is an expected, actionable user state (no Microsoft
 		// account linked yet) — logging it at error level pollutes prod
 		// error-monitoring with noise for something that isn't a fault (#2525).
+		// A Graph 403 (access denied) is a similar per-viewer, non-operational
+		// condition — the caller's account is connected but can't read one of
+		// the configured chats/channels — surfaced per-context in the
+		// project's Context tab via integrations.teams.contextAccess
+		// (Fizzy #2450).
 		if (isMicrosoftNotConnectedError(errorMessage)) {
 			console.warn(
 				`[SearchProjectTeamsMessages] Search failed: ${errorMessage}`,
+			);
+		} else if (isMicrosoftAccessDeniedError(errorMessage)) {
+			console.warn(
+				`[SearchProjectTeamsMessages] Access denied: ${errorMessage}`,
 			);
 		} else {
 			console.error(
@@ -713,6 +723,15 @@ export async function fetchRecentTeamsMessages(
 					);
 					notConnectedWarned = true;
 				}
+			} else if (isMicrosoftAccessDeniedError(errorMessage)) {
+				// Per-viewer Graph 403 — surfaced per-context in the project's
+				// Context tab via integrations.teams.contextAccess (Fizzy #2450),
+				// not an operational fault. Not dedup'd like not-connected above:
+				// this is per-channel, not account-wide.
+				console.warn(
+					`[FetchRecentTeamsMessages] Access denied fetching from ${ctx.displayName}:`,
+					errorMessage,
+				);
 			} else {
 				console.error(
 					`[FetchRecentTeamsMessages] Error fetching from ${ctx.displayName}:`,
