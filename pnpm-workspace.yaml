@@ -162,6 +162,17 @@ overrides:
   "brace-expansion@^2.0.0": "^2.1.3"
   "brace-expansion@^5.0.0": "^5.0.9"
   "engine.io@^6.0.0": "^6.6.7"
+  # ProseMirror single-copy floors — dedupe, not an advisory. `@tiptap/pm` pins
+  # prosemirror-model/-view/-transform at its own release line, while the other
+  # prosemirror packages (state, commands, tables, schema-list, …) declare
+  # looser `^` ranges that pnpm satisfies with the older copies already in the
+  # lockfile. Two copies of prosemirror-model mean two structurally distinct
+  # `Node`/`NodeSpec` types, and editor code that hands a node from
+  # `@tiptap/pm/model` to a ProseMirror plugin stops type-checking (TS2345).
+  # These floors keep exactly one copy of each on the tree.
+  "prosemirror-model": "^1.25.11"
+  "prosemirror-transform": "^1.12.0"
+  "prosemirror-view": "^1.42.3"
   # better-auth's peer island, pinned to the versions the lockfile already
   # resolved before `next` moved to 16.3.3. `better-auth` takes `next` as an
   # optional peer, so bumping Next re-keys its whole peer suffix and pnpm
