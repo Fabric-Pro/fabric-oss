@@ -7,6 +7,7 @@
 
 "use client";
 
+import { getAvatarInitials } from "@shared/lib/avatar-initials";
 import { Avatar, AvatarFallback, AvatarImage } from "@ui/components/avatar";
 import { Badge } from "@ui/components/badge";
 import {
@@ -114,9 +115,7 @@ export function CollaborationStatus({
 														collab.color,
 												}}
 											>
-												{collab.name
-													.slice(0, 2)
-													.toUpperCase()}
+												{getAvatarInitials(collab.name)}
 											</AvatarFallback>
 										</Avatar>
 									</TooltipTrigger>

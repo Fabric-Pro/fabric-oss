@@ -1,5 +1,6 @@
 "use client";
 
+import { getAvatarInitials } from "@shared/lib/avatar-initials";
 import { Avatar, AvatarFallback, AvatarImage } from "@ui/components/avatar";
 import { Textarea } from "@ui/components/textarea";
 import { useTranslations } from "next-intl";
@@ -150,32 +151,31 @@ export function QuestionMentionTextarea({
 					className="absolute z-20 mt-1 max-h-48 w-full overflow-y-auto rounded-md border bg-popover p-1 shadow-md"
 					aria-label={t("mentionSuggestionsLabel")}
 				>
-					{members.slice(0, 8).map((member) => (
-						<li key={member.id}>
-							<button
-								type="button"
-								onClick={() => insert(member)}
-								className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs hover:bg-accent"
-							>
-								<Avatar className="size-5">
-									{member.avatarUrl && (
-										<AvatarImage
-											src={member.avatarUrl}
-											alt={member.name ?? ""}
-										/>
-									)}
-									<AvatarFallback className="text-[9px]">
-										{(member.name ?? member.email ?? "?")
-											.slice(0, 2)
-											.toUpperCase()}
-									</AvatarFallback>
-								</Avatar>
-								<span className="truncate">
-									{member.name ?? member.email}
-								</span>
-							</button>
-						</li>
-					))}
+					{members.slice(0, 8).map((member) => {
+						const display = member.name?.trim() || member.email;
+						return (
+							<li key={member.id}>
+								<button
+									type="button"
+									onClick={() => insert(member)}
+									className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs hover:bg-accent"
+								>
+									<Avatar className="size-5">
+										{member.avatarUrl && (
+											<AvatarImage
+												src={member.avatarUrl}
+												alt={display ?? ""}
+											/>
+										)}
+										<AvatarFallback className="text-[9px]">
+											{getAvatarInitials(display, "?")}
+										</AvatarFallback>
+									</Avatar>
+									<span className="truncate">{display}</span>
+								</button>
+							</li>
+						);
+					})}
 				</ul>
 			)}
 		</div>

@@ -1,5 +1,6 @@
 "use client";
 
+import { getAvatarInitials } from "@shared/lib/avatar-initials";
 import { Avatar, AvatarFallback, AvatarImage } from "@ui/components/avatar";
 import { Button } from "@ui/components/button";
 import {
@@ -29,12 +30,7 @@ export type AssignableMember = {
 
 /** Two initials from a display name, falling back to the email's first letter. */
 function initials(member: { name: string | null; email: string | null }) {
-	const source = member.name?.trim() || member.email?.trim() || "?";
-	const parts = source.split(/\s+/).filter(Boolean);
-	if (parts.length >= 2) {
-		return `${parts[0][0]}${parts[1][0]}`.toUpperCase();
-	}
-	return source.slice(0, 2).toUpperCase();
+	return getAvatarInitials(member.name?.trim() || member.email, "?");
 }
 
 type Props = {

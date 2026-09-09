@@ -11,6 +11,7 @@
  * live in the `tooltips.*` i18n namespace.
  */
 
+import { getAvatarInitials } from "@shared/lib/avatar-initials";
 import { Avatar, AvatarFallback, AvatarImage } from "@ui/components/avatar";
 import { Button } from "@ui/components/button";
 import {
@@ -137,14 +138,8 @@ export function HistoryActor({
 	/** Change source label (e.g. "AI Update" / "Slack"); null/absent = manual. */
 	source?: string | null;
 }) {
-	const display = name ?? email ?? "Unknown user";
-	const initials =
-		display
-			.split(/\s+/)
-			.map((part) => part.charAt(0))
-			.join("")
-			.slice(0, 2)
-			.toUpperCase() || "?";
+	const display = name?.trim() || email?.trim() || "Unknown user";
+	const initials = getAvatarInitials(display, "?");
 
 	return (
 		<span className="inline-flex items-center gap-1.5">

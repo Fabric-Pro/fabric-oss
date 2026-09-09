@@ -66,6 +66,7 @@
 import type { ChatHistoryGroupItem } from "@saas/ai/components/ChatHistoryGroup";
 import { ChatHistoryGroup } from "@saas/ai/components/ChatHistoryGroup";
 import { RenameChatDialog } from "@saas/ai/components/RenameChatDialog";
+import { getAvatarInitials } from "@shared/lib/avatar-initials";
 import {
 	AlertDialog,
 	AlertDialogAction,
@@ -296,13 +297,7 @@ function CreatorChip({
 }) {
 	const tTooltips = useTranslations("tooltips.copilot");
 	const displayName = name?.trim() || "Unknown user";
-	const initials =
-		displayName
-			.split(/\s+/)
-			.filter(Boolean)
-			.slice(0, 2)
-			.map((part) => part[0]?.toUpperCase() ?? "")
-			.join("") || "?";
+	const initials = getAvatarInitials(displayName, "?");
 	const startedLabel = createdAt
 		? formatDistanceToNow(new Date(createdAt), { addSuffix: true })
 		: null;

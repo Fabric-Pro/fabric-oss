@@ -12,6 +12,7 @@ import type { MessageAttachmentListItem } from "@saas/shared/components/copilot/
 import { useCopilotErrorHandler } from "@saas/shared/components/copilot/use-copilot-error-handler";
 import { useFullscreen } from "@saas/shared/contexts/FullscreenContext";
 import { SubscribeToggle } from "@saas/subscriptions/components/SubscribeToggle";
+import { getAvatarInitials } from "@shared/lib/avatar-initials";
 import { orpc } from "@shared/lib/orpc-query-utils";
 import { useQuery } from "@tanstack/react-query";
 import { Avatar, AvatarFallback, AvatarImage } from "@ui/components/avatar";
@@ -455,9 +456,9 @@ export function DocumentEditorPage({
 													alt={u.userName}
 												/>
 												<AvatarFallback className="text-[8px] bg-linear-to-br from-amber-500 to-orange-600 text-white">
-													{u.userName
-														.slice(0, 2)
-														.toUpperCase()}
+													{getAvatarInitials(
+														u.userName,
+													)}
 												</AvatarFallback>
 											</Avatar>
 										</TooltipTrigger>

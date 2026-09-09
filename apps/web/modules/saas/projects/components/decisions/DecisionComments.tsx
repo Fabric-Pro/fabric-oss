@@ -1,6 +1,7 @@
 "use client";
 
 import { useOrganizationContext } from "@saas/organizations/hooks/use-organization-context";
+import { getAvatarInitials } from "@shared/lib/avatar-initials";
 import { orpc } from "@shared/lib/orpc-query-utils";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Avatar, AvatarFallback, AvatarImage } from "@ui/components/avatar";
@@ -23,13 +24,7 @@ import { useMemo, useState } from "react";
 import { toast } from "sonner";
 
 function initials(name?: string | null, email?: string | null) {
-	const source = name || email || "User";
-	return source
-		.split(/\s+/)
-		.map((part) => part[0])
-		.join("")
-		.slice(0, 2)
-		.toUpperCase();
+	return getAvatarInitials(name?.trim() || email, "U");
 }
 
 function formatTime(value: string | Date) {

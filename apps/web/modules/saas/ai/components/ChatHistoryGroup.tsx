@@ -1,5 +1,6 @@
 "use client";
 
+import { getAvatarInitials } from "@shared/lib/avatar-initials";
 import { Avatar, AvatarFallback, AvatarImage } from "@ui/components/avatar";
 import { Button } from "@ui/components/button";
 import { cn } from "@ui/lib";
@@ -119,19 +120,6 @@ function relativeTime(iso: string): string {
 	return `${years}y ago`;
 }
 
-function initialsFrom(name: string | null | undefined): string {
-	if (!name) {
-		return "?";
-	}
-	const parts = name.trim().split(/\s+/);
-	if (parts.length === 0) {
-		return "?";
-	}
-	const first = parts[0]?.[0] ?? "";
-	const second = parts.length > 1 ? (parts[parts.length - 1]?.[0] ?? "") : "";
-	return (first + second).toUpperCase() || "?";
-}
-
 /**
  * Editorial row used by the document-assistant drawer. Each row is a
  * `<button>` so it's keyboard-focusable and announces correctly. The
@@ -187,7 +175,7 @@ function EditorialRow({
 						/>
 					) : null}
 					<AvatarFallback className="text-[10px] font-medium">
-						{initialsFrom(item.authorName)}
+						{getAvatarInitials(item.authorName, "?")}
 					</AvatarFallback>
 				</Avatar>
 				<div className="min-w-0 flex-1">

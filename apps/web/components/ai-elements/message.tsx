@@ -1,3 +1,4 @@
+import { getAvatarInitials } from "@shared/lib/avatar-initials";
 import { Avatar, AvatarFallback, AvatarImage } from "@ui/components/avatar";
 import { cn } from "@ui/lib";
 import type { UIMessage } from "ai";
@@ -75,6 +76,6 @@ export const MessageAvatar = ({
 }: MessageAvatarProps) => (
 	<Avatar className={cn("size-8 ring-1 ring-border", className)} {...props}>
 		<AvatarImage alt="" className="mt-0 mb-0" src={src} />
-		<AvatarFallback>{name?.slice(0, 2) || "ME"}</AvatarFallback>
+		<AvatarFallback>{getAvatarInitials(name, "ME")}</AvatarFallback>
 	</Avatar>
 );
