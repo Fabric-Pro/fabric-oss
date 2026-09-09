@@ -66,7 +66,7 @@ export function extractUsageFromLangChainResponse(
 			| Record<string, unknown>
 			| undefined);
 
-	const inputTokens =
+	const reportedInputTokens =
 		readNumber(usageMetadata?.input_tokens) ??
 		readNumber(usageMetadata?.inputTokens) ??
 		readNumber(tokenUsage?.promptTokens) ??
@@ -82,12 +82,12 @@ export function extractUsageFromLangChainResponse(
 		readNumber(tokenUsage?.output_tokens) ??
 		0;
 
-	const totalTokens =
+	const reportedTotalTokens =
 		readNumber(usageMetadata?.total_tokens) ??
 		readNumber(usageMetadata?.totalTokens) ??
 		readNumber(tokenUsage?.totalTokens) ??
 		readNumber(tokenUsage?.total_tokens) ??
-		inputTokens + outputTokens;
+		reportedInputTokens + outputTokens;
 
 	// Cache + reasoning breakdown (LangChain surfaces these under *_token_details).
 	const inputDetails = usageMetadata?.input_token_details as
@@ -117,6 +117,26 @@ export function extractUsageFromLangChainResponse(
 		readNumber(inputDetails?.cache_creation) ??
 		readNumber(usageMetadata?.cache_creation_input_tokens) ??
 		readNumber(rawUsage?.cache_creation_input_tokens);
+	// @langchain/anthropic 1.5.x normalizes usage_metadata.input_tokens to
+	// include both cache buckets, while Anthropic's raw API reports them
+	// separately. Fabric's direct-Anthropic pricing contract expects that raw,
+	// exclusive shape. The native adapter identifies itself explicitly; the
+	// Databricks ChatOpenAI path does not, so its inclusive accounting remains
+	// unchanged.
+	const isNativeAnthropicUsage =
+		responseMetadata?.model_provider === "anthropic" &&
+		usageMetadata !== undefined;
+	const normalizedCacheTokens = isNativeAnthropicUsage
+		? (cachedInputTokens ?? 0) + (cacheCreationInputTokens ?? 0)
+		: 0;
+	const inputTokens = Math.max(
+		0,
+		reportedInputTokens - normalizedCacheTokens,
+	);
+	const totalTokens = Math.max(
+		0,
+		reportedTotalTokens - normalizedCacheTokens,
+	);
 	const reasoningTokens = readNumber(outputDetails?.reasoning);
 
 	// The gateway generation id, if present, lets the row reconcile to actual cost.
