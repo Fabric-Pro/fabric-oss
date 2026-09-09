@@ -245,9 +245,82 @@ describe("listTopicDrafts — working drafts", () => {
 				hasBody: true,
 				body: "A saved draft.",
 				sourceOptionLabel: null,
+				// Hand-written: no candidate to carry a safety note.
+				sourceContent: null,
 				updatedAt: new Date("2026-09-01T11:00:00Z"),
 			},
 		]);
+	});
+
+	/**
+	 * Defect §2. The panels read `safetyNote` off `latestReady`, which after a
+	 * regeneration nobody adopted is a DIFFERENT document from the one in the
+	 * editor — and when v2 needs no generalizing the section vanishes entirely
+	 * while the saved text is still the generalized one.
+	 */
+	it("carries the candidate the body was adopted from, not the newest one", async () => {
+		draftFindMany.mockResolvedValue([
+			row({
+				id: "d2",
+				version: 2,
+				status: "READY",
+				postType: "BLOG_POST",
+				content: {
+					safetyNote: null,
+					body: "v2, needs no generalizing",
+				},
+			}),
+			row({
+				id: "d1",
+				version: 1,
+				status: "READY",
+				postType: "BLOG_POST",
+				content: {
+					safetyNote: "Generalized the customer reference.",
+					body: "v1",
+				},
+			}),
+		]);
+		workingFindMany.mockResolvedValue([
+			{
+				postType: "BLOG_POST",
+				body: "v1, as adopted.",
+				sourceDraftId: "d1",
+				sourceOptionLabel: null,
+				updatedAt: new Date("2026-09-01T11:00:00Z"),
+			},
+		]);
+
+		const result = await listTopicDrafts(SCOPE);
+
+		expect(result.workingDrafts[0].sourceContent).toEqual({
+			safetyNote: "Generalized the customer reference.",
+			body: "v1",
+		});
+		// The newest READY row is still reported unchanged: this ADDS a field,
+		// it does not redirect what the panel renders as the draft.
+		expect(
+			result.drafts.find((d) => d.postType === "BLOG_POST")?.latestReady
+				?.id,
+		).toBe("d2");
+	});
+
+	it("reports no source when the candidate is gone", async () => {
+		// A superseded row can fall out of retention. "No note applies" is the
+		// honest answer; showing the newest one instead is precisely the bug.
+		workingFindMany.mockResolvedValue([
+			{
+				postType: "BLOG_POST",
+				body: "Adopted long ago.",
+				sourceDraftId: "vanished",
+				sourceOptionLabel: null,
+				updatedAt: new Date("2026-09-01T11:00:00Z"),
+			},
+		]);
+
+		const result = await listTopicDrafts(SCOPE);
+
+		expect(result.workingDrafts[0].sourceContent).toBeNull();
 	});
 
 	it("reports an EMPTY body as nothing saved", async () => {

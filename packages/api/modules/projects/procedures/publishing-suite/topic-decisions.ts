@@ -50,6 +50,16 @@ const TopicDecisionEntrySchema = z.object({
 	summary: z.string().nullable(),
 	content: z.string().nullable(),
 	recommendedResponse: z.string().nullable(),
+	/**
+	 * Several answers to choose between, as Feature Maturation offers.
+	 *
+	 * `nullish` and not required: every row minted before this carries none,
+	 * and a reader falls back to `recommendedResponse` above — so nothing had
+	 * to be backfilled and an old question reads exactly as it always did.
+	 */
+	answerOptions: z
+		.array(z.object({ text: z.string(), justification: z.string() }))
+		.nullish(),
 	whyItMatters: z.string().nullable(),
 	answerSource: z.string().nullable(),
 	analysisVersion: z.number().int().nullable(),

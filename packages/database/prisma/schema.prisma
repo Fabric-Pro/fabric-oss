@@ -267,6 +267,8 @@ model User {
   qaAnalysisVersions           QaAnalysisVersion[]
   publishingSuggestionCycles   PublishingSuggestionCycle[]
   publishingTopics             PublishingTopic[]             @relation("PublishingTopicOwner")
+  publishingListPreferences    PublishingListPreference[]
+  publishingDraftReadMarkers   PublishingTopicDraftRead[]
   publishingTopicsCreated      PublishingTopic[]             @relation("PublishingTopicCreatedBy")
   publishingSuiteSettings      PublishingSuiteSettings[]
   publishingNotificationsReceived PublishingNotificationDelivery[]
@@ -695,6 +697,8 @@ model Organization {
   projectQaWebhooks                       ProjectQaWebhook[]
   publishingSuggestionCycles              PublishingSuggestionCycle[]
   publishingTopics                        PublishingTopic[]
+  publishingListPreferences               PublishingListPreference[]
+  publishingDraftReadMarkers              PublishingTopicDraftRead[]
   publishingSuiteSettings                 PublishingSuiteSettings[]
   publishingTopicReads                    PublishingTopicRead[]
   publishingPlanningAnalyses              PublishingTopicPlanningAnalysis[]
@@ -1777,6 +1781,7 @@ model Project {
   qaAnalysisVersions         QaAnalysisVersion[]
   publishingSuggestionCycles PublishingSuggestionCycle[]
   publishingTopics           PublishingTopic[]
+  publishingListPreferences  PublishingListPreference[]
   publishingPlanningAnalyses PublishingTopicPlanningAnalysis[]
   publishingTopicDecisions   PublishingTopicDecisionEntry[]
   publishingTopicDrafts      PublishingTopicDraft[]
@@ -5646,6 +5651,27 @@ enum PublishingTopicStatus {
   @@map("publishing_topic_status")
 }
 
+/// How the Inbox orders its Suggested section for one reader.
+///
+/// RECOMMENDED is the per-viewer ranking 1B computes — the default, because it
+/// already puts a reader's own beat first and a stored preference should not
+/// silently switch personalization off for someone who never asked.
+enum PublishingListSort {
+  RECOMMENDED
+  RECENTLY_UPDATED
+  RECENTLY_CREATED
+
+  @@map("publishing_list_sort")
+}
+
+/// How the Inbox lays its sections out for one reader.
+enum PublishingListView {
+  LIST
+  TWO_COLUMN
+
+  @@map("publishing_list_view")
+}
+
 enum PublishingTopicOrigin {
   AI
   MANUAL
@@ -6990,6 +7016,41 @@ model PublishingSuggestionCycle {
   @@map("publishing_suggestion_cycle")
 }
 
+/// One reader's Inbox preferences for one project.
+///
+/// Per user AND per project, matching how project tab customization already
+/// stores a member's layout — the same person reasonably works differently on a
+/// busy project and a quiet one, and a single global row would make one of the
+/// two wrong. Both columns carry defaults, so a reader with no row is not a
+/// special case anywhere: the absence of a row and the default preference are
+/// the same thing.
+///
+/// Deliberately NOT on `PublishingSuiteSettings`, which is the project's own
+/// configuration and admin-owned. This is a personal preference and must not
+/// need permission to change.
+model PublishingListPreference {
+  id             String             @id @default(cuid())
+  userId         String
+  projectId      String
+  /// Denormalized from the parent project, never from ambient context — the
+  /// same rule `PublishingTopicRead` states, and for the same reason: every
+  /// tenant policy in `apply-rls-direct.ts` reads this column, so a row without
+  /// it is a row RLS cannot place. Null in personal context.
+  organizationId String?
+  sort           PublishingListSort @default(RECOMMENDED)
+  view           PublishingListView @default(LIST)
+  createdAt      DateTime           @default(now())
+  updatedAt      DateTime           @updatedAt
+
+  user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  project      Project       @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  organization Organization? @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, projectId])
+  @@index([organizationId])
+  @@map("publishing_list_preference")
+}
+
 model PublishingTopic {
   id                      String                    @id @default(cuid())
   projectId               String
@@ -7026,6 +7087,21 @@ model PublishingTopic {
   postTypeRecommendations Json                      @default("[]") // [{type,theme,rationale}] display-only enrichment; suggestedPostTypes is derived from this
   postTypesOverridden     Boolean                   @default(false) // false → effective post types = suggestedPostTypes (AI); true → userPostTypes (may be [])
   userPostTypes           PublishingTopicPostType[] @default([]) // user override set; meaningful only when postTypesOverridden = true
+  /// Why this topic is worth a look before the others, in the model's own
+  /// words — one short clause, set on AT MOST the top few of a cycle's batch.
+  ///
+  /// A FORCED RANKING, not a score. Absolute thresholds were measured against
+  /// 202 staging topics first: 68% cite two or more sources and, in a typical
+  /// week, four of five do, so any "is it corroborated" bar marks nearly the
+  /// whole queue and means nothing. Asking the model to rank its OWN batch and
+  /// mark only the strongest produces a state that stays rare however the
+  /// underlying data drifts, and the cap is enforced server-side rather than
+  /// trusted to the prompt.
+  ///
+  /// null = not highlighted, which is every manual topic and most AI ones.
+  /// Freshness is NOT stored here: it is computed at read time, so a highlight
+  /// stops applying as the topic ages rather than needing a sweep to clear it.
+  highlightReason         String?
   angle                   String? // FR9/10 (incremental): AI-stamped short angle label; distinct from title and from relevantFunctionTags; null = none / manual topics
   subject                 String? // FR9/10 multiplication: canonical subject line; set only on a >=2 angle-group member; null otherwise
   subjectKey              String? // FR9/10 multiplication: grouping identity = hash(projectId + normalize(subject||title)); server-side only; NEVER in the unique index
@@ -7039,6 +7115,7 @@ model PublishingTopic {
   cycle        PublishingSuggestionCycle? @relation(fields: [cycleId], references: [id], onDelete: SetNull)
   createdBy    User?                      @relation("PublishingTopicCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
   readMarkers  PublishingTopicRead[]
+  draftReadMarkers PublishingTopicDraftRead[]
   planningAnalyses PublishingTopicPlanningAnalysis[]
   publishingTopicDecisions PublishingTopicDecisionEntry[]
   drafts       PublishingTopicDraft[]
@@ -7397,6 +7474,19 @@ model PublishingTopicDecisionEntry {
   summary        String?                     @db.Text
   content        String?                     @db.Text
   recommendedResponse String?                @db.Text
+  /// SEVERAL suggested answers, as Feature Maturation offers — `[{ text,
+  /// justification }]`, at most four, each justification required.
+  ///
+  /// JSON rather than a second table, following FMv2's own precedent
+  /// (`DecisionLogEntry.metadata.answerRecommendation`): the options are read
+  /// and written as one unit, never queried across, and never joined to.
+  ///
+  /// `recommendedResponse` above is NOT replaced. It stays as the single-answer
+  /// form every existing row carries and every reader still falls back to, so
+  /// nothing needs backfilling and a question minted before this reads exactly
+  /// as it did. A row with options renders them; a row without renders what it
+  /// always did.
+  answerOptions       Json?
   /// The rationale behind the question — why the decision matters, not what
   /// it is. Carried from the analysis's own `whyItMatters` field so a reader
   /// on the Summary & Questions tab sees why to bother, not just what to
@@ -7433,6 +7523,35 @@ model PublishingTopicDecisionEntry {
 /// Read state lives HERE and not on PublishingTopic because a column there
 /// would bump PublishingTopic.updatedAt on every open, silently reordering the
 /// "Recently Modified" section that FR2 defines by last-modified date.
+/// When a reader last looked at one CONTENT TYPE on a topic.
+///
+/// A separate table from `PublishingTopicRead` rather than a column on it. That
+/// row means "this topic has been opened" and unreading DELETES it; adding a
+/// post type would change what its absence means and break the one-row-per-
+/// reader shape the Inbox's unread dot depends on.
+///
+/// The constraint that shaped both: neither may touch `PublishingTopic`.
+/// Reading a topic must not bump its `updatedAt`, or opening something would
+/// reorder "Recently Modified" underneath the person reading it.
+model PublishingTopicDraftRead {
+  id             String   @id @default(cuid())
+  topicId        String
+  userId         String
+  postType       PublishingTopicPostType
+  projectId      String // denormalized from the parent topic, never from ambient context
+  organizationId String? // denormalized from the parent topic; null in personal context
+  readAt         DateTime @default(now())
+
+  topic        PublishingTopic @relation(fields: [topicId], references: [id], onDelete: Cascade)
+  user         User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organization Organization?   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([topicId, userId, postType])
+  @@index([userId, projectId])
+  @@index([organizationId])
+  @@map("publishing_topic_draft_read")
+}
+
 model PublishingTopicRead {
   id             String   @id @default(cuid())
   topicId        String
@@ -7462,6 +7581,18 @@ model PublishingSuiteSettings {
   cadence              String   @default("MANUAL") // MANUAL | WEEKLY | BIWEEKLY | MONTHLY
   lookbackDays         Int? // null => engine default (180); else 1..365
   notificationsEnabled Boolean  @default(true) // project-level kill switch (1C-2)
+  /// Whether the analysis drafts SUGGESTED ANSWERS for the questions it raises.
+  ///
+  /// Feature Maturation's equivalent is per-feature; this is per PROJECT
+  /// because the two are asked at different moments. FMv2 mints questions
+  /// continuously as a spec matures, so a person can turn it off for the one
+  /// feature that is noisy. Publishing mints them once, when the analysis runs,
+  /// and a reader who wanted it off would have to have said so before opening
+  /// the topic — a per-topic switch nobody could reach in time.
+  ///
+  /// On by default: the suggestions are the feature, and a switch that starts
+  /// off is a feature nobody finds.
+  autoProposeAnswers   Boolean  @default(true)
   chatChannels         Json? // 1C-3: PublishingChatChannel[] — selected broadcast targets. NULL or [] means chat is off; there is deliberately no separate boolean, because a second switch could disagree with the selection.
 
   // 1C-1b (§7.1(a), FR8–FR10): the ADVISORY recommendation preferences. They

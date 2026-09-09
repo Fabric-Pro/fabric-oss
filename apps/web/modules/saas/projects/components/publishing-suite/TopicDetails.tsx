@@ -35,9 +35,20 @@ import {
 export function TopicRankReason({
 	topic,
 	className,
+	variant = "rule",
 }: {
 	topic: PublishingTopic;
 	className?: string;
+	/**
+	 * `rule` is the original left-bar line, still what the topic page renders.
+	 * `pill` is the Inbox row's, added because the line was disappearing into
+	 * a stack of four grey paragraphs — the owner could not see it at a glance,
+	 * which is the whole reason it was lifted out of the disclosure in 1B.
+	 *
+	 * A prop rather than a replacement: the default keeps every existing mount
+	 * byte-identical, including the flag-off row whose markup is snapshotted.
+	 */
+	variant?: "rule" | "pill";
 }) {
 	if (!topic.rankReason) {
 		return null;
@@ -45,7 +56,9 @@ export function TopicRankReason({
 	return (
 		<p
 			className={cn(
-				"border-l-2 border-primary pl-2 text-xs text-muted-foreground",
+				variant === "pill"
+					? "inline-flex w-fit items-center rounded-full border border-primary/40 bg-primary/10 px-2.5 py-0.5 font-medium text-primary text-xs"
+					: "border-l-2 border-primary pl-2 text-xs text-muted-foreground",
 				className,
 			)}
 		>

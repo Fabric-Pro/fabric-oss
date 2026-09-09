@@ -38,6 +38,7 @@ import {
 	db,
 	effectiveContributorUserIds,
 	getBoundPromptForAgent,
+	getPublishingSuiteSettings,
 	logDraftRefusal,
 } from "@repo/database";
 import type { TemplateFormat } from "@repo/utils";
@@ -158,7 +159,19 @@ export async function generatePlanningAnalysisActivity(
 
 	heartbeat(`planningAnalysis: context assembled for ${analysisId}`);
 
+	/**
+	 * Whether this project wants the analysis to draft suggested answers.
+	 *
+	 * Read here rather than threaded through workflow input on purpose: the
+	 * setting is a preference the project can change between the run being
+	 * scheduled and it executing, and the honest answer is the one that holds
+	 * when the prompt is written. Nothing about it needs to survive a replay —
+	 * it shapes the prompt, and the prompt is already part of the result.
+	 */
+	const suiteSettings = await getPublishingSuiteSettings(projectId);
+
 	const composed = await composePlanningAnalysisPrompt({
+		autoProposeAnswers: suiteSettings?.autoProposeAnswers ?? true,
 		templateBody:
 			boundPrompt?.version?.content ??
 			PUBLISHING_PLANNING_ANALYSIS_FALLBACK_BODY,

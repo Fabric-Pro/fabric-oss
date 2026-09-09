@@ -23,7 +23,7 @@
  * `analysis-version-history.test.tsx`.
  */
 
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useEffect, useState } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -92,6 +92,15 @@ vi.mock("@shared/lib/orpc-query-utils", () => ({
 					}),
 					queryKey: ({ input }: { input?: unknown }) => [
 						"getPlanningAnalysis",
+						input,
+					],
+				},
+				// `key`, not `queryKey`, and the distinction is the whole
+				// point — the revision list is an INFINITE query, so the
+				// `type: "query"` stamp `queryKey` adds matches nothing.
+				listAnalysisRevisions: {
+					key: ({ input }: { input?: unknown }) => [
+						"listAnalysisRevisions",
 						input,
 					],
 				},
@@ -242,6 +251,7 @@ function props(overrides: Record<string, unknown> = {}) {
 		latestAttempt: null,
 		effective: null,
 		aiVersion: null,
+		aiCreatedAt: null,
 		aiModel: null,
 		aiPromptSource: null,
 		revisionVersion: null,
@@ -262,6 +272,79 @@ beforeEach(() => {
 	editorProps.current = null;
 	historyProps.current = null;
 	editorMounts.count = 0;
+});
+
+/**
+ * The tab used to open on an empty dashed box. Every other tab on the page
+ * depends on this document, so the first thing anyone did on arriving was press
+ * Generate — which is what the owner reported: "there is nothing to work with
+ * here, at least it should run on open".
+ *
+ * Radix unmounts inactive tab content, so a mount IS an open: this cannot fire
+ * for someone who never visits the tab.
+ */
+describe("PlanningAnalysisTab — starting the first analysis on open", () => {
+	it("starts one for a topic that has never had an analysis", () => {
+		renderTab();
+
+		expect(generateMutate).toHaveBeenCalledWith({
+			projectId: "proj-1",
+			topicId: "topic-1",
+			organizationId: null,
+		});
+	});
+
+	it("does not start one while the query is still loading", () => {
+		// Before the read settles, `latestAttempt` is null because nothing has
+		// been READ — a different thing from nothing existing, and firing here
+		// would spend a call on a topic that already has an analysis.
+		renderTab({ isLoading: true });
+
+		expect(generateMutate).not.toHaveBeenCalled();
+	});
+
+	it("does not retry a FAILED attempt by itself", () => {
+		// A failed run has already cost money. Whether to try again is a
+		// decision for the person looking at the failure, not for a mount.
+		renderTab({
+			latestAttempt: {
+				id: "pa-1",
+				version: 1,
+				status: "FAILED",
+				content: null,
+				sourceRefs: null,
+				model: null,
+				promptSource: null,
+				error: "boom",
+				createdAt: new Date(),
+				updatedAt: new Date(),
+			},
+		});
+
+		expect(generateMutate).not.toHaveBeenCalled();
+	});
+
+	it("never starts one for a reader", () => {
+		// The server gates generation on PUBLISHING_TOPIC_UPDATE, so this could
+		// only ever produce a 403.
+		renderTab({ canEdit: false });
+
+		expect(generateMutate).not.toHaveBeenCalled();
+	});
+
+	it("starts exactly one, not one per re-render", () => {
+		// `generate.mutate` invalidates the analysis query; the refetch
+		// re-renders this component, and for the moment before the new row
+		// lands `latestAttempt` is STILL null. Without the ref guard the effect
+		// re-enters and starts a second paid run.
+		const { rerender } = render(
+			<PlanningAnalysisTab {...(props() as never)} />,
+		);
+		rerender(<PlanningAnalysisTab {...(props() as never)} />);
+		rerender(<PlanningAnalysisTab {...(props() as never)} />);
+
+		expect(generateMutate).toHaveBeenCalledTimes(1);
+	});
 });
 
 describe("PlanningAnalysisTab — the empty state", () => {
@@ -706,6 +789,33 @@ describe("PlanningAnalysisTab — keeping the client's version tokens fresh", ()
 		expect(invalidateQueries).toHaveBeenCalledWith({
 			queryKey: [
 				"getPlanningAnalysis",
+				{
+					projectId: "proj-1",
+					topicId: "topic-1",
+					organizationId: null,
+				},
+			],
+		});
+	});
+
+	/**
+	 * A save moves TWO things: the document, and the list of versions it has
+	 * had. Only the first was invalidated, so History showed a list without
+	 * the revision that had just been written — and the app's 60s `staleTime`
+	 * meant closing and reopening the drawer did not refetch either. It took a
+	 * full page reload, which builds a fresh cache, for the save to appear.
+	 *
+	 * Restore already did this. An ordinary Save did not.
+	 */
+	it("re-fetches the VERSION LIST after a save, not just the document", async () => {
+		renderTab(editedProps);
+		invalidateQueries.mockClear();
+
+		await userEvent.click(screen.getByRole("button", { name: /^save$/i }));
+
+		expect(invalidateQueries).toHaveBeenCalledWith({
+			queryKey: [
+				"listAnalysisRevisions",
 				{
 					projectId: "proj-1",
 					topicId: "topic-1",
@@ -1253,38 +1363,94 @@ describe("PlanningAnalysisTab — read-only", () => {
  *
  * Feature Maturation shows "N new decisions recorded — not yet in the Full
  * Specification" with an Update action. Publishing had the data and said
- * nothing: a question stores the analysis version it was RAISED against, so a
- * RESOLVED question still carrying the CURRENT version was answered after the
- * document was written, and the document does not know.
+ * nothing.
+ *
+ * The predicate is a TIMESTAMP comparison — the live answer against the moment
+ * the analysis was written — and not the version equality it shipped as. Two
+ * of the cases below are the ones version equality got wrong: `analysisVersion`
+ * is stamped when a question is RAISED and never moves again, so an answer
+ * changing afterwards cannot be seen by comparing it with anything.
  *
  * The action is the Regenerate button already in this header, so the banner
  * points at it rather than adding a second control that does the same thing.
  */
 describe("PlanningAnalysisTab — answers the analysis predates", () => {
-	const answered = (analysisVersion: number) => ({
-		root: {
-			id: `d-${analysisVersion}-${Math.random()}`,
-			parentId: null,
+	const ANALYSIS_WRITTEN_AT = new Date("2026-09-01T12:00:00Z");
+	const BEFORE = new Date("2026-08-30T09:00:00Z");
+	const AFTER = new Date("2026-09-03T09:00:00Z");
+
+	/**
+	 * A question raised against `analysisVersion`, answered at `answeredAt`.
+	 *
+	 * `replies` carries the answer because that is where an answer lives: both
+	 * `answerTopicQuestion` and `amendTopicQuestionAnswer` APPEND a reply, and
+	 * neither touches the root's `analysisVersion`.
+	 */
+	const answered = ({
+		analysisVersion,
+		answeredAt,
+		status = "RESOLVED",
+		replies,
+	}: {
+		analysisVersion: number;
+		answeredAt?: Date;
+		status?: string;
+		replies?: { createdAt: Date; content: string | null }[];
+	}) => {
+		const id = `d-${analysisVersion}-${Math.random()}`;
+		const entry = (over: Record<string, unknown>) => ({
+			id: `${id}-${Math.random()}`,
+			parentId: id,
 			kind: "QUESTION" as const,
 			status: "RESOLVED",
-			authorType: "AGENT" as const,
-			authorUserId: null,
+			authorType: "USER" as const,
+			authorUserId: "u-1",
 			questionId: "q1",
 			decisionKind: "CONTENT_TYPE",
 			subject: null,
-			summary: "Should we produce a Blog Post for this topic?",
-			content: null,
+			summary: null,
+			content: "Yes",
 			recommendedResponse: null,
 			whyItMatters: null,
 			answerSource: "MANUAL",
-			analysisVersion,
-			createdAt: new Date(),
-		},
-		replies: [],
-	});
+			analysisVersion: null,
+			...over,
+		});
+		return {
+			root: {
+				id,
+				parentId: null,
+				kind: "QUESTION" as const,
+				status,
+				authorType: "AGENT" as const,
+				authorUserId: null,
+				questionId: "q1",
+				decisionKind: "CONTENT_TYPE",
+				subject: null,
+				summary: "Should we produce a Blog Post for this topic?",
+				content: null,
+				recommendedResponse: null,
+				whyItMatters: null,
+				answerSource: "MANUAL",
+				analysisVersion,
+				createdAt: BEFORE,
+			},
+			replies: (
+				replies ??
+				(answeredAt ? [{ createdAt: answeredAt, content: "Yes" }] : [])
+			).map((r) => entry(r)),
+		};
+	};
+
+	const render2 = (threads: unknown[], aiVersion = 2) =>
+		renderTab({
+			aiVersion,
+			aiCreatedAt: ANALYSIS_WRITTEN_AT,
+			decisionThreads: threads,
+		});
 
 	it("says so when an answer landed after the current analysis", () => {
-		renderTab({ aiVersion: 2, decisionThreads: [answered(2)] });
+		render2([answered({ analysisVersion: 2, answeredAt: AFTER })]);
 
 		expect(
 			screen.getByTestId("analysis-behind-decisions"),
@@ -1294,7 +1460,7 @@ describe("PlanningAnalysisTab — answers the analysis predates", () => {
 	it("stays quiet once the analysis has been regenerated past them", () => {
 		// The question was raised against version 1 and answered; version 2 was
 		// written afterwards, so it already knows.
-		renderTab({ aiVersion: 2, decisionThreads: [answered(1)] });
+		render2([answered({ analysisVersion: 1, answeredAt: BEFORE })]);
 
 		expect(
 			screen.queryByTestId("analysis-behind-decisions"),
@@ -1302,13 +1468,106 @@ describe("PlanningAnalysisTab — answers the analysis predates", () => {
 	});
 
 	it("does not count a question nobody has answered", () => {
-		const open = answered(2);
+		render2([answered({ analysisVersion: 2, status: "OPEN" })]);
+
+		expect(
+			screen.queryByTestId("analysis-behind-decisions"),
+		).not.toBeInTheDocument();
+	});
+
+	/**
+	 * The defect this predicate was rewritten for (`found-defects.md` §7).
+	 *
+	 * Analysis v1 raises Q and Q is answered, so the root keeps
+	 * `analysisVersion: 1`. The analysis is regenerated to v2 — and
+	 * `reconcileTopicQuestions` SKIPS resolved roots, so that 1 never moves.
+	 * Someone then amends the answer. Version equality reads 1 !== 2 and says
+	 * the analysis already knows, while the decision changed minutes ago.
+	 */
+	it("fires when an answer is AMENDED after a regeneration", () => {
+		render2([
+			answered({
+				analysisVersion: 1,
+				replies: [
+					{ createdAt: BEFORE, content: "No" },
+					{ createdAt: AFTER, content: "Actually yes" },
+				],
+			}),
+		]);
+
+		expect(
+			screen.getByTestId("analysis-behind-decisions"),
+		).toHaveTextContent(/1 answer was recorded after this analysis/i);
+	});
+
+	/**
+	 * The same hole from the other side: the soft-close sweep sets status only,
+	 * so answering a `POSSIBLY_RESOLVED` root after a regeneration also leaves
+	 * `analysisVersion` on the version that raised it.
+	 */
+	it("fires when a soft-closed question is answered after a regeneration", () => {
+		render2([answered({ analysisVersion: 1, answeredAt: AFTER })]);
+
+		expect(
+			screen.getByTestId("analysis-behind-decisions"),
+		).toHaveTextContent(/1 answer was recorded after this analysis/i);
+	});
+
+	// The action belongs IN the banner, as Feature Maturation's does. It was
+	// words only — "regenerate to fold them in" — pointing at a button in the
+	// header strip, which on a long analysis is a scroll away from the sentence
+	// explaining why to press it.
+	it("offers the regenerate action inside the banner", async () => {
+		render2([answered({ analysisVersion: 2, answeredAt: AFTER })]);
+
+		const banner = screen.getByTestId("analysis-behind-decisions");
+		const button = within(banner).getByRole("button", {
+			name: /regenerate analysis/i,
+		});
+
+		await userEvent.click(button);
+		expect(generateMutate).toHaveBeenCalled();
+	});
+
+	it("shows a reader the banner but no action", () => {
+		// The server gates generation on PUBLISHING_TOPIC_UPDATE. A button that
+		// can only produce a 403 is worse than no button — and the sentence
+		// changes with it, since "regenerate" is not something they can do.
 		renderTab({
+			canEdit: false,
 			aiVersion: 2,
+			aiCreatedAt: ANALYSIS_WRITTEN_AT,
 			decisionThreads: [
-				{ ...open, root: { ...open.root, status: "OPEN" } },
+				answered({ analysisVersion: 2, answeredAt: AFTER }),
 			],
 		});
+
+		const banner = screen.getByTestId("analysis-behind-decisions");
+		expect(
+			within(banner).queryByRole("button", { name: /regenerate/i }),
+		).not.toBeInTheDocument();
+		expect(banner).toHaveTextContent(/not reflected in it yet/i);
+	});
+
+	it("says nothing at all while no analysis has been written", () => {
+		// No READY analysis means no baseline to compare against, and an answer
+		// cannot be "behind" a document that does not exist.
+		renderTab({
+			aiVersion: null,
+			aiCreatedAt: null,
+			decisionThreads: [
+				answered({ analysisVersion: 1, answeredAt: AFTER }),
+			],
+		});
+
+		expect(
+			screen.queryByTestId("analysis-behind-decisions"),
+		).not.toBeInTheDocument();
+	});
+
+	it("ignores AI run notes, which are records rather than questions", () => {
+		const note = answered({ analysisVersion: 2, answeredAt: AFTER });
+		render2([{ ...note, root: { ...note.root, kind: "AI_UPDATE" } }]);
 
 		expect(
 			screen.queryByTestId("analysis-behind-decisions"),

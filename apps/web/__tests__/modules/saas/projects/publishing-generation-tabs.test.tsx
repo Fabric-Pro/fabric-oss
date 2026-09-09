@@ -285,6 +285,66 @@ describe("GenerationTabs — state is in the accessible name (FR5)", () => {
 		expect(tab).toBeInTheDocument();
 	});
 
+	// #39. Every panel in this row opens on "No planning analysis yet — run one
+	// on the Planning & Analysis tab", so before one exists there is nothing to
+	// do in any of them. The row says so once instead of letting a reader find
+	// out a tab at a time.
+	//
+	// MUTED, not disabled: generation itself still works without an analysis,
+	// and a disabled tab would hide that from someone who wants to draft
+	// anyway.
+	it("marks the format tabs as awaiting an analysis, without disabling them", () => {
+		renderTabs({ analysis: null });
+
+		const tab = within(tablist()).getByRole("tab", {
+			name: /short post \/ tweet.*needs analysis/i,
+		});
+		expect(tab).not.toBeDisabled();
+	});
+
+	it("drops the hint once an analysis exists", () => {
+		renderTabs({
+			analysis: analysisWith({
+				recommended: [
+					{ type: "Short Post / Tweet", rationale: "a crisp result" },
+				],
+			}),
+		});
+
+		expect(
+			within(tablist()).queryByRole("tab", { name: /needs analysis/i }),
+		).not.toBeInTheDocument();
+	});
+
+	it("never hints at a type that already has a draft", () => {
+		// A generated tab is useful whatever the analysis says. Muting it would
+		// hide real content behind a hint about something else.
+		renderTabs({
+			analysis: null,
+			drafts: [
+				{
+					postType: "TWEET",
+					latestAttempt: null,
+					latestReady: {
+						id: "d1",
+						postType: "TWEET",
+						version: 1,
+						status: "READY",
+						error: null,
+						createdAt: new Date(),
+						updatedAt: new Date(),
+					},
+				},
+			] as Parameters<typeof buildGenerationTabModel>[0]["drafts"],
+		});
+
+		const tab = within(tablist()).getByRole("tab", {
+			name: /short post \/ tweet/i,
+		});
+		expect(tab).toHaveAccessibleName(/generated/i);
+		expect(tab).not.toHaveAccessibleName(/needs analysis/i);
+	});
+
 	it("keeps an AVAILABLE type plain but still names its state", () => {
 		// The card says a not-recommended type "should not be visually
 		// promoted", so it gets no badge — but the state must not be invisible
@@ -710,6 +770,88 @@ describe("GenerationTabs — degraded read", () => {
 			within(tablist()).queryByRole("tab", {
 				name: /short post \/ tweet.*generated/i,
 			}),
+		).not.toBeInTheDocument();
+	});
+});
+
+/**
+ * "Changed since last visit" (#46).
+ *
+ * The tabs already carried GENERATED and NEEDS CONFIRMATION — facts about the
+ * DRAFT. This is a fact about YOUR last visit, so it sits beside them rather
+ * than replacing one: both can be true of the same tab.
+ *
+ * Compared against the draft's own timestamps and never the topic's. A topic
+ * changes for many reasons — a status flip, an assignee, an answered question —
+ * and none of them is a reason to say a blog post has changed.
+ */
+describe("GenerationTabs — changed since last visit", () => {
+	const draftAt = (updatedAt: Date) =>
+		[
+			{
+				postType: "TWEET",
+				latestAttempt: null,
+				latestReady: {
+					id: "d1",
+					postType: "TWEET",
+					version: 1,
+					status: "READY",
+					error: null,
+					createdAt: updatedAt,
+					updatedAt,
+				},
+			},
+		] as Parameters<typeof buildGenerationTabModel>[0]["drafts"];
+
+	it("marks a tab whose draft moved after the last visit", () => {
+		renderTabs({
+			drafts: draftAt(new Date("2026-09-02T00:00:00Z")),
+			readMarkers: { TWEET: new Date("2026-09-01T00:00:00Z") },
+		});
+
+		expect(
+			within(tablist()).getByRole("tab", {
+				name: /short post \/ tweet.*changed/i,
+			}),
+		).toBeInTheDocument();
+	});
+
+	it("stays quiet when the visit came after the change", () => {
+		renderTabs({
+			drafts: draftAt(new Date("2026-09-01T00:00:00Z")),
+			readMarkers: { TWEET: new Date("2026-09-02T00:00:00Z") },
+		});
+
+		expect(
+			within(tablist()).queryByRole("tab", { name: /changed/i }),
+		).not.toBeInTheDocument();
+	});
+
+	it("says nothing about a tab nobody has ever opened", () => {
+		// Absent means "not changed", not "changed": a tab never visited is
+		// new, and RECOMMENDED already says so. Two markers for one state is
+		// noise.
+		renderTabs({
+			drafts: draftAt(new Date("2026-09-02T00:00:00Z")),
+			readMarkers: {},
+		});
+
+		expect(
+			within(tablist()).queryByRole("tab", { name: /changed/i }),
+		).not.toBeInTheDocument();
+	});
+
+	it("claims nothing when the drafts read failed", () => {
+		// The caller's banner already says the state could not load. A badge
+		// derived from data that did not arrive is worse than silence.
+		renderTabs({
+			drafts: draftAt(new Date("2026-09-02T00:00:00Z")),
+			readMarkers: { TWEET: new Date("2026-09-01T00:00:00Z") },
+			hasError: true,
+		});
+
+		expect(
+			within(tablist()).queryByRole("tab", { name: /changed/i }),
 		).not.toBeInTheDocument();
 	});
 });

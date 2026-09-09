@@ -1,0 +1,11 @@
+-- Several suggested answers per question, as Feature Maturation offers.
+--
+-- `[{ text, justification }]`, at most four. JSON rather than a second table,
+-- following FMv2's own precedent: the options are read and written as one unit,
+-- never queried across and never joined to.
+--
+-- `recommendedResponse` is deliberately kept. It is the single-answer form
+-- every existing row carries and every reader falls back to, so nothing needs
+-- backfilling: a question minted before this reads exactly as it did, and one
+-- minted after renders its options instead.
+ALTER TABLE "publishing_topic_decision_entry" ADD COLUMN "answerOptions" JSONB;

@@ -57,6 +57,27 @@ const {
 	invalidateQueriesMock: vi.fn(),
 }));
 
+/**
+ * The global `next/navigation` mock hands out a fresh `push` on every call, so
+ * nothing can assert on it. This mirrors that mock exactly and pins the one
+ * function these tests need — the whole-card click has no other observable
+ * effect.
+ */
+const { routerPush } = vi.hoisted(() => ({ routerPush: vi.fn() }));
+vi.mock("next/navigation", () => ({
+	useRouter: () => ({
+		push: routerPush,
+		replace: vi.fn(),
+		prefetch: vi.fn(),
+		back: vi.fn(),
+		pathname: "/",
+		query: {},
+	}),
+	usePathname: () => "/",
+	useSearchParams: () => new URLSearchParams(),
+	useParams: () => ({}),
+}));
+
 vi.mock("sonner", () => ({ toast: { error: toastError } }));
 
 // Task 6: PublishingSuiteList now reads the viewer's own id via this hook.
@@ -200,6 +221,16 @@ vi.mock("@shared/lib/orpc-query-utils", () => {
 					),
 					setTopicReadState: proc(
 						"projects.publishingSuite.setTopicReadState",
+					),
+					// The reader's own sort and layout. Read by the list's
+					// header controls — same obligation as the entries below:
+					// a missing one is `undefined.queryOptions`, which takes
+					// out every case in the file rather than one assertion.
+					getListPreference: proc(
+						"projects.publishingSuite.getListPreference",
+					),
+					setListPreference: proc(
+						"projects.publishingSuite.setListPreference",
 					),
 					// These two are read by PublishingCycleHistory and its
 					// Channels disclosure, which render inside this component.
@@ -1212,18 +1243,33 @@ describe("neglected suggestions", () => {
 		).not.toBeInTheDocument();
 	});
 
-	// Only STALE leaves. An aging row is de-emphasised where it stands, so it
-	// is interleaved here between the fresh ones: an implementation that
-	// treated each tier in turn would move `Aging middle` and fail this.
-	it("archives stale suggestions out of Suggested without moving aging ones", () => {
+	// Stale LEAVES, aging SINKS. The fixture interleaves both between the fresh
+	// rows so the assertion pins two rules at once: the aging pair drops below
+	// every live topic, and the two fresh ones keep their incoming order
+	// relative to each other — which is 1B's per-viewer ranking surviving.
+	//
+	// This replaces an assertion that an aging row stays exactly where it was.
+	// The card owner asked for the opposite ("if for 10+ days we can start
+	// lowering it in the list"), and that call supersedes the earlier one.
+	it("archives the stale and sinks the aging, oldest last", () => {
 		const stale = daysAgo(STALE_AFTER_DAYS + 10);
-		const aging = daysAgo(AGING_AFTER_DAYS + 2);
+		const agingOlder = daysAgo(STALE_AFTER_DAYS - 1);
+		const agingNewer = daysAgo(AGING_AFTER_DAYS + 2);
 		const fresh = daysAgo(2);
 		state.topics = [
 			makeTopic({ id: "f1", title: "Fresh first", updatedAt: fresh }),
 			makeTopic({ id: "s1", title: "Stale first", updatedAt: stale }),
-			makeTopic({ id: "a1", title: "Aging middle", updatedAt: aging }),
+			makeTopic({
+				id: "a1",
+				title: "Aging older",
+				updatedAt: agingOlder,
+			}),
 			makeTopic({ id: "f2", title: "Fresh second", updatedAt: fresh }),
+			makeTopic({
+				id: "a2",
+				title: "Aging newer",
+				updatedAt: agingNewer,
+			}),
 			makeTopic({ id: "s2", title: "Stale second", updatedAt: stale }),
 		];
 		renderList();
@@ -1231,7 +1277,12 @@ describe("neglected suggestions", () => {
 		const titles = within(suggested)
 			.getAllByRole("link")
 			.map((a) => a.textContent);
-		expect(titles).toEqual(["Fresh first", "Aging middle", "Fresh second"]);
+		expect(titles).toEqual([
+			"Fresh first",
+			"Fresh second",
+			"Aging newer",
+			"Aging older",
+		]);
 	});
 
 	// The list must SAY what it removed. A queue that quietly shrinks is the
@@ -1508,6 +1559,39 @@ describe("search", () => {
 		expect(screen.getByText("Shipping the inbox")).toBeInTheDocument();
 	});
 
+	// The get-started spotlight targets `publishing-suite-inbox`. That anchor
+	// used to sit on the sectioned branch, so searching — or picking a status
+	// chip — took it out of the DOM and a "Show me" fired mid-search
+	// highlighted nothing. It now rides an always-rendered wrapper, the same
+	// place `publishing-suite-list` sits for the same reason.
+	it("keeps the get-started anchor mounted while a search narrows the list", async () => {
+		const user = userEvent.setup();
+		state.topics = [makeTopic({ id: "a", title: "Shipping the inbox" })];
+		const { container } = renderList();
+		expect(
+			container.querySelector(
+				'[data-onboarding-target="publishing-suite-inbox"]',
+			),
+		).not.toBeNull();
+
+		await user.type(searchBox(), "inbox");
+		expect(
+			container.querySelector(
+				'[data-onboarding-target="publishing-suite-inbox"]',
+			),
+		).not.toBeNull();
+
+		// And when the search matches nothing at all, which is the state a
+		// spotlight is most likely to land in.
+		await user.clear(searchBox());
+		await user.type(searchBox(), "zzzz-no-such-topic");
+		expect(
+			container.querySelector(
+				'[data-onboarding-target="publishing-suite-inbox"]',
+			),
+		).not.toBeNull();
+	});
+
 	// Search deliberately spans EVERY status, including the two the Inbox
 	// sections exclude. A topic you declined last month and half remember is
 	// exactly what search is reached for, and it is otherwise only findable by
@@ -1538,5 +1622,244 @@ describe("search", () => {
 		expect(
 			screen.getByText(/No topics match .*kubernetes/),
 		).toBeInTheDocument();
+	});
+});
+
+/**
+ * FR2 made the title a real anchor so middle-click and "open in new tab" work,
+ * and the chevron beside it a separate disclosure button. What nobody could do
+ * was click the CARD — the owner reported exactly that. The row now navigates
+ * from anywhere that is not itself a control.
+ */
+describe("clicking the row", () => {
+	beforeEach(() => {
+		routerPush.mockClear();
+	});
+
+	it("opens the topic from anywhere on the card", async () => {
+		const user = userEvent.setup();
+		state.topics = [makeTopic({ id: "a", title: "Clickable topic" })];
+		renderList();
+
+		await user.click(
+			screen.getByText("Clickable topic").closest("li") as HTMLElement,
+		);
+
+		expect(routerPush).toHaveBeenCalledTimes(1);
+		expect(routerPush.mock.calls[0][0]).toContain("/publishing/a");
+	});
+
+	it("leaves the controls inside it alone", async () => {
+		// The status select, the disclosure chevron, mute and snooze all live
+		// inside the card. If the row swallowed their clicks, opening the
+		// status dropdown would navigate away instead of opening.
+		const user = userEvent.setup();
+		state.topics = [makeTopic({ id: "a", title: "Clickable topic" })];
+		renderList();
+
+		await user.click(screen.getByTestId("topic-disclosure"));
+
+		expect(routerPush).not.toHaveBeenCalled();
+	});
+
+	it("leaves a modified click to the anchor", async () => {
+		// Cmd/Ctrl-click means "open somewhere else" and belongs to the title
+		// link, which is a real anchor. Handling it here would open the topic
+		// in the current tab and quietly break that gesture.
+		const user = userEvent.setup();
+		state.topics = [makeTopic({ id: "a", title: "Clickable topic" })];
+		renderList();
+
+		const row = screen
+			.getByText("Clickable topic")
+			.closest("li") as HTMLElement;
+		await user.keyboard("{Meta>}");
+		await user.click(row);
+		await user.keyboard("{/Meta}");
+
+		expect(routerPush).not.toHaveBeenCalled();
+	});
+});
+
+/**
+ * "Worth a look" — the hot-topic section (#2).
+ *
+ * A forced ranking rather than a score, measured before it was built: across
+ * 202 staging topics 68% cite two or more sources, so an absolute bar would
+ * have marked most of the queue. The model ranks its own batch, capped at two
+ * per cycle, and the reason it gives rides the row — a tint with no explanation
+ * is the badge people learn to ignore.
+ */
+describe("worth a look", () => {
+	it("gives a highlighted topic its own section, above the rest", () => {
+		state.topics = [
+			makeTopic({ id: "plain", title: "An ordinary topic" }),
+			makeTopic({
+				id: "hot",
+				title: "The standout",
+				highlightReason: "Came up in three separate meetings",
+			}),
+		];
+		renderList();
+
+		const section = screen.getByRole("region", { name: /worth a look/i });
+		expect(within(section).getByText("The standout")).toBeInTheDocument();
+		expect(
+			within(section).queryByText("An ordinary topic"),
+		).not.toBeInTheDocument();
+	});
+
+	it("says WHY, not just that it stands out", () => {
+		state.topics = [
+			makeTopic({
+				id: "hot",
+				title: "The standout",
+				highlightReason: "Came up in three separate meetings",
+			}),
+		];
+		renderList();
+
+		expect(
+			screen.getByText("Came up in three separate meetings"),
+		).toBeInTheDocument();
+	});
+
+	it("renders no empty section on a quiet week", () => {
+		// The other two sections answer "what should I look at next", and an
+		// empty one is itself an answer. This one claims something stands out —
+		// an empty heading every quiet week teaches a reader to stop believing
+		// it.
+		state.topics = [makeTopic({ id: "plain", title: "An ordinary topic" })];
+		renderList();
+
+		expect(
+			screen.queryByRole("region", { name: /worth a look/i }),
+		).not.toBeInTheDocument();
+	});
+
+	it("lets the highlight expire instead of pinning a topic there", () => {
+		state.topics = [
+			makeTopic({
+				id: "old",
+				title: "Was worth a look last week",
+				createdAt: daysAgo(9),
+				updatedAt: daysAgo(9),
+				highlightReason: "Stale claim",
+			}),
+		];
+		renderList();
+
+		expect(
+			screen.queryByRole("region", { name: /worth a look/i }),
+		).not.toBeInTheDocument();
+		expect(screen.queryByText("Stale claim")).not.toBeInTheDocument();
+	});
+});
+
+/**
+ * The sort and layout controls — "lets have option to change sorting and
+ * remember user's preference so when he revisits its the same for him", and
+ * "maybe lets have an option to change view".
+ *
+ * The preference is stored per user per project, so this only pins what the
+ * component does with it; the storage is covered in the API and query suites.
+ */
+describe("sort and layout controls", () => {
+	it("offers them while the sections are on screen", () => {
+		state.topics = [makeTopic({ id: "a", title: "A topic" })];
+		renderList();
+
+		expect(
+			screen.getByRole("combobox", { name: /sort topics/i }),
+		).toBeInTheDocument();
+		expect(
+			screen.getByRole("group", { name: /inbox layout/i }),
+		).toBeInTheDocument();
+	});
+
+	it("hides them during a search", async () => {
+		// A search replaces the sections with one flat list this control does
+		// not order. Leaving it on screen would be a lie about what it does.
+		const user = userEvent.setup();
+		state.topics = [makeTopic({ id: "a", title: "A topic" })];
+		renderList();
+
+		await user.type(
+			screen.getByRole("searchbox", { name: /search topics/i }),
+			"topic",
+		);
+
+		expect(
+			screen.queryByRole("combobox", { name: /sort topics/i }),
+		).not.toBeInTheDocument();
+	});
+
+	it("shows which layout is active", () => {
+		state.topics = [makeTopic({ id: "a", title: "A topic" })];
+		renderList();
+
+		const group = screen.getByRole("group", { name: /inbox layout/i });
+		expect(
+			within(group).getByRole("button", { name: /^list$/i }),
+		).toHaveAttribute("aria-pressed", "true");
+		expect(
+			within(group).getByRole("button", { name: /two columns/i }),
+		).toHaveAttribute("aria-pressed", "false");
+	});
+});
+
+/**
+ * Refresh history moved off the page and behind a button (#8).
+ *
+ * It was the last block on the list, under every state, and the card owner
+ * could not tell what it was: "i wouldnt even know its here with such long
+ * list, but still dont understand what is that". A table of runs is reference
+ * material — worth reaching for when the list is thinner than expected, and
+ * noise the rest of the time.
+ */
+describe("refresh history", () => {
+	it("is behind a button rather than under the list", () => {
+		state.topics = [makeTopic({ id: "a", title: "A topic" })];
+		renderList();
+
+		expect(
+			screen.getByRole("button", { name: /refresh history/i }),
+		).toBeInTheDocument();
+	});
+
+	it("keeps the tour anchor, on the control that opens it", () => {
+		// The anchor MOVED rather than being deleted. A spotlight cannot point
+		// at something that is not on screen until you click, so it belongs on
+		// the button — and the tour copy moved with it, which is what keeps the
+		// drift test green.
+		state.topics = [makeTopic({ id: "a", title: "A topic" })];
+		const { container } = renderList();
+
+		const anchored = container.querySelector(
+			'[data-onboarding-target="publishing-history"]',
+		);
+		expect(anchored?.tagName).toBe("BUTTON");
+	});
+
+	it("marks the button when the most recent refresh failed", () => {
+		// Only a FAILURE earns a mark. A run that found nothing is ordinary and
+		// the list says so itself; a failed one is WHY the list is short.
+		state.cycle = { status: "FAILED" };
+		state.topics = [makeTopic({ id: "a", title: "A topic" })];
+		renderList();
+
+		expect(
+			screen.getByLabelText(/most recent refresh failed/i),
+		).toBeInTheDocument();
+	});
+
+	it("leaves the button unmarked for an ordinary refresh", () => {
+		state.cycle = { status: "READY" };
+		state.topics = [makeTopic({ id: "a", title: "A topic" })];
+		renderList();
+
+		expect(
+			screen.queryByLabelText(/most recent refresh failed/i),
+		).not.toBeInTheDocument();
 	});
 });

@@ -97,6 +97,10 @@ export const LlmOutputSchema = z.object({
 			postTypeRecommendations: z.array(z.unknown()).optional(),
 			angle: z.unknown().optional(),
 			subject: z.unknown().optional(),
+			// Loose, for the same I4 reason as the fields above: a strict shape
+			// here would reject a whole batch over one malformed highlight.
+			// Normalized and CAPPED below.
+			highlightReason: z.unknown().optional(),
 		}),
 	),
 });
@@ -301,6 +305,23 @@ async function runSummarizeTopicSuggestions(
 
 	trackUsage();
 
+	/**
+	 * How many topics in one cycle may be highlighted.
+	 *
+	 * Enforced HERE and not left to the prompt. The instruction asks the model
+	 * to rank its own batch and mark the strongest, but a model that marks
+	 * everything produces a section that means nothing, and the whole reason
+	 * this is a forced ranking rather than a score is that absolute measures
+	 * drift upward. Measured first: across 202 staging topics, 68% clear "two
+	 * or more sources" and four of five do in a typical week, so any threshold
+	 * would have highlighted most of the queue.
+	 *
+	 * Two, against a cycle that yields about five topics — a real signal rather
+	 * than wallpaper.
+	 */
+	const MAX_HIGHLIGHTS = 2;
+	let highlightsUsed = 0;
+
 	const normalizedObject = {
 		topics: result.object.topics.map((t) => {
 			const enrichment = normalizeTopicEnrichment({
@@ -318,6 +339,20 @@ async function runSummarizeTopicSuggestions(
 				postTypeRecommendations: enrichment.postTypeRecommendations,
 				angle: enrichment.angle,
 				subject: enrichment.subject,
+				// Order is the model's own ranking, so "the first two that
+				// carry a reason" IS the top two it chose. Trimmed and bounded
+				// because this reaches a row surface directly.
+				highlightReason: (() => {
+					const raw =
+						typeof t.highlightReason === "string"
+							? t.highlightReason.trim()
+							: "";
+					if (raw === "" || highlightsUsed >= MAX_HIGHLIGHTS) {
+						return null;
+					}
+					highlightsUsed += 1;
+					return raw.slice(0, 200);
+				})(),
 			};
 		}),
 	};

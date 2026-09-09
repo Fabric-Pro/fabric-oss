@@ -67,6 +67,13 @@ export const updatePublishingSuiteSettingsProcedure = tenantProtectedProcedure
 				.nullable()
 				.optional(),
 			notificationsEnabled: z.boolean().optional(),
+			/**
+			 * Whether the analysis drafts suggested answers for the questions
+			 * it raises. Project-level rather than per-topic: Publishing mints
+			 * its questions once, when the analysis runs, so a per-topic switch
+			 * is one nobody could reach in time.
+			 */
+			autoProposeAnswers: z.boolean().optional(),
 			// Selected broadcast targets. `[]` turns chat off; omitted leaves the
 			// stored selection alone. Re-validated against the project's LIVE
 			// linked set below — a channel unlinked since the form loaded is
@@ -191,6 +198,7 @@ export const updatePublishingSuiteSettingsProcedure = tenantProtectedProcedure
 				cadence: input.cadence,
 				lookbackDays: input.lookbackDays,
 				notificationsEnabled: input.notificationsEnabled,
+				autoProposeAnswers: input.autoProposeAnswers,
 				chatChannels,
 				// Straight through — no filtering step. Unlike `chatChannels` there
 				// is no live external set to re-validate against: the post-type

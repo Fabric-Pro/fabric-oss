@@ -189,6 +189,8 @@ export interface PersistCycleTerminalInput {
 		angle?: string;
 		subject?: string | null;
 		subjectKey?: string | null;
+		/** Why this one is worth a look first; already capped upstream. */
+		highlightReason?: string | null;
 	}[];
 	sourceCoverage: SourceCoverage; // committed ONLY for kind === "SUGGESTIONS" (P5)
 	sourceFailures: SourceFailures;
@@ -409,6 +411,11 @@ export async function persistCycleTerminal(
 					angle: t.angle || null, // blank angle = "none" -> NULL, not "" (Copilot; normalizer already coerces "" -> undefined upstream)
 					subject: t.subject ?? null,
 					subjectKey: t.subjectKey ?? null,
+					// Already capped in `summarizeTopicSuggestions`, where the
+					// whole batch is visible. Nothing here re-decides it — a
+					// second cap applied per-insert could not see the batch and
+					// would silently disagree with the one that could.
+					highlightReason: t.highlightReason ?? null,
 				})),
 				skipDuplicates: true,
 			});
@@ -813,6 +820,12 @@ export interface PublishingTopicListItem {
 	rankReason: PublishingTopicRankReason;
 	authorRecommendation: PublishingTopicAuthorRecommendation;
 	angle: string | null;
+	/**
+	 * Why this topic is worth a look before the others, in the model's own
+	 * words — `null` on almost every row. See the column's own comment for why
+	 * it is a forced ranking rather than a score.
+	 */
+	highlightReason: string | null;
 	subject: string | null;
 	whySuggested: PublishingWhySuggested;
 	userPostTypes: PublishingTopicPostType[] | null;
@@ -843,6 +856,7 @@ const TOPIC_LIST_SELECT = {
 	relevantFunctionTags: true,
 	postTypeRecommendations: true,
 	angle: true,
+	highlightReason: true,
 	subject: true,
 	provenance: true,
 	postTypesOverridden: true,
@@ -2228,21 +2242,83 @@ export async function resolveProjectContributorIds(
 	// global identity tables (not tenant-RLS-scoped); the worker runs BYPASSRLS.
 	if (githubAuthorIds.length > 0) {
 		try {
-			const accounts = await db.account.findMany({
-				where: {
-					providerId: "github",
-					accountId: { in: githubAuthorIds },
-				},
-				select: { accountId: true, userId: true },
-			});
+			const wanted = new Set(githubAuthorIds);
 			const usersByAccountId = new Map<string, Set<string>>();
-			for (const a of accounts) {
-				let set = usersByAccountId.get(a.accountId);
+			const link = (githubId: string, userId: string) => {
+				let set = usersByAccountId.get(githubId);
 				if (!set) {
 					set = new Set<string>();
-					usersByAccountId.set(a.accountId, set);
+					usersByAccountId.set(githubId, set);
 				}
-				set.add(a.userId);
+				set.add(userId);
+			};
+
+			/**
+			 * TWO sources for one identity, and the second is the one that
+			 * actually has the data.
+			 *
+			 * `Account(providerId: "github")` is written by exactly one thing:
+			 * Better Auth social sign-in — someone clicking "Sign in with
+			 * GitHub". That is not how Fabric learns a GitHub identity.
+			 * Connecting a repository runs a SEPARATE OAuth flow that writes
+			 * `WorkflowIntegration.settings.githubUserId`, and a project cannot
+			 * have PRs in its suggestion context unless someone completed that
+			 * flow. Reading only the first meant the join was keyed to a login
+			 * METHOD rather than to the connection the product creates — 2
+			 * identities against 12 in production, and 6% of topics on staging
+			 * resolving any contributor at all.
+			 *
+			 * Both are consulted, and both feed the same ambiguity check below,
+			 * so a GitHub account reachable through two different Fabric users
+			 * still credits nobody rather than fanning out.
+			 */
+			const [accounts, project] = await Promise.all([
+				db.account.findMany({
+					where: {
+						providerId: "github",
+						accountId: { in: githubAuthorIds },
+					},
+					select: { accountId: true, userId: true },
+				}),
+				db.project.findUnique({
+					where: { id: projectId },
+					select: { organizationId: true },
+				}),
+			]);
+			for (const a of accounts) {
+				link(a.accountId, a.userId);
+			}
+
+			// Scoped to the project's own organization rather than swept
+			// globally: a contributor who is not in this tenant is not a
+			// contributor to this project's topics, and an unscoped read of
+			// every GitHub integration ever created would grow without bound.
+			// `settings` is untyped JSON, and `githubUserId` arrives from the
+			// GitHub API as a NUMBER while `githubAuthorIds` are strings — the
+			// comparison is done on strings for that reason, not by accident.
+			if (project?.organizationId) {
+				const integrations = await db.workflowIntegration.findMany({
+					where: {
+						provider: "GITHUB",
+						isActive: true,
+						organizationId: project.organizationId,
+					},
+					select: { userId: true, settings: true },
+				});
+				for (const integration of integrations) {
+					const githubUserId = (
+						integration.settings as {
+							githubUserId?: unknown;
+						} | null
+					)?.githubUserId;
+					if (githubUserId == null) {
+						continue;
+					}
+					const key = String(githubUserId);
+					if (wanted.has(key)) {
+						link(key, integration.userId);
+					}
+				}
 			}
 			for (const [accountId, userIds] of usersByAccountId) {
 				if (userIds.size === 1) {
@@ -2290,5 +2366,115 @@ export async function resolveProjectTenant(
 	return {
 		organizationId: p.organizationId ?? null,
 		userId: p.organizationId ? null : p.userId, // org → userId null; personal → keep owner
+	};
+}
+
+// =============================================================================
+// Inbox preferences (Fizzy #1851 follow-up)
+// =============================================================================
+
+export type PublishingListSortValue =
+	| "RECOMMENDED"
+	| "RECENTLY_UPDATED"
+	| "RECENTLY_CREATED";
+export type PublishingListViewValue = "LIST" | "TWO_COLUMN";
+
+export interface PublishingListPreferenceValue {
+	sort: PublishingListSortValue;
+	view: PublishingListViewValue;
+}
+
+/**
+ * The defaults a reader with no stored row gets.
+ *
+ * `RECOMMENDED` and not "newest first": the incoming order is 1B's per-viewer
+ * ranking, which already floats a reader's own beat to the top. Defaulting to a
+ * date sort would silently switch personalization off for everyone who never
+ * opens the control, which is most people.
+ */
+export const PUBLISHING_LIST_PREFERENCE_DEFAULT: PublishingListPreferenceValue =
+	{
+		sort: "RECOMMENDED",
+		view: "LIST",
+	};
+
+/**
+ * One reader's Inbox preferences for one project.
+ *
+ * Absence is not an error and not a special case: a reader with no row gets the
+ * defaults, which is the same answer a row holding them would give. Nothing
+ * writes on read.
+ */
+export async function getPublishingListPreference(input: {
+	userId: string;
+	projectId: string;
+}): Promise<PublishingListPreferenceValue> {
+	const row = await db.publishingListPreference.findUnique({
+		where: {
+			userId_projectId: {
+				userId: input.userId,
+				projectId: input.projectId,
+			},
+		},
+		select: { sort: true, view: true },
+	});
+	if (!row) {
+		return PUBLISHING_LIST_PREFERENCE_DEFAULT;
+	}
+	return {
+		sort: row.sort as PublishingListSortValue,
+		view: row.view as PublishingListViewValue,
+	};
+}
+
+/**
+ * Store one reader's preference, creating the row on first use.
+ *
+ * PARTIAL by design — the two controls are independent and a reader changing
+ * the sort must not silently reset the layout somebody set last week. An
+ * upsert's `create` still has to name both, so the unspecified half falls back
+ * to the default rather than to whatever the caller happened to send.
+ *
+ * The tenant columns come from the PROJECT, never from caller input: a
+ * preference stamped with an ambient organization would be a row RLS places in
+ * the wrong tenant, and the project row is the only thing that knows the truth.
+ */
+export async function setPublishingListPreference(input: {
+	userId: string;
+	projectId: string;
+	sort?: PublishingListSortValue;
+	view?: PublishingListViewValue;
+}): Promise<PublishingListPreferenceValue> {
+	const project = await db.project.findUnique({
+		where: { id: input.projectId },
+		select: { organizationId: true },
+	});
+	if (!project) {
+		return PUBLISHING_LIST_PREFERENCE_DEFAULT;
+	}
+
+	const row = await db.publishingListPreference.upsert({
+		where: {
+			userId_projectId: {
+				userId: input.userId,
+				projectId: input.projectId,
+			},
+		},
+		create: {
+			userId: input.userId,
+			projectId: input.projectId,
+			organizationId: project.organizationId,
+			sort: input.sort ?? PUBLISHING_LIST_PREFERENCE_DEFAULT.sort,
+			view: input.view ?? PUBLISHING_LIST_PREFERENCE_DEFAULT.view,
+		},
+		update: {
+			...(input.sort ? { sort: input.sort } : {}),
+			...(input.view ? { view: input.view } : {}),
+		},
+		select: { sort: true, view: true },
+	});
+	return {
+		sort: row.sort as PublishingListSortValue,
+		view: row.view as PublishingListViewValue,
 	};
 }

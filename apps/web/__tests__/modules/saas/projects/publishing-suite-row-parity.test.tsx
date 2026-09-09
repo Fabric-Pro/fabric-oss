@@ -259,6 +259,16 @@ vi.mock("@shared/lib/orpc-query-utils", () => {
 					setTopicReadState: m(
 						"projects.publishingSuite.setTopicReadState",
 					),
+					// The reader's own sort and layout, read and written by the
+					// list header. Same obligation as the entries around it: a
+					// missing one is `undefined.queryOptions` failing every
+					// case in the file rather than one assertion.
+					getListPreference: q(
+						"projects.publishingSuite.getListPreference",
+					),
+					setListPreference: m(
+						"projects.publishingSuite.setListPreference",
+					),
 					// Task 5 (Fizzy #2265, 1D-2): PublishingSuiteList now also
 					// unconditionally constructs the snooze mutation, regardless of
 					// the flag value mocked in this file. Same obligation as

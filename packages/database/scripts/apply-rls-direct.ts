@@ -413,6 +413,21 @@ async function applyRLS() {
 			{ name: "publishing_suggestion_cycle", policy: "user_owned" }, // Publishing Suite run ledger
 			{ name: "publishing_topic", policy: "user_owned" }, // Publishing Suite topics
 			{ name: "publishing_topic_read", policy: "per_user_within_org" }, // Per-user topic read markers
+			// Per-user, per-content-type read markers. Same policy as the
+			// topic markers above and for the same reason: when a colleague
+			// last looked at a draft is not this member's business.
+			{
+				name: "publishing_topic_draft_read",
+				policy: "per_user_within_org",
+			},
+			// One reader's Inbox sort and layout for one project. Per-user
+			// within the org for the same reason the read markers are: a
+			// colleague's preference is not this member's business, and it must
+			// not leak across a tenant either.
+			{
+				name: "publishing_list_preference",
+				policy: "per_user_within_org",
+			},
 			{ name: "publishing_suite_settings", policy: "user_owned" }, // Publishing Suite per-project config
 			{ name: "publishing_notification_delivery", policy: "user_owned" }, // Publishing Suite delivery ledger
 			{ name: "publishing_chat_delivery", policy: "user_owned" }, // Publishing Suite chat broadcast ledger

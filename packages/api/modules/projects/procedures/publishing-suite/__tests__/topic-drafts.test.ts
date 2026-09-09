@@ -16,6 +16,10 @@ const flagMocks = vi.hoisted(() => ({
 }));
 vi.mock("@repo/database", () => ({
 	listTopicDrafts: vi.fn(),
+	// Read alongside the drafts so a tab can say it changed since the caller's
+	// last visit. Always the CALLER's markers — the input carries no userId.
+	getTopicDraftReadMarkers: vi.fn().mockResolvedValue({}),
+	markTopicDraftRead: vi.fn().mockResolvedValue(true),
 	// A REAL tuple, not a vi.fn(): topic-drafts.ts builds its OUTPUT schema with
 	// `z.enum(PUBLISHING_TOPIC_POST_TYPES)` at module load, so a mock function
 	// here is a construction-time TypeError rather than a failing assertion.
@@ -74,6 +78,13 @@ const INPUT = {
 	organizationId: "org-1",
 };
 
+/**
+ * The read markers are the CALLER's, always — the procedure takes the user from
+ * the session and the input carries no userId, so nobody can read when a
+ * colleague last opened a draft.
+ */
+const CONTEXT = { user: { id: "user-1" } };
+
 beforeEach(() => {
 	vi.clearAllMocks();
 	flagMocks.isFeatureEnabled.mockResolvedValue(true);
@@ -105,15 +116,15 @@ describe("listTopicDrafts procedure", () => {
 		// project looked unresolvable to the gate.
 		flagMocks.isFeatureEnabled.mockResolvedValue(false);
 
-		await expect(handler({ input: INPUT })).rejects.toThrow(
-			/Publishing Suite is not enabled/,
-		);
+		await expect(
+			handler({ input: INPUT, context: CONTEXT }),
+		).rejects.toThrow(/Publishing Suite is not enabled/);
 		// And nothing reached the database.
 		expect(listTopicDrafts).not.toHaveBeenCalled();
 	});
 
 	it("scopes the read by BOTH projectId and topicId", async () => {
-		await handler({ input: INPUT });
+		await handler({ input: INPUT, context: CONTEXT });
 
 		expect(listTopicDrafts).toHaveBeenCalledWith({
 			projectId: "project-1",
@@ -126,7 +137,7 @@ describe("listTopicDrafts procedure", () => {
 		// project row. Passing the client's own organizationId down would make a
 		// client input part of the scope, which is the shape every tenancy bug
 		// in this area has had.
-		await handler({ input: INPUT });
+		await handler({ input: INPUT, context: CONTEXT });
 
 		const passed = (listTopicDrafts as unknown as ReturnType<typeof vi.fn>)
 			.mock.calls[0][0];
@@ -148,6 +159,10 @@ describe("listTopicDrafts procedure", () => {
 			listTopicDrafts as unknown as ReturnType<typeof vi.fn>
 		).mockResolvedValue(payload);
 
-		await expect(handler({ input: INPUT })).resolves.toEqual(payload);
+		// Plus the caller's own read markers, which the procedure fetches
+		// alongside — the query layer's payload is passed through untouched.
+		await expect(
+			handler({ input: INPUT, context: CONTEXT }),
+		).resolves.toEqual({ ...payload, readMarkers: {} });
 	});
 });
