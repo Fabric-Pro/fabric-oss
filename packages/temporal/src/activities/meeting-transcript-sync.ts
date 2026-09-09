@@ -42,6 +42,8 @@ export interface LinkedMeetingJoinUrl {
 	id: string;
 	joinUrl: string;
 	subject: string | null;
+	/** Who linked it, and therefore whose calendar it is read from (#2354). */
+	userId: string | null;
 }
 
 export interface ListRecentMeetingInstancesInput {
@@ -54,6 +56,15 @@ export interface ListRecentMeetingInstancesInput {
 	 * fetch itself is keyed on the user's token, not the project (#2355).
 	 */
 	projectId?: string;
+	/**
+	 * The linked meetings this one calendar read answers for. A project reads
+	 * one calendar per linker (#2354), so the failure state it records or
+	 * clears must land on exactly these rows and no others — otherwise one
+	 * healthy linker's pass clears a departed linker's failures. Omitted by
+	 * pre-#2354 workflow runs, which read a single calendar for the whole
+	 * project and so are still correctly project-wide.
+	 */
+	linkedMeetingIds?: string[];
 }
 
 const DEFAULT_LOOKBACK_DAYS = 30;
@@ -248,7 +259,13 @@ export async function getLinkedMeetingJoinUrlsActivity(
 export async function listRecentMeetingInstancesForLinkedUrls(
 	input: ListRecentMeetingInstancesInput,
 ): Promise<MeetingInstance[]> {
-	const { userId, organizationId, linkedJoinUrls, projectId } = input;
+	const {
+		userId,
+		organizationId,
+		linkedJoinUrls,
+		projectId,
+		linkedMeetingIds,
+	} = input;
 	const window = resolveLookbackWindow(input.daysBack, new Date());
 
 	logger.info(
@@ -294,8 +311,9 @@ export async function listRecentMeetingInstancesForLinkedUrls(
 				if (projectId) {
 					await recordMeetingSyncFailure({
 						projectId,
+						linkedMeetingIds,
 						errorMessage:
-							"Microsoft is not connected for the account this sync runs on. Reconnect it to resume.",
+							"Microsoft is not connected for the account these meetings sync under. Reconnect it, or take the meetings over, to resume.",
 					});
 				}
 				return [];
@@ -310,7 +328,7 @@ export async function listRecentMeetingInstancesForLinkedUrls(
 		// transcript arriving means a project that recovers while genuinely
 		// quiet does not keep its banner forever (#2311's bug, on meetings).
 		if (projectId) {
-			await clearMeetingSyncFailures(projectId);
+			await clearMeetingSyncFailures({ projectId, linkedMeetingIds });
 		}
 
 		// Build a set for efficient lookup (normalize URLs to lowercase for comparison)
@@ -362,8 +380,9 @@ export async function listRecentMeetingInstancesForLinkedUrls(
 			if (projectId) {
 				await recordMeetingSyncFailure({
 					projectId,
+					linkedMeetingIds,
 					errorMessage:
-						"Microsoft is not connected for the account this sync runs on. Reconnect it to resume.",
+						"Microsoft is not connected for the account these meetings sync under. Reconnect it, or take the meetings over, to resume.",
 				});
 			}
 			return [];

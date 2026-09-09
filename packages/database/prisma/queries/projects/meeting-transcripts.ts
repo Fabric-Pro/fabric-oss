@@ -83,6 +83,13 @@ export async function getLinkedMeetings(projectId: string) {
  * exactly this query stops seeing the row — the meeting, its transcripts and
  * their context stay live and readable everywhere else, which is what makes it
  * the non-destructive alternative to unlinking (Fizzy #2355).
+ *
+ * `userId` — who linked the meeting — is returned because the sync now reads
+ * each meeting under that person's own Microsoft account (Fizzy #2354). It was
+ * written at link time and read by nothing, which is why a project could only
+ * ever collect the meetings ONE account could see. Null on rows linked before
+ * the column existed; the workflow falls back to the project-level account for
+ * those.
  */
 export async function getLinkedMeetingJoinUrls(projectId: string) {
 	return await db.projectLinkedMeeting.findMany({
@@ -91,6 +98,7 @@ export async function getLinkedMeetingJoinUrls(projectId: string) {
 			id: true,
 			joinUrl: true,
 			subject: true,
+			userId: true,
 		},
 	});
 }
@@ -143,19 +151,32 @@ export async function reactivateLinkedMeeting(params: {
 }
 
 /**
- * Record that a project's meeting sync could not reach Microsoft.
+ * Record that a meeting sync could not reach Microsoft.
  *
- * Mirrors `recordTeamsChannelFailure`. Applied across the project's meetings
- * rather than one row, because the sync is a single project-level workflow
- * bound to a single account — when that account goes, every meeting stops at
- * once, and blaming one row would misdescribe the outage (#2355).
+ * Mirrors `recordTeamsChannelFailure`. `linkedMeetingIds` scopes the write to
+ * the meetings the failed calendar read was actually responsible for — since
+ * #2354 a project reads one calendar per linker, so a stamp across the whole
+ * project would blame everybody else's meetings for one person's dead
+ * connection. Omit it only for a genuinely project-wide failure.
+ *
+ * Scoped by id rather than by `userId` on purpose: the fallback group is "rows
+ * with no linker OR rows linked by the project's bound account", which is not
+ * expressible as one `userId` predicate, and a `userId` filter would silently
+ * skip every null row.
  */
 export async function recordMeetingSyncFailure(params: {
 	projectId: string;
 	errorMessage: string;
+	linkedMeetingIds?: string[];
 }) {
 	return await db.projectLinkedMeeting.updateMany({
-		where: { projectId: params.projectId, deactivatedAt: null },
+		where: {
+			projectId: params.projectId,
+			deactivatedAt: null,
+			...(params.linkedMeetingIds
+				? { id: { in: params.linkedMeetingIds } }
+				: {}),
+		},
 		data: {
 			consecutiveFailures: { increment: 1 },
 			lastErrorMessage: params.errorMessage.slice(0, 4000),
@@ -169,15 +190,50 @@ export async function recordMeetingSyncFailure(params: {
  *
  * Without this a project that recovers while quiet keeps its banner forever —
  * the exact bug the channel monitors hit in #2311.
+ *
+ * Scoped the same way as `recordMeetingSyncFailure`, and for a sharper reason:
+ * unscoped, one healthy linker's pass would clear a departed linker's failures
+ * on every cycle, so the banner naming the connection that needs attention
+ * would flicker off and the sync would go back to looking healthy (#2354).
  */
-export async function clearMeetingSyncFailures(projectId: string) {
+export async function clearMeetingSyncFailures(params: {
+	projectId: string;
+	linkedMeetingIds?: string[];
+}) {
 	return await db.projectLinkedMeeting.updateMany({
-		where: { projectId, consecutiveFailures: { gt: 0 } },
+		where: {
+			projectId: params.projectId,
+			consecutiveFailures: { gt: 0 },
+			...(params.linkedMeetingIds
+				? { id: { in: params.linkedMeetingIds } }
+				: {}),
+		},
 		data: {
 			consecutiveFailures: 0,
 			lastErrorMessage: null,
 			lastErrorAt: null,
 		},
+	});
+}
+
+/**
+ * Move a set of meetings onto the calling account, so the sync reads them
+ * under a connection that works (Fizzy #2354).
+ *
+ * The workflow re-reads `userId` every cycle, so this write alone is the
+ * takeover — no workflow restart is involved.
+ */
+export async function rebindLinkedMeetingsToUser(params: {
+	projectId: string;
+	linkedMeetingIds: string[];
+	userId: string;
+}) {
+	return await db.projectLinkedMeeting.updateMany({
+		where: {
+			projectId: params.projectId,
+			id: { in: params.linkedMeetingIds },
+		},
+		data: { userId: params.userId },
 	});
 }
 

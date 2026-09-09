@@ -1,5 +1,9 @@
 import { ORPCError } from "@orpc/server";
-import { clearMeetingSyncFailures, db } from "@repo/database";
+import {
+	clearMeetingSyncFailures,
+	db,
+	rebindLinkedMeetingsToUser,
+} from "@repo/database";
 import { executeMicrosoftTeamsTool } from "@repo/integrations/microsoft";
 import { logger } from "@repo/logs";
 import type { getTemporalClient } from "@repo/temporal";
@@ -25,19 +29,21 @@ const SYNC_LOOKBACK_DAYS = 30;
  * workaround when unlinking became admin-only — this is what replaces it
  * (Fizzy #2355).
  *
- * Rebinds a project's meeting sync to the calling user's Microsoft account.
+ * Moves linked meetings onto the calling user's Microsoft account.
  *
- * The sync is ONE project-level Temporal workflow carrying one user's id, so
- * when that person leaves, every meeting in the project stops at once — and
- * silently, because the failed lookup returns an empty list rather than an
- * error. There is no per-meeting owner to transfer; repair is necessarily
- * project-wide.
+ * Since #2354 each meeting syncs under the account that linked it, so this is
+ * a takeover of specific meetings rather than a rebind of the whole project:
+ * pass `linkedMeetingIds` to adopt just those — the answer to "the person who
+ * linked this has left" — or omit it to adopt every actively syncing meeting.
+ * The workflow re-reads each meeting's account every cycle, so adopting one is
+ * a database write; only the project-wide form also restarts the workflow, to
+ * move the fallback account that rows with no linker are read under.
  *
- * Two modes. `preflight` resolves each linked meeting under the calling user
+ * Two modes. `preflight` resolves the meetings in scope under the calling user
  * and reports the ones they cannot see, WITHOUT changing anything. That check
- * is the point: Microsoft grants transcript access per person, so rebinding to
- * someone with narrower access silently shrinks what the project collects, and
- * a shrunken sync is indistinguishable from a healthy one.
+ * is the point: Microsoft grants transcript access per person, so moving a
+ * meeting to someone with narrower access silently shrinks what the project
+ * collects, and a shrunken sync is indistinguishable from a healthy one.
  */
 export const repairSyncProcedure = tenantProtectedProcedure
 	.use(requireProjectPermission(Permissions.PROJECT_UPDATE))
@@ -45,16 +51,22 @@ export const repairSyncProcedure = tenantProtectedProcedure
 		method: "POST",
 		path: "/projects/{projectId}/meeting-transcript-sync/repair",
 		tags: ["Projects", "Meeting Transcript Sync"],
-		summary: "Reconnect a project's meeting sync",
+		summary: "Move linked meetings onto your Microsoft account",
 		description:
-			"Checks which linked meetings the calling user can reach, and rebinds the sync to their Microsoft account.",
+			"Checks which linked meetings the calling user can reach, and moves those meetings' sync onto their Microsoft account.",
 	})
 	.input(
 		z.object({
 			projectId: z.string(),
 			organizationId: z.string().nullable().optional(),
-			/** True = report only. False = rebind. */
+			/** True = report only. False = take the meetings over. */
 			preflightOnly: z.boolean().default(true),
+			/**
+			 * Limit the takeover to these meetings. Omitted means every
+			 * actively syncing meeting in the project, which also moves the
+			 * fallback account for rows that carry no linker.
+			 */
+			linkedMeetingIds: z.array(z.string()).min(1).optional(),
 		}),
 	)
 	.handler(async ({ input, context }) => {
@@ -83,14 +95,24 @@ export const repairSyncProcedure = tenantProtectedProcedure
 
 		const organizationId = project.organizationId ?? undefined;
 
+		const scopedToMeetings = input.linkedMeetingIds !== undefined;
+
 		const meetings = await db.projectLinkedMeeting.findMany({
-			where: { projectId: input.projectId, deactivatedAt: null },
-			select: { id: true, joinUrl: true, subject: true },
+			where: {
+				projectId: input.projectId,
+				deactivatedAt: null,
+				...(input.linkedMeetingIds
+					? { id: { in: input.linkedMeetingIds } }
+					: {}),
+			},
+			select: { id: true, joinUrl: true, subject: true, userId: true },
 		});
 
 		if (meetings.length === 0) {
 			throw new ORPCError("BAD_REQUEST", {
-				message: "This project has no actively syncing meetings.",
+				message: scopedToMeetings
+					? "Those meetings are no longer syncing in this project."
+					: "This project has no actively syncing meetings.",
 			});
 		}
 
@@ -148,11 +170,14 @@ export const repairSyncProcedure = tenantProtectedProcedure
 				.filter((url): url is string => Boolean(url)),
 		);
 
-		const unreachable = meetings
-			.filter((m) => !visibleJoinUrls.has(m.joinUrl.toLowerCase()))
-			.map((m) => ({ subject: m.subject }));
+		const reachable = meetings.filter((m) =>
+			visibleJoinUrls.has(m.joinUrl.toLowerCase()),
+		);
+		const unreachable = meetings.filter(
+			(m) => !visibleJoinUrls.has(m.joinUrl.toLowerCase()),
+		);
 
-		const reachableCount = meetings.length - unreachable.length;
+		const reachableCount = reachable.length;
 
 		if (input.preflightOnly) {
 			return {
@@ -166,9 +191,41 @@ export const repairSyncProcedure = tenantProtectedProcedure
 
 		if (reachableCount === 0) {
 			throw new ORPCError("BAD_REQUEST", {
-				message:
-					"None of this project's meetings are visible to your Microsoft account, so reconnecting would stop the sync entirely.",
+				message: scopedToMeetings
+					? "None of those meetings are visible to your Microsoft account, so taking them over would stop them syncing entirely."
+					: "None of this project's meetings are visible to your Microsoft account, so reconnecting would stop the sync entirely.",
 			});
+		}
+
+		// The takeover itself. Only the meetings this account can actually see
+		// move: adopting one it cannot reach would trade a sync that is
+		// visibly broken for one that is quietly empty.
+		const adoptedIds = reachable.map((m) => m.id);
+
+		// Adopting specific meetings needs nothing else: the workflow re-reads
+		// who each meeting belongs to on its next cycle. Restarting it here
+		// would also move every linker-less row onto this account as a side
+		// effect of a request that named four meetings.
+		if (scopedToMeetings) {
+			await rebindLinkedMeetingsToUser({
+				projectId: input.projectId,
+				linkedMeetingIds: adoptedIds,
+				userId: user.id,
+			});
+			await clearMeetingSyncFailures({
+				projectId: input.projectId,
+				linkedMeetingIds: adoptedIds,
+			});
+
+			return {
+				mode: "repaired" as const,
+				totalMeetings: meetings.length,
+				reachableCount,
+				unreachableSubjects: unreachable.map((m) => m.subject),
+				workflowId: project.meetingTranscriptSyncWorkflowId,
+				workflowStatus: null,
+				currentlyBoundTo: user.id,
+			};
 		}
 
 		const temporal = await import("@repo/temporal");
@@ -240,7 +297,17 @@ export const repairSyncProcedure = tenantProtectedProcedure
 			},
 		});
 
-		await clearMeetingSyncFailures(input.projectId);
+		// Last, so a workflow service that never came back leaves the meetings
+		// where they were rather than moved by a request that failed.
+		await rebindLinkedMeetingsToUser({
+			projectId: input.projectId,
+			linkedMeetingIds: adoptedIds,
+			userId: user.id,
+		});
+		await clearMeetingSyncFailures({
+			projectId: input.projectId,
+			linkedMeetingIds: adoptedIds,
+		});
 
 		return {
 			mode: "repaired" as const,

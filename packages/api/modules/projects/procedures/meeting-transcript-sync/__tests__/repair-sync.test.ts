@@ -16,6 +16,7 @@ const {
 	dbMock,
 	executeTeamsToolMock,
 	clearFailuresMock,
+	rebindMock,
 	startWorkflowMock,
 	describeMock,
 	getHandleMock,
@@ -26,6 +27,7 @@ const {
 	},
 	executeTeamsToolMock: vi.fn(),
 	clearFailuresMock: vi.fn(),
+	rebindMock: vi.fn(),
 	startWorkflowMock: vi.fn(),
 	describeMock: vi.fn(),
 	getHandleMock: vi.fn(),
@@ -34,6 +36,7 @@ const {
 vi.mock("@repo/database", () => ({
 	db: dbMock,
 	clearMeetingSyncFailures: clearFailuresMock,
+	rebindLinkedMeetingsToUser: rebindMock,
 }));
 
 vi.mock("@repo/integrations/microsoft", () => ({
@@ -109,6 +112,7 @@ beforeEach(() => {
 		meetings: MEETINGS.map((m) => ({ joinUrl: m.joinUrl })),
 	});
 	clearFailuresMock.mockResolvedValue({ count: 0 });
+	rebindMock.mockResolvedValue({ count: 0 });
 	startWorkflowMock.mockResolvedValue({ workflowId: "wf_new" });
 	describeMock.mockResolvedValue({ status: { name: "RUNNING" } });
 	getHandleMock.mockReturnValue({
@@ -222,7 +226,21 @@ describe("repairSyncProcedure", () => {
 				}),
 			}),
 		);
-		expect(clearFailuresMock).toHaveBeenCalledWith("proj_1");
+		// Scoped to the meetings actually adopted, not the whole project: a
+		// project-wide clear would wipe the failure state of meetings this
+		// account cannot see and did not take over, so the banner naming the
+		// connection that still needs attention would vanish (#2354).
+		expect(clearFailuresMock).toHaveBeenCalledWith({
+			projectId: "proj_1",
+			linkedMeetingIds: ["lm_1", "lm_2", "lm_3"],
+		});
+		// The takeover itself: each meeting now reads from the caller's
+		// calendar. Restarting the workflow alone would only move the fallback.
+		expect(rebindMock).toHaveBeenCalledWith({
+			projectId: "proj_1",
+			linkedMeetingIds: ["lm_1", "lm_2", "lm_3"],
+			userId: "user_new",
+		});
 	});
 
 	it("resolves Graph and rebinds under the project's organization, not the caller's", async () => {
@@ -287,5 +305,76 @@ describe("repairSyncProcedure", () => {
 		await expect(
 			handler({ input: PREFLIGHT, context: CONTEXT }),
 		).rejects.toMatchObject({ code: "BAD_REQUEST" });
+	});
+
+	// Taking over ONE meeting, which is what "the person who linked this has
+	// left" actually needs (Fizzy #2354). Before per-linker sync there was no
+	// such thing: one workflow carried one account, so the only repair was the
+	// whole project.
+	describe("taking over specific meetings", () => {
+		const SCOPED = {
+			projectId: "proj_1",
+			organizationId: null,
+			preflightOnly: false,
+			linkedMeetingIds: ["lm_2"],
+		};
+
+		beforeEach(() => {
+			// The query is filtered by id, so only that row comes back.
+			dbMock.projectLinkedMeeting.findMany.mockResolvedValue([
+				MEETINGS[1],
+			]);
+		});
+
+		it("asks the database for only the named meetings", async () => {
+			await handler({ input: SCOPED, context: CONTEXT });
+
+			expect(dbMock.projectLinkedMeeting.findMany).toHaveBeenCalledWith(
+				expect.objectContaining({
+					where: expect.objectContaining({
+						id: { in: ["lm_2"] },
+					}),
+				}),
+			);
+		});
+
+		it("moves just that meeting and leaves the workflow alone", async () => {
+			const result = await handler({ input: SCOPED, context: CONTEXT });
+
+			expect(result.mode).toBe("repaired");
+			expect(rebindMock).toHaveBeenCalledWith({
+				projectId: "proj_1",
+				linkedMeetingIds: ["lm_2"],
+				userId: "user_new",
+			});
+
+			// The workflow re-reads each meeting's account every cycle, so a
+			// restart buys nothing here — and restarting would ALSO move every
+			// meeting with no linker onto this account, which nobody asked for.
+			expect(startWorkflowMock).not.toHaveBeenCalled();
+			expect(dbMock.project.update).not.toHaveBeenCalled();
+		});
+
+		it("clears the failure state of only the meetings it took over", async () => {
+			await handler({ input: SCOPED, context: CONTEXT });
+
+			expect(clearFailuresMock).toHaveBeenCalledWith({
+				projectId: "proj_1",
+				linkedMeetingIds: ["lm_2"],
+			});
+		});
+
+		it("refuses to adopt a meeting this account cannot see", async () => {
+			// Absent from the calendar — Microsoft's way of saying "not
+			// yours". Adopting it would trade a visibly broken sync for a
+			// quietly empty one.
+			executeTeamsToolMock.mockResolvedValue({ meetings: [] });
+
+			await expect(
+				handler({ input: SCOPED, context: CONTEXT }),
+			).rejects.toMatchObject({ code: "BAD_REQUEST" });
+
+			expect(rebindMock).not.toHaveBeenCalled();
+		});
 	});
 });

@@ -8,6 +8,7 @@
  * configurable intervals.
  */
 
+import { useSession } from "@saas/auth/hooks/use-session";
 import { LINKED_MEETINGS_QUERY_KEY } from "@saas/meeting-digest/hooks/use-linked-meeting-join-urls";
 import { LinkedMeetingSelector } from "@saas/meetings/components";
 import { useConfirmationAlert } from "@saas/shared/components/ConfirmationAlertProvider";
@@ -104,7 +105,13 @@ type LinkedMeeting = {
 	consecutiveFailures?: number;
 	lastErrorMessage?: string | null;
 	lastErrorAt?: string | Date | null;
+	/** Who linked it, and so whose Microsoft account it syncs under (#2354). */
 	userId: string | null;
+	user?: {
+		id: string;
+		name: string | null;
+		email: string | null;
+	} | null;
 	organizationId: string | null;
 	_count: {
 		transcripts: number;
@@ -258,6 +265,25 @@ function TranscriptScanStatusPill({
 	);
 }
 
+/**
+ * Whose Microsoft account a meeting is read under (#2354).
+ *
+ * A row with no linker predates the column and is read under the account the
+ * project's sync was last enabled or reconnected with.
+ */
+function syncingAccountName(
+	meeting: LinkedMeeting,
+	currentUserId: string | undefined,
+): string | null {
+	if (!meeting.userId) {
+		return null;
+	}
+	if (meeting.userId === currentUserId) {
+		return "you";
+	}
+	return meeting.user?.name || meeting.user?.email || "another member";
+}
+
 export function MeetingTranscriptSyncSettings({
 	projectId,
 	organizationId,
@@ -271,6 +297,7 @@ export function MeetingTranscriptSyncSettings({
 		warning: string;
 	};
 	const { confirm } = useConfirmationAlert();
+	const { user: currentUser } = useSession();
 	// Which meeting is being unlinked, so the disabled state applies to that row
 	// only. `unlinkMutation.isPending` is a single shared flag and was disabling
 	// the unlink button on every row at once.
@@ -388,18 +415,35 @@ export function MeetingTranscriptSyncSettings({
 	// A broken sync used to be invisible: the Graph call threw, the activity
 	// swallowed it, and the run still stamped a clean lastRun. This is the
 	// signal that was missing (#2355). Mirrors the channel monitors' threshold.
+	//
+	// Since #2354 a project reads one calendar per linker, so a failure is
+	// rarely the whole project any more — it is one person's connection, and
+	// saying whose is the only way anyone can act on it.
 	const syncFailure = useMemo(() => {
-		const failing = (linkedMeetings ?? []).find(
+		const failing = (linkedMeetings ?? []).filter(
 			(m) => (m.consecutiveFailures ?? 0) >= MEETING_FAILURE_THRESHOLD,
 		);
-		if (!failing) {
+		const first = failing[0];
+		if (!first) {
 			return null;
 		}
+		const accounts = Array.from(
+			new Set(
+				failing.map(
+					(m) =>
+						syncingAccountName(m, currentUser?.id) ??
+						"the project's connection",
+				),
+			),
+		);
 		return {
-			message: failing.lastErrorMessage ?? "Recent runs have failed.",
-			lastErrorAt: failing.lastErrorAt ?? null,
+			accounts,
+			affectedCount: failing.length,
+			meetingIds: failing.map((m) => m.id),
+			message: first.lastErrorMessage ?? "Recent runs have failed.",
+			lastErrorAt: first.lastErrorAt ?? null,
 		};
-	}, [linkedMeetings]);
+	}, [linkedMeetings, currentUser?.id]);
 	const autoSyncEnabled = localSyncEnabled;
 
 	// Undo a deletion from within its 7-day window.
@@ -438,55 +482,79 @@ export function MeetingTranscriptSyncSettings({
 		},
 	});
 
-	// Reconnect this project's sync to the current user. Panel-level, not
-	// per-row: the sync is ONE workflow bound to one account, so there is no
-	// per-meeting owner to transfer (#2355).
+	// Move meetings onto the current user's Microsoft account. Panel-level
+	// takes the whole project; passing ids takes only those, which is what
+	// answers "the person who linked this one has left" (#2354).
 	const repairMutation = useMutation({
-		mutationFn: async (preflightOnly: boolean) => {
+		mutationFn: async (variables: {
+			preflightOnly: boolean;
+			linkedMeetingIds?: string[];
+		}) => {
 			return await orpcClient.projects.meetingTranscriptSync.repairSync({
 				projectId,
 				organizationId,
-				preflightOnly,
+				preflightOnly: variables.preflightOnly,
+				linkedMeetingIds: variables.linkedMeetingIds,
 			});
 		},
 		onError: (error) => {
-			toast.error("Could not reconnect the sync", {
+			toast.error("Could not move the sync to your account", {
 				description:
 					error instanceof Error ? error.message : "Unknown error",
 			});
 		},
 	});
 
-	const handleRepair = useCallback(async () => {
-		const check = await repairMutation.mutateAsync(true);
-		if (check.mode !== "preflight") {
-			return;
-		}
+	const handleRepair = useCallback(
+		async (linkedMeetingIds?: string[]) => {
+			const check = await repairMutation.mutateAsync({
+				preflightOnly: true,
+				linkedMeetingIds,
+			});
+			if (check.mode !== "preflight") {
+				return;
+			}
 
-		const unreachable = check.unreachableSubjects.filter(
-			(subject): subject is string => Boolean(subject),
-		);
+			const unreachable = check.unreachableSubjects.filter(
+				(subject): subject is string => Boolean(subject),
+			);
+			const scoped = linkedMeetingIds !== undefined;
+			const subject =
+				check.totalMeetings === 1
+					? "This meeting"
+					: `These ${check.totalMeetings} meetings`;
 
-		confirm({
-			title: "Reconnect this project's sync?",
-			message:
-				unreachable.length > 0
-					? `Transcripts will be fetched using your Microsoft account from now on. Nothing already collected is affected. We checked all ${check.totalMeetings} meetings — ${unreachable.join(", ")} ${unreachable.length === 1 ? "is" : "are"} not visible to you and will stop collecting new transcripts. The other ${check.reachableCount} will resume.`
-					: `Transcripts will be fetched using your Microsoft account from now on. Nothing already collected is affected. All ${check.totalMeetings} meetings are visible to you.`,
-			confirmLabel: `Reconnect ${check.reachableCount} meeting${check.reachableCount === 1 ? "" : "s"}`,
-			onConfirm: async () => {
-				await repairMutation.mutateAsync(false);
-				toast.success("Sync reconnected");
-				queryClient.invalidateQueries({
-					queryKey: [
-						LINKED_MEETINGS_QUERY_KEY,
-						projectId,
-						organizationId,
-					],
-				});
-			},
-		});
-	}, [confirm, repairMutation, queryClient, projectId, organizationId]);
+			confirm({
+				title: scoped
+					? `Sync ${check.totalMeetings === 1 ? "this meeting" : "these meetings"} under your account?`
+					: "Sync every meeting under your account?",
+				message:
+					unreachable.length > 0
+						? `${scoped ? subject : `All ${check.totalMeetings} of this project's meetings`} would be fetched using your Microsoft account from now on. Nothing already collected is affected. ${unreachable.join(", ")} ${unreachable.length === 1 ? "is" : "are"} not visible to you, so ${unreachable.length === 1 ? "it is" : "they are"} left where ${unreachable.length === 1 ? "it is" : "they are"}. The other ${check.reachableCount} will resume.`
+						: `${scoped ? subject : `All ${check.totalMeetings} of this project's meetings`} will be fetched using your Microsoft account from now on. Nothing already collected is affected.`,
+				confirmLabel: `Move ${check.reachableCount} meeting${check.reachableCount === 1 ? "" : "s"}`,
+				onConfirm: async () => {
+					await repairMutation.mutateAsync({
+						preflightOnly: false,
+						linkedMeetingIds,
+					});
+					toast.success(
+						scoped
+							? "Now syncing under your account"
+							: "Sync reconnected",
+					);
+					queryClient.invalidateQueries({
+						queryKey: [
+							LINKED_MEETINGS_QUERY_KEY,
+							projectId,
+							organizationId,
+						],
+					});
+				},
+			});
+		},
+		[confirm, repairMutation, queryClient, projectId, organizationId],
+	);
 
 	// Unlink meeting mutation
 	const unlinkMutation = useMutation({
@@ -854,9 +922,10 @@ export function MeetingTranscriptSyncSettings({
 	return (
 		<>
 			<Card className="overflow-hidden border-foreground/10">
-				{/* A sync whose bound Microsoft account has gone away. Stated at
-				    the panel, not per row: one workflow, one account, so when it
-				    breaks every meeting stops together (#2355). */}
+				{/* A Microsoft account the sync can no longer read. Names WHOSE:
+				    a project reads one calendar per linker (#2354), so the rest
+				    of it is usually still collecting, and "the sync is broken"
+				    would send the wrong person looking. */}
 				{syncFailure && canEdit && (
 					<div
 						role="status"
@@ -868,9 +937,13 @@ export function MeetingTranscriptSyncSettings({
 						/>
 						<div className="min-w-0 grow">
 							<p className="font-semibold text-foreground text-sm">
-								This project&rsquo;s meeting sync is not running
+								{syncFailure.affectedCount ===
+								activeMeetingCount
+									? "This project’s meeting sync is not running"
+									: `${syncFailure.affectedCount} of ${activeMeetingCount} meetings are not syncing`}
 							</p>
 							<p className="mt-0.5 text-muted-foreground text-xs">
+								They sync as {syncFailure.accounts.join(", ")}.{" "}
 								{syncFailure.message}
 								{syncFailure.lastErrorAt
 									? ` Last attempt ${formatDistanceToNow(new Date(syncFailure.lastErrorAt), { addSuffix: true })}.`
@@ -881,10 +954,10 @@ export function MeetingTranscriptSyncSettings({
 							variant="outline"
 							size="sm"
 							className="shrink-0"
-							onClick={handleRepair}
+							onClick={() => handleRepair(syncFailure.meetingIds)}
 							disabled={repairMutation.isPending}
 						>
-							Reconnect as me
+							Sync these as me
 						</Button>
 					</div>
 				)}
@@ -1050,8 +1123,10 @@ export function MeetingTranscriptSyncSettings({
 											    bound account dies has no other route
 											    at all (#2355). */}
 											{/* Gated where the sync actions above are
-											    not: rebinding changes whose account
-											    the WHOLE project collects under. */}
+											    not: this moves EVERY meeting onto one
+											    account, including ones other people
+											    linked. The per-row action is the
+											    narrow version (#2354). */}
 											{canEdit && (
 												<>
 													<DropdownMenuSeparator />
@@ -1062,10 +1137,13 @@ export function MeetingTranscriptSyncSettings({
 																0 ||
 															repairMutation.isPending
 														}
-														onSelect={handleRepair}
+														onSelect={() =>
+															handleRepair()
+														}
 													>
 														<span className="font-medium">
-															Reconnect sync to me
+															Sync all meetings as
+															me
 														</span>
 														<span className="text-muted-foreground text-xs">
 															{activeMeetingCount ===
@@ -1173,6 +1251,22 @@ export function MeetingTranscriptSyncSettings({
 																<TeamsIcon className="size-3" />
 																Teams
 															</span>
+															{/* Whose calendar this one is read
+															    from. Invisible until #2354, which
+															    is how a project could collect only
+															    what one person could see and still
+															    report a healthy sync. */}
+															<span aria-hidden>
+																·
+															</span>
+															<span className="max-w-[220px] truncate">
+																{syncingAccountName(
+																	meeting,
+																	currentUser?.id,
+																)
+																	? `Syncs as ${syncingAccountName(meeting, currentUser?.id)}`
+																	: "Syncs under the project’s connection"}
+															</span>
 															{latestSyncedAt && (
 																<>
 																	<span
@@ -1261,6 +1355,44 @@ export function MeetingTranscriptSyncSettings({
 																</Button>
 															</DropdownMenuTrigger>
 															<DropdownMenuContent align="end">
+																{/* The answer to "the person who linked this has
+																    left": take over this one meeting, not the
+																    project. Hidden when it already syncs as you,
+																    and when it is not syncing at all (#2354). */}
+																{!isDeactivated &&
+																	meeting.userId !==
+																		currentUser?.id && (
+																		<>
+																			<DropdownMenuItem
+																				className="flex-col items-start gap-0.5"
+																				disabled={
+																					repairMutation.isPending
+																				}
+																				onSelect={() =>
+																					handleRepair(
+																						[
+																							meeting.id,
+																						],
+																					)
+																				}
+																			>
+																				<span className="font-medium">
+																					Sync
+																					as
+																					me
+																				</span>
+																				<span className="text-muted-foreground text-xs">
+																					Reads
+																					it
+																					from
+																					your
+																					calendar
+																					instead
+																				</span>
+																			</DropdownMenuItem>
+																			<DropdownMenuSeparator />
+																		</>
+																	)}
 																{/* Reversible action first, destructive last and
 																    separated: they were one control before, which
 																    is how a meeting's whole history got deleted
