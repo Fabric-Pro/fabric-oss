@@ -64,6 +64,22 @@ const TopicDecisionEntrySchema = z.object({
 	answerSource: z.string().nullable(),
 	analysisVersion: z.number().int().nullable(),
 	createdAt: z.date(),
+	/**
+	 * Who the question is waiting on, oldest assignment first (Fizzy #1851).
+	 *
+	 * `default([])` rather than required: replies and AI Update notes can never
+	 * carry one, and an absent key must read as "nobody is on this" — the state
+	 * the panel renders as a dashed placeholder — rather than fail validation
+	 * and take the whole thread down with it.
+	 */
+	assignees: z
+		.array(
+			z.object({
+				assigneeUserId: z.string(),
+				assignedByUserId: z.string(),
+			}),
+		)
+		.default([]),
 });
 
 export const listTopicDecisionsProcedure = tenantProtectedProcedure

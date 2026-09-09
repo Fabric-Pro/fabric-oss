@@ -1574,3 +1574,150 @@ describe("PlanningAnalysisTab — answers the analysis predates", () => {
 		).not.toBeInTheDocument();
 	});
 });
+
+/**
+ * The AI assistant's rewrite reaching the editor (Fizzy #1851, #15).
+ *
+ * The assistant proposes and a person applies: accepting in the chat SEEDS
+ * this editor and the existing Save is still the only thing that writes. The
+ * reason is #1929 — an autosave racing an in-flight agent overwrote the server
+ * with pre-answer text — and a revision in this suite is defined as "what a
+ * person saved", so a second writer would reintroduce that race.
+ *
+ * What is pinned here is the half of that contract this component owns: the
+ * proposal has to REMOUNT the editor to be visible at all (the real one seeds
+ * `prose` once and never re-reads it), it has to be taken exactly once, and
+ * both ways out of it — discard, or save — have to leave the tab telling the
+ * truth about what is on screen.
+ */
+describe("PlanningAnalysisTab — the assistant's proposed rewrite", () => {
+	const PROPOSAL = "### Topic angle\n\nA sharper angle, as instructed.";
+
+	const withAnalysis = (overrides: Record<string, unknown> = {}) => ({
+		latestAttempt: ready(),
+		effective: AI_EFFECTIVE,
+		aiVersion: 1,
+		...overrides,
+	});
+
+	it("loads the proposal into the editor instead of the server's prose", () => {
+		const onConsumed = vi.fn();
+		renderTab(
+			withAnalysis({
+				assistantProposal: PROPOSAL,
+				onAssistantProposalConsumed: onConsumed,
+			}),
+		);
+
+		// `editor-prose` is the mock's MOUNT-TIME seed, so reading the
+		// proposal there is the assertion that the editor was rebuilt on it —
+		// passing the text down without a remount would leave the old seed on
+		// screen, which is the whole failure mode this guards.
+		expect(screen.getByTestId("editor-prose")).toHaveTextContent(
+			"A sharper angle, as instructed.",
+		);
+		expect(
+			screen.getByTestId("assistant-proposal-notice"),
+		).toHaveTextContent(/nothing is saved until you save it/i);
+	});
+
+	it("tells the page it took the proposal, so one accept applies once", () => {
+		const onConsumed = vi.fn();
+		renderTab(
+			withAnalysis({
+				assistantProposal: PROPOSAL,
+				onAssistantProposalConsumed: onConsumed,
+			}),
+		);
+
+		// Without this the page keeps handing the same string down, and the
+		// next render that reaches this effect re-seeds the editor — throwing
+		// away everything typed since the accept.
+		expect(onConsumed).toHaveBeenCalledTimes(1);
+	});
+
+	it("does not re-apply a proposal the page has not cleared", async () => {
+		const { rerender } = render(
+			<PlanningAnalysisTab
+				{...(props(
+					withAnalysis({
+						assistantProposal: PROPOSAL,
+						onAssistantProposalConsumed: vi.fn(),
+					}),
+				) as never)}
+			/>,
+		);
+		const mountsAfterProposal = editorMounts.count;
+		await userEvent.click(screen.getByRole("button", { name: "Type" }));
+
+		// The same value again — a poll landing, a sibling query settling —
+		// and with a FRESH `onAssistantProposalConsumed`. That identity change
+		// is the point: an effect guarded only by its dependency list re-fires
+		// here and re-seeds the editor, so this fails unless the guard is the
+		// proposal's own text.
+		rerender(
+			<PlanningAnalysisTab
+				{...(props(
+					withAnalysis({
+						assistantProposal: PROPOSAL,
+						onAssistantProposalConsumed: vi.fn(),
+					}),
+				) as never)}
+			/>,
+		);
+
+		expect(editorMounts.count).toBe(mountsAfterProposal);
+		expect(screen.getByTestId("editor-draft")).toHaveTextContent(
+			UNSAVED_KEYSTROKES,
+		);
+	});
+
+	it("puts the server's text back when the rewrite is discarded", async () => {
+		renderTab(
+			withAnalysis({
+				assistantProposal: PROPOSAL,
+				onAssistantProposalConsumed: vi.fn(),
+			}),
+		);
+
+		await userEvent.click(
+			screen.getByRole("button", { name: /discard it/i }),
+		);
+
+		expect(screen.getByTestId("editor-prose")).toHaveTextContent(
+			"An engineering reliability story.",
+		);
+		expect(
+			screen.queryByTestId("assistant-proposal-notice"),
+		).not.toBeInTheDocument();
+	});
+
+	it("drops the notice once the rewrite has been saved", async () => {
+		renderTab(
+			withAnalysis({
+				assistantProposal: PROPOSAL,
+				onAssistantProposalConsumed: vi.fn(),
+			}),
+		);
+
+		await userEvent.click(screen.getByRole("button", { name: "Save" }));
+
+		// The proposal IS the document now, so an offer to discard it no
+		// longer describes anything true — and leaving it up would invite
+		// someone to "discard" a saved revision back to the AI's text.
+		expect(
+			screen.queryByTestId("assistant-proposal-notice"),
+		).not.toBeInTheDocument();
+	});
+
+	it("shows no notice when the assistant has proposed nothing", () => {
+		renderTab(withAnalysis());
+
+		expect(
+			screen.queryByTestId("assistant-proposal-notice"),
+		).not.toBeInTheDocument();
+		expect(screen.getByTestId("editor-prose")).toHaveTextContent(
+			"An engineering reliability story.",
+		);
+	});
+});

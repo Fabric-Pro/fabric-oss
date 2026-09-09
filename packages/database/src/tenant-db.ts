@@ -162,6 +162,7 @@ const USER_OWNED_TABLES = new Set([
 	"PublishingChatDelivery", // Publishing Suite chat broadcast ledger - tenant XOR + projectId
 	"PublishingTopicPlanningAnalysis", // Publishing Suite planning worksheet - tenant XOR + projectId
 	"PublishingTopicDecisionEntry", // Publishing Suite topic decision threads - tenant XOR
+	"PublishingTopicQuestionAssignee", // Publishing Suite per-question assignment - tenant XOR
 	"PublishingTopicDraft", // Publishing Suite generated drafts - tenant XOR + projectId
 	"PublishingListPreference", // One reader's Inbox sort/layout - tenant XOR + projectId
 	"PublishingTopicDraftRead", // Per-content-type read markers - tenant XOR + projectId
@@ -307,6 +308,7 @@ const PROJECT_SCOPED_TABLES: Record<string, string> = {
 	PublishingChatDelivery: "projectId",
 	PublishingTopicPlanningAnalysis: "projectId",
 	PublishingTopicDecisionEntry: "projectId",
+	PublishingTopicQuestionAssignee: "projectId",
 	PublishingTopicDraft: "projectId",
 	PublishingListPreference: "projectId",
 	PublishingTopicDraftRead: "projectId",

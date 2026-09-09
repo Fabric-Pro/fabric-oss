@@ -75,6 +75,20 @@ interface PlanningAnalysisTabProps {
 	canEdit: boolean;
 	isLoading: boolean;
 	/**
+	 * A rewrite the AI assistant produced and the reader accepted in the chat
+	 * (Fizzy #1851, #15). `null` whenever there is none waiting.
+	 *
+	 * It arrives as a SEED for the editor, never as a save: this tab has no
+	 * autosave, and the reason is #1929 — an autosave racing an in-flight agent
+	 * overwrote the server with pre-answer text. A second writer here would
+	 * reintroduce exactly that race against a document whose revisions are
+	 * defined as "what a person saved". So the assistant's text lands in the
+	 * editor and the existing Save stays the only thing that writes.
+	 */
+	assistantProposal?: string | null;
+	/** Clears the parent's copy, so one accepted rewrite is applied once. */
+	onAssistantProposalConsumed?: () => void;
+	/**
 	 * The newest attempt at an analysis, whatever became of it. This is what
 	 * the panel says ABOUT the document — running, failed, stranded past its
 	 * deadline — never what it renders. A panel driven off "the newest row"
@@ -178,6 +192,8 @@ export function PlanningAnalysisTab({
 	sourceAnalysisVersion,
 	author,
 	revisionCreatedAt,
+	assistantProposal = null,
+	onAssistantProposalConsumed,
 }: PlanningAnalysisTabProps) {
 	const queryClient = useQueryClient();
 	const [historyOpen, setHistoryOpen] = useState(false);
@@ -229,6 +245,15 @@ export function PlanningAnalysisTab({
 		version: number;
 	} | null>(null);
 
+	/**
+	 * The assistant's rewrite once it is IN the editor — kept so the editor can
+	 * be seeded from it instead of from the server's prose, and so the notice
+	 * above it knows to be there.
+	 *
+	 * Cleared by a save (the text is the document now) and by Discard.
+	 */
+	const [loadedProposal, setLoadedProposal] = useState<string | null>(null);
+
 	// Every write that can move the document's version has to land here. The
 	// editor and the history drawer both hold their version tokens as props
 	// from this parent, and neither updates them itself on success.
@@ -268,6 +293,9 @@ export function PlanningAnalysisTab({
 	const handleSaved = useCallback(
 		(version: number) => {
 			setOwnSave({ topic: topicId, version });
+			// The assistant's text is the document now, so the notice offering
+			// to discard it no longer describes anything true.
+			setLoadedProposal(null);
 			refreshAnalysis();
 		},
 		[refreshAnalysis, topicId],
@@ -456,6 +484,45 @@ export function PlanningAnalysisTab({
 		autoStarted.current = true;
 		onGenerate();
 	}, [isLoading, canEdit, latestAttempt, generate.isPending, onGenerate]);
+
+	/**
+	 * Take the assistant's accepted rewrite into the editor.
+	 *
+	 * The generation bump is what makes it visible: `PlanningAnalysisEditor`
+	 * seeds its TipTap instance on mount and never re-syncs, so feeding it new
+	 * prose without remounting it changes nothing on screen. The functional
+	 * form matters too — the render-phase `setSeed` above may have fired in the
+	 * same commit, and a bump computed from the `seed` this closure captured
+	 * would land on the stale generation and cancel that remount out.
+	 *
+	 * Taken ONCE, and the guard is the proposal's own text rather than the
+	 * effect's dependency list: `onAssistantProposalConsumed` is a prop, and a
+	 * caller that rebuilds it per render would otherwise re-fire this on every
+	 * poll — re-seeding the editor and destroying everything typed since the
+	 * accept. Clearing the parent is the other half, not a substitute for it.
+	 */
+	const consumedProposal = useRef<string | null>(null);
+	useEffect(() => {
+		if (assistantProposal === null) {
+			// Re-arm, so proposing the SAME text again after a clear is a new
+			// proposal rather than one the guard below silently swallows.
+			consumedProposal.current = null;
+			return;
+		}
+		if (consumedProposal.current === assistantProposal) {
+			return;
+		}
+		consumedProposal.current = assistantProposal;
+		setLoadedProposal(assistantProposal);
+		setSeed((prev) => ({ ...prev, generation: prev.generation + 1 }));
+		onAssistantProposalConsumed?.();
+	}, [assistantProposal, onAssistantProposalConsumed]);
+
+	/** Put the server's text back, and remount the editor onto it. */
+	const discardProposal = useCallback(() => {
+		setLoadedProposal(null);
+		setSeed((prev) => ({ ...prev, generation: prev.generation + 1 }));
+	}, []);
 
 	const onReplace = () => {
 		if (newerProse === null || aiVersion === null) {
@@ -752,6 +819,25 @@ export function PlanningAnalysisTab({
 						/>
 					) : null}
 
+					{loadedProposal !== null ? (
+						<div
+							data-testid="assistant-proposal-notice"
+							className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-highlight/40 bg-highlight/10 p-3"
+						>
+							<p className="text-sm">
+								The assistant's rewrite is loaded below. Nothing
+								is saved until you save it.
+							</p>
+							<Button
+								size="sm"
+								variant="outline"
+								onClick={discardProposal}
+							>
+								Discard it
+							</Button>
+						</div>
+					) : null}
+
 					{/* Keyed on the seed, not merely fed it: the editor seeds
 					    `prose` on mount and never re-syncs, so every change of
 					    seed has to remount it — and nothing else may. */}
@@ -760,7 +846,7 @@ export function PlanningAnalysisTab({
 						projectId={projectId}
 						topicId={topicId}
 						organizationId={organizationId}
-						prose={effective.prose}
+						prose={loadedProposal ?? effective.prose}
 						revisionVersion={revisionVersion}
 						sourceAnalysisVersion={sourceAnalysisVersion}
 						canEdit={canEdit}

@@ -6,8 +6,14 @@ import { Button } from "@ui/components/button";
 import { Textarea } from "@ui/components/textarea";
 import { cn } from "@ui/lib";
 import { ChevronDownIcon, PencilIcon, SparklesIcon } from "lucide-react";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { toast } from "sonner";
+import {
+	type AssignableMember,
+	QuestionAssigneePicker,
+} from "../stories/maturation/QuestionAssigneePicker";
+import { useScrollToQuestion } from "../stories/maturation/use-scroll-to-question";
+import type { ProjectMember } from "./topic-shared";
 
 /**
  * A turn in a topic's decision thread, as `listTopicDecisions` returns it.
@@ -34,6 +40,8 @@ interface TopicDecisionEntry {
 	recommendedResponse: string | null;
 	/** Several answers to choose between; absent on every pre-existing row. */
 	answerOptions?: { text: string; justification: string }[] | null;
+	/** Who the question is waiting on. Empty, never absent — see the schema. */
+	assignees: { assigneeUserId: string; assignedByUserId: string }[];
 	whyItMatters: string | null;
 	answerSource: string | null;
 	analysisVersion: number | null;
@@ -57,6 +65,14 @@ type Props = {
 	 * not ask", not "there was nothing to ask". */
 	analysisFailed?: boolean;
 	threads: TopicDecisionThread[];
+	/**
+	 * The project's members, for the per-question assignee picker.
+	 *
+	 * Passed down rather than queried here because the page already holds this
+	 * list for its two topic-level pickers, and a third copy of the same query
+	 * would be a third thing that can be loading while the other two are not.
+	 */
+	members?: readonly ProjectMember[];
 };
 
 /**
@@ -89,9 +105,38 @@ export function TopicQuestionsPanel({
 	isLoading = false,
 	analysisFailed = false,
 	threads,
+	members = [],
 }: Props) {
 	const queryClient = useQueryClient();
 	const [showPossiblyResolved, setShowPossiblyResolved] = useState(false);
+	// The picker's own search box. Filtered here rather than on the server —
+	// unlike Feature Maturation, this surface already holds the whole member
+	// list for the topic's other two pickers, so a round trip per keystroke
+	// would buy nothing.
+	const [memberQuery, setMemberQuery] = useState("");
+
+	// Land a notification ON its question rather than at the top of the topic.
+	// Shares the maturation reader, and so the `#q-<rootId>` fragment
+	// `publishingQuestionAssigned` writes, rather than inventing a second
+	// anchor convention for the same act.
+	useScrollToQuestion(!isLoading);
+
+	const assignableMembers = useMemo<AssignableMember[]>(() => {
+		const rows = members.map((m) => ({
+			id: m.userId,
+			name: m.user.name ?? null,
+			email: m.user.email ?? null,
+			avatarUrl: m.user.image ?? null,
+		}));
+		const needle = memberQuery.trim().toLowerCase();
+		return needle === ""
+			? rows
+			: rows.filter((row) =>
+					`${row.name ?? ""} ${row.email ?? ""}`
+						.toLowerCase()
+						.includes(needle),
+				);
+	}, [members, memberQuery]);
 
 	const answer = useMutation(
 		orpc.projects.publishingSuite.answerTopicQuestion.mutationOptions({
@@ -111,6 +156,37 @@ export function TopicQuestionsPanel({
 				// re-enabling with nothing said — the same toast shape
 				// `PlanningAnalysisTab` uses for its own mutation failures.
 				toast.error("Could not save your answer. Please try again.");
+			},
+		}),
+	);
+
+	/**
+	 * Who a question is waiting on (#1851) — the routing Feature Maturation
+	 * already has, over a publishing question.
+	 *
+	 * SET SEMANTICS: the picker submits the COMPLETE list every time, so
+	 * assigning, re-assigning and clearing are one call. It NEVER answers
+	 * anything — the root stays OPEN, which is what separates asking somebody
+	 * from settling the question yourself.
+	 *
+	 * `variables` is read in `isPending` below so only the card being saved
+	 * disables its picker; a bare `assign.isPending` would freeze every
+	 * question's picker on the page while one of them wrote.
+	 */
+	const assign = useMutation(
+		orpc.projects.publishingSuite.setQuestionAssignees.mutationOptions({
+			onSuccess: () => {
+				queryClient.invalidateQueries({
+					queryKey:
+						orpc.projects.publishingSuite.listTopicDecisions.queryKey(
+							{ input: { projectId, topicId, organizationId } },
+						),
+				});
+			},
+			onError: () => {
+				toast.error(
+					"Could not change who this question is assigned to. Please try again.",
+				);
 			},
 		}),
 	);
@@ -265,6 +341,22 @@ export function TopicQuestionsPanel({
 								onAnswer={(text, source) =>
 									submitAnswer(thread, text, source)
 								}
+								members={assignableMembers}
+								onMemberQueryChange={setMemberQuery}
+								onAssign={(assigneeUserIds) =>
+									assign.mutate({
+										projectId,
+										topicId,
+										organizationId,
+										questionRootId: thread.root.id,
+										assigneeUserIds,
+									})
+								}
+								isAssignSaving={
+									assign.isPending &&
+									assign.variables?.questionRootId ===
+										thread.root.id
+								}
 							/>
 						))}
 					</ul>
@@ -330,6 +422,22 @@ export function TopicQuestionsPanel({
 										onAnswer={(text, source) =>
 											submitAnswer(thread, text, source)
 										}
+										members={assignableMembers}
+										onMemberQueryChange={setMemberQuery}
+										onAssign={(assigneeUserIds) =>
+											assign.mutate({
+												projectId,
+												topicId,
+												organizationId,
+												questionRootId: thread.root.id,
+												assigneeUserIds,
+											})
+										}
+										isAssignSaving={
+											assign.isPending &&
+											assign.variables?.questionRootId ===
+												thread.root.id
+										}
 									/>
 								))}
 							</ul>
@@ -346,14 +454,46 @@ function QuestionCard({
 	canEdit,
 	isSubmitting,
 	onAnswer,
+	members,
+	onMemberQueryChange,
+	onAssign,
+	isAssignSaving,
 }: {
 	thread: TopicDecisionThread;
 	canEdit: boolean;
 	isSubmitting: boolean;
 	onAnswer: (text: string, source: AnswerSource) => void;
+	members: AssignableMember[];
+	onMemberQueryChange: (query: string) => void;
+	/** The COMPLETE desired set — the server takes set semantics. */
+	onAssign: (assigneeUserIds: string[]) => void;
+	isAssignSaving: boolean;
 }) {
 	const root = thread.root;
 	const options = root.answerOptions ?? [];
+	/**
+	 * The stored assignee ids, resolved against the member list for names and
+	 * avatars.
+	 *
+	 * An id with no member row left — somebody who has since left the project —
+	 * still gets an entry rather than vanishing, because a question silently
+	 * showing fewer people than it is actually assigned to is worse than one
+	 * showing a nameless avatar. Saving the picker afterwards drops them, which
+	 * is the correct resolution: the server refuses non-members outright.
+	 */
+	const assignees = useMemo(
+		() =>
+			root.assignees.map((a) => {
+				const member = members.find((m) => m.id === a.assigneeUserId);
+				return {
+					id: a.assigneeUserId,
+					name: member?.name ?? member?.email ?? "Former member",
+					avatarUrl: member?.avatarUrl ?? null,
+					assignedByUserId: a.assignedByUserId,
+				};
+			}),
+		[root.assignees, members],
+	);
 	// A question with SEVERAL options has something to accept, even when the
 	// legacy single `recommendedResponse` is empty — so the editor must not
 	// start open and hide them.
@@ -423,10 +563,32 @@ function QuestionCard({
 	};
 
 	return (
-		<li className="space-y-2 rounded-lg border border-border bg-card p-4">
-			<p className="text-foreground text-sm leading-relaxed">
-				{root.summary}
-			</p>
+		<li
+			// The scroll target for a `#q-<rootId>` notification link. The RAW
+			// root id, with no prefix of its own — `useScrollToQuestion` strips
+			// the fragment's, and a second one here is how the writer and the
+			// reader drift apart.
+			data-question-anchor={root.id}
+			data-testid={`question-${root.id}`}
+			className="space-y-2 rounded-lg border border-border bg-card p-4"
+		>
+			<div className="flex items-start justify-between gap-3">
+				<p className="min-w-0 flex-1 text-foreground text-sm leading-relaxed">
+					{root.summary}
+				</p>
+				{/* Rendered for a reader too, disabled: who a question is
+				    waiting on is worth SEEING even when you cannot change it,
+				    and hiding it would make an assigned question look
+				    unassigned to exactly the people most likely to answer it. */}
+				<QuestionAssigneePicker
+					assignees={assignees}
+					members={members}
+					onChange={onAssign}
+					onQueryChange={onMemberQueryChange}
+					disabled={!canEdit}
+					saving={isAssignSaving}
+				/>
+			</div>
 			{root.whyItMatters ? (
 				<p className="text-muted-foreground text-xs leading-relaxed">
 					{root.whyItMatters}

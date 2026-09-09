@@ -1,0 +1,18 @@
+-- AlterEnum
+-- The in-app notice sent when somebody is asked to answer a publishing topic's
+-- open question (Fizzy #1851).
+--
+-- Its own migration, mirroring 20260909120100: a value added by ALTER TYPE
+-- cannot be referenced in the same transaction that adds it, so the table
+-- migration alongside it stays separate.
+--
+-- A DISTINCT type from PUBLISHING_TOPIC_ASSIGNED, not a reuse of it, for the
+-- reason #1751 gives for keeping QUESTION_ASSIGNED apart from QUESTION_MENTIONED:
+-- being added to a topic is an FYI, being asked a question is a request, and a
+-- recipient who cannot tell them apart from the bell has to open both. The
+-- payloads differ too — this one carries the question root, so the deep link can
+-- land on the question rather than the top of the topic.
+--
+-- Reuses the existing ASSIGNMENT NotificationCategory, so no category enum
+-- change is required.
+ALTER TYPE "NotificationType" ADD VALUE IF NOT EXISTS 'PUBLISHING_QUESTION_ASSIGNED';

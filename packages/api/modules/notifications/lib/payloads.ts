@@ -153,6 +153,22 @@ const questionAssignedPayload = z.object({
 	assignedByUserId: z.string(),
 });
 
+/**
+ * The publishing suite's own question routing (Fizzy #1851).
+ *
+ * Shaped like `questionAssignedPayload` above but keyed on `topicId` rather
+ * than `storyId` — the two features route questions the same way over
+ * different subjects, and a shared payload with both ids optional would let a
+ * writer omit whichever one the reader needed.
+ */
+const publishingQuestionAssignedPayload = z.object({
+	topicId: z.string(),
+	projectId: z.string(),
+	/** The question thread root — also the scroll anchor for the deep link. */
+	questionRootId: z.string(),
+	assignedByUserId: z.string(),
+});
+
 const questionMentionedPayload = z.object({
 	storyId: z.string(),
 	projectId: z.string(),
@@ -454,6 +470,8 @@ const NotificationPayloadByType = {
 	[NotificationType.DECISION_OWNER_ASSIGNED]: decisionOwnerPayload,
 	[NotificationType.DECISION_OWNER_UPDATED]: decisionOwnerPayload,
 	[NotificationType.QUESTION_ASSIGNED]: questionAssignedPayload,
+	[NotificationType.PUBLISHING_QUESTION_ASSIGNED]:
+		publishingQuestionAssignedPayload,
 	[NotificationType.QUESTION_MENTIONED]: questionMentionedPayload,
 	[NotificationType.QUESTION_ANSWERED]: questionAnsweredPayload,
 } as const;

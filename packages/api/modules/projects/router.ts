@@ -305,6 +305,7 @@ import {
 	selectLinkedInPostOptionProcedure,
 	selectShortPostOptionProcedure,
 	setPublishingListPreferenceProcedure,
+	setPublishingQuestionAssigneesProcedure,
 	setTopicReadStateProcedure,
 	setTopicSnoozeProcedure,
 	updatePublishingSuiteSettingsProcedure,
@@ -1425,6 +1426,10 @@ export const projectsRouter = {
 		// #1851 (2A-3): the topic's decision thread — questions, their answers,
 		// and the AI Updates a regeneration writes.
 		listTopicDecisions: listTopicDecisionsProcedure,
+		// Routing, NOT answering: `setQuestionAssignees` leaves the root OPEN.
+		// A separate procedure from `answerTopicQuestion` below for exactly that
+		// reason — asking somebody is not settling the question.
+		setQuestionAssignees: setPublishingQuestionAssigneesProcedure,
 		answerTopicQuestion: answerTopicQuestionProcedure,
 		// A settled question is not a closed one: `amendTopicQuestion` appends a
 		// superseding answer, mirroring `stories.maturation.amendAnswer`. It is

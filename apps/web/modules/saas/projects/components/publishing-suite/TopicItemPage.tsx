@@ -1,10 +1,13 @@
 "use client";
 
 import { useSession } from "@saas/auth/hooks/use-session";
+import { useAiSidebarExpanded } from "@saas/shared/components/copilot/ai-sidebar-layout";
 import { orpc } from "@shared/lib/orpc-query-utils";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@ui/components/tabs";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { cn } from "@ui/lib";
+import dynamic from "next/dynamic";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { AssigneesDialog } from "./AssigneesDialog";
 import { ContentTypesChecklist } from "./ContentTypesChecklist";
@@ -21,6 +24,7 @@ import {
 	isEmptyAnalysis,
 	readPlanningAnalysis,
 } from "./planning-analysis-content";
+import type { TopicAssistantContext } from "./TopicAssistant";
 import { TopicDecisionLog } from "./TopicDecisionLog";
 import { TopicDetails } from "./TopicDetails";
 import { TopicQuestionsPanel } from "./TopicQuestionsPanel";
@@ -31,6 +35,26 @@ import {
 	type PostType,
 	TOPIC_STATUSES,
 } from "./topic-shared";
+
+/**
+ * The assistant rail, loaded on demand.
+ *
+ * `dynamic` and not a plain import for two reasons, one of them load-bearing.
+ * The bundle reason is the one `StoriesRoadmap` gives for `BacklogChatPanel`:
+ * `TopicAssistant` pulls in the whole CopilotKit runtime (react-core +
+ * react-ui + its stylesheet), which has no business in this page's initial
+ * payload.
+ *
+ * The other is that a static import puts that stylesheet in the import graph
+ * of `publishing-suite/index.ts` — the barrel three Inbox suites import
+ * `PublishingSuiteList` from — and CopilotKit's stylesheet drags a transitive
+ * katex `.css` that jsdom cannot load. Every one of those suites then fails at
+ * import, before a case runs, over a component they never render.
+ */
+const TopicAssistant = dynamic(
+	() => import("./TopicAssistant").then((m) => m.TopicAssistant),
+	{ ssr: false },
+);
 
 /**
  * The three review tabs this page owns. Kept as a literal union rather than
@@ -125,6 +149,37 @@ export function TopicItemPage({
 	const [contributorsPending, setContributorsPending] = useState(false);
 	const [assigneesOpen, setAssigneesOpen] = useState(false);
 	const [assigneesPending, setAssigneesPending] = useState(false);
+
+	/**
+	 * A rewrite the assistant produced and the reader accepted, waiting to be
+	 * loaded into the Planning & Analysis editor.
+	 *
+	 * It lives HERE rather than in the assistant because the two are siblings:
+	 * the chat rail and the tab that consumes the text have no other common
+	 * ancestor. It is cleared the moment that tab takes it, so an accepted
+	 * rewrite is applied once and never re-applied by a later re-render.
+	 */
+	const [assistantProposal, setAssistantProposal] = useState<string | null>(
+		null,
+	);
+	const handleApplyRewrite = useCallback((markdown: string) => {
+		setAssistantProposal(markdown);
+		// Radix unmounts an inactive `TabsContent`, so a proposal accepted from
+		// the chat while another tab is open would land on a component that is
+		// not in the tree. Switching first means the tab mounts WITH the
+		// proposal already set and picks it up on its first effect — and it is
+		// what the reader wants anyway: they just asked for a rewrite, so show
+		// them the rewrite.
+		setTab("planningAnalysis");
+	}, []);
+	const handleProposalConsumed = useCallback(
+		() => setAssistantProposal(null),
+		[],
+	);
+
+	// Reserves the width the docked assistant occupies. Read here rather than
+	// inside `TopicAssistant` because it is THIS element that has to move.
+	const isAssistantOpen = useAiSidebarExpanded();
 
 	const topicQuery = useQuery(
 		orpc.projects.publishingSuite.getTopic.queryOptions({
@@ -282,6 +337,42 @@ export function TopicItemPage({
 		orpc.projects.publishingSuite.listTopicDecisions.queryOptions({
 			input: { projectId, topicId, organizationId },
 		}),
+	);
+
+	/**
+	 * What the assistant is told about the topic beside it.
+	 *
+	 * The open questions are in here on purpose: they are the gaps the analysis
+	 * has NOT resolved, and an assistant that rewrites the document without
+	 * them writes over the uncertainty instead of around it. CONTENT_TYPE rows
+	 * are excluded for the same reason `TopicQuestionsPanel` excludes them —
+	 * they are settings now, not questions.
+	 */
+	const assistantContext = useMemo<TopicAssistantContext>(
+		() => ({
+			title: topicQuery.data?.topic?.title ?? "",
+			angle: topicQuery.data?.topic?.angle ?? null,
+			pitch: topicQuery.data?.topic?.pitch ?? null,
+			status: topicQuery.data?.topic?.status ?? "",
+			postTypes: selectedPostTypes,
+			openQuestions: (decisionsQuery.data?.threads ?? [])
+				.filter(
+					(t) =>
+						t.root.kind === "QUESTION" &&
+						t.root.decisionKind !== "CONTENT_TYPE" &&
+						t.root.status === "OPEN",
+				)
+				.map((t) => t.root.subject ?? t.root.content ?? "")
+				.filter((q) => q !== ""),
+		}),
+		[
+			topicQuery.data?.topic?.title,
+			topicQuery.data?.topic?.angle,
+			topicQuery.data?.topic?.pitch,
+			topicQuery.data?.topic?.status,
+			selectedPostTypes,
+			decisionsQuery.data?.threads,
+		],
 	);
 
 	/**
@@ -622,7 +713,18 @@ export function TopicItemPage({
 	return (
 		// Page padding is the ROUTE's (it owns the breadcrumb trail above
 		// this, and the two have to share one inset).
-		<div className="space-y-6">
+		<div
+			className={cn(
+				"space-y-6",
+				// The assistant docks as a `position: fixed` 28rem rail from
+				// `sm` up, and globals.css cancels CopilotKit's own content
+				// margin so each host page reserves that width itself. NOT
+				// `AI_SIDEBAR_CONTENT_SHIFT_CLASS`: that is a `right-` utility
+				// and means nothing outside the fixed page chrome the document
+				// editor shifts with it. This page is normal flow, so it pads.
+				isAssistantOpen && "sm:pr-[28rem]",
+			)}
+		>
 			<div className="space-y-3">
 				<p className="editorial-label">Publishing topic</p>
 				<div className="flex flex-wrap items-start justify-between gap-3">
@@ -741,6 +843,7 @@ export function TopicItemPage({
 						isLoading={decisionsQuery.isLoading}
 						analysisFailed={latestAttempt?.status === "FAILED"}
 						threads={decisionsQuery.data?.threads ?? []}
+						members={members}
 					/>
 					{/* The metadata block is `TopicDetails`, the SAME component
 					    the Inbox row mounts — not a copy of it. The two views
@@ -788,6 +891,8 @@ export function TopicItemPage({
 						revisionCreatedAt={
 							analysisQuery.data?.revisionCreatedAt ?? null
 						}
+						assistantProposal={assistantProposal}
+						onAssistantProposalConsumed={handleProposalConsumed}
 					/>
 				</TabsContent>
 
@@ -870,6 +975,21 @@ export function TopicItemPage({
 					/>
 				</>
 			) : null}
+
+			{/* Mounted LAST and for everyone, reader included: the chat is a
+			    read affordance in its own right, and the one thing it can
+			    write — the accepted rewrite — is gated on `canEdit` inside.
+			    Last in the tree because it introduces the CopilotKit provider,
+			    and the rest of this page must render whether or not that
+			    starts. */}
+			<TopicAssistant
+				projectId={projectId}
+				organizationId={organizationId}
+				context={assistantContext}
+				analysisMarkdown={effective?.prose ?? null}
+				canEdit={canEdit}
+				onApplyRewrite={handleApplyRewrite}
+			/>
 		</div>
 	);
 }
