@@ -2,6 +2,7 @@
 
 import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
+import { getAvatarInitials } from "@shared/lib/avatar-initials";
 import { Checkbox } from "@ui/components/checkbox";
 import { ContextMenu, ContextMenuTrigger } from "@ui/components/context-menu";
 import {
@@ -39,17 +40,6 @@ import {
 	StoryContextActions,
 } from "./StoryContextActions";
 import { StoryKindIcon } from "./StoryKindIcon";
-
-function initials(name: string | null | undefined): string {
-	const parts = (name ?? "").trim().split(/\s+/).filter(Boolean);
-	if (parts.length === 0) {
-		return "—";
-	}
-	return parts
-		.slice(0, 2)
-		.map((w) => w[0]?.toUpperCase() ?? "")
-		.join("");
-}
 
 /**
  * Compact vertical card for the kanban-style "Board" roadmap view. Mirrors the
@@ -335,10 +325,11 @@ function StoryTileImpl({
 							<TooltipTrigger asChild>
 								<span className="flex items-center gap-1">
 									<span className="flex size-3.5 items-center justify-center rounded-full bg-muted text-[7px] font-medium text-muted-foreground/80">
-										{initials(
+										{getAvatarInitials(
 											story.lastEditedAt
 												? story.lastEditedByName
 												: creatorName,
+											"—",
 										)}
 									</span>
 									{formatDistanceToNowStrict(

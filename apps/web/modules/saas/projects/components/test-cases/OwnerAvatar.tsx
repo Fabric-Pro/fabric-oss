@@ -1,5 +1,6 @@
 "use client";
 
+import { getAvatarInitials } from "@shared/lib/avatar-initials";
 import {
 	Tooltip,
 	TooltipContent,
@@ -8,18 +9,6 @@ import {
 import { cn } from "@ui/lib";
 import { UserIcon } from "lucide-react";
 import { useTranslations } from "next-intl";
-
-/** Up to two initials from a display name (first letter of the first two words). */
-function initialsOf(name: string): string {
-	const words = name.trim().split(/\s+/).filter(Boolean);
-	if (words.length === 0) {
-		return "";
-	}
-	if (words.length === 1) {
-		return words[0].slice(0, 2).toUpperCase();
-	}
-	return (words[0][0] + words[1][0]).toUpperCase();
-}
 
 type Props = {
 	/** Display name — when present the avatar shows tokenized initials. */
@@ -45,7 +34,7 @@ type Props = {
 export function OwnerAvatar({ name, assigned, label, className }: Props) {
 	const t = useTranslations("tooltips.testCases");
 	const trimmed = name?.trim();
-	const initials = trimmed ? initialsOf(trimmed) : "";
+	const initials = getAvatarInitials(name);
 	const accessibleLabel = label ?? trimmed ?? undefined;
 
 	const base =

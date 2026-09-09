@@ -15,6 +15,7 @@
  */
 import type { AnalysisRunSummary } from "@repo/atlas/types";
 import { useOrganizationContext } from "@saas/organizations/hooks/use-organization-context";
+import { getAvatarInitials } from "@shared/lib/avatar-initials";
 import { orpcClient } from "@shared/lib/orpc-client";
 import { useInfiniteQuery } from "@tanstack/react-query";
 import { Avatar, AvatarFallback } from "@ui/components/avatar";
@@ -49,17 +50,6 @@ interface AtlasHistoryPanelProps {
 	projectId: string;
 	repositoryIntegrationId: string | null;
 	onClose: () => void;
-}
-
-function getUserInitials(name: string | null): string {
-	if (!name) {
-		return "?";
-	}
-	const parts = name.trim().split(/\s+/);
-	if (parts.length >= 2) {
-		return `${parts[0][0]}${parts[parts.length - 1][0]}`.toUpperCase();
-	}
-	return name.slice(0, 2).toUpperCase();
 }
 
 /** Map a run's mode to its history-panel badge label. */
@@ -153,7 +143,7 @@ function HistoryRunRow({ run }: { run: AnalysisRunSummary }) {
 			{/* Triggering user avatar */}
 			<Avatar className="mt-0.5 size-7 shrink-0">
 				<AvatarFallback className="bg-muted/70 text-[11px] font-medium text-muted-foreground">
-					{getUserInitials(run.triggeredByName)}
+					{getAvatarInitials(run.triggeredByName, "?")}
 				</AvatarFallback>
 			</Avatar>
 

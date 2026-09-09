@@ -7,6 +7,7 @@
  * Shows avatar stack with tooltips for user details.
  */
 
+import { getAvatarInitials } from "@shared/lib/avatar-initials";
 import { Avatar, AvatarFallback, AvatarImage } from "@ui/components/avatar";
 import {
 	Tooltip,
@@ -100,9 +101,7 @@ export function ProjectPresenceBar({
 										alt={user.userName}
 									/>
 									<AvatarFallback className="text-xs bg-gradient-to-br from-emerald-500 to-green-600 text-white">
-										{user.userName
-											.slice(0, 2)
-											.toUpperCase()}
+										{getAvatarInitials(user.userName)}
 									</AvatarFallback>
 								</Avatar>
 							</TooltipTrigger>

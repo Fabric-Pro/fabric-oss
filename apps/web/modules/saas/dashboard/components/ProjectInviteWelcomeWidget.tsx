@@ -5,6 +5,7 @@ import {
 	useOrganizationId,
 	useOrganizationSlug,
 } from "@saas/organizations/hooks";
+import { getAvatarInitials } from "@shared/lib/avatar-initials";
 import { orpcClient } from "@shared/lib/orpc-client";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Avatar, AvatarFallback, AvatarImage } from "@ui/components/avatar";
@@ -279,7 +280,7 @@ export function ProjectInviteWelcomeWidget({
 							<Avatar className="size-5">
 								<AvatarImage src={inviterImageSrc} />
 								<AvatarFallback className="bg-secondary/10 text-[10px] text-secondary">
-									{initialsOf(mostRecent.inviter.name)}
+									{getAvatarInitials(mostRecent.inviter.name)}
 								</AvatarFallback>
 							</Avatar>
 							<span>Invited by {mostRecent.inviter.name}</span>

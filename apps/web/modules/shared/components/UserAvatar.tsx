@@ -1,4 +1,5 @@
 import { config } from "@repo/config";
+import { getAvatarInitials } from "@shared/lib/avatar-initials";
 import { Avatar, AvatarFallback, AvatarImage } from "@ui/components/avatar";
 import { useMemo } from "react";
 
@@ -12,15 +13,7 @@ export const UserAvatar = ({
 	avatarUrl?: string | null;
 	className?: string;
 }) => {
-	const initials = useMemo(
-		() =>
-			name
-				.split(" ")
-				.slice(0, 2)
-				.map((n) => n[0])
-				.join(""),
-		[name],
-	);
+	const initials = useMemo(() => getAvatarInitials(name), [name]);
 
 	const avatarSrc = useMemo(
 		() =>
