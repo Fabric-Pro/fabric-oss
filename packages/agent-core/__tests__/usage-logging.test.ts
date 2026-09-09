@@ -174,3 +174,92 @@ describe("logAgentUsageFromRunnableConfig — never rejects", () => {
 		).resolves.toBeUndefined();
 	});
 });
+
+describe("logAgentUsageFromRunnableConfig — cache accounting", () => {
+	afterEach(() => {
+		vi.unstubAllGlobals();
+	});
+
+	async function captureUsageBody(
+		provider: string,
+		cacheRead = 3000,
+		cacheCreation = 1570,
+	) {
+		const rawInput = 3;
+		const output = 4;
+		const inclusiveInput = rawInput + cacheRead + cacheCreation;
+		let requestBody: Record<string, unknown> | undefined;
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (_url: string, init?: RequestInit) => {
+				requestBody = JSON.parse(String(init?.body));
+				return new Response(null, { status: 204 });
+			}),
+		);
+
+		await logAgentUsageFromRunnableConfig(
+			{
+				configurable: {
+					ai_token: "token",
+					ai_provider: provider,
+					ai_model: "claude-sonnet-4-5",
+				},
+			},
+			{
+				usage_metadata: {
+					// @langchain/anthropic includes both cache buckets here.
+					input_tokens: inclusiveInput,
+					output_tokens: output,
+					total_tokens: inclusiveInput + output,
+					input_token_details: {
+						cache_read: cacheRead,
+						cache_creation: cacheCreation,
+					},
+				},
+				response_metadata: {
+					model_provider:
+						provider === "ANTHROPIC_DIRECT"
+							? "anthropic"
+							: "openai",
+				},
+			},
+			{ taskType: "TOOL_CALLING" },
+		);
+
+		return requestBody;
+	}
+
+	it("removes native Anthropic cache reads from full-rate input tokens", async () => {
+		await expect(
+			captureUsageBody("ANTHROPIC_DIRECT", 4570, 0),
+		).resolves.toMatchObject({
+			inputTokens: 3,
+			outputTokens: 4,
+			totalTokens: 7,
+			cachedInputTokens: 4570,
+			cacheCreationInputTokens: 0,
+		});
+	});
+
+	it("removes native Anthropic cache writes from full-rate input tokens", async () => {
+		await expect(
+			captureUsageBody("ANTHROPIC_DIRECT", 0, 4570),
+		).resolves.toMatchObject({
+			inputTokens: 3,
+			outputTokens: 4,
+			totalTokens: 7,
+			cachedInputTokens: 0,
+			cacheCreationInputTokens: 4570,
+		});
+	});
+
+	it("keeps Databricks Claude cache buckets inside input tokens", async () => {
+		await expect(captureUsageBody("DATABRICKS")).resolves.toMatchObject({
+			inputTokens: 4573,
+			outputTokens: 4,
+			totalTokens: 4577,
+			cachedInputTokens: 3000,
+			cacheCreationInputTokens: 1570,
+		});
+	});
+});

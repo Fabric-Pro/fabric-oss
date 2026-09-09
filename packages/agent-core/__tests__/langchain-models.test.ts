@@ -6,7 +6,7 @@ import {
 	isOutputTruncated,
 	resolveStopReason,
 } from "@repo/agent-core/output-truncation";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { RuntimeProviderConfig } from "../src/services/langchain-models";
 import {
 	applyReasoningConfig,
@@ -728,6 +728,80 @@ describe("createProviderModel — OPENAI_DIRECT reasoning integration", () => {
 		expect((model as unknown as { temperature?: number }).temperature).toBe(
 			0.5,
 		);
+	});
+});
+
+describe("createProviderModel — direct Anthropic prompt caching", () => {
+	afterEach(() => {
+		vi.unstubAllEnvs();
+	});
+
+	function directAnthropicInvocationParams(
+		options: Record<string, unknown> = {},
+	): Record<string, unknown> {
+		const model = createProviderModel(
+			{
+				provider: "ANTHROPIC_DIRECT",
+				model: "claude-sonnet-4-5",
+				apiKey: "test-key",
+			},
+			{},
+		) as ChatAnthropic;
+		return (
+			model as unknown as {
+				invocationParams: (
+					opts: Record<string, unknown>,
+				) => Record<string, unknown>;
+			}
+		).invocationParams(options);
+	}
+
+	it("adds top-level ephemeral cache_control by default", () => {
+		expect(directAnthropicInvocationParams().cache_control).toEqual({
+			type: "ephemeral",
+		});
+	});
+
+	it("does not override an explicit caller cache_control", () => {
+		expect(
+			directAnthropicInvocationParams({
+				cache_control: { type: "ephemeral", ttl: "1h" },
+			}).cache_control,
+		).toEqual({ type: "ephemeral", ttl: "1h" });
+	});
+
+	it("honors the existing truthy DATABRICKS_PROMPT_CACHE_DISABLED kill switch", () => {
+		vi.stubEnv("DATABRICKS_PROMPT_CACHE_DISABLED", "1");
+		expect(directAnthropicInvocationParams().cache_control).toBeUndefined();
+	});
+
+	it.each(["", "0", "false"])(
+		"keeps caching enabled for falsey kill-switch value %j",
+		(value) => {
+			vi.stubEnv("DATABRICKS_PROMPT_CACHE_DISABLED", value);
+			expect(directAnthropicInvocationParams().cache_control).toEqual({
+				type: "ephemeral",
+			});
+		},
+	);
+
+	it("does not add Anthropic cache_control to another direct provider", () => {
+		const model = createProviderModel(
+			{
+				provider: "OPENAI_DIRECT",
+				model: "gpt-4o",
+				apiKey: "test-key",
+			},
+			{},
+		) as ChatOpenAI;
+		const params = (
+			model as unknown as {
+				invocationParams: (
+					opts: Record<string, unknown>,
+				) => Record<string, unknown>;
+			}
+		).invocationParams({});
+		expect(params.cache_control).toBeUndefined();
 	});
 });
 
