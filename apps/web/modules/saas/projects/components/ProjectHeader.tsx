@@ -3,6 +3,7 @@
 import { useBasePath } from "@saas/organizations/hooks";
 import { ProjectFavoriteToggle } from "@saas/projects/components/ProjectFavoriteToggle";
 import { ProjectReadinessIndicator } from "@saas/projects/components/readiness/ProjectReadinessIndicator";
+import { useFeatureFlag } from "@saas/shared/components/FeatureFlagProvider";
 import { Button } from "@ui/components/button";
 import {
 	Tooltip,
@@ -19,6 +20,7 @@ import { useRouter } from "next/navigation";
 import { useTranslations } from "next-intl";
 import { ProjectPresenceBar } from "./ProjectPresenceBar";
 import { ProjectTitleInlineEdit } from "./ProjectTitleInlineEdit";
+import { navigateToProjectSettingsTab } from "./settings-tab-navigation";
 
 type Project = {
 	id: string;
@@ -62,7 +64,20 @@ export function ProjectHeader({
 	const router = useRouter();
 	const basePath = useBasePath() || "/app";
 
+	const simplifiedCreation = useFeatureFlag("SIMPLIFIED_PROJECT_CREATION");
+
 	function handleEditProject() {
+		// With the simplified creation flow on, an ACTIVE project has nothing
+		// to edit on a creation form and the route sends it straight back to
+		// the project — so the button would look broken. Editing an active
+		// project belongs in Settings, which owns the name, the brief, the
+		// phase and the expected development start date. A DRAFT still resumes
+		// in the creation flow either way, because it has never been created.
+		if (simplifiedCreation && project.status !== "DRAFT") {
+			navigateToProjectSettingsTab(project.id, "general");
+			return;
+		}
+
 		// For DRAFT projects, omit `step` so the wizard restores the user's
 		// last step from server-side wizardState. For ACTIVE projects there's
 		// no wizardState and editing always starts from the Brief step.
