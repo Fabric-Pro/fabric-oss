@@ -45,6 +45,7 @@ import {
 	InfoIcon,
 	LinkIcon,
 	LoaderIcon,
+	LockIcon,
 	MessageSquareIcon,
 	MicIcon,
 	MoreVerticalIcon,
@@ -1065,6 +1066,40 @@ export function ProjectContextsList({ projectId }: Props) {
 			};
 		}, [contexts]);
 
+	// Per-viewer Teams access (Fizzy #2450): a linked Teams chat/channel is
+	// read under the VIEWING user's own Microsoft token, so a Graph 403 for
+	// one member doesn't mean the context is broken — it means this
+	// particular viewer can't read it, while others with access still can.
+	// Only probed when the list actually has a Teams row; `staleTime` keeps
+	// this from re-firing on every unrelated list refetch/poll.
+	const { data: teamsAccessData } = useQuery({
+		...orpc.integrations.teams.contextAccess.queryOptions({
+			input: { projectId, organizationId },
+		}),
+		enabled: !!teamsGroup && teamsGroup.length > 0,
+		staleTime: 60_000,
+	});
+
+	// Keyed by ProjectContext row id. Deliberately per-viewer, in-memory
+	// only — never folds into readiness tallies / isStoredButNotSearchable /
+	// resolveExtractionStatus, all of which describe the project's state,
+	// not this viewer's.
+	const teamsAccessByContextId = useMemo(() => {
+		const map = new Map<
+			string,
+			{ readable: boolean; error: string | null }
+		>();
+		if (teamsAccessData?.connected) {
+			for (const entry of teamsAccessData.contexts) {
+				map.set(entry.contextId, {
+					readable: entry.readable,
+					error: entry.error,
+				});
+			}
+		}
+		return map;
+	}, [teamsAccessData]);
+
 	const [expandedGroups, setExpandedGroups] = useState<Set<string>>(
 		new Set(),
 	);
@@ -1773,6 +1808,18 @@ export function ProjectContextsList({ projectId }: Props) {
 													? `#${meta.channelName}`
 													: "Teams Chat");
 
+											// Per-viewer (Fizzy #2450): undefined while the
+											// probe is loading/errored, or when the
+											// viewer's Microsoft account isn't connected at
+											// all (`connected: false`) — none of those states
+											// render anything extra here, on purpose.
+											const accessEntry =
+												teamsAccessByContextId.get(
+													context.id,
+												);
+											const notReadableByViewer =
+												accessEntry?.readable === false;
+
 											return (
 												<div
 													key={context.id}
@@ -1813,6 +1860,40 @@ export function ProjectContextsList({ projectId }: Props) {
 																	<CheckCircleIcon className="size-3" />
 																	Embedded
 																</span>
+															)}
+															{notReadableByViewer && (
+																<Tooltip>
+																	<TooltipTrigger
+																		asChild
+																	>
+																		<button
+																			type="button"
+																			className="flex items-center gap-1 text-highlight focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring rounded-sm"
+																			data-testid="teams-context-not-readable"
+																			aria-label="Not readable by you"
+																		>
+																			<LockIcon className="size-3.5" />
+																			Not
+																			readable
+																			by
+																			you
+																		</button>
+																	</TooltipTrigger>
+																	<TooltipContent surface="popover">
+																		<p>
+																			{
+																				"Your Microsoft account can't read this chat, so it won't be used as context for you. People with access still see it."
+																			}
+																		</p>
+																		{accessEntry?.error && (
+																			<p className="mt-1 text-muted-foreground">
+																				{
+																					accessEntry.error
+																				}
+																			</p>
+																		)}
+																	</TooltipContent>
+																</Tooltip>
 															)}
 														</div>
 													</div>

@@ -1,20 +1,27 @@
 /**
- * Confluence INTEGRATION-card tests for ProjectContextsList
- * (confluence-project-context-source spec FR7 / D7 / Task 2.4).
+ * Teams Chats per-viewer access indicator tests for ProjectContextsList
+ * (Fizzy #2450).
  *
- * An added Confluence page is persisted as one INTEGRATION ProjectContext with
- * `metadata = { provider: "confluence", confluencePageId, sourceTitle, ... }`.
- * This surface asserts the list renders that row as a FIRST-CLASS card:
- *   1. A recognizable "Confluence" provider badge (not the generic "Integration"
- *      fallback).
- *   2. It is NOT swallowed by the Notion/Teams grouping — it renders as an
- *      individual card via the per-card `integrationProviderConfig["confluence"]`
- *      override (the map key is lowercase, matching the stored provider).
+ * A linked Teams chat/channel is read under the VIEWING user's own
+ * Microsoft Graph token, so a Graph 403 for one member doesn't mean the
+ * context is broken for everyone — it means that member specifically can't
+ * read it. Before this, nothing in the UI said so: the row rendered like a
+ * healthy one no matter who was looking at it. This pins the per-viewer
+ * indicator sourced from `integrations.teams.contextAccess`:
+ *   1. A row the viewer can't read shows "Not readable by you".
+ *   2. A row the viewer CAN read shows nothing extra.
+ *   3. When the viewer's Microsoft account isn't connected at all
+ *      (`connected: false`), nothing extra renders for any row — that's a
+ *      different, out-of-scope experience.
+ *
+ * Mirrors the sibling `ProjectContextsList.meeting-transcript.test.tsx`
+ * mocking style; the Teams Chats group is itself a collapsible group, so
+ * tests expand it before asserting row content.
  */
 
-import { FeatureFlagProvider } from "@saas/shared/components/FeatureFlagProvider";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, within } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 // ── jsdom polyfills ──────────────────────────────────────────────────────
@@ -34,6 +41,12 @@ beforeAll(() => {
 	if (typeof Element.prototype.hasPointerCapture === "undefined") {
 		Element.prototype.hasPointerCapture = () => false;
 	}
+	if (typeof Element.prototype.releasePointerCapture === "undefined") {
+		Element.prototype.releasePointerCapture = () => undefined;
+	}
+	if (typeof Element.prototype.setPointerCapture === "undefined") {
+		Element.prototype.setPointerCapture = () => undefined;
+	}
 	if (typeof Element.prototype.scrollIntoView === "undefined") {
 		Element.prototype.scrollIntoView = () => undefined;
 	}
@@ -41,10 +54,13 @@ beforeAll(() => {
 
 // ── Module mocks ─────────────────────────────────────────────────────────
 
-const { contextsListMock, trackEventMock } = vi.hoisted(() => ({
-	contextsListMock: vi.fn(),
-	trackEventMock: vi.fn(),
-}));
+const { contextsListMock, contextAccessMock, trackEventMock } = vi.hoisted(
+	() => ({
+		contextsListMock: vi.fn(),
+		contextAccessMock: vi.fn(),
+		trackEventMock: vi.fn(),
+	}),
+);
 
 vi.mock("@shared/lib/orpc-client", () => ({
 	orpcClient: { projects: { contexts: {} } },
@@ -83,10 +99,7 @@ vi.mock("@shared/lib/orpc-query-utils", () => ({
 							"integrations.teams.contextAccess",
 							input,
 						] as const,
-						queryFn: async () => ({
-							connected: true,
-							contexts: [],
-						}),
+						queryFn: () => contextAccessMock(input),
 					}),
 				},
 			},
@@ -169,71 +182,118 @@ function wrap(ui: React.ReactElement) {
 		defaultOptions: { queries: { retry: false } },
 	});
 	return render(
-		<QueryClientProvider client={client}>
-			<FeatureFlagProvider value={{}}>{ui}</FeatureFlagProvider>
-		</QueryClientProvider>,
+		<QueryClientProvider client={client}>{ui}</QueryClientProvider>,
 	);
 }
 
-function makeConfluenceContext(overrides: Record<string, unknown> = {}) {
+function makeTeamsChatContext(
+	id: string,
+	chatTopic: string,
+	overrides: Record<string, unknown> = {},
+) {
 	return {
-		id: "ctx_confluence_1",
+		id,
 		type: "INTEGRATION",
-		content: "Page body content",
-		sourceUrl: "https://example.atlassian.net/wiki/x",
-		sourceTitle: "Release Notes",
-		extractionStatus: "COMPLETED",
+		extractionStatus: null,
 		extractionError: null,
-		embeddedAt: new Date("2026-06-01T10:00:00Z"),
-		createdAt: new Date("2026-06-01T10:00:00Z"),
+		embeddedAt: null,
+		createdAt: new Date("2026-06-10T16:30:00Z"),
 		metadata: {
-			provider: "confluence",
-			confluencePageId: "page-1",
-			spaceKey: "ENG",
-			sourceTitle: "Release Notes",
-			sourceUrl: "https://example.atlassian.net/wiki/x",
+			provider: "MICROSOFT_TEAMS",
+			chatType: "chat",
+			chatId: `chat-${id}`,
+			chatTopic,
 		},
 		...overrides,
 	};
 }
 
+async function expandTeamsChatsGroup(user: ReturnType<typeof userEvent.setup>) {
+	await user.click(await screen.findByText("Teams Chats"));
+}
+
 // ── Tests ────────────────────────────────────────────────────────────────
 
-describe("ProjectContextsList — Confluence INTEGRATION card (FR7 / D7)", () => {
+describe("ProjectContextsList — Teams Chats per-viewer access (Fizzy #2450)", () => {
 	beforeEach(() => {
 		contextsListMock.mockReset();
+		contextAccessMock.mockReset();
 		trackEventMock.mockReset();
+		// Default: no access probe issues, so tests that don't care about it
+		// don't need to stub a resolved value themselves.
+		contextAccessMock.mockResolvedValue({ connected: true, contexts: [] });
 	});
 
-	it("renders an added Confluence page as a first-class card with the Confluence badge (AC7.1)", async () => {
+	it("shows 'Not readable by you' on a context the viewer can't read", async () => {
 		contextsListMock.mockResolvedValue({
-			contexts: [makeConfluenceContext()],
+			contexts: [makeTeamsChatContext("ctx_teams_1", "example-team")],
 			total: 1,
 			hasMore: false,
 		});
+		contextAccessMock.mockResolvedValue({
+			connected: true,
+			contexts: [
+				{
+					contextId: "ctx_teams_1",
+					readable: false,
+					error: 'Microsoft Graph API error: 403 Forbidden - {"error":{"code":"Forbidden","message":"UnknownError"}}',
+				},
+			],
+		});
 
+		const user = userEvent.setup();
 		wrap(<ProjectContextsList projectId="proj_1" />);
 
-		const title = await screen.findByText("Release Notes");
-		const card = title.closest("[class*='rounded']") as HTMLElement;
+		await expandTeamsChatsGroup(user);
 
-		// Recognizable "Confluence" badge — not the generic "Integration" fallback.
-		expect(within(card).getByText("Confluence")).toBeInTheDocument();
-		expect(within(card).queryByText("Integration")).not.toBeInTheDocument();
+		expect(
+			await screen.findByText("Not readable by you"),
+		).toBeInTheDocument();
 	});
 
-	it("does NOT swallow the confluence row into the Notion/Teams grouping (AC7.3)", async () => {
+	it("shows nothing extra for a context the viewer CAN read", async () => {
 		contextsListMock.mockResolvedValue({
-			contexts: [makeConfluenceContext()],
+			contexts: [makeTeamsChatContext("ctx_teams_2", "example-team")],
 			total: 1,
 			hasMore: false,
 		});
+		contextAccessMock.mockResolvedValue({
+			connected: true,
+			contexts: [
+				{ contextId: "ctx_teams_2", readable: true, error: null },
+			],
+		});
 
+		const user = userEvent.setup();
 		wrap(<ProjectContextsList projectId="proj_1" />);
 
-		// The page renders as its own card (title visible at top level), and there
-		// is no "Notion Documents" / grouped section heading for it.
-		expect(await screen.findByText("Release Notes")).toBeInTheDocument();
-		expect(screen.queryByText(/Notion Document/i)).not.toBeInTheDocument();
+		await expandTeamsChatsGroup(user);
+
+		// Wait for the row itself, then assert the indicator never appears.
+		await screen.findByText("example-team");
+		expect(
+			screen.queryByText("Not readable by you"),
+		).not.toBeInTheDocument();
+	});
+
+	it("shows nothing extra for any row when the viewer's Microsoft account isn't connected", async () => {
+		contextsListMock.mockResolvedValue({
+			contexts: [makeTeamsChatContext("ctx_teams_3", "example-team")],
+			total: 1,
+			hasMore: false,
+		});
+		// Account-wide not-connected — the procedure never reports per-row
+		// failures in this case (contexts is always []).
+		contextAccessMock.mockResolvedValue({ connected: false, contexts: [] });
+
+		const user = userEvent.setup();
+		wrap(<ProjectContextsList projectId="proj_1" />);
+
+		await expandTeamsChatsGroup(user);
+
+		await screen.findByText("example-team");
+		expect(
+			screen.queryByText("Not readable by you"),
+		).not.toBeInTheDocument();
 	});
 });

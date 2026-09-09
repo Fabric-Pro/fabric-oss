@@ -14,6 +14,7 @@ import { db, hasProjectAccess } from "@repo/database";
 import type { ProjectContextType } from "@repo/database/prisma/client";
 import {
 	executeMicrosoftTeamsTool,
+	isMicrosoftAccessDeniedError,
 	isMicrosoftNotConnectedError,
 } from "@repo/integrations/microsoft";
 import { z } from "zod";
@@ -23,6 +24,7 @@ import {
 	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
+import { parseTeamsContexts } from "../lib/teams-contexts";
 
 // Response type for a single Teams message
 interface TeamsMessage {
@@ -32,15 +34,6 @@ interface TeamsMessage {
 	createdAt?: string;
 	chatId: string;
 	chatName: string;
-}
-
-// Internal type for parsed Teams contexts (both chats and channels)
-interface TeamsContext {
-	type: "chat" | "channel";
-	chatId?: string;
-	teamId?: string;
-	channelId?: string;
-	displayName: string;
 }
 
 export const getRecentTeamsMessagesProcedure = tenantProtectedProcedure
@@ -105,44 +98,10 @@ export const getRecentTeamsMessagesProcedure = tenantProtectedProcedure
 		}
 
 		// Extract Teams contexts (both chats and channels)
-		const teamsContexts: TeamsContext[] = [];
-
-		for (const ctx of integrationContexts) {
-			const metadata = ctx.metadata as Record<string, unknown> | null;
-			if (metadata?.provider !== "MICROSOFT_TEAMS") {
-				continue;
-			}
-
-			const chatType = metadata?.chatType as string | undefined;
-
-			if (!chatType) {
-				console.warn(
-					"[getRecentTeamsMessages] Context missing chatType, skipping",
-					{ contextId: ctx.id, projectId },
-				);
-				continue;
-			}
-
-			if (
-				chatType === "channel" &&
-				metadata?.teamId &&
-				metadata?.channelId
-			) {
-				teamsContexts.push({
-					type: "channel",
-					teamId: metadata.teamId as string,
-					channelId: metadata.channelId as string,
-					displayName:
-						(metadata.chatTopic as string) || "Teams Channel",
-				});
-			} else if (metadata?.chatId) {
-				teamsContexts.push({
-					type: "chat",
-					chatId: metadata.chatId as string,
-					displayName: (metadata.chatTopic as string) || "Teams Chat",
-				});
-			}
-		}
+		const teamsContexts = parseTeamsContexts(integrationContexts, {
+			projectId,
+			logTag: "getRecentTeamsMessages",
+		});
 
 		if (teamsContexts.length === 0) {
 			return {
@@ -228,6 +187,17 @@ export const getRecentTeamsMessagesProcedure = tenantProtectedProcedure
 						);
 						notConnectedWarned = true;
 					}
+				} else if (isMicrosoftAccessDeniedError(errorMessage)) {
+					// A Graph 403 here means THIS user can't read THIS chat/channel
+					// (e.g. removed from it) — a per-viewer condition, not an
+					// operational fault. It's surfaced per-context in the project's
+					// Context tab via integrations.teams.contextAccess (Fizzy
+					// #2450), so warn (not dedup'd — it's per context) rather than
+					// error.
+					console.warn(
+						`[getRecentTeamsMessages] Access denied fetching from ${ctx.displayName}:`,
+						errorMessage,
+					);
 				} else {
 					console.error(
 						`[getRecentTeamsMessages] Error fetching from ${ctx.displayName}:`,
