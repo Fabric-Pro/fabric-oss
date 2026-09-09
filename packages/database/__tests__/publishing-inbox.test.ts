@@ -128,25 +128,31 @@ describe("composeInboxSections", () => {
 		expect(out.archived.map((t) => t.id)).toEqual(["stale-1", "stale-2"]);
 	});
 
-	// The whole point of the EARLIER threshold: an aging topic is
-	// de-emphasised where it stands and does not move. The fixture interleaves
-	// aging, fresh and stale precisely so that the obvious "graduated"
-	// implementation — a third partition group, or a sort by neglect level —
-	// reorders something and fails here. Only `stale-1` may leave.
-	it("leaves aging suggestions exactly where they were and archives only the stale one", () => {
+	// The aging band SINKS. This replaces an assertion that it stays put — the
+	// card owner asked for the opposite ("if for 10+ days we can start lowering
+	// it in the list"), and that decision overrides the earlier one.
+	//
+	// What is still protected, and what this fixture is built to prove, is that
+	// the sink does NOT flatten 1B's per-viewer tier order across the section.
+	// The input interleaves aging and fresh so that the head keeps its incoming
+	// order exactly — `fresh-1` before `fresh-2` — while the tail is ordered by
+	// neglect, least neglected first. An implementation that simply sorted the
+	// whole section by age would put `fresh-1` and `fresh-2` in a different
+	// relationship to each other and fail here.
+	it("sinks the aging band below the live topics, oldest last", () => {
 		const now = new Date("2026-06-01T00:00:00.000Z");
 		const daysBefore = (n: number) =>
 			new Date(now.getTime() - n * 24 * 60 * 60 * 1000);
 		const out = composeInboxSections(
 			[
 				topic({
-					id: "aging-1",
-					updatedAt: daysBefore(AGING_AFTER_DAYS),
+					id: "aging-old",
+					updatedAt: daysBefore(STALE_AFTER_DAYS - 1),
 				}),
 				topic({ id: "fresh-1", updatedAt: daysBefore(1) }),
 				topic({
-					id: "aging-2",
-					updatedAt: daysBefore(STALE_AFTER_DAYS - 1),
+					id: "aging-new",
+					updatedAt: daysBefore(AGING_AFTER_DAYS),
 				}),
 				topic({
 					id: "stale-1",
@@ -156,13 +162,38 @@ describe("composeInboxSections", () => {
 			],
 			{ now },
 		);
+		// Head: incoming order, untouched. Tail: by neglect, ascending — the
+		// topic quiet for 10 days sits above the one quiet for 29.
 		expect(out.suggested.map((t) => t.id)).toEqual([
-			"aging-1",
 			"fresh-1",
-			"aging-2",
 			"fresh-2",
+			"aging-new",
+			"aging-old",
 		]);
 		expect(out.archived.map((t) => t.id)).toEqual(["stale-1"]);
+	});
+
+	// The head is where 1B's ranking lives, so it must survive the sink
+	// untouched even when every topic in it is equally fresh. A comparator
+	// applied to the WHOLE section rather than to the aging tail would reorder
+	// these by `updatedAt` and fail.
+	it("never reorders the live topics among themselves", () => {
+		const now = new Date("2026-06-01T00:00:00.000Z");
+		const daysBefore = (n: number) =>
+			new Date(now.getTime() - n * 24 * 60 * 60 * 1000);
+		const out = composeInboxSections(
+			[
+				topic({ id: "ranked-3rd", updatedAt: daysBefore(1) }),
+				topic({ id: "ranked-1st", updatedAt: daysBefore(5) }),
+				topic({ id: "ranked-2nd", updatedAt: daysBefore(3) }),
+			],
+			{ now },
+		);
+		expect(out.suggested.map((t) => t.id)).toEqual([
+			"ranked-3rd",
+			"ranked-1st",
+			"ranked-2nd",
+		]);
 	});
 
 	// NEGATIVE CONTROL for the archive: de-cluttered is not deleted. A stale

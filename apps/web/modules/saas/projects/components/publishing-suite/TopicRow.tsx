@@ -28,6 +28,7 @@ import {
 	MailOpenIcon,
 } from "lucide-react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useTranslations } from "next-intl";
 import { useEffect, useMemo, useState } from "react";
 import { AssigneesDialog } from "./AssigneesDialog";
@@ -164,6 +165,7 @@ export function TopicRow({
 	// copy is the sighted-mouse equivalent, and says what the control DOES
 	// rather than restating its label.
 	const t = useTranslations("tooltips.publishing");
+	const router = useRouter();
 	const [declineOpen, setDeclineOpen] = useState(false);
 	const [declinePending, setDeclinePending] = useState(false);
 	const [publishOpen, setPublishOpen] = useState(false);
@@ -480,6 +482,63 @@ export function TopicRow({
 		</Tooltip>
 	) : null;
 
+	// The badge escalates in FOUR steps rather than two, because "quiet" and
+	// "stale" told a reader nothing about how far along the topic was between
+	// them — a 12-day row and a 29-day row wore the same pill.
+	//
+	// The bands stop at 25 and not at 30 on purpose: a topic ARCHIVES out of
+	// the list at `STALE_AFTER_DAYS`, so red is the last thing seen before it
+	// disappears rather than a state it rests in. Raise the archive threshold
+	// and these want revisiting together.
+	//
+	// Colour is never the only carrier — the number and the word beside it say
+	// the same thing, which is what keeps this legible with colour stripped.
+	const neglectTone = (days: number) => {
+		if (days >= 25) {
+			return "border-destructive/70 bg-destructive/15";
+		}
+		if (days >= 20) {
+			return "border-highlight/70 bg-highlight/20";
+		}
+		if (days >= 15) {
+			return "border-highlight/60 bg-highlight/15";
+		}
+		return "border-highlight/25 bg-highlight/5";
+	};
+
+	/**
+	 * The whole card opens the topic, not just the title.
+	 *
+	 * Everything interactive inside the row keeps its own behaviour — the
+	 * disclosure chevron, the status select, mute, snooze, the dialogs — so
+	 * the handler bails on anything that closest()-matches a control. Without
+	 * that, opening the status dropdown would navigate away instead.
+	 *
+	 * Three more bail-outs, each for a real gesture rather than a hypothetical:
+	 * a modified or middle click is "open somewhere else" and belongs to the
+	 * anchor, not here; and a click that ends a text selection is someone
+	 * copying the pitch, who would lose it to a navigation.
+	 */
+	const handleRowClick = (event: React.MouseEvent<HTMLLIElement>) => {
+		if (event.defaultPrevented || event.button !== 0) {
+			return;
+		}
+		if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) {
+			return;
+		}
+		if (
+			(event.target as HTMLElement).closest(
+				"a, button, input, select, textarea, [role='button'], [role='dialog'], [role='menu'], [role='listbox']",
+			)
+		) {
+			return;
+		}
+		if (window.getSelection()?.toString()) {
+			return;
+		}
+		router.push(topicHref);
+	};
+
 	// Never colour alone (WCAG 2.1 AA): the muted surface on the row below is
 	// the at-a-glance signal, and this badge is what actually SAYS it — the row
 	// stays readable with colour stripped out entirely, and the two tiers are
@@ -502,9 +561,7 @@ export function TopicRow({
 					// non-step rejected for the row surface below. `--card` is
 					// a real step against `--muted` in both themes, and it is
 					// what `angleChip` already uses to read as a pill on a row.
-					neglect.level === "stale"
-						? "border-highlight/40 bg-highlight/10"
-						: "border-border bg-card",
+					neglectTone(neglect.days),
 				)}
 				title={`No activity in over ${
 					neglect.level === "stale"
@@ -650,9 +707,16 @@ export function TopicRow({
 	}
 
 	return (
+		// biome-ignore lint/a11y/useKeyWithClickEvents: the title is a real
+		// anchor and already carries the keyboard and screen-reader path to
+		// this destination. Making the row a second focusable control for the
+		// same href would add a duplicate tab stop announcing the same thing —
+		// worse for a keyboard user, not better. This handler is a MOUSE
+		// convenience layered on top of an already-accessible row.
 		<li
+			onClick={handleRowClick}
 			className={cn(
-				"rounded-xl border border-border p-4",
+				"cursor-pointer rounded-xl border border-border p-4 transition-colors hover:border-muted-foreground/40",
 				// A neglected row recedes by swapping the card surface for the
 				// muted one — NOT by `opacity-*`, which would drag every piece
 				// of text on the row below the AA contrast floor the rest of
@@ -737,14 +801,24 @@ export function TopicRow({
 					</div>
 					{angleChip}
 					{pitchLine}
-					{/* `break-words` only here: the reason joins every matched
-					    tag and is unbounded, and the summary column is the one
-					    mount where a single long token could otherwise push the
-					    row wider than its container. */}
-					<TopicRankReason topic={topic} className="break-words" />
-					{ageLine || neglectBadge ? (
-						<div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-							{ageLine}
+					{/* One metadata line, not three stacked paragraphs. The
+					    age moved OUT of here entirely — it lives in the action
+					    column now, beside the status it belongs with — and the
+					    role reason became a pill, because four consecutive
+					    lines of grey text is exactly how both of them stopped
+					    being read.
+
+					    `break-words` stays on the reason: it joins every
+					    matched tag and is unbounded, and this is the one mount
+					    where a single long token could push the row wider than
+					    its container. */}
+					{topic.rankReason || neglectBadge ? (
+						<div className="flex flex-wrap items-center gap-x-2 gap-y-1.5 pt-0.5">
+							<TopicRankReason
+								topic={topic}
+								variant="pill"
+								className="break-words"
+							/>
 							{neglectBadge}
 						</div>
 					) : null}
@@ -756,6 +830,13 @@ export function TopicRow({
 					) : null}
 				</div>
 				<div className="flex w-full shrink-0 items-center gap-2 sm:w-auto">
+					{/* Age sits with the controls that describe the topic's
+					    state, not at the bottom of the summary column where it
+					    was competing with three other grey lines for the same
+					    glance. Hidden below `sm:` — at phone widths this
+					    cluster wraps under the title and the row is short
+					    enough that "when" is one scroll away, not lost. */}
+					<span className="hidden sm:inline-flex">{ageLine}</span>
 					<Tooltip>
 						<TooltipTrigger asChild>
 							<Button

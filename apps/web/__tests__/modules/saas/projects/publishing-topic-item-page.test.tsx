@@ -30,7 +30,9 @@ const {
 	updateStatusMutate,
 	updateContributorsMutate,
 	toastError,
+	invalidateQueries,
 } = vi.hoisted(() => ({
+	invalidateQueries: vi.fn(),
 	state: {
 		topic: null as Record<string, unknown> | null,
 		// 2A-2: the planning analysis the page now fetches alongside the
@@ -269,7 +271,7 @@ vi.mock("@tanstack/react-query", () => ({
 		}
 		return { mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false };
 	},
-	useQueryClient: () => ({ invalidateQueries: vi.fn() }),
+	useQueryClient: () => ({ invalidateQueries }),
 }));
 
 vi.mock("@shared/lib/orpc-query-utils", () => {
@@ -519,6 +521,7 @@ function renderPage(canEdit = true) {
 }
 
 beforeEach(() => {
+	invalidateQueries.mockClear();
 	state.topic = topic();
 	state.latestAttempt = null;
 	state.effective = null;
@@ -1614,5 +1617,90 @@ describe("TopicItemPage — readiness", () => {
 		renderPage();
 
 		expect(screen.queryByTestId("topic-readiness")).not.toBeInTheDocument();
+	});
+});
+
+/**
+ * Questions are minted at the moment an analysis run completes —
+ * `reconcileTopicQuestions` runs inside `completePlanningAnalysis`, in the same
+ * transaction that makes the analysis READY. The decisions query has no
+ * interval, so it was fetched once on mount, came back empty because the run
+ * had not happened, and nothing ever asked again.
+ *
+ * The page then contradicted itself in one frame: format tabs reading
+ * "Recommended" — off the analysis query, which polls — beside a panel saying
+ * "No open questions yet. They arrive with the planning analysis." They had.
+ */
+describe("TopicItemPage — questions arriving with a finished analysis", () => {
+	const generating = { id: "pa-1", version: 1, status: "GENERATING" };
+	const ready = { id: "pa-1", version: 1, status: "READY" };
+	const decisionsKey = [
+		"projects.publishingSuite.listTopicDecisions",
+		{ projectId: "proj-1", topicId: "topic-1", organizationId: null },
+	];
+
+	it("refetches the decisions when a run leaves GENERATING", () => {
+		state.latestAttempt = generating;
+		const { rerender } = renderPage();
+		invalidateQueries.mockClear();
+
+		state.latestAttempt = ready;
+		rerender(
+			<TopicItemPage
+				projectId="proj-1"
+				topicId="topic-1"
+				organizationId={null}
+				canEdit
+			/>,
+		);
+
+		expect(invalidateQueries).toHaveBeenCalledWith({
+			queryKey: decisionsKey,
+		});
+	});
+
+	it("refetches them when the run FAILED too", () => {
+		// Reconciliation may still have soft-closed questions the previous run
+		// raised, and the panel explains a failure differently from an empty
+		// list — so a failed run must not leave a stale question set on screen.
+		state.latestAttempt = generating;
+		const { rerender } = renderPage();
+		invalidateQueries.mockClear();
+
+		state.latestAttempt = { ...ready, status: "FAILED" };
+		rerender(
+			<TopicItemPage
+				projectId="proj-1"
+				topicId="topic-1"
+				organizationId={null}
+				canEdit
+			/>,
+		);
+
+		expect(invalidateQueries).toHaveBeenCalledWith({
+			queryKey: decisionsKey,
+		});
+	});
+
+	it("does not invalidate on every refetch of an already-finished analysis", () => {
+		// The guard is the TRANSITION, not the terminal status. Keyed on
+		// `status === "READY"` this would re-fire on each refetch and
+		// invalidate in a loop.
+		state.latestAttempt = ready;
+		const { rerender } = renderPage();
+		invalidateQueries.mockClear();
+
+		rerender(
+			<TopicItemPage
+				projectId="proj-1"
+				topicId="topic-1"
+				organizationId={null}
+				canEdit
+			/>,
+		);
+
+		expect(invalidateQueries).not.toHaveBeenCalledWith({
+			queryKey: decisionsKey,
+		});
 	});
 });

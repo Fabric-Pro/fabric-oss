@@ -1861,6 +1861,13 @@ describe("getPlanningAnalysis", () => {
 			latestAttempt: attempt,
 			aiModel: null,
 			aiPromptSource: null,
+			// The third scalar off the READY row, added by the follow-up to
+			// #1851: the Planning & Analysis tab needs to know WHEN the
+			// analysis was written, because comparing versions cannot see an
+			// amended answer. It travels the same way the provenance pair
+			// does, for the same reason — a scalar says something about the
+			// row without being the row.
+			aiCreatedAt: null,
 		});
 		// Said twice on purpose: the equality above already fails on an extra
 		// key, but this names WHICH key must never come back.
@@ -1874,6 +1881,7 @@ describe("getPlanningAnalysis", () => {
 		// off the attempt would lose both until somebody retried, on exactly
 		// the analysis a reader has most reason to scrutinise. Scalars say how
 		// the text was produced without carrying the text.
+		const readyCreatedAt = new Date("2026-09-01T12:00:00Z");
 		planningMocks.getLatestPlanningAnalysis.mockResolvedValue({
 			latestAttempt: {
 				id: "pa-2",
@@ -1888,6 +1896,7 @@ describe("getPlanningAnalysis", () => {
 				status: "READY",
 				model: "test-model",
 				promptSource: "DEFAULT_RENDER_FAILED",
+				createdAt: readyCreatedAt,
 			},
 		});
 		planningMocks.getEffectivePlanningAnalysis.mockResolvedValue({
@@ -1902,8 +1911,14 @@ describe("getPlanningAnalysis", () => {
 		expect(res).toMatchObject({
 			aiModel: "test-model",
 			aiPromptSource: "DEFAULT_RENDER_FAILED",
+			// Off the READY row, NOT the attempt — same rule as the two above,
+			// and it matters more here: the tab compares answers against this
+			// timestamp to say the analysis is behind them, so reading it off
+			// a failed regeneration would move the baseline forward every time
+			// a run failed and quietly stop the banner firing.
+			aiCreatedAt: readyCreatedAt,
 		});
-		// Still no path to the un-overridden AI text: two scalars, not a row.
+		// Still no path to the un-overridden AI text: three scalars, not a row.
 		expect(res).not.toHaveProperty("latestReady");
 	});
 
@@ -1943,6 +1958,7 @@ describe("getPlanningAnalysis", () => {
 			latestAttempt: null,
 			aiModel: null,
 			aiPromptSource: null,
+			aiCreatedAt: null,
 			effective: { body: "Edited prose.", isStale: false },
 			aiVersion: 2,
 			revisionVersion: 1,
@@ -1981,6 +1997,7 @@ describe("getPlanningAnalysis", () => {
 			latestAttempt: null,
 			aiModel: null,
 			aiPromptSource: null,
+			aiCreatedAt: null,
 			effective: null,
 			aiVersion: null,
 			revisionVersion: null,

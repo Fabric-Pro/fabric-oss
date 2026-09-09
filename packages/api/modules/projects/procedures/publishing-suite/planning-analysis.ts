@@ -237,6 +237,12 @@ export const getPlanningAnalysisProcedure = tenantProtectedProcedure
 			// an analysis built from the default body because a bound prompt
 			// would not render reads exactly like one built from the bound one.
 			aiPromptSource: latestReady?.promptSource ?? null,
+			// WHEN the analysis on screen was written. The tab compares answers
+			// against this to say the document is behind them, and a version
+			// number cannot carry that comparison: an amendment changes the
+			// answer without changing any version, so equality of versions goes
+			// on reading "already folded in" while the decision has just moved.
+			aiCreatedAt: latestReady?.createdAt ?? null,
 			// Spread, not enumerated: `getEffectivePlanningAnalysis` is the ONE
 			// answer to "what is this topic's planning analysis right now", and
 			// naming its fields one by one here would let a future field it adds

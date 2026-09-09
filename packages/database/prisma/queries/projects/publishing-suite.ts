@@ -2228,21 +2228,83 @@ export async function resolveProjectContributorIds(
 	// global identity tables (not tenant-RLS-scoped); the worker runs BYPASSRLS.
 	if (githubAuthorIds.length > 0) {
 		try {
-			const accounts = await db.account.findMany({
-				where: {
-					providerId: "github",
-					accountId: { in: githubAuthorIds },
-				},
-				select: { accountId: true, userId: true },
-			});
+			const wanted = new Set(githubAuthorIds);
 			const usersByAccountId = new Map<string, Set<string>>();
-			for (const a of accounts) {
-				let set = usersByAccountId.get(a.accountId);
+			const link = (githubId: string, userId: string) => {
+				let set = usersByAccountId.get(githubId);
 				if (!set) {
 					set = new Set<string>();
-					usersByAccountId.set(a.accountId, set);
+					usersByAccountId.set(githubId, set);
 				}
-				set.add(a.userId);
+				set.add(userId);
+			};
+
+			/**
+			 * TWO sources for one identity, and the second is the one that
+			 * actually has the data.
+			 *
+			 * `Account(providerId: "github")` is written by exactly one thing:
+			 * Better Auth social sign-in — someone clicking "Sign in with
+			 * GitHub". That is not how Fabric learns a GitHub identity.
+			 * Connecting a repository runs a SEPARATE OAuth flow that writes
+			 * `WorkflowIntegration.settings.githubUserId`, and a project cannot
+			 * have PRs in its suggestion context unless someone completed that
+			 * flow. Reading only the first meant the join was keyed to a login
+			 * METHOD rather than to the connection the product creates — 2
+			 * identities against 12 in production, and 6% of topics on staging
+			 * resolving any contributor at all.
+			 *
+			 * Both are consulted, and both feed the same ambiguity check below,
+			 * so a GitHub account reachable through two different Fabric users
+			 * still credits nobody rather than fanning out.
+			 */
+			const [accounts, project] = await Promise.all([
+				db.account.findMany({
+					where: {
+						providerId: "github",
+						accountId: { in: githubAuthorIds },
+					},
+					select: { accountId: true, userId: true },
+				}),
+				db.project.findUnique({
+					where: { id: projectId },
+					select: { organizationId: true },
+				}),
+			]);
+			for (const a of accounts) {
+				link(a.accountId, a.userId);
+			}
+
+			// Scoped to the project's own organization rather than swept
+			// globally: a contributor who is not in this tenant is not a
+			// contributor to this project's topics, and an unscoped read of
+			// every GitHub integration ever created would grow without bound.
+			// `settings` is untyped JSON, and `githubUserId` arrives from the
+			// GitHub API as a NUMBER while `githubAuthorIds` are strings — the
+			// comparison is done on strings for that reason, not by accident.
+			if (project?.organizationId) {
+				const integrations = await db.workflowIntegration.findMany({
+					where: {
+						provider: "GITHUB",
+						isActive: true,
+						organizationId: project.organizationId,
+					},
+					select: { userId: true, settings: true },
+				});
+				for (const integration of integrations) {
+					const githubUserId = (
+						integration.settings as {
+							githubUserId?: unknown;
+						} | null
+					)?.githubUserId;
+					if (githubUserId == null) {
+						continue;
+					}
+					const key = String(githubUserId);
+					if (wanted.has(key)) {
+						link(key, integration.userId);
+					}
+				}
 			}
 			for (const [accountId, userIds] of usersByAccountId) {
 				if (userIds.size === 1) {

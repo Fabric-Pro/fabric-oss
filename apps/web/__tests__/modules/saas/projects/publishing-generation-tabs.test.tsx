@@ -285,6 +285,66 @@ describe("GenerationTabs — state is in the accessible name (FR5)", () => {
 		expect(tab).toBeInTheDocument();
 	});
 
+	// #39. Every panel in this row opens on "No planning analysis yet — run one
+	// on the Planning & Analysis tab", so before one exists there is nothing to
+	// do in any of them. The row says so once instead of letting a reader find
+	// out a tab at a time.
+	//
+	// MUTED, not disabled: generation itself still works without an analysis,
+	// and a disabled tab would hide that from someone who wants to draft
+	// anyway.
+	it("marks the format tabs as awaiting an analysis, without disabling them", () => {
+		renderTabs({ analysis: null });
+
+		const tab = within(tablist()).getByRole("tab", {
+			name: /short post \/ tweet.*needs analysis/i,
+		});
+		expect(tab).not.toBeDisabled();
+	});
+
+	it("drops the hint once an analysis exists", () => {
+		renderTabs({
+			analysis: analysisWith({
+				recommended: [
+					{ type: "Short Post / Tweet", rationale: "a crisp result" },
+				],
+			}),
+		});
+
+		expect(
+			within(tablist()).queryByRole("tab", { name: /needs analysis/i }),
+		).not.toBeInTheDocument();
+	});
+
+	it("never hints at a type that already has a draft", () => {
+		// A generated tab is useful whatever the analysis says. Muting it would
+		// hide real content behind a hint about something else.
+		renderTabs({
+			analysis: null,
+			drafts: [
+				{
+					postType: "TWEET",
+					latestAttempt: null,
+					latestReady: {
+						id: "d1",
+						postType: "TWEET",
+						version: 1,
+						status: "READY",
+						error: null,
+						createdAt: new Date(),
+						updatedAt: new Date(),
+					},
+				},
+			] as Parameters<typeof buildGenerationTabModel>[0]["drafts"],
+		});
+
+		const tab = within(tablist()).getByRole("tab", {
+			name: /short post \/ tweet/i,
+		});
+		expect(tab).toHaveAccessibleName(/generated/i);
+		expect(tab).not.toHaveAccessibleName(/needs analysis/i);
+	});
+
 	it("keeps an AVAILABLE type plain but still names its state", () => {
 		// The card says a not-recommended type "should not be visually
 		// promoted", so it gets no badge — but the state must not be invisible

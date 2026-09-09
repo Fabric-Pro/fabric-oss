@@ -57,6 +57,27 @@ const {
 	invalidateQueriesMock: vi.fn(),
 }));
 
+/**
+ * The global `next/navigation` mock hands out a fresh `push` on every call, so
+ * nothing can assert on it. This mirrors that mock exactly and pins the one
+ * function these tests need — the whole-card click has no other observable
+ * effect.
+ */
+const { routerPush } = vi.hoisted(() => ({ routerPush: vi.fn() }));
+vi.mock("next/navigation", () => ({
+	useRouter: () => ({
+		push: routerPush,
+		replace: vi.fn(),
+		prefetch: vi.fn(),
+		back: vi.fn(),
+		pathname: "/",
+		query: {},
+	}),
+	usePathname: () => "/",
+	useSearchParams: () => new URLSearchParams(),
+	useParams: () => ({}),
+}));
+
 vi.mock("sonner", () => ({ toast: { error: toastError } }));
 
 // Task 6: PublishingSuiteList now reads the viewer's own id via this hook.
@@ -1212,18 +1233,33 @@ describe("neglected suggestions", () => {
 		).not.toBeInTheDocument();
 	});
 
-	// Only STALE leaves. An aging row is de-emphasised where it stands, so it
-	// is interleaved here between the fresh ones: an implementation that
-	// treated each tier in turn would move `Aging middle` and fail this.
-	it("archives stale suggestions out of Suggested without moving aging ones", () => {
+	// Stale LEAVES, aging SINKS. The fixture interleaves both between the fresh
+	// rows so the assertion pins two rules at once: the aging pair drops below
+	// every live topic, and the two fresh ones keep their incoming order
+	// relative to each other — which is 1B's per-viewer ranking surviving.
+	//
+	// This replaces an assertion that an aging row stays exactly where it was.
+	// The card owner asked for the opposite ("if for 10+ days we can start
+	// lowering it in the list"), and that call supersedes the earlier one.
+	it("archives the stale and sinks the aging, oldest last", () => {
 		const stale = daysAgo(STALE_AFTER_DAYS + 10);
-		const aging = daysAgo(AGING_AFTER_DAYS + 2);
+		const agingOlder = daysAgo(STALE_AFTER_DAYS - 1);
+		const agingNewer = daysAgo(AGING_AFTER_DAYS + 2);
 		const fresh = daysAgo(2);
 		state.topics = [
 			makeTopic({ id: "f1", title: "Fresh first", updatedAt: fresh }),
 			makeTopic({ id: "s1", title: "Stale first", updatedAt: stale }),
-			makeTopic({ id: "a1", title: "Aging middle", updatedAt: aging }),
+			makeTopic({
+				id: "a1",
+				title: "Aging older",
+				updatedAt: agingOlder,
+			}),
 			makeTopic({ id: "f2", title: "Fresh second", updatedAt: fresh }),
+			makeTopic({
+				id: "a2",
+				title: "Aging newer",
+				updatedAt: agingNewer,
+			}),
 			makeTopic({ id: "s2", title: "Stale second", updatedAt: stale }),
 		];
 		renderList();
@@ -1231,7 +1267,12 @@ describe("neglected suggestions", () => {
 		const titles = within(suggested)
 			.getAllByRole("link")
 			.map((a) => a.textContent);
-		expect(titles).toEqual(["Fresh first", "Aging middle", "Fresh second"]);
+		expect(titles).toEqual([
+			"Fresh first",
+			"Fresh second",
+			"Aging newer",
+			"Aging older",
+		]);
 	});
 
 	// The list must SAY what it removed. A queue that quietly shrinks is the
@@ -1508,6 +1549,39 @@ describe("search", () => {
 		expect(screen.getByText("Shipping the inbox")).toBeInTheDocument();
 	});
 
+	// The get-started spotlight targets `publishing-suite-inbox`. That anchor
+	// used to sit on the sectioned branch, so searching — or picking a status
+	// chip — took it out of the DOM and a "Show me" fired mid-search
+	// highlighted nothing. It now rides an always-rendered wrapper, the same
+	// place `publishing-suite-list` sits for the same reason.
+	it("keeps the get-started anchor mounted while a search narrows the list", async () => {
+		const user = userEvent.setup();
+		state.topics = [makeTopic({ id: "a", title: "Shipping the inbox" })];
+		const { container } = renderList();
+		expect(
+			container.querySelector(
+				'[data-onboarding-target="publishing-suite-inbox"]',
+			),
+		).not.toBeNull();
+
+		await user.type(searchBox(), "inbox");
+		expect(
+			container.querySelector(
+				'[data-onboarding-target="publishing-suite-inbox"]',
+			),
+		).not.toBeNull();
+
+		// And when the search matches nothing at all, which is the state a
+		// spotlight is most likely to land in.
+		await user.clear(searchBox());
+		await user.type(searchBox(), "zzzz-no-such-topic");
+		expect(
+			container.querySelector(
+				'[data-onboarding-target="publishing-suite-inbox"]',
+			),
+		).not.toBeNull();
+	});
+
 	// Search deliberately spans EVERY status, including the two the Inbox
 	// sections exclude. A topic you declined last month and half remember is
 	// exactly what search is reached for, and it is otherwise only findable by
@@ -1538,5 +1612,61 @@ describe("search", () => {
 		expect(
 			screen.getByText(/No topics match .*kubernetes/),
 		).toBeInTheDocument();
+	});
+});
+
+/**
+ * FR2 made the title a real anchor so middle-click and "open in new tab" work,
+ * and the chevron beside it a separate disclosure button. What nobody could do
+ * was click the CARD — the owner reported exactly that. The row now navigates
+ * from anywhere that is not itself a control.
+ */
+describe("clicking the row", () => {
+	beforeEach(() => {
+		routerPush.mockClear();
+	});
+
+	it("opens the topic from anywhere on the card", async () => {
+		const user = userEvent.setup();
+		state.topics = [makeTopic({ id: "a", title: "Clickable topic" })];
+		renderList();
+
+		await user.click(
+			screen.getByText("Clickable topic").closest("li") as HTMLElement,
+		);
+
+		expect(routerPush).toHaveBeenCalledTimes(1);
+		expect(routerPush.mock.calls[0][0]).toContain("/publishing/a");
+	});
+
+	it("leaves the controls inside it alone", async () => {
+		// The status select, the disclosure chevron, mute and snooze all live
+		// inside the card. If the row swallowed their clicks, opening the
+		// status dropdown would navigate away instead of opening.
+		const user = userEvent.setup();
+		state.topics = [makeTopic({ id: "a", title: "Clickable topic" })];
+		renderList();
+
+		await user.click(screen.getByTestId("topic-disclosure"));
+
+		expect(routerPush).not.toHaveBeenCalled();
+	});
+
+	it("leaves a modified click to the anchor", async () => {
+		// Cmd/Ctrl-click means "open somewhere else" and belongs to the title
+		// link, which is a real anchor. Handling it here would open the topic
+		// in the current tab and quietly break that gesture.
+		const user = userEvent.setup();
+		state.topics = [makeTopic({ id: "a", title: "Clickable topic" })];
+		renderList();
+
+		const row = screen
+			.getByText("Clickable topic")
+			.closest("li") as HTMLElement;
+		await user.keyboard("{Meta>}");
+		await user.click(row);
+		await user.keyboard("{/Meta}");
+
+		expect(routerPush).not.toHaveBeenCalled();
 	});
 });

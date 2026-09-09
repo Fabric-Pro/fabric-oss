@@ -175,26 +175,52 @@ export function composeInboxSections<T extends InboxTopicShape>(
 	// and that is precisely the 1B regression the paragraph above exists to
 	// prevent.
 	//
-	// TWO groups, not three, even though `topicNeglect` reports three states.
-	// An `aging` topic is de-emphasised WHERE IT STANDS and must not move: a
-	// third group is a sort by neglect, and a sort is the one thing this
-	// section may not do to 1B's tier order. Only stale topics leave.
+	// THREE groups now, not two — the card owner asked for the aging band to
+	// sink rather than only recede in place, and this is that change.
 	//
-	// They LEAVE rather than sink. Stale used to be pushed to the bottom of
-	// this section; the archive supersedes that for the same set, because at
-	// equal thresholds the two rules select the same topics — `live` has
-	// already dropped every snoozed one, so there is no stale-but-unarchived
-	// topic left for a sink to order. Reverting is a one-line reroute:
-	// `[...suggested, ...archived]` here, and the caller's footer goes quiet
-	// on its own because the array it counts is empty.
-	const suggested: T[] = [];
+	// The paragraph this replaces argued that a third group is a sort by
+	// neglect, and that a sort is the one thing this section may not do to 1B's
+	// tier order. Half of that still holds, which is why the partition is
+	// shaped the way it is:
+	//
+	//  - `active` — everything under `AGING_AFTER_DAYS` — is built by a STABLE
+	//    partition and never sorted, so 1B's per-viewer tier order survives
+	//    byte-for-byte at the HEAD of the section, where personalization is
+	//    the thing that matters. #2265's ranking is untouched for every topic
+	//    a reader is realistically going to act on.
+	//  - `aging` is the de-prioritised tail, and there the owner's rule wins:
+	//    the longer a topic has been quiet the further down it goes. Ordering
+	//    by neglect inside a group that is already sinking costs nothing that
+	//    tiering was protecting — a topic nobody has touched in three weeks is
+	//    not being ranked for relevance any more, it is being queued for
+	//    archival.
+	//  - `archived` leaves the section entirely at `STALE_AFTER_DAYS`.
+	//
+	// `days` ascending, so the least neglected sits closest to the live topics
+	// and the oldest is last in the list before it disappears. Ties keep tier
+	// order, because `sort` is stable and the input already carries it.
+	const active: T[] = [];
+	const aging: T[] = [];
 	const archived: T[] = [];
 	for (const t of live) {
 		if (t.status !== "SUGGESTION") {
 			continue;
 		}
-		(isTopicArchived(t, now) ? archived : suggested).push(t);
+		const neglect = topicNeglect(t, now);
+		if (neglect === null) {
+			active.push(t);
+		} else if (neglect.level === "stale") {
+			archived.push(t);
+		} else {
+			aging.push(t);
+		}
 	}
+	aging.sort(
+		(a, b) =>
+			(topicNeglect(a, now)?.days ?? 0) -
+			(topicNeglect(b, now)?.days ?? 0),
+	);
+	const suggested = [...active, ...aging];
 
 	return {
 		recentlyModified: recent.slice(0, maxRecent),

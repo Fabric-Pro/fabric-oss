@@ -410,6 +410,97 @@ describe("resolveConfirmationQuestions", () => {
 		expect(questions[0].question).toMatch(/account team/i);
 	});
 
+	/**
+	 * The defect the owner hit on staging: ONE decision, TWO cards.
+	 *
+	 * The topic asked "Should we produce a LinkedIn Post for this topic?" from
+	 * the classification bucket AND "Should a LinkedIn Post be produced in
+	 * addition to the already-suggested Tweet and Blog Post, given LinkedIn's
+	 * different truncation behaviour?" from the model — and the screenshot
+	 * approval appeared three times the same way. The identity hash cannot
+	 * collapse them, because the two `subject` strings are written
+	 * independently and only merge on an exact match.
+	 *
+	 * `CONTENT_TYPE` and `ASSET_APPROVAL` are fully derivable from the buckets,
+	 * so a model question of that kind, once a bucket has produced one, is a
+	 * restatement by construction.
+	 */
+	it("drops a model restatement of a decision the buckets already cover", () => {
+		const questions = resolveConfirmationQuestions("topic-1", {
+			contentTypes: {
+				needsConfirmation: [
+					{
+						type: "LinkedIn Post",
+						rationale: "Second social format.",
+					},
+				],
+			},
+			recommendedQuestions: [
+				{
+					decisionKind: "CONTENT_TYPE",
+					subject: "the second social format",
+					question:
+						"Should a LinkedIn Post be produced in addition to the already-suggested Tweet and Blog Post?",
+				},
+			],
+		});
+
+		expect(questions).toHaveLength(1);
+		expect(questions[0].source).toBe("DERIVED");
+	});
+
+	it("keeps a model question of a kind no bucket raised", () => {
+		// The rule is scoped to kinds the classification ACTUALLY filled. With
+		// no asset requiring approval, a model question about one is the only
+		// thing raising it and must survive.
+		const questions = resolveConfirmationQuestions("topic-1", {
+			contentTypes: {
+				needsConfirmation: [
+					{
+						type: "LinkedIn Post",
+						rationale: "Second social format.",
+					},
+				],
+			},
+			recommendedQuestions: [
+				{
+					decisionKind: "ASSET_APPROVAL",
+					subject: "the architecture diagram",
+					question: "May we publish the architecture diagram?",
+				},
+			],
+		});
+
+		expect(questions).toHaveLength(2);
+		expect(questions.some((q) => q.decisionKind === "ASSET_APPROVAL")).toBe(
+			true,
+		);
+	});
+
+	it("keeps a model question of an uncovered KIND even when buckets are full", () => {
+		// AUDIENCE_SCOPE is not derivable from any bucket, so the rule must not
+		// touch it however much the classification produced.
+		const questions = resolveConfirmationQuestions("topic-1", {
+			contentTypes: {
+				needsConfirmation: [{ type: "LinkedIn Post", rationale: "r" }],
+			},
+			supportingAssets: {
+				requiresApproval: [{ type: "Screenshot", rationale: "r" }],
+			},
+			recommendedQuestions: [
+				{
+					decisionKind: "AUDIENCE_SCOPE",
+					subject: "the audience",
+					question: "Is this external-ready?",
+				},
+			],
+		});
+
+		expect(questions.some((q) => q.decisionKind === "AUDIENCE_SCOPE")).toBe(
+			true,
+		);
+	});
+
 	it("gives every question a stable id", () => {
 		const of = (
 			analysis: Parameters<typeof resolveConfirmationQuestions>[1],
