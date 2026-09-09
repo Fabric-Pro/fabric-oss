@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -764,7 +764,7 @@ describe("StakeholderEmailPanel — when the notes describe a different version"
 	});
 
 	it("qualifies the unconfirmed banner and the inputs list, not only the status", () => {
-		// Three surfaces. The banner matters most in the other direction: when
+		// Four surfaces. The banner matters most in the other direction: when
 		// the newer version is NOT unconfirmed the amber block disappears
 		// altogether while the text about to be sent was written under an
 		// unknown release state, so the status qualifier is the only thing left
@@ -774,7 +774,13 @@ describe("StakeholderEmailPanel — when the notes describe a different version"
 			working: working({ sourceDraftId: "d1" }),
 		});
 
-		expect(screen.getAllByText(OTHER_VERSION)).toHaveLength(3);
+		// FOUR since A6: the safety note joined the three surfaces this
+		// test was written for. It was the one on-screen surface never
+		// qualified, against the panel header's own claim that every one
+		// is — and the side-by-side layout put it beside the draft it is
+		// NOT about. A count rather than a floor, so a surface that
+		// silently loses its qualifier still fails here.
+		expect(screen.getAllByText(OTHER_VERSION)).toHaveLength(4);
 	});
 
 	it("stays quiet when the editor holds that very version", () => {
@@ -1031,6 +1037,182 @@ describe("StakeholderEmailPanel — what a viewer sees", () => {
 			screen.queryByRole("button", {
 				name: /generate|use this version|save changes|copy draft|download/i,
 			}),
+		).not.toBeInTheDocument();
+	});
+});
+
+describe("StakeholderEmailPanel — refining the saved draft (Fizzy #1851, A7)", () => {
+	it("does NOT offer refine before anything is saved", () => {
+		// With no working draft the action has no input, and offering it would
+		// be a regeneration wearing a label that promises otherwise.
+		renderPanel({ draft: readyDraft() });
+
+		expect(
+			screen.queryByRole("button", { name: /refine draft/i }),
+		).not.toBeInTheDocument();
+	});
+
+	it("does NOT offer refine for a working draft with no text", () => {
+		renderPanel({ working: { ...working(), hasBody: false, body: "" } });
+
+		expect(
+			screen.queryByRole("button", { name: /refine draft/i }),
+		).not.toBeInTheDocument();
+	});
+
+	it("offers refine ALONGSIDE regenerate once a draft is saved", () => {
+		// A second action, not a replacement: the two answer different
+		// questions and both stay reachable.
+		renderPanel({ draft: readyDraft(), working: working() });
+
+		expect(
+			screen.getByRole("button", { name: /refine draft/i }),
+		).toBeInTheDocument();
+		expect(
+			screen.getByRole("button", { name: /regenerate draft/i }),
+		).toBeEnabled();
+	});
+
+	it("keeps refine disabled until an instruction is written", async () => {
+		const user = userEvent.setup();
+		renderPanel({ working: working() });
+
+		const button = screen.getByRole("button", { name: /refine draft/i });
+		expect(button).toBeDisabled();
+
+		await user.type(
+			screen.getByRole("textbox", { name: /refine the saved draft/i }),
+			"Make it shorter.",
+		);
+		expect(button).toBeEnabled();
+	});
+
+	it("sends the instruction with the refine flag, and no body", async () => {
+		// The panel names the intent; the server reads the text it revises.
+		const user = userEvent.setup();
+		renderPanel({ working: working() });
+
+		await user.type(
+			screen.getByRole("textbox", { name: /refine the saved draft/i }),
+			"Warmer tone.",
+		);
+		await user.click(screen.getByRole("button", { name: /refine draft/i }));
+
+		expect(mutate.generate).toHaveBeenCalledWith({
+			projectId: "p1",
+			topicId: "t1",
+			organizationId: "org1",
+			guidance: "Warmer tone.",
+			refineFromWorkingDraft: true,
+		});
+	});
+
+	it("keeps the refine instruction OUT of a regeneration", async () => {
+		// Two fields because they ask for different things. A shared one would
+		// carry "make it shorter" into a run that has nothing to shorten.
+		const user = userEvent.setup();
+		renderPanel({ draft: readyDraft(), working: working() });
+
+		await user.type(
+			screen.getByRole("textbox", { name: /refine the saved draft/i }),
+			"Warmer tone.",
+		);
+		await user.click(
+			screen.getByRole("button", { name: /regenerate draft/i }),
+		);
+
+		expect(mutate.generate).toHaveBeenCalledWith(
+			expect.objectContaining({ guidance: null }),
+		);
+		expect(mutate.generate).not.toHaveBeenCalledWith(
+			expect.objectContaining({ refineFromWorkingDraft: true }),
+		);
+	});
+
+	it("says the saved draft is safe until the result is adopted", () => {
+		renderPanel({ working: working() });
+
+		expect(
+			screen.getByText(/nothing you have saved changes until you adopt/i),
+		).toBeInTheDocument();
+	});
+
+	it("gives a viewer no refine control", () => {
+		renderPanel({ working: working(), canEdit: false });
+
+		expect(
+			screen.queryByRole("button", { name: /refine draft/i }),
+		).not.toBeInTheDocument();
+	});
+});
+
+describe("StakeholderEmailPanel — what the draft wrote around (Fizzy #1851, A6)", () => {
+	it("breaks the note into one entry per thing the draft wrote around", () => {
+		// This panel heads the block differently from the other three — its
+		// note is about a release it declined to claim, not a customer detail
+		// it blurred — so the breakdown is worth pinning here too.
+		renderPanel({
+			draft: readyDraft(
+				{
+					...UNCONFIRMED_DOCUMENT,
+					safetyNote:
+						"Left the release date out, since nothing confirmed one. Described the adoption result qualitatively rather than quoting a figure.",
+				},
+				"d2",
+			),
+		});
+
+		expect(
+			screen.getByRole("heading", {
+				name: /what the draft wrote around/i,
+			}),
+		).toBeInTheDocument();
+		expect(
+			screen.getByText(
+				"Left the release date out, since nothing confirmed one.",
+			),
+		).toBeInTheDocument();
+		expect(
+			screen.getByText(
+				"Described the adoption result qualitatively rather than quoting a figure.",
+			),
+		).toBeInTheDocument();
+	});
+});
+
+describe("StakeholderEmailPanel — whose draft the note describes (A6)", () => {
+	/**
+	 * Scoped to the section, because the unconfirmed-release banner, the
+	 * claims table and the inputs-needed list carry the SAME sentence when the
+	 * condition holds — an unscoped query would pass on a build where the note
+	 * itself was never qualified.
+	 */
+	const QUALIFIER = /these notes describe the most recent generated version/i;
+
+	function noteSection() {
+		const heading = screen.getByRole("heading", {
+			name: /what the draft wrote around/i,
+		});
+		return heading.closest("section") as HTMLElement;
+	}
+
+	it("says so when a regeneration the reader has not adopted exists", () => {
+		renderPanel({
+			draft: readyDraft(UNCONFIRMED_DOCUMENT, "d2"),
+			working: working({ sourceDraftId: "d1" }),
+		});
+
+		expect(within(noteSection()).getByText(QUALIFIER)).toBeInTheDocument();
+	});
+
+	it("stays quiet when the saved draft came from the latest version", () => {
+		renderPanel({
+			draft: readyDraft(UNCONFIRMED_DOCUMENT, "d1"),
+			working: working({ sourceDraftId: "d1" }),
+		});
+
+		expect(
+			within(noteSection()).queryByText(QUALIFIER),
 		).not.toBeInTheDocument();
 	});
 });

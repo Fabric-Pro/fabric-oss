@@ -30,6 +30,10 @@ vi.mock("@repo/ai", () => ({
 }));
 
 const mockIsCurrentOrgMember = vi.fn();
+// The prompt now comes from the Prompt Library (#1851). Unmocked, the real
+// query runs against no database and the activity never reaches the model.
+// `null` is the unbound case, which is what every assertion here assumes.
+const mockGetBoundPromptForAgent = vi.fn();
 // Spied at the `@repo/database` boundary so the REAL `job-progress` runs on top.
 const setBackgroundJobStep = vi.fn();
 vi.mock("@repo/database", async () => {
@@ -40,6 +44,8 @@ vi.mock("@repo/database", async () => {
 	return {
 		...actual,
 		isCurrentOrgMember: (...a: unknown[]) => mockIsCurrentOrgMember(...a),
+		getBoundPromptForAgent: (...a: unknown[]) =>
+			mockGetBoundPromptForAgent(...a),
 		setBackgroundJobStep: (...a: unknown[]) => setBackgroundJobStep(...a),
 	};
 });
@@ -69,6 +75,8 @@ beforeEach(() => {
 	logModelUsageAsync.mockReset();
 	mockIsCurrentOrgMember.mockReset();
 	mockIsCurrentOrgMember.mockResolvedValue(true);
+	mockGetBoundPromptForAgent.mockReset();
+	mockGetBoundPromptForAgent.mockResolvedValue(null);
 	trackUsage.mockReset();
 	setBackgroundJobStep.mockReset();
 	stubModel();

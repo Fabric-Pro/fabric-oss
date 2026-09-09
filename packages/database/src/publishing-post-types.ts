@@ -8,25 +8,36 @@
  * `function-tags.ts`, which `PublishingSuiteList.tsx` already imports that way.
  *
  * It exists because the alternative was a fourth hand-written copy of the same
- * four values. `PostTypesDialog.tsx` and `PublishingSuiteList.tsx` each already
- * carry their own `{ value, label }` array; the settings form would have made
- * three, and the numbers below would have made three more. Those two existing
- * copies are left alone — moving them is not this slice's business — but from
- * here on there is one place to move them TO.
+ * values. `PostTypesDialog.tsx` carries its own `{ value, label }` array; the
+ * settings form would have made another, and the numbers below more again. That
+ * copy is left alone — moving it is not this slice's business — but from here on
+ * there is one place to move it TO.
  */
 
 import type { PublishingTopicPostType } from "../prisma/client";
 
 /**
- * The four post types, as value + human label together.
+ * The post types, as value + human label together.
  *
  * One array rather than a values tuple beside a label map, because every
  * consumer so far needs both: the API validates the value, the form renders the
  * label, the prompt clause writes the label. Splitting them is what lets one
  * drift from the other.
+ *
+ * ORDER IS DISPLAY ORDER, and it is not the enum's. `LINKEDIN_POST` was
+ * appended to the Prisma enum because `ALTER TYPE ... ADD VALUE` appends, but it
+ * reads here beside TWEET: the two are the short-form social pair, and a reader
+ * scanning the list should meet them together rather than find one of them
+ * after Stakeholder Email. `publishing-post-types.test.ts` pins this order
+ * against the LLM whitelist, so the two lists move together or go red.
+ *
+ * `satisfies` checks the VALUES against the enum but not the COVERAGE of it —
+ * a sixth enum member would not fail this file. The pin above is what catches
+ * that instead.
  */
 export const PUBLISHING_POST_TYPE_OPTIONS = [
 	{ value: "TWEET", label: "Tweet" },
+	{ value: "LINKEDIN_POST", label: "LinkedIn Post" },
 	{ value: "BLOG_POST", label: "Blog Post" },
 	{ value: "CASE_STUDY", label: "Case Study" },
 	{ value: "STAKEHOLDER_EMAIL", label: "Stakeholder Email" },
@@ -41,13 +52,14 @@ export const PUBLISHING_POST_TYPE_OPTIONS = [
  */
 export const PUBLISHING_TOPIC_POST_TYPES = [
 	"TWEET",
+	"LINKEDIN_POST",
 	"BLOG_POST",
 	"CASE_STUDY",
 	"STAKEHOLDER_EMAIL",
 ] as const satisfies readonly PublishingTopicPostType[];
 
 /**
- * The four values as a UNION — what the oRPC boundary accepts, and therefore
+ * The values as a UNION — what the oRPC boundary accepts, and therefore
  * what any caller writing this field has to be holding.
  *
  * Exported because the alternative at the form was `as string[]`, and a
@@ -74,7 +86,7 @@ export type PublishingPostTypeValue =
  *
  * `preferredPostTypes` is deliberately NOT governed by these. It is a closed
  * enum, so its vocabulary and its size both come from the enum itself — a cap
- * of 25 on a four-value set is a limit that can never fire, which reads to a
+ * of 25 on a five-value set is a limit that can never fire, which reads to a
  * later editor as a limit nobody thought about.
  */
 export const MAX_PUBLISHING_PREFERENCE_ITEMS = 25;

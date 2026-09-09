@@ -205,6 +205,111 @@ describe("BlogPostPanel — the generate control", () => {
 	});
 });
 
+describe("BlogPostPanel — refining the saved draft (Fizzy #1851, A7)", () => {
+	it("does NOT offer refine before anything is saved", () => {
+		// With no working draft the action has no input, and offering it would
+		// be a regeneration wearing a label that promises otherwise.
+		renderPanel({ draft: readyDraft() });
+
+		expect(
+			screen.queryByRole("button", { name: /refine draft/i }),
+		).not.toBeInTheDocument();
+	});
+
+	it("does NOT offer refine for a working draft with no text", () => {
+		renderPanel({ working: working({ hasBody: false, body: "" }) });
+
+		expect(
+			screen.queryByRole("button", { name: /refine draft/i }),
+		).not.toBeInTheDocument();
+	});
+
+	it("offers refine ALONGSIDE regenerate once a draft is saved", () => {
+		// A second action, not a replacement: the two answer different
+		// questions and both stay reachable.
+		renderPanel({ draft: readyDraft(), working: working() });
+
+		expect(
+			screen.getByRole("button", { name: /refine draft/i }),
+		).toBeInTheDocument();
+		expect(
+			screen.getByRole("button", { name: /regenerate draft/i }),
+		).toBeEnabled();
+	});
+
+	it("keeps refine disabled until an instruction is written", async () => {
+		const user = userEvent.setup();
+		renderPanel({ working: working() });
+
+		const button = screen.getByRole("button", { name: /refine draft/i });
+		expect(button).toBeDisabled();
+
+		await user.type(
+			screen.getByRole("textbox", { name: /refine the saved draft/i }),
+			"Make it shorter.",
+		);
+		expect(button).toBeEnabled();
+	});
+
+	it("sends the instruction with the refine flag, and no body", async () => {
+		// The panel names the intent; the server reads the text it revises.
+		const user = userEvent.setup();
+		renderPanel({ working: working() });
+
+		await user.type(
+			screen.getByRole("textbox", { name: /refine the saved draft/i }),
+			"Warmer tone.",
+		);
+		await user.click(screen.getByRole("button", { name: /refine draft/i }));
+
+		expect(mutate.generate).toHaveBeenCalledWith({
+			projectId: "p1",
+			topicId: "t1",
+			organizationId: "org1",
+			guidance: "Warmer tone.",
+			refineFromWorkingDraft: true,
+		});
+	});
+
+	it("keeps the refine instruction OUT of a regeneration", async () => {
+		// Two fields because they ask for different things. A shared one would
+		// carry "make it shorter" into a run that has nothing to shorten.
+		const user = userEvent.setup();
+		renderPanel({ draft: readyDraft(), working: working() });
+
+		await user.type(
+			screen.getByRole("textbox", { name: /refine the saved draft/i }),
+			"Warmer tone.",
+		);
+		await user.click(
+			screen.getByRole("button", { name: /regenerate draft/i }),
+		);
+
+		expect(mutate.generate).toHaveBeenCalledWith(
+			expect.objectContaining({ guidance: null }),
+		);
+		expect(mutate.generate).not.toHaveBeenCalledWith(
+			expect.objectContaining({ refineFromWorkingDraft: true }),
+		);
+	});
+
+	it("says the saved draft is safe until the result is adopted", () => {
+		renderPanel({ working: working() });
+
+		expect(
+			screen.getByText(/nothing you have saved changes until you adopt/i),
+		).toBeInTheDocument();
+	});
+
+	it("gives a viewer no refine control", () => {
+		renderPanel({ working: working(), canEdit: false });
+
+		expect(
+			screen.queryByRole("button", { name: /refine draft/i }),
+		).not.toBeInTheDocument();
+	});
+});
+
 describe("BlogPostPanel — the editor (FR21)", () => {
 	it("shows the saved draft in an editable field", () => {
 		renderPanel({ working: working() });
@@ -474,5 +579,179 @@ describe("BlogPostPanel — the generated document", () => {
 		expect(screen.getByRole("alert")).toHaveTextContent(
 			"The provider timed out.",
 		);
+	});
+});
+
+describe("BlogPostPanel — the saved draft beside the candidate (Fizzy #1851, A6)", () => {
+	it("puts both texts on screen at once, each labelled for what it is", () => {
+		// The panel already promised the comparison in prose — "regenerating
+		// writes a new version to compare against" — while stacking the two
+		// texts several sections apart, so comparing them meant scrolling.
+		renderPanel({
+			draft: readyDraft(DOCUMENT, "d2"),
+			working: working({ sourceDraftId: "d1" }),
+		});
+
+		expect(
+			screen.getByRole("textbox", { name: /working blog post/i }),
+		).toHaveValue(
+			"# Faster incremental builds\n\nBuilds used to start cold.",
+		);
+		// A regex, not `DOCUMENT.body`: the default matcher normalizes the
+		// node's whitespace but not the string it is compared against, so a
+		// body containing a blank line never matches itself.
+		expect(screen.getByText(/## Why this matters/)).toBeInTheDocument();
+
+		// And which is which, without the reader having to work it out.
+		expect(
+			screen.getByRole("heading", {
+				name: /new candidate \(version 1\)/i,
+			}),
+		).toBeInTheDocument();
+		expect(
+			screen.getByText(/saved\. this is the blog post the topic holds/i),
+		).toBeInTheDocument();
+		expect(
+			screen.getByText(
+				/not saved\. adopting it replaces your saved draft/i,
+			),
+		).toBeInTheDocument();
+	});
+
+	it("does not claim a replacement when there is no saved draft to replace", () => {
+		renderPanel({ draft: readyDraft(DOCUMENT, "d2") });
+
+		expect(
+			screen.queryByText(
+				/saved\. this is the blog post the topic holds/i,
+			),
+		).not.toBeInTheDocument();
+		expect(
+			screen.getByText(/adopting it makes this the topic's draft/i),
+		).toBeInTheDocument();
+	});
+
+	it("keeps the adopt control reachable rather than below the candidate's text", () => {
+		// The candidate's prose scrolls inside its own frame; the control that
+		// adopts it must not scroll away with a long draft.
+		renderPanel({
+			draft: readyDraft(DOCUMENT, "d2"),
+			working: working({ sourceDraftId: "d1" }),
+		});
+
+		const adopt = screen.getByRole("button", { name: /use this version/i });
+		const candidateBody = screen.getByText(/## Why this matters/);
+
+		expect(adopt).toBeEnabled();
+		// The block that scrolls is the body's own container. The control must
+		// sit outside it, or a four-thousand-word draft buries it.
+		expect(candidateBody.parentElement?.contains(adopt)).toBe(false);
+	});
+});
+
+describe("BlogPostPanel — how the draft was generalized (Fizzy #1851, A6)", () => {
+	const THREE_APPROVALS =
+		"Generalized the customer reference, which is not approved for naming. Described the rollout result qualitatively rather than quoting the figure. Left the screenshot out until the capture is cleared for use.";
+
+	it("breaks the note into one entry per thing the draft wrote around", () => {
+		renderPanel({
+			draft: readyDraft({ ...DOCUMENT, safetyNote: THREE_APPROVALS }),
+		});
+
+		expect(
+			screen.getByText(
+				"Generalized the customer reference, which is not approved for naming.",
+			),
+		).toBeInTheDocument();
+		expect(
+			screen.getByText(
+				"Described the rollout result qualitatively rather than quoting the figure.",
+			),
+		).toBeInTheDocument();
+		expect(
+			screen.getByText(
+				"Left the screenshot out until the capture is cleared for use.",
+			),
+		).toBeInTheDocument();
+		// Three entries, not one paragraph carrying all three.
+		expect(screen.queryByText(THREE_APPROVALS)).not.toBeInTheDocument();
+	});
+
+	it("leaves a one-sentence note as a paragraph, not a single bullet", () => {
+		// `DOCUMENT.safetyNote` is one sentence. A one-item list promises a
+		// breakdown that did not happen.
+		renderPanel({ draft: readyDraft() });
+
+		expect(
+			screen.getByText("Generalized the customer reference."),
+		).toBeInTheDocument();
+		// The only list left on the panel is `inputsNeeded`.
+		expect(screen.getAllByRole("listitem")).toHaveLength(1);
+	});
+
+	it("does not split on a decimal or an abbreviation", () => {
+		// Splitting "12.4%" or "e.g." apart would turn a formatting change
+		// into an editing one, on the block a reader checks the draft's
+		// honesty against.
+		renderPanel({
+			draft: readyDraft({
+				...DOCUMENT,
+				safetyNote:
+					"Reported the 12.4% uplift as unconfirmed rather than as a measured result. Named no customer, e.g. Contoso, until the approval lands.",
+			}),
+		});
+
+		expect(
+			screen.getByText(
+				"Reported the 12.4% uplift as unconfirmed rather than as a measured result.",
+			),
+		).toBeInTheDocument();
+		expect(
+			screen.getByText(
+				"Named no customer, e.g. Contoso, until the approval lands.",
+			),
+		).toBeInTheDocument();
+	});
+});
+
+describe("BlogPostPanel — whose draft the generalization note describes (A6)", () => {
+	/**
+	 * The note is read off the LATEST READY generation; the editor beside it
+	 * holds the WORKING draft. Once a regeneration nobody adopted exists, the
+	 * two are different documents and the note is about the one the reader is
+	 * NOT editing — which the side-by-side makes easy to misattribute, because
+	 * the sentence now sits equally close to both columns.
+	 *
+	 * This panel had no qualifier of any kind before A6.
+	 */
+	const QUALIFIER = /these notes describe the most recent generated version/i;
+
+	it("says so when a regeneration the reader has not adopted exists", () => {
+		renderPanel({
+			draft: readyDraft(DOCUMENT, "d2"),
+			working: working({ sourceDraftId: "d1" }),
+		});
+
+		expect(screen.getByText(QUALIFIER)).toBeInTheDocument();
+	});
+
+	it("stays quiet when the saved draft came from the latest version", () => {
+		// The note describes the text in the editor, so qualifying it would be
+		// a warning about nothing — and a warning on every draft is one nobody
+		// reads.
+		renderPanel({
+			draft: readyDraft(DOCUMENT, "d1"),
+			working: working({ sourceDraftId: "d1" }),
+		});
+
+		expect(screen.queryByText(QUALIFIER)).not.toBeInTheDocument();
+	});
+
+	it("stays quiet when there is no saved draft to disagree with it", () => {
+		// With no working body there is no "version this text was saved from",
+		// so the sentence would be false rather than merely unnecessary.
+		renderPanel({ draft: readyDraft(DOCUMENT, "d2") });
+
+		expect(screen.queryByText(QUALIFIER)).not.toBeInTheDocument();
 	});
 });

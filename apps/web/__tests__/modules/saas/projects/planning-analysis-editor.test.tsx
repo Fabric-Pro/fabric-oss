@@ -51,16 +51,40 @@ vi.mock("@saas/projects/lib/tiptap-extensions-advanced", () => ({
 	advancedExtensions: [],
 }));
 
-const { fakeEditor } = vi.hoisted(() => ({
+// `on`/`off` complete the stub rather than loosen it: the editor region now
+// docks `DocumentTocRail`, whose `useDocumentToc` subscribes to the editor's
+// `update` event. A stand-in without them throws out of the effect and takes
+// the whole tree down. Heading extraction itself finds no `state` here and
+// falls into the hook's own catch, so the rail renders nothing — which is
+// correct for this file: the ToC's own behaviour is pinned in
+// `modules/saas/projects/components/__tests__/DocumentTocRail.test.tsx`, and
+// what is under test here is save/version logic.
+const { fakeEditor, capturedEditorOptionsRef } = vi.hoisted(() => ({
 	fakeEditor: {
 		commands: { setContent: vi.fn() },
 		setEditable: vi.fn(),
+		on: vi.fn(),
+		off: vi.fn(),
 		isEditable: true,
 	},
+	capturedEditorOptionsRef: {
+		current: null as {
+			editorProps?: { attributes?: { class?: string } };
+		} | null,
+	},
 }));
+// `EditorContent` renders the div it is given a className on, because the
+// height chain that keeps the contenteditable clickable runs THROUGH that
+// element — a stand-in returning `null` would let the middle link of the
+// chain be deleted with every test still green.
 vi.mock("@tiptap/react", () => ({
-	useEditor: () => fakeEditor,
-	EditorContent: () => null,
+	useEditor: (options: { editorProps?: unknown }) => {
+		capturedEditorOptionsRef.current = options;
+		return fakeEditor;
+	},
+	EditorContent: ({ className }: { className?: string }) => (
+		<div className={className} />
+	),
 }));
 
 // `EditorToolbar` is an existing, separately-tested component the brief
@@ -248,6 +272,131 @@ describe("PlanningAnalysisEditor — raw mode never repairs on save", () => {
 
 		expect(saveMutationMock).toHaveBeenCalledWith(
 			expect.objectContaining({ body: "Hand-edited markdown." }),
+		);
+	});
+});
+
+describe("PlanningAnalysisEditor — the editor region owns its height", () => {
+	const region = (container: HTMLElement) =>
+		container.querySelector<HTMLElement>(
+			'[data-testid="planning-analysis-editor-region"]',
+		);
+
+	it("keeps the same height rule in both view modes", async () => {
+		// The defect: one wrapper, two structurally different children. Rich
+		// was an unbounded, content-driven `EditorContent`; raw a `Textarea`
+		// with a 300px floor that does not grow. A short analysis grew on
+		// toggle and a long one collapsed into an internal scroller.
+		const { container } = render(<PlanningAnalysisEditor {...baseProps} />);
+
+		const richClass = region(container)?.className;
+		expect(richClass).toMatch(/\bh-\[clamp\(/);
+
+		await userEvent.click(
+			screen.getByRole("button", { name: /markdown/i }),
+		);
+
+		expect(region(container)?.className).toBe(richClass);
+	});
+
+	// The floor exists for two reasons and a viewer has neither: no rich/raw
+	// toggle and no toolbar, so no jump to prevent — only a tall, mostly-empty
+	// box for a problem they cannot trigger.
+	it("drops the height floor for a read-only viewer", () => {
+		const { container } = render(
+			<PlanningAnalysisEditor {...baseProps} canEdit={false} />,
+		);
+
+		expect(region(container)?.className).not.toMatch(/\bh-\[clamp\(/);
+	});
+
+	// NEGATIVE CONTROL for the gate: proves the case above is the viewer's
+	// doing, not a class that stopped being applied to anyone. Same assertion
+	// the toggle-stability test makes, from the other side of `canEdit`.
+	it("keeps the height floor for someone who can edit", () => {
+		const { container } = render(<PlanningAnalysisEditor {...baseProps} />);
+
+		expect(region(container)?.className).toMatch(/\bh-\[clamp\(/);
+	});
+
+	// The floor was also what gave `DocumentTocRail` a definite height to dock
+	// against, so removing it must not cost a viewer their table of contents.
+	// It does not: the rail is a stretch-aligned flex item and takes the row's
+	// height, and it renders nothing at all when the document has no headings
+	// — so the "rail with nothing to stick to" case cannot arise. With no
+	// headings here, its polite live region is the proof it still mounted.
+	it("still docks the table of contents for a viewer", () => {
+		render(<PlanningAnalysisEditor {...baseProps} canEdit={false} />);
+
+		expect(screen.getByRole("status")).toBeInTheDocument();
+	});
+
+	it("keeps the toolbar inside that region, so losing it cannot move the box", () => {
+		// The third contributor to the jump: the toolbar unmounts in raw mode.
+		// While it sat ABOVE the box, its disappearance moved everything below
+		// it. Inside, it only changes how a fixed height is divided.
+		const { container } = render(<PlanningAnalysisEditor {...baseProps} />);
+
+		expect(
+			region(container)?.contains(
+				screen.getByTestId("editor-toolbar-stub"),
+			),
+		).toBe(true);
+	});
+
+	it("docks the table of contents in rich mode and drops it in raw", async () => {
+		// The rail is mounted for real here rather than stubbed: with no
+		// headings it renders only its polite live region, and that is enough
+		// to prove it mounted against this editor without throwing. Raw mode
+		// must hide it — the Textarea has no heading DOM to navigate.
+		render(<PlanningAnalysisEditor {...baseProps} />);
+
+		expect(screen.getByRole("status")).toBeInTheDocument();
+
+		await userEvent.click(
+			screen.getByRole("button", { name: /markdown/i }),
+		);
+
+		expect(screen.queryByRole("status")).not.toBeInTheDocument();
+	});
+
+	it("keeps the contenteditable as tall as the region it now sits in", () => {
+		// Once the region stopped hugging its content, a short analysis left
+		// most of the box as dead space: a click below the text landed on the
+		// scroll container, not the editor, so no caret appeared. Measured in
+		// a browser against this exact class chain — 82px of editable inside a
+		// 488px box without it, the full 488px with it.
+		//
+		// All three links are asserted because the percentage only resolves
+		// while every one of them holds: `min-h-full` on the ProseMirror
+		// element needs a definite height on `EditorContent`, which needs one
+		// on the measure wrapper, which takes it from the region. Dropping any
+		// single link silently restores the dead zone.
+		const { container } = render(<PlanningAnalysisEditor {...baseProps} />);
+
+		expect(
+			capturedEditorOptionsRef.current?.editorProps?.attributes?.class,
+		).toMatch(/\bmin-h-full\b/);
+
+		const measure = region(container)?.querySelector(".max-w-3xl");
+		expect(measure?.className).toMatch(/\bh-full\b/);
+		expect(measure?.firstElementChild?.className).toMatch(/\bh-full\b/);
+	});
+
+	it("caps the reading measure in both view modes", async () => {
+		// Asserted on the class list because jsdom has no layout engine: there
+		// is no width to measure, only the rule that produces one. The
+		// analysis rendered full-bleed before this.
+		const { container } = render(<PlanningAnalysisEditor {...baseProps} />);
+
+		expect(region(container)?.querySelector(".max-w-3xl")).not.toBeNull();
+
+		await userEvent.click(
+			screen.getByRole("button", { name: /markdown/i }),
+		);
+
+		expect(screen.getByRole("textbox").parentElement?.className).toMatch(
+			/\bmax-w-3xl\b/,
 		);
 	});
 });

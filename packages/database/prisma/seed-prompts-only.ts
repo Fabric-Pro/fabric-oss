@@ -12,6 +12,10 @@ import {
 	PUBLISHING_CASE_STUDY_FALLBACK_BODY,
 } from "@repo/utils/publishing-case-study-prompt";
 import {
+	PUBLISHING_LINKEDIN_POST_AGENT_KEY,
+	PUBLISHING_LINKEDIN_POST_FALLBACK_BODY,
+} from "@repo/utils/publishing-linkedin-post-prompt";
+import {
 	PUBLISHING_PLANNING_ANALYSIS_AGENT_KEY,
 	PUBLISHING_PLANNING_ANALYSIS_FALLBACK_BODY,
 } from "@repo/utils/publishing-planning-prompt";
@@ -23,6 +27,10 @@ import {
 	PUBLISHING_STAKEHOLDER_EMAIL_AGENT_KEY,
 	PUBLISHING_STAKEHOLDER_EMAIL_FALLBACK_BODY,
 } from "@repo/utils/publishing-stakeholder-email-prompt";
+import {
+	PUBLISHING_TOPIC_SUGGESTION_AGENT_KEY,
+	PUBLISHING_TOPIC_SUGGESTION_FALLBACK_BODY,
+} from "@repo/utils/publishing-suggestion-prompt";
 import { db } from "../prisma/client";
 import { isDirectRun } from "./lib/is-direct-run";
 // The retirement guard every SYSTEM-scope insert goes through, and the batched
@@ -326,6 +334,21 @@ const PROMPT_DOCUMENT_TYPE_BINDINGS: Record<string, SeedBindingSpec> = {
 		storyKind: null as null,
 		targetKey: "meeting_agenda_generator",
 	},
+	// publishing_topic_suggestion: the daily scan that decides which of a
+	// project's recent activity is worth publishing, and writes the summary at
+	// the top of every Topic Item Page (#1851, FR7). Its own agent key so
+	// `summarizeTopicSuggestions` resolves a prompt distinct from every document
+	// prompt at the same documentType/storyKind. GENERAL + null: one prompt per
+	// tenant covers every project and cycle. Unlike its four publishing
+	// siblings this body takes NO variables — the serialized source context is
+	// appended code-side, along with the output contract and the grounding
+	// rules, so an override can retune what counts as newsworthy but cannot
+	// leave the model with nothing to ground a topic in.
+	[PUBLISHING_TOPIC_SUGGESTION_AGENT_KEY]: {
+		documentTypes: ["GENERAL"],
+		storyKind: null as null,
+		targetKey: PUBLISHING_TOPIC_SUGGESTION_AGENT_KEY,
+	},
 	// publishing_topic_planning_analysis: the Topic Item Page's pre-draft planning
 	// worksheet (#1851, Phase 2A-2). Its own agent key so
 	// `generatePlanningAnalysisActivity` resolves a prompt distinct from every
@@ -349,6 +372,18 @@ const PROMPT_DOCUMENT_TYPE_BINDINGS: Record<string, SeedBindingSpec> = {
 		documentTypes: ["GENERAL"],
 		storyKind: null as null,
 		targetKey: PUBLISHING_SHORT_POST_AGENT_KEY,
+	},
+	// publishing_topic_linkedin_post: GENERAL + null for the same reason its
+	// publishing siblings use them — one prompt per tenant covers every project
+	// and topic. Same variables as the short post, and the same three-option
+	// contract and approval rules appended code-side. It is a SEPARATE prompt
+	// rather than a mode of the short post's because the platforms impose
+	// opposite constraints: LinkedIn folds a post behind "see more" after the
+	// first line or two and caps nothing, X caps hard and folds nothing.
+	[PUBLISHING_LINKEDIN_POST_AGENT_KEY]: {
+		documentTypes: ["GENERAL"],
+		storyKind: null as null,
+		targetKey: PUBLISHING_LINKEDIN_POST_AGENT_KEY,
 	},
 	// publishing_topic_blog_post: GENERAL + null for the same reason its two
 	// publishing siblings use them — one prompt per tenant covers every project
@@ -5845,6 +5880,45 @@ Rules:
 - Returning NO findings is a real and frequently correct answer. A well-covered change should produce an empty list, and padding it makes every future list less believable.`,
 	},
 	{
+		// publishing_topic_suggestion — the daily scan that decides which of a
+		// project's recent activity is worth publishing (#1851, FR7). Resolved
+		// at runtime by `summarizeTopicSuggestions` (packages/temporal) via
+		// getBoundPromptForAgent.
+		//
+		// The BODY is imported rather than repeated here, so this seed and the
+		// activity's in-memory fallback cannot drift — the same arrangement its
+		// four publishing siblings use, and for the same reason.
+		//
+		// Content is the body that shipped hard-coded in the activity, moved
+		// unchanged. What left it: the output contract and the three grounding
+		// rules, which are appended CODE-SIDE so an org retuning what counts as
+		// newsworthy cannot drop them; and the serialized source context, which
+		// is appended code-side too. That last part is the difference from the
+		// siblings — this prompt takes no template variables at all, so there
+		// is no `{{{context}}}` slot an edit can delete, which would otherwise
+		// leave the model inventing topics from nothing on a daily schedule.
+		//
+		// INSERT-ONLY: once this seeds, changing the text does nothing on an
+		// environment that already ran the seed. Ship wording changes as an
+		// explicit UPDATE migration.
+		key: PUBLISHING_TOPIC_SUGGESTION_AGENT_KEY,
+		name: "Topic Suggestions",
+		description:
+			"Scans a project's recent stories, documents, transcripts, pull requests and releases and proposes the topics worth publishing, each with its pitch, angle, recommended formats and provenance.",
+		category: "publishing",
+		tags: [
+			"publishing",
+			"publishing-suite",
+			"topic-suggestion",
+			"ai-generation",
+		],
+		format: "HANDLEBARS" as const,
+		promptType: "STRUCTURED" as const,
+		structuredFormat: "JSON" as const,
+		isPublic: true,
+		content: PUBLISHING_TOPIC_SUGGESTION_FALLBACK_BODY,
+	},
+	{
 		// publishing_topic_planning_analysis — the Topic Item Page's pre-draft
 		// planning worksheet (#1851, Phase 2A-2). Resolved at runtime by
 		// `generatePlanningAnalysisActivity` (packages/temporal) via
@@ -5906,6 +5980,41 @@ Rules:
 		structuredFormat: "JSON" as const,
 		isPublic: true,
 		content: PUBLISHING_SHORT_POST_FALLBACK_BODY,
+	},
+	{
+		// publishing_topic_linkedin_post: the LinkedIn post drafted from a
+		// topic (Fizzy #1851). Its own prompt rather than the short post's
+		// under a different label, because the two platforms impose opposite
+		// constraints on the same sentence: LinkedIn hides everything after the
+		// first line or two behind "see more" and imposes no hard ceiling, X
+		// imposes a hard ceiling and hides nothing. So a tweet reposted to
+		// LinkedIn buries its hook below the fold. The prompt's distinguishing
+		// content is that constraint; everything else matches the short post's.
+		//
+		// Runs with structured output like its siblings, so each option is a
+		// field and "exactly three" is a schema check rather than a regex over
+		// prose. The grounding and approval rules are appended CODE-SIDE so an
+		// org editing tone cannot drop them by accident.
+		//
+		// INSERT-ONLY: once this seeds, changing the text does nothing on an
+		// environment that already ran the seed. Ship wording changes as an
+		// explicit UPDATE migration.
+		key: PUBLISHING_LINKEDIN_POST_AGENT_KEY,
+		name: "Topic LinkedIn Post",
+		description:
+			'Drafts three labeled LinkedIn post options from a Publishing Suite topic, each written so its opening line survives the feed\'s "see more" fold.',
+		category: "publishing",
+		tags: [
+			"publishing",
+			"publishing-suite",
+			"linkedin-post",
+			"ai-generation",
+		],
+		format: "HANDLEBARS" as const,
+		promptType: "STRUCTURED" as const,
+		structuredFormat: "JSON" as const,
+		isPublic: true,
+		content: PUBLISHING_LINKEDIN_POST_FALLBACK_BODY,
 	},
 	{
 		// publishing_topic_blog_post: the long-form blog draft written from a

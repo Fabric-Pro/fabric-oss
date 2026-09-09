@@ -27,6 +27,18 @@ id = "GHSA-jmr9-qjv8-65gv"
 ignoreUntil = 2026-11-12
 reason = "extract-zip@2.0.1 via @langchain/langgraph-cli; no patched release exists upstream. Sole call site is the CLI's Python dev path, which this repo never invokes. See SECURITY.md § Documented dismissals."
 
+# Published 2026-09; the SAME defect class on the SAME unfixable package as the
+# entry above — symlink archive entries escaping the extraction directory — so
+# the chain and the reachability argument are identical and are not restated
+# here. Deliberately given the same `ignoreUntil` so the two are re-evaluated in
+# one pass: whatever retires one (a 2.0.2+, or a langgraph-cli that drops the
+# dependency) retires both, and staggered dates would mean doing the same
+# investigation twice.
+[[IgnoredVulns]]
+id = "GHSA-7pqw-9j4j-h8q3"
+ignoreUntil = 2026-11-12
+reason = "extract-zip@2.0.1 via @langchain/langgraph-cli; same unfixable package and same symlink-write class as GHSA-jmr9-qjv8-65gv. No patched release exists upstream. Sole call site is the CLI's Python dev path, which this repo never invokes. See SECURITY.md § Documented dismissals."
+
 # The former deepmerge-ts entry (GHSA-ggr8-5vv4-36mx) was removed 2026-09-02:
 # the `deepmerge-ts` -> `^8.0.2` override in the root package.json moves
 # @prisma/config's exact 7.1.5 pin past the first fixed release (8.0.0).

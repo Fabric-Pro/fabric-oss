@@ -23,11 +23,20 @@
  * via `resolveEffectiveProjectPermissions` — never a raw `project.userRole`
  * string check. Topic *creation* itself re-derives its tenant tuple from the
  * Project row (`resolveProjectTenant`), so it never depends on this loader (F2).
+ *
+ * The breadcrumb trail lives HERE rather than inside `PublishingSuiteList`,
+ * because that component has two mounts: this route, and the `publishing-suite`
+ * tab inside `ProjectDetails` — which renders `PageBreadcrumbs` itself. A trail
+ * owned by the component would render twice on the tab. This route is the mount
+ * with no chrome of its own, so it supplies its own, in the shape the `Testing`
+ * tab uses: the project name links back to the project, and the section is the
+ * trailing crumb.
  */
 
 import { isFeatureEnabled } from "@repo/database";
 import { getActiveOrganization, getSession } from "@saas/auth/lib/server";
 import { PublishingSuiteList } from "@saas/projects/components/publishing-suite";
+import { PageBreadcrumbs } from "@saas/shared/components/PageBreadcrumbs";
 import { orpcClient } from "@shared/lib/orpc-client";
 import { notFound, redirect } from "next/navigation";
 
@@ -70,11 +79,30 @@ export default async function OrganizationPublishingSuitePage({
 		notFound();
 	}
 
+	const basePath = `/app/${organizationSlug}`;
+
 	return (
-		<PublishingSuiteList
-			projectId={id}
-			organizationId={organization.id}
-			canEdit={projectResult.project.canPublish ?? false}
-		/>
+		<div className="space-y-6">
+			{/* "Publishing Suite" is written out rather than read from `tabs`
+			    (`lib/project-tabs.ts`), matching how `ProjectDetails` writes
+			    "Testing" into the same slot: a crumb names a location to a
+			    reader, and the tab strip's own label is free to diverge from it
+			    without either becoming wrong. */}
+			<PageBreadcrumbs
+				items={[
+					{ label: "Projects", href: `${basePath}/projects` },
+					{
+						label: projectResult.project.name,
+						href: `${basePath}/projects/${id}`,
+					},
+					{ label: "Publishing Suite" },
+				]}
+			/>
+			<PublishingSuiteList
+				projectId={id}
+				organizationId={organization.id}
+				canEdit={projectResult.project.canPublish ?? false}
+			/>
+		</div>
 	);
 }

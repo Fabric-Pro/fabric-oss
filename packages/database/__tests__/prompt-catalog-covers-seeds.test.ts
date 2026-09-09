@@ -26,9 +26,11 @@ import {
 } from "@repo/utils/prompt-action-catalog";
 import { PUBLISHING_BLOG_POST_AGENT_KEY } from "@repo/utils/publishing-blog-post-prompt";
 import { PUBLISHING_CASE_STUDY_AGENT_KEY } from "@repo/utils/publishing-case-study-prompt";
+import { PUBLISHING_LINKEDIN_POST_AGENT_KEY } from "@repo/utils/publishing-linkedin-post-prompt";
 import { PUBLISHING_PLANNING_ANALYSIS_AGENT_KEY } from "@repo/utils/publishing-planning-prompt";
 import { PUBLISHING_SHORT_POST_AGENT_KEY } from "@repo/utils/publishing-short-post-prompt";
 import { PUBLISHING_STAKEHOLDER_EMAIL_AGENT_KEY } from "@repo/utils/publishing-stakeholder-email-prompt";
+import { PUBLISHING_TOPIC_SUGGESTION_AGENT_KEY } from "@repo/utils/publishing-suggestion-prompt";
 import { describe, expect, it } from "vitest";
 
 const SEED = readFileSync(
@@ -65,8 +67,10 @@ const RETIRED_AGENTS = new Set([
  * coverage.
  */
 const KEY_CONSTANTS: Record<string, string> = {
+	PUBLISHING_TOPIC_SUGGESTION_AGENT_KEY,
 	PUBLISHING_PLANNING_ANALYSIS_AGENT_KEY,
 	PUBLISHING_SHORT_POST_AGENT_KEY,
+	PUBLISHING_LINKEDIN_POST_AGENT_KEY,
 	PUBLISHING_BLOG_POST_AGENT_KEY,
 	PUBLISHING_CASE_STUDY_AGENT_KEY,
 	PUBLISHING_STAKEHOLDER_EMAIL_AGENT_KEY,

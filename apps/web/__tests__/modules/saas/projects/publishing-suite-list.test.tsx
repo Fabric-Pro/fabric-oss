@@ -283,6 +283,11 @@ vi.mock("@shared/lib/orpc-query-utils", () => {
 					updateTopicContributors: m(
 						"projects.publishingSuite.updateTopicContributors",
 					),
+					// A8: the assignee write, constructed UNCONDITIONALLY by
+					// the component. Same obligation as every entry above.
+					updateTopicAssignees: m(
+						"projects.publishingSuite.updateTopicAssignees",
+					),
 				},
 				// Task 6: the contributors picker's member list. Same
 				// obligation as every other entry in this mock — a missing
@@ -341,6 +346,16 @@ function makeTopic(overrides: Record<string, unknown> = {}) {
 		subject: null as string | null,
 		userPostTypes: null as string[] | null,
 		userContributorUserIds: null as string[] | null,
+		// A8: assignees are always present on the wire — the query layer
+		// resolves them from the same lookup as contributors, so a fixture
+		// omitting them is a topic shape the API never returns.
+		assigneeUserIds: [] as string[],
+		assignees: [] as Array<{
+			id: string;
+			name: string;
+			image: string | null;
+			username: string | null;
+		}>,
 		whySuggested: null as {
 			named: Array<{
 				type: "story" | "document" | "meeting";
@@ -1760,9 +1775,9 @@ describe("PublishingSuiteList", () => {
 			screen.getByTestId("post-types-selected-count").textContent;
 		expect(count()).toBe("None selected");
 		await user.click(screen.getByLabelText("Tweet"));
-		expect(count()).toBe("1 of 4 selected");
+		expect(count()).toBe("1 of 5 selected");
 		await user.click(screen.getByLabelText("Blog Post"));
-		expect(count()).toBe("2 of 4 selected");
+		expect(count()).toBe("2 of 5 selected");
 	});
 
 	it("tells the reviewer that more than one post type may be picked", async () => {

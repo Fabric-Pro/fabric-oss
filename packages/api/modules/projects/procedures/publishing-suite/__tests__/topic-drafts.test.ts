@@ -16,6 +16,19 @@ const flagMocks = vi.hoisted(() => ({
 }));
 vi.mock("@repo/database", () => ({
 	listTopicDrafts: vi.fn(),
+	// A REAL tuple, not a vi.fn(): topic-drafts.ts builds its OUTPUT schema with
+	// `z.enum(PUBLISHING_TOPIC_POST_TYPES)` at module load, so a mock function
+	// here is a construction-time TypeError rather than a failing assertion.
+	// Kept complete rather than trimmed to the types a case happens to use — a
+	// post type missing from this list is stripped by output validation, which
+	// is the exact silent failure the shared tuple exists to prevent.
+	PUBLISHING_TOPIC_POST_TYPES: [
+		"TWEET",
+		"LINKEDIN_POST",
+		"BLOG_POST",
+		"CASE_STUDY",
+		"STAKEHOLDER_EMAIL",
+	],
 	// The gate resolves the flag per organization and derives the tenant from
 	// the Project row. `resolveProjectTenant` MUST point at flagMocks, not a
 	// bare vi.fn(): the gate reads a null return as "project not resolvable"

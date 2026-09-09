@@ -1,5 +1,5 @@
 import { CASE_STUDY_CLAMP_REASON } from "@repo/utils/publishing-case-study-clamp";
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -737,7 +737,13 @@ describe("CaseStudyPanel — when the notes describe a different version", () =>
 			working: working({ sourceDraftId: "d1" }),
 		});
 
-		expect(screen.getAllByText(OTHER_VERSION)).toHaveLength(3);
+		// FOUR since A6: the safety note joined the three surfaces this
+		// test was written for. It was the one on-screen surface never
+		// qualified, against the panel header's own claim that every one
+		// is — and the side-by-side layout put it beside the draft it is
+		// NOT about. A count rather than a floor, so a surface that
+		// silently loses its qualifier still fails here.
+		expect(screen.getAllByText(OTHER_VERSION)).toHaveLength(4);
 	});
 
 	it("stays quiet when the editor holds that very version", () => {
@@ -1036,6 +1042,208 @@ describe("CaseStudyPanel — what a viewer sees", () => {
 			screen.queryByRole("button", {
 				name: /generate|use this version|save changes|copy draft|download/i,
 			}),
+		).not.toBeInTheDocument();
+	});
+});
+
+describe("CaseStudyPanel — refining the saved draft (Fizzy #1851, A7)", () => {
+	it("does NOT offer refine before anything is saved", () => {
+		// With no working draft the action has no input, and offering it would
+		// be a regeneration wearing a label that promises otherwise.
+		renderPanel({ draft: readyDraft() });
+
+		expect(
+			screen.queryByRole("button", { name: /refine draft/i }),
+		).not.toBeInTheDocument();
+	});
+
+	it("does NOT offer refine for a working draft with no text", () => {
+		renderPanel({ working: { ...working(), hasBody: false, body: "" } });
+
+		expect(
+			screen.queryByRole("button", { name: /refine draft/i }),
+		).not.toBeInTheDocument();
+	});
+
+	it("offers refine ALONGSIDE regenerate once a draft is saved", () => {
+		// A second action, not a replacement: the two answer different
+		// questions and both stay reachable.
+		renderPanel({ draft: readyDraft(), working: working() });
+
+		expect(
+			screen.getByRole("button", { name: /refine draft/i }),
+		).toBeInTheDocument();
+		expect(
+			screen.getByRole("button", { name: /regenerate draft/i }),
+		).toBeEnabled();
+	});
+
+	it("keeps refine disabled until an instruction is written", async () => {
+		const user = userEvent.setup();
+		renderPanel({ working: working() });
+
+		const button = screen.getByRole("button", { name: /refine draft/i });
+		expect(button).toBeDisabled();
+
+		await user.type(
+			screen.getByRole("textbox", { name: /refine the saved draft/i }),
+			"Make it shorter.",
+		);
+		expect(button).toBeEnabled();
+	});
+
+	it("sends the instruction with the refine flag, and no body", async () => {
+		// The panel names the intent; the server reads the text it revises.
+		const user = userEvent.setup();
+		renderPanel({ working: working() });
+
+		await user.type(
+			screen.getByRole("textbox", { name: /refine the saved draft/i }),
+			"Warmer tone.",
+		);
+		await user.click(screen.getByRole("button", { name: /refine draft/i }));
+
+		expect(mutate.generate).toHaveBeenCalledWith({
+			projectId: "p1",
+			topicId: "t1",
+			organizationId: "org1",
+			guidance: "Warmer tone.",
+			refineFromWorkingDraft: true,
+		});
+	});
+
+	it("keeps the refine instruction OUT of a regeneration", async () => {
+		// Two fields because they ask for different things. A shared one would
+		// carry "make it shorter" into a run that has nothing to shorten.
+		const user = userEvent.setup();
+		renderPanel({ draft: readyDraft(), working: working() });
+
+		await user.type(
+			screen.getByRole("textbox", { name: /refine the saved draft/i }),
+			"Warmer tone.",
+		);
+		await user.click(
+			screen.getByRole("button", { name: /regenerate draft/i }),
+		);
+
+		expect(mutate.generate).toHaveBeenCalledWith(
+			expect.objectContaining({ guidance: null }),
+		);
+		expect(mutate.generate).not.toHaveBeenCalledWith(
+			expect.objectContaining({ refineFromWorkingDraft: true }),
+		);
+	});
+
+	it("says the saved draft is safe until the result is adopted", () => {
+		renderPanel({ working: working() });
+
+		expect(
+			screen.getByText(/nothing you have saved changes until you adopt/i),
+		).toBeInTheDocument();
+	});
+
+	it("gives a viewer no refine control", () => {
+		renderPanel({ working: working(), canEdit: false });
+
+		expect(
+			screen.queryByRole("button", { name: /refine draft/i }),
+		).not.toBeInTheDocument();
+	});
+});
+
+describe("CaseStudyPanel — the saved draft beside the candidate (Fizzy #1851, A6)", () => {
+	it("puts both texts on screen at once, each labelled for what it is", () => {
+		renderPanel({
+			draft: readyDraft(DOCUMENT, "d2"),
+			working: working({ sourceDraftId: "d1" }),
+		});
+
+		expect(
+			screen.getByRole("textbox", { name: /working case study/i }),
+		).toHaveValue(BODY);
+		// Scoped to the candidate's own region, and matched by regex: the
+		// saved body contains the candidate's text verbatim, and the default
+		// matcher normalizes the node's whitespace but not the string it is
+		// compared against.
+		const candidateHeading = screen.getByRole("heading", {
+			name: /new candidate \(version 1\)/i,
+		});
+		const candidate = candidateHeading.closest("section") as HTMLElement;
+		expect(
+			within(candidate).getByText(/## Executive summary/),
+		).toBeInTheDocument();
+		expect(
+			screen.getByText(/saved\. this is the case study the topic holds/i),
+		).toBeInTheDocument();
+		expect(
+			screen.getByText(
+				/not saved\. adopting it replaces your saved draft/i,
+			),
+		).toBeInTheDocument();
+	});
+
+	it("keeps the export controls with the draft they actually send", () => {
+		// The copy and download controls egress the WORKING body, never the
+		// candidate. Putting the two texts side by side is only safe while
+		// they stay in the saved column.
+		renderPanel({
+			draft: readyDraft(DOCUMENT, "d2"),
+			working: working({ sourceDraftId: "d1" }),
+		});
+
+		const editor = screen.getByRole("textbox", {
+			name: /working case study/i,
+		});
+		const savedColumn = editor.closest("section");
+
+		expect(
+			savedColumn?.contains(
+				screen.getByRole("button", { name: /copy draft/i }),
+			),
+		).toBe(true);
+		expect(
+			savedColumn?.contains(
+				screen.getByRole("button", { name: /use this version/i }),
+			),
+		).toBe(false);
+	});
+});
+
+describe("CaseStudyPanel — whose draft the generalization note describes (A6)", () => {
+	/**
+	 * Scoped to the generalization section, because this panel's scaffold
+	 * banner, approval-status table and inputs-needed list carry the SAME
+	 * sentence when the condition holds — an unscoped query would pass on a
+	 * build where the note itself was never qualified.
+	 */
+	const QUALIFIER = /these notes describe the most recent generated version/i;
+
+	function generalizationSection() {
+		const heading = screen.getByRole("heading", {
+			name: /how this was generalized/i,
+		});
+		return heading.closest("section") as HTMLElement;
+	}
+
+	it("says so when a regeneration the reader has not adopted exists", () => {
+		renderPanel({
+			draft: readyDraft(SCAFFOLD_DOCUMENT, "d2"),
+			working: working({ sourceDraftId: "d1" }),
+		});
+
+		expect(
+			within(generalizationSection()).getByText(QUALIFIER),
+		).toBeInTheDocument();
+	});
+
+	it("stays quiet when the saved draft came from the latest version", () => {
+		renderPanel({
+			draft: readyDraft(SCAFFOLD_DOCUMENT, "d1"),
+			working: working({ sourceDraftId: "d1" }),
+		});
+
+		expect(
+			within(generalizationSection()).queryByText(QUALIFIER),
 		).not.toBeInTheDocument();
 	});
 });

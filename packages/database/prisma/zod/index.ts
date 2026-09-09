@@ -792,7 +792,7 @@ export type PublishingSuggestionCycleScalarFieldEnum = z.infer<typeof Publishing
 
 // File: PublishingTopicScalarFieldEnum.schema.ts
 
-export const PublishingTopicScalarFieldEnumSchema = z.enum(['id', 'projectId', 'organizationId', 'userId', 'cycleId', 'title', 'pitch', 'status', 'origin', 'createdById', 'declineReason', 'snoozedUntil', 'snoozeReason', 'publishedUrl', 'provenance', 'suggestedPostTypes', 'contributorUserIds', 'contributorsOverridden', 'userContributorUserIds', 'relevantFunctionTags', 'postTypeRecommendations', 'postTypesOverridden', 'userPostTypes', 'angle', 'subject', 'subjectKey', 'dedupeKey', 'createdAt', 'updatedAt'])
+export const PublishingTopicScalarFieldEnumSchema = z.enum(['id', 'projectId', 'organizationId', 'userId', 'cycleId', 'title', 'pitch', 'status', 'origin', 'createdById', 'declineReason', 'snoozedUntil', 'snoozeReason', 'publishedUrl', 'provenance', 'suggestedPostTypes', 'contributorUserIds', 'contributorsOverridden', 'userContributorUserIds', 'assigneeUserIds', 'relevantFunctionTags', 'postTypeRecommendations', 'postTypesOverridden', 'userPostTypes', 'angle', 'subject', 'subjectKey', 'dedupeKey', 'createdAt', 'updatedAt'])
 
 export type PublishingTopicScalarFieldEnum = z.infer<typeof PublishingTopicScalarFieldEnumSchema>;
 
@@ -2466,7 +2466,7 @@ export type PublishingTopicOrigin = z.infer<typeof PublishingTopicOriginSchema>;
 
 // File: PublishingTopicPostType.schema.ts
 
-export const PublishingTopicPostTypeSchema = z.enum(['TWEET', 'BLOG_POST', 'CASE_STUDY', 'STAKEHOLDER_EMAIL'])
+export const PublishingTopicPostTypeSchema = z.enum(['TWEET', 'BLOG_POST', 'CASE_STUDY', 'STAKEHOLDER_EMAIL', 'LINKEDIN_POST'])
 
 export type PublishingTopicPostType = z.infer<typeof PublishingTopicPostTypeSchema>;
 
@@ -3180,7 +3180,7 @@ export type ChatArtifactType = z.infer<typeof ChatArtifactTypeSchema>;
 
 // File: NotificationType.schema.ts
 
-export const NotificationTypeSchema = z.enum(['STORY_MENTION', 'STORY_COMMENT_REPLY', 'STORY_ASSIGNED', 'TASK_MENTION', 'TASK_COMMENT_REPLY', 'COMMENT_MENTION', 'DOCUMENT_MENTION', 'AGENT_REPLY_READY', 'STORY_STATUS_CHANGED', 'PM_SYNC_CONFLICT', 'AI_USAGE_LIMIT_WARNING', 'AI_USAGE_LIMIT_REACHED', 'INTEGRATION_INCIDENT', 'SYSTEM_INCIDENT', 'CONTEXT_INDEXING_STARTED', 'CONTEXT_INDEXING_COMPLETED', 'REPO_INTEGRATION_TOKEN_EXPIRED', 'SECURITY_SCAN_COMPLETED', 'PROJECT_SERVICE_ALERT_DIGEST', 'REPORT_COMPLETED', 'REPORT_FAILED', 'SECURITY_TICKETS_GENERATED', 'DOCUMENT_UPDATED', 'FEATURE_UPDATED', 'STORY_SHARED', 'NEWSLETTER_APPROVAL_PENDING', 'TEST_CASES_DRAFTED', 'STATUS_ANNOUNCEMENT', 'PUBLISHING_TOPICS_READY', 'PROMPT_DEFAULT_UPDATED', 'PROMPT_NOMINATION_PENDING', 'PM_ATTACHMENT_SYNC_FAILED', 'DECISION_OWNER_ASSIGNED', 'DECISION_OWNER_UPDATED', 'QUESTION_ASSIGNED', 'QUESTION_MENTIONED', 'QUESTION_ANSWERED', 'DOCUMENT_GENERATION_COMPLETED', 'DOCUMENT_GENERATION_FAILED'])
+export const NotificationTypeSchema = z.enum(['STORY_MENTION', 'STORY_COMMENT_REPLY', 'STORY_ASSIGNED', 'TASK_MENTION', 'TASK_COMMENT_REPLY', 'COMMENT_MENTION', 'DOCUMENT_MENTION', 'AGENT_REPLY_READY', 'STORY_STATUS_CHANGED', 'PM_SYNC_CONFLICT', 'AI_USAGE_LIMIT_WARNING', 'AI_USAGE_LIMIT_REACHED', 'INTEGRATION_INCIDENT', 'SYSTEM_INCIDENT', 'CONTEXT_INDEXING_STARTED', 'CONTEXT_INDEXING_COMPLETED', 'REPO_INTEGRATION_TOKEN_EXPIRED', 'SECURITY_SCAN_COMPLETED', 'PROJECT_SERVICE_ALERT_DIGEST', 'REPORT_COMPLETED', 'REPORT_FAILED', 'SECURITY_TICKETS_GENERATED', 'DOCUMENT_UPDATED', 'FEATURE_UPDATED', 'STORY_SHARED', 'NEWSLETTER_APPROVAL_PENDING', 'TEST_CASES_DRAFTED', 'STATUS_ANNOUNCEMENT', 'PUBLISHING_TOPICS_READY', 'PROMPT_DEFAULT_UPDATED', 'PROMPT_NOMINATION_PENDING', 'PM_ATTACHMENT_SYNC_FAILED', 'DECISION_OWNER_ASSIGNED', 'DECISION_OWNER_UPDATED', 'QUESTION_ASSIGNED', 'QUESTION_MENTIONED', 'QUESTION_ANSWERED', 'PUBLISHING_TOPIC_ASSIGNED', 'DOCUMENT_GENERATION_COMPLETED', 'DOCUMENT_GENERATION_FAILED'])
 
 export type NotificationType = z.infer<typeof NotificationTypeSchema>;
 
@@ -6373,6 +6373,7 @@ export const PublishingTopicSchema = z.object({
   contributorUserIds: z.array(z.string()),
   contributorsOverridden: z.boolean(),
   userContributorUserIds: z.array(z.string()),
+  assigneeUserIds: z.array(z.string()),
   relevantFunctionTags: z.array(FunctionTagSchema),
   postTypeRecommendations: z.unknown().refine((val) => { const getDepth = (obj: unknown, depth: number = 0): number => { if (depth > 10) return depth; if (obj === null || typeof obj !== 'object') return depth; const values = Object.values(obj as Record<string, unknown>); if (values.length === 0) return depth; return Math.max(...values.map(v => getDepth(v, depth + 1))); }; return getDepth(val) <= 10; }, "JSON nesting depth exceeds maximum of 10").default("[]"),
   postTypesOverridden: z.boolean(),

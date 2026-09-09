@@ -4,11 +4,17 @@ import { orpc } from "@shared/lib/orpc-query-utils";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@ui/components/button";
 import { Textarea } from "@ui/components/textarea";
-import { Loader2Icon, SparklesIcon } from "lucide-react";
+import { Loader2Icon, PencilLineIcon, SparklesIcon } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
 import { CopyDraftButton } from "./CopyDraftButton";
+import {
+	CandidateDraft,
+	DraftComparison,
+	SavedDraftCaption,
+} from "./DraftComparison";
 import { DraftDownloadDropdown } from "./DraftDownloadDropdown";
+import { GeneralizationNotes, OTHER_VERSION_NOTE } from "./GeneralizationNotes";
 import type { TopicDraftState, TopicWorkingDraftState } from "./GenerationTabs";
 
 /** Mirrors the API's own bounds, so a field cannot submit what it would reject. */
@@ -84,18 +90,6 @@ const RELEASE_STATUS_LABELS: Record<ReleaseStatus, string> = {
 	UNCONFIRMED:
 		"The source material didn't say whether this has shipped, so the draft asserts no release state.",
 };
-
-/**
- * Said when the safety fields on screen describe a DIFFERENT version than the
- * text below them.
- *
- * One sentence, used by the export block and by all three on-screen safety
- * surfaces, for the reason `RELEASE_STATUS_LABELS` gives: the caveat block
- * exists so a reader of the file learns what a reader of the page learns, and
- * two spellings of the same warning are two warnings as soon as one is edited.
- */
-const OTHER_VERSION_NOTE =
-	"These notes describe the most recent generated version, which is not the version this text was saved from.";
 
 interface StakeholderEmailDocument {
 	subject: string;
@@ -283,6 +277,17 @@ export function StakeholderEmailPanel({
 	const queryClient = useQueryClient();
 	const [guidance, setGuidance] = useState("");
 	/**
+	 * The edit instruction for a REFINE run, kept apart from `guidance`.
+	 *
+	 * Two fields rather than one, because they ask for different things and a
+	 * shared one would silently carry the wrong kind of text into whichever
+	 * action was pressed second. Guidance steers a draft that does not exist
+	 * yet; this steers a change to one that does ("make it shorter"). Sent as
+	 * `guidance` on the wire — it IS the run's instruction, and putting it there
+	 * is what records it on the attempt row.
+	 */
+	const [refineInstruction, setRefineInstruction] = useState("");
+	/**
 	 * The editor's text, or null for "showing what the server last returned".
 	 *
 	 * Null rather than a copy of the body, so a poll landing while the reader has
@@ -467,6 +472,120 @@ export function StakeholderEmailPanel({
 		});
 	};
 
+	/**
+	 * The two halves of the comparison, built before the return so each can
+	 * ask whether the other exists. See `DraftComparison` for why they no
+	 * longer sit at opposite ends of the panel.
+	 */
+	const candidate =
+		hasUnadoptedVersion && doc ? (
+			<CandidateDraft
+				version={draft?.latestReady?.version ?? null}
+				title={doc.subject}
+				body={doc.body}
+				replacesSavedDraft={Boolean(working?.hasBody)}
+				action={
+					canEdit ? (
+						<Button
+							type="button"
+							variant="outline"
+							size="sm"
+							onClick={handleAdopt}
+							disabled={adopt.isPending}
+						>
+							{working?.hasBody
+								? "Use this version"
+								: "Save as working draft"}
+						</Button>
+					) : null
+				}
+			/>
+		) : null;
+
+	const savedDraft = working?.hasBody ? (
+		<section className="space-y-2">
+			<div className="flex items-baseline justify-between gap-3">
+				<h3 className="editorial-label" id="stakeholder-email-editor">
+					Working stakeholder email
+				</h3>
+				{isDirty ? (
+					<span
+						className="text-muted-foreground text-xs"
+						role="status"
+					>
+						Unsaved changes
+					</span>
+				) : null}
+			</div>
+			{/* Only while a candidate sits beside it: with one draft on
+			    screen there is nothing to tell apart. */}
+			{candidate ? (
+				<SavedDraftCaption>
+					Saved. This is the email the topic holds — editing here
+					changes it, and it is what the copy and download controls
+					below send.
+				</SavedDraftCaption>
+			) : null}
+			{canEdit ? (
+				<>
+					<Textarea
+						aria-labelledby="stakeholder-email-editor"
+						value={bodyValue}
+						onChange={(e) => setEditedBody(e.target.value)}
+						maxLength={BODY_MAX}
+						rows={20}
+						className="font-mono text-sm leading-relaxed"
+						disabled={saveBody.isPending}
+					/>
+					<div className="flex flex-wrap items-center gap-3">
+						<Button
+							type="button"
+							onClick={handleSaveBody}
+							disabled={!isDirty || saveBody.isPending}
+						>
+							{saveBody.isPending ? (
+								<Loader2Icon
+									className="mr-2 size-4 motion-safe:animate-spin"
+									aria-hidden="true"
+								/>
+							) : null}
+							Save changes
+						</Button>
+						{isDirty ? (
+							<Button
+								type="button"
+								variant="ghost"
+								onClick={() => setEditedBody(null)}
+								disabled={saveBody.isPending}
+							>
+								Discard changes
+							</Button>
+						) : null}
+						{/* The bare body, deliberately — see
+						    `composeExportMarkdown` for why the two
+						    controls beside each other egress different
+						    strings. */}
+						<CopyDraftButton markdown={bodyValue} />
+						<DraftDownloadDropdown
+							markdown={composeExportMarkdown({
+								body: bodyValue,
+								doc,
+								bodyIsFromLatest,
+							})}
+							filename={doc?.subject ?? "stakeholder-email"}
+						/>
+					</div>
+				</>
+			) : (
+				<div className="rounded-xl border border-border bg-muted/40 p-4">
+					<p className="whitespace-pre-wrap break-words text-sm leading-relaxed">
+						{working.body}
+					</p>
+				</div>
+			)}
+		</section>
+	) : null;
+
 	return (
 		<div className="space-y-5">
 			{canEdit ? (
@@ -530,6 +649,78 @@ export function StakeholderEmailPanel({
 							affected until you adopt it.
 						</p>
 					) : null}
+				</section>
+			) : null}
+
+			{/*
+			 * A SECOND action, never a replacement for the one above.
+			 * Regenerate rebuilds the stakeholder email from the planning analysis; this
+			 * one revises the saved text. Both are useful and they answer
+			 * different questions, so the panel offers both — and offers this
+			 * one only once there is something saved to revise, since without a
+			 * working draft it has no input and would just be a regeneration
+			 * with a confusing label.
+			 */}
+			{canEdit && working?.hasBody ? (
+				<section className="space-y-2">
+					<label
+						className="editorial-label block"
+						htmlFor="stakeholder-email-refine"
+					>
+						Refine the saved draft
+					</label>
+					<Textarea
+						id="stakeholder-email-refine"
+						value={refineInstruction}
+						onChange={(e) => setRefineInstruction(e.target.value)}
+						maxLength={GUIDANCE_MAX}
+						rows={2}
+						placeholder="Make it shorter. Warmer tone. Lead with the metric."
+						disabled={isGenerating || generate.isPending}
+					/>
+					<div className="flex items-center gap-3">
+						<Button
+							type="button"
+							variant="outline"
+							onClick={() =>
+								generate.mutate({
+									projectId,
+									topicId,
+									organizationId,
+									guidance: refineInstruction.trim() || null,
+									refineFromWorkingDraft: true,
+								})
+							}
+							// Required here where it is optional above: a
+							// refinement with no instruction is a rewrite of
+							// the draft for no stated reason, which is the one
+							// thing this action cannot usefully do.
+							disabled={
+								!refineInstruction.trim() ||
+								isGenerating ||
+								generate.isPending
+							}
+						>
+							{isGenerating || generate.isPending ? (
+								<Loader2Icon
+									className="mr-2 size-4 motion-safe:animate-spin"
+									aria-hidden="true"
+								/>
+							) : (
+								<PencilLineIcon
+									className="mr-2 size-4"
+									aria-hidden="true"
+								/>
+							)}
+							Refine draft
+						</Button>
+					</div>
+					<p className="text-muted-foreground text-xs">
+						Starts from the stakeholder email you have saved and
+						changes only what you ask for. The result arrives as a
+						new version to compare against; nothing you have saved
+						changes until you adopt it.
+					</p>
 				</section>
 			) : null}
 
@@ -615,130 +806,18 @@ export function StakeholderEmailPanel({
 				</section>
 			) : null}
 
-			{working?.hasBody ? (
-				<section className="space-y-2">
-					<div className="flex items-baseline justify-between gap-3">
-						<h3
-							className="editorial-label"
-							id="stakeholder-email-editor"
-						>
-							Working stakeholder email
-						</h3>
-						{isDirty ? (
-							<span
-								className="text-muted-foreground text-xs"
-								role="status"
-							>
-								Unsaved changes
-							</span>
-						) : null}
-					</div>
-					{canEdit ? (
-						<>
-							<Textarea
-								aria-labelledby="stakeholder-email-editor"
-								value={bodyValue}
-								onChange={(e) => setEditedBody(e.target.value)}
-								maxLength={BODY_MAX}
-								rows={20}
-								className="font-mono text-sm leading-relaxed"
-								disabled={saveBody.isPending}
-							/>
-							<div className="flex flex-wrap items-center gap-3">
-								<Button
-									type="button"
-									onClick={handleSaveBody}
-									disabled={!isDirty || saveBody.isPending}
-								>
-									{saveBody.isPending ? (
-										<Loader2Icon
-											className="mr-2 size-4 motion-safe:animate-spin"
-											aria-hidden="true"
-										/>
-									) : null}
-									Save changes
-								</Button>
-								{isDirty ? (
-									<Button
-										type="button"
-										variant="ghost"
-										onClick={() => setEditedBody(null)}
-										disabled={saveBody.isPending}
-									>
-										Discard changes
-									</Button>
-								) : null}
-								{/* The bare body, deliberately — see
-								    `composeExportMarkdown` for why the two
-								    controls beside each other egress different
-								    strings. */}
-								<CopyDraftButton markdown={bodyValue} />
-								<DraftDownloadDropdown
-									markdown={composeExportMarkdown({
-										body: bodyValue,
-										doc,
-										bodyIsFromLatest,
-									})}
-									filename={
-										doc?.subject ?? "stakeholder-email"
-									}
-								/>
-							</div>
-						</>
-					) : (
-						<div className="rounded-xl border border-border bg-muted/40 p-4">
-							<p className="whitespace-pre-wrap text-sm leading-relaxed">
-								{working.body}
-							</p>
-						</div>
-					)}
-				</section>
-			) : null}
+			<DraftComparison saved={savedDraft} candidate={candidate} />
 
 			{doc ? (
 				<>
-					{hasUnadoptedVersion ? (
-						<section className="space-y-3">
-							<h3 className="editorial-label">
-								Generated draft{" "}
-								{draft?.latestReady
-									? `(version ${draft.latestReady.version})`
-									: null}
-							</h3>
-							<div className="rounded-xl border border-border bg-card p-4">
-								<h4 className="font-medium text-sm">
-									{doc.subject}
-								</h4>
-								<p className="mt-3 whitespace-pre-wrap text-sm leading-relaxed">
-									{doc.body}
-								</p>
-								{canEdit ? (
-									<Button
-										type="button"
-										variant="outline"
-										size="sm"
-										className="mt-3"
-										onClick={handleAdopt}
-										disabled={adopt.isPending}
-									>
-										{working?.hasBody
-											? "Use this version"
-											: "Save as working draft"}
-									</Button>
-								) : null}
-							</div>
-						</section>
-					) : null}
-
 					{doc.safetyNote ? (
-						<section className="space-y-2">
-							<h3 className="editorial-label">
-								What the draft wrote around
-							</h3>
-							<p className="text-muted-foreground text-sm leading-relaxed">
-								{doc.safetyNote}
-							</p>
-						</section>
+						<GeneralizationNotes
+							heading="What the draft wrote around"
+							note={doc.safetyNote}
+							describesAnotherVersion={
+								notesDescribeAnotherVersion
+							}
+						/>
 					) : null}
 
 					{doc.inputsNeeded.length > 0 ? (

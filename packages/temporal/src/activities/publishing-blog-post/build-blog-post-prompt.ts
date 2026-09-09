@@ -26,6 +26,7 @@ import {
 	PUBLISHING_BLOG_POST_AGENT_KEY,
 	PUBLISHING_BLOG_POST_FALLBACK_BODY,
 } from "@repo/utils/publishing-blog-post-prompt";
+import { buildRefinementSection } from "@repo/utils/publishing-refinement";
 import { toSingleLineSubject } from "@repo/utils/publishing-restrictions";
 import { z } from "zod";
 import {
@@ -240,6 +241,7 @@ export async function composeBlogPostPrompt({
 	analysisData,
 	decisions,
 	guidance,
+	currentDraft,
 	restrictedSubjects,
 }: {
 	templateBody: string;
@@ -256,16 +258,23 @@ export async function composeBlogPostPrompt({
 	analysisData: AnalysisData;
 	decisions: BlogPostDecision[];
 	guidance: string | null;
+	/**
+	 * The topic's saved working blog post, when this run is a REFINEMENT of it
+	 * rather than a fresh draft. Read server-side and passed down; null on every
+	 * ordinary generation. See `buildRefinementSection`.
+	 */
+	currentDraft: string | null;
 	restrictedSubjects: string[];
 }): Promise<ComposedBlogPostPrompt> {
+	const writerVariables = buildShortPostVariables({
+		analysisProse,
+		analysisData,
+		decisions,
+		guidance,
+	});
 	const variables = {
 		...buildPlanningAnalysisVariables({ topic, context }),
-		...buildShortPostVariables({
-			analysisProse,
-			analysisData,
-			decisions,
-			guidance,
-		}),
+		...writerVariables,
 	};
 
 	let effectiveFormat = format;
@@ -304,8 +313,25 @@ export async function composeBlogPostPrompt({
 		bodyRecovered = true;
 	}
 
+	// BEFORE the locked clauses, never after: "Rules that override anything
+	// above" must keep overriding the refinement framing, or a refine run would
+	// be a route around the grounding and unresolved-approval rules. Empty on an
+	// ordinary generation, and the filter then reproduces the previous prompt
+	// byte for byte. `writerVariables.guidance` rather than the raw argument, so
+	// the instruction is clamped by the guidance bound exactly once.
+	const refinement = buildRefinementSection({
+		currentDraft,
+		instruction: writerVariables.guidance,
+	});
+
 	return {
-		prompt: `${body.trimEnd()}\n\n${buildBlogPostLockedClauses(restrictedSubjects)}`,
+		prompt: [
+			body.trimEnd(),
+			refinement,
+			buildBlogPostLockedClauses(restrictedSubjects),
+		]
+			.filter((section) => section.length > 0)
+			.join("\n\n"),
 		formatOverridden,
 		bodyRecovered,
 	};

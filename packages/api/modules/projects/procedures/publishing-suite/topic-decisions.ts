@@ -23,7 +23,11 @@
  */
 
 import { ORPCError } from "@orpc/client";
-import { answerTopicQuestion, listTopicDecisions } from "@repo/database";
+import {
+	amendTopicQuestionAnswer,
+	answerTopicQuestion,
+	listTopicDecisions,
+} from "@repo/database";
 import { z } from "zod";
 import {
 	Permissions,
@@ -141,6 +145,83 @@ export const answerTopicQuestionProcedure = tenantProtectedProcedure
 
 		if (result.status === "not_found") {
 			throw new ORPCError("NOT_FOUND", { message: "Question not found" });
+		}
+
+		return { status: result.status, root: result.root };
+	});
+
+/**
+ * Change the answer to an already-resolved question.
+ *
+ * Every gate is `answerTopicQuestionProcedure`'s, deliberately unchanged: the
+ * same `PUBLISHING_TOPIC_UPDATE` permission, the same feature assertion, and
+ * the same project ratchet — amending a decision is new work on the project,
+ * so an archived one must refuse it exactly as it refuses a first answer. A
+ * read-only member cannot amend, for the same reason they cannot answer.
+ *
+ * `organizationId` stays a GUARD and never a scoping key: it is handed to
+ * `requireEligibleProjectForTopic`, which rejects a positively-wrong value
+ * against the loaded Project row and otherwise ignores it. Nothing here
+ * resolves a tenant from caller input.
+ *
+ * `supersedesId` is the answer turn the client was looking at. Sending it is
+ * what makes a concurrent amendment detectable — without it, whoever saved last
+ * would silently overwrite a colleague's correction they never read.
+ */
+export const amendTopicQuestionProcedure = tenantProtectedProcedure
+	.use(requireProjectPermission(Permissions.PUBLISHING_TOPIC_UPDATE))
+	.route({
+		method: "POST",
+		path: "/projects/{projectId}/publishing-topics/{topicId}/decisions/amend",
+		tags: ["Projects", "Publishing Suite"],
+		summary: "Amend the answer to a resolved question on a topic",
+	})
+	.input(
+		z.object({
+			projectId: z.string(),
+			topicId: z.string(),
+			organizationId: z.string().nullable().optional(),
+			questionId: z.string().min(1).max(500),
+			/** The answer turn being replaced. */
+			supersedesId: z.string().min(1),
+			answer: z.string().min(1).max(10_000),
+			answerSource: z.enum(["AI_SUGGESTED", "AI_EDITED", "MANUAL"]),
+		}),
+	)
+	.output(
+		z.object({
+			// `stale` is a real outcome rather than an error: the amendment was
+			// refused, but nothing is broken and the client's job is to reload
+			// and show the answer that won, not to report a failure.
+			status: z.enum(["amended", "deduped", "stale"]),
+			root: TopicDecisionEntrySchema.nullable(),
+		}),
+	)
+	.handler(async ({ input, context }) => {
+		await assertPublishingSuiteFeatureEnabled(input.projectId);
+
+		await requireEligibleProjectForTopic({
+			projectId: input.projectId,
+			clientOrganizationId: input.organizationId ?? null,
+		});
+
+		const result = await amendTopicQuestionAnswer({
+			projectId: input.projectId,
+			topicId: input.topicId,
+			questionId: input.questionId,
+			supersedesId: input.supersedesId,
+			answer: input.answer,
+			answerSource: input.answerSource,
+			// The AUTHOR is the session, never the request body — same rule the
+			// answer path states: a client-supplied author id would let anyone
+			// with update access attribute a decision to a colleague.
+			authorUserId: context.user.id,
+		});
+
+		if (result.status === "not_found") {
+			throw new ORPCError("NOT_FOUND", {
+				message: "No resolved answer to amend for this question",
+			});
 		}
 
 		return { status: result.status, root: result.root };

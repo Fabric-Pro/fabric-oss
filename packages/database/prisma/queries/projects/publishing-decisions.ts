@@ -483,3 +483,190 @@ export async function answerTopicQuestion(input: {
 		};
 	});
 }
+
+/**
+ * Change the answer to an ALREADY-RESOLVED question — the amend affordance the
+ * Feature Maturation Decision Log has (`amendQuestionAnswer`), brought to the
+ * Publishing Suite's Summary & Questions tab.
+ *
+ * A SEPARATE function rather than a relaxed `answerTopicQuestion` above. That
+ * one's settled check is what stops a double-submit minting two replies for one
+ * act, and its docstring records the rule it enforces — the same question must
+ * never be answered twice. Amending is a different act with a different
+ * precondition (there must already BE an answer), so it gets its own guard
+ * instead of widening one that is holding something else up.
+ *
+ * APPEND, NEVER MUTATE, like its maturation sibling: the amendment is a NEW
+ * reply and the superseded turn stays byte-identical beneath it, so the Decision
+ * Log can show what the answer used to say. The root keeps its RESOLVED status
+ * throughout — amending changes the answer, not whether the question is settled.
+ *
+ * Unlike maturation, there is no `supersedesId` COLUMN to record the link. That
+ * would be a migration on `PublishingTopicDecisionEntry`, and it is not needed:
+ * replies under one root are a single chronological chain, so "the live answer"
+ * is the newest reply carrying content and everything before it is history.
+ * `listTopicDecisions` already returns replies `createdAt asc`, so readers get
+ * that order for free. Callers must therefore take the LAST answering reply,
+ * not the first — before amendment existed those were the same reply, and code
+ * written against that assumption now shows a stale answer.
+ *
+ * Three refusals, and they mean different things to a caller:
+ *
+ *  - `not_found` — no such question, or it is not settled. An OPEN or
+ *    POSSIBLY_RESOLVED root is answered through `answerTopicQuestion`; there is
+ *    nothing here to supersede.
+ *  - `stale` — `supersedesId` does not name the live answer any more, so the
+ *    caller is amending text a colleague has already replaced. Refused rather
+ *    than applied: the whole point of an amendment is that its author read what
+ *    they were changing.
+ *  - `deduped` — the submitted text already IS the live answer. Makes the
+ *    operation idempotent, which is what a double-click on the Save button
+ *    produces, and costs a reader nothing: an amendment that changes no words
+ *    is not a decision.
+ */
+export async function amendTopicQuestionAnswer(input: {
+	topicId: string;
+	projectId: string;
+	questionId: string;
+	/** The answer turn the caller read and is replacing. */
+	supersedesId: string;
+	answer: string;
+	answerSource: "AI_SUGGESTED" | "AI_EDITED" | "MANUAL";
+	authorUserId: string;
+}): Promise<{
+	status: "amended" | "deduped" | "stale" | "not_found";
+	root: TopicDecisionEntry | null;
+}> {
+	return db.$transaction(async (tx) => {
+		const root = await tx.publishingTopicDecisionEntry.findFirst({
+			// Same scoping as `answerTopicQuestion`: project (DV16) plus a live
+			// QUESTION root, so a reply id is not amendable and a soft-deleted
+			// root does not resurrect.
+			where: {
+				topicId: input.topicId,
+				projectId: input.projectId,
+				questionId: input.questionId,
+				parentId: null,
+				kind: "QUESTION",
+				deletedAt: null,
+			},
+			select: {
+				id: true,
+				status: true,
+				updatedAt: true,
+				organizationId: true,
+				userId: true,
+			},
+		});
+
+		// Only a settled question has an answer to amend, and RESOLVED is the
+		// only status this table settles into. Deliberately an ALLOW-list here,
+		// the mirror of the deny-list `answerTopicQuestion` uses: that one asks
+		// "is anyone still waiting on this?", which must fail safe towards
+		// settled, while this one asks "is there an answer to replace?", which
+		// must fail safe towards no.
+		if (!root || root.status !== "RESOLVED") {
+			return { status: "not_found" as const, root: null };
+		}
+
+		// The live answer is the NEWEST reply carrying content. `id desc` breaks
+		// a same-millisecond tie so this is a total order — without it two
+		// replies written in one batch could swap places between the read that
+		// decides staleness and the read that renders the thread.
+		const live = await tx.publishingTopicDecisionEntry.findFirst({
+			where: {
+				parentId: root.id,
+				projectId: input.projectId,
+				topicId: input.topicId,
+				deletedAt: null,
+				content: { not: null },
+			},
+			orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+			select: { id: true, content: true },
+		});
+
+		if (!live || live.id !== input.supersedesId) {
+			// Either the root is settled with no answering reply at all — which
+			// nothing writes today — or someone else amended first.
+			const existing = await tx.publishingTopicDecisionEntry.findUnique({
+				where: { id: root.id },
+			});
+			return {
+				status: "stale" as const,
+				root: existing as unknown as TopicDecisionEntry,
+			};
+		}
+
+		const trimmed = input.answer.trim();
+		if (trimmed === (live.content ?? "").trim()) {
+			const existing = await tx.publishingTopicDecisionEntry.findUnique({
+				where: { id: root.id },
+			});
+			return {
+				status: "deduped" as const,
+				root: existing as unknown as TopicDecisionEntry,
+			};
+		}
+
+		// CLAIM BEFORE WRITE, the same pattern `answerTopicQuestion` uses, with
+		// the root's own `updatedAt` as the version token — there is no status
+		// to flip here, because the root is RESOLVED before and after. Prisma
+		// stamps `updatedAt` on every write, and this path always writes
+		// `answerSource`, so a second concurrent amender's predicate no longer
+		// matches and it loses cleanly instead of appending a second reply to a
+		// thread whose live answer moved under it.
+		const claim = await tx.publishingTopicDecisionEntry.updateMany({
+			where: {
+				id: root.id,
+				projectId: input.projectId,
+				topicId: input.topicId,
+				status: "RESOLVED",
+				updatedAt: root.updatedAt,
+			},
+			// The root carries the CURRENT answer's provenance, so it moves with
+			// the amendment. Leaving it behind would report the superseded
+			// answer's source for a decision that no longer says what it said —
+			// and this column is what recommendation-acceptance reporting
+			// counts (see `20260828120000_repoint_ai_edited_answer_source`).
+			data: { answerSource: input.answerSource },
+		});
+
+		if (claim.count === 0) {
+			const existing = await tx.publishingTopicDecisionEntry.findUnique({
+				where: { id: root.id },
+			});
+			return {
+				status: "stale" as const,
+				root: existing as unknown as TopicDecisionEntry,
+			};
+		}
+
+		await tx.publishingTopicDecisionEntry.create({
+			data: {
+				topicId: input.topicId,
+				projectId: input.projectId,
+				// Tenancy is INHERITED from the root, exactly as answering does:
+				// stamping the amending user's own tenant would break the XOR
+				// the moment someone amends inside an org topic.
+				organizationId: root.organizationId,
+				userId: root.userId,
+				parentId: root.id,
+				kind: "QUESTION",
+				status: "RESOLVED",
+				authorType: "USER",
+				authorUserId: input.authorUserId,
+				content: input.answer,
+				answerSource: input.answerSource,
+			},
+		});
+
+		const updated = await tx.publishingTopicDecisionEntry.findUnique({
+			where: { id: root.id },
+		});
+
+		return {
+			status: "amended" as const,
+			root: updated as unknown as TopicDecisionEntry,
+		};
+	});
+}

@@ -25,12 +25,34 @@ const { FakeProjectNotFound, FakeTenantMismatch } = vi.hoisted(() => {
 	return { FakeProjectNotFound, FakeTenantMismatch };
 });
 
+// The publishing-suite barrel these tests import now re-exports
+// `update-topic-assignees`, which imports `fanOut` (A8's in-app assignee
+// nudge). Left real, that one import drags @repo/payments, @repo/mail and the
+// notification payload registry into this file's module graph, and each would
+// then need its own entry in the `@repo/database` mock below — none of which
+// any procedure under test touches. Mocking the boundary keeps the graph the
+// size these tests are actually about. The fan-out's own behaviour is pinned by
+// `modules/projects/procedures/publishing-suite/__tests__/update-topic-assignees.test.ts`.
+vi.mock("../lib/notification-service", () => ({
+	fanOut: { publishingTopicAssigned: vi.fn() },
+}));
+
 vi.mock("@repo/database", () => ({
 	db: { project: { findUnique: dbMocks.projectFindUnique } },
 	isFeatureEnabled: flagMocks.isFeatureEnabled,
 	resolveProjectTenant: flagMocks.resolveProjectTenant,
 	getPublishingSuiteSettings: vi.fn(),
 	upsertPublishingSuiteSettings: vi.fn(),
+	// Outcome measurement (Fizzy #1851 A9). The barrel these tests import now
+	// pulls in `lib/publishing-outcome.ts`, which destructures these from
+	// `@repo/database` at import time — a factory mock missing any one of them
+	// throws before a single test runs.
+	recordAiOutcome: vi.fn(),
+	resolvePromptVersionId: vi.fn(),
+	getAiOutcomesForSubjects: vi.fn(() => ({})),
+	getAnalysisRevisionSnapshot: vi.fn(),
+	getWorkingDraftSourceSnapshot: vi.fn(),
+	getLatestReadyDraft: vi.fn(),
 	PublishingSettingsProjectNotFoundError: FakeProjectNotFound,
 	PublishingSettingsTenantMismatchError: FakeTenantMismatch,
 	PUBLISHING_CADENCES: ["MANUAL", "WEEKLY", "BIWEEKLY", "MONTHLY"],
@@ -55,6 +77,7 @@ vi.mock("@repo/database", () => ({
 	// TypeError, not a failing assertion.
 	PUBLISHING_TOPIC_POST_TYPES: [
 		"TWEET",
+		"LINKEDIN_POST",
 		"BLOG_POST",
 		"CASE_STUDY",
 		"STAKEHOLDER_EMAIL",

@@ -106,7 +106,12 @@ overrides:
   "protobufjs@^7.0.0": "^7.6.5"
   "protobufjs@^8.0.0": "^8.6.6"
   "@hono/node-server@^1.0.0": "^1.19.15"
-  "sharp@<0.35.0": "^0.35.0"
+  "sharp@<0.35.0": "^0.35.4"
+  # `next` carries its own `sharp` optional peer and resolved it to 0.35.3,
+  # which the `<0.35.0` key above cannot reach — so GHSA-rgj7-g3m4-5g8c (libheif)
+  # survived bumping every first-party declaration. This key catches the 0.35.x
+  # line itself.
+  "sharp@^0.35.0": "^0.35.4"
   "@xmldom/xmldom@^0.8.0": "^0.8.15"
   "axios": "^1.16.0"
   "browserslist": "^4.28.8"
@@ -157,8 +162,21 @@ overrides:
   "brace-expansion@^2.0.0": "^2.1.3"
   "brace-expansion@^5.0.0": "^5.0.9"
   "engine.io@^6.0.0": "^6.6.7"
-  "js-yaml@^3.0.0": "^3.15.1"
-  "js-yaml@^4.0.0": "^4.3.1"
+  # better-auth's peer island, pinned to the versions the lockfile already
+  # resolved before `next` moved to 16.3.3. `better-auth` takes `next` as an
+  # optional peer, so bumping Next re-keys its whole peer suffix and pnpm
+  # re-resolves the island from scratch — which produced a SECOND
+  # `@better-auth/core` at `@better-fetch/fetch@1.1.21` / `better-call@1.3.5`
+  # alongside the good one. apps/web then type-checked against the old
+  # better-fetch and produced 51 errors across every auth, organization and
+  # settings component. These three pins are not an upgrade: they are the
+  # versions already in use, held still so a Next bump cannot silently fork the
+  # island. Drop them if better-auth ever stops declaring `next` as a peer.
+  "@better-fetch/fetch": "1.3.1"
+  "better-call": "1.3.7"
+  "@better-auth/utils": "0.4.2"
+  "js-yaml@^3.0.0": "^3.15.2"
+  "js-yaml@^4.0.0": "^4.3.2"
   "postcss@^8.0.0": "^8.5.26"
   "yaml@^2.0.0": "^2.8.3"
   "dompurify@^3.0.0": "^3.4.13"

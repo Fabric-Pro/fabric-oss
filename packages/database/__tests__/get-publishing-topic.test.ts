@@ -77,6 +77,7 @@ function topicRow(overrides: Record<string, unknown> = {}) {
 		snoozeReason: null,
 		suggestedPostTypes: [],
 		contributorUserIds: ["user-a"],
+		assigneeUserIds: [],
 		relevantFunctionTags: [],
 		postTypeRecommendations: [],
 		angle: null,
@@ -196,5 +197,105 @@ describe("getPublishingTopic", () => {
 		});
 
 		expect(result?.topic.isRead).toBe(true);
+	});
+});
+
+/**
+ * Assignees (A8) — who should pick the topic up, as distinct from the
+ * contributors who produced it.
+ *
+ * Two properties are pinned here because the query layer is the only place that
+ * can get them wrong. Handles come from the SAME `db.user.findMany` as
+ * contributors, so an assignee the AI never named must still resolve — the ids
+ * are unioned into that one lookup, and a lookup scoped to contributors alone
+ * would silently drop exactly the person somebody just assigned. And the RAW
+ * `assigneeUserIds` must survive a handle-lookup failure even though `assignees`
+ * does not: the picker seeds its selection from the raw ids, so degrading both
+ * together would let a Save during a degraded read wipe the list.
+ */
+describe("getPublishingTopic — assignees", () => {
+	it("resolves an assignee who is NOT a contributor, from the same single user lookup", async () => {
+		publishingTopicFindMany.mockResolvedValue([
+			topicRow({
+				contributorUserIds: ["user-a"],
+				assigneeUserIds: ["user-z"],
+			}),
+		]);
+		userFindMany.mockResolvedValue([
+			{ id: "user-a", name: "Dev One", image: null, username: "devone" },
+			{ id: "user-z", name: "Dev Two", image: null, username: "devtwo" },
+		]);
+
+		const result = await getPublishingTopic({
+			id: "topic-1",
+			projectId: "proj-1",
+			viewerUserId: "viewer-1",
+		});
+
+		expect(result?.topic.assignees).toEqual([
+			{ id: "user-z", name: "Dev Two", image: null, username: "devtwo" },
+		]);
+		expect(result?.topic.assigneeUserIds).toEqual(["user-z"]);
+		// ONE lookup for both sets, over the union of their ids.
+		expect(userFindMany).toHaveBeenCalledTimes(1);
+		expect([...userFindMany.mock.calls[0][0].where.id.in].sort()).toEqual([
+			"user-a",
+			"user-z",
+		]);
+	});
+
+	it("drops an assignee whose user no longer exists, without dropping the stored id", async () => {
+		publishingTopicFindMany.mockResolvedValue([
+			topicRow({
+				contributorUserIds: [],
+				assigneeUserIds: ["deleted-user"],
+			}),
+		]);
+		userFindMany.mockResolvedValue([]);
+
+		const result = await getPublishingTopic({
+			id: "topic-1",
+			projectId: "proj-1",
+			viewerUserId: "viewer-1",
+		});
+
+		expect(result?.topic.assignees).toEqual([]);
+		// The raw id survives, so the picker can still show and remove them.
+		expect(result?.topic.assigneeUserIds).toEqual(["deleted-user"]);
+	});
+
+	it("keeps the raw assignee ids when handle resolution FAILS, even though the handles degrade to []", async () => {
+		publishingTopicFindMany.mockResolvedValue([
+			topicRow({
+				contributorUserIds: ["user-a"],
+				assigneeUserIds: ["user-z"],
+			}),
+		]);
+		userFindMany.mockRejectedValue(new Error("db down"));
+
+		const result = await getPublishingTopic({
+			id: "topic-1",
+			projectId: "proj-1",
+			viewerUserId: "viewer-1",
+		});
+
+		expect(result?.topic.assignees).toEqual([]);
+		expect(result?.topic.contributors).toEqual([]);
+		expect(result?.topic.assigneeUserIds).toEqual(["user-z"]);
+	});
+
+	it("returns an empty list, never undefined, for a topic nobody is assigned to", async () => {
+		publishingTopicFindMany.mockResolvedValue([
+			topicRow({ assigneeUserIds: [] }),
+		]);
+
+		const result = await getPublishingTopic({
+			id: "topic-1",
+			projectId: "proj-1",
+			viewerUserId: "viewer-1",
+		});
+
+		expect(result?.topic.assignees).toEqual([]);
+		expect(result?.topic.assigneeUserIds).toEqual([]);
 	});
 });

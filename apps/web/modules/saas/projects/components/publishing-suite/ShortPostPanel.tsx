@@ -4,9 +4,16 @@ import { orpc } from "@shared/lib/orpc-query-utils";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@ui/components/button";
 import { Textarea } from "@ui/components/textarea";
-import { Loader2Icon, SparklesIcon } from "lucide-react";
+import {
+	Loader2Icon,
+	PencilLineIcon,
+	ScissorsIcon,
+	SparklesIcon,
+} from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
+import { FEED_FOLD_ESTIMATE, splitAtFeedFold } from "./feed-fold";
+import { GeneralizationNotes } from "./GeneralizationNotes";
 import type { TopicDraftState, TopicWorkingDraftState } from "./GenerationTabs";
 
 /** Mirrors the API's own bound, so the field cannot submit what it would reject. */
@@ -24,6 +31,16 @@ const GUIDANCE_MAX = 2000;
  * blog generation seeds a working draft on the first run (FR21) where this one
  * deliberately does not (DV4), so sharing a component would mean a flag deciding
  * which product it is.
+ *
+ * A DELIBERATE vocabulary split, and the reason the two halves of this file
+ * disagree: the stored document, the schema and the `selectShortPostOption`
+ * procedure all call these OPTIONS, and nothing user-facing does any more. A PO
+ * read "options" under a guidance field as a question to answer rather than
+ * three finished posts to choose between, so every string a reader sees now
+ * says DRAFT. The field name stays what the API and the temporal activity
+ * already write; renaming it would ripple well past a copy fix. Below the
+ * render, `option` means the record — above it, "draft" means the thing on
+ * screen.
  */
 
 /** One option as the stored draft document holds it. */
@@ -112,11 +129,22 @@ export function ShortPostPanel({
 	topicId: string;
 	draft: TopicDraftState | null;
 	working: TopicWorkingDraftState | null;
-	/** PR2: a reader sees the options but gets no controls. */
+	/** PR2: a reader sees the candidate drafts but gets no controls. */
 	canEdit: boolean;
 }) {
 	const queryClient = useQueryClient();
 	const [guidance, setGuidance] = useState("");
+	/**
+	 * The edit instruction for a REFINE run, kept apart from `guidance`.
+	 *
+	 * Two fields rather than one, because they ask for different things and a
+	 * shared one would silently carry the wrong kind of text into whichever
+	 * action was pressed second. Guidance steers a draft that does not exist
+	 * yet; this steers a change to one that does ("make it shorter"). Sent as
+	 * `guidance` on the wire — it IS the run's instruction, and putting it there
+	 * is what records it on the attempt row.
+	 */
+	const [refineInstruction, setRefineInstruction] = useState("");
 
 	const attempt = draft?.latestAttempt ?? null;
 	// `isExpired` splits GENERATING in two: a LIVE run is genuinely in flight, a
@@ -177,7 +205,7 @@ export function ShortPostPanel({
 					invalidateDrafts();
 					return;
 				}
-				toast.error("Could not save that option.");
+				toast.error("Could not save that draft.");
 			},
 		}),
 	);
@@ -292,14 +320,14 @@ export function ShortPostPanel({
 									aria-hidden="true"
 								/>
 							)}
-							{doc ? "Regenerate options" : "Generate short post"}
+							{doc ? "Regenerate drafts" : "Generate short post"}
 						</Button>
 						{isGenerating ? (
 							<span
 								className="text-muted-foreground text-sm"
 								role="status"
 							>
-								Writing three options…
+								Writing three drafts…
 							</span>
 						) : null}
 					</div>
@@ -309,6 +337,78 @@ export function ShortPostPanel({
 							you have already saved is not affected.
 						</p>
 					) : null}
+				</section>
+			) : null}
+
+			{/*
+			 * A SECOND action, never a replacement for the one above.
+			 * Regenerate rebuilds the short post from the planning analysis; this
+			 * one revises the saved text. Both are useful and they answer
+			 * different questions, so the panel offers both — and offers this
+			 * one only once there is something saved to revise, since without a
+			 * working draft it has no input and would just be a regeneration
+			 * with a confusing label.
+			 */}
+			{canEdit && working?.hasBody ? (
+				<section className="space-y-2">
+					<label
+						className="editorial-label block"
+						htmlFor="short-post-refine"
+					>
+						Refine the saved draft
+					</label>
+					<Textarea
+						id="short-post-refine"
+						value={refineInstruction}
+						onChange={(e) => setRefineInstruction(e.target.value)}
+						maxLength={GUIDANCE_MAX}
+						rows={2}
+						placeholder="Make it shorter. Warmer tone. Lead with the metric."
+						disabled={isGenerating || generate.isPending}
+					/>
+					<div className="flex items-center gap-3">
+						<Button
+							type="button"
+							variant="outline"
+							onClick={() =>
+								generate.mutate({
+									projectId,
+									topicId,
+									organizationId,
+									guidance: refineInstruction.trim() || null,
+									refineFromWorkingDraft: true,
+								})
+							}
+							// Required here where it is optional above: a
+							// refinement with no instruction is a rewrite of
+							// the draft for no stated reason, which is the one
+							// thing this action cannot usefully do.
+							disabled={
+								!refineInstruction.trim() ||
+								isGenerating ||
+								generate.isPending
+							}
+						>
+							{isGenerating || generate.isPending ? (
+								<Loader2Icon
+									className="mr-2 size-4 motion-safe:animate-spin"
+									aria-hidden="true"
+								/>
+							) : (
+								<PencilLineIcon
+									className="mr-2 size-4"
+									aria-hidden="true"
+								/>
+							)}
+							Refine draft
+						</Button>
+					</div>
+					<p className="text-muted-foreground text-xs">
+						Starts from the short post you have saved and changes
+						only what you ask for. The result arrives as a new
+						version to compare against; nothing you have saved
+						changes until you adopt it.
+					</p>
 				</section>
 			) : null}
 
@@ -344,26 +444,53 @@ export function ShortPostPanel({
 			{doc ? (
 				<>
 					{doc.safetyNote ? (
-						<section className="space-y-2">
-							<h3 className="editorial-label">
-								How this was generalized
-							</h3>
-							<p className="text-muted-foreground text-sm leading-relaxed">
-								{doc.safetyNote}
-							</p>
-						</section>
+						<GeneralizationNotes
+							heading="How this was generalized"
+							note={doc.safetyNote}
+						/>
 					) : null}
 
+					{/*
+					 * Three PREVIEWS of one post, not three questions.
+					 *
+					 * The shape this replaced was a stacked list of bordered
+					 * cards, each headed by its variant label with a paragraph
+					 * and a button under it, directly below a guidance field
+					 * and a generate button — which is, to the character, how
+					 * this product renders a question with suggested answers.
+					 * A PO read it as exactly that ("i clicked generate and it
+					 * asks me more questions?"), and renaming the heading was
+					 * never going to fix a resemblance that was structural.
+					 *
+					 * So the content leads. Each candidate renders as the post
+					 * would read, inside a neutral frame that reproduces the
+					 * CONSTRAINT a feed imposes — the character count and where
+					 * the fold falls — and the variant label drops to a quiet
+					 * tag in the frame's header. Deliberately no platform
+					 * chrome: no logo, no imitation of anyone's UI. What is
+					 * being previewed is the text under a limit, not a
+					 * screenshot of a network.
+					 */}
 					<section className="space-y-3">
-						<h3 className="editorial-label">
-							Options{" "}
-							{draft?.latestReady
-								? `(version ${draft.latestReady.version})`
-								: null}
-						</h3>
-						<ul className="space-y-3">
+						<div className="space-y-1">
+							<h3 className="editorial-label">
+								Candidate drafts{" "}
+								{draft?.latestReady
+									? `(version ${draft.latestReady.version})`
+									: null}
+							</h3>
+							<p className="text-muted-foreground text-xs leading-relaxed">
+								Three ways of writing the same post. Pick the
+								one to work from — nothing is saved until you
+								do.
+							</p>
+						</div>
+						<ul className="space-y-4">
 							{doc.options.map((option, index) => {
 								const isSaved = isSavedOption(option);
+								const { visible, folded } = splitAtFeedFold(
+									option.text,
+								);
 								return (
 									<li
 										// Position, not label. The schema refuses to
@@ -375,37 +502,84 @@ export function ShortPostPanel({
 										// so the index is stable for as long as a row is
 										// on screen.
 										key={`${index}:${option.label}`}
-										className="rounded-xl border border-border bg-card p-4"
+										className={`overflow-hidden rounded-xl border bg-card ${
+											isSaved
+												? "border-primary/60"
+												: "border-border"
+										}`}
 									>
-										<div className="flex items-baseline justify-between gap-3">
-											<h4 className="font-medium text-sm">
+										<div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1 border-border border-b bg-muted/40 px-4 py-2">
+											{/* A tag, not a headline. Still an
+											    `h4`, so the outline a screen
+											    reader walks keeps naming which
+											    candidate is which. */}
+											<h4 className="font-normal text-[11px] text-muted-foreground uppercase tracking-[0.2em]">
 												{option.label}
 											</h4>
-											<span className="text-muted-foreground text-xs">
+											<span className="text-muted-foreground text-xs tabular-nums">
 												~{option.estimatedCharacters}{" "}
 												characters
 											</span>
 										</div>
-										<p className="mt-2 whitespace-pre-wrap text-sm leading-relaxed">
-											{option.text}
-										</p>
+										<div className="px-4 py-4">
+											<p className="whitespace-pre-wrap break-words text-base leading-relaxed">
+												{folded ? (
+													<>
+														<span>{visible}</span>
+														{/*
+														 * Dimmed, not hidden.
+														 * It is the reader's
+														 * own text and it has
+														 * to stay legible —
+														 * `--muted-foreground`
+														 * rather than a lighter
+														 * tint invented for the
+														 * effect.
+														 */}
+														<span className="text-muted-foreground">
+															{folded}
+														</span>
+													</>
+												) : (
+													option.text
+												)}
+											</p>
+											{folded ? (
+												// The words carry it, not the
+												// dimming: a reader who cannot
+												// see the tint still learns
+												// where the post folds.
+												<p className="mt-3 flex items-start gap-2 border-border border-t pt-3 text-muted-foreground text-xs leading-relaxed">
+													<ScissorsIcon
+														className="mt-0.5 size-3.5 shrink-0"
+														aria-hidden="true"
+													/>
+													Most feeds fold a post after
+													roughly {FEED_FOLD_ESTIMATE}{" "}
+													characters — the dimmed text
+													sits behind “see more”.
+												</p>
+											) : null}
+										</div>
 										{canEdit ? (
-											<Button
-												type="button"
-												variant="outline"
-												size="sm"
-												className="mt-3"
-												onClick={() =>
-													handleSelect(option)
-												}
-												disabled={
-													select.isPending || isSaved
-												}
-											>
-												{isSaved
-													? "Saved as working draft"
-													: "Use this option"}
-											</Button>
+											<div className="border-border border-t px-4 py-3">
+												<Button
+													type="button"
+													variant="outline"
+													size="sm"
+													onClick={() =>
+														handleSelect(option)
+													}
+													disabled={
+														select.isPending ||
+														isSaved
+													}
+												>
+													{isSaved
+														? "Saved as working draft"
+														: "Use this draft"}
+												</Button>
+											</div>
 										) : null}
 									</li>
 								);
@@ -437,7 +611,7 @@ export function ShortPostPanel({
 				</>
 			) : !isGenerating && attempt?.status !== "FAILED" ? (
 				<p className="text-muted-foreground text-sm">
-					No short post options yet.
+					No short post drafts yet.
 				</p>
 			) : null}
 		</div>

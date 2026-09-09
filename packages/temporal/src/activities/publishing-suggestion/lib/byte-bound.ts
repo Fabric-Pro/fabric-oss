@@ -48,7 +48,7 @@ export function byteBoundItems<T>(
  *
  * `PER_SOURCE_MAX_BYTES` bounds each of the (up to) 5 collectors
  * individually, but nothing bounded the TOTAL context the workflow hands to
- * `buildTopicSuggestionPrompt`. A busy project with all 5 sources near their
+ * `composeTopicSuggestionPrompt`. A busy project with all 5 sources near their
  * per-source cap can still assemble a ~1.5MB prompt (~400K tokens at ~4
  * chars/token) — enough to overflow the COMPLEX model's context window and
  * fail the whole cycle, even though every individual collector behaved.
@@ -56,7 +56,7 @@ export function byteBoundItems<T>(
  * 75,000 tokens × ~4 chars/token ≈ 300,000 bytes. That is comfortably under
  * the smallest COMPLEX-tier model context window in use (128K-token class
  * models are the floor), leaving headroom for the rest of the prompt
- * (instructions in `buildTopicSuggestionPrompt`, ~1-2K tokens) plus the
+ * (the bound prompt body plus its locked clauses, ~1-2K tokens) plus the
  * model's output tokens (topics are short — title/pitch/provenance — but
  * still need budget). `getAIModelWithMetadata`'s `AIModelMetadata` does not
  * expose a context-window/token-limit field today (see
@@ -69,7 +69,7 @@ export const TOTAL_CONTEXT_MAX_BYTES = 300_000;
 /**
  * Bound the WHOLE collector context (all source keys combined) to
  * `maxBytes` of serialized JSON before it is handed to
- * `buildTopicSuggestionPrompt`. Reuses the same `boundGatheredData` cascade
+ * `composeTopicSuggestionPrompt`. Reuses the same `boundGatheredData` cascade
  * as `byteBoundItems` — truncate long strings, then cap the largest
  * top-level arrays, then drop the largest top-level keys — applied across
  * ALL source keys (`stories`, `documents`, `transcripts`, `pullRequests`,

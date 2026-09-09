@@ -21,7 +21,7 @@
  * exists.
  */
 
-import { listTopicDrafts } from "@repo/database";
+import { listTopicDrafts, PUBLISHING_TOPIC_POST_TYPES } from "@repo/database";
 import { z } from "zod";
 import {
 	Permissions,
@@ -30,12 +30,12 @@ import {
 } from "../../../../orpc/procedures";
 import { assertPublishingSuiteFeatureEnabled } from "../../lib/publishing-suite-feature";
 
-const PostTypeSchema = z.enum([
-	"TWEET",
-	"BLOG_POST",
-	"CASE_STUDY",
-	"STAKEHOLDER_EMAIL",
-]);
+// The vocabulary comes from the shared tuple rather than being written out
+// again. A hand-written copy here narrows the OUTPUT schema, so a post type the
+// database can hold and `listTopicDrafts` returns would be stripped by oRPC's
+// output validation on its way to the page — the row simply vanishes, with no
+// error anywhere.
+const PostTypeSchema = z.enum(PUBLISHING_TOPIC_POST_TYPES);
 
 /**
  * One draft attempt.

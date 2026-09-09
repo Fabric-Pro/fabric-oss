@@ -1,0 +1,12 @@
+-- AlterEnum
+-- The in-app nudge sent when somebody is ADDED to a publishing topic's
+-- assignee list (Fizzy #1851, A8).
+--
+-- Kept in its own migration, mirroring
+-- 20260901120100_add_question_routing_notification_types: a value added by
+-- ALTER TYPE cannot be referenced in the same transaction that adds it, so the
+-- column migration alongside it stays separate.
+--
+-- Reuses the existing ASSIGNMENT NotificationCategory, so no category enum
+-- change is required.
+ALTER TYPE "NotificationType" ADD VALUE IF NOT EXISTS 'PUBLISHING_TOPIC_ASSIGNED';

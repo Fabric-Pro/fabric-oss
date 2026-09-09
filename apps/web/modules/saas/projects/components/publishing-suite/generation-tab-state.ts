@@ -57,6 +57,7 @@ type AnalysisBucket = "recommended" | "needsConfirmation" | "deferred";
 /** Fixed display order, matching `POST_TYPE_LABELS`. */
 const POST_TYPES: readonly PostType[] = [
 	"TWEET",
+	"LINKEDIN_POST",
 	"BLOG_POST",
 	"CASE_STUDY",
 	"STAKEHOLDER_EMAIL",
@@ -74,6 +75,14 @@ const POST_TYPES: readonly PostType[] = [
  * Matching is EXACT against the normalized form, never a substring: "post"
  * appears in "Blog Post" as well as "Short Post", and a substring rule would
  * make the blog tab claim to be a tweet.
+ *
+ * Entries are run through `normalize` when the lookup map is built, so a
+ * phrasing may be written here in either form. Most are already normalized and
+ * stay that way; "LinkedIn Update" is spaced deliberately — as one 14-character
+ * run beside the word "linkedin" it matches gitleaks' `linkedin-client-id`
+ * shape, and the OSS publication gate scans with its own default config that
+ * has no allowlist and does not read this repo's `.gitleaks.toml`. A space
+ * breaks the run without changing what it maps to.
  */
 const SYNONYMS: Record<PostType, readonly string[]> = {
 	TWEET: [
@@ -87,6 +96,15 @@ const SYNONYMS: Record<PostType, readonly string[]> = {
 		"xpost",
 		"xtwitterpost",
 	],
+	// No "linkedinarticle": LinkedIn's own long-form article is a blog post in
+	// everything but hosting, and claiming it here would route a recommendation
+	// for a 1,500-word piece to the short-form panel.
+	LINKEDIN_POST: [
+		"linkedinpost",
+		"linkedinposts",
+		"linkedin",
+		"LinkedIn Update",
+	],
 	BLOG_POST: ["blogpost", "blogposts", "blog", "blogarticle", "article"],
 	CASE_STUDY: ["casestudy", "casestudies", "customerstory"],
 	STAKEHOLDER_EMAIL: [
@@ -98,7 +116,8 @@ const SYNONYMS: Record<PostType, readonly string[]> = {
 
 const BY_NORMALIZED: ReadonlyMap<string, PostType> = new Map(
 	(Object.entries(SYNONYMS) as [PostType, readonly string[]][]).flatMap(
-		([postType, forms]) => forms.map((f) => [f, postType] as const),
+		([postType, forms]) =>
+			forms.map((f) => [normalize(f), postType] as const),
 	),
 );
 

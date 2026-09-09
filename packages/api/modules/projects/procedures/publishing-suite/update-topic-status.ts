@@ -6,6 +6,7 @@ import {
 	requireProjectPermission,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
+import { recordTopicStatusOutcome } from "../../lib/publishing-outcome";
 import { assertPublishingSuiteFeatureEnabled } from "../../lib/publishing-suite-feature";
 
 export const updatePublishingTopicStatusProcedure = tenantProtectedProcedure
@@ -32,7 +33,7 @@ export const updatePublishingTopicStatusProcedure = tenantProtectedProcedure
 			publishedUrl: z.string().nullable().optional(),
 		}),
 	)
-	.handler(async ({ input }) => {
+	.handler(async ({ input, context }) => {
 		await assertPublishingSuiteFeatureEnabled(input.projectId);
 		// AUTHORIZATION: requireProjectPermission(PUBLISHING_TOPIC_UPDATE) gates
 		// project access. The DB helper re-scopes the write to
@@ -48,5 +49,17 @@ export const updatePublishingTopicStatusProcedure = tenantProtectedProcedure
 		if (!result) {
 			throw new ORPCError("NOT_FOUND", { message: "Topic not found" });
 		}
+
+		// Measurement only, and only for the two terminal moves (Fizzy #1851
+		// A9). PUBLISHED is the outcome the whole feature exists to produce —
+		// counting distinct users over those rows is the nearest measure of
+		// "how many people are actually posting" the system can offer.
+		await recordTopicStatusOutcome({
+			topicId: input.topicId,
+			projectId: input.projectId,
+			userId: context.user.id,
+			status: input.status,
+		});
+
 		return { topic: result.topic };
 	});

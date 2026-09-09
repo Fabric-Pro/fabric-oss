@@ -467,6 +467,52 @@ describe("PlanningAnalysisTab — a ready analysis", () => {
 	});
 });
 
+describe("PlanningAnalysisTab — version state sits with the button that changes it", () => {
+	const readyProps = {
+		effective: AI_EFFECTIVE,
+		aiVersion: 1,
+		sourceAnalysisVersion: 1,
+		latestAttempt: ready(),
+	};
+
+	/** True when `first` precedes `second` in document order. */
+	const precedes = (first: Element, second: Element) =>
+		Boolean(
+			first.compareDocumentPosition(second) &
+				Node.DOCUMENT_POSITION_FOLLOWING,
+		);
+
+	it("puts the provenance line and History above the document, not below it", () => {
+		// They used to live in a footer BELOW the editor AND below the data
+		// sections, while Generate/Regenerate was pinned at the top — so on a
+		// real analysis the version the reader is looking at, and the control
+		// that changes it, were a long scroll apart. Document order is the
+		// assertion because jsdom has no layout to measure.
+		renderTab(readyProps);
+
+		const documentEl = screen.getByTestId("editor-prose");
+		const provenance = screen.getByText(/not edited yet/i);
+		const history = screen.getByRole("button", { name: /history/i });
+		const generate = screen.getByRole("button", { name: /regenerate/i });
+
+		expect(precedes(provenance, documentEl)).toBe(true);
+		expect(precedes(history, documentEl)).toBe(true);
+		expect(precedes(generate, documentEl)).toBe(true);
+	});
+
+	it("still opens the history drawer from its new home", async () => {
+		// Moving the trigger must not leave it wired to nothing — and the
+		// drawer itself stays mounted where it was.
+		renderTab(readyProps);
+
+		expect(screen.queryByText(/version history drawer/i)).toBeNull();
+
+		await userEvent.click(screen.getByRole("button", { name: /history/i }));
+
+		expect(screen.getByText(/version history drawer/i)).toBeInTheDocument();
+	});
+});
+
 describe("PlanningAnalysisTab — never edited vs deliberately cleared", () => {
 	it("distinguishes an emptied document from one that was never edited", () => {
 		const { rerender } = render(
@@ -1199,5 +1245,73 @@ describe("PlanningAnalysisTab — read-only", () => {
 			screen.queryByRole("button", { name: /regenerate/i }),
 		).not.toBeInTheDocument();
 		expect(editorProps.current).toMatchObject({ canEdit: false });
+	});
+});
+
+/**
+ * The analysis says when it is behind the decisions it asked for (A4).
+ *
+ * Feature Maturation shows "N new decisions recorded — not yet in the Full
+ * Specification" with an Update action. Publishing had the data and said
+ * nothing: a question stores the analysis version it was RAISED against, so a
+ * RESOLVED question still carrying the CURRENT version was answered after the
+ * document was written, and the document does not know.
+ *
+ * The action is the Regenerate button already in this header, so the banner
+ * points at it rather than adding a second control that does the same thing.
+ */
+describe("PlanningAnalysisTab — answers the analysis predates", () => {
+	const answered = (analysisVersion: number) => ({
+		root: {
+			id: `d-${analysisVersion}-${Math.random()}`,
+			parentId: null,
+			kind: "QUESTION" as const,
+			status: "RESOLVED",
+			authorType: "AGENT" as const,
+			authorUserId: null,
+			questionId: "q1",
+			decisionKind: "CONTENT_TYPE",
+			subject: null,
+			summary: "Should we produce a Blog Post for this topic?",
+			content: null,
+			recommendedResponse: null,
+			whyItMatters: null,
+			answerSource: "MANUAL",
+			analysisVersion,
+			createdAt: new Date(),
+		},
+		replies: [],
+	});
+
+	it("says so when an answer landed after the current analysis", () => {
+		renderTab({ aiVersion: 2, decisionThreads: [answered(2)] });
+
+		expect(
+			screen.getByTestId("analysis-behind-decisions"),
+		).toHaveTextContent(/1 answer was recorded after this analysis/i);
+	});
+
+	it("stays quiet once the analysis has been regenerated past them", () => {
+		// The question was raised against version 1 and answered; version 2 was
+		// written afterwards, so it already knows.
+		renderTab({ aiVersion: 2, decisionThreads: [answered(1)] });
+
+		expect(
+			screen.queryByTestId("analysis-behind-decisions"),
+		).not.toBeInTheDocument();
+	});
+
+	it("does not count a question nobody has answered", () => {
+		const open = answered(2);
+		renderTab({
+			aiVersion: 2,
+			decisionThreads: [
+				{ ...open, root: { ...open.root, status: "OPEN" } },
+			],
+		});
+
+		expect(
+			screen.queryByTestId("analysis-behind-decisions"),
+		).not.toBeInTheDocument();
 	});
 });

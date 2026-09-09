@@ -328,7 +328,7 @@ describe("generatePublishingCaseStudyWorkflow", () => {
 });
 
 describe("every publishing generation workflow unwraps the wrapper", () => {
-	// The unwrap is one line, repeated in five files, and only ONE of those
+	// The unwrap is one line, repeated in six files, and only ONE of those
 	// files is exercised by the case above — `generate-publishing-stakeholder-email.ts`
 	// has no workflow suite at all. A file-by-file structural check is what
 	// stops the other four regressing silently.
@@ -339,6 +339,7 @@ describe("every publishing generation workflow unwraps the wrapper", () => {
 	const WORKFLOWS = [
 		"generate-publishing-blog-post.ts",
 		"generate-publishing-case-study.ts",
+		"generate-publishing-linkedin-post.ts",
 		"generate-publishing-planning-analysis.ts",
 		"generate-publishing-short-post.ts",
 		"generate-publishing-stakeholder-email.ts",

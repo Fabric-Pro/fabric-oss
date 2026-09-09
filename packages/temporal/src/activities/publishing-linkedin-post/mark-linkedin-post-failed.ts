@@ -1,0 +1,47 @@
+/**
+ * The failure marker for a LinkedIn post attempt (Fizzy #1851).
+ *
+ * A separate activity from the generator on purpose. The generator commits its
+ * own success, but by definition it cannot be trusted to record its own
+ * failure — the reason it failed may be the very thing that stops it writing.
+ * The workflow owns this call, behind its own short-timeout proxy so a failing
+ * run does not sit on GENERATING for another generation budget, holding the
+ * partial unique index against every retry.
+ *
+ * The write is a compare-and-set on `status = 'GENERATING'` scoped by
+ * `{ id, projectId }`, so a marker arriving after a deadline sweep already
+ * reclaimed the attempt changes nothing. That is a normal outcome and NOT an
+ * error: throwing here would make the workflow's last-resort catch fire and
+ * report a crash where there was only a race the database already settled.
+ */
+
+import { failTopicDraft, logDraftRefusal } from "@repo/database";
+
+export interface MarkLinkedInPostFailedInput {
+	draftId: string;
+	projectId: string;
+	message: string;
+}
+
+export async function markLinkedInPostFailedActivity(
+	input: MarkLinkedInPostFailedInput,
+): Promise<void> {
+	const commit = await failTopicDraft({
+		id: input.draftId,
+		projectId: input.projectId,
+		error: input.message,
+	});
+
+	if (!commit.persisted) {
+		// Why the marker was skipped, not just that it was. A superseded
+		// attempt is routine; an archived project is somebody's action.
+		logDraftRefusal(
+			"[publishing-linkedin-post] failure marker skipped",
+			commit.reason,
+			{
+				draftId: input.draftId,
+				projectId: input.projectId,
+			},
+		);
+	}
+}

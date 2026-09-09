@@ -13,9 +13,11 @@ import {
 import { Label } from "@ui/components/label";
 import { cn } from "@ui/lib";
 import { useEffect, useState } from "react";
+import type { GenerationTabInfo } from "./generation-tab-state";
 
 const POST_TYPE_OPTIONS = [
 	{ value: "TWEET", label: "Tweet" },
+	{ value: "LINKEDIN_POST", label: "LinkedIn Post" },
 	{ value: "BLOG_POST", label: "Blog Post" },
 	{ value: "CASE_STUDY", label: "Case Study" },
 	{ value: "STAKEHOLDER_EMAIL", label: "Stakeholder Email" },
@@ -24,13 +26,32 @@ const POST_TYPE_OPTIONS = [
 type PostTypeValue = (typeof POST_TYPE_OPTIONS)[number]["value"];
 
 /**
+ * How the analysis's verdict reads next to each option.
+ *
+ * Deliberately not colour alone (WCAG 2.1 AA): the word carries the meaning and
+ * the tint only reinforces it. "Not recommended" has no entry — a type the
+ * analysis never mentioned shows no badge rather than a verdict it never gave.
+ */
+const BUCKET_LABELS: Record<string, string> = {
+	recommended: "Recommended",
+	needsConfirmation: "Needs confirmation",
+	deferred: "Deferred",
+};
+
+const BUCKET_TONES: Record<string, string> = {
+	recommended: "bg-secondary/15 text-secondary",
+	needsConfirmation: "bg-highlight/15 text-highlight",
+	deferred: "bg-muted text-muted-foreground",
+};
+
+/**
  * PostTypesDialog — override-only editor for a topic's suggested post types.
  * Save submits the checked set (possibly empty); Reset submits `null` (revert
  * to the AI suggestion). The chip row on the card stays display-only.
  *
  * A topic can carry SEVERAL post types at once, and this dialog has always
  * allowed that — the toggle keeps a `Set` and Save submits every checked
- * value. What it did not do was *look* like it: four bare 16px checkboxes
+ * value. What it did not do was *look* like it: a column of bare 16px checkboxes
  * stacked in a column, one of them ticked, is the canonical shape of a radio
  * group, so review read it as single-select. Hence the grouping, the "select
  * all that apply" cue and the live count below — each one a signal a radio
@@ -44,6 +65,7 @@ export function PostTypesDialog({
 	initialSelected,
 	hasOverride,
 	hasAiSuggestion,
+	recommendations,
 	onSubmit,
 	isPending,
 }: {
@@ -53,6 +75,15 @@ export function PostTypesDialog({
 	initialSelected: readonly PostTypeValue[];
 	hasOverride: boolean;
 	hasAiSuggestion: boolean;
+	/**
+	 * What the planning analysis said about each type, keyed by post type.
+	 *
+	 * The recommendation and its reason already existed — on the topic row and
+	 * inside the Planning & Analysis document — everywhere except the one screen
+	 * where the choice is actually made. Passing it here is what turns this from
+	 * a blank form into an override of something.
+	 */
+	recommendations?: ReadonlyMap<PostTypeValue, GenerationTabInfo>;
 	onSubmit: (postTypes: PostTypeValue[] | null) => void;
 	isPending?: boolean;
 }) {
@@ -99,12 +130,13 @@ export function PostTypesDialog({
 					</legend>
 					{POST_TYPE_OPTIONS.map((o) => {
 						const isChecked = selected.has(o.value);
+						const info = recommendations?.get(o.value);
 						return (
 							<Label
 								key={o.value}
 								htmlFor={`post-type-${o.value}`}
 								className={cn(
-									"flex items-center gap-3 rounded-lg border px-3 py-2.5 transition-colors",
+									"flex items-start gap-3 rounded-lg border px-3 py-2.5 transition-colors",
 									isChecked
 										? "border-primary/60 bg-primary/10"
 										: "border-border bg-card",
@@ -121,7 +153,26 @@ export function PostTypesDialog({
 									}
 									disabled={isPending}
 								/>
-								<span>{o.label}</span>
+								<span className="flex min-w-0 flex-col gap-0.5">
+									<span className="flex items-center gap-2">
+										{o.label}
+										{info?.bucket ? (
+											<span
+												className={cn(
+													"rounded px-1.5 py-0.5 font-medium text-[10px] uppercase tracking-wide",
+													BUCKET_TONES[info.bucket],
+												)}
+											>
+												{BUCKET_LABELS[info.bucket]}
+											</span>
+										) : null}
+									</span>
+									{info?.rationale ? (
+										<span className="text-muted-foreground text-xs leading-snug">
+											{info.rationale}
+										</span>
+									) : null}
+								</span>
 							</Label>
 						);
 					})}

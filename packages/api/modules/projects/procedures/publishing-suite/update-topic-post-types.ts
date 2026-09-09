@@ -1,5 +1,8 @@
 import { ORPCError } from "@orpc/client";
-import { updatePublishingTopicPostTypes } from "@repo/database";
+import {
+	PUBLISHING_TOPIC_POST_TYPES,
+	updatePublishingTopicPostTypes,
+} from "@repo/database";
 import { z } from "zod";
 import {
 	Permissions,
@@ -23,16 +26,16 @@ export const updatePublishingTopicPostTypesProcedure = tenantProtectedProcedure
 			organizationId: z.string().nullable().optional(),
 			// null = reset to the AI suggestion; [] = explicit clear; a set =
 			// override. Enum-checked + capped here; the DB helper dedupes.
+			//
+			// Both the vocabulary and the cap come from the shared tuple, the
+			// same way `update-settings.ts` takes them. They used to be a
+			// hand-written enum beside a literal `.max(4)`, and the literal is
+			// the half that fails quietly: a fifth post type makes "select
+			// every type" a validation error, on a dialog whose whole purpose
+			// is choosing several at once, and no type-check can see it.
 			postTypes: z
-				.array(
-					z.enum([
-						"TWEET",
-						"BLOG_POST",
-						"CASE_STUDY",
-						"STAKEHOLDER_EMAIL",
-					]),
-				)
-				.max(4)
+				.array(z.enum(PUBLISHING_TOPIC_POST_TYPES))
+				.max(PUBLISHING_TOPIC_POST_TYPES.length)
 				.nullable(),
 		}),
 	)

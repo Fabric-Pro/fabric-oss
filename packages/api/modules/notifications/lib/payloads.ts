@@ -388,6 +388,20 @@ const documentGenerationPayload = z.object({
 	status: z.enum(["COMPLETED", "FAILED"]),
 });
 
+// PUBLISHING_TOPIC_ASSIGNED payload — written by `fanOut.publishingTopicAssigned`
+// when somebody is ADDED to a publishing topic's assignee list (Fizzy #1851, A8).
+//
+// Identifiers only. The topic title and the assigner's name live in the
+// notification's `title`/`snippet` columns, as `assignmentBase` does for stories.
+// There is no `previousAssigneeUserIds` counterpart to STORY_ASSIGNED's
+// `previousAssigneeId`: a topic's assignees are a SET that several people edit,
+// so "who held it before" is not a single answer worth freezing into a payload.
+const publishingTopicAssignedPayload = z.object({
+	topicId: z.string(),
+	projectId: z.string(),
+	assignedByUserId: z.string(),
+});
+
 const NotificationPayloadByType = {
 	[NotificationType.STORY_MENTION]: mentionLikeBase,
 	[NotificationType.TASK_MENTION]: mentionLikeBase,
@@ -431,6 +445,8 @@ const NotificationPayloadByType = {
 	[NotificationType.STATUS_ANNOUNCEMENT]: statusAnnouncementPayload,
 	[NotificationType.TEST_CASES_DRAFTED]: testCasesDraftedPayload,
 	[NotificationType.PUBLISHING_TOPICS_READY]: publishingTopicsReadyPayload,
+	[NotificationType.PUBLISHING_TOPIC_ASSIGNED]:
+		publishingTopicAssignedPayload,
 	[NotificationType.PROMPT_DEFAULT_UPDATED]: promptDefaultUpdatedPayload,
 	[NotificationType.PROMPT_NOMINATION_PENDING]:
 		promptNominationPendingPayload,

@@ -1,8 +1,7 @@
 "use client";
 
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@ui/components/tabs";
+import { TabsContent, TabsTrigger } from "@ui/components/tabs";
 import { AlertTriangleIcon, CheckCircle2Icon, StarIcon } from "lucide-react";
-import { useState } from "react";
 import { BlogPostPanel } from "./BlogPostPanel";
 import { CaseStudyPanel } from "./CaseStudyPanel";
 import type {
@@ -16,6 +15,7 @@ import {
 	resolveRestrictions,
 	restrictsPostType,
 } from "./generation-tab-state";
+import { LinkedInPostPanel } from "./LinkedInPostPanel";
 import type { PlanningAnalysisDocument } from "./planning-analysis-content";
 import { ShortPostPanel } from "./ShortPostPanel";
 import { StakeholderEmailPanel } from "./StakeholderEmailPanel";
@@ -75,7 +75,9 @@ export interface TopicWorkingDraftState {
 }
 
 /**
- * The Topic Item Page's content-generation tab strip (Fizzy #1853, Phase 2B-1).
+ * The Topic Item Page's content-generation tabs (Fizzy #1853, Phase 2B-1),
+ * since the 2A rework split into three exports: the state model, row 2 of the
+ * page's tab strip, and the panels.
  *
  * Replaces 2A's `GenerationTabsPlaceholder`, whose own comment named itself
  * "the only thing later phases (2B/2C) still need to replace".
@@ -104,16 +106,131 @@ export interface TopicWorkingDraftState {
  * panel could sensibly render.
  *
  * With that, every content type has a panel and NO tab reads "Coming soon" —
- * 2A's FR50 is satisfied for all four rather than waived for one. The
- * coming-soon branch below stays: `GENERATION_ACTIVE_POST_TYPES` is what makes
- * a tab selectable, and a fifth post type added to the Prisma enum must arrive
- * disabled until it has a panel rather than rendering an empty tab.
+ * 2A's FR50 is satisfied for all of them rather than waived for one. LinkedIn
+ * is the fifth, and it arrived WITH its panel in one change rather than landing
+ * disabled first.
+ *
+ * The coming-soon branch below stays anyway, and the rule it enforces is a
+ * PAIRING rather than a delay: `GENERATION_ACTIVE_POST_TYPES` is what makes a
+ * tab selectable AND what mounts its `TabsContent`, so an entry added there
+ * without an arm in `GenerationPanel`'s `postType === …` chain renders a
+ * selectable tab with an empty body. A type that genuinely has no panel yet is
+ * better left out of that set, where it reads "Coming soon" — an honest
+ * placeholder beats a live tab that does nothing.
  *
  * The unresolved-question list is computed PER PANEL rather than once for the
  * strip, and that is a 2C requirement rather than a tidy-up. See
  * `GenerationPanel`.
  */
-export function GenerationTabs({
+
+/** Every content type's generation state, derived once per render. */
+export interface GenerationTabModel {
+	tabs: GenerationTabInfo[];
+	byPostType: Map<PostType, GenerationTabInfo>;
+	restrictions: Restrictions;
+}
+
+/**
+ * Resolve every content type's generation state once, for a page that renders
+ * the triggers and the panels in two different places.
+ *
+ * The 2A rework splits what used to be one self-contained `GenerationTabs`
+ * block into a SECOND ROW of the page's single tab strip plus panels in the
+ * shared content region — so the strip and the panels no longer sit inside one
+ * component that could derive this for both. Deriving it here keeps one source
+ * rather than two that drift.
+ */
+export function buildGenerationTabModel(input: {
+	analysis: PlanningAnalysisDocument | null;
+	drafts: TopicDraftState[];
+	workingDrafts: TopicWorkingDraftState[];
+	decisionThreads: TopicDecisionThread[];
+	/** The drafts read failed. States degrade to AVAILABLE and say so. */
+	hasError: boolean;
+}): GenerationTabModel {
+	const restrictions: Restrictions = resolveRestrictions(
+		input.decisionThreads,
+	);
+
+	// A type counts as generated when it has a READY candidate OR a working
+	// draft. A user who saved a body has content for that type whatever became
+	// of the candidate it came from.
+	const generatedPostTypes = [
+		...input.drafts
+			.filter((d) => d.latestReady !== null)
+			.map((d) => d.postType),
+		...input.workingDrafts.filter((w) => w.hasBody).map((w) => w.postType),
+	];
+
+	const tabs = resolveGenerationTabStates({
+		analysis: input.analysis,
+		// A failed read must not invent a generated state. Everything degrades
+		// to AVAILABLE and the caller's banner says the state could not load.
+		generatedPostTypes: input.hasError ? [] : generatedPostTypes,
+		restrictions,
+	});
+
+	return {
+		tabs,
+		byPostType: new Map(tabs.map((t) => [t.postType, t])),
+		restrictions,
+	};
+}
+
+/**
+ * Row 2 of the topic page's tab strip: one trigger per content type the topic
+ * has actually selected.
+ *
+ * `postTypes` is the topic's EFFECTIVE selection (the user's override when set,
+ * the AI suggestion otherwise), not every type the enum knows. A topic that
+ * wants a tweet and a blog post shows two triggers, not four — which is what
+ * makes "Edit post types" a control with a visible consequence rather than a
+ * dialog nobody opens.
+ *
+ * Returns a fragment rather than its own `TabsList`: the caller owns the row so
+ * that both rows drive ONE selection, and picking a content type deselects the
+ * review tab instead of opening a tab inside a tab.
+ */
+export function GenerationTabTriggers({
+	model,
+	postTypes,
+}: {
+	model: GenerationTabModel;
+	postTypes: readonly PostType[];
+}) {
+	return (
+		<>
+			{POST_TYPE_LABELS.filter((t) => postTypes.includes(t.value)).map(
+				(t) => {
+					const info = model.byPostType.get(t.value);
+					const active = GENERATION_ACTIVE_POST_TYPES.has(t.value);
+					return (
+						<TabsTrigger
+							key={t.value}
+							value={t.value}
+							disabled={!active}
+						>
+							{t.generationLabel ?? t.label}
+							{active && info ? (
+								<StateBadge info={info} />
+							) : (
+								<Badge tone="muted">Coming soon</Badge>
+							)}
+						</TabsTrigger>
+					);
+				},
+			)}
+		</>
+	);
+}
+
+/**
+ * The generation panels, as `TabsContent` siblings of the review tabs' own
+ * content. Only the selected types render, and only those with a panel.
+ */
+export function GenerationTabPanels({
+	model,
+	postTypes,
 	projectId,
 	organizationId,
 	topicId,
@@ -122,9 +239,10 @@ export function GenerationTabs({
 	workingDrafts,
 	decisionThreads,
 	isLoading,
-	hasError,
 	canEdit,
 }: {
+	model: GenerationTabModel;
+	postTypes: readonly PostType[];
 	projectId: string;
 	organizationId: string | null;
 	topicId: string;
@@ -133,111 +251,48 @@ export function GenerationTabs({
 	workingDrafts: TopicWorkingDraftState[];
 	decisionThreads: TopicDecisionThread[];
 	isLoading: boolean;
-	/** The drafts read failed. States degrade to AVAILABLE and say so. */
-	hasError: boolean;
 	/** PR2: a reader sees every panel, and none of the write controls. */
 	canEdit: boolean;
 }) {
-	const [tab, setTab] = useState<PostType>("TWEET");
-
-	const restrictions: Restrictions = resolveRestrictions(decisionThreads);
-
-	// A type counts as generated when it has a READY candidate OR a working
-	// draft. A user who saved a body has content for that type whatever became
-	// of the candidate it came from.
-	const generatedPostTypes = [
-		...drafts.filter((d) => d.latestReady !== null).map((d) => d.postType),
-		...workingDrafts.filter((w) => w.hasBody).map((w) => w.postType),
-	];
-
-	const tabs = resolveGenerationTabStates({
-		analysis,
-		// A failed read must not invent a generated state. Everything degrades
-		// to AVAILABLE and the banner below says the state could not be loaded.
-		generatedPostTypes: hasError ? [] : generatedPostTypes,
-		restrictions,
-	});
-	const byPostType = new Map(tabs.map((t) => [t.postType, t]));
-
 	return (
-		<div className="space-y-2">
-			<p className="editorial-label">Content generation</p>
-
-			{hasError ? (
-				<p
-					className="text-muted-foreground text-xs"
-					data-testid="generation-tabs-degraded"
-				>
-					We couldn't load this topic's draft state. The tabs below
-					still open, but they can't say what has been generated yet.
-				</p>
-			) : null}
-
-			<Tabs
-				value={tab}
-				onValueChange={(v) => setTab(v as PostType)}
-				className="space-y-4"
-			>
-				<TabsList aria-label="Content generation" className="flex-wrap">
-					{POST_TYPE_LABELS.map((t) => {
-						const info = byPostType.get(t.value);
-						const active = GENERATION_ACTIVE_POST_TYPES.has(
-							t.value,
-						);
-						return (
-							<TabsTrigger
-								key={t.value}
-								value={t.value}
-								disabled={!active}
-							>
-								{t.generationLabel ?? t.label}
-								{active && info ? (
-									<StateBadge info={info} />
-								) : (
-									<Badge tone="muted">Coming soon</Badge>
-								)}
-							</TabsTrigger>
-						);
-					})}
-				</TabsList>
-
-				{POST_TYPE_LABELS.filter((t) =>
+		<>
+			{POST_TYPE_LABELS.filter(
+				(t) =>
+					postTypes.includes(t.value) &&
 					GENERATION_ACTIVE_POST_TYPES.has(t.value),
-				).map((t) => {
-					const info = byPostType.get(t.value);
-					return (
-						<TabsContent
-							key={t.value}
-							value={t.value}
-							className="space-y-4"
-						>
-							<GenerationPanel
-								label={t.generationLabel ?? t.label}
-								postType={t.value}
-								projectId={projectId}
-								organizationId={organizationId}
-								topicId={topicId}
-								canEdit={canEdit}
-								info={info ?? null}
-								draft={
-									drafts.find(
-										(d) => d.postType === t.value,
-									) ?? null
-								}
-								working={
-									workingDrafts.find(
-										(w) => w.postType === t.value,
-									) ?? null
-								}
-								decisionThreads={decisionThreads}
-								isLoading={isLoading}
-								hasAnalysis={analysis !== null}
-							/>
-						</TabsContent>
-					);
-				})}
-			</Tabs>
-		</div>
+			).map((t) => {
+				const info = model.byPostType.get(t.value);
+				return (
+					<TabsContent
+						key={t.value}
+						value={t.value}
+						className="space-y-4"
+					>
+						<GenerationPanel
+							label={t.generationLabel ?? t.label}
+							postType={t.value}
+							projectId={projectId}
+							organizationId={organizationId}
+							topicId={topicId}
+							canEdit={canEdit}
+							info={info ?? null}
+							draft={
+								drafts.find((d) => d.postType === t.value) ??
+								null
+							}
+							working={
+								workingDrafts.find(
+									(w) => w.postType === t.value,
+								) ?? null
+							}
+							decisionThreads={decisionThreads}
+							isLoading={isLoading}
+							hasAnalysis={analysis !== null}
+						/>
+					</TabsContent>
+				);
+			})}
+		</>
 	);
 }
 
@@ -509,6 +564,15 @@ function GenerationPanel({
 
 			{postType === "TWEET" ? (
 				<ShortPostPanel
+					projectId={projectId}
+					organizationId={organizationId}
+					topicId={topicId}
+					draft={draft}
+					working={working}
+					canEdit={canEdit}
+				/>
+			) : postType === "LINKEDIN_POST" ? (
+				<LinkedInPostPanel
 					projectId={projectId}
 					organizationId={organizationId}
 					topicId={topicId}
