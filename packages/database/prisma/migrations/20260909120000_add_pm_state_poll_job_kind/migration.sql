@@ -1,0 +1,16 @@
+-- AlterEnum
+-- A project's project-management scan, tracked as a background job so that the
+-- generation queue can ask whether one is running right now.
+--
+-- The PM sync log records only outcomes — SUCCESS, FAILURE, CONFLICT — and is
+-- written after an attempt finishes, so there has never been a row to read
+-- while a scan is in flight. Document generation could therefore start against
+-- a backlog it was about to receive, which matters most on the projects where
+-- the backlog is the best documentation there is.
+--
+-- Kept in its own migration, mirroring 20260907170100_add_document_generation_job_kind:
+-- a value added by ALTER TYPE cannot be referenced in the transaction that adds
+-- it. Enum additions are additive and cannot be safely removed while rows may
+-- hold the value; IF NOT EXISTS makes recovery from a partially applied
+-- deployment idempotent.
+ALTER TYPE "BackgroundJobKind" ADD VALUE IF NOT EXISTS 'PM_STATE_POLL';

@@ -15,7 +15,7 @@
  */
 
 /**
- * Six coarse buckets, and deliberately nothing finer.
+ * A handful of coarse buckets, and deliberately nothing finer.
  *
  * A category is all the user ever sees for a wait, which is the point: the
  * probe reads across a project's whole surface — uploaded files, a connected
@@ -36,6 +36,7 @@ export const GENERATION_DEPENDENCY_CATEGORIES = [
 	"linkedSiteCrawl",
 	"securityScan",
 	"monitorIngestion",
+	"projectManagementScan",
 	"prerequisiteDocument",
 ] as const;
 

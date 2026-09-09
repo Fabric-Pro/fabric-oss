@@ -71,6 +71,11 @@ export const JOB_STEPS = {
 	// RUNNING throughout, it is simply not reading anything yet, and the panel's
 	// active-versus-recent split already keys off RUNNING.
 	documentGeneration: ["awaitContext", "generate"],
+	// The poll's two halves as the queue cares about them: reading the board,
+	// then writing what changed back. Both are named so the Job Hub row says
+	// which half a long scan is in, and so the row has a step to close from on
+	// either exit — the workflow returns rather than throws on failure.
+	pmStatePoll: ["fetch", "reconcile"],
 	// Publishing topic generation stops at `persist` on purpose: notification and
 	// chat delivery run after the cycle terminalizes, each behind its own
 	// patched() marker and its own try/catch, so there is no statically-known
@@ -93,6 +98,7 @@ export interface JobEnsureArgs {
 		| "CODE_INDEXING"
 		| "CONTEXT_PROCESSING"
 		| "PUBLISHING_TOPIC_GENERATION"
+		| "PM_STATE_POLL"
 		| "DOCUMENT_GENERATION";
 	title: string;
 	projectId: string;

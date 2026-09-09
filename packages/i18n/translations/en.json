@@ -212,6 +212,7 @@
 				"CONTEXT_PROCESSING": "Document ingestion",
 				"STORY_KIND_REGENERATION": "Rewriting for the new type",
 				"PUBLISHING_TOPIC_GENERATION": "Topic suggestions",
+				"PM_STATE_POLL": "Project management scan",
 				"DOCUMENT_GENERATION": "Document generation"
 			},
 			"steps": {
@@ -2421,6 +2422,7 @@
 					"securityScan": "the security scan",
 					"monitorIngestion": "connected channels being imported",
 					"prerequisiteDocument": "a document this one is written from",
+					"projectManagementScan": "the project-management scan",
 					"unknown": "the project's context work"
 				}
 			},
