@@ -21,7 +21,12 @@
  * exists.
  */
 
-import { listTopicDrafts, PUBLISHING_TOPIC_POST_TYPES } from "@repo/database";
+import {
+	getTopicDraftReadMarkers,
+	listTopicDrafts,
+	markTopicDraftRead,
+	PUBLISHING_TOPIC_POST_TYPES,
+} from "@repo/database";
 import { z } from "zod";
 import {
 	Permissions,
@@ -97,6 +102,12 @@ export const listTopicDraftsProcedure = tenantProtectedProcedure
 					latestReady: DraftRowSchema.nullable(),
 				}),
 			),
+			/**
+			 * When this reader last looked at each content type, so a tab can
+			 * say a draft has changed since they were there. Keyed by post
+			 * type; a type they have never opened is simply absent.
+			 */
+			readMarkers: z.record(z.string(), z.date()),
 			workingDrafts: z.array(
 				z.object({
 					postType: PostTypeSchema,
@@ -127,18 +138,76 @@ export const listTopicDraftsProcedure = tenantProtectedProcedure
 					 */
 					sourceDraftId: z.string().nullable(),
 					sourceOptionLabel: z.string().nullable(),
+					/**
+					 * The candidate this body came from, in full — so a panel
+					 * renders the safety note of the document it is SHOWING
+					 * rather than of the newest ready row, which after an
+					 * unadopted regeneration is a different document.
+					 * `z.unknown()` like the draft rows' own `content`: the
+					 * shape is each content type's business.
+					 */
+					sourceContent: z.unknown(),
 					updatedAt: z.date(),
 				}),
 			),
 		}),
 	)
-	.handler(async ({ input }) => {
+	.handler(async ({ input, context }) => {
 		await assertPublishingSuiteFeatureEnabled(input.projectId);
 
-		// Scoped by BOTH ids inside the helper. `input.organizationId` is a
+		// Scoped by BOTH ids inside the helpers. `input.organizationId` is a
 		// guard the middleware already used, never a scoping key here.
-		return await listTopicDrafts({
+		//
+		// The markers are the CALLER's, always — the input carries no userId,
+		// so nobody can read when a colleague last opened a draft.
+		const [drafts, readMarkers] = await Promise.all([
+			listTopicDrafts({
+				projectId: input.projectId,
+				topicId: input.topicId,
+			}),
+			getTopicDraftReadMarkers({
+				projectId: input.projectId,
+				topicId: input.topicId,
+				userId: context.user.id,
+			}),
+		]);
+		return { ...drafts, readMarkers };
+	});
+
+/**
+ * Record that the caller has looked at one content type on a topic.
+ *
+ * Read-gated, not update-gated, for the reason `setTopicReadState` gives about
+ * the topic marker: noting what YOU have seen is not editing the topic, and
+ * requiring edit rights would leave a read-only member's tabs permanently
+ * claiming to have changed.
+ */
+export const markTopicDraftReadProcedure = tenantProtectedProcedure
+	.use(requireProjectPermission(Permissions.PUBLISHING_TOPIC_READ))
+	.route({
+		method: "PATCH",
+		path: "/projects/{projectId}/publishing-topics/{topicId}/drafts/{postType}/read",
+		tags: ["Projects", "Publishing Suite"],
+		summary: "Mark one content type on a topic as seen by the caller",
+	})
+	.input(
+		z.object({
+			projectId: z.string(),
+			topicId: z.string(),
+			organizationId: z.string().nullable().optional(),
+			postType: PostTypeSchema,
+		}),
+	)
+	.output(z.object({ ok: z.boolean() }))
+	.handler(async ({ input, context }) => {
+		await assertPublishingSuiteFeatureEnabled(input.projectId);
+		// AUTHORIZATION: always the AUTHENTICATED user. The input carries no
+		// userId, so one caller can never write another's marker.
+		const ok = await markTopicDraftRead({
 			projectId: input.projectId,
 			topicId: input.topicId,
+			userId: context.user.id,
+			postType: input.postType,
 		});
+		return { ok };
 	});

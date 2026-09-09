@@ -242,6 +242,25 @@ export function BlogPostPanel({
 	const notesDescribeAnotherVersion =
 		hasUnadoptedVersion && working?.hasBody === true;
 
+	/**
+	 * The safety fields of the version the BODY came from.
+	 *
+	 * `doc` is the newest READY candidate — right for the comparison panes,
+	 * wrong for anything describing the text in the editor. The A6 qualifier
+	 * covered half of it and could not reach the other half at all: when v1 was
+	 * generalized and v2 needs none, `doc.safetyNote` is null, the section does
+	 * not render, and the reader loses the explanation of the document they
+	 * hold while the export carries it away silently.
+	 *
+	 * The qualifier survives only for what it can still describe — a source row
+	 * past retention, where the newest note is all there is.
+	 */
+	const adoptedDoc = readBlogPostDocument(working?.sourceContent ?? null);
+	const safetyDoc =
+		notesDescribeAnotherVersion && adoptedDoc ? adoptedDoc : doc;
+	const noteDescribesAnotherVersion =
+		notesDescribeAnotherVersion && adoptedDoc === null;
+
 	const handleAdopt = () => {
 		if (!readyId) {
 			return;
@@ -541,12 +560,12 @@ export function BlogPostPanel({
 
 			{doc ? (
 				<>
-					{doc.safetyNote ? (
+					{safetyDoc?.safetyNote ? (
 						<GeneralizationNotes
 							heading="How this was generalized"
-							note={doc.safetyNote}
+							note={safetyDoc.safetyNote}
 							describesAnotherVersion={
-								notesDescribeAnotherVersion
+								noteDescribesAnotherVersion
 							}
 						/>
 					) : null}

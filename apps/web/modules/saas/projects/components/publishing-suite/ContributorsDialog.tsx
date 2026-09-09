@@ -133,6 +133,36 @@ export function ContributorsDialog({
 		? contributors.filter((c) => !memberIds.has(c.id))
 		: [];
 
+	/**
+	 * Selected people that neither list accounts for — and the reason this
+	 * dialog reported "None selected" over a real selection.
+	 *
+	 * `contributors` carries only the ids a user lookup RESOLVED, and under the
+	 * degrade contract in `listPublishingTopics` it empties entirely while the
+	 * raw override ids ride through untouched. So an override naming a departed
+	 * or unresolvable person arrives here as a checked id with nothing to
+	 * render — which the count read as nothing selected, and which Save then
+	 * DROPPED, because it submits `rows.filter(selected)`.
+	 *
+	 * Giving each one a row fixes both at once, and is what `AssigneesDialog`
+	 * already does ("an id with no handle left at all still gets a row, because
+	 * the alternative is a checked-but-invisible id"). Row, checkbox, and the
+	 * ability to remove them deliberately rather than by side effect.
+	 *
+	 * Seeded from `initialSelected` rather than the live `selected` — the two
+	 * agree on open, and using the live set would delete the row out from under
+	 * anyone who unchecked it, leaving them no way to change their mind. A
+	 * non-member contributor is legitimate here (unlike an assignee, which
+	 * `AssigneesDialog` blocks Save on), so the row has to stay put.
+	 */
+	const accountedFor = new Set([
+		...members.map((m) => m.userId),
+		...nonMemberContributors.map((c) => c.id),
+	]);
+	const unresolvedSelected = membersReady
+		? initialSelected.filter((id) => !accountedFor.has(id))
+		: [];
+
 	const combinedRows: {
 		id: string;
 		name: string;
@@ -151,6 +181,12 @@ export function ContributorsDialog({
 			image: c.image,
 			isNonMember: true,
 		})),
+		...unresolvedSelected.map((id) => ({
+			id,
+			name: "Former member",
+			image: null,
+			isNonMember: true,
+		})),
 	];
 	// Postgres arrays carry no uniqueness constraint and the procedure's input
 	// schema (`z.array(z.string()).max(50)`) doesn't dedupe either, so a
@@ -167,11 +203,13 @@ export function ContributorsDialog({
 		seenRowIds.add(r.id);
 		return true;
 	});
-	// Counts VISIBLE rows only, not `selected.size` — a selection can carry an
-	// id with no rendered row (e.g. while the members query is loading), and
-	// reporting that as part of the count would print something like "3 of 2
-	// selected".
-	const checkedCount = rows.filter((r) => selected.has(r.id)).length;
+	// The SELECTION, not the visible rows — same rule and same wording as
+	// `AssigneesDialog`, which was built this way precisely because this dialog
+	// was not. The two sit one above the other on the topic page, so a reader
+	// comparing them is comparing like with like. Every selected id now has a
+	// row (see `unresolvedSelected`), so the two counts agree anyway; counting
+	// the selection is what keeps them agreeing if that ever stops being true.
+	const checkedCount = selected.size;
 	const canSave = !isPending && membersReady;
 
 	return (
@@ -282,7 +320,7 @@ export function ContributorsDialog({
 						>
 							{checkedCount === 0
 								? "None selected"
-								: `${checkedCount} of ${rows.length} selected`}
+								: `${checkedCount} selected`}
 						</p>
 					) : null}
 				</fieldset>

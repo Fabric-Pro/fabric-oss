@@ -26,6 +26,7 @@ export {
 } from "./linkedin-post";
 export { listCycleChatDeliveriesProcedure } from "./list-cycle-chat-deliveries";
 export { listPublishingCyclesProcedure } from "./list-cycles";
+export * from "./list-preferences";
 export { listPublishingTopicsProcedure } from "./list-topics";
 export {
 	generatePlanningAnalysisProcedure,
@@ -47,7 +48,10 @@ export {
 	answerTopicQuestionProcedure,
 	listTopicDecisionsProcedure,
 } from "./topic-decisions";
-export { listTopicDraftsProcedure } from "./topic-drafts";
+export {
+	listTopicDraftsProcedure,
+	markTopicDraftReadProcedure,
+} from "./topic-drafts";
 export { updatePublishingSuiteSettingsProcedure } from "./update-settings";
 export { updatePublishingTopicAssigneesProcedure } from "./update-topic-assignees";
 export { updatePublishingTopicContributorsProcedure } from "./update-topic-contributors";

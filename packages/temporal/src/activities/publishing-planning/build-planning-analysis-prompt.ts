@@ -161,6 +161,14 @@ export const PublishingPlanningAnalysisSchema = z.object({
 				subject: z.string().max(160).optional(),
 				question: z.string().min(1),
 				recommendedResponse: z.string().optional(),
+				/**
+				 * SEVERAL answers to choose between, as Feature Maturation
+				 * offers. Loose per-element on purpose (I4): a malformed
+				 * option must cost that option, never the whole analysis —
+				 * `PUBLISHING_SCHEMA_VALIDATION_FAILED` is non-retryable and
+				 * would lose the run.
+				 */
+				recommendedAnswers: z.array(z.unknown()).optional(),
 				whyItMatters: z.string().optional(),
 			}),
 		)
@@ -270,9 +278,62 @@ export interface ResolvedConfirmationQuestion {
 	subject: string | null;
 	question: string;
 	recommendedResponse: string | null;
+	/** Several answers to choose between; `null` when the model offered none. */
+	answerOptions: { text: string; justification: string }[] | null;
 	whyItMatters: string | null;
 	/** Whether the model raised this itself, or it was derived from a bucket. */
 	source: "MODEL" | "DERIVED";
+}
+
+/**
+ * Turn the model's suggested answers into something a panel can render.
+ *
+ * Tolerant by construction, because the raw schema deliberately is not strict:
+ * a malformed option costs that option and nothing else, where a strict shape
+ * would throw `PUBLISHING_SCHEMA_VALIDATION_FAILED` — non-retryable — and lose
+ * the whole run over one bad element.
+ *
+ * A justification is REQUIRED and an option without one is dropped, which is
+ * the rule Feature Maturation already enforces. An answer you cannot see the
+ * reasoning for is not a suggestion, it is a guess wearing one's clothes — and
+ * with several on screen the reasoning is the only thing that separates them.
+ *
+ * Capped at four, matching FMv2's own limit: past that they stop being choices
+ * and become a list to read.
+ */
+const MAX_ANSWER_OPTIONS = 4;
+
+function normalizeAnswerOptions(
+	raw: unknown,
+): { text: string; justification: string }[] | null {
+	if (!Array.isArray(raw)) {
+		return null;
+	}
+	const out: { text: string; justification: string }[] = [];
+	for (const entry of raw) {
+		if (typeof entry !== "object" || entry === null) {
+			continue;
+		}
+		const text = (entry as { text?: unknown }).text;
+		const justification = (entry as { justification?: unknown })
+			.justification;
+		if (typeof text !== "string" || typeof justification !== "string") {
+			continue;
+		}
+		const trimmedText = text.trim();
+		const trimmedWhy = justification.trim();
+		if (trimmedText === "" || trimmedWhy === "") {
+			continue;
+		}
+		out.push({
+			text: trimmedText.slice(0, 500),
+			justification: trimmedWhy.slice(0, 1000),
+		});
+		if (out.length === MAX_ANSWER_OPTIONS) {
+			break;
+		}
+	}
+	return out.length > 0 ? out : null;
 }
 
 export function resolveConfirmationQuestions(
@@ -301,19 +362,29 @@ export function resolveConfirmationQuestions(
 			subject,
 			question,
 			recommendedResponse: null,
+			answerOptions: null,
 			whyItMatters,
 			source: "DERIVED",
 		});
 	};
 
-	for (const entry of analysis.contentTypes?.needsConfirmation ?? []) {
-		derive(
-			"CONTENT_TYPE",
-			entry.type,
-			`Should we produce a ${entry.type} for this topic?`,
-			entry.rationale,
-		);
-	}
+	/**
+	 * `contentTypes.needsConfirmation` deliberately mints NOTHING.
+	 *
+	 * "Should we produce a LinkedIn Post for this topic?" is a checkbox wearing
+	 * a question's clothes, and the card owner said so twice — *"its simple
+	 * setting, not question, it could be checkbox"*. It is now the content-types
+	 * checklist on the Summary & Questions tab, where the analysis's own
+	 * rationale sits ON the choice instead of being re-asked underneath it.
+	 *
+	 * Dropping it also removes one of the two producers that were asking about
+	 * the same format twice: the classification no longer becomes a question at
+	 * all, so there is nothing for a model-authored one to duplicate.
+	 *
+	 * The bucket itself is untouched — the analysis still classifies, the
+	 * checklist still groups by that verdict, and the generation tab still
+	 * badges from it. Only the QUESTION is gone.
+	 */
 	for (const entry of analysis.supportingAssets?.requiresApproval ?? []) {
 		derive(
 			"ASSET_APPROVAL",
@@ -323,20 +394,73 @@ export function resolveConfirmationQuestions(
 		);
 	}
 
+	/**
+	 * Which kinds the classification buckets above have ALREADY produced a
+	 * question for.
+	 *
+	 * The locked clauses tell the model not to restate a recommendation it has
+	 * classified, but an instruction is not a guarantee, and the merge below
+	 * only collapses a restatement when the model happens to reuse the exact
+	 * same `subject` string. It usually does not: the observed failure was one
+	 * topic asking "Should we produce a LinkedIn Post for this topic?" and
+	 * "Should a LinkedIn Post be produced in addition to the already-suggested
+	 * Tweet and Blog Post, given LinkedIn's different truncation behaviour?" —
+	 * one decision, two cards, both needing an answer.
+	 *
+	 * `CONTENT_TYPE` and `ASSET_APPROVAL` are fully derivable from the buckets
+	 * by construction: a format needing confirmation is in `needsConfirmation`,
+	 * an asset needing approval is in `requiresApproval`, and there is no third
+	 * place either can come from. So once a bucket has produced a question of
+	 * that kind, a model-authored one of the same kind is a restatement and is
+	 * dropped.
+	 *
+	 * Scoped to kinds the buckets ACTUALLY filled, not to the two kinds in the
+	 * abstract — if the classification produced nothing of a kind, a model
+	 * question there is the only thing raising it and is kept.
+	 */
+	const derivedKinds = new Set(
+		[...byId.values()].map((entry) => entry.decisionKind),
+	);
+	const COVERED_BY_CLASSIFICATION: readonly PublishingDecisionKind[] = [
+		"ASSET_APPROVAL",
+	];
+
 	for (const q of analysis.recommendedQuestions ?? []) {
 		const decisionKind = q.decisionKind ?? "OTHER";
+		// Content types are a SETTING, not a question — the checklist on the
+		// Summary & Questions tab is where they are decided, and the bucket
+		// above deliberately mints nothing. A model that writes one anyway is
+		// asking for a decision the reader has already been given a control
+		// for, so it is dropped whatever the buckets contain.
+		if (decisionKind === "CONTENT_TYPE") {
+			continue;
+		}
 		const questionId = deriveQuestionId({
 			topicId,
 			decisionKind,
 			subject: q.subject,
 			question: q.question,
 		});
+		// Order matters. An EXACT identity match is the same decision reached
+		// twice, and the model's wording is the better of the two — it wins,
+		// which is what it has always done. Only when the identity does NOT
+		// match does the kind rule apply: a differently-worded question about a
+		// kind the buckets already covered is the restatement this exists to
+		// drop.
+		if (
+			!byId.has(questionId) &&
+			COVERED_BY_CLASSIFICATION.includes(decisionKind) &&
+			derivedKinds.has(decisionKind)
+		) {
+			continue;
+		}
 		byId.set(questionId, {
 			questionId,
 			decisionKind,
 			subject: q.subject ?? null,
 			question: q.question,
 			recommendedResponse: q.recommendedResponse ?? null,
+			answerOptions: normalizeAnswerOptions(q.recommendedAnswers),
 			whyItMatters: q.whyItMatters ?? null,
 			source: "MODEL",
 		});
@@ -570,7 +694,30 @@ export function buildPlanningAnalysisVariables({
  *     are the requirements that make this phase safe to ship at all. A prompt
  *     edit that dropped them would not look like a mistake in the editor.
  */
-export function buildPlanningAnalysisLockedClauses(): string {
+export function buildPlanningAnalysisLockedClauses(
+	opts: { autoProposeAnswers?: boolean } = {},
+): string {
+	/**
+	 * Asked for only when the project wants them.
+	 *
+	 * Gated in the PROMPT rather than stripped from the answer afterwards, so
+	 * turning it off actually stops the model writing them — a post-hoc filter
+	 * would spend the tokens and then throw the result away, which is a
+	 * setting that costs what it claims to save.
+	 */
+	const ANSWER_OPTIONS_CLAUSE =
+		opts.autoProposeAnswers === false
+			? `Do NOT propose answers. Raise the question and stop — this project has asked to
+decide for itself, and a suggestion it did not want is one more thing to read past.`
+			: `For each question, offer between two and four "recommendedAnswers" — the real
+options a reader is choosing between, not one answer and its negation. Each
+needs a "text" (the answer itself, as they would give it) and a "justification"
+(one or two sentences on what in the evidence supports it). An option without a
+justification is dropped: with several on screen the reasoning is the only thing
+that separates them.
+
+Where the evidence genuinely points one way, say so in the justifications rather
+than inventing a second option to balance the first.`;
 	return `## Output contract
 
 Return one field per section. The value of a field is Markdown; the response as
@@ -594,9 +741,17 @@ again when this analysis is regenerated:
   customer quote", "the architecture diagram", "the first content format"). Name
   the same thing the same way every time; do not restate the question here.
 
-Raise a question for every recommendation you classify as needing confirmation
-or approval. One is raised on your behalf for any you miss, but yours will be
-better written.
+${ANSWER_OPTIONS_CLAUSE}
+
+Do NOT write a question for a recommendation you have already classified as
+needing confirmation or approval. One is raised from the classification itself,
+so writing your own as well produces two questions about a single decision and
+the reader has to answer the same thing twice.
+
+Use "recommendedQuestions" only for decisions the classifications above do NOT
+already cover — an audience judgement, a claim the evidence will not carry, an
+authorship call, a scope question. If a decision belongs in a bucket, put it in
+the bucket and say nothing more about it here.
 
 ## Rules that override anything above
 
@@ -666,11 +821,18 @@ export async function composePlanningAnalysisPrompt({
 	format,
 	topic,
 	context,
+	autoProposeAnswers,
 }: {
 	templateBody: string;
 	format: TemplateFormat;
 	topic: PlanningAnalysisTopic;
 	context: PlanningAnalysisContext;
+	/**
+	 * Whether to ask for suggested answers. Defaults to true when a caller does
+	 * not say — an old workflow history carries no such input, and the feature
+	 * being on is what every project had before the switch existed.
+	 */
+	autoProposeAnswers?: boolean;
 }): Promise<ComposedPlanningAnalysisPrompt> {
 	const variables = buildPlanningAnalysisVariables({ topic, context });
 
@@ -711,7 +873,7 @@ export async function composePlanningAnalysisPrompt({
 	}
 
 	return {
-		prompt: `${body.trimEnd()}\n\n${buildPlanningAnalysisLockedClauses()}`,
+		prompt: `${body.trimEnd()}\n\n${buildPlanningAnalysisLockedClauses({ autoProposeAnswers })}`,
 		formatOverridden,
 		bodyRecovered,
 	};

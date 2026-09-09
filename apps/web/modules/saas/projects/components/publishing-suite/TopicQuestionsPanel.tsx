@@ -5,7 +5,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@ui/components/button";
 import { Textarea } from "@ui/components/textarea";
 import { cn } from "@ui/lib";
-import { ChevronDownIcon, PencilIcon } from "lucide-react";
+import { ChevronDownIcon, PencilIcon, SparklesIcon } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
 
@@ -32,6 +32,8 @@ interface TopicDecisionEntry {
 	summary: string | null;
 	content: string | null;
 	recommendedResponse: string | null;
+	/** Several answers to choose between; absent on every pre-existing row. */
+	answerOptions?: { text: string; justification: string }[] | null;
 	whyItMatters: string | null;
 	answerSource: string | null;
 	analysisVersion: number | null;
@@ -216,7 +218,22 @@ export function TopicQuestionsPanel({
 		);
 	}
 
-	const questions = threads.filter((t) => t.root.kind === "QUESTION");
+	/**
+	 * `CONTENT_TYPE` is excluded: it is the content-types checklist now, not a
+	 * question.
+	 *
+	 * The generator stopped minting these, but topics created before that still
+	 * carry them — and leaving them here would ask for a decision the checklist
+	 * directly above already shows, in the exact "should we produce a LinkedIn
+	 * Post?" wording the owner objected to. Filtered rather than migrated: the
+	 * rows stay in the Decision Log, where an answer someone actually gave is
+	 * still part of the record.
+	 */
+	const questions = threads.filter(
+		(t) =>
+			t.root.kind === "QUESTION" &&
+			t.root.decisionKind !== "CONTENT_TYPE",
+	);
 	const open = questions.filter((t) => t.root.status === "OPEN");
 	const resolved = questions.filter((t) => t.root.status === "RESOLVED");
 	const possiblyResolved = questions.filter(
@@ -336,16 +353,19 @@ function QuestionCard({
 	onAnswer: (text: string, source: AnswerSource) => void;
 }) {
 	const root = thread.root;
-	const hasRecommendation = Boolean(root.recommendedResponse?.trim());
+	const options = root.answerOptions ?? [];
+	// A question with SEVERAL options has something to accept, even when the
+	// legacy single `recommendedResponse` is empty — so the editor must not
+	// start open and hide them.
+	const hasRecommendation =
+		Boolean(root.recommendedResponse?.trim()) || options.length > 0;
 	// A question with no recommendation has nothing to accept or edit, so its
 	// free-form field IS the only affordance and starts open. One WITH a
 	// recommendation starts collapsed, showing it plus "Use this answer" /
 	// "Edit" — whether the editor was opened FROM the recommendation is what
 	// separates a MANUAL answer from one the AI seeded, the same distinction
 	// `SummaryQuestionsPanel` draws for features.
-	const [isEditing, setIsEditing] = useState(
-		() => !hasRecommendation && root.decisionKind !== "CONTENT_TYPE",
-	);
+	const [isEditing, setIsEditing] = useState(() => !hasRecommendation);
 	const [fromSuggestion, setFromSuggestion] = useState(false);
 	const [draft, setDraft] = useState("");
 
@@ -355,37 +375,24 @@ function QuestionCard({
 		setIsEditing(true);
 	};
 
+	/**
+	 * Open the editor seeded with ONE of the suggested answers.
+	 *
+	 * `fromSuggestion` stays true, so an answer edited from an option records
+	 * `AI_EDITED` rather than `MANUAL` — the person started from the AI's
+	 * wording, which is a different fact about acceptance from having typed
+	 * their own, and the metric measures exactly that difference.
+	 */
+	const openEditorWith = (text: string) => {
+		setDraft(text);
+		setFromSuggestion(true);
+		setIsEditing(true);
+	};
+
 	const cancelEdit = () => {
 		setIsEditing(false);
 		setFromSuggestion(false);
 		setDraft("");
-	};
-
-	/**
-	 * A content-type question is a yes/no, and typing prose to answer one is
-	 * the complaint that started this.
-	 *
-	 * The wording is templated per type — "Should we produce a Blog Post for
-	 * this topic?" reads the same on every topic — but the RATIONALE beneath it
-	 * is written about this topic, which is why these stay questions rather than
-	 * becoming a project setting: FR39 binds recommendations that need
-	 * confirmation, and each of these is one. What changes is the affordance,
-	 * not the decision model, so the answer still lands in the Decision Log and
-	 * still survives the next regeneration.
-	 *
-	 * The free-text editor stays available beside the two buttons, because
-	 * "yes, but only after the metric is approved" is a real answer that a
-	 * boolean would throw away.
-	 */
-	const isYesNo = root.decisionKind === "CONTENT_TYPE";
-
-	// MANUAL, not AI_SUGGESTED: the person decided, rather than accepting the
-	// AI's wording. `answerSource` measures recommendation acceptance, so a
-	// button that never showed the recommendation must not count as accepting
-	// it — the same reasoning behind
-	// `20260828120000_repoint_ai_edited_answer_source`.
-	const submitYesNo = (yes: boolean) => {
-		onAnswer(yes ? "Yes." : "No.", "MANUAL");
 	};
 
 	const submitDraft = () => {
@@ -461,45 +468,71 @@ function QuestionCard({
 							</Button>
 						</div>
 					</div>
-				) : isYesNo ? (
+				) : options.length > 0 ? (
+					/**
+					 * SEVERAL suggested answers, the way Feature Maturation
+					 * offers them: each is a real option with the reasoning
+					 * that supports it, and the pencil opens the editor seeded
+					 * with that text so a near-miss can be adjusted rather than
+					 * retyped.
+					 *
+					 * Picking one records `AI_SUGGESTED` — the person took the
+					 * AI's wording. Editing it first records `AI_EDITED`, which
+					 * is what keeps the acceptance metric honest about the
+					 * difference.
+					 */
 					<div className="space-y-2">
-						{hasRecommendation ? (
-							<p className="text-muted-foreground text-sm leading-relaxed">
-								Suggested: {root.recommendedResponse}
-							</p>
-						) : null}
-						<div className="flex flex-wrap gap-2">
-							<Button
-								type="button"
-								size="sm"
-								onClick={() => submitYesNo(true)}
-								disabled={isSubmitting}
+						<p className="flex items-center gap-2 font-medium text-secondary text-xs uppercase tracking-[0.16em]">
+							<SparklesIcon
+								className="size-3.5"
+								aria-hidden="true"
+							/>
+							Suggested answers
+						</p>
+						{options.map((option) => (
+							<div
+								key={option.text}
+								className="flex items-start gap-2 rounded-lg border border-border bg-card p-3 transition-colors hover:border-primary/40"
 							>
-								Yes
-							</Button>
-							<Button
-								type="button"
-								variant="outline"
-								size="sm"
-								onClick={() => submitYesNo(false)}
-								disabled={isSubmitting}
-							>
-								No
-							</Button>
-							<Button
-								type="button"
-								variant="ghost"
-								size="sm"
-								onClick={openEditor}
-								disabled={isSubmitting}
-							>
-								<PencilIcon
-									className="mr-1.5 size-3.5"
-									aria-hidden="true"
-								/>
-								Answer in your own words
-							</Button>
-						</div>
+								<button
+									type="button"
+									disabled={isSubmitting}
+									onClick={() =>
+										onAnswer(option.text, "AI_SUGGESTED")
+									}
+									className="min-w-0 flex-1 text-left"
+								>
+									<span className="block font-medium text-sm">
+										{option.text}
+									</span>
+									<span className="mt-1 block text-muted-foreground text-xs leading-relaxed">
+										{option.justification}
+									</span>
+								</button>
+								<Button
+									type="button"
+									variant="ghost"
+									size="sm"
+									disabled={isSubmitting}
+									aria-label={`Edit "${option.text}" before answering`}
+									onClick={() => openEditorWith(option.text)}
+								>
+									<PencilIcon
+										className="size-3.5"
+										aria-hidden="true"
+									/>
+								</Button>
+							</div>
+						))}
+						<Button
+							type="button"
+							variant="ghost"
+							size="sm"
+							disabled={isSubmitting}
+							onClick={openEditor}
+						>
+							Type your own
+						</Button>
 					</div>
 				) : (
 					<div className="space-y-2">

@@ -74,8 +74,17 @@ vi.mock("@shared/lib/orpc-client", () => ({
 	},
 }));
 
+/**
+ * Hoisted so `vi.mock`'s factory can close over it, and so the tree walker
+ * below has a stable identity to match on — the route wraps this component in
+ * its breadcrumb trail, so it is no longer the root of what the page returns.
+ */
+const { TopicItemPageStub } = vi.hoisted(() => ({
+	TopicItemPageStub: () => null,
+}));
+
 vi.mock("@saas/projects/components/publishing-suite", () => ({
-	TopicItemPage: () => null,
+	TopicItemPage: TopicItemPageStub,
 }));
 
 const PROJECT_ID = "proj-1";
@@ -90,6 +99,40 @@ beforeEach(() => {
 afterEach(() => {
 	vi.resetModules();
 });
+
+/**
+ * The props the route hands `TopicItemPage`, wherever it sits in the returned
+ * tree.
+ *
+ * It used to be the root element, and these assertions read `result.props`
+ * directly. The route now wraps it in the breadcrumb trail — the trail belongs
+ * to the ROUTE because the component has more than one mount — so the element
+ * is a child, and a test that reads the root is asserting about a `<div>`.
+ *
+ * Walking to it rather than indexing a fixed position: what these cases pin is
+ * that the guard passes the RESOLVED values through, and that should not break
+ * again the next time something is added above or below it.
+ */
+function topicItemPageProps(node: unknown): Record<string, unknown> | null {
+	if (!node || typeof node !== "object") {
+		return null;
+	}
+	const element = node as {
+		type?: unknown;
+		props?: Record<string, unknown> & { children?: unknown };
+	};
+	if (element.type === TopicItemPageStub) {
+		return element.props ?? {};
+	}
+	const children = element.props?.children;
+	for (const child of Array.isArray(children) ? children : [children]) {
+		const found = topicItemPageProps(child);
+		if (found) {
+			return found;
+		}
+	}
+	return null;
+}
 
 async function callPage() {
 	const mod = await import(
@@ -175,12 +218,12 @@ describe("Organization Publishing Suite topic page — route guard", () => {
 		mockIsFeatureEnabled.mockResolvedValue(true);
 		mockProjectsGet.mockResolvedValue({ project: { canPublish: true } });
 
-		const result = (await callPage()) as { props: Record<string, unknown> };
+		const props = topicItemPageProps(await callPage()) ?? {};
 
-		expect(result.props.projectId).toBe(PROJECT_ID);
-		expect(result.props.topicId).toBe(TOPIC_ID);
-		expect(result.props.organizationId).toBe(ORG_ID);
-		expect(result.props.canEdit).toBe(true);
+		expect(props.projectId).toBe(PROJECT_ID);
+		expect(props.topicId).toBe(TOPIC_ID);
+		expect(props.organizationId).toBe(ORG_ID);
+		expect(props.canEdit).toBe(true);
 		// F2: the RESOLVED org id, never `null` — passing `null` searches
 		// personal projects only and would 404 an org member authorized
 		// through their org role rather than a `ProjectMember` row.
@@ -196,7 +239,7 @@ describe("Organization Publishing Suite topic page — route guard", () => {
 		mockIsFeatureEnabled.mockResolvedValue(true);
 		mockProjectsGet.mockResolvedValue({ project: { canPublish: false } });
 
-		const result = (await callPage()) as { props: Record<string, unknown> };
-		expect(result.props.canEdit).toBe(false);
+		const props = topicItemPageProps(await callPage()) ?? {};
+		expect(props.canEdit).toBe(false);
 	});
 });

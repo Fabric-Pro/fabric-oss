@@ -73,7 +73,20 @@ Return ONLY the topics — no commentary, no restating the context, no meta-disc
 
 - Ground every claim in the given context — never invent details, numbers, or outcomes that are not present.
 - Do not fabricate a topic to fill space. If nothing in the context is genuinely publishing-worthy, return an empty "topics" array — that is a valid and expected answer for a quiet window.
-- Never cite an id, PR number, or repo name that does not appear verbatim in the context below.`;
+- Never cite an id, PR number, or repo name that does not appear verbatim in the context below.
+
+## Which of these is worth a look first
+
+Rank the topics you are returning AGAINST EACH OTHER, and set "highlightReason"
+on at most the strongest TWO — a short clause, under 200 characters, saying what
+makes that one worth reading before the rest ("came up in three separate
+meetings this week", "the only shipped user-facing change in this window").
+
+Leave "highlightReason" null on every other topic, including when you return one
+or two in total. This is a ranking, not a score: if nothing in this batch stands
+out against the others, null on all of them is the right answer and an honest
+one. Do not describe the topic again — the pitch already does that. Say why it
+outranks its neighbours.`;
 }
 
 /** A body that still carries template syntax after rendering did not render. */

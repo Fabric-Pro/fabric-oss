@@ -1,15 +1,13 @@
 "use client";
 
 import { useSession } from "@saas/auth/hooks/use-session";
-import { useBasePath } from "@saas/organizations/hooks/use-organization-context";
 import { orpc } from "@shared/lib/orpc-query-utils";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@ui/components/tabs";
-import { ArrowLeftIcon } from "lucide-react";
-import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { AssigneesDialog } from "./AssigneesDialog";
+import { ContentTypesChecklist } from "./ContentTypesChecklist";
 import { ContributorsDialog } from "./ContributorsDialog";
 import {
 	buildGenerationTabModel,
@@ -27,7 +25,12 @@ import { TopicDecisionLog } from "./TopicDecisionLog";
 import { TopicDetails } from "./TopicDetails";
 import { TopicQuestionsPanel } from "./TopicQuestionsPanel";
 import { TopicReadiness } from "./TopicReadiness";
-import { ALL_POST_TYPES, type PostType, TOPIC_STATUSES } from "./topic-shared";
+import {
+	ALL_POST_TYPES,
+	GENERATION_ACTIVE_POST_TYPES,
+	type PostType,
+	TOPIC_STATUSES,
+} from "./topic-shared";
 
 /**
  * The three review tabs this page owns. Kept as a literal union rather than
@@ -106,7 +109,6 @@ export function TopicItemPage({
 	organizationId: string | null;
 	canEdit: boolean;
 }) {
-	const basePath = useBasePath();
 	const queryClient = useQueryClient();
 	const { user } = useSession();
 	const viewerUserId = user?.id ?? null;
@@ -256,11 +258,76 @@ export function TopicItemPage({
 	// stale. Rows survive a failed regeneration (`failPlanningAnalysis`
 	// writes no question at all), so this query, unlike `analysisQuery`
 	// above, has no failure branch to account for.
+	/**
+	 * The per-content-type read marker behind the "Changed" badge (#46).
+	 *
+	 * Invalidates the DRAFTS query on success, because that is where the
+	 * markers are read from — without it the badge a reader has just cleared
+	 * stays on screen until something else refetches.
+	 */
+	const markDraftRead = useMutation(
+		orpc.projects.publishingSuite.markTopicDraftRead.mutationOptions({
+			onSuccess: () => {
+				void queryClient.invalidateQueries({
+					queryKey:
+						orpc.projects.publishingSuite.listTopicDrafts.queryKey({
+							input: { projectId, topicId, organizationId },
+						}),
+				});
+			},
+		}),
+	);
+
 	const decisionsQuery = useQuery(
 		orpc.projects.publishingSuite.listTopicDecisions.queryOptions({
 			input: { projectId, topicId, organizationId },
 		}),
 	);
+
+	/**
+	 * Refetch the questions when an analysis run FINISHES.
+	 *
+	 * Questions are minted server-side at exactly that moment —
+	 * `reconcileTopicQuestions` runs inside `completePlanningAnalysis`, in the
+	 * same transaction that makes the analysis READY. But the query above is a
+	 * plain one with no interval, so it was fetched once on mount, came back
+	 * empty because the run had not happened yet, and nothing ever asked again.
+	 *
+	 * The result was a page contradicting itself in a single frame: the format
+	 * tabs showed "Recommended" badges — read off the analysis query, which
+	 * polls and had refetched — beside a panel reading "No open questions yet.
+	 * They arrive with the planning analysis." They had arrived. Only a refocus
+	 * or a reload, expiring the 60-second `staleTime`, ever showed them.
+	 *
+	 * Keyed on the TRANSITION out of `GENERATING`, not on the terminal status
+	 * itself: an effect firing on `status === "READY"` would re-fire on every
+	 * later refetch of a finished analysis and invalidate in a loop. A run that
+	 * FAILED is included deliberately — reconciliation may still have
+	 * soft-closed questions the previous run raised, and the panel explains a
+	 * failure differently from an empty list.
+	 */
+	const previousAttemptStatus = useRef<string | null>(null);
+	useEffect(() => {
+		const status = latestAttempt?.status ?? null;
+		const wasGenerating = previousAttemptStatus.current === "GENERATING";
+		previousAttemptStatus.current = status;
+		if (!wasGenerating || status === "GENERATING") {
+			return;
+		}
+		void queryClient.invalidateQueries({
+			queryKey: orpc.projects.publishingSuite.listTopicDecisions.queryKey(
+				{
+					input: { projectId, topicId, organizationId },
+				},
+			),
+		});
+	}, [
+		latestAttempt?.status,
+		queryClient,
+		projectId,
+		topicId,
+		organizationId,
+	]);
 
 	// 2B-1: the topic's generated-draft state, for the generation tab strip.
 	// Polled on the SAME function-form interval the analysis query uses, so a
@@ -295,12 +362,14 @@ export function TopicItemPage({
 				drafts: draftsQuery.data?.drafts ?? [],
 				workingDrafts: draftsQuery.data?.workingDrafts ?? [],
 				decisionThreads: decisionsQuery.data?.threads ?? [],
+				readMarkers: draftsQuery.data?.readMarkers,
 				hasError: draftsQuery.isError,
 			}),
 		[
 			analysisDocument,
 			draftsQuery.data?.drafts,
 			draftsQuery.data?.workingDrafts,
+			draftsQuery.data?.readMarkers,
 			decisionsQuery.data?.threads,
 			draftsQuery.isError,
 		],
@@ -519,8 +588,6 @@ export function TopicItemPage({
 		}
 	};
 
-	const backHref = `${basePath}/projects/${projectId}/publishing`;
-
 	if (topicQuery.isPending) {
 		return (
 			<output
@@ -538,8 +605,7 @@ export function TopicItemPage({
 		// cannot distinguish the two — saying "you lack access" would confirm
 		// the topic exists.
 		return (
-			<div className="space-y-4 p-6">
-				<BackLink href={backHref} />
+			<div className="space-y-4">
 				<h1 className="font-serif text-2xl">Topic not found</h1>
 				<p className="text-muted-foreground text-sm">
 					This topic may have been deleted, or it belongs to another
@@ -554,9 +620,10 @@ export function TopicItemPage({
 		topic.status;
 
 	return (
-		<div className="space-y-6 p-6">
+		// Page padding is the ROUTE's (it owns the breadcrumb trail above
+		// this, and the two have to share one inset).
+		<div className="space-y-6">
 			<div className="space-y-3">
-				<BackLink href={backHref} />
 				<p className="editorial-label">Publishing topic</p>
 				<div className="flex flex-wrap items-start justify-between gap-3">
 					<h1 className="font-serif font-normal text-3xl leading-tight">
@@ -583,7 +650,26 @@ export function TopicItemPage({
 
 			<Tabs
 				value={activeTab}
-				onValueChange={(v) => setTab(v as ActiveTab)}
+				onValueChange={(v) => {
+					setTab(v as ActiveTab);
+					// Opening a format tab IS looking at it — the strongest
+					// form of looking there is — so the marker moves here
+					// rather than waiting for a scroll or a click inside.
+					// Fire-and-forget: a failed marker costs a stale "Changed"
+					// badge, which is not worth a toast interrupting the thing
+					// the reader just asked for.
+					if (
+						GENERATION_ACTIVE_POST_TYPES.has(v as PostType) &&
+						selectedPostTypes.includes(v as PostType)
+					) {
+						markDraftRead.mutate({
+							projectId,
+							topicId,
+							organizationId,
+							postType: v as PostType,
+						});
+					}
+				}}
 				className="space-y-4"
 			>
 				{/* The two rows share ONE rule. Every `TabsList` carries its own
@@ -630,6 +716,20 @@ export function TopicItemPage({
 					) : (
 						<EmptyState>This topic has no summary yet.</EmptyState>
 					)}
+					{/* Content types sits ABOVE the questions and below the
+					    summary, because it is the first decision anyone makes
+					    about a topic and every question under it is downstream
+					    of the answer. It used to live behind a modal on a
+					    metadata row two tabs away, and its questions were being
+					    asked here as if nobody had decided. */}
+					<ContentTypesChecklist
+						analysis={analysisDocument}
+						selected={selectedPostTypes}
+						canEdit={canEdit}
+						isPending={postTypesPending}
+						createdAt={topic.createdAt}
+						onChange={handlePostTypesSubmit}
+					/>
 					<TopicReadiness
 						threads={decisionsQuery.data?.threads ?? []}
 					/>
@@ -672,6 +772,7 @@ export function TopicItemPage({
 						latestAttempt={latestAttempt}
 						effective={effective}
 						aiVersion={analysisQuery.data?.aiVersion ?? null}
+						aiCreatedAt={analysisQuery.data?.aiCreatedAt ?? null}
 						decisionThreads={decisionsQuery.data?.threads ?? []}
 						aiModel={analysisQuery.data?.aiModel ?? null}
 						aiPromptSource={
@@ -770,29 +871,6 @@ export function TopicItemPage({
 				</>
 			) : null}
 		</div>
-	);
-}
-
-// `flex w-fit`, deliberately, rather than `inline-flex`.
-//
-// The masthead below stacks this above `<p className="editorial-label">`, and
-// that class is `display: inline-flex` in `globals.css`. Two inline-level boxes
-// share a line, so the two rendered touching — "Back to Publishing Suite" hard
-// against "PUBLISHING TOPIC" — while the container's `space-y-3` separated
-// nothing, because its `margin-top` cannot break a line.
-//
-// A block-level link puts the label on its own line, where that margin then
-// applies. `w-fit` keeps the click target the width of the text rather than the
-// full row.
-function BackLink({ href }: { href: string }) {
-	return (
-		<Link
-			href={href}
-			className="flex w-fit items-center gap-1.5 text-muted-foreground text-sm transition-colors hover:text-foreground"
-		>
-			<ArrowLeftIcon className="size-4" aria-hidden="true" />
-			Back to Publishing Suite
-		</Link>
 	);
 }
 

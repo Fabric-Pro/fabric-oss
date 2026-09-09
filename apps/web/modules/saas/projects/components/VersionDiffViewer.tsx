@@ -275,11 +275,14 @@ export function VersionDiffViewer({
 						<div className="text-center text-muted-foreground">
 							<ArrowLeftRight className="h-12 w-12 mx-auto mb-3 opacity-50" />
 							<p className="font-medium text-lg">
-								No differences found
+								{selectedVersion.version === currentVersion
+									? "This is the current document"
+									: "No differences found"}
 							</p>
 							<p className="text-sm mt-1">
-								Version {selectedVersion.version} is identical
-								to the current document
+								{selectedVersion.version === currentVersion
+									? `Version ${selectedVersion.version} is what the document holds right now — there is nothing to compare it against.`
+									: `Version ${selectedVersion.version} is identical to the current document`}
 							</p>
 						</div>
 					</div>
@@ -412,18 +415,37 @@ export function VersionDiffViewer({
 						>
 							Close
 						</Button>
-						<Button
-							size="sm"
-							onClick={onRestore}
-							disabled={isRestoring}
-						>
-							{isRestoring ? (
-								<Loader2Icon className="mr-2 h-4 w-4 animate-spin" />
-							) : (
-								<RotateCcwIcon className="mr-2 h-4 w-4" />
-							)}
-							Restore Version {selectedVersion.version}
-						</Button>
+						{/* No Restore when restoring would change nothing.
+						    The version LIST already hides it on the current
+						    row; this viewer did not, and it is reachable from
+						    that same row — so clicking through to it and
+						    pressing Restore wrote a new revision holding the
+						    body the document already had. It reported
+						    "Restored to version N+1" (the number of the row it
+						    had just minted, not the one named on the button)
+						    and nothing on screen changed, which reads as two
+						    bugs and is really this one.
+
+						    Keyed on `isIdentical` rather than on version
+						    equality: an older version whose body matches the
+						    current one is the same no-op, and the honest rule
+						    is "do not offer to restore something that would
+						    change nothing" rather than "do not offer to
+						    restore the current row". */}
+						{isIdentical ? null : (
+							<Button
+								size="sm"
+								onClick={onRestore}
+								disabled={isRestoring}
+							>
+								{isRestoring ? (
+									<Loader2Icon className="mr-2 h-4 w-4 animate-spin" />
+								) : (
+									<RotateCcwIcon className="mr-2 h-4 w-4" />
+								)}
+								Restore Version {selectedVersion.version}
+							</Button>
+						)}
 					</div>
 				</div>
 			</div>

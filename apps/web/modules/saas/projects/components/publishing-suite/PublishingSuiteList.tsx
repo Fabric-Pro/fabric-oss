@@ -3,6 +3,7 @@
 import {
 	composeInboxSections,
 	isTopicArchived,
+	isTopicHighlighted,
 	STALE_AFTER_DAYS,
 	topicNeglect,
 } from "@repo/database/src/publishing-inbox";
@@ -15,8 +16,27 @@ import { orpc } from "@shared/lib/orpc-query-utils";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@ui/components/button";
 import { Input } from "@ui/components/input";
+import {
+	Select,
+	SelectContent,
+	SelectItem,
+	SelectTrigger,
+	SelectValue,
+} from "@ui/components/select";
+import {
+	Sheet,
+	SheetContent,
+	SheetDescription,
+	SheetHeader,
+	SheetTitle,
+} from "@ui/components/sheet";
 import { cn } from "@ui/lib";
-import { AlertTriangleIcon, PlusIcon, RefreshCwIcon } from "lucide-react";
+import {
+	AlertTriangleIcon,
+	HistoryIcon,
+	PlusIcon,
+	RefreshCwIcon,
+} from "lucide-react";
 import { type ReactNode, useState } from "react";
 import { toast } from "sonner";
 import { CreateTopicDialog } from "./CreateTopicDialog";
@@ -383,11 +403,82 @@ export function PublishingSuiteList({
 							(t) => t.status === statusFilter && !t.isSnoozed,
 						)
 	).filter(matchesSearch);
+	/**
+	 * The reader's own sort and layout for this project, remembered across
+	 * devices — "lets have option to change sorting and remember user's
+	 * preference so when he revisits its the same for him".
+	 *
+	 * A stored row is not required: the query's default IS the default
+	 * preference, so a reader who has never touched either control renders
+	 * identically to one whose row holds the defaults. Nothing writes on read.
+	 */
+	const preferenceInput = { projectId, organizationId };
+	const preferenceQuery = useQuery({
+		...orpc.projects.publishingSuite.getListPreference.queryOptions({
+			input: preferenceInput,
+		}),
+		enabled: inboxEnabled,
+	});
+	const preference = preferenceQuery.data ?? {
+		sort: "RECOMMENDED" as const,
+		view: "LIST" as const,
+	};
+	const setPreference = useMutation(
+		orpc.projects.publishingSuite.setListPreference.mutationOptions({
+			// Optimistic through the CACHE rather than local state: the control
+			// is rendered from the query, so writing the cache is what makes it
+			// respond at once AND keeps a failed write from leaving the UI
+			// claiming something the server never stored.
+			onMutate: async (next: {
+				sort?: "RECOMMENDED" | "RECENTLY_UPDATED" | "RECENTLY_CREATED";
+				view?: "LIST" | "TWO_COLUMN";
+			}) => {
+				const key =
+					orpc.projects.publishingSuite.getListPreference.queryKey({
+						input: preferenceInput,
+					});
+				await queryClient.cancelQueries({ queryKey: key });
+				const previous = queryClient.getQueryData(key);
+				queryClient.setQueryData(key, {
+					...preference,
+					...(next.sort ? { sort: next.sort } : {}),
+					...(next.view ? { view: next.view } : {}),
+				});
+				return { previous, key };
+			},
+			onError: (
+				_e: unknown,
+				_v: unknown,
+				ctx: { previous?: unknown; key?: unknown } | undefined,
+			) => {
+				if (ctx?.key) {
+					queryClient.setQueryData(
+						ctx.key as unknown[],
+						ctx.previous,
+					);
+				}
+				toast.error("Could not save that preference.");
+			},
+		}),
+	);
+
+	const inboxSort =
+		preference.sort === "RECENTLY_UPDATED"
+			? ("recentlyUpdated" as const)
+			: preference.sort === "RECENTLY_CREATED"
+				? ("recentlyCreated" as const)
+				: ("recommended" as const);
+
 	const inboxSections = composeInboxSections(topics, {
+		sort: inboxSort,
 		maxRecent: showAllRecent ? Number.POSITIVE_INFINITY : MAX_RECENT,
 		now,
 	});
 	const cycleStatus = cycleQuery.data?.cycle?.status ?? null;
+	const [historyOpen, setHistoryOpen] = useState(false);
+	// Read off the SAME cycle the banners above read, so the dot and the
+	// "Last refresh failed" banner can never disagree about one run.
+	const latestCycleFailed = cycleStatus === "FAILED";
 	const hasCycle = cycleQuery.data?.cycle != null;
 
 	// The row now takes eight props and would otherwise be written out three
@@ -405,6 +496,10 @@ export function PublishingSuiteList({
 			// not stop being neglected because you reached it through the
 			// Suggestion chip or a search.
 			neglect={topicNeglect(t, now)}
+			// Same `now`, same predicate, for the same reason: a topic does not
+			// stop standing out because you reached it through a status chip
+			// or a search rather than through its section.
+			isHighlighted={isTopicHighlighted(t, now)}
 			topicHref={buildPublishingTopicRoute(basePath, projectId, t.id)}
 			members={members}
 			membersPending={membersQuery.isPending}
@@ -463,108 +558,177 @@ export function PublishingSuiteList({
 						value={statusFilter}
 						onChange={setStatusFilter}
 					/>
-					<TopicSearchInput value={search} onChange={setSearch} />
+					<div className="flex flex-wrap items-center gap-2">
+						{/* Only while the sections are on screen. A search or a
+						    status chip replaces them with one flat list, and a
+						    sort control over a list this does not order would
+						    be a lie about what it does. */}
+						{inboxEnabled && statusFilter === null && !searching ? (
+							<>
+								<InboxSortSelect
+									value={preference.sort}
+									disabled={setPreference.isPending}
+									onChange={(sort) =>
+										setPreference.mutate({
+											...preferenceInput,
+											sort,
+										})
+									}
+								/>
+								<InboxViewToggle
+									value={preference.view}
+									disabled={setPreference.isPending}
+									onChange={(view) =>
+										setPreference.mutate({
+											...preferenceInput,
+											view,
+										})
+									}
+								/>
+							</>
+						) : null}
+						<TopicSearchInput value={search} onChange={setSearch} />
+					</div>
 				</div>
-				{/* A search term replaces the two sections with one flat list of
+				{/* The inbox anchor sits on this ALWAYS-rendered wrapper, not
+				    on the sectioned branch below, for the same reason the list
+				    anchor sits on the outer wrapper: a spotlight has to have
+				    something to point at in every state. It used to be on the
+				    sections themselves, so searching or picking a status chip
+				    took the anchor out of the DOM and a "Show me" fired during
+				    a search highlighted nothing. */}
+				<div data-onboarding-target="publishing-suite-inbox">
+					{/* A search term replaces the two sections with one flat list of
 				    hits, exactly as picking a status chip does: the sections
 				    answer "what should I look at next", and a search is the
 				    question that overrides it. */}
-				{inboxEnabled && statusFilter === null && !searching ? (
-					<div
-						className="space-y-4"
-						data-onboarding-target="publishing-suite-inbox"
-					>
-						<InboxSection
-							label="Recently Modified"
-							emptyText="Nothing in progress right now."
+					{inboxEnabled && statusFilter === null && !searching ? (
+						<div
+							className={cn(
+								preference.view === "TWO_COLUMN"
+									? // The sections ALREADY answer two
+										// different questions — what is moving,
+										// and what is waiting — so putting them
+										// side by side is a layout change and
+										// not a new information architecture.
+										// One column below `lg:`, where two
+										// would each be too narrow for a title
+										// and a pitch.
+										"grid gap-4 lg:grid-cols-2 lg:items-start"
+									: "space-y-4",
+							)}
 						>
-							{inboxSections.recentlyModified.length > 0 ? (
-								<>
+							{/* Rendered only when it has something in it, unlike
+							    the two below. Those answer "what should I look
+							    at next" and an empty one is itself an answer;
+							    this one is a claim that something stands out,
+							    and an empty "Worth a look" heading every quiet
+							    week is the fastest way to teach a reader to
+							    stop believing it. */}
+							{inboxSections.worthALook.length > 0 ? (
+								<InboxSection label="Worth a look" emptyText="">
 									<ul className="space-y-2">
-										{inboxSections.recentlyModified.map(
+										{inboxSections.worthALook.map(
 											renderRow,
 										)}
 									</ul>
-									{inboxSections.recentlyModifiedTotal >
-									MAX_RECENT ? (
-										<Button
-											type="button"
-											variant="ghost"
-											size="sm"
-											onClick={() =>
-												setShowAllRecent((v) => !v)
-											}
-										>
-											{showAllRecent
-												? "Show fewer"
-												: `Showing ${MAX_RECENT} of ${inboxSections.recentlyModifiedTotal} — show all`}
-										</Button>
-									) : null}
-								</>
+								</InboxSection>
 							) : null}
-						</InboxSection>
-						<InboxSection
-							label="Suggested"
-							emptyText="No new suggestions right now."
-							footer={
-								/* Say it out loud. A queue that quietly
+							<InboxSection
+								label="Recently Modified"
+								emptyText="Nothing in progress right now."
+							>
+								{inboxSections.recentlyModified.length > 0 ? (
+									<>
+										<ul className="space-y-2">
+											{inboxSections.recentlyModified.map(
+												renderRow,
+											)}
+										</ul>
+										{inboxSections.recentlyModifiedTotal >
+										MAX_RECENT ? (
+											<Button
+												type="button"
+												variant="ghost"
+												size="sm"
+												onClick={() =>
+													setShowAllRecent((v) => !v)
+												}
+											>
+												{showAllRecent
+													? "Show fewer"
+													: `Showing ${MAX_RECENT} of ${inboxSections.recentlyModifiedTotal} — show all`}
+											</Button>
+										) : null}
+									</>
+								) : null}
+							</InboxSection>
+							<InboxSection
+								label="Suggested"
+								emptyText="No new suggestions right now."
+								footer={
+									/* Say it out loud. A queue that quietly
 								   shrinks is the one nobody trusts, so the
 								   section accounts for what it removed and
 								   hands over the way to go and look. The
 								   count reads the very array the rows were
 								   taken out of — recomputing it here would be
 								   two paths to one number, free to drift. */
-								inboxSections.archived.length > 0 ? (
-									<div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-										<p className="text-muted-foreground text-xs">
-											{`${inboxSections.archived.length} ${
-												inboxSections.archived
-													.length === 1
-													? "topic"
-													: "topics"
-											} archived after ${STALE_AFTER_DAYS} days without activity`}
-										</p>
-										{/* The visible text IS the accessible
+									inboxSections.archived.length > 0 ? (
+										<div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+											<p className="text-muted-foreground text-xs">
+												{`${inboxSections.archived.length} ${
+													inboxSections.archived
+														.length === 1
+														? "topic"
+														: "topics"
+												} archived after ${STALE_AFTER_DAYS} days without activity`}
+											</p>
+											{/* The visible text IS the accessible
 										    name (WCAG 2.5.3), so it has to
 										    say what it opens on its own — an
 										    `aria-label` naming the chip would
 										    no longer contain "Show archived". */}
-										<Button
-											type="button"
-											variant="ghost"
-											size="sm"
-											onClick={() =>
-												setStatusFilter("ARCHIVED")
-											}
-										>
-											Show archived
-										</Button>
-									</div>
-								) : null
-							}
-						>
-							{inboxSections.suggested.length > 0 ? (
-								<ul className="space-y-2">
-									{inboxSections.suggested.map(renderRow)}
-								</ul>
-							) : null}
-						</InboxSection>
-					</div>
-				) : visibleTopics.length > 0 ? (
-					<ul className="space-y-2">
-						{visibleTopics.map(renderRow)}
-					</ul>
-				) : (
-					/* Announced, because it updates live as you type or switch
+											<Button
+												type="button"
+												variant="ghost"
+												size="sm"
+												onClick={() =>
+													setStatusFilter("ARCHIVED")
+												}
+											>
+												Show archived
+											</Button>
+										</div>
+									) : null
+								}
+							>
+								{inboxSections.suggested.length > 0 ? (
+									<ul className="space-y-2">
+										{inboxSections.suggested.map(renderRow)}
+									</ul>
+								) : null}
+							</InboxSection>
+						</div>
+					) : visibleTopics.length > 0 ? (
+						<ul className="space-y-2">
+							{visibleTopics.map(renderRow)}
+						</ul>
+					) : (
+						/* Announced, because it updates live as you type or switch
 					   chips — a result count that only changes visually leaves
 					   a screen-reader user with no signal that anything did
 					   (WCAG 4.1.3). The chip path had the same gap. */
-					<p role="status" className="text-muted-foreground text-sm">
-						{searching
-							? `No topics match “${search.trim()}”.`
-							: "No topics match this filter."}
-					</p>
-				)}
+						<p
+							role="status"
+							className="text-muted-foreground text-sm"
+						>
+							{searching
+								? `No topics match “${search.trim()}”.`
+								: "No topics match this filter."}
+						</p>
+					)}
+				</div>
 			</>
 		);
 	} else if (cycleQuery.isPending) {
@@ -601,6 +765,46 @@ export function PublishingSuiteList({
 					<PublishingBetaBadge />
 				</div>
 				<div className="flex items-center gap-2">
+					{/* Refresh history moved OFF the page and behind this
+					    button. It was the last block on the list, under every
+					    state, and the card owner could not tell what it was —
+					    "i wouldnt even know its here with such long list, but
+					    still dont understand what is that". A table of runs is
+					    reference material: worth reaching for when the list
+					    above is emptier than expected, and noise the rest of
+					    the time.
+
+					    The DRAWER itself renders at the bottom of this
+					    component, beside the other dialogs, and deliberately
+					    not here: it is a Radix root, so mounting it in the
+					    header allocates a `useId` ahead of every row and
+					    renumbers the `radix-_r_N_` ids the flag-off parity
+					    snapshot pins — a red test with nothing to do with what
+					    changed.
+
+					    The tour anchor moved with the button rather than being
+					    deleted, and the tour copy now describes it; moving an
+					    anchored component without moving its copy is what
+					    turns the drift test red. */}
+					<Button
+						variant="ghost"
+						size="sm"
+						data-onboarding-target="publishing-history"
+						onClick={() => setHistoryOpen(true)}
+					>
+						<HistoryIcon className="size-4" aria-hidden="true" />
+						Refresh history
+						{/* Only a FAILURE earns a mark. A run that found
+						    nothing is ordinary and the list says so itself; a
+						    run that failed is why the list is short, and that
+						    is the one thing worth interrupting for. */}
+						{latestCycleFailed ? (
+							<span
+								className="ml-1.5 size-1.5 rounded-full bg-destructive"
+								aria-label="The most recent refresh failed"
+							/>
+						) : null}
+					</Button>
 					<PageTourButton pageId="publishing-suite" />
 					{canEdit && (
 						<Button
@@ -614,14 +818,25 @@ export function PublishingSuiteList({
 				</div>
 			</div>
 			{body}
-			{/* Outside `body`, which switches on the TOPIC read: the history is
-			    its own query with its own states, and a project whose topics
-			    failed to load can still have a readable refresh history —
-			    including the failed run that explains the empty list above. */}
-			<PublishingCycleHistory
-				projectId={projectId}
-				organizationId={organizationId}
-			/>
+			<Sheet open={historyOpen} onOpenChange={setHistoryOpen}>
+				<SheetContent
+					side="right"
+					className="w-full overflow-y-auto sm:max-w-2xl"
+				>
+					<SheetHeader>
+						<SheetTitle>Refresh history</SheetTitle>
+						<SheetDescription>
+							Every run behind the topics on this page — when it
+							ran, whether it was scheduled or asked for, and what
+							it produced.
+						</SheetDescription>
+					</SheetHeader>
+					<PublishingCycleHistory
+						projectId={projectId}
+						organizationId={organizationId}
+					/>
+				</SheetContent>
+			</Sheet>
 			<CreateTopicDialog
 				projectId={projectId}
 				organizationId={organizationId}
@@ -636,6 +851,97 @@ export function PublishingSuiteList({
 // ---------------------------------------------------------------------------
 // F8: status filter chips.
 // ---------------------------------------------------------------------------
+
+/**
+ * How the Suggested section is ordered, for this reader on this project.
+ *
+ * "Recommended" leads and is the default because the incoming order is 1B's
+ * per-viewer ranking — it already floats a reader's own beat to the top, and
+ * defaulting to a date would switch that off for everyone who never opens this.
+ * The other two exist for the case the owner described: wanting the newest
+ * thing first regardless of whose beat it is.
+ */
+function InboxSortSelect({
+	value,
+	disabled,
+	onChange,
+}: {
+	value: "RECOMMENDED" | "RECENTLY_UPDATED" | "RECENTLY_CREATED";
+	disabled: boolean;
+	onChange: (
+		value: "RECOMMENDED" | "RECENTLY_UPDATED" | "RECENTLY_CREATED",
+	) => void;
+}) {
+	return (
+		<Select
+			value={value}
+			disabled={disabled}
+			onValueChange={(v) => onChange(v as typeof value)}
+		>
+			<SelectTrigger
+				className="h-8 w-[11.5rem] text-xs"
+				aria-label="Sort topics"
+			>
+				<SelectValue />
+			</SelectTrigger>
+			<SelectContent>
+				<SelectItem value="RECOMMENDED">Recommended</SelectItem>
+				<SelectItem value="RECENTLY_UPDATED">
+					Recently updated
+				</SelectItem>
+				<SelectItem value="RECENTLY_CREATED">
+					Recently created
+				</SelectItem>
+			</SelectContent>
+		</Select>
+	);
+}
+
+/**
+ * One column or two.
+ *
+ * A toggle rather than a third `Select`: there are exactly two states, and the
+ * current one is legible from which side is pressed. Icon-only would need a
+ * tooltip to say what it does, so the words stay.
+ */
+function InboxViewToggle({
+	value,
+	disabled,
+	onChange,
+}: {
+	value: "LIST" | "TWO_COLUMN";
+	disabled: boolean;
+	onChange: (value: "LIST" | "TWO_COLUMN") => void;
+}) {
+	return (
+		<div
+			className="inline-flex overflow-hidden rounded-lg border border-border"
+			role="group"
+			aria-label="Inbox layout"
+		>
+			{[
+				{ v: "LIST" as const, label: "List" },
+				{ v: "TWO_COLUMN" as const, label: "Two columns" },
+			].map((option) => (
+				<button
+					key={option.v}
+					type="button"
+					disabled={disabled}
+					aria-pressed={value === option.v}
+					onClick={() => onChange(option.v)}
+					className={cn(
+						"px-2.5 py-1.5 text-xs transition-colors",
+						value === option.v
+							? "bg-primary/10 text-primary"
+							: "text-muted-foreground hover:text-foreground",
+					)}
+				>
+					{option.label}
+				</button>
+			))}
+		</div>
+	);
+}
 
 function StatusFilterChips({
 	value,

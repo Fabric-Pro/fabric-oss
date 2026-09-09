@@ -1,0 +1,12 @@
+-- Why a topic is worth a look before the others, in the model's own words.
+--
+-- A forced ranking rather than a score: the suggestion prompt marks at most the
+-- strongest few of each batch, and the cap is enforced server-side. Absolute
+-- thresholds were measured against 202 staging topics and rejected — 68% cite
+-- two or more sources, so any corroboration bar marks nearly the whole queue.
+--
+-- Nullable with no default and no backfill: every existing topic is simply not
+-- highlighted, which is the correct answer for all of them. No index, because
+-- the column is read on rows the Inbox has already loaded and never filtered on
+-- in SQL.
+ALTER TABLE "publishing_topic" ADD COLUMN "highlightReason" TEXT;

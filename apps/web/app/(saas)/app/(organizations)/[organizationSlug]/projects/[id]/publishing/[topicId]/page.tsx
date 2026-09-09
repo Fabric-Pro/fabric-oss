@@ -24,11 +24,24 @@
  *
  * The topic itself is NOT fetched here; `TopicItemPage` reads it through
  * `publishingSuite.getTopic`, which re-scopes to `{ id, projectId }` (DV16).
+ *
+ * The breadcrumb trail lives HERE, for the same reason the list route documents
+ * — a component with more than one mount cannot own one — and it is the reason
+ * the page padding moved up here too: `TopicItemPage` carried its own `p-6`, so
+ * a trail rendered as its sibling would have sat a full 24px to the left of the
+ * title it belongs above.
+ *
+ * The trailing crumb is the generic "Topic" rather than the topic's title,
+ * which is how `automation-templates/[id]` names its own leaf ("Template").
+ * That keeps the route free of a topic fetch it otherwise does not need — and
+ * the title is the `h1` immediately beneath, so spelling it twice would buy
+ * nothing.
  */
 
 import { isFeatureEnabled } from "@repo/database";
 import { getActiveOrganization, getSession } from "@saas/auth/lib/server";
 import { TopicItemPage } from "@saas/projects/components/publishing-suite";
+import { PageBreadcrumbs } from "@saas/shared/components/PageBreadcrumbs";
 import { orpcClient } from "@shared/lib/orpc-client";
 import { notFound, redirect } from "next/navigation";
 
@@ -71,12 +84,30 @@ export default async function OrganizationPublishingTopicPage({
 		notFound();
 	}
 
+	const basePath = `/app/${organizationSlug}`;
+
 	return (
-		<TopicItemPage
-			projectId={id}
-			topicId={topicId}
-			organizationId={organization.id}
-			canEdit={projectResult.project.canPublish ?? false}
-		/>
+		<div className="space-y-4 p-6">
+			<PageBreadcrumbs
+				items={[
+					{ label: "Projects", href: `${basePath}/projects` },
+					{
+						label: projectResult.project.name,
+						href: `${basePath}/projects/${id}`,
+					},
+					{
+						label: "Publishing Suite",
+						href: `${basePath}/projects/${id}/publishing`,
+					},
+					{ label: "Topic" },
+				]}
+			/>
+			<TopicItemPage
+				projectId={id}
+				topicId={topicId}
+				organizationId={organization.id}
+				canEdit={projectResult.project.canPublish ?? false}
+			/>
+		</div>
 	);
 }

@@ -790,9 +790,15 @@ export const PublishingSuggestionCycleScalarFieldEnumSchema = z.enum(['id', 'pro
 
 export type PublishingSuggestionCycleScalarFieldEnum = z.infer<typeof PublishingSuggestionCycleScalarFieldEnumSchema>;
 
+// File: PublishingListPreferenceScalarFieldEnum.schema.ts
+
+export const PublishingListPreferenceScalarFieldEnumSchema = z.enum(['id', 'userId', 'projectId', 'organizationId', 'sort', 'view', 'createdAt', 'updatedAt'])
+
+export type PublishingListPreferenceScalarFieldEnum = z.infer<typeof PublishingListPreferenceScalarFieldEnumSchema>;
+
 // File: PublishingTopicScalarFieldEnum.schema.ts
 
-export const PublishingTopicScalarFieldEnumSchema = z.enum(['id', 'projectId', 'organizationId', 'userId', 'cycleId', 'title', 'pitch', 'status', 'origin', 'createdById', 'declineReason', 'snoozedUntil', 'snoozeReason', 'publishedUrl', 'provenance', 'suggestedPostTypes', 'contributorUserIds', 'contributorsOverridden', 'userContributorUserIds', 'assigneeUserIds', 'relevantFunctionTags', 'postTypeRecommendations', 'postTypesOverridden', 'userPostTypes', 'angle', 'subject', 'subjectKey', 'dedupeKey', 'createdAt', 'updatedAt'])
+export const PublishingTopicScalarFieldEnumSchema = z.enum(['id', 'projectId', 'organizationId', 'userId', 'cycleId', 'title', 'pitch', 'status', 'origin', 'createdById', 'declineReason', 'snoozedUntil', 'snoozeReason', 'publishedUrl', 'provenance', 'suggestedPostTypes', 'contributorUserIds', 'contributorsOverridden', 'userContributorUserIds', 'assigneeUserIds', 'relevantFunctionTags', 'postTypeRecommendations', 'postTypesOverridden', 'userPostTypes', 'highlightReason', 'angle', 'subject', 'subjectKey', 'dedupeKey', 'createdAt', 'updatedAt'])
 
 export type PublishingTopicScalarFieldEnum = z.infer<typeof PublishingTopicScalarFieldEnumSchema>;
 
@@ -822,9 +828,15 @@ export type PublishingTopicWorkingDraftScalarFieldEnum = z.infer<typeof Publishi
 
 // File: PublishingTopicDecisionEntryScalarFieldEnum.schema.ts
 
-export const PublishingTopicDecisionEntryScalarFieldEnumSchema = z.enum(['id', 'topicId', 'projectId', 'organizationId', 'userId', 'parentId', 'authorType', 'authorUserId', 'status', 'kind', 'questionId', 'decisionKind', 'subject', 'summary', 'content', 'recommendedResponse', 'whyItMatters', 'answerSource', 'analysisVersion', 'deletedAt', 'createdAt', 'updatedAt'])
+export const PublishingTopicDecisionEntryScalarFieldEnumSchema = z.enum(['id', 'topicId', 'projectId', 'organizationId', 'userId', 'parentId', 'authorType', 'authorUserId', 'status', 'kind', 'questionId', 'decisionKind', 'subject', 'summary', 'content', 'recommendedResponse', 'answerOptions', 'whyItMatters', 'answerSource', 'analysisVersion', 'deletedAt', 'createdAt', 'updatedAt'])
 
 export type PublishingTopicDecisionEntryScalarFieldEnum = z.infer<typeof PublishingTopicDecisionEntryScalarFieldEnumSchema>;
+
+// File: PublishingTopicDraftReadScalarFieldEnum.schema.ts
+
+export const PublishingTopicDraftReadScalarFieldEnumSchema = z.enum(['id', 'topicId', 'userId', 'postType', 'projectId', 'organizationId', 'readAt'])
+
+export type PublishingTopicDraftReadScalarFieldEnum = z.infer<typeof PublishingTopicDraftReadScalarFieldEnumSchema>;
 
 // File: PublishingTopicReadScalarFieldEnum.schema.ts
 
@@ -834,7 +846,7 @@ export type PublishingTopicReadScalarFieldEnum = z.infer<typeof PublishingTopicR
 
 // File: PublishingSuiteSettingsScalarFieldEnum.schema.ts
 
-export const PublishingSuiteSettingsScalarFieldEnumSchema = z.enum(['id', 'projectId', 'organizationId', 'userId', 'cadence', 'lookbackDays', 'notificationsEnabled', 'chatChannels', 'preferredThemes', 'preferredPostTypes', 'strategicPriorities', 'createdByUserId', 'createdAt', 'updatedAt'])
+export const PublishingSuiteSettingsScalarFieldEnumSchema = z.enum(['id', 'projectId', 'organizationId', 'userId', 'cadence', 'lookbackDays', 'notificationsEnabled', 'autoProposeAnswers', 'chatChannels', 'preferredThemes', 'preferredPostTypes', 'strategicPriorities', 'createdByUserId', 'createdAt', 'updatedAt'])
 
 export type PublishingSuiteSettingsScalarFieldEnum = z.infer<typeof PublishingSuiteSettingsScalarFieldEnumSchema>;
 
@@ -2451,6 +2463,18 @@ export type DecisionTypeOrigin = z.infer<typeof DecisionTypeOriginSchema>;
 export const PublishingCycleStatusSchema = z.enum(['GENERATING', 'READY', 'NO_TOPICS', 'INSUFFICIENT_CONTEXT', 'FAILED'])
 
 export type PublishingCycleStatus = z.infer<typeof PublishingCycleStatusSchema>;
+
+// File: PublishingListSort.schema.ts
+
+export const PublishingListSortSchema = z.enum(['RECOMMENDED', 'RECENTLY_UPDATED', 'RECENTLY_CREATED'])
+
+export type PublishingListSort = z.infer<typeof PublishingListSortSchema>;
+
+// File: PublishingListView.schema.ts
+
+export const PublishingListViewSchema = z.enum(['LIST', 'TWO_COLUMN'])
+
+export type PublishingListView = z.infer<typeof PublishingListViewSchema>;
 
 // File: PublishingTopicStatus.schema.ts
 
@@ -6351,6 +6375,22 @@ export const PublishingSuggestionCycleSchema = z.object({
 export type PublishingSuggestionCycleType = z.infer<typeof PublishingSuggestionCycleSchema>;
 
 
+// File: PublishingListPreference.schema.ts
+
+export const PublishingListPreferenceSchema = z.object({
+  id: z.string(),
+  userId: z.string(),
+  projectId: z.string(),
+  organizationId: z.string().nullish(),
+  sort: PublishingListSortSchema.default("RECOMMENDED"),
+  view: PublishingListViewSchema.default("LIST"),
+  createdAt: z.date(),
+  updatedAt: z.date(),
+});
+
+export type PublishingListPreferenceType = z.infer<typeof PublishingListPreferenceSchema>;
+
+
 // File: PublishingTopic.schema.ts
 
 export const PublishingTopicSchema = z.object({
@@ -6378,6 +6418,7 @@ export const PublishingTopicSchema = z.object({
   postTypeRecommendations: z.unknown().refine((val) => { const getDepth = (obj: unknown, depth: number = 0): number => { if (depth > 10) return depth; if (obj === null || typeof obj !== 'object') return depth; const values = Object.values(obj as Record<string, unknown>); if (values.length === 0) return depth; return Math.max(...values.map(v => getDepth(v, depth + 1))); }; return getDepth(val) <= 10; }, "JSON nesting depth exceeds maximum of 10").default("[]"),
   postTypesOverridden: z.boolean(),
   userPostTypes: z.array(PublishingTopicPostTypeSchema),
+  highlightReason: z.string().nullish(),
   angle: z.string().nullish(),
   subject: z.string().nullish(),
   subjectKey: z.string().nullish(),
@@ -6499,6 +6540,7 @@ export const PublishingTopicDecisionEntrySchema = z.object({
   summary: z.string().nullish(),
   content: z.string().nullish(),
   recommendedResponse: z.string().nullish(),
+  answerOptions: z.unknown().refine((val) => { const getDepth = (obj: unknown, depth: number = 0): number => { if (depth > 10) return depth; if (obj === null || typeof obj !== 'object') return depth; const values = Object.values(obj as Record<string, unknown>); if (values.length === 0) return depth; return Math.max(...values.map(v => getDepth(v, depth + 1))); }; return getDepth(val) <= 10; }, "JSON nesting depth exceeds maximum of 10").nullish(),
   whyItMatters: z.string().nullish(),
   answerSource: AnswerSourceSchema.nullish(),
   analysisVersion: z.number().int().nullish(),
@@ -6508,6 +6550,21 @@ export const PublishingTopicDecisionEntrySchema = z.object({
 });
 
 export type PublishingTopicDecisionEntryType = z.infer<typeof PublishingTopicDecisionEntrySchema>;
+
+
+// File: PublishingTopicDraftRead.schema.ts
+
+export const PublishingTopicDraftReadSchema = z.object({
+  id: z.string(),
+  topicId: z.string(),
+  userId: z.string(),
+  postType: PublishingTopicPostTypeSchema,
+  projectId: z.string(),
+  organizationId: z.string().nullish(),
+  readAt: z.date(),
+});
+
+export type PublishingTopicDraftReadType = z.infer<typeof PublishingTopicDraftReadSchema>;
 
 
 // File: PublishingTopicRead.schema.ts
@@ -6534,6 +6591,7 @@ export const PublishingSuiteSettingsSchema = z.object({
   cadence: z.string().default("MANUAL"),
   lookbackDays: z.number().int().nullish(),
   notificationsEnabled: z.boolean().default(true),
+  autoProposeAnswers: z.boolean().default(true),
   chatChannels: z.unknown().refine((val) => { const getDepth = (obj: unknown, depth: number = 0): number => { if (depth > 10) return depth; if (obj === null || typeof obj !== 'object') return depth; const values = Object.values(obj as Record<string, unknown>); if (values.length === 0) return depth; return Math.max(...values.map(v => getDepth(v, depth + 1))); }; return getDepth(val) <= 10; }, "JSON nesting depth exceeds maximum of 10").nullish(),
   preferredThemes: z.array(z.string()),
   preferredPostTypes: z.array(PublishingTopicPostTypeSchema),

@@ -149,6 +149,15 @@ export interface TopicWorkingDraftState {
 	 */
 	sourceDraftId: string | null;
 	sourceOptionLabel: string | null;
+	/**
+	 * The raw content of the candidate this body was ADOPTED FROM.
+	 *
+	 * The panels render `safetyNote` — "the draft was generalized, and here is
+	 * why" — and were reading it off `latestReady`, which after a regeneration
+	 * nobody adopted is a different document from the one in the editor. `null`
+	 * for a hand-written body, or when the source row is gone.
+	 */
+	sourceContent: unknown;
 	updatedAt: Date;
 }
 
@@ -272,6 +281,13 @@ export async function listTopicDrafts(input: {
 		};
 	});
 
+	// Every candidate row by id, for `sourceContent` below. `rows` is already in
+	// memory — this function reads them all before folding to two per type — so
+	// resolving a working draft's source costs a map build and no query.
+	const rowsById = new Map(
+		(rows as RawDraftRow[]).map((r) => [r.id, r] as const),
+	);
+
 	const workingDrafts: TopicWorkingDraftState[] = (
 		working as {
 			postType: string;
@@ -286,6 +302,25 @@ export async function listTopicDrafts(input: {
 		body: w.body,
 		sourceDraftId: w.sourceDraftId,
 		sourceOptionLabel: w.sourceOptionLabel,
+		/**
+		 * Two ways reading `latestReady` went wrong, and the second is why a
+		 * wording qualifier could not reach it:
+		 *
+		 *  - v1 generalized, v2 also generalized — the reader saw v2's note
+		 *    over v1's text, which a qualifier can at least flag.
+		 *  - v1 generalized, v2 needing none — `latestReady.safetyNote` is
+		 *    null, so the section VANISHED while the saved text was still the
+		 *    generalized one. Nothing was on screen to qualify, and copy and
+		 *    download then exported text whose stated generalizations described
+		 *    a document nobody adopted.
+		 *
+		 * `null` for a hand-written body or a source row past retention — both
+		 * mean "no note applies", which is the honest answer rather than the
+		 * newest one.
+		 */
+		sourceContent: w.sourceDraftId
+			? (rowsById.get(w.sourceDraftId)?.content ?? null)
+			: null,
 		updatedAt: w.updatedAt,
 	}));
 
@@ -983,4 +1018,79 @@ export async function updateWorkingDraftBody(input: {
 
 		return { status: "saved" as const, updatedAt: saved.updatedAt };
 	});
+}
+
+// =============================================================================
+// Per-content-type read markers (Fizzy #1851 follow-up, finding #46)
+// =============================================================================
+
+/**
+ * When this reader last looked at each content type on a topic.
+ *
+ * A map rather than a list, because every caller asks the same question — "has
+ * this tab changed since I was here" — and a list would make each of them build
+ * the same index.
+ */
+export async function getTopicDraftReadMarkers(input: {
+	topicId: string;
+	projectId: string;
+	userId: string;
+}): Promise<Record<string, Date>> {
+	const rows = await db.publishingTopicDraftRead.findMany({
+		where: {
+			topicId: input.topicId,
+			projectId: input.projectId,
+			userId: input.userId,
+		},
+		select: { postType: true, readAt: true },
+	});
+	return Object.fromEntries(rows.map((r) => [r.postType, r.readAt]));
+}
+
+/**
+ * Record that this reader has now seen one content type.
+ *
+ * An upsert that always moves `readAt` forward, so re-opening a tab after a
+ * regeneration clears the marker rather than leaving it stuck at the first
+ * visit.
+ *
+ * Tenant columns come from the TOPIC, never from caller input — the same rule
+ * `PublishingTopicRead` states. A marker stamped from ambient context is a row
+ * RLS places in the wrong tenant.
+ *
+ * Deliberately writes NOTHING on `PublishingTopic`. Reading must not bump a
+ * topic's `updatedAt`, or opening one would reorder "Recently Modified"
+ * underneath the person reading it.
+ */
+export async function markTopicDraftRead(input: {
+	topicId: string;
+	projectId: string;
+	userId: string;
+	postType: DraftPostType;
+}): Promise<boolean> {
+	const topic = await db.publishingTopic.findFirst({
+		where: { id: input.topicId, projectId: input.projectId },
+		select: { organizationId: true },
+	});
+	if (!topic) {
+		return false;
+	}
+	await db.publishingTopicDraftRead.upsert({
+		where: {
+			topicId_userId_postType: {
+				topicId: input.topicId,
+				userId: input.userId,
+				postType: input.postType,
+			},
+		},
+		create: {
+			topicId: input.topicId,
+			userId: input.userId,
+			postType: input.postType,
+			projectId: input.projectId,
+			organizationId: topic.organizationId,
+		},
+		update: { readAt: new Date() },
+	});
+	return true;
 }
