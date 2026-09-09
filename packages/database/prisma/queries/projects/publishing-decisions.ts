@@ -288,6 +288,18 @@ export async function reconcileTopicQuestions(
 	return outcome;
 }
 
+/**
+ * A person a question is waiting on, and who put them there (Fizzy #1851).
+ *
+ * `assignedByUserId` is not bookkeeping: after a re-assignment there are two
+ * candidate askers, and this is what makes "tell the person who asked" resolve
+ * to exactly one of them.
+ */
+export interface TopicQuestionAssignee {
+	assigneeUserId: string;
+	assignedByUserId: string;
+}
+
 export interface TopicDecisionEntry {
 	id: string;
 	parentId: string | null;
@@ -306,7 +318,29 @@ export interface TopicDecisionEntry {
 	answerSource: string | null;
 	analysisVersion: number | null;
 	createdAt: Date;
+	/**
+	 * Who this question is waiting on. Always present, empty when nobody has
+	 * been asked — "unassigned" is a state the panel renders, not missing data.
+	 * Replies and AI Update notes carry none; only a question root can.
+	 */
+	assignees: TopicQuestionAssignee[];
 }
+
+/**
+ * The assignee rows every read of a decision entry carries.
+ *
+ * Extracted so the shape cannot drift between the thread list and the four
+ * single-root reads: `TopicDecisionEntry.assignees` is non-optional, so a read
+ * that forgot the include would satisfy the type only through the `as unknown`
+ * cast each of them already uses — and hand back a question whose assignees
+ * silently read as absent rather than as empty.
+ */
+const ASSIGNEE_INCLUDE = {
+	assignees: {
+		orderBy: { createdAt: "asc" },
+		select: { assigneeUserId: true, assignedByUserId: true },
+	},
+} as const;
 
 export interface TopicDecisionThread {
 	root: TopicDecisionEntry;
@@ -338,6 +372,12 @@ export async function listTopicDecisions(input: {
 			deletedAt: null,
 		},
 		orderBy: { createdAt: "asc" },
+		// Included rather than fetched separately: the assignee rows are
+		// scoped by the PARENT, which this query has already scoped, so a
+		// second round trip would only be a second chance to scope it
+		// differently. Ordered by creation so the avatars keep a stable order
+		// between renders instead of shuffling on every refetch.
+		include: ASSIGNEE_INCLUDE,
 	});
 
 	const roots = rows.filter((r) => r.parentId === null);
@@ -486,6 +526,7 @@ export async function answerTopicQuestion(input: {
 		// shape, and the caller needs the latter.
 		const updated = await tx.publishingTopicDecisionEntry.findUnique({
 			where: { id: root.id },
+			include: ASSIGNEE_INCLUDE,
 		});
 
 		return {
@@ -673,6 +714,7 @@ export async function amendTopicQuestionAnswer(input: {
 
 		const updated = await tx.publishingTopicDecisionEntry.findUnique({
 			where: { id: root.id },
+			include: ASSIGNEE_INCLUDE,
 		});
 
 		return {
@@ -680,4 +722,115 @@ export async function amendTopicQuestionAnswer(input: {
 			root: updated as unknown as TopicDecisionEntry,
 		};
 	});
+}
+
+/**
+ * Replace a question's assignee set (Fizzy #1851).
+ *
+ * SET SEMANTICS, mirroring `setQuestionAssignees` in `feature-maturation.ts`:
+ * assigning, re-assigning and clearing are the same call with a different
+ * desired set, so the caller never diffs. Rows already present are left
+ * untouched so their original `assignedByUserId` survives a re-save —
+ * re-picking somebody already assigned must not silently transfer who is
+ * recorded as having asked.
+ *
+ * Returns the newly-ADDED assignees — exactly the set to notify — alongside the
+ * question's own wording, which the notification card needs. Re-saving an
+ * unchanged list adds nobody, which is what keeps toggling avatars in a picker
+ * from spamming the room.
+ *
+ * The wording comes back from HERE rather than from a second read in the
+ * caller because this function has already loaded the row it belongs to, and
+ * because the alternative — re-reading the whole decision thread to find one
+ * subject line — is a great deal of work for a notification snippet.
+ *
+ * `null` means the question does not exist in this topic and project, which the
+ * caller must not report as a successful no-op assignment.
+ *
+ * NOT ACCESS CONTROL. Assignment routes accountability; it never restricts who
+ * may answer, or who may reassign. There is deliberately no check that the
+ * caller is the author or an existing assignee — the same call the procedure's
+ * `PUBLISHING_TOPIC_UPDATE` gate already covers.
+ */
+export async function setTopicQuestionAssignees(input: {
+	topicId: string;
+	projectId: string;
+	/** The question thread ROOT. */
+	entryId: string;
+	/** The complete desired set. Empty clears the question. */
+	assigneeUserIds: string[];
+	assignedByUserId: string;
+}): Promise<{ added: string[]; summary: string | null } | null> {
+	// Resolve the question first, and take the child's tenant columns from IT.
+	// Stamping the caller's own tenant is the mistake this shape exists to
+	// prevent: the table's XOR check compares the two columns to each other,
+	// not to the parent, so a row whose tenant disagrees with its question
+	// would satisfy the constraint and still be invisible to the reader of the
+	// thread it belongs to.
+	const entry = await db.publishingTopicDecisionEntry.findFirst({
+		where: {
+			id: input.entryId,
+			topicId: input.topicId,
+			projectId: input.projectId,
+			parentId: null,
+			kind: "QUESTION",
+			deletedAt: null,
+		},
+		select: {
+			id: true,
+			userId: true,
+			organizationId: true,
+			subject: true,
+			content: true,
+		},
+	});
+	if (!entry) {
+		return null;
+	}
+	const summary = entry.subject ?? entry.content;
+
+	const desired = [...new Set(input.assigneeUserIds)];
+	const existing = await db.publishingTopicQuestionAssignee.findMany({
+		where: { decisionEntryId: entry.id },
+		select: { assigneeUserId: true },
+	});
+	const existingIds = new Set(existing.map((row) => row.assigneeUserId));
+	const added = desired.filter((id) => !existingIds.has(id));
+	const removed = [...existingIds].filter((id) => !desired.includes(id));
+
+	if (added.length === 0 && removed.length === 0) {
+		return { added: [], summary };
+	}
+
+	await db.$transaction(async (tx) => {
+		if (removed.length > 0) {
+			await tx.publishingTopicQuestionAssignee.deleteMany({
+				where: {
+					decisionEntryId: entry.id,
+					assigneeUserId: { in: removed },
+				},
+			});
+		}
+		if (added.length > 0) {
+			await tx.publishingTopicQuestionAssignee.createMany({
+				data: added.map((assigneeUserId) => ({
+					decisionEntryId: entry.id,
+					assigneeUserId,
+					assignedByUserId: input.assignedByUserId,
+					projectId: input.projectId,
+					// Inherited from the question, never from the assignee or
+					// the caller — see the model's doc-comment.
+					userId: entry.userId,
+					organizationId: entry.organizationId,
+				})),
+				// Two people saving the picker at once both compute the same
+				// `added`, and the unique index turns the second write into an
+				// error rather than a duplicate. Skipping is the right
+				// resolution: the row the loser wanted already exists.
+				skipDuplicates: true,
+			});
+		}
+	});
+
+	return { added, summary };
 }

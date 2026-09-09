@@ -297,6 +297,37 @@ type PublishingTopicAssignedArgs = {
 };
 
 /**
+ * Somebody is being ASKED to answer a topic's open question (Fizzy #1851).
+ *
+ * A separate shape from `PublishingTopicAssignedArgs` above, not an extension
+ * of it, because the two are different acts: being added to a topic is an FYI,
+ * being asked a question is a request. #1751 makes the same split between
+ * `questionAssigned` and `questionMentioned` and gives the reason — a recipient
+ * who cannot tell them apart from the bell has to open both, which defeats the
+ * routing the feature exists to provide.
+ *
+ * `recipientUserIds` is the ADDED set, never the whole list. Assignees are
+ * edited as a set, so a save that only removes somebody, or re-saves an
+ * unchanged list, must notify nobody. The query helper computes that diff
+ * inside the write; this does not re-derive it.
+ */
+type PublishingQuestionAssignedArgs = {
+	recipientUserIds: string[];
+	topicId: string;
+	topicTitle: string;
+	/** The question thread root — also the scroll anchor for the deep link. */
+	questionRootId: string;
+	/** What the notification card shows, so the recipient can triage unopened. */
+	questionSummary: string;
+	projectId: string;
+	organizationId: string | null;
+	actorUserId: string;
+	actorName: string;
+	/** Topic link WITHOUT a fragment; the question anchor is appended here. */
+	link: string;
+};
+
+/**
  * Shared by the three maturation question-routing fan-outs (Fizzy #1751).
  *
  * One shape for all three because they differ only in intent — who is told, and
@@ -1127,6 +1158,65 @@ export const fanOut = {
 						});
 					} catch (error) {
 						logFailure("fanOut.publishingTopicAssigned", error);
+					}
+				}),
+		);
+	},
+
+	/**
+	 * Somebody is being asked to answer a publishing topic's open question
+	 * (Fizzy #1851).
+	 *
+	 * A REQUEST, unlike `publishingTopicAssigned` above, and the copy has to
+	 * carry the difference: the recipient is now the person the topic is
+	 * waiting on. The distinction lives in the type, the verb and the link
+	 * depth; keep all three aligned if you touch any.
+	 *
+	 * The link carries the question anchor, so the notification lands ON the
+	 * question rather than the top of the topic — the same `#q-<rootId>`
+	 * contract `buildQuestionLink` writes for maturation, read by
+	 * `useScrollToQuestion`.
+	 *
+	 * Category ASSIGNMENT, deliberately not PUBLISHING: a person asking a
+	 * person is not the AI suggestion digest, and somebody who has silenced the
+	 * digest should still hear their own name.
+	 */
+	async publishingQuestionAssigned(
+		args: PublishingQuestionAssignedArgs,
+	): Promise<void> {
+		await Promise.all(
+			args.recipientUserIds
+				.filter((userId) => userId !== args.actorUserId)
+				.map(async (userId) => {
+					try {
+						await createNotification({
+							userId,
+							organizationId: args.organizationId,
+							type: NotificationType.PUBLISHING_QUESTION_ASSIGNED,
+							category: NotificationCategory.ASSIGNMENT,
+							title: `${args.actorName} is asking you about ${args.topicTitle}`,
+							snippet: args.questionSummary,
+							link: `${args.link}#q-${args.questionRootId}`,
+							source: {
+								projectId: args.projectId,
+								actorUserId: args.actorUserId,
+							},
+							payload: {
+								topicId: args.topicId,
+								projectId: args.projectId,
+								questionRootId: args.questionRootId,
+								assignedByUserId: args.actorUserId,
+							},
+							// Keyed on the QUESTION, not the topic: two
+							// questions on one topic are two asks and must not
+							// coalesce. Unread-only, so re-asking somebody who
+							// never opened the first nudge folds into it rather
+							// than stacking a second row.
+							dedupeKey: `publishingQuestionAssigned:${args.questionRootId}:${userId}`,
+							dedupePolicy: "unreadOnly",
+						});
+					} catch (error) {
+						logFailure("fanOut.publishingQuestionAssigned", error);
 					}
 				}),
 		);

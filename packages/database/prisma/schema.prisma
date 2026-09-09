@@ -283,6 +283,9 @@ model User {
   publishingAnalysisRevisionsAuthored PublishingTopicAnalysisRevision[] @relation("PublishingAnalysisRevisionAuthor")
   publishingTopicDecisions     PublishingTopicDecisionEntry[]
   authoredPublishingTopicDecisions PublishingTopicDecisionEntry[] @relation("PublishingTopicDecisionAuthor")
+  publishingQuestionAssignments  PublishingTopicQuestionAssignee[] @relation("PublishingQuestionAssignee")
+  publishingQuestionsAssignedOut PublishingTopicQuestionAssignee[] @relation("PublishingQuestionAssignedBy")
+  publishingQuestionAssigneeRows PublishingTopicQuestionAssignee[]
 
   // Notification center relations
   notifications                   Notification[]
@@ -703,6 +706,7 @@ model Organization {
   publishingTopicReads                    PublishingTopicRead[]
   publishingPlanningAnalyses              PublishingTopicPlanningAnalysis[]
   publishingTopicDecisions                PublishingTopicDecisionEntry[]
+  publishingQuestionAssignees             PublishingTopicQuestionAssignee[]
   publishingTopicDrafts                   PublishingTopicDraft[]
   publishingWorkingDrafts                 PublishingTopicWorkingDraft[]
   publishingAnalysisRevisions             PublishingTopicAnalysisRevision[]
@@ -1784,6 +1788,7 @@ model Project {
   publishingListPreferences  PublishingListPreference[]
   publishingPlanningAnalyses PublishingTopicPlanningAnalysis[]
   publishingTopicDecisions   PublishingTopicDecisionEntry[]
+  publishingQuestionAssignees PublishingTopicQuestionAssignee[]
   publishingTopicDrafts      PublishingTopicDraft[]
   publishingWorkingDrafts    PublishingTopicWorkingDraft[]
   publishingAnalysisRevisions PublishingTopicAnalysisRevision[]
@@ -7502,6 +7507,7 @@ model PublishingTopicDecisionEntry {
   project      Project                        @relation(fields: [projectId], references: [id], onDelete: Cascade)
   parent       PublishingTopicDecisionEntry?  @relation("PublishingTopicDecisionReplies", fields: [parentId], references: [id], onDelete: Cascade)
   replies      PublishingTopicDecisionEntry[] @relation("PublishingTopicDecisionReplies")
+  assignees    PublishingTopicQuestionAssignee[]
   organization Organization?                  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   user         User?                          @relation(fields: [userId], references: [id], onDelete: Cascade)
   author       User?                          @relation("PublishingTopicDecisionAuthor", fields: [authorUserId], references: [id], onDelete: SetNull)
@@ -7511,6 +7517,64 @@ model PublishingTopicDecisionEntry {
   @@index([organizationId])
   @@index([userId])
   @@map("publishing_topic_decision_entry")
+}
+
+/// Routes an open publishing question to the people who can answer it
+/// (Fizzy #1851). Mirrors `DecisionLogEntryAssignee`, which Feature Maturation
+/// uses for the same job — the owner asked for the FMv2 behaviour, so this is
+/// the FMv2 shape rather than a second design for the same problem.
+///
+/// TENANCY — read this before adding a column. `userId` is the TENANT key and
+/// mirrors the parent entry's owner; it is NOT the assignee. The `user_owned`
+/// RLS policy matches `"userId" = current_user_id()` on its personal branch, so
+/// naming the assignee `userId` would scope a row to the person being ASKED
+/// rather than to the tenant that owns the question. The assignee is
+/// `assigneeUserId`, and it is never a tenant predicate anywhere.
+///
+/// `userId` is NULLABLE here where the maturation table's is required, because
+/// the PARENT's is: `publishing_topic_decision_entry_tenant_xor` allows exactly
+/// one of (organizationId, userId) to be set, and under ADR-018 every live row
+/// is the organization arm. The child copies both columns from the parent and
+/// carries the same XOR, so the two can never disagree about which arm a
+/// question is on.
+///
+/// `projectId` is denormalized from the parent — as every other publishing
+/// child table does it — so `PROJECT_SCOPED_TABLES` can scope this one by
+/// project. Copied from the question, never taken from ambient context.
+///
+/// There is deliberately no `status`. "Assigned" is DERIVED (`assignees.length
+/// > 0 && status === OPEN`) rather than stored, because a new `DecisionStatus`
+/// member would fall out of the `status: "OPEN"` predicates the questions panel
+/// and `reconcileTopicQuestions` both depend on, and break them silently.
+model PublishingTopicQuestionAssignee {
+  id               String   @id @default(cuid())
+  decisionEntryId  String
+  /// The project member being asked.
+  assigneeUserId   String
+  /// Who created this assignment. Kept so a later "answered" notice has exactly
+  /// one asker to name, even after a re-assignment.
+  assignedByUserId String
+  /// Denormalized from the parent question, never from ambient context.
+  projectId        String
+  /// Tenant key (mirrors the parent entry), NOT the assignee. See the note above.
+  userId           String?
+  organizationId   String?
+  createdAt        DateTime @default(now())
+
+  entry        PublishingTopicDecisionEntry @relation(fields: [decisionEntryId], references: [id], onDelete: Cascade)
+  assignee     User                         @relation("PublishingQuestionAssignee", fields: [assigneeUserId], references: [id], onDelete: Cascade)
+  assignedBy   User                         @relation("PublishingQuestionAssignedBy", fields: [assignedByUserId], references: [id], onDelete: Cascade)
+  project      Project                      @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  user         User?                        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organization Organization?                @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([decisionEntryId, assigneeUserId])
+  @@index([decisionEntryId])
+  @@index([assigneeUserId])
+  @@index([projectId])
+  @@index([organizationId])
+  @@index([userId])
+  @@map("publishing_topic_question_assignee")
 }
 
 /// Per-user read marker for a publishing topic (1D, Fizzy #2265).
@@ -16205,6 +16269,7 @@ enum NotificationType {
   /// existing "assignments" toggle rather than the publishing-digest one: an
   /// explicit human hand-off is not the AI suggestion feed.
   PUBLISHING_TOPIC_ASSIGNED
+  PUBLISHING_QUESTION_ASSIGNED
 
   /// A document-generation run the recipient started reached its terminal
   /// state. Split into two types rather than one "finished" type, mirroring

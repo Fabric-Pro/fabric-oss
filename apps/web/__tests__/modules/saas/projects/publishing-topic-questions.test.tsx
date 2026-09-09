@@ -24,15 +24,22 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 // (`answerTopicQuestion` refuses a settled root on purpose), and a shared spy
 // would let a regression that sent an amendment down the answer procedure pass
 // every assertion below.
-const { answerMutation, amendMutation, mutationState } = vi.hoisted(() => ({
-	answerMutation: vi.fn(),
-	amendMutation: vi.fn(),
-	mutationState: {
-		shouldFail: false,
-		/** What the amend mutation resolves with — its `onSuccess` reads `status`. */
-		result: { status: "amended" } as { status: string },
-	},
-}));
+const { answerMutation, amendMutation, assignMutation, mutationState } =
+	vi.hoisted(() => ({
+		answerMutation: vi.fn(),
+		amendMutation: vi.fn(),
+		/**
+		 * Routing, and its OWN spy. Assignment must never reach either write above:
+		 * asking somebody is not settling the question, and a shared spy would let
+		 * a regression that answered on the caller's behalf pass every assertion.
+		 */
+		assignMutation: vi.fn(),
+		mutationState: {
+			shouldFail: false,
+			/** What the amend mutation resolves with — its `onSuccess` reads `status`. */
+			result: { status: "amended" } as { status: string },
+		},
+	}));
 
 async function run(
 	opts: {
@@ -42,10 +49,13 @@ async function run(
 	},
 	vars: unknown,
 ) {
+	const key = opts.mutationKey?.[0];
 	const spy =
-		opts.mutationKey?.[0] === "amendTopicQuestion"
+		key === "amendTopicQuestion"
 			? amendMutation
-			: answerMutation;
+			: key === "setQuestionAssignees"
+				? assignMutation
+				: answerMutation;
 	spy(vars);
 	if (mutationState.shouldFail) {
 		const err = new Error("failed");
@@ -93,6 +103,12 @@ vi.mock("@shared/lib/orpc-query-utils", () => ({
 						...opts,
 					}),
 				},
+				setQuestionAssignees: {
+					mutationOptions: (opts: Record<string, unknown>) => ({
+						mutationKey: ["setQuestionAssignees"],
+						...opts,
+					}),
+				},
 				listTopicDecisions: {
 					queryKey: ({ input }: { input?: unknown }) => [
 						"listTopicDecisions",
@@ -133,6 +149,10 @@ function root(overrides: Record<string, unknown> = {}) {
 		answerSource: null,
 		analysisVersion: 1,
 		createdAt: new Date("2026-08-30T10:00:00Z"),
+		// Always an array, never absent: the procedure's output schema defaults
+		// it, so a fixture that omitted it would be testing a payload the
+		// server cannot send.
+		assignees: [] as { assigneeUserId: string; assignedByUserId: string }[],
 		...overrides,
 	};
 }
@@ -809,5 +829,191 @@ describe("TopicQuestionsPanel — several suggested answers", () => {
 		render(<TopicQuestionsPanel {...BASE} threads={[OPEN_THREAD]} />);
 
 		expect(screen.getByText(/suggested:/i)).toBeInTheDocument();
+	});
+});
+
+/**
+ * Per-question assignment (Fizzy #1851) — who a question is waiting on.
+ *
+ * Mirrors Feature Maturation's routing, and reuses its picker, so what is
+ * pinned here is the WIRING rather than the picker's own behaviour (that has
+ * its own suite): that the panel sends the COMPLETE set on every change, that
+ * it never answers anything on the way, and that a reader can see who is on a
+ * question without being able to change it.
+ *
+ * The global next-intl mock echoes keys, so the picker's control is addressed
+ * by its key (`assignLabel` / `assigneesLabel`) rather than by English copy.
+ */
+describe("TopicQuestionsPanel — per-question assignment", () => {
+	const MEMBERS = [
+		{
+			userId: "u1",
+			user: {
+				id: "u1",
+				name: "Sam R.",
+				email: "sam@example.com",
+				image: null,
+			},
+		},
+		{
+			userId: "u2",
+			user: {
+				id: "u2",
+				name: "Wren P.",
+				email: "wren@example.com",
+				image: null,
+			},
+		},
+	] as never;
+
+	it("sends the COMPLETE desired set, not just the person clicked", async () => {
+		const user = userEvent.setup();
+		render(
+			<TopicQuestionsPanel
+				{...BASE}
+				members={MEMBERS}
+				threads={[
+					{
+						root: root({
+							assignees: [
+								{
+									assigneeUserId: "u1",
+									assignedByUserId: "asker",
+								},
+							],
+						}),
+						replies: [],
+					},
+				]}
+			/>,
+		);
+
+		await user.click(
+			screen.getByRole("button", { name: "assigneesLabel" }),
+		);
+		await user.click(await screen.findByText("Wren P."));
+
+		// Set semantics: the server replaces the list with exactly what arrives,
+		// so sending only the toggled id would silently unassign everyone else.
+		expect(assignMutation).toHaveBeenCalledWith(
+			expect.objectContaining({
+				questionRootId: "decision-1",
+				assigneeUserIds: ["u1", "u2"],
+			}),
+		);
+	});
+
+	it("removes somebody by sending the list without them", async () => {
+		const user = userEvent.setup();
+		render(
+			<TopicQuestionsPanel
+				{...BASE}
+				members={MEMBERS}
+				threads={[
+					{
+						root: root({
+							assignees: [
+								{
+									assigneeUserId: "u1",
+									assignedByUserId: "asker",
+								},
+								{
+									assigneeUserId: "u2",
+									assignedByUserId: "asker",
+								},
+							],
+						}),
+						replies: [],
+					},
+				]}
+			/>,
+		);
+
+		await user.click(
+			screen.getByRole("button", { name: "assigneesLabel" }),
+		);
+		await user.click(await screen.findByText("Sam R."));
+
+		expect(assignMutation).toHaveBeenCalledWith(
+			expect.objectContaining({ assigneeUserIds: ["u2"] }),
+		);
+	});
+
+	it("never answers the question it is routing", async () => {
+		const user = userEvent.setup();
+		render(
+			<TopicQuestionsPanel
+				{...BASE}
+				members={MEMBERS}
+				threads={[{ root: root(), replies: [] }]}
+			/>,
+		);
+
+		await user.click(screen.getByRole("button", { name: "assignLabel" }));
+		await user.click(await screen.findByText("Sam R."));
+
+		// The root stays OPEN. Routing an ask through the answer path would
+		// close the very question being asked.
+		expect(answerMutation).not.toHaveBeenCalled();
+		expect(amendMutation).not.toHaveBeenCalled();
+	});
+
+	it("shows a reader who a question is waiting on, without letting them change it", () => {
+		render(
+			<TopicQuestionsPanel
+				{...BASE}
+				canEdit={false}
+				members={MEMBERS}
+				threads={[
+					{
+						root: root({
+							assignees: [
+								{
+									assigneeUserId: "u1",
+									assignedByUserId: "asker",
+								},
+							],
+						}),
+						replies: [],
+					},
+				]}
+			/>,
+		);
+
+		// Rendered, not hidden: who is on a question is worth seeing even when
+		// you cannot change it, and hiding it would make an assigned question
+		// look unassigned to exactly the people most likely to answer it.
+		expect(
+			screen.getByRole("button", { name: "assigneesLabel" }),
+		).toBeDisabled();
+	});
+
+	it("keeps an assignee whose project membership has lapsed visible", () => {
+		render(
+			<TopicQuestionsPanel
+				{...BASE}
+				members={MEMBERS}
+				threads={[
+					{
+						root: root({
+							assignees: [
+								{
+									assigneeUserId: "gone",
+									assignedByUserId: "asker",
+								},
+							],
+						}),
+						replies: [],
+					},
+				]}
+			/>,
+		);
+
+		// A question that silently shows fewer people than it is assigned to is
+		// worse than one showing a nameless avatar — the reader would think
+		// nobody had been asked.
+		expect(
+			screen.getByRole("button", { name: "assigneesLabel" }),
+		).toBeInTheDocument();
 	});
 });

@@ -32,6 +32,7 @@ export {
 	generatePlanningAnalysisProcedure,
 	getPlanningAnalysisProcedure,
 } from "./planning-analysis";
+export { setPublishingQuestionAssigneesProcedure } from "./set-question-assignees";
 export { setTopicReadStateProcedure } from "./set-topic-read-state";
 export { setTopicSnoozeProcedure } from "./set-topic-snooze";
 export {

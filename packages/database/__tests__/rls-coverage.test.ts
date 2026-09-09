@@ -323,6 +323,45 @@ describe("publishing_topic_decision_entry registration", () => {
 	});
 });
 
+/**
+ * `publishing_topic_question_assignee` registration (Fizzy #1851).
+ *
+ * Its own block for the same reason the parent's has one: a tenant table
+ * missing from EITHER tenant-db list is not "less isolated", it is UNFILTERED —
+ * `tenantProtectedProcedure` looks the model up by name and silently applies no
+ * filter when it is absent. The registration IS the isolation.
+ *
+ * It matters more here than usual because the table's own `assigneeUserId`
+ * looks like a scoping key and is not one. If a reader ever "fixes" the tenant
+ * filter to use it, these three assertions are what say which columns actually
+ * carry the tenancy.
+ */
+describe("publishing_topic_question_assignee registration", () => {
+	it("is registered as a tenant table", () => {
+		const block =
+			tenantDbSrc.match(
+				/const USER_OWNED_TABLES = new Set\(\[([\s\S]*?)\]\);/,
+			)?.[1] ?? "";
+		expect(block).toMatch(/"PublishingTopicQuestionAssignee",/);
+	});
+
+	it("is registered as project-scoped on projectId", () => {
+		const block =
+			tenantDbSrc.match(
+				/const PROJECT_SCOPED_TABLES:[^{]+\{([\s\S]*?)\n\};/,
+			)?.[1] ?? "";
+		expect(block).toMatch(
+			/PublishingTopicQuestionAssignee:\s*"projectId",/,
+		);
+	});
+
+	it("has an RLS policy in the inventory", () => {
+		expect(applySrc).toMatch(
+			/name:\s*"publishing_topic_question_assignee"\s*,\s*policy:\s*"user_owned"/,
+		);
+	});
+});
+
 describe("tenant-db allowlist parity with the RLS registration", () => {
 	const userOwnedBlock =
 		tenantDbSrc.match(

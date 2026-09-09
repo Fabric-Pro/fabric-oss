@@ -440,6 +440,10 @@ async function applyRLS() {
 				policy: "user_owned",
 			}, // Publishing Suite topic decision threads
 			{
+				name: "publishing_topic_question_assignee",
+				policy: "user_owned",
+			}, // Publishing Suite per-question assignment
+			{
 				name: "publishing_topic_draft",
 				policy: "user_owned",
 			}, // Publishing Suite generated content drafts
