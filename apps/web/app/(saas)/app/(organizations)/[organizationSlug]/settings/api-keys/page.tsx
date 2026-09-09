@@ -5,7 +5,8 @@ import { SettingsList } from "@saas/shared/components/SettingsList";
 
 export const metadata = {
 	title: "API Keys",
-	description: "Manage your API keys for this organization",
+	description:
+		"Create and revoke your own keys for reaching Fabric from outside the app",
 };
 
 export default function OrganizationApiKeysSettingsPage() {
@@ -14,7 +15,7 @@ export default function OrganizationApiKeysSettingsPage() {
 			<SettingsHero
 				title="API Keys"
 				label="Organization"
-				description="Create and manage the keys you use to reach this organization from outside the app."
+				description="Keys are personal. Yours reaches Fabric from outside the app with the same access you have inside it."
 			/>
 			<SettingsList>
 				<OrganizationApiKeysSettings />
