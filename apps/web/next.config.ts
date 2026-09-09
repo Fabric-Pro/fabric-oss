@@ -341,10 +341,28 @@ const nextConfig: NextConfig = {
 		NEXT_PUBLIC_APP_VERSION: appVersion,
 	},
 
-	// Enable standalone output for Docker and Vercel deployments
-	// This creates a minimal production build with all dependencies bundled
-	// Set DOCKER_BUILD=true to enable (used in Docker and Vercel builds)
-	output: process.env.DOCKER_BUILD === "true" ? "standalone" : undefined,
+	// Standalone output for the Docker image only (DOCKER_BUILD=true): a
+	// minimal production tree under .next/standalone with every traced
+	// dependency copied in, which is what apps/web/Dockerfile ships.
+	//
+	// Never on Vercel, even though the Vercel build command also exports
+	// DOCKER_BUILD=true. Vercel packages each route from its own per-entry
+	// .nft.json trace and ignores .next/standalone entirely, so the copy only
+	// ever cost build time and memory there. Since Next 16.3 it fails the
+	// build outright: Vercel now injects a build adapter (NEXT_ADAPTER_PATH),
+	// and with an adapter present Turbopack no longer emits the whole-app
+	// next-server.js.nft.json (vercel/next.js#93684) — while the standalone
+	// finaliser still reads it unguarded, so every deploy died with
+	// "ENOENT: .next/next-server.js.nft.json" right after "Running
+	// onBuildComplete from Vercel". Upstream: vercel/next.js#96646; the fix
+	// was backported to the 16.3 branch on 2026-09-04, after 16.3.4 shipped.
+	// Keying on VERCEL rather than a Next version keeps the two concerns
+	// apart for good: standalone is a self-hosting artifact and has no reader
+	// on the platform.
+	output:
+		process.env.DOCKER_BUILD === "true" && process.env.VERCEL !== "1"
+			? "standalone"
+			: undefined,
 
 	// NFT DYNAMIC-OP HAZARD (contained — do not undo the mitigations).
 	//
