@@ -28,6 +28,7 @@ import {
 } from "@repo/permissions";
 import { runWithProjectContext } from "@repo/utils/project-context";
 import { resolveEffectiveProjectPermissions } from "../../lib/effective-project-permissions";
+import { MISSING_ORGANIZATION_CONTEXT_ERROR_CODE } from "../../lib/missing-organization-context";
 
 /**
  * When RBAC_DRY_RUN=true, permission denials are logged as warnings
@@ -454,9 +455,19 @@ export function requireInputOrgPermission(
 			// procedures that share this middleware.
 			if (!organizationId) {
 				if (options?.requireOrganization) {
+					// The middleware's own emission of this refusal. It carries
+					// the same machine-readable cause as the prompt module's
+					// gate (`modules/prompts/lib/assert-organization-context.ts`,
+					// which the deletion and its impact read share) so a client
+					// recognises every one of them the same way. Safe to act on
+					// because this runs before the handler: nothing has
+					// happened yet.
 					throw new ORPCError("FORBIDDEN", {
 						message:
 							"This operation requires an organization context",
+						data: {
+							errorCode: MISSING_ORGANIZATION_CONTEXT_ERROR_CODE,
+						},
 					});
 				}
 				return next();

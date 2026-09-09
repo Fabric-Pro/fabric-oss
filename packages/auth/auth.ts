@@ -54,7 +54,10 @@ import {
 	assertPasswordStrength,
 	PasswordTooWeakError,
 } from "./lib/password-strength";
-import { seedSessionOrganization } from "./lib/seed-session-organization";
+import {
+	seedSessionOrganization,
+	seedSessionOrganizationOnCreate,
+} from "./lib/seed-session-organization";
 import { socialProviders } from "./lib/social-providers";
 import { buildTrustedOrigins } from "./lib/trusted-origins";
 import { verifyTurnstileToken } from "./lib/turnstile";
@@ -386,12 +389,36 @@ const authOptions = {
 		},
 		session: {
 			create: {
+				before: async (session) => {
+					// Give the session its organization while the row is
+					// being SHAPED, not after it has been written. The row
+					// and the signed session cookie are produced inside one
+					// request body, and Better Auth drains the after-hooks
+					// below only once that body has returned — so seeding
+					// from there alone left the cookie the API reads naming
+					// no organization until the browser aligned it.
+					//
+					// The return-value contract with the library is
+					// documented on `seedSessionOrganizationOnCreate` in
+					// `./lib/seed-session-organization.ts`.
+					return await seedSessionOrganizationOnCreate(session);
+				},
 				after: async (session) => {
 					// An admin impersonating a user must never trigger
 					// membership grants, seat changes, or audit rows for the
 					// impersonated user; skip reconciliation for impersonation
 					// sessions (the user's own later sign-in heals them).
+					//
+					// The organization seed is the one thing that DOES run for
+					// them: it only reads a membership and patches the session
+					// row, so an impersonation session resolves the
+					// impersonated user's organization without granting them
+					// anything. It stays inside this branch rather than being
+					// hoisted above it — hoisting would also move it ahead of
+					// reconciliation and organization creation for an ordinary
+					// session, and a brand-new signup would end with none.
 					if (session.impersonatedBy) {
+						await seedSessionOrganization(session);
 						return;
 					}
 					// Sign-in self-heal: resolve pending invitations for the
@@ -422,6 +449,15 @@ const authOptions = {
 					// nothing. Extracted so the rule is testable without
 					// booting Better Auth, and so its reasoning lives beside
 					// it.
+					//
+					// The create.before hook above has already seeded anyone
+					// who already belonged somewhere, and leaves such a session
+					// alone here. This call is the catch for the accounts that
+					// hook cannot serve: it runs BEFORE the two self-heals
+					// above, so a new signup or an invited user's first
+					// sign-in has no membership to resolve yet. Their
+					// membership is created just above, and this is where it
+					// reaches the session.
 					await seedSessionOrganization(session);
 				},
 			},

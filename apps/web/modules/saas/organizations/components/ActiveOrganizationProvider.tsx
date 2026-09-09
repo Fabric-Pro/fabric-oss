@@ -10,8 +10,8 @@ import {
 	useActiveOrganizationQuery,
 } from "@saas/organizations/lib/api";
 import { useRouter } from "@shared/hooks/router";
-import { orpc } from "@shared/lib/orpc-query-utils";
 import { orpcClient } from "@shared/lib/orpc-client";
+import { orpc } from "@shared/lib/orpc-query-utils";
 import { useQueryClient } from "@tanstack/react-query";
 import { useParams } from "next/navigation";
 import { useTranslations } from "next-intl";
@@ -105,6 +105,24 @@ async function persistLastActiveWorkspace(
 		`[ActiveOrganizationProvider] Failed to persist the last active workspace after ${LAST_ACTIVE_WORKSPACE_ATTEMPTS} attempts — the user's next sign-in will open the workspace they switched away from`,
 		lastError,
 	);
+}
+
+/**
+ * The viewer's own membership row in an organization, or `undefined` when they
+ * hold none.
+ *
+ * One predicate serves both callers below — the session-alignment precondition
+ * and the role the context exposes — so the two can never disagree about
+ * whether this person belongs to the workspace on screen.
+ */
+function findViewerMembership<TMembers extends readonly { userId: string }[]>(
+	members: TMembers | undefined,
+	userId: string | undefined,
+): TMembers[number] | undefined {
+	if (!userId) {
+		return undefined;
+	}
+	return members?.find((member) => member.userId === userId);
 }
 
 export function ActiveOrganizationProvider({
@@ -375,9 +393,27 @@ export function ActiveOrganizationProvider({
 		if (session?.activeOrganizationId === activeOrganization.id) {
 			return;
 		}
+		// Only a member can be moved onto this workspace: the organization
+		// plugin's set-active route refuses a caller who holds no membership in
+		// the organization it is handed. A project guest sees the workspace on
+		// screen without belonging to it, so the member list — not the page — is
+		// what decides whether the call is worth making. Emptiness is not the
+		// test: an organization whose members exist but exclude the viewer is
+		// skipped just the same.
+		if (
+			!findViewerMembership(activeOrganization.members, session?.userId)
+		) {
+			return;
+		}
 		if (reconciledOrganizationsRef.current.has(activeOrganization.id)) {
 			return;
 		}
+		// Recorded BEFORE the attempt, deliberately — that is what makes a
+		// refusal terminal. The plugin's set-active route clears the session's
+		// active organization and returns without refreshing the signed session
+		// cookie when it refuses, so a second attempt repairs nothing and clears
+		// the field again: retrying leaves the caller worse off than the single
+		// attempt did. One try per organization, then silence.
 		reconciledOrganizationsRef.current.add(activeOrganization.id);
 
 		void authClient.organization
@@ -405,6 +441,7 @@ export function ActiveOrganizationProvider({
 	}, [
 		activeOrganization,
 		session?.activeOrganizationId,
+		session?.userId,
 		switchTarget,
 		queryClient,
 	]);
@@ -417,8 +454,9 @@ export function ActiveOrganizationProvider({
 		}
 	}, [activeOrganization]);
 
-	const activeOrganizationUserRole = activeOrganization?.members.find(
-		(member: { userId: string }) => member.userId === session?.userId,
+	const activeOrganizationUserRole = findViewerMembership(
+		activeOrganization?.members,
+		session?.userId,
 	)?.role;
 
 	const contextValue = useMemo(

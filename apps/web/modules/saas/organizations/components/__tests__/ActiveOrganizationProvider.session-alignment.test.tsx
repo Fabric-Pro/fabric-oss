@@ -22,7 +22,7 @@
  * user has to see.
  */
 
-import { render, waitFor } from "@testing-library/react";
+import { act, render, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const { setActiveMock, pushMock, toastErrorMock } = vi.hoisted(() => ({
@@ -45,7 +45,9 @@ vi.mock("@repo/config", () => ({
 	config: { organizations: { enableBilling: false } },
 }));
 
-let sessionMock: { activeOrganizationId?: string | null } | undefined;
+let sessionMock:
+	| { activeOrganizationId?: string | null; userId?: string }
+	| undefined;
 vi.mock("@saas/auth/hooks/use-session", () => ({
 	useSession: () => ({ session: sessionMock, user: { id: "u-1" } }),
 }));
@@ -53,7 +55,11 @@ vi.mock("@saas/auth/hooks/use-session", () => ({
 vi.mock("@saas/auth/lib/api", () => ({ sessionQueryKey: ["session"] }));
 
 let activeOrganizationMock:
-	| { id: string; slug: string; members: unknown[] }
+	| {
+			id: string;
+			slug: string;
+			members: { userId: string; role: string }[];
+	  }
 	| undefined;
 vi.mock("@saas/organizations/lib/api", () => ({
 	activeOrganizationQueryKey: (slug: string) => ["active-org", slug],
@@ -94,6 +100,7 @@ vi.mock("next-intl", () => ({
 vi.mock("sonner", () => ({ toast: { error: toastErrorMock } }));
 
 import { ActiveOrganizationProvider } from "@saas/organizations/components/ActiveOrganizationProvider";
+import { useActiveOrganization } from "@saas/organizations/hooks/use-active-organization";
 
 /** Only alignment log lines, so React/jsdom noise cannot pass or fail a test. */
 function alignmentLogs(spy: ReturnType<typeof vi.spyOn>) {
@@ -112,6 +119,27 @@ function renderProvider() {
 	);
 }
 
+/**
+ * The alignment and the switcher both go through `authClient.organization
+ * .setActive`, and only the payload tells them apart: alignment names an
+ * organization id, a deliberate switch names a slug.
+ */
+function alignmentCalls() {
+	return setActiveMock.mock.calls.filter(
+		(call) =>
+			typeof call[0] === "object" &&
+			call[0] !== null &&
+			"organizationId" in (call[0] as Record<string, unknown>),
+	);
+}
+
+/** Hands the test the context's switch action, as the switcher UI gets it. */
+let startSwitch: ((slug: string | null) => Promise<void>) | undefined;
+function SwitchConsumer() {
+	startSwitch = useActiveOrganization().setActiveOrganization;
+	return <div>child</div>;
+}
+
 describe("session alignment with the workspace on screen", () => {
 	let consoleErrorSpy: ReturnType<typeof vi.spyOn>;
 
@@ -124,9 +152,10 @@ describe("session alignment with the workspace on screen", () => {
 		activeOrganizationMock = {
 			id: "org-2",
 			slug: "example-org",
-			members: [],
+			members: [{ userId: "u-1", role: "owner" }],
 		};
-		sessionMock = { activeOrganizationId: "org-1" };
+		sessionMock = { activeOrganizationId: "org-1", userId: "u-1" };
+		startSwitch = undefined;
 		setActiveMock.mockResolvedValue({ data: { id: "org-2" }, error: null });
 	});
 
@@ -153,7 +182,7 @@ describe("session alignment with the workspace on screen", () => {
 	});
 
 	it("stays silent when the session already names it", async () => {
-		sessionMock = { activeOrganizationId: "org-2" };
+		sessionMock = { activeOrganizationId: "org-2", userId: "u-1" };
 
 		renderProvider();
 
@@ -207,7 +236,7 @@ describe("session alignment with the workspace on screen", () => {
 		activeOrganizationMock = {
 			id: "org-2",
 			slug: "example-org",
-			members: [],
+			members: [{ userId: "u-1", role: "owner" }],
 		};
 		rerender(
 			<ActiveOrganizationProvider>
@@ -217,5 +246,128 @@ describe("session alignment with the workspace on screen", () => {
 		await new Promise((resolve) => setTimeout(resolve, 0));
 
 		expect(setActiveMock).toHaveBeenCalledTimes(1);
+	});
+
+	it("does not attempt an alignment for a viewer the workspace excludes", async () => {
+		// A project guest is shown the workspace without belonging to it, and
+		// the organization plugin refuses to make a non-member's session name
+		// it. The refusal is not free — it clears the workspace the session was
+		// carrying — so the call is never sent. The member list here is not
+		// empty: it names somebody else, which is exactly the case an
+		// emptiness check would wave through.
+		activeOrganizationMock = {
+			id: "org-2",
+			slug: "example-org",
+			members: [{ userId: "u-other", role: "owner" }],
+		};
+
+		renderProvider();
+
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		expect(setActiveMock).not.toHaveBeenCalled();
+		expect(alignmentLogs(consoleErrorSpy)).toHaveLength(0);
+	});
+
+	it("does not attempt an alignment when the workspace lists no members at all", async () => {
+		// The thin organization a guest resolves carries no member rows.
+		activeOrganizationMock = {
+			id: "org-2",
+			slug: "example-org",
+			members: [],
+		};
+
+		renderProvider();
+
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		expect(setActiveMock).not.toHaveBeenCalled();
+	});
+
+	it("still aligns when the member list names the viewer among others", async () => {
+		// The precondition asks whether this viewer belongs, not whether the
+		// workspace has members — a real membership among other people's still
+		// gets the session moved.
+		activeOrganizationMock = {
+			id: "org-2",
+			slug: "example-org",
+			members: [
+				{ userId: "u-other", role: "owner" },
+				{ userId: "u-1", role: "member" },
+			],
+		};
+
+		renderProvider();
+
+		await waitFor(() => {
+			expect(setActiveMock).toHaveBeenCalledWith({
+				organizationId: "org-2",
+			});
+		});
+	});
+
+	it("paints its children without waiting on the precondition or the call", () => {
+		// The alignment is a background correction. Nothing on the page may be
+		// gated on it, so the call is left pending here and the child has to be
+		// on screen already — and the same holds on the path where the
+		// precondition skips the call entirely.
+		setActiveMock.mockReturnValue(new Promise(() => {}));
+
+		const { getByText, rerender } = renderProvider();
+
+		expect(getByText("child")).toBeDefined();
+		expect(setActiveMock).toHaveBeenCalledTimes(1);
+
+		activeOrganizationMock = {
+			id: "org-3",
+			slug: "example-org",
+			members: [{ userId: "u-other", role: "owner" }],
+		};
+		rerender(
+			<ActiveOrganizationProvider>
+				<div>child</div>
+			</ActiveOrganizationProvider>,
+		);
+
+		expect(getByText("child")).toBeDefined();
+		expect(setActiveMock).toHaveBeenCalledTimes(1);
+	});
+
+	it("stays out of the way of a deliberate workspace switch", async () => {
+		// The switch is already writing the field the alignment would write; a
+		// background correction firing underneath it would race that write.
+		sessionMock = { activeOrganizationId: "org-2", userId: "u-1" };
+		// Neither call resolves, so the switch stays in flight for the rerender.
+		setActiveMock.mockReturnValue(new Promise(() => {}));
+
+		const { rerender } = render(
+			<ActiveOrganizationProvider>
+				<SwitchConsumer />
+			</ActiveOrganizationProvider>,
+		);
+		expect(setActiveMock).not.toHaveBeenCalled();
+
+		await act(async () => {
+			void startSwitch?.("other-org");
+		});
+
+		// The session now disagrees with the workspace on screen — but the
+		// switch owns that field until it lands.
+		sessionMock = { activeOrganizationId: "org-1", userId: "u-1" };
+		activeOrganizationMock = {
+			id: "org-2",
+			slug: "example-org",
+			members: [{ userId: "u-1", role: "owner" }],
+		};
+		rerender(
+			<ActiveOrganizationProvider>
+				<SwitchConsumer />
+			</ActiveOrganizationProvider>,
+		);
+		await new Promise((resolve) => setTimeout(resolve, 0));
+
+		expect(alignmentCalls()).toHaveLength(0);
+		expect(setActiveMock).toHaveBeenCalledTimes(1);
+		expect(setActiveMock).toHaveBeenCalledWith({
+			organizationSlug: "other-org",
+		});
 	});
 });
