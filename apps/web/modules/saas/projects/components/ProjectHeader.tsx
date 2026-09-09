@@ -188,7 +188,17 @@ export function ProjectHeader({
 							</Button>
 						</TooltipTrigger>
 						<TooltipContent>
-							{tTooltip("editProject")}
+							{/* The wizard's copy names the repository link and
+							    integrations, which the edit screen does not
+							    touch — they moved to the project's own tabs and
+							    settings. Wrong copy under the new flow, right
+							    copy under the old one, so it follows the same
+							    switch the button's destination does. */}
+							{tTooltip(
+								simplifiedCreation && project.status !== "DRAFT"
+									? "editProjectBasics"
+									: "editProject",
+							)}
 						</TooltipContent>
 					</Tooltip>
 				</div>
