@@ -2,15 +2,12 @@ import { isFunctionTagsEnabled } from "@repo/utils/feature-flag";
 import {
 	buildMeetingSpeakers,
 	buildRosterIndex,
+	MEETING_PARTICIPANTS_DETAIL_CAP,
 	type MeetingSpeakers,
 	matchSpeaker,
 } from "../../../src/meeting-speaker-match";
-import type {
-	SourceCoverage,
-	SourceFailures,
-} from "../../../src/publishing-suite-schema";
-import { computeDedupeKey } from "../../../src/publishing-suite-schema";
 import { publishingTerminalCountsAsRun } from "../../../src/publishing-cadence";
+import { isTopicSnoozed } from "../../../src/publishing-inbox";
 import {
 	computePublishingPreferencesHash,
 	type PublishingPreferencesSnapshot,
@@ -19,7 +16,12 @@ import {
 	type PublishingSnoozePreset,
 	resolvePublishingSnoozeUntil,
 } from "../../../src/publishing-snooze";
-import { isTopicSnoozed } from "../../../src/publishing-inbox";
+import type {
+	SourceCoverage,
+	SourceFailures,
+} from "../../../src/publishing-suite-schema";
+import { computeDedupeKey } from "../../../src/publishing-suite-schema";
+import { formatMeetingDateLabel } from "../../../src/publishing-why-suggested";
 import { db, Prisma } from "../../client"; // packages/database/prisma/client.ts re-exports both — NOT ../../../src
 import type {
 	FunctionTag,
@@ -730,11 +732,23 @@ export type PublishingTopicAuthorRecommendation = {
 } | null;
 
 /** A resolved provenance source shown in the "why suggested" line. `label` is
- *  "" only for a meeting with no subject (rendered as bare "Meeting"). */
+ *  "" only for a meeting with no subject (rendered as bare "Meeting").
+ *
+ *  `date` is set for meetings only, and only when the transcript carries one:
+ *  a recurring series yields several transcripts under ONE subject, so the
+ *  label alone cannot tell two occurrences apart. Preformatted here rather
+ *  than sent as a timestamp — the rest of this shape is already resolved and
+ *  capped server-side, and a raw date would render in whichever timezone the
+ *  reader's browser happens to be in, moving the day for anyone far from UTC. */
 export type PublishingWhySuggestedSource = {
 	type: "story" | "document" | "meeting";
 	label: string;
+	date?: string;
 };
+
+/** What `resolveLabels` yields per id: a source without its `type`, which the
+ *  caller supplies from which list the id came out of. */
+type ResolvedWhySuggestedSource = Omit<PublishingWhySuggestedSource, "type">;
 
 /** Global, per-topic "why suggested" provenance summary (display-only). Named
  *  local sources (capped) + a visible PR count. `null` = render nothing. */
@@ -780,6 +794,22 @@ export interface PublishingTopicListItem {
 		image: string | null;
 		username: string | null;
 	}[];
+	/** Who was asked to pick this up (A8). Informational — it grants nothing
+	 *  and hides nothing. The RAW stored ids, including any that no longer
+	 *  resolve to a live user, so the picker can seed its selection from the
+	 *  truth rather than from what happened to render. */
+	assigneeUserIds: string[];
+	/** The same set with display handles resolved, for rendering. Resolved from
+	 *  the SAME `db.user.findMany` as `contributors` (the ids are unioned into
+	 *  one lookup), so it costs nothing extra — and it therefore shares that
+	 *  lookup's degrade contract: a handle-resolution failure empties this to
+	 *  `[]` alongside `contributors`, while `assigneeUserIds` above survives. */
+	assignees: {
+		id: string;
+		name: string;
+		image: string | null;
+		username: string | null;
+	}[];
 	rankReason: PublishingTopicRankReason;
 	authorRecommendation: PublishingTopicAuthorRecommendation;
 	angle: string | null;
@@ -809,6 +839,7 @@ const TOPIC_LIST_SELECT = {
 	contributorUserIds: true,
 	contributorsOverridden: true,
 	userContributorUserIds: true,
+	assigneeUserIds: true,
 	relevantFunctionTags: true,
 	postTypeRecommendations: true,
 	angle: true,
@@ -865,6 +896,19 @@ export async function listPublishingTopics(o: {
 	 * to no rows (DV16) rather than to a topic the viewer may not see.
 	 */
 	topicId?: string;
+	/**
+	 * How many matched meeting participants each item carries before
+	 * `overflowCount` takes over. Defaults to the Inbox's
+	 * `MEETING_PARTICIPANTS_CAP`; `getPublishingTopic` raises it so the topic
+	 * page can unfold the rest of the names.
+	 *
+	 * Deliberately an option on this function rather than a second enrichment
+	 * path in `getPublishingTopic`: the two views share one projection and one
+	 * set of degrade contracts, and the cap is the ONLY thing that differs.
+	 * Raising it for the whole list would widen 133 rows' payloads to buy a
+	 * disclosure nothing on the Inbox offers.
+	 */
+	meetingParticipantsCap?: number;
 }): Promise<{ items: PublishingTopicListItem[] }> {
 	const rows = await db.publishingTopic.findMany({
 		where: {
@@ -926,8 +970,21 @@ export async function listPublishingTopics(o: {
 	// never picked, and a lookup scoped to the AI list would leave that
 	// contributor's handle unresolved (silently dropped by the `.filter()`
 	// below, right when the person who just assigned it looks for it).
+	//
+	// Assignees (A8) ride the SAME lookup rather than adding a third: the two
+	// sets overlap heavily in practice (you tend to assign the people who did
+	// the work), and one `IN` over the union is strictly cheaper than two. The
+	// consequence is deliberate and documented on the type — `assignees` shares
+	// this degrade contract and empties alongside `contributors`, while the raw
+	// `assigneeUserIds` column survives the failure untouched, so the picker can
+	// still seed the selection it is about to edit.
 	const allIds = [
-		...new Set(rows.flatMap((r) => effectiveContributorUserIds(r))),
+		...new Set(
+			rows.flatMap((r) => [
+				...effectiveContributorUserIds(r),
+				...r.assigneeUserIds,
+			]),
+		),
 	];
 	let byId = new Map<
 		string,
@@ -1087,23 +1144,28 @@ export async function listPublishingTopics(o: {
 			}
 		}
 
-		// Chunked, tenant-scoped resolution → one label map per type (no truncation).
+		// Chunked, tenant-scoped resolution → one source map per type (no truncation).
 		const resolveLabels = async <S extends { id: string }>(
 			ids: string[],
 			read: (chunk: string[]) => Promise<S[]>,
-			toLabel: (row: S) => string,
-		): Promise<Map<string, string>> => {
-			const map = new Map<string, string>();
+			toSource: (row: S) => ResolvedWhySuggestedSource,
+		): Promise<Map<string, ResolvedWhySuggestedSource>> => {
+			const map = new Map<string, ResolvedWhySuggestedSource>();
 			for (const c of chunkIds(ids, WHY_SUGGESTED_ID_CHUNK)) {
 				if (c.length === 0) {
 					continue;
 				}
 				for (const row of await read(c)) {
-					map.set(row.id, toLabel(row));
+					map.set(row.id, toSource(row));
 				}
 			}
 			return map;
 		};
+
+		// One clock read for the whole page, so two meetings resolved either
+		// side of midnight on 31 December cannot disagree about which of them
+		// needs a year.
+		const currentYear = new Date().getUTCFullYear();
 
 		const storyLabels = await resolveLabels(
 			[...storyIdSet],
@@ -1112,7 +1174,7 @@ export async function listPublishingTopics(o: {
 					where: { projectId: o.projectId, id: { in: c } },
 					select: { id: true, title: true },
 				}),
-			(row) => row.title,
+			(row) => ({ label: row.title }),
 		);
 		const docLabels = await resolveLabels(
 			[...docIdSet],
@@ -1121,16 +1183,27 @@ export async function listPublishingTopics(o: {
 					where: { projectId: o.projectId, id: { in: c } },
 					select: { id: true, title: true },
 				}),
-			(row) => row.title,
+			(row) => ({ label: row.title }),
 		);
 		const meetingLabels = await resolveLabels(
 			[...meetingIdSet],
 			(c) =>
 				db.projectMeetingTranscript.findMany({
 					where: { projectId: o.projectId, id: { in: c } },
-					select: { id: true, meetingSubject: true },
+					// `meetingDate` joins the EXISTING select rather than
+					// arriving on a second read: it is the same row, and a
+					// separate query would sit outside this block's try/catch
+					// and break the all-or-nothing degrade below.
+					select: {
+						id: true,
+						meetingSubject: true,
+						meetingDate: true,
+					},
 				}),
-			(row) => row.meetingSubject?.trim() || "",
+			(row) => ({
+				label: row.meetingSubject?.trim() || "",
+				date: formatMeetingDateLabel(row.meetingDate, currentYear),
+			}),
 		);
 
 		// Compose per topic: dedupe → order stories→docs→meetings → cap.
@@ -1145,14 +1218,14 @@ export async function listPublishingTopics(o: {
 			const pushNamed = (
 				ids: unknown,
 				type: PublishingWhySuggestedSource["type"],
-				labels: Map<string, string>,
+				labels: Map<string, ResolvedWhySuggestedSource>,
 			) => {
 				for (const id of new Set(strArr(ids))) {
-					const label = labels.get(id);
-					if (label === undefined) {
+					const source = labels.get(id);
+					if (source === undefined) {
 						continue; // unresolved (deleted/foreign) — drop
 					}
-					named.push({ type, label });
+					named.push({ type, ...source });
 				}
 			};
 			pushNamed(prov.storyIds, "story", storyLabels);
@@ -1297,7 +1370,10 @@ export async function listPublishingTopics(o: {
 				const members = [...ids]
 					.map((id) => memberById.get(id))
 					.filter((m): m is NonNullable<typeof m> => m != null);
-				const value = buildMeetingSpeakers(members);
+				const value = buildMeetingSpeakers(
+					members,
+					o.meetingParticipantsCap,
+				);
 				if (value) {
 					meetingSpeakersById.set(topicId, value);
 				}
@@ -1363,6 +1439,14 @@ export async function listPublishingTopics(o: {
 				contributorsOverridden,
 				userContributorUserIds: userContributorsRaw,
 			})
+				.map((id) => byId.get(id))
+				.filter((u): u is NonNullable<typeof u> => u != null),
+			// A8. No effective-set indirection to apply: assignees have no
+			// AI-resolved twin to fall back to, so the stored column IS the
+			// answer. `assigneeUserIds` itself rides along in `rest` — the raw
+			// ids stay on the wire so the picker seeds from the truth, not from
+			// whichever of them happened to resolve to a live user here.
+			assignees: rest.assigneeUserIds
 				.map((id) => byId.get(id))
 				.filter((u): u is NonNullable<typeof u> => u != null),
 		};
@@ -1493,6 +1577,13 @@ export async function listPublishingTopics(o: {
  * `rankReason` is a list-ordering signal. On a single-row read the partition
  * is trivially the viewer's own tier, which is what the Inbox row would show
  * for the same topic — so it stays meaningful rather than becoming noise.
+ *
+ * ONE enrichment option differs from the Inbox: the meeting-participant cap.
+ * The Inbox line has room for three names across 133 rows; this page shows one
+ * topic and is where "who was actually in that meeting" gets asked, so it
+ * carries the rest of the matched members and the page offers to unfold them.
+ * The first three are the same three either way — `buildMeetingSpeakers` orders
+ * before it caps — so the collapsed page and the Inbox row never disagree.
  */
 export async function getPublishingTopic(o: {
 	id: string;
@@ -1503,6 +1594,7 @@ export async function getPublishingTopic(o: {
 		projectId: o.projectId,
 		viewerUserId: o.viewerUserId,
 		topicId: o.id,
+		meetingParticipantsCap: MEETING_PARTICIPANTS_DETAIL_CAP,
 	});
 	const topic = items[0];
 	return topic ? { topic } : null;
@@ -1920,6 +2012,63 @@ export async function updatePublishingTopicContributors(i: {
 		select: TOPIC_SELECT,
 	});
 	return topic ? { topic } : null;
+}
+
+/**
+ * Replace a topic's assignee list (A8) and report who is NEWLY on it.
+ *
+ * Structurally a mirror of `updatePublishingTopicContributors` above, with the
+ * tri-state deliberately absent: assignees have no AI-resolved set, so there is
+ * nothing to "reset to" and no `assigneesOverridden` twin. The input is a plain
+ * array and `[]` means nobody — not "revert".
+ *
+ * `addedUserIds` is why this reads before it writes. The caller notifies on ADD
+ * only, and it can only know what an add IS by diffing against the set that was
+ * there. Deriving it here rather than making the procedure run its own prior
+ * read keeps the two halves of one decision in one place, and keeps the window
+ * between them as small as this layer can make it — a concurrent writer between
+ * the read and the update can still cost a duplicate notification, which the
+ * caller's `dedupeKey` absorbs (see `fanOut.publishingTopicAssigned`).
+ *
+ * Membership is NOT checked here — the procedure does it, because it is the
+ * layer that knows the caller's organization. Do not call this helper from a
+ * new caller without repeating that check: see the note in
+ * `update-topic-assignees.ts`, which is stricter than the contributor one (no
+ * grandfathering).
+ *
+ * Project-scoped and writes NO tenant columns, like its neighbours.
+ */
+export async function updatePublishingTopicAssignees(i: {
+	id: string;
+	projectId: string;
+	assigneeUserIds: string[];
+}): Promise<{
+	topic: PublishingTopicRecord;
+	addedUserIds: string[];
+} | null> {
+	const prior = await db.publishingTopic.findFirst({
+		where: { id: i.id, projectId: i.projectId },
+		select: { assigneeUserIds: true },
+	});
+	if (!prior) {
+		return null;
+	}
+	const next = Array.from(new Set(i.assigneeUserIds));
+	const priorSet = new Set(prior.assigneeUserIds);
+	const addedUserIds = next.filter((id) => !priorSet.has(id));
+
+	const { count } = await db.publishingTopic.updateMany({
+		where: { id: i.id, projectId: i.projectId },
+		data: { assigneeUserIds: next },
+	});
+	if (count === 0) {
+		return null;
+	}
+	const topic = await db.publishingTopic.findFirst({
+		where: { id: i.id, projectId: i.projectId },
+		select: TOPIC_SELECT,
+	});
+	return topic ? { topic, addedUserIds } : null;
 }
 
 /**

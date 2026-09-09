@@ -1,5 +1,10 @@
 "use client";
 
+import {
+	AGING_AFTER_DAYS,
+	STALE_AFTER_DAYS,
+	type TopicNeglect,
+} from "@repo/database/src/publishing-inbox";
 import { Button } from "@ui/components/button";
 import {
 	Select,
@@ -14,6 +19,7 @@ import {
 	TooltipTrigger,
 } from "@ui/components/tooltip";
 import { cn } from "@ui/lib";
+import { formatDistanceToNowStrict } from "date-fns";
 import {
 	AlarmClockIcon,
 	AlarmClockOffIcon,
@@ -24,12 +30,13 @@ import {
 import Link from "next/link";
 import { useTranslations } from "next-intl";
 import { useEffect, useMemo, useState } from "react";
+import { AssigneesDialog } from "./AssigneesDialog";
 import { ContributorsDialog } from "./ContributorsDialog";
 import { DeclineTopicDialog } from "./DeclineTopicDialog";
 import { PostTypesDialog } from "./PostTypesDialog";
 import { PublishTopicDialog } from "./PublishTopicDialog";
 import { type SnoozePreset, SnoozeTopicDialog } from "./SnoozeTopicDialog";
-import { TopicDetails } from "./TopicDetails";
+import { TopicDetails, TopicRankReason } from "./TopicDetails";
 import {
 	type PostType,
 	type ProjectMember,
@@ -47,6 +54,23 @@ import {
 // with the Inbox layout.
 // ---------------------------------------------------------------------------
 
+/**
+ * A wire timestamp as a usable `Date`, or `null` when there is none.
+ *
+ * Two things make this a guard rather than padding. Timestamps cross the wire
+ * as `Date | string` (the same reason `PublishingSuiteList` normalizes before
+ * composing the Inbox sections), and an absent one yields an Invalid Date
+ * whose `toISOString()` THROWS — inside a row that renders eagerly, that is
+ * not a missing line, it is the whole tab.
+ */
+function toDate(value: Date | string | null | undefined): Date | null {
+	if (value == null) {
+		return null;
+	}
+	const parsed = value instanceof Date ? value : new Date(value);
+	return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
 /** The wake date in the reader's own locale. Date-only on purpose: a snooze is
  *  a coarse instrument, and a time-of-day would imply a precision that three
  *  fixed presets do not have. */
@@ -63,6 +87,7 @@ export function TopicRow({
 	canEdit,
 	inbox,
 	isPending,
+	neglect = null,
 	topicHref,
 	members,
 	membersPending,
@@ -71,6 +96,7 @@ export function TopicRow({
 	onChangeStatus,
 	onChangePostTypes,
 	onChangeContributors,
+	onChangeAssignees,
 	onSetReadState,
 	onSetSnooze,
 }: {
@@ -87,6 +113,19 @@ export function TopicRow({
 	topicHref: string;
 	/** True while THIS topic's status mutation is in flight (C-Med2). */
 	isPending: boolean;
+	/**
+	 * How long this topic has gone untouched and which threshold that has
+	 * passed, or `null` if neither — the very value `topicNeglect` already
+	 * computed for the Suggested ordering, so the badge and the sink can never
+	 * disagree about the same row.
+	 *
+	 * Passed in rather than derived here for the same reason `topicHref` is:
+	 * the row has no clock of its own, and one `now` per render is what keeps
+	 * a row from being badged stale but left un-sunk across a day boundary.
+	 * Optional and `null` by default — a mount with no neglect information is
+	 * a row that is not neglected, which is what the flag-off path wants.
+	 */
+	neglect?: TopicNeglect | null;
 	/**
 	 * The project's members, for the contributors picker. Fetched ONCE in
 	 * `PublishingSuiteList` and passed down — a query here would fire once
@@ -111,6 +150,9 @@ export function TopicRow({
 	onChangeContributors: (
 		contributorUserIds: string[] | null,
 	) => Promise<void>;
+	/** A8. No `null` arm: assignees have no AI-resolved set to revert to, so
+	 *  `[]` is the only way to clear the list and it means exactly "nobody". */
+	onChangeAssignees: (assigneeUserIds: string[]) => Promise<void>;
 	onSetReadState: (read: boolean) => Promise<void>;
 	onSetSnooze: (
 		preset: SnoozePreset | null,
@@ -130,6 +172,8 @@ export function TopicRow({
 	const [postTypesPending, setPostTypesPending] = useState(false);
 	const [contributorsOpen, setContributorsOpen] = useState(false);
 	const [contributorsPending, setContributorsPending] = useState(false);
+	const [assigneesOpen, setAssigneesOpen] = useState(false);
+	const [assigneesPending, setAssigneesPending] = useState(false);
 	const [snoozeOpen, setSnoozeOpen] = useState(false);
 	const [snoozePending, setSnoozePending] = useState(false);
 	const [expanded, setExpanded] = useState(false);
@@ -226,6 +270,20 @@ export function TopicRow({
 			// handlePostTypesSubmit above).
 		} finally {
 			setContributorsPending(false);
+		}
+	};
+
+	const handleAssigneesSubmit = async (assigneeUserIds: string[]) => {
+		setAssigneesPending(true);
+		try {
+			await onChangeAssignees(assigneeUserIds);
+			setAssigneesOpen(false);
+		} catch {
+			// Surfaced by the shared mutation's onError toast; keep the dialog
+			// open so the user's checkbox choices aren't lost (mirrors
+			// handleContributorsSubmit above).
+		} finally {
+			setAssigneesPending(false);
 		}
 	};
 
@@ -342,14 +400,33 @@ export function TopicRow({
 		[topic.userContributorUserIds, topic.contributors],
 	);
 
+	// A8 needs the SAME referential stability `contributorIds` is memoized for —
+	// `AssigneesDialog` re-seeds its selection whenever the reference changes,
+	// so a fresh array every render would discard whatever the user just checked
+	// — but it needs no `useMemo` to get it. `topic.assigneeUserIds` is a plain
+	// column passed straight through, and TanStack Query's structural sharing
+	// already keeps it stable across a refetch that changed nothing. A memo whose
+	// body is the dependency is ceremony, not a guard. The dialog is handed the
+	// RAW ids rather than the resolved `assignees`: the two differ exactly when a
+	// handle failed to resolve, and seeding from the handles would let Save
+	// silently remove whoever the lookup lost. Anything less direct than a
+	// pass-through here (a `??`, a `.map()`) DOES need the memo — see
+	// `TopicItemPage`, where the same value is `topic?.assigneeUserIds ?? []`.
+
 	const details = (
 		<TopicDetails
 			topic={topic}
 			canEdit={canEdit}
 			isPending={isPending}
+			// The Inbox row lifts the rank-reason line into its collapsed
+			// summary column below, so the expanded region must not repeat it.
+			// The flag-off row has no summary column to lift it into and keeps
+			// rendering it here, exactly where it shipped.
+			showRankReason={!inbox}
 			onEditUrl={() => setPublishOpen(true)}
 			onEditPostTypes={() => setPostTypesOpen(true)}
 			onEditContributors={() => setContributorsOpen(true)}
+			onEditAssignees={() => setAssigneesOpen(true)}
 		/>
 	);
 
@@ -365,6 +442,84 @@ export function TopicRow({
 	const pitchLine = topic.pitch ? (
 		<p className="text-sm leading-6 text-muted-foreground">{topic.pitch}</p>
 	) : null;
+
+	// Last activity, mirroring `StoryTile`'s `lastEditedAt ?? createdAt`: what
+	// the reader wants at a glance is when the topic was last TOUCHED, not when
+	// it was created. The fallback is real rather than ceremonial — a row can
+	// reach this component with no usable `updatedAt` at all, and one bad
+	// timestamp must cost the age line, never the row.
+	const createdAt = toDate(topic.createdAt);
+	const lastActivityAt = toDate(topic.updatedAt) ?? createdAt;
+
+	// `<time>` rather than `<span>`: the exact instant is a hover away for a
+	// mouse user, so `dateTime` is what carries it everywhere else. It is
+	// deliberately NOT given an `aria-label` — `time` has the implicit ARIA
+	// role `generic`, which prohibits naming from `aria-label` (the same trap
+	// `TopicDetails` documents on its post-type chips), and the relative text
+	// is already visible to everyone.
+	const ageLine = lastActivityAt ? (
+		<Tooltip>
+			<TooltipTrigger asChild>
+				<time
+					dateTime={lastActivityAt.toISOString()}
+					className="text-xs text-muted-foreground"
+				>
+					{formatDistanceToNowStrict(lastActivityAt, {
+						addSuffix: true,
+					})}
+				</time>
+			</TooltipTrigger>
+			<TooltipContent>
+				<div className="space-y-1 text-[11px] leading-snug">
+					{createdAt ? (
+						<p>{`Created · ${createdAt.toLocaleString()}`}</p>
+					) : null}
+					<p>{`Updated · ${lastActivityAt.toLocaleString()}`}</p>
+				</div>
+			</TooltipContent>
+		</Tooltip>
+	) : null;
+
+	// Never colour alone (WCAG 2.1 AA): the muted surface on the row below is
+	// the at-a-glance signal, and this badge is what actually SAYS it — the row
+	// stays readable with colour stripped out entirely, and the two tiers are
+	// told apart by their WORDS ("quiet" then "stale"), never by their tint.
+	//
+	// The day count LEADS, in the larger of the two type sizes, because the
+	// number is the message; the word trailing it is the editorial label that
+	// gives the number its meaning. That is `angleChip`'s value-and-label pill
+	// read in the other order, which is why it reuses its geometry rather than
+	// inventing a second badge shape for the same row. The thresholds
+	// themselves are invisible, so the title names the one just passed.
+	const neglectBadge =
+		neglect === null ? null : (
+			<p
+				className={cn(
+					"inline-flex w-fit items-baseline gap-1.5 rounded-full border px-2 py-0.5",
+					// `bg-card` and not `bg-background` for the quiet pill: the
+					// row underneath it is `bg-muted`, and `--background` sits
+					// about two units of lightness from that — the same
+					// non-step rejected for the row surface below. `--card` is
+					// a real step against `--muted` in both themes, and it is
+					// what `angleChip` already uses to read as a pill on a row.
+					neglect.level === "stale"
+						? "border-highlight/40 bg-highlight/10"
+						: "border-border bg-card",
+				)}
+				title={`No activity in over ${
+					neglect.level === "stale"
+						? STALE_AFTER_DAYS
+						: AGING_AFTER_DAYS
+				} days`}
+			>
+				<span className="font-semibold text-foreground text-xs tabular-nums">
+					{neglect.days}
+				</span>{" "}
+				<span className="text-[11px] uppercase tracking-[0.15em] text-muted-foreground">
+					{`${neglect.days === 1 ? "day" : "days"} ${neglect.level === "stale" ? "stale" : "quiet"}`}
+				</span>
+			</p>
+		);
 
 	// Fix 2 (external review, flag-ON row only): the Inbox row needs the
 	// trigger full-width below `sm:` so it can drop onto its own line at
@@ -444,6 +599,19 @@ export function TopicRow({
 				membersPending={membersPending}
 				membersError={membersError}
 			/>
+			<AssigneesDialog
+				topicTitle={topic.title}
+				open={assigneesOpen}
+				onOpenChange={setAssigneesOpen}
+				members={members}
+				assignees={topic.assignees}
+				initialSelected={topic.assigneeUserIds}
+				viewerUserId={viewerUserId}
+				onSubmit={handleAssigneesSubmit}
+				isPending={assigneesPending}
+				membersPending={membersPending}
+				membersError={membersError}
+			/>
 			<SnoozeTopicDialog
 				topicTitle={topic.title}
 				open={snoozeOpen}
@@ -482,7 +650,25 @@ export function TopicRow({
 	}
 
 	return (
-		<li className="rounded-xl border border-border bg-card p-4">
+		<li
+			className={cn(
+				"rounded-xl border border-border p-4",
+				// A neglected row recedes by swapping the card surface for the
+				// muted one — NOT by `opacity-*`, which would drag every piece
+				// of text on the row below the AA contrast floor the rest of
+				// the list clears. Nothing here is colour-only: `neglectBadge`
+				// above says it in words.
+				//
+				// ONE surface step, taken at the EARLIER threshold, which is
+				// where the owner asked for "less visible by colour". A second
+				// step for stale would have to sit between `--card` and
+				// `--muted`, and in light mode that gap is about two units of
+				// lightness — a graduation visible in the code and in nothing
+				// else. Stale escalates where the escalation can actually be
+				// seen: the badge tint, its word, and the sink.
+				neglect === null ? "bg-card" : "bg-muted",
+			)}
+		>
 			{/* Fix 2 (external review): `flex-wrap` lets the action cluster
 			    drop below the title instead of squeezing it at phone widths.
 			    `basis-full sm:basis-auto` gives the summary column the whole
@@ -551,6 +737,17 @@ export function TopicRow({
 					</div>
 					{angleChip}
 					{pitchLine}
+					{/* `break-words` only here: the reason joins every matched
+					    tag and is unbounded, and the summary column is the one
+					    mount where a single long token could otherwise push the
+					    row wider than its container. */}
+					<TopicRankReason topic={topic} className="break-words" />
+					{ageLine || neglectBadge ? (
+						<div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+							{ageLine}
+							{neglectBadge}
+						</div>
+					) : null}
 					{isSnoozed && topic.snoozedUntil ? (
 						<p className="text-xs text-muted-foreground">
 							Snoozed until{" "}

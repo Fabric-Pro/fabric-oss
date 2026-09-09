@@ -217,11 +217,18 @@ treat a topic as externally safe unless the context supports that.
 ## Content types
 
 Recommend content types based on angle, audience, author fit and available
-evidence. Supported types include Tweet / Short Post, Blog Post, Case Study,
-Stakeholder Email, Webinar or Demo Script, Video Walkthrough Script, Newsletter
-Blurb, and AI-assisted Video Walkthrough. For each relevant type, decide whether
-it is recommended, possible but needing confirmation, or deferred and not
-recommended yet.
+evidence. Supported types include Tweet / Short Post, LinkedIn Post, Blog Post,
+Case Study, Stakeholder Email, Webinar or Demo Script, Video Walkthrough Script,
+Newsletter Blurb, and AI-assisted Video Walkthrough. For each relevant type,
+decide whether it is recommended, possible but needing confirmation, or deferred
+and not recommended yet.
+
+Tweet / Short Post and LinkedIn Post are NOT interchangeable, and recommending
+one is not implicitly recommending the other. A feed hides a LinkedIn post
+after its first line or two behind "see more" and caps nothing; X caps hard and
+hides nothing. So they suit different material: a point that needs a sentence
+of setup before it lands can work on LinkedIn and cannot work as a tweet.
+Where both fit, say so and say why each does.
 
 ## Supporting assets
 

@@ -268,7 +268,7 @@ function generationActivityFiles(): string[] {
 }
 
 describe("every publishing generation activity re-checks before it spends", () => {
-	it("finds all five generation activities", () => {
+	it("finds all six generation activities", () => {
 		const found = generationActivityFiles().map((file) =>
 			relative(ACTIVITIES_DIR, file).replace(/\\/g, "/"),
 		);
@@ -276,6 +276,7 @@ describe("every publishing generation activity re-checks before it spends", () =
 		expect(found.sort()).toEqual([
 			"publishing-blog-post/generate-blog-post.ts",
 			"publishing-case-study/generate-case-study.ts",
+			"publishing-linkedin-post/generate-linkedin-post.ts",
 			"publishing-planning/generate-planning-analysis.ts",
 			"publishing-short-post/generate-short-post.ts",
 			"publishing-stakeholder-email/generate-stakeholder-email.ts",
@@ -296,8 +297,8 @@ describe("every publishing generation activity re-checks before it spends", () =
 
 		it(`${rel} calls it BEFORE anything resolves a model`, () => {
 			// The property that actually protects the organization's money. A
-			// guard that runs after the model factory is a log line. Two of the
-			// five activities (blog post, short post) have no suite of their own
+			// guard that runs after the model factory is a log line. Three of the
+			// six activities (blog post, short post, LinkedIn post) have no suite of their own
 			// at all, so for those this is the ONLY thing standing between the
 			// code and a silently reordered call.
 			// Both sides are CALLS, not references: every one of these modules

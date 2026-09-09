@@ -58,9 +58,10 @@ export type {
 	DraftCommitRefusal,
 } from "./publishing-tenant-lock";
 
-/** The four `PublishingTopicPostType` values, in the UI's fixed display order. */
+/** The `PublishingTopicPostType` values, in the UI's fixed display order. */
 const POST_TYPES = [
 	"TWEET",
+	"LINKEDIN_POST",
 	"BLOG_POST",
 	"CASE_STUDY",
 	"STAKEHOLDER_EMAIL",

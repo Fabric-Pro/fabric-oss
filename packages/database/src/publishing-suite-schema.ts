@@ -39,9 +39,16 @@ export const TopicProvenanceSchema = z.object({
 });
 export type TopicProvenance = z.infer<typeof TopicProvenanceSchema>;
 
-/** The four human-readable post-type labels the LLM emits (whitelisted, fail-closed). */
+/**
+ * The human-readable post-type labels the LLM emits (whitelisted, fail-closed).
+ *
+ * Order matches `PUBLISHING_POST_TYPE_OPTIONS` element for element, which
+ * `publishing-post-types.test.ts` asserts — so LinkedIn sits beside Tweet here
+ * too even though the Prisma enum appends it.
+ */
 export const POST_TYPE_LABELS = [
 	"Tweet",
+	"LinkedIn Post",
 	"Blog Post",
 	"Case Study",
 	"Stakeholder Email",
@@ -52,12 +59,13 @@ export type PostTypeLabel = (typeof POST_TYPE_LABELS)[number];
 // CLIENT-SAFE module the settings form deep-imports, so the value vocabulary
 // has exactly one definition. `POST_TYPE_LABELS` above stays here: it is the
 // vocabulary the LLM EMITS and is whitelisted fail-closed, which is a
-// different job that happens to use the same four words. The two are pinned
+// different job that happens to use the same words. The two are pinned
 // against each other by `publishing-post-types.test.ts`.
 
 const POST_TYPE_LABEL_TO_ENUM: Record<PostTypeLabel, PublishingTopicPostType> =
 	{
 		Tweet: PublishingTopicPostType.TWEET,
+		"LinkedIn Post": PublishingTopicPostType.LINKEDIN_POST,
 		"Blog Post": PublishingTopicPostType.BLOG_POST,
 		"Case Study": PublishingTopicPostType.CASE_STUDY,
 		"Stakeholder Email": PublishingTopicPostType.STAKEHOLDER_EMAIL,
@@ -212,9 +220,17 @@ export const PublishingTopicSuggestionsSchema = z.object({
 			title: z.string().min(1).max(200),
 			pitch: z.string().min(1).max(500),
 			provenance: TopicProvenanceSchema,
+			// The cap comes from the tuple, never a literal. A literal `.max(4)`
+			// beside a five-value vocabulary does not fail where you can see it:
+			// this schema is parsed by `summarizeTopicSuggestions`, whose
+			// failure throws `PUBLISHING_SCHEMA_VALIDATION_FAILED` — listed in
+			// the suggestion workflow's `nonRetryableErrorTypes`, so there is no
+			// retry and no partial save. ONE topic the model recommends every
+			// format for would fail the WHOLE day's cycle, for every topic in
+			// the batch. Same fix, same reason, as `update-topic-post-types.ts`.
 			suggestedPostTypes: z
 				.array(z.enum(POST_TYPE_LABELS))
-				.max(4)
+				.max(POST_TYPE_LABELS.length)
 				.optional()
 				.default([]),
 			relevantFunctionTags: z

@@ -54,6 +54,8 @@ const {
 	mockNotFound,
 	mockIsFeatureEnabled,
 	mockProjectsGet,
+	ListStub,
+	BreadcrumbsStub,
 } = vi.hoisted(() => ({
 	mockGetSession: vi.fn(),
 	mockGetActiveOrganization: vi.fn(),
@@ -61,6 +63,11 @@ const {
 	mockNotFound: vi.fn(),
 	mockIsFeatureEnabled: vi.fn(),
 	mockProjectsGet: vi.fn(),
+	// Hoisted so the assertions below can identify each child of the page's
+	// wrapper by REFERENCE rather than by guessing at child order — the page
+	// now returns a fragment carrying the breadcrumb trail as well as the list.
+	ListStub: () => null,
+	BreadcrumbsStub: () => null,
 }));
 
 vi.mock("@saas/auth/lib/server", () => ({
@@ -96,12 +103,20 @@ vi.mock("@shared/lib/orpc-client", () => ({
 // Stub the client component so the import doesn't pull the whole React
 // tree — the guard test only cares about which props reach it, not its UI.
 vi.mock("@saas/projects/components/publishing-suite", () => ({
-	PublishingSuiteList: () => null,
+	PublishingSuiteList: ListStub,
+}));
+
+// Same reasoning for the breadcrumb trail: `PageBreadcrumbs` is a client
+// component reading organization context through hooks, and this suite renders
+// nothing — it inspects the element tree the server component returns.
+vi.mock("@saas/shared/components/PageBreadcrumbs", () => ({
+	PageBreadcrumbs: BreadcrumbsStub,
 }));
 
 const PROJECT_ID = "proj-1";
+const PROJECT_NAME = "Example Project";
 const ORG_ID = "org-A";
-const ORG_SLUG = "acme";
+const ORG_SLUG = "example-org";
 
 beforeEach(() => {
 	vi.clearAllMocks();
@@ -124,6 +139,29 @@ async function callPage() {
 	});
 }
 
+type RenderedElement = { type: unknown; props: Record<string, unknown> };
+
+/**
+ * The page now returns a wrapper carrying BOTH the breadcrumb trail and the
+ * list, so a happy-path assertion has to reach past the wrapper. Children are
+ * matched by element reference against the hoisted stubs rather than by index:
+ * a reordered wrapper is a layout decision, not a regression, and an assertion
+ * that fails on it would be pinning the wrong thing.
+ */
+function childOfType(result: unknown, type: unknown): RenderedElement {
+	const raw = (result as RenderedElement).props.children;
+	const children = (Array.isArray(raw) ? raw : [raw]) as RenderedElement[];
+	const found = children.find((child) => child?.type === type);
+	if (!found) {
+		throw new Error("the page did not render the expected child");
+	}
+	return found;
+}
+
+const listProps = (result: unknown) => childOfType(result, ListStub).props;
+const breadcrumbProps = (result: unknown) =>
+	childOfType(result, BreadcrumbsStub).props;
+
 describe("Organization Publishing Suite page — route guard", () => {
 	it("the per-organization gate is the only availability gate", async () => {
 		// The build-time NEXT_PUBLIC_* guard is gone. Nothing outside
@@ -136,7 +174,9 @@ describe("Organization Publishing Suite page — route guard", () => {
 		// this suite stubs an env var any more).
 		mockGetSession.mockResolvedValue({ user: { id: "user-1" } });
 		mockGetActiveOrganization.mockResolvedValue({ id: ORG_ID });
-		mockProjectsGet.mockResolvedValue({ project: { canPublish: true } });
+		mockProjectsGet.mockResolvedValue({
+			project: { name: PROJECT_NAME, canPublish: true },
+		});
 
 		mockIsFeatureEnabled.mockResolvedValue(false);
 		await expect(callPage()).rejects.toThrow(/__NOT_FOUND__/);
@@ -204,13 +244,15 @@ describe("Organization Publishing Suite page — route guard", () => {
 		mockGetSession.mockResolvedValue({ user: { id: "user-1" } });
 		mockGetActiveOrganization.mockResolvedValue({ id: ORG_ID });
 		mockIsFeatureEnabled.mockResolvedValue(true);
-		mockProjectsGet.mockResolvedValue({ project: { canPublish: true } });
+		mockProjectsGet.mockResolvedValue({
+			project: { name: PROJECT_NAME, canPublish: true },
+		});
 
-		const result = (await callPage()) as { props: Record<string, unknown> };
+		const result = await callPage();
 
-		expect(result.props.projectId).toBe(PROJECT_ID);
-		expect(result.props.organizationId).toBe(ORG_ID);
-		expect(result.props.canEdit).toBe(true);
+		expect(listProps(result).projectId).toBe(PROJECT_ID);
+		expect(listProps(result).organizationId).toBe(ORG_ID);
+		expect(listProps(result).canEdit).toBe(true);
 		expect(mockIsFeatureEnabled).toHaveBeenCalledWith(
 			"PUBLISHING_SUITE",
 			ORG_ID,
@@ -228,10 +270,12 @@ describe("Organization Publishing Suite page — route guard", () => {
 		mockGetSession.mockResolvedValue({ user: { id: "viewer-1" } });
 		mockGetActiveOrganization.mockResolvedValue({ id: ORG_ID });
 		mockIsFeatureEnabled.mockResolvedValue(true);
-		mockProjectsGet.mockResolvedValue({ project: { canPublish: false } });
+		mockProjectsGet.mockResolvedValue({
+			project: { name: PROJECT_NAME, canPublish: false },
+		});
 
-		const result = (await callPage()) as { props: Record<string, unknown> };
-		expect(result.props.canEdit).toBe(false);
+		const result = await callPage();
+		expect(listProps(result).canEdit).toBe(false);
 	});
 
 	it("F2(a): given the loader resolves the project, the org route renders it without extra gating and passes the resolved org id (never null)", async () => {
@@ -246,12 +290,14 @@ describe("Organization Publishing Suite page — route guard", () => {
 		// note in the file docblock: end-to-end, that caller is 404'd by the
 		// shared getProjectById loader today (org membership alone does not
 		// grant project access — projects.ts:95).
-		mockProjectsGet.mockResolvedValue({ project: { canPublish: true } });
+		mockProjectsGet.mockResolvedValue({
+			project: { name: PROJECT_NAME, canPublish: true },
+		});
 
-		const result = (await callPage()) as { props: Record<string, unknown> };
+		const result = await callPage();
 
 		expect(mockNotFound).not.toHaveBeenCalled();
-		expect(result.props.canEdit).toBe(true);
+		expect(listProps(result).canEdit).toBe(true);
 		expect(mockProjectsGet).toHaveBeenCalledWith(
 			expect.objectContaining({ organizationId: ORG_ID }),
 		);
@@ -263,11 +309,66 @@ describe("Organization Publishing Suite page — route guard", () => {
 		mockIsFeatureEnabled.mockResolvedValue(true);
 		// Simulates canPublish resolved via an active ProjectMember row
 		// (the guest invite path) rather than an org role.
-		mockProjectsGet.mockResolvedValue({ project: { canPublish: true } });
+		mockProjectsGet.mockResolvedValue({
+			project: { name: PROJECT_NAME, canPublish: true },
+		});
 
-		const result = (await callPage()) as { props: Record<string, unknown> };
+		const result = await callPage();
 
 		expect(mockNotFound).not.toHaveBeenCalled();
-		expect(result.props.canEdit).toBe(true);
+		expect(listProps(result).canEdit).toBe(true);
+	});
+});
+
+/**
+ * The list route is the ONE mount of `PublishingSuiteList` with no chrome of
+ * its own — the other is the `publishing-suite` tab inside `ProjectDetails`,
+ * which renders its own trail. So the trail is owned by this page, and these
+ * cases pin that ownership: a trail moved down into the component would render
+ * twice on the tab and zero times here, and the first assertion below is what
+ * catches the second half of that.
+ */
+describe("Organization Publishing Suite page — breadcrumbs", () => {
+	beforeEach(() => {
+		mockGetSession.mockResolvedValue({ user: { id: "user-1" } });
+		mockGetActiveOrganization.mockResolvedValue({ id: ORG_ID });
+		mockIsFeatureEnabled.mockResolvedValue(true);
+		mockProjectsGet.mockResolvedValue({
+			project: { name: PROJECT_NAME, canPublish: true },
+		});
+	});
+
+	it("renders the project trail above the list, ending on the section", async () => {
+		const result = await callPage();
+
+		expect(breadcrumbProps(result).items).toEqual([
+			{ label: "Projects", href: `/app/${ORG_SLUG}/projects` },
+			{
+				label: PROJECT_NAME,
+				href: `/app/${ORG_SLUG}/projects/${PROJECT_ID}`,
+			},
+			{ label: "Publishing Suite" },
+		]);
+	});
+
+	it("leaves the trailing crumb unlinked so it reads as the current page", async () => {
+		const result = await callPage();
+		const items = breadcrumbProps(result).items as { href?: string }[];
+
+		// `PageBreadcrumbs` renders the last item as `BreadcrumbPage` when it
+		// has no href. Giving "Publishing Suite" one would make the page a link
+		// to itself.
+		expect(items.at(-1)?.href).toBeUndefined();
+	});
+
+	it("names the project from the resolved project, not the route id", async () => {
+		mockProjectsGet.mockResolvedValue({
+			project: { name: "Another Example", canPublish: false },
+		});
+
+		const result = await callPage();
+		const items = breadcrumbProps(result).items as { label: string }[];
+
+		expect(items[1].label).toBe("Another Example");
 	});
 });

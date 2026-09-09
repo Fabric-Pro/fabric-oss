@@ -9,8 +9,13 @@ import { ArrowLeftIcon } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
+import { AssigneesDialog } from "./AssigneesDialog";
 import { ContributorsDialog } from "./ContributorsDialog";
-import { GenerationTabs } from "./GenerationTabs";
+import {
+	buildGenerationTabModel,
+	GenerationTabPanels,
+	GenerationTabTriggers,
+} from "./GenerationTabs";
 import { PlanningAnalysisTab } from "./PlanningAnalysisTab";
 import { PostTypesDialog } from "./PostTypesDialog";
 import { PublishTopicDialog } from "./PublishTopicDialog";
@@ -21,19 +26,44 @@ import {
 import { TopicDecisionLog } from "./TopicDecisionLog";
 import { TopicDetails } from "./TopicDetails";
 import { TopicQuestionsPanel } from "./TopicQuestionsPanel";
-import { type PostType, TOPIC_STATUSES } from "./topic-shared";
+import { TopicReadiness } from "./TopicReadiness";
+import { ALL_POST_TYPES, type PostType, TOPIC_STATUSES } from "./topic-shared";
 
 /**
  * The three review tabs this page owns. Kept as a literal union rather than
  * derived from the array below so a typo in `setTab` is a compile error.
  */
-type ReviewTab = "summaryQuestions" | "planningAnalysis" | "decisionLog";
+type ReviewTab = "summaryQuestions" | "decisionLog" | "planningAnalysis";
 
+/**
+ * Row 1. Ordered to match the Feature Item Page — Summary & Questions,
+ * Decisions, then the document — because the PO asked for exactly that
+ * sequence and because the two pages reading differently is the whole
+ * complaint the 2A rework exists to answer.
+ *
+ * FR6 requires Summary & Questions to be the DEFAULT tab, not the first one,
+ * and it stays the default below.
+ */
 const REVIEW_TABS: ReadonlyArray<{ value: ReviewTab; label: string }> = [
 	{ value: "summaryQuestions", label: "Summary & Questions" },
-	{ value: "planningAnalysis", label: "Planning & Analysis" },
 	{ value: "decisionLog", label: "Decision Log" },
+	{ value: "planningAnalysis", label: "Planning & Analysis" },
 ];
+
+/**
+ * One selection across BOTH rows of the strip.
+ *
+ * The content types are a second ROW of the same tab set, not a tab inside a
+ * tab: picking Blog Post deselects Summary & Questions, the same way picking
+ * Decision Log does. That is what stops the page rendering two independent tab
+ * strips at once — the shape the PO flagged as "tabs way down here, really
+ * easy to get lost".
+ */
+type ActiveTab = ReviewTab | PostType;
+
+const REVIEW_TAB_VALUES: ReadonlySet<string> = new Set(
+	REVIEW_TABS.map((t) => t.value),
+);
 
 /**
  * Topic Item Page — review, planning and decision capture for ONE publishing
@@ -80,7 +110,7 @@ export function TopicItemPage({
 	const queryClient = useQueryClient();
 	const { user } = useSession();
 	const viewerUserId = user?.id ?? null;
-	const [tab, setTab] = useState<ReviewTab>("summaryQuestions");
+	const [tab, setTab] = useState<ActiveTab>("summaryQuestions");
 	// The three metadata editors `TopicDetails` triggers. Held here rather than
 	// inside that component because it is the SAME block the Inbox row mounts:
 	// giving it its own dialogs would put two of each in the tree whenever both
@@ -91,6 +121,8 @@ export function TopicItemPage({
 	const [urlPending, setUrlPending] = useState(false);
 	const [contributorsOpen, setContributorsOpen] = useState(false);
 	const [contributorsPending, setContributorsPending] = useState(false);
+	const [assigneesOpen, setAssigneesOpen] = useState(false);
+	const [assigneesPending, setAssigneesPending] = useState(false);
 
 	const topicQuery = useQuery(
 		orpc.projects.publishingSuite.getTopic.queryOptions({
@@ -116,6 +148,16 @@ export function TopicItemPage({
 					topic.contributors.map((c) => c.id))
 				: [],
 		[topic?.userContributorUserIds, topic?.contributors],
+	);
+
+	// A8, same stability contract as `contributorIds` above and the same
+	// tolerance for `topic` being undefined while the query is pending. Seeded
+	// from the RAW `assigneeUserIds`, never the resolved `assignees`: the two
+	// differ exactly when a handle failed to resolve, and seeding from the
+	// handles would let Save silently drop whoever the lookup lost.
+	const assigneeIds = useMemo(
+		() => topic?.assigneeUserIds ?? [],
+		[topic?.assigneeUserIds],
 	);
 
 	// For the contributors picker (Task 6). This page owns its own queries and
@@ -165,6 +207,48 @@ export function TopicItemPage({
 	// shipping it would keep a supported path to the un-overridden AI text.
 	const effective = analysisQuery.data?.effective ?? null;
 
+	/**
+	 * The DATA half of the analysis, parsed once for the generation panels.
+	 *
+	 * `effective.data` never carries the prose keys (`topicAngle`, `risks`,
+	 * `preDraftGuidance`, …), so this is the structured half — exactly what the
+	 * content-type buckets need. An analysis that came back empty carries no
+	 * recommendation, so it resolves to `null` rather than rendering tabs whose
+	 * AVAILABLE state nothing explains. Empty is judged against BOTH halves, so
+	 * a risk-heavy analysis with no structured recommendations still counts.
+	 */
+	const analysisDocument = useMemo(() => {
+		if (!effective) {
+			return null;
+		}
+		const doc = readPlanningAnalysis(effective.data);
+		return isEmptyAnalysis(effective) ? null : doc;
+	}, [effective]);
+
+	/**
+	 * The content types row 2 offers: the user's override when set, the AI
+	 * suggestion otherwise — the same resolution `PostTypesDialog` seeds from,
+	 * so the strip and the dialog can never disagree.
+	 *
+	 * EMPTY FALLS BACK TO ALL OF THEM, and that is a requirement rather than a
+	 * kindness. #1853 FR1/FR2 say the system SHALL activate the Short Post and
+	 * Blog Post tabs; narrowing the strip to a selection is only legitimate
+	 * while a selection exists to narrow it to. Topics created before 1B started
+	 * writing `suggestedPostTypes` have none, and every manually-created topic
+	 * starts with none — hiding generation from them would strand the feature
+	 * behind a dialog nobody has a reason to open.
+	 */
+	const selectedPostTypes: readonly PostType[] = useMemo(() => {
+		const chosen =
+			topicQuery.data?.topic?.userPostTypes ??
+			topicQuery.data?.topic?.suggestedPostTypes ??
+			[];
+		return chosen.length > 0 ? chosen : ALL_POST_TYPES;
+	}, [
+		topicQuery.data?.topic?.userPostTypes,
+		topicQuery.data?.topic?.suggestedPostTypes,
+	]);
+
 	// The topic's decision thread (2A-3) — the source of truth for the
 	// Summary & Questions tab's open and answered questions AND, read here as
 	// a filterable history rather than a worklist, the Decision Log tab. One
@@ -203,6 +287,37 @@ export function TopicItemPage({
 			return live ? 3000 : false;
 		},
 	});
+
+	const generationModel = useMemo(
+		() =>
+			buildGenerationTabModel({
+				analysis: analysisDocument,
+				drafts: draftsQuery.data?.drafts ?? [],
+				workingDrafts: draftsQuery.data?.workingDrafts ?? [],
+				decisionThreads: decisionsQuery.data?.threads ?? [],
+				hasError: draftsQuery.isError,
+			}),
+		[
+			analysisDocument,
+			draftsQuery.data?.drafts,
+			draftsQuery.data?.workingDrafts,
+			decisionsQuery.data?.threads,
+			draftsQuery.isError,
+		],
+	);
+
+	/**
+	 * Fall back to the default tab when the selected one stops existing —
+	 * dropping a content type in `PostTypesDialog` while its tab is open would
+	 * otherwise leave the page with a value no trigger and no panel answers to,
+	 * and a blank content region. Derived rather than corrected in an effect so
+	 * there is no frame where nothing renders.
+	 */
+	const activeTab: ActiveTab =
+		REVIEW_TAB_VALUES.has(tab) ||
+		selectedPostTypes.includes(tab as PostType)
+			? tab
+			: "summaryQuestions";
 
 	// 1D's FR4 makes expanding a row "opening" it, which writes the read
 	// marker. Opening the whole page is the strongest form of opening there
@@ -295,6 +410,21 @@ export function TopicItemPage({
 		}),
 	);
 
+	const updateAssignees = useMutation(
+		orpc.projects.publishingSuite.updateTopicAssignees.mutationOptions({
+			// Same contract as `updateContributors` below: the response returns
+			// the narrow topic record, which does NOT carry the assignee
+			// column, so refresh by invalidating rather than reading
+			// `response.topic`.
+			onSuccess: invalidateTopic,
+			onError: () => {
+				toast.error(
+					"We couldn't update the assignees. Please try again.",
+				);
+			},
+		}),
+	);
+
 	const updateContributors = useMutation(
 		orpc.projects.publishingSuite.updateTopicContributors.mutationOptions({
 			// Same contract as `updatePostTypes` above: the mutation response
@@ -347,6 +477,23 @@ export function TopicItemPage({
 			// Surfaced by this mutation's onError toast above.
 		} finally {
 			setContributorsPending(false);
+		}
+	};
+
+	const handleAssigneesSubmit = async (assigneeUserIds: string[]) => {
+		setAssigneesPending(true);
+		try {
+			await updateAssignees.mutateAsync({
+				projectId,
+				organizationId,
+				topicId,
+				assigneeUserIds,
+			});
+			setAssigneesOpen(false);
+		} catch {
+			// Surfaced by this mutation's onError toast above.
+		} finally {
+			setAssigneesPending(false);
 		}
 	};
 
@@ -435,17 +582,45 @@ export function TopicItemPage({
 			</div>
 
 			<Tabs
-				value={tab}
-				onValueChange={(v) => setTab(v as ReviewTab)}
+				value={activeTab}
+				onValueChange={(v) => setTab(v as ActiveTab)}
 				className="space-y-4"
 			>
-				<TabsList aria-label="Topic review">
-					{REVIEW_TABS.map((t) => (
-						<TabsTrigger key={t.value} value={t.value}>
-							{t.label}
-						</TabsTrigger>
-					))}
-				</TabsList>
+				{/* The two rows share ONE rule. Every `TabsList` carries its own
+				    `border-b` and is `inline-flex`, so stacking two of them
+				    unchanged paints two underlines of DIFFERENT widths — the
+				    wrapper owns the rule instead and both lists drop theirs.
+				    Row 2's active trigger still tucks onto it via `-mb-px`. */}
+				<div className="flex flex-col items-start border-border border-b">
+					<TabsList aria-label="Topic review" className="border-b-0">
+						{REVIEW_TABS.map((t) => (
+							<TabsTrigger key={t.value} value={t.value}>
+								{t.label}
+							</TabsTrigger>
+						))}
+					</TabsList>
+
+					<TabsList
+						aria-label="Content generation"
+						className="flex-wrap border-b-0"
+					>
+						<GenerationTabTriggers
+							model={generationModel}
+							postTypes={selectedPostTypes}
+						/>
+					</TabsList>
+				</div>
+
+				{draftsQuery.isError ? (
+					<p
+						className="text-muted-foreground text-xs"
+						data-testid="generation-tabs-degraded"
+					>
+						We couldn't load this topic's draft state. The content
+						tabs still open, but they can't say what has been
+						generated yet.
+					</p>
+				) : null}
 
 				<TabsContent value="summaryQuestions" className="space-y-6">
 					{topic.pitch ? (
@@ -455,6 +630,18 @@ export function TopicItemPage({
 					) : (
 						<EmptyState>This topic has no summary yet.</EmptyState>
 					)}
+					<TopicReadiness
+						threads={decisionsQuery.data?.threads ?? []}
+					/>
+					<TopicQuestionsPanel
+						projectId={projectId}
+						topicId={topicId}
+						organizationId={organizationId}
+						canEdit={canEdit}
+						isLoading={decisionsQuery.isLoading}
+						analysisFailed={latestAttempt?.status === "FAILED"}
+						threads={decisionsQuery.data?.threads ?? []}
+					/>
 					{/* The metadata block is `TopicDetails`, the SAME component
 					    the Inbox row mounts — not a copy of it. The two views
 					    show the same fields, so a second implementation would
@@ -465,20 +652,13 @@ export function TopicItemPage({
 						isPending={
 							postTypesPending ||
 							urlPending ||
-							contributorsPending
+							contributorsPending ||
+							assigneesPending
 						}
 						onEditUrl={() => setUrlOpen(true)}
 						onEditPostTypes={() => setPostTypesOpen(true)}
 						onEditContributors={() => setContributorsOpen(true)}
-					/>
-					<TopicQuestionsPanel
-						projectId={projectId}
-						topicId={topicId}
-						organizationId={organizationId}
-						canEdit={canEdit}
-						isLoading={decisionsQuery.isLoading}
-						analysisFailed={latestAttempt?.status === "FAILED"}
-						threads={decisionsQuery.data?.threads ?? []}
+						onEditAssignees={() => setAssigneesOpen(true)}
 					/>
 				</TabsContent>
 
@@ -492,6 +672,7 @@ export function TopicItemPage({
 						latestAttempt={latestAttempt}
 						effective={effective}
 						aiVersion={analysisQuery.data?.aiVersion ?? null}
+						decisionThreads={decisionsQuery.data?.threads ?? []}
 						aiModel={analysisQuery.data?.aiModel ?? null}
 						aiPromptSource={
 							analysisQuery.data?.aiPromptSource ?? null
@@ -515,40 +696,20 @@ export function TopicItemPage({
 						isLoading={decisionsQuery.isLoading}
 					/>
 				</TabsContent>
+				<GenerationTabPanels
+					model={generationModel}
+					postTypes={selectedPostTypes}
+					projectId={projectId}
+					organizationId={organizationId}
+					topicId={topicId}
+					canEdit={canEdit}
+					analysis={analysisDocument}
+					drafts={draftsQuery.data?.drafts ?? []}
+					workingDrafts={draftsQuery.data?.workingDrafts ?? []}
+					decisionThreads={decisionsQuery.data?.threads ?? []}
+					isLoading={draftsQuery.isLoading}
+				/>
 			</Tabs>
-
-			<GenerationTabs
-				projectId={projectId}
-				organizationId={organizationId}
-				topicId={topicId}
-				canEdit={canEdit}
-				analysis={
-					effective
-						? (() => {
-								// `effective.data` never carries the prose keys
-								// (`topicAngle`, `risks`, `preDraftGuidance`, …),
-								// so this parses the DATA half only — exactly
-								// what the content-type buckets below need.
-								const doc = readPlanningAnalysis(
-									effective.data,
-								);
-								// An analysis that came back empty carries no
-								// recommendation, so treating it as "no analysis"
-								// is the honest answer rather than rendering four
-								// silently unexplained AVAILABLE tabs. Empty is
-								// judged against BOTH halves — the resolved prose
-								// AND the data — so a risk-heavy analysis with no
-								// structured recommendations still counts as one.
-								return isEmptyAnalysis(effective) ? null : doc;
-							})()
-						: null
-				}
-				drafts={draftsQuery.data?.drafts ?? []}
-				workingDrafts={draftsQuery.data?.workingDrafts ?? []}
-				decisionThreads={decisionsQuery.data?.threads ?? []}
-				isLoading={draftsQuery.isLoading}
-				hasError={draftsQuery.isError}
-			/>
 
 			{/* The editors behind `TopicDetails`' two affordances. Mounted only
 			    for an editor: the controls that open them are themselves
@@ -565,6 +726,7 @@ export function TopicItemPage({
 						}
 						hasOverride={topic.userPostTypes !== null}
 						hasAiSuggestion={topic.suggestedPostTypes.length > 0}
+						recommendations={generationModel.byPostType}
 						onSubmit={handlePostTypesSubmit}
 						isPending={postTypesPending}
 					/>
@@ -592,17 +754,41 @@ export function TopicItemPage({
 						onSubmit={handleContributorsSubmit}
 						isPending={contributorsPending}
 					/>
+					<AssigneesDialog
+						topicTitle={topic.title}
+						open={assigneesOpen}
+						onOpenChange={setAssigneesOpen}
+						members={members}
+						assignees={topic.assignees}
+						initialSelected={assigneeIds}
+						viewerUserId={viewerUserId}
+						membersPending={membersQuery.isPending}
+						membersError={membersQuery.isError}
+						onSubmit={handleAssigneesSubmit}
+						isPending={assigneesPending}
+					/>
 				</>
 			) : null}
 		</div>
 	);
 }
 
+// `flex w-fit`, deliberately, rather than `inline-flex`.
+//
+// The masthead below stacks this above `<p className="editorial-label">`, and
+// that class is `display: inline-flex` in `globals.css`. Two inline-level boxes
+// share a line, so the two rendered touching — "Back to Publishing Suite" hard
+// against "PUBLISHING TOPIC" — while the container's `space-y-3` separated
+// nothing, because its `margin-top` cannot break a line.
+//
+// A block-level link puts the label on its own line, where that margin then
+// applies. `w-fit` keeps the click target the width of the text rather than the
+// full row.
 function BackLink({ href }: { href: string }) {
 	return (
 		<Link
 			href={href}
-			className="inline-flex items-center gap-1.5 text-muted-foreground text-sm transition-colors hover:text-foreground"
+			className="flex w-fit items-center gap-1.5 text-muted-foreground text-sm transition-colors hover:text-foreground"
 		>
 			<ArrowLeftIcon className="size-4" aria-hidden="true" />
 			Back to Publishing Suite

@@ -271,6 +271,13 @@ vi.mock("@shared/lib/orpc-query-utils", () => {
 					updateTopicContributors: m(
 						"projects.publishingSuite.updateTopicContributors",
 					),
+					// A8: the assignee write, constructed UNCONDITIONALLY by
+					// the component. A missing entry is not one failing
+					// assertion, it is `undefined.mutationOptions` taking out
+					// every case in the file at once.
+					updateTopicAssignees: m(
+						"projects.publishingSuite.updateTopicAssignees",
+					),
 				},
 				members: {
 					list: q("projects.members.list"),
@@ -326,6 +333,16 @@ function makeTopic(overrides: Record<string, unknown> = {}) {
 		subject: null as string | null,
 		userPostTypes: null as string[] | null,
 		userContributorUserIds: null as string[] | null,
+		// A8: assignees are always present on the wire — the query layer
+		// resolves them from the same lookup as contributors, so a fixture
+		// omitting them is a topic shape the API never returns.
+		assigneeUserIds: [] as string[],
+		assignees: [] as Array<{
+			id: string;
+			name: string;
+			image: string | null;
+			username: string | null;
+		}>,
 		whySuggested: null as {
 			named: Array<{
 				type: "story" | "document" | "meeting";
@@ -417,6 +434,19 @@ describe("PublishingSuiteList row parity", () => {
 					},
 				],
 				rankReason: { kind: "contributed" },
+				// A8. This fixture's whole point is EVERY optional field
+				// populated at once, so the assignee row has to be here too —
+				// it renders alongside the contributor row and is exactly the
+				// kind of field a future move drops silently.
+				assigneeUserIds: ["u2"],
+				assignees: [
+					{
+						id: "u2",
+						name: "Another Person",
+						image: null,
+						username: "another",
+					},
+				],
 				whySuggested: {
 					named: [{ type: "meeting", label: "Weekly sync" }],
 					prCount: 2,

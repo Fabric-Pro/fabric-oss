@@ -30,9 +30,11 @@
 import { documentTypeShortLabel } from "./document-type-catalog";
 import { PUBLISHING_BLOG_POST_AGENT_KEY } from "./publishing-blog-post-prompt";
 import { PUBLISHING_CASE_STUDY_AGENT_KEY } from "./publishing-case-study-prompt";
+import { PUBLISHING_LINKEDIN_POST_AGENT_KEY } from "./publishing-linkedin-post-prompt";
 import { PUBLISHING_PLANNING_ANALYSIS_AGENT_KEY } from "./publishing-planning-prompt";
 import { PUBLISHING_SHORT_POST_AGENT_KEY } from "./publishing-short-post-prompt";
 import { PUBLISHING_STAKEHOLDER_EMAIL_AGENT_KEY } from "./publishing-stakeholder-email-prompt";
+import { PUBLISHING_TOPIC_SUGGESTION_AGENT_KEY } from "./publishing-suggestion-prompt";
 
 export type PromptStoryKind = "FEATURE" | "BUG" | null;
 
@@ -425,6 +427,19 @@ export const PROMPT_AGENT_TARGETS: readonly PromptAgentTarget[] = [
 		actions: nonStage("GENERAL"),
 	},
 	{
+		// The daily scan that decides which of a project's recent work is worth
+		// publishing at all, and writes the summary every Topic Item Page opens
+		// with. Editing it changes what counts as newsworthy, how recency is
+		// weighed and how a topic is pitched. It cannot remove the output
+		// contract or the grounding rules (claims come from the given context;
+		// a quiet window returns nothing; only ids present in the context are
+		// cited) — those are appended code-side.
+		key: PUBLISHING_TOPIC_SUGGESTION_AGENT_KEY,
+		label: "Topic Suggestions",
+		featureType: "PUBLISHING",
+		actions: nonStage("GENERAL"),
+	},
+	{
 		// The pre-draft planning worksheet for a publishing topic. Editing it
 		// changes what the analysis considers and how it frames authorship,
 		// audience and content-type advice. It cannot remove the output contract
@@ -443,6 +458,21 @@ export const PROMPT_AGENT_TARGETS: readonly PromptAgentTarget[] = [
 		// option count is enforced by the schema before anything is persisted.
 		key: PUBLISHING_SHORT_POST_AGENT_KEY,
 		label: "Topic Short Post / Tweet",
+		featureType: "PUBLISHING",
+		actions: nonStage("GENERAL"),
+	},
+	{
+		// The LinkedIn post drafted from a publishing topic. Its own entry
+		// rather than a reuse of the short post's: a LinkedIn feed folds a post
+		// behind "see more" after the first line or two and imposes no hard
+		// ceiling, where X imposes a ceiling and folds nothing, so the two
+		// prompts govern opposite constraints. Editing it changes voice, length
+		// and how the opening earns the expand. It cannot remove the output
+		// contract (exactly three labeled options) or the approval rules —
+		// those are appended code-side, and the option count is enforced by the
+		// schema before anything is persisted.
+		key: PUBLISHING_LINKEDIN_POST_AGENT_KEY,
+		label: "Topic LinkedIn Post",
 		featureType: "PUBLISHING",
 		actions: nonStage("GENERAL"),
 	},

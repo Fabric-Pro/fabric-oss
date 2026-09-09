@@ -1,6 +1,11 @@
 "use client";
 
-import { composeInboxSections } from "@repo/database/src/publishing-inbox";
+import {
+	composeInboxSections,
+	isTopicArchived,
+	STALE_AFTER_DAYS,
+	topicNeglect,
+} from "@repo/database/src/publishing-inbox";
 import { useSession } from "@saas/auth/hooks/use-session";
 import { PageTourButton } from "@saas/get-started/components/PageTourButton";
 import { useBasePath } from "@saas/organizations/hooks/use-organization-context";
@@ -9,6 +14,7 @@ import { useFeatureFlag } from "@saas/shared/components/FeatureFlagProvider";
 import { orpc } from "@shared/lib/orpc-query-utils";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@ui/components/button";
+import { Input } from "@ui/components/input";
 import { cn } from "@ui/lib";
 import { AlertTriangleIcon, PlusIcon, RefreshCwIcon } from "lucide-react";
 import { type ReactNode, useState } from "react";
@@ -46,8 +52,9 @@ export function PublishingSuiteList({
 	const inboxEnabled = useFeatureFlag("PUBLISHING_INBOX");
 	const [createOpen, setCreateOpen] = useState(false);
 	const [statusFilter, setStatusFilter] = useState<
-		TopicStatus | "SNOOZED" | null
+		TopicStatus | "SNOOZED" | "ARCHIVED" | null
 	>(null); // null = all
+	const [search, setSearch] = useState("");
 	// C-Med2: per-topic in-flight WRITE COUNT, not a presence flag. Expanding a
 	// row is deliberately allowed while a status write is in flight (FR4), so
 	// two of `changeStatus` / `changePostTypes` / `changeReadState` /
@@ -214,6 +221,38 @@ export function PublishingSuiteList({
 		}
 	};
 
+	const updateAssignees = useMutation(
+		orpc.projects.publishingSuite.updateTopicAssignees.mutationOptions({
+			// Same contract as the contributor write above: the response
+			// returns the narrow topic record, which does NOT carry the
+			// assignee column — never read `response.topic` here. Invalidate
+			// and let the list re-fetch the resolved handles.
+			onSuccess: invalidate,
+			onError: () => {
+				toast.error(
+					"We couldn't update the assignees. Please try again.",
+				);
+			},
+		}),
+	);
+
+	const changeAssignees = async (
+		topicId: string,
+		assigneeUserIds: string[],
+	) => {
+		beginPending(topicId);
+		try {
+			await updateAssignees.mutateAsync({
+				projectId,
+				organizationId,
+				topicId,
+				assigneeUserIds,
+			});
+		} finally {
+			endPending(topicId);
+		}
+	};
+
 	const setReadState = useMutation(
 		orpc.projects.publishingSuite.setTopicReadState.mutationOptions({
 			onSuccess: invalidate,
@@ -272,33 +311,82 @@ export function PublishingSuiteList({
 		}
 	};
 
-	const topics: PublishingTopic[] = topicsQuery.data?.items ?? [];
-	// F8: filter chips. Client-side over the already-fetched list (small per
-	// project → instant, no refetch/query-key churn). `listTopics` also accepts
-	// `status` for a server-side filter if the list ever grows large; 1A filters
-	// in the client.
-	const visibleTopics =
-		statusFilter === null
-			? topics
-			: statusFilter === "SNOOZED"
-				? topics.filter((t) => t.isSnoozed)
-				: topics.filter(
-						(t) => t.status === statusFilter && !t.isSnoozed,
-					);
-	// The Inbox composition sorts by `updatedAt.getTime()`, which throws on a
-	// string. `updatedAt` crosses the wire as `Date | string` (see
-	// PublishingCycleHistory's identical guard in this same directory), so
-	// this normalization is required, not defensive padding.
-	const inboxSections = composeInboxSections(
-		topics.map((t) => ({
+	// The Inbox composition and the staleness read both call
+	// `updatedAt.getTime()`, which throws on a string, and `updatedAt` crosses
+	// the wire as `Date | string` (see PublishingCycleHistory's identical guard
+	// in this same directory) — so this normalization is required, not
+	// defensive padding.
+	//
+	// It happens ONCE, on the raw query result, rather than on the way into
+	// `composeInboxSections`. The chip and search paths filter this same array
+	// and now read staleness too; a normalization that lived only on the Inbox
+	// path would leave "updatedAt.getTime is not a function" waiting behind a
+	// status chip.
+	const topics: PublishingTopic[] = (topicsQuery.data?.items ?? []).map(
+		(t) => ({
 			...t,
 			updatedAt:
 				t.updatedAt instanceof Date
 					? t.updatedAt
 					: new Date(t.updatedAt),
-		})),
-		{ maxRecent: showAllRecent ? Number.POSITIVE_INFINITY : MAX_RECENT },
+			// BOTH date fields, in the same pass. `snoozedUntil` is now half of
+			// what decides whether a topic is archived — a snooze ending counts
+			// as activity — and it crosses the wire as a string exactly like
+			// `updatedAt`. A string reaching `getTime()` gives `NaN`, which
+			// compares false against every threshold, so leaving this one out
+			// would not throw: it would report every topic as fresh and leave
+			// the archive silently dead.
+			snoozedUntil:
+				t.snoozedUntil == null || t.snoozedUntil instanceof Date
+					? (t.snoozedUntil ?? null)
+					: new Date(t.snoozedUntil),
+		}),
 	);
+	// ONE `now` for the whole render, shared by the archive, the Archived chip
+	// and every row's neglect badge. Two separate `new Date()` calls can
+	// straddle a day boundary and render a row that is badged stale but was
+	// left in Suggested (or the reverse).
+	const now = new Date();
+	// F8: filter chips. Client-side over the already-fetched list (small per
+	// project → instant, no refetch/query-key churn). `listTopics` also accepts
+	// `status` for a server-side filter if the list ever grows large; 1A filters
+	// in the client.
+	//
+	// Text search rides the same decision for the same reason, and composes
+	// with the chips rather than replacing them. It searches EVERY topic, not
+	// just the two Inbox sections: a declined or snoozed topic you half
+	// remember is exactly what you reach for search to find, and the sections
+	// deliberately exclude both.
+	const searchTerm = search.trim().toLowerCase();
+	const searching = searchTerm !== "";
+	// Title, pitch and angle — the three fields the collapsed row itself shows,
+	// so every hit is visible in its result rather than matching on something
+	// the user cannot see.
+	const matchesSearch = (t: PublishingTopic) =>
+		!searching ||
+		[t.title, t.pitch, t.angle].some((field) =>
+			field?.toLowerCase().includes(searchTerm),
+		);
+	// `ARCHIVED` needs an arm of its own for the same reason `SNOOZED` does:
+	// neither is a status, so both would fall through to the `t.status ===`
+	// comparison, match nothing, and leave a chip that looks broken with every
+	// gate still green. This arm is also how an archived topic stays REACHABLE
+	// — it is removed from Suggested, never from the list.
+	const visibleTopics = (
+		statusFilter === null
+			? topics
+			: statusFilter === "SNOOZED"
+				? topics.filter((t) => t.isSnoozed)
+				: statusFilter === "ARCHIVED"
+					? topics.filter((t) => isTopicArchived(t, now))
+					: topics.filter(
+							(t) => t.status === statusFilter && !t.isSnoozed,
+						)
+	).filter(matchesSearch);
+	const inboxSections = composeInboxSections(topics, {
+		maxRecent: showAllRecent ? Number.POSITIVE_INFINITY : MAX_RECENT,
+		now,
+	});
 	const cycleStatus = cycleQuery.data?.cycle?.status ?? null;
 	const hasCycle = cycleQuery.data?.cycle != null;
 
@@ -312,6 +400,11 @@ export function PublishingSuiteList({
 			canEdit={canEdit}
 			inbox={inboxEnabled}
 			isPending={(pendingTopicIds.get(t.id) ?? 0) > 0}
+			// Computed for EVERY row from the same predicate that sinks the
+			// Suggested section, not only for the rows inside it: a topic does
+			// not stop being neglected because you reached it through the
+			// Suggestion chip or a search.
+			neglect={topicNeglect(t, now)}
 			topicHref={buildPublishingTopicRoute(basePath, projectId, t.id)}
 			members={members}
 			membersPending={membersQuery.isPending}
@@ -323,6 +416,9 @@ export function PublishingSuiteList({
 			onChangePostTypes={(postTypes) => changePostTypes(t.id, postTypes)}
 			onChangeContributors={(contributorUserIds) =>
 				changeContributors(t.id, contributorUserIds)
+			}
+			onChangeAssignees={(assigneeUserIds) =>
+				changeAssignees(t.id, assigneeUserIds)
 			}
 			onSetReadState={(read) => changeReadState(t.id, read)}
 			onSetSnooze={(preset, reason) => changeSnooze(t.id, preset, reason)}
@@ -362,11 +458,18 @@ export function PublishingSuiteList({
 						Last refresh failed — existing topics are unchanged.
 					</Banner>
 				)}
-				<StatusFilterChips
-					value={statusFilter}
-					onChange={setStatusFilter}
-				/>
-				{inboxEnabled && statusFilter === null ? (
+				<div className="flex flex-wrap items-center justify-between gap-2">
+					<StatusFilterChips
+						value={statusFilter}
+						onChange={setStatusFilter}
+					/>
+					<TopicSearchInput value={search} onChange={setSearch} />
+				</div>
+				{/* A search term replaces the two sections with one flat list of
+				    hits, exactly as picking a status chip does: the sections
+				    answer "what should I look at next", and a search is the
+				    question that overrides it. */}
+				{inboxEnabled && statusFilter === null && !searching ? (
 					<div
 						className="space-y-4"
 						data-onboarding-target="publishing-suite-inbox"
@@ -403,6 +506,42 @@ export function PublishingSuiteList({
 						<InboxSection
 							label="Suggested"
 							emptyText="No new suggestions right now."
+							footer={
+								/* Say it out loud. A queue that quietly
+								   shrinks is the one nobody trusts, so the
+								   section accounts for what it removed and
+								   hands over the way to go and look. The
+								   count reads the very array the rows were
+								   taken out of — recomputing it here would be
+								   two paths to one number, free to drift. */
+								inboxSections.archived.length > 0 ? (
+									<div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+										<p className="text-muted-foreground text-xs">
+											{`${inboxSections.archived.length} ${
+												inboxSections.archived
+													.length === 1
+													? "topic"
+													: "topics"
+											} archived after ${STALE_AFTER_DAYS} days without activity`}
+										</p>
+										{/* The visible text IS the accessible
+										    name (WCAG 2.5.3), so it has to
+										    say what it opens on its own — an
+										    `aria-label` naming the chip would
+										    no longer contain "Show archived". */}
+										<Button
+											type="button"
+											variant="ghost"
+											size="sm"
+											onClick={() =>
+												setStatusFilter("ARCHIVED")
+											}
+										>
+											Show archived
+										</Button>
+									</div>
+								) : null
+							}
 						>
 							{inboxSections.suggested.length > 0 ? (
 								<ul className="space-y-2">
@@ -416,8 +555,14 @@ export function PublishingSuiteList({
 						{visibleTopics.map(renderRow)}
 					</ul>
 				) : (
-					<p className="text-sm text-muted-foreground">
-						No topics match this filter.
+					/* Announced, because it updates live as you type or switch
+					   chips — a result count that only changes visually leaves
+					   a screen-reader user with no signal that anything did
+					   (WCAG 4.1.3). The chip path had the same gap. */
+					<p role="status" className="text-muted-foreground text-sm">
+						{searching
+							? `No topics match “${search.trim()}”.`
+							: "No topics match this filter."}
 					</p>
 				)}
 			</>
@@ -496,16 +641,20 @@ function StatusFilterChips({
 	value,
 	onChange,
 }: {
-	value: TopicStatus | "SNOOZED" | null;
-	onChange: (status: TopicStatus | "SNOOZED" | null) => void;
+	value: TopicStatus | "SNOOZED" | "ARCHIVED" | null;
+	onChange: (status: TopicStatus | "SNOOZED" | "ARCHIVED" | null) => void;
 }) {
 	const chips: ReadonlyArray<{
-		value: TopicStatus | "SNOOZED" | null;
+		value: TopicStatus | "SNOOZED" | "ARCHIVED" | null;
 		label: string;
 	}> = [
 		{ value: null, label: "All" },
 		...TOPIC_STATUSES,
 		{ value: "SNOOZED", label: "Snoozed" },
+		// Neither of the last two is a status — both are overlays the list
+		// derives. `Archived` is the reachable half of the archive: the Inbox
+		// takes those topics out of Suggested, and this is where they went.
+		{ value: "ARCHIVED", label: "Archived" },
 	];
 	return (
 		<div
@@ -532,6 +681,37 @@ function StatusFilterChips({
 					</button>
 				);
 			})}
+		</div>
+	);
+}
+
+/**
+ * Text search over the already-fetched list.
+ *
+ * A real `<label>`, visually hidden rather than dropped: `type="search"` gives
+ * the control the `searchbox` role, and a placeholder is not an accessible
+ * name — it disappears the moment anyone types.
+ */
+function TopicSearchInput({
+	value,
+	onChange,
+}: {
+	value: string;
+	onChange: (value: string) => void;
+}) {
+	return (
+		<div className="w-full sm:w-64">
+			<label htmlFor="publishing-topic-search" className="sr-only">
+				Search topics
+			</label>
+			<Input
+				id="publishing-topic-search"
+				type="search"
+				value={value}
+				onChange={(e) => onChange(e.target.value)}
+				placeholder="Search topics…"
+				className="h-8"
+			/>
 		</div>
 	);
 }
@@ -743,10 +923,18 @@ function FailedState() {
 function InboxSection({
 	label,
 	emptyText,
+	footer,
 	children,
 }: {
 	label: string;
 	emptyText: string;
+	/**
+	 * Rendered after the rows, and OUTSIDE the `children ?? emptyText` choice
+	 * on purpose. A section whose every topic was archived still has nothing
+	 * to suggest, so it must say so AND account for what left — folding the
+	 * footer into `children` would substitute the one message for the other.
+	 */
+	footer?: ReactNode;
 	children: ReactNode;
 }) {
 	return (
@@ -755,6 +943,7 @@ function InboxSection({
 			{children ?? (
 				<p className="text-sm text-muted-foreground">{emptyText}</p>
 			)}
+			{footer}
 		</section>
 	);
 }

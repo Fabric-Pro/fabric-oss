@@ -29,6 +29,7 @@ import {
 	PUBLISHING_CASE_STUDY_AGENT_KEY,
 	PUBLISHING_CASE_STUDY_FALLBACK_BODY,
 } from "@repo/utils/publishing-case-study-prompt";
+import { buildRefinementSection } from "@repo/utils/publishing-refinement";
 import { toSingleLineSubject } from "@repo/utils/publishing-restrictions";
 import { z } from "zod";
 import {
@@ -340,6 +341,7 @@ export async function composeCaseStudyPrompt({
 	analysisData,
 	decisions,
 	guidance,
+	currentDraft,
 	restrictedSubjects,
 	openQuestionSubjects,
 }: {
@@ -357,6 +359,16 @@ export async function composeCaseStudyPrompt({
 	analysisData: AnalysisData;
 	decisions: CaseStudyDecision[];
 	guidance: string | null;
+	/**
+	 * The topic's saved working case study when this run REFINES it rather than
+	 * drafting fresh. Read server-side and passed down; null on every ordinary
+	 * generation. See `buildRefinementSection`.
+	 *
+	 * NOT a template variable, so it does not pass through the neutralizing map
+	 * below — `buildRefinementSection` fences and neutralizes it itself, which
+	 * is what keeps that fence and its escape in one place.
+	 */
+	currentDraft: string | null;
 	restrictedSubjects: string[];
 	openQuestionSubjects: string[];
 }): Promise<ComposedCaseStudyPrompt> {
@@ -378,15 +390,16 @@ export async function composeCaseStudyPrompt({
 	// rather than decorative: without it a document containing the closing
 	// marker ends its own block, and everything after it re-enters the prompt
 	// as top-level text.
+	const writerVariables = buildShortPostVariables({
+		analysisProse,
+		analysisData,
+		decisions,
+		guidance,
+	});
 	const variables = Object.fromEntries(
 		Object.entries({
 			...buildPlanningAnalysisVariables({ topic, context }),
-			...buildShortPostVariables({
-				analysisProse,
-				analysisData,
-				decisions,
-				guidance,
-			}),
+			...writerVariables,
 		}).map(([key, value]) => [
 			key,
 			typeof value === "string"
@@ -436,8 +449,21 @@ export async function composeCaseStudyPrompt({
 		openQuestionSubjects,
 	});
 
+	// BEFORE the locked clauses, never after: "Rules that override anything
+	// above" must keep overriding the refinement framing, or a refine run would
+	// be a route around the grounding and unresolved-approval rules. Empty on an
+	// ordinary generation, and the filter then reproduces the previous prompt
+	// byte for byte. `writerVariables.guidance` rather than the raw argument, so
+	// the instruction is clamped by the guidance bound exactly once.
+	const refinement = buildRefinementSection({
+		currentDraft,
+		instruction: writerVariables.guidance,
+	});
+
 	return {
-		prompt: `${body.trimEnd()}\n\n${locked}`,
+		prompt: [body.trimEnd(), refinement, locked]
+			.filter((section) => section.length > 0)
+			.join("\n\n"),
 		formatOverridden,
 		bodyRecovered,
 	};

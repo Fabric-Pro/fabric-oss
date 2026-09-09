@@ -3,9 +3,9 @@
  * splice (Publishing Suite 1C-1b part 2, §7.1(a) / FR8–FR10).
  *
  * Sibling of `role-clause-injection.test.ts` and deliberately shaped like it:
- * `buildTopicSuggestionPrompt()` is untouched, the splice lives in the async
- * activity between the prompt build and the `generateObject()` call, and it is
- * asserted through the prompt `generateObject` actually receives.
+ * the prompt composition is untouched, the splice lives in the async activity
+ * between the prompt build and the `generateObject()` call, and it is asserted
+ * through the prompt `generateObject` actually receives.
  *
  * The clause is built from the snapshot the DISPATCHER captured and the
  * workflow forwards — never from a fresh read of the settings row. A second
@@ -35,6 +35,10 @@ vi.mock("@repo/ai/lib/function-tag-context", () => ({
 }));
 
 const mockIsCurrentOrgMember = vi.fn();
+// The prompt now comes from the Prompt Library (#1851). Unmocked, the real
+// query runs against no database and the activity never reaches the model.
+// `null` is the unbound case, which is what every assertion here assumes.
+const mockGetBoundPromptForAgent = vi.fn();
 vi.mock("@repo/database", async () => {
 	const actual =
 		await vi.importActual<typeof import("@repo/database")>(
@@ -43,6 +47,8 @@ vi.mock("@repo/database", async () => {
 	return {
 		...actual,
 		isCurrentOrgMember: (...a: unknown[]) => mockIsCurrentOrgMember(...a),
+		getBoundPromptForAgent: (...a: unknown[]) =>
+			mockGetBoundPromptForAgent(...a),
 	};
 });
 
@@ -62,6 +68,8 @@ beforeEach(() => {
 	logModelUsageAsync.mockReset();
 	mockIsCurrentOrgMember.mockReset();
 	mockIsCurrentOrgMember.mockResolvedValue(true);
+	mockGetBoundPromptForAgent.mockReset();
+	mockGetBoundPromptForAgent.mockResolvedValue(null);
 	trackUsage.mockReset();
 	clause.mockReset();
 	// Role clause OFF by default so these tests observe the preferences splice

@@ -47,6 +47,16 @@ function topic(overrides: Record<string, unknown> = {}) {
 		whySuggested: null,
 		userPostTypes: null,
 		userContributorUserIds: null,
+		// A8: assignees are always present on the wire — the query layer
+		// resolves them from the same lookup as contributors, so a fixture
+		// omitting them is a topic shape the API never returns.
+		assigneeUserIds: [] as string[],
+		assignees: [] as Array<{
+			id: string;
+			name: string;
+			image: string | null;
+			username: string | null;
+		}>,
 		meetingSpeakers: null,
 		...overrides,
 	};

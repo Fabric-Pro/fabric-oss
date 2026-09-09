@@ -8,7 +8,11 @@ import {
 	SparklesIcon,
 } from "lucide-react";
 import { useState } from "react";
-import type { TopicDecisionThread } from "./TopicQuestionsPanel";
+import {
+	liveAnswerReply,
+	supersededAnswerReplies,
+	type TopicDecisionThread,
+} from "./TopicQuestionsPanel";
 
 type Filter = "all" | "OPEN" | "RESOLVED";
 
@@ -189,12 +193,17 @@ function filterEmptyMessage(filter: Filter): string {
  * to what the row actually stores: who raised it (always the AI) and who
  * answered it (always the answering project member, per
  * `answerTopicQuestion`) — never a name, since the table does not record one.
+ *
+ * An AMENDED question has more than one answering reply. The log is the
+ * changelog, so it shows the live answer in the same place it always did and
+ * the replaced ones beneath as history — the append-only record is the whole
+ * reason amending supersedes rather than edits, and dropping the earlier turns
+ * here would throw away what the log is for.
  */
 function DecisionCard({ thread }: { thread: TopicDecisionThread }) {
 	const root = thread.root;
-	const answer = thread.replies.find(
-		(r) => r.content !== null && r.content.trim().length > 0,
-	);
+	const answer = liveAnswerReply(thread);
+	const superseded = supersededAnswerReplies(thread);
 	const createdAt = new Date(root.createdAt);
 
 	return (
@@ -220,6 +229,28 @@ function DecisionCard({ thread }: { thread: TopicDecisionThread }) {
 						{answer.content}
 					</p>
 				</div>
+			) : null}
+			{superseded.length > 0 ? (
+				<ol
+					className="space-y-1 border-border border-l-2 pl-3"
+					aria-label="Previous answers"
+				>
+					{superseded.map((reply) => (
+						<li key={reply.id}>
+							<p className="text-muted-foreground text-xs leading-relaxed line-through">
+								{reply.content}
+							</p>
+							<time
+								className="text-[11px] text-muted-foreground/70"
+								dateTime={new Date(
+									reply.createdAt,
+								).toISOString()}
+							>
+								{new Date(reply.createdAt).toLocaleString()}
+							</time>
+						</li>
+					))}
+				</ol>
 			) : null}
 		</li>
 	);

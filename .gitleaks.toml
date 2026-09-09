@@ -57,6 +57,15 @@ regexes = [
   # "secret". This is an env-var identifier, not a value — real Lemon Squeezy
   # keys (eyJ… JWTs) would still be caught by the jwt + generic rules.
   '''^LEMONSQUEEZY_API_KEY=$''',
+  # `linkedinupdate` is one of the phrasings the Publishing Suite maps onto the
+  # LINKEDIN_POST content type (apps/web/.../publishing-suite/generation-tab-state.ts).
+  # gitleaks' `linkedin-client-id` rule wants 14 alphanumerics near the keyword
+  # "linkedin", and that synonym is exactly 14 characters sitting one line below
+  # the literal "linkedin" in the same array. Same shape as the
+  # `tenantProtectedProcedure` entry above: an identifier whose LENGTH collides
+  # with a credential format. A real LinkedIn client id is a random 14-char
+  # string, so anchoring on this one English word suppresses nothing else.
+  '''^linkedinupdate$''',
   # Azure BUILT-IN role definition IDs in deployment/azure/setup-github-oidc.sh.
   # generic-api-key fires because the variable names contain "SECRETS" next to a
   # GUID (ROLE_KV_SECRETS_OFFICER / ROLE_KV_SECRETS_USER). These are Microsoft's

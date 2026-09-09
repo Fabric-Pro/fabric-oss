@@ -20,6 +20,10 @@ export { generatePublishingTopicsNowProcedure } from "./generate-now";
 export { getPublishingSuiteSettingsProcedure } from "./get-settings";
 export { getPublishingTopicProcedure } from "./get-topic";
 export { latestPublishingCycleProcedure } from "./latest-cycle";
+export {
+	generateLinkedInPostProcedure,
+	selectLinkedInPostOptionProcedure,
+} from "./linkedin-post";
 export { listCycleChatDeliveriesProcedure } from "./list-cycle-chat-deliveries";
 export { listPublishingCyclesProcedure } from "./list-cycles";
 export { listPublishingTopicsProcedure } from "./list-topics";
@@ -39,11 +43,13 @@ export {
 	saveStakeholderEmailBodyProcedure,
 } from "./stakeholder-email";
 export {
+	amendTopicQuestionProcedure,
 	answerTopicQuestionProcedure,
 	listTopicDecisionsProcedure,
 } from "./topic-decisions";
 export { listTopicDraftsProcedure } from "./topic-drafts";
 export { updatePublishingSuiteSettingsProcedure } from "./update-settings";
+export { updatePublishingTopicAssigneesProcedure } from "./update-topic-assignees";
 export { updatePublishingTopicContributorsProcedure } from "./update-topic-contributors";
 export { updatePublishingTopicPostTypesProcedure } from "./update-topic-post-types";
 export { updatePublishingTopicStatusProcedure } from "./update-topic-status";

@@ -113,6 +113,76 @@ export function TopicQuestionsPanel({
 		}),
 	);
 
+	/**
+	 * Correcting a settled answer (#1851, review follow-up) — the affordance
+	 * Feature Maturation's Decision Log already has.
+	 *
+	 * A SEPARATE mutation, not a second call to `answerTopicQuestion`: that one
+	 * refuses an already-settled root on purpose, and the refusal is what keeps
+	 * a double-submit from minting two replies for one act. Amending appends a
+	 * superseding turn instead, so the question keeps its history.
+	 */
+	const amend = useMutation(
+		orpc.projects.publishingSuite.amendTopicQuestion.mutationOptions({
+			onSuccess: (result) => {
+				if (result.status === "stale") {
+					// Someone else amended first. The refetch below replaces the
+					// text on screen, so the toast only has to explain why the
+					// words the reader just typed are not the ones they see.
+					toast.warning(
+						"Someone else changed this answer first. Your edit was not saved — the current answer is shown below.",
+					);
+				}
+				queryClient.invalidateQueries({
+					queryKey:
+						orpc.projects.publishingSuite.listTopicDecisions.queryKey(
+							{ input: { projectId, topicId, organizationId } },
+						),
+				});
+			},
+			onError: () => {
+				toast.error("Could not save your answer. Please try again.");
+			},
+		}),
+	);
+
+	/**
+	 * Returns the outcome rather than firing and forgetting, because the card
+	 * has to decide whether to close its editor on it. A `stale` amendment is
+	 * REFUSED — the draft in that textarea is then the only copy of what the
+	 * person typed, and closing on submit would destroy it while the toast told
+	 * them it had not been saved.
+	 */
+	const submitAmendment = async (
+		thread: TopicDecisionThread,
+		supersedesId: string,
+		text: string,
+	): Promise<{ status: string } | undefined> => {
+		const questionId = thread.root.questionId;
+		const trimmed = text.trim();
+		if (!questionId || trimmed.length === 0) {
+			return undefined;
+		}
+		return amend.mutateAsync({
+			projectId,
+			topicId,
+			organizationId,
+			questionId,
+			supersedesId,
+			answer: trimmed,
+			// MANUAL, always, and this is a measurement decision rather than a
+			// default. `answerSource` counts recommendation ACCEPTANCE — the
+			// column `20260828120000_repoint_ai_edited_answer_source` exists to
+			// keep honest. The amend editor is seeded with the answer already on
+			// record, never with `recommendedResponse`, so nothing typed here is
+			// an act of taking the AI's wording: re-typing your own text is
+			// MANUAL, and so is replacing an AI answer with your own. An
+			// amendment that happened to land on the recommendation's exact words
+			// still was not reached by accepting it.
+			answerSource: "MANUAL",
+		});
+	};
+
 	const submitAnswer = (
 		thread: TopicDecisionThread,
 		text: string,
@@ -192,6 +262,11 @@ export function TopicQuestionsPanel({
 							<AnsweredCard
 								key={thread.root.id}
 								thread={thread}
+								canEdit={canEdit}
+								isSubmitting={amend.isPending}
+								onAmend={(supersedesId, text) =>
+									submitAmendment(thread, supersedesId, text)
+								}
 							/>
 						))}
 					</ul>
@@ -268,7 +343,9 @@ function QuestionCard({
 	// "Edit" — whether the editor was opened FROM the recommendation is what
 	// separates a MANUAL answer from one the AI seeded, the same distinction
 	// `SummaryQuestionsPanel` draws for features.
-	const [isEditing, setIsEditing] = useState(!hasRecommendation);
+	const [isEditing, setIsEditing] = useState(
+		() => !hasRecommendation && root.decisionKind !== "CONTENT_TYPE",
+	);
 	const [fromSuggestion, setFromSuggestion] = useState(false);
 	const [draft, setDraft] = useState("");
 
@@ -282,6 +359,33 @@ function QuestionCard({
 		setIsEditing(false);
 		setFromSuggestion(false);
 		setDraft("");
+	};
+
+	/**
+	 * A content-type question is a yes/no, and typing prose to answer one is
+	 * the complaint that started this.
+	 *
+	 * The wording is templated per type — "Should we produce a Blog Post for
+	 * this topic?" reads the same on every topic — but the RATIONALE beneath it
+	 * is written about this topic, which is why these stay questions rather than
+	 * becoming a project setting: FR39 binds recommendations that need
+	 * confirmation, and each of these is one. What changes is the affordance,
+	 * not the decision model, so the answer still lands in the Decision Log and
+	 * still survives the next regeneration.
+	 *
+	 * The free-text editor stays available beside the two buttons, because
+	 * "yes, but only after the metric is approved" is a real answer that a
+	 * boolean would throw away.
+	 */
+	const isYesNo = root.decisionKind === "CONTENT_TYPE";
+
+	// MANUAL, not AI_SUGGESTED: the person decided, rather than accepting the
+	// AI's wording. `answerSource` measures recommendation acceptance, so a
+	// button that never showed the recommendation must not count as accepting
+	// it — the same reasoning behind
+	// `20260828120000_repoint_ai_edited_answer_source`.
+	const submitYesNo = (yes: boolean) => {
+		onAnswer(yes ? "Yes." : "No.", "MANUAL");
 	};
 
 	const submitDraft = () => {
@@ -357,6 +461,46 @@ function QuestionCard({
 							</Button>
 						</div>
 					</div>
+				) : isYesNo ? (
+					<div className="space-y-2">
+						{hasRecommendation ? (
+							<p className="text-muted-foreground text-sm leading-relaxed">
+								Suggested: {root.recommendedResponse}
+							</p>
+						) : null}
+						<div className="flex flex-wrap gap-2">
+							<Button
+								type="button"
+								size="sm"
+								onClick={() => submitYesNo(true)}
+								disabled={isSubmitting}
+							>
+								Yes
+							</Button>
+							<Button
+								type="button"
+								variant="outline"
+								size="sm"
+								onClick={() => submitYesNo(false)}
+								disabled={isSubmitting}
+							>
+								No
+							</Button>
+							<Button
+								type="button"
+								variant="ghost"
+								size="sm"
+								onClick={openEditor}
+								disabled={isSubmitting}
+							>
+								<PencilIcon
+									className="mr-1.5 size-3.5"
+									aria-hidden="true"
+								/>
+								Answer in your own words
+							</Button>
+						</div>
+					</div>
 				) : (
 					<div className="space-y-2">
 						<p className="text-muted-foreground text-sm leading-relaxed">
@@ -401,23 +545,157 @@ function QuestionCard({
 	);
 }
 
-function AnsweredCard({ thread }: { thread: TopicDecisionThread }) {
+/**
+ * The LIVE answer on a thread: the NEWEST reply carrying content.
+ *
+ * `.find()` — the first one — was correct while a question could only ever be
+ * answered once. Amending appends a superseding reply rather than editing the
+ * original, so the first reply is now the OLDEST answer and reading it would
+ * show text the author has already replaced. `listTopicDecisions` returns
+ * replies `createdAt asc`, so the last match is the current one.
+ *
+ * Exported because the Decision Log answers the same question about the same
+ * threads, and two copies of this rule would diverge the first time either
+ * moved — the log showing one answer while the tab beside it shows another is
+ * exactly the confusion amending is supposed to remove.
+ */
+export function liveAnswerReply(
+	thread: TopicDecisionThread,
+): TopicDecisionThread["replies"][number] | undefined {
+	for (let i = thread.replies.length - 1; i >= 0; i--) {
+		const reply = thread.replies[i];
+		if (reply.content !== null && reply.content.trim().length > 0) {
+			return reply;
+		}
+	}
+	return undefined;
+}
+
+/** Every answer this thread has superseded, oldest first. */
+export function supersededAnswerReplies(
+	thread: TopicDecisionThread,
+): TopicDecisionThread["replies"] {
+	const live = liveAnswerReply(thread);
+	return thread.replies.filter(
+		(r) =>
+			r.id !== live?.id &&
+			r.content !== null &&
+			r.content.trim().length > 0,
+	);
+}
+
+function AnsweredCard({
+	thread,
+	canEdit,
+	isSubmitting,
+	onAmend,
+}: {
+	thread: TopicDecisionThread;
+	canEdit: boolean;
+	isSubmitting: boolean;
+	onAmend: (
+		supersedesId: string,
+		answer: string,
+	) => Promise<{ status: string } | undefined>;
+}) {
 	const root = thread.root;
 	// The answer text lives on the reply, not the root — `answerTopicQuestion`
 	// records it as a REPLY so the question survives beside its answer.
-	const answerReply = thread.replies.find(
-		(r) => r.content !== null && r.content.trim().length > 0,
-	);
+	const answerReply = liveAnswerReply(thread);
+	const [isEditing, setIsEditing] = useState(false);
+	const [draft, setDraft] = useState("");
+
+	const openEditor = () => {
+		setDraft(answerReply?.content ?? "");
+		setIsEditing(true);
+	};
+
+	/**
+	 * Close on SUCCESS, never on submit.
+	 *
+	 * Two outcomes leave the amendment unrecorded — the server refusing it as
+	 * `stale` because a colleague amended first, and the request failing
+	 * outright — and in both the textarea holds the only copy of what the
+	 * person wrote. Closing eagerly would throw that away while the toast
+	 * announced that nothing had been saved. Left open, the refreshed answer
+	 * renders in the card beside the draft, which is exactly what someone needs
+	 * to reconcile the two.
+	 */
+	const saveAmendment = async (supersedesId: string) => {
+		try {
+			const result = await onAmend(supersedesId, draft);
+			if (result?.status !== "stale") {
+				setIsEditing(false);
+			}
+		} catch {
+			// The panel's `onError` has already said so; keep the draft.
+		}
+	};
+
 	return (
 		<li className="space-y-2 rounded-lg border border-border bg-card p-4">
 			<p className="text-foreground text-sm leading-relaxed">
 				{root.summary}
 			</p>
-			{answerReply ? (
-				<p className="text-muted-foreground text-sm leading-relaxed">
-					{answerReply.content}
-				</p>
-			) : null}
+			{isEditing && answerReply ? (
+				<div className="space-y-2">
+					<Textarea
+						value={draft}
+						onChange={(e) => setDraft(e.target.value)}
+						rows={3}
+						aria-label="Your answer"
+						disabled={isSubmitting}
+					/>
+					<div className="flex items-center justify-end gap-2">
+						<Button
+							type="button"
+							variant="ghost"
+							size="sm"
+							onClick={() => setIsEditing(false)}
+							disabled={isSubmitting}
+						>
+							Cancel
+						</Button>
+						<Button
+							type="button"
+							size="sm"
+							onClick={() => saveAmendment(answerReply.id)}
+							disabled={isSubmitting || draft.trim().length === 0}
+						>
+							Save answer
+						</Button>
+					</div>
+				</div>
+			) : (
+				<>
+					{answerReply ? (
+						<p className="text-muted-foreground text-sm leading-relaxed">
+							{answerReply.content}
+						</p>
+					) : null}
+					{/* Gated on an answer EXISTING as well as on `canEdit`:
+					    there is nothing to supersede without one, and the
+					    server refuses that call as `stale` rather than
+					    inventing a first answer through the amend path. */}
+					{canEdit && answerReply ? (
+						<div className="flex justify-end">
+							<Button
+								type="button"
+								variant="ghost"
+								size="sm"
+								onClick={openEditor}
+								disabled={isSubmitting}
+							>
+								<PencilIcon
+									className="mr-1.5 size-3.5"
+									aria-hidden="true"
+								/>
+								Amend
+							</Button>
+						</div>
+					) : null}
+				</>
+			)}
 		</li>
 	);
 }

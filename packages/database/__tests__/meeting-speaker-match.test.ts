@@ -3,6 +3,7 @@ import {
 	buildMeetingSpeakers,
 	buildRosterIndex,
 	MEETING_PARTICIPANTS_CAP,
+	MEETING_PARTICIPANTS_DETAIL_CAP,
 	matchSpeaker,
 	normalizeName,
 } from "../src/meeting-speaker-match";
@@ -91,5 +92,58 @@ describe("buildMeetingSpeakers", () => {
 			"c person",
 		]);
 		expect(v?.overflowCount).toBe(2);
+	});
+
+	// The single-topic read raises the cap so the Topic Item Page can unfold
+	// the names the Inbox line has no room for. The Inbox itself keeps the
+	// tight cap, which is why the default above is the one that must not move.
+	it("honours a caller-supplied cap and still reports the remainder", () => {
+		const many = ["e", "d", "c", "b", "a"].map((c, i) => ({
+			id: `u${i}`,
+			name: `${c} person`,
+			username: null,
+		}));
+
+		const v = buildMeetingSpeakers(many, 4);
+		expect(v?.members.map((m) => m.name)).toEqual([
+			"a person",
+			"b person",
+			"c person",
+			"d person",
+		]);
+		expect(v?.overflowCount).toBe(1);
+	});
+
+	it("orders BEFORE it caps, so a raised cap only ever appends", () => {
+		// Load-bearing for the topic page: the collapsed line there shows the
+		// first three of a 25-cap payload, and those have to be the same three
+		// the Inbox row showed from its 3-cap payload. If the cap were applied
+		// to the unsorted input this would fail, and the two views would name
+		// different people for the same meeting.
+		const many = ["e", "d", "c", "b", "a"].map((c, i) => ({
+			id: `u${i}`,
+			name: `${c} person`,
+			username: null,
+		}));
+
+		const tight = buildMeetingSpeakers(many, MEETING_PARTICIPANTS_CAP);
+		const wide = buildMeetingSpeakers(
+			many,
+			MEETING_PARTICIPANTS_DETAIL_CAP,
+		);
+
+		expect(wide?.members.slice(0, MEETING_PARTICIPANTS_CAP)).toEqual(
+			tight?.members,
+		);
+		expect(wide?.members).toHaveLength(5);
+		expect(wide?.overflowCount).toBe(0);
+	});
+});
+
+describe("MEETING_PARTICIPANTS_DETAIL_CAP", () => {
+	it("is wider than the Inbox cap, which is what gives the topic page something to unfold", () => {
+		expect(MEETING_PARTICIPANTS_DETAIL_CAP).toBeGreaterThan(
+			MEETING_PARTICIPANTS_CAP,
+		);
 	});
 });

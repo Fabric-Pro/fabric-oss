@@ -1,8 +1,14 @@
-import { GenerationTabs } from "@saas/projects/components/publishing-suite/GenerationTabs";
+import {
+	buildGenerationTabModel,
+	GenerationTabPanels,
+	GenerationTabTriggers,
+} from "@saas/projects/components/publishing-suite/GenerationTabs";
 import type { PlanningAnalysisDocument } from "@saas/projects/components/publishing-suite/planning-analysis-content";
+import { ALL_POST_TYPES } from "@saas/projects/components/publishing-suite/topic-shared";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { Tabs, TabsList } from "@ui/components/tabs";
 import { describe, expect, it } from "vitest";
 
 /**
@@ -79,28 +85,63 @@ function thread(over: Record<string, unknown> = {}) {
  * purely presentational component. Retries off and a fresh client per render, so
  * one test's cache cannot answer another's question.
  */
-function renderTabs(over: Partial<Parameters<typeof GenerationTabs>[0]> = {}) {
+/**
+ * Mount the generation tabs the way the Topic Item Page now does.
+ *
+ * The 2A rework split `GenerationTabs` into a model, row 2 of the page's tab
+ * strip, and the panels — so the harness composes them exactly as the page
+ * does rather than rendering one component. Every assertion below is unchanged;
+ * only the mounting moved.
+ *
+ * `hasError`'s banner is the page's, not this component's, so it is asserted in
+ * `publishing-topic-item-page.test.tsx`. What is asserted here is the part this
+ * module still owns: a failed read must not let a type claim GENERATED.
+ */
+function renderTabs(
+	over: Partial<
+		Parameters<typeof buildGenerationTabModel>[0] &
+			Parameters<typeof GenerationTabPanels>[0]
+	> = {},
+) {
 	const client = new QueryClient({
 		defaultOptions: {
 			queries: { retry: false },
 			mutations: { retry: false },
 		},
 	});
+	const input = {
+		analysis: null,
+		drafts: [],
+		workingDrafts: [],
+		decisionThreads: [],
+		hasError: false,
+		...over,
+	} as Parameters<typeof buildGenerationTabModel>[0];
+	const model = buildGenerationTabModel(input);
 	return render(
 		<QueryClientProvider client={client}>
-			<GenerationTabs
-				projectId="p1"
-				organizationId="org1"
-				topicId="t1"
-				canEdit={true}
-				analysis={null}
-				drafts={[]}
-				workingDrafts={[]}
-				decisionThreads={[]}
-				isLoading={false}
-				hasError={false}
-				{...over}
-			/>
+			<Tabs defaultValue="TWEET">
+				<TabsList aria-label="Content generation">
+					<GenerationTabTriggers
+						model={model}
+						postTypes={ALL_POST_TYPES}
+					/>
+				</TabsList>
+				<GenerationTabPanels
+					model={model}
+					postTypes={ALL_POST_TYPES}
+					projectId="p1"
+					organizationId="org1"
+					topicId="t1"
+					canEdit={true}
+					analysis={input.analysis}
+					drafts={input.drafts}
+					workingDrafts={input.workingDrafts}
+					decisionThreads={input.decisionThreads}
+					isLoading={false}
+					{...over}
+				/>
+			</Tabs>
 		</QueryClientProvider>,
 	);
 }
@@ -640,14 +681,13 @@ describe("GenerationTabs — panel content", () => {
 });
 
 describe("GenerationTabs — degraded read", () => {
-	it("keeps the tabs usable and says the state could not be loaded", () => {
+	it("keeps the tabs usable when the draft read failed", () => {
 		renderTabs({ hasError: true });
 
-		expect(
-			screen.getByTestId("generation-tabs-degraded"),
-		).toBeInTheDocument();
 		// The tab strip itself still works — the recommendation context comes
 		// from a DIFFERENT query, so one failing read must not blank the lot.
+		// The banner that says so is the page's, and is asserted in
+		// `publishing-topic-item-page.test.tsx`.
 		expect(
 			within(tablist()).getByRole("tab", { name: /blog post/i }),
 		).toBeEnabled();

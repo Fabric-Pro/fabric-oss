@@ -2,10 +2,11 @@
  * Publishing Suggestion — recommendation-preferences clause (1C-1b part 2,
  * §7.1(a) / FR8–FR10).
  *
- * Sibling of `buildTopicSuggestionPrompt` in `./prompt.ts`, kept in its own
- * file because that one promises in its header to have no imports at all — it
- * is a pure `unknown -> string` transform and its contract is worth keeping.
- * This one needs the post-type label map, so it lives next door instead.
+ * Sibling of `composeTopicSuggestionPrompt` in `./prompt.ts`, kept in its own
+ * file because that one owns the org-editable body and the clauses an override
+ * cannot remove. This clause is neither: it is per-project guidance spliced in
+ * by the activity, and mixing it into the prompt module would blur what a
+ * tenant can edit with what it cannot.
  *
  * Imported only by `summarize-topic-suggestions.ts` (an ACTIVITY). Never by the
  * workflow: nothing here may end up inside the Temporal sandbox.

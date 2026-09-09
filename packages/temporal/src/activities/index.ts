@@ -395,6 +395,7 @@ export * from "./publishing-suggestion";
 // generator and its failure marker).
 export * from "./publishing-blog-post";
 export * from "./publishing-case-study";
+export * from "./publishing-linkedin-post";
 export * from "./publishing-planning";
 export * from "./publishing-short-post";
 export * from "./publishing-stakeholder-email";

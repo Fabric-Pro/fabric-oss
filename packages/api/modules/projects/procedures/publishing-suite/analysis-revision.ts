@@ -38,6 +38,7 @@ import {
 	requireProjectPermission,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
+import { recordAnalysisRevisionOutcome } from "../../lib/publishing-outcome";
 import { assertPublishingSuiteFeatureEnabled } from "../../lib/publishing-suite-feature";
 import { requireEligibleProjectForTopic } from "../../lib/publishing-topic-project";
 
@@ -106,6 +107,18 @@ export const saveAnalysisRevisionProcedure = tenantProtectedProcedure
 
 		switch (result.status) {
 			case "saved":
+				// Measurement only (Fizzy #1851 A9). Saving prose over the
+				// AI's analysis is a human editing AI output, which is the
+				// verdict `ACCEPTED_WITH_EDITS` exists for — one row per
+				// revision, so the count is the revision count.
+				await recordAnalysisRevisionOutcome({
+					topicId: input.topicId,
+					projectId: project.id,
+					organizationId: project.organizationId,
+					userId: context.user.id,
+					revisionVersion: result.version,
+					sourceAnalysisVersion: input.sourceAnalysisVersion,
+				});
 				return { saved: true as const, version: result.version };
 			case "conflict":
 				// Not a failure: nothing is wrong, the caller is acting on a view
