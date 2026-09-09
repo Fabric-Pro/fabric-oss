@@ -752,8 +752,11 @@ export function PublishingCycleHistory({
 	}
 
 	return (
-		<section className="mt-8" data-onboarding-target="publishing-history">
-			<h3 className="editorial-label mb-3">Refresh history</h3>
+		// No anchor and no heading of its own any more: this renders inside a
+		// drawer whose header already names it, and the tour anchor moved to
+		// the button that OPENS the drawer — a spotlight cannot point at
+		// something that is not on screen until you click.
+		<section className="mt-4">
 			{/* Rendered outside the state switch, so the filter stays usable
 			    when the current one returns nothing — otherwise the only way
 			    out of an empty filter is a reload. */}

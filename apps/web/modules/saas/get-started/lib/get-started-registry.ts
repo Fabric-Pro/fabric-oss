@@ -1103,7 +1103,7 @@ export const GET_STARTED_PAGES: readonly GsPage[] = [
 				id: "publishing-history",
 				anchor: "publishing-history",
 				title: "Every refresh, not just the last one",
-				body: "The list above shows the current set of topics. This table shows every refresh behind them — when each ran, whether it was scheduled or someone asked for it, how long it took and how many topics it produced. A run that failed or found nothing stays here after the next one starts, which is where you look when the list above is emptier than you expected.",
+				body: "This opens the history behind the list — every refresh that produced it, when each ran, whether it was scheduled or someone asked for it, and what it found. It lives behind a button rather than under the list because it is reference material: worth reaching for when the topics above are thinner than you expected, and out of the way the rest of the time. A dot on the button means the most recent refresh failed.",
 			},
 		],
 	},

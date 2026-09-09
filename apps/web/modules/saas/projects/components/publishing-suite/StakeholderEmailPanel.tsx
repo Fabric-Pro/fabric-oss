@@ -209,10 +209,19 @@ function readStakeholderEmailDocument(
 function composeExportMarkdown({
 	body,
 	doc,
+	safetyDoc,
 	bodyIsFromLatest,
 }: {
 	body: string;
 	doc: StakeholderEmailDocument | null;
+	/**
+	 * Where the SAFETY NOTE comes from — the version the body was adopted from
+	 * when that is known, the newest ready one otherwise. Separate from `doc`
+	 * because the rest of this header is metadata about the candidate (which
+	 * the caveat flags as another version's), while the note has to describe
+	 * the text actually being exported.
+	 */
+	safetyDoc: StakeholderEmailDocument | null;
 	bodyIsFromLatest: boolean;
 }): string {
 	if (!doc) {
@@ -221,9 +230,12 @@ function composeExportMarkdown({
 
 	const isClean =
 		doc.releaseStatus !== "UNCONFIRMED" &&
-		!doc.safetyNote &&
 		doc.inputsNeeded.length === 0 &&
-		bodyIsFromLatest;
+		bodyIsFromLatest &&
+		// The note that would be EXPORTED, not the newest one: a body adopted
+		// from a generalized version is not clean because the candidate above
+		// it happens to be.
+		!safetyDoc?.safetyNote;
 	if (isClean) {
 		return body;
 	}
@@ -244,8 +256,8 @@ function composeExportMarkdown({
 	if (!bodyIsFromLatest) {
 		lines.push(`- ${OTHER_VERSION_NOTE}`);
 	}
-	if (doc.safetyNote) {
-		lines.push(`- Safety note: ${doc.safetyNote}`);
+	if (safetyDoc?.safetyNote) {
+		lines.push(`- Safety note: ${safetyDoc.safetyNote}`);
 	}
 	if (doc.inputsNeeded.length > 0) {
 		lines.push("", "## Still needed before sending", "");
@@ -431,6 +443,28 @@ export function StakeholderEmailPanel({
 	const notesDescribeAnotherVersion =
 		!bodyIsFromLatest && working?.hasBody === true;
 
+	/**
+	 * The safety fields of the version the BODY came from.
+	 *
+	 * `doc` is the newest READY candidate — right for the comparison panes,
+	 * wrong for anything describing the text in the editor. A qualifier covered
+	 * half of it and could not reach the other half: when v1 was generalized
+	 * and v2 needs none, `doc.safetyNote` is null, the section does not render
+	 * at all, and the reader loses the explanation of the document they hold
+	 * while the export carries it away silently.
+	 */
+	const adoptedDoc = readStakeholderEmailDocument(
+		working?.sourceContent ?? null,
+	);
+	const safetyDoc =
+		notesDescribeAnotherVersion && adoptedDoc ? adoptedDoc : doc;
+	// The qualifier survives only for the case it can still describe: a source
+	// row past retention, where the newest note is all there is. With the
+	// adopted version in hand the note IS this text's, and saying otherwise
+	// would be false.
+	const noteDescribesAnotherVersion =
+		notesDescribeAnotherVersion && adoptedDoc === null;
+
 	const handleAdopt = () => {
 		if (!readyId) {
 			return;
@@ -570,6 +604,7 @@ export function StakeholderEmailPanel({
 							markdown={composeExportMarkdown({
 								body: bodyValue,
 								doc,
+								safetyDoc,
 								bodyIsFromLatest,
 							})}
 							filename={doc?.subject ?? "stakeholder-email"}
@@ -810,12 +845,12 @@ export function StakeholderEmailPanel({
 
 			{doc ? (
 				<>
-					{doc.safetyNote ? (
+					{safetyDoc?.safetyNote ? (
 						<GeneralizationNotes
 							heading="What the draft wrote around"
-							note={doc.safetyNote}
+							note={safetyDoc.safetyNote}
 							describesAnotherVersion={
-								notesDescribeAnotherVersion
+								noteDescribesAnotherVersion
 							}
 						/>
 					) : null}

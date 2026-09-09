@@ -14,6 +14,15 @@ export interface InboxTopicShape {
 	isSnoozed: boolean;
 	updatedAt: Date;
 	/**
+	 * Why the model ranked this topic above its neighbours, or `null`.
+	 *
+	 * Optional so the flag-off row and every existing caller keep working
+	 * untouched — a topic with no highlight and a caller that does not supply
+	 * one are the same thing to everything below.
+	 */
+	highlightReason?: string | null;
+	createdAt?: Date;
+	/**
 	 * The snooze deadline, past or future. Typed `Date` and not `Date | string`
 	 * on purpose: it crosses the wire as a string like `updatedAt` does, and a
 	 * string reaching `getTime()` here yields `NaN`, which compares false
@@ -48,6 +57,17 @@ export const STALE_AFTER_DAYS = 30;
  * one-line change.
  */
 export const AGING_AFTER_DAYS = 10;
+
+/**
+ * How long a highlight lasts.
+ *
+ * Freshness is computed rather than stored, so a highlight expires on its own
+ * instead of needing a sweep to clear it — and "worth a look" stops being true
+ * about a topic that has sat there for a fortnight whatever the model thought
+ * when it wrote it. Shorter than `AGING_AFTER_DAYS` on purpose: a topic must
+ * never be able to be highlighted and quiet at the same time.
+ */
+export const HIGHLIGHT_LASTS_DAYS = 7;
 
 /**
  * How long a suggestion has gone untouched, once that is worth saying.
@@ -138,17 +158,53 @@ export function isTopicArchived(topic: InboxTopicShape, now: Date): boolean {
 	return topicNeglect(topic, now)?.level === "stale";
 }
 
+/**
+ * Is this topic worth a look right now?
+ *
+ * Two conditions, and the second is why the first is safe to trust. The model
+ * ranked it above its neighbours when the batch was written — a FORCED ranking
+ * capped at two per cycle, because absolute thresholds were measured against
+ * 202 staging topics and marked 68% of them. And it is still recent: a
+ * highlight is a claim about what to read next, which stops being true once a
+ * topic has been sitting there for a week.
+ *
+ * Exported so the section composition and any badge cannot drift into two
+ * different answers about the same row.
+ */
+export function isTopicHighlighted(topic: InboxTopicShape, now: Date): boolean {
+	if (!topic.highlightReason || topic.status !== "SUGGESTION") {
+		return false;
+	}
+	const createdAt = topic.createdAt ?? topic.updatedAt;
+	const days = (now.getTime() - createdAt.getTime()) / DAY_MS;
+	return days < HIGHLIGHT_LASTS_DAYS;
+}
+
+/**
+ * How a reader has asked for the Suggested section to be ordered.
+ *
+ * `recommended` is the incoming order — 1B's per-viewer ranking, computed
+ * server-side — and is the DEFAULT, because it already floats a reader's own
+ * beat to the top. The other two are a deliberate override, for the case the
+ * card owner described: wanting the newest thing first regardless of whose beat
+ * it is.
+ */
+export type InboxSort = "recommended" | "recentlyUpdated" | "recentlyCreated";
+
 export function composeInboxSections<T extends InboxTopicShape>(
 	items: readonly T[],
-	opts: { maxRecent?: number; now?: Date } = {},
+	opts: { maxRecent?: number; now?: Date; sort?: InboxSort } = {},
 ): {
 	recentlyModified: T[];
 	recentlyModifiedTotal: number;
+	/** Highlighted AND still fresh — see `isTopicHighlighted`. */
+	worthALook: T[];
 	suggested: T[];
 	archived: T[];
 } {
 	const maxRecent = opts.maxRecent ?? 3;
 	const now = opts.now ?? new Date();
+	const sort = opts.sort ?? "recommended";
 	const live = items.filter((t) => !t.isSnoozed);
 
 	// FR2 names `updatedAt`, which is NOT the key the array arrives sorted by,
@@ -175,30 +231,81 @@ export function composeInboxSections<T extends InboxTopicShape>(
 	// and that is precisely the 1B regression the paragraph above exists to
 	// prevent.
 	//
-	// TWO groups, not three, even though `topicNeglect` reports three states.
-	// An `aging` topic is de-emphasised WHERE IT STANDS and must not move: a
-	// third group is a sort by neglect, and a sort is the one thing this
-	// section may not do to 1B's tier order. Only stale topics leave.
+	// THREE groups now, not two — the card owner asked for the aging band to
+	// sink rather than only recede in place, and this is that change.
 	//
-	// They LEAVE rather than sink. Stale used to be pushed to the bottom of
-	// this section; the archive supersedes that for the same set, because at
-	// equal thresholds the two rules select the same topics — `live` has
-	// already dropped every snoozed one, so there is no stale-but-unarchived
-	// topic left for a sink to order. Reverting is a one-line reroute:
-	// `[...suggested, ...archived]` here, and the caller's footer goes quiet
-	// on its own because the array it counts is empty.
-	const suggested: T[] = [];
+	// The paragraph this replaces argued that a third group is a sort by
+	// neglect, and that a sort is the one thing this section may not do to 1B's
+	// tier order. Half of that still holds, which is why the partition is
+	// shaped the way it is:
+	//
+	//  - `active` — everything under `AGING_AFTER_DAYS` — is built by a STABLE
+	//    partition and never sorted, so 1B's per-viewer tier order survives
+	//    byte-for-byte at the HEAD of the section, where personalization is
+	//    the thing that matters. #2265's ranking is untouched for every topic
+	//    a reader is realistically going to act on.
+	//  - `aging` is the de-prioritised tail, and there the owner's rule wins:
+	//    the longer a topic has been quiet the further down it goes. Ordering
+	//    by neglect inside a group that is already sinking costs nothing that
+	//    tiering was protecting — a topic nobody has touched in three weeks is
+	//    not being ranked for relevance any more, it is being queued for
+	//    archival.
+	//  - `archived` leaves the section entirely at `STALE_AFTER_DAYS`.
+	//
+	// `days` ascending, so the least neglected sits closest to the live topics
+	// and the oldest is last in the list before it disappears. Ties keep tier
+	// order, because `sort` is stable and the input already carries it.
+	const worthALook: T[] = [];
+	const active: T[] = [];
+	const aging: T[] = [];
 	const archived: T[] = [];
 	for (const t of live) {
 		if (t.status !== "SUGGESTION") {
 			continue;
 		}
-		(isTopicArchived(t, now) ? archived : suggested).push(t);
+		const neglect = topicNeglect(t, now);
+		if (neglect !== null) {
+			(neglect.level === "stale" ? archived : aging).push(t);
+			continue;
+		}
+		// A highlight the model wrote, and only while it is still fresh. The
+		// count cap was applied when the batch was written, so a cycle can put
+		// at most two topics here; the age test is what stops them accumulating
+		// across cycles into a third permanent section.
+		(isTopicHighlighted(t, now) ? worthALook : active).push(t);
 	}
+	aging.sort(
+		(a, b) =>
+			(topicNeglect(a, now)?.days ?? 0) -
+			(topicNeglect(b, now)?.days ?? 0),
+	);
+	/**
+	 * The reader's sort applies to the LIVE head and to nothing else.
+	 *
+	 * `aging` is already ordered by neglect, and that ordering IS the sink —
+	 * re-sorting the tail by date would undo the very thing the control sits
+	 * above. `archived` never renders in order at all. And `recommended` sorts
+	 * nothing, because the incoming order is the answer: re-sorting it by any
+	 * date flattens the per-viewer tiers that order carries, which is exactly
+	 * what defaulting to a date sort would have done to everyone who never
+	 * opens the control.
+	 */
+	if (sort === "recentlyUpdated") {
+		active.sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime());
+	} else if (sort === "recentlyCreated") {
+		active.sort(
+			(a, b) =>
+				(b.createdAt ?? b.updatedAt).getTime() -
+				(a.createdAt ?? a.updatedAt).getTime(),
+		);
+	}
+
+	const suggested = [...active, ...aging];
 
 	return {
 		recentlyModified: recent.slice(0, maxRecent),
 		recentlyModifiedTotal: recent.length,
+		worthALook,
 		suggested,
 		archived,
 	};

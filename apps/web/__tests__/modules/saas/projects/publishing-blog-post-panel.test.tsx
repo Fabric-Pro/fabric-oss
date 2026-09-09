@@ -755,3 +755,91 @@ describe("BlogPostPanel — whose draft the generalization note describes (A6)",
 		expect(screen.queryByText(QUALIFIER)).not.toBeInTheDocument();
 	});
 });
+
+/**
+ * Defect §2 — the generalization note read off the wrong version.
+ *
+ * All the panels read `safetyNote` from `latestReady` while the editor beside
+ * them holds the working draft. After a regeneration nobody adopted, those are
+ * different documents. Slice A6 added a qualifier — but a qualifier only covers
+ * the case where a note IS rendered.
+ *
+ * The uncovered half is the mirror: v1 was generalized, v2 needs none, so
+ * `latestReady.safetyNote` is null and the whole section DISAPPEARS while the
+ * saved text is still the generalized one. The reader loses the explanation of
+ * the draft they are holding and there is nothing on screen to qualify — so no
+ * wording change could ever reach it.
+ */
+describe("BlogPostPanel — the note belongs to the version on screen", () => {
+	const GENERALIZED = {
+		...DOCUMENT,
+		safetyNote: "Generalized the customer reference.",
+	};
+	const CLEAN = { ...DOCUMENT, safetyNote: null };
+
+	it("keeps the note when a later version needs no generalizing", () => {
+		// The vanishing case. v2 is clean, the body is still v1's.
+		renderPanel({
+			draft: readyDraft(CLEAN, "d2"),
+			working: working({
+				sourceDraftId: "d1",
+				sourceContent: GENERALIZED,
+			}),
+		});
+
+		expect(
+			screen.getByText("Generalized the customer reference."),
+		).toBeInTheDocument();
+	});
+
+	it("shows the adopted version's note, not the newest one", () => {
+		renderPanel({
+			draft: readyDraft(
+				{ ...DOCUMENT, safetyNote: "v2's own note." },
+				"d2",
+			),
+			working: working({
+				sourceDraftId: "d1",
+				sourceContent: GENERALIZED,
+			}),
+		});
+
+		expect(
+			screen.getByText("Generalized the customer reference."),
+		).toBeInTheDocument();
+		expect(screen.queryByText("v2's own note.")).not.toBeInTheDocument();
+	});
+
+	it("drops the qualifier once the note really is this version's", () => {
+		// "These notes describe another version" was the best A6 could do
+		// without the source. With it in hand the sentence is false.
+		renderPanel({
+			draft: readyDraft(
+				{ ...DOCUMENT, safetyNote: "v2's own note." },
+				"d2",
+			),
+			working: working({
+				sourceDraftId: "d1",
+				sourceContent: GENERALIZED,
+			}),
+		});
+
+		expect(
+			screen.queryByText(/describe(s)? another version/i),
+		).not.toBeInTheDocument();
+	});
+
+	it("still qualifies when the adopted version is gone", () => {
+		// A superseded row can fall out of retention. The newest note is then
+		// all there is, and saying so is the honest answer.
+		renderPanel({
+			draft: readyDraft(
+				{ ...DOCUMENT, safetyNote: "v2's own note." },
+				"d2",
+			),
+			working: working({ sourceDraftId: "d1", sourceContent: null }),
+		});
+
+		expect(screen.getByText("v2's own note.")).toBeInTheDocument();
+	});
+});

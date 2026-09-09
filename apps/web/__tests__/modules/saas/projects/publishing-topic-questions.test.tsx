@@ -399,21 +399,21 @@ describe("TopicQuestionsPanel — answering (FR10/FR11)", () => {
 });
 
 /**
- * Content-type questions answer as a yes/no (A3, Fizzy #1851).
+ * Content types are a SETTING, not a question.
  *
- * "is it supposed to be like that? its simple setting, not question that we
- * want ai to ask us, it could be checkbox or setting" — typing prose to answer
- * "Should we produce a Blog Post for this topic?" is the complaint.
+ * This replaces a block asserting they answer with Yes/No buttons. That was the
+ * right shape while they were still questions — but the card owner's point was
+ * that they should not be questions at all ("its simple setting, not question,
+ * it could be checkbox"), and they are now the content-types checklist above
+ * this panel, where the analysis's rationale sits on the choice.
  *
- * These stay QUESTIONS rather than becoming a project setting, and the reason
- * is in the data: the wording is templated per type, but the rationale beneath
- * it is written about this topic. FR39 binds recommendations that need
- * confirmation and each of these is one, so what changes is the affordance, not
- * the decision model — the answer still reaches the Decision Log and still
- * survives the next regeneration.
+ * The generator no longer mints them. Topics created before that still carry
+ * them, so the panel filters them out too — otherwise the checklist and a
+ * question directly beneath it would ask for the same decision, in the exact
+ * wording that was objected to.
  */
-describe("TopicQuestionsPanel — content-type questions are a yes/no", () => {
-	it("offers Yes and No instead of an open textarea", () => {
+describe("TopicQuestionsPanel — content types are not questions", () => {
+	it("hides a content-type question a topic still carries", () => {
 		render(
 			<TopicQuestionsPanel
 				{...BASE}
@@ -422,8 +422,7 @@ describe("TopicQuestionsPanel — content-type questions are a yes/no", () => {
 						root: root({
 							decisionKind: "CONTENT_TYPE",
 							summary:
-								"Should we produce a Blog Post for this topic?",
-							recommendedResponse: null,
+								"Should we produce a LinkedIn Post for this topic?",
 						}),
 						replies: [],
 					},
@@ -431,77 +430,14 @@ describe("TopicQuestionsPanel — content-type questions are a yes/no", () => {
 			/>,
 		);
 
-		expect(screen.getByRole("button", { name: "Yes" })).toBeInTheDocument();
-		expect(screen.getByRole("button", { name: "No" })).toBeInTheDocument();
 		expect(
-			screen.queryByRole("textbox", { name: /your answer/i }),
+			screen.queryByText(/should we produce a linkedin post/i),
 		).not.toBeInTheDocument();
 	});
 
-	it("records a Yes as MANUAL, not as accepting the AI's wording", async () => {
-		// answerSource measures recommendation acceptance. A button that never
-		// showed the recommendation must not count as accepting it — the same
-		// reasoning behind the repoint_ai_edited_answer_source migration.
-		const user = userEvent.setup();
-		render(
-			<TopicQuestionsPanel
-				{...BASE}
-				threads={[
-					{
-						root: root({
-							decisionKind: "CONTENT_TYPE",
-							summary:
-								"Should we produce a Blog Post for this topic?",
-							recommendedResponse:
-								"Yes, the topic has enough substance.",
-						}),
-						replies: [],
-					},
-				]}
-			/>,
-		);
-
-		await user.click(screen.getByRole("button", { name: "Yes" }));
-
-		expect(answerMutation).toHaveBeenCalledWith(
-			expect.objectContaining({ answerSource: "MANUAL" }),
-		);
-	});
-
-	it("still allows a nuanced answer in your own words", async () => {
-		// "yes, but only after the metric is approved" is a real answer a
-		// boolean would throw away.
-		const user = userEvent.setup();
-		render(
-			<TopicQuestionsPanel
-				{...BASE}
-				threads={[
-					{
-						root: root({
-							decisionKind: "CONTENT_TYPE",
-							summary:
-								"Should we produce a Blog Post for this topic?",
-							recommendedResponse: null,
-						}),
-						replies: [],
-					},
-				]}
-			/>,
-		);
-
-		await user.click(
-			screen.getByRole("button", { name: /answer in your own words/i }),
-		);
-
-		expect(
-			screen.getByRole("textbox", { name: /your answer/i }),
-		).toBeInTheDocument();
-	});
-
-	it("leaves an asset-approval question as free text", () => {
-		// The distinction is in decisionKind: an ASSET_APPROVAL question names a
-		// specific asset in this topic and rarely has a yes/no answer worth
-		// recording on its own.
+	it("leaves every other kind of question alone", () => {
+		// The filter is keyed on the KIND, not on the wording — an asset
+		// approval reads similarly and must survive.
 		render(
 			<TopicQuestionsPanel
 				{...BASE}
@@ -509,9 +445,7 @@ describe("TopicQuestionsPanel — content-type questions are a yes/no", () => {
 					{
 						root: root({
 							decisionKind: "ASSET_APPROVAL",
-							summary:
-								"Is the Metric callout approved for use in this content?",
-							recommendedResponse: null,
+							summary: "Is the screenshot approved for use?",
 						}),
 						replies: [],
 					},
@@ -520,11 +454,8 @@ describe("TopicQuestionsPanel — content-type questions are a yes/no", () => {
 		);
 
 		expect(
-			screen.getByRole("textbox", { name: /your answer/i }),
+			screen.getByText(/is the screenshot approved for use/i),
 		).toBeInTheDocument();
-		expect(
-			screen.queryByRole("button", { name: "Yes" }),
-		).not.toBeInTheDocument();
 	});
 });
 
@@ -786,5 +717,97 @@ describe("TopicQuestionsPanel — amending a settled answer", () => {
 		expect(
 			screen.queryByRole("button", { name: /amend/i }),
 		).not.toBeInTheDocument();
+	});
+});
+
+/**
+ * Several suggested answers, as Feature Maturation offers (#24).
+ *
+ * The card owner asked for parity: "for AI suggested answers lets follow the
+ * same logic as in fmv2, card (or couple cards if couple possible answers)".
+ * Each option is a real choice with the reasoning that supports it — with
+ * several on screen the reasoning is the only thing separating them.
+ *
+ * `recommendedResponse` is untouched and still the fallback, so every question
+ * minted before this reads exactly as it did.
+ */
+describe("TopicQuestionsPanel — several suggested answers", () => {
+	const OPTIONS = [
+		{
+			text: "Out of scope for this release",
+			justification: "The evidence names no customer commitment.",
+		},
+		{
+			text: "In scope, if it fits the estimate",
+			justification: "Groundwork already exists in the linked PR.",
+		},
+	];
+
+	const withOptions = () => ({
+		root: root({ answerOptions: OPTIONS, recommendedResponse: null }),
+		replies: [],
+	});
+
+	it("shows every option with its reasoning", () => {
+		render(<TopicQuestionsPanel {...BASE} threads={[withOptions()]} />);
+
+		expect(
+			screen.getByText("Out of scope for this release"),
+		).toBeInTheDocument();
+		expect(
+			screen.getByText("The evidence names no customer commitment."),
+		).toBeInTheDocument();
+		expect(
+			screen.getByText("In scope, if it fits the estimate"),
+		).toBeInTheDocument();
+	});
+
+	it("records picking one as accepting the AI's wording", async () => {
+		const user = userEvent.setup();
+		render(<TopicQuestionsPanel {...BASE} threads={[withOptions()]} />);
+
+		await user.click(screen.getByText("Out of scope for this release"));
+
+		expect(answerMutation).toHaveBeenCalledWith(
+			expect.objectContaining({
+				answer: "Out of scope for this release",
+				answerSource: "AI_SUGGESTED",
+			}),
+		);
+	});
+
+	it("records editing one as AI_EDITED, not MANUAL", async () => {
+		// Starting from the AI's wording is a different fact about acceptance
+		// from having typed your own, and the metric measures that difference.
+		const user = userEvent.setup();
+		render(<TopicQuestionsPanel {...BASE} threads={[withOptions()]} />);
+
+		await user.click(
+			screen.getByRole("button", {
+				name: /edit "out of scope for this release"/i,
+			}),
+		);
+		await user.type(screen.getByRole("textbox"), " — revisit in Q4");
+		await user.click(screen.getByRole("button", { name: /^submit$/i }));
+
+		expect(answerMutation).toHaveBeenCalledWith(
+			expect.objectContaining({ answerSource: "AI_EDITED" }),
+		);
+	});
+
+	it("still offers a free-form answer beside them", () => {
+		render(<TopicQuestionsPanel {...BASE} threads={[withOptions()]} />);
+
+		expect(
+			screen.getByRole("button", { name: /type your own/i }),
+		).toBeInTheDocument();
+	});
+
+	it("falls back to the single recommendation for an older question", () => {
+		// Nothing was backfilled. A row minted before this carries no options
+		// and must read exactly as it always did.
+		render(<TopicQuestionsPanel {...BASE} threads={[OPEN_THREAD]} />);
+
+		expect(screen.getByText(/suggested:/i)).toBeInTheDocument();
 	});
 });

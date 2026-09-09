@@ -163,6 +163,8 @@ const USER_OWNED_TABLES = new Set([
 	"PublishingTopicPlanningAnalysis", // Publishing Suite planning worksheet - tenant XOR + projectId
 	"PublishingTopicDecisionEntry", // Publishing Suite topic decision threads - tenant XOR
 	"PublishingTopicDraft", // Publishing Suite generated drafts - tenant XOR + projectId
+	"PublishingListPreference", // One reader's Inbox sort/layout - tenant XOR + projectId
+	"PublishingTopicDraftRead", // Per-content-type read markers - tenant XOR + projectId
 	"PublishingTopicWorkingDraft", // Publishing Suite user-owned working drafts - tenant XOR + projectId
 	"PublishingTopicAnalysisRevision", // Publishing Suite user-owned analysis prose - tenant XOR + projectId
 	// Note: TestResultEvent (run-result history) is a columnless child of TestCase and
@@ -306,6 +308,8 @@ const PROJECT_SCOPED_TABLES: Record<string, string> = {
 	PublishingTopicPlanningAnalysis: "projectId",
 	PublishingTopicDecisionEntry: "projectId",
 	PublishingTopicDraft: "projectId",
+	PublishingListPreference: "projectId",
+	PublishingTopicDraftRead: "projectId",
 	PublishingTopicWorkingDraft: "projectId",
 	PublishingTopicAnalysisRevision: "projectId",
 	Epic: "projectId",

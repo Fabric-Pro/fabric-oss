@@ -437,13 +437,12 @@ describe("generatePlanningAnalysisActivity — what it persists", () => {
 		}
 	});
 
-	it("merges the model's questions with the ones the buckets imply", async () => {
-		// Two decisions, not one. The model raised "may we name the customer?";
-		// separately, it put a content type in `needsConfirmation`, and that bucket
-		// is itself an unanswered decision ("do we publish it as a case study?").
-		// Deriving the second is what stops a confirmation requirement the model
-		// stated in a bucket from having no question attached to it — FR39's whole
-		// point is that the buckets and the question list cannot disagree.
+	it("keeps the model's own questions, and mints none for a content type", async () => {
+		// A content type is a SETTING now — the checklist on Summary &
+		// Questions — so `contentTypes.needsConfirmation` mints nothing, and
+		// the only question left here is the model's own. FR39 still holds
+		// between the buckets and the question list: an ASSET that requires
+		// approval is still derived, because there is no control for it.
 		await run();
 
 		const content = completePlanningAnalysis.mock.calls[0]?.[0]?.content;
@@ -455,17 +454,14 @@ describe("generatePlanningAnalysisActivity — what it persists", () => {
 				],
 			),
 		);
-		expect(bySource).toEqual({
-			MODEL: "CUSTOMER_NAME",
-			DERIVED: "CONTENT_TYPE",
-		});
+		expect(bySource).toEqual({ MODEL: "CUSTOMER_NAME" });
 		expect(
 			new Set(
 				content.questions.map(
 					(q: { questionId: string }) => q.questionId,
 				),
 			).size,
-		).toBe(2);
+		).toBe(1);
 	});
 
 	it("drops the raw recommendedQuestions array", async () => {
@@ -525,12 +521,12 @@ describe("generatePlanningAnalysisActivity — what it persists", () => {
 				}),
 			),
 		);
-		// Guards against a vacuous pass: MODEL_OUTPUT resolves to two questions
-		// (see "merges the model's questions with the ones the buckets imply"
-		// above), so if the `questions:` argument were ever deleted entirely,
-		// `questions` here is `undefined` and this fails loudly rather than
-		// `toEqual` quietly comparing two empty arrays.
-		expect(questions).toHaveLength(2);
+		// Guards against a vacuous pass: MODEL_OUTPUT resolves to one question
+		// now that a content type is a setting rather than a question, so if
+		// the `questions:` argument were ever deleted entirely, `questions`
+		// here is `undefined` and this fails loudly rather than `toEqual`
+		// quietly comparing two empty arrays.
+		expect(questions).toHaveLength(1);
 	});
 
 	it("reports SUPERSEDED rather than throwing when the CAS is lost", async () => {

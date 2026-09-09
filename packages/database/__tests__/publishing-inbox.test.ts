@@ -14,6 +14,8 @@ type T = {
 	createdAt: Date;
 	updatedAt: Date;
 	snoozedUntil: Date | null;
+	/** Why the model ranked this above its neighbours; `null` on almost all. */
+	highlightReason: string | null;
 };
 
 const topic = (o: Partial<T> & { id: string }): T => ({
@@ -22,6 +24,7 @@ const topic = (o: Partial<T> & { id: string }): T => ({
 	createdAt: new Date("2026-01-01T00:00:00.000Z"),
 	updatedAt: new Date("2026-01-01T00:00:00.000Z"),
 	snoozedUntil: null,
+	highlightReason: null,
 	...o,
 });
 
@@ -128,25 +131,31 @@ describe("composeInboxSections", () => {
 		expect(out.archived.map((t) => t.id)).toEqual(["stale-1", "stale-2"]);
 	});
 
-	// The whole point of the EARLIER threshold: an aging topic is
-	// de-emphasised where it stands and does not move. The fixture interleaves
-	// aging, fresh and stale precisely so that the obvious "graduated"
-	// implementation — a third partition group, or a sort by neglect level —
-	// reorders something and fails here. Only `stale-1` may leave.
-	it("leaves aging suggestions exactly where they were and archives only the stale one", () => {
+	// The aging band SINKS. This replaces an assertion that it stays put — the
+	// card owner asked for the opposite ("if for 10+ days we can start lowering
+	// it in the list"), and that decision overrides the earlier one.
+	//
+	// What is still protected, and what this fixture is built to prove, is that
+	// the sink does NOT flatten 1B's per-viewer tier order across the section.
+	// The input interleaves aging and fresh so that the head keeps its incoming
+	// order exactly — `fresh-1` before `fresh-2` — while the tail is ordered by
+	// neglect, least neglected first. An implementation that simply sorted the
+	// whole section by age would put `fresh-1` and `fresh-2` in a different
+	// relationship to each other and fail here.
+	it("sinks the aging band below the live topics, oldest last", () => {
 		const now = new Date("2026-06-01T00:00:00.000Z");
 		const daysBefore = (n: number) =>
 			new Date(now.getTime() - n * 24 * 60 * 60 * 1000);
 		const out = composeInboxSections(
 			[
 				topic({
-					id: "aging-1",
-					updatedAt: daysBefore(AGING_AFTER_DAYS),
+					id: "aging-old",
+					updatedAt: daysBefore(STALE_AFTER_DAYS - 1),
 				}),
 				topic({ id: "fresh-1", updatedAt: daysBefore(1) }),
 				topic({
-					id: "aging-2",
-					updatedAt: daysBefore(STALE_AFTER_DAYS - 1),
+					id: "aging-new",
+					updatedAt: daysBefore(AGING_AFTER_DAYS),
 				}),
 				topic({
 					id: "stale-1",
@@ -156,13 +165,38 @@ describe("composeInboxSections", () => {
 			],
 			{ now },
 		);
+		// Head: incoming order, untouched. Tail: by neglect, ascending — the
+		// topic quiet for 10 days sits above the one quiet for 29.
 		expect(out.suggested.map((t) => t.id)).toEqual([
-			"aging-1",
 			"fresh-1",
-			"aging-2",
 			"fresh-2",
+			"aging-new",
+			"aging-old",
 		]);
 		expect(out.archived.map((t) => t.id)).toEqual(["stale-1"]);
+	});
+
+	// The head is where 1B's ranking lives, so it must survive the sink
+	// untouched even when every topic in it is equally fresh. A comparator
+	// applied to the WHOLE section rather than to the aging tail would reorder
+	// these by `updatedAt` and fail.
+	it("never reorders the live topics among themselves", () => {
+		const now = new Date("2026-06-01T00:00:00.000Z");
+		const daysBefore = (n: number) =>
+			new Date(now.getTime() - n * 24 * 60 * 60 * 1000);
+		const out = composeInboxSections(
+			[
+				topic({ id: "ranked-3rd", updatedAt: daysBefore(1) }),
+				topic({ id: "ranked-1st", updatedAt: daysBefore(5) }),
+				topic({ id: "ranked-2nd", updatedAt: daysBefore(3) }),
+			],
+			{ now },
+		);
+		expect(out.suggested.map((t) => t.id)).toEqual([
+			"ranked-3rd",
+			"ranked-1st",
+			"ranked-2nd",
+		]);
 	});
 
 	// NEGATIVE CONTROL for the archive: de-cluttered is not deleted. A stale
@@ -241,6 +275,7 @@ describe("composeInboxSections", () => {
 		expect(out).toEqual({
 			recentlyModified: [],
 			recentlyModifiedTotal: 0,
+			worthALook: [],
 			suggested: [],
 			archived: [],
 		});
@@ -407,5 +442,180 @@ describe("isTopicSnoozed", () => {
 		expect(isTopicSnoozed(new Date("2026-05-01T11:59:59.999Z"), now)).toBe(
 			false,
 		);
+	});
+});
+
+/**
+ * "Worth a look" — the hot-topic section.
+ *
+ * A FORCED RANKING, not a score, and the reason is measured rather than
+ * assumed: across 202 staging topics, 68% cite two or more sources and four of
+ * five do in a typical week, so an absolute "is it corroborated" bar marks
+ * nearly the whole queue. The model ranks its own batch instead, capped at two
+ * per cycle where the batch is written, and freshness is applied here.
+ */
+describe("composeInboxSections — worth a look", () => {
+	const now = new Date("2026-06-01T00:00:00.000Z");
+	const daysBefore = (n: number) =>
+		new Date(now.getTime() - n * 24 * 60 * 60 * 1000);
+
+	it("lifts a highlighted, fresh topic out of Suggested", () => {
+		const out = composeInboxSections(
+			[
+				topic({ id: "plain", updatedAt: daysBefore(1) }),
+				topic({
+					id: "hot",
+					updatedAt: daysBefore(1),
+					createdAt: daysBefore(1),
+					highlightReason: "Came up in three separate meetings",
+				}),
+			],
+			{ now },
+		);
+
+		expect(out.worthALook.map((t) => t.id)).toEqual(["hot"]);
+		expect(out.suggested.map((t) => t.id)).toEqual(["plain"]);
+	});
+
+	it("lets a highlight EXPIRE rather than needing a sweep to clear it", () => {
+		// "Worth a look" is a claim about what to read next. It stops being
+		// true once a topic has been sitting there for a week, whatever the
+		// model thought when it wrote the batch.
+		const out = composeInboxSections(
+			[
+				topic({
+					id: "stale-highlight",
+					updatedAt: daysBefore(8),
+					createdAt: daysBefore(8),
+					highlightReason: "Was worth a look last week",
+				}),
+			],
+			{ now },
+		);
+
+		expect(out.worthALook).toEqual([]);
+		expect(out.suggested.map((t) => t.id)).toEqual(["stale-highlight"]);
+	});
+
+	it("never highlights a topic that is already going quiet", () => {
+		// A highlight lasts fewer days than the aging threshold precisely so
+		// these two states cannot both be true of one row.
+		const out = composeInboxSections(
+			[
+				topic({
+					id: "aging",
+					updatedAt: daysBefore(AGING_AFTER_DAYS + 1),
+					createdAt: daysBefore(AGING_AFTER_DAYS + 1),
+					highlightReason: "Stale claim",
+				}),
+			],
+			{ now },
+		);
+
+		expect(out.worthALook).toEqual([]);
+		expect(out.suggested.map((t) => t.id)).toEqual(["aging"]);
+	});
+
+	it("ignores a highlight on a topic that is no longer a suggestion", () => {
+		// Acting on a topic is a stronger statement than the model's ranking:
+		// once it is IN_PROGRESS it belongs to Recently Modified.
+		const out = composeInboxSections(
+			[
+				topic({
+					id: "picked-up",
+					status: "IN_PROGRESS",
+					updatedAt: daysBefore(1),
+					createdAt: daysBefore(1),
+					highlightReason: "Worth a look",
+				}),
+			],
+			{ now },
+		);
+
+		expect(out.worthALook).toEqual([]);
+		expect(out.recentlyModified.map((t) => t.id)).toEqual(["picked-up"]);
+	});
+});
+
+/**
+ * The sort control the card owner asked for — "lets have option to change
+ * sorting and remember user's preference".
+ *
+ * `recommended` stays the DEFAULT because the incoming order is 1B's per-viewer
+ * ranking: defaulting to a date would switch personalization off for everyone
+ * who never opens the control, which is most people.
+ */
+describe("composeInboxSections — the reader's sort", () => {
+	const now = new Date("2026-06-01T00:00:00.000Z");
+	const daysBefore = (n: number) =>
+		new Date(now.getTime() - n * 24 * 60 * 60 * 1000);
+	const items = [
+		topic({
+			id: "ranked-first",
+			updatedAt: daysBefore(5),
+			createdAt: daysBefore(9),
+		}),
+		topic({
+			id: "newest-created",
+			updatedAt: daysBefore(4),
+			createdAt: daysBefore(1),
+		}),
+		topic({
+			id: "newest-updated",
+			updatedAt: daysBefore(1),
+			createdAt: daysBefore(6),
+		}),
+	];
+
+	it("leaves the ranking alone by default", () => {
+		// The incoming order IS the answer. Sorting it by any date flattens the
+		// per-viewer tiers it carries.
+		expect(
+			composeInboxSections(items, { now }).suggested.map((t) => t.id),
+		).toEqual(["ranked-first", "newest-created", "newest-updated"]);
+	});
+
+	it("orders by last activity when asked", () => {
+		expect(
+			composeInboxSections(items, {
+				now,
+				sort: "recentlyUpdated",
+			}).suggested.map((t) => t.id),
+		).toEqual(["newest-updated", "newest-created", "ranked-first"]);
+	});
+
+	it("orders by creation when asked", () => {
+		expect(
+			composeInboxSections(items, {
+				now,
+				sort: "recentlyCreated",
+			}).suggested.map((t) => t.id),
+		).toEqual(["newest-created", "newest-updated", "ranked-first"]);
+	});
+
+	it("never re-sorts the aging tail out of neglect order", () => {
+		// The tail is ordered by how long each has been quiet, and that IS the
+		// sink. A sort applied to the whole section would undo the thing the
+		// control sits above.
+		const withAging = [
+			topic({ id: "live", updatedAt: daysBefore(1) }),
+			topic({
+				id: "quiet-29",
+				updatedAt: daysBefore(29),
+				createdAt: daysBefore(1),
+			}),
+			topic({
+				id: "quiet-12",
+				updatedAt: daysBefore(12),
+				createdAt: daysBefore(2),
+			}),
+		];
+
+		expect(
+			composeInboxSections(withAging, {
+				now,
+				sort: "recentlyCreated",
+			}).suggested.map((t) => t.id),
+		).toEqual(["live", "quiet-12", "quiet-29"]);
 	});
 });
