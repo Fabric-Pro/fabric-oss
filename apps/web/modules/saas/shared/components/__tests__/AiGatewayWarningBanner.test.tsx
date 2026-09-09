@@ -284,16 +284,21 @@ describe("AiGatewayWarningBanner — the route names an organization the context
 	});
 
 	it("asks as normal once the slug resolves to an organization", async () => {
-		// The control for the negative above: the same route, the same flush,
-		// with the id in place. Without it "never called" could be a flush too
-		// short to catch the call rather than the gate holding.
+		// The control for the negative above: the same route, with the id in
+		// place. Wait for both observable stages rather than assuming one timer
+		// tick also covers React Query's notification and React's re-render.
 		paramsMock.mockReturnValue({ organizationSlug: "acme" });
 
 		renderBanner();
 
-		await settle();
-		expect(getStatusMock).toHaveBeenCalledWith({ organizationId: ORG_ID });
-		expect(screen.getByText("AI provider required")).toBeInTheDocument();
+		await waitFor(() =>
+			expect(getStatusMock).toHaveBeenCalledWith({
+				organizationId: ORG_ID,
+			}),
+		);
+		expect(
+			await screen.findByText("AI provider required"),
+		).toBeInTheDocument();
 	});
 
 	it("does not consume a personal status already cached under the null key", async () => {
