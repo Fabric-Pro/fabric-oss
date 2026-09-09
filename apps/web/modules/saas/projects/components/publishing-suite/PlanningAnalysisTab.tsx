@@ -22,7 +22,7 @@ import {
 	Loader2Icon,
 	SparklesIcon,
 } from "lucide-react";
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { AnalysisVersionHistory } from "./AnalysisVersionHistory";
 import { PlanningAnalysisEditor } from "./PlanningAnalysisEditor";
@@ -30,7 +30,10 @@ import {
 	isEmptyAnalysis,
 	readPlanningAnalysis,
 } from "./planning-analysis-content";
-import type { TopicDecisionThread } from "./TopicQuestionsPanel";
+import {
+	liveAnswerReply,
+	type TopicDecisionThread,
+} from "./TopicQuestionsPanel";
 
 const UNKNOWN_AUTHOR_LABEL = "Unknown author";
 const REPLACE_FAILURE_MESSAGE =
@@ -88,6 +91,15 @@ interface PlanningAnalysisTabProps {
 	effective: EffectiveAnalysis | null;
 	/** Version of the newest READY analysis. `null` when there is none. */
 	aiVersion: number | null;
+	/**
+	 * When the newest READY analysis was written. `null` when there is none.
+	 *
+	 * Separate from `aiVersion` because the two answer different questions: a
+	 * version says WHICH document this is, a timestamp says what it could
+	 * possibly have known. Only the second one survives an amendment, which
+	 * moves an answer without moving any version.
+	 */
+	aiCreatedAt: string | Date | null;
 	/**
 	 * The topic's decision threads, read only to count answers the current
 	 * analysis predates. The panel that renders them lives on another tab; this
@@ -158,6 +170,7 @@ export function PlanningAnalysisTab({
 	latestAttempt,
 	effective,
 	aiVersion,
+	aiCreatedAt,
 	decisionThreads,
 	aiModel,
 	aiPromptSource,
@@ -219,12 +232,29 @@ export function PlanningAnalysisTab({
 	// Every write that can move the document's version has to land here. The
 	// editor and the history drawer both hold their version tokens as props
 	// from this parent, and neither updates them itself on success.
+	//
+	// TWO queries, because a save moves two things: the document, and the list
+	// of versions the document has had. Only the first was invalidated, so
+	// saving an edit left History showing a list without the revision it had
+	// just written — and the global 60s `staleTime` meant reopening the drawer
+	// did not refetch either, which is why it took a full page reload to
+	// appear. Restore already invalidated both; an ordinary Save did not.
+	//
+	// `key()` and NOT `queryKey()` for the revision list, for the reason its
+	// own restore handler documents at length: the list is an INFINITE query,
+	// `queryKey({ input })` stamps `type: "query"`, and the mismatch matches
+	// nothing at runtime while looking perfectly correct here.
 	const refreshAnalysis = useCallback(() => {
 		queryClient.invalidateQueries({
 			queryKey:
 				orpc.projects.publishingSuite.getPlanningAnalysis.queryKey({
 					input: { projectId, topicId, organizationId },
 				}),
+		});
+		queryClient.invalidateQueries({
+			queryKey: orpc.projects.publishingSuite.listAnalysisRevisions.key({
+				input: { projectId, topicId, organizationId },
+			}),
 		});
 	}, [queryClient, projectId, topicId, organizationId]);
 
@@ -383,6 +413,50 @@ export function PlanningAnalysisTab({
 	const onGenerate = () =>
 		generate.mutate({ projectId, topicId, organizationId });
 
+	/**
+	 * Start the first analysis when this tab is opened on a topic that has
+	 * never had one.
+	 *
+	 * The tab used to open on an empty dashed box with a button, and the owner's
+	 * complaint was that there is nothing to work with there — every other tab
+	 * on the page depends on this document, so the first thing anyone does on
+	 * arriving is press Generate. Feature Maturation drafts its spec at creation
+	 * for the same reason.
+	 *
+	 * The conditions are narrow on purpose, because this spends an LLM call:
+	 *
+	 *  - `latestAttempt === null` — NEVER attempted, not merely "no READY row".
+	 *    A failed or stranded run has already cost money and its retry is a
+	 *    decision for the person looking at the failure, not for a mount.
+	 *  - `canEdit` — the server gates generation, so a reader must not fire a
+	 *    request that can only 403.
+	 *  - `!isLoading` — before the query settles, `latestAttempt` is null
+	 *    because nothing has been read yet, which is a different thing from
+	 *    nothing existing.
+	 *
+	 * The ref guard is load-bearing rather than defensive. `generate.mutate`
+	 * invalidates the analysis query, the refetch re-renders this component,
+	 * and for the moment before the new row lands `latestAttempt` is still
+	 * null — so without it this effect re-enters and starts a second run.
+	 *
+	 * Radix unmounts inactive tab content, so "mount" IS "opened" and this
+	 * cannot fire for someone who never visits the tab.
+	 */
+	const autoStarted = useRef(false);
+	useEffect(() => {
+		if (
+			autoStarted.current ||
+			isLoading ||
+			!canEdit ||
+			latestAttempt !== null ||
+			generate.isPending
+		) {
+			return;
+		}
+		autoStarted.current = true;
+		onGenerate();
+	}, [isLoading, canEdit, latestAttempt, generate.isPending, onGenerate]);
+
 	const onReplace = () => {
 		if (newerProse === null || aiVersion === null) {
 			return;
@@ -416,23 +490,53 @@ export function PlanningAnalysisTab({
 	/**
 	 * Answers the current analysis does not know about.
 	 *
-	 * A question stores the analysis version it was RAISED against. If it has
-	 * since been answered and the analysis is still on that version, the answer
-	 * arrived after the document was written — so the document is behind the
-	 * decisions it asked for, and nothing on screen said so.
+	 * Compares TIMESTAMPS, not versions: an answer that landed after the
+	 * document was written is one the document cannot reflect, whatever
+	 * version either of them carries.
+	 *
+	 * It used to compare the version a question was RAISED against with the
+	 * version on screen, and that proxy has two holes — both reachable, both
+	 * silent, and neither visible from inside the slice that introduced it:
+	 *
+	 * - **Amending.** `reconcileTopicQuestions` skips RESOLVED roots, so a
+	 *   question answered against v1 keeps `analysisVersion: 1` forever. Amend
+	 *   its answer after a regeneration to v2 and the versions differ, so the
+	 *   banner stays quiet while the analysis is genuinely behind the decision
+	 *   that just changed.
+	 * - **Answering a soft-closed root.** The `POSSIBLY_RESOLVED` sweep sets
+	 *   status only and never `analysisVersion`, so answering one after a
+	 *   regeneration is silent for the same reason.
+	 *
+	 * A timestamp has neither hole, because every answer — first or amended —
+	 * appends a reply and every reply is stamped.
 	 *
 	 * This is the Feature Maturation banner ("N new decisions recorded — not
 	 * yet in the Full Specification") in the place that reads the same way here.
 	 * The action is the Regenerate button already in this header, so the banner
 	 * points at it rather than adding a second control that does the same thing.
 	 */
-	const answersNotYetFolded = (decisionThreads ?? []).filter(
-		(t) =>
-			t.root.kind === "QUESTION" &&
-			t.root.status === "RESOLVED" &&
-			aiVersion !== null &&
-			t.root.analysisVersion === aiVersion,
-	).length;
+	const analysisWrittenAt =
+		aiCreatedAt === null ? null : new Date(aiCreatedAt).getTime();
+	const answersNotYetFolded =
+		analysisWrittenAt === null || Number.isNaN(analysisWrittenAt)
+			? 0
+			: (decisionThreads ?? []).filter((t) => {
+					if (t.root.kind !== "QUESTION") {
+						return false;
+					}
+					// The LIVE answer, not the first: amending appends a
+					// superseding reply, and the whole point of this predicate
+					// is to notice the amendment.
+					const answer = liveAnswerReply(t);
+					if (!answer) {
+						return false;
+					}
+					const answeredAt = new Date(answer.createdAt).getTime();
+					return (
+						!Number.isNaN(answeredAt) &&
+						answeredAt > analysisWrittenAt
+					);
+				}).length;
 
 	return (
 		<div className="space-y-5">
@@ -445,22 +549,57 @@ export function PlanningAnalysisTab({
 			    row — it runs to ~140 characters with a model name and a prompt
 			    note, and would wrap badly against the buttons. */}
 			{answersNotYetFolded > 0 ? (
-				<p
-					className="rounded-lg border border-highlight/40 bg-highlight/10 px-3 py-2 text-foreground text-sm"
+				<div
+					className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-highlight/40 bg-highlight/10 px-3 py-2 text-foreground text-sm"
 					data-testid="analysis-behind-decisions"
 				>
-					{answersNotYetFolded === 1
-						? "1 answer was recorded after this analysis was written"
-						: `${answersNotYetFolded} answers were recorded after this analysis was written`}
-					{canEdit
-						? " — regenerate to fold them in."
-						: " and are not reflected in it yet."}
-				</p>
+					<p>
+						{answersNotYetFolded === 1
+							? "1 answer was recorded after this analysis was written"
+							: `${answersNotYetFolded} answers were recorded after this analysis was written`}
+						{canEdit ? "." : " and are not reflected in it yet."}
+					</p>
+					{/* The action lives IN the banner, the way Feature
+					    Maturation's does. It used to be words only — "regenerate
+					    to fold them in" — pointing at a button in the header
+					    strip above, which on a long analysis is a scroll away
+					    from the sentence describing why to press it.
+
+					    Same handler and same disabled rule as that button, not
+					    a second path: two controls that start the same run must
+					    not be able to disagree about whether one is already
+					    running. */}
+					{canEdit ? (
+						<Button
+							size="sm"
+							onClick={onGenerate}
+							disabled={isGenerating || generate.isPending}
+						>
+							{isGenerating || generate.isPending ? (
+								<Loader2Icon
+									className="mr-2 size-4 motion-safe:animate-spin"
+									aria-hidden="true"
+								/>
+							) : (
+								<SparklesIcon
+									className="mr-2 size-4"
+									aria-hidden="true"
+								/>
+							)}
+							Regenerate analysis
+						</Button>
+					) : null}
+				</div>
 			) : null}
 
 			<div className="space-y-2">
-				<div className="flex flex-wrap items-center justify-between gap-3">
-					<p className="editorial-label">Planning &amp; analysis</p>
+				{/* No `PLANNING & ANALYSIS` label here: the tab immediately
+				    above already says it, and printing it twice was the first
+				    thing a reader noticed. `justify-end` rather than
+				    `justify-between` — with the label gone, `between` would
+				    have pushed the controls to the left edge, under the tab
+				    strip, instead of leaving them where they are. */}
+				<div className="flex flex-wrap items-center justify-end gap-3">
 					<div className="flex flex-wrap items-center gap-2">
 						{/* Reading history is gated on read access, not edit
 						    access, so it shows for a viewer too — but only

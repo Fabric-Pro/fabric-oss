@@ -127,6 +127,15 @@ export const listTopicDraftsProcedure = tenantProtectedProcedure
 					 */
 					sourceDraftId: z.string().nullable(),
 					sourceOptionLabel: z.string().nullable(),
+					/**
+					 * The candidate this body came from, in full — so a panel
+					 * renders the safety note of the document it is SHOWING
+					 * rather than of the newest ready row, which after an
+					 * unadopted regeneration is a different document.
+					 * `z.unknown()` like the draft rows' own `content`: the
+					 * shape is each content type's business.
+					 */
+					sourceContent: z.unknown(),
 					updatedAt: z.date(),
 				}),
 			),

@@ -3,6 +3,7 @@
 import {
 	composeInboxSections,
 	isTopicArchived,
+	isTopicHighlighted,
 	STALE_AFTER_DAYS,
 	topicNeglect,
 } from "@repo/database/src/publishing-inbox";
@@ -405,6 +406,10 @@ export function PublishingSuiteList({
 			// not stop being neglected because you reached it through the
 			// Suggestion chip or a search.
 			neglect={topicNeglect(t, now)}
+			// Same `now`, same predicate, for the same reason: a topic does not
+			// stop standing out because you reached it through a status chip
+			// or a search rather than through its section.
+			isHighlighted={isTopicHighlighted(t, now)}
 			topicHref={buildPublishingTopicRoute(basePath, projectId, t.id)}
 			members={members}
 			membersPending={membersQuery.isPending}
@@ -465,106 +470,131 @@ export function PublishingSuiteList({
 					/>
 					<TopicSearchInput value={search} onChange={setSearch} />
 				</div>
-				{/* A search term replaces the two sections with one flat list of
+				{/* The inbox anchor sits on this ALWAYS-rendered wrapper, not
+				    on the sectioned branch below, for the same reason the list
+				    anchor sits on the outer wrapper: a spotlight has to have
+				    something to point at in every state. It used to be on the
+				    sections themselves, so searching or picking a status chip
+				    took the anchor out of the DOM and a "Show me" fired during
+				    a search highlighted nothing. */}
+				<div data-onboarding-target="publishing-suite-inbox">
+					{/* A search term replaces the two sections with one flat list of
 				    hits, exactly as picking a status chip does: the sections
 				    answer "what should I look at next", and a search is the
 				    question that overrides it. */}
-				{inboxEnabled && statusFilter === null && !searching ? (
-					<div
-						className="space-y-4"
-						data-onboarding-target="publishing-suite-inbox"
-					>
-						<InboxSection
-							label="Recently Modified"
-							emptyText="Nothing in progress right now."
-						>
-							{inboxSections.recentlyModified.length > 0 ? (
-								<>
+					{inboxEnabled && statusFilter === null && !searching ? (
+						<div className="space-y-4">
+							{/* Rendered only when it has something in it, unlike
+							    the two below. Those answer "what should I look
+							    at next" and an empty one is itself an answer;
+							    this one is a claim that something stands out,
+							    and an empty "Worth a look" heading every quiet
+							    week is the fastest way to teach a reader to
+							    stop believing it. */}
+							{inboxSections.worthALook.length > 0 ? (
+								<InboxSection label="Worth a look" emptyText="">
 									<ul className="space-y-2">
-										{inboxSections.recentlyModified.map(
+										{inboxSections.worthALook.map(
 											renderRow,
 										)}
 									</ul>
-									{inboxSections.recentlyModifiedTotal >
-									MAX_RECENT ? (
-										<Button
-											type="button"
-											variant="ghost"
-											size="sm"
-											onClick={() =>
-												setShowAllRecent((v) => !v)
-											}
-										>
-											{showAllRecent
-												? "Show fewer"
-												: `Showing ${MAX_RECENT} of ${inboxSections.recentlyModifiedTotal} — show all`}
-										</Button>
-									) : null}
-								</>
+								</InboxSection>
 							) : null}
-						</InboxSection>
-						<InboxSection
-							label="Suggested"
-							emptyText="No new suggestions right now."
-							footer={
-								/* Say it out loud. A queue that quietly
+							<InboxSection
+								label="Recently Modified"
+								emptyText="Nothing in progress right now."
+							>
+								{inboxSections.recentlyModified.length > 0 ? (
+									<>
+										<ul className="space-y-2">
+											{inboxSections.recentlyModified.map(
+												renderRow,
+											)}
+										</ul>
+										{inboxSections.recentlyModifiedTotal >
+										MAX_RECENT ? (
+											<Button
+												type="button"
+												variant="ghost"
+												size="sm"
+												onClick={() =>
+													setShowAllRecent((v) => !v)
+												}
+											>
+												{showAllRecent
+													? "Show fewer"
+													: `Showing ${MAX_RECENT} of ${inboxSections.recentlyModifiedTotal} — show all`}
+											</Button>
+										) : null}
+									</>
+								) : null}
+							</InboxSection>
+							<InboxSection
+								label="Suggested"
+								emptyText="No new suggestions right now."
+								footer={
+									/* Say it out loud. A queue that quietly
 								   shrinks is the one nobody trusts, so the
 								   section accounts for what it removed and
 								   hands over the way to go and look. The
 								   count reads the very array the rows were
 								   taken out of — recomputing it here would be
 								   two paths to one number, free to drift. */
-								inboxSections.archived.length > 0 ? (
-									<div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-										<p className="text-muted-foreground text-xs">
-											{`${inboxSections.archived.length} ${
-												inboxSections.archived
-													.length === 1
-													? "topic"
-													: "topics"
-											} archived after ${STALE_AFTER_DAYS} days without activity`}
-										</p>
-										{/* The visible text IS the accessible
+									inboxSections.archived.length > 0 ? (
+										<div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+											<p className="text-muted-foreground text-xs">
+												{`${inboxSections.archived.length} ${
+													inboxSections.archived
+														.length === 1
+														? "topic"
+														: "topics"
+												} archived after ${STALE_AFTER_DAYS} days without activity`}
+											</p>
+											{/* The visible text IS the accessible
 										    name (WCAG 2.5.3), so it has to
 										    say what it opens on its own — an
 										    `aria-label` naming the chip would
 										    no longer contain "Show archived". */}
-										<Button
-											type="button"
-											variant="ghost"
-											size="sm"
-											onClick={() =>
-												setStatusFilter("ARCHIVED")
-											}
-										>
-											Show archived
-										</Button>
-									</div>
-								) : null
-							}
-						>
-							{inboxSections.suggested.length > 0 ? (
-								<ul className="space-y-2">
-									{inboxSections.suggested.map(renderRow)}
-								</ul>
-							) : null}
-						</InboxSection>
-					</div>
-				) : visibleTopics.length > 0 ? (
-					<ul className="space-y-2">
-						{visibleTopics.map(renderRow)}
-					</ul>
-				) : (
-					/* Announced, because it updates live as you type or switch
+											<Button
+												type="button"
+												variant="ghost"
+												size="sm"
+												onClick={() =>
+													setStatusFilter("ARCHIVED")
+												}
+											>
+												Show archived
+											</Button>
+										</div>
+									) : null
+								}
+							>
+								{inboxSections.suggested.length > 0 ? (
+									<ul className="space-y-2">
+										{inboxSections.suggested.map(renderRow)}
+									</ul>
+								) : null}
+							</InboxSection>
+						</div>
+					) : visibleTopics.length > 0 ? (
+						<ul className="space-y-2">
+							{visibleTopics.map(renderRow)}
+						</ul>
+					) : (
+						/* Announced, because it updates live as you type or switch
 					   chips — a result count that only changes visually leaves
 					   a screen-reader user with no signal that anything did
 					   (WCAG 4.1.3). The chip path had the same gap. */
-					<p role="status" className="text-muted-foreground text-sm">
-						{searching
-							? `No topics match “${search.trim()}”.`
-							: "No topics match this filter."}
-					</p>
-				)}
+						<p
+							role="status"
+							className="text-muted-foreground text-sm"
+						>
+							{searching
+								? `No topics match “${search.trim()}”.`
+								: "No topics match this filter."}
+						</p>
+					)}
+				</div>
 			</>
 		);
 	} else if (cycleQuery.isPending) {

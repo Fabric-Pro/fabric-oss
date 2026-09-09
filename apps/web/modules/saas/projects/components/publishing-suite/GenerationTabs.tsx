@@ -1,6 +1,7 @@
 "use client";
 
 import { TabsContent, TabsTrigger } from "@ui/components/tabs";
+import { cn } from "@ui/lib";
 import { AlertTriangleIcon, CheckCircle2Icon, StarIcon } from "lucide-react";
 import { BlogPostPanel } from "./BlogPostPanel";
 import { CaseStudyPanel } from "./CaseStudyPanel";
@@ -71,6 +72,19 @@ export interface TopicWorkingDraftState {
 	 */
 	sourceDraftId: string | null;
 	sourceOptionLabel: string | null;
+	/**
+	 * The candidate that body was adopted FROM, in full.
+	 *
+	 * A panel's "how this was generalized" note has to describe the text in the
+	 * editor, and `latestReady` stops being that document the moment a
+	 * regeneration nobody adopted lands on top of it. `null` for a hand-written
+	 * body, or when the source row has fallen out of retention — both meaning
+	 * "no note applies", which is a different answer from the newest one.
+	 *
+	 * `unknown` like the draft rows' own `content`: the shape belongs to each
+	 * content type's own reader.
+	 */
+	sourceContent: unknown;
 	updatedAt: string | Date;
 }
 
@@ -128,6 +142,15 @@ export interface GenerationTabModel {
 	tabs: GenerationTabInfo[];
 	byPostType: Map<PostType, GenerationTabInfo>;
 	restrictions: Restrictions;
+	/**
+	 * Whether a planning analysis exists to generate FROM.
+	 *
+	 * Every panel in this row opens on "No planning analysis yet — run one on
+	 * the Planning & Analysis tab to get a recommendation", so before one
+	 * exists there is nothing here worth a click. The row says so rather than
+	 * letting a reader find out one tab at a time.
+	 */
+	hasAnalysis: boolean;
 }
 
 /**
@@ -174,6 +197,7 @@ export function buildGenerationTabModel(input: {
 		tabs,
 		byPostType: new Map(tabs.map((t) => [t.postType, t])),
 		restrictions,
+		hasAnalysis: input.analysis !== null,
 	};
 }
 
@@ -204,17 +228,49 @@ export function GenerationTabTriggers({
 				(t) => {
 					const info = model.byPostType.get(t.value);
 					const active = GENERATION_ACTIVE_POST_TYPES.has(t.value);
+					// Muted, NOT disabled, and the difference is the whole
+					// decision. Every panel here opens on "run one on the
+					// Planning & Analysis tab", so before an analysis exists
+					// there is nothing to do in any of them — but generation
+					// itself still works, and disabling the tab would hide
+					// that from someone who wants to draft anyway. It reads
+					// as unavailable and stays reachable.
+					// Not for a type that already HAS a draft: a generated tab
+					// is useful whatever the analysis says, and muting it
+					// would hide real content behind a hint about something
+					// else.
+					const awaitingAnalysis =
+						active &&
+						!model.hasAnalysis &&
+						info?.state !== "GENERATED";
 					return (
 						<TabsTrigger
 							key={t.value}
 							value={t.value}
 							disabled={!active}
+							className={cn(
+								awaitingAnalysis &&
+									"opacity-60 data-[state=active]:opacity-100",
+							)}
 						>
 							{t.generationLabel ?? t.label}
-							{active && info ? (
-								<StateBadge info={info} />
-							) : (
+							{!active ? (
 								<Badge tone="muted">Coming soon</Badge>
+							) : (
+								<>
+									{/* `StateBadge` renders first and always:
+									    it is what carries the tab's state into
+									    the ACCESSIBLE NAME, including for an
+									    AVAILABLE type that deliberately shows
+									    no visible badge. The hint is added
+									    beside it, never in place of it. */}
+									{info ? <StateBadge info={info} /> : null}
+									{awaitingAnalysis ? (
+										<Badge tone="muted">
+											Needs analysis
+										</Badge>
+									) : null}
+								</>
 							)}
 						</TabsTrigger>
 					);

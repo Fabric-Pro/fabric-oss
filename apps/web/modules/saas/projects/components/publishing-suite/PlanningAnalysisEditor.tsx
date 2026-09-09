@@ -108,8 +108,18 @@ const EDITOR_REGION_HEIGHT_CLASS = "h-[clamp(24rem,60vh,44rem)]";
  * The reading measure. 3xl is the cap the topic page already uses for prose
  * (`TopicItemPage`'s pitch paragraph); the analysis rendered full-bleed before
  * this, at line lengths no one reads comfortably.
+ *
+ * LEFT-ALIGNED, not centred, and that is the whole point of this comment.
+ * `mx-auto` here put a wide blank gutter between the contents rail and the
+ * text: the rail is `shrink-0` and the measure caps at 768px, so the auto
+ * margins split whatever the rail left over and pushed the document away from
+ * the very thing it is meant to sit beside. The pattern this cites —
+ * `TopicItemPage`'s pitch paragraph — is `max-w-3xl` with NO `mx-auto`, and
+ * the two other consumers of `DocumentTocRail` (`DocumentEditor`,
+ * `StoryWorkspace`) cap nothing at all, so neither had ever exercised a capped
+ * column against the rail's asymmetric layout.
  */
-const PROSE_MEASURE_CLASS = "mx-auto w-full max-w-3xl";
+const PROSE_MEASURE_CLASS = "w-full max-w-3xl";
 
 interface SaveAnalysisRevisionResult {
 	saved: true;

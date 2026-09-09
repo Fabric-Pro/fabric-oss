@@ -7026,6 +7026,21 @@ model PublishingTopic {
   postTypeRecommendations Json                      @default("[]") // [{type,theme,rationale}] display-only enrichment; suggestedPostTypes is derived from this
   postTypesOverridden     Boolean                   @default(false) // false → effective post types = suggestedPostTypes (AI); true → userPostTypes (may be [])
   userPostTypes           PublishingTopicPostType[] @default([]) // user override set; meaningful only when postTypesOverridden = true
+  /// Why this topic is worth a look before the others, in the model's own
+  /// words — one short clause, set on AT MOST the top few of a cycle's batch.
+  ///
+  /// A FORCED RANKING, not a score. Absolute thresholds were measured against
+  /// 202 staging topics first: 68% cite two or more sources and, in a typical
+  /// week, four of five do, so any "is it corroborated" bar marks nearly the
+  /// whole queue and means nothing. Asking the model to rank its OWN batch and
+  /// mark only the strongest produces a state that stays rare however the
+  /// underlying data drifts, and the cap is enforced server-side rather than
+  /// trusted to the prompt.
+  ///
+  /// null = not highlighted, which is every manual topic and most AI ones.
+  /// Freshness is NOT stored here: it is computed at read time, so a highlight
+  /// stops applying as the topic ages rather than needing a sweep to clear it.
+  highlightReason         String?
   angle                   String? // FR9/10 (incremental): AI-stamped short angle label; distinct from title and from relevantFunctionTags; null = none / manual topics
   subject                 String? // FR9/10 multiplication: canonical subject line; set only on a >=2 angle-group member; null otherwise
   subjectKey              String? // FR9/10 multiplication: grouping identity = hash(projectId + normalize(subject||title)); server-side only; NEVER in the unique index
