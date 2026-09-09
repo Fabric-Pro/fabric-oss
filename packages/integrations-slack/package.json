@@ -1,6 +1,6 @@
 {
 	"name": "@fabricorg/integrations-slack",
-	"version": "0.1.0",
+	"version": "0.1.1",
 	"description": "Slack integration plugin for Fabric — type augmentation + runtime",
 	"keywords": [
 		"fabric",

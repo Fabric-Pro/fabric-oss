@@ -1,5 +1,79 @@
 # fabric-app
 
+## 1.14.9
+
+### Patch Changes
+
+- 7a75c23: Echo provider permission header on HTTP 403 during CI result sync rather than guessing missing Actions: read.
+- 191ae7d: Agent health probes refresh the cached agent card at most every 30 minutes and regenerate its search embedding only when the text changes or daily.
+- 340546b: Page the Planning & Analysis version history instead of loading every revision at once
+- 1018bf6: Fabric now says up front that Anthropic cannot serve embeddings, image generation or audio, on its provider card and across the app.
+- df57463: The API Keys settings page now says plainly that a key is yours and carries only the access you already have in the app
+- ec59ac3: Stop the Loom orchestrator re-asking clarifying questions the conversation already answered
+- 185d5ae: The confirmation dialog's third button no longer hangs outside the dialog, and its stacked mobile layout no longer runs the buttons together.
+- 94ab06a: Wait for a project's context to finish arriving before generating a document, instead of generating against a half-built picture of it
+- 384b301: Point "Edit Project" at project settings when the simplified creation flow is on, instead of a creation route that sends it straight back.
+- 0d0d14d: Correct the "Edit Project" tooltip, which described the wizard rather than the edit screen.
+- 00b8331: Stop handing a generation run the same source twice, and localize the regenerate toast
+- aef8887: Publishing Suite topics now age, then archive themselves out of the inbox, and a read-only planning analysis sizes to its content
+- c33af88: The page copilot no longer answers that it has no tools, or sends you to a surface the app no longer has.
+- 2eac740: A browser with no stored theme preference now renders Fabric in light mode, so a first visit lands on a bright interface instead of a dark one.
+- 0249906: Re-enable AVIF image optimization, and restore the web build's type-check heap
+- aef8887: Publishing Suite: amend a settled answer, date repeated meeting citations, expand the participants list, and give the list page its breadcrumb trail
+- ecd5dfc: The workspace switcher no longer names a personal account on the shell that `/app` paints on its way into an organization.
+- 67ffb29: The organization a page resolved on the server now reaches the browser, so the workspace switcher no longer flashes "Your account" on load.
+- e2979a7: Meeting transcript sync now reads each linked meeting from the calendar of the person who linked it, instead of one account for the whole project.
+- aef8887: Topic Planning & Analysis now recommends LinkedIn as a content format of its own on already-deployed environments
+- 60ed7a3: Reserve part of the generator prompt budget for the structured planning-analysis half when the prose half would otherwise consume it
+- c961973: Wait for a running project-management scan before generating a document
+- f876965: Stop rewriting the integration provider registry on every API boot and every monitoring poll.
+- 4205730: Sink quiet topics down the Inbox instead of only fading them where they stand
+- aef8887: A publishing topic's Planning & Analysis now says when answers have been recorded that it does not yet reflect
+- 16f7305: Publishing topics: the Planning & Analysis worksheet is now an editable, versioned document whose edits reach every generator.
+- 4205730: Let a project turn off the AI's suggested answers
+- 4205730: Start the planning analysis when the tab is opened on a topic that never had one
+- 4205730: Put the regenerate action in the banner that asks for it, and mark format tabs that have nothing to show yet
+- 4205730: Tell a reader which generation tabs have changed since they were last there
+- 4205730: Make content types a setting on the topic's first tab, not a question behind a modal
+- 4205730: Credit the people who actually wrote the code a publishing topic is about
+- aef8887: Publishing drafts read as drafts: short-post candidates preview as posts, and a regenerated long-form draft sits beside the one you saved.
+- 4205730: Stop asking the same publishing decision twice
+- aef8887: The daily publishing scan can recommend LinkedIn, and a topic suited to every format no longer fails the whole cycle
+- 4205730: Fix the Publishing Suite's contributor picker losing a selection, and the analysis banner missing an amended answer
+- 4205730: Show the questions a finished planning analysis raised, without waiting for a reload
+- 4205730: Show a saved analysis revision in History without a reload, and stop offering a restore that changes nothing
+- 4205730: Stop printing the Planning & Analysis heading twice, and put the analysis document back beside its contents rail
+- 4205730: Show the generalization note that belongs to the draft on screen
+- 4205730: Move refresh history behind a button, and mark it when a run has failed
+- 4205730: Give the Inbox a "Worth a look" section, ranked by the model against its own batch
+- 4205730: Make the whole Inbox card open its topic, and let the age and role reason be seen
+- aef8887: Add LinkedIn as a Publishing Suite content type, with a prompt written for the feed's "see more" fold rather than a character limit.
+- aef8887: Publishing Suite topics now show their age, stale suggestions sink to the bottom of the queue, and the list is searchable
+- 4205730: Let a reader choose how their Inbox is sorted and laid out, and remember it
+- aef8887: An amended publishing answer keeps its text when the server refuses the write, and the topic masthead stops colliding with its label
+- aef8887: The Planning & Analysis editor keeps a stable height, gains a table of contents, and puts version provenance next to the button that changes it
+- 4205730: Say when a topic is older than the format recommendations, instead of showing an empty picker
+- be42a21: Let a publishing topic's open questions be assigned to the people who can answer them
+- aef8887: A publishing topic now shows how many of its decisions are answered, and puts the questions above the reference material
+- aef8887: The Publishing Suite's post-type picker now shows what the analysis recommended and why, instead of presenting four unexplained options
+- aef8887: You can now refine a saved publishing draft with an instruction instead of only regenerating it from scratch
+- 4205730: Offer several suggested answers per question, as Feature Maturation does
+- aef8887: Measure the Publishing Suite: record every human verdict on a generated draft, analysis revision and topic outcome
+- aef8887: Assign people to a publishing topic — pick several, drop yourself, and everyone added gets an in-app heads-up.
+- be42a21: Add an AI assistant rail to the publishing Topic Item Page, able to rewrite the planning analysis for review
+- aef8887: Publishing Suite topic pages now show content types as a second row of the same tab strip instead of a separate block below every tab
+- aef8887: Content-type questions on a publishing topic now answer with Yes or No instead of a free-text box
+- c368698: Stop the project readiness checklist re-fetching on every re-render after a mutation succeeds.
+- 35524ce: Merge registered-agent metadata keys with one atomic jsonb UPDATE so concurrent card-cache, embedding and refresh writes no longer drop each other's keys.
+- e61bd8a: Roadmap filters now survive opening a feature and clicking "Back to roadmap"
+- aef8887: Patch seven dependency advisories, including two unauthenticated remote-code-execution criticals in Next.js
+- 6114e79: Add a single-step project creation form, behind a switch that restores the five-step wizard.
+- 7d238db: Give a live project an edit screen that asks the same four questions as project creation.
+- 752a5bb: Show when a linked Teams chat can't be read by the current user, so it's clear it won't be used as context for them.
+- 320c85f: Reject commit subjects over 120 characters at authorship, so the published-side length limit no longer costs a round trip.
+- aef8887: The prompt that picks a project's publishing topics is now editable in the Prompt Library
+- bbf6432: Stop asking for standalone output on Vercel, which failed every deploy on Next 16.3 with a missing next-server.js.nft.json
+
 ## 1.14.8
 
 ### Patch Changes
