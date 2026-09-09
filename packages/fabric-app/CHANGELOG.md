@@ -1,5 +1,12 @@
 # fabric-app
 
+## 1.14.10
+
+### Patch Changes
+
+- 445c71a: Point the code-of-conduct, contributing and waitlist contact addresses at the single support inbox
+- fdd78d9: Move the whole Tiptap editor family onto one 3.31.3 release line so `@tiptap/core` runs against the `@tiptap/pm` it declares.
+
 ## 1.14.9
 
 ### Patch Changes
