@@ -11,7 +11,10 @@
 
 import { db } from "@repo/database";
 import type { ProjectContextType } from "@repo/database/prisma/client";
-import { executeMicrosoftTeamsTool } from "@repo/integrations/microsoft";
+import {
+	executeMicrosoftTeamsTool,
+	isMicrosoftAccessDeniedError,
+} from "@repo/integrations/microsoft";
 import { executeSlackTool } from "@repo/integrations/slack";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -236,10 +239,23 @@ async function fetchTeamsMessages(
 					sourceGuidance: ctx.sourceGuidance ?? undefined,
 				}));
 			} catch (error) {
-				console.error(
-					`[LiveIntegrationContext] Error fetching Teams messages from ${ctx.displayName}:`,
-					error instanceof Error ? error.message : error,
-				);
+				const errorMessage =
+					error instanceof Error ? error.message : String(error);
+				// A Graph 403 here means THIS user can't read THIS chat/channel —
+				// a per-viewer condition surfaced per-context in the project's
+				// Context tab via integrations.teams.contextAccess (Fizzy #2450),
+				// not an operational fault, so it doesn't belong at error level.
+				if (isMicrosoftAccessDeniedError(errorMessage)) {
+					console.warn(
+						`[LiveIntegrationContext] Access denied fetching Teams messages from ${ctx.displayName}:`,
+						errorMessage,
+					);
+				} else {
+					console.error(
+						`[LiveIntegrationContext] Error fetching Teams messages from ${ctx.displayName}:`,
+						errorMessage,
+					);
+				}
 				return [];
 			}
 		}),

@@ -34,7 +34,10 @@ export { TEAMS_TOOL_LIMITS } from "./config/limits";
 // classify an error string (apps/web, @repo/api, @repo/temporal) can do
 // `import { isMicrosoftNotConnectedError } from "@repo/integrations/microsoft"`
 // without depending on @repo/api (which @repo/temporal must not).
-export { isMicrosoftNotConnectedError } from "./connection-errors";
+export {
+	isMicrosoftAccessDeniedError,
+	isMicrosoftNotConnectedError,
+} from "./connection-errors";
 // Re-export the chat-thread image-attachments helpers from the Microsoft barrel
 // so downstream packages can `import { downloadTeamsHostedContent } from
 // "@repo/integrations/microsoft"` without reaching into the file directly.

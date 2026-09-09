@@ -119,6 +119,22 @@ vi.mock("@shared/lib/orpc-query-utils", () => ({
 				},
 			},
 		},
+		integrations: {
+			teams: {
+				contextAccess: {
+					queryOptions: ({ input }: { input: unknown }) => ({
+						queryKey: [
+							"integrations.teams.contextAccess",
+							input,
+						] as const,
+						queryFn: async () => ({
+							connected: true,
+							contexts: [],
+						}),
+					}),
+				},
+			},
+		},
 	},
 }));
 

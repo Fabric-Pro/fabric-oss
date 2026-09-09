@@ -13,8 +13,8 @@
  *      provider string.
  */
 
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { FeatureFlagProvider } from "@saas/shared/components/FeatureFlagProvider";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, within } from "@testing-library/react";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -74,6 +74,22 @@ vi.mock("@shared/lib/orpc-query-utils", () => ({
 				},
 				delete: { call: vi.fn() },
 				createDownloadUrl: { call: vi.fn() },
+			},
+		},
+		integrations: {
+			teams: {
+				contextAccess: {
+					queryOptions: ({ input }: { input: unknown }) => ({
+						queryKey: [
+							"integrations.teams.contextAccess",
+							input,
+						] as const,
+						queryFn: async () => ({
+							connected: true,
+							contexts: [],
+						}),
+					}),
+				},
 			},
 		},
 	},

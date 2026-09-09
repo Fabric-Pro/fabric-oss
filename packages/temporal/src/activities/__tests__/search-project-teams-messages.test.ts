@@ -11,14 +11,16 @@ const executeMicrosoftTeamsToolMock = vi.fn();
 const findManyMock = vi.fn();
 
 // The barrel is mocked because it reaches for `db` and crypto on import, but
-// the not-connected classifier is deliberately dependency-free and lives in its
-// own module — so pull in the REAL one rather than re-implementing it here. A
+// the not-connected classifier (and, since Fizzy #2450, the access-denied
+// classifier) are deliberately dependency-free and live in their own module
+// — so pull in the REAL ones rather than re-implementing them here. A
 // mirrored copy would keep these tests green if the real classifier changed,
 // which is precisely the regression they exist to catch.
 vi.mock("@repo/integrations/microsoft", async () => {
-	const { isMicrosoftNotConnectedError } = await vi.importActual<
-		typeof import("@repo/integrations/microsoft/connection-errors")
-	>("@repo/integrations/microsoft/connection-errors");
+	const { isMicrosoftAccessDeniedError, isMicrosoftNotConnectedError } =
+		await vi.importActual<
+			typeof import("@repo/integrations/microsoft/connection-errors")
+		>("@repo/integrations/microsoft/connection-errors");
 
 	return {
 		executeMicrosoftTeamsTool: (...args: unknown[]) =>
@@ -30,6 +32,7 @@ vi.mock("@repo/integrations/microsoft", async () => {
 			EXTRACTOR_TIMEOUT_MS: 15_000,
 			FULL_MESSAGE_MAX_CHARS: 10_000,
 		},
+		isMicrosoftAccessDeniedError,
 		isMicrosoftNotConnectedError,
 	};
 });
