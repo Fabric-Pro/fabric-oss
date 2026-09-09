@@ -94,6 +94,26 @@ const {
 
 vi.mock("sonner", () => ({ toast: { error: toastError } }));
 
+/**
+ * The AI assistant rail (Fizzy #1851, #15) is stubbed out, for the reason
+ * `StoryWorkspacePage.*.test.tsx` stubs `StoryWorkspace`: the module
+ * side-effect imports CopilotKit's stylesheet, which drags in a transitive
+ * katex `.css` that jsdom cannot load ("Unknown file extension .css").
+ *
+ * The page reaches it through `next/dynamic`, so the failure is not a suite
+ * that cannot import — it is an unhandled rejection from the lazy chunk when a
+ * case renders the page, which is worse: intermittent, and attributed to
+ * whichever test happened to be running. Stub it and the question never
+ * arises.
+ *
+ * Nothing here is testing the assistant. What this page owes it is one prop
+ * hand-off, and `assistantProposal` — the only thing that flows BACK — is
+ * pinned where it does its work, in `publishing-planning-analysis-tab.test.tsx`.
+ */
+vi.mock("@saas/projects/components/publishing-suite/TopicAssistant", () => ({
+	TopicAssistant: () => null,
+}));
+
 // Task 6: TopicItemPage now reads the viewer's own id (for the contributors
 // picker's "(You)" label) via this hook, mirroring ProjectMembersSettings'
 // existing use of it.
@@ -417,6 +437,11 @@ vi.mock("@shared/lib/orpc-query-utils", () => {
 					// refusing an already-settled root.
 					amendTopicQuestion: m(
 						"projects.publishingSuite.amendTopicQuestion",
+					),
+					// Per-question assignment (#1851) — routing, never an
+					// answer: it leaves the root OPEN.
+					setQuestionAssignees: m(
+						"projects.publishingSuite.setQuestionAssignees",
 					),
 					updateTopicPostTypes: m(
 						"projects.publishingSuite.updateTopicPostTypes",
@@ -855,6 +880,10 @@ describe("TopicItemPage — open questions (FR39)", () => {
 			answerSource: null,
 			analysisVersion: 1,
 			createdAt: new Date("2026-08-30T10:00:00Z"),
+			// Always an array, never absent: the procedure's output schema
+			// defaults it, so omitting it here would exercise a payload the
+			// server cannot send.
+			assignees: [],
 			...overrides,
 		},
 		replies: [],
@@ -1574,6 +1603,7 @@ describe("TopicItemPage — readiness", () => {
 			answerSource: null,
 			analysisVersion: 1,
 			createdAt: new Date(),
+			assignees: [],
 		},
 		replies: [],
 	});
