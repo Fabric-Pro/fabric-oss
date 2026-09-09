@@ -278,6 +278,25 @@ type AssignmentArgs = {
 };
 
 /**
+ * Somebody was ADDED to a publishing topic's assignee list (Fizzy #1851, A8).
+ *
+ * `recipientUserIds` is the ADDED set, never the whole list: assignees are
+ * edited as a set, so a save that only removes someone, or that re-saves an
+ * unchanged list, must notify nobody. The caller computes the diff (see
+ * `updatePublishingTopicAssignees`); this helper does not re-derive it.
+ */
+type PublishingTopicAssignedArgs = {
+	recipientUserIds: string[];
+	topicId: string;
+	topicTitle: string;
+	projectId: string;
+	organizationId: string | null;
+	actorUserId: string;
+	actorName: string;
+	link: string;
+};
+
+/**
  * Shared by the three maturation question-routing fan-outs (Fizzy #1751).
  *
  * One shape for all three because they differ only in intent — who is told, and
@@ -1044,6 +1063,73 @@ export const fanOut = {
 		} catch (error) {
 			logFailure("fanOut.assigned", error);
 		}
+	},
+
+	/**
+	 * Somebody put you on a publishing topic (Fizzy #1851, A8).
+	 *
+	 * An FYI, and the copy has to stay one: assignment here changes NOTHING
+	 * about who can see or edit the topic — everyone in the project already
+	 * could. It is a nudge to look, which is why the verb is "added you to"
+	 * rather than "assigned you", and why nothing in the product blocks on it.
+	 *
+	 * In-app is the whole intent. That is not enforced here but inherited:
+	 * external channels (email/webhook) are account-global OPT-IN and default
+	 * OFF (`DEFAULT_NOTIFICATION_DELIVERY_PREFERENCES`), so a recipient who has
+	 * never touched their settings gets a bell row and nothing else. Do NOT
+	 * reach for the suite's own 1C contributor-notification path here: that one
+	 * carries email and chat plus a delivery ledger, which is a great deal
+	 * heavier than a tag deserves and is how a useful signal turns into
+	 * something people mute.
+	 *
+	 * Category ASSIGNMENT, deliberately not PUBLISHING: a person handing work to
+	 * a person is not the AI suggestion digest, and a reader who silences the
+	 * digest should still hear their own name.
+	 *
+	 * `createNotification` self-skips when actor === recipient, so assigning
+	 * yourself — explicitly allowed, since the ask was to be able to EXCLUDE
+	 * yourself, not to be unable to include yourself — writes no row. The
+	 * per-recipient filter below is the same belt-and-braces the other
+	 * multi-recipient fan-outs carry.
+	 */
+	async publishingTopicAssigned(
+		args: PublishingTopicAssignedArgs,
+	): Promise<void> {
+		await Promise.all(
+			args.recipientUserIds
+				.filter((userId) => userId !== args.actorUserId)
+				.map(async (userId) => {
+					try {
+						await createNotification({
+							userId,
+							organizationId: args.organizationId,
+							type: NotificationType.PUBLISHING_TOPIC_ASSIGNED,
+							category: NotificationCategory.ASSIGNMENT,
+							title: `${args.actorName} added you to a publishing topic`,
+							snippet: args.topicTitle,
+							link: args.link,
+							source: {
+								projectId: args.projectId,
+								actorUserId: args.actorUserId,
+							},
+							payload: {
+								topicId: args.topicId,
+								projectId: args.projectId,
+								assignedByUserId: args.actorUserId,
+							},
+							// Dedup is scoped to UNREAD, LIVE rows, so removing
+							// then re-adding somebody who never opened the first
+							// nudge coalesces into it rather than stacking a
+							// second. That is the wanted behaviour for a set
+							// several people edit — do not defeat it by keying
+							// on the actor or a timestamp.
+							dedupeKey: `publishingTopicAssigned:${args.topicId}:${userId}`,
+						});
+					} catch (error) {
+						logFailure("fanOut.publishingTopicAssigned", error);
+					}
+				}),
+		);
 	},
 
 	/**

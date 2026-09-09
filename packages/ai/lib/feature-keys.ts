@@ -37,6 +37,22 @@ export const AI_FEATURE_KEYS = [
 	"prompt-nomination-summary",
 	/** Decision tagging metadata suggestions (type, duration, priority, owner). */
 	"decision-tagging",
+	/**
+	 * Publishing Suite: topic suggestions, planning analysis, and every
+	 * generated content draft (short post, blog post, case study, stakeholder
+	 * email).
+	 *
+	 * ONE key for the whole suite rather than one per content type. The
+	 * question this feature is measured against — how many posts, how much
+	 * revision, how many people publishing — is asked of the suite, and
+	 * `getAiOutcomeBreakdown` groups by `featureKey` alone, so four keys would
+	 * fragment the headline number into four the dashboard cannot add up.
+	 * The per-content-type split lives on `subjectType`, which is the axis
+	 * `AiOutcomeEvent` already carries for exactly that purpose, and a new
+	 * content type then costs a subject type rather than a registry entry the
+	 * dashboards have to learn.
+	 */
+	"publishing-suite",
 ] as const;
 
 export type AiFeatureKey = (typeof AI_FEATURE_KEYS)[number];

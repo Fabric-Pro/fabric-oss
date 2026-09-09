@@ -294,3 +294,67 @@ describe("TopicDecisionLog — panel width", () => {
 		expect(panel?.className).not.toMatch(/\bmax-w-/);
 	});
 });
+
+/**
+ * An amended answer in the log (Fizzy #1851, UI-review follow-up).
+ *
+ * Amending appends a superseding reply rather than editing the original, so a
+ * thread can carry several answering turns. The log is the changelog: it shows
+ * the LIVE answer where the single answer used to sit, and the replaced turns
+ * beneath as history. Dropping the earlier ones would throw away the reason
+ * amending supersedes rather than edits.
+ */
+describe("TopicDecisionLog — an amended answer", () => {
+	const AMENDED_THREAD: TopicDecisionThread = {
+		root: root({
+			id: "decision-amended",
+			questionId: "q-amended",
+			status: "RESOLVED",
+			summary: "May we name the customer?",
+			createdAt: new Date("2026-08-26T09:00:00Z"),
+		}),
+		replies: [
+			reply({
+				id: "reply-first",
+				parentId: "decision-amended",
+				content: "Yes, marketing cleared it.",
+				createdAt: new Date("2026-08-26T09:05:00Z"),
+			}),
+			reply({
+				id: "reply-second",
+				parentId: "decision-amended",
+				content: "No — legal withdrew the approval.",
+				createdAt: new Date("2026-08-28T11:00:00Z"),
+			}),
+		],
+	};
+
+	it("shows the newest answer as the answer, not the first one", () => {
+		// `.find()` — the first reply — was correct while a question could only
+		// be answered once. It now names the OLDEST answer.
+		render(<TopicDecisionLog threads={[AMENDED_THREAD]} />);
+
+		const card = screen.getByTestId("decision-root");
+		expect(
+			within(card).getByText(/legal withdrew the approval/i),
+		).toBeVisible();
+	});
+
+	it("keeps the superseded answer readable as history", () => {
+		render(<TopicDecisionLog threads={[AMENDED_THREAD]} />);
+
+		const history = screen.getByRole("list", { name: /previous answers/i });
+		expect(
+			within(history).getByText(/marketing cleared it/i),
+		).toBeVisible();
+	});
+
+	it("renders no history section for a question answered once", () => {
+		render(<TopicDecisionLog threads={[RESOLVED_THREAD]} />);
+
+		expect(screen.getByText(/marketing cleared it/i)).toBeVisible();
+		expect(
+			screen.queryByRole("list", { name: /previous answers/i }),
+		).not.toBeInTheDocument();
+	});
+});

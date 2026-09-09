@@ -7,9 +7,19 @@ import {
 } from "../publishing-suite-schema";
 
 describe("Publishing Suite 1B schema", () => {
-	it("exposes the four post-type enum values", () => {
+	it("exposes the post-type enum values", () => {
+		// The generated enum, pinned against a hand-written list on purpose: it
+		// is the one place a value added to `schema.prisma` without its
+		// migration, or vice versa, shows up as a disagreement rather than as a
+		// runtime error in whichever environment ran the other half.
 		expect(Object.values(PublishingTopicPostType).sort()).toEqual(
-			["BLOG_POST", "CASE_STUDY", "STAKEHOLDER_EMAIL", "TWEET"].sort(),
+			[
+				"BLOG_POST",
+				"CASE_STUDY",
+				"LINKEDIN_POST",
+				"STAKEHOLDER_EMAIL",
+				"TWEET",
+			].sort(),
 		);
 	});
 });

@@ -5653,11 +5653,24 @@ enum PublishingTopicOrigin {
   @@map("publishing_topic_origin")
 }
 
+/// LINKEDIN_POST is its own value rather than a re-labelled TWEET, and the
+/// reason is a platform fact rather than a preference: a feed collapses a
+/// LinkedIn post behind "see more" after roughly the first line or two, while X
+/// enforces a hard character limit with no expand at all. Those demand different
+/// opening structures — a tweet reposted to LinkedIn buries its hook below the
+/// fold — so the two need different prompts, not one prompt behind a label.
+///
+/// Appended rather than placed beside TWEET because `ALTER TYPE ... ADD VALUE`
+/// appends, and the schema has to describe the database that migration produces.
+/// Display order is owned by the hand-maintained arrays in
+/// `src/publishing-post-types.ts` and `topic-shared.ts`, which do group it with
+/// TWEET.
 enum PublishingTopicPostType {
   TWEET
   BLOG_POST
   CASE_STUDY
   STAKEHOLDER_EMAIL
+  LINKEDIN_POST
 }
 
 // Custom Kanban columns per project
@@ -7001,6 +7014,14 @@ model PublishingTopic {
   contributorUserIds      String[]                  @default([]) // resolved Fabric user ids (stories+docs); [] valid
   contributorsOverridden  Boolean                   @default(false) // false → effective contributors = contributorUserIds (AI); true → userContributorUserIds (may be [])
   userContributorUserIds  String[]                  @default([]) // user override set; meaningful only when contributorsOverridden = true; every id is a project member at write time
+  /// Who should PICK THIS UP — deliberately NOT the contributor columns above,
+  /// which record whose work the topic derives from. Informational only: it
+  /// grants nothing and hides nothing, everyone still sees every topic. Plural
+  /// by design, and every id is a current project member at write time (no
+  /// grandfathering — unlike contributors there is no server-resolved set to
+  /// inherit). No `assigneesOverridden` twin: nothing AI-resolves this, so
+  /// there is no suggestion to fall back to and `[]` simply means nobody.
+  assigneeUserIds         String[]                  @default([])
   relevantFunctionTags    FunctionTag[]             @default([]) // AI-stamped disciplines the topic serves (FR2/FR3 ranking signal, NOT an angle); [] for manual
   postTypeRecommendations Json                      @default("[]") // [{type,theme,rationale}] display-only enrichment; suggestedPostTypes is derived from this
   postTypesOverridden     Boolean                   @default(false) // false → effective post types = suggestedPostTypes (AI); true → userPostTypes (may be [])
@@ -16045,6 +16066,13 @@ enum NotificationType {
   QUESTION_MENTIONED
   /// Sent back to whoever created the assignment once the question is answered.
   QUESTION_ANSWERED
+
+  /// Somebody added the recipient to a publishing topic's assignee list
+  /// (Fizzy #1851, A8). An FYI nudge, not a permission grant — the topic was
+  /// already visible to them. Category ASSIGNMENT, so it rides the recipient's
+  /// existing "assignments" toggle rather than the publishing-digest one: an
+  /// explicit human hand-off is not the AI suggestion feed.
+  PUBLISHING_TOPIC_ASSIGNED
 
   /// A document-generation run the recipient started reached its terminal
   /// state. Split into two types rather than one "finished" type, mirroring

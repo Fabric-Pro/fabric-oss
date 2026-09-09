@@ -101,6 +101,11 @@ const AI_WORKFLOWS: Array<{
 		aiProxies: 1,
 	},
 	{
+		name: "generate-publishing-linkedin-post",
+		load: () => import("../generate-publishing-linkedin-post"),
+		aiProxies: 1,
+	},
+	{
 		name: "generate-publishing-planning-analysis",
 		load: () => import("../generate-publishing-planning-analysis"),
 		aiProxies: 1,

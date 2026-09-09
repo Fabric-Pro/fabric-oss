@@ -11,6 +11,11 @@
  * COMPLEX-tier model, call `generateObject` against
  * `PublishingTopicSuggestionsSchema`, and fail closed on invalid output.
  *
+ * The prompt itself comes from the Prompt Library, resolved here through
+ * `getBoundPromptForAgent` and composed in `./prompt` — the last of the suite's
+ * AI steps to stop carrying a hard-coded body. The grounding rules are appended
+ * code-side and are not part of the editable body.
+ *
  * Unlike the newsletter curate activities (which soft-skip on a stale actor),
  * this activity THROWS `PUBLISHING_ACTOR_INVALID` non-retryably — the caller
  * (Task 9's workflow) has no "skip the model, publish an empty section"
@@ -38,12 +43,15 @@
 import { generateObject, getAIModelWithMetadata } from "@repo/ai";
 import { getProjectFunctionTagClause } from "@repo/ai/lib/function-tag-context";
 import {
+	getBoundPromptForAgent,
 	isCurrentOrgMember,
 	normalizeTopicEnrichment,
 	type PublishingPreferencesSnapshot,
 	type PublishingTopicSuggestions,
 	PublishingTopicSuggestionsSchema,
 } from "@repo/database";
+import { logger } from "@repo/logs";
+import type { TemplateFormat } from "@repo/utils";
 import { Context } from "@temporalio/activity";
 import { ApplicationFailure } from "@temporalio/common";
 import { z } from "zod";
@@ -51,7 +59,9 @@ import { jobStep } from "../lib/job-progress";
 import { boundContextToBudget } from "./lib/byte-bound";
 import { buildPublishingPreferencesClause } from "./preferences-clause";
 import {
-	buildTopicSuggestionPrompt,
+	composeTopicSuggestionPrompt,
+	PUBLISHING_TOPIC_SUGGESTION_AGENT_KEY,
+	PUBLISHING_TOPIC_SUGGESTION_FALLBACK_BODY,
 	stripPrAuthorGithubIdsForPrompt,
 } from "./prompt";
 
@@ -181,22 +191,79 @@ async function runSummarizeTopicSuggestions(
 	const { context: boundedContext } = boundContextToBudget(
 		input.context as Record<string, unknown>,
 	);
+	const [boundPrompt, roleClause] = await Promise.all([
+		// The org-editable body behind this cycle's topics (#1851). Resolved
+		// HERE, in the activity, for the same reason its Planning & Analysis
+		// sibling does: activity bodies are not replayed, so the read adds no
+		// command to the workflow's sequence and cannot cause TMPRL1100.
+		//
+		// `organizationId ?? undefined` is load-bearing: falsy takes the
+		// personal USER → SYSTEM path, truthy takes ORG → SYSTEM, and the two
+		// never cross (getBoundPromptVersion, prompts.ts).
+		//
+		// `userId` passed for parity with the four sibling activities, but note
+		// what it means HERE and does not mean there. Inside an organization
+		// the resolver consults the caller's own USER binding before the ORG
+		// one (the documented PromptBinding exception, CLAUDE.md), which is
+		// right for a draft someone asked for: the preference shapes that
+		// person's own work. A suggestion cycle is unattended, the actor is
+		// whoever the dispatcher captured, and its output is the pitch every
+		// member of the project reads — so a personal default here steers what
+		// the whole project sees. Dropping `userId` would narrow resolution to
+		// ORG → SYSTEM; that is a policy call about this one agent, not a fix
+		// to the resolver.
+		getBoundPromptForAgent({
+			agentName: PUBLISHING_TOPIC_SUGGESTION_AGENT_KEY,
+			documentType: "GENERAL",
+			storyKind: null,
+			userId: actorUserId,
+			organizationId: organizationId ?? undefined,
+		}),
+		// FR2 (#1767): the project's function-tag role-composition clause, so
+		// the model can stamp relevantFunctionTags / role-aware post-type
+		// themes. Flag-gated + self-authorizing inside the helper → no-op when
+		// function-tags are off or no roster member holds a tag.
+		getProjectFunctionTagClause({
+			projectId,
+			requesterUserId: actorUserId,
+			surface: "publishing-suite",
+		}),
+	]);
+
 	// Copilot review (#2148): the numeric PR-author github id is needed only by
 	// the workflow's contributor map, never by the model. Strip it from the
 	// serialized CONTEXT so it is not sent to the provider or written to prompt
 	// logs (the id remains available to the resolver via the workflow map).
-	const prompt = buildTopicSuggestionPrompt(
-		stripPrAuthorGithubIdsForPrompt(boundedContext),
-	);
-	// FR2 (#1767): append the project's function-tag role-composition clause so
-	// the model can stamp relevantFunctionTags / role-aware post-type themes.
-	// Flag-gated + self-authorizing inside the helper → no-op when function-tags
-	// are off or no roster member holds a tag.
-	const roleClause = await getProjectFunctionTagClause({
-		projectId,
-		requesterUserId: actorUserId,
-		surface: "publishing-suite",
+	const composed = await composeTopicSuggestionPrompt({
+		templateBody:
+			boundPrompt?.version?.content ??
+			PUBLISHING_TOPIC_SUGGESTION_FALLBACK_BODY,
+		format:
+			(boundPrompt?.format as TemplateFormat | undefined) ?? "HANDLEBARS",
+		context: stripPrAuthorGithubIdsForPrompt(boundedContext),
 	});
+	const prompt = composed.prompt;
+
+	// A cycle whose org prompt would not render produces topics that read
+	// exactly like any other, so this is the one thing about the run a reader
+	// cannot recover from its output. Logged rather than persisted: unlike a
+	// planning analysis, a cycle has no per-run row to hang a `promptSource`
+	// column on.
+	//
+	// Deliberately silent when no prompt is bound at all. That is the normal
+	// state of an environment whose prompt seed has not run, it is the same
+	// answer for every project, and warning about it once per project per day
+	// would bury the case that is actually about one org's edit.
+	if (composed.bodyRecovered || composed.formatOverridden) {
+		logger.warn(
+			"[publishing-suggestion] the bound topic prompt was not usable as written",
+			{
+				projectId,
+				bodyRecovered: composed.bodyRecovered,
+				formatOverridden: composed.formatOverridden,
+			},
+		);
+	}
 	// 1C-1b (§7.1(a), FR8–FR10): the project's recommendation preferences,
 	// built from the snapshot the DISPATCHER took rather than from a fresh read
 	// of the settings row. A second read would let a mid-run edit make this

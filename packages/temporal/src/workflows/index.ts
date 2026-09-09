@@ -310,6 +310,14 @@ export {
 	type GeneratePublishingCaseStudyWorkflowOutput,
 	generatePublishingCaseStudyWorkflow,
 } from "./generate-publishing-case-study";
+// Publishing Suite LinkedIn Post (fire-and-forget — three labeled options for
+// one topic, written so the opening line survives the feed's "see more" fold).
+// #1851
+export {
+	type GeneratePublishingLinkedInPostWorkflowInput,
+	type GeneratePublishingLinkedInPostWorkflowOutput,
+	generatePublishingLinkedInPostWorkflow,
+} from "./generate-publishing-linkedin-post";
 // Publishing Suite Planning & Analysis (fire-and-forget — one topic's planning
 // worksheet, from its own provenance). #1851
 export {

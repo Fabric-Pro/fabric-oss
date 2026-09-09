@@ -20,9 +20,11 @@ import {
 } from "../lib/prompt-action-catalog";
 import { PUBLISHING_BLOG_POST_AGENT_KEY } from "../lib/publishing-blog-post-prompt";
 import { PUBLISHING_CASE_STUDY_AGENT_KEY } from "../lib/publishing-case-study-prompt";
+import { PUBLISHING_LINKEDIN_POST_AGENT_KEY } from "../lib/publishing-linkedin-post-prompt";
 import { PUBLISHING_PLANNING_ANALYSIS_AGENT_KEY } from "../lib/publishing-planning-prompt";
 import { PUBLISHING_SHORT_POST_AGENT_KEY } from "../lib/publishing-short-post-prompt";
 import { PUBLISHING_STAKEHOLDER_EMAIL_AGENT_KEY } from "../lib/publishing-stakeholder-email-prompt";
+import { PUBLISHING_TOPIC_SUGGESTION_AGENT_KEY } from "../lib/publishing-suggestion-prompt";
 
 const actions = listPromptActions();
 const byId = (id: string) => actions.find((a) => a.id === id);
@@ -190,6 +192,29 @@ describe("Publishing Suite prompts (#1851, #1853, #1854)", () => {
 		]);
 	});
 
+	// The topic suggestion prompt (FR7) is the sixth member and the last of the
+	// suite's AI steps to become editable at all. Same three-site hazard, same
+	// silence when it bites: a key that does not match resolves no binding, and
+	// every daily cycle then runs the default body forever while looking normal.
+	it("files the topic suggestion prompt under Publishing Suite by the shared key", () => {
+		const target = findPromptAgentTarget(
+			PUBLISHING_TOPIC_SUGGESTION_AGENT_KEY,
+		);
+		expect(target).toBeDefined();
+		expect(target?.featureType).toBe("PUBLISHING");
+	});
+
+	it("binds the topic suggestion prompt for GENERAL with no story kind", () => {
+		// `summarizeTopicSuggestions` resolves by exact match on (documentType
+		// GENERAL, storyKind null) — and a cycle has no story kind to scope by.
+		const target = findPromptAgentTarget(
+			PUBLISHING_TOPIC_SUGGESTION_AGENT_KEY,
+		);
+		expect(target?.actions).toEqual([
+			{ documentType: "GENERAL", storyKind: null },
+		]);
+	});
+
 	// The short post prompt (2B-2) carries the SAME three-site hazard the
 	// planning prompt does — seed, catalog and the Temporal activity that
 	// resolves the binding — and it is a silent one: a key that does not match
@@ -208,6 +233,30 @@ describe("Publishing Suite prompts (#1851, #1853, #1854)", () => {
 		// storyKind null). A stage-scoped or kind-scoped binding would find
 		// nothing, and finding nothing is the fallback path, not an error.
 		const target = findPromptAgentTarget(PUBLISHING_SHORT_POST_AGENT_KEY);
+		expect(target?.actions).toEqual([
+			{ documentType: "GENERAL", storyKind: null },
+		]);
+	});
+
+	// The LinkedIn prompt is a SEPARATE key from the short post's on purpose:
+	// the two platforms impose opposite constraints (LinkedIn folds behind
+	// "see more" and caps nothing, X caps hard and folds nothing), so they are
+	// two prompts rather than one behind a label. That makes the copy-paste
+	// hazard sharper here than anywhere else in the family — the two bodies are
+	// structurally near-identical — and the uniqueness case at the bottom of
+	// this file is what actually catches it.
+	it("files the LinkedIn post prompt under Publishing Suite by the shared key", () => {
+		const target = findPromptAgentTarget(
+			PUBLISHING_LINKEDIN_POST_AGENT_KEY,
+		);
+		expect(target).toBeDefined();
+		expect(target?.featureType).toBe("PUBLISHING");
+	});
+
+	it("binds the LinkedIn post prompt for GENERAL with no story kind", () => {
+		const target = findPromptAgentTarget(
+			PUBLISHING_LINKEDIN_POST_AGENT_KEY,
+		);
 		expect(target?.actions).toEqual([
 			{ documentType: "GENERAL", storyKind: null },
 		]);
@@ -269,15 +318,21 @@ describe("Publishing Suite prompts (#1851, #1853, #1854)", () => {
 		]);
 	});
 
-	it("keeps all five publishing prompts under DIFFERENT keys", () => {
+	it("keeps every publishing prompt under a DIFFERENT key", () => {
 		// Every one of them is PUBLISHING/GENERAL/null, so a copy-paste that
 		// left a sibling's key on another entry would satisfy every other case
 		// in this file — and would silently route one content type's generation
 		// to another's prompt. Uniqueness across the whole set is the only check
 		// that catches it whichever pair was duplicated.
+		//
+		// A new member of the family must be added to this array. Leaving it out
+		// keeps the case green while it stops covering the key that was just
+		// added, which is the failure this whole file exists to prevent.
 		const keys = [
+			PUBLISHING_TOPIC_SUGGESTION_AGENT_KEY,
 			PUBLISHING_PLANNING_ANALYSIS_AGENT_KEY,
 			PUBLISHING_SHORT_POST_AGENT_KEY,
+			PUBLISHING_LINKEDIN_POST_AGENT_KEY,
 			PUBLISHING_BLOG_POST_AGENT_KEY,
 			PUBLISHING_CASE_STUDY_AGENT_KEY,
 			PUBLISHING_STAKEHOLDER_EMAIL_AGENT_KEY,

@@ -4,9 +4,15 @@ import { orpc } from "@shared/lib/orpc-query-utils";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@ui/components/button";
 import { Textarea } from "@ui/components/textarea";
-import { Loader2Icon, SparklesIcon } from "lucide-react";
+import { Loader2Icon, PencilLineIcon, SparklesIcon } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
+import {
+	CandidateDraft,
+	DraftComparison,
+	SavedDraftCaption,
+} from "./DraftComparison";
+import { GeneralizationNotes } from "./GeneralizationNotes";
 import type { TopicDraftState, TopicWorkingDraftState } from "./GenerationTabs";
 
 /** Mirrors the API's own bounds, so a field cannot submit what it would reject. */
@@ -91,6 +97,18 @@ export function BlogPostPanel({
 }) {
 	const queryClient = useQueryClient();
 	const [guidance, setGuidance] = useState("");
+	/**
+	 * The edit instruction for a REFINE run, kept apart from `guidance`.
+	 *
+	 * Two fields rather than one, because they ask for different things and a
+	 * shared one would silently carry the wrong kind of text into whichever
+	 * action was pressed second. Guidance steers a draft that does not exist
+	 * yet ("technical audience, 800 words"); this steers a change to one that
+	 * does ("make it shorter"). Sent as `guidance` on the wire — it IS the
+	 * run's instruction, and putting it there is what records it on the attempt
+	 * row.
+	 */
+	const [refineInstruction, setRefineInstruction] = useState("");
 	/**
 	 * The editor's text, or null for "showing what the server last returned".
 	 *
@@ -207,6 +225,23 @@ export function BlogPostPanel({
 	const hasUnadoptedVersion =
 		readyId !== null && working?.sourceDraftId !== readyId;
 
+	/**
+	 * Whether the safety note describes a version the saved text did not come
+	 * from.
+	 *
+	 * The same predicate its Case Study and Stakeholder Email siblings spell
+	 * as `!bodyIsFromLatest && working?.hasBody === true`; written directly
+	 * here because this panel has no export path and so no second reader for
+	 * the intermediate. Gated on there being a saved body to qualify — with no
+	 * working draft the sentence would be false, since there is no "version
+	 * this text was saved from".
+	 *
+	 * This panel had no qualifier of any kind before slice A6, which made it
+	 * the worst of the three rather than the reference.
+	 */
+	const notesDescribeAnotherVersion =
+		hasUnadoptedVersion && working?.hasBody === true;
+
 	const handleAdopt = () => {
 		if (!readyId) {
 			return;
@@ -248,6 +283,111 @@ export function BlogPostPanel({
 			expectedUpdatedAt: new Date(working.updatedAt),
 		});
 	};
+
+	/**
+	 * The two halves of the comparison, built before the return so each can
+	 * ask whether the other exists.
+	 *
+	 * The panel used to stack them — the editor here, the generated version
+	 * several sections below, the safety blocks in between — while telling the
+	 * reader in prose that regenerating "writes a new version to compare
+	 * against". Comparing meant scrolling, so the promise was not kept.
+	 */
+	const candidate =
+		doc && hasUnadoptedVersion ? (
+			<CandidateDraft
+				version={draft?.latestReady?.version ?? null}
+				title={doc.title}
+				subtitle={doc.subtitle}
+				body={doc.body}
+				replacesSavedDraft={Boolean(working?.hasBody)}
+				action={
+					canEdit ? (
+						<Button
+							type="button"
+							variant="outline"
+							size="sm"
+							onClick={handleAdopt}
+							disabled={adopt.isPending}
+						>
+							{working?.hasBody
+								? "Use this version"
+								: "Save as working draft"}
+						</Button>
+					) : null
+				}
+			/>
+		) : null;
+
+	const savedDraft = working?.hasBody ? (
+		<section className="space-y-2">
+			<div className="flex items-baseline justify-between gap-3">
+				<h3 className="editorial-label" id="blog-post-editor">
+					Working blog post
+				</h3>
+				{isDirty ? (
+					<span
+						className="text-muted-foreground text-xs"
+						role="status"
+					>
+						Unsaved changes
+					</span>
+				) : null}
+			</div>
+			{/* Only while a candidate sits beside it: with one draft on
+			    screen there is nothing to tell apart. */}
+			{candidate ? (
+				<SavedDraftCaption>
+					Saved. This is the blog post the topic holds — editing here
+					changes it.
+				</SavedDraftCaption>
+			) : null}
+			{canEdit ? (
+				<>
+					<Textarea
+						aria-labelledby="blog-post-editor"
+						value={bodyValue}
+						onChange={(e) => setEditedBody(e.target.value)}
+						maxLength={BODY_MAX}
+						rows={20}
+						className="font-mono text-sm leading-relaxed"
+						disabled={saveBody.isPending}
+					/>
+					<div className="flex flex-wrap items-center gap-3">
+						<Button
+							type="button"
+							onClick={handleSaveBody}
+							disabled={!isDirty || saveBody.isPending}
+						>
+							{saveBody.isPending ? (
+								<Loader2Icon
+									className="mr-2 size-4 motion-safe:animate-spin"
+									aria-hidden="true"
+								/>
+							) : null}
+							Save changes
+						</Button>
+						{isDirty ? (
+							<Button
+								type="button"
+								variant="ghost"
+								onClick={() => setEditedBody(null)}
+								disabled={saveBody.isPending}
+							>
+								Discard changes
+							</Button>
+						) : null}
+					</div>
+				</>
+			) : (
+				<div className="rounded-xl border border-border bg-muted/40 p-4">
+					<p className="whitespace-pre-wrap break-words text-sm leading-relaxed">
+						{working.body}
+					</p>
+				</div>
+			)}
+		</section>
+	) : null;
 
 	return (
 		<div className="space-y-5">
@@ -313,6 +453,77 @@ export function BlogPostPanel({
 				</section>
 			) : null}
 
+			{/*
+			 * A SECOND action, never a replacement for the one above. Regenerate
+			 * rebuilds the post from the planning analysis; this one revises the
+			 * saved text. Both are useful and they answer different questions,
+			 * so the panel offers both — and offers this one only once there is
+			 * something saved to revise, since without a working draft it has no
+			 * input and would just be a regeneration with a confusing label.
+			 */}
+			{canEdit && working?.hasBody ? (
+				<section className="space-y-2">
+					<label
+						className="editorial-label block"
+						htmlFor="blog-post-refine"
+					>
+						Refine the saved draft
+					</label>
+					<Textarea
+						id="blog-post-refine"
+						value={refineInstruction}
+						onChange={(e) => setRefineInstruction(e.target.value)}
+						maxLength={GUIDANCE_MAX}
+						rows={2}
+						placeholder="Make it shorter. Warmer tone. Lead with the metric."
+						disabled={isGenerating || generate.isPending}
+					/>
+					<div className="flex items-center gap-3">
+						<Button
+							type="button"
+							variant="outline"
+							onClick={() =>
+								generate.mutate({
+									projectId,
+									topicId,
+									organizationId,
+									guidance: refineInstruction.trim() || null,
+									refineFromWorkingDraft: true,
+								})
+							}
+							// Required here where it is optional above: a
+							// refinement with no instruction is a rewrite of
+							// the draft for no stated reason, which is the one
+							// thing this action cannot usefully do.
+							disabled={
+								!refineInstruction.trim() ||
+								isGenerating ||
+								generate.isPending
+							}
+						>
+							{isGenerating || generate.isPending ? (
+								<Loader2Icon
+									className="mr-2 size-4 motion-safe:animate-spin"
+									aria-hidden="true"
+								/>
+							) : (
+								<PencilLineIcon
+									className="mr-2 size-4"
+									aria-hidden="true"
+								/>
+							)}
+							Refine draft
+						</Button>
+					</div>
+					<p className="text-muted-foreground text-xs">
+						Starts from the blog post you have saved and changes
+						only what you ask for. The result arrives as a new
+						version to compare against; nothing you have saved
+						changes until you adopt it.
+					</p>
+				</section>
+			) : null}
+
 			{isStranded ? (
 				<p className="text-muted-foreground text-sm" role="alert">
 					The last run didn't report back within its time limit.
@@ -326,117 +537,18 @@ export function BlogPostPanel({
 				</p>
 			) : null}
 
-			{working?.hasBody ? (
-				<section className="space-y-2">
-					<div className="flex items-baseline justify-between gap-3">
-						<h3 className="editorial-label" id="blog-post-editor">
-							Working blog post
-						</h3>
-						{isDirty ? (
-							<span
-								className="text-muted-foreground text-xs"
-								role="status"
-							>
-								Unsaved changes
-							</span>
-						) : null}
-					</div>
-					{canEdit ? (
-						<>
-							<Textarea
-								aria-labelledby="blog-post-editor"
-								value={bodyValue}
-								onChange={(e) => setEditedBody(e.target.value)}
-								maxLength={BODY_MAX}
-								rows={20}
-								className="font-mono text-sm leading-relaxed"
-								disabled={saveBody.isPending}
-							/>
-							<div className="flex items-center gap-3">
-								<Button
-									type="button"
-									onClick={handleSaveBody}
-									disabled={!isDirty || saveBody.isPending}
-								>
-									{saveBody.isPending ? (
-										<Loader2Icon
-											className="mr-2 size-4 motion-safe:animate-spin"
-											aria-hidden="true"
-										/>
-									) : null}
-									Save changes
-								</Button>
-								{isDirty ? (
-									<Button
-										type="button"
-										variant="ghost"
-										onClick={() => setEditedBody(null)}
-										disabled={saveBody.isPending}
-									>
-										Discard changes
-									</Button>
-								) : null}
-							</div>
-						</>
-					) : (
-						<div className="rounded-xl border border-border bg-muted/40 p-4">
-							<p className="whitespace-pre-wrap text-sm leading-relaxed">
-								{working.body}
-							</p>
-						</div>
-					)}
-				</section>
-			) : null}
+			<DraftComparison saved={savedDraft} candidate={candidate} />
 
 			{doc ? (
 				<>
-					{hasUnadoptedVersion ? (
-						<section className="space-y-3">
-							<h3 className="editorial-label">
-								Generated draft{" "}
-								{draft?.latestReady
-									? `(version ${draft.latestReady.version})`
-									: null}
-							</h3>
-							<div className="rounded-xl border border-border bg-card p-4">
-								<h4 className="font-medium text-sm">
-									{doc.title}
-								</h4>
-								{doc.subtitle ? (
-									<p className="mt-1 text-muted-foreground text-sm italic">
-										{doc.subtitle}
-									</p>
-								) : null}
-								<p className="mt-3 whitespace-pre-wrap text-sm leading-relaxed">
-									{doc.body}
-								</p>
-								{canEdit ? (
-									<Button
-										type="button"
-										variant="outline"
-										size="sm"
-										className="mt-3"
-										onClick={handleAdopt}
-										disabled={adopt.isPending}
-									>
-										{working?.hasBody
-											? "Use this version"
-											: "Save as working draft"}
-									</Button>
-								) : null}
-							</div>
-						</section>
-					) : null}
-
 					{doc.safetyNote ? (
-						<section className="space-y-2">
-							<h3 className="editorial-label">
-								How this was generalized
-							</h3>
-							<p className="text-muted-foreground text-sm leading-relaxed">
-								{doc.safetyNote}
-							</p>
-						</section>
+						<GeneralizationNotes
+							heading="How this was generalized"
+							note={doc.safetyNote}
+							describesAnotherVersion={
+								notesDescribeAnotherVersion
+							}
+						/>
 					) : null}
 
 					{doc.inputsNeeded.length > 0 ? (

@@ -276,10 +276,12 @@ import {
 	adoptBlogPostDraftProcedure,
 	adoptCaseStudyDraftProcedure,
 	adoptStakeholderEmailDraftProcedure,
+	amendTopicQuestionProcedure,
 	answerTopicQuestionProcedure,
 	createPublishingTopicProcedure,
 	generateBlogPostProcedure,
 	generateCaseStudyProcedure,
+	generateLinkedInPostProcedure,
 	generatePlanningAnalysisProcedure,
 	generatePublishingTopicsNowProcedure,
 	generateShortPostProcedure,
@@ -298,10 +300,12 @@ import {
 	saveBlogPostBodyProcedure,
 	saveCaseStudyBodyProcedure,
 	saveStakeholderEmailBodyProcedure,
+	selectLinkedInPostOptionProcedure,
 	selectShortPostOptionProcedure,
 	setTopicReadStateProcedure,
 	setTopicSnoozeProcedure,
 	updatePublishingSuiteSettingsProcedure,
+	updatePublishingTopicAssigneesProcedure,
 	updatePublishingTopicContributorsProcedure,
 	updatePublishingTopicPostTypesProcedure,
 	updatePublishingTopicStatusProcedure,
@@ -1389,6 +1393,9 @@ export const projectsRouter = {
 		updateTopicStatus: updatePublishingTopicStatusProcedure,
 		updateTopicPostTypes: updatePublishingTopicPostTypesProcedure,
 		updateTopicContributors: updatePublishingTopicContributorsProcedure,
+		// A8: who should PICK THIS UP, distinct from the contributor override
+		// above (whose work the topic derives from). Informational only.
+		updateTopicAssignees: updatePublishingTopicAssigneesProcedure,
 		setTopicSnooze: setTopicSnoozeProcedure,
 		setTopicReadState: setTopicReadStateProcedure,
 		getSettings: getPublishingSuiteSettingsProcedure,
@@ -1411,6 +1418,12 @@ export const projectsRouter = {
 		// and the AI Updates a regeneration writes.
 		listTopicDecisions: listTopicDecisionsProcedure,
 		answerTopicQuestion: answerTopicQuestionProcedure,
+		// A settled question is not a closed one: `amendTopicQuestion` appends a
+		// superseding answer, mirroring `stories.maturation.amendAnswer`. It is
+		// a SEPARATE procedure rather than a mode of `answerTopicQuestion`,
+		// because that one's refusal to answer twice is what stops a
+		// double-submit minting two replies for one act.
+		amendTopicQuestion: amendTopicQuestionProcedure,
 		// #1853 (2B-1): the topic's generated-draft state, and the poll target
 		// while a generation runs. Like `getPlanningAnalysis`, it returns TWO
 		// rows per content type — the latest attempt and the latest READY one —
@@ -1424,6 +1437,13 @@ export const projectsRouter = {
 		// its text, and reads the text from the stored draft.
 		generateShortPost: generateShortPostProcedure,
 		selectShortPostOption: selectShortPostOptionProcedure,
+		// #1851: LinkedIn Post. The same candidate-based pair as the short post,
+		// and a separate one rather than a post-type parameter on it: LinkedIn
+		// folds a post behind "see more" after the first line or two and caps
+		// nothing where X caps hard and folds nothing, so the two run different
+		// prompts and bound an option's text differently.
+		generateLinkedInPost: generateLinkedInPostProcedure,
+		selectLinkedInPostOption: selectLinkedInPostOptionProcedure,
 		// #1853 (2B-3): Blog Post. `generateBlogPost` starts one run the panel
 		// polls for, and the FIRST run seeds the topic's working draft inside
 		// the activity (DV5/FR21) — which is why this pair exists where the

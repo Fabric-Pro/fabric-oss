@@ -229,6 +229,10 @@ const RENDERS_NO_SUBJECT = new Map([
 		"takes an AgendaContext and emits fixed clause strings; no subject list",
 	],
 	["buildPlanningAnalysisLockedClauses", "takes no arguments at all"],
+	[
+		"buildTopicSuggestionLockedClauses",
+		"takes no arguments at all — topic suggestion runs BEFORE any topic exists, so there is no subject to render",
+	],
 ]);
 
 function discoverLockedClauseBuilders(): string[] {

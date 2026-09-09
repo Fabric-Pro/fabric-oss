@@ -63,6 +63,7 @@ export * from "./publishing-notification-delivery";
 export * from "./publishing-notification-drain";
 export * from "./publishing-notification-outcome";
 export * from "./publishing-notification-reconcile";
+export * from "./publishing-outcomes";
 export * from "./publishing-planning";
 export * from "./publishing-recipients";
 export * from "./publishing-settings";

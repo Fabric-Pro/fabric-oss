@@ -18,30 +18,64 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { answerMutation, mutationState } = vi.hoisted(() => ({
+// The panel owns TWO mutations now — answering an open question, and amending
+// a settled one. They route to SEPARATE spies by `mutationKey` rather than
+// sharing one: the point of the amend path is that it is NOT the answer path
+// (`answerTopicQuestion` refuses a settled root on purpose), and a shared spy
+// would let a regression that sent an amendment down the answer procedure pass
+// every assertion below.
+const { answerMutation, amendMutation, mutationState } = vi.hoisted(() => ({
 	answerMutation: vi.fn(),
-	mutationState: { shouldFail: false },
+	amendMutation: vi.fn(),
+	mutationState: {
+		shouldFail: false,
+		/** What the amend mutation resolves with — its `onSuccess` reads `status`. */
+		result: { status: "amended" } as { status: string },
+	},
 }));
+
+async function run(
+	opts: {
+		mutationKey?: unknown[];
+		onSuccess?: (...a: unknown[]) => unknown;
+		onError?: (...a: unknown[]) => unknown;
+	},
+	vars: unknown,
+) {
+	const spy =
+		opts.mutationKey?.[0] === "amendTopicQuestion"
+			? amendMutation
+			: answerMutation;
+	spy(vars);
+	if (mutationState.shouldFail) {
+		const err = new Error("failed");
+		await opts.onError?.(err, vars, undefined);
+		throw err;
+	}
+	await opts.onSuccess?.(mutationState.result, vars, undefined);
+	return mutationState.result;
+}
 
 vi.mock("@tanstack/react-query", () => ({
 	useMutation: (opts: {
+		mutationKey?: unknown[];
 		onSuccess?: (...a: unknown[]) => unknown;
 		onError?: (...a: unknown[]) => unknown;
 	}) => ({
 		mutate: (vars: unknown) => {
-			answerMutation(vars);
-			if (mutationState.shouldFail) {
-				opts.onError?.(new Error("failed"), vars, undefined);
-			} else {
-				opts.onSuccess?.(undefined, vars, undefined);
-			}
+			void run(opts, vars).catch(() => {});
 		},
+		// The amend path awaits its own outcome: a REFUSED amendment must leave
+		// the editor open, because the draft in it is the only copy of what the
+		// person typed. A mock that only offered `mutate` would let that
+		// regression through by never resolving anything to decide on.
+		mutateAsync: (vars: unknown) => run(opts, vars),
 		isPending: false,
 	}),
 	useQueryClient: () => ({ invalidateQueries: vi.fn() }),
 }));
 
-vi.mock("sonner", () => ({ toast: { error: vi.fn() } }));
+vi.mock("sonner", () => ({ toast: { error: vi.fn(), warning: vi.fn() } }));
 
 vi.mock("@shared/lib/orpc-query-utils", () => ({
 	orpc: {
@@ -50,6 +84,12 @@ vi.mock("@shared/lib/orpc-query-utils", () => ({
 				answerTopicQuestion: {
 					mutationOptions: (opts: Record<string, unknown>) => ({
 						mutationKey: ["answerTopicQuestion"],
+						...opts,
+					}),
+				},
+				amendTopicQuestion: {
+					mutationOptions: (opts: Record<string, unknown>) => ({
+						mutationKey: ["amendTopicQuestion"],
 						...opts,
 					}),
 				},
@@ -148,6 +188,7 @@ const POSSIBLY_RESOLVED_THREAD = {
 beforeEach(() => {
 	vi.clearAllMocks();
 	mutationState.shouldFail = false;
+	mutationState.result = { status: "amended" };
 });
 
 describe("TopicQuestionsPanel — the four states (DV14)", () => {
@@ -353,6 +394,397 @@ describe("TopicQuestionsPanel — answering (FR10/FR11)", () => {
 		expect(screen.getByText(/yes, marketing cleared it/i)).toBeVisible();
 		expect(
 			screen.queryByRole("button", { name: /use this answer/i }),
+		).not.toBeInTheDocument();
+	});
+});
+
+/**
+ * Content-type questions answer as a yes/no (A3, Fizzy #1851).
+ *
+ * "is it supposed to be like that? its simple setting, not question that we
+ * want ai to ask us, it could be checkbox or setting" — typing prose to answer
+ * "Should we produce a Blog Post for this topic?" is the complaint.
+ *
+ * These stay QUESTIONS rather than becoming a project setting, and the reason
+ * is in the data: the wording is templated per type, but the rationale beneath
+ * it is written about this topic. FR39 binds recommendations that need
+ * confirmation and each of these is one, so what changes is the affordance, not
+ * the decision model — the answer still reaches the Decision Log and still
+ * survives the next regeneration.
+ */
+describe("TopicQuestionsPanel — content-type questions are a yes/no", () => {
+	it("offers Yes and No instead of an open textarea", () => {
+		render(
+			<TopicQuestionsPanel
+				{...BASE}
+				threads={[
+					{
+						root: root({
+							decisionKind: "CONTENT_TYPE",
+							summary:
+								"Should we produce a Blog Post for this topic?",
+							recommendedResponse: null,
+						}),
+						replies: [],
+					},
+				]}
+			/>,
+		);
+
+		expect(screen.getByRole("button", { name: "Yes" })).toBeInTheDocument();
+		expect(screen.getByRole("button", { name: "No" })).toBeInTheDocument();
+		expect(
+			screen.queryByRole("textbox", { name: /your answer/i }),
+		).not.toBeInTheDocument();
+	});
+
+	it("records a Yes as MANUAL, not as accepting the AI's wording", async () => {
+		// answerSource measures recommendation acceptance. A button that never
+		// showed the recommendation must not count as accepting it — the same
+		// reasoning behind the repoint_ai_edited_answer_source migration.
+		const user = userEvent.setup();
+		render(
+			<TopicQuestionsPanel
+				{...BASE}
+				threads={[
+					{
+						root: root({
+							decisionKind: "CONTENT_TYPE",
+							summary:
+								"Should we produce a Blog Post for this topic?",
+							recommendedResponse:
+								"Yes, the topic has enough substance.",
+						}),
+						replies: [],
+					},
+				]}
+			/>,
+		);
+
+		await user.click(screen.getByRole("button", { name: "Yes" }));
+
+		expect(answerMutation).toHaveBeenCalledWith(
+			expect.objectContaining({ answerSource: "MANUAL" }),
+		);
+	});
+
+	it("still allows a nuanced answer in your own words", async () => {
+		// "yes, but only after the metric is approved" is a real answer a
+		// boolean would throw away.
+		const user = userEvent.setup();
+		render(
+			<TopicQuestionsPanel
+				{...BASE}
+				threads={[
+					{
+						root: root({
+							decisionKind: "CONTENT_TYPE",
+							summary:
+								"Should we produce a Blog Post for this topic?",
+							recommendedResponse: null,
+						}),
+						replies: [],
+					},
+				]}
+			/>,
+		);
+
+		await user.click(
+			screen.getByRole("button", { name: /answer in your own words/i }),
+		);
+
+		expect(
+			screen.getByRole("textbox", { name: /your answer/i }),
+		).toBeInTheDocument();
+	});
+
+	it("leaves an asset-approval question as free text", () => {
+		// The distinction is in decisionKind: an ASSET_APPROVAL question names a
+		// specific asset in this topic and rarely has a yes/no answer worth
+		// recording on its own.
+		render(
+			<TopicQuestionsPanel
+				{...BASE}
+				threads={[
+					{
+						root: root({
+							decisionKind: "ASSET_APPROVAL",
+							summary:
+								"Is the Metric callout approved for use in this content?",
+							recommendedResponse: null,
+						}),
+						replies: [],
+					},
+				]}
+			/>,
+		);
+
+		expect(
+			screen.getByRole("textbox", { name: /your answer/i }),
+		).toBeInTheDocument();
+		expect(
+			screen.queryByRole("button", { name: "Yes" }),
+		).not.toBeInTheDocument();
+	});
+});
+
+/**
+ * Amending a settled answer (Fizzy #1851, UI-review follow-up).
+ *
+ * A RESOLVED question used to render as read-only text with no way back, while
+ * Feature Maturation's Decision Log has offered the same correction for a while
+ * (`stories.maturation.amendAnswer`). The reviewer asked for parity.
+ *
+ * It is a SECOND procedure rather than a mode of `answerTopicQuestion`, and the
+ * separate spies above are what pin that: the answer path's refusal to answer a
+ * settled root is what stops a double-submit minting two replies for one act,
+ * so making it answerable again would have fixed this at the cost of that.
+ */
+describe("TopicQuestionsPanel — amending a settled answer", () => {
+	/** A thread whose answer has already been amended once. */
+	const AMENDED_THREAD = {
+		...RESOLVED_THREAD,
+		replies: [
+			RESOLVED_THREAD.replies[0],
+			{
+				...RESOLVED_THREAD.replies[0],
+				id: "reply-2",
+				content: "On reflection, no — legal has not signed off.",
+				createdAt: new Date("2026-08-31T09:00:00Z"),
+			},
+		],
+	};
+
+	it("offers Amend on a resolved question", async () => {
+		render(<TopicQuestionsPanel {...BASE} threads={[RESOLVED_THREAD]} />);
+
+		expect(
+			screen.getByRole("button", { name: /amend/i }),
+		).toBeInTheDocument();
+	});
+
+	it("seeds the editor with the answer on record, not with the AI recommendation", async () => {
+		// Load-bearing for `answerSource`. The seed decides what an amendment
+		// IS: starting from the existing answer means nothing typed here is an
+		// act of accepting the AI's wording, which is what lets the submission
+		// below classify honestly as MANUAL.
+		const user = userEvent.setup();
+		render(<TopicQuestionsPanel {...BASE} threads={[RESOLVED_THREAD]} />);
+
+		await user.click(screen.getByRole("button", { name: /amend/i }));
+
+		expect(
+			screen.getByRole("textbox", { name: /your answer/i }),
+		).toHaveValue("Yes, marketing cleared it.");
+	});
+
+	it("sends the amendment to amendTopicQuestion, never to answerTopicQuestion", async () => {
+		const user = userEvent.setup();
+		render(<TopicQuestionsPanel {...BASE} threads={[RESOLVED_THREAD]} />);
+
+		await user.click(screen.getByRole("button", { name: /amend/i }));
+		const box = screen.getByRole("textbox", { name: /your answer/i });
+		await user.clear(box);
+		await user.type(box, "No, they withdrew it.");
+		await user.click(screen.getByRole("button", { name: /save answer/i }));
+
+		expect(amendMutation).toHaveBeenCalledWith(
+			expect.objectContaining({
+				projectId: "proj-1",
+				topicId: "topic-1",
+				questionId: "q-customer-name",
+				supersedesId: "reply-1",
+				answer: "No, they withdrew it.",
+			}),
+		);
+		expect(answerMutation).not.toHaveBeenCalled();
+	});
+
+	it("classifies an amendment as MANUAL, because nothing here accepts a recommendation", async () => {
+		// `answerSource` measures recommendation ACCEPTANCE — the reason
+		// `20260828120000_repoint_ai_edited_answer_source` exists. The editor is
+		// seeded from the answer, so AI_EDITED would overstate what happened
+		// even when the previous answer came from the AI.
+		const user = userEvent.setup();
+		render(<TopicQuestionsPanel {...BASE} threads={[RESOLVED_THREAD]} />);
+
+		await user.click(screen.getByRole("button", { name: /amend/i }));
+		const box = screen.getByRole("textbox", { name: /your answer/i });
+		await user.clear(box);
+		await user.type(box, "Different wording.");
+		await user.click(screen.getByRole("button", { name: /save answer/i }));
+
+		expect(amendMutation).toHaveBeenCalledWith(
+			expect.objectContaining({ answerSource: "MANUAL" }),
+		);
+	});
+
+	it("supersedes the LATEST answer, not the first one", async () => {
+		// A thread amended twice has several answering replies. Sending the
+		// first reply's id would be refused as stale by the server — correctly,
+		// since it names text the author is no longer looking at.
+		const user = userEvent.setup();
+		render(<TopicQuestionsPanel {...BASE} threads={[AMENDED_THREAD]} />);
+
+		expect(
+			screen.getByText(/on reflection, no — legal has not signed off/i),
+		).toBeVisible();
+
+		await user.click(screen.getByRole("button", { name: /amend/i }));
+		const box = screen.getByRole("textbox", { name: /your answer/i });
+		await user.clear(box);
+		await user.type(box, "Third time.");
+		await user.click(screen.getByRole("button", { name: /save answer/i }));
+
+		expect(amendMutation).toHaveBeenCalledWith(
+			expect.objectContaining({ supersedesId: "reply-2" }),
+		);
+	});
+
+	it("warns when a colleague amended first, rather than reporting success", async () => {
+		mutationState.result = { status: "stale" };
+		const user = userEvent.setup();
+		render(<TopicQuestionsPanel {...BASE} threads={[RESOLVED_THREAD]} />);
+
+		await user.click(screen.getByRole("button", { name: /amend/i }));
+		const box = screen.getByRole("textbox", { name: /your answer/i });
+		await user.clear(box);
+		await user.type(box, "Mine.");
+		await user.click(screen.getByRole("button", { name: /save answer/i }));
+
+		expect(toast.warning).toHaveBeenCalled();
+	});
+
+	it("KEEPS the refused draft on screen, because it is the only copy of it", async () => {
+		// The editor closes on SUCCESS, never on submit. A `stale` amendment
+		// was not recorded anywhere, so closing on click would destroy the
+		// words the person typed while the toast told them nothing was saved.
+		mutationState.result = { status: "stale" };
+		const user = userEvent.setup();
+		render(<TopicQuestionsPanel {...BASE} threads={[RESOLVED_THREAD]} />);
+
+		await user.click(screen.getByRole("button", { name: /amend/i }));
+		const box = screen.getByRole("textbox", { name: /your answer/i });
+		await user.clear(box);
+		await user.type(box, "The wording I want to keep.");
+		await user.click(screen.getByRole("button", { name: /save answer/i }));
+
+		expect(
+			screen.getByRole("textbox", { name: /your answer/i }),
+		).toHaveValue("The wording I want to keep.");
+	});
+
+	it("keeps the draft when the request itself fails", async () => {
+		mutationState.shouldFail = true;
+		const user = userEvent.setup();
+		render(<TopicQuestionsPanel {...BASE} threads={[RESOLVED_THREAD]} />);
+
+		await user.click(screen.getByRole("button", { name: /amend/i }));
+		const box = screen.getByRole("textbox", { name: /your answer/i });
+		await user.clear(box);
+		await user.type(box, "Survives a dropped connection.");
+		await user.click(screen.getByRole("button", { name: /save answer/i }));
+
+		expect(
+			screen.getByRole("textbox", { name: /your answer/i }),
+		).toHaveValue("Survives a dropped connection.");
+	});
+
+	it("closes the editor once the amendment lands", async () => {
+		const user = userEvent.setup();
+		render(<TopicQuestionsPanel {...BASE} threads={[RESOLVED_THREAD]} />);
+
+		await user.click(screen.getByRole("button", { name: /amend/i }));
+		const box = screen.getByRole("textbox", { name: /your answer/i });
+		await user.clear(box);
+		await user.type(box, "Recorded.");
+		await user.click(screen.getByRole("button", { name: /save answer/i }));
+
+		expect(
+			screen.queryByRole("textbox", { name: /your answer/i }),
+		).not.toBeInTheDocument();
+	});
+
+	it("closes on a deduped no-op too — nothing was refused, there was nothing to change", async () => {
+		mutationState.result = { status: "deduped" };
+		const user = userEvent.setup();
+		render(<TopicQuestionsPanel {...BASE} threads={[RESOLVED_THREAD]} />);
+
+		await user.click(screen.getByRole("button", { name: /amend/i }));
+		await user.click(screen.getByRole("button", { name: /save answer/i }));
+
+		expect(
+			screen.queryByRole("textbox", { name: /your answer/i }),
+		).not.toBeInTheDocument();
+		expect(toast.warning).not.toHaveBeenCalled();
+	});
+
+	it("says nothing extra on an ordinary amendment", async () => {
+		const user = userEvent.setup();
+		render(<TopicQuestionsPanel {...BASE} threads={[RESOLVED_THREAD]} />);
+
+		await user.click(screen.getByRole("button", { name: /amend/i }));
+		const box = screen.getByRole("textbox", { name: /your answer/i });
+		await user.clear(box);
+		await user.type(box, "Mine.");
+		await user.click(screen.getByRole("button", { name: /save answer/i }));
+
+		expect(toast.warning).not.toHaveBeenCalled();
+	});
+
+	it("reports a failed amendment instead of leaving the editor closed in silence", async () => {
+		mutationState.shouldFail = true;
+		const user = userEvent.setup();
+		render(<TopicQuestionsPanel {...BASE} threads={[RESOLVED_THREAD]} />);
+
+		await user.click(screen.getByRole("button", { name: /amend/i }));
+		const box = screen.getByRole("textbox", { name: /your answer/i });
+		await user.clear(box);
+		await user.type(box, "Mine.");
+		await user.click(screen.getByRole("button", { name: /save answer/i }));
+
+		expect(toast.error).toHaveBeenCalled();
+	});
+
+	it("abandons the edit on Cancel without sending anything", async () => {
+		const user = userEvent.setup();
+		render(<TopicQuestionsPanel {...BASE} threads={[RESOLVED_THREAD]} />);
+
+		await user.click(screen.getByRole("button", { name: /amend/i }));
+		await user.click(screen.getByRole("button", { name: /cancel/i }));
+
+		expect(amendMutation).not.toHaveBeenCalled();
+		expect(screen.getByText(/yes, marketing cleared it/i)).toBeVisible();
+	});
+
+	it("gives a read-only member no way to amend", async () => {
+		render(
+			<TopicQuestionsPanel
+				{...BASE}
+				threads={[RESOLVED_THREAD]}
+				canEdit={false}
+			/>,
+		);
+
+		expect(screen.getByText(/yes, marketing cleared it/i)).toBeVisible();
+		expect(
+			screen.queryByRole("button", { name: /amend/i }),
+		).not.toBeInTheDocument();
+	});
+
+	it("offers nothing to amend on a settled question with no answer recorded", async () => {
+		// Nothing writes this today, but the server refuses it as `stale`
+		// rather than inventing a first answer, so the button must not be there
+		// to send it.
+		render(
+			<TopicQuestionsPanel
+				{...BASE}
+				threads={[{ ...RESOLVED_THREAD, replies: [] }]}
+			/>,
+		);
+
+		expect(
+			screen.queryByRole("button", { name: /amend/i }),
 		).not.toBeInTheDocument();
 	});
 });

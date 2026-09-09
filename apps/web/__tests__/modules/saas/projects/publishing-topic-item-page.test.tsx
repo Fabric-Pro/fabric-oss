@@ -344,6 +344,20 @@ vi.mock("@shared/lib/orpc-query-utils", () => {
 					selectShortPostOption: m(
 						"projects.publishingSuite.selectShortPostOption",
 					),
+					// The LinkedIn panel owns these two (Fizzy #1851). Present
+					// BEFORE the panel is mounted, deliberately: the comment
+					// above records this file being taken down three times by a
+					// tab that started rendering a real panel against a mock
+					// that did not list its procedures, and the mount is a
+					// follow-up change in a file this slice could not touch.
+					// An entry for a panel that is not yet rendered costs
+					// nothing; a missing one costs every case in the file.
+					generateLinkedInPost: m(
+						"projects.publishingSuite.generateLinkedInPost",
+					),
+					selectLinkedInPostOption: m(
+						"projects.publishingSuite.selectLinkedInPostOption",
+					),
 					// 2B-3's blog panel owns these three, and the warning above
 					// is not hypothetical: omitting them crashed every case in
 					// this file the moment the Blog Post tab stopped rendering
@@ -388,6 +402,13 @@ vi.mock("@shared/lib/orpc-query-utils", () => {
 					answerTopicQuestion: m(
 						"projects.publishingSuite.answerTopicQuestion",
 					),
+					// The amend write the Summary & Questions tab owns
+					// alongside answering — a settled question is correctable,
+					// through a SEPARATE procedure so the answer path can keep
+					// refusing an already-settled root.
+					amendTopicQuestion: m(
+						"projects.publishingSuite.amendTopicQuestion",
+					),
 					updateTopicPostTypes: m(
 						"projects.publishingSuite.updateTopicPostTypes",
 					),
@@ -397,6 +418,11 @@ vi.mock("@shared/lib/orpc-query-utils", () => {
 					// Task 6: the contributors override write.
 					updateTopicContributors: m(
 						"projects.publishingSuite.updateTopicContributors",
+					),
+					// A8: the assignee write, constructed UNCONDITIONALLY by
+					// this page. Same obligation as every entry above.
+					updateTopicAssignees: m(
+						"projects.publishingSuite.updateTopicAssignees",
 					),
 				},
 				// Task 6: the contributors picker's member list. Same
@@ -444,6 +470,16 @@ function topic(overrides: Record<string, unknown> = {}) {
 		whySuggested: null,
 		userPostTypes: null,
 		userContributorUserIds: null,
+		// A8: assignees are always present on the wire — the query layer
+		// resolves them from the same lookup as contributors, so a fixture
+		// omitting them is a topic shape the API never returns.
+		assigneeUserIds: [] as string[],
+		assignees: [] as Array<{
+			id: string;
+			name: string;
+			image: string | null;
+			username: string | null;
+		}>,
 		meetingSpeakers: null,
 		...overrides,
 	};
@@ -1282,5 +1318,301 @@ describe("TopicItemPage — editing contributors (Task 6)", () => {
 		);
 		expect(dialog.getByRole("button", { name: "Save" })).toBeDisabled();
 		expect(updateContributorsMutate).not.toHaveBeenCalled();
+	});
+});
+
+/**
+ * The 2A rework's tab structure (Fizzy #1851).
+ *
+ * The PO asked for two ROWS of tabs — `Summary & Questions | Decisions |
+ * Planning and Analysis` above `Short Post | Blog | Case Study…` — rather than
+ * the generation strip sitting in a page footer below everything, where it
+ * rendered under all three review tabs at once.
+ *
+ * What these pin is that the two rows drive ONE selection. A content type is a
+ * peer of a review tab, not a tab inside a tab, so picking one deselects the
+ * other. Row 1's order is pinned too, because matching the Feature Item Page's
+ * sequence is the point of the change rather than a side effect of it.
+ */
+describe("TopicItemPage — two-row tab strip", () => {
+	const reviewTabs = () =>
+		screen.getByRole("tablist", { name: /topic review/i });
+	const contentTabs = () =>
+		screen.getByRole("tablist", { name: /content generation/i });
+
+	it("orders row 1 to match the Feature Item Page: Summary, Decisions, then the document", () => {
+		renderPage();
+
+		const names = within(reviewTabs())
+			.getAllByRole("tab")
+			.map((t) => t.textContent);
+		expect(names).toEqual([
+			"Summary & Questions",
+			"Decision Log",
+			"Planning & Analysis",
+		]);
+	});
+
+	it("still opens on Summary & Questions (FR6), which is no longer row 1's only job", () => {
+		renderPage();
+
+		expect(
+			within(reviewTabs()).getByRole("tab", {
+				name: /summary & questions/i,
+			}),
+		).toHaveAttribute("aria-selected", "true");
+	});
+
+	it("narrows row 2 to the content types the topic selected", () => {
+		state.topic = topic({ suggestedPostTypes: ["TWEET", "BLOG_POST"] });
+		renderPage();
+
+		const names = within(contentTabs())
+			.getAllByRole("tab")
+			.map((t) => t.textContent);
+		expect(names).toHaveLength(2);
+		expect(names[0]).toMatch(/short post \/ tweet/i);
+		expect(names[1]).toMatch(/blog post/i);
+	});
+
+	it("prefers the user's override over the AI suggestion for row 2", () => {
+		state.topic = topic({
+			suggestedPostTypes: ["TWEET"],
+			userPostTypes: ["CASE_STUDY"],
+		});
+		renderPage();
+
+		const names = within(contentTabs())
+			.getAllByRole("tab")
+			.map((t) => t.textContent);
+		expect(names).toHaveLength(1);
+		expect(names[0]).toMatch(/case study/i);
+	});
+
+	it("falls back to every content type when the topic selected none (#1853 FR1/FR2)", () => {
+		// Topics created before 1B started writing `suggestedPostTypes`, and
+		// every manually-created topic, have no selection. Hiding generation
+		// from them would strand the feature behind a dialog nobody has a
+		// reason to open — and FR1/FR2 say the tabs are activated, not
+		// conditional.
+		state.topic = topic({ suggestedPostTypes: [], userPostTypes: null });
+		renderPage();
+
+		// Five since LinkedIn joined the enum (Fizzy #1851). A literal rather
+		// than a derived count on purpose: the number here is the claim that
+		// EVERY type falls back, so deriving it from the same list the page
+		// renders from would make the case agree with the page by construction.
+		expect(within(contentTabs()).getAllByRole("tab")).toHaveLength(5);
+	});
+
+	it("treats a content type as a peer of a review tab, not a tab inside a tab", async () => {
+		state.topic = topic({ suggestedPostTypes: ["TWEET"] });
+		const user = userEvent.setup();
+		renderPage();
+
+		await user.click(
+			within(contentTabs()).getByRole("tab", {
+				name: /short post \/ tweet/i,
+			}),
+		);
+
+		// One selection across both rows: picking a content type deselects the
+		// review tab rather than opening beneath it.
+		expect(
+			within(reviewTabs()).getByRole("tab", {
+				name: /summary & questions/i,
+			}),
+		).toHaveAttribute("aria-selected", "false");
+	});
+
+	it("says so when the draft read failed, without blanking the strip", () => {
+		// The banner moved here from `GenerationTabs` when the strip split into
+		// triggers and panels; the page owns the query, so the page says so.
+		state.draftsError = true;
+		renderPage();
+
+		expect(
+			screen.getByTestId("generation-tabs-degraded"),
+		).toBeInTheDocument();
+		expect(
+			within(contentTabs()).getByRole("tab", { name: /blog post/i }),
+		).toBeEnabled();
+	});
+});
+
+/**
+ * The content-type recommendation, at the point the choice is made (A2).
+ *
+ * The PO's words: "one thing that I don't see in the current build is how the
+ * system really recommends content types and how the user interacts with that
+ * — say to disable a recommendation or to enable something that wasn't
+ * recommended", and later "it might also be good to show the user an explainer
+ * on why certain content types were recommended."
+ *
+ * Both already existed. `Edit post types` has always overridden the AI list,
+ * and the analysis has always carried a per-type rationale in its Recommended /
+ * Needs confirmation / Deferred buckets. What was missing is that none of it
+ * was visible on the screen where the choice happens — the dialog was a blank
+ * form rather than an override of something.
+ */
+describe("TopicItemPage — the recommendation is visible where you choose", () => {
+	const openPostTypes = async () => {
+		const user = userEvent.setup();
+		renderPage();
+		await user.click(
+			screen.getByRole("button", { name: /edit post types/i }),
+		);
+		return within(screen.getByRole("dialog"));
+	};
+
+	it("labels each option with the analysis's verdict", async () => {
+		state.effective = {
+			prose: "",
+			data: {
+				contentTypes: {
+					recommended: [
+						{ type: "Blog Post", rationale: "Enough substance." },
+					],
+					needsConfirmation: [
+						{
+							type: "Tweet",
+							rationale: "Needs the metric approved first.",
+						},
+					],
+				},
+			},
+			overridden: false,
+		};
+
+		const dialog = await openPostTypes();
+
+		expect(dialog.getByText(/^Recommended$/i)).toBeInTheDocument();
+		expect(dialog.getByText(/^Needs confirmation$/i)).toBeInTheDocument();
+	});
+
+	it("explains WHY, rather than only that", async () => {
+		state.effective = {
+			prose: "",
+			data: {
+				contentTypes: {
+					needsConfirmation: [
+						{
+							type: "Tweet",
+							rationale: "Needs the metric approved first.",
+						},
+					],
+				},
+			},
+			overridden: false,
+		};
+
+		const dialog = await openPostTypes();
+
+		expect(
+			dialog.getByText(/needs the metric approved first/i),
+		).toBeInTheDocument();
+	});
+
+	it("shows no verdict for a type the analysis never mentioned", async () => {
+		// A type with no entry is not "not recommended" — the analysis simply
+		// did not speak to it, and inventing a verdict it never gave would be
+		// worse than showing none.
+		state.effective = {
+			prose: "",
+			data: {
+				contentTypes: {
+					recommended: [
+						{ type: "Blog Post", rationale: "Enough substance." },
+					],
+				},
+			},
+			overridden: false,
+		};
+
+		const dialog = await openPostTypes();
+
+		expect(dialog.queryAllByText(/^Recommended$/i)).toHaveLength(1);
+	});
+});
+
+/**
+ * Readiness, and putting the work above the reference (A4).
+ *
+ * Two of the PO's asks. "Open questions should be on top" — the questions ARE
+ * the work on this tab, and the metadata block below them is reference. And
+ * "in fmv2 we have readiness bar, can we mirror it here?" — mirrored in intent
+ * rather than in component, because a feature moves through a fixed stage
+ * pipeline and a publishing topic does not. What a topic has is decisions, each
+ * answered or not, so the honest signal is the proportion answered.
+ */
+describe("TopicItemPage — readiness", () => {
+	const question = (id: string, status: string) => ({
+		root: {
+			id,
+			parentId: null,
+			kind: "QUESTION" as const,
+			status,
+			authorType: "AGENT" as const,
+			authorUserId: null,
+			questionId: id,
+			decisionKind: "CONTENT_TYPE",
+			subject: null,
+			summary: null,
+			content: `Question ${id}?`,
+			recommendedResponse: null,
+			whyItMatters: null,
+			answerSource: null,
+			analysisVersion: 1,
+			createdAt: new Date(),
+		},
+		replies: [],
+	});
+
+	it("counts answered decisions against the total", () => {
+		state.decisionThreads = [
+			question("a", "RESOLVED"),
+			question("b", "OPEN"),
+			question("c", "OPEN"),
+		];
+		renderPage();
+
+		expect(screen.getByTestId("topic-readiness")).toHaveTextContent(
+			"1 of 3 decisions answered",
+		);
+	});
+
+	it("counts a soft-closed question as answered, not as reopened", () => {
+		// POSSIBLY_RESOLVED means the newest analysis stopped raising something
+		// somebody had already answered. Treating it as open would make a topic
+		// look less ready every time it regenerated.
+		state.decisionThreads = [
+			question("a", "POSSIBLY_RESOLVED"),
+			question("b", "RESOLVED"),
+		];
+		renderPage();
+
+		expect(screen.getByTestId("topic-readiness")).toHaveTextContent(
+			"All 2 decisions answered",
+		);
+	});
+
+	it("ignores AI update rows, which nobody can answer", () => {
+		const update = question("u", "OPEN");
+		state.decisionThreads = [
+			{ ...update, root: { ...update.root, kind: "AI_UPDATE" } },
+			question("a", "RESOLVED"),
+		];
+		renderPage();
+
+		expect(screen.getByTestId("topic-readiness")).toHaveTextContent(
+			"All 1 decisions answered",
+		);
+	});
+
+	it("shows nothing at all when the analysis raised no questions", () => {
+		state.decisionThreads = [];
+		renderPage();
+
+		expect(screen.queryByTestId("topic-readiness")).not.toBeInTheDocument();
 	});
 });

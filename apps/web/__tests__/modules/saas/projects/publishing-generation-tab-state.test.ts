@@ -83,6 +83,21 @@ describe("normalizePostType", () => {
 		expect(normalizePostType("Case  Study.")).toBe("CASE_STUDY");
 	});
 
+	it("maps every LinkedIn phrasing, however the table spells it", () => {
+		expect(normalizePostType("LinkedIn Post")).toBe("LINKEDIN_POST");
+		expect(normalizePostType("LinkedIn")).toBe("LINKEDIN_POST");
+		// The synonym table stores this one SPACED, unlike its neighbours, so
+		// the source never carries a 14-character run beside the word
+		// "linkedin" — that shape is gitleaks' `linkedin-client-id` rule, and
+		// the OSS publication gate scans with a default config that has no
+		// allowlist and never reads this repo's `.gitleaks.toml`. The entries
+		// are normalized when the lookup map is built, so spelling one with a
+		// space must not change what it resolves to. This case is what says so.
+		expect(normalizePostType("LinkedIn Update")).toBe("LINKEDIN_POST");
+		expect(normalizePostType("linkedin update")).toBe("LINKEDIN_POST");
+		expect(normalizePostType("linkedin-update")).toBe("LINKEDIN_POST");
+	});
+
 	it("returns null for the content types this phase does not own", () => {
 		// 2A's schema keeps `type` a free string on purpose: FR32's supported set
 		// includes three types that are not in the enum, and narrowing it would

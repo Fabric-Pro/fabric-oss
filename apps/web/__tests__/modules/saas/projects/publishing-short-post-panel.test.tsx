@@ -75,6 +75,17 @@ vi.mock("@shared/lib/orpc-query-utils", () => {
 
 import { ShortPostPanel } from "@saas/projects/components/publishing-suite/ShortPostPanel";
 
+/**
+ * Three candidates, every one of them SHORT ON PURPOSE.
+ *
+ * Since A6 a post past `FEED_FOLD_ESTIMATE` renders as two spans so the folded
+ * tail can be dimmed, and the default `getByText` matcher reads only an
+ * element's direct text nodes — so `getByText(o.text)` below finds nothing for
+ * a post over the fold. Lengthen one of these past 200 characters and that
+ * assertion fails for a reason that has nothing to do with what it is testing.
+ * The folded case has its own coverage in the A6 block at the end of the file,
+ * which matches on `textContent`.
+ */
 const OPTIONS = [
 	{
 		label: "Direct",
@@ -155,7 +166,7 @@ describe("ShortPostPanel — the generate control", () => {
 		renderPanel({ draft: readyDraft() });
 
 		expect(
-			screen.getByRole("button", { name: /regenerate options/i }),
+			screen.getByRole("button", { name: /regenerate drafts/i }),
 		).toBeEnabled();
 	});
 
@@ -261,7 +272,7 @@ describe("ShortPostPanel — the three options", () => {
 		});
 
 		expect(
-			screen.getAllByRole("button", { name: /use this option/i }),
+			screen.getAllByRole("button", { name: /use this draft/i }),
 		).toHaveLength(2);
 	});
 
@@ -271,7 +282,7 @@ describe("ShortPostPanel — the three options", () => {
 		renderPanel({ draft: readyDraft({ sections: ["old shape"] }) });
 
 		expect(
-			screen.getByText(/no short post options yet/i),
+			screen.getByText(/no short post drafts yet/i),
 		).toBeInTheDocument();
 	});
 
@@ -284,7 +295,7 @@ describe("ShortPostPanel — the three options", () => {
 			.find((li) => within(li).queryByText("Question-led"));
 		await user.click(
 			within(chosen as HTMLElement).getByRole("button", {
-				name: /use this option/i,
+				name: /use this draft/i,
 			}),
 		);
 
@@ -342,7 +353,7 @@ describe("ShortPostPanel — the working draft", () => {
 			.find((li) => within(li).queryByText("Story-led"));
 		await user.click(
 			within(other as HTMLElement).getByRole("button", {
-				name: /use this option/i,
+				name: /use this draft/i,
 			}),
 		);
 
@@ -364,7 +375,7 @@ describe("ShortPostPanel — the working draft", () => {
 			.find((li) => within(li).queryByText("Story-led"));
 		await user.click(
 			within(other as HTMLElement).getByRole("button", {
-				name: /use this option/i,
+				name: /use this draft/i,
 			}),
 		);
 
@@ -401,7 +412,7 @@ describe("ShortPostPanel — the working draft", () => {
 			.find((li) => within(li).queryByText("Direct"));
 		expect(
 			within(direct as HTMLElement).getByRole("button", {
-				name: /use this option/i,
+				name: /use this draft/i,
 			}),
 		).toBeEnabled();
 	});
@@ -452,7 +463,7 @@ describe("ShortPostPanel — the working draft", () => {
 			.find((li) => within(li).queryByText("Direct"));
 		expect(
 			within(direct as HTMLElement).getByRole("button", {
-				name: /use this option/i,
+				name: /use this draft/i,
 			}),
 		).toBeEnabled();
 	});
@@ -480,7 +491,7 @@ describe("ShortPostPanel — the working draft", () => {
 			.find((li) => within(li).queryByText("Direct"));
 		await user.click(
 			within(direct as HTMLElement).getByRole("button", {
-				name: /use this option/i,
+				name: /use this draft/i,
 			}),
 		);
 
@@ -496,7 +507,7 @@ describe("ShortPostPanel — the working draft", () => {
 		renderPanel({ draft: readyDraft() });
 
 		await user.click(
-			screen.getAllByRole("button", { name: /use this option/i })[0],
+			screen.getAllByRole("button", { name: /use this draft/i })[0],
 		);
 
 		// Nothing is being replaced, so a prompt here would be a dialog that
@@ -518,7 +529,7 @@ describe("ShortPostPanel — a reader", () => {
 			screen.queryByRole("button", { name: /generate/i }),
 		).not.toBeInTheDocument();
 		expect(
-			screen.queryByRole("button", { name: /use this option/i }),
+			screen.queryByRole("button", { name: /use this draft/i }),
 		).not.toBeInTheDocument();
 		expect(screen.queryByLabelText(/guidance/i)).not.toBeInTheDocument();
 	});
@@ -597,5 +608,199 @@ describe("ShortPostPanel — mutation outcomes", () => {
 
 		expect(mutate.toastInfo).not.toHaveBeenCalled();
 		expect(mutate.invalidate).toHaveBeenCalled();
+	});
+});
+
+const REFINE_WORKING = {
+	postType: "TWEET" as const,
+	hasBody: true,
+	body: "Builds are faster now.",
+	sourceDraftId: "d1",
+	sourceOptionLabel: "Direct",
+	updatedAt: new Date("2026-09-01T12:00:00Z"),
+};
+
+describe("ShortPostPanel — refining the saved draft (Fizzy #1851, A7)", () => {
+	it("does NOT offer refine before anything is saved", () => {
+		// With no working draft the action has no input, and offering it would
+		// be a regeneration wearing a label that promises otherwise.
+		renderPanel({ draft: readyDraft() });
+
+		expect(
+			screen.queryByRole("button", { name: /refine draft/i }),
+		).not.toBeInTheDocument();
+	});
+
+	it("does NOT offer refine for a working draft with no text", () => {
+		renderPanel({
+			working: { ...REFINE_WORKING, hasBody: false, body: "" },
+		});
+
+		expect(
+			screen.queryByRole("button", { name: /refine draft/i }),
+		).not.toBeInTheDocument();
+	});
+
+	it("offers refine ALONGSIDE regenerate once a draft is saved", () => {
+		// A second action, not a replacement: the two answer different
+		// questions and both stay reachable.
+		renderPanel({ draft: readyDraft(), working: REFINE_WORKING });
+
+		expect(
+			screen.getByRole("button", { name: /refine draft/i }),
+		).toBeInTheDocument();
+		expect(
+			screen.getByRole("button", { name: /regenerate drafts/i }),
+		).toBeEnabled();
+	});
+
+	it("keeps refine disabled until an instruction is written", async () => {
+		const user = userEvent.setup();
+		renderPanel({ working: REFINE_WORKING });
+
+		const button = screen.getByRole("button", { name: /refine draft/i });
+		expect(button).toBeDisabled();
+
+		await user.type(
+			screen.getByRole("textbox", { name: /refine the saved draft/i }),
+			"Make it shorter.",
+		);
+		expect(button).toBeEnabled();
+	});
+
+	it("sends the instruction with the refine flag, and no body", async () => {
+		// The panel names the intent; the server reads the text it revises.
+		const user = userEvent.setup();
+		renderPanel({ working: REFINE_WORKING });
+
+		await user.type(
+			screen.getByRole("textbox", { name: /refine the saved draft/i }),
+			"Warmer tone.",
+		);
+		await user.click(screen.getByRole("button", { name: /refine draft/i }));
+
+		expect(mutate.generate).toHaveBeenCalledWith({
+			projectId: "p1",
+			topicId: "t1",
+			organizationId: "org1",
+			guidance: "Warmer tone.",
+			refineFromWorkingDraft: true,
+		});
+	});
+
+	it("keeps the refine instruction OUT of a regeneration", async () => {
+		// Two fields because they ask for different things. A shared one would
+		// carry "make it shorter" into a run that has nothing to shorten.
+		const user = userEvent.setup();
+		renderPanel({ draft: readyDraft(), working: REFINE_WORKING });
+
+		await user.type(
+			screen.getByRole("textbox", { name: /refine the saved draft/i }),
+			"Warmer tone.",
+		);
+		await user.click(
+			screen.getByRole("button", { name: /regenerate drafts/i }),
+		);
+
+		expect(mutate.generate).toHaveBeenCalledWith(
+			expect.objectContaining({ guidance: null }),
+		);
+		expect(mutate.generate).not.toHaveBeenCalledWith(
+			expect.objectContaining({ refineFromWorkingDraft: true }),
+		);
+	});
+
+	it("says the saved draft is safe until the result is adopted", () => {
+		renderPanel({ working: REFINE_WORKING });
+
+		expect(
+			screen.getByText(/nothing you have saved changes until you adopt/i),
+		).toBeInTheDocument();
+	});
+
+	it("gives a viewer no refine control", () => {
+		renderPanel({ working: REFINE_WORKING, canEdit: false });
+
+		expect(
+			screen.queryByRole("button", { name: /refine draft/i }),
+		).not.toBeInTheDocument();
+	});
+});
+
+describe("ShortPostPanel — the candidate previews (Fizzy #1851, A6)", () => {
+	/**
+	 * Comfortably past the fold, with a tail on the far side of it.
+	 *
+	 * Built by repetition rather than written out, so the assertion below is
+	 * comparing against the same string the panel was handed — a hand-typed
+	 * 250-character fixture invites a transcription slip that would look like
+	 * the split dropping a character.
+	 */
+	const LONG_TEXT = `${"A steady stream of small build wins. ".repeat(6)}And the closing line nobody sees.`;
+
+	function longOption(estimatedCharacters = LONG_TEXT.length) {
+		return {
+			options: [{ label: "Long", text: LONG_TEXT, estimatedCharacters }],
+		};
+	}
+
+	it("says where a feed folds a long post, in words rather than in colour", () => {
+		// The dimmed tail is the visual half. A reader who cannot see the tint
+		// still has to learn that the opening line is what carries the post.
+		renderPanel({ draft: readyDraft(longOption()) });
+
+		expect(
+			screen.getByText(
+				/most feeds fold a post after roughly 200 characters/i,
+			),
+		).toBeInTheDocument();
+	});
+
+	it("keeps every character of a folded post on screen", () => {
+		// The fold is a presentation split across two spans. Consuming the
+		// boundary to make it look tidier would drop a character out of text
+		// the reader is about to publish.
+		//
+		// Matched on `textContent` rather than by string: the default matcher
+		// reads only an element's DIRECT text nodes, so a preview split in two
+		// is invisible to it — which is exactly the state this asserts about.
+		renderPanel({ draft: readyDraft(longOption()) });
+
+		expect(
+			screen.getByText(
+				(_content, element) => element?.textContent === LONG_TEXT,
+			),
+		).toBeInTheDocument();
+	});
+
+	it("marks no fold on a post that fits inside one", () => {
+		renderPanel({ draft: readyDraft() });
+
+		expect(
+			screen.queryByText(/most feeds fold a post/i),
+		).not.toBeInTheDocument();
+	});
+
+	it("decides the fold from the text, not from the model's own estimate", () => {
+		// `estimatedCharacters` is what the model claimed, with a length
+		// fallback for older rows. Trusting it would hide the indicator on
+		// exactly the post that needs it.
+		renderPanel({ draft: readyDraft(longOption(42)) });
+
+		expect(screen.getByText(/~42 characters/)).toBeInTheDocument();
+		expect(
+			screen.getByText(
+				/most feeds fold a post after roughly 200 characters/i,
+			),
+		).toBeInTheDocument();
+	});
+
+	it("still lets a reader adopt a folded candidate", () => {
+		// The fold is a preview of a feed, not a limit this panel imposes.
+		renderPanel({ draft: readyDraft(longOption()) });
+
+		expect(
+			screen.getByRole("button", { name: /use this draft/i }),
+		).toBeEnabled();
 	});
 });

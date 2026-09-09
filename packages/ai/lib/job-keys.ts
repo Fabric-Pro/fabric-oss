@@ -50,6 +50,19 @@ export const AI_JOB_TYPES = [
 	 */
 	"publishing-short-post",
 	/**
+	 * Publishing-suite LinkedIn Post drafting (#1851).
+	 *
+	 * Its own key rather than folded into `publishing-short-post`, even though
+	 * both draft three options over the same prompt shape. Two reasons, and the
+	 * second is why it matters: a LinkedIn post has no hard character ceiling
+	 * where a tweet has one, so its OUTPUT runs several times longer per option
+	 * — and the two are the formats a person is most likely to run against the
+	 * same topic. Shared, the cheaper one's run count would drag the average
+	 * per-run cost down and hide which of the two the spend actually went on,
+	 * which is the question this list exists to answer.
+	 */
+	"publishing-linkedin-post",
+	/**
 	 * Publishing-suite Blog Post drafting (#1853).
 	 *
 	 * Separate from `publishing-short-post` because it is the expensive one in

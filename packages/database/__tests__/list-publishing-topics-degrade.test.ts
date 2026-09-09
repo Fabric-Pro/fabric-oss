@@ -88,6 +88,7 @@ describe("listPublishingTopics — AC6 degrade-safe on handle-lookup failure", (
 				createdAt: new Date("2026-07-16T00:00:00Z"),
 				suggestedPostTypes: [],
 				contributorUserIds: ["user-a"],
+				assigneeUserIds: [],
 				relevantFunctionTags: [],
 				postTypeRecommendations: [],
 			},
@@ -102,6 +103,7 @@ describe("listPublishingTopics — AC6 degrade-safe on handle-lookup failure", (
 				createdAt: new Date("2026-07-15T00:00:00Z"),
 				suggestedPostTypes: [],
 				contributorUserIds: ["user-b"],
+				assigneeUserIds: [],
 				relevantFunctionTags: [],
 				postTypeRecommendations: [],
 			},
@@ -116,6 +118,7 @@ describe("listPublishingTopics — AC6 degrade-safe on handle-lookup failure", (
 				createdAt: new Date("2026-07-14T00:00:00Z"),
 				suggestedPostTypes: [],
 				contributorUserIds: ["user-a", "user-c"],
+				assigneeUserIds: [],
 				relevantFunctionTags: [],
 				postTypeRecommendations: [],
 			},
@@ -157,6 +160,7 @@ describe("listPublishingTopics — AC6 degrade-safe on handle-lookup failure", (
 			createdAt: new Date("2026-07-16T00:00:00Z"),
 			suggestedPostTypes: [],
 			contributorUserIds: ["user-a"],
+			assigneeUserIds: [],
 			relevantFunctionTags: [],
 			postTypeRecommendations: [],
 		},
@@ -171,6 +175,7 @@ describe("listPublishingTopics — AC6 degrade-safe on handle-lookup failure", (
 			createdAt: new Date("2026-07-15T00:00:00Z"),
 			suggestedPostTypes: [],
 			contributorUserIds: ["user-b"],
+			assigneeUserIds: [],
 			relevantFunctionTags: [],
 			postTypeRecommendations: [],
 		},
@@ -185,6 +190,7 @@ describe("listPublishingTopics — AC6 degrade-safe on handle-lookup failure", (
 			createdAt: new Date("2026-07-14T00:00:00Z"),
 			suggestedPostTypes: [],
 			contributorUserIds: ["viewer-1", "user-c"],
+			assigneeUserIds: [],
 			relevantFunctionTags: [],
 			postTypeRecommendations: [],
 		},
@@ -264,6 +270,7 @@ describe("listPublishingTopics — AC6 degrade-safe on handle-lookup failure", (
 				? {
 						...r,
 						contributorUserIds: ["user-x"],
+						assigneeUserIds: [],
 						relevantFunctionTags: ["DEVELOPER"],
 					}
 				: { ...r, relevantFunctionTags: [] },
@@ -314,6 +321,7 @@ describe("listPublishingTopics — AC6 degrade-safe on handle-lookup failure", (
 				createdAt: new Date("2026-07-16T00:00:00Z"), // newest
 				suggestedPostTypes: [],
 				contributorUserIds: ["viewer-1"],
+				assigneeUserIds: [],
 				relevantFunctionTags: [],
 				postTypeRecommendations: [],
 			},
@@ -328,6 +336,7 @@ describe("listPublishingTopics — AC6 degrade-safe on handle-lookup failure", (
 				createdAt: new Date("2026-07-15T00:00:00Z"), // middle recency
 				suggestedPostTypes: [],
 				contributorUserIds: ["user-x"],
+				assigneeUserIds: [],
 				relevantFunctionTags: [],
 				postTypeRecommendations: [],
 			},
@@ -342,6 +351,7 @@ describe("listPublishingTopics — AC6 degrade-safe on handle-lookup failure", (
 				createdAt: new Date("2026-07-14T00:00:00Z"), // oldest
 				suggestedPostTypes: [],
 				contributorUserIds: ["user-y"],
+				assigneeUserIds: [],
 				relevantFunctionTags: ["DEVELOPER"],
 				postTypeRecommendations: [],
 			},
@@ -404,6 +414,7 @@ describe("listPublishingTopics — AC6 degrade-safe on handle-lookup failure", (
 				? {
 						...r,
 						contributorUserIds: ["user-x"],
+						assigneeUserIds: [],
 						relevantFunctionTags: ["DEVELOPER"],
 					}
 				: r.id === "topic-1"
@@ -443,6 +454,7 @@ describe("listPublishingTopics — AC6 degrade-safe on handle-lookup failure", (
 				? {
 						...r,
 						contributorUserIds: ["user-x"],
+						assigneeUserIds: [],
 						relevantFunctionTags: ["DEVELOPER", "ARCHITECT"],
 					}
 				: r,
@@ -522,6 +534,7 @@ describe("listPublishingTopics — AC6 degrade-safe on handle-lookup failure", (
 				createdAt: new Date("2026-07-16T00:00:00Z"), // newest
 				suggestedPostTypes: [],
 				contributorUserIds: ["viewer-1"],
+				assigneeUserIds: [],
 				relevantFunctionTags: [],
 				postTypeRecommendations: [],
 				provenance: { storyIds: ["s1"] },
@@ -537,6 +550,7 @@ describe("listPublishingTopics — AC6 degrade-safe on handle-lookup failure", (
 				createdAt: new Date("2026-07-15T00:00:00Z"),
 				suggestedPostTypes: [],
 				contributorUserIds: ["user-x"],
+				assigneeUserIds: [],
 				// `.some()` (roleMatched) works normally → B lands in tier 2; the
 				// overridden `.filter()` throws when the tier-2 graft computes
 				// matchedTags — after tier-1 (A) has already been grafted.
@@ -609,6 +623,7 @@ describe("listPublishingTopics — contributor override (effectiveContributorUse
 				createdAt: new Date("2026-07-16T00:00:00Z"),
 				suggestedPostTypes: [],
 				contributorUserIds: [],
+				assigneeUserIds: [],
 				contributorsOverridden: true,
 				userContributorUserIds: ["override-only"],
 				relevantFunctionTags: [],
@@ -669,6 +684,7 @@ describe("listPublishingTopics — contributor override (effectiveContributorUse
 				createdAt: new Date("2026-07-16T00:00:00Z"), // newer
 				suggestedPostTypes: [],
 				contributorUserIds: ["other-user"],
+				assigneeUserIds: [],
 				relevantFunctionTags: [],
 				postTypeRecommendations: [],
 			},
@@ -685,6 +701,7 @@ describe("listPublishingTopics — contributor override (effectiveContributorUse
 				suggestedPostTypes: [],
 				// The AI still lists the viewer...
 				contributorUserIds: ["viewer-1"],
+				assigneeUserIds: [],
 				// ...but the viewer overrode the topic to remove everyone (DV: an
 				// empty override is deliberate "nobody", not absence).
 				contributorsOverridden: true,
@@ -733,6 +750,7 @@ describe("listPublishingTopics — contributor override (effectiveContributorUse
 				createdAt: new Date("2026-07-16T00:00:00Z"),
 				suggestedPostTypes: [],
 				contributorUserIds: ["ai-pick"],
+				assigneeUserIds: [],
 				contributorsOverridden: true,
 				userContributorUserIds: ["override-pick"],
 				relevantFunctionTags: ["DEVELOPER"],
@@ -788,6 +806,7 @@ describe("listPublishingTopics — author recommendations (FR4-8, UC2/UC3)", () 
 			createdAt: new Date("2026-07-16T00:00:00Z"),
 			suggestedPostTypes: [],
 			contributorUserIds,
+			assigneeUserIds: [],
 			relevantFunctionTags,
 			postTypeRecommendations: [],
 		},
@@ -942,6 +961,7 @@ describe("listPublishingTopics — author recommendations (FR4-8, UC2/UC3)", () 
 			createdAt: new Date("2026-07-16T00:00:00Z"), // newest
 			suggestedPostTypes: [],
 			contributorUserIds: ["viewer-1"],
+			assigneeUserIds: [],
 			relevantFunctionTags: [],
 			postTypeRecommendations: [],
 		},
@@ -957,6 +977,7 @@ describe("listPublishingTopics — author recommendations (FR4-8, UC2/UC3)", () 
 			createdAt: new Date("2026-07-15T00:00:00Z"), // middle
 			suggestedPostTypes: [],
 			contributorUserIds: ["user-x"],
+			assigneeUserIds: [],
 			relevantFunctionTags: [],
 			postTypeRecommendations: [],
 		},
@@ -972,6 +993,7 @@ describe("listPublishingTopics — author recommendations (FR4-8, UC2/UC3)", () 
 			createdAt: new Date("2026-07-14T00:00:00Z"), // oldest
 			suggestedPostTypes: [],
 			contributorUserIds: ["user-y"],
+			assigneeUserIds: [],
 			relevantFunctionTags: ["DEVELOPER"],
 			postTypeRecommendations: [],
 		},
@@ -1067,6 +1089,7 @@ describe("listPublishingTopics — angle passthrough (FR9/10)", () => {
 		createdAt: new Date("2026-07-16T00:00:00Z"),
 		suggestedPostTypes: [],
 		contributorUserIds: [],
+		assigneeUserIds: [],
 		relevantFunctionTags: [],
 		postTypeRecommendations: [],
 		angle: null,
@@ -1118,6 +1141,7 @@ describe("listPublishingTopics — whySuggested provenance (composition)", () =>
 			relevantFunctionTags: [],
 			postTypeRecommendations: [],
 			contributorUserIds: [],
+			assigneeUserIds: [],
 			angle: null,
 			provenance: null,
 			...over,
@@ -1282,6 +1306,7 @@ describe("listPublishingTopics — whySuggested provenance (composition)", () =>
 				pitch: "p1",
 				angle: "A1",
 				contributorUserIds: ["v1"],
+				assigneeUserIds: [],
 				relevantFunctionTags: ["DEVELOPER"],
 				provenance: { storyIds: ["s1"] },
 				createdAt: new Date("2026-07-16T00:00:00Z"),
@@ -1291,6 +1316,7 @@ describe("listPublishingTopics — whySuggested provenance (composition)", () =>
 				title: "T2",
 				pitch: "p2",
 				contributorUserIds: [],
+				assigneeUserIds: [],
 				provenance: { storyIds: ["s2"] },
 				createdAt: new Date("2026-07-15T00:00:00Z"),
 			}),
@@ -1350,6 +1376,7 @@ describe("listPublishingTopics — whySuggested provenance (composition)", () =>
 			topicRow({
 				id: "t1",
 				contributorUserIds: ["u1"],
+				assigneeUserIds: [],
 				provenance: { storyIds: ["s1"] },
 			}),
 		]);
@@ -1377,11 +1404,13 @@ describe("listPublishingTopics — whySuggested provenance (composition)", () =>
 			topicRow({
 				id: "t1",
 				contributorUserIds: ["v1"],
+				assigneeUserIds: [],
 				provenance: { storyIds: ["s1"] },
 			}),
 			topicRow({
 				id: "t2",
 				contributorUserIds: [],
+				assigneeUserIds: [],
 				provenance: { storyIds: ["s2"] },
 			}),
 		]);

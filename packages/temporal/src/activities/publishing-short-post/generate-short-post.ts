@@ -72,6 +72,15 @@ export interface GenerateShortPostInput {
 	actorUserId: string;
 	/** The guidance recorded on the attempt row, or null. */
 	guidance: string | null;
+	/**
+	 * The topic's saved working draft when this run REFINES it, read by the
+	 * procedure from the server's own store and clamped there.
+	 *
+	 * OPTIONAL on purpose. A Temporal history recorded before this field existed
+	 * replays with it absent, and absent must mean "an ordinary generation" —
+	 * which is exactly what null does here.
+	 */
+	currentDraft?: string | null;
 }
 
 export interface GenerateShortPostOutput {
@@ -234,6 +243,7 @@ export async function generateShortPostActivity(
 		analysisData: effectiveAnalysis.effective?.data ?? {},
 		decisions,
 		guidance: input.guidance,
+		currentDraft: input.currentDraft ?? null,
 		restrictedSubjects,
 	});
 
@@ -312,6 +322,16 @@ export async function generateShortPostActivity(
 			// look like it generalized for no reason.
 			restrictedSubjects,
 			guidance: input.guidance,
+			// Whether this candidate is a REVISION of the saved working draft
+			// or a draft written from the planning analysis. Recorded because
+			// the two are indistinguishable once written: nothing else on the
+			// row says which question the model was asked, and `guidance` reads
+			// the same either way. For the stored draft and the log only — no
+			// panel surfaces it today, and a refined candidate renders exactly
+			// like a regenerated one. The body itself is NOT stored: it is
+			// already on the working draft row, and a copy per attempt would
+			// duplicate the whole post on every refine.
+			refinedFromWorkingDraft: Boolean(input.currentDraft?.trim()),
 			generatedAt: new Date().toISOString(),
 		},
 	};

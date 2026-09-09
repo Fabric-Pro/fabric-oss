@@ -30,6 +30,7 @@ import {
 	isEmptyAnalysis,
 	readPlanningAnalysis,
 } from "./planning-analysis-content";
+import type { TopicDecisionThread } from "./TopicQuestionsPanel";
 
 const UNKNOWN_AUTHOR_LABEL = "Unknown author";
 const REPLACE_FAILURE_MESSAGE =
@@ -88,6 +89,12 @@ interface PlanningAnalysisTabProps {
 	/** Version of the newest READY analysis. `null` when there is none. */
 	aiVersion: number | null;
 	/**
+	 * The topic's decision threads, read only to count answers the current
+	 * analysis predates. The panel that renders them lives on another tab; this
+	 * tab needs the COUNT so it can say the document is behind them.
+	 */
+	decisionThreads?: TopicDecisionThread[];
+	/**
 	 * The model that produced the newest READY analysis, and how that run's
 	 * prompt was resolved. Scalars off that row rather than the row itself:
 	 * provenance has to survive a FAILED or stranded attempt landing on top of
@@ -112,8 +119,9 @@ interface PlanningAnalysisTabProps {
  *
  * Composes the editable document (`PlanningAnalysisEditor`, Task 9) and its
  * version history (`AnalysisVersionHistory`, Task 10) around the structured
- * sections the product reads by name, in one order: stale banner, document,
- * data sections, footer.
+ * sections the product reads by name, in one order: header (label, History,
+ * Generate, and the provenance line under them), stale banner, document, data
+ * sections.
  *
  * Three things here are load-bearing rather than cosmetic:
  *
@@ -150,6 +158,7 @@ export function PlanningAnalysisTab({
 	latestAttempt,
 	effective,
 	aiVersion,
+	decisionThreads,
 	aiModel,
 	aiPromptSource,
 	revisionVersion,
@@ -404,34 +413,111 @@ export function PlanningAnalysisTab({
 	const data = effective ? readPlanningAnalysis(effective.data) : null;
 	const proseIsEmpty = effective !== null && effective.prose.trim() === "";
 
+	/**
+	 * Answers the current analysis does not know about.
+	 *
+	 * A question stores the analysis version it was RAISED against. If it has
+	 * since been answered and the analysis is still on that version, the answer
+	 * arrived after the document was written — so the document is behind the
+	 * decisions it asked for, and nothing on screen said so.
+	 *
+	 * This is the Feature Maturation banner ("N new decisions recorded — not
+	 * yet in the Full Specification") in the place that reads the same way here.
+	 * The action is the Regenerate button already in this header, so the banner
+	 * points at it rather than adding a second control that does the same thing.
+	 */
+	const answersNotYetFolded = (decisionThreads ?? []).filter(
+		(t) =>
+			t.root.kind === "QUESTION" &&
+			t.root.status === "RESOLVED" &&
+			aiVersion !== null &&
+			t.root.analysisVersion === aiVersion,
+	).length;
+
 	return (
 		<div className="space-y-5">
-			<div className="flex flex-wrap items-center justify-between gap-3">
-				<p className="editorial-label">Planning &amp; analysis</p>
-				{canEdit ? (
-					<Button
-						variant={aiVersion !== null ? "outline" : "primary"}
-						size="sm"
-						onClick={onGenerate}
-						disabled={isGenerating || generate.isPending}
-					>
-						{isGenerating || generate.isPending ? (
-							<Loader2Icon
-								className="mr-2 size-4 motion-safe:animate-spin"
-								aria-hidden="true"
-							/>
-						) : (
-							<SparklesIcon
-								className="mr-2 size-4"
-								aria-hidden="true"
-							/>
-						)}
-						{canRetry
-							? "Try again"
-							: aiVersion !== null
-								? "Regenerate planning analysis"
-								: "Generate planning analysis"}
-					</Button>
+			{/* Version state and the two controls that change it sit together,
+			    above the fold. They used to be split: Generate pinned here and
+			    the provenance line plus History in a footer BELOW the document
+			    and below the data sections, which on a real analysis is a long
+			    scroll away from the button whose result it describes.
+			    Provenance takes its own line rather than sharing the header
+			    row — it runs to ~140 characters with a model name and a prompt
+			    note, and would wrap badly against the buttons. */}
+			{answersNotYetFolded > 0 ? (
+				<p
+					className="rounded-lg border border-highlight/40 bg-highlight/10 px-3 py-2 text-foreground text-sm"
+					data-testid="analysis-behind-decisions"
+				>
+					{answersNotYetFolded === 1
+						? "1 answer was recorded after this analysis was written"
+						: `${answersNotYetFolded} answers were recorded after this analysis was written`}
+					{canEdit
+						? " — regenerate to fold them in."
+						: " and are not reflected in it yet."}
+				</p>
+			) : null}
+
+			<div className="space-y-2">
+				<div className="flex flex-wrap items-center justify-between gap-3">
+					<p className="editorial-label">Planning &amp; analysis</p>
+					<div className="flex flex-wrap items-center gap-2">
+						{/* Reading history is gated on read access, not edit
+						    access, so it shows for a viewer too — but only
+						    once there is an analysis to have a history of. */}
+						{effective !== null ? (
+							<Button
+								type="button"
+								variant="outline"
+								size="sm"
+								onClick={() => setHistoryOpen(true)}
+							>
+								<HistoryIcon
+									className="mr-2 size-4"
+									aria-hidden="true"
+								/>
+								History
+							</Button>
+						) : null}
+						{canEdit ? (
+							<Button
+								variant={
+									aiVersion !== null ? "outline" : "primary"
+								}
+								size="sm"
+								onClick={onGenerate}
+								disabled={isGenerating || generate.isPending}
+							>
+								{isGenerating || generate.isPending ? (
+									<Loader2Icon
+										className="mr-2 size-4 motion-safe:animate-spin"
+										aria-hidden="true"
+									/>
+								) : (
+									<SparklesIcon
+										className="mr-2 size-4"
+										aria-hidden="true"
+									/>
+								)}
+								{canRetry
+									? "Try again"
+									: aiVersion !== null
+										? "Regenerate planning analysis"
+										: "Generate planning analysis"}
+							</Button>
+						) : null}
+					</div>
+				</div>
+
+				{effective !== null ? (
+					<DocumentProvenance
+						revisionVersion={revisionVersion}
+						aiVersion={aiVersion}
+						author={author}
+						revisionCreatedAt={revisionCreatedAt}
+						aiModel={aiModel}
+						aiPromptSource={aiPromptSource}
+					/>
 				) : null}
 			</div>
 
@@ -543,16 +629,6 @@ export function PlanningAnalysisTab({
 					/>
 
 					{data ? <AnalysisDataSections doc={data} /> : null}
-
-					<DocumentFooter
-						revisionVersion={revisionVersion}
-						aiVersion={aiVersion}
-						author={author}
-						revisionCreatedAt={revisionCreatedAt}
-						aiModel={aiModel}
-						aiPromptSource={aiPromptSource}
-						onOpenHistory={() => setHistoryOpen(true)}
-					/>
 				</div>
 			)}
 
@@ -764,25 +840,29 @@ function Section({
 }
 
 /**
- * Who wrote what is on screen, and how to get at what came before it.
+ * Who wrote what is on screen.
  *
  * The prompt note is the load-bearing part of the provenance: an analysis
  * built from the default body because a bound prompt would not render reads
  * exactly like one built from the bound prompt, so it is the one fact about a
  * run a reader cannot recover from the output itself. It describes the READY
- * analysis on screen, and arrives as two scalars for that reason — a footer
- * that read it off the newest ATTEMPT would go blank the moment a regeneration
+ * analysis on screen, and arrives as two scalars for that reason — a line that
+ * read it off the newest ATTEMPT would go blank the moment a regeneration
  * failed, and FAILED is terminal: the note would be gone until someone
  * retried, on precisely the analysis a reader has most reason to question.
+ *
+ * Rendered in the header beside Generate/Regenerate and History rather than in
+ * a footer under the document: it is a statement about what those two buttons
+ * did and will do, and under a full analysis plus its data sections it sat far
+ * below the fold, describing a button the reader could no longer see.
  */
-function DocumentFooter({
+function DocumentProvenance({
 	revisionVersion,
 	aiVersion,
 	author,
 	revisionCreatedAt,
 	aiModel,
 	aiPromptSource,
-	onOpenHistory,
 }: {
 	revisionVersion: number | null;
 	aiVersion: number | null;
@@ -790,39 +870,27 @@ function DocumentFooter({
 	revisionCreatedAt: string | Date | null;
 	aiModel: string | null;
 	aiPromptSource: string | null;
-	onOpenHistory: () => void;
 }) {
 	const usedDefault =
 		aiPromptSource === "DEFAULT_UNBOUND" ||
 		aiPromptSource === "DEFAULT_RENDER_FAILED";
 
 	return (
-		<div className="flex flex-wrap items-center justify-between gap-3 border-border border-t pt-3">
-			<p className="text-muted-foreground text-xs">
-				{revisionVersion === null
-					? `Not edited yet — showing analysis version ${aiVersion ?? "—"}`
-					: `Version ${revisionVersion} · edited by ${author?.name?.trim() || UNKNOWN_AUTHOR_LABEL}${
-							revisionCreatedAt
-								? ` · ${formatWhen(revisionCreatedAt)}`
-								: ""
-						}`}
-				{aiModel ? ` · ${aiModel}` : ""}
-				{usedDefault
-					? aiPromptSource === "DEFAULT_RENDER_FAILED"
-						? " · built from the default prompt (the bound prompt did not render)"
-						: " · built from the default prompt"
-					: ""}
-			</p>
-			<Button
-				type="button"
-				variant="outline"
-				size="sm"
-				onClick={onOpenHistory}
-			>
-				<HistoryIcon className="mr-2 size-4" aria-hidden="true" />
-				History
-			</Button>
-		</div>
+		<p className="text-muted-foreground text-xs">
+			{revisionVersion === null
+				? `Not edited yet — showing analysis version ${aiVersion ?? "—"}`
+				: `Version ${revisionVersion} · edited by ${author?.name?.trim() || UNKNOWN_AUTHOR_LABEL}${
+						revisionCreatedAt
+							? ` · ${formatWhen(revisionCreatedAt)}`
+							: ""
+					}`}
+			{aiModel ? ` · ${aiModel}` : ""}
+			{usedDefault
+				? aiPromptSource === "DEFAULT_RENDER_FAILED"
+					? " · built from the default prompt (the bound prompt did not render)"
+					: " · built from the default prompt"
+				: ""}
+		</p>
 	);
 }
 

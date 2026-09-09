@@ -2,8 +2,8 @@
  * Tests for `summarizeTopicSuggestions` — function-tag role clause splice
  * (Publishing Suite 1B FR2 / Fizzy #1767).
  *
- * `buildTopicSuggestionPrompt()` itself is untouched by FR2; the splice lives
- * in the async activity, between `buildTopicSuggestionPrompt(...)` and the
+ * The prompt composition itself is untouched by FR2; the splice lives in the
+ * async activity, between `composeTopicSuggestionPrompt(...)` and the
  * `generateObject()` call, and is asserted here through the prompt
  * `generateObject` actually receives.
  *
@@ -34,6 +34,10 @@ vi.mock("@repo/ai/lib/function-tag-context", () => ({
 }));
 
 const mockIsCurrentOrgMember = vi.fn();
+// The prompt now comes from the Prompt Library (#1851). Unmocked, the real
+// query runs against no database and the activity never reaches the model.
+// `null` is the unbound case, which is what every assertion here assumes.
+const mockGetBoundPromptForAgent = vi.fn();
 vi.mock("@repo/database", async () => {
 	const actual =
 		await vi.importActual<typeof import("@repo/database")>(
@@ -42,6 +46,8 @@ vi.mock("@repo/database", async () => {
 	return {
 		...actual,
 		isCurrentOrgMember: (...a: unknown[]) => mockIsCurrentOrgMember(...a),
+		getBoundPromptForAgent: (...a: unknown[]) =>
+			mockGetBoundPromptForAgent(...a),
 	};
 });
 
@@ -63,6 +69,8 @@ beforeEach(() => {
 	logModelUsageAsync.mockReset();
 	mockIsCurrentOrgMember.mockReset();
 	mockIsCurrentOrgMember.mockResolvedValue(true);
+	mockGetBoundPromptForAgent.mockReset();
+	mockGetBoundPromptForAgent.mockResolvedValue(null);
 	trackUsage.mockReset();
 	clause.mockReset();
 	// Default to flag-OFF (no clause) so any test that doesn't override this

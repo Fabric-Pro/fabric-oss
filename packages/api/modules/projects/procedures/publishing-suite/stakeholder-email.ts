@@ -32,6 +32,12 @@ import {
 	requireProjectPermission,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
+import {
+	recordEditedWorkingDraft,
+	recordPublishingOutcome,
+	recordSupersededDraft,
+} from "../../lib/publishing-outcome";
+import { readRefinementSource } from "../../lib/publishing-refine-source";
 import { assertPublishingSuiteFeatureEnabled } from "../../lib/publishing-suite-feature";
 import { requireEligibleProjectForTopic } from "../../lib/publishing-topic-project";
 
@@ -72,6 +78,17 @@ export const generateStakeholderEmailProcedure = tenantProtectedProcedure
 			topicId: z.string(),
 			organizationId: z.string().nullable().optional(),
 			guidance: z.string().max(GUIDANCE_MAX).nullable().optional(),
+			/**
+			 * Revise the saved working stakeholder email rather than draft a new one
+			 * from the planning analysis (Fizzy #1851, A7).
+			 *
+			 * A FLAG, not a body. The server reads the text it revises out of
+			 * its own store — see `readRefinementSource` for why a client-
+			 * supplied body would be a different and much worse endpoint.
+			 * `guidance` carries the edit instruction on this path, which is
+			 * what puts it on the attempt row and in the audit trail.
+			 */
+			refineFromWorkingDraft: z.boolean().optional(),
 		}),
 	)
 	.handler(async ({ input, context }) => {
@@ -100,6 +117,21 @@ export const generateStakeholderEmailProcedure = tenantProtectedProcedure
 		// guidance section containing nothing — which reads to the model as an
 		// instruction it failed to understand rather than as no instruction.
 		const guidance = input.guidance?.trim() ? input.guidance.trim() : null;
+
+		// BEFORE the attempt row, for the reason the Temporal check above is
+		// before it: a refine against a topic with nothing saved must fail
+		// having created nothing. Creating the row first and discovering the
+		// missing draft second would leave a GENERATING row holding the partial
+		// unique index, so the button would refuse for ten minutes over a
+		// mistake that cost nothing to detect.
+		const currentDraft = input.refineFromWorkingDraft
+			? await readRefinementSource({
+					topicId: input.topicId,
+					projectId: project.id,
+					postType: "STAKEHOLDER_EMAIL",
+					label: "stakeholder email",
+				})
+			: null;
 
 		const attempt = await startTopicDraftAttempt({
 			topicId: input.topicId,
@@ -157,6 +189,7 @@ export const generateStakeholderEmailProcedure = tenantProtectedProcedure
 							organizationId: project.organizationId ?? null,
 							actorUserId: context.user.id,
 							guidance,
+							currentDraft,
 						},
 					],
 				}),
@@ -199,6 +232,18 @@ export const generateStakeholderEmailProcedure = tenantProtectedProcedure
 				message: "Could not start the stakeholder email",
 			});
 		}
+
+		// Measurement only, after the run is safely started (Fizzy #1851 A9).
+		// A regeneration that passes over a candidate already on screen is a
+		// rejection of it; the helper swallows its own failures, so nothing
+		// here can turn a started run into an error.
+		await recordSupersededDraft({
+			topicId: input.topicId,
+			projectId: project.id,
+			organizationId: project.organizationId,
+			postType: "STAKEHOLDER_EMAIL",
+			userId: context.user.id,
+		});
 
 		return {
 			started: true as const,
@@ -327,6 +372,21 @@ export const adoptStakeholderEmailDraftProcedure = tenantProtectedProcedure
 			});
 		}
 
+		// Measurement only (Fizzy #1851 A9). Adopting is the cleanest
+		// acceptance signal the Suite produces — the body saved IS the text the
+		// model wrote, since this endpoint refuses to take one from the client.
+		await recordPublishingOutcome({
+			outcome: "ACCEPTED_AS_IS",
+			subjectType: "publishing-stakeholder-email",
+			subjectId: candidate.id,
+			userId: context.user.id,
+			organizationId: project.organizationId,
+			projectId: project.id,
+			model: candidate.model,
+			promptId: candidate.promptId,
+			promptVersion: candidate.promptVersion,
+		});
+
 		return { saved: true as const, updatedAt: saved.updatedAt };
 	});
 
@@ -392,6 +452,17 @@ export const saveStakeholderEmailBodyProcedure = tenantProtectedProcedure
 					"The saved stakeholder email changed while you were editing. Refresh and try again.",
 			});
 		}
+
+		// Measurement only (Fizzy #1851 A9). An edit over an adopted candidate
+		// is that candidate's verdict downgraded from "as is" to "with edits" —
+		// the pair of counts that answers "how much revision does this take".
+		await recordEditedWorkingDraft({
+			topicId: input.topicId,
+			projectId: project.id,
+			organizationId: project.organizationId,
+			postType: "STAKEHOLDER_EMAIL",
+			userId: context.user.id,
+		});
 
 		return { saved: true as const, updatedAt: saved.updatedAt };
 	});

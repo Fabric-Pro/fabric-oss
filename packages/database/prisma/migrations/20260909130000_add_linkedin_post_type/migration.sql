@@ -1,0 +1,17 @@
+-- AlterEnum
+-- LinkedIn as a publishing content type (Fizzy #1851).
+--
+-- Its own enum value rather than a re-labelled TWEET: a feed collapses a
+-- LinkedIn post behind "see more" after roughly the first line or two, while X
+-- enforces a hard character limit with no expand, so the two need different
+-- opening structures and therefore different prompts.
+--
+-- ONE migration, and it stays alone. A value added by ALTER TYPE cannot be
+-- referenced in the same transaction that adds it, so anything that had to name
+-- 'LINKEDIN_POST' — a column default, a backfill, a partial index predicate —
+-- would need a second migration after this one. Nothing here does: the value is
+-- only ever written by application code at runtime.
+-- The type is PascalCase: `PublishingTopicPostType` carries no `@@map`, unlike
+-- its `PublishingTopicStatus` neighbour. Created by
+-- 20260716120000_add_publishing_suite_1b_fields.
+ALTER TYPE "PublishingTopicPostType" ADD VALUE IF NOT EXISTS 'LINKEDIN_POST';

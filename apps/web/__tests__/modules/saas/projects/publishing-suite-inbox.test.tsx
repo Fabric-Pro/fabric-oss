@@ -217,6 +217,11 @@ vi.mock("@shared/lib/orpc-query-utils", () => {
 					updateTopicContributors: proc(
 						"projects.publishingSuite.updateTopicContributors",
 					),
+					// A8: the assignee write, constructed UNCONDITIONALLY by
+					// the component. Same obligation as every entry above.
+					updateTopicAssignees: proc(
+						"projects.publishingSuite.updateTopicAssignees",
+					),
 				},
 				// Task 6: the contributors picker's member list. Same
 				// obligation as listCycles/cycleChatDeliveries above.
@@ -230,6 +235,13 @@ vi.mock("@shared/lib/orpc-query-utils", () => {
 
 vi.mock("@shared/lib/orpc-client", () => ({ orpcClient: {} }));
 
+// The threshold itself, not a copy of its current value: tuning it (it is an
+// explicit first guess) must not turn these cases red for a reason that has
+// nothing to do with what they assert.
+import {
+	AGING_AFTER_DAYS,
+	STALE_AFTER_DAYS,
+} from "@repo/database/src/publishing-inbox";
 // Imported AFTER the mocks, matching the existing suite: the component is
 // pulled from the module barrel, not a deep path.
 import { PublishingSuiteList } from "@saas/projects/components/publishing-suite";
@@ -245,8 +257,16 @@ function makeTopic(overrides: Record<string, unknown> = {}) {
 		declineReason: null,
 		publishedUrl: null,
 		createdById: null,
-		createdAt: new Date("2026-08-01T00:00:00Z"),
-		updatedAt: new Date("2026-08-01T00:00:00Z"),
+		// RELATIVE, for the reason `daysAgo` below is documented at length —
+		// and this default is where that rule had not yet been applied. A
+		// literal date drifts past the staleness threshold as real time
+		// passes, and while stale only meant "sunk and muted" the drift was
+		// survivable: the row still rendered, so the tests still found it.
+		// Archiving REMOVES the row, so the same literal silently emptied the
+		// Suggested section and took 23 unrelated cases with it. Two days is
+		// unambiguously inside every threshold.
+		createdAt: daysAgo(3),
+		updatedAt: daysAgo(2),
 		snoozedUntil: null,
 		snoozeReason: null,
 		isSnoozed: false,
@@ -259,10 +279,33 @@ function makeTopic(overrides: Record<string, unknown> = {}) {
 		subject: null,
 		userPostTypes: null,
 		userContributorUserIds: null,
+		// A8: assignees are always present on the wire — the query layer
+		// resolves them from the same lookup as contributors, so a fixture
+		// omitting them is a topic shape the API never returns.
+		assigneeUserIds: [] as string[],
+		assignees: [] as Array<{
+			id: string;
+			name: string;
+			image: string | null;
+			username: string | null;
+		}>,
 		whySuggested: null,
 		meetingSpeakers: null,
 		...overrides,
 	};
+}
+
+/**
+ * A timestamp `n` days before the moment the test runs.
+ *
+ * Every age- and staleness-sensitive fixture in this file is built from this
+ * rather than from a literal date. A literal is a time bomb: the staleness
+ * threshold is measured against the real clock, so a fixed date that reads as
+ * fresh today reads as stale a month from now, and the test that depended on
+ * it fails for a reason that has nothing to do with the code.
+ */
+function daysAgo(n: number): Date {
+	return new Date(Date.now() - n * 24 * 60 * 60 * 1000);
 }
 
 function renderList() {
@@ -834,22 +877,38 @@ describe("inbox sections", () => {
 	// incoming order untouched and slipped past this control — it only caught
 	// a `createdAt` sort. A fixture where any of the three agree passes under
 	// more implementations and proves less.
+	//
+	// The four dates are RELATIVE where they used to be fixed strings. Stale
+	// suggestions now sink to the bottom of Suggested (PO-approved), and ANY
+	// fixed date eventually drifts past the staleness threshold as real time
+	// passes — which would sink `tier1` and quietly turn this control into a
+	// test of the sink instead of a test of tier order. Both topics are
+	// deliberately days rather than months old so both stay FRESH, and the
+	// three-way disagreement the paragraph above depends on is preserved:
+	// `tier1` is still both the older-created and the less-recently-updated.
+	//
+	// `tier1`'s update is 8 days back rather than the 10 it was written with:
+	// graduated staleness added an earlier threshold, and 10 is now exactly
+	// ON it (the boundary is inclusive), which would badge this fixture aging
+	// and falsify the paragraph above. Aging does not sink, so the assertion
+	// would still have passed — for the wrong reason, on a row the comment
+	// claims is fresh.
 	it("preserves the incoming tier order in Suggested", () => {
 		state.topics = [
 			makeTopic({
 				id: "tier1",
 				title: "Contributed but old",
 				status: "SUGGESTION",
-				createdAt: new Date("2026-07-01T00:00:00Z"),
-				updatedAt: new Date("2026-07-05T00:00:00Z"),
+				createdAt: daysAgo(20),
+				updatedAt: daysAgo(8),
 				rankReason: { kind: "contributed" },
 			}),
 			makeTopic({
 				id: "tier3",
 				title: "Newer but unranked",
 				status: "SUGGESTION",
-				createdAt: new Date("2026-08-20T00:00:00Z"),
-				updatedAt: new Date("2026-08-25T00:00:00Z"),
+				createdAt: daysAgo(5),
+				updatedAt: daysAgo(2),
 			}),
 		];
 		renderList();
@@ -1029,6 +1088,455 @@ describe("optimistic overlay reconciliation", () => {
 		// unread — but the row must already read as read.
 		expect(
 			screen.getByRole("button", { name: /mark as unread/i }),
+		).toBeInTheDocument();
+	});
+});
+
+// ---------------------------------------------------------------------------
+// #1851 slice B: age, staleness, the collapsed rank reason, and search.
+// ---------------------------------------------------------------------------
+
+describe("topic age", () => {
+	it("shows how long ago the row was last touched, without expanding it", () => {
+		state.topics = [makeTopic({ updatedAt: daysAgo(3) })];
+		renderList();
+		expect(screen.getByText("3 days ago")).toBeInTheDocument();
+	});
+
+	// The relative text is the readable half; `dateTime` is the exact instant,
+	// and it is what a machine (or an assistive technology reading the value)
+	// gets. Without it the precise timestamp would be hover-only.
+	it("carries the exact timestamp in the time element", () => {
+		const updatedAt = daysAgo(3);
+		state.topics = [makeTopic({ updatedAt })];
+		const { container } = renderList();
+		expect(container.querySelector("time")).toHaveAttribute(
+			"dateTime",
+			updatedAt.toISOString(),
+		);
+	});
+
+	// The `updatedAt ?? createdAt` fallback, which is a real path rather than
+	// ceremony: a row can reach this component with no usable `updatedAt`, and
+	// when it does, when the topic was created is still the honest answer to
+	// "how old is this".
+	it("falls back to the creation date when there is no update timestamp", () => {
+		const createdAt = daysAgo(6);
+		state.topics = [makeTopic({ createdAt, updatedAt: undefined })];
+		const { container } = renderList();
+		expect(container.querySelector("time")).toHaveAttribute(
+			"dateTime",
+			createdAt.toISOString(),
+		);
+		expect(screen.getByText("6 days ago")).toBeInTheDocument();
+	});
+
+	// NEGATIVE CONTROL, and the case that took every row down before the guard
+	// existed: the age markup is built EAGERLY, so an unusable timestamp threw
+	// out of `toISOString()` during render — not one missing line, the whole
+	// tab. With no usable timestamp at all the row must still render, minus
+	// its age.
+	it("renders the row without an age when no timestamp is usable", () => {
+		state.topics = [
+			makeTopic({
+				title: "No timestamp",
+				createdAt: undefined,
+				updatedAt: undefined,
+			}),
+		];
+		const { container } = renderList();
+		expect(screen.getByText("No timestamp")).toBeInTheDocument();
+		expect(container.querySelector("time")).toBeNull();
+	});
+});
+
+describe("neglected suggestions", () => {
+	/**
+	 * The neglect badge, found by its word and read back whole.
+	 *
+	 * The day count and the word are separate elements — the number is the
+	 * message and carries its own weight — and `getByText` only ever sees an
+	 * element's DIRECT text nodes, so no single query matches the phrase.
+	 * Finding the word and reading its badge back asserts both halves AND
+	 * that they belong to the same badge, which two independent queries
+	 * would not.
+	 */
+	const badgeFor = (word: "quiet" | "stale") =>
+		screen.getByText(new RegExp(`days ${word}$`)).parentElement;
+
+	/** Switch to the Archived filter chip, where archived topics live. */
+	const showArchived = async () =>
+		await userEvent.click(screen.getByRole("button", { name: "Archived" }));
+
+	// Reached through the chip, because a stale topic is no longer IN
+	// Suggested — it has been archived out of it. The badge is what explains
+	// why it is here rather than there.
+	it("badges a suggestion nobody has touched since the stale threshold", async () => {
+		const age = STALE_AFTER_DAYS + 15;
+		state.topics = [
+			makeTopic({ status: "SUGGESTION", updatedAt: daysAgo(age) }),
+		];
+		renderList();
+		await showArchived();
+		expect(badgeFor("stale")).toHaveTextContent(`${age} days stale`);
+	});
+
+	// The earlier tier, and the assertion that makes staleness GRADUATED
+	// rather than binary: this row used to carry nothing at all. The two tiers
+	// are told apart in WORDS, so stripping every colour from the page still
+	// distinguishes them (WCAG 2.1 AA) — which is also why this asserts on the
+	// text rather than on the tint.
+	it("badges a suggestion past the aging threshold as quiet, not stale", () => {
+		const age = STALE_AFTER_DAYS - 5;
+		state.topics = [
+			makeTopic({ status: "SUGGESTION", updatedAt: daysAgo(age) }),
+		];
+		renderList();
+		expect(badgeFor("quiet")).toHaveTextContent(`${age} days quiet`);
+		expect(screen.queryByText(/days stale$/)).not.toBeInTheDocument();
+	});
+
+	// NEGATIVE CONTROL. A badge every suggestion carries says nothing; this is
+	// what makes the two cases above mean "past a threshold" rather than "is a
+	// suggestion".
+	it("leaves a suggestion inside the aging threshold unbadged", () => {
+		state.topics = [
+			makeTopic({
+				status: "SUGGESTION",
+				updatedAt: daysAgo(AGING_AFTER_DAYS - 1),
+			}),
+		];
+		renderList();
+		expect(
+			screen.queryByText(/days (quiet|stale)$/),
+		).not.toBeInTheDocument();
+	});
+
+	// Only STALE leaves. An aging row is de-emphasised where it stands, so it
+	// is interleaved here between the fresh ones: an implementation that
+	// treated each tier in turn would move `Aging middle` and fail this.
+	it("archives stale suggestions out of Suggested without moving aging ones", () => {
+		const stale = daysAgo(STALE_AFTER_DAYS + 10);
+		const aging = daysAgo(AGING_AFTER_DAYS + 2);
+		const fresh = daysAgo(2);
+		state.topics = [
+			makeTopic({ id: "f1", title: "Fresh first", updatedAt: fresh }),
+			makeTopic({ id: "s1", title: "Stale first", updatedAt: stale }),
+			makeTopic({ id: "a1", title: "Aging middle", updatedAt: aging }),
+			makeTopic({ id: "f2", title: "Fresh second", updatedAt: fresh }),
+			makeTopic({ id: "s2", title: "Stale second", updatedAt: stale }),
+		];
+		renderList();
+		const suggested = screen.getByRole("region", { name: /suggested/i });
+		const titles = within(suggested)
+			.getAllByRole("link")
+			.map((a) => a.textContent);
+		expect(titles).toEqual(["Fresh first", "Aging middle", "Fresh second"]);
+	});
+
+	// The list must SAY what it removed. A queue that quietly shrinks is the
+	// one nobody trusts — and the count has to be the number of topics that
+	// actually left, not a plausible-looking one.
+	it("accounts for what it archived, in a count that matches", () => {
+		const stale = daysAgo(STALE_AFTER_DAYS + 10);
+		state.topics = [
+			makeTopic({ id: "f1", title: "Fresh", updatedAt: daysAgo(2) }),
+			makeTopic({ id: "s1", title: "Gone one", updatedAt: stale }),
+			makeTopic({ id: "s2", title: "Gone two", updatedAt: stale }),
+		];
+		renderList();
+		expect(
+			screen.getByText(
+				`2 topics archived after ${STALE_AFTER_DAYS} days without activity`,
+			),
+		).toBeInTheDocument();
+	});
+
+	// NEGATIVE CONTROL for that notice: a list with nothing archived must not
+	// announce an archive at all.
+	it("says nothing about archiving when nothing was archived", () => {
+		state.topics = [makeTopic({ updatedAt: daysAgo(2) })];
+		renderList();
+		expect(screen.queryByText(/archived after/)).not.toBeInTheDocument();
+	});
+
+	// De-cluttered, NEVER deleted. This is the whole reversibility claim: the
+	// topic left Suggested but is one click away, with its status untouched.
+	it("keeps every archived topic reachable through the Archived chip", async () => {
+		state.topics = [
+			makeTopic({
+				id: "s1",
+				title: "Long forgotten",
+				updatedAt: daysAgo(STALE_AFTER_DAYS + 60),
+			}),
+		];
+		renderList();
+		expect(screen.queryByText("Long forgotten")).not.toBeInTheDocument();
+
+		await showArchived();
+		expect(screen.getByText("Long forgotten")).toBeInTheDocument();
+	});
+
+	// The footer's own button, rather than the chip: it is the affordance a
+	// reader actually meets, right where the topics went missing.
+	it("reveals the archived topics from the notice itself", async () => {
+		state.topics = [
+			makeTopic({
+				id: "s1",
+				title: "Long forgotten",
+				updatedAt: daysAgo(STALE_AFTER_DAYS + 60),
+			}),
+		];
+		renderList();
+		await userEvent.click(
+			screen.getByRole("button", { name: "Show archived" }),
+		);
+		expect(screen.getByText("Long forgotten")).toBeInTheDocument();
+	});
+
+	// FR8/UC5. A snoozed topic is parked deliberately, and the archive must
+	// never take one — its `updatedAt` here is far past the threshold, and the
+	// only thing keeping it safe is that a snooze counts as activity.
+	it("never archives a snoozed topic, however old its last edit", async () => {
+		state.topics = [
+			makeTopic({
+				id: "z1",
+				title: "Parked on purpose",
+				isSnoozed: true,
+				updatedAt: daysAgo(STALE_AFTER_DAYS + 60),
+				snoozedUntil: new Date(Date.now() + 60 * 24 * 60 * 60 * 1000),
+			}),
+		];
+		renderList();
+		expect(screen.queryByText(/archived after/)).not.toBeInTheDocument();
+
+		await showArchived();
+		expect(screen.queryByText("Parked on purpose")).not.toBeInTheDocument();
+	});
+
+	// The wire hands `snoozedUntil` over as a STRING, and the list normalizes
+	// it alongside `updatedAt`. Worth its own case because dropping that
+	// normalization fails silently rather than throwing: an unparsed string
+	// loses every comparison, so the snooze stops counting as activity and
+	// this topic — parked deliberately, ancient by `updatedAt` — is archived
+	// away. Exactly the FR8 breach the property exists to prevent, arriving
+	// through a type rather than through logic.
+	it("honours a snooze that arrives from the wire as a string", async () => {
+		const until = new Date(Date.now() + 60 * 24 * 60 * 60 * 1000);
+		state.topics = [
+			makeTopic({
+				id: "z2",
+				title: "Parked, from the wire",
+				isSnoozed: true,
+				updatedAt: daysAgo(STALE_AFTER_DAYS + 60),
+				snoozedUntil: until.toISOString() as unknown as Date,
+			}),
+		];
+		renderList();
+		expect(screen.queryByText(/archived after/)).not.toBeInTheDocument();
+
+		await showArchived();
+		expect(
+			screen.queryByText("Parked, from the wire"),
+		).not.toBeInTheDocument();
+	});
+
+	// The other half of FR8, and the case a threshold on `updatedAt` alone
+	// gets exactly wrong: three months is the longest snooze preset, so a
+	// topic coming back is routinely older than the archive threshold. It has
+	// to return VISIBLE — "no topic is permanently lost due to snoozing".
+	it("shows a topic returning from snooze, however far past the threshold it is", () => {
+		state.topics = [
+			makeTopic({
+				id: "r1",
+				title: "Back from a long snooze",
+				isSnoozed: false,
+				createdAt: daysAgo(200),
+				updatedAt: daysAgo(95),
+				snoozedUntil: daysAgo(1),
+			}),
+		];
+		renderList();
+		const suggested = screen.getByRole("region", { name: /suggested/i });
+		expect(
+			within(suggested).getByText("Back from a long snooze"),
+		).toBeInTheDocument();
+		expect(screen.queryByText(/archived after/)).not.toBeInTheDocument();
+		expect(
+			screen.queryByText(/days (quiet|stale)$/),
+		).not.toBeInTheDocument();
+	});
+
+	// NEGATIVE CONTROL for the OTHER section. Neglect is about a suggestion
+	// nobody acted on; a topic someone picked up and then left is a different
+	// thing, and Recently Modified is explicitly out of scope for this change.
+	it("never badges or reorders a topic outside Suggested", () => {
+		state.topics = [
+			makeTopic({
+				id: "p1",
+				title: "Picked up, then quiet",
+				status: "IN_PROGRESS",
+				updatedAt: daysAgo(STALE_AFTER_DAYS + 40),
+			}),
+		];
+		renderList();
+		const recent = screen.getByRole("region", {
+			name: /recently modified/i,
+		});
+		expect(
+			within(recent).getByText("Picked up, then quiet"),
+		).toBeInTheDocument();
+		expect(
+			screen.queryByText(/days (quiet|stale)$/),
+		).not.toBeInTheDocument();
+	});
+});
+
+describe("rank reason on the collapsed row", () => {
+	it("says why a topic ranked here before anyone expands it", () => {
+		state.topics = [makeTopic({ rankReason: { kind: "contributed" } })];
+		renderList();
+		expect(
+			screen.getByText("Based on your contribution"),
+		).toBeInTheDocument();
+	});
+
+	it("renders the role-match reason with every matched tag", () => {
+		state.topics = [
+			makeTopic({
+				rankReason: {
+					kind: "role",
+					matchedTags: ["DEVELOPER", "ARCHITECT"],
+				},
+			}),
+		];
+		renderList();
+		expect(
+			screen.getByText("Matches your role: Developer, Architect"),
+		).toBeInTheDocument();
+	});
+
+	// NEGATIVE CONTROL for the lift. The line moved OUT of the expanded region
+	// into the summary column; leaving it in both is the obvious way to get
+	// this wrong, and it renders the same sentence twice the moment a row is
+	// opened — invisible in a test that only asserts it is present.
+	it("renders the reason exactly once when the row is expanded", async () => {
+		const user = userEvent.setup();
+		state.topics = [makeTopic({ rankReason: { kind: "contributed" } })];
+		renderList();
+		await user.click(screen.getByTestId("topic-disclosure"));
+		expect(screen.getAllByText("Based on your contribution")).toHaveLength(
+			1,
+		);
+	});
+
+	it("renders no reason line for an unranked topic", () => {
+		state.topics = [makeTopic({ rankReason: null })];
+		renderList();
+		expect(
+			screen.queryByText(
+				/^(Based on your contribution|Matches your role)/,
+			),
+		).not.toBeInTheDocument();
+	});
+});
+
+describe("search", () => {
+	const searchBox = () =>
+		screen.getByRole("searchbox", { name: /search topics/i });
+
+	it("filters the list to matching titles", async () => {
+		const user = userEvent.setup();
+		state.topics = [
+			makeTopic({ id: "a", title: "Shipping the new inbox" }),
+			makeTopic({ id: "b", title: "Migrating the database" }),
+		];
+		renderList();
+		await user.type(searchBox(), "inbox");
+		expect(screen.getByText("Shipping the new inbox")).toBeInTheDocument();
+		expect(
+			screen.queryByText("Migrating the database"),
+		).not.toBeInTheDocument();
+	});
+
+	it("matches the pitch and the angle too, ignoring case", async () => {
+		const user = userEvent.setup();
+		state.topics = [
+			makeTopic({
+				id: "a",
+				title: "Untitled",
+				pitch: "How we cut latency in half",
+			}),
+			makeTopic({
+				id: "b",
+				title: "Nameless",
+				pitch: null,
+				angle: "Developer experience",
+			}),
+			makeTopic({ id: "c", title: "Unrelated", pitch: null }),
+		];
+		renderList();
+
+		await user.type(searchBox(), "LATENCY");
+		expect(screen.getByText("Untitled")).toBeInTheDocument();
+		expect(screen.queryByText("Unrelated")).not.toBeInTheDocument();
+
+		await user.clear(searchBox());
+		await user.type(searchBox(), "developer experience");
+		expect(screen.getByText("Nameless")).toBeInTheDocument();
+		expect(screen.queryByText("Unrelated")).not.toBeInTheDocument();
+	});
+
+	// A search is a question that overrides "what should I look at next", so
+	// it answers with one flat list — the same thing picking a status chip
+	// does — rather than scattering hits across two sections.
+	it("replaces the Inbox sections with a flat list of hits", async () => {
+		const user = userEvent.setup();
+		state.topics = [makeTopic({ id: "a", title: "Shipping the inbox" })];
+		renderList();
+		expect(
+			screen.getByRole("region", { name: /suggested/i }),
+		).toBeInTheDocument();
+
+		await user.type(searchBox(), "inbox");
+		expect(
+			screen.queryByRole("region", { name: /suggested/i }),
+		).not.toBeInTheDocument();
+		expect(
+			screen.queryByRole("region", { name: /recently modified/i }),
+		).not.toBeInTheDocument();
+		expect(screen.getByText("Shipping the inbox")).toBeInTheDocument();
+	});
+
+	// Search deliberately spans EVERY status, including the two the Inbox
+	// sections exclude. A topic you declined last month and half remember is
+	// exactly what search is reached for, and it is otherwise only findable by
+	// knowing which chip to press.
+	it("finds a topic neither Inbox section shows", async () => {
+		const user = userEvent.setup();
+		state.topics = [
+			makeTopic({
+				id: "d",
+				title: "Declined last month",
+				status: "DECLINED",
+			}),
+		];
+		renderList();
+		expect(
+			screen.queryByText("Declined last month"),
+		).not.toBeInTheDocument();
+
+		await user.type(searchBox(), "declined last");
+		expect(screen.getByText("Declined last month")).toBeInTheDocument();
+	});
+
+	it("names the term that found nothing", async () => {
+		const user = userEvent.setup();
+		state.topics = [makeTopic({ id: "a", title: "Shipping the inbox" })];
+		renderList();
+		await user.type(searchBox(), "kubernetes");
+		expect(
+			screen.getByText(/No topics match .*kubernetes/),
 		).toBeInTheDocument();
 	});
 });

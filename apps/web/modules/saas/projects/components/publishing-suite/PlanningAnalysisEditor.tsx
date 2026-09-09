@@ -25,8 +25,25 @@
  *      raw→rich view transition, where the user has asked to see the text
  *      rendered. Running it on save would silently rewrite a hand-edit the
  *      moment the author typed it.
+ *
+ * For someone who can edit, the region owns its own height
+ * (`EDITOR_REGION_HEIGHT_CLASS`), which is what makes the two view modes
+ * interchangeable rather than merely alternative. They render structurally
+ * different children — a content-driven `EditorContent` and a fixed-minimum
+ * `Textarea` — and the toolbar exists in only one of them, so a wrapper that
+ * took its height from its children resized the whole tab on every toggle: a
+ * short analysis grew, a long one collapsed into an internal scroller. Owning
+ * the height is also what gives `DocumentTocRail` something to stick to; the
+ * rail is `h-full` against a scroll container, and this surface has no
+ * page-level one (the same shape `StoryWorkspace` and `DocumentEditor` dock
+ * their rails inside).
+ *
+ * A read-only viewer gets neither the toggle nor the toolbar, so it gets
+ * neither the jump nor the height — see `EDITOR_REGION_HEIGHT_CLASS` for why
+ * the rail is fine without it.
  */
 
+import { DocumentTocRail } from "@saas/projects/components/DocumentTocRail";
 import { EditorToolbar } from "@saas/projects/components/EditorToolbar";
 import {
 	fromMarkdown,
@@ -39,6 +56,7 @@ import { useMutation } from "@tanstack/react-query";
 import { EditorContent, useEditor } from "@tiptap/react";
 import { Button } from "@ui/components/button";
 import { Textarea } from "@ui/components/textarea";
+import { cn } from "@ui/lib";
 import {
 	AlertTriangleIcon,
 	Code2Icon,
@@ -56,6 +74,42 @@ const STALE_SOURCE_MESSAGE =
 	"That analysis version is no longer available. Refresh and try again.";
 const GENERIC_SAVE_FAILURE_MESSAGE =
 	"Could not save the planning analysis. Refresh and try again.";
+
+const EDITOR_REGION_CLASS =
+	"flex flex-col overflow-hidden rounded-lg border border-border bg-card";
+
+/**
+ * The height the region holds in both view modes — FOR AN EDITOR ONLY.
+ *
+ * A definite length rather than a min/max pair: `DocumentTocRail` resolves
+ * `h-full` against this box, and a percentage against an auto height is not a
+ * height. Clamped rather than fixed so the region tracks the viewport without
+ * becoming unusable on a short one (24rem floor) or absurd on a tall one.
+ *
+ * Both reasons for the floor are an editor's: it stops the box jumping as the
+ * rich/raw toggle swaps a toolbar and a content-driven `EditorContent` for a
+ * `Textarea`, and it gives the rail a definite height to dock against. A
+ * read-only viewer has neither toggle nor toolbar, so there is no jump to
+ * prevent — the floor only buys them a tall, mostly-empty box for a problem
+ * they cannot trigger. They size to content instead.
+ *
+ * The rail SURVIVES that, and keeps working, for three reasons worth stating
+ * because "a rail with nothing to stick to" is exactly what the floor was
+ * protecting. `DocumentTocPanel` renders nothing at all when the document has
+ * no headings, so the degenerate case cannot arise; when it does render it is
+ * a stretch-aligned flex item, so it takes the row's height rather than
+ * asking for one; and its own min-content height (icon, caption, chevron)
+ * sets a floor under the row instead of needing one above it — the spine is
+ * already built to clip its caption on a short rail rather than break.
+ */
+const EDITOR_REGION_HEIGHT_CLASS = "h-[clamp(24rem,60vh,44rem)]";
+
+/**
+ * The reading measure. 3xl is the cap the topic page already uses for prose
+ * (`TopicItemPage`'s pitch paragraph); the analysis rendered full-bleed before
+ * this, at line lengths no one reads comfortably.
+ */
+const PROSE_MEASURE_CLASS = "mx-auto w-full max-w-3xl";
 
 interface SaveAnalysisRevisionResult {
 	saved: true;
@@ -104,7 +158,17 @@ export function PlanningAnalysisEditor({
 		editable: canEdit,
 		immediatelyRender: false,
 		editorProps: {
-			attributes: { class: "p-4 tiptap" },
+			// `min-h-full` is what keeps the contenteditable as tall as the
+			// region now that the region owns a height instead of hugging its
+			// content. Without it a three-line analysis leaves most of the box
+			// as dead space — a click there lands on the scroll container, not
+			// the editor, so there is no caret. Measured in a browser: 82px of
+			// editable inside a 488px box before, the full 488px after. The
+			// percentage resolves only because every ancestor up to the region
+			// carries a height (see the wrapper and `EditorContent` below);
+			// `StoryWorkspace` solves the same problem with a pixel floor,
+			// which would go back to being wrong at the top of the clamp.
+			attributes: { class: "min-h-full p-4 tiptap" },
 		},
 	});
 
@@ -236,25 +300,68 @@ export function PlanningAnalysisEditor({
 				</div>
 			) : null}
 
-			{viewMode === "rich" && canEdit ? (
-				<EditorToolbar editor={editor} />
-			) : null}
-
-			<div className="rounded-lg border border-border bg-card">
-				{viewMode === "rich" ? (
-					<EditorContent
-						editor={editor}
-						className="prose prose-sm max-w-none p-4 dark:prose-invert"
-					/>
-				) : (
-					<Textarea
-						value={rawContent}
-						onChange={(e) => setRawContent(e.target.value)}
-						disabled={!canEdit}
-						className="min-h-[300px] w-full resize-none border-0 font-mono text-sm"
-						placeholder="Planning analysis in markdown format..."
-					/>
+			{/* The toolbar lives INSIDE the height-owning region, not above
+			    it. Raw mode has no toolbar, and while it sat outside, its
+			    disappearance moved everything below it — the third
+			    contributor to the toggle jump. Inside, its presence only
+			    changes how the region's fixed height is divided. */}
+			<div
+				className={cn(
+					EDITOR_REGION_CLASS,
+					canEdit && EDITOR_REGION_HEIGHT_CLASS,
 				)}
+				// The height is the contract, and jsdom has no layout engine
+				// to measure it with — only the rule that produces one. This
+				// handle is how the toggle-stability test reads that rule off
+				// the same element in both modes.
+				data-testid="planning-analysis-editor-region"
+			>
+				{viewMode === "rich" && canEdit ? (
+					<EditorToolbar editor={editor} />
+				) : null}
+
+				<div className="flex min-h-0 flex-1 overflow-hidden">
+					{/* Hidden in raw mode, exactly as `StoryWorkspace` hides
+					    it: the Textarea has no heading DOM to navigate. */}
+					{viewMode === "rich" ? (
+						<DocumentTocRail editor={editor} />
+					) : null}
+
+					{viewMode === "rich" ? (
+						<div className="min-h-0 flex-1 overflow-y-auto">
+							{/* The measure is a wrapper rather than a class on
+							    `EditorContent`: `prose` carries its own
+							    max-width, and `max-w-none` beside a cap on the
+							    same element is a coin toss over which wins.
+							    Both links carry `h-full` so the editor's own
+							    `min-h-full` has a definite height to resolve
+							    against — break either one and the click target
+							    shrinks back to the text. Content taller than
+							    the box overflows them and the scroll container
+							    above scrolls it, as before. */}
+							<div className={`${PROSE_MEASURE_CLASS} h-full`}>
+								<EditorContent
+									editor={editor}
+									className="prose prose-sm h-full max-w-none dark:prose-invert"
+								/>
+							</div>
+						</div>
+					) : (
+						<div className="min-h-0 flex-1 overflow-hidden p-4">
+							<div className={`${PROSE_MEASURE_CLASS} h-full`}>
+								<Textarea
+									value={rawContent}
+									onChange={(e) =>
+										setRawContent(e.target.value)
+									}
+									disabled={!canEdit}
+									className="h-full w-full resize-none border-0 bg-transparent font-mono text-sm"
+									placeholder="Planning analysis in markdown format..."
+								/>
+							</div>
+						</div>
+					)}
+				</div>
 			</div>
 
 			{saveError ? (

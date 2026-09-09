@@ -86,6 +86,17 @@ export interface GeneratePublishingStakeholderEmailWorkflowInput {
 	organizationId: string | null;
 	actorUserId: string;
 	guidance: string | null;
+	/**
+	 * The topic's saved working stakeholder email when this run REFINES it rather than
+	 * drafting fresh (Fizzy #1851, A7).
+	 *
+	 * OPTIONAL, and passed straight through with no branch around it. A history
+	 * recorded before this field existed replays with it absent, which the
+	 * activity reads as an ordinary generation — and because nothing here
+	 * BRANCHES on it, the command sequence is identical either way and replay
+	 * cannot see the difference.
+	 */
+	currentDraft?: string | null;
 }
 
 export interface GeneratePublishingStakeholderEmailWorkflowOutput {
@@ -105,6 +116,7 @@ export async function generatePublishingStakeholderEmailWorkflow(
 			organizationId: input.organizationId,
 			actorUserId: input.actorUserId,
 			guidance: input.guidance,
+			currentDraft: input.currentDraft ?? null,
 		});
 
 		// A non-READY status is a normal outcome, not a failure. The write was

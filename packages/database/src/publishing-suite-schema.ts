@@ -39,9 +39,16 @@ export const TopicProvenanceSchema = z.object({
 });
 export type TopicProvenance = z.infer<typeof TopicProvenanceSchema>;
 
-/** The four human-readable post-type labels the LLM emits (whitelisted, fail-closed). */
+/**
+ * The human-readable post-type labels the LLM emits (whitelisted, fail-closed).
+ *
+ * Order matches `PUBLISHING_POST_TYPE_OPTIONS` element for element, which
+ * `publishing-post-types.test.ts` asserts — so LinkedIn sits beside Tweet here
+ * too even though the Prisma enum appends it.
+ */
 export const POST_TYPE_LABELS = [
 	"Tweet",
+	"LinkedIn Post",
 	"Blog Post",
 	"Case Study",
 	"Stakeholder Email",
@@ -52,12 +59,13 @@ export type PostTypeLabel = (typeof POST_TYPE_LABELS)[number];
 // CLIENT-SAFE module the settings form deep-imports, so the value vocabulary
 // has exactly one definition. `POST_TYPE_LABELS` above stays here: it is the
 // vocabulary the LLM EMITS and is whitelisted fail-closed, which is a
-// different job that happens to use the same four words. The two are pinned
+// different job that happens to use the same words. The two are pinned
 // against each other by `publishing-post-types.test.ts`.
 
 const POST_TYPE_LABEL_TO_ENUM: Record<PostTypeLabel, PublishingTopicPostType> =
 	{
 		Tweet: PublishingTopicPostType.TWEET,
+		"LinkedIn Post": PublishingTopicPostType.LINKEDIN_POST,
 		"Blog Post": PublishingTopicPostType.BLOG_POST,
 		"Case Study": PublishingTopicPostType.CASE_STUDY,
 		"Stakeholder Email": PublishingTopicPostType.STAKEHOLDER_EMAIL,
