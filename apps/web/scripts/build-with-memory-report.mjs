@@ -111,9 +111,27 @@ const sampler = setInterval(() => {
 }, SAMPLE_MS);
 sampler.unref();
 
+// Carry the build's heap cap into the ENVIRONMENT as well as argv.
+//
+// Since Next 16.3 the TypeScript phase runs in a CHILD of `next build`, and a
+// child inherits the environment but not its parent's argv — so a bare
+// `--max-old-space-size` flag stops applying to the one phase that needs it.
+// The symptom is a build that compiles fine and then dies at ~4 GB, Node's
+// default, with a much larger cap nominally granted.
+//
+// The value is read back off the command rather than hardcoded, so this stays
+// correct if the caller's cap changes, and an existing NODE_OPTIONS is
+// respected rather than clobbered — the Docker build sets its own, larger one.
+const heapFlag = command.find((arg) => arg.startsWith("--max-old-space-size="));
+const childEnv = { ...process.env };
+if (heapFlag && !(childEnv.NODE_OPTIONS ?? "").includes("max-old-space-size")) {
+	childEnv.NODE_OPTIONS = `${childEnv.NODE_OPTIONS ?? ""} ${heapFlag}`.trim();
+}
+
 const child = spawn(command[0], command.slice(1), {
 	stdio: "inherit",
 	shell: false,
+	env: childEnv,
 });
 
 function report() {

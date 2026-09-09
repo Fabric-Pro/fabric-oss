@@ -146,7 +146,21 @@ ENV DOCKER_BUILD=true
 # ("Compiled successfully in 77s") and then exhausts the heap in the phase after,
 # now that the workspace closure actually resolves.
 RUN pnpm --filter "web^..." build
-RUN cd apps/web && node --max-old-space-size=12288 ./node_modules/next/dist/bin/next build
+#
+# NODE_OPTIONS rather than an argv flag, since Next 16.3. The flag below used to
+# be enough because the TypeScript phase ran inside this process; 16.3 runs it in
+# a CHILD, which inherits the environment but not the parent's argv. So the cap
+# silently stopped applying to the one phase that needs it: the build compiled
+# fine in 2.4 min and then died at 4,034 MB — Node's default heap — with 12 GB
+# nominally granted. Both forms are kept: the env var is what reaches the type
+# checker, the flag keeps the parent's own cap explicit at the call site.
+#
+# Scoped to this RUN instead of an ENV line on purpose. `pnpm --filter "web^..."
+# build` above runs the shared build script, which caps the old space at 6144 on
+# purpose because Vercel runs it too and raising it there trades a V8 heap error
+# for the container OOM-killing the process. A Dockerfile-wide ENV would raise it
+# for that step as well.
+RUN cd apps/web && NODE_OPTIONS=--max-old-space-size=12288 node --max-old-space-size=12288 ./node_modules/next/dist/bin/next build
 
 # =============================================================================
 # Stage 3: Production
