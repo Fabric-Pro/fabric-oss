@@ -57,7 +57,7 @@ export const waitlistSignup = publicProcedure
 			// Send notification email to admin about new waitlist signup
 			try {
 				await sendEmail({
-					to: "hello@fabric.pro",
+					to: "support@fabric.pro",
 					subject: "New Waitlist Signup",
 					html: `
 						<h2>New Waitlist Signup</h2>
