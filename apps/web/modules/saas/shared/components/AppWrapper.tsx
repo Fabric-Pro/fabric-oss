@@ -7,6 +7,7 @@ import { GetStartedController } from "@saas/get-started/components/GetStartedCon
 import { AiUsageLimitBanner } from "@saas/payments/components/AiUsageLimitBanner";
 import { TiptapEditorRegistryProvider } from "@saas/projects/components/excalidraw-auto-insert/TiptapEditorRegistry";
 import { AiGatewayWarningBanner } from "@saas/shared/components/AiGatewayWarningBanner";
+import { AnthropicCapabilityBanner } from "@saas/shared/components/AnthropicCapabilityBanner";
 import { NavBar } from "@saas/shared/components/NavBar";
 import { FocusModeProvider } from "@saas/shared/contexts/FocusModeContext";
 import {
@@ -109,15 +110,21 @@ function AppWrapperContent({ children }: PropsWithChildren) {
 								: "px-6",
 						)}
 					>
-						{/* Three advisory banners share this column, and their
+						{/* Four advisory banners share this column, and their
 						 * order is fixed here by the urgency of the block each
 						 * describes — never by whichever component happens to
 						 * sit higher in the markup. With no provider
 						 * configured no user-facing AI runs at all, so that
-						 * notice leads; a usage limit bites only some calls; a
-						 * stale build bites nothing yet. All three can render
-						 * at once (an organization can lose its provider and
-						 * carry a usage breach in the same hour).
+						 * notice leads; a whole capability class being
+						 * unavailable — document search, retrieval, the
+						 * context step — outranks a usage limit that bites
+						 * only some calls; a stale build bites nothing yet.
+						 * They can render at once (an organization can lose
+						 * its provider and carry a usage breach in the same
+						 * hour), though the capability notice deliberately
+						 * stays silent while the first one speaks: "nothing
+						 * resolves" already covers "this provider cannot
+						 * embed".
 						 *
 						 * Mounted here rather than in the organization layout,
 						 * for the reason recorded when the usage-limit banner
@@ -130,6 +137,7 @@ function AppWrapperContent({ children }: PropsWithChildren) {
 						 * dashboard before, and said nothing anywhere else.
 						 * Each renders nothing when it has nothing to say. */}
 						<AiGatewayWarningBanner />
+						<AnthropicCapabilityBanner />
 						<AiUsageLimitBanner />
 						{/* Detects a stale build; its backstop countdown
 						 * banner renders here in flow, never as a fixed

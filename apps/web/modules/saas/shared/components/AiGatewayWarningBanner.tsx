@@ -5,6 +5,7 @@ import {
 	useContextPath,
 	useOrganizationContext,
 } from "@saas/organizations/hooks/use-organization-context";
+import { useTenantScopeResolved } from "@saas/shared/lib/use-tenant-scope-resolved";
 import { orpcClient } from "@shared/lib/orpc-client";
 import { useQuery } from "@tanstack/react-query";
 import { Alert, AlertDescription, AlertTitle } from "@ui/components/alert";
@@ -65,6 +66,10 @@ export function AiGatewayWarningBanner() {
 	const [dismissedOn, setDismissedOn] = useState<string | null>(null);
 	const { organizationId, isOrgContext, isOrganizationAdmin } =
 		useOrganizationContext();
+	// The route says whether an organization is expected; the context says
+	// whether it arrived. This notice is tenant-scoped, so both must agree
+	// before it asks or speaks.
+	const tenantScopeResolved = useTenantScopeResolved();
 	const settingsPath = useContextPath("settings/ai-providers");
 	// The account-global provider page (Fizzy #1875, R12). Same organization
 	// base path, because it is reached from inside the organization the member
@@ -88,7 +93,15 @@ export function AiGatewayWarningBanner() {
 				organizationId,
 			});
 		},
-		enabled: !isGuest,
+		// The URL's organization must have resolved before anything tenant-scoped
+		// is asked for. Null `organizationId` reads as personal to the
+		// procedure, so asking too early — or after a failed lookup, which
+		// leaves the same null with no loading flag raised — caches an answer
+		// about the caller's own configuration under a key an organization page
+		// then reads. Shared with the sibling capability banner, because this
+		// layer has no reason to differ between them and drifted once when it
+		// did.
+		enabled: !isGuest && tenantScopeResolved,
 	});
 
 	// A guest is never asked about, and never told about, an organization they
@@ -96,6 +109,14 @@ export function AiGatewayWarningBanner() {
 	// read as "not configured", would pin this notice to every page they load
 	// behind a control that redirects them straight back out.
 	if (isGuest) {
+		return null;
+	}
+
+	// The URL names an organization that has not resolved — still loading, or
+	// looked up and failed. `organizationId` is null in both cases and the
+	// procedure reads null as personal, so anything shown here would describe
+	// the caller's own configuration on somebody's organization page.
+	if (!tenantScopeResolved) {
 		return null;
 	}
 
@@ -113,9 +134,11 @@ export function AiGatewayWarningBanner() {
 
 	// Neither message claims that scheduled or background work has stopped,
 	// because it has not: indexing, embedding and tool ingestion keep their
-	// own key resolution (R13). What stops is the user-facing half.
+	// own key resolution (R13). What stops is the user-facing half. Anthropic
+	// left the enabling list because it serves no embedding models, so naming
+	// it beside document generation overstated what such a key buys.
 	const description = canConfigure
-		? "Add an OpenAI, Anthropic, Vercel AI Gateway, OpenRouter, or compatible provider key to use chat, agents, and document generation."
+		? "Add an OpenAI, Vercel AI Gateway, OpenRouter, or compatible provider key to use chat, agents, and document generation. Anthropic covers chat and agents, but not the embeddings document search needs."
 		: "This organization has no AI provider configured, so chat, agents, and document generation are unavailable here. An organization admin can add one — or add a personal key to use these features yourself.";
 
 	return (

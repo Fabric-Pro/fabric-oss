@@ -182,7 +182,14 @@ BYOK is enforced by which resolver a caller reaches, not by a flag it passes. Tw
 
 The boundary is **whether a person is waiting**, not what kind of operation it is. Background work keeps the platform key so a keyless tenant's uploads still index; anything a person triggered refuses until they configure a provider. The distinction is easy to misapply, because the same *kind* of work falls on both sides: embedding a document during ingestion is background, while embedding a chat message to retrieve context for a reply is not. Reading the rule by its category rather than its reason is how a waiting user ends up on the platform's key.
 
-A member's own key counts — it resolves inside an organization that has none.
+A member's own key counts for the provider itself — it resolves inside an organization that has none. It does not count for the Embedding provider, which is read from the tenant alone, so a personal assignment never rescues an organization's document search.
+
+### Embedding provider
+The provider designated to turn documents into vectors, chosen separately from the one that answers chat. Distinct from the **default provider**: the default serves generation, the embedding provider serves retrieval, and a tenant can have one without the other.
+
+Which provider an embedding actually runs on is a resolution, not a stored value, and the two disagree in ordinary states. Resolution takes the explicitly designated row first; failing that the tenant's default; failing that the caller's own default; failing that the deployment's own key, and only for background work. So a tenant with no designated row is not necessarily broken — the fallback may land somewhere that serves embeddings — and a tenant whose default cannot serve them is broken even though every row is present and enabled. Anything reporting whether retrieval will work has to ask for the resolved answer; reading the stored rows and ranking them reproduces the order in a second place, where it drifts.
+
+Designation is read from the tenant alone. Inside an organization a member's personal designation is never consulted, which is why the remedy for a missing one is not always the reader's to carry out.
 
 ## Feature specs
 

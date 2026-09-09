@@ -21,11 +21,25 @@
  * It also pins the predicate: the notice reads `canResolveProvider`, which
  * mirrors what the resolver does, NOT `isConfigured`, which does not (R11).
  *
+ * And it pins the copy itself. The admin-facing line used to name Anthropic
+ * among the keys that enable document generation, which Anthropic cannot do —
+ * it serves no embedding models, and document search needs them. The
+ * assertions below are written against literals rather than against a constant
+ * imported from the component, so a copy edit that reintroduces the claim
+ * fails here instead of agreeing with itself.
+ *
  * Run with:
  *   pnpm --filter web test modules/saas/shared/components/__tests__/AiGatewayWarningBanner.test.tsx
  */
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+	act,
+	cleanup,
+	fireEvent,
+	render,
+	screen,
+	waitFor,
+} from "@testing-library/react";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -61,8 +75,18 @@ vi.mock("@shared/lib/orpc-client", () => ({
 }));
 
 const pathnameMock = vi.fn();
+/**
+ * The route's own params.
+ *
+ * `organizationSlug` is the URL's claim about which tenant the reader is
+ * standing in, and it is the half `useOrganizationContext` cannot supply: its
+ * `organizationId` is null both on a route that names no organization and on
+ * one whose lookup has not landed — or has failed outright.
+ */
+const paramsMock = vi.fn();
 vi.mock("next/navigation", () => ({
 	usePathname: () => pathnameMock(),
+	useParams: () => paramsMock(),
 }));
 
 vi.mock("next/link", () => ({
@@ -99,16 +123,41 @@ function status({
 	return { canResolveProvider, isConfigured };
 }
 
+/**
+ * Let every queued effect, microtask and macrotask run.
+ *
+ * Needed for the negative assertion in the resolving-window block below.
+ * `waitFor(() => expect(mock).not.toHaveBeenCalled())` is not a wait at all:
+ * its callback passes on the first tick, so it cannot tell "never fires" from
+ * "fires one microtask later". Same helper, and the same reasoning, as the
+ * sibling `AnthropicCapabilityBanner` suite — the point of the block below is
+ * that the two banners now behave identically at this gate.
+ */
+async function settle() {
+	await act(async () => {
+		await new Promise((resolve) => setTimeout(resolve, 0));
+	});
+}
+
 beforeEach(() => {
 	vi.clearAllMocks();
+	// `isResolvingOrganization` belongs in every fixture in this file because
+	// the component now reads it: omitting it would leave it `undefined`, which
+	// is falsy, and the cold-load guard would look tested when nothing had
+	// exercised it.
 	orgContextMock.mockReturnValue({
 		organizationId: ORG_ID,
 		organizationSlug: "acme",
 		isOrgContext: true,
 		isOrganizationAdmin: true,
+		isResolvingOrganization: false,
 	});
 	guestMock.mockReturnValue(false);
 	pathnameMock.mockReturnValue("/app/acme/projects");
+	// Every fixture in this file stands on a route whose organization has
+	// resolved, so the tenant gate is open by default — nothing that passes
+	// today starts passing because the banner fell silent.
+	paramsMock.mockReturnValue({ organizationSlug: "acme" });
 	getStatusMock.mockResolvedValue(status({ canResolveProvider: false }));
 });
 
@@ -134,6 +183,183 @@ describe("AiGatewayWarningBanner — a guest (AE6)", () => {
 	});
 });
 
+describe("AiGatewayWarningBanner — the organization-resolving window", () => {
+	/** The context this banner sees while the URL's organization is in flight. */
+	function resolvingOrgContext() {
+		return {
+			organizationId: null,
+			organizationSlug: null,
+			isOrgContext: false,
+			isOrganizationAdmin: false,
+			isResolvingOrganization: true,
+		};
+	}
+
+	it("asks nothing and says nothing while the URL's organization is still resolving", async () => {
+		// `organizationId` is null in that window without meaning there is no
+		// organization. This call is tenant-scoped, so asking now asks about the
+		// caller's PERSONAL setup and caches the answer under a key the banner
+		// stops reading the moment the real organization lands. The sibling
+		// capability banner has carried this gate all along; this is the line the
+		// two had drifted apart on.
+		orgContextMock.mockReturnValue(resolvingOrgContext());
+
+		renderBanner();
+
+		await settle();
+		expect(getStatusMock).not.toHaveBeenCalled();
+		expect(screen.queryByText("AI provider required")).toBeNull();
+	});
+
+	it("asks as normal once the organization lands, under the same mount", async () => {
+		// The control for the negative above: the same flush, with the gate open,
+		// DOES fire the request — so "never fires" is the guard speaking and not
+		// a flush that is simply too short. It also models what actually happens,
+		// since the organization fetch resolves under a chrome that never
+		// unmounted and only re-rendered.
+		const queryClient = makeClient();
+		orgContextMock.mockReturnValue(resolvingOrgContext());
+		const { rerender } = renderBanner(queryClient);
+
+		await settle();
+		expect(getStatusMock).not.toHaveBeenCalled();
+
+		orgContextMock.mockReturnValue({
+			organizationId: ORG_ID,
+			organizationSlug: "acme",
+			isOrgContext: true,
+			isOrganizationAdmin: true,
+			isResolvingOrganization: false,
+		});
+		rerender(
+			<QueryClientProvider client={queryClient}>
+				<AiGatewayWarningBanner />
+			</QueryClientProvider>,
+		);
+
+		await waitFor(() =>
+			expect(getStatusMock).toHaveBeenCalledWith({
+				organizationId: ORG_ID,
+			}),
+		);
+		expect(
+			await screen.findByText("AI provider required"),
+		).toBeInTheDocument();
+	});
+});
+
+describe("AiGatewayWarningBanner — the route names an organization the context never resolved", () => {
+	/**
+	 * The context a FAILED organization lookup leaves behind: no id, and no
+	 * loading flag raised, because that query does not retry.
+	 *
+	 * Byte for byte the context of someone standing outside any organization —
+	 * which is the whole difficulty. Only the ROUTE separates the two, so every
+	 * test below sets the params deliberately rather than inheriting them.
+	 */
+	function nullTenantContext() {
+		return {
+			organizationId: null,
+			organizationSlug: null,
+			isOrgContext: false,
+			isOrganizationAdmin: false,
+			isResolvingOrganization: false,
+		};
+	}
+
+	it("asks nothing and shows nothing when the route names an organization that failed to resolve", async () => {
+		// Not the loading window above: the lookup is over and lost, and the
+		// flag that window is recognised by is already back down. Asking here
+		// sends `organizationId: null`, which the status procedure answers from
+		// its PERSONAL arm — so this reader's own configuration would be
+		// reported to them as the organization's.
+		paramsMock.mockReturnValue({ organizationSlug: "acme" });
+		orgContextMock.mockReturnValue(nullTenantContext());
+
+		renderBanner();
+
+		await settle();
+		expect(getStatusMock).not.toHaveBeenCalled();
+		expect(screen.queryByText("AI provider required")).toBeNull();
+	});
+
+	it("asks as normal once the slug resolves to an organization", async () => {
+		// The control for the negative above: the same route, the same flush,
+		// with the id in place. Without it "never called" could be a flush too
+		// short to catch the call rather than the gate holding.
+		paramsMock.mockReturnValue({ organizationSlug: "acme" });
+
+		renderBanner();
+
+		await settle();
+		expect(getStatusMock).toHaveBeenCalledWith({ organizationId: ORG_ID });
+		expect(screen.getByText("AI provider required")).toBeInTheDocument();
+	});
+
+	it("does not consume a personal status already cached under the null key", async () => {
+		// The sharp half of this. Both banners key on
+		// `["aiConfigStatus", organizationId]`, so one early ask — from either of
+		// them — leaves the caller's PERSONAL answer sitting under the null key,
+		// and every later render on the organization route reads it straight out
+		// of the cache. That makes the disclosure immediate and lasting rather
+		// than a flicker, and waiting for a request cannot expose it, because
+		// there is no request left to make.
+		const queryClient = makeClient();
+		queryClient.setQueryData(
+			aiConfigStatusQueryKey(null),
+			status({ canResolveProvider: false }),
+		);
+		// Nothing may arrive over the network either, so the cache is the only
+		// thing that could put this notice on screen.
+		getStatusMock.mockReturnValue(new Promise(() => {}));
+		paramsMock.mockReturnValue({ organizationSlug: "acme" });
+		orgContextMock.mockReturnValue(nullTenantContext());
+
+		renderBanner(queryClient);
+
+		await settle();
+		expect(getStatusMock).not.toHaveBeenCalled();
+		expect(screen.queryByText("AI provider required")).toBeNull();
+
+		// The control: that cached answer is live, and it does render — on the
+		// personal route it actually describes. Without this the assertion above
+		// could be satisfied by a seed that never landed on the key this banner
+		// reads, and would then hold however the gate behaved.
+		cleanup();
+		queryClient.setQueryData(
+			aiConfigStatusQueryKey(null),
+			status({ canResolveProvider: false }),
+		);
+		pathnameMock.mockReturnValue("/app/projects");
+		paramsMock.mockReturnValue({});
+		renderBanner(queryClient);
+
+		expect(screen.getByText("AI provider required")).toBeInTheDocument();
+	});
+
+	it("still asks outside any organization, where a null tenant is the real answer", async () => {
+		// The gate is about the route and the context disagreeing, not about a
+		// null id. On a route that names no organization, null IS the tenant, and
+		// a guard tightened into "never ask with a null id" would silence this
+		// notice for everyone outside an organization — with nothing else here to
+		// catch it.
+		pathnameMock.mockReturnValue("/app/projects");
+		paramsMock.mockReturnValue({});
+		orgContextMock.mockReturnValue(nullTenantContext());
+
+		renderBanner();
+
+		await waitFor(() =>
+			expect(getStatusMock).toHaveBeenCalledWith({
+				organizationId: null,
+			}),
+		);
+		expect(
+			await screen.findByText("AI provider required"),
+		).toBeInTheDocument();
+	});
+});
+
 describe("AiGatewayWarningBanner — role (AE7)", () => {
 	it("a member who cannot edit is told what they can do, with no control to a read-only form", async () => {
 		orgContextMock.mockReturnValue({
@@ -141,6 +367,7 @@ describe("AiGatewayWarningBanner — role (AE7)", () => {
 			organizationSlug: "acme",
 			isOrgContext: true,
 			isOrganizationAdmin: false,
+			isResolvingOrganization: false,
 		});
 
 		renderBanner();
@@ -169,6 +396,7 @@ describe("AiGatewayWarningBanner — role (AE7)", () => {
 			organizationSlug: "acme",
 			isOrgContext: true,
 			isOrganizationAdmin: false,
+			isResolvingOrganization: false,
 		});
 
 		renderBanner();
@@ -198,18 +426,108 @@ describe("AiGatewayWarningBanner — role (AE7)", () => {
 });
 
 describe("AiGatewayWarningBanner — what it says", () => {
-	it("names the remedy and does not claim background work has stopped", async () => {
+	/** The admin-facing description, as rendered. */
+	async function adminDescription() {
 		renderBanner();
-
 		const description = await screen.findByText(
-			/Add an OpenAI, Anthropic, Vercel AI Gateway, OpenRouter, or compatible provider key/,
+			/Add an OpenAI, Vercel AI Gateway, OpenRouter, or compatible provider key/,
 		);
-		expect(description.textContent).toContain(
+		return description.textContent ?? "";
+	}
+
+	/**
+	 * Where the enabling list ends, named rather than counted.
+	 *
+	 * The three assertions below examine only the first sentence — the keys the
+	 * reader is told will buy them the named capabilities. What follows it is
+	 * the caveat, not part of the list.
+	 */
+	const ENABLING_LIST_END = "to use chat, agents, and document generation.";
+
+	/**
+	 * The first sentence, sliced at that named boundary.
+	 *
+	 * Deliberately not `description.split(". ")[0]`. A positional split
+	 * silently redefines what these assertions examine the moment the copy
+	 * gains an abbreviation or another sentence: a reworded caveat could move
+	 * "Anthropic" into fragment zero, or an "e.g." could cut the list in half,
+	 * and every assertion would go on passing while inspecting the wrong text.
+	 * Missing the boundary throws instead, so a copy change that moves it is a
+	 * failure to look at rather than a silent change of subject.
+	 */
+	function enablingList(description: string) {
+		const end = description.indexOf(ENABLING_LIST_END);
+		if (end === -1) {
+			throw new Error(
+				`The admin copy no longer ends its enabling list with "${ENABLING_LIST_END}" — re-anchor this helper before trusting the assertions below. Got: ${description}`,
+			);
+		}
+		return description.slice(0, end + ENABLING_LIST_END.length);
+	}
+
+	it("names the remedy and does not claim background work has stopped", async () => {
+		const description = await adminDescription();
+
+		expect(description).toContain(
 			"to use chat, agents, and document generation.",
 		);
 		// Indexing, embedding and tool ingestion keep their own resolution
 		// (R13), so the copy must not sweep workflows in with the outage.
 		expect(document.body.textContent).not.toMatch(/workflow/i);
+	});
+
+	it("does not offer Anthropic as a key that enables document generation", async () => {
+		const description = await adminDescription();
+
+		// Anthropic serves no embedding models, and document search needs
+		// them, so a reader acting on the enabling list alone must not come
+		// away with an Anthropic key.
+		expect(enablingList(description)).not.toMatch(/Anthropic/);
+	});
+
+	it("still names a provider that does, so the remedy stays actionable", async () => {
+		const description = await adminDescription();
+
+		// Removing the false claim must not leave the reader with nothing to
+		// buy. OpenAI serves both halves; the gateways reach a provider that
+		// does.
+		expect(enablingList(description)).toContain("OpenAI");
+		expect(enablingList(description)).toMatch(
+			/Vercel AI Gateway|OpenRouter/,
+		);
+	});
+
+	it("names the embedding gap rather than leaving Anthropic unmentioned", async () => {
+		const description = await adminDescription();
+
+		// Silence would be accurate but unhelpful: a reader who already holds
+		// an Anthropic key needs to know why it is not on the list.
+		expect(description).toContain(
+			"Anthropic covers chat and agents, but not the embeddings document search needs.",
+		);
+	});
+
+	it("leaves the non-admin copy exactly as it was — a different situation", async () => {
+		// The member-facing line describes the zero-provider state and claims
+		// no capability of any named provider, so the correction above does
+		// not reach it.
+		orgContextMock.mockReturnValue({
+			organizationId: ORG_ID,
+			organizationSlug: "acme",
+			isOrgContext: true,
+			isOrganizationAdmin: false,
+			isResolvingOrganization: false,
+		});
+
+		renderBanner();
+
+		const description = await screen.findByText(
+			/no AI provider configured/i,
+		);
+		expect(description.textContent).toBe(
+			"This organization has no AI provider configured, so chat, agents, and document generation are unavailable here. An organization admin can add one — or add a personal key to use these features yourself.",
+		);
+		expect(description.textContent).not.toMatch(/Anthropic/);
 	});
 
 	it("renders on a page that is not the dashboard", async () => {

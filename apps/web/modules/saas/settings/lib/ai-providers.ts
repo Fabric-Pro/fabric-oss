@@ -438,6 +438,19 @@ const AI_PROVIDER_METADATA: Record<AIProvider, ProviderMetadata> = {
 	},
 };
 
+/**
+ * The Anthropic direct-provider id, read out of the typed metadata above
+ * rather than retyped wherever a comparison needs it.
+ *
+ * The AI-config status payload types `provider` and `defaultProvider` as plain
+ * `string`, so a comparison against a hand-written literal carrying a typo
+ * would typecheck, never match, and leave whatever it gates silently dead —
+ * while fixtures built from the same typo went on passing. Indexing the
+ * `Record<AIProvider, ProviderMetadata>` above turns that same typo into a
+ * compile error.
+ */
+export const ANTHROPIC_PROVIDER_ID = AI_PROVIDER_METADATA.ANTHROPIC_DIRECT.id;
+
 // ============================================================================
 // Gateway Sub-Providers
 // ============================================================================
