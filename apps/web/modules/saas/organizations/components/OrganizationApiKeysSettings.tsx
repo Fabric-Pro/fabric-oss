@@ -341,7 +341,7 @@ export function OrganizationApiKeysSettings() {
 			title="Your API Keys"
 			description={
 				isOrganizationOwner
-					? "Keys carry the access of whoever created them — they are personal, not shared. As an owner you can see and revoke every key in this organization."
+					? "Keys carry the access of whoever created them — not the organization's. As an owner you can see and revoke every key in this organization."
 					: "Connect external tools to Fabric. A key carries your own access to this organization and nothing more, and only you can see the keys you create."
 			}
 		>
