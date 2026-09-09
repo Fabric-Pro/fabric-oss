@@ -311,6 +311,47 @@ describe("outstanding categories", () => {
 		});
 	});
 
+	it("reports a running project-management scan as its own category", async () => {
+		// Not folded into monitorIngestion. The reader is told which kind of work
+		// to wait for, and "connected channels being imported" is a different
+		// sentence from "the project-management scan" — the poll is the reason a
+		// backlog-heavy project waits, and saying so is the whole point.
+		jobGroupBy.mockResolvedValue([jobGroup("PM_STATE_POLL", 1)]);
+
+		const result = await resolveGenerationDependencies(ARGS);
+
+		expect(result.verdict).toBe("waiting");
+		expect(result.outstanding).toEqual([
+			{ category: "projectManagementScan", count: 1 },
+		]);
+	});
+
+	it("keeps a scan and a monitor apart when both are running", async () => {
+		jobGroupBy.mockResolvedValue([
+			jobGroup("PM_STATE_POLL", 1),
+			jobGroup("SLACK_BACKFILL", 2),
+		]);
+
+		const result = await resolveGenerationDependencies(ARGS);
+
+		expect(result.outstanding).toEqual([
+			{ category: "monitorIngestion", count: 2 },
+			{ category: "projectManagementScan", count: 1 },
+		]);
+	});
+
+	it("never refuses a generation because of a project-management scan", async () => {
+		// The poll's own log records only outcomes and is written after the fact,
+		// so a failed scan is invisible to this read by construction. The scan is
+		// refresh work over a backlog the project already has: worth waiting
+		// through, never worth refusing a document over.
+		jobGroupBy.mockResolvedValue([jobGroup("PM_STATE_POLL", 1)]);
+
+		const result = await resolveGenerationDependencies(ARGS);
+
+		expect(result.failed).toEqual([]);
+	});
+
 	it("counts every running monitor job as monitorIngestion", async () => {
 		jobGroupBy.mockResolvedValue([
 			jobGroup("SLACK_CHANNEL_MONITOR", 1),
@@ -330,6 +371,7 @@ describe("outstanding categories", () => {
 					kind: {
 						in: [
 							"CODE_INDEXING",
+							"PM_STATE_POLL",
 							"TEAMS_CHANNEL_MONITOR",
 							"TEAMS_CHAT_MONITOR",
 							"SLACK_CHANNEL_MONITOR",
@@ -824,6 +866,7 @@ describe("the answer names nothing", () => {
 		jobGroupBy.mockResolvedValue([
 			jobGroup("CODE_INDEXING", 1),
 			jobGroup("SLACK_BACKFILL", 1),
+			jobGroup("PM_STATE_POLL", 1),
 		]);
 		scanCount.mockResolvedValue(1);
 		withDocuments([{ id: "doc-1", type: "PRD", status: "GENERATING" }]);
@@ -844,6 +887,7 @@ describe("the answer names nothing", () => {
 			"linkedSiteCrawl",
 			"securityScan",
 			"monitorIngestion",
+			"projectManagementScan",
 			"prerequisiteDocument",
 		]);
 
@@ -863,6 +907,7 @@ describe("the answer names nothing", () => {
 			"linkedSiteCrawl",
 			"securityScan",
 			"monitorIngestion",
+			"projectManagementScan",
 			"prerequisiteDocument",
 		]);
 	});

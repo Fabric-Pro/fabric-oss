@@ -15448,6 +15448,7 @@ enum BackgroundJobKind {
   // is exactly the stretch that reads as a lost request. The row is what gives
   // the Job Hub something to show for it, and what names the dependency the run
   // is currently blocked on.
+  PM_STATE_POLL
   DOCUMENT_GENERATION
 }
 

@@ -192,6 +192,7 @@
 				"CONTEXT_PROCESSING": "Dokumenterfassung",
 				"STORY_KIND_REGENERATION": "Neufassung für den neuen Typ",
 				"PUBLISHING_TOPIC_GENERATION": "Themenvorschläge",
+				"PM_STATE_POLL": "Projektmanagement-Scan",
 				"DOCUMENT_GENERATION": "Dokumenterstellung"
 			},
 			"steps": {
@@ -2030,6 +2031,7 @@
 					"securityScan": "den Sicherheitsscan",
 					"monitorIngestion": "den Import verbundener Kanäle",
 					"prerequisiteDocument": "ein Dokument, auf dem dieses aufbaut",
+					"projectManagementScan": "den Scan des Projektmanagement-Systems",
 					"unknown": "die Kontextarbeit des Projekts"
 				}
 			},

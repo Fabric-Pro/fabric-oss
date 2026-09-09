@@ -194,6 +194,7 @@ function emptyTally(): Record<GenerationDependencyCategory, number> {
 		linkedSiteCrawl: 0,
 		securityScan: 0,
 		monitorIngestion: 0,
+		projectManagementScan: 0,
 		prerequisiteDocument: 0,
 	};
 }
@@ -268,13 +269,15 @@ function toEntries(
  *     TECHNICAL_SPEC and API_SPEC the project would ever ask for. Dropping the
  *     old row leaves the tier simply unsatisfied, which is already the honest
  *     answer — nothing is coming, so the generator writes from context alone.
- *   - `linkedSiteCrawl`, `securityScan` and `monitorIngestion` are never
- *     required. A crawl, a scan and a monitor poll are refresh work over data
- *     that is already on the project; a failed one is worth waiting through,
- *     never worth refusing a document over. (The crawl has no failure state of
- *     its own to read in any case — a crawl that dies clears its workflow id
- *     and leaves the outcome on the context row, where `sourceExtraction`
- *     already reads it.)
+ *   - `linkedSiteCrawl`, `securityScan`, `monitorIngestion` and
+ *     `projectManagementScan` are never required. A crawl, a scan and a poll
+ *     are refresh work over data that is already on the project; a failed one
+ *     is worth waiting through, never worth refusing a document over. (The
+ *     crawl has no failure state of its own to read in any case — a crawl that
+ *     dies clears its workflow id and leaves the outcome on the context row,
+ *     where `sourceExtraction` already reads it. The PM scan's own log records
+ *     only outcomes and is written after the fact, so a failure there is
+ *     likewise invisible to this read by construction.)
  */
 export async function resolveGenerationDependencies({
 	projectId,
@@ -416,7 +419,13 @@ export async function resolveGenerationDependencies({
 			where: {
 				projectId,
 				status: "RUNNING",
-				kind: { in: ["CODE_INDEXING", ...MONITOR_JOB_KINDS] },
+				kind: {
+					in: [
+						"CODE_INDEXING",
+						"PM_STATE_POLL",
+						...MONITOR_JOB_KINDS,
+					],
+				},
 				heartbeatAt: { gte: liveCutoff },
 			},
 			_count: { _all: true },
@@ -491,10 +500,16 @@ export async function resolveGenerationDependencies({
 		}
 	}
 
+	// Every kind named in the query above needs its own arm here. The former
+	// `else` swept anything that was not CODE_INDEXING into `monitorIngestion`,
+	// so a kind added to the query and forgotten here would not fail — it would
+	// silently be reported to the reader as a chat monitor.
 	let indexingJobCount = 0;
 	for (const group of runningJobGroups) {
 		if (group.kind === "CODE_INDEXING") {
 			indexingJobCount += group._count._all;
+		} else if (group.kind === "PM_STATE_POLL") {
+			outstanding.projectManagementScan += group._count._all;
 		} else {
 			outstanding.monitorIngestion += group._count._all;
 		}

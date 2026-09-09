@@ -874,6 +874,8 @@ export {
 	type ReconcileAdoStatesResult,
 	reconcileAdoStates,
 	reconcileMissingTickets,
+	reportPmScanJobClosed,
+	reportPmScanJobOpened,
 	updateProjectPollTimestamp,
 } from "./pm-integration/pm-state-poll";
 // PM Integration - ADO State Poll Activation

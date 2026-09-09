@@ -16,6 +16,8 @@ import type {
 	fetchAdoWorkItemStates as FetchAdoWorkItemStatesFn,
 	reconcileAdoStates as ReconcileAdoStatesFn,
 	reconcileMissingTickets as ReconcileMissingTicketsFn,
+	reportPmScanJobClosed as ReportPmScanJobClosedFn,
+	reportPmScanJobOpened as ReportPmScanJobOpenedFn,
 	updateProjectPollTimestamp as UpdateProjectPollTimestampFn,
 } from "../activities/pm-integration/pm-state-poll";
 
@@ -106,6 +108,23 @@ const { updateProjectPollTimestamp } = proxyActivities<{
 	},
 });
 
+/**
+ * Bookkeeping only, so it retries little and never fails the poll: the row it
+ * writes exists to let the generation queue see this scan, and a scan that
+ * cannot announce itself is still worth running.
+ */
+const { reportPmScanJobOpened, reportPmScanJobClosed } = proxyActivities<{
+	reportPmScanJobOpened: typeof ReportPmScanJobOpenedFn;
+	reportPmScanJobClosed: typeof ReportPmScanJobClosedFn;
+}>({
+	startToCloseTimeout: "10 seconds",
+	retry: {
+		initialInterval: "1s",
+		backoffCoefficient: 2,
+		maximumAttempts: 2,
+	},
+});
+
 // =============================================================================
 // Workflow
 // =============================================================================
@@ -114,6 +133,22 @@ export async function adoStatePollProjectWorkflow(
 	input: AdoStatePollProjectInput,
 ): Promise<AdoStatePollProjectOutput> {
 	const { projectId } = input;
+
+	// Fizzy #2199 FR29 — announce the scan so document generation can wait for
+	// it. Gated: every call below adds a command to the history, and a poll
+	// recorded before this shipped has to replay with all of them absent. The
+	// flag is read once and reused on the closing paths rather than calling
+	// `patched()` again there, so open and close can never land on opposite
+	// sides of the gate.
+	const scanVisibleToQueue = patched("pm-scan-generation-gating-2026-09-09");
+	if (scanVisibleToQueue) {
+		await reportPmScanJobOpened({
+			projectId,
+			userId: input.userId,
+			organizationId: input.organizationId,
+			containerName: input.containerName,
+		});
+	}
 
 	try {
 		log.info("Starting ADO state poll for project", { projectId });
@@ -186,6 +221,10 @@ export async function adoStatePollProjectWorkflow(
 			storiesAutoHidden,
 		});
 
+		if (scanVisibleToQueue) {
+			await reportPmScanJobClosed({ projectId });
+		}
+
 		return {
 			projectId,
 			success: true,
@@ -200,6 +239,15 @@ export async function adoStatePollProjectWorkflow(
 			projectId,
 			error: errorMessage,
 		});
+
+		if (scanVisibleToQueue) {
+			// Closed on the failure path too. The workflow returns rather than
+			// throwing here, so nothing else would ever terminalize the row —
+			// it would sit RUNNING until the background-job watchdog swept it,
+			// and every generation in the project would wait out that window
+			// for a scan that had already stopped.
+			await reportPmScanJobClosed({ projectId, error: errorMessage });
+		}
 
 		return {
 			projectId,

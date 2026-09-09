@@ -30,6 +30,14 @@ import {
 	normalizePolledState,
 } from "./extract-pm-item-state";
 import { stripAttachmentBlock } from "./gitlab-attachment-block";
+import {
+	JOB_STEPS,
+	jobComplete,
+	jobEnsure,
+	jobFail,
+	jobStep,
+	seedJobSteps,
+} from "../lib/job-progress";
 import { isFetchComplete } from "./pm-fetch-complete";
 import { PM_MISSING_SENTINEL } from "./pm-missing-constants";
 import { computePmHash } from "./pm-sync-hash";
@@ -1280,4 +1288,65 @@ export async function reconcileMissingTickets(input: {
 		capped: created >= MAX_NEW_FLAGS_PER_PROJECT_PER_CYCLE,
 	});
 	return flagged;
+}
+
+// =============================================================================
+// Generation-queue visibility (Fizzy #2199, FR29)
+// =============================================================================
+
+/**
+ * Open and close this poll's Job Hub row, so the generation queue can see that
+ * a project-management scan is in flight.
+ *
+ * The PM sync log cannot answer that question. Its status vocabulary is
+ * SUCCESS, FAILURE and CONFLICT — all outcomes — and a row is written when an
+ * attempt finishes, so while a scan runs there is nothing in the database to
+ * read. Document generation could therefore start against a backlog it was
+ * about to receive, which hurts most on exactly the projects where the backlog
+ * is the best documentation there is.
+ *
+ * A background job carries `heartbeatAt`, which is the column the queue's
+ * outstanding arms already read and the background-job watchdog already sweeps.
+ * Using it means a generation stops waiting on a dead poll at the same moment
+ * the watchdog gives up on it, rather than on a second timer of its own.
+ *
+ * Failures are swallowed here, deliberately. This row exists to make a wait
+ * visible; a poll that cannot write it should still poll, and turning a
+ * bookkeeping failure into a retried activity would put the real work through
+ * its retry budget for the sake of a caption.
+ */
+export async function reportPmScanJobOpened(params: {
+	projectId: string;
+	userId: string;
+	organizationId?: string | null;
+	containerName?: string | null;
+}): Promise<void> {
+	const container = params.containerName?.trim();
+	await jobEnsure({
+		kind: "PM_STATE_POLL",
+		title: container
+			? `Project management scan · ${container}`
+			: "Project management scan",
+		projectId: params.projectId,
+		userId: params.userId,
+		organizationId: params.organizationId,
+		// One poll per project at a time, so the project is identity enough —
+		// unlike document generation, where two documents can run at once.
+		sourceId: params.projectId,
+		steps: seedJobSteps([...JOB_STEPS.pmStatePoll]),
+	});
+}
+
+export async function reportPmScanJobClosed(params: {
+	projectId: string;
+	error?: string;
+}): Promise<void> {
+	const sourceId = params.projectId;
+	if (params.error) {
+		await jobStep("reconcile", "failed", { sourceId, error: params.error });
+		await jobFail(params.error, { sourceId });
+		return;
+	}
+	await jobStep("reconcile", "completed", { sourceId });
+	await jobComplete({ sourceId });
 }

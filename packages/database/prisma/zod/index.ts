@@ -3132,7 +3132,7 @@ export type SyncJobType = z.infer<typeof SyncJobTypeSchema>;
 
 // File: BackgroundJobKind.schema.ts
 
-export const BackgroundJobKindSchema = z.enum(['TEAMS_CHANNEL_MONITOR', 'TEAMS_CHAT_MONITOR', 'SLACK_CHANNEL_MONITOR', 'SLACK_BACKFILL', 'CODE_INDEXING', 'CONTEXT_PROCESSING', 'STORY_KIND_REGENERATION', 'PUBLISHING_TOPIC_GENERATION', 'DOCUMENT_GENERATION'])
+export const BackgroundJobKindSchema = z.enum(['TEAMS_CHANNEL_MONITOR', 'TEAMS_CHAT_MONITOR', 'SLACK_CHANNEL_MONITOR', 'SLACK_BACKFILL', 'CODE_INDEXING', 'CONTEXT_PROCESSING', 'STORY_KIND_REGENERATION', 'PUBLISHING_TOPIC_GENERATION', 'PM_STATE_POLL', 'DOCUMENT_GENERATION'])
 
 export type BackgroundJobKind = z.infer<typeof BackgroundJobKindSchema>;
 
