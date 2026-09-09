@@ -102,6 +102,12 @@ describe("summarizeTopicSuggestions", () => {
 				suggestedPostTypes: [],
 				relevantFunctionTags: [],
 				postTypeRecommendations: [],
+				// The producer always decides. A topic the model did not rank
+				// highly carries an explicit null, which says something a
+				// missing field does not.
+				highlightReason: null,
+				angle: undefined,
+				subject: undefined,
 			},
 		]);
 		expect(result.aiUsageTokens).toBe(123);
@@ -375,5 +381,97 @@ describe("summarizeTopicSuggestions — Job Hub steps", () => {
 		await expect(
 			summarizeTopicSuggestions(JOB_INPUT),
 		).resolves.toMatchObject({ aiUsageTokens: 5 });
+	});
+});
+
+/**
+ * The hot-topic highlight is a FORCED RANKING, not a score.
+ *
+ * Absolute thresholds were measured against 202 staging topics before this was
+ * built: 68% cite two or more sources, and four of five do in a typical week —
+ * so a corroboration bar marks nearly the whole queue and means nothing. The
+ * model is asked to rank its own batch instead, and the count is capped here
+ * rather than trusted to the prompt, because a model that marks everything
+ * produces exactly the section this design exists to avoid.
+ */
+describe("summarizeTopicSuggestions — highlight cap", () => {
+	const topicWith = (over: Record<string, unknown>) => ({
+		...VALID_TOPIC,
+		...over,
+	});
+
+	it("keeps at most two highlights, in the model's own order", async () => {
+		generateObject.mockResolvedValue({
+			object: {
+				topics: [
+					topicWith({ title: "A", highlightReason: "first" }),
+					topicWith({ title: "B", highlightReason: "second" }),
+					topicWith({ title: "C", highlightReason: "third" }),
+					topicWith({ title: "D", highlightReason: "fourth" }),
+				],
+			},
+			usage: { totalTokens: 1 },
+		});
+
+		const result = await summarizeTopicSuggestions({
+			projectId: "proj-a",
+			organizationId: null,
+			actorUserId: "user-1",
+			context: {},
+		});
+
+		expect(result.topics.map((t) => t.highlightReason)).toEqual([
+			"first",
+			"second",
+			null,
+			null,
+		]);
+	});
+
+	it("treats a blank reason as no highlight, and does not spend the cap on it", async () => {
+		generateObject.mockResolvedValue({
+			object: {
+				topics: [
+					topicWith({ title: "A", highlightReason: "   " }),
+					topicWith({ title: "B", highlightReason: "real" }),
+				],
+			},
+			usage: { totalTokens: 1 },
+		});
+
+		const result = await summarizeTopicSuggestions({
+			projectId: "proj-a",
+			organizationId: null,
+			actorUserId: "user-1",
+			context: {},
+		});
+
+		expect(result.topics.map((t) => t.highlightReason)).toEqual([
+			null,
+			"real",
+		]);
+	});
+
+	it("survives a highlight of the wrong type rather than failing the batch", async () => {
+		// I4: the raw schema is loose on purpose. A strict shape here would
+		// throw PUBLISHING_SCHEMA_VALIDATION_FAILED — non-retryable — and lose
+		// the whole day's cycle over one malformed field.
+		generateObject.mockResolvedValue({
+			object: {
+				topics: [
+					topicWith({ title: "A", highlightReason: { nope: 1 } }),
+				],
+			},
+			usage: { totalTokens: 1 },
+		});
+
+		const result = await summarizeTopicSuggestions({
+			projectId: "proj-a",
+			organizationId: null,
+			actorUserId: "user-1",
+			context: {},
+		});
+
+		expect(result.topics[0].highlightReason).toBeNull();
 	});
 });

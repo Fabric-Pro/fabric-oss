@@ -72,6 +72,10 @@ export async function computeSuggestionTopics(
 			angle: topic.angle,
 			subject: null,
 			subjectKey: null,
+			// Carried through unchanged. The count cap was applied upstream in
+			// `summarizeTopicSuggestions`, where the whole batch is in one
+			// place; re-deciding it per topic here could not see the batch.
+			highlightReason: topic.highlightReason ?? null,
 		};
 		const subjectRaw = topic.subject?.trim() ? topic.subject.trim() : null;
 		return {

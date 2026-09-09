@@ -5,12 +5,16 @@
  * component's own contract and both mounts (`TopicRow`, `TopicItemPage`) pass
  * it the same four things.
  *
- * The headline case is the COUNT. `ContributorsDialog` computes its "N
+ * The headline case is the COUNT. `ContributorsDialog` computed its "N
  * selected" over VISIBLE ROWS, so a selection whose rows are not rendered —
  * a members list still loading, or an assignee who has since left the project —
- * reads as "None selected" while three people are selected. The PO hit exactly
+ * read as "None selected" while three people were selected. The PO hit exactly
  * that and reported the dialog as broken. This dialog counts the SELECTION, and
  * these tests exist so nobody "harmonises" it back to the row count.
+ *
+ * That sibling has since been brought onto this rule rather than the reverse —
+ * see `publishing-contributors-dialog.test.tsx`, which pins the same two
+ * properties from the other side.
  */
 
 import { AssigneesDialog } from "@saas/projects/components/publishing-suite/AssigneesDialog";
@@ -70,7 +74,7 @@ function count() {
 }
 
 describe("AssigneesDialog selected count", () => {
-	it("counts a selection it cannot currently render — the defect ContributorsDialog still has", () => {
+	it("counts a selection it cannot currently render", () => {
 		// Members have not loaded, so there are NO rows to count. The topic
 		// nonetheless has two assignees. Counting rows would print "None
 		// selected" here, which is what the PO reported.

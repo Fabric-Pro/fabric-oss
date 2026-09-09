@@ -60,6 +60,9 @@ describe("computeSuggestionTopics", () => {
 			contributorUserIds: [],
 			subject: null,
 			subjectKey: null,
+			// Carried through from the batch, where the count cap was applied.
+			// Null for a topic the model did not rank highly.
+			highlightReason: null,
 		});
 		// Project-scoped: the same title under a different project hashes differently.
 		expect(computeDedupeKey("proj-2", "Ship the widget")).not.toBe(
@@ -242,5 +245,52 @@ describe("computeSuggestionTopics", () => {
 		const grouped = topics.filter((r) => r.subject === "Shipped RLS");
 		expect(grouped).toHaveLength(2);
 		expect(grouped.every((r) => r.title !== "Shipped RLS")).toBe(true);
+	});
+});
+
+describe("computeSuggestionTopics — the highlight rides through untouched", () => {
+	it("carries a highlight reason to the persist record", async () => {
+		const { topics } = await computeSuggestionTopics({
+			projectId: "p1",
+			topics: [
+				{
+					title: "Ship X",
+					pitch: "we shipped X",
+					provenance: {},
+					suggestedPostTypes: [],
+					relevantFunctionTags: [],
+					postTypeRecommendations: [],
+					highlightReason: "Came up in three separate meetings",
+				},
+			],
+		});
+
+		expect(topics[0].highlightReason).toBe(
+			"Came up in three separate meetings",
+		);
+	});
+
+	it("does not re-apply the cap here", async () => {
+		// The cap belongs where the whole batch is visible
+		// (`summarizeTopicSuggestions`). A second one applied per topic could
+		// not see the batch and would silently disagree with the one that can.
+		const { topics } = await computeSuggestionTopics({
+			projectId: "p1",
+			topics: ["a", "b", "c"].map((t) => ({
+				title: `Topic ${t}`,
+				pitch: t,
+				provenance: {},
+				suggestedPostTypes: [],
+				relevantFunctionTags: [],
+				postTypeRecommendations: [],
+				highlightReason: `reason ${t}`,
+			})),
+		});
+
+		expect(topics.map((t) => t.highlightReason)).toEqual([
+			"reason a",
+			"reason b",
+			"reason c",
+		]);
 	});
 });

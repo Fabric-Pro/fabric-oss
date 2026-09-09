@@ -323,6 +323,38 @@ export function resolveConfirmationQuestions(
 		);
 	}
 
+	/**
+	 * Which kinds the classification buckets above have ALREADY produced a
+	 * question for.
+	 *
+	 * The locked clauses tell the model not to restate a recommendation it has
+	 * classified, but an instruction is not a guarantee, and the merge below
+	 * only collapses a restatement when the model happens to reuse the exact
+	 * same `subject` string. It usually does not: the observed failure was one
+	 * topic asking "Should we produce a LinkedIn Post for this topic?" and
+	 * "Should a LinkedIn Post be produced in addition to the already-suggested
+	 * Tweet and Blog Post, given LinkedIn's different truncation behaviour?" —
+	 * one decision, two cards, both needing an answer.
+	 *
+	 * `CONTENT_TYPE` and `ASSET_APPROVAL` are fully derivable from the buckets
+	 * by construction: a format needing confirmation is in `needsConfirmation`,
+	 * an asset needing approval is in `requiresApproval`, and there is no third
+	 * place either can come from. So once a bucket has produced a question of
+	 * that kind, a model-authored one of the same kind is a restatement and is
+	 * dropped.
+	 *
+	 * Scoped to kinds the buckets ACTUALLY filled, not to the two kinds in the
+	 * abstract — if the classification produced nothing of a kind, a model
+	 * question there is the only thing raising it and is kept.
+	 */
+	const derivedKinds = new Set(
+		[...byId.values()].map((entry) => entry.decisionKind),
+	);
+	const COVERED_BY_CLASSIFICATION: readonly PublishingDecisionKind[] = [
+		"CONTENT_TYPE",
+		"ASSET_APPROVAL",
+	];
+
 	for (const q of analysis.recommendedQuestions ?? []) {
 		const decisionKind = q.decisionKind ?? "OTHER";
 		const questionId = deriveQuestionId({
@@ -331,6 +363,19 @@ export function resolveConfirmationQuestions(
 			subject: q.subject,
 			question: q.question,
 		});
+		// Order matters. An EXACT identity match is the same decision reached
+		// twice, and the model's wording is the better of the two — it wins,
+		// which is what it has always done. Only when the identity does NOT
+		// match does the kind rule apply: a differently-worded question about a
+		// kind the buckets already covered is the restatement this exists to
+		// drop.
+		if (
+			!byId.has(questionId) &&
+			COVERED_BY_CLASSIFICATION.includes(decisionKind) &&
+			derivedKinds.has(decisionKind)
+		) {
+			continue;
+		}
 		byId.set(questionId, {
 			questionId,
 			decisionKind,
@@ -594,9 +639,15 @@ again when this analysis is regenerated:
   customer quote", "the architecture diagram", "the first content format"). Name
   the same thing the same way every time; do not restate the question here.
 
-Raise a question for every recommendation you classify as needing confirmation
-or approval. One is raised on your behalf for any you miss, but yours will be
-better written.
+Do NOT write a question for a recommendation you have already classified as
+needing confirmation or approval. One is raised from the classification itself,
+so writing your own as well produces two questions about a single decision and
+the reader has to answer the same thing twice.
+
+Use "recommendedQuestions" only for decisions the classifications above do NOT
+already cover — an audience judgement, a claim the evidence will not carry, an
+authorship call, a scope question. If a decision belongs in a bucket, put it in
+the bucket and say nothing more about it here.
 
 ## Rules that override anything above
 
