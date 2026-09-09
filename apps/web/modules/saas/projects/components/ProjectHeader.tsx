@@ -20,7 +20,6 @@ import { useRouter } from "next/navigation";
 import { useTranslations } from "next-intl";
 import { ProjectPresenceBar } from "./ProjectPresenceBar";
 import { ProjectTitleInlineEdit } from "./ProjectTitleInlineEdit";
-import { navigateToProjectSettingsTab } from "./settings-tab-navigation";
 
 type Project = {
 	id: string;
@@ -67,14 +66,12 @@ export function ProjectHeader({
 	const simplifiedCreation = useFeatureFlag("SIMPLIFIED_PROJECT_CREATION");
 
 	function handleEditProject() {
-		// With the simplified creation flow on, an ACTIVE project has nothing
-		// to edit on a creation form and the route sends it straight back to
-		// the project — so the button would look broken. Editing an active
-		// project belongs in Settings, which owns the name, the brief, the
-		// phase and the expected development start date. A DRAFT still resumes
-		// in the creation flow either way, because it has never been created.
+		// With the simplified creation flow on, an ACTIVE project goes to the
+		// edit screen — the same four fields the creation form asks for, put to
+		// a project that already exists. A DRAFT still resumes in the creation
+		// flow either way, because it has never been created.
 		if (simplifiedCreation && project.status !== "DRAFT") {
-			navigateToProjectSettingsTab(project.id, "general");
+			router.push(`${basePath}/projects/${project.id}/edit`);
 			return;
 		}
 

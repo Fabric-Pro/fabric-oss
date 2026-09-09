@@ -63,8 +63,8 @@ vi.mock("@saas/projects/components/ProjectCreationWizard", () => ({
 	ProjectCreationWizard: WizardStub,
 }));
 
-vi.mock("@saas/projects/components/SimplifiedProjectCreationForm", () => ({
-	SimplifiedProjectCreationForm: SimplifiedStub,
+vi.mock("@saas/projects/components/SimplifiedProjectForm", () => ({
+	SimplifiedProjectForm: SimplifiedStub,
 }));
 
 vi.mock("@saas/shared/components/PageBreadcrumbs", () => ({
@@ -188,16 +188,19 @@ describe("new-project page — an ACTIVE project on the creation route", () => {
 
 	// The "Edit Project" link on an ACTIVE project sends the user here with
 	// `?step=1&projectId=`, which is the requirements/code mismatch the card
-	// names: an already-live project has nothing to do on a creation form.
-	it("sends an ACTIVE project to the project itself", async () => {
+	// names: an already-live project has nothing to do on a creation form, so
+	// it lands on the edit screen instead.
+	it("sends an ACTIVE project to the edit screen", async () => {
 		mockIsFeatureEnabled.mockResolvedValue(true);
 		mockGetProjectSummaryById.mockResolvedValue(activeProject);
 
 		await expect(
 			callPage({ step: "1", projectId: "proj-live" }),
-		).rejects.toThrow("__REDIRECT__:/app/example-org/projects/proj-live");
+		).rejects.toThrow(
+			"__REDIRECT__:/app/example-org/projects/proj-live/edit",
+		);
 		expect(mockRedirect).toHaveBeenCalledWith(
-			"/app/example-org/projects/proj-live",
+			"/app/example-org/projects/proj-live/edit",
 		);
 	});
 

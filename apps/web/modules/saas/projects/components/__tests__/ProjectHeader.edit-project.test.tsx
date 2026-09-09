@@ -7,26 +7,23 @@
  * project straight back to the project — so the button navigated to the page
  * it was already on and read as dead.
  *
- * On, editing an active project goes to Settings, which owns the name, the
- * brief, the phase and the expected development start date. Off, the button
- * must behave exactly as it did before, or the rollback lever would be
- * changing a second thing as a side effect.
+ * On, editing an active project goes to the edit screen, which asks for the
+ * same four fields the creation form does. Off, the button must behave exactly
+ * as it did before, or the rollback lever would be changing a second thing as
+ * a side effect.
  *
  * A DRAFT resumes in the creation flow under either value: it has never been
- * created, so there is nothing in Settings to edit.
+ * created, so there is nothing live to edit.
  */
 
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { pushMock, useFeatureFlagMock, navigateToSettingsMock } = vi.hoisted(
-	() => ({
-		pushMock: vi.fn(),
-		useFeatureFlagMock: vi.fn(),
-		navigateToSettingsMock: vi.fn(),
-	}),
-);
+const { pushMock, useFeatureFlagMock } = vi.hoisted(() => ({
+	pushMock: vi.fn(),
+	useFeatureFlagMock: vi.fn(),
+}));
 
 vi.mock("next/navigation", () => ({
 	useRouter: () => ({
@@ -49,11 +46,6 @@ vi.mock("@saas/organizations/hooks", () => ({
 
 vi.mock("@saas/shared/components/FeatureFlagProvider", () => ({
 	useFeatureFlag: (key: string) => useFeatureFlagMock(key),
-}));
-
-vi.mock("../settings-tab-navigation", () => ({
-	navigateToProjectSettingsTab: (...args: unknown[]) =>
-		navigateToSettingsMock(...args),
 }));
 
 // Children the header composes but this test does not exercise. Each pulls in
@@ -114,16 +106,13 @@ describe("Edit Project — simplified creation on", () => {
 		useFeatureFlagMock.mockReturnValue(true);
 	});
 
-	it("opens Settings for an ACTIVE project instead of the creation route", async () => {
+	it("opens the edit screen for an ACTIVE project", async () => {
 		renderHeader("ACTIVE");
 		await clickEdit();
 
-		expect(navigateToSettingsMock).toHaveBeenCalledWith(
-			"proj-1",
-			"general",
+		expect(pushMock).toHaveBeenCalledWith(
+			"/app/example-org/projects/proj-1/edit",
 		);
-		// The bounce-back that made the button look dead.
-		expect(pushMock).not.toHaveBeenCalled();
 	});
 
 	it("still resumes a DRAFT in the creation flow", async () => {
@@ -133,7 +122,6 @@ describe("Edit Project — simplified creation on", () => {
 		expect(pushMock).toHaveBeenCalledWith(
 			"/app/example-org/projects/new?projectId=proj-1",
 		);
-		expect(navigateToSettingsMock).not.toHaveBeenCalled();
 	});
 
 	it("reads the flag it claims to read", async () => {
@@ -158,7 +146,6 @@ describe("Edit Project — simplified creation off", () => {
 		expect(pushMock).toHaveBeenCalledWith(
 			"/app/example-org/projects/new?step=1&projectId=proj-1",
 		);
-		expect(navigateToSettingsMock).not.toHaveBeenCalled();
 	});
 
 	it("sends a DRAFT to the wizard with no step", async () => {

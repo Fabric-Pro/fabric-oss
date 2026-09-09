@@ -134,17 +134,20 @@ vi.mock("@shared/lib/orpc-query-utils", () => ({
 	},
 }));
 
-import { SimplifiedProjectCreationForm } from "@saas/projects/components/SimplifiedProjectCreationForm";
+import { SimplifiedProjectForm } from "@saas/projects/components/SimplifiedProjectForm";
 
-function renderForm(props: { projectId?: string } = {}) {
+function renderForm(
+	props: { projectId?: string; mode?: "create" | "edit" } = {},
+) {
 	const queryClient = new QueryClient({
 		defaultOptions: { queries: { retry: false } },
 	});
 	return render(
 		<QueryClientProvider client={queryClient}>
-			<SimplifiedProjectCreationForm
+			<SimplifiedProjectForm
 				organizationId="org_1"
 				projectId={props.projectId}
+				mode={props.mode}
 			/>
 		</QueryClientProvider>,
 	);
@@ -537,5 +540,104 @@ describe("SimplifiedProjectCreationForm — resuming a draft", () => {
 		await waitFor(() => {
 			expect(updateProjectMock).toHaveBeenCalledTimes(1);
 		});
+	});
+});
+
+describe("SimplifiedProjectForm — editing a live project", () => {
+	const liveProject = {
+		project: {
+			id: "proj_live",
+			name: "Customer portal",
+			description: BRIEF_51,
+			status: "ACTIVE",
+			draftKey: null,
+			projectPhase: "DEVELOPMENT_EXECUTION",
+			expectedDevelopmentStartDate: null,
+			canUpdateProject: true,
+		},
+	};
+
+	beforeEach(() => {
+		projectGetMock.mockResolvedValue(liveProject);
+		updateProjectMock.mockResolvedValue({ project: { id: "proj_live" } });
+	});
+
+	async function renderEditor() {
+		renderForm({ projectId: "proj_live", mode: "edit" });
+		await waitFor(() => {
+			expect(screen.getByTestId("simplified-project-name")).toHaveValue(
+				"Customer portal",
+			);
+		});
+	}
+
+	it("prefills the same four fields from the live project", async () => {
+		await renderEditor();
+
+		expect(
+			screen.getByTestId("simplified-project-description"),
+		).toHaveValue(BRIEF_51);
+		expect(
+			screen.getByTestId("simplified-create-project"),
+		).toHaveTextContent("Save changes");
+	});
+
+	// The whole difference between editing and activating a draft. Sending
+	// `status` here would let an ordinary edit re-activate a project that had
+	// been archived.
+	it("saves without writing the project's status", async () => {
+		const user = userEvent.setup();
+		await renderEditor();
+
+		await user.clear(screen.getByTestId("simplified-project-name"));
+		await user.type(
+			screen.getByTestId("simplified-project-name"),
+			"Partner portal",
+		);
+		await user.click(screen.getByTestId("simplified-create-project"));
+
+		await waitFor(() => {
+			expect(updateProjectMock).toHaveBeenCalledTimes(1);
+		});
+		const payload = updateProjectMock.mock.calls[0]?.[0];
+		expect(payload).toMatchObject({
+			id: "proj_live",
+			name: "Partner portal",
+		});
+		expect(payload).not.toHaveProperty("status");
+		expect(createProjectMock).not.toHaveBeenCalled();
+		expect(pushMock).toHaveBeenCalledWith(
+			"/app/example-org/projects/proj_live",
+		);
+	});
+
+	// A live project is not a draft. Autosaving one would write a DRAFT row
+	// beside it and surface the project in the "unfinished draft" banner.
+	it("never autosaves a draft while editing", async () => {
+		const user = userEvent.setup();
+		await renderEditor();
+
+		await user.type(
+			screen.getByTestId("simplified-project-name"),
+			" rebuilt",
+		);
+		await new Promise((resolve) => setTimeout(resolve, 700));
+
+		expect(saveDraftMock).not.toHaveBeenCalled();
+	});
+
+	// `checkName` has no notion of "except this one", so leaving the name
+	// untouched would report the project as a duplicate of itself and disable
+	// the save button.
+	it("does not flag the project's own name as taken", async () => {
+		checkNameMock.mockResolvedValue({ available: false });
+		await renderEditor();
+
+		await waitFor(() => {
+			expect(
+				screen.getByTestId("simplified-create-project"),
+			).toBeEnabled();
+		});
+		expect(checkNameMock).not.toHaveBeenCalled();
 	});
 });
