@@ -287,6 +287,7 @@ import {
 	generateShortPostProcedure,
 	generateStakeholderEmailProcedure,
 	getPlanningAnalysisProcedure,
+	getPublishingListPreferenceProcedure,
 	getPublishingSuiteSettingsProcedure,
 	getPublishingTopicProcedure,
 	latestPublishingCycleProcedure,
@@ -296,12 +297,14 @@ import {
 	listPublishingTopicsProcedure,
 	listTopicDecisionsProcedure,
 	listTopicDraftsProcedure,
+	markTopicDraftReadProcedure,
 	saveAnalysisRevisionProcedure,
 	saveBlogPostBodyProcedure,
 	saveCaseStudyBodyProcedure,
 	saveStakeholderEmailBodyProcedure,
 	selectLinkedInPostOptionProcedure,
 	selectShortPostOptionProcedure,
+	setPublishingListPreferenceProcedure,
 	setTopicReadStateProcedure,
 	setTopicSnoozeProcedure,
 	updatePublishingSuiteSettingsProcedure,
@@ -1398,6 +1401,11 @@ export const projectsRouter = {
 		updateTopicAssignees: updatePublishingTopicAssigneesProcedure,
 		setTopicSnooze: setTopicSnoozeProcedure,
 		setTopicReadState: setTopicReadStateProcedure,
+		// The caller's OWN Inbox sort and layout for this project. Read-gated,
+		// not update-gated: how your list is sorted is not an edit to the
+		// project, and a read-only member must not be stuck on a default.
+		getListPreference: getPublishingListPreferenceProcedure,
+		setListPreference: setPublishingListPreferenceProcedure,
 		getSettings: getPublishingSuiteSettingsProcedure,
 		updateSettings: updatePublishingSuiteSettingsProcedure,
 		generateNow: generatePublishingTopicsNowProcedure,
@@ -1430,6 +1438,7 @@ export const projectsRouter = {
 		// so a failed regeneration cannot blank a good draft the reader still
 		// wants.
 		listTopicDrafts: listTopicDraftsProcedure,
+		markTopicDraftRead: markTopicDraftReadProcedure,
 		// #1853 (2B-2): Short Post / Tweet. `generateShortPost` starts one run
 		// and returns immediately — the panel polls `listTopicDrafts` for the
 		// result. `selectShortPostOption` adopts one of the three generated

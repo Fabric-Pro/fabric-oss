@@ -9,6 +9,7 @@
 
 import { describe, expect, it } from "vitest";
 import {
+	buildPlanningAnalysisLockedClauses,
 	composePlanningAnalysisPrompt,
 	deriveQuestionId,
 	type PlanningAnalysisContext,
@@ -321,7 +322,17 @@ describe("resolveConfirmationQuestions", () => {
 	// The questions are therefore DERIVED from the recommendations that carry a
 	// confirmation requirement, and merged with whatever the model volunteered.
 
-	it("mints a question for a content type that needs confirmation", () => {
+	/**
+	 * A content type is a SETTING, not a question — the card owner said so
+	 * twice ("its simple setting, not question, it could be checkbox"). It is
+	 * the content-types checklist now, where the analysis's own rationale sits
+	 * ON the choice rather than being re-asked underneath it.
+	 *
+	 * The bucket is untouched: the analysis still classifies, the checklist
+	 * groups by that verdict and the tab strip still badges from it. Only the
+	 * question is gone.
+	 */
+	it("mints NO question for a content type — it is a setting", () => {
 		const questions = resolveConfirmationQuestions("topic-1", {
 			contentTypes: {
 				needsConfirmation: [
@@ -333,9 +344,24 @@ describe("resolveConfirmationQuestions", () => {
 			},
 		});
 
-		expect(questions).toHaveLength(1);
-		expect(questions[0].question).toMatch(/case study/i);
-		expect(questions[0].source).toBe("DERIVED");
+		expect(questions).toEqual([]);
+	});
+
+	it("drops a model-authored content-type question too", () => {
+		// Dropping only the derived one would leave the model free to ask for a
+		// decision the reader already has a control for — and it was one of the
+		// two producers asking about the same format twice.
+		const questions = resolveConfirmationQuestions("topic-1", {
+			recommendedQuestions: [
+				{
+					decisionKind: "CONTENT_TYPE",
+					subject: "the second social format",
+					question: "Should a LinkedIn Post be produced as well?",
+				},
+			],
+		});
+
+		expect(questions).toEqual([]);
 	});
 
 	it("mints a question for an asset that requires approval", () => {
@@ -408,6 +434,89 @@ describe("resolveConfirmationQuestions", () => {
 		expect(questions).toHaveLength(1);
 		expect(questions[0].source).toBe("MODEL");
 		expect(questions[0].question).toMatch(/account team/i);
+	});
+
+	/**
+	 * The defect the owner hit on staging: ONE decision, TWO cards.
+	 *
+	 * The topic asked "Should we produce a LinkedIn Post for this topic?" from
+	 * the classification bucket AND "Should a LinkedIn Post be produced in
+	 * addition to the already-suggested Tweet and Blog Post, given LinkedIn's
+	 * different truncation behaviour?" from the model — and the screenshot
+	 * approval appeared three times the same way. The identity hash cannot
+	 * collapse them, because the two `subject` strings are written
+	 * independently and only merge on an exact match.
+	 *
+	 * `CONTENT_TYPE` and `ASSET_APPROVAL` are fully derivable from the buckets,
+	 * so a model question of that kind, once a bucket has produced one, is a
+	 * restatement by construction.
+	 */
+	it("drops a model restatement of a decision the buckets already cover", () => {
+		const questions = resolveConfirmationQuestions("topic-1", {
+			supportingAssets: {
+				requiresApproval: [
+					{
+						type: "Screenshot",
+						rationale: "Internal UI is sensitive.",
+					},
+				],
+			},
+			recommendedQuestions: [
+				{
+					decisionKind: "ASSET_APPROVAL",
+					subject: "the internal UI capture",
+					question:
+						"Can a screenshot of the Customize control be used to support the blog post?",
+				},
+			],
+		});
+
+		expect(questions).toHaveLength(1);
+		expect(questions[0].source).toBe("DERIVED");
+	});
+
+	it("keeps a model question of a kind no bucket raised", () => {
+		// The rule is scoped to kinds the classification ACTUALLY filled. With
+		// no asset requiring approval, a model question about one is the only
+		// thing raising it and must survive.
+		const questions = resolveConfirmationQuestions("topic-1", {
+			recommendedQuestions: [
+				{
+					decisionKind: "ASSET_APPROVAL",
+					subject: "the architecture diagram",
+					question: "May we publish the architecture diagram?",
+				},
+			],
+		});
+
+		expect(questions).toHaveLength(1);
+		expect(questions.some((q) => q.decisionKind === "ASSET_APPROVAL")).toBe(
+			true,
+		);
+	});
+
+	it("keeps a model question of an uncovered KIND even when buckets are full", () => {
+		// AUDIENCE_SCOPE is not derivable from any bucket, so the rule must not
+		// touch it however much the classification produced.
+		const questions = resolveConfirmationQuestions("topic-1", {
+			contentTypes: {
+				needsConfirmation: [{ type: "LinkedIn Post", rationale: "r" }],
+			},
+			supportingAssets: {
+				requiresApproval: [{ type: "Screenshot", rationale: "r" }],
+			},
+			recommendedQuestions: [
+				{
+					decisionKind: "AUDIENCE_SCOPE",
+					subject: "the audience",
+					question: "Is this external-ready?",
+				},
+			],
+		});
+
+		expect(questions.some((q) => q.decisionKind === "AUDIENCE_SCOPE")).toBe(
+			true,
+		);
 	});
 
 	it("gives every question a stable id", () => {
@@ -615,5 +724,36 @@ describe("agent key", () => {
 		expect(PUBLISHING_PLANNING_ANALYSIS_AGENT_KEY).toBe(
 			"publishing_topic_planning_analysis",
 		);
+	});
+});
+
+/**
+ * The project's `autoProposeAnswers` switch.
+ *
+ * Gated in the PROMPT rather than by stripping the answer afterwards, so
+ * turning it off actually stops the model writing them. A post-hoc filter would
+ * spend the tokens and throw the result away — a setting that costs exactly
+ * what it claims to save.
+ */
+describe("buildPlanningAnalysisLockedClauses — suggested answers", () => {
+	it("asks for several options by default", () => {
+		expect(buildPlanningAnalysisLockedClauses()).toMatch(
+			/recommendedAnswers/,
+		);
+	});
+
+	it("asks for them when the project has the switch on", () => {
+		expect(
+			buildPlanningAnalysisLockedClauses({ autoProposeAnswers: true }),
+		).toMatch(/recommendedAnswers/);
+	});
+
+	it("tells the model NOT to propose when the project has it off", () => {
+		const clauses = buildPlanningAnalysisLockedClauses({
+			autoProposeAnswers: false,
+		});
+
+		expect(clauses).toMatch(/do not propose answers/i);
+		expect(clauses).not.toMatch(/between two and four/i);
 	});
 });

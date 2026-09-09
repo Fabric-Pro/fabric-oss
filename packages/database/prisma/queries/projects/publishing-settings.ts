@@ -11,11 +11,12 @@
  * tenant. Publishing already hit and fixed this exact race in
  * `createManualPublishingTopic` (see its C-High note); this follows that path.
  */
-import type { PublishingTopicPostType } from "../../generated/client";
+
 import type { PublishingCadence } from "../../../src/publishing-cadence";
 import { DEFAULT_PUBLISHING_CADENCE } from "../../../src/publishing-cadence";
 import type { PublishingChatChannel } from "../../../src/publishing-chat-channel";
 import { db } from "../../client";
+import type { PublishingTopicPostType } from "../../generated/client";
 
 /** The project row vanished between authorization and the locked read. */
 export class PublishingSettingsProjectNotFoundError extends Error {
@@ -45,6 +46,7 @@ const PUBLISHING_SUITE_SETTINGS_PUBLIC_SELECT = {
 	cadence: true,
 	lookbackDays: true,
 	notificationsEnabled: true,
+	autoProposeAnswers: true,
 	chatChannels: true,
 	preferredThemes: true,
 	preferredPostTypes: true,
@@ -64,6 +66,7 @@ export function publishingSuiteSettingsDefaults(projectId: string) {
 		cadence: DEFAULT_PUBLISHING_CADENCE as string,
 		lookbackDays: null as number | null,
 		notificationsEnabled: true,
+		autoProposeAnswers: true,
 		chatChannels: null as PublishingChatChannel[] | null,
 		// Empty, not null — these mirror the columns' own `@default([])`, so a
 		// project with no settings row and a project that has one but configured
@@ -96,6 +99,8 @@ export interface UpsertPublishingSuiteSettingsInput {
 	cadence?: PublishingCadence;
 	lookbackDays?: number | null;
 	notificationsEnabled?: boolean;
+	/** Whether the analysis drafts suggested answers for its questions. */
+	autoProposeAnswers?: boolean;
 	/**
 	 * The selected broadcast targets. Omitted leaves the stored list untouched;
 	 * `[]` is the OFF switch and must reach the column as an empty array, not be
@@ -183,6 +188,7 @@ export async function upsertPublishingSuiteSettings(
 				cadence: rest.cadence ?? DEFAULT_PUBLISHING_CADENCE,
 				lookbackDays: rest.lookbackDays ?? null,
 				notificationsEnabled: rest.notificationsEnabled ?? true,
+				autoProposeAnswers: rest.autoProposeAnswers ?? true,
 				chatChannels: rest.chatChannels,
 				preferredThemes: rest.preferredThemes ?? [],
 				preferredPostTypes: rest.preferredPostTypes ?? [],

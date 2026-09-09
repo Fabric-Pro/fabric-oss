@@ -261,10 +261,22 @@ function readCaseStudyDocument(content: unknown): CaseStudyDocument | null {
 function composeExportMarkdown({
 	body,
 	doc,
+	safetyDoc,
 	bodyIsFromLatest,
 }: {
 	body: string;
 	doc: CaseStudyDocument | null;
+	/**
+	 * Where the SAFETY NOTE comes from — the version the body was adopted from
+	 * when that is known, and the newest ready one otherwise.
+	 *
+	 * Separate from `doc` because the two describe different things. The rest
+	 * of this header is metadata about the candidate, which the caveat below
+	 * already flags as belonging to another version; the safety note describes
+	 * the TEXT being exported, and getting that wrong means shipping a document
+	 * whose stated generalizations belong to a draft nobody adopted.
+	 */
+	safetyDoc: CaseStudyDocument | null;
 	bodyIsFromLatest: boolean;
 }): string {
 	if (!doc) {
@@ -282,11 +294,14 @@ function composeExportMarkdown({
 		!doc.isScaffold &&
 		doc.customerIdentity === "APPROVED" &&
 		doc.metricsBasis === "CONFIRMED" &&
-		!doc.safetyNote &&
 		doc.inputsNeeded.length === 0 &&
 		doc.assetsNeedingConfirmation.length === 0 &&
 		doc.clamped.assets.length === 0 &&
-		bodyIsFromLatest;
+		bodyIsFromLatest &&
+		// The note that would be EXPORTED, not the newest one — a body adopted
+		// from a generalized version is not clean just because the candidate
+		// above it happens to be.
+		!safetyDoc?.safetyNote;
 	if (isClean) {
 		return body;
 	}
@@ -309,11 +324,15 @@ function composeExportMarkdown({
 		}`,
 	];
 
+	// Still driven by the version relationship: the metadata ABOVE this line —
+	// approval status, results basis, scaffold state — is the candidate's and
+	// genuinely describes another version, even once the safety note below has
+	// been corrected to the adopted one.
 	if (!bodyIsFromLatest) {
 		lines.push(`- ${OTHER_VERSION_NOTE}`);
 	}
-	if (doc.safetyNote) {
-		lines.push(`- Safety note: ${doc.safetyNote}`);
+	if (safetyDoc?.safetyNote) {
+		lines.push(`- Safety note: ${safetyDoc.safetyNote}`);
 	}
 	if (doc.assetsNeedingConfirmation.length > 0) {
 		lines.push(
@@ -500,8 +519,29 @@ export function CaseStudyPanel({
 	 * beside an editor.
 	 */
 	const bodyIsFromLatest = !hasUnadoptedVersion;
-	const notesDescribeAnotherVersion =
+	const bodyIsFromAnotherVersion =
 		!bodyIsFromLatest && working?.hasBody === true;
+
+	/**
+	 * The safety fields of the version the BODY came from.
+	 *
+	 * `doc` is the newest READY candidate, which is the right source for the
+	 * comparison panes and the wrong one for anything describing the text in
+	 * the editor. Adding a qualifier — "these notes describe another version" —
+	 * covered half of it, and could not reach the other half at all: when v1
+	 * was generalized and v2 needs none, `doc.safetyNote` is null, the section
+	 * does not render, and there is nothing on screen to qualify. The reader
+	 * loses the explanation of the document they are actually holding, and the
+	 * export carries it away silently.
+	 *
+	 * So the note is read off the adopted version when there is one, and the
+	 * qualifier survives only for the case it can still describe — a source row
+	 * gone past retention, where the newest note is all there is.
+	 */
+	const adoptedDoc = readCaseStudyDocument(working?.sourceContent ?? null);
+	const safetyDoc = bodyIsFromAnotherVersion && adoptedDoc ? adoptedDoc : doc;
+	const notesDescribeAnotherVersion =
+		bodyIsFromAnotherVersion && adoptedDoc === null;
 
 	const handleAdopt = () => {
 		if (!readyId) {
@@ -642,6 +682,7 @@ export function CaseStudyPanel({
 							markdown={composeExportMarkdown({
 								body: bodyValue,
 								doc,
+								safetyDoc,
 								bodyIsFromLatest,
 							})}
 							filename={doc?.title ?? "case-study"}
@@ -930,10 +971,10 @@ export function CaseStudyPanel({
 
 			{doc ? (
 				<>
-					{doc.safetyNote ? (
+					{safetyDoc?.safetyNote ? (
 						<GeneralizationNotes
 							heading="How this was generalized"
-							note={doc.safetyNote}
+							note={safetyDoc.safetyNote}
 							describesAnotherVersion={
 								notesDescribeAnotherVersion
 							}

@@ -252,8 +252,14 @@ export function resolveRestrictions(
 	return { global, byPostType };
 }
 
-/** The contentTypes buckets, flattened to `postType -> (bucket, rationale)`. */
-function readContentTypeBuckets(
+/**
+ * The contentTypes buckets, flattened to `postType -> (bucket, rationale)`.
+ *
+ * Exported since the content-types checklist groups by the same verdict the tab
+ * strip badges from — two readers of one classification, and a second copy of
+ * this fold would let the list and the tabs disagree about a topic.
+ */
+export function readContentTypeBuckets(
 	analysis: PlanningAnalysisDocument | null,
 ): Map<PostType, { bucket: AnalysisBucket; rationale: string }> {
 	const out = new Map<

@@ -116,6 +116,8 @@ const THEME_MAX = 120;
 const RATIONALE_MAX = 240;
 const ANGLE_MAX = 60; // FR9/10: short free-text topic-angle label (prompt asks ≤~4 words)
 export const SUBJECT_MAX = 120; // FR9/10 multiplication: canonical subject line (a touch longer than the angle label)
+/** One short clause riding a row, so it must not wrap the card. */
+export const HIGHLIGHT_REASON_MAX = 200;
 export const MULTIPLICATION_CAP = 2; // FR9/10 multiplication: max angle-records per subject per cycle (D3)
 
 /**
@@ -249,6 +251,22 @@ export const PublishingTopicSuggestionsSchema = z.object({
 				.default([]),
 			angle: z.string().max(ANGLE_MAX).optional(),
 			subject: z.string().max(SUBJECT_MAX).optional(),
+			/**
+			 * Why this topic is worth a look before the others — set on at most
+			 * the strongest few of a batch, and `null` on all the rest.
+			 *
+			 * `nullable` rather than merely optional because the producer always
+			 * decides: a topic the model did not rank highly gets an explicit
+			 * `null`, which is a different statement from a field nobody
+			 * computed. The COUNT cap lives in `summarizeTopicSuggestions`,
+			 * where the whole batch is visible; this only bounds one string.
+			 */
+			// `.nullish()` and NOT `.default(null)`: a default makes the parsed
+			// type REQUIRED, which would force every fixture and every caller
+			// that builds a topic by hand to name a field the producer already
+			// always sets. The producer's own `?? null` is where the absence is
+			// resolved.
+			highlightReason: z.string().max(HIGHLIGHT_REASON_MAX).nullish(),
 		}),
 	),
 });

@@ -24,7 +24,7 @@
  *    evidence that the decision went away and the row must stay restorable.
  */
 
-import { db } from "../../client";
+import { db, Prisma } from "../../client"; // client.ts re-exports both — NOT ../../../src
 
 /** The subset of a resolved analysis question this table needs. */
 export interface ReconcilableQuestion {
@@ -33,6 +33,8 @@ export interface ReconcilableQuestion {
 	subject: string | null;
 	question: string;
 	recommendedResponse: string | null;
+	/** Several answers to choose between; `null` when the model offered none. */
+	answerOptions?: { text: string; justification: string }[] | null;
 	whyItMatters: string | null;
 }
 
@@ -149,6 +151,10 @@ export async function reconcileTopicQuestions(
 					...(reactivating ? { status: "OPEN" as const } : {}),
 					summary: question.question,
 					recommendedResponse: question.recommendedResponse,
+					answerOptions:
+						(question.answerOptions as
+							| Prisma.InputJsonValue
+							| undefined) ?? Prisma.DbNull,
 					whyItMatters: question.whyItMatters,
 					// `decisionKind`/`subject` are persisted for identity and
 					// provenance, not for display: they are the inputs
@@ -191,6 +197,10 @@ export async function reconcileTopicQuestions(
 				subject: question.subject,
 				summary: question.question,
 				recommendedResponse: question.recommendedResponse,
+				answerOptions:
+					(question.answerOptions as
+						| Prisma.InputJsonValue
+						| undefined) ?? Prisma.DbNull,
 				whyItMatters: question.whyItMatters,
 				analysisVersion: input.analysisVersion,
 			},
@@ -291,6 +301,7 @@ export interface TopicDecisionEntry {
 	summary: string | null;
 	content: string | null;
 	recommendedResponse: string | null;
+	answerOptions: { text: string; justification: string }[] | null;
 	whyItMatters: string | null;
 	answerSource: string | null;
 	analysisVersion: number | null;
