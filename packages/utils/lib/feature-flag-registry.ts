@@ -187,6 +187,15 @@ export const FEATURE_FLAG_REGISTRY = {
 		default: false,
 		note: "Fizzy #2355. This flag gates a capability REMOVAL, which is why it is registered here rather than read from the env: with it on, an EDITOR can no longer unlink a meeting or a monitored channel, and a kill switch that needs a redeploy is not a kill switch. Off restores today's floor exactly — unlink stays on PROJECT_UPDATE and the row renders the single unlink button — and any meeting already stopped keeps its deactivatedAt untouched, so flipping it back on restores that state. Linking is deliberately NOT gated either way: a team member may need to add a meeting the owner was not in.",
 	},
+	SIMPLIFIED_PROJECT_CREATION: {
+		label: "Simplified project creation",
+		description:
+			"Serves a single-step new-project form — title, description, phase and, for Discovery/Planning, an expected development start date — in place of the five-step setup wizard.",
+		envVar: "FABRIC_FEATURE_SIMPLIFIED_PROJECT_CREATION",
+		default: false,
+		orgScopable: true,
+		note: 'Fizzy #2247. A rollback lever, not a phased migration: the five-step wizard is left intact behind this switch, so off restores it exactly, with no redeploy and no migration. Deliberately NOT ANDed with PROJECT_READINESS even though the readiness checklist is what replaces the removed steps as the guidance surface — nothing in the simplified path reads readiness (the panel mounts above the project tab bar on its own), so the dependency is one of rollout order rather than of code, and a code AND would make this switch read "on" while the behaviour was off because readiness had been toggled for an unrelated reason. Turn readiness on first; a deployment that turns this on without it gets a form whose follow-up guidance is missing, which is degraded rather than broken, because every field the wizard collected has a post-creation home in project settings. Drafts are unaffected in both directions: the simplified form autosaves through the same saveDraft procedure and resumes an existing DRAFT by its stored draftKey, so a draft started under either path is resumable under the other. What this switch does NOT reach: the wizard remains the only way to run codebase analysis or generate a document set at creation time, so while it is on those two actions are unavailable to a new project — deliberate, and the reason the wizard is not deleted here.',
+	},
 } as const satisfies Record<string, FeatureFlagDefinition>;
 
 export type FeatureFlagKey = keyof typeof FEATURE_FLAG_REGISTRY;
