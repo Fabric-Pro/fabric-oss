@@ -1,6 +1,7 @@
 "use client";
 
 import { useOrganizationContext } from "@saas/organizations/hooks/use-organization-context";
+import { AnthropicCapabilityNotice } from "@saas/settings/components/AnthropicCapabilityNotice";
 import { SettingsItem } from "@saas/shared/components/SettingsItem";
 import { orpcClient } from "@shared/lib/orpc-client";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -1105,7 +1106,7 @@ export function OrgAiProvidersSettingsForm({
 							<ServerIcon className="size-4" />
 							Direct Providers
 						</h3>
-						<div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+						<div className="grid items-start gap-4 md:grid-cols-2 lg:grid-cols-3">
 							{directProviders.map((provider) => {
 								const isConfigured = isProviderConfigured(
 									provider.id,
@@ -1171,6 +1172,10 @@ export function OrgAiProvidersSettingsForm({
 													</p>
 												</div>
 											</div>
+
+											<AnthropicCapabilityNotice
+												providerId={provider.id}
+											/>
 
 											<div className="flex gap-2 flex-wrap">
 												<Button
