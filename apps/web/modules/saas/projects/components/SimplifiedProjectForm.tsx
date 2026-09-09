@@ -53,29 +53,50 @@ function todayIsoDate(): string {
 	return new Date().toLocaleDateString("en-CA");
 }
 
-export interface SimplifiedProjectCreationFormProps {
+type SimplifiedProjectFormMode = "create" | "edit";
+
+export interface SimplifiedProjectFormProps {
 	organizationId?: string;
-	/** Present when resuming a DRAFT from the banner or an edit link. */
+	/**
+	 * The project this form is working on: a DRAFT being resumed in `create`
+	 * mode, or the project being edited in `edit` mode.
+	 */
 	projectId?: string;
+	/**
+	 * `create` activates a project — a fresh one, or a DRAFT being resumed.
+	 * `edit` changes one that is already live and never touches its status.
+	 */
+	mode?: SimplifiedProjectFormMode;
 }
 
 /**
- * The single-step new-project form (Fizzy #2247).
+ * The single-step form for a project's basics (Fizzy #2247).
  *
- * Collects only what the readiness checklist cannot infer or ask for later —
+ * Asks only for what the readiness checklist cannot infer or collect later —
  * title, brief, phase, and a development start date while the project is still
- * in Discovery — then activates the project and hands the user to the project
- * Overview, where the checklist takes over as the guidance surface. It
- * deliberately starts nothing: no codebase analysis, no document generation.
+ * in Discovery. Everything the five-step wizard used to gather beyond these has
+ * a home in the project's own tabs and settings.
  *
- * Served in place of `ProjectCreationWizard` when SIMPLIFIED_PROJECT_CREATION
- * resolves true; the wizard is left intact behind that switch, so turning it
- * off restores the previous flow exactly.
+ * It serves two screens, because they ask the same four questions and differ
+ * only in what they do with the answers. `create` activates a project, whether
+ * fresh or resumed from a DRAFT, and lands on the project Overview where the
+ * checklist takes over. `edit` changes a project that is already live and never
+ * writes its status. Keeping them as one component is what stops the two
+ * screens drifting into asking for different things.
+ *
+ * Both are served only when SIMPLIFIED_PROJECT_CREATION resolves true. The
+ * wizard is left intact behind that switch, so turning it off restores the
+ * previous flow exactly — and the edit screen simply ceases to exist, because
+ * the wizard is the edit surface again.
+ *
+ * It deliberately starts nothing: no codebase analysis, no document generation.
  */
-export function SimplifiedProjectCreationForm({
+export function SimplifiedProjectForm({
 	organizationId: propsOrganizationId,
 	projectId,
-}: SimplifiedProjectCreationFormProps = {}) {
+	mode = "create",
+}: SimplifiedProjectFormProps = {}) {
+	const isEditMode = mode === "edit";
 	const router = useRouter();
 	const queryClient = useQueryClient();
 	const { organizationId: contextOrgId, basePath } = useOrganizationContext();
@@ -107,10 +128,10 @@ export function SimplifiedProjectCreationForm({
 	// DRAFT reuses the key already stored on the row, so continuing one and
 	// closing the tab again updates that draft instead of writing a second.
 	useEffect(() => {
-		if (!projectId) {
+		if (!projectId && !isEditMode) {
 			setDraftKey((prev) => prev || createDraftKey());
 		}
-	}, [projectId]);
+	}, [projectId, isEditMode]);
 
 	const { data: existingProjectData, isLoading: isLoadingProject } = useQuery(
 		{
@@ -142,6 +163,12 @@ export function SimplifiedProjectCreationForm({
 				: "",
 		});
 
+		if (isEditMode) {
+			// An already-live project. Nothing about a draft applies: no
+			// draftKey, no autosave, and its status is never written.
+			return;
+		}
+
 		if (project.status === "DRAFT") {
 			setResumedDraftId(project.id);
 			// A DRAFT written by the v1 API or the agent tool carries no
@@ -153,7 +180,7 @@ export function SimplifiedProjectCreationForm({
 				setDraftKey(project.draftKey);
 			}
 		}
-	}, [existingProjectData]);
+	}, [existingProjectData, isEditMode]);
 
 	const todayIso = todayIsoDate();
 
@@ -168,10 +195,15 @@ export function SimplifiedProjectCreationForm({
 				organizationId: effectiveOrganizationId ?? null,
 			},
 		}),
-		enabled: !resumedDraftId && trimmedDebouncedName.length >= 1,
+		enabled:
+			!resumedDraftId && !isEditMode && trimmedDebouncedName.length >= 1,
 	});
+	// Skipped when working on a project that already exists — the endpoint has
+	// no notion of "except this one", so an unchanged name would report itself
+	// as taken and block the save.
 	const isDuplicateName =
 		!resumedDraftId &&
+		!isEditMode &&
 		trimmedDebouncedName.length >= 1 &&
 		nameCheckData?.available === false;
 
@@ -219,7 +251,12 @@ export function SimplifiedProjectCreationForm({
 			// user closed the tab. `upsertDraftProjectByKey` is idempotent by
 			// draftKey and carries an explicit P2002 race branch, so overlapping
 			// saves are a case the server already handles.
-			if (hasActivatedRef.current || !draftKey || !data.name.trim()) {
+			if (
+				isEditMode ||
+				hasActivatedRef.current ||
+				!draftKey ||
+				!data.name.trim()
+			) {
 				return;
 			}
 			saveDraftMutation.mutate({
@@ -240,7 +277,12 @@ export function SimplifiedProjectCreationForm({
 				currentStep: 1,
 			});
 		},
-		[draftKey, effectiveOrganizationId, saveDraftMutation.mutate],
+		[
+			draftKey,
+			effectiveOrganizationId,
+			isEditMode,
+			saveDraftMutation.mutate,
+		],
 	);
 
 	// A ref keeps the effect's dependency list stable, so the debounce is not
@@ -254,6 +296,11 @@ export function SimplifiedProjectCreationForm({
 
 	const goToProject = (id: string) => {
 		hasActivatedRef.current = true;
+		if (isEditMode) {
+			toast.success("Project updated");
+			router.push(`${projectsBasePath}/${id}`);
+			return;
+		}
 		queryClient.invalidateQueries({
 			queryKey: orpc.projects.listDrafts.queryOptions({
 				input: { organizationId: effectiveOrganizationId ?? null },
@@ -339,6 +386,22 @@ export function SimplifiedProjectCreationForm({
 				? new Date(formData.expectedDevelopmentStartDate)
 				: undefined;
 
+		// Editing a live project: same four fields, but its status is never
+		// written — that is the whole difference between this and activating a
+		// draft, and sending `status` here would let an edit re-activate a
+		// project someone had archived.
+		if (isEditMode && projectId) {
+			updateMutation.mutate({
+				id: projectId,
+				organizationId: effectiveOrganizationId ?? null,
+				name: formData.name.trim(),
+				description: formData.description,
+				projectPhase: formData.projectPhase as ProjectPhase,
+				expectedDevelopmentStartDate: startDate ?? null,
+			});
+			return;
+		}
+
 		if (resumedDraftId) {
 			updateMutation.mutate({
 				id: resumedDraftId,
@@ -382,11 +445,16 @@ export function SimplifiedProjectCreationForm({
 					className="font-normal text-3xl leading-tight"
 					style={{ fontFamily: "var(--font-serif)" }}
 				>
-					{resumedDraftId ? "Continue your project" : "New project"}
+					{isEditMode
+						? "Edit project"
+						: resumedDraftId
+							? "Continue your project"
+							: "New project"}
 				</h1>
 				<p className="mt-2 text-muted-foreground text-sm">
-					Start a project with the basics. Fabric will guide setup
-					after creation.
+					{isEditMode
+						? "The basics Fabric works from. Everything else lives in the project's own tabs and settings."
+						: "Start a project with the basics. Fabric will guide setup after creation."}
 				</p>
 			</div>
 
@@ -535,7 +603,13 @@ export function SimplifiedProjectCreationForm({
 					<Button
 						type="button"
 						variant="ghost"
-						onClick={() => router.push(projectsBasePath)}
+						onClick={() =>
+							router.push(
+								isEditMode && projectId
+									? `${projectsBasePath}/${projectId}`
+									: projectsBasePath,
+							)
+						}
 						disabled={isSubmitting}
 					>
 						Cancel
@@ -548,7 +622,7 @@ export function SimplifiedProjectCreationForm({
 						{isSubmitting && (
 							<Loader2Icon className="mr-2 size-4 animate-spin" />
 						)}
-						Create Project
+						{isEditMode ? "Save changes" : "Create Project"}
 					</Button>
 				</div>
 			</form>

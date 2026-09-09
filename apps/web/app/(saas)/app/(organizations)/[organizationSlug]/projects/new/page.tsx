@@ -1,7 +1,7 @@
 import { getProjectSummaryById, isFeatureEnabled } from "@repo/database";
 import { getActiveOrganization, getSession } from "@saas/auth/lib/server";
 import { ProjectCreationWizard } from "@saas/projects/components/ProjectCreationWizard";
-import { SimplifiedProjectCreationForm } from "@saas/projects/components/SimplifiedProjectCreationForm";
+import { SimplifiedProjectForm } from "@saas/projects/components/SimplifiedProjectForm";
 import { PageBreadcrumbs } from "@saas/shared/components/PageBreadcrumbs";
 import { TopRightControls } from "@saas/shared/components/TopRightControls";
 import { redirect } from "next/navigation";
@@ -48,13 +48,14 @@ export default async function NewProjectPage({
 		: null;
 	const projectName = project?.name ?? null;
 
-	// An ACTIVE project has nothing to do on a creation form — its fields are
-	// edited in project settings. The old "Edit Project" link sends one here
-	// with `?step=1`, which is the requirements/code mismatch the card names.
+	// An ACTIVE project has nothing to do on a creation form. The old "Edit
+	// Project" link sends one here with `?step=1`, which is the
+	// requirements/code mismatch the card names; it now lands on the edit
+	// screen, which asks for the same four fields against the live project.
 	// Gated on the flag so that turning the flag off restores the previous
 	// route behaviour exactly, byte for byte.
 	if (simplifiedCreation && project && project.status !== "DRAFT") {
-		redirect(`/app/${organizationSlug}/projects/${project.id}`);
+		redirect(`/app/${organizationSlug}/projects/${project.id}/edit`);
 	}
 
 	// The unified wizard renders directly at `projects/new` — there is no
@@ -93,7 +94,7 @@ export default async function NewProjectPage({
 				// `step` is deliberately not passed through: the simplified
 				// form is one step, and a legacy `?step=` on the URL means
 				// nothing to it.
-				<SimplifiedProjectCreationForm
+				<SimplifiedProjectForm
 					organizationId={organization.id}
 					projectId={isEditMode ? projectId : undefined}
 				/>
