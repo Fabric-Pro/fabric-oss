@@ -596,6 +596,45 @@ describe("listRecentMeetingInstancesForLinkedUrls", () => {
 		expect(mocks.clearMeetingSyncFailuresMock).not.toHaveBeenCalled();
 	});
 
+	it("blames only the meetings this account was reading", async () => {
+		// A project reads one calendar per linker (#2354). Stamping the whole
+		// project would raise the banner on meetings that are collecting fine,
+		// and send the wrong person looking for a broken connection.
+		mocks.executeMicrosoftTeamsToolMock.mockRejectedValue(
+			new Error(
+				"Microsoft not connected. Please connect your Microsoft account in Settings > Integrations.",
+			),
+		);
+
+		await listRecentMeetingInstancesForLinkedUrls({
+			...input,
+			projectId: "proj-1",
+			linkedMeetingIds: ["lm_2", "lm_3"],
+		});
+
+		expect(mocks.recordMeetingSyncFailureMock).toHaveBeenCalledWith(
+			expect.objectContaining({ linkedMeetingIds: ["lm_2", "lm_3"] }),
+		);
+	});
+
+	it("clears only the meetings this account was reading", async () => {
+		// The sharper half of the same rule: unscoped, one healthy linker's
+		// pass would wipe a departed linker's failures every cycle, and the
+		// sync would go back to looking healthy while half of it is dead.
+		mocks.executeMicrosoftTeamsToolMock.mockResolvedValue({ meetings: [] });
+
+		await listRecentMeetingInstancesForLinkedUrls({
+			...input,
+			projectId: "proj-1",
+			linkedMeetingIds: ["lm_1"],
+		});
+
+		expect(mocks.clearMeetingSyncFailuresMock).toHaveBeenCalledWith({
+			projectId: "proj-1",
+			linkedMeetingIds: ["lm_1"],
+		});
+	});
+
 	it("matches linked meetings when the calendar reads normally", async () => {
 		mocks.executeMicrosoftTeamsToolMock.mockResolvedValue({
 			meetings: [

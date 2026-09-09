@@ -14,6 +14,12 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+// The panel names whose Microsoft account each meeting is read under (#2354),
+// so it needs to know who is looking.
+vi.mock("@saas/auth/hooks/use-session", () => ({
+	useSession: () => ({ user: { id: "user_me", name: "Current User" } }),
+}));
+
 const { toastErrorMock, toastSuccessMock } = vi.hoisted(() => ({
 	toastErrorMock: vi.fn(),
 	toastSuccessMock: vi.fn(),
@@ -277,7 +283,7 @@ describe("MeetingTranscriptSyncSettings — restore", () => {
 	});
 });
 
-describe("MeetingTranscriptSyncSettings — reconnect entry point", () => {
+describe("MeetingTranscriptSyncSettings — take-over entry point", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
 		listTranscriptsMock.mockResolvedValue([]);
@@ -330,7 +336,7 @@ describe("MeetingTranscriptSyncSettings — reconnect entry point", () => {
 
 		expect(
 			await screen.findByRole("menuitem", {
-				name: /Reconnect sync to me/,
+				name: /Sync all meetings as me/,
 			}),
 		).toBeInTheDocument();
 	});
@@ -343,7 +349,7 @@ describe("MeetingTranscriptSyncSettings — reconnect entry point", () => {
 		await openSyncOptions(user);
 		await user.click(
 			await screen.findByRole("menuitem", {
-				name: /Reconnect sync to me/,
+				name: /Sync all meetings as me/,
 			}),
 		);
 
@@ -366,7 +372,7 @@ describe("MeetingTranscriptSyncSettings — reconnect entry point", () => {
 		await openSyncOptions(user);
 
 		const item = await screen.findByRole("menuitem", {
-			name: /Reconnect sync to me/,
+			name: /Sync all meetings as me/,
 		});
 		expect(item).toHaveAttribute("aria-disabled", "true");
 		expect(
@@ -387,7 +393,7 @@ describe("MeetingTranscriptSyncSettings — reconnect entry point", () => {
 			await screen.findByText("Sync last 30 days"),
 		).toBeInTheDocument();
 		expect(
-			screen.queryByRole("menuitem", { name: /Reconnect sync to me/ }),
+			screen.queryByRole("menuitem", { name: /Sync all meetings as me/ }),
 		).not.toBeInTheDocument();
 	});
 });

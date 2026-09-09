@@ -13,6 +13,12 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+// The panel names whose Microsoft account each meeting is read under (#2354),
+// so it needs to know who is looking.
+vi.mock("@saas/auth/hooks/use-session", () => ({
+	useSession: () => ({ user: { id: "user_me", name: "Current User" } }),
+}));
+
 const { toastErrorMock, toastSuccessMock } = vi.hoisted(() => ({
 	toastErrorMock: vi.fn(),
 	toastSuccessMock: vi.fn(),

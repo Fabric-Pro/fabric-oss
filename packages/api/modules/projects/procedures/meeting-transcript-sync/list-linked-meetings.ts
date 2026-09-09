@@ -53,6 +53,12 @@ export const listLinkedMeetingsProcedure = tenantProtectedProcedure
 				_count: {
 					select: { transcripts: true },
 				},
+				// Whose Microsoft account this meeting is read under (#2354).
+				// The panel needs the name, not just the id: when a connection
+				// dies the only useful thing to say is whose it is.
+				user: {
+					select: { id: true, name: true, email: true },
+				},
 			},
 			orderBy: { linkedAt: "desc" },
 		});
