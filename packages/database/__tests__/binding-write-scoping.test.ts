@@ -179,13 +179,13 @@ describe("getBoundPromptVersion matches storyKind exactly", () => {
 		expect(kindsAskedFor().every((k) => k === null)).toBe(true);
 	});
 
-	it("falls through the tiers without ever changing the kind", async () => {
-		// ORG then SYSTEM. Both must carry the same kind — a fallback that
-		// widened on the way down is exactly the cross-bucket leak.
+	it("uses one exact-kind lookup", async () => {
+		// A single lookup keeps the discriminator on the only query instead of
+		// relying on every serial fallback to carry it.
 		await lookup("BUG");
 
-		expect(bindingFindFirst.mock.calls.length).toBeGreaterThan(1);
-		expect(new Set(kindsAskedFor())).toEqual(new Set(["BUG"]));
+		expect(bindingFindFirst).toHaveBeenCalledTimes(1);
+		expect(kindsAskedFor()).toEqual(["BUG"]);
 	});
 });
 
