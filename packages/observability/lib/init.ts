@@ -54,10 +54,14 @@ import {
 	ATTR_SERVICE_NAME,
 	ATTR_SERVICE_VERSION,
 } from "@opentelemetry/semantic-conventions";
+import { shutdownAppInsights } from "./app-insights";
+import { isHttpProbe } from "./http-probes";
 // Re-export API for use in instrumentation modules
 
 export interface ObservabilityConfig {
 	serviceName: string;
+	/** Set false when the HTTP service owns draining and telemetry shutdown. */
+	registerShutdownHooks?: boolean;
 	serviceVersion?: string;
 	environment?: string;
 	/** Custom OTLP endpoint (overrides OTEL_EXPORTER_OTLP_ENDPOINT) */
@@ -311,9 +315,9 @@ function reportShutdownFailure(error: unknown): void {
 }
 
 /**
- * Wind down the logger provider and the SDK, reporting whatever fails.
+ * Wind down custom telemetry, the logger provider, and the SDK.
  *
- * The two settle independently rather than in sequence: a collector that has
+ * The exporters settle independently rather than in sequence: a collector that has
  * already gone rejects the first shutdown, and awaiting them one after the
  * other both cancelled the second flush outright and stacked two exporter
  * timeouts back to back — long enough to matter against a container's
@@ -321,6 +325,7 @@ function reportShutdownFailure(error: unknown): void {
  */
 async function flushAndShutdown(): Promise<void> {
 	const outcomes = await Promise.allSettled([
+		shutdownAppInsights(),
 		loggerProvider?.shutdown() ?? Promise.resolve(),
 		sdk?.shutdown() ?? Promise.resolve(),
 	]);
@@ -402,6 +407,9 @@ function setupConsoleInterception(serviceName: string): void {
 					body,
 					timestamp: Date.now(),
 				});
+			} catch {
+				// The original console write already succeeded. Serialization or
+				// exporter failures must never turn logging into an application error.
 			} finally {
 				isEmitting = false;
 			}
@@ -543,6 +551,10 @@ export function initObservability(config: ObservabilityConfig): void {
 				],
 		instrumentations: [
 			getNodeAutoInstrumentations({
+				"@opentelemetry/instrumentation-http": {
+					ignoreIncomingRequestHook: (request) =>
+						isHttpProbe(request.url),
+				},
 				// Disable verbose instrumentations in development
 				"@opentelemetry/instrumentation-fs": {
 					enabled: verboseInstrumentation,
@@ -564,8 +576,10 @@ export function initObservability(config: ObservabilityConfig): void {
 		originalConsole.log("[Observability] Shutdown complete");
 	};
 
-	process.on("SIGTERM", shutdown);
-	process.on("SIGINT", shutdown);
+	if (config.registerShutdownHooks !== false) {
+		process.on("SIGTERM", shutdown);
+		process.on("SIGINT", shutdown);
+	}
 
 	originalConsole.log("[Observability] Initialized successfully");
 }
@@ -603,6 +617,7 @@ export function getLogger(name?: string) {
  */
 export async function shutdownObservability(): Promise<void> {
 	if (!isInitialized) {
+		await shutdownAppInsights();
 		return;
 	}
 

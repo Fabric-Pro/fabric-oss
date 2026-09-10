@@ -5,7 +5,7 @@
 
 import * as tls from "node:tls";
 import { Client, Connection, ScheduleClient } from "@temporalio/client";
-import { makeCorrelationClientInterceptor } from "./lib/correlation-interceptor";
+import { buildWorkflowClientInterceptors } from "./lib/client-interceptors";
 import type { TemporalConfig } from "./types";
 
 let client: Client | null = null;
@@ -133,16 +133,15 @@ export async function getTemporalClient(): Promise<Client> {
 			connection = await createConnection();
 		}
 
-		// Create client. The correlation interceptor reads the active
-		// request's correlation ID from AsyncLocalStorage and stamps it
-		// onto every workflow execution's headers — covers all current
-		// AND all future workflow.start callsites with zero per-callsite
-		// work. See lib/correlation-interceptor.ts.
+		// Create the client with the shared interceptor chain. OTel tracing adds
+		// `_tracer-data` when configured; correlation propagation independently
+		// adds `x-correlation-id`. This covers every workflow start without
+		// per-callsite work. See lib/client-interceptors.ts.
 		client = new Client({
 			connection,
 			namespace: config.namespace,
 			interceptors: {
-				workflow: [makeCorrelationClientInterceptor()],
+				workflow: buildWorkflowClientInterceptors(),
 			},
 		});
 

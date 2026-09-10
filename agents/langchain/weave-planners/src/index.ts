@@ -7,6 +7,7 @@
 import { serve } from "@hono/node-server";
 import { HumanMessage } from "@langchain/core/messages";
 import { serviceAuth } from "@repo/agent-runtime";
+import { registerHttpServerShutdown } from "@repo/observability/http-server";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { logger } from "hono/logger";
@@ -138,9 +139,11 @@ app.get("/health", (c) => {
 });
 
 console.log(`🧩 weave-planners starting on port ${PORT}`);
-serve({
+const server = serve({
 	fetch: app.fetch,
 	port: PORT,
 });
 
 export default app;
+
+registerHttpServerShutdown(server);

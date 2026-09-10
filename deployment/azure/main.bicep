@@ -1048,8 +1048,8 @@ module mcpStdioWrapperApp 'modules/container-app-sidecar.bicep' = {
 //      - HTTP 5xx burn-rate (SEV-1/SEV-2/SEV-3) via KQL on the `requests`
 //        table — multi-window multi-burn-rate, App Insights Smart
 //        Detection covers most other application anomalies.
-//      - Custom-event alerts on `customEvents` for circuit-breaker open
-//        transitions and consecutive synthetic-probe failures.
+//      - Event alerts over legacy `customEvents` and OTLP `traces` for
+//        circuit-breaker transitions and consecutive synthetic failures.
 //      - `dependencies/failed` count alert for outbound integration
 //        failures (api.openai.com, api.anthropic.com, etc.).
 //      The Action Group's one webhookReceiver points at
@@ -1061,8 +1061,8 @@ module mcpStdioWrapperApp 'modules/container-app-sidecar.bicep' = {
 // app-downtime feature uses. Application Insights replaces Prometheus +
 // Alertmanager as the metrics + alerting backend — App Insights is
 // already deployed by `application-insights.bicep` and the application
-// services (api, temporal-worker, langgraph agents) emit metrics +
-// custom events via `applicationinsights` SDK.
+// services emit OTLP through per-replica collectors. Event helpers use
+// OTLP logs unless a direct App Insights connection string is configured.
 // =============================================================================
 
 // -----------------------------------------------------------------------------
@@ -1168,12 +1168,12 @@ module aspireDashboard 'modules/aspire-dashboard.bicep' = if (enableMonitoring) 
 }
 
 // =============================================================================
-// DEPRECATED: Custom OTEL Collector and Jaeger
+// DEPRECATED: Standalone OTEL Collector and Jaeger
 // =============================================================================
-// These modules are no longer needed as Azure Container Apps provides a
-// managed OpenTelemetry agent built into the environment.
-// The managed agent automatically routes telemetry to the Aspire Dashboard
-// via the openTelemetryConfiguration in the Container Apps Environment.
+// These standalone modules are not deployed. Application SDKs currently send
+// to localhost sidecars configured by container-app-sidecar.bicep, which export
+// to Application Insights. The environment's managed agent is configured
+// separately; its presence does not move traffic off those sidecars.
 //
 // If you need additional destinations (Jaeger, Prometheus, Application Insights),
 // configure them in the openTelemetryConfiguration.destinationsConfiguration

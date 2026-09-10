@@ -20,6 +20,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { serve } from "@hono/node-server";
+import { registerHttpServerShutdown } from "@repo/observability/http-server";
 import { Hono } from "hono";
 import { logger } from "hono/logger";
 import { parse as parseShellArgs } from "shell-quote";
@@ -399,16 +400,7 @@ export function startServer(
 		port,
 	});
 
-	// Graceful shutdown handling
-	const shutdown = async () => {
-		console.log("[MCP STDIO Wrapper] Shutting down...");
-		await shutdownProcessPool();
-		server.close();
-		process.exit(0);
-	};
-
-	process.on("SIGTERM", shutdown);
-	process.on("SIGINT", shutdown);
+	registerHttpServerShutdown(server, shutdownProcessPool);
 
 	console.log(`[MCP STDIO Wrapper] Server ready at http://0.0.0.0:${port}`);
 

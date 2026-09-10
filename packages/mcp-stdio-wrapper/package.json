@@ -10,15 +10,16 @@
 		"./server": "./src/server.ts"
 	},
 	"scripts": {
-		"dev": "tsx src/server.ts",
-		"start": "node --import tsx src/server.ts",
+		"dev": "tsx --import ./src/telemetry.ts src/server.ts",
+		"start": "node --import tsx --import ./src/telemetry.ts src/server.ts",
 		"type-check": "tsc --noEmit"
 	},
 	"dependencies": {
 		"@hono/node-server": "^2.0.11",
 		"hono": "^4.13.7",
 		"shell-quote": "^1.9.0",
-		"zod": "^4.2.1"
+		"zod": "^4.2.1",
+		"@repo/observability": "workspace:*"
 	},
 	"devDependencies": {
 		"@repo/tsconfig": "workspace:*",

@@ -28,6 +28,7 @@ export {
 	__resetAppInsightsForTests,
 	getAppInsightsClient,
 	initAppInsights,
+	shutdownAppInsights,
 	trackEvent,
 	trackMetric,
 } from "./lib/app-insights";

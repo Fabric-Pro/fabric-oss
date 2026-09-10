@@ -1,677 +1,1066 @@
 {
-	"$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
-	"contentVersion": "1.0.0.0",
-	"metadata": {
-		"_generator": {
-			"name": "bicep",
-			"version": "0.41.2.15936",
-			"templateHash": "12460071317273107398"
-		}
-	},
-	"parameters": {
-		"resourcePrefix": {
-			"type": "string",
-			"metadata": {
-				"description": "Resource prefix for naming"
-			}
-		},
-		"location": {
-			"type": "string",
-			"metadata": {
-				"description": "Azure region"
-			}
-		},
-		"logAnalyticsWorkspaceId": {
-			"type": "string",
-			"metadata": {
-				"description": "Log Analytics Workspace ID"
-			}
-		},
-		"containerEnvId": {
-			"type": "string",
-			"metadata": {
-				"description": "Container Apps Environment ID"
-			}
-		},
-		"environment": {
-			"type": "string",
-			"metadata": {
-				"description": "Environment name"
-			}
-		},
-		"alertEmail": {
-			"type": "string",
-			"defaultValue": "",
-			"metadata": {
-				"description": "Alert notification email"
-			}
-		},
-		"alertsWebhookUrl": {
-			"type": "securestring",
-			"defaultValue": "",
-			"metadata": {
-				"description": "Power Automate workflow webhook URL for alert notifications (posts to Teams and Slack)"
-			}
-		},
-		"monitoredContainerApps": {
-			"type": "array",
-			"defaultValue": [],
-			"metadata": {
-				"description": "Array of container apps to monitor: { name: string, resourceId: string, critical: bool }"
-			}
-		},
-		"appInsightsId": {
-			"type": "string",
-			"defaultValue": "",
-			"metadata": {
-				"description": "Application Insights resource ID — required to deploy LLM alert rules"
-			}
-		}
-	},
-	"resources": [
-		{
-			"type": "Microsoft.Insights/actionGroups",
-			"apiVersion": "2023-01-01",
-			"name": "[format('{0}-alerts-ag', parameters('resourcePrefix'))]",
-			"location": "global",
-			"properties": {
-				"groupShortName": "FabricAlert",
-				"enabled": true,
-				"emailReceivers": "[if(not(equals(parameters('alertEmail'), '')), createArray(createObject('name', 'AdminEmail', 'emailAddress', parameters('alertEmail'), 'useCommonAlertSchema', true())), createArray())]",
-				"webhookReceivers": "[if(not(equals(parameters('alertsWebhookUrl'), '')), createArray(createObject('name', 'AlertsWorkflow', 'serviceUri', parameters('alertsWebhookUrl'), 'useCommonAlertSchema', true())), createArray())]"
-			}
-		},
-		{
-			"copy": {
-				"name": "replicaAlerts",
-				"count": "[length(parameters('monitoredContainerApps'))]"
-			},
-			"type": "Microsoft.Insights/metricAlerts",
-			"apiVersion": "2018-03-01",
-			"name": "[format('{0}-{1}-replica-alert', parameters('resourcePrefix'), parameters('monitoredContainerApps')[copyIndex()].name)]",
-			"location": "global",
-			"properties": {
-				"description": "[format('{0} has 0 running replicas - service is down', parameters('monitoredContainerApps')[copyIndex()].name)]",
-				"severity": "[if(parameters('monitoredContainerApps')[copyIndex()].critical, 1, 2)]",
-				"enabled": true,
-				"scopes": [
-					"[parameters('monitoredContainerApps')[copyIndex()].resourceId]"
-				],
-				"evaluationFrequency": "PT5M",
-				"windowSize": "PT5M",
-				"criteria": {
-					"odata.type": "Microsoft.Azure.Monitor.SingleResourceMultipleMetricCriteria",
-					"allOf": [
-						{
-							"name": "ReplicaCountZero",
-							"metricName": "Replicas",
-							"metricNamespace": "Microsoft.App/containerApps",
-							"operator": "LessThanOrEqual",
-							"threshold": 0,
-							"timeAggregation": "Maximum",
-							"criterionType": "StaticThresholdCriterion"
-						}
-					]
-				},
-				"actions": [
-					{
-						"actionGroupId": "[resourceId('Microsoft.Insights/actionGroups', format('{0}-alerts-ag', parameters('resourcePrefix')))]"
-					}
-				],
-				"autoMitigate": false
-			},
-			"dependsOn": [
-				"[resourceId('Microsoft.Insights/actionGroups', format('{0}-alerts-ag', parameters('resourcePrefix')))]"
-			]
-		},
-		{
-			"copy": {
-				"name": "restartAlerts",
-				"count": "[length(parameters('monitoredContainerApps'))]"
-			},
-			"type": "Microsoft.Insights/metricAlerts",
-			"apiVersion": "2018-03-01",
-			"name": "[format('{0}-{1}-restart-alert', parameters('resourcePrefix'), parameters('monitoredContainerApps')[copyIndex()].name)]",
-			"location": "global",
-			"properties": {
-				"description": "[format('{0} is crash-looping - more than 5 restarts in 5 minutes', parameters('monitoredContainerApps')[copyIndex()].name)]",
-				"severity": 2,
-				"enabled": true,
-				"scopes": [
-					"[parameters('monitoredContainerApps')[copyIndex()].resourceId]"
-				],
-				"evaluationFrequency": "PT5M",
-				"windowSize": "PT5M",
-				"criteria": {
-					"odata.type": "Microsoft.Azure.Monitor.SingleResourceMultipleMetricCriteria",
-					"allOf": [
-						{
-							"name": "HighRestartCount",
-							"metricName": "RestartCount",
-							"metricNamespace": "Microsoft.App/containerApps",
-							"operator": "GreaterThan",
-							"threshold": 5,
-							"timeAggregation": "Total",
-							"criterionType": "StaticThresholdCriterion"
-						}
-					]
-				},
-				"actions": [
-					{
-						"actionGroupId": "[resourceId('Microsoft.Insights/actionGroups', format('{0}-alerts-ag', parameters('resourcePrefix')))]"
-					}
-				],
-				"autoMitigate": false
-			},
-			"dependsOn": [
-				"[resourceId('Microsoft.Insights/actionGroups', format('{0}-alerts-ag', parameters('resourcePrefix')))]"
-			]
-		},
-		{
-			"condition": "[not(equals(parameters('appInsightsId'), ''))]",
-			"type": "Microsoft.Insights/scheduledQueryRules",
-			"apiVersion": "2022-06-15",
-			"name": "[format('{0}-llm-high-error-rate', parameters('resourcePrefix'))]",
-			"location": "[parameters('location')]",
-			"properties": {
-				"displayName": "AI - High LLM Error Rate (>10%)",
-				"description": "LLM error rate exceeded 10% over the last 5 minutes — possible provider outage or bug",
-				"severity": 1,
-				"enabled": true,
-				"scopes": ["[parameters('appInsightsId')]"],
-				"evaluationFrequency": "PT5M",
-				"windowSize": "PT5M",
-				"criteria": {
-					"allOf": [
-						{
-							"query": "            let total = toscalar(union dependencies, requests | where timestamp > ago(5m) | where name startswith \"llm.\" | count);\r\n            let errors = toscalar(union dependencies, requests | where timestamp > ago(5m) | where name startswith \"llm.\" | where success == false | count);\r\n            print error_rate_pct = iff(total > 0, (toreal(errors) / toreal(total)) * 100.0, 0.0)\r\n            | where error_rate_pct > 10\r\n          ",
-							"timeAggregation": "Count",
-							"threshold": 0,
-							"operator": "GreaterThan",
-							"failingPeriods": {
-								"numberOfEvaluationPeriods": 1,
-								"minFailingPeriodsToAlert": 1
-							}
-						}
-					]
-				},
-				"actions": {
-					"actionGroups": [
-						"[resourceId('Microsoft.Insights/actionGroups', format('{0}-alerts-ag', parameters('resourcePrefix')))]"
-					]
-				},
-				"autoMitigate": false
-			},
-			"dependsOn": [
-				"[resourceId('Microsoft.Insights/actionGroups', format('{0}-alerts-ag', parameters('resourcePrefix')))]"
-			]
-		},
-		{
-			"condition": "[not(equals(parameters('appInsightsId'), ''))]",
-			"type": "Microsoft.Insights/scheduledQueryRules",
-			"apiVersion": "2022-06-15",
-			"name": "[format('{0}-llm-provider-error-rate', parameters('resourcePrefix'))]",
-			"location": "[parameters('location')]",
-			"properties": {
-				"displayName": "AI - LLM Provider Error Rate (>25%)",
-				"description": "A specific LLM provider error rate exceeded 25% — possible provider-specific outage",
-				"severity": 2,
-				"enabled": true,
-				"scopes": ["[parameters('appInsightsId')]"],
-				"evaluationFrequency": "PT5M",
-				"windowSize": "PT5M",
-				"criteria": {
-					"allOf": [
-						{
-							"query": "            union dependencies, requests\r\n            | where timestamp > ago(5m)\r\n            | where name startswith \"llm.\"\r\n            | summarize total = count(), errors = countif(success == false)\r\n              by provider = tostring(customDimensions[\"gen_ai.system\"])\r\n            | where isnotempty(provider)\r\n            | extend error_rate_pct = iff(total > 0, (toreal(errors) / toreal(total)) * 100.0, 0.0)\r\n            | where error_rate_pct > 25\r\n          ",
-							"timeAggregation": "Count",
-							"threshold": 0,
-							"operator": "GreaterThan",
-							"failingPeriods": {
-								"numberOfEvaluationPeriods": 1,
-								"minFailingPeriodsToAlert": 1
-							}
-						}
-					]
-				},
-				"actions": {
-					"actionGroups": [
-						"[resourceId('Microsoft.Insights/actionGroups', format('{0}-alerts-ag', parameters('resourcePrefix')))]"
-					]
-				},
-				"autoMitigate": false
-			},
-			"dependsOn": [
-				"[resourceId('Microsoft.Insights/actionGroups', format('{0}-alerts-ag', parameters('resourcePrefix')))]"
-			]
-		},
-		{
-			"condition": "[not(equals(parameters('appInsightsId'), ''))]",
-			"type": "Microsoft.Insights/scheduledQueryRules",
-			"apiVersion": "2022-06-15",
-			"name": "[format('{0}-llm-high-latency', parameters('resourcePrefix'))]",
-			"location": "[parameters('location')]",
-			"properties": {
-				"displayName": "AI - High LLM Latency P95 (>30s)",
-				"description": "P95 LLM request latency exceeded 30 seconds for at least one provider",
-				"severity": 2,
-				"enabled": true,
-				"scopes": ["[parameters('appInsightsId')]"],
-				"evaluationFrequency": "PT5M",
-				"windowSize": "PT5M",
-				"criteria": {
-					"allOf": [
-						{
-							"query": "            union dependencies, requests\r\n            | where timestamp > ago(5m)\r\n            | where name startswith \"llm.\"\r\n            | summarize p95_ms = percentile(duration, 95)\r\n              by provider = tostring(customDimensions[\"gen_ai.system\"])\r\n            | where p95_ms > 30000\r\n          ",
-							"timeAggregation": "Count",
-							"threshold": 0,
-							"operator": "GreaterThan",
-							"failingPeriods": {
-								"numberOfEvaluationPeriods": 1,
-								"minFailingPeriodsToAlert": 1
-							}
-						}
-					]
-				},
-				"actions": {
-					"actionGroups": [
-						"[resourceId('Microsoft.Insights/actionGroups', format('{0}-alerts-ag', parameters('resourcePrefix')))]"
-					]
-				},
-				"autoMitigate": false
-			},
-			"dependsOn": [
-				"[resourceId('Microsoft.Insights/actionGroups', format('{0}-alerts-ag', parameters('resourcePrefix')))]"
-			]
-		},
-		{
-			"condition": "[not(equals(parameters('appInsightsId'), ''))]",
-			"type": "Microsoft.Insights/scheduledQueryRules",
-			"apiVersion": "2022-06-15",
-			"name": "[format('{0}-llm-token-usage-spike', parameters('resourcePrefix'))]",
-			"location": "[parameters('location')]",
-			"properties": {
-				"displayName": "AI - Token Usage Spike (>5x hourly average)",
-				"description": "Token usage in the last 5 minutes is more than 5x the hourly average — possible runaway agent or abuse",
-				"severity": 2,
-				"enabled": true,
-				"scopes": ["[parameters('appInsightsId')]"],
-				"evaluationFrequency": "PT5M",
-				"windowSize": "PT1H",
-				"criteria": {
-					"allOf": [
-						{
-							"query": "            let bins = union dependencies, requests\r\n                | where timestamp > ago(1h)\r\n                | where name startswith \"llm.\"\r\n                | extend total_tokens = toint(customDimensions[\"gen_ai.usage.input_tokens\"]) + toint(customDimensions[\"gen_ai.usage.output_tokens\"])\r\n                | summarize tokens = sum(total_tokens) by bin(timestamp, 5m);\r\n            let recent = toscalar(bins | top 1 by timestamp desc | project tokens);\r\n            let hist_avg = toscalar(bins | summarize avg(tokens));\r\n            print ratio = toreal(recent) / max_of(toreal(hist_avg), 1.0)\r\n            | where ratio > 5\r\n          ",
-							"timeAggregation": "Count",
-							"threshold": 0,
-							"operator": "GreaterThan",
-							"failingPeriods": {
-								"numberOfEvaluationPeriods": 1,
-								"minFailingPeriodsToAlert": 1
-							}
-						}
-					]
-				},
-				"actions": {
-					"actionGroups": [
-						"[resourceId('Microsoft.Insights/actionGroups', format('{0}-alerts-ag', parameters('resourcePrefix')))]"
-					]
-				},
-				"autoMitigate": false
-			},
-			"dependsOn": [
-				"[resourceId('Microsoft.Insights/actionGroups', format('{0}-alerts-ag', parameters('resourcePrefix')))]"
-			]
-		},
-		{
-			"condition": "[not(equals(parameters('appInsightsId'), ''))]",
-			"type": "Microsoft.Insights/scheduledQueryRules",
-			"apiVersion": "2022-06-15",
-			"name": "[format('{0}-llm-high-output-token-rate', parameters('resourcePrefix'))]",
-			"location": "[parameters('location')]",
-			"properties": {
-				"displayName": "AI - High Output Token Rate (>5000/s per model)",
-				"description": "Output token rate for a model/provider exceeded 5000 tokens per second — possible runaway generation",
-				"severity": 2,
-				"enabled": true,
-				"scopes": ["[parameters('appInsightsId')]"],
-				"evaluationFrequency": "PT5M",
-				"windowSize": "PT5M",
-				"criteria": {
-					"allOf": [
-						{
-							"query": "            union dependencies, requests\r\n            | where timestamp > ago(5m)\r\n            | where name startswith \"llm.\"\r\n            | summarize output_tokens = sum(toint(customDimensions[\"gen_ai.usage.output_tokens\"]))\r\n              by provider = tostring(customDimensions[\"gen_ai.system\"]),\r\n                 model = tostring(customDimensions[\"gen_ai.request.model\"])\r\n            | where isnotempty(provider)\r\n            | extend output_per_sec = toreal(output_tokens) / 300.0\r\n            | where output_per_sec > 5000\r\n          ",
-							"timeAggregation": "Count",
-							"threshold": 0,
-							"operator": "GreaterThan",
-							"failingPeriods": {
-								"numberOfEvaluationPeriods": 1,
-								"minFailingPeriodsToAlert": 1
-							}
-						}
-					]
-				},
-				"actions": {
-					"actionGroups": [
-						"[resourceId('Microsoft.Insights/actionGroups', format('{0}-alerts-ag', parameters('resourcePrefix')))]"
-					]
-				},
-				"autoMitigate": false
-			},
-			"dependsOn": [
-				"[resourceId('Microsoft.Insights/actionGroups', format('{0}-alerts-ag', parameters('resourcePrefix')))]"
-			]
-		},
-		{
-			"condition": "[not(equals(parameters('appInsightsId'), ''))]",
-			"type": "Microsoft.Insights/scheduledQueryRules",
-			"apiVersion": "2022-06-15",
-			"name": "[format('{0}-llm-no-requests', parameters('resourcePrefix'))]",
-			"location": "[parameters('location')]",
-			"properties": {
-				"displayName": "AI - No LLM Requests (15 min silence after activity)",
-				"description": "No LLM requests received in the last 15 minutes despite prior activity — possible instrumentation or service failure",
-				"severity": 2,
-				"enabled": true,
-				"scopes": ["[parameters('appInsightsId')]"],
-				"evaluationFrequency": "PT5M",
-				"windowSize": "PT6H",
-				"criteria": {
-					"allOf": [
-						{
-							"query": "            let recent_count = toscalar(union dependencies, requests | where timestamp > ago(15m) | where name startswith \"llm.\" | count);\r\n            let prior_count  = toscalar(union dependencies, requests | where timestamp between(ago(6h) .. ago(15m)) | where name startswith \"llm.\" | count);\r\n            print recent_count = recent_count, prior_count = prior_count\r\n            | where recent_count == 0 and prior_count > 0\r\n          ",
-							"timeAggregation": "Count",
-							"threshold": 0,
-							"operator": "GreaterThan",
-							"failingPeriods": {
-								"numberOfEvaluationPeriods": 1,
-								"minFailingPeriodsToAlert": 1
-							}
-						}
-					]
-				},
-				"actions": {
-					"actionGroups": [
-						"[resourceId('Microsoft.Insights/actionGroups', format('{0}-alerts-ag', parameters('resourcePrefix')))]"
-					]
-				},
-				"autoMitigate": false
-			},
-			"dependsOn": [
-				"[resourceId('Microsoft.Insights/actionGroups', format('{0}-alerts-ag', parameters('resourcePrefix')))]"
-			]
-		},
-		{
-			"condition": "[not(equals(parameters('appInsightsId'), ''))]",
-			"type": "Microsoft.Insights/scheduledQueryRules",
-			"apiVersion": "2022-06-15",
-			"name": "[format('{0}-http-5xx-burn-rate-sev1', parameters('resourcePrefix'))]",
-			"location": "[parameters('location')]",
-			"properties": {
-				"displayName": "App - HTTP 5xx Burn Rate SEV-1 (14.4x over 5m and 1h)",
-				"description": "[format('HTTP 5xx error rate is burning the monthly SLO budget at 14.4x the sustainable rate over BOTH the 5m and 1h windows — page on-call. Routes through {0}. See the alert catalogue: https://github.com/Fabric-Pro/fabric-oss/blob/master/docs/monitoring/alerts.md#http-5xx-burn-rate-kql-scheduledqueryrules', parameters('alertsWebhookUrl'))]",
-				"severity": 0,
-				"enabled": true,
-				"scopes": ["[parameters('appInsightsId')]"],
-				"evaluationFrequency": "PT5M",
-				"windowSize": "PT1H",
-				"criteria": {
-					"allOf": [
-						{
-							"query": "            let slo_target = 0.999;\r\n            let burn_multiplier = 14.4;\r\n            let threshold = (1.0 - slo_target) * burn_multiplier;\r\n            let short_window = requests\r\n              | where timestamp > ago(5m)\r\n              | summarize total = count(), errors = countif(success == false);\r\n            let long_window = requests\r\n              | where timestamp > ago(1h)\r\n              | summarize total = count(), errors = countif(success == false);\r\n            short_window\r\n            | extend short_rate = iff(total > 0, toreal(errors) / toreal(total), 0.0)\r\n            | extend short_total = total\r\n            | extend long = toscalar(long_window | project errors)\r\n            | extend long_total = toscalar(long_window | project total)\r\n            | extend long_rate = iff(long_total > 0, toreal(long) / toreal(long_total), 0.0)\r\n            | where short_rate > threshold and long_rate > threshold and long_total > 10\r\n          ",
-							"timeAggregation": "Count",
-							"threshold": 0,
-							"operator": "GreaterThan",
-							"failingPeriods": {
-								"numberOfEvaluationPeriods": 1,
-								"minFailingPeriodsToAlert": 1
-							}
-						}
-					]
-				},
-				"actions": {
-					"actionGroups": [
-						"[resourceId('Microsoft.Insights/actionGroups', format('{0}-alerts-ag', parameters('resourcePrefix')))]"
-					],
-					"customProperties": {
-						"runbook_url": "https://github.com/Fabric-Pro/fabric-oss/blob/master/docs/monitoring/alerts.md#http-5xx-burn-rate-kql-scheduledqueryrules",
-						"severity": "SEV-1"
-					}
-				},
-				"autoMitigate": false
-			},
-			"dependsOn": [
-				"[resourceId('Microsoft.Insights/actionGroups', format('{0}-alerts-ag', parameters('resourcePrefix')))]"
-			]
-		},
-		{
-			"condition": "[not(equals(parameters('appInsightsId'), ''))]",
-			"type": "Microsoft.Insights/scheduledQueryRules",
-			"apiVersion": "2022-06-15",
-			"name": "[format('{0}-http-5xx-burn-rate-sev2', parameters('resourcePrefix'))]",
-			"location": "[parameters('location')]",
-			"properties": {
-				"displayName": "App - HTTP 5xx Burn Rate SEV-2 (6x over 30m and 6h)",
-				"description": "[format('HTTP 5xx error rate is burning the monthly SLO budget at 6x the sustainable rate over BOTH the 30m and 6h windows — open ticket, respond within business hours. Routes through {0}. See the alert catalogue: https://github.com/Fabric-Pro/fabric-oss/blob/master/docs/monitoring/alerts.md#http-5xx-burn-rate-kql-scheduledqueryrules', parameters('alertsWebhookUrl'))]",
-				"severity": 1,
-				"enabled": true,
-				"scopes": ["[parameters('appInsightsId')]"],
-				"evaluationFrequency": "PT15M",
-				"windowSize": "PT6H",
-				"criteria": {
-					"allOf": [
-						{
-							"query": "            let slo_target = 0.999;\r\n            let burn_multiplier = 6.0;\r\n            let threshold = (1.0 - slo_target) * burn_multiplier;\r\n            let short_window = requests\r\n              | where timestamp > ago(30m)\r\n              | summarize total = count(), errors = countif(success == false);\r\n            let long_window = requests\r\n              | where timestamp > ago(6h)\r\n              | summarize total = count(), errors = countif(success == false);\r\n            short_window\r\n            | extend short_rate = iff(total > 0, toreal(errors) / toreal(total), 0.0)\r\n            | extend long = toscalar(long_window | project errors)\r\n            | extend long_total = toscalar(long_window | project total)\r\n            | extend long_rate = iff(long_total > 0, toreal(long) / toreal(long_total), 0.0)\r\n            | where short_rate > threshold and long_rate > threshold and long_total > 30\r\n          ",
-							"timeAggregation": "Count",
-							"threshold": 0,
-							"operator": "GreaterThan",
-							"failingPeriods": {
-								"numberOfEvaluationPeriods": 1,
-								"minFailingPeriodsToAlert": 1
-							}
-						}
-					]
-				},
-				"actions": {
-					"actionGroups": [
-						"[resourceId('Microsoft.Insights/actionGroups', format('{0}-alerts-ag', parameters('resourcePrefix')))]"
-					],
-					"customProperties": {
-						"runbook_url": "https://github.com/Fabric-Pro/fabric-oss/blob/master/docs/monitoring/alerts.md#http-5xx-burn-rate-kql-scheduledqueryrules",
-						"severity": "SEV-2"
-					}
-				},
-				"autoMitigate": false
-			},
-			"dependsOn": [
-				"[resourceId('Microsoft.Insights/actionGroups', format('{0}-alerts-ag', parameters('resourcePrefix')))]"
-			]
-		},
-		{
-			"condition": "[not(equals(parameters('appInsightsId'), ''))]",
-			"type": "Microsoft.Insights/scheduledQueryRules",
-			"apiVersion": "2022-06-15",
-			"name": "[format('{0}-http-5xx-burn-rate-sev3', parameters('resourcePrefix'))]",
-			"location": "[parameters('location')]",
-			"properties": {
-				"displayName": "App - HTTP 5xx Burn Rate SEV-3 (1x over 6h and 3d)",
-				"description": "[format('HTTP 5xx error rate is burning the monthly SLO budget at the sustained baseline rate over BOTH the 6h and 3d windows — SEV-3 ticket-only, surfaces in the weekly digest. Routes through {0}. See the alert catalogue: https://github.com/Fabric-Pro/fabric-oss/blob/master/docs/monitoring/alerts.md#http-5xx-burn-rate-kql-scheduledqueryrules', parameters('alertsWebhookUrl'))]",
-				"severity": 3,
-				"enabled": true,
-				"scopes": ["[parameters('appInsightsId')]"],
-				"evaluationFrequency": "PT1H",
-				"windowSize": "PT3D",
-				"criteria": {
-					"allOf": [
-						{
-							"query": "            let slo_target = 0.999;\r\n            let burn_multiplier = 1.0;\r\n            let threshold = (1.0 - slo_target) * burn_multiplier;\r\n            let short_window = requests\r\n              | where timestamp > ago(6h)\r\n              | summarize total = count(), errors = countif(success == false);\r\n            let long_window = requests\r\n              | where timestamp > ago(3d)\r\n              | summarize total = count(), errors = countif(success == false);\r\n            short_window\r\n            | extend short_rate = iff(total > 0, toreal(errors) / toreal(total), 0.0)\r\n            | extend long = toscalar(long_window | project errors)\r\n            | extend long_total = toscalar(long_window | project total)\r\n            | extend long_rate = iff(long_total > 0, toreal(long) / toreal(long_total), 0.0)\r\n            | where short_rate > threshold and long_rate > threshold and long_total > 100\r\n          ",
-							"timeAggregation": "Count",
-							"threshold": 0,
-							"operator": "GreaterThan",
-							"failingPeriods": {
-								"numberOfEvaluationPeriods": 1,
-								"minFailingPeriodsToAlert": 1
-							}
-						}
-					]
-				},
-				"actions": {
-					"actionGroups": [
-						"[resourceId('Microsoft.Insights/actionGroups', format('{0}-alerts-ag', parameters('resourcePrefix')))]"
-					],
-					"customProperties": {
-						"runbook_url": "https://github.com/Fabric-Pro/fabric-oss/blob/master/docs/monitoring/alerts.md#http-5xx-burn-rate-kql-scheduledqueryrules",
-						"severity": "SEV-3"
-					}
-				},
-				"autoMitigate": false
-			},
-			"dependsOn": [
-				"[resourceId('Microsoft.Insights/actionGroups', format('{0}-alerts-ag', parameters('resourcePrefix')))]"
-			]
-		},
-		{
-			"condition": "[not(equals(parameters('appInsightsId'), ''))]",
-			"type": "Microsoft.Insights/scheduledQueryRules",
-			"apiVersion": "2022-06-15",
-			"name": "[format('{0}-circuit-breaker-opened', parameters('resourcePrefix'))]",
-			"location": "[parameters('location')]",
-			"properties": {
-				"displayName": "Integration - Circuit Breaker Opened",
-				"description": "A provider circuit breaker transitioned to OPEN — short-circuiting calls. See the alert catalogue: https://github.com/Fabric-Pro/fabric-oss/blob/master/docs/monitoring/alerts.md#integration-health-kql-scheduledqueryrules",
-				"severity": 0,
-				"enabled": true,
-				"scopes": ["[parameters('appInsightsId')]"],
-				"evaluationFrequency": "PT1M",
-				"windowSize": "PT5M",
-				"criteria": {
-					"allOf": [
-						{
-							"query": "            customEvents\r\n            | where timestamp > ago(5m)\r\n            | where name == \"CircuitBreakerStateChange\"\r\n            | where tostring(customDimensions[\"newState\"]) == \"open\"\r\n            | summarize count() by provider = tostring(customDimensions[\"provider\"])\r\n          ",
-							"timeAggregation": "Count",
-							"threshold": 0,
-							"operator": "GreaterThan",
-							"failingPeriods": {
-								"numberOfEvaluationPeriods": 1,
-								"minFailingPeriodsToAlert": 1
-							}
-						}
-					]
-				},
-				"actions": {
-					"actionGroups": [
-						"[resourceId('Microsoft.Insights/actionGroups', format('{0}-alerts-ag', parameters('resourcePrefix')))]"
-					],
-					"customProperties": {
-						"runbook_url": "https://github.com/Fabric-Pro/fabric-oss/blob/master/docs/monitoring/alerts.md#integration-health-kql-scheduledqueryrules",
-						"severity": "SEV-1"
-					}
-				},
-				"autoMitigate": false
-			},
-			"dependsOn": [
-				"[resourceId('Microsoft.Insights/actionGroups', format('{0}-alerts-ag', parameters('resourcePrefix')))]"
-			]
-		},
-		{
-			"condition": "[not(equals(parameters('appInsightsId'), ''))]",
-			"type": "Microsoft.Insights/scheduledQueryRules",
-			"apiVersion": "2022-06-15",
-			"name": "[format('{0}-synthetic-probe-failing', parameters('resourcePrefix'))]",
-			"location": "[parameters('location')]",
-			"properties": {
-				"displayName": "Integration - Synthetic Probe Failing (>=3 failures in 15m)",
-				"description": "[format('A provider synthetic probe failed 3 or more times in the last 15 minutes — open ticket. Routes through {0}. See the alert catalogue: https://github.com/Fabric-Pro/fabric-oss/blob/master/docs/monitoring/alerts.md#integration-health-kql-scheduledqueryrules', parameters('alertsWebhookUrl'))]",
-				"severity": 1,
-				"enabled": true,
-				"scopes": ["[parameters('appInsightsId')]"],
-				"evaluationFrequency": "PT5M",
-				"windowSize": "PT15M",
-				"criteria": {
-					"allOf": [
-						{
-							"query": "            customEvents\r\n            | where timestamp > ago(15m)\r\n            | where name == \"SyntheticProbeResult\"\r\n            | where tostring(customDimensions[\"outcome\"]) == \"failure\"\r\n              or tostring(customDimensions[\"outcome\"]) == \"timeout\"\r\n            | summarize failures = count() by provider = tostring(customDimensions[\"provider\"])\r\n            | where failures >= 3\r\n          ",
-							"timeAggregation": "Count",
-							"threshold": 0,
-							"operator": "GreaterThan",
-							"failingPeriods": {
-								"numberOfEvaluationPeriods": 1,
-								"minFailingPeriodsToAlert": 1
-							}
-						}
-					]
-				},
-				"actions": {
-					"actionGroups": [
-						"[resourceId('Microsoft.Insights/actionGroups', format('{0}-alerts-ag', parameters('resourcePrefix')))]"
-					],
-					"customProperties": {
-						"runbook_url": "https://github.com/Fabric-Pro/fabric-oss/blob/master/docs/monitoring/alerts.md#integration-health-kql-scheduledqueryrules",
-						"severity": "SEV-2"
-					}
-				},
-				"autoMitigate": false
-			},
-			"dependsOn": [
-				"[resourceId('Microsoft.Insights/actionGroups', format('{0}-alerts-ag', parameters('resourcePrefix')))]"
-			]
-		},
-		{
-			"condition": "[not(equals(parameters('appInsightsId'), ''))]",
-			"type": "Microsoft.Insights/scheduledQueryRules",
-			"apiVersion": "2022-06-15",
-			"name": "[format('{0}-dependency-failures', parameters('resourcePrefix'))]",
-			"location": "[parameters('location')]",
-			"properties": {
-				"displayName": "Integration - Outbound Dependency Failures (>5 in 15m)",
-				"description": "[format('Outbound dependency failures exceeded 5 in the last 15 minutes for one or more tracked providers (OpenAI, Anthropic, Stripe, Resend, S3). Routes through {0}. See the alert catalogue: https://github.com/Fabric-Pro/fabric-oss/blob/master/docs/monitoring/alerts.md#integration-health-kql-scheduledqueryrules', parameters('alertsWebhookUrl'))]",
-				"severity": 1,
-				"enabled": true,
-				"scopes": ["[parameters('appInsightsId')]"],
-				"evaluationFrequency": "PT5M",
-				"windowSize": "PT15M",
-				"criteria": {
-					"allOf": [
-						{
-							"query": "            dependencies\r\n            | where timestamp > ago(15m)\r\n            | where success == false\r\n            | where target has_any (\r\n                \"api.openai.com\",\r\n                \"api.anthropic.com\",\r\n                \"api.stripe.com\",\r\n                \"api.resend.com\",\r\n                \"s3.amazonaws.com\",\r\n                \"amazonaws.com\"\r\n              )\r\n            | summarize failures = count() by target\r\n            | where failures > 5\r\n          ",
-							"timeAggregation": "Count",
-							"threshold": 0,
-							"operator": "GreaterThan",
-							"failingPeriods": {
-								"numberOfEvaluationPeriods": 1,
-								"minFailingPeriodsToAlert": 1
-							}
-						}
-					]
-				},
-				"actions": {
-					"actionGroups": [
-						"[resourceId('Microsoft.Insights/actionGroups', format('{0}-alerts-ag', parameters('resourcePrefix')))]"
-					],
-					"customProperties": {
-						"runbook_url": "https://github.com/Fabric-Pro/fabric-oss/blob/master/docs/monitoring/alerts.md#integration-health-kql-scheduledqueryrules",
-						"severity": "SEV-2"
-					}
-				},
-				"autoMitigate": false
-			},
-			"dependsOn": [
-				"[resourceId('Microsoft.Insights/actionGroups', format('{0}-alerts-ag', parameters('resourcePrefix')))]"
-			]
-		}
-	],
-	"outputs": {
-		"actionGroupId": {
-			"type": "string",
-			"value": "[resourceId('Microsoft.Insights/actionGroups', format('{0}-alerts-ag', parameters('resourcePrefix')))]"
-		},
-		"actionGroupName": {
-			"type": "string",
-			"value": "[format('{0}-alerts-ag', parameters('resourcePrefix'))]"
-		},
-		"alertRuleCount": {
-			"type": "int",
-			"value": "[add(mul(length(parameters('monitoredContainerApps')), 2), if(not(equals(parameters('appInsightsId'), '')), 12, 0))]"
-		}
-	}
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "_generator": {
+      "name": "bicep",
+      "version": "0.43.1.21952",
+      "templateHash": "15646268316808229813"
+    }
+  },
+  "parameters": {
+    "resourcePrefix": {
+      "type": "string",
+      "metadata": {
+        "description": "Resource prefix for naming"
+      }
+    },
+    "location": {
+      "type": "string",
+      "metadata": {
+        "description": "Azure region"
+      }
+    },
+    "logAnalyticsWorkspaceId": {
+      "type": "string",
+      "metadata": {
+        "description": "Log Analytics Workspace ID — required to deploy repo-integration health alert rules (which query ContainerAppConsoleLogs_CL)"
+      }
+    },
+    "containerEnvId": {
+      "type": "string",
+      "metadata": {
+        "description": "Container Apps Environment ID"
+      }
+    },
+    "environment": {
+      "type": "string",
+      "metadata": {
+        "description": "Environment name"
+      }
+    },
+    "alertEmail": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Alert notification email"
+      }
+    },
+    "alertsWebhookUrl": {
+      "type": "securestring",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Power Automate workflow webhook URL for alert notifications (posts to Teams and Slack)"
+      }
+    },
+    "monitoredContainerApps": {
+      "type": "array",
+      "defaultValue": [],
+      "metadata": {
+        "description": "Array of container apps to monitor: { name: string, resourceId: string, critical: bool }"
+      }
+    },
+    "appInsightsId": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Application Insights resource ID — required to deploy LLM alert rules"
+      }
+    }
+  },
+  "variables": {
+    "copy": [
+      {
+        "name": "expectedTelemetryRoles",
+        "count": "[length(parameters('monitoredContainerApps'))]",
+        "input": "[format('fabric.{0}', parameters('monitoredContainerApps')[copyIndex('expectedTelemetryRoles')].name)]"
+      }
+    ]
+  },
+  "resources": [
+    {
+      "type": "Microsoft.Insights/actionGroups",
+      "apiVersion": "2023-01-01",
+      "name": "[format('{0}-alerts-ag', parameters('resourcePrefix'))]",
+      "location": "global",
+      "properties": {
+        "groupShortName": "FabricAlert",
+        "enabled": true,
+        "emailReceivers": "[if(not(equals(parameters('alertEmail'), '')), createArray(createObject('name', 'AdminEmail', 'emailAddress', parameters('alertEmail'), 'useCommonAlertSchema', true())), createArray())]",
+        "webhookReceivers": "[if(not(equals(parameters('alertsWebhookUrl'), '')), createArray(createObject('name', 'AlertsWorkflow', 'serviceUri', parameters('alertsWebhookUrl'), 'useCommonAlertSchema', true())), createArray())]"
+      }
+    },
+    {
+      "copy": {
+        "name": "replicaAlerts",
+        "count": "[length(parameters('monitoredContainerApps'))]"
+      },
+      "type": "Microsoft.Insights/metricAlerts",
+      "apiVersion": "2018-03-01",
+      "name": "[format('{0}-{1}-replica-alert', parameters('resourcePrefix'), parameters('monitoredContainerApps')[copyIndex()].name)]",
+      "location": "global",
+      "properties": {
+        "description": "[format('{0} has 0 running replicas - service is down', parameters('monitoredContainerApps')[copyIndex()].name)]",
+        "severity": "[if(parameters('monitoredContainerApps')[copyIndex()].critical, 1, 2)]",
+        "enabled": true,
+        "scopes": [
+          "[parameters('monitoredContainerApps')[copyIndex()].resourceId]"
+        ],
+        "evaluationFrequency": "PT5M",
+        "windowSize": "PT5M",
+        "criteria": {
+          "odata.type": "Microsoft.Azure.Monitor.SingleResourceMultipleMetricCriteria",
+          "allOf": [
+            {
+              "name": "ReplicaCountZero",
+              "metricName": "Replicas",
+              "metricNamespace": "Microsoft.App/containerApps",
+              "operator": "LessThanOrEqual",
+              "threshold": 0,
+              "timeAggregation": "Maximum",
+              "criterionType": "StaticThresholdCriterion"
+            }
+          ]
+        },
+        "actions": [
+          {
+            "actionGroupId": "[resourceId('Microsoft.Insights/actionGroups', format('{0}-alerts-ag', parameters('resourcePrefix')))]"
+          }
+        ],
+        "autoMitigate": false
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Insights/actionGroups', format('{0}-alerts-ag', parameters('resourcePrefix')))]"
+      ]
+    },
+    {
+      "copy": {
+        "name": "restartAlerts",
+        "count": "[length(parameters('monitoredContainerApps'))]"
+      },
+      "type": "Microsoft.Insights/metricAlerts",
+      "apiVersion": "2018-03-01",
+      "name": "[format('{0}-{1}-restart-alert', parameters('resourcePrefix'), parameters('monitoredContainerApps')[copyIndex()].name)]",
+      "location": "global",
+      "properties": {
+        "description": "[format('{0} is crash-looping - more than 5 restarts in 5 minutes', parameters('monitoredContainerApps')[copyIndex()].name)]",
+        "severity": 2,
+        "enabled": true,
+        "scopes": [
+          "[parameters('monitoredContainerApps')[copyIndex()].resourceId]"
+        ],
+        "evaluationFrequency": "PT5M",
+        "windowSize": "PT5M",
+        "criteria": {
+          "odata.type": "Microsoft.Azure.Monitor.SingleResourceMultipleMetricCriteria",
+          "allOf": [
+            {
+              "name": "HighRestartCount",
+              "metricName": "RestartCount",
+              "metricNamespace": "Microsoft.App/containerApps",
+              "operator": "GreaterThan",
+              "threshold": 5,
+              "timeAggregation": "Total",
+              "criterionType": "StaticThresholdCriterion"
+            }
+          ]
+        },
+        "actions": [
+          {
+            "actionGroupId": "[resourceId('Microsoft.Insights/actionGroups', format('{0}-alerts-ag', parameters('resourcePrefix')))]"
+          }
+        ],
+        "autoMitigate": false
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Insights/actionGroups', format('{0}-alerts-ag', parameters('resourcePrefix')))]"
+      ]
+    },
+    {
+      "condition": "[not(equals(parameters('appInsightsId'), ''))]",
+      "type": "Microsoft.Insights/scheduledQueryRules",
+      "apiVersion": "2022-06-15",
+      "name": "[format('{0}-llm-high-error-rate', parameters('resourcePrefix'))]",
+      "location": "[parameters('location')]",
+      "properties": {
+        "displayName": "AI - High LLM Error Rate (>10%)",
+        "description": "LLM error rate exceeded 10% over the last 5 minutes — possible provider outage or bug",
+        "severity": 1,
+        "enabled": true,
+        "scopes": [
+          "[parameters('appInsightsId')]"
+        ],
+        "evaluationFrequency": "PT5M",
+        "windowSize": "PT5M",
+        "criteria": {
+          "allOf": [
+            {
+              "query": "            let total = toscalar(union dependencies, requests | where timestamp > ago(5m) | where name startswith \"llm.\" | count);\n            let errors = toscalar(union dependencies, requests | where timestamp > ago(5m) | where name startswith \"llm.\" | where success == false | count);\n            print error_rate_pct = iff(total > 0, (toreal(errors) / toreal(total)) * 100.0, 0.0)\n            | where error_rate_pct > 10\n          ",
+              "timeAggregation": "Count",
+              "threshold": 0,
+              "operator": "GreaterThan",
+              "failingPeriods": {
+                "numberOfEvaluationPeriods": 1,
+                "minFailingPeriodsToAlert": 1
+              }
+            }
+          ]
+        },
+        "actions": {
+          "actionGroups": [
+            "[resourceId('Microsoft.Insights/actionGroups', format('{0}-alerts-ag', parameters('resourcePrefix')))]"
+          ]
+        },
+        "autoMitigate": false
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Insights/actionGroups', format('{0}-alerts-ag', parameters('resourcePrefix')))]"
+      ]
+    },
+    {
+      "condition": "[not(equals(parameters('appInsightsId'), ''))]",
+      "type": "Microsoft.Insights/scheduledQueryRules",
+      "apiVersion": "2022-06-15",
+      "name": "[format('{0}-llm-provider-error-rate', parameters('resourcePrefix'))]",
+      "location": "[parameters('location')]",
+      "properties": {
+        "displayName": "AI - LLM Provider Error Rate (>25%)",
+        "description": "A specific LLM provider error rate exceeded 25% — possible provider-specific outage",
+        "severity": 2,
+        "enabled": true,
+        "scopes": [
+          "[parameters('appInsightsId')]"
+        ],
+        "evaluationFrequency": "PT5M",
+        "windowSize": "PT5M",
+        "criteria": {
+          "allOf": [
+            {
+              "query": "            union dependencies, requests\n            | where timestamp > ago(5m)\n            | where name startswith \"llm.\"\n            | summarize total = count(), errors = countif(success == false)\n              by provider = tostring(customDimensions[\"gen_ai.system\"])\n            | where isnotempty(provider)\n            | extend error_rate_pct = iff(total > 0, (toreal(errors) / toreal(total)) * 100.0, 0.0)\n            | where error_rate_pct > 25\n          ",
+              "timeAggregation": "Count",
+              "threshold": 0,
+              "operator": "GreaterThan",
+              "failingPeriods": {
+                "numberOfEvaluationPeriods": 1,
+                "minFailingPeriodsToAlert": 1
+              }
+            }
+          ]
+        },
+        "actions": {
+          "actionGroups": [
+            "[resourceId('Microsoft.Insights/actionGroups', format('{0}-alerts-ag', parameters('resourcePrefix')))]"
+          ]
+        },
+        "autoMitigate": false
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Insights/actionGroups', format('{0}-alerts-ag', parameters('resourcePrefix')))]"
+      ]
+    },
+    {
+      "condition": "[not(equals(parameters('appInsightsId'), ''))]",
+      "type": "Microsoft.Insights/scheduledQueryRules",
+      "apiVersion": "2022-06-15",
+      "name": "[format('{0}-llm-high-latency', parameters('resourcePrefix'))]",
+      "location": "[parameters('location')]",
+      "properties": {
+        "displayName": "AI - High LLM Latency P95 (>30s)",
+        "description": "P95 LLM request latency exceeded 30 seconds for at least one provider",
+        "severity": 2,
+        "enabled": true,
+        "scopes": [
+          "[parameters('appInsightsId')]"
+        ],
+        "evaluationFrequency": "PT5M",
+        "windowSize": "PT5M",
+        "criteria": {
+          "allOf": [
+            {
+              "query": "            union dependencies, requests\n            | where timestamp > ago(5m)\n            | where name startswith \"llm.\"\n            | summarize p95_ms = percentile(duration, 95)\n              by provider = tostring(customDimensions[\"gen_ai.system\"])\n            | where p95_ms > 30000\n          ",
+              "timeAggregation": "Count",
+              "threshold": 0,
+              "operator": "GreaterThan",
+              "failingPeriods": {
+                "numberOfEvaluationPeriods": 1,
+                "minFailingPeriodsToAlert": 1
+              }
+            }
+          ]
+        },
+        "actions": {
+          "actionGroups": [
+            "[resourceId('Microsoft.Insights/actionGroups', format('{0}-alerts-ag', parameters('resourcePrefix')))]"
+          ]
+        },
+        "autoMitigate": false
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Insights/actionGroups', format('{0}-alerts-ag', parameters('resourcePrefix')))]"
+      ]
+    },
+    {
+      "condition": "[not(equals(parameters('appInsightsId'), ''))]",
+      "type": "Microsoft.Insights/scheduledQueryRules",
+      "apiVersion": "2022-06-15",
+      "name": "[format('{0}-llm-token-usage-spike', parameters('resourcePrefix'))]",
+      "location": "[parameters('location')]",
+      "properties": {
+        "displayName": "AI - Token Usage Spike (>5x hourly average)",
+        "description": "Token usage in the last 5 minutes is more than 5x the hourly average — possible runaway agent or abuse",
+        "severity": 2,
+        "enabled": true,
+        "scopes": [
+          "[parameters('appInsightsId')]"
+        ],
+        "evaluationFrequency": "PT5M",
+        "windowSize": "PT1H",
+        "criteria": {
+          "allOf": [
+            {
+              "query": "            let bins = union dependencies, requests\n                | where timestamp > ago(1h)\n                | where name startswith \"llm.\"\n                | extend total_tokens = toint(customDimensions[\"gen_ai.usage.input_tokens\"]) + toint(customDimensions[\"gen_ai.usage.output_tokens\"])\n                | summarize tokens = sum(total_tokens) by bin(timestamp, 5m);\n            let recent = toscalar(bins | top 1 by timestamp desc | project tokens);\n            let hist_avg = toscalar(bins | summarize avg(tokens));\n            print ratio = toreal(recent) / max_of(toreal(hist_avg), 1.0)\n            | where ratio > 5\n          ",
+              "timeAggregation": "Count",
+              "threshold": 0,
+              "operator": "GreaterThan",
+              "failingPeriods": {
+                "numberOfEvaluationPeriods": 1,
+                "minFailingPeriodsToAlert": 1
+              }
+            }
+          ]
+        },
+        "actions": {
+          "actionGroups": [
+            "[resourceId('Microsoft.Insights/actionGroups', format('{0}-alerts-ag', parameters('resourcePrefix')))]"
+          ]
+        },
+        "autoMitigate": false
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Insights/actionGroups', format('{0}-alerts-ag', parameters('resourcePrefix')))]"
+      ]
+    },
+    {
+      "condition": "[not(equals(parameters('appInsightsId'), ''))]",
+      "type": "Microsoft.Insights/scheduledQueryRules",
+      "apiVersion": "2022-06-15",
+      "name": "[format('{0}-llm-high-output-token-rate', parameters('resourcePrefix'))]",
+      "location": "[parameters('location')]",
+      "properties": {
+        "displayName": "AI - High Output Token Rate (>5000/s per model)",
+        "description": "Output token rate for a model/provider exceeded 5000 tokens per second — possible runaway generation",
+        "severity": 2,
+        "enabled": true,
+        "scopes": [
+          "[parameters('appInsightsId')]"
+        ],
+        "evaluationFrequency": "PT5M",
+        "windowSize": "PT5M",
+        "criteria": {
+          "allOf": [
+            {
+              "query": "            union dependencies, requests\n            | where timestamp > ago(5m)\n            | where name startswith \"llm.\"\n            | summarize output_tokens = sum(toint(customDimensions[\"gen_ai.usage.output_tokens\"]))\n              by provider = tostring(customDimensions[\"gen_ai.system\"]),\n                 model = tostring(customDimensions[\"gen_ai.request.model\"])\n            | where isnotempty(provider)\n            | extend output_per_sec = toreal(output_tokens) / 300.0\n            | where output_per_sec > 5000\n          ",
+              "timeAggregation": "Count",
+              "threshold": 0,
+              "operator": "GreaterThan",
+              "failingPeriods": {
+                "numberOfEvaluationPeriods": 1,
+                "minFailingPeriodsToAlert": 1
+              }
+            }
+          ]
+        },
+        "actions": {
+          "actionGroups": [
+            "[resourceId('Microsoft.Insights/actionGroups', format('{0}-alerts-ag', parameters('resourcePrefix')))]"
+          ]
+        },
+        "autoMitigate": false
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Insights/actionGroups', format('{0}-alerts-ag', parameters('resourcePrefix')))]"
+      ]
+    },
+    {
+      "condition": "[not(equals(parameters('appInsightsId'), ''))]",
+      "type": "Microsoft.Insights/scheduledQueryRules",
+      "apiVersion": "2022-06-15",
+      "name": "[format('{0}-llm-no-requests', parameters('resourcePrefix'))]",
+      "location": "[parameters('location')]",
+      "properties": {
+        "displayName": "AI - LLM Trace Signal Missing After Requests",
+        "description": "LLM request metrics increased in the last 15 minutes but no matching llm.* spans arrived for that service — the trace signal is broken. Idle services do not alert.",
+        "severity": 2,
+        "enabled": true,
+        "scopes": [
+          "[parameters('appInsightsId')]"
+        ],
+        "evaluationFrequency": "PT5M",
+        "windowSize": "PT30M",
+        "criteria": {
+          "allOf": [
+            {
+              "query": "            // llm.requests is a cumulative counter. Compare the most recent\n            // 15m with a preceding baseline per process/attribute series; a\n            // reset contributes its new value instead of a negative delta.\n            let attempts = customMetrics\n              | where timestamp > ago(30m) and name == \"llm.requests\"\n              | extend role = tolower(coalesce(cloud_RoleName, \"unknown\")),\n                       instance = tostring(customDimensions[\"service.instance.id\"]),\n                       provider = tostring(customDimensions[\"provider\"]),\n                       model = tostring(customDimensions[\"model\"]),\n                       operation = tostring(customDimensions[\"operation\"]),\n                       status = tostring(customDimensions[\"status\"])\n              | summarize baseline = maxif(value, timestamp between (ago(30m) .. ago(15m))),\n                          recent = maxif(value, timestamp > ago(15m)),\n                          recent_points = countif(timestamp > ago(15m))\n                by role, instance, provider, model, operation, status\n              | where recent_points > 0\n              | extend delta = iff(isnull(baseline) or recent < baseline, recent, recent - baseline)\n              | summarize attempts = sum(delta) by role\n              | where attempts > 0;\n            let traced = union dependencies, requests\n              | where timestamp > ago(15m) and name startswith \"llm.\"\n              | extend role = tolower(coalesce(cloud_RoleName, \"unknown\"))\n              | summarize spans = count() by role;\n            attempts\n            | join kind=leftouter traced on role\n            | extend spans = coalesce(spans, 0)\n            | where spans == 0\n            | project role, attempts, spans\n          ",
+              "timeAggregation": "Count",
+              "threshold": 0,
+              "operator": "GreaterThan",
+              "failingPeriods": {
+                "numberOfEvaluationPeriods": 1,
+                "minFailingPeriodsToAlert": 1
+              }
+            }
+          ]
+        },
+        "actions": {
+          "actionGroups": [
+            "[resourceId('Microsoft.Insights/actionGroups', format('{0}-alerts-ag', parameters('resourcePrefix')))]"
+          ]
+        },
+        "autoMitigate": false
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Insights/actionGroups', format('{0}-alerts-ag', parameters('resourcePrefix')))]"
+      ]
+    },
+    {
+      "condition": "[not(equals(parameters('logAnalyticsWorkspaceId'), ''))]",
+      "type": "Microsoft.Insights/scheduledQueryRules",
+      "apiVersion": "2022-06-15",
+      "name": "[format('{0}-kv-unauthorized-access', parameters('resourcePrefix'))]",
+      "location": "[parameters('location')]",
+      "properties": {
+        "displayName": "Security - Key Vault Unauthorized Access Attempts",
+        "description": "SOC 2 CC7.2 -- >= 5 Key Vault authorization denials (HTTP 403 Forbidden) from one caller in 15 min (possible secret-access attack or misconfiguration). Excludes the benign 401 Azure AD pre-auth challenge.",
+        "severity": 1,
+        "enabled": true,
+        "scopes": [
+          "[parameters('logAnalyticsWorkspaceId')]"
+        ],
+        "evaluationFrequency": "PT15M",
+        "windowSize": "PT15M",
+        "criteria": {
+          "allOf": [
+            {
+              "query": "            AzureDiagnostics\n            | where TimeGenerated > ago(15m)\n            | where ResourceProvider == \"MICROSOFT.KEYVAULT\" and Category == \"AuditEvent\"\n            // 403 = a genuine authorization denial. 401 is the benign AAD\n            // pre-auth challenge that precedes every successful call -- exclude it.\n            | where httpStatusCode_d == 403\n            | summarize failures = count() by CallerIPAddress\n            | where failures >= 5\n          ",
+              "timeAggregation": "Count",
+              "threshold": 0,
+              "operator": "GreaterThan",
+              "failingPeriods": {
+                "numberOfEvaluationPeriods": 1,
+                "minFailingPeriodsToAlert": 1
+              }
+            }
+          ]
+        },
+        "actions": {
+          "actionGroups": [
+            "[resourceId('Microsoft.Insights/actionGroups', format('{0}-alerts-ag', parameters('resourcePrefix')))]"
+          ]
+        },
+        "autoMitigate": true
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Insights/actionGroups', format('{0}-alerts-ag', parameters('resourcePrefix')))]"
+      ]
+    },
+    {
+      "condition": "[not(equals(parameters('appInsightsId'), ''))]",
+      "type": "Microsoft.Insights/scheduledQueryRules",
+      "apiVersion": "2022-06-15",
+      "name": "[format('{0}-http-5xx-burn-rate-sev1', parameters('resourcePrefix'))]",
+      "location": "[parameters('location')]",
+      "properties": {
+        "displayName": "App - HTTP 5xx Burn Rate SEV-1 (14.4x over 5m and 1h)",
+        "description": "[format('HTTP 5xx error rate is burning the monthly SLO budget at 14.4x the sustainable rate over BOTH the 5m and 1h windows — page on-call. Routes through {0}. See the alert catalogue: https://github.com/Fabric-Pro/fabric-oss/blob/master/docs/monitoring/alerts.md#http-5xx-burn-rate-kql-scheduledqueryrules', parameters('alertsWebhookUrl'))]",
+        "severity": 0,
+        "enabled": true,
+        "scopes": [
+          "[parameters('appInsightsId')]"
+        ],
+        "evaluationFrequency": "PT5M",
+        "windowSize": "PT1H",
+        "criteria": {
+          "allOf": [
+            {
+              "query": "            let slo_target = 0.999;\n            let burn_multiplier = 14.4;\n            let threshold = (1.0 - slo_target) * burn_multiplier;\n            let request_base = requests\n              | where timestamp > ago(1h)\n              | extend role = tolower(coalesce(cloud_RoleName, \"unknown\")),\n                       path = tolower(coalesce(tostring(parse_url(url).Path), \"<application>\")),\n                       weight = tolong(coalesce(itemCount, 1)),\n                       status_code = toint(resultCode)\n              // Match the application-side probe filter exactly: exclude only\n              // these path roots (and their children), never names such as\n              // /healthcare or /metrics-report.\n              | where not(path matches regex @\"^/(?:api/)?(?:healthz?|readyz?|livez?|metrics)(?:/|$)\");\n            let short_window = request_base\n              | where timestamp > ago(5m)\n              | summarize short_total = sum(weight), short_errors = sumif(weight, status_code between (500 .. 599)) by role;\n            let long_window = request_base\n              | summarize long_total = sum(weight), long_errors = sumif(weight, status_code between (500 .. 599)) by role;\n            short_window\n            | join kind=inner long_window on role\n            | extend short_rate = iff(short_total > 0, toreal(short_errors) / toreal(short_total), 0.0)\n            | extend long_rate = iff(long_total > 0, toreal(long_errors) / toreal(long_total), 0.0)\n            | where short_rate > threshold and long_rate > threshold and long_total > 10\n            | project role, short_rate, long_rate, short_total, long_total, short_errors, long_errors\n          ",
+              "timeAggregation": "Count",
+              "threshold": 0,
+              "operator": "GreaterThan",
+              "failingPeriods": {
+                "numberOfEvaluationPeriods": 1,
+                "minFailingPeriodsToAlert": 1
+              }
+            }
+          ]
+        },
+        "actions": {
+          "actionGroups": [
+            "[resourceId('Microsoft.Insights/actionGroups', format('{0}-alerts-ag', parameters('resourcePrefix')))]"
+          ],
+          "customProperties": {
+            "runbook_url": "https://github.com/Fabric-Pro/fabric-oss/blob/master/docs/monitoring/alerts.md#http-5xx-burn-rate-kql-scheduledqueryrules",
+            "severity": "SEV-1"
+          }
+        },
+        "autoMitigate": false
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Insights/actionGroups', format('{0}-alerts-ag', parameters('resourcePrefix')))]"
+      ]
+    },
+    {
+      "condition": "[not(equals(parameters('appInsightsId'), ''))]",
+      "type": "Microsoft.Insights/scheduledQueryRules",
+      "apiVersion": "2022-06-15",
+      "name": "[format('{0}-http-5xx-burn-rate-sev2', parameters('resourcePrefix'))]",
+      "location": "[parameters('location')]",
+      "properties": {
+        "displayName": "App - HTTP 5xx Burn Rate SEV-2 (6x over 30m and 6h)",
+        "description": "[format('HTTP 5xx error rate is burning the monthly SLO budget at 6x the sustainable rate over BOTH the 30m and 6h windows — open ticket, respond within business hours. Routes through {0}. See the alert catalogue: https://github.com/Fabric-Pro/fabric-oss/blob/master/docs/monitoring/alerts.md#http-5xx-burn-rate-kql-scheduledqueryrules', parameters('alertsWebhookUrl'))]",
+        "severity": 1,
+        "enabled": true,
+        "scopes": [
+          "[parameters('appInsightsId')]"
+        ],
+        "evaluationFrequency": "PT15M",
+        "windowSize": "PT6H",
+        "criteria": {
+          "allOf": [
+            {
+              "query": "            let slo_target = 0.999;\n            let burn_multiplier = 6.0;\n            let threshold = (1.0 - slo_target) * burn_multiplier;\n            let request_base = requests\n              | where timestamp > ago(6h)\n              | extend role = tolower(coalesce(cloud_RoleName, \"unknown\")),\n                       path = tolower(coalesce(tostring(parse_url(url).Path), \"<application>\")),\n                       weight = tolong(coalesce(itemCount, 1)),\n                       status_code = toint(resultCode)\n              | where not(path matches regex @\"^/(?:api/)?(?:healthz?|readyz?|livez?|metrics)(?:/|$)\");\n            let short_window = request_base\n              | where timestamp > ago(30m)\n              | summarize short_total = sum(weight), short_errors = sumif(weight, status_code between (500 .. 599)) by role;\n            let long_window = request_base\n              | summarize long_total = sum(weight), long_errors = sumif(weight, status_code between (500 .. 599)) by role;\n            short_window\n            | join kind=inner long_window on role\n            | extend short_rate = iff(short_total > 0, toreal(short_errors) / toreal(short_total), 0.0)\n            | extend long_rate = iff(long_total > 0, toreal(long_errors) / toreal(long_total), 0.0)\n            | where short_rate > threshold and long_rate > threshold and long_total > 30\n            | project role, short_rate, long_rate, short_total, long_total, short_errors, long_errors\n          ",
+              "timeAggregation": "Count",
+              "threshold": 0,
+              "operator": "GreaterThan",
+              "failingPeriods": {
+                "numberOfEvaluationPeriods": 1,
+                "minFailingPeriodsToAlert": 1
+              }
+            }
+          ]
+        },
+        "actions": {
+          "actionGroups": [
+            "[resourceId('Microsoft.Insights/actionGroups', format('{0}-alerts-ag', parameters('resourcePrefix')))]"
+          ],
+          "customProperties": {
+            "runbook_url": "https://github.com/Fabric-Pro/fabric-oss/blob/master/docs/monitoring/alerts.md#http-5xx-burn-rate-kql-scheduledqueryrules",
+            "severity": "SEV-2"
+          }
+        },
+        "autoMitigate": false
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Insights/actionGroups', format('{0}-alerts-ag', parameters('resourcePrefix')))]"
+      ]
+    },
+    {
+      "condition": "[not(equals(parameters('appInsightsId'), ''))]",
+      "type": "Microsoft.Insights/scheduledQueryRules",
+      "apiVersion": "2022-06-15",
+      "name": "[format('{0}-http-5xx-burn-rate-sev3', parameters('resourcePrefix'))]",
+      "location": "[parameters('location')]",
+      "properties": {
+        "displayName": "App - HTTP 5xx Burn Rate SEV-3 (1x over 6h and 2d)",
+        "description": "[format('HTTP 5xx error rate is burning the monthly SLO budget at the sustained baseline rate over BOTH the 6h and 2d windows — SEV-3 ticket-only, surfaces in the weekly digest. Note: long window capped at Azure scheduledQueryRules max (P2D = 48h). Routes through {0}. See the alert catalogue: https://github.com/Fabric-Pro/fabric-oss/blob/master/docs/monitoring/alerts.md#http-5xx-burn-rate-kql-scheduledqueryrules', parameters('alertsWebhookUrl'))]",
+        "severity": 3,
+        "enabled": true,
+        "scopes": [
+          "[parameters('appInsightsId')]"
+        ],
+        "evaluationFrequency": "PT1H",
+        "windowSize": "P2D",
+        "criteria": {
+          "allOf": [
+            {
+              "query": "            let slo_target = 0.999;\n            let burn_multiplier = 1.0;\n            let threshold = (1.0 - slo_target) * burn_multiplier;\n            let request_base = requests\n              | where timestamp > ago(2d)\n              | extend role = tolower(coalesce(cloud_RoleName, \"unknown\")),\n                       path = tolower(coalesce(tostring(parse_url(url).Path), \"<application>\")),\n                       weight = tolong(coalesce(itemCount, 1)),\n                       status_code = toint(resultCode)\n              | where not(path matches regex @\"^/(?:api/)?(?:healthz?|readyz?|livez?|metrics)(?:/|$)\");\n            let short_window = request_base\n              | where timestamp > ago(6h)\n              | summarize short_total = sum(weight), short_errors = sumif(weight, status_code between (500 .. 599)) by role;\n            let long_window = request_base\n              | summarize long_total = sum(weight), long_errors = sumif(weight, status_code between (500 .. 599)) by role;\n            short_window\n            | join kind=inner long_window on role\n            | extend short_rate = iff(short_total > 0, toreal(short_errors) / toreal(short_total), 0.0)\n            | extend long_rate = iff(long_total > 0, toreal(long_errors) / toreal(long_total), 0.0)\n            | where short_rate > threshold and long_rate > threshold and long_total > 100\n            | project role, short_rate, long_rate, short_total, long_total, short_errors, long_errors\n          ",
+              "timeAggregation": "Count",
+              "threshold": 0,
+              "operator": "GreaterThan",
+              "failingPeriods": {
+                "numberOfEvaluationPeriods": 1,
+                "minFailingPeriodsToAlert": 1
+              }
+            }
+          ]
+        },
+        "actions": {
+          "actionGroups": [
+            "[resourceId('Microsoft.Insights/actionGroups', format('{0}-alerts-ag', parameters('resourcePrefix')))]"
+          ],
+          "customProperties": {
+            "runbook_url": "https://github.com/Fabric-Pro/fabric-oss/blob/master/docs/monitoring/alerts.md#http-5xx-burn-rate-kql-scheduledqueryrules",
+            "severity": "SEV-3"
+          }
+        },
+        "autoMitigate": false
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Insights/actionGroups', format('{0}-alerts-ag', parameters('resourcePrefix')))]"
+      ]
+    },
+    {
+      "condition": "[not(equals(parameters('appInsightsId'), ''))]",
+      "type": "Microsoft.Insights/scheduledQueryRules",
+      "apiVersion": "2022-06-15",
+      "name": "[format('{0}-circuit-breaker-opened', parameters('resourcePrefix'))]",
+      "location": "[parameters('location')]",
+      "properties": {
+        "displayName": "Integration - Circuit Breaker Opened",
+        "description": "A provider circuit breaker transitioned to OPEN — short-circuiting calls. See the alert catalogue: https://github.com/Fabric-Pro/fabric-oss/blob/master/docs/monitoring/alerts.md#integration-health-kql-scheduledqueryrules",
+        "severity": 0,
+        "enabled": true,
+        "scopes": [
+          "[parameters('appInsightsId')]"
+        ],
+        "evaluationFrequency": "PT1M",
+        "windowSize": "PT5M",
+        "criteria": {
+          "allOf": [
+            {
+              "query": "            let integration_events = union isfuzzy=true\n              (customEvents\n                | project timestamp, operation_Id, event_name = name, customDimensions, source = \"legacy\"),\n              (traces\n                | extend event_name = tostring(customDimensions[\"event.name\"])\n                | where isnotempty(event_name)\n                | project timestamp, operation_Id, event_name, customDimensions, source = \"otel\")\n              | extend event_id = tostring(customDimensions[\"event.id\"])\n              | extend event_key = iff(isempty(event_id), strcat(source, \"|\", operation_Id, \"|\", tostring(timestamp)), event_id)\n              | summarize arg_max(timestamp, *) by event_key;\n            integration_events\n            | where timestamp > ago(5m)\n            | where event_name == \"CircuitBreakerStateChange\"\n            | where tostring(customDimensions[\"newState\"]) == \"open\"\n            | summarize count() by provider = tostring(customDimensions[\"provider\"])\n          ",
+              "timeAggregation": "Count",
+              "threshold": 0,
+              "operator": "GreaterThan",
+              "failingPeriods": {
+                "numberOfEvaluationPeriods": 1,
+                "minFailingPeriodsToAlert": 1
+              }
+            }
+          ]
+        },
+        "actions": {
+          "actionGroups": [
+            "[resourceId('Microsoft.Insights/actionGroups', format('{0}-alerts-ag', parameters('resourcePrefix')))]"
+          ],
+          "customProperties": {
+            "runbook_url": "https://github.com/Fabric-Pro/fabric-oss/blob/master/docs/monitoring/alerts.md#integration-health-kql-scheduledqueryrules",
+            "severity": "SEV-1"
+          }
+        },
+        "autoMitigate": false
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Insights/actionGroups', format('{0}-alerts-ag', parameters('resourcePrefix')))]"
+      ]
+    },
+    {
+      "condition": "[not(equals(parameters('appInsightsId'), ''))]",
+      "type": "Microsoft.Insights/scheduledQueryRules",
+      "apiVersion": "2022-06-15",
+      "name": "[format('{0}-synthetic-probe-failing', parameters('resourcePrefix'))]",
+      "location": "[parameters('location')]",
+      "properties": {
+        "displayName": "Integration - Synthetic Probe Failing (>=3 failures in 15m)",
+        "description": "[format('A provider synthetic probe failed 3 or more times in the last 15 minutes — open ticket. Routes through {0}. See the alert catalogue: https://github.com/Fabric-Pro/fabric-oss/blob/master/docs/monitoring/alerts.md#integration-health-kql-scheduledqueryrules', parameters('alertsWebhookUrl'))]",
+        "severity": 1,
+        "enabled": true,
+        "scopes": [
+          "[parameters('appInsightsId')]"
+        ],
+        "evaluationFrequency": "PT5M",
+        "windowSize": "PT15M",
+        "criteria": {
+          "allOf": [
+            {
+              "query": "            let integration_events = union isfuzzy=true\n              (customEvents\n                | project timestamp, operation_Id, event_name = name, customDimensions, source = \"legacy\"),\n              (traces\n                | extend event_name = tostring(customDimensions[\"event.name\"])\n                | where isnotempty(event_name)\n                | project timestamp, operation_Id, event_name, customDimensions, source = \"otel\")\n              | extend event_id = tostring(customDimensions[\"event.id\"])\n              | extend event_key = iff(isempty(event_id), strcat(source, \"|\", operation_Id, \"|\", tostring(timestamp)), event_id)\n              | summarize arg_max(timestamp, *) by event_key;\n            integration_events\n            | where timestamp > ago(15m)\n            | where event_name == \"SyntheticProbeResult\"\n            | where tostring(customDimensions[\"outcome\"]) == \"failure\"\n              or tostring(customDimensions[\"outcome\"]) == \"timeout\"\n            | summarize failures = count() by provider = tostring(customDimensions[\"provider\"])\n            | where failures >= 3\n          ",
+              "timeAggregation": "Count",
+              "threshold": 0,
+              "operator": "GreaterThan",
+              "failingPeriods": {
+                "numberOfEvaluationPeriods": 1,
+                "minFailingPeriodsToAlert": 1
+              }
+            }
+          ]
+        },
+        "actions": {
+          "actionGroups": [
+            "[resourceId('Microsoft.Insights/actionGroups', format('{0}-alerts-ag', parameters('resourcePrefix')))]"
+          ],
+          "customProperties": {
+            "runbook_url": "https://github.com/Fabric-Pro/fabric-oss/blob/master/docs/monitoring/alerts.md#integration-health-kql-scheduledqueryrules",
+            "severity": "SEV-2"
+          }
+        },
+        "autoMitigate": false
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Insights/actionGroups', format('{0}-alerts-ag', parameters('resourcePrefix')))]"
+      ]
+    },
+    {
+      "condition": "[not(equals(parameters('appInsightsId'), ''))]",
+      "type": "Microsoft.Insights/scheduledQueryRules",
+      "apiVersion": "2022-06-15",
+      "name": "[format('{0}-dependency-failures', parameters('resourcePrefix'))]",
+      "location": "[parameters('location')]",
+      "properties": {
+        "displayName": "Integration - Outbound Dependency Failures (>5 in 15m)",
+        "description": "[format('Outbound dependency failures exceeded 5 in the last 15 minutes for one or more tracked providers (OpenAI, Anthropic, Stripe, Resend, S3). Routes through {0}. See the alert catalogue: https://github.com/Fabric-Pro/fabric-oss/blob/master/docs/monitoring/alerts.md#integration-health-kql-scheduledqueryrules', parameters('alertsWebhookUrl'))]",
+        "severity": 1,
+        "enabled": true,
+        "scopes": [
+          "[parameters('appInsightsId')]"
+        ],
+        "evaluationFrequency": "PT5M",
+        "windowSize": "PT15M",
+        "criteria": {
+          "allOf": [
+            {
+              "query": "            dependencies\n            | where timestamp > ago(15m)\n            | where success == false\n            | where target has_any (\n                \"api.openai.com\",\n                \"api.anthropic.com\",\n                \"api.stripe.com\",\n                \"api.resend.com\",\n                \"s3.amazonaws.com\",\n                \"amazonaws.com\"\n              )\n            | summarize failures = count() by target\n            | where failures > 5\n          ",
+              "timeAggregation": "Count",
+              "threshold": 0,
+              "operator": "GreaterThan",
+              "failingPeriods": {
+                "numberOfEvaluationPeriods": 1,
+                "minFailingPeriodsToAlert": 1
+              }
+            }
+          ]
+        },
+        "actions": {
+          "actionGroups": [
+            "[resourceId('Microsoft.Insights/actionGroups', format('{0}-alerts-ag', parameters('resourcePrefix')))]"
+          ],
+          "customProperties": {
+            "runbook_url": "https://github.com/Fabric-Pro/fabric-oss/blob/master/docs/monitoring/alerts.md#integration-health-kql-scheduledqueryrules",
+            "severity": "SEV-2"
+          }
+        },
+        "autoMitigate": false
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Insights/actionGroups', format('{0}-alerts-ag', parameters('resourcePrefix')))]"
+      ]
+    },
+    {
+      "condition": "[not(equals(parameters('appInsightsId'), ''))]",
+      "type": "Microsoft.Insights/scheduledQueryRules",
+      "apiVersion": "2022-06-15",
+      "name": "[format('{0}-otel-collector-heartbeat-missing', parameters('resourcePrefix'))]",
+      "location": "[parameters('location')]",
+      "properties": {
+        "displayName": "Telemetry - OTel Collector Heartbeat Missing",
+        "description": "One or more always-on monitored Container Apps has not exported its collector uptime metric for 15 minutes. This covers a never-working telemetry pipeline without relying on prior signal history.",
+        "severity": 1,
+        "enabled": true,
+        "scopes": [
+          "[parameters('appInsightsId')]"
+        ],
+        "evaluationFrequency": "PT5M",
+        "windowSize": "PT15M",
+        "criteria": {
+          "allOf": [
+            {
+              "query": "[format('            let expected = print roles = dynamic({0})\n              | mv-expand role = roles to typeof(string)\n              | project role = tolower(role);\n            let observed = customMetrics\n              | where timestamp > ago(15m) and name startswith \"otelcol_process_uptime\"\n              | project role = tolower(coalesce(cloud_RoleName, \"unknown\"))\n              | distinct role;\n            expected\n            | join kind=leftanti observed on role\n          ', string(variables('expectedTelemetryRoles')))]",
+              "timeAggregation": "Count",
+              "threshold": 0,
+              "operator": "GreaterThan",
+              "failingPeriods": {
+                "numberOfEvaluationPeriods": 2,
+                "minFailingPeriodsToAlert": 2
+              }
+            }
+          ]
+        },
+        "actions": {
+          "actionGroups": [
+            "[resourceId('Microsoft.Insights/actionGroups', format('{0}-alerts-ag', parameters('resourcePrefix')))]"
+          ],
+          "customProperties": {
+            "runbook_url": "https://github.com/Fabric-Pro/fabric-oss/blob/master/docs/monitoring/alerts.md#telemetry-pipeline-kql-scheduledqueryrules",
+            "severity": "SEV-2"
+          }
+        },
+        "autoMitigate": true
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Insights/actionGroups', format('{0}-alerts-ag', parameters('resourcePrefix')))]"
+      ]
+    },
+    {
+      "condition": "[not(equals(parameters('appInsightsId'), ''))]",
+      "type": "Microsoft.Insights/scheduledQueryRules",
+      "apiVersion": "2022-06-15",
+      "name": "[format('{0}-otel-collector-backpressure', parameters('resourcePrefix'))]",
+      "location": "[parameters('location')]",
+      "properties": {
+        "displayName": "Telemetry - OTel Collector Export Queue >=80%",
+        "description": "An OTel collector export queue remained at least 80% full across the evaluation window — telemetry loss is imminent if the destination does not recover.",
+        "severity": 1,
+        "enabled": true,
+        "scopes": [
+          "[parameters('appInsightsId')]"
+        ],
+        "evaluationFrequency": "PT5M",
+        "windowSize": "PT15M",
+        "criteria": {
+          "allOf": [
+            {
+              "query": "            let sizes = customMetrics\n              | where timestamp > ago(15m) and name == \"otelcol_exporter_queue_size\"\n              | extend role = tolower(coalesce(cloud_RoleName, \"unknown\")),\n                       exporter = tostring(customDimensions[\"exporter\"]),\n                       instance = tostring(customDimensions[\"service.instance.id\"])\n              | summarize queue_size = max(value) by bin(timestamp, 1m), role, exporter, instance;\n            let capacities = customMetrics\n              | where timestamp > ago(15m) and name == \"otelcol_exporter_queue_capacity\"\n              | extend role = tolower(coalesce(cloud_RoleName, \"unknown\")),\n                       exporter = tostring(customDimensions[\"exporter\"]),\n                       instance = tostring(customDimensions[\"service.instance.id\"])\n              | summarize queue_capacity = max(value) by bin(timestamp, 1m), role, exporter, instance;\n            sizes\n            | join kind=inner capacities on timestamp, role, exporter, instance\n            | where queue_capacity > 0\n            | extend fill_ratio = toreal(queue_size) / toreal(queue_capacity)\n            | summarize samples = count(), p95_fill_ratio = percentile(fill_ratio, 95), max_fill_ratio = max(fill_ratio)\n              by role, exporter, instance\n            | where samples >= 3 and p95_fill_ratio >= 0.8\n          ",
+              "timeAggregation": "Count",
+              "threshold": 0,
+              "operator": "GreaterThan",
+              "failingPeriods": {
+                "numberOfEvaluationPeriods": 1,
+                "minFailingPeriodsToAlert": 1
+              }
+            }
+          ]
+        },
+        "actions": {
+          "actionGroups": [
+            "[resourceId('Microsoft.Insights/actionGroups', format('{0}-alerts-ag', parameters('resourcePrefix')))]"
+          ],
+          "customProperties": {
+            "runbook_url": "https://github.com/Fabric-Pro/fabric-oss/blob/master/docs/monitoring/alerts.md#telemetry-pipeline-kql-scheduledqueryrules",
+            "severity": "SEV-2"
+          }
+        },
+        "autoMitigate": true
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Insights/actionGroups', format('{0}-alerts-ag', parameters('resourcePrefix')))]"
+      ]
+    },
+    {
+      "condition": "[not(equals(parameters('appInsightsId'), ''))]",
+      "type": "Microsoft.Insights/scheduledQueryRules",
+      "apiVersion": "2022-06-15",
+      "name": "[format('{0}-temporal-queue-delay', parameters('resourcePrefix'))]",
+      "location": "[parameters('location')]",
+      "properties": {
+        "displayName": "Temporal - Sustained Queue Delay (>60s average)",
+        "description": "Workflow or activity tasks waited more than 60 seconds on average before a worker accepted them during the last 15 minutes. Grouped by task queue and signal type.",
+        "severity": 1,
+        "enabled": true,
+        "scopes": [
+          "[parameters('appInsightsId')]"
+        ],
+        "evaluationFrequency": "PT5M",
+        "windowSize": "PT30M",
+        "criteria": {
+          "allOf": [
+            {
+              "query": "            // These histograms are cumulative. Subtract the preceding 15m\n            // baseline per process/queue before calculating a weighted mean;\n            // summing raw values would repeatedly count the process lifetime.\n            customMetrics\n            | where timestamp > ago(30m)\n            | where name in (\"temporal_workflow_task_schedule_to_start_latency\", \"temporal_activity_schedule_to_start_latency\")\n            | extend role = tolower(coalesce(cloud_RoleName, \"unknown\")),\n                     instance = tostring(customDimensions[\"service.instance.id\"]),\n                     task_queue = tostring(customDimensions[\"task_queue\"])\n            | summarize baseline_sum = maxif(valueSum, timestamp between (ago(30m) .. ago(15m))),\n                        baseline_count = maxif(valueCount, timestamp between (ago(30m) .. ago(15m))),\n                        recent_sum = maxif(valueSum, timestamp > ago(15m)),\n                        recent_count = maxif(valueCount, timestamp > ago(15m)),\n                        recent_points = countif(timestamp > ago(15m))\n              by role, instance, task_queue, signal = name\n            | where recent_points > 0\n            | extend delay_sum = iff(isnull(baseline_sum) or recent_sum < baseline_sum, recent_sum, recent_sum - baseline_sum),\n                     tasks = iff(isnull(baseline_count) or recent_count < baseline_count, recent_count, recent_count - baseline_count)\n            | summarize delay_sum = sum(delay_sum), tasks = sum(tasks) by role, task_queue, signal\n            | where tasks >= 5\n            | extend average_delay_ms = toreal(delay_sum) / toreal(tasks)\n            | where average_delay_ms > 60000\n          ",
+              "timeAggregation": "Count",
+              "threshold": 0,
+              "operator": "GreaterThan",
+              "failingPeriods": {
+                "numberOfEvaluationPeriods": 1,
+                "minFailingPeriodsToAlert": 1
+              }
+            }
+          ]
+        },
+        "actions": {
+          "actionGroups": [
+            "[resourceId('Microsoft.Insights/actionGroups', format('{0}-alerts-ag', parameters('resourcePrefix')))]"
+          ],
+          "customProperties": {
+            "runbook_url": "https://github.com/Fabric-Pro/fabric-oss/blob/master/docs/monitoring/alerts.md#temporal-capacity-kql-scheduledqueryrules",
+            "severity": "SEV-2"
+          }
+        },
+        "autoMitigate": true
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Insights/actionGroups', format('{0}-alerts-ag', parameters('resourcePrefix')))]"
+      ]
+    },
+    {
+      "condition": "[not(equals(parameters('appInsightsId'), ''))]",
+      "type": "Microsoft.Insights/scheduledQueryRules",
+      "apiVersion": "2022-06-15",
+      "name": "[format('{0}-temporal-task-slots-exhausted', parameters('resourcePrefix'))]",
+      "location": "[parameters('location')]",
+      "properties": {
+        "displayName": "Temporal - Task Slots Exhausted (15m)",
+        "description": "All worker replicas reported zero available slots for the same task queue and worker type throughout the 15-minute window.",
+        "severity": 1,
+        "enabled": true,
+        "scopes": [
+          "[parameters('appInsightsId')]"
+        ],
+        "evaluationFrequency": "PT5M",
+        "windowSize": "PT15M",
+        "criteria": {
+          "allOf": [
+            {
+              "query": "            customMetrics\n            | where timestamp > ago(15m) and name == \"temporal_worker_task_slots_available\"\n            | extend role = tolower(coalesce(cloud_RoleName, \"unknown\")),\n                     task_queue = tostring(customDimensions[\"task_queue\"]),\n                     worker_type = tostring(customDimensions[\"worker_type\"])\n            // Sum replicas for each minute. Alert only if aggregate capacity\n            // stayed at zero; one saturated replica beside a free replica is\n            // not a capacity incident.\n            | summarize available = sum(value) by bin(timestamp, 1m), role, task_queue, worker_type\n            | summarize samples = count(), max_available = max(available) by role, task_queue, worker_type\n            | where samples >= 5 and max_available <= 0\n          ",
+              "timeAggregation": "Count",
+              "threshold": 0,
+              "operator": "GreaterThan",
+              "failingPeriods": {
+                "numberOfEvaluationPeriods": 1,
+                "minFailingPeriodsToAlert": 1
+              }
+            }
+          ]
+        },
+        "actions": {
+          "actionGroups": [
+            "[resourceId('Microsoft.Insights/actionGroups', format('{0}-alerts-ag', parameters('resourcePrefix')))]"
+          ],
+          "customProperties": {
+            "runbook_url": "https://github.com/Fabric-Pro/fabric-oss/blob/master/docs/monitoring/alerts.md#temporal-capacity-kql-scheduledqueryrules",
+            "severity": "SEV-2"
+          }
+        },
+        "autoMitigate": true
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Insights/actionGroups', format('{0}-alerts-ag', parameters('resourcePrefix')))]"
+      ]
+    },
+    {
+      "condition": "[not(equals(parameters('logAnalyticsWorkspaceId'), ''))]",
+      "type": "Microsoft.Insights/scheduledQueryRules",
+      "apiVersion": "2022-06-15",
+      "name": "[format('{0}-otel-collector-pipeline-failures', parameters('resourcePrefix'))]",
+      "location": "[parameters('location')]",
+      "properties": {
+        "displayName": "Telemetry - OTel Collector Pipeline Failures",
+        "description": "An OTel collector sidecar logged at least five pipeline processing, rejection, queue-full, or drop failures in 15 minutes. Azure transport outages are detected by the missing-heartbeat rule.",
+        "severity": 1,
+        "enabled": true,
+        "scopes": [
+          "[parameters('logAnalyticsWorkspaceId')]"
+        ],
+        "evaluationFrequency": "PT5M",
+        "windowSize": "PT15M",
+        "criteria": {
+          "allOf": [
+            {
+              "query": "            ContainerAppConsoleLogs_CL\n            | where TimeGenerated > ago(15m)\n            | where ContainerName_s == \"otel-collector\"\n            | where Log_s has \"Exporting failed\"\n              or Log_s has \"Dropping data\"\n              or Log_s has \"Rejecting data\"\n              or Log_s has \"sending queue is full\"\n              or Log_s has \"sending_queue is full\"\n              or Log_s has \"Failed to process\"\n            | summarize failures = count() by ContainerAppName_s\n            | where failures >= 5\n          ",
+              "timeAggregation": "Count",
+              "threshold": 0,
+              "operator": "GreaterThan",
+              "failingPeriods": {
+                "numberOfEvaluationPeriods": 1,
+                "minFailingPeriodsToAlert": 1
+              }
+            }
+          ]
+        },
+        "actions": {
+          "actionGroups": [
+            "[resourceId('Microsoft.Insights/actionGroups', format('{0}-alerts-ag', parameters('resourcePrefix')))]"
+          ],
+          "customProperties": {
+            "runbook_url": "https://github.com/Fabric-Pro/fabric-oss/blob/master/docs/monitoring/alerts.md#telemetry-pipeline-kql-scheduledqueryrules",
+            "severity": "SEV-2"
+          }
+        },
+        "autoMitigate": true
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Insights/actionGroups', format('{0}-alerts-ag', parameters('resourcePrefix')))]"
+      ]
+    },
+    {
+      "condition": "[not(equals(parameters('logAnalyticsWorkspaceId'), ''))]",
+      "type": "Microsoft.Insights/scheduledQueryRules",
+      "apiVersion": "2022-06-15",
+      "name": "[format('{0}-repo-oauth-credentials-rejected', parameters('resourcePrefix'))]",
+      "location": "[parameters('location')]",
+      "properties": {
+        "displayName": "Integration - GitHub OAuth App Credentials Rejected (config error)",
+        "description": "The temporal-worker's configured GitHub OAuth app client_id/secret were rejected by GitHub during a repo-integration token refresh. This is a configuration error (wrong/stale FABRIC_GITHUB_CLIENT_ID/SECRET) — NOT a user's expired token — and breaks credential refresh for every GitHub integration in this environment. Fix the GitHub OAuth secrets in Key Vault / the deploy environment and restart the worker. See the alert catalogue: https://github.com/Fabric-Pro/fabric-oss/blob/master/docs/monitoring/alerts.md#integration-health-kql-scheduledqueryrules",
+        "severity": 2,
+        "enabled": true,
+        "scopes": [
+          "[parameters('logAnalyticsWorkspaceId')]"
+        ],
+        "evaluationFrequency": "PT15M",
+        "windowSize": "PT45M",
+        "criteria": {
+          "allOf": [
+            {
+              "query": "            ContainerAppConsoleLogs_CL\n            | where TimeGenerated > ago(45m)\n            | where ContainerAppName_s endswith 'temporal-worker'\n            | where Log_s has 'client_id and/or client_secret'\n            | summarize Rejections = count()\n            | where Rejections > 0\n          ",
+              "timeAggregation": "Count",
+              "threshold": 0,
+              "operator": "GreaterThan",
+              "failingPeriods": {
+                "numberOfEvaluationPeriods": 1,
+                "minFailingPeriodsToAlert": 1
+              }
+            }
+          ]
+        },
+        "actions": {
+          "actionGroups": [
+            "[resourceId('Microsoft.Insights/actionGroups', format('{0}-alerts-ag', parameters('resourcePrefix')))]"
+          ],
+          "customProperties": {
+            "runbook_url": "https://github.com/Fabric-Pro/fabric-oss/blob/master/docs/monitoring/alerts.md#integration-health-kql-scheduledqueryrules",
+            "severity": "SEV-2"
+          }
+        },
+        "autoMitigate": false
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Insights/actionGroups', format('{0}-alerts-ag', parameters('resourcePrefix')))]"
+      ]
+    },
+    {
+      "condition": "[not(equals(parameters('logAnalyticsWorkspaceId'), ''))]",
+      "type": "Microsoft.Insights/scheduledQueryRules",
+      "apiVersion": "2022-06-15",
+      "name": "[format('{0}-repo-health-degraded', parameters('resourcePrefix'))]",
+      "location": "[parameters('location')]",
+      "properties": {
+        "displayName": "Integration - Repo Health Degraded (>50% unhealthy)",
+        "description": "More than half of the monitored repository integrations were unhealthy in the most recent scheduled health-check cycle — a systemic problem (mass token revocation, GitHub egress outage, or wrong worker OAuth app credentials) rather than the normal trickle of individually-expired user tokens. See the alert catalogue: https://github.com/Fabric-Pro/fabric-oss/blob/master/docs/monitoring/alerts.md#integration-health-kql-scheduledqueryrules",
+        "severity": 3,
+        "enabled": true,
+        "scopes": [
+          "[parameters('logAnalyticsWorkspaceId')]"
+        ],
+        "evaluationFrequency": "PT30M",
+        "windowSize": "PT60M",
+        "criteria": {
+          "allOf": [
+            {
+              "query": "            ContainerAppConsoleLogs_CL\n            | where TimeGenerated > ago(60m)\n            | where ContainerAppName_s endswith 'temporal-worker'\n            | where Log_s has 'RepoHealthCheck' and Log_s has 'Cycle complete'\n            | parse Log_s with * 'Cycle complete: ' healthy:int ' healthy, ' unhealthy:int ' unhealthy' *\n            | where isnotnull(unhealthy) and isnotnull(healthy)\n            | top 1 by TimeGenerated desc\n            | extend total = healthy + unhealthy\n            | where total > 0 and (toreal(unhealthy) / toreal(total)) > 0.5\n          ",
+              "timeAggregation": "Count",
+              "threshold": 0,
+              "operator": "GreaterThan",
+              "failingPeriods": {
+                "numberOfEvaluationPeriods": 1,
+                "minFailingPeriodsToAlert": 1
+              }
+            }
+          ]
+        },
+        "actions": {
+          "actionGroups": [
+            "[resourceId('Microsoft.Insights/actionGroups', format('{0}-alerts-ag', parameters('resourcePrefix')))]"
+          ],
+          "customProperties": {
+            "runbook_url": "https://github.com/Fabric-Pro/fabric-oss/blob/master/docs/monitoring/alerts.md#integration-health-kql-scheduledqueryrules",
+            "severity": "SEV-3"
+          }
+        },
+        "autoMitigate": false
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Insights/actionGroups', format('{0}-alerts-ag', parameters('resourcePrefix')))]"
+      ]
+    }
+  ],
+  "outputs": {
+    "actionGroupId": {
+      "type": "string",
+      "value": "[resourceId('Microsoft.Insights/actionGroups', format('{0}-alerts-ag', parameters('resourcePrefix')))]"
+    },
+    "actionGroupName": {
+      "type": "string",
+      "value": "[format('{0}-alerts-ag', parameters('resourcePrefix'))]"
+    },
+    "alertRuleCount": {
+      "type": "int",
+      "value": "[add(add(mul(length(parameters('monitoredContainerApps')), 2), if(not(equals(parameters('appInsightsId'), '')), 16, 0)), if(not(equals(parameters('logAnalyticsWorkspaceId'), '')), 4, 0))]"
+    }
+  }
 }
