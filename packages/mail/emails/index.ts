@@ -8,6 +8,8 @@ import { NewsletterApprovalPending } from "../emails/NewsletterApprovalPending";
 import { NewsletterConfirm } from "../emails/NewsletterConfirm";
 import { NewsletterSignup } from "../emails/NewsletterSignup";
 import { NewUser } from "../emails/NewUser";
+import { OrganizationDeletionConfirm } from "../emails/OrganizationDeletionConfirm";
+import { OrganizationDeletionReminder } from "../emails/OrganizationDeletionReminder";
 import { OrganizationInvitation } from "../emails/OrganizationInvitation";
 import { ProjectInvitation } from "../emails/ProjectInvitation";
 import { PublishingTopicsReady } from "../emails/PublishingTopicsReady";
@@ -27,6 +29,8 @@ export const mailTemplates = {
 	newsletterApprovalPending: NewsletterApprovalPending,
 	newsletterConfirm: NewsletterConfirm,
 	newsletterSignup: NewsletterSignup,
+	organizationDeletionConfirm: OrganizationDeletionConfirm,
+	organizationDeletionReminder: OrganizationDeletionReminder,
 	organizationInvitation: OrganizationInvitation,
 	emailVerification: EmailVerification,
 	projectInvitation: ProjectInvitation,

@@ -3,6 +3,7 @@ import {
 	adminAuditLogStatsViaApiKeyProcedure,
 	adminAuditLogViaApiKeyProcedure,
 } from "./procedures/audit-log-via-api-key";
+import { adminDeleteOrganizationProcedure } from "./procedures/delete-organization";
 import {
 	listFeatureFlagsProcedure,
 	resetFeatureFlagProcedure,
@@ -28,6 +29,10 @@ export const adminRouter = {
 	organizations: {
 		list: listOrganizations,
 		find: findOrganization,
+		// Deactivates with the standard retention window rather than hard
+		// deleting — the auth library's delete endpoint is refused now so the
+		// window cannot be skipped (Fizzy #2462).
+		delete: adminDeleteOrganizationProcedure,
 	},
 	auditLog: {
 		viaApiKey: adminAuditLogViaApiKeyProcedure,

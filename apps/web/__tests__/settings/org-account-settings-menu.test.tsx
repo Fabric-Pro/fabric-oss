@@ -24,6 +24,11 @@ vi.mock("@repo/config", () => ({
 
 vi.mock("@repo/auth/lib/helper", () => ({
 	isOrganizationAdmin: () => false,
+	// Danger Zone is gated on ownership rather than admin since Fizzy #2462 —
+	// the server has always accepted owners alone, so showing the entry to an
+	// admin only produced a refusal. This suite is about the ACCOUNT group, so
+	// the viewer is neither.
+	isOrganizationOwner: () => false,
 }));
 
 const getSession = vi.fn();

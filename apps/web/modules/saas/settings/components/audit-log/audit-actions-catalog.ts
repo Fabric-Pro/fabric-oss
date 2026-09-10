@@ -231,6 +231,20 @@ export const AUDIT_ACTIONS: AuditActionEntry[] = [
 			"Organization marked for deletion. All members lose access immediately; data purges per retention policy.",
 	},
 	{
+		key: "org.restored",
+		categoryId: "org",
+		labelKey: "settings.auditLog.actions.org.restored",
+		description:
+			"A deactivated organization was brought back inside its recovery window and every member regained access. It comes back whole because nothing had been deleted — the projects, features and integrations were untouched for the length of the corridor. Read alongside the `org.deleted` row it cancels: without this one, an organization that recovered is indistinguishable from one that was never deleted.",
+	},
+	{
+		key: "org.purged",
+		categoryId: "org",
+		labelKey: "settings.auditLog.actions.org.purged",
+		description:
+			"The recovery window expired and the organization was permanently deleted, taking every project, feature, document and integration it owned. Written by the scheduled purge rather than by a person, so this is one of the few rows whose actor is the system. It is the point after which restoring is no longer possible — this row and the audit log itself outlive everything it describes.",
+	},
+	{
 		key: "org.settings.updated",
 		categoryId: "org",
 		labelKey: "settings.auditLog.actions.org.settings.updated",

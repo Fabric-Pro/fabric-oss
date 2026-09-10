@@ -63,7 +63,11 @@ const organizationApiKeyFindFirst = vi.fn();
 const userFindUnique = vi.fn();
 const isOrganizationMember = vi.fn();
 const resolveUserOrganization = vi.fn();
+const isOrganizationLive = vi.fn().mockResolvedValue(true);
 vi.mock("@repo/database", () => ({
+	// Fizzy #2462: both MCP routes refuse a deactivated organization.
+	// Live unless a test says otherwise.
+	isOrganizationLive: (...args: unknown[]) => isOrganizationLive(...args),
 	db: {
 		organizationApiKey: {
 			findFirst: (args: unknown) => organizationApiKeyFindFirst(args),

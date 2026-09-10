@@ -657,6 +657,26 @@
 			"revokeButton": "Abbrechen und überall abmelden",
 			"ignoreNotice": "Wenn du diese E-Mail ignorierst, wird keine Änderung vorgenommen – die Anfrage läuft automatisch ab.",
 			"subject": "Fabric AI: E-Mail-Änderung auf deinem Konto angefordert"
+		},
+		"organizationDeletionConfirm": {
+			"subject": "Löschung von {organizationName} bestätigen",
+			"headline": "Löschung von {organizationName} bestätigen",
+			"body": "Sie haben uns gebeten, die Organisation {organizationName} zu löschen. Es wurde noch nichts gelöscht — erst das Öffnen des Links unten startet den Vorgang.",
+			"whatIsRemoved": "Beim Löschen wird alles darin entfernt, für alle Mitglieder: Projekte und Features, Dokumente und Spezifikationen, Chats, Meetings und Transkripte, Integrationen und API-Schlüssel sowie der Zugriff aller Mitglieder darauf.",
+			"recoveryWindow": "Sie haben {retentionDays} Tage, um es sich anders zu überlegen. Die Organisation wird zunächst deaktiviert und kann in diesem Zeitraum vollständig wiederhergestellt werden; danach wird alles endgültig gelöscht und kann nicht mehr wiederhergestellt werden.",
+			"confirm": "{organizationName} endgültig löschen",
+			"linkExpiry": "Dieser Link funktioniert einmal und läuft nach einer Stunde ab. Ist er abgelaufen, starten Sie die Löschung erneut, um einen neuen zu erhalten.",
+			"notYou": "Waren Sie das nicht, tun Sie nichts — der Link läuft von selbst ab und die Organisation bleibt unberührt. Informieren Sie am besten die anderen Inhaber darüber, dass es jemand versucht hat."
+		},
+		"organizationDeletionReminder": {
+			"subject": "{organizationName} wird am {purgeDate} endgültig gelöscht",
+			"headline": "{organizationName} wird endgültig gelöscht",
+			"body": "Die Organisation {organizationName} wurde deaktiviert und ist nun zur endgültigen Löschung vorgesehen. Dies ist die letzte Nachricht dazu.",
+			"purgeDate": "Endgültige Löschung am {purgeDate}",
+			"irreversible": "Alles darin geht in diesem Moment verloren — Projekte und Features, Dokumente, Chats, Meetings, Integrationen und der Zugriff aller Mitglieder. Dieser Schritt kann nicht rückgängig gemacht werden, auch der Support kann nichts wiederherstellen.",
+			"restore": "{organizationName} wiederherstellen",
+			"retentionNote": "Wenn Sie die Organisation behalten möchten, stellen Sie sie jetzt wieder her. Es wurde noch nichts gelöscht, sie kommt genau wie zuvor zurück.",
+			"noActionNeeded": "Eine deaktivierte Organisation wird {retentionDays} Tage aufbewahrt, bevor sie gelöscht wird. Wenn die Löschung beabsichtigt war, müssen Sie nichts tun — sie wird am oben genannten Datum entfernt."
 		}
 	},
 	"newsletter": {
@@ -810,10 +830,14 @@
 				"title": "Name der Organisation"
 			},
 			"deleteOrganization": {
-				"confirmation": "Bist du sicher, dass du deine Organisation löschen möchtest?",
-				"description": "Lösche deine Organisation dauerhaft. Sobald du deine Organisation gelöscht hast, gibt es kein Zurück mehr. Zur Bestätigung gib bitte unten dein Passwort ein:",
+				"confirmation": "Durch das Löschen von {organizationName} verlieren alle Mitglieder sofort den Zugriff. Sie können die Organisation 7 Tage lang wiederherstellen, danach wird alles endgültig gelöscht.",
+				"description": "Löschen Sie diese Organisation und entziehen Sie allen Mitgliedern den Zugriff. Sie können sie 7 Tage lang wiederherstellen; danach wird sie endgültig gelöscht.",
 				"submit": "Organisation löschen",
-				"title": "Organisation löschen"
+				"title": "Organisation löschen",
+				"typeToConfirm": "Geben Sie {organizationName} ein, um zu bestätigen",
+				"impact": "Dabei werden {projects} Projekte, {members} Mitglieder, {documents} Dokumente und {contexts} Kontexte entfernt.",
+				"impactUnavailable": "Wir konnten nicht laden, was entfernt wird. Sie können trotzdem fortfahren.",
+				"confirmationSent": "Prüfen Sie {email} — wir haben einen Bestätigungslink gesendet. Es wurde noch nichts gelöscht."
 			},
 			"logo": {
 				"description": "Lade ein Logo für deine Organisation hoch.",
@@ -921,6 +945,22 @@
 		},
 		"start": {
 			"subtitle": "Willkommen auf der Startseite dieser Organisation!"
+		},
+		"confirmDeletion": {
+			"title": "Diese Organisation löschen?",
+			"description": "Sie haben das Löschen dieser Organisation angefordert. Es wurde noch nichts gelöscht — das geschieht erst mit Ihrer Bestätigung.",
+			"warning": "Alle Mitglieder verlieren sofort den Zugriff. Sie können die Organisation 7 Tage lang wiederherstellen, danach wird alles endgültig gelöscht.",
+			"submit": "Organisation löschen",
+			"deleted": "{organizationName} wurde gelöscht. Sie können die Organisation {days} Tage lang wiederherstellen.",
+			"failed": "Dieser Bestätigungslink ist nicht mehr gültig. Starten Sie das Löschen erneut, um einen neuen zu erhalten."
+		},
+		"restore": {
+			"recentlyDeleted": "Kürzlich gelöscht",
+			"action": "Wiederherstellen",
+			"daysRemaining": "Endgültige Löschung in {days} Tagen",
+			"bannerTitle": "Sie haben {organizationName} gelöscht",
+			"restored": "{organizationName} wurde wiederhergestellt.",
+			"failed": "Wir konnten diese Organisation nicht wiederherstellen. Bitte versuchen Sie es erneut."
 		}
 	},
 	"pricing": {
@@ -1182,7 +1222,9 @@
 						"connected": "Integration verbunden",
 						"disconnected": "Integration getrennt",
 						"config_updated": "Integrationskonfiguration aktualisiert"
-					}
+					},
+					"restored": "Organisation wiederhergestellt",
+					"purged": "Organisation endgültig gelöscht"
 				},
 				"account": {
 					"api_key": {

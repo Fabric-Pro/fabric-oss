@@ -1010,6 +1010,35 @@ const authOptions = {
 				stepUpGrantDeps,
 			);
 
+			// Organization deletion is a 7-day recoverable corridor now
+			// (Fizzy #2462), and it is OUR flow: request -> emailed
+			// confirmation -> deactivate -> scheduled purge, in
+			// `packages/api/modules/organizations/procedures/deletion`.
+			//
+			// This endpoint is refused because it CANNOT participate in that.
+			// It hard-deletes inside the plugin, and `beforeDeleteOrganization`
+			// is an audit hook that cannot refuse or alter the deletion — so
+			// there is no seam that turns this call into a soft delete. Leaving
+			// it reachable would mean the retention window could be skipped
+			// entirely by anyone who called the library directly, which is the
+			// same as not having built it.
+			//
+			// ONE THING MOVES WITH IT. The subscription-cancellation block
+			// further down this same hook fires for `/organization/delete` and
+			// cancels the tenant's subscriptions at the payment provider before
+			// the row is destroyed. Refusing here means that no longer runs for
+			// organizations, so THE PURGE NOW OWNS IT — see the organization
+			// deletion activity in packages/temporal. Cancelling at purge rather
+			// than at deactivation is deliberate: an organization restored on
+			// day six must come back with its billing intact, which it cannot do
+			// if the subscription was cancelled on day zero.
+			if (ctx.path === "/organization/delete") {
+				throw new APIError("FORBIDDEN", {
+					message:
+						"Deleting an organization goes through the confirmation flow in organization settings, so it can be recovered afterwards.",
+				});
+			}
+
 			// Silent-notify on duplicate-email signup attempts. Lookup runs
 			// here (not in onAPIError, where Better Auth passes the auth init
 			// context with no path/body) so we can read the submitted email

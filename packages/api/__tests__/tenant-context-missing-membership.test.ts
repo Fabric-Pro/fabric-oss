@@ -244,6 +244,11 @@ describe("tenantContextMiddleware — a session naming a workspace the caller be
 		// it by querying a second time would double every org-scoped request's
 		// query count for the whole application.
 		expect(mocks.memberFindUnique).toHaveBeenCalledTimes(1);
+		// The select grew a second field in Fizzy #2462 — the organization's
+		// `deletedAt`, which answers whether the workspace is still live. That
+		// is deliberately carried on THIS lookup rather than a second one, for
+		// exactly the reason the assertion above exists, so the shape is pinned
+		// here too.
 		expect(mocks.memberFindUnique).toHaveBeenCalledWith({
 			where: {
 				organizationId_userId: {
@@ -251,7 +256,10 @@ describe("tenantContextMiddleware — a session naming a workspace the caller be
 					userId: USER_ID,
 				},
 			},
-			select: { role: true },
+			select: {
+				role: true,
+				organization: { select: { deletedAt: true } },
+			},
 		});
 	});
 });

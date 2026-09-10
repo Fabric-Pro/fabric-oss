@@ -368,9 +368,34 @@ export async function isScheduledNewsletterActorValid(
 	return isCurrentOrgMember(createdByUserId, organizationId);
 }
 
+/**
+ * Every newsletter the scheduled dispatcher should consider sending.
+ *
+ * The two liveness predicates matter more than they look. This query fans out
+ * from a CHILD table, so neither a soft-deleted project nor a deactivated
+ * organization is excluded by anything upstream — the dispatcher has no session
+ * and therefore never passes the tenant-resolution gate that makes a deactivated
+ * organization unreachable everywhere else.
+ *
+ * Without them, deleting something keeps emailing people about it: a project in
+ * its 7-day window kept sending (a bug that predates the organization work), and
+ * an organization would have done the same for its own 7 days — telling members
+ * about an organization they had just been told was deleted. (Fizzy #2462.)
+ *
+ * `NOT { organization: { deletedAt: not null } }` rather than
+ * `organization: { deletedAt: null }`: the second silently drops any project
+ * whose `organizationId` is null, which is a different behaviour change than the
+ * one intended here. This excludes only what is actually deleted.
+ */
 export async function listEnabledNewsletterSettings() {
 	return db.newsletterSettings.findMany({
-		where: { enabled: true },
+		where: {
+			enabled: true,
+			project: {
+				deletedAt: null,
+				NOT: { organization: { deletedAt: { not: null } } },
+			},
+		},
 		include: { project: { select: { id: true, name: true } } },
 	});
 }

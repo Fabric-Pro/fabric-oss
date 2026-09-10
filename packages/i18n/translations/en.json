@@ -731,6 +731,26 @@
 			"revokeButton": "Cancel and sign out everywhere",
 			"ignoreNotice": "If you ignore this email, no change is made — the request will expire automatically.",
 			"subject": "Fabric AI: Email change requested on your account"
+		},
+		"organizationDeletionConfirm": {
+			"subject": "Confirm deleting {organizationName}",
+			"headline": "Confirm deleting {organizationName}",
+			"body": "You asked us to delete the organization {organizationName}. Nothing has been deleted yet — opening the link below is what starts it.",
+			"whatIsRemoved": "Deleting it removes everything inside it, for everyone in it: its projects and features, documents and specifications, chats, meetings and transcripts, integrations and API keys, and every member's access to all of it.",
+			"recoveryWindow": "You have {retentionDays} days to change your mind. The organization is deactivated first and can be restored in full during that window; after it closes, everything is destroyed permanently and cannot be recovered.",
+			"confirm": "Confirm and delete {organizationName}",
+			"linkExpiry": "This link works once and expires in one hour. If it has expired, start the deletion again to get a new one.",
+			"notYou": "If this was not you, do nothing — the link expires on its own and the organization is untouched. It is worth telling the other owners that someone tried."
+		},
+		"organizationDeletionReminder": {
+			"subject": "{organizationName} will be permanently deleted on {purgeDate}",
+			"headline": "{organizationName} will be permanently deleted",
+			"body": "The organization {organizationName} was deactivated and is now scheduled to be destroyed. This is the last message you will get about it.",
+			"purgeDate": "Permanently deleted on {purgeDate}",
+			"irreversible": "Everything in it goes at that moment — projects and features, documents, chats, meetings, integrations and every member's access. That step cannot be undone, and support cannot recover it afterwards.",
+			"restore": "Restore {organizationName}",
+			"retentionNote": "If you still want it, restore it now. Nothing has been destroyed yet, so it comes back exactly as it was.",
+			"noActionNeeded": "A deactivated organization is kept for {retentionDays} days before it is destroyed. If you meant to delete it, you do not need to do anything — it will be removed on the date above."
 		}
 	},
 	"newsletter": {
@@ -976,10 +996,14 @@
 				"title": "Organization name"
 			},
 			"deleteOrganization": {
-				"confirmation": "Are you sure you want to delete your organization?",
-				"description": "Permanently delete your organization. Once you delete your organization, there is no going back. To confirm, please enter your password below:",
+				"confirmation": "Deleting {organizationName} immediately removes access for everyone in it. You can restore it for 7 days, after which everything is permanently deleted.",
+				"description": "Delete this organization and remove access for everyone in it. You can restore it for 7 days; after that it is permanently deleted and cannot be recovered.",
 				"submit": "Delete organization",
-				"title": "Delete organization"
+				"title": "Delete organization",
+				"typeToConfirm": "Type {organizationName} to confirm",
+				"impact": "This will remove {projects} projects, {members} members, {documents} documents and {contexts} contexts.",
+				"impactUnavailable": "We could not load what will be removed. You can still continue.",
+				"confirmationSent": "Check {email} — we sent a link to confirm. Nothing has been deleted yet."
 			},
 			"logo": {
 				"description": "Upload a logo for your organization.",
@@ -1138,6 +1162,22 @@
 		},
 		"start": {
 			"subtitle": "Welcome to the start page of this organization!"
+		},
+		"confirmDeletion": {
+			"title": "Delete this organization?",
+			"description": "You asked to delete this organization. Nothing has been deleted yet — this happens when you confirm below.",
+			"warning": "Everyone in the organization loses access immediately. You can restore it for 7 days, after which everything in it is permanently deleted.",
+			"submit": "Delete organization",
+			"deleted": "{organizationName} has been deleted. You can restore it for {days} days.",
+			"failed": "This confirmation link is no longer valid. Start the deletion again to get a new one."
+		},
+		"restore": {
+			"recentlyDeleted": "Recently deleted",
+			"action": "Restore",
+			"daysRemaining": "Permanently deleted in {days} days",
+			"bannerTitle": "You deleted {organizationName}",
+			"restored": "{organizationName} has been restored.",
+			"failed": "We could not restore this organization. Please try again."
 		}
 	},
 	"pricing": {
@@ -1414,7 +1454,9 @@
 						"connected": "Integration connected",
 						"disconnected": "Integration disconnected",
 						"config_updated": "Integration config updated"
-					}
+					},
+					"restored": "Organization restored",
+					"purged": "Organization permanently deleted"
 				},
 				"account": {
 					"api_key": {

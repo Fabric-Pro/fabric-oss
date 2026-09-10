@@ -35,6 +35,9 @@ vi.mock("@repo/auth/client", () => ({
 }));
 
 vi.mock("@saas/organizations/lib/api", () => ({
+	// Fizzy #2462: the switcher subtracts deactivated organizations from
+	// the switchable list, so it reads this alongside the org list.
+	useRestorableOrganizationsQuery: () => ({ data: undefined }),
 	organizationListQueryKey: ["organizations"],
 }));
 vi.mock("@saas/organizations/lib/invitation-actions", () => ({

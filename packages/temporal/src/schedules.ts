@@ -23,6 +23,17 @@ const TASK_QUEUE = "fabric-worker";
 const PROJECT_DELETE_CRON_SCHEDULE = "0 0 * * *";
 const TIMEZONE = "America/New_York";
 
+const ORGANIZATION_DELETE_SCHEDULE_ID = "organization-delete-cleanup";
+const ORGANIZATION_DELETE_WORKFLOW_NAME = "organizationDeleteCleanupWorkflow";
+// Daily at 04:30 US Eastern. Every other daily sweep in this file is on the
+// hour, the quarter or the three-quarter (00:00, 03:00, 03:15, 03:45, 04:00,
+// 04:15, 04:45, 05:00, 05:30, 06:00), so the half-hour is the one slot in the
+// quiet window that nothing else occupies. The purge is heavy — a hard delete
+// that cascades ~168 relations per organization, then Qdrant and S3 teardown —
+// so it wants a tick of its own rather than to contend with the attachment
+// retention purge fifteen minutes earlier.
+const ORGANIZATION_DELETE_CRON_SCHEDULE = "30 4 * * *";
+
 const AGENT_HEALTH_SCHEDULE_ID = "agent-health-monitor";
 const AGENT_HEALTH_WORKFLOW_NAME = "agentHealthMonitorWorkflow";
 // Every 2 minutes
@@ -342,6 +353,7 @@ export async function registerSystemSchedules(): Promise<void> {
 		});
 
 		await registerProjectDeleteCleanupSchedule(scheduleClient);
+		await registerOrganizationDeleteCleanupSchedule(scheduleClient);
 		await registerAgentHealthMonitorSchedule(scheduleClient);
 		await registerRepoHealthCheckSchedule(scheduleClient);
 		await registerAuthorityCleanupSchedule(scheduleClient);
@@ -418,6 +430,70 @@ async function registerProjectDeleteCleanupSchedule(
 		if (error instanceof ScheduleAlreadyRunning) {
 			console.log(
 				`[Worker] Schedule "${PROJECT_DELETE_SCHEDULE_ID}" already exists, skipping`,
+			);
+		} else {
+			throw error;
+		}
+	}
+}
+
+/**
+ * Register the organization-delete-cleanup schedule (Fizzy #2462).
+ *
+ * Runs daily to warn deactivated organizations whose recovery window closes in
+ * 24-48 hours, then permanently destroy the ones whose window has closed.
+ *
+ * REGISTRATION IS CREATE-ONLY. `scheduleClient.create` throws
+ * `ScheduleAlreadyRunning` for an id that already exists and the catch below
+ * swallows it — so on every worker start after the first, everything in this
+ * payload is ignored. CHANGING THE CRON HERE DOES NOT CHANGE A SCHEDULE THAT IS
+ * ALREADY REGISTERED, and neither does changing the batch size, the overlap
+ * policy or the note. A deployed environment has to be updated out of band
+ * (`temporal schedule update`, or delete the schedule and let the next worker
+ * start recreate it). Every sibling in this file behaves the same way; the one
+ * exception, publishing-suggestion-dispatcher, refreshes its note explicitly
+ * because it hit exactly this.
+ */
+async function registerOrganizationDeleteCleanupSchedule(
+	scheduleClient: ScheduleClient,
+): Promise<void> {
+	try {
+		await scheduleClient.create({
+			scheduleId: ORGANIZATION_DELETE_SCHEDULE_ID,
+			spec: {
+				cronExpressions: [ORGANIZATION_DELETE_CRON_SCHEDULE],
+				timezone: TIMEZONE,
+			},
+			action: {
+				type: "startWorkflow",
+				workflowType: ORGANIZATION_DELETE_WORKFLOW_NAME,
+				taskQueue: TASK_QUEUE,
+				args: [{ batchSize: 100 }],
+			},
+			policies: {
+				// SKIP, not BUFFER: a run that overruns a day has a systemic
+				// problem, and queueing a second sweep behind it would have two
+				// workers racing the same batch of guarded deletes.
+				overlap: "SKIP",
+				// One tick, not a backlog. A worker that was down for a week
+				// should purge what is due NOW — the queries recompute the due
+				// set from the clock, so replaying six missed triggers would do
+				// the same work six times.
+				catchupWindow: "1 hour",
+			},
+			state: {
+				paused: false,
+				note: "Permanently deletes deactivated organizations after their retention window. Sends a reminder 24-48h before.",
+			},
+		});
+
+		console.log(
+			`[Worker] Schedule "${ORGANIZATION_DELETE_SCHEDULE_ID}" registered (daily at 04:30 US Eastern)`,
+		);
+	} catch (error) {
+		if (error instanceof ScheduleAlreadyRunning) {
+			console.log(
+				`[Worker] Schedule "${ORGANIZATION_DELETE_SCHEDULE_ID}" already exists, skipping`,
 			);
 		} else {
 			throw error;

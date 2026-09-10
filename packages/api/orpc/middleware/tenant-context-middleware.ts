@@ -20,6 +20,7 @@ import {
 } from "@repo/database";
 import { logger } from "@repo/logs";
 import type { OrgRole } from "@repo/permissions";
+import { DELETED_ORGANIZATION_ERROR_CODE } from "../../lib/deleted-organization";
 import { MISSING_ORGANIZATION_CONTEXT_ERROR_CODE } from "../../lib/missing-organization-context";
 import { checkRateLimitSync } from "../../lib/rate-limit";
 
@@ -170,6 +171,15 @@ export const tenantContextMiddleware = os
 		// org-scoped request in the application.
 		let activeOrganizationRole: OrgRole | null = null;
 		let hasMembership = false;
+		// Whether the workspace itself is still live. Deleting an organization
+		// deactivates it for seven days before anything is destroyed
+		// (Fizzy #2462), and THIS is where that deactivation is enforced: the
+		// ~168 tables that cascade off `organization` carry no `deletedAt`
+		// predicate of their own, and do not need one, because no request can
+		// resolve a context for a deactivated workspace in the first place.
+		// Selected through the membership lookup above rather than as a second
+		// query — the third question this one lookup already answers.
+		let organizationIsDeleted = false;
 		if (namedOrganizationId) {
 			const membership = await db.member.findUnique({
 				where: {
@@ -178,11 +188,15 @@ export const tenantContextMiddleware = os
 						userId,
 					},
 				},
-				select: { role: true },
+				select: {
+					role: true,
+					organization: { select: { deletedAt: true } },
+				},
 			});
 			hasMembership = membership !== null;
 			activeOrganizationRole = (membership?.role ??
 				null) as OrgRole | null;
+			organizationIsDeleted = membership?.organization?.deletedAt != null;
 		}
 
 		// A WORKSPACE POINTER IS NOT A MEMBERSHIP. Resolution and session
@@ -220,6 +234,22 @@ export const tenantContextMiddleware = os
 			throw new ORPCError("FORBIDDEN", {
 				message: "This operation requires an organization context",
 				data: { errorCode: MISSING_ORGANIZATION_CONTEXT_ERROR_CODE },
+			});
+		}
+
+		// A DELETED WORKSPACE REFUSES EVERY REQUEST, INCLUDING ITS OWNER'S.
+		// Checked after the membership gate so a non-member still learns nothing
+		// about whether the workspace exists, and carries its own error code so
+		// a client can offer the owner the way out — restoring it — instead of
+		// the reload that answers a missing pointer. Deliberately not recorded
+		// through `recordRequestWithoutWorkspace`: the workspace resolved
+		// perfectly well, it is simply gone, and folding it into that signal
+		// would make a normal consequence of deletion look like the session bug
+		// that counter exists to measure.
+		if (namedOrganizationId && organizationIsDeleted) {
+			throw new ORPCError("FORBIDDEN", {
+				message: "This organization has been deleted",
+				data: { errorCode: DELETED_ORGANIZATION_ERROR_CODE },
 			});
 		}
 

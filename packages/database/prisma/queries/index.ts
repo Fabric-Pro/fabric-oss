@@ -73,6 +73,7 @@ export * from "./organization-security";
 // exports nothing.
 export * from "./organizations";
 export * from "./organizations/attachment-retention";
+export * from "./organizations/deletion";
 export * from "./organizations/member-offboarding";
 export * from "./organizations/rag-settings";
 export * from "./pending-pm-state-changes";
