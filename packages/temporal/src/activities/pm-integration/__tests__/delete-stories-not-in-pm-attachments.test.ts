@@ -166,14 +166,9 @@ describe("deleteStoriesNotInPMList — attachment object cleanup", () => {
 			{ id: "s2", identifier: "F-2", externalId: "ext-2" },
 		]);
 		// s1 has one attachment; s2 is kept so its attachment is irrelevant.
-		mocks.storyAttachmentFindMany.mockImplementation(
-			async ({ where }: { where: { storyId: string } }) => {
-				if (where.storyId === "s1") {
-					return [{ storageKey: "story-attachments/p/s1/a.png" }];
-				}
-				return [];
-			},
-		);
+		mocks.storyAttachmentFindMany.mockResolvedValue([
+			{ storyId: "s1", storageKey: "story-attachments/p/s1/a.png" },
+		]);
 
 		const result = await deleteStoriesNotInPMList(
 			makeInput(["ext-2"], ORG_ID), // only ext-2 is in PM
@@ -189,6 +184,11 @@ describe("deleteStoriesNotInPMList — attachment object cleanup", () => {
 			["story-attachments/p/s1/a.png"],
 			{ bucket: "project-contexts" },
 		);
+		expect(mocks.storyAttachmentFindMany).toHaveBeenCalledTimes(1);
+		expect(mocks.storyAttachmentFindMany).toHaveBeenCalledWith({
+			where: { storyId: { in: ["s1"] } },
+			select: { storyId: true, storageKey: true },
+		});
 	});
 
 	it("does not call deleteObjects when pruned stories have no attachments", async () => {
@@ -203,12 +203,26 @@ describe("deleteStoriesNotInPMList — attachment object cleanup", () => {
 		expect(mocks.deleteObjects).not.toHaveBeenCalled();
 	});
 
+	it("rejects attachment-read failures before starting any story delete", async () => {
+		mocks.userStoryFindMany.mockResolvedValue([
+			{ id: "s1", identifier: "F-1", externalId: "ext-1" },
+		]);
+		mocks.storyAttachmentFindMany.mockRejectedValue(
+			new Error("attachment read failed"),
+		);
+
+		await expect(
+			deleteStoriesNotInPMList(makeInput([], ORG_ID)),
+		).rejects.toThrow("attachment read failed");
+		expect(mocks.deleteStory).not.toHaveBeenCalled();
+	});
+
 	it("logs [attachments] warn on deleteObjects errors but resolves with the right count", async () => {
 		mocks.userStoryFindMany.mockResolvedValue([
 			{ id: "s1", identifier: "F-1", externalId: "ext-1" },
 		]);
 		mocks.storyAttachmentFindMany.mockResolvedValue([
-			{ storageKey: "story-attachments/p/s1/b.pdf" },
+			{ storyId: "s1", storageKey: "story-attachments/p/s1/b.pdf" },
 		]);
 		// deleteObjects returns errors (R2 denied).
 		mocks.deleteObjects.mockResolvedValue({
@@ -235,7 +249,7 @@ describe("deleteStoriesNotInPMList — attachment object cleanup", () => {
 			{ id: "s1", identifier: "F-1", externalId: "ext-1" },
 		]);
 		mocks.storyAttachmentFindMany.mockResolvedValue([
-			{ storageKey: "story-attachments/p/s1/c.jpg" },
+			{ storyId: "s1", storageKey: "story-attachments/p/s1/c.jpg" },
 		]);
 		// deleteStory rejects — the story was NOT removed from the DB.
 		mocks.deleteStory.mockRejectedValue(new Error("DB constraint"));
@@ -249,5 +263,59 @@ describe("deleteStoriesNotInPMList — attachment object cleanup", () => {
 		// deleteObjects must NOT have been called (the row still exists, object
 		// should not be orphaned).
 		expect(mocks.deleteObjects).not.toHaveBeenCalled();
+	});
+
+	it("batches attachments and keeps successful deletes when another delete fails", async () => {
+		mocks.userStoryFindMany.mockResolvedValue([
+			{ id: "s1", identifier: "F-1", externalId: "ext-1" },
+			{ id: "s2", identifier: "F-2", externalId: "ext-2" },
+			{ id: "s3", identifier: "F-3", externalId: "ext-3" },
+			{ id: "s4", identifier: "F-4", externalId: "ext-4" },
+			{ id: "s5", identifier: "F-5", externalId: "ext-5" },
+		]);
+		mocks.storyAttachmentFindMany.mockResolvedValue([
+			{ storyId: "s1", storageKey: "story-attachments/p/s1/a.png" },
+			{ storyId: "s2", storageKey: "story-attachments/p/s2/b.png" },
+			{ storyId: "s3", storageKey: "story-attachments/p/s3/c.png" },
+			{ storyId: "s4", storageKey: "story-attachments/p/s4/d.png" },
+			{ storyId: "s5", storageKey: "story-attachments/p/s5/e.png" },
+		]);
+		let activeDeletes = 0;
+		let maxConcurrentDeletes = 0;
+		mocks.deleteStory.mockImplementation(async (storyId: string) => {
+			activeDeletes++;
+			maxConcurrentDeletes = Math.max(
+				maxConcurrentDeletes,
+				activeDeletes,
+			);
+			await Promise.resolve();
+			activeDeletes--;
+			if (storyId === "s2") {
+				throw new Error("constraint");
+			}
+		});
+
+		const result = await deleteStoriesNotInPMList(makeInput([], ORG_ID));
+
+		expect(mocks.storyAttachmentFindMany).toHaveBeenCalledTimes(1);
+		expect(mocks.storyAttachmentFindMany).toHaveBeenCalledWith({
+			where: { storyId: { in: ["s1", "s2", "s3", "s4", "s5"] } },
+			select: { storyId: true, storageKey: true },
+		});
+		expect(mocks.deleteStory).toHaveBeenCalledTimes(5);
+		expect(maxConcurrentDeletes).toBe(4);
+		expect(result).toEqual({
+			deletedCount: 4,
+			deletedIdentifiers: ["F-1", "F-3", "F-4", "F-5"],
+		});
+		expect(mocks.deleteObjects).toHaveBeenCalledWith(
+			[
+				"story-attachments/p/s1/a.png",
+				"story-attachments/p/s3/c.png",
+				"story-attachments/p/s4/d.png",
+				"story-attachments/p/s5/e.png",
+			],
+			{ bucket: "project-contexts" },
+		);
 	});
 });

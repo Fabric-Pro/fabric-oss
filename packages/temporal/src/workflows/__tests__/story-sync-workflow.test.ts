@@ -138,6 +138,18 @@ const MCP_FIZZY_CAPABILITIES = {
 	availableTools: ["create_card", "update_card", "get_card", "list_cards"],
 };
 
+const MCP_GITHUB_CAPABILITIES = {
+	hasPMCapabilities: true,
+	containerHierarchy: [],
+	taskList: {
+		toolName: "github_list_issues",
+		containerParam: "repo",
+		allParams: [{ name: "repo" }],
+	},
+	detectedType: "github" as const,
+	availableTools: ["github_list_issues"],
+};
+
 // =============================================================================
 // Pull tests
 // =============================================================================
@@ -240,6 +252,7 @@ describe("storySyncWorkflow — pull orchestration", () => {
 				mcpConfigId: null,
 				mcpServerId: "srv-gl",
 				containerId: "100",
+				capabilities: REST_GITLAB_CAPABILITIES,
 			}),
 		);
 
@@ -326,6 +339,32 @@ describe("storySyncWorkflow — pull orchestration", () => {
 			activityStubs.createOrUpdateStoryFromPMItem,
 		).toHaveBeenCalledWith(
 			expect.objectContaining({ mcpConfigId: "cfg-1" }),
+		);
+	});
+
+	it("MCP generic pull forwards the discovered capabilities to pagination", async () => {
+		activityStubs.discoverPMToolCapabilities.mockResolvedValue(
+			MCP_GITHUB_CAPABILITIES,
+		);
+
+		const output = await storySyncWorkflow({
+			projectId: "proj-github",
+			mcpServerId: "srv-github",
+			mcpConfigId: "cfg-github",
+			containerId: "owner/repo",
+			userId: "user-github",
+			organizationId: "org-github",
+			direction: "pull",
+		});
+
+		expect(output.success).toBe(true);
+		expect(activityStubs.listAllFizzyCards).not.toHaveBeenCalled();
+		expect(activityStubs.listWorkItemsFromPM).toHaveBeenCalledWith(
+			expect.objectContaining({
+				mcpConfigId: "cfg-github",
+				containerId: "owner/repo",
+				capabilities: MCP_GITHUB_CAPABILITIES,
+			}),
 		);
 	});
 
