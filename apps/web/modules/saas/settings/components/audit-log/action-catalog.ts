@@ -162,6 +162,25 @@ export const ACTION_CATALOG: Record<string, ActionDescriptor> = {
 		"warning",
 		"org",
 	),
+	"org.restored": D(
+		"org.restored",
+		"Organization restored",
+		Archive,
+		// Info, not warning: this is the row that UNDOES the one above, and
+		// nothing was destroyed for it to recover.
+		"info",
+		"org",
+	),
+	"org.purged": D(
+		"org.purged",
+		"Organization permanently deleted",
+		// Deliberately not Trash2 — that is `org.deleted`'s icon, and the two
+		// rows have to be distinguishable at a glance in a list where the
+		// difference between them is whether anything can still be recovered.
+		Eraser,
+		"warning",
+		"org",
+	),
 	"org.settings.updated": D(
 		"org.settings.updated",
 		"Organization settings updated",

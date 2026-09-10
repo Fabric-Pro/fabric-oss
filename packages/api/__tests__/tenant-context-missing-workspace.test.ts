@@ -183,6 +183,9 @@ describe("tenantContextMiddleware — recording a request that resolves no works
 		await invokeMw(mw, makeCtx("session-with-org", ORG_ID));
 
 		expect(mocks.warn).not.toHaveBeenCalled();
+		// The select also carries the organization's `deletedAt` since Fizzy
+		// #2462 — the workspace-liveness gate rides this same lookup rather
+		// than adding a query.
 		expect(mocks.memberFindUnique).toHaveBeenCalledWith({
 			where: {
 				organizationId_userId: {
@@ -190,7 +193,10 @@ describe("tenantContextMiddleware — recording a request that resolves no works
 					userId: USER_ID,
 				},
 			},
-			select: { role: true },
+			select: {
+				role: true,
+				organization: { select: { deletedAt: true } },
+			},
 		});
 	});
 });

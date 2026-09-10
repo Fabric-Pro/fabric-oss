@@ -10,12 +10,16 @@ import {
 	AlertDialogTitle,
 } from "@ui/components/alert-dialog";
 import { Button } from "@ui/components/button";
+import { Input } from "@ui/components/input";
+import { Label } from "@ui/components/label";
 import { useTranslations } from "next-intl";
 import {
 	createContext,
 	type PropsWithChildren,
+	type ReactNode,
 	useCallback,
 	useContext,
+	useEffect,
 	useRef,
 	useState,
 } from "react";
@@ -39,6 +43,23 @@ type ConfirmOptions = {
 		label: string;
 		onSelect: () => Promise<void> | void;
 	};
+	/**
+	 * Require the person to type something exactly before the confirm button
+	 * becomes usable — the organization's name, for instance (Fizzy #2462).
+	 *
+	 * Exists because a yes/no dialog only asks "are you sure", which a reflex
+	 * answers. Typing the name asks "which one", which a reflex cannot. Reserve
+	 * it for actions that destroy something a person cannot rebuild.
+	 *
+	 * The comparison is exact after trimming surrounding whitespace: a name is
+	 * case-carrying, and accepting the wrong case would defeat the point of
+	 * asking someone to look at it.
+	 */
+	requireTypedConfirmation?: {
+		expected: string;
+		label: ReactNode;
+		placeholder?: string;
+	};
 };
 
 // No default value: a `useConfirmationAlert()` outside the provider must throw
@@ -53,6 +74,22 @@ export function ConfirmationAlertProvider({ children }: PropsWithChildren) {
 		null,
 	);
 	const [pending, setPending] = useState(false);
+	const [typedConfirmation, setTypedConfirmation] = useState("");
+
+	// Clear the typed value whenever the dialog opens on a NEW request. Without
+	// this, dismissing the dialog and reopening it on a different target would
+	// arrive with the previous answer already satisfying the gate — the one
+	// failure mode that would make this control worse than no control.
+	useEffect(() => {
+		setTypedConfirmation("");
+	}, [confirmOptions]);
+
+	const typedConfirmationRequired =
+		confirmOptions?.requireTypedConfirmation != null;
+	const typedConfirmationSatisfied =
+		!typedConfirmationRequired ||
+		typedConfirmation.trim() ===
+			confirmOptions?.requireTypedConfirmation?.expected;
 	// Ref as well as state so the guard holds even if React has not re-rendered
 	// between two clicks. `Button` already refuses re-entrant clicks while the
 	// promise it returned is pending (`autoLoading`), so this is belt-and-braces
@@ -147,6 +184,30 @@ export function ConfirmationAlertProvider({ children }: PropsWithChildren) {
 						{confirmOptions?.message}
 					</AlertDialogDescription>
 
+					{confirmOptions?.requireTypedConfirmation && (
+						<div className="flex flex-col gap-2">
+							<Label htmlFor="confirmation-typed-value">
+								{confirmOptions.requireTypedConfirmation.label}
+							</Label>
+							<Input
+								id="confirmation-typed-value"
+								autoComplete="off"
+								autoCorrect="off"
+								autoCapitalize="none"
+								spellCheck={false}
+								disabled={pending}
+								placeholder={
+									confirmOptions.requireTypedConfirmation
+										.placeholder
+								}
+								value={typedConfirmation}
+								onChange={(event) =>
+									setTypedConfirmation(event.target.value)
+								}
+							/>
+						</div>
+					)}
+
 					<AlertDialogFooter>
 						{/* Radix element, not our `Button`, so it has no
 						    autoLoading guard of its own. */}
@@ -168,7 +229,7 @@ export function ConfirmationAlertProvider({ children }: PropsWithChildren) {
 										: "primary"
 							}
 							onClick={handleConfirm}
-							disabled={pending}
+							disabled={pending || !typedConfirmationSatisfied}
 						>
 							{confirmOptions?.confirmLabel ??
 								t("common.confirmation.confirm")}

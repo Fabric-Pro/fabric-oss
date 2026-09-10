@@ -25,6 +25,7 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { verifyUserApiKey } from "@repo/api/modules/users/procedures/api-keys";
 import { auth } from "@repo/auth";
+import { isOrganizationLive } from "@repo/database";
 import {
 	type BrowserAutomationInput,
 	type BrowserRagIngestionInput,
@@ -2490,6 +2491,35 @@ async function handlePostRequest(
 		return createOrganizationRefusalResponse(authOutcome.refusal);
 	}
 	const authResult = authResultOf(authOutcome);
+
+	// A DEACTIVATED ORGANIZATION REFUSES HERE TOO.
+	//
+	// Deleting an organization deactivates it for seven days (Fizzy #2462), and
+	// that is enforced by refusing at tenant resolution rather than by filtering
+	// the ~168 tables hanging off it. This route resolves its own tenant and
+	// never crosses `tenantContextMiddleware`, so without this the corridor is
+	// closed to people and open to their agents.
+	//
+	// Checked against the LIVE auth result rather than the restored session's,
+	// which is safe because `checkStoredSessionAuth` already refuses a stored
+	// session whose organization disagrees with the live one — so the two are
+	// equal by the time any tool runs, and this is the earlier of the two.
+	//
+	// Deliberately gated on this route as well as `/api/mcp-gateway`, not
+	// instead of it. The two authenticate differently and one has already
+	// shipped a production outage that the other's passing tests hid.
+	if (
+		authResult?.organizationId &&
+		!(await isOrganizationLive(authResult.organizationId))
+	) {
+		return createJsonRpcErrorResponse(
+			403,
+			-32000,
+			`Organization ${authResult.organizationId} has been deleted. An owner can restore it from the workspace switcher until it is permanently removed.`,
+			{ reason: "deleted_organization" },
+		);
+	}
+
 	let parsedBody: unknown;
 
 	try {

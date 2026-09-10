@@ -541,6 +541,22 @@ model Organization {
   /// When attachmentRetentionDays last changed. Arms the grace floor: a newly
   /// shortened window cannot delete anything until this is 7 days old.
   attachmentRetentionDaysUpdatedAt DateTime?
+  /// Soft-delete quartet (Fizzy #2462), mirroring `Project`. A deactivated
+  /// organization keeps every row it owns — the 168 relations that cascade off
+  /// this model are untouched — and is made unreachable by REFUSING it at
+  /// tenant resolution instead. That is why none of those tables needs a
+  /// liveness predicate of its own.
+  deletedAt                       DateTime?
+  /// userId that initiated the deletion. Also the recipient of the reminder.
+  deletedBy                       String?
+  /// deletedAt + ORGANIZATION_RETENTION_DAYS, STAMPED AT DELETION TIME rather
+  /// than computed at purge time. That is what makes "recoverable until <date>"
+  /// a promise the system can keep: shortening the window later cannot
+  /// retroactively destroy something already in the corridor.
+  scheduledPermanentDeleteAt      DateTime?
+  /// Set when the 24-48h pre-purge reminder has been sent, so the daily sweep
+  /// cannot send it twice.
+  deletionReminderSentAt          DateTime?
   mcpServers                      MCPServer[]
   mcpConfigs                      MCPConfig[]
   aiChatMcpConfigs                AiChatMcpConfig[]
@@ -767,6 +783,10 @@ model Organization {
   // Per-organization feature-flag overrides (RLS-exempt; see model doc)
   featureFlagOverrides OrganizationFeatureFlagOverride[]
 
+  // Serves the daily purge scan for organizations past their retention window
+  // (#2462). Created CONCURRENTLY in its own migration — see
+  // migrations/20260910140100_organization_purge_index.
+  @@index([scheduledPermanentDeleteAt])
   @@map("organization")
   deletedMeetingArchives DeletedMeetingArchive[]
 }

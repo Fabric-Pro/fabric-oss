@@ -20,6 +20,29 @@ export const useOrgInvitationsQuery = (organizationId: string) => {
 	});
 };
 
+export const restorableOrganizationsQueryKey = [
+	"organizations",
+	"restorable",
+] as const;
+
+/**
+ * Organizations the viewer deleted and can still bring back (Fizzy #2462).
+ *
+ * Lives beside `useOrganizationListQuery` rather than in the component that
+ * renders it, because the switcher needs BOTH: the auth library's list knows
+ * nothing about the retention window, so a deactivated organization has to be
+ * subtracted from the switchable set and re-rendered as a restore control.
+ */
+export const useRestorableOrganizationsQuery = () => {
+	return useQuery({
+		queryKey: restorableOrganizationsQueryKey,
+		queryFn: () => orpcClient.organizations.deletion.listRestorable({}),
+		// Nothing here changes without the viewer acting, and a stale answer
+		// would render a restore button for something already restored.
+		staleTime: 30_000,
+	});
+};
+
 export const organizationListQueryKey = ["user", "organizations"] as const;
 export const useOrganizationListQuery = () => {
 	return useQuery({

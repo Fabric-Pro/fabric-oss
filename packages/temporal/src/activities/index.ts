@@ -1000,6 +1000,34 @@ export {
 	updateProjectContextStatus,
 } from "./project-context-processing";
 export * from "./project-contexts-reprocess";
+// Organization purge activities (reminder, guarded hard delete, and the
+// vector / object-storage / billing teardown the cascade cannot reach).
+export {
+	type CancelOrganizationSubscriptionsInput,
+	type CancelOrganizationSubscriptionsOutput,
+	cancelOrganizationSubscriptionsActivity,
+	type CaptureOrganizationSubscriptionIdsInput,
+	type CaptureOrganizationSubscriptionIdsOutput,
+	captureOrganizationSubscriptionIdsActivity,
+	type DeleteOrganizationObjectsFromStorageInput,
+	type DeleteOrganizationObjectsFromStorageOutput,
+	deleteOrganizationObjectsFromStorageActivity,
+	type DeleteOrganizationVectorsInput,
+	type DeleteOrganizationVectorsOutput,
+	deleteOrganizationVectorsActivity,
+	type ExpiredOrganization,
+	type GetExpiredOrganizationsInput,
+	getExpiredOrganizationsActivity,
+	type GetOrganizationsNeedingPurgeReminderInput,
+	getOrganizationsNeedingPurgeReminderActivity,
+	type OrganizationNeedingPurgeReminder,
+	type PermanentDeleteOrganizationFromDbInput,
+	type PermanentDeleteOrganizationFromDbOutput,
+	permanentDeleteOrganizationFromDbActivity,
+	type SendOrganizationDeletionReminderInput,
+	type SendOrganizationDeletionReminderOutput,
+	sendOrganizationDeletionReminderActivity,
+} from "./organization-deletion";
 // Project deletion activities (soft delete, permanent delete, cleanup)
 export {
 	captureProjectDocumentIdsActivity,

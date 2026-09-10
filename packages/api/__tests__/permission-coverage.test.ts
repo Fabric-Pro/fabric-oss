@@ -401,6 +401,38 @@ const COVERAGE_EXEMPTIONS: ReadonlyMap<string, string> = new Map([
 	// the right pattern here; the exemption is justified by the inline
 	// resolver doing the gating job.
 	// =============================================================================
+	// =============================================================================
+	// Organization deletion — the 7-day corridor (Fizzy #2462)
+	// =============================================================================
+	// These three cannot take `requirePermission(ORG_DELETE)`, because the
+	// middleware resolves the target organization from the SESSION and by
+	// definition none of them has it as the active one:
+	//   - `confirm` is reached by following a link out of a mail client, so the
+	//     session's active organization is whatever it happened to be — or
+	//     nothing. The TOKEN names the organization.
+	//   - `restore` and `listRestorable` act on a DEACTIVATED organization,
+	//     which the tenant middleware refuses outright. That refusal is the
+	//     feature; it is also why these cannot be behind it.
+	// All three resolve the caller's membership themselves and check
+	// `ORG_DELETE` against it explicitly — the same permission the middleware
+	// would have applied — and filter every lookup by the caller's own userId,
+	// so naming someone else's organization finds nothing.
+	[
+		"packages/api/modules/organizations/procedures/deletion/confirm.ts",
+		"token names the organization, not the session — checks ORG_DELETE against the caller's own membership inline",
+	],
+	[
+		"packages/api/modules/organizations/procedures/deletion/restore.ts",
+		"acts on a deactivated org the tenant middleware refuses — checks ORG_DELETE against the caller's own membership inline",
+	],
+	[
+		"packages/api/modules/organizations/procedures/deletion/list-restorable.ts",
+		"lists deactivated orgs the tenant middleware refuses — filtered by the caller's own membership, ORG_DELETE checked per row",
+	],
+	[
+		"packages/api/modules/admin/procedures/delete-organization.ts",
+		"admin-only — gated by adminProcedure; acts on any tenant by id",
+	],
 	[
 		"packages/api/modules/audit/procedures/api-keys/list.ts",
 		"split personal/org tenant — inline resolver enforces owner/admin for org context",

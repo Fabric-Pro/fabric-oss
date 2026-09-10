@@ -53,10 +53,21 @@ export const AUDIT_ACTIONS = [
 	"auth.password.changed",
 	"auth.impersonation.started",
 	"auth.impersonation.ended",
-	// org (13)
+	// org (15)
 	"org.created",
 	"org.updated",
 	"org.deleted",
+	// The other two ends of the deletion corridor (#2462). `org.deleted` is now
+	// a deactivation that stays recoverable for a fixed window, so the ledger
+	// needs the row for someone taking it back and the row for the window
+	// running out. Without them a deletion reads as permanent the moment it
+	// happens and an organization that came back looks like one that was never
+	// deleted — the restore is what makes the first row's outcome legible.
+	"org.restored",
+	// Written by the scheduled purge, not by a person: the only row here whose
+	// actor is the system, and the point after which nothing can be brought
+	// back.
+	"org.purged",
 	"org.settings.updated",
 	"org.member.invited",
 	"org.member.role_changed",
@@ -732,9 +743,11 @@ export function mapToLegacyEventType(action: string): AuditEventType {
 		case "audit.retention.purged":
 			return "DATA_DELETE";
 		case "org.deleted":
+		case "org.purged":
 		case "project.deleted":
 		case "story.deleted":
 			return "DATA_DELETE";
+		case "org.restored":
 		case "org.updated":
 		case "org.settings.updated":
 		case "project.updated":

@@ -54,7 +54,7 @@ export type TwoFactorScalarFieldEnum = z.infer<typeof TwoFactorScalarFieldEnumSc
 
 // File: OrganizationScalarFieldEnum.schema.ts
 
-export const OrganizationScalarFieldEnumSchema = z.enum(['id', 'name', 'slug', 'logo', 'createdAt', 'metadata', 'paymentsCustomerId', 'timezone', 'firecrawlApiKey', 'firecrawlEnabled', 'firecrawlConfiguredAt', 'firecrawlLastUsedAt', 'azureAiApiKey', 'azureAiConfiguredAt', 'azureAiEnabled', 'azureAiEndpoint', 'azureAiLastUsedAt', 'azureAiModelRouterName', 'azureAiProjectName', 'azureAiRegion', 'azureAiResourceGroup', 'azureAiSubscriptionId', 'azureAiTenantId', 'azureAiUseModelRouter', 'useDelegatedExecution', 'documentAssistantHistoryEnabled', 'featureMaturationV2Enabled', 'aiAnswerRecommendationsEnabled', 'requireTwoFactor', 'attachmentRetentionDays', 'attachmentRetentionDaysUpdatedAt', 'canShareFramesPublicly', 'allowedFrameShareDomains'])
+export const OrganizationScalarFieldEnumSchema = z.enum(['id', 'name', 'slug', 'logo', 'createdAt', 'metadata', 'paymentsCustomerId', 'timezone', 'firecrawlApiKey', 'firecrawlEnabled', 'firecrawlConfiguredAt', 'firecrawlLastUsedAt', 'azureAiApiKey', 'azureAiConfiguredAt', 'azureAiEnabled', 'azureAiEndpoint', 'azureAiLastUsedAt', 'azureAiModelRouterName', 'azureAiProjectName', 'azureAiRegion', 'azureAiResourceGroup', 'azureAiSubscriptionId', 'azureAiTenantId', 'azureAiUseModelRouter', 'useDelegatedExecution', 'documentAssistantHistoryEnabled', 'featureMaturationV2Enabled', 'aiAnswerRecommendationsEnabled', 'requireTwoFactor', 'attachmentRetentionDays', 'attachmentRetentionDaysUpdatedAt', 'deletedAt', 'deletedBy', 'scheduledPermanentDeleteAt', 'deletionReminderSentAt', 'canShareFramesPublicly', 'allowedFrameShareDomains'])
 
 export type OrganizationScalarFieldEnum = z.infer<typeof OrganizationScalarFieldEnumSchema>;
 
@@ -3443,6 +3443,10 @@ export const OrganizationSchema = z.object({
   requireTwoFactor: z.boolean(),
   attachmentRetentionDays: z.number().int().nullish(),
   attachmentRetentionDaysUpdatedAt: z.date().nullish(),
+  deletedAt: z.date().nullish(),
+  deletedBy: z.string().nullish(),
+  scheduledPermanentDeleteAt: z.date().nullish(),
+  deletionReminderSentAt: z.date().nullish(),
   canShareFramesPublicly: z.boolean().default(true),
   allowedFrameShareDomains: z.array(z.string()),
 });

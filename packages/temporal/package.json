@@ -69,6 +69,7 @@
 		"@repo/mcp": "workspace:*",
 		"@repo/mcp-registry": "workspace:*",
 		"@repo/observability": "workspace:*",
+		"@repo/payments": "workspace:*",
 		"@repo/rag": "workspace:*",
 		"@repo/sandbox": "workspace:*",
 		"@repo/search": "workspace:*",

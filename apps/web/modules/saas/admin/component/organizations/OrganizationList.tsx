@@ -1,11 +1,11 @@
 "use client";
 
-import { authClient } from "@repo/auth/client";
 import { useAdminPath } from "@saas/admin/lib/links";
 import { OrganizationLogo } from "@saas/organizations/components/OrganizationLogo";
 import { useConfirmationAlert } from "@saas/shared/components/ConfirmationAlertProvider";
 import { Pagination } from "@saas/shared/components/Pagination";
 import { Spinner } from "@shared/components/Spinner";
+import { orpcClient } from "@shared/lib/orpc-client";
 import { orpc } from "@shared/lib/orpc-query-utils";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ColumnDef } from "@tanstack/react-table";
@@ -93,13 +93,12 @@ export function OrganizationList() {
 	const deleteOrganization = async (id: string) => {
 		toast.promise(
 			async () => {
-				const { error } = await authClient.organization.delete({
+				// Deactivates with the standard retention window instead of
+				// hard deleting: an organization removed from here is exactly
+				// as recoverable as one an owner deleted (Fizzy #2462).
+				await orpcClient.admin.organizations.delete({
 					organizationId: id,
 				});
-
-				if (error) {
-					throw error;
-				}
 			},
 			{
 				loading: t("admin.organizations.deleteOrganization.deleting"),

@@ -1,13 +1,17 @@
 "use client";
 import { config } from "@repo/config";
 import { useSession } from "@saas/auth/hooks/use-session";
+import { RestorableOrganizations } from "@saas/organizations/components/RestorableOrganizations";
 import { useActiveOrganization } from "@saas/organizations/hooks/use-active-organization";
 import { useIsGuestInOrg } from "@saas/organizations/hooks/use-is-guest-in-org";
 import {
 	useAccountOrganization,
 	useOrganizationContext,
 } from "@saas/organizations/hooks/use-organization-context";
-import { useOrganizationListQuery } from "@saas/organizations/lib/api";
+import {
+	useOrganizationListQuery,
+	useRestorableOrganizationsQuery,
+} from "@saas/organizations/lib/api";
 import { ActivePlanBadge } from "@saas/payments/components/ActivePlanBadge";
 import { Spinner } from "@shared/components/Spinner";
 import { UserAvatar } from "@shared/components/UserAvatar";
@@ -137,6 +141,21 @@ export function OrganzationSelect({
 		(isResolvingOrganization ||
 			(config.organizations.requireOrganization &&
 				!urlNamesAnOrganization));
+	// A deleted organization must leave the list you can SWITCH INTO — entering
+	// it is refused at tenant resolution, so a switchable entry would only ever
+	// produce an error — while staying reachable to RESTORE. The auth library
+	// owns `organization.list` and knows nothing about the retention window, so
+	// the partition happens here (Fizzy #2462).
+	const { data: restorable } = useRestorableOrganizationsQuery();
+	const deletedOrganizationIds = new Set(
+		(restorable?.organizations ?? []).map(
+			(organization) => organization.id,
+		),
+	);
+	const switchableOrganizations = allOrganizations?.filter(
+		(org) => !deletedOrganizationIds.has(org.id),
+	);
+
 	if (
 		!user ||
 		!mounted ||
@@ -171,7 +190,7 @@ export function OrganzationSelect({
 					setActiveOrganization(newSlug);
 				}}
 			>
-				{allOrganizations?.map((org) => (
+				{switchableOrganizations?.map((org) => (
 					<DropdownMenuRadioItem
 						key={org.slug}
 						value={org.slug}
@@ -192,6 +211,13 @@ export function OrganzationSelect({
 					</DropdownMenuRadioItem>
 				))}
 			</DropdownMenuRadioGroup>
+
+			{deletedOrganizationIds.size > 0 && (
+				<>
+					<DropdownMenuSeparator />
+					<RestorableOrganizations variant="switcher" />
+				</>
+			)}
 
 			{config.organizations.enableUsersToCreateOrganizations && (
 				<>

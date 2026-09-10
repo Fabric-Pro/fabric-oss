@@ -46,6 +46,9 @@ vi.mock("@saas/organizations/hooks/use-is-guest-in-org", () => ({
 }));
 
 vi.mock("@saas/organizations/lib/api", () => ({
+	// Fizzy #2462: the switcher subtracts deactivated organizations from
+	// the switchable list, so it reads this alongside the org list.
+	useRestorableOrganizationsQuery: () => ({ data: undefined }),
 	useOrganizationListQuery: () => ({
 		isPending: false,
 		data: [
