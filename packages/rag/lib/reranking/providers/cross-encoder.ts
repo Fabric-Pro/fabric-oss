@@ -9,11 +9,6 @@
  * - Trained on MS MARCO passage ranking dataset
  * - Excellent quality/speed tradeoff
  *
- * Performance:
- * - First load: 2-5 seconds (downloads model)
- * - Subsequent runs: 50-200ms depending on document count
- * - Memory: ~100MB for the model
- *
  * @see https://huggingface.co/cross-encoder/ms-marco-MiniLM-L-6-v2
  */
 
@@ -119,40 +114,52 @@ export class CrossEncoderRerankerProvider implements RerankerProvider {
 		try {
 			const classifier = await getOrCreatePipeline(this.model);
 
-			// Create query-document pairs for cross-encoder
-			// Format: "query [SEP] document" - the model scores relevance
-			const pairs = documents.map((doc) => {
+			const documentTexts = documents.map((doc) => {
 				// Truncate content to avoid token limits (512 tokens typical for MiniLM)
-				const truncatedContent = doc.content.slice(0, 1500);
-				return `${query} [SEP] ${truncatedContent}`;
+				return doc.content.slice(0, 1500);
 			});
 
 			// Process in batches to avoid memory issues
 			const batchSize = 32;
 			const allScores: number[] = [];
 
-			for (let i = 0; i < pairs.length; i += batchSize) {
-				const batch = pairs.slice(i, i + batchSize);
+			for (let i = 0; i < documentTexts.length; i += batchSize) {
+				const batch = documentTexts.slice(i, i + batchSize);
+				// A cross-encoder needs two token sequences so the tokenizer can assign
+				// the document its own segment. The text-classification pipeline only
+				// accepts one sequence and softmaxes the model's single logit to 1.
+				const modelInputs = classifier.tokenizer(
+					batch.map(() => query),
+					{
+						text_pair: batch,
+						padding: true,
+						truncation: true,
+					},
+				);
+				const { logits } = await classifier.model(modelInputs);
+				const rows: unknown = logits?.tolist?.();
+				const hasExpectedShape =
+					Array.isArray(logits?.dims) &&
+					logits.dims.length === 2 &&
+					logits.dims[0] === batch.length &&
+					logits.dims[1] === 1 &&
+					Array.isArray(rows) &&
+					rows.length === batch.length &&
+					rows.every(
+						(row) =>
+							Array.isArray(row) &&
+							row.length === 1 &&
+							Number.isFinite(row[0]),
+					);
 
-				// The model outputs classification scores
-				// For MS MARCO models, LABEL_1 indicates relevance
-				const results = await classifier(batch, {
-					top_k: null, // Get all labels
-				});
+				if (!hasExpectedShape) {
+					throw new Error(
+						"Cross-encoder model must return one finite logit per query-document pair",
+					);
+				}
 
-				// Extract relevance scores
-				for (const result of results) {
-					// Handle both array and single result formats
-					const scores = Array.isArray(result) ? result : [result];
-
-					// Find the positive label score (LABEL_1 for relevance)
-					const positiveScore =
-						scores.find(
-							(s: { label: string; score: number }) =>
-								s.label === "LABEL_1" || s.label === "positive",
-						)?.score ?? 0;
-
-					allScores.push(positiveScore);
+				for (const [rawScore] of rows as number[][]) {
+					allScores.push(1 / (1 + Math.exp(-rawScore)));
 				}
 			}
 
