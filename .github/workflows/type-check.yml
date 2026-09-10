@@ -94,13 +94,13 @@ name: Type Check
 # @repo/database's ~47MB Prisma client) are re-checked by every consumer.
 # The local pr-quality-gate hook runs the same scoped check.
 #
-# MEMORY. The elevated NODE_OPTIONS heap lives ONLY in this workflow (CI
-# runners with the RAM to spare) — it is deliberately NOT baked into the
-# shared `type-check` script, so contributors' machines are never forced to a
-# 12 GB floor. The ceiling is per tsc process and has to be read together
+# MEMORY. The shared type-check wrapper defaults to a 12 GB NODE_OPTIONS heap
+# only when the caller has not already set a max-old-space-size flag. This
+# workflow keeps its explicit 12 GB setting so the CI resource contract stays
+# visible here. The ceiling is per tsc process and has to be read together
 # with the Turbo concurrency beside it: every shard runs one heavy tsc at a
-# time (`TURBO_CONCURRENCY: 1`) under a 12 GB ceiling that leaves room for
-# the OS and pnpm on the 16 GB standard runner. The staging repo's
+# time (`TURBO_CONCURRENCY: 1`) under a 12 GB ceiling that leaves room for the
+# OS and pnpm on the 16 GB standard runner. The staging repo's
 # `workflow_dispatch` path reuses that same ceiling on the bigger
 # `ubuntu-8core-arm` label purely for headroom, not for extra concurrency.
 # The heavy-package memory blow-up is tracked for a compiled-packages
