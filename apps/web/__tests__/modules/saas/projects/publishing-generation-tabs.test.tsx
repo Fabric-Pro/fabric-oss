@@ -468,9 +468,16 @@ describe("GenerationTabs — panel content", () => {
 		expect(listed).toEqual(["the customer name"]);
 	});
 
-	it("lists a CONTENT_TYPE question alongside a safety-critical one", async () => {
-		// Both arms of the predicate at once, so a fix that kept only one arm
-		// cannot pass.
+	it("lists the safety-critical question and NOT a legacy CONTENT_TYPE one", async () => {
+		// `CONTENT_TYPE` used to be the predicate's second arm, and this case
+		// asserted both arms at once. It stopped being a restriction when the
+		// inline checklist replaced the question and the panel began filtering
+		// every such row out of the answerable list: a row nobody can answer
+		// must not appear under "unresolved before drafting" either, or the
+		// reader is told to clear something that is not on the page.
+		//
+		// The safety-critical arm stays in the case on purpose — it is what
+		// proves the removal is scoped to one kind rather than to the list.
 		renderTabs({
 			decisionThreads: [
 				thread({
@@ -498,7 +505,7 @@ describe("GenerationTabs — panel content", () => {
 			.map((li) => li.textContent);
 
 		expect(listed).toContain("the architecture diagram");
-		expect(listed).toContain("Blog Post");
+		expect(listed).not.toContain("Blog Post");
 		expect(listed).not.toContain("who signs the post");
 	});
 

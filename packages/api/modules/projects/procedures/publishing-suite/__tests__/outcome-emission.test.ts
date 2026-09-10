@@ -171,7 +171,13 @@ beforeEach(() => {
 		updatedAt: SAVED_AT,
 	});
 	dbMocks.listTopicDrafts.mockResolvedValue({
-		drafts: [{ postType: "BLOG_POST", latestReady: BLOG_CANDIDATE }],
+		drafts: [
+			{
+				postType: "BLOG_POST",
+				latestReady: BLOG_CANDIDATE,
+				versions: [BLOG_CANDIDATE],
+			},
+		],
 		workingDrafts: [],
 	});
 	dbMocks.getLatestReadyDraft.mockResolvedValue(BLOG_CANDIDATE);
@@ -209,7 +215,13 @@ describe("adopting a generated candidate", () => {
 	 */
 	it("records ACCEPTED_AS_IS when a short post option is selected", async () => {
 		dbMocks.listTopicDrafts.mockResolvedValue({
-			drafts: [{ postType: "TWEET", latestReady: SHORT_POST_CANDIDATE }],
+			drafts: [
+				{
+					postType: "TWEET",
+					latestReady: SHORT_POST_CANDIDATE,
+					versions: [SHORT_POST_CANDIDATE],
+				},
+			],
 			workingDrafts: [],
 		});
 

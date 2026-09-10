@@ -28,10 +28,15 @@ import type { ProjectMember } from "./topic-shared";
 interface TopicDecisionEntry {
 	id: string;
 	parentId: string | null;
-	kind: "QUESTION" | "AI_UPDATE";
+	/** BLOCKER is a thing the topic is MISSING — see `TopicBlockers`. It rides
+	 *  the same read; every consumer here filters to QUESTION. */
+	kind: "QUESTION" | "AI_UPDATE" | "BLOCKER";
 	status: string;
 	authorType: "USER" | "AGENT";
 	authorUserId: string | null;
+	/** Who decided, when a person did. Null for an AI turn, and null for an
+	 *  author whose account has since been removed. */
+	author?: { id: string; name: string; image: string | null } | null;
 	questionId: string | null;
 	decisionKind: string | null;
 	subject: string | null;
@@ -74,6 +79,93 @@ type Props = {
 	 */
 	members?: readonly ProjectMember[];
 };
+
+/**
+ * Amending an answer, for every surface that offers it.
+ *
+ * Two surfaces do: Summary & Questions, where an answer is given, and the
+ * Decision Log, which is where you READ a decision and therefore where you
+ * notice it is wrong — the same placement Feature Maturation uses. Both drive
+ * this one hook rather than each holding a mutation, so the stale handling,
+ * the toasts and the invalidation cannot drift apart between the two tabs.
+ *
+ * A SEPARATE procedure from `answerTopicQuestion`: that one refuses an
+ * already-settled root on purpose, and the refusal is what keeps a
+ * double-submit from minting two replies for one act. Amending appends a
+ * superseding turn instead, so the question keeps its history.
+ */
+export function useAmendAnswer({
+	projectId,
+	topicId,
+	organizationId,
+}: {
+	projectId: string;
+	topicId: string;
+	organizationId: string | null;
+}) {
+	const queryClient = useQueryClient();
+	const amend = useMutation(
+		orpc.projects.publishingSuite.amendTopicQuestion.mutationOptions({
+			onSuccess: (result) => {
+				if (result.status === "stale") {
+					// Someone else amended first. The refetch below replaces the
+					// text on screen, so the toast only has to explain why the
+					// words the reader just typed are not the ones they see.
+					toast.warning(
+						"Someone else changed this answer first. Your edit was not saved — the current answer is shown below.",
+					);
+				}
+				queryClient.invalidateQueries({
+					queryKey:
+						orpc.projects.publishingSuite.listTopicDecisions.queryKey(
+							{ input: { projectId, topicId, organizationId } },
+						),
+				});
+			},
+			onError: () => {
+				toast.error("Could not save your answer. Please try again.");
+			},
+		}),
+	);
+
+	/**
+	 * Returns the outcome rather than firing and forgetting, because the card
+	 * has to decide whether to close its editor on it. A `stale` amendment is
+	 * REFUSED — the draft in that textarea is then the only copy of what the
+	 * person typed, and closing on submit would destroy it while the toast told
+	 * them it had not been saved.
+	 */
+	const submitAmendment = async (
+		thread: TopicDecisionThread,
+		supersedesId: string,
+		text: string,
+	): Promise<{ status: string } | undefined> => {
+		const questionId = thread.root.questionId;
+		const trimmed = text.trim();
+		if (!questionId || trimmed.length === 0) {
+			return undefined;
+		}
+		return amend.mutateAsync({
+			projectId,
+			topicId,
+			organizationId,
+			questionId,
+			supersedesId,
+			answer: trimmed,
+			// MANUAL, always, and this is a measurement decision rather than a
+			// default. `answerSource` counts recommendation ACCEPTANCE. The
+			// amend editor is seeded with the answer already on record, never
+			// with `recommendedResponse`, so nothing typed here is an act of
+			// taking the AI's wording: re-typing your own text is MANUAL, and
+			// so is replacing an AI answer with your own. An amendment that
+			// happened to land on the recommendation's exact words still was
+			// not reached by accepting it.
+			answerSource: "MANUAL",
+		});
+	};
+
+	return { submitAmendment, isAmending: amend.isPending };
+}
 
 /**
  * The Summary & Questions tab's questions, and the controls to answer them
@@ -200,66 +292,11 @@ export function TopicQuestionsPanel({
 	 * a double-submit from minting two replies for one act. Amending appends a
 	 * superseding turn instead, so the question keeps its history.
 	 */
-	const amend = useMutation(
-		orpc.projects.publishingSuite.amendTopicQuestion.mutationOptions({
-			onSuccess: (result) => {
-				if (result.status === "stale") {
-					// Someone else amended first. The refetch below replaces the
-					// text on screen, so the toast only has to explain why the
-					// words the reader just typed are not the ones they see.
-					toast.warning(
-						"Someone else changed this answer first. Your edit was not saved — the current answer is shown below.",
-					);
-				}
-				queryClient.invalidateQueries({
-					queryKey:
-						orpc.projects.publishingSuite.listTopicDecisions.queryKey(
-							{ input: { projectId, topicId, organizationId } },
-						),
-				});
-			},
-			onError: () => {
-				toast.error("Could not save your answer. Please try again.");
-			},
-		}),
-	);
-
-	/**
-	 * Returns the outcome rather than firing and forgetting, because the card
-	 * has to decide whether to close its editor on it. A `stale` amendment is
-	 * REFUSED — the draft in that textarea is then the only copy of what the
-	 * person typed, and closing on submit would destroy it while the toast told
-	 * them it had not been saved.
-	 */
-	const submitAmendment = async (
-		thread: TopicDecisionThread,
-		supersedesId: string,
-		text: string,
-	): Promise<{ status: string } | undefined> => {
-		const questionId = thread.root.questionId;
-		const trimmed = text.trim();
-		if (!questionId || trimmed.length === 0) {
-			return undefined;
-		}
-		return amend.mutateAsync({
-			projectId,
-			topicId,
-			organizationId,
-			questionId,
-			supersedesId,
-			answer: trimmed,
-			// MANUAL, always, and this is a measurement decision rather than a
-			// default. `answerSource` counts recommendation ACCEPTANCE — the
-			// column `20260828120000_repoint_ai_edited_answer_source` exists to
-			// keep honest. The amend editor is seeded with the answer already on
-			// record, never with `recommendedResponse`, so nothing typed here is
-			// an act of taking the AI's wording: re-typing your own text is
-			// MANUAL, and so is replacing an AI answer with your own. An
-			// amendment that happened to land on the recommendation's exact words
-			// still was not reached by accepting it.
-			answerSource: "MANUAL",
-		});
-	};
+	const { submitAmendment, isAmending } = useAmendAnswer({
+		projectId,
+		topicId,
+		organizationId,
+	});
 
 	const submitAnswer = (
 		thread: TopicDecisionThread,
@@ -330,7 +367,7 @@ export function TopicQuestionsPanel({
 		<section className="space-y-5">
 			{open.length > 0 ? (
 				<div className="space-y-3">
-					<h3 className="editorial-label">Open questions</h3>
+					<h3 className="publishing-label">Open questions</h3>
 					<ul className="space-y-3">
 						{open.map((thread) => (
 							<QuestionCard
@@ -365,14 +402,14 @@ export function TopicQuestionsPanel({
 
 			{resolved.length > 0 ? (
 				<div className="space-y-3">
-					<h3 className="editorial-label">Answered</h3>
+					<h3 className="publishing-label">Answered</h3>
 					<ul className="space-y-3">
 						{resolved.map((thread) => (
 							<AnsweredCard
 								key={thread.root.id}
 								thread={thread}
 								canEdit={canEdit}
-								isSubmitting={amend.isPending}
+								isSubmitting={isAmending}
 								onAmend={(supersedesId, text) =>
 									submitAmendment(thread, supersedesId, text)
 								}
@@ -398,7 +435,7 @@ export function TopicQuestionsPanel({
 							)}
 							aria-hidden="true"
 						/>
-						<h3 className="editorial-label">Possibly resolved</h3>
+						<h3 className="publishing-label">Possibly resolved</h3>
 						<span className="text-[11px] text-muted-foreground/70">
 							{possiblyResolved.length}
 						</span>
@@ -738,6 +775,41 @@ function QuestionCard({
 			) : null}
 		</li>
 	);
+}
+
+/**
+ * How many live answers were recorded AFTER the analysis was written.
+ *
+ * The signal behind "your analysis is behind your answers", and shared because
+ * it now has two readers: the Planning & Analysis tab, which owns the
+ * Regenerate action, and Summary & Questions, which is where answering happens
+ * and where the notice therefore has to appear. Radix unmounts an inactive
+ * `TabsContent`, so a banner that lives only on the analysis tab cannot fire
+ * for the person who just caused it — which is exactly how it shipped.
+ *
+ * The LIVE answer, not the first: amending appends a superseding reply, and
+ * noticing the amendment is the whole point.
+ */
+export function countAnswersRecordedAfter(
+	aiCreatedAt: Date | string | null,
+	threads: readonly TopicDecisionThread[] | null | undefined,
+): number {
+	const writtenAt =
+		aiCreatedAt === null ? null : new Date(aiCreatedAt).getTime();
+	if (writtenAt === null || Number.isNaN(writtenAt)) {
+		return 0;
+	}
+	return (threads ?? []).filter((thread) => {
+		if (thread.root.kind !== "QUESTION") {
+			return false;
+		}
+		const answer = liveAnswerReply(thread);
+		if (!answer) {
+			return false;
+		}
+		const answeredAt = new Date(answer.createdAt).getTime();
+		return !Number.isNaN(answeredAt) && answeredAt > writtenAt;
+	}).length;
 }
 
 /**

@@ -31,7 +31,7 @@ import {
 	readPlanningAnalysis,
 } from "./planning-analysis-content";
 import {
-	liveAnswerReply,
+	countAnswersRecordedAfter,
 	type TopicDecisionThread,
 } from "./TopicQuestionsPanel";
 
@@ -582,28 +582,10 @@ export function PlanningAnalysisTab({
 	 * The action is the Regenerate button already in this header, so the banner
 	 * points at it rather than adding a second control that does the same thing.
 	 */
-	const analysisWrittenAt =
-		aiCreatedAt === null ? null : new Date(aiCreatedAt).getTime();
-	const answersNotYetFolded =
-		analysisWrittenAt === null || Number.isNaN(analysisWrittenAt)
-			? 0
-			: (decisionThreads ?? []).filter((t) => {
-					if (t.root.kind !== "QUESTION") {
-						return false;
-					}
-					// The LIVE answer, not the first: amending appends a
-					// superseding reply, and the whole point of this predicate
-					// is to notice the amendment.
-					const answer = liveAnswerReply(t);
-					if (!answer) {
-						return false;
-					}
-					const answeredAt = new Date(answer.createdAt).getTime();
-					return (
-						!Number.isNaN(answeredAt) &&
-						answeredAt > analysisWrittenAt
-					);
-				}).length;
+	const answersNotYetFolded = countAnswersRecordedAfter(
+		aiCreatedAt,
+		decisionThreads,
+	);
 
 	return (
 		<div className="space-y-5">
@@ -851,9 +833,17 @@ export function PlanningAnalysisTab({
 						sourceAnalysisVersion={sourceAnalysisVersion}
 						canEdit={canEdit}
 						onSaved={handleSaved}
+						// Inside the editor's surface, as the document's own
+						// tail rather than a block after it. It rendered as a
+						// sibling below this whole tab, past a clamped editor
+						// region, so on a real analysis it was a scroll beyond
+						// what looked like the end — and the contents rail,
+						// which indexes only the editor's headings, could not
+						// see it either.
+						footer={
+							data ? <AnalysisDataSections doc={data} /> : null
+						}
 					/>
-
-					{data ? <AnalysisDataSections doc={data} /> : null}
 				</div>
 			)}
 
@@ -1058,7 +1048,7 @@ function Section({
 }) {
 	return (
 		<section className="space-y-2">
-			<h3 className="editorial-label">{label}</h3>
+			<h3 className="publishing-label">{label}</h3>
 			{children}
 		</section>
 	);

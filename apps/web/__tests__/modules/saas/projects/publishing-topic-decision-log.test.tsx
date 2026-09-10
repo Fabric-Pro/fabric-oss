@@ -24,9 +24,36 @@
 
 import { TopicDecisionLog } from "@saas/projects/components/publishing-suite/TopicDecisionLog";
 import type { TopicDecisionThread } from "@saas/projects/components/publishing-suite/TopicQuestionsPanel";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import type { ReactElement } from "react";
 import { describe, expect, it } from "vitest";
+
+/**
+ * The log amends in place now, so it holds a mutation and needs a client.
+ *
+ * Retries off: a test that exercises a failing amendment should see the
+ * failure once rather than wait out three attempts.
+ */
+function renderLog(ui: ReactElement) {
+	const client = new QueryClient({
+		defaultOptions: {
+			queries: { retry: false },
+			mutations: { retry: false },
+		},
+	});
+	return render(
+		<QueryClientProvider client={client}>{ui}</QueryClientProvider>,
+	);
+}
+
+/** The tenant triple every mount needs, so the cases stay about the log. */
+const TENANT = {
+	projectId: "p1",
+	topicId: "t1",
+	organizationId: null,
+} as const;
 
 /** A QUESTION root plus its (empty by default) replies, as `listTopicDecisions` returns it. */
 function root(
@@ -110,6 +137,9 @@ const OPEN_THREAD: TopicDecisionThread = {
 	replies: [],
 };
 
+/** The live answer on `RESOLVED_THREAD`, so the amend cases assert one string. */
+const ANSWER_TEXT = "Yes, marketing cleared it.";
+
 const RESOLVED_THREAD: TopicDecisionThread = {
 	root: root({
 		id: "decision-resolved",
@@ -148,7 +178,9 @@ const AI_UPDATE_THREAD: TopicDecisionThread = {
 
 describe("TopicDecisionLog (FR43–FR47)", () => {
 	it("lists the topic's questions newest first", () => {
-		render(<TopicDecisionLog threads={[OLD_THREAD, NEW_THREAD]} />);
+		renderLog(
+			<TopicDecisionLog {...TENANT} threads={[OLD_THREAD, NEW_THREAD]} />,
+		);
 
 		const items = screen.getAllByTestId("decision-root");
 		expect(items[0]).toHaveTextContent(/newer question/i);
@@ -174,8 +206,11 @@ describe("TopicDecisionLog (FR43–FR47)", () => {
 				}),
 			],
 		};
-		render(
-			<TopicDecisionLog threads={[OPEN_THREAD, otherResolvedThread]} />,
+		renderLog(
+			<TopicDecisionLog
+				{...TENANT}
+				threads={[OPEN_THREAD, otherResolvedThread]}
+			/>,
 		);
 
 		// Default filter is RESOLVED — the open item does not show yet.
@@ -198,7 +233,7 @@ describe("TopicDecisionLog (FR43–FR47)", () => {
 	});
 
 	it("shows a resolved question's answer beneath it (FR46)", () => {
-		render(<TopicDecisionLog threads={[RESOLVED_THREAD]} />);
+		renderLog(<TopicDecisionLog {...TENANT} threads={[RESOLVED_THREAD]} />);
 
 		expect(screen.getByText(/may we name the customer/i)).toBeVisible();
 		expect(screen.getByText(/yes, marketing cleared it/i)).toBeVisible();
@@ -208,8 +243,11 @@ describe("TopicDecisionLog (FR43–FR47)", () => {
 		// A run note is history, not a decision. Interleaving them buries the
 		// decisions the log exists to show.
 		const user = userEvent.setup();
-		render(
-			<TopicDecisionLog threads={[RESOLVED_THREAD, AI_UPDATE_THREAD]} />,
+		renderLog(
+			<TopicDecisionLog
+				{...TENANT}
+				threads={[RESOLVED_THREAD, AI_UPDATE_THREAD]}
+			/>,
 		);
 
 		expect(
@@ -225,7 +263,9 @@ describe("TopicDecisionLog (FR43–FR47)", () => {
 		// but were never read by any surface until now — FR47 names "version-
 		// change summaries", and the card rendered only `content` beneath it.
 		const user = userEvent.setup();
-		render(<TopicDecisionLog threads={[AI_UPDATE_THREAD]} />);
+		renderLog(
+			<TopicDecisionLog {...TENANT} threads={[AI_UPDATE_THREAD]} />,
+		);
 
 		await user.click(screen.getByRole("button", { name: /ai updates/i }));
 		expect(screen.getByText(/planning analysis v2/i)).toBeVisible();
@@ -235,18 +275,18 @@ describe("TopicDecisionLog (FR43–FR47)", () => {
 		// WCAG 2.1 AA: colour is not an information channel on its own. Scoped
 		// to the decision card itself — the filter bar also has a "Resolved"
 		// button, so an unscoped query would match both.
-		render(<TopicDecisionLog threads={[RESOLVED_THREAD]} />);
+		renderLog(<TopicDecisionLog {...TENANT} threads={[RESOLVED_THREAD]} />);
 		const card = screen.getByTestId("decision-root");
 		expect(within(card).getByText(/^resolved$/i)).toBeVisible();
 	});
 
 	it("shows a loading skeleton while the threads are in flight", () => {
-		render(<TopicDecisionLog threads={[]} isLoading />);
+		renderLog(<TopicDecisionLog {...TENANT} threads={[]} isLoading />);
 		expect(screen.getByTestId("topic-decision-log-loading")).toBeVisible();
 	});
 
 	it("shows an empty state when there are no decisions at all", () => {
-		render(<TopicDecisionLog threads={[]} />);
+		renderLog(<TopicDecisionLog {...TENANT} threads={[]} />);
 
 		expect(
 			screen.getByText(/no decisions recorded for this topic yet/i),
@@ -262,7 +302,7 @@ describe("TopicDecisionLog (FR43–FR47)", () => {
 		// The branch most likely to regress silently: reachable only by
 		// switching filters, not by any default render.
 		const user = userEvent.setup();
-		render(<TopicDecisionLog threads={[RESOLVED_THREAD]} />);
+		renderLog(<TopicDecisionLog {...TENANT} threads={[RESOLVED_THREAD]} />);
 
 		await user.click(screen.getByRole("button", { name: /^open$/i }));
 
@@ -284,8 +324,8 @@ describe("TopicDecisionLog — panel width", () => {
 		//
 		// Asserted on the class list because jsdom has no layout engine: there
 		// is no width to measure, only the rule that produces one.
-		const { container } = render(
-			<TopicDecisionLog threads={[RESOLVED_THREAD]} />,
+		const { container } = renderLog(
+			<TopicDecisionLog {...TENANT} threads={[RESOLVED_THREAD]} />,
 		);
 
 		const panel = container.querySelector("section");
@@ -332,7 +372,7 @@ describe("TopicDecisionLog — an amended answer", () => {
 	it("shows the newest answer as the answer, not the first one", () => {
 		// `.find()` — the first reply — was correct while a question could only
 		// be answered once. It now names the OLDEST answer.
-		render(<TopicDecisionLog threads={[AMENDED_THREAD]} />);
+		renderLog(<TopicDecisionLog {...TENANT} threads={[AMENDED_THREAD]} />);
 
 		const card = screen.getByTestId("decision-root");
 		expect(
@@ -341,7 +381,7 @@ describe("TopicDecisionLog — an amended answer", () => {
 	});
 
 	it("keeps the superseded answer readable as history", () => {
-		render(<TopicDecisionLog threads={[AMENDED_THREAD]} />);
+		renderLog(<TopicDecisionLog {...TENANT} threads={[AMENDED_THREAD]} />);
 
 		const history = screen.getByRole("list", { name: /previous answers/i });
 		expect(
@@ -350,11 +390,148 @@ describe("TopicDecisionLog — an amended answer", () => {
 	});
 
 	it("renders no history section for a question answered once", () => {
-		render(<TopicDecisionLog threads={[RESOLVED_THREAD]} />);
+		renderLog(<TopicDecisionLog {...TENANT} threads={[RESOLVED_THREAD]} />);
 
 		expect(screen.getByText(/marketing cleared it/i)).toBeVisible();
 		expect(
 			screen.queryByRole("list", { name: /previous answers/i }),
 		).not.toBeInTheDocument();
+	});
+});
+
+/**
+ * Amending from the log itself.
+ *
+ * The log is where you READ a decision, so it is where you notice it is wrong —
+ * which is why Feature Maturation puts a pencil on every live answer here. This
+ * one was read-only, and the only amend affordance lived one tab away on
+ * Summary & Questions.
+ */
+describe("TopicDecisionLog — amending in place", () => {
+	it("offers Amend on an answered decision when the reader may edit", () => {
+		renderLog(
+			<TopicDecisionLog
+				{...TENANT}
+				canEdit
+				threads={[RESOLVED_THREAD]}
+			/>,
+		);
+
+		expect(
+			screen.getByRole("button", { name: "Amend" }),
+		).toBeInTheDocument();
+	});
+
+	it("offers nothing to a reader who may not edit", () => {
+		renderLog(<TopicDecisionLog {...TENANT} threads={[RESOLVED_THREAD]} />);
+
+		expect(
+			screen.queryByRole("button", { name: "Amend" }),
+		).not.toBeInTheDocument();
+	});
+
+	it("seeds the editor with the answer already on record", async () => {
+		// Never with `recommendedResponse`: re-typing your own text is MANUAL,
+		// and seeding from the AI's wording would make an amendment look like
+		// an acceptance of it.
+		renderLog(
+			<TopicDecisionLog
+				{...TENANT}
+				canEdit
+				threads={[RESOLVED_THREAD]}
+			/>,
+		);
+
+		await userEvent.click(screen.getByRole("button", { name: "Amend" }));
+
+		expect(screen.getByLabelText("Your answer")).toHaveValue(ANSWER_TEXT);
+	});
+
+	it("closes the editor on Cancel without touching the answer", async () => {
+		renderLog(
+			<TopicDecisionLog
+				{...TENANT}
+				canEdit
+				threads={[RESOLVED_THREAD]}
+			/>,
+		);
+
+		await userEvent.click(screen.getByRole("button", { name: "Amend" }));
+		await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
+
+		expect(screen.queryByLabelText("Your answer")).not.toBeInTheDocument();
+		expect(screen.getByText(ANSWER_TEXT)).toBeInTheDocument();
+	});
+
+	it("refuses to save an empty amendment", async () => {
+		// An empty answer is not an amendment, it is a deletion the log has no
+		// concept of — the record is append-only.
+		renderLog(
+			<TopicDecisionLog
+				{...TENANT}
+				canEdit
+				threads={[RESOLVED_THREAD]}
+			/>,
+		);
+
+		await userEvent.click(screen.getByRole("button", { name: "Amend" }));
+		await userEvent.clear(screen.getByLabelText("Your answer"));
+
+		expect(
+			screen.getByRole("button", { name: "Save answer" }),
+		).toBeDisabled();
+	});
+});
+
+/**
+ * Who decided.
+ *
+ * The log rendered the literal string "Team member" on every human turn: the
+ * id was on the wire and the name never was. A decision log that cannot say
+ * who decided is not a log — and the relation already existed, so this was a
+ * missing `select`, not a missing column.
+ */
+describe("TopicDecisionLog — attribution", () => {
+	const withAuthor = (name: string): TopicDecisionThread => ({
+		root: RESOLVED_THREAD.root,
+		replies: RESOLVED_THREAD.replies.map((r) => ({
+			...r,
+			author: { id: "u-ada", name, image: null },
+		})),
+	});
+
+	it("names the person who settled the decision", () => {
+		renderLog(
+			<TopicDecisionLog
+				{...TENANT}
+				threads={[withAuthor("Ada Lovelace")]}
+			/>,
+		);
+
+		expect(screen.getByText("Ada Lovelace")).toBeInTheDocument();
+		expect(screen.queryByText("Team member")).not.toBeInTheDocument();
+	});
+
+	it("falls back when the author's account is gone", () => {
+		// `authorUserId` is ON DELETE SET NULL, so the decision survives and
+		// the name does not. Inventing one would be worse than saying nothing.
+		renderLog(<TopicDecisionLog {...TENANT} threads={[RESOLVED_THREAD]} />);
+
+		expect(screen.getAllByText("Team member").length).toBeGreaterThan(0);
+	});
+
+	it("still marks the AI's own turn as AI, not as a person", () => {
+		// The question ROOT is the AI raising it; the reply is the person
+		// settling it. Both lines render an author, and they must not collapse
+		// into one attribution.
+		renderLog(
+			<TopicDecisionLog
+				{...TENANT}
+				threads={[withAuthor("Ada Lovelace")]}
+			/>,
+		);
+
+		expect(screen.getByText("AI")).toBeInTheDocument();
+		expect(screen.getByText("Ada Lovelace")).toBeInTheDocument();
 	});
 });

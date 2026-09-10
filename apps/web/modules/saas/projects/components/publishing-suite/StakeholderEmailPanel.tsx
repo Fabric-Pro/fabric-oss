@@ -14,6 +14,7 @@ import {
 	SavedDraftCaption,
 } from "./DraftComparison";
 import { DraftDownloadDropdown } from "./DraftDownloadDropdown";
+import { DraftVersions } from "./DraftVersions";
 import { GeneralizationNotes, OTHER_VERSION_NOTE } from "./GeneralizationNotes";
 import type { TopicDraftState, TopicWorkingDraftState } from "./GenerationTabs";
 
@@ -465,8 +466,8 @@ export function StakeholderEmailPanel({
 	const noteDescribesAnotherVersion =
 		notesDescribeAnotherVersion && adoptedDoc === null;
 
-	const handleAdopt = () => {
-		if (!readyId) {
+	const handleAdopt = (draftId: string | null = readyId) => {
+		if (!draftId) {
 			return;
 		}
 		// FR35 is satisfied structurally — generation can only CREATE a working
@@ -483,7 +484,7 @@ export function StakeholderEmailPanel({
 			projectId,
 			topicId,
 			organizationId,
-			draftId: readyId,
+			draftId,
 			// Optimistic concurrency: when THIS tab last saw the working draft.
 			// Keyed on `working` EXISTING, not on `hasBody` — a row with a blank
 			// body still exists and still has an `updatedAt` the server compares
@@ -524,7 +525,7 @@ export function StakeholderEmailPanel({
 							type="button"
 							variant="outline"
 							size="sm"
-							onClick={handleAdopt}
+							onClick={() => handleAdopt()}
 							disabled={adopt.isPending}
 						>
 							{working?.hasBody
@@ -539,7 +540,7 @@ export function StakeholderEmailPanel({
 	const savedDraft = working?.hasBody ? (
 		<section className="space-y-2">
 			<div className="flex items-baseline justify-between gap-3">
-				<h3 className="editorial-label" id="stakeholder-email-editor">
+				<h3 className="publishing-label" id="stakeholder-email-editor">
 					Working stakeholder email
 				</h3>
 				{isDirty ? (
@@ -626,7 +627,7 @@ export function StakeholderEmailPanel({
 			{canEdit ? (
 				<section className="space-y-2">
 					<label
-						className="editorial-label block"
+						className="publishing-label block"
 						htmlFor="stakeholder-email-guidance"
 					>
 						Guidance (optional)
@@ -699,7 +700,7 @@ export function StakeholderEmailPanel({
 			{canEdit && working?.hasBody ? (
 				<section className="space-y-2">
 					<label
-						className="editorial-label block"
+						className="publishing-label block"
 						htmlFor="stakeholder-email-refine"
 					>
 						Refine the saved draft
@@ -780,7 +781,7 @@ export function StakeholderEmailPanel({
 				// own prose carries them, and a warning on every draft is a
 				// warning nobody reads.
 				<section className="space-y-1 rounded-xl border border-highlight/40 bg-highlight/10 p-4">
-					<h3 className="editorial-label">
+					<h3 className="publishing-label">
 						Release status not confirmed
 					</h3>
 					<p className="text-sm leading-relaxed">
@@ -800,7 +801,7 @@ export function StakeholderEmailPanel({
 
 			{doc ? (
 				<section className="space-y-2">
-					<h3 className="editorial-label">What the draft claims</h3>
+					<h3 className="publishing-label">What the draft claims</h3>
 					{/* The qualifier sits ABOVE the values it qualifies, and is
 					    the one surface that renders whatever the two versions
 					    say — so the reader still learns the notes are about
@@ -843,6 +844,37 @@ export function StakeholderEmailPanel({
 
 			<DraftComparison saved={savedDraft} candidate={candidate} />
 
+			{/* Every earlier run, and a way back into one. See `DraftVersions` —
+			    the rows always persisted and the read path folded them to two, so
+			    the version number counted runs rather than naming a place you could
+			    go. */}
+			<DraftVersions
+				versions={draft?.versions ?? []}
+				adoptedId={working?.sourceDraftId ?? null}
+				isAdopting={adopt.isPending}
+				onAdopt={canEdit ? (id) => handleAdopt(id) : undefined}
+				renderBody={(id) => {
+					const version = readStakeholderEmailDocument(
+						draft?.versions?.find((v) => v.id === id)?.content ??
+							null,
+					);
+					return version ? (
+						<div className="space-y-2">
+							<p className="font-medium text-foreground text-sm">
+								{version.subject}
+							</p>
+							<p className="whitespace-pre-wrap text-muted-foreground text-sm leading-relaxed">
+								{version.body}
+							</p>
+						</div>
+					) : (
+						<p className="text-muted-foreground text-sm">
+							That version's content could not be read.
+						</p>
+					);
+				}}
+			/>
+
 			{doc ? (
 				<>
 					{safetyDoc?.safetyNote ? (
@@ -857,7 +889,7 @@ export function StakeholderEmailPanel({
 
 					{doc.inputsNeeded.length > 0 ? (
 						<section className="space-y-2">
-							<h3 className="editorial-label">Inputs needed</h3>
+							<h3 className="publishing-label">Inputs needed</h3>
 							{notesDescribeAnotherVersion ? (
 								<p className="text-muted-foreground text-sm leading-relaxed">
 									{OTHER_VERSION_NOTE}

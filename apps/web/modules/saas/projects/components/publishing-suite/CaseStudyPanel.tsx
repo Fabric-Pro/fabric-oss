@@ -15,6 +15,7 @@ import {
 	SavedDraftCaption,
 } from "./DraftComparison";
 import { DraftDownloadDropdown } from "./DraftDownloadDropdown";
+import { DraftVersions } from "./DraftVersions";
 import { GeneralizationNotes, OTHER_VERSION_NOTE } from "./GeneralizationNotes";
 import type { TopicDraftState, TopicWorkingDraftState } from "./GenerationTabs";
 
@@ -543,8 +544,8 @@ export function CaseStudyPanel({
 	const notesDescribeAnotherVersion =
 		bodyIsFromAnotherVersion && adoptedDoc === null;
 
-	const handleAdopt = () => {
-		if (!readyId) {
+	const handleAdopt = (draftId: string | null = readyId) => {
+		if (!draftId) {
 			return;
 		}
 		// FR35 is satisfied structurally — generation can only CREATE a working
@@ -561,7 +562,7 @@ export function CaseStudyPanel({
 			projectId,
 			topicId,
 			organizationId,
-			draftId: readyId,
+			draftId,
 			// Optimistic concurrency: when THIS tab last saw the working draft.
 			// Keyed on `working` EXISTING, not on `hasBody` — a row with a blank
 			// body still exists and still has an `updatedAt` the server compares
@@ -602,7 +603,7 @@ export function CaseStudyPanel({
 							type="button"
 							variant="outline"
 							size="sm"
-							onClick={handleAdopt}
+							onClick={() => handleAdopt()}
 							disabled={adopt.isPending}
 						>
 							{working?.hasBody
@@ -617,7 +618,7 @@ export function CaseStudyPanel({
 	const savedDraft = working?.hasBody ? (
 		<section className="space-y-2">
 			<div className="flex items-baseline justify-between gap-3">
-				<h3 className="editorial-label" id="case-study-editor">
+				<h3 className="publishing-label" id="case-study-editor">
 					Working case study
 				</h3>
 				{isDirty ? (
@@ -704,7 +705,7 @@ export function CaseStudyPanel({
 			{canEdit ? (
 				<section className="space-y-2">
 					<label
-						className="editorial-label block"
+						className="publishing-label block"
 						htmlFor="case-study-guidance"
 					>
 						Guidance (optional)
@@ -775,7 +776,7 @@ export function CaseStudyPanel({
 			{canEdit && working?.hasBody ? (
 				<section className="space-y-2">
 					<label
-						className="editorial-label block"
+						className="publishing-label block"
 						htmlFor="case-study-refine"
 					>
 						Refine the saved draft
@@ -853,7 +854,7 @@ export function CaseStudyPanel({
 				// cannot see it must still learn that this is an outline, which
 				// is the single most consequential thing about the draft.
 				<section className="space-y-1 rounded-xl border border-highlight/40 bg-highlight/10 p-4">
-					<h3 className="editorial-label">Scaffold draft</h3>
+					<h3 className="publishing-label">Scaffold draft</h3>
 					<p className="text-sm leading-relaxed">
 						There wasn't enough confirmed material to write a full
 						case study, so this is an outline with placeholders
@@ -870,7 +871,7 @@ export function CaseStudyPanel({
 
 			{doc ? (
 				<section className="space-y-2">
-					<h3 className="editorial-label">Approval status</h3>
+					<h3 className="publishing-label">Approval status</h3>
 					{/* The qualifier sits ABOVE the values it qualifies, and is
 					    the one surface that renders whatever the two versions
 					    say — so the reader still learns the notes are about
@@ -911,7 +912,7 @@ export function CaseStudyPanel({
 				<div className="grid gap-4 sm:grid-cols-2">
 					{doc.confirmedAssets.length > 0 ? (
 						<section className="space-y-2 rounded-xl border border-border bg-muted/40 p-4">
-							<h3 className="editorial-label">
+							<h3 className="publishing-label">
 								Assets cleared for use
 							</h3>
 							{/* NOT "approved, and safe to publish". Every other
@@ -939,7 +940,7 @@ export function CaseStudyPanel({
 					{doc.assetsNeedingConfirmation.length > 0 ||
 					doc.clamped.assets.length > 0 ? (
 						<section className="space-y-2 rounded-xl border border-highlight/40 bg-highlight/10 p-4">
-							<h3 className="editorial-label">
+							<h3 className="publishing-label">
 								Assets awaiting confirmation
 							</h3>
 							<p className="text-xs leading-relaxed">
@@ -969,6 +970,37 @@ export function CaseStudyPanel({
 
 			<DraftComparison saved={savedDraft} candidate={candidate} />
 
+			{/* Every earlier run, and a way back into one. See `DraftVersions` —
+			    the rows always persisted and the read path folded them to two, so
+			    the version number counted runs rather than naming a place you could
+			    go. */}
+			<DraftVersions
+				versions={draft?.versions ?? []}
+				adoptedId={working?.sourceDraftId ?? null}
+				isAdopting={adopt.isPending}
+				onAdopt={canEdit ? (id) => handleAdopt(id) : undefined}
+				renderBody={(id) => {
+					const version = readCaseStudyDocument(
+						draft?.versions?.find((v) => v.id === id)?.content ??
+							null,
+					);
+					return version ? (
+						<div className="space-y-2">
+							<p className="font-medium text-foreground text-sm">
+								{version.title}
+							</p>
+							<p className="whitespace-pre-wrap text-muted-foreground text-sm leading-relaxed">
+								{version.body}
+							</p>
+						</div>
+					) : (
+						<p className="text-muted-foreground text-sm">
+							That version's content could not be read.
+						</p>
+					);
+				}}
+			/>
+
 			{doc ? (
 				<>
 					{safetyDoc?.safetyNote ? (
@@ -983,7 +1015,7 @@ export function CaseStudyPanel({
 
 					{doc.inputsNeeded.length > 0 ? (
 						<section className="space-y-2">
-							<h3 className="editorial-label">Inputs needed</h3>
+							<h3 className="publishing-label">Inputs needed</h3>
 							{notesDescribeAnotherVersion ? (
 								<p className="text-muted-foreground text-sm leading-relaxed">
 									{OTHER_VERSION_NOTE}
@@ -999,7 +1031,7 @@ export function CaseStudyPanel({
 
 					{doc.categories.length > 0 ? (
 						<section className="space-y-2">
-							<h3 className="editorial-label">
+							<h3 className="publishing-label">
 								Suggested categories
 							</h3>
 							<p className="text-muted-foreground text-sm">
@@ -1010,7 +1042,7 @@ export function CaseStudyPanel({
 
 					{doc.keywords.length > 0 ? (
 						<section className="space-y-2">
-							<h3 className="editorial-label">
+							<h3 className="publishing-label">
 								Suggested keywords
 							</h3>
 							<p className="text-muted-foreground text-sm">

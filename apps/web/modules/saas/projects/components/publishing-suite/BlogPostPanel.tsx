@@ -12,6 +12,7 @@ import {
 	DraftComparison,
 	SavedDraftCaption,
 } from "./DraftComparison";
+import { DraftVersions } from "./DraftVersions";
 import { GeneralizationNotes } from "./GeneralizationNotes";
 import type { TopicDraftState, TopicWorkingDraftState } from "./GenerationTabs";
 
@@ -261,8 +262,8 @@ export function BlogPostPanel({
 	const noteDescribesAnotherVersion =
 		notesDescribeAnotherVersion && adoptedDoc === null;
 
-	const handleAdopt = () => {
-		if (!readyId) {
+	const handleAdopt = (draftId: string | null = readyId) => {
+		if (!draftId) {
 			return;
 		}
 		// FR35 is satisfied structurally — generation can only CREATE a working
@@ -280,7 +281,7 @@ export function BlogPostPanel({
 			projectId,
 			topicId,
 			organizationId,
-			draftId: readyId,
+			draftId,
 			// Optimistic concurrency: when THIS tab last saw the working draft.
 			// Keyed on `working` existing, NOT on `hasBody` — a row with a blank
 			// body still exists and still has an `updatedAt` the server compares
@@ -326,7 +327,7 @@ export function BlogPostPanel({
 							type="button"
 							variant="outline"
 							size="sm"
-							onClick={handleAdopt}
+							onClick={() => handleAdopt()}
 							disabled={adopt.isPending}
 						>
 							{working?.hasBody
@@ -341,7 +342,7 @@ export function BlogPostPanel({
 	const savedDraft = working?.hasBody ? (
 		<section className="space-y-2">
 			<div className="flex items-baseline justify-between gap-3">
-				<h3 className="editorial-label" id="blog-post-editor">
+				<h3 className="publishing-label" id="blog-post-editor">
 					Working blog post
 				</h3>
 				{isDirty ? (
@@ -413,7 +414,7 @@ export function BlogPostPanel({
 			{canEdit ? (
 				<section className="space-y-2">
 					<label
-						className="editorial-label block"
+						className="publishing-label block"
 						htmlFor="blog-post-guidance"
 					>
 						Guidance (optional)
@@ -483,7 +484,7 @@ export function BlogPostPanel({
 			{canEdit && working?.hasBody ? (
 				<section className="space-y-2">
 					<label
-						className="editorial-label block"
+						className="publishing-label block"
 						htmlFor="blog-post-refine"
 					>
 						Refine the saved draft
@@ -558,6 +559,40 @@ export function BlogPostPanel({
 
 			<DraftComparison saved={savedDraft} candidate={candidate} />
 
+			{/* Every earlier run, and a way back into one. The rows always
+			    persisted; the read path folded them to two, so the "(version
+			    2)" in the heading above counted runs rather than naming a place
+			    you could go. Restoring is the same adopt path with an older id,
+			    which is why the server had to widen too — narrowing the lookup
+			    to `latestReady` was what made version 1 unreachable rather than
+			    merely unlisted. */}
+			<DraftVersions
+				versions={draft?.versions ?? []}
+				adoptedId={working?.sourceDraftId ?? null}
+				isAdopting={adopt.isPending}
+				onAdopt={canEdit ? (id) => handleAdopt(id) : undefined}
+				renderBody={(id) => {
+					const doc = readBlogPostDocument(
+						draft?.versions?.find((v) => v.id === id)?.content ??
+							null,
+					);
+					return doc ? (
+						<div className="space-y-2">
+							<p className="font-medium text-foreground text-sm">
+								{doc.title}
+							</p>
+							<p className="whitespace-pre-wrap text-muted-foreground text-sm leading-relaxed">
+								{doc.body}
+							</p>
+						</div>
+					) : (
+						<p className="text-muted-foreground text-sm">
+							That version's content could not be read.
+						</p>
+					);
+				}}
+			/>
+
 			{doc ? (
 				<>
 					{safetyDoc?.safetyNote ? (
@@ -572,7 +607,7 @@ export function BlogPostPanel({
 
 					{doc.inputsNeeded.length > 0 ? (
 						<section className="space-y-2">
-							<h3 className="editorial-label">Inputs needed</h3>
+							<h3 className="publishing-label">Inputs needed</h3>
 							<ul className="list-disc space-y-1.5 pl-5 text-muted-foreground text-sm leading-relaxed">
 								{doc.inputsNeeded.map((item) => (
 									<li key={item}>{item}</li>
@@ -583,7 +618,7 @@ export function BlogPostPanel({
 
 					{doc.categories.length > 0 ? (
 						<section className="space-y-2">
-							<h3 className="editorial-label">
+							<h3 className="publishing-label">
 								Suggested categories
 							</h3>
 							<p className="text-muted-foreground text-sm">
@@ -594,7 +629,7 @@ export function BlogPostPanel({
 
 					{doc.keywords.length > 0 ? (
 						<section className="space-y-2">
-							<h3 className="editorial-label">
+							<h3 className="publishing-label">
 								Suggested keywords
 							</h3>
 							<p className="text-muted-foreground text-sm">

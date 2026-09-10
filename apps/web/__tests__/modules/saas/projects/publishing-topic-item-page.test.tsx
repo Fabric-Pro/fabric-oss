@@ -54,6 +54,9 @@ const {
 		aiVersion: null as number | null,
 		revisionVersion: null as number | null,
 		sourceAnalysisVersion: null as number | null,
+		/** When the AI analysis was written — the clock the staleness notice
+		 *  compares live answers against. */
+		aiCreatedAt: null as Date | null,
 		// 2A-3: the decision-thread rows `TopicQuestionsPanel` renders. The
 		// source of truth for the Summary & Questions tab's questions moved
 		// here from the analysis blob above — see the FR39 block below.
@@ -151,6 +154,7 @@ vi.mock("@tanstack/react-query", () => ({
 					aiVersion: state.aiVersion,
 					revisionVersion: state.revisionVersion,
 					sourceAnalysisVersion: state.sourceAnalysisVersion,
+					aiCreatedAt: state.aiCreatedAt,
 					author: null,
 					revisionCreatedAt: null,
 				},
@@ -576,6 +580,7 @@ beforeEach(() => {
 	state.aiVersion = null;
 	state.revisionVersion = null;
 	state.sourceAnalysisVersion = null;
+	state.aiCreatedAt = null;
 	state.decisionThreads = [];
 	state.members = [];
 	state.membersPending = false;
@@ -1756,5 +1761,372 @@ describe("TopicItemPage — questions arriving with a finished analysis", () => 
 		expect(invalidateQueries).not.toHaveBeenCalledWith({
 			queryKey: decisionsKey,
 		});
+	});
+});
+
+/**
+ * "Your analysis is behind your answers", said where answering happens.
+ *
+ * The full banner with its Regenerate button lives on Planning & Analysis.
+ * Radix unmounts an inactive `TabsContent` and the default tab is Summary &
+ * Questions — so the banner could not fire for the person who had just caused
+ * it. Nothing switches tabs on answer either: `answerTopicQuestion`'s
+ * `onSuccess` only invalidates. The notice therefore has to be on this tab.
+ */
+describe("TopicItemPage — the analysis is behind the answers", () => {
+	const answeredAt = (iso: string) => ({
+		root: {
+			id: "decision-q1",
+			parentId: null,
+			kind: "QUESTION",
+			status: "RESOLVED",
+			authorType: "AGENT",
+			authorUserId: null,
+			questionId: "q1",
+			decisionKind: "CUSTOMER_NAME",
+			subject: "the customer name",
+			summary: "May we name the customer?",
+			content: null,
+			recommendedResponse: null,
+			answerSource: "MANUAL",
+			analysisVersion: 1,
+			createdAt: new Date("2026-08-30T10:00:00Z"),
+			assignees: [],
+		},
+		replies: [
+			{
+				id: "reply-q1",
+				parentId: "decision-q1",
+				kind: "QUESTION",
+				status: "RESOLVED",
+				authorType: "USER",
+				authorUserId: "u1",
+				questionId: "q1",
+				decisionKind: "CUSTOMER_NAME",
+				subject: null,
+				summary: null,
+				content: "Yes, they approved it.",
+				recommendedResponse: null,
+				answerSource: "MANUAL",
+				analysisVersion: 1,
+				createdAt: new Date(iso),
+				assignees: [],
+			},
+		],
+	});
+
+	it("says so on the default tab, without being opened", () => {
+		state.aiCreatedAt = new Date("2026-09-01T10:00:00Z");
+		state.decisionThreads = [answeredAt("2026-09-02T10:00:00Z")];
+		renderPage();
+
+		expect(
+			screen.getByTestId("summary-analysis-behind-decisions"),
+		).toHaveTextContent(
+			"1 answer was recorded after the analysis was written.",
+		);
+	});
+
+	it("stays silent when every answer predates the analysis", () => {
+		state.aiCreatedAt = new Date("2026-09-03T10:00:00Z");
+		state.decisionThreads = [answeredAt("2026-09-02T10:00:00Z")];
+		renderPage();
+
+		expect(
+			screen.queryByTestId("summary-analysis-behind-decisions"),
+		).not.toBeInTheDocument();
+	});
+
+	it("stays silent when no analysis has been written yet", () => {
+		// Nothing to be behind.
+		state.aiCreatedAt = null;
+		state.decisionThreads = [answeredAt("2026-09-02T10:00:00Z")];
+		renderPage();
+
+		expect(
+			screen.queryByTestId("summary-analysis-behind-decisions"),
+		).not.toBeInTheDocument();
+	});
+});
+
+/**
+ * Participants belong in the header.
+ *
+ * "that kind of stuff feels like it goes in the header somewhere" — it is
+ * context for the whole topic rather than a field you go looking for. The same
+ * component the metadata block uses, so the overflow rules cannot diverge, and
+ * the metadata block stops rendering them so the page does not say it twice.
+ *
+ * Placement only. Ordering them by who ran the meeting is a different ask, and
+ * a dropped one — the transcript row carries `speakerNames` and no organizer.
+ */
+describe("TopicItemPage — meeting participants", () => {
+	const SPEAKERS = {
+		members: [
+			{ userId: "u1", name: "Ada Lovelace", username: null },
+			{ userId: "u2", name: "Grace Hopper", username: null },
+		],
+		overflowCount: 0,
+	};
+
+	it("names them once, in the header", () => {
+		state.topic = { ...state.topic, meetingSpeakers: SPEAKERS };
+		renderPage();
+
+		expect(screen.getAllByText(/Ada Lovelace/)).toHaveLength(1);
+	});
+
+	it("says nothing when the topic came from no meeting", () => {
+		state.topic = { ...state.topic, meetingSpeakers: null };
+		renderPage();
+
+		expect(
+			screen.queryByText(/Meeting participants/i),
+		).not.toBeInTheDocument();
+	});
+});
+
+/**
+ * Adding a content type from the tab strip.
+ *
+ * "I would put that on the same bar that you see the different tabs ... it gets
+ * hidden down there" — the row IS the set of things this topic is producing, so
+ * "+" says you can add to it without needing a label.
+ *
+ * A POPOVER carrying the checklist that already exists, not a new modal: the
+ * modal is what the checklist replaced, and reintroducing one here would walk
+ * back "its simple setting, not question, it could be checkbox".
+ */
+describe("TopicItemPage — adding a content type from the tab strip", () => {
+	it("offers Add type beside the generation tabs", () => {
+		renderPage();
+
+		expect(
+			screen.getByRole("button", { name: /add type/i }),
+		).toBeInTheDocument();
+	});
+
+	it("offers nothing to a reader who may not edit", () => {
+		renderPage(false);
+
+		expect(
+			screen.queryByRole("button", { name: /add type/i }),
+		).not.toBeInTheDocument();
+	});
+
+	it("opens the same checklist, not a second dialog", async () => {
+		renderPage();
+
+		await userEvent.click(
+			screen.getByRole("button", { name: /add type/i }),
+		);
+
+		// The checklist's own reset control is the cheapest proof it is the
+		// checklist rather than a lookalike.
+		expect(await screen.findByRole("dialog")).toBeInTheDocument();
+	});
+});
+
+/**
+ * What the topic is MISSING, as its own class.
+ *
+ * "Recognize what maybe is missing, beyond the questions that we would ask."
+ * A question is decided at your desk; a blocker takes somebody else and an
+ * artifact that does not exist yet. They read identically until one of them
+ * says so.
+ */
+describe("TopicItemPage — blockers", () => {
+	const blocker = (overrides: Record<string, unknown> = {}) => ({
+		root: {
+			id: "b1",
+			parentId: null,
+			kind: "BLOCKER",
+			status: "OPEN",
+			authorType: "AGENT",
+			authorUserId: null,
+			questionId: "blk-quote",
+			decisionKind: "MISSING_QUOTE",
+			subject: "a customer quote",
+			summary: "We have no approved customer quote for this case study.",
+			content: null,
+			recommendedResponse: null,
+			answerOptions: null,
+			whyItMatters: "A case study without one is a different piece.",
+			answerSource: null,
+			analysisVersion: 1,
+			createdAt: new Date("2026-09-01T10:00:00Z"),
+			assignees: [],
+			...overrides,
+		},
+		replies: [],
+	});
+
+	it("names what is missing, and why", () => {
+		state.decisionThreads = [blocker()];
+		renderPage();
+
+		expect(
+			screen.getByText(
+				"We have no approved customer quote for this case study.",
+			),
+		).toBeInTheDocument();
+		expect(
+			screen.getByText("A case study without one is a different piece."),
+		).toBeInTheDocument();
+	});
+
+	it("offers both ways out — provide it, or say it is not needed", () => {
+		state.decisionThreads = [blocker()];
+		renderPage();
+
+		const section = screen.getByLabelText("Before this can be published");
+		expect(
+			within(section).getByRole("button", { name: /mark provided/i }),
+		).toBeInTheDocument();
+		expect(
+			within(section).getByRole("button", { name: /not needed/i }),
+		).toBeInTheDocument();
+	});
+
+	it("drops a cleared blocker out of the section", () => {
+		// Cleared is history, and history lives in the Decision Log. Leaving it
+		// here would make the section permanent and teach a reader to skip it —
+		// the exact failure the section exists to avoid.
+		state.decisionThreads = [blocker({ status: "RESOLVED" })];
+		renderPage();
+
+		expect(
+			screen.queryByLabelText("Before this can be published"),
+		).not.toBeInTheDocument();
+	});
+
+	it("shows a reader no way to clear one", () => {
+		state.decisionThreads = [blocker()];
+		renderPage(false);
+
+		expect(
+			screen.queryByRole("button", { name: /not needed/i }),
+		).not.toBeInTheDocument();
+	});
+
+	it("keeps blockers out of the questions list", () => {
+		// Both live in one table. The questions panel filters by kind, and a
+		// blocker leaking in would be asked as if a person could answer it —
+		// so the text must appear exactly once, in the blockers section.
+		state.decisionThreads = [blocker()];
+		renderPage();
+
+		const section = screen.getByLabelText("Before this can be published");
+		const summary =
+			"We have no approved customer quote for this case study.";
+		expect(within(section).getByText(summary)).toBeInTheDocument();
+		expect(screen.getAllByText(summary)).toHaveLength(1);
+	});
+});
+
+/** A blocker root, as `listTopicDecisions` returns one. */
+function blockerThread(overrides: Record<string, unknown> = {}) {
+	return {
+		root: {
+			id: "b-count",
+			parentId: null,
+			kind: "BLOCKER",
+			status: "OPEN",
+			authorType: "AGENT",
+			authorUserId: null,
+			questionId: "blk-count",
+			decisionKind: "MISSING_QUOTE",
+			subject: "a customer quote",
+			summary: "No approved quote yet.",
+			content: null,
+			recommendedResponse: null,
+			answerOptions: null,
+			whyItMatters: null,
+			answerSource: null,
+			analysisVersion: 1,
+			createdAt: new Date("2026-09-01T10:00:00Z"),
+			assignees: [],
+			...overrides,
+		},
+		replies: [],
+	};
+}
+
+/** An unanswered question root. */
+function openQuestionThread(
+	id: string,
+	overrides: Record<string, unknown> = {},
+) {
+	return {
+		root: {
+			id: `q-${id}`,
+			parentId: null,
+			kind: "QUESTION",
+			status: "OPEN",
+			authorType: "AGENT",
+			authorUserId: null,
+			questionId: id,
+			decisionKind: "CUSTOMER_NAME",
+			subject: "the customer name",
+			summary: "May we name the customer?",
+			content: null,
+			recommendedResponse: null,
+			answerOptions: null,
+			whyItMatters: null,
+			answerSource: null,
+			analysisVersion: 1,
+			createdAt: new Date("2026-09-01T10:00:00Z"),
+			assignees: [],
+			...overrides,
+		},
+		replies: [],
+	};
+}
+
+/**
+ * The two counts on the Summary & Questions tab.
+ *
+ * Different colours because they are different asks: red is a blocker somebody
+ * has to go and get, amber is a question you can answer here and now.
+ * Collapsing them into one number puts the errand and the decision behind the
+ * same digit.
+ */
+describe("TopicItemPage — tab counts", () => {
+	it("counts blockers and questions separately", () => {
+		state.decisionThreads = [
+			blockerThread(),
+			openQuestionThread("q-one"),
+			openQuestionThread("q-two"),
+		];
+		renderPage();
+
+		expect(screen.getByLabelText("1 blocking item")).toBeInTheDocument();
+		expect(screen.getByLabelText("2 open questions")).toBeInTheDocument();
+	});
+
+	it("shows no badge at all at zero", () => {
+		// A zero badge is a permanent mark, and a permanent mark stops being read.
+		state.decisionThreads = [];
+		renderPage();
+
+		expect(
+			screen.queryByLabelText(/blocking item/),
+		).not.toBeInTheDocument();
+		expect(
+			screen.queryByLabelText(/open question/),
+		).not.toBeInTheDocument();
+	});
+
+	it("does not count a legacy content-type row as a question", () => {
+		// The checklist replaced those, and the panel refuses to render them —
+		// a badge counting one would point at a question that is not there.
+		state.decisionThreads = [
+			openQuestionThread("q-legacy", { decisionKind: "CONTENT_TYPE" }),
+		];
+		renderPage();
+
+		expect(
+			screen.queryByLabelText(/open question/),
+		).not.toBeInTheDocument();
 	});
 });

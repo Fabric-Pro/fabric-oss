@@ -72,7 +72,7 @@ export function PublishingSuiteList({
 	const inboxEnabled = useFeatureFlag("PUBLISHING_INBOX");
 	const [createOpen, setCreateOpen] = useState(false);
 	const [statusFilter, setStatusFilter] = useState<
-		TopicStatus | "SNOOZED" | "ARCHIVED" | null
+		TopicStatus | "SNOOZED" | "ARCHIVED" | "UNREAD" | "MINE" | null
 	>(null); // null = all
 	const [search, setSearch] = useState("");
 	// C-Med2: per-topic in-flight WRITE COUNT, not a presence flag. Expanding a
@@ -377,6 +377,22 @@ export function PublishingSuiteList({
 	// just the two Inbox sections: a declined or snoozed topic you half
 	// remember is exactly what you reach for search to find, and the sections
 	// deliberately exclude both.
+	/**
+	 * How many topics the two derived views hold.
+	 *
+	 * Counted from the SAME array they filter, and BEFORE the search narrows
+	 * it: a count that moved while you typed would describe the view you are
+	 * looking at rather than the one the chip takes you to.
+	 */
+	const viewCounts = {
+		unread: topics.filter((t) => !t.isRead && !t.isSnoozed).length,
+		mine: topics.filter(
+			(t) =>
+				viewerUserId !== null &&
+				t.assigneeUserIds.includes(viewerUserId),
+		).length,
+	};
+
 	const searchTerm = search.trim().toLowerCase();
 	const searching = searchTerm !== "";
 	// Title, pitch and angle — the three fields the collapsed row itself shows,
@@ -399,9 +415,27 @@ export function PublishingSuiteList({
 				? topics.filter((t) => t.isSnoozed)
 				: statusFilter === "ARCHIVED"
 					? topics.filter((t) => isTopicArchived(t, now))
-					: topics.filter(
-							(t) => t.status === statusFilter && !t.isSnoozed,
-						)
+					: // Two VIEWS over the same list rather than statuses.
+						// "Like Gmail — you've got the concept of read versus
+						// unread, and you could have an extra sidebar in here."
+						// Neither is a status a topic can be set to; both are
+						// questions about the reader, which is why they cannot
+						// fall through to the `t.status ===` arm below.
+						statusFilter === "UNREAD"
+						? topics.filter((t) => !t.isRead && !t.isSnoozed)
+						: statusFilter === "MINE"
+							? topics.filter(
+									(t) =>
+										viewerUserId !== null &&
+										t.assigneeUserIds.includes(
+											viewerUserId,
+										),
+								)
+							: topics.filter(
+									(t) =>
+										t.status === statusFilter &&
+										!t.isSnoozed,
+								)
 	).filter(matchesSearch);
 	/**
 	 * The reader's own sort and layout for this project, remembered across
@@ -557,6 +591,7 @@ export function PublishingSuiteList({
 					<StatusFilterChips
 						value={statusFilter}
 						onChange={setStatusFilter}
+						counts={viewCounts}
 					/>
 					<div className="flex flex-wrap items-center gap-2">
 						{/* Only while the sections are on screen. A search or a
@@ -946,15 +981,29 @@ function InboxViewToggle({
 function StatusFilterChips({
 	value,
 	onChange,
+	counts,
 }: {
-	value: TopicStatus | "SNOOZED" | "ARCHIVED" | null;
-	onChange: (status: TopicStatus | "SNOOZED" | "ARCHIVED" | null) => void;
+	value: TopicStatus | "SNOOZED" | "ARCHIVED" | "UNREAD" | "MINE" | null;
+	onChange: (
+		status: TopicStatus | "SNOOZED" | "ARCHIVED" | "UNREAD" | "MINE" | null,
+	) => void;
+	/** How many topics each derived view holds, so a reader can see there is
+	 *  something in it before spending a click. Statuses are deliberately
+	 *  uncounted: those chips have always been unnumbered and adding numbers to
+	 *  half a row reads as a bug. */
+	counts: { unread: number; mine: number };
 }) {
 	const chips: ReadonlyArray<{
-		value: TopicStatus | "SNOOZED" | "ARCHIVED" | null;
+		value: TopicStatus | "SNOOZED" | "ARCHIVED" | "UNREAD" | "MINE" | null;
 		label: string;
+		count?: number;
 	}> = [
 		{ value: null, label: "All" },
+		// The two VIEWS first, before the statuses. They answer "what do I have
+		// to do", which is the question somebody lands on this page holding —
+		// "when I land here, I don't immediately know what to do".
+		{ value: "UNREAD", label: "Unread", count: counts.unread },
+		{ value: "MINE", label: "Assigned to me", count: counts.mine },
 		...TOPIC_STATUSES,
 		{ value: "SNOOZED", label: "Snoozed" },
 		// Neither of the last two is a status — both are overlays the list
@@ -984,6 +1033,11 @@ function StatusFilterChips({
 						)}
 					>
 						{chip.label}
+						{chip.count !== undefined && chip.count > 0 ? (
+							<span className="ml-1.5 tabular-nums opacity-70">
+								{chip.count}
+							</span>
+						) : null}
 					</button>
 				);
 			})}
@@ -1070,7 +1124,7 @@ function StateShell({
 				aria-hidden="true"
 			/>
 			<div className="relative">
-				<span className="editorial-label">{label}</span>
+				<span className="publishing-label">{label}</span>
 				<h3 className="mt-4 font-serif text-2xl font-normal leading-tight text-foreground">
 					{title}
 				</h3>
@@ -1221,10 +1275,12 @@ function FailedState() {
 /**
  * One Inbox section: an editorial label and either its rows or a muted line.
  *
- * `app-editorial-label`, not `editorial-label` — the latter is the marketing
- * variant and hardcodes its red, which CLAUDE.md forbids in app components.
- * An empty section is explicitly NOT an error state (UC1/UC2), so it is a
- * muted paragraph and never a role="alert".
+ * `publishing-label` — the suite's own label rule. The marketing
+ * `editorial-label` hardcodes its red, which CLAUDE.md forbids in app
+ * components, and `publishing-label` still draws its rule in `--primary`;
+ * a page of red rules reads as a page of problems. An empty section is
+ * explicitly NOT an error state (UC1/UC2), so it is a muted paragraph and
+ * never a role="alert".
  */
 function InboxSection({
 	label,
@@ -1245,7 +1301,7 @@ function InboxSection({
 }) {
 	return (
 		<section aria-label={label} className="space-y-2">
-			<h3 className="app-editorial-label">{label}</h3>
+			<h3 className="publishing-label">{label}</h3>
 			{children ?? (
 				<p className="text-sm text-muted-foreground">{emptyText}</p>
 			)}

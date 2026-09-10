@@ -804,3 +804,86 @@ describe("ShortPostPanel — the candidate previews (Fizzy #1851, A6)", () => {
 		).toBeEnabled();
 	});
 });
+
+/**
+ * Defect §2 — the generalization note read off the wrong version.
+ *
+ * Fixed on Blog, Case Study and Stakeholder Email; the two short-form panels
+ * were missed and kept reading `latestReady`. Same failure as the blog panel
+ * documents: after a regeneration nobody adopted, the newest candidate and the
+ * saved body are different documents, and when v2 needs no generalizing the
+ * whole section DISAPPEARS while the saved text is still v1's generalized one.
+ * Nothing is on screen to qualify, so no wording change could reach it — and
+ * copy/download then export text whose stated generalizations describe a
+ * document nobody adopted.
+ */
+describe("ShortPostPanel — the note belongs to the version on screen", () => {
+	const GENERALIZED = {
+		options: OPTIONS,
+		safetyNote: "Generalized the customer reference.",
+	};
+	const CLEAN = { options: OPTIONS, safetyNote: null };
+
+	/** `readyDraft` pins id `d1`; these cases need the newest to be `d2`. */
+	function v2(content: unknown) {
+		const draft = readyDraft(content);
+		return {
+			...draft,
+			latestAttempt: { ...draft.latestAttempt, id: "d2", version: 2 },
+			latestReady: { ...draft.latestReady, id: "d2", version: 2 },
+		};
+	}
+
+	const savedFromV1 = (sourceContent: unknown) => ({
+		postType: "TWEET" as const,
+		hasBody: true,
+		body: "Builds are faster now.",
+		sourceDraftId: "d1",
+		sourceOptionLabel: "Direct",
+		sourceContent,
+		updatedAt: new Date(),
+	});
+
+	it("keeps the note when a later version needs no generalizing", () => {
+		// The vanishing case, and the reason a qualifier could never fix it.
+		renderPanel({ draft: v2(CLEAN), working: savedFromV1(GENERALIZED) });
+
+		expect(
+			screen.getByText("Generalized the customer reference."),
+		).toBeInTheDocument();
+	});
+
+	it("shows the adopted version's note, not the newest one", () => {
+		renderPanel({
+			draft: v2({ options: OPTIONS, safetyNote: "v2's own note." }),
+			working: savedFromV1(GENERALIZED),
+		});
+
+		expect(
+			screen.getByText("Generalized the customer reference."),
+		).toBeInTheDocument();
+		expect(screen.queryByText("v2's own note.")).not.toBeInTheDocument();
+	});
+
+	it("drops the qualifier once the note really is this version's", () => {
+		renderPanel({
+			draft: v2({ options: OPTIONS, safetyNote: "v2's own note." }),
+			working: savedFromV1(GENERALIZED),
+		});
+
+		expect(
+			screen.queryByText(/describe(s)? another version/i),
+		).not.toBeInTheDocument();
+	});
+
+	it("still qualifies when the adopted version is gone", () => {
+		// A superseded row can fall out of retention. The newest note is then
+		// all there is, and saying so is the honest answer.
+		renderPanel({
+			draft: v2({ options: OPTIONS, safetyNote: "v2's own note." }),
+			working: savedFromV1(null),
+		});
+
+		expect(screen.getByText("v2's own note.")).toBeInTheDocument();
+	});
+});

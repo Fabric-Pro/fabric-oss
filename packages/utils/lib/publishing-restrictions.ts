@@ -19,8 +19,7 @@
  *
  * An unapproved customer name, asset, metric, internal UI capture or AI
  * likeness is not a question about one content type — it is a fact the draft
- * must not assert, whichever type is being written. `CONTENT_TYPE` is handled
- * by the caller precisely because it IS type-specific.
+ * must not assert, whichever type is being written.
  */
 export const SAFETY_CRITICAL_KINDS: ReadonlySet<string> = new Set([
 	"CUSTOMER_NAME",
@@ -61,7 +60,23 @@ export function isRestrictingThread(thread: RestrictionThreadRoot): boolean {
 		return false;
 	}
 	const kind = root.decisionKind ?? "";
-	return SAFETY_CRITICAL_KINDS.has(kind) || kind === "CONTENT_TYPE";
+	// `CONTENT_TYPE` is deliberately NOT restricting any more.
+	//
+	// The inline checklist replaced these questions, and the questions panel
+	// filters every one of them out of the list a reader can answer, at any
+	// status. Rows written before that change are still in the table and still
+	// OPEN — so counting them here put a "Needs confirmation" caution on a tab
+	// and an "unresolved before drafting" line in its panel, with no visible
+	// question anywhere behind either, and nothing on the page able to clear
+	// it: the Decision Log carries answered decisions, and the checklist writes
+	// post-type selections rather than closing threads. The generation prompt
+	// reads the same predicate, so the model was being told to write around an
+	// approval nobody could grant.
+	//
+	// Removed here rather than at the two call sites because both readers —
+	// the tab badge and the per-panel list — resolve through this one
+	// predicate, and fixing only the badge would have left the list saying it.
+	return SAFETY_CRITICAL_KINDS.has(kind);
 }
 
 /**

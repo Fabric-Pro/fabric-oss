@@ -100,6 +100,16 @@ export const listTopicDraftsProcedure = tenantProtectedProcedure
 					latestAttempt: DraftRowSchema.nullable(),
 					/** The newest READY row — what to RENDER. */
 					latestReady: DraftRowSchema.nullable(),
+					/**
+					 * Every READY generation, newest first, so an older version
+					 * can be opened and adopted.
+					 *
+					 * The rows always persisted; the read path folded them to
+					 * two and nothing else could reach them, so "version 2" had
+					 * no version 1 behind it. Costs no query — the fold already
+					 * reads them all.
+					 */
+					versions: z.array(DraftRowSchema),
 				}),
 			),
 			/**

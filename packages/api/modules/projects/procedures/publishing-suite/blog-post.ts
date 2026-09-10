@@ -308,8 +308,15 @@ export const adoptBlogPostDraftProcedure = tenantProtectedProcedure
 			projectId: project.id,
 		});
 		const blog = drafts.find((d) => d.postType === "BLOG_POST");
+		// ANY ready version, not only the newest.
+		//
+		// Restoring an older draft is adopting it, and this is the only
+		// endpoint that adopts — so narrowing to `latestReady` here was
+		// what made version 1 unreachable rather than merely unlisted.
+		// `versions` is the same scoped read, so this still cannot see a
+		// draft the page could not.
 		const candidate =
-			blog?.latestReady?.id === input.draftId ? blog.latestReady : null;
+			blog?.versions.find((v) => v.id === input.draftId) ?? null;
 		if (!candidate) {
 			// Deliberately the same answer for "no such draft" and "that draft is
 			// not the current one": a caller who guessed an id learns nothing

@@ -4,8 +4,15 @@ import { useSession } from "@saas/auth/hooks/use-session";
 import { useAiSidebarExpanded } from "@saas/shared/components/copilot/ai-sidebar-layout";
 import { orpc } from "@shared/lib/orpc-query-utils";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Button } from "@ui/components/button";
+import {
+	Popover,
+	PopoverContent,
+	PopoverTrigger,
+} from "@ui/components/popover";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@ui/components/tabs";
 import { cn } from "@ui/lib";
+import { PlusIcon } from "lucide-react";
 import dynamic from "next/dynamic";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
@@ -25,9 +32,13 @@ import {
 	readPlanningAnalysis,
 } from "./planning-analysis-content";
 import type { TopicAssistantContext } from "./TopicAssistant";
+import { TopicBlockers } from "./TopicBlockers";
 import { TopicDecisionLog } from "./TopicDecisionLog";
-import { TopicDetails } from "./TopicDetails";
-import { TopicQuestionsPanel } from "./TopicQuestionsPanel";
+import { MeetingParticipants, TopicDetails } from "./TopicDetails";
+import {
+	countAnswersRecordedAfter,
+	TopicQuestionsPanel,
+} from "./TopicQuestionsPanel";
 import { TopicReadiness } from "./TopicReadiness";
 import {
 	ALL_POST_TYPES,
@@ -143,6 +154,7 @@ export function TopicItemPage({
 	// surfaces are open, and would stop the row owning its own pending state.
 	const [postTypesOpen, setPostTypesOpen] = useState(false);
 	const [postTypesPending, setPostTypesPending] = useState(false);
+	const [addTypeOpen, setAddTypeOpen] = useState(false);
 	const [urlOpen, setUrlOpen] = useState(false);
 	const [urlPending, setUrlPending] = useState(false);
 	const [contributorsOpen, setContributorsOpen] = useState(false);
@@ -337,6 +349,93 @@ export function TopicItemPage({
 		orpc.projects.publishingSuite.listTopicDecisions.queryOptions({
 			input: { projectId, topicId, organizationId },
 		}),
+	);
+
+	/**
+	 * Start the first analysis when the page opens, for a topic that never
+	 * passed through Selected.
+	 *
+	 * Selecting a topic starts one server-side now, which is where Andrew
+	 * wanted it: "as soon as the user clicks selected ... they don't even have
+	 * to open this page". But a topic can be opened without ever being
+	 * selected — one created by hand, or one of the sixteen that predate the
+	 * feature — and the trigger that used to cover them was on the Planning &
+	 * Analysis tab's own mount. Radix unmounts an inactive tab, and the default
+	 * tab is Summary & Questions, so a reader who never clicked through to the
+	 * third tab got an empty questions panel and no explanation.
+	 *
+	 * A second caller of the same procedure is safe HERE, unlike the two
+	 * Regenerate controls: the server claims the attempt under a partial unique
+	 * index and answers `in-progress` to whoever loses, so the two cannot both
+	 * run. What they must not do is disagree about whether one is running, and
+	 * neither of these renders a disabled state.
+	 */
+	const autoStarted = useRef(false);
+	const startAnalysis = useMutation(
+		orpc.projects.publishingSuite.generatePlanningAnalysis.mutationOptions({
+			onSuccess: () => {
+				queryClient.invalidateQueries({
+					queryKey:
+						orpc.projects.publishingSuite.getPlanningAnalysis.queryKey(
+							{ input: { projectId, topicId, organizationId } },
+						),
+				});
+			},
+			// Silent. Nobody asked for this run, so nobody should be told it
+			// failed — the Generate button is still there and says so itself.
+			onError: () => {},
+		}),
+	);
+	useEffect(() => {
+		if (
+			autoStarted.current ||
+			!canEdit ||
+			analysisQuery.isLoading ||
+			latestAttempt !== null ||
+			startAnalysis.isPending
+		) {
+			return;
+		}
+		autoStarted.current = true;
+		startAnalysis.mutate({ projectId, topicId, organizationId });
+	}, [
+		canEdit,
+		analysisQuery.isLoading,
+		latestAttempt,
+		startAnalysis,
+		projectId,
+		topicId,
+		organizationId,
+	]);
+
+	/**
+	 * What the Summary & Questions tab is carrying, for its badges.
+	 *
+	 * Counted from the SAME threads the tab renders, so a badge cannot claim
+	 * work the page does not show. `CONTENT_TYPE` rows are excluded for the
+	 * reason the questions panel excludes them — they are settings now, and a
+	 * legacy one is not something anybody can answer.
+	 */
+	const openBlockerCount = (decisionsQuery.data?.threads ?? []).filter(
+		(thread) =>
+			thread.root.kind === "BLOCKER" && thread.root.status === "OPEN",
+	).length;
+	const openQuestionCount = (decisionsQuery.data?.threads ?? []).filter(
+		(thread) =>
+			thread.root.kind === "QUESTION" &&
+			thread.root.status === "OPEN" &&
+			thread.root.decisionKind !== "CONTENT_TYPE",
+	).length;
+
+	/**
+	 * Answers recorded since the analysis was written, for the notice on
+	 * Summary & Questions. Same predicate the Planning & Analysis banner uses —
+	 * one function, so the two surfaces cannot disagree about whether the
+	 * analysis is stale.
+	 */
+	const answersBehindAnalysis = countAnswersRecordedAfter(
+		analysisQuery.data?.aiCreatedAt ?? null,
+		decisionsQuery.data?.threads,
 	);
 
 	/**
@@ -726,7 +825,7 @@ export function TopicItemPage({
 			)}
 		>
 			<div className="space-y-3">
-				<p className="editorial-label">Publishing topic</p>
+				<p className="publishing-label">Publishing topic</p>
 				<div className="flex flex-wrap items-start justify-between gap-3">
 					<h1 className="font-serif font-normal text-3xl leading-tight">
 						{topic.title}
@@ -747,6 +846,18 @@ export function TopicItemPage({
 					<p className="border-destructive border-l-2 pl-3 text-muted-foreground text-sm">
 						{topic.declineReason}
 					</p>
+				) : null}
+				{/* Who was in the room, in the header rather than down in the
+				    metadata block — "that kind of stuff feels like it goes in
+				    the header somewhere". It is context for the whole topic,
+				    not a field you go looking for, and the same component the
+				    metadata block uses so the overflow rules cannot diverge.
+
+				    Placement only. Ordering them by who ran the meeting is a
+				    different ask, and a dropped one: the transcript row carries
+				    `speakerNames` and no organizer. */}
+				{topic.meetingSpeakers ? (
+					<MeetingParticipants speakers={topic.meetingSpeakers} />
 				) : null}
 			</div>
 
@@ -784,19 +895,99 @@ export function TopicItemPage({
 						{REVIEW_TABS.map((t) => (
 							<TabsTrigger key={t.value} value={t.value}>
 								{t.label}
+								{/* Two counts, and they are different colours
+								    because they are different asks. RED is a
+								    blocker: something the topic is missing, and
+								    somebody has to go and get it. AMBER is an
+								    open question: you can answer it here, now.
+								    Collapsing them into one number would put
+								    the errand and the decision behind the same
+								    digit.
+
+								    Only on the tab that holds them, and only
+								    when there are any — a zero badge is a
+								    permanent mark, and a permanent mark stops
+								    being read. */}
+								{t.value === "summaryQuestions" &&
+								openBlockerCount > 0 ? (
+									<span
+										aria-label={`${openBlockerCount} blocking ${openBlockerCount === 1 ? "item" : "items"}`}
+										className="ml-1.5 inline-flex min-w-[1.125rem] items-center justify-center rounded-full bg-destructive px-1.5 py-0 font-bold text-[10px] text-destructive-foreground tabular-nums"
+									>
+										{openBlockerCount}
+									</span>
+								) : null}
+								{t.value === "summaryQuestions" &&
+								openQuestionCount > 0 ? (
+									<span
+										aria-label={`${openQuestionCount} open ${openQuestionCount === 1 ? "question" : "questions"}`}
+										className="ml-1.5 inline-flex min-w-[1.125rem] items-center justify-center rounded-full border border-highlight/60 bg-highlight/20 px-1.5 py-0 font-bold text-[10px] text-foreground tabular-nums"
+									>
+										{openQuestionCount}
+									</span>
+								) : null}
 							</TabsTrigger>
 						))}
 					</TabsList>
 
-					<TabsList
-						aria-label="Content generation"
-						className="flex-wrap border-b-0"
-					>
-						<GenerationTabTriggers
-							model={generationModel}
-							postTypes={selectedPostTypes}
-						/>
-					</TabsList>
+					<div className="flex flex-wrap items-center">
+						<TabsList
+							aria-label="Content generation"
+							className="flex-wrap border-b-0"
+						>
+							<GenerationTabTriggers
+								model={generationModel}
+								postTypes={selectedPostTypes}
+							/>
+						</TabsList>
+						{/* Immediately after the last tab, not pushed to the
+						    right edge: the row IS the set of things this topic
+						    is producing, and "+" says you can add to it without
+						    needing a label. "Edit post types" lived on a
+						    metadata row far below and got lost there.
+
+						    A POPOVER carrying the checklist we already built,
+						    not a new modal — the modal is what the checklist
+						    replaced, and reintroducing one here would walk that
+						    back. Same component, same grouping by the
+						    analysis's own verdict, and the inline checklist
+						    stays on Summary & Questions for anyone who prefers
+						    it there. */}
+						{canEdit ? (
+							<Popover
+								open={addTypeOpen}
+								onOpenChange={setAddTypeOpen}
+							>
+								<PopoverTrigger asChild>
+									<Button
+										type="button"
+										variant="ghost"
+										size="sm"
+										className="ml-1 border border-border border-dashed"
+									>
+										<PlusIcon
+											className="mr-1 size-3.5"
+											aria-hidden="true"
+										/>
+										Add type
+									</Button>
+								</PopoverTrigger>
+								<PopoverContent
+									align="start"
+									className="w-[min(28rem,calc(100vw-2rem))] p-3"
+								>
+									<ContentTypesChecklist
+										analysis={analysisDocument}
+										selected={selectedPostTypes}
+										canEdit={canEdit}
+										isPending={postTypesPending}
+										createdAt={topic.createdAt}
+										onChange={handlePostTypesSubmit}
+									/>
+								</PopoverContent>
+							</Popover>
+						) : null}
+					</div>
 				</div>
 
 				{draftsQuery.isError ? (
@@ -832,9 +1023,56 @@ export function TopicItemPage({
 						createdAt={topic.createdAt}
 						onChange={handlePostTypesSubmit}
 					/>
+					{/* ABOVE the readiness bar and the questions: it is the
+					    shorter list and the one that decides whether the other
+					    is worth working through. Answering five questions for a
+					    case study nobody can approve is wasted effort. */}
+					<TopicBlockers
+						projectId={projectId}
+						topicId={topicId}
+						organizationId={organizationId}
+						threads={decisionsQuery.data?.threads ?? []}
+						canEdit={canEdit}
+					/>
 					<TopicReadiness
 						threads={decisionsQuery.data?.threads ?? []}
 					/>
+					{/* The analysis is behind the answers — said HERE, where
+					    answering happens.
+
+					    The full banner, with its Regenerate button, lives on
+					    the Planning & Analysis tab. Radix unmounts an inactive
+					    `TabsContent`, and the default tab is this one, so that
+					    banner could not fire for the person who had just caused
+					    it: you answered a question, the analysis went stale,
+					    and the only thing that said so was on a tab you were
+					    not on.
+
+					    Compact and a link rather than a second Regenerate
+					    control: two buttons starting the same run must not be
+					    able to disagree about whether one is already running,
+					    which is the reason the banner's own button reuses the
+					    header's handler rather than adding a path. Answering
+					    deliberately does NOT switch tabs on its own — being
+					    moved off the page mid-thought is worse than a notice
+					    you choose to follow. */}
+					{answersBehindAnalysis > 0 ? (
+						<p
+							className="text-muted-foreground text-sm"
+							data-testid="summary-analysis-behind-decisions"
+						>
+							{answersBehindAnalysis === 1
+								? "1 answer was recorded after the analysis was written."
+								: `${answersBehindAnalysis} answers were recorded after the analysis was written.`}{" "}
+							<button
+								type="button"
+								className="underline underline-offset-2 hover:text-foreground"
+								onClick={() => setTab("planningAnalysis")}
+							>
+								Review the analysis
+							</button>
+						</p>
+					) : null}
 					<TopicQuestionsPanel
 						projectId={projectId}
 						topicId={topicId}
@@ -862,6 +1100,7 @@ export function TopicItemPage({
 						onEditPostTypes={() => setPostTypesOpen(true)}
 						onEditContributors={() => setContributorsOpen(true)}
 						onEditAssignees={() => setAssigneesOpen(true)}
+						showMeetingParticipants={false}
 					/>
 				</TabsContent>
 
@@ -900,6 +1139,10 @@ export function TopicItemPage({
 					<TopicDecisionLog
 						threads={decisionsQuery.data?.threads ?? []}
 						isLoading={decisionsQuery.isLoading}
+						projectId={projectId}
+						topicId={topicId}
+						organizationId={organizationId}
+						canEdit={canEdit}
 					/>
 				</TabsContent>
 				<GenerationTabPanels

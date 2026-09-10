@@ -1,5 +1,7 @@
 "use client";
 
+import { ChevronDownIcon } from "lucide-react";
+
 /**
  * The generated draft's own account of what it wrote around, broken into
  * entries a reader can scan (Fizzy #1851, slice A6).
@@ -172,9 +174,10 @@ export function GeneralizationNotes({
 	 * the note equally adjacent to both — while inviting exactly the
 	 * comparison that makes attributing it matter.
 	 *
-	 * Defaulted rather than required so a caller with no versioning to
-	 * describe — the short post, whose candidates are never a working draft —
-	 * does not have to pass a constant false.
+	 * Defaulted rather than required for a caller with no versioning to
+	 * describe. Both short-form panels DO pass it now: they adopt a candidate
+	 * into a working draft like every other panel, and were simply missed when
+	 * defect §2 was fixed on the other three.
 	 */
 	describesAnotherVersion?: boolean;
 }) {
@@ -184,35 +187,67 @@ export function GeneralizationNotes({
 	}
 
 	return (
-		<section className="space-y-2">
-			<h3 className="editorial-label">{heading}</h3>
-			{/* ABOVE the entries it qualifies, matching every sibling
-			    surface: a reader must learn whose text this describes
-			    before reading it, not after. */}
-			{describesAnotherVersion ? (
-				<p className="text-muted-foreground text-sm leading-relaxed">
-					{OTHER_VERSION_NOTE}
-				</p>
-			) : null}
-			{entries.length === 1 ? (
-				<p className="text-muted-foreground text-sm leading-relaxed">
-					{entries[0]}
-				</p>
-			) : (
-				<ul className="space-y-2">
-					{entries.map((entry, index) => (
-						<li
-							// Position, not text. Two entries can repeat a
-							// sentence, and the list is rebuilt wholesale from
-							// one string rather than reordered.
-							key={`${index}:${entry}`}
-							className="rounded-lg border border-border bg-muted/40 px-3 py-2 text-muted-foreground text-sm leading-relaxed"
-						>
-							{entry}
-						</li>
-					))}
-				</ul>
-			)}
-		</section>
+		/*
+		 * Collapsed by default, expanding to exactly what it always showed.
+		 *
+		 * The note is auditable text — it is what a reader checks the draft's
+		 * honesty against — but it sat open under every draft, and open under
+		 * every draft it stopped being read: "these things are ignored
+		 * automatically ... it looks like some just noise. I don't even read
+		 * this." A summary line keeps it one click from the draft it describes
+		 * instead of competing with it for the same glance.
+		 *
+		 * `<details>` rather than state: it is disclosure and nothing else,
+		 * the browser gives it keyboard and screen-reader semantics for free,
+		 * and its content stays in the DOM — so Find-in-page still reaches a
+		 * generalization the reader is looking for rather than silently
+		 * missing it, which a conditional render would not.
+		 *
+		 * Open when it describes ANOTHER version. That case is a warning about
+		 * the text on screen rather than a record about it, and a warning
+		 * behind a disclosure is not a warning.
+		 */
+		<details
+			className="group rounded-lg border border-border bg-card px-3 py-2"
+			open={describesAnotherVersion}
+		>
+			<summary className="flex cursor-pointer list-none items-center gap-2">
+				<h3 className="publishing-label">{heading}</h3>
+				<span className="text-muted-foreground text-xs">
+					{entries.length === 1
+						? "1 note"
+						: `${entries.length} notes`}
+				</span>
+				<ChevronDownIcon
+					className="ml-auto size-4 text-muted-foreground transition-transform group-open:rotate-180"
+					aria-hidden="true"
+				/>
+			</summary>
+			<div className="space-y-2 pt-2">
+				{/* ABOVE the entries it qualifies, matching every sibling
+				    surface: a reader must learn whose text this describes
+				    before reading it, not after. */}
+				{describesAnotherVersion ? (
+					<p className="publishing-prose">{OTHER_VERSION_NOTE}</p>
+				) : null}
+				{entries.length === 1 ? (
+					<p className="publishing-prose">{entries[0]}</p>
+				) : (
+					<ul className="space-y-2">
+						{entries.map((entry, index) => (
+							<li
+								// Position, not text. Two entries can repeat a
+								// sentence, and the list is rebuilt wholesale
+								// from one string rather than reordered.
+								key={`${index}:${entry}`}
+								className="publishing-prose rounded-lg border border-border bg-muted/40 px-3 py-2"
+							>
+								{entry}
+							</li>
+						))}
+					</ul>
+				)}
+			</div>
+		</details>
 	);
 }

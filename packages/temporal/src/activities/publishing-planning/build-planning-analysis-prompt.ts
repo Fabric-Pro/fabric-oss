@@ -84,6 +84,28 @@ export const PUBLISHING_DECISION_KINDS = [
 export type PublishingDecisionKind = (typeof PUBLISHING_DECISION_KINDS)[number];
 
 /**
+ * What kind of thing a topic is missing.
+ *
+ * Deliberately short and about the ARTIFACT rather than about the reason. A
+ * reader scanning "before this can be published" wants to know what to go and
+ * get; why it matters is the sentence underneath.
+ *
+ * `MISSING_APPROVAL` overlaps `ASSET_APPROVAL` in the question kinds above and
+ * that is correct rather than duplication: the question asks whether we MAY use
+ * a thing we have, this says we do not have the sign-off yet. One is a decision,
+ * the other is an errand.
+ */
+export const PUBLISHING_BLOCKER_KINDS = [
+	"MISSING_ASSET",
+	"MISSING_QUOTE",
+	"MISSING_APPROVAL",
+	"MISSING_DATA",
+	"OTHER",
+] as const;
+
+export type PublishingBlockerKind = (typeof PUBLISHING_BLOCKER_KINDS)[number];
+
+/**
  * The Planning & Analysis document, one field per section of the PO's prompt
  * "Output Format" (v1.1), in that order.
  *
@@ -173,6 +195,33 @@ export const PublishingPlanningAnalysisSchema = z.object({
 			}),
 		)
 		.optional(),
+	/**
+	 * What the topic NEEDS that does not exist yet.
+	 *
+	 * Distinct from `recommendedQuestions`, and the distinction is the point:
+	 * a question is decided at your desk — "should this be a case study?" — and
+	 * a blocker takes somebody else and an artifact that was never captured.
+	 * They were being said the same way, so a reader could not tell which of
+	 * their open items they could actually clear before lunch.
+	 *
+	 * Identity is `kind` + `subject`, exactly as a question's is, so a
+	 * regeneration that rephrases "we need a quote from the client" does not
+	 * mint a second one beside the one somebody already cleared.
+	 *
+	 * Every field but `need` is optional, for the reason the whole schema is
+	 * loose: `PUBLISHING_SCHEMA_VALIDATION_FAILED` is non-retryable, so a
+	 * malformed blocker must cost that blocker and never the run.
+	 */
+	blockers: z
+		.array(
+			z.object({
+				kind: z.enum(PUBLISHING_BLOCKER_KINDS).optional(),
+				subject: z.string().max(160).optional(),
+				need: z.string().min(1),
+				whyItMatters: z.string().optional(),
+			}),
+		)
+		.optional(),
 	/** FR38 */
 	preDraftGuidance: z.string().optional(),
 });
@@ -232,7 +281,14 @@ function normalizePhrase(text: string): string {
  */
 export function deriveQuestionId(input: {
 	topicId: string;
-	decisionKind?: PublishingDecisionKind;
+	/**
+	 * Widened from `PublishingDecisionKind` to a plain string: blockers key
+	 * their identity through this same function with their own kinds, and the
+	 * hash does not interpret the value — it only has to be stable and
+	 * distinct. Keeping two derivations would be two chances for a
+	 * regeneration to mint a duplicate beside a row somebody had settled.
+	 */
+	decisionKind?: string;
 	subject?: string;
 	question: string;
 }): string {
@@ -752,6 +808,36 @@ Use "recommendedQuestions" only for decisions the classifications above do NOT
 already cover — an audience judgement, a claim the evidence will not carry, an
 authorship call, a scope question. If a decision belongs in a bucket, put it in
 the bucket and say nothing more about it here.
+
+## "blockers" — what this topic is MISSING
+
+A blocker is something the topic NEEDS that does not exist yet. It is not a
+decision somebody makes; it is an artifact somebody has to go and get.
+
+  - an approved customer quote, for a case study that has none
+  - a screenshot or diagram nobody has captured
+  - a sign-off that has not been given
+  - a number or result the source material never carried
+
+Write one per missing thing, with:
+
+- "kind" — MISSING_ASSET, MISSING_QUOTE, MISSING_APPROVAL, MISSING_DATA or OTHER.
+- "subject" — a short noun phrase naming the thing that is missing ("a customer
+  quote", "a screenshot of the settings page"). Name the same thing the same way
+  every time: this is the identity a regeneration matches on, and a rephrasing
+  that changes it mints a second blocker beside one somebody already cleared.
+- "need" — one sentence saying what has to exist, addressed to the person who
+  will get it.
+- "whyItMatters" — what the draft cannot honestly say without it.
+
+The test is whether the reader could clear it at their desk in a minute. If they
+could, it is a question, not a blocker. "Should this be a case study?" is a
+question. "We have no approved quote for the case study" is a blocker.
+
+Say nothing here about a thing the topic HAS. An asset that exists but is not
+approved is a question about permission, and it is already raised from the
+classification above; repeating it here would ask the reader for an errand they
+do not have to run.
 
 ## Rules that override anything above
 

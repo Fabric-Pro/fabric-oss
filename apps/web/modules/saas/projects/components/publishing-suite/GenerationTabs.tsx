@@ -59,6 +59,16 @@ export interface TopicDraftState {
 	postType: PostType;
 	latestAttempt: TopicDraftRow | null;
 	latestReady: TopicDraftRow | null;
+	/**
+	 * Every READY generation, newest first — so "version 2" has a version 1
+	 * behind it.
+	 *
+	 * Optional on the client only. The read path always sends it now, but a
+	 * panel test that predates it would otherwise fail on a field it has no
+	 * opinion about, and `DraftVersions` renders nothing below two entries
+	 * anyway.
+	 */
+	versions?: TopicDraftRow[];
 }
 
 export interface TopicWorkingDraftState {
@@ -753,7 +763,7 @@ function Section({
 }) {
 	return (
 		<section className="space-y-2">
-			<h3 className="editorial-label">{label}</h3>
+			<h3 className="publishing-label">{label}</h3>
 			{children}
 		</section>
 	);

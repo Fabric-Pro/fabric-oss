@@ -144,6 +144,7 @@ beforeEach(() => {
 				postType: "BLOG_POST",
 				latestAttempt: READY_DRAFT,
 				latestReady: READY_DRAFT,
+				versions: [READY_DRAFT],
 			},
 		],
 		workingDrafts: [],
@@ -585,6 +586,14 @@ describe("adoptBlogPostDraft", () => {
 						...READY_DRAFT,
 						content: { options: [{ label: "Direct", text: "x" }] },
 					},
+					versions: [
+						{
+							...READY_DRAFT,
+							content: {
+								options: [{ label: "Direct", text: "x" }],
+							},
+						},
+					],
 				},
 			],
 			workingDrafts: [],

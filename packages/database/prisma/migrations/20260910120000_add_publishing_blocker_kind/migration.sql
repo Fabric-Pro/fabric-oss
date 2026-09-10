@@ -1,0 +1,25 @@
+-- AlterEnum
+-- Blockers on a publishing topic (Fizzy #1851).
+--
+-- A topic can be held by two different things and they were being said the same
+-- way. A QUESTION is something a person decides at their desk — "should this be
+-- a case study?". A BLOCKER is something that does not EXIST yet: an approved
+-- customer quote, a screenshot nobody has signed off, an asset that was never
+-- captured. Answering the first takes a minute; clearing the second takes
+-- somebody else.
+--
+-- A new `kind` on the existing decision-entry table rather than a table of its
+-- own. A blocker is a thread with a status, an author, assignees and a history
+-- — which is every column this table already has, plus the assignee join, the
+-- RLS policies and the tenant XOR constraint. A parallel table would duplicate
+-- all of it and then need its own answer to each.
+--
+-- Both existing readers already filter by kind: `TopicQuestionsPanel` selects
+-- `kind === "QUESTION"` and the Decision Log splits QUESTION from AI_UPDATE, so
+-- no BLOCKER row can leak into a surface that has no idea what it is.
+--
+-- ONE migration, and it stays alone: a value added by ALTER TYPE cannot be
+-- referenced in the same transaction that adds it, so a default or a partial
+-- index naming 'BLOCKER' would need a second. Nothing here does — the value is
+-- only ever written by application code at runtime.
+ALTER TYPE "PublishingDecisionEntryKind" ADD VALUE IF NOT EXISTS 'BLOCKER';

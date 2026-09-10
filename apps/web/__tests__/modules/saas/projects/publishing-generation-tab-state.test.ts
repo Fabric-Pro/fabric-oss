@@ -154,29 +154,40 @@ describe("WEBINAR_SCRIPT synonyms (Fizzy #1988, Phase 2D-1)", () => {
 		expect(normalizePostType("Demo Script")).toBe("WEBINAR_SCRIPT");
 	});
 
-	it("scopes a webinar CONTENT_TYPE question to its own tab", () => {
-		// Before this widening, an OPEN CONTENT_TYPE question naming "Webinar
-		// Script" fell through the synonym table unmapped and hit the FAIL SAFE
-		// branch: `global = true`, warning on every shipped tab. After it, the
-		// warning narrows to the one tab it actually names — correct, but a
-		// de-warning change to five shipped tabs.
+	/**
+	 * `CONTENT_TYPE` no longer restricts anything, webinar included.
+	 *
+	 * These two arrived with the sixth content type and were correct against
+	 * the predicate as it stood: an unmapped subject hit the fail-safe and
+	 * warned on every tab, and the synonym widening narrowed that to the one
+	 * tab it named. Both are moot now — the kind was removed from
+	 * `isRestrictingThread` entirely, because the inline checklist replaced
+	 * these questions and the panel filters every one of them out of the list a
+	 * reader can answer. A legacy row was cautioning tabs with nothing behind
+	 * them and no way to clear it.
+	 *
+	 * Kept and inverted rather than deleted: reintroducing the caution is the
+	 * failure mode, so it wants a test that fails if anyone does. The synonym
+	 * widening itself still has coverage — `normalizePostType("Demo Script")`
+	 * above, and the bucket case below.
+	 */
+	it("does not restrict on a webinar CONTENT_TYPE question", () => {
 		const r = resolveRestrictions([
 			openContentTypeThread("Webinar Script"),
 		]);
 
 		expect(r.global).toBe(false);
-		expect(r.byPostType.has("WEBINAR_SCRIPT")).toBe(true);
+		expect(r.byPostType.has("WEBINAR_SCRIPT")).toBe(false);
 	});
 
-	it("still fails safe for a phrasing nobody listed", () => {
-		// The negative control: the widening above must not have loosened the
-		// fail-safe path itself. A phrasing no synonym table lists still
-		// restricts every type rather than being silently dropped.
+	it("does not fail safe for a phrasing nobody listed either", () => {
+		// This one used to escalate to every tab. A row nobody can answer must
+		// not be able to caution the whole page, in any phrasing.
 		const r = resolveRestrictions([
 			openContentTypeThread("an unusual phrasing nobody listed"),
 		]);
 
-		expect(r.global).toBe(true);
+		expect(r.global).toBe(false);
 	});
 
 	it("resolves the bucket for an analysis written before the type existed", () => {
@@ -436,21 +447,33 @@ describe("resolveRestrictions", () => {
 		}
 	});
 
-	it("scopes a CONTENT_TYPE question to the post type its subject names", () => {
+	/**
+	 * A legacy `CONTENT_TYPE` thread must restrict NOTHING.
+	 *
+	 * These three cases asserted the opposite, and were correct when written:
+	 * the topic asked "should we produce a Blog Post?" as a question, and an
+	 * unanswered one held the tab. The contract moved when the inline checklist
+	 * replaced those questions and the panel began filtering every
+	 * `CONTENT_TYPE` row out of the answerable list at any status — but nothing
+	 * updated the restriction predicate, so rows written before that change
+	 * kept holding tabs with no question behind them and no way to clear it.
+	 *
+	 * Inverted rather than deleted: the failure mode is reintroducing the
+	 * caution, so it wants a test that fails if anyone does.
+	 */
+	it("does not restrict on a legacy CONTENT_TYPE thread", () => {
 		const r = resolveRestrictions([
 			thread({ decisionKind: "CONTENT_TYPE", subject: "Blog Post" }),
 		]);
 
 		expect(r.global).toBe(false);
-		expect([...r.byPostType]).toEqual(["BLOG_POST"]);
+		expect([...r.byPostType]).toEqual([]);
 	});
 
-	it("fails SAFE when a CONTENT_TYPE question's subject cannot be mapped", () => {
-		// `subject` is free text. A real decision phrased in a way the synonym
-		// map has not seen would otherwise resolve to null and be dropped —
-		// turning an unresolved approval into no warning at all. Restricting
-		// every type over-warns; dropping it under-warns, and only one of those
-		// lets a draft assert something nobody approved.
+	it("does not fail safe on an unmappable CONTENT_TYPE subject either", () => {
+		// The old fail-safe escalated an unrecognised subject to EVERY tab.
+		// That was the right call while the question was answerable and the
+		// worst one after: one legacy row cautioned the whole page forever.
 		const r = resolveRestrictions([
 			thread({
 				decisionKind: "CONTENT_TYPE",
@@ -458,18 +481,19 @@ describe("resolveRestrictions", () => {
 			}),
 		]);
 
-		expect(r.global).toBe(true);
+		expect(r.global).toBe(false);
+		expect([...r.byPostType]).toEqual([]);
 	});
 
-	it("still scopes precisely when the subject IS mappable", () => {
-		// The fail-safe above must not swallow the precise path: a recognised
-		// subject restricts ONE type, not all four.
+	it("still restricts on the safety-critical kinds beside it", () => {
+		// The removal is scoped to one kind. An unapproved customer name is
+		// still a fact no draft may assert, and still holds every type.
 		const r = resolveRestrictions([
 			thread({ decisionKind: "CONTENT_TYPE", subject: "Case Study" }),
+			thread({ decisionKind: "CUSTOMER_NAME" }),
 		]);
 
-		expect(r.global).toBe(false);
-		expect([...r.byPostType]).toEqual(["CASE_STUDY"]);
+		expect(r.global).toBe(true);
 	});
 
 	it("ignores questions that are already answered", () => {
@@ -499,7 +523,7 @@ describe("resolveRestrictions", () => {
 		).toBe(true);
 		expect(
 			isRestrictingThread(thread({ decisionKind: "CONTENT_TYPE" })),
-		).toBe(true);
+		).toBe(false);
 		expect(
 			isRestrictingThread(thread({ decisionKind: "AUTHORSHIP" })),
 		).toBe(false);
@@ -519,14 +543,14 @@ describe("resolveRestrictions", () => {
 		).toBe(false);
 	});
 
-	it("fails safe for a CONTENT_TYPE question carrying no subject at all", () => {
-		// Restricting by kind, but naming nothing to scope to. Dropping it
-		// would lose the restriction; scoping it to nothing would too.
+	it("ignores a CONTENT_TYPE question carrying no subject at all", () => {
+		// This one used to escalate to every tab. A row nobody can answer must
+		// not be able to caution the whole page.
 		const r = resolveRestrictions([
 			thread({ decisionKind: "CONTENT_TYPE", subject: null }),
 		]);
 
-		expect(r.global).toBe(true);
+		expect(r.global).toBe(false);
 	});
 
 	it("ignores an open question of a non-restricting kind", () => {

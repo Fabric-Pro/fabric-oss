@@ -456,6 +456,50 @@ export function TopicRow({
 		<p className="text-sm leading-6 text-muted-foreground">{topic.pitch}</p>
 	) : null;
 
+	/**
+	 * Who already owns this topic, on the COLLAPSED row.
+	 *
+	 * The full list lives in `TopicDetails`, which this row mounts only behind
+	 * the disclosure — so "if we have someone who already owns it, maybe it
+	 * makes sense to show that" shipped invisible, behind the same extra click
+	 * the role pill was lifted out of. Names are the payload the expanded list
+	 * carries; the row carries initials, because at a glance the question is
+	 * "is anyone on this" and only secondarily "who".
+	 *
+	 * `aria-label` on the list, and one per member, for the reason
+	 * `TopicDetails` documents: assignees and contributors are different sets,
+	 * and a reader who cannot tell them apart gets both wrong.
+	 */
+	const assigneeCluster =
+		topic.assignees.length > 0 ? (
+			<ul
+				className="flex items-center -space-x-1.5"
+				aria-label={`Assigned to ${topic.assignees.map((a) => a.name).join(", ")}`}
+			>
+				{topic.assignees.map((a) => (
+					<li key={a.id}>
+						<Tooltip>
+							<TooltipTrigger asChild>
+								{a.image ? (
+									// eslint-disable-next-line @next/next/no-img-element
+									<img
+										src={a.image}
+										alt=""
+										className="size-5 rounded-full border border-background"
+									/>
+								) : (
+									<span className="flex size-5 items-center justify-center rounded-full border border-background bg-muted font-medium text-[9px] text-muted-foreground">
+										{a.name.charAt(0).toUpperCase()}
+									</span>
+								)}
+							</TooltipTrigger>
+							<TooltipContent>{a.name}</TooltipContent>
+						</Tooltip>
+					</li>
+				))}
+			</ul>
+		) : null;
+
 	// Last activity, mirroring `StoryTile`'s `lastEditedAt ?? createdAt`: what
 	// the reader wants at a glance is when the topic was last TOUCHED, not when
 	// it was created. The fallback is real rather than ceremonial — a row can
@@ -853,7 +897,10 @@ export function TopicRow({
 					    matched tag and is unbounded, and this is the one mount
 					    where a single long token could push the row wider than
 					    its container. */}
-					{topic.rankReason || neglectBadge || highlightChip ? (
+					{topic.rankReason ||
+					neglectBadge ||
+					highlightChip ||
+					assigneeCluster ? (
 						<div className="flex flex-wrap items-center gap-x-2 gap-y-1.5 pt-0.5">
 							{highlightChip}
 							<TopicRankReason
@@ -862,6 +909,7 @@ export function TopicRow({
 								className="break-words"
 							/>
 							{neglectBadge}
+							{assigneeCluster}
 						</div>
 					) : null}
 					{isSnoozed && topic.snoozedUntil ? (
@@ -961,7 +1009,7 @@ export function TopicRow({
 					{topic.status === "DECLINED" &&
 					topic.declineReason?.trim() ? (
 						<div className="pt-2">
-							<span className="app-editorial-label">
+							<span className="publishing-label">
 								Why this was declined
 							</span>
 							<p className="mt-1 text-sm leading-6 text-muted-foreground">

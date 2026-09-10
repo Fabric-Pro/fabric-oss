@@ -156,7 +156,7 @@ export function ContentTypesChecklist({
 				aria-expanded={open}
 				className="flex w-full items-center gap-3 px-4 py-3 text-left"
 			>
-				<span className="editorial-label shrink-0">Content types</span>
+				<span className="publishing-label shrink-0">Content types</span>
 				<span className="min-w-0 flex-1 truncate text-muted-foreground text-sm">
 					{summary}
 				</span>

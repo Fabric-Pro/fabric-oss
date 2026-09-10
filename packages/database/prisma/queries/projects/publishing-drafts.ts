@@ -125,6 +125,18 @@ export interface TopicDraftState {
 	latestAttempt: TopicDraftRecord | null;
 	/** The newest READY row — what to RENDER. */
 	latestReady: TopicDraftRecord | null;
+	/**
+	 * Every READY generation of this type, newest first.
+	 *
+	 * `latestAttempt` and `latestReady` were the whole contract, so a panel
+	 * headed "Generated draft (version 2)" had no version 1 to open — the rows
+	 * persist, and nothing could reach them. This costs no query: the fold
+	 * below already reads every row before narrowing to two.
+	 *
+	 * READY only. A failed attempt is not a version of anything; it is a run
+	 * that produced no document, and `latestAttempt` is where the panel says so.
+	 */
+	versions: TopicDraftRecord[];
 }
 
 export interface TopicWorkingDraftState {
@@ -284,14 +296,18 @@ export async function listTopicDrafts(input: {
 				(r) => r.postType === postType,
 			);
 			const latestAttempt = forType[0] ?? null;
-			const latestReady =
-				forType.find((r) => r.status === "READY") ?? null;
+			const readyRows = forType.filter((r) => r.status === "READY");
+			const latestReady = readyRows[0] ?? null;
 			return {
 				postType,
 				latestAttempt: latestAttempt
 					? toRecord(latestAttempt, now)
 					: null,
 				latestReady: latestReady ? toRecord(latestReady, now) : null,
+				// Same rows, same clock, same order `rows` arrived in — so the
+				// first entry IS `latestReady` rather than a second opinion
+				// about which version is current.
+				versions: readyRows.map((r) => toRecord(r, now)),
 			};
 		});
 

@@ -143,6 +143,7 @@ beforeEach(() => {
 				postType: "TWEET",
 				latestAttempt: READY_DRAFT,
 				latestReady: READY_DRAFT,
+				versions: [READY_DRAFT],
 			},
 		],
 		workingDrafts: [],
@@ -380,6 +381,14 @@ describe("selectShortPostOption", () => {
 							options: [{ label: "Direct", text: "   " }],
 						},
 					},
+					versions: [
+						{
+							...READY_DRAFT,
+							content: {
+								options: [{ label: "Direct", text: "   " }],
+							},
+						},
+					],
 				},
 			],
 			workingDrafts: [],
@@ -405,6 +414,12 @@ describe("selectShortPostOption", () => {
 						...READY_DRAFT,
 						content: { sections: ["old"] },
 					},
+					versions: [
+						{
+							...READY_DRAFT,
+							content: { sections: ["old"] },
+						},
+					],
 				},
 			],
 			workingDrafts: [],
@@ -434,6 +449,20 @@ describe("selectShortPostOption", () => {
 							],
 						},
 					},
+					versions: [
+						{
+							...READY_DRAFT,
+							content: {
+								options: [
+									{ label: "Direct", text: "First." },
+									{
+										label: "Direct",
+										text: "Second, different.",
+									},
+								],
+							},
+						},
+					],
 				},
 			],
 			workingDrafts: [],
@@ -486,6 +515,7 @@ describe("selectShortPostOption", () => {
 					postType: "TWEET",
 					latestAttempt: READY_DRAFT,
 					latestReady: READY_DRAFT,
+					versions: [READY_DRAFT],
 				},
 			],
 			workingDrafts: [
