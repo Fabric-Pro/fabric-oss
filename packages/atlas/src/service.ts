@@ -861,15 +861,6 @@ export class AtlasService {
 			input.projectId,
 			input.analysisId,
 		);
-		// Confirm the node exists in the served analysis before persisting a note.
-		const node = await queries.getNodeDetail(this.ctx, {
-			analysisId: input.analysisId,
-			mode: input.mode,
-			key: input.key,
-		});
-		if (!node) {
-			throw new AtlasError("NOT_FOUND", "Node not found");
-		}
 
 		const normalizedCategory =
 			input.userCategory === undefined
@@ -878,7 +869,8 @@ export class AtlasService {
 					? null
 					: input.userCategory.trim().toLowerCase() || null;
 
-		await queries.upsertNodeOverride(this.ctx, {
+		const node = await queries.updateNodeDetail(this.ctx, {
+			analysisId: input.analysisId,
 			...overrideKey,
 			mode: input.mode,
 			key: input.key,
@@ -886,6 +878,10 @@ export class AtlasService {
 			userCategory: normalizedCategory,
 			updatedByUserId: this.ctx.userId,
 		});
+
+		if (!node) {
+			throw new AtlasError("NOT_FOUND", "Node not found");
+		}
 
 		recordAudit({
 			action: "atlas.node.edited",
@@ -901,16 +897,7 @@ export class AtlasService {
 			},
 		});
 
-		// Return the freshly-overlaid node detail (override now applied at read).
-		const updated = await queries.getNodeDetail(this.ctx, {
-			analysisId: input.analysisId,
-			mode: input.mode,
-			key: input.key,
-		});
-		if (!updated) {
-			throw new AtlasError("NOT_FOUND", "Node not found");
-		}
-		return updated;
+		return node;
 	}
 
 	/** Override edit history for a node (T6 `getNodeHistory`). */
@@ -2725,8 +2712,16 @@ export class AtlasService {
 			>;
 		}[] = [];
 		const unavailable: UnavailableRepo[] = [];
+		const existing = await queries.findAnalysesForRepositories(
+			this.ctx,
+			projectId,
+			wanted,
+		);
 		for (const repo of wanted) {
-			const analysis = await this.resolveAnalysis(projectId, repo);
+			// Adoption mutates ownership; keep it ordered even though reads are batched.
+			const analysis =
+				existing.get(repo.repositoryIntegrationId) ??
+				(await this.adoptOrphanedAnalysis(projectId, repo));
 			if (analysis && analysis.status === "READY") {
 				available.push({ repo, analysis });
 			} else {
@@ -2740,6 +2735,24 @@ export class AtlasService {
 			}
 		}
 		return { available, unavailable };
+	}
+
+	private edgeOverrideLoader(projectId: string) {
+		const pending = new Map<string, Promise<queries.EdgeOverrideRow[]>>();
+		return (branch: string, mode: GraphMode) => {
+			const key = JSON.stringify([branch, mode]);
+			let result = pending.get(key);
+			if (!result) {
+				result = queries.loadEdgeOverrides(
+					this.ctx,
+					projectId,
+					branch,
+					mode,
+				);
+				pending.set(key, result);
+			}
+			return result;
+		};
 	}
 
 	/**
@@ -2760,6 +2773,7 @@ export class AtlasService {
 			repositoryIntegrationId: string | null;
 			branch: string;
 		}[],
+		loadOverrides = this.edgeOverrideLoader(projectId),
 	): Promise<OverlaidCrossEdge[]> {
 		const analysisIds = repos.map((r) => r.analysisId);
 		if (analysisIds.length === 0) {
@@ -2772,28 +2786,14 @@ export class AtlasService {
 			repos.map((r) => [r.repositoryIntegrationId, r.analysisId]),
 		);
 
-		const crossRows = await queries.getCrossEdges(
-			this.ctx,
-			projectId,
-			mode,
-			analysisIds,
-		);
-
-		// Overrides are keyed by ENDPOINTS (repo integration + node key) and live
-		// per branch, so load every distinct branch the selected analyses sit on.
 		const distinctBranches = [...new Set(repos.map((r) => r.branch))];
-		const overrideRows = (
-			await Promise.all(
-				distinctBranches.map((branch) =>
-					queries.loadEdgeOverrides(
-						this.ctx,
-						projectId,
-						branch,
-						mode,
-					),
-				),
-			)
-		).flat();
+		const [crossRows, overrideGroups] = await Promise.all([
+			queries.getCrossEdges(this.ctx, projectId, mode, analysisIds),
+			Promise.all(
+				distinctBranches.map((branch) => loadOverrides(branch, mode)),
+			),
+		]);
+		const overrideRows = overrideGroups.flat();
 		const overrideByEndpoints = new Map<
 			string,
 			(typeof overrideRows)[number]
@@ -2972,13 +2972,26 @@ export class AtlasService {
 		const nodes: SystemGraphNode[] = [];
 		const edges: SystemGraphEdge[] = [];
 
-		for (const { repo, analysis } of available) {
-			const graph = await queries.getGraph(
-				this.ctx,
-				analysis.id,
-				input.mode,
-				{ includeDeleted },
-			);
+		const loadOverrides = this.edgeOverrideLoader(input.projectId);
+		const graphs = await Promise.all(
+			available.map(async ({ repo, analysis }) => ({
+				repo,
+				analysis,
+				graph: await queries.getGraph(
+					this.ctx,
+					analysis.id,
+					input.mode,
+					{
+						includeDeleted,
+						edgeOverrides: loadOverrides(
+							analysis.branch,
+							input.mode,
+						),
+					},
+				),
+			})),
+		);
+		for (const { repo, analysis, graph } of graphs) {
 			const groupId = `repo::${analysis.id}`;
 			const ns = (key: string) => `${analysis.id}::${key}`;
 			nodes.push({
@@ -3055,6 +3068,7 @@ export class AtlasService {
 				repositoryIntegrationId: repo.repositoryIntegrationId,
 				branch: analysis.branch,
 			})),
+			loadOverrides,
 		);
 		const namespaceCrossEndpoint = (
 			analysisId: string,
@@ -3237,26 +3251,40 @@ export class AtlasService {
 				description: n.description,
 				filePath: n.filePath,
 			});
-			const repoData: RepoAnalysisData[] = [];
-			for (const { repo, analysis } of available) {
-				const [tech, biz] = await Promise.all([
-					queries.getGraph(this.ctx, analysis.id, "TECHNICAL"),
-					queries.getGraph(this.ctx, analysis.id, "BUSINESS"),
-				]);
-				repoData.push({
-					analysisId: analysis.id,
-					repoId: repo.repositoryIntegrationId,
-					repoName: repo.repositoryName,
-					repoUrl: repo.repositoryUrl,
-					commitSha: analysis.analyzedCommitSha,
-					techStack:
-						(analysis.techStack as TechStackEntry[] | null) ?? [],
-					publishedPackages:
-						(analysis.publishedPackages as string[] | null) ?? [],
-					technicalNodes: tech.nodes.map(toLite),
-					businessNodes: biz.nodes.map(toLite),
-				});
-			}
+			const loadOverrides = this.edgeOverrideLoader(input.projectId);
+			const repoData: RepoAnalysisData[] = await Promise.all(
+				available.map(async ({ repo, analysis }) => {
+					const [tech, biz] = await Promise.all([
+						queries.getGraph(this.ctx, analysis.id, "TECHNICAL", {
+							edgeOverrides: loadOverrides(
+								analysis.branch,
+								"TECHNICAL",
+							),
+						}),
+						queries.getGraph(this.ctx, analysis.id, "BUSINESS", {
+							edgeOverrides: loadOverrides(
+								analysis.branch,
+								"BUSINESS",
+							),
+						}),
+					]);
+					return {
+						analysisId: analysis.id,
+						repoId: repo.repositoryIntegrationId,
+						repoName: repo.repositoryName,
+						repoUrl: repo.repositoryUrl,
+						commitSha: analysis.analyzedCommitSha,
+						techStack:
+							(analysis.techStack as TechStackEntry[] | null) ??
+							[],
+						publishedPackages:
+							(analysis.publishedPackages as string[] | null) ??
+							[],
+						technicalNodes: tech.nodes.map(toLite),
+						businessNodes: biz.nodes.map(toLite),
+					};
+				}),
+			);
 
 			const structural = detectStructuralEdges(repoData);
 			const ai = await detectAiEdges(this.ctx, repoData, input.projectId);
@@ -3449,14 +3477,9 @@ export class AtlasService {
 				input.projectId,
 			);
 
-			// Skip-set: endpoint pairs that already carry a user edit (keep-edits)
-			// plus structural edges (already shown). Undirected, per lens,
-			// NUL-delimited to match `getSoloOverrideEndpointPairs`.
-			const skip = await queries.getSoloOverrideEndpointPairs(this.ctx, {
-				projectId: input.projectId,
-				repositoryIntegrationId: input.repositoryIntegrationId,
-				branch,
-			});
+			// Skip structural edges and duplicate proposals here. The bulk writer
+			// checks existing overrides again after the LLM returns.
+			const skip = new Set<string>();
 			const pairKey = (m: GraphMode, a: string, b: string): string =>
 				`${m}\u0000${a}\u0000${b}`;
 			const addBoth = (m: GraphMode, a: string, b: string) => {
@@ -3470,33 +3493,24 @@ export class AtlasService {
 				addBoth("BUSINESS", e.source, e.target);
 			}
 
-			let referencesGenerated = 0;
-			for (const e of ai.edges) {
-				if (skip.has(pairKey(e.mode, e.sourceKey, e.targetKey))) {
-					continue;
+			const candidates = ai.edges.filter((edge) => {
+				if (
+					skip.has(pairKey(edge.mode, edge.sourceKey, edge.targetKey))
+				) {
+					return false;
 				}
-				addBoth(e.mode, e.sourceKey, e.targetKey); // dedupe within this run
-				await queries.upsertEdgeOverride(this.ctx, {
+				addBoth(edge.mode, edge.sourceKey, edge.targetKey);
+				return true;
+			});
+			const referencesGenerated = await queries.createAiSoloEdgeOverrides(
+				this.ctx,
+				{
 					projectId: input.projectId,
+					repositoryIntegrationId: input.repositoryIntegrationId,
 					branch,
-					mode: e.mode,
-					source: {
-						repositoryIntegrationId: input.repositoryIntegrationId,
-						key: e.sourceKey,
-					},
-					target: {
-						repositoryIntegrationId: input.repositoryIntegrationId,
-						key: e.targetKey,
-					},
-					kind: e.kind,
-					userDescription: e.description,
-					isManual: true,
-					isCrossRepo: false,
-					isAiGenerated: true,
-					updatedByUserId: this.ctx.userId,
-				});
-				referencesGenerated++;
-			}
+					edges: candidates,
+				},
+			);
 
 			let costMicroUsd: number | null = null;
 			if (ai.model && ai.usage.totalTokens > 0) {
