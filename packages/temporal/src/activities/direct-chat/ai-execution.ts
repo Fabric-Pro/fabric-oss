@@ -24,6 +24,7 @@ import {
 	streamText,
 	tool,
 } from "@repo/ai";
+import { supportsAnthropicMidConversationSystem } from "@repo/ai/prompt-cache";
 import {
 	buildSkillsSystemBlock,
 	createSkillTools,
@@ -65,11 +66,17 @@ import {
 import { guardToolWriteForReadOnly } from "../shared/read-only-gate";
 import {
 	buildProviderOptions,
+	isAnthropicProvider,
 	resolveOutputTokenBudget,
 } from "./build-provider-options";
 import { createBuiltInTools } from "./built-in-tools";
 import { decideForcedToolChoice } from "./decide-forced-tool-choice";
 import type { McpToolInfo } from "./mcp-tools";
+import {
+	buildDirectChatPromptCacheRequest,
+	buildLegacyDirectChatSystemInstructions,
+	DIRECT_CHAT_CACHEABLE_SYSTEM_PROMPT,
+} from "./prompt-cache";
 import { extractReasoningText } from "./reasoning-stream";
 import { extractStreamErrorMessage } from "./stream-error";
 import { resolveStreamOutcome } from "./stream-outcome";
@@ -1042,11 +1049,7 @@ export async function executeDirectChatActivity(
 	// Track usage (fire-and-forget)
 	trackUsage();
 
-	// Build system prompt
-	// If a custom systemPrompt is provided, prepend it to the default instructions
-	const defaultSystemInstructions = `You are Fabric Loom, an intelligent assistant that helps users accomplish tasks.
-
-CAPABILITIES:
+	const capabilitiesInstructions = `CAPABILITIES:
 ${toolsEnabled ? "- You have access to tools. Use them when they can help answer the user's question." : "- No tools connected. Suggest the user connect tools in Settings."}
 ${toolsEnabled && hasBuiltInWebSearch ? "- Web search is available via the webSearch tool. Use it for current information, news, research, and fact-checking." : ""}
 ${
@@ -1070,42 +1073,55 @@ ${omittedServerSummary.map((entry) => `  • ${entry}`).join("\n")}
 If the user asks for something one of them does, say those tools were left out of this turn because too many servers are enabled at once, and suggest they turn some off in the chat's tool selector. Never tell them the server is not connected — it is.`
 		: ""
 }
-${toolsEnabled && hasWorkflowTools ? "- User workflows can be listed and executed." : ""}
+${toolsEnabled && hasWorkflowTools ? "- User workflows can be listed and executed." : ""}`;
 
-TOOL USAGE GUIDELINES:
-- CAREFULLY read the tool's input schema to understand ALL available filter/query parameters
-- When the user specifies filters, ALWAYS use the appropriate filter parameters
-- Do NOT fetch ALL data and filter client-side - use server-side filtering
-- Only fetch the minimum data needed to answer the user's question
-- When an MCP tool is available that matches the user's request, call it — do not give text instructions instead
-${
-	toolsEnabled && hasBuiltInWebSearch
-		? `
-WEB SEARCH GUIDELINES:
+	const webSearchInstructions =
+		toolsEnabled && hasBuiltInWebSearch
+			? `WEB SEARCH GUIDELINES:
 - Use webSearch for questions about current events, recent information, or facts you're uncertain about
 - Include the current year or "latest" in queries for up-to-date information
 - After searching, cite sources using [Title](URL) format inline with the text
-- Never put citations at the end - cite immediately after the relevant information
-`
-		: ""
-}
-RESPONSE GUIDELINES:
-- Use markdown for formatting (tables, bullet points, code blocks)
-- Be concise but complete
-- Cite sources when using document context or web search results
-${
-	hasFrameTool && requestedFrameOutput
-		? `
-FRAME OUTPUT REQUIREMENT:
+- Never put citations at the end - cite immediately after the relevant information`
+			: "";
+
+	const frameOutputInstructions =
+		hasFrameTool && requestedFrameOutput
+			? `FRAME OUTPUT REQUIREMENT:
 - The user explicitly asked for a ${requestedFrameOutput}.
 - You MUST call ${requestedFrameOutput === "slideshow" ? "fabric_create_slideshow" : "fabric_create_frame"} instead of answering with plain-text slide/frame content.
 - Do not outline the ${requestedFrameOutput} in prose first. Produce the first-class Fabric artifact directly.`
-		: ""
-}
+			: "";
+	const currentDateContext = getCurrentDateContext();
+	const promptCacheEnabled = isAnthropicProvider(
+		metadata.provider,
+		metadata.modelString,
+	);
+	const rollingHistoryEnabled = supportsAnthropicMidConversationSystem(
+		metadata.provider,
+		metadata.modelString,
+	);
 
-${getCurrentDateContext()}`;
+	// Anthropic gets an invariant system prefix. Other providers retain the
+	// prior full-string ordering and content.
+	const defaultSystemInstructions = promptCacheEnabled
+		? [
+				capabilitiesInstructions,
+				webSearchInstructions,
+				frameOutputInstructions,
+				currentDateContext,
+			]
+				.filter(Boolean)
+				.join("\n\n")
+		: buildLegacyDirectChatSystemInstructions({
+				capabilitiesInstructions,
+				webSearchInstructions,
+				frameOutputInstructions,
+				currentDateContext,
+			});
 
-	// If caller provided a custom systemPrompt, prepend it before the default instructions
+	// Caller instructions retain their leading position inside the variable
+	// system context. Cache-aware assembly keeps that context outside the stable
+	// checkpoint and, where supported, outside the rolling-history checkpoint.
 	const systemInstructions = input.systemPrompt
 		? `${input.systemPrompt}\n\n---\n\n${defaultSystemInstructions}`
 		: defaultSystemInstructions;
@@ -1191,15 +1207,9 @@ ${getCurrentDateContext()}`;
 	// without an extra HTTP round trip, which is what we want.
 	const uiMessages: Array<{
 		id: string;
-		role: "system" | "user" | "assistant";
+		role: "user" | "assistant";
 		parts: Array<{ type: "text"; text: string }>;
 	}> = [];
-
-	uiMessages.push({
-		id: `system_${Date.now()}`,
-		role: "system",
-		parts: [{ type: "text", text: fullSystemContext }],
-	});
 
 	history.forEach((h: { role: string; content: string }, i: number) => {
 		uiMessages.push({
@@ -1318,8 +1328,12 @@ ${getCurrentDateContext()}`;
 	const maxSteps =
 		reasoningMode === "pro" ? 15 : reasoningMode === "balanced" ? 10 : 5;
 
+	const fullSystemContextLength =
+		(promptCacheEnabled ? DIRECT_CHAT_CACHEABLE_SYSTEM_PROMPT.length : 0) +
+		fullSystemContext.length;
+
 	logger.info("System context constructed", {
-		systemContextLength: fullSystemContext.length,
+		systemContextLength: fullSystemContextLength,
 		hasRagContext: !!ragContext && ragContext.length > 0,
 		ragContextLength: ragContext?.length ?? 0,
 		messageCount: uiMessages.length,
@@ -1423,7 +1437,7 @@ ${getCurrentDateContext()}`;
 			providerOptions,
 			metadata,
 			promptChars:
-				fullSystemContext.length +
+				fullSystemContextLength +
 				message.length +
 				(history
 					?.map((entry: { content: string }) => entry.content)
@@ -1459,11 +1473,18 @@ ${getCurrentDateContext()}`;
 			);
 		}
 
+		const promptCacheRequest = buildDirectChatPromptCacheRequest({
+			promptCacheEnabled,
+			rollingHistoryEnabled,
+			systemPrompt: fullSystemContext,
+			messages: convertedMessages,
+		});
+
 		const result = streamText({
 			model: model as Parameters<typeof streamText>[0]["model"],
-			system: fullSystemContext,
+			system: promptCacheRequest.system,
 			stopWhen: stepCountIs(maxSteps),
-			messages: convertedMessages,
+			messages: promptCacheRequest.messages,
 			...(shouldUseTools ? { tools: allTools as any } : {}),
 			...(forcedToolChoice ? { toolChoice: forcedToolChoice } : {}),
 			...(providerOptions ? { providerOptions } : {}),
@@ -1770,6 +1791,9 @@ ${getCurrentDateContext()}`;
 			logger.info("Token usage from model", { tokenUsage });
 		} else {
 			const inputText =
+				(promptCacheEnabled
+					? DIRECT_CHAT_CACHEABLE_SYSTEM_PROMPT
+					: "") +
 				fullSystemContext +
 				message +
 				(history

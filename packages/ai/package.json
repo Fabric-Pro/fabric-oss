@@ -1,6 +1,6 @@
 {
 	"dependencies": {
-		"@ai-sdk/anthropic": "^3.0.0",
+		"@ai-sdk/anthropic": "^3.0.116",
 		"@ai-sdk/cerebras": "^2.0.5",
 		"@ai-sdk/deepseek": "^2.0.0",
 		"@ai-sdk/groq": "^3.0.1",

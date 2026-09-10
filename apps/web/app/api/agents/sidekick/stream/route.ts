@@ -16,7 +16,6 @@ import {
 } from "@repo/ai";
 import { createSidekickTools } from "@repo/ai/sidekick";
 import { NEW_AGENT_ID } from "@repo/ai/sidekick/constants";
-import { buildSidekickSystemPrompt } from "@repo/ai/sidekick/prompt";
 import { checkRateLimit, RATE_LIMIT_PRESETS } from "@repo/api/lib/rate-limit";
 import {
 	db,
@@ -27,6 +26,7 @@ import { AiUsageLimitExceededError } from "@repo/payments";
 import { getSession } from "@saas/auth/lib/server";
 import type { NextRequest } from "next/server";
 import { z } from "zod";
+import { buildSidekickPromptCacheRequest } from "./prompt-cache";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -257,7 +257,11 @@ export async function POST(request: NextRequest) {
 
 		// Get AI model via centralized entry point — use the entity's tenant
 		// so model catalog + billing resolve against the right org.
-		const { model: aiModel, trackUsage } = await getAIModelWithMetadata(
+		const {
+			model: aiModel,
+			metadata,
+			trackUsage,
+		} = await getAIModelWithMetadata(
 			{ taskType: "CHAT" },
 			{
 				userId,
@@ -282,10 +286,15 @@ export async function POST(request: NextRequest) {
 
 		// Stream the response using the full message history from the client
 		// (includes tool calls and results with proper structure)
+		const promptCacheRequest = buildSidekickPromptCacheRequest({
+			provider: metadata.provider,
+			modelString: metadata.modelString,
+			messages: modelMessages,
+		});
 		const result = streamText({
 			model: aiModel,
-			system: buildSidekickSystemPrompt(),
-			messages: modelMessages,
+			system: promptCacheRequest.system,
+			messages: promptCacheRequest.messages,
 			tools,
 			stopWhen: stepCountIs(5),
 		});
