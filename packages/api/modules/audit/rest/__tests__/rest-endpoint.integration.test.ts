@@ -23,6 +23,11 @@ const mocks = vi.hoisted(() => ({
 	// These cases are about tenant scoping, not offboarding, so default to
 	// membership holding.
 	isOrganizationMember: vi.fn().mockResolvedValue(true),
+	// Membership is not the same question as role. Most cases here are about
+	// tenant scoping, so default to the owner still holding both audit
+	// permissions; the demotion block below overrides them per test.
+	canReadOrganizationAuditLog: vi.fn().mockResolvedValue(true),
+	canExportOrganizationAuditLog: vi.fn().mockResolvedValue(true),
 	listAuditLog: vi.fn(),
 	countAuditLog: vi.fn(),
 	fetchAuditLogForExport: vi.fn(),
@@ -44,6 +49,8 @@ vi.mock("@repo/database", async (importOriginal) => {
 		getOrganizationApiKeyByPrefixIncludingRevoked:
 			mocks.getOrganizationApiKeyByPrefixIncludingRevoked,
 		isOrganizationMember: mocks.isOrganizationMember,
+		canReadOrganizationAuditLog: mocks.canReadOrganizationAuditLog,
+		canExportOrganizationAuditLog: mocks.canExportOrganizationAuditLog,
 		listAuditLog: mocks.listAuditLog,
 		countAuditLog: mocks.countAuditLog,
 		fetchAuditLogForExport: mocks.fetchAuditLogForExport,
@@ -114,6 +121,12 @@ function makeRow(over: Record<string, unknown> = {}) {
 beforeEach(() => {
 	mocks.getUserApiKeyByPrefixIncludingRevoked.mockReset();
 	mocks.getOrganizationApiKeyByPrefixIncludingRevoked.mockReset();
+	// `mockClear`, not `mockReset` — the call history has to go so a
+	// `not.toHaveBeenCalled()` assertion means this test, but the default
+	// resolved value has to stay or every case would have to restate it.
+	mocks.isOrganizationMember.mockClear().mockResolvedValue(true);
+	mocks.canReadOrganizationAuditLog.mockClear().mockResolvedValue(true);
+	mocks.canExportOrganizationAuditLog.mockClear().mockResolvedValue(true);
 	mocks.listAuditLog.mockReset();
 	mocks.countAuditLog.mockReset();
 	mocks.fetchAuditLogForExport.mockReset();
@@ -530,5 +543,191 @@ describe("Rate limit", () => {
 		});
 		expect(res.status).toBe(429);
 		expect(res.headers.get("Retry-After")).toBe("12");
+	});
+});
+
+describe("GET /audit-log — the owner's CURRENT role", () => {
+	// Fizzy #2380, QA round two. Membership was already read live, so removing
+	// someone retired their key immediately. Demoting them did not: an ex-admin
+	// is still a member, and nothing downstream asked what their role had become,
+	// so an admin-minted key kept reading the audit log from a plain Member
+	// account. These pin the second half of "a key must never grant more than
+	// the UI" — the half that changes after the key is minted.
+	function demotedAdminsKey(raw: string, scopes: string[]) {
+		return {
+			id: "key-demoted",
+			organizationId: "org-123",
+			createdByUserId: "user-was-admin",
+			keyHash: hashFor(raw),
+			keyPrefix: raw.slice(0, 12),
+			name: "minted while an admin",
+			scopes,
+			isActive: true,
+			expiresAt: null,
+		};
+	}
+
+	it("refuses a read once the owner no longer holds the audit-log role", async () => {
+		const raw = "org_dddddddd_secret";
+		mocks.getOrganizationApiKeyByPrefixIncludingRevoked.mockResolvedValue(
+			demotedAdminsKey(raw, ["audit_log:read"]),
+		);
+		mocks.canReadOrganizationAuditLog.mockResolvedValue(false);
+
+		const app = createAuditLogRestRoutes();
+		const res = await app.request("/audit-log", {
+			headers: { Authorization: `Bearer ${raw}` },
+		});
+
+		expect(res.status).toBe(403);
+		const body = await res.json();
+		expect(body.error.code).toBe("INSUFFICIENT_PERMISSION");
+		// The refusal has to happen before the read, not be filtered out of it.
+		expect(mocks.listAuditLog).not.toHaveBeenCalled();
+	});
+
+	it("asks about the key's creator, not the organization", async () => {
+		const raw = "org_eeeeeeee_secret";
+		mocks.getOrganizationApiKeyByPrefixIncludingRevoked.mockResolvedValue(
+			demotedAdminsKey(raw, ["audit_log:read"]),
+		);
+		mocks.listAuditLog.mockResolvedValue({ items: [], nextCursor: null });
+
+		const app = createAuditLogRestRoutes();
+		await app.request("/audit-log", {
+			headers: { Authorization: `Bearer ${raw}` },
+		});
+
+		expect(mocks.canReadOrganizationAuditLog).toHaveBeenCalledWith(
+			"user-was-admin",
+			"org-123",
+		);
+	});
+
+	it("refuses a WILDCARD key too", async () => {
+		// The trap this whole gate is shaped around. `hasAuditLogScope` answers
+		// true for `*`, so a permission check placed inside the concrete-scope
+		// branch would never run for the keys with the most access.
+		const raw = "org_ffffffff_secret";
+		mocks.getOrganizationApiKeyByPrefixIncludingRevoked.mockResolvedValue(
+			demotedAdminsKey(raw, ["*"]),
+		);
+		mocks.canReadOrganizationAuditLog.mockResolvedValue(false);
+
+		const app = createAuditLogRestRoutes();
+		const res = await app.request("/audit-log", {
+			headers: { Authorization: `Bearer ${raw}` },
+		});
+
+		expect(res.status).toBe(403);
+		expect(mocks.listAuditLog).not.toHaveBeenCalled();
+	});
+
+	it("distinguishes a lost role from a missing scope", async () => {
+		// Two different 403s. The credential is intact in one and wrong in the
+		// other, and the fix is "get your access back" versus "mint a wider
+		// key" — an operator reading the trail should not have to guess which.
+		const raw = "org_11111111_secret";
+		mocks.getOrganizationApiKeyByPrefixIncludingRevoked.mockResolvedValue(
+			demotedAdminsKey(raw, ["projects:read"]),
+		);
+
+		const app = createAuditLogRestRoutes();
+		const res = await app.request("/audit-log", {
+			headers: { Authorization: `Bearer ${raw}` },
+		});
+
+		expect(res.status).toBe(403);
+		const body = await res.json();
+		expect(body.error.code).toBe("INSUFFICIENT_SCOPE");
+	});
+
+	it("still serves a key whose owner kept the role", async () => {
+		const raw = "org_22222222_secret";
+		mocks.getOrganizationApiKeyByPrefixIncludingRevoked.mockResolvedValue(
+			demotedAdminsKey(raw, ["audit_log:read"]),
+		);
+		mocks.listAuditLog.mockResolvedValue({
+			items: [makeRow({ id: "row-ok" })],
+			nextCursor: null,
+		});
+
+		const app = createAuditLogRestRoutes();
+		const res = await app.request("/audit-log", {
+			headers: { Authorization: `Bearer ${raw}` },
+		});
+
+		expect(res.status).toBe(200);
+	});
+
+	it("gates export on the export permission, not the read one", async () => {
+		const raw = "org_33333333_secret";
+		mocks.getOrganizationApiKeyByPrefixIncludingRevoked.mockResolvedValue(
+			demotedAdminsKey(raw, ["audit_log:export"]),
+		);
+		mocks.canReadOrganizationAuditLog.mockResolvedValue(true);
+		mocks.canExportOrganizationAuditLog.mockResolvedValue(false);
+
+		const app = createAuditLogRestRoutes();
+		const res = await app.request("/audit-log/export", {
+			headers: { Authorization: `Bearer ${raw}` },
+		});
+
+		expect(res.status).toBe(403);
+		const body = await res.json();
+		expect(body.error.code).toBe("INSUFFICIENT_PERMISSION");
+		expect(mocks.fetchAuditLogForExport).not.toHaveBeenCalled();
+	});
+
+	it("leaves a personal key alone — it has no organization role to lose", async () => {
+		const raw = "fab_44444444_secret";
+		mocks.getUserApiKeyByPrefixIncludingRevoked.mockResolvedValue({
+			id: "key-personal",
+			userId: "user-99",
+			name: "personal",
+			keyPrefix: "fab_44444444",
+			keyHash: hashFor(raw),
+			scopes: ["audit_log:read"],
+			isActive: true,
+			expiresAt: null,
+		});
+		mocks.listAuditLog.mockResolvedValue({ items: [], nextCursor: null });
+
+		const app = createAuditLogRestRoutes();
+		const res = await app.request("/audit-log", {
+			headers: { Authorization: `Bearer ${raw}` },
+		});
+
+		expect(res.status).toBe(200);
+		expect(mocks.canReadOrganizationAuditLog).not.toHaveBeenCalled();
+	});
+});
+
+describe("the published spec and the runtime agree on refusal codes", () => {
+	// The module's own history is the argument for this guard: `API_KEY_REVOKED`
+	// exists as a distinct code because an operator could not otherwise tell a
+	// revoked key from one that never existed. A code the runtime returns but the
+	// spec does not list is the same failure wearing different clothes — the
+	// client written against the documented enum has no branch for it.
+	it("lists every error code these routes can return", async () => {
+		const { getAuditLogOpenApiSpec } = await import("../openapi-spec");
+		const spec = getAuditLogOpenApiSpec("https://example.com") as {
+			components: {
+				schemas: {
+					ErrorResponse: {
+						properties: {
+							error: { properties: { code: { enum: string[] } } };
+						};
+					};
+				};
+			};
+		};
+
+		const documented =
+			spec.components.schemas.ErrorResponse.properties.error.properties
+				.code.enum;
+
+		expect(documented).toContain("INSUFFICIENT_SCOPE");
+		expect(documented).toContain("INSUFFICIENT_PERMISSION");
 	});
 });

@@ -16,6 +16,10 @@ import {
 	protectedProcedure,
 	requireInputOrgPermission,
 } from "../../../../orpc/procedures";
+import {
+	assertAgentEndpointAllowed,
+	fetchAgentEndpoint,
+} from "../../lib/agent-endpoint-guard";
 
 /**
  * Discover an AG-UI-native agent
@@ -87,6 +91,8 @@ export const discoverAgent = protectedProcedure
 	)
 	.handler(async ({ input, context }) => {
 		const { deploymentUrl, apiKey, timeout } = input;
+
+		assertAgentEndpointAllowed(deploymentUrl);
 		const startTime = Date.now();
 
 		console.log("[discoverAgent] Discovering agent:", {
@@ -97,7 +103,7 @@ export const discoverAgent = protectedProcedure
 		try {
 			// Fetch agent metadata
 			const metadataUrl = `${deploymentUrl}/metadata`;
-			const response = await fetch(metadataUrl, {
+			const response = await fetchAgentEndpoint(metadataUrl, {
 				method: "GET",
 				headers: {
 					"Content-Type": "application/json",
@@ -156,7 +162,7 @@ export const discoverAgent = protectedProcedure
 			// Check health endpoint
 			let healthy = false;
 			try {
-				const healthResponse = await fetch(
+				const healthResponse = await fetchAgentEndpoint(
 					`${deploymentUrl}${metadata.endpoints.health}`,
 					{
 						method: "GET",

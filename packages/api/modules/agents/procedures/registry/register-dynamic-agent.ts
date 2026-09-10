@@ -23,6 +23,10 @@ import {
 	requireInputOrgPermission,
 	resolveOrganizationId,
 } from "../../../../orpc/procedures";
+import {
+	assertAgentEndpointAllowed,
+	fetchAgentEndpoint,
+} from "../../lib/agent-endpoint-guard";
 
 // =============================================================================
 // Input Schema
@@ -107,6 +111,11 @@ export const registerDynamicAgent = protectedProcedure
 			input.organizationId,
 			context.session,
 		);
+
+		// The address itself, before the scope question below and before any
+		// probe leaves the process. `validateA2AEndpoint` fetches on its own,
+		// so guarding only the direct calls further down would miss it.
+		assertAgentEndpointAllowed(input.deploymentUrl);
 
 		// SECURITY (SOC 2 CC6.1/CC6.3): SYSTEM-scoped agents are global (every
 		// tenant) with an attacker-controlled deploymentUrl. Restrict SYSTEM
@@ -197,7 +206,7 @@ export const registerDynamicAgent = protectedProcedure
 				} else if (input.protocol === "AG_UI") {
 					// Validate AG-UI protocol
 					const metadataUrl = `${input.deploymentUrl}/metadata`;
-					const response = await fetch(metadataUrl, {
+					const response = await fetchAgentEndpoint(metadataUrl, {
 						method: "GET",
 						headers: { "Content-Type": "application/json" },
 						signal: AbortSignal.timeout(5000),
@@ -224,16 +233,19 @@ export const registerDynamicAgent = protectedProcedure
 					);
 				} else if (input.protocol === "MCP") {
 					// For MCP, just check if the endpoint is reachable
-					const response = await fetch(input.deploymentUrl, {
-						method: "HEAD",
-						signal: AbortSignal.timeout(5000),
-					}).catch(() => null);
+					const response = await fetchAgentEndpoint(
+						input.deploymentUrl,
+						{
+							method: "HEAD",
+							signal: AbortSignal.timeout(5000),
+						},
+					).catch(() => null);
 
 					healthStatus = response?.ok ? "healthy" : "degraded";
 				} else {
 					// Custom protocol - basic health check
 					const healthUrl = `${input.deploymentUrl}/health`;
-					const response = await fetch(healthUrl, {
+					const response = await fetchAgentEndpoint(healthUrl, {
 						method: "GET",
 						signal: AbortSignal.timeout(5000),
 					}).catch(() => null);
@@ -383,6 +395,12 @@ export const refreshDynamicAgent = protectedProcedure
 		if (!agent.deploymentUrl) {
 			healthStatus = "unknown";
 		} else {
+			// Re-checked on the stored URL, not just on the one that was
+			// supplied at registration: the row is editable, and a probe of a
+			// stored address is the same outbound request as a probe of a
+			// fresh one.
+			assertAgentEndpointAllowed(agent.deploymentUrl);
+
 			try {
 				if (agent.framework === "A2A") {
 					const validation = await validateA2AEndpoint(
@@ -409,7 +427,7 @@ export const refreshDynamicAgent = protectedProcedure
 				} else {
 					// Generic health check
 					const healthUrl = `${agent.deploymentUrl}/health`;
-					const response = await fetch(healthUrl, {
+					const response = await fetchAgentEndpoint(healthUrl, {
 						method: "GET",
 						signal: AbortSignal.timeout(5000),
 					}).catch(() => null);

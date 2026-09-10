@@ -457,6 +457,29 @@ export const updateDoc = tenantProtectedProcedure
   });
 ```
 
+### API keys: a key never grants more than the UI
+
+A scope is a *ceiling*, never a grant. Every surface that accepts an API key
+asks two independent questions, and both must pass:
+
+1. **Does the key carry the scope?** — `hasScope` / `scopeSatisfied` /
+   `hasAuditLogScope`. What was chosen when the key was minted.
+2. **May its owner still do this?** — a live permission read against the
+   creator's *current* org role. What they may do today.
+
+| Trap | Why it bites |
+|---|---|
+| Membership is not role | `verifyOrganizationApiKey` refuses a key whose creator **left**. An ex-admin is still a member — ask about the role. |
+| The second check must be unconditional | Every scope helper answers `true` for `*`, so a check nested inside the concrete-scope branch never runs for the widest keys. |
+| Only some scopes need it | A scope is escalation-prone only when its permission sits **above** the role that may mint a key (`ORG_API_KEYS_CREATE` is member+). Today: `audit_log:read`, `audit_log:export`, `agents:execute`. |
+
+The comparison runs both ways: a tenant filter on a key surface that looks too
+wide is only a hole if the **in-app query for the same resource** is narrower.
+Read that query before tightening one.
+
+Refusals stay distinguishable — `INSUFFICIENT_SCOPE` means mint a wider key,
+`INSUFFICIENT_PERMISSION` means ask for your access back.
+
 ## API Architecture (oRPC)
 
 ### Procedure Types

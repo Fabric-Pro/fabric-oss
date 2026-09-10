@@ -30,6 +30,8 @@
 
 import {
 	AUDIT_EXPORT_ROW_CAP,
+	canExportOrganizationAuditLog,
+	canReadOrganizationAuditLog,
 	countAuditLog,
 	fetchAuditLogForExport,
 	listAuditLog,
@@ -39,6 +41,7 @@ import { Hono } from "hono";
 import {
 	type ApiKeyRestVariables,
 	apiKeyRestAuth,
+	insufficientOwnerPermission,
 	insufficientScope,
 } from "../../../lib/api-key-rest-auth";
 import { recordAuditFromRequest } from "../../../lib/audit";
@@ -50,6 +53,7 @@ import {
 } from "../lib/export-format";
 import {
 	AUDIT_LOG_SCOPES,
+	type AuditLogScopeName,
 	hasAuditLogScope,
 	type VerifiedAuditApiKey,
 } from "./verify-audit-key";
@@ -299,6 +303,40 @@ async function bumpUsage(key: VerifiedAuditApiKey): Promise<void> {
 // ---------------------------------------------------------------------------
 
 /**
+ * Does the key's owner still hold the organization permission that `scope`
+ * stands for?
+ *
+ * The scope check above asks what the key was granted when it was minted. This
+ * asks what its owner may do now, and both have to hold. Without it, reading
+ * the audit log survives its owner being demoted out of the role that allowed
+ * it: `verifyAuditApiKey` reads membership live, but membership is not the
+ * question — an ex-admin is still very much a member.
+ *
+ * Run it unconditionally after the scope check, never nested inside the
+ * concrete-scope branch: `hasAuditLogScope` answers true for a `*` key, and a
+ * gate that only fires when the exact scope name is present would wave every
+ * wildcard key past.
+ */
+async function ownerStillHoldsScope(
+	key: VerifiedAuditApiKey,
+	scope: AuditLogScopeName,
+): Promise<boolean> {
+	// A personal key names no organization, so there is no role to consult —
+	// and nothing to escalate into. Its tenant resolves to the fail-closed null
+	// organization, which owns no audit rows, so the read comes back empty on
+	// its own. Refusing here would invent a boundary rather than enforce one.
+	if (key.owner.type !== "org") {
+		return true;
+	}
+
+	const { userId, organizationId } = key.owner;
+
+	return scope === AUDIT_LOG_SCOPES.EXPORT
+		? canExportOrganizationAuditLog(userId, organizationId)
+		: canReadOrganizationAuditLog(userId, organizationId);
+}
+
+/**
  * Build the Hono sub-app for the public audit-log REST endpoints.
  *
  * Mount this at `/api/v1` in the top-level app:
@@ -330,6 +368,10 @@ export function createAuditLogRestRoutes() {
 		// Scope check
 		if (!hasAuditLogScope(key.scopes, AUDIT_LOG_SCOPES.READ)) {
 			return insufficientScope(c, AUDIT_LOG_SCOPES.READ);
+		}
+
+		if (!(await ownerStillHoldsScope(key, AUDIT_LOG_SCOPES.READ))) {
+			return insufficientOwnerPermission(c, AUDIT_LOG_SCOPES.READ);
 		}
 
 		const qs = c.req.query();
@@ -442,6 +484,10 @@ export function createAuditLogRestRoutes() {
 
 		if (!hasAuditLogScope(key.scopes, AUDIT_LOG_SCOPES.EXPORT)) {
 			return insufficientScope(c, AUDIT_LOG_SCOPES.EXPORT);
+		}
+
+		if (!(await ownerStillHoldsScope(key, AUDIT_LOG_SCOPES.EXPORT))) {
+			return insufficientOwnerPermission(c, AUDIT_LOG_SCOPES.EXPORT);
 		}
 
 		const qs = c.req.query();

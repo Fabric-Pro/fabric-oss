@@ -6,7 +6,10 @@
  */
 
 import { createHash } from "node:crypto";
-import { verifyOrganizationApiKey } from "@repo/database";
+import {
+	canExecuteOrganizationAgents,
+	verifyOrganizationApiKey,
+} from "@repo/database";
 import type { Context, Next } from "hono";
 import { verifyUserApiKey } from "../../users/procedures/api-keys/verify";
 import type { ExternalApiContext, ExternalApiVariables } from "../types";
@@ -17,6 +20,71 @@ import type { ExternalApiContext, ExternalApiVariables } from "../types";
  */
 function hasScope(scopes: string[], requiredScope: string): boolean {
 	return scopes.includes(requiredScope) || scopes.includes("*");
+}
+
+/**
+ * Scopes that need a second, live check against the owner's organization role.
+ *
+ * A scope is only escalation-prone when the permission behind it sits ABOVE the
+ * role that may mint a key at all — `ORG_API_KEYS_CREATE` is member-and-up, so
+ * anything a member already holds cannot be escalated by putting it on a key.
+ * `agents:execute` is the one entry that qualifies on this surface: `AGENT_EXECUTE`
+ * is member-and-up, so a key keeps working after its owner is demoted to a
+ * read-only role that may list agents but not run them.
+ *
+ * `agents:read` and `agents:stream` are deliberately absent. Their permissions
+ * sit in the viewer set, which every role holds, so a gate there could refuse
+ * nobody. Nor is the org-wide reach of those reads an escalation: the in-app
+ * agents list filters on the organization alone, with no creator filter, so a
+ * key sees exactly what its owner sees in the browser.
+ */
+const OWNER_PERMISSION_GATES: Record<
+	string,
+	(userId: string, organizationId: string) => Promise<boolean>
+> = {
+	"agents:execute": canExecuteOrganizationAgents,
+};
+
+/**
+ * Does the key's owner still hold the organization permission behind `scope`?
+ *
+ * Runs after — never instead of — the scope check, and unconditionally once
+ * that passes: `hasScope` answers true for a `*` key, so a gate that only fired
+ * on the exact scope name would wave every wildcard key through.
+ */
+async function ownerStillHoldsScope(
+	ctx: ExternalApiContext,
+	scope: string,
+): Promise<boolean> {
+	const gate = OWNER_PERMISSION_GATES[scope];
+	if (!gate) {
+		return true;
+	}
+
+	// A personal key names no organization, so there is no role to consult.
+	// It resolves to the fail-closed null tenant on every procedure here and
+	// so reaches no organization's agents at all; refusing it would invent a
+	// boundary rather than enforce one.
+	if (!ctx.organizationId) {
+		return true;
+	}
+
+	return gate(ctx.userId, ctx.organizationId);
+}
+
+/**
+ * 403 for a key whose scope is present but whose owner no longer holds the
+ * access behind it. Distinct from the missing-scope refusal on purpose: the
+ * credential is exactly as it was minted, the person's role changed, and
+ * re-minting the key would not help.
+ */
+function ownerPermissionRefusal(c: Context, scope: string) {
+	return c.json(
+		{
+			error: `The key's owner no longer holds the access required for ${scope} in this organization`,
+		},
+		403,
+	);
 }
 
 /**
@@ -118,6 +186,13 @@ export function requireApiKey(requiredScope?: string) {
 			};
 		}
 
+		if (
+			requiredScope &&
+			!(await ownerStillHoldsScope(ctx, requiredScope))
+		) {
+			return ownerPermissionRefusal(c, requiredScope);
+		}
+
 		c.set("externalApiContext", ctx);
 		await next();
 	};
@@ -139,6 +214,10 @@ export function requireScope(scope: string) {
 
 		if (!hasScope(ctx.scopes, scope)) {
 			return c.json({ error: `Missing required scope: ${scope}` }, 403);
+		}
+
+		if (!(await ownerStillHoldsScope(ctx, scope))) {
+			return ownerPermissionRefusal(c, scope);
 		}
 
 		await next();

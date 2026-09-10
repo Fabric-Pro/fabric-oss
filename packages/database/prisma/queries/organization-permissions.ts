@@ -94,3 +94,64 @@ export async function canUpdateOrganizationFrames(
 		Permissions.WORKSPACE_UPDATE,
 	);
 }
+
+/**
+ * Returns `true` if `userId` may read `organizationId`'s audit log, matching
+ * `requirePermission(ORG_AUDIT_LOG_READ)`.
+ *
+ * Asked by the public audit-log REST surface, which authenticates with an API
+ * key rather than a session and so cannot mount the oRPC middleware. The key
+ * records the scopes chosen when it was minted; this records what its owner may
+ * do *today*. Both have to hold — see the note on the export sibling.
+ */
+export async function canReadOrganizationAuditLog(
+	userId: string,
+	organizationId: string,
+): Promise<boolean> {
+	return organizationPermissionHolds(
+		userId,
+		organizationId,
+		Permissions.ORG_AUDIT_LOG_READ,
+	);
+}
+
+/**
+ * Returns `true` if `userId` may export `organizationId`'s audit log, matching
+ * `requirePermission(ORG_AUDIT_LOG_EXPORT)`.
+ *
+ * Read and export are separate permissions in the matrix and separate scopes on
+ * the key, so they are separate questions here. Collapsing them would let an
+ * export-scoped key answer a read question, which is the drift these helpers
+ * exist to prevent.
+ */
+export async function canExportOrganizationAuditLog(
+	userId: string,
+	organizationId: string,
+): Promise<boolean> {
+	return organizationPermissionHolds(
+		userId,
+		organizationId,
+		Permissions.ORG_AUDIT_LOG_EXPORT,
+	);
+}
+
+/**
+ * Returns `true` if `userId` may run agents in `organizationId`, matching
+ * `requirePermission(AGENT_EXECUTE)`.
+ *
+ * The read siblings deliberately have no helper. `AGENT_READ` and
+ * `AGENT_TEMPLATE_READ` sit in the viewer set — every role holds them — so a
+ * gate on `agents:read` could refuse nobody and would only suggest, falsely,
+ * that reading agents is narrower than it is. Executing them is member-and-up,
+ * which is the line worth checking.
+ */
+export async function canExecuteOrganizationAgents(
+	userId: string,
+	organizationId: string,
+): Promise<boolean> {
+	return organizationPermissionHolds(
+		userId,
+		organizationId,
+		Permissions.AGENT_EXECUTE,
+	);
+}

@@ -20,6 +20,7 @@ import {
 	resolveOrganizationId,
 } from "../../../../orpc/procedures";
 import { verifyOrganizationMembership } from "../../../organizations/lib/membership";
+import { assertAgentEndpointAllowed } from "../../lib/agent-endpoint-guard";
 
 /**
  * Update a registered agent
@@ -75,6 +76,12 @@ export const updateRegisteredAgent = protectedProcedure
 		const { id, organizationId: inputOrgId, ...updateData } = input;
 		const { user, session } = context;
 		const organizationId = resolveOrganizationId(inputOrgId, session);
+
+		// An update can move an agent to an address that create would have
+		// refused. Guarding only creation leaves the edit as the way in.
+		if (updateData.deploymentUrl) {
+			assertAgentEndpointAllowed(updateData.deploymentUrl);
+		}
 
 		// Get agent from RegisteredAgent table
 		const existingAgent = await getRegisteredAgentById(id);

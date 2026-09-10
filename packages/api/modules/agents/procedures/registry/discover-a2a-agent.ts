@@ -12,6 +12,10 @@ import {
 	protectedProcedure,
 	requireInputOrgPermission,
 } from "../../../../orpc/procedures";
+import {
+	assertAgentEndpointAllowed,
+	fetchAgentEndpoint,
+} from "../../lib/agent-endpoint-guard";
 
 /**
  * A2A Agent Skill Schema
@@ -140,6 +144,11 @@ export const discoverA2AAgent = protectedProcedure
 		const { deploymentUrl, timeout, testSendMessage } = input;
 		const startTime = Date.now();
 
+		// Before anything reaches the network. `validateA2AEndpoint` fetches
+		// the agent card itself, so a guard on the /health call below would
+		// leave the first and more informative request unguarded.
+		assertAgentEndpointAllowed(deploymentUrl);
+
 		console.log("[discoverA2AAgent] Discovering A2A agent:", {
 			deploymentUrl,
 			userId: context.user.id,
@@ -174,9 +183,10 @@ export const discoverA2AAgent = protectedProcedure
 			let healthEndpointAvailable = false;
 			let healthWarning: string | undefined;
 			try {
-				const healthRes = await fetch(`${deploymentUrl}/health`, {
-					signal: AbortSignal.timeout(3000),
-				});
+				const healthRes = await fetchAgentEndpoint(
+					`${deploymentUrl}/health`,
+					{ signal: AbortSignal.timeout(3000) },
+				);
 				healthEndpointAvailable = healthRes.ok;
 				if (!healthRes.ok) {
 					healthWarning = `/health returned ${healthRes.status}. The agent health monitor requires a /health endpoint returning 2xx. Without it, the agent will be marked ERROR and excluded from semantic search.`;

@@ -34,6 +34,10 @@ import {
 	requireInputOrgPermission,
 	resolveOrganizationId,
 } from "../../../../orpc/procedures";
+import {
+	assertAgentEndpointAllowed,
+	fetchAgentEndpoint,
+} from "../../lib/agent-endpoint-guard";
 
 // Extended framework schema to include A2A, MCP and COPILOTKIT for external agents
 const ExtendedFrameworkSchema = z.enum([
@@ -116,6 +120,13 @@ export const createRegisteredAgent = protectedProcedure
 			throw new ORPCError("FORBIDDEN", {
 				message: "Only platform admins can create SYSTEM-scoped agents",
 			});
+		}
+
+		// The address is refused before it is stored, not only before it is
+		// probed: an agent row that survives with an internal URL gets probed
+		// later by the health monitor on a path with no caller to refuse.
+		if (input.deploymentUrl) {
+			assertAgentEndpointAllowed(input.deploymentUrl);
 		}
 
 		// Generate unique agentId
@@ -243,7 +254,7 @@ export const createRegisteredAgent = protectedProcedure
 
 			try {
 				const metadataUrl = `${input.deploymentUrl}/metadata`;
-				const response = await fetch(metadataUrl, {
+				const response = await fetchAgentEndpoint(metadataUrl, {
 					method: "GET",
 					headers: { "Content-Type": "application/json" },
 					signal: AbortSignal.timeout(5000),
