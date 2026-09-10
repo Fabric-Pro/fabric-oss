@@ -22,7 +22,10 @@ const BASE_URL = process.env.BASE_URL || `http://localhost:${PORT}`;
 const app = new Hono();
 
 // Enable CORS
-app.use("*", cors());
+app.use(
+	"*",
+	cors({ allowMethods: ["GET", "HEAD", "PUT", "POST", "DELETE", "PATCH"] }),
+);
 
 // Health check
 app.get("/health", (c) => {
