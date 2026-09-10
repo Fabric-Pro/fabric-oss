@@ -26,7 +26,7 @@
 		"type-check": "tsc --noEmit"
 	},
 	"dependencies": {
-		"hono": "^4.12.34",
+		"hono": "^4.13.5",
 		"uuid": "^14.0.2"
 	},
 	"devDependencies": {

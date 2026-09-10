@@ -122,7 +122,7 @@
 		"es-toolkit": "^1.41.0",
 		"fumadocs-core": "16.8.2",
 		"fumadocs-ui": "16.8.2",
-		"hono": "^4.12.34",
+		"hono": "^4.13.5",
 		"html-to-image": "^1.11.13",
 		"html2canvas": "^1.4.1",
 		"input-otp": "^1.4.2",
