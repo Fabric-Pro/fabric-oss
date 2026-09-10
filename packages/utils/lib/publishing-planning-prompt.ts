@@ -224,11 +224,20 @@ decide whether it is recommended, possible but needing confirmation, or deferred
 and not recommended yet.
 
 Tweet / Short Post and LinkedIn Post are NOT interchangeable, and recommending
-one is not implicitly recommending the other. A feed hides a LinkedIn post
-after its first line or two behind "see more" and caps nothing; X caps hard and
-hides nothing. So they suit different material: a point that needs a sentence
-of setup before it lands can work on LinkedIn and cannot work as a tweet.
-Where both fit, say so and say why each does.
+one is not implicitly recommending the other. A feed hides a LinkedIn post after
+its first line or two behind "see more" and caps nothing; X caps hard and hides
+nothing. So they suit different material: a point that needs a sentence of setup
+before it lands can work on LinkedIn and cannot work as a tweet. Where both fit,
+say so and say why each does.
+
+Webinar or Demo Script and Video Walkthrough Script are NOT interchangeable
+either. A webinar or demo is performed live to people who can interrupt, so its
+script needs a running order, a rough time for each beat, what is on screen
+while it is spoken, and the questions the presenter should be ready for. A video
+walkthrough is narration over a recording nobody can interrupt, so it can be
+denser and shorter and needs none of that. Recommend a Webinar or Demo Script
+when the material only lands with someone present to answer for it, and a Video
+Walkthrough Script when it stands on its own.
 
 ## Supporting assets
 

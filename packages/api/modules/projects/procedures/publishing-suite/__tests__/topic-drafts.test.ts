@@ -14,6 +14,24 @@ const flagMocks = vi.hoisted(() => ({
 	isFeatureEnabled: vi.fn(),
 	resolveProjectTenant: vi.fn(),
 }));
+
+/**
+ * A REAL, hand-written tuple — never `vi.fn()` — for the same construction-time
+ * reason as `PUBLISHING_TOPIC_POST_TYPES` below. Named and hoisted separately
+ * (rather than inlined into the `@repo/database` mock's returned object) so
+ * the parity test further down can compare it against the ACTUAL
+ * `@repo/database` export without comparing the mock against itself.
+ */
+const postTypeMocks = vi.hoisted(() => ({
+	MOCK_PUBLISHING_TOPIC_POST_TYPES: [
+		"TWEET",
+		"LINKEDIN_POST",
+		"BLOG_POST",
+		"CASE_STUDY",
+		"STAKEHOLDER_EMAIL",
+		"WEBINAR_SCRIPT",
+	],
+}));
 vi.mock("@repo/database", () => ({
 	listTopicDrafts: vi.fn(),
 	// Read alongside the drafts so a tab can say it changed since the caller's
@@ -26,13 +44,7 @@ vi.mock("@repo/database", () => ({
 	// Kept complete rather than trimmed to the types a case happens to use — a
 	// post type missing from this list is stripped by output validation, which
 	// is the exact silent failure the shared tuple exists to prevent.
-	PUBLISHING_TOPIC_POST_TYPES: [
-		"TWEET",
-		"LINKEDIN_POST",
-		"BLOG_POST",
-		"CASE_STUDY",
-		"STAKEHOLDER_EMAIL",
-	],
+	PUBLISHING_TOPIC_POST_TYPES: postTypeMocks.MOCK_PUBLISHING_TOPIC_POST_TYPES,
 	// The gate resolves the flag per organization and derives the tenant from
 	// the Project row. `resolveProjectTenant` MUST point at flagMocks, not a
 	// bare vi.fn(): the gate reads a null return as "project not resolvable"
@@ -41,6 +53,22 @@ vi.mock("@repo/database", () => ({
 	isFeatureEnabled: flagMocks.isFeatureEnabled,
 	resolveProjectTenant: flagMocks.resolveProjectTenant,
 }));
+
+// Imported OUTSIDE the vi.mock factory above, so this is the REAL tuple —
+// comparing it against a value the factory itself produced would be a test
+// that cannot fail. An incomplete-but-non-empty mock tuple loads fine and
+// silently strips the missing post type via output validation; Task 2's
+// `packages/database` pin catches that class in its own package but runs in a
+// different vitest project and cannot see this file's `vi.mock` factory,
+// which is why this file needs its own copy of the check.
+const actualDatabaseModule =
+	await vi.importActual<typeof import("@repo/database")>("@repo/database");
+
+it("the mocked post-type tuple matches the real one", () => {
+	expect(new Set(postTypeMocks.MOCK_PUBLISHING_TOPIC_POST_TYPES)).toEqual(
+		new Set(actualDatabaseModule.PUBLISHING_TOPIC_POST_TYPES),
+	);
+});
 vi.mock("../../../../../orpc/procedures", () => {
 	const chain: Record<string, unknown> = {};
 	for (const m of ["use", "route", "input", "output"]) {

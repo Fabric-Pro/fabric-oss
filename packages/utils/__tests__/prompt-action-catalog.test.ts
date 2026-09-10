@@ -25,6 +25,7 @@ import { PUBLISHING_PLANNING_ANALYSIS_AGENT_KEY } from "../lib/publishing-planni
 import { PUBLISHING_SHORT_POST_AGENT_KEY } from "../lib/publishing-short-post-prompt";
 import { PUBLISHING_STAKEHOLDER_EMAIL_AGENT_KEY } from "../lib/publishing-stakeholder-email-prompt";
 import { PUBLISHING_TOPIC_SUGGESTION_AGENT_KEY } from "../lib/publishing-suggestion-prompt";
+import { PUBLISHING_WEBINAR_SCRIPT_AGENT_KEY } from "../lib/publishing-webinar-script-prompt";
 
 const actions = listPromptActions();
 const byId = (id: string) => actions.find((a) => a.id === id);
@@ -318,6 +319,23 @@ describe("Publishing Suite prompts (#1851, #1853, #1854)", () => {
 		]);
 	});
 
+	// The webinar / demo script prompt (2D slice 1) is the sixth member and
+	// carries the identical three-site hazard: seed SYSTEM prompt, seed
+	// binding, catalog entry and the Temporal activity must all name one key.
+	it("exposes the webinar script prompt as an editable PUBLISHING target", () => {
+		const target = PROMPT_AGENT_TARGETS.find(
+			(t) => t.key === PUBLISHING_WEBINAR_SCRIPT_AGENT_KEY,
+		);
+		expect(target).toBeDefined();
+		expect(target?.featureType).toBe("PUBLISHING");
+		// Assert the SHAPE, not `nonStage(...)` — that helper is a bare `const` at
+		// prompt-action-catalog.ts:163 and is not exported, so calling it here is a
+		// ReferenceError that would masquerade as the expected TDD red.
+		expect(target?.actions).toEqual([
+			{ documentType: "GENERAL", storyKind: null },
+		]);
+	});
+
 	it("keeps every publishing prompt under a DIFFERENT key", () => {
 		// Every one of them is PUBLISHING/GENERAL/null, so a copy-paste that
 		// left a sibling's key on another entry would satisfy every other case
@@ -336,6 +354,7 @@ describe("Publishing Suite prompts (#1851, #1853, #1854)", () => {
 			PUBLISHING_BLOG_POST_AGENT_KEY,
 			PUBLISHING_CASE_STUDY_AGENT_KEY,
 			PUBLISHING_STAKEHOLDER_EMAIL_AGENT_KEY,
+			PUBLISHING_WEBINAR_SCRIPT_AGENT_KEY,
 		];
 		expect(new Set(keys).size).toBe(keys.length);
 	});

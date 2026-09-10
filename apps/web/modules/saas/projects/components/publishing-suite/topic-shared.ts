@@ -95,6 +95,7 @@ export const POST_TYPE_LABELS: ReadonlyArray<{
 	{ value: "BLOG_POST", label: "Blog Post" },
 	{ value: "CASE_STUDY", label: "Case Study" },
 	{ value: "STAKEHOLDER_EMAIL", label: "Stakeholder Email" },
+	{ value: "WEBINAR_SCRIPT", label: "Webinar / Demo Script" },
 ];
 
 /**
@@ -116,20 +117,22 @@ export const ALL_POST_TYPES: readonly PostType[] = POST_TYPE_LABELS.map(
  * The content types with a generation panel of their own.
  *
  * Phase 2B activated Tweet and Blog Post; 2C-1 added Case Study, 2C-2
- * Stakeholder Email, and #1851 LinkedIn Post.
+ * Stakeholder Email, #1851 LinkedIn Post, and #1988 Webinar / Demo Script
+ * (Phase 2D-1).
  *
  * The set stays rather than collapsing into "all of them", and the rule it
  * enforces is a PAIRING rather than a delay: membership here is what makes a
  * tab selectable AND what makes `GenerationTabs` mount a `TabsContent` for it,
  * so an entry added here without a matching arm in `GenerationPanel`'s
- * `postType === …` chain renders a selectable tab with an empty body. Deriving
- * this from `POST_TYPE_LABELS` would do exactly that, automatically, the moment
- * the Prisma enum grew — which is why it is written out by hand.
+ * `postType === …` chain renders a selectable tab whose body carries nothing
+ * type-specific. Deriving this from `POST_TYPE_LABELS` would do exactly that,
+ * automatically, the moment the Prisma enum grew — which is why it is written
+ * out by hand.
  *
  * So a new post type must arrive with its panel, and the two land in one
  * change. A type that genuinely has no panel yet is better left OUT of this
  * set, where it renders disabled and "Coming soon": an honest placeholder beats
- * a live tab that does nothing.
+ * a live tab that silently lacks its panel.
  *
  * `LINKEDIN_POST` is the first value to test that. It arrived WITH
  * `LinkedInPostPanel` and its arm in the chain, in one change — and the two
@@ -138,8 +141,16 @@ export const ALL_POST_TYPES: readonly PostType[] = POST_TYPE_LABELS.map(
  * NO generation tab disabled or Coming Soon") went green without an assertion
  * moving. Note what those cases do NOT catch: they read the tab strip only, so
  * adding an entry here without the panel arm would satisfy both while the tab
- * body rendered nothing. The pairing is a rule for a person to keep, not one a
- * test can check for you.
+ * body carried nothing type-specific.
+ *
+ * Task 12 (`WEBINAR_SCRIPT`, #1988) closed that gap:
+ * `publishing-generation-tabs.test.tsx`'s "gives every active post type a
+ * matching arm in GenerationPanel's postType chain" reads `GenerationTabs.tsx`'s
+ * own source and asserts every member of this set names a `postType === "…"`
+ * arm. A mounted-DOM assertion could not stand in for it — `GenerationPanel`
+ * renders its "Recommendation" section regardless of which arm fires, so an
+ * empty-body check stays green with or without one — which is why the pairing
+ * is now checked against the source rather than the render.
  */
 export const GENERATION_ACTIVE_POST_TYPES: ReadonlySet<PostType> =
 	new Set<PostType>([
@@ -148,6 +159,7 @@ export const GENERATION_ACTIVE_POST_TYPES: ReadonlySet<PostType> =
 		"BLOG_POST",
 		"CASE_STUDY",
 		"STAKEHOLDER_EMAIL",
+		"WEBINAR_SCRIPT",
 	]);
 
 export type WhySuggested = NonNullable<PublishingTopic["whySuggested"]>;

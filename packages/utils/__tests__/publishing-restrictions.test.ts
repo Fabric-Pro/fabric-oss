@@ -246,6 +246,39 @@ describe("restrictsPostType — Stakeholder Email (Phase 2C slice 2)", () => {
 	});
 });
 
+describe("restrictsPostType — Webinar / Demo Script (Phase 2D slice 2D-1)", () => {
+	it("names the kinds that additionally constrain a webinar script", () => {
+		// A script carries a Supporting Details block with problem, solution and
+		// evidence, so an unresolved "is this strong enough to claim?" is live; it
+		// states its audience explicitly; and the PO prompt has a technical-depth
+		// dial, which is what CODEBASE_DETAIL governs.
+		for (const kind of [
+			"CLAIM_STRENGTH",
+			"AUDIENCE_SCOPE",
+			"CODEBASE_DETAIL",
+		]) {
+			expect(
+				restrictsPostType(
+					thread({ decisionKind: kind }),
+					"WEBINAR_SCRIPT",
+				),
+			).toBe(true);
+		}
+	});
+
+	it("does not widen the shared set", () => {
+		// The negative control that makes the entry ADDITIVE rather than a
+		// widening: CODEBASE_DETAIL must not start constraining Tweet, and §4.2
+		// excludes it from Newsletter deliberately.
+		expect(
+			restrictsPostType(
+				thread({ decisionKind: "CODEBASE_DETAIL" }),
+				"TWEET",
+			),
+		).toBe(false);
+	});
+});
+
 describe("isRestrictingThread is unchanged by the per-type set", () => {
 	it("still says no to AUDIENCE_SCOPE", () => {
 		// It means "restricts EVERY content type", and Tweet and Blog Post

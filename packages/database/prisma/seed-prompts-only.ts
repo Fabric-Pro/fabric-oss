@@ -31,6 +31,10 @@ import {
 	PUBLISHING_TOPIC_SUGGESTION_AGENT_KEY,
 	PUBLISHING_TOPIC_SUGGESTION_FALLBACK_BODY,
 } from "@repo/utils/publishing-suggestion-prompt";
+import {
+	PUBLISHING_WEBINAR_SCRIPT_AGENT_KEY,
+	PUBLISHING_WEBINAR_SCRIPT_FALLBACK_BODY,
+} from "@repo/utils/publishing-webinar-script-prompt";
 import { db } from "../prisma/client";
 import { isDirectRun } from "./lib/is-direct-run";
 // The retirement guard every SYSTEM-scope insert goes through, and the batched
@@ -421,6 +425,19 @@ const PROMPT_DOCUMENT_TYPE_BINDINGS: Record<string, SeedBindingSpec> = {
 		documentTypes: ["GENERAL"],
 		storyKind: null as null,
 		targetKey: PUBLISHING_STAKEHOLDER_EMAIL_AGENT_KEY,
+	},
+	// publishing_topic_webinar_script: GENERAL + null for the same reason its
+	// five publishing siblings use them — one prompt per tenant covers every
+	// project and topic. The activity passes the topic, its planning analysis,
+	// its confirmed decisions and the run's guidance as HANDLEBARS variables;
+	// the one-script output contract and the invention/disclosure rules (no
+	// invented metric, customer name, quote, release status or implementation
+	// claim) are appended code-side and are NOT part of this body, so an
+	// override cannot drop them.
+	[PUBLISHING_WEBINAR_SCRIPT_AGENT_KEY]: {
+		documentTypes: ["GENERAL"],
+		storyKind: null as null,
+		targetKey: PUBLISHING_WEBINAR_SCRIPT_AGENT_KEY,
 	},
 	// test_case_step_reviser: re-drafts ONE existing case whose feature has since
 	// changed. Kept separate from `test_case_drafter` because the contract is
@@ -6111,6 +6128,42 @@ Rules:
 		structuredFormat: "JSON" as const,
 		isPublic: true,
 		content: PUBLISHING_STAKEHOLDER_EMAIL_FALLBACK_BODY,
+	},
+	{
+		// publishing_topic_webinar_script: the webinar / demo script written
+		// from a topic (Fizzy #1988, Phase 2D slice 1). No PO prompt-document
+		// attachment exists for this content type; the body is authored from
+		// the card's own "Webinar / Demo Script Prompt Requirements" section
+		// plus the shipped family precedent — Case Study's and Stakeholder
+		// Email's — for structure, section ordering and voice. This prompt
+		// runs with structured output, so the session framing, the talk
+		// tracks, the demo flow, the supporting details, the suggested
+		// assets and the inputs still needed are each a field.
+		//
+		// The output contract and the invention/disclosure rules (no
+		// invented metric, customer name, quote, release status or
+		// implementation claim) are appended CODE-SIDE so an org editing
+		// tone cannot drop them by accident.
+		//
+		// INSERT-ONLY: once this seeds, changing the text does nothing on an
+		// environment that already ran the seed. Ship wording changes as an
+		// explicit UPDATE migration.
+		key: PUBLISHING_WEBINAR_SCRIPT_AGENT_KEY,
+		name: "Topic Webinar / Demo Script",
+		description:
+			"Drafts one webinar or demo script from a Publishing Suite topic, using its planning analysis, confirmed decisions and project source context.",
+		category: "publishing",
+		tags: [
+			"publishing",
+			"publishing-suite",
+			"webinar-script",
+			"ai-generation",
+		],
+		format: "HANDLEBARS" as const,
+		promptType: "STRUCTURED" as const,
+		structuredFormat: "JSON" as const,
+		isPublic: true,
+		content: PUBLISHING_WEBINAR_SCRIPT_FALLBACK_BODY,
 	},
 ];
 

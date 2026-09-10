@@ -425,6 +425,22 @@ vi.mock("@shared/lib/orpc-query-utils", () => {
 					saveStakeholderEmailBody: m(
 						"projects.publishingSuite.saveStakeholderEmailBody",
 					),
+					// The webinar / demo script panel owns these three (Fizzy
+					// #1988, Phase 2D-1). These entries were added BEFORE the
+					// panel was mounted, deliberately — same sequencing the
+					// comments above already record twice: a missing entry
+					// costs every case in the file the moment a tab starts
+					// rendering a real panel against a mock that does not list
+					// its procedures. The panel has since been mounted.
+					generateWebinarScript: m(
+						"projects.publishingSuite.generateWebinarScript",
+					),
+					adoptWebinarScriptDraft: m(
+						"projects.publishingSuite.adoptWebinarScriptDraft",
+					),
+					saveWebinarScriptBody: m(
+						"projects.publishingSuite.saveWebinarScriptBody",
+					),
 					listTopicDecisions: q(
 						"projects.publishingSuite.listTopicDecisions",
 					),
@@ -1437,11 +1453,12 @@ describe("TopicItemPage — two-row tab strip", () => {
 		state.topic = topic({ suggestedPostTypes: [], userPostTypes: null });
 		renderPage();
 
-		// Five since LinkedIn joined the enum (Fizzy #1851). A literal rather
-		// than a derived count on purpose: the number here is the claim that
-		// EVERY type falls back, so deriving it from the same list the page
-		// renders from would make the case agree with the page by construction.
-		expect(within(contentTabs()).getAllByRole("tab")).toHaveLength(5);
+		// Six since Webinar / Demo Script joined the enum (Fizzy #1988). A
+		// literal rather than a derived count on purpose: the number here is
+		// the claim that EVERY type falls back, so deriving it from the same
+		// list the page renders from would make the case agree with the page
+		// by construction.
+		expect(within(contentTabs()).getAllByRole("tab")).toHaveLength(6);
 	});
 
 	it("treats a content type as a peer of a review tab, not a tab inside a tab", async () => {

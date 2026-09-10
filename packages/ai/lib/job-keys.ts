@@ -94,6 +94,20 @@ export const AI_JOB_TYPES = [
 	 * to answer.
 	 */
 	"publishing-stakeholder-email",
+	/**
+	 * Publishing-suite Webinar / Demo Script drafting (#1988).
+	 *
+	 * Its own key rather than folded into either neighbour, for a reason
+	 * neither of them shares: this is the longest single-shot generation in the
+	 * family — an agenda, a multi-step demo flow and two talk tracks from one
+	 * call, closer to the blog post's output size than to the short email's —
+	 * while its per-topic run count behaves like the stakeholder email's, once
+	 * per session rather than once per audience. Averaging it into the email's
+	 * line item would understate the email's true cost; averaging it into the
+	 * blog post's would blur a script's run cadence into a post's. "Which
+	 * format did the spend go on" is the question this list exists to answer.
+	 */
+	"publishing-webinar-script",
 	/** Slack channel monitor note summarization. */
 	"slack-channel-monitor",
 	/** Security scanning grouping/review/scan model calls. */

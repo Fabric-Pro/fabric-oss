@@ -53,7 +53,8 @@ type PublishingDraftPostType =
 	| "LINKEDIN_POST"
 	| "BLOG_POST"
 	| "CASE_STUDY"
-	| "STAKEHOLDER_EMAIL";
+	| "STAKEHOLDER_EMAIL"
+	| "WEBINAR_SCRIPT";
 
 /**
  * What a verdict is about.
@@ -70,7 +71,8 @@ type PublishingSubjectType =
 	| "publishing-case-study"
 	| "publishing-stakeholder-email"
 	| "publishing-analysis"
-	| "publishing-topic";
+	| "publishing-topic"
+	| "publishing-webinar-script";
 
 const SUBJECT_TYPE_BY_POST_TYPE: Record<
 	PublishingDraftPostType,
@@ -81,6 +83,7 @@ const SUBJECT_TYPE_BY_POST_TYPE: Record<
 	BLOG_POST: "publishing-blog-post",
 	CASE_STUDY: "publishing-case-study",
 	STAKEHOLDER_EMAIL: "publishing-stakeholder-email",
+	WEBINAR_SCRIPT: "publishing-webinar-script",
 };
 
 /** Verdicts that mean the human took the output; see `skipIfAlreadyAccepted`. */

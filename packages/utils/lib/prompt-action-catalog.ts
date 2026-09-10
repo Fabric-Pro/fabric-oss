@@ -35,6 +35,7 @@ import { PUBLISHING_PLANNING_ANALYSIS_AGENT_KEY } from "./publishing-planning-pr
 import { PUBLISHING_SHORT_POST_AGENT_KEY } from "./publishing-short-post-prompt";
 import { PUBLISHING_STAKEHOLDER_EMAIL_AGENT_KEY } from "./publishing-stakeholder-email-prompt";
 import { PUBLISHING_TOPIC_SUGGESTION_AGENT_KEY } from "./publishing-suggestion-prompt";
+import { PUBLISHING_WEBINAR_SCRIPT_AGENT_KEY } from "./publishing-webinar-script-prompt";
 
 export type PromptStoryKind = "FEATURE" | "BUG" | null;
 
@@ -507,6 +508,17 @@ export const PROMPT_AGENT_TARGETS: readonly PromptAgentTarget[] = [
 		// says SHIPPED — those are appended code-side.
 		key: PUBLISHING_STAKEHOLDER_EMAIL_AGENT_KEY,
 		label: "Topic Stakeholder Email",
+		featureType: "PUBLISHING",
+		actions: nonStage("GENERAL"),
+	},
+	{
+		// The webinar / demo script written from a publishing topic. Editing it
+		// changes voice, the demo-flow guidance and how much project context
+		// reaches the draft. It cannot remove the output contract (one script,
+		// not a set of alternatives) or the approval rules — no unapproved demo
+		// asset is treated as confirmed — those are appended code-side.
+		key: PUBLISHING_WEBINAR_SCRIPT_AGENT_KEY,
+		label: "Topic Webinar / Demo Script",
 		featureType: "PUBLISHING",
 		actions: nonStage("GENERAL"),
 	},

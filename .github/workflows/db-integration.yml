@@ -1013,6 +1013,128 @@ jobs:
           if (passed !== 3) { console.error(`::error::Expected exactly 3 passing tests, got ${passed}`); process.exit(1); }
           EOF
 
+      - name: Run the prompt sync-migration apply suite (real Postgres)
+        # Fizzy #1988, Phase 2D slice 1. The two `sync_*` prompt migrations
+        # rewrite a SYSTEM prompt's bound version in place on every deployed
+        # environment, and a migration cannot be re-run once its name is in
+        # `_prisma_migrations` — so a mistargeted one that passes CI is
+        # unrecoverable. The chain guard beside this suite is purely textual and
+        # cannot see which ROW the statement finds; this file executes the
+        # migration's own UPDATE against real rows it seeds itself.
+        #
+        # Its own step rather than a line in the 20-file publishing aggregate
+        # above: that guard pins `files !== 20` and a floor on the total, so
+        # adding a file there fails the count.
+        env:
+          RUN_DB_INTEGRATION: '1'
+        run: |
+          pnpm --filter @repo/database exec vitest run \
+            __tests__/migrations/sync-prompt-migrations-apply.test.ts \
+            --passWithNoTests=false \
+            --reporter=dot \
+            --reporter=json --outputFile=sync-prompt-migrations-apply-results.json
+
+      - name: 'Guard: assert the prompt sync-migration apply suite executed (exact count, zero skips)'
+        # Same anti-false-pass shape as the guards above, and the `skipped > 0`
+        # arm is the one that matters here: the suite gates on
+        # `hasReachableDatabaseUrl()`, which rejects the unit-tests.yml
+        # placeholder, so a misconfigured DATABASE_URL turns it into
+        # "11 skipped, exit 0" — a green step that executed nothing.
+        run: |
+          node <<'EOF'
+          const fs = require("node:fs");
+          // 14 = 5 cases per migration, times the two migrations, plus four.
+          // Per migration: a pristine SYSTEM default v1 row carried across
+          // exactly once; a second run matching zero rows; a prompt versioned
+          // past v1 declined, then updated once its v2 is dropped; a
+          // non-default binding declined, then updated once it is made the
+          // default; and one pass proving a wrong-agent binding and an ORG fork
+          // of the same key are both left alone while exactly one row changes.
+          // The two "declined, then..." halves are negative controls — without
+          // them a predicate broken in an unrelated way reports the same clean
+          // zero. Plus the pg_enum case, which is the only thing comparing the
+          // hand-edited schema.prisma against the hand-edited ALTER TYPE SQL.
+          // Plus three coverage cases that tie this file's hand-written CASES
+          // list to what the chain guard discovers, so a future prompt-sync
+          // migration cannot get textual replay and no executing fixture while
+          // both suites stay green. Those three read only the filesystem and
+          // sit OUTSIDE the database gate, so they also run in unit-tests.yml.
+          const EXPECTED = 14;
+          const report = JSON.parse(fs.readFileSync("packages/database/sync-prompt-migrations-apply-results.json","utf8"));
+          const files = report.testResults?.length ?? 0;
+          const total = report.numTotalTests ?? 0;
+          const passed = report.numPassedTests ?? 0;
+          const skipped = (report.numSkippedTests ?? 0) + (report.numPendingTests ?? 0);
+          const todo = report.numTodoTests ?? 0;
+          console.log(`sync-prompt-migrations-apply: ${files} file(s), total=${total} passed=${passed} skipped=${skipped} todo=${todo}`);
+          if (files !== 1) { console.error("::error::Expected exactly 1 test file (sync-prompt-migrations-apply.test.ts)"); process.exit(1); }
+          if (skipped > 0) { console.error("::error::suite self-skipped — DATABASE_URL is not a reachable Postgres — false pass"); process.exit(1); }
+          if (todo > 0) { console.error("::error::a case is .todo — coverage silently dropped"); process.exit(1); }
+          if (total !== EXPECTED || passed !== EXPECTED) {
+            console.error(`::error::expected exactly ${EXPECTED} passing tests, got total=${total} passed=${passed}`);
+            process.exit(1);
+          }
+          EOF
+
+      - name: Run the publishing prompt-sync Prisma adapter suite (real Postgres)
+        # Fizzy #1988, Phase 2D slice 1, task 14 follow-up. The resolution
+        # logic in verify-publishing-prompt-sync.ts is unit-tested against an
+        # in-memory fake of its three-method database interface; the real
+        # Prisma adapter (`createPrismaPromptSyncDb`) that maps that interface
+        # onto `db.prompt.findFirst` / `db.promptVersion.findFirst` /
+        # `db.promptBinding.findFirst` had no coverage at all before this
+        # suite — the one place a schema or seed-shape drift could make the
+        # detector report OK for a broken environment. This suite runs those
+        # three queries against real Postgres rows it seeds itself, inside
+        # rolled-back transactions, using a synthetic agent key no seed or
+        # migration ever targets.
+        env:
+          RUN_DB_INTEGRATION: '1'
+        run: |
+          pnpm --filter @repo/database exec vitest run \
+            __tests__/verify-publishing-prompt-sync.integration.test.ts \
+            --passWithNoTests=false \
+            --reporter=dot \
+            --reporter=json --outputFile=verify-publishing-prompt-sync-integration-results.json
+
+      - name: 'Guard: assert the publishing prompt-sync adapter suite executed (exact count, zero skips)'
+        # Same anti-false-pass shape as the guard above: the suite gates on
+        # `hasReachableDatabaseUrl()`, so a misconfigured DATABASE_URL turns it
+        # into "5 skipped, exit 0" — a green step that executed nothing.
+        run: |
+          node <<'EOF'
+          const fs = require("node:fs");
+          // 9: nothing at all for the key; a prompt row with no binding; a
+          // prompt and a version with no binding; the full chain resolving on
+          // a row shaped exactly like the seed's; a binding repointed to v2,
+          // which is what an admin editing a SYSTEM prompt leaves behind; TWO
+          // SYSTEM prompt rows for one key, which Postgres accepts because
+          // that unique index is NULL-distinct; a promptVersionId naming no
+          // row; and two negative controls — a binding whose documentType does
+          // not match the predicate, and one that is not the default.
+          // documentType is the one predicate field that is a plain String
+          // column rather than a Prisma enum, so a value drift there
+          // type-checks cleanly and this is the only thing that would catch
+          // it. The v2 and duplicate-row cases cannot be established by the
+          // in-memory fake at all: both are facts about Postgres index
+          // semantics rather than about this code.
+          const EXPECTED = 9;
+          const report = JSON.parse(fs.readFileSync("packages/database/verify-publishing-prompt-sync-integration-results.json","utf8"));
+          const files = report.testResults?.length ?? 0;
+          const total = report.numTotalTests ?? 0;
+          const passed = report.numPassedTests ?? 0;
+          const skipped = (report.numSkippedTests ?? 0) + (report.numPendingTests ?? 0);
+          const todo = report.numTodoTests ?? 0;
+          console.log(`verify-publishing-prompt-sync-integration: ${files} file(s), total=${total} passed=${passed} skipped=${skipped} todo=${todo}`);
+          if (files !== 1) { console.error("::error::Expected exactly 1 test file (verify-publishing-prompt-sync.integration.test.ts)"); process.exit(1); }
+          if (skipped > 0) { console.error("::error::suite self-skipped — DATABASE_URL is not a reachable Postgres — false pass"); process.exit(1); }
+          if (todo > 0) { console.error("::error::a case is .todo — coverage silently dropped"); process.exit(1); }
+          if (total !== EXPECTED || passed !== EXPECTED) {
+            console.error(`::error::expected exactly ${EXPECTED} passing tests, got total=${total} passed=${passed}`);
+            process.exit(1);
+          }
+          EOF
+
   temporal-tests:
     name: Temporal publishing tests (real Postgres)
     needs: changes

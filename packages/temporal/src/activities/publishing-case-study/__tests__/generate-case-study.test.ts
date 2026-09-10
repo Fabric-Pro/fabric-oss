@@ -741,6 +741,32 @@ describe("generateCaseStudyActivity — the clamp", () => {
 		]);
 	});
 
+	it("de-duplicates a demoted asset against a differently-cased hedge", async () => {
+		// The model hedged in one list and claimed in the other, spelled
+		// differently. Selection has always matched normalized; the dedupe used
+		// exact equality, so the same asset landed twice.
+		generateObject.mockResolvedValue({
+			object: {
+				...MODEL_OUTPUT,
+				confirmedAssets: ["The Latency Chart"],
+				assetsNeedingConfirmation: ["the latency chart"],
+			},
+			usage: {},
+		});
+		listTopicDecisions.mockResolvedValue([
+			openQuestion("ASSET_APPROVAL", "latency chart"),
+		]);
+
+		await run();
+
+		expect(persistedContent().assetsNeedingConfirmation).toEqual([
+			"the latency chart",
+		]);
+		expect(persistedContent().generation.clamped.assets).toEqual([
+			"The Latency Chart",
+		]);
+	});
+
 	it("leaves every confirmed asset standing when no ASSET-restricting kind is open", async () => {
 		// The clamp is keyed on the specific approval. An open customer-name
 		// question says nothing about whether a diagram may be used, and a

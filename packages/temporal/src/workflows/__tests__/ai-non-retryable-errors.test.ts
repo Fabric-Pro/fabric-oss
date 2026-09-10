@@ -121,6 +121,11 @@ const AI_WORKFLOWS: Array<{
 		aiProxies: 1,
 	},
 	{
+		name: "generate-publishing-webinar-script",
+		load: () => import("../generate-publishing-webinar-script"),
+		aiProxies: 1,
+	},
+	{
 		name: "link-meeting-action-items",
 		load: () => import("../link-meeting-action-items"),
 		aiProxies: 1,

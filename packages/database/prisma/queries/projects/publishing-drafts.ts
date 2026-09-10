@@ -58,16 +58,26 @@ export type {
 	DraftCommitRefusal,
 } from "./publishing-tenant-lock";
 
-/** The `PublishingTopicPostType` values, in the UI's fixed display order. */
-const POST_TYPES = [
+/**
+ * The `PublishingTopicPostType` values in the UI's fixed display order.
+ *
+ * Exported under a deliberately unmistakable name because this module's symbols
+ * reach `@repo/database`'s root barrel. It exists so the exhaustiveness pin in
+ * `__tests__/publishing-post-types.test.ts` can compare it to the Prisma enum —
+ * it is NOT a source of truth for the vocabulary. Read
+ * `PUBLISHING_TOPIC_POST_TYPES` for that.
+ */
+export const PUBLISHING_DRAFT_POST_TYPES_DISPLAY_ORDER = [
 	"TWEET",
 	"LINKEDIN_POST",
 	"BLOG_POST",
 	"CASE_STUDY",
 	"STAKEHOLDER_EMAIL",
+	"WEBINAR_SCRIPT",
 ] as const;
 
-export type DraftPostType = (typeof POST_TYPES)[number];
+export type DraftPostType =
+	(typeof PUBLISHING_DRAFT_POST_TYPES_DISPLAY_ORDER)[number];
 
 export interface TopicDraftRecord {
 	id: string;
@@ -265,21 +275,25 @@ export async function listTopicDrafts(input: {
 	// slow fold report two rows with the same deadline differently.
 	const now = Date.now();
 
-	const drafts: TopicDraftState[] = POST_TYPES.map((postType) => {
-		// `rows` is version-descending, so the first match of each predicate is
-		// the newest — no per-type sort, and no reliance on the database
-		// returning post types in any particular grouping.
-		const forType = (rows as RawDraftRow[]).filter(
-			(r) => r.postType === postType,
-		);
-		const latestAttempt = forType[0] ?? null;
-		const latestReady = forType.find((r) => r.status === "READY") ?? null;
-		return {
-			postType,
-			latestAttempt: latestAttempt ? toRecord(latestAttempt, now) : null,
-			latestReady: latestReady ? toRecord(latestReady, now) : null,
-		};
-	});
+	const drafts: TopicDraftState[] =
+		PUBLISHING_DRAFT_POST_TYPES_DISPLAY_ORDER.map((postType) => {
+			// `rows` is version-descending, so the first match of each predicate is
+			// the newest — no per-type sort, and no reliance on the database
+			// returning post types in any particular grouping.
+			const forType = (rows as RawDraftRow[]).filter(
+				(r) => r.postType === postType,
+			);
+			const latestAttempt = forType[0] ?? null;
+			const latestReady =
+				forType.find((r) => r.status === "READY") ?? null;
+			return {
+				postType,
+				latestAttempt: latestAttempt
+					? toRecord(latestAttempt, now)
+					: null,
+				latestReady: latestReady ? toRecord(latestReady, now) : null,
+			};
+		});
 
 	// Every candidate row by id, for `sourceContent` below. `rows` is already in
 	// memory — this function reads them all before folding to two per type — so

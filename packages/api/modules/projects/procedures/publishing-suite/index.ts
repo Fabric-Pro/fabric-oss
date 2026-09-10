@@ -58,3 +58,8 @@ export { updatePublishingTopicAssigneesProcedure } from "./update-topic-assignee
 export { updatePublishingTopicContributorsProcedure } from "./update-topic-contributors";
 export { updatePublishingTopicPostTypesProcedure } from "./update-topic-post-types";
 export { updatePublishingTopicStatusProcedure } from "./update-topic-status";
+export {
+	adoptWebinarScriptDraftProcedure,
+	generateWebinarScriptProcedure,
+	saveWebinarScriptBodyProcedure,
+} from "./webinar-script";

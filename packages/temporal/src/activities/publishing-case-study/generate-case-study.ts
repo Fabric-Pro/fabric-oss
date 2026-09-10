@@ -51,10 +51,9 @@ import {
 } from "@repo/database";
 import { logger } from "@repo/logs";
 import type { TemplateFormat } from "@repo/utils";
+import { clampConfirmedAssets } from "@repo/utils/publishing-asset-clamp";
 import { composeCaseStudyWorkingDraftBody } from "@repo/utils/publishing-case-study-body";
 import {
-	ASSET_RESTRICTING_KINDS,
-	assetIsRestricted,
 	CASE_STUDY_CLAMP_REASON,
 	type CaseStudyClampRecord,
 } from "@repo/utils/publishing-case-study-clamp";
@@ -433,36 +432,26 @@ export async function generateCaseStudyActivity(
 	//
 	// Matched by SUBJECT, never wholesale. An open approval about one asset says
 	// nothing about an unrelated one, and demoting a whole list would teach the
-	// reader to ignore it. `assetIsRestricted` is deliberately generous about
-	// what counts as the same thing (containment either way, case- and
+	// reader to ignore it. `clampConfirmedAssets` (shared with other content
+	// types, `@repo/utils/publishing-asset-clamp`) is deliberately generous
+	// about what counts as the same thing (containment either way, case- and
 	// whitespace-folded): over-matching moves an asset to "needs confirmation",
 	// which is the safe direction, while a miss leaves an unapproved asset
 	// labelled ready to publish.
 	//
 	// Restricted subjects only, not open questions: a framing question is not a
 	// claim about whether an asset exists and may be used.
-	const assetRestrictedSubjects = restricted
-		.filter((r) => ASSET_RESTRICTING_KINDS.has(r.kind))
-		.map((r) => r.label);
-	if (assetRestrictedSubjects.length > 0) {
-		const demoted = document.confirmedAssets.filter((asset) =>
-			assetIsRestricted(asset, assetRestrictedSubjects),
-		);
-		if (demoted.length > 0) {
-			document.confirmedAssets = document.confirmedAssets.filter(
-				(asset) => !assetIsRestricted(asset, assetRestrictedSubjects),
-			);
-			// De-duplicated against what the model already listed as needing
-			// confirmation. A model that hedged by putting the same asset in
-			// BOTH lists is not rare, and a demoted asset appearing twice reads
-			// as two separate things still to chase.
-			const needing = new Set(document.assetsNeedingConfirmation);
-			document.assetsNeedingConfirmation = [
-				...document.assetsNeedingConfirmation,
-				...demoted.filter((asset) => !needing.has(asset)),
-			];
-			clamped.assets = demoted;
-		}
+	const assetClamp = clampConfirmedAssets({
+		confirmed: document.confirmedAssets,
+		needsConfirmation: document.assetsNeedingConfirmation,
+		restricted,
+	});
+	if (assetClamp.moved.length > 0) {
+		document.confirmedAssets = assetClamp.confirmed;
+		document.assetsNeedingConfirmation = assetClamp.needsConfirmation;
+		// PRE-dedupe, matching what this call site has always recorded. Case
+		// Study does not persist `assetKinds` — only the label list.
+		clamped.assets = assetClamp.moved.map((m) => m.label);
 	}
 
 	if (clamped.customerIdentity || clamped.metricsBasis || clamped.assets) {

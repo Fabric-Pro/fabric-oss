@@ -15,12 +15,13 @@ import { cn } from "@ui/lib";
 import { useEffect, useState } from "react";
 import type { GenerationTabInfo } from "./generation-tab-state";
 
-const POST_TYPE_OPTIONS = [
+export const POST_TYPE_OPTIONS = [
 	{ value: "TWEET", label: "Tweet" },
 	{ value: "LINKEDIN_POST", label: "LinkedIn Post" },
 	{ value: "BLOG_POST", label: "Blog Post" },
 	{ value: "CASE_STUDY", label: "Case Study" },
 	{ value: "STAKEHOLDER_EMAIL", label: "Stakeholder Email" },
+	{ value: "WEBINAR_SCRIPT", label: "Webinar / Demo Script" },
 ] as const;
 
 type PostTypeValue = (typeof POST_TYPE_OPTIONS)[number]["value"];

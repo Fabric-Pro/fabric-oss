@@ -276,6 +276,7 @@ import {
 	adoptBlogPostDraftProcedure,
 	adoptCaseStudyDraftProcedure,
 	adoptStakeholderEmailDraftProcedure,
+	adoptWebinarScriptDraftProcedure,
 	amendTopicQuestionProcedure,
 	answerTopicQuestionProcedure,
 	createPublishingTopicProcedure,
@@ -286,6 +287,7 @@ import {
 	generatePublishingTopicsNowProcedure,
 	generateShortPostProcedure,
 	generateStakeholderEmailProcedure,
+	generateWebinarScriptProcedure,
 	getPlanningAnalysisProcedure,
 	getPublishingListPreferenceProcedure,
 	getPublishingSuiteSettingsProcedure,
@@ -302,6 +304,7 @@ import {
 	saveBlogPostBodyProcedure,
 	saveCaseStudyBodyProcedure,
 	saveStakeholderEmailBodyProcedure,
+	saveWebinarScriptBodyProcedure,
 	selectLinkedInPostOptionProcedure,
 	selectShortPostOptionProcedure,
 	setPublishingListPreferenceProcedure,
@@ -1489,6 +1492,17 @@ export const projectsRouter = {
 		generateStakeholderEmail: generateStakeholderEmailProcedure,
 		adoptStakeholderEmailDraft: adoptStakeholderEmailDraftProcedure,
 		saveStakeholderEmailBody: saveStakeholderEmailBodyProcedure,
+		// Fizzy #1988 (Phase 2D-1): Webinar / Demo Script, the sixth content
+		// type. Same three-endpoint shape as the Case Study and Stakeholder
+		// Email — the FIRST run seeds the working draft inside the activity, so
+		// `adoptWebinarScriptDraft` replaces a body that already exists and
+		// `saveWebinarScriptBody` is the editor; both are compare-and-set on
+		// the working draft's `updatedAt`. Adoption composes the body with the
+		// SHARED `composeWebinarScriptWorkingDraftBody`, the same function the
+		// activity seeds with, so the two texts cannot drift.
+		generateWebinarScript: generateWebinarScriptProcedure,
+		adoptWebinarScriptDraft: adoptWebinarScriptDraftProcedure,
+		saveWebinarScriptBody: saveWebinarScriptBodyProcedure,
 	},
 
 	// User Stories & Tasks (Kanban)

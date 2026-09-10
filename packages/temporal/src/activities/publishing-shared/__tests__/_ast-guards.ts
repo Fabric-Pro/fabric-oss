@@ -1,5 +1,39 @@
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import ts from "typescript";
+
+/** `packages/temporal/src/activities`, relative to this file's own location. */
+const ACTIVITIES_DIR = join(__dirname, "..", "..");
+
+/**
+ * Every `publishing-*` activity folder that is a DRAFT-GENERATION pair — it
+ * has both a `generate-*.ts` and a `mark-*-failed.ts` file. That structural
+ * signature is what excludes `publishing-shared` (has neither) and
+ * `publishing-suggestion` (has a `mark-cycle-failed.ts` but no
+ * `generate-*.ts` sibling — a cycle-level failure marker for a different
+ * subsystem, topic suggestion rather than draft generation) WITHOUT naming
+ * either folder: a future draft-generation content type is picked up the
+ * same way, with nothing here to update.
+ *
+ * Shared by `draft-refusal.test.ts` and `publishing-failure-message.test.ts`
+ * — both need exactly this folder rule, and before this each kept its own
+ * copy, which is the failure mode this task exists to remove.
+ */
+export function draftGenerationFolders(): string[] {
+	return readdirSync(ACTIVITIES_DIR, { withFileTypes: true })
+		.filter(
+			(entry) =>
+				entry.isDirectory() && entry.name.startsWith("publishing-"),
+		)
+		.map((entry) => entry.name)
+		.filter((name) => {
+			const files = readdirSync(join(ACTIVITIES_DIR, name));
+			return (
+				files.some((f) => /^generate-.*\.ts$/.test(f)) &&
+				files.some((f) => /^mark-.*-failed\.ts$/.test(f))
+			);
+		});
+}
 
 /**
  * Every VALUE a module imports from `@repo/database`, read off the source.
