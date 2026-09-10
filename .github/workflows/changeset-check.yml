@@ -1,8 +1,8 @@
 name: Changeset check
 
-# Fails any PR that touches code paths but does not include a changeset.
-# Opt out by applying the `skip-changeset` label (for docs-only, CI-only,
-# or other no-user-impact PRs).
+# Fails any PR that does not include a non-empty changeset. Opt out explicitly
+# by applying the `skip-changeset` label (for docs-only, CI-only, or other
+# no-user-impact PRs).
 #
 # See packages/fabric-app/README.md for the rationale and
 # docs/deployment.md § Release Strategy for the full release flow.
@@ -29,19 +29,26 @@ jobs:
     runs-on: ubuntu-24.04-arm
     # Skip the check if:
     # - PR carries the opt-out label, OR
-    # - PR is the auto-generated release PR from changesets/action
+    # - PR is the auto-generated release PR from changesets/action, opened by
+    #   the configured release App from this repository
     #   (head branch `changeset-release/<base>`) — that PR consumes
     #   changesets rather than adding them, so requiring one would
     #   deadlock the release. The release PR head branch is
-    #   `changeset-release/master` (post-cutover canonical base). OR
-    # - this is fabric-dev: the public relay PR carries the same label
-    #   (the relay propagates `skip-changeset`) and runs this identical
-    #   check, so a skip here — which counts as passing for the relay
-    #   gate — costs nothing. No workflow_dispatch escape hatch here, unlike
-    #   type-check and unit-tests: this workflow only runs on pull_request.
-    if: ${{ !contains(github.event.pull_request.labels.*.name, 'skip-changeset')
-            && github.event.pull_request.head.ref != 'changeset-release/master'
-            && github.repository != 'Fabric-Pro/fabric-dev' }}
+    #   `changeset-release/master` (post-cutover canonical base).
+    # Run this in fabric-dev as well as the public mirror. That duplicates a
+    # small setup/status check for impacting PRs, but catches a missing release
+    # decision before relay. A correctly labeled non-impacting PR skips the job
+    # before setup, so it incurs no duplicate runner work.
+    if: >-
+      ${{
+        !contains(github.event.pull_request.labels.*.name, 'skip-changeset') &&
+        !(
+          vars.RELEASE_APP_LOGIN != '' &&
+          github.event.pull_request.user.login == vars.RELEASE_APP_LOGIN &&
+          github.event.pull_request.head.repo.full_name == github.repository &&
+          github.event.pull_request.head.ref == 'changeset-release/master'
+        )
+      }}
     steps:
       - name: Checkout PR
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -50,29 +57,21 @@ jobs:
           # can diff against the merge base.
           fetch-depth: 0
 
-      - name: Path-based opt-out (docs/CI/changeset-only changes)
-        id: paths
-        # Only the listed paths changed → no changeset required.
+      - name: Require a changeset file or explicit skip label
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          CHANGED=$(git diff --name-only "$BASE_SHA" "$HEAD_SHA")
-          echo "Changed files:"
-          echo "$CHANGED"
-          # Files matching any of these patterns count as "no-impact"
-          NON_IMPACT_REGEX='^(\.changeset/|\.github/|docs/|\.vscode/|\.claude/|\.cursor/|\.augment/|.*\.md$|\.gitignore$|\.editorconfig$|LICENSE)'
-          IMPACT=$(echo "$CHANGED" | grep -Ev "$NON_IMPACT_REGEX" || true)
-          if [ -z "$IMPACT" ]; then
-            echo "no_impact=true" >> "$GITHUB_OUTPUT"
-            echo "Only no-impact paths changed; skipping changeset check."
-          else
-            echo "no_impact=false" >> "$GITHUB_OUTPUT"
-            echo "Impacting files present; changeset required."
+          CHANGESET_FILES=$(git diff --name-only "$BASE_SHA" "$HEAD_SHA" -- '.changeset/*.md')
+          if [ -z "$CHANGESET_FILES" ]; then
+            echo "::error::No changeset file was added or updated."
+            echo "::error::Run \`pnpm changeset\`, or apply \`skip-changeset\` when this PR has no deployable or user-visible impact."
+            exit 1
           fi
+          echo "Changeset candidates:"
+          echo "$CHANGESET_FILES"
 
       - name: Setup pnpm
-        if: steps.paths.outputs.no_impact == 'false'
         uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
         env:
           # The action bootstraps pnpm with `npm ci`, whose audit request has stalled for
@@ -81,23 +80,19 @@ jobs:
           npm_config_audit: "false"
 
       - name: Setup Node.js
-        if: steps.paths.outputs.no_impact == 'false'
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '22'
           cache: 'pnpm'
 
       - name: Verify a changeset exists and declares package bumps
-        if: steps.paths.outputs.no_impact == 'false'
         env:
           BASE_REF: ${{ github.event.pull_request.base.ref }}
         run: |
           # Two-layer check:
-          # 1. A non-zero exit from `changeset status` is a CLI failure (an
-          #    unreadable changeset, a bad --since ref) — surface it as-is.
-          #    It is NOT how a missing changeset shows up: with `--output`
-          #    the command exits 0 and writes `"releases": []` whether the
-          #    range has no changeset file or one with empty frontmatter.
+          # 1. A non-zero exit from `changeset status` is a failure (including
+          #    unreadable or absent changesets and a bad --since ref) — surface
+          #    it as-is.
           # 2. Parse the JSON output and require at least one package bump
           #    in `.releases` — this is the gate for both the "forgot to add
           #    one" case and the malformed-frontmatter case (file exists but
@@ -135,7 +130,7 @@ jobs:
             echo "::error::  \"fabric-app\": patch"
             echo "::error::  ---"
             echo "::error::"
-            echo "::error::See AGENTS.md § Changesets for the full format."
+            echo "::error::See AGENTS.md § Changesets and delivery for the full format."
             exit 1
           fi
           echo "Changeset present with $RELEASE_COUNT package bump(s) — OK."

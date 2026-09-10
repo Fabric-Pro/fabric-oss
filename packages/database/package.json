@@ -35,7 +35,6 @@
 	"private": true,
 	"scripts": {
 		"generate": "tsx ./scripts/generate-client.mts",
-		"push": "dotenv -c -e ../../.env -- prisma db push --skip-generate --schema=./prisma/schema.prisma && pnpm generate",
 		"migrate": "dotenv -c -e ../../.env -- prisma migrate dev --skip-generate --schema=./prisma/schema.prisma && pnpm generate",
 		"studio": "dotenv -c -e ../../.env -- prisma studio --schema=./prisma/schema.prisma",
 		"seed": "dotenv -c -e ../../.env.local -- tsx ./prisma/seed.ts",

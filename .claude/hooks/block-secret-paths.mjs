@@ -97,7 +97,7 @@ function main() {
 	writeBlockMessage({
 		command: `${toolCall.tool_name.toLowerCase()} of '${filePath}'`,
 		reason: verdict.reason,
-		sourceRef: "CLAUDE.md (secret files)",
+		sourceRef: "AGENTS.md (security and auditability)",
 	});
 	process.exit(2);
 }

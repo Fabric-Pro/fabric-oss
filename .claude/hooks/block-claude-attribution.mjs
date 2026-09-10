@@ -82,7 +82,7 @@ function main() {
 	writeBlockMessage({
 		command,
 		reason: `Claude attribution ("${matched}") is forbidden in commit messages and PR bodies`,
-		sourceRef: "CLAUDE.md:175-176",
+		sourceRef: "AGENTS.md (changesets and delivery)",
 		proceedHint:
 			"rewrite the message without the attribution line, " +
 			'or set "disableAllHooks": true in .claude/settings.local.json',

@@ -416,7 +416,8 @@ pnpm format                       # Format all packages
 
 # Database
 pnpm --filter @repo/database generate  # Generate Prisma client
-pnpm --filter @repo/database push      # Push schema to database
+cd packages/database
+npx dotenv -c -e ../../.env.local -- npx prisma migrate dev --name descriptive_name --schema=./prisma/schema.prisma
 pnpm --filter @repo/database studio    # Open Prisma Studio
 
 # Testing

@@ -14,7 +14,7 @@ describe("block-claude-attribution — blocks", () => {
 			"git commit with Co-Authored-By trailer",
 			`git commit -m "fix(api): handle null user
 
-Co-Authored-By: Claude <noreply@anthropic.com>"`,
+Co-Authored-By: Claude <no-reply@example.com>"`,
 		],
 		[
 			"git commit with literal robot emoji prefix",
@@ -35,7 +35,7 @@ Generated with Claude Code"`,
 			`git commit -m "$(cat <<'EOF'
 fix(api): handle null user
 
-Co-Authored-By: Claude <noreply@anthropic.com>
+Co-Authored-By: Claude <no-reply@example.com>
 EOF
 )"`,
 		],
@@ -51,7 +51,10 @@ co-authored-by: Claude <x@x>"`,
 			const result = await bash(command);
 			assert.equal(result.exitCode, 2, `stderr: ${result.stderr}`);
 			assert.match(result.stderr, /attribution/i);
-			assert.match(result.stderr, /CLAUDE\.md:175-176/);
+			assert.match(
+				result.stderr,
+				/AGENTS\.md \(changesets and delivery\)/,
+			);
 		});
 	}
 });

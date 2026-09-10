@@ -1,7 +1,7 @@
 # Claude Code hooks
 
 This directory holds the team-shared **PreToolUse hooks** that enforce
-the safety rules documented in `CLAUDE.md` and `CONTRIBUTING.md`.
+the safety rules documented in `AGENTS.md` and `CONTRIBUTING.md`.
 Hooks live in `.claude/hooks/` and are wired in `.claude/settings.json`,
 both of which are checked into the repo — so a fresh `git clone` plus
 opening Claude Code in this checkout gives every developer the same
@@ -19,11 +19,11 @@ that itself).
 
 | Hook | Trigger | What it blocks | Source |
 | ---- | ------- | -------------- | ------ |
-| `block-destructive-bash.mjs` | every `Bash` call | `git clean -fd[x]`; `rm -rf` of `/`, `~`, `$HOME`, `.`; `git push --force` to `main`/`master`; `git reset --hard` / `git checkout .` / `git restore .` while the tree is dirty; `git branch -D main\|master`; `chmod -R 777`; `curl\|wget … \| sh\|bash` | `CLAUDE.md:26` (the `git clean -fd` incident); destructive-bash conventions |
-| `block-claude-attribution.mjs` | `git commit *` or `gh pr *` | Commit messages and PR bodies containing `Co-Authored-By: Claude` (case-insensitive), `Generated with Claude Code`, or `🤖 Generated`. Scans `-m`, `--body`, heredocs, and the whole command string | `CLAUDE.md:175-176` |
+| `block-destructive-bash.mjs` | every `Bash` call | `git clean -fd[x]`; `rm -rf` of `/`, `~`, `$HOME`, `.`; `git push --force` to `main`/`master`; `git reset --hard` / `git checkout .` / `git restore .` while the tree is dirty; `git branch -D main\|master`; `chmod -R 777`; `curl\|wget … \| sh\|bash` | `AGENTS.md` § Workspace safety |
+| `block-claude-attribution.mjs` | `git commit *` or `gh pr *` | Commit messages and PR bodies containing `Co-Authored-By: Claude` (case-insensitive), `Generated with Claude Code`, or `🤖 Generated`. Scans `-m`, `--body`, heredocs, and the whole command string | `AGENTS.md` § Changesets and delivery |
 | `block-prisma-db-push.mjs` | `*prisma db push*` | Any `prisma db push` invocation (via `npx`, `pnpm`, `yarn dlx`, or `bash -c`) — schema changes must go through `prisma migrate dev` | `CONTRIBUTING.md:69` |
-| `block-destructive-sql.mjs` | `psql *` | `DROP DATABASE`, `DROP TABLE`, `TRUNCATE`, and `DELETE FROM` / `UPDATE … SET` without a `WHERE` clause inside a `-c "<SQL>"` payload — always-on regardless of host (yes, including local Docker postgres; a typo against local is still an evening of re-seeding) | `CLAUDE.md` (database safety) |
-| `block-shared-env-sql-writes.mjs` | `psql *` | Any non-`SELECT`/`WITH`/`EXPLAIN`/`SHOW` / `\…` statement when the `psql` invocation targets a host containing `neon.tech`, `staging`, `prod`, or `production`. Local connections (`localhost`, `127.0.0.1`, `host.docker.internal`, no host) are not gated | `CLAUDE.md` (database safety) |
+| `block-destructive-sql.mjs` | `psql *` | `DROP DATABASE`, `DROP TABLE`, `TRUNCATE`, and `DELETE FROM` / `UPDATE … SET` without a `WHERE` clause inside a `-c "<SQL>"` payload — always-on regardless of host (yes, including local Docker postgres; a typo against local is still an evening of re-seeding) | `AGENTS.md` § Database and migration safety |
+| `block-shared-env-sql-writes.mjs` | `psql *` | Any non-`SELECT`/`WITH`/`EXPLAIN`/`SHOW` / `\…` statement when the `psql` invocation targets a host containing `neon.tech`, `staging`, `prod`, or `production`. Local connections (`localhost`, `127.0.0.1`, `host.docker.internal`, no host) are not gated | `AGENTS.md` § Database and migration safety |
 | `block-secret-paths.mjs` | `Edit`/`Write`/`MultiEdit`/`NotebookEdit` | Edits to `.env` / `.env.*` (except `.example`/`.sample`/`.template`), `**/*.pem` / `**/*.key`, `.npmrc`, or any basename starting with `credentials` (case-insensitive). **`.md` files are exempt** — docs about credentials are not credentials. `Read` is never blocked | conventions: environment variables / secrets |
 | `enforce-branch-naming.mjs` | `git push*` | `git push` from a branch whose name does not match `^(feature\|fix\|docs\|refactor)/[a-z0-9._-]+$`. Explicit allow-list: `main`, `master`, detached HEAD, `--tags`, and pushes whose positional ref is a semver tag (`v1.2.3`, `v0.0.0-rc.1`) — those are tag pushes, not branch pushes. Does **not** run `lint`/`type-check`: `git push` stays fast | `CONTRIBUTING.md:50-57` |
 | `pr-quality-gate.mjs` | `gh pr create*`, `gh pr edit*--body*`, `gh pr edit*--body-file*` | `gh pr create` and `gh pr edit` calls that mutate the PR body. Runs `pnpm type-check:changed`, `pnpm lint`, and `pnpm format:check` from the git worktree the PR command runs in — a leading `cd <dir>`, else the session cwd, falling back to `$CLAUDE_PROJECT_DIR` — sequentially with fail-fast. On the first non-zero exit it does **not** hard-block — it returns `permissionDecision: "ask"`, escalating to a user confirmation prompt that shows the last 20 lines of the failing check. **You** decide: fix it first, or approve and create the PR anyway. Allows `gh pr view`/`list`/`checkout`/`merge`/`review`/`comment` and `gh pr edit` calls without `--body`/`--body-file` (label/title/reviewer changes). **Slow by design** — see "PR-quality-gate latency" below | `CONTRIBUTING.md:79-86` |
@@ -56,7 +56,7 @@ The block message Claude shows you is always three lines:
 
 ```
 Blocked: '<the literal command Claude tried to run>'
-Reason: <one-line reason> (<source ref, e.g. CLAUDE.md:26>)
+Reason: <one-line reason> (<source ref, e.g. AGENTS.md § Workspace safety>)
 To proceed: <how to get past the block>
 ```
 
@@ -137,7 +137,7 @@ Tests pass these via the `env` option of `child_process.spawn` (see
 3. Wire the hook in `.claude/settings.json` with a tight `if`
    pre-filter so it only spawns for relevant tool calls.
 4. Update the table in this README and cite the rule it enforces
-   (`CLAUDE.md` line, `CONTRIBUTING.md` line, or a `fabric/standards/`
+   (`AGENTS.md` section, `CONTRIBUTING.md` line, or a `fabric/standards/`
    file).
 5. The CI workflow `.github/workflows/claude-hooks.yml` will validate
    the JSON, syntax-check every `.mjs`, and run the test suite on the PR.

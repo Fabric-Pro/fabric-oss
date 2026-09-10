@@ -1,0 +1,53 @@
+# Commands forbidden by repository policy. These rules are an additional Codex
+# boundary; CI and review remain the cross-agent enforcement layers.
+
+prefix_rule(
+    pattern = ["git", "clean"],
+    decision = "forbidden",
+    justification = "Use pnpm clean or remove one verified build-artifact directory instead; git clean has deleted required agent files in this repository.",
+    match = ["git clean -fd", "git clean -fdx"],
+    not_match = ["git status --short"],
+)
+
+prefix_rule(
+    pattern = ["prisma", "db", "push"],
+    decision = "forbidden",
+    justification = "Create a reviewed Prisma migration with migrate dev; db push bypasses migration history.",
+    match = ["prisma db push"],
+)
+
+prefix_rule(
+    pattern = ["npx", "prisma", "db", "push"],
+    decision = "forbidden",
+    justification = "Create a reviewed Prisma migration with migrate dev; db push bypasses migration history.",
+    match = ["npx prisma db push"],
+)
+
+prefix_rule(
+    pattern = ["pnpm", "exec", "prisma", "db", "push"],
+    decision = "forbidden",
+    justification = "Create a reviewed Prisma migration with migrate dev; db push bypasses migration history.",
+    match = ["pnpm exec prisma db push"],
+)
+
+prefix_rule(
+    pattern = ["pnpm", "prisma", "db", "push"],
+    decision = "forbidden",
+    justification = "Create a reviewed Prisma migration with migrate dev; db push bypasses migration history.",
+    match = ["pnpm prisma db push"],
+)
+
+prefix_rule(
+    pattern = ["pnpm", "--filter", "@repo/database", "push"],
+    decision = "forbidden",
+    justification = "The legacy database push script bypassed migration history and has been removed; create a reviewed migration instead.",
+    match = ["pnpm --filter @repo/database push"],
+)
+
+prefix_rule(
+    pattern = ["gh", "pr", "merge"],
+    decision = "forbidden",
+    justification = "This repository lands through the OSS relay; do not merge its pull requests directly.",
+    match = ["gh pr merge 123", "gh pr merge --squash 123"],
+    not_match = ["gh pr view 123"],
+)

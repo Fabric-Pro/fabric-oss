@@ -93,7 +93,7 @@ function main() {
 		writeBlockMessage({
 			command,
 			reason: `${reason} — confirmed always-on, including local Docker postgres`,
-			sourceRef: "CLAUDE.md (database safety)",
+			sourceRef: "AGENTS.md (database and migration safety)",
 			proceedHint:
 				"add an explicit WHERE clause, or run interactively in your own psql session " +
 				"(this hook intentionally has no in-band bypass — `disableAllHooks: true` in .claude/settings.local.json for the session)",

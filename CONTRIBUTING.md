@@ -140,18 +140,21 @@ evidence of relevant local testing may be closed without detailed review.
 
 ## Multi-Tenant Architecture
 
-Every feature **must** support both personal and organization contexts with strict data isolation. See the [Tenant Isolation Guide](/docs/guides/tenant-isolation) for details.
+An organization is the only live tenant context. New features must resolve an
+organization and preserve strict isolation between organizations and users. A
+remaining `organizationId: null` branch is a fail-closed default, not a
+personal product surface. See
+[ADR-018](docs/adr/018-organization-is-the-only-tenant-context.md).
 
 ### Feature Checklist
 
 Before submitting a feature PR, verify:
 
-- [ ] Schema has `userId` + `organizationId` columns
+- [ ] Tenant-owned schema and queries carry the required ownership columns
 - [ ] Queries use XOR pattern (never OR for tenant filtering)
 - [ ] Uses `tenantProtectedProcedure` or `resolveOrganizationId()`
-- [ ] Page exists in both `(account)/` and `(organizations)/[organizationSlug]/`
-- [ ] Components use `useOrganizationContext()`
-- [ ] Tested in both personal and organization contexts
+- [ ] `organizationId` reaches workflows, activities, MCP, and model resolution
+- [ ] Tests cover cross-organization and unauthorized-user boundaries
 
 ## Coding Standards
 

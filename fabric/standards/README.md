@@ -98,10 +98,10 @@ For deployment and operations:
 
 ### For AI Assistants
 
-Standards are automatically:
-- Loaded during task orchestration
-- Referenced during code generation
-- Enforced during code review
+Standards are loaded when an instruction or task routes the assistant to them;
+Markdown links are not automatic includes. The root `AGENTS.md` routing table
+names the standards that must be read for each change area. Machine-checkable
+requirements belong in tests or CI rather than relying on prose alone.
 
 ### For Code Review
 
@@ -187,4 +187,3 @@ Links to official docs and further reading.
 **Standards Version**: 2.0
 
 *These standards are living documents. Contribute improvements through pull requests.*
-

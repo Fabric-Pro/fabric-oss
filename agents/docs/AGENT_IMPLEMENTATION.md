@@ -90,9 +90,10 @@ To verify and synchronize the schema:
 ```bash
 # From repository root
 pnpm --filter @repo/database generate
-pnpm --filter @repo/database push  # For dev
-# OR
-pnpm --filter @repo/database migrate deploy  # For production
+cd packages/database
+npx dotenv -c -e ../../.env.local -- npx prisma migrate dev --name descriptive_name --schema=./prisma/schema.prisma
+# Managed environments use the guarded promotion path
+pnpm --filter @repo/database promote
 ```
 
 ---
@@ -1432,4 +1433,3 @@ The architecture is solid and ready for expansion. The main gap is the dynamic a
 
 **Last Updated**: 2025-11-17
 **Version**: 1.0.0
-

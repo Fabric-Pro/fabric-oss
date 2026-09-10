@@ -8,7 +8,7 @@ name: Type Check
 # type-check job on `pull_request` at all, and none on `push` either. Every
 # fabric-dev PR lands through the OSS relay, which opens a public PR on the
 # same commit in the mirror, and that public PR's `type-check` run is the
-# required gate — see CLAUDE.md § Landing a PR: the OSS relay. Running the
+# required gate — see AGENTS.md § Changesets and delivery. Running the
 # sweep in fabric-dev too would only pay twice (it used to, on a paid 8-core
 # arm64 runner) for a verdict the public PR already gives. `workflow_dispatch`
 # is exempt from that: a manual dispatch in the staging repo still runs the

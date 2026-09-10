@@ -72,6 +72,9 @@ jobs:
       - name: Lint
         run: pnpm lint
 
+      - name: Agent guidance
+        run: pnpm guidance:check
+
       # Apache-2.0 §4(a)/(d) and MIT's notice condition follow the artifact, not
       # the tree — see docs/licensing.md.
       - name: Artifact licence and notice check

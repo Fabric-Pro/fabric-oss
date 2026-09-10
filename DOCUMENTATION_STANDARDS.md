@@ -10,7 +10,8 @@ Non-negotiable rules for all documentation in this repository.
 2. **No work logs.** Do not commit debugging sessions, fix summaries, or iteration narratives as markdown files.
 3. **No execution plans after completion.** Delete plans once work is done. The code is the outcome.
 4. **No duplicate topic files.** One topic = one file. Update the existing file instead of creating a variant.
-5. **Every document must define its audience and owner** in a metadata header.
+5. **Every document must define its audience and owner** in a metadata header,
+   except tool-discovered instruction entry points listed below.
 6. **Files must live in approved directories** (see Directory Structure below).
 
 ## Prohibited Patterns
@@ -36,7 +37,9 @@ If a document describes "how we fixed X" or "what we tried", it does not belong 
 
 ## Required Document Header
 
-Every markdown file (except README.md, CONTRIBUTING.md, SECURITY.md) must start with:
+Every markdown file (except README.md, CONTRIBUTING.md, SECURITY.md, scoped
+`AGENTS.md`/`CLAUDE.md` instruction files, and `.agents/skills/*/SKILL.md`) must
+start with:
 
 ```markdown
 # Title
@@ -54,6 +57,8 @@ Product and developer documentation must live in approved directories:
 | Directory | Purpose | Rules |
 |-----------|---------|-------|
 | `/` (root) | Entry points | README, AGENTS, CLAUDE, CONCEPTS, CONTRIBUTING, SECURITY, CHANGELOG, COLLABORATION only |
+| `**/AGENTS.md`, `**/CLAUDE.md` | Tool-discovered instructions | Keep path-scoped guidance terse; route to canonical documentation for detail |
+| `.agents/skills/*/` | Shared agent procedures | One `SKILL.md` entry point plus only the supporting resources it needs |
 | `docs/` | Internal developer documentation | Architecture, deployment, integration references |
 | `docs/adr/` | Architecture Decision Records | Numbered, immutable once accepted |
 | `agents/docs/` | Agent-specific documentation | Architecture and protocol references only |
@@ -63,7 +68,11 @@ Product and developer documentation must live in approved directories:
 | `fabric/standards/` | Coding standards | Active standards only |
 | `deployment/` | Deployment references | Per-platform guides |
 
-**Exceptions**: Tooling and CI configuration directories (`.github/`, `.claude/`, `.augment/`) may contain markdown files as needed for their respective tools. These are not subject to this rule.
+**Exceptions**: Tooling and CI configuration directories (`.github/`,
+`.claude/`, `.augment/`), tool-discovered `AGENTS.md`/`CLAUDE.md` files, and
+`.agents/skills/*/SKILL.md` may contain markdown as needed for their respective
+tools. These are not subject to the approved-directory or metadata-header
+rules, but they remain subject to the no-history and no-duplicate-topic rules.
 
 Do not create product or developer documentation markdown files outside the approved directories listed above.
 
@@ -100,8 +109,10 @@ Required format:
 CI should fail if:
 
 - Files match prohibited patterns (`*_FIX.md`, `*_FINAL.md`, etc.)
-- Markdown files are added outside approved directories
-- Markdown files are missing the required metadata header
+- Documentation markdown files are added outside approved directories, after
+  applying the instruction-file exceptions above
+- Documentation markdown files are missing the required metadata header, after
+  applying the instruction-file exceptions above
 - Multiple new docs are created for the same topic without an ADR
 
 ## Review Checklist

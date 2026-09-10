@@ -121,16 +121,20 @@ builder.Build().Run();
 **✅ DO**: Use Prisma migrations for schema changes
 
 ```bash
-# Development: Push schema changes directly
-pnpm --filter @repo/database push
+# Development: create and review migration history
+cd packages/database
+npx dotenv -c -e ../../.env.local -- npx prisma migrate dev --name add_workflow_versions --schema=./prisma/schema.prisma
 
-# Production: Create and apply migrations
-pnpm --filter @repo/database migrate:dev --name add_workflow_versions
-pnpm --filter @repo/database migrate:deploy
+# Managed environments: use the promotion path (preflight, migrate, RLS)
+pnpm --filter @repo/database promote
 
 # Generate Prisma client after schema changes
 pnpm --filter @repo/database generate
 ```
+
+Never use `prisma db push`; it bypasses migration history and creates drift
+between environments. Follow [migration standards](../backend/migrations.md)
+for branch switching, RLS, and recovery requirements.
 
 **✅ DO**: Review migrations before applying
 
@@ -445,4 +449,3 @@ CMD ["node", "apps/web/server.js"]
 - [Prisma Migrations](https://www.prisma.io/docs/orm/prisma-migrate)
 - [Next.js Deployment](https://nextjs.org/docs/deployment)
 - [Temporal Cloud](https://temporal.io/cloud)
-
