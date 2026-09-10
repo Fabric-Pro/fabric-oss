@@ -8,7 +8,7 @@ If you discover a security vulnerability in Fabric AI, please report it responsi
 
 ### How to Report
 
-Email: **security@fabric.pro**
+Email: **support@fabric.pro**
 
 Include:
 - Description of the vulnerability
