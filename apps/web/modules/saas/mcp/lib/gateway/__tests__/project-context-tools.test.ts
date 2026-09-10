@@ -23,6 +23,7 @@ const mocks = vi.hoisted(() => ({
 	listProjectContextSummaries: vi.fn(),
 	getContextById: vi.fn(),
 	getCrawledUrlSourceMarkdown: vi.fn(),
+	getCrawledUrlSourceMarkdownPage: vi.fn(),
 	getCapturedConversationMarkdown: vi.fn(),
 	getSignedUrl: vi.fn(),
 }));
@@ -32,6 +33,7 @@ vi.mock("@repo/database", () => ({
 	listProjectContextSummaries: mocks.listProjectContextSummaries,
 	getContextById: mocks.getContextById,
 	getCrawledUrlSourceMarkdown: mocks.getCrawledUrlSourceMarkdown,
+	getCrawledUrlSourceMarkdownPage: mocks.getCrawledUrlSourceMarkdownPage,
 	getCapturedConversationMarkdown: mocks.getCapturedConversationMarkdown,
 }));
 
@@ -116,6 +118,11 @@ beforeEach(() => {
 	});
 	mocks.getContextById.mockResolvedValue(transcriptRow());
 	mocks.getCrawledUrlSourceMarkdown.mockResolvedValue("");
+	mocks.getCrawledUrlSourceMarkdownPage.mockResolvedValue({
+		content: "",
+		contentLength: 0,
+		hasReadableText: false,
+	});
 	mocks.getCapturedConversationMarkdown.mockResolvedValue("");
 	mocks.getSignedUrl.mockResolvedValue("https://storage.example/signed");
 });
@@ -319,6 +326,57 @@ describe("fabric_get_project_context", () => {
 		expect(second.nextOffset).toBeUndefined();
 	});
 
+	it("uses Unicode characters consistently for body offsets and lengths", async () => {
+		mocks.getContextById.mockResolvedValue(
+			transcriptRow({ content: "A😀BC" }),
+		);
+
+		const first = payload(
+			await executePlatformTool(
+				"fabric_get_project_context",
+				{ contextId: "ctx-1", maxLength: 2 },
+				session,
+			),
+		);
+		expect(first).toMatchObject({
+			content: "A😀",
+			contentLength: 4,
+			returnedLength: 2,
+			nextOffset: 2,
+		});
+
+		const second = payload(
+			await executePlatformTool(
+				"fabric_get_project_context",
+				{ contextId: "ctx-1", offset: 2, maxLength: 2 },
+				session,
+			),
+		);
+		expect(second).toMatchObject({
+			content: "BC",
+			contentLength: 4,
+			returnedLength: 2,
+			truncated: false,
+		});
+	});
+
+	it.each([
+		[{ offset: 0.5 }, /offset must be an integer/i],
+		[{ offset: 2_147_483_647 }, /offset must be an integer/i],
+		[{ maxLength: 1.5 }, /maxLength must be an integer/i],
+		[{ maxLength: 200_001 }, /maxLength must be an integer/i],
+	])("rejects invalid pagination values: %o", async (pagination, message) => {
+		const result = await executePlatformTool(
+			"fabric_get_project_context",
+			{ contextId: "ctx-1", ...pagination },
+			session,
+		);
+
+		expect(result.isError).toBe(true);
+		expect(payload(result).error).toMatch(message);
+		expect(mocks.getCrawledUrlSourceMarkdownPage).not.toHaveBeenCalled();
+	});
+
 	it("reassembles a crawled URL source from its child pages", async () => {
 		mocks.getContextById.mockResolvedValue(
 			transcriptRow({
@@ -329,9 +387,12 @@ describe("fabric_get_project_context", () => {
 				sourceTitle: "Docs site",
 			}),
 		);
-		mocks.getCrawledUrlSourceMarkdown.mockResolvedValue(
-			"## Install\nhttps://example.com/install\n\nRun the installer.\n",
-		);
+		mocks.getCrawledUrlSourceMarkdownPage.mockResolvedValue({
+			content:
+				"## Install\nhttps://example.com/install\n\nRun the installer.\n",
+			contentLength: 56,
+			hasReadableText: true,
+		});
 
 		const body = payload(
 			await executePlatformTool(
@@ -341,12 +402,52 @@ describe("fabric_get_project_context", () => {
 			),
 		);
 
-		expect(mocks.getCrawledUrlSourceMarkdown).toHaveBeenCalledWith(
+		expect(mocks.getCrawledUrlSourceMarkdownPage).toHaveBeenCalledWith(
 			"ctx-link",
 			{ userId: "user-1", organizationId: "org-1" },
+			{ offset: 0, maxLength: 50_000 },
 		);
+		expect(mocks.getCrawledUrlSourceMarkdown).not.toHaveBeenCalled();
 		expect(body.contentAvailable).toBe(true);
 		expect(body.content).toContain("Run the installer.");
+	});
+
+	it("reads a later crawled-URL offset through the page-aware query", async () => {
+		mocks.getContextById.mockResolvedValue(
+			transcriptRow({
+				id: "ctx-link",
+				type: "LINK",
+				urlScope: "PATH_PREFIX",
+				content: "",
+			}),
+		);
+		mocks.getCrawledUrlSourceMarkdownPage.mockResolvedValue({
+			content: "## Deploy\nhttps://example.com/deploy\n\nShip it.\n",
+			contentLength: 180,
+			hasReadableText: true,
+		});
+
+		const body = payload(
+			await executePlatformTool(
+				"fabric_get_project_context",
+				{ contextId: "ctx-link", offset: 120, maxLength: 60 },
+				session,
+			),
+		);
+
+		expect(mocks.getCrawledUrlSourceMarkdownPage).toHaveBeenCalledWith(
+			"ctx-link",
+			{ userId: "user-1", organizationId: "org-1" },
+			{ offset: 120, maxLength: 60 },
+		);
+		expect(mocks.getCrawledUrlSourceMarkdown).not.toHaveBeenCalled();
+		expect(body).toMatchObject({
+			contentLength: 180,
+			offset: 120,
+			returnedLength: 47,
+			truncated: true,
+			nextOffset: 167,
+		});
 	});
 
 	it("hands back a presigned link to the original upload alongside its text", async () => {

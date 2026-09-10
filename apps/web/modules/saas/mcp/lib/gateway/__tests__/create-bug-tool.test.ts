@@ -22,9 +22,8 @@ const mocks = vi.hoisted(() => ({
 	updateMany: vi.fn(),
 	storyFindUnique: vi.fn(),
 	projectFindUnique: vi.fn(),
-	findCollision: vi.fn(),
-	buildBacklogDedupGuard: vi.fn(),
-	listStories: vi.fn(),
+	findOpenBacklogTitleCollision: vi.fn(),
+	listStorySummaries: vi.fn(),
 	createStoryFromProposal: vi.fn(),
 	dispatchLifecycleEvent: vi.fn(),
 	recordAuditFromRequest: vi.fn(),
@@ -42,8 +41,8 @@ vi.mock("@repo/database", () => ({
 	isOrganizationMember: mocks.isOrganizationMember,
 	hasProjectAccess: mocks.hasProjectAccess,
 	canCreateProjectStory: mocks.canCreateProjectStory,
-	buildBacklogDedupGuard: mocks.buildBacklogDedupGuard,
-	listStories: mocks.listStories,
+	findOpenBacklogTitleCollision: mocks.findOpenBacklogTitleCollision,
+	listStorySummaries: mocks.listStorySummaries,
 	TERMINAL_DRAFTING_STAGES: ["DECLINED", "CLOSED"],
 }));
 
@@ -122,11 +121,8 @@ beforeEach(() => {
 		id: "proj-1",
 		organizationId: "org-1",
 	});
-	mocks.findCollision.mockReturnValue(null);
-	mocks.buildBacklogDedupGuard.mockResolvedValue({
-		findCollision: mocks.findCollision,
-		recordCreated: vi.fn(),
-	});
+	mocks.findOpenBacklogTitleCollision.mockResolvedValue(null);
+	mocks.listStorySummaries.mockResolvedValue({ stories: [], total: 0 });
 	mocks.createStoryFromProposal.mockResolvedValue({
 		story: {
 			id: "story-new",
@@ -228,7 +224,7 @@ describe("fabric_create_bug — dedup", () => {
 	});
 
 	it("returns the existing bug on a normalized-title collision", async () => {
-		mocks.findCollision.mockReturnValue({
+		mocks.findOpenBacklogTitleCollision.mockResolvedValue({
 			existingId: "story-title-dupe",
 			existingIdentifier: "9",
 		});
@@ -252,7 +248,8 @@ describe("fabric_create_bug — dedup", () => {
 			identifier: "9",
 			fingerprintAttached: false,
 		});
-		expect(mocks.findCollision).toHaveBeenCalledWith(
+		expect(mocks.findOpenBacklogTitleCollision).toHaveBeenCalledWith(
+			"proj-1",
 			"BUG",
 			"Checkout returns 500 when cart is empty",
 		);
@@ -262,7 +259,7 @@ describe("fabric_create_bug — dedup", () => {
 	});
 
 	it("back-fills the caller's fingerprint onto a title-matched bug that has none", async () => {
-		mocks.findCollision.mockReturnValue({
+		mocks.findOpenBacklogTitleCollision.mockResolvedValue({
 			existingId: "story-title-dupe",
 			existingIdentifier: "9",
 		});
@@ -300,7 +297,7 @@ describe("fabric_create_bug — dedup", () => {
 	});
 
 	it("reports fingerprintAttached=false when the matched bug already carries one", async () => {
-		mocks.findCollision.mockReturnValue({
+		mocks.findOpenBacklogTitleCollision.mockResolvedValue({
 			existingId: "story-title-dupe",
 			existingIdentifier: "9",
 		});
@@ -329,7 +326,7 @@ describe("fabric_create_bug — dedup", () => {
 		// The guard's index is a snapshot: the bug it matched was closed
 		// between building the guard and writing. A resolved ticket is not a
 		// live duplicate, so this report deserves its own row.
-		mocks.findCollision.mockReturnValue({
+		mocks.findOpenBacklogTitleCollision.mockResolvedValue({
 			existingId: "story-title-dupe",
 			existingIdentifier: "9",
 		});
@@ -356,7 +353,7 @@ describe("fabric_create_bug — dedup", () => {
 	});
 
 	it("files a new bug when the title-matched row was deleted before the back-fill", async () => {
-		mocks.findCollision.mockReturnValue({
+		mocks.findOpenBacklogTitleCollision.mockResolvedValue({
 			existingId: "story-title-dupe",
 			existingIdentifier: "9",
 		});
@@ -379,7 +376,7 @@ describe("fabric_create_bug — dedup", () => {
 	});
 
 	it("prefers the fingerprint holder when the back-fill hits the unique index", async () => {
-		mocks.findCollision.mockReturnValue({
+		mocks.findOpenBacklogTitleCollision.mockResolvedValue({
 			existingId: "story-title-dupe",
 			existingIdentifier: "9",
 		});
@@ -418,7 +415,7 @@ describe("fabric_create_bug — dedup", () => {
 		// is closed — so it is not the live duplicate either. The title match
 		// is still open, so it is the answer and a stale P2002 must not
 		// surface.
-		mocks.findCollision.mockReturnValue({
+		mocks.findOpenBacklogTitleCollision.mockResolvedValue({
 			existingId: "story-title-dupe",
 			existingIdentifier: "9",
 		});
@@ -454,7 +451,7 @@ describe("fabric_create_bug — dedup", () => {
 		// ticket — and the P2002 is meaningless by then. A losing update says
 		// nothing about S's CURRENT state: the conflict comes from the index,
 		// so S satisfied the non-terminal predicate at write time only.
-		mocks.findCollision.mockReturnValue({
+		mocks.findOpenBacklogTitleCollision.mockResolvedValue({
 			existingId: "story-title-dupe",
 			existingIdentifier: "9",
 		});
@@ -486,7 +483,7 @@ describe("fabric_create_bug — dedup", () => {
 	});
 
 	it("files a new bug when the title match was deleted after losing the back-fill", async () => {
-		mocks.findCollision.mockReturnValue({
+		mocks.findOpenBacklogTitleCollision.mockResolvedValue({
 			existingId: "story-title-dupe",
 			existingIdentifier: "9",
 		});
@@ -877,7 +874,7 @@ describe("fabric_create_bug — creation side effects", () => {
 		[
 			"a title dedup hit with a back-fill",
 			() =>
-				mocks.findCollision.mockReturnValue({
+				mocks.findOpenBacklogTitleCollision.mockResolvedValue({
 					existingId: "story-title-dupe",
 					existingIdentifier: "9",
 				}),
@@ -1134,7 +1131,7 @@ describe("fabric_create_bug — validation and permissions", () => {
 
 describe("fabric_list_features — work-item kind", () => {
 	beforeEach(() => {
-		mocks.listStories.mockResolvedValue({
+		mocks.listStorySummaries.mockResolvedValue({
 			stories: [
 				{
 					id: "s1",
@@ -1147,7 +1144,8 @@ describe("fabric_list_features — work-item kind", () => {
 					storyPoints: null,
 					draftingStage: "PUBLISHED",
 					assigneeId: null,
-					tasks: [],
+					taskCount: 0,
+					completedTaskCount: 0,
 					externalUrl: null,
 					createdAt: new Date("2026-01-01T00:00:00Z"),
 					updatedAt: new Date("2026-01-01T00:00:00Z"),
@@ -1163,7 +1161,8 @@ describe("fabric_list_features — work-item kind", () => {
 					storyPoints: null,
 					draftingStage: "DRAFT",
 					assigneeId: null,
-					tasks: [],
+					taskCount: 3,
+					completedTaskCount: 2,
 					externalUrl: null,
 					createdAt: new Date("2026-01-01T00:00:00Z"),
 					updatedAt: new Date("2026-01-01T00:00:00Z"),
@@ -1197,15 +1196,26 @@ describe("fabric_list_features — work-item kind", () => {
 			"FEATURE",
 			"BUG",
 		]);
+		expect(
+			body.features.map(
+				(f: { taskCount: number; completedTaskCount: number }) => [
+					f.taskCount,
+					f.completedTaskCount,
+				],
+			),
+		).toEqual([
+			[0, 0],
+			[3, 2],
+		]);
 	});
 
-	it("threads the kind filter into listStories", async () => {
+	it("threads the kind filter into the narrow summary query", async () => {
 		await executePlatformTool(
 			"fabric_list_features",
 			{ projectId: "proj-1", kind: "BUG" },
 			session,
 		);
-		expect(mocks.listStories).toHaveBeenCalledWith(
+		expect(mocks.listStorySummaries).toHaveBeenCalledWith(
 			expect.objectContaining({ projectId: "proj-1", kind: "BUG" }),
 		);
 	});
@@ -1216,7 +1226,7 @@ describe("fabric_list_features — work-item kind", () => {
 			{ projectId: "proj-1" },
 			session,
 		);
-		expect(mocks.listStories).toHaveBeenCalledWith(
+		expect(mocks.listStorySummaries).toHaveBeenCalledWith(
 			expect.objectContaining({ kind: undefined }),
 		);
 	});
@@ -1235,7 +1245,7 @@ describe("fabric_list_features — work-item kind", () => {
 			expect(result.isError).toBe(true);
 			expect(payload(result).error).toContain("projectId is required");
 			expect(mocks.hasProjectAccess).not.toHaveBeenCalled();
-			expect(mocks.listStories).not.toHaveBeenCalled();
+			expect(mocks.listStorySummaries).not.toHaveBeenCalled();
 		},
 	);
 
@@ -1249,7 +1259,7 @@ describe("fabric_list_features — work-item kind", () => {
 			);
 			expect(result.isError).toBe(true);
 			expect(payload(result).error).toContain("kind must be one of");
-			expect(mocks.listStories).not.toHaveBeenCalled();
+			expect(mocks.listStorySummaries).not.toHaveBeenCalled();
 		},
 	);
 });

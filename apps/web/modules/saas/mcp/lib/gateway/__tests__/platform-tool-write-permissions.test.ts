@@ -22,8 +22,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
-	hasProjectAccess: vi.fn(),
-	canUpdateProjectStory: vi.fn(),
+	resolveProjectAccess: vi.fn(),
+	hasPermission: vi.fn(),
 	canCreateProjectInOrganization: vi.fn(),
 	updateTask: vi.fn(),
 	createProject: vi.fn(),
@@ -34,8 +34,12 @@ vi.mock("@repo/database", () => ({
 	db: {
 		storyTask: { findFirst: mocks.storyTaskFindFirst },
 	},
-	hasProjectAccess: mocks.hasProjectAccess,
-	canUpdateProjectStory: mocks.canUpdateProjectStory,
+	resolveProjectAccess: mocks.resolveProjectAccess,
+	hasPermission: mocks.hasPermission,
+	Permissions: {
+		PROJECT_UPDATE: "project:update",
+		STORY_UPDATE: "story:update",
+	},
 	canCreateProjectInOrganization: mocks.canCreateProjectInOrganization,
 	updateTask: mocks.updateTask,
 	createProject: mocks.createProject,
@@ -63,10 +67,14 @@ function text(result: { content: Array<{ text: string }> }) {
 
 beforeEach(() => {
 	vi.clearAllMocks();
-	// The caller can see the project in every case below. That is the whole
-	// point: visibility was the only thing these handlers used to check, and it
-	// is not the question a write should be asking.
-	mocks.hasProjectAccess.mockResolvedValue(true);
+	mocks.resolveProjectAccess.mockResolvedValue({
+		source: "project-member",
+		isVisible: true,
+		permissions: ["project:update", "story:update"],
+	});
+	mocks.hasPermission.mockImplementation((permissions, required) =>
+		permissions.includes(required),
+	);
 	mocks.storyTaskFindFirst.mockResolvedValue({
 		id: "task-1",
 		title: "Wire the export",
@@ -85,7 +93,7 @@ beforeEach(() => {
 
 describe("fabric_update_task honours the caller's project role", () => {
 	it("refuses a caller who may see the project but not update its stories", async () => {
-		mocks.canUpdateProjectStory.mockResolvedValue(false);
+		mocks.hasPermission.mockReturnValue(false);
 
 		const result = await executePlatformTool(
 			"fabric_update_task",
@@ -93,7 +101,7 @@ describe("fabric_update_task honours the caller's project role", () => {
 			session,
 		);
 
-		expect(mocks.canUpdateProjectStory).toHaveBeenCalledWith(
+		expect(mocks.resolveProjectAccess).toHaveBeenCalledWith(
 			"proj-1",
 			"user-1",
 		);
@@ -103,7 +111,7 @@ describe("fabric_update_task honours the caller's project role", () => {
 	});
 
 	it("allows a caller who holds STORY_UPDATE on the project", async () => {
-		mocks.canUpdateProjectStory.mockResolvedValue(true);
+		mocks.hasPermission.mockReturnValue(true);
 
 		await executePlatformTool(
 			"fabric_update_task",
@@ -117,7 +125,7 @@ describe("fabric_update_task honours the caller's project role", () => {
 
 describe("fabric_complete_task honours the caller's project role", () => {
 	it("refuses a Viewer who can see the project", async () => {
-		mocks.canUpdateProjectStory.mockResolvedValue(false);
+		mocks.hasPermission.mockReturnValue(false);
 
 		const result = await executePlatformTool(
 			"fabric_complete_task",
@@ -130,7 +138,7 @@ describe("fabric_complete_task honours the caller's project role", () => {
 	});
 
 	it("allows an Editor", async () => {
-		mocks.canUpdateProjectStory.mockResolvedValue(true);
+		mocks.hasPermission.mockReturnValue(true);
 
 		await executePlatformTool(
 			"fabric_complete_task",
@@ -142,6 +150,40 @@ describe("fabric_complete_task honours the caller's project role", () => {
 			isCompleted: true,
 		});
 	});
+});
+
+it("uses the authoritative org-role fallback when no ProjectMember row exists", async () => {
+	mocks.resolveProjectAccess.mockResolvedValue({
+		source: "org",
+		isVisible: true,
+		permissions: ["story:update"],
+	});
+
+	await executePlatformTool(
+		"fabric_update_task",
+		{ taskId: "task-1", projectId: "proj-1", title: "Renamed" },
+		session,
+	);
+
+	expect(mocks.updateTask).toHaveBeenCalled();
+});
+
+it("does not let an org role write a project hidden from discovery", async () => {
+	mocks.resolveProjectAccess.mockResolvedValue({
+		source: "org",
+		isVisible: false,
+		permissions: ["story:update"],
+	});
+
+	const result = await executePlatformTool(
+		"fabric_update_task",
+		{ taskId: "task-1", projectId: "proj-1", title: "Renamed" },
+		session,
+	);
+
+	expect(text(result)).toContain("Project not found or access denied");
+	expect(mocks.hasPermission).not.toHaveBeenCalled();
+	expect(mocks.updateTask).not.toHaveBeenCalled();
 });
 
 describe("fabric_create_project honours PROJECT_CREATE", () => {

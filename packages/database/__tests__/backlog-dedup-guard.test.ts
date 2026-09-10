@@ -12,10 +12,11 @@
  *   pnpm --filter @repo/database test __tests__/backlog-dedup-guard.test.ts
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { TERMINAL_DRAFTING_STAGES } from "../utils";
+import { normalizeBacklogTitle, TERMINAL_DRAFTING_STAGES } from "../utils";
 
-const { findManyMock } = vi.hoisted(() => ({
+const { findManyMock, rawQueryMock } = vi.hoisted(() => ({
 	findManyMock: vi.fn(),
+	rawQueryMock: vi.fn(),
 }));
 
 // The helper resolves its `db` import to `../../client` from its position
@@ -24,19 +25,98 @@ const { findManyMock } = vi.hoisted(() => ({
 vi.mock("../prisma/client", () => ({
 	db: {
 		userStory: { findMany: findManyMock },
+		$queryRaw: (...args: unknown[]) => rawQueryMock(...args),
 	},
+	Prisma: { join: (values: unknown[]) => ({ __join: values }) },
 }));
 
 // `normalizeBacklogTitle` is a pure helper at `packages/database/utils.ts`.
 // Importing the real one keeps these tests exercising the canonical
 // normalization rules — no parallel implementation to drift.
 
-const { buildBacklogDedupGuard, inferDedupFamily } = await import(
-	"../prisma/queries/projects/backlog-dedup-guard"
-);
+const {
+	buildBacklogDedupGuard,
+	findOpenBacklogTitleCollision,
+	inferDedupFamily,
+} = await import("../prisma/queries/projects/backlog-dedup-guard");
 
 beforeEach(() => {
 	findManyMock.mockReset();
+	rawQueryMock.mockReset();
+});
+
+describe("findOpenBacklogTitleCollision", () => {
+	it("uses a single parameterized normalized-title lookup scoped to one family", async () => {
+		rawQueryMock.mockResolvedValue([
+			{
+				existingId: "bug-1",
+				existingIdentifier: "B-007",
+				title: "\u00a0[BUG]\tLogin crashes\u00a0",
+			},
+		]);
+
+		await expect(
+			findOpenBacklogTitleCollision(
+				"proj-1",
+				"BUG",
+				"  [BUG] Login crashes  ",
+			),
+		).resolves.toEqual({
+			existingId: "bug-1",
+			existingIdentifier: "B-007",
+		});
+
+		expect(findManyMock).not.toHaveBeenCalled();
+		const [strings, ...params] = rawQueryMock.mock.calls[0];
+		const sql = (strings as string[]).join("?").replace(/\s+/g, " ");
+		expect(sql).toContain("FROM user_story");
+		expect(sql).toContain('kind = ?::"StoryKind"');
+		expect(sql).toContain('"draftingStage" NOT IN');
+		expect(sql).toContain("regexp_replace");
+		expect(sql).toContain("lower(normalize");
+		expect(sql).toContain("= normalize(?, NFD)");
+		expect(params).toContain("proj-1");
+		expect(params).toContain("BUG");
+		expect(params).toContain("login crashes");
+		expect(params).toEqual(
+			expect.arrayContaining([expect.stringContaining("\u00a0")]),
+		);
+	});
+
+	it("rejects a database candidate that does not match the canonical normalizer", async () => {
+		rawQueryMock.mockResolvedValue([
+			{
+				existingId: "bug-1",
+				existingIdentifier: "B-007",
+				title: "A different title",
+			},
+		]);
+
+		await expect(
+			findOpenBacklogTitleCollision("proj-1", "BUG", "Login crashes"),
+		).resolves.toBeNull();
+	});
+
+	it("uses a database-portable Unicode canonical key", async () => {
+		expect(normalizeBacklogTitle("İssue")).toBe("i̇ssue");
+		expect(normalizeBacklogTitle("ΟΣ")).toBe("οσ");
+		expect(normalizeBacklogTitle("ος")).toBe("οσ");
+
+		rawQueryMock.mockResolvedValue([
+			{
+				existingId: "feature-1",
+				existingIdentifier: "F-007",
+				title: "ΟΣ",
+			},
+		]);
+
+		await expect(
+			findOpenBacklogTitleCollision("proj-1", "FEATURE", "ος"),
+		).resolves.toEqual({
+			existingId: "feature-1",
+			existingIdentifier: "F-007",
+		});
+	});
 });
 
 // ---------------------------------------------------------------------------

@@ -22,7 +22,18 @@ import { describe, expect, it, vi } from "vitest";
 vi.mock("@repo/database", () => ({
 	db: {},
 	hasProjectAccess: vi.fn().mockResolvedValue(true),
-	canUpdateProjectStory: vi.fn().mockResolvedValue(true),
+	resolveProjectAccess: vi.fn().mockResolvedValue({
+		source: "project-member",
+		isVisible: true,
+		permissions: ["project:update", "story:update"],
+	}),
+	hasPermission: vi.fn((permissions, required) =>
+		permissions.includes(required),
+	),
+	Permissions: {
+		PROJECT_UPDATE: "project:update",
+		STORY_UPDATE: "story:update",
+	},
 	canCreateProjectInOrganization: vi.fn().mockResolvedValue(true),
 	listProjects: vi.fn().mockResolvedValue([]),
 	updateTask: vi.fn(),

@@ -42,6 +42,7 @@ const PERMISSION_GATES = [
 	"canUpdateProjectStory",
 	"canCreateProjectStory",
 	"canCreateProjectInOrganization",
+	"resolveGatewayProjectWriteAccess",
 	"resolveProjectForStoryWrite",
 	"isOrganizationMember",
 	"session.credential",

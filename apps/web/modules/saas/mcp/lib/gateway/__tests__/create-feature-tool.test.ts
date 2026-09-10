@@ -28,8 +28,7 @@ const mocks = vi.hoisted(() => ({
 	updateMany: vi.fn(),
 	storyFindUnique: vi.fn(),
 	projectFindUnique: vi.fn(),
-	findCollision: vi.fn(),
-	buildBacklogDedupGuard: vi.fn(),
+	findOpenBacklogTitleCollision: vi.fn(),
 	listStories: vi.fn(),
 	createStoryFromProposal: vi.fn(),
 	dispatchLifecycleEvent: vi.fn(),
@@ -48,7 +47,7 @@ vi.mock("@repo/database", () => ({
 	isOrganizationMember: mocks.isOrganizationMember,
 	hasProjectAccess: mocks.hasProjectAccess,
 	canCreateProjectStory: mocks.canCreateProjectStory,
-	buildBacklogDedupGuard: mocks.buildBacklogDedupGuard,
+	findOpenBacklogTitleCollision: mocks.findOpenBacklogTitleCollision,
 	listStories: mocks.listStories,
 	TERMINAL_DRAFTING_STAGES: ["DECLINED", "CLOSED"],
 }));
@@ -116,11 +115,7 @@ beforeEach(() => {
 		id: "proj-1",
 		organizationId: "org-1",
 	});
-	mocks.findCollision.mockReturnValue(null);
-	mocks.buildBacklogDedupGuard.mockResolvedValue({
-		findCollision: mocks.findCollision,
-		recordCreated: vi.fn(),
-	});
+	mocks.findOpenBacklogTitleCollision.mockResolvedValue(null);
 	mocks.createStoryFromProposal.mockResolvedValue({
 		story: {
 			id: "story-new",
@@ -188,7 +183,7 @@ describe("fabric_create_feature — declaration", () => {
 
 describe("fabric_create_feature — title dedup", () => {
 	it("returns the existing feature on a normalized-title collision", async () => {
-		mocks.findCollision.mockReturnValue({
+		mocks.findOpenBacklogTitleCollision.mockResolvedValue({
 			existingId: "story-title-dupe",
 			existingIdentifier: "9",
 		});
@@ -221,8 +216,8 @@ describe("fabric_create_feature — title dedup", () => {
 			session,
 		);
 
-		expect(mocks.buildBacklogDedupGuard).toHaveBeenCalledWith("proj-1");
-		expect(mocks.findCollision).toHaveBeenCalledWith(
+		expect(mocks.findOpenBacklogTitleCollision).toHaveBeenCalledWith(
+			"proj-1",
 			"FEATURE",
 			"Export the roadmap as CSV",
 		);
@@ -239,15 +234,8 @@ describe("fabric_create_feature — title dedup", () => {
 		expect(mocks.updateMany).not.toHaveBeenCalled();
 	});
 
-	it("files a new feature when the title-matched row went terminal", async () => {
-		mocks.findCollision.mockReturnValue({
-			existingId: "story-title-dupe",
-			existingIdentifier: "9",
-		});
-		mocks.storyFindUnique.mockResolvedValue({
-			id: "story-title-dupe",
-			draftingStage: "CLOSED",
-		});
+	it("files a new feature when the direct lookup excludes terminal rows", async () => {
+		mocks.findOpenBacklogTitleCollision.mockResolvedValue(null);
 
 		const body = payload(
 			await executePlatformTool(
@@ -261,12 +249,8 @@ describe("fabric_create_feature — title dedup", () => {
 		expect(mocks.createStoryFromProposal).toHaveBeenCalledTimes(1);
 	});
 
-	it("files a new feature when the title-matched row vanished", async () => {
-		mocks.findCollision.mockReturnValue({
-			existingId: "story-title-dupe",
-			existingIdentifier: "9",
-		});
-		mocks.storyFindUnique.mockResolvedValue(null);
+	it("files a new feature when the direct lookup finds no current row", async () => {
+		mocks.findOpenBacklogTitleCollision.mockResolvedValue(null);
 
 		const body = payload(
 			await executePlatformTool(
@@ -431,7 +415,7 @@ describe("fabric_create_feature — creation side effects", () => {
 	});
 
 	it("emits NOTHING on a title dedup hit — no row came into existence", async () => {
-		mocks.findCollision.mockReturnValue({
+		mocks.findOpenBacklogTitleCollision.mockResolvedValue({
 			existingId: "story-title-dupe",
 			existingIdentifier: "9",
 		});
