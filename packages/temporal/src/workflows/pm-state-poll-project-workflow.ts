@@ -36,6 +36,8 @@ export interface AdoStatePollProjectInput {
 	lastAdoStatePollAt: Date | null;
 	userId: string;
 	organizationId?: string;
+	/** Optional for compatibility with child-workflow inputs recorded before #289. */
+	projectManagementAdditionalContext?: unknown;
 }
 
 export interface AdoStatePollProjectOutput {
@@ -164,6 +166,8 @@ export async function adoStatePollProjectWorkflow(
 			lastAdoStatePollAt: input.lastAdoStatePollAt,
 			userId: input.userId,
 			organizationId: input.organizationId,
+			projectManagementAdditionalContext:
+				input.projectManagementAdditionalContext,
 		});
 
 		const reconcileResult = await reconcileAdoStates({

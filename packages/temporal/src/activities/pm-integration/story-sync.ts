@@ -6973,6 +6973,7 @@ export async function fetchPMItemsByIds(input: {
 				organizationId,
 				mcpConfigId,
 				timeoutMs: callTimeoutMs,
+				failureLogging: "caller",
 			});
 
 			if (!getResult.success) {
@@ -7027,13 +7028,26 @@ export async function fetchPMItemsByIds(input: {
 			// the documented `notFoundIds ⊆ failedIds` invariant) or ambiguous
 			// (→ failedIds). Never fabricate a phantom `Work Item N` present item.
 			if (!hasUsablePmContent(data)) {
-				if (isStructurallyAbsentPmResponse(data)) {
+				const deletedUpstream = isStructurallyAbsentPmResponse(data);
+				const errorPreview = deletedUpstream
+					? "structurally absent"
+					: "ambiguous empty success";
+				const logFailure = deletedUpstream
+					? logger.info.bind(logger)
+					: logger.error.bind(logger);
+				logFailure("[Fetch PM Items By IDs] Tool failed for item", {
+					externalId,
+					tool: getTool.toolName,
+					errorPreview,
+					deletedUpstream,
+				});
+				if (deletedUpstream) {
 					notFoundIds.push(externalId);
 					failedIds.push(externalId);
-					failedIdErrors[externalId] = "structurally absent";
+					failedIdErrors[externalId] = errorPreview;
 				} else {
 					failedIds.push(externalId);
-					failedIdErrors[externalId] = "ambiguous empty success";
+					failedIdErrors[externalId] = errorPreview;
 				}
 				return;
 			}

@@ -115,6 +115,9 @@ describe("getAdoActiveProjects — filters correctly", () => {
 				projectManagementMcpConfigId: "mcp-1",
 				projectManagementContainerId: "cont-1",
 				projectManagementContainerName: "MyProject",
+				projectManagementAdditionalContext: {
+					account_slug: "/6117483",
+				},
 				lastAdoStatePollAt: new Date("2026-05-01"),
 				userId: "user-1",
 				organizationId: "org-1",
@@ -138,6 +141,9 @@ describe("getAdoActiveProjects — filters correctly", () => {
 		expect(result[0].id).toBe("proj-1");
 		expect(result[0].mcpConfigId).toBe("mcp-1");
 		expect(result[0].containerId).toBe("cont-1");
+		expect(result[0].projectManagementAdditionalContext).toEqual({
+			account_slug: "/6117483",
+		});
 	});
 
 	it("returns empty array when no projects match", async () => {

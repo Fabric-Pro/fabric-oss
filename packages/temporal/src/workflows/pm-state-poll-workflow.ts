@@ -86,6 +86,8 @@ export async function adoStatePollWorkflow(): Promise<AdoStatePollWorkflowOutput
 						lastAdoStatePollAt: project.lastAdoStatePollAt,
 						userId: project.userId,
 						organizationId: project.organizationId ?? undefined,
+						projectManagementAdditionalContext:
+							project.projectManagementAdditionalContext,
 					},
 				],
 			}),

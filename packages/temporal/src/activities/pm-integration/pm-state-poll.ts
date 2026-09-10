@@ -21,6 +21,14 @@ import {
 import { logger } from "@repo/logs";
 import { Context } from "@temporalio/activity";
 import {
+	JOB_STEPS,
+	jobComplete,
+	jobEnsure,
+	jobFail,
+	jobStep,
+	seedJobSteps,
+} from "../lib/job-progress";
+import {
 	PMSourceNotFound,
 	resolvePmServerKey,
 	resolvePmSource,
@@ -30,14 +38,6 @@ import {
 	normalizePolledState,
 } from "./extract-pm-item-state";
 import { stripAttachmentBlock } from "./gitlab-attachment-block";
-import {
-	JOB_STEPS,
-	jobComplete,
-	jobEnsure,
-	jobFail,
-	jobStep,
-	seedJobSteps,
-} from "../lib/job-progress";
 import { isFetchComplete } from "./pm-fetch-complete";
 import { PM_MISSING_SENTINEL } from "./pm-missing-constants";
 import { computePmHash } from "./pm-sync-hash";
@@ -159,6 +159,8 @@ export interface PmActiveProject {
 	lastAdoStatePollAt: Date | null;
 	userId: string;
 	organizationId: string | null;
+	/** Saved PM-tool inputs, carried through the poll and filtered before use. */
+	projectManagementAdditionalContext: unknown;
 }
 
 /**
@@ -206,6 +208,8 @@ export interface FetchAdoWorkItemStatesInput {
 	lastAdoStatePollAt: Date | null;
 	userId: string;
 	organizationId?: string;
+	/** Optional for compatibility with poll workflows already in Temporal history. */
+	projectManagementAdditionalContext?: unknown;
 }
 
 export interface ReconcileAdoStatesInput {
@@ -445,6 +449,7 @@ export async function getAdoActiveProjects(): Promise<PmActiveProject[]> {
 			projectManagementMcpConfigId: true,
 			projectManagementContainerId: true,
 			projectManagementContainerName: true,
+			projectManagementAdditionalContext: true,
 			lastAdoStatePollAt: true,
 			userId: true,
 			organizationId: true,
@@ -509,6 +514,8 @@ export async function getAdoActiveProjects(): Promise<PmActiveProject[]> {
 			lastAdoStatePollAt: p.lastAdoStatePollAt,
 			userId: p.userId,
 			organizationId: p.organizationId,
+			projectManagementAdditionalContext:
+				p.projectManagementAdditionalContext,
 		});
 	}
 
@@ -766,6 +773,7 @@ export async function fetchAdoWorkItemStates(
 		lastAdoStatePollAt,
 		userId,
 		organizationId,
+		projectManagementAdditionalContext,
 	} = input;
 	const kind = input.sourceKind ?? "mcp";
 
@@ -832,14 +840,34 @@ export async function fetchAdoWorkItemStates(
 		}
 	}
 
+	const savedAdditionalContext: Record<string, string> = {};
+	if (
+		projectManagementAdditionalContext &&
+		typeof projectManagementAdditionalContext === "object" &&
+		!Array.isArray(projectManagementAdditionalContext)
+	) {
+		for (const [key, value] of Object.entries(
+			projectManagementAdditionalContext,
+		)) {
+			if (typeof value === "string") {
+				savedAdditionalContext[key] = value;
+			}
+		}
+	}
+	const additionalContext = {
+		...(containerName ? { project: containerName } : {}),
+		...savedAdditionalContext,
+	};
+
 	const result = await fetchPMItemsByIds({
 		mcpConfigId,
 		mcpServerId,
 		containerId,
 		externalIds: linkedItems.map((i) => i.externalId),
-		additionalContext: containerName
-			? { project: containerName }
-			: undefined,
+		additionalContext:
+			Object.keys(additionalContext).length > 0
+				? additionalContext
+				: undefined,
 		userId,
 		organizationId,
 		concurrency: 8,

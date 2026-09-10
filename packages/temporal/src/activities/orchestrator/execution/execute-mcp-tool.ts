@@ -1689,7 +1689,7 @@ async function executeMcpToolImpl(
 				mcpOutput &&
 				typeof mcpOutput === "object" &&
 				mcpOutput.isError === true;
-			if (isMcpError) {
+			if (isMcpError && input.failureLogging !== "caller") {
 				const errText =
 					mcpOutput?.content?.find((c) => c.type === "text")?.text ??
 					"MCP tool returned error";
@@ -1803,10 +1803,12 @@ async function executeMcpToolImpl(
 			// benign outcome — a card deleted upstream, most of all — was
 			// reported twice at the highest severity by two layers, neither of
 			// which knew whether it mattered.
-			console.warn(
-				`[Orchestrator] Tool "${input.toolName}" execution failed:`,
-				errorMessage,
-			);
+			if (input.failureLogging !== "caller") {
+				console.warn(
+					`[Orchestrator] Tool "${input.toolName}" execution failed:`,
+					errorMessage,
+				);
+			}
 
 			// Cache failed result to avoid retries (but not for OAuth errors)
 			if (input.lettaAgentId) {
