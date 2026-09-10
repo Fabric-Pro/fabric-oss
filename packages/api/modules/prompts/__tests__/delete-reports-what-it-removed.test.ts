@@ -39,6 +39,7 @@
  */
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { MISSING_ORGANIZATION_CONTEXT_ERROR_CODE } from "../../../lib/missing-organization-context";
 
 const {
 	deletePrompt,
@@ -142,6 +143,14 @@ describe("prompts.delete — the organization gate", () => {
 		await expect(callDelete("prompt-1", "personal")).rejects.toMatchObject({
 			code: "FORBIDDEN",
 			message: "This operation requires an organization context",
+			// The machine-readable cause, asserted at RUNTIME here and not only
+			// by the source scan in `deletion-impact-authorization.test.ts`: a
+			// client tells this refusal from a refusal of authority by reading
+			// `data.errorCode`, and a static check that the literal appears in
+			// the source cannot show that the payload survives to the caller.
+			// The sibling read asserts the same thing for its own gate; this is
+			// the write, which is the action the marker exists to explain.
+			data: { errorCode: MISSING_ORGANIZATION_CONTEXT_ERROR_CODE },
 		});
 
 		// Runs before the read, exactly as it does in `deletion-impact.ts`: a

@@ -8,6 +8,7 @@ import {
 	requirePermission,
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
+import { assertOrganizationContext } from "../lib/assert-organization-context";
 import { assertPromptDeleteAuthority } from "../lib/scope-authority";
 
 /**
@@ -100,31 +101,18 @@ export const deleteProcedure = tenantProtectedProcedure
 	.handler(async ({ input, context }) => {
 		const user = context.user;
 
-		// An organization context must exist, and this is NOT redundant with
-		// the `requirePermission` middleware above. That middleware returns
-		// `next()` without evaluating any role when `tenantContext` is absent
-		// or personal, so on its own it waves a global admin with no active
-		// organization straight through to the most destructive action in this
-		// module on the strength of the per-scope check alone. Under
-		// `docs/adr/018-organization-is-the-only-tenant-context.md` a session
-		// with no organization means resolution FAILED, and a deletion that
-		// reaches every tenant's bindings is not a capability worth offering
-		// from that state. The impact READ this deletion follows already
-		// refuses it (`deletion-impact.ts`, gate 2) — the write must never be
-		// the laxer of the two.
+		// An organization context must exist. Shared with the platform-wide
+		// impact read this deletion follows (`deletion-impact.ts`, gate 2)
+		// rather than copied into both — the write must never end up the laxer
+		// of the two, and two hand-written copies of one gate are two places a
+		// relaxation has to be caught. `assertOrganizationContext` carries the
+		// reasoning: why this is not redundant with the `requirePermission`
+		// middleware above, nor with the tenant-context middleware further out.
 		//
 		// Runs FIRST for the same reason it does there: a caller with no
 		// organization has no business learning that a prompt id exists.
 		const tenantContext = context.tenantContext;
-		if (
-			!tenantContext ||
-			tenantContext.type !== "organization" ||
-			!tenantContext.organizationId
-		) {
-			throw new ORPCError("FORBIDDEN", {
-				message: "This operation requires an organization context",
-			});
-		}
+		assertOrganizationContext(tenantContext);
 
 		// Get existing prompt
 		const existing = await getPromptById(input.id);

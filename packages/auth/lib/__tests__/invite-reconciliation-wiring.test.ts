@@ -21,6 +21,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { beforeAll, describe, expect, it } from "vitest";
+import { databaseHooksBlock, sliceBetween } from "./support/auth-source-slice";
 
 let AUTH_SOURCE = "";
 
@@ -30,34 +31,6 @@ beforeAll(() => {
 	const here = dirname(fileURLToPath(import.meta.url));
 	AUTH_SOURCE = readFileSync(join(here, "..", "..", "auth.ts"), "utf8");
 });
-
-/**
- * Slice the source between `startMarker` and the first occurrence of
- * `endMarker` after it. Fails loudly when either marker is missing so a
- * rename surfaces as a clear assertion message instead of a vacuous pass.
- */
-function sliceBetween(
-	source: string,
-	startMarker: string,
-	endMarker: string,
-): string {
-	const start = source.indexOf(startMarker);
-	expect(
-		start,
-		`expected to find "${startMarker}" in auth.ts`,
-	).toBeGreaterThanOrEqual(0);
-	const end = source.indexOf(endMarker, start + startMarker.length);
-	expect(
-		end,
-		`expected to find "${endMarker}" after "${startMarker}" in auth.ts`,
-	).toBeGreaterThanOrEqual(0);
-	return source.slice(start, end);
-}
-
-/** The `databaseHooks: { ... }` block (up to the sibling `hooks:` key). */
-function databaseHooksBlock(): string {
-	return sliceBetween(AUTH_SOURCE, "databaseHooks: {", "hooks: {");
-}
 
 describe("auth.ts hook wiring — runInviteReconciliationForUser", () => {
 	it("imports runInviteReconciliationForUser from ./lib/invite-reconciliation", () => {
@@ -75,7 +48,7 @@ describe("auth.ts hook wiring — runInviteReconciliationForUser", () => {
 
 	it('awaits the wrapper inside databaseHooks.user.create.after with trigger "user_create"', () => {
 		const userBlock = sliceBetween(
-			databaseHooksBlock(),
+			databaseHooksBlock(AUTH_SOURCE),
 			"user: {",
 			"session: {",
 		);
@@ -85,7 +58,7 @@ describe("auth.ts hook wiring — runInviteReconciliationForUser", () => {
 	});
 
 	it('awaits the wrapper inside databaseHooks.session.create.after with trigger "session_create" and session.userId', () => {
-		const dbHooks = databaseHooksBlock();
+		const dbHooks = databaseHooksBlock(AUTH_SOURCE);
 		const sessionStart = dbHooks.indexOf("session: {");
 		expect(
 			sessionStart,
@@ -101,7 +74,7 @@ describe("auth.ts hook wiring — runInviteReconciliationForUser", () => {
 	});
 
 	it("skips reconciliation for impersonation sessions before the call", () => {
-		const dbHooks = databaseHooksBlock();
+		const dbHooks = databaseHooksBlock(AUTH_SOURCE);
 		const sessionStart = dbHooks.indexOf("session: {");
 		const sessionBlock = dbHooks.slice(sessionStart);
 		// An impersonation guard must short-circuit before the wrapper runs,
@@ -113,8 +86,18 @@ describe("auth.ts hook wiring — runInviteReconciliationForUser", () => {
 			"expected an `if (session.impersonatedBy) return` guard in session.create.after",
 		).toBeGreaterThanOrEqual(0);
 		expect(callIdx).toBeGreaterThan(guardIdx);
+		// The branch short-circuits with a bare `return;`. It is no longer
+		// EMPTY — the session's organization seed runs inside it, because an
+		// impersonation session still needs the organization it runs in and
+		// seeding grants the impersonated user nothing. `[^{}]*` is what keeps
+		// this widening honest: a call taking an object argument (which is how
+		// reconciliation and organization creation are both written) carries
+		// braces and would not match, so this still cannot pass with either of
+		// them moved inside the guard. That reconciliation specifically stays
+		// out is asserted directly in
+		// `seed-session-organization-wiring.test.ts`.
 		expect(sessionBlock).toMatch(
-			/if\s*\(\s*session\.impersonatedBy\s*\)\s*\{\s*return;\s*\}/,
+			/if\s*\(\s*session\.impersonatedBy\s*\)\s*\{[^{}]*\breturn;\s*\}/,
 		);
 	});
 

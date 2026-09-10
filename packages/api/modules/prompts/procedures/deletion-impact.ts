@@ -11,6 +11,7 @@ import {
 	requirePermission,
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
+import { assertOrganizationContext } from "../lib/assert-organization-context";
 import { assertPromptDeleteAuthority } from "../lib/scope-authority";
 
 /**
@@ -28,15 +29,13 @@ import { assertPromptDeleteAuthority } from "../lib/scope-authority";
  *  1. `requirePermission(PROMPT_DELETE)` — the same middleware the delete
  *     procedure carries, evaluated against the caller's ACTIVE ORGANIZATION
  *     role.
- *  2. An organization context must exist. Gate 1 returns `next()` without
- *     evaluating any role when `tenantContext` is absent or personal, so on its
- *     own it would wave a global admin with no active organization through to a
- *     cross-tenant read on the strength of gate 3 alone. Under
- *     `docs/adr/018-organization-is-the-only-tenant-context.md` a session with
- *     no organization means resolution FAILED, and a platform-wide read is not
- *     a capability worth offering from that state. `requireInputOrgPermission`
- *     solves the same problem with its `requireOrganization` option; this
- *     procedure takes no organization in its input, so it asks directly.
+ *  2. An organization context must exist, asserted by
+ *     `assertOrganizationContext`, which carries the reasoning: why this is not
+ *     redundant with gate 1, nor with the tenant-context middleware further
+ *     out. `requireInputOrgPermission` solves the same problem with its
+ *     `requireOrganization` option; this procedure takes no organization in its
+ *     input, so it asks directly. The helper is shared with `delete.ts` rather
+ *     than copied, so the read and the write it authorises cannot drift apart.
  *  3. The per-scope authority the deletion requires, shared with `delete.ts`
  *     via `assertPromptDeleteAuthority` rather than copied.
  *
@@ -80,18 +79,11 @@ export const deletionImpactProcedure = tenantProtectedProcedure
 	.handler(async ({ input, context }) => {
 		const user = context.user;
 
-		// Gate 2 — see the doc-comment. This runs FIRST: a caller with no
-		// organization has no business learning that a prompt id exists.
+		// Gate 2, shared with `delete.ts` — see the doc-comment. This runs
+		// FIRST: a caller with no organization has no business learning that a
+		// prompt id exists.
 		const tenantContext = context.tenantContext;
-		if (
-			!tenantContext ||
-			tenantContext.type !== "organization" ||
-			!tenantContext.organizationId
-		) {
-			throw new ORPCError("FORBIDDEN", {
-				message: "This operation requires an organization context",
-			});
-		}
+		assertOrganizationContext(tenantContext);
 
 		// Un-scoped by design, exactly as the delete handler reads it: the
 		// per-scope check below is what decides access, not the read.

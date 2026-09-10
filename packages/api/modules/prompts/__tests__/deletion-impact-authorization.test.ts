@@ -31,8 +31,11 @@
  *   pnpm --filter api test modules/prompts/__tests__/deletion-impact-authorization.test.ts
  */
 
+import { readdirSync, readFileSync } from "node:fs";
+import { join, relative, resolve, sep } from "node:path";
 import { Permissions as RealPermissions } from "@repo/permissions";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { MISSING_ORGANIZATION_CONTEXT_ERROR_CODE } from "../../../lib/missing-organization-context";
 
 const {
 	getPlatformWidePromptDeletionImpact,
@@ -320,5 +323,253 @@ describe("prompts.deletionImpact audit trail", () => {
 		await expect(callImpact({ tenant: "personal" })).rejects.toThrow();
 
 		expect(recordAuditFromRequest).not.toHaveBeenCalled();
+	});
+});
+
+/**
+ * R7 (Fizzy #2403) — telling ONE refusal apart from the others.
+ *
+ * Every gate above refuses with `FORBIDDEN` and a sentence. A client that wants
+ * to explain why — and offer the way out — could previously only match on that
+ * sentence, which is not a contract and breaks the moment the wording improves.
+ * The workspace-less refusal now carries a machine-readable cause; the ones
+ * about authority deliberately do not, so their absence is itself the signal.
+ */
+describe("prompts.deletionImpact refusal cause", () => {
+	type Refusal = {
+		code?: string;
+		status?: number;
+		message?: string;
+		data?: { errorCode?: string };
+	};
+
+	const refusalFrom = async (call: Promise<unknown>): Promise<Refusal> => {
+		try {
+			await call;
+		} catch (error) {
+			return error as Refusal;
+		}
+		throw new Error("expected the call to be refused, but it resolved");
+	};
+
+	it("marks a refusal caused by an absent workspace", async () => {
+		const refusal = await refusalFrom(callImpact({ tenant: "personal" }));
+
+		expect(refusal.data).toEqual({
+			errorCode: MISSING_ORGANIZATION_CONTEXT_ERROR_CODE,
+		});
+		expect(getPromptById).not.toHaveBeenCalled();
+	});
+
+	it("marks it the same way when the tenant context is missing entirely", async () => {
+		// Two different shapes of the same failure — a caller cannot be asked to
+		// know which one the server saw.
+		const refusal = await refusalFrom(callImpact({ tenant: "absent" }));
+
+		expect(refusal.data?.errorCode).toBe(
+			MISSING_ORGANIZATION_CONTEXT_ERROR_CODE,
+		);
+	});
+
+	it("leaves a refusal of authority unmarked, so the two are distinguishable without reading either message", async () => {
+		const workspace = await refusalFrom(callImpact({ tenant: "personal" }));
+		const authority = await refusalFrom(callImpact({ role: "user" }));
+
+		// The whole point: this comparison never touches `.message`.
+		expect(authority.data?.errorCode).toBeUndefined();
+		expect(workspace.data?.errorCode).toBe(
+			MISSING_ORGANIZATION_CONTEXT_ERROR_CODE,
+		);
+		expect(authority.data?.errorCode).not.toBe(workspace.data?.errorCode);
+
+		// And both are still FORBIDDEN, so the status cannot stand in for it.
+		expect(authority.code).toBe("FORBIDDEN");
+		expect(workspace.code).toBe("FORBIDDEN");
+	});
+
+	it("changes nothing else about the refusal", async () => {
+		// The marker is additive. Anything reading the status or the sentence
+		// today — including the delete procedure's own tests — is untouched.
+		const refusal = await refusalFrom(callImpact({ tenant: "personal" }));
+
+		expect(refusal.code).toBe("FORBIDDEN");
+		expect(refusal.status).toBe(403);
+		expect(refusal.message).toBe(
+			"This operation requires an organization context",
+		);
+	});
+
+	it("marks the middleware's refusal identically", async () => {
+		// The third emitter, driven for real. `requireOrganization` is the only
+		// branch that refuses; the pass-through beside it is untouched by this
+		// change and is asserted below.
+		const { requireInputOrgPermission } = await import(
+			"../../../orpc/middleware/require-permission"
+		);
+		const middleware = requireInputOrgPermission(
+			RealPermissions.PROMPT_DELETE,
+			{ requireOrganization: true },
+		);
+		const next = vi.fn().mockResolvedValue({ output: "ok" });
+
+		const call = (
+			middleware as unknown as (
+				a: { context: unknown; next: typeof next },
+				input: unknown,
+			) => Promise<unknown>
+		)(
+			{
+				context: {
+					user: { id: "user-1", role: "admin" },
+					session: { activeOrganizationId: null },
+					tenantContext: { userId: "user-1", type: "personal" },
+				},
+				next,
+			},
+			{ organizationId: null },
+		);
+
+		const refusal = await refusalFrom(call);
+
+		expect(refusal.code).toBe("FORBIDDEN");
+		expect(refusal.message).toBe(
+			"This operation requires an organization context",
+		);
+		expect(refusal.data?.errorCode).toBe(
+			MISSING_ORGANIZATION_CONTEXT_ERROR_CODE,
+		);
+		expect(next).not.toHaveBeenCalled();
+	});
+
+	it("still passes an unresolved organization through when the option is off", async () => {
+		// The sibling branch. A prior plan records its divergence as deliberate:
+		// the pass-through is correct for the account-global procedures sharing
+		// this middleware, so marking the refusal must not turn it into one.
+		const { requireInputOrgPermission } = await import(
+			"../../../orpc/middleware/require-permission"
+		);
+		const middleware = requireInputOrgPermission(
+			RealPermissions.PROMPT_DELETE,
+		);
+		const next = vi.fn().mockResolvedValue({ output: "ok" });
+
+		await (
+			middleware as unknown as (
+				a: { context: unknown; next: typeof next },
+				input: unknown,
+			) => Promise<unknown>
+		)(
+			{
+				context: {
+					user: { id: "user-1", role: "admin" },
+					session: { activeOrganizationId: null },
+					tenantContext: { userId: "user-1", type: "personal" },
+				},
+				next,
+			},
+			{ organizationId: null },
+		);
+
+		expect(next).toHaveBeenCalledTimes(1);
+	});
+});
+
+/**
+ * The marker is only usable if it has exactly one spelling. This reads the
+ * sources rather than the runtime, because the failure it guards against is a
+ * NEW emitter typing the string itself — which no behavioural test of the known
+ * ones can see.
+ *
+ * LIMITATION, and it is the reason the marker exists in the first place: the
+ * scan finds emitters by MESSAGE TEXT alone. A site that refuses the same
+ * condition with DIFFERENT wording and no marker is invisible to it — a client
+ * matching on `data.errorCode` silently misreads that refusal as some other
+ * FORBIDDEN, and nothing here goes red. The scan can only keep the sentence and
+ * the marker travelling together; it cannot discover a refusal that shares
+ * neither. When you add a gate for this condition, reach for the sentence and
+ * the shared constant rather than writing your own of either, and this test
+ * will notice you.
+ *
+ * The two prompt procedures no longer appear below because they no longer
+ * emit: `modules/prompts/lib/assert-organization-context.ts` is the one gate
+ * both the deletion and its platform-wide impact read call. The count did not
+ * fall when they were folded together, because the tenant-context middleware
+ * began refusing the same condition in the same change — which is the point of
+ * asserting the list rather than a number nobody rereads.
+ */
+describe("missing-workspace marker has one spelling", () => {
+	const apiRoot = resolve(__dirname, "../../..");
+
+	/** Every non-test source file under `packages/api` that emits the sentence. */
+	const emitters = () => {
+		const found: string[] = [];
+		const walk = (dir: string) => {
+			for (const entry of readdirSync(dir, { withFileTypes: true })) {
+				const full = join(dir, entry.name);
+				if (entry.isDirectory()) {
+					if (
+						entry.name === "node_modules" ||
+						entry.name === "__tests__"
+					) {
+						continue;
+					}
+					walk(full);
+					continue;
+				}
+				if (!entry.name.endsWith(".ts")) {
+					continue;
+				}
+				if (
+					readFileSync(full, "utf8").includes(
+						"This operation requires an organization context",
+					)
+				) {
+					found.push(relative(apiRoot, full).split(sep).join("/"));
+				}
+			}
+		};
+		walk(apiRoot);
+		return found.sort();
+	};
+
+	it("is emitted by exactly the three known sites", () => {
+		// A fourth emitter fails here rather than shipping an unmarked refusal
+		// a client would silently misread as "some other FORBIDDEN". Adding one
+		// means marking it and listing it, in that order.
+		//
+		// One gate in the prompts module and two middlewares — not one per
+		// procedure. The count is meant to track the number of PLACES the rule
+		// is written, and it only stays honest if a new procedure needing this
+		// condition calls an existing gate instead of adding a fourth row here.
+		expect(emitters()).toEqual([
+			"modules/prompts/lib/assert-organization-context.ts",
+			"orpc/middleware/require-permission.ts",
+			"orpc/middleware/tenant-context-middleware.ts",
+		]);
+	});
+
+	it("has every emitter import the shared constant rather than retype it", () => {
+		// Asserted here too, not only in the sibling above: without it a
+		// refactor that made the scan return nothing would leave this loop with
+		// no iterations, and a test that proves nothing passes green.
+		expect(emitters().length).toBe(3);
+
+		for (const file of emitters()) {
+			const source = readFileSync(resolve(apiRoot, file), "utf8");
+
+			// The SYMBOL is imported from that module — deliberately not the
+			// statement's exact shape, so adding a second export to the module
+			// and importing it alongside this one does not fail the test.
+			expect(source).toMatch(
+				/import \{[^}]*\bMISSING_ORGANIZATION_CONTEXT_ERROR_CODE\b[^}]*\} from "[./]+lib\/missing-organization-context";/,
+			);
+			// Carried on the `data` payload under the repo's discriminant key,
+			// not tucked into the sentence or a bespoke field.
+			expect(source).toContain(
+				"errorCode: MISSING_ORGANIZATION_CONTEXT_ERROR_CODE",
+			);
+			// The literal value appears nowhere but the declaration module.
+			expect(source).not.toContain('"MISSING_ORGANIZATION_CONTEXT"');
+		}
 	});
 });

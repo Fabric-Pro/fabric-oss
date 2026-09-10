@@ -1,14 +1,21 @@
 /**
  * What a prompt deletion says before and after it happens (Fizzy #2328,
- * R5/R7/R10/R14/R15, KTD6/KTD7).
+ * R5/R7/R10/R14/R15, KTD6/KTD7; Fizzy #2403, R8/R10/R15).
  *
  * Deleting a SYSTEM prompt reaches rows in tenants the operator cannot see, so
  * the confirmation has to say how far it goes. These tests hold that copy to
- * three rules:
+ * four rules:
  *
  *  - it names the figures, and names no organization and no person (R6);
  *  - an impact that could not be read says exactly that, never "no bindings" —
  *    see `docs/solutions/design-patterns/a-surface-must-not-report-absence-it-did-not-verify.md`;
+ *  - a failure whose cause IS known is described by that cause instead, and
+ *    carries the action that fixes it (#2403 AE11/AE20) — the sentence above
+ *    is for a check that did not answer, and blaming it for a request that
+ *    resolved no workspace sends the operator hunting for a permission they
+ *    already have. It describes the cause as a CONDITION and never as an
+ *    outcome: the condition is measured once, before the dialog opens, so any
+ *    promise about what Delete will do can go false while it is on screen;
  *  - the completion reports what the deletion RETURNED, not the snapshot the
  *    dialog showed, because a binding can be written while the operator reads
  *    it (R15, AE16).
@@ -25,6 +32,7 @@
  *   pnpm --filter web test __tests__/modules/saas/prompts/PromptDeleteConfirmation.test.tsx
  */
 
+import { MISSING_ORGANIZATION_CONTEXT_ERROR_CODE } from "@repo/api/lib/missing-organization-context";
 import { PromptCard } from "@saas/prompts/components/PromptCard";
 import { PromptManagementPage } from "@saas/prompts/components/PromptManagementPage";
 import { PromptsListView } from "@saas/prompts/components/PromptsListView";
@@ -32,6 +40,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { refusal } from "./support/refusal";
 
 const {
 	deletionImpact,
@@ -108,6 +117,12 @@ vi.mock("@saas/organizations/hooks/use-organization-context", () => ({
 	useOrganizationContext: () => ({
 		basePath: "/app/example-org",
 		organizationId: "org-1",
+		// A viewer who HOLDS a membership in the workspace on screen — which is
+		// what `activeOrganizationUserRole` being non-null means, and what
+		// `ActiveOrganizationProvider` gates its session alignment on. Every
+		// sentence in this file is therefore the one a member is shown; the
+		// viewer who holds none is `PromptDeletionDialogRace.test.tsx`'s case,
+		// because no surface renders Delete on a SYSTEM prompt for them.
 		userRole: "admin",
 	}),
 }));
@@ -228,6 +243,14 @@ function confirmOptions() {
 		confirmLabel?: string;
 		destructive?: boolean;
 		onConfirm: () => void;
+		/**
+		 * The third action `ConfirmationAlertProvider` renders between Cancel
+		 * and the primary, and gives `autoFocus` to (#2355). The provider is
+		 * mocked here, so these tests assert the option the dialog is handed;
+		 * that it is the focused one is the provider's own contract, asserted
+		 * where the provider is rendered.
+		 */
+		secondaryAction?: { label: string; onSelect: () => void };
 	};
 }
 
@@ -318,6 +341,156 @@ describe("the confirmation for a SYSTEM prompt", () => {
 		await waitFor(() =>
 			expect(deletePrompt).toHaveBeenCalledWith({ id: "p-sys" }),
 		);
+	});
+});
+
+describe("the confirmation when the request resolved no workspace", () => {
+	/**
+	 * The refusal the impact endpoint raises for a request with no workspace:
+	 * the shared sentence, and the marker beside it that says which refusal it
+	 * is. Everything below starts from this one failure.
+	 */
+	function refuseImpactForMissingWorkspace() {
+		deletionImpact.mockRejectedValue(
+			refusal("No organization context available", {
+				errorCode: MISSING_ORGANIZATION_CONTEXT_ERROR_CODE,
+			}),
+		);
+	}
+
+	async function openConfirmation() {
+		refuseImpactForMissingWorkspace();
+		surfaces[0].render(systemPrompt);
+		await chooseDelete(surfaces[0].anchor);
+		await waitFor(() => expect(confirmMock).toHaveBeenCalled());
+		return confirmOptions();
+	}
+
+	it("names the cause and states the condition, not an impact it could not read (AE11)", async () => {
+		const { message } = await openConfirmation();
+
+		expect(message).toContain("This request has no workspace to act in");
+		// The CONDITION, not a prediction about how it ends: this holds while
+		// the workspace is missing and stops holding the moment it is not.
+		expect(message).toContain(
+			"the deletion will be refused while the workspace is missing",
+		);
+		// The whole point of the branch: this failure has an answer, so it must
+		// not be dressed up as the absence of one.
+		expect(message).not.toContain("could not be determined");
+		// "organization" is the backend's word and never names the thing this
+		// request is missing — the marker is spelled that way, the copy is not
+		// (the rule lives on `MISSING_ORGANIZATION_CONTEXT_ERROR_CODE`). The one
+		// occurrence the sentence may carry is the
+		// standing hedge's audience, whose bindings nobody counted; the sibling
+		// branch has always named them exactly so. Removing that clause and
+		// re-asserting keeps every OTHER use of the word out.
+		expect(
+			message.replace("other organizations and people", ""),
+		).not.toMatch(/organi[sz]ation/i);
+		// And still no claim about how much is bound, in either direction.
+		expect(message).not.toMatch(/no bindings|0 bindings/);
+	});
+
+	it("promises no outcome, because the condition is never re-measured (P1)", async () => {
+		const { message } = await openConfirmation();
+
+		// The workspace was found missing ONCE, before this dialog opened, and
+		// nothing re-reads it while the dialog is up: `ActiveOrganizationProvider`
+		// can align the session a moment later, and Delete then succeeds and
+		// performs the platform-wide deletion. A sentence ending "nothing will
+		// be removed" would have been reassurance, on an irreversible action,
+		// that went false while the operator read it.
+		expect(message).not.toMatch(/nothing will be removed/i);
+		expect(message).not.toMatch(
+			/nothing (is|was|will be|would be) (removed|deleted)/i,
+		);
+		// What stands in its place is the sibling branch's hedge, which this
+		// branch had dropped: the impact was never read, so the possibility it
+		// covers is stated rather than ruled out.
+		expect(message).toContain("what it would remove was never read");
+		expect(message).toContain(
+			"this may remove bindings belonging to other organizations and people",
+		);
+	});
+
+	it("offers reloading as the safe action, and tells nobody to sign out (AE20)", async () => {
+		const { message, secondaryAction } = await openConfirmation();
+
+		expect(secondaryAction?.label).toBe("Reload the page");
+		expect(typeof secondaryAction?.onSelect).toBe("function");
+		// The sentence and the button have to point at the same recovery.
+		expect(message).toContain("reloading the page restores it");
+		// Signing out and back in was the workaround this ticket removes: it
+		// costs the operator their whole session for a pointer the app
+		// restores by itself. Nothing on this dialog may suggest it.
+		expect(`${message} ${secondaryAction?.label ?? ""}`).not.toMatch(
+			/sign (in|out)|log (in|out)|sign-out|logout/i,
+		);
+	});
+
+	it("reads, in full, as the sentence a member is shown", async () => {
+		// Byte-for-byte, the way its sibling below is pinned. The two halves
+		// this sentence has to hold together — a named cause with a recovery,
+		// and an unread impact that is hedged rather than dismissed — are easy
+		// to satisfy one at a time and easy to break as a whole.
+		const { message } = await openConfirmation();
+
+		expect(message).toBe(
+			'Delete the system prompt "Draft Generator"? This request has no workspace to act in, so the deletion will be refused while the workspace is missing — reloading the page restores it. You can still choose Delete, but what it would remove was never read, so if the workspace is restored first this may remove bindings belonging to other organizations and people.',
+		);
+	});
+
+	it("still offers to proceed, with Delete unchanged (AE14, R10)", async () => {
+		const options = await openConfirmation();
+
+		expect(options.title).toBe("Delete Prompt");
+		expect(options.confirmLabel).toBe("Delete");
+		expect(options.destructive).toBe(true);
+		// The safe action is an addition, never a replacement: choosing Delete
+		// still calls the deletion, which is where the server refuses it.
+		options.onConfirm();
+		await waitFor(() =>
+			expect(deletePrompt).toHaveBeenCalledWith({ id: "p-sys" }),
+		);
+	});
+});
+
+describe("every other confirmation keeps the wording it has today", () => {
+	it("says the impact could not be determined when the refusal names no cause, and offers no recovery (AE12, AE13)", async () => {
+		// A refusal about authority carries no marker, so it is a check that
+		// did not answer as far as this surface can tell — and an unnamed
+		// cause has no known remedy to offer.
+		deletionImpact.mockRejectedValue(
+			refusal("You are not authorised to delete system prompts"),
+		);
+		surfaces[0].render(systemPrompt);
+		await chooseDelete(surfaces[0].anchor);
+
+		await waitFor(() => expect(confirmMock).toHaveBeenCalled());
+		const { message, secondaryAction } = confirmOptions();
+
+		// Byte-for-byte: this sentence is pinned by the recorded rule that an
+		// unverified impact is never reported as zero, and #2403 must not have
+		// disturbed it.
+		expect(message).toBe(
+			'Delete the system prompt "Draft Generator"? What this removes could not be determined — the platform-wide check did not complete, so this may still remove bindings belonging to other organizations and people. You can continue anyway; the deletion cannot be undone.',
+		);
+		expect(secondaryAction).toBeUndefined();
+	});
+
+	it("reports real figures exactly as before, and offers no recovery", async () => {
+		deletionImpact.mockResolvedValue(busyImpact);
+		surfaces[0].render(systemPrompt);
+		await chooseDelete(surfaces[0].anchor);
+
+		await waitFor(() => expect(confirmMock).toHaveBeenCalled());
+		const { message, secondaryAction } = confirmOptions();
+
+		expect(message).toBe(
+			'Delete the system prompt "Draft Generator"? 2 prompt rows carry its key and all of them will be removed. That removes 5 bindings in all, affecting 2 organizations and 1 person holding a personal override, covering Draft and PRD. These figures are a snapshot taken just now, so a binding created while you read this is not in them. This cannot be undone.',
+		);
+		expect(secondaryAction).toBeUndefined();
 	});
 });
 

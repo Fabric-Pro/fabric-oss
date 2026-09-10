@@ -811,6 +811,12 @@ model Member {
   // (queries/prompt-default-recipients.ts). That predicate has no organization to
   // narrow it, so without this it reads every member row on the platform.
   @@index([role])
+  // Resolving which workspace a session runs in asks "where does this person
+  // belong" (queries/resolve-user-organization.ts). The unique above cannot serve
+  // it — organizationId leads, and this predicate supplies only userId. Since
+  // Fizzy #2403 that resolution runs on the session-creation path, so the scan it
+  // used to pay for after the response is now in front of every sign-in.
+  @@index([userId])
   @@map("member")
 }
 

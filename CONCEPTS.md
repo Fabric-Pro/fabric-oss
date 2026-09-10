@@ -166,7 +166,12 @@ The durable, per-user record of the workspace someone was last working in. It is
 
 It decides more than where a sign-in lands. A fresh session is given a workspace by consulting it, so a credential with no workspace of its own — an API key, a protocol client — resolves through it too. A write lost in the background therefore moves a person's next sign-in *and* the tenant their non-browser credentials operate in, with nothing anywhere to explain either.
 
-Distinct from the **active workspace** carried on a session, which is one last-write-wins value shared by every browser tab on that session and can outlive several switches. When the two disagree, the last-active record is the honest one.
+Distinct from the **active workspace**, which is a property of one session rather than of the person. When the two disagree, the last-active record is the honest one.
+
+### Active workspace
+The workspace a single session is currently working in — one last-write-wins value shared by every browser tab on that session, which can outlive several switches.
+
+It is a pointer, not evidence of membership, and the two can come apart: naming a workspace and belonging to it are established at different moments, and removing someone clears only the sessions that exist when the removal runs. A session can therefore go on naming a workspace its owner has left. A request that names one the caller holds no membership in is refused rather than treated as having no workspace at all — the two are different failures, and only the second is a state a caller can legitimately be in.
 
 ### Ambiguous resolution
 The answer a workspace resolver gives when a person belongs to several and nothing authorised names one of them. It is deliberately distinct from *belongs nowhere*: the first is answerable by the caller naming a workspace, the second is not, and collapsing them turns one into a lockout and the other into a lie.
