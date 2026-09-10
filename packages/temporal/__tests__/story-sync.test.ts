@@ -827,6 +827,10 @@ describe("syncStoryToPM pull terminal-status reconcile wiring (#1360)", () => {
 	it("pull of a closed Fizzy card runs the reconcile with the raw-derived item and auto-hides", async () => {
 		setupMcpClientMock();
 		vi.mocked(getStoryById).mockResolvedValue(DRAFT_STAMPED_STORY as any);
+		vi.mocked(db.userStory.findFirst).mockResolvedValue({
+			draftingStage: "REVIEW",
+			pmAutoHidden: true,
+		} as any);
 		vi.mocked(executeMcpTool).mockResolvedValue(closedFizzyCardOutput());
 		vi.mocked(updateStory).mockResolvedValue({} as any);
 		vi.mocked(listStoryStatuses).mockResolvedValue([] as any);
@@ -844,6 +848,11 @@ describe("syncStoryToPM pull terminal-status reconcile wiring (#1360)", () => {
 		});
 
 		const result = await syncStoryToPM(pullInput);
+		expect(getStoryById).toHaveBeenCalledTimes(1);
+		expect(db.userStory.findFirst).toHaveBeenCalledWith({
+			where: { id: "story-123", projectId: "project-456" },
+			select: { draftingStage: true, pmAutoHidden: true },
+		});
 
 		// The reconcile saw the RAW closure (not parsePMItemFromGetOutput's
 		// result, which drops `closed`): isClosed true + the Fizzy column name.
@@ -858,8 +867,8 @@ describe("syncStoryToPM pull terminal-status reconcile wiring (#1360)", () => {
 				fabricItem: expect.objectContaining({
 					entityType: "STORY",
 					entityId: "story-123",
-					draftingStage: "DRAFT",
-					pmAutoHidden: false,
+					draftingStage: "REVIEW",
+					pmAutoHidden: true,
 				}),
 				autoCloseEnabled: true,
 			}),
@@ -1008,6 +1017,44 @@ function wrapMcpJson(payload: unknown) {
 describe("listWorkItemsFromPM: availableWorkItemTypes + availableStates", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
+	});
+
+	it("uses supplied capabilities without rediscovering them", async () => {
+		const capabilities = {
+			hasPMCapabilities: true,
+			containerHierarchy: [],
+			detectedType: "github",
+			availableTools: ["github_list_issues"],
+			taskList: {
+				toolName: "github_list_issues",
+				containerParam: "repo",
+				filterParams: [],
+				paginationInfo: { style: "none" },
+				allParams: [{ name: "repo" }],
+			},
+		} as any;
+		vi.mocked(executeMcpTool).mockResolvedValue({
+			success: true,
+			output: wrapMcpJson({
+				items: [{ id: "gh-1", title: "Issue", state: "open" }],
+			}),
+			durationMs: 10,
+		});
+
+		const result = await listWorkItemsFromPM({
+			mcpConfigId: "cfg-gh",
+			containerId: "owner/repo",
+			userId: "user-1",
+			capabilities,
+		});
+
+		expect(result.items).toHaveLength(1);
+		// Discovery would open an MCP client to enumerate tools. Supplying the
+		// workflow's capability snapshot must avoid that second connection.
+		expect(getMcpClientResult).not.toHaveBeenCalled();
+		expect(executeMcpTool).toHaveBeenCalledWith(
+			expect.objectContaining({ toolName: "github_list_issues" }),
+		);
 	});
 
 	it("extracts distinct work-item types from Jira items (AC-11)", async () => {

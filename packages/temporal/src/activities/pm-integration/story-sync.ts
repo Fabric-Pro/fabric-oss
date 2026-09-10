@@ -4294,11 +4294,15 @@ export async function syncStoryToPM(
 							pmTool: capabilities.detectedType ?? undefined,
 						});
 
-						const reconcileStory = await getStoryById(
-							storyId,
-							projectId,
-						);
-						if (reconcileStory) {
+						// Re-read only the mutable lifecycle fields immediately before
+						// reconciliation. A full getStoryById here would be redundant, but
+						// reusing the initial snapshot could overwrite a concurrent
+						// drafting-stage or auto-hide update with stale state.
+						const lifecycleStory = await db.userStory.findFirst({
+							where: { id: storyId, projectId },
+							select: { draftingStage: true, pmAutoHidden: true },
+						});
+						if (lifecycleStory) {
 							const project = await db.project.findUnique({
 								where: { id: projectId },
 								select: {
@@ -4327,9 +4331,9 @@ export async function syncStoryToPM(
 								fabricItem: {
 									entityType: "STORY",
 									entityId: storyId,
-									draftingStage: reconcileStory.draftingStage,
+									draftingStage: lifecycleStory.draftingStage,
 									pmAutoHidden:
-										reconcileStory.pmAutoHidden ?? false,
+										lifecycleStory.pmAutoHidden ?? false,
 									lastSyncedPmHash: null,
 									lastPmSyncStatus: null,
 								},
@@ -5467,6 +5471,8 @@ export async function listWorkItemsFromPM(input: {
 	page?: number;
 	/** Number of items per page to request from the PM tool. Default: 50 */
 	pageSize?: number;
+	/** Pre-discovered capabilities, supplied by a workflow that already ran discovery. */
+	capabilities?: PMToolCapabilities;
 }): Promise<ListWorkItemsResult> {
 	const {
 		mcpConfigId: maybeMcpConfigId,
@@ -5521,11 +5527,13 @@ export async function listWorkItemsFromPM(input: {
 
 	const mcpConfigId = maybeMcpConfigId;
 
-	const capabilities = await discoverPMToolCapabilities({
-		mcpConfigId,
-		userId,
-		organizationId,
-	});
+	const capabilities =
+		input.capabilities ??
+		(await discoverPMToolCapabilities({
+			mcpConfigId,
+			userId,
+			organizationId,
+		}));
 
 	if (!capabilities?.taskList) {
 		throw ApplicationFailure.nonRetryable(
@@ -8824,24 +8832,66 @@ export async function deleteStoriesNotInPMList(input: {
 		}
 	}
 
+	// Capture every attachment key before the delete cascade removes its row.
+	// The candidate IDs are already scoped by the tenant-filtered story query
+	// above, so this one batched lookup cannot broaden deletion scope.
+	const attachmentKeysByStoryId = new Map<string, string[]>();
+	if (toDelete.length > 0) {
+		try {
+			const attachments = await db.storyAttachment.findMany({
+				where: { storyId: { in: toDelete.map((story) => story.id) } },
+				select: { storyId: true, storageKey: true },
+			});
+			for (const attachment of attachments) {
+				const keys =
+					attachmentKeysByStoryId.get(attachment.storyId) ?? [];
+				keys.push(attachment.storageKey);
+				attachmentKeysByStoryId.set(attachment.storyId, keys);
+			}
+		} catch (e) {
+			// No delete has started yet. Surface this so Temporal retries the
+			// complete capture-and-delete operation instead of reporting a
+			// misleading successful zero-delete result.
+			logger.warn(
+				"[Delete Orphaned] Failed to capture story attachments",
+				{
+					projectId,
+					storyCount: toDelete.length,
+					error: e instanceof Error ? e.message : String(e),
+				},
+			);
+			throw e;
+		}
+	}
+
+	// Keep deletes independently failure-isolated, while avoiding a serial
+	// round-trip for every orphan in a large board. Results stay indexed so the
+	// public identifier order remains the same as the candidate order.
+	const deleted = new Array<boolean>(toDelete.length).fill(false);
+	await runBoundedWorkerPool({
+		total: toDelete.length,
+		concurrency: 4,
+		task: async (idx) => {
+			const { id, identifier } = toDelete[idx];
+			try {
+				await deleteStory(id, projectId);
+				deleted[idx] = true;
+			} catch (e) {
+				logger.warn("[Delete Orphaned] Failed to delete story", {
+					storyId: id,
+					identifier,
+					error: e instanceof Error ? e.message : String(e),
+				});
+			}
+		},
+	});
+
 	const deletedIdentifiers: string[] = [];
 	const orphanedKeys: string[] = [];
-	for (const { id, identifier } of toDelete) {
-		try {
-			// Capture attachment object keys BEFORE the cascade removes the rows.
-			const attachments = await db.storyAttachment.findMany({
-				where: { storyId: id },
-				select: { storageKey: true },
-			});
-			await deleteStory(id, projectId);
-			deletedIdentifiers.push(identifier);
-			orphanedKeys.push(...attachments.map((a) => a.storageKey));
-		} catch (e) {
-			logger.warn("[Delete Orphaned] Failed to delete story", {
-				storyId: id,
-				identifier,
-				error: e instanceof Error ? e.message : String(e),
-			});
+	for (const [idx, story] of toDelete.entries()) {
+		if (deleted[idx]) {
+			deletedIdentifiers.push(story.identifier);
+			orphanedKeys.push(...(attachmentKeysByStoryId.get(story.id) ?? []));
 		}
 	}
 
