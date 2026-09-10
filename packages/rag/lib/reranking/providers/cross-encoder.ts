@@ -17,6 +17,8 @@
  * @see https://huggingface.co/cross-encoder/ms-marco-MiniLM-L-6-v2
  */
 
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { logger } from "@repo/logs";
 import type {
 	RerankerConfig,
@@ -58,6 +60,7 @@ async function getOrCreatePipeline(modelName: string): Promise<any> {
 			// Configure transformers.js for server-side usage
 			env.allowLocalModels = false;
 			env.useBrowserCache = false;
+			env.cacheDir = join(tmpdir(), "fabric-transformers-cache");
 
 			// Create a text-classification pipeline for cross-encoder scoring
 			// Cross-encoders output a single score for query-document pairs
