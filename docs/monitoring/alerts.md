@@ -71,6 +71,16 @@ prevents low-traffic features from paging on a single error. Without
 this floor, one 500 in a feature that sees 10 requests a day would
 saturate the rate and page on-call.
 
+The calculation runs independently per normalized `cloud_RoleName` and
+uses Application Insights `itemCount` as the request weight, so ingestion
+sampling does not dilute the error rate. Only status codes 500–599 spend
+this server-error SLO; intentional 4xx responses remain visible in normal
+failure analysis but do not burn it. Probe traffic is excluded by URL path
+using the same exact-root rule as application instrumentation:
+`/(api/)?(health|healthz|ready|readyz|live|livez|metrics)` and descendants.
+Names that merely start the same way, such as `/healthcare` and
+`/metrics-report`, remain in the SLO population.
+
 ![Read-only "Alert thresholds" section of the admin monitoring page, listing the SEV-1/2/3 burn-rate windows alongside the integration-signal trigger conditions and recovery hysteresis.](./assets/admin-monitoring-dashboard.png)
 
 The admin dashboard renders the same thresholds described here in a
@@ -112,17 +122,62 @@ to deploy.
 | `${prefix}-llm-high-latency` | SEV-2 | 5 min | 5 min | Any provider's P95 LLM latency > 30 000 ms. |
 | `${prefix}-llm-token-usage-spike` | SEV-2 | 5 min | 1 h | 5-min token usage > 5× hourly average. Bin by 5 m. |
 | `${prefix}-llm-high-output-token-rate` | SEV-2 | 5 min | 5 min | Output tokens per second > 5 000 for any model/provider pair. |
-| `${prefix}-llm-no-requests` | SEV-2 | 5 min | 6 h | Zero LLM requests in the last 15 min AND prior activity in the 6 h before. Detects instrumentation breakage. |
+| `${prefix}-llm-no-requests` | SEV-2 | 5 min | 30 min | The cumulative `llm.requests` metric increased in the last 15 min for a role, but no `llm.*` span arrived for that role. Counter resets are handled; idle roles do not alert. The historical resource name is retained so incremental deployment updates the old rule in place. |
 
 ### Integration health (KQL scheduledQueryRules)
 
 | Alert name | Severity | Eval freq | Window | Trigger |
 |---|---|---|---|---|
-| `${prefix}-circuit-breaker-opened` | SEV-1 | 1 min | 5 min | Any `customEvents` row with `name == "CircuitBreakerStateChange"` and `newState == "open"`. Grouped by `provider`. |
-| `${prefix}-synthetic-probe-failing` | SEV-2 | 5 min | 15 min | 3+ failures for a provider in `customEvents` where `name == "SyntheticProbeResult"`. |
+| `${prefix}-circuit-breaker-opened` | SEV-1 | 1 min | 5 min | Any normalized integration event named `CircuitBreakerStateChange` with `newState == "open"`. Grouped by `provider`. |
+| `${prefix}-synthetic-probe-failing` | SEV-2 | 5 min | 15 min | 3+ normalized `SyntheticProbeResult` failures for a provider. |
 | `${prefix}-dependency-failures` | SEV-2 | 5 min | 15 min | More than 5 dependency failures in 15 min for `api.openai.com`, `api.anthropic.com`, `api.stripe.com`, `api.resend.com`, or `*.amazonaws.com`. Grouped by `target`. |
 | `${prefix}-repo-oauth-credentials-rejected` | SEV-2 | 15 min | 45 min | The worker's GitHub OAuth app credentials were rejected during a repo-integration token refresh — a configuration error, not an expired user token. |
 | `${prefix}-repo-health-degraded` | SEV-3 | 30 min | 1 h | More than half the monitored repository integrations were unhealthy in the most recent health-check cycle. |
+
+Integration events have one exclusive transport. A direct Application
+Insights client writes `customEvents`; the OpenTelemetry fallback writes
+`traces` with `customDimensions["event.name"]`. The queries union those
+app-scope tables and deduplicate on `event.id`. `AppTraces` is the
+workspace-scope alias and is intentionally absent because these rules are
+scoped to the Application Insights resource.
+
+### Telemetry pipeline (KQL scheduledQueryRules)
+
+| Alert name | Severity | Eval freq | Window | Trigger |
+|---|---|---|---|---|
+| `${prefix}-otel-collector-heartbeat-missing` | SEV-2 | 5 min | 15 min | Two consecutive evaluations find no `otelcol_process_uptime` row for an always-on app in `monitoredContainerApps`. The expected role set is generated from the deployment config, so this catches a collector that never emitted and is the production signal for a sustained Azure exporter transport outage. |
+| `${prefix}-otel-collector-backpressure` | SEV-2 | 5 min | 15 min | At least 3 samples and P95 export-queue fill ratio ≥ 80% for one collector/exporter/replica. |
+| `${prefix}-otel-collector-pipeline-failures` | SEV-2 | 5 min | 15 min | At least 5 processing, rejection, queue-full, or drop log lines from one collector sidecar. This reads the independently captured `ContainerAppConsoleLogs_CL` stream. |
+
+The collector scrapes only `127.0.0.1:8888` once per minute. A
+receiver-local relabel allowlist retains uptime, queue size/capacity, send or
+enqueue failures, and receiver/processor refusal counters. The allowlist does
+not touch the OTLP receiver. A dedicated collector-metrics pipeline replaces
+the Prometheus job identity with the sidecar's app service name, while the
+application pipeline preserves all application metrics and the native
+Temporal task-slot and queue-delay metrics. This keeps the heartbeat cost to
+one low-cardinality series per collector replica and avoids exporting Go
+runtime/process detail that has no alert response.
+
+The pinned Azure Monitor exporter sends asynchronously and reports network
+transport failures only at debug level. Global debug logging would add too
+much production volume, so the console-log rule covers pipeline failures that
+are observable at the configured info level. A sustained transport outage
+stops the uptime series from reaching Application Insights and is covered by
+the missing-heartbeat rule.
+
+### Temporal capacity (KQL scheduledQueryRules)
+
+| Alert name | Severity | Eval freq | Window | Trigger |
+|---|---|---|---|---|
+| `${prefix}-temporal-queue-delay` | SEV-2 | 5 min | 30 min | At least 5 newly observed workflow/activity tasks averaged more than 60 s schedule-to-start latency in the latest 15 min, grouped by role, task queue, and signal. |
+| `${prefix}-temporal-task-slots-exhausted` | SEV-2 | 5 min | 15 min | Aggregate available slots across every replica stayed at zero for one task queue and worker type for at least 5 one-minute samples. |
+
+Temporal histograms and counters are cumulative. The queue-delay query
+subtracts the preceding 15-minute `valueSum`/`valueCount` baseline before
+calculating its weighted mean; summing raw rows would count the process
+lifetime repeatedly. Slot capacity is summed across replicas so one busy
+replica does not alert while another can still accept work.
 
 ### Container App availability (metric alerts)
 
@@ -152,7 +207,8 @@ of `monitoring.bicep`:
 | `alertEmail` | empty | If non-empty, appends an `emailReceiver` to the Action Group. |
 | `alertsWebhookUrl` | empty (secure) | The Power Automate webhook. If empty, no webhook receiver is created (alerts still fire to Azure Monitor but do not fan out). |
 | `monitoredContainerApps` | `[]` | Array of `{ name, resourceId, critical }`. Wired from `main.bicep` from `tsAgentConfigs`. |
-| `appInsightsId` | empty | When set, the 12 KQL-based rules deploy. When empty, only the per-app metric alerts deploy. |
+| `appInsightsId` | empty | When set, the 16 App-Insights-scoped KQL rules deploy. When empty, only the per-app metric alerts and Log-Analytics-scoped rules deploy. |
+| `logAnalyticsWorkspaceId` | required | Scope for the 4 workspace rules: Key Vault denial, collector pipeline failure, and 2 repository-health alerts. |
 
 Per-rule thresholds (burn multiplier, error rate %, latency ms, token
 rate) are inlined in the KQL `let` bindings at the top of each rule.
@@ -171,7 +227,8 @@ current values without grepping Bicep.
    - `requests` for HTTP traffic.
    - `dependencies` for outbound calls and LLM spans (filter on
      `name startswith "llm."`).
-   - `customEvents` for breaker / probe / business-domain signals.
+   - `customEvents` plus OTel `traces` for breaker / probe / business-domain events (normalize on `event.name`, deduplicate on `event.id`).
+   - `customMetrics` for native Temporal and collector metrics.
 3. Set `severity: 0|1|3` and `scopes: [appInsightsId]`.
 4. Reference the shared `actionGroups: [actionGroup.id]` — never create
    a parallel Action Group.
@@ -199,8 +256,10 @@ existing breaker / probe / statuspage rules pick it up. See
 
 ## Testing a new alert
 
-- **Local**: run `pnpm --filter @repo/temporal test` for workflow rules
-  and `pnpm --filter web test` for KQL contract tests against fixtures.
+- **KQL**: execute the exact final query through the Azure Application
+  Insights or Log Analytics query API. A source-string assertion is not a
+  parser or schema test. Validate both an empty current result and a fixture
+  branch that returns a known alerting row when practical.
 - **Bicep**: `az deployment group what-if` against the staging RG
   shows the alert-rule diff. The `alertRuleCount` output should match
   the expected count.

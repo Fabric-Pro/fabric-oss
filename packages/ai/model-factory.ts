@@ -23,6 +23,7 @@ import { Agent as UndiciAgent, fetch as undiciFetch } from "undici";
 import { createDatabricksFetch } from "./lib/databricks-compat";
 import { toDatabricksServingBaseUrl } from "./lib/databricks-url";
 import { createEmptyToolInputRepairMiddleware } from "./lib/empty-tool-input-middleware";
+import { createLLMTelemetryMiddleware } from "./lib/llm-telemetry-middleware";
 
 /**
  * Reasoning model patterns that need middleware extraction
@@ -269,7 +270,13 @@ function wrapWithProviderMiddleware(
 	// correctly: `@ai-sdk/openai@3` silently drops a streamed call whose
 	// arguments never parse as JSON, which is every NO-PARAMETER tool (they
 	// arrive as `arguments: ""`). See empty-tool-input-middleware.ts.
-	const middleware = [createEmptyToolInputRepairMiddleware()];
+	const middleware = [
+		createLLMTelemetryMiddleware({
+			provider: resolvedProvider ?? nameProvider,
+			model: modelName,
+		}),
+		createEmptyToolInputRepairMiddleware(),
+	];
 
 	if (
 		needsReasoningExtraction(

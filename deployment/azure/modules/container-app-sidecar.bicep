@@ -284,6 +284,10 @@ resource containerApp 'Microsoft.App/containerApps@2024-10-02-preview' = {
                 ],
             [
               {
+                name: 'OTEL_SERVICE_NAME'
+                value: actualContainerName
+              }
+              {
                 name: 'DEPLOYMENT_ENVIRONMENT'
                 value: deploymentEnvironment
               }
@@ -304,6 +308,18 @@ resource containerApp 'Microsoft.App/containerApps@2024-10-02-preview' = {
           ]
           args: [
             '--config=/etc/otelcol/config.yaml'
+          ]
+          probes: [
+            {
+              type: 'Liveness'
+              httpGet: {
+                path: '/'
+                port: 13133
+              }
+              initialDelaySeconds: 15
+              periodSeconds: 30
+              failureThreshold: 3
+            }
           ]
         }
       ], additionalSidecars)

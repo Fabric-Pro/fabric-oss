@@ -12,9 +12,13 @@
 
 ## Dev/Production (Azure Container Apps)
 
-**Uses Application Insights** (Azure-managed APM)
+**Uses Application Insights through per-replica OpenTelemetry sidecars**
 
-- Traces and logs sent via managed OpenTelemetry agent
+- Application SDKs send traces, logs, and metrics to `localhost:4317`
+- The `otel-collector` sidecar exports OTLP data to Application Insights
+- The sidecar health endpoint is probed on `localhost:13133`
+- Collector health/backpressure metrics are self-scraped from
+  `127.0.0.1:8888` once per minute
 - Free tier: 5GB/month data ingestion, 90-day retention
 - UI: Azure Portal → Application Insights → Transaction search, Application map, Live metrics
 
@@ -22,16 +26,17 @@
 
 ```
 ┌─────────────────┐
-│  Containers     │ (OTEL SDK instrumented)
+│  App container  │ (OTEL SDK instrumented)
 │  - temporal     │
-│  - web          │
 │  - agents       │
+│  - MCP wrapper  │
 └─────────────────┘
-        ↓ (auto-injected OTEL_EXPORTER_OTLP_ENDPOINT)
+        ↓ localhost:4317
 ┌──────────────────────────────────┐
-│  Managed OTLP Agent              │ (Azure-managed)
-│  - Auto-configured               │
-│  - Routes to App Insights        │
+│  otel-collector sidecar          │ (one per replica)
+│  - Azure Monitor exporter        │
+│  - / health probe on :13133      │
+│  - bounded self-scrape on :8888  │
 └──────────────────────────────────┘
         ↓
 ┌──────────────────────────────────┐
@@ -44,27 +49,19 @@
 
 ### Configuration
 
-In `deployment/azure/main.bicep`:
+`deployment/azure/modules/container-app-sidecar.bicep` loads one of the
+Azure collector configs into a secret-backed volume, points the application
+at the sidecar, and gives both containers the same stable service identity:
 
 ```bicep
-resource containerEnv 'Microsoft.App/managedEnvironments@2024-03-01' = {
-  properties: {
-    // Application Insights connection
-    appInsightsConfiguration: {
-      connectionString: appInsights.outputs.connectionString
-    }
-    // Managed agent routes OTLP to App Insights
-    openTelemetryConfiguration: {
-      tracesConfiguration: {
-        destinations: ['appInsights']
-      }
-      logsConfiguration: {
-        destinations: ['appInsights']
-      }
-    }
-  }
-}
+{ name: 'OTEL_EXPORTER_OTLP_ENDPOINT', value: 'http://localhost:4317' }
+{ name: 'OTEL_SERVICE_NAME', value: actualContainerName }
 ```
+
+With an Application Insights connection string, the sidecar uses
+`configs/otel-collector-azure.yaml`. Environments without one use
+`configs/otel-collector-azure-no-appinsights.yaml`, which keeps OTLP and
+health endpoints live with a sampled debug sink.
 
 ### Accessing Telemetry
 
@@ -80,7 +77,7 @@ resource containerEnv 'Microsoft.App/managedEnvironments@2024-03-01' = {
 ```kusto
 // Find traces for temporal worker
 traces
-| where cloud_RoleName == "temporal-worker"
+| where cloud_RoleName == "fabric.temporal-worker"
 | where timestamp > ago(1h)
 | order by timestamp desc
 
@@ -89,6 +86,20 @@ exceptions
 | where timestamp > ago(1h)
 | project timestamp, type, outerMessage, cloud_RoleName
 ```
+
+Application-scoped queries use the classic aliases `requests`,
+`dependencies`, `traces`, `customEvents`, and `customMetrics`. `AppTraces`
+is a workspace-scoped alias and does not resolve through the Application
+Insights query API used by the alert rules.
+
+The collector self-scrape retains only uptime, exporter queue capacity/size,
+send/enqueue failures, and receiver/processor refusal metrics. This selector
+belongs to the Prometheus self receiver; it does not filter application or
+Temporal metrics entering over OTLP. Native metrics such as
+`temporal_worker_task_slots_available` and
+`temporal_activity_schedule_to_start_latency` remain available for capacity
+alerts. See [the alert catalogue](../../docs/monitoring/alerts.md) for the
+queries and thresholds.
 
 ## Future Options (Code Preserved)
 
@@ -108,10 +119,10 @@ The following modules are available for future use if needed:
   - `monitoring/grafana/provisioning/datasources/prometheus.yml`
 - **Deployment**: Run as container apps (not currently deployed)
 
-### OTEL Collector (`deployment/azure/modules/otel-collector.bicep`)
+### Standalone OTEL Collector (`deployment/azure/modules/otel-collector.bicep`)
 - **Use case**: Fan-out telemetry to multiple destinations
-- **Limitation**: Cannot be used as intermediate collector in Container Apps (DNS resolution issue)
-- **Alternative**: Use managed OTLP agent instead
+- **Status**: Not deployed. Azure Container Apps use the per-replica sidecar
+  in `container-app-sidecar.bicep` instead.
 
 ## Deployment
 
@@ -143,21 +154,36 @@ Application Insights resource name: `fabric-{env}-appinsights`
 
 ### No traces appearing in Application Insights
 
-1. **Check managed agent is configured:**
+1. **Check the sidecar is healthy:**
    ```bash
-   az containerapp env show \
-     --name <container-app-env> \
+   az containerapp revision show \
+     --revision <revision-name> \
      --resource-group <resource-group> \
-     --query properties.openTelemetryConfiguration
+     --query 'properties.template.containers[?name==`otel-collector`].probes'
    ```
 
 2. **Verify container has OTEL SDK:**
    - Check logs for "OpenTelemetry SDK started" message
-   - Verify `OTEL_EXPORTER_OTLP_ENDPOINT` is auto-injected (check container env vars)
+   - Verify `OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317`
+   - Verify the app and sidecar share the expected `OTEL_SERVICE_NAME`
 
 3. **Check Application Insights connection:**
-   - Verify `appInsightsConfiguration.connectionString` is set in Container Apps Environment
+   - Verify the sidecar has an `APPLICATIONINSIGHTS_CONNECTION_STRING`
+     secret reference
    - Check Application Insights → Live Metrics for real-time data
+
+4. **Check the independent pipeline-failure path:**
+   - Query `ContainerAppConsoleLogs_CL` for `ContainerName_s ==
+     "otel-collector"` and messages such as `Exporting failed`, `Dropping
+     data`, `Rejecting data`, `sending queue is full`, or `Failed to process`
+   - The `${prefix}-otel-collector-pipeline-failures` rule uses this
+     independently captured path for processing, rejection, queue, and drop
+     failures
+   - The pinned Azure exporter reports asynchronous network transmission
+     failures only at debug level. Production stays at info to bound log
+     volume; `${prefix}-otel-collector-heartbeat-missing` is the sustained
+     Azure transport-outage signal because uptime stops reaching Application
+     Insights
 
 ### Local development broken after changes
 

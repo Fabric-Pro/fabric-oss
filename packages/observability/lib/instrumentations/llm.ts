@@ -42,30 +42,31 @@ const LLM_USAGE_INPUT_TOKENS = "gen_ai.usage.input_tokens";
 const LLM_USAGE_OUTPUT_TOKENS = "gen_ai.usage.output_tokens";
 const LLM_RESPONSE_FINISH_REASON = "gen_ai.response.finish_reasons";
 
-// Get tracer and meter
+// Get tracer. Metric instruments are resolved lazily because service
+// entrypoints import model modules before registering their MeterProvider.
 const tracer = trace.getTracer("fabric-llm");
-const meter = metrics.getMeter("fabric-llm");
 
-// Metrics
-const llmRequestCounter = meter.createCounter("llm.requests", {
-	description: "Total number of LLM requests",
-	unit: "1",
-});
-
-const llmTokensCounter = meter.createCounter("llm.tokens", {
-	description: "Total tokens used",
-	unit: "1",
-});
-
-const llmRequestDuration = meter.createHistogram("llm.request.duration", {
-	description: "Duration of LLM requests",
-	unit: "ms",
-});
-
-const llmErrorCounter = meter.createCounter("llm.errors", {
-	description: "Total number of LLM errors",
-	unit: "1",
-});
+function getLLMMetrics() {
+	const meter = metrics.getMeter("fabric-llm");
+	return {
+		requestCounter: meter.createCounter("llm.requests", {
+			description: "Total number of LLM requests",
+			unit: "1",
+		}),
+		tokensCounter: meter.createCounter("llm.tokens", {
+			description: "Total tokens used",
+			unit: "1",
+		}),
+		requestDuration: meter.createHistogram("llm.request.duration", {
+			description: "Duration of LLM requests",
+			unit: "ms",
+		}),
+		errorCounter: meter.createCounter("llm.errors", {
+			description: "Total number of LLM errors",
+			unit: "1",
+		}),
+	};
+}
 
 export interface LLMCallOptions {
 	/** LLM provider (anthropic, openai, groq, etc.) */
@@ -89,6 +90,151 @@ export interface LLMSpan extends Span {
 	setResponseModel(model: string): void;
 }
 
+export interface LLMTokenUsage {
+	inputTokens?: number;
+	outputTokens?: number;
+}
+
+export interface LLMInvocation {
+	/** Finish the invocation successfully. Duplicate terminal signals are ignored. */
+	succeed(usage?: LLMTokenUsage): void;
+	/** Finish the invocation as failed without recording the error message or stack. */
+	fail(error?: unknown): void;
+	/** Finish an invocation whose streaming consumer cancelled it. */
+	cancel(): void;
+}
+
+const MAX_LLM_ATTRIBUTE_LENGTH = 128;
+
+function boundedAttribute(value: string, fallback: string): string {
+	const normalized = value.trim() || fallback;
+	return normalized.slice(0, MAX_LLM_ATTRIBUTE_LENGTH);
+}
+
+function tokenCount(value: number | undefined): number {
+	return typeof value === "number" && Number.isFinite(value) && value > 0
+		? value
+		: 0;
+}
+
+function boundedErrorType(error: unknown): string {
+	if (error instanceof Error) {
+		try {
+			const type = error.constructor.name;
+			return /^[A-Za-z][A-Za-z0-9_.-]*$/.test(type)
+				? boundedAttribute(type, "Error")
+				: "Error";
+		} catch {
+			return "Error";
+		}
+	}
+	return "UnknownError";
+}
+
+const noopInvocation: LLMInvocation = {
+	succeed() {},
+	fail() {},
+	cancel() {},
+};
+
+function startInvocation(options: LLMCallOptions): LLMInvocation {
+	try {
+		const provider = boundedAttribute(options.provider, "unknown");
+		const model = boundedAttribute(options.model, "unknown");
+		const startedAt = Date.now();
+		const span = trace.getTracer("fabric-llm").startSpan("llm.chat", {
+			attributes: {
+				[LLM_SYSTEM]: provider,
+				[LLM_REQUEST_MODEL]: model,
+				[LLM_USAGE_INPUT_TOKENS]: 0,
+				[LLM_USAGE_OUTPUT_TOKENS]: 0,
+			},
+		});
+		let finished = false;
+
+		const finish = (
+			outcome: "success" | "error" | "cancelled",
+			usage?: LLMTokenUsage,
+			error?: unknown,
+		) => {
+			if (finished) {
+				return;
+			}
+			finished = true;
+			const inputTokens = tokenCount(usage?.inputTokens);
+			const outputTokens = tokenCount(usage?.outputTokens);
+
+			try {
+				const {
+					errorCounter,
+					requestCounter,
+					requestDuration,
+					tokensCounter,
+				} = getLLMMetrics();
+				span.setAttributes({
+					[LLM_USAGE_INPUT_TOKENS]: inputTokens,
+					[LLM_USAGE_OUTPUT_TOKENS]: outputTokens,
+					"llm.outcome": outcome,
+				});
+				if (outcome === "success") {
+					span.setStatus({ code: SpanStatusCode.OK });
+				} else if (outcome === "error") {
+					span.setStatus({ code: SpanStatusCode.ERROR });
+					span.setAttribute("error.type", boundedErrorType(error));
+				} else {
+					span.setStatus({ code: SpanStatusCode.UNSET });
+				}
+
+				requestCounter.add(1, {
+					provider,
+					model,
+					operation: "chat",
+					status: outcome,
+				});
+				tokensCounter.add(inputTokens, {
+					provider,
+					model,
+					type: "input",
+				});
+				tokensCounter.add(outputTokens, {
+					provider,
+					model,
+					type: "output",
+				});
+				if (outcome === "error") {
+					errorCounter.add(1, {
+						provider,
+						model,
+						operation: "chat",
+						error_type: boundedErrorType(error),
+					});
+				}
+				requestDuration.record(Date.now() - startedAt, {
+					provider,
+					model,
+					operation: "chat",
+				});
+			} catch {
+				// Telemetry is best-effort and must never change model behavior.
+			} finally {
+				try {
+					span.end();
+				} catch {
+					// Telemetry is best-effort and must never change model behavior.
+				}
+			}
+		};
+
+		return {
+			succeed: (usage) => finish("success", usage),
+			fail: (error) => finish("error", undefined, error),
+			cancel: () => finish("cancelled"),
+		};
+	} catch {
+		return noopInvocation;
+	}
+}
+
 /**
  * Create an instrumented LLM span wrapper
  */
@@ -96,16 +242,17 @@ function createLLMSpan(span: Span, options: LLMCallOptions): LLMSpan {
 	const llmSpan = span as LLMSpan;
 
 	llmSpan.setTokenUsage = (inputTokens: number, outputTokens: number) => {
+		const { tokensCounter } = getLLMMetrics();
 		span.setAttribute(LLM_USAGE_INPUT_TOKENS, inputTokens);
 		span.setAttribute(LLM_USAGE_OUTPUT_TOKENS, outputTokens);
 
 		// Record token metrics
-		llmTokensCounter.add(inputTokens, {
+		tokensCounter.add(inputTokens, {
 			provider: options.provider,
 			model: options.model,
 			type: "input",
 		});
-		llmTokensCounter.add(outputTokens, {
+		tokensCounter.add(outputTokens, {
 			provider: options.provider,
 			model: options.model,
 			type: "output",
@@ -128,6 +275,9 @@ function createLLMSpan(span: Span, options: LLMCallOptions): LLMSpan {
  * LLM Instrumentation utilities
  */
 export const llmInstrumentation = {
+	/** Start a privacy-safe span whose lifetime can cross streaming callbacks. */
+	startInvocation,
+
 	/**
 	 * Trace an LLM call with automatic metrics recording
 	 *
@@ -158,13 +308,15 @@ export const llmInstrumentation = {
 			`llm.${operationName}`,
 			{ attributes },
 			async (span) => {
+				const { errorCounter, requestCounter, requestDuration } =
+					getLLMMetrics();
 				const llmSpan = createLLMSpan(span, options);
 
 				try {
 					const result = await fn(llmSpan);
 
 					// Record success metrics
-					llmRequestCounter.add(1, {
+					requestCounter.add(1, {
 						provider: options.provider,
 						model: options.model,
 						operation: operationName,
@@ -175,13 +327,13 @@ export const llmInstrumentation = {
 					return result;
 				} catch (error) {
 					// Record error metrics
-					llmRequestCounter.add(1, {
+					requestCounter.add(1, {
 						provider: options.provider,
 						model: options.model,
 						operation: operationName,
 						status: "error",
 					});
-					llmErrorCounter.add(1, {
+					errorCounter.add(1, {
 						provider: options.provider,
 						model: options.model,
 						operation: operationName,
@@ -204,7 +356,7 @@ export const llmInstrumentation = {
 					throw error;
 				} finally {
 					const duration = Date.now() - startTime;
-					llmRequestDuration.record(duration, {
+					requestDuration.record(duration, {
 						provider: options.provider,
 						model: options.model,
 						operation: operationName,
@@ -227,26 +379,28 @@ export const llmInstrumentation = {
 		durationMs: number;
 		finishReason?: string;
 	}): void {
-		llmRequestCounter.add(1, {
+		const { requestCounter, requestDuration, tokensCounter } =
+			getLLMMetrics();
+		requestCounter.add(1, {
 			provider: options.provider,
 			model: options.model,
 			operation: "streaming",
 			status: "success",
 		});
 
-		llmTokensCounter.add(options.inputTokens, {
+		tokensCounter.add(options.inputTokens, {
 			provider: options.provider,
 			model: options.model,
 			type: "input",
 		});
 
-		llmTokensCounter.add(options.outputTokens, {
+		tokensCounter.add(options.outputTokens, {
 			provider: options.provider,
 			model: options.model,
 			type: "output",
 		});
 
-		llmRequestDuration.record(options.durationMs, {
+		requestDuration.record(options.durationMs, {
 			provider: options.provider,
 			model: options.model,
 			operation: "streaming",

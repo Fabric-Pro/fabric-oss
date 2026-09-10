@@ -1,7 +1,7 @@
 import { defineConfig } from "tsup";
 
 export default defineConfig({
-	entry: ["src/index.ts"],
+	entry: ["src/index.ts", "src/telemetry.ts"],
 	format: ["esm"],
 	target: "node20",
 	outDir: "dist",
@@ -11,7 +11,6 @@ export default defineConfig({
 	external: [
 		"@repo/database",
 		"@repo/ai",
-		"@repo/observability",
 		"pg",
 		"@prisma/adapter-pg",
 		"@prisma/client",

@@ -117,6 +117,12 @@ param monitoredContainerApps array = []
 @description('Application Insights resource ID — required to deploy LLM alert rules')
 param appInsightsId string = ''
 
+// The sidecar's collector-only resource processor sets each app's service.name and the Azure
+// exporter combines it with service.namespace (`fabric`) as cloud_RoleName.
+// Keep this derived from the same input as replica monitoring so a newly-added
+// app automatically joins collector heartbeat coverage.
+var expectedTelemetryRoles = [for app in monitoredContainerApps: 'fabric.${app.name}']
+
 // =============================================================================
 // Action Group for Alerts
 // =============================================================================
@@ -433,25 +439,52 @@ resource llmHighOutputTokenRateAlert 'Microsoft.Insights/scheduledQueryRules@202
   }
 }
 
-resource llmNoRequestsAlert 'Microsoft.Insights/scheduledQueryRules@2022-06-15' = if (appInsightsId != '') {
+resource llmSignalCoverageAlert 'Microsoft.Insights/scheduledQueryRules@2022-06-15' = if (appInsightsId != '') {
+  // Preserve the deployed resource identity. Azure incremental deployment does
+  // not delete a renamed scheduledQueryRule, which would leave the obsolete
+  // silence-after-activity rule enabled beside this signal-coverage behavior.
   name: '${resourcePrefix}-llm-no-requests'
   location: location
   properties: {
-    displayName: 'AI - No LLM Requests (15 min silence after activity)'
-    description: 'No LLM requests received in the last 15 minutes despite prior activity — possible instrumentation or service failure'
+    displayName: 'AI - LLM Trace Signal Missing After Requests'
+    description: 'LLM request metrics increased in the last 15 minutes but no matching llm.* spans arrived for that service — the trace signal is broken. Idle services do not alert.'
     severity: 2
     enabled: true
     scopes: [appInsightsId]
     evaluationFrequency: 'PT5M'
-    windowSize: 'PT6H'
+    windowSize: 'PT30M'
     criteria: {
       allOf: [
         {
           query: '''
-            let recent_count = toscalar(union dependencies, requests | where timestamp > ago(15m) | where name startswith "llm." | count);
-            let prior_count  = toscalar(union dependencies, requests | where timestamp between(ago(6h) .. ago(15m)) | where name startswith "llm." | count);
-            print recent_count = recent_count, prior_count = prior_count
-            | where recent_count == 0 and prior_count > 0
+            // llm.requests is a cumulative counter. Compare the most recent
+            // 15m with a preceding baseline per process/attribute series; a
+            // reset contributes its new value instead of a negative delta.
+            let attempts = customMetrics
+              | where timestamp > ago(30m) and name == "llm.requests"
+              | extend role = tolower(coalesce(cloud_RoleName, "unknown")),
+                       instance = tostring(customDimensions["service.instance.id"]),
+                       provider = tostring(customDimensions["provider"]),
+                       model = tostring(customDimensions["model"]),
+                       operation = tostring(customDimensions["operation"]),
+                       status = tostring(customDimensions["status"])
+              | summarize baseline = maxif(value, timestamp between (ago(30m) .. ago(15m))),
+                          recent = maxif(value, timestamp > ago(15m)),
+                          recent_points = countif(timestamp > ago(15m))
+                by role, instance, provider, model, operation, status
+              | where recent_points > 0
+              | extend delta = iff(isnull(baseline) or recent < baseline, recent, recent - baseline)
+              | summarize attempts = sum(delta) by role
+              | where attempts > 0;
+            let traced = union dependencies, requests
+              | where timestamp > ago(15m) and name startswith "llm."
+              | extend role = tolower(coalesce(cloud_RoleName, "unknown"))
+              | summarize spans = count() by role;
+            attempts
+            | join kind=leftouter traced on role
+            | extend spans = coalesce(spans, 0)
+            | where spans == 0
+            | project role, attempts, spans
           '''
           timeAggregation: 'Count'
           threshold: 0
@@ -563,19 +596,27 @@ resource httpErrorBurnRateSev1Alert 'Microsoft.Insights/scheduledQueryRules@2022
             let slo_target = 0.999;
             let burn_multiplier = 14.4;
             let threshold = (1.0 - slo_target) * burn_multiplier;
-            let short_window = requests
-              | where timestamp > ago(5m)
-              | summarize total = count(), errors = countif(success == false);
-            let long_window = requests
+            let request_base = requests
               | where timestamp > ago(1h)
-              | summarize total = count(), errors = countif(success == false);
+              | extend role = tolower(coalesce(cloud_RoleName, "unknown")),
+                       path = tolower(coalesce(tostring(parse_url(url).Path), "<application>")),
+                       weight = tolong(coalesce(itemCount, 1)),
+                       status_code = toint(resultCode)
+              // Match the application-side probe filter exactly: exclude only
+              // these path roots (and their children), never names such as
+              // /healthcare or /metrics-report.
+              | where not(path matches regex @"^/(?:api/)?(?:healthz?|readyz?|livez?|metrics)(?:/|$)");
+            let short_window = request_base
+              | where timestamp > ago(5m)
+              | summarize short_total = sum(weight), short_errors = sumif(weight, status_code between (500 .. 599)) by role;
+            let long_window = request_base
+              | summarize long_total = sum(weight), long_errors = sumif(weight, status_code between (500 .. 599)) by role;
             short_window
-            | extend short_rate = iff(total > 0, toreal(errors) / toreal(total), 0.0)
-            | extend short_total = total
-            | extend long_errors = toscalar(long_window | project errors)
-            | extend long_total = toscalar(long_window | project total)
+            | join kind=inner long_window on role
+            | extend short_rate = iff(short_total > 0, toreal(short_errors) / toreal(short_total), 0.0)
             | extend long_rate = iff(long_total > 0, toreal(long_errors) / toreal(long_total), 0.0)
             | where short_rate > threshold and long_rate > threshold and long_total > 10
+            | project role, short_rate, long_rate, short_total, long_total, short_errors, long_errors
           '''
           timeAggregation: 'Count'
           threshold: 0
@@ -616,18 +657,24 @@ resource httpErrorBurnRateSev2Alert 'Microsoft.Insights/scheduledQueryRules@2022
             let slo_target = 0.999;
             let burn_multiplier = 6.0;
             let threshold = (1.0 - slo_target) * burn_multiplier;
-            let short_window = requests
-              | where timestamp > ago(30m)
-              | summarize total = count(), errors = countif(success == false);
-            let long_window = requests
+            let request_base = requests
               | where timestamp > ago(6h)
-              | summarize total = count(), errors = countif(success == false);
+              | extend role = tolower(coalesce(cloud_RoleName, "unknown")),
+                       path = tolower(coalesce(tostring(parse_url(url).Path), "<application>")),
+                       weight = tolong(coalesce(itemCount, 1)),
+                       status_code = toint(resultCode)
+              | where not(path matches regex @"^/(?:api/)?(?:healthz?|readyz?|livez?|metrics)(?:/|$)");
+            let short_window = request_base
+              | where timestamp > ago(30m)
+              | summarize short_total = sum(weight), short_errors = sumif(weight, status_code between (500 .. 599)) by role;
+            let long_window = request_base
+              | summarize long_total = sum(weight), long_errors = sumif(weight, status_code between (500 .. 599)) by role;
             short_window
-            | extend short_rate = iff(total > 0, toreal(errors) / toreal(total), 0.0)
-            | extend long_errors = toscalar(long_window | project errors)
-            | extend long_total = toscalar(long_window | project total)
+            | join kind=inner long_window on role
+            | extend short_rate = iff(short_total > 0, toreal(short_errors) / toreal(short_total), 0.0)
             | extend long_rate = iff(long_total > 0, toreal(long_errors) / toreal(long_total), 0.0)
             | where short_rate > threshold and long_rate > threshold and long_total > 30
+            | project role, short_rate, long_rate, short_total, long_total, short_errors, long_errors
           '''
           timeAggregation: 'Count'
           threshold: 0
@@ -668,18 +715,24 @@ resource httpErrorBurnRateSev3Alert 'Microsoft.Insights/scheduledQueryRules@2022
             let slo_target = 0.999;
             let burn_multiplier = 1.0;
             let threshold = (1.0 - slo_target) * burn_multiplier;
-            let short_window = requests
-              | where timestamp > ago(6h)
-              | summarize total = count(), errors = countif(success == false);
-            let long_window = requests
+            let request_base = requests
               | where timestamp > ago(2d)
-              | summarize total = count(), errors = countif(success == false);
+              | extend role = tolower(coalesce(cloud_RoleName, "unknown")),
+                       path = tolower(coalesce(tostring(parse_url(url).Path), "<application>")),
+                       weight = tolong(coalesce(itemCount, 1)),
+                       status_code = toint(resultCode)
+              | where not(path matches regex @"^/(?:api/)?(?:healthz?|readyz?|livez?|metrics)(?:/|$)");
+            let short_window = request_base
+              | where timestamp > ago(6h)
+              | summarize short_total = sum(weight), short_errors = sumif(weight, status_code between (500 .. 599)) by role;
+            let long_window = request_base
+              | summarize long_total = sum(weight), long_errors = sumif(weight, status_code between (500 .. 599)) by role;
             short_window
-            | extend short_rate = iff(total > 0, toreal(errors) / toreal(total), 0.0)
-            | extend long_errors = toscalar(long_window | project errors)
-            | extend long_total = toscalar(long_window | project total)
+            | join kind=inner long_window on role
+            | extend short_rate = iff(short_total > 0, toreal(short_errors) / toreal(short_total), 0.0)
             | extend long_rate = iff(long_total > 0, toreal(long_errors) / toreal(long_total), 0.0)
             | where short_rate > threshold and long_rate > threshold and long_total > 100
+            | project role, short_rate, long_rate, short_total, long_total, short_errors, long_errors
           '''
           timeAggregation: 'Count'
           threshold: 0
@@ -703,12 +756,14 @@ resource httpErrorBurnRateSev3Alert 'Microsoft.Insights/scheduledQueryRules@2022
 }
 
 // =============================================================================
-// Application Insights — Custom Event Alerts (Circuit Breaker + Probes)
+// Application Insights — Integration Event Alerts (Circuit Breaker + Probes)
 // =============================================================================
-// Replaces the breaker-state and synthetic-probe Prometheus rules. Both
-// rules query the `customEvents` table that `trackEvent()` populates from
-// `packages/observability/lib/breakers.ts` and
-// `packages/temporal/src/activities/monitoring/synthetic-probe-shared.ts`.
+// `trackEvent()` uses one exclusive transport: the Application Insights SDK
+// writes legacy `customEvents`, while the OTel fallback writes `traces` with
+// `customDimensions["event.name"]`. App-scoped queries cannot resolve the
+// workspace-only `AppTraces` alias, so normalize these two app-scope tables.
+// event.id is generated by both transports and makes retry/dedup semantics
+// explicit; old rows without it get a row-local fallback key.
 // =============================================================================
 
 resource circuitBreakerOpenedAlert 'Microsoft.Insights/scheduledQueryRules@2022-06-15' = if (appInsightsId != '') {
@@ -726,9 +781,19 @@ resource circuitBreakerOpenedAlert 'Microsoft.Insights/scheduledQueryRules@2022-
       allOf: [
         {
           query: '''
-            customEvents
+            let integration_events = union isfuzzy=true
+              (customEvents
+                | project timestamp, operation_Id, event_name = name, customDimensions, source = "legacy"),
+              (traces
+                | extend event_name = tostring(customDimensions["event.name"])
+                | where isnotempty(event_name)
+                | project timestamp, operation_Id, event_name, customDimensions, source = "otel")
+              | extend event_id = tostring(customDimensions["event.id"])
+              | extend event_key = iff(isempty(event_id), strcat(source, "|", operation_Id, "|", tostring(timestamp)), event_id)
+              | summarize arg_max(timestamp, *) by event_key;
+            integration_events
             | where timestamp > ago(5m)
-            | where name == "CircuitBreakerStateChange"
+            | where event_name == "CircuitBreakerStateChange"
             | where tostring(customDimensions["newState"]) == "open"
             | summarize count() by provider = tostring(customDimensions["provider"])
           '''
@@ -768,9 +833,19 @@ resource syntheticProbeFailingAlert 'Microsoft.Insights/scheduledQueryRules@2022
       allOf: [
         {
           query: '''
-            customEvents
+            let integration_events = union isfuzzy=true
+              (customEvents
+                | project timestamp, operation_Id, event_name = name, customDimensions, source = "legacy"),
+              (traces
+                | extend event_name = tostring(customDimensions["event.name"])
+                | where isnotempty(event_name)
+                | project timestamp, operation_Id, event_name, customDimensions, source = "otel")
+              | extend event_id = tostring(customDimensions["event.id"])
+              | extend event_key = iff(isempty(event_id), strcat(source, "|", operation_Id, "|", tostring(timestamp)), event_id)
+              | summarize arg_max(timestamp, *) by event_key;
+            integration_events
             | where timestamp > ago(15m)
-            | where name == "SyntheticProbeResult"
+            | where event_name == "SyntheticProbeResult"
             | where tostring(customDimensions["outcome"]) == "failure"
               or tostring(customDimensions["outcome"]) == "timeout"
             | summarize failures = count() by provider = tostring(customDimensions["provider"])
@@ -853,6 +928,275 @@ resource dependencyFailureAlert 'Microsoft.Insights/scheduledQueryRules@2022-06-
       }
     }
     autoMitigate: false
+  }
+}
+
+// =============================================================================
+// Application Insights — Collector and Temporal Capacity Alerts
+// =============================================================================
+// The collector self-scrape exports a deliberately small set of operational
+// series. It does not pass through a global metric filter, so application and
+// Temporal native metrics arriving through OTLP remain intact.
+// =============================================================================
+
+resource collectorHeartbeatMissingAlert 'Microsoft.Insights/scheduledQueryRules@2022-06-15' = if (appInsightsId != '') {
+  name: '${resourcePrefix}-otel-collector-heartbeat-missing'
+  location: location
+  properties: {
+    displayName: 'Telemetry - OTel Collector Heartbeat Missing'
+    description: 'One or more always-on monitored Container Apps has not exported its collector uptime metric for 15 minutes. This covers a never-working telemetry pipeline without relying on prior signal history.'
+    severity: 1
+    enabled: true
+    scopes: [appInsightsId]
+    evaluationFrequency: 'PT5M'
+    windowSize: 'PT15M'
+    criteria: {
+      allOf: [
+        {
+          query: format('''
+            let expected = print roles = dynamic({0})
+              | mv-expand role = roles to typeof(string)
+              | project role = tolower(role);
+            let observed = customMetrics
+              | where timestamp > ago(15m) and name startswith "otelcol_process_uptime"
+              | project role = tolower(coalesce(cloud_RoleName, "unknown"))
+              | distinct role;
+            expected
+            | join kind=leftanti observed on role
+          ''', string(expectedTelemetryRoles))
+          timeAggregation: 'Count'
+          threshold: 0
+          operator: 'GreaterThan'
+          failingPeriods: {
+            numberOfEvaluationPeriods: 2
+            minFailingPeriodsToAlert: 2
+          }
+        }
+      ]
+    }
+    actions: {
+      actionGroups: [actionGroup.id]
+      customProperties: {
+        runbook_url: 'https://github.com/Fabric-Pro/fabric-oss/blob/master/docs/monitoring/alerts.md#telemetry-pipeline-kql-scheduledqueryrules'
+        severity: 'SEV-2'
+      }
+    }
+    autoMitigate: true
+  }
+}
+
+resource collectorBackpressureAlert 'Microsoft.Insights/scheduledQueryRules@2022-06-15' = if (appInsightsId != '') {
+  name: '${resourcePrefix}-otel-collector-backpressure'
+  location: location
+  properties: {
+    displayName: 'Telemetry - OTel Collector Export Queue >=80%'
+    description: 'An OTel collector export queue remained at least 80% full across the evaluation window — telemetry loss is imminent if the destination does not recover.'
+    severity: 1
+    enabled: true
+    scopes: [appInsightsId]
+    evaluationFrequency: 'PT5M'
+    windowSize: 'PT15M'
+    criteria: {
+      allOf: [
+        {
+          query: '''
+            let sizes = customMetrics
+              | where timestamp > ago(15m) and name == "otelcol_exporter_queue_size"
+              | extend role = tolower(coalesce(cloud_RoleName, "unknown")),
+                       exporter = tostring(customDimensions["exporter"]),
+                       instance = tostring(customDimensions["service.instance.id"])
+              | summarize queue_size = max(value) by bin(timestamp, 1m), role, exporter, instance;
+            let capacities = customMetrics
+              | where timestamp > ago(15m) and name == "otelcol_exporter_queue_capacity"
+              | extend role = tolower(coalesce(cloud_RoleName, "unknown")),
+                       exporter = tostring(customDimensions["exporter"]),
+                       instance = tostring(customDimensions["service.instance.id"])
+              | summarize queue_capacity = max(value) by bin(timestamp, 1m), role, exporter, instance;
+            sizes
+            | join kind=inner capacities on timestamp, role, exporter, instance
+            | where queue_capacity > 0
+            | extend fill_ratio = toreal(queue_size) / toreal(queue_capacity)
+            | summarize samples = count(), p95_fill_ratio = percentile(fill_ratio, 95), max_fill_ratio = max(fill_ratio)
+              by role, exporter, instance
+            | where samples >= 3 and p95_fill_ratio >= 0.8
+          '''
+          timeAggregation: 'Count'
+          threshold: 0
+          operator: 'GreaterThan'
+          failingPeriods: {
+            numberOfEvaluationPeriods: 1
+            minFailingPeriodsToAlert: 1
+          }
+        }
+      ]
+    }
+    actions: {
+      actionGroups: [actionGroup.id]
+      customProperties: {
+        runbook_url: 'https://github.com/Fabric-Pro/fabric-oss/blob/master/docs/monitoring/alerts.md#telemetry-pipeline-kql-scheduledqueryrules'
+        severity: 'SEV-2'
+      }
+    }
+    autoMitigate: true
+  }
+}
+
+resource temporalQueueDelayAlert 'Microsoft.Insights/scheduledQueryRules@2022-06-15' = if (appInsightsId != '') {
+  name: '${resourcePrefix}-temporal-queue-delay'
+  location: location
+  properties: {
+    displayName: 'Temporal - Sustained Queue Delay (>60s average)'
+    description: 'Workflow or activity tasks waited more than 60 seconds on average before a worker accepted them during the last 15 minutes. Grouped by task queue and signal type.'
+    severity: 1
+    enabled: true
+    scopes: [appInsightsId]
+    evaluationFrequency: 'PT5M'
+    windowSize: 'PT30M'
+    criteria: {
+      allOf: [
+        {
+          query: '''
+            // These histograms are cumulative. Subtract the preceding 15m
+            // baseline per process/queue before calculating a weighted mean;
+            // summing raw values would repeatedly count the process lifetime.
+            customMetrics
+            | where timestamp > ago(30m)
+            | where name in ("temporal_workflow_task_schedule_to_start_latency", "temporal_activity_schedule_to_start_latency")
+            | extend role = tolower(coalesce(cloud_RoleName, "unknown")),
+                     instance = tostring(customDimensions["service.instance.id"]),
+                     task_queue = tostring(customDimensions["task_queue"])
+            | summarize baseline_sum = maxif(valueSum, timestamp between (ago(30m) .. ago(15m))),
+                        baseline_count = maxif(valueCount, timestamp between (ago(30m) .. ago(15m))),
+                        recent_sum = maxif(valueSum, timestamp > ago(15m)),
+                        recent_count = maxif(valueCount, timestamp > ago(15m)),
+                        recent_points = countif(timestamp > ago(15m))
+              by role, instance, task_queue, signal = name
+            | where recent_points > 0
+            | extend delay_sum = iff(isnull(baseline_sum) or recent_sum < baseline_sum, recent_sum, recent_sum - baseline_sum),
+                     tasks = iff(isnull(baseline_count) or recent_count < baseline_count, recent_count, recent_count - baseline_count)
+            | summarize delay_sum = sum(delay_sum), tasks = sum(tasks) by role, task_queue, signal
+            | where tasks >= 5
+            | extend average_delay_ms = toreal(delay_sum) / toreal(tasks)
+            | where average_delay_ms > 60000
+          '''
+          timeAggregation: 'Count'
+          threshold: 0
+          operator: 'GreaterThan'
+          failingPeriods: {
+            numberOfEvaluationPeriods: 1
+            minFailingPeriodsToAlert: 1
+          }
+        }
+      ]
+    }
+    actions: {
+      actionGroups: [actionGroup.id]
+      customProperties: {
+        runbook_url: 'https://github.com/Fabric-Pro/fabric-oss/blob/master/docs/monitoring/alerts.md#temporal-capacity-kql-scheduledqueryrules'
+        severity: 'SEV-2'
+      }
+    }
+    autoMitigate: true
+  }
+}
+
+resource temporalSlotsExhaustedAlert 'Microsoft.Insights/scheduledQueryRules@2022-06-15' = if (appInsightsId != '') {
+  name: '${resourcePrefix}-temporal-task-slots-exhausted'
+  location: location
+  properties: {
+    displayName: 'Temporal - Task Slots Exhausted (15m)'
+    description: 'All worker replicas reported zero available slots for the same task queue and worker type throughout the 15-minute window.'
+    severity: 1
+    enabled: true
+    scopes: [appInsightsId]
+    evaluationFrequency: 'PT5M'
+    windowSize: 'PT15M'
+    criteria: {
+      allOf: [
+        {
+          query: '''
+            customMetrics
+            | where timestamp > ago(15m) and name == "temporal_worker_task_slots_available"
+            | extend role = tolower(coalesce(cloud_RoleName, "unknown")),
+                     task_queue = tostring(customDimensions["task_queue"]),
+                     worker_type = tostring(customDimensions["worker_type"])
+            // Sum replicas for each minute. Alert only if aggregate capacity
+            // stayed at zero; one saturated replica beside a free replica is
+            // not a capacity incident.
+            | summarize available = sum(value) by bin(timestamp, 1m), role, task_queue, worker_type
+            | summarize samples = count(), max_available = max(available) by role, task_queue, worker_type
+            | where samples >= 5 and max_available <= 0
+          '''
+          timeAggregation: 'Count'
+          threshold: 0
+          operator: 'GreaterThan'
+          failingPeriods: {
+            numberOfEvaluationPeriods: 1
+            minFailingPeriodsToAlert: 1
+          }
+        }
+      ]
+    }
+    actions: {
+      actionGroups: [actionGroup.id]
+      customProperties: {
+        runbook_url: 'https://github.com/Fabric-Pro/fabric-oss/blob/master/docs/monitoring/alerts.md#temporal-capacity-kql-scheduledqueryrules'
+        severity: 'SEV-2'
+      }
+    }
+    autoMitigate: true
+  }
+}
+
+// Container Apps captures the sidecar's stderr independently of its telemetry
+// pipeline. Cover observable pipeline rejection/drop conditions here. The
+// pinned Azure exporter reports asynchronous transport failures only at debug,
+// so the heartbeat-missing rule is the production transport-outage signal.
+resource collectorPipelineFailureAlert 'Microsoft.Insights/scheduledQueryRules@2022-06-15' = if (logAnalyticsWorkspaceId != '') {
+  name: '${resourcePrefix}-otel-collector-pipeline-failures'
+  location: location
+  properties: {
+    displayName: 'Telemetry - OTel Collector Pipeline Failures'
+    description: 'An OTel collector sidecar logged at least five pipeline processing, rejection, queue-full, or drop failures in 15 minutes. Azure transport outages are detected by the missing-heartbeat rule.'
+    severity: 1
+    enabled: true
+    scopes: [logAnalyticsWorkspaceId]
+    evaluationFrequency: 'PT5M'
+    windowSize: 'PT15M'
+    criteria: {
+      allOf: [
+        {
+          query: '''
+            ContainerAppConsoleLogs_CL
+            | where TimeGenerated > ago(15m)
+            | where ContainerName_s == "otel-collector"
+            | where Log_s has "Exporting failed"
+              or Log_s has "Dropping data"
+              or Log_s has "Rejecting data"
+              or Log_s has "sending queue is full"
+              or Log_s has "sending_queue is full"
+              or Log_s has "Failed to process"
+            | summarize failures = count() by ContainerAppName_s
+            | where failures >= 5
+          '''
+          timeAggregation: 'Count'
+          threshold: 0
+          operator: 'GreaterThan'
+          failingPeriods: {
+            numberOfEvaluationPeriods: 1
+            minFailingPeriodsToAlert: 1
+          }
+        }
+      ]
+    }
+    actions: {
+      actionGroups: [actionGroup.id]
+      customProperties: {
+        runbook_url: 'https://github.com/Fabric-Pro/fabric-oss/blob/master/docs/monitoring/alerts.md#telemetry-pipeline-kql-scheduledqueryrules'
+        severity: 'SEV-2'
+      }
+    }
+    autoMitigate: true
   }
 }
 
@@ -986,6 +1330,7 @@ resource repoHealthDegradedAlert 'Microsoft.Insights/scheduledQueryRules@2022-06
 output actionGroupId string = actionGroup.id
 output actionGroupName string = actionGroup.name
 // 2 per Container App (replica + restart) + 6 LLM rules + 3 burn-rate +
-// 2 custom-event + 1 dependency = +12 when appInsightsId is set; + 2
+// 2 integration-event + 1 dependency + 2 collector + 2 Temporal = +16
+// when appInsightsId is set; + 1 Key Vault + 1 collector-pipeline + 2
 // repo-integration credential-health rules when logAnalyticsWorkspaceId is set.
-output alertRuleCount int = length(monitoredContainerApps) * 2 + (appInsightsId != '' ? 12 : 0) + (logAnalyticsWorkspaceId != '' ? 2 : 0)
+output alertRuleCount int = length(monitoredContainerApps) * 2 + (appInsightsId != '' ? 16 : 0) + (logAnalyticsWorkspaceId != '' ? 4 : 0)

@@ -25,6 +25,7 @@ COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 
 # Copy package.json files for all workspace packages
 COPY packages/mcp-stdio-wrapper/package.json packages/mcp-stdio-wrapper/
+COPY packages/observability/package.json packages/observability/
 COPY packages/database/package.json packages/database/
 COPY packages/utils/package.json packages/utils/
 COPY tooling/typescript/package.json tooling/typescript/
@@ -51,6 +52,7 @@ COPY --from=deps /app/pnpm-workspace.yaml ./pnpm-workspace.yaml
 
 # Copy source files
 COPY packages/mcp-stdio-wrapper packages/mcp-stdio-wrapper
+COPY packages/observability packages/observability
 COPY packages/database packages/database
 COPY packages/utils packages/utils
 COPY tooling/typescript tooling/typescript
@@ -158,4 +160,4 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD node -e "fetch('http://localhost:3100/health').then(r => r.ok ? process.exit(0) : process.exit(1)).catch(() => process.exit(1))"
 
 # Start the server
-CMD ["node", "--import", "tsx", "packages/mcp-stdio-wrapper/src/server.ts"]
+CMD ["node", "--import", "tsx", "--import", "./packages/mcp-stdio-wrapper/src/telemetry.ts", "packages/mcp-stdio-wrapper/src/server.ts"]

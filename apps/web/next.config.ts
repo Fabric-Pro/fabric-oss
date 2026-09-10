@@ -1,5 +1,6 @@
 import { execSync } from "node:child_process";
 import fs from "node:fs";
+import { createRequire } from "node:module";
 import path from "node:path";
 import { withContentCollections } from "@content-collections/next";
 // @ts-expect-error - PrismaPlugin is not typed
@@ -8,6 +9,18 @@ import type { NextConfig } from "next";
 import nextIntlPlugin from "next-intl/plugin";
 
 const withNextIntl = nextIntlPlugin("./modules/i18n/request.ts");
+
+/**
+ * Application Insights is externalized below, so deployed Next.js functions
+ * must resolve it from the web app's own dependency tree. Keep this build-time
+ * assertion as the source-level dependency edge; the runtime SDK load remains
+ * lazy inside `@repo/observability`.
+ */
+function assertApplicationInsightsExternalResolvable(): void {
+	const require = createRequire(import.meta.url);
+	require.resolve("applicationinsights");
+}
+assertApplicationInsightsExternalResolvable();
 
 /**
  * Fail the BUILD if the sharp/libvips native package the

@@ -26,6 +26,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const captured = vi.hoisted(() => ({
 	sdkConfig: undefined as Record<string, unknown> | undefined,
+	instrumentationConfig: undefined as
+		| Record<string, Record<string, unknown>>
+		| undefined,
 	loggerShutdownError: undefined as unknown,
 	sdkShutdownError: undefined as unknown,
 	shutdownsCalled: [] as string[],
@@ -79,7 +82,12 @@ vi.mock("@opentelemetry/exporter-logs-otlp-grpc", () => ({
 }));
 
 vi.mock("@opentelemetry/auto-instrumentations-node", () => ({
-	getNodeAutoInstrumentations: () => [],
+	getNodeAutoInstrumentations: (
+		config: Record<string, Record<string, unknown>>,
+	) => {
+		captured.instrumentationConfig = config;
+		return [];
+	},
 }));
 
 /**
@@ -107,6 +115,50 @@ async function initWithConsoleSpies() {
 }
 
 const originalConsole = { ...console };
+
+describe("HTTP probe collection", () => {
+	it("excludes probe paths but retains similarly named application routes", async () => {
+		await initWithFreshModules();
+		const http =
+			captured.instrumentationConfig?.[
+				"@opentelemetry/instrumentation-http"
+			];
+		expect(http?.ignoreIncomingRequestHook).toBeTypeOf("function");
+		const ignore = http?.ignoreIncomingRequestHook as (request: {
+			url?: string;
+		}) => boolean;
+		for (const url of [
+			"/health",
+			"/health/ready?full=true",
+			"/readyz",
+			"/livez",
+			"/metrics",
+			"/api/health",
+			"/api/metrics?format=prometheus",
+		]) {
+			expect(ignore({ url }), url).toBe(true);
+		}
+		for (const url of [
+			"/healthcare",
+			"/metrics-report",
+			"/api/projects",
+			"/ready-made",
+			"/projects/health",
+			"/",
+			undefined,
+		]) {
+			expect(ignore({ url }), url).toBe(false);
+		}
+	});
+});
+
+it("does not turn a circular console payload into an application exception", async () => {
+	await initWithConsoleSpies();
+	const payload: Record<string, unknown> = {};
+	payload.self = payload;
+	expect(() => console.log(payload)).not.toThrow();
+});
+
 const envKeys = ["OTEL_ENABLED", "OTEL_NODE_RESOURCE_DETECTORS"] as const;
 const originalEnv: Record<string, string | undefined> = {};
 
@@ -124,6 +176,7 @@ beforeEach(() => {
 	}
 	process.env.OTEL_ENABLED = "true";
 	captured.sdkConfig = undefined;
+	captured.instrumentationConfig = undefined;
 	captured.loggerShutdownError = undefined;
 	captured.sdkShutdownError = undefined;
 	captured.shutdownsCalled = [];
