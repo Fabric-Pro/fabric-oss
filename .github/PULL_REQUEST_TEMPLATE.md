@@ -21,6 +21,7 @@ CI will fail if neither is present, including for docs- and CI-only PRs. See
 
 ## Testing
 
+- [ ] If a literal validation failed and an environment- or resource-adjusted retry succeeded, recorded both outcomes; the retry does not make the original validation pass
 - [ ] Type check passes (`pnpm type-check`)
 - [ ] Lint passes (`pnpm lint`)
 - [ ] Relevant tests pass
