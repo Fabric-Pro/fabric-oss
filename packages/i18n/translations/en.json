@@ -5661,6 +5661,11 @@
 				"description": "Create or add an Architecture document for the product’s technical structure.",
 				"tooltip": "Architecture context helps Fabric understand system components, dependencies, integrations, and technical constraints."
 			},
+			"designDocument": {
+				"name": "Design document",
+				"description": "Create or add a Design System document for the product’s visual language.",
+				"tooltip": "A design system gives Fabric the colors, spacing, components and patterns your UI already uses, so generated work matches the product instead of inventing a new look."
+			},
 			"apiSpec": {
 				"name": "API specification exists",
 				"description": "API spec exists when API behavior is in scope.",
@@ -5767,6 +5772,7 @@
 			"proposal": "Create Proposal",
 			"prd": "Create PRD",
 			"architecture": "Create Architecture",
+			"designDocument": "Create Design System",
 			"apiSpec": "Create API Spec",
 			"technicalSpec": "Create Technical Specification",
 			"qaStrategy": "Create QA Strategy",
