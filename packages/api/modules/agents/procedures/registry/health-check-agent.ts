@@ -19,6 +19,7 @@ import {
 	resolveOrganizationId,
 } from "../../../../orpc/procedures";
 import { verifyOrganizationMembership } from "../../../organizations/lib/membership";
+import { fetchAgentEndpoint } from "../../lib/agent-endpoint-guard";
 
 /**
  * Health check a registered agent
@@ -139,11 +140,17 @@ export const healthCheckAgent = protectedProcedure
 				agent.deploymentUrl,
 			);
 			try {
-				const response = await fetch(`${resolvedUrl}/health`, {
-					method: "GET",
-					headers: { "Content-Type": "application/json" },
-					signal: AbortSignal.timeout(5000),
-				});
+				// Guarded like every other agent probe. The URL is stored
+				// rather than supplied here, but a stored one is editable and
+				// leaves the process as the same outbound request.
+				const response = await fetchAgentEndpoint(
+					`${resolvedUrl}/health`,
+					{
+						method: "GET",
+						headers: { "Content-Type": "application/json" },
+						signal: AbortSignal.timeout(5000),
+					},
+				);
 				healthy = response.ok;
 				if (!healthy) {
 					error = `Health check failed with status ${response.status} (probed ${resolvedUrl}/health)`;

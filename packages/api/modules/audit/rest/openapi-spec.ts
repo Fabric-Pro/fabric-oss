@@ -179,6 +179,7 @@ export function getAuditLogOpenApiSpec(
 										"API_KEY_REVOKED",
 										"API_KEY_EXPIRED",
 										"INSUFFICIENT_SCOPE",
+										"INSUFFICIENT_PERMISSION",
 										"BAD_REQUEST",
 										"TOO_MANY_REQUESTS",
 										"SERVICE_UNAVAILABLE",
@@ -355,7 +356,7 @@ export function getAuditLogOpenApiSpec(
 						},
 						"403": {
 							description:
-								"API key missing the `audit_log:read` scope",
+								"API key missing the `audit_log:read` scope (`INSUFFICIENT_SCOPE`), or its owner no longer holds the organization access behind that scope (`INSUFFICIENT_PERMISSION`) — the key is intact and the person's role changed, so re-minting it will not help",
 							content: {
 								"application/json": {
 									schema: {
@@ -490,7 +491,7 @@ export function getAuditLogOpenApiSpec(
 						},
 						"403": {
 							description:
-								"API key missing the `audit_log:export` scope",
+								"API key missing the `audit_log:export` scope (`INSUFFICIENT_SCOPE`), or its owner no longer holds the organization access behind that scope (`INSUFFICIENT_PERMISSION`) — the key is intact and the person's role changed, so re-minting it will not help",
 							content: {
 								"application/json": {
 									schema: {

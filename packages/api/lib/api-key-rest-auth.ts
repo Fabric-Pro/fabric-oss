@@ -280,3 +280,32 @@ export function insufficientScope(c: Context, required: string) {
 		403,
 	);
 }
+
+/**
+ * Standard 403 body for a key whose scope is present but whose *owner* no
+ * longer holds the permission behind it — the shape a demotion leaves.
+ *
+ * A separate code from `INSUFFICIENT_SCOPE` on purpose, for the same reason
+ * `NOT_A_MEMBER` is separate from `INACTIVE`: the credential is exactly as it
+ * was minted, the person changed. An operator reading the trail wants to see
+ * which of the two happened, and an integration owner wants to be told to ask
+ * for their access back rather than to re-mint the key.
+ */
+export function insufficientOwnerPermission(c: Context, required: string) {
+	const key = c.get("verifiedKey") as VerifiedAuditApiKey | undefined;
+	auditFailedAttempt(c, {
+		code: "INSUFFICIENT_PERMISSION",
+		status: 403,
+		keyPrefix: key?.keyPrefix,
+		owner: key?.owner,
+	});
+	return c.json(
+		{
+			error: {
+				code: "INSUFFICIENT_PERMISSION",
+				message: `The key's owner no longer holds the access required for ${required} in this organization`,
+			},
+		},
+		403,
+	);
+}

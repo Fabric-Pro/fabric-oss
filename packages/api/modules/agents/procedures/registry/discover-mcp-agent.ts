@@ -15,6 +15,10 @@ import {
 	protectedProcedure,
 	requireInputOrgPermission,
 } from "../../../../orpc/procedures";
+import {
+	assertAgentEndpointAllowed,
+	fetchAgentEndpoint,
+} from "../../lib/agent-endpoint-guard";
 
 /**
  * MCP Tool Schema
@@ -58,7 +62,7 @@ async function validateMcpConnection(
 		const toolsUrl = new URL("/tools/list", url);
 
 		try {
-			const response = await fetch(toolsUrl.toString(), {
+			const response = await fetchAgentEndpoint(toolsUrl.toString(), {
 				method: "POST",
 				headers: {
 					"Content-Type": "application/json",
@@ -92,7 +96,7 @@ async function validateMcpConnection(
 		} catch (fetchError) {
 			// Try alternative endpoint format
 			try {
-				const altResponse = await fetch(url, {
+				const altResponse = await fetchAgentEndpoint(url, {
 					method: "POST",
 					headers: {
 						"Content-Type": "application/json",
@@ -139,7 +143,7 @@ async function validateMcpConnection(
 
 		// Try to get server info
 		try {
-			const infoResponse = await fetch(url, {
+			const infoResponse = await fetchAgentEndpoint(url, {
 				method: "POST",
 				headers: {
 					"Content-Type": "application/json",
@@ -297,6 +301,8 @@ export const discoverMcpAgent = protectedProcedure
 		}),
 	)
 	.handler(async ({ input, context }) => {
+		assertAgentEndpointAllowed(input.deploymentUrl);
+
 		const { deploymentUrl, name, displayName, description, timeout } =
 			input;
 
