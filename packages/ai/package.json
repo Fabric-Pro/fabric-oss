@@ -21,7 +21,7 @@
 	"devDependencies": {
 		"@repo/tsconfig": "workspace:*",
 		"typescript": "5.9.3",
-		"vitest": "^4.1.8"
+		"vitest": "^4.1.11"
 	},
 	"main": "./index.ts",
 	"name": "@repo/ai",

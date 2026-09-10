@@ -203,7 +203,7 @@
 		"jsdom": "^26.0.2",
 		"postcss": "^8.5.26",
 		"tailwindcss": "4.1.16",
-		"vitest": "^4.1.8",
+		"vitest": "^4.1.11",
 		"vitest-axe": "^0.1.0"
 	},
 	"name": "@repo/web",
