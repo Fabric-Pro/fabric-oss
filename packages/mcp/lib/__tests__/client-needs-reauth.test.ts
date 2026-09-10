@@ -171,3 +171,38 @@ describe("createMcpClientForConfig - needsReauth enforcement", () => {
 		});
 	});
 });
+
+describe("createMcpClientForConfig - STDIO OAuth enforcement", () => {
+	beforeEach(resetMocks);
+
+	it("rejects unauthenticated Google Drive STDIO before creating a wrapper client", async () => {
+		mockGetMcpConfigById.mockResolvedValue({
+			...baseConfig,
+			displayName: "Google Drive",
+			transport: "STDIO",
+			encryptedAccessToken: null,
+			mcpServer: {
+				name: "Google Drive",
+				transport: "STDIO",
+				command: "npx -y @modelcontextprotocol/server-gdrive",
+			},
+		});
+		vi.stubEnv("MCP_STDIO_WRAPPER_URL", "http://localhost:3100");
+		const fetchSpy = vi.spyOn(global, "fetch");
+
+		await expect(
+			createMcpClientForConfig({
+				configId: "config_x",
+				userId: "user_a",
+				organizationId: "org_a",
+			}),
+		).rejects.toMatchObject({
+			code: "OAUTH_AUTH_REQUIRED",
+			isAuthError: true,
+		});
+		expect(fetchSpy).not.toHaveBeenCalled();
+
+		fetchSpy.mockRestore();
+		vi.unstubAllEnvs();
+	});
+});
