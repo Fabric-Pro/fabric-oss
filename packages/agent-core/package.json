@@ -109,6 +109,6 @@
 		"@copilotkit/runtime": "1.70.1",
 		"@repo/tsconfig": "workspace:*",
 		"typescript": "5.9.3",
-		"vitest": "^4.1.8"
+		"vitest": "^4.1.11"
 	}
 }

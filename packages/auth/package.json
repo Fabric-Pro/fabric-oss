@@ -21,7 +21,7 @@
 	"devDependencies": {
 		"@repo/tsconfig": "workspace:*",
 		"@types/node": "^24.10.0",
-		"vitest": "^4.1.8"
+		"vitest": "^4.1.11"
 	},
 	"main": "./index.ts",
 	"name": "@repo/auth",
