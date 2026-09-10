@@ -136,6 +136,13 @@ const CASES: Array<[string, () => ReadinessEvidence, () => ReadinessEvidence]> =
 		["proposal", () => withDocument("PROPOSAL"), emptyEvidence],
 		["prd", () => withDocument("PRD"), emptyEvidence],
 		["architecture", () => withDocument("ARCHITECTURE"), emptyEvidence],
+		[
+			"design-document",
+			() => withDocument("DESIGN_SYSTEM"),
+			// A project with every other document but no design system is the
+			// case this row exists to prompt.
+			() => withDocument("ARCHITECTURE"),
+		],
 		["api-spec", () => withDocument("API_SPEC"), emptyEvidence],
 		["technical-spec", () => withDocument("TECHNICAL_SPEC"), emptyEvidence],
 		["qa-strategy", () => withDocument("QA_STRATEGY"), emptyEvidence],
@@ -246,8 +253,11 @@ const CASES: Array<[string, () => ReadinessEvidence, () => ReadinessEvidence]> =
 	];
 
 describe("readiness rule registry", () => {
-	it("carries the 26 items that survive onboarding extraction", () => {
-		expect(READINESS_RULES).toHaveLength(26);
+	it("carries the 26 items that survive onboarding extraction, plus design", () => {
+		// 26 from the 19 August sheet; `design-document` was added later and
+		// was never on it (Fizzy #2377).
+		expect(READINESS_RULES).toHaveLength(27);
+		expect(READINESS_RULES_BY_KEY.has("design-document")).toBe(true);
 	});
 
 	/**

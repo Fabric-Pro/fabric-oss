@@ -5,7 +5,11 @@
  * One entry per sheet row, one unit test per entry. That pairing is the point:
  * a rule cannot quietly drift from the sheet without a named test failing.
  *
- * ## Why 26 rules and not 29
+ * ## Why 27 rules and not 29
+ *
+ * 26 of them are the sheet. The 27th, `design-document`, is a later addition
+ * that was never on it (Fizzy #2377) — so a count that no longer matches the
+ * spreadsheet is expected, and the sheet remains canonical for the other 26.
  *
  * The three Project Basics rows — project description, project phase, expected
  * development start date — are annotated in the sheet as "will not be shown on
@@ -220,6 +224,30 @@ export const READINESS_RULES: readonly ReadinessRule[] = [
 		dependsOn: ["prd", "proposal", "business-case", "codebase-connected"],
 		detect: (e) => e.completeDocumentTypes.has("ARCHITECTURE"),
 		inProgress: (e) => e.inFlight.documentTypes.has("ARCHITECTURE"),
+	},
+	{
+		/**
+		 * Sits beside `architecture` as the card asks, but one level softer at
+		 * every phase: a design system is recommended, never required, because
+		 * a project with no UI work has nothing to describe. Such a project
+		 * marks the row Not Applicable through the same control every other
+		 * item already offers (Fizzy #2377).
+		 *
+		 * No `dependsOn`. Architecture waits on a PRD or a connected codebase
+		 * because it is written from one; a design system is derived from code
+		 * OR from uploaded design references, and the generation graph agrees —
+		 * `DESIGN_SYSTEM` is tier 1 with no prerequisites
+		 * (`document-dependency-graph.ts`). Gating it behind a document it does
+		 * not need would hide a row the user could act on today.
+		 */
+		key: "design-document",
+		category: "DOCUMENTS",
+		i18nKey: "readiness.items.designDocument",
+		ctaLabelKey: "readiness.cta.designDocument",
+		target: { kind: "tab", tab: "documents" },
+		needLevel: phase({ discovery: "COULD", development: "SHOULD" }),
+		detect: (e) => e.completeDocumentTypes.has("DESIGN_SYSTEM"),
+		inProgress: (e) => e.inFlight.documentTypes.has("DESIGN_SYSTEM"),
 	},
 	{
 		key: "api-spec",

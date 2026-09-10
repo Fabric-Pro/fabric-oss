@@ -56,6 +56,7 @@ function fullySetUp(): ReadinessEvidence {
 		"PROPOSAL",
 		"PRD",
 		"ARCHITECTURE",
+		"DESIGN_SYSTEM",
 		"API_SPEC",
 		"TECHNICAL_SPEC",
 		"QA_STRATEGY",
