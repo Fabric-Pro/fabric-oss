@@ -340,6 +340,14 @@ export {
 	type GeneratePublishingStakeholderEmailWorkflowOutput,
 	generatePublishingStakeholderEmailWorkflow,
 } from "./generate-publishing-stakeholder-email";
+// Publishing Suite Webinar / Demo Script (fire-and-forget — one editable
+// webinar/demo script for one topic, from its planning analysis and its own
+// provenance). #1988
+export {
+	type GeneratePublishingWebinarScriptWorkflowInput,
+	type GeneratePublishingWebinarScriptWorkflowOutput,
+	generatePublishingWebinarScriptWorkflow,
+} from "./generate-publishing-webinar-script";
 // Goal-Oriented Agent workflow (iterative goal achievement)
 export {
 	cancelSignal as goalOrientedCancelSignal,

@@ -1,6 +1,7 @@
-import { join } from "node:path";
+import { readdirSync } from "node:fs";
+import { join, relative, sep } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { firstCallPosition } from "./_ast-guards";
+import { draftGenerationFolders, firstCallPosition } from "./_ast-guards";
 
 /**
  * What a refused terminal write says, and how loudly.
@@ -116,38 +117,160 @@ describe("every publishing terminal write reports its refusal through the table"
 	// are exercised by a suite of their own. A file-by-file structural check is
 	// what stops the rest drifting back to a hand-written sentence.
 	//
-	// Fifteen, not ten. The first draft of this guard listed only the Temporal
-	// activities, and adversarial review found the five it had missed: each
-	// generation procedure rolls its own attempt back when the workflow start
-	// fails, and those calls discarded the result entirely. A completeness
-	// guard that is itself incomplete is the worst of both, because it reads as
-	// proof.
+	// Discovered rather than hand-listed, because the hand-written 15-entry
+	// list this replaced had already drifted: LinkedIn's three sites (its
+	// generate, its mark-failed, its API procedure) were never added, and
+	// `expect(SITES).toHaveLength(15)` stayed green throughout because the
+	// PIN moved in lockstep with the very list it was meant to guard.
 	//
 	// `firstCallPosition` and not a source-text search: the comment above each
 	// call describes the reasons in prose, so a grep for "superseded" would
 	// report the comment, and a grep for the helper name would stay green after
 	// the call itself was deleted.
 	const PACKAGES = join(__dirname, "..", "..", "..", "..", "..");
-	const SITES = [
-		"temporal/src/activities/publishing-blog-post/generate-blog-post.ts",
-		"temporal/src/activities/publishing-blog-post/mark-blog-post-failed.ts",
-		"temporal/src/activities/publishing-case-study/generate-case-study.ts",
-		"temporal/src/activities/publishing-case-study/mark-case-study-failed.ts",
-		"temporal/src/activities/publishing-short-post/generate-short-post.ts",
-		"temporal/src/activities/publishing-short-post/mark-short-post-failed.ts",
-		"temporal/src/activities/publishing-stakeholder-email/generate-stakeholder-email.ts",
-		"temporal/src/activities/publishing-stakeholder-email/mark-stakeholder-email-failed.ts",
-		"temporal/src/activities/publishing-planning/generate-planning-analysis.ts",
-		"temporal/src/activities/publishing-planning/mark-planning-analysis-failed.ts",
-		"api/modules/projects/procedures/publishing-suite/blog-post.ts",
-		"api/modules/projects/procedures/publishing-suite/case-study.ts",
-		"api/modules/projects/procedures/publishing-suite/short-post.ts",
-		"api/modules/projects/procedures/publishing-suite/stakeholder-email.ts",
-		"api/modules/projects/procedures/publishing-suite/planning-analysis.ts",
+	const ACTIVITIES_DIR = join(__dirname, "..", "..");
+	const API_PUBLISHING_SUITE_DIR = join(
+		PACKAGES,
+		"api/modules/projects/procedures/publishing-suite",
+	);
+
+	/**
+	 * `path.relative` returns backslash-separated paths on Windows; every
+	 * literal comparison below (and the pre-existing `SITES` array this
+	 * replaced) is written POSIX-style, so this is where that gets reconciled
+	 * rather than at every call site.
+	 */
+	function toPosixRelative(from: string, to: string): string {
+		return relative(from, to).split(sep).join("/");
+	}
+
+	/**
+	 * The five `@repo/database` entry points that commit or refuse a draft or
+	 * planning-analysis terminal write. NOT discovered — these are the fixed
+	 * vocabulary the table exists to cover, same as `logDraftRefusal`'s own
+	 * reason union. What IS discovered is every FILE that calls one of them,
+	 * which is the part that used to drift.
+	 */
+	const TERMINAL_WRITE_HELPERS = [
+		"completeTopicDraft",
+		"failTopicDraft",
+		"completePlanningAnalysis",
+		"failPlanningAnalysis",
+		"startTopicDraftAttempt",
 	];
 
-	it("lists every site — a short completeness guard is worse than none", () => {
-		expect(SITES).toHaveLength(15);
+	function tsFilesDirectlyIn(dir: string): string[] {
+		return readdirSync(dir, { withFileTypes: true })
+			.filter((entry) => entry.isFile() && entry.name.endsWith(".ts"))
+			.map((entry) => join(dir, entry.name));
+	}
+
+	// `draftGenerationFolders()` — the "publishing-* folder with both a
+	// generate-*.ts and a mark-*-failed.ts file" rule — lives in `_ast-guards.ts`
+	// now, shared with `publishing-failure-message.test.ts`. Both needed exactly
+	// this rule; keeping two copies is the drift risk this task exists to remove.
+
+	/** The `generate-*.ts` and `mark-*-failed.ts` files those folders contain. */
+	function expectedDraftActivityFiles(): string[] {
+		const out: string[] = [];
+		for (const folder of draftGenerationFolders()) {
+			const dir = join(ACTIVITIES_DIR, folder);
+			for (const file of readdirSync(dir)) {
+				if (
+					/^generate-.*\.ts$/.test(file) ||
+					/^mark-.*-failed\.ts$/.test(file)
+				) {
+					out.push(toPosixRelative(PACKAGES, join(dir, file)));
+				}
+			}
+		}
+		return out.sort();
+	}
+
+	/**
+	 * Every file, across the Temporal activities AND the API procedures, that
+	 * calls at least one terminal-write helper — the discovered replacement
+	 * for the old hand-written `SITES` array.
+	 */
+	function discoverTerminalWriteSites(): string[] {
+		const candidates = [
+			...draftGenerationFolders().flatMap((folder) =>
+				tsFilesDirectlyIn(join(ACTIVITIES_DIR, folder)),
+			),
+			...tsFilesDirectlyIn(API_PUBLISHING_SUITE_DIR),
+		];
+		return candidates
+			.filter((file) =>
+				TERMINAL_WRITE_HELPERS.some(
+					(helper) => firstCallPosition(file, helper) > -1,
+				),
+			)
+			.map((file) => toPosixRelative(PACKAGES, file))
+			.sort();
+	}
+
+	describe("discovery preconditions — the guard cannot pass vacuously (draft refusal)", () => {
+		it("finds the draft-generation folders it is supposed to find", () => {
+			const folders = draftGenerationFolders();
+			expect(folders).toContain("publishing-case-study");
+			expect(folders).toContain("publishing-linkedin-post");
+			expect(folders).toContain("publishing-webinar-script");
+			expect(folders).not.toContain("publishing-shared");
+			expect(folders).not.toContain("publishing-suggestion");
+			expect(folders.length).toBeGreaterThanOrEqual(7);
+		});
+
+		it("finds a plausible set of expected generate/mark files", () => {
+			const files = expectedDraftActivityFiles();
+			expect(files).toContain(
+				"temporal/src/activities/publishing-case-study/generate-case-study.ts",
+			);
+			expect(files).toContain(
+				"temporal/src/activities/publishing-webinar-script/mark-webinar-script-failed.ts",
+			);
+			// Seven folders, two files each.
+			expect(files.length).toBeGreaterThanOrEqual(14);
+		});
+	});
+
+	const SITES = discoverTerminalWriteSites();
+
+	it("discovers a plausible, non-empty set of terminal-write call sites", () => {
+		// Named explicitly rather than resting on the floor alone: LinkedIn's
+		// omission and the webinar-script slice's addition are exactly the two
+		// things this rebuild must not let slip through silently again.
+		expect(SITES).toContain(
+			"temporal/src/activities/publishing-linkedin-post/generate-linkedin-post.ts",
+		);
+		expect(SITES).toContain(
+			"temporal/src/activities/publishing-linkedin-post/mark-linkedin-post-failed.ts",
+		);
+		expect(SITES).toContain(
+			"api/modules/projects/procedures/publishing-suite/linkedin-post.ts",
+		);
+		expect(SITES).toContain(
+			"temporal/src/activities/publishing-webinar-script/generate-webinar-script.ts",
+		);
+		expect(SITES).toContain(
+			"temporal/src/activities/publishing-webinar-script/mark-webinar-script-failed.ts",
+		);
+		expect(SITES).toContain(
+			"api/modules/projects/procedures/publishing-suite/webinar-script.ts",
+		);
+		// 7 content types × (generate + mark) + 7 API procedures.
+		expect(SITES.length).toBeGreaterThanOrEqual(21);
+	});
+
+	it("covers every generate-*.ts / mark-*-failed.ts pair discovery expects to find", () => {
+		// Guards the helper list itself: a future content type that calls some
+		// OTHER terminal-write helper would be invisible to
+		// `discoverTerminalWriteSites`, but it would still show up here,
+		// because this check is purely structural (folder + filename) and does
+		// not go through `TERMINAL_WRITE_HELPERS` at all.
+		const missing = expectedDraftActivityFiles().filter(
+			(file) => !SITES.includes(file),
+		);
+		expect(missing).toEqual([]);
 	});
 
 	for (const file of SITES) {

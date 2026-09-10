@@ -343,6 +343,7 @@ describe("every publishing generation workflow unwraps the wrapper", () => {
 		"generate-publishing-planning-analysis.ts",
 		"generate-publishing-short-post.ts",
 		"generate-publishing-stakeholder-email.ts",
+		"generate-publishing-webinar-script.ts",
 	];
 
 	for (const file of WORKFLOWS) {

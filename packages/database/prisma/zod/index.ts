@@ -2496,7 +2496,7 @@ export type PublishingTopicOrigin = z.infer<typeof PublishingTopicOriginSchema>;
 
 // File: PublishingTopicPostType.schema.ts
 
-export const PublishingTopicPostTypeSchema = z.enum(['TWEET', 'BLOG_POST', 'CASE_STUDY', 'STAKEHOLDER_EMAIL', 'LINKEDIN_POST'])
+export const PublishingTopicPostTypeSchema = z.enum(['TWEET', 'BLOG_POST', 'CASE_STUDY', 'STAKEHOLDER_EMAIL', 'LINKEDIN_POST', 'WEBINAR_SCRIPT'])
 
 export type PublishingTopicPostType = z.infer<typeof PublishingTopicPostTypeSchema>;
 

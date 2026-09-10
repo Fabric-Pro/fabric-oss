@@ -33,13 +33,13 @@
  * ## Why the fence
  *
  * The draft is user- and model-authored text being interpolated into a prompt,
- * which is exactly what `<<<SOURCE DATA: … >>>` exists for. Case Study and
- * Stakeholder Email neutralize every template variable before rendering; this
- * section is appended AFTER rendering and so is outside that pass, and Blog Post,
- * Short Post and LinkedIn Post have no such pass at all. So it neutralizes its
- * own two values
+ * which is exactly what `<<<SOURCE DATA: … >>>` exists for. Case Study,
+ * Stakeholder Email and Webinar / Demo Script neutralize every template
+ * variable before rendering; this section is appended AFTER rendering and so is
+ * outside that pass, and Blog Post, Short Post and LinkedIn Post have no such
+ * pass at all. So it neutralizes its own two values
  * and states its own injection rule rather than relying on a family's locked
- * clauses to carry one — only Case Study's and Stakeholder Email's do.
+ * clauses to carry one — only those same three carry one.
  */
 
 import {

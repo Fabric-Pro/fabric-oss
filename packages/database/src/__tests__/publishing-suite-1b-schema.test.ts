@@ -19,6 +19,7 @@ describe("Publishing Suite 1B schema", () => {
 				"LINKEDIN_POST",
 				"STAKEHOLDER_EMAIL",
 				"TWEET",
+				"WEBINAR_SCRIPT",
 			].sort(),
 		);
 	});

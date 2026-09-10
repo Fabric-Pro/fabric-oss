@@ -31,6 +31,7 @@ import { PUBLISHING_PLANNING_ANALYSIS_AGENT_KEY } from "@repo/utils/publishing-p
 import { PUBLISHING_SHORT_POST_AGENT_KEY } from "@repo/utils/publishing-short-post-prompt";
 import { PUBLISHING_STAKEHOLDER_EMAIL_AGENT_KEY } from "@repo/utils/publishing-stakeholder-email-prompt";
 import { PUBLISHING_TOPIC_SUGGESTION_AGENT_KEY } from "@repo/utils/publishing-suggestion-prompt";
+import { PUBLISHING_WEBINAR_SCRIPT_AGENT_KEY } from "@repo/utils/publishing-webinar-script-prompt";
 import { describe, expect, it } from "vitest";
 
 const SEED = readFileSync(
@@ -74,6 +75,7 @@ const KEY_CONSTANTS: Record<string, string> = {
 	PUBLISHING_BLOG_POST_AGENT_KEY,
 	PUBLISHING_CASE_STUDY_AGENT_KEY,
 	PUBLISHING_STAKEHOLDER_EMAIL_AGENT_KEY,
+	PUBLISHING_WEBINAR_SCRIPT_AGENT_KEY,
 };
 
 function resolveKeyConstant(name: string): string {
@@ -101,6 +103,43 @@ function seededTargetKeys(): Set<string> {
 	// Entries with no explicit targetKey fall back to this one — see the
 	// `bindingSpec.targetKey ?? "project_document_generator"` line in the seed.
 	keys.add("project_document_generator");
+	return keys;
+}
+
+/**
+ * Every `key` a `SYSTEM_PROMPTS` row declares — the seeded prompt itself,
+ * as distinct from the binding that points a document/story slot at it.
+ *
+ * `seededTargetKeys()` above proves a binding exists; this proves the prompt
+ * row it points at exists too. A catalog target with a binding but no
+ * `SYSTEM_PROMPTS` row is exactly the hole this file did not previously
+ * cover: the prompt library shows no entry for it and generation quietly
+ * falls back to the hardcoded default forever, with every test green.
+ *
+ * Sliced to the `const SYSTEM_PROMPTS = [` block and anchored to the start
+ * of the line — defensive narrowing, not a fix for a collision that exists
+ * today. `targetKey:` and `bindingTargetKey:` are camelCase, so lowercase
+ * `key:` never matches either even unanchored and unsliced; the two
+ * `key: p.key,` lines that do sit outside the block, in the trailing
+ * seed-runner, satisfy neither pattern below anyway (one wants a quoted
+ * value, the other an uppercase constant). The slice and the anchor instead
+ * bound the search to the region that actually defines seeded prompt keys,
+ * so that loosening either pattern below later can't silently widen what
+ * this helper accepts to text it was never meant to read.
+ */
+function seededSystemPromptKeys(): Set<string> {
+	const sectionStart = SEED.indexOf("const SYSTEM_PROMPTS = [");
+	expect(sectionStart).toBeGreaterThan(0);
+	const sectionEnd = SEED.indexOf("\n];", sectionStart);
+	const section = SEED.slice(sectionStart, sectionEnd);
+
+	const keys = new Set<string>();
+	for (const m of section.matchAll(/^\s*key:\s*"([a-z0-9_]+)"/gm)) {
+		keys.add(m[1]);
+	}
+	for (const m of section.matchAll(/^\s*key:\s*([A-Z][A-Z0-9_]*)\s*,/gm)) {
+		keys.add(resolveKeyConstant(m[1]));
+	}
 	return keys;
 }
 
@@ -279,4 +318,35 @@ describe("prompt action catalog covers the seeded slots", () => {
 			`Seeded binding slots with no catalog entry. A default set from the UI lands at the declared slot, which nothing then reads — the seeded prompt keeps running instead:\n  ${missing.join("\n  ")}`,
 		).toEqual([]);
 	});
+});
+
+describe("every PUBLISHING catalog target is fully seeded", () => {
+	const publishingTargets = PROMPT_AGENT_TARGETS.filter(
+		(t) => t.featureType === "PUBLISHING",
+	);
+
+	it("parsed a plausible number of keys from the SYSTEM_PROMPTS block", () => {
+		// Guards the guard, as above: a parse that silently stopped matching
+		// would make every case below vacuously true.
+		const seeded = seededSystemPromptKeys();
+		expect(seeded.size).toBeGreaterThan(15);
+		expect(seeded.has("publishing_topic_case_study")).toBe(true);
+	});
+
+	it("finds the targets it is supposed to find", () => {
+		// Guard-the-guard: there are eight PUBLISHING targets today. A floor
+		// of 7 would be satisfied by the pre-existing seven alone and would
+		// tolerate losing exactly the target this slice added.
+		expect(publishingTargets.map((t) => t.key)).toContain(
+			PUBLISHING_WEBINAR_SCRIPT_AGENT_KEY,
+		);
+		expect(publishingTargets.length).toBeGreaterThanOrEqual(8);
+	});
+
+	for (const target of publishingTargets) {
+		it(`${target.key} has a binding and a SYSTEM_PROMPTS row`, () => {
+			expect(seededTargetKeys()).toContain(target.key);
+			expect(seededSystemPromptKeys()).toContain(target.key);
+		});
+	}
 });

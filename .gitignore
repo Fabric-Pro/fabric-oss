@@ -202,6 +202,8 @@ packages/database/postgres-suites-results.json
 packages/database/feature-maturation-results.json
 packages/database/publishing-suite-schema-results.json
 packages/database/role-tag-trigger-results.json
+packages/database/sync-prompt-migrations-apply-results.json
+packages/database/verify-publishing-prompt-sync-integration-results.json
 packages/temporal/publishing-notify-activity-results.json
 packages/temporal/publishing-email-delivery-results.json
 packages/temporal/publishing-reconcile-activity-results.json

@@ -111,6 +111,18 @@ export const EXTRA_RESTRICTING_KINDS_BY_POST_TYPE: Readonly<
 		"CODEBASE_DETAIL",
 	]),
 	STAKEHOLDER_EMAIL: new Set(["AUDIENCE_SCOPE", "CLAIM_STRENGTH"]),
+	// A script carries a Supporting Details block with problem, solution and
+	// evidence, so an unresolved "is this strong enough to claim?" is live the
+	// same way it is for a Case Study; it states its recommended audience
+	// explicitly, the way a Stakeholder Email is addressed; and the PO prompt
+	// has its own technical-depth dial ("match technical depth to the
+	// recommended audience"), which is exactly what CODEBASE_DETAIL governs.
+	// All three, the same set the Case Study uses.
+	WEBINAR_SCRIPT: new Set([
+		"CLAIM_STRENGTH",
+		"AUDIENCE_SCOPE",
+		"CODEBASE_DETAIL",
+	]),
 };
 
 /**

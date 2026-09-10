@@ -51,6 +51,18 @@ function analysisWith(
 
 const NO_RESTRICTIONS = { global: false, byPostType: new Set<string>() };
 
+/** A minimal OPEN CONTENT_TYPE question naming `subject`, for `resolveRestrictions`. */
+function openContentTypeThread(subject: string) {
+	return {
+		root: {
+			kind: "QUESTION",
+			status: "OPEN",
+			decisionKind: "CONTENT_TYPE",
+			subject,
+		},
+	};
+}
+
 function statesFor(
 	input: Parameters<typeof resolveGenerationTabStates>[0],
 ): Record<string, { state: string; needsAttention: boolean }> {
@@ -100,10 +112,12 @@ describe("normalizePostType", () => {
 
 	it("returns null for the content types this phase does not own", () => {
 		// 2A's schema keeps `type` a free string on purpose: FR32's supported set
-		// includes three types that are not in the enum, and narrowing it would
-		// make the model drop them. Ignoring them here is the correct answer, not
-		// a gap.
-		expect(normalizePostType("Webinar/Demo Script")).toBeNull();
+		// has nine types. #1988 (Phase 2D-1) brought Webinar / Demo Script into
+		// the owned set (see the describe block below), leaving three — Video
+		// Walkthrough Script, Newsletter Blurb and AI-assisted Video Walkthrough
+		// — that this phase still does not own, and narrowing the schema to the
+		// enum would make the model drop them. Ignoring them here is the
+		// correct answer, not a gap.
 		expect(normalizePostType("Video Walkthrough Script")).toBeNull();
 		expect(normalizePostType("Newsletter Blurb")).toBeNull();
 		expect(normalizePostType("")).toBeNull();
@@ -115,6 +129,75 @@ describe("normalizePostType", () => {
 		expect(normalizePostType("post")).toBeNull();
 		expect(normalizePostType("study")).toBeNull();
 		expect(normalizePostType("email")).toBeNull();
+	});
+});
+
+describe("WEBINAR_SCRIPT synonyms (Fizzy #1988, Phase 2D-1)", () => {
+	// Widening `SYNONYMS` changes two shipped surfaces at once —
+	// `resolveRestrictions`'s CONTENT_TYPE scoping and
+	// `resolveGenerationTabStates`'s bucket lookup — and no existing test
+	// caught either, because the existing fail-safe case (below) uses a
+	// subject that stays unmapped throughout.
+	it("maps the exact label the LLM is whitelisted to emit for this type", () => {
+		// "Webinar / Demo Script" (`publishing-suite-schema.ts`'s
+		// `POST_TYPE_LABELS`) is the exact label the LLM is whitelisted to emit
+		// for this content type, and it normalizes to this slash form. This
+		// mapped to null before this phase owned the type; restoring it flipped
+		// is the point — the earlier assertion was deleted rather than inverted
+		// when `WEBINAR_SCRIPT` joined the enum.
+		expect(normalizePostType("Webinar/Demo Script")).toBe("WEBINAR_SCRIPT");
+	});
+
+	it("maps the bare 'Demo Script' synonym", () => {
+		// The second `SYNONYMS` entry ("demoscript") had no case of its own
+		// anywhere in this suite before this one.
+		expect(normalizePostType("Demo Script")).toBe("WEBINAR_SCRIPT");
+	});
+
+	it("scopes a webinar CONTENT_TYPE question to its own tab", () => {
+		// Before this widening, an OPEN CONTENT_TYPE question naming "Webinar
+		// Script" fell through the synonym table unmapped and hit the FAIL SAFE
+		// branch: `global = true`, warning on every shipped tab. After it, the
+		// warning narrows to the one tab it actually names — correct, but a
+		// de-warning change to five shipped tabs.
+		const r = resolveRestrictions([
+			openContentTypeThread("Webinar Script"),
+		]);
+
+		expect(r.global).toBe(false);
+		expect(r.byPostType.has("WEBINAR_SCRIPT")).toBe(true);
+	});
+
+	it("still fails safe for a phrasing nobody listed", () => {
+		// The negative control: the widening above must not have loosened the
+		// fail-safe path itself. A phrasing no synonym table lists still
+		// restricts every type rather than being silently dropped.
+		const r = resolveRestrictions([
+			openContentTypeThread("an unusual phrasing nobody listed"),
+		]);
+
+		expect(r.global).toBe(true);
+	});
+
+	it("resolves the bucket for an analysis written before the type existed", () => {
+		// The second call site the widening reaches: `readContentTypeBuckets`,
+		// via `resolveGenerationTabStates`. Stored analyses already name
+		// "Webinar or Demo Script" — the planning prompt's own phrasing — so
+		// they populate the new tab's badge retroactively rather than leaving
+		// it stuck on AVAILABLE forever.
+		const tabs = resolveGenerationTabStates({
+			analysis: analysisWith({
+				deferred: [
+					{ type: "Webinar or Demo Script", rationale: "not yet" },
+				],
+			}),
+			generatedPostTypes: [],
+			restrictions: NO_RESTRICTIONS,
+		});
+
+		expect(tabs.find((t) => t.postType === "WEBINAR_SCRIPT")?.bucket).toBe(
+			"deferred",
+		);
 	});
 });
 

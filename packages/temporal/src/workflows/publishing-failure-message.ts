@@ -4,7 +4,7 @@ import { unwrapPmSyncError } from "./pm-sync-error-unwrap";
  * What a failed publishing generation run STORES versus what it LOGS.
  *
  * Pure and deterministic, so it is safe inside a workflow, and separate from the
- * five workflows so the mapping is stated once.
+ * seven workflows that call it so the mapping is stated once.
  *
  * ## Two audiences, and only one of them is trusted
  *
@@ -60,6 +60,7 @@ const AUTHORED_MESSAGE: ReadonlyMap<string, string> = new Map([
 			"PUBLISHING_LINKEDIN_POST_SCHEMA_VALIDATION_FAILED",
 			"PUBLISHING_STAKEHOLDER_EMAIL_SCHEMA_VALIDATION_FAILED",
 			"PUBLISHING_PA_SCHEMA_VALIDATION_FAILED",
+			"PUBLISHING_WEBINAR_SCRIPT_SCHEMA_VALIDATION_FAILED",
 		] as const
 	).map(
 		(type) =>
@@ -75,6 +76,20 @@ const AUTHORED_MESSAGE: ReadonlyMap<string, string> = new Map([
 
 const NEUTRAL =
 	"Generation failed. The reason is recorded in the run log for this project.";
+
+/**
+ * The failure classes above that get their own copy, exposed so a guard can
+ * ask "does this class have an authored message?" without a function call —
+ * `publishingFailureDetail` takes an `unknown` error and unwraps it itself, so
+ * it cannot be asked about a bare class string.
+ *
+ * Derived from `AUTHORED_MESSAGE`'s own keys rather than re-listed, so this can
+ * never drift from the map it describes: adding an entry above adds it here
+ * for free, and there is nothing to forget.
+ */
+export const AUTHORED_FAILURE_CLASSES: ReadonlySet<string> = new Set(
+	AUTHORED_MESSAGE.keys(),
+);
 
 export interface PublishingFailureDetail {
 	/** Authored by us. Safe to persist on the draft and render. */

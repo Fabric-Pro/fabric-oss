@@ -32,6 +32,24 @@ const dbMocks = vi.hoisted(() => ({
 	memberFindFirst: vi.fn(),
 }));
 
+/**
+ * A REAL, hand-written tuple — never `vi.fn()` — for the same construction-time
+ * reason as the other module-scope values in the big `@repo/database` mock
+ * below. Named and hoisted separately (rather than inlined into that mock's
+ * returned object) so the parity test further down can compare it against the
+ * ACTUAL `@repo/database` export without comparing the mock against itself.
+ */
+const postTypeMocks = vi.hoisted(() => ({
+	MOCK_PUBLISHING_TOPIC_POST_TYPES: [
+		"TWEET",
+		"LINKEDIN_POST",
+		"BLOG_POST",
+		"CASE_STUDY",
+		"STAKEHOLDER_EMAIL",
+		"WEBINAR_SCRIPT",
+	],
+}));
+
 const flagMocks = vi.hoisted(() => ({
 	isFeatureEnabled: vi.fn(),
 	resolveProjectTenant: vi.fn(),
@@ -219,13 +237,7 @@ vi.mock("@repo/database", () => ({
 	// describes, arriving for real. Real numbers rather than 0 or 1: a bound of 0
 	// builds a schema that rejects everything, so a later case added to this file
 	// would fail against a limit no reviewer would think to suspect.
-	PUBLISHING_TOPIC_POST_TYPES: [
-		"TWEET",
-		"LINKEDIN_POST",
-		"BLOG_POST",
-		"CASE_STUDY",
-		"STAKEHOLDER_EMAIL",
-	],
+	PUBLISHING_TOPIC_POST_TYPES: postTypeMocks.MOCK_PUBLISHING_TOPIC_POST_TYPES,
 	MAX_PUBLISHING_PREFERENCE_ITEMS: 25,
 	MAX_PUBLISHING_PREFERENCE_ITEM_LENGTH: 60,
 	MAX_PUBLISHING_STRATEGIC_PRIORITIES_LENGTH: 2000,
@@ -236,6 +248,22 @@ vi.mock("@repo/database", () => ({
 	normalizePreferenceLabel: (value: unknown) =>
 		typeof value === "string" ? value.trim().replace(/\s+/g, " ") : "",
 }));
+
+// Imported OUTSIDE the vi.mock factory above, so this is the REAL tuple —
+// comparing it against a value the factory itself produced would be a test
+// that cannot fail. An incomplete-but-non-empty mock tuple loads fine and
+// silently strips the missing post type via output validation; Task 2's
+// `packages/database` pin catches that class in its own package but runs in a
+// different vitest project and cannot see this file's `vi.mock` factory,
+// which is why this file needs its own copy of the check.
+const actualDatabaseModule =
+	await vi.importActual<typeof import("@repo/database")>("@repo/database");
+
+it("the mocked post-type tuple matches the real one", () => {
+	expect(new Set(postTypeMocks.MOCK_PUBLISHING_TOPIC_POST_TYPES)).toEqual(
+		new Set(actualDatabaseModule.PUBLISHING_TOPIC_POST_TYPES),
+	);
+});
 
 // `generateNow` (Task 7) now shares this barrel. Its own helper,
 // `requestPublishingGeneration`, imports `isTemporalAvailable` from

@@ -314,6 +314,7 @@ vi.mock("@shared/lib/orpc-client", () => ({ orpcClient: {} }));
 
 import type { FunctionTag } from "@repo/database/prisma/generated/client";
 import { PublishingSuiteList } from "@saas/projects/components/publishing-suite";
+import { POST_TYPE_OPTIONS } from "@saas/projects/components/publishing-suite/PostTypesDialog";
 
 function makeTopic(overrides: Record<string, unknown> = {}) {
 	return {
@@ -1783,11 +1784,16 @@ describe("PublishingSuiteList", () => {
 		);
 		const count = () =>
 			screen.getByTestId("post-types-selected-count").textContent;
+		// Derived from the exported option list, not a literal — Task 12 (Fizzy
+		// #1988) is what makes that possible, and a new literal here would just
+		// go stale again the next time a post type is added, the way this one
+		// did for ten commits after Webinar / Demo Script joined the dialog.
+		const total = POST_TYPE_OPTIONS.length;
 		expect(count()).toBe("None selected");
 		await user.click(screen.getByLabelText("Tweet"));
-		expect(count()).toBe("1 of 5 selected");
+		expect(count()).toBe(`1 of ${total} selected`);
 		await user.click(screen.getByLabelText("Blog Post"));
-		expect(count()).toBe("2 of 5 selected");
+		expect(count()).toBe(`2 of ${total} selected`);
 	});
 
 	it("tells the reviewer that more than one post type may be picked", async () => {

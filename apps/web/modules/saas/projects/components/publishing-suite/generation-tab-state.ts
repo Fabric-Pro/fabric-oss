@@ -54,23 +54,33 @@ export interface GenerationTabInfo {
 
 type AnalysisBucket = "recommended" | "needsConfirmation" | "deferred";
 
-/** Fixed display order, matching `POST_TYPE_LABELS`. */
-const POST_TYPES: readonly PostType[] = [
+/**
+ * Fixed display order, matching `POST_TYPE_LABELS`.
+ *
+ * Exported as `GENERATION_TAB_POST_TYPES` — Fizzy #1988 (Phase 2D-1) — so
+ * `publishing-post-type-vocabulary.test.ts` can pin it set-equal to the shared
+ * `PUBLISHING_TOPIC_POST_TYPES` tuple. That runtime pin is what a `Record<
+ * PostType, …>` would give for free at compile time; this module stays an
+ * array because every consumer iterates it in order, not by key.
+ */
+export const GENERATION_TAB_POST_TYPES: readonly PostType[] = [
 	"TWEET",
 	"LINKEDIN_POST",
 	"BLOG_POST",
 	"CASE_STUDY",
 	"STAKEHOLDER_EMAIL",
+	"WEBINAR_SCRIPT",
 ];
 
 /**
  * Free-string phrasings the analysis may use for each enum value.
  *
  * `contentTypes.*[].type` is a free string BY DESIGN — 2A's schema comment is
- * explicit that narrowing it to the enum would make the model drop three of its
- * eight legitimate answers (Webinar/Demo Script, Video Walkthrough Script,
- * Newsletter Blurb are not in the enum). So this maps what it can and ignores
- * the rest, which is the correct answer rather than a gap.
+ * explicit that narrowing it to the enum would make the model drop legitimate
+ * answers it cannot map. FR32's supported set has nine; the enum covers six,
+ * leaving three that still are not in it (Video Walkthrough Script,
+ * Newsletter Blurb, and AI-assisted Video Walkthrough). So this maps what it
+ * can and ignores the rest, which is the correct answer rather than a gap.
  *
  * Matching is EXACT against the normalized form, never a substring: "post"
  * appears in "Blog Post" as well as "Short Post", and a substring rule would
@@ -111,6 +121,21 @@ const SYNONYMS: Record<PostType, readonly string[]> = {
 		"stakeholderemail",
 		"stakeholderupdate",
 		"stakeholderemailupdate",
+	],
+	// Fizzy #1988 (Phase 2D-1). "webinarordemoscript" and "webinardemoscript"
+	// are this file's own two planning-prompt phrasings: the analysis prompt's
+	// "Webinar or Demo Script" (`publishing-planning-prompt.ts`) and the
+	// slash form "Webinar/Demo Script" the schema comment in
+	// `build-planning-analysis-prompt.ts` uses for the same type. No bare
+	// "webinar": matching is exact against the normalized form, not a
+	// substring, so a lone "Webinar" token appearing as some unrelated
+	// decision's free-text subject would otherwise be swept into this bucket
+	// too.
+	WEBINAR_SCRIPT: [
+		"webinarscript",
+		"demoscript",
+		"webinarordemoscript",
+		"webinardemoscript",
 	],
 };
 
@@ -239,12 +264,12 @@ export function resolveRestrictions(
 			//
 			// Deliberately asymmetric with the BUCKET path below, which ignores
 			// what it cannot map. There, an unmapped entry is usually a content
-			// type this phase genuinely does not own (Webinar Script, Video
-			// Walkthrough, Newsletter Blurb are not in the enum) and warning
-			// about it on all four tabs would be noise. Here the question has
-			// already been raised as an unresolved approval, so the cost of
-			// over-warning is a visible caution and the cost of under-warning is
-			// a draft that asserts something nobody approved.
+			// type this phase genuinely does not own (Video Walkthrough,
+			// Newsletter Blurb are not in the enum) and warning about it on all
+			// six tabs would be noise. Here the question has already been
+			// raised as an unresolved approval, so the cost of over-warning is
+			// a visible caution and the cost of under-warning is a draft that
+			// asserts something nobody approved.
 			global = true;
 		}
 	}
@@ -318,7 +343,7 @@ export function resolveGenerationTabStates(input: {
 	const buckets = readContentTypeBuckets(input.analysis);
 	const generated = new Set(input.generatedPostTypes);
 
-	return POST_TYPES.map((postType) => {
+	return GENERATION_TAB_POST_TYPES.map((postType) => {
 		const entry = buckets.get(postType) ?? null;
 		const cautious =
 			entry?.bucket === "needsConfirmation" ||

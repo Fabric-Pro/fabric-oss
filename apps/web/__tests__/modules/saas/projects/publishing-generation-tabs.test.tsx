@@ -1,10 +1,16 @@
+import { readFileSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import {
 	buildGenerationTabModel,
 	GenerationTabPanels,
 	GenerationTabTriggers,
 } from "@saas/projects/components/publishing-suite/GenerationTabs";
 import type { PlanningAnalysisDocument } from "@saas/projects/components/publishing-suite/planning-analysis-content";
-import { ALL_POST_TYPES } from "@saas/projects/components/publishing-suite/topic-shared";
+import {
+	ALL_POST_TYPES,
+	GENERATION_ACTIVE_POST_TYPES,
+} from "@saas/projects/components/publishing-suite/topic-shared";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -148,6 +154,40 @@ function renderTabs(
 
 const tablist = () =>
 	screen.getByRole("tablist", { name: /content generation/i });
+
+const here = path.dirname(fileURLToPath(import.meta.url));
+const repoRoot = path.resolve(here, "../../../../../..");
+const generationTabsSource = readFileSync(
+	path.resolve(
+		repoRoot,
+		"apps/web/modules/saas/projects/components/publishing-suite/GenerationTabs.tsx",
+	),
+	"utf8",
+);
+
+describe("GenerationTabs — the pairing rule (Fizzy #1988, Phase 2D-1)", () => {
+	// `GENERATION_ACTIVE_POST_TYPES` makes a tab selectable AND makes
+	// `GenerationTabPanels` mount a `TabsContent` for it, so an entry there
+	// without a matching `postType === "…"` arm in `GenerationPanel`'s chain
+	// renders a selectable tab whose body carries nothing type-specific.
+	// `topic-shared.ts`'s own docblock calls this "a rule for a person to
+	// keep, not one a test can check for you" — this is that check.
+	//
+	// It reads the SOURCE rather than mounting every panel and asserting on
+	// `container`: `GenerationPanel` always renders its "Recommendation"
+	// section regardless of which arm fires (or whether one fires at all), so
+	// a rendered-DOM assertion stays green with or without the arm and would
+	// not have caught this. Measured directly: adding `WEBINAR_SCRIPT` to
+	// `GENERATION_ACTIVE_POST_TYPES` without its arm still left
+	// `container` non-empty. The AST form is the one that actually binds.
+	it("gives every active post type a matching arm in GenerationPanel's postType chain", () => {
+		for (const postType of GENERATION_ACTIVE_POST_TYPES) {
+			expect(generationTabsSource).toContain(
+				`postType === "${postType}"`,
+			);
+		}
+	});
+});
 
 describe("GenerationTabs — which tabs are live", () => {
 	it("enables the two Phase 2B content types", () => {

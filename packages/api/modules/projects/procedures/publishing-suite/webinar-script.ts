@@ -1,0 +1,567 @@
+/**
+ * Webinar / Demo Script — start one generation run, adopt a generated version,
+ * and save an edit (Publishing Suite Phase 2D-1, Fizzy #1988).
+ *
+ * The same three-endpoint, single-draft shape as the Case Study and
+ * Stakeholder Email family: one editable draft (or scaffold) rather than
+ * Short Post's three options, and the FIRST run seeds the working draft
+ * inside the activity, so this module owns what happens afterwards — adopting
+ * a later version over saved work, and editing the text. Both must be
+ * compare-and-set, because both can be racing the other.
+ *
+ * Unlike its two-field siblings, the generated document has no single `body`
+ * string to narrow the stored `content` down to: it is composed from `title`
+ * through `suggestedCta` across more than a dozen separate fields. Rather than
+ * hand-narrowing each one — a second copy of `BaseWebinarScriptSchema`'s field
+ * list that could drift from it — `readWebinarScriptDocument` re-validates the
+ * stored `content` against a schema PICKED from `BaseWebinarScriptSchema`,
+ * covering exactly the fields the composer reads. NOT the full
+ * `PublishingWebinarScriptSchema` the generation activity validates the
+ * model's output against: that schema also bounds `suggestedAssets`, which a
+ * clamp inside the activity can legitimately push past its own limit AFTER
+ * validation succeeds — re-checking a bound the composer never relies on
+ * would turn an activity-produced document into one adopt can never read
+ * again. Returns null on anything it does not recognize. See
+ * `readWebinarScriptDocument` for the detail.
+ *
+ * All three are writes; the read side is `listTopicDrafts`, polled while a run
+ * is in flight. No procedure trusts a topic id alone: the DB helpers re-scope to
+ * `{ topicId, projectId }` inside the Project-row lock, so a real topic id
+ * belonging to another project produces the answer a missing one produces and
+ * cannot be used to probe for topics in projects the caller cannot see.
+ */
+
+import { ORPCError } from "@orpc/client";
+import {
+	failTopicDraft,
+	listTopicDrafts,
+	logDraftRefusal,
+	saveWorkingDraft,
+	startTopicDraftAttempt,
+	updateWorkingDraftBody,
+} from "@repo/database";
+import {
+	BaseWebinarScriptSchema,
+	composeWebinarScriptWorkingDraftBody,
+	type WebinarScriptDocument,
+} from "@repo/utils/publishing-webinar-script-body";
+import { z } from "zod";
+import { withCorrelationMemo } from "../../../../lib/temporal-correlation";
+import {
+	Permissions,
+	requireProjectPermission,
+	tenantProtectedProcedure,
+} from "../../../../orpc/procedures";
+import {
+	recordEditedWorkingDraft,
+	recordPublishingOutcome,
+	recordSupersededDraft,
+} from "../../lib/publishing-outcome";
+import { readRefinementSource } from "../../lib/publishing-refine-source";
+import { assertPublishingSuiteFeatureEnabled } from "../../lib/publishing-suite-feature";
+import { requireEligibleProjectForTopic } from "../../lib/publishing-topic-project";
+
+/**
+ * Bound on the per-run guidance.
+ *
+ * Enforced here AND again where it is composed into the prompt:
+ * `buildWebinarScriptPrompt` passes `guidance` into the same
+ * `buildShortPostVariables` helper the rest of the family shares
+ * (`build-short-post-prompt.ts`), which clamps it again at
+ * `GUIDANCE_CHAR_CAP` — 2000, the same value as this constant today, though
+ * nothing enforces that they stay equal — before `buildRefinementSection`
+ * ever sees it. That second clamp is why `buildRefinementSection`'s own doc
+ * comment can say the instruction arrives "already clamped by the caller's
+ * guidance bound" and skip re-clamping: its caller is the prompt builder, not
+ * this procedure. Both bounds exist because they protect different things:
+ * this one protects the column and the audit trail, the other protects the
+ * model's context window from a value written before the bound existed.
+ */
+const GUIDANCE_MAX = 2000;
+
+/**
+ * Bound on an edited body.
+ *
+ * A separate literal from `WEBINAR_SCRIPT_BODY_MAX` in `@repo/utils` — both
+ * bound the same composed working draft at 40,000 characters today, and
+ * nothing enforces that they stay equal. Generous: a demo script's talk
+ * tracks and demo-flow steps run long, and the cap exists to stop an
+ * unbounded write reaching a `@db.Text` column, not to impose a house style.
+ */
+const BODY_MAX = 40000;
+
+export const generateWebinarScriptProcedure = tenantProtectedProcedure
+	.use(requireProjectPermission(Permissions.PUBLISHING_TOPIC_UPDATE))
+	.route({
+		method: "POST",
+		path: "/projects/{projectId}/publishing-topics/{topicId}/webinar-script",
+		tags: ["Projects", "Publishing Suite"],
+		summary: "Generate a webinar script draft for a topic",
+	})
+	.input(
+		z.object({
+			projectId: z.string(),
+			topicId: z.string(),
+			organizationId: z.string().nullable().optional(),
+			guidance: z.string().max(GUIDANCE_MAX).nullable().optional(),
+			/**
+			 * Revise the saved working script rather than draft a new one from
+			 * the planning analysis (Fizzy #1851, A7 — same flag the rest of the
+			 * family carries).
+			 *
+			 * A FLAG, not a body. The server reads the text it revises out of
+			 * its own store — see `readRefinementSource` for why a client-
+			 * supplied body would be a different and much worse endpoint.
+			 * `guidance` carries the edit instruction on this path, which is
+			 * what puts it on the attempt row and in the audit trail.
+			 */
+			refineFromWorkingDraft: z.boolean().optional(),
+		}),
+	)
+	.handler(async ({ input, context }) => {
+		await assertPublishingSuiteFeatureEnabled(input.projectId);
+
+		// Security ratchet: the permission middleware proved the caller is
+		// authorized for THIS project, but it never inspects the org. The tenant
+		// is derived from the loaded Project row, and `input.organizationId` is
+		// a guard only — never a scoping key.
+		const project = await requireEligibleProjectForTopic({
+			projectId: input.projectId,
+			clientOrganizationId: input.organizationId,
+		});
+
+		// Temporal is checked BEFORE the row is created. Creating it first and
+		// discovering the outage second would leave a GENERATING row holding the
+		// partial unique index, so the button would go on refusing for ten
+		// minutes over an outage that may already be over.
+		const { isTemporalAvailable } = await import("@repo/temporal");
+		if (!(await isTemporalAvailable())) {
+			return { started: false as const, reason: "unavailable" as const };
+		}
+
+		// Empty guidance is stored as null, not "". The column's meaning is "what
+		// the user asked for on this run", and an empty string would render as a
+		// guidance section containing nothing — which reads to the model as an
+		// instruction it failed to understand rather than as no instruction.
+		const guidance = input.guidance?.trim() ? input.guidance.trim() : null;
+
+		// BEFORE the attempt row, for the reason the Temporal check above is
+		// before it: a refine against a topic with nothing saved must fail
+		// having created nothing. Creating the row first and discovering the
+		// missing draft second would leave a GENERATING row holding the partial
+		// unique index, so the button would refuse for ten minutes over a
+		// mistake that cost nothing to detect.
+		const currentDraft = input.refineFromWorkingDraft
+			? await readRefinementSource({
+					topicId: input.topicId,
+					projectId: project.id,
+					postType: "WEBINAR_SCRIPT",
+					label: "webinar script",
+				})
+			: null;
+
+		const attempt = await startTopicDraftAttempt({
+			topicId: input.topicId,
+			projectId: project.id,
+			postType: "WEBINAR_SCRIPT",
+			requestedById: context.user.id,
+			guidance,
+		});
+		// Two causes, two messages. The helper re-checks the project under its own
+		// lock, so it can find the project archived between the ratchet above and
+		// the transaction — reporting that as "Topic not found" would send a
+		// reader looking for a topic that is perfectly fine.
+		if (attempt.status === "project_ineligible") {
+			throw new ORPCError("NOT_FOUND", { message: "Project not found" });
+		}
+		if (attempt.status === "not_found") {
+			throw new ORPCError("NOT_FOUND", { message: "Topic not found" });
+		}
+		if (attempt.status === "in_flight") {
+			// A double-click, or a poll that raced the first click. The row the UI
+			// is about to poll already exists and a run is filling it.
+			return { started: false as const, reason: "in-progress" as const };
+		}
+
+		const { getTemporalClient } = await import("@repo/temporal");
+		const client = await getTemporalClient();
+
+		try {
+			// `withCorrelationMemo` propagates the request's correlation id into
+			// the workflow memo so a webinar script run can be traced end to end.
+			await client.workflow.start(
+				"generatePublishingWebinarScriptWorkflow",
+				withCorrelationMemo({
+					taskQueue: "fabric-worker",
+					// Keyed on the ATTEMPT, not the topic: each attempt is a
+					// distinct row with its own terminal state, and reusing a
+					// topic-keyed id would make a second run collide with a
+					// finished one's history. The `-ws:` prefix keeps this family
+					// distinguishable from `-cs:` and `-sp:` in Temporal's UI.
+					workflowId: `publishing-topic-ws:${attempt.draftId}`,
+					workflowIdReusePolicy: "ALLOW_DUPLICATE",
+					workflowIdConflictPolicy: "FAIL",
+					// Backstop for a run that never finds a worker at all:
+					// without it the row would sit GENERATING until the deadline
+					// sweep, which is the same ten minutes but with nothing
+					// recorded about why.
+					workflowExecutionTimeout: "10m",
+					args: [
+						{
+							draftId: attempt.draftId,
+							topicId: input.topicId,
+							projectId: project.id,
+							organizationId: project.organizationId ?? null,
+							actorUserId: context.user.id,
+							guidance,
+							currentDraft,
+						},
+					],
+				}),
+			);
+		} catch (error) {
+			if (
+				error instanceof Error &&
+				error.name === "WorkflowExecutionAlreadyStartedError"
+			) {
+				return {
+					started: false as const,
+					reason: "in-progress" as const,
+				};
+			}
+
+			// Roll the row back, or the UI polls a GENERATING row no workflow will
+			// ever complete — and the partial unique index refuses every retry
+			// until the deadline sweep clears it.
+			// The rollback can itself be refused, and silently dropping that is
+			// how a row ends up GENERATING with nothing recorded about why: the
+			// caller gets a 500, the panel keeps polling, and the deadline sweep
+			// is the only thing that ever clears it. Reported, not retried —
+			// every refusal reason means this attempt is no longer ours to write.
+			const rollback = await failTopicDraft({
+				id: attempt.draftId,
+				projectId: project.id,
+				error:
+					error instanceof Error
+						? `Could not start generation: ${error.message}`
+						: "Could not start generation",
+			});
+			if (!rollback.persisted) {
+				logDraftRefusal(
+					"[publishing-webinar-script] start rollback skipped",
+					rollback.reason,
+					{ draftId: attempt.draftId, projectId: project.id },
+				);
+			}
+			throw new ORPCError("INTERNAL_SERVER_ERROR", {
+				message: "Could not start the webinar script",
+			});
+		}
+
+		// Measurement only, after the run is safely started (Fizzy #1851 A9).
+		// A regeneration that passes over a candidate already on screen is a
+		// rejection of it; the helper swallows its own failures, so nothing
+		// here can turn a started run into an error.
+		await recordSupersededDraft({
+			topicId: input.topicId,
+			projectId: project.id,
+			organizationId: project.organizationId,
+			postType: "WEBINAR_SCRIPT",
+			userId: context.user.id,
+		});
+
+		return {
+			started: true as const,
+			draftId: attempt.draftId,
+			version: attempt.version,
+		};
+	});
+
+/**
+ * Adopt a generated webinar script version as the topic's working draft.
+ *
+ * Takes no option label — a webinar script generation produces one draft
+ * rather than a labeled set. Like its siblings it does NOT accept the text:
+ * the client names a candidate, and the server reads the document out of that
+ * draft's own stored `content`. Accepting a body would make this endpoint a
+ * way to write arbitrary text into a project's published-content pipeline
+ * under the guise of "adopting" a generated version — and the stored draft
+ * would then no longer be evidence of what the model actually produced.
+ * Editing is `saveWebinarScriptBody`, which is explicit about being an edit
+ * and records who made it.
+ *
+ * Reaching this at all means a working draft already exists, because the FIRST
+ * generation seeded one. That is the whole reason the compare-and-set matters
+ * here: adopting version 4 over a body someone has been editing is exactly the
+ * silent overwrite the working draft's `updatedAt` guard exists to prevent.
+ */
+export const adoptWebinarScriptDraftProcedure = tenantProtectedProcedure
+	.use(requireProjectPermission(Permissions.PUBLISHING_TOPIC_UPDATE))
+	.route({
+		method: "POST",
+		path: "/projects/{projectId}/publishing-topics/{topicId}/webinar-script/adopt",
+		tags: ["Projects", "Publishing Suite"],
+		summary:
+			"Adopt a generated webinar script version as the working draft",
+	})
+	.input(
+		z.object({
+			projectId: z.string(),
+			topicId: z.string(),
+			organizationId: z.string().nullable().optional(),
+			draftId: z.string(),
+			/**
+			 * The working draft's `updatedAt` as the client last saw it, or null
+			 * for "nothing is saved". Optimistic concurrency: this endpoint ships
+			 * alongside the editor that makes a concurrent body change possible,
+			 * so there is no older client whose absent expectation has to keep
+			 * working.
+			 */
+			expectedUpdatedAt: z.coerce.date().nullable(),
+		}),
+	)
+	.handler(async ({ input, context }) => {
+		await assertPublishingSuiteFeatureEnabled(input.projectId);
+
+		const project = await requireEligibleProjectForTopic({
+			projectId: input.projectId,
+			clientOrganizationId: input.organizationId,
+		});
+
+		// Read the candidate through the SAME scoped helper the page reads, so
+		// this endpoint cannot see a draft the page could not.
+		const { drafts } = await listTopicDrafts({
+			topicId: input.topicId,
+			projectId: project.id,
+		});
+		const webinarScript = drafts.find(
+			(d) => d.postType === "WEBINAR_SCRIPT",
+		);
+		const candidate =
+			webinarScript?.latestReady?.id === input.draftId
+				? webinarScript.latestReady
+				: null;
+		if (!candidate) {
+			// Deliberately the same answer for "no such draft" and "that draft is
+			// not the current one": a caller who guessed an id learns nothing
+			// about whether it exists, and a stale tab learns it needs to refresh
+			// either way.
+			throw new ORPCError("NOT_FOUND", { message: "Draft not found" });
+		}
+
+		const document = readWebinarScriptDocument(candidate.content);
+		if (document === null) {
+			// The stored document is not one this code can read — an older
+			// content shape, or a row written by a future one. A 500 rather than
+			// a NOT_FOUND: the draft is right there and the failure is ours.
+			throw new ORPCError("INTERNAL_SERVER_ERROR", {
+				message:
+					"This draft could not be read as a webinar script. Regenerate it.",
+			});
+		}
+
+		const saved = await saveWorkingDraft({
+			topicId: input.topicId,
+			projectId: project.id,
+			postType: "WEBINAR_SCRIPT",
+			sourceDraftId: input.draftId,
+			// No option to name: a webinar script generation produces one draft
+			// rather than a labeled set.
+			sourceOptionLabel: null,
+			// The SHARED composer, not a copy of it — `@repo/temporal` seeds the
+			// working draft with this exact function, so the adopted text cannot
+			// drift from the seeded text.
+			body: composeWebinarScriptWorkingDraftBody(document),
+			updatedById: context.user.id,
+			expectedUpdatedAt: input.expectedUpdatedAt,
+		});
+
+		if (saved.status === "project_ineligible") {
+			throw new ORPCError("NOT_FOUND", { message: "Project not found" });
+		}
+		if (saved.status === "stale") {
+			// Someone edited or adopted while this caller was reading. A conflict
+			// rather than a failure: nothing is wrong, the caller is simply
+			// acting on a view that has moved.
+			throw new ORPCError("CONFLICT", {
+				message:
+					"The saved webinar script changed while you were reading. Refresh and try again.",
+			});
+		}
+		if (saved.status === "source_not_found") {
+			// The draft was read a moment ago, so reaching here means it was
+			// superseded or deleted in between. A conflict, not a 500.
+			throw new ORPCError("CONFLICT", {
+				message:
+					"That draft is no longer available. Refresh and try again.",
+			});
+		}
+
+		// Measurement only (Fizzy #1851 A9). Adopting is the cleanest
+		// acceptance signal the Suite produces — the body saved IS the text the
+		// model wrote, since this endpoint refuses to take one from the client.
+		await recordPublishingOutcome({
+			outcome: "ACCEPTED_AS_IS",
+			subjectType: "publishing-webinar-script",
+			subjectId: candidate.id,
+			userId: context.user.id,
+			organizationId: project.organizationId,
+			projectId: project.id,
+			model: candidate.model,
+			promptId: candidate.promptId,
+			promptVersion: candidate.promptVersion,
+		});
+
+		return { saved: true as const, updatedAt: saved.updatedAt };
+	});
+
+/**
+ * Save an edit to the topic's working webinar script.
+ *
+ * The one endpoint in this family that DOES take body text from the client, and
+ * it is safe for the reason the others are not: it is an edit. There is no
+ * generated artefact whose evidentiary value it could undermine — the draft rows
+ * keep saying exactly what the model produced, and `sourceDraftId` keeps naming
+ * the version this text began as. What changes is the body the project owns,
+ * which is what a person editing their own draft is entitled to change.
+ *
+ * `expectedUpdatedAt` is required rather than nullable: an edit necessarily has
+ * something to edit, so "I believe nothing is saved" is not a coherent claim
+ * here, and accepting it would mean accepting an unconditional write.
+ */
+export const saveWebinarScriptBodyProcedure = tenantProtectedProcedure
+	.use(requireProjectPermission(Permissions.PUBLISHING_TOPIC_UPDATE))
+	.route({
+		method: "POST",
+		path: "/projects/{projectId}/publishing-topics/{topicId}/webinar-script/body",
+		tags: ["Projects", "Publishing Suite"],
+		summary: "Save an edit to the working webinar script draft",
+	})
+	.input(
+		z.object({
+			projectId: z.string(),
+			topicId: z.string(),
+			organizationId: z.string().nullable().optional(),
+			body: z.string().min(1).max(BODY_MAX),
+			expectedUpdatedAt: z.coerce.date(),
+		}),
+	)
+	.handler(async ({ input, context }) => {
+		await assertPublishingSuiteFeatureEnabled(input.projectId);
+
+		const project = await requireEligibleProjectForTopic({
+			projectId: input.projectId,
+			clientOrganizationId: input.organizationId,
+		});
+
+		const saved = await updateWorkingDraftBody({
+			topicId: input.topicId,
+			projectId: project.id,
+			postType: "WEBINAR_SCRIPT",
+			body: input.body,
+			updatedById: context.user.id,
+			expectedUpdatedAt: input.expectedUpdatedAt,
+		});
+
+		if (saved.status === "project_ineligible") {
+			throw new ORPCError("NOT_FOUND", { message: "Project not found" });
+		}
+		if (saved.status === "not_found") {
+			throw new ORPCError("NOT_FOUND", {
+				message: "No saved webinar script to edit",
+			});
+		}
+		if (saved.status === "stale") {
+			throw new ORPCError("CONFLICT", {
+				message:
+					"The saved webinar script changed while you were editing. Refresh and try again.",
+			});
+		}
+
+		// Measurement only (Fizzy #1851 A9). An edit over an adopted candidate
+		// is that candidate's verdict downgraded from "as is" to "with edits" —
+		// the pair of counts that answers "how much revision does this take".
+		await recordEditedWorkingDraft({
+			topicId: input.topicId,
+			projectId: project.id,
+			organizationId: project.organizationId,
+			postType: "WEBINAR_SCRIPT",
+			userId: context.user.id,
+		});
+
+		return { saved: true as const, updatedAt: saved.updatedAt };
+	});
+
+/**
+ * The fields {@link composeWebinarScriptWorkingDraftBody} actually reads —
+ * see `webinarScriptDraftSections` in `publishing-webinar-script-body.ts` for
+ * the field list this mirrors — picked out of `BaseWebinarScriptSchema`
+ * rather than validated through the activity's full
+ * `PublishingWebinarScriptSchema`.
+ *
+ * Deliberately narrower than that schema. `generate-webinar-script.ts` runs
+ * its asset clamp AFTER `PublishingWebinarScriptSchema` validates the model's
+ * output, and the clamp's `needsConfirmation` append
+ * (`@repo/utils/publishing-asset-clamp`) has no cap of its own — so a stored
+ * document can legitimately carry more entries than the `.max(8)` the full
+ * schema still declares for `suggestedAssets`. Re-parsing a document like that
+ * against the full schema would fail every time, including after a
+ * regeneration that reproduces the same overflow while the approval that
+ * caused it stays open — a permanent, unrecoverable adopt failure for a
+ * document the activity produced correctly. `suggestedAssets`,
+ * `releaseStatus`, `inputsNeeded` and `safetyNote` are exactly the fields the
+ * composer never reads, so none of their bounds need to hold here.
+ */
+const ComposedWebinarScriptFieldsSchema = BaseWebinarScriptSchema.pick({
+	title: true,
+	sessionPurpose: true,
+	recommendedAudience: true,
+	suggestedLength: true,
+	presenterNotes: true,
+	openingTalkTrack: true,
+	agenda: true,
+	keyMessage: true,
+	demoFlow: true,
+	supportingDetails: true,
+	closingTalkTrack: true,
+	suggestedCta: true,
+});
+
+/**
+ * Narrow a stored webinar script draft's `content` to the parsed document
+ * {@link composeWebinarScriptWorkingDraftBody} composes from.
+ *
+ * Defensive about the shape rather than trusting it: `content` is `Json?` in
+ * the schema, so a row written by an older code path — or by a future one —
+ * is not guaranteed to match today's document. Returning null makes that an
+ * error the caller can render instead of a `TypeError` in a handler.
+ *
+ * Re-validates against {@link ComposedWebinarScriptFieldsSchema} — see its own
+ * comment for why that is a picked subset rather than the activity's full
+ * `PublishingWebinarScriptSchema` — instead of hand-narrowing each of the
+ * composer's twelve fields the way `readCaseStudyDocument` narrows its two.
+ * `suggestedAssets`, `releaseStatus`, `inputsNeeded` and `safetyNote` are
+ * filled with inert placeholders below rather than re-checked, since the
+ * composer never reads them back out; `isScaffold` is recomputed the same way
+ * `PublishingWebinarScriptSchema`'s own transform derives it, for internal
+ * consistency only — nothing downstream of this function reads it either.
+ * `content` also carries a `generation` block this schema does not declare;
+ * Zod's default object mode strips unknown keys rather than erroring on them,
+ * so this call only re-checks the fields the composer actually reads.
+ */
+function readWebinarScriptDocument(
+	content: unknown,
+): WebinarScriptDocument | null {
+	const parsed = ComposedWebinarScriptFieldsSchema.safeParse(content);
+	if (!parsed.success) {
+		return null;
+	}
+	return {
+		...parsed.data,
+		suggestedAssets: { confirmed: [], needsConfirmation: [] },
+		releaseStatus: "UNCONFIRMED",
+		inputsNeeded: [],
+		safetyNote: null,
+		isScaffold: parsed.data.demoFlow.length === 0,
+	};
+}

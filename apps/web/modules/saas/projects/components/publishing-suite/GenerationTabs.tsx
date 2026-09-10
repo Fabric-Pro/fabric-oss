@@ -26,6 +26,7 @@ import {
 	POST_TYPE_LABELS,
 	type PostType,
 } from "./topic-shared";
+import { WebinarScriptPanel } from "./WebinarScriptPanel";
 
 /**
  * One draft attempt as `listTopicDrafts` returns it (content excluded).
@@ -122,15 +123,18 @@ export interface TopicWorkingDraftState {
  * With that, every content type has a panel and NO tab reads "Coming soon" —
  * 2A's FR50 is satisfied for all of them rather than waived for one. LinkedIn
  * is the fifth, and it arrived WITH its panel in one change rather than landing
- * disabled first.
+ * disabled first. Webinar / Demo Script (#1988, Task 12) is the sixth,
+ * following the same pattern.
  *
  * The coming-soon branch below stays anyway, and the rule it enforces is a
  * PAIRING rather than a delay: `GENERATION_ACTIVE_POST_TYPES` is what makes a
  * tab selectable AND what mounts its `TabsContent`, so an entry added there
  * without an arm in `GenerationPanel`'s `postType === …` chain renders a
- * selectable tab with an empty body. A type that genuinely has no panel yet is
- * better left out of that set, where it reads "Coming soon" — an honest
- * placeholder beats a live tab that does nothing.
+ * selectable tab whose body carries nothing type-specific — `GenerationPanel`
+ * always renders its "Recommendation" section ahead of that chain, so the tab
+ * looks populated and plausible rather than empty. A type that genuinely has
+ * no panel yet is better left out of that set, where it reads "Coming soon" —
+ * an honest placeholder beats a live tab that silently lacks its panel.
  *
  * The unresolved-question list is computed PER PANEL rather than once for the
  * strip, and that is a 2C requirement rather than a tidy-up. See
@@ -713,6 +717,15 @@ function GenerationPanel({
 				/>
 			) : postType === "STAKEHOLDER_EMAIL" ? (
 				<StakeholderEmailPanel
+					projectId={projectId}
+					organizationId={organizationId}
+					topicId={topicId}
+					draft={draft}
+					working={working}
+					canEdit={canEdit}
+				/>
+			) : postType === "WEBINAR_SCRIPT" ? (
+				<WebinarScriptPanel
 					projectId={projectId}
 					organizationId={organizationId}
 					topicId={topicId}

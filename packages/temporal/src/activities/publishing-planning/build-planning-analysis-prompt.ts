@@ -44,11 +44,11 @@ export {
  * One classified recommendation.
  *
  * `type` is a free string, NOT `PublishingTopicPostType`. FR32's supported set
- * includes Webinar/Demo Script, Video Walkthrough Script and Newsletter Blurb,
- * none of which are in that enum; narrowing this would make the model drop three
- * of its eight legitimate answers. `rationale` is required because DV11/DV12
- * only mean something if the classification says why — an unexplained "requires
- * approval" is not actionable by a writer.
+ * has nine types; Video Walkthrough Script, Newsletter Blurb and AI-assisted
+ * Video Walkthrough are the three not in that enum, and narrowing this would
+ * make the model drop three of its nine legitimate answers. `rationale` is
+ * required because DV11/DV12 only mean something if the classification says
+ * why — an unexplained "requires approval" is not actionable by a writer.
  */
 const ClassifiedRecommendationSchema = z.object({
 	type: z.string().min(1),
