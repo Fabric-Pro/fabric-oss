@@ -21,7 +21,7 @@ import {
 	normalizeBacklogTitle,
 	TERMINAL_DRAFTING_STAGES,
 } from "../../../utils";
-import { db } from "../../client";
+import { db, Prisma } from "../../client";
 
 /**
  * A CREATE that the guard blocked because its normalized title matched an
@@ -43,6 +43,61 @@ export type SkippedDuplicate = {
  * the same equivalence class.
  */
 export type DedupFamily = "BUG" | "FEATURE";
+
+// ECMAScript's WhiteSpace + LineTerminator set. PostgreSQL btrim's one-argument
+// form removes only ordinary spaces, which would drift from normalizeBacklogTitle.
+const ECMASCRIPT_TRIM_CHARACTERS =
+	"\u0009\u000a\u000b\u000c\u000d\u0020\u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000\ufeff";
+const LEGACY_BUG_PREFIX_PATTERN = `^\\[bug\\][${ECMASCRIPT_TRIM_CHARACTERS}]+`;
+
+/**
+ * Find one live same-family normalized-title collision without building the
+ * batch guard's complete in-memory index. Gateway creates only need one title,
+ * while batch callers still benefit from {@link buildBacklogDedupGuard}.
+ */
+export async function findOpenBacklogTitleCollision(
+	projectId: string,
+	family: DedupFamily,
+	title: string,
+): Promise<{ existingId: string; existingIdentifier: string } | null> {
+	const normalizedTitle = normalizeBacklogTitle(title);
+	const rows = await db.$queryRaw<
+		Array<{
+			existingId: string;
+			existingIdentifier: string;
+			title: string;
+		}>
+	>`
+		SELECT id AS "existingId", identifier AS "existingIdentifier", title
+		  FROM user_story
+		 WHERE "projectId" = ${projectId}
+		   AND kind = ${family}::"StoryKind"
+		   AND "draftingStage" NOT IN (${Prisma.join(TERMINAL_DRAFTING_STAGES)})
+		   AND replace(lower(normalize(
+				btrim(
+					regexp_replace(
+						btrim(title, ${ECMASCRIPT_TRIM_CHARACTERS}),
+						${LEGACY_BUG_PREFIX_PATTERN},
+						'',
+						'i'
+					),
+					${ECMASCRIPT_TRIM_CHARACTERS}
+				),
+				NFD
+			)), 'ς', 'σ') = normalize(${normalizedTitle}, NFD)
+		 ORDER BY "createdAt" ASC
+		 LIMIT 10
+	`;
+	const collision = rows.find(
+		(row) => normalizeBacklogTitle(row.title) === normalizedTitle,
+	);
+	return collision
+		? {
+				existingId: collision.existingId,
+				existingIdentifier: collision.existingIdentifier,
+			}
+		: null;
+}
 
 export interface BacklogDedupGuard {
 	/**

@@ -23,6 +23,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
 	hasProjectAccess: vi.fn(),
 	getStoryById: vi.fn(),
+	getStorySummaryById: vi.fn(),
 	listDecisionLogThreads: vi.fn(),
 	getFeatureVersions: vi.fn(),
 	getFeatureVersion: vi.fn(),
@@ -31,6 +32,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock("@repo/database", () => ({
 	hasProjectAccess: mocks.hasProjectAccess,
 	getStoryById: mocks.getStoryById,
+	getStorySummaryById: mocks.getStorySummaryById,
 	listDecisionLogThreads: mocks.listDecisionLogThreads,
 	getFeatureVersions: mocks.getFeatureVersions,
 	getFeatureVersion: mocks.getFeatureVersion,
@@ -174,6 +176,11 @@ beforeEach(() => {
 	vi.clearAllMocks();
 	mocks.hasProjectAccess.mockResolvedValue(true);
 	mocks.getStoryById.mockResolvedValue(storyRow());
+	mocks.getStorySummaryById.mockResolvedValue({
+		id: "story-1",
+		identifier: "F-042",
+		maturationStatus: "DRAFT",
+	});
 	mocks.listDecisionLogThreads.mockResolvedValue([humanThread(), aiThread()]);
 	mocks.getFeatureVersions.mockResolvedValue({
 		versions: [versionRow(2), versionRow(1)],
@@ -322,7 +329,7 @@ describe("fabric_get_feature_decisions", () => {
 	});
 
 	it("rejects a feature that does not belong to the project", async () => {
-		mocks.getStoryById.mockResolvedValue(null);
+		mocks.getStorySummaryById.mockResolvedValue(null);
 
 		const result = await executePlatformTool(
 			"fabric_get_feature_decisions",

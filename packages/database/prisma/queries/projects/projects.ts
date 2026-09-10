@@ -1253,6 +1253,8 @@ export async function getProjectMemberRole(
 export interface ProjectAccess {
 	/** The project's host organization RIGHT NOW, or null for a personal one. */
 	organizationId: string | null;
+	/** Whether the caller passes the narrower project-discovery access rule. */
+	isVisible: boolean;
 	/** What the caller may do, by the path that granted it. */
 	permissions: readonly Permission[];
 	/** Which path granted them. `"owner"` is a short-circuit — see below. */
@@ -1271,6 +1273,10 @@ export interface ProjectAccess {
  *   B. otherwise, the caller's org role on the project's host organization.
  *
  * Returns `null` when the project does not exist.
+ *
+ * `isVisible` separately preserves the narrower `hasProjectAccess` boundary:
+ * an organization role can grant a permission across the organization, while
+ * project discovery still requires creator or active ProjectMember standing.
  *
  * ## Callers must apply the owner short-circuit themselves
  *
@@ -1320,6 +1326,7 @@ export async function resolveProjectAccess(
 	if (project.userId === userId && project.organizationId === null) {
 		return {
 			organizationId: null,
+			isVisible: true,
 			permissions: resolveProjectPermissions(ProjectMemberRole.OWNER),
 			source: "owner",
 		};
@@ -1337,6 +1344,7 @@ export async function resolveProjectAccess(
 	if (memberActive) {
 		return {
 			organizationId: project.organizationId,
+			isVisible: true,
 			permissions: resolveProjectPermissions(member.role),
 			source: "project-member",
 		};
@@ -1351,6 +1359,9 @@ export async function resolveProjectAccess(
 		if (orgMember) {
 			return {
 				organizationId: project.organizationId,
+				// Organization permissions apply across the organization, but the
+				// project-discovery surface remains creator/member scoped.
+				isVisible: project.userId === userId,
 				permissions: resolveOrgPermissions(orgMember.role),
 				source: "org",
 			};
@@ -1359,6 +1370,7 @@ export async function resolveProjectAccess(
 
 	return {
 		organizationId: project.organizationId,
+		isVisible: false,
 		permissions: [],
 		source: "none",
 	};

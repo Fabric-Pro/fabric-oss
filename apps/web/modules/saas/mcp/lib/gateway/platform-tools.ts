@@ -847,16 +847,20 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 					description: "Context ID from fabric_list_project_contexts",
 				},
 				offset: {
-					type: "number",
+					type: "integer",
 					description:
-						"Character offset to start reading from (default 0). Use 'nextOffset' from a truncated response.",
+						"Unicode-character offset to start reading from (default 0). Use 'nextOffset' from a truncated response.",
 					default: 0,
+					minimum: 0,
+					maximum: 2_147_483_646,
 				},
 				maxLength: {
-					type: "number",
+					type: "integer",
 					description:
-						"Max characters of body text to return in this call (default 50000, max 200000)",
+						"Max Unicode characters of body text to return in this call (default 50000, max 200000)",
 					default: 50000,
+					minimum: 1,
+					maximum: 200_000,
 				},
 			},
 			required: ["contextId"],
@@ -1936,7 +1940,9 @@ async function handleListFeatures(
 	args: Record<string, unknown>,
 	session: GatewaySession,
 ): Promise<ToolCallResult> {
-	const { listStories, hasProjectAccess } = await import("@repo/database");
+	const { listStorySummaries, hasProjectAccess } = await import(
+		"@repo/database"
+	);
 
 	if (typeof args.projectId !== "string" || !args.projectId.trim()) {
 		return errorResult(
@@ -1973,7 +1979,7 @@ async function handleListFeatures(
 	const limit = Math.min((args.limit as number) ?? 50, 100);
 	const offset = (args.offset as number) ?? 0;
 
-	const { stories, total } = await listStories({
+	const { stories, total } = await listStorySummaries({
 		projectId,
 		statusId: args.statusId as string | undefined,
 		draftingStage: args.draftingStage as
@@ -1998,7 +2004,6 @@ async function handleListFeatures(
 		search: args.search as string | undefined,
 		limit,
 		offset,
-		includeTaskCount: true,
 	});
 
 	return jsonResult({
@@ -2017,9 +2022,8 @@ async function handleListFeatures(
 			storyPoints: s.storyPoints,
 			draftingStage: s.draftingStage,
 			assigneeId: s.assigneeId,
-			taskCount: s.tasks?.length ?? 0,
-			completedTaskCount:
-				s.tasks?.filter((t) => t.isCompleted).length ?? 0,
+			taskCount: s.taskCount,
+			completedTaskCount: s.completedTaskCount,
 			externalUrl: s.externalUrl,
 			createdAt: s.createdAt,
 			updatedAt: s.updatedAt,
@@ -2027,6 +2031,31 @@ async function handleListFeatures(
 		total,
 		hasMore: offset + limit < total,
 	});
+}
+
+/**
+ * Resolve visibility and write permission from the same authoritative project
+ * access result. A caller outside the narrower project-discovery boundary
+ * remains indistinguishable from a missing project; a visible caller missing
+ * the requested permission gets the existing explicit refusal. The owner
+ * shortcut matches the oRPC gate.
+ */
+async function resolveGatewayProjectWriteAccess(
+	projectId: string,
+	userId: string,
+	permission: "PROJECT_UPDATE" | "STORY_UPDATE",
+): Promise<"allowed" | "not-found" | "forbidden"> {
+	const { hasPermission, Permissions, resolveProjectAccess } = await import(
+		"@repo/database"
+	);
+	const access = await resolveProjectAccess(projectId, userId);
+	if (!access || !access.isVisible) {
+		return "not-found";
+	}
+	return access.source === "owner" ||
+		hasPermission(access.permissions, Permissions[permission])
+		? "allowed"
+		: "forbidden";
 }
 
 async function handleGetFeature(
@@ -2143,7 +2172,7 @@ async function handleGetFeatureDecisions(
 	args: Record<string, unknown>,
 	session: GatewaySession,
 ): Promise<ToolCallResult> {
-	const { getStoryById, hasProjectAccess, listDecisionLogThreads } =
+	const { getStorySummaryById, hasProjectAccess, listDecisionLogThreads } =
 		await import("@repo/database");
 
 	const featureId = args.featureId as string;
@@ -2164,7 +2193,7 @@ async function handleGetFeatureDecisions(
 		return errorResult("Project not found or access denied");
 	}
 
-	const story = await getStoryById(featureId, projectId);
+	const story = await getStorySummaryById(featureId, projectId);
 	if (!story) {
 		return errorResult("Feature not found");
 	}
@@ -2229,7 +2258,7 @@ async function handleGetFeatureVersions(
 	const {
 		getFeatureVersion,
 		getFeatureVersions,
-		getStoryById,
+		getStorySummaryById,
 		hasProjectAccess,
 	} = await import("@repo/database");
 
@@ -2251,7 +2280,7 @@ async function handleGetFeatureVersions(
 		return errorResult("Project not found or access denied");
 	}
 
-	const story = await getStoryById(featureId, projectId);
+	const story = await getStorySummaryById(featureId, projectId);
 	if (!story) {
 		return errorResult("Feature not found");
 	}
@@ -2334,9 +2363,7 @@ async function handleUpdateFeatureStatus(
 	args: Record<string, unknown>,
 	session: GatewaySession,
 ): Promise<ToolCallResult> {
-	const { moveStory, hasProjectAccess, canEditProject } = await import(
-		"@repo/database"
-	);
+	const { moveStory } = await import("@repo/database");
 
 	const featureId = args.featureId as string;
 	const projectId = args.projectId as string;
@@ -2351,17 +2378,15 @@ async function handleUpdateFeatureStatus(
 		return errorResult("statusId is required");
 	}
 
-	const hasAccess = await hasProjectAccess(
+	const access = await resolveGatewayProjectWriteAccess(
 		projectId,
 		session.userId,
-		session.organizationId || undefined,
+		"PROJECT_UPDATE",
 	);
-	if (!hasAccess) {
+	if (access === "not-found") {
 		return errorResult("Project not found or access denied");
 	}
-
-	const canEdit = await canEditProject(projectId, session.userId);
-	if (!canEdit) {
+	if (access === "forbidden") {
 		return errorResult("No edit permission for this project");
 	}
 
@@ -2380,8 +2405,7 @@ async function handleCompleteTask(
 	args: Record<string, unknown>,
 	session: GatewaySession,
 ): Promise<ToolCallResult> {
-	const { updateTask, hasProjectAccess, canUpdateProjectStory, db } =
-		await import("@repo/database");
+	const { updateTask, db } = await import("@repo/database");
 
 	const taskId = args.taskId as string;
 	const projectId = args.projectId as string;
@@ -2393,22 +2417,20 @@ async function handleCompleteTask(
 		return errorResult("projectId is required");
 	}
 
-	const hasAccess = await hasProjectAccess(
+	const access = await resolveGatewayProjectWriteAccess(
 		projectId,
 		session.userId,
-		session.organizationId || undefined,
+		"STORY_UPDATE",
 	);
-	if (!hasAccess) {
+	if (access === "not-found") {
 		return errorResult("Project not found or access denied");
 	}
 
-	// `hasProjectAccess` answers "may this caller see the project", which is
-	// the right question for the refusal above — it is what lets a stranger be
-	// told "not found" rather than "forbidden". It is the wrong question for a
-	// write: it is true for a Viewer and a Commenter, neither of whom may touch
-	// a task through the UI. The oRPC counterpart of this tool
+	// The access resolver preserves the not-found boundary for callers with no
+	// effective project access, then separately checks this write permission.
+	// The oRPC counterpart of this tool
 	// (stories/tasks/toggle-task) requires STORY_UPDATE, so this asks the same.
-	if (!(await canUpdateProjectStory(projectId, session.userId))) {
+	if (access === "forbidden") {
 		return errorResult("No permission to update tasks in this project");
 	}
 
@@ -2434,8 +2456,7 @@ async function handleUpdateTask(
 	args: Record<string, unknown>,
 	session: GatewaySession,
 ): Promise<ToolCallResult> {
-	const { updateTask, hasProjectAccess, canUpdateProjectStory, db } =
-		await import("@repo/database");
+	const { updateTask, db } = await import("@repo/database");
 
 	const taskId = args.taskId as string;
 	const projectId = args.projectId as string;
@@ -2446,18 +2467,18 @@ async function handleUpdateTask(
 		return errorResult("projectId is required");
 	}
 
-	const hasAccess = await hasProjectAccess(
+	const access = await resolveGatewayProjectWriteAccess(
 		projectId,
 		session.userId,
-		session.organizationId || undefined,
+		"STORY_UPDATE",
 	);
-	if (!hasAccess) {
+	if (access === "not-found") {
 		return errorResult("Project not found or access denied");
 	}
 
 	// Visibility is not permission — see the note in handleCompleteTask. The
 	// oRPC counterpart (stories/tasks/update-task) requires STORY_UPDATE.
-	if (!(await canUpdateProjectStory(projectId, session.userId))) {
+	if (access === "forbidden") {
 		return errorResult("No permission to update tasks in this project");
 	}
 
@@ -2500,8 +2521,7 @@ async function handleCreateFeatureTask(
 	args: Record<string, unknown>,
 	session: GatewaySession,
 ): Promise<ToolCallResult> {
-	const { createTask, hasProjectAccess, canEditProject, getStoryById } =
-		await import("@repo/database");
+	const { createTask, getStorySummaryById } = await import("@repo/database");
 
 	const featureId = args.featureId as string;
 	const projectId = args.projectId as string;
@@ -2516,22 +2536,20 @@ async function handleCreateFeatureTask(
 		return errorResult("title is required");
 	}
 
-	const hasAccess = await hasProjectAccess(
+	const access = await resolveGatewayProjectWriteAccess(
 		projectId,
 		session.userId,
-		session.organizationId || undefined,
+		"PROJECT_UPDATE",
 	);
-	if (!hasAccess) {
+	if (access === "not-found") {
 		return errorResult("Project not found or access denied");
 	}
-
-	const canEdit = await canEditProject(projectId, session.userId);
-	if (!canEdit) {
+	if (access === "forbidden") {
 		return errorResult("No edit permission for this project");
 	}
 
 	// Verify the feature exists in this project
-	const story = await getStoryById(featureId, projectId);
+	const story = await getStorySummaryById(featureId, projectId);
 	if (!story) {
 		return errorResult("Feature not found in this project");
 	}
@@ -2884,7 +2902,7 @@ function announceStoryCreated(params: {
  *     rows only — so a closed/declined bug never blocks re-filing a regression,
  *     and the index is the backstop for the check-then-create race (P2002 →
  *     re-read the winner).
- *  2. Title, via `BacklogDedupGuard` with family BUG. Same semantics as the
+ *  2. Title, via a direct normalized-title lookup with family BUG. Same semantics as the
  *     in-platform `fabric_create_story` tool: per-project, per-family,
  *     normalized-title, non-terminal rows only. This layer is BEST-EFFORT and
  *     known to be leaky: the bug-drafting prompt may rewrite a title after
@@ -2911,7 +2929,7 @@ async function handleCreateBug(
 	args: Record<string, unknown>,
 	session: GatewaySession,
 ): Promise<ToolCallResult> {
-	const { db, buildBacklogDedupGuard, TERMINAL_DRAFTING_STAGES } =
+	const { db, findOpenBacklogTitleCollision, TERMINAL_DRAFTING_STAGES } =
 		await import("@repo/database");
 
 	if (typeof args.projectId !== "string" || !args.projectId.trim()) {
@@ -3016,8 +3034,11 @@ async function handleCreateBug(
 	}
 
 	// ── Layer 2: normalized-title dedup, BUG family only ──
-	const dedupGuard = await buildBacklogDedupGuard(projectId);
-	const collision = dedupGuard.findCollision("BUG", title);
+	const collision = await findOpenBacklogTitleCollision(
+		projectId,
+		"BUG",
+		title,
+	);
 
 	const titleHitResult = (
 		matched: { existingId: string; existingIdentifier: string },
@@ -3046,15 +3067,14 @@ async function handleCreateBug(
 		//
 		// The `where` is a compare-and-set needing no transaction, and it
 		// carries the NON-TERMINAL predicate as well as `bugFingerprint: null`.
-		// The guard's index is a snapshot: the row it matched can be closed
-		// between `buildBacklogDedupGuard` and this write, and stamping a
+		// The direct lookup is a snapshot: the row it matched can be closed
+		// between that read and this write, and stamping a
 		// fingerprint onto a closed bug would both violate terminal-item
 		// immutability and park the fingerprint outside the partial index,
 		// wrongly reporting a resolved ticket as the live duplicate.
 		if (!fingerprint) {
 			// No fingerprint to back-fill, so no fresh read is taken and the
-			// guard's snapshot is all we know. Same staleness every other
-			// BacklogDedupGuard caller lives with.
+			// direct lookup's snapshot is all we know.
 			return titleHitResult(collision, false);
 		}
 
@@ -3229,8 +3249,8 @@ async function handleCreateBug(
  * an error signature, so the bug tool can dedupe on a caller-supplied
  * fingerprint and treat re-reporting as routine. A feature request has no such
  * machine key — a "fingerprint" of a capability request is just its title — so
- * this tool has exactly ONE dedup layer: the normalized title, via
- * `BacklogDedupGuard` with family FEATURE (per-project, per-family,
+ * this tool has exactly ONE dedup layer: a direct normalized-title lookup with
+ * family FEATURE (per-project, per-family,
  * non-terminal rows only). Feature titles are never matched against bugs, and a
  * closed or declined item never blocks a new filing.
  *
@@ -3256,7 +3276,7 @@ async function handleCreateFeature(
 	args: Record<string, unknown>,
 	session: GatewaySession,
 ): Promise<ToolCallResult> {
-	const { buildBacklogDedupGuard } = await import("@repo/database");
+	const { findOpenBacklogTitleCollision } = await import("@repo/database");
 
 	if (typeof args.projectId !== "string" || !args.projectId.trim()) {
 		return errorResult(
@@ -3320,12 +3340,12 @@ async function handleCreateFeature(
 	}
 
 	// ── Normalized-title dedup, FEATURE family only ──
-	const dedupGuard = await buildBacklogDedupGuard(projectId);
-	const collision = dedupGuard.findCollision("FEATURE", title);
-	if (
-		collision &&
-		(await isBacklogCollisionStillLive(collision.existingId))
-	) {
+	const collision = await findOpenBacklogTitleCollision(
+		projectId,
+		"FEATURE",
+		title,
+	);
+	if (collision) {
 		return jsonResult({
 			success: true,
 			created: false,
@@ -3336,9 +3356,6 @@ async function handleCreateFeature(
 			message: `A feature titled "${title}" already exists in this project as ${collision.existingIdentifier}. Returned it instead of filing a duplicate. If you have details it does not cover, attach them with fabric_create_feature_task rather than resending with a reworded title.`,
 		});
 	}
-	// A matched row that went terminal or vanished since the guard was built is
-	// not a live duplicate, so fall through and create.
-
 	const { createStoryFromProposal } = await import("@repo/temporal");
 
 	const { story, aiDrafted } = await createStoryFromProposal({
@@ -3476,9 +3493,7 @@ async function handleCreateDocument(
 	args: Record<string, unknown>,
 	session: GatewaySession,
 ): Promise<ToolCallResult> {
-	const { createDocument, canEditProject, hasProjectAccess } = await import(
-		"@repo/database"
-	);
+	const { createDocument } = await import("@repo/database");
 
 	const projectId = args.projectId as string;
 	const type = args.type as string;
@@ -3497,17 +3512,15 @@ async function handleCreateDocument(
 		return errorResult("content is required");
 	}
 
-	const hasAccess = await hasProjectAccess(
+	const access = await resolveGatewayProjectWriteAccess(
 		projectId,
 		session.userId,
-		session.organizationId || undefined,
+		"PROJECT_UPDATE",
 	);
-	if (!hasAccess) {
+	if (access === "not-found") {
 		return errorResult("Project not found or access denied");
 	}
-
-	const canEdit = await canEditProject(projectId, session.userId);
-	if (!canEdit) {
+	if (access === "forbidden") {
 		return errorResult("No edit permission for this project");
 	}
 
@@ -3552,12 +3565,7 @@ async function handleUpdateDocument(
 	args: Record<string, unknown>,
 	session: GatewaySession,
 ): Promise<ToolCallResult> {
-	const {
-		updateDocument,
-		getDocumentById,
-		canEditProject,
-		hasProjectAccess,
-	} = await import("@repo/database");
+	const { updateDocument, getDocumentById } = await import("@repo/database");
 
 	const documentId = args.documentId as string;
 	if (!documentId) {
@@ -3569,17 +3577,15 @@ async function handleUpdateDocument(
 		return errorResult("Document not found");
 	}
 
-	const hasAccess = await hasProjectAccess(
+	const access = await resolveGatewayProjectWriteAccess(
 		doc.projectId,
 		session.userId,
-		session.organizationId || undefined,
+		"PROJECT_UPDATE",
 	);
-	if (!hasAccess) {
+	if (access === "not-found") {
 		return errorResult("Document not found or access denied");
 	}
-
-	const canEdit = await canEditProject(doc.projectId, session.userId);
-	if (!canEdit) {
+	if (access === "forbidden") {
 		return errorResult("No edit permission for this project");
 	}
 
@@ -3623,6 +3629,21 @@ async function handleUpdateDocument(
 /** Default / ceiling for one page of context body text, in characters. */
 const CONTEXT_BODY_DEFAULT_MAX_LENGTH = 50_000;
 const CONTEXT_BODY_MAX_LENGTH = 200_000;
+// PostgreSQL substring positions are int4. Reserve one for its one-based index.
+const CONTEXT_BODY_MAX_OFFSET = 2_147_483_646;
+
+/** Slice by Unicode code point, matching PostgreSQL substring/length. */
+function sliceUnicodeCharacters(
+	body: string,
+	offset: number,
+	maxLength: number,
+): { content: string; contentLength: number } {
+	const characters = Array.from(body);
+	return {
+		content: characters.slice(offset, offset + maxLength).join(""),
+		contentLength: characters.length,
+	};
+}
 
 /** How long the presigned link to a stored file stays valid. */
 const CONTEXT_FILE_URL_EXPIRY_SECONDS = 300;
@@ -3791,7 +3812,7 @@ async function handleGetProjectContext(
 	const {
 		getCapturedConversationMarkdown,
 		getContextById,
-		getCrawledUrlSourceMarkdown,
+		getCrawledUrlSourceMarkdownPage,
 		hasProjectAccess,
 	} = await import("@repo/database");
 
@@ -3817,8 +3838,32 @@ async function handleGetProjectContext(
 		return errorResult("Context not found or access denied");
 	}
 
-	// Two kinds of row keep their text somewhere other than `content`, and both
-	// have to be reassembled before reading.
+	const offset = (args.offset as number | undefined) ?? 0;
+	const maxLength =
+		(args.maxLength as number | undefined) ??
+		CONTEXT_BODY_DEFAULT_MAX_LENGTH;
+	if (
+		!Number.isInteger(offset) ||
+		offset < 0 ||
+		offset > CONTEXT_BODY_MAX_OFFSET
+	) {
+		return errorResult(
+			`offset must be an integer between 0 and ${CONTEXT_BODY_MAX_OFFSET}`,
+		);
+	}
+	if (
+		!Number.isInteger(maxLength) ||
+		maxLength < 1 ||
+		maxLength > CONTEXT_BODY_MAX_LENGTH
+	) {
+		return errorResult(
+			`maxLength must be an integer between 1 and ${CONTEXT_BODY_MAX_LENGTH}`,
+		);
+	}
+
+	// Two kinds of row keep their text somewhere other than `content`. Crawled
+	// URL pages use a SQL-side slice so an offset read does not transfer every
+	// child body; conversation bundles still return their existing full text.
 	//
 	// A PATH_PREFIX URL source scatters its markdown across child page rows. A
 	// monitored Teams or Slack channel is a pointer whose captured conversation
@@ -3830,11 +3875,23 @@ async function handleGetProjectContext(
 	// capture path applies the guard before the row write so every derived copy
 	// inherits it. Nothing is re-applied here.
 	let body: string;
+	let crawledPage:
+		| {
+				content: string;
+				contentLength: number;
+				hasReadableText: boolean;
+		  }
+		| undefined;
 	if (ctx.type === "LINK" && ctx.urlScope === "PATH_PREFIX") {
-		body = await getCrawledUrlSourceMarkdown(ctx.id, {
-			userId: session.userId,
-			organizationId: session.organizationId,
-		});
+		crawledPage = await getCrawledUrlSourceMarkdownPage(
+			ctx.id,
+			{
+				userId: session.userId,
+				organizationId: session.organizationId,
+			},
+			{ offset, maxLength },
+		);
+		body = "";
 	} else if (ctx.type === "INTEGRATION") {
 		const captured = await getCapturedConversationMarkdown(ctx.id, {
 			userId: session.userId,
@@ -3849,16 +3906,14 @@ async function handleGetProjectContext(
 		body = ctx.content ?? "";
 	}
 
-	const offset = Math.max((args.offset as number) ?? 0, 0);
-	const maxLength = Math.min(
-		Math.max(
-			(args.maxLength as number) ?? CONTEXT_BODY_DEFAULT_MAX_LENGTH,
-			1,
-		),
-		CONTEXT_BODY_MAX_LENGTH,
-	);
-	const page = body.slice(offset, offset + maxLength);
-	const truncated = offset + page.length < body.length;
+	const localPage = crawledPage
+		? undefined
+		: sliceUnicodeCharacters(body, offset, maxLength);
+	const page = crawledPage?.content ?? localPage?.content ?? "";
+	const contentLength =
+		crawledPage?.contentLength ?? localPage?.contentLength ?? 0;
+	const returnedLength = Array.from(page).length;
+	const truncated = offset + returnedLength < contentLength;
 
 	// Blank is not the same as non-empty. A scanned or photo-only PDF extracts
 	// to whitespace — COMPLETED status, `"\n\n"` for content — and reporting
@@ -3866,7 +3921,9 @@ async function handleGetProjectContext(
 	// text. Treat whitespace-only as nothing to read; the Class A branch of
 	// `resolveContextUnavailableReason` then points at the original file,
 	// which for these rows is exactly where the information actually is.
-	const hasReadableText = body.trim().length > 0;
+	const hasReadableText = crawledPage
+		? crawledPage.hasReadableText
+		: body.trim().length > 0;
 
 	const originalFile = await resolveOriginalFileLink(ctx);
 
@@ -3888,11 +3945,11 @@ async function handleGetProjectContext(
 			? {}
 			: { unavailableReason: resolveContextUnavailableReason(ctx) }),
 		content: page,
-		contentLength: body.length,
+		contentLength,
 		offset,
-		returnedLength: page.length,
+		returnedLength,
 		truncated,
-		...(truncated ? { nextOffset: offset + page.length } : {}),
+		...(truncated ? { nextOffset: offset + returnedLength } : {}),
 		...(originalFile ? { originalFile } : {}),
 	});
 }
