@@ -24,6 +24,27 @@ const mockStreamText = vi.fn();
 vi.mock("../queries", () => ({
 	listProjectRepositories: (...a: unknown[]) =>
 		mockListProjectRepositories(...a),
+	findAnalysesForRepositories: async (
+		ctx: unknown,
+		projectId: string,
+		repos: { repositoryIntegrationId: string; defaultBranch: string }[],
+	) =>
+		new Map(
+			await Promise.all(
+				repos.map(
+					async (repo) =>
+						[
+							repo.repositoryIntegrationId,
+							await mockFindAnalysis(
+								ctx,
+								projectId,
+								repo.repositoryIntegrationId,
+								repo.defaultBranch,
+							),
+						] as const,
+				),
+			),
+		),
 	findAnalysis: (...a: unknown[]) => mockFindAnalysis(...a),
 	findLatestAnalysisForIntegration: vi.fn().mockResolvedValue(null),
 	findLatestAnalysisForProject: vi.fn().mockResolvedValue(null),

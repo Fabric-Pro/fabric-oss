@@ -324,6 +324,52 @@ export async function findAnalysis(
 	});
 }
 
+/** Resolve existing repo analyses in two batched reads; adoption stays in the service. */
+export async function findAnalysesForRepositories(
+	ctx: AtlasContext,
+	projectId: string,
+	repos: RepoOption[],
+): Promise<
+	Map<string | null, NonNullable<Awaited<ReturnType<typeof findAnalysis>>>>
+> {
+	if (repos.length === 0) {
+		return new Map();
+	}
+	const exact = await db.atlasAnalysis.findMany({
+		where: {
+			projectId,
+			...tenantWhere(ctx),
+			OR: repos.map((repo) => ({
+				repositoryIntegrationId: repo.repositoryIntegrationId,
+				branch: repo.defaultBranch,
+			})),
+		},
+	});
+	const byRepo = new Map(
+		exact.map((analysis) => [analysis.repositoryIntegrationId, analysis]),
+	);
+	const missing = repos.filter(
+		(repo) => !byRepo.has(repo.repositoryIntegrationId),
+	);
+	if (missing.length > 0) {
+		const latest = await db.atlasAnalysis.findMany({
+			where: {
+				projectId,
+				...tenantWhere(ctx),
+				OR: missing.map((repo) => ({
+					repositoryIntegrationId: repo.repositoryIntegrationId,
+				})),
+			},
+			orderBy: { updatedAt: "desc" },
+			distinct: ["repositoryIntegrationId"],
+		});
+		for (const analysis of latest) {
+			byRepo.set(analysis.repositoryIntegrationId, analysis);
+		}
+	}
+	return byRepo;
+}
+
 /** A single analysis row by id (tenant-scoped) — for run/cancel paths that already hold the id. */
 export async function findAnalysisById(ctx: AtlasContext, analysisId: string) {
 	return db.atlasAnalysis.findFirst({
@@ -1252,7 +1298,15 @@ export async function getModulesForDescribe(
 			},
 		}),
 		db.atlasEdge.findMany({
-			where: { analysisId, mode: "TECHNICAL", kind: "DEPENDS_ON" },
+			where: {
+				analysisId,
+				mode: "TECHNICAL",
+				kind: "DEPENDS_ON",
+				OR: [
+					{ sourceKey: { in: moduleKeys } },
+					{ targetKey: { in: moduleKeys } },
+				],
+			},
 			select: { sourceKey: true, targetKey: true },
 		}),
 		db.atlasNode.findMany({
@@ -1284,17 +1338,24 @@ export async function getModulesForDescribe(
 		filesByModule.set(f.parentKey, arr);
 	}
 
+	const outgoing = new Map<string, string[]>();
+	const incoming = new Map<string, string[]>();
+	for (const edge of dependsEdges) {
+		const targets = outgoing.get(edge.sourceKey) ?? [];
+		targets.push(labelByKey.get(edge.targetKey) ?? edge.targetKey);
+		outgoing.set(edge.sourceKey, targets);
+		const sources = incoming.get(edge.targetKey) ?? [];
+		sources.push(labelByKey.get(edge.sourceKey) ?? edge.sourceKey);
+		incoming.set(edge.targetKey, sources);
+	}
+
 	return modules.map((m) => {
 		const metrics = (m.metrics ?? {}) as {
 			fileCount?: number;
 			loc?: number;
 		};
-		const dependsOn = dependsEdges
-			.filter((e) => e.sourceKey === m.key)
-			.map((e) => labelByKey.get(e.targetKey) ?? e.targetKey);
-		const dependedOnBy = dependsEdges
-			.filter((e) => e.targetKey === m.key)
-			.map((e) => labelByKey.get(e.sourceKey) ?? e.sourceKey);
+		const dependsOn = outgoing.get(m.key) ?? [];
+		const dependedOnBy = incoming.get(m.key) ?? [];
 		return {
 			key: m.key,
 			label: m.label,
@@ -1689,23 +1750,34 @@ const CANVAS_EDGE_KIND: Record<GraphMode, AtlasEdgeKind> = {
  * loaded via the analysis's repo+branch and overlaid only when the analysis was
  * built with `appliedUserOverrides` (i.e. not a "from fresh" run).
  */
+interface OverrideAnalysis {
+	projectId: string;
+	repositoryIntegrationId: string | null;
+	branch: string;
+	appliedUserOverrides: boolean;
+}
+
 async function loadOverrideOverlay(
 	ctx: AtlasContext,
 	analysisId: string,
 	mode: GraphMode,
+	knownAnalysis?: OverrideAnalysis | null,
 ): Promise<{
 	applied: boolean;
 	overrides: Map<string, NodeOverrideValue>;
 }> {
-	const analysis = await db.atlasAnalysis.findFirst({
-		where: { id: analysisId, ...tenantWhere(ctx) },
-		select: {
-			projectId: true,
-			repositoryIntegrationId: true,
-			branch: true,
-			appliedUserOverrides: true,
-		},
-	});
+	const analysis =
+		knownAnalysis === undefined
+			? await db.atlasAnalysis.findFirst({
+					where: { id: analysisId, ...tenantWhere(ctx) },
+					select: {
+						projectId: true,
+						repositoryIntegrationId: true,
+						branch: true,
+						appliedUserOverrides: true,
+					},
+				})
+			: knownAnalysis;
 	if (!analysis || !analysis.appliedUserOverrides) {
 		return { applied: false, overrides: new Map() };
 	}
@@ -1749,16 +1821,43 @@ export async function getGraph(
 	ctx: AtlasContext,
 	analysisId: string,
 	mode: GraphMode,
-	options?: { includeDeleted?: boolean },
+	options?: {
+		includeDeleted?: boolean;
+		edgeOverrides?: Promise<EdgeOverrideRow[]>;
+	},
 ): Promise<{ nodes: GraphNode[]; edges: GraphEdge[] }> {
 	const includeDeleted = options?.includeDeleted ?? false;
-	const [nodes, edges, overlay, analysis] = await Promise.all([
+	const analysisPromise = Promise.resolve(
+		db.atlasAnalysis.findFirst({
+			where: { id: analysisId, ...tenantWhere(ctx) },
+			select: {
+				projectId: true,
+				repositoryIntegrationId: true,
+				branch: true,
+				appliedUserOverrides: true,
+			},
+		}),
+	);
+	const [nodes, edges, overlay, analysis, edgeOverrides] = await Promise.all([
 		db.atlasNode.findMany({
 			where: {
 				analysisId,
 				mode,
 				kind: { in: CANVAS_NODE_KIND[mode] },
 				...tenantWhere(ctx),
+			},
+			select: {
+				key: true,
+				kind: true,
+				label: true,
+				filePath: true,
+				language: true,
+				parentKey: true,
+				technicalDescription: true,
+				businessDescription: true,
+				category: true,
+				metrics: true,
+				layout: true,
 			},
 		}),
 		db.atlasEdge.findMany({
@@ -1775,15 +1874,22 @@ export async function getGraph(
 				weight: true,
 			},
 		}),
-		loadOverrideOverlay(ctx, analysisId, mode),
-		db.atlasAnalysis.findFirst({
-			where: { id: analysisId, ...tenantWhere(ctx) },
-			select: {
-				projectId: true,
-				repositoryIntegrationId: true,
-				branch: true,
-			},
-		}),
+		analysisPromise.then((analysis) =>
+			loadOverrideOverlay(ctx, analysisId, mode, analysis),
+		),
+		analysisPromise,
+		Promise.all([analysisPromise, options?.edgeOverrides]).then(
+			([analysis, preloaded]) =>
+				analysis
+					? (preloaded ??
+						loadEdgeOverrides(
+							ctx,
+							analysis.projectId,
+							analysis.branch,
+							mode,
+						))
+					: [],
+		),
 	]);
 
 	const nodeKeys = new Set(nodes.map((n) => n.key));
@@ -1793,14 +1899,6 @@ export async function getGraph(
 	// (sourceKey → targetKey). Active overrides attach a user description / drop a
 	// soft-deleted edge / add a manual edge; mirrors the node-override overlay.
 	const repoId = analysis?.repositoryIntegrationId ?? null;
-	const edgeOverrides = analysis
-		? await loadEdgeOverrides(
-				ctx,
-				analysis.projectId,
-				analysis.branch,
-				mode,
-			)
-		: [];
 	// Only overrides whose BOTH endpoints are intra-repo (this analysis's repo)
 	// belong to the solo graph; cross-repo manual overrides live on the System map.
 	const soloOverrides = edgeOverrides.filter(
@@ -1925,7 +2023,7 @@ export async function getCapabilityCoverage(
 	}));
 }
 
-export async function getNodeDetail(
+async function loadNodeDetail(
 	ctx: AtlasContext,
 	args: { analysisId: string; mode: GraphMode; key: string },
 ) {
@@ -1944,7 +2042,6 @@ export async function getNodeDetail(
 	// Effective overlay (T5): the user override wins when overrides are applied.
 	const overlay = await loadOverrideOverlay(ctx, args.analysisId, args.mode);
 	const override = overlay.overrides.get(args.key);
-	const eff = overlayNode(node, args.mode, override);
 
 	// Neighbours: edges touching this node (deps + containment + covers), capped.
 	const edges = await db.atlasEdge.findMany({
@@ -1986,6 +2083,16 @@ export async function getNodeDetail(
 		}
 	}
 
+	return { node, neighbors, override, applied: overlay.applied };
+}
+
+function formatNodeDetail(
+	snapshot: NonNullable<Awaited<ReturnType<typeof loadNodeDetail>>>,
+	mode: GraphMode,
+) {
+	const override = snapshot.override;
+	const { node, neighbors } = snapshot;
+	const eff = overlayNode(node, mode, override);
 	return {
 		key: node.key,
 		kind: node.kind as GraphNode["kind"],
@@ -2010,6 +2117,33 @@ export async function getNodeDetail(
 		layout: (node.layout as GraphNode["layout"]) ?? null,
 		neighbors,
 	};
+}
+
+export async function getNodeDetail(
+	ctx: AtlasContext,
+	args: { analysisId: string; mode: GraphMode; key: string },
+) {
+	const snapshot = await loadNodeDetail(ctx, args);
+	return snapshot ? formatNodeDetail(snapshot, args.mode) : null;
+}
+
+/** Keep the raw node and neighbours so clearing an override restores the AI value. */
+export async function updateNodeDetail(
+	ctx: AtlasContext,
+	args: Parameters<typeof upsertNodeOverride>[1] & { analysisId: string },
+) {
+	const snapshot = await loadNodeDetail(ctx, args);
+	if (!snapshot) {
+		return null;
+	}
+	const saved = await upsertNodeOverride(ctx, args);
+	return formatNodeDetail(
+		{
+			...snapshot,
+			override: snapshot.applied ? saved.value : undefined,
+		},
+		args.mode,
+	);
 }
 
 // ── Analysis history (who / when / commit) ───────────────────────────────────
@@ -2506,6 +2640,103 @@ export async function upsertEdgeOverride(
 	return row;
 }
 
+/** Insert new AI references and their history atomically, preserving existing edits. */
+export async function createAiSoloEdgeOverrides(
+	ctx: AtlasContext,
+	args: {
+		projectId: string;
+		repositoryIntegrationId: string | null;
+		branch: string;
+		edges: {
+			mode: GraphMode;
+			sourceKey: string;
+			targetKey: string;
+			kind: string;
+			description: string | null;
+		}[];
+	},
+): Promise<number> {
+	if (args.edges.length === 0) {
+		return 0;
+	}
+	const tenant = tenantColumns(ctx);
+	return db.$transaction(async (tx) => {
+		const existing = await tx.atlasEdgeOverride.findMany({
+			where: {
+				projectId: args.projectId,
+				branch: args.branch,
+				sourceRepositoryIntegrationId: args.repositoryIntegrationId,
+				targetRepositoryIntegrationId: args.repositoryIntegrationId,
+				...tenantWhere(ctx),
+			},
+			select: { mode: true, sourceKey: true, targetKey: true },
+		});
+		const pairs = new Set<string>();
+		const key = (mode: GraphMode, source: string, target: string) =>
+			JSON.stringify([mode, source, target]);
+		const add = (e: {
+			mode: GraphMode;
+			sourceKey: string;
+			targetKey: string;
+		}) => {
+			pairs.add(key(e.mode, e.sourceKey, e.targetKey));
+			pairs.add(key(e.mode, e.targetKey, e.sourceKey));
+		};
+		for (const edge of existing) {
+			add(edge);
+		}
+		const fresh = args.edges.filter((edge) => {
+			if (pairs.has(key(edge.mode, edge.sourceKey, edge.targetKey))) {
+				return false;
+			}
+			add(edge);
+			return true;
+		});
+		if (fresh.length === 0) {
+			return 0;
+		}
+		// Concurrent remaps must acquire unique-index locks in the same order.
+		fresh.sort((a, b) => {
+			const left = key(a.mode, a.sourceKey, a.targetKey);
+			const right = key(b.mode, b.sourceKey, b.targetKey);
+			return left < right ? -1 : left > right ? 1 : 0;
+		});
+		const inserted = await tx.atlasEdgeOverride.createManyAndReturn({
+			data: fresh.map((edge) => ({
+				projectId: args.projectId,
+				branch: args.branch,
+				mode: edge.mode,
+				sourceRepositoryIntegrationId: args.repositoryIntegrationId,
+				targetRepositoryIntegrationId: args.repositoryIntegrationId,
+				sourceKey: edge.sourceKey,
+				targetKey: edge.targetKey,
+				kind: edge.kind,
+				userDescription: edge.description,
+				isManual: true,
+				isCrossRepo: false,
+				isAiGenerated: true,
+				updatedByUserId: ctx.userId,
+				...tenant,
+			})),
+			skipDuplicates: true,
+			select: { id: true, userDescription: true },
+		});
+		if (inserted.length > 0) {
+			await tx.atlasEdgeOverrideHistory.createMany({
+				data: inserted.map((row) => ({
+					overrideId: row.id,
+					action: "created",
+					oldValue: null,
+					newValue: row.userDescription,
+					editedByUserId: ctx.userId,
+					...tenant,
+				})),
+			});
+		}
+		return inserted.length;
+	});
+}
+
 /** Soft-delete an edge override (set deletedAt + `deleted` history). A user
  * deletion also DEMOTES an AI-generated reference to a user-owned edit
  * (`isAiGenerated=false`) so a later "keep my edits" re-map respects the deletion
@@ -2605,39 +2836,6 @@ export async function deleteSoloEdgeOverrides(
 		},
 	});
 	return result.count;
-}
-
-/**
- * Endpoint pairs (per lens) that already carry a user override for this repo's
- * solo graph — the set a "keep my edits" re-map must NOT regenerate over (a
- * user-edited description, a manual edge, or a user deletion all win). Keyed
- * `${mode}\u0000${sourceKey}\u0000${targetKey}`, undirected (both orders added).
- */
-export async function getSoloOverrideEndpointPairs(
-	ctx: AtlasContext,
-	args: {
-		projectId: string;
-		repositoryIntegrationId: string | null;
-		branch: string;
-	},
-): Promise<Set<string>> {
-	const rows = await db.atlasEdgeOverride.findMany({
-		where: {
-			projectId: args.projectId,
-			branch: args.branch,
-			isCrossRepo: false,
-			sourceRepositoryIntegrationId: args.repositoryIntegrationId,
-			targetRepositoryIntegrationId: args.repositoryIntegrationId,
-			...tenantWhere(ctx),
-		},
-		select: { mode: true, sourceKey: true, targetKey: true },
-	});
-	const set = new Set<string>();
-	for (const r of rows) {
-		set.add(`${r.mode}\u0000${r.sourceKey}\u0000${r.targetKey}`);
-		set.add(`${r.mode}\u0000${r.targetKey}\u0000${r.sourceKey}`);
-	}
-	return set;
 }
 
 // ── Cross-link recompute (re-map) history ────────────────────────────────────

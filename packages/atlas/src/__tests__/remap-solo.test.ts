@@ -19,8 +19,7 @@ const q = vi.hoisted(() => ({
 	createAnalysisRun: vi.fn(),
 	deleteSoloEdgeOverrides: vi.fn(),
 	getGraph: vi.fn(),
-	getSoloOverrideEndpointPairs: vi.fn(),
-	upsertEdgeOverride: vi.fn(),
+	createAiSoloEdgeOverrides: vi.fn(),
 	getModelCostRates: vi.fn(),
 	completeLatestRun: vi.fn(),
 }));
@@ -45,8 +44,6 @@ vi.mock("../intra-repo", () => ({
 }));
 
 import { AtlasService } from "../service";
-
-const SEP = "\u0000";
 
 function svc() {
 	return new AtlasService({
@@ -120,11 +117,7 @@ beforeEach(() => {
 				}
 			: { nodes: [], edges: [] },
 	);
-	// A user override exists on the m3<->m4 pair (both orders).
-	q.getSoloOverrideEndpointPairs.mockResolvedValue(
-		new Set([`TECHNICAL${SEP}m3${SEP}m4`, `TECHNICAL${SEP}m4${SEP}m3`]),
-	);
-	q.upsertEdgeOverride.mockResolvedValue({ id: "ov" });
+	q.createAiSoloEdgeOverrides.mockResolvedValue(1);
 	q.getModelCostRates.mockResolvedValue(null);
 	q.completeLatestRun.mockResolvedValue({ durationMs: 10 });
 	// AI proposes: m1->m2 (dup structural → skip), m3->m4 (dup user → skip),
@@ -190,23 +183,35 @@ describe("remapSolo", () => {
 		);
 	});
 
-	it("skips structural + user-override duplicates, inserts only new AI refs", async () => {
+	it("skips structural duplicates and reports the bulk writer's inserted count", async () => {
 		const result = await svc().remapSolo({
 			projectId: "p1",
 			repositoryIntegrationId: "i1",
 		});
-		// Only the m1->m3 reference is inserted.
-		expect(q.upsertEdgeOverride).toHaveBeenCalledTimes(1);
-		expect(q.upsertEdgeOverride).toHaveBeenCalledWith(
+		expect(q.createAiSoloEdgeOverrides).toHaveBeenCalledTimes(1);
+		expect(q.createAiSoloEdgeOverrides).toHaveBeenCalledWith(
 			expect.anything(),
-			expect.objectContaining({
-				mode: "TECHNICAL",
-				isManual: true,
-				isAiGenerated: true,
-				isCrossRepo: false,
-				source: expect.objectContaining({ key: "m1" }),
-				target: expect.objectContaining({ key: "m3" }),
-			}),
+			{
+				projectId: "p1",
+				repositoryIntegrationId: "i1",
+				branch: "main",
+				edges: [
+					{
+						mode: "TECHNICAL",
+						kind: "RELATES_TO",
+						sourceKey: "m3",
+						targetKey: "m4",
+						description: "dup user",
+					},
+					{
+						mode: "TECHNICAL",
+						kind: "CALLS",
+						sourceKey: "m1",
+						targetKey: "m3",
+						description: "new ref",
+					},
+				],
+			},
 		);
 		expect(result.referencesGenerated).toBe(1);
 	});

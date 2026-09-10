@@ -31,6 +31,27 @@ const callOrder: string[] = [];
 vi.mock("../queries", () => ({
 	listProjectRepositories: (...args: unknown[]) =>
 		mockListProjectRepositories(...args),
+	findAnalysesForRepositories: async (
+		ctx: unknown,
+		projectId: string,
+		repos: { repositoryIntegrationId: string; defaultBranch: string }[],
+	) =>
+		new Map(
+			await Promise.all(
+				repos.map(
+					async (repo) =>
+						[
+							repo.repositoryIntegrationId,
+							await mockFindAnalysis(
+								ctx,
+								projectId,
+								repo.repositoryIntegrationId,
+								repo.defaultBranch,
+							),
+						] as const,
+				),
+			),
+		),
 	findAnalysis: (...args: unknown[]) => mockFindAnalysis(...args),
 	findLatestAnalysisForProject: vi.fn(),
 	getConversation: (...args: unknown[]) => mockGetConversation(...args),
