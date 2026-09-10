@@ -142,6 +142,9 @@ cuga.egg-info/
 # npm lock file (project uses pnpm)
 package-lock.json
 .codex/**
+# Keep repository safety policy versioned while ignoring local Codex state.
+!.codex/rules/
+!.codex/rules/*.rules
 docs/local-meeting-notes/**
 # Personal agent instructions — untracked on purpose. This repo is public, and
 # these files routinely name real organizations, deployments and internal IDs.

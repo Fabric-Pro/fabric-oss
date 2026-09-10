@@ -37,7 +37,7 @@
  *     NOT appear in CHANGELOG.md. Diagnosis prose, staging trace IDs, file
  *     lists, test counts, before/after snippets all belong here.
  *
- * See CLAUDE.md / AGENTS.md § Changesets for the full convention.
+ * See packages/fabric-app/README.md for the full convention.
  */
 
 // A line that begins a new Markdown block: unordered/ordered list item,

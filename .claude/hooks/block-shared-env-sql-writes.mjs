@@ -145,7 +145,7 @@ function main() {
 		writeBlockMessage({
 			command,
 			reason: "non-SELECT SQL against a shared environment (neon.tech / staging / prod) is blocked",
-			sourceRef: "CLAUDE.md (database safety)",
+			sourceRef: "AGENTS.md (database and migration safety)",
 			proceedHint:
 				"run against your local Docker postgres, or open a psql session yourself in a terminal " +
 				'(temporarily set "disableAllHooks": true in .claude/settings.local.json if you really need this in Claude Code)',

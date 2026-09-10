@@ -1,3 +1,5 @@
+import { writeFileSync } from "node:fs";
+
 const DEFAULT_PROCEED_HINT =
 	'run outside Claude Code, or temporarily set "disableAllHooks": true in .claude/settings.local.json';
 
@@ -7,7 +9,7 @@ const MAX_COMMAND_LENGTH = 120;
  * @typedef {Object} BlockMessageOptions
  * @property {string} command         The literal user-supplied command (truncated to ~120 chars).
  * @property {string} reason          One-line reason. Will be paired with the source ref.
- * @property {string} sourceRef       e.g. `CLAUDE.md:175-176` or `CONTRIBUTING.md:69`.
+ * @property {string} sourceRef       e.g. `AGENTS.md (workspace safety)` or `CONTRIBUTING.md:69`.
  * @property {string} [proceedHint]   Overrides the default escape-paths line.
  */
 
@@ -35,5 +37,5 @@ export function writeBlockMessage(options) {
 		`Reason: ${reason} (${sourceRef})`,
 		`To proceed: ${proceedHint ?? DEFAULT_PROCEED_HINT}`,
 	];
-	process.stderr.write(`${lines.join("\n")}\n`);
+	writeFileSync(2, `${lines.join("\n")}\n`);
 }

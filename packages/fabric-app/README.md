@@ -28,8 +28,45 @@ From the repo root, with your PR branch checked out:
 pnpm changeset
 ```
 
-The interactive prompt will let you select `fabric-app` (or any other affected package), choose a semver bump level, and write a short description. Commit the generated `.changeset/<random-name>.md` file with your PR.
+The interactive prompt lets you select `fabric-app` (or an affected published
+package), choose a semver bump level, and write a short description. Commit the
+generated `.changeset/<random-name>.md` file with your PR.
 
-For tooling-only / docs-only PRs, label the PR with `skip-changeset` to bypass the CI check.
+Do not declare internal `@repo/*` workspace packages. Changesets cascades their
+version changes through workspace dependents, creating a noisy release PR
+without affecting deployment. Production-shipping changes normally declare:
+
+```markdown
+---
+"fabric-app": patch
+---
+
+Describe the user-visible result in one complete sentence.
+```
+
+Add a public `@fabricorg/*` package only when that package itself is being
+released. Use `minor` or `major` when the compatibility impact requires it.
+
+The first body paragraph becomes public CHANGELOG text. Keep it specific and
+free of ticket numbers, private context, internal hostnames, and real customer
+identifiers. Put any safe engineering rationale after a blank line.
+
+## Prove the release decision
+
+Before the first push and after every later revision, run:
+
+```bash
+pnpm exec changeset status --since=origin/master --output=/tmp/changeset-status.json
+jq '.releases | length' /tmp/changeset-status.json
+```
+
+An exit code of zero is insufficient: Changesets also exits zero when the JSON
+contains `"releases": []`. An impacting PR must have at least one release.
+
+Docs-only, CI-only, Markdown-only, and pure changeset edits are normally
+non-impacting. Do not create meaningless release notes for them; apply the
+`skip-changeset` label and state the no-impact reason in the PR. A different
+change may skip only when it genuinely has no deployable or user-visible
+effect. Omitting both a changeset and the label is never an explicit decision.
 
 See `docs/deployment.md` § Release Strategy for the full release flow.

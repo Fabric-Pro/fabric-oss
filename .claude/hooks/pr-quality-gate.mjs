@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { execFileSync } from "node:child_process";
+import { writeFileSync } from "node:fs";
 import { leadingCdTarget } from "./lib/git-helpers.mjs";
 import { readToolInput } from "./lib/parse-input.mjs";
 import { writeAskDecision } from "./lib/permission-decision.mjs";
@@ -181,7 +182,7 @@ function main() {
 	try {
 		toolCall = readToolInput();
 	} catch (err) {
-		process.stderr.write(`pr-quality-gate: ${err.message}\n`);
+		writeFileSync(2, `pr-quality-gate: ${err.message}\n`);
 		process.exit(0);
 	}
 
@@ -205,7 +206,8 @@ function main() {
 	// Without a repo root we can't run the checks reliably; fail open
 	// rather than blocking on an environment quirk.
 	if (!repoRoot) {
-		process.stderr.write(
+		writeFileSync(
+			2,
 			"pr-quality-gate: CLAUDE_PROJECT_DIR not set and no runnable cwd; skipping checks (fail open)\n",
 		);
 		process.exit(0);

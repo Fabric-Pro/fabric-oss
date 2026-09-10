@@ -18,6 +18,7 @@
 		"create-plugin": "pnpm --filter @repo/scripts create:plugin",
 		"selector:replay": "dotenv -c -- tsx scripts/orchestrator-selector-replay.ts",
 		"security:check": "pnpm --filter @repo/scripts security:check-org-context",
+		"guidance:check": "node --test tooling/agent-guidance/check.test.mjs && node tooling/agent-guidance/check.mjs",
 		"validate:agents": "tsx scripts/validate-agents.ts",
 		"postinstall": "node -e \"const s='scripts/postinstall-dev-build.mjs';require('fs').existsSync(s)&&require('child_process').execFileSync(process.execPath,[s],{stdio:'inherit'})\"",
 		"changeset": "changeset",

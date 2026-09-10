@@ -1,3 +1,5 @@
+import { writeFileSync } from "node:fs";
+
 /**
  * Emits a PreToolUse permission decision as JSON on stdout. The caller
  * must `process.exit(0)` afterward — exit 0 with this JSON is what Claude
@@ -11,7 +13,8 @@
  * @param {string} reason
  */
 export function writeAskDecision(reason) {
-	process.stdout.write(
+	writeFileSync(
+		1,
 		`${JSON.stringify({
 			hookSpecificOutput: {
 				hookEventName: "PreToolUse",

@@ -278,31 +278,31 @@ function evaluate(command, cwd) {
 		if (isDestructiveGitClean(argv)) {
 			return {
 				reason: "git clean wipes untracked files including the agents/ tree — use `pnpm clean` or remove specific dirs",
-				sourceRef: "CLAUDE.md:45",
+				sourceRef: "AGENTS.md (workspace safety)",
 			};
 		}
 		if (isForcePushToProtected(argv)) {
 			return {
 				reason: "force-push against main/master is forbidden",
-				sourceRef: "CLAUDE.md (protected branches)",
+				sourceRef: "AGENTS.md (workspace safety)",
 			};
 		}
 		if (isGitResetHard(argv) && isDirty(cwd)) {
 			return {
 				reason: "`git reset --hard` would discard uncommitted work in the current tree",
-				sourceRef: "CLAUDE.md (destructive git operations)",
+				sourceRef: "AGENTS.md (workspace safety)",
 			};
 		}
 		if (isWholeTreeRevert(argv) && isDirty(cwd)) {
 			return {
 				reason: "`git checkout .` / `git restore .` would discard uncommitted work",
-				sourceRef: "CLAUDE.md (destructive git operations)",
+				sourceRef: "AGENTS.md (workspace safety)",
 			};
 		}
 		if (isDeleteProtectedBranch(argv)) {
 			return {
 				reason: "deleting the local copy of main/master is forbidden",
-				sourceRef: "CLAUDE.md (protected branches)",
+				sourceRef: "AGENTS.md (workspace safety)",
 			};
 		}
 	}
@@ -310,21 +310,21 @@ function evaluate(command, cwd) {
 	if (isCatastrophicRm(tokens)) {
 		return {
 			reason: "`rm -rf` of $HOME, /, /*, ~, or the working tree is catastrophic",
-			sourceRef: "CLAUDE.md (destructive bash)",
+			sourceRef: "AGENTS.md (workspace safety)",
 		};
 	}
 
 	if (isWorldWritableChmod(tokens)) {
 		return {
 			reason: "`chmod -R 777` makes paths world-writable — almost never the intent",
-			sourceRef: "CLAUDE.md (destructive bash)",
+			sourceRef: "AGENTS.md (workspace safety)",
 		};
 	}
 
 	if (isPipeToShell(command)) {
 		return {
 			reason: "piping curl/wget output into a shell executes opaque remote code",
-			sourceRef: "CLAUDE.md (destructive bash)",
+			sourceRef: "AGENTS.md (workspace safety)",
 		};
 	}
 
