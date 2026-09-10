@@ -119,6 +119,53 @@ done
 readonly MAIN_TEMPLATE_JSON="$VALIDATION_TEMP_DIR/main-template.json"
 bicep build "$MAIN_BICEP_TEMPLATE" --stdout --no-restore > "$MAIN_TEMPLATE_JSON"
 
+echo '== Container App non-HTTP scale rules =='
+for module in \
+  "$BICEP_DIR/modules/container-app.bicep" \
+  "$BICEP_DIR/modules/container-app-sidecar.bicep"; do
+  module_json="$VALIDATION_TEMP_DIR/$(basename "$module").json"
+  bicep build "$module" --stdout --no-restore > "$module_json"
+
+  case "$module" in
+    *-sidecar.bicep) scale_condition="variables('isHttpService')" ;;
+    *) scale_condition="parameters('enableIngress')" ;;
+  esac
+
+  if ! jq -e --arg scale_condition "$scale_condition" '
+    (.variables.nonHttpScaleRules == [
+      {
+        name: "cpu-scaling",
+        custom: {
+          type: "cpu",
+          metadata: {
+            type: "Utilization",
+            value: "70"
+          }
+        }
+      }
+    ])
+    and (
+      ([
+        .resources[]
+        | select(.type | startswith("Microsoft.App/containerApps"))
+        | .properties.template.scale.rules
+      ]) as $scale_rule_expressions
+      | ($scale_rule_expressions | length) == 1
+        and all(
+        $scale_rule_expressions[];
+          type == "string"
+          and startswith("[if(\($scale_condition), ")
+          and contains("\u0027http-scaling\u0027")
+          and contains("\u0027concurrentRequests\u0027, \u002750\u0027")
+          and endswith("variables(\u0027nonHttpScaleRules\u0027))]")
+        )
+    )
+  ' "$module_json" >/dev/null; then
+    echo "Container App module lacks the required non-HTTP CPU scale rule: $module" >&2
+    exit 1
+  fi
+done
+
 echo '== Bicep parameter files =='
 mapfile -t bicep_parameter_files < <(find "$BICEP_DIR" -type f -name '*.bicepparam' -print | LC_ALL=C sort)
 for parameter_file in "${bicep_parameter_files[@]}"; do

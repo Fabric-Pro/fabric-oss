@@ -77,6 +77,22 @@ var transformedEnv = [for e in env: e.?secretRef != null ? {
   value: e.value
 }]
 
+// KEDA rejects a ScaledObject with an empty trigger list. Non-HTTP workers
+// still need an explicit trigger for maxReplicas to be meaningful, so use the
+// same CPU threshold as the standalone OTel collector module.
+var nonHttpScaleRules = [
+  {
+    name: 'cpu-scaling'
+    custom: {
+      type: 'cpu'
+      metadata: {
+        type: 'Utilization'
+        value: '70'
+      }
+    }
+  }
+]
+
 resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
   name: name
   location: location
@@ -165,7 +181,7 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
               }
             }
           }
-        ] : []
+        ] : nonHttpScaleRules
       }
     }
   }
@@ -179,4 +195,3 @@ output id string = containerApp.id
 output name string = containerApp.name
 output fqdn string = enableIngress ? containerApp.properties.configuration.ingress.fqdn : ''
 output url string = enableIngress ? 'https://${containerApp.properties.configuration.ingress.fqdn}' : ''
-

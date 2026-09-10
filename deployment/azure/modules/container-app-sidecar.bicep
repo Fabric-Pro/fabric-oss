@@ -84,6 +84,22 @@ var nameParts = split(name, '-')
 var extractedName = length(nameParts) > 2 ? join(skip(nameParts, 2), '-') : last(nameParts)
 var actualContainerName = containerName != '' ? containerName : extractedName
 
+// KEDA rejects a ScaledObject with an empty trigger list. Non-HTTP workers
+// still need an explicit trigger for maxReplicas to be meaningful, so use the
+// same CPU threshold as the standalone OTel collector module.
+var nonHttpScaleRules = [
+  {
+    name: 'cpu-scaling'
+    custom: {
+      type: 'cpu'
+      metadata: {
+        type: 'Utilization'
+        value: '70'
+      }
+    }
+  }
+]
+
 // Load otel collector config (Azure-specific)
 // The standard config's azuremonitor exporter resolves the App Insights
 // connection string at startup and the collector refuses to run without it —
@@ -303,7 +319,7 @@ resource containerApp 'Microsoft.App/containerApps@2024-10-02-preview' = {
               }
             }
           }
-        ] : []
+        ] : nonHttpScaleRules
       }
       volumes: [
         {
