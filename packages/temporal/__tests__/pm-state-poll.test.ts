@@ -709,6 +709,13 @@ describe("fetchAdoWorkItemStates", () => {
 			sourceKind: "mcp",
 			containerId: "container-1",
 			containerName: "MyProject",
+			projectManagementAdditionalContext: {
+				account_slug: "/6117483",
+				project: "Saved project name",
+				nested: { ignored: true },
+				list: ["ignored"],
+				number: 42,
+			},
 			lastAdoStatePollAt: null,
 			userId: "user-1",
 			organizationId: "org-1",
@@ -718,7 +725,13 @@ describe("fetchAdoWorkItemStates", () => {
 			expect.objectContaining({
 				externalIds: ["101", "102", "103"],
 				containerId: "container-1",
-				additionalContext: { project: "MyProject" },
+				// Saved string values survive; an explicit saved project takes
+				// precedence over the display-name hint, and non-strings never cross
+				// the Temporal/MCP boundary.
+				additionalContext: {
+					account_slug: "/6117483",
+					project: "Saved project name",
+				},
 				// Poll wiring (DEC-2/DEC-7): concurrency raised 5->8 and the fetch
 				// is bounded by a per-call timeout + a whole-fetch budget.
 				concurrency: 8,

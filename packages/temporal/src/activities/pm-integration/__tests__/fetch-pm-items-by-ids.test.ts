@@ -1,3 +1,4 @@
+import { logger } from "@repo/logs";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@temporalio/activity", async () => {
@@ -45,7 +46,7 @@ const FIZZY_CAPS = {
 	taskGet: {
 		toolName: "fizzy_get_card",
 		idParam: "card_number",
-		additionalRequiredParams: [],
+		additionalRequiredParams: ["account_slug"],
 		allParams: [],
 	},
 };
@@ -107,12 +108,117 @@ describe("fetchPMItemsByIds bounded fetch", () => {
 			callTimeoutMs: 20_000,
 		});
 		expect(exec.executeMcpTool).toHaveBeenCalledWith(
-			expect.objectContaining({ timeoutMs: 20_000 }),
+			expect.objectContaining({
+				args: expect.objectContaining({ account_slug: "acme" }),
+				failureLogging: "caller",
+				timeoutMs: 20_000,
+			}),
 		);
 		expect(res.items.map((i) => i.id)).toEqual(["1", "3"]);
 		expect(res.failedIds).toContain("2");
 		expect(res.notFoundIds ?? []).not.toContain("2");
 		expect(res.failedIdErrors?.["2"]).toMatch(/timed out/i);
+	});
+
+	it("logs definite not-found at info and keeps other failures at error", async () => {
+		healthyDiscovery();
+		exec.executeMcpTool.mockImplementation(
+			async (input: { args: Record<string, unknown> }) => {
+				const id = String(input.args.card_number);
+				return {
+					success: false,
+					output: {
+						error:
+							id === "404"
+								? "HTTP 404 Not Found"
+								: "401 Unauthorized",
+					},
+					durationMs: 1,
+					cached: false,
+				};
+			},
+		);
+		const { fetchPMItemsByIds } = await import("../story-sync");
+		const res = await fetchPMItemsByIds({
+			...baseInput,
+			externalIds: ["404", "401"],
+		});
+
+		expect(res.failedIds).toEqual(["404", "401"]);
+		expect(res.notFoundIds).toEqual(["404"]);
+		expect(vi.mocked(logger.info)).toHaveBeenCalledWith(
+			"[Fetch PM Items By IDs] Tool failed for item",
+			expect.objectContaining({
+				externalId: "404",
+				deletedUpstream: true,
+			}),
+		);
+		expect(vi.mocked(logger.error)).toHaveBeenCalledWith(
+			"[Fetch PM Items By IDs] Tool failed for item",
+			expect.objectContaining({
+				externalId: "401",
+				deletedUpstream: false,
+			}),
+		);
+	});
+
+	it("logs a structurally absent success at info", async () => {
+		healthyDiscovery();
+		exec.executeMcpTool.mockResolvedValue({
+			success: true,
+			output: { found: false },
+			durationMs: 1,
+			cached: false,
+		});
+		const { fetchPMItemsByIds } = await import("../story-sync");
+
+		const res = await fetchPMItemsByIds({
+			...baseInput,
+			externalIds: ["404"],
+		});
+
+		expect(res.failedIds).toEqual(["404"]);
+		expect(res.notFoundIds).toEqual(["404"]);
+		expect(vi.mocked(logger.info)).toHaveBeenCalledWith(
+			"[Fetch PM Items By IDs] Tool failed for item",
+			expect.objectContaining({
+				externalId: "404",
+				errorPreview: "structurally absent",
+				deletedUpstream: true,
+			}),
+		);
+		expect(vi.mocked(logger.error)).not.toHaveBeenCalled();
+	});
+
+	it("logs an ambiguous permission success at error", async () => {
+		healthyDiscovery();
+		exec.executeMcpTool.mockResolvedValue({
+			success: true,
+			output: { found: false, error: "403 Forbidden" },
+			durationMs: 1,
+			cached: false,
+		});
+		const { fetchPMItemsByIds } = await import("../story-sync");
+
+		const res = await fetchPMItemsByIds({
+			...baseInput,
+			externalIds: ["403"],
+		});
+
+		expect(res.failedIds).toEqual(["403"]);
+		expect(res.notFoundIds).toEqual([]);
+		expect(vi.mocked(logger.error)).toHaveBeenCalledWith(
+			"[Fetch PM Items By IDs] Tool failed for item",
+			expect.objectContaining({
+				externalId: "403",
+				errorPreview: "ambiguous empty success",
+				deletedUpstream: false,
+			}),
+		);
+		expect(vi.mocked(logger.info)).not.toHaveBeenCalledWith(
+			"[Fetch PM Items By IDs] Tool failed for item",
+			expect.anything(),
+		);
 	});
 
 	it("budget=0 skips every card as a transient failedId, calling no per-card tool", async () => {

@@ -101,4 +101,81 @@ describe("executeMcpTool timeoutMs", () => {
 		});
 		expect(res.success).toBe(true);
 	});
+
+	it("lets caller-owned mode classify a thrown MCP failure without a generic warning", async () => {
+		const warn = vi
+			.spyOn(console, "warn")
+			.mockImplementation(() => undefined);
+		h.execute.mockRejectedValueOnce(new Error("network unavailable"));
+		const { executeMcpTool } = await import("../execute-mcp-tool");
+
+		const res = await executeMcpTool({
+			toolName: "fizzy_get_card",
+			args: { card_number: 1 },
+			userId: "u1",
+			mcpConfigId: "cfg1",
+			failureLogging: "caller",
+		});
+
+		expect(res).toMatchObject({
+			success: false,
+			output: { error: "network unavailable" },
+		});
+		expect(warn).not.toHaveBeenCalled();
+		warn.mockRestore();
+	});
+
+	it("lets caller-owned mode classify an MCP isError result without a generic error", async () => {
+		const error = vi
+			.spyOn(console, "error")
+			.mockImplementation(() => undefined);
+		h.execute.mockResolvedValueOnce({
+			content: [{ type: "text", text: "HTTP 404 Not Found" }],
+			isError: true,
+		});
+		const { executeMcpTool } = await import("../execute-mcp-tool");
+
+		const res = await executeMcpTool({
+			toolName: "fizzy_get_card",
+			args: { card_number: 404 },
+			userId: "u1",
+			mcpConfigId: "cfg1",
+			failureLogging: "caller",
+		});
+
+		expect(res.success).toBe(false);
+		expect(res.output).toEqual({
+			content: [{ type: "text", text: "HTTP 404 Not Found" }],
+			isError: true,
+		});
+		expect(error).not.toHaveBeenCalled();
+		error.mockRestore();
+	});
+
+	it("keeps generic executor logging for default callers", async () => {
+		const error = vi
+			.spyOn(console, "error")
+			.mockImplementation(() => undefined);
+		h.execute.mockResolvedValueOnce({
+			content: [{ type: "text", text: "HTTP 404 Not Found" }],
+			isError: true,
+		});
+		const { executeMcpTool } = await import("../execute-mcp-tool");
+
+		const res = await executeMcpTool({
+			toolName: "fizzy_get_card",
+			args: { card_number: 404 },
+			userId: "u1",
+			mcpConfigId: "cfg1",
+		});
+
+		expect(res.success).toBe(false);
+		expect(error).toHaveBeenCalledWith(
+			expect.stringContaining(
+				'MCP tool "fizzy_get_card" returned isError:',
+			),
+			"HTTP 404 Not Found",
+		);
+		error.mockRestore();
+	});
 });

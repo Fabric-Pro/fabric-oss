@@ -214,6 +214,11 @@ export interface ExecuteMcpToolInput {
 	 * (or leak the heartbeat interval). Default `undefined` = no timeout.
 	 */
 	timeoutMs?: number;
+	/**
+	 * Failure-log owner. Defaults to the executor; callers that classify a
+	 * failure themselves can opt in to avoid duplicate generic MCP logs.
+	 */
+	failureLogging?: "executor" | "caller";
 }
 
 export interface ExecuteMcpToolOutput {
