@@ -1,0 +1,318 @@
+{
+	"fixtureVersion": 1,
+	"description": "Synthetic, fixed engineering and product-document retrieval judgments. Grades are 2 = directly answers the query, 1 = useful partial context, and 0 = lexical hard negative or irrelevant.",
+	"queries": [
+		{
+			"id": "tenant-filter",
+			"query": "How should a tenant-scoped database query filter organization data?",
+			"candidates": [
+				{
+					"id": "direct",
+					"grade": 2,
+					"text": "Tenant queries select records with organizationId and userId. Do not combine an organization arm and a personal arm with OR."
+				},
+				{
+					"id": "partial",
+					"grade": 1,
+					"text": "resolveOrganizationId verifies a caller belongs to the selected organization before a request continues."
+				},
+				{
+					"id": "hard-negative",
+					"grade": 0,
+					"text": "The tenant onboarding form asks for an organization display name and an optional logo."
+				},
+				{
+					"id": "irrelevant",
+					"grade": 0,
+					"text": "The release job packages the web application after unit tests finish."
+				}
+			]
+		},
+		{
+			"id": "project-guest-write",
+			"query": "Can an invited project guest edit a project document?",
+			"candidates": [
+				{
+					"id": "direct",
+					"grade": 2,
+					"text": "Use canEditProject for project writes. Organization membership alone does not grant an invited guest permission to edit."
+				},
+				{
+					"id": "partial",
+					"grade": 1,
+					"text": "hasProjectAccess determines whether a caller may read a project, including invited project guests."
+				},
+				{
+					"id": "hard-negative",
+					"grade": 0,
+					"text": "Guests can change their profile picture from the account settings page."
+				},
+				{
+					"id": "irrelevant",
+					"grade": 0,
+					"text": "Document chunks are embedded before they are sent to the vector store."
+				}
+			]
+		},
+		{
+			"id": "prisma-migration",
+			"query": "What is required when adding a tenant-aware Prisma table?",
+			"candidates": [
+				{
+					"id": "direct",
+					"grade": 2,
+					"text": "Edit schema.prisma, create and inspect a focused migration, regenerate clients, and add RLS policies for the tenant-aware table."
+				},
+				{
+					"id": "partial",
+					"grade": 1,
+					"text": "Use additive expand-contract migrations when a production deployment must remain compatible."
+				},
+				{
+					"id": "hard-negative",
+					"grade": 0,
+					"text": "The Prisma dashboard lists database tables and migration timestamps for administrators."
+				},
+				{
+					"id": "irrelevant",
+					"grade": 0,
+					"text": "The design system exposes a table component with striped row variants."
+				}
+			]
+		},
+		{
+			"id": "workflow-determinism",
+			"query": "Where should a Temporal workflow perform network I/O and time reads?",
+			"candidates": [
+				{
+					"id": "direct",
+					"grade": 2,
+					"text": "Keep workflows deterministic. Put network I/O, clocks, random values, and environment reads in activities, and make activities idempotent for retries."
+				},
+				{
+					"id": "partial",
+					"grade": 1,
+					"text": "Workflow control-flow changes require replay validation against representative histories."
+				},
+				{
+					"id": "hard-negative",
+					"grade": 0,
+					"text": "The workflow page displays the most recent activity duration and retry count."
+				},
+				{
+					"id": "irrelevant",
+					"grade": 0,
+					"text": "Temporal workers are deployed with a health endpoint for container probes."
+				}
+			]
+		},
+		{
+			"id": "api-key-permission",
+			"query": "Must a wildcard API key still check the creator's current permission?",
+			"candidates": [
+				{
+					"id": "direct",
+					"grade": 2,
+					"text": "Yes. Every API-key request checks both the key scope and the creator's current permission, including a wildcard star scope."
+				},
+				{
+					"id": "partial",
+					"grade": 1,
+					"text": "Return distinguishable errors for an API key scope failure and a live permission failure."
+				},
+				{
+					"id": "hard-negative",
+					"grade": 0,
+					"text": "A wildcard search query matches API keys whose display name contains the supplied words."
+				},
+				{
+					"id": "irrelevant",
+					"grade": 0,
+					"text": "The UI copies an API key only once when it is created."
+				}
+			]
+		},
+		{
+			"id": "accessibility-dialog",
+			"query": "What accessibility behavior is required for a modal confirmation dialog?",
+			"candidates": [
+				{
+					"id": "direct",
+					"grade": 2,
+					"text": "A modal dialog needs an accessible name, initial focus, keyboard focus trapping, and focus returned to the triggering control when it closes."
+				},
+				{
+					"id": "partial",
+					"grade": 1,
+					"text": "Destructive confirmation buttons use clear action labels instead of a vague affirmative label."
+				},
+				{
+					"id": "hard-negative",
+					"grade": 0,
+					"text": "The dialog component accepts a modal prop that changes its drop shadow and width."
+				},
+				{
+					"id": "irrelevant",
+					"grade": 0,
+					"text": "Product settings appear in the navigation sidebar after the project list."
+				}
+			]
+		},
+		{
+			"id": "changeset-decision",
+			"query": "When does a production-shipping Fabric change need a changeset?",
+			"candidates": [
+				{
+					"id": "direct",
+					"grade": 2,
+					"text": "A user-visible or production-shipping behavior change needs a non-empty changeset, normally a fabric-app patch release."
+				},
+				{
+					"id": "partial",
+					"grade": 1,
+					"text": "Docs-only and CI-only changes can be skip-changeset eligible when the reason is recorded on the pull request."
+				},
+				{
+					"id": "hard-negative",
+					"grade": 0,
+					"text": "A changeset is a short summary shown in the pull request file list."
+				},
+				{
+					"id": "irrelevant",
+					"grade": 0,
+					"text": "DCO sign-off is added to commits with the git commit -s option."
+				}
+			]
+		},
+		{
+			"id": "rag-reranking",
+			"query": "Why should RAG retrieval rerank a diversified candidate set?",
+			"candidates": [
+				{
+					"id": "direct",
+					"grade": 2,
+					"text": "Diversification removes near-duplicate contexts before reranking; the reranker then orders the distinct candidates by relevance and returns the configured top K."
+				},
+				{
+					"id": "partial",
+					"grade": 1,
+					"text": "An inline answering path may opt out of reranking when it cannot afford the extra model call."
+				},
+				{
+					"id": "hard-negative",
+					"grade": 0,
+					"text": "Reranking the project dashboard changes the visual order of recent retrieval charts."
+				},
+				{
+					"id": "irrelevant",
+					"grade": 0,
+					"text": "Chunk text is capped before embedding to keep vector generation within model limits."
+				}
+			]
+		},
+		{
+			"id": "audit-secret-redaction",
+			"query": "Can audit metadata include an API token if a redactor runs later?",
+			"candidates": [
+				{
+					"id": "direct",
+					"grade": 2,
+					"text": "No. Audit metadata and resource names must never contain credentials. The sensitive-key redactor is defense in depth, not permission to pass secrets."
+				},
+				{
+					"id": "partial",
+					"grade": 1,
+					"text": "Security-relevant mutations should emit the appropriate audit action, often through recordAuditFromRequest."
+				},
+				{
+					"id": "hard-negative",
+					"grade": 0,
+					"text": "The audit log supports filtering by an API action name and by date range."
+				},
+				{
+					"id": "irrelevant",
+					"grade": 0,
+					"text": "Tokens are counted before an AI prompt is submitted to a model provider."
+				}
+			]
+		},
+		{
+			"id": "mcp-paired-dialogs",
+			"query": "What must be checked when changing the MCP server management dialog?",
+			"candidates": [
+				{
+					"id": "direct",
+					"grade": 2,
+					"text": "Inspect and test both intentionally paired MCP management dialogs: the primary servers view and the settings configuration dialog."
+				},
+				{
+					"id": "partial",
+					"grade": 1,
+					"text": "When a navigation surface changes, update the Get Started registry, tour steps, anchors, and translation copy together."
+				},
+				{
+					"id": "hard-negative",
+					"grade": 0,
+					"text": "The MCP server dialog uses a two-column layout for environment variable names and values."
+				},
+				{
+					"id": "irrelevant",
+					"grade": 0,
+					"text": "MCP clients use a gateway to read tool definitions from configured servers."
+				}
+			]
+		},
+		{
+			"id": "release-relay",
+			"query": "How are Fabric pull requests landed after checks pass?",
+			"candidates": [
+				{
+					"id": "direct",
+					"grade": 2,
+					"text": "Fabric pull requests land through the OSS relay. Authorize the exact head SHA with /relay and apply ready-for-relay; do not use gh pr merge."
+				},
+				{
+					"id": "partial",
+					"grade": 1,
+					"text": "A push makes an earlier relay authorization stale, so the exact current head needs a new relay comment."
+				},
+				{
+					"id": "hard-negative",
+					"grade": 0,
+					"text": "The relay status panel displays pull request labels next to the branch name."
+				},
+				{
+					"id": "irrelevant",
+					"grade": 0,
+					"text": "The changelog is generated from released package versions."
+				}
+			]
+		},
+		{
+			"id": "retrieval-fallback",
+			"query": "What should retrieval do if the reranker service cannot score candidates?",
+			"candidates": [
+				{
+					"id": "direct",
+					"grade": 2,
+					"text": "If reranking fails, return the original diversified retrieval order so a reranker outage does not prevent context delivery."
+				},
+				{
+					"id": "partial",
+					"grade": 1,
+					"text": "Reranking is skipped when there is at most one candidate because it cannot change the result order."
+				},
+				{
+					"id": "hard-negative",
+					"grade": 0,
+					"text": "The reranker failure banner is shown at the top of the retrieval settings page."
+				},
+				{
+					"id": "irrelevant",
+					"grade": 0,
+					"text": "The vector store client retries a transient collection creation request."
+				}
+			]
+		}
+	]
+}
