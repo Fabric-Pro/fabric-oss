@@ -1,7 +1,7 @@
 import { defineConfig } from "tsup";
 
 export default defineConfig({
-	entry: ["src/index.ts"],
+	entry: ["src/index.ts", "src/telemetry.ts"],
 	format: ["esm"],
 	target: "node20",
 	outDir: "dist",
@@ -11,7 +11,6 @@ export default defineConfig({
 	external: [
 		"@repo/database",
 		"@repo/ai",
-		"@repo/observability",
 		"pg",
 		"@prisma/adapter-pg",
 		"@prisma/client",
@@ -30,7 +29,7 @@ export default defineConfig({
 	// with `Dynamic require of "punycode" is not supported`. Same fix used in
 	// packages/cli and packages/mcp-server tsup configs.
 	banner: {
-		js: "import { createRequire } from 'module'; const require = createRequire(import.meta.url);",
+		js: "import { createRequire as __fabricCreateRequire } from 'module'; const require = __fabricCreateRequire(import.meta.url);",
 	},
 	clean: true,
 	sourcemap: true,

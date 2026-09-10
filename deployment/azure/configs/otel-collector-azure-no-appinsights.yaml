@@ -18,6 +18,23 @@ receivers:
       http:
         endpoint: 0.0.0.0:4318
 
+  # Match the production receiver shape so environments without Application
+  # Insights still validate and expose the same bounded collector diagnostics.
+  prometheus/collector:
+    config:
+      scrape_configs:
+        - job_name: otel-collector-self
+          scrape_interval: 60s
+          scrape_timeout: 10s
+          static_configs:
+            - targets: ["127.0.0.1:8888"]
+              labels:
+                collector_target: "${env:OTEL_SERVICE_NAME}"
+          metric_relabel_configs:
+            - source_labels: [__name__]
+              regex: "otelcol_(process_uptime.*|exporter_(enqueue_failed|send_failed|queue_(capacity|size)).*|receiver_refused_.*|processor_refused_.*)"
+              action: keep
+
 processors:
   batch:
     timeout: 5s
@@ -36,6 +53,18 @@ processors:
         action: upsert
       - key: service.namespace
         value: "fabric"
+        action: upsert
+
+  resource/collector:
+    attributes:
+      - key: deployment.environment
+        value: "${env:DEPLOYMENT_ENVIRONMENT}"
+        action: upsert
+      - key: service.namespace
+        value: "fabric"
+        action: upsert
+      - key: service.name
+        value: "${env:OTEL_SERVICE_NAME}"
         action: upsert
 
 exporters:
@@ -61,6 +90,11 @@ service:
     metrics:
       receivers: [otlp]
       processors: [memory_limiter, batch, resource]
+      exporters: [debug]
+
+    metrics/collector:
+      receivers: [prometheus/collector]
+      processors: [memory_limiter, batch, resource/collector]
       exporters: [debug]
 
     logs:

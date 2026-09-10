@@ -20,6 +20,7 @@ import {
 	createDatabricksFetch,
 	isReasoningModelName,
 } from "./databricks-compat";
+import { createLangChainTelemetryCallback } from "./langchain-telemetry";
 
 /**
  * Shared emergency kill switch for Anthropic prompt caching.
@@ -1158,7 +1159,7 @@ function isAzureResponsesApiModel(model: string): boolean {
  * @param options - Model creation options
  * @returns A LangChain BaseChatModel instance
  */
-export function createProviderModel(
+function createUninstrumentedProviderModel(
 	config: RuntimeProviderConfig,
 	options: ModelOptions = {},
 ): BaseChatModel {
@@ -1708,6 +1709,20 @@ export function createProviderModel(
 				maxRetries,
 			});
 	}
+}
+
+export function createProviderModel(
+	config: RuntimeProviderConfig,
+	options: ModelOptions = {},
+): BaseChatModel {
+	const model = createUninstrumentedProviderModel(config, options);
+	model.callbacks = [
+		createLangChainTelemetryCallback({
+			provider: config.provider ?? "unknown",
+			model: config.model,
+		}),
+	];
+	return model;
 }
 
 /**

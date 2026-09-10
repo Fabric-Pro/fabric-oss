@@ -6,9 +6,9 @@
 	"description": "Multi-node LangGraph agents for complex planning (Pattern)",
 	"type": "module",
 	"scripts": {
-		"dev": "tsx watch src/index.ts",
+		"dev": "tsx watch --import ./src/telemetry.ts src/index.ts",
 		"build": "tsup --config tsup.config.ts",
-		"start": "node dist/index.js",
+		"start": "node --import ./dist/telemetry.js dist/index.js",
 		"type-check": "tsc --noEmit",
 		"typecheck": "pnpm run type-check"
 	},
@@ -24,7 +24,8 @@
 		"ai": "^6.0.116",
 		"hono": "^4.13.7",
 		"undici": "^8.5.0",
-		"zod": "^3.22.4"
+		"zod": "^3.22.4",
+		"@repo/observability": "workspace:*"
 	},
 	"devDependencies": {
 		"@types/node": "^20.10.0",

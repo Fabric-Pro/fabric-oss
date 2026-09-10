@@ -14,7 +14,11 @@
 
 import type { Server } from "node:http";
 import * as tls from "node:tls";
-import { createMetricsHttpServer, initAppInsights } from "@repo/observability";
+import {
+	createMetricsHttpServer,
+	initAppInsights,
+	shutdownAppInsights,
+} from "@repo/observability";
 import { describeEncryptionKeyMisconfiguration } from "@repo/utils";
 import {
 	bundleWorkflowCode,
@@ -663,7 +667,9 @@ function setupShutdownHandlers() {
 			);
 			metricsServer = null;
 		}
-		// Shutdown OpenTelemetry to flush any pending telemetry
+		// Flush the optional isolated Application Insights client before its
+		// providers are released, then flush the process-wide OTel pipeline.
+		await shutdownAppInsights();
 		await shutdownTelemetry();
 		process.exit(0);
 	};

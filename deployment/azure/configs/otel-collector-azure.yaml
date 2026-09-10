@@ -14,6 +14,28 @@ receivers:
       http:
         endpoint: 0.0.0.0:4318
 
+  # Scrape this sidecar's own internal telemetry. Keep this receiver local to
+  # 127.0.0.1:8888: the target is the collector process in this replica, not
+  # another app or a discovery surface. metric_relabel_configs is deliberately
+  # receiver-local so it cannot discard application or Temporal native metrics
+  # arriving through OTLP.
+  prometheus/collector:
+    config:
+      scrape_configs:
+        - job_name: otel-collector-self
+          scrape_interval: 60s
+          scrape_timeout: 10s
+          static_configs:
+            - targets: ["127.0.0.1:8888"]
+              labels:
+                collector_target: "${env:OTEL_SERVICE_NAME}"
+          metric_relabel_configs:
+            # Export only actionable health/backpressure series. Process/runtime
+            # internals add ingestion cost without changing an operator action.
+            - source_labels: [__name__]
+              regex: "otelcol_(process_uptime.*|exporter_(enqueue_failed|send_failed|queue_(capacity|size)).*|receiver_refused_.*|processor_refused_.*)"
+              action: keep
+
 processors:
   # Batch processor for better performance
   batch:
@@ -35,6 +57,21 @@ processors:
         action: upsert
       - key: service.namespace
         value: "fabric"
+        action: upsert
+
+  # Prometheus maps its job name to service.name. Keep self metrics in their
+  # own pipeline and replace that receiver-local identity with the app name;
+  # the OTLP pipeline above continues to preserve producer service names.
+  resource/collector:
+    attributes:
+      - key: deployment.environment
+        value: "${env:DEPLOYMENT_ENVIRONMENT}"
+        action: upsert
+      - key: service.namespace
+        value: "fabric"
+        action: upsert
+      - key: service.name
+        value: "${env:OTEL_SERVICE_NAME}"
         action: upsert
 
 exporters:
@@ -70,6 +107,13 @@ service:
     metrics:
       receivers: [otlp]
       processors: [memory_limiter, batch, resource]
+      exporters: [azuremonitor]
+
+    # Collector self metrics have a dedicated identity rewrite and bounded
+    # receiver allowlist; they never pass through the application pipeline.
+    metrics/collector:
+      receivers: [prometheus/collector]
+      processors: [memory_limiter, batch, resource/collector]
       exporters: [azuremonitor]
 
     # Logs pipeline - send to Application Insights
