@@ -161,7 +161,10 @@ const a2aServer = new A2AServer(
 const app = new Hono();
 
 // Enable CORS
-app.use("*", cors());
+app.use(
+	"*",
+	cors({ allowMethods: ["GET", "HEAD", "PUT", "POST", "DELETE", "PATCH"] }),
+);
 
 // A2A Protocol Endpoints
 const handlers = a2aServer.createHandlers();
