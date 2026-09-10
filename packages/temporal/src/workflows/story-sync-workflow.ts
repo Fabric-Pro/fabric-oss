@@ -990,6 +990,7 @@ export async function storySyncWorkflow(
 						organizationId,
 						page: currentPage,
 						pageSize: FETCH_PAGE_SIZE,
+						capabilities,
 					});
 					allPmItems.push(...pageResult.items);
 

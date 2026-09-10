@@ -127,12 +127,15 @@ describe("attachments stay out of outbound PM sync (R15)", () => {
 
 	it("touches attachments only to reclaim storage keys after a delete", () => {
 		// The single storyAttachment read in the sync path exists to clean up
-		// orphaned objects after the FK cascade removes rows. It selects
-		// storageKey and nothing else. A second usage, or a widened select,
-		// means attachment data reached an outbound payload.
+		// orphaned objects after the FK cascade removes rows. It selects only the
+		// storyId needed to group a batched read and the storageKey to reclaim. A
+		// second usage, or any content-bearing field in the select, means attachment
+		// data reached an outbound payload.
 		const usages = storySync.match(/db\.storyAttachment\./g) ?? [];
 		expect(usages).toHaveLength(1);
-		expect(storySync).toContain("select: { storageKey: true }");
+		expect(storySync).toContain(
+			"select: { storyId: true, storageKey: true }",
+		);
 	});
 
 	it("never puts attachment text or filenames in a sync payload", () => {
