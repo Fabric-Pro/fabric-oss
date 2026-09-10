@@ -143,6 +143,11 @@ vi.mock(
 			revisionVersion: number | null;
 			sourceAnalysisVersion: number | null;
 			onSaved?: (version: number) => void;
+			/** The document's own tail — supporting assets, source signals.
+			 *  Rendered here because the real editor renders it; a mock that
+			 *  dropped it would report the sections missing from a page that
+			 *  shows them. */
+			footer?: React.ReactNode;
 		}) => {
 			editorProps.current = props;
 			const [seeded] = useState(props.prose);
@@ -154,6 +159,7 @@ vi.mock(
 				<div>
 					<p data-testid="editor-prose">{seeded}</p>
 					<p data-testid="editor-draft">{draft}</p>
+					{props.footer}
 					<button
 						type="button"
 						onClick={() => setDraft(UNSAVED_KEYSTROKES)}

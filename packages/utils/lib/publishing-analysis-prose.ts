@@ -42,6 +42,10 @@ export const DATA_FIELDS = [
 	"supportingAssets",
 	"sourceSignals",
 	"recommendedQuestions",
+	// What the topic is MISSING. Data, not prose, and for the same reason
+	// `recommendedQuestions` is: it mints decision threads rather than rendering
+	// into the document, and a reader edits the rows rather than the sentence.
+	"blockers",
 ] as const;
 
 export type AnalysisData = Record<string, unknown>;

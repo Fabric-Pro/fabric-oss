@@ -50,6 +50,7 @@ import {
 } from "../publishing-shared";
 import {
 	composePlanningAnalysisPrompt,
+	deriveQuestionId,
 	PUBLISHING_PLANNING_ANALYSIS_AGENT_KEY,
 	PUBLISHING_PLANNING_ANALYSIS_FALLBACK_BODY,
 	PublishingPlanningAnalysisSchema,
@@ -263,10 +264,48 @@ export async function generatePlanningAnalysisActivity(
 	// id would not, and stability is the whole point of the key.
 	const questions = resolveConfirmationQuestions(topic.id, parsed.data);
 
+	/**
+	 * What the topic is MISSING, keyed the same way its questions are.
+	 *
+	 * Identity is `(topic, kind, subject)` and derived code-side for the same
+	 * reason: a model-invented id would not survive a regeneration that
+	 * rephrases "we need a quote from the client", and a second blocker beside
+	 * one somebody already cleared is worse than none.
+	 *
+	 * A blocker carries no recommended answer. There is nothing to recommend —
+	 * the thing does not exist yet, and the only two outcomes are that somebody
+	 * gets it or that somebody decides it is not needed.
+	 */
+	const blockers = (parsed.data.blockers ?? [])
+		.filter((b) => b.need.trim().length > 0)
+		.map((b) => {
+			const kind = b.kind ?? "OTHER";
+			const subject = b.subject?.trim() || null;
+			return {
+				questionId: deriveQuestionId({
+					topicId: topic.id,
+					decisionKind: kind,
+					subject: subject ?? undefined,
+					question: b.need,
+				}),
+				decisionKind: kind,
+				subject,
+				question: b.need.trim(),
+				recommendedResponse: null,
+				whyItMatters: b.whyItMatters?.trim() || null,
+			};
+		});
+
 	// `recommendedQuestions` is deliberately dropped in favour of `questions`:
 	// the raw array carries no ids, and keeping both would leave the page two
 	// sources of truth for the same list.
-	const { recommendedQuestions: _raw, ...sections } = parsed.data;
+	const {
+		recommendedQuestions: _raw,
+		// Dropped from the blob for the same reason: the raw array carries no
+		// ids, and the ROWS are what the page reads.
+		blockers: _rawBlockers,
+		...sections
+	} = parsed.data;
 	const content = {
 		...sections,
 		questions,
@@ -298,6 +337,7 @@ export async function generatePlanningAnalysisActivity(
 			recommendedResponse: q.recommendedResponse,
 			whyItMatters: q.whyItMatters,
 		})),
+		blockers,
 	});
 
 	if (!commit.persisted) {

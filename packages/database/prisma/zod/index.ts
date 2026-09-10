@@ -2514,7 +2514,7 @@ export type PublishingDraftStatus = z.infer<typeof PublishingDraftStatusSchema>;
 
 // File: PublishingDecisionEntryKind.schema.ts
 
-export const PublishingDecisionEntryKindSchema = z.enum(['QUESTION', 'AI_UPDATE'])
+export const PublishingDecisionEntryKindSchema = z.enum(['QUESTION', 'AI_UPDATE', 'BLOCKER'])
 
 export type PublishingDecisionEntryKind = z.infer<typeof PublishingDecisionEntryKindSchema>;
 

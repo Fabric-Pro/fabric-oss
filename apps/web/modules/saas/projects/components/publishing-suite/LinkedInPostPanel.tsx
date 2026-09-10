@@ -12,6 +12,7 @@ import {
 } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
+import { DraftVersions } from "./DraftVersions";
 import { FEED_FOLD_ESTIMATE, splitAtFeedFold } from "./feed-fold";
 import { GeneralizationNotes } from "./GeneralizationNotes";
 import type { TopicDraftState, TopicWorkingDraftState } from "./GenerationTabs";
@@ -219,6 +220,23 @@ export function LinkedInPostPanel({
 	const readyId = draft?.latestReady?.id ?? null;
 
 	/**
+	 * The safety fields of the version the SAVED text came from — the same
+	 * correction `ShortPostPanel` carries, for the same reason: `doc` is the
+	 * newest READY candidate, so a v1-generalized / v2-clean pair drops the
+	 * section while the saved text is still the generalized one.
+	 */
+	const hasUnadoptedVersion =
+		readyId !== null && working?.sourceDraftId !== readyId;
+	const notesDescribeAnotherVersion =
+		hasUnadoptedVersion && working?.hasBody === true;
+	const adoptedDoc = readLinkedInPostDocument(working?.sourceContent ?? null);
+	const safetyDoc =
+		notesDescribeAnotherVersion && adoptedDoc ? adoptedDoc : doc;
+	/** A source row past retention: the newest note is all there is to show. */
+	const noteDescribesAnotherVersion =
+		notesDescribeAnotherVersion && adoptedDoc === null;
+
+	/**
 	 * Whether a saved working draft IS this option.
 	 *
 	 * Both halves, and the draft id is the half that matters. The prompt is
@@ -284,7 +302,7 @@ export function LinkedInPostPanel({
 			{canEdit ? (
 				<section className="space-y-2">
 					<label
-						className="editorial-label block"
+						className="publishing-label block"
 						htmlFor="linkedin-post-guidance"
 					>
 						Guidance (optional)
@@ -356,7 +374,7 @@ export function LinkedInPostPanel({
 			{canEdit && working?.hasBody ? (
 				<section className="space-y-2">
 					<label
-						className="editorial-label block"
+						className="publishing-label block"
 						htmlFor="linkedin-post-refine"
 					>
 						Refine the saved draft
@@ -431,7 +449,7 @@ export function LinkedInPostPanel({
 
 			{working?.hasBody ? (
 				<section className="space-y-2">
-					<h3 className="editorial-label">Working LinkedIn post</h3>
+					<h3 className="publishing-label">Working LinkedIn post</h3>
 					<div className="rounded-xl border border-border bg-muted/40 p-4">
 						<p className="whitespace-pre-wrap text-sm leading-relaxed">
 							{working.body}
@@ -445,12 +463,52 @@ export function LinkedInPostPanel({
 				</section>
 			) : null}
 
+			{/* Read-only here, deliberately. A short-form run produces
+			    SEVERAL options, so restoring a version means picking one of its
+			    options — which is the panel's own "Use this draft" affordance, not
+			    something a version list can do on its own. Viewing is still the
+			    thing that was missing: "version 2" had no version 1 to open. */}
+			<DraftVersions
+				versions={draft?.versions ?? []}
+				adoptedId={working?.sourceDraftId ?? null}
+				renderBody={(id) => {
+					const version = readLinkedInPostDocument(
+						draft?.versions?.find((v) => v.id === id)?.content ??
+							null,
+					);
+					return version && version.options.length > 0 ? (
+						<ul className="space-y-3">
+							{version.options.map((option) => (
+								<li
+									key={option.label}
+									className="rounded-lg border border-border p-3"
+								>
+									<p className="font-medium text-foreground text-xs uppercase tracking-[0.14em]">
+										{option.label}
+									</p>
+									<p className="mt-1 whitespace-pre-wrap text-muted-foreground text-sm leading-relaxed">
+										{option.text}
+									</p>
+								</li>
+							))}
+						</ul>
+					) : (
+						<p className="text-muted-foreground text-sm">
+							That version's content could not be read.
+						</p>
+					);
+				}}
+			/>
+
 			{doc ? (
 				<>
-					{doc.safetyNote ? (
+					{safetyDoc?.safetyNote ? (
 						<GeneralizationNotes
 							heading="How this was generalized"
-							note={doc.safetyNote}
+							note={safetyDoc.safetyNote}
+							describesAnotherVersion={
+								noteDescribesAnotherVersion
+							}
 						/>
 					) : null}
 
@@ -475,7 +533,7 @@ export function LinkedInPostPanel({
 					 */}
 					<section className="space-y-3">
 						<div className="space-y-1">
-							<h3 className="editorial-label">
+							<h3 className="publishing-label">
 								Candidate drafts{" "}
 								{draft?.latestReady
 									? `(version ${draft.latestReady.version})`
@@ -490,7 +548,27 @@ export function LinkedInPostPanel({
 								judge each draft on what stays bright.
 							</p>
 						</div>
-						<ul className="space-y-4">
+						{/* THREE COLUMNS, not a stack.
+						 *
+						 * Asked for twice — as "OPTIONS (VERSION 1) reads as
+						 * questions, a rename wont fix it, we need to change this
+						 * design", and again from the other direction as "three
+						 * different versions, almost like another set of
+						 * questions ... do you want this more like this, more like
+						 * that". The first round restyled the cards and left the
+						 * structure: a vertical list of bordered cards, each with a
+						 * button under it, which is to the character how this
+						 * product renders a question with suggested answers.
+						 *
+						 * Side by side, the same variants stop being three
+						 * documents to read in order and become one choice to make.
+						 * That is the whole difference, and it is structural rather
+						 * than cosmetic — which is why the restyle did not reach it.
+						 *
+						 * Stacked below `lg`. Three columns of a tweet at phone
+						 * width is three columns of one word.
+						 */}
+						<ul className="grid gap-4 lg:grid-cols-3">
 							{doc.options.map((option, index) => {
 								const isSaved = isSavedOption(option);
 								const { visible, folded } = splitAtFeedFold(
@@ -617,7 +695,7 @@ export function LinkedInPostPanel({
 
 					{doc.inputsNeeded.length > 0 ? (
 						<section className="space-y-2">
-							<h3 className="editorial-label">Inputs needed</h3>
+							<h3 className="publishing-label">Inputs needed</h3>
 							<ul className="list-disc space-y-1.5 pl-5 text-muted-foreground text-sm leading-relaxed">
 								{doc.inputsNeeded.map((item) => (
 									<li key={item}>{item}</li>
@@ -628,7 +706,7 @@ export function LinkedInPostPanel({
 
 					{doc.hashtags.length > 0 ? (
 						<section className="space-y-2">
-							<h3 className="editorial-label">
+							<h3 className="publishing-label">
 								Suggested hashtags
 							</h3>
 							<p className="text-muted-foreground text-sm">

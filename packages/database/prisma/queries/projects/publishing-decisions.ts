@@ -67,8 +67,21 @@ export async function reconcileTopicQuestions(
 		userId: string | null;
 		analysisVersion: number;
 		questions: ReconcilableQuestion[];
+		/**
+		 * Which entry kind these rows are.
+		 *
+		 * `QUESTION` by default, so every existing caller is unchanged.
+		 * `BLOCKER` reuses this whole function — the identity match, the
+		 * refresh, the soft-close of anything the new analysis stopped raising,
+		 * and the rule that a row a PERSON settled is never reopened. All of
+		 * that is the same for a thing the topic is missing as for a decision
+		 * nobody has made, and a second copy would be two spellings of the
+		 * soft-close rule that drift the first time either is edited.
+		 */
+		kind?: "QUESTION" | "BLOCKER";
 	},
 ): Promise<ReconcileOutcome> {
+	const entryKind = input.kind ?? "QUESTION";
 	// Live roots only. Scoped by projectId as well as topicId (DV16) — a topic id
 	// is not a capability, and every read in this file re-scopes.
 	const roots = await tx.publishingTopicDecisionEntry.findMany({
@@ -76,7 +89,7 @@ export async function reconcileTopicQuestions(
 			topicId: input.topicId,
 			projectId: input.projectId,
 			parentId: null,
-			kind: "QUESTION",
+			kind: entryKind,
 			deletedAt: null,
 		},
 		select: { id: true, questionId: true, status: true },
@@ -183,7 +196,7 @@ export async function reconcileTopicQuestions(
 				organizationId: input.organizationId,
 				userId: input.userId,
 				parentId: null,
-				kind: "QUESTION",
+				kind: entryKind,
 				status: "OPEN",
 				// The analysis raised it, so the AGENT authored it. `authorUserId`
 				// stays null: the person who clicked Generate did not write the
@@ -279,7 +292,13 @@ export async function reconcileTopicQuestions(
 				authorType: "AGENT",
 				authorUserId: null,
 				summary: `Planning analysis v${input.analysisVersion}`,
-				content: `Questions after regeneration: ${parts.join(", ")}.`,
+				// Named for what actually changed. The blocker pass runs after
+				// the question pass in the same transaction, so an unqualified
+				// "Questions after regeneration" would appear twice and the
+				// second one would be describing something else.
+				content: `${
+					entryKind === "BLOCKER" ? "Blockers" : "Questions"
+				} after regeneration: ${parts.join(", ")}.`,
 				analysisVersion: input.analysisVersion,
 			},
 		});
@@ -303,7 +322,7 @@ export interface TopicQuestionAssignee {
 export interface TopicDecisionEntry {
 	id: string;
 	parentId: string | null;
-	kind: "QUESTION" | "AI_UPDATE";
+	kind: "QUESTION" | "AI_UPDATE" | "BLOCKER";
 	status: string;
 	authorType: "USER" | "AGENT";
 	authorUserId: string | null;
@@ -324,6 +343,15 @@ export interface TopicDecisionEntry {
 	 * Replies and AI Update notes carry none; only a question root can.
 	 */
 	assignees: TopicQuestionAssignee[];
+	/**
+	 * Who made this decision, when a person did.
+	 *
+	 * `null` for an AI turn, and `null` for a person whose account has since
+	 * been removed — `authorUserId` is `ON DELETE SET NULL`, so the log keeps
+	 * the decision and loses only the name. Readers fall back to the generic
+	 * label in both cases rather than inventing one.
+	 */
+	author: { id: string; name: string; image: string | null } | null;
 }
 
 /**
@@ -340,6 +368,17 @@ const ASSIGNEE_INCLUDE = {
 		orderBy: { createdAt: "asc" },
 		select: { assigneeUserId: true, assignedByUserId: true },
 	},
+	/**
+	 * The decision's author, for the same reason the assignees ride along: the
+	 * Decision Log rendered the literal string "Team member" on every human
+	 * turn, because the id was on the wire and the name never was. The relation
+	 * already existed; nothing here needed a migration.
+	 *
+	 * Only the three fields a label needs. The full `User` carries an email and
+	 * a password hash, and a decision log is not a reason to put either on the
+	 * wire.
+	 */
+	author: { select: { id: true, name: true, image: true } },
 } as const;
 
 export interface TopicDecisionThread {
@@ -431,20 +470,33 @@ export async function answerTopicQuestion(input: {
 	answer: string;
 	answerSource: "AI_SUGGESTED" | "AI_EDITED" | "MANUAL";
 	authorUserId: string;
+	/**
+	 * Which kind of root is being settled. `QUESTION` by default, so every
+	 * existing caller is unchanged.
+	 *
+	 * A blocker is settled the same way a question is — a reply that supersedes
+	 * it and flips the root — so this is one function rather than two. What the
+	 * kind must NOT do is fall out of the lookup: a blocker id clearing a
+	 * question would be a cross-kind write with the same shape as a correct one.
+	 */
+	kind?: "QUESTION" | "BLOCKER";
 }): Promise<{
 	status: "resolved" | "deduped" | "not_found";
 	root: TopicDecisionEntry | null;
 }> {
 	return db.$transaction(async (tx) => {
 		const root = await tx.publishingTopicDecisionEntry.findFirst({
-			// Re-scoped to the project (DV16) and to a live QUESTION root: a reply's
-			// id must not be answerable, and a soft-deleted root must not resurrect.
+			// Re-scoped to the project (DV16) and to a live root of the SAME kind:
+			// a reply's id must not be answerable, a soft-deleted root must not
+			// resurrect, and a blocker id must not clear a question or the other
+			// way round. The kind is part of what is being addressed, not a
+			// filter that can be relaxed.
 			where: {
 				topicId: input.topicId,
 				projectId: input.projectId,
 				questionId: input.questionId,
 				parentId: null,
-				kind: "QUESTION",
+				kind: input.kind ?? "QUESTION",
 				deletedAt: null,
 			},
 			select: {
@@ -513,7 +565,10 @@ export async function answerTopicQuestion(input: {
 				organizationId: root.organizationId,
 				userId: root.userId,
 				parentId: root.id,
-				kind: "QUESTION",
+				// The reply carries the ROOT's kind: a blocker cleared by a
+				// person is still a blocker in the log, and typing it as a
+				// question would hide it from the section that raised it.
+				kind: input.kind ?? "QUESTION",
 				status: "RESOLVED",
 				authorType: "USER",
 				authorUserId: input.authorUserId,

@@ -148,6 +148,7 @@ beforeEach(() => {
 				postType: "STAKEHOLDER_EMAIL",
 				latestAttempt: READY_DRAFT,
 				latestReady: READY_DRAFT,
+				versions: [READY_DRAFT],
 			},
 		],
 		workingDrafts: [],
@@ -436,6 +437,7 @@ describe("adoptStakeholderEmailDraft", () => {
 					postType: "CASE_STUDY",
 					latestAttempt: { ...READY_DRAFT, postType: "CASE_STUDY" },
 					latestReady: { ...READY_DRAFT, postType: "CASE_STUDY" },
+					versions: [{ ...READY_DRAFT, postType: "CASE_STUDY" }],
 				},
 			],
 			workingDrafts: [],
@@ -487,6 +489,15 @@ describe("adoptStakeholderEmailDraft", () => {
 							body: "## Executive Summary",
 						},
 					},
+					versions: [
+						{
+							...READY_DRAFT,
+							content: {
+								title: "Cutting release lead time",
+								body: "## Executive Summary",
+							},
+						},
+					],
 				},
 			],
 			workingDrafts: [],
@@ -519,6 +530,12 @@ describe("adoptStakeholderEmailDraft", () => {
 						...READY_DRAFT,
 						content: { ...READY_DRAFT.content, subject: "   " },
 					},
+					versions: [
+						{
+							...READY_DRAFT,
+							content: { ...READY_DRAFT.content, subject: "   " },
+						},
+					],
 				},
 			],
 			workingDrafts: [],

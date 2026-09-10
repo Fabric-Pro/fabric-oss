@@ -843,3 +843,74 @@ describe("BlogPostPanel — the note belongs to the version on screen", () => {
 		expect(screen.getByText("v2's own note.")).toBeInTheDocument();
 	});
 });
+
+/**
+ * #40 — "GENERATED DRAFT (VERSION 2)" with no version 1 to open.
+ *
+ * Every attempt row always persisted. `listTopicDrafts` folded them to
+ * `latestAttempt` / `latestReady` and nothing else could reach them, so the
+ * version number counted runs rather than naming a place you could go — and
+ * the adopt endpoint narrowed its lookup to `latestReady`, which is what made
+ * an older version unreachable rather than merely unlisted.
+ */
+describe("BlogPostPanel — earlier versions", () => {
+	const v = (id: string, version: number, title: string) => ({
+		id,
+		postType: "BLOG_POST" as const,
+		version,
+		status: "READY",
+		error: null,
+		createdAt: new Date("2026-09-01T10:00:00Z"),
+		updatedAt: new Date("2026-09-01T10:00:00Z"),
+		content: { ...DOCUMENT, title },
+	});
+
+	it("says nothing when there has only ever been one run", () => {
+		// "Version 1 of 1" invites a reader to look for the others.
+		renderPanel({
+			draft: { ...readyDraft(DOCUMENT), versions: [v("d1", 1, "Only")] },
+		});
+
+		expect(screen.queryByText(/earlier versions/i)).not.toBeInTheDocument();
+	});
+
+	it("lists every earlier run once there is more than one", () => {
+		renderPanel({
+			draft: {
+				...readyDraft(DOCUMENT),
+				versions: [v("d2", 2, "Newer"), v("d1", 1, "Older")],
+			},
+		});
+
+		expect(screen.getByText(/earlier versions/i)).toBeInTheDocument();
+		expect(screen.getByText("Version 1")).toBeInTheDocument();
+		expect(screen.getByText("Version 2")).toBeInTheDocument();
+	});
+
+	it("marks the version the saved draft came from", () => {
+		renderPanel({
+			draft: {
+				...readyDraft(DOCUMENT),
+				versions: [v("d2", 2, "Newer"), v("d1", 1, "Older")],
+			},
+			working: working({ sourceDraftId: "d1", sourceContent: null }),
+		});
+
+		expect(screen.getByText(/saved from this/i)).toBeInTheDocument();
+	});
+
+	it("opens an older version's own text, not the newest", async () => {
+		renderPanel({
+			draft: {
+				...readyDraft(DOCUMENT),
+				versions: [v("d2", 2, "Newer"), v("d1", 1, "Older")],
+			},
+		});
+
+		await userEvent.click(
+			screen.getAllByRole("button", { name: "View" })[1],
+		);
+
+		expect(await screen.findByText("Older")).toBeInTheDocument();
+	});
+});

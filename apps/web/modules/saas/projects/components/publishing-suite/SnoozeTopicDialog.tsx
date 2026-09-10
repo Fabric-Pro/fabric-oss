@@ -93,7 +93,7 @@ export function SnoozeTopicDialog({
 				</DialogHeader>
 				<div className="space-y-2">
 					<span
-						className="app-editorial-label"
+						className="publishing-label"
 						id="snooze-duration-label"
 					>
 						Snooze duration

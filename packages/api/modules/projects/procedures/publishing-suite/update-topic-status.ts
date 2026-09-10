@@ -6,6 +6,7 @@ import {
 	requireProjectPermission,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
+import { autoStartPlanningAnalysis } from "../../lib/publishing-analysis-autostart";
 import { recordTopicStatusOutcome } from "../../lib/publishing-outcome";
 import { assertPublishingSuiteFeatureEnabled } from "../../lib/publishing-suite-feature";
 
@@ -60,6 +61,18 @@ export const updatePublishingTopicStatusProcedure = tenantProtectedProcedure
 			userId: context.user.id,
 			status: input.status,
 		});
+
+		// Selecting a topic starts its analysis, so it is running — or done —
+		// before anybody opens the page. Awaited but never fatal: the helper
+		// swallows its own failures, because the status change is what the user
+		// asked for and it has already happened.
+		if (input.status === "SELECTED") {
+			await autoStartPlanningAnalysis({
+				projectId: input.projectId,
+				topicId: input.topicId,
+				requestedById: context.user.id,
+			});
+		}
 
 		return { topic: result.topic };
 	});

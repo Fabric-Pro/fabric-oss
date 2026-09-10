@@ -226,6 +226,16 @@ export async function completePlanningAnalysis(input: {
 	// passes a value, so an explicit array costs it nothing and removes a mode
 	// that can silently wipe a topic's open questions.
 	questions: ReconcilableQuestion[];
+	/**
+	 * What the topic is MISSING, reconciled in the same transaction and by the
+	 * same function.
+	 *
+	 * Optional so a caller that has none — and every existing one — is
+	 * unchanged. Same shape as a question because the reconciliation is
+	 * identical: stable identity, refresh on rephrase, soft-close what the new
+	 * analysis stopped raising, never reopen what a person settled.
+	 */
+	blockers?: ReconcilableQuestion[];
 }): Promise<
 	| { persisted: true; reconciled: ReconcileOutcome | null }
 	| { persisted: false; reason: DraftCommitRefusal; reconciled: null }
@@ -315,6 +325,24 @@ export async function completePlanningAnalysis(input: {
 				questions: input.questions,
 			},
 		);
+
+		// Inside the SAME transaction, for the reason the question pass is: a
+		// crash between the READY flip and the minting would leave a terminal
+		// analysis whose blockers were never created, and nothing retries it.
+		if (input.blockers && input.blockers.length > 0) {
+			await reconcileTopicQuestions(
+				tx as unknown as Parameters<typeof reconcileTopicQuestions>[0],
+				{
+					topicId: stored.topicId,
+					projectId: input.projectId,
+					organizationId: tenant.organizationId,
+					userId: tenant.userId,
+					analysisVersion: stored.version,
+					questions: input.blockers,
+					kind: "BLOCKER",
+				},
+			);
+		}
 
 		return { persisted: true, reconciled };
 	});

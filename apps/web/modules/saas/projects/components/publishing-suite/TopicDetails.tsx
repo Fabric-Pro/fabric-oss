@@ -97,7 +97,11 @@ export function TopicRankReason({
  * component. Keeping the hooks inside the branch that mounts them means the
  * Inbox row renders the identical tree it always has.
  */
-function MeetingParticipants({ speakers }: { speakers: MeetingSpeakers }) {
+export function MeetingParticipants({
+	speakers,
+}: {
+	speakers: MeetingSpeakers;
+}) {
 	const line = buildMeetingParticipantsLine(speakers);
 
 	if (line.hiddenCount === 0) {
@@ -178,6 +182,7 @@ export function TopicDetails({
 	canEdit,
 	isPending,
 	showRankReason = true,
+	showMeetingParticipants = true,
 	onEditUrl,
 	onEditPostTypes,
 	onEditContributors,
@@ -194,6 +199,14 @@ export function TopicDetails({
 	 * line exactly where it shipped.
 	 */
 	showRankReason?: boolean;
+	/**
+	 * The same lift as `showRankReason`, for the same reason. The Topic Item
+	 * Page now carries the participants in its header — context for the whole
+	 * topic rather than a field you go looking for — so the metadata block
+	 * below must not repeat them. Defaults to true: the Inbox row has no header
+	 * to lift them into and keeps rendering them where they shipped.
+	 */
+	showMeetingParticipants?: boolean;
 	onEditUrl: () => void;
 	onEditPostTypes: () => void;
 	onEditContributors: () => void;
@@ -207,7 +220,7 @@ export function TopicDetails({
 				</p>
 			) : null}
 			{showRankReason ? <TopicRankReason topic={topic} /> : null}
-			{topic.meetingSpeakers ? (
+			{showMeetingParticipants && topic.meetingSpeakers ? (
 				<MeetingParticipants speakers={topic.meetingSpeakers} />
 			) : null}
 			{topic.subject ? (

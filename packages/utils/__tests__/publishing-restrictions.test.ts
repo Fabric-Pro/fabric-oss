@@ -214,7 +214,8 @@ describe("restrictsPostType — Stakeholder Email (Phase 2C slice 2)", () => {
 			"METRICS_APPROVAL",
 			"INTERNAL_UI",
 			"VIDEO_WALKTHROUGH",
-			"CONTENT_TYPE",
+			// `CONTENT_TYPE` is deliberately absent — see the case at the
+			// bottom of this file.
 		]) {
 			expect(
 				restrictsPostType(
@@ -298,8 +299,32 @@ describe("isRestrictingThread is unchanged by the per-type set", () => {
 		expect(
 			isRestrictingThread(thread({ decisionKind: "CUSTOMER_NAME" })),
 		).toBe(true);
+	});
+
+	/**
+	 * `CONTENT_TYPE` was the one non-safety-critical kind this predicate
+	 * admitted, and it stopped being a restriction when the inline checklist
+	 * replaced the question.
+	 *
+	 * The panel now filters every `CONTENT_TYPE` row out of the list a reader
+	 * can answer, at any status — so a row written before that change kept
+	 * holding a tab, and appearing under "unresolved before drafting", with
+	 * nothing on the page able to clear it. The generation prompt reads this
+	 * same predicate, so the model was also being told to write around an
+	 * approval nobody could grant.
+	 *
+	 * Both readers resolve through here, which is why the removal is here and
+	 * not at either call site.
+	 */
+	it("says no to CONTENT_TYPE, which the checklist replaced", () => {
 		expect(
 			isRestrictingThread(thread({ decisionKind: "CONTENT_TYPE" })),
-		).toBe(true);
+		).toBe(false);
+		expect(
+			restrictsPostType(
+				thread({ decisionKind: "CONTENT_TYPE" }),
+				"BLOG_POST",
+			),
+		).toBe(false);
 	});
 });

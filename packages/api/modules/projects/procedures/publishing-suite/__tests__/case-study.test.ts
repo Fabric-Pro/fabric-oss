@@ -153,6 +153,7 @@ beforeEach(() => {
 				postType: "CASE_STUDY",
 				latestAttempt: READY_DRAFT,
 				latestReady: READY_DRAFT,
+				versions: [READY_DRAFT],
 			},
 		],
 		workingDrafts: [],
@@ -423,6 +424,7 @@ describe("adoptCaseStudyDraft", () => {
 					postType: "BLOG_POST",
 					latestAttempt: { ...READY_DRAFT, postType: "BLOG_POST" },
 					latestReady: { ...READY_DRAFT, postType: "BLOG_POST" },
+					versions: [{ ...READY_DRAFT, postType: "BLOG_POST" }],
 				},
 			],
 			workingDrafts: [],
@@ -469,6 +471,14 @@ describe("adoptCaseStudyDraft", () => {
 						...READY_DRAFT,
 						content: { options: [{ label: "Direct", text: "x" }] },
 					},
+					versions: [
+						{
+							...READY_DRAFT,
+							content: {
+								options: [{ label: "Direct", text: "x" }],
+							},
+						},
+					],
 				},
 			],
 			workingDrafts: [],
@@ -500,6 +510,12 @@ describe("adoptCaseStudyDraft", () => {
 						...READY_DRAFT,
 						content: { ...READY_DRAFT.content, title: "   " },
 					},
+					versions: [
+						{
+							...READY_DRAFT,
+							content: { ...READY_DRAFT.content, title: "   " },
+						},
+					],
 				},
 			],
 			workingDrafts: [],

@@ -7468,6 +7468,15 @@ model PublishingTopicWorkingDraft {
 enum PublishingDecisionEntryKind {
   QUESTION
   AI_UPDATE
+  /// Something the topic NEEDS that does not exist yet — an approved customer
+  /// quote, a signed-off screenshot, an asset nobody captured.
+  ///
+  /// Distinct from QUESTION because the two are cleared differently and were
+  /// being said the same way: a question is decided at your desk, a blocker
+  /// takes somebody else and an artifact. Both readers of this table already
+  /// filter by kind, so a BLOCKER cannot leak into a surface built for
+  /// questions.
+  BLOCKER
 }
 
 /// One turn in a publishing topic's decision thread: an OPEN question root, the

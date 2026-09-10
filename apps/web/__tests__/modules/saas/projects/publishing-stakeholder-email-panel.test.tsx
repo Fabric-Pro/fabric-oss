@@ -1193,7 +1193,11 @@ describe("StakeholderEmailPanel — whose draft the note describes (A6)", () => 
 		const heading = screen.getByRole("heading", {
 			name: /what the draft wrote around/i,
 		});
-		return heading.closest("section") as HTMLElement;
+		// `details`, not `section`: the note collapses now, and the disclosure
+		// IS its container. It is rendered open in these cases on purpose —
+		// a warning about the text on screen behind a disclosure is not a
+		// warning.
+		return heading.closest("details") as HTMLElement;
 	}
 
 	it("says so when a regeneration the reader has not adopted exists", () => {

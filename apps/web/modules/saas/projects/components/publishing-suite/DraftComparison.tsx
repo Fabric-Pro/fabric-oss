@@ -80,7 +80,7 @@ export function CandidateDraft({
 	return (
 		<section className="space-y-2">
 			<div className="space-y-1">
-				<h3 className="editorial-label">
+				<h3 className="publishing-label">
 					New candidate
 					{version !== null ? ` (version ${version})` : ""}
 				</h3>

@@ -1,5 +1,7 @@
 "use client";
 
+import { Button } from "@ui/components/button";
+import { Textarea } from "@ui/components/textarea";
 import { cn } from "@ui/lib";
 import {
 	CheckCircle2Icon,
@@ -12,6 +14,7 @@ import {
 	liveAnswerReply,
 	supersededAnswerReplies,
 	type TopicDecisionThread,
+	useAmendAnswer,
 } from "./TopicQuestionsPanel";
 
 type Filter = "all" | "OPEN" | "RESOLVED";
@@ -25,6 +28,16 @@ const FILTERS: ReadonlyArray<{ key: Filter; label: string }> = [
 type Props = {
 	threads: TopicDecisionThread[];
 	isLoading?: boolean;
+	/**
+	 * Amending happens HERE as well as on Summary & Questions — the same
+	 * placement Feature Maturation uses, and for the reason the log exists: it
+	 * is where you read a decision, so it is where you notice it is wrong.
+	 * Until now the log was read-only and the pencil lived one tab away.
+	 */
+	projectId: string;
+	topicId: string;
+	organizationId: string | null;
+	canEdit?: boolean;
 };
 
 /**
@@ -51,7 +64,21 @@ type Props = {
  * here with their own status marker instead of folding into Open or
  * Resolved.
  */
-export function TopicDecisionLog({ threads, isLoading = false }: Props) {
+export function TopicDecisionLog({
+	threads,
+	isLoading = false,
+	projectId,
+	topicId,
+	organizationId,
+	canEdit = false,
+}: Props) {
+	// One hook, shared with `TopicQuestionsPanel`, so the stale handling and
+	// the toasts cannot drift apart between the two tabs that offer this.
+	const { submitAmendment, isAmending } = useAmendAnswer({
+		projectId,
+		topicId,
+		organizationId,
+	});
 	// The log is the changelog of settled decisions, not a parking lot for
 	// unanswered questions — those live on the Summary & Questions tab. Open
 	// items stay reachable via the filter.
@@ -97,7 +124,7 @@ export function TopicDecisionLog({ threads, isLoading = false }: Props) {
 	return (
 		<section className="space-y-5">
 			<div className="flex items-center justify-between gap-3">
-				<h2 className="editorial-label">Decision log</h2>
+				<h2 className="publishing-label">Decision log</h2>
 				{/* biome-ignore lint/a11y/useSemanticElements: a filter toggle group, not a form fieldset */}
 				<div
 					className="inline-flex items-center rounded-md border border-border p-0.5"
@@ -126,7 +153,15 @@ export function TopicDecisionLog({ threads, isLoading = false }: Props) {
 			{decisions.length > 0 ? (
 				<ol className="space-y-2">
 					{decisions.map((thread) => (
-						<DecisionCard key={thread.root.id} thread={thread} />
+						<DecisionCard
+							key={thread.root.id}
+							thread={thread}
+							canEdit={canEdit}
+							isSubmitting={isAmending}
+							onAmend={(supersedesId, text) =>
+								submitAmendment(thread, supersedesId, text)
+							}
+						/>
 					))}
 				</ol>
 			) : (
@@ -151,7 +186,7 @@ export function TopicDecisionLog({ threads, isLoading = false }: Props) {
 							)}
 							aria-hidden="true"
 						/>
-						<h3 className="editorial-label">AI Updates</h3>
+						<h3 className="publishing-label">AI Updates</h3>
 						<span className="text-[11px] text-muted-foreground/70">
 							{aiUpdates.length}
 						</span>
@@ -200,11 +235,43 @@ function filterEmptyMessage(filter: Filter): string {
  * reason amending supersedes rather than edits, and dropping the earlier turns
  * here would throw away what the log is for.
  */
-function DecisionCard({ thread }: { thread: TopicDecisionThread }) {
+function DecisionCard({
+	thread,
+	canEdit,
+	isSubmitting,
+	onAmend,
+}: {
+	thread: TopicDecisionThread;
+	canEdit: boolean;
+	isSubmitting: boolean;
+	onAmend: (
+		supersedesId: string,
+		answer: string,
+	) => Promise<{ status: string } | undefined>;
+}) {
 	const root = thread.root;
 	const answer = liveAnswerReply(thread);
 	const superseded = supersededAnswerReplies(thread);
 	const createdAt = new Date(root.createdAt);
+	const [isEditing, setIsEditing] = useState(false);
+	const [draft, setDraft] = useState("");
+
+	/**
+	 * Close on SUCCESS, never on submit — the rule `AnsweredCard` documents.
+	 * A `stale` amendment is refused, and the textarea then holds the only copy
+	 * of what the person wrote; closing eagerly would throw it away while the
+	 * toast announced that nothing had been saved.
+	 */
+	const saveAmendment = async (supersedesId: string) => {
+		try {
+			const result = await onAmend(supersedesId, draft);
+			if (result?.status !== "stale") {
+				setIsEditing(false);
+			}
+		} catch {
+			// The hook's `onError` has already said so; keep the draft.
+		}
+	};
 
 	return (
 		<li
@@ -218,16 +285,91 @@ function DecisionCard({ thread }: { thread: TopicDecisionThread }) {
 				<StatusMarker status={root.status} />
 			</div>
 			<div className="flex flex-wrap items-center gap-2 text-muted-foreground text-xs">
-				<AuthorLabel authorType={root.authorType} />
+				<AuthorLabel
+					authorType={root.authorType}
+					author={root.author}
+				/>
 				<time dateTime={createdAt.toISOString()}>
 					{createdAt.toLocaleString()}
 				</time>
 			</div>
 			{answer ? (
-				<div className="border-border border-t pt-2">
-					<p className="text-foreground text-sm leading-relaxed">
-						{answer.content}
-					</p>
+				<div className="space-y-2 border-border border-t pt-2">
+					{isEditing ? (
+						<>
+							<Textarea
+								value={draft}
+								onChange={(e) => setDraft(e.target.value)}
+								rows={3}
+								aria-label="Your answer"
+								disabled={isSubmitting}
+							/>
+							<div className="flex items-center justify-end gap-2">
+								<Button
+									type="button"
+									variant="ghost"
+									size="sm"
+									onClick={() => setIsEditing(false)}
+									disabled={isSubmitting}
+								>
+									Cancel
+								</Button>
+								<Button
+									type="button"
+									size="sm"
+									onClick={() => saveAmendment(answer.id)}
+									disabled={
+										isSubmitting ||
+										draft.trim().length === 0
+									}
+								>
+									Save answer
+								</Button>
+							</div>
+						</>
+					) : (
+						<div className="flex items-start justify-between gap-2">
+							<div className="min-w-0">
+								<p className="text-foreground text-sm leading-relaxed">
+									{answer.content}
+								</p>
+								{/* The DECISION's author, which is the one a
+								    reader is looking for. The root above is the
+								    AI raising the question; the reply is the
+								    person settling it, and on an amended thread
+								    it is the person who settled it LAST. */}
+								<p className="mt-1 flex flex-wrap items-center gap-2 text-muted-foreground text-xs">
+									<AuthorLabel
+										authorType={answer.authorType}
+										author={answer.author}
+									/>
+									<time
+										dateTime={new Date(
+											answer.createdAt,
+										).toISOString()}
+									>
+										{new Date(
+											answer.createdAt,
+										).toLocaleString()}
+									</time>
+								</p>
+							</div>
+							{canEdit ? (
+								<Button
+									type="button"
+									variant="ghost"
+									size="sm"
+									className="shrink-0"
+									onClick={() => {
+										setDraft(answer.content ?? "");
+										setIsEditing(true);
+									}}
+								>
+									Amend
+								</Button>
+							) : null}
+						</div>
+					)}
 				</div>
 			) : null}
 			{superseded.length > 0 ? (
@@ -294,7 +436,26 @@ function AiUpdateCard({ thread }: { thread: TopicDecisionThread }) {
 	);
 }
 
-function AuthorLabel({ authorType }: { authorType: "USER" | "AGENT" }) {
+/**
+ * Who made a decision.
+ *
+ * "Team member" was a placeholder that reached production: the id was on the
+ * wire and the name never was, so every human decision in the log read as
+ * anonymous. The name is the point of a log — "who decided this" is most of
+ * what you come here to find out.
+ *
+ * The fallback stays for the two cases where there genuinely is no name: an
+ * author whose account has been removed (`authorUserId` is `ON DELETE SET
+ * NULL`, so the decision survives and the name does not), and a row minted
+ * before the relation was selected.
+ */
+function AuthorLabel({
+	authorType,
+	author,
+}: {
+	authorType: "USER" | "AGENT";
+	author?: { name: string } | null;
+}) {
 	if (authorType === "AGENT") {
 		return (
 			<span className="inline-flex items-center gap-1 font-medium text-foreground">
@@ -303,7 +464,11 @@ function AuthorLabel({ authorType }: { authorType: "USER" | "AGENT" }) {
 			</span>
 		);
 	}
-	return <span className="font-medium text-foreground">Team member</span>;
+	return (
+		<span className="font-medium text-foreground">
+			{author?.name ?? "Team member"}
+		</span>
+	);
 }
 
 /**

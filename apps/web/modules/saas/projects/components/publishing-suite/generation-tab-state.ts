@@ -248,30 +248,21 @@ export function resolveRestrictions(
 			global = true;
 			continue;
 		}
-		if (kind === "CONTENT_TYPE") {
-			const postType = root.subject
-				? normalizePostType(root.subject)
-				: null;
-			if (postType) {
-				byPostType.add(postType);
-				continue;
-			}
-			// FAIL SAFE. `subject` is free text, so a valid decision about a
-			// content type this table does not list — a phrasing the synonym
-			// map has not seen — would otherwise resolve to null and be
-			// DROPPED, silently turning an unresolved restriction into no
-			// warning at all.
-			//
-			// Deliberately asymmetric with the BUCKET path below, which ignores
-			// what it cannot map. There, an unmapped entry is usually a content
-			// type this phase genuinely does not own (Video Walkthrough,
-			// Newsletter Blurb are not in the enum) and warning about it on all
-			// six tabs would be noise. Here the question has already been
-			// raised as an unresolved approval, so the cost of over-warning is
-			// a visible caution and the cost of under-warning is a draft that
-			// asserts something nobody approved.
-			global = true;
-		}
+		// `CONTENT_TYPE` is deliberately NOT read here.
+		//
+		// The checklist replaced these questions, and `TopicQuestionsPanel`
+		// filters every one of them out of the list a reader can answer — at any
+		// status. Rows written before that change are still in the table and
+		// still OPEN, so reading them here put a "Needs confirmation" caution on
+		// a tab with no visible question behind it, and the fail-safe below
+		// escalated an unmappable `subject` to every tab at once. Nothing on the
+		// page could clear it: the Decision Log carries answered decisions, and
+		// the checklist writes post-type selections rather than closing threads.
+		//
+		// The producer stopped emitting these (they are dropped at merge in
+		// `build-planning-analysis-prompt.ts`), so this is legacy data only. A
+		// warning a reader cannot act on is worse than no warning: it teaches
+		// them that the caution means nothing.
 	}
 
 	return { global, byPostType };

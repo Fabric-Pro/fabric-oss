@@ -423,6 +423,19 @@ export function ProjectDetails({ projectId, organizationSlug }: Props) {
 		? rawActiveTab
 		: "overview";
 
+	/**
+	 * The trailing breadcrumb crumb: the active tab's own label, or `null` on
+	 * Overview.
+	 *
+	 * Overview IS the project, so naming it again would read as a level of
+	 * nesting that is not there. Everything else is a section the reader
+	 * navigated into, and the trail should say which.
+	 */
+	const activeTabLabel =
+		activeTab === "overview"
+			? null
+			: (visibleTabs.find((tab) => tab.id === activeTab)?.label ?? null);
+
 	// Announce visibility transitions (card #1837): when tabs become visible
 	// again for this viewer — admin re-enabled one, or a personal hide was
 	// lifted — Get Started replays that page's first-visit experience once.
@@ -1004,10 +1017,20 @@ export function ProjectDetails({ projectId, organizationSlug }: Props) {
 			/>
 			{!shouldHideChrome && (
 				<>
-					{/* Breadcrumb. On the QA tab, surface the section as a
+					{/* Breadcrumb. Off Overview, surface the section as a
 					  trailing crumb and turn the project name into a link back to the
 					  project — mirrors the feature editor's "… › {project} › Roadmap"
-					  trail so the location reads clearly (matches the tab's own label). */}
+					  trail so the location reads clearly.
+
+					  Driven by the tab's own `label` rather than a per-tab
+					  branch. It was a branch on `test-cases` alone, so every
+					  other section — Publishing Suite included — showed
+					  "Projects / {project}" and named nothing. Publishing Suite
+					  even has its own route that DOES carry the full trail, so
+					  the crumb appeared or vanished depending on how you
+					  arrived, which is worse than never having it. The active
+					  tab is client state, not the URL, so this is the only
+					  place that knows where the reader is. */}
 					<PageBreadcrumbs
 						items={[
 							{
@@ -1016,13 +1039,13 @@ export function ProjectDetails({ projectId, organizationSlug }: Props) {
 									? `${basePath}/projects`
 									: "/app/projects",
 							},
-							...(activeTab === "test-cases"
+							...(activeTabLabel
 								? [
 										{
 											label: project.name,
 											href: `${basePath || "/app"}/projects/${project.id}`,
 										},
-										{ label: "Testing" },
+										{ label: activeTabLabel },
 									]
 								: [{ label: project.name }]),
 						]}

@@ -1863,3 +1863,89 @@ describe("refresh history", () => {
 		).not.toBeInTheDocument();
 	});
 });
+
+/**
+ * Who owns a topic, without expanding it.
+ *
+ * "if we have someone who already owns it/works on it, maybe it makes sense to
+ * show that" was closed against a list that renders inside `TopicDetails` —
+ * which the row mounts only behind the disclosure chevron. So it shipped behind
+ * exactly the extra click the role pill had just been lifted out of.
+ */
+describe("Inbox row — assignees are visible without expanding", () => {
+	const ASSIGNEES = [
+		{ id: "u1", name: "Ada Lovelace", image: null, username: null },
+		{ id: "u2", name: "Grace Hopper", image: null, username: null },
+	];
+
+	it("names every assignee on the collapsed row", () => {
+		state.topics = [
+			makeTopic({
+				assigneeUserIds: ASSIGNEES.map((a) => a.id),
+				assignees: ASSIGNEES,
+			}),
+		];
+		renderList();
+
+		// The accessible name carries the names; the row itself carries
+		// initials, because at a glance the question is "is anyone on this".
+		expect(
+			screen.getByLabelText("Assigned to Ada Lovelace, Grace Hopper"),
+		).toBeInTheDocument();
+	});
+
+	it("says nothing at all when nobody is assigned", () => {
+		state.topics = [makeTopic()];
+		renderList();
+
+		expect(screen.queryByLabelText(/^Assigned to/)).not.toBeInTheDocument();
+	});
+});
+
+/**
+ * Two views over the list, not two statuses.
+ *
+ * "When I land here, I don't immediately know what to do" — Unread and
+ * Assigned to me answer that, and neither is a state a topic can be set to.
+ * Both are questions about the READER, which is why they need their own arms
+ * rather than falling through to the status comparison.
+ */
+describe("Inbox — the Unread and Assigned-to-me views", () => {
+	it("counts unread topics on the chip", () => {
+		state.topics = [
+			makeTopic({ id: "t1", isRead: false }),
+			makeTopic({ id: "t2", isRead: true }),
+			makeTopic({ id: "t3", isRead: false }),
+		];
+		renderList();
+
+		expect(
+			screen.getByRole("button", { name: /^Unread\s*2$/ }),
+		).toBeInTheDocument();
+	});
+
+	it("narrows the list to unread when the view is picked", async () => {
+		state.topics = [
+			makeTopic({ id: "t1", title: "Unread one", isRead: false }),
+			makeTopic({ id: "t2", title: "Already read", isRead: true }),
+		];
+		renderList();
+
+		// Exact: the chip's accessible name carries its count, and a prefix
+		// match also catches the same chip in its other states.
+		await userEvent.click(screen.getByRole("button", { name: "Unread 1" }));
+
+		expect(screen.getByText("Unread one")).toBeInTheDocument();
+		expect(screen.queryByText("Already read")).not.toBeInTheDocument();
+	});
+
+	it("shows no count on a view that is empty", () => {
+		// A zero beside a chip is a permanent mark that says nothing.
+		state.topics = [makeTopic({ isRead: true })];
+		renderList();
+
+		expect(
+			screen.getByRole("button", { name: /^Unread$/ }),
+		).toBeInTheDocument();
+	});
+});

@@ -40,10 +40,30 @@ import { requireEligibleProjectForTopic } from "../../lib/publishing-topic-proje
 const TopicDecisionEntrySchema = z.object({
 	id: z.string(),
 	parentId: z.string().nullable(),
-	kind: z.enum(["QUESTION", "AI_UPDATE"]),
+	// BLOCKER rides the same table and the same read: it is a thread with a
+	// status, an author and a history, exactly as a question is. Both existing
+	// readers filter by kind, so widening this cannot leak one into a surface
+	// built for questions.
+	kind: z.enum(["QUESTION", "AI_UPDATE", "BLOCKER"]),
 	status: z.string(),
 	authorType: z.enum(["USER", "AGENT"]),
 	authorUserId: z.string().nullable(),
+	/**
+	 * The author's own name, so the log can say who decided.
+	 *
+	 * `nullish`, not required: an AI turn has no author, and a person whose
+	 * account was removed leaves `authorUserId` null under `ON DELETE SET
+	 * NULL`. Readers fall back to a generic label in both cases rather than
+	 * inventing a name. Three fields only — a decision log is not a reason to
+	 * put an email address on the wire.
+	 */
+	author: z
+		.object({
+			id: z.string(),
+			name: z.string(),
+			image: z.string().nullable(),
+		})
+		.nullish(),
 	questionId: z.string().nullable(),
 	decisionKind: z.string().nullable(),
 	subject: z.string().nullable(),
@@ -138,6 +158,15 @@ export const answerTopicQuestionProcedure = tenantProtectedProcedure
 			questionId: z.string().min(1).max(500),
 			answer: z.string().min(1).max(10_000),
 			answerSource: z.enum(["AI_SUGGESTED", "AI_EDITED", "MANUAL"]),
+			/**
+			 * Which kind of root is being settled — a question, or a blocker.
+			 *
+			 * Optional and `QUESTION` by default so an older client is
+			 * unchanged. It is part of the address, not a filter: without it a
+			 * blocker id could clear a question that happened to share one, and
+			 * the write would look correct from every side.
+			 */
+			kind: z.enum(["QUESTION", "BLOCKER"]).optional(),
 		}),
 	)
 	.output(
@@ -161,6 +190,7 @@ export const answerTopicQuestionProcedure = tenantProtectedProcedure
 			projectId: input.projectId,
 			topicId: input.topicId,
 			questionId: input.questionId,
+			kind: input.kind,
 			answer: input.answer,
 			answerSource: input.answerSource,
 			// The AUTHOR is the session, never the request body. A client-supplied

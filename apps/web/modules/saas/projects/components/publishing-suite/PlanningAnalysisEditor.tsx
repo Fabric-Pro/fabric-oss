@@ -144,6 +144,15 @@ export interface PlanningAnalysisEditorProps {
 	 * disabled in that state.
 	 */
 	sourceAnalysisVersion: number | null;
+	/**
+	 * Rendered at the end of the editor's own column, inside its surface.
+	 *
+	 * The analysis's data sections — supporting assets, source signals — used
+	 * to render as a sibling below the whole tab, which put them past the end
+	 * of a clamped editor region and outside the contents rail's scope. They
+	 * are part of the document a reader is reading, so they belong inside it.
+	 */
+	footer?: React.ReactNode;
 	canEdit: boolean;
 	onSaved?: (version: number) => void;
 }
@@ -155,6 +164,7 @@ export function PlanningAnalysisEditor({
 	prose,
 	revisionVersion,
 	sourceAnalysisVersion,
+	footer,
 	canEdit,
 	onSaved,
 }: PlanningAnalysisEditorProps) {
@@ -412,6 +422,19 @@ export function PlanningAnalysisEditor({
 					</Button>
 				</div>
 			) : null}
+			{/* Part of the document, not a block after it.
+			    "What are these things doing? These are specifications ... can't
+			    this live within the content?" They rendered as a sibling BELOW
+			    this whole surface, after a clamped editor region, so on any real
+			    analysis they were a scroll past the end of what looked like the
+			    end.
+
+			    Rendered here rather than written INTO the prose: they are
+			    structured data the generator produces, and folding them into
+			    the markdown would put generated content inside the text a
+			    person edits and saves — the next regeneration would then have
+			    to tell their words from its own. */}
+			{footer}
 		</div>
 	);
 }
