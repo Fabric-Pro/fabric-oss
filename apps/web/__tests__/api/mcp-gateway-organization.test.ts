@@ -73,7 +73,11 @@ const getOrganizationApiKeyByPrefix = vi.fn();
 const updateOrganizationApiKeyUsage = vi.fn();
 const isOrganizationMember = vi.fn();
 const resolveUserOrganization = vi.fn();
+const isOrganizationLive = vi.fn().mockResolvedValue(true);
 vi.mock("@repo/database", () => ({
+	// Fizzy #2462: both MCP routes refuse a deactivated organization.
+	// Live unless a test says otherwise.
+	isOrganizationLive: (...args: unknown[]) => isOrganizationLive(...args),
 	db: { user: { findUnique: (args: unknown) => userFindUnique(args) } },
 	getOrganizationApiKeyByPrefix: (prefix: string) =>
 		getOrganizationApiKeyByPrefix(prefix),
@@ -222,6 +226,10 @@ beforeEach(() => {
 		role: "user",
 	});
 	getSession.mockResolvedValue(null);
+	// `clearAllMocks` clears calls, not implementations, so a test that sets
+	// this false would otherwise deactivate the organization for every test
+	// after it.
+	isOrganizationLive.mockResolvedValue(true);
 	getOrganizationApiKeyByPrefix.mockResolvedValue(null);
 	updateOrganizationApiKeyUsage.mockResolvedValue(undefined);
 	executePlatformTool.mockResolvedValue({
@@ -243,6 +251,54 @@ describe("MCP gateway — a personal key resolves an organization", () => {
 		expect(response.status).toBe(200);
 		expect(resolveUserOrganization).toHaveBeenCalledWith(USER_ID);
 		expect(lastToolSession().organizationId).toBe(ALPHA);
+	});
+
+	/**
+	 * The corridor has to be closed to agents as well as to people.
+	 *
+	 * Deleting an organization deactivates it for seven days before anything is
+	 * destroyed (Fizzy #2462), and that is enforced by refusing at tenant
+	 * resolution rather than by filtering the tables underneath it. This route
+	 * resolves its own tenant and never crosses the oRPC middleware that does
+	 * the refusing, so without a gate of its own a tool caller would keep
+	 * working inside an organization its members can no longer open.
+	 */
+	it("refuses an ALREADY OPEN session once the organization is deactivated", async () => {
+		// Deliberately opened while the organization is live and deactivated
+		// afterwards. A gate that only refused new sessions would leave every
+		// agent that connected before the deletion running inside it for the
+		// whole retention window — gateway sessions live for twenty-four hours.
+		signedInAs({ memberships: [ALPHA] });
+
+		const sessionId = await openSession();
+		isOrganizationLive.mockResolvedValue(false);
+
+		const { response, payload } = await post(toolCallBody(), {
+			authorization: PERSONAL_KEY,
+			"mcp-session-id": sessionId,
+		});
+
+		expect(response.status).toBe(403);
+		// Machine-readable, and distinct from "you are not a member": the caller
+		// IS a member, of something that has been deleted.
+		expect(payload.reason).toBe("deleted_organization");
+		// And nothing ran.
+		expect(executePlatformTool).not.toHaveBeenCalled();
+	});
+
+	it("serves the request while the organization is still live", async () => {
+		// The other half of the gate — proving the refusal above is caused by
+		// deactivation and not by the test's own setup.
+		signedInAs({ memberships: [ALPHA] });
+		isOrganizationLive.mockResolvedValue(true);
+
+		const sessionId = await openSession();
+		const { response } = await post(toolCallBody(), {
+			authorization: PERSONAL_KEY,
+			"mcp-session-id": sessionId,
+		});
+
+		expect(response.status).toBe(200);
 	});
 
 	it("resolves a multi-organization user into their last active organization", async () => {

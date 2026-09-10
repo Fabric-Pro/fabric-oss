@@ -51,6 +51,9 @@ vi.mock("@saas/organizations/hooks/use-organization-context", () => ({
 }));
 
 vi.mock("@saas/organizations/lib/api", () => ({
+	// Fizzy #2462: the switcher subtracts deactivated organizations from
+	// the switchable list, so it reads this alongside the org list.
+	useRestorableOrganizationsQuery: () => ({ data: undefined }),
 	useOrganizationListQuery: () => ({
 		data: [
 			{ slug: "acme", name: "Acme", logo: null },

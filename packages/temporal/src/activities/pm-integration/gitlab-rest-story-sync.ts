@@ -17,10 +17,10 @@ import {
 	db,
 	formatBackLinkForProvider,
 	getStoryAttachmentsForSync,
-	importPulledStoryAttachment,
-	recordStoryAttachmentSyncIssue,
 	getStoryById,
+	importPulledStoryAttachment,
 	isProjectReadOnly,
+	recordStoryAttachmentSyncIssue,
 	updateStoryAttachmentSyncState,
 } from "@repo/database";
 import {

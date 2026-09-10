@@ -466,6 +466,13 @@ export { orchestratorCompletionWorkflow } from "./orchestrator/phases/completion
 export type { StepExecutionContext } from "./orchestrator/types";
 // Orchestrator (modular multi-agent orchestration with full context propagation)
 export * from "./orchestrator/types";
+// Organization purge — the daily sweep that warns deactivated organizations and
+// then destroys the ones whose 7-day window has closed (Fizzy #2462).
+export {
+	type OrganizationDeleteCleanupWorkflowInput,
+	type OrganizationDeleteCleanupWorkflowOutput,
+	organizationDeleteCleanupWorkflow,
+} from "./organization-deletion";
 // QA pipeline-results sync (cards 1834/1688) — live pull of CI Test Runs into the
 // ingestion engine + RCA→BUG.
 export {

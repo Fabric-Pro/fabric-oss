@@ -16,6 +16,13 @@ import {
 	getOrganizationDelegationSettingProcedure,
 	updateOrganizationDelegationSettingProcedure,
 } from "./procedures/delegation-settings";
+import {
+	confirmOrganizationDeletionProcedure,
+	listRestorableOrganizationsProcedure,
+	organizationDeletionImpactProcedure,
+	requestOrganizationDeletionProcedure,
+	restoreOrganizationProcedure,
+} from "./procedures/deletion";
 import { getOrganizationDocumentAssistantHistorySettingProcedure } from "./procedures/document-assistant-history-setting";
 import { getOrganizationFeatureMaturationV2SettingProcedure } from "./procedures/feature-maturation-v2-setting";
 import { deleteOrganizationFirecrawlKeyProcedure } from "./procedures/firecrawl/delete-key";
@@ -82,6 +89,17 @@ export const organizationsRouter = {
 		updateKey: updateOrganizationFirecrawlKeyProcedure,
 		deleteKey: deleteOrganizationFirecrawlKeyProcedure,
 		testKey: testOrganizationFirecrawlKeyProcedure,
+	},
+	// Organization deletion is a 7-day corridor rather than an event
+	// (Fizzy #2462), so it is OUR flow rather than the auth library's: request
+	// (mints an emailed token, deletes nothing) -> confirm (deactivates) ->
+	// restore, with the scheduled purge in the temporal worker.
+	deletion: {
+		impact: organizationDeletionImpactProcedure,
+		request: requestOrganizationDeletionProcedure,
+		confirm: confirmOrganizationDeletionProcedure,
+		restore: restoreOrganizationProcedure,
+		listRestorable: listRestorableOrganizationsProcedure,
 	},
 	apiKeys: {
 		create: createOrganizationApiKeyProcedure,

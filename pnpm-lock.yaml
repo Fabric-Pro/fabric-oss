@@ -3010,6 +3010,9 @@ importers:
       '@repo/observability':
         specifier: workspace:*
         version: link:../observability
+      '@repo/payments':
+        specifier: workspace:*
+        version: link:../payments
       '@repo/rag':
         specifier: workspace:*
         version: link:../rag

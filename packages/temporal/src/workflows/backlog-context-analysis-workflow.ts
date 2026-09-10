@@ -44,9 +44,9 @@ import type { fetchPMWorkItemsByType as FetchPMWorkItemsByTypeFn } from "../acti
 // mirrors PR2's (`scheduleToCloseTimeout` is the worker-outage cap;
 // `startToClose` is the single-attempt bound).
 import type * as postOperationResultModule from "../activities/post-operation-result";
+import { AI_NON_RETRYABLE_ERROR_TYPES } from "./ai-non-retryable-errors";
 import { BACKLOG_ANALYSIS_CANCELLED_TYPE } from "./backlog-constants";
 import { unwrapPmSyncError } from "./pm-sync-error-unwrap";
-import { AI_NON_RETRYABLE_ERROR_TYPES } from "./ai-non-retryable-errors";
 
 // Re-export the ChangeProposal type for consumers
 export type { ChangeProposal } from "../activities/backlog-context/analyze-context";

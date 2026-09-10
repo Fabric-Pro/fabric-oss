@@ -43,6 +43,9 @@ vi.mock("@saas/auth/hooks/use-session", () => ({
 vi.mock("@saas/auth/lib/api", () => ({ sessionQueryKey: ["session"] }));
 
 vi.mock("@saas/organizations/lib/api", () => ({
+	// Fizzy #2462: the switcher subtracts deactivated organizations from
+	// the switchable list, so it reads this alongside the org list.
+	useRestorableOrganizationsQuery: () => ({ data: undefined }),
 	activeOrganizationQueryKey: (slug: string) => ["active-org", slug],
 	useActiveOrganizationQuery: () => ({ data: undefined }),
 }));

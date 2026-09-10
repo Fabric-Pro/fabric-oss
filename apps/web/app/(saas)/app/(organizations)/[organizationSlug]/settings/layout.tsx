@@ -1,4 +1,7 @@
-import { isOrganizationAdmin } from "@repo/auth/lib/helper";
+import {
+	isOrganizationAdmin,
+	isOrganizationOwner,
+} from "@repo/auth/lib/helper";
 import { config } from "@repo/config";
 import {
 	getActiveOrganization,
@@ -60,6 +63,18 @@ export default async function SettingsLayout({
 	}
 
 	const userIsOrganizationAdmin = isOrganizationAdmin(
+		organization,
+		session?.user,
+	);
+	// Deleting an organization is owner-only, and always has been: the
+	// organization plugin's default access statement grants
+	// `organization: ["delete"]` to `owner` alone, and `ORG_DELETE` in
+	// packages/permissions agrees (roles.test.ts pins "admin does NOT have
+	// ORG_DELETE"). The nav entry below used `isOrganizationAdmin`, which is
+	// owner OR admin — so an admin saw Danger Zone, opened it, pressed the
+	// button and got a hard refusal from the server. Gate the entry on the
+	// same predicate the server enforces (Fizzy #2462).
+	const userIsOrganizationOwner = isOrganizationOwner(
 		organization,
 		session?.user,
 	);
@@ -195,8 +210,9 @@ export default async function SettingsLayout({
 					href: `${organizationSettingsBasePath}/usage`,
 					icon: <BarChart3Icon className="size-4 opacity-50" />,
 				},
-				// Danger Zone is admin-only (not just read-only)
-				...(userIsOrganizationAdmin
+				// Danger Zone is OWNER-only — it is the only way to delete
+				// the organization, and the server accepts owners alone.
+				...(userIsOrganizationOwner
 					? [
 							{
 								title: t(

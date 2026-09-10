@@ -28,6 +28,7 @@
 import { createHash } from "node:crypto";
 import { verifyUserApiKey } from "@repo/api/modules/users/procedures/api-keys";
 import { auth } from "@repo/auth";
+import { isOrganizationLive } from "@repo/database";
 import {
 	createGatewaySession,
 	deleteGatewaySession,
@@ -632,6 +633,38 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
 		);
 	}
 	const authResult = authOutcome.authResult;
+
+	// A DEACTIVATED ORGANIZATION REFUSES EVERY REQUEST, AT EVERY DOOR.
+	//
+	// Deleting an organization deactivates it for seven days before anything is
+	// destroyed (Fizzy #2462), and that deactivation is enforced by refusing at
+	// tenant resolution rather than by filtering the ~168 tables that hang off
+	// it. `tenantContextMiddleware` does that for the application — but a tool
+	// caller never passes through it, because this route resolves its own tenant
+	// from an API key or a session. So the same gate has to exist here, or the
+	// corridor is closed to people and open to their agents.
+	//
+	// Placed after the outcome rather than inside `authenticateRequest` because
+	// every branch of that function ends here with a resolved organization:
+	// personal key, organization key and session cookie alike. One check, one
+	// place, no path that can be added later without crossing it.
+	//
+	// 403 and a machine-readable `reason`, matching this route's other tenancy
+	// refusals: nothing about the request can be rewritten to make it allowed,
+	// and a client should be able to tell this from "you are not a member"
+	// without matching on prose.
+	if (
+		authResult.organizationId &&
+		!(await isOrganizationLive(authResult.organizationId))
+	) {
+		return NextResponse.json(
+			{
+				error: `Organization ${authResult.organizationId} has been deleted. An owner can restore it from the workspace switcher until it is permanently removed.`,
+				reason: "deleted_organization",
+			},
+			{ status: 403 },
+		);
+	}
 
 	// Parse JSON-RPC request
 	let rpcRequest: JsonRpcRequest;

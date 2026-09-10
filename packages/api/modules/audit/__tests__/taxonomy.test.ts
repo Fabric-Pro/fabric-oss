@@ -46,7 +46,7 @@ const handler = (
 )["~orpc"].handler;
 
 describe("audit.taxonomy handler", () => {
-	it("returns the 85 closed action keys, 16 categories, and the 8 error keys (D16, D17 + public-REST-API + Weave-session-lifecycle + story.auto_hidden/auto_unhidden + story.pm_ticket_unlinked + atlas analysis-lifecycle/branch/node-edit/pin/edge + backlog proposal-recovery + project.invitation.widget_dismissed + newsletter-widget-owner-actions + project.meeting_digest.inclusion_changed + userActivity.viewed + project.meeting_digest.action_item_toggled + newsletter-approval-gate + dailyBrief.releaseNote hide/unhide + decision-override + story.reprioritized + featureFlag.updated + qa-finding dismiss/merge additions + document-generation-failure + meeting delete/restore/sync-stop)", async () => {
+	it("returns the 85 closed action keys, 16 categories, and the 8 error keys (D16, D17 + public-REST-API + Weave-session-lifecycle + story.auto_hidden/auto_unhidden + story.pm_ticket_unlinked + atlas analysis-lifecycle/branch/node-edit/pin/edge + backlog proposal-recovery + project.invitation.widget_dismissed + newsletter-widget-owner-actions + project.meeting_digest.inclusion_changed + userActivity.viewed + project.meeting_digest.action_item_toggled + newsletter-approval-gate + dailyBrief.releaseNote hide/unhide + decision-override + story.reprioritized + featureFlag.updated + qa-finding dismiss/merge additions + document-generation-failure + meeting delete/restore/sync-stop + org restore/purge)", async () => {
 		const result = await handler({
 			context: { user: { id: "user-1", email: "alice@example.com" } },
 			input: {},
@@ -168,7 +168,14 @@ describe("audit.taxonomy handler", () => {
 		// delegated token, so the account a project collects under lived only in
 		// a Temporal workflow argument and could change with no trace,
 		// Fizzy #2355) = 119.
-		expect(result.actions).toHaveLength(119);
+		// + 2 org.restored / org.purged (organization deletion became a
+		// recoverable corridor, so `org.deleted` now records a deactivation
+		// rather than an ending. The restore row is what makes that first row's
+		// outcome legible — without it an organization that came back is
+		// indistinguishable from one that was never deleted — and the purge row
+		// is the system-actor event marking the point after which nothing can
+		// be brought back, Fizzy #2462) = 121.
+		expect(result.actions).toHaveLength(121);
 		expect(result.actions).toContain("auth.login.success");
 		expect(result.actions).toContain("project.document_generation.failed");
 		expect(result.actions).toContain("audit.retention.purged");
@@ -185,6 +192,10 @@ describe("audit.taxonomy handler", () => {
 		// rebind of whose account a monitor collects under.
 		expect(result.actions).toContain("project.context_source.scan_stopped");
 		expect(result.actions).toContain("project.context_source.reconnected");
+		// Organization deletion corridor: taking a deactivated organization
+		// back, and the scheduled purge that ends the window.
+		expect(result.actions).toContain("org.restored");
+		expect(result.actions).toContain("org.purged");
 		// PM terminal-status auto-close + reopen-unhide (#1360).
 		expect(result.actions).toContain("story.auto_hidden");
 		expect(result.actions).toContain("story.auto_unhidden");
