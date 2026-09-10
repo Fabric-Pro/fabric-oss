@@ -999,6 +999,15 @@ async function createStdioMcpClientForConfig(
 		});
 	}
 
+	if (mcpConfig.authType === "OAUTH2" && !mcpConfig.encryptedAccessToken) {
+		throw new McpClientError({
+			message: `Authentication required for "${serverName}". Please authenticate in MCP Settings.`,
+			code: "OAUTH_AUTH_REQUIRED",
+			serverName,
+			isAuthError: true,
+		});
+	}
+
 	// Get the wrapper service URL
 	const wrapperUrl = process.env.MCP_STDIO_WRAPPER_URL;
 	if (!wrapperUrl) {

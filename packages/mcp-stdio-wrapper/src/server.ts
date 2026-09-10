@@ -16,7 +16,7 @@
  * - Process-per-user isolation
  */
 
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { serve } from "@hono/node-server";
@@ -91,28 +91,33 @@ async function materializeCredentialFiles(
 	}
 
 	const tmpDir = join(tmpdir(), `gdrive-mcp-${configId}-${Date.now()}`);
-	await mkdir(tmpDir, { recursive: true, mode: 0o700 });
+	try {
+		await mkdir(tmpDir, { recursive: true, mode: 0o700 });
 
-	const resolved = { ...credentials };
-	// Remove the JSON content keys — they should not be passed as env vars
-	delete resolved.__GDRIVE_OAUTH_KEYS_JSON;
-	delete resolved.__GDRIVE_CREDENTIALS_JSON;
+		const resolved = { ...credentials };
+		// Remove the JSON content keys — they should not be passed as env vars
+		delete resolved.__GDRIVE_OAUTH_KEYS_JSON;
+		delete resolved.__GDRIVE_CREDENTIALS_JSON;
 
-	if (oauthKeysJson) {
-		const oauthKeysPath = join(tmpDir, "gcp-oauth.keys.json");
-		await writeFile(oauthKeysPath, oauthKeysJson, { mode: 0o600 });
-		resolved.GDRIVE_OAUTH_PATH = oauthKeysPath;
+		if (oauthKeysJson) {
+			const oauthKeysPath = join(tmpDir, "gcp-oauth.keys.json");
+			await writeFile(oauthKeysPath, oauthKeysJson, { mode: 0o600 });
+			resolved.GDRIVE_OAUTH_PATH = oauthKeysPath;
+		}
+
+		if (credentialsJson) {
+			const credentialsPath = join(tmpDir, "credentials.json");
+			await writeFile(credentialsPath, credentialsJson, { mode: 0o600 });
+			resolved.GDRIVE_CREDENTIALS_PATH = credentialsPath;
+		}
+
+		console.log(`[MCP Call] Materialized credential files in ${tmpDir}`);
+
+		return { resolved, cleanupPaths: [tmpDir] };
+	} catch (error) {
+		await rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+		throw error;
 	}
-
-	if (credentialsJson) {
-		const credentialsPath = join(tmpDir, "credentials.json");
-		await writeFile(credentialsPath, credentialsJson, { mode: 0o600 });
-		resolved.GDRIVE_CREDENTIALS_PATH = credentialsPath;
-	}
-
-	console.log(`[MCP Call] Materialized credential files in ${tmpDir}`);
-
-	return { resolved, cleanupPaths: [tmpDir] };
 }
 
 // =============================================================================
@@ -246,10 +251,6 @@ export function createServer(config: ServerConfig = {}): Hono {
 			`[MCP Call] method=${method}, configId=${configId}, userId=${userId.slice(0, 8)}...`,
 		);
 
-		// Materialize any JSON credential content into temp files on this filesystem
-		const { resolved: resolvedCredentials, cleanupPaths } =
-			await materializeCredentialFiles(credentials ?? {}, configId);
-
 		try {
 			// Get or create transport using the pool's race-condition-safe method
 			const transport = await pool.getOrCreate(
@@ -270,15 +271,25 @@ export function createServer(config: ServerConfig = {}): Hono {
 					const executable = commandParts[0];
 					const commandArgs = [...commandParts.slice(1), ...args];
 
-					const newTransport = await createStdioTransport({
-						command: executable,
-						args: commandArgs,
-						env: resolvedCredentials,
-					});
-
-					// Initialize the MCP connection
-					// Most MCP servers expect an initialize request first
+					let cleanupPaths: string[] = [];
+					let newTransport: Awaited<
+						ReturnType<typeof createStdioTransport>
+					> | null = null;
 					try {
+						// Only the request that creates the pooled process needs credential
+						// files. Calls reusing that process must not create orphaned copies.
+						const materialized = await materializeCredentialFiles(
+							credentials ?? {},
+							configId,
+						);
+						cleanupPaths = materialized.cleanupPaths;
+						newTransport = await createStdioTransport({
+							command: executable,
+							args: commandArgs,
+							env: materialized.resolved,
+						});
+
+						// MCP connections must initialize successfully before use.
 						await newTransport.request("initialize", {
 							protocolVersion: "2025-03-26",
 							capabilities: {
@@ -290,14 +301,18 @@ export function createServer(config: ServerConfig = {}): Hono {
 								version: "1.0.0",
 							},
 						});
-						// Send initialized notification
 						await newTransport.notify("notifications/initialized");
-					} catch (initError) {
-						console.error(
-							"[MCP Call] Initialize failed:",
-							initError,
+					} catch (error) {
+						await newTransport?.close().catch(() => {});
+						await Promise.all(
+							cleanupPaths.map((path) =>
+								rm(path, {
+									recursive: true,
+									force: true,
+								}).catch(() => {}),
+							),
 						);
-						// Some servers may not require initialization, continue anyway
+						throw error;
 					}
 
 					return { transport: newTransport, cleanupPaths };
