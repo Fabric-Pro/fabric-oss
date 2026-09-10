@@ -32,6 +32,62 @@ export const ANTHROPIC_EPHEMERAL_CACHE = {
 } as const;
 
 /**
+ * Returns whether a resolved model uses an Anthropic request path that supports
+ * Fabric's explicit prompt-cache breakpoints.
+ *
+ * Direct Anthropic models always qualify. Vercel AI Gateway only qualifies
+ * when its resolved model name is a Claude route. Bedrock, Foundry, and other
+ * gateways use different request adapters and are intentionally excluded.
+ */
+export function isPromptCacheTarget(
+	provider: string,
+	modelString: string,
+): boolean {
+	if (provider === "ANTHROPIC_DIRECT") {
+		return true;
+	}
+	if (provider !== "VERCEL_GATEWAY") {
+		return false;
+	}
+
+	const normalizedModel = modelString.toLowerCase();
+	return (
+		normalizedModel.startsWith("claude") ||
+		normalizedModel.startsWith("anthropic/")
+	);
+}
+
+const MID_CONVERSATION_SYSTEM_MODEL_PATTERN =
+	/^claude-(?:fable-5-1|mythos-5|opus-4(?:-8|\.8)|opus-5)(?:$|[-@:])/;
+
+/**
+ * Fail-closed capability check for Anthropic's mid-conversation system beta.
+ *
+ * Only model families explicitly documented as supported are admitted. Direct
+ * Anthropic IDs are unqualified; Vercel Gateway IDs must be explicitly routed
+ * through the `anthropic/` namespace. Unknown aliases and other Claude families
+ * stay on top-level system blocks even when explicit prompt caching is enabled.
+ */
+export function supportsAnthropicMidConversationSystem(
+	provider: string,
+	modelString: string,
+): boolean {
+	const normalizedModel = modelString.toLowerCase();
+	const directModel =
+		provider === "ANTHROPIC_DIRECT"
+			? normalizedModel
+			: provider === "VERCEL_GATEWAY" &&
+					normalizedModel.startsWith("anthropic/")
+				? normalizedModel.slice("anthropic/".length)
+				: undefined;
+
+	return (
+		directModel !== undefined &&
+		MID_CONVERSATION_SYSTEM_MODEL_PATTERN.test(directModel)
+	);
+}
+
+/**
  * A `system` model message whose prefix is a provider-agnostic cache breakpoint.
  * Pass as the `system` field of a `generateObject` / `generateText` / `streamText`
  * call so the fixed guidance isn't re-billed on every call in a fan-out.

@@ -3,6 +3,7 @@ import {
 	computeMaxOutputTokenBudget,
 	providerNeedsExplicitBudget,
 } from "@repo/ai/lib/output-token-budget";
+import { isPromptCacheTarget } from "@repo/ai/prompt-cache";
 import type { AIProvider } from "@repo/database";
 
 /**
@@ -138,12 +139,6 @@ export function resolveOutputTokenBudget(opts: {
 }
 
 /**
- * Model string prefixes that identify Claude models when routing through
- * a gateway (e.g., Vercel AI Gateway).
- */
-const CLAUDE_MODEL_PREFIXES = ["claude", "anthropic/"];
-
-/**
  * Returns true when the provider + model combination will result in a request
  * being processed by Anthropic's API (where the `thinking` opt-in is required).
  *
@@ -165,14 +160,7 @@ export function isAnthropicProvider(
 	provider: AIProvider,
 	modelString: string,
 ): boolean {
-	if (provider === "ANTHROPIC_DIRECT") {
-		return true;
-	}
-	if (provider === "VERCEL_GATEWAY") {
-		const lower = modelString.toLowerCase();
-		return CLAUDE_MODEL_PREFIXES.some((prefix) => lower.startsWith(prefix));
-	}
-	return false;
+	return isPromptCacheTarget(provider, modelString);
 }
 
 /**
