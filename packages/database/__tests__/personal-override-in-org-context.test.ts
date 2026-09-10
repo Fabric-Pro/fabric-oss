@@ -52,13 +52,8 @@ const TARGET = {
 	documentType: "GENERAL",
 };
 
-/** The (scope, userId, organizationId) triples the resolver asked for, in order. */
-const queriesMade = () =>
-	findFirst.mock.calls.map((c) => ({
-		scope: c[0].where.scope,
-		userId: c[0].where.userId,
-		organizationId: c[0].where.organizationId,
-	}));
+/** The scope conditions in the resolver's one lookup. */
+const scopeConditions = () => findFirst.mock.calls[0][0].where.OR;
 
 beforeEach(() => {
 	findFirst.mockReset();
@@ -66,15 +61,23 @@ beforeEach(() => {
 });
 
 describe("resolution order inside an organization", () => {
-	it("asks for the caller's personal binding first", async () => {
+	it("looks up only the caller's visible tiers in one ordered query", async () => {
 		await getBoundPromptVersion({
 			...TARGET,
 			userId: "user-1",
 			organizationId: "org-1",
 		});
 
-		const scopes = queriesMade().map((q) => q.scope);
-		expect(scopes).toEqual(["USER", "ORG", "SYSTEM"]);
+		expect(findFirst).toHaveBeenCalledTimes(1);
+		expect(
+			scopeConditions().map(
+				(condition: { scope: string }) => condition.scope,
+			),
+		).toEqual(["SYSTEM", "ORG", "USER"]);
+		expect(findFirst.mock.calls[0][0].orderBy).toEqual([
+			{ scope: "desc" },
+			{ projectId: { sort: "desc", nulls: "last" } },
+		]);
 	});
 
 	it("scopes that personal lookup to the caller alone", async () => {
@@ -86,16 +89,16 @@ describe("resolution order inside an organization", () => {
 			organizationId: "org-1",
 		});
 
-		const personal = queriesMade().find((q) => q.scope === "USER");
+		const personal = scopeConditions().find(
+			(condition: { scope: string }) => condition.scope === "USER",
+		);
 		expect(personal?.userId).toBe("user-1");
 	});
 
-	it("stops at the personal binding when one is in force", async () => {
-		findFirst.mockImplementation(async (args: any) =>
-			args.where.scope === "USER"
-				? { promptVersion: { id: "personal-version" } }
-				: null,
-		);
+	it("returns the database-selected personal binding when one is in force", async () => {
+		findFirst.mockResolvedValue({
+			promptVersion: { id: "personal-version" },
+		});
 
 		const result = await getBoundPromptVersion({
 			...TARGET,
@@ -104,16 +107,11 @@ describe("resolution order inside an organization", () => {
 		});
 
 		expect(result).toEqual({ id: "personal-version" });
-		// Having found it, there is no reason to look further.
-		expect(queriesMade().map((q) => q.scope)).toEqual(["USER"]);
+		expect(findFirst).toHaveBeenCalledTimes(1);
 	});
 
 	it("falls through to the organization when the user has no override", async () => {
-		findFirst.mockImplementation(async (args: any) =>
-			args.where.scope === "ORG"
-				? { promptVersion: { id: "org-version" } }
-				: null,
-		);
+		findFirst.mockResolvedValue({ promptVersion: { id: "org-version" } });
 
 		const result = await getBoundPromptVersion({
 			...TARGET,
@@ -125,11 +123,9 @@ describe("resolution order inside an organization", () => {
 	});
 
 	it("falls through to the system default when neither exists", async () => {
-		findFirst.mockImplementation(async (args: any) =>
-			args.where.scope === "SYSTEM"
-				? { promptVersion: { id: "system-version" } }
-				: null,
-		);
+		findFirst.mockResolvedValue({
+			promptVersion: { id: "system-version" },
+		});
 
 		const result = await getBoundPromptVersion({
 			...TARGET,
@@ -145,7 +141,11 @@ describe("resolution order inside an organization", () => {
 		// preference to honour, and must not query for one unscoped.
 		await getBoundPromptVersion({ ...TARGET, organizationId: "org-1" });
 
-		expect(queriesMade().map((q) => q.scope)).toEqual(["ORG", "SYSTEM"]);
+		expect(
+			scopeConditions().map(
+				(condition: { scope: string }) => condition.scope,
+			),
+		).toEqual(["SYSTEM", "ORG"]);
 	});
 });
 
@@ -153,7 +153,11 @@ describe("personal context is unchanged", () => {
 	it("still never consults another tenant's organization binding", async () => {
 		await getBoundPromptVersion({ ...TARGET, userId: "user-1" });
 
-		expect(queriesMade().map((q) => q.scope)).toEqual(["USER", "SYSTEM"]);
+		expect(
+			scopeConditions().map(
+				(condition: { scope: string }) => condition.scope,
+			),
+		).toEqual(["SYSTEM", "USER"]);
 	});
 });
 

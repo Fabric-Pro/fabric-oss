@@ -28,6 +28,7 @@ import {
 	bindPromptVersion,
 	clearPromptBinding,
 	getBindingStatusForPrompts,
+	getBoundPromptForAgent,
 	getBoundPromptVersion,
 } from "../prisma/queries/prompts";
 import { hasReachableDatabaseUrl } from "./_helpers/db-availability";
@@ -40,6 +41,7 @@ const PROJECT_A = `tr-proj-a-${RUN}`;
 const PROJECT_B = `tr-proj-b-${RUN}`;
 const AGENT = `tr_agent_${RUN}`;
 const DOC = "GENERAL";
+const LATEST_USER_VERSION = `tr-v-usr-latest-${RUN}`;
 
 /** One prompt per tier, so "which one came back" is unambiguous. */
 const TIERS = [
@@ -130,12 +132,26 @@ describe.skipIf(!hasReachableDatabaseUrl())(
 					VALUES (${tier.version}, ${tier.prompt}, 1, ${`${tier.scope} body`},
 						'SYSTEM'::"PromptScope", ${USER}, ${now})`);
 			}
+			// The agent resolver must return the version selected by the binding,
+			// not simply the latest version on that prompt.
+			await db.$executeRaw(Prisma.sql`
+				INSERT INTO "prompt_version" (id, "promptId", version, content,
+					scope, "createdBy", "createdAt")
+				VALUES (${LATEST_USER_VERSION}, ${TIERS[3].prompt}, 2, 'newer user body',
+					'SYSTEM'::"PromptScope", ${USER}, ${now})`);
 		});
 
 		afterAll(async () => {
 			await db.promptBinding.deleteMany({ where: { targetKey: AGENT } });
 			await db.promptVersion.deleteMany({
-				where: { id: { in: TIERS.map((t) => t.version) } },
+				where: {
+					id: {
+						in: [
+							...TIERS.map((tier) => tier.version),
+							LATEST_USER_VERSION,
+						],
+					},
+				},
 			});
 			await db.prompt.deleteMany({
 				where: { id: { in: TIERS.map((t) => t.prompt) } },
@@ -193,6 +209,45 @@ describe.skipIf(!hasReachableDatabaseUrl())(
 				});
 
 				expect(forOther?.id).toBe(versionOf("ORG"));
+			});
+		});
+
+		describe("agent prompt resolution", () => {
+			it("returns the winning binding's parent and selected version, not the latest", async () => {
+				await bind("SYSTEM");
+				await bind("ORG");
+				await bind("USER");
+
+				const result = await getBoundPromptForAgent({
+					agentName: AGENT,
+					documentType: DOC,
+					storyKind: null,
+					userId: USER,
+					organizationId: ORG,
+				});
+
+				expect(result).toMatchObject({
+					id: TIERS[3].prompt,
+					name: "USER",
+					version: {
+						id: versionOf("USER"),
+						version: 1,
+						content: "USER body",
+					},
+				});
+				expect(result?.version.id).not.toBe(LATEST_USER_VERSION);
+			});
+
+			it("returns null when no exact binding exists", async () => {
+				await expect(
+					getBoundPromptForAgent({
+						agentName: AGENT,
+						documentType: DOC,
+						storyKind: "BUG",
+						userId: USER,
+						organizationId: ORG,
+					}),
+				).resolves.toBeNull();
 			});
 		});
 

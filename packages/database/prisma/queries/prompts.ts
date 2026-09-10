@@ -1727,16 +1727,13 @@ export function groupPromptCatalogBindings(
  * tier" means `projectId: null` and nothing else. Omitting that filter lets a
  * project-narrowed row into a ranking nobody scoped to that project, which is
  * how the catalog came to badge a prompt the runtime would never resolve.
- * `getBoundPromptVersion` keeps its own inline copy: it queries the two tiers
- * as separate statements rather than as arms of one OR.
- *
  * `in: [id, null]` is not valid Prisma for a nullable column — the null needs
  * its own OR arm.
  */
 function orgScopeCondition(
 	organizationId: string,
 	projectId?: string | null,
-): Record<string, unknown> {
+): Prisma.PromptBindingWhereInput {
 	return projectId
 		? {
 				scope: "ORG",
@@ -1747,11 +1744,64 @@ function orgScopeCondition(
 }
 
 /**
+ * Build the one binding lookup every runtime prompt reader needs. The database
+ * orders PostgreSQL's PromptScope enum as SYSTEM, ORG, USER, so descending
+ * scope gives USER > ORG > SYSTEM; the non-null project binding comes before
+ * its org-wide sibling within ORG.
+ */
+function boundPromptBindingQueryArgs({
+	targetType,
+	targetKey,
+	documentType,
+	storyKind,
+	userId,
+	organizationId,
+	projectId,
+}: {
+	targetType: "AGENT" | "FEATURE";
+	targetKey: string;
+	documentType: string;
+	storyKind?: StoryKind | null;
+	userId?: string;
+	organizationId?: string;
+	projectId?: string | null;
+}): Pick<Prisma.PromptBindingFindFirstArgs, "where" | "orderBy"> {
+	const scopeConditions: Prisma.PromptBindingWhereInput[] = [
+		{ scope: "SYSTEM" },
+	];
+	if (organizationId) {
+		scopeConditions.push(orgScopeCondition(organizationId, projectId));
+	}
+	// A caller's own USER preference remains visible inside an organization by
+	// product rule: the org default recommends a prompt but does not enforce it.
+	// The userId condition keeps that exception limited to the caller alone.
+	if (userId) {
+		scopeConditions.push({ scope: "USER", userId });
+	}
+
+	return {
+		where: {
+			targetType,
+			targetKey,
+			documentType,
+			storyKind: storyKind ?? null,
+			isDefault: true,
+			OR: scopeConditions,
+		},
+		orderBy: [
+			{ scope: "desc" },
+			{ projectId: { sort: "desc", nulls: "last" } },
+		],
+	};
+}
+
+/**
  * Every binding visible to the caller, grouped by action.
  *
- * TENANT ISOLATION: SYSTEM plus the caller's own tier — ORG in organization
- * context, USER in personal context, never both, matching every other read
- * here.
+ * Visibility matches the runtime resolver: SYSTEM plus the current
+ * organization and the caller's own USER tier. A caller's preference remains
+ * visible in an organization, while both tenant-specific conditions stay
+ * scoped to their respective organization or user.
  */
 export async function listPromptCatalog({
 	userId,
@@ -2155,127 +2205,20 @@ export async function getBoundPromptVersion({
 	 *  org-wide one. Only meaningful with organizationId. */
 	projectId?: string | null;
 }) {
-	const storyKindFilter = storyKind ?? null;
-
-	// TENANT ISOLATION: Strict context separation
-	// - Organization context (organizationId provided): Only check ORG -> SYSTEM bindings
-	// - Personal context (userId only, no organizationId): Only check USER -> SYSTEM bindings
-	// USER bindings from personal context should NEVER be used in organization context
-
-	if (organizationId) {
-		// ORGANIZATION CONTEXT: USER -> PROJECT -> ORG -> SYSTEM.
-		//
-		// The caller's own personal default is consulted FIRST, which is FR3 of
-		// Fizzy #2068: "overriding Org and Universal defaults for themselves".
-		//
-		// This is a deliberate, documented exception to the repo's XOR tenancy
-		// rule, and it is narrower than it looks. XOR exists to stop one
-		// tenant's DATA reaching another; a prompt binding is not tenant data,
-		// it is one person's preference about their own work, and honouring it
-		// exposes nobody else's anything. The isolation that matters here is
-		// between two USERS, and that stays absolute — the lookup below is
-		// scoped to `userId`, so no one ever resolves someone else's override.
-		//
-		// The trade-off, accepted knowingly: an organization's default is a
-		// strong recommendation, not an enforcement mechanism. A prompt an
-		// organization must be able to mandate needs an explicit policy, not a
-		// preference the resolver quietly ignores.
-		if (userId) {
-			const personalBinding = await db.promptBinding.findFirst({
-				where: {
-					targetType: targetType as any,
-					targetKey,
-					documentType,
-					storyKind: storyKindFilter,
-					scope: "USER" as any,
-					userId,
-					isDefault: true,
-				},
-				include: { promptVersion: true },
-			});
-			if (personalBinding) {
-				return personalBinding.promptVersion;
-			}
-		}
-
-		// PROJECT tier: an org-admin's default for THIS project outranks the
-		// org-wide one. A project binding is still ORG scope — same writers,
-		// same authority — just narrowed in reach.
-		if (projectId) {
-			const projectBinding = await db.promptBinding.findFirst({
-				where: {
-					targetType: targetType as any,
-					targetKey,
-					documentType,
-					storyKind: storyKindFilter,
-					scope: "ORG" as any,
-					organizationId,
-					projectId,
-					// A row saved with "set as default" unchecked is available,
-					// not in force — same rule as the org-wide tier below.
-					isDefault: true,
-				},
-				include: { promptVersion: true },
-			});
-			if (projectBinding) {
-				return projectBinding.promptVersion;
-			}
-		}
-
-		const orgBinding = await db.promptBinding.findFirst({
-			where: {
-				targetType: targetType as any,
-				targetKey,
-				documentType,
-				storyKind: storyKindFilter,
-				scope: "ORG" as any,
-				organizationId,
-				// Only the org-WIDE row backs this tier; project-narrowed rows
-				// were consulted above and must not double-count here.
-				projectId: null,
-				// A row saved with "set as default" unchecked is available, not
-				// in force. Without this the tier could not be stood down at
-				// all short of deleting its row.
-				isDefault: true,
-			},
-			include: { promptVersion: true },
-		});
-		if (orgBinding) {
-			return orgBinding.promptVersion;
-		}
-	} else if (userId) {
-		// PERSONAL CONTEXT: Check USER -> SYSTEM only
-		// Never look at ORG bindings - they belong to organization context
-		const userBinding = await db.promptBinding.findFirst({
-			where: {
-				targetType: targetType as any,
-				targetKey,
-				documentType,
-				storyKind: storyKindFilter,
-				scope: "USER" as any,
-				userId,
-				isDefault: true,
-			},
-			include: { promptVersion: true },
-		});
-		if (userBinding) {
-			return userBinding.promptVersion;
-		}
-	}
-
-	// Fall back to SYSTEM binding (accessible in all contexts)
-	const sysBinding = await db.promptBinding.findFirst({
-		where: {
-			targetType: targetType as any,
+	const binding = await db.promptBinding.findFirst({
+		...boundPromptBindingQueryArgs({
+			targetType,
 			targetKey,
 			documentType,
-			storyKind: storyKindFilter,
-			scope: "SYSTEM" as any,
-			isDefault: true,
-		},
+			storyKind,
+			userId,
+			organizationId,
+			projectId,
+		}),
 		include: { promptVersion: true },
 	});
-	return sysBinding?.promptVersion ?? null;
+
+	return binding?.promptVersion ?? null;
 }
 
 /**
@@ -2299,33 +2242,31 @@ export async function getBoundPromptForAgent({
 	documentType: string; // Required: Must specify document type
 	storyKind?: StoryKind | null; // Exact-match; see getBoundPromptVersion for semantics
 }) {
-	// Get the bound prompt version for this specific document type
-	const promptVersion = await getBoundPromptVersion({
-		targetType: "AGENT",
-		targetKey: agentName,
-		documentType, // Filter by document type
-		storyKind,
-		userId,
-		organizationId,
-		projectId,
+	const binding = await db.promptBinding.findFirst({
+		...boundPromptBindingQueryArgs({
+			targetType: "AGENT",
+			targetKey: agentName,
+			documentType,
+			storyKind,
+			userId,
+			organizationId,
+			projectId,
+		}),
+		include: { promptVersion: true },
 	});
 
-	if (!promptVersion) {
+	if (!binding) {
 		return null;
 	}
 
-	// Fetch the full prompt details
+	const { promptVersion } = binding;
+	// Prompt deletion cascades through versions and bindings. The parent can
+	// disappear after the version relation is read, so treat that race as an
+	// unresolved binding instead of requiring Prisma to hydrate a missing row.
 	const prompt = await db.prompt.findUnique({
 		where: { id: promptVersion.promptId },
-		include: {
-			versions: {
-				where: { id: promptVersion.id },
-				take: 1,
-			},
-		},
 	});
-
-	if (!prompt || prompt.versions.length === 0) {
+	if (!prompt) {
 		return null;
 	}
 
