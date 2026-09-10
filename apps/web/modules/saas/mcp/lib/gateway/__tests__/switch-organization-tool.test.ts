@@ -54,7 +54,7 @@ vi.mock("@repo/database", () => ({
 	isOrganizationMember: mocks.isOrganizationMember,
 	hasProjectAccess: mocks.hasProjectAccess,
 	canCreateProjectStory: mocks.canCreateProjectStory,
-	buildBacklogDedupGuard: vi.fn(),
+	findOpenBacklogTitleCollision: vi.fn().mockResolvedValue(null),
 	listStories: vi.fn(),
 	TERMINAL_DRAFTING_STAGES: ["DECLINED", "CLOSED"],
 }));

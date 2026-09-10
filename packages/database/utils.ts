@@ -47,11 +47,18 @@ export async function generateSecureToken(length = 32): Promise<string> {
  * guards, so both flows produce the same equivalence class.
  */
 export function normalizeBacklogTitle(title: string): string {
-	return title
-		.toLowerCase()
-		.trim()
-		.replace(/^\[bug\]\s+/i, "")
-		.trim();
+	return (
+		Array.from(title.normalize("NFD"), (character) =>
+			character.toLowerCase(),
+		)
+			.join("")
+			// Fold the contextual Greek final sigma into ordinary sigma. PostgreSQL's
+			// lower() uses the ordinary form, so this keeps the canonical key portable.
+			.replaceAll("ς", "σ")
+			.trim()
+			.replace(/^\[bug\]\s+/i, "")
+			.trim()
+	);
 }
 
 /**

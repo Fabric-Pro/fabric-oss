@@ -433,6 +433,130 @@ export async function listStories(options: {
 }
 
 /**
+ * Narrow list shape for surfaces that render story metadata plus task counts.
+ * Unlike {@link listStories}, this deliberately never loads task bodies,
+ * subtasks, or descriptions.
+ */
+export async function listStorySummaries(options: {
+	projectId: string;
+	statusId?: string;
+	priority?: StoryPriority;
+	draftingStage?: FeatureDraftingStage;
+	assigneeId?: string;
+	kind?: StoryKind;
+	search?: string;
+	limit?: number;
+	offset?: number;
+}) {
+	const {
+		projectId,
+		statusId,
+		priority,
+		draftingStage,
+		assigneeId,
+		kind,
+		search,
+		limit = 100,
+		offset = 0,
+	} = options;
+	const normalizedSearch = search
+		? normalizeStoryIdentifierQuery(search)
+		: undefined;
+	const where: Prisma.UserStoryWhereInput = {
+		projectId,
+		...(statusId ? { statusId } : {}),
+		...(priority ? { priority } : {}),
+		...(draftingStage ? { draftingStage } : {}),
+		...(assigneeId ? { assigneeId } : {}),
+		...(kind ? { kind } : {}),
+		...(search
+			? {
+					OR: [
+						{ title: { contains: search, mode: "insensitive" } },
+						{
+							description: {
+								contains: search,
+								mode: "insensitive",
+							},
+						},
+						{
+							identifier: {
+								contains: search,
+								mode: "insensitive",
+							},
+						},
+						...(normalizedSearch && normalizedSearch !== search
+							? [
+									{
+										identifier: {
+											contains: normalizedSearch,
+											mode: "insensitive" as const,
+										},
+									},
+								]
+							: []),
+					],
+				}
+			: {}),
+	};
+
+	const [stories, total] = await Promise.all([
+		db.userStory.findMany({
+			where,
+			select: {
+				id: true,
+				identifier: true,
+				title: true,
+				kind: true,
+				priority: true,
+				size: true,
+				storyPoints: true,
+				draftingStage: true,
+				assigneeId: true,
+				externalUrl: true,
+				createdAt: true,
+				updatedAt: true,
+				status: { select: { id: true, name: true, color: true } },
+			},
+			orderBy: [{ statusId: "asc" }, { order: "asc" }],
+			take: limit,
+			skip: offset,
+		}),
+		db.userStory.count({ where }),
+	]);
+
+	const taskCounts = stories.length
+		? await db.storyTask.groupBy({
+				by: ["storyId", "isCompleted"],
+				where: {
+					storyId: { in: stories.map((story) => story.id) },
+				},
+				_count: { _all: true },
+			})
+		: [];
+	const taskCountByStory = new Map<string, number>();
+	const completedTaskCountByStory = new Map<string, number>();
+	for (const row of taskCounts) {
+		taskCountByStory.set(
+			row.storyId,
+			(taskCountByStory.get(row.storyId) ?? 0) + row._count._all,
+		);
+		if (row.isCompleted) {
+			completedTaskCountByStory.set(row.storyId, row._count._all);
+		}
+	}
+
+	return {
+		stories: stories.map((story) => ({
+			...story,
+			taskCount: taskCountByStory.get(story.id) ?? 0,
+			completedTaskCount: completedTaskCountByStory.get(story.id) ?? 0,
+		})),
+		total,
+	};
+}
+
+/**
  * Get stories grouped by status (for Kanban board)
  *
  * Returns the full UserStory model, `labels` included. Consumers that serve a
@@ -574,6 +698,14 @@ export async function getStoryById(storyId: string, projectId: string) {
 	return await db.userStory.findFirst({
 		where: { id: storyId, projectId },
 		include: getStoryByIdInclude,
+	});
+}
+
+/** Metadata-only story lookup for callers that do not render its full body. */
+export async function getStorySummaryById(storyId: string, projectId: string) {
+	return await db.userStory.findFirst({
+		where: { id: storyId, projectId },
+		select: { id: true, identifier: true, maturationStatus: true },
 	});
 }
 

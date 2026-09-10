@@ -1,3 +1,4 @@
+export { hasPermission, Permissions } from "@repo/permissions";
 export * from "./prisma";
 // Frame edit history
 export * from "./prisma/queries/frame-edit-history";
@@ -19,6 +20,8 @@ export * from "./src/function-tags";
 export * from "./src/newsletter-cadence";
 // Newsletter shared schemas
 export * from "./src/newsletter-schema";
+// Project-tab customization shared contract (visibility config + user prefs)
+export * from "./src/project-tabs";
 // Publishing suite cadence (pure: interval + due predicate maths)
 export * from "./src/publishing-cadence";
 // Publishing suite chat broadcast targets (pure: the persisted target triple)
@@ -32,8 +35,6 @@ export * from "./src/publishing-preferences";
 export * from "./src/publishing-snooze";
 // Publishing suite shared schemas
 export * from "./src/publishing-suite-schema";
-// Project-tab customization shared contract (visibility config + user prefs)
-export * from "./src/project-tabs";
 // Frame templates seed (for scripts)
 export { seedFrameTemplates } from "./src/queries/frame-templates-seed";
 export * from "./src/tenant-api-helper";

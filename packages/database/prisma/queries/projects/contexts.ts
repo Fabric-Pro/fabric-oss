@@ -883,6 +883,69 @@ export async function getCrawledUrlSourceMarkdown(
 }
 
 /**
+ * Read one offset page of a PATH_PREFIX crawl without transferring every child
+ * body to the application process. The SQL aggregation deliberately mirrors
+ * {@link getCrawledUrlSourceMarkdown} byte-for-byte; keep that full reader for
+ * callers that genuinely need the complete document.
+ */
+export async function getCrawledUrlSourceMarkdownPage(
+	parentContextId: string,
+	tenant: { userId: string; organizationId?: string | null },
+	page: { offset: number; maxLength: number },
+): Promise<{
+	content: string;
+	contentLength: number;
+	hasReadableText: boolean;
+}> {
+	const tenantClause = tenant.organizationId
+		? Prisma.sql`AND "organizationId" = ${tenant.organizationId}`
+		: Prisma.sql`AND "organizationId" IS NULL AND "userId" = ${tenant.userId}`;
+	const [result] = await db.$queryRaw<
+		Array<{
+			content: string | null;
+			contentLength: number | bigint;
+			hasReadableText: boolean;
+		}>
+	>`
+		WITH source AS (
+			SELECT COALESCE(
+				string_agg(
+					concat(
+							'## ',
+							COALESCE(NULLIF("pageTitle", ''), "pageUrl"),
+							chr(10),
+							"pageUrl",
+							chr(10),
+							chr(10),
+							content,
+							chr(10)
+						),
+						concat(chr(10), '---', chr(10), chr(10)) ORDER BY "pageUrl"
+				),
+				''
+			) AS body
+			  FROM project_context_url_page
+			 WHERE "parentContextId" = ${parentContextId}
+			   ${tenantClause}
+			   AND content <> ''
+		)
+		SELECT substring(
+			body,
+			${page.offset + 1}::integer,
+			${page.maxLength}::integer
+		) AS content,
+		       length(body)::integer AS "contentLength",
+		       body ~ ${HAS_NON_WHITESPACE} AS "hasReadableText"
+		  FROM source
+	`;
+	return {
+		content: result?.content ?? "",
+		contentLength: Number(result?.contentLength ?? 0),
+		hasReadableText: result?.hasReadableText ?? false,
+	};
+}
+
+/**
  * Update context
  */
 export async function updateContext(

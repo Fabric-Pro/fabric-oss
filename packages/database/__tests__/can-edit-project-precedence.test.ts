@@ -47,6 +47,7 @@ vi.mock("../prisma/client", () => ({
 import {
 	canCreateProjectStory,
 	canEditProject,
+	resolveProjectAccess,
 } from "../prisma/queries/projects/projects";
 
 const PROJECT_ID = "proj-1";
@@ -204,6 +205,37 @@ describe("canEditProject precedence", () => {
 		mocks.memberFindFirst.mockResolvedValue(null);
 
 		expect(await canEditProject(PROJECT_ID, USER_ID)).toBe(false);
+	});
+});
+
+describe("resolveProjectAccess visibility", () => {
+	it("keeps an unassigned organization member out of project discovery", async () => {
+		orgProject();
+		mocks.projectMemberFindUnique.mockResolvedValue(null);
+		mocks.memberFindFirst.mockResolvedValue({ role: "admin" });
+
+		await expect(
+			resolveProjectAccess(PROJECT_ID, USER_ID),
+		).resolves.toMatchObject({
+			source: "org",
+			isVisible: false,
+		});
+	});
+
+	it("keeps an organization-project creator visible without a project member row", async () => {
+		mocks.projectFindUnique.mockResolvedValue({
+			userId: USER_ID,
+			organizationId: ORG_ID,
+		});
+		mocks.projectMemberFindUnique.mockResolvedValue(null);
+		mocks.memberFindFirst.mockResolvedValue({ role: "admin" });
+
+		await expect(
+			resolveProjectAccess(PROJECT_ID, USER_ID),
+		).resolves.toMatchObject({
+			source: "org",
+			isVisible: true,
+		});
 	});
 });
 

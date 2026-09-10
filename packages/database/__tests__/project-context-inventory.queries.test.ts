@@ -34,7 +34,13 @@ vi.mock("../prisma/client", () => ({
 		},
 		$queryRaw: (...args: unknown[]) => rawQuery(...args),
 	},
-	Prisma: { join: (values: unknown[]) => ({ __join: values }) },
+	Prisma: {
+		join: (values: unknown[]) => ({ __join: values }),
+		sql: (strings: TemplateStringsArray, ...values: unknown[]) => ({
+			strings,
+			values,
+		}),
+	},
 }));
 
 /** Flatten a tagged-template call into its SQL text, params substituted as `?`. */
@@ -49,6 +55,7 @@ function paramsOf(call: unknown[]): unknown[] {
 
 import {
 	getCrawledUrlSourceMarkdown,
+	getCrawledUrlSourceMarkdownPage,
 	listProjectContextSummaries,
 } from "../prisma/queries/projects/contexts";
 
@@ -308,5 +315,53 @@ describe("getCrawledUrlSourceMarkdown", () => {
 				"\n---\n\n" +
 				"## https://example.com/c\nhttps://example.com/c\n\nDeploy it.\n",
 		);
+	});
+});
+
+describe("getCrawledUrlSourceMarkdownPage", () => {
+	it("uses a parameterized SQL slice rather than fetching every child body", async () => {
+		rawQuery.mockResolvedValue([
+			{
+				content: "second page",
+				contentLength: 120,
+				hasReadableText: true,
+			},
+		]);
+
+		const result = await getCrawledUrlSourceMarkdownPage(
+			"ctx-link",
+			{ userId: "user-1", organizationId: "org-1" },
+			{ offset: 100, maxLength: 50 },
+		);
+
+		expect(result).toEqual({
+			content: "second page",
+			contentLength: 120,
+			hasReadableText: true,
+		});
+		expect(urlPageFindMany).not.toHaveBeenCalled();
+		const call = rawQuery.mock.calls[0];
+		expect(sqlOf(call)).toContain("string_agg");
+		expect(sqlOf(call)).toContain("body, ?::integer, ?::integer");
+		expect(sqlOf(call)).toContain('"parentContextId" = ?');
+		expect(paramsOf(call)).toContain("ctx-link");
+		expect(paramsOf(call)).toContain(101);
+		expect(paramsOf(call)).toContain(50);
+	});
+
+	it("keeps personal tenant XOR in the page query", async () => {
+		rawQuery.mockResolvedValue([]);
+
+		await getCrawledUrlSourceMarkdownPage(
+			"ctx-link",
+			{ userId: "user-1", organizationId: null },
+			{ offset: 0, maxLength: 50 },
+		);
+
+		const nested = paramsOf(rawQuery.mock.calls[0]).find(
+			(value) => value && typeof value === "object" && "strings" in value,
+		) as { strings: TemplateStringsArray; values: unknown[] };
+		expect(nested.strings.join("?")).toContain('"organizationId" IS NULL');
+		expect(nested.values).toContain("user-1");
 	});
 });
