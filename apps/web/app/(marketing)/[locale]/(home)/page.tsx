@@ -108,7 +108,7 @@ function JsonLd() {
 			"@type": "ContactPoint",
 			contactType: "sales",
 			url: "https://techfabric.com/contact",
-			email: "contact@techfabric.com",
+			email: "support@fabric.pro",
 			availableLanguage: ["English"],
 		},
 	};
