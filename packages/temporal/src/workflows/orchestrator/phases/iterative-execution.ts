@@ -137,6 +137,7 @@ const {
 	executeDatabricksKnowledgeSearchActivity,
 	retrieveWorkspaceDocumentsActivity,
 	retrieveProjectContextsActivity,
+	listMeetingTranscriptsActivity,
 	searchProjectSlackMessages,
 	searchProjectTeamsMessages,
 	executeSkillToolActivity,
@@ -1278,8 +1279,46 @@ export async function executeIterativePhase(
 				required: ["query"],
 			},
 		};
+		// Pre-registered next to project_rag_query because it is the answer to
+		// the questions project_rag_query answers WRONGLY. Semantic search has
+		// no date dimension, so "any transcripts from the 10th?" is scored on
+		// wording against hundreds of near-identical standups and the model
+		// reports whatever the sample held as the most recent on record
+		// (Fizzy #2473). Without pre-registration the model can still discover
+		// this tool via search_tools, but the call then falls through to MCP
+		// resolution and fails with "MCP configuration not found".
+		discoveredTools.fabric_list_meeting_transcripts = {
+			description:
+				"List the attached project's synced meeting transcripts by the MEETING'S OWN DATE, newest first. Use this — never project_rag_query — for any question about which meetings exist, what happened on a particular day, or which transcript is the most recent: semantic search cannot filter or order by date and will give a confidently wrong answer. Returns subject, date, speakers and summary for each, plus the total match count so you can tell whether the list was truncated.",
+			inputSchema: {
+				type: "object",
+				properties: {
+					from: {
+						type: "string",
+						description:
+							"Inclusive start of the meeting-date range, ISO 8601 (e.g. '2026-09-10').",
+					},
+					to: {
+						type: "string",
+						description:
+							"Inclusive end of the meeting-date range, ISO 8601. For a single day, set from and to to that same day.",
+					},
+					subject: {
+						type: "string",
+						description:
+							"Case-insensitive substring of the meeting series name (e.g. 'DSU'). Omit to search all series.",
+					},
+					limit: {
+						type: "number",
+						description:
+							"Maximum transcripts to return (1-200, default 50).",
+					},
+				},
+				required: [],
+			},
+		};
 		log.info(
-			"[IterativeExecution] Pre-registered project_rag_query, search_slack_messages, and search_teams_messages tools",
+			"[IterativeExecution] Pre-registered project_rag_query, fabric_list_meeting_transcripts, search_slack_messages, and search_teams_messages tools",
 			{
 				projectId: input.projectId,
 			},
@@ -1693,7 +1732,7 @@ Place each ![Generated Image](url) AFTER the text description, NOT before it. Co
 		// `search_tools`. Re-emitting costs ~1.5K tokens vs. the 48K/iter the
 		// eager-schema path would have spent.
 		if (preloadedToolCatalog) {
-			iterationSystemPrompt += `\n\nFOCUSED AGENT — The catalog below lists the MCP tools exposed by ${preloadedServerNames.join(", ")}. Their schemas are NOT pre-attached. Before invoking a tool from the catalog, call search_tools with the exact tool name (e.g., search_tools({ query: "<tool_name>" })) to load its inputSchema; the loaded schema persists for the rest of this conversation. Tools NOT in the catalog (search_tools, project_rag_query, search_slack_messages, search_teams_messages, OAuth integrations such as Microsoft Teams or GitHub) are already attached and can be called directly without a search_tools roundtrip.\n\n${preloadedToolCatalog}`;
+			iterationSystemPrompt += `\n\nFOCUSED AGENT — The catalog below lists the MCP tools exposed by ${preloadedServerNames.join(", ")}. Their schemas are NOT pre-attached. Before invoking a tool from the catalog, call search_tools with the exact tool name (e.g., search_tools({ query: "<tool_name>" })) to load its inputSchema; the loaded schema persists for the rest of this conversation. Tools NOT in the catalog (search_tools, project_rag_query, fabric_list_meeting_transcripts, search_slack_messages, search_teams_messages, OAuth integrations such as Microsoft Teams or GitHub) are already attached and can be called directly without a search_tools roundtrip.\n\n${preloadedToolCatalog}`;
 		} else if (
 			iteration === 1 &&
 			preloadedServerNames.length > 0 &&
@@ -2531,6 +2570,65 @@ Never guess or use example values — always use real data from API responses.`;
 						} else {
 							toolResult = `No relevant content found in project contexts for query: "${query}".`;
 						}
+					}
+				} else if (
+					toolCall.name === "fabric_list_meeting_transcripts" &&
+					patched("loom-meeting-transcript-listing-dispatch-v1")
+				) {
+					// Date-filtered meeting lookup — execute directly without
+					// MCP. Without this branch the call falls through to MCP
+					// resolution and comes back "MCP configuration not found",
+					// which reads to the model as a broken integration rather
+					// than a tool it should have been able to run (Fizzy #2473).
+					//
+					// Patch-gated because this tool name was already reachable
+					// before this branch existed: the model could discover it
+					// through `search_tools` and call it, and that call fell
+					// through to the MCP arm below — recording that arm's own
+					// `loom-mcp-tool-call-ceiling-v1` marker. Replaying such a
+					// history against an ungated branch stops short of the
+					// marker and fails TMPRL1100. The gate keeps already-
+					// recorded histories on the MCP path they actually took.
+					const projectId = input.projectId;
+
+					log.info("Executing meeting transcript listing", {
+						toolName: toolCall.name,
+						projectId,
+						from: toolCall.args.from,
+						to: toolCall.args.to,
+					});
+
+					if (!projectId) {
+						toolResult =
+							"No project is attached to this conversation. Please attach a project in the Projects tab to list its meeting transcripts.";
+					} else {
+						const listing = await listMeetingTranscriptsActivity({
+							projectId,
+							userId: input.userId,
+							organizationId: input.organizationId,
+							from:
+								typeof toolCall.args.from === "string"
+									? toolCall.args.from
+									: undefined,
+							to:
+								typeof toolCall.args.to === "string"
+									? toolCall.args.to
+									: undefined,
+							subject:
+								typeof toolCall.args.subject === "string"
+									? toolCall.args.subject
+									: undefined,
+							limit:
+								typeof toolCall.args.limit === "number"
+									? toolCall.args.limit
+									: undefined,
+						});
+
+						toolResult = listing.response;
+						log.info("Meeting transcript listing completed", {
+							transcriptCount: listing.transcriptCount,
+							total: listing.total,
+						});
 					}
 				} else if (toolCall.name === "search_slack_messages") {
 					// Live Slack search — execute directly without MCP

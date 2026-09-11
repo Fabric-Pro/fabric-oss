@@ -89,6 +89,56 @@ export async function getProjectMetadataActivity(
 }
 
 /**
+ * Activity wrapper for the `fabric_list_meeting_transcripts` tool.
+ *
+ * The iterative orchestrator runs inside a workflow, which must not touch the
+ * database directly, so the shared listing helper is reached through here —
+ * mirroring how `retrieveProjectContextsActivity` fronts project RAG. Read-only
+ * and therefore trivially idempotent under Temporal's retries.
+ */
+export async function listMeetingTranscriptsActivity(input: {
+	projectId: string;
+	userId: string;
+	organizationId?: string;
+	from?: string;
+	to?: string;
+	subject?: string;
+	limit?: number;
+}): Promise<{ response: string; transcriptCount: number; total: number }> {
+	const { listProjectMeetingTranscripts, readTranscriptFilters } =
+		await import("./shared/meeting-transcript-listing");
+
+	try {
+		const listing = await listProjectMeetingTranscripts({
+			projectId: input.projectId,
+			userId: input.userId,
+			organizationId: input.organizationId,
+			filters: readTranscriptFilters({
+				from: input.from,
+				to: input.to,
+				subject: input.subject,
+				limit: input.limit,
+			}),
+		});
+		log.info("[MeetingTranscripts] Listed transcripts", {
+			projectId: input.projectId,
+			transcriptCount: listing.transcriptCount,
+			total: listing.total,
+		});
+		return listing;
+	} catch (error) {
+		log.error("[MeetingTranscripts] Failed to list transcripts", {
+			error: String(error),
+			projectId: input.projectId,
+		});
+		// Surface the failure rather than an empty list: "no transcripts" and
+		// "the lookup broke" must never look the same to the model, which is
+		// the whole point of this tool (Fizzy #2473).
+		throw error;
+	}
+}
+
+/**
  * Header for `project_rag_query` results.
  *
  * The caveat is load-bearing, not decoration (Fizzy #2473). This tool returns a
