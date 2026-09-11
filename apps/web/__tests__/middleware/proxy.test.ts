@@ -6,6 +6,8 @@
  * magic link, invitation, forgot password, and protected routes.
  */
 
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { extname, join, relative, resolve } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // All vi.mock factories are hoisted — no references to outer variables allowed
@@ -65,7 +67,7 @@ vi.mock("next/server", () => ({
 import { config as appConfig } from "@repo/config";
 import { getSessionCookie } from "better-auth/cookies";
 // Import after mocks are set up (hoisted by vitest)
-import proxy from "../../proxy";
+import proxy, { pathsWithoutLocale } from "../../proxy";
 
 const mockGetSessionCookie = vi.mocked(getSessionCookie);
 const mockAppConfig = appConfig as {
@@ -335,6 +337,19 @@ describe("Middleware (proxy.ts)", () => {
 			// middleware localizes the path and the confirm email link 404s, so
 			// users can never confirm their subscription.
 			const req = createMockRequest("/newsletter/confirm/tok_abc123");
+			const response = await proxy(req);
+			expect(response.type).toBe("next");
+		});
+
+		it("should pass through /organizations/confirm-deletion (emailed delete link)", async () => {
+			// Regression (Fizzy #2462): the page lives at
+			// (saas)/organizations/confirm-deletion, outside (marketing)/[locale].
+			// Without the pathsWithoutLocale bypass the intl middleware localizes
+			// the path and the emailed link 404s — so an owner can request a
+			// deletion and never confirm one, which is the whole flow.
+			const req = createMockRequest(
+				"/organizations/confirm-deletion?token=tok_abc123",
+			);
 			const response = await proxy(req);
 			expect(response.type).toBe("next");
 		});
@@ -675,5 +690,90 @@ describe("Middleware (proxy.ts)", () => {
 			expect(response.type).toBe("redirect");
 			expect(response.url).toContain("/auth/login");
 		});
+	});
+});
+
+/**
+ * The proxy localizes any path it does not recognize, so a link the server mails
+ * to a user 404s on the marketing 404 unless its prefix is listed in
+ * `pathsWithoutLocale` — while its route file sits correctly in the build, which
+ * is what makes the failure read as a bad deploy.
+ *
+ * That has now been missed three times (`/unsubscribe`, `/newsletter/confirm`,
+ * and the Fizzy #2462 deletion link), each found by a user clicking a dead link,
+ * and twice despite a comment in the list warning about exactly it. So rather
+ * than trust the next author to read it: find every absolute URL the server
+ * builds on its own base and prove the proxy will actually serve it.
+ */
+describe("emailed links bypass the intl middleware", () => {
+	const REPO_ROOT = resolve(__dirname, "..", "..", "..", "..");
+	const SCAN_ROOTS = [
+		join(REPO_ROOT, "packages", "api", "modules"),
+		join(REPO_ROOT, "packages", "temporal", "src"),
+	];
+
+	// Prefixes the proxy resolves on its own, before it consults the list.
+	const HANDLED_BEFORE_LOCALE = ["/app", "/auth", "/embed", "/docs", "/blog"];
+
+	function* walk(dir: string): Generator<string> {
+		for (const entry of readdirSync(dir)) {
+			const full = join(dir, entry);
+			if (statSync(full).isDirectory()) {
+				if (entry === "__tests__" || entry === "node_modules") {
+					continue;
+				}
+				yield* walk(full);
+			} else if (extname(full) === ".ts" || extname(full) === ".tsx") {
+				yield full;
+			}
+		}
+	}
+
+	/** Every `new URL(<path>, getBaseUrl())` the server builds, literal or via a local const. */
+	function emailedPaths(): { path: string; file: string }[] {
+		const found: { path: string; file: string }[] = [];
+		const pattern =
+			/new URL\(\s*(?:"([^"]+)"|([A-Za-z_][A-Za-z0-9_]*))\s*,\s*getBaseUrl\(\)/g;
+
+		for (const root of SCAN_ROOTS) {
+			if (!existsSync(root)) {
+				continue;
+			}
+			for (const file of walk(root)) {
+				const src = readFileSync(file, "utf-8");
+				for (const match of src.matchAll(pattern)) {
+					let path = match[1];
+					if (!path && match[2]) {
+						// A named constant — resolve it within the same file.
+						path = src.match(
+							new RegExp(`const ${match[2]}\\s*=\\s*"([^"]+)"`),
+						)?.[1];
+					}
+					if (path?.startsWith("/")) {
+						found.push({ path, file: relative(REPO_ROOT, file) });
+					}
+				}
+			}
+		}
+		return found;
+	}
+
+	it("covers every path the server mails out on its own base URL", () => {
+		const found = emailedPaths();
+
+		// Guards the guard: if the scan stops matching (a refactor renames
+		// getBaseUrl, the packages move), it must fail loudly rather than pass
+		// by finding nothing to check.
+		expect(found.length).toBeGreaterThan(0);
+
+		const uncovered = found.filter(
+			({ path }) =>
+				!HANDLED_BEFORE_LOCALE.some((prefix) =>
+					path.startsWith(prefix),
+				) &&
+				!pathsWithoutLocale.some((prefix) => path.startsWith(prefix)),
+		);
+
+		expect(uncovered).toEqual([]);
 	});
 });
