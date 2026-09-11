@@ -318,6 +318,14 @@ export {
 	type GeneratePublishingLinkedInPostWorkflowOutput,
 	generatePublishingLinkedInPostWorkflow,
 } from "./generate-publishing-linkedin-post";
+// Publishing Suite Newsletter Blurb (fire-and-forget — one short, editable
+// newsletter item for one topic, from its planning analysis and its own
+// provenance). #1988
+export {
+	type GeneratePublishingNewsletterBlurbWorkflowInput,
+	type GeneratePublishingNewsletterBlurbWorkflowOutput,
+	generatePublishingNewsletterBlurbWorkflow,
+} from "./generate-publishing-newsletter-blurb";
 // Publishing Suite Planning & Analysis (fire-and-forget — one topic's planning
 // worksheet, from its own provenance). #1851
 export {

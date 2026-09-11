@@ -16,6 +16,10 @@ import {
 	PUBLISHING_LINKEDIN_POST_FALLBACK_BODY,
 } from "@repo/utils/publishing-linkedin-post-prompt";
 import {
+	PUBLISHING_NEWSLETTER_BLURB_AGENT_KEY,
+	PUBLISHING_NEWSLETTER_BLURB_FALLBACK_BODY,
+} from "@repo/utils/publishing-newsletter-blurb-prompt";
+import {
 	PUBLISHING_PLANNING_ANALYSIS_AGENT_KEY,
 	PUBLISHING_PLANNING_ANALYSIS_FALLBACK_BODY,
 } from "@repo/utils/publishing-planning-prompt";
@@ -438,6 +442,19 @@ const PROMPT_DOCUMENT_TYPE_BINDINGS: Record<string, SeedBindingSpec> = {
 		documentTypes: ["GENERAL"],
 		storyKind: null as null,
 		targetKey: PUBLISHING_WEBINAR_SCRIPT_AGENT_KEY,
+	},
+	// publishing_topic_newsletter_blurb: GENERAL + null for the same reason its
+	// six publishing siblings use them — one prompt per tenant covers every
+	// project and topic. The activity passes the topic, its planning analysis,
+	// its confirmed decisions and the run's guidance as HANDLEBARS variables;
+	// the one-blurb output contract and the invention/disclosure rules (no
+	// invented metric, customer name, quote, release status or implementation
+	// claim) are appended code-side and are NOT part of this body, so an
+	// override cannot drop them.
+	[PUBLISHING_NEWSLETTER_BLURB_AGENT_KEY]: {
+		documentTypes: ["GENERAL"],
+		storyKind: null as null,
+		targetKey: PUBLISHING_NEWSLETTER_BLURB_AGENT_KEY,
 	},
 	// test_case_step_reviser: re-drafts ONE existing case whose feature has since
 	// changed. Kept separate from `test_case_drafter` because the contract is
@@ -6164,6 +6181,44 @@ Rules:
 		structuredFormat: "JSON" as const,
 		isPublic: true,
 		content: PUBLISHING_WEBINAR_SCRIPT_FALLBACK_BODY,
+	},
+	{
+		// publishing_topic_newsletter_blurb: the newsletter blurb written from
+		// a topic (Fizzy #1988, Phase 2D slice 2). Carries the PO's Newsletter
+		// Blurb body with the family's standing treatment — this prompt runs
+		// with structured output, so the headline, the blurb, the call-to-action
+		// state, the audience, the release status, the suggested assets, the
+		// inputs still needed and the safety note are each a field.
+		//
+		// The output contract and the invention/disclosure rules (no invented
+		// metric, customer name, quote, release status or implementation claim)
+		// are appended CODE-SIDE so an org editing tone cannot drop them by
+		// accident.
+		//
+		// The tag is `newsletter-blurb`, not `newsletter`: this repository
+		// ships a separate Newsletter product area, and a bare `newsletter` tag
+		// here would make the prompt library's own filtering lie about which
+		// feature this prompt belongs to.
+		//
+		// INSERT-ONLY: once this seeds, changing the text does nothing on an
+		// environment that already ran the seed. Ship wording changes as an
+		// explicit UPDATE migration.
+		key: PUBLISHING_NEWSLETTER_BLURB_AGENT_KEY,
+		name: "Topic Newsletter Blurb",
+		description:
+			"Drafts one newsletter blurb from a Publishing Suite topic, using its planning analysis, confirmed decisions and project source context.",
+		category: "publishing",
+		tags: [
+			"publishing",
+			"publishing-suite",
+			"newsletter-blurb",
+			"ai-generation",
+		],
+		format: "HANDLEBARS" as const,
+		promptType: "STRUCTURED" as const,
+		structuredFormat: "JSON" as const,
+		isPublic: true,
+		content: PUBLISHING_NEWSLETTER_BLURB_FALLBACK_BODY,
 	},
 ];
 

@@ -268,7 +268,7 @@ function generationActivityFiles(): string[] {
 }
 
 describe("every publishing generation activity re-checks before it spends", () => {
-	it("finds all seven generation activities", () => {
+	it("finds all eight generation activities", () => {
 		const found = generationActivityFiles().map((file) =>
 			relative(ACTIVITIES_DIR, file).replace(/\\/g, "/"),
 		);
@@ -277,6 +277,7 @@ describe("every publishing generation activity re-checks before it spends", () =
 			"publishing-blog-post/generate-blog-post.ts",
 			"publishing-case-study/generate-case-study.ts",
 			"publishing-linkedin-post/generate-linkedin-post.ts",
+			"publishing-newsletter-blurb/generate-newsletter-blurb.ts",
 			"publishing-planning/generate-planning-analysis.ts",
 			"publishing-short-post/generate-short-post.ts",
 			"publishing-stakeholder-email/generate-stakeholder-email.ts",

@@ -53,6 +53,7 @@ export const POST_TYPE_LABELS = [
 	"Case Study",
 	"Stakeholder Email",
 	"Webinar / Demo Script",
+	"Newsletter Blurb",
 ] as const;
 export type PostTypeLabel = (typeof POST_TYPE_LABELS)[number];
 
@@ -71,6 +72,7 @@ const POST_TYPE_LABEL_TO_ENUM: Record<PostTypeLabel, PublishingTopicPostType> =
 		"Case Study": PublishingTopicPostType.CASE_STUDY,
 		"Stakeholder Email": PublishingTopicPostType.STAKEHOLDER_EMAIL,
 		"Webinar / Demo Script": PublishingTopicPostType.WEBINAR_SCRIPT,
+		"Newsletter Blurb": PublishingTopicPostType.NEWSLETTER_BLURB,
 	};
 
 export function postTypeLabelToEnum(

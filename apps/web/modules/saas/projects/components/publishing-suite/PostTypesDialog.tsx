@@ -22,6 +22,7 @@ export const POST_TYPE_OPTIONS = [
 	{ value: "CASE_STUDY", label: "Case Study" },
 	{ value: "STAKEHOLDER_EMAIL", label: "Stakeholder Email" },
 	{ value: "WEBINAR_SCRIPT", label: "Webinar / Demo Script" },
+	{ value: "NEWSLETTER_BLURB", label: "Newsletter Blurb" },
 ] as const;
 
 type PostTypeValue = (typeof POST_TYPE_OPTIONS)[number]["value"];

@@ -5850,6 +5850,7 @@ enum PublishingTopicPostType {
   STAKEHOLDER_EMAIL
   LINKEDIN_POST
   WEBINAR_SCRIPT
+  NEWSLETTER_BLURB
 }
 
 // Custom Kanban columns per project

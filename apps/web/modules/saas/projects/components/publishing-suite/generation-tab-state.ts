@@ -70,6 +70,7 @@ export const GENERATION_TAB_POST_TYPES: readonly PostType[] = [
 	"CASE_STUDY",
 	"STAKEHOLDER_EMAIL",
 	"WEBINAR_SCRIPT",
+	"NEWSLETTER_BLURB",
 ];
 
 /**
@@ -77,10 +78,10 @@ export const GENERATION_TAB_POST_TYPES: readonly PostType[] = [
  *
  * `contentTypes.*[].type` is a free string BY DESIGN — 2A's schema comment is
  * explicit that narrowing it to the enum would make the model drop legitimate
- * answers it cannot map. FR32's supported set has nine; the enum covers six,
- * leaving three that still are not in it (Video Walkthrough Script,
- * Newsletter Blurb, and AI-assisted Video Walkthrough). So this maps what it
- * can and ignores the rest, which is the correct answer rather than a gap.
+ * answers it cannot map. FR32's supported set has nine; the enum covers
+ * seven, leaving two that still are not in it (Video Walkthrough Script and
+ * AI-assisted Video Walkthrough). So this maps what it can and ignores the
+ * rest, which is the correct answer rather than a gap.
  *
  * Matching is EXACT against the normalized form, never a substring: "post"
  * appears in "Blog Post" as well as "Short Post", and a substring rule would
@@ -137,6 +138,44 @@ const SYNONYMS: Record<PostType, readonly string[]> = {
 		"webinarordemoscript",
 		"webinardemoscript",
 	],
+	// Fizzy #1988 (Phase 2D-2). "newsletterblurb" is the exact label the LLM
+	// is whitelisted to emit for this type
+	// (`publishing-suite-schema.ts`'s `POST_TYPE_LABELS`), and the
+	// phrasing the planning prompt has always used.
+	//
+	// The consumer this entry serves is `readContentTypeBuckets` below — the
+	// only caller of `normalizePostType`. It folds the analysis document's own
+	// `contentTypes` items, whose `item.type` is a free string the model
+	// wrote, onto the enum; two readers then share that fold, the tab strip's
+	// badge and `ContentTypesChecklist`. So an entry here decides whether a
+	// stored analysis populates this tab's badge and rationale or leaves it on
+	// AVAILABLE forever, and the strings worth listing are the ones a producer
+	// actually emits.
+	//
+	// NO bare "newsletter", deliberately. Matching is exact against the
+	// normalized form, so the lone token WOULD resolve — and this repository
+	// ships an entire separate Newsletter product area: release notes,
+	// newsletter curation, chat delivery, its own settings procedures. An item
+	// whose `type` is just "Newsletter" most likely names that one, and
+	// claiming it here would hand this tab a badge and a rationale written
+	// about a different product.
+	//
+	// For the SAME reason, also no "newsletterupdate" — despite
+	// STAKEHOLDER_EMAIL's own second entry, "stakeholderupdate", looking like
+	// precedent for it. The symmetry does not hold: "stakeholderupdate" has no
+	// competing product to be confused with, so a match there can only mean
+	// the one type it names. "newsletterupdate" does have one — this file's
+	// own Newsletter product area. The distinction that generalizes to a
+	// future synonym: "newsletterblurb" is contract-derived — the phrasing the
+	// planning prompt itself puts in front of the model — so dropping it
+	// breaks a producer that is already emitting it. "newsletterupdate" was a
+	// guess at wording nothing asks for. `item.type` is schema-free
+	// (`ClassifiedRecommendationSchema` types it `z.string().min(1)`, which is
+	// why this table exists at all), but it is written by the model against
+	// that prompt's list of nine names, not typed by a person — so the prompt's
+	// own phrasings are the grounded entries, and a guess only adds a way to
+	// claim another product's row.
+	NEWSLETTER_BLURB: ["newsletterblurb"],
 };
 
 const BY_NORMALIZED: ReadonlyMap<string, PostType> = new Map(

@@ -27,6 +27,7 @@ import {
 import { PUBLISHING_BLOG_POST_AGENT_KEY } from "@repo/utils/publishing-blog-post-prompt";
 import { PUBLISHING_CASE_STUDY_AGENT_KEY } from "@repo/utils/publishing-case-study-prompt";
 import { PUBLISHING_LINKEDIN_POST_AGENT_KEY } from "@repo/utils/publishing-linkedin-post-prompt";
+import { PUBLISHING_NEWSLETTER_BLURB_AGENT_KEY } from "@repo/utils/publishing-newsletter-blurb-prompt";
 import { PUBLISHING_PLANNING_ANALYSIS_AGENT_KEY } from "@repo/utils/publishing-planning-prompt";
 import { PUBLISHING_SHORT_POST_AGENT_KEY } from "@repo/utils/publishing-short-post-prompt";
 import { PUBLISHING_STAKEHOLDER_EMAIL_AGENT_KEY } from "@repo/utils/publishing-stakeholder-email-prompt";
@@ -76,6 +77,7 @@ const KEY_CONSTANTS: Record<string, string> = {
 	PUBLISHING_CASE_STUDY_AGENT_KEY,
 	PUBLISHING_STAKEHOLDER_EMAIL_AGENT_KEY,
 	PUBLISHING_WEBINAR_SCRIPT_AGENT_KEY,
+	PUBLISHING_NEWSLETTER_BLURB_AGENT_KEY,
 };
 
 function resolveKeyConstant(name: string): string {
@@ -334,13 +336,18 @@ describe("every PUBLISHING catalog target is fully seeded", () => {
 	});
 
 	it("finds the targets it is supposed to find", () => {
-		// Guard-the-guard: there are eight PUBLISHING targets today. A floor
-		// of 7 would be satisfied by the pre-existing seven alone and would
-		// tolerate losing exactly the target this slice added.
+		// Guard-the-guard: there are nine PUBLISHING targets today. A floor
+		// of 8 would be satisfied by the pre-existing eight alone and would
+		// tolerate losing exactly the target this slice added. The same
+		// argument applies to the assertions that name a key, so each slice
+		// adds one BESIDE its predecessor rather than replacing it.
 		expect(publishingTargets.map((t) => t.key)).toContain(
 			PUBLISHING_WEBINAR_SCRIPT_AGENT_KEY,
 		);
-		expect(publishingTargets.length).toBeGreaterThanOrEqual(8);
+		expect(publishingTargets.map((t) => t.key)).toContain(
+			PUBLISHING_NEWSLETTER_BLURB_AGENT_KEY,
+		);
+		expect(publishingTargets.length).toBeGreaterThanOrEqual(9);
 	});
 
 	for (const target of publishingTargets) {

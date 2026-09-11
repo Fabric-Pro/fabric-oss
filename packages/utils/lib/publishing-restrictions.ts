@@ -138,6 +138,22 @@ export const EXTRA_RESTRICTING_KINDS_BY_POST_TYPE: Readonly<
 		"AUDIENCE_SCOPE",
 		"CODEBASE_DETAIL",
 	]),
+	// The SAME pair as the Stakeholder Email, and for the same reason: both are
+	// audience-scoped distribution formats whose characteristic harm is a claim
+	// made to the wrong readership. A newsletter travels further than the person
+	// who asked for one expects, so AUDIENCE_SCOPE decides the whole framing,
+	// and CLAIM_STRENGTH decides whether the first sentence — the only one a
+	// skimming reader is guaranteed to read — may assert a result.
+	//
+	// CODEBASE_DETAIL is deliberately EXCLUDED, and this is where the type parts
+	// company with the Webinar Script above. A blurb has no implementation-depth
+	// dial to turn: it is one headline and a paragraph or two, and the
+	// disclosure rule in its locked clauses covers the residue. Listing it
+	// anyway would put a third entry under "open questions that constrain this
+	// type" on nearly every technical topic, for a risk this format does not
+	// run — and a warning that fires where it does not apply is how a reader
+	// learns to skip the two that do.
+	NEWSLETTER_BLURB: new Set(["AUDIENCE_SCOPE", "CLAIM_STRENGTH"]),
 };
 
 /**

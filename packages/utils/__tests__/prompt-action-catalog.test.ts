@@ -21,6 +21,7 @@ import {
 import { PUBLISHING_BLOG_POST_AGENT_KEY } from "../lib/publishing-blog-post-prompt";
 import { PUBLISHING_CASE_STUDY_AGENT_KEY } from "../lib/publishing-case-study-prompt";
 import { PUBLISHING_LINKEDIN_POST_AGENT_KEY } from "../lib/publishing-linkedin-post-prompt";
+import { PUBLISHING_NEWSLETTER_BLURB_AGENT_KEY } from "../lib/publishing-newsletter-blurb-prompt";
 import { PUBLISHING_PLANNING_ANALYSIS_AGENT_KEY } from "../lib/publishing-planning-prompt";
 import { PUBLISHING_SHORT_POST_AGENT_KEY } from "../lib/publishing-short-post-prompt";
 import { PUBLISHING_STAKEHOLDER_EMAIL_AGENT_KEY } from "../lib/publishing-stakeholder-email-prompt";
@@ -336,6 +337,23 @@ describe("Publishing Suite prompts (#1851, #1853, #1854)", () => {
 		]);
 	});
 
+	// The newsletter blurb prompt (2D slice 2) is the seventh member and
+	// carries the identical three-site hazard: seed SYSTEM prompt, seed
+	// binding, catalog entry and the Temporal activity must all name one key.
+	it("exposes the newsletter blurb prompt as an editable PUBLISHING target", () => {
+		const target = PROMPT_AGENT_TARGETS.find(
+			(t) => t.key === PUBLISHING_NEWSLETTER_BLURB_AGENT_KEY,
+		);
+		expect(target).toBeDefined();
+		expect(target?.featureType).toBe("PUBLISHING");
+		// Assert the SHAPE, not `nonStage(...)` — that helper is a bare `const` at
+		// prompt-action-catalog.ts:163 and is not exported, so calling it here is a
+		// ReferenceError that would masquerade as the expected TDD red.
+		expect(target?.actions).toEqual([
+			{ documentType: "GENERAL", storyKind: null },
+		]);
+	});
+
 	it("keeps every publishing prompt under a DIFFERENT key", () => {
 		// Every one of them is PUBLISHING/GENERAL/null, so a copy-paste that
 		// left a sibling's key on another entry would satisfy every other case
@@ -355,6 +373,7 @@ describe("Publishing Suite prompts (#1851, #1853, #1854)", () => {
 			PUBLISHING_CASE_STUDY_AGENT_KEY,
 			PUBLISHING_STAKEHOLDER_EMAIL_AGENT_KEY,
 			PUBLISHING_WEBINAR_SCRIPT_AGENT_KEY,
+			PUBLISHING_NEWSLETTER_BLURB_AGENT_KEY,
 		];
 		expect(new Set(keys).size).toBe(keys.length);
 	});

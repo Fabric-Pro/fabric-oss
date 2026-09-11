@@ -10,6 +10,7 @@ import {
 import { describe, expect, it } from "vitest";
 import { buildBlogPostLockedClauses } from "../../publishing-blog-post/build-blog-post-prompt";
 import { buildCaseStudyLockedClauses } from "../../publishing-case-study/build-case-study-prompt";
+import { buildNewsletterBlurbLockedClauses } from "../../publishing-newsletter-blurb/build-newsletter-blurb-prompt";
 import { buildShortPostLockedClauses } from "../../publishing-short-post/build-short-post-prompt";
 import { buildStakeholderEmailLockedClauses } from "../../publishing-stakeholder-email/build-stakeholder-email-prompt";
 import { buildWebinarScriptLockedClauses } from "../../publishing-webinar-script/build-webinar-script-prompt";
@@ -102,6 +103,22 @@ const BUILDERS = [
 		name: "buildWebinarScriptLockedClauses (open questions)",
 		build: (subjects: string[]) =>
 			buildWebinarScriptLockedClauses({ openQuestionSubjects: subjects }),
+	},
+	// The sixth writer, added by Phase 2D slice 2D-2 — both blocks, for the same
+	// reason the stakeholder email's and the webinar script's are both listed
+	// above: they are separate string joins, so covering one would leave the
+	// other carrying an unfolded subject with nothing red.
+	{
+		name: "buildNewsletterBlurbLockedClauses (restricted)",
+		build: (subjects: string[]) =>
+			buildNewsletterBlurbLockedClauses({ restrictedSubjects: subjects }),
+	},
+	{
+		name: "buildNewsletterBlurbLockedClauses (open questions)",
+		build: (subjects: string[]) =>
+			buildNewsletterBlurbLockedClauses({
+				openQuestionSubjects: subjects,
+			}),
 	},
 ] as const;
 
@@ -232,10 +249,15 @@ describe("a thread subject cannot add a line to the locked clauses", () => {
 		// every case above vacuous (zero registered `it`s) rather than
 		// failing, the same failure mode the discovery test below guards
 		// against for the whole file.
+		//
+		// MOVED to 8 by Phase 2D slice 2D-2, read off the run rather than
+		// computed: a floor left at the previous set's size tolerates losing
+		// exactly the two blocks this slice added, which is the one loss it is
+		// here to catch.
 		const fenced = BUILDERS.filter(
 			({ name }) => !RENDERS_SUBJECT_UNFENCED.has(baseBuilderName(name)),
 		);
-		expect(fenced.length).toBeGreaterThanOrEqual(6);
+		expect(fenced.length).toBeGreaterThanOrEqual(8);
 	});
 
 	/**
@@ -301,6 +323,7 @@ const ACTIVITIES_DIR = join(
 const COVERED = new Set([
 	"buildBlogPostLockedClauses",
 	"buildCaseStudyLockedClauses",
+	"buildNewsletterBlurbLockedClauses",
 	"buildShortPostLockedClauses",
 	"buildStakeholderEmailLockedClauses",
 	"buildWebinarScriptLockedClauses",
@@ -355,10 +378,12 @@ describe("no locked-clause builder escapes this file unnoticed", () => {
 		expect(discovered).toContain("buildCaseStudyLockedClauses");
 		expect(discovered).toContain("buildBlogPostLockedClauses");
 		expect(discovered).toContain("buildWebinarScriptLockedClauses");
+		expect(discovered).toContain("buildNewsletterBlurbLockedClauses");
 		// Post-slice count, asserted by name as well as by size: a floor set
-		// to today's number would tolerate losing exactly the builder this
-		// task adds.
-		expect(discovered.length).toBeGreaterThanOrEqual(8);
+		// to the PREVIOUS number would tolerate losing exactly the builder the
+		// slice that moved it added. 9 as of Phase 2D slice 2D-2, read off the
+		// run.
+		expect(discovered.length).toBeGreaterThanOrEqual(9);
 	});
 
 	it("classifies every builder as either covered here or subject-free", () => {

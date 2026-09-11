@@ -396,6 +396,7 @@ export * from "./publishing-suggestion";
 export * from "./publishing-blog-post";
 export * from "./publishing-case-study";
 export * from "./publishing-linkedin-post";
+export * from "./publishing-newsletter-blurb";
 export * from "./publishing-planning";
 export * from "./publishing-short-post";
 export * from "./publishing-stakeholder-email";

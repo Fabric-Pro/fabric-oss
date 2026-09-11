@@ -84,6 +84,16 @@
 			"import": "./lib/publishing-webinar-script-body.ts",
 			"default": "./lib/publishing-webinar-script-body.ts"
 		},
+		"./publishing-newsletter-blurb-prompt": {
+			"types": "./lib/publishing-newsletter-blurb-prompt.ts",
+			"import": "./lib/publishing-newsletter-blurb-prompt.ts",
+			"default": "./lib/publishing-newsletter-blurb-prompt.ts"
+		},
+		"./publishing-newsletter-blurb-body": {
+			"types": "./lib/publishing-newsletter-blurb-body.ts",
+			"import": "./lib/publishing-newsletter-blurb-body.ts",
+			"default": "./lib/publishing-newsletter-blurb-body.ts"
+		},
 		"./publishing-planning-prompt": {
 			"types": "./lib/publishing-planning-prompt.ts",
 			"import": "./lib/publishing-planning-prompt.ts",

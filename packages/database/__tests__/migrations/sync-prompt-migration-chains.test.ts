@@ -39,9 +39,6 @@
  * a real Postgres.
  */
 
-import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import {
 	PUBLISHING_PLANNING_ANALYSIS_AGENT_KEY,
 	PUBLISHING_PLANNING_ANALYSIS_FALLBACK_BODY,
@@ -53,7 +50,12 @@ import {
 import { describe, expect, it } from "vitest";
 import {
 	discoverSyncPromptChainFolders,
+	extractSyncMigrationFragment,
+	foldersTargetingPublishingPromptKey,
 	readSyncMigrationAgentKey,
+	readSyncMigrationGuard,
+	readSyncMigrationSql,
+	syncPromptMigrationsDir,
 } from "../_helpers/sync-prompt-migration-discovery";
 
 /**
@@ -86,65 +88,16 @@ interface SyncMigration {
 	sql: string;
 }
 
-function migrationsDir(): string {
-	return join(
-		dirname(fileURLToPath(import.meta.url)),
-		"..",
-		"..",
-		"prisma",
-		"migrations",
-	);
-}
-
-/**
- * Pull one dollar-quoted fragment out of a migration by its tag. The tags are
- * `$old_types$` and `$new_types$`; the prompt bodies carry no `$` of their own,
- * so the delimiters are unambiguous.
- */
-function extractFragment(sql: string, tag: string, folder: string): string {
-	const delimiter = `$${tag}$`;
-	const start = sql.indexOf(delimiter);
-	if (start === -1) {
-		throw new Error(`${folder} has no ${delimiter} fragment`);
-	}
-	const contentStart = start + delimiter.length;
-	const end = sql.indexOf(delimiter, contentStart);
-	if (end === -1) {
-		throw new Error(`${folder}'s ${delimiter} fragment is not closed`);
-	}
-	return sql.slice(contentStart, end);
-}
-
-function extractSingle(
-	sql: string,
-	pattern: RegExp,
-	what: string,
-	folder: string,
-): string {
-	const matches = [...sql.matchAll(pattern)];
-	if (matches.length !== 1) {
-		throw new Error(
-			`${folder}: expected exactly one ${what}, found ${matches.length}`,
-		);
-	}
-	return matches[0]![1]!;
-}
-
 function loadChainMigrations(): SyncMigration[] {
-	const dir = migrationsDir();
+	const dir = syncPromptMigrationsDir();
 	return discoverSyncPromptChainFolders(dir).map((folder) => {
-		const sql = readFileSync(join(dir, folder, "migration.sql"), "utf8");
+		const sql = readSyncMigrationSql(dir, folder);
 		return {
 			folder,
 			agentKey: readSyncMigrationAgentKey(sql, folder),
-			replaced: extractFragment(sql, "old_types", folder),
-			replacement: extractFragment(sql, "new_types", folder),
-			guard: extractSingle(
-				sql,
-				/NOT LIKE '%([^']+)%'/g,
-				"`NOT LIKE` guard",
-				folder,
-			),
+			replaced: extractSyncMigrationFragment(sql, "old_types", folder),
+			replacement: extractSyncMigrationFragment(sql, "new_types", folder),
+			guard: readSyncMigrationGuard(sql, folder),
 			sql,
 		};
 	});
@@ -174,6 +127,43 @@ describe("sync prompt migration chains — discovery", () => {
 				`${migration.folder} targets '${migration.agentKey}', which has no constant registered in this suite`,
 			).toBe(true);
 		}
+	});
+
+	it("discovers every migration whose statement targets a publishing_topic_* prompt", () => {
+		// The negative control on the folder-name pattern discovery runs on.
+		// Everything else in this file, and the post-deploy checker's guard
+		// binding in `verify-publishing-prompt-sync.test.ts`, is scoped to what
+		// that pattern finds — so a prompt-sync migration named outside its two
+		// prefixes is not merely uncovered, it is invisible to the case that
+		// exists to notice a guard has fallen behind. Both directions of that
+		// case would compare two unchanged lists and pass, and
+		// `checkPublishingPromptSync` would report OK for an environment the
+		// migration never reached.
+		//
+		// A rewording of one of the seven existence-only publishing keys is how
+		// that arrives: the seed is INSERT-ONLY, so the change can only travel
+		// as a migration, and nothing obliges its author to pick one of the two
+		// prefixes.
+		const dir = syncPromptMigrationsDir();
+		const discovered = new Set(discoverSyncPromptChainFolders(dir));
+		const targeting = foldersTargetingPublishingPromptKey(dir);
+
+		// Floor first, so the assertion below cannot pass vacuously on a scan
+		// that has silently stopped matching — an empty scan has an empty
+		// difference. Tied to what discovery found rather than to a number, so
+		// it grows by itself and nobody has to bump it.
+		expect(
+			targeting.length,
+			"the SQL scan found fewer publishing_topic_* migrations than folder-name discovery did, so the scan itself has stopped working",
+		).toBeGreaterThanOrEqual(discovered.size);
+
+		const undiscovered = targeting.filter(
+			(folder) => !discovered.has(folder),
+		);
+		expect(
+			undiscovered,
+			`these migrations rewrite a publishing_topic_* prompt but are not discovered, so nothing binds a staleness guard to them and the post-deploy checker will report OK for an environment they never reached:\n  ${undiscovered.join("\n  ")}`,
+		).toEqual([]);
 	});
 
 	it("both prompt chains are non-empty", () => {
@@ -257,6 +247,43 @@ for (const [agentKey, chain] of CHAINS) {
 			it(`${migration.folder}: the guard string is absent before and present after`, () => {
 				expect(bBefore).not.toContain(migration.guard);
 				expect(bAfter).toContain(migration.guard);
+			});
+
+			// Rule 8, and the only one of the `G` rules that is a property of
+			// WHERE the string sits rather than of the string itself.
+			//
+			// The prompt constants are wrapped at 78 columns, so a clause
+			// picked out of one to serve as `G` can straddle a line break. The
+			// author of 20260910140000 nearly shipped exactly that. Written
+			// into the migration it becomes a quoted SQL literal carrying a
+			// raw newline — legal, almost never intended, and invisible to
+			// every other rule here, because all of them compare `G` against
+			// a body reconstructed from that same wrapped constant and so
+			// agree with themselves. `toContain` is substring-matching a
+			// multi-line string, and a multi-line needle matches it happily.
+			//
+			// MEASURED, by mutating this migration's guard and counting what
+			// went red:
+			//
+			//  - `G` taken across the wrap WITH the newline kept in the SQL
+			//    literal: exactly ONE failure, this case. All seven other
+			//    rules pass. This case is the only thing standing between
+			//    that authoring slip and a merge.
+			//  - the same clause with the newline flattened to a space:
+			//    TWO failures, this case and "absent before and present
+			//    after". Here rule 8 is a duplicate, not the catcher.
+			//
+			// What it is NOT for: re-wrapping the paragraph itself is caught
+			// many times over already (13 failures across the chain, driven by
+			// the frozen `$new_types$` fragment no longer occurring in the
+			// reflowed constant). An earlier draft of this comment claimed a
+			// re-wrap was "not caught at all"; measurement refuted that, and
+			// the claim is not repeated here.
+			it(`${migration.folder}: the guard string sits on ONE line of the body it produces`, () => {
+				expect(
+					bAfter.split("\n").some((l) => l.includes(migration.guard)),
+					`guard '${migration.guard}' straddles a line break in the constant, so the SQL literal carries a raw newline and the clause is pinned to one exact wrap position - pick a G that fits on a single line`,
+				).toBe(true);
 			});
 
 			// The fourth `G` rule: absent from the post-migration body of every

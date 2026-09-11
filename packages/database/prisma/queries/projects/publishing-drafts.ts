@@ -74,6 +74,7 @@ export const PUBLISHING_DRAFT_POST_TYPES_DISPLAY_ORDER = [
 	"CASE_STUDY",
 	"STAKEHOLDER_EMAIL",
 	"WEBINAR_SCRIPT",
+	"NEWSLETTER_BLURB",
 ] as const;
 
 export type DraftPostType =

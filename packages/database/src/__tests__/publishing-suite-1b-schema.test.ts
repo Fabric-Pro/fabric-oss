@@ -17,6 +17,7 @@ describe("Publishing Suite 1B schema", () => {
 				"BLOG_POST",
 				"CASE_STUDY",
 				"LINKEDIN_POST",
+				"NEWSLETTER_BLURB",
 				"STAKEHOLDER_EMAIL",
 				"TWEET",
 				"WEBINAR_SCRIPT",

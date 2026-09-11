@@ -96,6 +96,7 @@ export const POST_TYPE_LABELS: ReadonlyArray<{
 	{ value: "CASE_STUDY", label: "Case Study" },
 	{ value: "STAKEHOLDER_EMAIL", label: "Stakeholder Email" },
 	{ value: "WEBINAR_SCRIPT", label: "Webinar / Demo Script" },
+	{ value: "NEWSLETTER_BLURB", label: "Newsletter Blurb" },
 ];
 
 /**
@@ -117,8 +118,8 @@ export const ALL_POST_TYPES: readonly PostType[] = POST_TYPE_LABELS.map(
  * The content types with a generation panel of their own.
  *
  * Phase 2B activated Tweet and Blog Post; 2C-1 added Case Study, 2C-2
- * Stakeholder Email, #1851 LinkedIn Post, and #1988 Webinar / Demo Script
- * (Phase 2D-1).
+ * Stakeholder Email, #1851 LinkedIn Post, #1988 Webinar / Demo Script
+ * (Phase 2D-1) and #1988 Newsletter Blurb (Phase 2D-2).
  *
  * The set stays rather than collapsing into "all of them", and the rule it
  * enforces is a PAIRING rather than a delay: membership here is what makes a
@@ -160,6 +161,7 @@ export const GENERATION_ACTIVE_POST_TYPES: ReadonlySet<PostType> =
 		"CASE_STUDY",
 		"STAKEHOLDER_EMAIL",
 		"WEBINAR_SCRIPT",
+		"NEWSLETTER_BLURB",
 	]);
 
 export type WhySuggested = NonNullable<PublishingTopic["whySuggested"]>;

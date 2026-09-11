@@ -42,6 +42,7 @@ export const PUBLISHING_POST_TYPE_OPTIONS = [
 	{ value: "CASE_STUDY", label: "Case Study" },
 	{ value: "STAKEHOLDER_EMAIL", label: "Stakeholder Email" },
 	{ value: "WEBINAR_SCRIPT", label: "Webinar / Demo Script" },
+	{ value: "NEWSLETTER_BLURB", label: "Newsletter Blurb" },
 ] as const satisfies readonly {
 	value: PublishingTopicPostType;
 	label: string;
@@ -58,6 +59,7 @@ export const PUBLISHING_TOPIC_POST_TYPES = [
 	"CASE_STUDY",
 	"STAKEHOLDER_EMAIL",
 	"WEBINAR_SCRIPT",
+	"NEWSLETTER_BLURB",
 ] as const satisfies readonly PublishingTopicPostType[];
 
 /**

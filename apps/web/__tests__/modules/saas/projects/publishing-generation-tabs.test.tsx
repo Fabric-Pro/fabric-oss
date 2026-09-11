@@ -753,6 +753,28 @@ describe("GenerationTabs — panel content", () => {
 		).toBeInTheDocument();
 	});
 
+	it("DOES offer a generate control on the Newsletter Blurb tab", async () => {
+		// Spec §11's named case, INHERITED from Task 9: the tab it asserts on
+		// does not exist until the type joins `GENERATION_ACTIVE_POST_TYPES`
+		// and its arm lands in `GenerationPanel`'s chain, so it is written in
+		// the commit that does both. This is the reader-level half of the
+		// pairing rule: the static guard above matches `postType === "…"` as
+		// plain TEXT over the whole file, so it stays green for any arm whose
+		// text survives while its branch cannot fire — commented out, moved
+		// outside `GenerationPanel`'s chain, or gated off. MEASURED: appending
+		// `&& false` to the arm's condition left the guard GREEN and reddened
+		// this case alone. Deleting the arm outright reddens both.
+		const user = userEvent.setup();
+		renderTabs();
+
+		await user.click(
+			within(tablist()).getByRole("tab", { name: /newsletter blurb/i }),
+		);
+		expect(
+			screen.getByRole("button", { name: /generate newsletter blurb/i }),
+		).toBeInTheDocument();
+	});
+
 	it("hands a saved blog draft to the blog panel, which shows the body itself", async () => {
 		// This case used to assert the GENERIC draft-state line ("you have a
 		// saved draft for this content type"), retargeted from TWEET to
