@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
+	buildMcpToolName,
 	capToolSet,
+	MCP_TOOL_NAME_PATTERN,
 	summarizeOmittedTools,
 	validateMcpToolSet,
 } from "../src/activities/direct-chat/tool-payload-safety";
@@ -17,6 +19,21 @@ describe("validateMcpToolSet", () => {
 		const { tools, dropped } = validateMcpToolSet(input);
 		expect(Object.keys(tools)).toEqual(["a"]);
 		expect(dropped).toEqual([]);
+	});
+
+	it("drops a tool whose name the provider would reject", () => {
+		// The fail-safe behind `buildMcpToolName`: whoever produced the name,
+		// one that cannot be sent must cost a single tool rather than the
+		// whole request (Fizzy #2473).
+		const input = {
+			ok: tool({ type: "object", properties: {} }),
+			"slack_(official)_post": tool({ type: "object", properties: {} }),
+		};
+		const { tools, dropped } = validateMcpToolSet(input);
+		expect(Object.keys(tools)).toEqual(["ok"]);
+		expect(dropped).toEqual([
+			{ name: "slack_(official)_post", reason: "invalid_tool_name" },
+		]);
 	});
 
 	it("drops tools whose schema contains $ref", () => {
@@ -251,5 +268,89 @@ describe("summarizeOmittedTools", () => {
 			"fizzy (1 of its tools omitted)",
 			"ado (all of its tools omitted)",
 		]);
+	});
+});
+
+/**
+ * Fizzy #2473. A server name is free text, and names holding punctuation the
+ * provider's tool-name grammar forbids turned up in a real deployment.
+ * Anthropic answers a single bad name by rejecting the WHOLE request
+ * (`tools.12.custom.name: String should match pattern …`), so every tool in
+ * the turn died and direct chat's #1644 degradation answered with none — the
+ * user was told the surface has no tools connected.
+ */
+describe("buildMcpToolName", () => {
+	const legacyName = (serverName: string, toolName: string) =>
+		`${serverName.toLowerCase().replace(/\s+/g, "_")}_${toolName}`;
+
+	it("repairs the punctuation that reached the provider", () => {
+		for (const serverName of [
+			"Slack (Official)",
+			"Team's Google Drive",
+			"Reports & Metrics",
+			"Docs / Wiki",
+		]) {
+			const name = buildMcpToolName(serverName, "list_channels");
+			expect(legacyName(serverName, "list_channels")).not.toMatch(
+				MCP_TOOL_NAME_PATTERN,
+			);
+			expect(name).toMatch(MCP_TOOL_NAME_PATTERN);
+		}
+	});
+
+	it("leaves an already-valid name byte-identical", () => {
+		// The shapes a working server name already takes. Repairing must not
+		// rename a tool that worked: a changed name is a changed tool as far as
+		// the model and the conversation history are concerned.
+		for (const serverName of [
+			"fabric-mcp",
+			"Fizzy",
+			"Excalidraw",
+			"Notion Workspace MCP",
+			"ADO Server V2",
+			"GitLab",
+			"ado-tools",
+		]) {
+			expect(buildMcpToolName(serverName, "get_thing")).toBe(
+				legacyName(serverName, "get_thing"),
+			);
+		}
+	});
+
+	it("keeps two servers that repair to the same prefix apart", () => {
+		const taken = new Set<string>();
+		const first = buildMcpToolName("Slack (Official)", "post", taken);
+		const second = buildMcpToolName("Slack Official", "post", taken);
+		expect(first).toMatch(MCP_TOOL_NAME_PATTERN);
+		expect(second).toMatch(MCP_TOOL_NAME_PATTERN);
+		// `tools` and `toolToServerMap` are keyed by this string: a collision
+		// would route one server's calls to the other.
+		expect(second).not.toBe(first);
+	});
+
+	it("clamps an over-long name without converging two of them", () => {
+		const taken = new Set<string>();
+		const first = buildMcpToolName("x".repeat(200), "alpha", taken);
+		const second = buildMcpToolName("x".repeat(201), "alpha", taken);
+		expect(first).toMatch(MCP_TOOL_NAME_PATTERN);
+		expect(second).toMatch(MCP_TOOL_NAME_PATTERN);
+		expect(first.length).toBeLessThanOrEqual(128);
+		expect(second).not.toBe(first);
+	});
+
+	it("keeps two identical over-long names apart", () => {
+		// The hashed form is the same for both, so only the reservation set
+		// separates them — and it has to do so without cutting the hash back
+		// into a collision.
+		const taken = new Set<string>();
+		const first = buildMcpToolName("y".repeat(200), "alpha", taken);
+		const second = buildMcpToolName("y".repeat(200), "alpha", taken);
+		expect(first).toMatch(MCP_TOOL_NAME_PATTERN);
+		expect(second).toMatch(MCP_TOOL_NAME_PATTERN);
+		expect(second).not.toBe(first);
+	});
+
+	it("still yields a usable name when nothing survives repair", () => {
+		expect(buildMcpToolName("***", "***")).toMatch(MCP_TOOL_NAME_PATTERN);
 	});
 });
