@@ -362,6 +362,72 @@ describe("publishing_topic_question_assignee registration", () => {
 	});
 });
 
+/**
+ * CLI connection nudge registration (Fizzy #2457).
+ *
+ * Three new tables, and each has to be registered in BOTH files. The generic
+ * guards above catch only half of that: the M-A1 check would be satisfied by an
+ * EXEMPT entry, and the parity check below reads the `user_owned` policy only,
+ * so an org_only or per_user_within_org table missing from tenant-db.ts slips
+ * through it. A tenant table absent from tenant-db.ts is not "less isolated",
+ * it is UNFILTERED — `getTenantFilter` returns null for a model it does not
+ * recognise and the WHERE passes through untouched. The registration IS the
+ * isolation, so it is asserted here rather than trusted to review.
+ *
+ * The split of policies is the point and is worth pinning: the two reach tables
+ * report a fact about the ORGANIZATION, which every member may read, while a
+ * dismissal is one person's answer and must not be visible to a colleague.
+ */
+describe("CLI connection nudge registration (Fizzy #2457)", () => {
+	const orgOnlyBlock =
+		tenantDbSrc.match(
+			/const ORG_ONLY_TABLES = new Set\(\[([\s\S]*?)\]\);/,
+		)?.[1] ?? "";
+	const perUserOrgBlock =
+		tenantDbSrc.match(
+			/const PER_USER_ORG_TABLES = new Set\(\[([\s\S]*?)\]\);/,
+		)?.[1] ?? "";
+
+	it("sanity: both tenant-db table sets parsed", () => {
+		expect(orgOnlyBlock).not.toBe("");
+		expect(perUserOrgBlock).not.toBe("");
+	});
+
+	it.each([
+		"organization_cli_reach",
+		"organization_cli_first_reach",
+		"cli_connection_prompt_dismissal",
+	])("%s is registered rather than exempted", (physical) => {
+		expect(allowlist.has(physical)).toBe(true);
+		expect(EXEMPT.has(physical)).toBe(false);
+		expect(physicals.has(physical)).toBe(true);
+	});
+
+	it("scopes both reach tables to the organization alone", () => {
+		expect(applySrc).toMatch(
+			/name:\s*"organization_cli_reach"\s*,\s*policy:\s*"org_only"/,
+		);
+		expect(applySrc).toMatch(
+			/name:\s*"organization_cli_first_reach"\s*,\s*policy:\s*"org_only"/,
+		);
+		expect(orgOnlyBlock).toMatch(/"OrganizationCliReach",/);
+		expect(orgOnlyBlock).toMatch(/"OrganizationCliFirstReach",/);
+	});
+
+	it("scopes the dismissal to its own user within the organization", () => {
+		expect(applySrc).toMatch(
+			/name:\s*"cli_connection_prompt_dismissal"\s*,\s*policy:\s*"per_user_within_org"/,
+		);
+		expect(perUserOrgBlock).toMatch(/"CliConnectionPromptDismissal",/);
+	});
+
+	it("does not scope a reach record per user, which would hide the org fact", () => {
+		expect(perUserOrgBlock).not.toMatch(/"OrganizationCliReach",/);
+		expect(perUserOrgBlock).not.toMatch(/"OrganizationCliFirstReach",/);
+		expect(orgOnlyBlock).not.toMatch(/"CliConnectionPromptDismissal",/);
+	});
+});
+
 describe("tenant-db allowlist parity with the RLS registration", () => {
 	const userOwnedBlock =
 		tenantDbSrc.match(

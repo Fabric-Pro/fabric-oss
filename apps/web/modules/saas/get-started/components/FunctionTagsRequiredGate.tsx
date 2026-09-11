@@ -1,10 +1,10 @@
 "use client";
 
+import { useFeatureFlag } from "@saas/shared/components/FeatureFlagProvider";
 import {
 	FunctionTagSelect,
 	type FunctionTagValue,
 } from "@saas/shared/components/FunctionTagSelect";
-import { useFeatureFlag } from "@saas/shared/components/FeatureFlagProvider";
 import { useRoleTagSnapshot } from "@saas/shared/components/RoleTagSnapshotProvider";
 import { orpcClient } from "@shared/lib/orpc-client";
 import { orpc } from "@shared/lib/orpc-query-utils";
@@ -19,6 +19,7 @@ import {
 	DialogTitle,
 } from "@ui/components/dialog";
 import { useEffect, useState } from "react";
+import { useOnboardingViewClaim } from "../lib/onboarding-claim";
 
 /** How often an OPEN gate re-checks whether enforcement was withdrawn. */
 const KILL_SWITCH_POLL_MS = 30_000;
@@ -121,6 +122,14 @@ export function FunctionTagsRequiredGate() {
 	// still be open (from the payload snapshot), but we must not let Save
 	// write a selection that was never seeded from real tags.
 	const tagsLoaded = data !== undefined;
+
+	// Publish that this surface has the reader's attention (Fizzy #2457, R23).
+	//
+	// This gate blocks the whole app, so anything rendering underneath it — the
+	// CLI-connection prompt on a project page it was opened over — must stand
+	// down. `enforcing` is the same value the early return reads, so the claim
+	// cannot outlive what is on screen.
+	useOnboardingViewClaim(enforcing);
 
 	if (!enforcing) {
 		return null;

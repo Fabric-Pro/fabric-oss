@@ -21,13 +21,13 @@ import {
 	isNewlyIntroducedPage,
 	pageForTab,
 } from "../lib/get-started-registry";
+import { useOnboardingViewClaim } from "../lib/onboarding-claim";
 import { createSessionFlag, useSessionFlag } from "../lib/session-flag";
 import {
 	GET_STARTED_OPEN_EVENT,
 	GET_STARTED_PAGES_REVEALED_EVENT,
 	GET_STARTED_PROJECT_TAB_EVENT,
 	GET_STARTED_SPOTLIGHT_EVENT,
-	GET_STARTED_SURFACE_EVENT,
 	GET_STARTED_TOUR_PAGE_EVENT,
 	type OnboardingStep,
 	type PagesRevealedEventDetail,
@@ -35,7 +35,6 @@ import {
 	resolveTourPosition,
 	resolveTourSteps,
 	type SpotlightEventDetail,
-	type SurfaceEventDetail,
 	type TourPageEventDetail,
 } from "../lib/tour-steps";
 import {
@@ -681,17 +680,20 @@ export function GetStartedController() {
 		};
 	}, [openDrawer, startPageTourById]);
 
-	// Broadcast whether any onboarding surface is on screen. Keyed on `mode` so
-	// every path that opens or closes one is covered without touching each
-	// handler; drawer -> tour and similar surface-to-surface moves stay "open"
-	// throughout, so listeners never see a spurious close between them.
-	useEffect(() => {
-		window.dispatchEvent(
-			new CustomEvent<SurfaceEventDetail>(GET_STARTED_SURFACE_EVENT, {
-				detail: { open: mode !== "idle" },
-			}),
-		);
-	}, [mode]);
+	// Broadcast whether any onboarding surface is on screen. Derived from
+	// `mode` so every path that opens or closes one is covered without touching
+	// each handler; drawer -> tour and similar surface-to-surface moves stay
+	// "open" throughout, so listeners never see a spurious close between them.
+	//
+	// Held as a CLAIM rather than dispatched from here directly (Fizzy #2457):
+	// this is no longer the only surface that suppresses others, and a second
+	// publisher dispatching `false` on its own close would have cancelled a
+	// controller surface that was still up. The wire and its `{ open }` payload
+	// are unchanged — see `useOnboardingViewClaim`. Note the boolean dependency:
+	// keying the effect on `mode` itself would release and re-claim inside one
+	// commit on every surface-to-surface move, which is exactly the spurious
+	// close the comment above forbids.
+	useOnboardingViewClaim(mode !== "idle");
 
 	// Where the viewer is, resolved by STEP rather than by slot — the list is
 	// live and steps can vanish mid-run. See `resolveTourPosition`.

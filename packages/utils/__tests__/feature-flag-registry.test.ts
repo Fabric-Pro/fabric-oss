@@ -646,3 +646,69 @@ describe("SIMPLIFIED_PROJECT_CREATION", () => {
 		).toEqual({ enabled: true, source: "org-override" });
 	});
 });
+
+describe("CLI_CONNECTION_NUDGE (#2457)", () => {
+	// The default is the assertion that matters, not just the env var name: this
+	// gate decides whether the prompt interrupts anyone and whether a ninth row
+	// joins the readiness checklist. A default of `true` would do both on deploy,
+	// to every organization at once, which is the opposite of a staged rollout.
+	it("is registered off by default, on its own env var, and org-scopable", () => {
+		expect(isFeatureFlagKey("CLI_CONNECTION_NUDGE")).toBe(true);
+		expect(FEATURE_FLAG_REGISTRY.CLI_CONNECTION_NUDGE.default).toBe(false);
+		expect(FEATURE_FLAG_REGISTRY.CLI_CONNECTION_NUDGE.envVar).toBe(
+			"FABRIC_FEATURE_CLI_CONNECTION_NUDGE",
+		);
+		expect(FEATURE_FLAG_REGISTRY.CLI_CONNECTION_NUDGE.orgScopable).toBe(
+			true,
+		);
+	});
+
+	// A deployment that has never heard of this flag must get neither surface:
+	// merging it changes no project's readiness row, count or level.
+	it("resolves off when neither an override nor the env var is set", () => {
+		expect(resolveFlag("CLI_CONNECTION_NUDGE", {}, {})).toEqual({
+			enabled: false,
+			source: "default",
+		});
+	});
+
+	// The env var name is load-bearing, and sharing one is a known failure mode
+	// in this registry: LIVING_DOCS_REFRESH would have launched on deploy had it
+	// inherited the sweep kill switch's name, which is true in every environment.
+	// A collision here would hand this gate whatever the other feature's rollout
+	// state happens to be, with no visible cause.
+	it("does not share its env var with any other entry", () => {
+		const mine = FEATURE_FLAG_REGISTRY.CLI_CONNECTION_NUDGE.envVar;
+		const others = FEATURE_FLAG_KEYS.filter(
+			(key) => key !== "CLI_CONNECTION_NUDGE",
+		).map(
+			(key) =>
+				(FEATURE_FLAG_REGISTRY[key] as FeatureFlagDefinition).envVar,
+		);
+
+		expect(others).not.toContain(mine);
+	});
+
+	// The whole reason it is orgScopable: the rollout is one organization at a
+	// time, and the resolver ignores an org row for a flag that does not declare
+	// it — so without the marker the pilot would silently resolve to the default.
+	it("lets one organization be enabled ahead of the deployment", () => {
+		expect(resolveFlag("CLI_CONNECTION_NUDGE", { org: true }, {})).toEqual({
+			enabled: true,
+			source: "org-override",
+		});
+	});
+
+	// The other direction of the same lever: an organization that has said it
+	// does not want the prompt must stay excluded once the gate goes
+	// deployment-wide, or the rollout can only ever move forwards.
+	it("lets an org override of false beat a global override of true", () => {
+		expect(
+			resolveFlag(
+				"CLI_CONNECTION_NUDGE",
+				{ org: false, global: true },
+				{},
+			),
+		).toEqual({ enabled: false, source: "org-override" });
+	});
+});

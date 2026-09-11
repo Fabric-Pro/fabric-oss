@@ -51,6 +51,7 @@ export function emptyEvidence(): ReadinessEvidence {
 			analysisCompleted: false,
 			atlasAnalysisExists: false,
 		},
+		organizationCliConnected: false,
 		completeDocumentTypes: new Set<string>(),
 		acceptedMemberCount: 0,
 		roadmapItemCount: 0,

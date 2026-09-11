@@ -323,6 +323,23 @@ The countdown banner that appears only when a user has stayed on one screen long
 
 Because it fires only on a parked user, it always lands on someone mid-task, and almost always on someone scrolled away from the top of the page. That is why it is sticky rather than static: it is the only warning before a forced reload, so a placement that can scroll out of view defeats its whole purpose.
 
+## CLI connectivity
+
+### Reach record
+The runtime's own note that one credential carried a request from a coding tool into an organization over the protocol surface. Written by the server for itself at the point it has already decided the request is legitimate — the secret matched, the owner was loaded, membership was re-read — and never for a browser session or an anonymous caller.
+
+It exists because none of the facts that look like it are it. A credential that exists has not necessarily been used; a credential that authenticates may be refused by every tool it calls, since permission is enforced per call rather than at the door; and the usage counters are stamped the moment the secret matches, before the owner lookup and before the membership check, so they count requests that go on to be refused. Each of those was wrong in a state a real caller can reach, which is why the fact is recorded rather than inferred. One record per credential, so that revoking a credential can still change the answer — a single record per organization could not.
+
+### First reach
+The permanent mark that an organization was reached by a coding tool for the first time, kept apart from the Reach record on purpose and never invalidated afterwards.
+
+The separation is what lets adoption stay measurable. Every Reach record can stop counting — the credential is revoked, expires, or its owner leaves — so a funnel built on them would lose its own history the first time a team rotated a key. Electing the first reach is exact: concurrent first requests resolve to one winner. Delivery of any announcement that follows is not, because the winner can vanish after the mark is written and nothing will elect a second one; the mark itself is the durable signal, and anything downstream of it is a convenience.
+
+### Connected organization
+An organization that can currently be reached from a coding tool: at least one of its Reach records still names a credential that is active, unexpired, and held by someone who is still a member.
+
+Present tense, and deliberately not decaying. Silence is not disconnection — a team that connected once and has been quiet since is still connected, because nothing about their setup has changed. Revocation, expiry and offboarding do change it, and each flips the answer immediately, because the question is asked of the credentials rather than of the calendar. *Avoid:* "has an API key", which is the fact this concept exists to stop standing in for.
+
 ## Onboarding
 
 ### Get started
@@ -373,3 +390,10 @@ deletion and whether the model may read it; source usage decides whether supplie
 material feeds a generation or becomes a document body. Both are two-valued and both
 say "context" in one of their values, which is exactly why conflating them is easy —
 and why a change to one has never implied a change to the other.
+
+- "Connected" had been used for both *holding a credential* and *having actually been
+reached through one* — these are distinct, and the gap between them is reachable by an
+ordinary caller. A credential can exist unused, can authenticate and then be refused by
+every tool it calls, and can have its usage counter stamped on a request that goes on to
+return unauthorized. Only a Reach record says a coding tool arrived; everything else says
+someone was issued the means to try.

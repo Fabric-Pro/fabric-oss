@@ -82,6 +82,25 @@ export interface ResolveInput {
 	/** Whose view this is — decides which snoozes apply. */
 	viewerUserId: string;
 	now: Date;
+	/**
+	 * Rule keys to leave out of this resolution entirely: the item is absent
+	 * from `items` and `activeGaps`, and from both `completedCount` and
+	 * `totalCount`, exactly as though the rule were not in the registry.
+	 *
+	 * It exists for a rollout gate. A rule receives evidence and nothing else,
+	 * so the registry cannot read a feature flag, and the caller has to be able
+	 * to withhold a row BEFORE the level rolls up — dropping it from `items`
+	 * afterwards leaves it in the denominator and lets its gap drag a Ready
+	 * project down to Partially Ready.
+	 *
+	 * Skipping the item, not marking it not applicable. A not-applicable mark
+	 * would make the key read *satisfied* for everything that depends on it,
+	 * which is harmless only while no rule lists it in `dependsOn` — an
+	 * invariant nothing here enforces and a future rule could quietly break.
+	 * An excluded key keeps whatever `detect` says about it, so the items that
+	 * hang off one are judged on the truth rather than on the exclusion.
+	 */
+	excludeKeys?: ReadonlySet<string>;
 }
 
 export interface ReadinessSummary {
@@ -131,7 +150,7 @@ function capNeedLevel(own: NeedLevel, dependency: NeedLevel): NeedLevel {
 }
 
 export function resolveReadiness(input: ResolveInput): ReadinessSummary {
-	const { evidence, manualStates, viewerUserId, now } = input;
+	const { evidence, manualStates, viewerUserId, now, excludeKeys } = input;
 
 	// Decision 3 — grade every project. When no phase was chosen, infer one from
 	// the project's own state rather than withholding the checklist entirely.
@@ -235,6 +254,13 @@ export function resolveReadiness(input: ResolveInput): ReadinessSummary {
 		evidence.expectedDevelopmentStartDate > now;
 
 	for (const rule of READINESS_RULES) {
+		// Withheld rows never become items, so they reach neither count, neither
+		// list, nor the level. Their raw detection above is left intact on
+		// purpose — see `excludeKeys`.
+		if (excludeKeys?.has(rule.key)) {
+			continue;
+		}
+
 		let needLevel = rule.needLevel[phase];
 
 		if (developmentNotDueYet && CODEBASE_DEPENDENT.has(rule.key)) {

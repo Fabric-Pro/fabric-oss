@@ -154,6 +154,24 @@ export const OrganizationApiKeyScalarFieldEnumSchema = z.enum(['id', 'organizati
 
 export type OrganizationApiKeyScalarFieldEnum = z.infer<typeof OrganizationApiKeyScalarFieldEnumSchema>;
 
+// File: OrganizationCliReachScalarFieldEnum.schema.ts
+
+export const OrganizationCliReachScalarFieldEnumSchema = z.enum(['id', 'organizationId', 'credentialKind', 'credentialId', 'firstReachedAt', 'lastReachedAt'])
+
+export type OrganizationCliReachScalarFieldEnum = z.infer<typeof OrganizationCliReachScalarFieldEnumSchema>;
+
+// File: OrganizationCliFirstReachScalarFieldEnum.schema.ts
+
+export const OrganizationCliFirstReachScalarFieldEnumSchema = z.enum(['organizationId', 'firstReachedAt'])
+
+export type OrganizationCliFirstReachScalarFieldEnum = z.infer<typeof OrganizationCliFirstReachScalarFieldEnumSchema>;
+
+// File: CliConnectionPromptDismissalScalarFieldEnum.schema.ts
+
+export const CliConnectionPromptDismissalScalarFieldEnumSchema = z.enum(['id', 'organizationId', 'userId', 'dismissedAt', 'createdAt', 'updatedAt'])
+
+export type CliConnectionPromptDismissalScalarFieldEnum = z.infer<typeof CliConnectionPromptDismissalScalarFieldEnumSchema>;
+
 // File: AgentScalarFieldEnum.schema.ts
 
 export const AgentScalarFieldEnumSchema = z.enum(['id', 'agentId', 'name', 'displayName', 'description', 'heroEmojis', 'heroImageUrl', 'framework', 'runtimeVersion', 'deploymentUrl', 'status', 'scope', 'userId', 'organizationId', 'config', 'metadata', 'createdAt', 'updatedAt', 'lastHealthCheck', 'lastDeployedAt', 'aiModel', 'aiModelConfig', 'aiProvider', 'useGlobalAiProvider'])
@@ -1978,6 +1996,12 @@ export const DocumentStatusSchema = z.enum(['PENDING', 'PROCESSING', 'READY', 'F
 
 export type DocumentStatus = z.infer<typeof DocumentStatusSchema>;
 
+// File: CliCredentialKind.schema.ts
+
+export const CliCredentialKindSchema = z.enum(['USER_API_KEY', 'ORGANIZATION_API_KEY'])
+
+export type CliCredentialKind = z.infer<typeof CliCredentialKindSchema>;
+
 // File: AgentFramework.schema.ts
 
 export const AgentFrameworkSchema = z.enum(['LANGGRAPH', 'MICROSOFT', 'PYDANTIC_AI', 'CREWAI', 'AUTOGEN', 'OPENAI', 'CUSTOM', 'A2A', 'MCP', 'ORCHESTRATOR', 'COPILOTKIT', 'FABRIC_NATIVE'])
@@ -3768,6 +3792,44 @@ export const OrganizationApiKeySchema = z.object({
 });
 
 export type OrganizationApiKeyType = z.infer<typeof OrganizationApiKeySchema>;
+
+
+// File: OrganizationCliReach.schema.ts
+
+export const OrganizationCliReachSchema = z.object({
+  id: z.string(),
+  organizationId: z.string(),
+  credentialKind: CliCredentialKindSchema,
+  credentialId: z.string(),
+  firstReachedAt: z.date(),
+  lastReachedAt: z.date(),
+});
+
+export type OrganizationCliReachType = z.infer<typeof OrganizationCliReachSchema>;
+
+
+// File: OrganizationCliFirstReach.schema.ts
+
+export const OrganizationCliFirstReachSchema = z.object({
+  organizationId: z.string(),
+  firstReachedAt: z.date(),
+});
+
+export type OrganizationCliFirstReachType = z.infer<typeof OrganizationCliFirstReachSchema>;
+
+
+// File: CliConnectionPromptDismissal.schema.ts
+
+export const CliConnectionPromptDismissalSchema = z.object({
+  id: z.string(),
+  organizationId: z.string(),
+  userId: z.string(),
+  dismissedAt: z.date().nullish(),
+  createdAt: z.date(),
+  updatedAt: z.date(),
+});
+
+export type CliConnectionPromptDismissalType = z.infer<typeof CliConnectionPromptDismissalSchema>;
 
 
 // File: Agent.schema.ts

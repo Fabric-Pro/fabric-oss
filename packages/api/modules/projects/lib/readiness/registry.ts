@@ -5,11 +5,14 @@
  * One entry per sheet row, one unit test per entry. That pairing is the point:
  * a rule cannot quietly drift from the sheet without a named test failing.
  *
- * ## Why 27 rules and not 29
+ * ## Why 26 sheet rules, and 28 entries
  *
- * 26 of them are the sheet. The 27th, `design-document`, is a later addition
- * that was never on it (Fizzy #2377) — so a count that no longer matches the
- * spreadsheet is expected, and the sheet remains canonical for the other 26.
+ * The registry carries 28 entries. Twenty-six are the approved sheet, and the
+ * sheet stays canonical for those. The other two were added after it and were
+ * never on it: `design-document` (Fizzy #2377) and `api-key-for-cli`
+ * (Fizzy #2457). So a count that no longer matches the spreadsheet is expected
+ * rather than drift. The pairing rule holds for both late additions — each has
+ * its own case in `registry.test.ts`.
  *
  * The three Project Basics rows — project description, project phase, expected
  * development start date — are annotated in the sheet as "will not be shown on
@@ -44,6 +47,7 @@
  */
 
 import type { ProjectPhase } from "@repo/database";
+import { CLI_ITEM_KEY } from "./thresholds";
 import type { ReadinessRule } from "./types";
 
 /**
@@ -174,6 +178,40 @@ export const READINESS_RULES: readonly ReadinessRule[] = [
 		detect: (e) => e.indexedContext.knowledgeBaseLinks >= 1,
 		unmet: () => "classify",
 		inProgress: (e) => e.inFlight.context.knowledgeBaseLinks > 0,
+	},
+	{
+		// The ORGANIZATION, not the project. Every project of a connected
+		// organization reads complete, which is why the row's own copy says so
+		// rather than leaving it to be read as a per-project claim. The rule
+		// reads the resolved fact and does nothing else — see
+		// `ReadinessEvidence.organizationCliConnected` for why it is never
+		// re-derived from the key tables (Fizzy #2457, R11/R12).
+		//
+		// A Should in development rather than the ticket's Must. Within this
+		// category Must is today carried only by the item for a codebase Fabric
+		// cannot see; a team that prefers not to use a CLI is not in that
+		// category, and marking every established project not ready on the day
+		// this ships would teach people to ignore the readiness signal (R13).
+		//
+		// No `dependsOn` and no `supersededBy`, both deliberately: a dependency
+		// would hide the row behind another item, and the level calculation only
+		// ever counts what the panel can show.
+		//
+		// The entry is unconditional. A rule receives evidence and nothing else,
+		// so it cannot read the rollout gate; the payload is what filters this
+		// row out for an organization the gate is off for.
+		//
+		// `target` exists to satisfy the rule type and the CTA drift test, not
+		// to be followed: the row renders an action that opens the key-issuing
+		// view rather than navigating to a settings page (R15), so it names the
+		// project's own overview tab.
+		key: CLI_ITEM_KEY,
+		category: "CONTEXT_AND_CONNECTIONS",
+		i18nKey: "readiness.items.apiKeyForCli",
+		ctaLabelKey: "readiness.cta.apiKeyForCli",
+		target: { kind: "tab", tab: "overview" },
+		needLevel: phase({ discovery: "COULD", development: "SHOULD" }),
+		detect: (e) => e.organizationCliConnected,
 	},
 
 	// ── Documents ────────────────────────────────────────────────────────────

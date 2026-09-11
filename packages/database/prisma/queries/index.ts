@@ -29,6 +29,7 @@ export * from "./brand-color";
 export * from "./chat-agent-selection";
 export * from "./chat-artifacts";
 export * from "./chat-documents";
+export * from "./cli-reach";
 export * from "./code-symbols";
 export * from "./coding-runs";
 export * from "./component-incidents";

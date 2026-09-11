@@ -354,6 +354,10 @@ model User {
   authoredStatusUpdates         StatusUpdate[]         @relation("StatusUpdateAuthor")
   authoredStatusUpdateRevisions StatusUpdateRevision[] @relation("StatusUpdateRevisionAuthor")
 
+  // CLI connection nudge (Fizzy #2457). One dismissal per organization; see the
+  // model doc for why this is not a column on Member.
+  cliPromptDismissals CliConnectionPromptDismissal[]
+
   // Brute force protection
   failedLoginAttempts Int       @default(0)
   lockedUntil         DateTime?
@@ -782,6 +786,12 @@ model Organization {
 
   // Per-organization feature-flag overrides (RLS-exempt; see model doc)
   featureFlagOverrides OrganizationFeatureFlagOverride[]
+
+  // CLI connection nudge (Fizzy #2457). Reach records and the never-invalidated
+  // first-reach row cascade on org delete; so do prompt dismissals.
+  cliReaches          OrganizationCliReach[]
+  cliFirstReach       OrganizationCliFirstReach?
+  cliPromptDismissals CliConnectionPromptDismissal[]
 
   // Serves the daily purge scan for organizations past their retention window
   // (#2462). Created CONCURRENTLY in its own migration — see
@@ -1224,6 +1234,117 @@ model OrganizationApiKey {
   @@index([keyPrefix])
   @@index([isActive])
   @@map("organization_api_key")
+}
+
+/// Which of the two API-key tables a reach record's `credentialId` points at
+/// (Fizzy #2457). Fabric issues two kinds of key and they live in two different
+/// tables, so the id alone does not identify a row.
+enum CliCredentialKind {
+  USER_API_KEY
+  ORGANIZATION_API_KEY
+
+  @@map("cli_credential_kind")
+}
+
+/// One credential that has reached this organization over MCP (Fizzy #2457, R2).
+///
+/// Written by the MCP runtime at the point it has ALREADY decided a request is
+/// legitimate: an API key — never a browser session, which reaches the same
+/// endpoints with wider scopes — whose owner is still a member, for the
+/// organization the request actually resolved to, however it resolved. Nothing
+/// here is inferred afterwards from key rows: scopes are enforced per tool call,
+/// usage counters are stamped before the membership check, and a personal key's
+/// organization is only *defaulted* from its holder's memberships. Every
+/// re-derivation of "is a CLI connected" from those was wrong in a reachable
+/// state.
+///
+/// Reach is remembered; connectivity is checked. This row proves a credential
+/// reached the organization and that never stops being true. Whether the
+/// organization is *currently* connected is a second question, answered by
+/// asking whether any credential that reached it is still alive.
+///
+/// `credentialId` deliberately carries NO foreign key. It is polymorphic across
+/// `user_api_key` and `organization_api_key`, and a foreign key cannot point at
+/// two tables. The reader treats a MISSING key row as "this credential is dead"
+/// — organization keys are hard-deleted by the revoke path, so the absent row is
+/// the revocation. Do not "fix" this by adding a constraint: it cannot be
+/// expressed, and a cascade would delete the very history this table exists to
+/// keep.
+///
+/// `firstReachedAt` / `lastReachedAt` are this row's created/updated timestamps;
+/// they are named for what they mean rather than duplicated as a second pair.
+model OrganizationCliReach {
+  id             String            @id @default(cuid())
+  organizationId String
+  /// Which key table `credentialId` lives in.
+  credentialKind CliCredentialKind
+  /// The persisted id of the key row. No foreign key — see the model doc.
+  credentialId   String
+  firstReachedAt DateTime          @default(now())
+  lastReachedAt  DateTime          @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  /// The upsert's conflict target: one row per (organization, credential), so a
+  /// second request updates rather than duplicates.
+  @@unique([organizationId, credentialKind, credentialId])
+  @@index([organizationId])
+  @@map("organization_cli_reach")
+}
+
+/// The first time ANY credential reached this organization (Fizzy #2457, R32).
+///
+/// Separate from `OrganizationCliReach` on purpose: every per-credential row can
+/// become invalid — revoked, expired, owner offboarded — and the adoption funnel
+/// must survive that. This row is written once and is never invalidated, so a
+/// team whose only key was later revoked still reports when it first connected.
+///
+/// The organization is the primary key: there is exactly one first time, and
+/// making it the key is what makes the write idempotent under concurrency.
+model OrganizationCliFirstReach {
+  organizationId String   @id
+  firstReachedAt DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@map("organization_cli_first_reach")
+}
+
+/// One person's dismissal of the CLI connection prompt (Fizzy #2457, R5).
+///
+/// Permanence is deliberate: once dismissed, the prompt does not return for that
+/// person in that organization, on any device or in any later session. That is
+/// defensible only because the readiness checklist's "API Key for CLI" row does
+/// NOT dismiss — the row is the standing reminder, and only the interruption is
+/// spent. Adding an expiry here would re-interrupt someone who has already
+/// answered.
+///
+/// Deliberately NOT a column on `Member`. That model belongs to the
+/// authentication library, carries no application columns, and its rows are
+/// recreated when someone rejoins an organization — which would silently clear a
+/// dismissal and re-interrupt a person who had already answered.
+///
+/// Same shape as `ProjectUserPreference`: per-user within an organization, so
+/// `per_user_within_org` in `scripts/apply-rls-direct.ts` and
+/// `PER_USER_ORG_TABLES` in `src/tenant-db.ts`.
+model CliConnectionPromptDismissal {
+  id             String    @id @default(cuid())
+  organizationId String
+  userId         String
+  /// Nullable, and null is meaningful: the row is an upsert target, so a row
+  /// that exists without a timestamp reads as "not dismissed" rather than as a
+  /// dismissal. The timestamp carries the answer, not the row's existence.
+  dismissedAt    DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, userId])
+  @@index([organizationId])
+  @@index([userId])
+  @@map("cli_connection_prompt_dismissal")
 }
 
 model Agent {

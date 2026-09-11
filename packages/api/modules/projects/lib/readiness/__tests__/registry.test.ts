@@ -132,6 +132,16 @@ const CASES: Array<[string, () => ReadinessEvidence, () => ReadinessEvidence]> =
 				return e;
 			},
 		],
+		[
+			"api-key-for-cli",
+			// The organization has a credential that reached it and is still
+			// alive. That resolved fact is the whole rule — a key that exists is
+			// not a key that has ever connected, so nothing here is derived from
+			// the key tables (Fizzy #2457, AE3).
+			() => ({ ...emptyEvidence(), organizationCliConnected: true }),
+			// Nobody in the organization has ever reached Fabric from a CLI.
+			emptyEvidence,
+		],
 		["business-case", () => withDocument("BUSINESS_CASE"), emptyEvidence],
 		["proposal", () => withDocument("PROPOSAL"), emptyEvidence],
 		["prd", () => withDocument("PRD"), emptyEvidence],
@@ -253,11 +263,13 @@ const CASES: Array<[string, () => ReadinessEvidence, () => ReadinessEvidence]> =
 	];
 
 describe("readiness rule registry", () => {
-	it("carries the 26 items that survive onboarding extraction, plus design", () => {
-		// 26 from the 19 August sheet; `design-document` was added later and
-		// was never on it (Fizzy #2377).
-		expect(READINESS_RULES).toHaveLength(27);
+	it("carries the 28 items the panel can show", () => {
+		// The 19 August sheet's 26 that survive onboarding extraction, plus two
+		// later additions that were never on it: `design-document`
+		// (Fizzy #2377) and `api-key-for-cli` (Fizzy #2457).
+		expect(READINESS_RULES).toHaveLength(28);
 		expect(READINESS_RULES_BY_KEY.has("design-document")).toBe(true);
+		expect(READINESS_RULES_BY_KEY.has("api-key-for-cli")).toBe(true);
 	});
 
 	/**

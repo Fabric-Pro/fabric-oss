@@ -26,27 +26,24 @@ import {
  * single query behind them have to live above both.
  */
 
-export interface ReadinessItem {
-	key: string;
-	category: string;
-	i18nKey: string;
-	ctaLabelKey: string;
-	needLevel: "MUST" | "SHOULD" | "COULD" | "NOT_APPLICABLE";
-	isComplete: boolean;
-	isInProgress: boolean;
-	supersededBy?: string;
-	/** Copy variant for the "still needed" line; resolved against i18n. */
-	unmetReason?: string;
-	/** The prerequisite hiding this item, when one is. */
-	blockedBy?: string;
-	manualState: "SNOOZED" | "NOT_APPLICABLE" | "HELP_REQUESTED" | null;
-	snoozeUntil: string | Date | null;
-	isVisible: boolean;
-	isActiveGap: boolean;
-	target: { kind: "tab"; tab: string } | { kind: "settings"; subTab: string };
-}
+/**
+ * The payload shape, INFERRED from the procedure's output schema in
+ * `packages/api/modules/projects/procedures/readiness/get.ts`.
+ *
+ * Inferred rather than restated. A hand-written copy of the shape is a second
+ * source of truth that `pnpm type-check` has no way to compare against the
+ * first, so it drifts in silence the moment the procedure gains a field — and
+ * a readiness payload gains fields often. Nothing new is pulled into the
+ * browser bundle by reading it here: `orpc-client.ts` already imports the
+ * router's types, so this taps a flow that is there either way.
+ */
+type ReadinessData = Awaited<
+	ReturnType<typeof orpcClient.projects.readiness.get>
+>;
 
-/** What has changed since this viewer last opened the panel. */
+/** One checklist row, exactly as the procedure returns it. */
+export type ReadinessItem = ReadinessData["items"][number];
+
 /**
  * Whether the panel has already opened itself today, in the VIEWER's day.
  *
@@ -61,34 +58,6 @@ function isFirstViewToday(autoExpandedAt: string | Date | null): boolean {
 	const midnight = new Date();
 	midnight.setHours(0, 0, 0, 0);
 	return last < midnight;
-}
-
-/** What has changed since this viewer last opened the panel. */
-interface ReadinessAttention {
-	changes: Array<{
-		key: string;
-		kind: "COMPLETED" | "REGRESSED" | "APPEARED";
-	}>;
-	levelDropped: boolean;
-	seenAt: string | Date | null;
-	autoExpandedAt: string | Date | null;
-}
-
-interface ReadinessData {
-	enabled: boolean;
-	attention: ReadinessAttention;
-	level: "NOT_READY" | "PARTIALLY_READY" | "READY";
-	phase: "DISCOVERY_PLANNING" | "DEVELOPMENT_EXECUTION";
-	/** "inferred" means nobody chose the phase — say so rather than implying it. */
-	phaseSource: "set" | "inferred";
-	completedCount: number;
-	totalCount: number;
-	suggestPhaseTransition: boolean;
-	/** False for a viewer who cannot edit the project — every action needs it. */
-	canAct: boolean;
-	items: ReadinessItem[];
-	activeGaps: ReadinessItem[];
-	recentlyCompleted: Array<{ key: string }>;
 }
 
 interface ReadinessContextValue {
@@ -108,6 +77,34 @@ interface ReadinessContextValue {
 	 */
 	hasInlineSlot: boolean;
 	claimInlineSlot: () => () => void;
+	/**
+	 * Whether this viewer has minted a CLI key from THIS project view
+	 * (Fizzy #2457).
+	 *
+	 * Shared rather than held by whichever surface issued it, because two
+	 * surfaces offer the key and only one of them has to stand down: the
+	 * checklist's "API Key for CLI" row keeps the offer, and the prompt above
+	 * the project must not go on saying nobody has connected a coding tool to
+	 * someone holding a key they minted a second ago. Both mount their own
+	 * issuing view, so a flag local to either one is invisible to the other —
+	 * which is how the prompt survived a key issued from the row.
+	 *
+	 * Nothing on the server can replace it. The checklist item behind the
+	 * prompt's eligibility completes when a coding tool actually REACHES
+	 * Fabric, so issuing a key moves no readiness answer at all and the refetch
+	 * that follows still reports the prompt eligible.
+	 *
+	 * NOT derived from the payload, and never written by anything that reads
+	 * visibility — it is a fact about what this person just did, recorded by
+	 * the one callback that knows it happened.
+	 *
+	 * Per project view and deliberately not persisted: issuing a key is not
+	 * connecting with it, so the offer belongs back on the next visit, and the
+	 * checklist row keeps it reachable in between.
+	 */
+	cliKeyIssued: boolean;
+	/** Records the issue. One-way: nothing un-issues a key. */
+	markCliKeyIssued: () => void;
 }
 
 const ReadinessContext = createContext<ReadinessContextValue | null>(null);
@@ -134,7 +131,7 @@ export function ProjectReadinessProvider({
 			orpcClient.projects.readiness.get({
 				projectId,
 				organizationId: organizationId ?? null,
-			}) as Promise<ReadinessData>,
+			}),
 		staleTime: 30_000,
 		/**
 		 * Poll only while something is actually running.
@@ -147,9 +144,7 @@ export function ProjectReadinessProvider({
 		 * false and the query goes quiet again.
 		 */
 		refetchInterval: (query) =>
-			(query.state.data as ReadinessData | undefined)?.items?.some(
-				(i) => i.isInProgress,
-			)
+			query.state.data?.items.some((i) => i.isInProgress)
 				? 15_000
 				: false,
 		// The default — stated so the intent (don't spend this poll on a
@@ -345,6 +340,12 @@ export function ProjectReadinessProvider({
 		return () => setInlineSlotCount((n) => n - 1);
 	}, []);
 
+	// The one CLI fact both surfaces need — see `cliKeyIssued` on the context
+	// type. A latch, not a toggle: no caller may take it back, so nothing can
+	// re-offer the key to someone who has just been handed one.
+	const [cliKeyIssued, setCliKeyIssued] = useState(false);
+	const markCliKeyIssued = useCallback(() => setCliKeyIssued(true), []);
+
 	return (
 		<ReadinessContext.Provider
 			value={{
@@ -358,6 +359,8 @@ export function ProjectReadinessProvider({
 				},
 				hasInlineSlot: inlineSlotCount > 0,
 				claimInlineSlot,
+				cliKeyIssued,
+				markCliKeyIssued,
 			}}
 		>
 			{children}
