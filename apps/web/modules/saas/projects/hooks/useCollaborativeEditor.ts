@@ -35,6 +35,8 @@ interface UseCollaborativeEditorResult {
 
 interface CollaborationToken {
 	value: string;
+	documentId: string;
+	userId: string;
 }
 
 /** Consecutive credential rejections tolerated before keeping the editor offline. */
@@ -135,6 +137,7 @@ export function useCollaborativeEditor(
 			return;
 		}
 
+		const userId = user.id;
 		let cancelled = false;
 
 		const scheduleTokenRefreshRetry = () => {
@@ -183,6 +186,7 @@ export function useCollaborativeEditor(
 						response.statusText,
 					);
 					if (response.status === 401 || response.status === 403) {
+						setToken(null);
 						authRecoveryPendingRef.current = false;
 						tokenRefreshAttemptsRef.current = 0;
 					} else if (response.status >= 500) {
@@ -200,7 +204,11 @@ export function useCollaborativeEditor(
 					tokenRefreshAttemptsRef.current = 0;
 					// Store an object so a forced recovery replaces the provider even
 					// if the token endpoint returns the same string.
-					setToken({ value: data.token });
+					setToken({
+						value: data.token,
+						documentId,
+						userId,
+					});
 				}
 			} catch (error) {
 				console.error(
@@ -237,7 +245,14 @@ export function useCollaborativeEditor(
 			!!ydoc,
 		);
 
-		if (!token || !enabled || !ydoc) {
+		if (
+			!token ||
+			!enabled ||
+			!ydoc ||
+			!user ||
+			token.documentId !== documentId ||
+			token.userId !== user.id
+		) {
 			setProvider(null);
 			setIsConnected(false);
 			setIsSynced(false);
@@ -304,6 +319,7 @@ export function useCollaborativeEditor(
 			setIsConnected(false);
 			setIsSynced(false);
 			setCollaborators(new Map());
+			setToken(null);
 
 			unauthorizedClosesRef.current += 1;
 			if (unauthorizedClosesRef.current >= MAX_UNAUTHORIZED_CLOSES) {
