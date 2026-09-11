@@ -169,3 +169,78 @@ describe("CalendarCanvas — awaiting-transcript badges", () => {
 		expect(screen.getByText("+1 more")).toBeInTheDocument();
 	});
 });
+
+describe("CalendarCanvas — chronological ordering within a day (#2465)", () => {
+	it("renders meetings on the same day in chronological order (earlier first) when input is newest-first", () => {
+		const morningMeeting: DigestMeeting = {
+			...meeting,
+			transcriptId: "t-morning",
+			subject: "Morning DSU",
+			meetingDate: new Date("2026-06-10T09:00:00Z"),
+		};
+		const afternoonMeeting: DigestMeeting = {
+			...meeting,
+			transcriptId: "t-afternoon",
+			subject: "Afternoon Sync",
+			meetingDate: new Date("2026-06-10T15:00:00Z"),
+		};
+
+		// Passed in newest-first order as returned by listDigest API (orderBy: { meetingDate: "desc" })
+		render(
+			<CalendarCanvas
+				monthDate={new Date("2026-06-15")}
+				meetings={[afternoonMeeting, morningMeeting]}
+				onSelect={vi.fn()}
+			/>,
+		);
+
+		const badges = screen.getAllByRole("button", { name: /dsu|sync/i });
+		expect(badges.map((b) => b.textContent)).toEqual([
+			"Morning DSU",
+			"Afternoon Sync",
+		]);
+	});
+
+	it("shows the earliest three meetings when collapsed on a day with four meetings", () => {
+		const fourNewestFirst: DigestMeeting[] = [
+			{
+				...meeting,
+				transcriptId: "t4",
+				subject: "Meeting 16:00",
+				meetingDate: new Date("2026-06-10T16:00:00Z"),
+			},
+			{
+				...meeting,
+				transcriptId: "t3",
+				subject: "Meeting 14:00",
+				meetingDate: new Date("2026-06-10T14:00:00Z"),
+			},
+			{
+				...meeting,
+				transcriptId: "t2",
+				subject: "Meeting 11:00",
+				meetingDate: new Date("2026-06-10T11:00:00Z"),
+			},
+			{
+				...meeting,
+				transcriptId: "t1",
+				subject: "Meeting 09:00",
+				meetingDate: new Date("2026-06-10T09:00:00Z"),
+			},
+		];
+
+		render(
+			<CalendarCanvas
+				monthDate={new Date("2026-06-15")}
+				meetings={fourNewestFirst}
+				onSelect={vi.fn()}
+			/>,
+		);
+
+		expect(screen.getByText("Meeting 09:00")).toBeInTheDocument();
+		expect(screen.getByText("Meeting 11:00")).toBeInTheDocument();
+		expect(screen.getByText("Meeting 14:00")).toBeInTheDocument();
+		expect(screen.queryByText("Meeting 16:00")).not.toBeInTheDocument();
+		expect(screen.getByText("+1 more")).toBeInTheDocument();
+	});
+});

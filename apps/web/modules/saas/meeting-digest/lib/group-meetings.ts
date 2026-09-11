@@ -27,6 +27,13 @@ export function groupMeetingsByDay(
 			out.set(key, [meeting]);
 		}
 	}
+	for (const bucket of out.values()) {
+		bucket.sort((a, b) => {
+			const timeA = a.meetingDate ? new Date(a.meetingDate).getTime() : 0;
+			const timeB = b.meetingDate ? new Date(b.meetingDate).getTime() : 0;
+			return timeA - timeB;
+		});
+	}
 	return out;
 }
 
@@ -65,6 +72,13 @@ export function groupAwaitingByDay(
 			map.set(key, [meeting]);
 		}
 	}
+	for (const bucket of map.values()) {
+		bucket.sort((a, b) => {
+			const timeA = new Date(a.occurrenceStart).getTime();
+			const timeB = new Date(b.occurrenceStart).getTime();
+			return timeA - timeB;
+		});
+	}
 	return map;
 }
 
@@ -96,6 +110,13 @@ export function groupPersonalMeetingsByDay(
 		} else {
 			map.set(key, [meeting]);
 		}
+	}
+	for (const bucket of map.values()) {
+		bucket.sort((a, b) => {
+			const timeA = a.startTime ? new Date(a.startTime).getTime() : 0;
+			const timeB = b.startTime ? new Date(b.startTime).getTime() : 0;
+			return timeA - timeB;
+		});
 	}
 	return map;
 }
