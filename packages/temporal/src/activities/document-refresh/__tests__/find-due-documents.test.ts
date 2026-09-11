@@ -52,6 +52,7 @@ vi.mock("@repo/logs", () => ({
 	logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
 
+import { logger } from "@repo/logs";
 import { findDueDocumentsActivity } from "../find-due-documents";
 
 const NOW = new Date("2026-07-13T12:00:00.000Z");
@@ -180,6 +181,35 @@ describe("feature flag", () => {
 
 		expect(result.due).toEqual([]);
 		expect(listMock).not.toHaveBeenCalled();
+	});
+
+	// The stand-down above and a healthy sweep with nothing due both return an
+	// empty list, so without a line in the log the two are indistinguishable from
+	// outside. That ambiguity is not academic: prod ran with the rollout resolved
+	// true in the web deployment and absent in the worker, so members enrolled
+	// documents against a sweep that had been standing down since it booted, and
+	// the only symptom was an absence — no attempt, no status, no last-run time.
+	// Assert the gate is NAMED, because "some gate is closed" does not tell an
+	// operator which of the two deployments to go and look at.
+	it("names the closed gate in the log when it stands down", async () => {
+		flagMock.mockImplementation(
+			async (key: FeatureFlagKey) =>
+				resolveFlag(key, { global: undefined }, {
+					FABRIC_FEATURE_LIVING_DOCS_REFRESH: "true",
+					// rollout deliberately unset — the prod misconfiguration
+				} as NodeJS.ProcessEnv).enabled,
+		);
+
+		await findDueDocumentsActivity();
+
+		expect(logger.warn).toHaveBeenCalledWith(
+			expect.stringContaining("stood down"),
+			expect.objectContaining({
+				gate: "LIVING_DOCS_REFRESH",
+				rolloutOn: false,
+				sweepArmed: true,
+			}),
+		);
 	});
 
 	it("returns nothing and issues no query when the env var is off", async () => {

@@ -63,6 +63,28 @@ export interface RetrieveForSpecOptions {
 	 * Defaults off, so every existing caller keeps its current behavior.
 	 */
 	throwOnRetrievalError?: boolean;
+	/**
+	 * Hold `slots` of the final `topK` for contexts created at or after `since` —
+	 * material the document demonstrably cannot already reflect.
+	 *
+	 * Fusion ranks by similarity and has no opinion about age, which quietly
+	 * breaks the one job a repeating "update this document" cycle has. A document
+	 * is written FROM its early meetings, so it resembles them more closely than
+	 * it resembles anything said since; those same sources therefore win the
+	 * ranking on every subsequent run, fill the slots, and the model is asked to
+	 * update a document using only the material already in it. It answers "nothing
+	 * has changed" — correctly — and the document never moves again.
+	 *
+	 * A floor, not a re-ranking: the quota decides WHICH candidates survive the
+	 * cut, never what order they reach the prompt in, and it only ever displaces
+	 * candidates that would have made the cut on similarity alone. Fewer unseen
+	 * contexts than slots simply means the rest go to the ranking, so this cannot
+	 * pad the prompt with irrelevant recency.
+	 *
+	 * Undefined by default: every existing caller — v1 knowledge search, the story
+	 * path — retrieves exactly as before.
+	 */
+	unseenQuota?: { since: Date; slots: number };
 }
 
 /**
@@ -402,6 +424,98 @@ async function retrieveDatabricksContexts(options: {
 	}
 }
 
+/**
+ * Take `topK` candidates in rank order, holding `reserved` of the slots for
+ * material the document has never seen.
+ *
+ * Ordering is preserved: the quota decides WHICH candidates survive the cut,
+ * never what order they reach the prompt in. It is also a floor rather than a
+ * target — when fewer unseen candidates exist than slots reserved, the surplus
+ * goes straight back to the ranking, so this can never pad a prompt with
+ * irrelevant-but-recent material.
+ */
+function selectWithUnseenQuota(
+	eligible: Array<{ item: RetrievedContext; isUnseen: boolean }>,
+	topK: number,
+	reserved: number,
+): { items: RetrievedContext[]; reservedIds: Set<string> } {
+	// The untouched path, and it must stay byte-for-byte what the old
+	// stop-at-topK loop produced: same filters, same rank order, same cut.
+	if (reserved <= 0) {
+		return {
+			items: eligible.slice(0, topK).map((e) => e.item),
+			reservedIds: new Set<string>(),
+		};
+	}
+
+	const promoted = new Set<number>();
+	for (
+		let i = 0;
+		i < eligible.length && promoted.size < Math.min(reserved, topK);
+		i++
+	) {
+		if (eligible[i].isUnseen) {
+			promoted.add(i);
+		}
+	}
+
+	const chosen = [...promoted];
+	for (let i = 0; i < eligible.length && chosen.length < topK; i++) {
+		if (!promoted.has(i)) {
+			chosen.push(i);
+		}
+	}
+
+	const items = chosen
+		.sort((a, b) => a - b)
+		.slice(0, topK)
+		.map((i) => eligible[i].item);
+
+	// Which of them only made it because of the quota. They are, by construction,
+	// the lowest-scoring entries in the result — that is the whole point — which
+	// makes them the first casualties of any later score-ordered cut. The merge
+	// below needs to know who they are in order not to undo this.
+	return {
+		items,
+		reservedIds: new Set([...promoted].map((i) => eligible[i].item.id)),
+	};
+}
+
+/**
+ * Fold external (Databricks) hits into the internal result, without letting them
+ * evict the contexts the unseen quota just rescued.
+ *
+ * External hits carry no timestamp, so none of them can ever satisfy the
+ * reservation — and a plain score sort would hand them the reserved slots first,
+ * because a promoted context is by definition one that lost on score. Reserved
+ * entries are therefore held out of the contest and the external hits compete
+ * for what is left. With no quota in play this is exactly the previous merge.
+ */
+function mergeExternalHits(
+	internal: RetrievedContext[],
+	external: RetrievedContext[],
+	topK: number,
+	reservedIds: Set<string>,
+): RetrievedContext[] {
+	const byScore = (a: RetrievedContext, b: RetrievedContext) =>
+		b.score - a.score;
+
+	if (reservedIds.size === 0) {
+		return [...internal, ...external].sort(byScore).slice(0, topK);
+	}
+
+	const reserved = internal.filter((r) => reservedIds.has(r.id));
+	const contested = [
+		...internal.filter((r) => !reservedIds.has(r.id)),
+		...external,
+	].sort(byScore);
+
+	return [
+		...reserved,
+		...contested.slice(0, Math.max(0, topK - reserved.length)),
+	].sort(byScore);
+}
+
 export async function retrieveRelevantContextsForSpec(
 	options: RetrieveForSpecOptions,
 ): Promise<RetrievedContext[]> {
@@ -417,6 +531,7 @@ export async function retrieveRelevantContextsForSpec(
 		minSimilarity = 0.3,
 		excludeDocumentChunks = false,
 		throwOnRetrievalError = false,
+		unseenQuota,
 	} = options;
 	// Defensive normalization: `topK` reaches this function from a public API
 	// surface (v1 knowledge search validates too, but this function must not
@@ -610,12 +725,27 @@ export async function retrieveRelevantContextsForSpec(
 		}
 
 		const results: RetrievedContext[] = [];
+		let reservedIds = new Set<string>();
 		if (rrfScores.size > 0) {
 			// Fetch the top-N × 3 before filtering so baseline-date filtering can't
 			// starve the final list when many recent contexts rank mid-pack.
+			//
+			// That cut predates the unseen quota and fights it: it is applied
+			// BEFORE hydration, whereas "unseen" is only knowable AFTER it —
+			// `createdAt` lives on the row, not in the fused score. On precisely
+			// the workload the quota exists for (old, highly similar sources
+			// dominating the ranking) the reserved population is what this cut
+			// discards, so the quota would hold slots open for candidates it can
+			// no longer see, and a context could stay unreachable for good.
+			//
+			// So a caller that asks for the quota hydrates the whole fused list.
+			// Bounded by construction — at most `maxQueryChunks × perQueryTopK`
+			// candidates can ever enter the fusion — and paid only by the callers
+			// that opt in. Everyone else keeps the original cut exactly.
+			const hydrationLimit = unseenQuota ? rrfScores.size : topK * 3;
 			const rankedContextIds = [...rrfScores.entries()]
 				.sort((a, b) => b[1] - a[1])
-				.slice(0, topK * 3)
+				.slice(0, hydrationLimit)
 				.map(([contextId]) => contextId);
 
 			// Use `getRetrievableContextById` (not `getContextById`) so URL-page
@@ -625,6 +755,15 @@ export async function retrieveRelevantContextsForSpec(
 			const fetched = await Promise.all(
 				rankedContextIds.map((id) => getRetrievableContextById(id)),
 			);
+
+			// Every eligible candidate, in rank order — not just the first `topK`.
+			// The cut moved below so the unseen quota has something to choose
+			// from: stopping at `topK` here is precisely where the newest
+			// material used to be lost.
+			const eligible: Array<{
+				item: RetrievedContext;
+				isUnseen: boolean;
+			}> = [];
 
 			for (let i = 0; i < fetched.length; i++) {
 				const ctx = fetched[i];
@@ -650,23 +789,32 @@ export async function retrieveRelevantContextsForSpec(
 					(ctx.content.length > MAX_CONTEXT_CONTENT_CHARS
 						? `${ctx.content.slice(0, MAX_CONTEXT_CONTENT_CHARS)}...`
 						: ctx.content);
-				results.push({
-					id: ctx.id,
-					type: ctx.type,
-					content,
-					score: rrfScores.get(rankedContextIds[i]) ?? 0,
-					metadata: meta ?? undefined,
-					filename: ctx.originalFilename || undefined,
-					sourceUrl: ctx.sourceUrl || undefined,
-					sourceTitle: ctx.sourceTitle || undefined,
-					sourceType: ctx.sourceType ?? undefined,
-					aiInstructions: ctx.aiInstructions ?? undefined,
+				eligible.push({
+					item: {
+						id: ctx.id,
+						type: ctx.type,
+						content,
+						score: rrfScores.get(rankedContextIds[i]) ?? 0,
+						metadata: meta ?? undefined,
+						filename: ctx.originalFilename || undefined,
+						sourceUrl: ctx.sourceUrl || undefined,
+						sourceTitle: ctx.sourceTitle || undefined,
+						sourceType: ctx.sourceType ?? undefined,
+						aiInstructions: ctx.aiInstructions ?? undefined,
+					},
+					isUnseen: unseenQuota
+						? ctx.createdAt >= unseenQuota.since
+						: false,
 				});
-
-				if (results.length >= topK) {
-					break;
-				}
 			}
+
+			const selected = selectWithUnseenQuota(
+				eligible,
+				topK,
+				unseenQuota?.slots ?? 0,
+			);
+			results.push(...selected.items);
+			reservedIds = selected.reservedIds;
 		}
 
 		// Merge the two sources by RRF score. The Databricks list is already
@@ -674,9 +822,12 @@ export async function retrieveRelevantContextsForSpec(
 		// many internal ones — and only when they out-score them.
 		const merged =
 			databricks.results.length > 0
-				? [...results, ...databricks.results]
-						.sort((a, b) => b.score - a.score)
-						.slice(0, topK)
+				? mergeExternalHits(
+						results,
+						databricks.results,
+						topK,
+						reservedIds,
+					)
 				: results;
 
 		logger.info(

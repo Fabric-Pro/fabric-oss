@@ -45,9 +45,12 @@ vi.mock("@repo/ai/lib/function-tag-context", () => ({
 
 const {
 	runContextUpdate,
+	ContextUpdateFailedError,
 	ContextUpdateTruncatedError,
 	UPDATE_WITH_CONTEXT_SYSTEM_PROMPT,
 } = await import("../src/lib/update-with-context-core");
+// The mocked class above — the same identity the core's `instanceof` checks.
+const { AIProviderNotConfiguredError } = await import("@repo/ai");
 const actualAiForTests = await vi.importActual<typeof import("ai")>("ai");
 
 describe("runContextUpdate — FR-25 locked-attachment rule", () => {
@@ -471,12 +474,39 @@ describe("runContextUpdate — truncation classification", () => {
 		);
 	});
 
-	it("resolves to null for a generic error (unchanged behavior)", async () => {
+	it("rejects with ContextUpdateFailedError when the model call fails", async () => {
+		// A deliberate contract change. This used to resolve to null — the same
+		// value an unconfigured provider returns — so every caller told the user
+		// to "check your AI settings" for a rate limit, a provider 500 or an
+		// unparseable response, sending them to a page that was already correct.
 		mocks.generateObject.mockRejectedValue(new Error("boom"));
 
-		const result = await runContextUpdate(baseArgs);
+		await expect(runContextUpdate(baseArgs)).rejects.toBeInstanceOf(
+			ContextUpdateFailedError,
+		);
+	});
 
-		expect(result).toBeNull();
+	it("keeps the original failure as `cause` rather than in the user's message", async () => {
+		// The message is surfaced verbatim: the interactive button toasts it and
+		// the unattended sweep records it as the cycle's failure reason. Provider
+		// internals belong in the logs, not in either of those.
+		const underlying = new Error("429 rate_limit_exceeded from provider");
+		mocks.generateObject.mockRejectedValue(underlying);
+
+		const error = await runContextUpdate(baseArgs).catch((e) => e);
+
+		expect(error.cause).toBe(underlying);
+		expect(error.message).not.toContain("rate_limit_exceeded");
+	});
+
+	it("still resolves to null when no AI provider is configured", async () => {
+		// The one remaining null, and the only case for which "check your AI
+		// settings" is the right thing to say.
+		mocks.generateObject.mockRejectedValue(
+			new AIProviderNotConfiguredError("no provider"),
+		);
+
+		await expect(runContextUpdate(baseArgs)).resolves.toBeNull();
 	});
 });
 

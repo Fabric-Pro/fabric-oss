@@ -182,6 +182,7 @@ export {
 // refresh must run the exact same prompt, schema, and retrieval.
 export {
 	type ContextItem,
+	ContextUpdateFailedError,
 	type ContextUpdateResult,
 	ContextUpdateSchema,
 	ContextUpdateTruncatedError,

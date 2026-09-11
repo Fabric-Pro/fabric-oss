@@ -74,6 +74,23 @@ export async function findDueDocumentsActivity(): Promise<FindDueDocumentsOutput
 		isKillSwitchArmed("LIVING_DOCS_REFRESH_SWEEP"),
 	]);
 	if (!(rolloutOn && sweepArmed)) {
+		// Say so, every tick. A stand-down here is indistinguishable from a
+		// healthy sweep with nothing due — both produce an empty due-list — and
+		// the difference is the whole diagnosis when someone reports that an
+		// enrolled document never refreshes. It matters most for the rollout
+		// gate, which the WEB deployment resolves separately: a member can see
+		// the control, set a cadence and turn on auto-apply against a worker
+		// that has been standing down since it booted, and until this line
+		// existed the only evidence was an absence — no attempt, no status, no
+		// last-run time. Logged at warn because an enrolled estate plus a closed
+		// gate is a misconfiguration, not a resting state.
+		logger.warn("[DocumentRefresh] Sweep stood down: gate closed", {
+			rolloutOn,
+			sweepArmed,
+			gate: !rolloutOn
+				? "LIVING_DOCS_REFRESH"
+				: "LIVING_DOCS_REFRESH_SWEEP",
+		});
 		return { due: [] };
 	}
 

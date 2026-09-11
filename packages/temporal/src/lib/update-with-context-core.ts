@@ -192,6 +192,25 @@ export class ContextUpdateTruncatedError extends Error {
 	}
 }
 
+/**
+ * The model call itself failed — a provider error, a rate limit, a response that
+ * would not parse.
+ *
+ * Distinct from a `null` return, which now means one specific thing: no AI
+ * provider is configured. Collapsing the two (both used to return `null`) told
+ * every user of a transient provider blip to "check your AI settings", sending
+ * them to a settings page that was never the problem. The message carried here
+ * reaches people — the interactive button surfaces it, and the unattended sweep
+ * records it as the cycle's failure reason — so it stays human-readable and the
+ * underlying error rides along in `cause` for the logs.
+ */
+export class ContextUpdateFailedError extends Error {
+	constructor(message: string, options?: { cause?: unknown }) {
+		super(message, options);
+		this.name = "ContextUpdateFailedError";
+	}
+}
+
 export interface RunContextUpdateArgs {
 	title: string;
 	baselineDate: Date;
@@ -378,13 +397,29 @@ ${formatContextItems(contextItems)}`;
 				"The AI response was truncated at the model's output-token limit before the full updated document could be generated.",
 			);
 		}
+		// The ONLY `null` left. Everything else throws below, so a caller can tell
+		// "nothing is set up" from "the thing that is set up just failed".
 		if (error instanceof AIProviderNotConfiguredError) {
 			return null;
 		}
 		console.error("[UpdateWithContext] AI update failed:", error);
-		return null;
+		throw new ContextUpdateFailedError(
+			"The AI could not complete the update — the model call failed. This is not an AI-settings problem; try again, and if it keeps happening check the provider's status.",
+			{ cause: error },
+		);
 	}
 }
+
+/**
+ * How many of the retrieval slots are held for context the document has never
+ * seen, when a caller asks for the quota at all.
+ *
+ * A third of the default `topK` of 15. Enough that a refresh always has new
+ * material in front of it, small enough that two thirds of the prompt is still
+ * whatever is genuinely most relevant — this is a floor against starvation, not
+ * a recency sort.
+ */
+export const UNSEEN_CONTEXT_SLOTS = 5;
 
 export interface ProjectContextSources {
 	contextItems: ContextItem[];
@@ -546,6 +581,7 @@ export async function fetchProjectContextSources({
 	slackLimit = 30,
 	excludeDocumentChunks = false,
 	failOnRetrievalError = false,
+	unseenSince,
 }: {
 	projectId: string;
 	userId: string;
@@ -570,6 +606,15 @@ export async function fetchProjectContextSources({
 	 * on its own and must not record an outage as a completed no-change cycle.
 	 */
 	failOnRetrievalError?: boolean;
+	/**
+	 * Hold {@link UNSEEN_CONTEXT_SLOTS} of the retrieval slots for context created
+	 * at or after this moment — normally the document's own last content change,
+	 * which is exactly the line between what it can and cannot already reflect.
+	 *
+	 * Omitted by default. The story path and every other caller retrieve as
+	 * before.
+	 */
+	unseenSince?: Date;
 }): Promise<ProjectContextSources> {
 	const [ragSettled, liveSettled, decisionSettled] = await Promise.allSettled(
 		[
@@ -582,6 +627,14 @@ export async function fetchProjectContextSources({
 				throwOnRetrievalError: failOnRetrievalError,
 				baselineDate,
 				topK,
+				...(unseenSince
+					? {
+							unseenQuota: {
+								since: unseenSince,
+								slots: UNSEEN_CONTEXT_SLOTS,
+							},
+						}
+					: {}),
 			}),
 			fetchLiveIntegrationContext({
 				projectId,
