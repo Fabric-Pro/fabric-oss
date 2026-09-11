@@ -1435,6 +1435,291 @@ describe("PostgreSQL RLS Policies", () => {
 		});
 	});
 
+	describe("CLI connection nudge RLS Isolation (Fizzy #2457)", () => {
+		// Two policies in one feature, and the split is the point: the reach
+		// tables report a fact about the ORGANIZATION that any member may read,
+		// while a dismissal is one person's answer and must stay invisible to a
+		// colleague in the same organization. Both directions are asserted for
+		// each, because a policy that filtered nothing would pass the negatives
+		// only by accident of an empty table.
+		let orgAReachId: string;
+		let orgBReachId: string;
+		let dismissalOrgAUserA: string;
+		let dismissalOrgAUserB: string;
+		let dismissalOrgBUserA: string;
+
+		beforeAll(async () => {
+			orgAReachId = (
+				await db.organizationCliReach.create({
+					data: {
+						organizationId: TEST_ORGS.orgA,
+						credentialKind: "ORGANIZATION_API_KEY",
+						// A synthetic id on purpose: the column carries no foreign
+						// key because it is polymorphic across the two key tables,
+						// and this fixture would not insert if that ever changed.
+						credentialId: "rls-fixture-org-a-key",
+					},
+				})
+			).id;
+			orgBReachId = (
+				await db.organizationCliReach.create({
+					data: {
+						organizationId: TEST_ORGS.orgB,
+						credentialKind: "USER_API_KEY",
+						credentialId: "rls-fixture-org-b-key",
+					},
+				})
+			).id;
+
+			await db.organizationCliFirstReach.createMany({
+				data: [
+					{ organizationId: TEST_ORGS.orgA },
+					{ organizationId: TEST_ORGS.orgB },
+				],
+				skipDuplicates: true,
+			});
+
+			const now = new Date();
+			dismissalOrgAUserA = (
+				await db.cliConnectionPromptDismissal.create({
+					data: {
+						organizationId: TEST_ORGS.orgA,
+						userId: TEST_USERS.userA,
+						dismissedAt: now,
+					},
+				})
+			).id;
+			dismissalOrgAUserB = (
+				await db.cliConnectionPromptDismissal.create({
+					data: {
+						organizationId: TEST_ORGS.orgA,
+						userId: TEST_USERS.userB,
+						dismissedAt: now,
+					},
+				})
+			).id;
+			dismissalOrgBUserA = (
+				await db.cliConnectionPromptDismissal.create({
+					data: {
+						organizationId: TEST_ORGS.orgB,
+						userId: TEST_USERS.userA,
+						dismissedAt: now,
+					},
+				})
+			).id;
+		});
+
+		afterAll(async () => {
+			await db.cliConnectionPromptDismissal.deleteMany({
+				where: {
+					id: {
+						in: [
+							dismissalOrgAUserA,
+							dismissalOrgAUserB,
+							dismissalOrgBUserA,
+						],
+					},
+				},
+			});
+			await db.organizationCliReach.deleteMany({
+				where: { id: { in: [orgAReachId, orgBReachId] } },
+			});
+			await db.organizationCliFirstReach.deleteMany({
+				where: {
+					organizationId: { in: [TEST_ORGS.orgA, TEST_ORGS.orgB] },
+				},
+			});
+		});
+
+		it("organization_cli_reach: a member of the owning org CAN read the record", async () => {
+			const row = await asRlsRole(
+				{
+					type: "organization",
+					tenantId: TEST_ORGS.orgA,
+					userId: TEST_USERS.userA,
+				},
+				(tx) =>
+					tx.organizationCliReach.findUnique({
+						where: { id: orgAReachId },
+					}),
+			);
+			expect(row).not.toBeNull();
+			expect(row?.id).toBe(orgAReachId);
+		});
+
+		// The credential belongs to one person; the fact belongs to the
+		// organization. Reading it as a DIFFERENT member is what proves the
+		// policy is org_only rather than quietly per-user.
+		it("organization_cli_reach: another member of the same org CAN read it too", async () => {
+			const row = await asRlsRole(
+				{
+					type: "organization",
+					tenantId: TEST_ORGS.orgA,
+					userId: TEST_USERS.userB,
+				},
+				(tx) =>
+					tx.organizationCliReach.findUnique({
+						where: { id: orgAReachId },
+					}),
+			);
+			expect(row).not.toBeNull();
+		});
+
+		it("organization_cli_reach: Org B context cannot read Org A's record", async () => {
+			const row = await asRlsRole(
+				{
+					type: "organization",
+					tenantId: TEST_ORGS.orgB,
+					userId: TEST_USERS.userA,
+				},
+				(tx) =>
+					tx.organizationCliReach.findUnique({
+						where: { id: orgAReachId },
+					}),
+			);
+			expect(row).toBeNull();
+		});
+
+		// org_only has no personal branch at all, which is the correct shape
+		// under ADR 018: there is no personal arm to route into.
+		it("organization_cli_reach: a personal context reads nothing", async () => {
+			const row = await asRlsRole(
+				{
+					type: "personal",
+					tenantId: TEST_USERS.userA,
+					userId: TEST_USERS.userA,
+				},
+				(tx) =>
+					tx.organizationCliReach.findUnique({
+						where: { id: orgAReachId },
+					}),
+			);
+			expect(row).toBeNull();
+		});
+
+		it("organization_cli_first_reach: the owning org CAN read its row", async () => {
+			const row = await asRlsRole(
+				{
+					type: "organization",
+					tenantId: TEST_ORGS.orgA,
+					userId: TEST_USERS.userB,
+				},
+				(tx) =>
+					tx.organizationCliFirstReach.findUnique({
+						where: { organizationId: TEST_ORGS.orgA },
+					}),
+			);
+			expect(row).not.toBeNull();
+		});
+
+		// The primary key IS the tenant column here, so this also proves the
+		// policy reads that column rather than an `id` the table does not have.
+		it("organization_cli_first_reach: Org A context cannot read Org B's row", async () => {
+			const row = await asRlsRole(
+				{
+					type: "organization",
+					tenantId: TEST_ORGS.orgA,
+					userId: TEST_USERS.userA,
+				},
+				(tx) =>
+					tx.organizationCliFirstReach.findUnique({
+						where: { organizationId: TEST_ORGS.orgB },
+					}),
+			);
+			expect(row).toBeNull();
+		});
+
+		it("cli_connection_prompt_dismissal: a person CAN read their own dismissal in their org", async () => {
+			const row = await asRlsRole(
+				{
+					type: "organization",
+					tenantId: TEST_ORGS.orgA,
+					userId: TEST_USERS.userA,
+				},
+				(tx) =>
+					tx.cliConnectionPromptDismissal.findUnique({
+						where: { id: dismissalOrgAUserA },
+					}),
+			);
+			expect(row).not.toBeNull();
+			expect(row?.id).toBe(dismissalOrgAUserA);
+		});
+
+		// The difference from the reach tables above, and the reason the two
+		// policies are not interchangeable.
+		it("cli_connection_prompt_dismissal: a colleague in the same org cannot read it", async () => {
+			const row = await asRlsRole(
+				{
+					type: "organization",
+					tenantId: TEST_ORGS.orgA,
+					userId: TEST_USERS.userB,
+				},
+				(tx) =>
+					tx.cliConnectionPromptDismissal.findUnique({
+						where: { id: dismissalOrgAUserA },
+					}),
+			);
+			expect(row).toBeNull();
+			// Positive control on the same connection shape: user B's OWN row is
+			// readable, so the null above is the userId predicate and not an
+			// empty table or a policy that denies everything.
+			const own = await asRlsRole(
+				{
+					type: "organization",
+					tenantId: TEST_ORGS.orgA,
+					userId: TEST_USERS.userB,
+				},
+				(tx) =>
+					tx.cliConnectionPromptDismissal.findUnique({
+						where: { id: dismissalOrgAUserB },
+					}),
+			);
+			expect(own).not.toBeNull();
+		});
+
+		it("cli_connection_prompt_dismissal: the same person cannot read their Org B dismissal from Org A", async () => {
+			const row = await asRlsRole(
+				{
+					type: "organization",
+					tenantId: TEST_ORGS.orgA,
+					userId: TEST_USERS.userA,
+				},
+				(tx) =>
+					tx.cliConnectionPromptDismissal.findUnique({
+						where: { id: dismissalOrgBUserA },
+					}),
+			);
+			expect(row).toBeNull();
+		});
+
+		// WITH CHECK, not just USING: a dismissal attributed to someone else
+		// would let one member spend another's single, permanent answer.
+		//
+		// Deliberately the (Org B, user B) pair, which the fixture leaves empty.
+		// Aiming at a pair that already has a row would be rejected by the unique
+		// index before the policy was ever consulted, and the test would pass
+		// while proving nothing about RLS.
+		it("cli_connection_prompt_dismissal: a member cannot write a dismissal attributed to a colleague", async () => {
+			await expect(
+				asRlsRole(
+					{
+						type: "organization",
+						tenantId: TEST_ORGS.orgB,
+						userId: TEST_USERS.userA,
+					},
+					(tx) =>
+						tx.cliConnectionPromptDismissal.create({
+							data: {
+								organizationId: TEST_ORGS.orgB,
+								userId: TEST_USERS.userB,
+								dismissedAt: new Date(),
+							},
+						}),
+				),
+			).rejects.toThrow();
+		});
+	});
+
 	describe("Attachment retention minimum under RLS", () => {
 		// The purge's scan-bound proof (#1749) depends on MIN() observing EVERY
 		// row. `project` carries a `user_owned` policy, so under an RLS-enforcing

@@ -602,7 +602,7 @@ const SETTINGS_GROUP: GsGroup = {
 			id: "settings-api-keys",
 			label: "API Keys",
 			description:
-				"Create and revoke your own keys for connecting external tools to this organization.",
+				"Create and revoke your own keys, each personal to you and carrying the same access you have inside the app.",
 			icon: KeyIcon,
 			cluster: "Tools & connections",
 			href: settingsHref("api-keys"),

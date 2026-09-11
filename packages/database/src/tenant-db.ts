@@ -68,6 +68,7 @@ const PER_USER_ORG_TABLES = new Set([
 	"DocumentEval", // An eval run initiated by a specific user
 	"AgentWorkspaceFile", // A user's virtual workspace artifacts
 	"ProjectUserPreference", // Per-user-per-project settings
+	"CliConnectionPromptDismissal", // One person's dismissal of the CLI connection prompt
 ]);
 
 /**
@@ -237,6 +238,11 @@ const ORG_ONLY_TABLES = new Set([
 	"OrganizationModelPreference",
 	"OrganizationEvalBudget",
 	"SDLCArtifact",
+	// CLI connection nudge (Fizzy #2457). The fact is about the organization,
+	// not about the member whose credential happened to reach it, so every
+	// member reads the same answer.
+	"OrganizationCliReach",
+	"OrganizationCliFirstReach",
 ]);
 
 /**

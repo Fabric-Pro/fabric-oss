@@ -1,11 +1,40 @@
 "use client";
 
+/**
+ * The one row that does not behave like the others (Fizzy #2457, R15 / R21).
+ *
+ * Two departures, both scoped to this key alone.
+ *
+ * Its audience is decided by an ORGANIZATION role. Creating an API key sits on
+ * organization roles and on no project role at all, and creating a project
+ * seeds no `ProjectMember` rows — so `canAct`, which answers a project-role
+ * question, is false for the ordinary organization members this row exists for,
+ * and the panel would hand them the read-only label instead of the one action
+ * they can take.
+ *
+ * And its action opens the issuing view in place rather than navigating. The
+ * key's secret is returned exactly once, so no page reached by a link can
+ * render the finished configuration. The rule still carries a `target` because
+ * the rule type and the CTA drift test require one; it is not meant to be
+ * followed, and this row never uses it.
+ *
+ * Imported, not restated: the same string is the rule's own key and the row
+ * both readiness procedures special-case, and a fifth copy here is a fifth
+ * chance for one of them to be edited alone — a mismatch nothing would report,
+ * because every reader simply stops matching a row that still exists. The
+ * module it comes from is deliberately import-free, so a client component can
+ * read it without dragging a server module into the browser bundle.
+ */
+import { useAnalytics } from "@analytics";
+import { CLI_ITEM_KEY } from "@repo/api/modules/projects/lib/readiness/thresholds";
 import {
 	GET_STARTED_SPOTLIGHT_EVENT,
 	type ProjectTabId,
 	type SpotlightEventDetail,
 } from "@saas/get-started/lib/tour-steps";
 import { useOrganizationContext } from "@saas/organizations/hooks/use-organization-context";
+import { ConnectCliDialog } from "@saas/projects/components/cli-connection/ConnectCliDialog";
+import { CLI_CHECKLIST_KEY_ISSUED_EVENT } from "@saas/projects/components/cli-connection/lib/cli-connection-nudge";
 import {
 	resolveProjectTabs,
 	useProjectTabCustomization,
@@ -62,6 +91,17 @@ import {
  */
 
 const DEFAULT_GAP_COUNT = 5;
+
+/**
+ * What the issuing view calls this project when the payload cannot name it.
+ *
+ * Rarely seen and never for long: the readiness read is already in flight
+ * above every project page, and the sentence naming the project is rendered
+ * only after a second click inside the view. This is what the flag-disabled
+ * payload and a still-loading one leave behind — a slightly vaguer instruction
+ * rather than a sentence with a hole in it.
+ */
+const UNNAMED_PROJECT = "this project";
 
 /**
  * One colour scale for the whole panel (DSU review, 20 Aug).
@@ -374,7 +414,11 @@ function ReadinessPanelBody() {
 	// purpose: declining the suggestion is not a fact about the project, and one
 	// person deferring it should not hide it from their teammates.
 	const [transitionDismissed, setTransitionDismissed] = useState(false);
+	// The issuing view's open state, held HERE rather than on the row — see
+	// where the view is mounted, at the foot of this component.
+	const [connectCliOpen, setConnectCliOpen] = useState(false);
 	const { organizationId, organizationSlug } = useOrganizationContext();
+	const { trackEvent } = useAnalytics();
 	const projectId = readiness?.projectId ?? "";
 	// Mirrors the `/app` and `/app/{slug}` convention the rest of the SaaS shell
 	// uses; same construction as ProjectContextsList's deep links.
@@ -608,6 +652,35 @@ function ReadinessPanelBody() {
 			? 0
 			: Math.round((data.completedCount / data.totalCount) * 100);
 
+	/**
+	 * Who is offered the "Connect CLI" action (Fizzy #2457, R21).
+	 *
+	 * `viewerCanCreateKey` is the SERVER's answer to an organization-role
+	 * question, resolved in the readiness payload right beside `canAct`. It is
+	 * read, not re-derived: this codebase has no client-side permission hook, so
+	 * a second comparison here would only be a second chance to disagree with
+	 * the procedure that will actually authorise the key.
+	 *
+	 * The organization id is required as well, because the key is minted against
+	 * the organization hosting this project, named explicitly and never taken
+	 * from the session's active organization. With none resolved there is
+	 * nothing to mint against, so the row keeps the panel's ordinary behaviour
+	 * rather than offering an action that could only fail.
+	 *
+	 * The optional access is a RUNTIME guard, not a type one. `cliConnection` is
+	 * non-optional on the payload the provider infers straight from the
+	 * procedure's output, so dropping the `?.` would type-check today and still
+	 * be wrong: a browser holding this bundle can be answered by a server
+	 * running the previous release — both versions serve traffic during a
+	 * rollout — and that response carries no `cliConnection` at all. Reading a
+	 * field off it then throws inside render and takes the whole panel down,
+	 * for a block whose absence should read as "not eligible". Readiness
+	 * fixtures written before the block existed are the same shape.
+	 */
+	const cliActionAvailable =
+		data.cliConnection?.viewerCanCreateKey === true &&
+		organizationId !== null;
+
 	return (
 		<section
 			aria-label="Project readiness"
@@ -830,70 +903,141 @@ function ReadinessPanelBody() {
 					</p>
 				) : (
 					<ul className="flex flex-col">
-						{rows.map((item) => (
-							<ReadinessGapRow
-								key={item.key}
-								item={item}
-								label={t(
-									`items.${toCamel(item.key)}.name` as never,
-								)}
-								ctaLabel={t(
-									item.ctaLabelKey.replace(
-										/^readiness\./,
-										"",
-									) as never,
-								)}
-								itemDescription={t(
-									`items.${toCamel(item.key)}.description` as never,
-								)}
-								itemTooltip={t(
-									`items.${toCamel(item.key)}.tooltip` as never,
-								)}
-								changeKind={changeByKey.get(item.key) ?? null}
-								itemUnmet={
-									item.unmetReason
-										? t(
-												`items.${toCamel(item.key)}.unmet.${item.unmetReason}` as never,
-											)
-										: null
-								}
-								ctaHref={readinessTargetHref(
-									projectBasePath,
-									item.target,
-								)}
-								ctaReachable={
-									item.target.kind !== "tab" ||
-									reachableTabIds.has(item.target.tab)
-								}
-								onCtaClick={() => {
-									handleTargetClick(projectId, item.target);
-									spotlightFor(item.key);
-								}}
-								stateLabel={
-									item.manualState === "SNOOZED"
-										? t("panel.stateSnoozed")
-										: item.manualState === "NOT_APPLICABLE"
-											? t("panel.stateNotApplicable")
-											: item.isComplete
-												? t("panel.stateComplete")
-												: null
-								}
-								t={t}
-								onSnooze={(until) =>
-									snooze.mutate({ itemKey: item.key, until })
-								}
-								onSetNotApplicable={(notApplicable) =>
-									setNotApplicable.mutate({
-										itemKey: item.key,
-										notApplicable,
-									})
-								}
-								onRequestHelp={() =>
-									requestHelp.mutate(item.key)
-								}
-								canAct={data.canAct}
-							/>
-						))}
+						{rows.map((item) => {
+							/**
+							 * The one row singled out (R15 / R21). Everything
+							 * below is per-item, in the same shape the
+							 * spotlighted rows are special-cased: the row
+							 * component stays general and this decides, once,
+							 * which behaviour it is handed.
+							 *
+							 * Two questions, not one. WHICH row this is decides
+							 * that its call to action never navigates: its
+							 * `target` names the Overview tab only because the
+							 * rule type and the CTA drift test require one, and
+							 * there is nothing about connecting a coding tool on
+							 * that page. WHETHER this viewer may take it is a
+							 * separate, organization-role answer. Folded into a
+							 * single flag, a project editor without key rights
+							 * fell through to the ordinary link branch and got an
+							 * enabled "Connect CLI" that walked them to Overview.
+							 */
+							const isCliRow = item.key === CLI_ITEM_KEY;
+							const cliActionOffered =
+								isCliRow && cliActionAvailable;
+							return (
+								<ReadinessGapRow
+									key={item.key}
+									item={item}
+									label={t(
+										`items.${toCamel(item.key)}.name` as never,
+									)}
+									ctaLabel={t(
+										item.ctaLabelKey.replace(
+											/^readiness\./,
+											"",
+										) as never,
+									)}
+									itemDescription={t(
+										`items.${toCamel(item.key)}.description` as never,
+									)}
+									itemTooltip={t(
+										`items.${toCamel(item.key)}.tooltip` as never,
+									)}
+									changeKind={
+										changeByKey.get(item.key) ?? null
+									}
+									itemUnmet={
+										item.unmetReason
+											? t(
+													`items.${toCamel(item.key)}.unmet.${item.unmetReason}` as never,
+												)
+											: null
+									}
+									ctaHref={readinessTargetHref(
+										projectBasePath,
+										item.target,
+									)}
+									/* The CLI row's action goes nowhere, so
+									   there is nothing for the viewer's tab set
+									   to make unreachable. Without this, hiding
+									   the Overview tab would disable a control
+									   that never intended to navigate there. */
+									ctaReachable={
+										isCliRow ||
+										item.target.kind !== "tab" ||
+										reachableTabIds.has(item.target.tab)
+									}
+									onCtaAction={
+										cliActionOffered
+											? () => setConnectCliOpen(true)
+											: undefined
+									}
+									onCtaClick={() => {
+										handleTargetClick(
+											projectId,
+											item.target,
+										);
+										spotlightFor(item.key);
+									}}
+									stateLabel={
+										item.manualState === "SNOOZED"
+											? t("panel.stateSnoozed")
+											: item.manualState ===
+													"NOT_APPLICABLE"
+												? t("panel.stateNotApplicable")
+												: item.isComplete
+													? t("panel.stateComplete")
+													: null
+									}
+									t={t}
+									onSnooze={(until) =>
+										snooze.mutate({
+											itemKey: item.key,
+											until,
+										})
+									}
+									onSetNotApplicable={(notApplicable) =>
+										setNotApplicable.mutate({
+											itemKey: item.key,
+											notApplicable,
+										})
+									}
+									onRequestHelp={() =>
+										requestHelp.mutate(item.key)
+									}
+									canAct={data.canAct}
+									/* Answers the call to action ALONE, and only
+									   on this row — every other row passes
+									   nothing and keeps `canAct`. The two gates
+									   answer different questions: `canAct` is the
+									   project-role answer to "may this viewer
+									   change the item's state", and this is the
+									   organization-role answer to "may they take
+									   the action the row offers". Folding the
+									   second into the first also handed over the
+									   item's actions menu, whose "Not
+									   applicable" calls a procedure requiring
+									   project edit rights — so an organization
+									   member downgraded to project viewer, a
+									   supported combination, was offered a
+									   control the server answers FORBIDDEN.
+
+									   It REPLACES `canAct` rather than widening
+									   it, because on this row the project answer
+									   is not an answer to this question at all:
+									   an editor without organization key rights
+									   cannot mint a key, and the action they were
+									   handed instead led to the Overview tab the
+									   rule names as a placeholder. */
+									ctaAvailable={
+										isCliRow
+											? cliActionAvailable
+											: undefined
+									}
+								/>
+							);
+						})}
 					</ul>
 				)}
 
@@ -933,6 +1077,52 @@ function ReadinessPanelBody() {
 						</ul>
 					</div>
 				)}
+
+				{/* The issuing view, mounted HERE: at the panel body, outside
+				    the rows list, outside the `!canAct` branch and outside every
+				    eligibility check.
+
+				    That placement is load-bearing rather than tidy. The view
+				    holds the only copy of a secret the server stores as a
+				    hash, so anything that unmounts it destroys what the person
+				    came for — and everything inside the rows list is at the
+				    mercy of the next readiness read. Issuing a key is a
+				    successful mutation and the provider re-reads on any of
+				    those; that read can reorder the rows, take this one out of
+				    the gap list or change the eligibility that would have
+				    gated the mount. (What it will NOT do is complete the item:
+				    the rule detects a CLI that has actually reached Fabric,
+				    which minting a key is not, so the row stays outstanding
+				    until someone connects with it.) Here the view lives as
+				    long as the panel does, and the panel does not depend on
+				    this item at all. */}
+				{organizationId ? (
+					<ConnectCliDialog
+						open={connectCliOpen}
+						onOpenChange={setConnectCliOpen}
+						/* The other surface offering this key is the prompt
+						   above the project, and it has no way to see a key
+						   minted from here — it mounts its own issuing view.
+						   Left unwired, it went on telling a viewer holding a
+						   fresh key that nobody had connected a coding tool.
+						   Recorded on the shared readiness context, which both
+						   surfaces read; the row itself keeps its offer, since
+						   issuing a key is not connecting with it. */
+						onKeyIssued={() => {
+							readiness.markCliKeyIssued();
+							trackEvent(CLI_CHECKLIST_KEY_ISSUED_EVENT, {
+								projectId,
+							});
+						}}
+						organizationId={organizationId}
+						organizationSlug={organizationSlug ?? undefined}
+						/* `||`, not `??`: the payload names the project with the
+						   empty string when there is no project to name — the
+						   disabled shape, and the first render before the read
+						   lands — and an empty string is not nullish. */
+						projectName={data?.projectName || UNNAMED_PROJECT}
+					/>
+				) : null}
 			</div>
 		</section>
 	);
@@ -948,6 +1138,7 @@ function ReadinessGapRow({
 	changeKind,
 	ctaReachable,
 	ctaHref,
+	onCtaAction,
 	onCtaClick,
 	stateLabel,
 	t,
@@ -955,6 +1146,7 @@ function ReadinessGapRow({
 	onSetNotApplicable,
 	onRequestHelp,
 	canAct,
+	ctaAvailable,
 }: {
 	item: ReadinessItem;
 	label: string;
@@ -980,6 +1172,12 @@ function ReadinessGapRow({
 	/** The sheet's "Tooltip text" column. */
 	itemTooltip: string;
 	ctaHref: string;
+	/**
+	 * Set only on the row whose action opens a view in place instead of
+	 * navigating (R15). When set, `ctaHref` and `onCtaClick` are unused: there
+	 * is no destination and nothing to spotlight there.
+	 */
+	onCtaAction?: () => void;
 	onCtaClick: () => void;
 	/** Set once the item is resolved somehow; null while it is still a gap. */
 	stateLabel: string | null;
@@ -990,6 +1188,35 @@ function ReadinessGapRow({
 	onRequestHelp: () => void;
 	/** Read-only viewers see the state but cannot change it. */
 	canAct: boolean;
+	/**
+	 * This row's own answer to "may this viewer take the call to action",
+	 * REPLACING `canAct` where it is given (Fizzy #2457, R21).
+	 *
+	 * `undefined` on every ordinary row, where the project-role gate is the
+	 * right answer and nothing here should change that. It is set on the one row
+	 * whose action is an ORGANIZATION-role right that no project role carries —
+	 * and it answers in both directions there, because on that row `canAct` is
+	 * not a weaker answer to the same question but an answer to a different one:
+	 *
+	 *  - `true` where the project gate says no, so an ordinary organization
+	 *    member (a project role exists only where a `ProjectMember` row does, and
+	 *    creating a project seeds none) is offered the one action they can take
+	 *    instead of the read-only label.
+	 *  - `false` where the project gate says yes, so a project editor whose
+	 *    organization role does not carry key creation is not handed a control
+	 *    they cannot use. Withdrawing it is the whole fix: the row's `target`
+	 *    exists to satisfy the rule type and the CTA drift test, so the button
+	 *    that used to render in its place was an enabled "Connect CLI" that
+	 *    navigated to the project Overview tab, where nothing about connecting a
+	 *    coding tool exists.
+	 *
+	 * It reaches the call to action and the "View only" label that would
+	 * otherwise sit beside a live one, and nothing else: snoozing an item,
+	 * marking it Not applicable and taking that back all write readiness state
+	 * through a procedure that requires project edit rights, which is `canAct`'s
+	 * question and stays `canAct`'s answer.
+	 */
+	ctaAvailable?: boolean;
 }) {
 	// A resolved item shows what resolved it, and how to undo that — snoozing
 	// something already done is meaningless, but being unable to take back a
@@ -998,6 +1225,18 @@ function ReadinessGapRow({
 	// project.
 	const resolved = stateLabel !== null;
 	const remaining = snoozeRemaining(item.snoozeUntil);
+	// Whether the row still has work to point at, which is a question about the
+	// ITEM rather than about the viewer. A snooze quiets a reminder without
+	// taking the work away, so a snoozed row keeps its call to action; an item
+	// someone marked Not applicable, or one the project has already satisfied,
+	// has nothing left to do and offers none.
+	const ctaVisible = item.manualState === "SNOOZED" || !resolved;
+	// ...and this is the question about the viewer. It is asked separately from
+	// the rest of the cluster because the answer can differ — see
+	// {@link CLI_ITEM_KEY} for the one row where it does, and `ctaAvailable` for
+	// why that row answers it instead of `canAct` rather than alongside it.
+	const ctaPermitted = ctaAvailable ?? canAct;
+	const showCta = ctaVisible && ctaPermitted;
 
 	return (
 		<li className="flex flex-wrap items-center gap-3 border-border/60 border-t py-2 first:border-t-0">
@@ -1064,8 +1303,10 @@ function ReadinessGapRow({
 			<div className="ml-auto flex flex-wrap items-center gap-2">
 				{/* A viewer without edit rights kept every control and got a 403
 				    from each — the panel offered work it knew would fail. State
-				    still shows; only the verbs are withdrawn. */}
-				{!canAct && (
+				    still shows; only the verbs are withdrawn. Withheld where the
+				    row's own action is available anyway: "View only" printed
+				    beside a live button contradicts it. */}
+				{!canAct && !ctaPermitted && (
 					<Tooltip delayDuration={150}>
 						<TooltipTrigger asChild>
 							<span className="text-muted-foreground text-xs">
@@ -1131,13 +1372,6 @@ function ReadinessGapRow({
 						>
 							{t("panel.requestHelp")}
 						</Button>
-						<ReadinessCta
-							t={t}
-							reachable={ctaReachable}
-							href={ctaHref}
-							label={ctaLabel}
-							onClick={onCtaClick}
-						/>
 					</>
 				) : item.manualState === "NOT_APPLICABLE" ? (
 					<>
@@ -1157,79 +1391,73 @@ function ReadinessGapRow({
 						<CheckIcon className="size-3" aria-hidden="true" />
 						{stateLabel}
 					</span>
-				) : item.needLevel === "NOT_APPLICABLE" ? (
-					/* Not graded in this phase: snoozing a reminder nobody is
-					   getting, or marking "not applicable" what already is,
-					   changes nothing observable. The call to action stays —
-					   running a scan early is a reasonable thing to want. */
+				) : // Not graded in this phase: snoozing a reminder nobody is
+				// getting, or marking "not applicable" what already is, changes
+				// nothing observable, so this row is offered no actions. Its
+				// call to action still renders below — running a scan early is
+				// a reasonable thing to want.
+				item.needLevel === "NOT_APPLICABLE" ? null : (
+					/* FR22 / AC-9 describe one context menu holding the item's
+					   actions, not a row of inline buttons. With 26 rows the
+					   inline verbs were also most of the panel's visual weight,
+					   competing with the item names the reader is actually
+					   scanning. Snooze keeps its own submenu inside, because
+					   picking a duration is a second choice rather than a
+					   second action. */
+					<DropdownMenu>
+						<DropdownMenuTrigger asChild>
+							<Button
+								variant="ghost"
+								size="sm"
+								aria-label={t("panel.itemActions")}
+							>
+								<MoreHorizontalIcon className="size-4" />
+							</Button>
+						</DropdownMenuTrigger>
+						<DropdownMenuContent align="end">
+							<DropdownMenuLabel>
+								{t("panel.snooze")}
+							</DropdownMenuLabel>
+							{SNOOZE_DURATIONS.map((duration) => (
+								<DropdownMenuItem
+									key={duration.labelKey}
+									onSelect={() =>
+										onSnooze(snoozeUntilFrom(duration.days))
+									}
+								>
+									{t(`panel.${duration.labelKey}` as never)}
+								</DropdownMenuItem>
+							))}
+							<DropdownMenuSeparator />
+							<DropdownMenuItem
+								onSelect={() => onSetNotApplicable(true)}
+							>
+								{t("panel.notApplicable")}
+							</DropdownMenuItem>
+							<DropdownMenuItem onSelect={onRequestHelp}>
+								{t("panel.requestHelp")}
+							</DropdownMenuItem>
+						</DropdownMenuContent>
+					</DropdownMenu>
+				)}
+				{/* A real link, not a button with a router call: it
+				    middle-clicks, it shows its destination on hover, and it
+				    survives JavaScript being busy. The click handler only
+				    carries the settings sub-tab, which no URL can express.
+
+				    Rendered once, after the state cluster rather than inside
+				    it, because it is the one control here that does not answer
+				    to `canAct` alone. Its place in the row is unchanged: every
+				    branch that showed it showed it last. */}
+				{showCta && (
 					<ReadinessCta
 						t={t}
 						reachable={ctaReachable}
 						href={ctaHref}
 						label={ctaLabel}
+						onAction={onCtaAction}
 						onClick={onCtaClick}
 					/>
-				) : (
-					<>
-						{/* FR22 / AC-9 describe one context menu holding the
-						    item's actions, not a row of inline buttons. With
-						    26 rows the inline verbs were also most of the
-						    panel's visual weight, competing with the item names
-						    the reader is actually scanning. Snooze keeps its own
-						    submenu inside, because picking a duration is a
-						    second choice rather than a second action. */}
-						<DropdownMenu>
-							<DropdownMenuTrigger asChild>
-								<Button
-									variant="ghost"
-									size="sm"
-									aria-label={t("panel.itemActions")}
-								>
-									<MoreHorizontalIcon className="size-4" />
-								</Button>
-							</DropdownMenuTrigger>
-							<DropdownMenuContent align="end">
-								<DropdownMenuLabel>
-									{t("panel.snooze")}
-								</DropdownMenuLabel>
-								{SNOOZE_DURATIONS.map((duration) => (
-									<DropdownMenuItem
-										key={duration.labelKey}
-										onSelect={() =>
-											onSnooze(
-												snoozeUntilFrom(duration.days),
-											)
-										}
-									>
-										{t(
-											`panel.${duration.labelKey}` as never,
-										)}
-									</DropdownMenuItem>
-								))}
-								<DropdownMenuSeparator />
-								<DropdownMenuItem
-									onSelect={() => onSetNotApplicable(true)}
-								>
-									{t("panel.notApplicable")}
-								</DropdownMenuItem>
-								<DropdownMenuItem onSelect={onRequestHelp}>
-									{t("panel.requestHelp")}
-								</DropdownMenuItem>
-							</DropdownMenuContent>
-						</DropdownMenu>
-						{/* A real link, not a button with a router call: it
-						    middle-clicks, it shows its destination on hover, and
-						    it survives JavaScript being busy. The click handler
-						    only carries the settings sub-tab, which no URL can
-						    express. */}
-						<ReadinessCta
-							t={t}
-							reachable={ctaReachable}
-							href={ctaHref}
-							label={ctaLabel}
-							onClick={onCtaClick}
-						/>
-					</>
 				)}
 			</div>
 		</li>
@@ -1282,14 +1510,38 @@ function ReadinessCta({
 	reachable,
 	href,
 	label,
+	onAction,
 	onClick,
 }: {
 	t: ReturnType<typeof useTranslations<"readiness">>;
 	reachable: boolean;
 	href: string;
 	label: string;
+	/** Opens a view in place. Set on one row only — see {@link CLI_ITEM_KEY}. */
+	onAction?: () => void;
 	onClick: () => void;
 }) {
+	/**
+	 * One row acts rather than navigates (R15).
+	 *
+	 * A real `<button>` and not a link, for three reasons: it goes nowhere, so
+	 * an anchor would be lying about middle-click and "open in new tab"; the
+	 * view it opens hands focus back to whatever opened it (R31), which has to
+	 * be a focusable element still in the document when the view closes; and
+	 * the item's own `target` names a tab only because the rule type requires
+	 * one — following it would land the reader on a page that cannot show them
+	 * a secret returned exactly once.
+	 *
+	 * Same variant and size as every other row action, because it is the same
+	 * kind of control and must not read as a different affordance.
+	 */
+	if (onAction) {
+		return (
+			<Button variant="outline" size="sm" onClick={onAction}>
+				{label}
+			</Button>
+		);
+	}
 	if (reachable) {
 		return (
 			<Button asChild variant="outline" size="sm">

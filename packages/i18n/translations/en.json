@@ -5683,6 +5683,11 @@
 					"classify": "Still needed: add a link source classified as Knowledge Base / Wiki, and let it finish indexing. The other seven categories do not count."
 				}
 			},
+			"apiKeyForCli": {
+				"name": "API Key for CLI",
+				"description": "Connect a coding CLI to Fabric with an API key. This reports the organization, not this project.",
+				"tooltip": "A connected CLI lets Fabric feed project context into the coding tools your team already uses, over MCP, instead of asking them to work somewhere else. This item reports the organization rather than this project, so once anyone connects it reads complete on every project."
+			},
 			"businessCase": {
 				"name": "Business Case Document",
 				"description": "Create a Business Case when the project needs value or investment framing.",
@@ -5810,6 +5815,7 @@
 			"codebaseConnected": "Connect codebase",
 			"wikiConnected": "Connect wiki",
 			"knowledgeBase": "Add knowledge base",
+			"apiKeyForCli": "Connect CLI",
 			"businessCase": "Create Business Case",
 			"proposal": "Create Proposal",
 			"prd": "Create PRD",

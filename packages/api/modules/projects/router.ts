@@ -343,6 +343,7 @@ import { reprocessContextsProcedure } from "./procedures/rag-settings/reprocess-
 import { updateRagSettingsProcedure } from "./procedures/rag-settings/update-rag-settings";
 // Project readiness checklist (Fizzy #2165)
 import {
+	dismissCliNudgeProcedure,
 	getReadinessProcedure,
 	markReadinessSeenProcedure,
 	requestReadinessHelpProcedure,
@@ -887,6 +888,10 @@ export const projectsRouter = {
 		snooze: snoozeReadinessItemProcedure,
 		setNotApplicable: setReadinessItemNotApplicableProcedure,
 		requestHelp: requestReadinessHelpProcedure,
+		// The CLI-connection prompt's decline (Fizzy #2457). Organization-wide
+		// and permanent, so it lives beside the read whose `cliConnection`
+		// block it answers rather than under the API-key namespace.
+		dismissCliNudge: dismissCliNudgeProcedure,
 	},
 
 	// Meeting Digest (read-only aggregation + admin include/exclude)

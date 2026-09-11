@@ -50,7 +50,7 @@ export type ReadinessLevel = "NOT_READY" | "PARTIALLY_READY" | "READY";
 export type PhaseSource = "set" | "inferred";
 
 /**
- * Everything the 26 rules are allowed to read, gathered once per request in a
+ * Everything the 27 rules are allowed to read, gathered once per request in a
  * fixed number of aggregate queries. Rules receive this and nothing else — they
  * cannot issue their own queries, which is what keeps the per-rule cost at zero
  * and makes every rule trivially unit-testable against a plain object.
@@ -156,6 +156,42 @@ export interface ReadinessEvidence {
 	};
 
 	/**
+	 * Whether this project's ORGANIZATION has a CLI reaching Fabric right now
+	 * (Fizzy #2457, R2).
+	 *
+	 * The organization, not the project — every project of a connected
+	 * organization reads true, which is why the item's own copy says so.
+	 *
+	 * Reach is remembered; connectivity is checked. `OrganizationCliReach`
+	 * rows record that a credential once reached this organization and never
+	 * stop being true; this boolean answers the second question — is any of
+	 * those credentials still alive — so a quiet-but-working team stays
+	 * connected while a team whose only key was revoked goes back to not
+	 * connected. It therefore does not decay with time, only with a
+	 * credential's own death.
+	 *
+	 * Never derived from the key tables alone: a key that exists is not a key
+	 * that has ever connected, and a key that authenticates may be refused by
+	 * every tool it calls. See `evidence.ts` for the reads that resolve it —
+	 * the reach records, then one lookup per key kind — why the reach read is
+	 * bounded, and why a project with no organization resolves false (R24).
+	 *
+	 * **False, unasked, while the rollout gate is off for the organization.**
+	 * The gate withholds the row from the checklist altogether, so nothing
+	 * consults this and none of the three reads that would answer it are
+	 * issued — the reach table included, so a gated-off organization's
+	 * readiness does not depend on that table existing. Read it as "no CLI
+	 * connection is being claimed here", never as "this organization has no
+	 * live credential".
+	 *
+	 * That isolation covers this read path only. The MCP runtime records reach
+	 * on every authenticated request without consulting the gate, on purpose,
+	 * so the branch still requires migration-before-code — see
+	 * `resolveOrganizationCliConnected` in `evidence.ts` for why.
+	 */
+	organizationCliConnected: boolean;
+
+	/**
 	 * Documents that exist AND are usable — the 19 August tightening. A row with
 	 * no readable content does not count, and neither does one in `GENERATING`
 	 * or `FAILED` that has never held any: nothing has been produced yet. A
@@ -207,7 +243,7 @@ export interface ReadinessRule {
 	 * Which condition is standing between this project and the item, as a copy
 	 * variant resolved under `<i18nKey>.unmet.<variant>`.
 	 *
-	 * Every tooltip on the checklist is the spreadsheet's copy, and all 26 of
+	 * Every tooltip on the checklist is the spreadsheet's copy, and all 27 of
 	 * them say why an item matters rather than what would satisfy it. On a rule
 	 * with more than one condition that leaves a user who has done half the work
 	 * with no way to tell which half is missing — a project connected to a PM

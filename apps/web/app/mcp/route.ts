@@ -33,6 +33,12 @@ import {
 	type HybridExecutionInput,
 	type TemplateExecutionInput,
 } from "@repo/temporal";
+import {
+	type McpKeyIdentity,
+	recordCliReach,
+	toOrganizationKeyIdentity,
+	toUserKeyIdentity,
+} from "@saas/mcp/lib/record-cli-reach";
 import { recordOrganizationRefusal } from "@saas/mcp/lib/record-organization-refusal";
 import type { NextRequest } from "next/server";
 import {
@@ -71,6 +77,36 @@ interface AuthResult {
 	 * UI are not loosened by anything here.
 	 */
 	scopes: string[];
+	/**
+	 * Which key row proved this identity — kind plus persisted id.
+	 *
+	 * Populated by the two key branches and left ABSENT by the session and
+	 * anonymous branches, which is what stops in-app browsing being recorded
+	 * as a CLI connection (Fizzy #2457, R2).
+	 *
+	 * That is a CONVENTION those branches keep, not something the compiler
+	 * checks. `AuthResult` is a flat interface and `credential` is a plain
+	 * string union, so `{ credential: "session", keyIdentity:
+	 * toUserKeyIdentity(id) }` type-checks today and would record a browser
+	 * session as a CLI connection. What actually holds the line is the pair of
+	 * connection-record suites — `__tests__/api/mcp-hosted-connection-record`
+	 * for this host and `__tests__/api/mcp-connection-record` for the gateway —
+	 * which assert that a session request writes nothing. The risk is not
+	 * theoretical: building an identity is now a one-line call to a shared
+	 * helper that anything can reach.
+	 *
+	 * KNOWN FOLLOW-UP, deliberately deferred: make `AuthResult` a discriminated
+	 * union on `credential`, so the session variant cannot carry a key identity
+	 * at all and the convention above becomes a compiler error instead of a
+	 * test failure. It threads through this file and the gateway route, which is
+	 * why it is a follow-up of its own rather than a passenger on the
+	 * ordering fix below.
+	 *
+	 * `credential` alone could not carry the identity either way: every
+	 * organization key would collapse into one record and revocation would stop
+	 * meaning anything.
+	 */
+	keyIdentity?: McpKeyIdentity;
 }
 
 /**
@@ -637,6 +673,7 @@ async function authenticateRequest(request: NextRequest): Promise<AuthOutcome> {
 				role: (user.role as "user" | "admin") || "user",
 				credential: "organization-key",
 				scopes: orgKey.scopes,
+				keyIdentity: toOrganizationKeyIdentity(orgKey.id),
 			});
 		}
 
@@ -654,6 +691,8 @@ async function authenticateRequest(request: NextRequest): Promise<AuthOutcome> {
 			return ANONYMOUS_AUTH;
 		}
 
+		const keyIdentity = toUserKeyIdentity(result.keyId);
+
 		// Everything except the tenant is settled at this point, and both
 		// outcomes below carry it unchanged.
 		const identity = {
@@ -663,6 +702,7 @@ async function authenticateRequest(request: NextRequest): Promise<AuthOutcome> {
 			role: (user.role as "user" | "admin") || "user",
 			credential: "personal-key" as const,
 			scopes: result.scopes ?? [],
+			keyIdentity,
 		};
 
 		// The tenant on this branch is whatever the request asked for, so it is
@@ -949,6 +989,11 @@ function restoreAuthResult(session: McpSession): AuthResult | null {
 		// while `initialize` — which checks no scope — kept succeeding.
 		credential: "session" as const,
 		scopes: [],
+		// Absent for the same reason: the durable session never stored which
+		// key opened it. `effectiveAuthResult` puts the live one back, which is
+		// what keeps a reused session recording its CLI reach (Fizzy #2457, R2)
+		// instead of silently writing nothing from the second request on.
+		keyIdentity: undefined,
 	};
 }
 
@@ -978,7 +1023,12 @@ function effectiveAuthResult(
 		// future caller that skips that check cannot silently open this up.
 		return stored;
 	}
-	return { ...stored, credential: live.credential, scopes: live.scopes };
+	return {
+		...stored,
+		credential: live.credential,
+		scopes: live.scopes,
+		keyIdentity: live.keyIdentity,
+	};
 }
 
 function getSessionExpiry(expiresAt: string): number {
@@ -2521,6 +2571,41 @@ async function handlePostRequest(
 		);
 	}
 
+	/**
+	 * Write this request's connection record, at most once.
+	 *
+	 * `authenticateRequest` above has already matched the credential, loaded
+	 * its owner and re-read membership — and none of that before the usage
+	 * counter this must never be keyed off. But it is not the last gate that
+	 * can refuse the request: `checkStoredSessionAuth`, below and on two
+	 * separate paths, answers 401 when the live identity no longer matches the
+	 * session being reused. A CLI still holding a session opened for one
+	 * organization, now resolving to another, is refused on every POST — and
+	 * recording from here wrote that second organization an
+	 * `OrganizationCliFirstReach` row, which is written once and never
+	 * invalidated. The organization would read as connected forever, and the
+	 * funnel event would fire, on a request that never succeeded
+	 * (Fizzy #2457, R2).
+	 *
+	 * So the call lives at the four points where this function hands the
+	 * request to the MCP server, each of them past whatever gate applies to
+	 * its own path. Those four are on mutually exclusive branches, but the
+	 * guard makes exactly-once a property of this closure rather than
+	 * something a reader has to re-derive from ten return statements: a second
+	 * call on a path that already recorded writes nothing.
+	 *
+	 * A browser session carries no key identity and an anonymous public
+	 * session is `null`, so both still write nothing.
+	 */
+	let reachRecorded = false;
+	const recordReachForServedRequest = (): void => {
+		if (reachRecorded) {
+			return;
+		}
+		reachRecorded = true;
+		recordCliReach(authResult);
+	};
+
 	let parsedBody: unknown;
 
 	try {
@@ -2539,6 +2624,10 @@ async function handlePostRequest(
 					return authFailure;
 				}
 
+				// Past the session gate: this request may reuse the stored
+				// session and is about to be served.
+				recordReachForServedRequest();
+
 				const session = createRequestSession(
 					effectiveAuthResult(storedAuthResult, authResult),
 					{
@@ -2554,6 +2643,11 @@ async function handlePostRequest(
 				return session.transport.handleRequest(request);
 			}
 		}
+
+		// No stored session to disagree with — either no id was sent, or the one
+		// sent has expired — so there is no session gate to survive here and
+		// the transport answers the request on a fresh one.
+		recordReachForServedRequest();
 
 		const session = createRequestSession(authResult, {
 			routeOptions,
@@ -2579,6 +2673,11 @@ async function handlePostRequest(
 			sessionExpiresAt: durableSession.core.expiresAt,
 			routeOptions,
 		});
+
+		// An initialize opens its own session, so there is nothing stored for
+		// `checkStoredSessionAuth` to refuse it against — the connect below is
+		// the last thing between this request and the server.
+		recordReachForServedRequest();
 
 		await session.server.connect(session.transport);
 		const response = await session.transport.handleRequest(request, {
@@ -2612,6 +2711,9 @@ async function handlePostRequest(
 	if (authFailure) {
 		return authFailure;
 	}
+
+	// Past the session gate, the same rule as the malformed-body path above.
+	recordReachForServedRequest();
 
 	const session = createRequestSession(
 		effectiveAuthResult(storedAuthResult, authResult),
@@ -2659,6 +2761,16 @@ async function handleGetRequest(
 		return authFailure;
 	}
 
+	// Recorded here and not before the gate above. The live outcome is what
+	// proves a key was presented on THIS request, and `checkStoredSessionAuth`
+	// has already refused a session whose user or organization the request no
+	// longer matches — so nothing below can turn this into a 401 and the
+	// organization recorded is the one this request runs in (Fizzy #2457, R2).
+	// `handlePostRequest` applies the same rule at each of the four points it
+	// hands a request to the server; the ordering is the rule, not a detail of
+	// this verb.
+	recordCliReach(authResultOf(authOutcome));
+
 	const session = createRequestSession(
 		effectiveAuthResult(storedAuthResult, authResultOf(authOutcome)),
 		{
@@ -2702,6 +2814,16 @@ async function handleDeleteRequest(
 	if (authFailure) {
 		return authFailure;
 	}
+
+	// Recorded here and not before the gate above. The live outcome is what
+	// proves a key was presented on THIS request, and `checkStoredSessionAuth`
+	// has already refused a session whose user or organization the request no
+	// longer matches — so nothing below can turn this into a 401 and the
+	// organization recorded is the one this request runs in (Fizzy #2457, R2).
+	// `handlePostRequest` applies the same rule at each of the four points it
+	// hands a request to the server; the ordering is the rule, not a detail of
+	// this verb.
+	recordCliReach(authResultOf(authOutcome));
 
 	const session = createRequestSession(
 		effectiveAuthResult(storedAuthResult, authResultOf(authOutcome)),

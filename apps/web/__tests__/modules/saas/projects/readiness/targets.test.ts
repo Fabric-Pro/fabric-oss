@@ -296,6 +296,7 @@ function permutedEvidence(present: boolean, alt: boolean) {
 			analysisCompleted: alt,
 			atlasAnalysisExists: alt,
 		},
+		organizationCliConnected: present,
 		completeDocumentTypes: new Set<string>(),
 		acceptedMemberCount: n,
 		roadmapItemCount: n,

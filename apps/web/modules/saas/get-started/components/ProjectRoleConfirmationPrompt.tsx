@@ -1,5 +1,7 @@
 "use client";
 
+import { ORPCError } from "@orpc/client";
+import { FUNCTION_TAG_LABELS } from "@repo/database/src/function-tags";
 import { useSession } from "@saas/auth/hooks/use-session";
 import { useFeatureFlag } from "@saas/shared/components/FeatureFlagProvider";
 import {
@@ -7,8 +9,6 @@ import {
 	type FunctionTagValue,
 } from "@saas/shared/components/FunctionTagSelect";
 import { useRoleTagSnapshot } from "@saas/shared/components/RoleTagSnapshotProvider";
-import { FUNCTION_TAG_LABELS } from "@repo/database/src/function-tags";
-import { ORPCError } from "@orpc/client";
 import { orpcClient } from "@shared/lib/orpc-client";
 import { orpc } from "@shared/lib/orpc-query-utils";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -22,6 +22,7 @@ import {
 	DialogTitle,
 } from "@ui/components/dialog";
 import { useEffect, useRef, useState } from "react";
+import { useOnboardingViewClaim } from "../lib/onboarding-claim";
 import { createSessionFlag, useSessionFlag } from "../lib/session-flag";
 import { isEnforcementLive, shouldEnforce } from "./FunctionTagsRequiredGate";
 
@@ -277,7 +278,19 @@ export function ProjectRoleConfirmationPrompt({
 	// empty set and flip `accountGateUp` true. Without this term the two
 	// would render at once, breaking the "Never fires while the account
 	// gate is up" promise at the top of this file.
-	if (!open || !isEnforcementLive(flagFromPayload, myTags) || accountGateUp) {
+	const promptVisible =
+		open && isEnforcementLive(flagFromPayload, myTags) && !accountGateUp;
+
+	// Publish that this surface has the reader's attention (Fizzy #2457, R23).
+	//
+	// A fourth piece of state is NOT introduced here: this is derived from the
+	// three that already exist and is the same expression the early return
+	// below reads, so the claim and what is on screen cannot disagree. Every
+	// other onboarding surface goes through the same ledger, and the
+	// CLI-connection prompt on the project page stands down on it.
+	useOnboardingViewClaim(promptVisible);
+
+	if (!promptVisible) {
 		return null;
 	}
 

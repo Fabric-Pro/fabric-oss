@@ -22,6 +22,9 @@ const { mockDb, mockIsFeatureEnabled, mockGather, mockBuildMailto } =
 				update: vi.fn(),
 				updateMany: vi.fn(),
 			},
+			// The organization-role read behind the CLI row's settle
+			// constraint (Fizzy #2457).
+			member: { findFirst: vi.fn() },
 		},
 		mockIsFeatureEnabled: vi.fn(),
 		mockGather: vi.fn(),
@@ -82,6 +85,7 @@ beforeEach(() => {
 	mockDb.projectReadinessItemState.findFirst.mockResolvedValue(null);
 	mockDb.projectReadinessItemState.create.mockResolvedValue({});
 	mockDb.projectReadinessItemState.updateMany.mockResolvedValue({ count: 0 });
+	mockDb.member.findFirst.mockResolvedValue(null);
 	mockBuildMailto.mockResolvedValue(MAILTO);
 });
 
@@ -223,5 +227,104 @@ describe("request help", () => {
 		expect(mockBuildMailto.mock.calls[0][0].requesterName).toBe(
 			"alex@example.com",
 		);
+	});
+});
+
+/**
+ * The "API Key for CLI" row's second gate (Fizzy #2457, R29).
+ *
+ * Marking that one row not applicable stops the connection prompt for everyone
+ * in the organization, so it must not be reachable by someone the prompt itself
+ * would never target. `PROJECT_UPDATE` alone does not express that: a guest —
+ * a `ProjectMember` row with no membership of the host organization — holding a
+ * project-editor role passes it today. Every OTHER row keeps the panel's
+ * existing project-role gate exactly as it was, which is what the last test
+ * here pins.
+ */
+describe("not applicable — the CLI row", () => {
+	const CLI_KEY = "api-key-for-cli";
+
+	beforeEach(() => {
+		mockGather.mockResolvedValue({
+			evidence: {},
+			tenant: { userId: "owner-1", organizationId: "org-1" },
+		});
+	});
+
+	it("refuses a guest, whatever their project role says", async () => {
+		mockDb.member.findFirst.mockResolvedValue(null);
+
+		await expect(
+			call(setReadinessItemNotApplicableProcedure, {
+				projectId: "p1",
+				itemKey: CLI_KEY,
+				notApplicable: true,
+				organizationId: "org-1",
+			}),
+		).rejects.toThrow();
+		expect(mockDb.projectReadinessItemState.create).not.toHaveBeenCalled();
+	});
+
+	it("refuses an organization viewer, who could never mint the key either", async () => {
+		mockDb.member.findFirst.mockResolvedValue({ role: "viewer" });
+
+		await expect(
+			call(setReadinessItemNotApplicableProcedure, {
+				projectId: "p1",
+				itemKey: CLI_KEY,
+				notApplicable: true,
+				organizationId: "org-1",
+			}),
+		).rejects.toThrow();
+	});
+
+	it("allows a member whose organization role carries key creation", async () => {
+		mockDb.member.findFirst.mockResolvedValue({ role: "member" });
+
+		await call(setReadinessItemNotApplicableProcedure, {
+			projectId: "p1",
+			itemKey: CLI_KEY,
+			notApplicable: true,
+			organizationId: "org-1",
+		});
+
+		const args = mockDb.projectReadinessItemState.create.mock.calls[0][0];
+		expect(args.data.itemKey).toBe(CLI_KEY);
+		expect(args.data.state).toBe("NOT_APPLICABLE");
+		expect(mockDb.member.findFirst.mock.calls[0][0]).toMatchObject({
+			where: { organizationId: "org-1", userId: "user-1" },
+		});
+	});
+
+	it("refuses the CLEAR as well, since the row's control is one toggle", async () => {
+		mockDb.member.findFirst.mockResolvedValue(null);
+
+		await expect(
+			call(setReadinessItemNotApplicableProcedure, {
+				projectId: "p1",
+				itemKey: CLI_KEY,
+				notApplicable: false,
+				organizationId: "org-1",
+			}),
+		).rejects.toThrow();
+		expect(
+			mockDb.projectReadinessItemState.deleteMany,
+		).not.toHaveBeenCalled();
+	});
+
+	it("leaves every other row on the gate it already had", async () => {
+		mockDb.member.findFirst.mockResolvedValue(null);
+
+		await call(setReadinessItemNotApplicableProcedure, {
+			projectId: "p1",
+			itemKey: ITEM_KEY,
+			notApplicable: true,
+			organizationId: "org-1",
+		});
+
+		expect(mockDb.projectReadinessItemState.create).toHaveBeenCalled();
+		// Not even asked: the constraint is scoped to the one row that carries
+		// organization-wide consequences.
+		expect(mockDb.member.findFirst).not.toHaveBeenCalled();
 	});
 });

@@ -51,6 +51,9 @@ function fullySetUp(): ReadinessEvidence {
 		analysisCompleted: true,
 		atlasAnalysisExists: true,
 	};
+	// The organization has a live CLI credential reaching it — the "API Key
+	// for CLI" row is satisfied like every other item in a fully set up project.
+	e.organizationCliConnected = true;
 	e.completeDocumentTypes = new Set([
 		"BUSINESS_CASE",
 		"PROPOSAL",
@@ -75,6 +78,21 @@ function resolve(
 	viewerUserId = VIEWER,
 ) {
 	return resolveReadiness({ evidence, manualStates, viewerUserId, now: NOW });
+}
+
+/** The same resolution with the given rule keys withheld from it. */
+function resolveWithout(
+	evidence: ReadinessEvidence,
+	excludeKeys: string[],
+	manualStates: ManualStateInput[] = [],
+) {
+	return resolveReadiness({
+		evidence,
+		manualStates,
+		viewerUserId: VIEWER,
+		now: NOW,
+		excludeKeys: new Set(excludeKeys),
+	});
 }
 
 const notApplicable = (itemKey: string): ManualStateInput => ({
@@ -184,6 +202,118 @@ describe("readiness level", () => {
 			const result = resolve(e);
 			expect(result.level).toBe("PARTIALLY_READY");
 			expect(result.activeGaps.map((i) => i.key)).toEqual(["tech-stack"]);
+		});
+	});
+
+	/**
+	 * AE6 (Fizzy #2457, R13) — the plan's most contested decision, and this is
+	 * the only check on it.
+	 *
+	 * The ticket asked for Must in Development / Execution. The plan overrides
+	 * that to Should: within Context & Connections, Must is today carried only
+	 * by the item for a codebase Fabric cannot see, and a team that prefers not
+	 * to use a CLI is not in that category. Shipping it as a Must would flip
+	 * every established, otherwise-complete project to NOT_READY on day one,
+	 * which teaches people to ignore the readiness signal.
+	 *
+	 * If the need level is ever raised back to Must, this test is where the
+	 * decision has to be re-argued.
+	 */
+	describe("AE6 — nobody in the organization has connected a CLI", () => {
+		it("leaves a Development project PARTIALLY_READY rather than NOT_READY", () => {
+			const e = fullySetUp();
+			e.phase = "DEVELOPMENT_EXECUTION";
+			e.organizationCliConnected = false;
+
+			const result = resolve(e);
+
+			expect(
+				result.items.find((i) => i.key === "api-key-for-cli")
+					?.needLevel,
+			).toBe("SHOULD");
+			expect(result.activeGaps.map((i) => i.key)).toEqual([
+				"api-key-for-cli",
+			]);
+			expect(result.level).toBe("PARTIALLY_READY");
+		});
+	});
+
+	/**
+	 * `excludeKeys` — how a caller withholds a row from the checklist.
+	 *
+	 * A rule receives evidence and nothing else, so it cannot read a feature
+	 * flag; a rollout gate has to be able to hand this function a key and get
+	 * back a summary that has never heard of it. Asserted here rather than only
+	 * through the procedure that uses it, because "an excluded key costs the
+	 * summary nothing" is a property of this function and any caller may rely
+	 * on it.
+	 */
+	describe("withholding a row", () => {
+		it("drops the item from the lists, the level and both counts", () => {
+			const e = fullySetUp();
+			// Everything else settled, so the withheld row is the one thing
+			// standing between this project and Ready.
+			e.organizationCliConnected = false;
+
+			const shown = resolve(e);
+			const withheld = resolveWithout(e, ["api-key-for-cli"]);
+
+			expect(shown.items.map((i) => i.key)).toContain("api-key-for-cli");
+			expect(withheld.items.map((i) => i.key)).not.toContain(
+				"api-key-for-cli",
+			);
+			expect(withheld.activeGaps.map((i) => i.key)).not.toContain(
+				"api-key-for-cli",
+			);
+			// The denominator loses exactly the withheld row — the point of
+			// excluding before the roll-up rather than filtering after it.
+			expect(withheld.totalCount).toBe(shown.totalCount - 1);
+			expect(withheld.completedCount).toBe(shown.completedCount);
+			expect(shown.level).toBe("PARTIALLY_READY");
+			expect(withheld.level).toBe("READY");
+		});
+
+		it("takes a COMPLETE item out of the numerator too, not just the denominator", () => {
+			// Otherwise withholding a satisfied row would quietly move the
+			// progress percentage the panel prints.
+			const e = fullySetUp();
+			expect(e.organizationCliConnected).toBe(true);
+
+			const shown = resolve(e);
+			const withheld = resolveWithout(e, ["api-key-for-cli"]);
+
+			expect(withheld.completedCount).toBe(shown.completedCount - 1);
+			expect(withheld.totalCount).toBe(shown.totalCount - 1);
+			expect(withheld.level).toBe("READY");
+		});
+
+		it("says nothing about the items that depend on the withheld key", () => {
+			// The difference from marking the key not applicable, which is how
+			// this used to be done from outside. A not-applicable mark
+			// CASCADES: it resolves everything hanging off the key, so a rule
+			// that started depending on a withheld row would silently read
+			// complete. Withholding is silent — the dependents are judged on
+			// the evidence exactly as they were.
+			const e = emptyEvidence();
+
+			const marked = resolve(e, [notApplicable("codebase-connected")]);
+			const withheld = resolveWithout(e, ["codebase-connected"]);
+
+			const atlas = (result: ReturnType<typeof resolve>) =>
+				result.items.find((i) => i.key === "atlas-explored");
+
+			// The mark leaves the row on the checklist, settled; withholding
+			// takes it off entirely.
+			expect(marked.items.map((i) => i.key)).toContain(
+				"codebase-connected",
+			);
+			expect(withheld.items.map((i) => i.key)).not.toContain(
+				"codebase-connected",
+			);
+
+			expect(atlas(marked)?.isComplete).toBe(true);
+			expect(atlas(withheld)?.isComplete).toBe(false);
+			expect(atlas(withheld)?.blockedBy).toBe("codebase-connected");
 		});
 	});
 

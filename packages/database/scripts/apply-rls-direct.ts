@@ -397,6 +397,14 @@ async function applyRLS() {
 				policy: "project_scoped",
 			},
 			{ name: "project_user_preference", policy: "per_user_within_org" },
+			// One person's dismissal of the CLI connection prompt (Fizzy #2457).
+			// Per-user within the org for the same reason the read markers below
+			// are: whether a colleague dismissed a prompt is not this member's
+			// business, and it must not leak across a tenant either.
+			{
+				name: "cli_connection_prompt_dismissal",
+				policy: "per_user_within_org",
+			},
 			{ name: "project_user_function_tag", policy: "user_owned" }, // Shared per-project function tags (admin-managed)
 			{ name: "daily_brief", policy: "user_owned" }, // Shared per-project daily brief
 			{
@@ -521,6 +529,16 @@ async function applyRLS() {
 
 			// Org-only tables
 			{ name: "organization_eval_budget", policy: "org_only" },
+
+			// CLI connection nudge (Fizzy #2457). Both reach tables are owned by
+			// the organization and by nobody inside it: any member may be told
+			// whether their organization has a CLI reaching Fabric, and the
+			// person whose credential happened to reach it is not the subject of
+			// the fact. `organization_cli_first_reach` keys on organizationId,
+			// which is also its primary key — org_only reads the same column
+			// either way.
+			{ name: "organization_cli_reach", policy: "org_only" },
+			{ name: "organization_cli_first_reach", policy: "org_only" },
 
 			// Dynamic agents
 			{ name: "offloaded_tool_output", policy: "user_owned" }, // Large tool outputs

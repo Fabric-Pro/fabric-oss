@@ -46,6 +46,12 @@ import {
 	resolveProviderKeyFromToolPrefix,
 } from "@saas/mcp/lib/gateway/authority-service";
 import type { GatewayCredential } from "@saas/mcp/lib/gateway/types";
+import {
+	type McpKeyIdentity,
+	recordCliReach,
+	toOrganizationKeyIdentity,
+	toUserKeyIdentity,
+} from "@saas/mcp/lib/record-cli-reach";
 import { recordOrganizationRefusal } from "@saas/mcp/lib/record-organization-refusal";
 import { type NextRequest, NextResponse } from "next/server";
 
@@ -82,6 +88,36 @@ interface AuthResult {
 	 * UI are not loosened by anything here.
 	 */
 	scopes: string[];
+	/**
+	 * Which key row proved this identity — kind plus persisted id.
+	 *
+	 * Populated by the two key branches and left ABSENT by the session branch,
+	 * which is what stops a browser session being recorded as a CLI connection
+	 * (Fizzy #2457, R2).
+	 *
+	 * That is a CONVENTION the session branch keeps, not something the compiler
+	 * checks. `AuthResult` is a flat interface and `credential` is a plain
+	 * string union, so `{ credential: "session", keyIdentity:
+	 * toUserKeyIdentity(id) }` type-checks today and would record in-app
+	 * browsing as a CLI connection. What actually holds the line is the pair of
+	 * connection-record suites — `__tests__/api/mcp-connection-record` for this
+	 * host and `__tests__/api/mcp-hosted-connection-record` for the protocol
+	 * server — which assert that a session request writes nothing. The risk is
+	 * not theoretical: building an identity is now a one-line call to a shared
+	 * helper that anything can reach.
+	 *
+	 * KNOWN FOLLOW-UP, deliberately deferred: make `AuthResult` a discriminated
+	 * union on `credential`, so the session variant cannot carry a key identity
+	 * at all and the convention above becomes a compiler error instead of a
+	 * test failure. It threads through this file and the hosted protocol route,
+	 * which is why it is a follow-up of its own rather than a passenger on
+	 * the round-2 review fixes.
+	 *
+	 * `credential` alone could not carry the identity either way: every
+	 * organization key would collapse into one record and revocation would stop
+	 * meaning anything.
+	 */
+	keyIdentity?: McpKeyIdentity;
 }
 
 /**
@@ -186,6 +222,8 @@ async function authenticateRequest(request: NextRequest): Promise<AuthOutcome> {
 			return UNAUTHENTICATED;
 		}
 
+		const keyIdentity = toUserKeyIdentity(result.keyId);
+
 		const identity = {
 			userId: result.userId,
 			userName: user.name || "Unknown",
@@ -193,6 +231,7 @@ async function authenticateRequest(request: NextRequest): Promise<AuthOutcome> {
 			role: (user.role as "user" | "admin") || "user",
 			credential: "personal-key" as const,
 			scopes: result.scopes ?? [],
+			keyIdentity,
 		};
 
 		// The caller-supplied organization is verified HERE, against the user
@@ -328,6 +367,7 @@ async function authenticateRequest(request: NextRequest): Promise<AuthOutcome> {
 			role: (user.role as "user" | "admin") || "user",
 			credential: "organization-key",
 			scopes: storedKey.scopes,
+			keyIdentity: toOrganizationKeyIdentity(storedKey.id),
 		});
 	}
 
@@ -575,6 +615,26 @@ function jsonRpcError(
 
 // ─── POST Handler ───────────────────────────────────────────────────────────
 
+/**
+ * Whether this gateway serves the named JSON-RPC method.
+ *
+ * Read together with the routing switch in `POST` — this is its complement, and
+ * it exists so the connection record (Fizzy #2457, R2) is written on exactly
+ * the calls this server understands, and not on a `Method not found`.
+ */
+function isServedMethod(method: string): boolean {
+	switch (method) {
+		case "initialize":
+		case "notifications/initialized":
+		case "tools/list":
+		case "tools/call":
+		case "ping":
+			return true;
+		default:
+			return false;
+	}
+}
+
 export async function POST(request: NextRequest): Promise<NextResponse> {
 	// Validate Origin
 	if (!validateOrigin(request)) {
@@ -699,6 +759,27 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
 		authResult,
 	);
 
+	// A method this gateway does not serve is refused before anything is
+	// recorded: an unsupported call is not a CLI connection, however valid the
+	// credential that carried it. The complement of the routing switch below,
+	// which keeps its own `default:` as the closed answer.
+	if (!isServedMethod(rpcRequest.method)) {
+		return jsonRpcError(
+			rpcRequest.id,
+			-32601,
+			`Method not found: ${rpcRequest.method}`,
+			sessionId,
+		);
+	}
+
+	// The credential matched, its owner was loaded, membership was re-read, and
+	// the envelope is a well-formed call to a method this server serves. That is
+	// a CLI reaching this organization (Fizzy #2457, R2), and the record is
+	// written here rather than after the tool runs: deferring it to a successful
+	// tool result would push it into the executor for no gain in truth. A
+	// browser session carries no key identity and writes nothing.
+	recordCliReach(authResult);
+
 	// Route by method
 	switch (rpcRequest.method) {
 		case "initialize":
@@ -724,6 +805,9 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
 		case "ping":
 			return jsonRpcSuccess(rpcRequest.id, {}, sessionId);
 
+		// Unreachable — `isServedMethod` above refuses an unknown method before
+		// the record is written — and kept as the closed answer, so this switch
+		// gaining a case that the predicate does not list fails safe.
 		default:
 			return jsonRpcError(
 				rpcRequest.id,

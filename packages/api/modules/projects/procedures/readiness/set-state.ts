@@ -9,6 +9,8 @@ import {
 import { gatherReadinessEvidence } from "../../lib/readiness/evidence";
 import { buildReadinessHelpMailto } from "../../lib/readiness/help-request";
 import { READINESS_RULES_BY_KEY } from "../../lib/readiness/registry";
+import { CLI_ITEM_KEY } from "../../lib/readiness/thresholds";
+import { viewerMayCreateOrganizationKey } from "./get";
 
 /**
  * The three manual readiness actions (Fizzy #2165).
@@ -31,6 +33,42 @@ import { READINESS_RULES_BY_KEY } from "../../lib/readiness/registry";
  */
 
 const ITEM_KEY_UNKNOWN = "Unknown readiness item.";
+
+/**
+ * Who may settle the "API Key for CLI" row (Fizzy #2457, R29).
+ *
+ * Marking an item not applicable speaks for the whole project, and on this row
+ * it also stops the prompt for every member of the organization. So it must not
+ * be reachable by someone the prompt itself would never target: the same
+ * organization-role test that decides eligibility decides this, at the other
+ * door.
+ *
+ * `PROJECT_UPDATE` alone is not enough here, and the hole is concrete. A guest —
+ * someone with a `ProjectMember` row and no membership of the host organization
+ * — holding a project-editor role passes `PROJECT_UPDATE` today, and could
+ * therefore silence a prompt for an organization they do not belong to. They
+ * fail this test, because with no `member` row their organization permission
+ * set is empty.
+ *
+ * Only this one item is constrained. Every other row keeps the panel's existing
+ * project-role gate exactly as it was.
+ */
+async function assertMaySettleCliItem(
+	itemKey: string,
+	organizationId: string | null,
+	userId: string,
+): Promise<void> {
+	if (itemKey !== CLI_ITEM_KEY) {
+		return;
+	}
+
+	if (!(await viewerMayCreateOrganizationKey(organizationId, userId))) {
+		throw new ORPCError("FORBIDDEN", {
+			message:
+				"Only an organization member who can create API keys may settle this item.",
+		});
+	}
+}
 
 async function assertEnabled(): Promise<void> {
 	if (!(await isFeatureEnabled("PROJECT_READINESS"))) {
@@ -207,7 +245,8 @@ export const snoozeReadinessItemProcedure = tenantProtectedProcedure
  * Mark an item not applicable for the whole project, or clear that mark.
  *
  * Gated on project-edit rights because it changes what every member sees and,
- * through the cascade, resolves the items that depend on it.
+ * through the cascade, resolves the items that depend on it. One row carries a
+ * second gate on top of that — see {@link assertMaySettleCliItem}.
  */
 export const setReadinessItemNotApplicableProcedure = tenantProtectedProcedure
 	.use(requireProjectPermission(Permissions.PROJECT_UPDATE))
@@ -228,10 +267,19 @@ export const setReadinessItemNotApplicableProcedure = tenantProtectedProcedure
 		}),
 	)
 	.output(StateOutput)
-	.handler(async ({ input }) => {
+	.handler(async ({ input, context }) => {
 		await assertEnabled();
 		assertKnownItem(input.itemKey);
 		const tenant = await resolveTenant(input.projectId);
+		// Both directions of the toggle, not only the mark: the row's control
+		// is offered on the eligibility test rather than on the panel's
+		// project-role gate, so the same people who cannot set it cannot clear
+		// it either.
+		await assertMaySettleCliItem(
+			input.itemKey,
+			tenant.organizationId,
+			context.user.id,
+		);
 
 		if (!input.notApplicable) {
 			// Clearing removes the project-wide row entirely rather than writing

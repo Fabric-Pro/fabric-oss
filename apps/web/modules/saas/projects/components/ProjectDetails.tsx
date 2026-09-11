@@ -10,6 +10,7 @@ import {
 } from "@saas/get-started/lib/tour-steps";
 import { useOrganizationContext } from "@saas/organizations/hooks/use-organization-context";
 import { CustomizeProjectTabsDialog } from "@saas/projects/components/CustomizeProjectTabsDialog";
+import { CliConnectionNudge } from "@saas/projects/components/cli-connection/CliConnectionNudge";
 import { ProjectReadinessPanel } from "@saas/projects/components/readiness/ProjectReadinessPanel";
 import { useRecordProjectVisit } from "@saas/projects/hooks/use-record-project-visit";
 import {
@@ -1073,15 +1074,48 @@ export function ProjectDetails({ projectId, organizationSlug }: Props) {
 					    render above the breadcrumb. Mounting it here also tells the
 					    layout's fallback to stand down. */}
 					<ProjectReadinessPanel />
-
-					{/* Code Analysis Progress Banner */}
-					{project.codeAnalysisStatus === "SCANNING" && (
-						<CodeAnalysisBanner
-							projectId={projectId}
-							onComplete={() => refetch()}
-						/>
-					)}
 				</>
+			)}
+
+			{/* The CLI-connection prompt (Fizzy #2457, R3). Same banner slot,
+			    directly below the checklist it reads from — the prompt and the
+			    "API Key for CLI" row its copy names are then in one place, so a
+			    reader who dismisses the prompt can see where the option persists
+			    rather than take our word for it.
+
+			    Mounted OUTSIDE the chrome block above — the reason
+			    `ProjectRoleConfirmationPrompt` is too — and hidden with a prop
+			    rather than by that condition. Focus Mode is a toggle on this
+			    page, not a navigation: unmounting the prompt for it would reset
+			    the prompt's per-mount onboarding-yield latch and re-fire its
+			    render event, counting one impression twice within a single
+			    project visit. Its position between the readiness panel and the
+			    scan banner is unchanged, and while hidden it occupies no space —
+			    `space-y-*` skips a `[hidden]` child.
+
+			    `key={projectId}` for the reason the role-confirmation prompt
+			    above carries one: this page does not remount between projects,
+			    and that latch is per-mount. Without it, a tour taken on one
+			    project would keep the prompt suppressed on the next.
+
+			    The project's name is passed straight from the object this
+			    component already holds — the issuing view names the project in
+			    its starter instruction, and that is not worth a second read of a
+			    project already on screen. */}
+			<CliConnectionNudge
+				key={projectId}
+				hidden={shouldHideChrome}
+				organizationId={organizationId ?? null}
+				organizationSlug={organizationSlug}
+				projectName={project.name}
+			/>
+
+			{/* Code Analysis Progress Banner */}
+			{!shouldHideChrome && project.codeAnalysisStatus === "SCANNING" && (
+				<CodeAnalysisBanner
+					projectId={projectId}
+					onComplete={() => refetch()}
+				/>
 			)}
 
 			{/* Enhanced Tabs */}
