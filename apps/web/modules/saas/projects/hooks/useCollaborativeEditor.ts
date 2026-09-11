@@ -8,7 +8,7 @@
 "use client";
 
 import { useSession } from "@saas/auth/hooks/use-session";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import YPartyKitProvider from "y-partykit/provider";
 import * as Y from "yjs";
 
@@ -32,6 +32,16 @@ interface UseCollaborativeEditorResult {
 	collaborators: CollaboratorInfo[];
 	userColor: string;
 }
+
+interface CollaborationToken {
+	value: string;
+}
+
+/** Consecutive credential rejections tolerated before keeping the editor offline. */
+const MAX_UNAUTHORIZED_CLOSES = 3;
+
+/** Recovery-only retry schedule for transient token endpoint failures. */
+const TOKEN_REFRESH_BACKOFF_MS = [2000, 4000, 8000, 16000, 30000];
 
 // Color palette for user cursors - saturated colors optimized for white text
 // Only yellow uses black text, all others use white for better readability
@@ -69,8 +79,15 @@ export function useCollaborativeEditor(
 	const [collaborators, setCollaborators] = useState<
 		Map<number, CollaboratorInfo>
 	>(new Map());
-	const [token, setToken] = useState<string | null>(null);
+	const [token, setToken] = useState<CollaborationToken | null>(null);
+	const [tokenRefreshTrigger, setTokenRefreshTrigger] = useState(0);
 	const [provider, setProvider] = useState<YPartyKitProvider | null>(null);
+	const unauthorizedClosesRef = useRef(0);
+	const tokenRefreshAttemptsRef = useRef(0);
+	const tokenRefreshRetryTimeoutRef = useRef<ReturnType<
+		typeof setTimeout
+	> | null>(null);
+	const authRecoveryPendingRef = useRef(false);
 
 	// Check if we're on the client - Yjs doesn't work on the server
 	const isClient = typeof window !== "undefined";
@@ -83,6 +100,18 @@ export function useCollaborativeEditor(
 		}
 		return new Y.Doc();
 	});
+
+	// A document or session change starts a distinct connection lifecycle, so a
+	// prior room's rejection budget cannot leave the new one disconnected.
+	useEffect(() => {
+		unauthorizedClosesRef.current = 0;
+		tokenRefreshAttemptsRef.current = 0;
+		authRecoveryPendingRef.current = false;
+		if (tokenRefreshRetryTimeoutRef.current) {
+			clearTimeout(tokenRefreshRetryTimeoutRef.current);
+			tokenRefreshRetryTimeoutRef.current = null;
+		}
+	}, [documentId, enabled, user?.id]);
 
 	// Generate user color
 	const userColor = useMemo(
@@ -108,6 +137,30 @@ export function useCollaborativeEditor(
 
 		let cancelled = false;
 
+		const scheduleTokenRefreshRetry = () => {
+			if (cancelled || !authRecoveryPendingRef.current) {
+				return;
+			}
+
+			const delay =
+				TOKEN_REFRESH_BACKOFF_MS[tokenRefreshAttemptsRef.current];
+			if (delay === undefined) {
+				console.warn(
+					"[useCollaborativeEditor] Token recovery budget exhausted, staying disconnected",
+				);
+				authRecoveryPendingRef.current = false;
+				return;
+			}
+
+			tokenRefreshAttemptsRef.current += 1;
+			tokenRefreshRetryTimeoutRef.current = setTimeout(() => {
+				tokenRefreshRetryTimeoutRef.current = null;
+				if (!cancelled && authRecoveryPendingRef.current) {
+					setTokenRefreshTrigger((current) => current + 1);
+				}
+			}, delay);
+		};
+
 		async function getToken() {
 			try {
 				console.log(
@@ -119,6 +172,9 @@ export function useCollaborativeEditor(
 					headers: { "Content-Type": "application/json" },
 					body: JSON.stringify({ documentId }),
 				});
+				if (cancelled) {
+					return;
+				}
 
 				if (!response.ok) {
 					console.error(
@@ -126,6 +182,12 @@ export function useCollaborativeEditor(
 						response.status,
 						response.statusText,
 					);
+					if (response.status === 401 || response.status === 403) {
+						authRecoveryPendingRef.current = false;
+						tokenRefreshAttemptsRef.current = 0;
+					} else if (response.status >= 500) {
+						scheduleTokenRefreshRetry();
+					}
 					return;
 				}
 
@@ -134,13 +196,18 @@ export function useCollaborativeEditor(
 					"[useCollaborativeEditor] Token received successfully",
 				);
 				if (!cancelled) {
-					setToken(data.token);
+					authRecoveryPendingRef.current = false;
+					tokenRefreshAttemptsRef.current = 0;
+					// Store an object so a forced recovery replaces the provider even
+					// if the token endpoint returns the same string.
+					setToken({ value: data.token });
 				}
 			} catch (error) {
 				console.error(
 					"[useCollaborativeEditor] Token fetch error:",
 					error,
 				);
+				scheduleTokenRefreshRetry();
 			}
 		}
 
@@ -152,8 +219,12 @@ export function useCollaborativeEditor(
 		return () => {
 			cancelled = true;
 			clearInterval(refreshInterval);
+			if (tokenRefreshRetryTimeoutRef.current) {
+				clearTimeout(tokenRefreshRetryTimeoutRef.current);
+				tokenRefreshRetryTimeoutRef.current = null;
+			}
 		};
-	}, [documentId, enabled, user, isClient]);
+	}, [documentId, enabled, user, isClient, tokenRefreshTrigger]);
 
 	// Create PartyKit provider
 	useEffect(() => {
@@ -196,6 +267,11 @@ export function useCollaborativeEditor(
 		const handleSync = (synced: boolean) => {
 			console.log("[useCollaborativeEditor] Sync event:", synced);
 			setIsSynced(synced);
+			if (synced) {
+				// The worker authorizes after opening the socket. A completed sync,
+				// unlike the "connected" status, proves this credential was accepted.
+				unauthorizedClosesRef.current = 0;
+			}
 		};
 
 		// Handle connection errors
@@ -209,12 +285,48 @@ export function useCollaborativeEditor(
 		// Don't auto-connect yet so we can attach handlers first
 		const newProvider = new YPartyKitProvider(host, documentId, ydoc, {
 			connect: false, // Don't connect immediately
-			params: { token },
+			params: { token: token.value },
 		});
+
+		let handledUnauthorizedClose = false;
+		const handleConnectionClose = (event: CloseEvent) => {
+			if (event.code !== 4001 || handledUnauthorizedClose) {
+				return;
+			}
+			handledUnauthorizedClose = true;
+			// y-partykit reconnects with its original URL. Stop it before asking
+			// for a new credential so it cannot replay the rejected token.
+			newProvider.off("connection-close", handleConnectionClose);
+			newProvider.destroy();
+			setProvider((current) =>
+				current === newProvider ? null : current,
+			);
+			setIsConnected(false);
+			setIsSynced(false);
+			setCollaborators(new Map());
+
+			unauthorizedClosesRef.current += 1;
+			if (unauthorizedClosesRef.current >= MAX_UNAUTHORIZED_CLOSES) {
+				authRecoveryPendingRef.current = false;
+				if (tokenRefreshRetryTimeoutRef.current) {
+					clearTimeout(tokenRefreshRetryTimeoutRef.current);
+					tokenRefreshRetryTimeoutRef.current = null;
+				}
+				console.warn(
+					"[useCollaborativeEditor] Worker rejected the connection repeatedly, giving up",
+				);
+				return;
+			}
+
+			authRecoveryPendingRef.current = true;
+			tokenRefreshAttemptsRef.current = 0;
+			setTokenRefreshTrigger((current) => current + 1);
+		};
 
 		// Attach event handlers BEFORE connecting
 		newProvider.on("status", handleStatus);
 		newProvider.on("sync", handleSync);
+		newProvider.on("connection-close", handleConnectionClose);
 		// Note: y-partykit doesn't have a direct 'error' event,
 		// but we can handle WebSocket errors through status changes
 
@@ -260,6 +372,7 @@ export function useCollaborativeEditor(
 			console.log("[useCollaborativeEditor] Cleaning up provider");
 			newProvider.off("status", handleStatus);
 			newProvider.off("sync", handleSync);
+			newProvider.off("connection-close", handleConnectionClose);
 			newProvider.awareness.off("change", handleAwarenessChange);
 			newProvider.destroy();
 			setProvider(null);
