@@ -10,6 +10,42 @@ const DEFAULT_LOCALE = "en";
 const SESSION_DATA_COOKIE = `${appConfig.auth.cookiePrefix}.session_data`;
 const SESSION_DATA_COOKIE_SECURE = `__Secure-${appConfig.auth.cookiePrefix}.session_data`;
 
+/**
+ * Paths served OUTSIDE `(marketing)/[locale]` that must bypass the intl
+ * middleware.
+ *
+ * A path missing from this list is localized to `/en/...`, matches no marketing
+ * route, and renders the marketing 404 — so an emailed link dies on a dead page
+ * while its route file sits correctly in the build, which makes the failure look
+ * like a bad deploy rather than a missing entry here.
+ *
+ * Exported so `__tests__/proxy-emailed-paths.test.ts` can assert that every link
+ * the app mails out is covered. That test is the guard; this comment is not —
+ * the same footgun was commented twice here and still caught the next link.
+ */
+export const pathsWithoutLocale = [
+	"/onboarding",
+	"/new-organization",
+	"/choose-plan",
+	"/organization-invitation",
+	"/project-invitation",
+	// Public one-click unsubscribe link from release-notes newsletter emails.
+	// Lives at app/unsubscribe/[token] (outside (marketing)/[locale]); without
+	// this bypass the intl middleware localizes the path and it 404s.
+	"/unsubscribe",
+	// Public double opt-in confirm link from newsletter emails. Lives at
+	// app/newsletter/confirm/[token] (outside (marketing)/[locale]); without
+	// this bypass the intl middleware localizes the path and it 404s.
+	"/newsletter/confirm",
+	"/share",
+	"/vscode-auth",
+	"/change-password",
+	// Emailed confirmation link for deleting an organization. Lives at
+	// (saas)/organizations/confirm-deletion (outside (marketing)/[locale]);
+	// without this bypass the intl middleware localizes the path and it 404s.
+	"/organizations/confirm-deletion",
+];
+
 function mustChangePassword(req: NextRequest): boolean {
 	const raw =
 		req.cookies.get(SESSION_DATA_COOKIE_SECURE)?.value ??
@@ -149,25 +185,6 @@ export default async function proxy(req: NextRequest) {
 		res.headers.set("Content-Security-Policy", "frame-ancestors *");
 		return res;
 	}
-
-	const pathsWithoutLocale = [
-		"/onboarding",
-		"/new-organization",
-		"/choose-plan",
-		"/organization-invitation",
-		"/project-invitation",
-		// Public one-click unsubscribe link from release-notes newsletter emails.
-		// Lives at app/unsubscribe/[token] (outside (marketing)/[locale]); without
-		// this bypass the intl middleware localizes the path and it 404s.
-		"/unsubscribe",
-		// Public double opt-in confirm link from newsletter emails. Lives at
-		// app/newsletter/confirm/[token] (outside (marketing)/[locale]); without
-		// this bypass the intl middleware localizes the path and it 404s.
-		"/newsletter/confirm",
-		"/share",
-		"/vscode-auth",
-		"/change-password",
-	];
 
 	if (pathsWithoutLocale.some((path) => pathname.startsWith(path))) {
 		return NextResponse.next();
