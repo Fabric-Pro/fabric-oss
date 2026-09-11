@@ -3,9 +3,10 @@ import {
 	dayKey,
 	groupAwaitingByDay,
 	groupMeetingsByDay,
+	groupPersonalMeetingsByDay,
 	monthGridDays,
 } from "../group-meetings";
-import type { AwaitingMeeting, DigestMeeting } from "../types";
+import type { AwaitingMeeting, DigestMeeting, PersonalMeeting } from "../types";
 
 const m = (id: string, date: string | null): DigestMeeting => ({
 	linkedMeetingId: id,
@@ -32,6 +33,18 @@ describe("groupMeetingsByDay", () => {
 		).toEqual(["a", "b"]);
 		expect(grouped.get("2026-06-12")?.length).toBe(1);
 		expect([...grouped.keys()]).not.toContain("");
+	});
+
+	it("sorts meetings within a day chronologically ascending (earlier meetings first)", () => {
+		// When input arrives in reverse-chronological order (e.g. from orderBy: { meetingDate: "desc" })
+		const grouped = groupMeetingsByDay([
+			m("afternoon", "2026-09-09T15:00:00Z"),
+			m("morning", "2026-09-09T09:00:00Z"),
+			m("lunch", "2026-09-09T12:30:00Z"),
+		]);
+		expect(
+			grouped.get("2026-09-09")?.map((x) => x.linkedMeetingId),
+		).toEqual(["morning", "lunch", "afternoon"]);
 	});
 });
 
@@ -64,6 +77,70 @@ describe("groupAwaitingByDay", () => {
 			awaiting(new Date("2026-07-15T14:00:00Z")),
 		]);
 		expect([...grouped.values()][0]).toHaveLength(2);
+	});
+
+	it("sorts awaiting meetings within a day chronologically ascending", () => {
+		const grouped = groupAwaitingByDay([
+			{
+				linkedMeetingId: "afternoon",
+				subject: "Review",
+				occurrenceStart: "2026-07-15T15:00:00Z",
+				joinUrl: "https://teams.microsoft.com/l/meetup-join/test",
+			},
+			{
+				linkedMeetingId: "morning",
+				subject: "DSU",
+				occurrenceStart: "2026-07-15T09:00:00Z",
+				joinUrl: "https://teams.microsoft.com/l/meetup-join/test",
+			},
+			{
+				linkedMeetingId: "lunch",
+				subject: "Sync",
+				occurrenceStart: "2026-07-15T12:00:00Z",
+				joinUrl: "https://teams.microsoft.com/l/meetup-join/test",
+			},
+		]);
+		expect(
+			grouped.get("2026-07-15")?.map((x) => x.linkedMeetingId),
+		).toEqual(["morning", "lunch", "afternoon"]);
+	});
+});
+
+const personal = (id: string, startTime: string | null): PersonalMeeting => ({
+	id,
+	subject: id,
+	startTime,
+	organizer: "Alex Doe",
+	joinUrl: "https://teams.microsoft.com/l/meetup-join/test",
+	linkedWithoutTranscript: false,
+});
+
+describe("groupPersonalMeetingsByDay", () => {
+	it("buckets personal meetings by day and drops null or invalid dates", () => {
+		const grouped = groupPersonalMeetingsByDay([
+			personal("p1", "2026-07-15T09:00:00Z"),
+			personal("p2", "2026-07-15T14:00:00Z"),
+			personal("p3", null),
+			personal("p4", "invalid-date"),
+		]);
+		expect(grouped.get("2026-07-15")?.map((x) => x.id)).toEqual([
+			"p1",
+			"p2",
+		]);
+		expect(grouped.size).toBe(1);
+	});
+
+	it("sorts personal meetings within a day chronologically ascending", () => {
+		const grouped = groupPersonalMeetingsByDay([
+			personal("afternoon", "2026-07-15T16:00:00Z"),
+			personal("morning", "2026-07-15T08:30:00Z"),
+			personal("noon", "2026-07-15T12:00:00Z"),
+		]);
+		expect(grouped.get("2026-07-15")?.map((x) => x.id)).toEqual([
+			"morning",
+			"noon",
+			"afternoon",
+		]);
 	});
 });
 
