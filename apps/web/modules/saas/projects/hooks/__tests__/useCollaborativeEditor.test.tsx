@@ -182,10 +182,13 @@ describe("useCollaborativeEditor", () => {
 			.mockResolvedValueOnce(tokenResponse("expired-token"))
 			.mockResolvedValueOnce(
 				new Response("unauthorized", { status: 401 }),
+			)
+			.mockResolvedValueOnce(
+				new Response("unauthorized", { status: 401 }),
 			);
 		vi.stubGlobal("fetch", fetchMock);
 
-		renderHook(() =>
+		const { rerender } = renderHook(() =>
 			useCollaborativeEditor({
 				documentId: "document-1",
 				projectId: "project-1",
@@ -205,6 +208,88 @@ describe("useCollaborativeEditor", () => {
 		});
 
 		expect(fetchMock).toHaveBeenCalledTimes(2);
+		expect(MockYPartyKitProvider.instances).toHaveLength(1);
+
+		mockUseSession.mockReturnValue({
+			user: { id: "user-1", name: "Updated editor", image: null },
+		});
+		rerender();
+
+		await act(async () => {
+			await vi.advanceTimersByTimeAsync(0);
+		});
+		expect(fetchMock).toHaveBeenCalledTimes(3);
+		expect(MockYPartyKitProvider.instances).toHaveLength(1);
+	});
+
+	it("disconnects when a periodic token refresh is denied", async () => {
+		vi.useFakeTimers();
+		const fetchMock = vi
+			.fn()
+			.mockResolvedValueOnce(tokenResponse("active-token"))
+			.mockResolvedValueOnce(new Response("forbidden", { status: 403 }));
+		vi.stubGlobal("fetch", fetchMock);
+
+		const { result } = renderHook(() =>
+			useCollaborativeEditor({
+				documentId: "document-1",
+				projectId: "project-1",
+			}),
+		);
+
+		await act(async () => {
+			await vi.advanceTimersByTimeAsync(0);
+		});
+		expect(MockYPartyKitProvider.instances).toHaveLength(1);
+		const activeProvider = MockYPartyKitProvider.instances[0];
+
+		await act(async () => {
+			await vi.advanceTimersByTimeAsync(50 * 60 * 1000);
+		});
+
+		expect(fetchMock).toHaveBeenCalledTimes(2);
+		expect(activeProvider?.destroy).toHaveBeenCalled();
+		expect(result.current.provider).toBeNull();
+	});
+
+	it("does not reconnect with the previous user's token when the replacement request is denied", async () => {
+		const replacementToken = deferredResponse();
+		const fetchMock = vi
+			.fn()
+			.mockResolvedValueOnce(tokenResponse("user-1-token"))
+			.mockImplementationOnce(() => replacementToken.promise);
+		vi.stubGlobal("fetch", fetchMock);
+
+		const { rerender } = renderHook(() =>
+			useCollaborativeEditor({
+				documentId: "document-1",
+				projectId: "project-1",
+			}),
+		);
+
+		await waitFor(() => {
+			expect(MockYPartyKitProvider.instances).toHaveLength(1);
+		});
+		const firstUserProvider = MockYPartyKitProvider.instances[0];
+		expect(firstUserProvider?.options.params?.token).toBe("user-1-token");
+
+		mockUseSession.mockReturnValue({
+			user: { id: "user-2", name: "Next editor", image: null },
+		});
+		rerender();
+
+		await waitFor(() => {
+			expect(fetchMock).toHaveBeenCalledTimes(2);
+		});
+		expect(firstUserProvider?.destroy).toHaveBeenCalled();
+		expect(MockYPartyKitProvider.instances).toHaveLength(1);
+
+		await act(async () => {
+			replacementToken.resolve(
+				new Response("forbidden", { status: 403 }),
+			);
+		});
+
 		expect(MockYPartyKitProvider.instances).toHaveLength(1);
 	});
 
@@ -241,7 +326,7 @@ describe("useCollaborativeEditor", () => {
 		rerender({ documentId: "document-2" });
 		await waitFor(() => {
 			expect(fetchMock).toHaveBeenCalledTimes(3);
-			expect(MockYPartyKitProvider.instances).toHaveLength(3);
+			expect(MockYPartyKitProvider.instances).toHaveLength(2);
 		});
 		await act(async () => {
 			MockYPartyKitProvider.instances.at(-1)?.emit("connection-close", {
@@ -264,7 +349,7 @@ describe("useCollaborativeEditor", () => {
 		});
 
 		expect(fetchMock).toHaveBeenCalledTimes(5);
-		expect(MockYPartyKitProvider.instances).toHaveLength(4);
+		expect(MockYPartyKitProvider.instances).toHaveLength(3);
 		expect(
 			MockYPartyKitProvider.instances.at(-1)?.options.params?.token,
 		).toBe("document-2-fresh-token");
