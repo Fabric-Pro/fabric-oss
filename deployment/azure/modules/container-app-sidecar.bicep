@@ -251,6 +251,7 @@ resource containerApp 'Microsoft.App/containerApps@2024-10-02-preview' = {
               }
               initialDelaySeconds: 30
               periodSeconds: 30
+              timeoutSeconds: 5
             }
             {
               type: 'Readiness'
@@ -260,6 +261,7 @@ resource containerApp 'Microsoft.App/containerApps@2024-10-02-preview' = {
               }
               initialDelaySeconds: 5
               periodSeconds: 10
+              timeoutSeconds: 5
             }
           ] : []
         }
