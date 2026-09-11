@@ -54,7 +54,11 @@ export const BUILT_IN_TO_FABRIC_TOOLS: Record<string, string[]> = {
 	search: ["workspace_rag_query", "workspace_rag_summarize"],
 	"code-interpreter": ["fabric_code_interpreter"],
 	"image-generation": ["fabric_generate_image"],
-	"project-context": ["project_rag_query"],
+	// Both tools ship under one capability on purpose: project_rag_query has no
+	// date dimension, so an agent that can search project context but cannot
+	// list meetings by date answers "was there a meeting on the 10th?" from
+	// whatever the similarity sample happened to contain (Fizzy #2473).
+	"project-context": ["project_rag_query", "fabric_list_meeting_transcripts"],
 	"create-story": ["fabric_create_story"],
 };
 
