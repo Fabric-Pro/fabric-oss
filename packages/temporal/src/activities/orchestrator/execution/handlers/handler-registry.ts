@@ -544,6 +544,19 @@ export function getDefaultHandlerRegistry(): HandlerRegistry {
 		{ priority: HANDLER_PRIORITY.CODE_SEARCH },
 	);
 
+	// Meeting transcripts handler - reads ProjectMeetingTranscript rows by the
+	// meeting's own date, so it claims the list_meeting_transcripts tool ahead
+	// of the project RAG handler (Fizzy #2473).
+	registry.register(
+		() => {
+			const {
+				MeetingTranscriptsHandler,
+			} = require("./meeting-transcripts-handler");
+			return new MeetingTranscriptsHandler();
+		},
+		{ priority: HANDLER_PRIORITY.MEETING_TRANSCRIPTS },
+	);
+
 	// Architecture decisions handler - reads the project's Decisions tab
 	// (ArchitectureDecision rows). Checked before the generic Fabric AI handler
 	// so it claims the fabric_list_architecture_decisions tool.

@@ -46,6 +46,9 @@ export const HANDLER_PRIORITY = {
 	DECISION_CONTEXT: 8,
 	/** Security findings handler - checked before the generic Fabric AI handler */
 	SECURITY_FINDINGS: 8,
+	/** Meeting transcript lookup by meeting date - ahead of PROJECT_RAG, which
+	 * has no date dimension and answers date questions wrongly (Fizzy #2473) */
+	MEETING_TRANSCRIPTS: 5,
 	/** Fabric AI tools (YouTube, scraping, patterns) - checked first for specific URLs */
 	FABRIC_AI: 10,
 	/** Pre-defined Temporal workflows */

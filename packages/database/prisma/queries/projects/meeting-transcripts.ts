@@ -490,3 +490,100 @@ export async function markMeetingTranscriptAnalysisFailed(
 		},
 	});
 }
+
+/** Filters for {@link listMeetingTranscriptsByDate}. */
+export interface MeetingTranscriptDateQuery {
+	projectId: string;
+	/** Inclusive lower bound on the meeting's own occurrence date. */
+	from?: Date;
+	/** Inclusive upper bound on the meeting's own occurrence date. */
+	to?: Date;
+	/** Case-insensitive substring match on the meeting series subject. */
+	subjectContains?: string;
+	/** Rows to return (1-200, default 50). */
+	limit?: number;
+}
+
+export interface MeetingTranscriptDateResult {
+	items: {
+		id: string;
+		meetingSubject: string | null;
+		meetingDate: Date | null;
+		speakerNames: string[];
+		summary: string | null;
+		contentLength: number | null;
+		contextId: string | null;
+		wasSummarized: boolean;
+	}[];
+	/** Total matching the filters, so a caller can tell it was truncated. */
+	total: number;
+}
+
+/**
+ * List a project's synced meeting transcripts by the meeting's OWN date.
+ *
+ * Deliberately distinct from {@link listSyncedTranscripts}, which orders by
+ * `syncedAt` — the ingest timestamp. Those are not the same thing, and the
+ * difference is what made Fizzy #2473 possible: a bulk backfill can stamp
+ * hundreds of meetings spanning months with the same `syncedAt` minute, so
+ * ingest order says nothing about when anything actually happened.
+ *
+ * `meetingDate` is the occurrence date carried from the calendar event, and it
+ * is indexed (`@@index([meetingDate])`). This is the query that lets "what did
+ * we discuss on the 10th" be answered by a lookup instead of by semantic
+ * similarity over hundreds of near-identical standups.
+ *
+ * Tenancy: filtered by `projectId` only, matching the other project-scoped read
+ * helpers — callers verify access with `hasProjectAccess` first. Rows predating
+ * the tenant columns carry NULL there, so filtering on them here would silently
+ * hide real transcripts.
+ */
+export async function listMeetingTranscriptsByDate(
+	params: MeetingTranscriptDateQuery,
+): Promise<MeetingTranscriptDateResult> {
+	const { projectId, from, to, subjectContains } = params;
+	const take = Math.min(Math.max(1, params.limit ?? 50), 200);
+
+	const where = {
+		projectId,
+		...(from || to
+			? {
+					meetingDate: {
+						...(from ? { gte: from } : {}),
+						...(to ? { lte: to } : {}),
+					},
+				}
+			: {}),
+		...(subjectContains
+			? {
+					meetingSubject: {
+						contains: subjectContains,
+						mode: "insensitive" as const,
+					},
+				}
+			: {}),
+	};
+
+	const [items, total] = await Promise.all([
+		db.projectMeetingTranscript.findMany({
+			where,
+			// NULLs last: a row with no occurrence date is the least useful
+			// answer to a date question, never the headline.
+			orderBy: [{ meetingDate: { sort: "desc", nulls: "last" } }],
+			take,
+			select: {
+				id: true,
+				meetingSubject: true,
+				meetingDate: true,
+				speakerNames: true,
+				summary: true,
+				contentLength: true,
+				contextId: true,
+				wasSummarized: true,
+			},
+		}),
+		db.projectMeetingTranscript.count({ where }),
+	]);
+
+	return { items, total };
+}
