@@ -1055,6 +1055,7 @@ export * from "./project-document-generation";
 // Project metadata activities (orchestrator project context injection)
 export {
 	getProjectMetadataActivity,
+	listMeetingTranscriptsActivity,
 	retrieveProjectContextsActivity,
 } from "./project-metadata";
 export * from "./prompt-activities";

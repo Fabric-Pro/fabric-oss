@@ -344,7 +344,10 @@ export {
 	searchSemanticMemory,
 } from "../orchestrator-memory-activities";
 // Project context retrieval (for project_rag_query tool)
-export { retrieveProjectContextsActivity } from "../project-metadata";
+export {
+	listMeetingTranscriptsActivity,
+	retrieveProjectContextsActivity,
+} from "../project-metadata";
 // Live integration message search (for search_slack_messages / search_teams_messages tools)
 export { searchProjectSlackMessages } from "../search-project-slack-messages";
 export { searchProjectTeamsMessages } from "../search-project-teams-messages";
