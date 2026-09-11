@@ -87,7 +87,7 @@ describe("getOrganizationsNeedingPurgeReminder", () => {
 				slug: "example-org",
 				deletedBy: "user-1",
 				scheduledPermanentDeleteAt: new Date(
-					"2026-09-17T12:00:00.000Z",
+					"2026-10-10T12:00:00.000Z",
 				),
 				members: [
 					{

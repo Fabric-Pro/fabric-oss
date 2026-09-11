@@ -2494,8 +2494,9 @@ async function handlePostRequest(
 
 	// A DEACTIVATED ORGANIZATION REFUSES HERE TOO.
 	//
-	// Deleting an organization deactivates it for seven days (Fizzy #2462), and
-	// that is enforced by refusing at tenant resolution rather than by filtering
+	// Deleting an organization deactivates it for its retention window (Fizzy
+	// #2462), and that is enforced by refusing at tenant resolution rather than
+	// by filtering
 	// the ~168 tables hanging off it. This route resolves its own tenant and
 	// never crosses `tenantContextMiddleware`, so without this the corridor is
 	// closed to people and open to their agents.

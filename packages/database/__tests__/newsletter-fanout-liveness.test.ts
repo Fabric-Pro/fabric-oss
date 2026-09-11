@@ -12,8 +12,9 @@
  * Two failure modes, one pre-existing and one that the organization corridor
  * would have introduced:
  *   - a project in its 7-day window kept sending (already true before #2462);
- *   - a deactivated organization would have kept sending for its 7 days, which
- *     means emailing members about an organization they were just told was gone.
+ *   - a deactivated organization would have kept sending for its whole
+ *     retention window, which means emailing members about an organization they
+ *     were just told was gone.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 

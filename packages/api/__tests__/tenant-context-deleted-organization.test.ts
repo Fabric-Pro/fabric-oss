@@ -1,7 +1,8 @@
 /**
  * The deactivation gate in `tenantContextMiddleware` (Fizzy #2462).
  *
- * Deleting an organization does not destroy anything for seven days. What makes
+ * Deleting an organization destroys nothing until its retention window ends.
+ * What makes
  * it "deleted" in the meantime is THIS refusal — and the reason it can be one
  * refusal rather than a predicate on every query is that no request resolves a
  * tenant context for a deactivated workspace, so the ~168 tables that cascade

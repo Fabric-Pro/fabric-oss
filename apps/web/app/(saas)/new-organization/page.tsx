@@ -24,8 +24,8 @@ export default async function NewOrganizationPage() {
 			{/*
 			 * Deleting your LAST organization redirects here (see
 			 * app/layout.tsx). Without this banner that redirect is a dead end:
-			 * a page offering to create something new, during the exact seven
-			 * days when the thing you just deleted can still be brought back
+			 * a page offering to create something new, during the exact window
+			 * in which the thing you just deleted can still be brought back
 			 * (Fizzy #2462).
 			 */}
 			<div className="flex flex-col gap-6">

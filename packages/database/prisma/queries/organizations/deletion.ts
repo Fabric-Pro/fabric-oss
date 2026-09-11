@@ -10,19 +10,25 @@
  * The one thing this module does that the project code does not is own the
  * window as a NAMED CONSTANT. `7 * 24 * 60 * 60 * 1000` is currently spelled
  * out in four separate places on the project side — two query files, an OpenAPI
- * description and several UI strings — and they can drift apart silently. There
- * is exactly one seven here.
+ * description and several UI strings — and they can drift apart silently. The
+ * organization window is written down once, here, and everything that states it
+ * — mail, dialogs, settings copy — is handed the number rather than repeating
+ * it. That is what made moving it from seven days to thirty a one-line change.
  */
 import { db } from "../../client";
 
 /**
  * How long a deleted organization stays recoverable.
  *
- * Matches the project window deliberately: a person who has learned that a
- * deleted project comes back for seven days should not have to learn a second
- * number for organizations.
+ * Deliberately LONGER than the seven days a deleted project gets, and the
+ * difference is the blast radius: a project is one team's work and its owner
+ * notices within the day, whereas an organization takes everyone in it offline
+ * at once — including the people best placed to notice, who lose the surface
+ * they would have noticed on. Thirty days covers someone away for a few weeks
+ * and the deletion nobody sees until the quiet fortnight ends (Fizzy #2462,
+ * decided at the 2026-09-10 DSU).
  */
-export const ORGANIZATION_RETENTION_DAYS = 7;
+export const ORGANIZATION_RETENTION_DAYS = 30;
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 

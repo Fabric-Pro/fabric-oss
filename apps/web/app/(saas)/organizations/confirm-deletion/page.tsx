@@ -1,3 +1,4 @@
+import { ORGANIZATION_RETENTION_DAYS } from "@repo/database";
 import { getSession } from "@saas/auth/lib/server";
 import { ConfirmOrganizationDeletion } from "@saas/organizations/components/ConfirmOrganizationDeletion";
 import { AuthWrapper } from "@saas/shared/components/AuthWrapper";
@@ -36,7 +37,10 @@ export default async function ConfirmOrganizationDeletionPage({
 
 	return (
 		<AuthWrapper>
-			<ConfirmOrganizationDeletion token={token} />
+			<ConfirmOrganizationDeletion
+				token={token}
+				retentionDays={ORGANIZATION_RETENTION_DAYS}
+			/>
 		</AuthWrapper>
 	);
 }

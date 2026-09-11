@@ -636,8 +636,8 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
 
 	// A DEACTIVATED ORGANIZATION REFUSES EVERY REQUEST, AT EVERY DOOR.
 	//
-	// Deleting an organization deactivates it for seven days before anything is
-	// destroyed (Fizzy #2462), and that deactivation is enforced by refusing at
+	// Deleting an organization deactivates it for its retention window before
+	// anything is destroyed (Fizzy #2462), and that is enforced by refusing at
 	// tenant resolution rather than by filtering the ~168 tables that hang off
 	// it. `tenantContextMiddleware` does that for the application — but a tool
 	// caller never passes through it, because this route resolves its own tenant

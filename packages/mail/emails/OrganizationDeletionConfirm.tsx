@@ -97,7 +97,7 @@ OrganizationDeletionConfirm.PreviewProps = {
 	translations: defaultTranslations,
 	organizationName: "Example Org",
 	url: "https://example.com/organizations/confirm-deletion?token=example-token",
-	retentionDays: 7,
+	retentionDays: 30,
 };
 
 export default OrganizationDeletionConfirm;
