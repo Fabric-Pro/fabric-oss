@@ -445,6 +445,27 @@ vi.mock("@shared/lib/orpc-query-utils", () => {
 					saveWebinarScriptBody: m(
 						"projects.publishingSuite.saveWebinarScriptBody",
 					),
+					// The Newsletter Blurb panel owns these three (Fizzy #1988,
+					// Phase 2D-2). Same obligation every comment above records: a
+					// mock that does not name a procedure a newly-live tab calls
+					// is `undefined.mutationOptions`, which costs every case in
+					// this file rather than one assertion.
+					//
+					// MEASURED, so the next reader does not over-trust these: no
+					// case in this file selects the Newsletter Blurb tab, and
+					// `TabsContent` mounts only the selected one — so deleting
+					// these three today reddens NOTHING. They are here because the
+					// first case that does select that tab would otherwise take the
+					// whole file down, which is how the entries above got written.
+					generateNewsletterBlurb: m(
+						"projects.publishingSuite.generateNewsletterBlurb",
+					),
+					adoptNewsletterBlurbDraft: m(
+						"projects.publishingSuite.adoptNewsletterBlurbDraft",
+					),
+					saveNewsletterBlurbBody: m(
+						"projects.publishingSuite.saveNewsletterBlurbBody",
+					),
 					listTopicDecisions: q(
 						"projects.publishingSuite.listTopicDecisions",
 					),
@@ -1458,12 +1479,13 @@ describe("TopicItemPage — two-row tab strip", () => {
 		state.topic = topic({ suggestedPostTypes: [], userPostTypes: null });
 		renderPage();
 
-		// Six since Webinar / Demo Script joined the enum (Fizzy #1988). A
+		// Seven since Newsletter Blurb joined the enum (Fizzy #1988, Phase
+		// 2D-2); six of them since Webinar / Demo Script did (Phase 2D-1). A
 		// literal rather than a derived count on purpose: the number here is
 		// the claim that EVERY type falls back, so deriving it from the same
 		// list the page renders from would make the case agree with the page
 		// by construction.
-		expect(within(contentTabs()).getAllByRole("tab")).toHaveLength(6);
+		expect(within(contentTabs()).getAllByRole("tab")).toHaveLength(7);
 	});
 
 	it("treats a content type as a peer of a review tab, not a tab inside a tab", async () => {

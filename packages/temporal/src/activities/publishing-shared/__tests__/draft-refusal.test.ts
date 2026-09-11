@@ -217,7 +217,7 @@ describe("every publishing terminal write reports its refusal through the table"
 			expect(folders).toContain("publishing-webinar-script");
 			expect(folders).not.toContain("publishing-shared");
 			expect(folders).not.toContain("publishing-suggestion");
-			expect(folders.length).toBeGreaterThanOrEqual(7);
+			expect(folders.length).toBeGreaterThanOrEqual(8);
 		});
 
 		it("finds a plausible set of expected generate/mark files", () => {
@@ -228,8 +228,8 @@ describe("every publishing terminal write reports its refusal through the table"
 			expect(files).toContain(
 				"temporal/src/activities/publishing-webinar-script/mark-webinar-script-failed.ts",
 			);
-			// Seven folders, two files each.
-			expect(files.length).toBeGreaterThanOrEqual(14);
+			// Eight folders, two files each.
+			expect(files.length).toBeGreaterThanOrEqual(16);
 		});
 	});
 
@@ -257,8 +257,23 @@ describe("every publishing terminal write reports its refusal through the table"
 		expect(SITES).toContain(
 			"api/modules/projects/procedures/publishing-suite/webinar-script.ts",
 		);
-		// 7 content types × (generate + mark) + 7 API procedures.
-		expect(SITES.length).toBeGreaterThanOrEqual(21);
+		expect(SITES).toContain(
+			"temporal/src/activities/publishing-newsletter-blurb/generate-newsletter-blurb.ts",
+		);
+		expect(SITES).toContain(
+			"temporal/src/activities/publishing-newsletter-blurb/mark-newsletter-blurb-failed.ts",
+		);
+		expect(SITES).toContain(
+			"api/modules/projects/procedures/publishing-suite/newsletter-blurb.ts",
+		);
+		// 7 draft content types plus the planning analysis — 8 generation
+		// folders × (generate + mark) — and the 8 API procedures that open or
+		// close those attempts. Raised from 21 to the run's TRUE count when the
+		// Newsletter Blurb slice landed, deliberately rather than because the
+		// old floor went red: a floor that stays below the real number can
+		// tolerate losing exactly the sites a slice just added. The three names
+		// above are what make this a check on IDENTITY rather than on count.
+		expect(SITES.length).toBeGreaterThanOrEqual(24);
 	});
 
 	it("covers every generate-*.ts / mark-*-failed.ts pair discovery expects to find", () => {

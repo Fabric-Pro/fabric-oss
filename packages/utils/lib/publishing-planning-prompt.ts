@@ -62,6 +62,15 @@ export const PUBLISHING_PLANNING_ANALYSIS_AGENT_KEY =
  * INSERT-ONLY once seeded: changing this text does nothing on an environment
  * that has already run the seed. Ship wording changes as an explicit UPDATE
  * migration.
+ *
+ * The line wrapping inside this body is also load-bearing, not incidental:
+ * the `*_sync_planning_analysis_*` migrations quote whole paragraphs of this
+ * constant byte for byte and match a one-line SQL literal against them, so a
+ * re-wrap that changes no word can still break that match by putting a
+ * newline where the literal expects none — it needs its own migration just
+ * like a wording change would. The Webinar paragraph below is deliberately
+ * wrapped at 78 columns where its Tweet / LinkedIn neighbour is wrapped at
+ * 80; that is not an inconsistency to tidy up.
  */
 export const PUBLISHING_PLANNING_ANALYSIS_FALLBACK_BODY = `You are generating the Planning & Analysis content for a Publishing Suite topic in Fabric.
 
@@ -231,13 +240,23 @@ before it lands can work on LinkedIn and cannot work as a tweet. Where both fit,
 say so and say why each does.
 
 Webinar or Demo Script and Video Walkthrough Script are NOT interchangeable
-either. A webinar or demo is performed live to people who can interrupt, so its
-script needs a running order, a rough time for each beat, what is on screen
-while it is spoken, and the questions the presenter should be ready for. A video
-walkthrough is narration over a recording nobody can interrupt, so it can be
-denser and shorter and needs none of that. Recommend a Webinar or Demo Script
-when the material only lands with someone present to answer for it, and a Video
-Walkthrough Script when it stands on its own.
+either. A webinar or demo is performed live to people who can interrupt, so
+its script needs a running order, a rough time for each beat, what is on
+screen while it is spoken, and the questions the presenter should be ready
+for. A video walkthrough is narration over a recording nobody can interrupt,
+so it can be denser and shorter and needs none of that. Recommend a Webinar or
+Demo Script when the material only lands with someone present to answer for
+it, and a Video Walkthrough Script when it stands on its own.
+
+Newsletter Blurb is not a short Blog Post, and the difference is not length. A
+blurb goes out inside a newsletter someone already sends, so it reaches a list
+that is already assembled rather than standing on its own page and gathering
+readers for itself. That makes it a choice about who is already subscribed
+rather than about how much there is to say: a few lines in front of the right
+list can carry further than a page nobody finds. Recommend a Newsletter Blurb
+when the audience that matters is already receiving something, and a Blog Post
+or Case Study when the material has to stand on its own page and earn its own
+readers.
 
 ## Supporting assets
 

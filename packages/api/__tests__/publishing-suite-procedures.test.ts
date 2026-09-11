@@ -47,6 +47,7 @@ const postTypeMocks = vi.hoisted(() => ({
 		"CASE_STUDY",
 		"STAKEHOLDER_EMAIL",
 		"WEBINAR_SCRIPT",
+		"NEWSLETTER_BLURB",
 	],
 }));
 

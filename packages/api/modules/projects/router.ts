@@ -275,6 +275,7 @@ import {
 import {
 	adoptBlogPostDraftProcedure,
 	adoptCaseStudyDraftProcedure,
+	adoptNewsletterBlurbDraftProcedure,
 	adoptStakeholderEmailDraftProcedure,
 	adoptWebinarScriptDraftProcedure,
 	amendTopicQuestionProcedure,
@@ -283,6 +284,7 @@ import {
 	generateBlogPostProcedure,
 	generateCaseStudyProcedure,
 	generateLinkedInPostProcedure,
+	generateNewsletterBlurbProcedure,
 	generatePlanningAnalysisProcedure,
 	generatePublishingTopicsNowProcedure,
 	generateShortPostProcedure,
@@ -303,6 +305,7 @@ import {
 	saveAnalysisRevisionProcedure,
 	saveBlogPostBodyProcedure,
 	saveCaseStudyBodyProcedure,
+	saveNewsletterBlurbBodyProcedure,
 	saveStakeholderEmailBodyProcedure,
 	saveWebinarScriptBodyProcedure,
 	selectLinkedInPostOptionProcedure,
@@ -1508,6 +1511,20 @@ export const projectsRouter = {
 		generateWebinarScript: generateWebinarScriptProcedure,
 		adoptWebinarScriptDraft: adoptWebinarScriptDraftProcedure,
 		saveWebinarScriptBody: saveWebinarScriptBodyProcedure,
+		// Fizzy #1988 (Phase 2D slice 2): Newsletter Blurb, the seventh content
+		// type. Same three-endpoint shape as the Webinar Script — the FIRST run
+		// seeds the working draft inside the activity, so
+		// `adoptNewsletterBlurbDraft` replaces a body that already exists and
+		// `saveNewsletterBlurbBody` is the editor; both are compare-and-set on
+		// the working draft's `updatedAt`. Adoption composes the body with the
+		// SHARED `composeNewsletterBlurbWorkingDraftBody`, the same function
+		// the activity seeds with, so the two texts cannot drift. The one
+		// number that is NOT the Webinar Script's is the edited-body cap:
+		// 24,000, following the Stakeholder Email, because a blurb is the
+		// shortest thing this suite writes.
+		generateNewsletterBlurb: generateNewsletterBlurbProcedure,
+		adoptNewsletterBlurbDraft: adoptNewsletterBlurbDraftProcedure,
+		saveNewsletterBlurbBody: saveNewsletterBlurbBodyProcedure,
 	},
 
 	// User Stories & Tasks (Kanban)

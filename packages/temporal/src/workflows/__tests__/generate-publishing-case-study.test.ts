@@ -328,10 +328,17 @@ describe("generatePublishingCaseStudyWorkflow", () => {
 });
 
 describe("every publishing generation workflow unwraps the wrapper", () => {
-	// The unwrap is one line, repeated in six files, and only ONE of those
-	// files is exercised by the case above — `generate-publishing-stakeholder-email.ts`
-	// has no workflow suite at all. A file-by-file structural check is what
-	// stops the other four regressing silently.
+	// The unwrap is one line, repeated in every file listed below, and only a
+	// couple of them have a workflow suite that drives it against a real
+	// `ActivityFailure` the way the case above does; some
+	// — `generate-publishing-stakeholder-email.ts`,
+	// `generate-publishing-linkedin-post.ts` — have no workflow suite at all.
+	// A file-by-file structural check is what stops the rest regressing
+	// silently.
+	//
+	// Deliberately count-free: the sentence said "six files" and "the other
+	// four" while the list held seven, because a new content type appends here
+	// and nobody re-counts the prose.
 	//
 	// `firstCallPosition` and not a source-text search: the comment ABOVE each
 	// call describes the mapping in prose, so a grep would stay green after the
@@ -340,6 +347,7 @@ describe("every publishing generation workflow unwraps the wrapper", () => {
 		"generate-publishing-blog-post.ts",
 		"generate-publishing-case-study.ts",
 		"generate-publishing-linkedin-post.ts",
+		"generate-publishing-newsletter-blurb.ts",
 		"generate-publishing-planning-analysis.ts",
 		"generate-publishing-short-post.ts",
 		"generate-publishing-stakeholder-email.ts",

@@ -87,6 +87,13 @@ describe("normalizePostType", () => {
 		expect(normalizePostType("Stakeholder Email")).toBe(
 			"STAKEHOLDER_EMAIL",
 		);
+		// Moved up from "returns null for the content types this phase does
+		// not own" by #1988 Phase 2D-2. "Newsletter Blurb" is the exact label
+		// the LLM is whitelisted to emit and the phrasing the planning prompt
+		// has used since 2A, so the one string that HAD to resolve to null
+		// now has to resolve to the new value. The assertion was moved rather
+		// than deleted, so the direction it changed in stays visible.
+		expect(normalizePostType("Newsletter Blurb")).toBe("NEWSLETTER_BLURB");
 	});
 
 	it("ignores casing, punctuation and surrounding whitespace", () => {
@@ -112,14 +119,14 @@ describe("normalizePostType", () => {
 
 	it("returns null for the content types this phase does not own", () => {
 		// 2A's schema keeps `type` a free string on purpose: FR32's supported set
-		// has nine types. #1988 (Phase 2D-1) brought Webinar / Demo Script into
-		// the owned set (see the describe block below), leaving three — Video
-		// Walkthrough Script, Newsletter Blurb and AI-assisted Video Walkthrough
-		// — that this phase still does not own, and narrowing the schema to the
-		// enum would make the model drop them. Ignoring them here is the
-		// correct answer, not a gap.
+		// has nine types. #1988 brought Webinar / Demo Script into the owned set
+		// (Phase 2D-1) and then Newsletter Blurb (Phase 2D-2) — each has a
+		// describe block of its own below — leaving TWO, Video Walkthrough
+		// Script and AI-assisted Video Walkthrough, that this phase still does
+		// not own. Narrowing the schema to the enum would make the model drop
+		// them, so ignoring them here is the correct answer, not a gap.
 		expect(normalizePostType("Video Walkthrough Script")).toBeNull();
-		expect(normalizePostType("Newsletter Blurb")).toBeNull();
+		expect(normalizePostType("AI-assisted Video Walkthrough")).toBeNull();
 		expect(normalizePostType("")).toBeNull();
 	});
 
@@ -209,6 +216,82 @@ describe("WEBINAR_SCRIPT synonyms (Fizzy #1988, Phase 2D-1)", () => {
 		expect(tabs.find((t) => t.postType === "WEBINAR_SCRIPT")?.bucket).toBe(
 			"deferred",
 		);
+	});
+});
+
+describe("NEWSLETTER_BLURB synonyms (Fizzy #1988, Phase 2D-2)", () => {
+	// `readContentTypeBuckets` is the ONE consumer of `normalizePostType`, so
+	// it is the one surface a new synonym moves. 2D-1's widening also reached
+	// `resolveRestrictions`, but that path is gone: `CONTENT_TYPE` no longer
+	// restricts anything (`publishing-restrictions.ts` says why), and the
+	// fail-safe that escalated an unmappable subject to every tab went with
+	// it. So what is left to pin is the entry that resolves, and the guessed
+	// near-synonym deliberately kept out of the table beside it.
+	it('does not map "Newsletter Update" — that phrasing names this repo\'s other Newsletter product', () => {
+		// STAKEHOLDER_EMAIL's own second entry, "stakeholderupdate", looks like
+		// precedent for adding "newsletterupdate" here by symmetry. It is not:
+		// this repository ships a separate Newsletter product area (release
+		// notes, curation, chat delivery, its own settings procedures) that
+		// "Newsletter Update" most likely names instead. The whitelisted label
+		// stays mapped; the guessed near-synonym does not resolve.
+		expect(normalizePostType("Newsletter Update")).toBeNull();
+	});
+
+	it('does not populate the NEWSLETTER_BLURB bucket for "Newsletter" or "Newsletter Update"', () => {
+		// Restores, through the surviving consumer, what two of the four tests
+		// deleted for the removed CONTENT_TYPE branch used to pin via
+		// `resolveRestrictions`: a subject of exactly "Newsletter" fails safe to
+		// `global = true` there, and "Newsletter Update" fell through to the
+		// same fail-safe. That path is gone, but the exclusions it protected
+		// are still live in `SYNONYMS`, and nothing now reddens if either
+		// string is added there. One case for both because they are the same
+		// guard against the same kind of guess, not two different behaviours:
+		// this repository ships an entire separate Newsletter product area
+		// (release notes, curation, chat delivery, its own settings
+		// procedures), and an analysis item titled "Newsletter" or "Newsletter
+		// Update" most likely names that product rather than this content
+		// type. Mapping either would hand this tab a badge and a rationale
+		// written about a different product. The positive case beside this one
+		// (below) proves the fold is not simply broken.
+		const tabs = resolveGenerationTabStates({
+			analysis: analysisWith({
+				recommended: [
+					{ type: "Newsletter", rationale: "a" },
+					{ type: "Newsletter Update", rationale: "b" },
+				],
+			}),
+			generatedPostTypes: [],
+			restrictions: NO_RESTRICTIONS,
+		});
+
+		const tab = tabs.find((t) => t.postType === "NEWSLETTER_BLURB");
+		expect(tab?.bucket).toBeNull();
+		expect(tab?.state).toBe("AVAILABLE");
+	});
+
+	it("a stored analysis naming Newsletter Blurb resolves the new tab's bucket", () => {
+		// The call site the widening reaches: `readContentTypeBuckets`, via
+		// `resolveGenerationTabStates`. The planning prompt has named this
+		// content type since 2A, so analyses stored BEFORE the enum carried the
+		// value retroactively populate the new tab's bucket AND its rationale —
+		// a cautious bucket included — rather than leaving it on AVAILABLE
+		// forever. Intended, and this is the case that says so out loud.
+		const tabs = resolveGenerationTabStates({
+			analysis: analysisWith({
+				needsConfirmation: [
+					{
+						type: "Newsletter Blurb",
+						rationale: "confirm the send window first",
+					},
+				],
+			}),
+			generatedPostTypes: [],
+			restrictions: NO_RESTRICTIONS,
+		});
+
+		const tab = tabs.find((t) => t.postType === "NEWSLETTER_BLURB");
+		expect(tab?.bucket).toBe("needsConfirmation");
+		expect(tab?.rationale).toBe("confirm the send window first");
 	});
 });
 

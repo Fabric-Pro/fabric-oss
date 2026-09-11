@@ -280,6 +280,59 @@ describe("restrictsPostType — Webinar / Demo Script (Phase 2D slice 2D-1)", ()
 	});
 });
 
+describe("restrictsPostType — Newsletter Blurb (Phase 2D slice 2D-2)", () => {
+	it("an open AUDIENCE_SCOPE thread restricts a Newsletter Blurb", () => {
+		// A newsletter travels further than the person who asked for one
+		// expects, so "who reads this?" decides the whole framing — the same
+		// reason it constrains a Stakeholder Email, which is ADDRESSED for the
+		// same kind of onward reader.
+		expect(
+			restrictsPostType(
+				thread({ decisionKind: "AUDIENCE_SCOPE" }),
+				"NEWSLETTER_BLURB",
+			),
+		).toBe(true);
+	});
+
+	it("an open CLAIM_STRENGTH thread restricts a Newsletter Blurb", () => {
+		// A blurb is short enough to look already checked, and its first
+		// sentence is where the claim lands. An unsettled "is this result
+		// strong enough to claim?" is live in exactly that sentence.
+		expect(
+			restrictsPostType(
+				thread({ decisionKind: "CLAIM_STRENGTH" }),
+				"NEWSLETTER_BLURB",
+			),
+		).toBe(true);
+	});
+
+	it("CODEBASE_DETAIL does not restrict a Newsletter Blurb", () => {
+		// The negative control that gives the two above their meaning: a blurb
+		// has no implementation-depth dial, so CODEBASE_DETAIL must NOT
+		// restrict it. Without this case the entry could be
+		// `new Set([...SAFETY_CRITICAL_KINDS])` — or simply the case study's
+		// three — and both cases above would still pass.
+		expect(
+			restrictsPostType(
+				thread({ decisionKind: "CODEBASE_DETAIL" }),
+				"NEWSLETTER_BLURB",
+			),
+		).toBe(false);
+		// …and the control for the control, in the shape the Stakeholder
+		// Email's has. A `restrictsPostType` that had stopped restricting
+		// anything at all would satisfy the `false` above; this pins that the
+		// same kind still constrains the type that describes an
+		// implementation, so the `false` is a discrimination rather than a
+		// dead function.
+		expect(
+			restrictsPostType(
+				thread({ decisionKind: "CODEBASE_DETAIL" }),
+				"CASE_STUDY",
+			),
+		).toBe(true);
+	});
+});
+
 describe("isRestrictingThread is unchanged by the per-type set", () => {
 	it("still says no to AUDIENCE_SCOPE", () => {
 		// It means "restricts EVERY content type", and Tweet and Blog Post

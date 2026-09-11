@@ -2,7 +2,7 @@
 
 /**
  * Post-deploy verification for the Publishing Suite's editable prompts
- * (Fizzy #1988, Publishing Suite Phase 2D, slice 2D-1).
+ * (Fizzy #1988, Publishing Suite Phase 2D).
  *
  * # Why this exists
  *
@@ -15,34 +15,62 @@
  * detector for that silent state, run by hand (or wired into a pipeline
  * later, via its non-zero exit) against a specific environment.
  *
- * # The three keys, and why not a fourth
+ * # The nine keys, and the two different questions they ask
  *
- * This slice touches exactly three Publishing Suite prompt keys, split into
- * two different questions:
+ * `CHECKS` below covers all NINE `publishing_topic_*` prompt keys
+ * `seed-prompts-only.ts` registers, split into two kinds. The split is about
+ * which QUESTION a key can be asked, not about which keys matter: every one of
+ * the nine is seeded with the identical binding shape
+ * (`documentTypes: ["GENERAL"], storyKind: null, targetKey`), which is exactly
+ * the tuple `findDefaultSystemAgentBinding` resolves, so every one of them can
+ * land in the silent state the section above describes.
  *
- *  - `publishing_topic_planning_analysis` and `publishing_topic_suggestion`
- *    already existed before this slice. Two `sync_*` migrations
- *    (`20260910100000_sync_planning_analysis_webinar_script_content_type`,
- *    `20260910110000_sync_topic_suggestion_webinar_script_type`) carry a
- *    slice-2D-1-specific paragraph into their SYSTEM default version in
- *    place, because `seed-prompts-only.ts` is INSERT-ONLY and never reaches
- *    a prompt that already exists. For these two the question is
- *    FRESHNESS: did that migration's text reach this environment's live
- *    version?
- *  - `publishing_topic_webinar_script` is new in this slice. No migration
- *    targets it — the seed's own INSERT is the only writer it could ever
- *    have. For this one the question is EXISTENCE: did the seed run here at
- *    all, leaving behind a default binding that resolves to a real version an
- *    org can actually edit?
+ *  - FRESHNESS — `publishing_topic_planning_analysis` and
+ *    `publishing_topic_suggestion`. These two predate Phase 2D and are
+ *    rewritten in place by a CHAIN of `sync_*` migrations, one per
+ *    content-type slice, because `seed-prompts-only.ts` is INSERT-ONLY and
+ *    never reaches a prompt that already exists. So there is a second question
+ *    to ask of them: did the newest such migration's text reach this
+ *    environment's live version? Each carries a `staleGuardText` for that, and
+ *    it must track the NEWEST migration in its chain — see the field's own
+ *    docblock, which records the false green that rule exists to stop, and
+ *    `verify-publishing-prompt-sync.test.ts`, which asserts the rule against
+ *    the migrations on disk rather than restating it.
+ *  - EXISTENCE — the other seven: `publishing_topic_short_post`,
+ *    `publishing_topic_linkedin_post`, `publishing_topic_blog_post`,
+ *    `publishing_topic_case_study`, `publishing_topic_stakeholder_email`,
+ *    `publishing_topic_webinar_script` (2D-1) and
+ *    `publishing_topic_newsletter_blurb` (2D-2). No migration targets any of
+ *    them TODAY — the seed's own INSERT is the only writer they have had so
+ *    far, so there is no earlier body for them to be behind on and no freshness
+ *    question to ask. For these the whole question is EXISTENCE: did the seed
+ *    run here at all, leaving behind a default binding that resolves to a real
+ *    version an org can actually edit?
  *
- * A Newsletter Blurb prompt key is not part of this list. It belongs to
- * slice 2D-2, has no agent-key constant anywhere in this codebase yet, and
- * adding one here would either invent a string that does not exist in
- * production or leave a permanently-`MISSING` row training an operator to
- * ignore this script's output. When 2D-2 lands its own key, it is a new
- * `{ key: ... }` entry in `CHECKS` below — an existence-only entry, the same
- * shape `PUBLISHING_WEBINAR_SCRIPT_AGENT_KEY` uses today — not a rewrite of
- * this file's structure.
+ *    That "today" is load-bearing. The seed is INSERT-ONLY, so the day one of
+ *    these seven bodies is reworded, the change can ONLY reach a deployed
+ *    environment as a migration — the same pressure that produced five links
+ *    across the two chains above — and the key moves into the first kind, with
+ *    a `staleGuardText` here in the same change. The migration must also be
+ *    named so the suites discover it; a conventionally-shaped one that is not
+ *    reddens the chain suite's SQL-wide scan rather than passing unnoticed.
+ *
+ * A key is in the second kind because no `sync_*` migration targets it, never
+ * because nobody got round to it — the two lists together are every
+ * `publishing_topic_*` key the seed writes, so a PASS here means what an
+ * operator will read it as meaning. That last clause is asserted, not assumed:
+ * `verify-publishing-prompt-sync.test.ts` derives the family from
+ * `seed-prompts-only.ts` on disk and fails if `CHECKS` and the seed disagree,
+ * so a tenth content type cannot leave this list at nine.
+ *
+ * A new content type adds one `{ key: ... }` entry of the second kind. What
+ * it does NOT do is leave the first kind alone: if the slice also ships a
+ * `sync_*` migration for either chained key — 2D-1 and 2D-2 both did — that
+ * key's `staleGuardText` moves forward in the same change, or this script
+ * goes on reporting OK for a migration that never arrived. That is no longer
+ * left to whoever remembers to open this file: the test suite reads the
+ * newest migration in each chain off disk and fails if a guard here disagrees
+ * with it.
  *
  * # Why resolution starts at the BINDING, not at a version number
  *
@@ -69,8 +97,8 @@
  *    one row holds the SYSTEM AGENT tuple — resolving from that end has no
  *    duplicate to pick between.
  *
- * The binding tuple is the one the two sync migrations' own `WHERE` clauses
- * target: SYSTEM scope, the agent key, `targetType = 'AGENT'`,
+ * The binding tuple is the one every sync migration's own `WHERE` clause
+ * targets: SYSTEM scope, the agent key, `targetType = 'AGENT'`,
  * `documentType = 'GENERAL'`, `storyKind IS NULL`, `isDefault = true`.
  *
  * The version row is still fetched separately rather than trusted from the
@@ -96,7 +124,13 @@
  *   pnpm --filter @repo/database verify:publishing-prompt-sync:prod       # production
  */
 
+import { PUBLISHING_BLOG_POST_AGENT_KEY } from "@repo/utils/publishing-blog-post-prompt";
+import { PUBLISHING_CASE_STUDY_AGENT_KEY } from "@repo/utils/publishing-case-study-prompt";
+import { PUBLISHING_LINKEDIN_POST_AGENT_KEY } from "@repo/utils/publishing-linkedin-post-prompt";
+import { PUBLISHING_NEWSLETTER_BLURB_AGENT_KEY } from "@repo/utils/publishing-newsletter-blurb-prompt";
 import { PUBLISHING_PLANNING_ANALYSIS_AGENT_KEY } from "@repo/utils/publishing-planning-prompt";
+import { PUBLISHING_SHORT_POST_AGENT_KEY } from "@repo/utils/publishing-short-post-prompt";
+import { PUBLISHING_STAKEHOLDER_EMAIL_AGENT_KEY } from "@repo/utils/publishing-stakeholder-email-prompt";
 import { PUBLISHING_TOPIC_SUGGESTION_AGENT_KEY } from "@repo/utils/publishing-suggestion-prompt";
 import { PUBLISHING_WEBINAR_SCRIPT_AGENT_KEY } from "@repo/utils/publishing-webinar-script-prompt";
 // Type-only: erased at compile time, so importing it here does not pull in
@@ -164,7 +198,7 @@ const DANGLING_VERSION_DETAIL =
 	"the default SYSTEM AGENT binding references a prompt version row that is " +
 	"not there - generation silently falls back to the built-in body";
 
-interface PromptSyncCheck {
+export interface PromptSyncCheck {
 	key: string;
 	/**
 	 * Present only for a key a `sync_*` migration is expected to have
@@ -173,27 +207,75 @@ interface PromptSyncCheck {
 	 * this check and the migration read a live body the same way. Absent
 	 * means "brand-new key with no earlier body to be behind on" — existence
 	 * is the whole question for it.
+	 *
+	 * # The rule: this tracks the NEWEST migration in the key's chain
+	 *
+	 * It must be the guard of the LATEST `sync_*` migration targeting this
+	 * key — not the one that first introduced a value here. Every slice that
+	 * adds a sync migration for a key moves this string forward in the same
+	 * change, and a slice that does not silently disables the check.
+	 *
+	 * That is not a style preference; it was measured. Each of the two
+	 * entries below once held the guard of the PREVIOUS slice's migration,
+	 * and an earlier fragment survives verbatim in the body a later migration
+	 * produces — it is a different paragraph. So the superseded string was
+	 * still present, `checkPublishingPromptSync` allows exactly one guard per
+	 * key and returns OK the moment it is found, and both keys reported OK
+	 * whether or not the current slice's migration had ever reached the
+	 * environment. Two slices inherited that state because both comments read
+	 * as provenance — "from migration X" is true forever and says nothing
+	 * about whether X is still the newest.
+	 *
+	 * The newest fragment is strictly stronger than an older one, never
+	 * merely different: migrations apply in order and each carries its own
+	 * `NOT EXISTS (version > 1)` customisation guard, so the newest clause
+	 * being present implies every earlier one landed.
 	 */
 	staleGuardText?: string;
 }
 
-const CHECKS: readonly PromptSyncCheck[] = [
+/**
+ * Every `publishing_topic_*` prompt key, and how each one is checked.
+ *
+ * Exported so `verify-publishing-prompt-sync.test.ts` can assert the
+ * `staleGuardText` rule against the migrations on disk instead of restating it
+ * in prose. That binding is the reason this is exported at all: a guard left
+ * behind by a later slice is invisible to every case that seeds its own
+ * fixtures, because the fixture and the guard are edited by the same hand and
+ * agree with each other while both disagree with the environment.
+ */
+export const CHECKS: readonly PromptSyncCheck[] = [
 	{
 		key: PUBLISHING_PLANNING_ANALYSIS_AGENT_KEY,
-		// From 20260910100000_sync_planning_analysis_webinar_script_content_type's
-		// own `NOT LIKE '%performed live to people who can interrupt%'` guard.
-		staleGuardText: "performed live to people who can interrupt",
+		// The `NOT LIKE` guard of the NEWEST sync migration for this key,
+		// 20260910140000_sync_planning_analysis_newsletter_blurb_content_type
+		// (migration.sql:135). A later slice that adds another one moves this
+		// forward — and does not have to remember to, because the test suite
+		// reads the newest migration in this chain off disk and fails if this
+		// string is not its guard. See `staleGuardText` above for why.
+		staleGuardText: "goes out inside a newsletter someone already sends",
 	},
 	{
 		key: PUBLISHING_TOPIC_SUGGESTION_AGENT_KEY,
-		// From 20260910110000_sync_topic_suggestion_webinar_script_type's own
-		// `NOT LIKE '%a running order for a live session%'` guard.
-		staleGuardText: "a running order for a live session",
+		// The `NOT LIKE` guard of the NEWEST sync migration for this key,
+		// 20260910150000_sync_topic_suggestion_newsletter_blurb_type
+		// (migration.sql:113). Same binding to disk as the entry above.
+		staleGuardText: "borrows a distribution list that already exists",
 	},
-	// publishing_topic_webinar_script: new in this slice, no sync migration
-	// ever targets it (see header). Existence-only — add the next brand-new
-	// key the same way.
+	// The existence-only keys: every other `publishing_topic_*` key the seed
+	// registers. No `sync_*` migration targets any of them, so the seed's own
+	// INSERT is the only writer they could have and there is no freshness
+	// question to ask — add the next brand-new content type the same way, with
+	// no `staleGuardText`. They carry no logic of their own; what they buy is
+	// that this script's PASS covers the whole family an operator will read it
+	// as covering, rather than the subset one slice happened to touch.
+	{ key: PUBLISHING_SHORT_POST_AGENT_KEY },
+	{ key: PUBLISHING_LINKEDIN_POST_AGENT_KEY },
+	{ key: PUBLISHING_BLOG_POST_AGENT_KEY },
+	{ key: PUBLISHING_CASE_STUDY_AGENT_KEY },
+	{ key: PUBLISHING_STAKEHOLDER_EMAIL_AGENT_KEY },
 	{ key: PUBLISHING_WEBINAR_SCRIPT_AGENT_KEY },
+	{ key: PUBLISHING_NEWSLETTER_BLURB_AGENT_KEY },
 ];
 
 /**
@@ -229,7 +311,7 @@ async function resolveBoundVersion(
 }
 
 /**
- * Check every Publishing Suite prompt key this slice ships, against `db`.
+ * Check every Publishing Suite prompt key in `CHECKS`, against `db`.
  *
  * Exported so the resolution logic is testable against an in-memory fake,
  * independent of the CLI wrapper below (`main`) — the only thing here that
@@ -391,7 +473,7 @@ async function main(): Promise<void> {
 
 	if (customized > 0) {
 		console.log(
-			`\n✓ PASS — every Publishing Suite prompt key this slice ships resolves to a bound version. ${customized} of them ` +
+			`\n✓ PASS — every Publishing Suite prompt key this script covers resolves to a bound version. ${customized} of them ` +
 				"is running an edited prompt rather than the shipped one, which is a supported state, not a fault: " +
 				"its sync migration declines to overwrite a prompt somebody has edited. If the shipped paragraph is " +
 				"wanted there, the edit has to be re-made by hand in the Prompt Library.",
@@ -400,7 +482,7 @@ async function main(): Promise<void> {
 	}
 
 	console.log(
-		"\n✓ PASS — every Publishing Suite prompt key this slice ships is present and current.",
+		"\n✓ PASS — every Publishing Suite prompt key this script covers is present and current.",
 	);
 	process.exit(0);
 }

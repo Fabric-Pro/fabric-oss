@@ -108,13 +108,13 @@ interface SyncCase {
 const CASES: SyncCase[] = [
 	{
 		label: "planning & analysis",
-		folderSuffix: "_sync_planning_analysis_webinar_script_content_type",
+		folderSuffix: "_sync_planning_analysis_newsletter_blurb_content_type",
 		agentKey: PUBLISHING_PLANNING_ANALYSIS_AGENT_KEY,
 		constant: PUBLISHING_PLANNING_ANALYSIS_FALLBACK_BODY,
 	},
 	{
 		label: "topic suggestion",
-		folderSuffix: "_sync_topic_suggestion_webinar_script_type",
+		folderSuffix: "_sync_topic_suggestion_newsletter_blurb_type",
 		agentKey: PUBLISHING_TOPIC_SUGGESTION_AGENT_KEY,
 		constant: PUBLISHING_TOPIC_SUGGESTION_FALLBACK_BODY,
 	},

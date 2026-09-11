@@ -29,6 +29,11 @@ export { listPublishingCyclesProcedure } from "./list-cycles";
 export * from "./list-preferences";
 export { listPublishingTopicsProcedure } from "./list-topics";
 export {
+	adoptNewsletterBlurbDraftProcedure,
+	generateNewsletterBlurbProcedure,
+	saveNewsletterBlurbBodyProcedure,
+} from "./newsletter-blurb";
+export {
 	generatePlanningAnalysisProcedure,
 	getPlanningAnalysisProcedure,
 } from "./planning-analysis";

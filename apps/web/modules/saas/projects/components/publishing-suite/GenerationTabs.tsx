@@ -17,6 +17,7 @@ import {
 	restrictsPostType,
 } from "./generation-tab-state";
 import { LinkedInPostPanel } from "./LinkedInPostPanel";
+import { NewsletterBlurbPanel } from "./NewsletterBlurbPanel";
 import type { PlanningAnalysisDocument } from "./planning-analysis-content";
 import { ShortPostPanel } from "./ShortPostPanel";
 import { StakeholderEmailPanel } from "./StakeholderEmailPanel";
@@ -736,6 +737,15 @@ function GenerationPanel({
 				/>
 			) : postType === "WEBINAR_SCRIPT" ? (
 				<WebinarScriptPanel
+					projectId={projectId}
+					organizationId={organizationId}
+					topicId={topicId}
+					draft={draft}
+					working={working}
+					canEdit={canEdit}
+				/>
+			) : postType === "NEWSLETTER_BLURB" ? (
+				<NewsletterBlurbPanel
 					projectId={projectId}
 					organizationId={organizationId}
 					topicId={topicId}

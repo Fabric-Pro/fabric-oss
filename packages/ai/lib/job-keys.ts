@@ -108,6 +108,23 @@ export const AI_JOB_TYPES = [
 	 * format did the spend go on" is the question this list exists to answer.
 	 */
 	"publishing-webinar-script",
+	/**
+	 * Publishing-suite Newsletter Blurb drafting (#1988).
+	 *
+	 * Its own key rather than folded into the stakeholder email's, which is the
+	 * neighbour it most resembles on cost: both are SHORT outputs over the same
+	 * long topic prompt, so their per-run spend is close enough that a shared
+	 * key would look tidy. The run COUNT is what separates them, and it is the
+	 * half of the ratio this list exists to expose. A stakeholder email is run
+	 * once per audience for one piece of news; a blurb is run once per
+	 * newsletter issue, on a cadence somebody else sets — so a project that
+	 * sends weekly accumulates blurb runs on a schedule that has nothing to do
+	 * with how much work shipped. Averaged together, a rising issue cadence and
+	 * a rising number of stakeholder audiences are the same number, and neither
+	 * can be acted on. "Which format did the spend go on" is the question this
+	 * list exists to answer.
+	 */
+	"publishing-newsletter-blurb",
 	/** Slack channel monitor note summarization. */
 	"slack-channel-monitor",
 	/** Security scanning grouping/review/scan model calls. */

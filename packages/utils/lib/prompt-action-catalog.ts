@@ -31,6 +31,7 @@ import { documentTypeShortLabel } from "./document-type-catalog";
 import { PUBLISHING_BLOG_POST_AGENT_KEY } from "./publishing-blog-post-prompt";
 import { PUBLISHING_CASE_STUDY_AGENT_KEY } from "./publishing-case-study-prompt";
 import { PUBLISHING_LINKEDIN_POST_AGENT_KEY } from "./publishing-linkedin-post-prompt";
+import { PUBLISHING_NEWSLETTER_BLURB_AGENT_KEY } from "./publishing-newsletter-blurb-prompt";
 import { PUBLISHING_PLANNING_ANALYSIS_AGENT_KEY } from "./publishing-planning-prompt";
 import { PUBLISHING_SHORT_POST_AGENT_KEY } from "./publishing-short-post-prompt";
 import { PUBLISHING_STAKEHOLDER_EMAIL_AGENT_KEY } from "./publishing-stakeholder-email-prompt";
@@ -519,6 +520,18 @@ export const PROMPT_AGENT_TARGETS: readonly PromptAgentTarget[] = [
 		// asset is treated as confirmed — those are appended code-side.
 		key: PUBLISHING_WEBINAR_SCRIPT_AGENT_KEY,
 		label: "Topic Webinar / Demo Script",
+		featureType: "PUBLISHING",
+		actions: nonStage("GENERAL"),
+	},
+	{
+		// The newsletter blurb written from a publishing topic. Editing it
+		// changes voice, how the audience framing is chosen and how much
+		// project context reaches the draft. It cannot remove the output
+		// contract (one blurb, not a set of alternatives) or the approval
+		// rules — no unapproved asset is treated as confirmed — those are
+		// appended code-side.
+		key: PUBLISHING_NEWSLETTER_BLURB_AGENT_KEY,
+		label: "Topic Newsletter Blurb",
 		featureType: "PUBLISHING",
 		actions: nonStage("GENERAL"),
 	},

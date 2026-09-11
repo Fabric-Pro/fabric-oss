@@ -106,6 +106,11 @@ const AI_WORKFLOWS: Array<{
 		aiProxies: 1,
 	},
 	{
+		name: "generate-publishing-newsletter-blurb",
+		load: () => import("../generate-publishing-newsletter-blurb"),
+		aiProxies: 1,
+	},
+	{
 		name: "generate-publishing-planning-analysis",
 		load: () => import("../generate-publishing-planning-analysis"),
 		aiProxies: 1,
