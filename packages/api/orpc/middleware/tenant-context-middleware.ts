@@ -172,7 +172,7 @@ export const tenantContextMiddleware = os
 		let activeOrganizationRole: OrgRole | null = null;
 		let hasMembership = false;
 		// Whether the workspace itself is still live. Deleting an organization
-		// deactivates it for seven days before anything is destroyed
+		// deactivates it for its retention window before anything is destroyed
 		// (Fizzy #2462), and THIS is where that deactivation is enforced: the
 		// ~168 tables that cascade off `organization` carry no `deletedAt`
 		// predicate of their own, and do not need one, because no request can

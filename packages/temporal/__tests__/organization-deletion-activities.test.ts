@@ -41,7 +41,7 @@ const storageMocks = vi.hoisted(() => ({
 
 vi.mock("@repo/database", () => ({
 	db: dbMock,
-	ORGANIZATION_RETENTION_DAYS: 7,
+	ORGANIZATION_RETENTION_DAYS: 30,
 	...queryMocks,
 }));
 vi.mock("@repo/logs", () => ({
@@ -182,7 +182,7 @@ describe("sendOrganizationDeletionReminderActivity", () => {
 		expect(call[0].context.restoreUrl).toBe(
 			"https://example.com/new-organization",
 		);
-		expect(call[0].context.retentionDays).toBe(7);
+		expect(call[0].context.retentionDays).toBe(30);
 		// Localised here, on the last hop that still holds a real Date — never
 		// the raw ISO text the workflow passed in.
 		expect(call[0].context.purgeDate).not.toBe(PURGE_AT);

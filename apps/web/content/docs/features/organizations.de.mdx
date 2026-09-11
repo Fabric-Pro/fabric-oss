@@ -251,6 +251,55 @@ Entfernte Mitglieder:
 - Persönliche Ressourcen bleiben in ihrem Konto
 - Organisationsressourcen bleiben bei der Org
 
+## Eine Organisation löschen
+
+Nur der **Owner** kann eine Organisation löschen. Die Aktion liegt unter
+**Einstellungen → Gefahrenzone** und verlangt zwei getrennte Nachweise, bevor
+etwas passiert:
+
+1. **Den Namen der Organisation eintippen.** Das belegt, dass Sie wissen, welche
+   Organisation Sie löschen.
+2. **Den Link öffnen, den wir Ihnen per E-Mail schicken.** Beim Klick auf die
+   Schaltfläche wird noch nichts gelöscht — die Löschung erfolgt erst mit der
+   Bestätigung über diesen Link, und die belegt, dass Sie es sind und nicht
+   jemand an einem unbeaufsichtigten Rechner.
+
+Vor der Bestätigung zeigt der Dialog, was verloren geht: die Anzahl der
+Projekte, Mitglieder, Dokumente und Kontextquellen der Organisation.
+
+### Das 30-tägige Wiederherstellungsfenster
+
+Beim Löschen wird zunächst nichts zerstört. Die Organisation wird deaktiviert:
+alle verlieren sofort den Zugriff, jeder auf sie ausgestellte API-Schlüssel und
+jede MCP-Verbindung hört auf zu funktionieren, und sie verschwindet aus dem
+Organisationswechsler. Ihre Inhalte bleiben unangetastet.
+
+**30 Tage lang** können Sie sie unverändert zurückholen — über die Liste
+**Kürzlich gelöscht** auf Ihrer Organisationsseite. Die Wiederherstellung
+erfolgt selbstständig und ohne Support-Ticket. Kurz vor Ablauf des Fensters
+erhalten die Owner zusätzlich eine Warn-E-Mail, damit die letzte Gelegenheit
+nicht unbemerkt verstreicht.
+
+Nach 30 Tagen werden die Organisation und alles darin — Projekte, Dokumente,
+Meeting-Transkripte, indexierter Kontext und hochgeladene Dateien — endgültig
+gelöscht. Diese Löschung kann weder von Ihnen noch von uns rückgängig gemacht
+werden.
+
+<Callout type="info">
+  Gelöschte **Projekte** haben ein Wiederherstellungsfenster von 7 Tagen.
+  Organisationen bekommen mehr Zeit, weil ihre Löschung alle Beteiligten auf
+  einmal aussperrt — auch diejenigen, die es am ehesten bemerken würden.
+</Callout>
+
+### Inaktive Organisationen
+
+Fabric kann Organisationen entfernen, die **sechs Monate** inaktiv waren. Falls
+das auf Ihre zutrifft, informieren wir den Owner per E-Mail, bevor etwas
+gelöscht wird; das 30-tägige Wiederherstellungsfenster gilt dabei genauso.
+
+Bei Fragen zu einer Löschung oder Wiederherstellung wenden Sie sich an
+support@fabric.pro.
+
 ## Best Practices
 
 ### 1. Beschreibende Namen verwenden

@@ -251,6 +251,51 @@ Removed members:
 - Personal resources stay in their account
 - Organization resources remain with the org
 
+## Deleting an Organization
+
+Only the **Owner** can delete an organization. The control lives in
+**Settings → Danger zone**, and it asks for two separate proofs before anything
+happens:
+
+1. **Type the organization's name.** This proves you know which organization you
+   are deleting.
+2. **Open the link we email you.** Nothing is deleted when you press the button —
+   the deletion happens when you confirm from that link, which proves it is you
+   and not someone at an unlocked laptop.
+
+Before you confirm, the dialog shows what will go: the number of projects,
+members, documents and context sources the organization holds.
+
+### The 30-day recovery window
+
+Deleting an organization does not destroy anything straight away. It is
+deactivated: everyone loses access immediately, every API key and MCP connection
+scoped to it stops working, and it disappears from the organization switcher.
+Nothing inside it is erased.
+
+For **30 days** you can bring it back exactly as it was, from the **Recently
+deleted** list on your organization page. Restoring is self-service and needs no
+support ticket. Owners also get an email warning shortly before the window ends,
+so the last chance to act does not pass unnoticed.
+
+After 30 days the organization and everything in it — projects, documents,
+meeting transcripts, indexed context and uploaded files — are permanently
+deleted. That deletion cannot be undone by you or by us.
+
+<Callout type="info">
+  Deleted **projects** keep a 7-day recovery window. Organizations get longer
+  because deleting one takes everyone in it offline at once, including the people
+  most likely to notice.
+</Callout>
+
+### Inactive organizations
+
+Fabric may remove organizations that have been inactive for **six months**. If
+that applies to yours, we email the owner before anything is deleted, and the
+30-day recovery window above applies in the same way.
+
+If you need help with a deletion or a recovery, contact support@fabric.pro.
+
 ## Best Practices
 
 ### 1. Use Descriptive Names

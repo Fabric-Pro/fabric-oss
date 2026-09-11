@@ -1010,7 +1010,7 @@ const authOptions = {
 				stepUpGrantDeps,
 			);
 
-			// Organization deletion is a 7-day recoverable corridor now
+			// Organization deletion is a recoverable corridor now
 			// (Fizzy #2462), and it is OUR flow: request -> emailed
 			// confirmation -> deactivate -> scheduled purge, in
 			// `packages/api/modules/organizations/procedures/deletion`.

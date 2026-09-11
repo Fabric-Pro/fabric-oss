@@ -379,8 +379,9 @@ export async function isScheduledNewsletterActorValid(
  *
  * Without them, deleting something keeps emailing people about it: a project in
  * its 7-day window kept sending (a bug that predates the organization work), and
- * an organization would have done the same for its own 7 days — telling members
- * about an organization they had just been told was deleted. (Fizzy #2462.)
+ * an organization would have done the same for its own retention window —
+ * telling members about an organization they had just been told was deleted.
+ * (Fizzy #2462.)
  *
  * `NOT { organization: { deletedAt: not null } }` rather than
  * `organization: { deletedAt: null }`: the second silently drops any project

@@ -996,8 +996,8 @@
 				"title": "Organization name"
 			},
 			"deleteOrganization": {
-				"confirmation": "Deleting {organizationName} immediately removes access for everyone in it. You can restore it for 7 days, after which everything is permanently deleted.",
-				"description": "Delete this organization and remove access for everyone in it. You can restore it for 7 days; after that it is permanently deleted and cannot be recovered.",
+				"confirmation": "Deleting {organizationName} immediately removes access for everyone in it. You can restore it for {days} days, after which everything is permanently deleted.",
+				"description": "Delete this organization and remove access for everyone in it. You can restore it for {days} days; after that it is permanently deleted and cannot be recovered.",
 				"submit": "Delete organization",
 				"title": "Delete organization",
 				"typeToConfirm": "Type {organizationName} to confirm",
@@ -1166,7 +1166,7 @@
 		"confirmDeletion": {
 			"title": "Delete this organization?",
 			"description": "You asked to delete this organization. Nothing has been deleted yet — this happens when you confirm below.",
-			"warning": "Everyone in the organization loses access immediately. You can restore it for 7 days, after which everything in it is permanently deleted.",
+			"warning": "Everyone in the organization loses access immediately. You can restore it for {days} days, after which everything in it is permanently deleted.",
 			"submit": "Delete organization",
 			"deleted": "{organizationName} has been deleted. You can restore it for {days} days.",
 			"failed": "This confirmation link is no longer valid. Start the deletion again to get a new one."

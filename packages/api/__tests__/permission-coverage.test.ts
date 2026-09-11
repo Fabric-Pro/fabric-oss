@@ -402,7 +402,7 @@ const COVERAGE_EXEMPTIONS: ReadonlyMap<string, string> = new Map([
 	// resolver doing the gating job.
 	// =============================================================================
 	// =============================================================================
-	// Organization deletion — the 7-day corridor (Fizzy #2462)
+	// Organization deletion — the recoverable corridor (Fizzy #2462)
 	// =============================================================================
 	// These three cannot take `requirePermission(ORG_DELETE)`, because the
 	// middleware resolves the target organization from the SESSION and by

@@ -109,7 +109,7 @@ OrganizationDeletionReminder.PreviewProps = {
 	organizationName: "Example Org",
 	restoreUrl: "https://example.com/new-organization",
 	purgeDate: "Friday, March 14, 2098 at 12:00 AM UTC",
-	retentionDays: 7,
+	retentionDays: 30,
 };
 
 export default OrganizationDeletionReminder;

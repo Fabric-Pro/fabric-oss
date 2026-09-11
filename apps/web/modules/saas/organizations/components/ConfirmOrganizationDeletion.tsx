@@ -21,7 +21,13 @@ import { toast } from "sonner";
  * So the link only *shows* this page. Nothing has happened when it loads, and
  * the copy says so.
  */
-export function ConfirmOrganizationDeletion({ token }: { token: string }) {
+export function ConfirmOrganizationDeletion({
+	token,
+	retentionDays,
+}: {
+	token: string;
+	retentionDays: number;
+}) {
 	const t = useTranslations();
 	const router = useRouter();
 
@@ -57,7 +63,9 @@ export function ConfirmOrganizationDeletion({ token }: { token: string }) {
 
 			<Alert variant="error">
 				<AlertDescription>
-					{t("organizations.confirmDeletion.warning")}
+					{t("organizations.confirmDeletion.warning", {
+						days: retentionDays,
+					})}
 				</AlertDescription>
 			</Alert>
 

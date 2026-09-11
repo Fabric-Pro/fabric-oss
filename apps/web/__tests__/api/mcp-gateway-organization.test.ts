@@ -256,7 +256,8 @@ describe("MCP gateway — a personal key resolves an organization", () => {
 	/**
 	 * The corridor has to be closed to agents as well as to people.
 	 *
-	 * Deleting an organization deactivates it for seven days before anything is
+	 * Deleting an organization deactivates it for its retention window before
+	 * anything is
 	 * destroyed (Fizzy #2462), and that is enforced by refusing at tenant
 	 * resolution rather than by filtering the tables underneath it. This route
 	 * resolves its own tenant and never crosses the oRPC middleware that does

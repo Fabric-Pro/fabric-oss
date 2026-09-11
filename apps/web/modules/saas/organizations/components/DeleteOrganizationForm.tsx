@@ -24,8 +24,17 @@ import { toast } from "sonner";
  * the copy since the screen shipped and no field was ever rendered — and it
  * could not be, because magic-link and social accounts have no password, so a
  * password gate would lock those owners out of deleting their own organization.
+ *
+ * `retentionDays` arrives as a prop rather than being written into the copy,
+ * because this screen states the window twice and the server is the only place
+ * that decides it. A page that promises a different number from the one the
+ * purge honours is worse than a page that says nothing.
  */
-export function DeleteOrganizationForm() {
+export function DeleteOrganizationForm({
+	retentionDays,
+}: {
+	retentionDays: number;
+}) {
 	const t = useTranslations();
 	const { confirm } = useConfirmationAlert();
 	const { activeOrganization } = useActiveOrganization();
@@ -61,6 +70,7 @@ export function DeleteOrganizationForm() {
 			message: [
 				t("organizations.settings.deleteOrganization.confirmation", {
 					organizationName: activeOrganization.name,
+					days: retentionDays,
 				}),
 				impactLabel,
 			]
@@ -108,6 +118,7 @@ export function DeleteOrganizationForm() {
 			title={t("organizations.settings.deleteOrganization.title")}
 			description={t(
 				"organizations.settings.deleteOrganization.description",
+				{ days: retentionDays },
 			)}
 		>
 			<div className="mt-4 flex justify-end">

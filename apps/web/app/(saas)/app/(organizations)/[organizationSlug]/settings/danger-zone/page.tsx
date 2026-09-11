@@ -1,4 +1,5 @@
 import { isOrganizationOwner } from "@repo/auth/lib/helper";
+import { ORGANIZATION_RETENTION_DAYS } from "@repo/database";
 import { getActiveOrganization, getSession } from "@saas/auth/lib/server";
 import { DeleteOrganizationForm } from "@saas/organizations/components/DeleteOrganizationForm";
 import { DangerZoneHero } from "@saas/settings/components/DangerZoneHero";
@@ -44,7 +45,9 @@ export default async function OrganizationSettingsPage({
 		<>
 			<DangerZoneHero />
 			<SettingsList>
-				<DeleteOrganizationForm />
+				<DeleteOrganizationForm
+					retentionDays={ORGANIZATION_RETENTION_DAYS}
+				/>
 			</SettingsList>
 		</>
 	);

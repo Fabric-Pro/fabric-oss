@@ -90,7 +90,7 @@ export const organizationsRouter = {
 		deleteKey: deleteOrganizationFirecrawlKeyProcedure,
 		testKey: testOrganizationFirecrawlKeyProcedure,
 	},
-	// Organization deletion is a 7-day corridor rather than an event
+	// Organization deletion is a timed corridor rather than an event
 	// (Fizzy #2462), so it is OUR flow rather than the auth library's: request
 	// (mints an emailed token, deletes nothing) -> confirm (deactivates) ->
 	// restore, with the scheduled purge in the temporal worker.

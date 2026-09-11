@@ -830,8 +830,8 @@
 				"title": "Name der Organisation"
 			},
 			"deleteOrganization": {
-				"confirmation": "Durch das Löschen von {organizationName} verlieren alle Mitglieder sofort den Zugriff. Sie können die Organisation 7 Tage lang wiederherstellen, danach wird alles endgültig gelöscht.",
-				"description": "Löschen Sie diese Organisation und entziehen Sie allen Mitgliedern den Zugriff. Sie können sie 7 Tage lang wiederherstellen; danach wird sie endgültig gelöscht.",
+				"confirmation": "Durch das Löschen von {organizationName} verlieren alle Mitglieder sofort den Zugriff. Sie können die Organisation {days} Tage lang wiederherstellen, danach wird alles endgültig gelöscht.",
+				"description": "Löschen Sie diese Organisation und entziehen Sie allen Mitgliedern den Zugriff. Sie können sie {days} Tage lang wiederherstellen; danach wird sie endgültig gelöscht.",
 				"submit": "Organisation löschen",
 				"title": "Organisation löschen",
 				"typeToConfirm": "Geben Sie {organizationName} ein, um zu bestätigen",
@@ -949,7 +949,7 @@
 		"confirmDeletion": {
 			"title": "Diese Organisation löschen?",
 			"description": "Sie haben das Löschen dieser Organisation angefordert. Es wurde noch nichts gelöscht — das geschieht erst mit Ihrer Bestätigung.",
-			"warning": "Alle Mitglieder verlieren sofort den Zugriff. Sie können die Organisation 7 Tage lang wiederherstellen, danach wird alles endgültig gelöscht.",
+			"warning": "Alle Mitglieder verlieren sofort den Zugriff. Sie können die Organisation {days} Tage lang wiederherstellen, danach wird alles endgültig gelöscht.",
 			"submit": "Organisation löschen",
 			"deleted": "{organizationName} wurde gelöscht. Sie können die Organisation {days} Tage lang wiederherstellen.",
 			"failed": "Dieser Bestätigungslink ist nicht mehr gültig. Starten Sie das Löschen erneut, um einen neuen zu erhalten."
