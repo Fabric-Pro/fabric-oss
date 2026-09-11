@@ -212,6 +212,74 @@ function getFabricAiToolsInternal(): FabricAiTool[] {
 		},
 
 		// =======================================================================
+		// Meeting Transcripts Tool (Dynamic - executed on-demand)
+		// Reads ProjectMeetingTranscript rows directly, ordered by the meeting's
+		// OWN date. project_rag_query cannot answer a date question: the meeting
+		// date never reaches the vector payload, so a query like "transcripts
+		// from September 10" is scored on wording alone against hundreds of
+		// near-identical standups, and the model reports whatever the top-K
+		// happened to contain as "the most recent on record" (Fizzy #2473).
+		// =======================================================================
+		{
+			name: "list_meeting_transcripts",
+			description:
+				"List the attached project's synced meeting transcripts by the MEETING'S OWN DATE, newest first. " +
+				"Use this — never project_rag_query — for any question about which meetings exist, what happened " +
+				"on a particular day, or which transcript is the most recent: semantic search cannot filter or " +
+				"order by date and will give a confidently wrong answer. " +
+				"Returns each meeting's subject, date, speakers, summary and transcript size, plus the total match " +
+				"count so you can tell whether the list was truncated. Filter with from/to (ISO dates) and/or " +
+				"subject. Omit all filters to get the most recent meetings. " +
+				"KEYWORDS: meeting transcripts, meetings on a date, today's meeting, yesterday's meeting, latest " +
+				"standup, most recent meeting, DSU, daily sync, did we meet, when was the meeting, meetings last week.",
+			inputSchema: {
+				type: "object",
+				properties: {
+					from: {
+						type: "string",
+						description:
+							"Inclusive start of the meeting-date range, ISO 8601 (e.g. '2026-09-10' or '2026-09-10T00:00:00Z').",
+					},
+					to: {
+						type: "string",
+						description:
+							"Inclusive end of the meeting-date range, ISO 8601. For a single day, set from and to to that same day.",
+					},
+					subject: {
+						type: "string",
+						description:
+							"Case-insensitive substring of the meeting series name (e.g. 'DSU', 'Daily Sync'). Omit to search all series.",
+					},
+					limit: {
+						type: "number",
+						description:
+							"Maximum transcripts to return (1-200, default 50).",
+					},
+				},
+				required: [],
+			},
+			outputSchema: {
+				type: "object",
+				properties: {
+					response: {
+						type: "string",
+						description:
+							"Formatted list of matching meeting transcripts",
+					},
+					transcriptCount: {
+						type: "number",
+						description: "Number of transcripts returned",
+					},
+					total: {
+						type: "number",
+						description:
+							"Total matching the filters, before the limit was applied",
+					},
+				},
+			},
+		},
+
+		// =======================================================================
 		// Architecture Decisions Tool (Dynamic - executed on-demand)
 		// Reads the project's Decisions tab (Architecture Decision Log) directly
 		// from the ArchitectureDecision table. Unlike project_rag_query, this

@@ -461,6 +461,36 @@ export const ALWAYS_AVAILABLE_CAPABILITIES: CapabilityWithKeywords[] = [
 			"story question log",
 		],
 	},
+	// Meeting transcripts - reads ProjectMeetingTranscript by the meeting's own
+	// date. Keywords lean hard on the time words ("today", "yesterday", "latest")
+	// because those are exactly the questions semantic search answers wrongly.
+	{
+		id: "list_meeting_transcripts",
+		type: "mcp_tool",
+		name: "List Meeting Transcripts",
+		description:
+			"List the attached project's synced meeting transcripts by the meeting's own date, newest first, with subject, date, speakers and summary. Use instead of semantic search for any date or recency question about meetings. KEYWORDS: meeting transcripts, meetings on a date, today's meeting, yesterday's meeting, latest standup, most recent meeting, DSU, daily sync, did we meet, when was the meeting, meetings last week, recent meetings.",
+		keywords: [
+			"meeting transcripts",
+			"meeting transcript",
+			"transcripts from today",
+			"today's meeting",
+			"yesterday's meeting",
+			"latest meeting",
+			"most recent meeting",
+			"recent meetings",
+			"meetings last week",
+			"meetings this week",
+			"when was the meeting",
+			"did we meet",
+			"latest standup",
+			"daily standup",
+			"daily sync",
+			"DSU",
+			"list meetings",
+			"meetings on",
+		],
+	},
 	// Architecture decisions - reads the project's Decisions tab (ADR log)
 	{
 		id: "fabric_list_architecture_decisions",

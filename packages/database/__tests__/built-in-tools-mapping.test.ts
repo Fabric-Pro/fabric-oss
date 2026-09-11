@@ -10,7 +10,18 @@ describe("BUILT_IN_TO_FABRIC_TOOLS", () => {
 	it("registers project-context as a built-in capability backed by project_rag_query", () => {
 		expect(BUILT_IN_TO_FABRIC_TOOLS["project-context"]).toEqual([
 			"project_rag_query",
+			"list_meeting_transcripts",
 		]);
+	});
+
+	// Regression lock for Fizzy #2473: semantic search cannot filter or order by
+	// date, so an agent granted project context without the date-aware meeting
+	// lookup will answer "any transcripts from the 10th?" from whatever its
+	// similarity sample held — and report that guess as fact.
+	it("ships the date-aware meeting lookup alongside project RAG", () => {
+		expect(BUILT_IN_TO_FABRIC_TOOLS["project-context"]).toContain(
+			"list_meeting_transcripts",
+		);
 	});
 
 	it("keeps the legacy web-search and create-frames mappings intact", () => {
@@ -119,22 +130,27 @@ describe("getBuiltInToolConfig", () => {
 });
 
 describe("mapBuiltInKeysToFabricToolIds", () => {
-	it("expands project-context to the project_rag_query tool", () => {
+	it("expands project-context to the project RAG and meeting lookup tools", () => {
 		expect(mapBuiltInKeysToFabricToolIds(["project-context"])).toEqual([
 			"project_rag_query",
+			"list_meeting_transcripts",
 		]);
 	});
 
 	it("ignores keys without a registered mapping", () => {
 		expect(
 			mapBuiltInKeysToFabricToolIds(["project-context", "made-up-key"]),
-		).toEqual(["project_rag_query"]);
+		).toEqual(["project_rag_query", "list_meeting_transcripts"]);
 	});
 
 	it("flattens multiple keys into the union of their tool ids", () => {
 		expect(
 			mapBuiltInKeysToFabricToolIds(["project-context", "create-images"]),
-		).toEqual(["project_rag_query", "fabric_generate_image"]);
+		).toEqual([
+			"project_rag_query",
+			"list_meeting_transcripts",
+			"fabric_generate_image",
+		]);
 	});
 
 	it("returns an empty array when no built-in keys are enabled", () => {
