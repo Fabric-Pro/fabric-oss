@@ -83,6 +83,9 @@ param enableCodeIndexing bool = false
 @description('Living Documents auto-refresh SWEEP kill switch (FABRIC_FEATURE_LIVING_DOCS_REFRESH) on the temporal worker. TRUE in every environment, prod included — this is deliberately NOT the rollout switch, and since Fizzy #2210 it is registered as LIVING_DOCS_REFRESH_SWEEP rather than being read directly. What it buys is the brakes: the worker re-reads it immediately before it writes, so setting it false stops an AI mid-rollout. Rollout is a SEPARATE registry flag, LIVING_DOCS_REFRESH, whose env var is FABRIC_FEATURE_LIVING_DOCS_REFRESH_ROLLOUT — it governs the masthead control and the enrolment procedures together, and is off unless explicitly set. Both are now flippable from the admin console without a redeploy; this param is only the deployment default the override sits on top of. Set false only to hit the brakes.')
 param enableLivingDocsRefresh bool = true
 
+@description('Living Documents auto-refresh ROLLOUT gate (FABRIC_FEATURE_LIVING_DOCS_REFRESH_ROLLOUT) on the temporal worker, registry key LIVING_DOCS_REFRESH, registry default false. This is the SAME gate the web deployment reads, and findDueDocumentsActivity requires it as well as the kill switch above, so the two deployments have to agree: the sweep stands down whenever IT resolves false, whatever the masthead control shows a member. Prod ran with the rollout true on the web deployment and absent here, so documents could be enrolled, given a cadence and set to apply automatically while no sweep ever picked one up - and with no attempt recorded, the settings popover had no last-run time to show for it either. Passing it here is what keeps the worker half in agreement across deploys. A global override row (admin console) beats both env vars in both tiers and is the no-redeploy lever; this param is only the deployment default that row sits on top of.')
+param enableLivingDocsRefreshRollout bool = false
+
 @description('Publishing Suite daily suggestion sweep (FABRIC_FEATURE_PUBLISHING_SUITE) on the temporal worker. Defaults off here, but the deployment pipeline passes true for every non-prod environment and false for prod, so a staging-like environment runs with the global seed ON. This param only seeds the GLOBAL flag value; the find-eligible activity layers a per-organization PUBLISHING_SUITE override on top (database-backed, read on every tick, no cache), so it no longer determines who gets swept on its own — the sweep is restricted to organizations with an enabled override, or, when this is true, every organization except one with a disabled override. An organization can be enrolled individually regardless of this value; keep it false in prod until Publishing Suite is ready for a broad rollout.')
 param enablePublishingSuite bool = false
 
@@ -512,6 +515,17 @@ var livingDocsRefreshEnv = enableLivingDocsRefresh ? [
   { name: 'FABRIC_FEATURE_LIVING_DOCS_REFRESH', value: 'true' }
 ] : []
 
+// The ROLLOUT half of the same feature, and the half this template was missing.
+// Deliberately a separate switch from the kill switch above - an operator must
+// be able to hold "not rolled out" and "brakes armed" at once - but NOT a
+// separate audience: the find-due activity requires both, so a worker that
+// cannot see this one returns an empty due-list every tick while the web
+// deployment happily renders the control and accepts enrolments. FABRIC_ prefix
+// is load-bearing (turbo passthrough).
+var livingDocsRefreshRolloutEnv = enableLivingDocsRefreshRollout ? [
+  { name: 'FABRIC_FEATURE_LIVING_DOCS_REFRESH_ROLLOUT', value: 'true' }
+] : []
+
 // Publishing Suite daily suggestion sweep (Phase 1A; per-organization scoping
 // added by the org-scoped-flags slice). The dispatcher's find-eligible
 // activity deliberately does NOT resolve this via isFeatureEnabled — an
@@ -773,7 +787,7 @@ var mailEnv = [
 // Note: mcpWrapperSecrets is included so temporal-worker can authenticate with the standalone MCP STDIO wrapper
 var allTemporalSecrets = concat(temporalWorkerBaseSecrets, sandboxWorkerSecrets, agentUrlSecrets, enableRag ? ragSecrets : [], lettaSecrets, databricksSecrets, partykitSecrets, backgroundAgentsSecrets, microsoftGraphSecrets, fabricGitHubSecrets, gitLabSecrets, atlassianCloudSecrets, mcpWrapperSecrets, enableRedis ? redisSecrets : [], seedUserSecrets, mailSecrets)
 
-var allTemporalEnv = concat(temporalWorkerBaseEnv, sandboxWorkerEnv, agentUrlEnv, enableRag ? ragEnv : [], lettaEnv, databricksEnv, partykitEnv, backgroundAgentsEnv, microsoftGraphEnv, fabricGitHubEnv, codeIndexingEnv, livingDocsRefreshEnv, publishingSuiteEnv, testCasesEnv, openApiSpecContextEnv, bugAnalysisLogContextEnv, bugAnalysisLogSharedWorkspaceEnv, statusAnnouncementNotificationsEnv, gitLabEnv, atlassianCloudEnv, enableRedis ? redisEnv : [], seedUserEnv, mailEnv)
+var allTemporalEnv = concat(temporalWorkerBaseEnv, sandboxWorkerEnv, agentUrlEnv, enableRag ? ragEnv : [], lettaEnv, databricksEnv, partykitEnv, backgroundAgentsEnv, microsoftGraphEnv, fabricGitHubEnv, codeIndexingEnv, livingDocsRefreshEnv, livingDocsRefreshRolloutEnv, publishingSuiteEnv, testCasesEnv, openApiSpecContextEnv, bugAnalysisLogContextEnv, bugAnalysisLogSharedWorkspaceEnv, statusAnnouncementNotificationsEnv, gitLabEnv, atlassianCloudEnv, enableRedis ? redisEnv : [], seedUserEnv, mailEnv)
 
 module temporalWorker 'modules/container-app-sidecar.bicep' = {
   name: 'temporal-worker'

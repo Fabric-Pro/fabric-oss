@@ -6,6 +6,7 @@ import {
 } from "@repo/database";
 import { logger } from "@repo/logs";
 import {
+	ContextUpdateFailedError,
 	ContextUpdateTruncatedError,
 	fetchProjectContextSources,
 	runContextUpdate,
@@ -171,6 +172,14 @@ export const updateDocumentWithContextProcedure = tenantProtectedProcedure
 			organizationId,
 			baselineDate: document.createdAt,
 			specMarkdown: documentMarkdown,
+			// The baseline stays at `createdAt` here on purpose — a person pressing
+			// this button wants everything considered, and narrowing it would make
+			// the button quietly find nothing right after any manual edit. What it
+			// could not do before is SEE anything new: ranking is similarity-only,
+			// and on a project with months of meetings the ones the document was
+			// written from out-rank the ones it has never read. This reserves slots
+			// for the latter without taking the wide net away.
+			unseenSince: document.updatedAt ?? document.createdAt,
 		});
 
 		let aiResult: Awaited<ReturnType<typeof runContextUpdate>>;
@@ -191,13 +200,21 @@ export const updateDocumentWithContextProcedure = tenantProtectedProcedure
 						"The document is too large for the configured AI model's output limit — the update was truncated before completion. Try a model with a larger output limit or split the document.",
 				});
 			}
+			if (error instanceof ContextUpdateFailedError) {
+				// The model call failed. Deliberately NOT the settings message
+				// below — sending someone to a settings page that is already
+				// correct is how a transient provider blip becomes an afternoon.
+				throw new ORPCError("INTERNAL_SERVER_ERROR", {
+					message: error.message,
+				});
+			}
 			throw error;
 		}
 
 		if (!aiResult) {
 			throw new ORPCError("INTERNAL_SERVER_ERROR", {
 				message:
-					"AI provider not configured or update failed. Please check your AI settings.",
+					"No AI provider is configured for this organization. Add one in AI settings, then try again.",
 			});
 		}
 

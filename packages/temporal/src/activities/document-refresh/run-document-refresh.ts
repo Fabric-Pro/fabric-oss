@@ -148,6 +148,15 @@ export async function runDocumentRefreshActivity(
 				excludeDocumentChunks: true,
 				// An outage must not masquerade as "nothing changed".
 				failOnRetrievalError: true,
+				// Reserve slots for what the document cannot already reflect.
+				// `baselineDate` deliberately stays at the document's creation, so
+				// nothing is ever filtered out for being old — but that leaves
+				// every source the document was written FROM competing for the
+				// same fifteen slots as the ones it has never read, and winning,
+				// because the document resembles its own sources. A repeating
+				// cycle would then read only what it already contains and
+				// correctly report that nothing had changed, forever.
+				unseenSince: document.updatedAt ?? document.createdAt,
 			});
 
 			result = await runContextUpdate({
@@ -198,7 +207,9 @@ export async function runDocumentRefreshActivity(
 			await recordRefreshOutcome(
 				due.documentId,
 				"FAILED",
-				"The AI update could not be completed. The refresh will retry.",
+				// `null` is now only ever the unconfigured case; a failed model call
+				// throws and is recorded by the outer catch with its own message.
+				"No AI provider is configured for this organization, so the refresh could not run. Add one in AI settings.",
 			);
 			// Throw, so Temporal's retry policy actually engages. Returning would
 			// mark the activity a success and a transient provider blip would never

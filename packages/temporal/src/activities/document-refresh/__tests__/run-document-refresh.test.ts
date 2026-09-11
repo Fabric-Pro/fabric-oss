@@ -138,6 +138,9 @@ const DOCUMENT = {
 	content: "# PRD\n\nOriginal body.",
 	version: 3,
 	createdAt: new Date("2026-06-01T00:00:00Z"),
+	// When the document last absorbed anything. The baseline never moves past
+	// this, so a real row always carries it.
+	updatedAt: new Date("2026-08-20T00:00:00Z"),
 	status: "COMPLETE",
 };
 
@@ -272,6 +275,36 @@ describe("proposal mode (the default)", () => {
 		});
 		expect(updateDocumentMock).toHaveBeenCalledTimes(1);
 		expect(storeProposalMock).not.toHaveBeenCalled();
+	});
+});
+
+describe("retrieval scope", () => {
+	it("asks for slots to be reserved for context the document has never read", async () => {
+		// The baseline deliberately stays at the document's creation date, so
+		// nothing is ever filtered out for being old. The cost of that is a
+		// ranking contest the newest material always loses: the document was
+		// written FROM its older sources, so it resembles them far more closely
+		// than it resembles anything said since, and a repeating cycle would read
+		// only what it already contains and correctly report no changes forever.
+		// The quota is what stops that, so the sweep has to ask for it.
+		await runDocumentRefreshActivity(DUE);
+
+		expect(fetchSourcesMock).toHaveBeenCalledWith(
+			expect.objectContaining({
+				baselineDate: DOCUMENT.createdAt,
+				unseenSince: DOCUMENT.updatedAt,
+			}),
+		);
+	});
+
+	it("falls back to the creation date when a document has no recorded edit", async () => {
+		getDocumentMock.mockResolvedValue({ ...DOCUMENT, updatedAt: null });
+
+		await runDocumentRefreshActivity(DUE);
+
+		expect(fetchSourcesMock).toHaveBeenCalledWith(
+			expect.objectContaining({ unseenSince: DOCUMENT.createdAt }),
+		);
 	});
 });
 
