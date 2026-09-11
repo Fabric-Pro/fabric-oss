@@ -13,6 +13,7 @@
  */
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { PAT_INVALID_REASON } from "../lib/pat-validation-errors";
 
 // ---------------------------------------------------------------------------
 // Hoisted mock factories
@@ -26,6 +27,7 @@ const mockSyncLegacyProjectRepoOnConnect = vi.fn();
 const mockLogRepoIntegrationActivity = vi.fn();
 const mockParseRepoUrl = vi.fn();
 const mockEncryptApiKey = vi.fn();
+const mockDecryptApiKey = vi.fn();
 const mockRecordAuditFromRequest = vi.fn();
 
 vi.mock("@repo/connectors", () => ({
@@ -38,11 +40,13 @@ vi.mock("@repo/connectors", () => ({
 }));
 
 const mockRepoFindFirst = vi.fn();
+const mockRepoFindMany = vi.fn();
 
 vi.mock("@repo/database", () => ({
 	db: {
 		projectRepositoryIntegration: {
 			findFirst: (...args: unknown[]) => mockRepoFindFirst(...args),
+			findMany: (...args: unknown[]) => mockRepoFindMany(...args),
 		},
 	},
 	createProjectRepoIntegration: (...args: unknown[]) =>
@@ -56,6 +60,7 @@ vi.mock("@repo/database", () => ({
 
 vi.mock("@repo/utils", () => ({
 	encryptApiKey: (...args: unknown[]) => mockEncryptApiKey(...args),
+	decryptApiKey: (...args: unknown[]) => mockDecryptApiKey(...args),
 }));
 
 vi.mock("../../../../../lib/audit", () => ({
@@ -114,6 +119,9 @@ const baseContext = {
 beforeEach(() => {
 	vi.resetAllMocks();
 	mockEncryptApiKey.mockImplementation((k: string) => `enc_${k}`);
+	mockDecryptApiKey.mockImplementation((k: string) =>
+		k.replace(/^enc_/, "dec_"),
+	);
 	mockRepoFindFirst.mockResolvedValue(null);
 	mockParseRepoUrl.mockReturnValue({
 		provider: "AZURE_DEVOPS",
@@ -454,5 +462,480 @@ describe("connectRepoIntegrationProcedure — GitHub / GitLab PAT connect", () =
 				'The role tag "Legacy" is already assigned to acme/legacy-store',
 		});
 		expect(mockCreateProjectRepoIntegration).not.toHaveBeenCalled();
+	});
+
+	it("reuses stored PAT when input.pat is omitted and active stored PAT exists for the project and provider", async () => {
+		mockParseRepoUrl.mockReturnValue({
+			provider: "GITHUB",
+			owner: "acme",
+			name: "second-repo",
+		});
+		mockRepoFindMany.mockResolvedValueOnce([
+			{
+				id: "int-1",
+				encryptedPat: "enc_ghp_stored123",
+			},
+		]);
+		mockValidateGitHubPat.mockResolvedValue({ ok: true, status: 200 });
+		mockResolveDefaultBranch.mockResolvedValue("main");
+		mockCreateProjectRepoIntegration.mockResolvedValue({ id: "int-new" });
+
+		const handler = await loadHandler();
+		const result = await handler({
+			input: {
+				projectId: "p1",
+				organizationId: null,
+				provider: "GITHUB",
+				authMethod: "PAT",
+				repositoryUrl: "https://github.com/acme/second-repo",
+				repositoryOwner: "acme",
+				repositoryName: "second-repo",
+				roleTag: "Backend",
+				// Notice: pat is omitted!
+			},
+			context: baseContext,
+		});
+
+		expect(result.success).toBe(true);
+		expect(mockRepoFindMany).toHaveBeenCalledWith(
+			expect.objectContaining({
+				where: expect.objectContaining({
+					projectId: "p1",
+					provider: "GITHUB",
+					authMethod: "PAT",
+					status: "ACTIVE",
+					encryptedPat: { not: null },
+				}),
+				select: {
+					id: true,
+					encryptedPat: true,
+				},
+			}),
+		);
+		expect(mockValidateGitHubPat).toHaveBeenCalledWith({
+			pat: "dec_ghp_stored123",
+			owner: "acme",
+			repo: "second-repo",
+		});
+		expect(mockCreateProjectRepoIntegration).toHaveBeenCalledWith(
+			expect.objectContaining({
+				projectId: "p1",
+				provider: "GITHUB",
+				authMethod: "PAT",
+				roleTag: "Backend",
+				encryptedPat: "enc_ghp_stored123",
+			}),
+		);
+	});
+
+	it("selects the candidate PAT that validates against the target repository when multiple stored PATs exist", async () => {
+		mockParseRepoUrl.mockReturnValue({
+			provider: "GITHUB",
+			owner: "acme",
+			name: "second-repo",
+		});
+		mockRepoFindMany.mockResolvedValueOnce([
+			{
+				id: "int-wrong",
+				encryptedPat: "enc_wrong_pat",
+			},
+			{
+				id: "int-correct",
+				encryptedPat: "enc_correct_pat",
+			},
+		]);
+		// First candidate fails (404/403 for this repo), second candidate succeeds
+		mockValidateGitHubPat
+			.mockResolvedValueOnce({ ok: false, status: 404 })
+			.mockResolvedValueOnce({ ok: true, status: 200 });
+		mockResolveDefaultBranch.mockResolvedValue("main");
+		mockCreateProjectRepoIntegration.mockResolvedValue({ id: "int-new" });
+
+		const handler = await loadHandler();
+		const result = await handler({
+			input: {
+				projectId: "p1",
+				organizationId: null,
+				provider: "GITHUB",
+				authMethod: "PAT",
+				repositoryUrl: "https://github.com/acme/second-repo",
+				repositoryOwner: "acme",
+				repositoryName: "second-repo",
+			},
+			context: baseContext,
+		});
+
+		expect(result.success).toBe(true);
+		expect(mockValidateGitHubPat).toHaveBeenCalledTimes(2);
+		expect(mockCreateProjectRepoIntegration).toHaveBeenCalledWith(
+			expect.objectContaining({
+				encryptedPat: "enc_correct_pat",
+			}),
+		);
+	});
+
+	it("prioritizes sourceIntegrationId candidate when provided", async () => {
+		mockParseRepoUrl.mockReturnValue({
+			provider: "GITHUB",
+			owner: "acme",
+			name: "second-repo",
+		});
+		mockRepoFindMany.mockResolvedValueOnce([
+			{
+				id: "int-1",
+				encryptedPat: "enc_first_pat",
+			},
+			{
+				id: "int-target",
+				encryptedPat: "enc_target_pat",
+			},
+		]);
+		mockValidateGitHubPat.mockResolvedValueOnce({ ok: true, status: 200 });
+		mockResolveDefaultBranch.mockResolvedValue("main");
+		mockCreateProjectRepoIntegration.mockResolvedValue({ id: "int-new" });
+
+		const handler = await loadHandler();
+		const result = await handler({
+			input: {
+				projectId: "p1",
+				organizationId: null,
+				provider: "GITHUB",
+				authMethod: "PAT",
+				repositoryUrl: "https://github.com/acme/second-repo",
+				repositoryOwner: "acme",
+				repositoryName: "second-repo",
+				sourceIntegrationId: "int-target",
+			},
+			context: baseContext,
+		});
+
+		expect(result.success).toBe(true);
+		// int-target was checked first and succeeded, so only 1 validation call was made
+		expect(mockValidateGitHubPat).toHaveBeenCalledTimes(1);
+		expect(mockValidateGitHubPat).toHaveBeenCalledWith({
+			pat: "dec_target_pat",
+			owner: "acme",
+			repo: "second-repo",
+		});
+		expect(mockCreateProjectRepoIntegration).toHaveBeenCalledWith(
+			expect.objectContaining({
+				encryptedPat: "enc_target_pat",
+			}),
+		);
+	});
+
+	it("throws BAD_REQUEST when input.pat is omitted and no candidate PAT validates against the target repo", async () => {
+		mockParseRepoUrl.mockReturnValue({
+			provider: "GITHUB",
+			owner: "acme",
+			name: "second-repo",
+		});
+		mockRepoFindMany.mockResolvedValueOnce([
+			{
+				id: "int-1",
+				encryptedPat: "enc_wrong_pat",
+			},
+		]);
+		mockValidateGitHubPat.mockResolvedValueOnce({ ok: false, status: 404 });
+
+		const handler = await loadHandler();
+		await expect(
+			handler({
+				input: {
+					projectId: "p1",
+					organizationId: null,
+					provider: "GITHUB",
+					authMethod: "PAT",
+					repositoryUrl: "https://github.com/acme/second-repo",
+					repositoryOwner: "acme",
+					repositoryName: "second-repo",
+				},
+				context: baseContext,
+			}),
+		).rejects.toMatchObject({
+			code: "BAD_REQUEST",
+			message: "Invalid PAT or insufficient permissions",
+			data: { reason: PAT_INVALID_REASON },
+		});
+
+		expect(mockCreateProjectRepoIntegration).not.toHaveBeenCalled();
+	});
+
+	it("throws BAD_REQUEST when stored PAT decryption fails for candidate", async () => {
+		mockParseRepoUrl.mockReturnValue({
+			provider: "GITHUB",
+			owner: "acme",
+			name: "second-repo",
+		});
+		mockRepoFindMany.mockResolvedValueOnce([
+			{
+				id: "int-1",
+				encryptedPat: "enc_corrupt_pat",
+			},
+		]);
+		mockDecryptApiKey.mockImplementationOnce(() => {
+			throw new Error("Invalid decryption key");
+		});
+
+		const handler = await loadHandler();
+		await expect(
+			handler({
+				input: {
+					projectId: "p1",
+					organizationId: null,
+					provider: "GITHUB",
+					authMethod: "PAT",
+					repositoryUrl: "https://github.com/acme/second-repo",
+					repositoryOwner: "acme",
+					repositoryName: "second-repo",
+				},
+				context: baseContext,
+			}),
+		).rejects.toMatchObject({
+			code: "BAD_REQUEST",
+			message: "Invalid PAT or insufficient permissions",
+			data: { reason: PAT_INVALID_REASON },
+		});
+
+		expect(mockValidateGitHubPat).not.toHaveBeenCalled();
+		expect(mockCreateProjectRepoIntegration).not.toHaveBeenCalled();
+	});
+
+	it("throws BAD_REQUEST when input.pat is omitted for non-GitHub provider", async () => {
+		mockParseRepoUrl.mockReturnValue({
+			provider: "AZURE_DEVOPS",
+			owner: "acme",
+			name: "second-repo",
+		});
+
+		const handler = await loadHandler();
+		await expect(
+			handler({
+				input: {
+					projectId: "p1",
+					organizationId: null,
+					provider: "AZURE_DEVOPS",
+					authMethod: "PAT",
+					repositoryUrl:
+						"https://dev.azure.com/acme/proj/_git/second-repo",
+					repositoryOwner: "acme",
+					repositoryName: "second-repo",
+					azureOrganization: "acme",
+				},
+				context: baseContext,
+			}),
+		).rejects.toMatchObject({
+			code: "BAD_REQUEST",
+			message: "PAT is required for PAT authentication",
+		});
+
+		expect(mockRepoFindMany).not.toHaveBeenCalled();
+		expect(mockCreateProjectRepoIntegration).not.toHaveBeenCalled();
+	});
+
+	it("rejects when an explicit empty or whitespace PAT is provided for GITHUB rather than silently reusing stored PAT", async () => {
+		mockParseRepoUrl.mockReturnValue({
+			provider: "GITHUB",
+			owner: "acme",
+			name: "second-repo",
+		});
+
+		const handler = await loadHandler();
+		await expect(
+			handler({
+				input: {
+					projectId: "p1",
+					organizationId: null,
+					provider: "GITHUB",
+					authMethod: "PAT",
+					repositoryUrl: "https://github.com/acme/second-repo",
+					repositoryOwner: "acme",
+					repositoryName: "second-repo",
+					pat: "   ",
+				},
+				context: baseContext,
+			}),
+		).rejects.toMatchObject({
+			code: "BAD_REQUEST",
+			message: "PAT is required for PAT authentication",
+		});
+
+		expect(mockRepoFindMany).not.toHaveBeenCalled();
+		expect(mockCreateProjectRepoIntegration).not.toHaveBeenCalled();
+	});
+
+	it("throws BAD_REQUEST when input.pat is omitted and no active stored PAT exists for the project", async () => {
+		mockParseRepoUrl.mockReturnValue({
+			provider: "GITHUB",
+			owner: "acme",
+			name: "second-repo",
+		});
+		mockRepoFindMany.mockResolvedValueOnce([]);
+
+		const handler = await loadHandler();
+		await expect(
+			handler({
+				input: {
+					projectId: "p1",
+					organizationId: null,
+					provider: "GITHUB",
+					authMethod: "PAT",
+					repositoryUrl: "https://github.com/acme/second-repo",
+					repositoryOwner: "acme",
+					repositoryName: "second-repo",
+					// Notice: pat is omitted!
+				},
+				context: baseContext,
+			}),
+		).rejects.toMatchObject({
+			code: "BAD_REQUEST",
+			message: "No stored GitHub token found for this project",
+			data: { reason: PAT_INVALID_REASON },
+		});
+
+		expect(mockValidateGitHubPat).not.toHaveBeenCalled();
+		expect(mockCreateProjectRepoIntegration).not.toHaveBeenCalled();
+	});
+
+	it("tolerates TypeError during decryption of the first candidate and connects via the second candidate", async () => {
+		mockParseRepoUrl.mockReturnValue({
+			provider: "GITHUB",
+			owner: "acme",
+			name: "second-repo",
+		});
+		mockRepoFindMany.mockResolvedValueOnce([
+			{
+				id: "int-corrupt",
+				encryptedPat: "enc_corrupt",
+			},
+			{
+				id: "int-valid",
+				encryptedPat: "enc_valid",
+			},
+		]);
+		mockDecryptApiKey
+			.mockImplementationOnce(() => {
+				throw new TypeError("ERR_CRYPTO_INVALID_IV");
+			})
+			.mockReturnValueOnce("dec_valid");
+
+		mockValidateGitHubPat.mockResolvedValueOnce({ ok: true, status: 200 });
+		mockResolveDefaultBranch.mockResolvedValue("main");
+		mockCreateProjectRepoIntegration.mockResolvedValue({ id: "int-new" });
+
+		const handler = await loadHandler();
+		const result = await handler({
+			input: {
+				projectId: "p1",
+				organizationId: null,
+				provider: "GITHUB",
+				authMethod: "PAT",
+				repositoryUrl: "https://github.com/acme/second-repo",
+				repositoryOwner: "acme",
+				repositoryName: "second-repo",
+			},
+			context: baseContext,
+		});
+
+		expect(result.success).toBe(true);
+		expect(mockValidateGitHubPat).toHaveBeenCalledTimes(1);
+		expect(mockValidateGitHubPat).toHaveBeenCalledWith({
+			pat: "dec_valid",
+			owner: "acme",
+			repo: "second-repo",
+		});
+		expect(mockCreateProjectRepoIntegration).toHaveBeenCalledWith(
+			expect.objectContaining({
+				encryptedPat: "enc_valid",
+			}),
+		);
+	});
+
+	it("surfaces GitHub outage status when candidate validation receives 5xx", async () => {
+		mockParseRepoUrl.mockReturnValue({
+			provider: "GITHUB",
+			owner: "acme",
+			name: "second-repo",
+		});
+		mockRepoFindMany.mockResolvedValueOnce([
+			{
+				id: "int-1",
+				encryptedPat: "enc_ghp_stored123",
+			},
+		]);
+		mockValidateGitHubPat.mockResolvedValueOnce({ ok: false, status: 503 });
+
+		const handler = await loadHandler();
+		await expect(
+			handler({
+				input: {
+					projectId: "p1",
+					organizationId: null,
+					provider: "GITHUB",
+					authMethod: "PAT",
+					repositoryUrl: "https://github.com/acme/second-repo",
+					repositoryOwner: "acme",
+					repositoryName: "second-repo",
+				},
+				context: baseContext,
+			}),
+		).rejects.toMatchObject({
+			code: "BAD_REQUEST",
+			message: "GitHub returned status 503",
+		});
+	});
+});
+
+describe("connectRepoIntegrationInputSchema validation", () => {
+	it("validates when pat is omitted entirely", async () => {
+		const { connectRepoIntegrationInputSchema } = await import(
+			"../connect"
+		);
+		const parsed = connectRepoIntegrationInputSchema.safeParse({
+			projectId: "p1",
+			provider: "GITHUB",
+			authMethod: "PAT",
+			repositoryUrl: "https://github.com/acme/repo",
+			repositoryOwner: "acme",
+			repositoryName: "repo",
+		});
+		expect(parsed.success).toBe(true);
+		if (parsed.success) {
+			expect(parsed.data.pat).toBeUndefined();
+		}
+	});
+
+	it("accepts string pat when provided", async () => {
+		const { connectRepoIntegrationInputSchema } = await import(
+			"../connect"
+		);
+		const parsed = connectRepoIntegrationInputSchema.safeParse({
+			projectId: "p1",
+			provider: "GITHUB",
+			authMethod: "PAT",
+			repositoryUrl: "https://github.com/acme/repo",
+			repositoryOwner: "acme",
+			repositoryName: "repo",
+			pat: "ghp_token123",
+		});
+		expect(parsed.success).toBe(true);
+		if (parsed.success) {
+			expect(parsed.data.pat).toBe("ghp_token123");
+		}
+	});
+
+	it("rejects invalid repository URL", async () => {
+		const { connectRepoIntegrationInputSchema } = await import(
+			"../connect"
+		);
+		const parsed = connectRepoIntegrationInputSchema.safeParse({
+			projectId: "p1",
+			provider: "GITHUB",
+			authMethod: "PAT",
+			repositoryUrl: "not-a-valid-url",
+			repositoryOwner: "acme",
+			repositoryName: "repo",
+		});
+		expect(parsed.success).toBe(false);
 	});
 });

@@ -8,6 +8,7 @@
  * All repos are shared with the team via project-level credentials.
  */
 
+import { PAT_INVALID_REASON } from "@repo/api/modules/projects/procedures/repository-integrations/lib/pat-validation-errors";
 import { classificationForRawKind } from "@repo/utils/pipeline-sync-failure-kinds";
 import { InlineJobProgress } from "@saas/jobs/components/InlineJobProgress";
 import type { JobListItem } from "@saas/jobs/hooks/use-jobs";
@@ -198,6 +199,7 @@ interface ProjectRepositoryIntegrationSettingsProps {
 			provider: string;
 			repositoryOwner: string;
 			repositoryName: string;
+			authMethod?: string;
 		}>;
 	};
 	currentUserId: string;
@@ -358,6 +360,7 @@ export function ProjectRepositoryIntegrationSettings({
 						repositoryOwner: project.repositoryOwner,
 						repositoryName: project.repositoryName,
 						isLegacy: true,
+						authMethod: undefined,
 					},
 				]
 			: [];
@@ -416,7 +419,12 @@ export function ProjectRepositoryIntegrationSettings({
 					projectId: project.id,
 				});
 				if (!result.configured) {
-					return { repos: [], error: null };
+					return {
+						repos: [],
+						error: null,
+						source: undefined,
+						sourceIntegrationId: undefined,
+					};
 				}
 				const repos = (result.groups ?? []).flatMap((g) =>
 					g.repos.map((r) => ({
@@ -430,9 +438,19 @@ export function ProjectRepositoryIntegrationSettings({
 						url: r.htmlUrl,
 					})),
 				);
-				return { repos, error: result.error ?? null };
+				return {
+					repos,
+					error: result.error ?? null,
+					source: result.source,
+					sourceIntegrationId: result.sourceIntegrationId,
+				};
 			} catch {
-				return { repos: [], error: null };
+				return {
+					repos: [],
+					error: null,
+					source: undefined,
+					sourceIntegrationId: undefined,
+				};
 			}
 		},
 		enabled: canBrowseGitHub,
@@ -446,6 +464,7 @@ export function ProjectRepositoryIntegrationSettings({
 	const [selectedRepoUrl, setSelectedRepoUrl] = useState("");
 	const [manualRepoUrl, setManualRepoUrl] = useState("");
 	const [isConnectingOAuth, setIsConnectingOAuth] = useState(false);
+	const [isConnectingBrowse, setIsConnectingBrowse] = useState(false);
 	const [editTarget, setEditTarget] = useState<{
 		id: string;
 		repositoryOwner: string;
@@ -849,7 +868,7 @@ export function ProjectRepositoryIntegrationSettings({
 		}
 	}, [project.organizationId, openOAuthPopup]);
 
-	const handleAddFromGitHubBrowse = useCallback(() => {
+	const handleAddFromGitHubBrowse = useCallback(async () => {
 		if (!selectedRepoUrl || !reposData?.repos) {
 			return;
 		}
@@ -868,13 +887,93 @@ export function ProjectRepositoryIntegrationSettings({
 			toast.error("This repository is already connected");
 			return;
 		}
+
+		const hasOAuth = githubStatus?.connected === true;
+		const hasGitHubPat = integrationList.some(
+			(i) =>
+				i.provider === "GITHUB" &&
+				"authMethod" in i &&
+				i.authMethod === "PAT" &&
+				i.status === "ACTIVE",
+		);
+
+		// Rolling-deploy compatibility: if an older backend serves a populated repo
+		// list without `source`, infer PAT when the project has active PAT integrations and no OAuth.
+		const isPatSource =
+			reposData?.source === "pat" ||
+			(reposData?.source === undefined && !hasOAuth && hasGitHubPat);
+
+		if (isPatSource) {
+			setIsConnectingBrowse(true);
+			try {
+				await orpcClient.projects.repositoryIntegrations.connect({
+					projectId: project.id,
+					organizationId: project.organizationId ?? null,
+					provider: "GITHUB",
+					authMethod: "PAT",
+					repositoryUrl: repo.url,
+					repositoryOwner: repo.owner,
+					repositoryName: repo.name,
+					defaultBranch: repo.defaultBranch || "main",
+					roleTag: roleTagInput.trim() || undefined,
+					sourceIntegrationId: reposData?.sourceIntegrationId,
+				});
+				toast.success("Repository connected!");
+				setSelectedRepoUrl("");
+				setRoleTagInput("");
+				setIsAddingRepo(false);
+				invalidateAll();
+				return;
+			} catch (error) {
+				const err = error as {
+					code?: string;
+					status?: number;
+					data?: { reason?: string };
+				};
+				const isConflict =
+					err?.code === "CONFLICT" || err?.status === 409;
+
+				// Only fall through to OAuth on credential validation errors
+				const isCredentialError =
+					err?.data?.reason === PAT_INVALID_REASON ||
+					(error instanceof Error &&
+						(error.message.includes("Invalid PAT") ||
+							error.message.includes("No stored") ||
+							error.message.includes("PAT is required")));
+
+				if (isConflict || !isCredentialError) {
+					toast.error(
+						error instanceof Error
+							? error.message
+							: "Failed to connect repository",
+					);
+					return;
+				}
+
+				// In case the PAT is expired or lacks access, fallback is OAuth
+			} finally {
+				setIsConnectingBrowse(false);
+			}
+		}
+
+		// Fallback to OAuth sign-in flow (or default when not served via PAT)
 		handleAddGitHubRepo(
 			repo.url,
 			repo.owner,
 			repo.name,
 			repo.defaultBranch || "main",
 		);
-	}, [selectedRepoUrl, reposData, integrationList, handleAddGitHubRepo]);
+	}, [
+		selectedRepoUrl,
+		reposData,
+		integrationList,
+		githubStatus,
+		handleAddGitHubRepo,
+		project.id,
+		project.organizationId,
+		roleTagInput,
+		invalidateAll,
+	]);
 
 	/**
 	 * GitLab picker confirm.
@@ -1321,10 +1420,12 @@ export function ProjectRepositoryIntegrationSettings({
 													}
 													disabled={
 														isConnectingOAuth ||
+														isConnectingBrowse ||
 														!selectedRepoUrl
 													}
 												>
-													{isConnectingOAuth ? (
+													{isConnectingOAuth ||
+													isConnectingBrowse ? (
 														<Loader2Icon className="h-4 w-4 animate-spin" />
 													) : (
 														"Add"

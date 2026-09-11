@@ -132,6 +132,7 @@ type Project = {
 		provider: string;
 		repositoryOwner: string;
 		repositoryName: string;
+		authMethod?: string;
 	}>;
 };
 

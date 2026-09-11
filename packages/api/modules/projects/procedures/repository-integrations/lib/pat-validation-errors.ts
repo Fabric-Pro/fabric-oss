@@ -5,6 +5,8 @@
  * match the cause).
  */
 
+export const PAT_INVALID_REASON = "pat_invalid";
+
 export function gitHubPatValidationMessage(status: number | undefined): string {
 	switch (status) {
 		case 401:
