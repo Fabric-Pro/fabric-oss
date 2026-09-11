@@ -194,12 +194,17 @@ export function restrictsPostType(
 }
 
 /**
- * How a restricting thread is named to a person, and to the model.
+ * How a restricting thread is named to the model.
  *
  * `subject` is the specific thing awaiting approval ("Acme Corp", "the latency
- * chart"); the kind is the fallback when a question was raised without one.
- * Both readers need the same string: the tab lists it under "unresolved before
- * drafting", and the prompt lists it under "not approved for use".
+ * chart") — model-authored, never typed by a project member (see
+ * `toSingleLineSubject` below for the two producing paths); the kind is the
+ * fallback when a question was raised without one. This is the prompt's own
+ * computation, used where the prompt lists a thread under "not approved for
+ * use". The generation tab is a SEPARATE reader: it computes its own
+ * "unresolved before drafting" label locally rather than calling this
+ * function, and the two are not guaranteed to produce the same string (see
+ * `toSingleLineSubject` below for the known divergences).
  */
 export function restrictionLabel(thread: RestrictionThreadRoot): string {
 	const subject = toSingleLineSubject(thread.root.subject ?? "");
@@ -210,26 +215,103 @@ export function restrictionLabel(thread: RestrictionThreadRoot): string {
 }
 
 /**
- * Collapse a user-authored subject onto ONE line.
+ * Collapse a model-authored subject onto ONE line.
  *
- * A subject is free text typed by a project member, and both readers render it
- * as a single bullet: the "unresolved before drafting" list on the generation
- * tab, and the locked-clause block of every writer's prompt. In the prompt it
- * lands OUTSIDE any source-data fence — the locked clauses are the one region
- * a quoted source block must never reach — so an interior newline does not wrap
- * a bullet, it opens a new line at column zero inside the rules the model is
- * told override everything above it. That is the whole of the attack: nothing
- * has to be forged and no marker guessed, only a return key pressed in a field
- * the API accepts as an unconstrained string.
+ * The subject is not free text a project member types. It is model-authored
+ * on TWO paths:
  *
- * The pattern matches whitespace generally rather than the two obvious line
- * breaks, because it also has to catch the tab, the form feed, and U+2028 /
- * U+2029, which end a line for Markdown renderers and for a model reading
- * the text while being invisible in every UI that shows the subject back to
- * the person who typed it.
+ * 1. A recommended question's `recommendedQuestions[].subject`, capped at 160
+ *    characters by the Zod schema the model's output must satisfy
+ *    (`build-planning-analysis-prompt.ts`).
+ * 2. A DERIVED `ASSET_APPROVAL` question, whose subject is a classified
+ *    asset's `type` (`ClassifiedRecommendationSchema`,
+ *    `build-planning-analysis-prompt.ts`), which carries a minimum length
+ *    and NO maximum. `ASSET_APPROVAL` is in `SAFETY_CRITICAL_KINDS`, so this
+ *    unbounded path restricts every content type.
+ *
+ * Both are persisted with `authorType: "AGENT"` when the analysis is
+ * reconciled into the topic's decisions (`publishing-decisions.ts`). Nothing
+ * downstream lets a member author or edit one: the answer API takes an
+ * `answer`, never a `subject` (`answerTopicQuestion`,
+ * `amendTopicQuestionAnswer`), and the revision procedure
+ * (`saveAnalysisRevision`) edits the analysis document without
+ * re-reconciling questions — but a REGENERATED analysis does refresh an
+ * existing open question's subject, through `reconcileTopicQuestions`'
+ * update branch, which `completePlanningAnalysis` runs on every completed
+ * analysis. So the subject is model-authored for its entire life: at
+ * creation, and at every later refresh. The realistic attack is not an
+ * insider pressing a return key into a form — it is an indirect-injection
+ * payload the model copies out of source material an analysis reads (a
+ * document, a call transcript, a scraped page) into whichever of the two
+ * fields it emits.
+ *
+ * This helper's callers are the prompt builders: `restrictionLabel` below,
+ * and every `build-*-prompt.ts` that renders a subject as a locked-clause
+ * bullet directly. `build-linkedin-post-prompt.ts` renders one too, but only
+ * INDIRECTLY, by calling `build-short-post-prompt.ts`'s
+ * `buildShortPostLockedClauses` rather than defining its own. There the
+ * subject lands OUTSIDE any source-data fence — the locked clauses are the
+ * one region a quoted source block must never reach — so an interior newline
+ * does not wrap a bullet, it opens a new line at column zero inside the
+ * section the model is told overrides everything above it. A model-authored
+ * string that happens to carry a line break is enough — on the unbounded
+ * path there is no length floor to clear either; nothing has to be forged
+ * and no marker guessed.
+ *
+ * The generation tab is NOT one of this helper's callers, despite labeling
+ * the same threads. It builds its own label locally
+ * (`GenerationTabs.tsx`, `t.root.subject ?? humanizeKind(...)`), and the two
+ * disagree: a whitespace-only subject renders blank in the tab but falls
+ * back to the humanized decision kind (e.g. "Customer name") in the prompt;
+ * a multiline subject's STORED value stays multiline going into that
+ * comparison, though the tab actually renders it as `<li>{r.label}</li>` and
+ * HTML collapses the newline visually, so a reader never sees the
+ * difference there; and `decisionKind === "OTHER"` renders "An unresolved
+ * approval" in the tab against "Other" in the prompt. That divergence is
+ * real, is not fixed here, and is left for separate `apps/web` work with its
+ * own render tests.
+ *
+ * The pattern below matches whitespace generally rather than the two obvious
+ * line breaks, because it also has to catch the tab, the form feed, and
+ * U+2028 / U+2029, which end a line for Markdown renderers and for a model
+ * reading the text while remaining invisible in whatever UI renders the
+ * subject back to a reader.
  */
 export function toSingleLineSubject(value: string): string {
 	return value.replace(/\s+/g, " ").trim();
+}
+
+/**
+ * Render one approval subject as a QUOTED LABEL for a locked-clause bullet.
+ *
+ * The subject is the one piece of non-authored text these prompts render inside
+ * the rules section itself, because its job is to name what the rules are about.
+ * `toSingleLineSubject` stops it opening a new line among the rules, and — in
+ * the writers that fence their own variables in a SOURCE DATA block (case
+ * study, newsletter blurb, stakeholder email, webinar script; blog post,
+ * short post and LinkedIn post have no such fence to forge)
+ * — `neutralizeSourceDataMarkers` stops it forging one. Both are STRUCTURAL:
+ * a subject that is already one line and carries no marker passes each
+ * untouched and lands as a bullet indistinguishable from a rule.
+ *
+ * The quotation is what distinguishes them, so the one character that could
+ * close it early is downgraded to an apostrophe. Not backslash-escaped: a model
+ * reading Markdown is not a parser, and a visible straight quote inside the
+ * label is exactly the ambiguity being removed.
+ *
+ * A fence is deliberately NOT used: the locked clauses are the one region a
+ * quoted source block must never reach, because they instruct the model to
+ * disregard what sits inside one.
+ *
+ * WHAT THIS DOES NOT DO. Quoting types a value; it does not prove a model will
+ * refuse a quoted imperative. The guarantee here is representational - the
+ * subject is presented as data and the block's own governing instruction is
+ * preserved beside it. Whether a given provider then complies is a question
+ * only provider-level evaluation answers, and nothing in this repository
+ * measures it.
+ */
+export function renderSubjectBullet(subject: string): string {
+	return `- "${toSingleLineSubject(subject).replaceAll('"', "'")}"`;
 }
 
 /** `CUSTOMER_NAME` → `Customer name`. */
