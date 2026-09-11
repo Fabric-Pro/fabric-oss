@@ -99,7 +99,7 @@ describe("buildNewsletterBlurbLockedClauses", () => {
 			restrictedSubjects: ["Customer name: example-org"],
 		});
 		expect(clauses).toContain("Unresolved approvals for this topic");
-		expect(clauses).toContain("- Customer name: example-org");
+		expect(clauses).toContain('- "Customer name: example-org"');
 		expect(clauses).not.toContain(
 			"Open questions that constrain this content type",
 		);
@@ -112,7 +112,7 @@ describe("buildNewsletterBlurbLockedClauses", () => {
 		expect(clauses).toContain(
 			"Open questions that constrain this content type",
 		);
-		expect(clauses).toContain("- Audience scope");
+		expect(clauses).toContain('- "Audience scope"');
 		expect(clauses).not.toContain("Unresolved approvals for this topic");
 	});
 
