@@ -29,7 +29,7 @@ import {
 	parseRepoUrl,
 	syncLegacyProjectRepoOnConnect,
 } from "@repo/database";
-import { encryptApiKey } from "@repo/utils";
+import { decryptApiKey, encryptApiKey } from "@repo/utils";
 import { z } from "zod";
 import { recordAuditFromRequest } from "../../../../lib/audit";
 import {
@@ -42,7 +42,43 @@ import { startCodeIndexingForProject } from "../../lib/code-indexing-trigger";
 import {
 	gitHubPatValidationMessage,
 	gitLabPatValidationMessage,
+	PAT_INVALID_REASON,
 } from "./lib/pat-validation-errors";
+
+/**
+ * Maximum number of stored PAT candidates to evaluate sequentially
+ * before failing, bounding interactive latency on the connect path.
+ */
+const MAX_CANDIDATE_CREDENTIALS = 5;
+
+export const connectRepoIntegrationInputSchema = z.object({
+	projectId: z.string(),
+	organizationId: z.string().nullable().optional(),
+	provider: z.enum(["GITHUB", "GITLAB", "AZURE_DEVOPS"]),
+	authMethod: z.enum(["OAUTH", "PAT"]),
+	// Bounded span: js/polynomial-redos — this value is stored and later
+	// re-parsed by parseAdoRepositoryUrl's legacy-URL regex (update-branch);
+	// no real repository URL is anywhere near this length.
+	repositoryUrl: z.string().url().max(2048),
+	repositoryOwner: z.string(),
+	repositoryName: z.string(),
+	defaultBranch: z.string().optional(),
+	roleTag: z
+		.string()
+		.trim()
+		.max(50)
+		.regex(/^(?!.*---)[a-zA-Z0-9_\-./ ]+$/, {
+			message:
+				"Role tag can only contain letters, numbers, spaces, hyphens, underscores, dots, and slashes (and cannot contain '---')",
+		})
+		.nullable()
+		.optional(),
+	// For PAT-based auth. Azure DevOps also needs `azureOrganization`;
+	// GitHub / GitLab need only `pat`.
+	pat: z.string().optional(),
+	azureOrganization: z.string().optional(),
+	sourceIntegrationId: z.string().optional(),
+});
 
 export const connectRepoIntegrationProcedure = tenantProtectedProcedure
 	.use(requireProjectPermission(Permissions.PROJECT_SETTINGS_EDIT))
@@ -52,35 +88,7 @@ export const connectRepoIntegrationProcedure = tenantProtectedProcedure
 		tags: ["Projects", "Repository Integrations"],
 		summary: "Connect a repository integration to the project",
 	})
-	.input(
-		z.object({
-			projectId: z.string(),
-			organizationId: z.string().nullable().optional(),
-			provider: z.enum(["GITHUB", "GITLAB", "AZURE_DEVOPS"]),
-			authMethod: z.enum(["OAUTH", "PAT"]),
-			// Bounded span: js/polynomial-redos — this value is stored and later
-			// re-parsed by parseAdoRepositoryUrl's legacy-URL regex (update-branch);
-			// no real repository URL is anywhere near this length.
-			repositoryUrl: z.string().url().max(2048),
-			repositoryOwner: z.string(),
-			repositoryName: z.string(),
-			defaultBranch: z.string().optional(),
-			roleTag: z
-				.string()
-				.trim()
-				.max(50)
-				.regex(/^(?!.*---)[a-zA-Z0-9_\-./ ]+$/, {
-					message:
-						"Role tag can only contain letters, numbers, spaces, hyphens, underscores, dots, and slashes (and cannot contain '---')",
-				})
-				.nullable()
-				.optional(),
-			// For PAT-based auth. Azure DevOps also needs `azureOrganization`;
-			// GitHub / GitLab need only `pat`.
-			pat: z.string().optional(),
-			azureOrganization: z.string().optional(),
-		}),
-	)
+	.input(connectRepoIntegrationInputSchema)
 	.handler(async ({ input, context }) => {
 		const user = context.user;
 		const organizationId = resolveOrganizationId(
@@ -101,15 +109,125 @@ export const connectRepoIntegrationProcedure = tenantProtectedProcedure
 		const repositoryOwner = parsed.owner;
 		const repositoryName = parsed.name;
 
-		// For PAT auth, validate the PAT before storing
+		// For PAT-based auth, validate the PAT before storing (or reuse stored PAT for GITHUB)
 		if (input.authMethod === "PAT") {
-			if (!input.pat) {
-				throw new ORPCError("BAD_REQUEST", {
-					message: "PAT is required for PAT authentication",
-				});
-			}
+			let patToUse = input.pat;
+			let encryptedPat = input.pat ? encryptApiKey(input.pat) : null;
+			let validatedAgainstRepo = false;
 
-			const encryptedPat = encryptApiKey(input.pat);
+			// If pat is empty or whitespace-only:
+			// - If explicitly provided (e.g. "" or "   ") or provider is not GITHUB, reject immediately.
+			// - If pat was omitted (undefined) and provider is GITHUB, resolve and reuse stored active project PATs.
+			if (!patToUse || !patToUse.trim()) {
+				if (provider !== "GITHUB" || input.pat !== undefined) {
+					throw new ORPCError("BAD_REQUEST", {
+						message: "PAT is required for PAT authentication",
+					});
+				}
+
+				const candidates =
+					await db.projectRepositoryIntegration.findMany({
+						where: {
+							projectId: input.projectId,
+							provider: "GITHUB",
+							authMethod: "PAT",
+							status: "ACTIVE",
+							encryptedPat: { not: null },
+						},
+						select: {
+							id: true,
+							encryptedPat: true,
+						},
+						orderBy: { createdAt: "desc" },
+					});
+
+				if (candidates.length === 0) {
+					throw new ORPCError("BAD_REQUEST", {
+						message:
+							"No stored GitHub token found for this project",
+						data: { reason: PAT_INVALID_REASON },
+					});
+				}
+
+				// If sourceIntegrationId is provided, check that candidate first.
+				const fullCandidates = input.sourceIntegrationId
+					? [
+							...candidates.filter(
+								(c) => c.id === input.sourceIntegrationId,
+							),
+							...candidates.filter(
+								(c) => c.id !== input.sourceIntegrationId,
+							),
+						]
+					: candidates;
+
+				if (fullCandidates.length > MAX_CANDIDATE_CREDENTIALS) {
+					console.warn(
+						`[connect] Project ${input.projectId} has ${fullCandidates.length} candidate PAT credentials; capping evaluation at ${MAX_CANDIDATE_CREDENTIALS}.`,
+					);
+				}
+				const sortedCandidates = fullCandidates.slice(
+					0,
+					MAX_CANDIDATE_CREDENTIALS,
+				);
+
+				// Find a stored candidate PAT that can access this specific repository
+				let lastStatus: number | undefined;
+				for (const candidate of sortedCandidates) {
+					if (!candidate.encryptedPat) {
+						continue;
+					}
+
+					let decrypted: string;
+					try {
+						decrypted = decryptApiKey(candidate.encryptedPat);
+					} catch {
+						// Corrupt ciphertext or invalid key version — try next candidate
+						continue;
+					}
+
+					try {
+						const validation = await validateGitHubPat({
+							pat: decrypted,
+							owner: repositoryOwner,
+							repo: repositoryName,
+						});
+						if (validation.ok) {
+							patToUse = decrypted;
+							encryptedPat = candidate.encryptedPat;
+							validatedAgainstRepo = true;
+							break;
+						}
+						// Record failure status, preserving server outage status (>= 500) if encountered
+						if (
+							validation.status &&
+							(validation.status >= 500 || !lastStatus)
+						) {
+							lastStatus = validation.status;
+						}
+					} catch (err) {
+						// Rethrow network/transient fetch errors so they aren't masked as credential rejections
+						if (
+							err instanceof TypeError ||
+							(err as { name?: string })?.name === "FetchError"
+						) {
+							throw err;
+						}
+					}
+				}
+
+				if (!patToUse || !encryptedPat) {
+					if (lastStatus && lastStatus >= 500) {
+						throw new ORPCError("BAD_REQUEST", {
+							message: `GitHub returned status ${lastStatus}`,
+						});
+					}
+					throw new ORPCError("BAD_REQUEST", {
+						message: "Invalid PAT or insufficient permissions",
+						data: { reason: PAT_INVALID_REASON },
+					});
+				}
+			}
 
 			// Validate the PAT against the provider before storing. Each check is
 			// delegated to a `@repo/connectors` request-path helper. Error mapping:
@@ -129,7 +247,7 @@ export const connectRepoIntegrationProcedure = tenantProtectedProcedure
 				}
 				const validation = await validateAzureDevOpsPat({
 					organization: input.azureOrganization,
-					pat: input.pat,
+					pat: patToUse,
 				});
 				if (!validation.ok) {
 					throw new ORPCError("BAD_REQUEST", {
@@ -141,19 +259,24 @@ export const connectRepoIntegrationProcedure = tenantProtectedProcedure
 					});
 				}
 			} else if (provider === "GITHUB") {
-				const validation = await validateGitHubPat({
-					pat: input.pat,
-					owner: repositoryOwner,
-					repo: repositoryName,
-				});
-				if (!validation.ok) {
-					// Shared with the attach-PAT path so both tell one story per
-					// status: 401 is the credential itself, 403 authenticated but
-					// lacks the grant, and GitHub also answers 404 for a private
-					// repo the token cannot see.
-					throw new ORPCError("BAD_REQUEST", {
-						message: gitHubPatValidationMessage(validation.status),
+				if (!validatedAgainstRepo) {
+					const validation = await validateGitHubPat({
+						pat: patToUse,
+						owner: repositoryOwner,
+						repo: repositoryName,
 					});
+					if (!validation.ok) {
+						// Shared with the attach-PAT path so both tell one story per
+						// status: 401 is the credential itself, 403 authenticated but
+						// lacks the grant, and GitHub also answers 404 for a private
+						// repo the token cannot see.
+						throw new ORPCError("BAD_REQUEST", {
+							message: gitHubPatValidationMessage(
+								validation.status,
+							),
+							data: { reason: PAT_INVALID_REASON },
+						});
+					}
 				}
 			} else {
 				// GITLAB — gitlab.com only. `parseRepoUrl` recognises GitLab by a
@@ -180,7 +303,7 @@ export const connectRepoIntegrationProcedure = tenantProtectedProcedure
 					});
 				}
 				const validation = await validateGitLabPat({
-					pat: input.pat,
+					pat: patToUse,
 					host: "https://gitlab.com",
 					projectPath: `${repositoryOwner}/${repositoryName}`,
 				});
@@ -194,7 +317,7 @@ export const connectRepoIntegrationProcedure = tenantProtectedProcedure
 			const resolvedBranch = await resolveDefaultBranch({
 				providedBranch: input.defaultBranch,
 				provider,
-				token: input.pat,
+				token: patToUse,
 				repositoryUrl: input.repositoryUrl,
 				owner: repositoryOwner,
 				repo: repositoryName,
@@ -242,7 +365,7 @@ export const connectRepoIntegrationProcedure = tenantProtectedProcedure
 					repositoryName,
 					defaultBranch: resolvedBranch,
 					roleTag: normalizedRoleTag,
-					encryptedPat,
+					encryptedPat: encryptedPat ?? undefined,
 					azureOrganization: input.azureOrganization,
 					configuredByUserId: user.id,
 				});

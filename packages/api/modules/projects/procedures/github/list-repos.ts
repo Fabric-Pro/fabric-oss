@@ -38,6 +38,12 @@ import {
 // Shared types and helpers
 // ============================================================================
 
+/**
+ * Maximum number of project-level credential candidates to evaluate sequentially
+ * before falling through, bounding interactive latency on the picker-open path.
+ */
+const MAX_CANDIDATE_CREDENTIALS = 5;
+
 interface GitHubRepoRaw {
 	name: string;
 	full_name: string;
@@ -594,7 +600,15 @@ export const listGitHubReposProcedure = tenantProtectedProcedure
 				"context",
 			);
 			try {
-				return await listReposViaIntegration(token, input.searchOrg);
+				const result = await listReposViaIntegration(
+					token,
+					input.searchOrg,
+				);
+				return {
+					...result,
+					source: "oauth" as const,
+					sourceIntegrationId: undefined,
+				};
 			} catch (err) {
 				console.warn(
 					"[listGitHubRepos] Workflow integration failed:",
@@ -611,21 +625,41 @@ export const listGitHubReposProcedure = tenantProtectedProcedure
 				organizationId,
 			);
 			if (hasAccess) {
-				const projectIntegration =
-					await db.projectRepositoryIntegration.findFirst({
+				const projectIntegrations =
+					await db.projectRepositoryIntegration.findMany({
 						where: {
 							projectId: input.projectId,
 							provider: "GITHUB",
 							status: "ACTIVE",
-							encryptedAccessToken: { not: null },
+							OR: [
+								{ encryptedAccessToken: { not: null } },
+								{ encryptedPat: { not: null } },
+							],
 						},
+						orderBy: { createdAt: "desc" },
 					});
 
-				if (projectIntegration?.encryptedAccessToken) {
-					console.log(
-						"[listGitHubRepos] Using project-level shared credentials from project:",
-						input.projectId,
+				// Prefer OAuth rows first (preserving master behavior), then PAT rows
+				const sortedCandidates = [
+					...projectIntegrations.filter(
+						(i) => i.authMethod === "OAUTH",
+					),
+					...projectIntegrations.filter(
+						(i) => i.authMethod === "PAT",
+					),
+				];
+
+				if (sortedCandidates.length > MAX_CANDIDATE_CREDENTIALS) {
+					console.warn(
+						`[listGitHubRepos] Project ${input.projectId} has ${sortedCandidates.length} candidate credentials; capping evaluation at ${MAX_CANDIDATE_CREDENTIALS}.`,
 					);
+				}
+				const boundedCandidates = sortedCandidates.slice(
+					0,
+					MAX_CANDIDATE_CREDENTIALS,
+				);
+
+				for (const projectIntegration of boundedCandidates) {
 					try {
 						// Refresh-aware: a GitHub App user token dies after 8h, so
 						// decrypting the stored one here used to serve a dead token.
@@ -638,17 +672,31 @@ export const listGitHubReposProcedure = tenantProtectedProcedure
 								{ userId, organizationId },
 							);
 						if (!projectToken) {
-							throw new Error(
-								"No usable project-level GitHub token",
-							);
+							continue;
 						}
-						return await listReposViaIntegration(
+						const result = await listReposViaIntegration(
 							projectToken,
 							input.searchOrg,
 						);
+						console.log(
+							"[listGitHubRepos] Using project-level shared credentials from project:",
+							input.projectId,
+							"integrationId:",
+							projectIntegration.id,
+						);
+						const source =
+							projectIntegration.authMethod === "PAT"
+								? ("pat" as const)
+								: ("oauth" as const);
+						return {
+							...result,
+							source,
+							sourceIntegrationId: projectIntegration.id,
+						};
 					} catch (err) {
 						console.warn(
-							"[listGitHubRepos] Project-level credentials failed:",
+							"[listGitHubRepos] Project-level credentials candidate failed for integration:",
+							projectIntegration.id,
 							err,
 						);
 					}
@@ -670,8 +718,14 @@ export const listGitHubReposProcedure = tenantProtectedProcedure
 				username: null,
 				groups: [],
 				error: "GitHub not connected. Please connect your GitHub account in Settings → Workflow Integrations, or configure a GitHub MCP server.",
+				source: "mcp" as const,
+				sourceIntegrationId: undefined,
 			};
 		}
 
-		return mcpResult;
+		return {
+			...mcpResult,
+			source: "mcp" as const,
+			sourceIntegrationId: undefined,
+		};
 	});
