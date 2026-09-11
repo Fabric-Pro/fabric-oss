@@ -59,8 +59,100 @@ function schemaContainsRef(value: unknown): boolean {
 }
 
 /**
+ * The tool-name grammar the model providers enforce on every tool definition.
+ *
+ * Anthropic rejects the WHOLE request — `tools.<n>.custom.name: String should
+ * match pattern '^[a-zA-Z0-9_-]{1,128}$'` — when a single name breaks it. One
+ * malformed name therefore costs every tool in the turn, not just its own.
+ */
+export const MCP_TOOL_NAME_PATTERN = /^[a-zA-Z0-9_-]{1,128}$/;
+
+const MCP_TOOL_NAME_MAX_LENGTH = 128;
+const ALLOWED_CHARACTERS_ONLY = /^[a-zA-Z0-9_-]+$/;
+
+/**
+ * 32-bit FNV-1a as base36. Deterministic and dependency-free — `node:crypto`
+ * would be a needless import in a module reachable from the workflow bundle.
+ */
+function shortHash(value: string): string {
+	let hash = 0x811c9dc5;
+	for (let index = 0; index < value.length; index++) {
+		hash ^= value.charCodeAt(index);
+		hash = Math.imul(hash, 0x01000193) >>> 0;
+	}
+	return hash.toString(36).padStart(7, "0").slice(0, 7);
+}
+
+/**
+ * Builds the model-facing name for an MCP tool: the server's name, lowercased,
+ * prefixed onto the tool's own name.
+ *
+ * A server name is free text the user typed, so it routinely carries
+ * characters the grammar forbids — parentheses in `Slack (Official)`, an
+ * apostrophe in a possessive. The previous form replaced whitespace and
+ * nothing else, so `slack_(official)_…` went to the provider as-is, Anthropic
+ * refused the request, and direct chat's graceful degradation (#1644) retried
+ * the turn with no tools at all. The user was then told the surface has no
+ * tools connected — a confident false claim standing in for a hard 400
+ * (Fizzy #2473).
+ *
+ * A name that is already valid comes back byte-identical: repairing never
+ * renames a tool that worked.
+ *
+ * `taken` carries the names already used by this tool set, and must live
+ * OUTSIDE the per-server loop. `tools` and `toolToServerMap` are keyed by this
+ * string, so two servers that repair to the same prefix (`Slack (Official)` and
+ * `Slack Official`) would otherwise overwrite each other's entries and dispatch
+ * one server's calls to the other — a worse failure than the rejection this
+ * fixes.
+ */
+export function buildMcpToolName(
+	serverName: string,
+	toolName: string,
+	taken?: Set<string>,
+): string {
+	const legacy = `${serverName.toLowerCase().replace(/\s+/g, "_")}_${toolName}`;
+	let name = ALLOWED_CHARACTERS_ONLY.test(legacy)
+		? legacy
+		: legacy
+				.replace(/[^a-zA-Z0-9_-]+/g, "_")
+				.replace(/_+/g, "_")
+				.replace(/^_+|_+$/g, "");
+	if (!name) {
+		name = "mcp_tool";
+	}
+	if (name.length > MCP_TOOL_NAME_MAX_LENGTH) {
+		// Slicing alone can converge two long names onto the same 128
+		// characters — the collision case above wearing a different hat. The
+		// hash is taken over the full name, so distinct inputs stay distinct.
+		const hash = shortHash(name);
+		name = `${name.slice(0, MCP_TOOL_NAME_MAX_LENGTH - hash.length - 1)}_${hash}`;
+	}
+	if (!taken) {
+		return name;
+	}
+	let candidate = name;
+	let attempt = 2;
+	while (taken.has(candidate)) {
+		const suffix = `_${attempt}`;
+		candidate = `${name.slice(
+			0,
+			MCP_TOOL_NAME_MAX_LENGTH - suffix.length,
+		)}${suffix}`;
+		attempt++;
+	}
+	taken.add(candidate);
+	return candidate;
+}
+
+/**
  * Drops MCP tools whose schemas the model provider would reject:
- * non-serializable schemas and schemas containing `$ref`.
+ * a name outside the provider's grammar, non-serializable schemas, and schemas
+ * containing `$ref`.
+ *
+ * The name check is the fail-safe behind `buildMcpToolName`: whatever produced
+ * the name, one that cannot be sent costs a single tool here instead of the
+ * entire request (Fizzy #2473).
  *
  * Returns the kept tools, the list of dropped tools with reasons, and a
  * `sizes` map of kept-tool name → serialized byte length of the schema
@@ -75,6 +167,10 @@ export function validateMcpToolSet(tools: Record<string, unknown>): {
 	const dropped: ToolDropInfo[] = [];
 	const sizes: Record<string, number> = {};
 	for (const [name, def] of Object.entries(tools)) {
+		if (!MCP_TOOL_NAME_PATTERN.test(name)) {
+			dropped.push({ name, reason: "invalid_tool_name" });
+			continue;
+		}
 		const schema = getToolSchema(def);
 		let serialized: string;
 		try {

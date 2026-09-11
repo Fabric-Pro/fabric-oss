@@ -17,6 +17,7 @@ import {
 } from "@repo/agent-core/backend";
 import { db } from "@repo/database";
 import type { McpClientType } from "@repo/mcp";
+import { buildMcpToolName } from "./tool-payload-safety";
 
 const logger = {
 	info: (message: string, data?: Record<string, unknown>) =>
@@ -127,6 +128,9 @@ export async function getMcpClientsForExecution(
 		{ configId: string; serverName: string; resourceUri?: string }
 	> = {};
 	const clients: McpClientType[] = [];
+	// Shared across every server — see `buildMcpToolName` on why the set cannot
+	// live inside the loop.
+	const takenNames = new Set<string>();
 
 	for (const config of mcpToolInfo) {
 		try {
@@ -140,7 +144,11 @@ export async function getMcpClientsForExecution(
 				const tools = await result.client.tools();
 
 				for (const [toolName, toolDef] of Object.entries(tools)) {
-					const prefixedName = `${config.serverName.toLowerCase().replace(/\s+/g, "_")}_${toolName}`;
+					const prefixedName = buildMcpToolName(
+						config.serverName,
+						toolName,
+						takenNames,
+					);
 					allTools[prefixedName] = toolDef;
 					// Capture MCP App resourceUri from tool _meta if present
 					const resourceUri = (

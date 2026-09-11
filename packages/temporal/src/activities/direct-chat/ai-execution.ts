@@ -81,6 +81,7 @@ import { extractReasoningText } from "./reasoning-stream";
 import { extractStreamErrorMessage } from "./stream-error";
 import { resolveStreamOutcome } from "./stream-outcome";
 import {
+	buildMcpToolName,
 	capToolSet,
 	summarizeOmittedTools,
 	validateMcpToolSet,
@@ -403,6 +404,10 @@ async function loadMcpToolsFromServers(
 		}
 	> = {};
 	const clients: McpClientType[] = [];
+	// Shared across every server: the names key `tools` and `toolToServerMap`,
+	// so a name repaired into one another server already holds must not silently
+	// replace it (see `buildMcpToolName`).
+	const takenNames = new Set<string>();
 
 	for (const server of servers) {
 		try {
@@ -416,7 +421,11 @@ async function loadMcpToolsFromServers(
 				const serverTools = await result.client.tools();
 
 				for (const [toolName, toolDef] of Object.entries(serverTools)) {
-					const prefixedName = `${server.serverName.toLowerCase().replace(/\s+/g, "_")}_${toolName}`;
+					const prefixedName = buildMcpToolName(
+						server.serverName,
+						toolName,
+						takenNames,
+					);
 					tools[prefixedName] = toolDef;
 					// Capture MCP App resourceUri from tool _meta if present
 					const resourceUri = (
