@@ -45,6 +45,7 @@ const INFRASTRUCTURE_FABRIC_TOOLS = new Set([
 	"fabric_list_architecture_decisions",
 	"fabric_list_feature_decisions",
 	"fabric_list_security_findings",
+	"fabric_list_meeting_transcripts",
 ]);
 
 // =============================================================================

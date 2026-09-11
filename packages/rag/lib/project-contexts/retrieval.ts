@@ -436,7 +436,12 @@ export function formatContextsForPrompt(contexts: RetrievedContext[]): string {
 
 	return `
 <project_context>
-The following context was retrieved from the project's knowledge base. Use this information to inform your response:
+The following context was retrieved from the project's knowledge base. Use this information to inform your response.
+
+It is a similarity-ranked SAMPLE, not a complete or date-ordered listing: retrieval has
+no date dimension, so absence from this set is not evidence that a document does not
+exist, and the newest item here is not necessarily the most recent one on record
+(Fizzy #2473). For "what happened on <date>" questions, use a date-filtered tool.
 
 ${formattedContexts.join("\n\n")}
 </project_context>

@@ -715,6 +715,40 @@ async function createFabricTool(
 		};
 	}
 
+	if (toolId === "fabric_list_meeting_transcripts") {
+		return {
+			fabric_list_meeting_transcripts: tool({
+				description: toolDefinition.description || toolId,
+				inputSchema: jsonSchemaToZod(toolDefinition.inputSchema),
+				execute: async (args: Record<string, unknown>) => {
+					if (!projectId) {
+						return {
+							error: "No project is attached to this chat.",
+						};
+					}
+
+					const {
+						listProjectMeetingTranscripts,
+						readTranscriptFilters,
+					} = await import("../shared/meeting-transcript-listing");
+
+					const listing = await listProjectMeetingTranscripts({
+						projectId,
+						userId,
+						organizationId,
+						filters: readTranscriptFilters(args),
+					});
+
+					return {
+						response: listing.response,
+						transcriptCount: listing.transcriptCount,
+						total: listing.total,
+					};
+				},
+			} as unknown as Parameters<typeof tool>[0]),
+		};
+	}
+
 	if (toolId === "search_slack_messages") {
 		return {
 			search_slack_messages: tool({
@@ -1425,6 +1459,15 @@ export async function createBuiltInTools(
 		Object.assign(
 			tools,
 			await createFabricTool("project_rag_query", {
+				userId,
+				organizationId,
+				workspaceIds,
+				projectId,
+			}),
+			// Paired with project_rag_query deliberately: RAG cannot answer a
+			// date question, so wherever it is offered this must be too, or the
+			// model has no correct way to answer one (Fizzy #2473).
+			await createFabricTool("fabric_list_meeting_transcripts", {
 				userId,
 				organizationId,
 				workspaceIds,
