@@ -69,7 +69,9 @@ export function SettingsSidebarLayout({
 					: "lg:w-[224px] lg:max-w-[224px]",
 			)}
 		>
-			<div className="w-full">{children}</div>
+			{/* A little gutter so the panel's edge handle, which straddles the
+			    boundary, never sits over the first word of the content. */}
+			<div className="w-full lg:pl-3">{children}</div>
 		</SidebarContentLayout>
 	);
 }

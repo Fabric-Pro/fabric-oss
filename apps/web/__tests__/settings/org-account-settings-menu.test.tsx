@@ -172,10 +172,17 @@ describe("organization settings menu — account group", () => {
 		// — one editable by this member, one read-only for them — is exactly
 		// the ambiguity this notice's remedy cannot afford.
 		const menuItems = await buildMenu();
-		const orgProviders = menuItems[0].items.find(
-			(item) => item.href === "/app/example-org/settings/ai-providers",
-		);
-		const accountProviders = menuItems[1].items.find(
+		// The organization's pages are spread over several groups now (its own,
+		// AI, Extensions, Activity); the account group is always the last one.
+		const organizationGroups = menuItems.slice(0, -1);
+		const accountGroup = menuItems[menuItems.length - 1];
+		const orgProviders = organizationGroups
+			.flatMap((group) => group.items)
+			.find(
+				(item) =>
+					item.href === "/app/example-org/settings/ai-providers",
+			);
+		const accountProviders = accountGroup.items.find(
 			(item) =>
 				item.href === "/app/example-org/settings/account/ai-providers",
 		);
@@ -186,18 +193,24 @@ describe("organization settings menu — account group", () => {
 
 	it("appends the account group AFTER the organization's own group", async () => {
 		const menuItems = await buildMenu();
+		const accountGroup = menuItems[menuItems.length - 1];
 
-		expect(menuItems).toHaveLength(2);
-		// menuItems[0] drives the sidebar header — it must stay the org.
+		// menuItems[0] drives the sidebar header — it must stay the org. The
+		// organization's own pages are grouped (AI, Extensions, Activity), so
+		// what matters is that the account group is the LAST one, after all of
+		// them, not that there are exactly two.
 		expect(menuItems[0].title).toBe("Example Org");
-		expect(menuItems[1].title).toBe("Account");
+		expect(accountGroup.title).toBe("Account");
+		expect(
+			menuItems.slice(0, -1).some((group) => group.title === "Account"),
+		).toBe(false);
 		// Five now, not two. The personal settings tree is gone, so the
 		// account-global pages that lived only there — the profile, account
 		// deletion, and the member's own AI provider keys — moved here with the
 		// other two. Each would have collided with an organization page of the
 		// same slug at the top level, which is why the whole group is nested
 		// under `account/`.
-		expect(menuItems[1].items.map((item) => item.title)).toEqual([
+		expect(accountGroup.items.map((item) => item.title)).toEqual([
 			"settings.menu.account.general",
 			"Security",
 			"Notifications",

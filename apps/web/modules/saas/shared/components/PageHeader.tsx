@@ -36,21 +36,23 @@ export function PageHeader({
 	className,
 }: PageHeaderProps) {
 	const body = description ?? subtitle;
+	// `label` is accepted for compatibility but no longer drawn: every app
+	// page sits under a breadcrumb that already names the section, so the
+	// kicker repeated it and cost a line. The header is one compact block:
+	// 22px title, one-line description, actions on the same row.
+	void label;
 	return (
 		<header
 			className={[
-				"flex flex-col gap-4 border-b border-border/60 pb-5 sm:flex-row sm:items-end sm:justify-between",
+				"flex flex-col gap-3 border-b border-border pb-4 sm:flex-row sm:items-center sm:justify-between",
 				className,
 			]
 				.filter(Boolean)
 				.join(" ")}
 		>
 			<div className="min-w-0">
-				{label ? (
-					<p className="app-editorial-label mb-2">{label}</p>
-				) : null}
 				<div className="flex items-center gap-1.5">
-					<h1 className="text-3xl font-normal tracking-tight text-foreground/95 sm:text-4xl">
+					<h1 className="text-[22px] font-medium leading-7 tracking-[-0.02em] text-foreground">
 						{title}
 					</h1>
 					{titleAdornment}
@@ -59,7 +61,7 @@ export function PageHeader({
 					) : null}
 				</div>
 				{body ? (
-					<p className="mt-2 max-w-2xl text-sm leading-6 text-muted-foreground sm:text-base">
+					<p className="mt-1 max-w-2xl text-[13px] leading-5 text-muted-foreground">
 						{body}
 					</p>
 				) : null}

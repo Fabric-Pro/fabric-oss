@@ -27,7 +27,14 @@ import {
 	TooltipTrigger,
 } from "@ui/components/tooltip";
 import { cn } from "@ui/lib";
-import { Loader2, MicIcon, Paperclip, Send, StopCircle } from "lucide-react";
+import {
+	ArrowRight,
+	Loader2,
+	MicIcon,
+	Paperclip,
+	Send,
+	StopCircle,
+} from "lucide-react";
 import { useTranslations } from "next-intl";
 
 // User-facing strings audited against fabric/standards/ai/ai-copy-tone.md — task 4.1.
@@ -124,6 +131,14 @@ export interface ChatInputProps {
 	placeholder?: string;
 	/** Custom class name for the container */
 	className?: string;
+	/**
+	 * `hero` is the Advisor landing composer: a single pill with a round
+	 * send button, sized like the Cosmos advisor input. `default` is the
+	 * docked composer under a conversation.
+	 */
+	variant?: "default" | "hero";
+	/** Reports textarea focus so the parent can swap the placeholder. */
+	onFocusChange?: (focused: boolean) => void;
 
 	// Stop / cancel — see `specs/2026-05-09-stop-ai-generation/spec.md` § 8.5–8.6.
 	/**
@@ -222,6 +237,8 @@ export const ChatInput = forwardRef<HTMLTextAreaElement, ChatInputProps>(
 			disabled = false,
 			placeholder = "Type a message...",
 			className,
+			variant = "default",
+			onFocusChange,
 			onAttachClick,
 			attachTooltip = "Attach files",
 			attachDisabled = false,
@@ -252,6 +269,19 @@ export const ChatInput = forwardRef<HTMLTextAreaElement, ChatInputProps>(
 		const textareaRef =
 			(ref as React.RefObject<HTMLTextAreaElement>) || internalRef;
 		const containerRef = useRef<HTMLDivElement>(null);
+		const hero = variant === "hero";
+
+		// The hero pill is one line tall until the text needs more. A textarea
+		// without an explicit height renders two rows, which is what made the
+		// pill 80px with the placeholder sitting at its top edge.
+		useEffect(() => {
+			const el = textareaRef.current;
+			if (!el || !hero) {
+				return;
+			}
+			el.style.height = "auto";
+			el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
+		}, [hero, value, textareaRef]);
 
 		// Track cursor position for @ detection
 		const [cursorPosition, setCursorPosition] = useState(0);
@@ -838,7 +868,12 @@ export const ChatInput = forwardRef<HTMLTextAreaElement, ChatInputProps>(
 			<div className={cn("space-y-2", className)}>
 				{/* Header slot - context indicator, artifacts trigger, etc. */}
 				{headerSlot && (
-					<div className="px-1 min-w-0 overflow-x-hidden">
+					<div
+						className={cn(
+							"min-w-0 overflow-x-hidden px-1",
+							hero && "flex justify-center [&>div]:items-center",
+						)}
+					>
 						{headerSlot}
 					</div>
 				)}
@@ -857,7 +892,12 @@ export const ChatInput = forwardRef<HTMLTextAreaElement, ChatInputProps>(
 				{/* Main Input Container */}
 				<div
 					ref={containerRef}
-					className="relative rounded-2xl border bg-card shadow-md transition-all focus-within:border-primary/50 focus-within:ring-2 focus-within:ring-primary/20 focus-within:shadow-lg"
+					className={cn(
+						"relative border transition-colors",
+						hero
+							? "rounded-[24px] border-border bg-background shadow-[var(--fab-composer-shadow)] focus-within:border-foreground/30"
+							: "rounded-[24px] border-border bg-background shadow-[var(--fab-composer-shadow)] focus-within:border-foreground/30",
+					)}
 				>
 					{/* Template autocomplete dropdown */}
 					{enableTemplateMentions &&
@@ -911,7 +951,13 @@ export const ChatInput = forwardRef<HTMLTextAreaElement, ChatInputProps>(
 							/>
 						)}
 
-					<div className="flex items-end gap-2 p-3">
+					<div
+						className={cn(
+							"flex gap-2",
+							hero ? "items-center" : "items-end",
+							hero ? "py-1 pl-3 pr-1" : "p-3",
+						)}
+					>
 						{/* Attachment button */}
 						{showAttachButton && (
 							<Tooltip>
@@ -920,7 +966,12 @@ export const ChatInput = forwardRef<HTMLTextAreaElement, ChatInputProps>(
 										type="button"
 										variant="ghost"
 										size="icon"
-										className="h-9 w-9 shrink-0 rounded-xl text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+										className={cn(
+											"h-9 w-9 shrink-0 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground",
+											hero
+												? "rounded-full"
+												: "rounded-xl",
+										)}
 										onClick={onAttachClick}
 										disabled={isLoading || attachDisabled}
 									>
@@ -936,6 +987,7 @@ export const ChatInput = forwardRef<HTMLTextAreaElement, ChatInputProps>(
 						{/* Textarea */}
 						<Textarea
 							ref={textareaRef}
+							rows={hero ? 1 : undefined}
 							value={value}
 							onChange={handleChange}
 							onKeyDown={handleKeyDown}
@@ -947,7 +999,14 @@ export const ChatInput = forwardRef<HTMLTextAreaElement, ChatInputProps>(
 							placeholder={
 								isRecording ? "Listening…" : placeholder
 							}
-							className="flex-1 min-h-[44px] max-h-[200px] resize-none border-0 bg-transparent px-2 py-2 focus:ring-0 focus-visible:ring-0 focus-visible:ring-offset-0 placeholder:text-muted-foreground/50 text-[15px]"
+							onFocus={() => onFocusChange?.(true)}
+							onBlur={() => onFocusChange?.(false)}
+							className={cn(
+								"flex-1 max-h-[200px] resize-none border-0 bg-transparent focus:ring-0 focus-visible:ring-0 focus-visible:ring-offset-0",
+								hero
+									? "h-10 min-h-[40px] overflow-hidden px-2 py-2 text-[16px] leading-6 placeholder:text-muted-foreground"
+									: "min-h-[44px] px-2 py-2 text-[15px] placeholder:text-muted-foreground/50",
+							)}
 							disabled={isLoading || disabled}
 						/>
 
@@ -993,7 +1052,10 @@ export const ChatInput = forwardRef<HTMLTextAreaElement, ChatInputProps>(
 										)}
 										aria-pressed={isRecording}
 										className={cn(
-											"h-9 w-9 shrink-0 rounded-xl transition-colors",
+											"h-9 w-9 shrink-0 transition-colors",
+											hero
+												? "rounded-full"
+												: "rounded-xl",
 											!hasSpeechSupport &&
 												"text-muted-foreground opacity-40",
 											hasSpeechSupport &&
@@ -1049,7 +1111,12 @@ export const ChatInput = forwardRef<HTMLTextAreaElement, ChatInputProps>(
 											size="icon"
 											onClick={onStop}
 											aria-label={STOP_BUTTON_LABEL}
-											className="h-9 w-9 shrink-0 rounded-xl text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+											className={cn(
+												"shrink-0 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground",
+												hero
+													? "h-10 w-10 rounded-full"
+													: "h-9 w-9 rounded-xl",
+											)}
 										>
 											<StopCircle className="h-5 w-5" />
 										</Button>
@@ -1064,12 +1131,26 @@ export const ChatInput = forwardRef<HTMLTextAreaElement, ChatInputProps>(
 									disabled={!canSend}
 									size="icon"
 									autoLoading={false}
-									className="h-9 w-9 shrink-0 rounded-xl transition-colors"
+									aria-label="Send"
+									className={cn(
+										"shrink-0 transition-colors",
+										hero
+											? "h-10 w-10 rounded-full disabled:opacity-100 disabled:bg-muted-foreground/60 disabled:text-background"
+											: "h-9 w-9 rounded-xl",
+									)}
 								>
 									{isLoading && (
 										<Loader2 className="h-4 w-4 animate-spin" />
 									)}
-									{!isLoading && <Send className="h-4 w-4" />}
+									{!isLoading &&
+										(hero ? (
+											<ArrowRight
+												className="h-4 w-4"
+												strokeWidth={2}
+											/>
+										) : (
+											<Send className="h-4 w-4" />
+										))}
 								</Button>
 							)}
 						</div>

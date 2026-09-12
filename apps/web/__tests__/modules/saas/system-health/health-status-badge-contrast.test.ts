@@ -231,33 +231,12 @@ describe("the contrast maths itself", () => {
 		);
 	});
 
-	it("reproduces the tint failures that motivated the solid fills", () => {
-		// Measured over `--card`, the surface the component list actually sits on.
-		// `text-highlight` on `bg-highlight/10` = 2.83:1 in light mode, and
-		// `text-destructive` on `bg-destructive/10` = 4.20:1 in dark mode. Both
-		// under the floor, which is why no badge uses a tint any more.
-		const light = readTokens("light");
-		const highlight = parseHex(light.get("highlight") as string);
-		const lightTint = composite(
-			highlight,
-			0.1,
-			parseHex(light.get("card") as string),
-		);
-		expect(contrastRatio(lightTint, highlight)).toBeLessThan(
-			AA_NORMAL_TEXT,
-		);
-
-		const dark = readTokens("dark");
-		const destructive = parseHex(dark.get("destructive") as string);
-		const darkTint = composite(
-			destructive,
-			0.1,
-			parseHex(dark.get("card") as string),
-		);
-		expect(contrastRatio(darkTint, destructive)).toBeLessThan(
-			AA_NORMAL_TEXT,
-		);
-	});
+	// The tint proofs that motivated the solid fills (`text-highlight` on
+	// `bg-highlight/10` at 2.83:1 in light, `text-destructive` on
+	// `bg-destructive/10` at 4.20:1 in dark) stopped reproducing when the
+	// palette moved to neutral surfaces with darker inks; both tints now
+	// clear AA on their own. The badges keep solid fills regardless, and the
+	// per-status assertions above are the ones that guard them.
 
 	it("no longer needs a local override for dark-mode destructive", () => {
 		// This assertion is inverted from the one it replaces. The badge originally

@@ -16,3 +16,4 @@ export * from "./interactive-content";
 export { ToolCallList } from "./ToolCallList";
 // Types
 export * from "./types";
+export { useTypewriterPlaceholder } from "./useTypewriterPlaceholder";

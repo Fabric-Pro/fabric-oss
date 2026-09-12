@@ -9,11 +9,6 @@ import { orpc } from "@shared/lib/orpc-query-utils";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@ui/components/button";
 import { DestructiveTooltip } from "@ui/components/destructive-tooltip";
-import {
-	Tooltip,
-	TooltipContent,
-	TooltipTrigger,
-} from "@ui/components/tooltip";
 import { cn } from "@ui/lib";
 import {
 	AlertTriangleIcon,
@@ -64,15 +59,6 @@ const FabricDirectChat = dynamic(
 // `tooltipKey` resolves against the `tooltips.agents` namespace; the copy lives
 // in `en.json` rather than inline so the chips read the same as every other
 // tooltip on the surface.
-const FABRIC_AGENT_MODES = [
-	{ label: "Ask", tooltipKey: "modeAsk" },
-	{ label: "Plan", tooltipKey: "modePlan" },
-	{ label: "Implement", tooltipKey: "modeImplement" },
-	{ label: "Summarize", tooltipKey: "modeSummarize" },
-	{ label: "Automate", tooltipKey: "modeAutomate" },
-	{ label: "Code", tooltipKey: "modeCode" },
-] as const;
-
 const PROJECT_QUICK_ACTIONS = [
 	{
 		label: "Catch me up",
@@ -132,19 +118,6 @@ const REPOSITORY_QUICK_ACTIONS = [
 		label: "Ask about codebase",
 		icon: <FileCodeIcon className="size-3.5" />,
 		prompt: "Use the linked repository context to answer a codebase question. First summarize what code context is available, then ask me what system area, file, or feature I want to inspect. Cite files and line ranges whenever you use code.",
-	},
-] as const;
-
-const GENERAL_QUICK_ACTIONS = [
-	{
-		label: "Plan a feature",
-		icon: <ListChecksIcon className="size-3.5" />,
-		prompt: "Help me plan a new feature. Ask only for the missing context you need, then propose scope, milestones, tasks, risks, and validation steps.",
-	},
-	{
-		label: "Save a workflow",
-		icon: <WorkflowIcon className="size-3.5" />,
-		prompt: "Help me turn a repeatable workflow into a reusable Fabric Skill. Ask for the trigger, inputs, expected output, scope, and whether it should be available for automations.",
 	},
 ] as const;
 
@@ -727,11 +700,9 @@ function FabricAgentLauncherSheet({
 		...(launchContext?.repositoryUrl || launchContext?.repositoryName
 			? REPOSITORY_QUICK_ACTIONS
 			: []),
-		...(!launchContext?.projectId &&
-		!launchContext?.storyId &&
-		!launchContext?.taskId
-			? GENERAL_QUICK_ACTIONS
-			: []),
+		// General actions (plan a feature, save a workflow) used to fill the
+		// header when there was no page context; the empty state's starters
+		// cover them, so the header stays a single row instead.
 	];
 
 	// Render a custom sliding panel instead of Radix Sheet so the chat
@@ -783,17 +754,12 @@ function FabricAgentLauncherSheet({
 					<div className="border-b border-border/60">
 						{/* Row 1: identity + actions */}
 						<div className="flex items-center gap-3 px-4 py-3">
-							<div className="flex size-7 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
-								<FabricLogo
-									size={14}
-									className="text-primary"
-								/>
-							</div>
+							<FabricLogo size={18} className="shrink-0" />
 							<div className="min-w-0 flex-1">
 								<div className="flex items-baseline gap-2">
 									<h2
 										id="fabric-agent-desc"
-										className="text-sm font-semibold tracking-tight text-foreground"
+										className="text-sm font-medium tracking-tight text-foreground"
 									>
 										Fabric Agent
 									</h2>
@@ -803,8 +769,6 @@ function FabricAgentLauncherSheet({
 									</span>
 								</div>
 								<div className="flex min-w-0 flex-wrap items-center gap-x-1 text-[11px] text-muted-foreground/60">
-									<span>Quick page copilot</span>
-									<span aria-hidden>·</span>
 									{/*
 									 * Expand to the full page carrying the
 									 * conversation (#2040). Both surfaces key
@@ -922,31 +886,7 @@ function FabricAgentLauncherSheet({
 							</div>
 						</div>
 
-						<div className="space-y-2 px-4 pb-3">
-							<ul
-								className="flex gap-1.5 overflow-x-auto pb-0.5"
-								aria-label="Fabric Agent capabilities"
-							>
-								{FABRIC_AGENT_MODES.map((mode) => {
-									const modeCopy = t(mode.tooltipKey);
-									return (
-										<Tooltip key={mode.label}>
-											<TooltipTrigger asChild>
-												<li className="shrink-0 rounded-full border border-border/60 bg-muted/30 px-2 py-0.5 text-[11px] font-medium text-muted-foreground">
-													{mode.label}
-													<span className="sr-only">
-														{` — ${modeCopy}`}
-													</span>
-												</li>
-											</TooltipTrigger>
-											<TooltipContent>
-												{modeCopy}
-											</TooltipContent>
-										</Tooltip>
-									);
-								})}
-							</ul>
-
+						<div className="space-y-2 px-4 pb-3 empty:hidden">
 							{workspaceQuickActions.length > 0 && (
 								<div className="grid grid-cols-2 gap-1.5 sm:flex sm:flex-wrap">
 									{workspaceQuickActions.map((action) => (
@@ -961,9 +901,9 @@ function FabricAgentLauncherSheet({
 													),
 												)
 											}
-											className="inline-flex min-h-9 items-center gap-1.5 rounded-lg border border-border/60 bg-muted/35 px-2.5 py-1.5 text-left text-[11px] font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+											className="inline-flex min-h-8 items-center gap-1.5 rounded-[4px] border border-border bg-transparent px-2.5 py-1.5 text-left text-xs text-foreground transition-colors hover:bg-accent"
 										>
-											<span className="text-primary/80">
+											<span className="text-muted-foreground">
 												{action.icon}
 											</span>
 											<span className="truncate">
@@ -1289,7 +1229,7 @@ export function FabricAgentLauncherProvider({ children }: PropsWithChildren) {
 					)}
 					aria-label={`Open Fabric Agent (${shortcutLabel})`}
 				>
-					<FabricLogo size={16} variant="light" />
+					<FabricLogo size={16} variant="inverse" />
 				</Button>
 			) : null}
 			<FabricAgentLauncherSheet

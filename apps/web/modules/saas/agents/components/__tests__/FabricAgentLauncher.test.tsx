@@ -177,7 +177,7 @@ describe("FabricAgentLauncher", () => {
 		fireEvent.click(screen.getByRole("button", { name: /Fabric Agent/i }));
 
 		expectLauncherOpen();
-		expect(screen.getByText("Quick page copilot")).toBeInTheDocument();
+		expect(screen.getByText("Expand")).toBeInTheDocument();
 		expect(await screen.findByText("mock direct chat")).toBeInTheDocument();
 	});
 

@@ -1,15 +1,27 @@
 "use client";
 
+import { McpServerIcon } from "@saas/mcp/components/McpServerIcon";
 import { useOrganizationContext } from "@saas/organizations/hooks/use-organization-context";
 import { useMonitoringFeatureFlag } from "@saas/shared/lib/use-monitoring-feature-flag";
 import { orpcClient } from "@shared/lib/orpc-client";
 import { useQuery } from "@tanstack/react-query";
-import { Badge } from "@ui/components/badge";
 import { Button } from "@ui/components/button";
+import {
+	Collapsible,
+	CollapsibleContent,
+	CollapsibleTrigger,
+} from "@ui/components/collapsible";
+import {
+	DropdownMenu,
+	DropdownMenuContent,
+	DropdownMenuItem,
+	DropdownMenuTrigger,
+} from "@ui/components/dropdown-menu";
 import { Input } from "@ui/components/input";
-import { Plus, Search } from "lucide-react";
+import { cn } from "@ui/lib";
+import { ChevronDown, Search } from "lucide-react";
 import Link from "next/link";
-import { useMemo, useState } from "react";
+import { type ReactNode, useMemo, useRef, useState } from "react";
 import { useConnections } from "../hooks/useConnections";
 import { useProviderHealth } from "../hooks/useProviderHealth";
 import {
@@ -27,7 +39,19 @@ import {
 	PROVIDER_CATEGORIES,
 } from "../lib/providers";
 import { ActionOnlyProviderCard } from "./ActionOnlyProviderCard";
-import { ProviderCard } from "./ProviderCard";
+import { IntegrationTile, ProviderCard } from "./ProviderCard";
+
+type McpRegistryServer = {
+	id: string;
+	key?: string | null;
+	name?: string | null;
+	description?: string | null;
+	category?: string | null;
+	iconUrl?: string | null;
+	docsUrl?: string | null;
+	repositoryUrl?: string | null;
+	defaultUrl?: string | null;
+};
 
 function mapActionProviderToDataConnectionProvider(
 	provider: string,
@@ -129,13 +153,33 @@ const STATUS_FILTER_OPTIONS: ReadonlyArray<{
 ];
 
 interface ConnectionsPageContentProps {
-	addHref: string;
+	/** Kept for callers; the add menu now lives on the page itself. */
+	addHref?: string;
+	/** Which tiles to show: everything, integrations only, or MCP servers only. */
+	view?: "all" | "integrations" | "mcp";
+	/**
+	 * Where provider and action detail pages live. They stay under Settings;
+	 * only the catalogue itself moved to its own page.
+	 */
 	settingsBasePath: string;
+	/**
+	 * The catalogue page's own path, for links that change its tab. Defaults
+	 * to `settingsBasePath` for callers that still render it there.
+	 */
+	basePath?: string;
+	/**
+	 * Rendered at the start of the toolbar row, opposite the Add connection
+	 * menu — the page's type tabs, so the two controls that decide what is on
+	 * screen share one line.
+	 */
+	toolbarStart?: ReactNode;
 }
 
 export function ConnectionsPageContent({
-	addHref,
 	settingsBasePath,
+	basePath = settingsBasePath,
+	toolbarStart,
+	view = "all",
 }: ConnectionsPageContentProps) {
 	const { organizationId } = useOrganizationContext();
 	const { data: connections, isLoading, error } = useConnections();
@@ -143,6 +187,7 @@ export function ConnectionsPageContent({
 	const [capabilityFilter, setCapabilityFilter] =
 		useState<CapabilityFilter>("all");
 	const [statusFilter, setStatusFilter] = useState<StatusFilterValue>("all");
+	const searchRef = useRef<HTMLInputElement>(null);
 
 	const healthBadgesEnabled = useMonitoringFeatureFlag(
 		"feature-integration-health-badges",
@@ -264,6 +309,61 @@ export function ConnectionsPageContent({
 		healthByProviderKey,
 	]);
 
+	/*
+	 * The status filter only earns its row once the registry knows
+	 * something. On a fresh workspace every provider is "unknown", and a
+	 * filter whose only populated bucket is Unknown is noise.
+	 */
+	const hasKnownHealth = useMemo(
+		() =>
+			healthBadgesEnabled &&
+			allProviders.some((provider) => {
+				const health = resolveProviderHealth(
+					provider,
+					healthByProviderKey,
+				);
+				return health !== "UNKNOWN" && health !== "NOT_CONFIGURED";
+			}),
+		[healthBadgesEnabled, allProviders, healthByProviderKey],
+	);
+
+	/*
+	 * MCP servers from the registry, as tiles beside the integrations, so
+	 * the page is one catalogue the way cosmos.augmentcode.com/connector is.
+	 * A tile links to the MCP tab with the search prefilled to that server.
+	 */
+	const { data: mcpServers = [] } = useQuery({
+		queryKey: ["connections", "mcp-registry", organizationId ?? "user"],
+		queryFn: () =>
+			orpcClient.mcp.registry.list({ organizationId, includeAll: true }),
+		enabled: view !== "integrations",
+		staleTime: 5 * 60 * 1000,
+	});
+	const filteredMcpServers = useMemo(() => {
+		if (view === "integrations") {
+			return [];
+		}
+		const normalizedQuery = query.trim().toLowerCase();
+		return (mcpServers as McpRegistryServer[]).filter(
+			(server) =>
+				!normalizedQuery ||
+				(server.name ?? "").toLowerCase().includes(normalizedQuery) ||
+				(server.description ?? "")
+					.toLowerCase()
+					.includes(normalizedQuery),
+		);
+	}, [mcpServers, query, view]);
+
+	/* MCP servers under their registry category, as Cosmos groups its connectors. */
+	const mcpGroups = useMemo(() => {
+		const groups = new Map<string, McpRegistryServer[]>();
+		for (const server of filteredMcpServers) {
+			const category = server.category?.trim() || "Other MCP servers";
+			groups.set(category, [...(groups.get(category) ?? []), server]);
+		}
+		return [...groups.entries()].sort(([a], [b]) => a.localeCompare(b));
+	}, [filteredMcpServers]);
+
 	const filteredActionOnly = useMemo(() => {
 		const normalizedQuery = query.trim().toLowerCase();
 
@@ -331,30 +431,51 @@ export function ConnectionsPageContent({
 	}
 
 	return (
-		<div className="space-y-6">
-			<div className="flex items-start justify-between gap-4">
-				<div className="space-y-1">
-					<h2 className="text-lg font-semibold">Integrations</h2>
-					<p className="text-sm text-muted-foreground">
-						Each system appears once. Search and action capabilities
-						are shown on the same card.
-					</p>
-				</div>
-				<Button asChild data-onboarding-target="integrations-add">
-					<Link href={addHref}>
-						<Plus className="mr-2 h-4 w-4" />
-						Add Integration
-					</Link>
-				</Button>
+		<div className="space-y-5">
+			{/* Toolbar: what to show on the left, how to add more on the right. */}
+			<div className="flex flex-wrap items-center justify-between gap-3">
+				{toolbarStart ?? <span aria-hidden="true" />}
+				<DropdownMenu>
+					<DropdownMenuTrigger asChild>
+						<Button data-onboarding-target="integrations-add">
+							Add connection
+							<ChevronDown
+								className="ml-1 size-4"
+								aria-hidden="true"
+							/>
+						</Button>
+					</DropdownMenuTrigger>
+					<DropdownMenuContent align="end">
+						<DropdownMenuItem
+							onSelect={() => {
+								searchRef.current?.focus();
+								searchRef.current?.scrollIntoView({
+									block: "center",
+									behavior: "smooth",
+								});
+							}}
+						>
+							Browse integrations
+						</DropdownMenuItem>
+						<DropdownMenuItem asChild>
+							<Link href={`${basePath}?tab=mcp`}>
+								Add MCP server
+							</Link>
+						</DropdownMenuItem>
+					</DropdownMenuContent>
+				</DropdownMenu>
 			</div>
 
-			<div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+			{/* Filters: one row. Search grows; the capability and status
+			    switches sit beside it and wrap under it on narrow screens. */}
+			<div className="flex flex-wrap items-center gap-3">
 				<div
 					data-onboarding-target="integrations-search"
-					className="relative w-full max-w-md"
+					className="relative w-full min-w-[220px] max-w-sm flex-1"
 				>
 					<Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
 					<Input
+						ref={searchRef}
 						type="search"
 						value={query}
 						onChange={(event) => setQuery(event.target.value)}
@@ -362,21 +483,24 @@ export function ConnectionsPageContent({
 						className="pl-10"
 					/>
 				</div>
-				<div
+				<fieldset
 					data-onboarding-target="integrations-capability-filter"
-					className="flex flex-wrap gap-2"
+					className="inline-flex rounded-[8px] border border-border bg-background p-0.5"
 				>
+					<legend className="sr-only">Capability</legend>
 					{(["all", "search", "actions", "hybrid"] as const).map(
 						(filter) => (
-							<Button
+							<button
 								key={filter}
-								variant={
-									capabilityFilter === filter
-										? "default"
-										: "outline"
-								}
-								size="sm"
+								type="button"
+								aria-pressed={capabilityFilter === filter}
 								onClick={() => setCapabilityFilter(filter)}
+								className={cn(
+									"rounded-[6px] px-3 py-1 text-sm transition-colors",
+									capabilityFilter === filter
+										? "bg-accent text-foreground"
+										: "text-muted-foreground hover:text-foreground",
+								)}
 							>
 								{filter === "all"
 									? "All"
@@ -385,87 +509,149 @@ export function ConnectionsPageContent({
 										: filter === "actions"
 											? "Actions"
 											: "Hybrid"}
-							</Button>
+							</button>
 						),
 					)}
-				</div>
+				</fieldset>
+				{healthBadgesEnabled && hasKnownHealth ? (
+					<fieldset
+						className="inline-flex rounded-[8px] border border-border bg-background p-0.5"
+						data-testid="provider-status-filter"
+					>
+						<legend className="sr-only">Provider status</legend>
+						{STATUS_FILTER_OPTIONS.map((option) => (
+							<button
+								key={option.value}
+								type="button"
+								onClick={() => setStatusFilter(option.value)}
+								aria-pressed={statusFilter === option.value}
+								className={cn(
+									"rounded-[6px] px-3 py-1 text-sm transition-colors",
+									statusFilter === option.value
+										? "bg-accent text-foreground"
+										: "text-muted-foreground hover:text-foreground",
+								)}
+							>
+								{option.label}
+							</button>
+						))}
+					</fieldset>
+				) : null}
 			</div>
 
-			{healthBadgesEnabled ? (
-				<div
-					className="flex flex-wrap items-center gap-2"
-					data-testid="provider-status-filter"
-				>
-					<span className="text-[11px] font-medium uppercase tracking-[0.2em] text-muted-foreground">
-						Provider status
-					</span>
-					{STATUS_FILTER_OPTIONS.map((option) => (
-						<Button
-							key={option.value}
-							variant={
-								statusFilter === option.value
-									? "default"
-									: "outline"
-							}
-							size="sm"
-							onClick={() => setStatusFilter(option.value)}
-							aria-pressed={statusFilter === option.value}
-						>
-							{option.label}
-						</Button>
-					))}
-				</div>
-			) : null}
-
-			<div className="flex flex-wrap gap-2 text-sm text-muted-foreground">
-				<Badge variant="outline">
+			{/* Counts as one quiet line, not three badges. */}
+			<p className="fab-label flex flex-wrap items-center gap-x-2">
+				<span>
 					{filteredProviders.length + filteredActionOnly.length} shown
-				</Badge>
-				<Badge variant="outline">
-					{connections?.length ?? 0} search connected
-				</Badge>
-				<Badge variant="outline">
+				</span>
+				<span aria-hidden="true">·</span>
+				<span>{connections?.length ?? 0} search connected</span>
+				<span aria-hidden="true">·</span>
+				<span>
 					{actionConnectedProviders.size +
 						connectedActionOnlyTypes.size}{" "}
 					actions connected
-				</Badge>
-			</div>
+				</span>
+			</p>
 
-			{filteredProviders.length + filteredActionOnly.length > 0 ? (
-				<div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-					{filteredProviders.map((provider) => {
-						const hasSearchConnection =
-							searchConnectedProviders.has(provider);
-						const hasActionConnection =
-							actionConnectedProviders.has(provider);
-						const href = `${settingsBasePath}/providers/${provider}`;
-						const health = healthBadgesEnabled
-							? resolveProviderHealth(
-									provider,
-									healthByProviderKey,
-								)
-							: null;
-
+			{filteredProviders.length +
+				filteredActionOnly.length +
+				filteredMcpServers.length >
+			0 ? (
+				<div className="space-y-8">
+					{PROVIDER_CATEGORIES.map((category) => {
+						if (view === "mcp") {
+							return null;
+						}
+						const providers = category.providers.filter(
+							(provider) => filteredProviders.includes(provider),
+						);
+						if (providers.length === 0) {
+							return null;
+						}
 						return (
-							<ProviderCard
-								key={provider}
-								provider={provider}
-								href={href}
-								hasSearchConnection={hasSearchConnection}
-								hasActionConnection={hasActionConnection}
-								health={health}
-							/>
+							<IntegrationGroup
+								key={category.id}
+								title={category.name}
+							>
+								{providers.map((provider) => {
+									const hasSearchConnection =
+										searchConnectedProviders.has(provider);
+									const hasActionConnection =
+										actionConnectedProviders.has(provider);
+									const href = `${settingsBasePath}/providers/${provider}`;
+									const health = healthBadgesEnabled
+										? resolveProviderHealth(
+												provider,
+												healthByProviderKey,
+											)
+										: null;
+									return (
+										<ProviderCard
+											key={provider}
+											provider={provider}
+											href={href}
+											hasSearchConnection={
+												hasSearchConnection
+											}
+											hasActionConnection={
+												hasActionConnection
+											}
+											health={health}
+										/>
+									);
+								})}
+							</IntegrationGroup>
 						);
 					})}
-					{filteredActionOnly.map((entry) => (
-						<ActionOnlyProviderCard
-							key={entry.type}
-							type={entry.type}
-							href={`${settingsBasePath}/actions/${entry.type}`}
-							hasConnection={connectedActionOnlyTypes.has(
-								entry.type,
-							)}
-						/>
+					{view !== "mcp" && filteredActionOnly.length > 0 ? (
+						<IntegrationGroup title="Action integrations">
+							{filteredActionOnly.map((entry) => (
+								<ActionOnlyProviderCard
+									key={entry.type}
+									type={entry.type}
+									href={`${settingsBasePath}/actions/${entry.type}`}
+									hasConnection={connectedActionOnlyTypes.has(
+										entry.type,
+									)}
+								/>
+							))}
+						</IntegrationGroup>
+					) : null}
+					{mcpGroups.map(([category, servers]) => (
+						<IntegrationGroup
+							key={`mcp-${category}`}
+							title={category}
+						>
+							{servers.map((server) => (
+								<IntegrationTile
+									key={server.id}
+									href={`${basePath}?tab=mcp&server=${encodeURIComponent(server.name ?? "")}`}
+									icon={
+										<McpServerIcon
+											name={server.name}
+											iconUrl={server.iconUrl}
+											docsUrl={server.docsUrl}
+											repositoryUrl={server.repositoryUrl}
+											defaultUrl={server.defaultUrl}
+											size={28}
+											imageClassName="rounded-[6px] border-0 bg-transparent p-0 shadow-none"
+											fallbackClassName="rounded-[6px] border-0 shadow-none"
+										/>
+									}
+									name={
+										server.name ??
+										server.key ??
+										"MCP server"
+									}
+									description={
+										server.description ??
+										"Model Context Protocol server"
+									}
+									connected={false}
+								/>
+							))}
+						</IntegrationGroup>
 					))}
 				</div>
 			) : (
@@ -474,5 +660,29 @@ export function ConnectionsPageContent({
 				</div>
 			)}
 		</div>
+	);
+}
+
+/**
+ * A category of tiles under a collapsible heading, as on
+ * cosmos.augmentcode.com/connector: the name, a chevron, a two-column grid.
+ */
+function IntegrationGroup({
+	title,
+	children,
+}: {
+	title: string;
+	children: React.ReactNode;
+}) {
+	return (
+		<Collapsible defaultOpen>
+			<CollapsibleTrigger className="group/heading mb-3 inline-flex items-center gap-1.5 text-[15px] font-medium text-foreground">
+				{title}
+				<ChevronDown className="size-4 text-muted-foreground transition-transform group-data-[state=closed]/heading:-rotate-90" />
+			</CollapsibleTrigger>
+			<CollapsibleContent>
+				<div className="grid gap-3 sm:grid-cols-2">{children}</div>
+			</CollapsibleContent>
+		</Collapsible>
 	);
 }

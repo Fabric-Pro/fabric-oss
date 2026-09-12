@@ -27,7 +27,6 @@ export function ProjectSectionHero({
 			<div className="grid gap-0 xl:grid-cols-[minmax(0,1.5fr)_360px]">
 				<div className="relative p-6 sm:p-8">
 					<div className="app-dot-grid pointer-events-none absolute inset-0 opacity-[0.04] dark:opacity-[0.03]" />
-					<div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top_left,color-mix(in_srgb,var(--primary)_9%,transparent),transparent_42%)]" />
 					<div className="relative max-w-3xl">
 						<p className="app-editorial-label">{eyebrow}</p>
 						<div className="mt-3 flex items-center gap-1.5">

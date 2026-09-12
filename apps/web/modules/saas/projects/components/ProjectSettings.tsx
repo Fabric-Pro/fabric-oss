@@ -396,21 +396,27 @@ export function ProjectSettings({
 					<PageTourButton pageId="settings" />
 				</div>
 				{settingsTab === "general" && (
+					<ProjectGeneralSettings project={project} />
+				)}
+				{/* Behaviour rather than identity: how the assistant asks,
+				    how deep QA goes, and whether the project is read-only. */}
+				{settingsTab === "ai-assistant" && (
 					<div className="space-y-6">
-						<ProjectGeneralSettings project={project} />
-						<ProjectReadOnlyModeSettings
-							project={project}
-							canEdit={canEditSettings}
-						/>
 						<ProjectAiAssistantSettings
 							project={project}
 							canEdit={canEditSettings}
 						/>
 						<ProjectPromptDefaultsSettings projectId={project.id} />
-						<ProjectStageVisibilitySettings
+						<ProjectReadOnlyModeSettings
 							project={project}
-							canEdit={canEditStageVisibility}
+							canEdit={canEditSettings}
 						/>
+					</div>
+				)}
+				{/* What the project shows: which tabs exist for members and
+				    which feature stages appear in the dropdown. */}
+				{settingsTab === "navigation" && (
+					<div className="space-y-6">
 						{tabMeta && (
 							<ProjectTabVisibilitySettings
 								tabs={tabMeta}
@@ -428,9 +434,12 @@ export function ProjectSettings({
 								}
 							/>
 						)}
+						<ProjectStageVisibilitySettings
+							project={project}
+							canEdit={canEditStageVisibility}
+						/>
 					</div>
 				)}
-
 				{settingsTab === "knowledge" && (
 					<div className="space-y-4">
 						<div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">

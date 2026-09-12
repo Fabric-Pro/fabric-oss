@@ -380,6 +380,17 @@ export interface DirectChatSource {
 /**
  * Output for DirectChatWorkflow
  */
+export interface DirectChatModelInfo {
+	/** Provider model string, e.g. "claude-sonnet-4-5" */
+	id: string;
+	/** Display name from the catalog */
+	canonicalName?: string;
+	/** Provider key, e.g. "ANTHROPIC_DIRECT" */
+	provider?: string;
+	/** Catalog context window in tokens, when known */
+	contextWindow?: number;
+}
+
 export interface DirectChatWorkflowOutput {
 	success: boolean;
 	/** Final assistant response text */
@@ -398,6 +409,11 @@ export interface DirectChatWorkflowOutput {
 	durationMs?: number;
 	/** Token usage from AI model */
 	usage?: TokenUsage;
+	/**
+	 * The model that answered, so the client can size its context meter
+	 * against the right window and label it honestly.
+	 */
+	model?: DirectChatModelInfo;
 	/** RAG sources used to generate the response */
 	sources?: DirectChatSource[];
 }

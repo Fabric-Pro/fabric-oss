@@ -1,7 +1,9 @@
 "use client";
 
 import { useOrganizationId } from "@saas/organizations/hooks/use-organization-context";
+import { ragProviderSiteUrl } from "@saas/settings/lib/provider-sites";
 import { SettingsItem } from "@saas/shared/components/SettingsItem";
+import { SiteFavicon } from "@saas/shared/components/SiteFavicon";
 import { orpcClient } from "@shared/lib/orpc-client";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Badge } from "@ui/components/badge";
@@ -22,7 +24,7 @@ import {
 	CheckCircleIcon,
 	EyeIcon,
 	EyeOffIcon,
-	InfoIcon,
+	FileTextIcon,
 	LoaderIcon,
 	LockIcon,
 	SettingsIcon,
@@ -252,24 +254,6 @@ export function RagProvidersSettingsForm({
 						</div>
 					)}
 
-					{/* Info Banner */}
-					<div className="rounded-md border border-border bg-muted/40 p-4">
-						<div className="flex gap-3">
-							<InfoIcon className="size-5 shrink-0 text-muted-foreground" />
-							<div className="space-y-1 text-sm">
-								<p className="font-medium text-foreground">
-									How it works
-								</p>
-								<p className="text-muted-foreground">
-									Providers are tried in priority order (lower
-									number = higher priority). If one fails, the
-									next provider is automatically used as
-									fallback.
-								</p>
-							</div>
-						</div>
-					</div>
-
 					{isLoading ? (
 						<div className="flex items-center justify-center py-8">
 							<LoaderIcon className="size-6 animate-spin text-muted-foreground" />
@@ -279,10 +263,10 @@ export function RagProvidersSettingsForm({
 							{Object.entries(groupedProviders).map(
 								([category, providers]) => (
 									<div key={category}>
-										<h3 className="mb-3 font-semibold text-sm">
+										<h4 className="app-editorial-label mb-3">
 											{category}
-										</h3>
-										<div className="grid gap-4 md:grid-cols-2">
+										</h4>
+										<div className="grid gap-3 md:grid-cols-2">
 											{providers.map((provider) => {
 												const config =
 													getProviderConfig(
@@ -312,19 +296,31 @@ export function RagProvidersSettingsForm({
 
 														<div className="space-y-3">
 															{/* Provider Header */}
-															<div>
-																<div className="flex items-start justify-between">
-																	<h4 className="font-semibold">
+															<div className="flex items-start gap-3">
+																<SiteFavicon
+																	url={ragProviderSiteUrl(
+																		provider.name,
+																	)}
+																	name={
+																		provider.displayName
+																	}
+																	size={32}
+																	fallback={
+																		<FileTextIcon className="size-4" />
+																	}
+																/>
+																<div className="min-w-0 flex-1">
+																	<h5 className="text-sm font-medium text-foreground">
 																		{
 																			provider.displayName
 																		}
-																	</h4>
+																	</h5>
+																	<p className="mt-0.5 text-muted-foreground text-xs">
+																		{
+																			provider.description
+																		}
+																	</p>
 																</div>
-																<p className="mt-1 text-muted-foreground text-xs">
-																	{
-																		provider.description
-																	}
-																</p>
 															</div>
 
 															{/* Cost */}

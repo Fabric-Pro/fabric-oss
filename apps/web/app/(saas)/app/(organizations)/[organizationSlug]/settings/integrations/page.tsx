@@ -1,48 +1,27 @@
-import { getActiveOrganization, getSession } from "@saas/auth/lib/server";
-import { ConnectionsPageContent } from "@saas/data-connections/components/ConnectionsPageContent";
-import { SettingsHero } from "@saas/settings/components/SettingsHero";
-import { SettingsList } from "@saas/shared/components/SettingsList";
 import { redirect } from "next/navigation";
 
 type Props = {
 	params: Promise<{ organizationSlug: string }>;
+	searchParams: Promise<Record<string, string | string[] | undefined>>;
 };
 
-export const metadata = {
-	title: "Integrations - Settings",
-	description: "Configure your organization's third-party integrations",
-};
-
-export default async function IntegrationsSettingsPage({ params }: Props) {
-	const session = await getSession();
+/*
+ * The catalogue moved to /app/{slug}/connections, a page of its own like the
+ * other top-level sections. This route stays for links and bookmarks and
+ * carries the query (?tab=mcp, ?server=…) across. Provider and action detail
+ * pages beneath it are unchanged.
+ */
+export default async function IntegrationsSettingsPage({
+	params,
+	searchParams,
+}: Props) {
 	const { organizationSlug } = await params;
-
-	if (!session) {
-		redirect("/auth/login");
+	const query = new URLSearchParams();
+	for (const [key, value] of Object.entries(await searchParams)) {
+		if (typeof value === "string") {
+			query.set(key, value);
+		}
 	}
-
-	const organization = await getActiveOrganization(organizationSlug);
-
-	if (!organization) {
-		redirect("/app");
-	}
-
-	return (
-		<>
-			<SettingsHero
-				title="Integrations"
-				label="Integrations"
-				getStartedPageId="integrations"
-				description="Connect external systems Fabric can search, cite, and call at runtime."
-			/>
-			<SettingsList>
-				<div className="w-full py-6">
-					<ConnectionsPageContent
-						addHref={`/app/${organizationSlug}/settings/integrations/add`}
-						settingsBasePath={`/app/${organizationSlug}/settings/integrations`}
-					/>
-				</div>
-			</SettingsList>
-		</>
-	);
+	const qs = query.toString();
+	redirect(`/app/${organizationSlug}/connections${qs ? `?${qs}` : ""}`);
 }
