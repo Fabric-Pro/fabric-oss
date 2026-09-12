@@ -295,6 +295,7 @@ vi.mock("@saas/agents/components/FabricChat/shared", () => ({
 	getLatestSuccessfulFrameFromGroups: () => null,
 	InteractiveContentPanel: () => null,
 	ToolCallList: () => null,
+	useTypewriterPlaceholder: () => "",
 }));
 
 vi.mock("@saas/agents/components/FabricChat/shared/SkillAutocomplete", () => ({

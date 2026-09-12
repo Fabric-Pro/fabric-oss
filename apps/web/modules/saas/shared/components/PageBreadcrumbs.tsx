@@ -74,7 +74,7 @@ export function PageBreadcrumbs({
 					<BreadcrumbItem>
 						<BreadcrumbLink
 							href={effectiveHomeHref}
-							className="text-sm flex items-center gap-1.5"
+							className="flex items-center gap-1.5 text-[13px]"
 						>
 							<HomeIcon className="size-4" />
 							Home
@@ -91,13 +91,13 @@ export function PageBreadcrumbs({
 							>
 								<BreadcrumbItem>
 									{isLast || !item.href ? (
-										<BreadcrumbPage className="text-sm">
+										<BreadcrumbPage className="text-[13px]">
 											{item.label}
 										</BreadcrumbPage>
 									) : (
 										<BreadcrumbLink
 											href={item.href}
-											className="text-sm"
+											className="text-[13px]"
 										>
 											{item.label}
 										</BreadcrumbLink>

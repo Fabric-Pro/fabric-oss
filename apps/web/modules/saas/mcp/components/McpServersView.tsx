@@ -63,6 +63,10 @@ type ViewMode = "grid" | "list";
 
 type McpServersViewProps = {
 	organizationId?: string | null;
+	/** Rendered inside the Connections page, which has its own header. */
+	embedded?: boolean;
+	/** Prefill the registry search, e.g. from a tile on the Connections page. */
+	initialRegistrySearch?: string;
 };
 
 function getDefaultSemanticMetadata(server: {
@@ -223,7 +227,11 @@ function getDefaultSemanticMetadata(server: {
 	};
 }
 
-export function McpServersView({ organizationId }: McpServersViewProps = {}) {
+export function McpServersView({
+	organizationId,
+	embedded = false,
+	initialRegistrySearch = "",
+}: McpServersViewProps = {}) {
 	const qc = useQueryClient();
 	const [searchQuery, setSearchQuery] = useState("");
 	const [debouncedSearch] = useDebounceValue(searchQuery, 300);
@@ -276,7 +284,9 @@ export function McpServersView({ organizationId }: McpServersViewProps = {}) {
 
 	// Registry selection dialog state
 	const [openRegistryDialog, setOpenRegistryDialog] = useState(false);
-	const [registrySearchQuery, setRegistrySearchQuery] = useState("");
+	const [registrySearchQuery, setRegistrySearchQuery] = useState(
+		initialRegistrySearch,
+	);
 	const [debouncedRegistrySearch] = useDebounceValue(
 		registrySearchQuery,
 		300,
@@ -1119,7 +1129,7 @@ export function McpServersView({ organizationId }: McpServersViewProps = {}) {
 	return (
 		<div className="space-y-6">
 			{/* Hero Section */}
-			<MCPServersHero />
+			{embedded ? null : <MCPServersHero />}
 
 			{/* Header with Search and Add Button */}
 			<div className="app-surface flex flex-col gap-3 rounded-2xl p-3 sm:flex-row sm:items-center sm:justify-between">

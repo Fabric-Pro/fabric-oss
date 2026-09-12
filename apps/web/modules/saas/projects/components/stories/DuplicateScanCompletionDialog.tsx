@@ -153,7 +153,7 @@ export function DuplicateScanCompletionDialog({
 											: t("scanNoneTagged")}
 									</p>
 									{partialFailure ? (
-										<p className="text-highlight-foreground">
+										<p className="text-highlight-ink">
 											{t("scanPartialWarning", {
 												count: result.verifierFailures,
 											})}

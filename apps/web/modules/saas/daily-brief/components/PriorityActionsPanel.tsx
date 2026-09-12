@@ -117,7 +117,7 @@ function toneClasses(tone: "destructive" | "highlight" | "muted") {
 				border: "border-highlight/40",
 				bg: "bg-highlight/5",
 				icon: "text-highlight",
-				chip: "bg-highlight/10 text-highlight-foreground dark:text-highlight border-highlight/40",
+				chip: "bg-highlight/10 text-highlight-ink border-highlight/40",
 			};
 		default:
 			return {

@@ -551,7 +551,7 @@ export function ConnectCliDialog({
 							{/* Painted in the `--highlight` token pair rather
 							 * than the primitive's `warning` variant, which
 							 * reaches for a raw Tailwind yellow. */}
-							<Alert className="border-highlight/40 bg-highlight/5 text-highlight-foreground dark:text-highlight">
+							<Alert className="border-highlight/40 bg-highlight/5 text-highlight-ink">
 								<AlertTriangleIcon
 									aria-hidden="true"
 									className="text-highlight"

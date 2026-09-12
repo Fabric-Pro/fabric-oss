@@ -74,40 +74,71 @@ body[data-scroll-locked] {
 	overflow-y: scroll !important;
 }
 
-/* Atmospheric background treatments */
-body {
-	background-image: var(--bg-texture);
-	background-attachment: fixed;
-}
-
-.dark body {
-	background-image: var(--bg-texture), var(--bg-gradient);
-	background-attachment: fixed;
-}
-
-/* --font-serif alias → Inter (EB Garamond removed; all fonts are Inter) */
+/*
+ * Fabric design system (fabric-web/design/fabric-design-system.md).
+ * The reading face is the system grotesque, the stack augmentcode.com
+ * uses; nothing is downloaded for it. Headings are regular weight with
+ * tight tracking; the emphasis is in size and space, not weight.
+ */
 :root {
+	--font-sans: var(--font-inter), -apple-system, BlinkMacSystemFont, "Helvetica Neue", Helvetica, Arial, sans-serif;
+	--font-display: var(--font-sans);
 	--font-serif: var(--font-sans);
 }
 
-/* Large headings — Inter light for a clean, modern feel */
-h1, h2 {
+body {
 	font-family: var(--font-sans);
-	font-weight: 300;
-	letter-spacing: -0.03em;
-	line-height: 1.15;
+	font-size: 14px;
 }
 
-/* Sub-headings — Inter medium */
+h1, h2 {
+	font-family: var(--font-sans);
+	font-weight: 400;
+	letter-spacing: -0.025em;
+	line-height: 1.1;
+}
+
 h3, h4, h5, h6 {
 	font-family: var(--font-sans);
-	font-weight: 500;
+	font-weight: 400;
 	letter-spacing: -0.015em;
 }
 
-h1 { font-size: 1.875rem; }
-h2 { font-size: 1.5rem; }
-h3 { font-size: 1.125rem; line-height: 1.625rem; }
+h1 { font-size: 1.5rem; }
+h2 { font-size: 1.25rem; }
+h3 { font-size: 1.0625rem; line-height: 1.5rem; }
+
+/* Nothing on screen is bold; strong emphasis reads as medium. */
+b, strong, .font-bold, .font-semibold {
+	font-weight: 500;
+}
+
+/*
+ * No capitals anywhere. Hundreds of labels across the app carry Tailwind's
+ * `uppercase` with wide tracking; the design system sets every label in
+ * sentence case with light tracking, so the utility is neutralised here
+ * rather than edited in five hundred places. Source strings written in
+ * capitals still need editing where they are found.
+ */
+/* `html` prefix: a bare `.uppercase` selector is merged away with the
+   utility of the same name by the CSS pipeline; this one is not. */
+html .uppercase {
+	text-transform: none;
+}
+html .uppercase.tracking-widest,
+html .uppercase.tracking-wider,
+html .uppercase.tracking-wide,
+html .uppercase[class*="tracking-["] {
+	letter-spacing: 0.06em;
+}
+
+/* Labels: mono, small, sentence case, muted. Never capitals. */
+.fab-label {
+	font-family: var(--font-mono);
+	font-size: 11px;
+	letter-spacing: 0.1em;
+	color: var(--muted-foreground);
+}
 
 /* Code blocks with monospace font */
 pre, code, kbd, samp {
@@ -148,24 +179,25 @@ input[type="reset"]:not(:disabled) {
 .animate-stagger-5 { animation-delay: 0.25s; }
 
 /* Shared premium app surface utilities */
+/* The page kicker, in the design system: mono, sentence case, muted, a crimson square before it. */
 .app-editorial-label {
 	display: inline-flex;
 	align-items: center;
-	gap: 0.75rem;
-	font-size: 0.6875rem;
-	font-weight: 600;
-	letter-spacing: 0.22em;
-	text-transform: uppercase;
+	gap: 0.625rem;
+	font-family: var(--font-mono);
+	font-size: 11px;
+	font-weight: 400;
+	letter-spacing: 0.1em;
+	text-transform: none;
 	color: var(--muted-foreground);
 }
 
 .app-editorial-label::before {
 	content: "";
 	display: block;
-	width: 2px;
-	height: 1rem;
-	border-radius: 999px;
-	background: var(--primary);
+	width: 6px;
+	height: 6px;
+	background: var(--fab-accent-fill);
 }
 
 /* D2 (Feature Maturation): briefly flash a diff section when its confirm-time
@@ -192,21 +224,16 @@ input[type="reset"]:not(:disabled) {
 	}
 }
 
+/* Surfaces are flat: a panel one shade up, a hairline, no gradient, no shadow. */
 .app-surface {
-	background:
-		linear-gradient(180deg, color-mix(in srgb, var(--card) 96%, var(--muted)), var(--card)),
-		var(--card);
-	border: 1px solid color-mix(in srgb, var(--border) 82%, transparent);
-	box-shadow: 0 1px 2px color-mix(in srgb, var(--foreground) 6%, transparent);
+	background: var(--card);
+	border: 1px solid var(--border);
+	box-shadow: none;
 }
 
 .dark .app-surface {
-	background:
-		linear-gradient(180deg, color-mix(in srgb, var(--card) 92%, white 2%), var(--card)),
-		var(--card);
-	box-shadow:
-		inset 0 1px 0 color-mix(in srgb, white 4%, transparent),
-		0 1px 0 color-mix(in srgb, black 28%, transparent);
+	background: var(--card);
+	box-shadow: none;
 }
 
 .app-dot-grid {
@@ -1455,4 +1482,71 @@ html:root .copilotKitHeader {
 		animation: none;
 		background-color: color-mix(in srgb, var(--primary) 15%, transparent);
 	}
+}
+
+/*
+ * Advisor landing. The heading is the one place in the app set at medium
+ * weight: Cosmos sets its "Your guide to" line at 36px/500 with tight
+ * tracking, and at that size 400 reads thin. The glyphs are the decorative
+ * marks that drift around the composer; they are mono, mostly ink at low
+ * opacity, three of them coloured, and they stop for reduced motion.
+ */
+.advisor-title {
+	font-size: 36px;
+	font-weight: 500;
+	line-height: 40px;
+	letter-spacing: -0.025em;
+}
+
+.advisor-glyph {
+	position: absolute;
+	font-family: var(--font-mono), ui-monospace, monospace;
+	font-size: 13px;
+	line-height: 1;
+	color: var(--muted-foreground);
+	opacity: 0;
+	pointer-events: none;
+	user-select: none;
+	animation: advisor-glyph-drift var(--glyph-duration, 9s) ease-in-out infinite;
+	animation-delay: var(--glyph-delay, 0s);
+	will-change: transform, opacity;
+}
+
+@keyframes advisor-glyph-drift {
+	0% {
+		opacity: 0;
+		transform: translate3d(0, 6px, 0);
+	}
+	18% {
+		opacity: 0.55;
+	}
+	50% {
+		opacity: 0.7;
+		transform: translate3d(var(--glyph-dx, 2px), -6px, 0);
+	}
+	82% {
+		opacity: 0.35;
+	}
+	100% {
+		opacity: 0;
+		transform: translate3d(0, -14px, 0);
+	}
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.advisor-glyph {
+		animation: none;
+		opacity: 0.35;
+	}
+}
+
+/*
+ * `secondary` used to be a teal accent, and ~140 call sites still colour an
+ * icon or a label with `text-secondary`. In the neutral palette it is a
+ * surface token (#f4f4f4 light, #262626 dark), so that text vanished into
+ * the page in both themes. Until those call sites are migrated, read
+ * `text-secondary` as secondary ink.
+ */
+html .text-secondary {
+	color: var(--muted-foreground);
 }

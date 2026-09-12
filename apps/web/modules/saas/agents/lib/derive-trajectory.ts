@@ -1,8 +1,8 @@
+import type { TrajectoryStep } from "../components/FabricChat/TrajectorySteps";
 import type {
 	DirectStreamMessage,
 	DirectStreamToolCall,
 } from "../hooks/useDirectStream";
-import type { TrajectoryStep } from "../components/FabricChat/TrajectorySteps";
 
 const TITLE_TEMPLATES: Record<string, (tc: DirectStreamToolCall) => string> = {
 	// Generic / third-party tool conventions (illustrative, used by MCP servers
@@ -61,6 +61,10 @@ const TITLE_TEMPLATES: Record<string, (tc: DirectStreamToolCall) => string> = {
 		return "Read document";
 	},
 	fabric_list_workflows: () => "Listed workflows",
+	list_recent_sessions: () => "Reviewed recent Advisor sessions",
+	get_session: () => "Read a session transcript",
+	list_agents: () => "Listed agents",
+	list_connections: () => "Listed connections",
 };
 
 function argString(tc: DirectStreamToolCall, key: string): string {

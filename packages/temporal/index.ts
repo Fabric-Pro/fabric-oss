@@ -141,6 +141,7 @@ export {
 	EmbeddingUnavailableError,
 	runDuplicateScanCore,
 } from "./src/lib/duplicate-scan-core";
+export { decodeHeartbeatDetails } from "./src/lib/heartbeat-details";
 // Lifecycle event dispatcher (shared across api + temporal callers)
 export {
 	type DispatchLifecycleEventInput,
@@ -236,6 +237,7 @@ export {
 } from "./src/schedules/workflow-builder-schedule";
 // Type exports
 export type {
+	ActivityHeartbeatDetails,
 	ChatMessageInput,
 	ChatMessageOutput,
 	ChatTitleGenerationInput,

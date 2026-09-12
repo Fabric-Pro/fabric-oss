@@ -171,9 +171,11 @@ representative histories.
 When changing one side of an intentionally paired surface, inspect and test the
 sibling in the same task:
 
-- MCP management dialogs:
-  [primary](apps/web/modules/saas/mcp/components/McpServersView.tsx) and
-  [settings](apps/web/modules/saas/settings/components/mcp/components/McpConfigDialog.tsx).
+- MCP management:
+  [server list](apps/web/modules/saas/mcp/components/McpServersView.tsx) and
+  [config tile](apps/web/modules/saas/mcp/components/McpConfigTile.tsx).
+  The organization settings MCP page redirects here; there is no second
+  settings implementation to keep in step.
 - Slack and Teams integrations: preserve portable behavior while keeping
   provider-specific differences explicit.
 - Document editors: compare both implementations before changing shared

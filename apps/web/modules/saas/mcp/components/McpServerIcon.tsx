@@ -16,6 +16,23 @@ type Props = {
 	fallbackClassName?: string;
 };
 
+/*
+ * A crisp mark first: Google's favicon service returns the site's icon at
+ * 64px, which holds up in a 28px tile where a raw /favicon.ico is often
+ * a 16px bitmap. The origin's own favicon stays as the fallback.
+ */
+function toHiResFavicon(url?: string | null) {
+	if (!url) {
+		return null;
+	}
+	try {
+		const parsed = new URL(url);
+		return `https://www.google.com/s2/favicons?domain=${parsed.hostname}&sz=64`;
+	} catch {
+		return null;
+	}
+}
+
 function toOriginFavicon(url?: string | null) {
 	if (!url) {
 		return null;
@@ -61,6 +78,8 @@ export function McpServerIcon({
 	const candidates = useMemo(() => {
 		return [
 			iconUrl,
+			toHiResFavicon(defaultUrl),
+			!isCodeHostUrl(docsUrl) ? toHiResFavicon(docsUrl) : null,
 			toOriginFavicon(defaultUrl),
 			!isCodeHostUrl(docsUrl) ? toOriginFavicon(docsUrl) : null,
 			!isCodeHostUrl(repositoryUrl)

@@ -9,7 +9,6 @@
 
 import { McpLogo } from "@saas/mcp/components/McpLogo";
 import { FabricLogo } from "@saas/shared/components/FabricLogo";
-import { Response } from "../../../../../components/ai-elements/response";
 import { Badge } from "@ui/components/badge";
 import {
 	Collapsible,
@@ -33,6 +32,7 @@ import {
 	XCircle,
 } from "lucide-react";
 import { useMemo, useState } from "react";
+import { Response } from "../../../../../components/ai-elements/response";
 
 /**
  * Simplified step type for inline display
@@ -143,6 +143,10 @@ const INTERNAL_TOOLS = new Set([
 	"file_read",
 	"file_write",
 	"list_workflows",
+	"list_recent_sessions",
+	"get_session",
+	"list_agents",
+	"list_connections",
 	"get_workflow_details",
 	"execute_workflow",
 ]);

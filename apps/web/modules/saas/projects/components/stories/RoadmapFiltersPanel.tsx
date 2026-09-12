@@ -467,7 +467,7 @@ type FlagKey =
 // bg-highlight / text-highlight-foreground), with its icon — so the filter and
 // the cards present flags identically.
 const flagLeading = (Icon: typeof FileTextIcon) => (
-	<span className="flex size-5 items-center justify-center rounded-full border border-highlight/40 bg-highlight/10 text-highlight-foreground dark:text-muted-foreground">
+	<span className="flex size-5 items-center justify-center rounded-full border border-highlight/40 bg-highlight/10 text-highlight-ink dark:text-muted-foreground">
 		{/* Inline size: cmdk's CommandItem forces `[&_svg]:size-4` (16px), which
 		    would override a Tailwind size class and crowd the 20px chip. Pin it to
 		    14px so the icon sits with breathing room, matching the table chips. */}

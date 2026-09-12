@@ -11,8 +11,9 @@
  *   - **The `ink` / `inkDark` values are sound.** Their comment claims they were
  *     solved per brand to clear AA, and against `--background` and `--card` they
  *     do, in both themes. Asserted here so the solved values cannot drift.
- *   - **The `foreground` values are not.** Seven of the eight fail on their own
- *     fill; only `red` passes. That is already noted in `theme.css`, but as prose.
+ *   - **The `foreground` values are not.** Seven of the eight failed on their own
+ *     fill; only `red` passed, and after the move to the Fabric crimson even red
+ *     is safer with a dark label. That was noted in `theme.css`, but as prose.
  *
  * The load-bearing addition is `describe("why a foreground tweak cannot fix it")`.
  * The obvious reading of "white text on this button fails contrast" is "pick a
@@ -101,7 +102,11 @@ function readBrands(): Brand[] {
 
 const brands = readBrands();
 
-/** The seven whose fill is too light for a near-white label. */
+/**
+ * The seven whose fill is too light for ANY light label (proved below). Red is
+ * excluded on purpose: it also takes the dark ink now, but for a different
+ * reason — see "red is the brand where the margin is thinnest".
+ */
 const DARK_INK_BRANDS = [
 	"teal",
 	"blue",
@@ -185,14 +190,21 @@ describe("organization brand palette", () => {
 			});
 		}
 
-		it("picks the dark ink for seven brands and the light one only for red", () => {
+		it("picks the dark ink for all eight brands", () => {
 			// Pins the shape of the answer. If a future edit flipped the comparison
 			// the ratios above would still pass for some brands, so assert the
 			// distribution too.
+			//
+			// Red used to be the one light-ink brand: on Tailwind's red-600
+			// (#dc2626) the off-white ink reached 4.83:1 and black only 4.35:1.
+			// The design system replaced it with the Fabric crimson (#eb0600),
+			// which is a touch more luminous, and that flips both numbers past
+			// the floor in opposite directions (see "red is the brand where the
+			// margin is thinnest" below). So red joins the other seven.
 			const dark = brands.filter((b) => b.foreground === "#000000");
 			const light = brands.filter((b) => b.foreground !== "#000000");
-			expect(dark).toHaveLength(7);
-			expect(light.map((b) => b.name)).toEqual(["red"]);
+			expect(dark).toHaveLength(8);
+			expect(light).toEqual([]);
 		});
 	});
 
@@ -288,17 +300,28 @@ describe("organization brand palette", () => {
 			}
 		});
 
-		it("red is the one brand where the reverse holds", () => {
-			// Worth pinning: red passes with white (4.83:1) and FAILS with black
-			// (4.35:1), so any palette-wide "just use dark labels" fix would break
-			// the default brand. There is no single foreground for all eight.
+		it("red is the brand where the margin is thinnest", () => {
+			// Red is not in DARK_INK_BRANDS because the proof above does not hold
+			// for it: pure white DOES clear AA on the crimson (about 4.6:1). But
+			// the palette's light ink is the off-white #fff7f7, not pure white,
+			// and on this fill it lands just under the floor while black lands
+			// just over it. Pinned so that nudging either the crimson or the
+			// light ink cannot silently push the picked label below AA.
 			const red = brands.find((b) => b.name === "red") as Brand;
-			expect(
-				contrastRatio(parseHex(red.hex), [255, 255, 255]),
-			).toBeGreaterThanOrEqual(AA_NORMAL_TEXT);
-			expect(contrastRatio(parseHex(red.hex), [0, 0, 0])).toBeLessThan(
-				AA_NORMAL_TEXT,
+			const onBlack = contrastRatio(parseHex(red.hex), [0, 0, 0]);
+			const onLightInk = contrastRatio(
+				parseHex(red.hex),
+				parseHex("#fff7f7"),
 			);
+			expect(red.foreground).toBe("#000000");
+			expect(
+				onBlack,
+				`red on black = ${onBlack.toFixed(2)}:1`,
+			).toBeGreaterThanOrEqual(AA_NORMAL_TEXT);
+			expect(
+				onLightInk,
+				`red on the light ink = ${onLightInk.toFixed(2)}:1`,
+			).toBeLessThan(AA_NORMAL_TEXT);
 		});
 	});
 });

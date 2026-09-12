@@ -399,7 +399,7 @@ export function RoadmapFilterToolbarView({
 					{aiSearchError && (
 						<span
 							role="status"
-							className="text-highlight-foreground text-xs normal-case tracking-normal dark:text-highlight"
+							className="text-highlight-ink text-xs normal-case tracking-normal"
 						>
 							AI search failed — showing keyword results.
 						</span>

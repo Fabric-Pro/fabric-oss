@@ -64,6 +64,7 @@ import {
 	mergeDatabricksBindings,
 } from "../shared/databricks-knowledge";
 import { guardToolWriteForReadOnly } from "../shared/read-only-gate";
+import { createAdvisorTools } from "./advisor-tools";
 import {
 	buildProviderOptions,
 	isAnthropicProvider,
@@ -501,6 +502,7 @@ function createWorkflowTools(
 	const listWorkflowsSchema = z.object({
 		query: z
 			.string()
+			.optional()
 			.describe("Optional search query to filter workflows by name."),
 	});
 
@@ -853,6 +855,9 @@ export async function executeDirectChatActivity(
 
 	// Create workflow tools
 	const workflowTools = createWorkflowTools(userId, organizationId);
+	// The Advisor's view of itself and the workspace: recent sessions,
+	// agents, connections. Backs the "Improve Fabric" starter.
+	const advisorTools = createAdvisorTools(userId, organizationId);
 
 	// Create built-in tools (web search, etc.)
 	const builtInTools = await createBuiltInTools({
@@ -1013,6 +1018,7 @@ export async function executeDirectChatActivity(
 		...builtInTools,
 		...mcpTools,
 		...workflowTools,
+		...advisorTools,
 		...skillTools,
 		...databricksKnowledgeTools,
 	};
@@ -1082,7 +1088,8 @@ ${omittedServerSummary.map((entry) => `  • ${entry}`).join("\n")}
 If the user asks for something one of them does, say those tools were left out of this turn because too many servers are enabled at once, and suggest they turn some off in the chat's tool selector. Never tell them the server is not connected — it is.`
 		: ""
 }
-${toolsEnabled && hasWorkflowTools ? "- User workflows can be listed and executed." : ""}`;
+${toolsEnabled && hasWorkflowTools ? "- User workflows can be listed and executed." : ""}
+${toolsEnabled ? "- Your own recent sessions, the workspace's agents and its connections can be reviewed with list_recent_sessions, get_session, list_agents and list_connections. When asked to review usage or to suggest configuration changes (agents, connections, skills, workflows), call these, plus list_workflows and list_skills, and base the suggestions on what they return. Never use workspace document tools for that." : ""}`;
 
 	const webSearchInstructions =
 		toolsEnabled && hasBuiltInWebSearch
@@ -1693,6 +1700,49 @@ ${toolsEnabled && hasWorkflowTools ? "- User workflows can be listed and execute
 					`Calling tool: ${part.toolName}`,
 					75,
 				);
+			} else if (part.type === "tool-error") {
+				// A tool that threw, or a call whose input failed schema
+				// validation. Without this branch the call stayed "running"
+				// and the client later showed an error with no details.
+				const errorPart = part as {
+					toolCallId: string;
+					toolName: string;
+					input?: unknown;
+					error?: unknown;
+				};
+				const errorText =
+					errorPart.error instanceof Error
+						? errorPart.error.message
+						: typeof errorPart.error === "string"
+							? errorPart.error
+							: JSON.stringify(
+									errorPart.error ?? "Unknown tool error",
+								);
+				const toolCall = toolCalls.find(
+					(tc) => tc.id === errorPart.toolCallId,
+				);
+				if (toolCall) {
+					toolCall.status = "error";
+					toolCall.error = errorText;
+				} else {
+					toolCalls.push({
+						id: errorPart.toolCallId,
+						name: errorPart.toolName,
+						args: errorPart.input as Record<string, unknown>,
+						status: "error",
+						error: errorText,
+					});
+				}
+				logger.warn("Tool call failed", {
+					toolName: errorPart.toolName,
+					error: errorText,
+				});
+				lastHeartbeatTime = 0;
+				sendHeartbeat(
+					"tool_complete",
+					`Tool failed: ${errorPart.toolName}`,
+					78,
+				);
 			} else if (part.type === "tool-result") {
 				const toolCall = toolCalls.find(
 					(tc) => tc.id === part.toolCallId,
@@ -1910,6 +1960,12 @@ ${toolsEnabled && hasWorkflowTools ? "- User workflows can be listed and execute
 			pendingConfirmation,
 			durationMs,
 			usage: tokenUsage,
+			model: {
+				id: metadata.modelString,
+				canonicalName: metadata.canonicalName,
+				provider: String(metadata.provider),
+				contextWindow: metadata.contextWindow,
+			},
 		};
 	} catch (error) {
 		// Rethrow AI usage-limit errors immediately so the workflow does NOT

@@ -8,7 +8,6 @@ import {
 	getSession,
 	isGuestInOrg,
 } from "@saas/auth/lib/server";
-import { McpLogo } from "@saas/mcp/components/McpLogo";
 import { OrganizationLogo } from "@saas/organizations/components/OrganizationLogo";
 import { OrgSettingsLayoutClient } from "@saas/settings/components/OrgSettingsLayoutClient";
 import { SettingsSidebarLayout } from "@saas/settings/components/SettingsSidebarLayout";
@@ -21,6 +20,7 @@ import {
 	BarChart3Icon,
 	BellIcon,
 	BrainCircuitIcon,
+	ClipboardListIcon,
 	CreditCardIcon,
 	FileTextIcon,
 	HistoryIcon,
@@ -111,6 +111,17 @@ export default async function SettingsLayout({
 					icon: <Users2Icon className="size-4 opacity-50" />,
 				},
 				{
+					title: "API Keys",
+					href: `${organizationSettingsBasePath}/api-keys`,
+					icon: <KeyIcon className="size-4 opacity-50" />,
+				},
+			],
+		},
+		{
+			title: "AI",
+			avatar: null,
+			items: [
+				{
 					title: "AI Providers",
 					href: `${organizationSettingsBasePath}/ai-providers`,
 					icon: <BrainCircuitIcon className="size-4 opacity-50" />,
@@ -135,11 +146,12 @@ export default async function SettingsLayout({
 					href: `${organizationSettingsBasePath}/search-providers`,
 					icon: <SearchIcon className="size-4 opacity-50" />,
 				},
-				{
-					title: "MCP Registry",
-					href: `${organizationSettingsBasePath}/mcp`,
-					icon: <McpLogo size={16} className="opacity-50" />,
-				},
+			],
+		},
+		{
+			title: "Extensions",
+			avatar: null,
+			items: [
 				{
 					title: "OpenAPI Services",
 					href: `${organizationSettingsBasePath}/openapi`,
@@ -155,10 +167,19 @@ export default async function SettingsLayout({
 					href: `${organizationSettingsBasePath}/prompts`,
 					icon: <ScrollTextIcon className="size-4 opacity-50" />,
 				},
+			],
+		},
+		{
+			title: "Activity",
+			avatar: null,
+			items: [
+				// AI Usage is read-only visibility (not billing), so it's
+				// available even when org billing is disabled. The page
+				// itself enforces admin permission.
 				{
-					title: "API Keys",
-					href: `${organizationSettingsBasePath}/api-keys`,
-					icon: <KeyIcon className="size-4 opacity-50" />,
+					title: "AI Usage",
+					href: `${organizationSettingsBasePath}/usage`,
+					icon: <BarChart3Icon className="size-4 opacity-50" />,
 				},
 				// Audit Log is visible to owners, admins, and deployment
 				// admins (the env-list SRE bypass). Members and viewers
@@ -170,7 +191,7 @@ export default async function SettingsLayout({
 								title: t("settings.auditLog.menu.organization"),
 								href: `${organizationSettingsBasePath}/audit-log`,
 								icon: (
-									<ScrollTextIcon className="size-4 opacity-50" />
+									<ClipboardListIcon className="size-4 opacity-50" />
 								),
 							},
 						]
@@ -202,18 +223,17 @@ export default async function SettingsLayout({
 							},
 						]
 					: []),
-				// AI Usage is read-only visibility (not billing), so it's
-				// available even when org billing is disabled. The page
-				// itself enforces admin permission.
-				{
-					title: "AI Usage",
-					href: `${organizationSettingsBasePath}/usage`,
-					icon: <BarChart3Icon className="size-4 opacity-50" />,
-				},
-				// Danger Zone is OWNER-only — it is the only way to delete
-				// the organization, and the server accepts owners alone.
-				...(userIsOrganizationOwner
-					? [
+			],
+		},
+		// Danger Zone is OWNER-only — it is the only way to delete the
+		// organization, and the server accepts owners alone. Untitled group:
+		// the menu draws a hairline instead of a label, so it sits apart.
+		...(userIsOrganizationOwner
+			? [
+					{
+						title: "",
+						avatar: null,
+						items: [
 							{
 								title: t(
 									"settings.menu.organization.dangerZone",
@@ -223,10 +243,10 @@ export default async function SettingsLayout({
 									<TriangleAlertIcon className="size-4 opacity-50" />
 								),
 							},
-						]
-					: []),
-			],
-		},
+						],
+					},
+				]
+			: []),
 		// Account-global settings that an organization member must still be able
 		// to reach (Fizzy #1875, R7/R8/R12). Every page here is a property of
 		// the ACCOUNT, not of this organization — no organization is passed into

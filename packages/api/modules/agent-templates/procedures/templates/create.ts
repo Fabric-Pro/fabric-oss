@@ -1,3 +1,4 @@
+import { ORPCError } from "@orpc/server";
 import { createAgentTemplate, getAgentTemplateBySlug } from "@repo/database";
 import type { Prisma } from "@repo/database/prisma/generated/client";
 import { z } from "zod";
@@ -53,7 +54,12 @@ export const createTemplateProcedure = adminProcedure
 		// Check if slug already exists
 		const existing = await getAgentTemplateBySlug(input.slug);
 		if (existing) {
-			throw new Error("A template with this slug already exists");
+			// A plain Error surfaces as "Internal server error" in the form;
+			// a typed conflict carries the message to the person who typed it.
+			throw new ORPCError("CONFLICT", {
+				message:
+					"A template with this slug already exists. Choose another slug.",
+			});
 		}
 
 		const template = await createAgentTemplate({

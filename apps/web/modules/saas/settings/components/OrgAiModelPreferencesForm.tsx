@@ -25,7 +25,6 @@ import {
 	CloudIcon,
 	CodeIcon,
 	ImageIcon,
-	InfoIcon,
 	LoaderIcon,
 	LockIcon,
 	MessageSquareIcon,
@@ -201,7 +200,7 @@ export function OrgAiModelPreferencesForm({
 	readOnly?: boolean;
 }) {
 	const queryClient = useQueryClient();
-	const { organizationId, organizationSlug, organizationName, isOrgContext } =
+	const { organizationId, organizationSlug, isOrgContext } =
 		useOrganizationContext();
 	const [pendingChanges, setPendingChanges] = useState<
 		Record<string, PendingChange>
@@ -681,24 +680,6 @@ export function OrgAiModelPreferencesForm({
 						</div>
 					</div>
 				)}
-
-				{/* Info Banner */}
-				<div className="rounded-md border border-border bg-muted/40 p-4">
-					<div className="flex gap-3">
-						<InfoIcon className="size-5 shrink-0 text-muted-foreground" />
-						<div className="space-y-1 text-sm">
-							<p className="font-medium text-foreground">
-								Organization-Wide Settings
-							</p>
-							<p className="text-muted-foreground">
-								These model preferences apply to all members of{" "}
-								<strong>{organizationName}</strong>. Enable the
-								lock icon to prevent members from overriding
-								specific task settings.
-							</p>
-						</div>
-					</div>
-				</div>
 
 				{/* Enforce Banner */}
 				{!readOnly && (

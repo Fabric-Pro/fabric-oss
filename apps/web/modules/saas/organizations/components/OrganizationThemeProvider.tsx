@@ -115,12 +115,13 @@ const brandColorValues: Record<
 		inkDark: "#25da67",
 	},
 	red: {
-		hex: "#dc2626",
-		hue: "0",
-		saturation: "84%",
-		lightness: "60%",
-		ink: "#d31212",
-		inkDark: "#ef4848",
+		/* The Fabric crimson from the design system, not Tailwind's red-600. */
+		hex: "#eb0600",
+		hue: "2",
+		saturation: "100%",
+		lightness: "46%",
+		ink: "#b30000",
+		inkDark: "#ff8577",
 	},
 	indigo: {
 		hex: "#6366f1",
@@ -171,13 +172,15 @@ export function OrganizationThemeProvider({
 				.trim();
 		}
 
-		// Override the primary color (affects buttons and primary UI elements)
-		root.style.setProperty("--primary", colorValues.hex);
-		root.style.setProperty(
-			"--primary-foreground",
-			readableForegroundFor(colorValues.hex),
-		);
+		/*
+		 * The design system keeps the primary control neutral (off-white on
+		 * black); an organisation's brand colour is the thread, not the
+		 * button. It tints the accent variables, the active bar, the ink and
+		 * the focus ring, and leaves --primary alone.
+		 */
 		root.style.setProperty("--ring", colorValues.hex);
+		root.style.setProperty("--fab-accent-fill", colorValues.hex);
+		root.style.setProperty("--fab-accent", colorValues.inkDark);
 		// Ink tracks the brand too. CSS picks between these by theme, so a
 		// light/dark toggle needs no re-render here.
 		root.style.setProperty("--primary-ink-light", colorValues.ink);
@@ -217,6 +220,8 @@ export function OrganizationThemeProvider({
 			// set here — so remove it and let theme.css supply the fallback.
 			root.style.removeProperty("--primary-ink-light");
 			root.style.removeProperty("--primary-ink-dark");
+			root.style.removeProperty("--fab-accent-fill");
+			root.style.removeProperty("--fab-accent");
 			if (originalRing.current) {
 				root.style.setProperty("--ring", originalRing.current);
 			}

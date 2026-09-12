@@ -1,12 +1,11 @@
 "use client";
 
 import { useActiveOrganization } from "@saas/organizations/hooks/use-active-organization";
+import { SearchProviderTile } from "@saas/settings/components/SearchProviderTile";
 import { SettingsItem } from "@saas/shared/components/SettingsItem";
 import { orpcClient } from "@shared/lib/orpc-client";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Badge } from "@ui/components/badge";
 import { Button } from "@ui/components/button";
-import { Card } from "@ui/components/card";
 import {
 	Dialog,
 	DialogContent,
@@ -18,21 +17,7 @@ import {
 import { Input } from "@ui/components/input";
 import { Label } from "@ui/components/label";
 import { Switch } from "@ui/components/switch";
-import {
-	CheckCircleIcon,
-	ExternalLinkIcon,
-	EyeIcon,
-	EyeOffIcon,
-	FlameIcon,
-	GlobeIcon,
-	InfoIcon,
-	LoaderIcon,
-	LockIcon,
-	SearchIcon,
-	SettingsIcon,
-	StarIcon,
-	VideoIcon,
-} from "lucide-react";
+import { EyeIcon, EyeOffIcon, LoaderIcon, LockIcon } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
 
@@ -60,13 +45,6 @@ interface ProviderConfig {
 	searchesCount: number;
 	totalCost: number;
 }
-
-const PROVIDER_ICONS: Record<string, React.ReactNode> = {
-	exa: <SearchIcon className="size-5" />,
-	tavily: <GlobeIcon className="size-5" />,
-	youtube: <VideoIcon className="size-5" />,
-	firecrawl: <FlameIcon className="size-5" />,
-};
 
 export function SearchProvidersSettingsForm({
 	readOnly = false,
@@ -282,8 +260,8 @@ export function SearchProvidersSettingsForm({
 	return (
 		<>
 			<SettingsItem
-				title="Organization Search Providers"
-				description="Configure search providers for your organization. Members can override these with personal settings."
+				title="Providers"
+				description="Shared keys for the organization. Members can override them with their own."
 			>
 				<div className="space-y-6">
 					{/* Read-Only Banner */}
@@ -304,25 +282,6 @@ export function SearchProvidersSettingsForm({
 						</div>
 					)}
 
-					{/* Info Banner */}
-					<div className="rounded-md border border-border bg-muted/40 p-4">
-						<div className="flex gap-3">
-							<InfoIcon className="size-5 shrink-0 text-muted-foreground" />
-							<div className="space-y-1 text-sm">
-								<p className="font-medium text-foreground">
-									Organization Settings
-								</p>
-								<p className="text-muted-foreground">
-									These provider configurations will be used
-									by all organization members unless they
-									configure personal overrides. Only
-									organization admins can modify these
-									settings.
-								</p>
-							</div>
-						</div>
-					</div>
-
 					{isLoading ? (
 						<div className="flex items-center justify-center py-8">
 							<LoaderIcon className="size-6 animate-spin text-muted-foreground" />
@@ -332,180 +291,31 @@ export function SearchProvidersSettingsForm({
 							{Object.entries(groupedProviders).map(
 								([category, providers]) => (
 									<div key={category}>
-										<h3 className="mb-3 font-semibold text-sm">
+										<h4 className="app-editorial-label mb-3">
 											{category}
-										</h3>
-										<div className="grid gap-4 md:grid-cols-2">
+										</h4>
+										<div className="grid gap-3 md:grid-cols-2">
 											{providers.map((provider) => {
 												const config =
 													getProviderConfig(
 														provider.name,
 													);
-												const isConfigured = !!config;
-												const isEnabled =
-													config?.enabled ?? false;
 
 												return (
-													<Card
+													<SearchProviderTile
 														key={provider.name}
-														className="relative p-4 transition-colors hover:border-primary/50"
-													>
-														{/* Default Badge */}
-														{config?.isDefault && (
-															<div className="absolute top-2 right-2">
-																<Badge
-																	variant="default"
-																	className="flex items-center gap-1"
-																>
-																	<StarIcon className="size-3" />
-																	Default
-																</Badge>
-															</div>
+														provider={provider}
+														config={config}
+														features={getProviderFeatures(
+															provider,
 														)}
-
-														<div className="space-y-3">
-															{/* Provider Header */}
-															<div className="flex items-start gap-3">
-																<div className="text-muted-foreground">
-																	{PROVIDER_ICONS[
-																		provider
-																			.name
-																	] || (
-																		<SearchIcon className="size-5" />
-																	)}
-																</div>
-																<div className="flex-1">
-																	<div className="flex items-start justify-between">
-																		<h4 className="font-semibold">
-																			{
-																				provider.displayName
-																			}
-																		</h4>
-																	</div>
-																	<p className="mt-1 text-muted-foreground text-xs">
-																		{
-																			provider.description
-																		}
-																	</p>
-																</div>
-															</div>
-
-															{/* Status Badges */}
-															<div className="flex items-center gap-2">
-																{isConfigured && (
-																	<Badge
-																		variant={
-																			isEnabled
-																				? "default"
-																				: "outline"
-																		}
-																		className="text-xs"
-																	>
-																		{isEnabled ? (
-																			<>
-																				<CheckCircleIcon className="mr-1 size-3" />
-																				Enabled
-																			</>
-																		) : (
-																			"Disabled"
-																		)}
-																	</Badge>
-																)}
-																<Badge
-																	variant="secondary"
-																	className="text-xs"
-																>
-																	{provider.costPerSearch ===
-																	0
-																		? "Free"
-																		: `$${provider.costPerSearch}/search`}
-																</Badge>
-															</div>
-
-															{/* Features */}
-															<div className="flex flex-wrap gap-1">
-																{getProviderFeatures(
-																	provider,
-																)
-																	.slice(0, 3)
-																	.map(
-																		(
-																			feature,
-																		) => (
-																			<Badge
-																				key={
-																					feature
-																				}
-																				variant="outline"
-																				className="text-xs"
-																			>
-																				{
-																					feature
-																				}
-																			</Badge>
-																		),
-																	)}
-															</div>
-
-															{/* Usage Stats */}
-															{config && (
-																<div className="text-muted-foreground text-xs">
-																	<p>
-																		Searches:{" "}
-																		{
-																			config.searchesCount
-																		}{" "}
-																		| Cost:
-																		$
-																		{config.totalCost.toFixed(
-																			4,
-																		)}
-																	</p>
-																</div>
-															)}
-
-															{/* Action Buttons */}
-															<div className="flex gap-2">
-																<Button
-																	variant="outline"
-																	size="sm"
-																	className="flex-1"
-																	onClick={() =>
-																		handleConfigureProvider(
-																			provider,
-																		)
-																	}
-																	disabled={
-																		readOnly
-																	}
-																>
-																	<SettingsIcon className="mr-2 size-4" />
-																	{readOnly
-																		? "View Details"
-																		: isConfigured
-																			? "Edit"
-																			: "Configure"}
-																</Button>
-																{provider.docsUrl && (
-																	<Button
-																		variant="ghost"
-																		size="sm"
-																		asChild
-																	>
-																		<a
-																			href={
-																				provider.docsUrl
-																			}
-																			target="_blank"
-																			rel="noopener noreferrer"
-																		>
-																			<ExternalLinkIcon className="size-4" />
-																		</a>
-																	</Button>
-																)}
-															</div>
-														</div>
-													</Card>
+														readOnly={readOnly}
+														onConfigure={() =>
+															handleConfigureProvider(
+																provider,
+															)
+														}
+													/>
 												);
 											})}
 										</div>
