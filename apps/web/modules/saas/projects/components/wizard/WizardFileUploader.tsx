@@ -584,7 +584,7 @@ export function WizardFileUploader({
 			{/* biome-ignore lint/a11y/noStaticElementInteractions: Drop zone requires drag event handlers */}
 			<div
 				className={cn(
-					"relative overflow-hidden rounded-lg border-2 border-dashed transition-all",
+					"relative overflow-hidden rounded-lg border-2 border-dashed transition-colors",
 					isDragOver
 						? "border-primary bg-primary/5"
 						: "border-muted-foreground/25 hover:border-muted-foreground/40",
@@ -794,7 +794,7 @@ export function WizardFileUploader({
 										file.status === "processing") && (
 										<div className="absolute bottom-0 left-0 right-0 h-1 bg-muted overflow-hidden rounded-b-lg">
 											<div
-												className="h-full bg-blue-500 transition-all duration-300"
+												className="h-full bg-foreground transition-[width] duration-300"
 												style={{
 													width: `${file.progress}%`,
 												}}
