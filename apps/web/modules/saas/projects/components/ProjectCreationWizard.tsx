@@ -7,7 +7,6 @@ import { orpcClient } from "@shared/lib/orpc-client";
 import { orpc } from "@shared/lib/orpc-query-utils";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@ui/components/button";
-import { Card } from "@ui/components/card";
 import { Skeleton } from "@ui/components/skeleton";
 import { cn } from "@ui/lib";
 import {
@@ -237,6 +236,9 @@ const STANDARD_STEPS = [
  * Next/Back nav are hidden while on it.
  */
 const FINISH_STEP_ID = 6;
+
+/** One id for every step-1 validation toast, so a repeat replaces, never stacks. */
+const STEP_ONE_TOAST_ID = "wizard-step-one-validation";
 
 // Code-based review step: shows selected repos + which documents will be generated
 function CodeBasedReviewStep({ formData }: { formData: ProjectFormData }) {
@@ -1876,6 +1878,10 @@ export function ProjectCreationWizard({
 	 * close: a project reaching the end with no description and no phase, graded
 	 * afterwards against a guess.
 	 */
+	// Set on the first attempt to leave step 1; from then on the step shows its
+	// own validation next to each field.
+	const [showStepOneErrors, setShowStepOneErrors] = useState(false);
+
 	const basicsAnswered =
 		formData.name.trim().length > 0 &&
 		!hasDuplicateName &&
@@ -1887,13 +1893,22 @@ export function ProjectCreationWizard({
 					new Date().toLocaleDateString("en-CA")));
 
 	const handleNext = () => {
-		// Validate current step
+		// Validate current step. Each message also renders inline under its
+		// field (BasicInfoStep reads `showStepOneErrors`), so the toast is the
+		// announcement and the field is where it gets fixed.
+		if (currentStep === 1) {
+			setShowStepOneErrors(true);
+		}
 		if (currentStep === 1 && !formData.name.trim()) {
-			toast.error("Please enter a project name");
+			toast.error("Please enter a project name", {
+				id: STEP_ONE_TOAST_ID,
+			});
 			return;
 		}
 		if (currentStep === 1 && hasDuplicateName) {
-			toast.error("A project with this name already exists");
+			toast.error("A project with this name already exists", {
+				id: STEP_ONE_TOAST_ID,
+			});
 			return;
 		}
 		// The three Project Basics rows the checklist spreadsheet leaves off the
@@ -1906,11 +1921,14 @@ export function ProjectCreationWizard({
 		) {
 			toast.error(
 				`Give the project a brief of more than ${MIN_DESCRIPTION_LENGTH} characters — it is the first thing Fabric reads`,
+				{ id: STEP_ONE_TOAST_ID },
 			);
 			return;
 		}
 		if (currentStep === 1 && !formData.projectPhase) {
-			toast.error("Choose which phase this project is in");
+			toast.error("Choose which phase this project is in", {
+				id: STEP_ONE_TOAST_ID,
+			});
 			return;
 		}
 		if (
@@ -1918,7 +1936,9 @@ export function ProjectCreationWizard({
 			formData.projectPhase === "DISCOVERY_PLANNING" &&
 			!formData.expectedDevelopmentStartDate
 		) {
-			toast.error("Choose when development is expected to start");
+			toast.error("Choose when development is expected to start", {
+				id: STEP_ONE_TOAST_ID,
+			});
 			return;
 		}
 		// The picker's `min` stops the calendar offering a past day; typing one
@@ -1932,6 +1952,7 @@ export function ProjectCreationWizard({
 		) {
 			toast.error(
 				"Expected development start can't be in the past — pick today or later",
+				{ id: STEP_ONE_TOAST_ID },
 			);
 			return;
 		}
@@ -2124,8 +2145,8 @@ export function ProjectCreationWizard({
 
 	return (
 		<div className="mx-auto max-w-5xl space-y-8">
-			{/* Header */}
-			<div className="rounded-2xl border border-border bg-card px-6 py-7">
+			{/* Header — plain page title, not a card. */}
+			<div className="px-1">
 				<h1
 					className="text-4xl tracking-tight"
 					style={{
@@ -2138,7 +2159,7 @@ export function ProjectCreationWizard({
 						? "Edit Project"
 						: "Create New Project"}
 				</h1>
-				<p className="text-muted-foreground mt-2 text-lg">
+				<p className="text-muted-foreground mt-2 text-base">
 					{isEditMode && !isDraftResume
 						? "Update your project details and regenerate documentation"
 						: "Set up your project to generate AI-optimized documentation"}
@@ -2147,7 +2168,7 @@ export function ProjectCreationWizard({
 
 			{/* Progress Steps — hidden on the post-create finish step (D4). */}
 			{!isFinishStep && (
-				<div className="rounded-2xl border border-border bg-card px-6 py-6">
+				<div className="border-b border-border px-1 pb-6">
 					{/* Circles row - CSS Grid for equal-width columns */}
 					<div
 						className="grid items-center"
@@ -2167,15 +2188,19 @@ export function ProjectCreationWizard({
 								index > 0 && currentStep > steps[index - 1].id;
 
 							const circleClasses = cn(
-								"relative z-10 flex h-11 w-11 shrink-0 items-center justify-center rounded-full border transition-colors duration-200",
+								"relative z-10 flex h-10 w-10 shrink-0 items-center justify-center rounded-full border transition-colors duration-200",
+								// Done and current are both ink: a step you have
+								// finished and the one you are on are the same
+								// colour as the primary control, so the row reads
+								// as one line filling in rather than a traffic light.
 								isCompleted &&
-									"border-secondary bg-secondary text-secondary-foreground shadow-sm",
+									"border-foreground bg-foreground text-background",
 								isCurrent &&
 									!isCompleted &&
-									"border-primary/30 bg-primary/90 text-primary-foreground shadow-lg shadow-primary/10",
+									"border-primary bg-primary text-primary-foreground",
 								!isCompleted &&
 									!isCurrent &&
-									"border-border bg-muted text-muted-foreground",
+									"border-border bg-background text-muted-foreground",
 							);
 
 							return (
@@ -2186,21 +2211,21 @@ export function ProjectCreationWizard({
 									{/* Connector line before (except first) */}
 									{index > 0 ? (
 										<div
-											className="h-1 flex-1 min-w-0"
+											className="h-px flex-1 min-w-0"
 											aria-hidden
 										>
 											<div
 												className={cn(
 													"h-full rounded-full transition-colors duration-300",
 													prevDone
-														? "bg-secondary"
+														? "bg-foreground"
 														: "bg-border",
 												)}
 											/>
 										</div>
 									) : (
 										<div
-											className="h-1 flex-1 min-w-0 opacity-0"
+											className="h-px flex-1 min-w-0 opacity-0"
 											aria-hidden
 										/>
 									)}
@@ -2245,21 +2270,21 @@ export function ProjectCreationWizard({
 									{/* Connector line after (except last) */}
 									{index < steps.length - 1 ? (
 										<div
-											className="h-1 flex-1 min-w-0"
+											className="h-px flex-1 min-w-0"
 											aria-hidden
 										>
 											<div
 												className={cn(
 													"h-full rounded-full transition-colors duration-300",
 													isCompleted
-														? "bg-secondary"
+														? "bg-foreground"
 														: "bg-border",
 												)}
 											/>
 										</div>
 									) : (
 										<div
-											className="h-1 flex-1 min-w-0 opacity-0"
+											className="h-px flex-1 min-w-0 opacity-0"
 											aria-hidden
 										/>
 									)}
@@ -2287,10 +2312,8 @@ export function ProjectCreationWizard({
 									<span
 										className={cn(
 											"text-xs font-medium text-center",
-											isCurrent &&
-												"text-foreground font-bold",
-											isCompleted &&
-												"text-secondary font-semibold",
+											isCurrent && "text-foreground",
+											isCompleted && "text-foreground/80",
 											!isCurrent &&
 												!isCompleted &&
 												"text-muted-foreground",
@@ -2308,8 +2331,9 @@ export function ProjectCreationWizard({
 				</div>
 			)}
 
-			{/* Step Content */}
-			<Card className="rounded-2xl border border-border bg-card p-8">
+			{/* Step Content — unboxed; each step's own sections are the one
+			    level of surface, so nothing sits in a card inside a card. */}
+			<div className="px-1">
 				{/* Loading state for edit mode */}
 				{isEditMode && isLoadingProject && (
 					<div className="flex flex-col items-center justify-center py-16">
@@ -2336,6 +2360,7 @@ export function ProjectCreationWizard({
 										: "idle"
 						}
 						isEditMode={isEditMode && !isDraftResume}
+						showValidation={showStepOneErrors}
 						onDuplicateNameChange={setHasDuplicateName}
 						onAzureDevOpsReposChange={handleAzureDevOpsReposChange}
 						projectId={effectiveProjectId ?? undefined}
@@ -2437,11 +2462,12 @@ export function ProjectCreationWizard({
 						onGoToProject={handleGoToProject}
 					/>
 				)}
-			</Card>
+			</div>
 
-			{/* Navigation Buttons */}
+			{/* Navigation — a bar that stays at the bottom of the viewport while
+			    a long step scrolls, so Continue is never a page away. */}
 			{currentStep < maxStepId && (
-				<div className="rounded-2xl border border-border bg-card px-4 py-3">
+				<div className="sticky bottom-0 z-10 -mx-1 border-t border-border bg-background px-1 py-3">
 					<div className="flex items-center justify-between">
 						<div className="flex items-center gap-2">
 							{currentStep > 1 ? (
@@ -2489,8 +2515,7 @@ export function ProjectCreationWizard({
 								<Button
 									onClick={handleNext}
 									size="lg"
-									variant="outline"
-									className="cursor-pointer border-primary/25 bg-primary/10 text-primary hover:border-primary/40 hover:bg-primary/[0.14]"
+									className="cursor-pointer"
 								>
 									Continue
 								</Button>
@@ -2525,8 +2550,7 @@ export function ProjectCreationWizard({
 											!formData.name.trim()
 										}
 										size="lg"
-										variant="outline"
-										className="cursor-pointer border-primary/25 bg-primary/10 text-primary hover:border-primary/40 hover:bg-primary/[0.14]"
+										className="cursor-pointer"
 										title={
 											!formData.name.trim()
 												? "Enter a project name in Basic Info first"

@@ -20,6 +20,13 @@ type Props = {
 	anchor: string;
 	/** Mark this tab's feature as still work in progress (Fizzy #2348). */
 	beta: boolean;
+	/**
+	 * The tab did not fit on the row and is offered from the "More" menu
+	 * instead. It stays mounted, out of flow and invisible, so the row can
+	 * still measure it; it drops out of the tab order and gives up its
+	 * onboarding anchor to the menu trigger.
+	 */
+	overflowed?: boolean;
 	onSelect: () => void;
 	registerRef: (element: HTMLButtonElement | null) => void;
 };
@@ -49,6 +56,7 @@ export function ProjectTabButton({
 	showTitle,
 	anchor,
 	beta,
+	overflowed = false,
 	onSelect,
 	registerRef,
 }: Props) {
@@ -58,31 +66,22 @@ export function ProjectTabButton({
 			ref={registerRef}
 			type="button"
 			aria-label={accessibleName}
-			data-onboarding-target={anchor}
+			data-onboarding-target={overflowed ? undefined : anchor}
+			tabIndex={overflowed ? -1 : undefined}
 			onClick={onSelect}
 			className={cn(
-				"group relative flex shrink-0 items-center gap-2 rounded-xl py-2.5 font-medium text-sm transition-colors",
-				showTitle ? "px-4" : "px-3",
+				// An underline tab: ink and weight carry the state, no fill.
+				"-mb-px flex shrink-0 items-center gap-2 whitespace-nowrap border-b-2 pt-2 pb-2.5 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
+				showTitle ? "px-3" : "px-2.5",
 				isActive
-					? "text-foreground"
-					: "text-foreground/60 hover:text-foreground/80",
+					? "border-foreground font-medium text-foreground"
+					: "border-transparent text-muted-foreground hover:text-foreground",
+				overflowed && "invisible absolute pointer-events-none",
 			)}
 		>
-			{isActive && (
-				<div
-					aria-hidden="true"
-					className="absolute inset-0 rounded-xl border border-primary/15 bg-primary/10"
-				/>
-			)}
 			{showIcon && (
-				<span className="relative z-10 flex shrink-0">
-					<Icon
-						aria-hidden="true"
-						className={cn(
-							"size-4 shrink-0",
-							isActive && "text-primary",
-						)}
-					/>
+				<span className="relative flex shrink-0">
+					<Icon aria-hidden="true" className="size-4 shrink-0" />
 					{/* Only when no title is painted — otherwise the chip
 					 * below says it in words, and both at once reads as two
 					 * different claims. */}
@@ -96,7 +95,7 @@ export function ProjectTabButton({
 				</span>
 			)}
 			{showTitle && (
-				<span className="relative z-10 flex items-center gap-1.5">
+				<span className="relative flex items-center gap-1.5">
 					{label}
 					{beta && (
 						<span className="rounded-sm bg-highlight/15 px-1 py-px font-medium text-[10px] text-highlight uppercase tracking-wide">

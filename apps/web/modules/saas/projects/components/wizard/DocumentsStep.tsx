@@ -383,7 +383,7 @@ export function DocumentsStep({
 							return (
 								<Card
 									key={doc.id}
-									className={`transition-all ${
+									className={`transition-colors ${
 										isImported
 											? "border-green-500/50 bg-green-50/30 dark:bg-green-900/10"
 											: !isAvailable

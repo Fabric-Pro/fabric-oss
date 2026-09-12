@@ -33,13 +33,17 @@ import { orpcClient } from "@shared/lib/orpc-client";
 import { orpc } from "@shared/lib/orpc-query-utils";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@ui/components/button";
+import {
+	Popover,
+	PopoverContent,
+	PopoverTrigger,
+} from "@ui/components/popover";
 import { Skeleton } from "@ui/components/skeleton";
 import { cn } from "@ui/lib";
 import {
 	AlertTriangleIcon,
 	CheckCircleIcon,
-	ChevronLeftIcon,
-	ChevronRightIcon,
+	ChevronDownIcon,
 	CodeIcon,
 	ExternalLinkIcon,
 	FolderIcon,
@@ -209,6 +213,52 @@ const SecurityAccessibilityPage = dynamic(
 	() => import("./security").then((m) => m.SecurityAccessibilityPage),
 	{ loading: () => <TabContentSkeleton />, ssr: false },
 );
+
+/**
+ * How the "More" menu groups the tabs that do not fit on the row. The row
+ * itself keeps the viewer's saved order; only the overflow is grouped, by what
+ * the tab is for, so a tab that has fallen off the row is still easy to find.
+ */
+const TAB_GROUPS: ReadonlyArray<{ label: string; ids: readonly TabId[] }> = [
+	{
+		label: "Plan",
+		ids: [
+			"overview",
+			"stories",
+			"documents",
+			"decisions",
+			"context",
+			"diagrams",
+			"atlas",
+		],
+	},
+	{
+		label: "Build",
+		ids: [
+			"pipeline",
+			"kanban",
+			"agent-activity",
+			"weave",
+			"test-cases",
+			"security",
+		],
+	},
+	{
+		label: "Communicate",
+		ids: [
+			"daily-brief",
+			"meeting-digest",
+			"release-notes",
+			"publishing-suite",
+			"reports",
+		],
+	},
+	{ label: "Manage", ids: ["usage", "settings"] },
+];
+
+/** Room the "More" trigger needs once the row overflows, gap included. */
+const MORE_TRIGGER_RESERVE_PX = 112;
+const TAB_GAP_PX = 4;
 
 type Props = {
 	projectId: string;
@@ -497,142 +547,79 @@ export function ProjectDetails({ projectId, organizationSlug }: Props) {
 	}, [projectId]);
 
 	const tabRefs = useRef<Map<string, HTMLButtonElement>>(new Map());
-	// Callback-ref state: the toolbar isn't in the DOM during the loading
+	// Callback-ref state: the tab row isn't in the DOM during the loading
 	// skeleton render, so a plain object ref would attach after the only effect
 	// run. Storing the node in state lets the effect (re-)run when it mounts.
-	const [scrollContainer, setScrollContainer] =
-		useState<HTMLDivElement | null>(null);
-	// Edge-arrow scroll affordance: arrows appear only when the toolbar
-	// overflows; each is disabled when the corresponding edge is reached.
-	const [canScrollLeft, setCanScrollLeft] = useState(false);
-	const [canScrollRight, setCanScrollRight] = useState(false);
+	const [tabRow, setTabRow] = useState<HTMLDivElement | null>(null);
+	// Overflow folds into a "More" menu instead of scrolling off-screen. The
+	// row shows the viewer's tabs in their order until the width runs out, and
+	// `inlineCount` is how many fit. Infinity means all of them — which is also
+	// the value under jsdom, where nothing has a width, so tests see every tab.
+	const [inlineCount, setInlineCount] = useState(Number.POSITIVE_INFINITY);
+	const [moreOpen, setMoreOpen] = useState(false);
+
+	// Settings is pinned at the right end of the bar rather than competing for
+	// row space: it is the one tab every project has, and the one people find
+	// by position.
+	const rowTabs = useMemo(
+		() => visibleTabs.filter((tab) => tab.id !== "settings"),
+		[visibleTabs],
+	);
+	const settingsTab = visibleTabs.find((tab) => tab.id === "settings");
 
 	useEffect(() => {
-		const el = scrollContainer;
+		const el = tabRow;
 		if (!el) {
 			return;
 		}
-		// 1px epsilon absorbs sub-pixel rounding so boundaries register cleanly.
 		const update = () => {
-			const maxScroll = el.scrollWidth - el.clientWidth;
-			setCanScrollLeft(el.scrollLeft > 1);
-			setCanScrollRight(el.scrollLeft < maxScroll - 1);
+			const width = el.clientWidth;
+			if (width <= 0) {
+				return;
+			}
+			// Every row tab stays mounted — an overflowed one is visibility:
+			// hidden and out of flow — so each has a real width to measure.
+			const widths = rowTabs.map(
+				(tab) => tabRefs.current.get(tab.id)?.offsetWidth ?? 0,
+			);
+			const total = widths.reduce((sum, w) => sum + w + TAB_GAP_PX, 0);
+			if (total <= width) {
+				setInlineCount(Number.POSITIVE_INFINITY);
+				return;
+			}
+			const available = width - MORE_TRIGGER_RESERVE_PX;
+			let used = 0;
+			let count = 0;
+			for (const w of widths) {
+				if (used + w + TAB_GAP_PX > available) {
+					break;
+				}
+				used += w + TAB_GAP_PX;
+				count += 1;
+			}
+			setInlineCount(count);
 		};
 		update();
 		const ro = new ResizeObserver(update);
 		ro.observe(el);
-		el.addEventListener("scroll", update, { passive: true });
-		window.addEventListener("resize", update);
-		return () => {
-			ro.disconnect();
-			el.removeEventListener("scroll", update);
-			window.removeEventListener("resize", update);
-		};
-	}, [scrollContainer]);
+		return () => ro.disconnect();
+	}, [tabRow, rowTabs]);
 
-	// Keep the active tab on screen even if the user has scrolled away from it.
-	useEffect(() => {
-		const btn = tabRefs.current.get(activeTab);
-		if (!btn) {
-			return;
-		}
-		btn.scrollIntoView({ block: "nearest", inline: "nearest" });
-	}, [activeTab]);
-
-	const scrollTabsBy = useCallback(
-		(direction: 1 | -1) => {
-			const el = scrollContainer;
-			if (!el) {
-				return;
-			}
-			const reduceMotion =
-				typeof window !== "undefined" &&
-				window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-			el.scrollBy({
-				left: direction * Math.round(el.clientWidth * 0.8),
-				behavior: reduceMotion ? "auto" : "smooth",
-			});
-		},
-		[scrollContainer],
+	const overflowTabs = useMemo(
+		() => rowTabs.filter((_, index) => index >= inlineCount),
+		[rowTabs, inlineCount],
 	);
-
-	// Mouse drag-to-scroll. Touch and pen pointers fall through to the
-	// browser's native overflow scrolling so we don't fight platform behavior.
-	const dragRef = useRef<{
-		startX: number;
-		startScroll: number;
-		pointerId: number;
-		moved: boolean;
-	} | null>(null);
-	const suppressClickRef = useRef(false);
-
-	const handlePointerDown = useCallback(
-		(e: React.PointerEvent<HTMLDivElement>) => {
-			if (e.pointerType !== "mouse" || e.button !== 0) {
-				return;
-			}
-			const el = scrollContainer;
-			if (!el) {
-				return;
-			}
-			dragRef.current = {
-				startX: e.clientX,
-				startScroll: el.scrollLeft,
-				pointerId: e.pointerId,
-				moved: false,
-			};
-		},
-		[scrollContainer],
+	const activeOverflowTab = overflowTabs.find((tab) => tab.id === activeTab);
+	const overflowGroups = useMemo(
+		() =>
+			TAB_GROUPS.map((group) => ({
+				label: group.label,
+				tabs: overflowTabs.filter((tab) => group.ids.includes(tab.id)),
+			})).filter((group) => group.tabs.length > 0),
+		[overflowTabs],
 	);
-
-	const handlePointerMove = useCallback(
-		(e: React.PointerEvent<HTMLDivElement>) => {
-			const drag = dragRef.current;
-			const el = scrollContainer;
-			if (!drag || !el || drag.pointerId !== e.pointerId) {
-				return;
-			}
-			const dx = e.clientX - drag.startX;
-			if (!drag.moved) {
-				// 5px threshold lets a regular click pass through to the tab.
-				if (Math.abs(dx) < 5) {
-					return;
-				}
-				drag.moved = true;
-				el.setPointerCapture(e.pointerId);
-				el.style.cursor = "grabbing";
-			}
-			el.scrollLeft = drag.startScroll - dx;
-		},
-		[scrollContainer],
-	);
-
-	const handlePointerUp = useCallback(
-		(e: React.PointerEvent<HTMLDivElement>) => {
-			const drag = dragRef.current;
-			if (!drag || drag.pointerId !== e.pointerId) {
-				return;
-			}
-			if (drag.moved) {
-				suppressClickRef.current = true;
-				if (scrollContainer) {
-					scrollContainer.style.cursor = "";
-				}
-			}
-			dragRef.current = null;
-		},
-		[scrollContainer],
-	);
-
-	const handleClickCapture = useCallback(
-		(e: React.MouseEvent<HTMLDivElement>) => {
-			if (suppressClickRef.current) {
-				e.stopPropagation();
-				suppressClickRef.current = false;
-			}
-		},
-		[],
-	);
+	const tabLabel = (tab: (typeof tabs)[number]) =>
+		tab.id === "atlas" ? _t("projects.atlas.tabLabel") : tab.label;
 
 	const [kanbanStandaloneUrl, setKanbanStandaloneUrl] = useState<
 		string | null
@@ -858,8 +845,8 @@ export function ProjectDetails({ projectId, organizationSlug }: Props) {
 	if (!project) {
 		return (
 			<div className="flex flex-col items-center justify-center py-12">
-				<div className="mb-4 rounded-2xl bg-gradient-to-br from-primary/20 to-primary/5 p-4">
-					<FolderIcon className="size-8 text-primary" />
+				<div className="mb-4 rounded-2xl bg-muted p-4">
+					<FolderIcon className="size-8 text-muted-foreground" />
 				</div>
 				<p className="mb-2 font-medium text-foreground/70">
 					Project not found
@@ -884,8 +871,8 @@ export function ProjectDetails({ projectId, organizationSlug }: Props) {
 		if (!canDeleteProject) {
 			return (
 				<div className="flex flex-col items-center justify-center py-12">
-					<div className="mb-4 rounded-2xl bg-gradient-to-br from-primary/20 to-primary/5 p-4">
-						<FolderIcon className="size-8 text-primary" />
+					<div className="mb-4 rounded-2xl bg-muted p-4">
+						<FolderIcon className="size-8 text-muted-foreground" />
 					</div>
 					<p className="mb-2 font-medium text-foreground/70">
 						Project not found
@@ -926,7 +913,7 @@ export function ProjectDetails({ projectId, organizationSlug }: Props) {
 
 				{/* Deleted Project Warning Card */}
 				<div className="flex flex-col items-center justify-center py-12">
-					<div className="mb-6 rounded-2xl bg-gradient-to-br from-destructive/10 to-destructive/5 p-6">
+					<div className="mb-6 rounded-2xl bg-destructive/10 p-6">
 						<AlertTriangleIcon className="size-12 text-destructive" />
 					</div>
 
@@ -1121,117 +1108,190 @@ export function ProjectDetails({ projectId, organizationSlug }: Props) {
 			{/* Enhanced Tabs */}
 			<div className="min-w-0 w-full">
 				<div className={shouldHideChrome ? "hidden" : undefined}>
-					{/* Tab navigation — uniform icon + label tabs in a card, with
-					    sibling arrow buttons on either side when the toolbar
-					    overflows. Arrows stay outside the card so they never
-					    obscure tabs and read as clear navigation controls. */}
-					{(() => {
-						const overflows = canScrollLeft || canScrollRight;
-						return (
-							<div className="flex items-stretch gap-2">
-								{/* Per-user tab customization (card #1837). Sits outside the
-							    scrolling card — pinned after the arrows via flex order —
-							    so it stays reachable no matter how far the bar overflows.
-							    The dialog itself drafts locally and persists on Done. */}
-								<button
-									type="button"
-									onClick={() => setCustomizeOpen(true)}
-									aria-label="Customize tabs"
-									title="Customize tabs"
-									className="order-last flex size-8 shrink-0 items-center justify-center self-center rounded-lg text-muted-foreground/60 transition-colors hover:bg-muted hover:text-muted-foreground"
+					{/* Tab bar — one hairline row. The viewer's tabs run in their
+					    saved order; whatever does not fit folds into a "More" menu
+					    grouped by what the tab is for, and Settings is pinned at the
+					    right edge beside the customize control. Nothing scrolls, so
+					    no tab is ever hidden by position alone. */}
+					<div className="flex items-end gap-2 border-b border-border">
+						<div
+							ref={setTabRow}
+							className="relative flex min-w-0 flex-1 items-end gap-1 overflow-hidden"
+						>
+							{rowTabs.map((tab, index) => (
+								<ProjectTabButton
+									key={tab.id}
+									{...resolveProjectTabPaint(
+										tab.id,
+										tabCustomization.prefs,
+									)}
+									label={tabLabel(tab)}
+									icon={tab.icon}
+									isActive={activeTab === tab.id}
+									anchor={`project-tab-${tab.id}`}
+									beta={showBetaLabel && isBetaTab(tab.id)}
+									overflowed={index >= inlineCount}
+									onSelect={() => {
+										startTransition(() =>
+											setActiveTab(tab.id),
+										);
+									}}
+									registerRef={(el) => {
+										if (el) {
+											tabRefs.current.set(tab.id, el);
+										} else {
+											tabRefs.current.delete(tab.id);
+										}
+									}}
+								/>
+							))}
+							{overflowTabs.length > 0 && (
+								<Popover
+									open={moreOpen}
+									onOpenChange={setMoreOpen}
 								>
-									<Settings2Icon
-										aria-hidden="true"
-										className="size-4 shrink-0"
-									/>
-								</button>
-								{overflows && (
-									<Button
-										type="button"
-										variant="outline"
-										size="icon-lg"
-										aria-label="Scroll tabs left"
-										onClick={() => scrollTabsBy(-1)}
-										disabled={!canScrollLeft}
-										className="shrink-0 self-stretch h-auto rounded-xl"
-									>
-										<ChevronLeftIcon
-											aria-hidden="true"
-											className="size-4"
-										/>
-									</Button>
-								)}
-								<div className="app-surface min-w-0 flex-1 rounded-2xl bg-card/70">
-									<div
-										ref={setScrollContainer}
-										onPointerDown={handlePointerDown}
-										onPointerMove={handlePointerMove}
-										onPointerUp={handlePointerUp}
-										onPointerCancel={handlePointerUp}
-										onClickCapture={handleClickCapture}
-										className="no-scrollbar flex items-center gap-1 overflow-x-auto p-1.5"
-									>
-										{visibleTabs.map((tab) => (
-											<ProjectTabButton
-												key={tab.id}
-												{...resolveProjectTabPaint(
-													tab.id,
-													tabCustomization.prefs,
-												)}
-												label={
-													tab.id === "atlas"
-														? _t(
-																"projects.atlas.tabLabel",
-															)
-														: tab.label
-												}
-												icon={tab.icon}
-												isActive={activeTab === tab.id}
-												anchor={`project-tab-${tab.id}`}
-												beta={
-													showBetaLabel &&
-													isBetaTab(tab.id)
-												}
-												onSelect={() => {
-													startTransition(() =>
-														setActiveTab(tab.id),
-													);
-												}}
-												registerRef={(el) => {
-													if (el) {
-														tabRefs.current.set(
-															tab.id,
-															el,
-														);
-													} else {
-														tabRefs.current.delete(
-															tab.id,
-														);
-													}
-												}}
+									<PopoverTrigger asChild>
+										<button
+											type="button"
+											aria-haspopup="menu"
+											aria-expanded={moreOpen}
+											className={cn(
+												"-mb-px relative flex shrink-0 items-center gap-1.5 whitespace-nowrap border-b-2 px-3 pt-2 pb-2.5 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
+												activeOverflowTab
+													? "border-foreground font-medium text-foreground"
+													: "border-transparent text-muted-foreground hover:text-foreground",
+											)}
+										>
+											{/* Each overflowed tab's onboarding anchor lands
+											    here, so a tour step that spotlights a tab
+											    the row could not fit spotlights the menu that
+											    holds it instead of an invisible button. */}
+											{overflowTabs.map((tab) => (
+												<span
+													key={tab.id}
+													aria-hidden="true"
+													data-onboarding-target={`project-tab-${tab.id}`}
+													className="pointer-events-none absolute inset-0"
+												/>
+											))}
+											{activeOverflowTab
+												? tabLabel(activeOverflowTab)
+												: "More"}
+											<ChevronDownIcon
+												aria-hidden="true"
+												className="size-3.5 text-muted-foreground"
 											/>
-										))}
-									</div>
-								</div>
-								{overflows && (
-									<Button
-										type="button"
-										variant="outline"
-										size="icon-lg"
-										aria-label="Scroll tabs right"
-										onClick={() => scrollTabsBy(1)}
-										disabled={!canScrollRight}
-										className="shrink-0 self-stretch h-auto rounded-xl"
+										</button>
+									</PopoverTrigger>
+									<PopoverContent
+										align="end"
+										sideOffset={6}
+										className="w-60 rounded-xl p-1.5"
 									>
-										<ChevronRightIcon
-											aria-hidden="true"
-											className="size-4"
-										/>
-									</Button>
-								)}
-							</div>
-						);
-					})()}
+										<div
+											role="menu"
+											aria-label="More tabs"
+											className="space-y-1"
+										>
+											{overflowGroups.map((group) => (
+												<div key={group.label}>
+													<p className="px-2.5 pt-2 pb-1 font-mono text-[10px] uppercase tracking-[0.18em] text-muted-foreground">
+														{group.label}
+													</p>
+													{group.tabs.map((tab) => {
+														const Icon = tab.icon;
+														const isActive =
+															activeTab ===
+															tab.id;
+														const beta =
+															showBetaLabel &&
+															isBetaTab(tab.id);
+														return (
+															<button
+																key={tab.id}
+																type="button"
+																role="menuitem"
+																aria-label={
+																	beta
+																		? `${tabLabel(tab)} (Beta)`
+																		: tabLabel(
+																				tab,
+																			)
+																}
+																onClick={() => {
+																	setMoreOpen(
+																		false,
+																	);
+																	startTransition(
+																		() =>
+																			setActiveTab(
+																				tab.id,
+																			),
+																	);
+																}}
+																className={cn(
+																	"flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-sm transition-colors",
+																	isActive
+																		? "bg-accent text-foreground"
+																		: "text-foreground/80 hover:bg-accent hover:text-foreground",
+																)}
+															>
+																<Icon
+																	aria-hidden="true"
+																	className="size-4 shrink-0 text-muted-foreground"
+																/>
+																{tabLabel(tab)}
+																{beta && (
+																	<span className="ml-auto rounded-sm bg-highlight/15 px-1 py-px font-medium text-[10px] text-highlight uppercase tracking-wide">
+																		Beta
+																	</span>
+																)}
+															</button>
+														);
+													})}
+												</div>
+											))}
+										</div>
+									</PopoverContent>
+								</Popover>
+							)}
+						</div>
+						<div className="flex shrink-0 items-end gap-1">
+							{settingsTab && (
+								<ProjectTabButton
+									{...resolveProjectTabPaint(
+										settingsTab.id,
+										tabCustomization.prefs,
+									)}
+									label={settingsTab.label}
+									icon={settingsTab.icon}
+									isActive={activeTab === "settings"}
+									anchor="project-tab-settings"
+									beta={false}
+									onSelect={() => {
+										startTransition(() =>
+											setActiveTab("settings"),
+										);
+									}}
+									registerRef={() => {}}
+								/>
+							)}
+							{/* Per-user tab customization (card #1837). The dialog
+							    drafts locally and persists on Done. */}
+							<button
+								type="button"
+								onClick={() => setCustomizeOpen(true)}
+								aria-label="Customize tabs"
+								title="Customize tabs"
+								className="mb-1.5 flex size-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground/70 transition-colors hover:bg-accent hover:text-foreground"
+							>
+								<Settings2Icon
+									aria-hidden="true"
+									className="size-4 shrink-0"
+								/>
+							</button>
+						</div>
+					</div>
 				</div>
 
 				<CustomizeProjectTabsDialog

@@ -110,6 +110,12 @@ interface BasicInfoStepProps {
 	organizationId?: string;
 	draftKey?: string;
 	isEditMode?: boolean;
+	/**
+	 * True once the wizard has tried to leave this step. Until then the
+	 * required fields stay quiet; after, each shows its own message inline so
+	 * the toast is not the only place the problem is named.
+	 */
+	showValidation?: boolean;
 	onDuplicateNameChange?: (isDuplicate: boolean) => void;
 	/**
 	 * Azure DevOps selection handler. The wizard owns this (not `updateFormData`)
@@ -133,6 +139,7 @@ export function BasicInfoStep({
 	organizationId,
 	draftKey: _draftKey,
 	isEditMode,
+	showValidation = false,
 	onDuplicateNameChange,
 	onAzureDevOpsReposChange,
 	projectId,
@@ -143,7 +150,32 @@ export function BasicInfoStep({
 	// (no blur, no semi-transparent card fill) and no glassy inner shadow.
 	// Replaces the pre-redesign glassy chrome the 2026-05-23
 	// unified-context-uploader spec (§7.7/§17) deferred to this follow-up.
-	const sectionClassName = "rounded-2xl border border-border bg-card p-5";
+	const sectionClassName = "rounded-xl border border-border bg-card p-5";
+	const todayIso = new Date().toLocaleDateString("en-CA");
+	const briefLength = formData.description.trim().length;
+	const briefTooShort = briefLength <= MIN_DESCRIPTION_LENGTH;
+	// Inline validation, shown only after an attempt to continue. Mirrors every
+	// rule `handleNext` enforces for this step, so nothing is toast-only.
+	const nameError =
+		showValidation && !formData.name.trim()
+			? "Enter a project name."
+			: null;
+	const briefError =
+		showValidation && briefTooShort
+			? `Give the project a brief of more than ${MIN_DESCRIPTION_LENGTH} characters. It is the first thing Fabric reads.`
+			: null;
+	const phaseError =
+		showValidation && !formData.projectPhase
+			? "Choose which phase this project is in."
+			: null;
+	const startDateError =
+		showValidation && formData.projectPhase === "DISCOVERY_PLANNING"
+			? !formData.expectedDevelopmentStartDate
+				? "Choose when development is expected to start."
+				: formData.expectedDevelopmentStartDate < todayIso
+					? "Expected development start can't be in the past. Pick today or later."
+					: null
+			: null;
 
 	// Add Context dialog open state. Disabled until `formData.name` is
 	// non-empty (DRAFT must exist before context items can be added per
@@ -293,15 +325,12 @@ export function BasicInfoStep({
 	// Spec §7.3: CTA disabled until `formData.name.trim().length > 0`. The
 	// inline hint is shown only when disabled (avoid noise once name exists).
 	const isNameReady = formData.name.trim().length > 0;
-	const briefLength = formData.description.trim().length;
 	/** Local calendar day, so the picker's floor matches what the user sees. */
-	const todayIso = new Date().toLocaleDateString("en-CA");
-	const briefTooShort = briefLength <= MIN_DESCRIPTION_LENGTH;
 	const canOpenContextDialog = isNameReady && !!projectId;
 
 	return (
-		<div className="space-y-8">
-			<div className="rounded-[26px] border border-border bg-card p-6">
+		<div className="space-y-6">
+			<div className="rounded-xl border border-border bg-card p-6">
 				<div className="mb-6 max-w-3xl">
 					<p className="text-[11px] font-medium uppercase tracking-[0.24em] text-muted-foreground">
 						Step 1
@@ -346,18 +375,38 @@ export function BasicInfoStep({
 							onChange={(e) =>
 								updateFormData({ name: e.target.value })
 							}
-							className={`h-12 rounded-xl border-border bg-background ${isDuplicateName ? "border-destructive focus-visible:ring-destructive" : ""}`}
+							className={`h-12 rounded-xl border-border bg-background ${isDuplicateName || nameError ? "border-destructive focus-visible:ring-destructive" : ""}`}
+							aria-invalid={
+								isDuplicateName || nameError ? true : undefined
+							}
+							aria-describedby={
+								isDuplicateName || nameError
+									? "project-name-error"
+									: undefined
+							}
 							autoFocus
 						/>
-						{isDuplicateName && (
-							<p className="text-sm text-destructive">
+						{isDuplicateName ? (
+							<p
+								id="project-name-error"
+								role="alert"
+								className="text-sm text-destructive"
+							>
 								A project with this name already exists. Please
 								choose a different name.
 							</p>
-						)}
+						) : nameError ? (
+							<p
+								id="project-name-error"
+								role="alert"
+								className="text-sm text-destructive"
+							>
+								{nameError}
+							</p>
+						) : null}
 					</div>
 
-					<div className="overflow-hidden rounded-[24px] border border-border bg-muted/40">
+					<div className="overflow-hidden rounded-xl border border-border bg-muted/40">
 						<div className="flex flex-col gap-4 border-b border-border px-5 py-4 sm:flex-row sm:items-start sm:justify-between">
 							<div>
 								<Label
@@ -416,6 +465,10 @@ export function BasicInfoStep({
 								})
 							}
 							rows={10}
+							aria-invalid={briefError ? true : undefined}
+							aria-describedby={
+								briefError ? "project-brief-error" : undefined
+							}
 							className="min-h-[240px] resize-y border-0 bg-transparent px-5 py-5 text-[15px] leading-7 shadow-none focus-visible:ring-0"
 						/>
 						<div className="flex items-center justify-between border-t border-border px-5 py-3">
@@ -423,24 +476,34 @@ export function BasicInfoStep({
 							    a project that fails it is told so on its own
 							    readiness panel. Say it here, where it can still
 							    be fixed in a sentence. */}
-							<p
-								className={
-									briefTooShort
-										? "text-highlight text-xs"
-										: "text-muted-foreground text-xs"
-								}
-							>
-								{briefTooShort
-									? `A little more — ${MIN_DESCRIPTION_LENGTH + 1 - briefLength} character${
-											MIN_DESCRIPTION_LENGTH +
-												1 -
-												briefLength ===
-											1
-												? ""
-												: "s"
-										} to go. This is the first thing Fabric reads.`
-									: "Long-form notes work well here. Keep it rough if needed."}
-							</p>
+							{briefError ? (
+								<p
+									id="project-brief-error"
+									role="alert"
+									className="text-destructive text-xs"
+								>
+									{briefError}
+								</p>
+							) : (
+								<p
+									className={
+										briefTooShort
+											? "text-highlight text-xs"
+											: "text-muted-foreground text-xs"
+									}
+								>
+									{briefTooShort
+										? `A little more — ${MIN_DESCRIPTION_LENGTH + 1 - briefLength} character${
+												MIN_DESCRIPTION_LENGTH +
+													1 -
+													briefLength ===
+												1
+													? ""
+													: "s"
+											} to go. This is the first thing Fabric reads.`
+										: "Long-form notes work well here. Keep it rough if needed."}
+								</p>
+							)}
 							<TooltipProvider>
 								<Tooltip>
 									<TooltipTrigger asChild>
@@ -501,6 +564,17 @@ export function BasicInfoStep({
 								<SelectTrigger
 									id="project-phase"
 									data-testid="wizard-project-phase"
+									aria-invalid={phaseError ? true : undefined}
+									aria-describedby={
+										phaseError
+											? "project-phase-error"
+											: undefined
+									}
+									className={
+										phaseError
+											? "border-destructive focus:ring-destructive"
+											: undefined
+									}
 								>
 									<SelectValue placeholder="Choose a phase" />
 								</SelectTrigger>
@@ -513,10 +587,20 @@ export function BasicInfoStep({
 									</SelectItem>
 								</SelectContent>
 							</Select>
-							<p className="text-muted-foreground text-xs">
-								Fabric asks for different things in each phase.
-								You can change this later.
-							</p>
+							{phaseError ? (
+								<p
+									id="project-phase-error"
+									role="alert"
+									className="text-destructive text-xs"
+								>
+									{phaseError}
+								</p>
+							) : (
+								<p className="text-muted-foreground text-xs">
+									Fabric asks for different things in each
+									phase. You can change this later.
+								</p>
+							)}
 						</div>
 
 						{formData.projectPhase === "DISCOVERY_PLANNING" && (
@@ -532,7 +616,19 @@ export function BasicInfoStep({
 									// immediately un-quiet the codebase items the
 									// date exists to quiet.
 									min={todayIso}
-									aria-describedby="expected-dev-start-help"
+									aria-invalid={
+										startDateError ? true : undefined
+									}
+									aria-describedby={
+										startDateError
+											? "expected-dev-start-error"
+											: "expected-dev-start-help"
+									}
+									className={
+										startDateError
+											? "border-destructive focus-visible:ring-destructive"
+											: undefined
+									}
 									value={
 										formData.expectedDevelopmentStartDate
 									}
@@ -544,118 +640,145 @@ export function BasicInfoStep({
 									}
 									data-testid="wizard-expected-dev-start"
 								/>
-								<p
-									id="expected-dev-start-help"
-									className="text-muted-foreground text-xs"
-								>
-									Until then, Fabric will not ask you to
-									connect a codebase.
-								</p>
+								{startDateError ? (
+									<p
+										id="expected-dev-start-error"
+										role="alert"
+										className="text-destructive text-xs"
+									>
+										{startDateError}
+									</p>
+								) : (
+									<p
+										id="expected-dev-start-help"
+										className="text-muted-foreground text-xs"
+									>
+										Until then, Fabric will not ask you to
+										connect a codebase.
+									</p>
+								)}
 							</div>
 						)}
 					</div>
 				</div>
 			</div>
 
-			{/* Supporting Context — Add Context CTA + inline pending list.
-			    Spec §7.3 ordering: this section now lives directly under the
-			    project basics, before the Code Repository section. */}
-			<div
-				className={sectionClassName}
-				data-testid="supporting-context-section"
-			>
-				<div>
-					<Label className="text-base font-medium">
-						Supporting Context
-					</Label>
-					<p className="text-sm text-muted-foreground mt-1">
-						Upload files, link sources, paste notes, or pull from
-						integrations. Items are attached to the project
-						immediately and indexed in the background.
+			{/* Optional sources. Everything in here can be skipped — the project
+			    creates fine with none of it — so it sits under one label at a
+			    lower visual volume instead of reading as three more required
+			    forms. Order follows spec §7.3 (context → backlog → repository,
+			    with Project Shape last). Still plain sections, not accordions:
+			    a collapsed disclosure hides the very connection a first-time
+			    user did not know to look for. */}
+			<div className="space-y-4 pt-2" data-testid="optional-sources">
+				<div className="flex items-baseline justify-between gap-4 px-1">
+					<p className="app-editorial-label">
+						Optional — connect sources
+					</p>
+					<p className="text-xs text-muted-foreground">
+						Skip any of these and add them later from the project's
+						Settings.
 					</p>
 				</div>
-
-				<div className="mt-4 space-y-3">
-					{!canOpenContextDialog && (
-						<p
-							className="text-xs text-muted-foreground"
-							data-testid="add-context-disabled-hint"
-						>
-							Name your project first — we'll save your context to
-							a draft as you add it.
-						</p>
-					)}
-					<div className="flex flex-wrap items-center gap-3">
-						<Button
-							type="button"
-							variant="outline"
-							size="sm"
-							onClick={() => setContextDialogOpen(true)}
-							disabled={!canOpenContextDialog}
-							aria-label="Add project context"
-							aria-disabled={!canOpenContextDialog}
-							data-testid="add-context-cta"
-							className="border-border bg-background"
-						>
-							<PlusIcon className="mr-1 h-4 w-4" />
-							Add Context
-						</Button>
-					</div>
-
-					{projectId && (
-						<ContextPendingItemsList
-							projectId={projectId}
-							organizationId={organizationId ?? null}
-						/>
-					)}
-				</div>
-			</div>
-
-			{/* Optional integrations — plain sections (like the rest of the
-			    Brief step, not accordions). Both are skippable; the project
-			    creates fine with neither touched (AC#3). Backlog hosts the full
-			    PM/ADO config; Code Repository hosts the GitHub + GitLab + Azure
-			    DevOps provider cards (unified-project-setup spec §4.3, §4.4). */}
-			<div className="space-y-4" data-testid="optional-integrations">
-				<WizardBacklogCard
-					organizationId={organizationId ?? null}
-					value={{
-						projectManagementMcpConfigId:
-							formData.projectManagementMcpConfigId,
-						projectManagementMcpServerId:
-							formData.projectManagementMcpServerId,
-						projectManagementContainerId:
-							formData.projectManagementContainerId,
-						projectManagementContainerName:
-							formData.projectManagementContainerName,
-						projectManagementAdditionalContext:
-							formData.projectManagementAdditionalContext,
-						projectManagementDetectedType:
-							formData.projectManagementDetectedType,
-					}}
-					onChange={(patch) => updateFormData(patch)}
-				/>
+				{/* Supporting Context — Add Context CTA + inline pending list.
+				    Spec §7.3 ordering: this section now lives directly under the
+				    project basics, before the Code Repository section. */}
 				<div
 					className={sectionClassName}
-					data-testid="repository-section"
+					data-testid="supporting-context-section"
 				>
-					<WizardIntegrationsSection
-						sessionId={projectId ?? ""}
-						organizationId={organizationId ?? undefined}
-						projectId={projectId}
-						selectedGitHubRepos={formData.selectedGitHubRepos}
-						onGitHubReposChange={(repos) =>
-							updateFormData({ selectedGitHubRepos: repos })
-						}
-						selectedGitLabRepos={formData.selectedGitLabRepos}
-						onGitLabReposChange={(repos) =>
-							updateFormData({ selectedGitLabRepos: repos })
-						}
-						selectedAzureDevOpsRepos={
-							formData.selectedAzureDevOpsRepos
-						}
-						onAzureDevOpsReposChange={onAzureDevOpsReposChange}
+					<div>
+						<Label className="text-base font-medium">
+							Supporting Context
+						</Label>
+						<p className="text-sm text-muted-foreground mt-1">
+							Upload files, link sources, paste notes, or pull
+							from integrations. Items are attached to the project
+							immediately and indexed in the background.
+						</p>
+					</div>
+
+					<div className="mt-4 space-y-3">
+						{!canOpenContextDialog && (
+							<p
+								className="text-xs text-muted-foreground"
+								data-testid="add-context-disabled-hint"
+							>
+								Name your project first — we'll save your
+								context to a draft as you add it.
+							</p>
+						)}
+						<div className="flex flex-wrap items-center gap-3">
+							<Button
+								type="button"
+								variant="outline"
+								size="sm"
+								onClick={() => setContextDialogOpen(true)}
+								disabled={!canOpenContextDialog}
+								aria-label="Add project context"
+								aria-disabled={!canOpenContextDialog}
+								data-testid="add-context-cta"
+								className="border-border bg-background"
+							>
+								<PlusIcon className="mr-1 h-4 w-4" />
+								Add Context
+							</Button>
+						</div>
+
+						{projectId && (
+							<ContextPendingItemsList
+								projectId={projectId}
+								organizationId={organizationId ?? null}
+							/>
+						)}
+					</div>
+				</div>
+				{/* Optional integrations — plain sections (like the rest of the
+				    Brief step, not accordions). Both are skippable; the project
+				    creates fine with neither touched (AC#3). Backlog hosts the full
+				    PM/ADO config; Code Repository hosts the GitHub + GitLab + Azure
+				    DevOps provider cards (unified-project-setup spec §4.3, §4.4). */}
+				<div className="space-y-4" data-testid="optional-integrations">
+					<WizardBacklogCard
+						organizationId={organizationId ?? null}
+						value={{
+							projectManagementMcpConfigId:
+								formData.projectManagementMcpConfigId,
+							projectManagementMcpServerId:
+								formData.projectManagementMcpServerId,
+							projectManagementContainerId:
+								formData.projectManagementContainerId,
+							projectManagementContainerName:
+								formData.projectManagementContainerName,
+							projectManagementAdditionalContext:
+								formData.projectManagementAdditionalContext,
+							projectManagementDetectedType:
+								formData.projectManagementDetectedType,
+						}}
+						onChange={(patch) => updateFormData(patch)}
 					/>
+					<div
+						className={sectionClassName}
+						data-testid="repository-section"
+					>
+						<WizardIntegrationsSection
+							sessionId={projectId ?? ""}
+							organizationId={organizationId ?? undefined}
+							projectId={projectId}
+							selectedGitHubRepos={formData.selectedGitHubRepos}
+							onGitHubReposChange={(repos) =>
+								updateFormData({ selectedGitHubRepos: repos })
+							}
+							selectedGitLabRepos={formData.selectedGitLabRepos}
+							onGitLabReposChange={(repos) =>
+								updateFormData({ selectedGitLabRepos: repos })
+							}
+							selectedAzureDevOpsRepos={
+								formData.selectedAzureDevOpsRepos
+							}
+							onAzureDevOpsReposChange={onAzureDevOpsReposChange}
+						/>
+					</div>
 				</div>
 			</div>
 

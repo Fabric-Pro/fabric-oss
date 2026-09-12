@@ -730,7 +730,7 @@ export function DocumentGenerationStep({
 						return (
 							<Card
 								key={index}
-								className={`transition-all ${
+								className={`transition-colors ${
 									doc.selected
 										? "border-primary bg-primary/5"
 										: "hover:border-primary/50"
