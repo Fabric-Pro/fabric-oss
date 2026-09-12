@@ -29,6 +29,7 @@ import {
 	parseRepoUrl,
 	syncLegacyProjectRepoOnConnect,
 } from "@repo/database";
+import { getGitHubWorkflowCredential } from "@repo/integrations/github";
 import { decryptApiKey, encryptApiKey } from "@repo/utils";
 import { z } from "zod";
 import { recordAuditFromRequest } from "../../../../lib/audit";
@@ -141,14 +142,6 @@ export const connectRepoIntegrationProcedure = tenantProtectedProcedure
 						orderBy: { createdAt: "desc" },
 					});
 
-				if (candidates.length === 0) {
-					throw new ORPCError("BAD_REQUEST", {
-						message:
-							"No stored GitHub token found for this project",
-						data: { reason: PAT_INVALID_REASON },
-					});
-				}
-
 				// If sourceIntegrationId is provided, check that candidate first.
 				const fullCandidates = input.sourceIntegrationId
 					? [
@@ -216,14 +209,69 @@ export const connectRepoIntegrationProcedure = tenantProtectedProcedure
 					}
 				}
 
+				// Fall back to the caller's own stored workflow credential. When the
+				// picker listed this repository from a personal PAT, that token is the
+				// one proven to see it; sending the caller through an App
+				// authorization flow instead stores a credential that cannot read what
+				// was just browsed, and asking them to paste the token again is the
+				// friction this whole path exists to remove.
+				let personalPatAvailable = false;
+				if (!patToUse || !encryptedPat) {
+					const workflowCredential =
+						await getGitHubWorkflowCredential(
+							user.id,
+							organizationId ?? undefined,
+						);
+					if (workflowCredential?.kind === "pat") {
+						personalPatAvailable = true;
+						try {
+							const validation = await validateGitHubPat({
+								pat: workflowCredential.token,
+								owner: repositoryOwner,
+								repo: repositoryName,
+							});
+							if (validation.ok) {
+								patToUse = workflowCredential.token;
+								encryptedPat = encryptApiKey(
+									workflowCredential.token,
+								);
+								validatedAgainstRepo = true;
+							} else if (
+								validation.status &&
+								(validation.status >= 500 || !lastStatus)
+							) {
+								lastStatus = validation.status;
+							}
+						} catch (err) {
+							// Same rule as the stored-candidate loop: a transport
+							// failure is not a credential rejection.
+							if (
+								err instanceof TypeError ||
+								(err as { name?: string })?.name ===
+									"FetchError"
+							) {
+								throw err;
+							}
+						}
+					}
+				}
+
 				if (!patToUse || !encryptedPat) {
 					if (lastStatus && lastStatus >= 500) {
+						// Deliberately NOT tagged with PAT_INVALID_REASON. The picker
+						// treats that tag as "this credential is unusable, go sign in",
+						// and a sign-in popup is the wrong remedy for a provider
+						// outage — it would store an App credential that cannot read
+						// the repository. Surface the outage instead.
 						throw new ORPCError("BAD_REQUEST", {
 							message: `GitHub returned status ${lastStatus}`,
 						});
 					}
 					throw new ORPCError("BAD_REQUEST", {
-						message: "Invalid PAT or insufficient permissions",
+						message:
+							candidates.length > 0 || personalPatAvailable
+								? "Invalid PAT or insufficient permissions"
+								: "No stored GitHub token found for this project",
 						data: { reason: PAT_INVALID_REASON },
 					});
 				}

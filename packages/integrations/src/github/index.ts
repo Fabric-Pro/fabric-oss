@@ -789,8 +789,12 @@ async function refreshTokenIfNeeded(
 	},
 	userId?: string,
 	organizationId?: string,
+	/** Already-decrypted blob, so callers that decrypted for their own reasons
+	 *  don't pay a second scrypt. */
+	decryptedCredentials?: string,
 ): Promise<string> {
-	const credentialsJson = decryptApiKey(integration.credentials);
+	const credentialsJson =
+		decryptedCredentials ?? decryptApiKey(integration.credentials);
 	let parsed: ParsedCredentials;
 	try {
 		parsed = JSON.parse(credentialsJson) as ParsedCredentials;
@@ -1360,6 +1364,68 @@ export async function getGitHubAccessToken(
 	} catch {
 		return null;
 	}
+}
+
+/**
+ * The caller's stored GitHub workflow credential, together with the credential
+ * type the repository picker and the connect path both need.
+ *
+ * A GitHub App grant carries `access_token` (and usually `refresh_token`); a
+ * Personal Access Token arrives as a bare token field. The distinction decides
+ * how a browsed repository is connected: a PAT already carries its own
+ * repository access and can be stored directly, while an App grant needs its
+ * authorization flow to install the App on that repository first.
+ */
+export async function getGitHubWorkflowCredential(
+	userId: string,
+	organizationId?: string,
+): Promise<{ kind: "pat" | "oauth"; token: string } | null> {
+	const integration = await db.workflowIntegration.findFirst({
+		where: {
+			userId,
+			organizationId: organizationId ?? null,
+			provider: "GITHUB",
+			isActive: true,
+		},
+		select: { id: true, credentials: true, settings: true },
+	});
+
+	if (!integration?.credentials) {
+		return null;
+	}
+
+	// Decrypt before the refresh and hand the blob down: the refresh path needs
+	// the same plaintext, and decryption is a full scrypt each time.
+	let credentialsJson: string;
+	try {
+		credentialsJson = decryptApiKey(integration.credentials);
+	} catch {
+		// Undecryptable ciphertext tells us nothing about the credential type,
+		// and guessing "pat" would store an App token in `encryptedPat` — it
+		// expires in hours with no refresh token.
+		return null;
+	}
+
+	let token: string;
+	try {
+		token = await refreshTokenIfNeeded(
+			integration,
+			userId,
+			organizationId,
+			credentialsJson,
+		);
+	} catch {
+		return null;
+	}
+	if (!token) {
+		return null;
+	}
+
+	const parsed = safeParseCredentials(credentialsJson);
+	return {
+		kind: parsed?.access_token || parsed?.refresh_token ? "oauth" : "pat",
+		token,
+	};
 }
 
 /**

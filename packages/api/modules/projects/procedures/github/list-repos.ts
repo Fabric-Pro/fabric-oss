@@ -16,7 +16,7 @@ import {
 } from "@repo/database";
 import {
 	getAuthenticatedUser,
-	getGitHubAccessToken,
+	getGitHubWorkflowCredential,
 	listUserRepositories,
 	searchGitHubRepositories,
 } from "@repo/integrations/github";
@@ -588,25 +588,30 @@ export const listGitHubReposProcedure = tenantProtectedProcedure
 		);
 
 		// Strategy 1: Try user's workflow integration (preferred — no MCP server needed)
-		const token = await getGitHubAccessToken(
+		const workflowCredential = await getGitHubWorkflowCredential(
 			userId,
 			organizationId ?? undefined,
 		);
 
-		if (token) {
+		if (workflowCredential) {
 			console.log(
-				"[listGitHubRepos] Using workflow integration (OAuth token) from",
+				`[listGitHubRepos] Using workflow integration (${workflowCredential.kind}) from`,
 				organizationId ? `org:${organizationId}` : "personal",
 				"context",
 			);
 			try {
 				const result = await listReposViaIntegration(
-					token,
+					workflowCredential.token,
 					input.searchOrg,
 				);
+				// Report the credential that actually served this list. A PAT can
+				// connect a browsed repository directly; an App grant cannot, and
+				// labelling one as the other sends the caller through an
+				// authorization popup that then stores a credential unable to read
+				// the repository it just listed.
 				return {
 					...result,
-					source: "oauth" as const,
+					source: workflowCredential.kind,
 					sourceIntegrationId: undefined,
 				};
 			} catch (err) {
