@@ -201,62 +201,76 @@ export function AnthropicCapabilityBanner() {
 		isOrgContext && configStatus?.resolvedEmbeddingSource === "user";
 
 	return (
-		// `sticky` rather than plain flow: a reader arrives at pages already
-		// scrolled, and a notice explaining why document search returns nothing
-		// is useless sitting off-screen at the top of the document.
-		//
-		// Spacing belongs on this wrapper, never on the Alert: the Alert owns
-		// `p-4`, so `pt-*`/`pb-*` passed through its className would shrink its
-		// own padding instead of adding any outer gap. Same rhythm as the
-		// sibling banners in this column.
-		<div className="sticky top-0 z-10 flex shrink-0 justify-center px-3 pt-3 pb-1 motion-safe:animate-in motion-safe:fade-in">
-			{/* Painted in the `--highlight` token pair rather than the
-			 * primitive's `warning` variant, which reaches for a raw Tailwind
-			 * yellow — the same amber the sibling reminder and the AI Models
-			 * page's capability hints use, so the column reads as one system. */}
+		// Floating, not in flow: docked by the chrome in a fixed stack at the
+		// bottom-right of the content area with its siblings, so the page
+		// keeps its layout. The stack's wrapper is pointer-transparent, so
+		// this element re-enables pointer events for the card itself.
+		<div className="pointer-events-auto w-full max-w-lg motion-safe:animate-in motion-safe:fade-in motion-safe:slide-in-from-bottom-2">
+			{/* Painted in the `--highlight` token as ink on an opaque card,
+			 * matching the sibling reminder, so the stack reads as one system. */}
 			<Alert
 				aria-label="Anthropic capability notice"
-				className="flex w-full max-w-4xl items-start gap-3 border-highlight/40 bg-highlight/5 text-highlight-foreground dark:text-highlight"
+				className="flex w-full flex-col gap-3 border-highlight/40 bg-card text-highlight-ink shadow-lg"
 			>
-				{/* A warning triangle, and the opposite of the card's glyph on
-				 * purpose. The card states a permanent vendor fact to someone
-				 * choosing a provider, and shows even when nothing is configured
-				 * — nothing there is broken, so it takes the calmer icon. This
-				 * fires only when document search is actually not working for
-				 * this reader right now. That is a break, and it should read as
-				 * one. */}
-				<AlertTriangleIcon
-					className="size-4 shrink-0 text-highlight"
-					aria-hidden="true"
-				/>
-				<div className="min-w-0 flex-1">
-					<AlertTitle>{ANTHROPIC_CAPABILITY_TITLE}</AlertTitle>
-					<AlertDescription>
-						<p>{ANTHROPIC_CAPABILITY_BODY}</p>
-						{/* The banner's own second sentence: the reader is
-						 * already working, so they need to know which of the
-						 * things in front of them still run. */}
-						<p className="mt-1">
-							{ANTHROPIC_CAPABILITY_BANNER_DETAIL}
-						</p>
-						{/* Who is addressed depends on WHOSE configuration the
-						 * resolver reached, not on the reader's role. When it
-						 * reached their own default they can move it themselves;
-						 * when it reached the organization's they cannot, and
-						 * being pointed at their own provider page would send
-						 * them to a row that is never consulted for embeddings
-						 * inside an organization. See the role note in the
-						 * docstring. */}
-						{!canConfigure && (
+				{/* Text first, actions on their own row beneath: side by side
+				 * the control squeezed this long copy into a one-word column. */}
+				<div className="flex items-start gap-3">
+					{/* A warning triangle, and the opposite of the card's glyph on
+					 * purpose. The card states a permanent vendor fact to someone
+					 * choosing a provider, and shows even when nothing is configured
+					 * — nothing there is broken, so it takes the calmer icon. This
+					 * fires only when document search is actually not working for
+					 * this reader right now. That is a break, and it should read as
+					 * one. */}
+					<AlertTriangleIcon
+						className="mt-0.5 size-4 shrink-0 text-highlight"
+						aria-hidden="true"
+					/>
+					<div className="min-w-0 flex-1">
+						<AlertTitle>{ANTHROPIC_CAPABILITY_TITLE}</AlertTitle>
+						<AlertDescription>
+							<p>{ANTHROPIC_CAPABILITY_BODY}</p>
+							{/* The banner's own second sentence: the reader is
+							 * already working, so they need to know which of the
+							 * things in front of them still run. */}
 							<p className="mt-1">
-								{resolutionIsOwn
-									? ANTHROPIC_CAPABILITY_OWN_REMEDY
-									: ANTHROPIC_CAPABILITY_ADMIN_REMEDY}
+								{ANTHROPIC_CAPABILITY_BANNER_DETAIL}
 							</p>
-						)}
-					</AlertDescription>
+							{/* Who is addressed depends on WHOSE configuration the
+							 * resolver reached, not on the reader's role. When it
+							 * reached their own default they can move it themselves;
+							 * when it reached the organization's they cannot, and
+							 * being pointed at their own provider page would send
+							 * them to a row that is never consulted for embeddings
+							 * inside an organization. See the role note in the
+							 * docstring. */}
+							{!canConfigure && (
+								<p className="mt-1">
+									{resolutionIsOwn
+										? ANTHROPIC_CAPABILITY_OWN_REMEDY
+										: ANTHROPIC_CAPABILITY_ADMIN_REMEDY}
+								</p>
+							)}
+						</AlertDescription>
+					</div>
+					<Button
+						variant="ghost"
+						size="icon"
+						className="-mt-1.5 -mr-1.5 size-8 shrink-0"
+						onClick={() =>
+							setDismissedFor((previous) =>
+								new Set(previous).add(
+									organizationId ??
+										DISMISSED_IN_PERSONAL_CONTEXT,
+								),
+							)
+						}
+						aria-label="Dismiss Anthropic capability notice"
+					>
+						<XIcon className="size-4" />
+					</Button>
 				</div>
-				<div className="flex shrink-0 items-center gap-2">
+				<div className="flex flex-wrap items-center justify-end gap-2">
 					{/* A control only for a reader who has somewhere to go that
 					 * would change the answer: an admin to the organization's
 					 * settings, or anyone whose OWN default is what resolved to
@@ -275,22 +289,6 @@ export function AnthropicCapabilityBanner() {
 							</Link>
 						</Button>
 					)}
-					<Button
-						variant="ghost"
-						size="icon"
-						className="size-8"
-						onClick={() =>
-							setDismissedFor((previous) =>
-								new Set(previous).add(
-									organizationId ??
-										DISMISSED_IN_PERSONAL_CONTEXT,
-								),
-							)
-						}
-						aria-label="Dismiss Anthropic capability notice"
-					>
-						<XIcon className="size-4" />
-					</Button>
 				</div>
 			</Alert>
 		</div>

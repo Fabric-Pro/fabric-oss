@@ -1723,7 +1723,7 @@ export function DuplicateResolveDialog({
 												    not just hover. */}
 												<button
 													type="button"
-													className="inline-flex items-center gap-1 rounded-full border border-highlight/40 bg-highlight/10 px-2.5 py-1 font-medium text-highlight-foreground dark:text-muted-foreground"
+													className="inline-flex items-center gap-1 rounded-full border border-highlight/40 bg-highlight/10 px-2.5 py-1 font-medium text-highlight-ink dark:text-muted-foreground"
 												>
 													{t("overlapPillLabel")}
 												</button>

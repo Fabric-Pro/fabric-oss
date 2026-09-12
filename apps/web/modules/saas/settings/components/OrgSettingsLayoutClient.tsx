@@ -2,29 +2,30 @@
 
 import { PageBreadcrumbs } from "@saas/shared/components/PageBreadcrumbs";
 import { TopRightControls } from "@saas/shared/components/TopRightControls";
-import { useFullscreen } from "@saas/shared/contexts/FullscreenContext";
 import { usePathname } from "next/navigation";
-import { type PropsWithChildren, useEffect, useMemo } from "react";
+import { type PropsWithChildren, useMemo } from "react";
 import { SettingsReturnBanner } from "./SettingsReturnBanner";
 
 const settingsPageTitles: Record<string, string> = {
-	general: "General Settings",
+	general: "General",
 	members: "Members",
 	"ai-providers": "AI Providers",
 	"ai-models": "AI Models",
 	"ai-memory": "AI Memory",
 	"rag-providers": "RAG Providers",
 	"search-providers": "Search Providers",
-	mcp: "MCP Registry",
 	openapi: "OpenAPI Services",
 	agents: "Agent Registry",
 	prompts: "Prompts",
 	"api-keys": "API Keys",
+	"audit-log": "Audit Log",
+	"user-activity": "User Activity",
+	usage: "AI Usage",
 	billing: "Billing",
 	"danger-zone": "Danger Zone",
-	firecrawl: "Firecrawl",
+	// Detail pages for providers and actions still live under this slug;
+	// the catalogue itself is at /app/{slug}/connections.
 	integrations: "Integrations",
-	"data-connections": "Integrations",
 };
 
 type OrgSettingsLayoutClientProps = PropsWithChildren<{
@@ -37,7 +38,6 @@ export function OrgSettingsLayoutClient({
 	organizationSlug,
 	organizationName,
 }: OrgSettingsLayoutClientProps) {
-	const { setIsFullscreen } = useFullscreen();
 	const pathname = usePathname();
 
 	const breadcrumbItems = useMemo(() => {
@@ -64,17 +64,10 @@ export function OrgSettingsLayoutClient({
 		return items;
 	}, [pathname, organizationSlug, organizationName]);
 
-	useEffect(() => {
-		setIsFullscreen(true);
-		return () => {
-			setIsFullscreen(false);
-		};
-	}, [setIsFullscreen]);
-
 	return (
 		<>
 			<TopRightControls />
-			<div className="py-5">
+			<div className="pt-4 pb-3">
 				<PageBreadcrumbs items={breadcrumbItems} />
 			</div>
 			<SettingsReturnBanner />

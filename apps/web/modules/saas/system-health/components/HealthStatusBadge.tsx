@@ -65,17 +65,23 @@ const TONE: Record<HealthStatus, Tone> = {
 	// earlier intent of keeping the all-clear visually quieter than a problem is
 	// dropped: it cannot be expressed as a tint without failing AA, and hue
 	// already carries that emphasis.
+	// Since the neutral palette, light-mode `highlight` is a dark amber ink
+	// (#8a5e12) whose paired foreground is near-black: 3.06:1 on the solid
+	// fill. `highlight-foreground` is what sits on the 10% tints elsewhere,
+	// so it stays dark; the solid badge uses the page background as its
+	// text instead — white on the dark amber in light mode (5.4:1), charcoal
+	// on the bright amber in dark mode.
 	DEGRADED: {
 		label: "Degraded",
-		cls: "border-highlight bg-highlight text-highlight-foreground",
+		cls: "border-highlight bg-highlight text-background",
 		dot: "bg-highlight",
-		badgeDot: "bg-highlight-foreground",
+		badgeDot: "bg-background",
 	},
 	PARTIAL_OUTAGE: {
 		label: "Partial outage",
-		cls: "border-highlight bg-highlight text-highlight-foreground",
+		cls: "border-highlight bg-highlight text-background",
 		dot: "bg-highlight",
-		badgeDot: "bg-highlight-foreground",
+		badgeDot: "bg-background",
 	},
 	MAJOR_OUTAGE: {
 		label: "Major outage",

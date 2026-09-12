@@ -45,7 +45,7 @@ export function AgentTemplatesPageTabs({
 			onValueChange={handleTabChange}
 			className="w-full"
 		>
-			<TabsList className="mb-6">
+			<TabsList className="mb-4">
 				<TabsTrigger value="gallery" className="gap-2">
 					<LayoutGridIcon className="h-4 w-4" />
 					Template Gallery

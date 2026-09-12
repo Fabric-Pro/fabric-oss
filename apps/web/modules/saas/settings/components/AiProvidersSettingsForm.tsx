@@ -2,7 +2,9 @@
 
 import { AnthropicCapabilityNotice } from "@saas/settings/components/AnthropicCapabilityNotice";
 import { useReturnToRedirect } from "@saas/settings/hooks/use-return-to-redirect";
+import { aiProviderSiteUrl } from "@saas/settings/lib/provider-sites";
 import { SettingsItem } from "@saas/shared/components/SettingsItem";
+import { SiteFavicon } from "@saas/shared/components/SiteFavicon";
 import { orpcClient } from "@shared/lib/orpc-client";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -38,14 +40,11 @@ import {
 import {
 	AlertCircleIcon,
 	CheckCircleIcon,
-	CloudIcon,
 	DatabaseIcon,
 	EyeIcon,
 	EyeOffIcon,
-	InfoIcon,
 	LoaderIcon,
 	PlayIcon,
-	ServerIcon,
 	SettingsIcon,
 	StarIcon,
 	Trash2Icon,
@@ -711,7 +710,7 @@ export function AiProvidersSettingsForm() {
 		<>
 			<SettingsItem
 				title="AI Providers"
-				description="Configure AI providers to enable AI-powered features. You can use AI gateways for unified access or connect directly to providers."
+				description="Gateways give one key for many models. Direct providers connect straight to the source."
 			>
 				<div className="space-y-6">
 					{/* Status Overview */}
@@ -862,37 +861,18 @@ export function AiProvidersSettingsForm() {
 						</div>
 					)}
 
-					{/* Info Banner */}
-					<div className="rounded-md border border-border bg-muted/40 p-4">
-						<div className="flex gap-3">
-							<InfoIcon className="size-5 shrink-0 text-muted-foreground" />
-							<div className="space-y-1 text-sm">
-								<p className="font-medium text-foreground">
-									Choose Your Provider
-								</p>
-								<p className="text-muted-foreground">
-									<strong>AI Gateways</strong> provide unified
-									access to multiple models with caching and
-									analytics. <strong>Direct providers</strong>{" "}
-									connect straight to the source for
-									potentially lower costs.
-								</p>
-							</div>
-						</div>
-					</div>
-
 					{/* Embedding Provider Info Banner */}
 					{configStatus?.isConfigured &&
 						!configStatus?.embeddingProvider && (
-							<div className="rounded-md border border-secondary/20 bg-secondary/5 p-4">
+							<div className="rounded-md border border-border bg-muted/40 p-4">
 								<div className="flex gap-3">
-									<DatabaseIcon className="size-5 shrink-0 text-secondary" />
+									<DatabaseIcon className="size-5 shrink-0 text-muted-foreground" />
 									<div className="space-y-1 text-sm">
 										<p className="font-medium text-foreground">
 											Set an Embedding Provider for
 											Document Search
 										</p>
-										<p className="text-secondary/80">
+										<p className="text-muted-foreground">
 											When you upload documents, they are
 											converted into searchable vectors
 											using an{" "}
@@ -902,7 +882,7 @@ export function AiProvidersSettingsForm() {
 											default AI provider, set a dedicated
 											embedding provider below.
 										</p>
-										<p className="text-secondary/80 mt-1">
+										<p className="text-muted-foreground mt-1">
 											<strong>Recommended:</strong> OpenAI
 											or Vercel Gateway (with OpenAI
 											enabled) for best results.
@@ -914,10 +894,9 @@ export function AiProvidersSettingsForm() {
 
 					{/* AI Gateways Section */}
 					<div>
-						<h3 className="mb-3 flex items-center gap-2 text-[11px] font-medium uppercase tracking-[0.1em] text-muted-foreground">
-							<CloudIcon className="size-4" />
+						<h4 className="app-editorial-label mb-3">
 							AI Gateways
-						</h3>
+						</h4>
 						<div className="grid gap-4 md:grid-cols-2">
 							{gatewayProviders.map((provider) => {
 								const isConfigured = isProviderConfigured(
@@ -934,47 +913,53 @@ export function AiProvidersSettingsForm() {
 								return (
 									<Card
 										key={provider.id}
-										className={`relative p-4 transition-colors hover:border-primary/50 ${isDefault ? "border-primary/50 bg-primary/5" : ""}`}
+										className={`relative p-4 transition-colors hover:border-primary/50 ${isDefault ? "border-success/40" : ""}`}
 									>
 										<div className="space-y-3">
 											<div className="flex items-start gap-3">
-												<div className="rounded-lg bg-primary/10 p-2">
-													<Icon className="size-5 text-primary" />
-												</div>
+												<SiteFavicon
+													url={aiProviderSiteUrl(
+														provider.id,
+														provider.docsUrl,
+													)}
+													name={provider.name}
+													size={36}
+													fallback={
+														<Icon className="size-4" />
+													}
+												/>
 												<div className="flex-1">
-													<div className="flex items-center gap-2 flex-wrap">
-														<h4 className="font-semibold">
+													<div className="flex min-w-0 items-center gap-2">
+														<h4 className="truncate font-semibold">
 															{provider.name}
 														</h4>
 														{isDefault && (
 															<Badge
-																variant="default"
-																className="text-xs bg-primary text-primary-foreground"
+																variant="success"
+																className="shrink-0 text-xs"
 															>
 																<StarIcon className="mr-1 size-3" />
 																Default
 															</Badge>
 														)}
+														{isConfigured && (
+															<Badge
+																variant="outline"
+																className="shrink-0 border-success/40 text-xs text-success"
+															>
+																<CheckCircleIcon className="mr-1 size-3" />
+																Active
+															</Badge>
+														)}
 														{isEmbedding && (
 															<Badge
-																variant="default"
-																className="text-xs bg-secondary text-secondary-foreground"
+																variant="outline"
+																className="shrink-0 text-xs"
 															>
 																<DatabaseIcon className="mr-1 size-3" />
 																Embeddings
 															</Badge>
 														)}
-														{isConfigured &&
-															!isDefault &&
-															!isEmbedding && (
-																<Badge
-																	variant="secondary"
-																	className="text-xs"
-																>
-																	<CheckCircleIcon className="mr-1 size-3" />
-																	Active
-																</Badge>
-															)}
 													</div>
 													<p className="mt-1 text-muted-foreground text-xs">
 														{provider.description}
@@ -1160,10 +1145,9 @@ export function AiProvidersSettingsForm() {
 
 					{/* Direct Providers Section */}
 					<div>
-						<h3 className="mb-3 flex items-center gap-2 text-[11px] font-medium uppercase tracking-[0.1em] text-muted-foreground">
-							<ServerIcon className="size-4" />
+						<h4 className="app-editorial-label mb-3">
 							Direct Providers
-						</h3>
+						</h4>
 						<div className="grid items-start gap-4 md:grid-cols-2 lg:grid-cols-3">
 							{directProviders.map((provider) => {
 								const isConfigured = isProviderConfigured(
@@ -1180,50 +1164,52 @@ export function AiProvidersSettingsForm() {
 								return (
 									<Card
 										key={provider.id}
-										className={`relative p-4 transition-colors hover:border-primary/50 ${isDefault ? "border-primary/50 bg-primary/5" : ""}`}
+										className={`relative p-4 transition-colors hover:border-primary/50 ${isDefault ? "border-success/40" : ""}`}
 									>
 										<div className="space-y-3">
 											<div className="flex items-start gap-3">
-												<div
-													className={`rounded-lg p-2 ${isDefault ? "bg-primary/10" : "bg-muted"}`}
-												>
-													<Icon
-														className={`size-4 ${isDefault ? "text-primary" : "text-muted-foreground"}`}
-													/>
-												</div>
+												<SiteFavicon
+													url={aiProviderSiteUrl(
+														provider.id,
+														provider.docsUrl,
+													)}
+													name={provider.name}
+													size={36}
+													fallback={
+														<Icon className="size-4" />
+													}
+												/>
 												<div className="flex-1">
-													<div className="flex items-center gap-2 flex-wrap">
-														<h4 className="font-semibold text-sm">
+													<div className="flex min-w-0 items-center gap-2">
+														<h4 className="truncate font-semibold text-sm">
 															{provider.name}
 														</h4>
 														{isDefault && (
 															<Badge
-																variant="default"
-																className="text-xs bg-primary text-primary-foreground"
+																variant="success"
+																className="shrink-0 text-xs"
 															>
 																<StarIcon className="mr-1 size-3" />
 																Default
 															</Badge>
 														)}
+														{isConfigured && (
+															<Badge
+																variant="outline"
+																className="shrink-0 border-success/40 text-xs text-success"
+															>
+																Active
+															</Badge>
+														)}
 														{isEmbedding && (
 															<Badge
-																variant="default"
-																className="text-xs bg-secondary text-secondary-foreground"
+																variant="outline"
+																className="shrink-0 text-xs"
 															>
 																<DatabaseIcon className="mr-1 size-3" />
 																Embeddings
 															</Badge>
 														)}
-														{isConfigured &&
-															!isDefault &&
-															!isEmbedding && (
-																<Badge
-																	variant="secondary"
-																	className="text-xs"
-																>
-																	Active
-																</Badge>
-															)}
 													</div>
 													<p className="mt-1 line-clamp-2 text-muted-foreground text-xs">
 														{provider.description}
@@ -1394,10 +1380,9 @@ export function AiProvidersSettingsForm() {
 
 					{/* Cloud Providers Section */}
 					<div>
-						<h3 className="mb-3 flex items-center gap-2 text-[11px] font-medium uppercase tracking-[0.1em] text-muted-foreground">
-							<CloudIcon className="size-4" />
+						<h4 className="app-editorial-label mb-3">
 							Cloud Providers
-						</h3>
+						</h4>
 						<p className="mb-3 text-muted-foreground text-xs">
 							Enterprise cloud AI services that require additional
 							configuration like resource endpoints.
@@ -1418,50 +1403,52 @@ export function AiProvidersSettingsForm() {
 								return (
 									<Card
 										key={provider.id}
-										className={`relative p-4 transition-colors hover:border-primary/50 ${isDefault ? "border-primary/50 bg-primary/5" : ""}`}
+										className={`relative p-4 transition-colors hover:border-primary/50 ${isDefault ? "border-success/40" : ""}`}
 									>
 										<div className="space-y-3">
 											<div className="flex items-start gap-3">
-												<div
-													className={`rounded-lg p-2 ${isDefault ? "bg-primary/10" : "bg-muted"}`}
-												>
-													<Icon
-														className={`size-4 ${isDefault ? "text-primary" : "text-muted-foreground"}`}
-													/>
-												</div>
+												<SiteFavicon
+													url={aiProviderSiteUrl(
+														provider.id,
+														provider.docsUrl,
+													)}
+													name={provider.name}
+													size={36}
+													fallback={
+														<Icon className="size-4" />
+													}
+												/>
 												<div className="flex-1">
-													<div className="flex items-center gap-2 flex-wrap">
-														<h4 className="font-semibold text-sm">
+													<div className="flex min-w-0 items-center gap-2">
+														<h4 className="truncate font-semibold text-sm">
 															{provider.name}
 														</h4>
 														{isDefault && (
 															<Badge
-																variant="default"
-																className="text-xs bg-primary text-primary-foreground"
+																variant="success"
+																className="shrink-0 text-xs"
 															>
 																<StarIcon className="mr-1 size-3" />
 																Default
 															</Badge>
 														)}
+														{isConfigured && (
+															<Badge
+																variant="outline"
+																className="shrink-0 border-success/40 text-xs text-success"
+															>
+																Active
+															</Badge>
+														)}
 														{isEmbedding && (
 															<Badge
-																variant="default"
-																className="text-xs bg-secondary text-secondary-foreground"
+																variant="outline"
+																className="shrink-0 text-xs"
 															>
 																<DatabaseIcon className="mr-1 size-3" />
 																Embeddings
 															</Badge>
 														)}
-														{isConfigured &&
-															!isDefault &&
-															!isEmbedding && (
-																<Badge
-																	variant="secondary"
-																	className="text-xs"
-																>
-																	Active
-																</Badge>
-															)}
 													</div>
 													<p className="mt-1 line-clamp-2 text-muted-foreground text-xs">
 														{provider.description}

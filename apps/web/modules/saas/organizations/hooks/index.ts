@@ -32,8 +32,6 @@
  * See also: @shared/hooks/use-tenant-query for tenant-aware query utilities
  */
 
-// Low-level hook - use with caution, see JSDoc for warnings
-export { useActiveOrganization } from "./use-active-organization";
 // Primary hook for organization context - RECOMMENDED for API calls
 export {
 	useBasePath,

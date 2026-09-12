@@ -73,7 +73,7 @@ function AppWrapperContent({ children }: PropsWithChildren) {
 	return (
 		<div
 			className={cn(
-				"flex flex-col min-w-0 bg-[radial-gradient(farthest-corner_at_0%_0%,color-mix(in_oklch,var(--color-primary),transparent_95%)_0%,var(--color-background)_50%)] dark:bg-[radial-gradient(farthest-corner_at_0%_0%,color-mix(in_oklch,var(--color-primary),transparent_90%)_0%,var(--color-background)_50%)]",
+				"flex flex-col min-w-0 bg-background",
 				isFullHeightRoute
 					? "h-screen overflow-hidden"
 					: "min-h-screen overflow-x-clip",
@@ -136,9 +136,27 @@ function AppWrapperContent({ children }: PropsWithChildren) {
 						 * what the AI notice needs — it was mounted per
 						 * dashboard before, and said nothing anywhere else.
 						 * Each renders nothing when it has nothing to say. */}
-						<AiGatewayWarningBanner />
-						<AnthropicCapabilityBanner />
-						<AiUsageLimitBanner />
+						{/* The three AI notices float above the page instead
+						 * of sitting in flow: in flow they pushed every page
+						 * title down by their own height and covered the
+						 * header when they arrived late. They dock to the
+						 * bottom-right corner of the content area, offset by
+						 * the sidebar so they never sit over the nav, and
+						 * the wrapper ignores pointer events so the page
+						 * under the gaps stays clickable. Order is still
+						 * top-to-bottom by urgency. */}
+						<div
+							className={cn(
+								"pointer-events-none fixed inset-x-0 bottom-4 z-30 flex flex-col items-end gap-2 px-4",
+								isCollapsed
+									? "md:left-[72px]"
+									: "md:left-[232px]",
+							)}
+						>
+							<AiGatewayWarningBanner />
+							<AnthropicCapabilityBanner />
+							<AiUsageLimitBanner />
+						</div>
 						{/* Detects a stale build; its backstop countdown
 						 * banner renders here in flow, never as a fixed
 						 * overlay, so it cannot cover the page. */}

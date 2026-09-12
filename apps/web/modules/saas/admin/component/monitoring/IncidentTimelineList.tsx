@@ -778,7 +778,7 @@ function describeEventType(type: string): {
 				label: "Acknowledged",
 				icon: <CheckCircle2Icon className="size-3.5" />,
 				dotClass: "bg-highlight",
-				labelClass: "text-highlight-foreground sm:text-foreground",
+				labelClass: "text-highlight-ink sm:text-foreground",
 			};
 		case "RESOLVED":
 			return {

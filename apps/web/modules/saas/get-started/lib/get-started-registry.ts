@@ -176,7 +176,7 @@ const WORKSPACE_GROUP: GsGroup = {
 		},
 		{
 			id: "nexus",
-			label: "Fabric AI",
+			label: "Advisor",
 			description:
 				"Your always-on AI assistant — plan work, draft specs, and answer questions about your projects. The same conversation the floating button opens, as a full page.",
 			icon: SparklesIcon,
@@ -227,7 +227,7 @@ const WORKSPACE_GROUP: GsGroup = {
 				"Connect the tools Fabric works with — GitHub/GitLab, Jira, Teams, Slack, and more.",
 			icon: PlugIcon,
 			anchor: "nav-integrations",
-			href: ({ basePath }) => `${basePath}/settings/integrations`,
+			href: ({ basePath }) => `${basePath}/connections`,
 		},
 		{
 			id: "workspaces",
@@ -240,12 +240,12 @@ const WORKSPACE_GROUP: GsGroup = {
 		},
 		{
 			id: "mcp-servers",
-			label: "MCP Servers",
+			label: "MCP servers",
 			description:
-				"Register Model Context Protocol servers to give agents new tools and data sources.",
+				"Register Model Context Protocol servers to give agents new tools and data sources. They live under Connections, beside the integrations.",
 			icon: ServerIcon,
-			anchor: "nav-mcp-servers",
-			href: ({ basePath }) => `${basePath}/mcp-servers`,
+			anchor: "nav-integrations",
+			href: ({ basePath }) => `${basePath}/connections?tab=mcp`,
 		},
 		{
 			id: "reports",
@@ -578,7 +578,7 @@ const SETTINGS_GROUP: GsGroup = {
 				"Connect GitHub/GitLab, Jira, Teams, Slack and other tools, and check their health.",
 			icon: PlugIcon,
 			cluster: "Tools & connections",
-			href: settingsHref("integrations"),
+			href: ({ basePath }) => `${basePath}/connections`,
 		},
 		{
 			id: "settings-mcp",

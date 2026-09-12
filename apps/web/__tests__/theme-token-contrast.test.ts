@@ -250,14 +250,15 @@ describe("ink tokens on the neutral surfaces", () => {
 describe("the destructive pair specifically", () => {
 	// This is the one this change fixed, and the regression is easy to reintroduce
 	// by "restoring" white text on a red button.
+	//
+	// `secondary` is not in this list any more. It used to be a bright emerald
+	// fill (#34d399) that needed a dark ink like the others; the design system
+	// made it a neutral dark surface (#262626) whose correct ink is LIGHT, and
+	// the pair clears AA in the loop above. Asserting a dark ink on it would be
+	// asserting a failure.
 	it("uses a dark ink in dark mode, like every other bright fill", () => {
 		const dark = readTokens("dark");
-		for (const name of [
-			"destructive",
-			"secondary",
-			"success",
-			"highlight",
-		]) {
+		for (const name of ["destructive", "success", "highlight"]) {
 			const foreground = dark.get(`${name}-foreground`);
 			expect(foreground, `--${name}-foreground`).toBeDefined();
 			// Dark ink: luminance well below the midpoint.

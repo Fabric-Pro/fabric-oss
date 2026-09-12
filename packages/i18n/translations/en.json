@@ -162,8 +162,8 @@
 		"menu": {
 			"accountSettings": "Account settings",
 			"admin": "Admin",
-			"aiChatbot": "Fabric AI",
-			"aiChatbotLegacy": "Nexus",
+			"aiChatbot": "Advisor",
+			"aiChatbotLegacy": "Advisor",
 			"documentGenerator": "Document Generator",
 			"organizationSettings": "Organization settings",
 			"prompts": "Prompts",
@@ -1914,7 +1914,7 @@
 						"error": "Could not update password",
 						"success": "Password was updated successfully"
 					},
-					"title": "Your password"
+					"title": "Change password"
 				},
 				"connectedAccounts": {
 					"connect": "Connect",
@@ -1953,7 +1953,7 @@
 						"success": "Check your inbox for the link to set your password."
 					},
 					"submit": "Set password",
-					"title": "Your password"
+					"title": "Set a password"
 				},
 				"title": "Security",
 				"twoFactor": {

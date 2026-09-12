@@ -1,23 +1,28 @@
 "use client";
 
 /**
- * ChatWelcome - Welcome screen for chat interfaces
+ * ChatWelcome - the empty state of a chat surface.
  *
- * Displays:
- * - Agent branding with modern design
- * - Quick suggestion chips with emojis
- * - Example categories for inspiration
+ * On the Advisor it is the Cosmos-style landing: a centred heading, the
+ * composer directly under it with a few mono glyphs drifting around it,
+ * the most recent conversation tucked under the composer with a Resume
+ * link, and a flat list of starters, each an icon in its own colour, a
+ * label and a one-line description. Starters put their prompt in the
+ * composer; they do not send.
+ *
+ * Other surfaces (the orchestrator, agent instances) use the same layout
+ * without a composer slot, and may still pass example categories.
  *
  * Used by both Direct and Orchestrator chat modes.
  */
 
-import { FabricLogo } from "@saas/shared/components/FabricLogo";
 import { Button } from "@ui/components/button";
 import { cn } from "@ui/lib";
 import {
 	ArrowRight,
 	Code2,
 	FileText,
+	History,
 	Lightbulb,
 	ListTodo,
 	MessageSquareText,
@@ -25,23 +30,34 @@ import {
 	Sparkles,
 	SquareTerminal,
 } from "lucide-react";
+import type { ReactNode } from "react";
 import type { ExampleCategory, QuickSuggestion } from "./types";
+
+interface ChatWelcomeResume {
+	/** Conversation title; falls back to "Untitled conversation". */
+	title: string | null;
+	/** Human-readable recency, e.g. "Last active 6 hours ago". */
+	lastActiveLabel: string;
+	onResume: () => void;
+}
 
 export interface ChatWelcomeProps {
 	/** Main title text */
 	title?: string;
 	/** Subtitle/description */
 	subtitle?: string;
-	/** Quick suggestion chips */
+	/** Starters listed under the composer */
 	suggestions?: QuickSuggestion[];
 	/** Example categories with longer prompts */
 	categories?: ExampleCategory[];
 	/** Callback when user clicks a suggestion */
 	onSuggestionClick: (message: string) => void;
-	/** Custom logo component */
-	logo?: React.ReactNode;
+	/** The composer, rendered under the heading (Advisor landing). */
+	composer?: ReactNode;
+	/** The most recent conversation, tucked under the composer. */
+	resume?: ChatWelcomeResume | null;
 	/** Additional tips to show at bottom */
-	tips?: Array<{ icon?: React.ReactNode; text: React.ReactNode }>;
+	tips?: Array<{ icon?: ReactNode; text: ReactNode }>;
 	className?: string;
 }
 
@@ -118,89 +134,210 @@ const DEFAULT_CATEGORIES: ExampleCategory[] = [
 	},
 ];
 
+/**
+ * The marks that drift around the composer. Positions are percentages of
+ * the glyph field, which extends past the composer on both sides so the
+ * marks sit in the margins, not over the input. Three carry a colour; the
+ * rest are ink at low opacity (see .advisor-glyph in globals.css).
+ */
+const GLYPHS: Array<{
+	char: string;
+	left: string;
+	top: string;
+	delay: number;
+	duration: number;
+	dx: number;
+	color?: string;
+}> = [
+	{ char: ".", left: "5%", top: "-8%", delay: 0, duration: 9, dx: 3 },
+	{ char: "/", left: "9%", top: "22%", delay: 1.4, duration: 11, dx: -2 },
+	{ char: "@", left: "8%", top: "68%", delay: 2.8, duration: 10, dx: 2 },
+	{ char: "=", left: "12%", top: "96%", delay: 0.9, duration: 12, dx: -3 },
+	{
+		char: "+",
+		left: "1%",
+		top: "118%",
+		delay: 3.6,
+		duration: 9.5,
+		dx: 2,
+		color: "#cf8b17",
+	},
+	{ char: ":", left: "3%", top: "44%", delay: 5.2, duration: 10.5, dx: -2 },
+	{ char: "%", left: "97%", top: "-14%", delay: 2.1, duration: 11, dx: -3 },
+	{
+		char: "o",
+		left: "88%",
+		top: "36%",
+		delay: 0.4,
+		duration: 9,
+		dx: 2,
+		color: "#208858",
+	},
+	{ char: "+", left: "85%", top: "62%", delay: 4.4, duration: 12, dx: -2 },
+	{ char: ".", left: "86%", top: "78%", delay: 1.9, duration: 8.5, dx: 3 },
+	{
+		char: "×",
+		left: "91%",
+		top: "96%",
+		delay: 3.1,
+		duration: 10,
+		dx: -2,
+		color: "#dc2828",
+	},
+	{ char: "*", left: "95%", top: "56%", delay: 6.1, duration: 11.5, dx: 2 },
+	{ char: "-", left: "13%", top: "8%", delay: 4.9, duration: 10, dx: 3 },
+];
+
+function GlyphField() {
+	return (
+		<div
+			aria-hidden="true"
+			className="pointer-events-none absolute -inset-x-40 -top-16 -bottom-16 hidden lg:block"
+		>
+			{GLYPHS.map((g) => (
+				<span
+					key={`${g.char}-${g.left}-${g.top}`}
+					className="advisor-glyph"
+					style={
+						{
+							left: g.left,
+							top: g.top,
+							color: g.color,
+							"--glyph-delay": `${g.delay}s`,
+							"--glyph-duration": `${g.duration}s`,
+							"--glyph-dx": `${g.dx}px`,
+						} as React.CSSProperties
+					}
+				>
+					{g.char}
+				</span>
+			))}
+		</div>
+	);
+}
+
 export function ChatWelcome({
 	title = "What can I help you build?",
 	subtitle,
 	suggestions = DEFAULT_SUGGESTIONS,
 	categories = DEFAULT_CATEGORIES,
 	onSuggestionClick,
-	logo,
+	composer,
+	resume,
 	tips,
 	className,
 }: ChatWelcomeProps) {
+	const flat = categories.length === 0;
+
 	return (
 		<div
 			className={cn(
-				"flex-1 min-h-0 flex flex-col items-center justify-start sm:justify-center p-3 sm:p-8 overflow-y-auto overflow-x-hidden",
+				"flex-1 min-h-0 flex flex-col items-center justify-start sm:justify-center overflow-y-auto overflow-x-hidden px-4 py-8 sm:px-6 sm:py-12",
 				className,
 			)}
 		>
 			<div
 				className={cn(
-					"w-full space-y-4 min-w-0 sm:space-y-8",
-					categories.length === 0 ? "max-w-5xl" : "max-w-3xl",
+					"w-full min-w-0 flex flex-col items-center",
+					flat ? "max-w-4xl" : "max-w-3xl space-y-8",
 				)}
 			>
-				{/* Hero Section */}
-				<div className="text-center space-y-3 sm:space-y-5">
-					<div className="hidden sm:inline-flex items-center justify-center h-16 w-16 sm:h-20 sm:w-20 rounded-xl border border-primary/15 bg-gradient-to-br from-primary/16 to-primary/5 mx-auto shadow-[0_18px_60px_rgba(0,0,0,0.18)]">
-						{logo || (
-							<FabricLogo
-								className="h-9 w-9 sm:h-12 sm:w-12"
-								size={48}
-							/>
+				{/* The heading, alone: no logo tile, no subtitle unless one is given. */}
+				<div className="w-full px-0 text-center sm:px-6">
+					<h1
+						className={cn(
+							"text-foreground",
+							flat
+								? "advisor-title"
+								: "text-[clamp(1.7rem,3.2vw,2.4rem)] font-normal leading-[1.1] tracking-[-0.025em]",
 						)}
-					</div>
-					<div className="space-y-3">
-						<h1
-							className="text-2xl sm:text-[2.6rem] tracking-tight text-foreground/90"
-							style={{
-								fontFamily:
-									"var(--font-sans, 'EB Garamond', Georgia, serif)",
-								fontWeight: 400,
-							}}
-						>
-							{title}
-						</h1>
-						{subtitle && (
-							<p className="mx-auto max-w-2xl text-muted-foreground text-base sm:text-lg leading-8">
-								{subtitle}
-							</p>
-						)}
-					</div>
+					>
+						{title}
+					</h1>
+					{subtitle && (
+						<p className="mx-auto mt-3 max-w-2xl text-[15px] leading-7 text-muted-foreground">
+							{subtitle}
+						</p>
+					)}
 				</div>
 
-				{/* Quick Suggestions */}
-				{suggestions.length > 0 &&
-					(categories.length === 0 ? (
-						<div className="flex flex-wrap justify-center gap-2 sm:gap-3">
-							{suggestions.map((chip, index) => (
+				{/* Composer, with the glyph field behind it and the last
+				    conversation tucked under it. */}
+				{composer && (
+					<div className="relative mt-10 w-full sm:mt-14 sm:px-6">
+						<GlyphField />
+						<div className="relative z-10">{composer}</div>
+						{resume && (
+							<div className="relative z-0 -mt-4 px-3">
 								<button
-									key={`suggestion-${index}`}
 									type="button"
-									onClick={() =>
-										onSuggestionClick(chip.value)
-									}
-									className="group w-full min-h-28 rounded-md border border-border/60 bg-card/35 p-3 text-left transition-all hover:border-primary/35 hover:bg-card/55 hover:shadow-[0_4px_12px_rgba(0,0,0,0.1)] dark:hover:shadow-[0_8px_24px_rgba(0,0,0,0.28)] sm:min-h-32 sm:w-[200px] sm:p-4"
+									onClick={resume.onResume}
+									className="group flex w-full items-center gap-2 rounded-[6px_6px_16px_16px] bg-muted/50 px-5 pt-7 pb-3 text-left text-sm font-medium text-muted-foreground transition-colors hover:bg-muted"
 								>
-									<div className="flex items-start gap-2.5 min-w-0 sm:gap-3">
-										<div className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-primary/15 bg-primary/8 text-primary/80 dark:border-primary/20 dark:bg-primary/10 dark:text-primary/75">
-											<span className="flex items-center justify-center">
-												{chip.icon}
-											</span>
-										</div>
-										<div className="min-w-0 flex-1">
-											<p className="text-base font-medium text-foreground">
-												{chip.label}
-											</p>
-											<p className="mt-1 line-clamp-3 text-sm leading-6 text-muted-foreground">
-												{chip.value}
-											</p>
-										</div>
-									</div>
+									<History className="size-4 shrink-0" />
+									<span className="min-w-0 truncate text-foreground">
+										{resume.title ||
+											"Untitled conversation"}
+									</span>
+									<span className="hidden shrink-0 text-xs font-normal sm:inline">
+										{resume.lastActiveLabel}
+									</span>
+									<span className="ml-auto flex shrink-0 items-center gap-1 text-xs">
+										Resume
+										<ArrowRight className="size-3.5 transition-transform group-hover:translate-x-0.5" />
+									</span>
 								</button>
+							</div>
+						)}
+					</div>
+				)}
+
+				{/* Starters */}
+				{suggestions.length > 0 &&
+					(flat ? (
+						<ul
+							className={cn(
+								"grid w-full gap-x-6 gap-y-0.5 sm:grid-cols-2 sm:px-6",
+								composer ? "mt-10 sm:mt-12" : "mt-8",
+							)}
+						>
+							{suggestions.map((suggestion) => (
+								<li key={suggestion.value}>
+									<button
+										type="button"
+										onClick={() =>
+											onSuggestionClick(suggestion.value)
+										}
+										className="flex w-full items-center gap-2 rounded-[4px] px-2.5 py-2 text-left text-[13px] font-medium leading-5 text-muted-foreground transition-colors hover:bg-accent"
+									>
+										<span
+											className="flex size-4 shrink-0 items-center justify-center [&_svg]:size-4"
+											style={{
+												color:
+													suggestion.color ??
+													"var(--fab-accent)",
+											}}
+										>
+											{suggestion.icon}
+										</span>
+										<span className="min-w-0 truncate">
+											<span className="text-foreground">
+												{suggestion.label}
+											</span>
+											{suggestion.description ? (
+												<>
+													{" "}
+													&mdash;{" "}
+													{suggestion.description}
+												</>
+											) : (
+												<> &mdash; {suggestion.value}</>
+											)}
+										</span>
+									</button>
+								</li>
 							))}
-						</div>
+						</ul>
 					) : (
 						<div className="space-y-4">
 							<div className="flex flex-wrap items-center justify-center gap-2">
@@ -304,7 +441,7 @@ export function ChatWelcome({
 
 				{/* Tips */}
 				{tips && tips.length > 0 && (
-					<div className="text-center space-y-2 py-4">
+					<div className="mt-8 space-y-2 py-4 text-center">
 						{tips.map((tip, idx) => (
 							<p
 								key={`tip-${idx}`}
@@ -314,22 +451,6 @@ export function ChatWelcome({
 								<span>{tip.text}</span>
 							</p>
 						))}
-					</div>
-				)}
-
-				{/* Default tips if none provided */}
-				{(!tips || tips.length === 0) && (
-					<div className="text-center space-y-2 py-4">
-						<p className="text-sm text-muted-foreground flex items-center justify-center gap-1.5">
-							<Sparkles className="h-4 w-4 text-primary/60" />
-							<span>
-								Use{" "}
-								<kbd className="px-1.5 py-0.5 bg-muted border rounded text-xs font-mono">
-									@
-								</kbd>{" "}
-								to reference files from your workspace
-							</span>
-						</p>
 					</div>
 				)}
 			</div>

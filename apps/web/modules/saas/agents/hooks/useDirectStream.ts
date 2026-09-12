@@ -122,6 +122,13 @@ export interface DirectStreamMessage {
 	/** RAG sources used to generate the response */
 	sources?: DirectStreamSource[];
 	/**
+	 * Token usage and model of the turn that produced this assistant
+	 * message. Persisted in the message's metadata so the context meter
+	 * can be restored when the conversation is reopened.
+	 */
+	usage?: TokenUsage;
+	model?: StreamModelInfo;
+	/**
 	 * Filenames of documents/images attached when the user sent this
 	 * message. Rendered as a discreet caption beneath the user bubble
 	 * (paperclip + filename, no border, no background) — same visual
@@ -193,7 +200,7 @@ export interface DirectStreamState {
 	error?: string;
 }
 
-interface TokenUsage {
+export interface TokenUsage {
 	/** Input/prompt tokens */
 	inputTokens?: number;
 	/** Output/completion tokens */
@@ -206,6 +213,14 @@ interface TokenUsage {
 	cachedInputTokens?: number;
 }
 
+/** The model that answered the last turn, as reported by the stream. */
+export interface StreamModelInfo {
+	id: string;
+	canonicalName?: string;
+	provider?: string;
+	contextWindow?: number;
+}
+
 export interface ContextInfo {
 	/** Estimated token count of the context (history + system prompt) */
 	estimatedTokens: number;
@@ -213,10 +228,21 @@ export interface ContextInfo {
 	messageCount: number;
 	/** Whether context was compacted/truncated */
 	wasCompacted: boolean;
-	/** Maximum context tokens before compaction */
+	/**
+	 * The model's context window. The catalog value for the model that
+	 * answered the last turn when the stream reports one, else a default.
+	 */
 	maxTokens: number;
-	/** Actual token usage from API (accumulated across messages) */
+	/**
+	 * Token usage of the LAST turn. Its input count is the whole prompt the
+	 * model saw (history, system prompt, tools), so this is the size of the
+	 * current context, not a running sum of every turn.
+	 */
 	usage?: TokenUsage;
+	/** Provider model string of the model that answered the last turn. */
+	modelId?: string;
+	/** Display name for that model. */
+	modelLabel?: string;
 }
 
 /**
@@ -1052,34 +1078,64 @@ export function useDirectStream(options: UseDirectStreamOptions = {}) {
 					break;
 				}
 
-				case "done":
-					// Stream completed - capture token usage
-					if (data.usage) {
-						setContextInfo((prev) => {
-							// Accumulate token usage across messages
-							const prevUsage = prev.usage || {};
-							const newUsage: TokenUsage = {
-								inputTokens:
-									(prevUsage.inputTokens || 0) +
-									(data.usage.inputTokens || 0),
-								outputTokens:
-									(prevUsage.outputTokens || 0) +
-									(data.usage.outputTokens || 0),
+				case "done": {
+					// Stream completed. The turn's usage IS the current context:
+					// its input count covers everything the model was shown.
+					// Replace rather than accumulate, size the window from the
+					// model that answered, and pin both to the assistant
+					// message so they persist with it.
+					const turnUsage: TokenUsage | undefined = data.usage
+						? {
+								inputTokens: data.usage.inputTokens || 0,
+								outputTokens: data.usage.outputTokens || 0,
 								totalTokens:
-									(prevUsage.totalTokens || 0) +
-									(data.usage.totalTokens || 0),
-								reasoningTokens:
-									(prevUsage.reasoningTokens || 0) +
-									(data.usage.reasoningTokens || 0),
-								cachedInputTokens:
-									(prevUsage.cachedInputTokens || 0) +
-									(data.usage.cachedInputTokens || 0),
-							};
-							return { ...prev, usage: newUsage };
-						});
+									data.usage.totalTokens ||
+									(data.usage.inputTokens || 0) +
+										(data.usage.outputTokens || 0),
+								reasoningTokens: data.usage.reasoningTokens,
+								cachedInputTokens: data.usage.cachedInputTokens,
+							}
+						: undefined;
+					const turnModel: StreamModelInfo | undefined =
+						data.model && typeof data.model.id === "string"
+							? {
+									id: data.model.id,
+									canonicalName: data.model.canonicalName,
+									provider: data.model.provider,
+									contextWindow:
+										typeof data.model.contextWindow ===
+										"number"
+											? data.model.contextWindow
+											: undefined,
+								}
+							: undefined;
+					if (turnUsage || turnModel) {
+						setContextInfo((prev) => ({
+							...prev,
+							usage: turnUsage ?? prev.usage,
+							maxTokens:
+								turnModel?.contextWindow ?? prev.maxTokens,
+							modelId: turnModel?.id ?? prev.modelId,
+							modelLabel:
+								turnModel?.canonicalName ??
+								turnModel?.id ??
+								prev.modelLabel,
+						}));
+						setMessages((prev) =>
+							prev.map((m) =>
+								m.id === assistantMessageId
+									? {
+											...m,
+											usage: turnUsage ?? m.usage,
+											model: turnModel ?? m.model,
+										}
+									: m,
+							),
+						);
 					}
 					setState({ status: "completed" });
 					break;
+				}
 
 				default:
 					console.log("[DirectStream] Unknown event:", data.type);
@@ -1226,9 +1282,34 @@ export function useDirectStream(options: UseDirectStreamOptions = {}) {
 
 	// Update context info when messages change
 	useEffect(() => {
-		setContextInfo(calculateContextInfo(messages));
+		// Estimates follow the messages; the reported usage, window and
+		// model come from the stream and must survive this recalculation.
+		setContextInfo((prev) => ({
+			...calculateContextInfo(messages),
+			usage: prev.usage,
+			maxTokens: prev.usage ? prev.maxTokens : MAX_CONTEXT_TOKENS,
+			modelId: prev.modelId,
+			modelLabel: prev.modelLabel,
+		}));
 		messagesRef.current = messages;
 	}, [messages, calculateContextInfo]);
+
+	/**
+	 * Seed the context meter from persisted history: the usage and model
+	 * stored with the last assistant message of a reopened conversation.
+	 */
+	const restoreContextUsage = useCallback(
+		(usage?: TokenUsage, model?: StreamModelInfo) => {
+			setContextInfo((prev) => ({
+				...prev,
+				usage,
+				maxTokens: model?.contextWindow ?? MAX_CONTEXT_TOKENS,
+				modelId: model?.id,
+				modelLabel: model?.canonicalName ?? model?.id,
+			}));
+		},
+		[],
+	);
 
 	return {
 		// State
@@ -1252,6 +1333,7 @@ export function useDirectStream(options: UseDirectStreamOptions = {}) {
 		cancel,
 		reset,
 		seedMessages,
+		restoreContextUsage,
 
 		// Computed
 		isStreaming: state.status === "streaming",

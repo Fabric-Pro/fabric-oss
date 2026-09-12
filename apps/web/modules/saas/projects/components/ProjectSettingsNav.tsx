@@ -7,10 +7,12 @@ import {
 	BrainIcon,
 	FlaskConicalIcon,
 	GlobeIcon,
+	LayoutListIcon,
 	ListTodoIcon,
 	MailIcon,
 	MegaphoneIcon,
 	SettingsIcon,
+	SparklesIcon,
 	UsersIcon,
 	WorkflowIcon,
 } from "lucide-react";
@@ -18,6 +20,8 @@ import type { ComponentType } from "react";
 
 export type SettingsTab =
 	| "general"
+	| "ai-assistant"
+	| "navigation"
 	| "knowledge"
 	| "development"
 	| "project-management"
@@ -42,7 +46,19 @@ const TABS: TabItem[] = [
 		id: "general",
 		label: "General",
 		icon: SettingsIcon,
-		description: "Name, description, types",
+		description: "Name, brief, types, stack",
+	},
+	{
+		id: "ai-assistant",
+		label: "AI assistant",
+		icon: SparklesIcon,
+		description: "Questions, testing depth, read-only",
+	},
+	{
+		id: "navigation",
+		label: "Navigation",
+		icon: LayoutListIcon,
+		description: "Tabs and feature stages",
 	},
 	{
 		id: "knowledge",

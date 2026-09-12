@@ -102,7 +102,7 @@ export function SkillsLibrary({ organizationId: propOrgId }: Props) {
 						type="button"
 						onClick={() => setCategoryFilter("all")}
 						className={cn(
-							"rounded-full px-4 py-2 font-medium text-sm transition-all",
+							"rounded-[6px] px-3.5 py-1.5 text-sm transition-colors",
 							categoryFilter === "all" && !isFeatured
 								? "bg-primary text-primary-foreground"
 								: "bg-card hover:bg-card/80 text-foreground/70 hover:text-foreground border",
@@ -135,7 +135,7 @@ export function SkillsLibrary({ organizationId: propOrgId }: Props) {
 								setIsFeatured(false);
 							}}
 							className={cn(
-								"rounded-full px-4 py-2 font-medium text-sm transition-all",
+								"rounded-[6px] px-3.5 py-1.5 text-sm transition-colors",
 								categoryFilter === cat && !isFeatured
 									? "bg-primary text-primary-foreground"
 									: "bg-card hover:bg-card/80 text-foreground/70 hover:text-foreground border",

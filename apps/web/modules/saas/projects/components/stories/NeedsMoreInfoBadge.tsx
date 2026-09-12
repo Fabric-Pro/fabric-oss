@@ -28,7 +28,7 @@ export function NeedsMoreInfoBadge({
 			<Tooltip>
 				<TooltipTrigger asChild>
 					<span
-						className={`inline-flex shrink-0 items-center gap-1 rounded-full border border-highlight/40 bg-highlight/10 font-medium text-highlight-foreground dark:text-muted-foreground ${sizing}`}
+						className={`inline-flex shrink-0 items-center gap-1 rounded-full border border-highlight/40 bg-highlight/10 font-medium text-highlight-ink dark:text-muted-foreground ${sizing}`}
 						aria-label="This bug needs more info"
 					>
 						<HelpCircleIcon className="size-3" aria-hidden />

@@ -298,9 +298,8 @@ describe("NavBar — guest sidebar hygiene", () => {
 			[/^Skills$/, "/app/own-org/skills"],
 			[/^Templates$/, "/app/own-org/agent-templates"],
 			[/^Workflows$/, "/app/own-org/workflows"],
-			[/^Integrations$/, "/app/own-org/settings/integrations"],
+			[/^Connections$/, "/app/own-org/connections"],
 			[/^Workspaces$/, "/app/own-org/workspaces"],
-			[/MCP Servers/, "/app/own-org/mcp-servers"],
 			[/^Reports$/, "/app/own-org/report-templates"],
 		];
 		for (const [name, href] of expectedItems) {

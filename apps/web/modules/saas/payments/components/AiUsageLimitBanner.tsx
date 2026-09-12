@@ -151,51 +151,57 @@ function AiUsageLimitBannerRow({
 		<Alert
 			variant={variant}
 			className={cn(
-				"flex items-start gap-3",
+				"pointer-events-auto flex w-full max-w-lg flex-col gap-3 shadow-lg motion-safe:animate-in motion-safe:fade-in motion-safe:slide-in-from-bottom-2",
 				// Amber state — destructive variant covers >=100%. Below
 				// that, paint the alert in our `--highlight` token instead
 				// of the default neutral so users see "approaching" at a
 				// glance without it shouting like an error.
 				!isAtBlockingLevel &&
-					"border-highlight/40 bg-highlight/5 text-highlight-foreground dark:text-highlight",
+					"border-highlight/40 bg-card text-highlight-ink",
 			)}
 		>
-			<AlertTriangle
-				className={cn(
-					"size-4 shrink-0",
-					isAtBlockingLevel ? "text-destructive" : "text-highlight",
-				)}
-				aria-hidden="true"
-			/>
-			<div className="flex-1 space-y-1">
-				<AlertTitle>{t(titleKey, { name: limitLabel })}</AlertTitle>
-				<AlertDescription>
-					{t("settings.aiUsage.limits.banner.description", {
-						percent: Math.min(percent, 999),
-						window: t(
-							`settings.aiUsage.limits.window.${limit.window.toLowerCase()}` as
-								| "settings.aiUsage.limits.window.hourly"
-								| "settings.aiUsage.limits.window.daily"
-								| "settings.aiUsage.limits.window.monthly",
-						),
-					})}
-				</AlertDescription>
+			<div className="flex items-start gap-3">
+				<AlertTriangle
+					className={cn(
+						"mt-0.5 size-4 shrink-0",
+						isAtBlockingLevel
+							? "text-destructive"
+							: "text-highlight",
+					)}
+					aria-hidden="true"
+				/>
+				<div className="min-w-0 flex-1 space-y-1">
+					<AlertTitle>{t(titleKey, { name: limitLabel })}</AlertTitle>
+					<AlertDescription>
+						{t("settings.aiUsage.limits.banner.description", {
+							percent: Math.min(percent, 999),
+							window: t(
+								`settings.aiUsage.limits.window.${limit.window.toLowerCase()}` as
+									| "settings.aiUsage.limits.window.hourly"
+									| "settings.aiUsage.limits.window.daily"
+									| "settings.aiUsage.limits.window.monthly",
+							),
+						})}
+					</AlertDescription>
+				</div>
 			</div>
 			{canManage ? (
-				<Button
-					asChild
-					size="sm"
-					variant={isAtBlockingLevel ? "secondary" : "outline"}
-					className="shrink-0"
-				>
-					<Link href={manageHref}>
-						{t("settings.aiUsage.limits.banner.manageCta")}
-						<ExternalLink
-							className="ml-1 size-3"
-							aria-hidden="true"
-						/>
-					</Link>
-				</Button>
+				<div className="flex justify-end">
+					<Button
+						asChild
+						size="sm"
+						variant={isAtBlockingLevel ? "secondary" : "outline"}
+						className="shrink-0"
+					>
+						<Link href={manageHref}>
+							{t("settings.aiUsage.limits.banner.manageCta")}
+							<ExternalLink
+								className="ml-1 size-3"
+								aria-hidden="true"
+							/>
+						</Link>
+					</Button>
+				</div>
 			) : null}
 		</Alert>
 	);

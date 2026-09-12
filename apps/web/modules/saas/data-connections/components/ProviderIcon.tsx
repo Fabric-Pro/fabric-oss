@@ -632,6 +632,8 @@ interface ProviderIconProps {
 	provider: DataConnectionProvider;
 	size?: "sm" | "md" | "lg";
 	className?: string;
+	/** The mark alone at 20px, no box: the integration tiles use this. */
+	bare?: boolean;
 }
 
 const SIZE_CLASSES = {
@@ -650,11 +652,31 @@ export function ProviderIcon({
 	provider,
 	size = "md",
 	className,
+	bare = false,
 }: ProviderIconProps) {
 	const entry = PROVIDER_ICONS[provider];
 	const colorClass = PROVIDER_COLORS[provider];
 	const sizeClass = SIZE_CLASSES[size];
 	const iconSizeClass = ICON_SIZE_CLASSES[size];
+
+	if (bare) {
+		const bareColor = colorClass
+			.replace(/\b(bg-[^\s]+|ring-[^\s]+|shadow-[^\s]+)\b/g, "")
+			.trim();
+		return entry.type === "img" ? (
+			// biome-ignore lint/performance/noImgElement: provider icons use dynamic external URLs
+			<img
+				src={entry.src}
+				alt={entry.alt}
+				className={cn("size-7 shrink-0 object-contain", className)}
+				aria-hidden="true"
+			/>
+		) : (
+			<entry.component
+				className={cn("size-5 shrink-0", bareColor, className)}
+			/>
+		);
+	}
 
 	return (
 		<div

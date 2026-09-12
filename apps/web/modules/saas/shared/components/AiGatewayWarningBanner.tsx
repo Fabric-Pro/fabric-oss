@@ -142,35 +142,42 @@ export function AiGatewayWarningBanner() {
 		: "This organization has no AI provider configured, so chat, agents, and document generation are unavailable here. An organization admin can add one — or add a personal key to use these features yourself.";
 
 	return (
-		// `sticky` rather than plain flow: this notice explains why every AI
-		// action on the page will refuse, and it now renders on pages a reader
-		// arrives at already scrolled. In static flow it would sit at the top
-		// of the document, off-screen, and the refusal would arrive unexplained.
-		// Browser scroll anchoring makes that worse, not better — it holds the
-		// reading position precisely so nothing visibly moves.
-		//
-		// Spacing belongs on this wrapper, never on the Alert: the Alert owns
-		// `p-4`, so `pt-*`/`pb-*` passed through its className would shrink its
-		// own padding instead of adding any outer gap. Same rhythm as the
-		// sibling banners in this column.
-		<div className="sticky top-0 z-10 flex shrink-0 justify-center px-3 pt-3 pb-1 motion-safe:animate-in motion-safe:fade-in">
-			{/* Painted in the `--highlight` token rather than the primitive's
-			 * `warning` variant, which reaches for a raw Tailwind yellow —
-			 * same amber the sibling usage-limit banner uses for its
-			 * "approaching" state, so the column reads as one system. */}
+		// Floating, not in flow: the chrome docks this beside its two siblings
+		// in a fixed stack at the bottom-right of the content area, so the
+		// page keeps its layout and the notice is still on screen wherever
+		// the reader has scrolled. The stack's wrapper is pointer-transparent,
+		// so this element re-enables pointer events for the card itself.
+		<div className="pointer-events-auto w-full max-w-lg motion-safe:animate-in motion-safe:fade-in motion-safe:slide-in-from-bottom-2">
+			{/* Painted in the `--highlight` token as ink on an opaque card:
+			 * a translucent tint would let the page show through a floating
+			 * notice, and the ink token holds contrast in both themes. */}
 			<Alert
 				aria-label="AI setup reminder"
-				className="flex w-full max-w-4xl items-start gap-3 border-highlight/40 bg-highlight/5 text-highlight-foreground dark:text-highlight"
+				className="flex w-full flex-col gap-3 border-highlight/40 bg-card text-highlight-ink shadow-lg"
 			>
-				<AlertTriangleIcon
-					className="size-4 shrink-0 text-highlight"
-					aria-hidden="true"
-				/>
-				<div className="min-w-0 flex-1">
-					<AlertTitle>AI provider required</AlertTitle>
-					<AlertDescription>{description}</AlertDescription>
+				{/* Text first, actions on their own row beneath. Side by side
+				 * the controls squeezed the copy into a one-word column at
+				 * this width. */}
+				<div className="flex items-start gap-3">
+					<AlertTriangleIcon
+						className="mt-0.5 size-4 shrink-0 text-highlight"
+						aria-hidden="true"
+					/>
+					<div className="min-w-0 flex-1">
+						<AlertTitle>AI provider required</AlertTitle>
+						<AlertDescription>{description}</AlertDescription>
+					</div>
+					<Button
+						variant="ghost"
+						size="icon"
+						className="-mt-1.5 -mr-1.5 size-8 shrink-0"
+						onClick={() => setDismissedOn(pathname)}
+						aria-label="Dismiss AI setup reminder"
+					>
+						<XIcon className="size-4" />
+					</Button>
 				</div>
-				<div className="flex shrink-0 items-center gap-2">
+				<div className="flex flex-wrap items-center justify-end gap-2">
 					{/* Each role gets the one control it can actually act on.
 					 * R12 forbids sending anyone to a page they cannot change:
 					 * the organization's provider page renders read-only for a
@@ -192,15 +199,6 @@ export function AiGatewayWarningBanner() {
 							</Link>
 						</Button>
 					)}
-					<Button
-						variant="ghost"
-						size="icon"
-						className="size-8"
-						onClick={() => setDismissedOn(pathname)}
-						aria-label="Dismiss AI setup reminder"
-					>
-						<XIcon className="size-4" />
-					</Button>
 				</div>
 			</Alert>
 		</div>

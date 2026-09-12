@@ -67,7 +67,6 @@ import type { AttachedFile as CopilotAttachedFile } from "@saas/shared/component
 import { RobotIcon } from "@saas/shared/components/icons/RobotIcon";
 import { SparklesIcon } from "@saas/shared/components/icons/SparklesIcon";
 import { SidebarEdgeHandle } from "@saas/shared/components/SidebarEdgeHandle";
-import { getRandomGreeting } from "@saas/shared/lib/greetings";
 import { AsanaIcon } from "@saas/workflows/lib/plugins/asana/icon";
 import { AttioIcon } from "@saas/workflows/lib/plugins/attio/icon";
 import { CanvaIcon } from "@saas/workflows/lib/plugins/canva/icon";
@@ -2685,7 +2684,6 @@ function AgentPickerDialog({
 // ── LandingView ────────────────────────────────────────────────────────────────
 
 function LandingView({
-	firstName,
 	selectedAgents,
 	onToggleAgent,
 	onRemoveAgent,
@@ -2698,7 +2696,6 @@ function LandingView({
 	selectedConversationMcpIds,
 	onOpenConversationToolPicker,
 }: {
-	firstName: string;
 	selectedAgents: SelectedAgent[];
 	onToggleAgent: (agent: SelectedAgent) => void;
 	onRemoveAgent: (agentId: string) => void;
@@ -2712,12 +2709,6 @@ function LandingView({
 	onOpenConversationToolPicker?: () => void;
 }) {
 	const [input, setInput] = useState("");
-	const [greeting, setGreeting] = useState("");
-
-	useEffect(() => {
-		setGreeting(getRandomGreeting(firstName));
-	}, [firstName]);
-
 	const handleSend = useCallback(
 		(payload: SendPayload) => {
 			onSend(payload);
@@ -2730,17 +2721,8 @@ function LandingView({
 		<div className="flex flex-col h-full overflow-auto">
 			{/* Vertically centered greeting + input */}
 			<div className="flex flex-col items-center px-4 max-w-[55rem] mx-auto w-full pt-[12vh] pb-8 gap-6">
-				<h1
-					className="text-foreground/85"
-					style={{
-						fontFamily: "var(--font-sans)",
-						fontWeight: 400,
-						fontSize: "clamp(1.5rem, 4vw, 2.5rem)",
-						lineHeight: 1.15,
-						letterSpacing: "-0.01em",
-					}}
-				>
-					{greeting}
+				<h1 className="text-center text-[clamp(1.6rem,3.4vw,2.4rem)] font-normal leading-[1.1] tracking-[-0.025em] text-foreground">
+					What's on the agenda today?
 				</h1>
 				<div className="w-full">
 					<ComposeInput
@@ -3746,7 +3728,6 @@ export function CopilotPage({
 	initialPersistedSelection,
 }: CopilotPageProps) {
 	const { user } = useSession();
-	const firstName = user?.name?.split(" ")[0] ?? "there";
 	const queryClient = useQueryClient();
 	const router = useRouter();
 	const basePath = useBasePath();
@@ -5145,7 +5126,6 @@ export function CopilotPage({
 					/>
 				) : (
 					<LandingView
-						firstName={firstName}
 						selectedAgents={selectedAgents}
 						onToggleAgent={handleToggleAgent}
 						onRemoveAgent={handleRemoveAgent}

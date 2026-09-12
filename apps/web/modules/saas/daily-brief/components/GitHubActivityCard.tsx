@@ -29,7 +29,7 @@ const KIND_CHIP: Record<GithubItem["kind"], string> = {
 	pr_opened: "bg-muted text-muted-foreground border-border",
 	pr_merged: "bg-secondary/10 text-secondary border-secondary/30",
 	pr_awaiting_review:
-		"bg-highlight/10 text-highlight-foreground dark:text-highlight border-highlight/40",
+		"bg-highlight/10 text-highlight-ink border-highlight/40",
 	pr_closed: "bg-muted text-muted-foreground border-border",
 };
 

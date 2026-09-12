@@ -3,9 +3,11 @@ import { getAIModelWithMetadata, getCurrentDateContext } from "@repo/ai";
 import { checkRateLimit, RATE_LIMIT_PRESETS } from "@repo/api/lib/rate-limit";
 import { AiUsageLimitExceededError } from "@repo/payments";
 import {
+	type ActivityHeartbeatDetails,
 	type DirectChatProgressUpdate,
 	type DirectChatWorkflowInput,
 	type DirectChatWorkflowOutput,
+	decodeHeartbeatDetails,
 	getTemporalClient,
 	isTemporalAvailable,
 } from "@repo/temporal";
@@ -1179,6 +1181,7 @@ async function handleTemporalWorkflow(params: {
 								type: "done",
 								durationMs: result.durationMs,
 								usage: result.usage,
+								model: result.model,
 							});
 
 							isComplete = true;
@@ -1219,8 +1222,15 @@ async function handleTemporalWorkflow(params: {
 								(description as any).raw?.pendingActivities ||
 								[];
 							for (const activity of pendingActivities) {
+								// `describe()` hands heartbeat details back as an
+								// encoded Payloads proto, not the object the
+								// activity passed to `heartbeat()`. Decode it, or
+								// nothing below ever matches and the client sees
+								// only the final result.
 								const heartbeatDetails =
-									activity.heartbeatDetails;
+									decodeHeartbeatDetails<ActivityHeartbeatDetails>(
+										activity.heartbeatDetails,
+									);
 								// Widened from `heartbeatDetails?.toolCalls`: phase
 								// updates and partial assistant text also arrive on
 								// heartbeats that carry no tool calls, so process any
