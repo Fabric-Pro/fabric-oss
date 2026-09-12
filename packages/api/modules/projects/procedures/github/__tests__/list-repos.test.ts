@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // Hoisted mocks
-const mockGetGitHubAccessToken = vi.fn();
+const mockGetGitHubWorkflowCredential = vi.fn();
 const mockGetAuthenticatedUser = vi.fn();
 const mockListUserRepositories = vi.fn();
 const mockSearchGitHubRepositories = vi.fn();
@@ -12,8 +12,8 @@ const mockGetMcpServerByKey = vi.fn();
 const mockGetMcpConfigForTenantAndServer = vi.fn();
 
 vi.mock("@repo/integrations/github", () => ({
-	getGitHubAccessToken: (...args: unknown[]) =>
-		mockGetGitHubAccessToken(...args),
+	getGitHubWorkflowCredential: (...args: unknown[]) =>
+		mockGetGitHubWorkflowCredential(...args),
 	getAuthenticatedUser: (...args: unknown[]) =>
 		mockGetAuthenticatedUser(...args),
 	listUserRepositories: (...args: unknown[]) =>
@@ -115,7 +115,10 @@ describe("listGitHubReposProcedure", () => {
 	});
 
 	it("prioritizes user workflow integration (OAuth) when present (Strategy 1)", async () => {
-		mockGetGitHubAccessToken.mockResolvedValue("gho_oauth_token");
+		mockGetGitHubWorkflowCredential.mockResolvedValue({
+			kind: "oauth",
+			token: "gho_oauth_token",
+		});
 
 		const handler = await loadHandler();
 		const result = await handler({
@@ -126,7 +129,7 @@ describe("listGitHubReposProcedure", () => {
 		expect(result.configured).toBe(true);
 		expect(result.source).toBe("oauth");
 		expect(result.sourceIntegrationId).toBeUndefined();
-		expect(mockGetGitHubAccessToken).toHaveBeenCalledWith(
+		expect(mockGetGitHubWorkflowCredential).toHaveBeenCalledWith(
 			"user-1",
 			undefined,
 		);
@@ -134,8 +137,29 @@ describe("listGitHubReposProcedure", () => {
 		expect(mockRepoFindMany).not.toHaveBeenCalled();
 	});
 
+	it('reports source "pat" when the workflow credential is a personal token, not an App grant', async () => {
+		mockGetGitHubWorkflowCredential.mockResolvedValue({
+			kind: "pat",
+			token: "ghp_personal_token",
+		});
+
+		const handler = await loadHandler();
+		const result = await handler({
+			input: { projectId: "proj-1" },
+			context: defaultContext,
+		});
+
+		expect(result.configured).toBe(true);
+		// The credential that served the list decides how Add connects. Labelling a
+		// personal PAT as "oauth" sends the caller through an App authorization
+		// popup that stores a credential unable to read what was just listed.
+		expect(result.source).toBe("pat");
+		expect(result.sourceIntegrationId).toBeUndefined();
+		expect(mockRepoFindMany).not.toHaveBeenCalled();
+	});
+
 	it("evaluates project-level shared credentials when workflow integration is absent (Strategy 2)", async () => {
-		mockGetGitHubAccessToken.mockResolvedValue(null);
+		mockGetGitHubWorkflowCredential.mockResolvedValue(null);
 		mockRepoFindMany.mockResolvedValue([
 			{
 				id: "int-pat-1",
@@ -174,7 +198,7 @@ describe("listGitHubReposProcedure", () => {
 	});
 
 	it("sorts project OAuth candidates before PAT candidates and uses OAuth first", async () => {
-		mockGetGitHubAccessToken.mockResolvedValue(null);
+		mockGetGitHubWorkflowCredential.mockResolvedValue(null);
 		mockRepoFindMany.mockResolvedValue([
 			{
 				id: "int-pat-1",
@@ -212,7 +236,7 @@ describe("listGitHubReposProcedure", () => {
 	});
 
 	it("falls through to next candidate if first candidate fails to resolve or fetch", async () => {
-		mockGetGitHubAccessToken.mockResolvedValue(null);
+		mockGetGitHubWorkflowCredential.mockResolvedValue(null);
 		mockRepoFindMany.mockResolvedValue([
 			{
 				id: "int-dead-1",
@@ -249,7 +273,7 @@ describe("listGitHubReposProcedure", () => {
 	});
 
 	it("caps candidate evaluation at MAX_CANDIDATE_CREDENTIALS (5)", async () => {
-		mockGetGitHubAccessToken.mockResolvedValue(null);
+		mockGetGitHubWorkflowCredential.mockResolvedValue(null);
 		const candidates = Array.from({ length: 7 }, (_, i) => ({
 			id: `int-${i + 1}`,
 			authMethod: "PAT",
@@ -273,7 +297,7 @@ describe("listGitHubReposProcedure", () => {
 	});
 
 	it("falls through to Strategy 3 (MCP) when no tokens are configured", async () => {
-		mockGetGitHubAccessToken.mockResolvedValue(null);
+		mockGetGitHubWorkflowCredential.mockResolvedValue(null);
 		mockRepoFindMany.mockResolvedValue([]);
 
 		const handler = await loadHandler();

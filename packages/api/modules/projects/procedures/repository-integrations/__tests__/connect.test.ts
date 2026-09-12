@@ -41,6 +41,7 @@ vi.mock("@repo/connectors", () => ({
 
 const mockRepoFindFirst = vi.fn();
 const mockRepoFindMany = vi.fn();
+const mockGetGitHubWorkflowCredential = vi.fn();
 
 vi.mock("@repo/database", () => ({
 	db: {
@@ -56,6 +57,11 @@ vi.mock("@repo/database", () => ({
 	logRepoIntegrationActivity: (...args: unknown[]) =>
 		mockLogRepoIntegrationActivity(...args),
 	parseRepoUrl: (...args: unknown[]) => mockParseRepoUrl(...args),
+}));
+
+vi.mock("@repo/integrations/github", () => ({
+	getGitHubWorkflowCredential: (...args: unknown[]) =>
+		mockGetGitHubWorkflowCredential(...args),
 }));
 
 vi.mock("@repo/utils", () => ({
@@ -123,6 +129,7 @@ beforeEach(() => {
 		k.replace(/^enc_/, "dec_"),
 	);
 	mockRepoFindFirst.mockResolvedValue(null);
+	mockGetGitHubWorkflowCredential.mockResolvedValue(null);
 	mockParseRepoUrl.mockReturnValue({
 		provider: "AZURE_DEVOPS",
 		owner: "my-org",
@@ -764,6 +771,123 @@ describe("connectRepoIntegrationProcedure — GitHub / GitLab PAT connect", () =
 		expect(mockCreateProjectRepoIntegration).not.toHaveBeenCalled();
 	});
 
+	it("connects with the caller's personal PAT when the project has no stored credential", async () => {
+		mockParseRepoUrl.mockReturnValue({
+			provider: "GITHUB",
+			owner: "acme",
+			name: "second-repo",
+		});
+		mockRepoFindMany.mockResolvedValueOnce([]);
+		mockGetGitHubWorkflowCredential.mockResolvedValue({
+			kind: "pat",
+			token: "ghp_personal_token",
+		});
+		mockValidateGitHubPat.mockResolvedValue({ ok: true, status: 200 });
+		mockResolveDefaultBranch.mockResolvedValue("main");
+		mockCreateProjectRepoIntegration.mockResolvedValue({ id: "int-new" });
+
+		const handler = await loadHandler();
+		const result = await handler({
+			input: {
+				projectId: "p1",
+				organizationId: null,
+				provider: "GITHUB",
+				authMethod: "PAT",
+				repositoryUrl: "https://github.com/acme/second-repo",
+				repositoryOwner: "acme",
+				repositoryName: "second-repo",
+			},
+			context: baseContext,
+		});
+
+		expect(result.success).toBe(true);
+		expect(mockValidateGitHubPat).toHaveBeenCalledWith({
+			pat: "ghp_personal_token",
+			owner: "acme",
+			repo: "second-repo",
+		});
+		// The personal token is what gets encrypted and stored on the new row.
+		expect(mockEncryptApiKey).toHaveBeenCalledWith("ghp_personal_token");
+		expect(mockCreateProjectRepoIntegration).toHaveBeenCalledWith(
+			expect.objectContaining({ authMethod: "PAT" }),
+		);
+	});
+
+	it("ignores the caller's workflow credential when it is an App grant rather than a PAT", async () => {
+		mockParseRepoUrl.mockReturnValue({
+			provider: "GITHUB",
+			owner: "acme",
+			name: "second-repo",
+		});
+		mockRepoFindMany.mockResolvedValueOnce([]);
+		// An App grant cannot be stored as a PAT — it needs its authorization flow
+		// to install the App on the repository first.
+		mockGetGitHubWorkflowCredential.mockResolvedValue({
+			kind: "oauth",
+			token: "gho_oauth_token",
+		});
+
+		const handler = await loadHandler();
+		await expect(
+			handler({
+				input: {
+					projectId: "p1",
+					organizationId: null,
+					provider: "GITHUB",
+					authMethod: "PAT",
+					repositoryUrl: "https://github.com/acme/second-repo",
+					repositoryOwner: "acme",
+					repositoryName: "second-repo",
+				},
+				context: baseContext,
+			}),
+		).rejects.toMatchObject({
+			code: "BAD_REQUEST",
+			message: "No stored GitHub token found for this project",
+		});
+
+		expect(mockValidateGitHubPat).not.toHaveBeenCalled();
+		expect(mockCreateProjectRepoIntegration).not.toHaveBeenCalled();
+	});
+
+	it("prefers a stored project PAT over the caller's personal PAT", async () => {
+		mockParseRepoUrl.mockReturnValue({
+			provider: "GITHUB",
+			owner: "acme",
+			name: "second-repo",
+		});
+		mockRepoFindMany.mockResolvedValueOnce([
+			{ id: "int-1", encryptedPat: "enc_project_pat" },
+		]);
+		mockGetGitHubWorkflowCredential.mockResolvedValue({
+			kind: "pat",
+			token: "ghp_personal_token",
+		});
+		mockValidateGitHubPat.mockResolvedValue({ ok: true, status: 200 });
+		mockResolveDefaultBranch.mockResolvedValue("main");
+		mockCreateProjectRepoIntegration.mockResolvedValue({ id: "int-new" });
+
+		const handler = await loadHandler();
+		const result = await handler({
+			input: {
+				projectId: "p1",
+				organizationId: null,
+				provider: "GITHUB",
+				authMethod: "PAT",
+				repositoryUrl: "https://github.com/acme/second-repo",
+				repositoryOwner: "acme",
+				repositoryName: "second-repo",
+			},
+			context: baseContext,
+		});
+
+		expect(result.success).toBe(true);
+		expect(mockGetGitHubWorkflowCredential).not.toHaveBeenCalled();
+		expect(mockCreateProjectRepoIntegration).toHaveBeenCalledWith(
+			expect.objectContaining({ encryptedPat: "enc_project_pat" }),
+		);
+	});
+
 	it("throws BAD_REQUEST when input.pat is omitted and no active stored PAT exists for the project", async () => {
 		mockParseRepoUrl.mockReturnValue({
 			provider: "GITHUB",
@@ -866,23 +990,30 @@ describe("connectRepoIntegrationProcedure — GitHub / GitLab PAT connect", () =
 		mockValidateGitHubPat.mockResolvedValueOnce({ ok: false, status: 503 });
 
 		const handler = await loadHandler();
-		await expect(
-			handler({
-				input: {
-					projectId: "p1",
-					organizationId: null,
-					provider: "GITHUB",
-					authMethod: "PAT",
-					repositoryUrl: "https://github.com/acme/second-repo",
-					repositoryOwner: "acme",
-					repositoryName: "second-repo",
-				},
-				context: baseContext,
-			}),
-		).rejects.toMatchObject({
+		// One invocation: the mocks above are `...Once`, so a second call would
+		// exercise a different (crashing) path and assert nothing.
+		const error = (await handler({
+			input: {
+				projectId: "p1",
+				organizationId: null,
+				provider: "GITHUB",
+				authMethod: "PAT",
+				repositoryUrl: "https://github.com/acme/second-repo",
+				repositoryOwner: "acme",
+				repositoryName: "second-repo",
+			},
+			context: baseContext,
+		}).catch((e) => e)) as { data?: { reason?: string } };
+
+		expect(error).toMatchObject({
 			code: "BAD_REQUEST",
 			message: "GitHub returned status 503",
 		});
+		// An outage must NOT carry the credential-rejection tag: the picker reads
+		// that tag as "this credential is unusable, go sign in", and a sign-in
+		// popup against a provider returning 503 stores an App credential that
+		// cannot read the repository.
+		expect(error.data?.reason).toBeUndefined();
 	});
 });
 
