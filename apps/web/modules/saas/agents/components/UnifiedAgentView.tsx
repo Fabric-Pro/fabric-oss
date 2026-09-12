@@ -30,6 +30,9 @@ import { FeaturedAgentCard } from "./FeaturedAgentCard";
 import { InstanceAgentCard } from "./InstanceAgentCard";
 import { UnifiedAgentListView } from "./UnifiedAgentListView";
 
+/** Registry ids that the Fabric Loom row already represents. */
+const LOOM_AGENT_IDS = new Set(["fabric-workspace-assistant", "fabric-ai"]);
+
 type ViewMode = "grid" | "list";
 type AgentScope = "ALL" | "SYSTEM" | "ORGANIZATION" | "PERSONAL";
 
@@ -112,14 +115,20 @@ export function UnifiedAgentView() {
 		if (!registryData?.agents) {
 			return [];
 		}
-		return registryData.agents
-			.filter((agent) => agent.scope === "SYSTEM")
-			.map((agent) => ({
-				...agent,
-				scope: "SYSTEM" as const,
-				_type: "system" as const,
-				href: `${basePath}/${agent.id}/try`,
-			}));
+		return (
+			registryData.agents
+				.filter((agent) => agent.scope === "SYSTEM")
+				// The workspace assistant is the Fabric Loom row above the grid,
+				// and `fabric-ai` is its compatibility alias; a tile for either
+				// would be a second Fabric with nowhere useful to go.
+				.filter((agent) => !LOOM_AGENT_IDS.has(agent.agentId))
+				.map((agent) => ({
+					...agent,
+					scope: "SYSTEM" as const,
+					_type: "system" as const,
+					href: `${basePath}/${agent.id}/try`,
+				}))
+		);
 	}, [registryData, basePath]);
 
 	const instances = useMemo(() => {
@@ -203,58 +212,69 @@ export function UnifiedAgentView() {
 	];
 
 	return (
-		<div className="space-y-8">
+		<div className="space-y-4">
 			<AgentsHero />
 
-			{/* Scope Filter Pills */}
-			<div
-				data-onboarding-target="agents-scope-filter"
-				className="flex flex-wrap justify-center gap-2"
-			>
-				{chips.map(({ value, label, count }) => (
-					<button
-						key={value}
-						type="button"
-						onClick={() => setScopeFilter(value)}
-						className={cn(
-							"rounded-full px-4 py-2.5 font-medium text-base transition-all",
-							scopeFilter === value
-								? "bg-primary text-primary-foreground"
-								: "bg-card hover:bg-card/80 text-foreground/70 hover:text-foreground border",
-						)}
-					>
-						{label} ({count})
-					</button>
-				))}
-			</div>
-
-			{/* Actions Bar */}
-			<div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-				<div className="relative w-full sm:max-w-md">
-					<Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-					<SearchInput
-						placeholder="Search agents..."
-						value={searchQuery}
-						onChange={(e) => setSearchQuery(e.target.value)}
-						className="pl-10 h-11 text-base"
-					/>
+			{/* One toolbar: scope on the left, search and actions on the
+			    right. The scope filter and the New button keep their
+			    onboarding anchors. */}
+			<div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+				<div
+					data-onboarding-target="agents-scope-filter"
+					className="flex flex-wrap items-center gap-1.5"
+				>
+					{chips.map(({ value, label, count }) => (
+						<button
+							key={value}
+							type="button"
+							onClick={() => setScopeFilter(value)}
+							aria-pressed={scopeFilter === value}
+							className={cn(
+								"rounded-[6px] border px-3 py-1.5 text-[13px] transition-colors",
+								scopeFilter === value
+									? "border-border bg-accent text-foreground"
+									: "border-transparent text-muted-foreground hover:bg-accent/60 hover:text-foreground",
+							)}
+						>
+							{label}
+							<span className="ml-1.5 font-mono text-[11px] text-muted-foreground">
+								{count}
+							</span>
+						</button>
+					))}
 				</div>
 
-				<div className="flex items-center gap-2">
-					<div className="flex gap-1 border rounded-md p-1">
+				<div className="flex flex-wrap items-center gap-2">
+					<div className="relative w-full sm:w-64">
+						<Search className="absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+						<SearchInput
+							placeholder="Search agents..."
+							value={searchQuery}
+							onChange={(e) => setSearchQuery(e.target.value)}
+							className="h-9 pl-9 text-sm"
+						/>
+					</div>
+
+					<div className="flex gap-0.5 rounded-[6px] border p-0.5">
 						<Button
-							variant={viewMode === "grid" ? "default" : "ghost"}
+							variant={
+								viewMode === "grid" ? "secondary" : "ghost"
+							}
 							size="icon-sm"
 							onClick={() => setViewMode("grid")}
 							aria-label="Grid view"
+							aria-pressed={viewMode === "grid"}
 						>
 							<GridIcon className="h-4 w-4" />
 						</Button>
 						<Button
-							variant={viewMode === "list" ? "default" : "ghost"}
+							variant={
+								viewMode === "list" ? "secondary" : "ghost"
+							}
 							size="icon-sm"
 							onClick={() => setViewMode("list")}
 							aria-label="List view"
+							aria-pressed={viewMode === "list"}
 						>
 							<ListIcon className="h-4 w-4" />
 						</Button>
@@ -264,34 +284,35 @@ export function UnifiedAgentView() {
 						href={`${basePath}/register`}
 						className="hidden sm:block"
 					>
-						<Button variant="outline">
-							<Network className="h-4 w-4 mr-2" />
+						<Button variant="outline" size="sm">
+							<Network className="mr-2 h-4 w-4" />
 							Register External
 						</Button>
 					</Link>
 
 					<Button
 						asChild
+						size="sm"
 						data-onboarding-target="agents-new"
 						className="flex-1 sm:flex-none"
 					>
 						<Link href={`${contextBasePath}/agents/create`}>
-							<Plus className="h-4 w-4 mr-2" />
+							<Plus className="mr-2 h-4 w-4" />
 							New Agent
 						</Link>
 					</Button>
 				</div>
 			</div>
 
-			{/* Featured: Fabric Loom — always visible */}
+			{/* Fabric Loom, the orchestrator, always first and full width. */}
 			<div data-onboarding-target="agents-featured">
 				<FeaturedAgentCard
 					name="Fabric Loom"
 					description="Hub-and-spoke orchestrator that routes tasks to specialized agents via A2A protocol"
 					href={`${basePath}/fabric-ai`}
 					icon={<FabricLogo className="h-6 w-6" size={24} />}
-					badge="Smart"
-					badgeVariant="default"
+					badge="Orchestrator"
+					badgeVariant="outline"
 					capabilities={[
 						{
 							icon: <BrainIcon className="h-4 w-4" />,
@@ -338,7 +359,7 @@ export function UnifiedAgentView() {
 			{/* Agent Grid / List */}
 			{filteredItems.length > 0 &&
 				(viewMode === "grid" ? (
-					<div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+					<div className="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
 						{filteredItems.map((item: any) =>
 							item._type === "instance" ? (
 								<InstanceAgentCard

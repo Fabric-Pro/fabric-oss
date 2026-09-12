@@ -2,6 +2,7 @@
 
 import { useOrganizationContext } from "@saas/organizations/hooks/use-organization-context";
 import { SettingsItem } from "@saas/shared/components/SettingsItem";
+import { SiteFavicon } from "@saas/shared/components/SiteFavicon";
 import { orpcClient } from "@shared/lib/orpc-client";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -283,9 +284,14 @@ export function OrgOpenAPISettingsForm() {
 							<Card key={service.id} className="p-4">
 								<div className="flex items-center justify-between">
 									<div className="flex items-center gap-3">
-										<div className="h-10 w-10 rounded-lg bg-primary/10 flex items-center justify-center">
-											<ExternalLinkIcon className="h-5 w-5 text-primary" />
-										</div>
+										<SiteFavicon
+											url={service.baseUrl ?? service.specUrl}
+											name={service.name}
+											size={36}
+											fallback={
+												<ExternalLinkIcon className="size-4" />
+											}
+										/>
 										<div>
 											<div className="flex items-center gap-2">
 												<span className="font-medium">

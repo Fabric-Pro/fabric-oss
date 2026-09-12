@@ -102,7 +102,7 @@ export function ProjectStageVisibilitySettings({
 				<div>
 					<div className="flex items-center justify-between">
 						<h3 className="text-base font-semibold text-foreground">
-							Feature Maturation V2 Stage Visibility
+							Feature stages
 						</h3>
 						{updateMutation.isPending && (
 							<Loader2Icon className="size-4 animate-spin text-muted-foreground" />

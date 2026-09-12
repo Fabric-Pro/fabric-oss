@@ -1,7 +1,6 @@
 "use client";
 
 import { IncidentChip } from "@saas/shared/components/IncidentChip";
-import { getRandomGreeting } from "@saas/shared/lib/greetings";
 import { Button } from "@ui/components/button";
 import {
 	DropdownMenu,
@@ -47,23 +46,24 @@ export function DashboardHero({
 	onTimeRangeChange,
 	onRefresh,
 }: DashboardHeroProps) {
-	const firstName = userName?.split(" ")[0];
-	const [greeting, setGreeting] = useState("");
-
-	// Set after mount to avoid SSR/client hydration mismatch
+	/*
+	 * The workspace name and the date, in place of the rotating salutation
+	 * and its emoji: a page header says where you are, not how it feels.
+	 */
+	const title =
+		organizationName ||
+		(userName ? `${userName.split(" ")[0]}'s workspace` : "Your workspace");
+	const [today, setToday] = useState("");
 	useEffect(() => {
-		if (firstName) {
-			setGreeting(getRandomGreeting(firstName));
-		} else if (!organizationName) {
-			setGreeting(getRandomGreeting("there"));
-		}
-	}, [firstName, organizationName]);
-
-	const title = greeting || organizationName || "";
-
-	const subtitle = organizationName
-		? "Track your team's progress and collaboration in real-time."
-		: "Here are the latest insights from your projects and agents.";
+		setToday(
+			new Date().toLocaleDateString(undefined, {
+				weekday: "long",
+				day: "numeric",
+				month: "long",
+			}),
+		);
+	}, []);
+	const subtitle = today;
 
 	const handleCopyLink = useCallback(() => {
 		navigator.clipboard.writeText(window.location.href);
@@ -72,19 +72,10 @@ export function DashboardHero({
 	return (
 		<div className="flex items-start justify-between gap-4">
 			<div>
-				<h1
-					className="text-[1.85rem] tracking-tight text-foreground/90 sm:text-[2.15rem]"
-					style={{
-						fontFamily:
-							"var(--font-sans, 'EB Garamond', Georgia, serif)",
-						fontWeight: 400,
-					}}
-				>
+				<h1 className="text-[1.6rem] tracking-[-0.025em] text-foreground sm:text-[1.9rem]">
 					{title}
 				</h1>
-				<p className="mt-1 text-sm text-muted-foreground/90 sm:text-[0.95rem]">
-					{subtitle}
-				</p>
+				<p className="fab-label mt-2">{subtitle}</p>
 			</div>
 
 			<div className="flex items-center gap-2 shrink-0">

@@ -23,6 +23,10 @@ export interface QuickSuggestion {
 	label: string;
 	icon: ReactNode;
 	value: string;
+	/** One-line explanation shown after the label on the Advisor landing. */
+	description?: string;
+	/** Icon colour on the Advisor landing (any CSS colour). */
+	color?: string;
 }
 
 /** Example category for welcome screen */

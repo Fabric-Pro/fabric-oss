@@ -25,7 +25,6 @@ import { useFeatureFlag } from "@saas/shared/components/FeatureFlagProvider";
 import { IncidentRailIndicator } from "@saas/shared/components/IncidentRailIndicator";
 import { CloudArrowLeftRightIcon } from "@saas/shared/components/icons/CloudArrowLeftRightIcon";
 import { FolderOpenIcon as SparkFolderOpenIcon } from "@saas/shared/components/icons/FolderOpenIcon";
-import { McpServerIcon } from "@saas/shared/components/icons/McpServerIcon";
 import { PuzzleIcon } from "@saas/shared/components/icons/PuzzleIcon";
 import { RobotIcon } from "@saas/shared/components/icons/RobotIcon";
 import { SparklesIcon } from "@saas/shared/components/icons/SparklesIcon";
@@ -332,7 +331,7 @@ export function NavBar({
 	// while a guest views a shared project under /app/{slug}/projects/{id}.
 	const navSections: NavSection[] = [
 		{
-			label: "Main Navigation",
+			label: "Main navigation",
 			items: [
 				{
 					label: t("app.menu.start"),
@@ -435,11 +434,14 @@ export function NavBar({
 						!pathname.includes("/settings/integrations"),
 				},
 				{
-					label: "Integrations",
-					href: `${effectiveBasePath}/settings/integrations`,
+					label: "Connections",
+					href: `${effectiveBasePath}/connections`,
 					icon: CloudArrowLeftRightIcon,
 					onboardingId: "nav-integrations",
+					// Provider and action detail pages still live under
+					// Settings; they belong to this section, not to Settings.
 					isActive:
+						pathname.includes("/connections") ||
 						pathname.includes("/workflows/integrations") ||
 						pathname.includes("/settings/integrations"),
 				},
@@ -449,13 +451,6 @@ export function NavBar({
 					icon: Square3Stack3DIcon,
 					onboardingId: "nav-workspaces",
 					isActive: pathname.includes("/workspaces"),
-				},
-				{
-					label: "MCP Servers",
-					href: `${effectiveBasePath}/mcp-servers`,
-					icon: McpServerIcon,
-					onboardingId: "nav-mcp-servers",
-					isActive: pathname.includes("/mcp-servers"),
 				},
 				{
 					label: "Reports",
@@ -514,7 +509,7 @@ export function NavBar({
 							{navSections.map((section) => (
 								<div key={section.label ?? "main"}>
 									{section.label && (
-										<p className="mb-2 px-2 text-[11px] font-semibold uppercase tracking-widest text-muted-foreground/70 select-none">
+										<p className="fab-label mb-2 px-2 select-none">
 											{section.label}
 										</p>
 									)}
@@ -593,7 +588,7 @@ export function NavBar({
 			<nav
 				aria-label="Main navigation"
 				className={cn("w-full", {
-					"w-full md:fixed md:top-0 md:left-0 md:h-full md:overflow-visible md:bg-card/95 md:border-r md:border-border/55 md:transition-[width] md:duration-200 md:ease-in-out md:z-30":
+					"w-full md:fixed md:top-0 md:left-0 md:h-full md:overflow-visible md:bg-sidebar md:border-r md:border-border md:transition-[width] md:duration-200 md:ease-in-out md:z-30":
 						useSidebarLayout,
 					"md:w-[232px]": useSidebarLayout && showLabels,
 					"md:w-[72px]": useSidebarLayout && !showLabels,
@@ -947,7 +942,7 @@ function SidebarControlsFooter({ collapsed }: { collapsed: boolean }) {
 	);
 
 	return (
-		<div className="border-t border-border/40 bg-background/45 px-3 py-3 backdrop-blur-sm">
+		<div className="border-t border-border bg-sidebar px-3 py-3">
 			{/* Collapsed rail: a TooltipProvider so the bell + theme controls get
 			 * the same right-side hover tooltips as the nav items above. */}
 			{collapsed ? (
@@ -1164,19 +1159,18 @@ function SidebarNavItem({
 			onFocus={prefetchOnIntent}
 			onClick={onNavigate}
 			className={cn(
-				"relative flex min-h-[36px] items-center rounded-lg px-2.5 py-1.5 text-sm transition-colors outline-none focus-visible:ring-1 focus-visible:ring-primary/35 focus-visible:ring-offset-0",
+				"relative flex min-h-[32px] items-center rounded-[4px] px-2.5 py-1.5 text-sm transition-colors outline-none focus-visible:ring-1 focus-visible:ring-ring/50 focus-visible:ring-offset-0",
 				collapsed ? "justify-center" : "gap-2.5",
 				item.isActive
-					? "font-semibold text-foreground"
-					: "text-muted-foreground/85 hover:bg-muted/55 hover:text-foreground",
+					? "text-foreground"
+					: "text-muted-foreground hover:bg-muted hover:text-foreground",
 				isChild && "min-h-[32px] py-1 text-xs",
 			)}
 			style={
 				item.isActive
 					? {
-							backgroundColor:
-								"color-mix(in srgb, var(--org-accent, var(--primary)) 10%, transparent)",
-							color: "var(--org-accent, var(--primary))",
+							/* The design system: the active item sits on the wash with a crimson bar; the text stays ink. */
+							backgroundColor: "var(--accent)",
 						}
 					: undefined
 			}
@@ -1187,9 +1181,10 @@ function SidebarNavItem({
 			{/* Active indicator bar */}
 			{item.isActive && !collapsed && (
 				<span
-					className="absolute left-0 top-1.5 bottom-1.5 w-[3px] rounded-full"
+					className="absolute left-0 top-1.5 bottom-1.5 w-[2px] rounded-[2px]"
 					style={{
-						backgroundColor: "var(--org-accent, var(--primary))",
+						backgroundColor:
+							"var(--org-accent, var(--fab-accent-fill))",
 					}}
 				/>
 			)}

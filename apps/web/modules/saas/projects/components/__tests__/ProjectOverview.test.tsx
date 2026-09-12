@@ -14,8 +14,11 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
-vi.mock("../ProjectSectionHero", () => ({
-	ProjectSectionHero: () => null,
+// The overview renders the page-tour compass directly now (it used to sit
+// inside ProjectSectionHero, which this file mocked). The real button reads a
+// feature flag from a provider this test does not mount.
+vi.mock("@saas/get-started/components/PageTourButton", () => ({
+	PageTourButton: () => null,
 }));
 vi.mock("../ProjectSectionEditDialog", () => ({
 	ProjectSectionEditDialog: () => null,

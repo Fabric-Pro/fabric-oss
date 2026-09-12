@@ -59,24 +59,23 @@ export function SettingsMenu({
 									disabled={!collapsed}
 									label={menuItems[0].title}
 								>
-									<div className="shrink-0 text-muted-foreground/80 [&_svg]:size-7">
+									{/* The organisation's avatar is already on the rail beside this
+									    panel; repeating it here read as a duplicate. When the panel
+									    is collapsed it is the only label, so it stays then. */}
+									<div
+										className={cn(
+											"shrink-0 text-muted-foreground/80 [&_svg]:size-7",
+											!collapsed && "hidden",
+										)}
+									>
 										{menuItems[0].avatar}
 									</div>
 								</SidebarTooltip>
 							) : null}
-							{!collapsed && menuItems[0] ? (
-								<div className="min-w-0">
-									<p className="truncate text-[10px] font-semibold uppercase tracking-widest text-muted-foreground/60 select-none">
-										Settings
-									</p>
-									<p
-										className="truncate pt-0.5 text-sm font-medium text-foreground"
-										title={menuItems[0].title}
-									>
-										{menuItems[0].title}
-									</p>
-								</div>
-							) : null}
+							{/* Expanded, the panel used to open with "Settings" and the
+							    scope name, then repeat the scope as the first group
+							    heading under a breadcrumb that already says Settings.
+							    The group headings carry the scope on their own. */}
 						</div>
 
 						<div className="lg:hidden">
@@ -86,7 +85,7 @@ export function SettingsMenu({
 										<div className="shrink-0 text-muted-foreground/70">
 											{item.avatar}
 										</div>
-										<p className="truncate text-[10px] font-semibold uppercase tracking-widest text-muted-foreground/60">
+										<p className="fab-label truncate">
 											{item.title}
 										</p>
 									</div>
@@ -144,10 +143,10 @@ export function SettingsMenu({
 						<div className="no-scrollbar flex max-h-[calc(100vh-10rem)] flex-col gap-4 overflow-y-auto px-1 py-4 lg:flex-1">
 							{menuItems.map((item) => (
 								<div key={item.title}>
-									{collapsed ? (
+									{collapsed || !item.title ? (
 										<div className="mx-1 mb-2 h-px bg-border/40" />
 									) : (
-										<p className="mb-1.5 px-2 text-[10px] font-semibold uppercase tracking-widest text-muted-foreground/60 select-none">
+										<p className="fab-label mb-1.5 px-2 text-muted-foreground/60 select-none">
 											{item.title}
 										</p>
 									)}

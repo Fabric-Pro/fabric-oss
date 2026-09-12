@@ -18,18 +18,18 @@ export function AccountNotificationSettings() {
 			<SettingsHero
 				title="Notifications"
 				label="Preferences"
-				description="Choose which notification categories appear in your Notification Center. Changes take effect immediately and only apply to new notifications."
+				description="Which notifications you receive, and where. Changes apply to new notifications."
 			/>
 			<SettingsList>
 				<NotificationPreferencesForm />
-			</SettingsList>
-			<SettingsHero
-				title="Delivery"
-				label="Channels"
-				description="Choose where notifications are delivered. In-app is always on; opt in to email or a signed webhook to receive them in the tools you already use."
-			/>
-			<SettingsList>
-				<NotificationDeliveryForm />
+				<div>
+					<h2 className="app-editorial-label mb-1">Delivery</h2>
+					<p className="mb-3 text-[13px] text-muted-foreground">
+						In-app is always on. Add email or a signed webhook to
+						get them in the tools you already use.
+					</p>
+					<NotificationDeliveryForm />
+				</div>
 			</SettingsList>
 		</>
 	);

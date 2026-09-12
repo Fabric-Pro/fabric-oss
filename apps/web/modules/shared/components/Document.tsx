@@ -6,27 +6,27 @@ import {
 	FABRIC_ANALYTICS_CONSENT_COOKIE_NAME,
 } from "@shared/lib/consent";
 import { cn } from "@ui/lib";
-import { Inter, JetBrains_Mono } from "next/font/google";
+import { IBM_Plex_Mono, Inter } from "next/font/google";
 import { cookies, headers } from "next/headers";
 import { NuqsAdapter } from "nuqs/adapters/next/app";
 import type { PropsWithChildren } from "react";
 
+/*
+ * Fabric design system type, app surfaces: Inter is the reading face, the
+ * same face the Cosmos console uses, so the app reads the same on Linux as
+ * on a Mac (the system grotesque resolves to Arial or Liberation Sans there,
+ * which is what made the app look dated next to Augment). IBM Plex Mono is
+ * for labels, identifiers and timestamps. globals.css puts --font-inter at
+ * the head of --font-sans and falls back to the system grotesque.
+ */
 const sansFont = Inter({
-	weight: ["300", "400", "500", "600", "700"],
 	subsets: ["latin"],
-	variable: "--font-sans",
+	variable: "--font-inter",
 	display: "swap",
 });
 
-const displayFont = Inter({
-	weight: ["300", "400", "500", "600", "700"],
-	subsets: ["latin"],
-	variable: "--font-display",
-	display: "swap",
-});
-
-const monoFont = JetBrains_Mono({
-	weight: ["400", "500", "600", "700"],
+const monoFont = IBM_Plex_Mono({
+	weight: ["400", "500"],
 	subsets: ["latin"],
 	variable: "--font-mono",
 	display: "swap",
@@ -65,7 +65,6 @@ export async function Document({
 			suppressHydrationWarning
 			className={cn(
 				sansFont.variable,
-				displayFont.variable,
 				monoFont.variable,
 				"overflow-x-hidden",
 			)}

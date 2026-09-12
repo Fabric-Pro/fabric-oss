@@ -73,7 +73,7 @@ function AppWrapperContent({ children }: PropsWithChildren) {
 	return (
 		<div
 			className={cn(
-				"flex flex-col min-w-0 bg-[radial-gradient(farthest-corner_at_0%_0%,color-mix(in_oklch,var(--color-primary),transparent_95%)_0%,var(--color-background)_50%)] dark:bg-[radial-gradient(farthest-corner_at_0%_0%,color-mix(in_oklch,var(--color-primary),transparent_90%)_0%,var(--color-background)_50%)]",
+				"flex flex-col min-w-0 bg-background",
 				isFullHeightRoute
 					? "h-screen overflow-hidden"
 					: "min-h-screen overflow-x-clip",

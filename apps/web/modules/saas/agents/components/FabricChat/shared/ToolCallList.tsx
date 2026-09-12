@@ -42,6 +42,58 @@ export interface ToolCallListProps {
 	expandable?: boolean;
 }
 
+/**
+ * Turns a tool's error into one plain sentence.
+ *
+ * Tools report failures as `{ error: "..." }`, and that object used to be
+ * printed as raw JSON, braces and quotes included. Unwrap the message from
+ * an object or a JSON string, fall back to the raw text, and say so when a
+ * tool sent nothing at all.
+ */
+export function formatToolError(error: unknown, result: unknown): string {
+	const fromValue = (value: unknown): string | null => {
+		if (value === undefined || value === null) {
+			return null;
+		}
+		if (typeof value === "string") {
+			const text = value.trim();
+			if (!text) {
+				return null;
+			}
+			if (text.startsWith("{") || text.startsWith("[")) {
+				try {
+					return fromValue(JSON.parse(text));
+				} catch {
+					return text;
+				}
+			}
+			return text;
+		}
+		if (typeof value === "object") {
+			const obj = value as Record<string, unknown>;
+			for (const key of ["error", "message", "detail", "reason"]) {
+				const inner = obj[key];
+				if (typeof inner === "string" && inner.trim()) {
+					return inner.trim();
+				}
+				if (inner && typeof inner === "object") {
+					const nested = fromValue(inner);
+					if (nested) {
+						return nested;
+					}
+				}
+			}
+			return JSON.stringify(value);
+		}
+		return String(value);
+	};
+	return (
+		fromValue(error) ??
+		fromValue(result) ??
+		"This tool reported an error but sent no details."
+	);
+}
+
 function getToolState(
 	status: ToolCallItem["status"],
 ): "input-available" | "output-available" | "output-error" {
@@ -385,14 +437,10 @@ export function ToolCallList({
 										    result used to render this box
 										    empty - a red "Error" heading over
 										    nothing at all. */}
-										{toolCall.error ||
-											(typeof toolCall.result === "string"
-												? toolCall.result
-												: toolCall.result !== undefined
-													? JSON.stringify(
-															toolCall.result,
-														)
-													: "This tool reported an error but sent no details.")}
+										{formatToolError(
+											toolCall.error,
+											toolCall.result,
+										)}
 									</p>
 								</div>
 							)}

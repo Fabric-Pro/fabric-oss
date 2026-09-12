@@ -90,15 +90,21 @@ import {
 	useEffectiveOrganizationId,
 	useOrganizationContext,
 } from "@saas/organizations/hooks/use-organization-context";
-import { FabricLogo } from "@saas/shared/components/FabricLogo";
 import { PageBreadcrumbs } from "@saas/shared/components/PageBreadcrumbs";
 import { SidebarEdgeHandle } from "@saas/shared/components/SidebarEdgeHandle";
 import { useFullscreen } from "@saas/shared/contexts/FullscreenContext";
+import { useSidebarCollapse } from "@saas/shared/contexts/SidebarCollapseContext";
 import { orpcClient } from "@shared/lib/orpc-client";
 import { orpc } from "@shared/lib/orpc-query-utils";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Badge } from "@ui/components/badge";
 import { Button } from "@ui/components/button";
+import {
+	Sheet,
+	SheetContent,
+	SheetHeader,
+	SheetTitle,
+} from "@ui/components/sheet";
 import { Switch } from "@ui/components/switch";
 import {
 	Tooltip,
@@ -120,6 +126,8 @@ import {
 	History,
 	Layers,
 	LayoutGrid,
+	Maximize2,
+	Minimize2,
 	Plus,
 	Scale,
 	ScanSearch,
@@ -132,6 +140,7 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
+import type { ModelId } from "tokenlens";
 import {
 	Context,
 	ContextContent,
@@ -311,9 +320,30 @@ interface FabricAIClientProps {
 export default function FabricAIPage({
 	initialPreferences,
 }: FabricAIClientProps) {
+	const { isCollapsed: sidebarCollapsed } = useSidebarCollapse();
+	// Full-screen chat: the rail folds to its icon strip, the breadcrumb bar
+	// goes, and the chat takes the viewport. Esc or the same button brings
+	// it back. Reset on unmount so other pages never inherit it.
+	const { isFullscreen, setIsFullscreen } = useFullscreen();
+	const toggleFullscreen = useCallback(
+		() => setIsFullscreen(!isFullscreen),
+		[isFullscreen, setIsFullscreen],
+	);
+	useEffect(() => {
+		if (!isFullscreen) {
+			return;
+		}
+		const onKeyDown = (event: KeyboardEvent) => {
+			if (event.key === "Escape" && !event.defaultPrevented) {
+				setIsFullscreen(false);
+			}
+		};
+		window.addEventListener("keydown", onKeyDown);
+		return () => window.removeEventListener("keydown", onKeyDown);
+	}, [isFullscreen, setIsFullscreen]);
+	useEffect(() => () => setIsFullscreen(false), [setIsFullscreen]);
 	const { organizationId, organizationSlug, organizationName, basePath } =
 		useOrganizationContext();
-	const { setIsFullscreen } = useFullscreen();
 
 	// URL state — declared early so initial useState calls can read search params
 	const searchParams = useSearchParams();
@@ -503,14 +533,6 @@ export default function FabricAIPage({
 			boundProjectId,
 		};
 	}, [agentInstance]);
-
-	// Set fullscreen mode on mount, reset on unmount
-	useEffect(() => {
-		setIsFullscreen(true);
-		return () => {
-			setIsFullscreen(false);
-		};
-	}, [setIsFullscreen]);
 
 	// Track whether the current chat should use orchestrator or direct execution.
 	// Instance-backed agent chats now default to direct execution so the agent's
@@ -921,13 +943,28 @@ export default function FabricAIPage({
 					},
 					{ label: agentInstance.name },
 				]
-			: [{ label: "Fabric Loom" }]),
+			: [{ label: "Advisor" }]),
 	];
 
 	return (
-		<div className="fixed inset-y-0 right-0 top-16 left-0 md:top-0 md:left-[72px] bg-[radial-gradient(farthest-corner_at_0%_0%,color-mix(in_oklch,var(--color-primary),transparent_95%)_0%,var(--color-background)_50%)] dark:bg-[radial-gradient(farthest-corner_at_0%_0%,color-mix(in_oklch,var(--color-primary),transparent_90%)_0%,var(--color-background)_50%)]">
+		<div
+			className={cn(
+				"fixed inset-y-0 right-0 top-16 left-0 md:top-0",
+				// The page pins itself to the viewport, so it has to step
+				// past the rail itself: 232px expanded, 72px collapsed.
+				isFullscreen || sidebarCollapsed
+					? "md:left-[72px]"
+					: "md:left-[232px]",
+				"bg-background",
+			)}
+		>
 			{/* Breadcrumbs - hidden on mobile, shown from sm up */}
-			<div className="hidden sm:flex items-center justify-between border-b bg-transparent px-4 py-3 md:px-6 md:py-4">
+			<div
+				className={cn(
+					"hidden items-center justify-between border-b bg-transparent px-4 py-3 md:px-6 md:py-4",
+					!isFullscreen && "sm:flex",
+				)}
+			>
 				<PageBreadcrumbs items={breadcrumbItems} />
 				<div className="flex items-center gap-2">
 					<Badge
@@ -940,7 +977,7 @@ export default function FabricAIPage({
 			</div>
 
 			{/* Content - Full height */}
-			<div className="h-[calc(100vh-65px)]">
+			<div className={isFullscreen ? "h-screen" : "h-[calc(100vh-65px)]"}>
 				<AgentErrorBoundary>
 					<FabricChatContent
 						organizationId={organizationId ?? undefined}
@@ -954,6 +991,8 @@ export default function FabricAIPage({
 						// closed rather than reset, so returning to advanced
 						// restores whatever the user had open (#2040).
 						sidebarOpen={uiMode === "simple" ? false : sidebarOpen}
+						isFullscreen={isFullscreen}
+						onToggleFullscreen={toggleFullscreen}
 						setSidebarOpen={setSidebarOpen}
 						activeTab={activeTab}
 						setActiveTab={setActiveTab}
@@ -1002,6 +1041,10 @@ interface FabricChatContentProps {
 	deepResearchEnabled: boolean;
 	setDeepResearchEnabled: (enabled: boolean) => void;
 	sidebarOpen: boolean;
+	/** Whether the chat currently fills the viewport. */
+	isFullscreen: boolean;
+	/** Enter or leave full-screen chat. */
+	onToggleFullscreen: () => void;
 	setSidebarOpen: (open: boolean) => void;
 	activeTab: TabType;
 	setActiveTab: (tab: TabType) => void;
@@ -1082,6 +1125,8 @@ function FabricChatContent({
 	deepResearchEnabled,
 	setDeepResearchEnabled,
 	sidebarOpen,
+	isFullscreen,
+	onToggleFullscreen,
 	setSidebarOpen,
 	activeTab,
 	setActiveTab,
@@ -1104,6 +1149,9 @@ function FabricChatContent({
 	contextLaunch,
 	onInstanceIdRestored,
 }: FabricChatContentProps) {
+	// Past conversations, reachable in both interface modes. Simple mode
+	// hides the control deck that used to be the only way to them.
+	const [historyOpen, setHistoryOpen] = useState(false);
 	// Key to force remount of chat component when starting new chat
 	// This ensures all state is completely reset
 	const [chatInstanceKey, setChatInstanceKey] = useState(0);
@@ -1171,6 +1219,8 @@ function FabricChatContent({
 		reasoningTokens?: number;
 		cachedInputTokens?: number;
 		maxTokens: number;
+		modelId?: string;
+		modelLabel?: string;
 	}>({
 		inputTokens: 0,
 		outputTokens: 0,
@@ -1479,6 +1529,22 @@ function FabricChatContent({
 	);
 
 	const chrome = getInterfaceModeChrome(uiMode);
+
+	// The landing offers the last conversation with a Resume link, but only
+	// while nothing is open: once a conversation is active the landing is gone.
+	const recentConversation = useMemo(() => {
+		if (activeConversationId || conversations.length === 0) {
+			return null;
+		}
+		const latest = conversations.reduce((best, conv) =>
+			new Date(conv.updatedAt) > new Date(best.updatedAt) ? conv : best,
+		);
+		return {
+			id: latest.id,
+			title: latest.title,
+			updatedAt: latest.updatedAt,
+		};
+	}, [activeConversationId, conversations]);
 
 	// A conversation is bound to the engine it was created on: the effect above
 	// restores that engine from the conversation's metadata whenever one is
@@ -1963,7 +2029,7 @@ function FabricChatContent({
 	};
 
 	return (
-		<div className="flex h-full bg-[radial-gradient(circle_at_top_left,rgba(236,72,153,0.10),transparent_24%),radial-gradient(circle_at_bottom_left,rgba(59,130,246,0.06),transparent_24%),linear-gradient(180deg,rgba(255,255,255,0.01),rgba(255,255,255,0))]">
+		<div className="flex h-full bg-background">
 			{sidebarOpen && isCompactViewport && (
 				<button
 					type="button"
@@ -2002,58 +2068,44 @@ function FabricChatContent({
 					)}
 				>
 					{sidebarOpen ? (
-						<div className="flex h-full min-w-0 flex-1 flex-col border-r border-border/60 bg-background/45 backdrop-blur-sm">
-							<div className="border-b border-border/60 px-3 py-3">
-								<div className="rounded-lg border border-border/60 bg-card/40 p-3">
-									<div className="flex items-start justify-between gap-3">
-										<div className="min-w-0">
-											<p className="text-[11px] font-medium uppercase tracking-[0.24em] text-muted-foreground">
-												Control Deck
-											</p>
-											<p className="mt-2 text-[11px] leading-5 text-muted-foreground">
-												Configure agents, tools, and
-												files for the next run.
-											</p>
-										</div>
+						<div className="flex h-full min-w-0 flex-1 flex-col border-r border-border bg-sidebar">
+							<div className="border-b border-border px-3 pt-2.5 pb-2">
+								<div className="flex items-center justify-between gap-2 px-2.5 pb-2">
+									<p className="fab-label">Control deck</p>
+									{isCompactViewport ? (
+										<Button
+											variant="ghost"
+											size="icon"
+											className="h-8 w-8 rounded-[4px] text-muted-foreground hover:text-foreground"
+											onClick={() =>
+												setSidebarOpen(false)
+											}
+										>
+											<ChevronLeft className="h-4 w-4" />
+										</Button>
+									) : null}
+								</div>
 
-										{isCompactViewport ? (
-											<Button
-												variant="ghost"
-												size="icon"
-												className="h-9 w-9 rounded-md border border-border/50 bg-background/45 text-muted-foreground hover:bg-background/65 hover:text-foreground"
-												onClick={() =>
-													setSidebarOpen(false)
-												}
-											>
-												<ChevronLeft className="h-4 w-4" />
-											</Button>
-										) : null}
-									</div>
-
-									<div className="mt-3 grid grid-cols-2 gap-2">
-										{tabs.map((tab) => (
-											<button
-												key={tab.id}
-												type="button"
-												onClick={() =>
-													setActiveTab(tab.id)
-												}
-												className={cn(
-													"flex cursor-pointer items-center gap-2 rounded-md border px-3 py-2.5 text-left transition-all",
-													activeTab === tab.id
-														? "border-primary/25 bg-primary/10 text-foreground shadow-[inset_0_0_0_1px_rgba(236,72,153,0.18)]"
-														: "border-border/55 bg-background/40 text-muted-foreground hover:bg-background/60 hover:text-foreground",
-												)}
-											>
-												<tab.icon className="h-4 w-4 shrink-0" />
-												<div className="min-w-0">
-													<div className="text-sm font-medium">
-														{tab.label}
-													</div>
-												</div>
-											</button>
-										))}
-									</div>
+								{/* Tabs wrap into one or two short rows instead of a
+								    column that ate a third of the deck. */}
+								<div className="flex flex-wrap gap-1">
+									{tabs.map((tab) => (
+										<button
+											key={tab.id}
+											type="button"
+											onClick={() => setActiveTab(tab.id)}
+											aria-pressed={activeTab === tab.id}
+											className={cn(
+												"flex cursor-pointer items-center gap-1.5 rounded-[4px] border px-2 py-1 text-[12px] transition-colors",
+												activeTab === tab.id
+													? "border-border bg-accent text-foreground"
+													: "border-transparent text-muted-foreground hover:bg-accent/60 hover:text-foreground",
+											)}
+										>
+											<tab.icon className="h-3.5 w-3.5 shrink-0" />
+											<span>{tab.label}</span>
+										</button>
+									))}
 								</div>
 							</div>
 
@@ -2326,7 +2378,7 @@ function FabricChatContent({
 							</div>
 						</div>
 					) : (
-						<div className="flex h-full w-full flex-col items-center gap-2 border-r border-border/60 bg-background/45 px-1 py-2.5 backdrop-blur-sm">
+						<div className="flex h-full w-full flex-col items-center gap-2 border-r border-border bg-sidebar px-1 py-2.5">
 							{tabs.map((tab) => (
 								<Button
 									key={tab.id}
@@ -2355,6 +2407,14 @@ function FabricChatContent({
 							onClick={() => setSidebarOpen(!sidebarOpen)}
 							expandLabel="Expand control deck"
 							collapseLabel="Collapse control deck"
+							// The rail's handle sits at the viewport's middle. This
+							// column starts under the 65px breadcrumb bar, so its
+							// own middle is 32.5px lower; lift the handle to match.
+							style={{
+								top: isFullscreen
+									? "50%"
+									: "calc(50% - 32.5px)",
+							}}
 						/>
 					) : null}
 
@@ -2394,18 +2454,8 @@ function FabricChatContent({
 				{/* Header */}
 				<header className="flex items-center gap-2 border-b border-border/60 bg-background/30 px-3 py-2 backdrop-blur-sm sm:gap-3 sm:px-4 sm:py-3 md:px-6 lg:h-16 lg:gap-4 lg:py-0 overflow-x-auto overflow-y-hidden">
 					<div className="flex shrink-0 items-center gap-3">
-						<div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-primary/20 bg-gradient-to-br from-primary/18 to-primary/5 p-1.5 sm:h-10 sm:w-10 sm:p-2">
-							<FabricLogo size={20} className="text-primary" />
-						</div>
-						<h1
-							className="hidden leading-[1] text-foreground/85 lg:block"
-							style={{
-								fontFamily:
-									"var(--font-sans, 'EB Garamond', Georgia, serif)",
-								fontWeight: 400,
-							}}
-						>
-							Fabric Loom
+						<h1 className="hidden text-[15px] font-medium leading-none text-foreground lg:block">
+							Advisor
 						</h1>
 					</div>
 					<div className="ml-auto flex shrink-0 items-center gap-1 sm:gap-2.5">
@@ -2413,7 +2463,7 @@ function FabricChatContent({
 						<Button
 							variant="outline"
 							size="sm"
-							className="h-9 rounded-md border-primary/20 bg-primary/10 px-2.5 text-primary hover:bg-primary/16"
+							className="h-9 px-2.5"
 							title="New run"
 							onClick={() => {
 								selectConversation(null);
@@ -2442,6 +2492,53 @@ function FabricChatContent({
 							<Plus className="h-4 w-4" />
 							<span className="hidden lg:inline ml-1">New</span>
 						</Button>
+
+						{/* Past conversations. */}
+						<Tooltip>
+							<TooltipTrigger asChild>
+								<Button
+									variant="outline"
+									size="sm"
+									className="h-9 w-9 px-0"
+									aria-label="Conversation history"
+									onClick={() => setHistoryOpen(true)}
+								>
+									<History className="h-4 w-4" />
+								</Button>
+							</TooltipTrigger>
+							<TooltipContent side="bottom">
+								History
+							</TooltipContent>
+						</Tooltip>
+
+						{/* Full-screen chat and back. */}
+						<Tooltip>
+							<TooltipTrigger asChild>
+								<Button
+									variant="outline"
+									size="sm"
+									className="h-9 w-9 px-0"
+									aria-pressed={isFullscreen}
+									aria-label={
+										isFullscreen
+											? "Exit full screen"
+											: "Expand chat to full screen"
+									}
+									onClick={onToggleFullscreen}
+								>
+									{isFullscreen ? (
+										<Minimize2 className="h-4 w-4" />
+									) : (
+										<Maximize2 className="h-4 w-4" />
+									)}
+								</Button>
+							</TooltipTrigger>
+							<TooltipContent side="bottom">
+								{isFullscreen
+									? "Exit full screen · Esc"
+									: "Expand chat to full screen"}
+							</TooltipContent>
+						</Tooltip>
 
 						{/*
 						 * Interface mode (#2040). Simple is the reduced surface:
@@ -2702,7 +2799,13 @@ function FabricChatContent({
 											}
 										: undefined
 								}
-								modelId="openai:gpt-4o"
+								// The model that actually answered. Cost shows only
+								// when the pricing table knows it.
+								modelId={
+									tokenUsage.modelId
+										? (tokenUsage.modelId as ModelId)
+										: undefined
+								}
 							>
 								<ContextTrigger />
 								<ContextContent>
@@ -2718,6 +2821,40 @@ function FabricChatContent({
 						</div>
 					</div>
 				</header>
+
+				<Sheet open={historyOpen} onOpenChange={setHistoryOpen}>
+					<SheetContent
+						side="right"
+						className="flex w-full flex-col gap-0 p-0 sm:max-w-md"
+					>
+						<SheetHeader className="border-b border-border px-4 py-3">
+							<SheetTitle className="text-sm font-medium">
+								History
+							</SheetTitle>
+						</SheetHeader>
+						<div className="min-h-0 flex-1 overflow-y-auto">
+							<HistoryTabContent
+								conversations={conversations.map((conv) => ({
+									id: conv.id,
+									title: conv.title,
+									lastMessage: conv.lastMessage,
+									createdAt: conv.createdAt,
+									pinned: conv.pinned,
+									metadata: (conv as any).metadata,
+								}))}
+								activeConversationId={activeConversationId}
+								isLoading={isLoadingConversations}
+								isDeleting={isDeleting}
+								onSelectConversation={(id) => {
+									selectConversation(id);
+									setHistoryOpen(false);
+								}}
+								onTogglePin={togglePin}
+								onDeleteConversation={deleteConversation}
+							/>
+						</div>
+					</SheetContent>
+				</Sheet>
 
 				{contextLaunch?.projectId && !activeConversationId && (
 					<div className="border-b border-border/60 bg-primary/[0.04] px-4 py-3">
@@ -2806,6 +2943,8 @@ function FabricChatContent({
 							attachedDocumentIds={resolvedAgentDocumentIds}
 							systemPrompt={systemPrompt}
 							instanceId={instanceId}
+							recentConversation={recentConversation}
+							onResumeConversation={selectConversation}
 							initialInput={
 								!activeConversationId
 									? (contextLaunch?.prompt ?? undefined)
@@ -2863,7 +3002,7 @@ function FabricChatContent({
 							systemPrompt={systemPrompt}
 							instanceId={instanceId}
 							starterMessages={resolvedAgentStarterMessages}
-							agentName={agentInstanceName || "Fabric Loom"}
+							agentName={agentInstanceName || "Advisor"}
 							agentDescription={
 								agentInstanceDescription ||
 								"Durable multi-agent orchestration powered by Temporal."
@@ -2907,6 +3046,8 @@ function FabricChatContent({
 							attachedWorkspaceIds={effectiveWorkspaceIds}
 							attachedDocumentIds={resolvedAgentDocumentIds}
 							attachedProjectId={pendingProjectId}
+							recentConversation={recentConversation}
+							onResumeConversation={selectConversation}
 							initialInput={
 								!activeConversationId
 									? (contextLaunch?.prompt ?? undefined)

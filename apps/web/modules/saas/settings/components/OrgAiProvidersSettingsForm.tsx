@@ -2,7 +2,9 @@
 
 import { useOrganizationContext } from "@saas/organizations/hooks/use-organization-context";
 import { AnthropicCapabilityNotice } from "@saas/settings/components/AnthropicCapabilityNotice";
+import { aiProviderSiteUrl } from "@saas/settings/lib/provider-sites";
 import { SettingsItem } from "@saas/shared/components/SettingsItem";
+import { SiteFavicon } from "@saas/shared/components/SiteFavicon";
 import { orpcClient } from "@shared/lib/orpc-client";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Badge } from "@ui/components/badge";
@@ -28,14 +30,12 @@ import {
 import {
 	AlertCircleIcon,
 	CheckCircleIcon,
-	CloudIcon,
 	DatabaseIcon,
 	EyeIcon,
 	EyeOffIcon,
 	InfoIcon,
 	LoaderIcon,
 	PlayIcon,
-	ServerIcon,
 	SettingsIcon,
 	StarIcon,
 } from "lucide-react";
@@ -61,8 +61,7 @@ export function OrgAiProvidersSettingsForm({
 	readOnly = false,
 }: OrgAiProvidersSettingsFormProps) {
 	const queryClient = useQueryClient();
-	const { organizationId, organizationName, isOrgContext } =
-		useOrganizationContext();
+	const { organizationId, isOrgContext } = useOrganizationContext();
 	const [selectedProvider, setSelectedProvider] =
 		useState<ProviderWithIcon | null>(null);
 	const [showApiKey, setShowApiKey] = useState(false);
@@ -835,39 +834,19 @@ export function OrgAiProvidersSettingsForm({
 						</div>
 					)}
 
-					{/* Info Banner */}
-					<div className="rounded-md border border-border bg-muted/40 p-4">
-						<div className="flex gap-3">
-							<InfoIcon className="size-5 shrink-0 text-muted-foreground" />
-							<div className="space-y-1 text-sm">
-								<p className="font-medium text-foreground">
-									Organization Settings
-								</p>
-								<p className="text-muted-foreground">
-									These AI provider settings apply to all
-									members of{" "}
-									<strong>{organizationName}</strong>.
-									Individual members can override these
-									settings with their personal provider
-									configurations.
-								</p>
-							</div>
-						</div>
-					</div>
-
 					{/* Embedding Provider Info Banner */}
 					{configStatus?.isConfigured &&
 						!configStatus?.embeddingProvider &&
 						!readOnly && (
-							<div className="rounded-md border border-secondary/20 bg-secondary/5 p-4">
+							<div className="rounded-md border border-border bg-muted/40 p-4">
 								<div className="flex gap-3">
-									<DatabaseIcon className="size-5 shrink-0 text-secondary" />
+									<DatabaseIcon className="size-5 shrink-0 text-muted-foreground" />
 									<div className="space-y-1 text-sm">
 										<p className="font-medium text-foreground">
 											Choose a Provider for Document
 											Search
 										</p>
-										<p className="text-secondary/80">
+										<p className="text-muted-foreground">
 											To enable semantic document search,
 											choose a provider to convert your
 											documents into searchable vectors.
@@ -885,10 +864,9 @@ export function OrgAiProvidersSettingsForm({
 
 					{/* AI Gateways Section */}
 					<div>
-						<h3 className="mb-3 flex items-center gap-2 text-[11px] font-medium uppercase tracking-[0.1em] text-muted-foreground">
-							<CloudIcon className="size-4" />
+						<h4 className="app-editorial-label mb-3">
 							AI Gateways
-						</h3>
+						</h4>
 						<div className="grid gap-4 md:grid-cols-2">
 							{gatewayProviders.map((provider) => {
 								const isConfigured = isProviderConfigured(
@@ -905,47 +883,53 @@ export function OrgAiProvidersSettingsForm({
 								return (
 									<Card
 										key={provider.id}
-										className={`relative p-4 transition-colors ${!readOnly ? "hover:border-primary/50" : ""} ${isDefault ? "border-primary/50 bg-primary/5" : ""}`}
+										className={`relative p-4 transition-colors ${!readOnly ? "hover:border-primary/50" : ""} ${isDefault ? "border-success/40" : ""}`}
 									>
 										<div className="space-y-3">
 											<div className="flex items-start gap-3">
-												<div className="rounded-lg bg-primary/10 p-2">
-													<Icon className="size-5 text-primary" />
-												</div>
+												<SiteFavicon
+													url={aiProviderSiteUrl(
+														provider.id,
+														provider.docsUrl,
+													)}
+													name={provider.name}
+													size={36}
+													fallback={
+														<Icon className="size-4" />
+													}
+												/>
 												<div className="flex-1">
-													<div className="flex items-center gap-2 flex-wrap">
-														<h4 className="font-semibold">
+													<div className="flex min-w-0 items-center gap-2">
+														<h4 className="truncate font-semibold">
 															{provider.name}
 														</h4>
 														{isDefault && (
 															<Badge
-																variant="default"
-																className="text-xs bg-primary text-primary-foreground"
+																variant="success"
+																className="shrink-0 text-xs"
 															>
 																<StarIcon className="mr-1 size-3" />
 																Default
 															</Badge>
 														)}
+														{isConfigured && (
+															<Badge
+																variant="outline"
+																className="shrink-0 border-success/40 text-xs text-success"
+															>
+																<CheckCircleIcon className="mr-1 size-3" />
+																Active
+															</Badge>
+														)}
 														{isEmbedding && (
 															<Badge
-																variant="default"
-																className="text-xs bg-secondary text-secondary-foreground"
+																variant="outline"
+																className="shrink-0 text-xs"
 															>
 																<DatabaseIcon className="mr-1 size-3" />
 																Embeddings
 															</Badge>
 														)}
-														{isConfigured &&
-															!isDefault &&
-															!isEmbedding && (
-																<Badge
-																	variant="secondary"
-																	className="text-xs"
-																>
-																	<CheckCircleIcon className="mr-1 size-3" />
-																	Active
-																</Badge>
-															)}
 													</div>
 													<p className="mt-1 text-muted-foreground text-xs">
 														{provider.description}
@@ -1102,10 +1086,9 @@ export function OrgAiProvidersSettingsForm({
 
 					{/* Direct Providers Section */}
 					<div>
-						<h3 className="mb-3 flex items-center gap-2 text-[11px] font-medium uppercase tracking-[0.1em] text-muted-foreground">
-							<ServerIcon className="size-4" />
+						<h4 className="app-editorial-label mb-3">
 							Direct Providers
-						</h3>
+						</h4>
 						<div className="grid items-start gap-4 md:grid-cols-2 lg:grid-cols-3">
 							{directProviders.map((provider) => {
 								const isConfigured = isProviderConfigured(
@@ -1122,50 +1105,52 @@ export function OrgAiProvidersSettingsForm({
 								return (
 									<Card
 										key={provider.id}
-										className={`relative p-4 transition-colors ${!readOnly ? "hover:border-primary/50" : ""} ${isDefault ? "border-primary/50 bg-primary/5" : ""}`}
+										className={`relative p-4 transition-colors ${!readOnly ? "hover:border-primary/50" : ""} ${isDefault ? "border-success/40" : ""}`}
 									>
 										<div className="space-y-3">
 											<div className="flex items-start gap-3">
-												<div
-													className={`rounded-lg p-2 ${isDefault ? "bg-primary/10" : "bg-muted"}`}
-												>
-													<Icon
-														className={`size-4 ${isDefault ? "text-primary" : "text-muted-foreground"}`}
-													/>
-												</div>
+												<SiteFavicon
+													url={aiProviderSiteUrl(
+														provider.id,
+														provider.docsUrl,
+													)}
+													name={provider.name}
+													size={36}
+													fallback={
+														<Icon className="size-4" />
+													}
+												/>
 												<div className="flex-1">
-													<div className="flex items-center gap-2 flex-wrap">
-														<h4 className="font-semibold text-sm">
+													<div className="flex min-w-0 items-center gap-2">
+														<h4 className="truncate font-semibold text-sm">
 															{provider.name}
 														</h4>
 														{isDefault && (
 															<Badge
-																variant="default"
-																className="text-xs bg-primary text-primary-foreground"
+																variant="success"
+																className="shrink-0 text-xs"
 															>
 																<StarIcon className="mr-1 size-3" />
 																Default
 															</Badge>
 														)}
+														{isConfigured && (
+															<Badge
+																variant="outline"
+																className="shrink-0 border-success/40 text-xs text-success"
+															>
+																Active
+															</Badge>
+														)}
 														{isEmbedding && (
 															<Badge
-																variant="default"
-																className="text-xs bg-secondary text-secondary-foreground"
+																variant="outline"
+																className="shrink-0 text-xs"
 															>
 																<DatabaseIcon className="mr-1 size-3" />
 																Embeddings
 															</Badge>
 														)}
-														{isConfigured &&
-															!isDefault &&
-															!isEmbedding && (
-																<Badge
-																	variant="secondary"
-																	className="text-xs"
-																>
-																	Active
-																</Badge>
-															)}
 													</div>
 													<p className="mt-1 line-clamp-2 text-muted-foreground text-xs">
 														{provider.description}
@@ -1307,10 +1292,9 @@ export function OrgAiProvidersSettingsForm({
 
 					{/* Cloud Providers Section */}
 					<div>
-						<h3 className="mb-3 flex items-center gap-2 text-[11px] font-medium uppercase tracking-[0.1em] text-muted-foreground">
-							<CloudIcon className="size-4" />
+						<h4 className="app-editorial-label mb-3">
 							Cloud Providers
-						</h3>
+						</h4>
 						<p className="mb-3 text-muted-foreground text-xs">
 							Enterprise cloud AI services that require additional
 							configuration like resource endpoints.
@@ -1331,50 +1315,52 @@ export function OrgAiProvidersSettingsForm({
 								return (
 									<Card
 										key={provider.id}
-										className={`relative p-4 transition-colors ${!readOnly ? "hover:border-primary/50" : ""} ${isDefault ? "border-primary/50 bg-primary/5" : ""}`}
+										className={`relative p-4 transition-colors ${!readOnly ? "hover:border-primary/50" : ""} ${isDefault ? "border-success/40" : ""}`}
 									>
 										<div className="space-y-3">
 											<div className="flex items-start gap-3">
-												<div
-													className={`rounded-lg p-2 ${isDefault ? "bg-primary/10" : "bg-muted"}`}
-												>
-													<Icon
-														className={`size-4 ${isDefault ? "text-primary" : "text-muted-foreground"}`}
-													/>
-												</div>
+												<SiteFavicon
+													url={aiProviderSiteUrl(
+														provider.id,
+														provider.docsUrl,
+													)}
+													name={provider.name}
+													size={36}
+													fallback={
+														<Icon className="size-4" />
+													}
+												/>
 												<div className="flex-1">
-													<div className="flex items-center gap-2 flex-wrap">
-														<h4 className="font-semibold text-sm">
+													<div className="flex min-w-0 items-center gap-2">
+														<h4 className="truncate font-semibold text-sm">
 															{provider.name}
 														</h4>
 														{isDefault && (
 															<Badge
-																variant="default"
-																className="text-xs bg-primary text-primary-foreground"
+																variant="success"
+																className="shrink-0 text-xs"
 															>
 																<StarIcon className="mr-1 size-3" />
 																Default
 															</Badge>
 														)}
+														{isConfigured && (
+															<Badge
+																variant="outline"
+																className="shrink-0 border-success/40 text-xs text-success"
+															>
+																Active
+															</Badge>
+														)}
 														{isEmbedding && (
 															<Badge
-																variant="default"
-																className="text-xs bg-secondary text-secondary-foreground"
+																variant="outline"
+																className="shrink-0 text-xs"
 															>
 																<DatabaseIcon className="mr-1 size-3" />
 																Embeddings
 															</Badge>
 														)}
-														{isConfigured &&
-															!isDefault &&
-															!isEmbedding && (
-																<Badge
-																	variant="secondary"
-																	className="text-xs"
-																>
-																	Active
-																</Badge>
-															)}
 													</div>
 													<p className="mt-1 line-clamp-2 text-muted-foreground text-xs">
 														{provider.description}

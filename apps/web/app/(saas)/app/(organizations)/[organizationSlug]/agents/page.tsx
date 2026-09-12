@@ -15,7 +15,7 @@ export default function OrganizationAgentsPage() {
 		useOrganizationContext();
 
 	return (
-		<div className="w-full py-8 space-y-6">
+		<div className="w-full space-y-4 py-4">
 			<TopRightControls />
 			<PageBreadcrumbs
 				items={[
@@ -40,11 +40,11 @@ export default function OrganizationAgentsPage() {
 					</TabsTrigger>
 				</TabsList>
 
-				<TabsContent value="agents" className="mt-6">
+				<TabsContent value="agents" className="mt-4">
 					<UnifiedAgentView />
 				</TabsContent>
 
-				<TabsContent value="tasks" className="mt-6">
+				<TabsContent value="tasks" className="mt-4">
 					<AgentTaskList
 						organizationId={organizationId ?? undefined}
 					/>

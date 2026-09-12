@@ -260,72 +260,62 @@ export function AgentTemplatesList({
 	};
 
 	return (
-		<div className="space-y-8">
+		<div className="space-y-4">
 			<AgentTemplatesHero />
 
-			{/* Section header for templates */}
-			<div className="flex items-center gap-3 pt-4 border-t">
-				<span
-					className="block h-4 w-0.5 shrink-0 bg-primary"
-					aria-hidden="true"
-				/>
-				<p className="text-[11px] font-medium uppercase tracking-[0.2em] text-muted-foreground select-none">
-					Start from a template
-				</p>
-			</div>
-
-			{/* Category Pills - Modern style with icons */}
-			<div
-				data-onboarding-target="agent-templates-category-filter"
-				className="flex flex-wrap justify-center gap-2"
-			>
-				{categories.map((cat) => {
-					const Icon = cat.icon;
-					return (
-						<button
-							key={cat.value}
-							type="button"
-							onClick={() => setCategoryFilter(cat.value)}
-							className={cn(
-								"flex items-center gap-2 rounded-full px-4 py-2 text-sm font-medium transition-all duration-150",
-								categoryFilter === cat.value
-									? "bg-primary text-primary-foreground"
-									: "bg-background hover:bg-muted text-muted-foreground border border-border hover:text-foreground",
-							)}
-						>
-							<Icon
-								className={cn(
-									"h-4 w-4",
-									categoryFilter === cat.value
-										? ""
-										: cat.color,
-								)}
-							/>
-							{cat.label}
-						</button>
-					);
-				})}
-			</div>
-
-			{/* Search & Actions */}
-			<div className="flex gap-3 items-center justify-between">
+			{/* One toolbar: categories on the left, search and actions on
+			    the right. The onboarding anchors stay where they were. */}
+			<div className="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
 				<div
-					data-onboarding-target="agent-templates-search"
-					className="relative flex-1 max-w-md"
+					data-onboarding-target="agent-templates-category-filter"
+					className="flex flex-wrap items-center gap-1"
 				>
-					<SearchIcon className="absolute left-3.5 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-					<SearchInput
-						placeholder="Search templates..."
-						value={searchQuery}
-						onChange={(e) => setSearchQuery(e.target.value)}
-						className="pl-10"
-					/>
+					{categories.map((cat) => {
+						const Icon = cat.icon;
+						const selected = categoryFilter === cat.value;
+						return (
+							<button
+								key={cat.value}
+								type="button"
+								onClick={() => setCategoryFilter(cat.value)}
+								aria-pressed={selected}
+								className={cn(
+									"flex items-center gap-1.5 rounded-[6px] border px-2.5 py-1.5 text-[13px] transition-colors",
+									selected
+										? "border-border bg-accent text-foreground"
+										: "border-transparent text-muted-foreground hover:bg-accent/60 hover:text-foreground",
+								)}
+							>
+								<Icon
+									className={cn(
+										"h-3.5 w-3.5",
+										selected ? "" : cat.color,
+									)}
+								/>
+								{cat.label}
+							</button>
+						);
+					})}
 				</div>
-				<div className="flex gap-2">
+
+				<div className="flex flex-wrap items-center gap-2">
+					<div
+						data-onboarding-target="agent-templates-search"
+						className="relative w-full sm:w-64"
+					>
+						<SearchIcon className="absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+						<SearchInput
+							placeholder="Search templates..."
+							value={searchQuery}
+							onChange={(e) => setSearchQuery(e.target.value)}
+							className="h-9 pl-9 text-sm"
+						/>
+					</div>
 					<Button
 						data-onboarding-target="agent-templates-create-agent"
 						asChild
 						variant="outline"
+						size="sm"
 					>
 						<Link
 							href={`${basePath.replace("agent-templates", "agents")}/create`}
@@ -335,7 +325,7 @@ export function AgentTemplatesList({
 						</Link>
 					</Button>
 					{user?.role === "admin" && (
-						<Button asChild>
+						<Button asChild size="sm">
 							<Link href={`${basePath}/new`}>
 								<PlusIcon className="h-4 w-4" />
 								Create New Template

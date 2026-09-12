@@ -213,203 +213,197 @@ export function ProjectAiAssistantSettings({ project, canEdit }: Props) {
 						Clarifying questions
 					</h3>
 					<p className="mt-1 max-w-2xl text-sm text-muted-foreground">
-						Choose how often the AI Assistant pauses to ask a
-						clarifying question while it analyzes or matures work.
-						Questions appear in the assistant with quick answer
-						options you can click or type past.
+						How often the assistant pauses to ask, and how much test
+						coverage it plans for.
 					</p>
 				</div>
-
-				<div className="max-w-sm space-y-2">
-					<div className="flex items-center gap-1.5">
-						<Label htmlFor="clarifying-frequency">Frequency</Label>
-						<Tooltip>
-							<TooltipTrigger asChild>
-								<button
-									type="button"
-									className="rounded-full text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-									aria-label="How clarifying-question frequency works"
-								>
-									<InfoIcon className="size-3.5" />
-								</button>
-							</TooltipTrigger>
-							<TooltipContent className="max-w-xs">
-								<p className="font-medium">
-									How often the assistant pauses to ask:
-								</p>
-								<ul className="mt-1 space-y-1">
-									<li>
-										<span className="font-medium">
-											Minimal
-										</span>{" "}
-										— rarely; proceeds on reasonable
-										assumptions, asks only when truly
-										blocked.
-									</li>
-									<li>
-										<span className="font-medium">
-											Balanced
-										</span>{" "}
-										— asks when there is material ambiguity
-										(default).
-									</li>
-									<li>
-										<span className="font-medium">
-											Thorough
-										</span>{" "}
-										— asks proactively to refine details.
-									</li>
-								</ul>
-								<p className="mt-1 text-muted-foreground">
-									Questions appear as an in-chat card with
-									clickable options; dismissing records them
-									as open items.
-								</p>
-							</TooltipContent>
-						</Tooltip>
-					</div>
-					<Select
-						value={value}
-						onValueChange={handleChange}
-						disabled={!canEdit || updateMutation.isPending}
-					>
-						<SelectTrigger id="clarifying-frequency">
-							<SelectValue />
-						</SelectTrigger>
-						<SelectContent>
-							{FREQUENCY_OPTIONS.map((option) => (
-								<SelectItem
-									key={option.value}
-									value={option.value}
-								>
-									{option.label}
-								</SelectItem>
-							))}
-						</SelectContent>
-					</Select>
-					{activeHint && (
-						<p className="text-xs text-muted-foreground">
-							{activeHint}
-						</p>
-					)}
-					{value === "MINIMAL" && (
-						<p className="text-xs text-highlight-foreground">
-							The assistant will rarely ask — it may proceed on
-							assumptions you can revise later.
-						</p>
-					)}
-					{!canEdit && (
-						<p className="text-xs text-muted-foreground">
-							Only project admins can change this setting.
-						</p>
-					)}
-					{canEdit && (
-						<Link
-							href={`${promptsPath}?search=${encodeURIComponent(
-								"Clarifying Questions",
-							)}`}
-							className="inline-flex items-center gap-1 text-xs text-primary hover:underline"
+				<div className="grid gap-6 sm:grid-cols-2">
+					<div className="space-y-2">
+						<div className="flex items-center gap-1.5">
+							<Label htmlFor="clarifying-frequency">
+								Frequency
+							</Label>
+							<Tooltip>
+								<TooltipTrigger asChild>
+									<button
+										type="button"
+										className="rounded-full text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+										aria-label="How clarifying-question frequency works"
+									>
+										<InfoIcon className="size-3.5" />
+									</button>
+								</TooltipTrigger>
+								<TooltipContent className="max-w-xs">
+									<p className="font-medium">
+										How often the assistant pauses to ask:
+									</p>
+									<ul className="mt-1 space-y-1">
+										<li>
+											<span className="font-medium">
+												Minimal
+											</span>{" "}
+											— rarely; proceeds on reasonable
+											assumptions, asks only when truly
+											blocked.
+										</li>
+										<li>
+											<span className="font-medium">
+												Balanced
+											</span>{" "}
+											— asks when there is material
+											ambiguity (default).
+										</li>
+										<li>
+											<span className="font-medium">
+												Thorough
+											</span>{" "}
+											— asks proactively to refine
+											details.
+										</li>
+									</ul>
+									<p className="mt-1 text-muted-foreground">
+										Questions appear as an in-chat card with
+										clickable options; dismissing records
+										them as open items.
+									</p>
+								</TooltipContent>
+							</Tooltip>
+						</div>
+						<Select
+							value={value}
+							onValueChange={handleChange}
+							disabled={!canEdit || updateMutation.isPending}
 						>
-							Customize these prompts in the Prompt Library
-							<ArrowUpRightIcon
-								className="size-3"
-								aria-hidden="true"
-							/>
-						</Link>
-					)}
-				</div>
-
-				<div className="max-w-sm space-y-2">
-					<div className="flex items-center gap-1.5">
-						<Label htmlFor="qa-strategy-level">
-							Testing Strategy depth
-						</Label>
-						<Tooltip>
-							<TooltipTrigger asChild>
-								<button
-									type="button"
-									className="rounded-full text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-									aria-label="How Testing Strategy depth works"
-								>
-									<InfoIcon className="size-3.5" />
-								</button>
-							</TooltipTrigger>
-							<TooltipContent className="max-w-xs">
-								<p className="font-medium">
-									How much QA coverage the assistant
-									generates:
-								</p>
-								<ul className="mt-1 space-y-1">
-									<li>
-										<span className="font-medium">
-											Early-stage
-										</span>{" "}
-										— functional and acceptance tests only.
-									</li>
-									<li>
-										<span className="font-medium">
-											Standard
-										</span>{" "}
-										— adds regression, security, and browser
-										matrix coverage (default).
-									</li>
-									<li>
-										<span className="font-medium">
-											Production/Enterprise
-										</span>{" "}
-										— full coverage including performance
-										and WCAG 2.1 AA accessibility.
-									</li>
-								</ul>
-							</TooltipContent>
-						</Tooltip>
+							<SelectTrigger id="clarifying-frequency">
+								<SelectValue />
+							</SelectTrigger>
+							<SelectContent>
+								{FREQUENCY_OPTIONS.map((option) => (
+									<SelectItem
+										key={option.value}
+										value={option.value}
+									>
+										{option.label}
+									</SelectItem>
+								))}
+							</SelectContent>
+						</Select>
+						{activeHint && (
+							<p className="text-xs text-muted-foreground">
+								{activeHint}
+							</p>
+						)}
+						{value === "MINIMAL" && (
+							<p className="text-xs text-highlight-foreground">
+								The assistant will rarely ask — it may proceed
+								on assumptions you can revise later.
+							</p>
+						)}
+						{!canEdit && (
+							<p className="text-xs text-muted-foreground">
+								Only project admins can change this setting.
+							</p>
+						)}
+						{canEdit && (
+							<Link
+								href={`${promptsPath}?search=${encodeURIComponent(
+									"Clarifying Questions",
+								)}`}
+								className="inline-flex items-center gap-1 text-xs text-primary hover:underline"
+							>
+								Customize these prompts in the Prompt Library
+								<ArrowUpRightIcon
+									className="size-3"
+									aria-hidden="true"
+								/>
+							</Link>
+						)}
 					</div>
-					<Select
-						value={qaLevel}
-						onValueChange={handleQaLevelChange}
-						disabled={!canEdit || qaStrategyMutation.isPending}
-					>
-						<SelectTrigger id="qa-strategy-level">
-							<SelectValue />
-						</SelectTrigger>
-						<SelectContent>
-							{QA_STRATEGY_OPTIONS.map((option) => (
-								<SelectItem
-									key={option.value}
-									value={option.value}
-								>
-									{option.label}
-								</SelectItem>
-							))}
-						</SelectContent>
-					</Select>
-					{activeQaHint && (
-						<p className="text-xs text-muted-foreground">
-							{activeQaHint}
-						</p>
-					)}
-					{!canEdit && (
-						<p className="text-xs text-muted-foreground">
-							Only project admins can change this setting.
-						</p>
-					)}
-				</div>
 
-				{/*
-				 * The three test-case toggles that used to live here moved to
-				 * Settings ▸ Testing, next to the rest of the QA policy. A
-				 * pointer rather than a silent removal: anyone who knew where
-				 * they were needs to be told where they went, and a control
-				 * that simply vanishes reads as a regression.
-				 */}
-				<div className="max-w-sm space-y-2 border-t border-border pt-4">
-					<Label>Test cases</Label>
-					<p className="text-muted-foreground text-xs">
-						Test-case generation, the TDD ordering and automatic
-						bugs for failing tests now live in Settings ▸ Testing,
-						with the rest of the testing policy.
-					</p>
+					<div className="space-y-2">
+						<div className="flex items-center gap-1.5">
+							<Label htmlFor="qa-strategy-level">
+								Testing Strategy depth
+							</Label>
+							<Tooltip>
+								<TooltipTrigger asChild>
+									<button
+										type="button"
+										className="rounded-full text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+										aria-label="How Testing Strategy depth works"
+									>
+										<InfoIcon className="size-3.5" />
+									</button>
+								</TooltipTrigger>
+								<TooltipContent className="max-w-xs">
+									<p className="font-medium">
+										How much QA coverage the assistant
+										generates:
+									</p>
+									<ul className="mt-1 space-y-1">
+										<li>
+											<span className="font-medium">
+												Early-stage
+											</span>{" "}
+											— functional and acceptance tests
+											only.
+										</li>
+										<li>
+											<span className="font-medium">
+												Standard
+											</span>{" "}
+											— adds regression, security, and
+											browser matrix coverage (default).
+										</li>
+										<li>
+											<span className="font-medium">
+												Production/Enterprise
+											</span>{" "}
+											— full coverage including
+											performance and WCAG 2.1 AA
+											accessibility.
+										</li>
+									</ul>
+								</TooltipContent>
+							</Tooltip>
+						</div>
+						<Select
+							value={qaLevel}
+							onValueChange={handleQaLevelChange}
+							disabled={!canEdit || qaStrategyMutation.isPending}
+						>
+							<SelectTrigger id="qa-strategy-level">
+								<SelectValue />
+							</SelectTrigger>
+							<SelectContent>
+								{QA_STRATEGY_OPTIONS.map((option) => (
+									<SelectItem
+										key={option.value}
+										value={option.value}
+									>
+										{option.label}
+									</SelectItem>
+								))}
+							</SelectContent>
+						</Select>
+						{activeQaHint && (
+							<p className="text-xs text-muted-foreground">
+								{activeQaHint}
+							</p>
+						)}
+						{!canEdit && (
+							<p className="text-xs text-muted-foreground">
+								Only project admins can change this setting.
+							</p>
+						)}
+					</div>
 				</div>
+				{/* The test-case toggles moved to Settings ▸ Testing; one line
+				    says where, so the move never reads as a removal. */}
+				<p className="text-muted-foreground text-xs">
+					Test-case generation, TDD ordering and automatic bugs for
+					failing tests now live in Settings ▸ Testing.
+				</p>
 			</div>
 		</Card>
 	);

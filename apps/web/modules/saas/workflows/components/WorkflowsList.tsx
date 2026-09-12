@@ -92,10 +92,10 @@ export function WorkflowsList() {
 					type="button"
 					onClick={() => setStatusFilter("all")}
 					className={cn(
-						"rounded-full px-4 py-2 font-medium text-sm transition-all",
+						"rounded-[6px] px-3.5 py-1.5 text-sm transition-colors",
 						statusFilter === "all"
-							? "bg-primary text-primary-foreground"
-							: "bg-card hover:bg-card/80 text-foreground/70 hover:text-foreground border",
+							? "border border-border bg-accent text-foreground"
+							: "border border-transparent text-muted-foreground hover:bg-accent hover:text-foreground",
 					)}
 				>
 					All ({allCount})
@@ -104,10 +104,10 @@ export function WorkflowsList() {
 					type="button"
 					onClick={() => setStatusFilter("DRAFT")}
 					className={cn(
-						"rounded-full px-4 py-2 font-medium text-sm transition-all",
+						"rounded-[6px] px-3.5 py-1.5 text-sm transition-colors",
 						statusFilter === "DRAFT"
-							? "bg-primary text-primary-foreground"
-							: "bg-card hover:bg-card/80 text-foreground/70 hover:text-foreground border",
+							? "border border-border bg-accent text-foreground"
+							: "border border-transparent text-muted-foreground hover:bg-accent hover:text-foreground",
 					)}
 				>
 					Draft ({draftCount})
@@ -116,10 +116,10 @@ export function WorkflowsList() {
 					type="button"
 					onClick={() => setStatusFilter("ACTIVE")}
 					className={cn(
-						"rounded-full px-4 py-2 font-medium text-sm transition-all",
+						"rounded-[6px] px-3.5 py-1.5 text-sm transition-colors",
 						statusFilter === "ACTIVE"
-							? "bg-primary text-primary-foreground"
-							: "bg-card hover:bg-card/80 text-foreground/70 hover:text-foreground border",
+							? "border border-border bg-accent text-foreground"
+							: "border border-transparent text-muted-foreground hover:bg-accent hover:text-foreground",
 					)}
 				>
 					Active ({activeCount})
@@ -128,10 +128,10 @@ export function WorkflowsList() {
 					type="button"
 					onClick={() => setStatusFilter("PAUSED")}
 					className={cn(
-						"rounded-full px-4 py-2 font-medium text-sm transition-all",
+						"rounded-[6px] px-3.5 py-1.5 text-sm transition-colors",
 						statusFilter === "PAUSED"
-							? "bg-primary text-primary-foreground"
-							: "bg-card hover:bg-card/80 text-foreground/70 hover:text-foreground border",
+							? "border border-border bg-accent text-foreground"
+							: "border border-transparent text-muted-foreground hover:bg-accent hover:text-foreground",
 					)}
 				>
 					Paused ({pausedCount})
@@ -140,10 +140,10 @@ export function WorkflowsList() {
 					type="button"
 					onClick={() => setStatusFilter("ARCHIVED")}
 					className={cn(
-						"rounded-full px-4 py-2 font-medium text-sm transition-all",
+						"rounded-[6px] px-3.5 py-1.5 text-sm transition-colors",
 						statusFilter === "ARCHIVED"
-							? "bg-primary text-primary-foreground"
-							: "bg-card hover:bg-card/80 text-foreground/70 hover:text-foreground border",
+							? "border border-border bg-accent text-foreground"
+							: "border border-transparent text-muted-foreground hover:bg-accent hover:text-foreground",
 					)}
 				>
 					Archived ({archivedCount})
