@@ -49,6 +49,7 @@ interface ResolvedComponent {
 	group: string;
 	status: HealthStatus;
 	detail: string;
+	links?: Array<{ label: string; href: string }>;
 }
 
 interface ProviderIssue {
@@ -276,6 +277,28 @@ export function SystemHealthDashboard() {
 											<p className="mt-1 text-muted-foreground text-xs">
 												{component.detail}
 											</p>
+											{component.links &&
+											component.links.length > 0 ? (
+												<p className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs">
+													{component.links.map(
+														(link) => (
+															<a
+																key={link.href}
+																href={link.href}
+																target="_blank"
+																rel="noreferrer noopener"
+																className="inline-flex items-center gap-1 text-primary underline-offset-4 transition-colors hover:underline"
+															>
+																{link.label}
+																<ExternalLinkIcon
+																	aria-hidden="true"
+																	className="size-3"
+																/>
+															</a>
+														),
+													)}
+												</p>
+											) : null}
 										</div>
 										<HealthStatusBadge
 											status={component.status}

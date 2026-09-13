@@ -260,10 +260,27 @@ export async function buildSystemHealthOverview(
 			statusPageUrl: incident.statusPageUrl,
 		}));
 
+	// One incident per provider — the newest, since the list is newest-first —
+	// so a degraded capability can say which provider and link to their page.
+	const providerIncidentByKey = new Map<
+		string,
+		{ providerName: string; statusPageUrl: string | null; startedAt: Date }
+	>();
+	for (const incident of providerIncidents) {
+		if (!providerIncidentByKey.has(incident.providerKey)) {
+			providerIncidentByKey.set(incident.providerKey, {
+				providerName: incident.providerName,
+				statusPageUrl: incident.statusPageUrl,
+				startedAt: incident.startedAt,
+			});
+		}
+	}
+
 	const components = resolveComponents(listCustomerVisibleComponents(), {
 		serverFaultCount,
 		lastBackgroundWorkAt,
 		providerHealth,
+		providerIncidents: providerIncidentByKey,
 		unhealthyConnectionCount: connections.unhealthyCount,
 		totalConnectionCount: connections.totalCount,
 		relevantProviderIncidentCount: providerIssues.length,

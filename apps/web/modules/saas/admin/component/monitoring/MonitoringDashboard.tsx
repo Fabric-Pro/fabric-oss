@@ -35,33 +35,30 @@ import { ThresholdConfigDisplay } from "./ThresholdConfigDisplay";
 
 export function MonitoringDashboard() {
 	return (
-		<div className="space-y-10 pb-10">
-			<header className="relative overflow-hidden rounded-xl border border-border/60 bg-card px-6 py-8 sm:px-8 sm:py-10">
-				<div
-					className="pointer-events-none absolute inset-0 text-foreground/10 app-dot-grid"
-					aria-hidden="true"
-				/>
-				<div className="relative space-y-3">
-					<p className="app-editorial-label">Reliability</p>
-					<div className="flex items-center gap-3">
-						<h1 className="font-serif text-3xl font-normal tracking-tight text-foreground/95 sm:text-4xl">
-							Monitoring
-						</h1>
-						<HelpTooltip
-							label="the monitoring dashboard"
-							iconClassName="size-4"
-							contentClassName="max-w-sm"
-						>
-							{GLOSSARY.monitoringOverview}
-						</HelpTooltip>
-					</div>
-					<p className="max-w-2xl text-sm leading-6 text-muted-foreground sm:text-base">
-						Application error budgets, provider health, and the
-						incident timeline. Acknowledge or resolve from this
-						page; thresholds are read-only and changed via the
-						observability rules in code.
-					</p>
+		<div className="space-y-8 pb-10">
+			{/* A plain editorial header, like the settings pages: the boxed
+			 * dot-grid hero repeated the page title the layout already
+			 * shows and pushed the incident list below the fold. */}
+			<header className="space-y-2 border-b border-border/60 pb-6">
+				<p className="app-editorial-label">Reliability</p>
+				<div className="flex items-center gap-3">
+					<h2 className="text-2xl font-normal tracking-tight text-foreground">
+						Monitoring
+					</h2>
+					<HelpTooltip
+						label="the monitoring dashboard"
+						iconClassName="size-4"
+						contentClassName="max-w-sm"
+					>
+						{GLOSSARY.monitoringOverview}
+					</HelpTooltip>
 				</div>
+				<p className="max-w-2xl text-sm leading-6 text-muted-foreground">
+					Application error budgets, provider health, and the incident
+					timeline. Acknowledge or resolve from this page; thresholds
+					are read-only and changed via the observability rules in
+					code.
+				</p>
 			</header>
 
 			<ActiveIncidentsTable />

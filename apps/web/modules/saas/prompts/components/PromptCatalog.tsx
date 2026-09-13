@@ -10,7 +10,6 @@ import {
 import { useOrganizationContext } from "@saas/organizations/hooks/use-organization-context";
 import { orpcClient } from "@shared/lib/orpc-client";
 import { useQuery } from "@tanstack/react-query";
-import { Badge } from "@ui/components/badge";
 import { Card } from "@ui/components/card";
 import { Input } from "@ui/components/input";
 import { ChevronRightIcon, SearchIcon } from "lucide-react";
@@ -181,6 +180,10 @@ export function PromptCatalog() {
 
 				return (
 					<section key={featureType.key} className="space-y-3">
+						{/* A plain disclosure row. The marketing editorial label
+						    (uppercase, wide tracking, red bar) belongs to section
+						    eyebrows, not to a list of collapsible groups, where
+						    seven of them in a column read as shouting. */}
 						<button
 							type="button"
 							onClick={() =>
@@ -189,19 +192,19 @@ export function PromptCatalog() {
 								)
 							}
 							aria-expanded={expanded}
-							className="flex w-full items-center gap-2 text-left"
+							className="-mx-2 flex w-[calc(100%+1rem)] items-center gap-2 rounded-md px-2 py-2 text-left transition-colors hover:bg-accent/60"
 						>
 							<ChevronRightIcon
 								className={`size-4 shrink-0 text-muted-foreground transition-transform ${
 									expanded ? "rotate-90" : ""
 								}`}
 							/>
-							<span className="editorial-label">
+							<span className="font-medium text-foreground text-sm">
 								{featureType.label}
 							</span>
-							<Badge variant="outline" className="ml-1">
+							<span className="fab-label ml-1 text-muted-foreground">
 								{actions.length}
-							</Badge>
+							</span>
 						</button>
 
 						{expanded && (

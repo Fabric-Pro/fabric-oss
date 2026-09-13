@@ -143,12 +143,16 @@ export function PromptsList({ organizationId }: Props) {
 					</Tabs>
 
 					{/* Actions Bar */}
-					<div className="flex flex-col sm:flex-row gap-4 items-start sm:items-center justify-between">
-						<div className="flex flex-1 gap-2 w-full sm:w-auto flex-wrap">
+					{/* Two rows on purpose: finding (search, sort, unused) on the
+					    first, going elsewhere (view, defaults, create) on the
+					    second. On one row the eight controls fought for width and
+					    the search field lost. */}
+					<div className="flex flex-col gap-3">
+						<div className="flex w-full flex-wrap items-center gap-2">
 							{/* Search */}
 							<div
 								data-onboarding-target="prompts-search"
-								className="relative flex-1 max-w-md"
+								className="relative min-w-[16rem] flex-1"
 							>
 								<SearchIcon className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
 								<SearchInput
@@ -190,7 +194,6 @@ export function PromptsList({ organizationId }: Props) {
 							{/* Unused only (Fizzy #2068 F13): bound to no action */}
 							<Button
 								variant={unusedOnly ? "default" : "outline"}
-								size="sm"
 								onClick={() => setUnusedOnly((v) => !v)}
 								aria-pressed={unusedOnly}
 							>
@@ -201,7 +204,7 @@ export function PromptsList({ organizationId }: Props) {
 						{/* Wraps like its sibling above: in an org context this row
 						    carries the view toggle plus four labelled buttons, which
 						    overflows a phone viewport on one line. */}
-						<div className="flex flex-wrap gap-2 items-center">
+						<div className="flex flex-wrap items-center justify-end gap-2">
 							{/* View Toggle */}
 							<div className="flex gap-1 border rounded-md p-1">
 								<Button
@@ -238,6 +241,7 @@ export function PromptsList({ organizationId }: Props) {
 								onClick={() =>
 									router.push(`${promptsPath}/my-overrides`)
 								}
+								title="The prompts you personally chose for actions, in place of the organization's or Fabric's defaults. Follows you across organizations."
 							>
 								My Overrides
 							</Button>
@@ -252,6 +256,7 @@ export function PromptsList({ organizationId }: Props) {
 												`${promptsPath}/governance`,
 											)
 										}
+										title="Where this organization has replaced Fabric's default prompt for an action with its own, and which actions still run on Fabric's."
 									>
 										<ShieldCheckIcon className="mr-2 h-4 w-4" />
 										Org Overrides
@@ -263,6 +268,7 @@ export function PromptsList({ organizationId }: Props) {
 												`${promptsPath}/nominations`,
 											)
 										}
+										title="Prompts members have proposed as the organization's default for an action, waiting for an admin to accept or decline."
 									>
 										<InboxIcon className="mr-2 h-4 w-4" />
 										Proposed defaults
