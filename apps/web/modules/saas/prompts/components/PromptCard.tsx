@@ -373,26 +373,122 @@ export function PromptCard({
 				}
 			>
 				{/* Header */}
-				<div className="flex items-start justify-between gap-2 mb-2">
-					<div className="flex items-center gap-1 flex-1 min-w-0">
-						{!prompt.isPublic && (
-							<Lock className="h-3 w-3 text-muted-foreground shrink-0" />
-						)}
+				{/* The name gets the full width and up to two lines; the
+				    badges sit on their own row beneath it. Beside each other
+				    the badges won and the name was cut to one word. */}
+				<div className="mb-2 space-y-1.5">
+					<div className="flex items-start justify-between gap-2">
 						<Link
 							href={getPromptUrl()}
 							prefetch={false}
-							className="font-medium text-sm hover:underline line-clamp-1"
+							className="min-w-0 flex-1 font-medium text-sm leading-snug hover:underline line-clamp-2"
 						>
+							{!prompt.isPublic && (
+								<Lock
+									className="mr-1 inline h-3 w-3 text-muted-foreground"
+									aria-label="Private"
+								/>
+							)}
 							{prompt.name}
 						</Link>
+						<div className="flex items-center gap-1 shrink-0">
+							<DropdownMenu>
+								{/* Stays visible while it is busy: the menu has
+							    already closed, so a trigger that faded out
+							    would leave the wait with no on-screen home. */}
+								<DropdownMenuTrigger asChild>
+									<button
+										type="button"
+										{...deletion.triggerProps}
+										className={`p-1 rounded hover:bg-accent transition-opacity focus:opacity-100 ${
+											deletion.isPreparing
+												? "opacity-100"
+												: "md:opacity-0 md:group-hover:opacity-100"
+										}`}
+									>
+										{deletion.isPreparing ? (
+											<Spinner className="size-3.5 motion-reduce:animate-none" />
+										) : (
+											<MoreVerticalIcon className="h-3.5 w-3.5 text-muted-foreground" />
+										)}
+									</button>
+								</DropdownMenuTrigger>
+								<DropdownMenuContent align="end">
+									<DropdownMenuItem
+										onClick={() => setPreviewOpen(true)}
+									>
+										<Play className="mr-2 h-4 w-4" />
+										Preview
+									</DropdownMenuItem>
+									{isEditable && (
+										<DropdownMenuItem
+											onClick={() =>
+												router.push(getPromptUrl())
+											}
+										>
+											<EditIcon className="mr-2 h-4 w-4" />
+											Edit
+										</DropdownMenuItem>
+									)}
+									<DropdownMenuItem onClick={handleDuplicate}>
+										<CopyIcon className="mr-2 h-4 w-4" />
+										Duplicate
+									</DropdownMenuItem>
+									{latestVersionId && (
+										<DropdownMenuItem
+											onClick={() =>
+												setSetDefaultOpen(true)
+											}
+										>
+											<Link2Icon className="mr-2 h-4 w-4" />
+											Set as Default
+										</DropdownMenuItem>
+									)}
+									<DropdownMenuItem
+										onClick={() =>
+											router.push(
+												`${basePath}/prompts/catalog?prompt=${prompt.id}`,
+											)
+										}
+									>
+										<LibraryIcon className="mr-2 h-4 w-4" />
+										View in Catalog
+									</DropdownMenuItem>
+									{clearableBinding && (
+										<DropdownMenuItem
+											onClick={handleClearOverride}
+											disabled={clearMutation.isPending}
+										>
+											<Link2OffIcon className="mr-2 h-4 w-4" />
+											Clear Default Override
+										</DropdownMenuItem>
+									)}
+									{deletion.canDelete && (
+										<>
+											<DropdownMenuSeparator />
+											<DropdownMenuItem
+												onClick={() =>
+													deletion.requestDelete()
+												}
+												className="text-destructive"
+											>
+												<TrashIcon className="mr-2 h-4 w-4" />
+												Delete
+											</DropdownMenuItem>
+										</>
+									)}
+								</DropdownMenuContent>
+							</DropdownMenu>
+							{deletion.announcement}
+						</div>
+					</div>
+					<div className="flex flex-wrap items-center gap-1">
 						<PromptDefaultBadge
 							isDefault={prompt.isDefault}
 							isBound={prompt.isBound}
 							defaultScope={prompt.defaultScope}
 							className="text-[10px]"
 						/>
-					</div>
-					<div className="flex items-center gap-1 shrink-0">
 						{!hasMediaBackground && (
 							<>
 								<Badge
@@ -414,92 +510,6 @@ export function PromptCard({
 									)}
 							</>
 						)}
-						<DropdownMenu>
-							{/* Stays visible while it is busy: the menu has
-							    already closed, so a trigger that faded out
-							    would leave the wait with no on-screen home. */}
-							<DropdownMenuTrigger asChild>
-								<button
-									type="button"
-									{...deletion.triggerProps}
-									className={`p-1 rounded hover:bg-accent transition-opacity focus:opacity-100 ${
-										deletion.isPreparing
-											? "opacity-100"
-											: "md:opacity-0 md:group-hover:opacity-100"
-									}`}
-								>
-									{deletion.isPreparing ? (
-										<Spinner className="size-3.5 motion-reduce:animate-none" />
-									) : (
-										<MoreVerticalIcon className="h-3.5 w-3.5 text-muted-foreground" />
-									)}
-								</button>
-							</DropdownMenuTrigger>
-							<DropdownMenuContent align="end">
-								<DropdownMenuItem
-									onClick={() => setPreviewOpen(true)}
-								>
-									<Play className="mr-2 h-4 w-4" />
-									Preview
-								</DropdownMenuItem>
-								{isEditable && (
-									<DropdownMenuItem
-										onClick={() =>
-											router.push(getPromptUrl())
-										}
-									>
-										<EditIcon className="mr-2 h-4 w-4" />
-										Edit
-									</DropdownMenuItem>
-								)}
-								<DropdownMenuItem onClick={handleDuplicate}>
-									<CopyIcon className="mr-2 h-4 w-4" />
-									Duplicate
-								</DropdownMenuItem>
-								{latestVersionId && (
-									<DropdownMenuItem
-										onClick={() => setSetDefaultOpen(true)}
-									>
-										<Link2Icon className="mr-2 h-4 w-4" />
-										Set as Default
-									</DropdownMenuItem>
-								)}
-								<DropdownMenuItem
-									onClick={() =>
-										router.push(
-											`${basePath}/prompts/catalog?prompt=${prompt.id}`,
-										)
-									}
-								>
-									<LibraryIcon className="mr-2 h-4 w-4" />
-									View in Catalog
-								</DropdownMenuItem>
-								{clearableBinding && (
-									<DropdownMenuItem
-										onClick={handleClearOverride}
-										disabled={clearMutation.isPending}
-									>
-										<Link2OffIcon className="mr-2 h-4 w-4" />
-										Clear Default Override
-									</DropdownMenuItem>
-								)}
-								{deletion.canDelete && (
-									<>
-										<DropdownMenuSeparator />
-										<DropdownMenuItem
-											onClick={() =>
-												deletion.requestDelete()
-											}
-											className="text-destructive"
-										>
-											<TrashIcon className="mr-2 h-4 w-4" />
-											Delete
-										</DropdownMenuItem>
-									</>
-								)}
-							</DropdownMenuContent>
-						</DropdownMenu>
-						{deletion.announcement}
 					</div>
 				</div>
 

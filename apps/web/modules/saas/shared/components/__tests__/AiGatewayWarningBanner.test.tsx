@@ -15,8 +15,9 @@
  *   unguarded version hands every member a control leading to a form they may
  *   only read (AE7). Each role now gets the one control it can act on: an
  *   admin the organization's provider page, a member their own.
- * - Dismissal used to reset for free because the dashboard unmounted. A chrome
- *   mount survives navigation, so it has to reset explicitly (R14).
+ * - Dismissal is the reader's answer and is kept: across navigation and
+ *   reloads, per tenant. The notice collapses to a marker rather than
+ *   vanishing, so the fix stays one click away.
  *
  * It also pins the predicate: the notice reads `canResolveProvider`, which
  * mirrors what the resolver does, NOT `isConfigured`, which does not (R11).
@@ -141,6 +142,7 @@ async function settle() {
 
 beforeEach(() => {
 	vi.clearAllMocks();
+	window.localStorage.clear();
 	// `isResolvingOrganization` belongs in every fixture in this file because
 	// the component now reads it: omitting it would leave it `undefined`, which
 	// is falsy, and the cold-load guard would look tested when nothing had
@@ -619,7 +621,7 @@ describe("AiGatewayWarningBanner — clearing and dismissing", () => {
 		);
 	});
 
-	it("dismissal silences the page it was dismissed on, and only that page (R14)", async () => {
+	it("dismissal collapses the notice to a marker and holds across navigation", async () => {
 		const queryClient = makeClient();
 		const { rerender } = renderBanner(queryClient);
 
@@ -630,9 +632,13 @@ describe("AiGatewayWarningBanner — clearing and dismissing", () => {
 			screen.getByRole("button", { name: "Dismiss AI setup reminder" }),
 		);
 		expect(screen.queryByText("AI provider required")).toBeNull();
+		// Not gone: a small marker keeps the explanation one click away.
+		expect(
+			screen.getByRole("button", { name: "Show AI setup reminder" }),
+		).toBeInTheDocument();
 
 		// Navigation, as the chrome sees it: the component never unmounts, only
-		// the path changes.
+		// the path changes. The answer given once stands.
 		pathnameMock.mockReturnValue("/app/acme/settings/general");
 		rerender(
 			<QueryClientProvider client={queryClient}>
@@ -640,8 +646,45 @@ describe("AiGatewayWarningBanner — clearing and dismissing", () => {
 			</QueryClientProvider>,
 		);
 
+		await settle();
+		expect(screen.queryByText("AI provider required")).toBeNull();
+		expect(
+			screen.getByRole("button", { name: "Show AI setup reminder" }),
+		).toBeInTheDocument();
+	});
+
+	it("the marker reopens the full notice", async () => {
+		renderBanner();
+
 		expect(
 			await screen.findByText("AI provider required"),
 		).toBeInTheDocument();
+		fireEvent.click(
+			screen.getByRole("button", { name: "Dismiss AI setup reminder" }),
+		);
+		fireEvent.click(
+			screen.getByRole("button", { name: "Show AI setup reminder" }),
+		);
+
+		expect(
+			await screen.findByText("AI provider required"),
+		).toBeInTheDocument();
+	});
+
+	it("a dismissal survives a reload — the stored answer is read back", async () => {
+		window.localStorage.setItem(
+			"fabric-ai-notice-dismissed:provider-required:org-1",
+			"1",
+		);
+
+		renderBanner();
+
+		await waitFor(() => expect(getStatusMock).toHaveBeenCalled());
+		expect(
+			await screen.findByRole("button", {
+				name: "Show AI setup reminder",
+			}),
+		).toBeInTheDocument();
+		expect(screen.queryByText("AI provider required")).toBeNull();
 	});
 });

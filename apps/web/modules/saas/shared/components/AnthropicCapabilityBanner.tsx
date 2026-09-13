@@ -19,8 +19,8 @@ import { Button } from "@ui/components/button";
 import { AlertTriangleIcon, SettingsIcon, XIcon } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useState } from "react";
 import { aiConfigStatusQueryKey } from "./AiGatewayWarningBanner";
+import { CollapsedNotice, useNoticeDismissal } from "./ai-notice-dismissal";
 
 /**
  * The dismissal state's value for "dismissed outside an organization".
@@ -96,31 +96,13 @@ export function AnthropicCapabilityBanner() {
 	const pathname = usePathname();
 	const { organizationId, isOrgContext, isOrganizationAdmin } =
 		useOrganizationContext();
-	// Dismissal lasts the SESSION but is keyed to the TENANT, and both halves
-	// are deliberate.
-	//
-	// Session, not pathname — the one place this departs from the sibling
-	// reminder, which records where it was dismissed so it returns on the next
-	// page (R10). That banner reports a total outage: every AI action on every
-	// page will refuse, so it earns the right to ask again. This one reports a
-	// partial and often deliberate state — chat and agents keep working, and a
-	// tenant may have chosen Anthropic knowing exactly what it does not serve —
-	// so it gets the weaker nag: told once, dismissed once, quiet until the
-	// next load.
-	//
-	// Keyed to the tenant, because the workspace switcher navigates without
-	// unmounting this component. A bare boolean therefore carried a dismissal
-	// from one organization into the next, hiding a gap the reader has never
-	// been told about — in a tenant they may not even administer. Recording
-	// WHICH organization it was dismissed for keeps the "told once" intent
-	// inside the workspace it was formed in.
-	//
-	// A set rather than the last one, because switching away and back is
-	// ordinary: remembering only the most recent dismissal would re-raise the
-	// notice in a workspace the reader had already answered for, which is the
-	// same nagging the tenant key was added to stop, one switch removed.
-	const [dismissedFor, setDismissedFor] = useState<ReadonlySet<string>>(
-		() => new Set(),
+	// Dismissal is keyed to the TENANT and kept across pages and reloads.
+	// The workspace switcher navigates without unmounting this component, so
+	// a bare boolean would carry one organization's answer into the next; the
+	// key carries the organization id so each workspace is told once. Once
+	// dismissed the notice collapses to a small marker instead of vanishing.
+	const { dismissed, dismiss, restore } = useNoticeDismissal(
+		`anthropic-capability:${organizationId ?? DISMISSED_IN_PERSONAL_CONTEXT}`,
 	);
 	const settingsPath = useContextPath("settings/ai-providers");
 	// The reader's OWN provider page. Only ever offered when the resolution
@@ -177,18 +159,23 @@ export function AnthropicCapabilityBanner() {
 		return null;
 	}
 
-	const isDismissed = dismissedFor.has(
-		organizationId ?? DISMISSED_IN_PERSONAL_CONTEXT,
-	);
-
 	// The whole rule, including the "we do not know yet" case: an absent
 	// payload — loading, errored, or a switch to an organization whose key has
 	// no data — is never read as "the embedding path lands on Anthropic".
 	if (
-		isDismissed ||
+		dismissed === undefined ||
 		!shouldShowAnthropicCapabilityBanner(configStatus, pathname)
 	) {
 		return null;
+	}
+
+	if (dismissed) {
+		return (
+			<CollapsedNotice
+				label="Show Anthropic capability notice"
+				onOpen={restore}
+			/>
+		);
 	}
 
 	// Outside an organization there is no admin above the caller, so the
@@ -257,14 +244,7 @@ export function AnthropicCapabilityBanner() {
 						variant="ghost"
 						size="icon"
 						className="-mt-1.5 -mr-1.5 size-8 shrink-0"
-						onClick={() =>
-							setDismissedFor((previous) =>
-								new Set(previous).add(
-									organizationId ??
-										DISMISSED_IN_PERSONAL_CONTEXT,
-								),
-							)
-						}
+						onClick={dismiss}
 						aria-label="Dismiss Anthropic capability notice"
 					>
 						<XIcon className="size-4" />

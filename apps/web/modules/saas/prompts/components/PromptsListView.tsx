@@ -130,11 +130,11 @@ function PromptListItem({
 			<div className="w-full p-4">
 				<div className="flex items-start justify-between gap-4">
 					<div className="flex-1 min-w-0">
-						<div className="flex items-center gap-3 mb-2 flex-wrap">
+						<div className="mb-2 space-y-1.5">
 							<Tooltip delayDuration={500}>
 								<TooltipTrigger asChild>
 									<span className="inline-block">
-										<h3 className="font-semibold text-lg line-clamp-1">
+										<h3 className="font-semibold text-lg leading-snug line-clamp-2">
 											{prompt.name}
 										</h3>
 									</span>
@@ -143,20 +143,22 @@ function PromptListItem({
 									<p>{prompt.name}</p>
 								</TooltipContent>
 							</Tooltip>
-							<PromptDefaultBadge
-								isDefault={prompt.isDefault}
-								isBound={prompt.isBound}
-								defaultScope={prompt.defaultScope}
-								className="text-xs"
-							/>
-							<PromptScopeBadge scope={prompt.scope} />
-							<PromptFormatBadge format={prompt.format} />
-							{prompt.isPublic && (
-								<Badge variant="outline">
-									<EyeIcon className="mr-1 size-3" />
-									Public
-								</Badge>
-							)}
+							<div className="flex flex-wrap items-center gap-2">
+								<PromptDefaultBadge
+									isDefault={prompt.isDefault}
+									isBound={prompt.isBound}
+									defaultScope={prompt.defaultScope}
+									className="text-xs"
+								/>
+								<PromptScopeBadge scope={prompt.scope} />
+								<PromptFormatBadge format={prompt.format} />
+								{prompt.isPublic && (
+									<Badge variant="outline">
+										<EyeIcon className="mr-1 size-3" />
+										Public
+									</Badge>
+								)}
+							</div>
 						</div>
 
 						{/* Description */}
