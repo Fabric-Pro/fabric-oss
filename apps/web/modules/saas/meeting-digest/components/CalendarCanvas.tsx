@@ -8,6 +8,7 @@ import {
 import { cn } from "@ui/lib";
 import { format, isSameMonth } from "date-fns";
 import { useState } from "react";
+import { mergeDayRows } from "../lib/day-rows";
 import {
 	dayKey,
 	groupAwaitingByDay,
@@ -59,44 +60,21 @@ export function CalendarCanvas({
 			<div className="grid grid-cols-7">
 				{days.map((day) => {
 					const key = dayKey(day);
-					const items = grouped.get(key) ?? [];
-					const personalItems = personalGrouped.get(key) ?? [];
-					const awaitingItems = awaitingGrouped.get(key) ?? [];
-					const total =
-						items.length +
-						personalItems.length +
-						awaitingItems.length;
 					const isExpanded = expandedDay === key;
-					const visible = isExpanded
-						? items
-						: items.slice(0, MAX_BADGES);
-					// Personal and awaiting badges share the 3-badge budget: a
-					// busy calendar must not blow out the cell height.
-					//
-					// Order is by how much the row belongs to the TEAM's view of
-					// the project: synced project meetings, then awaiting ones,
-					// then the viewer's own personal calendar. Awaiting rows sit
-					// above personal deliberately (DEF-1, #2051 staging QA) —
-					// they are team content, and letting a viewer's private
-					// entries push them behind "+N more" defeats the point of
-					// surfacing them on the calendar at all.
-					const visibleAwaiting = isExpanded
-						? awaitingItems
-						: awaitingItems.slice(
-								0,
-								Math.max(0, MAX_BADGES - visible.length),
-							);
-					const visiblePersonal = isExpanded
-						? personalItems
-						: personalItems.slice(
-								0,
-								Math.max(
-									0,
-									MAX_BADGES -
-										visible.length -
-										visibleAwaiting.length,
-								),
-							);
+					// The cell shows the day's earliest meetings, whatever kind
+					// they are, and defers the rest to "+N more" — so it always
+					// reads as the start of that day rather than a selection out
+					// of it. The badge cap keeps a busy day from blowing out the
+					// cell height.
+					const dayRows = mergeDayRows({
+						team: grouped.get(key),
+						awaiting: awaitingGrouped.get(key),
+						personal: personalGrouped.get(key),
+					});
+					const total = dayRows.length;
+					const rows = isExpanded
+						? dayRows
+						: dayRows.slice(0, MAX_BADGES);
 					return (
 						<div
 							key={day.toISOString()}
@@ -108,46 +86,46 @@ export function CalendarCanvas({
 						>
 							<div className="text-xs">{format(day, "d")}</div>
 							<ul className="mt-1 space-y-1">
-								{visible.map((meeting) => (
-									<li key={meeting.transcriptId}>
-										<Tooltip>
-											<TooltipTrigger asChild>
-												<button
-													type="button"
-													onClick={() =>
-														onSelect(
-															meeting.transcriptId,
-														)
-													}
-													className="w-full truncate rounded bg-primary/10 px-1 py-0.5 text-left text-xs hover:bg-primary/20"
-												>
-													{meeting.subject ??
+								{rows.map((row) =>
+									row.kind === "team" ? (
+										<li key={row.key}>
+											<Tooltip>
+												<TooltipTrigger asChild>
+													<button
+														type="button"
+														onClick={() =>
+															onSelect(
+																row.meeting
+																	.transcriptId,
+															)
+														}
+														className="w-full truncate rounded bg-primary/10 px-1 py-0.5 text-left text-xs hover:bg-primary/20"
+													>
+														{row.meeting.subject ??
+															"Meeting"}
+													</button>
+												</TooltipTrigger>
+												<TooltipContent>
+													{row.meeting.subject ??
 														"Meeting"}
-												</button>
-											</TooltipTrigger>
-											<TooltipContent>
-												{meeting.subject ?? "Meeting"}
-											</TooltipContent>
-										</Tooltip>
-									</li>
-								))}
-								{visibleAwaiting.map((meeting) => (
-									<li
-										key={`${meeting.linkedMeetingId}:${new Date(meeting.occurrenceStart).toISOString()}`}
-									>
-										<AwaitingCalendarBadge
-											meeting={meeting}
-										/>
-									</li>
-								))}
-								{visiblePersonal.map((meeting) => (
-									<li key={meeting.id}>
-										<PersonalCalendarBadge
-											meeting={meeting}
-											onSelect={onSelectPersonal}
-										/>
-									</li>
-								))}
+												</TooltipContent>
+											</Tooltip>
+										</li>
+									) : row.kind === "awaiting" ? (
+										<li key={row.key}>
+											<AwaitingCalendarBadge
+												meeting={row.meeting}
+											/>
+										</li>
+									) : (
+										<li key={row.key}>
+											<PersonalCalendarBadge
+												meeting={row.meeting}
+												onSelect={onSelectPersonal}
+											/>
+										</li>
+									),
+								)}
 								{total > MAX_BADGES && (
 									<li>
 										<button

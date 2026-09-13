@@ -215,10 +215,13 @@ export function AgendaView({
 							</div>
 						))}
 						{/*
-						 * Same precedence as CalendarCanvas: team content first,
-						 * the viewer's personal calendar last. There is no badge
-						 * budget here, so this is purely about the two views
-						 * agreeing on order (DEF-1, #2051 staging QA).
+						 * The Agenda view renders sections sequentially: team
+						 * transcripts with extracted insights first, followed by
+						 * awaiting occurrences and personal meetings. Unlike
+						 * CalendarCanvas (which interleaves all rows strictly by
+						 * time within a cell), this preserves dedicated section
+						 * reading for digest summaries while each section remains
+						 * internally sorted.
 						 */}
 						{(awaitingByDay.get(key) ?? []).map((m) => (
 							<AwaitingAgendaRow
