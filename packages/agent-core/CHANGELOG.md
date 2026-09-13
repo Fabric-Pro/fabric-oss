@@ -1,5 +1,15 @@
 # @repo/agent-core
 
+## 0.1.4
+
+### Patch Changes
+
+- c3beb49: Enable automatic prompt caching for direct Anthropic LangChain calls while preserving caller overrides and the existing cache-disable switch.
+- Updated dependencies [f8f103f]
+  - @repo/ai@0.0.4
+  - @repo/mcp@0.0.5
+  - @repo/rag@0.0.4
+
 ## 0.1.3
 
 ### Patch Changes

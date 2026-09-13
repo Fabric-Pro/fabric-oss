@@ -1,5 +1,11 @@
 # @repo/ai
 
+## 0.0.4
+
+### Patch Changes
+
+- f8f103f: Cache stable system instructions and repeatable history for direct chat and Sidekick requests.
+
 ## 0.0.3
 
 ### Patch Changes

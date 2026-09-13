@@ -225,6 +225,6 @@
 		"type-check": "node --max-old-space-size=10240 ../../node_modules/typescript/lib/tsc.js --noEmit",
 		"typegen": "next typegen"
 	},
-	"version": "0.0.6",
+	"version": "0.0.7",
 	"license": "Apache-2.0"
 }
