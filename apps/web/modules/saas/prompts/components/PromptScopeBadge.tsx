@@ -11,7 +11,11 @@ const scopeConfig: Record<
 	{
 		label: string;
 		icon: React.ComponentType<{ className?: string }> | null;
-		color: string;
+		/** A Badge variant, so every scope reads in both themes from the
+		 *  same tokens the rest of the app uses. The previous raw Tailwind
+		 *  tints (orange on an orange gradient) fell below readable contrast
+		 *  on the dark surface. */
+		variant: "default" | "success" | "outline" | "info";
 		useFabricLogo?: boolean;
 	}
 > = {
@@ -19,22 +23,22 @@ const scopeConfig: Record<
 		label: "Fabric",
 		icon: null,
 		useFabricLogo: true,
-		color: "bg-gradient-to-r from-orange-500/10 to-red-500/10 text-orange-700 dark:from-orange-500/20 dark:to-red-500/20 dark:text-orange-400 border-0",
+		variant: "default",
 	},
 	ORG: {
 		label: "Organization",
 		icon: BuildingIcon,
-		color: "bg-green-500/10 text-green-700 dark:bg-green-500/20 dark:text-green-400 border-0",
+		variant: "success",
 	},
 	PROJECT: {
 		label: "Project",
 		icon: FolderIcon,
-		color: "bg-teal-500/10 text-teal-700 dark:bg-teal-500/20 dark:text-teal-400 border-0",
+		variant: "outline",
 	},
 	USER: {
 		label: "Personal",
 		icon: UserIcon,
-		color: "bg-blue-500/10 text-blue-700 dark:bg-blue-500/20 dark:text-blue-400 border-0",
+		variant: "info",
 	},
 };
 
@@ -48,7 +52,7 @@ export function PromptScopeBadge({ scope, showIcon = true }: Props) {
 	const Icon = config.icon;
 
 	return (
-		<Badge className={config.color}>
+		<Badge variant={config.variant}>
 			{showIcon && config.useFabricLogo && (
 				<FabricLogo size={12} className="mr-1" />
 			)}

@@ -501,7 +501,7 @@ export function PromptDetails({
 			{/* Header */}
 			<div className="mb-6">
 				{/* Title row with upvote button */}
-				<div className="flex items-center gap-4 mb-2">
+				<div className="flex items-start gap-4 mb-2">
 					<div className="shrink-0">
 						<UpvoteButton
 							promptId={promptId}
@@ -510,16 +510,12 @@ export function PromptDetails({
 							size="circular"
 						/>
 					</div>
-					<div className="flex-1 flex items-center justify-between gap-4 min-w-0">
-						<div className="flex items-center gap-2 flex-wrap min-w-0">
-							<h1
-								className="text-3xl tracking-tight"
-								style={{
-									fontFamily:
-										"var(--font-sans, 'EB Garamond', Georgia, serif)",
-									fontWeight: 400,
-								}}
-							>
+					{/* The name owns its row; the actions sit on the row beneath.
+					    Sharing a row squeezed the name into a word-per-line
+					    column whenever the actions were wide. */}
+					<div className="flex-1 flex flex-col gap-3 min-w-0">
+						<div className="flex items-baseline gap-2 flex-wrap min-w-0">
+							<h1 className="min-w-0 break-words text-3xl font-normal tracking-tight">
 								{prompt.name}
 							</h1>
 							{!prompt.isPublic && (
@@ -529,7 +525,7 @@ export function PromptDetails({
 								</Badge>
 							)}
 						</div>
-						<div className="flex items-center gap-2 shrink-0">
+						<div className="flex flex-wrap items-center gap-2 shrink-0">
 							{!isEditing && (
 								<>
 									{/* Fork button - show for SYSTEM or ORG prompts */}
@@ -741,14 +737,14 @@ export function PromptDetails({
 
 			{/* System prompt info banner */}
 			{prompt.scope === "SYSTEM" && !isAdmin && (
-				<div className="mb-6 p-4 rounded-lg bg-gradient-to-r from-orange-500/10 to-red-500/10 border border-orange-500/20">
+				<div className="mb-6 rounded-lg border border-highlight/40 bg-card p-4">
 					<div className="flex items-start gap-3">
-						<GitFork className="h-5 w-5 text-highlight dark:text-orange-400 mt-0.5 shrink-0" />
+						<GitFork className="mt-0.5 h-5 w-5 shrink-0 text-highlight-ink" />
 						<div>
-							<p className="font-medium text-orange-700 dark:text-orange-300">
+							<p className="font-medium text-highlight-ink">
 								This is a Fabric system prompt
 							</p>
-							<p className="text-sm text-highlight/80 dark:text-orange-400/80 mt-1">
+							<p className="mt-1 text-sm text-muted-foreground">
 								System prompts are maintained by Fabric and
 								cannot be edited directly. To customize this
 								prompt, click "Fork to Customize" to create your

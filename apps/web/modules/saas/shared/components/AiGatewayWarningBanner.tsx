@@ -17,8 +17,7 @@ import {
 	XIcon,
 } from "lucide-react";
 import Link from "next/link";
-import { usePathname } from "next/navigation";
-import { useState } from "react";
+import { CollapsedNotice, useNoticeDismissal } from "./ai-notice-dismissal";
 
 /**
  * The query key this notice reads, exported so nothing has to hand-write it.
@@ -57,13 +56,6 @@ export function aiConfigStatusQueryKey(organizationId: string | null) {
  *    mirrors what the resolver does — see the status procedure (R11).
  */
 export function AiGatewayWarningBanner() {
-	const pathname = usePathname();
-	// Dismissal is per page, not per session (R14). Recording WHERE it was
-	// dismissed rather than a bare boolean is what makes it reset on
-	// navigation: the dashboard mount used to get that for free by
-	// unmounting, and a chrome mount that survives navigation would
-	// otherwise turn one click into permanent silence.
-	const [dismissedOn, setDismissedOn] = useState<string | null>(null);
 	const { organizationId, isOrgContext, isOrganizationAdmin } =
 		useOrganizationContext();
 	// The route says whether an organization is expected; the context says
@@ -83,6 +75,12 @@ export function AiGatewayWarningBanner() {
 	// false, which is right — a workspace of one's own has no host to be a
 	// guest of.
 	const isGuest = useIsGuestInOrg();
+	// Cancelling this notice settles it for the tenant, across pages and
+	// reloads. It collapses to a small marker rather than disappearing, so
+	// the reader can still reach the explanation and the fix from anywhere.
+	const { dismissed, dismiss, restore } = useNoticeDismissal(
+		`provider-required:${organizationId ?? "personal"}`,
+	);
 
 	// IMPORTANT: `organizationId` is passed explicitly (null in personal
 	// context) to prevent the session fallback from leaking org data.
@@ -124,8 +122,14 @@ export function AiGatewayWarningBanner() {
 	// failed status call must not put a permanent outage notice on every page.
 	const canResolveProvider = configStatus?.canResolveProvider ?? true;
 
-	if (isLoading || canResolveProvider || dismissedOn === pathname) {
+	if (isLoading || canResolveProvider || dismissed === undefined) {
 		return null;
+	}
+
+	if (dismissed) {
+		return (
+			<CollapsedNotice label="Show AI setup reminder" onOpen={restore} />
+		);
 	}
 
 	// Outside an organization there is no admin above the caller, so the
@@ -171,7 +175,7 @@ export function AiGatewayWarningBanner() {
 						variant="ghost"
 						size="icon"
 						className="-mt-1.5 -mr-1.5 size-8 shrink-0"
-						onClick={() => setDismissedOn(pathname)}
+						onClick={dismiss}
 						aria-label="Dismiss AI setup reminder"
 					>
 						<XIcon className="size-4" />

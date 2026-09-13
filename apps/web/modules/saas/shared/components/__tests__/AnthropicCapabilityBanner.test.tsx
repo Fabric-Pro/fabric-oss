@@ -196,6 +196,7 @@ async function settle() {
 
 beforeEach(() => {
 	vi.clearAllMocks();
+	window.localStorage.clear();
 	orgContextMock.mockReturnValue(orgContext());
 	guestMock.mockReturnValue(false);
 	pathnameMock.mockReturnValue("/app/acme/projects");
