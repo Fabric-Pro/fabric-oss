@@ -148,6 +148,7 @@ export function UserAvatarUpload({
 			</div>
 
 			<CropImageDialog
+				title="Crop your photo"
 				image={image}
 				open={cropDialogOpen}
 				onOpenChange={setCropDialogOpen}

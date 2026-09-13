@@ -102,6 +102,23 @@ export function impactToStatus(
 	}
 }
 
+/** "OpenAI", "OpenAI and Anthropic", "OpenAI, Anthropic and Azure". */
+function listNames(names: string[]): string {
+	if (names.length <= 1) {
+		return names.join("");
+	}
+	return `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
+}
+
+/** A readable name for a provider key with no incident row to name it. */
+function providerDisplayName(key: string): string {
+	return key
+		.split(/[_-]+/)
+		.filter(Boolean)
+		.map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+		.join(" ");
+}
+
 /** Internal SEV ladder → customer-facing status. */
 export function severityToStatus(severity: string): HealthStatus {
 	switch (severity) {
@@ -129,7 +146,19 @@ export interface ResolvedComponent {
 	status: HealthStatus;
 	/** Customer-safe sentence explaining the status. Never names internals. */
 	detail: string;
+	/**
+	 * Where a customer can read more, when the cause is a provider that
+	 * publishes a status page. Empty when the cause is internal or unknown.
+	 */
+	links: Array<{ label: string; href: string }>;
 	source: HealthSource;
+}
+
+/** What is known about a provider's open incident, for the detail sentence. */
+interface ProviderIncidentSignal {
+	providerName: string;
+	statusPageUrl: string | null;
+	startedAt: Date;
 }
 
 export interface HealthSignalInputs {
@@ -139,6 +168,12 @@ export interface HealthSignalInputs {
 	lastBackgroundWorkAt: Date | null;
 	/** Provider key → current health. Absent keys resolve to UNKNOWN. */
 	providerHealth: Map<string, HealthStatus>;
+	/**
+	 * Provider key → its open incident, when one is recorded. Lets a rolled-up
+	 * capability say WHICH provider is having trouble and point at the vendor's
+	 * own status page, instead of a generic "an upstream service".
+	 */
+	providerIncidents?: Map<string, ProviderIncidentSignal>;
 	/** How many of the tenant's own connections need customer action. */
 	unhealthyConnectionCount: number;
 	/** Total connections the tenant has, for honest empty-state wording. */
@@ -185,6 +220,7 @@ export function resolveComponent(
 			...base,
 			status: announced,
 			detail: "We have published an update about this area.",
+			links: [],
 			source: "announcement",
 		};
 	}
@@ -197,18 +233,23 @@ export function resolveComponent(
 			// Deliberately generic: the incident's own summary is machine-written
 			// from alert payloads and carries internal topology.
 			detail: "We are investigating a problem affecting this area.",
+			links: [],
 			source: "incident",
 		};
 	}
 
-	const { status, detail } = resolveFromSignal(registration, inputs);
-	return { ...base, status, detail, source: "signal" };
+	const { status, detail, links } = resolveFromSignal(registration, inputs);
+	return { ...base, status, detail, links: links ?? [], source: "signal" };
 }
 
 function resolveFromSignal(
 	registration: PlatformComponentRegistration,
 	inputs: HealthSignalInputs,
-): { status: HealthStatus; detail: string } {
+): {
+	status: HealthStatus;
+	detail: string;
+	links?: Array<{ label: string; href: string }>;
+} {
 	const signal = registration.signal;
 
 	switch (signal.kind) {
@@ -286,12 +327,45 @@ function resolveFromSignal(
 				};
 			}
 			const rolled = worstStatus(configured);
+			if (rolled === "OPERATIONAL") {
+				return { status: rolled, detail: "Operating normally." };
+			}
+			// Name the provider(s) that moved the status, and hand the reader
+			// the vendor's own status page when there is one. The vendor's
+			// incident text itself is not cleared for customer display, so it
+			// is deliberately not repeated here; the link carries it.
+			const troubled = signal.providerKeys.filter((key) => {
+				const status = inputs.providerHealth.get(key);
+				return (
+					status !== undefined &&
+					status !== "OPERATIONAL" &&
+					status !== "NOT_CONFIGURED"
+				);
+			});
+			const named = troubled.map((key) => ({
+				key,
+				incident: inputs.providerIncidents?.get(key),
+				name:
+					inputs.providerIncidents?.get(key)?.providerName ??
+					providerDisplayName(key),
+			}));
+			const names = named.map((entry) => entry.name);
+			const withPages = named.filter(
+				(entry) => entry.incident?.statusPageUrl,
+			);
+			const detail =
+				names.length === 0
+					? "An upstream service this capability depends on is having problems."
+					: withPages.length > 0
+						? `${listNames(names)} ${names.length === 1 ? "is" : "are"} reporting a problem on their side. Requests that use ${names.length === 1 ? "this provider" : "these providers"} may be slower or fail until they resolve it.`
+						: `${listNames(names)} ${names.length === 1 ? "is" : "are"} not responding normally to our checks. Requests that use ${names.length === 1 ? "this provider" : "these providers"} may be slower or fail.`;
 			return {
 				status: rolled,
-				detail:
-					rolled === "OPERATIONAL"
-						? "Operating normally."
-						: "An upstream service this capability depends on is having problems.",
+				detail,
+				links: withPages.map((entry) => ({
+					label: `${entry.name} status page`,
+					href: entry.incident?.statusPageUrl as string,
+				})),
 			};
 		}
 
