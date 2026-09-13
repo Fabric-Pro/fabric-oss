@@ -70,6 +70,6 @@
 		"test:watch": "vitest",
 		"type-check": "tsc --noEmit"
 	},
-	"version": "0.0.5",
+	"version": "0.0.6",
 	"license": "Apache-2.0"
 }

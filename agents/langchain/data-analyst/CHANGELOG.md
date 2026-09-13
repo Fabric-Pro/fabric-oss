@@ -1,5 +1,12 @@
 # data-analyst-agent
 
+## 0.1.4
+
+### Patch Changes
+
+- Updated dependencies [c3beb49]
+  - @repo/agent-core@0.1.4
+
 ## 0.1.3
 
 ### Patch Changes
