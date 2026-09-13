@@ -13,8 +13,9 @@ import { usePathname } from "next/navigation";
 import type { ReactNode } from "react";
 
 export type SettingsMenuSection = {
-	title: string;
-	avatar: ReactNode;
+	/** Omitted or empty: the menu draws a hairline instead of a label. */
+	title?: string;
+	avatar?: ReactNode;
 	items: {
 		title: string;
 		href: string;
@@ -45,7 +46,17 @@ export function SettingsMenu({
 				className="min-w-0 lg:h-full"
 			>
 				<div className="rounded-xl border border-border/60 bg-background/80 backdrop-blur-sm lg:flex lg:h-full lg:flex-col lg:rounded-none lg:border-0 lg:bg-transparent lg:backdrop-blur-none">
-					<div className="border-b border-border/60 px-3 py-3 lg:px-1 lg:py-4">
+					{/* On desktop this strip only ever shows the collapsed rail's
+					    avatar; expanded, or with no avatar to show, it was an
+					    empty padded row with a rule under it — the unexplained
+					    gap at the top of the settings and admin menus. */}
+					<div
+						className={cn(
+							"border-b border-border/60 px-3 py-3 lg:px-1 lg:py-4",
+							(!collapsed || !menuItems[0]?.avatar) &&
+								"lg:hidden",
+						)}
+					>
 						<div
 							className={cn(
 								"hidden items-center",
@@ -57,7 +68,7 @@ export function SettingsMenu({
 							{menuItems[0] ? (
 								<SidebarTooltip
 									disabled={!collapsed}
-									label={menuItems[0].title}
+									label={menuItems[0].title ?? ""}
 								>
 									{/* The organisation's avatar is already on the rail beside this
 									    panel; repeating it here read as a duplicate. When the panel
@@ -79,8 +90,11 @@ export function SettingsMenu({
 						</div>
 
 						<div className="lg:hidden">
-							{menuItems.map((item) => (
-								<div key={item.title} className="space-y-2">
+							{menuItems.map((item, index) => (
+								<div
+									key={item.title || `group-${index}`}
+									className="space-y-2"
+								>
 									<div className="flex min-w-0 items-center gap-2">
 										<div className="shrink-0 text-muted-foreground/70">
 											{item.avatar}
@@ -141,10 +155,14 @@ export function SettingsMenu({
 
 					<div className="hidden lg:flex lg:min-h-0 lg:flex-1 lg:flex-col">
 						<div className="no-scrollbar flex max-h-[calc(100vh-10rem)] flex-col gap-4 overflow-y-auto px-1 py-4 lg:flex-1">
-							{menuItems.map((item) => (
-								<div key={item.title}>
+							{menuItems.map((item, index) => (
+								<div key={item.title || `group-${index}`}>
 									{collapsed || !item.title ? (
-										<div className="mx-1 mb-2 h-px bg-border/40" />
+										// A hairline separates an untitled group from the one
+										// above it; the first group has nothing to separate from.
+										index > 0 ? (
+											<div className="mx-1 mb-2 h-px bg-border/40" />
+										) : null
 									) : (
 										<p className="fab-label mb-1.5 px-2 text-muted-foreground/60 select-none">
 											{item.title}

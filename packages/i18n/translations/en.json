@@ -1007,6 +1007,10 @@
 			},
 			"logo": {
 				"description": "Upload a logo for your organization.",
+				"change": "Upload logo",
+				"replace": "Replace logo",
+				"remove": "Remove",
+				"hint": "PNG or JPG, square works best. Drag a file onto the mark or choose one.",
 				"title": "Organization logo"
 			},
 			"aiGateway": {

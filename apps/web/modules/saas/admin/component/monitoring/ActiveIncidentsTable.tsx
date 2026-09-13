@@ -44,6 +44,7 @@ import {
 	AlertTriangleIcon,
 	CheckIcon,
 	CpuIcon,
+	ExternalLinkIcon,
 	MessageSquareIcon,
 	PlugIcon,
 	XCircleIcon,
@@ -75,8 +76,27 @@ type IncidentRow = {
 	subject: string;
 	feature: string;
 	startedAt: Date;
+	/** What the source said is wrong — vendor incident title, affected parts. */
+	detail: string | null;
+	/** Where an operator can read the source's own account of it. */
+	link: { label: string; href: string } | null;
 	target: IncidentDialogTarget | null;
 };
+
+/** `detectionMethod` enum → what an operator would call it. */
+const DETECTION_LABEL: Record<string, string> = {
+	STATUSPAGE_POLL: "vendor status page",
+	SYNTHETIC_PROBE: "synthetic probe",
+	CIRCUIT_BREAKER: "circuit breaker",
+	ALERTMANAGER: "Alertmanager",
+};
+
+function detectionLabel(method: string | null | undefined): string {
+	if (!method) {
+		return "—";
+	}
+	return DETECTION_LABEL[method] ?? method.toLowerCase().replace(/_/g, " ");
+}
 
 type SortKey = "recent" | "severity";
 
@@ -211,6 +231,8 @@ export function ActiveIncidentsTable() {
 				subject: item.service,
 				feature: item.feature,
 				startedAt: new Date(item.firedAt),
+				detail: null,
+				link: null,
 				target: {
 					kind: "errorRate",
 					incidentId: item.id,
@@ -230,8 +252,28 @@ export function ActiveIncidentsTable() {
 				status: item.status as IncidentRow["status"],
 				label: item.providerName,
 				subject: item.providerKey,
-				feature: item.detectionMethod ?? "—",
+				feature: detectionLabel(item.detectionMethod),
 				startedAt: new Date(item.startedAt),
+				// The vendor's own incident title and the parts they say are
+				// affected. Without these an operator saw only "SEV2 ·
+				// Snowflake · STATUSPAGE_POLL" and had to leave the page to
+				// learn what was actually wrong.
+				detail:
+					[
+						item.summary,
+						item.affectedComponents &&
+						item.affectedComponents.length > 0
+							? `Affects: ${item.affectedComponents.join(", ")}`
+							: null,
+					]
+						.filter(Boolean)
+						.join(" · ") || null,
+				link: item.statusPageUrl
+					? {
+							label: `${item.providerName} status page`,
+							href: item.statusPageUrl,
+						}
+					: null,
 				target: {
 					kind: "integration",
 					incidentId: item.id,
@@ -258,6 +300,8 @@ export function ActiveIncidentsTable() {
 				subject: item.componentKey,
 				feature: "subsystem",
 				startedAt: new Date(item.firedAt ?? Date.now()),
+				detail: null,
+				link: null,
 				target: null,
 			});
 		}
@@ -542,6 +586,29 @@ function IncidentCard({
 							started {formatRelative(row.startedAt)}
 						</time>
 					</div>
+					{row.detail || row.link ? (
+						<p className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-foreground/80">
+							{row.detail ? (
+								<span className="min-w-0 break-words">
+									{row.detail}
+								</span>
+							) : null}
+							{row.link ? (
+								<a
+									href={row.link.href}
+									target="_blank"
+									rel="noreferrer noopener"
+									className="inline-flex shrink-0 items-center gap-1 text-primary underline-offset-4 hover:underline"
+								>
+									{row.link.label}
+									<ExternalLinkIcon
+										aria-hidden="true"
+										className="size-3"
+									/>
+								</a>
+							) : null}
+						</p>
+					) : null}
 				</div>
 				{/* Actions — right-aligned on wide viewports, single row
 				 * with native button `title` tooltips so the labels never

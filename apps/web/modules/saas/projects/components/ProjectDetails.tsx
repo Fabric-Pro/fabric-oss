@@ -999,7 +999,7 @@ export function ProjectDetails({ projectId, organizationSlug }: Props) {
 			  discipline `useRecordProjectVisit`'s `enabled` follows. The
 			  component decides for itself whether to open. */}
 			<ProjectRoleConfirmationPrompt
-				key={projectId}
+				key={`role-confirmation-${projectId}`}
 				projectId={projectId}
 				organizationId={organizationId ?? null}
 			/>
@@ -1080,8 +1080,8 @@ export function ProjectDetails({ projectId, organizationSlug }: Props) {
 			    scan banner is unchanged, and while hidden it occupies no space —
 			    `space-y-*` skips a `[hidden]` child.
 
-			    `key={projectId}` for the reason the role-confirmation prompt
-			    above carries one: this page does not remount between projects,
+			    Keyed by project for the reason the role-confirmation prompt
+			    above is: this page does not remount between projects,
 			    and that latch is per-mount. Without it, a tour taken on one
 			    project would keep the prompt suppressed on the next.
 
@@ -1090,7 +1090,7 @@ export function ProjectDetails({ projectId, organizationSlug }: Props) {
 			    its starter instruction, and that is not worth a second read of a
 			    project already on screen. */}
 			<CliConnectionNudge
-				key={projectId}
+				key={`cli-nudge-${projectId}`}
 				hidden={shouldHideChrome}
 				organizationId={organizationId ?? null}
 				organizationSlug={organizationSlug}
