@@ -194,24 +194,40 @@ export function restrictsPostType(
 }
 
 /**
+ * Name ONE decision thread, from its subject and its kind.
+ *
+ * The one computation of a decision's display label. `restrictionLabel`
+ * (same module), `buildShortPostVariables` (the shared prompt variable
+ * builder, which seven content types call), and the generation tab
+ * (`GenerationTabs.tsx`) all delegate here as of this commit — one function,
+ * three callers, and a test per caller. Before this function existed, the
+ * three formulas disagreed on three inputs: a blank subject, an interior
+ * line break, and the unclassified-kind fallback wording.
+ *
+ * `toSingleLineSubject` rather than `.trim()`, because it also collapses an
+ * interior newline. A subject is model-authored and unbounded on one of its two
+ * producing paths, so a multiline one is not a contrived input.
+ */
+export function decisionLabel(
+	subject: string | null | undefined,
+	decisionKind: string | null | undefined,
+): string {
+	const single = toSingleLineSubject(subject ?? "");
+	if (single) {
+		return single;
+	}
+	return humanizeDecisionKind(decisionKind ?? "");
+}
+
+/**
  * How a restricting thread is named to the model.
  *
- * `subject` is the specific thing awaiting approval ("Acme Corp", "the latency
- * chart") — model-authored, never typed by a project member (see
- * `toSingleLineSubject` below for the two producing paths); the kind is the
- * fallback when a question was raised without one. This is the prompt's own
- * computation, used where the prompt lists a thread under "not approved for
- * use". The generation tab is a SEPARATE reader: it computes its own
- * "unresolved before drafting" label locally rather than calling this
- * function, and the two are not guaranteed to produce the same string (see
- * `toSingleLineSubject` below for the known divergences).
+ * A thin wrapper over `decisionLabel`, the one computation of a decision's
+ * display label, which the shared prompt variable builder
+ * (`buildShortPostVariables`) and the generation tab also call.
  */
 export function restrictionLabel(thread: RestrictionThreadRoot): string {
-	const subject = toSingleLineSubject(thread.root.subject ?? "");
-	if (subject) {
-		return subject;
-	}
-	return humanizeDecisionKind(thread.root.decisionKind ?? "");
+	return decisionLabel(thread.root.subject, thread.root.decisionKind);
 }
 
 /**
@@ -245,10 +261,14 @@ export function restrictionLabel(thread: RestrictionThreadRoot): string {
  * document, a call transcript, a scraped page) into whichever of the two
  * fields it emits.
  *
- * This helper's callers are the prompt builders: `restrictionLabel` below,
- * and every `build-*-prompt.ts` that renders a subject as a locked-clause
- * bullet directly. `build-linkedin-post-prompt.ts` renders one too, but only
- * INDIRECTLY, by calling `build-short-post-prompt.ts`'s
+ * This helper's direct callers are `decisionLabel` above, `renderSubjectBullet`
+ * below, every `build-*-prompt.ts` that folds a subject before filtering an
+ * empty one out or rendering it as a locked-clause bullet, and the topic item
+ * page's assistant context (`TopicItemPage.tsx`). Indirectly, through
+ * `decisionLabel`, they also include `restrictionLabel`,
+ * `buildShortPostVariables` (the shared prompt variable builder), and the
+ * generation tab. `build-linkedin-post-prompt.ts` renders a locked-clause
+ * bullet too, but only INDIRECTLY, by calling `build-short-post-prompt.ts`'s
  * `buildShortPostLockedClauses` rather than defining its own. There the
  * subject lands OUTSIDE any source-data fence — the locked clauses are the
  * one region a quoted source block must never reach — so an interior newline
@@ -258,18 +278,13 @@ export function restrictionLabel(thread: RestrictionThreadRoot): string {
  * path there is no length floor to clear either; nothing has to be forged
  * and no marker guessed.
  *
- * The generation tab is NOT one of this helper's callers, despite labeling
- * the same threads. It builds its own label locally
- * (`GenerationTabs.tsx`, `t.root.subject ?? humanizeKind(...)`), and the two
- * disagree: a whitespace-only subject renders blank in the tab but falls
- * back to the humanized decision kind (e.g. "Customer name") in the prompt;
- * a multiline subject's STORED value stays multiline going into that
- * comparison, though the tab actually renders it as `<li>{r.label}</li>` and
- * HTML collapses the newline visually, so a reader never sees the
- * difference there; and `decisionKind === "OTHER"` renders "An unresolved
- * approval" in the tab against "Other" in the prompt. That divergence is
- * real, is not fixed here, and is left for separate `apps/web` work with its
- * own render tests.
+ * The fold matters most where a model reads the raw text directly: every
+ * `build-*-prompt.ts` locked clause, and — since `TopicItemPage.tsx` started
+ * calling this too — the topic assistant's open-questions context, which
+ * `useCopilotReadable` hands the model as data, not markup. The generation
+ * tab renders a label as `<li>{r.label}</li>`, and HTML collapses the
+ * newline visually there — so folding a multiline subject changes the
+ * stored and compared string, not what a reader of the tab sees.
  *
  * The pattern below matches whitespace generally rather than the two obvious
  * line breaks, because it also has to catch the tab, the form feed, and
@@ -316,8 +331,21 @@ export function renderSubjectBullet(subject: string): string {
 
 /** `CUSTOMER_NAME` → `Customer name`. */
 export function humanizeDecisionKind(kind: string): string {
-	if (!kind) {
-		return "An unresolved approval";
+	// `"OTHER"` is not a kind a reader recognises — it is what every
+	// generate-*.ts activity substitutes for a null `decisionKind` when it
+	// builds the answered-decisions payload. Rendered literally, `- Other:
+	// <answer>` reads as a decision about something named "Other", which
+	// names nothing. That payload is ANSWERED decisions rendered under a
+	// "Confirmed decisions" heading that calls them settled, so the fallback
+	// must read as true of a settled decision — "unclassified", never
+	// "unresolved". The open-thread paths — the locked clauses through
+	// `restrictionLabel`, and the generation tab — only ever see threads that
+	// `isRestrictingThread` or `restrictsPostType` admitted, and `"OTHER"` is
+	// in neither allowlist, so they do not reach this branch today; the
+	// wording is state-neutral so it stays true if an allowlist change ever
+	// lets it.
+	if (!kind || kind === "OTHER") {
+		return "An unclassified decision";
 	}
 	const words = kind.toLowerCase().split("_").filter(Boolean).join(" ");
 	return words.charAt(0).toUpperCase() + words.slice(1);

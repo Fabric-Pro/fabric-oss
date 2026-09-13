@@ -11,6 +11,7 @@ import type {
 	Restrictions,
 } from "./generation-tab-state";
 import {
+	decisionLabel,
 	isRestrictingThread,
 	resolveGenerationTabStates,
 	resolveRestrictions,
@@ -493,15 +494,6 @@ function StateBadge({ info }: { info: GenerationTabInfo }) {
 	);
 }
 
-/** "CUSTOMER_NAME" -> "Customer name", for a question that carries no subject. */
-function humanizeKind(kind: string | null): string {
-	if (!kind || kind === "OTHER") {
-		return "An unresolved approval";
-	}
-	const words = kind.toLowerCase().split("_").join(" ");
-	return words.charAt(0).toUpperCase() + words.slice(1);
-}
-
 function Badge({
 	tone,
 	children,
@@ -612,7 +604,7 @@ function GenerationPanel({
 	);
 	const asSubject = (t: (typeof restrictingThreads)[number]) => ({
 		id: t.root.id,
-		label: t.root.subject ?? humanizeKind(t.root.decisionKind),
+		label: decisionLabel(t.root.subject, t.root.decisionKind),
 	});
 	const unapprovedSubjects = restrictingThreads
 		.filter((t) => isRestrictingThread(t))

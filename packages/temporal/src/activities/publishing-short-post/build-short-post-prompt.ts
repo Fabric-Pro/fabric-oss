@@ -29,7 +29,7 @@ import {
 } from "@repo/utils/publishing-analysis-prose";
 import { buildRefinementSection } from "@repo/utils/publishing-refinement";
 import {
-	humanizeDecisionKind,
+	decisionLabel,
 	renderSubjectBullet,
 	toSingleLineSubject,
 } from "@repo/utils/publishing-restrictions";
@@ -214,9 +214,12 @@ function clamp(text: string, cap: number): string {
  *
  * Prefix note: every other log line in this file says `[publishing-short-post]`
  * because it truly is short-post-only. This one is not — `composeAnalysisBlock`,
- * its only caller, is reached by all four publishing generators through the
- * shared `buildShortPostVariables` builder, so tagging this line with one
- * generator's name would misattribute every truncation the other three cause.
+ * its only caller, is reached by every publishing generator that composes an
+ * analysis block, through the shared `buildShortPostVariables` builder — seven
+ * such generators as of this commit (this file's own composer, plus blog post,
+ * case study, LinkedIn post, newsletter blurb, stakeholder email and webinar
+ * script) — so tagging this line with one generator's name would misattribute
+ * the truncations the others cause.
  *
  * Definition every call site must agree on: `proseEmitted` / `dataEmitted` is
  * the number of characters that half contributed to the COMPOSED block —
@@ -471,12 +474,13 @@ export function buildShortPostVariables({
 	const decisionLines = decisions
 		.filter((d) => d.answer.trim().length > 0)
 		.map((d) => {
-			// The SHARED humanizer, not the local one: the tab lists an
-			// approval by exactly this string under "unresolved before
-			// drafting", so two spellings of the same thing would read as two
-			// different approvals.
-			const subject =
-				d.subject?.trim() || humanizeDecisionKind(d.decisionKind);
+			// The shared label function; `restrictionLabel` and the generation
+			// tab call it too, so all three compute a decision's label with one
+			// formula. This block's population is answered decisions, disjoint
+			// from the tab's open-only lists — which is also why the kind
+			// fallback reachable here must read as true of a SETTLED decision,
+			// never as unresolved.
+			const subject = decisionLabel(d.subject, d.decisionKind);
 			return `- ${subject}: ${clamp(d.answer, SOURCE_EXCERPT_CHAR_CAP)}`;
 		});
 
