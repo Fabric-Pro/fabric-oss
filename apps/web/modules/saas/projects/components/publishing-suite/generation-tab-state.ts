@@ -16,6 +16,7 @@
  */
 
 import {
+	decisionLabel,
 	EXTRA_RESTRICTING_KINDS_BY_POST_TYPE,
 	isRestrictingThread,
 	restrictsPostType,
@@ -244,8 +245,13 @@ export interface Restrictions {
  * type-agnostic one the badges are computed from. Both predicates, one import
  * site, so a panel cannot reach for the wrong one by reaching for the nearer
  * one.
+ *
+ * `decisionLabel` rides along for the tab's two restriction lists — unresolved
+ * approvals, and open questions that constrain a type — so the tab names each
+ * thread with the same function the drafting prompts use rather than a formula
+ * of its own.
  */
-export { isRestrictingThread, restrictsPostType };
+export { decisionLabel, isRestrictingThread, restrictsPostType };
 
 /**
  * What the topic's OPEN questions restrict, across the whole thread set.

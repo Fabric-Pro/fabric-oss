@@ -112,9 +112,18 @@ vi.mock("sonner", () => ({ toast: { error: toastError } }));
  * Nothing here is testing the assistant. What this page owes it is one prop
  * hand-off, and `assistantProposal` — the only thing that flows BACK — is
  * pinned where it does its work, in `publishing-planning-analysis-tab.test.tsx`.
+ * The stub now records that hand-off's `context` prop (Fizzy #1988), so the
+ * "what is still open" describe block below can assert on it directly.
  */
+const assistantCapture = vi.hoisted(() => ({
+	context: null as { openQuestions: string[] } | null,
+}));
+
 vi.mock("@saas/projects/components/publishing-suite/TopicAssistant", () => ({
-	TopicAssistant: () => null,
+	TopicAssistant: (props: { context: { openQuestions: string[] } }) => {
+		assistantCapture.context = props.context;
+		return null;
+	},
 }));
 
 // Task 6: TopicItemPage now reads the viewer's own id (for the contributors
@@ -595,6 +604,7 @@ function renderPage(canEdit = true) {
 
 beforeEach(() => {
 	invalidateQueries.mockClear();
+	assistantCapture.context = null;
 	state.topic = topic();
 	state.latestAttempt = null;
 	state.effective = null;
@@ -2150,5 +2160,57 @@ describe("TopicItemPage — tab counts", () => {
 		expect(
 			screen.queryByLabelText(/open question/),
 		).not.toBeInTheDocument();
+	});
+});
+
+/**
+ * What the assistant is told is still open (Fizzy #1988).
+ *
+ * `assistantContext.openQuestions` used to select with `subject ?? content`,
+ * which fails twice: `??` lets a whitespace-only subject win, and `content`
+ * is null on every question root — the question's text is in `summary`.
+ */
+describe("TopicItemPage — what the assistant is told is still open (Fizzy #1988)", () => {
+	it("names a blank-subject question by its text instead of forwarding a blank", async () => {
+		// `??` selects on null, not on emptiness, so a subject of spaces won
+		// and reached the assistant as "   ". The question's text lives in
+		// `summary` — the only field `reconcileTopicQuestions` writes it to —
+		// so that is what the assistant should be told instead.
+		state.decisionThreads = [
+			openQuestionThread("blank", { subject: "   " }),
+		];
+		renderPage();
+		await waitFor(() =>
+			expect(assistantCapture.context?.openQuestions).toEqual([
+				"May we name the customer?",
+			]),
+		);
+	});
+
+	it("folds a multiline question subject", async () => {
+		state.decisionThreads = [
+			openQuestionThread("multiline", { subject: "first\nsecond" }),
+		];
+		renderPage();
+		await waitFor(() =>
+			expect(assistantCapture.context?.openQuestions).toEqual([
+				"first second",
+			]),
+		);
+	});
+
+	it("names a question with no subject by its summary", async () => {
+		// Without `summary` in the chain a subject-less open question fell
+		// through to `content`, which is null on every question root, and the
+		// assistant was never told about it.
+		state.decisionThreads = [
+			openQuestionThread("no-subject", { subject: null }),
+		];
+		renderPage();
+		await waitFor(() =>
+			expect(assistantCapture.context?.openQuestions).toEqual([
+				"May we name the customer?",
+			]),
+		);
 	});
 });

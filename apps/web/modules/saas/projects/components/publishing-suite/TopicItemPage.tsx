@@ -1,5 +1,6 @@
 "use client";
 
+import { toSingleLineSubject } from "@repo/utils/publishing-restrictions";
 import { useSession } from "@saas/auth/hooks/use-session";
 import { useAiSidebarExpanded } from "@saas/shared/components/copilot/ai-sidebar-layout";
 import { orpc } from "@shared/lib/orpc-query-utils";
@@ -461,7 +462,20 @@ export function TopicItemPage({
 						t.root.decisionKind !== "CONTENT_TYPE" &&
 						t.root.status === "OPEN",
 				)
-				.map((t) => t.root.subject ?? t.root.content ?? "")
+				// `??` selects on null, not on emptiness, so a whitespace-only
+				// subject used to win and reach the assistant as a blank entry.
+				// Each candidate is folded before falling back: `subject` first,
+				// then `summary` — where `reconcileTopicQuestions` stores the
+				// question's text, and the field the page's other readers
+				// (`TopicBlockers`, `TopicDecisionLog`) fall back through before
+				// `content` — then `content`. An entry is dropped only when all
+				// three are blank.
+				.map(
+					(t) =>
+						toSingleLineSubject(t.root.subject ?? "") ||
+						toSingleLineSubject(t.root.summary ?? "") ||
+						toSingleLineSubject(t.root.content ?? ""),
+				)
 				.filter((q) => q !== ""),
 		}),
 		[

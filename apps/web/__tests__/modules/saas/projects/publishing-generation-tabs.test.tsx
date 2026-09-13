@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -15,7 +15,18 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Tabs, TabsList } from "@ui/components/tabs";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+
+// FR6(b). The tab must DELEGATE its label, not compute one. A spy rather than a
+// source scrape: a scrape is fooled by a doc comment mentioning the identifier,
+// and worse, by one keeping the guard green after the real call is deleted.
+vi.mock("@repo/utils/publishing-restrictions", async (importOriginal) => {
+	const actual =
+		await importOriginal<
+			typeof import("@repo/utils/publishing-restrictions")
+		>();
+	return { ...actual, decisionLabel: vi.fn(actual.decisionLabel) };
+});
 
 /**
  * The generation tab strip (Fizzy #1853, Phase 2B-1).
@@ -922,5 +933,127 @@ describe("GenerationTabs — changed since last visit", () => {
 		expect(
 			within(tablist()).queryByRole("tab", { name: /changed/i }),
 		).not.toBeInTheDocument();
+	});
+});
+
+describe("GenerationTabs — naming an unresolved approval (Fizzy #1988)", () => {
+	it("names a blank-subject approval by its kind instead of rendering an empty bullet", async () => {
+		// The one member-visible divergence this slice closes. `??` catches
+		// only null, so a whitespace-only subject reached the list as "   "
+		// and painted as an empty <li> — while the prompt named the kind.
+		const user = userEvent.setup();
+		renderTabs({
+			decisionThreads: [
+				thread({
+					id: "t-blank",
+					decisionKind: "CUSTOMER_NAME",
+					subject: "   ",
+				}),
+			],
+		});
+		await user.click(
+			within(tablist()).getByRole("tab", { name: /case study/i }),
+		);
+		const approvals = screen
+			.getByText(/unresolved approvals/i)
+			.closest("section") as HTMLElement;
+		expect(
+			within(approvals)
+				.getAllByRole("listitem")
+				.map((li) => li.textContent),
+		).toEqual(["Customer name"]);
+	});
+
+	it("folds a multiline subject in the compared string", async () => {
+		// Asserted on textContent, NOT via getByText: RTL's default normalizer
+		// collapses whitespace, so `getByText("first second")` matches the
+		// pre-fix DOM too and the case could not fail. The tab's RENDER never
+		// showed the difference either way — HTML collapses the newline inside
+		// <li> — so what this pins is the string the tab and the prompt now
+		// share, which is the point of the convergence.
+		const user = userEvent.setup();
+		renderTabs({
+			decisionThreads: [
+				thread({
+					id: "t-multiline",
+					decisionKind: "CUSTOMER_NAME",
+					subject: "first\nsecond",
+				}),
+			],
+		});
+		await user.click(
+			within(tablist()).getByRole("tab", { name: /case study/i }),
+		);
+		const approvals = screen
+			.getByText(/unresolved approvals/i)
+			.closest("section") as HTMLElement;
+		const labels = within(approvals)
+			.getAllByRole("listitem")
+			.map((li) => li.textContent);
+		expect(labels).toEqual(["first second"]);
+		expect(labels[0]).not.toContain("\n");
+	});
+
+	it("delegates the label to the shared function", async () => {
+		const { decisionLabel } = await import(
+			"@repo/utils/publishing-restrictions"
+		);
+		const user = userEvent.setup();
+		renderTabs({
+			decisionThreads: [
+				thread({
+					id: "t-delegate",
+					decisionKind: "CUSTOMER_NAME",
+					subject: "Acme Corp",
+				}),
+			],
+		});
+		await user.click(
+			within(tablist()).getByRole("tab", { name: /case study/i }),
+		);
+		expect(decisionLabel).toHaveBeenCalledWith(
+			"Acme Corp",
+			"CUSTOMER_NAME",
+		);
+	});
+
+	it("declares no local humanizer anywhere in the publishing-suite directory", () => {
+		// FR6(c). The divergence this slice closes was created exactly once, by
+		// writing a local copy of the shared humanizer. This makes writing a
+		// second one red.
+		//
+		// EVERY file in the directory, not just this component. A guard whose
+		// name says "anywhere in the directory" while it reads one file is a
+		// false claim of the kind this whole slice exists to remove — and a
+		// sibling panel is exactly where the next copy would be written.
+		//
+		// LIMITS, stated rather than implied. It catches a NAMED declaration.
+		// It does not catch an inlined ternary reproducing the same fallback
+		// (FR7's site is that shape), and it does not catch a copy placed
+		// outside this directory. The honest claim is "the shape that actually
+		// happened is now red", not "divergence is impossible".
+		//
+		// Declarations, not occurrences: anchoring to `function`/`const` keeps
+		// the guard off prose and comments.
+		const declarations = [
+			/^\s*(?:export\s+)?(?:async\s+)?function\s+\w*humanize\w*/im,
+			/^\s*(?:export\s+)?const\s+\w*humanize\w*\s*[:=]/im,
+		];
+		const suiteDir = path.resolve(
+			repoRoot,
+			"apps/web/modules/saas/projects/components/publishing-suite",
+		);
+		const offenders: string[] = [];
+		for (const entry of readdirSync(suiteDir)) {
+			if (!/\.tsx?$/.test(entry)) {
+				continue;
+			}
+			const source = readFileSync(path.join(suiteDir, entry), "utf8");
+			if (declarations.some((rx) => rx.test(source))) {
+				offenders.push(entry);
+			}
+		}
+		// Named rather than counted, so a failure says WHICH file to look at.
+		expect(offenders).toEqual([]);
 	});
 });

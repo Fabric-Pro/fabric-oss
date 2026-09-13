@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+	decisionLabel,
 	EXTRA_RESTRICTING_KINDS_BY_POST_TYPE,
 	isRestrictingThread,
 	type RestrictionThreadRoot,
@@ -451,6 +452,65 @@ describe("restrictionLabel", () => {
 		// empty bullet.
 		expect(
 			restrictionLabel(thread({ subject: null, decisionKind: null })),
-		).toBe("An unresolved approval");
+		).toBe("An unclassified decision");
+	});
+
+	it("carries the unclassified-kind label through to a restricted thread", () => {
+		// Unreachable in production — every caller of `restrictionLabel`
+		// filters through `isRestrictingThread` or `restrictsPostType`, and
+		// "OTHER" is in neither allowlist — so a unit
+		// test is the only place this row can be pinned. It is pinned anyway,
+		// because a future allowlist change would make it live and nothing
+		// else would notice.
+		expect(
+			restrictionLabel(thread({ subject: null, decisionKind: "OTHER" })),
+		).toBe("An unclassified decision");
+	});
+});
+
+describe("decisionLabel", () => {
+	// The one computation of a decision's display name. `restrictionLabel`
+	// (same module), `buildShortPostVariables` (the shared prompt builder,
+	// which seven content types call), and the generation tab
+	// (`GenerationTabs.tsx`) all delegate to it as of this commit — one
+	// function, three callers, and a test per caller. Before this function
+	// existed, every caller had its own formula and they disagreed on a blank
+	// subject, on an interior newline, and on the "OTHER" kind.
+
+	it("returns a present subject unchanged", () => {
+		expect(decisionLabel("Acme Corp", "CUSTOMER_NAME")).toBe("Acme Corp");
+	});
+
+	it("falls back to the humanized kind when the subject is only whitespace", () => {
+		// `??` does not catch this, which is why the tab rendered an empty
+		// bullet where the prompt named the kind.
+		expect(decisionLabel("   ", "CUSTOMER_NAME")).toBe("Customer name");
+		expect(decisionLabel("", "CUSTOMER_NAME")).toBe("Customer name");
+		expect(decisionLabel(null, "CUSTOMER_NAME")).toBe("Customer name");
+	});
+
+	it("folds a multiline subject onto one line", () => {
+		expect(decisionLabel("first\nsecond", "CUSTOMER_NAME")).toBe(
+			"first second",
+		);
+	});
+
+	it("names an unclassified kind generically rather than 'Other'", () => {
+		// FR2. `"OTHER"` is what every generate-*.ts activity substitutes for a
+		// null decisionKind when it builds the answered-decisions payload, so
+		// this is the default for anything the analysis could not classify.
+		// `- Other: <answer>` names nothing; a model reading it can only
+		// conclude there is a decision subject called "Other". That same
+		// payload holds ANSWERED decisions under a "Confirmed decisions"
+		// heading that calls them settled, so the label must never say
+		// "unresolved" — doing so would call a settled decision unresolved.
+		expect(decisionLabel(null, "OTHER")).toBe("An unclassified decision");
+		expect(decisionLabel(null, "OTHER")).not.toMatch(/unresolved/i);
+	});
+
+	it("names a thread with neither subject nor kind generically", () => {
+		// Distinct from the row above: this one is green whether or not FR2
+		// is present, so it is not a proxy for it.
+		expect(decisionLabel(null, null)).toBe("An unclassified decision");
 	});
 });

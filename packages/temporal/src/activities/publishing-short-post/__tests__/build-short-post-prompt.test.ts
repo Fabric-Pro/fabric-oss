@@ -18,6 +18,7 @@ import {
 	PLANNING_ANALYSIS_DATA_RESERVE,
 	PublishingShortPostSchema,
 	SHORT_POST_OPTION_COUNT,
+	type ShortPostDecision,
 } from "../build-short-post-prompt";
 
 // Mocked so the budget's own degradation is ASSERTABLE, not merely printed.
@@ -32,10 +33,47 @@ vi.mock("@repo/logs", () => ({
 	},
 }));
 
+// FR6(b). A behavioural assertion that this builder DELEGATES, not a source
+// scrape. A scrape for the identifier would be fooled by a doc comment
+// mentioning it — `_ast-guards.ts`'s own docblock records that exact incident —
+// and the mirror case, a comment keeping the guard green after the real call is
+// deleted, is worse. A spy cannot be fooled by prose.
+vi.mock("@repo/utils/publishing-restrictions", async (importOriginal) => {
+	const actual =
+		await importOriginal<
+			typeof import("@repo/utils/publishing-restrictions")
+		>();
+	return { ...actual, decisionLabel: vi.fn(actual.decisionLabel) };
+});
+
 const warn = vi.mocked(logger.warn);
 
 beforeEach(() => {
 	vi.clearAllMocks();
+});
+
+describe("buildShortPostVariables — delegates the decision label to the shared function", () => {
+	it("delegates the decision label to the shared function", async () => {
+		const { decisionLabel } = await import(
+			"@repo/utils/publishing-restrictions"
+		);
+		buildShortPostVariables({
+			analysisProse: "",
+			analysisData: {},
+			decisions: [
+				{
+					subject: "Acme Corp",
+					decisionKind: "CUSTOMER_NAME",
+					answer: "Approved.",
+				},
+			],
+			guidance: null,
+		});
+		expect(decisionLabel).toHaveBeenCalledWith(
+			"Acme Corp",
+			"CUSTOMER_NAME",
+		);
+	});
 });
 
 /**
@@ -297,6 +335,80 @@ describe("buildShortPostVariables", () => {
 			guidance: "   \n  ",
 		});
 		expect(vars.has_guidance).toBe(false);
+	});
+});
+
+describe("buildShortPostVariables — how a settled decision is named", () => {
+	// The resolved-decisions block renders into SEVEN content types, because
+	// every composer calls this one function. The label formula here used to
+	// be `subject?.trim() || humanizeDecisionKind(kind)`, which agreed with
+	// the locked-clause bullets on a blank subject and disagreed with them on
+	// an interior newline.
+	const decision = (over: Partial<ShortPostDecision>): ShortPostDecision => ({
+		subject: "Acme Corp",
+		decisionKind: "CUSTOMER_NAME",
+		answer: "Approved by the customer.",
+		...over,
+	});
+
+	it("names a decision by its subject", () => {
+		const vars = buildShortPostVariables({
+			analysisProse: "",
+			analysisData: {},
+			decisions: [decision({})],
+			guidance: null,
+		});
+		expect(vars.decisions).toContain(
+			"- Acme Corp: Approved by the customer.",
+		);
+	});
+
+	it("falls back to the humanized kind when the subject is only whitespace", () => {
+		const vars = buildShortPostVariables({
+			analysisProse: "",
+			analysisData: {},
+			decisions: [decision({ subject: "   " })],
+			guidance: null,
+		});
+		expect(vars.decisions).toContain(
+			"- Customer name: Approved by the customer.",
+		);
+	});
+
+	it("folds a multiline subject onto one line", () => {
+		// FR4. The old `.trim()` left the newline in place, so the block
+		// emitted a line break mid-label into the prompt body.
+		const vars = buildShortPostVariables({
+			analysisProse: "",
+			analysisData: {},
+			decisions: [decision({ subject: "first\nsecond" })],
+			guidance: null,
+		});
+		expect(vars.decisions).toContain(
+			"- first second: Approved by the customer.",
+		);
+		expect(vars.decisions).not.toContain("first\nsecond");
+	});
+
+	it("names an unclassified decision generically rather than 'Other'", () => {
+		// FR2, at the ONE site where "OTHER" is reachable: every generate-*.ts
+		// activity writes `decisionKind: thread.root.decisionKind ?? "OTHER"`
+		// into this payload, and that branch carries no kind allowlist.
+		const vars = buildShortPostVariables({
+			analysisProse: "",
+			analysisData: {},
+			decisions: [decision({ subject: null, decisionKind: "OTHER" })],
+			guidance: null,
+		});
+		expect(vars.decisions).toContain(
+			"- An unclassified decision: Approved by the customer.",
+		);
+		expect(vars.decisions).not.toContain("- Other:");
+		// The template heads this block "Confirmed decisions" and every entry
+		// in it is answered, so no label here may call a decision unresolved.
+		// An earlier revision of this slice rendered
+		// `- An unresolved approval: <answer>` in exactly this spot.
+		expect(vars.decisions).not.toMatch(/unresolved/i);
 	});
 });
 
