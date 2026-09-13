@@ -119,12 +119,10 @@ describe("CalendarCanvas — awaiting-transcript badges", () => {
 		expect(onSelect).not.toHaveBeenCalled();
 	});
 
-	it("keeps the awaiting row visible when personal meetings compete for the budget", () => {
-		// DEF-1, found in staging QA of #2051: the badge budget filled
-		// project -> personal -> awaiting, so two of the viewer's own calendar
-		// entries pushed the awaiting TEAM row behind "+N more". An awaiting row
-		// is team content and must outrank a personal one — the whole premise of
-		// the ticket is that people read the calendar, not the advisory.
+	it("counts the awaiting row in the shared time-ordered budget", () => {
+		// Awaiting rows share the time-ordered 3-badge budget: awaiting at 09:00
+		// and project meetings at 10:00 fill the budget, so the later personal
+		// meeting at 10:00 is deferred to "+1 more".
 		const personal: PersonalMeeting = {
 			id: "evt1",
 			subject: "Private 1:1",
@@ -145,8 +143,6 @@ describe("CalendarCanvas — awaiting-transcript badges", () => {
 				awaitingMeetings={[awaiting]}
 			/>,
 		);
-		// Budget is 3: two project rows, then the awaiting team row. The personal
-		// meeting is the one that gets deferred to "+1 more".
 		expect(screen.getByText("Fabric DSU")).toBeInTheDocument();
 		expect(screen.queryByText("Private 1:1")).not.toBeInTheDocument();
 		expect(screen.getByText("+1 more")).toBeInTheDocument();
@@ -242,5 +238,92 @@ describe("CalendarCanvas — chronological ordering within a day (#2465)", () =>
 		expect(screen.getByText("Meeting 14:00")).toBeInTheDocument();
 		expect(screen.queryByText("Meeting 16:00")).not.toBeInTheDocument();
 		expect(screen.getByText("+1 more")).toBeInTheDocument();
+	});
+});
+
+describe("CalendarCanvas — one chronological cell across row types", () => {
+	const personalAt = (
+		id: string,
+		subject: string,
+		startTime: string,
+	): PersonalMeeting => ({
+		id,
+		subject,
+		startTime,
+		organizer: "Alex Doe",
+		joinUrl: "https://teams.microsoft.com/l/meetup-join/AAA",
+		linkedWithoutTranscript: false,
+	});
+
+	const teamAt = (
+		transcriptId: string,
+		subject: string,
+		at: string,
+	): DigestMeeting => ({
+		...meetingOn(transcriptId, subject),
+		meetingDate: new Date(at),
+	});
+
+	it("places an earlier personal meeting above later team meetings", () => {
+		render(
+			<CalendarCanvas
+				monthDate={new Date("2026-06-15")}
+				meetings={[
+					teamAt("t-late", "Team 15:00", "2026-06-10T15:00:00Z"),
+					teamAt("t-early", "Team 10:00", "2026-06-10T10:00:00Z"),
+				]}
+				onSelect={vi.fn()}
+				personalMeetings={[
+					personalAt("p1", "Personal 09:00", "2026-06-10T09:00:00Z"),
+				]}
+			/>,
+		);
+
+		const labels = screen
+			.getAllByRole("button")
+			.map((element) => element.textContent);
+		expect(labels).toEqual(["Personal 09:00", "Team 10:00", "Team 15:00"]);
+	});
+
+	it("shows the day's earliest meetings and defers the rest, whatever kind they are", () => {
+		render(
+			<CalendarCanvas
+				monthDate={new Date("2026-06-15")}
+				meetings={[
+					teamAt("t-late", "Team 15:00", "2026-06-10T15:00:00Z"),
+					teamAt("t-early", "Team 10:00", "2026-06-10T10:00:00Z"),
+				]}
+				onSelect={vi.fn()}
+				awaitingMeetings={[
+					{
+						linkedMeetingId: "lm-awaiting",
+						subject: "Awaiting 09:00",
+						occurrenceStart: "2026-06-10T09:00:00Z",
+						joinUrl:
+							"https://teams.microsoft.com/l/meetup-join/BBB",
+					},
+				]}
+				personalMeetings={[
+					personalAt("p1", "Personal 08:00", "2026-06-10T08:00:00Z"),
+				]}
+			/>,
+		);
+
+		// The three earliest win the cell whatever kind they are, so the 15:00
+		// team meeting is the one deferred.
+		expect(screen.queryByText("Team 15:00")).not.toBeInTheDocument();
+		expect(screen.getByText("+1 more")).toBeInTheDocument();
+
+		const cell = screen.getByText("Personal 08:00").closest("ul");
+		const rendered = Array.from(cell?.querySelectorAll("li") ?? [])
+			.map((item) => item.textContent)
+			.filter((text) => text && !text.includes("more"));
+		// The awaiting badge carries its own "Not synced yet" marker line, so
+		// match its subject rather than the whole cell text.
+		expect(rendered).toEqual([
+			"Personal 08:00",
+			expect.stringContaining("Awaiting 09:00"),
+			"Team 10:00",
+		]);
 	});
 });
