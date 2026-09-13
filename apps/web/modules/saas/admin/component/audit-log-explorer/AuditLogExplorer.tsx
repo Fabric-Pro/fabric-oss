@@ -673,17 +673,13 @@ export function AuditLogExplorer() {
 		// in-product viewer's outer container constraint.
 		<div className="flex min-w-0 flex-col gap-8 pb-10">
 			{/* ============ Hero (title + subtitle + explanation in one block) ============ */}
-			<header className="relative overflow-hidden rounded-xl border border-border/60 bg-card px-6 py-8 sm:px-8 sm:py-10">
-				<div
-					className="pointer-events-none absolute inset-0 text-foreground/10 app-dot-grid"
-					aria-hidden="true"
-				/>
-				<div className="relative space-y-4">
+			<header className="space-y-3 border-b border-border/60 pb-6">
+				<div className="space-y-3">
 					<p className="app-editorial-label">{t("label")}</p>
 					<div className="flex flex-wrap items-center justify-between gap-3">
-						<h1 className="font-serif text-3xl font-normal tracking-tight text-foreground/95 sm:text-4xl">
+						<h2 className="text-2xl font-normal tracking-tight text-foreground">
 							{t("title")}
-						</h1>
+						</h2>
 						{docsHref ? (
 							<Button asChild variant="outline" size="sm">
 								<a
@@ -701,7 +697,7 @@ export function AuditLogExplorer() {
 							</Button>
 						) : null}
 					</div>
-					<p className="max-w-3xl text-sm leading-6 text-muted-foreground sm:text-base">
+					<p className="max-w-3xl text-sm leading-6 text-muted-foreground">
 						{t("subtitle")}
 					</p>
 					<p className="max-w-4xl text-sm leading-6 text-muted-foreground/90">

@@ -912,9 +912,11 @@ describe("ProjectRoleConfirmationPrompt", () => {
 		);
 		expect(source).toContain("ProjectRoleConfirmationPrompt } from");
 		expect(source).toContain("<ProjectRoleConfirmationPrompt");
-		// Keyed, so per-project state resets on an in-place project switch.
+		// Keyed by the project id, so per-project state resets on an in-place
+		// project switch. The key carries the component's name as well, so it
+		// cannot collide with the sibling nudge that resets the same way.
 		expect(source).toMatch(
-			/<ProjectRoleConfirmationPrompt[\s\S]{0,80}key=\{projectId\}/,
+			/<ProjectRoleConfirmationPrompt[\s\S]{0,80}key=\{[^}]*projectId[^}]*\}/,
 		);
 		// POSITION, not mere presence. The mount comment claims it sits below the
 		// `!project` and `deletedAt` guards so it can never fire on a not-found or

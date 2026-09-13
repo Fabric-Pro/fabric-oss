@@ -841,6 +841,10 @@
 			},
 			"logo": {
 				"description": "Lade ein Logo für deine Organisation hoch.",
+				"change": "Logo hochladen",
+				"replace": "Logo ersetzen",
+				"remove": "Entfernen",
+				"hint": "PNG oder JPG, quadratisch passt am besten. Datei auf das Zeichen ziehen oder auswählen.",
 				"title": "Logo der Organisation"
 			},
 			"members": {

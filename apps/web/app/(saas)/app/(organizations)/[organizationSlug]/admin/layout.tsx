@@ -6,7 +6,6 @@ import { PageHeader } from "@saas/shared/components/PageHeader";
 import { SidebarContentLayout } from "@saas/shared/components/SidebarContentLayout";
 import { TopRightControls } from "@saas/shared/components/TopRightControls";
 import { isMonitoringFeatureEnabled } from "@saas/shared/lib/feature-flags";
-import { Logo } from "@shared/components/Logo";
 import {
 	ActivityIcon,
 	BotMessageSquareIcon,
@@ -79,8 +78,8 @@ export default async function OrganizationAdminLayout({
 					<SettingsMenu
 						menuItems={[
 							{
-								avatar: <Logo className="size-8" />,
-								title: t("admin.title"),
+								// The page header above already says "Administration"; the
+								// menu does not repeat it, matching the settings menu.
 								items: [
 									{
 										title: t("admin.menu.users"),
