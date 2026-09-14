@@ -52,23 +52,23 @@ vi.mock("@saas/organizations/lib/organization-guest-context", () => ({
 	}) => <>{children}</>,
 }));
 vi.mock("@saas/shared/components/AppWrapper", () => ({
-	AppWrapper: ({ children }: { children: React.ReactNode }) => (
-		<>{children}</>
-	),
-}));
-vi.mock("@saas/shared/components/MfaSetupBanner", () => ({
-	// Not a null stub: this banner is a sibling ABOVE {children}, so it is the
-	// only probe that can tell "provider wraps the whole tree" apart from
-	// "provider wraps only children". A provider narrowed to {children} leaves
-	// this component with no context at all, and useFeatureFlag throws.
+	// Not a pass-through stub: AppWrapper renders INSIDE the providers and
+	// wraps {children}, so a probe here is what tells "provider wraps the
+	// whole tree" apart from "provider wraps only children". A provider
+	// narrowed to {children} leaves this component with no context at all,
+	// and useFeatureFlag throws.
 	//
-	// It carries the probe because it is the banner left in that slot — the
-	// credits banner that used to hold it is gone. Whatever occupies the slot
-	// next inherits the probe; the slot must never go unprobed.
-	MfaSetupBanner: () => (
-		<span data-testid="banner-probe">
-			{useFeatureFlag("PUBLISHING_SUITE") ? "on" : "off"}
-		</span>
+	// The probe used to ride on a banner mounted beside {children} — first the
+	// credits banner, then the MFA one, which has since moved into
+	// AppWrapper's own notice region (Fizzy #2489). It lives on the wrapper
+	// now because the wrapper is structural and cannot move out of the slot.
+	AppWrapper: ({ children }: { children: React.ReactNode }) => (
+		<>
+			<span data-testid="banner-probe">
+				{useFeatureFlag("PUBLISHING_SUITE") ? "on" : "off"}
+			</span>
+			{children}
+		</>
 	),
 }));
 // A real client, not a hand-rolled stub: the layout now dehydrates it into a
@@ -133,8 +133,8 @@ describe("organization layout feature flags", () => {
 		await renderLayout();
 
 		expect(screen.getByTestId("probe")).toHaveTextContent("on");
-		// The banner sits ABOVE {children} as a sibling — asserting it here
-		// proves the provider wraps the whole tree, not just {children}.
+		// The wrapper renders around {children} inside the providers —
+		// asserting it here proves the provider wraps the whole tree.
 		expect(screen.getByTestId("banner-probe")).toHaveTextContent("on");
 	});
 

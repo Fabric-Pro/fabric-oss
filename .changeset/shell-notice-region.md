@@ -1,0 +1,13 @@
+---
+"fabric-app": patch
+---
+
+Account and setup notices now stack in one region at the top of the page instead of floating over it, so a banner no longer covers the page heading or, on narrow screens, the navigation itself
+
+Fizzy #2489. The global notices had grown up in three unrelated mount points, each choosing its own position and z-index, and the offset that keeps them clear of the sidebar was written out four times across two files in two different encodings. The two-factor prompt was the visible cost: a fixed overlay that reserved no layout height, so it covered whatever sat at the top of the page, and below 768px — where the navigation is a normal full-width block rather than a fixed sidebar — it sat directly on the navigation.
+
+That prompt now sits in normal flow inside a single notice region, which owns the order and the spacing for every notice in it and renders nothing at all when there is nothing to show. Page content moves down to make room rather than being covered. The region carries no z-index, because an element in flow cannot be covered by a sibling; on the routes that paint their own full-viewport chrome — the document editor, the story workspace, the task planner, the document generator, the try-an-agent workspace, and the Advisor where it runs as the full-window workspace — it steps aside rather than rendering behind them, so the prompt is not shown there and returns when the reader leaves. The countdown banner that warns before a forced reload keeps the slot above the region and its own sticky placement, since a warning that can scroll out of view before the reload defeats itself.
+
+The two-factor prompt's wording changes with this. It previously carried two hardcoded English strings while its buttons already read from the translation catalogue; it now reads its heading and description from that catalogue too, so it reads "Protect your account with two-factor authentication" and "Add an extra layer of security to your Fabric account. It only takes a minute." in place of the shorter pair, and it can be translated.
+
+The floating AI notices move from `z-30` to `z-40`, which separates them from the sidebar they previously tied with, and the usage notice sheds vertical padding left over from when it rendered in flow and was double-spacing inside the dock. The sidebar offset is now stated once, in a module pinned to the navigation's own width by a test that fails if the two drift apart. The layering ladder and the two classes of notice are written down in the UI style guide and the concept glossary, including the surfaces that still sit outside the ladder.

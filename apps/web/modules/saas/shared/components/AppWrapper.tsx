@@ -9,11 +9,18 @@ import { TiptapEditorRegistryProvider } from "@saas/projects/components/excalidr
 import { AiGatewayWarningBanner } from "@saas/shared/components/AiGatewayWarningBanner";
 import { AnthropicCapabilityBanner } from "@saas/shared/components/AnthropicCapabilityBanner";
 import { NavBar } from "@saas/shared/components/NavBar";
+import { ShellNoticeRegion } from "@saas/shared/components/ShellNoticeRegion";
 import { FocusModeProvider } from "@saas/shared/contexts/FocusModeContext";
 import {
 	SidebarCollapseProvider,
 	useSidebarCollapse,
 } from "@saas/shared/contexts/SidebarCollapseContext";
+import {
+	SHELL_DOCK_GUTTER_CLASS,
+	SHELL_DOCK_LAYER_CLASS,
+	shellContentOffsetClass,
+	shellDockOffsetClass,
+} from "@saas/shared/lib/shell-layout";
 import { BuildVersionWatcher } from "@shared/components/BuildVersionWatcher";
 import { cn } from "@ui/lib";
 import { usePathname } from "next/navigation";
@@ -52,18 +59,18 @@ function AppWrapperContent({ children }: PropsWithChildren) {
 	const showCompactRail = config.ui.saas.useSidebarLayout && isFullscreen;
 	const baseHeightClasses = (() => {
 		if (config.ui.saas.useSidebarLayout && !isFullscreen) {
-			// Dynamic sidebar offset: 232px expanded, 72px collapsed (matches NavBar md:w-[72px])
-			const sidebarOffset = isCollapsed
-				? "md:ml-[72px]"
-				: "md:ml-[232px]";
+			const sidebarOffset = shellContentOffsetClass(isCollapsed);
 			return isFullHeightRoute
 				? cn("flex-1 h-[calc(100vh-4rem)]", sidebarOffset)
 				: cn("flex-1 min-h-[calc(100vh-4rem)]", sidebarOffset);
 		}
 		if (showCompactRail) {
+			// The compact rail IS the collapsed sidebar, so it takes the
+			// collapsed offset whatever the user's own preference is.
+			const railOffset = shellContentOffsetClass(true);
 			return isFullHeightRoute
-				? "flex-1 h-[calc(100vh-4rem)] md:ml-[72px]"
-				: "flex-1 min-h-[calc(100vh-4rem)] md:ml-[72px]";
+				? cn("flex-1 h-[calc(100vh-4rem)]", railOffset)
+				: cn("flex-1 min-h-[calc(100vh-4rem)]", railOffset);
 		}
 		return isFullHeightRoute
 			? "flex-1 h-[calc(100vh-4rem)]"
@@ -138,8 +145,13 @@ function AppWrapperContent({ children }: PropsWithChildren) {
 						 * Each renders nothing when it has nothing to say. */}
 						{/* The three AI notices float above the page instead
 						 * of sitting in flow: in flow they pushed every page
-						 * title down by their own height and covered the
-						 * header when they arrived late. They dock to the
+						 * title down by their own height. The same note also
+						 * recorded that they "covered the header when they
+						 * arrived late"; that half is unreproduced, and an
+						 * unpositioned in-flow element cannot cover a sibling
+						 * — the routes painting their own `fixed inset-y-0`
+						 * chrome are the likelier cause. Treat it as an open
+						 * observation, not a settled mechanism. They dock to the
 						 * bottom-right corner of the content area, offset by
 						 * the sidebar so they never sit over the nav, and
 						 * the wrapper ignores pointer events so the page
@@ -147,10 +159,10 @@ function AppWrapperContent({ children }: PropsWithChildren) {
 						 * top-to-bottom by urgency. */}
 						<div
 							className={cn(
-								"pointer-events-none fixed inset-x-0 bottom-4 z-30 flex flex-col items-end gap-2 px-4",
-								isCollapsed
-									? "md:left-[72px]"
-									: "md:left-[232px]",
+								"pointer-events-none fixed inset-x-0 bottom-4 flex flex-col items-end gap-2",
+								SHELL_DOCK_LAYER_CLASS,
+								SHELL_DOCK_GUTTER_CLASS,
+								shellDockOffsetClass(isCollapsed),
 							)}
 						>
 							<AiGatewayWarningBanner />
@@ -161,6 +173,12 @@ function AppWrapperContent({ children }: PropsWithChildren) {
 						 * banner renders here in flow, never as a fixed
 						 * overlay, so it cannot cover the page. */}
 						<BuildVersionWatcher />
+						{/* Below the Backstop banner on purpose: a warning that
+						 * precedes a forced reload outranks a security nudge, so
+						 * it keeps the top slot. Everything in this region sits
+						 * in flow and reserves its own height, so page content
+						 * moves down instead of being covered. */}
+						<ShellNoticeRegion />
 						{children}
 					</div>
 				</main>

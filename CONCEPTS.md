@@ -323,6 +323,29 @@ The countdown banner that appears only when a user has stayed on one screen long
 
 Because it fires only on a parked user, it always lands on someone mid-task, and almost always on someone scrolled away from the top of the page. That is why it is sticky rather than static: it is the only warning before a forced reload, so a placement that can scroll out of view defeats its whole purpose.
 
+## App shell notices
+
+### Shell notice region
+The single in-flow container that owns placement, order and spacing for the app
+shell's global notices. A shell notice reserves its own height and is never a
+viewport overlay, so page content moves down instead of being covered. The
+region renders nothing at all — no element, no space — when it holds no visible
+notice, and it yields entirely on routes that paint their own viewport-fixed
+chrome rather than rendering behind them.
+
+Order is by priority, highest first: system messages that precede a forced
+action, then security, then product setup and onboarding. The Backstop banner
+holds the first tier and keeps its own sticky mount above the region, because
+absorbing it into a static parent would let it scroll out of view before a
+forced reload.
+
+### Advisory dock
+The floating, bottom-docked stack of dismissible notices that report a standing
+configuration state — no AI provider, a capability gap, a usage limit. The
+counterpart class to a shell notice: it never reserves layout height, and a
+dismissed member collapses to an icon rather than disappearing. Reasoning about
+the two as one kind of banner is what produced four incompatible placements.
+
 ## CLI connectivity
 
 ### Reach record

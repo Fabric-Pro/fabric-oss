@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, renderHook, screen } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -59,8 +59,6 @@ vi.mock("next-intl", () => ({
 			"settings.account.security.mfaPrompt.setupCta": "Set up now",
 			"settings.account.security.mfaPrompt.snoozeCta": "Remind me later",
 			"settings.account.security.mfaPrompt.dismissCta": "Dismiss",
-			"settings.account.security.mfaPrompt.ariaLabel":
-				"Two-factor authentication setup prompt",
 		};
 		return map[key] ?? key;
 	},
@@ -75,23 +73,36 @@ vi.mock("next/link", () => ({
 import { useSession } from "@saas/auth/hooks/use-session";
 import { useUserAccountsQuery } from "@saas/auth/lib/api";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { MfaSetupBanner } from "../MfaSetupBanner";
+import { MfaSetupBanner, useMfaNoticeVisible } from "../MfaSetupBanner";
 
-function setupMocks({
-	sessionLoaded = true,
-	twoFactorEnabled = false,
-	accountsPending = false,
-	accounts = [{ providerId: "credential" }],
-	promptStatePending = false,
-	promptState = { dismissed: false, snoozedUntil: null },
-}: {
+/** Matches settings.account.security.mfaPrompt.title in the mock above. */
+const TITLE = "Protect your account with two-factor authentication";
+
+interface SetupOverrides {
 	sessionLoaded?: boolean;
 	twoFactorEnabled?: boolean | null;
 	accountsPending?: boolean;
 	accounts?: Array<{ providerId: string }>;
 	promptStatePending?: boolean;
 	promptState?: { dismissed: boolean; snoozedUntil: Date | null } | undefined;
-} = {}) {
+}
+
+function setupMocks(overrides: SetupOverrides = {}) {
+	const {
+		sessionLoaded = true,
+		twoFactorEnabled = false,
+		accountsPending = false,
+		accounts = [{ providerId: "credential" }],
+		promptStatePending = false,
+	} = overrides;
+
+	// Read by key presence, not by a destructuring default: `undefined` is a
+	// meaningful value here — it is the query settling with no data, which is a
+	// distinct idle path from the query still pending.
+	const promptState = Object.hasOwn(overrides, "promptState")
+		? overrides.promptState
+		: { dismissed: false, snoozedUntil: null };
+
 	vi.mocked(useSession).mockReturnValue({
 		user: { twoFactorEnabled } as any,
 		loaded: sessionLoaded,
@@ -121,7 +132,7 @@ describe("MfaSetupBanner", () => {
 		it("renders banner for eligible user", () => {
 			setupMocks();
 			render(<MfaSetupBanner />);
-			expect(screen.getByText("Secure your account")).toBeInTheDocument();
+			expect(screen.getByText(TITLE)).toBeInTheDocument();
 		});
 
 		it("renders nothing when MFA is already enabled", () => {
@@ -159,7 +170,15 @@ describe("MfaSetupBanner", () => {
 				promptState: { dismissed: false, snoozedUntil: past },
 			});
 			render(<MfaSetupBanner />);
-			expect(screen.getByText("Secure your account")).toBeInTheDocument();
+			expect(screen.getByText(TITLE)).toBeInTheDocument();
+		});
+
+		it("renders nothing when prompt state resolves with no data", () => {
+			// The query settled but answered with nothing. Distinct from
+			// "pending", and the one idle path the suite used to miss.
+			setupMocks({ promptState: undefined });
+			const { container } = render(<MfaSetupBanner />);
+			expect(container.firstChild).toBeNull();
 		});
 
 		it("renders nothing during loading (session not loaded)", () => {
@@ -178,6 +197,69 @@ describe("MfaSetupBanner", () => {
 			setupMocks({ promptStatePending: true });
 			const { container } = render(<MfaSetupBanner />);
 			expect(container.firstChild).toBeNull();
+		});
+	});
+
+	describe("placement", () => {
+		// The banner used to be a `fixed ... z-50` overlay that reserved no
+		// height, so it covered the page heading and — below `md`, where the
+		// nav is static — the navigation itself. ShellNoticeRegion owns
+		// placement now. These are negative assertions on purpose: a partial
+		// migration that left one positioning class behind would still
+		// satisfy every positive assertion in this file.
+		it.each(["fixed", "z-50", "md:left-[256px]", "md:right-6"])(
+			"carries no %s class of its own",
+			(token) => {
+				setupMocks();
+				const { container } = render(<MfaSetupBanner />);
+				const root = container.firstChild as HTMLElement;
+				expect(root.className).not.toContain(token);
+			},
+		);
+
+		it("no longer claims a landmark — the region owns it", () => {
+			setupMocks();
+			const { container } = render(<MfaSetupBanner />);
+			expect(container.querySelector("aside")).toBeNull();
+		});
+	});
+
+	describe("useMfaNoticeVisible", () => {
+		// The region asks this BEFORE rendering, so a disagreement between
+		// hook and component would show up as an empty region that still
+		// reserves space, or a spaced region holding nothing.
+		it("is true exactly when the banner renders", () => {
+			setupMocks();
+			expect(renderHook(() => useMfaNoticeVisible()).result.current).toBe(
+				true,
+			);
+		});
+
+		it.each([
+			["session not loaded", { sessionLoaded: false }],
+			["accounts pending", { accountsPending: true }],
+			["prompt state pending", { promptStatePending: true }],
+			["MFA already enabled", { twoFactorEnabled: true }],
+			["OAuth-only user", { accounts: [{ providerId: "google" }] }],
+			["prompt state absent", { promptState: undefined }],
+			[
+				"permanently dismissed",
+				{ promptState: { dismissed: true, snoozedUntil: null } },
+			],
+			[
+				"currently snoozed",
+				{
+					promptState: {
+						dismissed: false,
+						snoozedUntil: new Date(Date.now() + 60_000),
+					},
+				},
+			],
+		])("is false when %s", (_label, overrides: SetupOverrides) => {
+			setupMocks(overrides);
+			expect(renderHook(() => useMfaNoticeVisible()).result.current).toBe(
+				false,
+			);
 		});
 	});
 

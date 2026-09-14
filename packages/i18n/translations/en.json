@@ -159,6 +159,9 @@
 		"description": "Manage your application."
 	},
 	"app": {
+		"shellNotices": {
+			"ariaLabel": "Account and setup notices"
+		},
 		"menu": {
 			"accountSettings": "Account settings",
 			"admin": "Admin",
@@ -2034,8 +2037,7 @@
 					"description": "Add an extra layer of security to your Fabric account. It only takes a minute.",
 					"setupCta": "Set up now",
 					"snoozeCta": "Remind me later",
-					"dismissCta": "Dismiss",
-					"ariaLabel": "Two-factor authentication setup prompt"
+					"dismissCta": "Dismiss"
 				}
 			},
 			"title": "Account settings"

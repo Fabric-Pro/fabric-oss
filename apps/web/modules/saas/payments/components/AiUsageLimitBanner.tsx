@@ -87,8 +87,10 @@ export function AiUsageLimitBanner() {
 		? `/app/${settingsSlug}/settings/usage`
 		: "/app/settings/usage";
 
+	// No vertical padding of its own: this wrapper was spaced for an in-flow
+	// mount, and inside the dock's own gap it double-spaced.
 	return (
-		<div className="space-y-2 pt-3 pb-1">
+		<div className="space-y-2">
 			{visible.map((status) => (
 				<AiUsageLimitBannerRow
 					key={status.limit.id}

@@ -14,7 +14,6 @@ import { shouldEnforceOrgTwoFactor } from "@saas/organizations/lib/mfa-enforceme
 import { OrganizationGuestProvider } from "@saas/organizations/lib/organization-guest-context";
 import { AppWrapper } from "@saas/shared/components/AppWrapper";
 import { FeatureFlagProvider } from "@saas/shared/components/FeatureFlagProvider";
-import { MfaSetupBanner } from "@saas/shared/components/MfaSetupBanner";
 import { orpc } from "@shared/lib/orpc-query-utils";
 import { getServerQueryClient } from "@shared/lib/server";
 import { dehydrate, HydrationBoundary } from "@tanstack/react-query";
@@ -176,10 +175,7 @@ export default async function OrganizationLayout({
 						organizationSlug={organizationSlug}
 						isGuest={guest}
 					>
-						<AppWrapper>
-							<MfaSetupBanner />
-							{children}
-						</AppWrapper>
+						<AppWrapper>{children}</AppWrapper>
 					</OrganizationGuestProvider>
 				</OrganizationThemeProvider>
 			</FeatureFlagProvider>
