@@ -1,5 +1,20 @@
 # @repo/temporal
 
+## 0.0.5
+
+### Patch Changes
+
+- f8f103f: Cache stable system instructions and repeatable history for direct chat and Sidekick requests.
+- Updated dependencies [c3beb49]
+- Updated dependencies [f8f103f]
+  - @repo/agent-core@0.1.4
+  - @repo/ai@0.0.4
+  - @repo/atlas@0.0.4
+  - @repo/fabric-ai@0.0.4
+  - @repo/integrations@0.0.4
+  - @repo/mcp@0.0.5
+  - @repo/rag@0.0.4
+
 ## 0.0.4
 
 ### Patch Changes

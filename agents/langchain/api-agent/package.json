@@ -1,6 +1,6 @@
 {
 	"name": "api-agent",
-	"version": "1.0.3",
+	"version": "1.0.4",
 	"license": "Apache-2.0",
 	"description": "LangGraph API Agent for executing OpenAPI tools with AG-UI and A2A protocol support",
 	"type": "module",

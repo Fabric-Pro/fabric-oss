@@ -1,5 +1,13 @@
 # @repo/code-atlas
 
+## 0.0.4
+
+### Patch Changes
+
+- Updated dependencies [f8f103f]
+  - @repo/ai@0.0.4
+  - @repo/integrations@0.0.4
+
 ## 0.0.3
 
 ### Patch Changes

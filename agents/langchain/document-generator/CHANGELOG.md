@@ -1,5 +1,12 @@
 # document-generator-agent
 
+## 1.0.4
+
+### Patch Changes
+
+- Updated dependencies [c3beb49]
+  - @repo/agent-core@0.1.4
+
 ## 1.0.3
 
 ### Patch Changes
