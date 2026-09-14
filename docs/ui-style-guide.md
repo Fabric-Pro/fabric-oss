@@ -121,6 +121,49 @@ Use the existing spacing system consistently. Align with current layouts (cards,
 | `shadow-sm` | Cards, buttons |
 | `shadow-elevated` | Cards on hover, modals |
 
+### Layering
+
+Pick a layer from this ladder. Do not invent a value, and do not raise one to
+win a fight with a neighbour — a surface that loses is usually in the wrong
+class, not the wrong rung.
+
+| Layer | Value | What sits here |
+| --- | --- | --- |
+| Shell notice | *(none)* | In-flow notices in the shell notice region |
+| Backstop banner | `z-10` | The sticky pre-reload warning |
+| Sidebar navigation | `z-30` | `NavBar` |
+| Advisory dock | `z-40` | Floating, dismissible AI notices |
+| Overlays | `z-50` | Radix dialogs, sheets, popovers, dropdowns, tooltips |
+| Consent banner | `z-[100]` | The cookie-consent prompt |
+| Guided tour | `200` | The Get started spotlight (inline style, portalled) |
+
+**A shell notice takes no z-index at all.** It sits in normal flow, so a sibling
+cannot cover it and there is nothing to out-rank. Where a route paints its own
+viewport-fixed chrome the region yields instead of competing — see
+`isFullBleedRoute` in `apps/web/modules/saas/shared/lib/shell-layout.ts`. This
+holds only while no ancestor of the mount point establishes a stacking context
+(`transform`, `filter`, `backdrop-filter`, `will-change`); none does today.
+
+**Never hand-write the sidebar offset in new code.** Import it from
+`shell-layout.ts`. Four hand-written copies of one measurement across two files
+is what produced Fizzy #2489.
+
+**The values above are the ones the app already ships, recorded so they can be
+reasoned about — not a licence to invent new arbitrary values.** Rule 1 of
+§6 still stands: reach for a token, and add a rung here only when a genuinely
+new layer appears.
+
+**Known exceptions, ticketed separately.** These sit outside the rules above
+today and are being reconciled, so do not read them as precedent.
+
+| Surface | Deviation |
+| --- | --- |
+| Copilot sidebar launcher | `z-30`, sharing the advisory dock's rectangle |
+| Kanban toast stack, `ExcalidrawPreview`, `FrameVizShell` | `z-[9999]` |
+| Sonner toaster | Its own default, far above everything here. It cannot be out-ranked — keep surfaces out of its top-right corner rather than trying |
+| `FabricAIClient` | Restates the sidebar offset by hand. Correct today, including its collapsed arm, but not pinned to `NavBar` by the guard test |
+| Nine wrappers across five page components | Hardcode the collapsed offset with no collapse awareness, so they are wrong whenever the sidebar is expanded |
+
 ---
 
 ## 4. Typography

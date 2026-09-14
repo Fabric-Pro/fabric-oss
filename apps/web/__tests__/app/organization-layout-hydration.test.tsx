@@ -61,9 +61,6 @@ vi.mock("@saas/shared/components/AppWrapper", () => ({
 		<>{children}</>
 	),
 }));
-vi.mock("@saas/shared/components/MfaSetupBanner", () => ({
-	MfaSetupBanner: () => null,
-}));
 vi.mock("@saas/shared/components/FeatureFlagProvider", () => ({
 	FeatureFlagProvider: ({ children }: { children: React.ReactNode }) => (
 		<>{children}</>
