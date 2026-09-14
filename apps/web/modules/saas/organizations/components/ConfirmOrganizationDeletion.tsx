@@ -20,13 +20,24 @@ import { toast } from "sonner";
  *
  * So the link only *shows* this page. Nothing has happened when it loads, and
  * the copy says so.
+ *
+ * `organizationName` is resolved server-side from the token — see the page —
+ * and is `null` when the link is expired, already spent, or was issued to
+ * someone else. Named copy is used whenever it resolves, because this is the
+ * last screen before a tenant goes dark and "this organization" does not answer
+ * the one question worth asking at it. The unnamed strings stay as the fallback
+ * rather than printing an error: an invalid link still gets the page, and
+ * `confirm` owns the single refusal message for every way it can be invalid.
  */
 export function ConfirmOrganizationDeletion({
 	token,
 	retentionDays,
+	organizationName,
 }: {
 	token: string;
 	retentionDays: number;
+	/** Null when the token could not be resolved — see the note above. */
+	organizationName: string | null;
 }) {
 	const t = useTranslations();
 	const router = useRouter();
@@ -54,10 +65,18 @@ export function ConfirmOrganizationDeletion({
 		<div className="flex flex-col gap-6">
 			<div className="flex flex-col gap-2">
 				<h1 className="font-medium text-2xl">
-					{t("organizations.confirmDeletion.title")}
+					{organizationName
+						? t("organizations.confirmDeletion.titleNamed", {
+								organizationName,
+							})
+						: t("organizations.confirmDeletion.title")}
 				</h1>
 				<p className="text-muted-foreground text-sm">
-					{t("organizations.confirmDeletion.description")}
+					{organizationName
+						? t("organizations.confirmDeletion.descriptionNamed", {
+								organizationName,
+							})
+						: t("organizations.confirmDeletion.description")}
 				</p>
 			</div>
 

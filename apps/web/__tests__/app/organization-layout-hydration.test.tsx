@@ -38,6 +38,10 @@ vi.mock("@saas/auth/lib/server", () => ({
 		user: { id: "user-1", twoFactorEnabled: true },
 	})),
 	isGuestInOrg: vi.fn(async () => false),
+	// Live organization. The layout checks this before it resolves anything,
+	// and a deleted one redirects out rather than handing anything over
+	// (Fizzy #2462) — covered in `organization-layout-deleted-org.test.tsx`.
+	getOrganizationDeletedAt: vi.fn(async () => null),
 }));
 
 // Presentation-only wrappers between the layout root and `children`, stubbed to

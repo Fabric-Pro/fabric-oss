@@ -1172,7 +1172,9 @@
 		},
 		"confirmDeletion": {
 			"title": "Delete this organization?",
+			"titleNamed": "Delete {organizationName}?",
 			"description": "You asked to delete this organization. Nothing has been deleted yet — this happens when you confirm below.",
+			"descriptionNamed": "You asked to delete {organizationName}. Nothing has been deleted yet — this happens when you confirm below.",
 			"warning": "Everyone in the organization loses access immediately. You can restore it for {days} days, after which everything in it is permanently deleted.",
 			"submit": "Delete organization",
 			"deleted": "{organizationName} has been deleted. You can restore it for {days} days.",

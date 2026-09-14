@@ -45,6 +45,23 @@ import { defaultLocale } from "../src/util/translations";
  */
 const RAW_I18N_KEY = /\bmail\.[A-Za-z0-9_]+\.[A-Za-z0-9_.]+/;
 
+/**
+ * Matches an ICU argument that was never interpolated — `{organizationName}`,
+ * or the opening of a plural/select like `{topicCount, plural, ...`.
+ *
+ * A SEPARATE NET FROM `RAW_I18N_KEY`, and the two fail on opposite mistakes.
+ * A missing key degrades to the key path; a key that exists and is read as a
+ * RAW STRING keeps its placeholders. `getTemplate` does exactly that for any
+ * template without `resolveSubject` — it assigns `templateBucket.subject`
+ * without a translator — so a subject carrying `{…}` sends the braces.
+ *
+ * That is not hypothetical either: both organization-deletion templates
+ * shipped this way, and the confirmation mail arrived on staging titled
+ * "Confirm deleting {organizationName}" while this file was green, because the
+ * subject contains no key path for the other regex to find (Fizzy #2462).
+ */
+const UNRESOLVED_ICU_ARG = /\{\s*[A-Za-z_][A-Za-z0-9_]*\s*[,}]/;
+
 async function renderWith(templateId: TemplateId, context: object) {
 	return getTemplate({
 		templateId,
@@ -64,6 +81,25 @@ function expectNoRawKeys(
 	expect(text, `${label}: plaintext leaked an i18n key`).not.toMatch(
 		RAW_I18N_KEY,
 	);
+
+	// SUBJECT ONLY, and deliberately not the body in either render.
+	//
+	// `getTemplate` reads a raw bundle string for exactly one field, so the
+	// subject is the only place braces can survive. A BODY string whose values
+	// were never passed does not keep its braces — it degrades to the key path
+	// and `RAW_I18N_KEY` above already catches it. Checked against the real
+	// translator rather than assumed: `t("mail.x.body")` against
+	// `"Hello {organizationName}, bye"` returns the string `"mail.x.body"`.
+	//
+	// So a body assertion here could never fail on a real bug, while it WOULD
+	// fail on legitimate copy containing a brace — a JSON or CSS snippet in a
+	// release-notes mail, say. That is the trap this file's own header warns
+	// about with the href assertion it refused: it would grade fixtures rather
+	// than code. Keep this pinned to the field where it is load-bearing.
+	expect(
+		subject,
+		`${label}: subject shipped an uninterpolated ICU argument`,
+	).not.toMatch(UNRESOLVED_ICU_ARG);
 }
 
 const templateIds = Object.keys(mailTemplates) as TemplateId[];

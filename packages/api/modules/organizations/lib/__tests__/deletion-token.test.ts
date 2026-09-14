@@ -135,6 +135,84 @@ describe("consumeOrganizationDeletionToken", () => {
 	});
 });
 
+describe("readOrganizationDeletionToken", () => {
+	it("returns the payload WITHOUT spending the token", async () => {
+		const { readOrganizationDeletionToken } = await load();
+		store.findFirst.mockResolvedValue({
+			value: JSON.stringify({ organizationId: ORG_ID, userId: USER_ID }),
+			expiresAt: new Date(Date.now() + 60_000),
+		});
+
+		const payload = await readOrganizationDeletionToken("tok");
+
+		expect(payload).toEqual({ organizationId: ORG_ID, userId: USER_ID });
+		// The load-bearing assertion of this whole describe block. A read that
+		// deleted would burn the token on page render — which is exactly what
+		// a link-following mail scanner triggers, leaving the owner holding a
+		// dead link they never clicked.
+		expect(store.deleteMany).not.toHaveBeenCalled();
+	});
+
+	it("can be called repeatedly with the same result", async () => {
+		const { readOrganizationDeletionToken } = await load();
+		store.findFirst.mockResolvedValue({
+			value: JSON.stringify({ organizationId: ORG_ID, userId: USER_ID }),
+			expiresAt: new Date(Date.now() + 60_000),
+		});
+
+		const first = await readOrganizationDeletionToken("tok");
+		const second = await readOrganizationDeletionToken("tok");
+
+		expect(first).toEqual(second);
+		expect(store.deleteMany).not.toHaveBeenCalled();
+	});
+
+	it("looks the token up under the namespaced identifier", async () => {
+		const { readOrganizationDeletionToken } = await load();
+		store.findFirst.mockResolvedValue(null);
+
+		await readOrganizationDeletionToken("tok");
+
+		expect(store.findFirst.mock.calls[0]?.[0]?.where).toEqual({
+			identifier: "delete-org-tok",
+		});
+	});
+
+	// The same indistinguishable-failure property `consume` has, for the same
+	// reason: this feeds a page that would otherwise become an oracle telling
+	// the holder of a link WHICH way it was invalid.
+	it.each([
+		["unknown", null],
+		[
+			"expired",
+			{
+				value: JSON.stringify({
+					organizationId: ORG_ID,
+					userId: USER_ID,
+				}),
+				expiresAt: new Date(Date.now() - 1),
+			},
+		],
+		[
+			"malformed",
+			{ value: "not json", expiresAt: new Date(Date.now() + 60_000) },
+		],
+		[
+			"missing fields",
+			{
+				value: JSON.stringify({ organizationId: ORG_ID }),
+				expiresAt: new Date(Date.now() + 60_000),
+			},
+		],
+	])("returns null for a %s token", async (_label, row) => {
+		const { readOrganizationDeletionToken } = await load();
+		store.findFirst.mockResolvedValue(row);
+
+		expect(await readOrganizationDeletionToken("tok")).toBeNull();
+		expect(store.deleteMany).not.toHaveBeenCalled();
+	});
+});
+
 describe("revokeOrganizationDeletionTokens", () => {
 	it("removes only the tokens naming this organization", async () => {
 		// A link minted before a restore must not still be spendable afterwards,

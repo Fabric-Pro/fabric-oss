@@ -952,7 +952,9 @@
 		},
 		"confirmDeletion": {
 			"title": "Diese Organisation löschen?",
+			"titleNamed": "{organizationName} löschen?",
 			"description": "Sie haben das Löschen dieser Organisation angefordert. Es wurde noch nichts gelöscht — das geschieht erst mit Ihrer Bestätigung.",
+			"descriptionNamed": "Sie haben das Löschen von {organizationName} angefordert. Es wurde noch nichts gelöscht — das geschieht erst mit Ihrer Bestätigung.",
 			"warning": "Alle Mitglieder verlieren sofort den Zugriff. Sie können die Organisation {days} Tage lang wiederherstellen, danach wird alles endgültig gelöscht.",
 			"submit": "Organisation löschen",
 			"deleted": "{organizationName} wurde gelöscht. Sie können die Organisation {days} Tage lang wiederherstellen.",
