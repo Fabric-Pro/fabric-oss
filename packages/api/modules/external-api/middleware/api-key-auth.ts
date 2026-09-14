@@ -25,12 +25,29 @@ function hasScope(scopes: string[], requiredScope: string): boolean {
 /**
  * Scopes that need a second, live check against the owner's organization role.
  *
- * A scope is only escalation-prone when the permission behind it sits ABOVE the
- * role that may mint a key at all — `ORG_API_KEYS_CREATE` is member-and-up, so
- * anything a member already holds cannot be escalated by putting it on a key.
- * `agents:execute` is the one entry that qualifies on this surface: `AGENT_EXECUTE`
- * is member-and-up, so a key keeps working after its owner is demoted to a
- * read-only role that may list agents but not run them.
+ * A scope is escalation-prone when the permission behind it sits ABOVE the role
+ * of the person who minted the key. There is no longer a floor to measure that
+ * against: `ORG_API_KEYS_CREATE` sits in the VIEWER set, so every role may mint
+ * a key (Fizzy #2457, moving what Fizzy #2380 had put at member-and-up). Read
+ * "above the minting floor" anywhere near this file as stale.
+ *
+ * Two things keep the surface safe in its place, and neither is a role floor:
+ *
+ *   - `READ_ONLY_ORG_API_KEY_SCOPES` in
+ *     `organizations/procedures/api-keys/create.ts` is a positive allow-list. A
+ *     viewer may put only the scopes ON that list onto a key, so the scopes
+ *     that sit above the viewer role — `agents:execute` among them — cannot be
+ *     minted by somebody who does not already hold them. It is a
+ *     creation-time clamp against the role held at creation time.
+ *   - `verifyOrganizationApiKey` re-reads the creator's membership on EVERY
+ *     request and returns null when it is gone, so an offboarded creator's key
+ *     stops working at their next call rather than when a human notices.
+ *
+ * What neither covers is a demotion that keeps the membership row: a member who
+ * mints `agents:execute` and is demoted to viewer still holds a key carrying a
+ * scope their role no longer backs. That is exactly the gap this map closes,
+ * and `agents:execute` is the one entry that qualifies on this surface —
+ * `AGENT_EXECUTE` is member-and-up, so the scope outlives the access.
  *
  * `agents:read` and `agents:stream` are deliberately absent. Their permissions
  * sit in the viewer set, which every role holds, so a gate there could refuse

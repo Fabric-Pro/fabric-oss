@@ -265,17 +265,24 @@ describe("not applicable — the CLI row", () => {
 		expect(mockDb.projectReadinessItemState.create).not.toHaveBeenCalled();
 	});
 
-	it("refuses an organization viewer, who could never mint the key either", async () => {
+	it("allows an organization viewer, who can now mint a read-only key", async () => {
+		// CONTRACT CHANGE, not a weakened assertion. This case used to assert
+		// a refusal, on the grounds that a viewer "could never mint the key
+		// either". Fizzy #2457 required exactly that to change: a read-only
+		// role now receives a read-only-scoped key. The gate this test guards
+		// is unchanged — settling the row still asks whether the caller could
+		// act on it — and the no-membership case above still proves the gate
+		// refuses someone, so flipping this one does not leave it unguarded.
 		mockDb.member.findFirst.mockResolvedValue({ role: "viewer" });
 
-		await expect(
-			call(setReadinessItemNotApplicableProcedure, {
-				projectId: "p1",
-				itemKey: CLI_KEY,
-				notApplicable: true,
-				organizationId: "org-1",
-			}),
-		).rejects.toThrow();
+		await call(setReadinessItemNotApplicableProcedure, {
+			projectId: "p1",
+			itemKey: CLI_KEY,
+			notApplicable: true,
+			organizationId: "org-1",
+		});
+
+		expect(mockDb.projectReadinessItemState.create).toHaveBeenCalled();
 	});
 
 	it("allows a member whose organization role carries key creation", async () => {

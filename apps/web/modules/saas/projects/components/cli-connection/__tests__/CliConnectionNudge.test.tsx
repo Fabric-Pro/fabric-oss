@@ -30,7 +30,7 @@
  *      secret the server stores as a hash.
  *   6. A key issued from the prompt stands the prompt down for the rest of the
  *      mount. Nothing on the server does it: the checklist item behind
- *      `promptEligible` completes when a coding tool REACHES Fabric, so a
+ *      `promptEligible` completes when something REACHES Fabric over MCP, so a
  *      readiness read after a successful issue still says "eligible" and an
  *      unsuppressed prompt would offer to mint a second key to the person
  *      holding a fresh one.
@@ -58,14 +58,37 @@ const {
 	createKeyMock,
 	dismissMock,
 	getMyDefaultMock,
+	listMembersMock,
+	requestCliConnectionMock,
 	setMyDefaultMock,
 	trackEventMock,
 } = vi.hoisted(() => ({
 	createKeyMock: vi.fn(),
 	dismissMock: vi.fn(),
 	getMyDefaultMock: vi.fn(),
+	/**
+	 * The project roster (Fizzy #2457). The prompt reads it to answer one
+	 * question the readiness payload does not carry — whether there is anybody
+	 * here to ask — so every case below now resolves it, and the default is an
+	 * empty roster: the prompt's older assertions are about a prompt with
+	 * nobody to pass the job to, and that is exactly what they keep asserting.
+	 */
+	listMembersMock: vi.fn(),
+	requestCliConnectionMock: vi.fn(),
 	setMyDefaultMock: vi.fn(),
 	trackEventMock: vi.fn(),
+}));
+
+const VIEWER_ID = "user-viewer";
+
+vi.mock("@saas/auth/hooks/use-session", () => ({
+	useSession: () => ({
+		user: {
+			id: VIEWER_ID,
+			name: "Robin Viewer",
+			email: "robin@example.com",
+		},
+	}),
 }));
 
 vi.mock("@shared/lib/orpc-client", () => ({
@@ -151,6 +174,25 @@ vi.mock("@shared/lib/orpc-query-utils", () => ({
 				key: () => [["functionTags", "getMyProjectStatus"], {}],
 			},
 		},
+		projects: {
+			members: {
+				list: {
+					queryOptions: ({ input }: { input: unknown }) => ({
+						queryKey: ["projects", "members", "list", input],
+						queryFn: () => listMembersMock(input),
+					}),
+				},
+			},
+			readiness: {
+				requestCliConnection: {
+					mutationOptions: (options: Record<string, unknown>) => ({
+						mutationFn: (input: unknown) =>
+							requestCliConnectionMock(input),
+						...options,
+					}),
+				},
+			},
+		},
 	},
 }));
 vi.mock("@saas/shared/components/FeatureFlagProvider", () => ({
@@ -164,8 +206,11 @@ import { FunctionTagsRequiredGate } from "@saas/get-started/components/FunctionT
 import { claimOnboardingView } from "@saas/get-started/lib/onboarding-claim";
 import { CliConnectionNudge } from "../CliConnectionNudge";
 import {
+	CLI_NUDGE_ASK_OPENED_EVENT,
+	CLI_NUDGE_ASK_SENT_EVENT,
 	CLI_NUDGE_OPENED_EVENT,
 	CLI_NUDGE_RENDERED_EVENT,
+	shouldOfferCliConnectionAsk,
 	shouldShowCliConnectionNudge,
 } from "../lib/cli-connection-nudge";
 
@@ -181,7 +226,30 @@ const ORGANIZATION_SLUG = "example-org";
  */
 const REGION_LABEL = "CLI connection prompt";
 const CONNECT_LABEL = "Connect CLI";
+const ASK_LABEL = "Ask a teammate";
 const DISMISS_LABEL = "Dismiss the CLI connection prompt";
+
+/** The prompt's own sentences, as a reader meets them. */
+const NUDGE_TITLE = "Nobody is using Fabric's MCP";
+const NUDGE_BODY =
+	"This project has enough context to be worth reading from outside the app, but nothing in this organization is reaching Fabric over MCP to read it. It takes a key and a single configuration block — set yours up now, or send whoever on your team works in a CLI here to set up theirs.";
+
+/** The ask picker's title, used to prove the prompt opens it. */
+const ASK_DIALOG_TITLE = "Ask a teammate to connect a coding tool";
+
+/** A project roster entry, shaped as `projects.members.list` returns one. */
+function member(userId: string, name: string) {
+	return {
+		userId,
+		isGuest: false,
+		user: {
+			id: userId,
+			name,
+			email: `${userId}@example.com`,
+			image: null,
+		},
+	};
+}
 
 /** The issuing view's own copy, used to drive it end to end from the prompt. */
 const DIALOG_TITLE = "Connect Fabric to your coding tool";
@@ -340,6 +408,17 @@ beforeEach(() => {
 	readinessContext = contextWith(eligibleBlock());
 	dismissMock.mockResolvedValue({ ok: true });
 	createKeyMock.mockResolvedValue(issuedKeyFixture());
+	// Nobody but the viewer, so the ask control is absent unless a case says
+	// otherwise. Every assertion written before the ask existed was written
+	// against exactly this prompt.
+	listMembersMock.mockResolvedValue({
+		members: [member(VIEWER_ID, "Robin Viewer")],
+	});
+	requestCliConnectionMock.mockResolvedValue({
+		notifiedCount: 1,
+		recipientCount: 1,
+		ineligibleCount: 0,
+	});
 	getMyDefaultMock.mockResolvedValue({ tags: [], enforcementEnabled: true });
 	roleTagFlag = true;
 	roleTagSnapshot = false;
@@ -409,8 +488,8 @@ describe("shouldShowCliConnectionNudge", () => {
 
 	/**
 	 * The input no server answer can replace. `promptEligible` stays true after
-	 * a key is minted — the item behind it completes on a coding tool reaching
-	 * Fabric, not on a key existing — so this is the only thing standing the
+	 * a key is minted — the item behind it completes on something reaching Fabric
+	 * over MCP, not on a key existing — so this is the only thing standing the
 	 * prompt down for the person who has just issued one.
 	 */
 	it("yields to a key issued from the prompt, while the server still says eligible", () => {
@@ -825,7 +904,7 @@ describe("CliConnectionNudge — after a key is issued", () => {
 
 		// What actually comes back after issuing: the readiness provider
 		// re-reads on any successful mutation, and the item behind
-		// `promptEligible` completes on a coding tool REACHING Fabric, so the
+		// `promptEligible` completes on something REACHING Fabric over MCP, so the
 		// server's answer has not moved at all.
 		//
 		// A new PAYLOAD on the same context, not a new context: a refetch
@@ -857,7 +936,7 @@ describe("CliConnectionNudge — after a key is issued", () => {
 		// provider's own mount that clears it. Within a single visit the
 		// suppression deliberately outlives this component — a reader who mints
 		// a key, opens a document and comes back must not be told again that
-		// nobody has connected a coding tool.
+		// nothing has reached Fabric over MCP.
 		rendered.unmount();
 		publishReadiness(contextWith(eligibleBlock()));
 		renderNudge();
@@ -972,5 +1051,333 @@ describe("CliConnectionNudge — hidden by the page's chrome", () => {
 		// prompt back on screen under a reader who is being shown something
 		// else — the regression hiding by unmounting would have introduced.
 		await waitFor(() => expect(promptElement()).not.toBeInTheDocument());
+	});
+});
+
+/* -------------------------------------------------------------------------- */
+/* The copy (Fizzy #2457 follow-up)                                            */
+/* -------------------------------------------------------------------------- */
+
+describe("CliConnectionNudge — what the prompt claims", () => {
+	/**
+	 * The prompt says nobody is USING Fabric's MCP, not that nothing is SET UP
+	 * for it. That is the reframing the product owner asked for, and it is also
+	 * the more accurate of the two: the evidence underneath is
+	 * `OrganizationCliReach`, a row the MCP runtime writes when something
+	 * actually reaches Fabric. A key can exist and a configuration block can be
+	 * pasted without one ever appearing, so "connected" was a claim about setup
+	 * that this surface has no way to see.
+	 */
+	it("says nobody is using Fabric's MCP", () => {
+		renderNudge();
+
+		expect(screen.getByText(NUDGE_TITLE)).toBeInTheDocument();
+		expect(screen.getByText(NUDGE_BODY)).toBeInTheDocument();
+	});
+
+	/**
+	 * The overclaim guard, and the reason it is a test rather than a comment.
+	 *
+	 * "Nobody uses it to the full" was floated and cannot be supported:
+	 * `lastReachedAt` has no readers, connectivity is derived from credential
+	 * liveness rather than recency, and there is deliberately no time decay — a
+	 * team that reached Fabric once and went quiet still reads as connected and
+	 * never sees this prompt. Any of these words would be the interface
+	 * inventing a measurement the product does not take.
+	 */
+	it.each([
+		"actively",
+		"regularly",
+		"properly",
+		"recently",
+		"to the full",
+		"fully",
+	])("claims nothing about intensity or recency (%s)", (word) => {
+		renderNudge();
+
+		const region = promptElement();
+		expect(region).toBeInTheDocument();
+		expect(region?.textContent?.toLowerCase()).not.toContain(word);
+	});
+
+	/**
+	 * The second thing the prompt must not claim: WHAT did the reaching.
+	 *
+	 * A Reach record carries an organization, a credential kind, a credential
+	 * id and two timestamps. The protocol does offer a client to name itself at
+	 * handshake, and neither host reads or stores it — so a coding CLI, a
+	 * desktop assistant and a one-off script are indistinguishable here. A
+	 * prompt that says "no coding tool has connected" is describing a filter
+	 * the runtime does not apply, and would be wrong the first time somebody
+	 * connects something else.
+	 *
+	 * The OFFER may still name a CLI: telling a reader what to go and set up is
+	 * an instruction, not a claim about what was observed. Only the statement
+	 * of fact is constrained, which is why this asserts on the heading rather
+	 * than the whole region.
+	 */
+	it.each(["coding tool", "cli", "terminal", "editor", "ide"])(
+		"claims nothing about what kind of client reached Fabric (%s)",
+		(word) => {
+			renderNudge();
+
+			const heading = screen.getByRole("heading", { name: NUDGE_TITLE });
+			expect(heading.textContent?.toLowerCase()).not.toContain(word);
+		},
+	);
+
+	/** The permanence warning is not traded away for the new framing (R28). */
+	it("still says the dismissal is permanent and names the checklist row", () => {
+		renderNudge();
+
+		expect(
+			screen.getByText(/dismissing this is permanent/i),
+		).toBeInTheDocument();
+		expect(screen.getByText(/"API Key for CLI"/)).toBeInTheDocument();
+	});
+
+	/**
+	 * The third thing the prompt must not claim: that nobody EVER did this.
+	 *
+	 * `organizationCliConnected` is present tense and does not decay — a Reach
+	 * record leaves the answer when its credential is revoked, expires, or its
+	 * owner is offboarded. The dialog this prompt opens issues 90-day keys, so
+	 * every organization that connects through it returns to false on a
+	 * schedule, having plainly used MCP. `OrganizationCliFirstReach` is the
+	 * permanent record of that first use and nothing reads it. A perfect-tense
+	 * claim here would therefore be false for exactly the teams who tried.
+	 *
+	 * CONCEPTS.md defines "Connected organization" in the present tense for
+	 * this reason; this test is that definition, enforced.
+	 */
+	it.each([
+		"has used",
+		"has ever",
+		"never",
+		"no one has",
+		"nobody has",
+		"yet",
+	])(
+		"claims nothing about what the organization did in the past (%s)",
+		(phrase) => {
+			renderNudge();
+
+			const region = promptElement();
+			expect(region).toBeInTheDocument();
+			expect(region?.textContent?.toLowerCase()).not.toContain(phrase);
+		},
+	);
+
+	/**
+	 * The fourth thing, and the one a heading-only guard let through: the
+	 * prompt must not claim anything about SETUP.
+	 *
+	 * "Connected" is a statement about configuration — a key minted, a block
+	 * pasted — and configuration is precisely what this surface cannot observe.
+	 * A Reach record appears when a credential carries a request in, and until
+	 * then a fully configured organization is indistinguishable from an empty
+	 * one. The body said "nothing is connected" while the comment four lines
+	 * above it explained why that could not be said, which is what a guard
+	 * scoped to the heading could not catch.
+	 *
+	 * Scoped to the title and body rather than the whole region, because the
+	 * region also holds BUTTONS, and "Connect a coding tool" on a button is an
+	 * instruction, not a claim.
+	 */
+	it.each(["is connected", "has connected", "connected to", "is set up"])(
+		"claims nothing about setup, only about reach (%s)",
+		(phrase) => {
+			renderNudge();
+
+			const claim = `${screen.getByText(NUDGE_TITLE).textContent} ${
+				screen.getByText(NUDGE_BODY).textContent
+			}`.toLowerCase();
+			expect(claim).not.toContain(phrase);
+		},
+	);
+
+	/** Both readers keep their path through the sentence (R10). */
+	it("still addresses the reader who will act and the one whose team will", () => {
+		renderNudge();
+
+		const body = screen.getByText(NUDGE_BODY).textContent ?? "";
+		expect(body).toContain("set yours up now");
+		expect(body).toContain("works in a CLI here to set up theirs");
+	});
+});
+
+/* -------------------------------------------------------------------------- */
+/* Asking a teammate (Fizzy #2457 follow-up)                                   */
+/* -------------------------------------------------------------------------- */
+
+describe("CliConnectionNudge — the ask control", () => {
+	it("offers the ask once the roster answers with somebody else", async () => {
+		listMembersMock.mockResolvedValue({
+			members: [
+				member("user-dana", "Dana Rivers"),
+				member(VIEWER_ID, "Robin Viewer"),
+			],
+		});
+
+		renderNudge();
+
+		expect(
+			await screen.findByRole("button", { name: ASK_LABEL }),
+		).toBeInTheDocument();
+	});
+
+	/**
+	 * Nobody to ask, no control. A control that opens an empty picker reads as
+	 * an offer the product then withdraws — and the viewer alone on their
+	 * project is exactly the reader who would try it.
+	 */
+	it("offers nothing when the viewer is the only person on the project", async () => {
+		renderNudge();
+
+		await screen.findByRole("button", { name: CONNECT_LABEL });
+		await waitFor(() => expect(listMembersMock).toHaveBeenCalled());
+		expect(
+			screen.queryByRole("button", { name: ASK_LABEL }),
+		).not.toBeInTheDocument();
+	});
+
+	/** Fails closed: an unanswered roster is not evidence that anybody is there. */
+	it("offers nothing when the roster cannot be read", async () => {
+		listMembersMock.mockRejectedValue(new Error("forbidden"));
+
+		renderNudge();
+
+		await screen.findByRole("button", { name: CONNECT_LABEL });
+		await waitFor(() => expect(listMembersMock).toHaveBeenCalled());
+		expect(
+			screen.queryByRole("button", { name: ASK_LABEL }),
+		).not.toBeInTheDocument();
+	});
+
+	/** No prompt, no roster read: a project view that shows nothing costs nothing. */
+	it("reads no roster while the prompt is not on screen", async () => {
+		readinessContext = contextWith({
+			...eligibleBlock(),
+			promptEligible: false,
+		});
+
+		renderNudge();
+
+		await waitFor(() => expect(prompt()).not.toBeInTheDocument());
+		expect(listMembersMock).not.toHaveBeenCalled();
+	});
+
+	it("opens the picker and records that leg of the funnel", async () => {
+		listMembersMock.mockResolvedValue({
+			members: [
+				member("user-dana", "Dana Rivers"),
+				member(VIEWER_ID, "Robin Viewer"),
+			],
+		});
+		const user = userEvent.setup();
+		renderNudge();
+
+		await user.click(
+			await screen.findByRole("button", { name: ASK_LABEL }),
+		);
+
+		expect(await screen.findByText(ASK_DIALOG_TITLE)).toBeInTheDocument();
+		expect(trackEventMock).toHaveBeenCalledWith(
+			CLI_NUDGE_ASK_OPENED_EVENT,
+			{
+				projectId: PROJECT_ID,
+			},
+		);
+	});
+
+	/**
+	 * Asking somebody else is not connecting. Nothing has reached Fabric, the
+	 * reader may still want the key themselves, and the prompt is the only
+	 * place the explanation lives — so it stays put, unlike the suppression
+	 * that follows issuing a key.
+	 */
+	it("leaves the prompt standing after an ask is sent", async () => {
+		listMembersMock.mockResolvedValue({
+			members: [
+				member("user-dana", "Dana Rivers"),
+				member(VIEWER_ID, "Robin Viewer"),
+			],
+		});
+		const user = userEvent.setup();
+		renderNudge();
+
+		await user.click(
+			await screen.findByRole("button", { name: ASK_LABEL }),
+		);
+		await user.click(
+			await screen.findByRole("checkbox", { name: "Ask Dana Rivers" }),
+		);
+		await user.click(screen.getByRole("button", { name: "Send the ask" }));
+
+		await waitFor(() =>
+			expect(requestCliConnectionMock).toHaveBeenCalledWith({
+				projectId: PROJECT_ID,
+				organizationId: ORGANIZATION_ID,
+				userIds: ["user-dana"],
+				functionTags: [],
+			}),
+		);
+		await waitFor(() =>
+			expect(trackEventMock).toHaveBeenCalledWith(
+				CLI_NUDGE_ASK_SENT_EVENT,
+				{ projectId: PROJECT_ID },
+			),
+		);
+		await waitFor(() =>
+			expect(
+				screen.queryByText(ASK_DIALOG_TITLE),
+			).not.toBeInTheDocument(),
+		);
+		expect(prompt()).toBeInTheDocument();
+	});
+
+	/** The ask reaches the picker by keyboard alone, as the dismissal does. */
+	it("opens the picker from the keyboard", async () => {
+		listMembersMock.mockResolvedValue({
+			members: [
+				member("user-dana", "Dana Rivers"),
+				member(VIEWER_ID, "Robin Viewer"),
+			],
+		});
+		const user = userEvent.setup();
+		renderNudge();
+
+		const ask = await screen.findByRole("button", { name: ASK_LABEL });
+		ask.focus();
+		expect(ask).toHaveFocus();
+		await user.keyboard("{Enter}");
+
+		expect(await screen.findByText(ASK_DIALOG_TITLE)).toBeInTheDocument();
+	});
+});
+
+describe("shouldOfferCliConnectionAsk", () => {
+	it("offers nothing while the prompt itself is not shown", () => {
+		expect(
+			shouldOfferCliConnectionAsk({
+				promptVisible: false,
+				askableTeammateCount: 4,
+			}),
+		).toBe(false);
+	});
+
+	it("offers the ask only when somebody other than the viewer is there", () => {
+		expect(
+			shouldOfferCliConnectionAsk({
+				promptVisible: true,
+				askableTeammateCount: 0,
+			}),
+		).toBe(false);
+		expect(
+			shouldOfferCliConnectionAsk({
+				promptVisible: true,
+				askableTeammateCount: 1,
+			}),
+		).toBe(true);
 	});
 });

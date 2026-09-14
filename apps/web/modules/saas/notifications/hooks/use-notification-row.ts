@@ -17,6 +17,7 @@ import {
 	Loader2Icon,
 	MegaphoneIcon,
 	Share2Icon,
+	TerminalIcon,
 	UserPlusIcon,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -103,11 +104,17 @@ function resolveIcon(notification: {
 	if (notification.type === "DOCUMENT_GENERATION_FAILED") {
 		return AlertCircleIcon;
 	}
-	// STORY_SHARED reuses the MENTION category (so it stays out of the Mentions
-	// tab), but a "shared a feature with you" row reads better with a share
-	// glyph than the `@` mention glyph — override per-type here.
+	// Two types reuse the MENTION category, for its opt-out toggle rather than
+	// for its meaning. They therefore DO land in the Mentions tab, which filters
+	// on category — an earlier comment here claimed the opposite, and the tab's
+	// own filter (`tab === "mentions" ? "MENTION" : undefined`) settles it. What
+	// an override can still fix is the glyph: neither row is an `@` mention, and
+	// the default icon is chosen per category.
 	if (notification.type === "STORY_SHARED") {
 		return Share2Icon;
+	}
+	if (notification.type === "CLI_CONNECTION_REQUESTED") {
+		return TerminalIcon;
 	}
 	if (notification.category === "CONTEXT_INDEXING_COMPLETED") {
 		// Defensive: notification.payload is typed Json; in practice it's

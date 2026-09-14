@@ -33,11 +33,15 @@ import {
 	TooltipProvider,
 	TooltipTrigger,
 } from "@ui/components/tooltip";
+import { formatDistanceToNow } from "date-fns";
 import {
+	AlertTriangleIcon,
 	CheckIcon,
 	CopyIcon,
+	InfinityIcon,
 	InfoIcon,
 	KeyIcon,
+	OctagonXIcon,
 	PlusIcon,
 	Trash2Icon,
 } from "lucide-react";
@@ -161,6 +165,150 @@ export const AVAILABLE_SCOPES = [
 
 type ApiKeyScope = (typeof AVAILABLE_SCOPES)[number]["id"];
 
+/**
+ * The scopes an organization VIEWER may put on a key (Fizzy #2457).
+ *
+ * A read-only role may now mint a key at all, and the create procedure clamps
+ * what it may carry: `READ_ONLY_ORG_API_KEY_SCOPES` in
+ * `packages/api/modules/organizations/procedures/api-keys/create.ts` is the
+ * authority, and it REFUSES a request naming anything outside the set rather
+ * than quietly granting less. Mirrored here — not imported, because this
+ * component cannot reach into the API package — so the picker cannot compose a
+ * request the server is bound to reject. Keep the two in step; the procedure's
+ * own table explains why each scope is or is not on it, including the four
+ * whose names read as read-only and are not.
+ */
+const READ_ONLY_SCOPES: ReadonlySet<ApiKeyScope> = new Set<ApiKeyScope>([
+	"mcp:read",
+	"projects:read",
+	"agents:read",
+	"agents:stream",
+	"orgs:read",
+	"features:read",
+	"workspaces:read",
+	"workflows:read",
+	"frames:read",
+	"chats:read",
+	"system_health:read",
+	"status_updates:read",
+]);
+
+/**
+ * What the create dialog starts with, for the role holding it open.
+ *
+ * The procedure's input schema defaults `scopes` to `["mcp:read", "mcp:write"]`
+ * and that default is not a viewer's set: a viewer who accepted it was refused
+ * with FORBIDDEN on the write half, having ticked nothing. The schema default is
+ * deliberately left alone — changing it would move the floor for every member —
+ * so the fix belongs on the one caller that knows the role.
+ *
+ * A read-only role gets `mcp:read` alone: the scope that connects a coding tool,
+ * which is the capability this role was granted key creation for, and the same
+ * single scope `ConnectCliDialog` mints with.
+ */
+function defaultScopesForRole(isReadOnlyRole: boolean): ApiKeyScope[] {
+	return isReadOnlyRole ? ["mcp:read"] : ["mcp:read", "mcp:write"];
+}
+
+/**
+ * How far ahead of expiry a key starts reading as "expiring soon" rather than
+ * just showing its date.
+ *
+ * The CLI connect flow (`ConnectCliDialog`'s `ISSUED_KEY_EXPIRY_DAYS`) issues
+ * 90-day keys — the shortest-lived key minted anywhere today, and to the
+ * population least likely to be watching for it: a one-click credential
+ * handed to whatever tool asked for it. Two weeks is enough runway to notice
+ * the warning, mint a replacement, and update the client's config before the
+ * old key goes dead mid-task, without flagging most of a 90-day key's life as
+ * "soon".
+ */
+const EXPIRING_SOON_WINDOW_DAYS = 14;
+const EXPIRING_SOON_WINDOW_MS = EXPIRING_SOON_WINDOW_DAYS * 24 * 60 * 60 * 1000;
+
+type KeyExpiryStatus =
+	| { kind: "none" }
+	| { kind: "expired"; expiresAt: Date }
+	| { kind: "expiring-soon"; expiresAt: Date }
+	| { kind: "active"; expiresAt: Date };
+
+function getKeyExpiryStatus(
+	expiresAt: Date | null,
+	now: Date = new Date(),
+): KeyExpiryStatus {
+	if (!expiresAt) {
+		return { kind: "none" };
+	}
+	const msRemaining = expiresAt.getTime() - now.getTime();
+	if (msRemaining <= 0) {
+		return { kind: "expired", expiresAt };
+	}
+	if (msRemaining <= EXPIRING_SOON_WINDOW_MS) {
+		return { kind: "expiring-soon", expiresAt };
+	}
+	return { kind: "active", expiresAt };
+}
+
+function formatAbsoluteDate(date: Date) {
+	return date.toLocaleDateString(undefined, {
+		year: "numeric",
+		month: "short",
+		day: "numeric",
+	});
+}
+
+/**
+ * Renders a key's lifetime so its state is obvious without doing date
+ * arithmetic — and without relying on color alone: "Expired" / "Expiring
+ * soon" / "No expiry" are always spelled out in text (read the same by a
+ * screen reader and by someone who cannot distinguish the badge hue), and
+ * distinct icon shapes back up the distinction visually. The absolute date
+ * stays visible alongside any relative phrase so nothing is lost for anyone
+ * who needs the exact day.
+ */
+function ApiKeyExpiryCell({ expiresAt }: { expiresAt: Date | null }) {
+	const status = getKeyExpiryStatus(expiresAt);
+
+	if (status.kind === "none") {
+		return (
+			<span className="flex items-center gap-1 text-muted-foreground text-sm">
+				<InfinityIcon className="size-3.5" aria-hidden="true" />
+				No expiry
+			</span>
+		);
+	}
+
+	if (status.kind === "active") {
+		return (
+			<span className="text-muted-foreground text-sm">
+				{formatAbsoluteDate(status.expiresAt)}
+			</span>
+		);
+	}
+
+	const isExpired = status.kind === "expired";
+
+	return (
+		<div className="flex flex-col gap-1">
+			<Badge
+				variant={isExpired ? "destructive" : "warning"}
+				className="w-fit"
+			>
+				{isExpired ? (
+					<OctagonXIcon aria-hidden="true" />
+				) : (
+					<AlertTriangleIcon aria-hidden="true" />
+				)}
+				{isExpired ? "Expired" : "Expiring soon"}
+			</Badge>
+			<span className="text-muted-foreground text-xs">
+				{isExpired ? "Expired " : "Expires "}
+				{formatAbsoluteDate(status.expiresAt)} (
+				{formatDistanceToNow(status.expiresAt, { addSuffix: true })})
+			</span>
+		</div>
+	);
+}
+
 export function OrganizationApiKeysSettings() {
 	const queryClient = useQueryClient();
 	const { organizationId, isOrgContext, userRole } = useOrganizationContext();
@@ -179,12 +327,19 @@ export function OrganizationApiKeysSettings() {
 	const isOrganizationOwner = userRole === "owner";
 	const canRevokeKey = (createdByUserId: string) =>
 		isOrganizationOwner || createdByUserId === user?.id;
+
+	// A read-only role may mint a key, clamped server-side to read-only scopes
+	// (Fizzy #2457). Everything below that consults this exists so the request
+	// this component sends is one the caller can actually hold.
+	const isReadOnlyRole = userRole === "viewer";
+	const defaultScopes = defaultScopesForRole(isReadOnlyRole);
+	const canHoldScope = (scope: ApiKeyScope) =>
+		!isReadOnlyRole || READ_ONLY_SCOPES.has(scope);
+
 	const [isCreateOpen, setIsCreateOpen] = useState(false);
 	const [newKeyName, setNewKeyName] = useState("");
-	const [selectedScopes, setSelectedScopes] = useState<string[]>([
-		"mcp:read",
-		"mcp:write",
-	]);
+	const [selectedScopes, setSelectedScopes] =
+		useState<string[]>(defaultScopes);
 	const [newKey, setNewKey] = useState<string | null>(null);
 	const [copied, setCopied] = useState(false);
 	const [apiUrl, setApiUrl] = useState("http://localhost:3000");
@@ -275,11 +430,19 @@ export function OrganizationApiKeysSettings() {
 			toast.error("Please enter a name for the API key");
 			return;
 		}
-		if (selectedScopes.length === 0) {
+		// Last line before the request: never send a scope this role cannot
+		// hold. The picker already withholds those checkboxes, so nothing here
+		// discards a choice the reader made — it drops a default they were
+		// handed before their role was known, which is the one way a refused
+		// scope could still be in this array.
+		const scopes = selectedScopes.filter((scope) =>
+			canHoldScope(scope as ApiKeyScope),
+		);
+		if (scopes.length === 0) {
 			toast.error("Please select at least one scope");
 			return;
 		}
-		createMutation.mutate({ name: newKeyName, scopes: selectedScopes });
+		createMutation.mutate({ name: newKeyName, scopes });
 	};
 
 	const handleCopy = async () => {
@@ -302,16 +465,20 @@ export function OrganizationApiKeysSettings() {
 	const handleCloseCreate = () => {
 		setIsCreateOpen(false);
 		setNewKeyName("");
-		setSelectedScopes(["mcp:read", "mcp:write"]);
+		setSelectedScopes(defaultScopes);
 		setNewKey(null);
 		setCopied(false);
 	};
 
 	const handleCreateDialogOpenChange = (open: boolean) => {
 		setIsCreateOpen(open);
+		// Re-seeded on the way IN as well as out. The role arrives with the
+		// organization query and can still be unresolved at first render, which
+		// would have left a viewer holding the member default they never chose;
+		// by the time anybody opens this dialog the role is known.
+		setNewKeyName("");
+		setSelectedScopes(defaultScopes);
 		if (!open) {
-			setNewKeyName("");
-			setSelectedScopes(["mcp:read", "mcp:write"]);
 			setNewKey(null);
 			setCopied(false);
 		}
@@ -419,8 +586,23 @@ export function OrganizationApiKeysSettings() {
 											Select which actions this API key
 											can perform
 										</p>
+										{/* Said before the list rather than
+										    after a refusal: a read-only role
+										    sees a shorter list, and an
+										    unexplained short list reads as a
+										    bug. */}
+										{isReadOnlyRole && (
+											<p className="text-muted-foreground text-xs">
+												Your role in this organization
+												is read-only, so a key you
+												create can only carry read-only
+												access.
+											</p>
+										)}
 										<div className="space-y-2 rounded-lg border p-3">
-											{AVAILABLE_SCOPES.map((scope) => (
+											{AVAILABLE_SCOPES.filter((scope) =>
+												canHoldScope(scope.id),
+											).map((scope) => (
 												<div
 													key={scope.id}
 													className="flex items-start gap-2"
@@ -504,6 +686,7 @@ export function OrganizationApiKeysSettings() {
 									<TableHead>Scopes</TableHead>
 									<TableHead>Created By</TableHead>
 									<TableHead>Last Used</TableHead>
+									<TableHead>Expires</TableHead>
 									{apiKeys.some((key) =>
 										canRevokeKey(key.createdBy.id),
 									) && <TableHead className="w-[50px]" />}
@@ -587,6 +770,11 @@ export function OrganizationApiKeysSettings() {
 										</TableCell>
 										<TableCell className="text-muted-foreground text-sm">
 											{formatDate(key.lastUsedAt)}
+										</TableCell>
+										<TableCell>
+											<ApiKeyExpiryCell
+												expiresAt={key.expiresAt}
+											/>
 										</TableCell>
 										{canRevokeKey(key.createdBy.id) && (
 											<TableCell>

@@ -567,14 +567,19 @@ describe("projects.readiness.get — CLI connection eligibility", () => {
 		});
 	});
 
-	it("denies an organization viewer, who cannot mint a key", async () => {
+	it("offers it to an organization viewer, who can now mint a read-only key", async () => {
+		// CONTRACT CHANGE, not a weakened assertion: Fizzy #2457 asks that a
+		// read-only role receive a read-only-scoped key, so `viewer` gained
+		// `ORG_API_KEYS_CREATE` and the create handler clamps its scopes. The
+		// audience rule is unchanged — "anyone who can mint a key" — so a
+		// viewer entering that set is the rule applying, not bending.
 		qualifyingProject();
 		mockDb.member.findFirst.mockResolvedValue({ role: "viewer" });
 
 		const result = await callHandler();
 
-		expect(result.cliConnection.viewerCanCreateKey).toBe(false);
-		expect(result.cliConnection.promptEligible).toBe(false);
+		expect(result.cliConnection.viewerCanCreateKey).toBe(true);
+		expect(result.cliConnection.promptEligible).toBe(true);
 	});
 
 	it("follows the organization role even when a project-viewer row exists", async () => {
@@ -592,15 +597,26 @@ describe("projects.readiness.get — CLI connection eligibility", () => {
 		expect((result as unknown as { canAct: boolean }).canAct).toBe(false);
 	});
 
-	it("follows the organization role even when a project-editor row exists", async () => {
-		qualifyingProject();
-		mockDb.member.findFirst.mockResolvedValue({ role: "viewer" });
-		mockGetProjectRole.mockResolvedValue("editor");
+	it.each(["owner", "admin", "member", "viewer"])(
+		"offers it to every organization role, including %s, the lowest",
+		async (role) => {
+			// Replaces a case that pinned "an organization viewer with a
+			// project-editor row is still refused". Once `viewer` gained key
+			// creation that case stopped discriminating: both the right answer
+			// (ask the organization) and the wrong one (ask the project) came
+			// back eligible, so it could no longer fail. This pins what is now
+			// true and load-bearing instead — every organization role can mint,
+			// so eligibility never has cause to fall back to the project role.
+			// The guest case below is what still proves the gate exists.
+			qualifyingProject();
+			mockDb.member.findFirst.mockResolvedValue({ role });
+			mockGetProjectRole.mockResolvedValue("viewer");
 
-		const result = await callHandler();
+			const result = await callHandler();
 
-		expect(result.cliConnection.promptEligible).toBe(false);
-	});
+			expect(result.cliConnection.viewerCanCreateKey).toBe(true);
+		},
+	);
 
 	it("denies a guest, who has no organization membership at all", async () => {
 		qualifyingProject();

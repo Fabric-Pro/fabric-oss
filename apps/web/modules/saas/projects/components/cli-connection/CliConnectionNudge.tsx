@@ -1,25 +1,31 @@
 "use client";
 
 import { useAnalytics } from "@analytics";
+import { useSession } from "@saas/auth/hooks/use-session";
 import {
 	isOnboardingViewClaimed,
 	useOnboardingViewClaimedSinceMount,
 } from "@saas/get-started/lib/onboarding-claim";
 import { useProjectReadiness } from "@saas/projects/components/readiness/ProjectReadinessProvider";
 import { orpcClient } from "@shared/lib/orpc-client";
-import { useMutation } from "@tanstack/react-query";
+import { orpc } from "@shared/lib/orpc-query-utils";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import { Alert, AlertDescription, AlertTitle } from "@ui/components/alert";
 import { Button } from "@ui/components/button";
 import { cn } from "@ui/lib";
-import { TerminalIcon, XIcon } from "lucide-react";
+import { TerminalIcon, UsersIcon, XIcon } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { ConnectCliDialog } from "./ConnectCliDialog";
 import {
+	CLI_NUDGE_ASK_OPENED_EVENT,
+	CLI_NUDGE_ASK_SENT_EVENT,
 	CLI_NUDGE_KEY_ISSUED_EVENT,
 	CLI_NUDGE_OPENED_EVENT,
 	CLI_NUDGE_RENDERED_EVENT,
+	shouldOfferCliConnectionAsk,
 	shouldShowCliConnectionNudge,
 } from "./lib/cli-connection-nudge";
+import { RequestCliConnectionDialog } from "./RequestCliConnectionDialog";
 
 /* -------------------------------------------------------------------------- */
 /* Copy                                                                        */
@@ -29,8 +35,40 @@ import {
 /* `AnthropicCapabilityBanner` give theirs.                                     */
 /* -------------------------------------------------------------------------- */
 
-/** States the fact R3 asks the prompt to explain, and blames nobody for it. */
-const NUDGE_TITLE = "No coding tool is connected to Fabric yet";
+/**
+ * States the fact R3 asks the prompt to explain, and blames nobody for it.
+ *
+ * USE, not setup. The evidence underneath is `OrganizationCliReach`, a record
+ * the MCP runtime writes when a credential carries a request into Fabric over
+ * MCP — it is a record of somebody using the product, and there is no other way
+ * for a row to appear. Not of somebody using a CLI: the runtime stores no
+ * client identity, so the record cannot tell one apart from a desktop assistant
+ * or a script. "Nothing is connected" was a claim about configuration that this
+ * surface cannot see: a key can exist, a configuration block can be pasted, and
+ * none of it writes a row until a tool asks Fabric for something.
+ *
+ * Note what it does NOT say. No "actively", no "regularly", no "properly" —
+ * `lastReachedAt` has no readers, connectivity is derived from credential
+ * liveness rather than recency, and nothing decays. A team that reached Fabric
+ * once a year ago still reads as connected and would never see this prompt, so
+ * any word implying intensity or recency would be a claim about data this
+ * product does not keep.
+ *
+ * And PRESENT tense, which an earlier draft got wrong. "Nobody HAS USED" is a
+ * claim about history, and the signal underneath is not historical: a Reach
+ * record stops counting when its credential is revoked, expires, or its owner
+ * leaves, so an organization that connected and then let a 90-day key lapse
+ * — the default this feature's own dialog issues — flips back to false while
+ * having plainly used MCP. The permanent record of that first use exists, in
+ * `OrganizationCliFirstReach`, and nothing reads it. See CONCEPTS.md, which
+ * defines a connected organization in the present tense for this reason.
+ *
+ * Which is also why there is no "yet". "Yet" says first use has not happened,
+ * and that is the one thing the paragraph above establishes this cannot see. It
+ * survived two rounds of correcting the tense around it, because a single
+ * adverb reads as a softener rather than as the claim it is.
+ */
+const NUDGE_TITLE = "Nobody is using Fabric's MCP";
 
 /**
  * The offer, written for both readers at once (R10).
@@ -46,9 +84,23 @@ const NUDGE_TITLE = "No coding tool is connected to Fabric yet";
  * one. That is not softening: the key authenticates as its holder across the
  * whole organization, which the issuing view says plainly, so copy that
  * implied passing one around would contradict the view it opens.
+ *
+ * The middle clause is the evidence behind the title, said once and exactly:
+ * no live credential in this organization is REACHING Fabric. That is the whole
+ * content of `organizationCliConnected === false` — organization-wide, never
+ * per-project, with no notion of how long ago or how often, and present tense,
+ * because a revoked or expired credential takes its Reach record out of the
+ * answer. It is not a claim that nobody ever did.
+ *
+ * "Reaching", not "connected", and the word matters as much here as in the
+ * title. Connection is SETUP, and setup is the one thing this surface cannot
+ * see: a key can exist and a configuration block can be pasted with no Reach
+ * record ever appearing. An earlier draft said "nothing is connected" and
+ * contradicted the paragraph above it — which is how a guard on the heading
+ * alone let an overclaim through in the body.
  */
 const NUDGE_BODY =
-	"This project has enough context to be useful inside a coding tool, but nobody in this organization has connected one. It takes a key and a single configuration block — set yours up now, or send whoever on your team works in a CLI here to set up theirs.";
+	"This project has enough context to be worth reading from outside the app, but nothing in this organization is reaching Fabric over MCP to read it. It takes a key and a single configuration block — set yours up now, or send whoever on your team works in a CLI here to set up theirs.";
 
 /**
  * What dismissing costs, and where the option survives it (R28).
@@ -67,6 +119,16 @@ const NUDGE_DISMISS_NOTE =
 
 /** Matches the checklist row's own action, so the two read as one affordance. */
 const NUDGE_CONNECT_LABEL = "Connect CLI";
+
+/**
+ * The second offer, for the reader whose answer to "set yours up now" is no.
+ *
+ * The body addresses two people and, until now, only one of them had a control:
+ * the reader who will open a terminal. This is the other one's — and it is the
+ * likelier reader of the two on a readiness checklist, which is why it sits
+ * beside the first rather than behind it.
+ */
+const NUDGE_ASK_LABEL = "Ask a teammate";
 
 /** The icon-only control's accessible name (R31, WCAG 2.1 AA). */
 const NUDGE_DISMISS_LABEL = "Dismiss the CLI connection prompt";
@@ -118,8 +180,13 @@ interface CliConnectionNudgeProps {
  * matter, that nothing in their organization is reading Fabric from a coding
  * tool — and offers to fix that in the same view.
  *
- * **It issues no query of its own.** Everything it needs is on the readiness
- * payload already mounted over every project route, resolved server-side:
+ * **It issues one query, and only while it is on screen.** The project roster
+ * is read to answer a single question the readiness payload does not carry:
+ * whether there is anybody here to ask. The read is enabled by the prompt's own
+ * visibility, so a project view that shows no prompt costs nothing, and its
+ * cache entry is the one the ask picker then opens on. Everything ELSE it needs
+ * is on the readiness payload already mounted over every project route,
+ * resolved server-side:
  * `promptEligible` folds in the rollout gate, the resolved checklist item, the
  * project's status, the two-of-eight context threshold, this viewer's
  * key-creation permission and their dismissal. There is no client-side
@@ -139,9 +206,9 @@ interface CliConnectionNudgeProps {
  *  - VISIBILITY is derived from all of them by the pure rule beside this file,
  *    and is held nowhere.
  *
- * Nothing derives an open state from a flag the same effect sets: the issuing
- * view's `open` is set by a click and by nothing else, and the render-event
- * latch is a ref that no rendering decision reads.
+ * Nothing derives an open state from a flag the same effect sets: both dialogs'
+ * `open` is set by a click and by nothing else, and the render-event latch is a
+ * ref that no rendering decision reads.
  */
 export function CliConnectionNudge({
 	organizationId,
@@ -159,18 +226,20 @@ export function CliConnectionNudge({
 	 * "I have just done this" — read from the readiness context, not held here.
 	 *
 	 * The server will go on reporting the prompt eligible after a key is issued
-	 * (the checklist item behind it completes on a coding tool REACHING Fabric,
-	 * not on a key existing), so something on the client has to stand the
+	 * (the checklist item behind it completes on something REACHING Fabric over
+	 * MCP, not on a key existing), so something on the client has to stand the
 	 * prompt down. It cannot be state local to this component: the checklist's
 	 * "API Key for CLI" row mounts its OWN issuing view and offers the same
 	 * key, and a viewer who minted one from there was left looking at a banner
-	 * telling them nobody had connected a coding tool. One fact, one owner,
+	 * telling them nothing had reached Fabric over MCP. One fact, one owner,
 	 * both surfaces — per project view and not persisted, exactly as a local
 	 * flag was.
 	 */
 	const keyIssued = readiness?.cliKeyIssued === true;
 	const [issuingViewOpen, setIssuingViewOpen] = useState(false);
+	const [askViewOpen, setAskViewOpen] = useState(false);
 	const { trackEvent } = useAnalytics();
+	const { user } = useSession();
 
 	// The project readiness is about. Read from the context rather than taken
 	// as a prop, so the id this dismisses for and the payload this reads can
@@ -202,6 +271,42 @@ export function CliConnectionNudge({
 		onboardingClaimed,
 		dismissed,
 		keyIssued,
+	});
+
+	/**
+	 * Is there anybody here to ask?
+	 *
+	 * The readiness payload cannot answer this — it resolves the viewer's own
+	 * position, not the roster — so it is the one thing this prompt reads for
+	 * itself. Enabled by the prompt's visibility and by `hidden`, so it costs
+	 * nothing on the project views that show no prompt, and the ask picker
+	 * mounts onto this same cache entry rather than issuing a second read.
+	 *
+	 * PROJECT members, not organization members, and that is not a shortcut: a
+	 * function tag is held per project in this data model and the handler
+	 * expands tags strictly within this roster, so one count gates both routes
+	 * into the picker truthfully.
+	 */
+	const membersQuery = useQuery({
+		...orpc.projects.members.list.queryOptions({
+			input: { projectId, organizationId },
+		}),
+		enabled: visible && !hidden && projectId !== "",
+	});
+
+	/**
+	 * The viewer is dropped here for the same reason the picker and the handler
+	 * drop them: asking yourself to do the thing you are looking at is nothing.
+	 * A count of the whole roster would offer the control to somebody alone on
+	 * their project and open an empty picker.
+	 */
+	const askableTeammateCount = (membersQuery.data?.members ?? []).filter(
+		(member) => member.userId !== user?.id,
+	).length;
+
+	const offerAsk = shouldOfferCliConnectionAsk({
+		promptVisible: visible,
+		askableTeammateCount,
 	});
 
 	/**
@@ -255,6 +360,11 @@ export function CliConnectionNudge({
 		setIssuingViewOpen(true);
 	};
 
+	const openAskView = () => {
+		trackEvent(CLI_NUDGE_ASK_OPENED_EVENT, { projectId });
+		setAskViewOpen(true);
+	};
+
 	const handleDismiss = () => {
 		// Optimistic, and it stays optimistic on failure — see `onError`. The
 		// surface disappears on the click rather than a round trip later, and
@@ -302,7 +412,7 @@ export function CliConnectionNudge({
 							</p>
 						</AlertDescription>
 					</div>
-					<div className="flex shrink-0 items-center gap-2">
+					<div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
 						<Button
 							autoLoading={false}
 							onClick={openIssuingView}
@@ -311,6 +421,25 @@ export function CliConnectionNudge({
 						>
 							{NUDGE_CONNECT_LABEL}
 						</Button>
+						{/* Rendered only when the roster has answered with
+						    somebody other than the viewer. A control that opens
+						    an empty picker is worse than no control: it reads as
+						    an offer the product then withdraws. Loading and
+						    errored both count as "nobody" — see the rule. */}
+						{offerAsk && (
+							<Button
+								autoLoading={false}
+								onClick={openAskView}
+								size="sm"
+								variant="outline"
+							>
+								<UsersIcon
+									aria-hidden="true"
+									className="size-4"
+								/>
+								{NUDGE_ASK_LABEL}
+							</Button>
+						)}
 						<Button
 							aria-label={NUDGE_DISMISS_LABEL}
 							autoLoading={false}
@@ -342,6 +471,31 @@ export function CliConnectionNudge({
 
 			    Gated only on an organization, because there is nothing to mint
 			    a key against without one. */}
+			{/* The ask picker, a SIBLING of the prompt for the same structural
+			    reason the issuing view above is one, if not the same stakes.
+			    While it is open the roster can refetch to nobody, the readiness
+			    read can flip eligibility, and an onboarding surface can claim
+			    the view — and a picker unmounted mid-compose would discard a
+			    selection the reader made, with no way to tell them why.
+
+			    Not gated on an organization: asking a teammate mints nothing,
+			    and the handler resolves every organization it uses from the
+			    project itself. */}
+			<RequestCliConnectionDialog
+				onAsked={() => {
+					// The prompt deliberately stays. Asking somebody else is
+					// not connecting, nothing has reached Fabric yet, and the
+					// reader may still want the key themselves — the surface
+					// that would be wrong to keep showing is the one offering
+					// to mint a second key, which is a different suppression.
+					trackEvent(CLI_NUDGE_ASK_SENT_EVENT, { projectId });
+				}}
+				onOpenChange={setAskViewOpen}
+				open={askViewOpen}
+				organizationId={organizationId}
+				projectId={projectId}
+			/>
+
 			{organizationId && (
 				<ConnectCliDialog
 					onKeyIssued={() => {

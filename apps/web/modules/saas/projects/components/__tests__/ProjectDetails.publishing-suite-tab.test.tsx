@@ -166,6 +166,33 @@ const { tabConfigState } = vi.hoisted(() => ({
 vi.mock("@shared/lib/orpc-query-utils", () => ({
 	orpc: {
 		projects: {
+			// FIXTURE: the CLI-connection prompt mounted inside this tree reads
+			// the project roster to decide whether there is anyone to hand the
+			// job to. An empty roster is the quiet answer — no ask control, no
+			// behaviour change for the assertions below, which predate it.
+			members: {
+				list: {
+					queryOptions: ({ input }: { input: unknown }) => ({
+						queryKey: ["projects", "members", "list", input],
+						queryFn: async () => [],
+					}),
+				},
+			},
+			// FIXTURE: the ask picker is mounted as a sibling of the prompt so a
+			// half-composed selection survives a refetch, which means this
+			// suite renders it too and needs its mutation declared.
+			readiness: {
+				requestCliConnection: {
+					mutationOptions: (options: Record<string, unknown>) => ({
+						mutationFn: async () => ({
+							notifiedCount: 0,
+							recipientCount: 0,
+							ineligibleCount: 0,
+						}),
+						...options,
+					}),
+				},
+			},
 			get: {
 				queryOptions: ({ input }: { input: unknown }) => ({
 					queryKey: ["projects.get", input],
