@@ -314,7 +314,6 @@ vi.mock("@shared/lib/orpc-client", () => ({ orpcClient: {} }));
 
 import type { FunctionTag } from "@repo/database/prisma/generated/client";
 import { PublishingSuiteList } from "@saas/projects/components/publishing-suite";
-import { POST_TYPE_OPTIONS } from "@saas/projects/components/publishing-suite/PostTypesDialog";
 
 function makeTopic(overrides: Record<string, unknown> = {}) {
 	return {
@@ -1674,7 +1673,7 @@ describe("PublishingSuiteList", () => {
 		expect(screen.getByText("Case Study")).toBeInTheDocument();
 	});
 
-	it("shows the Edit button but no chips for an editor when the effective set is empty", () => {
+	it("shows the Add type trigger but no chips for an editor when the effective set is empty", () => {
 		state.topics = [
 			makeTopic({
 				title: "Empty editable",
@@ -1684,149 +1683,32 @@ describe("PublishingSuiteList", () => {
 		];
 		renderList({ canEdit: true });
 		expect(
-			screen.getByRole("button", { name: "Edit post types" }),
+			screen.getByRole("button", { name: "Add type" }),
 		).toBeInTheDocument();
 	});
 
-	it("hides the Edit button without canEdit", () => {
+	it("hides the Add type trigger without canEdit", () => {
 		state.topics = [
 			makeTopic({ title: "No edit", suggestedPostTypes: ["TWEET"] }),
 		];
 		renderList({ canEdit: false });
 		expect(
-			screen.queryByRole("button", { name: "Edit post types" }),
+			screen.queryByRole("button", { name: "Add type" }),
 		).not.toBeInTheDocument();
 	});
 
-	it("saves the checked set through updateTopicPostTypes", async () => {
-		const user = userEvent.setup();
-		state.topics = [
-			makeTopic({
-				id: "tX",
-				title: "Save set",
-				suggestedPostTypes: ["TWEET"],
-			}),
-		];
-		renderList({ canEdit: true });
-		await user.click(
-			screen.getByRole("button", { name: "Edit post types" }),
-		);
-		await user.click(screen.getByLabelText("Blog Post"));
-		await user.click(screen.getByRole("button", { name: "Save" }));
-		await waitFor(() =>
-			expect(updatePostTypesMutate).toHaveBeenCalledWith(
-				expect.objectContaining({
-					topicId: "tX",
-					postTypes: ["TWEET", "BLOG_POST"],
-				}),
-			),
-		);
-	});
-
-	// The dialog has always saved several types at once, but it did not LOOK
-	// multi-select — four bare checkboxes in a column read as a radio group,
-	// and review reported it as one. These three pin the signals that say
-	// otherwise, so a later restyle cannot quietly take them away again.
-	it("keeps both post types checked when a second one is picked", async () => {
-		const user = userEvent.setup();
-		state.topics = [
-			makeTopic({
-				id: "tMulti",
-				title: "Two types",
-				suggestedPostTypes: [],
-				userPostTypes: [],
-			}),
-		];
-		renderList({ canEdit: true });
-		await user.click(
-			screen.getByRole("button", { name: "Edit post types" }),
-		);
-		// Click the option TEXT, not the 16px control — scoped to the dialog so
-		// the card's own post-type chips cannot match instead.
-		const dialog = within(screen.getByRole("dialog"));
-		await user.click(dialog.getByText("Tweet"));
-		await user.click(dialog.getByText("Case Study"));
-		// The radio behaviour this guards against would have cleared Tweet.
-		expect(screen.getByLabelText("Tweet")).toBeChecked();
-		expect(screen.getByLabelText("Case Study")).toBeChecked();
-		// Clicking the text does NOT on its own prove the row is the click
-		// target: the previous markup also kept the text inside a `<label>`,
-		// just not the row, so that click passed there too. What changed is
-		// that the control and its text now share ONE label — which is the row.
-		// Asserting that is the only part of this a restyle cannot silently
-		// undo; against the previous markup `closest("label")` was null.
-		expect(
-			screen.getByLabelText("Tweet").closest("label"),
-		).toHaveTextContent("Tweet");
-		await user.click(screen.getByRole("button", { name: "Save" }));
-		await waitFor(() =>
-			expect(updatePostTypesMutate).toHaveBeenCalledWith(
-				expect.objectContaining({
-					topicId: "tMulti",
-					postTypes: ["TWEET", "CASE_STUDY"],
-				}),
-			),
-		);
-	});
-
-	it("reports how many post types are selected", async () => {
-		const user = userEvent.setup();
-		state.topics = [
-			makeTopic({
-				title: "Count",
-				suggestedPostTypes: [],
-				userPostTypes: [],
-			}),
-		];
-		renderList({ canEdit: true });
-		await user.click(
-			screen.getByRole("button", { name: "Edit post types" }),
-		);
-		const count = () =>
-			screen.getByTestId("post-types-selected-count").textContent;
-		// Derived from the exported option list, not a literal — Task 12 (Fizzy
-		// #1988) is what makes that possible, and a new literal here would just
-		// go stale again the next time a post type is added, the way this one
-		// did for ten commits after Webinar / Demo Script joined the dialog.
-		const total = POST_TYPE_OPTIONS.length;
-		expect(count()).toBe("None selected");
-		await user.click(screen.getByLabelText("Tweet"));
-		expect(count()).toBe(`1 of ${total} selected`);
-		await user.click(screen.getByLabelText("Blog Post"));
-		expect(count()).toBe(`2 of ${total} selected`);
-	});
-
-	it("tells the reviewer that more than one post type may be picked", async () => {
-		const user = userEvent.setup();
-		state.topics = [
-			makeTopic({ title: "Cue", suggestedPostTypes: ["TWEET"] }),
-		];
-		renderList({ canEdit: true });
-		await user.click(
-			screen.getByRole("button", { name: "Edit post types" }),
-		);
-		expect(
-			screen.getByText(/select all that apply/i, { selector: "p" }),
-		).toBeInTheDocument();
-	});
-
-	it("hides Reset when the topic is not overridden", async () => {
-		const user = userEvent.setup();
-		state.topics = [
-			makeTopic({
-				title: "No reset",
-				suggestedPostTypes: ["TWEET"],
-				userPostTypes: null,
-			}),
-		];
-		renderList({ canEdit: true });
-		await user.click(
-			screen.getByRole("button", { name: "Edit post types" }),
-		);
-		expect(
-			screen.queryByRole("button", { name: "Reset to AI suggestion" }),
-		).not.toBeInTheDocument();
-	});
+	/*
+	 * The five tests that drove `PostTypesDialog` from this row are gone with it.
+	 *
+	 * The row now opens `ContentTypesChecklist` in a popover, the same component
+	 * and the same writer the topic page uses, so there is one post-types
+	 * affordance in the product instead of a modal here and a popover there.
+	 * Saving the checked set, keeping a second pick, the selected-count line and
+	 * the Reset-when-overridden rule are all covered against that component in
+	 * `publishing-content-types-checklist.test.tsx`. What stays here is the part
+	 * that is about the ROW: that the trigger is present for an editor and
+	 * absent without `canEdit`.
+	 */
 
 	// -----------------------------------------------------------------------
 	// Task 6: the contributors editor — assign, remove yourself, reset.

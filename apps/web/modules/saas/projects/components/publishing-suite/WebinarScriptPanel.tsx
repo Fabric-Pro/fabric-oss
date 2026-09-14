@@ -1189,23 +1189,7 @@ export function WebinarScriptPanel({
 			) : null}
 
 			{doc ? (
-				<>
-					{doc.inputsNeeded.length > 0 ? (
-						<section className="space-y-2">
-							<h3 className="editorial-label">Inputs needed</h3>
-							{notesDescribeAnotherVersion ? (
-								<p className="text-muted-foreground text-sm leading-relaxed">
-									{OTHER_VERSION_NOTE}
-								</p>
-							) : null}
-							<ul className="list-disc space-y-1.5 pl-5 text-muted-foreground text-sm leading-relaxed">
-								{doc.inputsNeeded.map((item) => (
-									<li key={item}>{item}</li>
-								))}
-							</ul>
-						</section>
-					) : null}
-				</>
+				<></>
 			) : !isGenerating &&
 				attempt?.status !== "FAILED" &&
 				!working?.hasBody ? (

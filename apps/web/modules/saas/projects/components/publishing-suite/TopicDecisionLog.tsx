@@ -2,11 +2,18 @@
 
 import { Button } from "@ui/components/button";
 import { Textarea } from "@ui/components/textarea";
+import {
+	Tooltip,
+	TooltipContent,
+	TooltipProvider,
+	TooltipTrigger,
+} from "@ui/components/tooltip";
 import { cn } from "@ui/lib";
 import {
 	CheckCircle2Icon,
 	ChevronDownIcon,
 	CircleDashedIcon,
+	PencilLineIcon,
 	SparklesIcon,
 } from "lucide-react";
 import { useState } from "react";
@@ -122,91 +129,93 @@ export function TopicDecisionLog({
 	const aiUpdates = filtered.filter((th) => th.root.kind === "AI_UPDATE");
 
 	return (
-		<section className="space-y-5">
-			<div className="flex items-center justify-between gap-3">
-				<h2 className="publishing-label">Decision log</h2>
-				{/* biome-ignore lint/a11y/useSemanticElements: a filter toggle group, not a form fieldset */}
-				<div
-					className="inline-flex items-center rounded-md border border-border p-0.5"
-					role="group"
-					aria-label="Filter decisions"
-				>
-					{FILTERS.map((f) => (
-						<button
-							key={f.key}
-							type="button"
-							onClick={() => setFilter(f.key)}
-							aria-pressed={filter === f.key}
-							className={cn(
-								"rounded px-2.5 py-1 text-xs transition-colors",
-								filter === f.key
-									? "bg-accent font-medium text-foreground"
-									: "text-muted-foreground hover:text-foreground",
-							)}
-						>
-							{f.label}
-						</button>
-					))}
-				</div>
-			</div>
-
-			{decisions.length > 0 ? (
-				<ol className="space-y-2">
-					{decisions.map((thread) => (
-						<DecisionCard
-							key={thread.root.id}
-							thread={thread}
-							canEdit={canEdit}
-							isSubmitting={isAmending}
-							onAmend={(supersedesId, text) =>
-								submitAmendment(thread, supersedesId, text)
-							}
-						/>
-					))}
-				</ol>
-			) : (
-				<p className="text-muted-foreground text-sm">
-					{filterEmptyMessage(filter)}
-				</p>
-			)}
-
-			{aiUpdates.length > 0 ? (
-				<section aria-label="AI updates">
-					<button
-						type="button"
-						onClick={() => setAiUpdatesOpen((open) => !open)}
-						aria-expanded={aiUpdatesOpen}
-						aria-controls="decision-log-ai-updates"
-						className="flex w-full items-center gap-2 py-1 text-left"
+		<TooltipProvider>
+			<section className="space-y-5">
+				<div className="flex items-center justify-between gap-3">
+					<h2 className="publishing-label">Decision log</h2>
+					{/* biome-ignore lint/a11y/useSemanticElements: a filter toggle group, not a form fieldset */}
+					<div
+						className="inline-flex items-center rounded-md border border-border p-0.5"
+						role="group"
+						aria-label="Filter decisions"
 					>
-						<ChevronDownIcon
-							className={cn(
-								"size-3.5 shrink-0 text-muted-foreground transition-transform",
-								!aiUpdatesOpen && "-rotate-90",
-							)}
-							aria-hidden="true"
-						/>
-						<h3 className="publishing-label">AI Updates</h3>
-						<span className="text-[11px] text-muted-foreground/70">
-							{aiUpdates.length}
-						</span>
-					</button>
-					{aiUpdatesOpen ? (
-						<ol
-							id="decision-log-ai-updates"
-							className="mt-2 space-y-2"
+						{FILTERS.map((f) => (
+							<button
+								key={f.key}
+								type="button"
+								onClick={() => setFilter(f.key)}
+								aria-pressed={filter === f.key}
+								className={cn(
+									"rounded px-2.5 py-1 text-xs transition-colors",
+									filter === f.key
+										? "bg-accent font-medium text-foreground"
+										: "text-muted-foreground hover:text-foreground",
+								)}
+							>
+								{f.label}
+							</button>
+						))}
+					</div>
+				</div>
+
+				{decisions.length > 0 ? (
+					<ol className="space-y-2">
+						{decisions.map((thread) => (
+							<DecisionCard
+								key={thread.root.id}
+								thread={thread}
+								canEdit={canEdit}
+								isSubmitting={isAmending}
+								onAmend={(supersedesId, text) =>
+									submitAmendment(thread, supersedesId, text)
+								}
+							/>
+						))}
+					</ol>
+				) : (
+					<p className="text-muted-foreground text-sm">
+						{filterEmptyMessage(filter)}
+					</p>
+				)}
+
+				{aiUpdates.length > 0 ? (
+					<section aria-label="AI updates">
+						<button
+							type="button"
+							onClick={() => setAiUpdatesOpen((open) => !open)}
+							aria-expanded={aiUpdatesOpen}
+							aria-controls="decision-log-ai-updates"
+							className="flex w-full items-center gap-2 py-1 text-left"
 						>
-							{aiUpdates.map((thread) => (
-								<AiUpdateCard
-									key={thread.root.id}
-									thread={thread}
-								/>
-							))}
-						</ol>
-					) : null}
-				</section>
-			) : null}
-		</section>
+							<ChevronDownIcon
+								className={cn(
+									"size-3.5 shrink-0 text-muted-foreground transition-transform",
+									!aiUpdatesOpen && "-rotate-90",
+								)}
+								aria-hidden="true"
+							/>
+							<h3 className="publishing-label">AI Updates</h3>
+							<span className="text-[11px] text-muted-foreground/70">
+								{aiUpdates.length}
+							</span>
+						</button>
+						{aiUpdatesOpen ? (
+							<ol
+								id="decision-log-ai-updates"
+								className="mt-2 space-y-2"
+							>
+								{aiUpdates.map((thread) => (
+									<AiUpdateCard
+										key={thread.root.id}
+										thread={thread}
+									/>
+								))}
+							</ol>
+						) : null}
+					</section>
+				) : null}
+			</section>
+		</TooltipProvider>
 	);
 }
 
@@ -223,11 +232,18 @@ function filterEmptyMessage(filter: Filter): string {
 
 /**
  * A single decision — the question (+ status + who/when) with its answer, if
- * any, beneath it. Unlike the maturation sibling, this table carries no
- * `authorName` / `sourceProvenance` columns, so attribution here is limited
- * to what the row actually stores: who raised it (always the AI) and who
- * answered it (always the answering project member, per
- * `answerTopicQuestion`) — never a name, since the table does not record one.
+ * any, beneath it.
+ *
+ * This comment used to say the table records no author name and that `AuthorLabel`
+ * could therefore only ever print a generic string. That was true when the log
+ * shipped and is not true now: the `author` relation is on the wire and
+ * `AuthorLabel` renders `author.name`, falling back to a generic label only for
+ * a row that genuinely has none. The stale sentence outlived the fix and was
+ * later cited in review as evidence of a defect that did not exist — so state
+ * what the code does, and check it before repeating it.
+ *
+ * Still genuinely absent, unlike the maturation sibling: `sourceProvenance`.
+ * There is no chip here saying which meeting or document a decision came from.
  *
  * An AMENDED question has more than one answering reply. The log is the
  * changelog, so it shows the live answer in the same place it always did and
@@ -255,6 +271,16 @@ function DecisionCard({
 	const createdAt = new Date(root.createdAt);
 	const [isEditing, setIsEditing] = useState(false);
 	const [draft, setDraft] = useState("");
+
+	/**
+	 * Amend a RESOLVED decision only, matching `DecisionLogPanel`.
+	 *
+	 * An answered-but-still-OPEN thread is one the product has not finished
+	 * with — a regeneration can still supersede it — so offering to amend it
+	 * invites an edit that the next run may discard. The default filter is
+	 * Resolved, which hid the asymmetry; on All and Open it was reachable.
+	 */
+	const canAmend = canEdit && root.status === "RESOLVED";
 
 	/**
 	 * Close on SUCCESS, never on submit — the rule `AnsweredCard` documents.
@@ -354,19 +380,30 @@ function DecisionCard({
 									</time>
 								</p>
 							</div>
-							{canEdit ? (
-								<Button
-									type="button"
-									variant="ghost"
-									size="sm"
-									className="shrink-0"
-									onClick={() => {
-										setDraft(answer.content ?? "");
-										setIsEditing(true);
-									}}
-								>
-									Amend
-								</Button>
+							{canAmend ? (
+								<Tooltip>
+									<TooltipTrigger asChild>
+										<Button
+											type="button"
+											variant="ghost"
+											size="icon"
+											className="shrink-0"
+											aria-label={`Amend the answer to "${root.subject ?? root.content ?? "this decision"}"`}
+											onClick={() => {
+												setDraft(answer.content ?? "");
+												setIsEditing(true);
+											}}
+										>
+											<PencilLineIcon
+												className="size-3.5"
+												aria-hidden="true"
+											/>
+										</Button>
+									</TooltipTrigger>
+									<TooltipContent side="left">
+										Amend
+									</TooltipContent>
+								</Tooltip>
 							) : null}
 						</div>
 					)}

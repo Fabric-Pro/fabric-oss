@@ -444,3 +444,34 @@ describe("PlanningAnalysisEditor — save failures are recoverable, not crashes"
 		).not.toBeInTheDocument();
 	});
 });
+
+describe("PlanningAnalysisEditor — locked while a run is in flight", () => {
+	it("pauses the keyboard and Save, and says why", () => {
+		// Feature Maturation locks its editor on `isAiLoading`, and that is WHY
+		// it can replace a refreshed spec outright: nothing can have been typed
+		// into the document being superseded. Publishing left the editor live,
+		// so a regeneration could land on words a person was still writing.
+		render(<PlanningAnalysisEditor {...baseProps} isLocked />);
+
+		expect(
+			screen.getByTestId("planning-analysis-locked"),
+		).toBeInTheDocument();
+		expect(screen.getByRole("button", { name: /^save$/i })).toBeDisabled();
+		expect(fakeEditor.setEditable).toHaveBeenLastCalledWith(false);
+	});
+
+	it("is a separate concern from permission, so an editor keeps the rest", () => {
+		// `canEdit` also drives the toolbar, the raw/rich toggle and the editor
+		// region's height clamp. Folding the lock into it would drop the clamp
+		// mid-run and make the page jump under the reader.
+		const { rerender } = render(
+			<PlanningAnalysisEditor {...baseProps} isLocked />,
+		);
+		rerender(<PlanningAnalysisEditor {...baseProps} isLocked={false} />);
+
+		expect(
+			screen.queryByTestId("planning-analysis-locked"),
+		).not.toBeInTheDocument();
+		expect(fakeEditor.setEditable).toHaveBeenLastCalledWith(true);
+	});
+});

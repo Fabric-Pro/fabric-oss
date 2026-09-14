@@ -1267,16 +1267,6 @@ describe("NewsletterBlurbPanel — refining the saved draft", () => {
 });
 
 describe("NewsletterBlurbPanel — inputs needed and the safety note", () => {
-	it("shows the inputs still needed", () => {
-		renderPanel({ draft: readyDraft(UNCONFIRMED_DOCUMENT, "d2") });
-
-		expect(
-			screen.getByText(
-				/confirm whether the retry budget is live for everyone/i,
-			),
-		).toBeInTheDocument();
-	});
-
 	it("shows the note the draft wrote around", () => {
 		renderPanel({ draft: readyDraft(UNCONFIRMED_DOCUMENT, "d2") });
 

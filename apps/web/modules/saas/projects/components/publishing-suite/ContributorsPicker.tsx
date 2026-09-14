@@ -4,21 +4,24 @@ import { Avatar, AvatarFallback, AvatarImage } from "@ui/components/avatar";
 import { Badge } from "@ui/components/badge";
 import { Button } from "@ui/components/button";
 import { Checkbox } from "@ui/components/checkbox";
-import {
-	Dialog,
-	DialogContent,
-	DialogDescription,
-	DialogFooter,
-	DialogHeader,
-	DialogTitle,
-} from "@ui/components/dialog";
 import { Label } from "@ui/components/label";
+import {
+	Popover,
+	PopoverContent,
+	PopoverTrigger,
+} from "@ui/components/popover";
 import { cn } from "@ui/lib";
 import { useEffect, useState } from "react";
 import type { ProjectMember, TopicContributor } from "./topic-shared";
 
 /**
- * ContributorsDialog — override-only editor for a topic's contributor set.
+ * ContributorsPicker — override-only editor for a topic's contributor set.
+ *
+ * A POPOVER, not a modal. Choosing two names off a short list is a small
+ * action, and a modal charged it a dimmed page, a centred card and a round
+ * trip to dismiss. It owns its own trigger because a popover has to anchor to
+ * one; its DATA still belongs to the surface that runs the member query, which
+ * hands the wired control to `TopicDetails` as a node.
  * Save submits the checked set (possibly empty); Reset submits `null` (revert
  * to the AI-resolved set). The contributor row on the card stays display-only.
  *
@@ -62,7 +65,7 @@ import type { ProjectMember, TopicContributor } from "./topic-shared";
  * mounts (`TopicRow`, `TopicItemPage`) for how those are threaded through
  * from their own `members.list` query.
  */
-export function ContributorsDialog({
+export function ContributorsPicker({
 	topicTitle,
 	open,
 	onOpenChange,
@@ -144,7 +147,7 @@ export function ContributorsDialog({
 	 * render — which the count read as nothing selected, and which Save then
 	 * DROPPED, because it submits `rows.filter(selected)`.
 	 *
-	 * Giving each one a row fixes both at once, and is what `AssigneesDialog`
+	 * Giving each one a row fixes both at once, and is what `AssigneesPicker`
 	 * already does ("an id with no handle left at all still gets a row, because
 	 * the alternative is a checked-but-invisible id"). Row, checkbox, and the
 	 * ability to remove them deliberately rather than by side effect.
@@ -153,7 +156,7 @@ export function ContributorsDialog({
 	 * agree on open, and using the live set would delete the row out from under
 	 * anyone who unchecked it, leaving them no way to change their mind. A
 	 * non-member contributor is legitimate here (unlike an assignee, which
-	 * `AssigneesDialog` blocks Save on), so the row has to stay put.
+	 * `AssigneesPicker` blocks Save on), so the row has to stay put.
 	 */
 	const accountedFor = new Set([
 		...members.map((m) => m.userId),
@@ -204,7 +207,7 @@ export function ContributorsDialog({
 		return true;
 	});
 	// The SELECTION, not the visible rows — same rule and same wording as
-	// `AssigneesDialog`, which was built this way precisely because this dialog
+	// `AssigneesPicker`, which was built this way precisely because this dialog
 	// was not. The two sit one above the other on the topic page, so a reader
 	// comparing them is comparing like with like. Every selected id now has a
 	// row (see `unresolvedSelected`), so the two counts agree anyway; counting
@@ -213,15 +216,28 @@ export function ContributorsDialog({
 	const canSave = !isPending && membersReady;
 
 	return (
-		<Dialog open={open} onOpenChange={onOpenChange}>
-			<DialogContent className="max-w-md">
-				<DialogHeader>
-					<DialogTitle>Edit contributors</DialogTitle>
-					<DialogDescription>
-						Choose who contributed to "{topicTitle}" — select all
-						that apply. This overrides the AI-detected contributors.
-					</DialogDescription>
-				</DialogHeader>
+		<Popover open={open} onOpenChange={onOpenChange}>
+			<PopoverTrigger asChild>
+				<Button
+					type="button"
+					variant="ghost"
+					size="sm"
+					disabled={isPending}
+				>
+					Edit contributors
+				</Button>
+			</PopoverTrigger>
+			<PopoverContent
+				align="start"
+				className="w-[min(24rem,calc(100vw-2rem))] space-y-3 p-3"
+			>
+				<div className="space-y-1">
+					<p className="publishing-label">Contributors</p>
+					<p className="text-muted-foreground text-xs leading-relaxed">
+						Who contributed to "{topicTitle}". Overrides the
+						AI-detected list.
+					</p>
+				</div>
 				<fieldset className="max-h-[50vh] space-y-2 overflow-y-auto">
 					<legend className="sr-only">
 						Contributors — select all that apply
@@ -324,7 +340,7 @@ export function ContributorsDialog({
 						</p>
 					) : null}
 				</fieldset>
-				<DialogFooter>
+				<div className="flex flex-wrap items-center justify-end gap-2">
 					<Button
 						variant="ghost"
 						onClick={() => onOpenChange(false)}
@@ -353,8 +369,8 @@ export function ContributorsDialog({
 					>
 						Save
 					</Button>
-				</DialogFooter>
-			</DialogContent>
-		</Dialog>
+				</div>
+			</PopoverContent>
+		</Popover>
 	);
 }

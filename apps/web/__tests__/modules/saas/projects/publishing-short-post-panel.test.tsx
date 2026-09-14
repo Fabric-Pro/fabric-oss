@@ -551,23 +551,33 @@ describe("ShortPostPanel — extra sections", () => {
 		).toBeInTheDocument();
 	});
 
-	it("lists inputs needed and hashtags only when present", () => {
+	it("lists hashtags only when present", () => {
 		const { unmount } = renderPanel({ draft: readyDraft() });
-		expect(screen.queryByText(/inputs needed/i)).not.toBeInTheDocument();
 		expect(
 			screen.queryByText(/suggested hashtags/i),
 		).not.toBeInTheDocument();
 		unmount();
 
 		renderPanel({
+			draft: readyDraft({ options: OPTIONS, hashtags: ["#ci"] }),
+		});
+		expect(screen.getByText("#ci")).toBeInTheDocument();
+	});
+
+	it("no longer shows an inputs-needed list beside the draft", () => {
+		// The model still emits the field and it still reaches the working
+		// draft body, where it is editable and gets deleted before publishing.
+		// What is gone is the panel block: nothing in the product could clear an
+		// item, and it was largely the model echoing back the unresolved
+		// approvals the locked clauses had just told it about.
+		renderPanel({
 			draft: readyDraft({
 				options: OPTIONS,
 				inputsNeeded: ["The release date"],
-				hashtags: ["#ci"],
 			}),
 		});
-		expect(screen.getByText("The release date")).toBeInTheDocument();
-		expect(screen.getByText("#ci")).toBeInTheDocument();
+		expect(screen.queryByText(/inputs needed/i)).not.toBeInTheDocument();
+		expect(screen.queryByText("The release date")).not.toBeInTheDocument();
 	});
 });
 

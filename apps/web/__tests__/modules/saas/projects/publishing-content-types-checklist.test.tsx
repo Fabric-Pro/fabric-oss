@@ -127,6 +127,23 @@ describe("ContentTypesChecklist", () => {
 		expect(screen.getByText(/Tweet · Blog Post/)).toBeInTheDocument();
 	});
 
+	it("skips the collapse entirely when it IS the surface", () => {
+		// The popover mounts pass `alwaysOpen`. Without it they could only ever
+		// render collapsed: the effective post types fall back to every format
+		// when a topic has chosen none, so `selected` is never empty there, and
+		// opening the popover then cost a second click and a chevron to reach a
+		// checkbox. There is nothing for a popover to collapse out of the way of.
+		renderChecklist({ selected: ["TWEET", "BLOG_POST"], alwaysOpen: true });
+
+		expect(
+			screen.getByRole("checkbox", { name: /tweet/i }),
+		).toBeInTheDocument();
+		// And no collapse control, since there is no collapsed state to reach.
+		expect(
+			screen.queryByRole("button", { name: /content types/i }),
+		).not.toBeInTheDocument();
+	});
+
 	it("reopens on demand", async () => {
 		const user = userEvent.setup();
 		renderChecklist({ selected: ["TWEET"] });

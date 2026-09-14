@@ -858,8 +858,9 @@ export function CaseStudyPanel({
 					<p className="text-sm leading-relaxed">
 						There wasn't enough confirmed material to write a full
 						case study, so this is an outline with placeholders
-						rather than a finished draft. Fill the gaps under
-						"Inputs needed" before sharing it.
+						rather than a finished draft. Fill the gaps under "Still
+						needed before publishing" in the draft before sharing
+						it.
 					</p>
 					{notesDescribeAnotherVersion ? (
 						<p className="text-sm leading-relaxed">
@@ -1011,22 +1012,6 @@ export function CaseStudyPanel({
 								notesDescribeAnotherVersion
 							}
 						/>
-					) : null}
-
-					{doc.inputsNeeded.length > 0 ? (
-						<section className="space-y-2">
-							<h3 className="publishing-label">Inputs needed</h3>
-							{notesDescribeAnotherVersion ? (
-								<p className="text-muted-foreground text-sm leading-relaxed">
-									{OTHER_VERSION_NOTE}
-								</p>
-							) : null}
-							<ul className="list-disc space-y-1.5 pl-5 text-muted-foreground text-sm leading-relaxed">
-								{doc.inputsNeeded.map((item) => (
-									<li key={item}>{item}</li>
-								))}
-							</ul>
-						</section>
 					) : null}
 
 					{doc.categories.length > 0 ? (

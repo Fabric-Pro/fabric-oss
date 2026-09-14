@@ -311,6 +311,7 @@ import {
 	selectLinkedInPostOptionProcedure,
 	selectShortPostOptionProcedure,
 	setPublishingListPreferenceProcedure,
+	restorePublishingQuestionProcedure,
 	setPublishingQuestionAssigneesProcedure,
 	setTopicReadStateProcedure,
 	setTopicSnoozeProcedure,
@@ -1440,6 +1441,7 @@ export const projectsRouter = {
 		// Routing, NOT answering: `setQuestionAssignees` leaves the root OPEN.
 		// A separate procedure from `answerTopicQuestion` below for exactly that
 		// reason — asking somebody is not settling the question.
+		restoreQuestion: restorePublishingQuestionProcedure,
 		setQuestionAssignees: setPublishingQuestionAssigneesProcedure,
 		answerTopicQuestion: answerTopicQuestionProcedure,
 		// A settled question is not a closed one: `amendTopicQuestion` appends a

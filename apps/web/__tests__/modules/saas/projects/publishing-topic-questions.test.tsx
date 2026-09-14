@@ -24,22 +24,33 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 // (`answerTopicQuestion` refuses a settled root on purpose), and a shared spy
 // would let a regression that sent an amendment down the answer procedure pass
 // every assertion below.
-const { answerMutation, amendMutation, assignMutation, mutationState } =
-	vi.hoisted(() => ({
-		answerMutation: vi.fn(),
-		amendMutation: vi.fn(),
-		/**
-		 * Routing, and its OWN spy. Assignment must never reach either write above:
-		 * asking somebody is not settling the question, and a shared spy would let
-		 * a regression that answered on the caller's behalf pass every assertion.
-		 */
-		assignMutation: vi.fn(),
-		mutationState: {
-			shouldFail: false,
-			/** What the amend mutation resolves with — its `onSuccess` reads `status`. */
-			result: { status: "amended" } as { status: string },
-		},
-	}));
+const {
+	answerMutation,
+	amendMutation,
+	assignMutation,
+	restoreMutate,
+	mutationState,
+} = vi.hoisted(() => ({
+	answerMutation: vi.fn(),
+	amendMutation: vi.fn(),
+	/**
+	 * Restoring, and its OWN spy for the same reason assignment has one:
+	 * putting a question back on the open list must never reach a write
+	 * that answers it.
+	 */
+	restoreMutate: vi.fn(),
+	/**
+	 * Routing, and its OWN spy. Assignment must never reach either write above:
+	 * asking somebody is not settling the question, and a shared spy would let
+	 * a regression that answered on the caller's behalf pass every assertion.
+	 */
+	assignMutation: vi.fn(),
+	mutationState: {
+		shouldFail: false,
+		/** What the amend mutation resolves with — its `onSuccess` reads `status`. */
+		result: { status: "amended" } as { status: string },
+	},
+}));
 
 async function run(
 	opts: {
@@ -55,7 +66,9 @@ async function run(
 			? amendMutation
 			: key === "setQuestionAssignees"
 				? assignMutation
-				: answerMutation;
+				: key === "restoreQuestion"
+					? restoreMutate
+					: answerMutation;
 	spy(vars);
 	if (mutationState.shouldFail) {
 		const err = new Error("failed");
@@ -100,6 +113,12 @@ vi.mock("@shared/lib/orpc-query-utils", () => ({
 				amendTopicQuestion: {
 					mutationOptions: (opts: Record<string, unknown>) => ({
 						mutationKey: ["amendTopicQuestion"],
+						...opts,
+					}),
+				},
+				restoreQuestion: {
+					mutationOptions: (opts: Record<string, unknown>) => ({
+						mutationKey: ["restoreQuestion"],
 						...opts,
 					}),
 				},
@@ -287,6 +306,43 @@ describe("TopicQuestionsPanel — a failing answer (DV14)", () => {
 });
 
 describe("TopicQuestionsPanel — possibly-resolved questions (FR/IN4)", () => {
+	it("puts a soft-closed question back on the open list", async () => {
+		// The panel already said these "can still be answered" and offered no
+		// way to put one back where the work happens: once a regeneration set a
+		// root aside, only another regeneration raising it again could undo
+		// that. `SummaryQuestionsPanel` has had this lever since #5.
+		const user = userEvent.setup();
+		render(
+			<TopicQuestionsPanel
+				{...BASE}
+				threads={[POSSIBLY_RESOLVED_THREAD]}
+			/>,
+		);
+
+		await user.click(
+			screen.getByRole("button", { name: /possibly resolved/i }),
+		);
+		await user.click(
+			screen.getByRole("button", { name: /restore to open questions/i }),
+		);
+
+		expect(restoreMutate).toHaveBeenCalledWith(
+			expect.objectContaining({
+				questionRootId: POSSIBLY_RESOLVED_THREAD.root.id,
+			}),
+		);
+	});
+
+	it("offers no restore on an OPEN question, which has nothing to restore", () => {
+		render(<TopicQuestionsPanel {...BASE} threads={[OPEN_THREAD]} />);
+
+		expect(
+			screen.queryByRole("button", {
+				name: /restore to open questions/i,
+			}),
+		).not.toBeInTheDocument();
+	});
+
 	it("answers a possibly-resolved question through the same controls as OPEN", async () => {
 		const user = userEvent.setup();
 		render(

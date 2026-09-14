@@ -676,31 +676,6 @@ describe("StakeholderEmailPanel — the release status", () => {
 		).toBeInTheDocument();
 	});
 
-	it("drops a whitespace-only entry rather than drawing an empty bullet", () => {
-		// `audience` above has always been trimmed to null; the LISTS were not
-		// brought along, so an entry of spaces survived the type check and drew
-		// a bullet with nothing in it. Worse on the export path, where the same
-		// entry makes the draft count as unclean and prints a caveat line that
-		// names no caveat.
-		renderPanel({
-			draft: readyDraft(
-				{
-					...UNCONFIRMED_DOCUMENT,
-					inputsNeeded: ["   ", "Confirm the rollout completed"],
-				},
-				"d2",
-			),
-		});
-
-		expect(
-			screen.getByText(/confirm the rollout completed/i),
-		).toBeInTheDocument();
-		// One item rendered, not two: the blank one is gone, and the real one
-		// is untouched. Asserting only the second would pass on a build that
-		// dropped nothing.
-		expect(screen.getAllByRole("listitem")).toHaveLength(1);
-	});
-
 	it("treats a whitespace-only safety note as no safety note", () => {
 		renderPanel({
 			draft: readyDraft({ ...DOCUMENT, safetyNote: "   " }, "d2"),
@@ -711,14 +686,11 @@ describe("StakeholderEmailPanel — the release status", () => {
 		expect(screen.queryByText(/safety note/i)).not.toBeInTheDocument();
 	});
 
-	it("shows the safety note and the inputs still needed", () => {
+	it("shows the safety note", () => {
 		renderPanel({ draft: readyDraft(UNCONFIRMED_DOCUMENT, "d2") });
 
 		expect(
 			screen.getByText(/generalized the customer reference/i),
-		).toBeInTheDocument();
-		expect(
-			screen.getByText(/confirm whether the rollout has completed/i),
 		).toBeInTheDocument();
 	});
 
@@ -774,13 +746,11 @@ describe("StakeholderEmailPanel — when the notes describe a different version"
 			working: working({ sourceDraftId: "d1" }),
 		});
 
-		// FOUR since A6: the safety note joined the three surfaces this
-		// test was written for. It was the one on-screen surface never
-		// qualified, against the panel header's own claim that every one
-		// is — and the side-by-side layout put it beside the draft it is
-		// NOT about. A count rather than a floor, so a surface that
-		// silently loses its qualifier still fails here.
-		expect(screen.getAllByText(OTHER_VERSION)).toHaveLength(4);
+		// THREE. It was four until the inputs-needed list left the panel;
+		// the safety note, added in A6, keeps the count above the two this
+		// test was originally written for. A count rather than a floor, so a
+		// surface that silently loses its qualifier still fails here.
+		expect(screen.getAllByText(OTHER_VERSION)).toHaveLength(3);
 	});
 
 	it("stays quiet when the editor holds that very version", () => {

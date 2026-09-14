@@ -889,3 +889,51 @@ export async function setTopicQuestionAssignees(input: {
 
 	return { added, summary };
 }
+
+/**
+ * Re-open a soft-closed (`POSSIBLY_RESOLVED`) question.
+ *
+ * The reverse happens automatically: `reconcileTopicQuestions` soft-closes a
+ * root the newest analysis stopped raising, deliberately rather than deleting
+ * it, because a dropped question is weak evidence that it was settled. This is
+ * the manual lever back, and it only ever re-opens — nothing here deletes, so
+ * recall is preserved either way. Mirrors `maturation.restoreQuestion`, which
+ * exists for the same reason on the feature side.
+ *
+ * Scoped like every other writer in this file: the root is resolved by
+ * `(id, topicId, projectId)` before anything is written, so a caller cannot
+ * reach a question on a topic they named incorrectly.
+ *
+ * Only `POSSIBLY_RESOLVED` is eligible. Re-opening a RESOLVED root would undo
+ * somebody's answer, and an already-OPEN one has nothing to do — both return
+ * `null` rather than silently reporting success.
+ */
+export async function restoreTopicQuestion(input: {
+	topicId: string;
+	projectId: string;
+	/** The question thread ROOT. */
+	entryId: string;
+}): Promise<{ restored: true; summary: string | null } | null> {
+	const entry = await db.publishingTopicDecisionEntry.findFirst({
+		where: {
+			id: input.entryId,
+			topicId: input.topicId,
+			projectId: input.projectId,
+			parentId: null,
+			kind: "QUESTION",
+			status: "POSSIBLY_RESOLVED",
+			deletedAt: null,
+		},
+		select: { id: true, subject: true, content: true },
+	});
+	if (!entry) {
+		return null;
+	}
+
+	await db.publishingTopicDecisionEntry.update({
+		where: { id: entry.id },
+		data: { status: "OPEN" },
+	});
+
+	return { restored: true, summary: entry.subject ?? entry.content };
+}

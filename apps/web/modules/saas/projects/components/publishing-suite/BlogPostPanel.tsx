@@ -605,17 +605,6 @@ export function BlogPostPanel({
 						/>
 					) : null}
 
-					{doc.inputsNeeded.length > 0 ? (
-						<section className="space-y-2">
-							<h3 className="publishing-label">Inputs needed</h3>
-							<ul className="list-disc space-y-1.5 pl-5 text-muted-foreground text-sm leading-relaxed">
-								{doc.inputsNeeded.map((item) => (
-									<li key={item}>{item}</li>
-								))}
-							</ul>
-						</section>
-					) : null}
-
 					{doc.categories.length > 0 ? (
 						<section className="space-y-2">
 							<h3 className="publishing-label">

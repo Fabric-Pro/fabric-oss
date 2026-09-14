@@ -737,13 +737,11 @@ describe("CaseStudyPanel — when the notes describe a different version", () =>
 			working: working({ sourceDraftId: "d1" }),
 		});
 
-		// FOUR since A6: the safety note joined the three surfaces this
-		// test was written for. It was the one on-screen surface never
-		// qualified, against the panel header's own claim that every one
-		// is — and the side-by-side layout put it beside the draft it is
-		// NOT about. A count rather than a floor, so a surface that
-		// silently loses its qualifier still fails here.
-		expect(screen.getAllByText(OTHER_VERSION)).toHaveLength(4);
+		// THREE. It was four until the inputs-needed list left the panel;
+		// the safety note, added in A6, keeps the count above the two this
+		// test was originally written for. A count rather than a floor, so a
+		// surface that silently loses its qualifier still fails here.
+		expect(screen.getAllByText(OTHER_VERSION)).toHaveLength(3);
 	});
 
 	it("stays quiet when the editor holds that very version", () => {
@@ -895,7 +893,6 @@ describe("CaseStudyPanel — downloading the draft", () => {
 			draft: readyDraft(
 				{
 					...SCAFFOLD_DOCUMENT,
-					inputsNeeded: ["   ", "Adoption numbers for the rollout"],
 					assetsNeedingConfirmation: [
 						"\t\n",
 						"the architecture diagram",
@@ -905,9 +902,6 @@ describe("CaseStudyPanel — downloading the draft", () => {
 			),
 		});
 
-		expect(
-			screen.getByText(/adoption numbers for the rollout/i),
-		).toBeInTheDocument();
 		expect(
 			screen.getByText(/the architecture diagram/i),
 		).toBeInTheDocument();

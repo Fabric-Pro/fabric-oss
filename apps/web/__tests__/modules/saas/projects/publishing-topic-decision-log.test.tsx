@@ -418,7 +418,7 @@ describe("TopicDecisionLog — amending in place", () => {
 		);
 
 		expect(
-			screen.getByRole("button", { name: "Amend" }),
+			screen.getByRole("button", { name: /^amend the answer to/i }),
 		).toBeInTheDocument();
 	});
 
@@ -426,7 +426,7 @@ describe("TopicDecisionLog — amending in place", () => {
 		renderLog(<TopicDecisionLog {...TENANT} threads={[RESOLVED_THREAD]} />);
 
 		expect(
-			screen.queryByRole("button", { name: "Amend" }),
+			screen.queryByRole("button", { name: /^amend the answer to/i }),
 		).not.toBeInTheDocument();
 	});
 
@@ -442,7 +442,9 @@ describe("TopicDecisionLog — amending in place", () => {
 			/>,
 		);
 
-		await userEvent.click(screen.getByRole("button", { name: "Amend" }));
+		await userEvent.click(
+			screen.getByRole("button", { name: /^amend the answer to/i }),
+		);
 
 		expect(screen.getByLabelText("Your answer")).toHaveValue(ANSWER_TEXT);
 	});
@@ -456,7 +458,9 @@ describe("TopicDecisionLog — amending in place", () => {
 			/>,
 		);
 
-		await userEvent.click(screen.getByRole("button", { name: "Amend" }));
+		await userEvent.click(
+			screen.getByRole("button", { name: /^amend the answer to/i }),
+		);
 		await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
 
 		expect(screen.queryByLabelText("Your answer")).not.toBeInTheDocument();
@@ -474,7 +478,9 @@ describe("TopicDecisionLog — amending in place", () => {
 			/>,
 		);
 
-		await userEvent.click(screen.getByRole("button", { name: "Amend" }));
+		await userEvent.click(
+			screen.getByRole("button", { name: /^amend the answer to/i }),
+		);
 		await userEvent.clear(screen.getByLabelText("Your answer"));
 
 		expect(

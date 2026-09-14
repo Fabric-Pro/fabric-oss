@@ -17,16 +17,15 @@ import { PlusIcon } from "lucide-react";
 import dynamic from "next/dynamic";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
-import { AssigneesDialog } from "./AssigneesDialog";
+import { AssigneesPicker } from "./AssigneesPicker";
 import { ContentTypesChecklist } from "./ContentTypesChecklist";
-import { ContributorsDialog } from "./ContributorsDialog";
+import { ContributorsPicker } from "./ContributorsPicker";
 import {
 	buildGenerationTabModel,
 	GenerationTabPanels,
 	GenerationTabTriggers,
 } from "./GenerationTabs";
 import { PlanningAnalysisTab } from "./PlanningAnalysisTab";
-import { PostTypesDialog } from "./PostTypesDialog";
 import { PublishTopicDialog } from "./PublishTopicDialog";
 import {
 	isEmptyAnalysis,
@@ -149,11 +148,16 @@ export function TopicItemPage({
 	const { user } = useSession();
 	const viewerUserId = user?.id ?? null;
 	const [tab, setTab] = useState<ActiveTab>("summaryQuestions");
-	// The three metadata editors `TopicDetails` triggers. Held here rather than
-	// inside that component because it is the SAME block the Inbox row mounts:
-	// giving it its own dialogs would put two of each in the tree whenever both
+	// The metadata editors `TopicDetails` triggers. Held here rather than inside
+	// that component because it is the SAME block the Inbox row mounts: giving
+	// it its own dialogs would put two of each in the tree whenever both
 	// surfaces are open, and would stop the row owning its own pending state.
-	const [postTypesOpen, setPostTypesOpen] = useState(false);
+	//
+	// Post types are NOT among them on this page. `+ Add type` in the tab strip
+	// opens the checklist in a popover, so the dialog had no trigger left here
+	// and the second entry point it created — one popover, one modal, writing
+	// through the same handler — is the duplication that removal resolves. The
+	// Inbox row still mounts the dialog: it has no tab strip to host the `+`.
 	const [postTypesPending, setPostTypesPending] = useState(false);
 	const [addTypeOpen, setAddTypeOpen] = useState(false);
 	const [urlOpen, setUrlOpen] = useState(false);
@@ -207,7 +211,7 @@ export function TopicItemPage({
 	// structural sharing keeps `topic` referentially stable across a no-op
 	// refetch, but ANY OTHER field changing (a read marker, a status edit,
 	// `updatedAt`) mints a new `topic` object and would re-run this memo,
-	// re-seeding `ContributorsDialog`'s selection and discarding whatever the
+	// re-seeding `ContributorsPicker`'s selection and discarding whatever the
 	// user had just checked. Called unconditionally (before the early returns
 	// below), so it has to tolerate `topic` being undefined while the query is
 	// still pending.
@@ -724,7 +728,7 @@ export function TopicItemPage({
 				topicId,
 				postTypes,
 			});
-			setPostTypesOpen(false);
+			setAddTypeOpen(false);
 		} catch {
 			// Surfaced by this mutation's onError toast above.
 		} finally {
@@ -841,9 +845,22 @@ export function TopicItemPage({
 			<div className="space-y-3">
 				<p className="publishing-label">Publishing topic</p>
 				<div className="flex flex-wrap items-start justify-between gap-3">
-					<h1 className="font-serif font-normal text-3xl leading-tight">
-						{topic.title}
-					</h1>
+					<div className="flex min-w-0 flex-wrap items-baseline gap-x-3 gap-y-1">
+						<h1 className="font-serif font-normal text-3xl leading-tight">
+							{topic.title}
+						</h1>
+						{/* The angle is a LABEL — "Feature release note", "How-to",
+						    "Customer story" — and it was rendering as a lone grey
+						    sentence under the title, where it read as a one-line
+						    description that had been cut off. Same row, pill
+						    shape, so it reads as a classification of the title
+						    rather than prose about it. */}
+						{topic.angle ? (
+							<span className="inline-flex w-fit shrink-0 items-center rounded-full border border-border bg-muted px-2.5 py-0.5 text-muted-foreground text-xs">
+								{topic.angle}
+							</span>
+						) : null}
+					</div>
 					<span
 						className="shrink-0 rounded-full border border-border bg-muted px-3 py-1 text-muted-foreground text-xs"
 						data-testid="topic-status"
@@ -851,11 +868,6 @@ export function TopicItemPage({
 						{statusLabel}
 					</span>
 				</div>
-				{topic.angle ? (
-					<p className="text-muted-foreground text-sm">
-						{topic.angle}
-					</p>
-				) : null}
 				{topic.declineReason ? (
 					<p className="border-destructive border-l-2 pl-3 text-muted-foreground text-sm">
 						{topic.declineReason}
@@ -996,6 +1008,7 @@ export function TopicItemPage({
 										canEdit={canEdit}
 										isPending={postTypesPending}
 										createdAt={topic.createdAt}
+										alwaysOpen
 										onChange={handlePostTypesSubmit}
 									/>
 								</PopoverContent>
@@ -1111,10 +1124,41 @@ export function TopicItemPage({
 							assigneesPending
 						}
 						onEditUrl={() => setUrlOpen(true)}
-						onEditPostTypes={() => setPostTypesOpen(true)}
-						onEditContributors={() => setContributorsOpen(true)}
-						onEditAssignees={() => setAssigneesOpen(true)}
+						contributorsControl={
+							<ContributorsPicker
+								topicTitle={topic.title}
+								open={contributorsOpen}
+								onOpenChange={setContributorsOpen}
+								members={members}
+								contributors={topic.contributors}
+								initialSelected={contributorIds}
+								hasOverride={
+									topic.userContributorUserIds !== null
+								}
+								viewerUserId={viewerUserId}
+								membersPending={membersQuery.isPending}
+								membersError={membersQuery.isError}
+								onSubmit={handleContributorsSubmit}
+								isPending={contributorsPending}
+							/>
+						}
+						assigneesControl={
+							<AssigneesPicker
+								topicTitle={topic.title}
+								open={assigneesOpen}
+								onOpenChange={setAssigneesOpen}
+								members={members}
+								assignees={topic.assignees}
+								initialSelected={assigneeIds}
+								viewerUserId={viewerUserId}
+								membersPending={membersQuery.isPending}
+								membersError={membersQuery.isError}
+								onSubmit={handleAssigneesSubmit}
+								isPending={assigneesPending}
+							/>
+						}
 						showMeetingParticipants={false}
+						showEditPostTypes={false}
 					/>
 				</TabsContent>
 
@@ -1180,19 +1224,6 @@ export function TopicItemPage({
 			    would put unreachable write UI in the tree. */}
 			{canEdit ? (
 				<>
-					<PostTypesDialog
-						topicTitle={topic.title}
-						open={postTypesOpen}
-						onOpenChange={setPostTypesOpen}
-						initialSelected={
-							topic.userPostTypes ?? topic.suggestedPostTypes
-						}
-						hasOverride={topic.userPostTypes !== null}
-						hasAiSuggestion={topic.suggestedPostTypes.length > 0}
-						recommendations={generationModel.byPostType}
-						onSubmit={handlePostTypesSubmit}
-						isPending={postTypesPending}
-					/>
 					<PublishTopicDialog
 						topicTitle={topic.title}
 						open={urlOpen}
@@ -1202,33 +1233,6 @@ export function TopicItemPage({
 						initialUrl={topic.publishedUrl}
 						title="Edit published URL"
 						confirmLabel="Save"
-					/>
-					<ContributorsDialog
-						topicTitle={topic.title}
-						open={contributorsOpen}
-						onOpenChange={setContributorsOpen}
-						members={members}
-						contributors={topic.contributors}
-						initialSelected={contributorIds}
-						hasOverride={topic.userContributorUserIds !== null}
-						viewerUserId={viewerUserId}
-						membersPending={membersQuery.isPending}
-						membersError={membersQuery.isError}
-						onSubmit={handleContributorsSubmit}
-						isPending={contributorsPending}
-					/>
-					<AssigneesDialog
-						topicTitle={topic.title}
-						open={assigneesOpen}
-						onOpenChange={setAssigneesOpen}
-						members={members}
-						assignees={topic.assignees}
-						initialSelected={assigneeIds}
-						viewerUserId={viewerUserId}
-						membersPending={membersQuery.isPending}
-						membersError={membersQuery.isError}
-						onSubmit={handleAssigneesSubmit}
-						isPending={assigneesPending}
 					/>
 				</>
 			) : null}
