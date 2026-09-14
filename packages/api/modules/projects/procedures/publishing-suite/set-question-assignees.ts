@@ -53,6 +53,15 @@ export const setPublishingQuestionAssigneesProcedure = tenantProtectedProcedure
 			organizationId: z.string().nullable().optional(),
 			/** The COMPLETE desired set; empty clears the question. */
 			assigneeUserIds: z.array(z.string()).max(MAX_ASSIGNEES),
+			/**
+			 * The sentence that explains the ask.
+			 *
+			 * Without it, routing a question notified somebody with nothing but
+			 * "you have been assigned" — the recipient arrives at a bare
+			 * assignment and has to guess why. Stored as a real reply turn, so
+			 * it renders under the question with its author and its time.
+			 */
+			note: z.string().trim().max(2000).optional(),
 		}),
 	)
 	.output(
@@ -93,6 +102,8 @@ export const setPublishingQuestionAssigneesProcedure = tenantProtectedProcedure
 			entryId: input.questionRootId,
 			assigneeUserIds: input.assigneeUserIds,
 			assignedByUserId: user.id,
+			assignedByName: user.name ?? null,
+			note: input.note?.trim() || null,
 		});
 		// `null` is "no such question in this topic and project". Reporting it
 		// as a successful no-op would leave the picker showing avatars the
@@ -101,8 +112,23 @@ export const setPublishingQuestionAssigneesProcedure = tenantProtectedProcedure
 			throw new ORPCError("NOT_FOUND", { message: "Question not found" });
 		}
 		const added = result.added;
+		const note = input.note?.trim() || undefined;
 
-		if (added.length > 0) {
+		/**
+		 * An ask carrying a note is a MESSAGE, not just a routing change, so
+		 * everyone the question is now waiting on hears it — not only the
+		 * people this call added. Re-asking somebody already assigned is the
+		 * ordinary way a second question gets asked, and `added` is empty for
+		 * exactly that person, so the note would otherwise reach nobody.
+		 *
+		 * Without a note the original rule stands: re-saving an unchanged set
+		 * is silent, so toggling avatars in the picker never spams the room.
+		 */
+		const recipientUserIds = note
+			? [...new Set([...added, ...input.assigneeUserIds])]
+			: added;
+
+		if (recipientUserIds.length > 0) {
 			// Fire-and-forget: a notification failure must never fail the write
 			// the user actually asked for.
 			//
@@ -121,7 +147,7 @@ export const setPublishingQuestionAssigneesProcedure = tenantProtectedProcedure
 					}),
 				]);
 				await fanOut.publishingQuestionAssigned({
-					recipientUserIds: added,
+					recipientUserIds,
 					topicId: input.topicId,
 					topicTitle: topic?.topic.title ?? "a publishing topic",
 					questionRootId: input.questionRootId,
@@ -135,6 +161,8 @@ export const setPublishingQuestionAssigneesProcedure = tenantProtectedProcedure
 					// must not carry `/app` or an org slug of its own. The
 					// question anchor is appended by the fan-out.
 					link: `projects/${input.projectId}/publishing/${input.topicId}`,
+					note,
+					noteEntryId: result.noteEntryId ?? undefined,
 				});
 			})().catch((error) => {
 				console.warn(
@@ -146,6 +174,6 @@ export const setPublishingQuestionAssigneesProcedure = tenantProtectedProcedure
 
 		return {
 			assigneeUserIds: [...new Set(input.assigneeUserIds)],
-			notifiedUserIds: added,
+			notifiedUserIds: recipientUserIds,
 		};
 	});

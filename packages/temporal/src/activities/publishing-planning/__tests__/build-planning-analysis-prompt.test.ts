@@ -332,6 +332,64 @@ describe("resolveConfirmationQuestions", () => {
 	 * groups by that verdict and the tab strip still badges from it. Only the
 	 * question is gone.
 	 */
+	it("keeps a model option whose justification is missing", () => {
+		// The normalizer required BOTH text and justification and skipped any
+		// entry missing either — so a model that answered without explaining
+		// itself lost the whole set, `answerOptions` came back null, and the
+		// card fell back to a single "Suggested:" line. The text IS the option;
+		// the justification is commentary on it, and a usable option should not
+		// be discarded for missing its rationale.
+		const questions = resolveConfirmationQuestions("topic-1", {
+			recommendedQuestions: [
+				{
+					decisionKind: "AUTHORSHIP",
+					subject: "the byline",
+					question: "Who should be credited?",
+					recommendedAnswers: [
+						{ text: "The feature's engineer", justification: "" },
+						{
+							text: "The team, unattributed",
+							justification: "No individual is named in context.",
+						},
+					],
+				},
+			],
+		} as never);
+
+		const authored = questions.find((q) => q.source !== "DERIVED");
+		expect(authored?.answerOptions).toHaveLength(2);
+		expect(authored?.answerOptions?.[0]?.justification).toBe("");
+	});
+
+	it("gives a derived approval two options to pick between", () => {
+		// Every DERIVED question carried `recommendedResponse: null` and
+		// `answerOptions: null`, hardcoded here rather than left to the model —
+		// so it rendered as a bare textarea, and no amount of regenerating
+		// changed that. Derived approvals are most of what a reader sees on a
+		// topic. "May we use this?" has two answers and the draft behaves
+		// differently for each, which is what an option with a justification is
+		// for; typing your own is still offered.
+		const questions = resolveConfirmationQuestions("topic-1", {
+			supportingAssets: {
+				requiresApproval: [
+					{
+						type: "the customer quote",
+						rationale: "Names a customer.",
+					},
+				],
+			},
+		} as never);
+
+		const derived = questions.find((q) => q.source === "DERIVED");
+		expect(derived?.answerOptions).toHaveLength(2);
+		expect(derived?.answerOptions?.[0]?.text).toMatch(/approved/i);
+		expect(derived?.answerOptions?.[1]?.text).toMatch(/leave .* out/i);
+		// Each carries WHY, because the two answers change what the draft does.
+		for (const option of derived?.answerOptions ?? []) {
+			expect(option.justification.length).toBeGreaterThan(0);
+		}
+	});
+
 	it("mints NO question for a content type — it is a setting", () => {
 		const questions = resolveConfirmationQuestions("topic-1", {
 			contentTypes: {

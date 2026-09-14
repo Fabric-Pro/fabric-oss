@@ -7570,6 +7570,27 @@ model PublishingTopicWorkingDraft {
   /// blog post, whose generation produces one draft rather than options.
   sourceOptionLabel String?
   updatedById       String?
+  /// An ADVISORY lock on a SHARED draft (Fizzy #1851, deck call 05).
+  ///
+  /// `@@unique([topicId, postType])` means one working draft per content type
+  /// for the whole topic, not one per author — so two people editing is a real
+  /// collision rather than a theoretical one. Advisory and never enforcing:
+  /// `editingUserId` names who is in it, `editingExpiresAt` says when that
+  /// claim goes stale, and Take-over is always available. Nothing here can
+  /// refuse a write.
+  ///
+  /// Safe to hand over BECAUSE every prior body is reachable: the draft
+  /// version list is what makes a take-over non-destructive, which is why the
+  /// lock was sequenced after it rather than before.
+  ///
+  /// A PLAIN column, like `sourceDraftId` above and for a related reason. A
+  /// foreign key here would buy only SetNull on the holder's account going
+  /// away, and a claim already expires on its own after ten minutes — so a
+  /// departed user's lock self-heals without one. The holder's NAME is
+  /// resolved through the project's member list rather than a user join, which
+  /// is the disclosure rule every other reader in this area follows anyway.
+  editingUserId     String?
+  editingExpiresAt  DateTime?
   createdAt         DateTime                @default(now())
   updatedAt         DateTime                @updatedAt
 
@@ -7584,6 +7605,7 @@ model PublishingTopicWorkingDraft {
   @@index([organizationId])
   @@index([userId])
   @@index([updatedById])
+  @@index([editingUserId])
   @@map("publishing_topic_working_draft")
 }
 

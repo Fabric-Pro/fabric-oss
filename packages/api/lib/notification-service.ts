@@ -444,6 +444,16 @@ type PublishingQuestionAssignedArgs = {
 	actorName: string;
 	/** Topic link WITHOUT a fragment; the question anchor is appended here. */
 	link: string;
+	/**
+	 * The sentence that explains the ask, when one was typed.
+	 *
+	 * It becomes the notification's snippet: a recipient triaging the bell
+	 * wants to know what is being asked of them, and the question's own
+	 * summary is what the AI wrote rather than what a colleague said.
+	 */
+	note?: string;
+	/** The reply turn the note was stored as; a second ask is a second notice. */
+	noteEntryId?: string;
 };
 
 /**
@@ -1362,7 +1372,11 @@ export const fanOut = {
 							type: NotificationType.PUBLISHING_QUESTION_ASSIGNED,
 							category: NotificationCategory.ASSIGNMENT,
 							title: `${args.actorName} is asking you about ${args.topicTitle}`,
-							snippet: args.questionSummary,
+							// The colleague's words when there are any: the
+							// question summary is what the AI wrote, and a
+							// recipient triaging the bell wants to know what is
+							// being asked of THEM.
+							snippet: args.note ?? args.questionSummary,
 							link: `${args.link}#q-${args.questionRootId}`,
 							source: {
 								projectId: args.projectId,
@@ -1379,7 +1393,13 @@ export const fanOut = {
 							// coalesce. Unread-only, so re-asking somebody who
 							// never opened the first nudge folds into it rather
 							// than stacking a second row.
-							dedupeKey: `publishingQuestionAssigned:${args.questionRootId}:${userId}`,
+							// The NOTE turn joins the key when there is one: a
+							// second ask on the same question is a second
+							// thing said, and folding it into an unread first
+							// nudge would silently swallow it.
+							dedupeKey: args.noteEntryId
+								? `publishingQuestionAssigned:${args.questionRootId}:${args.noteEntryId}:${userId}`
+								: `publishingQuestionAssigned:${args.questionRootId}:${userId}`,
 							dedupePolicy: "unreadOnly",
 						});
 					} catch (error) {

@@ -44,6 +44,8 @@ vi.mock("sonner", () => ({
 	},
 }));
 
+const noopMutate = vi.fn();
+
 vi.mock("@tanstack/react-query", () => ({
 	useQueryClient: () => ({ invalidateQueries: mutate.invalidate }),
 	useMutation: (
@@ -56,7 +58,10 @@ vi.mock("@tanstack/react-query", () => ({
 			adoptWebinarScriptDraft: mutate.adopt,
 			saveWebinarScriptBody: mutate.saveBody,
 		};
-		return { mutate: byKey[key], isPending: false };
+		// The advisory draft lock fires two mutations this suite does not
+		// assert on. A missing entry must be a no-op rather than `undefined`,
+		// which the hook would then call.
+		return { mutate: byKey[key] ?? noopMutate, isPending: false };
 	},
 }));
 
@@ -71,6 +76,18 @@ vi.mock("@shared/lib/orpc-query-utils", () => {
 		orpc: {
 			projects: {
 				publishingSuite: {
+					claimDraftLock: {
+						mutationOptions: (o: Record<string, unknown>) => ({
+							mutationKey: ["claimDraftLock"],
+							...o,
+						}),
+					},
+					releaseDraftLock: {
+						mutationOptions: (o: Record<string, unknown>) => ({
+							mutationKey: ["releaseDraftLock"],
+							...o,
+						}),
+					},
 					listTopicDrafts: {
 						queryKey: ({ input }: { input?: unknown }) => [
 							"listTopicDrafts",

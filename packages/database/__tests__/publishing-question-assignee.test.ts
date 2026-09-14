@@ -170,7 +170,13 @@ describe("setTopicQuestionAssignees", () => {
 		// list on every interaction, so an unchanged save must not open a
 		// transaction at all.
 		expect(transaction).not.toHaveBeenCalled();
-		expect(result).toEqual({ added: [], summary: "the named customer" });
+		// `noteEntryId` joins the shape now that an ask can carry a sentence.
+		// Null here, because nothing was written at all.
+		expect(result).toEqual({
+			added: [],
+			summary: "the named customer",
+			noteEntryId: null,
+		});
 	});
 
 	it("collapses a duplicated id instead of writing it twice", async () => {

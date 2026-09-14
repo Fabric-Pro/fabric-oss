@@ -51,6 +51,20 @@ export function TopicReadiness({
 	const open = total - resolved;
 	const pct = Math.round((resolved / total) * 100);
 
+	// Blockers are NOT decisions and stay out of the ratio — a blocker is a
+	// thing the topic is missing, not a question anybody can answer, and
+	// folding them into the denominator would make "answered" mean two things.
+	//
+	// But they cannot be ignored either. This sits directly below
+	// `TopicBlockers`, and counting only questions let it read "All 6 decisions
+	// answered" with two blockers open immediately above it — the page
+	// contradicting itself in adjacent lines. So the ratio stays about
+	// decisions and the ALL-CLEAR is withheld while a blocker is open.
+	const openBlockers = threads.filter(
+		(t) => t.root.kind === "BLOCKER" && t.root.status === "OPEN",
+	).length;
+	const allClear = open === 0 && openBlockers === 0;
+
 	// Enough segments to read as progress, few enough to stay a glance.
 	const SEGMENTS = 10;
 	const filled = Math.round((resolved / total) * SEGMENTS);
@@ -79,16 +93,32 @@ export function TopicReadiness({
 					    it, so the indicator survives being read without colour
 					    (WCAG 2.1 AA). */}
 					<span className="truncate text-muted-foreground text-xs">
-						{open === 0
+						{allClear
 							? `All ${total} decisions answered`
 							: `${resolved} of ${total} decisions answered`}
+						{openBlockers > 0
+							? ` · ${openBlockers} blocking ${
+									openBlockers === 1 ? "item" : "items"
+								}`
+							: ""}
 					</span>
 				</span>
 			</TooltipTrigger>
 			<TooltipContent>
-				{open === 0
+				{allClear
 					? "Every question the analysis raised has an answer. A draft can assert what they settled."
-					: `${open} unanswered. A draft will write around each one — generalizing it, using a neutral placeholder, or leaving it out — rather than assert it. ${pct}% answered.`}
+					: [
+							open > 0
+								? `${open} unanswered. A draft will write around each one — generalizing it, using a neutral placeholder, or leaving it out — rather than assert it. ${pct}% answered.`
+								: `Every question has an answer (${pct}%).`,
+							openBlockers > 0
+								? `${openBlockers} blocking ${
+										openBlockers === 1 ? "item" : "items"
+									} still needed before this topic is ready.`
+								: "",
+						]
+							.filter(Boolean)
+							.join(" ")}
 			</TooltipContent>
 		</Tooltip>
 	);

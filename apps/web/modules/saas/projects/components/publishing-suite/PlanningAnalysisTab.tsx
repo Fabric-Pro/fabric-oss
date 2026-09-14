@@ -17,6 +17,12 @@ import {
 } from "@ui/components/dialog";
 import { Markdown } from "@ui/components/markdown";
 import {
+	Tooltip,
+	TooltipContent,
+	TooltipProvider,
+	TooltipTrigger,
+} from "@ui/components/tooltip";
+import {
 	AlertTriangleIcon,
 	ChevronDownIcon,
 	HistoryIcon,
@@ -589,90 +595,41 @@ export function PlanningAnalysisTab({
 	);
 
 	return (
-		<div className="space-y-5">
-			{/* Version state and the two controls that change it sit together,
-			    above the fold. They used to be split: Generate pinned here and
-			    the provenance line plus History in a footer BELOW the document
-			    and below the data sections, which on a real analysis is a long
-			    scroll away from the button whose result it describes.
-			    Provenance takes its own line rather than sharing the header
-			    row — it runs to ~140 characters with a model name and a prompt
-			    note, and would wrap badly against the buttons. */}
-			{answersNotYetFolded > 0 ? (
-				<div
-					className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-highlight/40 bg-highlight/10 px-3 py-2 text-foreground text-sm"
-					data-testid="analysis-behind-decisions"
-				>
-					<p>
-						{answersNotYetFolded === 1
-							? "1 answer was recorded after this analysis was written"
-							: `${answersNotYetFolded} answers were recorded after this analysis was written`}
-						{canEdit ? "." : " and are not reflected in it yet."}
-					</p>
-					{/* The action lives IN the banner, the way Feature
-					    Maturation's does. It used to be words only — "regenerate
-					    to fold them in" — pointing at a button in the header
-					    strip above, which on a long analysis is a scroll away
-					    from the sentence describing why to press it.
+		<TooltipProvider>
+			<div className="space-y-5">
+				{/* Version state and the two controls that change it sit together,
+				    above the fold. They used to be split: Generate pinned here and
+				    the provenance line plus History in a footer BELOW the document
+				    and below the data sections, which on a real analysis is a long
+				    scroll away from the button whose result it describes.
+				    Provenance takes its own line rather than sharing the header
+				    row — it runs to ~140 characters with a model name and a prompt
+				    note, and would wrap badly against the buttons. */}
+				{answersNotYetFolded > 0 ? (
+					<div
+						className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-highlight/40 bg-highlight/10 px-3 py-2 text-foreground text-sm"
+						data-testid="analysis-behind-decisions"
+					>
+						<p>
+							{answersNotYetFolded === 1
+								? "1 answer was recorded after this analysis was written"
+								: `${answersNotYetFolded} answers were recorded after this analysis was written`}
+							{canEdit
+								? "."
+								: " and are not reflected in it yet."}
+						</p>
+						{/* The action lives IN the banner, the way Feature
+						    Maturation's does. It used to be words only — "regenerate
+						    to fold them in" — pointing at a button in the header
+						    strip above, which on a long analysis is a scroll away
+						    from the sentence describing why to press it.
 
-					    Same handler and same disabled rule as that button, not
-					    a second path: two controls that start the same run must
-					    not be able to disagree about whether one is already
-					    running. */}
-					{canEdit ? (
-						<Button
-							size="sm"
-							onClick={onGenerate}
-							disabled={isGenerating || generate.isPending}
-						>
-							{isGenerating || generate.isPending ? (
-								<Loader2Icon
-									className="mr-2 size-4 motion-safe:animate-spin"
-									aria-hidden="true"
-								/>
-							) : (
-								<SparklesIcon
-									className="mr-2 size-4"
-									aria-hidden="true"
-								/>
-							)}
-							Regenerate analysis
-						</Button>
-					) : null}
-				</div>
-			) : null}
-
-			<div className="space-y-2">
-				{/* No `PLANNING & ANALYSIS` label here: the tab immediately
-				    above already says it, and printing it twice was the first
-				    thing a reader noticed. `justify-end` rather than
-				    `justify-between` — with the label gone, `between` would
-				    have pushed the controls to the left edge, under the tab
-				    strip, instead of leaving them where they are. */}
-				<div className="flex flex-wrap items-center justify-end gap-3">
-					<div className="flex flex-wrap items-center gap-2">
-						{/* Reading history is gated on read access, not edit
-						    access, so it shows for a viewer too — but only
-						    once there is an analysis to have a history of. */}
-						{effective !== null ? (
-							<Button
-								type="button"
-								variant="outline"
-								size="sm"
-								onClick={() => setHistoryOpen(true)}
-							>
-								<HistoryIcon
-									className="mr-2 size-4"
-									aria-hidden="true"
-								/>
-								History
-							</Button>
-						) : null}
+						    Same handler and same disabled rule as that button, not
+						    a second path: two controls that start the same run must
+						    not be able to disagree about whether one is already
+						    running. */}
 						{canEdit ? (
 							<Button
-								variant={
-									aiVersion !== null ? "outline" : "primary"
-								}
 								size="sm"
 								onClick={onGenerate}
 								disabled={isGenerating || generate.isPending}
@@ -688,76 +645,309 @@ export function PlanningAnalysisTab({
 										aria-hidden="true"
 									/>
 								)}
-								{canRetry
-									? "Try again"
-									: aiVersion !== null
-										? "Regenerate planning analysis"
-										: "Generate planning analysis"}
+								Regenerate analysis
 							</Button>
 						) : null}
 					</div>
+				) : null}
+
+				{/* ONE toolbar row, not a stack.
+			    
+				    The provenance line and the controls were separate block-level
+				    rows, and with the document's own Markdown toggle below them
+				    that was three full-width rows of chrome before the text began
+				    — seven or eight once the stale, generating, failed and
+				    superseded notices stacked up behind them. Feature Maturation
+				    is not compact because it has fewer controls; it has just as
+				    many, portalled into one shared toolbar slot. This is that
+				    slot: provenance left, actions right, one line.
+
+				    No `PLANNING & ANALYSIS` label: the tab immediately above
+				    already says it, and printing it twice was the first thing a
+				    reader noticed. */}
+				<div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+					<div className="min-w-0">
+						{effective !== null ? (
+							<DocumentProvenance
+								revisionVersion={revisionVersion}
+								aiVersion={aiVersion}
+								author={author}
+								revisionCreatedAt={revisionCreatedAt}
+								aiModel={aiModel}
+								aiPromptSource={aiPromptSource}
+							/>
+						) : null}
+					</div>
+					<div className="flex flex-wrap items-center justify-end gap-3">
+						<div className="flex flex-wrap items-center gap-2">
+							{/* Reading history is gated on read access, not edit
+							    access, so it shows for a viewer too — but only
+							    once there is an analysis to have a history of. */}
+							{effective !== null ? (
+								<Tooltip>
+									<TooltipTrigger asChild>
+										<Button
+											type="button"
+											variant="ghost"
+											size="sm"
+											aria-label={`Version history, showing version ${
+												revisionVersion ??
+												aiVersion ??
+												1
+											}`}
+											onClick={() => setHistoryOpen(true)}
+										>
+											<HistoryIcon
+												className="mr-1 size-4"
+												aria-hidden="true"
+											/>
+											v{revisionVersion ?? aiVersion ?? 1}
+										</Button>
+									</TooltipTrigger>
+									<TooltipContent>
+										Version history
+									</TooltipContent>
+								</Tooltip>
+							) : null}
+							{canEdit ? (
+								<Button
+									variant={
+										aiVersion !== null
+											? "outline"
+											: "primary"
+									}
+									size="sm"
+									onClick={onGenerate}
+									disabled={
+										isGenerating || generate.isPending
+									}
+								>
+									{isGenerating || generate.isPending ? (
+										<Loader2Icon
+											className="mr-2 size-4 motion-safe:animate-spin"
+											aria-hidden="true"
+										/>
+									) : (
+										<SparklesIcon
+											className="mr-2 size-4"
+											aria-hidden="true"
+										/>
+									)}
+									{canRetry
+										? "Try again"
+										: aiVersion !== null
+											? "Regenerate planning analysis"
+											: "Generate planning analysis"}
+								</Button>
+							) : null}
+						</div>
+					</div>
 				</div>
 
-				{effective !== null ? (
-					<DocumentProvenance
-						revisionVersion={revisionVersion}
-						aiVersion={aiVersion}
-						author={author}
-						revisionCreatedAt={revisionCreatedAt}
-						aiModel={aiModel}
-						aiPromptSource={aiPromptSource}
-					/>
-				) : null}
-			</div>
-
-			{isGenerating ? (
-				<Banner tone="info">
-					Generating the planning analysis. This usually takes a
-					minute or two.
-				</Banner>
-			) : null}
-
-			{hasFailed ? (
-				<Banner tone="error">
-					{latestAttempt?.error ??
-						"The planning analysis could not be built."}
-				</Banner>
-			) : null}
-
-			{isStranded ? (
-				<Banner tone="error">
-					This run did not report back within its time limit.
-					Generating again will clear it and start a new one.
-				</Banner>
-			) : null}
-
-			{isStale ? (
-				<div className="space-y-3">
-					{/* The live region is the SENTENCE, not the box around it:
-					    putting the two controls inside one would have a screen
-					    reader re-announce them every time the banner
-					    appeared. */}
-					<Banner tone="warning">
-						A newer planning analysis is available (version{" "}
-						{aiVersion}). This document was written from version{" "}
-						{sourceAnalysisVersion}, so it does not reflect what the
-						latest run found.
+				{isGenerating ? (
+					<Banner tone="info">
+						Generating the planning analysis. This usually takes a
+						minute or two.
 					</Banner>
-					{newerProse !== null ? (
-						<div className="flex flex-wrap gap-2">
+				) : null}
+
+				{hasFailed ? (
+					<Banner tone="error">
+						{latestAttempt?.error ??
+							"The planning analysis could not be built."}
+					</Banner>
+				) : null}
+
+				{isStranded ? (
+					<Banner tone="error">
+						This run did not report back within its time limit.
+						Generating again will clear it and start a new one.
+					</Banner>
+				) : null}
+
+				{/* ONE quiet line, actions inline.
+					
+					   It was a full-width amber block with its own two-button
+					   row underneath — the loudest thing on a tab whose
+					   complaint was how much chrome sits above the text, and
+					   it appears on exactly the documents someone is in the
+					   middle of editing.
+					
+					   The CHOICE stays. Feature Maturation replaces a
+					   refreshed spec outright because it locks its editor
+					   while one runs, so nothing can have been typed into the
+					   document being superseded. Here the newer analysis
+					   arrives from a background run, and this banner only
+					   shows when a person has already edited — a document
+					   nobody has touched takes the new version wholesale and
+					   never gets here. Auto-replacing would discard exactly
+					   the edits it exists to protect.
+					
+					   The live region is the SENTENCE, not the row: putting
+					   the controls inside one would have a screen reader
+					   re-announce them every time it appeared. */}
+				{isStale ? (
+					<div className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-lg border border-highlight/40 bg-highlight/10 px-3 py-2">
+						<p
+							className="min-w-0 flex-1 text-xs leading-relaxed"
+							role="status"
+						>
+							Written from version {sourceAnalysisVersion};
+							version {aiVersion} has since been generated.
+						</p>
+						{newerProse !== null ? (
+							<>
+								{/* Short LABEL, full accessible name. "View" and
+								    "Replace" out of context tell a screen
+								    reader nothing about what is being viewed
+								    or replaced; the sentence beside them is
+								    what gives the words their meaning, and a
+								    button has to carry its own. */}
+								<Button
+									type="button"
+									variant="ghost"
+									size="sm"
+									aria-label="View the newer analysis"
+									onClick={() => setNewerOpen(true)}
+								>
+									View
+								</Button>
+								{canEdit ? (
+									<Button
+										type="button"
+										variant="outline"
+										size="sm"
+										aria-label="Replace with the newer analysis"
+										onClick={onReplace}
+										disabled={replace.isPending}
+									>
+										{replace.isPending ? (
+											<Loader2Icon
+												className="mr-2 size-4 motion-safe:animate-spin"
+												aria-hidden="true"
+											/>
+										) : null}
+										Replace
+									</Button>
+								) : null}
+							</>
+						) : (
+							<span className="text-muted-foreground text-xs">
+								Available once the run in flight finishes.
+							</span>
+						)}
+					</div>
+				) : null}
+
+				{effective === null ? (
+					<p className="rounded-xl border border-border border-dashed bg-muted/40 p-6 text-center text-muted-foreground text-sm">
+						No analysis yet.
+						{canEdit
+							? " Generate one to see the angle, key details, recommended content types and the decisions that still need an answer."
+							: ""}
+					</p>
+				) : (
+					<div className="space-y-6">
+						{showingPrevious ? (
+							<p className="text-muted-foreground text-xs">
+								Showing the previous analysis (version{" "}
+								{aiVersion}).
+							</p>
+						) : null}
+
+						{proseIsEmpty ? (
+							<EmptyProseNotice
+								effective={effective}
+								canEdit={canEdit}
+							/>
+						) : null}
+
+						{loadedProposal !== null ? (
+							<div
+								data-testid="assistant-proposal-notice"
+								className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-highlight/40 bg-highlight/10 p-3"
+							>
+								<p className="text-sm">
+									The assistant's rewrite is loaded below.
+									Nothing is saved until you save it.
+								</p>
+								<Button
+									size="sm"
+									variant="outline"
+									onClick={discardProposal}
+								>
+									Discard it
+								</Button>
+							</div>
+						) : null}
+
+						{/* Keyed on the seed, not merely fed it: the editor seeds
+						    `prose` on mount and never re-syncs, so every change of
+						    seed has to remount it — and nothing else may. */}
+						<PlanningAnalysisEditor
+							key={seed.generation}
+							projectId={projectId}
+							topicId={topicId}
+							organizationId={organizationId}
+							prose={loadedProposal ?? effective.prose}
+							revisionVersion={revisionVersion}
+							sourceAnalysisVersion={sourceAnalysisVersion}
+							canEdit={canEdit}
+							isLocked={isGenerating}
+							onSaved={handleSaved}
+							// Inside the editor's surface, as the document's own
+							// tail rather than a block after it. It rendered as a
+							// sibling below this whole tab, past a clamped editor
+							// region, so on a real analysis it was a scroll beyond
+							// what looked like the end — and the contents rail,
+							// which indexes only the editor's headings, could not
+							// see it either.
+							footer={
+								data ? (
+									<AnalysisDataSections doc={data} />
+								) : null
+							}
+						/>
+					</div>
+				)}
+
+				<AnalysisVersionHistory
+					open={historyOpen}
+					onOpenChange={setHistoryOpen}
+					projectId={projectId}
+					topicId={topicId}
+					organizationId={organizationId}
+					currentVersion={revisionVersion}
+					onRestore={refreshAnalysis}
+				/>
+
+				<Dialog open={newerOpen} onOpenChange={setNewerOpen}>
+					<DialogContent className="max-h-[85vh] max-w-3xl overflow-y-auto">
+						<DialogHeader>
+							<DialogTitle>
+								Planning analysis version {aiVersion}
+							</DialogTitle>
+							<DialogDescription>
+								What the latest run wrote. Your own text is
+								untouched until you replace it.
+							</DialogDescription>
+						</DialogHeader>
+
+						<div className="prose prose-sm max-w-none dark:prose-invert">
+							<Markdown>{newerProse ?? ""}</Markdown>
+						</div>
+
+						<DialogFooter>
 							<Button
 								type="button"
 								variant="outline"
-								size="sm"
-								onClick={() => setNewerOpen(true)}
+								onClick={() => setNewerOpen(false)}
 							>
-								View the newer analysis
+								Close
 							</Button>
 							{canEdit ? (
 								<Button
 									type="button"
-									variant="primary"
-									size="sm"
 									onClick={onReplace}
 									disabled={replace.isPending}
 								>
@@ -770,138 +960,11 @@ export function PlanningAnalysisTab({
 									Replace with the newer analysis
 								</Button>
 							) : null}
-						</div>
-					) : (
-						<p className="text-muted-foreground text-xs">
-							You can view or take it once the run in flight
-							finishes.
-						</p>
-					)}
-				</div>
-			) : null}
-
-			{effective === null ? (
-				<p className="rounded-xl border border-border border-dashed bg-muted/40 p-6 text-center text-muted-foreground text-sm">
-					No analysis yet.
-					{canEdit
-						? " Generate one to see the angle, key details, recommended content types and the decisions that still need an answer."
-						: ""}
-				</p>
-			) : (
-				<div className="space-y-6">
-					{showingPrevious ? (
-						<p className="text-muted-foreground text-xs">
-							Showing the previous analysis (version {aiVersion}).
-						</p>
-					) : null}
-
-					{proseIsEmpty ? (
-						<EmptyProseNotice
-							effective={effective}
-							canEdit={canEdit}
-						/>
-					) : null}
-
-					{loadedProposal !== null ? (
-						<div
-							data-testid="assistant-proposal-notice"
-							className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-highlight/40 bg-highlight/10 p-3"
-						>
-							<p className="text-sm">
-								The assistant's rewrite is loaded below. Nothing
-								is saved until you save it.
-							</p>
-							<Button
-								size="sm"
-								variant="outline"
-								onClick={discardProposal}
-							>
-								Discard it
-							</Button>
-						</div>
-					) : null}
-
-					{/* Keyed on the seed, not merely fed it: the editor seeds
-					    `prose` on mount and never re-syncs, so every change of
-					    seed has to remount it — and nothing else may. */}
-					<PlanningAnalysisEditor
-						key={seed.generation}
-						projectId={projectId}
-						topicId={topicId}
-						organizationId={organizationId}
-						prose={loadedProposal ?? effective.prose}
-						revisionVersion={revisionVersion}
-						sourceAnalysisVersion={sourceAnalysisVersion}
-						canEdit={canEdit}
-						isLocked={isGenerating}
-						onSaved={handleSaved}
-						// Inside the editor's surface, as the document's own
-						// tail rather than a block after it. It rendered as a
-						// sibling below this whole tab, past a clamped editor
-						// region, so on a real analysis it was a scroll beyond
-						// what looked like the end — and the contents rail,
-						// which indexes only the editor's headings, could not
-						// see it either.
-						footer={
-							data ? <AnalysisDataSections doc={data} /> : null
-						}
-					/>
-				</div>
-			)}
-
-			<AnalysisVersionHistory
-				open={historyOpen}
-				onOpenChange={setHistoryOpen}
-				projectId={projectId}
-				topicId={topicId}
-				organizationId={organizationId}
-				currentVersion={revisionVersion}
-				onRestore={refreshAnalysis}
-			/>
-
-			<Dialog open={newerOpen} onOpenChange={setNewerOpen}>
-				<DialogContent className="max-h-[85vh] max-w-3xl overflow-y-auto">
-					<DialogHeader>
-						<DialogTitle>
-							Planning analysis version {aiVersion}
-						</DialogTitle>
-						<DialogDescription>
-							What the latest run wrote. Your own text is
-							untouched until you replace it.
-						</DialogDescription>
-					</DialogHeader>
-
-					<div className="prose prose-sm max-w-none dark:prose-invert">
-						<Markdown>{newerProse ?? ""}</Markdown>
-					</div>
-
-					<DialogFooter>
-						<Button
-							type="button"
-							variant="outline"
-							onClick={() => setNewerOpen(false)}
-						>
-							Close
-						</Button>
-						{canEdit ? (
-							<Button
-								type="button"
-								onClick={onReplace}
-								disabled={replace.isPending}
-							>
-								{replace.isPending ? (
-									<Loader2Icon
-										className="mr-2 size-4 motion-safe:animate-spin"
-										aria-hidden="true"
-									/>
-								) : null}
-								Replace with the newer analysis
-							</Button>
-						) : null}
-					</DialogFooter>
-				</DialogContent>
-			</Dialog>
-		</div>
+						</DialogFooter>
+					</DialogContent>
+				</Dialog>
+			</div>
+		</TooltipProvider>
 	);
 }
 

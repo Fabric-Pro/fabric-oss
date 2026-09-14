@@ -1,8 +1,14 @@
 "use client";
 
+import { Button } from "@ui/components/button";
 import { TabsContent, TabsTrigger } from "@ui/components/tabs";
 import { cn } from "@ui/lib";
-import { AlertTriangleIcon, CheckCircle2Icon, StarIcon } from "lucide-react";
+import {
+	AlertTriangleIcon,
+	CheckCircle2Icon,
+	Loader2Icon,
+	StarIcon,
+} from "lucide-react";
 import { BlogPostPanel } from "./BlogPostPanel";
 import { CaseStudyPanel } from "./CaseStudyPanel";
 import type {
@@ -157,6 +163,8 @@ export interface TopicWorkingDraftState {
 export interface GenerationTabModel {
 	tabs: GenerationTabInfo[];
 	byPostType: Map<PostType, GenerationTabInfo>;
+	/** Types whose draft is being written right now. */
+	generatingPostTypes: ReadonlySet<PostType>;
 	restrictions: Restrictions;
 	/**
 	 * Content types whose draft has moved since this reader last opened its
@@ -233,6 +241,29 @@ export function buildGenerationTabModel(input: {
 	 * caller's banner already says the state could not load, and a "changed"
 	 * dot derived from data that did not arrive is worse than silence.
 	 */
+	/**
+	 * Types with a run in flight right now.
+	 *
+	 * The strip had four states and none of them meant "running", so a tab
+	 * kept its old marks for the whole of a generation while the panel under
+	 * it said "Writing the draft…" — and a reader who started a run and moved
+	 * to another tab had nothing telling them it had finished. `isExpired` is
+	 * the server's own answer to "is this really live": a GENERATING row past
+	 * its deadline is stranded, not running, and marking it as running would
+	 * leave a spinner on the tab forever.
+	 */
+	const generatingPostTypes = new Set<PostType>();
+	if (!input.hasError) {
+		for (const draft of input.drafts) {
+			if (
+				draft.latestAttempt?.status === "GENERATING" &&
+				!draft.latestAttempt.isExpired
+			) {
+				generatingPostTypes.add(draft.postType);
+			}
+		}
+	}
+
 	const changedSinceRead = new Set<PostType>();
 	if (!input.hasError && input.readMarkers) {
 		for (const draft of input.drafts) {
@@ -262,6 +293,7 @@ export function buildGenerationTabModel(input: {
 		tabs,
 		byPostType: new Map(tabs.map((t) => [t.postType, t])),
 		restrictions,
+		generatingPostTypes,
 		hasAnalysis: input.analysis !== null,
 		changedSinceRead,
 	};
@@ -330,18 +362,27 @@ export function GenerationTabTriggers({
 									    AVAILABLE type that deliberately shows
 									    no visible badge. The hint is added
 									    beside it, never in place of it. */}
-									{info ? <StateBadge info={info} /> : null}
+									{info ? (
+										<StateBadge
+											info={info}
+											isGenerating={model.generatingPostTypes.has(
+												t.value,
+											)}
+											openCount={
+												model.restrictions.globalCount +
+												(model.restrictions.countByPostType.get(
+													t.value,
+												) ?? 0)
+											}
+											hasChanged={model.changedSinceRead.has(
+												t.value,
+											)}
+										/>
+									) : null}
 									{awaitingAnalysis ? (
 										<Badge tone="muted">
 											Needs analysis
 										</Badge>
-									) : null}
-									{/* Beside the state badge, not instead of
-									    it: "changed" is a fact about YOUR last
-									    visit, and the state is a fact about the
-									    draft. Both can be true. */}
-									{model.changedSinceRead.has(t.value) ? (
-										<Badge tone="warn">Changed</Badge>
 									) : null}
 								</>
 							)}
@@ -369,6 +410,7 @@ export function GenerationTabPanels({
 	decisionThreads,
 	isLoading,
 	canEdit,
+	onReviewQuestions,
 }: {
 	model: GenerationTabModel;
 	postTypes: readonly PostType[];
@@ -382,6 +424,16 @@ export function GenerationTabPanels({
 	isLoading: boolean;
 	/** PR2: a reader sees every panel, and none of the write controls. */
 	canEdit: boolean;
+	/**
+	 * Take the reader to Summary & Questions.
+	 *
+	 * The unresolved-approval list names what is outstanding but cannot do
+	 * anything about it — answering lives on the other tab, and a reader who
+	 * wanted to act had to find their own way back. The tab is CLIENT state,
+	 * not a route, so the panel cannot link to it; the page hands down the
+	 * setter instead.
+	 */
+	onReviewQuestions?: () => void;
 }) {
 	return (
 		<>
@@ -416,6 +468,7 @@ export function GenerationTabPanels({
 							}
 							decisionThreads={decisionThreads}
 							isLoading={isLoading}
+							onReviewQuestions={onReviewQuestions}
 							hasAnalysis={analysis !== null}
 						/>
 					</TabsContent>
@@ -449,49 +502,102 @@ const STATE_LABELS: Record<GenerationTabState, string | null> = {
  * cautious one, so folding them together would silence the warning on exactly
  * the tabs that already have content.
  */
-function StateBadge({ info }: { info: GenerationTabInfo }) {
-	const label = STATE_LABELS[info.state];
-	const showCaution =
-		info.needsAttention && info.state !== "NEEDS_CONFIRMATION";
+function StateBadge({
+	info,
+	isGenerating,
+	openCount,
+	hasChanged,
+}: {
+	info: GenerationTabInfo;
+	isGenerating: boolean;
+	/** Open questions standing between this type and a clean draft. */
+	openCount: number;
+	hasChanged: boolean;
+}) {
+	// RUNNING outranks everything. Whatever the tab said a moment ago is about
+	// to be replaced, and a reader who started the run and walked to another
+	// tab has no other way to learn it finished.
+	if (isGenerating) {
+		return (
+			<Badge tone="warn">
+				<Loader2Icon
+					className="size-3 motion-safe:animate-spin"
+					aria-hidden="true"
+				/>
+				Generating
+			</Badge>
+		);
+	}
 
-	return (
-		<>
-			{label ? (
-				<Badge
-					tone={
-						info.state === "GENERATED"
-							? "done"
-							: info.state === "NEEDS_CONFIRMATION"
-								? "warn"
-								: "recommend"
-					}
-				>
-					{info.state === "GENERATED" ? (
-						<CheckCircle2Icon
-							className="size-3"
-							aria-hidden="true"
-						/>
-					) : info.state === "NEEDS_CONFIRMATION" ? (
-						<AlertTriangleIcon
-							className="size-3"
-							aria-hidden="true"
-						/>
-					) : (
-						<StarIcon className="size-3" aria-hidden="true" />
-					)}
-					{label}
-				</Badge>
-			) : (
-				<span className="sr-only">Available</span>
-			)}
-			{showCaution ? (
-				<Badge tone="warn">
-					<AlertTriangleIcon className="size-3" aria-hidden="true" />
-					Needs confirmation
-				</Badge>
-			) : null}
-		</>
-	);
+	// ONE mark, not three. A tab used to carry its state, its caution and its
+	// changed-since-read flag as three separate word chips — four 10px
+	// uppercase pills on a row, louder than the tabs they annotated. The count
+	// is the actionable half and it goes first; the rest is a shape and a
+	// colour, with the words kept in the accessible name.
+	// A caution can exist with NO count behind it: a type the analysis deferred
+	// mints no question in 2A, so `needsAttention` is the only thing that knows.
+	// Keying the mark on the count alone left exactly those tabs silent — which
+	// the caution exists to prevent, since it is meant to be seen on a tab the
+	// reader has not opened.
+	const cautious = info.state === "NEEDS_CONFIRMATION" || info.needsAttention;
+
+	if (openCount > 0 || cautious) {
+		return (
+			<Badge tone="warn">
+				<AlertTriangleIcon className="size-3" aria-hidden="true" />
+				{hasChanged ? (
+					<span
+						aria-hidden="true"
+						className="size-1.5 rounded-full bg-current"
+					/>
+				) : null}
+				{openCount > 0 ? openCount : null}
+				{/* ONE visible mark, BOTH facts announced. A generated tab with
+				    an unresolved caution has two things worth knowing, and the
+				    accessible name is where the second one goes now that the
+				    strip shows a single chip instead of three word pills. */}
+				<span className="sr-only">
+					{info.state === "GENERATED" ? "Generated, " : ""}
+					{openCount > 0
+						? `Needs confirmation — ${openCount} open ${
+								openCount === 1 ? "question" : "questions"
+							} before this can be drafted cleanly`
+						: "Needs confirmation"}
+					{hasChanged ? ", changed since your last visit" : ""}
+				</span>
+			</Badge>
+		);
+	}
+
+	if (info.state === "GENERATED") {
+		return (
+			<Badge tone="done">
+				<CheckCircle2Icon className="size-3" aria-hidden="true" />
+				<span className="sr-only">
+					{hasChanged
+						? "Generated, changed since your last visit"
+						: "Generated"}
+				</span>
+				{hasChanged ? (
+					<span
+						aria-hidden="true"
+						className="size-1.5 rounded-full bg-current"
+					/>
+				) : null}
+			</Badge>
+		);
+	}
+
+	if (info.state === "RECOMMENDED") {
+		return (
+			<Badge tone="recommend">
+				<StarIcon className="size-3" aria-hidden="true" />
+				<span className="sr-only">Recommended</span>
+			</Badge>
+		);
+	}
+
+	return <span className="sr-only">Available</span>;
 }
 
 function Badge({
@@ -534,6 +640,7 @@ function GenerationPanel({
 	working,
 	decisionThreads,
 	isLoading,
+	onReviewQuestions,
 	hasAnalysis,
 }: {
 	label: string;
@@ -547,6 +654,7 @@ function GenerationPanel({
 	working: TopicWorkingDraftState | null;
 	decisionThreads: TopicDecisionThread[];
 	isLoading: boolean;
+	onReviewQuestions?: () => void;
 	hasAnalysis: boolean;
 }) {
 	// Only the questions that actually CONSTRAIN a draft OF THIS TYPE, and only
@@ -642,23 +750,60 @@ function GenerationPanel({
 			</Section>
 
 			{unapprovedSubjects.length > 0 ? (
-				<Section label="Unresolved approvals">
-					{/* FR8/FR9. Shown rather than used to block: generation
-					    will produce a safe, generalized draft and say so, which
-					    is what UC4 asks for. Answering happens on the Summary &
-					    Questions tab — this only names what is outstanding.
-					    Wording tracks the locked clause it describes. */}
-					<p className="text-muted-foreground text-sm leading-relaxed">
-						These are still unapproved, so a draft will write around
-						each one — generalizing it, using a neutral placeholder,
-						or leaving it out — rather than assert it:
+				/* A WARNING with a way to act on it, not a grey list.
+				
+				   FR8/FR9: still shown rather than used to block — generation
+				   produces a safe, generalized draft and says so, which is what
+				   UC4 asks for, and turning an advisory into a gate on a
+				   product whose own rule is "write around it" would be a
+				   different feature. What changes is that the reader can now
+				   DO something: answering lives on Summary & Questions, the
+				   tab is client state rather than a route, so the page hands
+				   down the setter and this links to it.
+				
+				   The subjects stay listed. The full question text and the
+				   control that answers it are deliberately not repeated here
+				   — both panels are mounted at once, and restating it put the
+				   same sentence on the page twice with only one copy
+				   actionable. */
+				<section
+					aria-label="Unresolved approvals"
+					className="space-y-2 rounded-lg border border-highlight/40 bg-highlight/10 p-3"
+					data-testid="unresolved-approvals"
+				>
+					<div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+						{/* The section keeps its NAME. The count is what makes
+						    it actionable, but a heading that changes wording
+						    with the count is one a reader cannot learn and a
+						    test cannot address. */}
+						<h3 className="publishing-label shrink-0">
+							Unresolved approvals
+						</h3>
+						<p className="min-w-0 flex-1 text-muted-foreground text-xs">
+							{`${unapprovedSubjects.length} to review before publishing this draft.`}
+						</p>
+						{onReviewQuestions ? (
+							<Button
+								type="button"
+								variant="outline"
+								size="sm"
+								onClick={onReviewQuestions}
+							>
+								Review questions
+							</Button>
+						) : null}
+					</div>
+					<p className="text-muted-foreground text-xs leading-relaxed">
+						A draft will write around each one — generalizing it,
+						using a neutral placeholder, or leaving it out — rather
+						than assert it:
 					</p>
-					<ul className="list-disc space-y-1.5 pl-5 text-muted-foreground text-sm leading-relaxed">
+					<ul className="list-disc space-y-1 pl-5 text-muted-foreground text-xs leading-relaxed">
 						{unapprovedSubjects.map((r) => (
 							<li key={r.id}>{r.label}</li>
 						))}
 					</ul>
-				</Section>
+				</section>
 			) : null}
 
 			{openQuestionSubjects.length > 0 ? (

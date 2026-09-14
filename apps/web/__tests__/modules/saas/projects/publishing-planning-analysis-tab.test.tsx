@@ -733,7 +733,11 @@ describe("PlanningAnalysisTab — the stale-analysis banner", () => {
 		// buttons carry that word too, so a looser matcher would pass on a
 		// build that rendered the affordances with no explanation of why.
 		expect(
-			screen.getByText(/a newer planning analysis is available/i),
+			// Shorter copy, same fact. The banner was a full-width amber block
+			// with its own button row; it is one line now, and the buttons
+			// carry their full names in `aria-label` rather than in 4 words of
+			// visible text apiece.
+			screen.getByText(/version 2 has since been generated/i),
 		).toBeInTheDocument();
 	});
 

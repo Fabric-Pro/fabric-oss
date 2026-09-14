@@ -6,7 +6,7 @@ import {
 	useCopilotAction,
 	useCopilotReadable,
 } from "@copilotkit/react-core";
-import { CopilotSidebar } from "@copilotkit/react-ui";
+import { CopilotSidebar, useChatContext } from "@copilotkit/react-ui";
 import "@copilotkit/react-ui/styles.css";
 import { useSession } from "@saas/auth/hooks/use-session";
 import { CopilotChatSessionProvider } from "@saas/shared/components/copilot/CopilotChatSessionProvider";
@@ -181,7 +181,12 @@ export function TopicAssistant({
 						onApplyRewrite={onApplyRewrite}
 					/>
 					<CopilotSidebar
-						defaultOpen={false}
+						// DOCKED OPEN, as the Feature Assistant is. The
+						// assistant was reachable from every tab already —
+						// mounted at page level, outside `<Tabs>` — but behind
+						// a launcher, so the two surfaces read as different
+						// features while running the same component.
+						defaultOpen={true}
 						clickOutsideToClose={false}
 						Button={Launcher}
 						labels={{
@@ -189,11 +194,47 @@ export function TopicAssistant({
 							initial:
 								"Ask about this topic, or tell me how to change the planning analysis — say what you want different and I'll rewrite it for your review.",
 						}}
-					/>
+					>
+						<CloseAssistantOnNarrowViewport />
+					</CopilotSidebar>
 				</CopilotChatSessionProvider>
 			</CopilotKit>
 		</TopicAssistantErrorBoundary>
 	);
+}
+
+/** Tailwind `sm` — the width below which CopilotKit goes full-screen. */
+const ASSISTANT_FULLSCREEN_BELOW = 640;
+
+/**
+ * Close the assistant on arrival at a phone-width viewport.
+ *
+ * Side-effect only; renders nothing. Below `sm` CopilotKit renders the sidebar
+ * as a full-screen overlay, so docking it open there would bury the whole topic
+ * — `StoryWorkspace` measured this on a real feature at 375px: the tab bar sat
+ * at x=499 in a 360px window and only the assistant was reachable.
+ *
+ * A CHILD of `<CopilotSidebar>` rather than logic in `TopicAssistant`'s own
+ * body, because `useChatContext` resolves only inside it. And done here rather
+ * than by computing `defaultOpen`: that prop is read once at mount, so a
+ * viewport measured in an effect arrives too late.
+ *
+ * Mount only. A later resize is the reader's own doing, and yanking the panel
+ * shut mid-conversation because they rotated the device would be worse than
+ * leaving it where they put it.
+ */
+function CloseAssistantOnNarrowViewport() {
+	const { setOpen } = useChatContext();
+	useEffect(() => {
+		if (
+			window.matchMedia(
+				`(max-width: ${ASSISTANT_FULLSCREEN_BELOW - 1}px)`,
+			).matches
+		) {
+			setOpen(false);
+		}
+	}, [setOpen]);
+	return null;
 }
 
 /**

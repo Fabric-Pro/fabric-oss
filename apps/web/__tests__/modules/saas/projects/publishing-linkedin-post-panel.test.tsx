@@ -69,6 +69,18 @@ vi.mock("@shared/lib/orpc-query-utils", () => {
 		orpc: {
 			projects: {
 				publishingSuite: {
+					claimDraftLock: {
+						mutationOptions: (o: Record<string, unknown>) => ({
+							mutationKey: ["claimDraftLock"],
+							...o,
+						}),
+					},
+					releaseDraftLock: {
+						mutationOptions: (o: Record<string, unknown>) => ({
+							mutationKey: ["releaseDraftLock"],
+							...o,
+						}),
+					},
 					listTopicDrafts: {
 						queryKey: ({ input }: { input?: unknown }) => [
 							"listTopicDrafts",
@@ -77,6 +89,7 @@ vi.mock("@shared/lib/orpc-query-utils", () => {
 					},
 					generateLinkedInPost: m("generateLinkedInPost"),
 					selectLinkedInPostOption: m("selectLinkedInPostOption"),
+					saveLinkedInPostBody: m("saveLinkedInPostBody"),
 				},
 			},
 		},

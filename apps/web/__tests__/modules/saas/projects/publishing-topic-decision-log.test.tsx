@@ -311,6 +311,33 @@ describe("TopicDecisionLog (FR43–FR47)", () => {
 	});
 });
 
+describe("TopicDecisionLog — two columns", () => {
+	it("pairs a question with its answer side by side", () => {
+		// Stacked at full page width a decision read as two unrelated
+		// paragraphs and the eye had to work out which answer belonged to
+		// which question. `DecisionLogPanel` puts them side by side; this is
+		// the same shape, and it is the reading measure the log actually
+		// needed — a readable line rather than a narrower page. One column
+		// below `sm`, where two would be two narrow columns instead of one.
+		const { container } = renderLog(
+			<TopicDecisionLog {...TENANT} threads={[RESOLVED_THREAD]} />,
+		);
+
+		const card = container.querySelector('[data-testid="decision-root"]');
+		expect(card?.className).toMatch(/\bsm:grid-cols-2\b/);
+	});
+
+	it("says which analysis raised the question", () => {
+		// This table has no `sourceProvenance` column like its maturation
+		// sibling, but it records which analysis run raised a root — and "the
+		// run that asked this" is the provenance question a reader has when a
+		// decision looks stale.
+		renderLog(<TopicDecisionLog {...TENANT} threads={[RESOLVED_THREAD]} />);
+
+		expect(screen.getByText(/analysis v1/i)).toBeInTheDocument();
+	});
+});
+
 describe("TopicDecisionLog — panel width", () => {
 	it("fills its tab panel instead of centring in a narrow column", () => {
 		// The log carried `mx-auto max-w-3xl`, copied from the Feature

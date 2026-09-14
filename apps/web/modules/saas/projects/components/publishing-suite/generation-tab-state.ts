@@ -224,6 +224,17 @@ export interface Restrictions {
 	global: boolean;
 	/** Post types named by an unresolved CONTENT_TYPE question. */
 	byPostType: ReadonlySet<string>;
+	/**
+	 * HOW MANY, not just whether — the tab strip shows a number now rather
+	 * than the words "Needs confirmation", so it needs a count.
+	 *
+	 * Counted per THREAD, and a thread that restricts a type both globally and
+	 * through that type's extra kinds counts once for it: the reader is being
+	 * told how many questions stand between them and a clean draft, and the
+	 * same question twice is not two questions.
+	 */
+	globalCount: number;
+	countByPostType: ReadonlyMap<string, number>;
 }
 
 /**
@@ -264,13 +275,28 @@ export { decisionLabel, isRestrictingThread, restrictsPostType };
  * at the one level whose stated purpose is to be seen on a tab the reader has
  * NOT opened, so it is the worse direction of the two to get wrong.
  */
+function countRestricted(
+	counts: Map<string, number>,
+	postTypes: ReadonlySet<string>,
+): void {
+	for (const postType of postTypes) {
+		counts.set(postType, (counts.get(postType) ?? 0) + 1);
+	}
+}
+
 export function resolveRestrictions(
 	threads: readonly RestrictionThread[],
 ): Restrictions {
 	let global = false;
+	let globalCount = 0;
 	const byPostType = new Set<string>();
+	const countByPostType = new Map<string, number>();
 
 	for (const thread of threads) {
+		// Which types THIS thread restricts, so a thread that qualifies twice
+		// — globally and through a type's extra kinds — is still counted once
+		// for that type.
+		const restrictedHere = new Set<string>();
 		// The per-type extras first, and NOT as an `else` — a thread can be
 		// restricting for every type by its kind and named by a type's extra
 		// set at the same time, and the shared branches below `continue`.
@@ -281,16 +307,22 @@ export function resolveRestrictions(
 			)) {
 				if (extra.has(kind)) {
 					byPostType.add(postType);
+					restrictedHere.add(postType);
 				}
 			}
 		}
 		if (!isRestrictingThread(thread)) {
+			countRestricted(countByPostType, restrictedHere);
 			continue;
 		}
 		const { root } = thread;
 		const kind = root.decisionKind ?? "";
 		if (SAFETY_CRITICAL_KINDS.has(kind)) {
 			global = true;
+			globalCount += 1;
+			// Deliberately NOT also counted per type: it already restricts
+			// every type through `globalCount`, and adding its per-type marks
+			// on top would show one question as two on the tabs it names.
 			continue;
 		}
 		// `CONTENT_TYPE` is deliberately NOT read here.
@@ -308,9 +340,10 @@ export function resolveRestrictions(
 		// `build-planning-analysis-prompt.ts`), so this is legacy data only. A
 		// warning a reader cannot act on is worse than no warning: it teaches
 		// them that the caution means nothing.
+		countRestricted(countByPostType, restrictedHere);
 	}
 
-	return { global, byPostType };
+	return { global, byPostType, globalCount, countByPostType };
 }
 
 /**
