@@ -142,6 +142,13 @@ vi.mock("@shared/lib/orpc-query-utils", () => ({
 import { TopicQuestionsPanel } from "@saas/projects/components/publishing-suite/TopicQuestionsPanel";
 import { toast } from "sonner";
 
+/**
+ * The Answered group is collapsed by default, so a case that reaches for a
+ * settled question — or its Amend control — opens it first.
+ */
+const openAnswered = () =>
+	userEvent.click(screen.getByRole("button", { name: /^answered/i }));
+
 const BASE = {
 	projectId: "proj-1",
 	topicId: "topic-1",
@@ -562,8 +569,9 @@ describe("TopicQuestionsPanel — answering (FR10/FR11)", () => {
 		).not.toBeInTheDocument();
 	});
 
-	it("shows a resolved question with its answer instead of a form (FR13)", () => {
+	it("shows a resolved question with its answer instead of a form (FR13)", async () => {
 		render(<TopicQuestionsPanel {...BASE} threads={[RESOLVED_THREAD]} />);
+		await openAnswered();
 
 		expect(screen.getByText(/yes, marketing cleared it/i)).toBeVisible();
 		expect(
@@ -645,6 +653,38 @@ describe("TopicQuestionsPanel — content types are not questions", () => {
  * settled root is what stops a double-submit minting two replies for one act,
  * so making it answerable again would have fixed this at the cost of that.
  */
+describe("TopicQuestionsPanel — the Answered group", () => {
+	it("keeps answered questions collapsed behind a count", () => {
+		// The worklist is what anyone comes to this tab to work, and a topic
+		// only ever accumulates answers. Collapsed, the open list stays at the
+		// top of the tab however many questions have been settled.
+		render(
+			<TopicQuestionsPanel
+				{...BASE}
+				threads={[OPEN_THREAD, RESOLVED_THREAD]}
+			/>,
+		);
+
+		const toggle = screen.getByRole("button", { name: /^answered/i });
+		expect(toggle).toHaveAttribute("aria-expanded", "false");
+		expect(
+			screen.queryByText(/yes, marketing cleared it/i),
+		).not.toBeInTheDocument();
+	});
+
+	it("opens on request and closes again", async () => {
+		render(<TopicQuestionsPanel {...BASE} threads={[RESOLVED_THREAD]} />);
+
+		await openAnswered();
+		expect(screen.getByText(/yes, marketing cleared it/i)).toBeVisible();
+
+		await openAnswered();
+		expect(
+			screen.queryByText(/yes, marketing cleared it/i),
+		).not.toBeInTheDocument();
+	});
+});
+
 describe("TopicQuestionsPanel — amending a settled answer", () => {
 	/** A thread whose answer has already been amended once. */
 	const AMENDED_THREAD = {
@@ -662,6 +702,7 @@ describe("TopicQuestionsPanel — amending a settled answer", () => {
 
 	it("offers Amend on a resolved question", async () => {
 		render(<TopicQuestionsPanel {...BASE} threads={[RESOLVED_THREAD]} />);
+		await openAnswered();
 
 		expect(
 			screen.getByRole("button", { name: /amend/i }),
@@ -675,6 +716,7 @@ describe("TopicQuestionsPanel — amending a settled answer", () => {
 		// below classify honestly as MANUAL.
 		const user = userEvent.setup();
 		render(<TopicQuestionsPanel {...BASE} threads={[RESOLVED_THREAD]} />);
+		await openAnswered();
 
 		await user.click(screen.getByRole("button", { name: /amend/i }));
 
@@ -686,6 +728,7 @@ describe("TopicQuestionsPanel — amending a settled answer", () => {
 	it("sends the amendment to amendTopicQuestion, never to answerTopicQuestion", async () => {
 		const user = userEvent.setup();
 		render(<TopicQuestionsPanel {...BASE} threads={[RESOLVED_THREAD]} />);
+		await openAnswered();
 
 		await user.click(screen.getByRole("button", { name: /amend/i }));
 		const box = screen.getByRole("textbox", { name: /your answer/i });
@@ -712,6 +755,7 @@ describe("TopicQuestionsPanel — amending a settled answer", () => {
 		// even when the previous answer came from the AI.
 		const user = userEvent.setup();
 		render(<TopicQuestionsPanel {...BASE} threads={[RESOLVED_THREAD]} />);
+		await openAnswered();
 
 		await user.click(screen.getByRole("button", { name: /amend/i }));
 		const box = screen.getByRole("textbox", { name: /your answer/i });
@@ -730,6 +774,7 @@ describe("TopicQuestionsPanel — amending a settled answer", () => {
 		// since it names text the author is no longer looking at.
 		const user = userEvent.setup();
 		render(<TopicQuestionsPanel {...BASE} threads={[AMENDED_THREAD]} />);
+		await openAnswered();
 
 		expect(
 			screen.getByText(/on reflection, no — legal has not signed off/i),
@@ -750,6 +795,7 @@ describe("TopicQuestionsPanel — amending a settled answer", () => {
 		mutationState.result = { status: "stale" };
 		const user = userEvent.setup();
 		render(<TopicQuestionsPanel {...BASE} threads={[RESOLVED_THREAD]} />);
+		await openAnswered();
 
 		await user.click(screen.getByRole("button", { name: /amend/i }));
 		const box = screen.getByRole("textbox", { name: /your answer/i });
@@ -767,6 +813,7 @@ describe("TopicQuestionsPanel — amending a settled answer", () => {
 		mutationState.result = { status: "stale" };
 		const user = userEvent.setup();
 		render(<TopicQuestionsPanel {...BASE} threads={[RESOLVED_THREAD]} />);
+		await openAnswered();
 
 		await user.click(screen.getByRole("button", { name: /amend/i }));
 		const box = screen.getByRole("textbox", { name: /your answer/i });
@@ -783,6 +830,7 @@ describe("TopicQuestionsPanel — amending a settled answer", () => {
 		mutationState.shouldFail = true;
 		const user = userEvent.setup();
 		render(<TopicQuestionsPanel {...BASE} threads={[RESOLVED_THREAD]} />);
+		await openAnswered();
 
 		await user.click(screen.getByRole("button", { name: /amend/i }));
 		const box = screen.getByRole("textbox", { name: /your answer/i });
@@ -798,6 +846,7 @@ describe("TopicQuestionsPanel — amending a settled answer", () => {
 	it("closes the editor once the amendment lands", async () => {
 		const user = userEvent.setup();
 		render(<TopicQuestionsPanel {...BASE} threads={[RESOLVED_THREAD]} />);
+		await openAnswered();
 
 		await user.click(screen.getByRole("button", { name: /amend/i }));
 		const box = screen.getByRole("textbox", { name: /your answer/i });
@@ -814,6 +863,7 @@ describe("TopicQuestionsPanel — amending a settled answer", () => {
 		mutationState.result = { status: "deduped" };
 		const user = userEvent.setup();
 		render(<TopicQuestionsPanel {...BASE} threads={[RESOLVED_THREAD]} />);
+		await openAnswered();
 
 		await user.click(screen.getByRole("button", { name: /amend/i }));
 		await user.click(screen.getByRole("button", { name: /save answer/i }));
@@ -827,6 +877,7 @@ describe("TopicQuestionsPanel — amending a settled answer", () => {
 	it("says nothing extra on an ordinary amendment", async () => {
 		const user = userEvent.setup();
 		render(<TopicQuestionsPanel {...BASE} threads={[RESOLVED_THREAD]} />);
+		await openAnswered();
 
 		await user.click(screen.getByRole("button", { name: /amend/i }));
 		const box = screen.getByRole("textbox", { name: /your answer/i });
@@ -841,6 +892,7 @@ describe("TopicQuestionsPanel — amending a settled answer", () => {
 		mutationState.shouldFail = true;
 		const user = userEvent.setup();
 		render(<TopicQuestionsPanel {...BASE} threads={[RESOLVED_THREAD]} />);
+		await openAnswered();
 
 		await user.click(screen.getByRole("button", { name: /amend/i }));
 		const box = screen.getByRole("textbox", { name: /your answer/i });
@@ -854,6 +906,7 @@ describe("TopicQuestionsPanel — amending a settled answer", () => {
 	it("abandons the edit on Cancel without sending anything", async () => {
 		const user = userEvent.setup();
 		render(<TopicQuestionsPanel {...BASE} threads={[RESOLVED_THREAD]} />);
+		await openAnswered();
 
 		await user.click(screen.getByRole("button", { name: /amend/i }));
 		await user.click(screen.getByRole("button", { name: /cancel/i }));
@@ -870,6 +923,7 @@ describe("TopicQuestionsPanel — amending a settled answer", () => {
 				canEdit={false}
 			/>,
 		);
+		await openAnswered();
 
 		expect(screen.getByText(/yes, marketing cleared it/i)).toBeVisible();
 		expect(
@@ -887,6 +941,7 @@ describe("TopicQuestionsPanel — amending a settled answer", () => {
 				threads={[{ ...RESOLVED_THREAD, replies: [] }]}
 			/>,
 		);
+		await openAnswered();
 
 		expect(
 			screen.queryByRole("button", { name: /amend/i }),

@@ -1878,6 +1878,23 @@ describe("TopicItemPage — adding a content type from the tab strip", () => {
 		// checklist rather than a lookalike.
 		expect(await screen.findByRole("dialog")).toBeInTheDocument();
 	});
+
+	it("is the ONLY content-types control on the page", () => {
+		// It used to render a second, always-open copy of the same checklist
+		// above the questions, so opening the popover put the identical list
+		// on screen twice — the owner's "this section duplicated; i think plus
+		// near tabs is enough for this". Closed, nothing of the checklist
+		// should be on the page at all.
+		renderPage();
+
+		// The second copy was the collapsible variant, whose header is a
+		// button named "Content types <summary>". The popover's copy is
+		// `alwaysOpen` and renders no such button — and is unmounted anyway
+		// until `+ Add type` is clicked.
+		expect(
+			screen.queryByRole("button", { name: /^content types/i }),
+		).not.toBeInTheDocument();
+	});
 });
 
 /**

@@ -1130,20 +1130,13 @@ export function TopicItemPage({
 					) : (
 						<EmptyState>This topic has no summary yet.</EmptyState>
 					)}
-					{/* Content types sits ABOVE the questions and below the
-					    summary, because it is the first decision anyone makes
-					    about a topic and every question under it is downstream
-					    of the answer. It used to live behind a modal on a
-					    metadata row two tabs away, and its questions were being
-					    asked here as if nobody had decided. */}
-					<ContentTypesChecklist
-						analysis={analysisDocument}
-						selected={selectedPostTypes}
-						canEdit={canEdit}
-						isPending={postTypesPending}
-						createdAt={topic.createdAt}
-						onChange={handlePostTypesSubmit}
-					/>
+					{/* No content-types list here. It used to render in full
+					    above the questions, which put the same checklist on
+					    screen twice: `+ Add type` in the tab strip opens the
+					    very same component, one row up and already in view.
+					    The tab strip is the right home — the types ARE the
+					    tabs, so the control that changes them belongs beside
+					    them rather than in a second copy further down. */}
 					{/* ABOVE the readiness bar and the questions: it is the
 					    shorter list and the one that decides whether the other
 					    is worth working through. Answering five questions for a

@@ -259,6 +259,13 @@ function worthGrouping(
  * of what it raised — it is not read for display again, and this file is
  * deliberately the only question renderer left.
  *
+ * This tab is the WORKLIST. What is still open renders in full; a settled
+ * question collapses behind a count, because the open list is what anyone
+ * comes here to work and a topic accumulates answers without ever shedding
+ * them. The full record of a decision — its reply history and its
+ * attribution — is the Decision Log's job either way; what stays here is the
+ * fast route from "I just answered that" to amending it.
+ *
  * `POSSIBLY_RESOLVED` roots — soft-closed by reconciliation rather than
  * settled by anyone — render in their own group, collapsed behind a toggle
  * (mirroring `SummaryQuestionsPanel`'s `showPossiblyResolved`, IN4).
@@ -283,6 +290,7 @@ export function TopicQuestionsPanel({
 	members = [],
 }: Props) {
 	const queryClient = useQueryClient();
+	const [showAnswered, setShowAnswered] = useState(false);
 	const [showPossiblyResolved, setShowPossiblyResolved] = useState(false);
 	// The picker's own search box. Filtered here rather than on the server —
 	// unlike Feature Maturation, this surface already holds the whole member
@@ -527,22 +535,46 @@ export function TopicQuestionsPanel({
 			) : null}
 
 			{resolved.length > 0 ? (
-				<div className="space-y-3">
-					<h3 className="publishing-label">Answered</h3>
-					<ul className="space-y-3">
-						{resolved.map((thread) => (
-							<AnsweredCard
-								key={thread.root.id}
-								thread={thread}
-								canEdit={canEdit}
-								isSubmitting={isAmending}
-								onAmend={(supersedesId, text) =>
-									submitAmendment(thread, supersedesId, text)
-								}
-							/>
-						))}
-					</ul>
-				</div>
+				<section aria-label="Answered questions">
+					<button
+						type="button"
+						onClick={() => setShowAnswered((open) => !open)}
+						aria-expanded={showAnswered}
+						aria-controls="questions-answered"
+						className="flex w-full items-center gap-2 py-1 text-left"
+					>
+						<ChevronDownIcon
+							className={cn(
+								"size-3.5 shrink-0 text-muted-foreground transition-transform",
+								!showAnswered && "-rotate-90",
+							)}
+							aria-hidden="true"
+						/>
+						<h3 className="publishing-label">Answered</h3>
+						<span className="text-[11px] text-muted-foreground/70">
+							{resolved.length}
+						</span>
+					</button>
+					{showAnswered ? (
+						<ul id="questions-answered" className="mt-2 space-y-3">
+							{resolved.map((thread) => (
+								<AnsweredCard
+									key={thread.root.id}
+									thread={thread}
+									canEdit={canEdit}
+									isSubmitting={isAmending}
+									onAmend={(supersedesId, text) =>
+										submitAmendment(
+											thread,
+											supersedesId,
+											text,
+										)
+									}
+								/>
+							))}
+						</ul>
+					) : null}
+				</section>
 			) : null}
 
 			{possiblyResolved.length > 0 ? (
