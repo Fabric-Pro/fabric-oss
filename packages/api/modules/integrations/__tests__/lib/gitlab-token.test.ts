@@ -2,6 +2,9 @@ import {
 	advisoryObjectKey,
 	mcpConfigLockKey,
 	REFRESH_ADVISORY_CLASS,
+	REFRESH_LOCK_DB_HEADROOM_MS,
+	REFRESH_LOCK_MAX_WAIT_MS,
+	REFRESH_LOCK_TRANSACTION_TIMEOUT_MS,
 } from "@repo/database/prisma/queries/lib/refresh-lock-key";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -36,13 +39,33 @@ vi.mock("@repo/integrations/gitlab", async () => {
 		here,
 		"../../../../../integrations/src/gitlab/oauth-refresh.ts",
 	);
+	const probeMcpPath = path.resolve(
+		here,
+		"../../../../../integrations/src/gitlab/probe-mcp.ts",
+	);
 	const oauthRefresh =
 		await vi.importActual<typeof import("@repo/integrations/gitlab")>(
 			oauthRefreshPath,
 		);
+	const probeMcp =
+		await vi.importActual<typeof import("@repo/integrations/gitlab")>(
+			probeMcpPath,
+		);
 	return {
 		probeGitLabMcp: probeGitLabMcpMock,
 		GitLabReauthRequiredError: oauthRefresh.GitLabReauthRequiredError,
+		// The SUT (gitlab-token.ts) imports these for its own `fetch` timeout
+		// and for the budget-guard's `requiredMs` arithmetic — pass the REAL
+		// values through rather than leaving them `undefined`, which would
+		// make `AbortSignal.timeout(undefined)` throw inside
+		// `refreshAtGitLab`, and would make the budget guard's `requiredMs`
+		// a silent `NaN` (a comparison against `NaN` is always `false`, so
+		// the guard would never throw — a regression this mock would then
+		// hide rather than catch).
+		GITLAB_TOKEN_EXCHANGE_TIMEOUT_MS:
+			oauthRefresh.GITLAB_TOKEN_EXCHANGE_TIMEOUT_MS,
+		GITLAB_MCP_PROBE_DEFAULT_TIMEOUT_MS:
+			probeMcp.GITLAB_MCP_PROBE_DEFAULT_TIMEOUT_MS,
 	};
 });
 
@@ -50,6 +73,11 @@ describe("getValidGitLabToken / markNeedsReauth", () => {
 	beforeEach(() => {
 		vi.resetModules();
 		vi.unstubAllGlobals();
+		// Clear call history too, not just the return value — otherwise a
+		// "not called" assertion in a later test sees calls left over from an
+		// earlier one (this mock lives at module scope, outside any
+		// per-test factory reset).
+		probeGitLabMcpMock.mockClear();
 		// Default probe mock: not capable (safe default — keeps focus on token refresh logic).
 		probeGitLabMcpMock.mockResolvedValue({
 			capable: false,
@@ -504,6 +532,61 @@ describe("getValidGitLabToken / markNeedsReauth", () => {
 		}).catch((e: unknown) => e);
 
 		expect(err).toBeInstanceOf(Error);
+		expect(err).not.toBeInstanceOf(GitLabReauthRequiredError);
+		expect(tx.mCPConfig.updateMany).not.toHaveBeenCalled();
+	});
+
+	it("propagates a non-OK exchange's body-read timeout unchanged instead of folding it into a generic status Error", async () => {
+		// `refreshAtGitLab` shares its classification rule with
+		// @repo/integrations's `refreshGitLabToken` (see oauth-refresh.ts):
+		// when the timeout fires AFTER non-OK headers already arrived — so
+		// `res.ok` is already decided — the body read (`res.json()`) is what
+		// actually throws, not `fetch` itself. A catch around that read that
+		// only handles "body wasn't JSON" will fold the abort into a generic
+		// `Error("GitLab refresh failed: <status>")`, erasing the one thing
+		// that distinguishes "we never got an answer" from an ordinary
+		// refresh failure — so the catch must check for and rethrow an
+		// abort/timeout unchanged. This test drives the REAL `refreshAtGitLab`
+		// (through `getValidGitLabToken`, not stubbed) so a swallow
+		// reintroduced here actually fails it, unlike the "aborted/timed-out
+		// exchange" test below, which injects the abort as a `fetch()`
+		// rejection (headers never arrive at all) and so cannot catch a
+		// swallow that happens strictly inside the body-read of the non-OK
+		// branch.
+		const expired = new Date(Date.now() + 10 * 1000);
+		const { db, tx } = dbFor({
+			mcpRow: {
+				id: "mcp_1",
+				encryptedAccessToken: "enc_stale",
+				encryptedRefreshToken: "enc_r",
+				tokenExpiresAt: expired,
+				needsReauth: false,
+			},
+		});
+		vi.stubGlobal(
+			"fetch",
+			vi.fn().mockResolvedValue({
+				ok: false,
+				status: 400,
+				json: async () => {
+					throw new DOMException("signal timed out", "TimeoutError");
+				},
+			}),
+		);
+
+		const { getValidGitLabToken, GitLabReauthRequiredError } = await import(
+			"../../lib/gitlab-token"
+		);
+		const err = await getValidGitLabToken(db as never, {
+			userId: "u1",
+			organizationId: null,
+		}).catch((e: unknown) => e);
+
+		// The DOMException itself reaches the caller — not a generic Error
+		// that has lost the one signal distinguishing "aborted" from
+		// "answered and rejected".
+		expect(err).toBeInstanceOf(DOMException);
+		expect((err as DOMException).name).toBe("TimeoutError");
 		expect(err).not.toBeInstanceOf(GitLabReauthRequiredError);
 		expect(tx.mCPConfig.updateMany).not.toHaveBeenCalled();
 	});
@@ -1067,6 +1150,15 @@ describe("getValidGitLabToken / markNeedsReauth", () => {
 		// critical guarantee: the inner tx mock has NO `$transaction` method
 		// — the SUT must never invoke a nested transaction (Prisma's real
 		// TransactionClient does not expose `$transaction`).
+		//
+		// Spy on the real `AbortSignal.timeout`, not just the passed
+		// `signal`'s type: `expect(init.signal).toBeInstanceOf(AbortSignal)`
+		// alone is satisfied by ANY AbortSignal, including a plain
+		// `new AbortController().signal` that would never fire on its own —
+		// so that assertion by itself would leave this test green even if
+		// the exchange stopped calling the real timeout and became
+		// unbounded.
+		const timeoutSpy = vi.spyOn(AbortSignal, "timeout");
 		const expiringSoon = new Date(Date.now() + 10 * 1000);
 		const outer = dbFor({
 			mcpRow: {
@@ -1159,6 +1251,20 @@ describe("getValidGitLabToken / markNeedsReauth", () => {
 		expect(queryRawSpy).toHaveBeenCalledTimes(1);
 		// Refresh fetched against GitLab token endpoint.
 		expect(fetch).toHaveBeenCalledTimes(1);
+		// Bounded: the exchange carries a REAL AbortSignal.timeout, at the
+		// exact documented bound, so a hanging GitLab response cannot hold
+		// the advisory lock past the transaction budget.
+		const { GITLAB_TOKEN_EXCHANGE_TIMEOUT_MS } = await import(
+			"@repo/integrations/gitlab"
+		);
+		const fetchInit = (fetch as ReturnType<typeof vi.fn>).mock
+			.calls[0][1] as RequestInit;
+		expect(timeoutSpy).toHaveBeenCalledWith(
+			GITLAB_TOKEN_EXCHANGE_TIMEOUT_MS,
+		);
+		// And it's the SAME signal object `fetch` actually received.
+		expect(fetchInit.signal).toBe(timeoutSpy.mock.results[0]?.value);
+		timeoutSpy.mockRestore();
 		// Dual-write happened ON THE TX — not via a nested $transaction.
 		// (`tx` deliberately has no `$transaction` method; persisting via the
 		// non-tx helper would throw before reaching these writes.)
@@ -1169,6 +1275,80 @@ describe("getValidGitLabToken / markNeedsReauth", () => {
 		expect(
 			(tx as unknown as Record<string, unknown>).$transaction,
 		).toBeUndefined();
+		// Explicit budget on the lock transaction itself — this path holds the
+		// lock across TWO in-tx HTTP hops (the exchange above, plus the MCP
+		// probe inside prepareTokenWrite), so it must never fall back to
+		// Prisma's 5s interactive-transaction default. See the comment at
+		// this call site in gitlab-token.ts.
+		expect(fakePrisma.$transaction.mock.calls[0][1]).toEqual({
+			timeout: REFRESH_LOCK_TRANSACTION_TIMEOUT_MS,
+			maxWait: REFRESH_LOCK_MAX_WAIT_MS,
+		});
+	});
+
+	it("an aborted/timed-out exchange in the locked path rolls back without condemning the credential", async () => {
+		// Same shape as the previous test, but the exchange never gets a
+		// response — modelling GITLAB_TOKEN_EXCHANGE_TIMEOUT_MS firing. This
+		// must reach the caller as an ordinary failure: no
+		// GitLabReauthRequiredError, no needsReauth write. `refreshAtGitLab`
+		// has no try/catch of its own around `fetch`, so the DOMException
+		// simply propagates — asserting that here catches a regression where
+		// someone adds one and reclassifies it.
+		const expiringSoon = new Date(Date.now() + 10 * 1000);
+		const outer = dbFor({
+			mcpRow: {
+				id: "mcp_1",
+				encryptedAccessToken: "enc_stale",
+				encryptedRefreshToken: "enc_rtok",
+				tokenExpiresAt: expiringSoon,
+				needsReauth: false,
+			},
+		});
+		const innerTx = freshTx({
+			mcpRow: {
+				id: "mcp_1",
+				encryptedAccessToken: "enc_stale",
+				encryptedRefreshToken: "enc_rtok",
+				tokenExpiresAt: expiringSoon,
+				needsReauth: false,
+			},
+		});
+		const queryRawSpy = vi.fn().mockResolvedValue(undefined);
+		const tx = { ...innerTx, $executeRaw: queryRawSpy };
+		const fakePrisma = {
+			$queryRaw: vi.fn(),
+			$transaction: vi.fn(
+				async (cb: (t: typeof tx) => Promise<unknown>) => {
+					// A rejected callback rolls back — buffered writes are
+					// dropped, `commit()` is never called. Models Prisma's
+					// real rollback-on-throw behavior.
+					return cb(tx);
+				},
+			),
+		};
+
+		const timeoutError = new DOMException(
+			"The operation was aborted due to timeout",
+			"TimeoutError",
+		);
+		vi.stubGlobal("fetch", vi.fn().mockRejectedValue(timeoutError));
+
+		const { getValidGitLabToken, GitLabReauthRequiredError } = await import(
+			"../../lib/gitlab-token"
+		);
+
+		const err = await getValidGitLabToken(
+			outer.db as never,
+			{ userId: "u1", organizationId: null },
+			{ prisma: fakePrisma as never },
+		).catch((e: unknown) => e);
+
+		expect(err).toBe(timeoutError);
+		expect(err).not.toBeInstanceOf(GitLabReauthRequiredError);
+		// No condemnation: neither the MCPConfig breaker nor its
+		// WorkflowIntegration mirror was written.
+		expect(innerTx.mCPConfig.updateMany).not.toHaveBeenCalled();
+		expect(innerTx.workflowIntegration.update).not.toHaveBeenCalled();
 	});
 
 	it("takes the advisory lock with NO opts.prisma — the way the only production caller invokes it", async () => {
@@ -1209,6 +1389,13 @@ describe("getValidGitLabToken / markNeedsReauth", () => {
 		expect(outer.tx.$executeRaw.mock.calls[0][2]).toBe(
 			advisoryObjectKey(mcpConfigLockKey("mcp_1")),
 		);
+		expect(
+			(outer.db.$transaction as ReturnType<typeof vi.fn>).mock
+				.calls[0][1],
+		).toEqual({
+			timeout: REFRESH_LOCK_TRANSACTION_TIMEOUT_MS,
+			maxWait: REFRESH_LOCK_MAX_WAIT_MS,
+		});
 	});
 
 	it("acquires advisory lock and skips refresh when re-read shows fresh token", async () => {
@@ -1295,6 +1482,214 @@ describe("getValidGitLabToken / markNeedsReauth", () => {
 		// And no persist happened inside the tx.
 		expect(innerTx.mCPConfig.update).not.toHaveBeenCalled();
 		expect(innerTx.workflowIntegration.update).not.toHaveBeenCalled();
+		expect(fakePrisma.$transaction.mock.calls[0][1]).toEqual({
+			timeout: REFRESH_LOCK_TRANSACTION_TIMEOUT_MS,
+			maxWait: REFRESH_LOCK_MAX_WAIT_MS,
+		});
+	});
+
+	it("static invariant: the transaction budget covers both bounded in-tx HTTP hops this path makes PLUS a full REFRESH_LOCK_DB_HEADROOM_MS", async () => {
+		// This locked path holds the advisory lock across TWO bounded HTTP
+		// calls — the token exchange (GITLAB_TOKEN_EXCHANGE_TIMEOUT_MS) and,
+		// on success, the MCP capability probe inside prepareTokenWrite
+		// (GITLAB_MCP_PROBE_DEFAULT_TIMEOUT_MS) — plus its own DB round-trips.
+		// A bare "timeout > exchange + probe" check would pass even with a
+		// single millisecond of slack for every DB round-trip the
+		// transaction makes — not the real invariant `assertRefreshLockBudget`
+		// enforces at runtime. Assert the same arithmetic the guard uses, so
+		// a future edit that breaks it fails here instead of only inside a
+		// live transaction.
+		//
+		// The top-of-file `vi.mock("@repo/integrations/gitlab", ...)` stubs
+		// this module down to `probeGitLabMcp` + `GitLabReauthRequiredError`,
+		// so a plain import here would read `undefined`. Reach the REAL leaf
+		// modules the same way that mock factory does, via `vi.importActual`
+		// against an absolute path.
+		const { fileURLToPath } = await import("node:url");
+		const path = await import("node:path");
+		const here = path.dirname(fileURLToPath(import.meta.url));
+		const oauthRefresh = await vi.importActual<
+			typeof import("@repo/integrations/gitlab")
+		>(
+			path.resolve(
+				here,
+				"../../../../../integrations/src/gitlab/oauth-refresh.ts",
+			),
+		);
+		const probeMcp = await vi.importActual<
+			typeof import("@repo/integrations/gitlab")
+		>(
+			path.resolve(
+				here,
+				"../../../../../integrations/src/gitlab/probe-mcp.ts",
+			),
+		);
+		const boundedHttpBudget =
+			oauthRefresh.GITLAB_TOKEN_EXCHANGE_TIMEOUT_MS +
+			probeMcp.GITLAB_MCP_PROBE_DEFAULT_TIMEOUT_MS;
+		expect(
+			REFRESH_LOCK_TRANSACTION_TIMEOUT_MS - boundedHttpBudget,
+		).toBeGreaterThanOrEqual(REFRESH_LOCK_DB_HEADROOM_MS);
+	});
+
+	it("bails out with RefreshLockBudgetExhaustedError — never attempting the exchange or the probe — when the lock wait already ate the budget", async () => {
+		// Models a waiter that queued behind another process's own refresh
+		// and only acquires the advisory lock deep into its own 20s
+		// transaction budget. Starting a fresh exchange + probe at that
+		// point would reproduce the exact defect this budget exists to
+		// prevent.
+		vi.useFakeTimers();
+		const start = new Date(2026, 0, 1);
+		vi.setSystemTime(start);
+
+		const expiringSoon = new Date(start.getTime() + 10 * 1000);
+		const outer = dbFor({
+			mcpRow: {
+				id: "mcp_1",
+				encryptedAccessToken: "enc_stale",
+				encryptedRefreshToken: "enc_rtok",
+				tokenExpiresAt: expiringSoon,
+				needsReauth: false,
+			},
+		});
+		const innerTx = freshTx({
+			mcpRow: {
+				id: "mcp_1",
+				encryptedAccessToken: "enc_stale",
+				encryptedRefreshToken: "enc_rtok",
+				tokenExpiresAt: expiringSoon,
+				needsReauth: false,
+			},
+		});
+		const queryRawSpy = vi.fn().mockImplementation(async () => {
+			// A 15s advisory-lock wait — leaves only 5s of the 20s budget,
+			// not enough for the 10s exchange + 2s probe plus DB headroom.
+			vi.advanceTimersByTime(15_000);
+			return undefined;
+		});
+		const tx = { ...innerTx, $executeRaw: queryRawSpy };
+		const fakePrisma = {
+			$queryRaw: vi.fn(),
+			$transaction: vi.fn(
+				async (cb: (t: typeof tx) => Promise<unknown>) => cb(tx),
+			),
+		};
+
+		const fetchSpy = vi.fn();
+		vi.stubGlobal("fetch", fetchSpy);
+
+		const { getValidGitLabToken, GitLabReauthRequiredError } = await import(
+			"../../lib/gitlab-token"
+		);
+		// Imported dynamically, AFTER this test's `vi.resetModules()` — a
+		// static top-level import would bind a DIFFERENT module instance
+		// (and therefore a different class identity) than the one the
+		// freshly re-imported SUT above actually throws, making every
+		// `instanceof` check below false for reasons that have nothing to
+		// do with the guard's real behavior. This module is not mocked in
+		// this file, so the plain dynamic import already resolves to
+		// whatever `gitlab-token.ts` itself resolves for the same specifier.
+		const { RefreshLockBudgetExhaustedError } = await import(
+			"@repo/database/prisma/queries/lib/refresh-lock-key"
+		);
+
+		const err = await getValidGitLabToken(
+			outer.db as never,
+			{ userId: "u1", organizationId: null },
+			{ prisma: fakePrisma as never },
+		).catch((e: unknown) => e);
+
+		expect(err).toBeInstanceOf(RefreshLockBudgetExhaustedError);
+		// Transient, never a grant verdict.
+		expect(err).not.toBeInstanceOf(GitLabReauthRequiredError);
+		// Neither bounded call was even attempted.
+		expect(fetchSpy).not.toHaveBeenCalled();
+		expect(probeGitLabMcpMock).not.toHaveBeenCalled();
+		// And critically: no condemnation. The guard throws before the
+		// try/catch that resolves a `GitLabReauthRequiredError` verdict as a
+		// value even starts, so this can never be routed into
+		// `markNeedsReauthOnTx`.
+		expect(innerTx.mCPConfig.update).not.toHaveBeenCalled();
+		expect(innerTx.mCPConfig.updateMany).not.toHaveBeenCalled();
+		expect(innerTx.workflowIntegration.update).not.toHaveBeenCalled();
+
+		vi.useRealTimers();
+	});
+
+	it("returns the winner's already-fresh token via the short-circuit even when the lock wait already exhausted the budget", async () => {
+		// The budget guard must only gate BOUNDED PROVIDER WORK, never the
+		// lock acquisition itself. A caller that queues behind a legitimate
+		// holder and, once it acquires the lock, finds via its own in-lock
+		// re-read (`loadGitLabToken`) that the winner already persisted a
+		// fresh token has no bounded work left to do — gating on the lock
+		// wait alone would reject that caller with
+		// RefreshLockBudgetExhaustedError before it ever looked, even though
+		// it needed no further budget. That is the common contended case,
+		// not the rare one: prove it is NEVER gated, however long the lock
+		// wait was.
+		vi.useFakeTimers();
+		const start = new Date(2026, 0, 1);
+		vi.setSystemTime(start);
+
+		// Outer (pre-lock) read: expiring soon, so the locked path is
+		// entered — mirrors the exhaustion test above.
+		const expiringSoon = new Date(start.getTime() + 10 * 1000);
+		const outer = dbFor({
+			mcpRow: {
+				id: "mcp_1",
+				encryptedAccessToken: "enc_stale",
+				encryptedRefreshToken: "enc_rtok",
+				tokenExpiresAt: expiringSoon,
+				needsReauth: false,
+			},
+		});
+		// In-lock re-read: far in the future — `isExpiring` is false, so
+		// this short-circuits with `{ ok: true, token: reloaded.accessToken }`
+		// before any bounded provider work would even be considered.
+		const farFuture = new Date(start.getTime() + 60 * 60 * 1000);
+		const innerTx = freshTx({
+			mcpRow: {
+				id: "mcp_1",
+				encryptedAccessToken: "enc_winner-fresh",
+				encryptedRefreshToken: "enc_rtok",
+				tokenExpiresAt: farFuture,
+				needsReauth: false,
+			},
+		});
+		const queryRawSpy = vi.fn().mockImplementation(async () => {
+			// Same 15s lock wait as the exhaustion test above — the budget
+			// really is gone by the time this caller acquires the lock.
+			vi.advanceTimersByTime(15_000);
+			return undefined;
+		});
+		const tx = { ...innerTx, $executeRaw: queryRawSpy };
+		const fakePrisma = {
+			$queryRaw: vi.fn(),
+			$transaction: vi.fn(
+				async (cb: (t: typeof tx) => Promise<unknown>) => cb(tx),
+			),
+		};
+
+		const fetchSpy = vi.fn();
+		vi.stubGlobal("fetch", fetchSpy);
+
+		const { getValidGitLabToken } = await import("../../lib/gitlab-token");
+
+		const token = await getValidGitLabToken(
+			outer.db as never,
+			{ userId: "u1", organizationId: null },
+			{ prisma: fakePrisma as never },
+		);
+
+		expect(token).toBe("winner-fresh");
+		// Neither bounded call was even attempted.
+		expect(fetchSpy).not.toHaveBeenCalled();
+		expect(probeGitLabMcpMock).not.toHaveBeenCalled();
+		expect(innerTx.mCPConfig.update).not.toHaveBeenCalled();
+		expect(innerTx.mCPConfig.updateMany).not.toHaveBeenCalled();
+		expect(innerTx.workflowIntegration.update).not.toHaveBeenCalled();
+
+		vi.useRealTimers();
 	});
 });
 

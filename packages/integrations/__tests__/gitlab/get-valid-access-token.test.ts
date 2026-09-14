@@ -1,9 +1,50 @@
+import {
+	REFRESH_LOCK_DB_HEADROOM_MS,
+	REFRESH_LOCK_MAX_WAIT_MS,
+	REFRESH_LOCK_TRANSACTION_TIMEOUT_MS,
+} from "@repo/database/prisma/queries/lib/refresh-lock-key";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+
+// The locked-transaction budget guard measures elapsed time with
+// `performance.now()` (monotonic), not `Date.now()`. `vi.setSystemTime()`
+// does NOT move `performance.now()` in this project's Vitest/Node
+// combination — only `vi.advanceTimersByTime()` moves `Date` and
+// `performance.now()` together. So every test below that simulates a lock
+// wait uses `vi.advanceTimersByTime()` for that step; `vi.setSystemTime()`
+// is used only to pin the initial "now" that `tokenExpiresAt` fixtures are
+// computed relative to.
 
 vi.mock("@repo/utils", () => ({
 	encryptApiKey: (v: string) => `enc_${v}`,
 	decryptApiKey: (v: string) => v.replace("enc_", ""),
 }));
+
+/** The transaction-options object every locked `$transaction` call must pass. */
+const LOCK_TX_OPTIONS = {
+	timeout: REFRESH_LOCK_TRANSACTION_TIMEOUT_MS,
+	maxWait: REFRESH_LOCK_MAX_WAIT_MS,
+};
+
+describe("locked-transaction budget invariant", () => {
+	it("REFRESH_LOCK_TRANSACTION_TIMEOUT_MS covers the one bounded HTTP hop this transaction makes PLUS a full REFRESH_LOCK_DB_HEADROOM_MS of DB round-trips", async () => {
+		// getValidGitLabAccessToken's locked branches make exactly ONE bounded
+		// HTTP call inside the transaction — the injected `refresh`, which
+		// every production caller wires to `refreshGitLabToken`, bounded to
+		// GITLAB_TOKEN_EXCHANGE_TIMEOUT_MS. A "timeout > exchange" check alone
+		// would pass even with a single millisecond of slack for every DB
+		// round-trip the transaction makes — not the real invariant
+		// `assertRefreshLockBudget` enforces at runtime. Assert the same
+		// arithmetic the guard uses, so a future edit that breaks it fails
+		// here instead of only inside a live transaction.
+		const { GITLAB_TOKEN_EXCHANGE_TIMEOUT_MS } = await import(
+			"../../src/gitlab/oauth-refresh"
+		);
+		expect(
+			REFRESH_LOCK_TRANSACTION_TIMEOUT_MS -
+				GITLAB_TOKEN_EXCHANGE_TIMEOUT_MS,
+		).toBeGreaterThanOrEqual(REFRESH_LOCK_DB_HEADROOM_MS);
+	});
+});
 
 const refreshSpy = vi.fn();
 
@@ -611,6 +652,11 @@ describe("getValidGitLabAccessToken — postgres advisory lock", () => {
 		// Re-read found a fresh row → refresh skipped.
 		expect(refreshSpy).not.toHaveBeenCalled();
 		expect(txUpdate).not.toHaveBeenCalled();
+		// The explicit budget: without it this transaction runs under Prisma's
+		// 5s default, which the injected `refresh` (bounded in production to
+		// GITLAB_TOKEN_EXCHANGE_TIMEOUT_MS = 10s) can outrun on its own — see
+		// the comment at this call site in get-valid-access-token.ts.
+		expect(txSpy.mock.calls[0][1]).toEqual(LOCK_TX_OPTIONS);
 	});
 
 	it("refreshes and persists inside the transaction when re-read still needs refresh", async () => {
@@ -679,6 +725,375 @@ describe("getValidGitLabAccessToken — postgres advisory lock", () => {
 		expect(queryRawSpy).toHaveBeenCalledTimes(2);
 		expect(refreshSpy).toHaveBeenCalledTimes(1);
 		expect(txUpdate).toHaveBeenCalledTimes(1);
+		expect(fakePrisma.$transaction.mock.calls[0][1]).toEqual(
+			LOCK_TX_OPTIONS,
+		);
+	});
+
+	it("passes the explicit transaction budget on the PROJECT-source locked branch too", async () => {
+		// Same asymmetry the defect report describes, on the other branch:
+		// `getValidGitLabAccessToken`'s project-source path opens its own
+		// `$transaction` and must carry the identical budget. Nothing above
+		// exercises the project branch under a real `prisma` double, so this
+		// is the only place a regression there (e.g. only fixing the
+		// user-source branch) would be caught.
+		const near = new Date(Date.now() + 5 * 1000);
+		const outerFindUnique = vi.fn().mockResolvedValue({
+			id: "pri_1",
+			encryptedAccessToken: "enc_stale-proj",
+			encryptedRefreshToken: "enc_proj-refresh",
+			tokenExpiresAt: near,
+		});
+		const txFindUnique = vi.fn().mockResolvedValue({
+			id: "pri_1",
+			encryptedAccessToken: "enc_stale-proj",
+			encryptedRefreshToken: "enc_proj-refresh",
+			tokenExpiresAt: near,
+		});
+		const txUpdateMany = vi.fn().mockResolvedValue({ count: 1 });
+		const queryRawSpy = vi.fn().mockResolvedValue(undefined);
+		const tx = {
+			$executeRaw: queryRawSpy,
+			projectRepositoryIntegration: {
+				findUnique: txFindUnique,
+				updateMany: txUpdateMany,
+			},
+		};
+		const txSpy = vi.fn(async (cb: (t: typeof tx) => Promise<unknown>) =>
+			cb(tx),
+		);
+		const fakePrisma = {
+			$queryRaw: vi.fn(),
+			$transaction: txSpy,
+		};
+
+		refreshSpy.mockResolvedValue({
+			access_token: "fresh-proj",
+			refresh_token: "new-refresh",
+			expires_in: 7200,
+		});
+
+		const { getValidGitLabAccessToken } = await import(
+			"../../src/gitlab/get-valid-access-token"
+		);
+		const token = await getValidGitLabAccessToken({
+			db: {
+				workflowIntegration: { findUnique: vi.fn(), update: vi.fn() },
+				projectRepositoryIntegration: {
+					findUnique: outerFindUnique,
+					update: vi.fn(),
+				},
+			} as never,
+			integrationId: "pri_1",
+			clientId: "id",
+			clientSecret: "secret",
+			source: "project",
+			refresh: refreshSpy,
+			prisma: fakePrisma as never,
+		});
+
+		expect(token).toBe("fresh-proj");
+		expect(refreshSpy).toHaveBeenCalledTimes(1);
+		expect(txUpdateMany).toHaveBeenCalledTimes(1);
+		expect(txSpy.mock.calls[0][1]).toEqual(LOCK_TX_OPTIONS);
+	});
+
+	it("bails out with RefreshLockBudgetExhaustedError on the PROJECT-source branch when the re-read still needs a refresh and the lock wait already ate the budget", async () => {
+		vi.useFakeTimers();
+		const start = new Date(2026, 0, 1);
+		vi.setSystemTime(start);
+
+		const near = new Date(start.getTime() + 5 * 1000);
+		const outerFindUnique = vi.fn().mockResolvedValue({
+			id: "pri_1",
+			encryptedAccessToken: "enc_stale-proj",
+			encryptedRefreshToken: "enc_proj-refresh",
+			tokenExpiresAt: near,
+		});
+		const queryRawSpy = vi.fn().mockImplementation(async () => {
+			vi.advanceTimersByTime(15_000);
+			return undefined;
+		});
+		// In-lock re-read: STILL stale — this caller genuinely needs the
+		// exchange, so it must reach and trip the guard.
+		const txFindUnique = vi.fn().mockResolvedValue({
+			id: "pri_1",
+			encryptedAccessToken: "enc_stale-proj",
+			encryptedRefreshToken: "enc_proj-refresh",
+			tokenExpiresAt: near,
+		});
+		const tx = {
+			$executeRaw: queryRawSpy,
+			projectRepositoryIntegration: {
+				findUnique: txFindUnique,
+				updateMany: vi.fn(),
+			},
+		};
+		const fakePrisma = {
+			$queryRaw: vi.fn(),
+			$transaction: vi.fn(
+				async (cb: (t: typeof tx) => Promise<unknown>) => cb(tx),
+			),
+		};
+
+		const { getValidGitLabAccessToken } = await import(
+			"../../src/gitlab/get-valid-access-token"
+		);
+		const { RefreshLockBudgetExhaustedError } = await import(
+			"@repo/database/prisma/queries/lib/refresh-lock-key"
+		);
+
+		const err = await getValidGitLabAccessToken({
+			db: {
+				workflowIntegration: { findUnique: vi.fn(), update: vi.fn() },
+				projectRepositoryIntegration: {
+					findUnique: outerFindUnique,
+					update: vi.fn(),
+				},
+			} as never,
+			integrationId: "pri_1",
+			clientId: "id",
+			clientSecret: "secret",
+			source: "project",
+			refresh: refreshSpy,
+			prisma: fakePrisma as never,
+		}).catch((e: unknown) => e);
+
+		expect(err).toBeInstanceOf(RefreshLockBudgetExhaustedError);
+		expect(txFindUnique).toHaveBeenCalledTimes(1);
+		expect(refreshSpy).not.toHaveBeenCalled();
+
+		vi.useRealTimers();
+	});
+
+	it("returns the winner's freshly persisted token via the short-circuit on the PROJECT-source branch even when the lock wait already exhausted the budget", async () => {
+		vi.useFakeTimers();
+		const start = new Date(2026, 0, 1);
+		vi.setSystemTime(start);
+
+		const near = new Date(start.getTime() + 5 * 1000);
+		const future = new Date(start.getTime() + 60 * 60 * 1000);
+		const outerFindUnique = vi.fn().mockResolvedValue({
+			id: "pri_1",
+			encryptedAccessToken: "enc_stale-proj",
+			encryptedRefreshToken: "enc_proj-refresh",
+			tokenExpiresAt: near,
+		});
+		const queryRawSpy = vi.fn().mockImplementation(async () => {
+			vi.advanceTimersByTime(15_000);
+			return undefined;
+		});
+		// In-lock re-read: the WINNER's fresh row — no bounded HTTP work
+		// needed at all.
+		const txFindUnique = vi.fn().mockResolvedValue({
+			id: "pri_1",
+			encryptedAccessToken: "enc_winner-proj",
+			encryptedRefreshToken: "enc_winner-refresh",
+			tokenExpiresAt: future,
+		});
+		const tx = {
+			$executeRaw: queryRawSpy,
+			projectRepositoryIntegration: {
+				findUnique: txFindUnique,
+				updateMany: vi.fn(),
+			},
+		};
+		const fakePrisma = {
+			$queryRaw: vi.fn(),
+			$transaction: vi.fn(
+				async (cb: (t: typeof tx) => Promise<unknown>) => cb(tx),
+			),
+		};
+
+		const { getValidGitLabAccessToken } = await import(
+			"../../src/gitlab/get-valid-access-token"
+		);
+
+		const token = await getValidGitLabAccessToken({
+			db: {
+				workflowIntegration: { findUnique: vi.fn(), update: vi.fn() },
+				projectRepositoryIntegration: {
+					findUnique: outerFindUnique,
+					update: vi.fn(),
+				},
+			} as never,
+			integrationId: "pri_1",
+			clientId: "id",
+			clientSecret: "secret",
+			source: "project",
+			refresh: refreshSpy,
+			prisma: fakePrisma as never,
+		});
+
+		expect(token).toBe("winner-proj");
+		expect(refreshSpy).not.toHaveBeenCalled();
+
+		vi.useRealTimers();
+	});
+
+	it("bails out with RefreshLockBudgetExhaustedError — never attempting the exchange — when the re-read still needs a refresh and the lock wait already ate the user-branch budget", async () => {
+		// Models a waiter that queued behind another process's own refresh
+		// (its exchange + DB round-trips) and only acquires the advisory lock
+		// deep into its own 20s transaction budget. The IN-LOCK re-read still
+		// shows a stale row (unlike the short-circuit tests below), so this
+		// caller really is about to start a fresh GITLAB_TOKEN_EXCHANGE_TIMEOUT_MS
+		// -bounded exchange — exactly the case the guard exists to stop.
+		vi.useFakeTimers();
+		const start = new Date(2026, 0, 1);
+		vi.setSystemTime(start);
+
+		const near = new Date(start.getTime() + 5 * 1000).toISOString();
+		const outerFindUnique = vi.fn().mockResolvedValue({
+			id: "wi_1",
+			credentials:
+				"enc_" +
+				JSON.stringify({
+					access_token: "stale",
+					refresh_token: "refresh-token",
+				}),
+			settings: { tokenExpiresAt: near },
+		});
+		const queryRawSpy = vi.fn().mockImplementation(async () => {
+			// Simulate a 15s wait for the advisory lock — leaves only 5s of
+			// the 20s budget, not enough for a 10s exchange plus DB headroom.
+			vi.advanceTimersByTime(15_000);
+			return undefined;
+		});
+		// The in-lock re-read: STILL stale (same near-future expiry, still
+		// has a refresh token) — this caller genuinely needs the exchange,
+		// so it must reach and trip the guard rather than short-circuiting.
+		const txFindUnique = vi.fn().mockResolvedValue({
+			id: "wi_1",
+			credentials:
+				"enc_" +
+				JSON.stringify({
+					access_token: "stale",
+					refresh_token: "refresh-token",
+				}),
+			settings: { tokenExpiresAt: near },
+		});
+		const tx = {
+			$executeRaw: queryRawSpy,
+			workflowIntegration: { findUnique: txFindUnique, update: vi.fn() },
+		};
+		const fakePrisma = {
+			$queryRaw: vi.fn(),
+			$transaction: vi.fn(
+				async (cb: (t: typeof tx) => Promise<unknown>) => cb(tx),
+			),
+		};
+
+		const { getValidGitLabAccessToken } = await import(
+			"../../src/gitlab/get-valid-access-token"
+		);
+		const { RefreshLockBudgetExhaustedError } = await import(
+			"@repo/database/prisma/queries/lib/refresh-lock-key"
+		);
+		const { GitLabReauthRequiredError } = await import(
+			"../../src/gitlab/oauth-refresh"
+		);
+
+		const err = await getValidGitLabAccessToken({
+			db: {
+				workflowIntegration: {
+					findUnique: outerFindUnique,
+					update: vi.fn(),
+				},
+			} as never,
+			integrationId: "wi_1",
+			clientId: "id",
+			clientSecret: "secret",
+			refresh: refreshSpy,
+			prisma: fakePrisma as never,
+		}).catch((e: unknown) => e);
+
+		expect(err).toBeInstanceOf(RefreshLockBudgetExhaustedError);
+		// Transient, not a grant verdict — must never be mistaken for one.
+		expect(err).not.toBeInstanceOf(GitLabReauthRequiredError);
+		// The re-read DID run (it decided the exchange was still needed);
+		// the guard fires right after that, before the exchange itself.
+		expect(txFindUnique).toHaveBeenCalledTimes(1);
+		expect(refreshSpy).not.toHaveBeenCalled();
+
+		vi.useRealTimers();
+	});
+
+	it("returns the winner's freshly persisted token via the short-circuit even when the lock wait already exhausted the user-branch budget", async () => {
+		// The budget guard must only gate BOUNDED PROVIDER WORK, never the
+		// lock acquisition itself. A waiter that queues behind a legitimate
+		// holder and, once it acquires the lock, finds via the re-read above
+		// that the winner already persisted a fresh token has no bounded
+		// work left to do — gating on the lock wait alone would reject that
+		// waiter with RefreshLockBudgetExhaustedError before it ever looked,
+		// even though it needed no further budget. This is the common
+		// contended case, not the rare one: prove it is NEVER gated.
+		vi.useFakeTimers();
+		const start = new Date(2026, 0, 1);
+		vi.setSystemTime(start);
+
+		const near = new Date(start.getTime() + 5 * 1000).toISOString();
+		const future = new Date(start.getTime() + 60 * 60 * 1000).toISOString();
+		const outerFindUnique = vi.fn().mockResolvedValue({
+			id: "wi_1",
+			credentials:
+				"enc_" +
+				JSON.stringify({
+					access_token: "stale",
+					refresh_token: "refresh-token",
+				}),
+			settings: { tokenExpiresAt: near },
+		});
+		const queryRawSpy = vi.fn().mockImplementation(async () => {
+			// Same 15s lock wait as the exhaustion test above — the budget
+			// really is gone by the time this caller acquires the lock.
+			vi.advanceTimersByTime(15_000);
+			return undefined;
+		});
+		// The in-lock re-read shows the WINNER's fresh token: no bounded HTTP
+		// work is needed at all.
+		const txFindUnique = vi.fn().mockResolvedValue({
+			id: "wi_1",
+			credentials:
+				"enc_" +
+				JSON.stringify({
+					access_token: "winner-token",
+					refresh_token: "winner-refresh",
+				}),
+			settings: { tokenExpiresAt: future },
+		});
+		const tx = {
+			$executeRaw: queryRawSpy,
+			workflowIntegration: { findUnique: txFindUnique, update: vi.fn() },
+		};
+		const fakePrisma = {
+			$queryRaw: vi.fn(),
+			$transaction: vi.fn(
+				async (cb: (t: typeof tx) => Promise<unknown>) => cb(tx),
+			),
+		};
+
+		const { getValidGitLabAccessToken } = await import(
+			"../../src/gitlab/get-valid-access-token"
+		);
+
+		const token = await getValidGitLabAccessToken({
+			db: {
+				workflowIntegration: {
+					findUnique: outerFindUnique,
+					update: vi.fn(),
+				},
+			} as never,
+			integrationId: "wi_1",
+			clientId: "id",
+			clientSecret: "secret",
+			refresh: refreshSpy,
+			prisma: fakePrisma as never,
+		});
+
+		expect(token).toBe("winner-token");
+		expect(refreshSpy).not.toHaveBeenCalled();
+
+		vi.useRealTimers();
 	});
 
 	it("falls back to in-process behavior when prisma is omitted", async () => {

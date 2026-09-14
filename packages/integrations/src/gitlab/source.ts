@@ -1,3 +1,4 @@
+import { RefreshLockBudgetExhaustedError } from "@repo/database/prisma/queries/lib/refresh-lock-key";
 import {
 	type GitLabIntegrationSettings,
 	readUseOfficialMcp,
@@ -12,6 +13,56 @@ import {
 	GitLabReauthRequiredError,
 	GitLabRefreshSuppressedError,
 } from "./oauth-refresh";
+
+/**
+ * True for the two NO-VERDICT transient outcomes a `refresh()` implementation
+ * wired into this resolver can now produce:
+ *
+ *   - An aborted/timed-out provider HTTP call. `AbortSignal.timeout(ms)`
+ *     rejects with a `DOMException` named `"TimeoutError"`; a plain
+ *     `AbortController.abort()` with no reason rejects with one named
+ *     `"AbortError"`. Either way, this process gave up waiting — it is not
+ *     evidence GitLab rejected anything.
+ *   - `RefreshLockBudgetExhaustedError`: the advisory-lock transaction
+ *     declined to even START the exchange because too little of its budget
+ *     remained after the lock wait. No provider contact happened at all.
+ *
+ * Neither says anything about the credential, so recording either against
+ * `refreshFailureCount` would inflate the circuit breaker's strike counter
+ * (`MAX_REFRESH_FAILURES` in `@repo/database`) on evidence that isn't a
+ * strike — the next GENUINE permanent failure would then trip the breaker
+ * immediately instead of on its own third occurrence, eroding the tolerance
+ * that counter exists to provide.
+ *
+ * Also unwraps ONE level of `Error.cause`, as defence in depth for a wrapper
+ * this codebase hasn't introduced yet: if some future layer wraps the abort
+ * (e.g. `new Error("refresh failed", { cause: timeoutError })`) instead of
+ * rethrowing it unchanged, the underlying signal is still recognised here.
+ * This must NOT be treated as a substitute for rethrowing unchanged at the
+ * source — every body read on the way here (`refreshGitLabToken`'s
+ * `!response.ok` branch in particular; see its comment) is fixed to do
+ * exactly that, and any NEW swallow found in the future belongs fixed the
+ * same way, not papered over by widening this unwrap.
+ */
+function isNoVerdictTransientError(err: unknown): boolean {
+	if (isAbortOrBudgetError(err)) {
+		return true;
+	}
+	if (err instanceof Error && isAbortOrBudgetError(err.cause)) {
+		return true;
+	}
+	return false;
+}
+
+function isAbortOrBudgetError(err: unknown): boolean {
+	if (err instanceof RefreshLockBudgetExhaustedError) {
+		return true;
+	}
+	return (
+		err instanceof DOMException &&
+		(err.name === "TimeoutError" || err.name === "AbortError")
+	);
+}
 
 export type GitLabSource =
 	| { kind: "official-mcp"; callTool: GitLabMcpClient["callTool"] }
@@ -259,6 +310,27 @@ export async function resolveGitLabSource(
 				// the REST degradation below still runs.
 				const suppressed = err instanceof GitLabRefreshSuppressedError;
 
+				// Same skip, different reason: an abort/timeout or a budget
+				// exhaustion never got an answer from GitLab at all (or never
+				// even tried), so — like a suppressed refresh — there is no
+				// outcome to record. Recording it anyway would still count
+				// toward the breaker's 3-strike threshold even though
+				// `reauthRequired` stays false, letting a burst of transient
+				// timeouts set up the NEXT genuine permanent failure to trip
+				// the breaker immediately. See `isNoVerdictTransientError`.
+				// `reauthRequired` takes precedence over the cause-unwrap in
+				// `isNoVerdictTransientError`: an error can be BOTH a genuine
+				// `GitLabReauthRequiredError` verdict AND carry an abort as its
+				// `cause` (e.g. a future wrapper attaching the underlying
+				// `TimeoutError` for diagnostics). Checking `reauthRequired`
+				// first means a real verdict is always recorded regardless of
+				// what its `cause` chain contains — the cause-unwrap only ever
+				// widens what counts as no-verdict, and must never cost a
+				// genuine verdict its recording.
+				const noVerdict =
+					suppressed ||
+					(!reauthRequired && isNoVerdictTransientError(err));
+
 				// The row version the failure describes. Prefer the value
 				// `refresh()` stamped on the error: its rotation-race retry
 				// posts a token this resolver never loaded, and the write must
@@ -277,7 +349,7 @@ export async function resolveGitLabSource(
 				// degraded to REST with no prompt to reconnect. If marking
 				// itself fails (DB outage), swallow — the REST fallback below
 				// is the real recovery path.
-				if (!suppressed) {
+				if (!noVerdict) {
 					// A condemnation may only travel with the row version it
 					// is bound to, which is why the callback's type refuses
 					// `reauthRequired: true` without a ciphertext. Unreachable

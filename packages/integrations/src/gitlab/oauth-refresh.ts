@@ -76,6 +76,41 @@ export class GitLabRefreshRaceLostError extends Error {
 
 const GITLAB_TOKEN_URL = "https://gitlab.com/oauth/token";
 
+/**
+ * Upper bound on the token-exchange HTTP call. Without this, `fetch` has no
+ * timeout of its own — undici's default headers timeout is 300s — so a slow
+ * or hanging GitLab response can run far longer than the Postgres advisory
+ * lock that wraps this exchange (see `REFRESH_LOCK_TRANSACTION_TIMEOUT_MS` in
+ * `@repo/database/prisma/queries/lib/refresh-lock-key`). That transaction
+ * budget is a bound, not a guarantee, unless every bounded call inside it is
+ * ALSO bounded: 10s here leaves headroom under the 20s transaction timeout
+ * for the in-tx MCP capability probe (`probeGitLabMcp`, bounded to
+ * `GITLAB_MCP_PROBE_DEFAULT_TIMEOUT_MS` = 2s — see `probe-mcp.ts`) plus the
+ * transaction's own DB round-trips (lock acquisition, re-read, persist).
+ *
+ * What this bound actually guarantees is narrower than "GitLab cannot outrun
+ * the lock": it guarantees this PROCESS gives up on the HTTP call in time for
+ * the transaction to still be open when it decides what to do next — i.e.
+ * the persist that follows a successful exchange is never attempted against
+ * an already-rolled-back transaction. It does NOT prove anything about
+ * GitLab's own state at the moment of the abort: the request may have
+ * already reached GitLab and the rotation may already have committed
+ * server-side before the client gave up waiting on the response. That
+ * unknown-outcome window is inherent to any client-side timeout, not
+ * something this bound closes — it only keeps a slow response from silently
+ * corrupting OUR transaction's outcome.
+ *
+ * A `TimeoutError`/`AbortError` from this bound must NOT be classified as
+ * `GitLabReauthRequiredError` — every catch below (and every consumer that
+ * gates `needsReauth` on `instanceof GitLabReauthRequiredError`) only throws
+ * that type on evidence that GitLab rejected the GRANT itself
+ * (`invalid_grant` / `invalid_token`), never on a request that never got a
+ * response. An aborted fetch propagates unchanged as an ordinary rejection,
+ * which is exactly what keeps a slow provider from condemning a live
+ * credential.
+ */
+export const GITLAB_TOKEN_EXCHANGE_TIMEOUT_MS = 10_000;
+
 export interface GitLabRefreshResponse {
 	access_token: string;
 	token_type?: string;
@@ -122,13 +157,40 @@ export async function refreshGitLabToken(
 			"Content-Type": "application/x-www-form-urlencoded",
 		},
 		body: body.toString(),
+		// See GITLAB_TOKEN_EXCHANGE_TIMEOUT_MS above. This same signal also
+		// covers every body read below (`response.json()`, both branches): a
+		// timeout firing after headers already arrived throws the identical
+		// DOMException from THOSE reads, not just from this call. The
+		// classification below never matches a DOMException, and the non-OK
+		// branch explicitly rethrows one unchanged rather than folding it
+		// into its generic status Error — see that branch's comment — so an
+		// abort anywhere in this function reaches the caller as an ordinary
+		// failure, never a dead-grant verdict.
+		signal: AbortSignal.timeout(GITLAB_TOKEN_EXCHANGE_TIMEOUT_MS),
 	});
 
 	if (!response.ok) {
 		let body: { error?: string; error_description?: string } = {};
 		try {
 			body = (await response.json()) as typeof body;
-		} catch {
+		} catch (err) {
+			// A body-read abort reuses the SAME AbortSignal as the fetch
+			// call above: when the timeout fires after non-OK headers have
+			// already arrived (so `response.ok` is already decided), THIS
+			// read is what actually throws — not `fetch` itself. That is
+			// not "the body wasn't JSON", it's "we never read a body at
+			// all", and it must propagate UNCHANGED rather than fall
+			// through to the generic status Error below: folding it in
+			// would erase the one thing downstream needs to recognise it as
+			// a no-verdict transient outcome (see `isNoVerdictTransientError`
+			// in source.ts) rather than a strike against the refresh
+			// circuit breaker.
+			if (
+				err instanceof DOMException &&
+				(err.name === "TimeoutError" || err.name === "AbortError")
+			) {
+				throw err;
+			}
 			// Body wasn't JSON (HTML error page, empty response). There is no
 			// OAuth error code to classify on, so it falls through to the
 			// plain Error below.

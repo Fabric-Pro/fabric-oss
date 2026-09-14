@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
+	GITLAB_TOKEN_EXCHANGE_TIMEOUT_MS,
 	GitLabReauthRequiredError,
 	refreshGitLabToken,
 } from "../../src/gitlab/oauth-refresh";
@@ -244,6 +245,71 @@ describe("refreshGitLabToken", () => {
 		expect((err as Error).message).toMatch(
 			/GitLab token refresh failed: 500/,
 		);
+	});
+
+	it("bounds the exchange with an AbortSignal.timeout at GITLAB_TOKEN_EXCHANGE_TIMEOUT_MS, so a hanging GitLab response cannot outrun the advisory-lock transaction", async () => {
+		// Spy on the real `AbortSignal.timeout`, not just the passed
+		// `signal`'s type: `expect(init.signal).toBeInstanceOf(AbortSignal)`
+		// alone is satisfied by ANY AbortSignal, including a plain
+		// `new AbortController().signal` that would never fire on its own —
+		// it proves nothing about there being an actual bound, let alone the
+		// right one.
+		const timeoutSpy = vi.spyOn(AbortSignal, "timeout");
+		const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+			new Response(
+				JSON.stringify({ access_token: "tok", expires_in: 7200 }),
+				{
+					status: 200,
+					headers: { "Content-Type": "application/json" },
+				},
+			),
+		);
+
+		await refreshGitLabToken("refresh", "client-id", "client-secret");
+
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+		// A REAL timeout signal, at the exact documented bound.
+		expect(timeoutSpy).toHaveBeenCalledWith(
+			GITLAB_TOKEN_EXCHANGE_TIMEOUT_MS,
+		);
+		// And it's the SAME signal object `fetch` actually received — not a
+		// coincidentally-equal one constructed some other way.
+		const init = fetchMock.mock.calls[0][1] as RequestInit;
+		expect(init.signal).toBe(timeoutSpy.mock.results[0]?.value);
+	});
+
+	it("does not classify an aborted/timed-out exchange as a dead grant", async () => {
+		// What AbortSignal.timeout(...) actually produces when it fires —
+		// a DOMException named "TimeoutError", not an HTTP response at all.
+		// `refreshGitLabToken` never wraps the `fetch` call in a try/catch of
+		// its own, so this must propagate UNCHANGED: never
+		// GitLabReauthRequiredError, which is reserved for a positive
+		// provider verdict (`invalid_grant` / `invalid_token`) and — enforced
+		// downstream — condemns the credential until the user reconnects. A
+		// request that never got a response is not that evidence.
+		const timeoutError = new DOMException(
+			"The operation was aborted due to timeout",
+			"TimeoutError",
+		);
+		vi.spyOn(globalThis, "fetch").mockRejectedValueOnce(timeoutError);
+
+		const err = await refreshGitLabToken(
+			"refresh",
+			"client-id",
+			"client-secret",
+		).catch((e: unknown) => e);
+
+		expect(err).toBe(timeoutError);
+		expect(err).not.toBeInstanceOf(GitLabReauthRequiredError);
+	});
+
+	it("GITLAB_TOKEN_EXCHANGE_TIMEOUT_MS stays a sane bound (used by the transaction-budget invariant tests)", () => {
+		// Sanity guard, not a duplicate of the arithmetic assertions in
+		// get-valid-access-token.test.ts / gitlab-token.test.ts: this just
+		// pins that the exported constant is what those tests assume it is,
+		// so a change here fails loudly at the source instead of only in a
+		// budget test elsewhere.
+		expect(GITLAB_TOKEN_EXCHANGE_TIMEOUT_MS).toBe(10_000);
 	});
 
 	it("returns the refresh payload on success", async () => {

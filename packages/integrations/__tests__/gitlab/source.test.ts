@@ -559,6 +559,180 @@ describe("resolveGitLabSource", () => {
 		expect(markRefreshFailure).not.toHaveBeenCalled();
 	});
 
+	it("does NOT record a failure when refresh() rejects with an aborted/timed-out exchange", async () => {
+		// A `refresh()` implementation wired here can bottom out in
+		// `refreshGitLabToken`, which bounds its exchange with
+		// `AbortSignal.timeout(...)` (see oauth-refresh.ts). Firing that
+		// timeout rejects with a DOMException — no response from GitLab was
+		// ever seen, so there is no outcome to record. Recording it anyway
+		// would still count toward the breaker's 3-strike threshold via
+		// `refreshFailureCount`, even though `reauthRequired` stays false,
+		// letting a burst of transient timeouts set up the NEXT genuine
+		// permanent failure to trip the breaker immediately instead of on
+		// its own third strike.
+		const db = makeDb({
+			mcpConfig: {
+				id: "cfg-timeout",
+				baseUrl: null,
+				encryptedAccessToken: "enc:abc",
+				encryptedRefreshToken: "enc:refresh",
+				tokenExpiresAt: new Date("2026-05-15T11:00:00Z"), // expired
+				mcpServer: { defaultUrl: "https://gitlab.com/api/v4/mcp" },
+			},
+		});
+		const refresh = vi.fn(async () => {
+			throw new DOMException("signal timed out", "TimeoutError");
+		});
+		const markRefreshFailure = vi.fn(async () => {});
+		const getRestToken = vi.fn(async () => "rest-token");
+
+		const src = await resolveGitLabSource({
+			userId: "u1",
+			organizationId: null,
+			db: db as never,
+			decrypt: () => "decrypted-token",
+			refresh,
+			getRestToken,
+			...baseDeps,
+			markRefreshFailure,
+		});
+
+		expect(src).toEqual({ kind: "rest-adapter", token: "rest-token" });
+		expect(refresh).toHaveBeenCalledOnce();
+		expect(markRefreshFailure).not.toHaveBeenCalled();
+	});
+
+	it("does NOT record a failure when refresh() rejects with a plain Error whose cause is an abort/timeout", async () => {
+		// `isNoVerdictTransientError` also unwraps one level of `Error.cause`,
+		// for a wrapper that attaches the underlying abort/timeout instead of
+		// rethrowing it unchanged (e.g. `new Error("refresh failed", { cause:
+		// timeoutError })`). This is the direction the unwrap exists for: a
+		// non-verdict error whose cause is the real signal still resolves to
+		// no-verdict, the same as if the abort had been thrown directly.
+		const db = makeDb({
+			mcpConfig: {
+				id: "cfg-wrapped-timeout",
+				baseUrl: null,
+				encryptedAccessToken: "enc:abc",
+				encryptedRefreshToken: "enc:refresh",
+				tokenExpiresAt: new Date("2026-05-15T11:00:00Z"), // expired
+				mcpServer: { defaultUrl: "https://gitlab.com/api/v4/mcp" },
+			},
+		});
+		const refresh = vi.fn(async () => {
+			throw new Error("refresh failed", {
+				cause: new DOMException("signal timed out", "TimeoutError"),
+			});
+		});
+		const markRefreshFailure = vi.fn(async () => {});
+		const getRestToken = vi.fn(async () => "rest-token");
+
+		const src = await resolveGitLabSource({
+			userId: "u1",
+			organizationId: null,
+			db: db as never,
+			decrypt: () => "decrypted-token",
+			refresh,
+			getRestToken,
+			...baseDeps,
+			markRefreshFailure,
+		});
+
+		expect(src).toEqual({ kind: "rest-adapter", token: "rest-token" });
+		expect(markRefreshFailure).not.toHaveBeenCalled();
+	});
+
+	it("still records a genuine reauth verdict even when it carries an abort/timeout as its cause", async () => {
+		// The cause-unwrap must never cost a real verdict its recording: an
+		// error can be a genuine `GitLabReauthRequiredError` — GitLab answered
+		// `invalid_grant`/`invalid_token`, definitive evidence the credential
+		// is dead — while also carrying an abort/timeout as its `cause` (for
+		// example a wrapper that attaches diagnostic context about a retry
+		// that preceded the definitive answer). `reauthRequired` is checked
+		// before the cause-unwrap for exactly this reason, so the typed
+		// verdict always wins and the condemnation still lands.
+		const db = makeDb({
+			mcpConfig: {
+				id: "cfg-verdict-with-abort-cause",
+				baseUrl: null,
+				encryptedAccessToken: "enc:abc",
+				encryptedRefreshToken: "enc:refresh",
+				tokenExpiresAt: new Date("2026-05-15T11:00:00Z"), // expired
+				mcpServer: { defaultUrl: "https://gitlab.com/api/v4/mcp" },
+			},
+		});
+		const refresh = vi.fn(async () => {
+			const err = new GitLabReauthRequiredError();
+			(err as Error & { cause?: unknown }).cause = new DOMException(
+				"signal timed out",
+				"TimeoutError",
+			);
+			throw err;
+		});
+		const markRefreshFailure = vi.fn(async () => {});
+		const getRestToken = vi.fn(async () => "rest-token");
+
+		const src = await resolveGitLabSource({
+			userId: "u1",
+			organizationId: null,
+			db: db as never,
+			decrypt: () => "decrypted-token",
+			refresh,
+			getRestToken,
+			...baseDeps,
+			markRefreshFailure,
+		});
+
+		expect(src).toEqual({ kind: "rest-adapter", token: "rest-token" });
+		expect(markRefreshFailure).toHaveBeenCalledOnce();
+		expect(markRefreshFailure).toHaveBeenCalledWith({
+			mcpConfigId: "cfg-verdict-with-abort-cause",
+			error: "NEEDS_REAUTH",
+			reauthRequired: true,
+			expectedRefreshToken: "enc:refresh",
+		});
+	});
+
+	it("does NOT record a failure when refresh() rejects with RefreshLockBudgetExhaustedError", async () => {
+		// The advisory-lock transaction declined to even START the exchange
+		// because too little of its budget remained after the lock wait — no
+		// provider contact happened at all. Same no-verdict reasoning as the
+		// abort/timeout case above.
+		const { RefreshLockBudgetExhaustedError } = await import(
+			"@repo/database/prisma/queries/lib/refresh-lock-key"
+		);
+		const db = makeDb({
+			mcpConfig: {
+				id: "cfg-budget",
+				baseUrl: null,
+				encryptedAccessToken: "enc:abc",
+				encryptedRefreshToken: "enc:refresh",
+				tokenExpiresAt: new Date("2026-05-15T11:00:00Z"), // expired
+				mcpServer: { defaultUrl: "https://gitlab.com/api/v4/mcp" },
+			},
+		});
+		const refresh = vi.fn(async () => {
+			throw new RefreshLockBudgetExhaustedError();
+		});
+		const markRefreshFailure = vi.fn(async () => {});
+		const getRestToken = vi.fn(async () => "rest-token");
+
+		const src = await resolveGitLabSource({
+			userId: "u1",
+			organizationId: null,
+			db: db as never,
+			decrypt: () => "decrypted-token",
+			refresh,
+			getRestToken,
+			...baseDeps,
+			markRefreshFailure,
+		});
+
+		expect(src).toEqual({ kind: "rest-adapter", token: "rest-token" });
+		expect(refresh).toHaveBeenCalledOnce();
+		expect(markRefreshFailure).not.toHaveBeenCalled();
+	});
+
 	it("survives a markRefreshFailure rejection (DB down) and still falls through to REST", async () => {
 		// If the marking step itself fails (DB outage during the same
 		// request), the resolver must still degrade gracefully to REST so

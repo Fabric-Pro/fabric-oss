@@ -21,14 +21,15 @@
  * carries an explicit timeout rather than relying on the default.
  */
 import { db } from "../../client";
-import { advisoryObjectKey, REFRESH_ADVISORY_CLASS } from "./refresh-lock-key";
+import {
+	advisoryObjectKey,
+	assertRefreshLockBudget,
+	REFRESH_ADVISORY_CLASS,
+	REFRESH_LOCK_MAX_WAIT_MS,
+	REFRESH_LOCK_TRANSACTION_TIMEOUT_MS,
+} from "./refresh-lock-key";
 
 export * from "./refresh-lock-key";
-
-/** How long the exchange may hold the lock before the transaction gives up. */
-const LOCK_TRANSACTION_TIMEOUT_MS = 20_000;
-/** How long to wait for a connection + the lock itself. */
-const LOCK_MAX_WAIT_MS = 10_000;
 
 /**
  * Run `fn` holding a per-key Postgres advisory lock, serialized across every
@@ -43,18 +44,59 @@ const LOCK_MAX_WAIT_MS = 10_000;
  * `void`, which the Postgres driver adapter's `$queryRaw` cannot deserialize
  * ("Failed to deserialize column of type 'void'"). That throw previously
  * aborted every project-repo token refresh silently.
+ *
+ * `fn` receives a SECOND argument, `assertBudget`, a ready-made closure with
+ * `lockStartedAt` baked in. It is OPTIONAL to call — every GitHub caller
+ * ignores it today, deliberately: this guard is scoped to GitLab for now —
+ * but calling it is the only correct way to enforce a budget, because only
+ * `fn` knows where its own short-circuits are. A caller that queues behind a
+ * winner and finds (via its own in-lock re-read) that there is no bounded
+ * HTTP work left to do must be able to return without ever calling
+ * `assertBudget`. Gating unconditionally right after the lock statement
+ * instead — before `fn` gets a chance to short-circuit — would reject that
+ * exact caller: it queued behind a holder's legitimate ~12s of work, only
+ * needs to read the row the holder just persisted, and yet would be
+ * rejected before it ever looked. `assertBudget(requiredMs)` should be
+ * called by `fn` immediately before starting bounded work whose duration is
+ * `requiredMs`, never earlier — see `assertRefreshLockBudget` for what it
+ * checks.
  */
 export async function withRefreshLock<T>(
 	key: string,
 	fn: (
 		tx: Parameters<Parameters<typeof db.$transaction>[0]>[0],
+		assertBudget: (requiredMs: number) => void,
 	) => Promise<T>,
 ): Promise<T> {
 	return db.$transaction(
 		async (tx) => {
+			// Measured from the first statement in the callback — the instant
+			// closest to when Prisma arms the `timeout` timer. See
+			// REFRESH_LOCK_MAX_WAIT_MS's comment: `maxWait` covers only the
+			// pre-callback connection acquisition, so timing from before this
+			// callback runs would wrongly charge that window against the
+			// budget this guard protects.
+			//
+			// `performance.now()`, not `Date.now()`: this measures a DURATION,
+			// and `Date.now()` is wall-clock — an NTP correction stepping the
+			// clock backwards mid-transaction would make elapsed look smaller
+			// than it really was and let the guard under-reject work it
+			// should have refused. `performance.now()` is monotonic and never
+			// steps backwards; the different epoch doesn't matter since only
+			// the delta between two calls is ever used.
+			const lockStartedAt = performance.now();
 			await tx.$executeRaw`SELECT pg_advisory_xact_lock(${REFRESH_ADVISORY_CLASS}::int, ${advisoryObjectKey(key)}::int)`;
-			return fn(tx);
+			const assertBudget = (requiredMs: number): void => {
+				assertRefreshLockBudget({
+					elapsedMs: performance.now() - lockStartedAt,
+					requiredMs,
+				});
+			};
+			return fn(tx, assertBudget);
 		},
-		{ timeout: LOCK_TRANSACTION_TIMEOUT_MS, maxWait: LOCK_MAX_WAIT_MS },
+		{
+			timeout: REFRESH_LOCK_TRANSACTION_TIMEOUT_MS,
+			maxWait: REFRESH_LOCK_MAX_WAIT_MS,
+		},
 	);
 }

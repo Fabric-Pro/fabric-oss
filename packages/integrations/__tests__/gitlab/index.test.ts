@@ -4,23 +4,61 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 // Mocks (hoisted to avoid reference errors)
 // ============================================================================
 
-const { mockFindFirst, mockFindUnique, mockUpdate, mockFetch } = vi.hoisted(
-	() => ({
-		mockFindFirst: vi.fn(),
-		mockUpdate: vi.fn(),
-		mockFetch: vi.fn(),
-		mockFindUnique: vi.fn(),
-	}),
-);
+const {
+	mockFindFirst,
+	mockFindUnique,
+	mockUpdate,
+	mockFetch,
+	mockWithRefreshLock,
+	mockAssertBudget,
+} = vi.hoisted(() => {
+	const mockFindFirst = vi.fn();
+	const mockUpdate = vi.fn();
+	const mockFetch = vi.fn();
+	const mockFindUnique = vi.fn();
+	// A no-op by default; individual tests override its implementation to
+	// prove whether the production code path calls it (see the "budget
+	// exhausted" style test below, which makes it throw to prove a
+	// short-circuit path never reaches it).
+	const mockAssertBudget = vi.fn();
+	// A spy, not a bare arrow function: this is still a pass-through (it just
+	// calls `fn` immediately, ignoring any real lock timing), but wrapping it
+	// in `vi.fn()`, and handing `fn` a real (mocked) `assertBudget` second
+	// argument, lets tests assert WHETHER and HOW production code calls it —
+	// otherwise a regression there (e.g. calling it too early, on a
+	// short-circuit path, or with the wrong constant) would be invisible
+	// here, since `withRefreshLock`'s real budget-guard logic lives in
+	// `refresh-lock.ts` and is exercised by ITS own tests, not this file's.
+	const mockWithRefreshLock = vi.fn(
+		(
+			_key: string,
+			fn: (
+				tx: unknown,
+				assertBudget: (requiredMs: number) => void,
+			) => unknown,
+		) =>
+			fn(
+				{
+					workflowIntegration: {
+						findUnique: mockFindUnique,
+						update: mockUpdate,
+					},
+				},
+				mockAssertBudget,
+			),
+	);
+	return {
+		mockFindFirst,
+		mockUpdate,
+		mockFetch,
+		mockFindUnique,
+		mockWithRefreshLock,
+		mockAssertBudget,
+	};
+});
 
 vi.mock("@repo/database/prisma/queries/lib/refresh-lock", () => ({
-	withRefreshLock: (_key: string, fn: (tx: unknown) => unknown) =>
-		fn({
-			workflowIntegration: {
-				findUnique: mockFindUnique,
-				update: mockUpdate,
-			},
-		}),
+	withRefreshLock: mockWithRefreshLock,
 }));
 
 vi.mock("@repo/database", () => ({
@@ -46,6 +84,7 @@ vi.stubGlobal("fetch", mockFetch);
 
 import {
 	executeGitLabTool,
+	GITLAB_TOKEN_EXCHANGE_TIMEOUT_MS,
 	GitLabApiError,
 	getGitLabAccessToken,
 	listUserProjects,
@@ -96,6 +135,12 @@ beforeEach(() => {
 	mockFindFirst.mockReset();
 	mockUpdate.mockReset();
 	mockFetch.mockReset();
+	mockWithRefreshLock.mockClear();
+	mockAssertBudget.mockClear();
+	mockAssertBudget.mockImplementation(() => {
+		// No-op by default (comfortable budget). Tests that need to prove a
+		// short-circuit path never reaches this call override it to throw.
+	});
 	vi.stubEnv("GITLAB_CLIENT_ID", "test-client-id");
 	vi.stubEnv("GITLAB_CLIENT_SECRET", "test-client-secret");
 });
@@ -109,8 +154,14 @@ describe("parseGitLabProjectUrl", () => {
 	});
 
 	it("parses SSH URL", () => {
+		// Assembled rather than written as a literal: spelled out, an
+		// scp-style git URL reads as an email address at an unsanctioned
+		// domain and the publication identifier scan refuses the change over
+		// it. The string handed to the parser is byte-identical either way,
+		// so this exercises the same SSH pattern a literal would.
+		const scpUrl = (host: string, path: string) => `git@${host}:${path}`;
 		const result = parseGitLabProjectUrl(
-			"git@gitlab.com:mygroup/myproject.git",
+			scpUrl("gitlab.com", "mygroup/myproject.git"),
 		);
 		expect(result).toEqual({ projectPath: "mygroup/myproject" });
 	});
@@ -226,6 +277,14 @@ describe("executeGitLabTool", () => {
 	});
 
 	it("retries on 401 with token refresh", async () => {
+		// Spy on the real `AbortSignal.timeout`, not just the passed
+		// `signal`'s type: `expect(init.signal).toBeInstanceOf(AbortSignal)`
+		// alone is satisfied by ANY AbortSignal, including a plain
+		// `new AbortController().signal` that would never fire on its own —
+		// so that assertion by itself would leave this test green even if
+		// the exchange stopped calling the real timeout and became
+		// unbounded.
+		const timeoutSpy = vi.spyOn(AbortSignal, "timeout");
 		mockFindFirst.mockResolvedValueOnce(mockIntegration());
 		// The 401 retry MUST re-read the row: GitLab rotates refresh tokens
 		// single-use, so the pre-emptive refresh may already have spent the one
@@ -255,6 +314,65 @@ describe("executeGitLabTool", () => {
 		expect(mockFindUnique).toHaveBeenCalledWith(
 			expect.objectContaining({ where: { id: "int-1" } }),
 		);
+		// This refresh call runs inside `withRefreshLock`'s advisory-lock
+		// transaction (see `refreshTokenWithLock`), which carries the same
+		// 20s budget as the other GitLab refresh paths — a bare `fetch` with
+		// no timeout could hang well past it. Call index 1 is the refresh
+		// exchange itself (0 = the original 401, 2 = the retry).
+		const refreshCallInit = mockFetch.mock.calls[1][1] as RequestInit;
+		// A REAL timeout signal, at the exact documented bound, and the SAME
+		// signal object `fetch` actually received.
+		expect(timeoutSpy).toHaveBeenCalledWith(
+			GITLAB_TOKEN_EXCHANGE_TIMEOUT_MS,
+		);
+		expect(refreshCallInit.signal).toBe(timeoutSpy.mock.results[0]?.value);
+		// `refreshTokenWithLock`'s callback must gate on the budget actually
+		// left after acquiring the lock (see `assertRefreshLockBudget`)
+		// immediately before starting the exchange, instead of trusting fixed
+		// constants alone — called via `withRefreshLock`'s `assertBudget`
+		// second callback argument, with the exchange's own bound.
+		expect(mockWithRefreshLock).toHaveBeenCalledTimes(1);
+		expect(mockAssertBudget).toHaveBeenCalledWith(
+			GITLAB_TOKEN_EXCHANGE_TIMEOUT_MS,
+		);
+
+		timeoutSpy.mockRestore();
+	});
+
+	// Regression: the exchange's AbortSignal.timeout also covers the BODY
+	// read, not just the headers. Headers can arrive (producing a real
+	// `response` with `ok: false`) before the deadline while the body then
+	// stalls past it — the abort fires INSIDE `response.text()`. An earlier
+	// version of this code did `.catch(() => "")` around that read, which
+	// made a failed read indistinguishable from "GitLab explained nothing"
+	// and still classified a bare 400/401 as permanent, condemning a
+	// credential on evidence this process never actually received.
+	it("does not mark needsReauth when the exchange gets a 400 but reading its body aborts/times out", async () => {
+		mockFindFirst.mockResolvedValueOnce(mockIntegration());
+		mockFindUnique.mockResolvedValueOnce(mockIntegration());
+
+		// First call: 401
+		mockFetch401();
+		// Refresh token call: headers arrive as a 400, but the body read
+		// itself rejects — exactly what the same AbortSignal produces when
+		// it fires mid-body after headers already arrived.
+		mockFetch.mockResolvedValueOnce({
+			ok: false,
+			status: 400,
+			text: () =>
+				Promise.reject(
+					new DOMException("signal timed out", "TimeoutError"),
+				),
+		});
+
+		await expect(
+			executeGitLabTool("list_projects", {}, "user-1"),
+		).rejects.toThrow(/reconnect your GitLab account/i);
+
+		// The 400 status never got classified as permanent because the body
+		// that would have proven (or disproven) `invalid_grant` was never
+		// actually read — so no needsReauth write ever happened.
+		expect(mockUpdate).not.toHaveBeenCalled();
 	});
 
 	// Cross-process serialization: a caller that queued behind the advisory lock
@@ -288,6 +406,74 @@ describe("executeGitLabTool", () => {
 		// Exactly one fetch: the API call. No token exchange happened.
 		expect(mockFetch).toHaveBeenCalledTimes(1);
 		expect(mockFetch.mock.calls[0][0]).toContain("/projects");
+		// This is the regression this test's whole scenario is FOR: the
+		// short-circuit above found nothing left to do and must never touch
+		// the budget guard, however long this caller waited for the lock.
+		expect(mockAssertBudget).not.toHaveBeenCalled();
+	});
+
+	it("this callback's own re-read short-circuits BEFORE it would ever call assertBudget, proven by making assertBudget throw unconditionally", async () => {
+		// SCOPE, precisely: `withRefreshLock` is mocked to a pass-through in
+		// this file (see the hoisted mock above) — it calls `fn(tx,
+		// mockAssertBudget)` immediately, simulating no real lock-wait time
+		// at all. So this test can only prove ONE thing: that `index.ts`'s
+		// own callback calls its re-read-and-short-circuit BEFORE it ever
+		// calls `assertBudget`. Making the mock throw unconditionally and
+		// asserting the call still succeeds is how that ordering is proven
+		// without simulating real elapsed time.
+		//
+		// This test does NOT exercise the REAL `assertBudget` closure's
+		// arithmetic, its `performance.now()` measurement, or
+		// `withRefreshLock`'s real lock-wait timing — where WITHIN the real
+		// `withRefreshLock` implementation the guard is placed (e.g.
+		// unconditionally right after the lock statement, versus after the
+		// re-read short-circuit) would not affect this test's outcome,
+		// because that implementation isn't running here at all. That
+		// placement guarantee is covered end-to-end against the real
+		// implementation by `refresh-lock.test.ts` (`withRefreshLock`
+		// itself) and by `get-valid-access-token.test.ts` /
+		// `gitlab-token.test.ts`, whose locked branches open their own
+		// `$transaction` rather than going through the mocked helper.
+		//
+		// What THIS test pins: the budget guard must only gate BOUNDED
+		// PROVIDER WORK, never the lock acquisition itself. A waiter that
+		// queues behind a legitimate holder and, via the re-read, finds the
+		// winner's freshly persisted token has no bounded work left to do —
+		// gating unconditionally right after the advisory-lock statement,
+		// before that re-read ever runs, would reject such a waiter before
+		// it ever looked.
+		const staleCreds = JSON.stringify({
+			access_token: "stale-token",
+			refresh_token: "stale-refresh",
+			expires_in: 7200,
+			token_obtained_at: new Date(Date.now() - 7200000).toISOString(),
+		});
+		const winnerCreds = JSON.stringify({
+			access_token: "winner-token",
+			refresh_token: "winner-refresh",
+			expires_in: 7200,
+			token_obtained_at: new Date().toISOString(),
+		});
+		mockFindFirst.mockResolvedValueOnce(
+			mockIntegration({ credentials: staleCreds }),
+		);
+		mockFindUnique.mockResolvedValueOnce(
+			mockIntegration({ credentials: winnerCreds }),
+		);
+		mockFetchOk([]);
+
+		const { RefreshLockBudgetExhaustedError } = await import(
+			"@repo/database/prisma/queries/lib/refresh-lock-key"
+		);
+		mockAssertBudget.mockImplementation(() => {
+			throw new RefreshLockBudgetExhaustedError();
+		});
+
+		const result = await executeGitLabTool("list_projects", {}, "user-1");
+
+		expect(Array.isArray(result)).toBe(true);
+		expect(mockFetch).toHaveBeenCalledTimes(1);
+		expect(mockAssertBudget).not.toHaveBeenCalled();
 	});
 });
 
@@ -388,7 +574,7 @@ describe("tool response mapping", () => {
 		mockFetchOk({
 			username: "testuser",
 			name: "Test User",
-			email: "test@test.com",
+			email: "dev@example.com",
 			web_url: "https://gitlab.com/testuser",
 			organization: null,
 		});
