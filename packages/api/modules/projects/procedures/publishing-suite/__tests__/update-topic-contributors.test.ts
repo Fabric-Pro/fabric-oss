@@ -8,12 +8,15 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
  * flag is honoured, and the membership/grandfather check that makes this
  * endpoint safe.
  *
- * The check is security-critical, not hygiene: `resolveContributorNames`
- * (packages/temporal) runs an UNSCOPED `db.user.findMany({ where: { id: { in:
+ * The check is security-critical, not hygiene: `listPublishingTopics`
+ * (packages/database) runs an UNSCOPED `db.user.findMany({ where: { id: { in:
  * ids } } })` on whatever ids land in `contributors`, justified by those ids
  * being server-written. This procedure makes them user-written, so an
- * unchecked id would let any caller read back an arbitrary user's display
- * name. Every submitted id MUST be either a current project member
+ * unchecked id would let any caller read back an arbitrary user's name,
+ * avatar and username. (`resolveContributorNames` in packages/temporal used
+ * to be the read this argument cited; it now fences itself to people who
+ * still have project access, and the display read is the one that does
+ * not.) Every submitted id MUST be either a current project member
  * (`getProjectMembers`) or already present in the topic's current effective
  * contributor set (`getPublishingTopicEffectiveContributorIds`, the
  * "grandfather" rule) before the write is allowed.
