@@ -319,34 +319,6 @@ export function PlanningAnalysisEditor({
 					replaces this one.
 				</p>
 			) : null}
-			{canEdit ? (
-				<div className="flex items-center justify-end gap-2">
-					<Button
-						type="button"
-						variant="outline"
-						size="sm"
-						onClick={handleViewModeToggle}
-					>
-						{viewMode === "rich" ? (
-							<>
-								<Code2Icon
-									className="size-4"
-									aria-hidden="true"
-								/>
-								Markdown
-							</>
-						) : (
-							<>
-								<EyeIcon
-									className="size-4"
-									aria-hidden="true"
-								/>
-								Rich text
-							</>
-						)}
-					</Button>
-				</div>
-			) : null}
 
 			{/* The toolbar lives INSIDE the height-owning region, not above
 			    it. Raw mode has no toolbar, and while it sat outside, its
@@ -364,8 +336,48 @@ export function PlanningAnalysisEditor({
 				// the same element in both modes.
 				data-testid="planning-analysis-editor-region"
 			>
-				{viewMode === "rich" && canEdit ? (
-					<EditorToolbar editor={editor} />
+				{/* The raw/rich toggle rides the toolbar line rather than
+				    claiming a full-width row of its own above the document.
+				    It is a control ON the editor, so it belongs beside the
+				    editor's other controls; as a separate row it was one more
+				    line of chrome between the reader and the text, which is
+				    the complaint this tab collected most often.
+
+				    Rendered for both modes — raw mode has no `EditorToolbar`,
+				    and the toggle is the only way back out of it. */}
+				{canEdit ? (
+					<div className="flex items-center gap-2 border-border border-b px-2 py-1">
+						<div className="min-w-0 flex-1">
+							{viewMode === "rich" ? (
+								<EditorToolbar editor={editor} />
+							) : null}
+						</div>
+						<Button
+							type="button"
+							variant="ghost"
+							size="sm"
+							className="shrink-0"
+							onClick={handleViewModeToggle}
+						>
+							{viewMode === "rich" ? (
+								<>
+									<Code2Icon
+										className="size-4"
+										aria-hidden="true"
+									/>
+									Markdown
+								</>
+							) : (
+								<>
+									<EyeIcon
+										className="size-4"
+										aria-hidden="true"
+									/>
+									Rich text
+								</>
+							)}
+						</Button>
+					</div>
 				) : null}
 
 				<div className="flex min-h-0 flex-1 overflow-hidden">

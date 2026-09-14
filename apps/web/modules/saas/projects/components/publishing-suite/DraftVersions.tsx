@@ -10,6 +10,7 @@ import {
 	DialogTitle,
 } from "@ui/components/dialog";
 import { formatDistanceToNowStrict } from "date-fns";
+import { HistoryIcon } from "lucide-react";
 import { useState } from "react";
 
 /**
@@ -58,6 +59,7 @@ export function DraftVersions({
 	isAdopting?: boolean;
 }) {
 	const [openId, setOpenId] = useState<string | null>(null);
+	const [listOpen, setListOpen] = useState(false);
 
 	// One version is not a history. Saying "version 1 of 1" invites a reader to
 	// look for the others.
@@ -68,58 +70,96 @@ export function DraftVersions({
 	const open = versions.find((v) => v.id === openId) ?? null;
 
 	return (
-		<section className="space-y-2">
-			<h3 className="publishing-label">Earlier versions</h3>
-			<ul className="space-y-1.5">
-				{versions.map((v) => {
-					const created = new Date(v.createdAt);
-					const isAdopted = adoptedId === v.id;
-					return (
-						<li
-							key={v.id}
-							className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-lg border border-border bg-card px-3 py-2"
-						>
-							<span className="font-medium text-foreground text-sm">
-								Version {v.version}
-							</span>
-							<time
-								dateTime={created.toISOString()}
-								className="text-muted-foreground text-xs"
-							>
-								{formatDistanceToNowStrict(created, {
-									addSuffix: true,
-								})}
-							</time>
-							{isAdopted ? (
-								<span className="rounded-full border border-border px-2 py-0.5 text-[10px] text-muted-foreground uppercase tracking-[0.14em]">
-									Saved from this
-								</span>
-							) : null}
-							<span className="ml-auto flex items-center gap-1">
-								<Button
-									type="button"
-									variant="ghost"
-									size="sm"
-									onClick={() => setOpenId(v.id)}
+		<>
+			{/* A BUTTON, not a block.
+			
+			    The list was a full-width section of bordered rows sitting
+			    between the draft and its candidates — a history nobody is
+			    reading most of the time, given the vertical space of the thing
+			    they are. Feature Maturation puts the same affordance behind
+			    one small `v{N}` control in a toolbar, and that is the shape
+			    this asks for: out of the way until wanted, one click away when
+			    it is. */}
+			<Button
+				type="button"
+				variant="ghost"
+				size="sm"
+				className="w-fit"
+				onClick={() => setListOpen(true)}
+			>
+				<HistoryIcon className="mr-1 size-4" aria-hidden="true" />
+				{`${versions.length} versions`}
+			</Button>
+
+			<Dialog
+				open={listOpen}
+				onOpenChange={(next) => {
+					setListOpen(next);
+					if (!next) {
+						setOpenId(null);
+					}
+				}}
+			>
+				<DialogContent className="max-h-[85vh] max-w-2xl overflow-y-auto">
+					<DialogHeader>
+						<DialogTitle>Earlier versions</DialogTitle>
+						<DialogDescription>
+							Every run this content type has had. Your saved
+							draft is untouched until you take one.
+						</DialogDescription>
+					</DialogHeader>
+					<ul className="space-y-1.5">
+						{versions.map((v) => {
+							const created = new Date(v.createdAt);
+							const isAdopted = adoptedId === v.id;
+							return (
+								<li
+									key={v.id}
+									className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-lg border border-border bg-card px-3 py-2"
 								>
-									View
-								</Button>
-								{onAdopt && !isAdopted ? (
-									<Button
-										type="button"
-										variant="ghost"
-										size="sm"
-										disabled={isAdopting}
-										onClick={() => onAdopt(v.id)}
+									<span className="font-medium text-foreground text-sm">
+										Version {v.version}
+									</span>
+									<time
+										dateTime={created.toISOString()}
+										className="text-muted-foreground text-xs"
 									>
-										Restore
-									</Button>
-								) : null}
-							</span>
-						</li>
-					);
-				})}
-			</ul>
+										{formatDistanceToNowStrict(created, {
+											addSuffix: true,
+										})}
+									</time>
+									{isAdopted ? (
+										<span className="rounded-full border border-border px-2 py-0.5 text-[10px] text-muted-foreground uppercase tracking-[0.14em]">
+											Saved from this
+										</span>
+									) : null}
+									<span className="ml-auto flex items-center gap-1">
+										<Button
+											type="button"
+											variant="ghost"
+											size="sm"
+											onClick={() => setOpenId(v.id)}
+										>
+											View
+										</Button>
+										{onAdopt && !isAdopted ? (
+											<Button
+												type="button"
+												variant="ghost"
+												size="sm"
+												disabled={isAdopting}
+												onClick={() => onAdopt(v.id)}
+											>
+												Restore
+											</Button>
+										) : null}
+									</span>
+								</li>
+							);
+						})}
+					</ul>
+				</DialogContent>
+			</Dialog>
 
 			<Dialog
 				open={open !== null}
@@ -161,6 +201,6 @@ export function DraftVersions({
 					</DialogFooter>
 				</DialogContent>
 			</Dialog>
-		</section>
+		</>
 	);
 }

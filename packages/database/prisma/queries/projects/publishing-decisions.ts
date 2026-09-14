@@ -815,7 +815,23 @@ export async function setTopicQuestionAssignees(input: {
 	/** The complete desired set. Empty clears the question. */
 	assigneeUserIds: string[];
 	assignedByUserId: string;
-}): Promise<{ added: string[]; summary: string | null } | null> {
+	/**
+	 * The sentence that explains the ask, stored as a real reply turn.
+	 *
+	 * The maturation sibling has carried one since #5, and without it routing a
+	 * question notified somebody with nothing but "you have been assigned" —
+	 * the recipient arrives at a bare assignment and has to guess why. A turn
+	 * rather than a column so it renders under the question like any other
+	 * reply, with its author and its time.
+	 */
+	note?: string | null;
+	/** Captured at write time, as answer turns do: an unattributed note is worse than none. */
+	assignedByName?: string | null;
+}): Promise<{
+	added: string[];
+	summary: string | null;
+	noteEntryId: string | null;
+} | null> {
 	// Resolve the question first, and take the child's tenant columns from IT.
 	// Stamping the caller's own tenant is the mistake this shape exists to
 	// prevent: the table's XOR check compares the two columns to each other,
@@ -844,6 +860,7 @@ export async function setTopicQuestionAssignees(input: {
 	}
 	const summary = entry.subject ?? entry.content;
 
+	let noteEntryId: string | null = null;
 	const desired = [...new Set(input.assigneeUserIds)];
 	const existing = await db.publishingTopicQuestionAssignee.findMany({
 		where: { decisionEntryId: entry.id },
@@ -853,8 +870,10 @@ export async function setTopicQuestionAssignees(input: {
 	const added = desired.filter((id) => !existingIds.has(id));
 	const removed = [...existingIds].filter((id) => !desired.includes(id));
 
-	if (added.length === 0 && removed.length === 0) {
-		return { added: [], summary };
+	const note = input.note?.trim() || null;
+
+	if (added.length === 0 && removed.length === 0 && !note) {
+		return { added: [], summary, noteEntryId: null };
 	}
 
 	await db.$transaction(async (tx) => {
@@ -885,9 +904,37 @@ export async function setTopicQuestionAssignees(input: {
 				skipDuplicates: true,
 			});
 		}
+
+		if (note) {
+			// Tenancy INHERITED from the root, like every other reply in this
+			// file: the table's XOR compares the row's two columns to each
+			// other rather than to its parent, so stamping the asker's own
+			// tenant would satisfy the constraint and still hide the turn from
+			// the reader of the thread it belongs to.
+			//
+			// OPEN, not RESOLVED. Asking somebody is not answering, and a note
+			// that closed the question it asks about would be the one thing
+			// this procedure promises never to do.
+			const reply = await tx.publishingTopicDecisionEntry.create({
+				data: {
+					topicId: input.topicId,
+					projectId: input.projectId,
+					organizationId: entry.organizationId,
+					userId: entry.userId,
+					parentId: entry.id,
+					kind: "QUESTION",
+					status: "OPEN",
+					authorType: "USER",
+					authorUserId: input.assignedByUserId,
+					content: note,
+				},
+				select: { id: true },
+			});
+			noteEntryId = reply.id;
+		}
 	});
 
-	return { added, summary };
+	return { added, summary, noteEntryId };
 }
 
 /**
@@ -936,4 +983,97 @@ export async function restoreTopicQuestion(input: {
 	});
 
 	return { restored: true, summary: entry.subject ?? entry.content };
+}
+
+/**
+ * Claim, refresh or release the advisory lock on a shared working draft.
+ *
+ * `@@unique([topicId, postType])` means one draft per content type for the
+ * whole topic rather than one per author, so two people editing is a real
+ * collision. Until now the only signal was a CONFLICT on save — after the words
+ * were typed.
+ *
+ * ADVISORY, never enforcing. It reports who holds the draft so a second person
+ * can decide, and `updateWorkingDraftBody`'s compare-and-set stays the thing
+ * that actually protects the text. Nothing here refuses a write.
+ *
+ * Safe to hand over because every prior body is reachable through the version
+ * list: a take-over cannot lose anything that was saved, which is why this was
+ * sequenced after that read path rather than before it.
+ *
+ * An EXPIRED claim is treated as absent. Somebody who opened a draft and walked
+ * away must not hold it for the rest of the day, and a lock nobody can clear is
+ * worse than no lock — it teaches its readers to ignore it.
+ */
+export async function claimWorkingDraftLock(input: {
+	topicId: string;
+	projectId: string;
+	postType: string;
+	userId: string;
+	/** How long the claim stands without a refresh. */
+	ttlMinutes: number;
+	/** Take it even when somebody else holds an unexpired claim. */
+	takeOver?: boolean;
+}): Promise<
+	| { status: "claimed"; expiresAt: Date }
+	| { status: "held"; byUserId: string; expiresAt: Date }
+	| { status: "not_found" }
+> {
+	const draft = await db.publishingTopicWorkingDraft.findFirst({
+		where: {
+			topicId: input.topicId,
+			projectId: input.projectId,
+			postType: input.postType as never,
+		},
+		select: { id: true, editingUserId: true, editingExpiresAt: true },
+	});
+	if (!draft) {
+		return { status: "not_found" };
+	}
+
+	const now = new Date();
+	const heldByAnother =
+		draft.editingUserId !== null &&
+		draft.editingUserId !== input.userId &&
+		draft.editingExpiresAt !== null &&
+		draft.editingExpiresAt > now;
+
+	if (heldByAnother && !input.takeOver) {
+		return {
+			status: "held",
+			byUserId: draft.editingUserId as string,
+			expiresAt: draft.editingExpiresAt as Date,
+		};
+	}
+
+	const expiresAt = new Date(now.getTime() + input.ttlMinutes * 60_000);
+	await db.publishingTopicWorkingDraft.update({
+		where: { id: draft.id },
+		data: { editingUserId: input.userId, editingExpiresAt: expiresAt },
+	});
+	return { status: "claimed", expiresAt };
+}
+
+/**
+ * Give up the lock, if this caller is the one holding it.
+ *
+ * Scoped to the holder so a stale tab closing cannot release somebody else's
+ * claim — the common case is two tabs, and the one that lost the race must not
+ * clear the one that won it.
+ */
+export async function releaseWorkingDraftLock(input: {
+	topicId: string;
+	projectId: string;
+	postType: string;
+	userId: string;
+}): Promise<void> {
+	await db.publishingTopicWorkingDraft.updateMany({
+		where: {
+			topicId: input.topicId,
+			projectId: input.projectId,
+			postType: input.postType as never,
+			editingUserId: input.userId,
+		},
+		data: { editingUserId: null, editingExpiresAt: null },
+	});
 }

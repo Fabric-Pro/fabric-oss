@@ -306,6 +306,104 @@ describe("TopicQuestionsPanel — a failing answer (DV14)", () => {
 });
 
 describe("TopicQuestionsPanel — possibly-resolved questions (FR/IN4)", () => {
+	it("asks a named colleague instead of answering for them", async () => {
+		// Typing an answer and typing a question to a colleague are the same
+		// box; which one it was is decided by whether a name is in it. "Ask"
+		// routes the question and leaves it OPEN, so "@ana can you check this?"
+		// is never recorded as the decision -- and the sentence rides along, so
+		// the recipient arrives at something other than a bare assignment.
+		const user = userEvent.setup();
+		render(
+			<TopicQuestionsPanel
+				{...BASE}
+				members={[
+					{
+						userId: "u-ana",
+						user: {
+							id: "u-ana",
+							name: "Ana",
+							email: "ana@example.com",
+							image: null,
+						},
+					},
+				]}
+				threads={[
+					{ root: root({ recommendedResponse: null }), replies: [] },
+				]}
+			/>,
+		);
+
+		await userEvent.type(
+			screen.getByRole("textbox", { name: /your answer/i }),
+			"@Ana can you confirm this?",
+		);
+		await user.click(screen.getByRole("button", { name: /^ask$/i }));
+
+		expect(assignMutation).toHaveBeenCalledWith(
+			expect.objectContaining({
+				assigneeUserIds: expect.arrayContaining(["u-ana"]),
+				note: "@Ana can you confirm this?",
+			}),
+		);
+		// Routed, never answered.
+		expect(answerMutation).not.toHaveBeenCalled();
+	});
+
+	it("groups open questions by what they are about", () => {
+		// `decisionKind` has been stored on every root since the column was
+		// added, and its doc-comment says grouping was the point -- it is kept
+		// on the row rather than re-read from the analysis so a question
+		// answered against version 1 still renders its own grouping after
+		// version 2 supersedes that analysis. Eleven readers, none of them
+		// grouping, until now.
+		render(
+			<TopicQuestionsPanel
+				{...BASE}
+				threads={[
+					{
+						root: root({ id: "a", decisionKind: "ASSET_APPROVAL" }),
+						replies: [],
+					},
+					{
+						root: root({ id: "b", decisionKind: "ASSET_APPROVAL" }),
+						replies: [],
+					},
+					{
+						root: root({ id: "c", decisionKind: "AUTHORSHIP" }),
+						replies: [],
+					},
+				]}
+			/>,
+		);
+
+		expect(screen.getByText("Asset approval")).toBeInTheDocument();
+		expect(screen.getByText("Authorship")).toBeInTheDocument();
+	});
+
+	it("does not group when grouping would only add headings", () => {
+		// One group is not a grouping, and one question per group is five
+		// headings and no grouping either. A group earns its heading by
+		// holding more than one.
+		render(
+			<TopicQuestionsPanel
+				{...BASE}
+				threads={[
+					{
+						root: root({ id: "a", decisionKind: "ASSET_APPROVAL" }),
+						replies: [],
+					},
+					{
+						root: root({ id: "c", decisionKind: "AUTHORSHIP" }),
+						replies: [],
+					},
+				]}
+			/>,
+		);
+
+		expect(screen.queryByText("Asset approval")).not.toBeInTheDocument();
+		expect(screen.queryByText("Authorship")).not.toBeInTheDocument();
+	});
+
 	it("puts a soft-closed question back on the open list", async () => {
 		// The panel already said these "can still be answered" and offered no
 		// way to put one back where the work happens: once a regeneration set a

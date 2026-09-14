@@ -22,6 +22,7 @@ import {
 	SavedDraftCaption,
 } from "./DraftComparison";
 import { DraftDownloadDropdown } from "./DraftDownloadDropdown";
+import { DraftLockBanner, useDraftEditLock } from "./DraftEditLock";
 import { GeneralizationNotes, OTHER_VERSION_NOTE } from "./GeneralizationNotes";
 import type { TopicDraftState, TopicWorkingDraftState } from "./GenerationTabs";
 
@@ -751,7 +752,7 @@ export function NewsletterBlurbPanel({
 	const savedDraft = working?.hasBody ? (
 		<section className="space-y-2">
 			<div className="flex items-baseline justify-between gap-3">
-				<h3 className="editorial-label" id="newsletter-blurb-editor">
+				<h3 className="publishing-label" id="newsletter-blurb-editor">
 					Working newsletter blurb
 				</h3>
 				{isDirty ? (
@@ -837,12 +838,27 @@ export function NewsletterBlurbPanel({
 		</section>
 	) : null;
 
+	// Advisory only: it says who else is in the draft and never refuses a write.
+	const editLock = useDraftEditLock({
+		projectId,
+		topicId,
+		organizationId,
+		postType: "NEWSLETTER_BLURB",
+		canEdit,
+		hasDraft: Boolean(working?.hasBody),
+		isDirty: isDirty,
+	});
+
 	return (
 		<div className="space-y-5">
+			<DraftLockBanner
+				heldBy={editLock.heldBy}
+				onTakeOver={editLock.takeOver}
+			/>
 			{canEdit ? (
 				<section className="space-y-2">
 					<label
-						className="editorial-label block"
+						className="publishing-label block"
 						htmlFor="newsletter-blurb-guidance"
 					>
 						Guidance (optional)
@@ -916,7 +932,7 @@ export function NewsletterBlurbPanel({
 			{canEdit && working?.hasBody ? (
 				<section className="space-y-2">
 					<label
-						className="editorial-label block"
+						className="publishing-label block"
 						htmlFor="newsletter-blurb-refine"
 					>
 						Refine the saved draft
@@ -996,7 +1012,7 @@ export function NewsletterBlurbPanel({
 
 			{doc ? (
 				<section className="space-y-2">
-					<h3 className="editorial-label">What the draft claims</h3>
+					<h3 className="publishing-label">What the draft claims</h3>
 					{/* The qualifier sits ABOVE the values it qualifies: a
 					    reader must learn whose text this describes before
 					    reading it, not after. */}
@@ -1046,7 +1062,7 @@ export function NewsletterBlurbPanel({
 				<div className="grid gap-4 sm:grid-cols-2">
 					{doc.suggestedAssets.confirmed.length > 0 ? (
 						<section className="space-y-2 rounded-xl border border-border bg-muted/40 p-4">
-							<h3 className="editorial-label">
+							<h3 className="publishing-label">
 								Assets confirmed
 							</h3>
 							<p className="text-muted-foreground text-xs leading-relaxed">
@@ -1064,7 +1080,7 @@ export function NewsletterBlurbPanel({
 					) : null}
 					{doc.suggestedAssets.needsConfirmation.length > 0 ? (
 						<section className="space-y-2 rounded-xl border border-highlight/40 bg-highlight/10 p-4">
-							<h3 className="editorial-label">
+							<h3 className="publishing-label">
 								Assets needing confirmation
 							</h3>
 							<p className="text-xs leading-relaxed">

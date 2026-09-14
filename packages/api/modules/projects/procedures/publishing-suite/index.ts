@@ -16,12 +16,17 @@ export {
 	saveCaseStudyBodyProcedure,
 } from "./case-study";
 export { createPublishingTopicProcedure } from "./create-topic";
+export {
+	claimDraftLockProcedure,
+	releaseDraftLockProcedure,
+} from "./draft-lock";
 export { generatePublishingTopicsNowProcedure } from "./generate-now";
 export { getPublishingSuiteSettingsProcedure } from "./get-settings";
 export { getPublishingTopicProcedure } from "./get-topic";
 export { latestPublishingCycleProcedure } from "./latest-cycle";
 export {
 	generateLinkedInPostProcedure,
+	saveLinkedinPostBodyProcedure,
 	selectLinkedInPostOptionProcedure,
 } from "./linkedin-post";
 export { listCycleChatDeliveriesProcedure } from "./list-cycle-chat-deliveries";
@@ -43,6 +48,7 @@ export { setTopicReadStateProcedure } from "./set-topic-read-state";
 export { setTopicSnoozeProcedure } from "./set-topic-snooze";
 export {
 	generateShortPostProcedure,
+	saveTweetBodyProcedure,
 	selectShortPostOptionProcedure,
 } from "./short-post";
 export {

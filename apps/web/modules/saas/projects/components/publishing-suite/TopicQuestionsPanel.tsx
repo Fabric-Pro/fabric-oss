@@ -12,6 +12,10 @@ import {
 	type AssignableMember,
 	QuestionAssigneePicker,
 } from "../stories/maturation/QuestionAssigneePicker";
+import {
+	mentionedMemberIds,
+	QuestionMentionTextarea,
+} from "../stories/maturation/QuestionMentionTextarea";
 import { useScrollToQuestion } from "../stories/maturation/use-scroll-to-question";
 import type { ProjectMember } from "./topic-shared";
 
@@ -165,6 +169,81 @@ export function useAmendAnswer({
 	};
 
 	return { submitAmendment, isAmending: amend.isPending };
+}
+
+/**
+ * What each question is ABOUT, for grouping.
+ *
+ * `decisionKind` has been stored on every root since the column was added, and
+ * its own doc-comment says grouping was the point: it is kept on the row rather
+ * than re-read from the analysis precisely so a question answered against
+ * version 1 still renders its own grouping after version 2 supersedes that
+ * analysis. Nothing grouped by it until now -- eleven readers, all of them
+ * filtering or labelling.
+ *
+ * These are RISK categories, not work areas. Feature Maturation groups by a
+ * subject taxonomy ("Scope & Requirements", "UX & Design"); a publishing review
+ * is triage of what is blocking a draft, so "Asset approval" and "Authorship"
+ * are the honest headings. Matching FMv2's wording would need a second
+ * classifier field and a prompt change.
+ */
+const DECISION_KIND_LABELS: Record<string, string> = {
+	ASSET_APPROVAL: "Asset approval",
+	AUDIENCE_SCOPE: "Audience and scope",
+	AUTHORSHIP: "Authorship",
+	CLAIM_STRENGTH: "Claim strength",
+	CODEBASE_DETAIL: "Codebase detail",
+	CUSTOMER_NAME: "Customer name",
+	INTERNAL_UI: "Internal UI",
+	METRICS_APPROVAL: "Metrics approval",
+	VIDEO_WALKTHROUGH: "Video walkthrough",
+};
+
+/** Unknown and absent kinds land here, and it sorts last. */
+const OTHER_GROUP = "Other";
+
+function groupByDecisionKind(
+	threads: TopicDecisionThread[],
+): { label: string; threads: TopicDecisionThread[] }[] {
+	const byLabel = new Map<string, TopicDecisionThread[]>();
+	for (const thread of threads) {
+		const kind = thread.root.decisionKind ?? "";
+		const label = DECISION_KIND_LABELS[kind] ?? OTHER_GROUP;
+		const bucket = byLabel.get(label);
+		if (bucket) {
+			bucket.push(thread);
+		} else {
+			byLabel.set(label, [thread]);
+		}
+	}
+	return [...byLabel.entries()]
+		.map(([label, group]) => ({ label, threads: group }))
+		.sort((a, b) => {
+			if (a.label === OTHER_GROUP) {
+				return 1;
+			}
+			if (b.label === OTHER_GROUP) {
+				return -1;
+			}
+			return a.label.localeCompare(b.label);
+		});
+}
+
+/**
+ * Suppress grouping that would not help.
+ *
+ * One group is not a grouping -- it is a second heading saying what the first
+ * already said. `SummaryQuestionsPanel` draws the same line for the same
+ * reason, suppressing when everything lands in one bucket. Six questions across
+ * five categories is five headings and no grouping either, so a group has to
+ * earn its heading by holding more than one.
+ */
+function worthGrouping(
+	groups: { label: string; threads: TopicDecisionThread[] }[],
+): boolean {
+	return (
+		groups.length > 1 && groups.some((group) => group.threads.length > 1)
+	);
 }
 
 /**
@@ -383,6 +462,8 @@ export function TopicQuestionsPanel({
 	const possiblyResolved = questions.filter(
 		(t) => t.root.status === "POSSIBLY_RESOLVED",
 	);
+	const openGroups = groupByDecisionKind(open);
+	const isGrouped = worthGrouping(openGroups);
 
 	if (questions.length === 0) {
 		return (
@@ -399,35 +480,49 @@ export function TopicQuestionsPanel({
 			{open.length > 0 ? (
 				<div className="space-y-3">
 					<h3 className="publishing-label">Open questions</h3>
-					<ul className="space-y-3">
-						{open.map((thread) => (
-							<QuestionCard
-								key={thread.root.id}
-								thread={thread}
-								canEdit={canEdit}
-								isSubmitting={answer.isPending}
-								onAnswer={(text, source) =>
-									submitAnswer(thread, text, source)
-								}
-								members={assignableMembers}
-								onMemberQueryChange={setMemberQuery}
-								onAssign={(assigneeUserIds) =>
-									assign.mutate({
-										projectId,
-										topicId,
-										organizationId,
-										questionRootId: thread.root.id,
-										assigneeUserIds,
-									})
-								}
-								isAssignSaving={
-									assign.isPending &&
-									assign.variables?.questionRootId ===
-										thread.root.id
-								}
-							/>
-						))}
-					</ul>
+					{openGroups.map((group) => (
+						<div key={group.label} className="space-y-3">
+							{/* A SUB-heading: the same editorial idiom as
+							    `publishing-label` without its red bar, which
+							    belongs to the section above and would read as a
+							    second section if repeated here. */}
+							{isGrouped ? (
+								<h4 className="font-medium text-[11px] text-muted-foreground uppercase tracking-[0.16em]">
+									{group.label}
+								</h4>
+							) : null}
+							<ul className="space-y-3">
+								{group.threads.map((thread) => (
+									<QuestionCard
+										key={thread.root.id}
+										thread={thread}
+										canEdit={canEdit}
+										isSubmitting={answer.isPending}
+										onAnswer={(text, source) =>
+											submitAnswer(thread, text, source)
+										}
+										members={assignableMembers}
+										onMemberQueryChange={setMemberQuery}
+										onAssign={(assigneeUserIds, note) =>
+											assign.mutate({
+												projectId,
+												topicId,
+												organizationId,
+												questionRootId: thread.root.id,
+												assigneeUserIds,
+												note,
+											})
+										}
+										isAssignSaving={
+											assign.isPending &&
+											assign.variables?.questionRootId ===
+												thread.root.id
+										}
+									/>
+								))}
+							</ul>
+						</div>
+					))}
 				</div>
 			) : null}
 
@@ -492,13 +587,14 @@ export function TopicQuestionsPanel({
 										}
 										members={assignableMembers}
 										onMemberQueryChange={setMemberQuery}
-										onAssign={(assigneeUserIds) =>
+										onAssign={(assigneeUserIds, note) =>
 											assign.mutate({
 												projectId,
 												topicId,
 												organizationId,
 												questionRootId: thread.root.id,
 												assigneeUserIds,
+												note,
 											})
 										}
 										isAssignSaving={
@@ -549,8 +645,15 @@ function QuestionCard({
 	onAnswer: (text: string, source: AnswerSource) => void;
 	members: AssignableMember[];
 	onMemberQueryChange: (query: string) => void;
-	/** The COMPLETE desired set — the server takes set semantics. */
-	onAssign: (assigneeUserIds: string[]) => void;
+	/**
+	 * The COMPLETE desired set — the server takes set semantics.
+	 *
+	 * `note` is the sentence that explains the ask. Without one the server's
+	 * original rule stands and a re-save is silent; with one, everybody the
+	 * question now waits on hears it, because re-asking somebody already
+	 * assigned is the ordinary way a second question gets asked.
+	 */
+	onAssign: (assigneeUserIds: string[], note?: string) => void;
 	isAssignSaving: boolean;
 	/**
 	 * Put a soft-closed question back on the open list. Only the possibly-
@@ -598,6 +701,10 @@ function QuestionCard({
 	const [isEditing, setIsEditing] = useState(() => !hasRecommendation);
 	const [fromSuggestion, setFromSuggestion] = useState(false);
 	const [draft, setDraft] = useState("");
+	// Resolved against the members already known, not the filtered search
+	// result: narrowing the list while typing a second name must not silently
+	// un-mention the first.
+	const mentioned = mentionedMemberIds(draft, members);
 
 	/**
 	 * Open the editor seeded with the single recommendation, from "Edit".
@@ -722,15 +829,53 @@ function QuestionCard({
 			{canEdit ? (
 				isEditing ? (
 					<div className="space-y-2">
-						<Textarea
+						{/* The SAME mention textarea Feature Maturation uses,
+						    not a copy: it is generic on `members` and has no
+						    story-shaped types, and its sibling
+						    `QuestionAssigneePicker` is already rendered above.
+						    Naming someone here is how you ask them — typing
+						    an answer and typing a question to a colleague are
+						    the same box, and which one it was is decided by
+						    whether a name is in it. */}
+						<QuestionMentionTextarea
 							value={draft}
-							onChange={(e) => setDraft(e.target.value)}
-							placeholder="Type an answer…"
-							rows={3}
-							aria-label="Your answer"
+							onChange={setDraft}
+							members={members}
+							onQueryChange={onMemberQueryChange}
 							disabled={isSubmitting}
+							placeholder="Type an answer, or @name to ask someone…"
+							ariaLabel="Your answer"
 						/>
-						<div className="flex items-center justify-end gap-2">
+						<div className="flex flex-wrap items-center justify-end gap-2">
+							{/* ASK, not answer. `onAssign` routes the question
+							    and leaves it OPEN; `submitDraft` settles it.
+							    Offering both when a name is present is what
+							    stops "@ana can you check this?" being recorded
+							    as the decision. */}
+							{mentioned.length > 0 ? (
+								<Button
+									type="button"
+									variant="outline"
+									size="sm"
+									disabled={isSubmitting}
+									onClick={() => {
+										onAssign(
+											[
+												...new Set([
+													...assignees.map(
+														(a) => a.id,
+													),
+													...mentioned,
+												]),
+											],
+											draft.trim(),
+										);
+										cancelEdit();
+									}}
+								>
+									Ask
+								</Button>
+							) : null}
 							{hasRecommendation ? (
 								<Button
 									type="button"
@@ -791,9 +936,15 @@ function QuestionCard({
 									<span className="block font-medium text-sm">
 										{option.text}
 									</span>
-									<span className="mt-1 block text-muted-foreground text-xs leading-relaxed">
-										{option.justification}
-									</span>
+									{/* An option may arrive without one: the
+									    text is the option, the justification
+									    is commentary. An empty line here drew
+									    a blank gap under the choice. */}
+									{option.justification ? (
+										<span className="mt-1 block text-muted-foreground text-xs leading-relaxed">
+											{option.justification}
+										</span>
+									) : null}
 								</button>
 								<Button
 									type="button"
