@@ -538,14 +538,6 @@ describe("BlogPostPanel — the generated document", () => {
 		expect(box).not.toHaveValue(expect.stringContaining("Toolchain"));
 	});
 
-	it("surfaces what the draft still needs (FR29)", () => {
-		renderPanel({ draft: readyDraft(DOCUMENT, "d2") });
-
-		expect(
-			screen.getByText("Adoption numbers for the rollout"),
-		).toBeInTheDocument();
-	});
-
 	it("says when the draft was generalized rather than asserted", () => {
 		renderPanel({ draft: readyDraft(DOCUMENT, "d2") });
 
@@ -685,8 +677,11 @@ describe("BlogPostPanel — how the draft was generalized (Fizzy #1851, A6)", ()
 		expect(
 			screen.getByText("Generalized the customer reference."),
 		).toBeInTheDocument();
-		// The only list left on the panel is `inputsNeeded`.
-		expect(screen.getAllByRole("listitem")).toHaveLength(1);
+		// Stronger than it was: `inputsNeeded` used to contribute the one
+		// listitem this counted, so the assertion passed while proving little.
+		// With that list gone the panel has no list at all, which is what
+		// "a paragraph, not a single bullet" actually means.
+		expect(screen.queryAllByRole("listitem")).toHaveLength(0);
 	});
 
 	it("does not split on a decimal or an abbreviation", () => {

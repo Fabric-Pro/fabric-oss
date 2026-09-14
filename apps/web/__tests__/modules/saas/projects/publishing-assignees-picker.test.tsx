@@ -1,11 +1,11 @@
 /**
- * AssigneesDialog — the topic assignee picker (Fizzy #1851, A8).
+ * AssigneesPicker — the topic assignee picker (Fizzy #1851, A8).
  *
  * Rendered directly rather than through a mount, because what these pin is the
  * component's own contract and both mounts (`TopicRow`, `TopicItemPage`) pass
  * it the same four things.
  *
- * The headline case is the COUNT. `ContributorsDialog` computed its "N
+ * The headline case is the COUNT. `ContributorsPicker` computed its "N
  * selected" over VISIBLE ROWS, so a selection whose rows are not rendered —
  * a members list still loading, or an assignee who has since left the project —
  * read as "None selected" while three people were selected. The PO hit exactly
@@ -17,7 +17,7 @@
  * properties from the other side.
  */
 
-import { AssigneesDialog } from "@saas/projects/components/publishing-suite/AssigneesDialog";
+import { AssigneesPicker } from "@saas/projects/components/publishing-suite/AssigneesPicker";
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
@@ -49,10 +49,10 @@ function assignee(id: string, name: string) {
 }
 
 function renderDialog(
-	overrides: Partial<React.ComponentProps<typeof AssigneesDialog>> = {},
+	overrides: Partial<React.ComponentProps<typeof AssigneesPicker>> = {},
 ) {
 	const onSubmit = vi.fn();
-	const props: React.ComponentProps<typeof AssigneesDialog> = {
+	const props: React.ComponentProps<typeof AssigneesPicker> = {
 		topicTitle: "A topic",
 		open: true,
 		onOpenChange: vi.fn(),
@@ -65,7 +65,7 @@ function renderDialog(
 		membersError: false,
 		...overrides,
 	};
-	render(<AssigneesDialog {...props} />);
+	render(<AssigneesPicker {...props} />);
 	return { onSubmit };
 }
 
@@ -73,7 +73,7 @@ function count() {
 	return screen.getByTestId("assignees-selected-count").textContent;
 }
 
-describe("AssigneesDialog selected count", () => {
+describe("AssigneesPicker selected count", () => {
 	it("counts a selection it cannot currently render", () => {
 		// Members have not loaded, so there are NO rows to count. The topic
 		// nonetheless has two assignees. Counting rows would print "None
@@ -126,7 +126,7 @@ describe("AssigneesDialog selected count", () => {
 	});
 });
 
-describe("AssigneesDialog behaviour", () => {
+describe("AssigneesPicker behaviour", () => {
 	it("lets the viewer assign themselves, and lets them take themselves off", async () => {
 		const user = userEvent.setup();
 		const { onSubmit } = renderDialog({ initialSelected: [] });

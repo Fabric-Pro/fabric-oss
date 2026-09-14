@@ -4,28 +4,30 @@ import { Avatar, AvatarFallback, AvatarImage } from "@ui/components/avatar";
 import { Badge } from "@ui/components/badge";
 import { Button } from "@ui/components/button";
 import { Checkbox } from "@ui/components/checkbox";
-import {
-	Dialog,
-	DialogContent,
-	DialogDescription,
-	DialogFooter,
-	DialogHeader,
-	DialogTitle,
-} from "@ui/components/dialog";
 import { Label } from "@ui/components/label";
+import {
+	Popover,
+	PopoverContent,
+	PopoverTrigger,
+} from "@ui/components/popover";
 import { cn } from "@ui/lib";
 import { useEffect, useState } from "react";
 import type { ProjectMember, TopicAssignee } from "./topic-shared";
 
 /**
- * AssigneesDialog — who should pick this topic up (A8).
+ * AssigneesPicker — who should pick this topic up (A8).
+ *
+ * A POPOVER, like its `ContributorsPicker` sibling and for the same reason.
+ * The two sit next to each other, so one of them staying a modal would have
+ * made a pair of adjacent controls behave differently for no reason a reader
+ * could see.
  *
  * Assignment here is a NUDGE, not access control: everyone in the project can
  * already see and edit every topic, and adding someone changes none of that.
  * The copy has to keep saying so, or the first reader assumes it is a
  * permission and the second assumes it is a queue.
  *
- * Structurally `ContributorsDialog`'s sibling — `fieldset` + `legend`, one
+ * Structurally `ContributorsPicker`'s sibling — `fieldset` + `legend`, one
  * full-width `Label` per row wrapping its `Checkbox`, avatar, "(You)" on the
  * viewer's own row, an `aria-live` count. Three deliberate divergences:
  *
@@ -34,7 +36,7 @@ import type { ProjectMember, TopicAssignee } from "./topic-shared";
  *    means exactly "nobody".
  *
  * 2. THE COUNT IS `selected.size`, with no "of N" denominator.
- *    `ContributorsDialog` counts VISIBLE ROWS instead, and that is a real
+ *    `ContributorsPicker` counts VISIBLE ROWS instead, and that is a real
  *    defect, not a style choice — a selection can carry an id with no rendered
  *    row (a member list that has not loaded, or an assignee who has since left
  *    the project), and counting rows then reports "None selected" while three
@@ -58,7 +60,7 @@ import type { ProjectMember, TopicAssignee } from "./topic-shared";
  * fires on IDENTITY, so a freshly `.map()`'d array every render would discard
  * whatever the user had just checked.
  */
-export function AssigneesDialog({
+export function AssigneesPicker({
 	topicTitle,
 	open,
 	onOpenChange,
@@ -168,19 +170,36 @@ export function AssigneesDialog({
 
 	const blockedByNonMember = selectedNonMembers.length > 0;
 	const canSave = !isPending && membersReady && !blockedByNonMember;
+	// Same wording the row's button carried before the picker owned its own
+	// trigger: "Assign people" reads as an invitation on a topic nobody has
+	// picked up, "Edit assignees" as a correction once somebody has.
+	const assignedLabel =
+		assignees.length > 0 ? "Edit assignees" : "Assign people";
 
 	return (
-		<Dialog open={open} onOpenChange={onOpenChange}>
-			<DialogContent className="max-w-md">
-				<DialogHeader>
-					<DialogTitle>Assign people</DialogTitle>
-					<DialogDescription>
-						Choose who should pick up "{topicTitle}" — select all
-						that apply. Everyone on the project can still see and
-						edit this topic; assigning is a heads-up, not a
-						permission.
-					</DialogDescription>
-				</DialogHeader>
+		<Popover open={open} onOpenChange={onOpenChange}>
+			<PopoverTrigger asChild>
+				<Button
+					type="button"
+					variant="ghost"
+					size="sm"
+					disabled={isPending}
+				>
+					{assignedLabel}
+				</Button>
+			</PopoverTrigger>
+			<PopoverContent
+				align="start"
+				className="w-[min(24rem,calc(100vw-2rem))] space-y-3 p-3"
+			>
+				<div className="space-y-1">
+					<p className="publishing-label">Assignees</p>
+					<p className="text-muted-foreground text-xs leading-relaxed">
+						Who should pick up "{topicTitle}". Everyone on the
+						project can still see and edit this topic; assigning is
+						a heads-up, not a permission.
+					</p>
+				</div>
 				<fieldset className="max-h-[50vh] space-y-2 overflow-y-auto">
 					<legend className="sr-only">
 						Assignees — select all that apply
@@ -293,7 +312,7 @@ export function AssigneesDialog({
 							: `${selected.size} selected`}
 					</p>
 				</fieldset>
-				<DialogFooter>
+				<div className="flex flex-wrap items-center justify-end gap-2">
 					<Button
 						variant="ghost"
 						onClick={() => onOpenChange(false)}
@@ -307,8 +326,8 @@ export function AssigneesDialog({
 					>
 						Save
 					</Button>
-				</DialogFooter>
-			</DialogContent>
-		</Dialog>
+				</div>
+			</PopoverContent>
+		</Popover>
 	);
 }

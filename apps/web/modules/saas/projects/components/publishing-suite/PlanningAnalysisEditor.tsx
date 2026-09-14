@@ -154,6 +154,20 @@ export interface PlanningAnalysisEditorProps {
 	 */
 	footer?: React.ReactNode;
 	canEdit: boolean;
+	/**
+	 * A run is in flight, so the document is about to be superseded.
+	 *
+	 * Separate from `canEdit`, which is a PERMISSION and also drives the
+	 * toolbar, the raw/rich toggle and the editor region's height clamp —
+	 * folding the lock into it would drop the clamp mid-run and make the page
+	 * jump. This only stops the keyboard, the same split Feature Maturation
+	 * draws between `canEdit` and `isAiLoading`.
+	 *
+	 * Why lock at all: a regeneration replaces this document. Typing into it
+	 * while one runs produces edits with nowhere to land, which is the conflict
+	 * that made the stale-analysis banner necessary in the first place.
+	 */
+	isLocked?: boolean;
 	onSaved?: (version: number) => void;
 }
 
@@ -166,6 +180,7 @@ export function PlanningAnalysisEditor({
 	sourceAnalysisVersion,
 	footer,
 	canEdit,
+	isLocked = false,
 	onSaved,
 }: PlanningAnalysisEditorProps) {
 	const [viewMode, setViewMode] = useState<"rich" | "raw">("rich");
@@ -175,7 +190,7 @@ export function PlanningAnalysisEditor({
 	const editor = useEditor({
 		extensions: advancedExtensions,
 		content: fromMarkdown(prose),
-		editable: canEdit,
+		editable: canEdit && !isLocked,
 		immediatelyRender: false,
 		editorProps: {
 			// `min-h-full` is what keeps the contenteditable as tall as the
@@ -193,8 +208,8 @@ export function PlanningAnalysisEditor({
 	});
 
 	useEffect(() => {
-		editor?.setEditable(canEdit);
-	}, [editor, canEdit]);
+		editor?.setEditable(canEdit && !isLocked);
+	}, [editor, canEdit, isLocked]);
 
 	const saveMutation = useMutation(
 		orpc.projects.publishingSuite.saveAnalysisRevision.mutationOptions({
@@ -286,11 +301,24 @@ export function PlanningAnalysisEditor({
 		});
 	};
 
+	// Locked too: a save landing while a regeneration is in flight writes a
+	// revision against a source version that is already being superseded.
 	const saveDisabled =
-		sourceAnalysisVersion === null || saveMutation.isPending;
+		sourceAnalysisVersion === null || saveMutation.isPending || isLocked;
 
 	return (
 		<div className="flex flex-col gap-3">
+			{isLocked ? (
+				<p
+					className="rounded-lg border border-border bg-muted/40 px-3 py-2 text-muted-foreground text-xs leading-relaxed"
+					role="status"
+					data-testid="planning-analysis-locked"
+				>
+					A new analysis is being written. Editing is paused until it
+					finishes, so nothing you type is lost to the version that
+					replaces this one.
+				</p>
+			) : null}
 			{canEdit ? (
 				<div className="flex items-center justify-end gap-2">
 					<Button

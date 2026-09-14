@@ -585,7 +585,14 @@ export function LinkedInPostPanel({
 										// so the index is stable for as long as a row is
 										// on screen.
 										key={`${index}:${option.label}`}
-										className={`overflow-hidden rounded-xl border bg-card ${
+										// `flex h-full flex-col` with `mt-auto`
+										// on the footer below: the grid already
+										// stretches the cards to a shared height,
+										// but the action sat directly under the
+										// text, so a short candidate floated its
+										// button level with its neighbours' prose
+										// and the three read as ragged.
+										className={`flex h-full flex-col overflow-hidden rounded-xl border bg-card ${
 											isSaved
 												? "border-primary/60"
 												: "border-border"
@@ -668,7 +675,7 @@ export function LinkedInPostPanel({
 											)}
 										</div>
 										{canEdit ? (
-											<div className="border-border border-t px-4 py-3">
+											<div className="mt-auto border-border border-t px-4 py-3">
 												<Button
 													type="button"
 													variant="outline"
@@ -692,17 +699,6 @@ export function LinkedInPostPanel({
 							})}
 						</ul>
 					</section>
-
-					{doc.inputsNeeded.length > 0 ? (
-						<section className="space-y-2">
-							<h3 className="publishing-label">Inputs needed</h3>
-							<ul className="list-disc space-y-1.5 pl-5 text-muted-foreground text-sm leading-relaxed">
-								{doc.inputsNeeded.map((item) => (
-									<li key={item}>{item}</li>
-								))}
-							</ul>
-						</section>
-					) : null}
 
 					{doc.hashtags.length > 0 ? (
 						<section className="space-y-2">

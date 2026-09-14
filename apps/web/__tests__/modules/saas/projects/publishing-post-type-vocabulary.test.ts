@@ -21,8 +21,10 @@
 // client behind it — does not load into the web vitest run.
 import { PUBLISHING_TOPIC_POST_TYPES } from "@repo/database/src/publishing-post-types";
 import { GENERATION_TAB_POST_TYPES } from "@saas/projects/components/publishing-suite/generation-tab-state";
-import { POST_TYPE_OPTIONS } from "@saas/projects/components/publishing-suite/PostTypesDialog";
-import { ALL_POST_TYPES } from "@saas/projects/components/publishing-suite/topic-shared";
+import {
+	ALL_POST_TYPES,
+	POST_TYPE_LABELS,
+} from "@saas/projects/components/publishing-suite/topic-shared";
 import { describe, expect, it } from "vitest";
 
 describe("post-type vocabulary parity", () => {
@@ -30,7 +32,12 @@ describe("post-type vocabulary parity", () => {
 		const expected = new Set<string>(PUBLISHING_TOPIC_POST_TYPES);
 		expect(new Set<string>(ALL_POST_TYPES)).toEqual(expected);
 		expect(new Set<string>(GENERATION_TAB_POST_TYPES)).toEqual(expected);
-		expect(new Set<string>(POST_TYPE_OPTIONS.map((o) => o.value))).toEqual(
+		// `POST_TYPE_LABELS` replaces the deleted `PostTypesDialog`'s own
+		// `POST_TYPE_OPTIONS` here. It is the array `ContentTypesChecklist`
+		// renders from — now the only post-types picker in the product — and it
+		// is exactly the list this file's header names as the one that cannot
+		// fail at compile time when the Prisma enum grows.
+		expect(new Set<string>(POST_TYPE_LABELS.map((o) => o.value))).toEqual(
 			expected,
 		);
 	});

@@ -493,6 +493,10 @@ vi.mock("@shared/lib/orpc-query-utils", () => {
 					setQuestionAssignees: m(
 						"projects.publishingSuite.setQuestionAssignees",
 					),
+					// Putting a soft-closed question back on the open list.
+					restoreQuestion: m(
+						"projects.publishingSuite.restoreQuestion",
+					),
 					updateTopicPostTypes: m(
 						"projects.publishingSuite.updateTopicPostTypes",
 					),
@@ -1023,79 +1027,22 @@ describe("TopicItemPage — open questions (FR39)", () => {
  * pin the same contract on the Item Page.
  */
 describe("TopicItemPage — editing topic metadata", () => {
-	it("opens the post-types editor rather than doing nothing", async () => {
-		const user = userEvent.setup();
-		state.topic = topic({ suggestedPostTypes: ["TWEET"] });
-		renderPage();
-
-		await user.click(
-			screen.getByRole("button", { name: "Edit post types" }),
-		);
-
-		expect(await screen.findByRole("dialog")).toBeVisible();
-		expect(screen.getByLabelText("Blog Post")).toBeInTheDocument();
-	});
-
-	it("saves the checked set through updateTopicPostTypes", async () => {
-		const user = userEvent.setup();
-		state.topic = topic({ suggestedPostTypes: ["TWEET"] });
-		renderPage();
-
-		await user.click(
-			screen.getByRole("button", { name: "Edit post types" }),
-		);
-		await user.click(screen.getByLabelText("Blog Post"));
-		await user.click(screen.getByRole("button", { name: "Save" }));
-
-		await waitFor(() =>
-			expect(updatePostTypesMutate).toHaveBeenCalledWith(
-				expect.objectContaining({
-					projectId: "proj-1",
-					topicId: "topic-1",
-					postTypes: ["TWEET", "BLOG_POST"],
-				}),
-			),
-		);
-	});
-
-	it("resets an override back to the AI suggestion", async () => {
-		const user = userEvent.setup();
-		state.topic = topic({
-			suggestedPostTypes: ["TWEET"],
-			userPostTypes: ["CASE_STUDY"],
-		});
-		renderPage();
-
-		await user.click(
-			screen.getByRole("button", { name: "Edit post types" }),
-		);
-		await user.click(
-			screen.getByRole("button", { name: "Reset to AI suggestion" }),
-		);
-
-		await waitFor(() =>
-			expect(updatePostTypesMutate).toHaveBeenCalledWith(
-				expect.objectContaining({ postTypes: null }),
-			),
-		);
-	});
-
-	it("keeps the dialog open when the save fails, so the choices survive", async () => {
-		// Mirrors the Inbox row's contract: close only AFTER success.
-		const user = userEvent.setup();
-		state.topic = topic({ suggestedPostTypes: ["TWEET"] });
-		state.postTypesRejects = true;
-		renderPage();
-
-		await user.click(
-			screen.getByRole("button", { name: "Edit post types" }),
-		);
-		await user.click(screen.getByLabelText("Blog Post"));
-		await user.click(screen.getByRole("button", { name: "Save" }));
-
-		await waitFor(() => expect(toastError).toHaveBeenCalled());
-		expect(screen.getByRole("dialog")).toBeVisible();
-	});
+	/*
+	 * The post-types tests that stood here are gone with the control they drove.
+	 *
+	 * `+ Add type` in the tab strip opens `ContentTypesChecklist` in a popover,
+	 * and `PostTypesDialog` no longer mounts on this page at all — one affordance
+	 * instead of a popover and a modal writing through the same handler. What
+	 * those tests pinned is not lost: the reasoning on each choice, grouping by
+	 * the analysis's verdict, choosing a deferred format, resetting to the AI
+	 * suggestion and the reader-without-controls case are all covered against the
+	 * component that now owns them, in
+	 * `publishing-content-types-checklist.test.tsx`. The strip's own path is
+	 * covered by "adding a content type from the tab strip" below.
+	 *
+	 * The dialog itself still ships for the Inbox row, which has no tab strip to
+	 * host a `+`, and is exercised through that row.
+	 */
 
 	it("edits a published topic's URL rather than doing nothing", async () => {
 		const user = userEvent.setup();
@@ -1135,9 +1082,10 @@ describe("TopicItemPage — editing topic metadata", () => {
 		});
 		renderPage(false);
 
-		expect(
-			screen.queryByRole("button", { name: "Edit post types" }),
-		).not.toBeInTheDocument();
+		// Post types are deliberately NOT asserted here any more: the button is
+		// gone from this page for every reader, so an absence assertion would
+		// pass without proving anything about `canEdit`. The strip's `+ Add type`
+		// carries that case, in "adding a content type from the tab strip".
 		expect(
 			screen.queryByRole("button", { name: "Edit URL" }),
 		).not.toBeInTheDocument();
@@ -1356,7 +1304,7 @@ describe("TopicItemPage — editing contributors (Task 6)", () => {
 	});
 
 	// Whole-branch review, IMPORTANT 2: this page is the OTHER mount of
-	// `ContributorsDialog` and owns its own `members.list` query
+	// `ContributorsPicker` and owns its own `members.list` query
 	// independently of `PublishingSuiteList` — it must thread the same
 	// non-member-contributor rendering and Save-guard, not only the list row.
 	it("renders a non-member contributor (a PR author who is not a project member) as its own labelled, checked row", async () => {
@@ -1547,96 +1495,6 @@ describe("TopicItemPage — two-row tab strip", () => {
  * Needs confirmation / Deferred buckets. What was missing is that none of it
  * was visible on the screen where the choice happens — the dialog was a blank
  * form rather than an override of something.
- */
-describe("TopicItemPage — the recommendation is visible where you choose", () => {
-	const openPostTypes = async () => {
-		const user = userEvent.setup();
-		renderPage();
-		await user.click(
-			screen.getByRole("button", { name: /edit post types/i }),
-		);
-		return within(screen.getByRole("dialog"));
-	};
-
-	it("labels each option with the analysis's verdict", async () => {
-		state.effective = {
-			prose: "",
-			data: {
-				contentTypes: {
-					recommended: [
-						{ type: "Blog Post", rationale: "Enough substance." },
-					],
-					needsConfirmation: [
-						{
-							type: "Tweet",
-							rationale: "Needs the metric approved first.",
-						},
-					],
-				},
-			},
-			overridden: false,
-		};
-
-		const dialog = await openPostTypes();
-
-		expect(dialog.getByText(/^Recommended$/i)).toBeInTheDocument();
-		expect(dialog.getByText(/^Needs confirmation$/i)).toBeInTheDocument();
-	});
-
-	it("explains WHY, rather than only that", async () => {
-		state.effective = {
-			prose: "",
-			data: {
-				contentTypes: {
-					needsConfirmation: [
-						{
-							type: "Tweet",
-							rationale: "Needs the metric approved first.",
-						},
-					],
-				},
-			},
-			overridden: false,
-		};
-
-		const dialog = await openPostTypes();
-
-		expect(
-			dialog.getByText(/needs the metric approved first/i),
-		).toBeInTheDocument();
-	});
-
-	it("shows no verdict for a type the analysis never mentioned", async () => {
-		// A type with no entry is not "not recommended" — the analysis simply
-		// did not speak to it, and inventing a verdict it never gave would be
-		// worse than showing none.
-		state.effective = {
-			prose: "",
-			data: {
-				contentTypes: {
-					recommended: [
-						{ type: "Blog Post", rationale: "Enough substance." },
-					],
-				},
-			},
-			overridden: false,
-		};
-
-		const dialog = await openPostTypes();
-
-		expect(dialog.queryAllByText(/^Recommended$/i)).toHaveLength(1);
-	});
-});
-
-/**
- * Readiness, and putting the work above the reference (A4).
- *
- * Two of the PO's asks. "Open questions should be on top" — the questions ARE
- * the work on this tab, and the metadata block below them is reference. And
- * "in fmv2 we have readiness bar, can we mirror it here?" — mirrored in intent
- * rather than in component, because a feature moves through a fixed stage
- * pipeline and a publishing topic does not. What a topic has is decisions, each
- * answered or not, so the honest signal is the proportion answered.
  */
 describe("TopicItemPage — readiness", () => {
 	const question = (id: string, status: string) => ({

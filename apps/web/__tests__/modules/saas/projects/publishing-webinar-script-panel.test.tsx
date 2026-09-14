@@ -897,16 +897,6 @@ describe("WebinarScriptPanel — refining the saved draft", () => {
 });
 
 describe("WebinarScriptPanel — inputs needed and the safety note", () => {
-	it("shows the safety note and the inputs still needed", () => {
-		renderPanel({ draft: readyDraft(SCAFFOLD_DOCUMENT, "d2") });
-
-		expect(
-			screen.getByText(
-				/a demo flow was not available from the topic context/i,
-			),
-		).toBeInTheDocument();
-	});
-
 	it("shows the note the draft wrote around", () => {
 		renderPanel({ draft: readyDraft(UNCONFIRMED_DOCUMENT, "d2") });
 

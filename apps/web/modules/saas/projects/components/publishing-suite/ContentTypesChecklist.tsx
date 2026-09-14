@@ -52,6 +52,13 @@ const RECOMMENDATIONS_AVAILABLE_FROM = new Date("2026-07-23T00:00:00.000Z");
  * already taken should not occupy a screen of vertical space above the
  * questions that still need one, and the header carries the answer so
  * collapsing costs no information.
+ *
+ * That rule is right for the INLINE mount and wrong inside a popover, where the
+ * reader has already said what they want by opening it. `alwaysOpen` is how the
+ * popover mounts say so: the effective post types fall back to every format
+ * when a topic has chosen none, so `selected` is never empty there and the
+ * collapsed branch was the only one a popover could ever reach — two clicks and
+ * a chevron to get at a checkbox.
  */
 export function ContentTypesChecklist({
 	analysis,
@@ -59,6 +66,7 @@ export function ContentTypesChecklist({
 	canEdit,
 	isPending,
 	createdAt,
+	alwaysOpen = false,
 	onChange,
 }: {
 	analysis: PlanningAnalysisDocument | null;
@@ -68,6 +76,11 @@ export function ContentTypesChecklist({
 	isPending?: boolean;
 	/** When the topic was created — see `RECOMMENDATIONS_AVAILABLE_FROM`. */
 	createdAt?: Date | string | null;
+	/**
+	 * Skip the collapse entirely: the checklist IS the surface, so there is
+	 * nothing for it to collapse out of the way of. Set by the popover mounts.
+	 */
+	alwaysOpen?: boolean;
 	/** `null` resets to the AI's suggestion; an array is an explicit override. */
 	onChange: (postTypes: PostType[] | null) => void;
 }) {
@@ -81,13 +94,13 @@ export function ContentTypesChecklist({
 	 * would slam the panel shut under the hand of someone who has just ticked
 	 * their first box and is still choosing.
 	 */
-	const [open, setOpen] = useState(selected.length === 0);
+	const [open, setOpen] = useState(alwaysOpen || selected.length === 0);
 	const [touched, setTouched] = useState(false);
 	useEffect(() => {
-		if (!touched) {
+		if (!touched && !alwaysOpen) {
 			setOpen(selected.length === 0);
 		}
-	}, [selected.length, touched]);
+	}, [selected.length, touched, alwaysOpen]);
 
 	const toggle = (postType: PostType, checked: boolean) => {
 		setTouched(true);
@@ -146,31 +159,58 @@ export function ContentTypesChecklist({
 		created < RECOMMENDATIONS_AVAILABLE_FROM;
 
 	return (
-		<section className="rounded-xl border border-border bg-card">
-			<button
-				type="button"
-				onClick={() => {
-					setTouched(true);
-					setOpen((v) => !v);
-				}}
-				aria-expanded={open}
-				className="flex w-full items-center gap-3 px-4 py-3 text-left"
-			>
-				<span className="publishing-label shrink-0">Content types</span>
-				<span className="min-w-0 flex-1 truncate text-muted-foreground text-sm">
-					{summary}
-				</span>
-				<ChevronDownIcon
-					className={cn(
-						"size-4 shrink-0 text-muted-foreground transition-transform duration-200",
-						open && "rotate-180",
-					)}
-					aria-hidden="true"
-				/>
-			</button>
+		<section
+			className={cn(
+				"rounded-xl",
+				// A popover draws its own surface; a second border and card
+				// background inside one reads as a panel within a panel.
+				!alwaysOpen && "border border-border bg-card",
+			)}
+		>
+			{alwaysOpen ? (
+				<div className="flex w-full items-center gap-3 pb-2">
+					<span className="publishing-label shrink-0">
+						Content types
+					</span>
+					<span className="min-w-0 flex-1 truncate text-muted-foreground text-sm">
+						{summary}
+					</span>
+				</div>
+			) : (
+				<button
+					type="button"
+					onClick={() => {
+						setTouched(true);
+						setOpen((v) => !v);
+					}}
+					aria-expanded={open}
+					className="flex w-full items-center gap-3 px-4 py-3 text-left"
+				>
+					<span className="publishing-label shrink-0">
+						Content types
+					</span>
+					<span className="min-w-0 flex-1 truncate text-muted-foreground text-sm">
+						{summary}
+					</span>
+					<ChevronDownIcon
+						className={cn(
+							"size-4 shrink-0 text-muted-foreground transition-transform duration-200",
+							open && "rotate-180",
+						)}
+						aria-hidden="true"
+					/>
+				</button>
+			)}
 
 			{open ? (
-				<div className="space-y-1 border-border border-t px-4 py-3">
+				<div
+					className={cn(
+						"space-y-1",
+						alwaysOpen
+							? "pt-1"
+							: "border-border border-t px-4 py-3",
+					)}
+				>
 					{predatesRecommendations ? (
 						<p className="rounded-lg border border-border bg-muted/40 px-3 py-2 text-muted-foreground text-xs leading-relaxed">
 							This topic was created before the suite started

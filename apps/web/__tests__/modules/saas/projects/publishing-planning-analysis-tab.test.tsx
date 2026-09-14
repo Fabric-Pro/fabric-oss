@@ -403,6 +403,26 @@ describe("PlanningAnalysisTab — a run in flight", () => {
 		expect(screen.getByRole("button", { name: /generat/i })).toBeDisabled();
 	});
 
+	it("pauses editing while the next analysis is being written", () => {
+		// Feature Maturation locks its editor on `isAiLoading`, and that is WHY
+		// it can simply replace a refreshed spec: nothing can have been typed
+		// into the document being superseded. Publishing kept the editor live
+		// through a run, so a person could type into a document a regeneration
+		// was about to replace, with nowhere for those words to land.
+		renderTab({
+			effective: AI_EFFECTIVE,
+			aiVersion: 1,
+			sourceAnalysisVersion: 1,
+			latestAttempt: ready({ status: "GENERATING", content: null }),
+		});
+
+		// The PROP, because this suite stubs the editor: what the lock does to
+		// the keyboard and to Save is the real component's behaviour and is
+		// pinned in `planning-analysis-editor.test.tsx`. Asserting the notice
+		// here would be asserting against the mock.
+		expect(editorProps.current?.isLocked).toBe(true);
+	});
+
 	it("keeps the previous analysis on screen while the next one runs", () => {
 		// Hiding it would make a regeneration destructive from the reader's point
 		// of view: the thing they were reading disappears for minutes, over an
@@ -475,14 +495,35 @@ describe("PlanningAnalysisTab — a ready analysis", () => {
 		latestAttempt: ready(),
 	};
 
-	it("renders the document and the data sections around it", () => {
+	it("renders the document, and never repeats the content-type recommendation", () => {
 		renderTab(readyProps);
 
 		expect(screen.getByTestId("editor-prose")).toHaveTextContent(
 			/an engineering reliability story/i,
 		);
-		expect(screen.getByText(/enough depth to teach/i)).toBeVisible();
-		expect(screen.getByText(/three merged pull requests/i)).toBeVisible();
+
+		// The content-type buckets are deliberately NOT rendered here. The same
+		// per-type rationale already appears in the `+ Add type` popover, the
+		// post-types dialog and the inline checklist — all three at the point
+		// where the choice is actually made. A fourth, control-less copy at the
+		// foot of the analysis was length without a decision. Asserting absence
+		// rather than deleting the assertion, so re-adding the echo fails here.
+		expect(screen.queryByText(/enough depth to teach/i)).toBeNull();
+		expect(screen.queryByText(/names a customer/i)).toBeNull();
+	});
+
+	it("keeps the source signals in the document but collapsed", () => {
+		renderTab(readyProps);
+
+		// Provenance earns a line, not a list: on a topic whose only inputs are
+		// its own title and summary these restate the page header. Still
+		// reachable — present in the DOM, one click from open — so the reader
+		// asking "why does it say that?" can still find out.
+		const signal = screen.getByText(/three merged pull requests/i);
+		expect(signal).toBeInTheDocument();
+		expect(signal).not.toBeVisible();
+
+		expect(screen.getByText(/source signals/i)).toBeVisible();
 	});
 
 	it("hands the editor the versions a save has to send", () => {

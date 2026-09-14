@@ -31,10 +31,9 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useTranslations } from "next-intl";
 import { useEffect, useMemo, useState } from "react";
-import { AssigneesDialog } from "./AssigneesDialog";
-import { ContributorsDialog } from "./ContributorsDialog";
+import { AssigneesPicker } from "./AssigneesPicker";
+import { ContributorsPicker } from "./ContributorsPicker";
 import { DeclineTopicDialog } from "./DeclineTopicDialog";
-import { PostTypesDialog } from "./PostTypesDialog";
 import { PublishTopicDialog } from "./PublishTopicDialog";
 import { type SnoozePreset, SnoozeTopicDialog } from "./SnoozeTopicDialog";
 import { TopicDetails, TopicRankReason } from "./TopicDetails";
@@ -145,7 +144,7 @@ export function TopicRow({
 	 */
 	members: readonly ProjectMember[];
 	/** Whether that shared `members.list` query has not settled, or failed —
-	 *  threaded through to `ContributorsDialog` so it can block Save on an
+	 *  threaded through to `ContributorsPicker` so it can block Save on an
 	 *  untrustworthy members list instead of treating `?? []` as "nobody". */
 	membersPending: boolean;
 	membersError: boolean;
@@ -181,7 +180,6 @@ export function TopicRow({
 	const [declinePending, setDeclinePending] = useState(false);
 	const [publishOpen, setPublishOpen] = useState(false);
 	const [publishPending, setPublishPending] = useState(false);
-	const [postTypesOpen, setPostTypesOpen] = useState(false);
 	const [postTypesPending, setPostTypesPending] = useState(false);
 	const [contributorsOpen, setContributorsOpen] = useState(false);
 	const [contributorsPending, setContributorsPending] = useState(false);
@@ -261,7 +259,6 @@ export function TopicRow({
 		setPostTypesPending(true);
 		try {
 			await onChangePostTypes(postTypes);
-			setPostTypesOpen(false);
 		} catch {
 			// Surfaced by the shared mutation's onError toast; keep the dialog
 			// open so the user's checkbox choices aren't lost (mirrors decline).
@@ -401,7 +398,7 @@ export function TopicRow({
 	// dialog wiring below. Without the memo, `topic.contributors.map(...)`
 	// would allocate a NEW array on every render of this row (a parent state
 	// change unrelated to contributors, a background refetch that changed
-	// nothing, etc.), and `ContributorsDialog` re-seeds its selection whenever
+	// nothing, etc.), and `ContributorsPicker` re-seeds its selection whenever
 	// this reference changes — silently discarding whatever the user had just
 	// checked. `topic.contributors` and `topic.userContributorUserIds`
 	// themselves stay referentially stable across a no-op refetch (TanStack
@@ -414,7 +411,7 @@ export function TopicRow({
 	);
 
 	// A8 needs the SAME referential stability `contributorIds` is memoized for —
-	// `AssigneesDialog` re-seeds its selection whenever the reference changes,
+	// `AssigneesPicker` re-seeds its selection whenever the reference changes,
 	// so a fresh array every render would discard whatever the user just checked
 	// — but it needs no `useMemo` to get it. `topic.assigneeUserIds` is a plain
 	// column passed straight through, and TanStack Query's structural sharing
@@ -437,9 +434,38 @@ export function TopicRow({
 			// rendering it here, exactly where it shipped.
 			showRankReason={!inbox}
 			onEditUrl={() => setPublishOpen(true)}
-			onEditPostTypes={() => setPostTypesOpen(true)}
-			onEditContributors={() => setContributorsOpen(true)}
-			onEditAssignees={() => setAssigneesOpen(true)}
+			onChangePostTypes={handlePostTypesSubmit}
+			contributorsControl={
+				<ContributorsPicker
+					topicTitle={topic.title}
+					open={contributorsOpen}
+					onOpenChange={setContributorsOpen}
+					members={members}
+					contributors={topic.contributors}
+					initialSelected={contributorIds}
+					hasOverride={topic.userContributorUserIds !== null}
+					viewerUserId={viewerUserId}
+					onSubmit={handleContributorsSubmit}
+					isPending={contributorsPending}
+					membersPending={membersPending}
+					membersError={membersError}
+				/>
+			}
+			assigneesControl={
+				<AssigneesPicker
+					topicTitle={topic.title}
+					open={assigneesOpen}
+					onOpenChange={setAssigneesOpen}
+					members={members}
+					assignees={topic.assignees}
+					initialSelected={topic.assigneeUserIds}
+					viewerUserId={viewerUserId}
+					onSubmit={handleAssigneesSubmit}
+					isPending={assigneesPending}
+					membersPending={membersPending}
+					membersError={membersError}
+				/>
+			}
 		/>
 	);
 
@@ -706,45 +732,6 @@ export function TopicRow({
 						: undefined
 				}
 				confirmLabel={topic.status === "PUBLISHED" ? "Save" : undefined}
-			/>
-			<PostTypesDialog
-				topicTitle={topic.title}
-				open={postTypesOpen}
-				onOpenChange={setPostTypesOpen}
-				initialSelected={
-					topic.userPostTypes ?? topic.suggestedPostTypes
-				}
-				hasOverride={topic.userPostTypes !== null}
-				hasAiSuggestion={topic.suggestedPostTypes.length > 0}
-				onSubmit={handlePostTypesSubmit}
-				isPending={postTypesPending}
-			/>
-			<ContributorsDialog
-				topicTitle={topic.title}
-				open={contributorsOpen}
-				onOpenChange={setContributorsOpen}
-				members={members}
-				contributors={topic.contributors}
-				initialSelected={contributorIds}
-				hasOverride={topic.userContributorUserIds !== null}
-				viewerUserId={viewerUserId}
-				onSubmit={handleContributorsSubmit}
-				isPending={contributorsPending}
-				membersPending={membersPending}
-				membersError={membersError}
-			/>
-			<AssigneesDialog
-				topicTitle={topic.title}
-				open={assigneesOpen}
-				onOpenChange={setAssigneesOpen}
-				members={members}
-				assignees={topic.assignees}
-				initialSelected={topic.assigneeUserIds}
-				viewerUserId={viewerUserId}
-				onSubmit={handleAssigneesSubmit}
-				isPending={assigneesPending}
-				membersPending={membersPending}
-				membersError={membersError}
 			/>
 			<SnoozeTopicDialog
 				topicTitle={topic.title}

@@ -1,5 +1,5 @@
 /**
- * ContributorsDialog — the topic contributor picker (Fizzy #1851 follow-up).
+ * ContributorsPicker — the topic contributor picker (Fizzy #1851 follow-up).
  *
  * These pin the defect the PO reported as "same for contributors": the dialog
  * said **"None selected"** over a real selection.
@@ -12,11 +12,11 @@
  * while the raw ids survive. So the selection was invisible, uncounted, and
  * silently dropped by the next Save.
  *
- * `AssigneesDialog` was built without this and its tests say so; these are the
+ * `AssigneesPicker` was built without this and its tests say so; these are the
  * other half of that pair, so the two dialogs cannot drift apart again.
  */
 
-import { ContributorsDialog } from "@saas/projects/components/publishing-suite/ContributorsDialog";
+import { ContributorsPicker } from "@saas/projects/components/publishing-suite/ContributorsPicker";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
@@ -38,7 +38,7 @@ function contributor(id: string, name: string) {
 }
 
 function renderDialog(
-	overrides: Partial<React.ComponentProps<typeof ContributorsDialog>> = {},
+	overrides: Partial<React.ComponentProps<typeof ContributorsPicker>> = {},
 ) {
 	const onSubmit = vi.fn();
 	const props = {
@@ -54,8 +54,8 @@ function renderDialog(
 		membersPending: false,
 		membersError: false,
 		...overrides,
-	} as React.ComponentProps<typeof ContributorsDialog>;
-	render(<ContributorsDialog {...props} />);
+	} as React.ComponentProps<typeof ContributorsPicker>;
+	render(<ContributorsPicker {...props} />);
 	return { onSubmit };
 }
 
@@ -63,7 +63,7 @@ function count() {
 	return screen.getByTestId("contributors-selected-count").textContent;
 }
 
-describe("ContributorsDialog selected count", () => {
+describe("ContributorsPicker selected count", () => {
 	it("counts a selection whose handles never resolved", () => {
 		// The override names two people; the lookup resolved neither, so
 		// `contributors` is empty. Counting rows printed "None selected" here.
@@ -123,7 +123,7 @@ describe("ContributorsDialog selected count", () => {
 	});
 });
 
-describe("ContributorsDialog save", () => {
+describe("ContributorsPicker save", () => {
 	it("does not silently drop a selected id it could not resolve", async () => {
 		const user = userEvent.setup();
 		const { onSubmit } = renderDialog({

@@ -18,6 +18,7 @@ import {
 import { Markdown } from "@ui/components/markdown";
 import {
 	AlertTriangleIcon,
+	ChevronDownIcon,
 	HistoryIcon,
 	Loader2Icon,
 	SparklesIcon,
@@ -832,6 +833,7 @@ export function PlanningAnalysisTab({
 						revisionVersion={revisionVersion}
 						sourceAnalysisVersion={sourceAnalysisVersion}
 						canEdit={canEdit}
+						isLocked={isGenerating}
 						onSaved={handleSaved}
 						// Inside the editor's surface, as the document's own
 						// tail rather than a block after it. It rendered as a
@@ -979,24 +981,41 @@ function Banner({
 }
 
 /**
- * The half the product reads by NAME, unchanged: the content-type and
- * supporting-asset buckets and the source signals. These are not part of the
- * editable document — `contentTypes` decides which media tabs are offered and
- * `sourceSignals` is provenance, so an author editing prose cannot silently
- * rewrite either.
+ * The content-type buckets are NOT rendered here.
+ *
+ * They were a fourth rendering of a recommendation the reader already has in
+ * three better places: the `+ Add type` popover, the post-types dialog and the
+ * inline checklist all show the same per-type rationale, and all three sit at
+ * the point where the decision is actually made. Repeating it at the foot of
+ * the analysis added length to a section whose whole complaint was that nobody
+ * reads it, and gave the reader a list of content types with no control on it.
+ *
+ * The FIELD stays exactly as it is — `contentTypes` still gates which media
+ * tabs are offered and still feeds the picker. Only this echo of it goes.
+ */
+const UNRENDERED_BUCKET_KEYS = new Set(["contentTypes"]);
+
+/**
+ * The half the product reads by NAME: the supporting-asset buckets and the
+ * source signals. These are not part of the editable document — `sourceSignals`
+ * is provenance, so an author editing prose cannot silently rewrite it.
  */
 function AnalysisDataSections({
 	doc,
 }: {
 	doc: ReturnType<typeof readPlanningAnalysis>;
 }) {
-	if (doc.buckets.length === 0 && doc.sourceSignals.length === 0) {
+	const buckets = doc.buckets.filter(
+		(section) => !UNRENDERED_BUCKET_KEYS.has(section.key),
+	);
+
+	if (buckets.length === 0 && doc.sourceSignals.length === 0) {
 		return null;
 	}
 
 	return (
 		<div className="space-y-6">
-			{doc.buckets.map((section) => (
+			{buckets.map((section) => (
 				<Section key={section.key} label={section.label}>
 					<div className="space-y-4">
 						{section.buckets.map((bucket) => (
@@ -1027,15 +1046,43 @@ function AnalysisDataSections({
 			))}
 
 			{doc.sourceSignals.length > 0 ? (
-				<Section label="Source signals">
-					<ul className="list-disc space-y-1.5 pl-5 text-muted-foreground text-sm leading-relaxed">
-						{doc.sourceSignals.map((item) => (
-							<li key={item}>{item}</li>
-						))}
-					</ul>
-				</Section>
+				<SourceSignals items={doc.sourceSignals} />
 			) : null}
 		</div>
+	);
+}
+
+/**
+ * Provenance, collapsed to one line.
+ *
+ * Source signals are the inventory of what the analysis had to work with. On a
+ * topic whose only inputs are its own title and summary they restate what is
+ * already at the top of the page, and they were being read as filler; they earn
+ * their space only when the analysis had meetings, pull requests or documents
+ * behind it and the reader is asking "why does it say that?". So the count is
+ * always visible and the list is one click away, rather than the reverse. Same
+ * treatment the generalization notes already carry, and a native `<details>`
+ * for the same reason: it needs no state and it survives print and find-in-page.
+ */
+function SourceSignals({ items }: { items: string[] }) {
+	return (
+		<details className="group space-y-2">
+			<summary className="flex cursor-pointer list-none items-center gap-2">
+				<h3 className="publishing-label">Source signals</h3>
+				<span className="text-muted-foreground text-xs">
+					{items.length}
+				</span>
+				<ChevronDownIcon
+					className="size-4 text-muted-foreground transition-transform group-open:rotate-180"
+					aria-hidden="true"
+				/>
+			</summary>
+			<ul className="list-disc space-y-1.5 pl-5 text-muted-foreground text-sm leading-relaxed">
+				{items.map((item) => (
+					<li key={item}>{item}</li>
+				))}
+			</ul>
+		</details>
 	);
 }
 

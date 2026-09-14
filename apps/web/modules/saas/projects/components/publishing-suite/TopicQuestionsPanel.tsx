@@ -182,12 +182,16 @@ export function useAmendAnswer({
  *
  * `POSSIBLY_RESOLVED` roots — soft-closed by reconciliation rather than
  * settled by anyone — render in their own group, collapsed behind a toggle
- * (mirroring `SummaryQuestionsPanel`'s `showPossiblyResolved`, IN4). Unlike
- * that sibling, which only offers to restore one, this table's
- * `answerTopicQuestion` deliberately keeps POSSIBLY_RESOLVED answerable — it
- * was soft-closed because a regeneration stopped raising it, not settled by
- * anyone — so the group gets the SAME `QuestionCard` controls OPEN questions
- * get, not a restore button.
+ * (mirroring `SummaryQuestionsPanel`'s `showPossiblyResolved`, IN4).
+ *
+ * They get BOTH affordances, which is the one place this panel is richer than
+ * its sibling. `answerTopicQuestion` deliberately keeps a soft-closed root
+ * answerable — it was set aside because a regeneration stopped raising it, not
+ * settled by anyone — so the group keeps the full `QuestionCard` controls. It
+ * now also carries Restore, which it did not: the panel said these "can still
+ * be answered" while offering no way to put one back on the list that gets
+ * worked through, so the only route back was another regeneration happening to
+ * raise it again. `SummaryQuestionsPanel` has had that lever since #5.
  */
 export function TopicQuestionsPanel({
 	projectId,
@@ -265,6 +269,33 @@ export function TopicQuestionsPanel({
 	 * disables its picker; a bare `assign.isPending` would freeze every
 	 * question's picker on the page while one of them wrote.
 	 */
+	/**
+	 * Bring a soft-closed question back onto the list that gets answered.
+	 *
+	 * The panel already told the reader these "can still be answered" and gave
+	 * them nothing to act on: a regeneration had set the root aside, and only
+	 * another regeneration could undo it. Feature Maturation has had this since
+	 * #5. The transition is one-way (`POSSIBLY_RESOLVED -> OPEN`) and nothing is
+	 * deleted either way, so restoring is always safe to undo by re-answering.
+	 */
+	const restore = useMutation(
+		orpc.projects.publishingSuite.restoreQuestion.mutationOptions({
+			onSuccess: () => {
+				queryClient.invalidateQueries({
+					queryKey:
+						orpc.projects.publishingSuite.listTopicDecisions.queryKey(
+							{ input: { projectId, topicId, organizationId } },
+						),
+				});
+			},
+			onError: () => {
+				toast.error(
+					"Could not restore that question. Please try again.",
+				);
+			},
+		}),
+	);
+
 	const assign = useMutation(
 		orpc.projects.publishingSuite.setQuestionAssignees.mutationOptions({
 			onSuccess: () => {
@@ -475,6 +506,20 @@ export function TopicQuestionsPanel({
 											assign.variables?.questionRootId ===
 												thread.root.id
 										}
+										onRestore={() =>
+											restore.mutate({
+												projectId,
+												topicId,
+												organizationId,
+												questionRootId: thread.root.id,
+											})
+										}
+										isRestoring={
+											restore.isPending &&
+											restore.variables
+												?.questionRootId ===
+												thread.root.id
+										}
 									/>
 								))}
 							</ul>
@@ -495,6 +540,8 @@ function QuestionCard({
 	onMemberQueryChange,
 	onAssign,
 	isAssignSaving,
+	onRestore,
+	isRestoring = false,
 }: {
 	thread: TopicDecisionThread;
 	canEdit: boolean;
@@ -505,6 +552,12 @@ function QuestionCard({
 	/** The COMPLETE desired set — the server takes set semantics. */
 	onAssign: (assigneeUserIds: string[]) => void;
 	isAssignSaving: boolean;
+	/**
+	 * Put a soft-closed question back on the open list. Only the possibly-
+	 * resolved group passes it; everywhere else there is nothing to restore.
+	 */
+	onRestore?: () => void;
+	isRestoring?: boolean;
 }) {
 	const root = thread.root;
 	const options = root.answerOptions ?? [];
@@ -546,9 +599,32 @@ function QuestionCard({
 	const [fromSuggestion, setFromSuggestion] = useState(false);
 	const [draft, setDraft] = useState("");
 
-	const openEditor = () => {
+	/**
+	 * Open the editor seeded with the single recommendation, from "Edit".
+	 *
+	 * `fromSuggestion` is true because the person started from the AI's wording.
+	 */
+	const openEditorFromRecommendation = () => {
 		setDraft(root.recommendedResponse ?? "");
 		setFromSuggestion(true);
+		setIsEditing(true);
+	};
+
+	/**
+	 * Open an EMPTY editor, from "Type your own".
+	 *
+	 * Seeding nothing and leaving `fromSuggestion` false is what makes the
+	 * answer record `MANUAL`. Both were previously routed through one helper
+	 * that always seeded and always set the flag, so "type your own" pre-filled
+	 * the AI's sentence and then recorded `AI_SUGGESTED`/`AI_EDITED` for it —
+	 * `MANUAL` was unreachable on any question that carried a recommendation,
+	 * which is precisely the misclassification
+	 * `20260828120000_repoint_ai_edited_answer_source` swept out of
+	 * `decision_log_entry`. `SummaryQuestionsPanel`'s equivalent passes no seed.
+	 */
+	const openEditorBlank = () => {
+		setDraft("");
+		setFromSuggestion(false);
 		setIsEditing(true);
 	};
 
@@ -630,6 +706,17 @@ function QuestionCard({
 				<p className="text-muted-foreground text-xs leading-relaxed">
 					{root.whyItMatters}
 				</p>
+			) : null}
+			{canEdit && onRestore ? (
+				<Button
+					type="button"
+					variant="outline"
+					size="sm"
+					disabled={isRestoring}
+					onClick={onRestore}
+				>
+					Restore to open questions
+				</Button>
 			) : null}
 
 			{canEdit ? (
@@ -728,7 +815,7 @@ function QuestionCard({
 							variant="ghost"
 							size="sm"
 							disabled={isSubmitting}
-							onClick={openEditor}
+							onClick={openEditorBlank}
 						>
 							Type your own
 						</Button>
@@ -756,7 +843,7 @@ function QuestionCard({
 								type="button"
 								variant="outline"
 								size="sm"
-								onClick={openEditor}
+								onClick={openEditorFromRecommendation}
 								disabled={isSubmitting}
 							>
 								<PencilIcon

@@ -3,13 +3,20 @@
 import { FUNCTION_TAG_LABELS } from "@repo/database/src/function-tags";
 import { Button } from "@ui/components/button";
 import {
+	Popover,
+	PopoverContent,
+	PopoverTrigger,
+} from "@ui/components/popover";
+import {
 	Tooltip,
 	TooltipContent,
 	TooltipProvider,
 	TooltipTrigger,
 } from "@ui/components/tooltip";
 import { cn } from "@ui/lib";
+import { PlusIcon } from "lucide-react";
 import { useId, useState } from "react";
+import { ContentTypesChecklist } from "./ContentTypesChecklist";
 import {
 	buildMeetingParticipantsLine,
 	formatMeetingParticipants,
@@ -18,6 +25,7 @@ import {
 	type MeetingParticipantsLine,
 	type MeetingSpeakers,
 	POST_TYPE_LABELS,
+	type PostType,
 	type PublishingTopic,
 } from "./topic-shared";
 
@@ -183,10 +191,11 @@ export function TopicDetails({
 	isPending,
 	showRankReason = true,
 	showMeetingParticipants = true,
+	showEditPostTypes = true,
 	onEditUrl,
-	onEditPostTypes,
-	onEditContributors,
-	onEditAssignees,
+	onChangePostTypes,
+	contributorsControl,
+	assigneesControl,
 }: {
 	topic: PublishingTopic;
 	canEdit: boolean;
@@ -207,11 +216,45 @@ export function TopicDetails({
 	 * to lift them into and keeps rendering them where they shipped.
 	 */
 	showMeetingParticipants?: boolean;
+	/**
+	 * False on the Topic Item Page, where `+ Add type` in the tab strip is the
+	 * affordance and this button was a second way to do the same thing — one
+	 * opening a popover, the other a modal, both writing through one handler.
+	 * The page's own comment already asserted the popover had replaced the
+	 * modal while the modal went on rendering below it.
+	 *
+	 * Defaults to true because the Inbox row has no tab strip: there this
+	 * button is the ONLY way to change a topic's post types, which is why the
+	 * dialog itself stays rather than being deleted outright.
+	 */
+	showEditPostTypes?: boolean;
 	onEditUrl: () => void;
-	onEditPostTypes: () => void;
-	onEditContributors: () => void;
-	onEditAssignees: () => void;
+	/**
+	 * Write a new post-type selection, or `null` to hand the topic back to the
+	 * AI's suggestion. Replaces the old `onEditPostTypes` callback: the row used
+	 * to open `PostTypesDialog`, a modal doing the same job as the checklist the
+	 * topic page shows in a popover. One component, both surfaces.
+	 */
+	onChangePostTypes?: (postTypes: PostType[] | null) => void;
+	/**
+	 * The contributor and assignee pickers, rendered by the OWNER rather than
+	 * built here.
+	 *
+	 * Both are popovers now rather than modals, and a popover has to sit beside
+	 * the trigger it anchors to. Their data — the member list, its loading and
+	 * error states, the pending flag, the submit handler — belongs to the Inbox
+	 * row and the topic page, which run those queries. Passing the wired control
+	 * in as a node keeps that ownership where it is; the alternative was
+	 * threading nine props through this component to rebuild it here.
+	 */
+	contributorsControl?: React.ReactNode;
+	assigneesControl?: React.ReactNode;
 }) {
+	// Local to the block, unlike the other editors. Those are dialogs whose open
+	// state both mount points own, so that two of the same modal never sit in
+	// one tree; a popover is anchored to its own trigger and has no such clash.
+	const [postTypesOpen, setPostTypesOpen] = useState(false);
+
 	return (
 		<>
 			{topic.whySuggested ? (
@@ -359,26 +402,8 @@ export function TopicDetails({
 			    wrong, and no new i18n key in a module that hardcodes English. */}
 			{canEdit ? (
 				<div className="flex flex-wrap items-center gap-1">
-					<Button
-						type="button"
-						variant="ghost"
-						size="sm"
-						disabled={isPending}
-						onClick={onEditContributors}
-					>
-						Edit contributors
-					</Button>
-					<Button
-						type="button"
-						variant="ghost"
-						size="sm"
-						disabled={isPending}
-						onClick={onEditAssignees}
-					>
-						{topic.assignees.length > 0
-							? "Edit assignees"
-							: "Assign people"}
-					</Button>
+					{contributorsControl}
+					{assigneesControl}
 				</div>
 			) : null}
 			{topic.authorRecommendation ? (
@@ -479,16 +504,44 @@ export function TopicDetails({
 									</span>
 								);
 							})}
-							{canEdit ? (
-								<Button
-									type="button"
-									variant="ghost"
-									size="sm"
-									disabled={isPending}
-									onClick={onEditPostTypes}
+							{canEdit && showEditPostTypes ? (
+								<Popover
+									open={postTypesOpen}
+									onOpenChange={setPostTypesOpen}
 								>
-									Edit post types
-								</Button>
+									<PopoverTrigger asChild>
+										<Button
+											type="button"
+											variant="ghost"
+											size="sm"
+											className="border border-border border-dashed"
+											disabled={isPending}
+										>
+											<PlusIcon
+												className="mr-1 size-3.5"
+												aria-hidden="true"
+											/>
+											Add type
+										</Button>
+									</PopoverTrigger>
+									<PopoverContent
+										align="start"
+										className="w-[min(28rem,calc(100vw-2rem))] p-3"
+									>
+										<ContentTypesChecklist
+											analysis={null}
+											selected={effectivePostTypes}
+											canEdit={canEdit}
+											isPending={isPending}
+											createdAt={topic.createdAt}
+											alwaysOpen
+											onChange={(next) => {
+												onChangePostTypes?.(next);
+												setPostTypesOpen(false);
+											}}
+										/>
+									</PopoverContent>
+								</Popover>
 							) : null}
 						</div>
 					</TooltipProvider>
