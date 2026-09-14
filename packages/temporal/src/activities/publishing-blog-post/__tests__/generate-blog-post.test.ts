@@ -44,6 +44,8 @@ vi.mock("@repo/ai/lib/function-tag-context", () => ({
 const topicFindFirst = vi.fn();
 const analysisFindFirst = vi.fn();
 const userFindMany = vi.fn();
+const projectFindUnique = vi.fn();
+const projectMemberFindMany = vi.fn();
 const checkPublishingGenerationActor = vi.fn();
 const getBoundPromptForAgent = vi.fn();
 const listTopicDecisions = vi.fn();
@@ -65,6 +67,17 @@ vi.mock("@repo/database", async (importOriginal) => {
 			},
 			publishingTopicPlanningAnalysis: {
 				findFirst: (...a: unknown[]) => analysisFindFirst(...a),
+			},
+			// `resolveContributorNames` fences name resolution to the people who
+			// still have project access before it reads a single user row. Here
+			// everyone submitted passes: what the fence actually admits is pinned
+			// in publishing-shared/__tests__/contributor-names.test.ts, and a
+			// second opinion about it in this file would be a guess.
+			project: {
+				findUnique: (...a: unknown[]) => projectFindUnique(...a),
+			},
+			projectMember: {
+				findMany: (...a: unknown[]) => projectMemberFindMany(...a),
 			},
 			user: { findMany: (...a: unknown[]) => userFindMany(...a) },
 		},
@@ -150,6 +163,25 @@ beforeEach(() => {
 	vi.clearAllMocks();
 	topicFindFirst.mockResolvedValue(TOPIC);
 	analysisFindFirst.mockResolvedValue(null);
+	// Both conditional on the activity's OWN project id ("proj-1"), not
+	// unconditional: an unconditional mock answers the same way no matter what
+	// id the fence asked about, so it cannot tell a correctly-scoped fence from
+	// one asked about the wrong project entirely (e.g. `topicId` passed where
+	// `projectId` belongs). See "contributor fence scope" below.
+	projectFindUnique.mockImplementation(
+		async (args: { where: { id: string } }) =>
+			args.where.id === "proj-1"
+				? { userId: "project-owner", organizationId: null }
+				: null,
+	);
+	projectMemberFindMany.mockImplementation(
+		async (args: {
+			where: { projectId: string; userId: { in: string[] } };
+		}) =>
+			args.where.projectId === "proj-1"
+				? args.where.userId.in.map((userId) => ({ userId }))
+				: [],
+	);
 	userFindMany.mockResolvedValue([{ id: "user-2", name: "A Contributor" }]);
 	checkPublishingGenerationActor.mockResolvedValue({ ok: true });
 	getBoundPromptForAgent.mockResolvedValue(null);
@@ -274,6 +306,27 @@ describe("generateBlogPostActivity — contributor override", () => {
 		expect(generateObject.mock.calls[0]?.[0]?.prompt).not.toContain(
 			"People associated with the work behind this topic",
 		);
+	});
+});
+
+describe("generateBlogPostActivity — contributor fence scope", () => {
+	// The mocks above are conditional on "proj-1" precisely so these two can
+	// fail: an unconditional `projectFindUnique` / `projectMemberFindMany`
+	// answers identically no matter which project id the fence asks about, so
+	// swapping `projectId` for `topicId` at the call site would go just as
+	// green as the correct call.
+	it("resolves contributor names against the activity's OWN project id, not the topic id", async () => {
+		await run();
+
+		expect(projectFindUnique.mock.calls[0]?.[0]?.where).toEqual({
+			id: "proj-1",
+		});
+	});
+
+	it("yields no contributor names when the fence is asked about a project it does not recognize", async () => {
+		await run({ projectId: "proj-9" });
+
+		expect(userFindMany).not.toHaveBeenCalled();
 	});
 });
 

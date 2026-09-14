@@ -168,7 +168,10 @@ export async function generateLinkedInPostActivity(
 			topicId,
 			provenance: topic.provenance,
 		}),
-		resolveContributorNames(effectiveContributorUserIds(topic)),
+		resolveContributorNames({
+			contributorUserIds: effectiveContributorUserIds(topic),
+			projectId,
+		}),
 		getProjectFunctionTagClause({
 			projectId,
 			requesterUserId: actorUserId,

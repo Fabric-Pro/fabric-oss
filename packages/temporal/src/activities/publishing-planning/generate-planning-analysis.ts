@@ -148,7 +148,10 @@ export async function generatePlanningAnalysisActivity(
 				topicId,
 				provenance: topic.provenance,
 			}),
-			resolveContributorNames(effectiveContributorUserIds(topic)),
+			resolveContributorNames({
+				contributorUserIds: effectiveContributorUserIds(topic),
+				projectId,
+			}),
 			// Flag-gated and self-authorizing inside the helper: a no-op when
 			// function tags are off or no roster member holds one.
 			getProjectFunctionTagClause({

@@ -36,21 +36,28 @@ export const updatePublishingTopicContributorsProcedure =
 			await assertPublishingSuiteFeatureEnabled(input.projectId);
 			// Every submitted id must be EITHER a current member of this project
 			// OR already present in the topic's CURRENT effective contributor set
-			// (the "grandfather" rule). `contributors` is resolved by an unscoped
-			// user lookup in the temporal helper (`resolveContributorNames`), so
-			// an unchecked id here would turn this endpoint into a
-			// name-disclosure oracle for arbitrary user ids — THAT is the
-			// property this check exists to preserve, and grandfathering an
-			// already-effective id does not widen it: that id was either written
-			// by the server's own `resolveProjectContributorIds` resolver or
-			// passed this exact membership check at an earlier write, so it was
-			// never introduced by this request. `resolveProjectContributorIds`
+			// (the "grandfather" rule). `listPublishingTopics` resolves the name,
+			// avatar and username for every id that lands in `contributors` with
+			// an unscoped `db.user.findMany`, so an unchecked id here would turn
+			// this endpoint into a name-disclosure oracle for arbitrary user
+			// ids — THAT is the property this check exists to preserve, and
+			// grandfathering an already-effective id does not widen it: that
+			// id was either written by the server's own
+			// `resolveProjectContributorIds` resolver or passed this exact
+			// membership check at an earlier write, so it was never introduced
+			// by this request. `resolveProjectContributorIds`
 			// deliberately resolves story/document/PR authors via ANY linked
 			// account, not just current project members (see its doc comment),
 			// so a topic routinely names a contributor who has since left the
 			// project or was never a member — without the grandfather rule, an
 			// editor opening the dialog to ADD one person would silently drop
 			// every such contributor on Save. A reset carries no ids to check.
+			//
+			// The generation path no longer rests on this check:
+			// `resolveContributorNames` (packages/temporal) now fences its own
+			// read to people who still have project access. The display path in
+			// `listPublishingTopics` does not, which is why the argument above
+			// cites that one.
 			if (input.contributorUserIds !== null) {
 				const [members, effectiveContributorIds] = await Promise.all([
 					getProjectMembers(input.projectId),

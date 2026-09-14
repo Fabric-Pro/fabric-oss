@@ -20,6 +20,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const topicFindFirst = vi.fn();
 const analysisFindFirst = vi.fn();
 const userFindMany = vi.fn();
+const projectFindUnique = vi.fn();
+const projectMemberFindMany = vi.fn();
 const checkPublishingGenerationActor = vi.fn();
 const getBoundPromptForAgent = vi.fn();
 const listTopicDecisions = vi.fn();
@@ -40,6 +42,17 @@ vi.mock("@repo/database", async (importOriginal) => {
 			},
 			publishingTopicPlanningAnalysis: {
 				findFirst: (...a: unknown[]) => analysisFindFirst(...a),
+			},
+			// `resolveContributorNames` fences name resolution to the people who
+			// still have project access before it reads a single user row. Here
+			// everyone submitted passes: what the fence actually admits is pinned
+			// in publishing-shared/__tests__/contributor-names.test.ts, and a
+			// second opinion about it in this file would be a guess.
+			project: {
+				findUnique: (...a: unknown[]) => projectFindUnique(...a),
+			},
+			projectMember: {
+				findMany: (...a: unknown[]) => projectMemberFindMany(...a),
 			},
 			user: { findMany: (...a: unknown[]) => userFindMany(...a) },
 		},
@@ -147,6 +160,14 @@ beforeEach(() => {
 	vi.clearAllMocks();
 	topicFindFirst.mockResolvedValue(TOPIC);
 	analysisFindFirst.mockResolvedValue(null);
+	projectFindUnique.mockResolvedValue({
+		userId: "project-owner",
+		organizationId: null,
+	});
+	projectMemberFindMany.mockImplementation(
+		async (args: { where: { userId: { in: string[] } } }) =>
+			args.where.userId.in.map((userId) => ({ userId })),
+	);
 	userFindMany.mockResolvedValue([{ id: "user-2", name: "A Contributor" }]);
 	checkPublishingGenerationActor.mockResolvedValue({ ok: true });
 	getBoundPromptForAgent.mockResolvedValue(null);
