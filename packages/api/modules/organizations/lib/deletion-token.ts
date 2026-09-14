@@ -119,6 +119,52 @@ export async function consumeOrganizationDeletionToken(
 }
 
 /**
+ * Read a token WITHOUT spending it.
+ *
+ * Exists so the confirmation page can name the organization it is about to
+ * destroy. That page is the last screen before a tenant goes dark and it used
+ * to say only "this organization", which is precisely the question the person
+ * reading it needs answered — someone who owns several cannot otherwise tell
+ * whether the one in front of them is the one they meant (Fizzy #2462).
+ *
+ * SEPARATE FROM `consume` ON PURPOSE, rather than a flag on it. Rendering the
+ * page must not spend the token: the whole reason the link only *shows* a page
+ * is that a mail scanner may have opened it already, and a read that consumed
+ * would hand that crawler the same power a GET redemption would — it would burn
+ * the token and leave the owner with a dead link.
+ *
+ * Returns `null` for every failure — unknown, expired, malformed — for the same
+ * reason `consume` does. Callers must not distinguish them to the user.
+ *
+ * Deliberately does NOT extend or touch `expiresAt`: looking at a link is not
+ * using it.
+ */
+export async function readOrganizationDeletionToken(
+	token: string,
+): Promise<DeletionTokenPayload | null> {
+	const row = await db.verification.findFirst({
+		where: { identifier: identifierFor(token) },
+		select: { value: true, expiresAt: true },
+	});
+
+	if (!row || row.expiresAt.getTime() <= Date.now()) {
+		return null;
+	}
+
+	try {
+		const parsed = JSON.parse(row.value) as DeletionTokenPayload;
+
+		if (!parsed?.organizationId || !parsed?.userId) {
+			return null;
+		}
+
+		return parsed;
+	} catch {
+		return null;
+	}
+}
+
+/**
  * Drop any outstanding tokens for an organization.
  *
  * Called when a deletion is confirmed or the organization is restored: a token

@@ -4,7 +4,7 @@ import { createTranslator } from "use-intl/core";
 import PrimaryButton from "../src/components/PrimaryButton";
 import Wrapper from "../src/components/Wrapper";
 import { defaultLocale, defaultTranslations } from "../src/util/translations";
-import type { BaseMailProps } from "../types";
+import type { BaseMailProps, MailTranslator } from "../types";
 
 /**
  * The last warning before an organization is destroyed (Fizzy #2462).
@@ -24,10 +24,12 @@ import type { BaseMailProps } from "../types";
  * the type honest and the output readable.
  *
  * Copy resolves through `createTranslator`, from
- * `mail.organizationDeletionReminder.*`. No `resolveSubject`: `getTemplate`
- * prefers that property over the bundle's `subject` key, which would leave the
- * subject as the one untranslatable line — and the subject is the load-bearing
- * part of a reminder, since it carries the deadline into the inbox list.
+ * `mail.organizationDeletionReminder.*` — the subject included, via
+ * `resolveSubject` below. The subject is the load-bearing part of a reminder,
+ * since it carries the deadline into the inbox list, and it interpolates BOTH
+ * the name and the date. `getTemplate` reads a bundle `subject` as a raw
+ * string, so without a resolver both placeholders ship literally and the
+ * deadline never reaches the inbox list at all.
  */
 export function OrganizationDeletionReminder({
 	organizationName,
@@ -102,6 +104,20 @@ export function OrganizationDeletionReminder({
 		</Wrapper>
 	);
 }
+
+/**
+ * `purgeDate` is passed straight through, already localised by the sending
+ * activity — see the note above. Formatting it here would re-introduce exactly
+ * the boundary that note exists to keep honest.
+ */
+OrganizationDeletionReminder.resolveSubject = (
+	ctx: Record<string, unknown>,
+	t: MailTranslator,
+) =>
+	t("mail.organizationDeletionReminder.subject", {
+		organizationName: (ctx.organizationName as string) ?? "",
+		purgeDate: (ctx.purgeDate as string) ?? "",
+	});
 
 OrganizationDeletionReminder.PreviewProps = {
 	locale: defaultLocale,

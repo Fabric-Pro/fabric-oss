@@ -5,6 +5,7 @@ import {
 } from "@repo/database";
 import {
 	getActiveOrganization,
+	getOrganizationDeletedAt,
 	getSession,
 	isGuestInOrg,
 } from "@saas/auth/lib/server";
@@ -44,6 +45,27 @@ export default async function OrganizationLayout({
 	}>;
 }>) {
 	const { organizationSlug } = await params;
+
+	// A DELETED ORGANIZATION IS NOT A 404, and the difference matters to the
+	// person standing here (Fizzy #2462). `getActiveOrganization` already
+	// refuses it — so without this branch the layout would fall into
+	// `notFound()` below — but this app's 404 is the marketing one, whose only
+	// exit is the public homepage. Someone who followed a bookmark into the
+	// workspace they deleted yesterday would be told nothing and handed no way
+	// back.
+	//
+	// `/app` is the destination because it is the same membership-based routing
+	// the confirmation flow already trusts: another organization if they have
+	// one, otherwise `/new-organization`, which carries the restore banner
+	// naming this organization with the button that brings it back.
+	//
+	// This TERMINATES only because `getOrganizationList` now filters deleted
+	// organizations out. While it did not, `/app` could resolve this very slug
+	// from `lastActiveOrganizationId` and send the person straight back here.
+	// The two changes are one fix; neither is safe to revert alone.
+	if (await getOrganizationDeletedAt(organizationSlug)) {
+		redirect("/app");
+	}
 
 	const organization = await getActiveOrganization(organizationSlug);
 

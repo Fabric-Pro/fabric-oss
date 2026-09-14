@@ -4,7 +4,7 @@ import { createTranslator } from "use-intl/core";
 import PrimaryButton from "../src/components/PrimaryButton";
 import Wrapper from "../src/components/Wrapper";
 import { defaultLocale, defaultTranslations } from "../src/util/translations";
-import type { BaseMailProps } from "../types";
+import type { BaseMailProps, MailTranslator } from "../types";
 
 /**
  * Step one of deleting an organization: the single-use confirmation link
@@ -18,10 +18,12 @@ import type { BaseMailProps } from "../types";
  * window is stated as a number of days rather than "for a while".
  *
  * Copy resolves through `createTranslator` like every other template here, from
- * `mail.organizationDeletionConfirm.*`. There is deliberately no
- * `resolveSubject`: `getTemplate` prefers that property over the bundle's own
- * `subject` key, so exporting one would make the subject the only untranslatable
- * line in the message.
+ * `mail.organizationDeletionConfirm.*` — the subject included, via
+ * `resolveSubject` below. It is NOT optional here: `getTemplate` falls back to
+ * reading `subject` straight out of the bundle as a raw string, and this
+ * subject interpolates `{organizationName}`, so without a resolver the
+ * placeholder is delivered literally. It was: the first staging run of this
+ * flow arrived titled "Confirm deleting {organizationName}".
  */
 export function OrganizationDeletionConfirm({
 	organizationName,
@@ -91,6 +93,20 @@ export function OrganizationDeletionConfirm({
 		</Wrapper>
 	);
 }
+
+/**
+ * The subject names the organization, because an inbox list is where this is
+ * first triaged: "Confirm deleting" alone is indistinguishable from the same
+ * mail about any other organization, and someone who owns several cannot tell
+ * whether the one going dark is the one they meant.
+ */
+OrganizationDeletionConfirm.resolveSubject = (
+	ctx: Record<string, unknown>,
+	t: MailTranslator,
+) =>
+	t("mail.organizationDeletionConfirm.subject", {
+		organizationName: (ctx.organizationName as string) ?? "",
+	});
 
 OrganizationDeletionConfirm.PreviewProps = {
 	locale: defaultLocale,
