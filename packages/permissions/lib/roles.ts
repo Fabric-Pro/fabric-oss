@@ -70,6 +70,26 @@ const VIEWER_ORG_PERMISSIONS: readonly Permission[] = [
 	P.ARCHITECTURE_DECISION_READ,
 	P.TEST_CASE_READ,
 	P.PUBLISHING_TOPIC_READ,
+	// An API key carries its creator's own access and nobody else's, so
+	// creating one grants nothing they did not already have — it only changes
+	// which client they can reach it from. Holding this at admin meant the only
+	// way for a member to connect an editor or an AI tool was to be promoted,
+	// which grants far more than the key ever would (Fizzy #2380).
+	//
+	// It sits in the VIEWER set, not the member set, because a read-only role
+	// needs the same escape from that trap: a viewer with no key cannot reach
+	// the organization from a CLI at all (Fizzy #2457). What keeps that safe is
+	// not this grant but the scope clamp in the create procedure, which refuses
+	// a viewer any scope whose permission sits above the viewer role. Without
+	// that clamp this line would be an escalation, so the two belong together —
+	// see `READ_ONLY_ORG_API_KEY_SCOPES` in
+	// `packages/api/modules/organizations/procedures/api-keys/create.ts`.
+	//
+	// Revocation is the counterpart: whoever may mint a credential must be able
+	// to retire it, and the delete procedure narrows a non-owner to their own
+	// keys (`canDeleteAnyKey = membership.role === "owner"`).
+	P.ORG_API_KEYS_CREATE,
+	P.ORG_API_KEYS_DELETE,
 ];
 
 const MEMBER_ORG_PERMISSIONS: readonly Permission[] = [
@@ -118,15 +138,9 @@ const MEMBER_ORG_PERMISSIONS: readonly Permission[] = [
 	P.TEST_CASE_UPDATE,
 	P.PUBLISHING_TOPIC_CREATE,
 	P.PUBLISHING_TOPIC_UPDATE,
-	// An API key carries its creator's own access and nobody else's, so
-	// creating one grants a member nothing they did not already have — it only
-	// changes which client they can reach it from. Holding this at admin meant
-	// the only way for a member to connect an editor or an AI tool was to be
-	// promoted, which grants far more than the key ever would (Fizzy #2380).
-	// Revocation is the counterpart: whoever may mint a credential must be able
-	// to retire it, and the procedure narrows a non-owner to their own keys.
-	P.ORG_API_KEYS_CREATE,
-	P.ORG_API_KEYS_DELETE,
+	// `ORG_API_KEYS_CREATE`/`_DELETE` are inherited from the viewer set above,
+	// which is where they now live. A member's key is not clamped to read-only
+	// scopes; the clamp in the create procedure applies to viewers alone.
 ];
 
 const ADMIN_ORG_PERMISSIONS: readonly Permission[] = [

@@ -59,7 +59,10 @@ export type CreateNotificationArgs = {
 	 * - `"unreadOnly"`: a pre-INSERT read checks for an existing unread+live
 	 * row and short-circuits before hitting the DB if one exists. Useful for
 	 * callers that must distinguish "suppressed" from "inserted" in the
-	 * return value (e.g. document-mention hardening).
+	 * return value (e.g. document-mention hardening). A P2002 raced past that
+	 * pre-read is the same event arriving a millisecond later, so it answers
+	 * the same way — `{ skipped: "deduped-unread" }`, and the live row is left
+	 * exactly as the winner wrote it. See the catch block below.
 	 * Has no effect unless `dedupeKey` is also set.
 	 */
 	dedupePolicy?: "exact" | "unreadOnly";
@@ -79,6 +82,99 @@ function truncateSnippet(snippet: string | undefined): string | undefined {
 	}
 	return `${snippet.slice(0, SNIPPET_MAX_LENGTH - 1).trimEnd()}…`;
 }
+
+/**
+ * How much of a display name may appear in a notification snippet.
+ *
+ * Long enough for any real name, including a long one with an honorific, and
+ * short enough that the sentence around it survives: the snippet is one line in
+ * the notification row and the opening line of the email body, and the name is
+ * not the part of it the reader needs.
+ */
+const ACTOR_NAME_MAX_LENGTH = 48;
+
+/**
+ * Characters a display name must not carry into a notification (Fizzy #2457).
+ *
+ * The name is text its owner types, so it is attacker-controlled on any surface
+ * where the actor need not be trusted. It no longer reaches the email SUBJECT
+ * — `CLI_CONNECTION_REQUESTED_TITLE` records why nothing user-typed does — but
+ * it still reaches a notification row and an email BODY, and three classes of
+ * character do damage disproportionate to their innocence there too:
+ *
+ *   - C0/C1 controls, CR and LF above all. A snippet is one line, and a raw
+ *     newline splits it. The same characters are the classic header-injection
+ *     primitive on any surface that later reuses this string as a header, which
+ *     is a good reason to keep stripping them where the name is assembled
+ *     rather than where it happens to be rendered today.
+ *   - Zero-width and bidi-formatting characters (U+200B-U+200F, U+202A-U+202E,
+ *     U+2066-U+2069, U+FEFF). These do not add text, they REORDER or hide the
+ *     text after them — enough to make "Ada asked about Atlas" render as
+ *     something else entirely without a single suspicious glyph.
+ *   - Runs of whitespace, which push the honest half of the sentence out of the
+ *     visible line without tripping a length check on visible text.
+ */
+const ACTOR_NAME_STRIPPED =
+	// biome-ignore lint/suspicious/noControlCharactersInRegex: matching the control characters is what removes them.
+	/[\u0000-\u001F\u007F-\u009F\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF]/g;
+
+/**
+ * Make an actor's display name safe to put in a notification snippet.
+ *
+ * Clamps rather than rejects, and never returns empty: a snippet with no
+ * attribution is worse than a truncated one, because the recipient cannot tell
+ * who wants this. A name that is nothing but stripped characters falls back to
+ * "Someone", which is the same word the callers use for a missing name.
+ *
+ * Applied by `fanOut.cliConnectionRequested`, the one fan-out whose actor is
+ * only required to hold a read-level permission. The older helpers here build
+ * titles from names too; bringing them behind this is worth doing and is not
+ * this change's to do.
+ */
+function clampActorName(actorName: string | null | undefined): string {
+	const cleaned = (actorName ?? "")
+		.replace(ACTOR_NAME_STRIPPED, "")
+		.replace(/\s+/g, " ")
+		.trim();
+
+	if (cleaned.length === 0) {
+		return "Someone";
+	}
+	if (cleaned.length <= ACTOR_NAME_MAX_LENGTH) {
+		return cleaned;
+	}
+	return `${cleaned.slice(0, ACTOR_NAME_MAX_LENGTH - 1).trimEnd()}…`;
+}
+
+/**
+ * The one title on this surface built from nothing a user typed (Fizzy #2457).
+ *
+ * `notification.title` becomes the email SUBJECT verbatim — see the delivery
+ * activity in `packages/temporal`. A subject is read in an inbox, outside
+ * anything that identifies Fabric as the sender, which makes it the one place
+ * where an attacker-supplied string reads as an IDENTITY rather than as
+ * content. And a display name is attacker-supplied: every member may set their
+ * own, so one could take the name of a team or a product and have Fabric put
+ * it, unqualified, in front of up to fifty colleagues.
+ *
+ * Clamping the name does not answer that, and it was a mistake to think it
+ * did. Stripping the characters that hide or reorder text cannot make
+ * "Fabric Security" an untrue-looking thing to be called. So the subject is
+ * server-authored end to end and the attribution moves to the SNIPPET, which
+ * the recipient reads inside the app, or inside a mail body that has already
+ * said where it came from.
+ *
+ * This helper is the one that needed it: its actor need hold only a read-level
+ * permission and picks the recipients by hand. The older fan-outs above still
+ * interpolate a name into their titles — the same shape, worth closing, and
+ * not this change's to close.
+ *
+ * "Coding tool" survives here because it is an INSTRUCTION about what to go and
+ * set up, not a claim about what was observed — the distinction the prompt's
+ * own copy guard draws.
+ */
+const CLI_CONNECTION_REQUESTED_TITLE =
+	"A teammate asked you to connect a coding tool to Fabric";
 
 /**
  * Write a single notification row. Self-skips when actor === recipient.
@@ -197,6 +293,29 @@ export async function createNotification(
 			typeof error === "object" &&
 			error !== null &&
 			(error as { code?: string }).code === "P2002";
+		if (
+			args.dedupeKey &&
+			isUniqueViolation &&
+			args.dedupePolicy === "unreadOnly"
+		) {
+			// The pre-read above missed and a concurrent writer got there
+			// first. Under `unreadOnly` that is not a coalesce, it is the very
+			// case the pre-read exists to catch, arriving a moment late — so it
+			// answers identically and the live row is left alone.
+			//
+			// Both halves matter. Returning the coalesced row would count as a
+			// delivery, and two colleagues asking the same person in the same
+			// second would each be told they had asked somebody, for one row.
+			// Rewriting that row would be worse: `title` and `actorUserId` are
+			// in the coalesce payload, so the pending ask would silently change
+			// attribution to whoever LOST the race. The first ask is the one
+			// the recipient saw arrive; it keeps its author (Fizzy #2457).
+			logger.debug(
+				{ userId: args.userId, dedupeKey: args.dedupeKey },
+				"[notification-service] notification deduped (unreadOnly, raced)",
+			);
+			return { skipped: true, reason: "deduped-unread" } as const;
+		}
 		if (args.dedupeKey && isUniqueViolation) {
 			await db.notification.updateMany({
 				where: {
@@ -549,6 +668,54 @@ export type StorySharedArgs = {
 	link: string;
 	/** Optional author note; surfaced as the row snippet when present. */
 	message?: string;
+};
+
+export type CliConnectionRequestedArgs = {
+	/**
+	 * Already resolved and authorised by the caller: every id here is on the
+	 * project roster and holds the organization permission to mint a key. This
+	 * helper writes rows; it does not decide who may receive one.
+	 */
+	recipientUserIds: string[];
+	projectId: string;
+	/** Names the project the ask came from, in the title and in the payload. */
+	projectName: string;
+	organizationId: string | null;
+	actorUserId: string;
+	/**
+	 * The asker's display name, as THEY last set it. Untrusted text: it is
+	 * clamped by `clampActorName` before it reaches the title, never used raw.
+	 */
+	actorName: string;
+	/** Context-relative deep-link, e.g. `projects/{projectId}`. */
+	link: string;
+};
+
+/**
+ * What became of each recipient handed to `fanOut.cliConnectionRequested`.
+ *
+ * Three disjoint buckets whose sum is the recipient list this helper worked on
+ * — the caller's list after de-duplication and the self-skip. A single "how
+ * many were written" number cannot carry this: a short count then means either
+ * "they already had one unread" or "the write broke", and those are opposite
+ * things to tell the person who asked (Fizzy #2457).
+ */
+export type CliConnectionRequestedResult = {
+	/** Rows actually written. Only these reached an inbox or an email. */
+	notified: number;
+	/**
+	 * Deliberately not written to: an unread ask for this project was already
+	 * live, the recipient has silenced the category, or `createNotification`
+	 * self-skipped them. Nothing went wrong and nothing needs retrying.
+	 */
+	skipped: number;
+	/**
+	 * The write threw. Logged and swallowed here so one bad row cannot fail the
+	 * asker's request — reported so the caller does not have to describe it as
+	 * a skip, which would tell the asker their colleague had already been asked
+	 * when nobody asked them.
+	 */
+	failed: number;
 };
 
 export type SubscriptionUpdateArgs = {
@@ -1558,6 +1725,123 @@ export const fanOut = {
 			}),
 		);
 		return results.filter(Boolean).length;
+	},
+
+	/**
+	 * Emit one CLI_CONNECTION_REQUESTED notification per recipient when
+	 * somebody asks teammates to connect a coding CLI (Fizzy #2457).
+	 *
+	 * Shaped on `fanOut.storyShared` above — the other fan-out whose recipients
+	 * a person chose by hand — and it inherits that helper's first two
+	 * properties: recipients are de-duplicated, and the actor is filtered out
+	 * before the write (and self-skipped again inside `createNotification`).
+	 *
+	 * Four things differ, all deliberate.
+	 *
+	 * Its title is server-authored. `storyShared` and every neighbour above
+	 * build theirs from the actor's display name, which lands in an email
+	 * subject; this one does not, and `CLI_CONNECTION_REQUESTED_TITLE` records
+	 * why the difference belongs to THIS helper in particular.
+	 *
+	 * It returns a BREAKDOWN, not a count. The neighbours return rows written,
+	 * which leaves a caller unable to tell a recipient who declined from a
+	 * recipient whose write broke — and this caller reports the result to the
+	 * person who asked, in a sentence. "They already had an unread ask" is a
+	 * fine thing to say and a terrible thing to say about a failure. See
+	 * `CliConnectionRequestedResult`.
+	 *
+	 * The dedupe key is `(project, recipient)` and carries no actor and no
+	 * timestamp. One person is asked about one project at most once while the
+	 * ask is unread, no matter how many colleagues ask or how many times the
+	 * button is pressed — which is the entire guard against this surface being
+	 * used to pile on somebody, since a nudge is by design something a
+	 * recipient may simply not act on. Once they read or archive the row the
+	 * question may be put again; an unanswered one is never repeated.
+	 *
+	 * And the policy is `unreadOnly`, not the default exact dedupe. Exact
+	 * dedupe resolves a collision by coalescing into the live row and returning
+	 * it, which this counter cannot tell apart from a fresh insert — so a
+	 * second ask would report everybody notified again while writing nothing.
+	 * `unreadOnly` short-circuits before the INSERT, and answers a P2002 raced
+	 * past that pre-read the same way rather than coalescing, which is what
+	 * makes the count honest on the second press and on the simultaneous one.
+	 *
+	 * Best-effort, like every helper here: a per-recipient failure is logged and
+	 * swallowed rather than breaking the asker's request. Unlike the neighbours
+	 * it is also counted, so the caller can say so.
+	 */
+	async cliConnectionRequested(
+		args: CliConnectionRequestedArgs,
+	): Promise<CliConnectionRequestedResult> {
+		const recipients = Array.from(new Set(args.recipientUserIds)).filter(
+			(id) => id && id !== args.actorUserId,
+		);
+		// The asker's own text. It reaches the notification row and the email
+		// BODY, and deliberately not the subject — see
+		// `CLI_CONNECTION_REQUESTED_TITLE`. Clamped on the way there anyway.
+		const actor = clampActorName(args.actorName);
+		const results = await Promise.all(
+			recipients.map(async (userId) => {
+				try {
+					const result = await createNotification({
+						userId,
+						organizationId: args.organizationId,
+						type: NotificationType.CLI_CONNECTION_REQUESTED,
+						// Silenceable by the recipient's "mentions" toggle. An
+						// optional favour asked by a colleague must be something
+						// they can turn off, which rules out every always-on
+						// category; see the enum's own note.
+						category: NotificationCategory.MENTION,
+						title: CLI_CONNECTION_REQUESTED_TITLE,
+						// Both variables live here rather than in the title:
+						// one is the asker's own text, and the other names the
+						// project, which a subject line does not need in order
+						// to be honest.
+						//
+						// It states no fact about the organization. The prompt
+						// that sends the asker here does — "nobody is using
+						// Fabric's MCP yet" — and that sentence is only true
+						// while `organizationCliConnected` is false, which this
+						// procedure does not re-read and which can have changed
+						// between the render and the press. Repeating the claim
+						// in a row the recipient may open days later would put
+						// a stale organization-wide negative in front of up to
+						// fifty people. What survives the delay is who asked,
+						// about what, and what it takes — so that is all this
+						// says. See CONCEPTS.md, "Connected organization".
+						snippet: `${actor} asked about ${args.projectName}. It takes a key and a single configuration block to let a coding tool read its context.`,
+						link: args.link,
+						source: {
+							projectId: args.projectId,
+							actorUserId: args.actorUserId,
+						},
+						payload: {
+							projectId: args.projectId,
+							projectName: args.projectName,
+							requestedByUserId: args.actorUserId,
+						},
+						dedupeKey: `cliConnectionRequested:${args.projectId}:${userId}`,
+						dedupePolicy: "unreadOnly",
+					});
+					// A written row is a Notification object. `null` is the
+					// self-skip and `{ skipped }` is dedupe-or-preference;
+					// under `unreadOnly` the raced P2002 answers `{ skipped }`
+					// too, so a coalesced row can never be read as a delivery.
+					return result !== null && !("skipped" in result)
+						? "notified"
+						: "skipped";
+				} catch (error) {
+					logFailure("fanOut.cliConnectionRequested", error);
+					return "failed";
+				}
+			}),
+		);
+		return {
+			notified: results.filter((outcome) => outcome === "notified")
+				.length,
+			skipped: results.filter((outcome) => outcome === "skipped").length,
+			failed: results.filter((outcome) => outcome === "failed").length,
+		};
 	},
 
 	/**

@@ -29,6 +29,25 @@ The second appeared after a fix that moved a rollout gate from the output of a q
 
 In both cases the code was correct, the tests were green, and the behaviour matched the intent. Only the explanation was wrong.
 
+Two more instances surfaced on the follow-up branch, after this document existed — which is the more useful evidence. A prompt heading claimed nobody was "using Fabric from a coding tool", and the product owner asked the question the reviewers had not: how would MCP know a coding tool from a desktop app or another server? It cannot. Neither host reads the client name the protocol offers at handshake, so the claim described a filter the runtime does not apply. Then the changeset headline for that same branch advertised a warning before an API key expires, while its own body said proactive warning was out of scope.
+
+The pattern holds across all four: **prose asserting a stronger fact than the mechanism produces**, in the one artifact class no gate checks. The first two were caught by an adversarial model, the third by a product owner reading the copy, the fourth by the author re-reading their own release text. None were caught by tests, types, or code review.
+
+A fifth, on the same branch, is a variant worth its own page: a defence that was described accurately and addressed the wrong axis. See [stripping characters cannot make a name trustworthy](../design-patterns/stripping-characters-cannot-make-a-name-trustworthy.md).
+
+The sixth is the one to remember, because **the repair for the fifth introduced it.** Moving the attribution out of the email subject meant rewriting the sentence around it, and the rewrite asserted that nobody in the organization had ever used MCP. The signal underneath is present tense and does not decay: a reach record leaves the answer when its credential is revoked, expires, or its owner is offboarded, and the feature's own dialog issues 90-day keys — so every organization that connects returns to "false" on a schedule, having plainly used MCP. The permanent record of first use exists and nothing reads it. The same false tense was already in the banner copy the product owner had approved, and in the comment that justified it, which claimed a missing reach row meant "has ever reached". CONCEPTS.md had defined the term correctly in the present tense the whole time.
+
+Counting them stops being useful around here, because the adversarial gate went on finding the same class in quieter places for two more rounds: a Prisma enum comment that described the row as meaning "the organization has no CLI reaching it" — an invariant the writer does not enforce — and then twelve code and test comments still saying a reach record is written when *a coding tool* reaches Fabric, in the same branch that had just established the runtime stores no client identity at all.
+
+What compounds is not the tally but four things about the shape:
+
+1. **Rewriting a sentence re-opens every claim in it.** The attention was on the field that moved; the words that had to change to accommodate it were not re-reviewed.
+2. **The vocabulary document is a checkable authority.** CONCEPTS.md had defined the term in the present tense the whole time, and neither the copy nor the comment defending it had been diffed against it.
+3. **Correct the concept, not the file.** Each round fixed the instances someone had pointed at. What finally worked was grepping the entire diff for the *idea* — a claim about client kind, a claim about history — and classifying every hit as instruction or assertion. Instructions may name a CLI; assertions may not.
+4. **A claim beside a persisted type outlives one in a copy string.** The schema comment was the last found and the longest-lived: nobody reads it, they rely on it, and a future consumer would have built on a precondition that was never enforced.
+
+And the reason none of this belongs in more prose: **the copy and the comment defending it fail together**, written by the same person in the same sitting from the same wrong belief. The guard has to be a test asserting on forbidden vocabulary. Both such tests here were verified by mutation — reverting the copy and watching them fail — because a guard nobody has seen fail is itself an unverified claim.
+
 ## Guidance
 
 **State what actually holds the invariant. If it is a convention or a test, say "convention" or "test" — never imply the compiler.**

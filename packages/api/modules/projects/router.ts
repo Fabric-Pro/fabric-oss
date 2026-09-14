@@ -350,6 +350,7 @@ import {
 	dismissCliNudgeProcedure,
 	getReadinessProcedure,
 	markReadinessSeenProcedure,
+	requestCliConnectionProcedure,
 	requestReadinessHelpProcedure,
 	setReadinessItemNotApplicableProcedure,
 	snoozeReadinessItemProcedure,
@@ -896,6 +897,11 @@ export const projectsRouter = {
 		// and permanent, so it lives beside the read whose `cliConnection`
 		// block it answers rather than under the API-key namespace.
 		dismissCliNudge: dismissCliNudgeProcedure,
+		// The prompt's other half (Fizzy #2457): pass the job to the teammates
+		// who would do it, by name or by the function tag they hold on this
+		// project. Beside the decline for the same reason — both answer the
+		// `cliConnection` block the readiness read serves.
+		requestCliConnection: requestCliConnectionProcedure,
 	},
 
 	// Meeting Digest (read-only aggregation + admin include/exclude)

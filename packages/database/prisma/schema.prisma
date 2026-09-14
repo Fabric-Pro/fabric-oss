@@ -16437,6 +16437,27 @@ enum NotificationType {
   /// without being opened.
   DOCUMENT_GENERATION_COMPLETED
   DOCUMENT_GENERATION_FAILED
+
+  /// A teammate asked the recipient to connect a coding tool to Fabric
+  /// (Fizzy #2457). Somebody looking at the project's readiness prompt named
+  /// this person — either directly or through a function tag they carry on
+  /// the project.
+  ///
+  /// That is the whole of it. The prompt the asker was looking at reports that
+  /// nothing in the organization is reaching Fabric over MCP, and this row does
+  /// NOT record that: the signal is present tense and the fan-out deliberately
+  /// does not re-read it, so the organization may be connected by the time the
+  /// row is written and certainly may be by the time it is read. Describe only
+  /// what stays true — who asked, and who they asked.
+  ///
+  /// Category MENTION, not SYSTEM or PROJECT. This is one colleague asking
+  /// another for a favour, so it has to be silenceable: MENTION is gated by
+  /// the recipient's `mentions` toggle in `CATEGORY_TO_TOGGLE`, while SYSTEM
+  /// and the other always-on categories are absent from that map and can
+  /// never be turned off. MENTION is also where the one existing
+  /// actor-chooses-recipients fan-out already sits (STORY_SHARED), so the two
+  /// surfaces answer to the same switch.
+  CLI_CONNECTION_REQUESTED
 }
 
 model Notification {

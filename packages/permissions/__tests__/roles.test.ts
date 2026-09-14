@@ -149,6 +149,78 @@ describe("ORG_ROLE_PERMISSIONS", () => {
 	});
 });
 
+/**
+ * Who may mint an organization API key (Fizzy #2380, then Fizzy #2457).
+ *
+ * The permission started at admin, which meant the only way for a member to
+ * connect a CLI or an editor was promotion — granting vastly more than the key
+ * would. #2380 moved it to member-and-up. #2457 moved it again, to viewer, so a
+ * read-only role can obtain a read-only key instead of nothing at all.
+ *
+ * The viewer grant is only safe alongside the scope clamp in
+ * `packages/api/modules/organizations/procedures/api-keys/create.ts`, which
+ * refuses a viewer any scope whose permission sits above the viewer role. If
+ * this grant is ever read as standalone permission to widen what a viewer may
+ * request, that clamp is the thing to read first.
+ */
+describe("organization API key permissions", () => {
+	it.each(["owner", "admin", "member", "viewer"] as const)(
+		"%s can create an API key",
+		(role) => {
+			expect(
+				hasPermission(
+					ORG_ROLE_PERMISSIONS[role],
+					Permissions.ORG_API_KEYS_CREATE,
+				),
+			).toBe(true);
+		},
+	);
+
+	// Delete travels with create: whoever may mint a credential must be able to
+	// retire it. The delete procedure narrows a non-owner to their own keys,
+	// which is what makes the grant safe this far down the matrix.
+	it.each(["owner", "admin", "member", "viewer"] as const)(
+		"%s can delete an API key",
+		(role) => {
+			expect(
+				hasPermission(
+					ORG_ROLE_PERMISSIONS[role],
+					Permissions.ORG_API_KEYS_DELETE,
+				),
+			).toBe(true);
+		},
+	);
+
+	// The half that already worked: a viewer could always see the key list.
+	// Being able to read it while being unable to obtain one was the bug.
+	it("viewer can read API keys", () => {
+		expect(
+			hasPermission(
+				ORG_ROLE_PERMISSIONS.viewer,
+				Permissions.ORG_API_KEYS_READ,
+			),
+		).toBe(true);
+	});
+
+	// The grant must not have dragged write access along with it. These are the
+	// permissions behind the scopes the create-time clamp refuses a viewer.
+	it.each([
+		["MCP_UPDATE", Permissions.MCP_UPDATE],
+		["MCP_CONNECT", Permissions.MCP_CONNECT],
+		["PROJECT_UPDATE", Permissions.PROJECT_UPDATE],
+		["STORY_CREATE", Permissions.STORY_CREATE],
+		["AGENT_EXECUTE", Permissions.AGENT_EXECUTE],
+		["AI_MODEL_RESOLVE", Permissions.AI_MODEL_RESOLVE],
+		["WORKSPACE_UPDATE", Permissions.WORKSPACE_UPDATE],
+		["DIAGRAM_CREATE", Permissions.DIAGRAM_CREATE],
+		["ORG_AUDIT_LOG_READ", Permissions.ORG_AUDIT_LOG_READ],
+	])("viewer still does NOT have %s", (_name, permission) => {
+		expect(hasPermission(ORG_ROLE_PERMISSIONS.viewer, permission)).toBe(
+			false,
+		);
+	});
+});
+
 describe("PROJECT_ROLE_PERMISSIONS", () => {
 	it("OWNER has PROJECT_DELETE", () => {
 		expect(

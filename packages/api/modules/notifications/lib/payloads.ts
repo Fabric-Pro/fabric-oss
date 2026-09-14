@@ -418,6 +418,26 @@ const publishingTopicAssignedPayload = z.object({
 	assignedByUserId: z.string(),
 });
 
+// CLI_CONNECTION_REQUESTED payload — written by `fanOut.cliConnectionRequested`
+// when somebody looking at a project's CLI-connection prompt asks teammates to
+// set a coding CLI up (Fizzy #2457). Category MENTION, so the recipient's
+// "mentions" toggle silences it: this is a colleague's request, not an alert.
+//
+// `projectId` is what the row's deep link is rebuilt from, and `projectName` is
+// carried rather than re-read because the bell renders a row without touching
+// the project — the same reason `projectServiceAlertDigestPayload` carries it.
+// The asker's display name lives in the notification's `title` column, as it
+// does for STORY_SHARED, so it is intentionally absent here.
+//
+// No free-text note. The one thing the recipient has to act on is fixed —
+// connect a CLI — and every free-text channel in a notification is one more
+// place for a sender to write something the product then repeats verbatim.
+const cliConnectionRequestedPayload = z.object({
+	projectId: z.string(),
+	projectName: z.string(),
+	requestedByUserId: z.string(),
+});
+
 const NotificationPayloadByType = {
 	[NotificationType.STORY_MENTION]: mentionLikeBase,
 	[NotificationType.TASK_MENTION]: mentionLikeBase,
@@ -474,6 +494,7 @@ const NotificationPayloadByType = {
 		publishingQuestionAssignedPayload,
 	[NotificationType.QUESTION_MENTIONED]: questionMentionedPayload,
 	[NotificationType.QUESTION_ANSWERED]: questionAnsweredPayload,
+	[NotificationType.CLI_CONNECTION_REQUESTED]: cliConnectionRequestedPayload,
 } as const;
 
 export function validatePayload(

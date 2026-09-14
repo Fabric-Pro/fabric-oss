@@ -164,6 +164,180 @@ describe("creating a key", () => {
 	});
 });
 
+/**
+ * The second half of the ticket (Fizzy #2457). Granting a viewer
+ * `ORG_API_KEYS_CREATE` is not enough on its own, and is unsafe on its own:
+ * it breaks the premise the external API's `OWNER_PERMISSION_GATES` table rests
+ * on — that anything a key can name, its creator already holds. A viewer holds
+ * far less than a member, so the create handler has to clamp what they may ask
+ * for. These pin that clamp.
+ */
+describe("a read-only role creating a key", () => {
+	const viewerInput = (scopes: string[]) => ({
+		context,
+		input: { organizationId: "org-1", name: "Read-only CLI", scopes },
+	});
+
+	beforeEach(() => {
+		mockRequireOrgMembership.mockResolvedValue({ role: "viewer" });
+	});
+
+	// The gap this half of the ticket exists for: a viewer held
+	// `ORG_API_KEYS_READ` but not `_CREATE`, so they could see the key list and
+	// never obtain a key of their own.
+	it("lets a viewer create a key with read-only scopes", async () => {
+		await handlers.create(
+			viewerInput([
+				"mcp:read",
+				"projects:read",
+				"features:read",
+			]) as never,
+		);
+
+		expect(mockCreateKey).toHaveBeenCalledWith(
+			expect.objectContaining({
+				scopes: ["mcp:read", "projects:read", "features:read"],
+			}),
+		);
+	});
+
+	it("accepts the whole read-only set", async () => {
+		const readOnlyScopes = [
+			"mcp:read",
+			"projects:read",
+			"agents:read",
+			"agents:stream",
+			"orgs:read",
+			"features:read",
+			"workspaces:read",
+			"workflows:read",
+			"frames:read",
+			"chats:read",
+			"system_health:read",
+			"status_updates:read",
+		];
+
+		await handlers.create(viewerInput(readOnlyScopes) as never);
+
+		expect(mockCreateKey).toHaveBeenCalledWith(
+			expect.objectContaining({ scopes: readOnlyScopes }),
+		);
+	});
+
+	it("refuses a viewer asking for mcp:write", async () => {
+		await expect(
+			handlers.create(viewerInput(["mcp:read", "mcp:write"]) as never),
+		).rejects.toThrow(/read-only/i);
+
+		expect(mockCreateKey).not.toHaveBeenCalled();
+	});
+
+	// The wildcard is the one that matters most: `hasScope` answers true for
+	// `*` against every scope, so a `*` key minted by a viewer would carry
+	// every write the organization has.
+	it("refuses a viewer asking for the wildcard", async () => {
+		await expect(
+			handlers.create(viewerInput(["*"]) as never),
+		).rejects.toThrow(/read-only/i);
+
+		expect(mockCreateKey).not.toHaveBeenCalled();
+	});
+
+	// Every write scope, not just the two spelled out above. A clamp that
+	// covered `mcp:write` and missed `projects:write` would read as working.
+	it.each([
+		"mcp:write",
+		"ai:models:read",
+		"ai:models:resolve",
+		"projects:write",
+		"agents:execute",
+		"features:write",
+		"workflows:run",
+		"frames:write",
+		"audit_log:read",
+		"audit_log:export",
+		"*",
+	])("refuses a viewer asking for %s", async (scope) => {
+		await expect(
+			handlers.create(viewerInput([scope]) as never),
+		).rejects.toThrow(/read-only/i);
+
+		expect(mockCreateKey).not.toHaveBeenCalled();
+	});
+
+	// The refusal has to be actionable. A bare 403 on the default scope set
+	// (`mcp:read`, `mcp:write` — which a viewer reaches by sending no scopes at
+	// all) would look like the feature is simply off for them.
+	it("names the refused scope and the ones that would work", async () => {
+		await expect(
+			handlers.create(viewerInput(["mcp:read", "mcp:write"]) as never),
+		).rejects.toThrow(/mcp:write/);
+
+		await expect(
+			handlers.create(viewerInput(["mcp:write"]) as never),
+		).rejects.toThrow(/projects:read/);
+	});
+
+	// The refusal must not leak the scopes it accepted into a partial key.
+	it("refuses the whole request, not just the offending scope", async () => {
+		await expect(
+			handlers.create(
+				viewerInput([
+					"mcp:read",
+					"projects:read",
+					"projects:write",
+				]) as never,
+			),
+		).rejects.toThrow(/read-only/i);
+
+		expect(mockCreateKey).not.toHaveBeenCalled();
+	});
+});
+
+/**
+ * The clamp applies to the read-only role and to nobody else. A member's key is
+ * already bounded by what a member holds, so clamping them would refuse
+ * requests that are not escalations — and would break every existing caller.
+ */
+describe("the clamp leaves member-and-up alone", () => {
+	it.each(["member", "admin", "owner"])(
+		"lets a %s keep the write scopes they could always request",
+		async (role) => {
+			mockRequireOrgMembership.mockResolvedValue({ role });
+
+			const scopes = ["mcp:read", "mcp:write", "projects:write"];
+			await handlers.create({
+				context,
+				input: { organizationId: "org-1", name: "Claude Code", scopes },
+			} as never);
+
+			expect(mockCreateKey).toHaveBeenCalledWith(
+				expect.objectContaining({ scopes }),
+			);
+		},
+	);
+
+	it.each(["member", "admin", "owner"])(
+		"lets a %s still request the wildcard",
+		async (role) => {
+			mockRequireOrgMembership.mockResolvedValue({ role });
+
+			await handlers.create({
+				context,
+				input: {
+					organizationId: "org-1",
+					name: "Claude Code",
+					scopes: ["*"],
+				},
+			} as never);
+
+			expect(mockCreateKey).toHaveBeenCalledWith(
+				expect.objectContaining({ scopes: ["*"] }),
+			);
+		},
+	);
+});
+
 describe("revoking a key", () => {
 	it("lets an owner revoke any key in the organization", async () => {
 		mockRequireOrgMembership.mockResolvedValue({ role: "owner" });

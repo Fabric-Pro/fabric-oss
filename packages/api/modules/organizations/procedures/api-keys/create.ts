@@ -8,6 +8,10 @@
  * Any member may create one. The key carries no more than its creator already
  * has, so minting it grants nothing new; it changes which client that access
  * can be reached from, and nothing else.
+ *
+ * A read-only role may create one too, and that is the part which needs care:
+ * "no more than its creator already has" is enforced by nothing except the
+ * scope clamp below. See `READ_ONLY_ORG_API_KEY_SCOPES` (Fizzy #2457).
  */
 
 import { createHash, randomBytes } from "node:crypto";
@@ -62,6 +66,102 @@ export const ORG_API_KEY_SCOPES = [
 	"*", // Full access
 ] as const;
 
+export type OrgApiKeyScope = (typeof ORG_API_KEY_SCOPES)[number];
+
+/**
+ * The most an organization VIEWER may put on a key (Fizzy #2457).
+ *
+ * A viewer may now mint a key at all, which breaks the premise the external
+ * API's `OWNER_PERMISSION_GATES` table rests on: that "anything a member
+ * already holds cannot be escalated by putting it on a key". A viewer holds far
+ * less than a member, so without this clamp a read-only role could request
+ * `projects:write` or `*` and walk out with write access it does not have in
+ * the browser. That is what this set prevents, and it is why the viewer grant
+ * in `VIEWER_ORG_PERMISSIONS` and this list have to be read together.
+ *
+ * Every scope in `ORG_API_KEY_SCOPES` is accounted for below. "Viewer?" is
+ * whether `VIEWER_ORG_PERMISSIONS` (packages/permissions/lib/roles.ts) holds
+ * the permission the surface behind that scope actually enforces:
+ *
+ * | Scope                  | Permission behind it        | Viewer? |
+ * |------------------------|-----------------------------|---------|
+ * | `mcp:read`             | `MCP_READ`                  | yes     |
+ * | `mcp:write`            | `MCP_UPDATE`/`MCP_CONNECT`  | no      |
+ * | `ai:models:read`       | `AI_MODEL_RESOLVE` (below)  | no      |
+ * | `ai:models:resolve`    | `AI_MODEL_RESOLVE`          | no      |
+ * | `projects:read`        | `PROJECT_READ`              | yes     |
+ * | `projects:write`       | `PROJECT_UPDATE`            | no      |
+ * | `agents:read`          | `AGENT_READ`                | yes     |
+ * | `agents:execute`       | `AGENT_EXECUTE`             | no      |
+ * | `agents:stream`        | `AGENT_READ`                | yes     |
+ * | `orgs:read`            | `ORG_READ`                  | yes     |
+ * | `features:read`        | `STORY_READ`                | yes     |
+ * | `features:write`       | `STORY_CREATE`/`STORY_UPDATE` | no    |
+ * | `workspaces:read`      | `WORKSPACE_READ`            | yes     |
+ * | `workflows:read`       | `WORKSPACE_READ`            | yes     |
+ * | `workflows:run`        | `WORKSPACE_UPDATE`          | no      |
+ * | `frames:read`          | `DIAGRAM_READ`              | yes     |
+ * | `frames:write`         | `DIAGRAM_CREATE`/`_UPDATE`  | no      |
+ * | `chats:read`           | none — own threads only     | yes     |
+ * | `audit_log:read`       | `ORG_AUDIT_LOG_READ`        | no      |
+ * | `audit_log:export`     | `ORG_AUDIT_LOG_EXPORT`      | no      |
+ * | `system_health:read`   | none — any authenticated    | yes     |
+ * | `status_updates:read`  | none — any authenticated     | yes    |
+ * | `*`                    | all of the above            | no      |
+ *
+ * Four rows are worth their own sentence, because reading the scope name is
+ * not enough to get them right:
+ *
+ *   - `ai:models:read` sounds like a read and is not one. The only surface that
+ *     honours it is `resolveModelForAgent`, which accepts it as an alternative
+ *     to `ai:models:resolve` and then performs the resolution — the capability
+ *     behind `AI_MODEL_RESOLVE`, which is member-and-up.
+ *   - `audit_log:read`/`:export` are genuine reads, but of something a viewer
+ *     may not see: `ORG_AUDIT_LOG_READ` is admin-and-up. Read-only is not the
+ *     same question as viewer-visible, and this is where the two part company.
+ *   - `agents:stream` is read-only on its own (`GET /executions/:id/stream`).
+ *     It also appears on the execute route, but only to reject a streaming
+ *     request early — that route already demands `agents:execute`.
+ *   - `chats:read`, `system_health:read` and `status_updates:read` map to no
+ *     permission because their handlers gate on authentication alone and return
+ *     either the caller's own rows (chats are filtered by `userId`) or
+ *     tenant-scoped/global status. Nothing there sits above the viewer role.
+ *
+ * This is a CREATION-TIME check against the role the caller holds right now.
+ * It is not a live guarantee: like every other scope on a key, these survive
+ * their owner's later demotion, and only `OWNER_PERMISSION_GATES` in
+ * `external-api/middleware/api-key-auth.ts` re-checks anything at request time.
+ * A member who mints `projects:write` and is then demoted to viewer keeps a
+ * working write key — a known, pre-existing hole that this clamp neither closes
+ * nor widens.
+ */
+const READ_ONLY_ORG_API_KEY_SCOPES: ReadonlySet<OrgApiKeyScope> = new Set([
+	"mcp:read",
+	"projects:read",
+	"agents:read",
+	"agents:stream",
+	"orgs:read",
+	"features:read",
+	"workspaces:read",
+	"workflows:read",
+	"frames:read",
+	"chats:read",
+	"system_health:read",
+	"status_updates:read",
+]);
+
+/**
+ * The ceiling on what `role` may request, or `null` for "no ceiling".
+ *
+ * Only the read-only role is clamped. A member's key is already bounded by the
+ * premise quoted above — every scope it can name maps to something the member
+ * holds — so clamping member-and-up would refuse requests that are not
+ * escalations, and would be a behaviour change for existing callers.
+ */
+function maxScopesForRole(role: string): ReadonlySet<OrgApiKeyScope> | null {
+	return role === "viewer" ? READ_ONLY_ORG_API_KEY_SCOPES : null;
+}
+
 /**
  * Generate a secure API key
  * Format: org_<prefix>_<secret>
@@ -101,7 +201,7 @@ export const createOrganizationApiKeyProcedure = tenantProtectedProcedure
 		tags: ["Organizations", "API Keys"],
 		summary: "Create a new organization API key",
 		description:
-			"Generate an API key carrying your own access within this organization. Any member may create one.",
+			"Generate an API key carrying your own access within this organization. Any member may create one; a read-only role may create one with read-only scopes.",
 	})
 	.input(
 		z.object({
@@ -148,6 +248,33 @@ export const createOrganizationApiKeyProcedure = tenantProtectedProcedure
 			throw new ORPCError("FORBIDDEN", {
 				message: "You must be a member of this organization",
 			});
+		}
+
+		// Clamp the requested scopes to the caller's live organization role.
+		//
+		// This lives in the handler and not in the input schema on purpose: the
+		// schema validates a shape and cannot see who is asking, and the role is
+		// only known after the membership lookup above.
+		//
+		// It refuses rather than quietly dropping the scopes it will not grant.
+		// Handing someone a key that silently does less than they asked for
+		// moves the failure to the first request that needs the missing scope,
+		// where it reads as a broken integration rather than a denied one — so
+		// the refusal names every scope it rejected and what may be asked for
+		// instead. A viewer who sends no `scopes` at all lands here too, since
+		// the schema default (`mcp:read`, `mcp:write`) is not a viewer set;
+		// the message is what tells them to ask for the read-only ones.
+		const allowedScopes = maxScopesForRole(membership.role);
+		if (allowedScopes) {
+			const refusedScopes = input.scopes.filter(
+				(scope) => !allowedScopes.has(scope),
+			);
+
+			if (refusedScopes.length > 0) {
+				throw new ORPCError("FORBIDDEN", {
+					message: `Your role in this organization is read-only, so these scopes cannot be granted: ${refusedScopes.join(", ")}. Available scopes for your role: ${[...allowedScopes].join(", ")}.`,
+				});
+			}
 		}
 
 		// Generate the API key

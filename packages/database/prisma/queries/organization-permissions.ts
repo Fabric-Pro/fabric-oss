@@ -48,6 +48,45 @@ async function organizationPermissionHolds(
 }
 
 /**
+ * The SET form of `organizationPermissionHolds`: which of `userIds` hold
+ * `permission` in `organizationId`?
+ *
+ * Not exported for the same reason its single-user sibling is not — a caller
+ * asks a named question below. It exists because the one-at-a-time helper is
+ * the wrong tool for a list: a fan-out resolving an audience would issue one
+ * round trip per candidate, and the answer is one indexed `IN (...)` read.
+ *
+ * Argument order is deliberately the mirror of the sibling's. The organization
+ * is the constant and the people are what varies, so it reads the way the query
+ * does. Members with no row, and members whose stored role the matrix does not
+ * recognise, are simply absent from the result: an unknown role resolves to the
+ * empty permission set, which fails closed (Fizzy #2457).
+ */
+async function organizationPermissionHoldsForAll(
+	organizationId: string,
+	userIds: string[],
+	permission: Permission,
+): Promise<Set<string>> {
+	const uniqueIds = Array.from(new Set(userIds)).filter(Boolean);
+	if (!organizationId || uniqueIds.length === 0) {
+		return new Set();
+	}
+
+	const orgMembers = await db.member.findMany({
+		where: { organizationId, userId: { in: uniqueIds } },
+		select: { userId: true, role: true },
+	});
+
+	const holders = new Set<string>();
+	for (const orgMember of orgMembers) {
+		if (hasPermission(resolveOrgPermissions(orgMember.role), permission)) {
+			holders.add(orgMember.userId);
+		}
+	}
+	return holders;
+}
+
+/**
  * Returns `true` if `userId` may create a project in `organizationId`, matching
  * `requirePermission(PROJECT_CREATE)`.
  *
@@ -153,5 +192,37 @@ export async function canExecuteOrganizationAgents(
 		userId,
 		organizationId,
 		Permissions.AGENT_EXECUTE,
+	);
+}
+
+/**
+ * Which of `userIds` may create an API key in `organizationId`, matching
+ * `requirePermission(ORG_API_KEYS_CREATE)` asked of each of them.
+ *
+ * The one question on this surface that is naturally asked about a LIST rather
+ * than about a person: the CLI-connection ask resolves an audience and has to
+ * drop everybody who could not act on it, because the ask is "mint a key" and
+ * handing that to somebody who cannot is handing them a dead end (Fizzy #2457).
+ *
+ * Returns the ids that hold the permission, so the caller filters rather than
+ * branching. Anyone absent from the result is ineligible for one of two
+ * reasons the caller does not need to tell apart: no membership row in this
+ * organization at all — the project guest reaching a project through a
+ * `ProjectMember` row — or a stored role the matrix does not recognise. Both
+ * resolve to the empty permission set.
+ *
+ * Which ranks carry `ORG_API_KEYS_CREATE` has already moved twice, so nothing
+ * here names a rank. It asks the matrix, exactly as the create procedure's own
+ * gate does, so the door a key is minted through and the door a recipient is
+ * judged at cannot answer the same question differently.
+ */
+export async function usersWhoCanCreateOrganizationApiKeys(
+	organizationId: string,
+	userIds: string[],
+): Promise<Set<string>> {
+	return organizationPermissionHoldsForAll(
+		organizationId,
+		userIds,
+		Permissions.ORG_API_KEYS_CREATE,
 	);
 }

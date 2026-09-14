@@ -10,8 +10,8 @@
  * decide its own. The prompt's suppression was state inside the prompt, set
  * from the callback of the prompt's view alone. Mint from the row instead and
  * nothing told it: the key-creation mutation does trigger a readiness refetch,
- * but the item behind `promptEligible` completes when a coding tool REACHES
- * Fabric rather than when a key exists, so the server's answer never moves and
+ * but the item behind `promptEligible` completes when something REACHES Fabric
+ * over MCP rather than when a key exists, so the server's answer never moves and
  * the banner went on telling someone holding a fresh key that "No coding tool
  * is connected to Fabric yet".
  *
@@ -78,6 +78,48 @@ vi.mock("@shared/lib/orpc-client", () => ({
 		},
 		organizations: {
 			apiKeys: { create: (input: unknown) => createKeyMock(input) },
+		},
+	},
+}));
+
+// FIXTURE: the CLI-connection prompt in this tree now reads the signed-in
+// viewer, to keep them out of the roster it offers to ask, and the project
+// roster itself. Neither existed when this suite was written; both are
+// declared here so the prompt mounts. The roster stays empty — this suite is
+// about the shared just-issued flag, not about asking anyone.
+vi.mock("@saas/auth/hooks/use-session", () => ({
+	useSession: () => ({
+		user: {
+			id: "viewer-1",
+			name: "Robin Viewer",
+			email: "robin@example.com",
+		},
+	}),
+}));
+
+vi.mock("@shared/lib/orpc-query-utils", () => ({
+	orpc: {
+		projects: {
+			members: {
+				list: {
+					queryOptions: ({ input }: { input: unknown }) => ({
+						queryKey: ["projects", "members", "list", input],
+						queryFn: async () => [],
+					}),
+				},
+			},
+			readiness: {
+				requestCliConnection: {
+					mutationOptions: (options: Record<string, unknown>) => ({
+						mutationFn: async () => ({
+							notifiedCount: 0,
+							recipientCount: 0,
+							ineligibleCount: 0,
+						}),
+						...options,
+					}),
+				},
+			},
 		},
 	},
 }));
@@ -215,7 +257,7 @@ function readinessPayload() {
 			viewerCanCreateKey: true,
 			viewerDismissed: false,
 			// Unmoved by minting a key, which is the whole problem: the item
-			// completes when a coding tool actually reaches Fabric.
+			// completes when something actually reaches Fabric over MCP.
 			promptEligible: true,
 		},
 	};
@@ -320,8 +362,8 @@ describe("a key issued from the checklist row", () => {
 
 		// The provider re-reads readiness after any successful mutation, and
 		// this is the read that used to put the prompt back: `promptEligible`
-		// is still true, because the item completes on a coding tool reaching
-		// Fabric rather than on a key existing.
+		// is still true, because the item completes on something reaching Fabric
+		// over MCP rather than on a key existing.
 		await waitFor(() =>
 			expect(readinessGetMock.mock.calls.length).toBeGreaterThan(1),
 		);
