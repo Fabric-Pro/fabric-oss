@@ -343,7 +343,7 @@ describe("Middleware (proxy.ts)", () => {
 
 		it("should pass through /organizations/confirm-deletion (emailed delete link)", async () => {
 			// Regression (Fizzy #2462): the page lives at
-			// (saas)/organizations/confirm-deletion, outside (marketing)/[locale].
+			// app/organizations/confirm-deletion, outside (marketing)/[locale].
 			// Without the pathsWithoutLocale bypass the intl middleware localizes
 			// the path and the emailed link 404s — so an owner can request a
 			// deletion and never confirm one, which is the whole flow.
@@ -729,9 +729,18 @@ describe("emailed links bypass the intl middleware", () => {
 		}
 	}
 
-	/** Every `new URL(<path>, getBaseUrl())` the server builds, literal or via a local const. */
-	function emailedPaths(): { path: string; file: string }[] {
-		const found: { path: string; file: string }[] = [];
+	/**
+	 * Every `new URL(<path>, getBaseUrl())` the server builds, literal or via a
+	 * local const. `carriesQuery` marks the ones that then attach a search param
+	 * — those are the links whose query must survive to the page.
+	 */
+	function emailedPaths(): {
+		path: string;
+		file: string;
+		carriesQuery: boolean;
+	}[] {
+		const found: { path: string; file: string; carriesQuery: boolean }[] =
+			[];
 		const pattern =
 			/new URL\(\s*(?:"([^"]+)"|([A-Za-z_][A-Za-z0-9_]*))\s*,\s*getBaseUrl\(\)/g;
 
@@ -750,7 +759,15 @@ describe("emailed links bypass the intl middleware", () => {
 						)?.[1];
 					}
 					if (path?.startsWith("/")) {
-						found.push({ path, file: relative(REPO_ROOT, file) });
+						const after = src.slice(
+							match.index ?? 0,
+							(match.index ?? 0) + 400,
+						);
+						found.push({
+							path,
+							file: relative(REPO_ROOT, file),
+							carriesQuery: after.includes("searchParams.set"),
+						});
 					}
 				}
 			}
@@ -775,5 +792,34 @@ describe("emailed links bypass the intl middleware", () => {
 		);
 
 		expect(uncovered).toEqual([]);
+	});
+
+	it("keeps every emailed link that carries a query outside the (saas) group", () => {
+		// `(saas)/layout.tsx` redirects a visitor with no session to a BARE
+		// `/auth/login`, dropping the query — and it runs before the page, so a
+		// page's own token-preserving redirect never fires. An emailed link with
+		// a token is therefore unusable from any browser that is not already
+		// signed in (Fizzy #2462, found on staging after the 404 fix).
+		//
+		// `/app/...` is exempt: it is the authenticated surface, and the proxy
+		// redirects it to a login that DOES carry redirectTo. A link with no
+		// query is exempt too — there is nothing to lose.
+		const offenders = emailedPaths()
+			.filter(
+				({ path, carriesQuery }) =>
+					carriesQuery && !path.startsWith("/app"),
+			)
+			.filter(({ path }) =>
+				existsSync(
+					join(
+						REPO_ROOT,
+						"apps/web/app/(saas)",
+						path.replace(/^\//, ""),
+						"page.tsx",
+					),
+				),
+			);
+
+		expect(offenders).toEqual([]);
 	});
 });
