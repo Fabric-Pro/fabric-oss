@@ -1,7 +1,6 @@
 import { ORGANIZATION_RETENTION_DAYS } from "@repo/database";
 import { getSession } from "@saas/auth/lib/server";
 import { ConfirmOrganizationDeletion } from "@saas/organizations/components/ConfirmOrganizationDeletion";
-import { AuthWrapper } from "@saas/shared/components/AuthWrapper";
 import { redirect } from "next/navigation";
 
 export const dynamic = "force-dynamic";
@@ -12,6 +11,12 @@ export const dynamic = "force-dynamic";
  * Deliberately renders a page with a button rather than redeeming the token on
  * load — see the component for why a GET redemption would let a link-following
  * mail scanner delete an organization.
+ *
+ * Lives OUTSIDE the `(saas)` route group, with `AuthWrapper` supplied by its own
+ * layout. Inside the group, `(saas)/layout.tsx` redirects a session-less visitor
+ * to a bare `/auth/login` before this page runs, discarding the token — see that
+ * layout's note. The redirect below is what preserves it, and it can only run
+ * out here.
  */
 export default async function ConfirmOrganizationDeletionPage({
 	searchParams,
@@ -36,11 +41,9 @@ export default async function ConfirmOrganizationDeletionPage({
 	}
 
 	return (
-		<AuthWrapper>
-			<ConfirmOrganizationDeletion
-				token={token}
-				retentionDays={ORGANIZATION_RETENTION_DAYS}
-			/>
-		</AuthWrapper>
+		<ConfirmOrganizationDeletion
+			token={token}
+			retentionDays={ORGANIZATION_RETENTION_DAYS}
+		/>
 	);
 }
