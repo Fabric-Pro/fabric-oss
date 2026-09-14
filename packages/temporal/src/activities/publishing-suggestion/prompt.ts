@@ -20,12 +20,7 @@
  * design.
  */
 
-import { logger } from "@repo/logs";
-import {
-	isEffectivelyBlank,
-	renderTemplate,
-	type TemplateFormat,
-} from "@repo/utils";
+import { renderTemplate, type TemplateFormat } from "@repo/utils";
 // Defined in @repo/utils, not here, so the seed and this activity share ONE
 // definition instead of two copies a test has to keep byte-identical.
 // Re-exported because this module is the natural import site for everything
@@ -34,6 +29,7 @@ import {
 	PUBLISHING_TOPIC_SUGGESTION_AGENT_KEY,
 	PUBLISHING_TOPIC_SUGGESTION_FALLBACK_BODY,
 } from "@repo/utils/publishing-suggestion-prompt";
+import { recoverBoundBody } from "../publishing-shared/recover-bound-body";
 
 export {
 	PUBLISHING_TOPIC_SUGGESTION_AGENT_KEY,
@@ -88,9 +84,6 @@ out against the others, null on all of them is the right answer and an honest
 one. Do not describe the topic again — the pitch already does that. Say why it
 outranks its neighbours.`;
 }
-
-/** A body that still carries template syntax after rendering did not render. */
-const UNRENDERED_TEMPLATE = /\{\{[{#]/;
 
 export interface ComposedTopicSuggestionPrompt {
 	prompt: string;
@@ -165,24 +158,13 @@ export async function composeTopicSuggestionPrompt({
 		variables: {},
 	});
 
-	let body = rendered.rendered;
-	let bodyRecovered = false;
-	// Not `trim()`: a template can render down to zero-width characters, which
-	// trim leaves standing and the model reads as nothing.
-	const renderedBlank = isEffectivelyBlank(body);
-	if (rendered.error || UNRENDERED_TEMPLATE.test(body) || renderedBlank) {
-		logger.error(
-			"[publishing-suggestion] bound prompt did not render; using the default body",
-			{ format: effectiveFormat, error: rendered.error, renderedBlank },
-		);
-		const recovery = await renderTemplate({
-			format: "HANDLEBARS",
-			template: PUBLISHING_TOPIC_SUGGESTION_FALLBACK_BODY,
-			variables: {},
-		});
-		body = recovery.rendered;
-		bodyRecovered = true;
-	}
+	const { body, bodyRecovered } = await recoverBoundBody({
+		subject: "publishing-suggestion",
+		rendered,
+		format: effectiveFormat,
+		fallbackTemplate: PUBLISHING_TOPIC_SUGGESTION_FALLBACK_BODY,
+		variables: {},
+	});
 
 	return {
 		prompt: `${body.trimEnd()}\n\n${buildTopicSuggestionLockedClauses()}\n\nCONTEXT:\n${JSON.stringify(context, null, 2)}\n`,

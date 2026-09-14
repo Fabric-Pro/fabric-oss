@@ -18,11 +18,7 @@
  */
 
 import { logger } from "@repo/logs";
-import {
-	isEffectivelyBlank,
-	renderTemplate,
-	type TemplateFormat,
-} from "@repo/utils";
+import { renderTemplate, type TemplateFormat } from "@repo/utils";
 import type { AnalysisData } from "@repo/utils/publishing-analysis-prose";
 import { buildRefinementSection } from "@repo/utils/publishing-refinement";
 import {
@@ -40,6 +36,7 @@ import {
 	type PlanningAnalysisContext,
 	type PlanningAnalysisTopic,
 } from "../publishing-planning/build-planning-analysis-prompt";
+import { recoverBoundBody } from "../publishing-shared/recover-bound-body";
 import {
 	buildShortPostVariables,
 	type ShortPostDecision,
@@ -319,8 +316,6 @@ ${openQuestions.map(renderSubjectBullet).join("\n")}`
 // Composition
 // =============================================================================
 
-const UNRENDERED_TEMPLATE = /\{\{[{#]/;
-
 export interface ComposedStakeholderEmailPrompt {
 	prompt: string;
 	/** Guard 1 fired: a non-templating format was rendered as Handlebars. */
@@ -457,24 +452,13 @@ export async function composeStakeholderEmailPrompt({
 		variables,
 	});
 
-	let body = rendered.rendered;
-	let bodyRecovered = false;
-	// Not `trim()`: a template can render down to zero-width characters, which
-	// trim leaves standing and the model reads as nothing.
-	const renderedBlank = isEffectivelyBlank(body);
-	if (rendered.error || UNRENDERED_TEMPLATE.test(body) || renderedBlank) {
-		logger.error(
-			"[publishing-stakeholder-email] bound prompt did not render; using the default body",
-			{ format: effectiveFormat, error: rendered.error, renderedBlank },
-		);
-		const recovery = await renderTemplate({
-			format: "HANDLEBARS",
-			template: PUBLISHING_STAKEHOLDER_EMAIL_FALLBACK_BODY,
-			variables,
-		});
-		body = recovery.rendered;
-		bodyRecovered = true;
-	}
+	const { body, bodyRecovered } = await recoverBoundBody({
+		subject: "publishing-stakeholder-email",
+		rendered,
+		format: effectiveFormat,
+		fallbackTemplate: PUBLISHING_STAKEHOLDER_EMAIL_FALLBACK_BODY,
+		variables,
+	});
 
 	const locked = buildStakeholderEmailLockedClauses({
 		restrictedSubjects,

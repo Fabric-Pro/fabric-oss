@@ -32,11 +32,7 @@
  */
 
 import { logger } from "@repo/logs";
-import {
-	isEffectivelyBlank,
-	renderTemplate,
-	type TemplateFormat,
-} from "@repo/utils";
+import { renderTemplate, type TemplateFormat } from "@repo/utils";
 import type { AnalysisData } from "@repo/utils/publishing-analysis-prose";
 import {
 	PUBLISHING_LINKEDIN_POST_AGENT_KEY,
@@ -49,6 +45,7 @@ import {
 	type PlanningAnalysisContext,
 	type PlanningAnalysisTopic,
 } from "../publishing-planning/build-planning-analysis-prompt";
+import { recoverBoundBody } from "../publishing-shared/recover-bound-body";
 import {
 	buildShortPostLockedClauses,
 	buildShortPostVariables,
@@ -173,8 +170,6 @@ export type PublishingLinkedInPost = z.infer<
 // Composition
 // =============================================================================
 
-const UNRENDERED_TEMPLATE = /\{\{[{#]/;
-
 export interface ComposedLinkedInPostPrompt {
 	prompt: string;
 	/** Guard 1 fired: a non-templating format was rendered as Handlebars. */
@@ -274,24 +269,13 @@ export async function composeLinkedInPostPrompt({
 		variables,
 	});
 
-	let body = rendered.rendered;
-	let bodyRecovered = false;
-	// Not `trim()`: a template can render down to zero-width characters, which
-	// trim leaves standing and the model reads as nothing.
-	const renderedBlank = isEffectivelyBlank(body);
-	if (rendered.error || UNRENDERED_TEMPLATE.test(body) || renderedBlank) {
-		logger.error(
-			"[publishing-linkedin-post] bound prompt did not render; using the default body",
-			{ format: effectiveFormat, error: rendered.error, renderedBlank },
-		);
-		const recovery = await renderTemplate({
-			format: "HANDLEBARS",
-			template: PUBLISHING_LINKEDIN_POST_FALLBACK_BODY,
-			variables,
-		});
-		body = recovery.rendered;
-		bodyRecovered = true;
-	}
+	const { body, bodyRecovered } = await recoverBoundBody({
+		subject: "publishing-linkedin-post",
+		rendered,
+		format: effectiveFormat,
+		fallbackTemplate: PUBLISHING_LINKEDIN_POST_FALLBACK_BODY,
+		variables,
+	});
 
 	// BEFORE the locked clauses, never after: "Rules that override anything
 	// above" must keep overriding the refinement framing, or a refine run would
