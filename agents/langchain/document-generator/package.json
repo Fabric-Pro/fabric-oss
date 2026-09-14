@@ -1,7 +1,7 @@
 {
 	"name": "document-generator-agent",
 	"private": true,
-	"version": "1.0.3",
+	"version": "1.0.4",
 	"license": "Apache-2.0",
 	"description": "LangGraph agent for document generation with AG-UI and A2A protocol support",
 	"type": "module",

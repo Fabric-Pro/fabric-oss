@@ -1,6 +1,6 @@
 {
 	"name": "task-planner-agent",
-	"version": "2.0.3",
+	"version": "2.0.4",
 	"license": "Apache-2.0",
 	"description": "LangGraph agent for breaking down user stories into development tasks with AG-UI and A2A protocol support",
 	"type": "module",

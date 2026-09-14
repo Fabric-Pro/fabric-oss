@@ -1,5 +1,14 @@
 # @repo/auth
 
+## 0.0.5
+
+### Patch Changes
+
+- Updated dependencies [c3beb49]
+- Updated dependencies [f8f103f]
+  - @repo/agent-core@0.1.4
+  - @repo/temporal@0.0.5
+
 ## 0.0.4
 
 ### Patch Changes

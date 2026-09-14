@@ -1,5 +1,69 @@
 # fabric-app
 
+## 1.15.0
+
+### Minor Changes
+
+- 2f29014: The app takes on the Fabric design system: Inter, a neutral light and charcoal dark palette, compact page headers, and the left rail keeping its state across pages. The Advisor is rebuilt on the Cosmos pattern with a pill composer, starters, a resume row, a history sheet and a full-screen toggle, and its replies now stream tool calls and text as they happen instead of arriving all at once. The Advisor can review its own recent sessions, agents and connections. Integrations and MCP servers share one Connections page, agent tiles say who owns an agent and whether it is reachable, and creating a template with a taken slug returns a clear conflict instead of a server error.
+- 05b9168: The project page and the project creation wizard take on the design system. The tab bar is one row of underline tabs in your saved order; tabs that do not fit fold into a "More" menu grouped by purpose, and Settings is pinned at the right edge. The wizard loses its cards-inside-a-card shell, keeps Continue in view at the bottom of the screen while a long step scrolls, and names missing required fields next to the field instead of only in a toast.
+
+### Patch Changes
+
+- d1c1ff3: The A2A relay and agent delegation no longer let the server be aimed at an address the deployment has not permitted
+- f6eacfd: Organizations without a logo show a monogram on a brand tint instead of a grey blob. The admin area names itself once and its Monitoring and Audit Log pages drop their boxed heroes. Open incidents in admin monitoring show the vendor's incident title, affected parts and a link to their status page, and System health names the provider behind a degraded capability and links to its status page instead of saying "an upstream service".
+- 76c284d: Agent discovery and registration no longer let the server be aimed at internal addresses
+- d1c1ff3: Revoked API keys stay revoked, key deletion is gated and recorded, and offboarding retires the keys a departing member minted
+- 76c284d: An API key now stops working the moment its owner loses the access behind it, not only when they leave the organization
+- 8a9a6c8: Speed up Atlas graph loading, repository resolution, node edits, and relationship remapping by batching database work.
+- daa97f5: Make the AI provider and Anthropic capability banner tests wait for their request and rendered notice instead of assuming React Query finishes both within one timer tick.
+- 2c77e24: Preserve saved project-management context during hourly ticket polling and classify per-ticket fetch failures at the PM boundary.
+- 720169a: Fix user avatar fallback initials to display first-and-last initials instead of the first two letters of the first name.
+- 9235b09: Ask a teammate to connect a coding tool, see when an API key is close to expiring, and let a read-only member create a read-only key.
+- 63f5bd5: Prompt a project team to connect a coding CLI, with a readiness checklist row and a dialog that issues a scoped key and a ready-to-paste config.
+- 82b1967: Say what actually happens to a code-of-conduct report instead of promising blanket confidentiality
+- 9bff538: Keep the emailed organization-deletion link working when opened from a signed-out browser
+- a8cb498: Consolidate the remaining published contact addresses onto the single support inbox
+- 3efa783: Correct local reranking to score query-document pairs with the model's relevance output instead of returning zero for every passage.
+- 2f6f0b8: Restore real-time document collaboration by refreshing expired credentials instead of repeatedly reconnecting with a rejected token.
+- a54bfb6: Reuse stored GitHub Personal Access Tokens when connecting repositories from the browse picker instead of prompting for OAuth authorization.
+- bdc1370: Update Hono across Fabric services to 4.13.7 for security fixes while preserving the existing browser CORS method policy.
+- 904697d: Make scheduled document auto-refresh actually run, and stop it reporting no changes on a document with new material waiting
+- 113f26b: Show each day of the Meeting Digest month calendar in time order, whatever kind of meeting it holds, so a personal calendar entry that starts before a team meeting now appears above it instead of below it.
+- f2ad6c5: Stop a punctuated MCP server name from stripping every tool out of a chat turn
+- a13d35b: Make a deleted organization unreachable by URL, and name the organization in the deletion confirmation email and page
+- 75d9fa0: Publishing now supports Newsletter Blurb as a seventh content type, from topic suggestion through draft generation and download
+- 4fab170: Add valid CPU scaling rules for non-HTTP Azure Container Apps so workers can scale without KEDA trigger errors.
+- 0f11059: The AI advisory notices stay dismissed once cancelled, across pages and reloads, and collapse to a small marker that reopens them. Prompt names are no longer cut short on the prompts list cards, the list view, or the prompt detail page.
+- 3cca595: Make the meeting transcript lookup reachable from the iterative agent instead of failing as a missing MCP server
+- 140d83c: Fix the emailed organization-deletion confirmation link landing on a 404 instead of the confirmation page
+- 71eb49e: Deleting an organization is now a seven-day recoverable window rather than an irreversible click.
+- 71d273f: A deleted organization is now recoverable for 30 days rather than 7, and the docs say so.
+- 917ab41: Show an unresolved-approval subject to the drafting model as quoted data rather than as one of its own rules
+- d09264d: Stop sending display names of people who no longer have project access to the AI provider during publishing generation
+- e46413f: Name an unresolved approval the same way on the topic page and in every drafting prompt
+- 512fe62: A publishing draft now says when somebody else is editing it, and short-form drafts can be edited, copied and downloaded like every other format.
+- 512fe62: Publishing topics put their context above the tabs, collapse four rows of chrome into one toolbar, group questions by what they are about, and give an approval question answers to pick between.
+- 98a8bcc: Publishing Suite: every generated draft version is reachable, blockers are named separately from questions, decisions carry their author, and the analysis starts when a topic is selected.
+- 479bb7a: Publishing topic pages stop repeating themselves: one way to pick content types, source signals collapsed to a line, and "type your own" recorded as a manual answer again.
+- 5d08fe3: Improve LLM and service telemetry, worker trace correlation, and alerts for application failures and collector health.
+- 0869848: Reduce project-management sync database and capability-discovery round trips while preserving bounded cleanup behavior.
+- 114421f: Reduce prompt-resolution queries while preserving personal, project, organization, and system default precedence.
+- da4c56f: Add a Design Document item to the project readiness checklist
+- 00fa342: Store local reranker model files in the runtime temporary directory so non-root deployments can load and reuse the cross-encoder model.
+- 954e34f: Support reusing stored Personal Access Tokens when connecting additional GitHub repositories via the repository browse dropdown in project settings.
+- 3621d9b: Prevent collaborative document sessions from reconnecting with credentials issued to a previous user or document.
+- 8433fc3: Account and setup notices now stack in one region at the top of the page instead of floating over it, so a banner no longer covers the page heading or, on narrow screens, the navigation itself
+- bef3f51: Sort meetings chronologically by start time in the Meeting Digest calendar and agenda views.
+- edc46e0: Split the publishing draft-lock index into its own migration so the concurrent build no longer runs inside a transaction
+- 81a0efc: Allow Container App health probes enough time to distinguish brief event-loop delays from unhealthy replicas.
+- 8ca5fec: Improve MCP gateway project-tool query efficiency.
+- f1154e7: Add a date-aware meeting transcript lookup so the assistant stops reporting meetings that exist as missing
+- d1c1ff3: A tool-router session now reaches no further than the API key that minted it, and only into organizations its owner belongs to
+- d1c1ff3: The Fabric Code routes now require a scope, and a personal key's wildcard is honoured the way an organization key's already was
+- 9bff674: Prevent unauthenticated STDIO MCP connections from spawning child processes, and stop failed initialization from reusing disconnected transports.
+- 95d183a: Publishing now supports Webinar / Demo Script as a sixth content type, from topic suggestion through draft generation and download
+- 12a2303: A session now carries its workspace from the moment it is created, so the first request made with it resolves the workspace the page is showing.
+
 ## 1.14.10
 
 ### Patch Changes
