@@ -14,6 +14,7 @@ import {
 	SavedDraftCaption,
 } from "./DraftComparison";
 import { DraftDownloadDropdown } from "./DraftDownloadDropdown";
+import { DraftLockBanner, useDraftEditLock } from "./DraftEditLock";
 import { DraftVersions } from "./DraftVersions";
 import { GeneralizationNotes, OTHER_VERSION_NOTE } from "./GeneralizationNotes";
 import type { TopicDraftState, TopicWorkingDraftState } from "./GenerationTabs";
@@ -622,8 +623,23 @@ export function StakeholderEmailPanel({
 		</section>
 	) : null;
 
+	// Advisory only: it says who else is in the draft and never refuses a write.
+	const editLock = useDraftEditLock({
+		projectId,
+		topicId,
+		organizationId,
+		postType: "STAKEHOLDER_EMAIL",
+		canEdit,
+		hasDraft: Boolean(working?.hasBody),
+		isDirty: isDirty,
+	});
+
 	return (
 		<div className="space-y-5">
+			<DraftLockBanner
+				heldBy={editLock.heldBy}
+				onTakeOver={editLock.takeOver}
+			/>
 			{canEdit ? (
 				<section className="space-y-2">
 					<label

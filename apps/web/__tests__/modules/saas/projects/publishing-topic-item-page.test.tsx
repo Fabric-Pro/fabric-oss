@@ -497,6 +497,22 @@ vi.mock("@shared/lib/orpc-query-utils", () => {
 					restoreQuestion: m(
 						"projects.publishingSuite.restoreQuestion",
 					),
+					// Hand edits to an adopted short-form draft — the two
+					// panels that had no save path until now.
+					saveShortPostBody: m(
+						"projects.publishingSuite.saveShortPostBody",
+					),
+					saveLinkedInPostBody: m(
+						"projects.publishingSuite.saveLinkedInPostBody",
+					),
+					// The advisory draft lock. Not asserted here — the panels
+					// own it — but a missing entry is a crash, not a skip.
+					claimDraftLock: m(
+						"projects.publishingSuite.claimDraftLock",
+					),
+					releaseDraftLock: m(
+						"projects.publishingSuite.releaseDraftLock",
+					),
 					updateTopicPostTypes: m(
 						"projects.publishingSuite.updateTopicPostTypes",
 					),
@@ -686,6 +702,31 @@ describe("TopicItemPage — header", () => {
 	});
 });
 
+describe("TopicItemPage — the metadata block sits above the tabs", () => {
+	it("keeps the topic's own context on screen when you change tab", async () => {
+		// It used to be the LAST child of Summary & Questions, under the
+		// questions — and Radix unmounts an inactive tab, so opening Decision
+		// Log or Planning & Analysis took the rank-reason line and the
+		// contributor and assignee controls off the page entirely. Who a topic
+		// belongs to is context for the whole page, not a field on one tab.
+		const user = userEvent.setup();
+		state.topic = topic({
+			rankReason: { kind: "role", matchedTags: ["DEVELOPER"] },
+		});
+		renderPage();
+
+		expect(screen.getByText(/matches your role/i)).toBeInTheDocument();
+
+		await user.click(screen.getByRole("tab", { name: /decision log/i }));
+		expect(screen.getByText(/matches your role/i)).toBeInTheDocument();
+
+		await user.click(
+			screen.getByRole("tab", { name: /planning & analysis/i }),
+		);
+		expect(screen.getByText(/matches your role/i)).toBeInTheDocument();
+	});
+});
+
 describe("TopicItemPage — tabs", () => {
 	it("opens on Summary & Questions (FR6)", () => {
 		renderPage();
@@ -858,6 +899,28 @@ describe("TopicItemPage — read marker", () => {
 		state.readStateRejects = true;
 		renderPage();
 		expect(toastError).toHaveBeenCalled();
+	});
+
+	it("does not re-fire a failed write on an unrelated re-render", () => {
+		// Releasing the guard on failure was not enough to mean what its
+		// comment claimed. The effect also depends on the mutation's `mutate`
+		// identity, so any extra render handing it a new function re-fired it
+		// against the SAME topic with no refetch in between -- which is the
+		// write loop the guard exists to prevent, reached the long way round.
+		state.readStateRejects = true;
+		const { rerender } = renderPage();
+		expect(setReadStateMutate).toHaveBeenCalledTimes(1);
+
+		// Same topic object: a re-render, not a refetch.
+		rerender(
+			<TopicItemPage
+				projectId="proj-1"
+				topicId="topic-1"
+				organizationId={null}
+				canEdit
+			/>,
+		);
+		expect(setReadStateMutate).toHaveBeenCalledTimes(1);
 	});
 
 	it("retries on a later load after a failed attempt", () => {

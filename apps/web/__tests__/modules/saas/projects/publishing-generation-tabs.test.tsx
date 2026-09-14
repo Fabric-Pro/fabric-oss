@@ -298,6 +298,89 @@ describe("GenerationTabs — state is in the accessible name (FR5)", () => {
 		).toBeInTheDocument();
 	});
 
+	it("shows how many questions stand in the way, not the words", () => {
+		// The strip used to stack a state chip, a caution chip and a changed
+		// chip -- four 10px uppercase pills on one row, louder than the tabs
+		// they annotated. One mark now, and where there is a count it IS the
+		// mark: the number is the actionable half. The words stay in the
+		// accessible name, so nothing is lost to a screen reader.
+		renderTabs({
+			analysis: analysisWith({
+				recommended: [{ type: "Blog Post", rationale: "fits" }],
+			}),
+			// Two safety-critical approvals, so they restrict EVERY type —
+			// the count a reader sees on any tab is the same two questions.
+			decisionThreads: [
+				thread({ id: "t-name", subject: "the customer name" }),
+				thread({
+					id: "t-shot",
+					decisionKind: "ASSET_APPROVAL",
+					subject: "the screenshot",
+				}),
+			],
+		});
+
+		const tab = within(tablist()).getByRole("tab", {
+			name: /blog post.*2 open questions/i,
+		});
+		expect(within(tab).getByText("2")).toBeInTheDocument();
+	});
+
+	it("says a draft is being written, so a reader elsewhere learns it finished", () => {
+		// The four states had no "running", so a tab kept its old marks for the
+		// whole of a generation while the panel under it said "Writing the
+		// draft…". Someone who started a run and moved to another tab had
+		// nothing to tell them it was done.
+		renderTabs({
+			drafts: [
+				{
+					postType: "BLOG_POST",
+					latestReady: null,
+					latestAttempt: {
+						id: "d1",
+						status: "GENERATING",
+						isExpired: false,
+						updatedAt: new Date(),
+					},
+					versions: [],
+				},
+			],
+		});
+
+		expect(
+			within(tablist()).getByRole("tab", {
+				name: /blog post.*generating/i,
+			}),
+		).toBeInTheDocument();
+	});
+
+	it("does not call a stranded run a running one", () => {
+		// `isExpired` is the server's own answer to "is this really live". A
+		// GENERATING row past its deadline is stranded, and a spinner on it
+		// would never stop.
+		renderTabs({
+			drafts: [
+				{
+					postType: "BLOG_POST",
+					latestReady: null,
+					latestAttempt: {
+						id: "d1",
+						status: "GENERATING",
+						isExpired: true,
+						updatedAt: new Date(),
+					},
+					versions: [],
+				},
+			],
+		});
+
+		expect(
+			within(tablist()).queryByRole("tab", {
+				name: /blog post.*generating/i,
+			}),
+		).not.toBeInTheDocument();
+	});
+
 	it("announces Needs confirmation for a deferred type", () => {
 		renderTabs({
 			analysis: analysisWith({
@@ -566,6 +649,29 @@ describe("GenerationTabs — panel content", () => {
 		expect(
 			screen.getAllByRole("listitem").map((li) => li.textContent),
 		).toContain("how strongly the result may be stated");
+	});
+
+	it("offers a way to act on an unresolved approval, not just a list of them", async () => {
+		// It named what was outstanding and could do nothing about it: answering
+		// lives on Summary & Questions, and a reader who wanted to act had to
+		// find their own way back. The tab is CLIENT state rather than a route,
+		// so the panel cannot link to it -- the page hands down the setter.
+		//
+		// Still not a GATE. Generation produces a safe, generalized draft and
+		// says so, which is what UC4 asks for; turning an advisory into a block
+		// on a product whose own rule is "write around it" is a different
+		// feature.
+		const user = userEvent.setup();
+		const onReviewQuestions = vi.fn();
+		renderTabs({
+			decisionThreads: [thread({ subject: "the customer name" })],
+			onReviewQuestions,
+		});
+
+		await user.click(
+			screen.getByRole("button", { name: /review questions/i }),
+		);
+		expect(onReviewQuestions).toHaveBeenCalled();
 	});
 
 	it("splits the two restriction kinds the way the prompt does", async () => {

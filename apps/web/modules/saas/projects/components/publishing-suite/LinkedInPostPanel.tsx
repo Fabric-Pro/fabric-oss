@@ -12,6 +12,9 @@ import {
 } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
+import { CopyDraftButton } from "./CopyDraftButton";
+import { DraftDownloadDropdown } from "./DraftDownloadDropdown";
+import { DraftLockBanner, useDraftEditLock } from "./DraftEditLock";
 import { DraftVersions } from "./DraftVersions";
 import { FEED_FOLD_ESTIMATE, splitAtFeedFold } from "./feed-fold";
 import { GeneralizationNotes } from "./GeneralizationNotes";
@@ -297,8 +300,66 @@ export function LinkedInPostPanel({
 		});
 	};
 
+	const [editedBody, setEditedBody] = useState<string | null>(null);
+	const bodyValue = editedBody ?? working?.body ?? "";
+	const isBodyDirty =
+		editedBody !== null && editedBody !== (working?.body ?? "");
+
+	const saveBody = useMutation(
+		orpc.projects.publishingSuite.saveLinkedInPostBody.mutationOptions({
+			onSuccess: () => {
+				setEditedBody(null);
+				toast.success("LinkedIn post saved.");
+				invalidateDrafts();
+			},
+			onError: (error: unknown) => {
+				// A CONFLICT means somebody else changed the draft while this
+				// tab was editing. The edit is NOT discarded — `editedBody` is
+				// left standing so the reader can copy their text first. The
+				// working draft is SHARED per topic, so this is a real
+				// collision rather than a theoretical one.
+				const code = (error as { code?: string } | null)?.code;
+				if (code === "CONFLICT") {
+					toast.error(
+						"Someone else changed this LinkedIn post while you were editing. Your text is still here — copy it before refreshing.",
+					);
+					return;
+				}
+				toast.error("Could not save the LinkedIn post.");
+			},
+		}),
+	);
+
+	const handleSaveBody = () => {
+		if (!working || !isBodyDirty) {
+			return;
+		}
+		saveBody.mutate({
+			projectId,
+			topicId,
+			organizationId,
+			body: bodyValue,
+			expectedUpdatedAt: new Date(working.updatedAt),
+		});
+	};
+
+	// Advisory only: it says who else is in the draft and never refuses a write.
+	const editLock = useDraftEditLock({
+		projectId,
+		topicId,
+		organizationId,
+		postType: "LINKEDIN_POST",
+		canEdit,
+		hasDraft: Boolean(working?.hasBody),
+		isDirty: isBodyDirty,
+	});
+
 	return (
 		<div className="space-y-5">
+			<DraftLockBanner
+				heldBy={editLock.heldBy}
+				onTakeOver={editLock.takeOver}
+			/>
 			{canEdit ? (
 				<section className="space-y-2">
 					<label
@@ -450,12 +511,66 @@ export function LinkedInPostPanel({
 			{working?.hasBody ? (
 				<section className="space-y-2">
 					<h3 className="publishing-label">Working LinkedIn post</h3>
-					<div className="rounded-xl border border-border bg-muted/40 p-4">
-						<p className="whitespace-pre-wrap text-sm leading-relaxed">
-							{working.body}
-						</p>
+					<div className="space-y-3 rounded-xl border border-border bg-muted/40 p-4">
+						{/* EDITABLE. The five long-form panels have had a
+						    textarea over the adopted body since 2B-3; TWEET and
+						    LINKEDIN_POST were deferred there and never picked
+						    up, so the two drafts most likely to need a word
+						    changed before posting were the two you could not
+						    change. Same column, same compare-and-set. */}
+						{canEdit ? (
+							<Textarea
+								aria-label="Working LinkedIn post"
+								value={bodyValue}
+								onChange={(e) => setEditedBody(e.target.value)}
+								rows={4}
+								disabled={saveBody.isPending}
+							/>
+						) : (
+							<p className="whitespace-pre-wrap text-sm leading-relaxed">
+								{working.body}
+							</p>
+						)}
+						<div className="flex flex-wrap items-center gap-2">
+							{canEdit ? (
+								<>
+									<Button
+										type="button"
+										size="sm"
+										onClick={handleSaveBody}
+										disabled={
+											!isBodyDirty || saveBody.isPending
+										}
+									>
+										{saveBody.isPending ? (
+											<Loader2Icon
+												className="mr-2 size-4 motion-safe:animate-spin"
+												aria-hidden="true"
+											/>
+										) : null}
+										Save changes
+									</Button>
+									{isBodyDirty ? (
+										<Button
+											type="button"
+											variant="ghost"
+											size="sm"
+											onClick={() => setEditedBody(null)}
+											disabled={saveBody.isPending}
+										>
+											Discard changes
+										</Button>
+									) : null}
+								</>
+							) : null}
+							<CopyDraftButton markdown={bodyValue} />
+							<DraftDownloadDropdown
+								markdown={bodyValue}
+								filename="linkedin-post"
+							/>
+						</div>
 						{working.sourceOptionLabel ? (
-							<p className="mt-3 text-muted-foreground text-xs">
+							<p className="text-muted-foreground text-xs">
 								From “{working.sourceOptionLabel}”.
 							</p>
 						) : null}

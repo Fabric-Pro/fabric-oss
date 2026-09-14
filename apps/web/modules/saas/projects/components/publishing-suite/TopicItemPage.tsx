@@ -99,6 +99,16 @@ const REVIEW_TABS: ReadonlyArray<{ value: ReviewTab; label: string }> = [
  */
 type ActiveTab = ReviewTab | PostType;
 
+/**
+ * The reading measure the three REVIEW tabs share.
+ *
+ * `4xl` rather than Feature Maturation's `3xl`: this page's questions carry an
+ * assignee picker on the same row and the decision log runs two columns, both
+ * of which lose their shape at 768px. Wide enough to stay a page, narrow enough
+ * that a line of prose does not run the whole of a 1440 window.
+ */
+const REVIEW_MEASURE_CLASS = "mx-auto w-full max-w-4xl";
+
 const REVIEW_TAB_VALUES: ReadonlySet<string> = new Set(
 	REVIEW_TABS.map((t) => t.value),
 );
@@ -196,7 +206,11 @@ export function TopicItemPage({
 
 	// Reserves the width the docked assistant occupies. Read here rather than
 	// inside `TopicAssistant` because it is THIS element that has to move.
-	const isAssistantOpen = useAiSidebarExpanded();
+	// `true`, matching the assistant's own `defaultOpen`: the observer in
+	// `useAiSidebarExpanded` self-corrects after mount, but seeding it false
+	// while the panel docks open means the page renders one frame at full
+	// width and then jumps by 28rem.
+	const isAssistantOpen = useAiSidebarExpanded(true);
 
 	const topicQuery = useQuery(
 		orpc.projects.publishingSuite.getTopic.queryOptions({
@@ -605,6 +619,19 @@ export function TopicItemPage({
 	// without it a successful write re-enters this effect and writes again in
 	// a loop.
 	const markedRead = useRef(false);
+	/**
+	 * The topic object a FAILED attempt was made against.
+	 *
+	 * Releasing `markedRead` alone was not enough to mean what the comment
+	 * below claims. This effect also depends on `setReadState.mutate`, and any
+	 * extra render that hands it a new function identity re-fires it — against
+	 * the same topic, immediately, with no refetch in between. Holding the
+	 * attempted topic makes "only a genuine refetch gets to try again" true by
+	 * construction rather than by the absence of re-renders.
+	 */
+	const readFailedFor = useRef<unknown>(null);
+	/** What the in-flight attempt was made against, for the handler above. */
+	const attemptedFor = useRef<unknown>(null);
 
 	const setReadState = useMutation(
 		orpc.projects.publishingSuite.setTopicReadState.mutationOptions({
@@ -632,14 +659,21 @@ export function TopicItemPage({
 				// only a genuine refetch (a refocus, or navigating back) gets
 				// to try again.
 				markedRead.current = false;
+				readFailedFor.current = attemptedFor.current;
 			},
 		}),
 	);
 	useEffect(() => {
-		if (!topic || topic.isRead || markedRead.current) {
+		if (
+			!topic ||
+			topic.isRead ||
+			markedRead.current ||
+			readFailedFor.current === topic
+		) {
 			return;
 		}
 		markedRead.current = true;
+		attemptedFor.current = topic;
 		setReadState.mutate({
 			projectId,
 			topicId,
@@ -887,6 +921,54 @@ export function TopicItemPage({
 				) : null}
 			</div>
 
+			{/* The metadata block is `TopicDetails`, the SAME component
+				    the Inbox row mounts — not a copy of it. The two views
+				    show the same fields, so a second implementation would
+				    drift the first time either changed. */}
+			<TopicDetails
+				topic={topic}
+				canEdit={canEdit}
+				isPending={
+					postTypesPending ||
+					urlPending ||
+					contributorsPending ||
+					assigneesPending
+				}
+				onEditUrl={() => setUrlOpen(true)}
+				contributorsControl={
+					<ContributorsPicker
+						topicTitle={topic.title}
+						open={contributorsOpen}
+						onOpenChange={setContributorsOpen}
+						members={members}
+						contributors={topic.contributors}
+						initialSelected={contributorIds}
+						hasOverride={topic.userContributorUserIds !== null}
+						viewerUserId={viewerUserId}
+						membersPending={membersQuery.isPending}
+						membersError={membersQuery.isError}
+						onSubmit={handleContributorsSubmit}
+						isPending={contributorsPending}
+					/>
+				}
+				assigneesControl={
+					<AssigneesPicker
+						topicTitle={topic.title}
+						open={assigneesOpen}
+						onOpenChange={setAssigneesOpen}
+						members={members}
+						assignees={topic.assignees}
+						initialSelected={assigneeIds}
+						viewerUserId={viewerUserId}
+						membersPending={membersQuery.isPending}
+						membersError={membersQuery.isError}
+						onSubmit={handleAssigneesSubmit}
+						isPending={assigneesPending}
+					/>
+				}
+				showMeetingParticipants={false}
+				showEditPostTypes={false}
+			/>
 			<Tabs
 				value={activeTab}
 				onValueChange={(v) => {
@@ -1028,7 +1110,19 @@ export function TopicItemPage({
 					</p>
 				) : null}
 
-				<TabsContent value="summaryQuestions" className="space-y-6">
+				{/* A READING MEASURE on the review tabs, and only there.
+				    
+				    The page had no max-width anywhere -- one paragraph was
+				    capped and everything else ran the full width of a 1440
+				    window, which is what made the questions hard to scan
+				    beside Feature Maturation, whose whole Summary & Questions
+				    panel is `mx-auto max-w-3xl`. The generation tabs stay
+				    full-bleed deliberately: three candidate columns need the
+				    room, and a cap there would squeeze them back into one. */}
+				<TabsContent
+					value="summaryQuestions"
+					className={cn(REVIEW_MEASURE_CLASS, "space-y-6")}
+				>
 					{topic.pitch ? (
 						<p className="max-w-3xl text-foreground text-sm leading-relaxed">
 							{topic.pitch}
@@ -1110,59 +1204,12 @@ export function TopicItemPage({
 						threads={decisionsQuery.data?.threads ?? []}
 						members={members}
 					/>
-					{/* The metadata block is `TopicDetails`, the SAME component
-					    the Inbox row mounts — not a copy of it. The two views
-					    show the same fields, so a second implementation would
-					    drift the first time either changed. */}
-					<TopicDetails
-						topic={topic}
-						canEdit={canEdit}
-						isPending={
-							postTypesPending ||
-							urlPending ||
-							contributorsPending ||
-							assigneesPending
-						}
-						onEditUrl={() => setUrlOpen(true)}
-						contributorsControl={
-							<ContributorsPicker
-								topicTitle={topic.title}
-								open={contributorsOpen}
-								onOpenChange={setContributorsOpen}
-								members={members}
-								contributors={topic.contributors}
-								initialSelected={contributorIds}
-								hasOverride={
-									topic.userContributorUserIds !== null
-								}
-								viewerUserId={viewerUserId}
-								membersPending={membersQuery.isPending}
-								membersError={membersQuery.isError}
-								onSubmit={handleContributorsSubmit}
-								isPending={contributorsPending}
-							/>
-						}
-						assigneesControl={
-							<AssigneesPicker
-								topicTitle={topic.title}
-								open={assigneesOpen}
-								onOpenChange={setAssigneesOpen}
-								members={members}
-								assignees={topic.assignees}
-								initialSelected={assigneeIds}
-								viewerUserId={viewerUserId}
-								membersPending={membersQuery.isPending}
-								membersError={membersQuery.isError}
-								onSubmit={handleAssigneesSubmit}
-								isPending={assigneesPending}
-							/>
-						}
-						showMeetingParticipants={false}
-						showEditPostTypes={false}
-					/>
 				</TabsContent>
 
-				<TabsContent value="planningAnalysis">
+				<TabsContent
+					value="planningAnalysis"
+					className={REVIEW_MEASURE_CLASS}
+				>
 					<PlanningAnalysisTab
 						projectId={projectId}
 						topicId={topicId}
@@ -1193,7 +1240,10 @@ export function TopicItemPage({
 					/>
 				</TabsContent>
 
-				<TabsContent value="decisionLog">
+				<TabsContent
+					value="decisionLog"
+					className={REVIEW_MEASURE_CLASS}
+				>
 					<TopicDecisionLog
 						threads={decisionsQuery.data?.threads ?? []}
 						isLoading={decisionsQuery.isLoading}
@@ -1214,6 +1264,7 @@ export function TopicItemPage({
 					drafts={draftsQuery.data?.drafts ?? []}
 					workingDrafts={draftsQuery.data?.workingDrafts ?? []}
 					decisionThreads={decisionsQuery.data?.threads ?? []}
+					onReviewQuestions={() => setTab("summaryQuestions")}
 					isLoading={draftsQuery.isLoading}
 				/>
 			</Tabs>

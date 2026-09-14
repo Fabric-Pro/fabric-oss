@@ -14,6 +14,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const mutate = vi.hoisted(() => ({
 	generate: vi.fn(),
 	select: vi.fn(),
+	saveBody: vi.fn(),
 	invalidate: vi.fn(),
 	toastInfo: vi.fn(),
 	toastError: vi.fn(),
@@ -41,8 +42,16 @@ vi.mock("@tanstack/react-query", () => ({
 		const key = opts.mutationKey[0];
 		captured[key] = opts;
 		return {
+			// A third spy, because a hand EDIT of the adopted body is neither
+			// a generation nor an option pick — sharing one would let a
+			// regression that saved on the reader's behalf pass every
+			// assertion here.
 			mutate:
-				key === "generateShortPost" ? mutate.generate : mutate.select,
+				key === "generateShortPost"
+					? mutate.generate
+					: key === "saveShortPostBody"
+						? mutate.saveBody
+						: mutate.select,
 			isPending: false,
 		};
 	},
@@ -59,6 +68,18 @@ vi.mock("@shared/lib/orpc-query-utils", () => {
 		orpc: {
 			projects: {
 				publishingSuite: {
+					claimDraftLock: {
+						mutationOptions: (o: Record<string, unknown>) => ({
+							mutationKey: ["claimDraftLock"],
+							...o,
+						}),
+					},
+					releaseDraftLock: {
+						mutationOptions: (o: Record<string, unknown>) => ({
+							mutationKey: ["releaseDraftLock"],
+							...o,
+						}),
+					},
 					listTopicDrafts: {
 						queryKey: ({ input }: { input?: unknown }) => [
 							"listTopicDrafts",
@@ -67,6 +88,7 @@ vi.mock("@shared/lib/orpc-query-utils", () => {
 					},
 					generateShortPost: m("generateShortPost"),
 					selectShortPostOption: m("selectShortPostOption"),
+					saveShortPostBody: m("saveShortPostBody"),
 				},
 			},
 		},
@@ -320,6 +342,100 @@ describe("ShortPostPanel — the working draft", () => {
 		sourceOptionLabel: "Direct",
 		updatedAt: new Date(),
 	};
+
+	it("takes a candidate from an EARLIER version, not just the newest", async () => {
+		// "Maybe I realised the previous proposals were better." A short-form
+		// run produces three options, so restoring a version means picking one
+		// of ITS options rather than swapping in a single body -- which is why
+		// the generic Restore is deliberately absent here. The version list was
+		// readable and not actionable; now the draft id is a parameter, so an
+		// option from any run can be adopted.
+		const user = userEvent.setup();
+		renderPanel({
+			draft: {
+				...readyDraft({ options: OPTIONS }),
+				versions: [
+					{
+						id: "d2",
+						version: 2,
+						createdAt: new Date(),
+						content: { options: OPTIONS },
+					},
+					{
+						id: "d1",
+						version: 1,
+						createdAt: new Date(),
+						content: {
+							options: [
+								{
+									label: "Earlier pick",
+									text: "The one that was better.",
+								},
+							],
+						},
+					},
+				],
+			},
+			working,
+		});
+
+		// A saved draft exists, so replacing it confirms first — the same
+		// guard the candidate grid uses, reached from the version dialog.
+		const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+
+		await user.click(screen.getByRole("button", { name: /2 versions/i }));
+		await user.click(screen.getAllByRole("button", { name: "View" })[1]);
+		await user.click(
+			screen.getByRole("button", { name: /use this draft/i }),
+		);
+		confirmSpy.mockRestore();
+
+		expect(mutate.select).toHaveBeenCalledWith(
+			expect.objectContaining({
+				draftId: "d1",
+				optionLabel: "Earlier pick",
+			}),
+		);
+	});
+
+	it("lets the adopted draft be edited and saved", async () => {
+		// The five long-form panels have had a textarea over the adopted body
+		// since 2B-3. TWEET and LINKEDIN_POST were deferred there -- "nothing
+		// edits a body until 2B-3" -- and never picked up, so the two drafts
+		// most likely to need a word changed before posting were the two you
+		// could not change. Same column, same compare-and-set.
+		const user = userEvent.setup();
+		renderPanel({ draft: readyDraft(), working });
+
+		const editor = screen.getByRole("textbox", {
+			name: /working short post/i,
+		});
+		await user.clear(editor);
+		await user.type(editor, "Builds are much faster now.");
+		await user.click(screen.getByRole("button", { name: /save changes/i }));
+
+		expect(mutate.saveBody).toHaveBeenCalledWith(
+			expect.objectContaining({ body: "Builds are much faster now." }),
+		);
+	});
+
+	it("lets the adopted draft be copied and downloaded", () => {
+		// Copy and Download mount against the EDITOR text on the long-form
+		// panels, and short-form has no editor -- so the one panel whose output
+		// is meant to be pasted straight into a feed had no way to get it out.
+		// The saved body is the same string.
+		renderPanel({
+			draft: readyDraft(),
+			working,
+		});
+
+		expect(
+			screen.getByRole("button", { name: /copy/i }),
+		).toBeInTheDocument();
+		expect(
+			screen.getByRole("button", { name: /download/i }),
+		).toBeInTheDocument();
+	});
 
 	it("shows the saved body and which option it came from", () => {
 		renderPanel({ draft: readyDraft(), working });

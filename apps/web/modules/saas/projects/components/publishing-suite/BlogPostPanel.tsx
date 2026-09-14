@@ -7,11 +7,14 @@ import { Textarea } from "@ui/components/textarea";
 import { Loader2Icon, PencilLineIcon, SparklesIcon } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
+import { CopyDraftButton } from "./CopyDraftButton";
 import {
 	CandidateDraft,
 	DraftComparison,
 	SavedDraftCaption,
 } from "./DraftComparison";
+import { DraftDownloadDropdown } from "./DraftDownloadDropdown";
+import { DraftLockBanner, useDraftEditLock } from "./DraftEditLock";
 import { DraftVersions } from "./DraftVersions";
 import { GeneralizationNotes } from "./GeneralizationNotes";
 import type { TopicDraftState, TopicWorkingDraftState } from "./GenerationTabs";
@@ -397,6 +400,16 @@ export function BlogPostPanel({
 								Discard changes
 							</Button>
 						) : null}
+						{/* Blog Post was the only panel with an editor and no
+						    way to get the text OUT of it — Case Study,
+						    Stakeholder Email, Newsletter and Webinar all carry
+						    these. Nothing about a blog post makes it the one
+						    draft nobody needs to paste somewhere. */}
+						<CopyDraftButton markdown={bodyValue} />
+						<DraftDownloadDropdown
+							markdown={bodyValue}
+							filename="blog-post"
+						/>
 					</div>
 				</>
 			) : (
@@ -409,8 +422,23 @@ export function BlogPostPanel({
 		</section>
 	) : null;
 
+	// Advisory only: it says who else is in the draft and never refuses a write.
+	const editLock = useDraftEditLock({
+		projectId,
+		topicId,
+		organizationId,
+		postType: "BLOG_POST",
+		canEdit,
+		hasDraft: Boolean(working?.hasBody),
+		isDirty: isDirty,
+	});
+
 	return (
 		<div className="space-y-5">
+			<DraftLockBanner
+				heldBy={editLock.heldBy}
+				onTakeOver={editLock.takeOver}
+			/>
 			{canEdit ? (
 				<section className="space-y-2">
 					<label

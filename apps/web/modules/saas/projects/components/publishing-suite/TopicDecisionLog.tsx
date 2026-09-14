@@ -130,6 +130,13 @@ export function TopicDecisionLog({
 
 	return (
 		<TooltipProvider>
+			{/* NO width cap, deliberately — see the panel-width test. The
+			    cap was carried over from `DecisionLogPanel`, which is mounted
+			    in a narrow column; here it pinned a tab panel to 768px and
+			    centred it, leaving a gutter that detached the log from the tab
+			    bar above it. The reading measure comes from the two columns
+			    below instead, which is what "it does not need full width"
+			    actually asked for: a readable line, not a narrower page. */}
 			<section className="space-y-5">
 				<div className="flex items-center justify-between gap-3">
 					<h2 className="publishing-label">Decision log</h2>
@@ -302,25 +309,45 @@ function DecisionCard({
 	return (
 		<li
 			data-testid="decision-root"
-			className="space-y-2 rounded-lg border border-border bg-card p-4"
+			className="grid gap-3 rounded-lg border border-border bg-card p-4 sm:grid-cols-2 sm:gap-4"
 		>
-			<div className="flex items-start justify-between gap-2">
-				<p className="text-foreground text-sm leading-relaxed">
-					{root.summary ?? root.content ?? ""}
-				</p>
-				<StatusMarker status={root.status} />
-			</div>
-			<div className="flex flex-wrap items-center gap-2 text-muted-foreground text-xs">
-				<AuthorLabel
-					authorType={root.authorType}
-					author={root.author}
-				/>
-				<time dateTime={createdAt.toISOString()}>
-					{createdAt.toLocaleString()}
-				</time>
+			{/* Two columns, question left and answer right, the shape
+			    `DecisionLogPanel` uses. Stacked at full page width a decision
+			    read as two unrelated paragraphs and the eye had to find which
+			    answer belonged to which question; side by side the pairing is
+			    the layout. Falls back to one column below `sm`, where two
+			    would be two narrow columns instead of one readable one. */}
+			<div className="min-w-0 space-y-2">
+				<div className="flex items-start justify-between gap-2">
+					<p className="text-foreground text-sm leading-relaxed">
+						{root.summary ?? root.content ?? ""}
+					</p>
+					<StatusMarker status={root.status} />
+				</div>
+				<div className="flex flex-wrap items-center gap-2 text-muted-foreground text-xs">
+					<AuthorLabel
+						authorType={root.authorType}
+						author={root.author}
+					/>
+					{/* Where the question CAME FROM, which the log had no way
+					    of saying. This table has no `sourceProvenance` column
+					    like its maturation sibling, but it does record which
+					    analysis raised a root — and "the run that asked this"
+					    is the provenance question a reader actually has when a
+					    decision looks stale. */}
+					{root.authorType === "AGENT" &&
+					root.analysisVersion !== null ? (
+						<span className="rounded-full border border-border px-2 py-0.5">
+							Analysis v{root.analysisVersion}
+						</span>
+					) : null}
+					<time dateTime={createdAt.toISOString()}>
+						{createdAt.toLocaleString()}
+					</time>
+				</div>
 			</div>
 			{answer ? (
-				<div className="space-y-2 border-border border-t pt-2">
+				<div className="min-w-0 space-y-2 sm:border-border sm:border-l sm:pl-4">
 					{isEditing ? (
 						<>
 							<Textarea

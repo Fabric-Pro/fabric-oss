@@ -35,6 +35,8 @@ vi.mock("sonner", () => ({
 	},
 }));
 
+const noopMutate = vi.fn();
+
 vi.mock("@tanstack/react-query", () => ({
 	useQueryClient: () => ({ invalidateQueries: mutate.invalidate }),
 	useMutation: (
@@ -47,7 +49,10 @@ vi.mock("@tanstack/react-query", () => ({
 			adoptBlogPostDraft: mutate.adopt,
 			saveBlogPostBody: mutate.saveBody,
 		};
-		return { mutate: byKey[key], isPending: false };
+		// The advisory draft lock fires two mutations this suite does not
+		// assert on. A missing entry must be a no-op rather than `undefined`,
+		// which the hook would then call.
+		return { mutate: byKey[key] ?? noopMutate, isPending: false };
 	},
 }));
 
@@ -62,6 +67,18 @@ vi.mock("@shared/lib/orpc-query-utils", () => {
 		orpc: {
 			projects: {
 				publishingSuite: {
+					claimDraftLock: {
+						mutationOptions: (o: Record<string, unknown>) => ({
+							mutationKey: ["claimDraftLock"],
+							...o,
+						}),
+					},
+					releaseDraftLock: {
+						mutationOptions: (o: Record<string, unknown>) => ({
+							mutationKey: ["releaseDraftLock"],
+							...o,
+						}),
+					},
 					listTopicDrafts: {
 						queryKey: ({ input }: { input?: unknown }) => [
 							"listTopicDrafts",
@@ -869,7 +886,11 @@ describe("BlogPostPanel — earlier versions", () => {
 		expect(screen.queryByText(/earlier versions/i)).not.toBeInTheDocument();
 	});
 
-	it("lists every earlier run once there is more than one", () => {
+	it("lists every earlier run once there is more than one", async () => {
+		// Behind a button now, not a full-width block between the draft and
+		// its candidates: a history nobody reads most of the time had the
+		// vertical space of one they do.
+		const user = userEvent.setup();
 		renderPanel({
 			draft: {
 				...readyDraft(DOCUMENT),
@@ -877,12 +898,15 @@ describe("BlogPostPanel — earlier versions", () => {
 			},
 		});
 
+		await user.click(screen.getByRole("button", { name: /2 versions/i }));
+
 		expect(screen.getByText(/earlier versions/i)).toBeInTheDocument();
 		expect(screen.getByText("Version 1")).toBeInTheDocument();
 		expect(screen.getByText("Version 2")).toBeInTheDocument();
 	});
 
-	it("marks the version the saved draft came from", () => {
+	it("marks the version the saved draft came from", async () => {
+		const user = userEvent.setup();
 		renderPanel({
 			draft: {
 				...readyDraft(DOCUMENT),
@@ -891,6 +915,7 @@ describe("BlogPostPanel — earlier versions", () => {
 			working: working({ sourceDraftId: "d1", sourceContent: null }),
 		});
 
+		await user.click(screen.getByRole("button", { name: /2 versions/i }));
 		expect(screen.getByText(/saved from this/i)).toBeInTheDocument();
 	});
 
@@ -902,6 +927,9 @@ describe("BlogPostPanel — earlier versions", () => {
 			},
 		});
 
+		await userEvent.click(
+			screen.getByRole("button", { name: /2 versions/i }),
+		);
 		await userEvent.click(
 			screen.getAllByRole("button", { name: "View" })[1],
 		);

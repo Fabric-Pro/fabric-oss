@@ -43,6 +43,8 @@ vi.mock("sonner", () => ({
 	},
 }));
 
+const noopMutate = vi.fn();
+
 vi.mock("@tanstack/react-query", () => ({
 	useQueryClient: () => ({ invalidateQueries: mutate.invalidate }),
 	useMutation: (
@@ -55,7 +57,10 @@ vi.mock("@tanstack/react-query", () => ({
 			adoptCaseStudyDraft: mutate.adopt,
 			saveCaseStudyBody: mutate.saveBody,
 		};
-		return { mutate: byKey[key], isPending: false };
+		// The advisory draft lock fires two mutations this suite does not
+		// assert on. A missing entry must be a no-op rather than `undefined`,
+		// which the hook would then call.
+		return { mutate: byKey[key] ?? noopMutate, isPending: false };
 	},
 }));
 
@@ -70,6 +75,18 @@ vi.mock("@shared/lib/orpc-query-utils", () => {
 		orpc: {
 			projects: {
 				publishingSuite: {
+					claimDraftLock: {
+						mutationOptions: (o: Record<string, unknown>) => ({
+							mutationKey: ["claimDraftLock"],
+							...o,
+						}),
+					},
+					releaseDraftLock: {
+						mutationOptions: (o: Record<string, unknown>) => ({
+							mutationKey: ["releaseDraftLock"],
+							...o,
+						}),
+					},
 					listTopicDrafts: {
 						queryKey: ({ input }: { input?: unknown }) => [
 							"listTopicDrafts",
@@ -297,6 +314,46 @@ beforeEach(() => {
 });
 
 describe("CaseStudyPanel — the generate control", () => {
+	it("says who else is in the draft, and still lets you edit it", async () => {
+		// `PublishingTopicWorkingDraft` is unique on (topicId, postType): one
+		// draft per content type for the WHOLE topic, not one per author. Two
+		// people editing was a real collision whose only signal was a CONFLICT
+		// toast on save -- after the words were typed.
+		//
+		// ADVISORY. It reports the holder so the second person can decide; the
+		// compare-and-set on save stays what actually protects the text, and
+		// take-over is never destructive because every earlier body is in the
+		// version list.
+		const user = userEvent.setup();
+		renderPanel({ draft: readyDraft(DOCUMENT), working: working() });
+
+		// Claimed only once the draft actually goes dirty: opening a topic to
+		// read it is not editing it.
+		expect(mutate.invalidate).not.toHaveBeenCalledWith(
+			expect.objectContaining({ claimed: true }),
+		);
+
+		await user.type(
+			screen.getByRole("textbox", { name: /case study/i }),
+			"!",
+		);
+
+		captured.claimDraftLock?.onSuccess?.({
+			status: "held",
+			expiresAt: new Date(),
+			heldBy: { id: "u2", name: "Ana" },
+		});
+
+		expect(
+			await screen.findByTestId("draft-edit-lock"),
+		).toBeInTheDocument();
+		expect(screen.getByText(/ana is editing this draft/i)).toBeVisible();
+		// Still editable — the lock never refuses a write.
+		expect(
+			screen.getByRole("textbox", { name: /case study/i }),
+		).toBeEnabled();
+	});
+
 	it("offers Generate when nothing has been drafted", () => {
 		renderPanel();
 

@@ -840,7 +840,7 @@ export type PublishingTopicDraftScalarFieldEnum = z.infer<typeof PublishingTopic
 
 // File: PublishingTopicWorkingDraftScalarFieldEnum.schema.ts
 
-export const PublishingTopicWorkingDraftScalarFieldEnumSchema = z.enum(['id', 'topicId', 'projectId', 'organizationId', 'userId', 'postType', 'body', 'sourceDraftId', 'sourceOptionLabel', 'updatedById', 'createdAt', 'updatedAt'])
+export const PublishingTopicWorkingDraftScalarFieldEnumSchema = z.enum(['id', 'topicId', 'projectId', 'organizationId', 'userId', 'postType', 'body', 'sourceDraftId', 'sourceOptionLabel', 'updatedById', 'editingUserId', 'editingExpiresAt', 'createdAt', 'updatedAt'])
 
 export type PublishingTopicWorkingDraftScalarFieldEnum = z.infer<typeof PublishingTopicWorkingDraftScalarFieldEnumSchema>;
 
@@ -6586,6 +6586,8 @@ export const PublishingTopicWorkingDraftSchema = z.object({
   sourceDraftId: z.string().nullish(),
   sourceOptionLabel: z.string().nullish(),
   updatedById: z.string().nullish(),
+  editingUserId: z.string().nullish(),
+  editingExpiresAt: z.date().nullish(),
   createdAt: z.date(),
   updatedAt: z.date(),
 });
