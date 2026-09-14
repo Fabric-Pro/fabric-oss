@@ -13,6 +13,13 @@
 --
 -- Both nullable with no default and no backfill: an existing row is simply
 -- unclaimed, which is the correct reading of "nobody was editing it".
+--
+-- The supporting index on "editingUserId" is NOT here. It is built
+-- CONCURRENTLY, which cannot run inside a transaction, and Prisma wraps any
+-- migration holding more than one statement -- so it lives alone in
+-- 20260914093000_publishing_working_draft_editing_user_index. Keep it that way:
+-- moving it back here is the exact edit that failed this migration in flight
+-- with SQLSTATE 25001 and stopped the staging promotion on 2026-09-14.
 ALTER TABLE "publishing_topic_working_draft"
   ADD COLUMN "editingUserId" TEXT,
   ADD COLUMN "editingExpiresAt" TIMESTAMP(3);
@@ -22,8 +29,3 @@ ALTER TABLE "publishing_topic_working_draft"
 -- minutes, so a departed user's lock self-heals without one. `sourceDraftId`
 -- on this same table is a plain column for a related reason. Skipping it also
 -- keeps this migration off the expand/contract path an ADD CONSTRAINT forces.
-
--- CONCURRENTLY and alone in its own statement: the migration linter refuses a
--- blocking CREATE INDEX on an existing table.
-CREATE INDEX CONCURRENTLY IF NOT EXISTS "publishing_topic_working_draft_editingUserId_idx"
-  ON "publishing_topic_working_draft"("editingUserId");
