@@ -18,11 +18,22 @@ export type ProbeGitLabMcpOpts = {
 	fetchImpl?: typeof fetch;
 };
 
+/**
+ * Default probe timeout when a caller doesn't override `timeoutMs`. Exported
+ * (rather than kept as an inline literal) so the callers that run this probe
+ * INSIDE an advisory-lock transaction — `prepareTokenWrite`'s locked-refresh
+ * branch in `gitlab-token.ts` — can state, in a test, that the transaction's
+ * budget actually covers this bounded call plus the token exchange it runs
+ * alongside. See `REFRESH_LOCK_TRANSACTION_TIMEOUT_MS` in
+ * `@repo/database/prisma/queries/lib/refresh-lock-key` for the invariant.
+ */
+export const GITLAB_MCP_PROBE_DEFAULT_TIMEOUT_MS = 2000;
+
 export async function probeGitLabMcp(
 	opts: ProbeGitLabMcpOpts,
 ): Promise<McpProbeResult> {
 	const fetchImpl = opts.fetchImpl ?? fetch;
-	const timeoutMs = opts.timeoutMs ?? 2000;
+	const timeoutMs = opts.timeoutMs ?? GITLAB_MCP_PROBE_DEFAULT_TIMEOUT_MS;
 	const url = `${opts.baseUrl.replace(/\/$/, "")}/api/v4/mcp`;
 	const body = JSON.stringify({
 		jsonrpc: "2.0",

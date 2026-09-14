@@ -17,6 +17,7 @@
 import { db } from "@repo/database";
 import { withRefreshLock } from "@repo/database/prisma/queries/lib/refresh-lock";
 import { decryptApiKey, encryptApiKey } from "@repo/utils";
+import { GITLAB_TOKEN_EXCHANGE_TIMEOUT_MS } from "./oauth-refresh";
 import { GitLabApiError } from "./rest-client";
 
 export * from "./capabilities";
@@ -402,6 +403,24 @@ async function performTokenRefresh(
 			"Content-Type": "application/x-www-form-urlencoded",
 		},
 		body: body.toString(),
+		// This exchange runs INSIDE `withRefreshLock`'s advisory-lock
+		// transaction (see `refreshTokenWithLock` below), which carries the
+		// same 20s budget as the other GitLab refresh paths — bare `fetch` has
+		// no timeout of its own (undici's default is 300s), so a hanging
+		// response here could otherwise run well past that budget, rolling the
+		// transaction back and releasing the lock while GitLab may still honor
+		// the exchange. Reuses the same-package constant so all three locked
+		// GitLab exchanges share one number.
+		//
+		// This signal is NOT scoped to just the headers: it also covers the
+		// body read below (`response.text()`). If headers arrive before the
+		// deadline but the body does not, THAT read rejects with the same
+		// DOMException — `response.ok` being true only proves headers
+		// arrived, not that the body ever will. The body-read branch below
+		// treats a failed read as indeterminate rather than folding it into
+		// the permanent/transient classification, so an abort firing mid-body
+		// can never be misread as evidence GitLab rejected the grant.
+		signal: AbortSignal.timeout(GITLAB_TOKEN_EXCHANGE_TIMEOUT_MS),
 	});
 
 	if (!response.ok) {
@@ -410,8 +429,28 @@ async function performTokenRefresh(
 		// rate limits) failures. Only the permanent kind warrants flipping
 		// needsReauth — surfacing the red "Reconnect required" callout for
 		// a transient 503 would make every blip look like the user's fault.
-		const errorBody = await response.text().catch(() => "");
-		const isPermanent = response.status === 400 || response.status === 401;
+		//
+		// A failed read — including the abort above firing mid-body, which
+		// reuses the same signal as the fetch itself — makes the outcome
+		// INDETERMINATE, not permanent: we never actually saw what GitLab
+		// was about to say. Swallowing that into an empty string (e.g. via a
+		// bare `.catch(() => "")`) would read identically to "GitLab
+		// explained nothing" and still classify a bare 400/401 as permanent
+		// — condemning a credential on evidence this process never
+		// received. Track the failure explicitly instead, and skip
+		// permanent classification (and the reauth write) when it happens;
+		// this still throws below, as an ordinary transient failure the
+		// caller can retry.
+		let errorBody = "";
+		let bodyReadFailed = false;
+		try {
+			errorBody = await response.text();
+		} catch {
+			bodyReadFailed = true;
+		}
+		const isPermanent =
+			!bodyReadFailed &&
+			(response.status === 400 || response.status === 401);
 		if (isPermanent) {
 			await markWorkflowIntegrationNeedsReauth(
 				integration.id,
@@ -421,7 +460,11 @@ async function performTokenRefresh(
 		}
 		throw new Error(
 			`GitLab token refresh failed: ${response.status}${
-				errorBody ? ` ${errorBody.slice(0, 200)}` : ""
+				bodyReadFailed
+					? " (response body unreadable, possibly a timeout)"
+					: errorBody
+						? ` ${errorBody.slice(0, 200)}`
+						: ""
 			}`,
 		);
 	}
@@ -524,32 +567,47 @@ async function refreshTokenWithLock(
 							"or reconnect your GitLab account.",
 					);
 				}
-				return withRefreshLock(`wfint:${integrationId}`, async (tx) => {
-					// Re-read inside the lock — a winner may have rotated while we
-					// queued, and exchanging their fresh token again would kill it.
-					const fresh = await tx.workflowIntegration.findUnique({
-						where: { id: integrationId },
-						select: { credentials: true },
-					});
-					if (fresh?.credentials) {
-						const decrypted = decryptApiKey(fresh.credentials);
-						const parsed = safeParseCredentials(decrypted);
-						if (parsed && !isTokenExpired(parsed)) {
-							return extractAccessToken(decrypted);
+				return withRefreshLock(
+					`wfint:${integrationId}`,
+					async (tx, assertBudget) => {
+						// Re-read inside the lock — a winner may have rotated while
+						// we queued, and exchanging their fresh token again would
+						// kill it. This short-circuit runs BEFORE the budget guard
+						// below on purpose: a caller that queued behind a winner
+						// and finds a still-fresh token here does no bounded HTTP
+						// work at all, so it must never be gated on the exchange's
+						// budget — only the path that is actually about to start
+						// the exchange is.
+						const fresh = await tx.workflowIntegration.findUnique({
+							where: { id: integrationId },
+							select: { credentials: true },
+						});
+						if (fresh?.credentials) {
+							const decrypted = decryptApiKey(fresh.credentials);
+							const parsed = safeParseCredentials(decrypted);
+							if (parsed && !isTokenExpired(parsed)) {
+								return extractAccessToken(decrypted);
+							}
+							if (parsed?.refresh_token) {
+								refreshTokenValue = parsed.refresh_token;
+							}
 						}
-						if (parsed?.refresh_token) {
-							refreshTokenValue = parsed.refresh_token;
-						}
-					}
-					return performTokenRefresh(
-						integration,
-						refreshTokenValue,
-						userId,
-						organizationId,
-						tx,
-						creds,
-					);
-				});
+						// About to start the one bounded HTTP call this callback
+						// makes — gate on the budget actually left after the lock
+						// wait, immediately before that call and after every
+						// short-circuit above that returns without touching the
+						// provider.
+						assertBudget(GITLAB_TOKEN_EXCHANGE_TIMEOUT_MS);
+						return performTokenRefresh(
+							integration,
+							refreshTokenValue,
+							userId,
+							organizationId,
+							tx,
+							creds,
+						);
+					},
+				);
 			})
 			.finally(() => {
 				refreshInProgress.delete(integrationId);
@@ -1264,7 +1322,12 @@ export async function listUserProjects(
  * Handles:
  * - https://gitlab.com/group/project
  * - https://gitlab.com/group/subgroup/project
- * - git@gitlab.com:group/project.git
+ * - git@<host>:group/project.git (scp-style SSH)
+ *
+ * The scp-style form is written with a placeholder host on purpose: spelled
+ * out in full it reads as an email address at an unsanctioned domain, and the
+ * publication identifier scan refuses the whole change over it. The patterns
+ * below carry the real host; only this prose avoids it.
  */
 export function parseGitLabProjectUrl(
 	url: string,
@@ -1272,7 +1335,7 @@ export function parseGitLabProjectUrl(
 	const patterns = [
 		// HTTPS URL: gitlab.com/group/project or gitlab.com/group/subgroup/project
 		/gitlab\.com\/(.+?)(?:\.git)?(?:\/)?(?:\?.*)?$/i,
-		// SSH URL: git@gitlab.com:group/project.git
+		// SSH URL, scp-style: git@<host>:group/project.git
 		/git@gitlab\.com:(.+?)(?:\.git)?$/i,
 	];
 

@@ -1,10 +1,15 @@
 import {
 	advisoryObjectKey,
+	assertRefreshLockBudget,
 	mcpConfigLockKey,
 	REFRESH_ADVISORY_CLASS,
+	REFRESH_LOCK_MAX_WAIT_MS,
+	REFRESH_LOCK_TRANSACTION_TIMEOUT_MS,
 	workflowIntegrationLockKey,
 } from "@repo/database/prisma/queries/lib/refresh-lock-key";
 import {
+	GITLAB_MCP_PROBE_DEFAULT_TIMEOUT_MS,
+	GITLAB_TOKEN_EXCHANGE_TIMEOUT_MS,
 	type GitLabIntegrationSettings,
 	GitLabReauthRequiredError,
 	probeGitLabMcp,
@@ -657,12 +662,45 @@ async function refreshAtGitLab(
 		method: "POST",
 		headers: { "Content-Type": "application/x-www-form-urlencoded" },
 		body: params.toString(),
+		// Reuses @repo/integrations' constant rather than a local one — this
+		// package already depends on @repo/integrations (see package.json) and
+		// already imports from "@repo/integrations/gitlab" above, so there is no
+		// import-direction reason to duplicate the number. Cross-reference:
+		// `oauth-refresh.ts`'s `refreshGitLabToken` bounds its own token
+		// exchange to the SAME constant, and both exchanges are bounded for the
+		// same reason — undici's default fetch timeout (300s) would otherwise
+		// let a hanging GitLab response outrun the 20s advisory-lock
+		// transaction that wraps this call (see
+		// REFRESH_LOCK_TRANSACTION_TIMEOUT_MS in refresh-lock-key.ts).
+		//
+		// This same signal also covers the body read below (`res.json()`): a
+		// timeout firing after non-OK headers already arrived throws the
+		// identical DOMException from THAT read, not just from this call —
+		// see its comment for why it must propagate unchanged rather than
+		// fold into the generic status Error.
+		signal: AbortSignal.timeout(GITLAB_TOKEN_EXCHANGE_TIMEOUT_MS),
 	});
 	if (!res.ok) {
 		let body: { error?: string } = {};
 		try {
 			body = (await res.json()) as { error?: string };
-		} catch {
+		} catch (err) {
+			// A body-read abort reuses the SAME AbortSignal as the fetch
+			// call above: when the timeout fires after non-OK headers have
+			// already arrived, THIS read is what actually throws — not
+			// `fetch` itself. That is not "the body wasn't JSON", it's "we
+			// never read a body at all", and it must propagate UNCHANGED
+			// rather than fall through to the generic status Error below —
+			// folding it in would erase the one thing downstream needs to
+			// recognise it as a no-verdict transient outcome rather than an
+			// ordinary refresh failure. Same fix, same reasoning, as the
+			// identical pattern in `oauth-refresh.ts`'s `refreshGitLabToken`.
+			if (
+				err instanceof DOMException &&
+				(err.name === "TimeoutError" || err.name === "AbortError")
+			) {
+				throw err;
+			}
 			// fall through to generic error below
 		}
 		// Same classification rule as the shared `refreshGitLabToken` in
@@ -933,7 +971,17 @@ type LockClient = {
 		template: TemplateStringsArray,
 		...values: unknown[]
 	) => Promise<unknown>;
-	$transaction: <T>(callback: (tx: TxClient) => Promise<T>) => Promise<T>;
+	// `options` mirrors Prisma's own `$transaction(fn, options?)` overload
+	// (kept optional rather than imported from Prisma's generated types, so a
+	// real `PrismaClient` and a `vi.fn()` test double both satisfy this
+	// structurally). This transaction wraps TWO in-tx HTTP hops —
+	// `refreshAtGitLab` and the MCP capability probe inside
+	// `prepareTokenWrite` — so the caller below MUST pass an explicit budget;
+	// see the comment at that call site for why the default is unsafe here.
+	$transaction: <T>(
+		callback: (tx: TxClient) => Promise<T>,
+		options?: { timeout?: number; maxWait?: number },
+	) => Promise<T>;
 };
 
 /**
@@ -1002,16 +1050,20 @@ export async function getValidGitLabToken(
 		 * shape limited to the accessors used inside the locked body. It
 		 * intentionally OMITS `$transaction`; nested transactions on a real
 		 * `Prisma.TransactionClient` would throw at runtime.
+		 *
+		 * Typed as the SAME `LockClient` the internal locked path uses below
+		 * — not a separately declared, narrower callback-only shape. The
+		 * point of `LockClient` requiring an `options` parameter on
+		 * `$transaction` is to make the caller pass `{ timeout, maxWait }` on
+		 * every call; a second, narrower type declared here instead would let
+		 * an override silently drop that argument (TypeScript's
+		 * fewer-declared-parameters rule accepts a `(callback) => Promise<T>`
+		 * override anywhere a `(callback, options?) => Promise<T>` is
+		 * expected either way, so sharing the type does not make a
+		 * deliberately careless override impossible — it removes the
+		 * accidental, type-level invitation to write one).
 		 */
-		prisma?: {
-			$queryRaw: (
-				template: TemplateStringsArray,
-				...values: unknown[]
-			) => Promise<unknown>;
-			$transaction: <T>(
-				callback: (tx: TxClient) => Promise<T>,
-			) => Promise<T>;
-		};
+		prisma?: LockClient;
 	},
 ): Promise<string> {
 	// Non-tx pre-read first: if the cached token is fresh, return it
@@ -1066,8 +1118,41 @@ export async function getValidGitLabToken(
 		// dead grant is posted again on the very next call, which is the retry
 		// loop the breaker exists to stop. So every decision resolves as a value
 		// and the error is re-raised, unchanged, once the write has committed.
+		//
+		// Explicit budget — REQUIRED, not cosmetic. This transaction holds the
+		// advisory lock across TWO bounded in-tx HTTP hops: `refreshAtGitLab`
+		// (the token exchange, bounded to GITLAB_TOKEN_EXCHANGE_TIMEOUT_MS =
+		// 10s) and, on success, the MCP capability probe inside
+		// `prepareTokenWrite` (`probeGitLabMcp`, bounded to
+		// `GITLAB_MCP_PROBE_DEFAULT_TIMEOUT_MS` = 2s — see `probe-mcp.ts`),
+		// plus its own DB round-trips (lock acquisition, the reads, the
+		// persist). 10s + 2s leaves comfortable headroom under Prisma's
+		// interactive-transaction budget here
+		// (REFRESH_LOCK_TRANSACTION_TIMEOUT_MS = 20s, imported above) — but
+		// only because BOTH hops are bounded. Without this
+		// option the transaction ran under Prisma's 5s default, which either
+		// hop alone can outrun on its own: the deadline rolls the transaction
+		// back and releases the lock WHILE the exchange is still in flight, so
+		// GitLab can still honor it — rotating and killing the single-use
+		// refresh token — while the persist below never runs, losing the
+		// rotated token and condemning the credential on the very next call.
 		const outcome = await lockClient.$transaction<LockedRefreshOutcome>(
 			async (tx) => {
+				// Measured from the FIRST statement in the callback — the
+				// instant closest to when Prisma arms its `timeout` timer.
+				// `maxWait` (see its comment in refresh-lock-key.ts) covers only
+				// the pre-callback connection acquisition, never the lock wait
+				// below, so timing from any earlier point would OVERcount the
+				// elapsed time (by charging that pre-callback connection
+				// acquisition against a budget it was never part of), not
+				// undercount it.
+				//
+				// `performance.now()`, not `Date.now()`: monotonic, so an NTP
+				// correction stepping the wall clock backwards mid-transaction
+				// can't make elapsed look smaller than it really was. Only the
+				// delta between two calls is used, so the different epoch
+				// doesn't matter.
+				const lockStartedAt = performance.now();
 				// $executeRaw (not $queryRaw): pg_advisory_xact_lock() returns `void`,
 				// which the Postgres driver adapter's $queryRaw cannot deserialize
 				// ("Failed to deserialize column of type 'void'") — that throw aborts
@@ -1105,6 +1190,26 @@ export async function getValidGitLabToken(
 						),
 					};
 				}
+				// Every branch above this point returns without starting any
+				// bounded HTTP work — including the reauth verdicts, which
+				// resolve as VALUES rather than throwing but still never touch
+				// the provider — so none of them are gated: a caller that
+				// queued behind a winner and finds (via the re-read above) that
+				// there is nothing left to do must return immediately, however
+				// long the lock wait was. Gate here, immediately before the
+				// only bounded work this transaction performs (the exchange
+				// plus, on success, the in-tx MCP probe) and — just as
+				// important — OUTSIDE the try/catch below that resolves a
+				// `GitLabReauthRequiredError` verdict as a value: a throw here
+				// can only propagate as an ordinary transaction failure, never
+				// routed into `markNeedsReauthOnTx`, never mistaken for a
+				// dead-grant verdict. See RefreshLockBudgetExhaustedError's doc.
+				assertRefreshLockBudget({
+					elapsedMs: performance.now() - lockStartedAt,
+					requiredMs:
+						GITLAB_TOKEN_EXCHANGE_TIMEOUT_MS +
+						GITLAB_MCP_PROBE_DEFAULT_TIMEOUT_MS,
+				});
 				try {
 					const refreshed = await refreshAtGitLab(
 						reloaded.refreshToken,
@@ -1151,6 +1256,10 @@ export async function getValidGitLabToken(
 					// the transaction.
 					throw err;
 				}
+			},
+			{
+				timeout: REFRESH_LOCK_TRANSACTION_TIMEOUT_MS,
+				maxWait: REFRESH_LOCK_MAX_WAIT_MS,
 			},
 		);
 		if (!outcome.ok) {

@@ -1,12 +1,16 @@
 import type { Prisma } from "@repo/database";
 import {
 	advisoryObjectKey,
+	assertRefreshLockBudget,
 	REFRESH_ADVISORY_CLASS,
+	REFRESH_LOCK_MAX_WAIT_MS,
+	REFRESH_LOCK_TRANSACTION_TIMEOUT_MS,
 	repoIntegrationLockKey,
 	workflowIntegrationLockKey,
 } from "@repo/database/prisma/queries/lib/refresh-lock-key";
 import { decryptApiKey, encryptApiKey } from "@repo/utils";
 import {
+	GITLAB_TOKEN_EXCHANGE_TIMEOUT_MS,
 	GitLabReauthRequiredError,
 	type GitLabRefreshResponse,
 } from "./oauth-refresh";
@@ -100,7 +104,21 @@ interface PrismaForLock {
 		template: TemplateStringsArray,
 		...values: unknown[]
 	) => Promise<unknown>;
-	$transaction: <T>(callback: (tx: TxClient) => Promise<T>) => Promise<T>;
+	// `options` must stay part of this type: without it, TypeScript would
+	// happily accept a caller that omits `{ timeout, maxWait }` on
+	// `$transaction`, silently defaulting every locked refresh to Prisma's
+	// 5s interactive-transaction timeout — well under the bounded provider
+	// exchange this callback runs INSIDE the transaction. Both locked
+	// branches below pass an explicit `{ timeout, maxWait }` budget (see
+	// REFRESH_LOCK_TRANSACTION_TIMEOUT_MS in refresh-lock-key.ts). Typed
+	// loosely (matches Prisma's own `options?` shape) so a real
+	// `PrismaClient` and a `vi.fn()` test double both satisfy this
+	// structurally without importing Prisma's generated `$transaction`
+	// overloads into this module's public surface.
+	$transaction: <T>(
+		callback: (tx: TxClient) => Promise<T>,
+		options?: { timeout?: number; maxWait?: number },
+	) => Promise<T>;
 }
 
 export async function getValidGitLabAccessToken(args: {
@@ -250,91 +268,159 @@ export async function getValidGitLabAccessToken(args: {
 				// the fresh token after our transaction commits.
 				const lockClient = resolveLockClient(args);
 				if (lockClient) {
-					return await lockClient.$transaction(async (tx) => {
-						if (!tx.projectRepositoryIntegration) {
-							throw new Error(
-								"projectRepositoryIntegration accessor missing on tx",
-							);
-						}
-						await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${legacyLockKey}::text)::bigint)`;
-						await tx.$executeRaw`SELECT pg_advisory_xact_lock(${REFRESH_ADVISORY_CLASS}::int, ${advisoryObjectKey(lockKey)}::int)`;
+					// Explicit budget — REQUIRED, not optional. This transaction
+					// holds the advisory lock across `args.refresh(...)`, the
+					// injected provider exchange (every production caller wires
+					// `refreshGitLabToken`, bounded to
+					// GITLAB_TOKEN_EXCHANGE_TIMEOUT_MS = 10s — see
+					// oauth-refresh.ts) plus its own DB round-trips (lock
+					// acquisition, re-read, persist). Prisma's interactive
+					// transaction defaults to a 5s timeout, which the bounded
+					// exchange alone can outrun; hitting that default rolls the
+					// transaction back and releases the lock WHILE the exchange
+					// is still in flight, so the exchange can still succeed at
+					// GitLab (rotating and killing the single-use refresh token)
+					// while the persist below never runs — the rotated token is
+					// lost and the credential gets condemned on the next call.
+					// See REFRESH_LOCK_TRANSACTION_TIMEOUT_MS in
+					// refresh-lock-key.ts for the general invariant this budget
+					// must satisfy.
+					return await lockClient.$transaction(
+						async (tx) => {
+							// Measured from the FIRST statement in the callback —
+							// the instant closest to when Prisma arms its `timeout`
+							// timer (see REFRESH_LOCK_MAX_WAIT_MS's comment:
+							// `maxWait` covers only the pre-callback connection
+							// acquisition, never the lock wait below).
+							//
+							// `performance.now()`, not `Date.now()`: monotonic, so
+							// an NTP correction stepping the wall clock backwards
+							// mid-transaction can't make elapsed look smaller than
+							// it really was. Only the delta between two calls is
+							// used, so the different epoch doesn't matter.
+							const lockStartedAt = performance.now();
+							if (!tx.projectRepositoryIntegration) {
+								throw new Error(
+									"projectRepositoryIntegration accessor missing on tx",
+								);
+							}
+							await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${legacyLockKey}::text)::bigint)`;
+							await tx.$executeRaw`SELECT pg_advisory_xact_lock(${REFRESH_ADVISORY_CLASS}::int, ${advisoryObjectKey(lockKey)}::int)`;
 
-						const rawProjectRowLocked =
-							await tx.projectRepositoryIntegration.findUnique({
-								where: { id: args.integrationId },
-							});
-						if (!rawProjectRowLocked) {
-							throw new Error(
-								`Project GitLab integration ${args.integrationId} not found`,
-							);
-						}
-						const lockedRow = rawProjectRowLocked as {
-							id: string;
-							encryptedAccessToken: string;
-							encryptedRefreshToken: string | null;
-							tokenExpiresAt: Date | null;
-						};
+							const rawProjectRowLocked =
+								await tx.projectRepositoryIntegration.findUnique(
+									{
+										where: { id: args.integrationId },
+									},
+								);
+							if (!rawProjectRowLocked) {
+								throw new Error(
+									`Project GitLab integration ${args.integrationId} not found`,
+								);
+							}
+							const lockedRow = rawProjectRowLocked as {
+								id: string;
+								encryptedAccessToken: string;
+								encryptedRefreshToken: string | null;
+								tokenExpiresAt: Date | null;
+							};
 
-						const unknownExpiryLocked = !lockedRow.tokenExpiresAt;
-						const needsRefreshLocked = lockedRow.tokenExpiresAt
-							? lockedRow.tokenExpiresAt.getTime() - Date.now() <
-								REFRESH_BUFFER_SECONDS * 1000
-							: true;
+							const unknownExpiryLocked =
+								!lockedRow.tokenExpiresAt;
+							const needsRefreshLocked = lockedRow.tokenExpiresAt
+								? lockedRow.tokenExpiresAt.getTime() -
+										Date.now() <
+									REFRESH_BUFFER_SECONDS * 1000
+								: true;
 
-						if (!needsRefreshLocked) {
-							return decryptApiKey(
-								lockedRow.encryptedAccessToken,
-							);
-						}
-						if (!lockedRow.encryptedRefreshToken) {
-							if (unknownExpiryLocked) {
+							// Every branch above this point returns (or throws)
+							// without touching the provider, so none of them are
+							// gated: a caller that queued behind a winner and finds
+							// — via this re-read — that there is no bounded HTTP
+							// work left to do (the row is fresh, or there is no
+							// refresh token to exchange) must be able to return
+							// immediately, however long the lock wait was. Only
+							// the path below, which is actually about to start
+							// the exchange, is gated.
+							if (!needsRefreshLocked) {
 								return decryptApiKey(
 									lockedRow.encryptedAccessToken,
 								);
 							}
-							throw new Error(
-								"GitLab project token expired and no refresh_token available — reconnect required",
-							);
-						}
-						const refreshedLocked = await refreshOrMarkReauth(
-							decryptApiKey(lockedRow.encryptedRefreshToken),
-						);
-						const resultLocked =
-							await tx.projectRepositoryIntegration.updateMany({
-								where: {
-									id: args.integrationId,
-									// Never repopulate tokens onto a row that was
-									// disconnected (tokens wiped) while the OAuth
-									// exchange was in flight — the advisory lock does
-									// not block a concurrent disconnect.
-									status: { not: "DISCONNECTED" },
-								},
-								data: {
-									encryptedAccessToken: encryptApiKey(
-										refreshedLocked.access_token,
-									),
-									encryptedRefreshToken:
-										refreshedLocked.refresh_token
-											? encryptApiKey(
-													refreshedLocked.refresh_token,
-												)
-											: null,
-									tokenExpiresAt: refreshedLocked.expires_in
-										? new Date(
-												Date.now() +
-													refreshedLocked.expires_in *
-														1000,
-											)
-										: null,
-								},
+							if (!lockedRow.encryptedRefreshToken) {
+								if (unknownExpiryLocked) {
+									return decryptApiKey(
+										lockedRow.encryptedAccessToken,
+									);
+								}
+								throw new Error(
+									"GitLab project token expired and no refresh_token available — reconnect required",
+								);
+							}
+							// Gate the upcoming exchange on the budget actually
+							// left, not on the fixed constants alone: a waiter
+							// that queued behind another refresh's own ~10s
+							// exchange can acquire this lock with most of its 20s
+							// transaction budget already spent. Starting a fresh
+							// exchange it cannot finish reproduces the exact
+							// defect this budget exists to prevent. Thrown here —
+							// immediately before the only bounded HTTP call this
+							// branch makes, and before any try/catch that resolves
+							// a decision as a value — so it can only ever roll the
+							// transaction back as an ordinary failure; see
+							// RefreshLockBudgetExhaustedError's doc for why it
+							// must never be treated as a dead-grant verdict.
+							assertRefreshLockBudget({
+								elapsedMs: performance.now() - lockStartedAt,
+								requiredMs: GITLAB_TOKEN_EXCHANGE_TIMEOUT_MS,
 							});
-						if (resultLocked.count === 0) {
-							throw new Error(
-								"GitLab integration was disconnected during token refresh",
+							const refreshedLocked = await refreshOrMarkReauth(
+								decryptApiKey(lockedRow.encryptedRefreshToken),
 							);
-						}
-						return refreshedLocked.access_token;
-					});
+							const resultLocked =
+								await tx.projectRepositoryIntegration.updateMany(
+									{
+										where: {
+											id: args.integrationId,
+											// Never repopulate tokens onto a row that was
+											// disconnected (tokens wiped) while the OAuth
+											// exchange was in flight — the advisory lock does
+											// not block a concurrent disconnect.
+											status: { not: "DISCONNECTED" },
+										},
+										data: {
+											encryptedAccessToken: encryptApiKey(
+												refreshedLocked.access_token,
+											),
+											encryptedRefreshToken:
+												refreshedLocked.refresh_token
+													? encryptApiKey(
+															refreshedLocked.refresh_token,
+														)
+													: null,
+											tokenExpiresAt:
+												refreshedLocked.expires_in
+													? new Date(
+															Date.now() +
+																refreshedLocked.expires_in *
+																	1000,
+														)
+													: null,
+										},
+									},
+								);
+							if (resultLocked.count === 0) {
+								throw new Error(
+									"GitLab integration was disconnected during token refresh",
+								);
+							}
+							return refreshedLocked.access_token;
+						},
+						{
+							timeout: REFRESH_LOCK_TRANSACTION_TIMEOUT_MS,
+							maxWait: REFRESH_LOCK_MAX_WAIT_MS,
+						},
+					);
 				}
 
 				// Unlocked path (no prisma supplied): in-process inflight Map is
@@ -431,91 +517,130 @@ export async function getValidGitLabAccessToken(args: {
 			// needsRefresh, then refresh + persist atomically.
 			const lockClient = resolveLockClient(args);
 			if (lockClient) {
-				return await lockClient.$transaction(async (tx) => {
-					await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${legacyLockKey}::text)::bigint)`;
-					await tx.$executeRaw`SELECT pg_advisory_xact_lock(${REFRESH_ADVISORY_CLASS}::int, ${advisoryObjectKey(lockKey)}::int)`;
+				// Same explicit budget as the project branch above, and for the
+				// same reason: this transaction holds the advisory lock across
+				// `args.refresh(...)` (bounded to GITLAB_TOKEN_EXCHANGE_TIMEOUT_MS
+				// = 10s at every production call site) plus its own DB
+				// round-trips. Omitting it runs under Prisma's 5s ITX default,
+				// which the exchange alone can outrun — the transaction rolls
+				// back and releases the lock mid-exchange, losing the freshly
+				// rotated single-use refresh token. See
+				// REFRESH_LOCK_TRANSACTION_TIMEOUT_MS in refresh-lock-key.ts.
+				return await lockClient.$transaction(
+					async (tx) => {
+						// Measured from the FIRST statement in the callback — see
+						// the project branch above for why, and for why it's
+						// `performance.now()` rather than `Date.now()`.
+						const lockStartedAt = performance.now();
+						await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${legacyLockKey}::text)::bigint)`;
+						await tx.$executeRaw`SELECT pg_advisory_xact_lock(${REFRESH_ADVISORY_CLASS}::int, ${advisoryObjectKey(lockKey)}::int)`;
 
-					const rawRowLocked =
-						await tx.workflowIntegration.findUnique({
-							where: { id: args.integrationId },
-						});
-					if (!rawRowLocked) {
-						throw new Error(
-							`GitLab integration ${args.integrationId} not found`,
-						);
-					}
-					const wiRowLocked = rawRowLocked as {
-						id: string;
-						credentials: string;
-						settings: unknown;
-					};
+						const rawRowLocked =
+							await tx.workflowIntegration.findUnique({
+								where: { id: args.integrationId },
+							});
+						if (!rawRowLocked) {
+							throw new Error(
+								`GitLab integration ${args.integrationId} not found`,
+							);
+						}
+						const wiRowLocked = rawRowLocked as {
+							id: string;
+							credentials: string;
+							settings: unknown;
+						};
 
-					const credentialsLocked = JSON.parse(
-						decryptApiKey(wiRowLocked.credentials),
-					) as {
-						access_token: string;
-						refresh_token?: string;
-					};
-					const settingsLocked = (wiRowLocked.settings ?? {}) as {
-						tokenExpiresAt?: string | null;
-					};
+						const credentialsLocked = JSON.parse(
+							decryptApiKey(wiRowLocked.credentials),
+						) as {
+							access_token: string;
+							refresh_token?: string;
+						};
+						const settingsLocked = (wiRowLocked.settings ?? {}) as {
+							tokenExpiresAt?: string | null;
+						};
 
-					const unknownExpiryLocked = !settingsLocked.tokenExpiresAt;
-					const needsRefreshLocked =
-						unknownExpiryLocked ||
-						new Date(
-							settingsLocked.tokenExpiresAt as string,
-						).getTime() -
-							Date.now() <
-							REFRESH_BUFFER_SECONDS * 1000;
+						const unknownExpiryLocked =
+							!settingsLocked.tokenExpiresAt;
+						const needsRefreshLocked =
+							unknownExpiryLocked ||
+							new Date(
+								settingsLocked.tokenExpiresAt as string,
+							).getTime() -
+								Date.now() <
+								REFRESH_BUFFER_SECONDS * 1000;
 
-					if (!needsRefreshLocked) {
-						// Another process already refreshed while we waited.
-						return credentialsLocked.access_token;
-					}
-					if (!credentialsLocked.refresh_token) {
-						if (unknownExpiryLocked) {
+						// Every branch above this point returns (or throws) without
+						// touching the provider — see the project branch's
+						// comment for the full rationale. None of them are
+						// gated; only the exchange below is.
+						if (!needsRefreshLocked) {
+							// Another process already refreshed while we waited.
 							return credentialsLocked.access_token;
 						}
-						throw new Error(
-							"GitLab token expired and no refresh_token available — reconnect required",
-						);
-					}
+						if (!credentialsLocked.refresh_token) {
+							if (unknownExpiryLocked) {
+								return credentialsLocked.access_token;
+							}
+							throw new Error(
+								"GitLab token expired and no refresh_token available — reconnect required",
+							);
+						}
 
-					const refreshedLocked = await refreshOrMarkReauth(
-						credentialsLocked.refresh_token,
-					);
-
-					const newCredentialsLocked = JSON.stringify({
-						access_token: refreshedLocked.access_token,
-						refresh_token:
-							refreshedLocked.refresh_token ??
+						// Gate the exchange on the budget actually left,
+						// immediately before the only bounded HTTP call this
+						// branch makes — see the project branch's comment for
+						// the full rationale and why this must be, and is,
+						// outside any try/catch that resolves a decision as a
+						// value.
+						assertRefreshLockBudget({
+							elapsedMs: performance.now() - lockStartedAt,
+							requiredMs: GITLAB_TOKEN_EXCHANGE_TIMEOUT_MS,
+						});
+						const refreshedLocked = await refreshOrMarkReauth(
 							credentialsLocked.refresh_token,
-						token_type: refreshedLocked.token_type,
-						scope: refreshedLocked.scope,
-						expires_in: refreshedLocked.expires_in,
-						created_at: refreshedLocked.created_at,
-						token_obtained_at: new Date().toISOString(),
-					});
-					const newExpiresAtLocked = refreshedLocked.expires_in
-						? new Date(
-								Date.now() + refreshedLocked.expires_in * 1000,
-							).toISOString()
-						: null;
+						);
 
-					await tx.workflowIntegration.update({
-						where: { id: args.integrationId },
-						data: {
-							credentials: encryptApiKey(newCredentialsLocked),
-							settings: {
-								...(settingsLocked as Record<string, unknown>),
-								tokenExpiresAt: newExpiresAtLocked,
-							} as Prisma.InputJsonValue,
-						},
-					});
+						const newCredentialsLocked = JSON.stringify({
+							access_token: refreshedLocked.access_token,
+							refresh_token:
+								refreshedLocked.refresh_token ??
+								credentialsLocked.refresh_token,
+							token_type: refreshedLocked.token_type,
+							scope: refreshedLocked.scope,
+							expires_in: refreshedLocked.expires_in,
+							created_at: refreshedLocked.created_at,
+							token_obtained_at: new Date().toISOString(),
+						});
+						const newExpiresAtLocked = refreshedLocked.expires_in
+							? new Date(
+									Date.now() +
+										refreshedLocked.expires_in * 1000,
+								).toISOString()
+							: null;
 
-					return refreshedLocked.access_token;
-				});
+						await tx.workflowIntegration.update({
+							where: { id: args.integrationId },
+							data: {
+								credentials:
+									encryptApiKey(newCredentialsLocked),
+								settings: {
+									...(settingsLocked as Record<
+										string,
+										unknown
+									>),
+									tokenExpiresAt: newExpiresAtLocked,
+								} as Prisma.InputJsonValue,
+							},
+						});
+
+						return refreshedLocked.access_token;
+					},
+					{
+						timeout: REFRESH_LOCK_TRANSACTION_TIMEOUT_MS,
+						maxWait: REFRESH_LOCK_MAX_WAIT_MS,
+					},
+				);
 			}
 
 			// Unlocked path (no prisma supplied): in-process inflight Map is the
