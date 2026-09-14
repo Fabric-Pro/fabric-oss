@@ -1,5 +1,12 @@
 # fabric-app
 
+## 1.15.1
+
+### Patch Changes
+
+- 7253e9b: A publishing topic's Summary & Questions tab now collapses its answered questions behind a count, and offers one content-types control instead of two.
+- 194d382: Log an error when a publishing prompt's built-in default body also fails to render, instead of reporting only a clean recovery.
+
 ## 1.15.0
 
 ### Minor Changes
