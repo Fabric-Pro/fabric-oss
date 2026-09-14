@@ -105,11 +105,10 @@ export type ShortPostOption = z.infer<typeof ShortPostOptionSchema>;
  * Labels must be DISTINCT, and that is a correctness rule rather than a
  * presentational one. The label is the selection key: the client sends a label
  * and the server reads that option's text back out of the stored draft. Two
- * options sharing a label make the key ambiguous, so choosing the second one
- * silently adopts the first one's text — the reader picks one post and a
- * different post enters the publishing pipeline, with nothing anywhere
- * reporting a problem. It also collapses the two in the panel, which marks both
- * as saved and disables both.
+ * options sharing a label make the key ambiguous, so neither can be selected —
+ * the selection procedure refuses that label as ambiguous and asks for a
+ * regeneration. It also collapses the two in the panel, which marks both as
+ * saved and disables both.
  *
  * Compared after `trim().toLowerCase()`, because the label's whole job is to
  * let a person tell the three options apart. "Direct" and "direct " are

@@ -24,10 +24,10 @@
  * existing type's (spec §6.4). A blurb's rules are about audience scope and
  * release claims; a script's are about demo assets and what may be claimed to
  * exist on screen. The one correct sharing in this family is LinkedIn Post
- * re-exporting the short post's, because those two share an output contract
- * exactly. These two do not: the enums differ (seven release states here, six
- * there), and this type carries a call-to-action state and an audience the
- * script has no equivalent of.
+ * reusing the short post's, because those two ask for the same document shape
+ * and differ only in its option-text cap. These two do not: the enums differ
+ * (seven release states here, six there), and this type carries a
+ * call-to-action state and an audience enum the script has no equivalent of.
  *
  * The exported name is `buildNewsletterBlurbPrompt`, not the family's usual
  * `composeXPrompt`, because that is the name the generation activity imports —
