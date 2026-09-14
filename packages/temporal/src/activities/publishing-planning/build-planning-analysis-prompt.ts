@@ -16,11 +16,7 @@
 
 import { createHash } from "node:crypto";
 import { logger } from "@repo/logs";
-import {
-	isEffectivelyBlank,
-	renderTemplate,
-	type TemplateFormat,
-} from "@repo/utils";
+import { renderTemplate, type TemplateFormat } from "@repo/utils";
 // Defined in @repo/utils, not here, so the seed and this activity share ONE
 // definition instead of two copies a test has to keep byte-identical.
 // Re-exported because this module is the natural import site for everything
@@ -30,6 +26,7 @@ import {
 	PUBLISHING_PLANNING_ANALYSIS_FALLBACK_BODY,
 } from "@repo/utils/publishing-planning-prompt";
 import { z } from "zod";
+import { recoverBoundBody } from "../publishing-shared/recover-bound-body";
 
 export {
 	PUBLISHING_PLANNING_ANALYSIS_AGENT_KEY,
@@ -892,6 +889,19 @@ do not have to run.
 // Composition
 // =============================================================================
 
+export interface ComposedPlanningAnalysisPrompt {
+	prompt: string;
+	/** Guard 1 fired: a non-templating format was rendered as Handlebars. */
+	formatOverridden: boolean;
+	/**
+	 * Guard 2 or 3 fired: the supplied body yielded nothing usable and the
+	 * default was used instead. One flag for both, because the consequence a
+	 * reader needs is identical — this analysis did not come from the prompt it
+	 * is bound to.
+	 */
+	bodyRecovered: boolean;
+}
+
 /**
  * Render the editable body against this topic's context and append the locked
  * clauses.
@@ -921,21 +931,6 @@ do not have to run.
  * body because your prompt would not render" is exactly the thing a reader
  * cannot infer from the output. It is persisted as `promptSource`.
  */
-const UNRENDERED_TEMPLATE = /\{\{[{#]/;
-
-export interface ComposedPlanningAnalysisPrompt {
-	prompt: string;
-	/** Guard 1 fired: a non-templating format was rendered as Handlebars. */
-	formatOverridden: boolean;
-	/**
-	 * Guard 2 or 3 fired: the supplied body yielded nothing usable and the
-	 * default was used instead. One flag for both, because the consequence a
-	 * reader needs is identical — this analysis did not come from the prompt it
-	 * is bound to.
-	 */
-	bodyRecovered: boolean;
-}
-
 export async function composePlanningAnalysisPrompt({
 	templateBody,
 	format,
@@ -973,24 +968,13 @@ export async function composePlanningAnalysisPrompt({
 		variables,
 	});
 
-	let body = rendered.rendered;
-	let bodyRecovered = false;
-	// Not `trim()`: a template can render down to zero-width characters, which
-	// trim leaves standing and the model reads as nothing.
-	const renderedBlank = isEffectivelyBlank(body);
-	if (rendered.error || UNRENDERED_TEMPLATE.test(body) || renderedBlank) {
-		logger.error(
-			"[publishing-planning] bound prompt did not render; using the default body",
-			{ format: effectiveFormat, error: rendered.error, renderedBlank },
-		);
-		const recovery = await renderTemplate({
-			format: "HANDLEBARS",
-			template: PUBLISHING_PLANNING_ANALYSIS_FALLBACK_BODY,
-			variables,
-		});
-		body = recovery.rendered;
-		bodyRecovered = true;
-	}
+	const { body, bodyRecovered } = await recoverBoundBody({
+		subject: "publishing-planning",
+		rendered,
+		format: effectiveFormat,
+		fallbackTemplate: PUBLISHING_PLANNING_ANALYSIS_FALLBACK_BODY,
+		variables,
+	});
 
 	return {
 		prompt: `${body.trimEnd()}\n\n${buildPlanningAnalysisLockedClauses({ autoProposeAnswers })}`,

@@ -17,11 +17,7 @@
  */
 
 import { logger } from "@repo/logs";
-import {
-	isEffectivelyBlank,
-	renderTemplate,
-	type TemplateFormat,
-} from "@repo/utils";
+import { renderTemplate, type TemplateFormat } from "@repo/utils";
 import {
 	type AnalysisData,
 	humanizeKey,
@@ -44,6 +40,7 @@ import {
 	type PlanningAnalysisTopic,
 	SOURCE_EXCERPT_CHAR_CAP,
 } from "../publishing-planning/build-planning-analysis-prompt";
+import { recoverBoundBody } from "../publishing-shared/recover-bound-body";
 
 export { PUBLISHING_SHORT_POST_AGENT_KEY, PUBLISHING_SHORT_POST_FALLBACK_BODY };
 
@@ -582,8 +579,6 @@ ${restricted.map(renderSubjectBullet).join("\n")}`
 // Composition
 // =============================================================================
 
-const UNRENDERED_TEMPLATE = /\{\{[{#]/;
-
 export interface ComposedShortPostPrompt {
 	prompt: string;
 	/** Guard 1 fired: a non-templating format was rendered as Handlebars. */
@@ -683,24 +678,13 @@ export async function composeShortPostPrompt({
 		variables,
 	});
 
-	let body = rendered.rendered;
-	let bodyRecovered = false;
-	// Not `trim()`: a template can render down to zero-width characters, which
-	// trim leaves standing and the model reads as nothing.
-	const renderedBlank = isEffectivelyBlank(body);
-	if (rendered.error || UNRENDERED_TEMPLATE.test(body) || renderedBlank) {
-		logger.error(
-			"[publishing-short-post] bound prompt did not render; using the default body",
-			{ format: effectiveFormat, error: rendered.error, renderedBlank },
-		);
-		const recovery = await renderTemplate({
-			format: "HANDLEBARS",
-			template: PUBLISHING_SHORT_POST_FALLBACK_BODY,
-			variables,
-		});
-		body = recovery.rendered;
-		bodyRecovered = true;
-	}
+	const { body, bodyRecovered } = await recoverBoundBody({
+		subject: "publishing-short-post",
+		rendered,
+		format: effectiveFormat,
+		fallbackTemplate: PUBLISHING_SHORT_POST_FALLBACK_BODY,
+		variables,
+	});
 
 	// BEFORE the locked clauses, never after: "Rules that override anything
 	// above" must keep overriding the refinement framing, or a refine run would

@@ -304,3 +304,111 @@ export function firstCallPosition(file: string, name: string): number {
 	visit(source);
 	return found;
 }
+
+/**
+ * How many CALLS in a source file resolve to the export `name` OF ONE OF
+ * `modules`, following the same local-binding chase `lockedClauseBuilderUsage`
+ * follows: a named import of that export from one of `modules`, aliased or
+ * not; a chain of plain local reassignment from such an import
+ * (`const again = render;`); and a namespace import of one of `modules`,
+ * accessed as `ns.name(...)`. A type-only import or element binds nothing.
+ * Never a source-text count — a comment or a string naming the call is not a
+ * call.
+ *
+ * `name` imported from, or reached through a namespace of, a module outside
+ * `modules` is NOT counted, and neither is a same-named local function in a
+ * file that does not import the export — that exclusion is the point: this
+ * exists to tell "calls the shared export" apart from "calls something else
+ * with the same name".
+ *
+ * NOT DETECTED: a call made inside another function that received the export
+ * by reference, or through a wrapper this file imports. And, as with
+ * `lockedClauseBuilderUsage`, bindings live in one file-global set with no
+ * lexical scoping, so a declaration that SHADOWS an imported binding in a
+ * nested scope — a function nested inside the composer and named like the
+ * import — has its calls counted as calls to the import. That is the quiet
+ * direction for a guard whose job is asserting that a call to the real export
+ * exists. A same-named declaration at the top level cannot shadow the import:
+ * it fails to compile (TS2440).
+ */
+export function resolvedCallCount(
+	file: string,
+	name: string,
+	modules: readonly string[],
+): number {
+	const source = ts.createSourceFile(
+		file,
+		readFileSync(file, "utf8"),
+		ts.ScriptTarget.Latest,
+		true,
+	);
+	const bindings = new Set<string>();
+	const namespaces = new Set<string>();
+
+	const collect = (node: ts.Node): void => {
+		if (
+			ts.isImportDeclaration(node) &&
+			node.importClause &&
+			!node.importClause.isTypeOnly &&
+			node.importClause.namedBindings &&
+			ts.isStringLiteral(node.moduleSpecifier) &&
+			modules.includes(node.moduleSpecifier.text)
+		) {
+			const { namedBindings } = node.importClause;
+			if (ts.isNamedImports(namedBindings)) {
+				for (const element of namedBindings.elements) {
+					if (
+						!element.isTypeOnly &&
+						(element.propertyName ?? element.name).text === name
+					) {
+						bindings.add(element.name.text);
+					}
+				}
+			} else if (ts.isNamespaceImport(namedBindings)) {
+				namespaces.add(namedBindings.name.text);
+			}
+		}
+		ts.forEachChild(node, collect);
+	};
+	collect(source);
+
+	let changed = true;
+	while (changed) {
+		changed = false;
+		const chase = (node: ts.Node): void => {
+			if (
+				ts.isVariableDeclaration(node) &&
+				ts.isIdentifier(node.name) &&
+				node.initializer &&
+				ts.isIdentifier(node.initializer) &&
+				bindings.has(node.initializer.text) &&
+				!bindings.has(node.name.text)
+			) {
+				bindings.add(node.name.text);
+				changed = true;
+			}
+			ts.forEachChild(node, chase);
+		};
+		chase(source);
+	}
+
+	let count = 0;
+	const visit = (node: ts.Node): void => {
+		if (ts.isCallExpression(node)) {
+			const callee = node.expression;
+			if (ts.isIdentifier(callee) && bindings.has(callee.text)) {
+				count += 1;
+			} else if (
+				ts.isPropertyAccessExpression(callee) &&
+				ts.isIdentifier(callee.expression) &&
+				namespaces.has(callee.expression.text) &&
+				callee.name.text === name
+			) {
+				count += 1;
+			}
+		}
+		ts.forEachChild(node, visit);
+	};
+	visit(source);
+	return count;
+}
