@@ -371,14 +371,19 @@ function normalizeAnswerOptions(
 			continue;
 		}
 		const text = (entry as { text?: unknown }).text;
-		const justification = (entry as { justification?: unknown })
-			.justification;
-		if (typeof text !== "string" || typeof justification !== "string") {
+		const rawWhy = (entry as { justification?: unknown }).justification;
+		if (typeof text !== "string") {
 			continue;
 		}
+		const justification = typeof rawWhy === "string" ? rawWhy : "";
 		const trimmedText = text.trim();
 		const trimmedWhy = justification.trim();
-		if (trimmedText === "" || trimmedWhy === "") {
+		// The TEXT is the option; the justification is commentary on it.
+		// Requiring both dropped the whole set whenever the model answered
+		// without explaining itself, and the card then fell back to a single
+		// "Suggested:" line — a usable option discarded because its rationale
+		// was missing. An option with no justification renders without one.
+		if (trimmedText === "") {
 			continue;
 		}
 		out.push({
@@ -400,6 +405,35 @@ export function resolveConfirmationQuestions(
 
 	// Derived first, so a model-authored question of the same identity overwrites
 	// it below rather than being dropped by a "first one wins" rule.
+	/**
+	 * The two ways an approval question ends, as pickable options.
+	 *
+	 * A DERIVED question used to carry `recommendedResponse: null` and
+	 * `answerOptions: null`, so every one of them rendered as a bare textarea —
+	 * and derived approvals are most of what a reader sees on a topic. No
+	 * amount of regenerating changed that, because the nulls are hardcoded
+	 * here rather than left to the model.
+	 *
+	 * They are not free-form questions. "May we use this?" has two answers and
+	 * the draft behaves differently for each, which is exactly what an option
+	 * with a justification is for. Typing your own is still offered, and a
+	 * person who wants to write conditions still can.
+	 */
+	const approvalOptions = (
+		subject: string,
+	): { text: string; justification: string }[] => [
+		{
+			text: `Approved — the draft may use ${subject}.`,
+			justification:
+				"The draft can state it plainly instead of writing around it.",
+		},
+		{
+			text: `Not approved — leave ${subject} out.`,
+			justification:
+				"The draft will generalize it, use a neutral placeholder, or omit it rather than assert it.",
+		},
+	];
+
 	const derive = (
 		decisionKind: PublishingDecisionKind,
 		subject: string,
@@ -418,7 +452,7 @@ export function resolveConfirmationQuestions(
 			subject,
 			question,
 			recommendedResponse: null,
-			answerOptions: null,
+			answerOptions: approvalOptions(subject),
 			whyItMatters,
 			source: "DERIVED",
 		});

@@ -17,6 +17,7 @@ import {
 	logDraftRefusal,
 	saveWorkingDraft,
 	startTopicDraftAttempt,
+	updateWorkingDraftBody,
 } from "@repo/database";
 import { z } from "zod";
 import {
@@ -25,6 +26,7 @@ import {
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
 import {
+	recordEditedWorkingDraft,
 	recordPublishingOutcome,
 	recordSupersededDraft,
 } from "../../lib/publishing-outcome";
@@ -436,3 +438,89 @@ function findOption(content: unknown, label: string): OptionLookup {
 	}
 	return found ? { status: "ok", option: found } : { status: "missing" };
 }
+
+/**
+ * How long a saved short post may be.
+ *
+ * Generous relative to the platform's own cap: this is the draft a person is
+ * working ON, and clamping it to the publish limit would refuse an edit that
+ * is one word over on its way to being two words under.
+ */
+const SHORT_POST_BODY_MAX = 2000;
+
+/**
+ * `publishingSuite.saveTweetBody` — save a hand edit to the adopted
+ * short post.
+ *
+ * The five long-form panels have had this since 2B-3; TWEET and LINKEDIN_POST
+ * were deferred there ("nothing edits a body until 2B-3") and never picked up,
+ * so the two panels whose output is pasted straight into a feed were the two
+ * you could not correct a typo in. The column is the same
+ * `PublishingTopicWorkingDraft.body`, so nothing about the schema changes.
+ *
+ * `expectedUpdatedAt` is a compare-and-set, as on every other panel. The
+ * working draft is SHARED per topic rather than per author, so two people
+ * editing is a real collision and the loser must be told rather than silently
+ * overwritten.
+ */
+export const saveTweetBodyProcedure = tenantProtectedProcedure
+	.use(requireProjectPermission(Permissions.PUBLISHING_TOPIC_UPDATE))
+	.route({
+		method: "POST",
+		path: "/projects/{projectId}/publishing-topics/{topicId}/short-post/body",
+		tags: ["Projects", "Publishing Suite"],
+		summary: "Save an edit to the working short post draft",
+	})
+	.input(
+		z.object({
+			projectId: z.string(),
+			topicId: z.string(),
+			organizationId: z.string().nullable().optional(),
+			body: z.string().min(1).max(SHORT_POST_BODY_MAX),
+			expectedUpdatedAt: z.coerce.date(),
+		}),
+	)
+	.handler(async ({ input, context }) => {
+		await assertPublishingSuiteFeatureEnabled(input.projectId);
+
+		const project = await requireEligibleProjectForTopic({
+			projectId: input.projectId,
+			clientOrganizationId: input.organizationId,
+		});
+
+		const saved = await updateWorkingDraftBody({
+			topicId: input.topicId,
+			projectId: project.id,
+			postType: "TWEET",
+			body: input.body,
+			updatedById: context.user.id,
+			expectedUpdatedAt: input.expectedUpdatedAt,
+		});
+
+		if (saved.status === "project_ineligible") {
+			throw new ORPCError("NOT_FOUND", { message: "Project not found" });
+		}
+		if (saved.status === "not_found") {
+			throw new ORPCError("NOT_FOUND", {
+				message: "No saved short post to edit",
+			});
+		}
+		if (saved.status === "stale") {
+			throw new ORPCError("CONFLICT", {
+				message:
+					"The saved short post changed while you were editing. Refresh and try again.",
+			});
+		}
+
+		// Measurement only (Fizzy #1851 A9): an edit over an adopted candidate
+		// is that candidate's verdict downgraded from "as is" to "with edits".
+		await recordEditedWorkingDraft({
+			topicId: input.topicId,
+			projectId: project.id,
+			organizationId: project.organizationId,
+			postType: "TWEET",
+			userId: context.user.id,
+		});
+
+		return { saved: true as const, updatedAt: saved.updatedAt };
+	});
