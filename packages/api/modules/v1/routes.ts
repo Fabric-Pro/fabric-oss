@@ -75,7 +75,6 @@ const CLI_SCOPES = [
 	"channels:read",
 	"channels:write",
 	"knowledge:read",
-	"keys:write",
 	"audit_log:read",
 	"audit_log:export",
 ] as const;
@@ -302,23 +301,41 @@ export function createPublicV1Routes() {
 
 	/**
 	 * DELETE /auth/keys/:id
-	 * Revokes (permanently deletes) an API key owned by the caller.
+	 * Revokes an API key owned by the caller.
+	 *
+	 * Gated on `keys:write`, matching its POST sibling. Without it any key of
+	 * the caller's — including one holding nothing but `orgs:read` — could
+	 * retire their other keys, which is a write the scope vocabulary already
+	 * has a name for.
+	 *
+	 * Revokes by flipping `isActive` rather than deleting the row. The
+	 * observable behaviour is unchanged — `verifyUserApiKey` refuses an
+	 * inactive key, and `listUserApiKeys` hides one unless asked for it — but
+	 * the row survives, which is what `revoke` exists to preserve and what a
+	 * hard delete was discarding.
 	 */
-	app.delete("/auth/keys/:id", async (c) => {
+	app.delete("/auth/keys/:id", requireScope("keys:write"), async (c) => {
 		const ctx = c.get("externalApiContext");
 		const id = c.req.param("id");
 
 		const key = await db.userApiKey.findFirst({
 			where: { id, userId: ctx.userId },
-			select: { id: true },
+			select: { id: true, isActive: true },
 		});
 
 		if (!key) {
 			return c.json(err("API key not found"), 404);
 		}
 
-		await db.userApiKey.delete({ where: { id } });
+		if (key.isActive) {
+			await db.userApiKey.update({
+				where: { id },
+				data: { isActive: false },
+			});
+		}
 
+		// `deleted` is kept in the payload: callers written against the old
+		// hard delete read this field, and from their side nothing changed.
 		return c.json(ok({ id, deleted: true }));
 	});
 

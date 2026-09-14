@@ -18,6 +18,7 @@ import {
 	getAIModelWithMetadata,
 } from "@repo/ai";
 import { issueAIToken } from "@repo/ai-token";
+import { agentEndpointRefusal } from "@repo/utils/agent-endpoint";
 import { Context } from "@temporalio/activity";
 import type {
 	DelegateToAgentInput,
@@ -111,6 +112,24 @@ export async function delegateToAgent(
 	if (!agent) {
 		throw new Error(
 			`Agent not found or no A2A endpoint configured: ${input.agentId}. All agents must expose A2A protocol endpoints.`,
+		);
+	}
+
+	// The registration procedures guard a `deploymentUrl` on the way in, but
+	// this is the request, and the guard's own rule is that the request is what
+	// has to be checked: a stored URL can be rewritten by a later update, can
+	// predate the guard shipping, and can be written by a path that never went
+	// through those procedures at all — a seed, a migration, a direct edit.
+	// Three outbound calls below share this address (health check, send, poll),
+	// so one check here covers all of them.
+	//
+	// The weave activities are deliberately NOT guarded the same way: their
+	// destination comes from `requireServiceUrl`, which is the operator's own
+	// environment rather than anything a caller or a row can influence.
+	const endpointRefusal = agentEndpointRefusal(agent.deploymentUrl);
+	if (endpointRefusal) {
+		throw new Error(
+			`Refusing to delegate to ${agent.name}: ${endpointRefusal}`,
 		);
 	}
 

@@ -8,6 +8,8 @@
  *
  * Emits `account.api_key.rotated` (personal) or `org.api_key.rotated`
  * (org).
+ *
+ * A revoked key cannot be rotated — see `assertKeyIsLive` below.
  */
 
 import { ORPCError } from "@orpc/server";
@@ -22,6 +24,27 @@ const inputSchema = z.object({
 	organizationId: z.string().nullable().optional(),
 	id: z.string().min(1),
 });
+
+/**
+ * Refuse to rotate a key that has been revoked.
+ *
+ * Revocation is a soft flag: `isActive` goes false and the row stays, so a
+ * revoked key is still findable by id. Rotation writes `isActive: true` along
+ * with the new hash, so without this check rotating a revoked key silently
+ * reinstates it and hands back a working secret — the credential is back in
+ * circulation with no create step and no trace that says so.
+ *
+ * `CONFLICT` rather than `NOT_FOUND`: the key genuinely exists, and saying so
+ * is what tells an operator the revocation stands.
+ */
+function assertKeyIsLive(isActive: boolean): void {
+	if (!isActive) {
+		throw new ORPCError("CONFLICT", {
+			message:
+				"This API key has been revoked. Rotation replaces the secret of a live key; it does not reinstate a revoked one. Create a new key instead.",
+		});
+	}
+}
 
 const outputSchema = z.object({
 	id: z.string(),
@@ -44,13 +67,20 @@ export const rotateAuditApiKeyProcedure = protectedProcedure
 			// on a new value.
 			const existing = await db.userApiKey.findFirst({
 				where: { id: input.id, userId: tenant.userId },
-				select: { id: true, name: true, scopes: true, keyPrefix: true },
+				select: {
+					id: true,
+					name: true,
+					scopes: true,
+					keyPrefix: true,
+					isActive: true,
+				},
 			});
 			if (!existing) {
 				throw new ORPCError("NOT_FOUND", {
 					message: "API key not found",
 				});
 			}
+			assertKeyIsLive(existing.isActive);
 
 			const { rawKey, keyHash, keyPrefix } = generateApiKey("fab");
 			const updated = await db.userApiKey.update({
@@ -86,13 +116,20 @@ export const rotateAuditApiKeyProcedure = protectedProcedure
 		// org tenant
 		const existing = await db.organizationApiKey.findFirst({
 			where: { id: input.id, organizationId: tenant.orgId },
-			select: { id: true, name: true, scopes: true, keyPrefix: true },
+			select: {
+				id: true,
+				name: true,
+				scopes: true,
+				keyPrefix: true,
+				isActive: true,
+			},
 		});
 		if (!existing) {
 			throw new ORPCError("NOT_FOUND", {
 				message: "API key not found",
 			});
 		}
+		assertKeyIsLive(existing.isActive);
 
 		const { rawKey, keyHash, keyPrefix } = generateApiKey("org");
 		const updated = await db.organizationApiKey.update({

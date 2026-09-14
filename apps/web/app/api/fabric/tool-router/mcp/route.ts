@@ -14,7 +14,11 @@
 
 import { fetchCredentialsByProvider } from "@repo/database";
 import { NextResponse } from "next/server";
-import { validateSession } from "../session/route";
+import {
+	TOOL_ROUTER_CALL_SCOPE,
+	sessionMayCallTools,
+	validateSession,
+} from "../session/route";
 
 export const runtime = "nodejs";
 
@@ -105,7 +109,7 @@ export async function POST(req: Request) {
 			return jsonRpcError(null, -32600, "Invalid or expired session");
 		}
 
-		const { userId, organizationId } = session;
+		const { userId, organizationId, scopes } = session;
 
 		// Parse JSON-RPC request
 		const body: McpRequest = await req.json();
@@ -132,6 +136,18 @@ export async function POST(req: Request) {
 				return handleToolsList(body.id, userId, organizationId);
 
 			case "tools/call":
+				// Minting the session took `mcp:read`; running a tool takes the
+				// write half as well. Without this, a read-only key minted a
+				// session that could send Slack messages and write to Drive —
+				// nothing downstream of `validateSession` looked at scopes at
+				// all.
+				if (!sessionMayCallTools(scopes)) {
+					return jsonRpcError(
+						body.id,
+						-32600,
+						`This API key does not have the "${TOOL_ROUTER_CALL_SCOPE}" scope required to execute tools.`,
+					);
+				}
 				return handleToolsCall(
 					body.id,
 					body.params,

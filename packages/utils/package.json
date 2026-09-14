@@ -308,6 +308,11 @@
 			"types": "./lib/quote-artifacts.ts",
 			"import": "./lib/quote-artifacts.ts",
 			"default": "./lib/quote-artifacts.ts"
+		},
+		"./agent-endpoint": {
+			"types": "./lib/agent-endpoint.ts",
+			"import": "./lib/agent-endpoint.ts",
+			"default": "./lib/agent-endpoint.ts"
 		}
 	},
 	"name": "@repo/utils",

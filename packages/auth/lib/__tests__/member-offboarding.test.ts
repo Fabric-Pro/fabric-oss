@@ -60,6 +60,7 @@ beforeEach(() => {
 		projectMemberships: 3,
 		workspaceMemberships: 2,
 		sessionsCleared: 1,
+		apiKeysDeactivated: 2,
 	});
 	seats.mockResolvedValue(undefined);
 });
@@ -123,6 +124,9 @@ describe("revokeDepartingMemberAccess", () => {
 				projectMemberships: 3,
 				workspaceMemberships: 2,
 				sessionsCleared: 1,
+				// Logged so an operator can see the credential was retired,
+				// not just the memberships.
+				apiKeysDeactivated: 2,
 			}),
 		);
 	});

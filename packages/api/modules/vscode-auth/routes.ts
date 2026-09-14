@@ -44,8 +44,22 @@ function generateApiKey(): {
 const DEVICE_AUTH_TTL_MS = 15 * 60 * 1000; // 15 minutes
 
 /** Bearer token → verified userId, or null */
+/**
+ * The scopes this module's routes require.
+ *
+ * The key `/vscode-auth/approve` mints carries exactly `["mcp:read",
+ * "mcp:write"]`, so requiring them changes nothing for the extension while
+ * refusing a key issued for something else entirely — which is what these
+ * routes used to accept, having passed no scope at all. Keys predating that
+ * narrowing hold `["*"]`, and `verifyUserApiKey` treats the wildcard as a
+ * grant, so they keep working too.
+ */
+const VSCODE_READ_SCOPE = "mcp:read";
+const VSCODE_WRITE_SCOPE = "mcp:write";
+
 async function authFromBearer(
 	authHeader: string | undefined,
+	requiredScope: string,
 ): Promise<string | null> {
 	if (!authHeader?.startsWith("Bearer ")) {
 		return null;
@@ -54,7 +68,7 @@ async function authFromBearer(
 	if (!token.startsWith("fab_")) {
 		return null;
 	}
-	const result = await verifyUserApiKey(token);
+	const result = await verifyUserApiKey(token, requiredScope);
 	return result.valid && result.userId ? result.userId : null;
 }
 
@@ -176,7 +190,10 @@ export function createVscodeAuthRoutes() {
 	 * Returns user profile and organization list.
 	 */
 	app.get("/profile", async (c) => {
-		const userId = await authFromBearer(c.req.header("Authorization"));
+		const userId = await authFromBearer(
+			c.req.header("Authorization"),
+			VSCODE_READ_SCOPE,
+		);
 		if (!userId) {
 			return c.json({ error: "Unauthorized" }, 401);
 		}
@@ -221,7 +238,10 @@ export function createVscodeAuthRoutes() {
 	 * a well-defined zero into a 404 for clients that have no way to know better.
 	 */
 	app.get("/profile/balance", async (c) => {
-		const userId = await authFromBearer(c.req.header("Authorization"));
+		const userId = await authFromBearer(
+			c.req.header("Authorization"),
+			VSCODE_READ_SCOPE,
+		);
 		if (!userId) {
 			return c.json({ error: "Unauthorized" }, 401);
 		}
@@ -238,7 +258,10 @@ export function createVscodeAuthRoutes() {
 	 * Returns default model IDs for authenticated user.
 	 */
 	app.get("/defaults", async (c) => {
-		const userId = await authFromBearer(c.req.header("Authorization"));
+		const userId = await authFromBearer(
+			c.req.header("Authorization"),
+			VSCODE_READ_SCOPE,
+		);
 		if (!userId) {
 			return c.json({ error: "Unauthorized" }, 401);
 		}
@@ -254,7 +277,10 @@ export function createVscodeAuthRoutes() {
 	 * Returns default model IDs for an organization context.
 	 */
 	app.get("/organizations/:orgId/defaults", async (c) => {
-		const userId = await authFromBearer(c.req.header("Authorization"));
+		const userId = await authFromBearer(
+			c.req.header("Authorization"),
+			VSCODE_READ_SCOPE,
+		);
 		if (!userId) {
 			return c.json({ error: "Unauthorized" }, 401);
 		}
@@ -290,7 +316,10 @@ export function createVscodeAuthRoutes() {
 	 * The extension uses this to populate the model picker.
 	 */
 	app.get("/openrouter/models", async (c) => {
-		const userId = await authFromBearer(c.req.header("Authorization"));
+		const userId = await authFromBearer(
+			c.req.header("Authorization"),
+			VSCODE_READ_SCOPE,
+		);
 		if (!userId) {
 			return c.json({ error: "Unauthorized" }, 401);
 		}
@@ -357,19 +386,17 @@ export function createVscodeAuthRoutes() {
 		const authHeader = c.req.header("Authorization");
 		const orgHeader = c.req.header("x-fabriccode-organizationid");
 
-		if (!authHeader?.startsWith("Bearer ")) {
-			return c.json({ error: "Unauthorized" }, 401);
-		}
-		const token = authHeader.slice(7);
-		if (!token.startsWith("fab_")) {
-			return c.json({ error: "Unauthorized" }, 401);
-		}
-		const authResult = await verifyUserApiKey(token);
-		if (!authResult.valid || !authResult.userId) {
+		// This one runs a completion, so it takes the write scope rather than
+		// the read one every other route here takes.
+		const authedUserId = await authFromBearer(
+			authHeader,
+			VSCODE_WRITE_SCOPE,
+		);
+		if (!authedUserId) {
 			return c.json({ error: "Unauthorized" }, 401);
 		}
 
-		const userId = authResult.userId;
+		const userId = authedUserId;
 		const organizationId = orgHeader || undefined;
 
 		// Parse request body
@@ -616,9 +643,11 @@ export async function approveDeviceCode(
 		// the broadest credential in the product was the one handed out with a
 		// single click, to anyone, with no screen that could list or revoke it.
 		//
-		// Safe to narrow: this module's own routes authenticate through
-		// `verifyUserApiKey` with no required scope (see `authFromBearer`), so
-		// nothing the extension already calls reads scopes at all.
+		// Safe to narrow: these two scopes are exactly what this module's own
+		// routes now require (see `VSCODE_READ_SCOPE` / `VSCODE_WRITE_SCOPE`),
+		// so everything the extension calls is satisfied by the key it is
+		// handed. Those routes used to require no scope at all, which is what
+		// made a key issued for something else acceptable to them.
 		scopes: ["mcp:read", "mcp:write"],
 	});
 

@@ -263,6 +263,7 @@ describe("audit.apiKeys.rotate", () => {
 			name: "Existing",
 			scopes: ["audit_log:read"],
 			keyPrefix: "fab_oldprefix",
+			isActive: true,
 		});
 		mocks.userApiKeyUpdate.mockImplementation(async (args) => ({
 			id: args.where.id,
@@ -302,6 +303,88 @@ describe("audit.apiKeys.rotate", () => {
 				input: { organizationId: null, id: "key-other-user" },
 			}),
 		).rejects.toMatchObject({ code: "NOT_FOUND" });
+	});
+
+	// Revocation is a soft flag and rotate writes `isActive: true`, so without
+	// a guard rotating a revoked key hands back a working secret and puts the
+	// credential back in circulation with no create step (Fizzy #2380, QA
+	// round 2). CONFLICT, not NOT_FOUND: the row is really there, and saying so
+	// is what tells an operator the revocation still stands.
+	it("refuses to rotate a revoked personal key, and writes nothing", async () => {
+		mocks.userApiKeyFindFirst.mockResolvedValue({
+			id: "key-1",
+			name: "Revoked",
+			scopes: ["audit_log:read"],
+			keyPrefix: "fab_oldprefix",
+			isActive: false,
+		});
+
+		await expect(
+			rotateHandler({
+				context: makeContext(),
+				input: { organizationId: null, id: "key-1" },
+			}),
+		).rejects.toMatchObject({ code: "CONFLICT" });
+
+		expect(mocks.userApiKeyUpdate).not.toHaveBeenCalled();
+	});
+
+	it("refuses to rotate a revoked organization key, and writes nothing", async () => {
+		mocks.getOrganizationMembership.mockResolvedValue({ role: "admin" });
+		mocks.orgApiKeyFindFirst.mockResolvedValue({
+			id: "ok-1",
+			name: "Revoked",
+			scopes: ["audit_log:read"],
+			keyPrefix: "org_oldprefix",
+			isActive: false,
+		});
+
+		await expect(
+			rotateHandler({
+				context: {
+					...makeContext(),
+					session: {
+						id: "session-1",
+						activeOrganizationId: "org-1",
+					},
+				},
+				input: { organizationId: "org-1", id: "ok-1" },
+			}),
+		).rejects.toMatchObject({ code: "CONFLICT" });
+
+		expect(mocks.orgApiKeyUpdate).not.toHaveBeenCalled();
+	});
+
+	it("still rotates a live organization key", async () => {
+		mocks.getOrganizationMembership.mockResolvedValue({ role: "admin" });
+		mocks.orgApiKeyFindFirst.mockResolvedValue({
+			id: "ok-1",
+			name: "Live",
+			scopes: ["audit_log:read"],
+			keyPrefix: "org_oldprefix",
+			isActive: true,
+		});
+		mocks.orgApiKeyUpdate.mockImplementation(async (args) => ({
+			id: args.where.id,
+			name: "Live",
+			scopes: ["audit_log:read"],
+			keyPrefix: args.data.keyPrefix,
+		}));
+
+		const result = (await rotateHandler({
+			context: {
+				...makeContext(),
+				session: {
+					id: "session-1",
+					activeOrganizationId: "org-1",
+				},
+			},
+			input: { organizationId: "org-1", id: "ok-1" },
+		})) as { keyPrefix: string; rawKey: string };
+
+		expect(result.keyPrefix).toMatch(/^org_[0-9a-f]{8}$/);
+		expect(result.keyPrefix).not.toBe("org_oldprefix");
+		expect(mocks.orgApiKeyUpdate).toHaveBeenCalled();
 	});
 });
 

@@ -34,6 +34,9 @@ import { requireOrgMembership } from "../../lib/membership";
  * it: a scope the API accepts but the picker never offers is unreachable, and a
  * scope a tool demands but the API rejects is a key that cannot be made. Both
  * had happened.
+ *
+ * Every entry names something the minting role already holds. Keep it that way
+ * — that premise is what lets `maxScopesForRole` clamp only the viewer role.
  */
 export const ORG_API_KEY_SCOPES = [
 	"mcp:read", // Read MCP tools/resources
@@ -63,7 +66,21 @@ export const ORG_API_KEY_SCOPES = [
 	"audit_log:export", // Export the org's audit log via GET /api/v1/audit-log/export
 	"system_health:read", // GET /api/v1/system-health (includes the org's own signals)
 	"status_updates:read", // GET /api/v1/status-updates (platform announcements only)
-	"*", // Full access
+	// No `"*"`. It used to sit here, and it was the one entry that broke the
+	// premise the role clamp below rests on: every other scope names something
+	// the minting role already holds, so a key cannot exceed its owner, while
+	// `"*"` named everything regardless of who asked. Any member could mint one
+	// by calling this procedure directly — the settings picker never offered it
+	// — and the only thing standing between that key and an admin-only surface
+	// was the request-time owner gate, which covers three scopes, not all of
+	// them.
+	//
+	// Removing it here stops new wildcard keys being minted, by any role.
+	// Wildcard keys ALREADY issued keep working: `hasScope` and `scopeSatisfied`
+	// test the stored string at request time and never consult this list. That
+	// is deliberate — narrowing them at the consumption end would silently strip
+	// every MCP scope from every wildcard key, which is the regression the
+	// restored-session fix had to undo.
 ] as const;
 
 export type OrgApiKeyScope = (typeof ORG_API_KEY_SCOPES)[number];
@@ -107,7 +124,6 @@ export type OrgApiKeyScope = (typeof ORG_API_KEY_SCOPES)[number];
  * | `audit_log:export`     | `ORG_AUDIT_LOG_EXPORT`      | no      |
  * | `system_health:read`   | none — any authenticated    | yes     |
  * | `status_updates:read`  | none — any authenticated     | yes    |
- * | `*`                    | all of the above            | no      |
  *
  * Four rows are worth their own sentence, because reading the scope name is
  * not enough to get them right:
