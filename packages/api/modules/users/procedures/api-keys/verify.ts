@@ -62,8 +62,19 @@ export async function verifyUserApiKey(
 		return { valid: false, error: "Invalid API key" };
 	}
 
-	// Check scope if required
-	if (requiredScope && !storedKey.scopes.includes(requiredScope)) {
+	// Check scope if required.
+	//
+	// `"*"` satisfies anything, matching `hasScope` in
+	// `external-api/middleware/api-key-auth.ts`, which is where the same
+	// question is answered for organization keys. Without this the two
+	// verifiers disagree about the same stored string: the personal keys minted
+	// before the VS Code key was narrowed carry `["*"]` and nothing else, and
+	// they would fail every scoped check here while passing the org one.
+	if (
+		requiredScope &&
+		!storedKey.scopes.includes(requiredScope) &&
+		!storedKey.scopes.includes("*")
+	) {
 		return {
 			valid: false,
 			error: `Missing required scope: ${requiredScope}`,

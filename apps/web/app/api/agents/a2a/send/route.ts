@@ -16,7 +16,9 @@ import {
 } from "@repo/ai";
 import { issueAIToken } from "@repo/ai-token";
 import { auth } from "@repo/auth";
+import { isOrganizationMember } from "@repo/database";
 import { AiUsageLimitExceededError } from "@repo/payments";
+import { agentEndpointRefusal } from "@repo/utils/agent-endpoint";
 import { headers } from "next/headers";
 import { type NextRequest, NextResponse } from "next/server";
 
@@ -62,6 +64,40 @@ export async function POST(req: NextRequest) {
 			return NextResponse.json(
 				{ error: "message.content is required" },
 				{ status: 400 },
+			);
+		}
+
+		// `agentUrl` is whatever the caller put in the body — there is no
+		// registered-agent lookup here and nothing cross-checks it against a
+		// stored `deploymentUrl`. Unguarded, that made this the sharpest SSRF
+		// in the product: the destination is handed `X-Service-Token` (the
+		// inter-agent shared secret) and `X-AI-Token`, which is exchangeable
+		// for real provider credentials. The registry procedures the guard
+		// first landed on leak a health flag; this one leaks the keys.
+		//
+		// Checked here rather than inside `SecureA2AClient`: the client lives
+		// in `@repo/agent-core`, which five other things import and which does
+		// not depend on `@repo/utils`.
+		const endpointRefusal = agentEndpointRefusal(agentUrl);
+		if (endpointRefusal) {
+			return NextResponse.json(
+				{ error: endpointRefusal },
+				{ status: 400 },
+			);
+		}
+
+		// The organization is caller-supplied too, and it is not decorative:
+		// it selects the AI model and RAG config below and is stamped into the
+		// AI token this route issues. Nothing downstream re-checks it.
+		if (
+			organizationId &&
+			!(await isOrganizationMember(session.user.id, organizationId))
+		) {
+			return NextResponse.json(
+				{
+					error: `Access denied: you are not a member of organization ${organizationId}`,
+				},
+				{ status: 403 },
 			);
 		}
 

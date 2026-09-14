@@ -33,6 +33,7 @@ const {
 	administratorDeleteMany,
 	contributorDeleteMany,
 	stakeholderDeleteMany,
+	orgApiKeyUpdateMany,
 } = vi.hoisted(() => ({
 	sessionUpdateMany: vi.fn(),
 	projectFindMany: vi.fn(),
@@ -41,6 +42,7 @@ const {
 	administratorDeleteMany: vi.fn(),
 	contributorDeleteMany: vi.fn(),
 	stakeholderDeleteMany: vi.fn(),
+	orgApiKeyUpdateMany: vi.fn(),
 }));
 
 // `project.findMany` and `workspace.findMany` are mocked deliberately even
@@ -64,6 +66,9 @@ vi.mock("../../../client", () => ({
 		workspaceStakeholder: {
 			deleteMany: (...a: unknown[]) => stakeholderDeleteMany(...a),
 		},
+		organizationApiKey: {
+			updateMany: (...a: unknown[]) => orgApiKeyUpdateMany(...a),
+		},
 	},
 	Prisma: {},
 }));
@@ -81,6 +86,7 @@ beforeEach(() => {
 	administratorDeleteMany.mockResolvedValue({ count: 1 });
 	contributorDeleteMany.mockResolvedValue({ count: 3 });
 	stakeholderDeleteMany.mockResolvedValue({ count: 0 });
+	orgApiKeyUpdateMany.mockResolvedValue({ count: 1 });
 });
 
 describe("revokeOrganizationMemberAccess", () => {
@@ -145,18 +151,40 @@ describe("revokeOrganizationMemberAccess", () => {
 			administratorDeleteMany,
 			contributorDeleteMany,
 			stakeholderDeleteMany,
+			orgApiKeyUpdateMany,
 		];
 
 		for (const fn of destructive) {
 			expect(fn).toHaveBeenCalledTimes(1);
 			const where = fn.mock.calls[0][0].where as Record<string, unknown>;
-			expect(Object.keys(where).sort()).not.toEqual(["userId"]);
-			expect(where.userId).toBe("user-1");
+			// The owning user is named `userId` on the membership tables and
+			// `createdByUserId` on the key table. Either way it has to be
+			// there, and it must not be the only condition.
+			expect(where.userId ?? where.createdByUserId).toBe("user-1");
+			expect(Object.keys(where).length).toBeGreaterThan(1);
 			// Whichever relation carries the scope, it must name THIS
 			// organization — a relation filter with the wrong key would satisfy
 			// the shape check above while scoping nothing.
 			expect(JSON.stringify(where)).toContain('"organizationId":"org-1"');
 		}
+	});
+
+	it("deactivates the keys this person minted for THIS organization only", async () => {
+		// Before this, removal revoked a key only on the surfaces that re-read
+		// membership live. The runtime verifier, `/mcp`, the fabric-kanban
+		// routes and agent model resolution all gate on `isActive` alone, so an
+		// offboarded creator's key kept authenticating there (Fizzy #2380, QA
+		// round 2). Deactivating is what revokes it for those.
+		await revokeOrganizationMemberAccess(INPUT);
+
+		expect(orgApiKeyUpdateMany).toHaveBeenCalledWith({
+			where: {
+				createdByUserId: "user-1",
+				organizationId: "org-1",
+				isActive: true,
+			},
+			data: { isActive: false },
+		});
 	});
 
 	it("sums the counts it actually deleted", async () => {
@@ -166,6 +194,7 @@ describe("revokeOrganizationMemberAccess", () => {
 			projectMemberships: 2,
 			workspaceMemberships: 4,
 			sessionsCleared: 1,
+			apiKeysDeactivated: 1,
 		});
 	});
 
@@ -178,6 +207,7 @@ describe("revokeOrganizationMemberAccess", () => {
 		contributorDeleteMany.mockResolvedValue({ count: 0 });
 		stakeholderDeleteMany.mockResolvedValue({ count: 0 });
 		sessionUpdateMany.mockResolvedValue({ count: 0 });
+		orgApiKeyUpdateMany.mockResolvedValue({ count: 0 });
 
 		const result = await revokeOrganizationMemberAccess(INPUT);
 
@@ -185,6 +215,7 @@ describe("revokeOrganizationMemberAccess", () => {
 			projectMemberships: 0,
 			workspaceMemberships: 0,
 			sessionsCleared: 0,
+			apiKeysDeactivated: 0,
 		});
 		expect(projectMemberDeleteMany).toHaveBeenCalledTimes(1);
 	});

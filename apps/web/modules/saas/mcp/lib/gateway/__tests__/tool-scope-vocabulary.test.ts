@@ -13,6 +13,8 @@
  *  - The procedure accepts a scope the picker never shows, so it exists but is
  *    unreachable. The picker was five scopes behind: `audit_log:read`,
  *    `audit_log:export`, `system_health:read`, `status_updates:read` and `*`.
+ *    Four of those were added to the picker; `*` was removed from the
+ *    procedure instead, and the last test here holds it removed.
  *
  * This is a static consistency check, not a behavioural one — the enforcement
  * itself is covered in `tool-scope-enforcement.test.ts`.
@@ -47,16 +49,22 @@ describe("the scope vocabularies agree", () => {
 		expect(unofferable).toEqual([]);
 	});
 
-	// `*` is accepted by the procedure and deliberately absent from the picker.
-	// A "full access" checkbox sitting beside twenty fine-grained ones invites
-	// the click that makes the other twenty pointless; a key that broad should
-	// take a deliberate API call, not a tick.
-	it("the picker offers everything the procedure accepts, bar the wildcard", () => {
+	it("the picker offers everything the procedure accepts", () => {
 		const missing = ORG_API_KEY_SCOPES.filter(
-			(scope) => scope !== "*" && !offered.has(scope),
+			(scope) => !offered.has(scope),
 		).sort();
 
 		expect(missing).toEqual([]);
+	});
+
+	// The wildcard used to be accepted here and deliberately hidden from the
+	// picker, which meant any member could still mint one by calling the
+	// procedure directly. It is gone from the vocabulary now, so the two lists
+	// agree with no exemption — and this holds it gone, because re-adding it
+	// would restore a credential broader than the role that minted it.
+	it("the wildcard cannot be granted to an organization key", () => {
+		expect(accepted.has("*")).toBe(false);
+		expect(offered.has("*")).toBe(false);
 	});
 
 	it("the picker offers nothing the procedure would reject", () => {

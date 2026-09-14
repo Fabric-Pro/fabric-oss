@@ -52,6 +52,8 @@ export interface RevokeOrganizationMemberAccessResult {
 	workspaceMemberships: number;
 	/** Sessions whose `activeOrganizationId` pointed at this organization. */
 	sessionsCleared: number;
+	/** Organization API keys this member had minted, deactivated. */
+	apiKeysDeactivated: number;
 }
 
 export async function revokeOrganizationMemberAccess(
@@ -70,6 +72,33 @@ export async function revokeOrganizationMemberAccess(
 	const sessions = await db.session.updateMany({
 		where: { userId, activeOrganizationId: organizationId },
 		data: { activeOrganizationId: null },
+	});
+
+	// The keys this person minted for this organization, next, and for the same
+	// reason as sessions: it is a credential, and revoking what it could reach
+	// before revoking the credential itself leaves a window where it still
+	// authenticates.
+	//
+	// Deactivated rather than deleted. Revocation here is the same soft flag the
+	// settings page sets, so the row survives as the record that the key existed
+	// and when it stopped working — and `isActive: false` is terminal, since no
+	// path reactivates a key, so re-inviting the person does not silently put
+	// their old secret back in circulation.
+	//
+	// This is not merely belt-and-braces over the live membership check in
+	// `verifyOrganizationApiKey`. That check covers one verification path; the
+	// runtime verifier, `/mcp`, the fabric-kanban routes, agent model resolution
+	// and readiness evidence all gate on `isActive` alone and never ask whether
+	// the creator is still a member. For those, this statement IS the
+	// revocation.
+	//
+	// Scoped by the `organizationId` column rather than through a relation,
+	// because the key row carries its tenant directly — the keys this person
+	// minted in their other organizations are none of this offboarding's
+	// business.
+	const apiKeys = await db.organizationApiKey.updateMany({
+		where: { createdByUserId: userId, organizationId, isActive: true },
+		data: { isActive: false },
 	});
 
 	const projectMemberships = await db.projectMember.deleteMany({
@@ -92,5 +121,6 @@ export async function revokeOrganizationMemberAccess(
 		workspaceMemberships:
 			administrators.count + contributors.count + stakeholders.count,
 		sessionsCleared: sessions.count,
+		apiKeysDeactivated: apiKeys.count,
 	};
 }
