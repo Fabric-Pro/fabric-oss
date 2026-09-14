@@ -148,9 +148,8 @@ describe("PublishingShortPostSchema", () => {
 	it("REJECTS two options sharing a label", () => {
 		// The label is the selection key: the client sends a label and the server
 		// reads that option's text back out of the draft. Two options under one
-		// label make the key ambiguous, so picking the second silently adopts the
-		// first one's text — the reader chooses one post and a different post is
-		// what gets published.
+		// label make the key ambiguous, so neither can be selected — the selection
+		// procedure refuses that label as ambiguous and asks for a regeneration.
 		const parsed = PublishingShortPostSchema.safeParse({
 			options: [
 				option({ label: "Direct", text: "First." }),

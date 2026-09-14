@@ -22,8 +22,8 @@
  * this is a second prompt rather than the short post's under another label.
  *
  * NOT DIFFERENT: the locked clauses. This module does not define its own — it
- * re-exports `buildShortPostLockedClauses`, so the two content types cannot
- * merely START with the same output contract and approval rules, they cannot
+ * calls `buildShortPostLockedClauses`, so the two content types cannot
+ * merely START with the same output instructions and approval rules, they cannot
  * diverge at all. The fold instruction lives in the EDITABLE body instead, and
  * that placement is the point: the fold is craft advice an org may reword for
  * its own house style, where the approval rules are safety and an org must not
@@ -134,9 +134,10 @@ export type LinkedInPostOption = z.infer<typeof LinkedInPostOptionSchema>;
  * Labels must be DISTINCT, and that is correctness rather than presentation.
  * The label is the selection key: the client sends a label and the server reads
  * that option's text back out of the stored draft. Two options sharing a label
- * make the key ambiguous, so choosing the second silently adopts the first one's
- * text — the reader picks one post and a different post enters the publishing
- * pipeline, with nothing anywhere reporting a problem.
+ * make the key ambiguous, so neither can be selected — the selection procedure
+ * refuses that label as ambiguous and asks for a regeneration. Refusing the
+ * output here fails the attempt visibly instead of persisting a draft whose
+ * options cannot all be chosen.
  *
  * Compared after `trim().toLowerCase()`: "Result first" and "result first " are
  * distinct strings, so selection would in fact resolve, but they are not a
