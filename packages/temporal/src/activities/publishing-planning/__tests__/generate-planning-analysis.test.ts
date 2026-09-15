@@ -546,13 +546,63 @@ describe("generatePlanningAnalysisActivity — what it persists", () => {
 		);
 	});
 
+	it("hands each question's answer options to the reconciliation rows", async () => {
+		// FR39's derived approvals are most of what a reader sees on a topic, and
+		// every one of them carries two pickable options (`approvalOptions`,
+		// `build-planning-analysis-prompt.ts`). The question map below used to
+		// omit `answerOptions` entirely (six fields, not seven), so no stored row
+		// ever carried options and no option button ever rendered
+		// (`TopicQuestionsPanel.tsx:698`, `const options = root.answerOptions ??
+		// []`). Worse: the reconcile writer stores `answerOptions ?? Prisma.DbNull`
+		// on refresh, so an omitted field does not leave existing options alone —
+		// it ERASES them on every regeneration.
+		generateObject.mockResolvedValue({
+			object: {
+				...MODEL_OUTPUT,
+				supportingAssets: {
+					requiresApproval: [
+						{
+							type: "the customer logo",
+							rationale: "Shown on the slide.",
+						},
+					],
+				},
+			},
+			usage: { totalTokens: 100 },
+		});
+
+		await run();
+
+		const content = completePlanningAnalysis.mock.calls[0]?.[0]?.content;
+		const questions =
+			completePlanningAnalysis.mock.calls[0]?.[0]?.questions;
+
+		const contentEntry = content.questions.find(
+			(q: { decisionKind: string }) =>
+				q.decisionKind === "ASSET_APPROVAL",
+		);
+		// Precondition: if the fixture itself carried no options, the row
+		// assertion below would pass vacuously by comparing `null` to `null`.
+		expect(contentEntry?.answerOptions).not.toBeNull();
+		expect(contentEntry?.answerOptions).toHaveLength(2);
+
+		const row = questions.find(
+			(q: { questionId: string }) =>
+				q.questionId === contentEntry.questionId,
+		);
+		// The fixture is the shipped option text, never hand-typed: the row's
+		// options must equal the SAME question's options in `content.questions`.
+		expect(row?.answerOptions).toEqual(contentEntry.answerOptions);
+		expect(row?.answerOptions).toHaveLength(2);
+	});
+
 	it("hands the resolved questions to completePlanningAnalysis as reconciliation rows", async () => {
 		// This is the single link that makes reconciliation happen at all
 		// (`publishing-decisions.ts`): `content.questions` is the analysis's own
 		// record of what it raised, but `reconcileTopicQuestions` never sees the
 		// content blob — only this separate `questions` argument. Pinned by
 		// comparing it against `content.questions` itself (projected down to the
-		// 6 fields the DB layer's `ReconcilableQuestion` type takes), so deleting
+		// fields the DB layer's `ReconcilableQuestion` type takes), so deleting
 		// the argument, or letting it drift out of sync with the content, both
 		// fail here rather than only in production.
 		await run();
@@ -569,6 +619,9 @@ describe("generatePlanningAnalysisActivity — what it persists", () => {
 					subject: string | null;
 					question: string;
 					recommendedResponse: string | null;
+					answerOptions:
+						| { text: string; justification: string }[]
+						| null;
 					whyItMatters: string | null;
 				}) => ({
 					questionId: q.questionId,
@@ -576,6 +629,7 @@ describe("generatePlanningAnalysisActivity — what it persists", () => {
 					subject: q.subject,
 					question: q.question,
 					recommendedResponse: q.recommendedResponse,
+					answerOptions: q.answerOptions,
 					whyItMatters: q.whyItMatters,
 				}),
 			),

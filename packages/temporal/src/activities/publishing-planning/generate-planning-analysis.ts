@@ -295,6 +295,9 @@ export async function generatePlanningAnalysisActivity(
 				subject,
 				question: b.need.trim(),
 				recommendedResponse: null,
+				// A blocker carries no recommended answer either — see the
+				// docblock above.
+				answerOptions: null,
 				whyItMatters: b.whyItMatters?.trim() || null,
 			};
 		});
@@ -338,6 +341,7 @@ export async function generatePlanningAnalysisActivity(
 			subject: q.subject,
 			question: q.question,
 			recommendedResponse: q.recommendedResponse,
+			answerOptions: q.answerOptions,
 			whyItMatters: q.whyItMatters,
 		})),
 		blockers,

@@ -119,8 +119,24 @@ const QUESTION_A = {
 	subject: "the named customer",
 	question: "May we name the customer?",
 	recommendedResponse: "Ask their marketing contact first.",
+	answerOptions: null,
 	whyItMatters: "A case study without the name is a different piece.",
 };
+/**
+ * Real pickable options (Fizzy #1851): the
+ * derived Approved/Not-approved pair `resolveConfirmationQuestions` mints for
+ * an asset needing approval. Neither write branch below had a test asserting
+ * what `reconcileTopicQuestions` does with `answerOptions` at all — every
+ * existing case here uses `QUESTION_A`, whose `answerOptions` is `null`.
+ */
+const OPTIONS = [
+	{
+		text: "Approved — the draft may use the customer logo.",
+		justification: "The draft can state it plainly.",
+	},
+	{ text: "Not approved — leave the customer logo out.", justification: "" },
+];
+const QUESTION_WITH_OPTIONS = { ...QUESTION_A, answerOptions: OPTIONS };
 const BASE = {
 	topicId: "topic-1",
 	projectId: "proj-1",
@@ -218,6 +234,25 @@ describe("reconcileTopicQuestions", () => {
 		);
 	});
 
+	it("writes the question's answerOptions on create", async () => {
+		findManyRoots.mockResolvedValue([]);
+
+		await reconcileTopicQuestions(tx, {
+			topicId: "topic-1",
+			projectId: "proj-1",
+			organizationId: "org-1",
+			userId: null,
+			analysisVersion: 1,
+			questions: [QUESTION_WITH_OPTIONS],
+		});
+
+		expect(createEntry).toHaveBeenCalledWith(
+			expect.objectContaining({
+				data: expect.objectContaining({ answerOptions: OPTIONS }),
+			}),
+		);
+	});
+
 	it("refreshes an OPEN root in place rather than minting a second one", async () => {
 		// The whole point of the derived questionId: a regeneration that rephrases
 		// the same decision must land on the SAME row, or the user is asked twice.
@@ -273,6 +308,23 @@ describe("reconcileTopicQuestions", () => {
 					whyItMatters: QUESTION_A.whyItMatters,
 					analysisVersion: BASE.analysisVersion,
 				}),
+			}),
+		);
+	});
+
+	it("writes the question's answerOptions on refresh", async () => {
+		findManyRoots.mockResolvedValue([
+			{ id: "root-1", questionId: QUESTION_A.questionId, status: "OPEN" },
+		]);
+
+		await reconcileTopicQuestions(tx, {
+			...BASE,
+			questions: [QUESTION_WITH_OPTIONS],
+		});
+
+		expect(claimRoot).toHaveBeenCalledWith(
+			expect.objectContaining({
+				data: expect.objectContaining({ answerOptions: OPTIONS }),
 			}),
 		);
 	});
