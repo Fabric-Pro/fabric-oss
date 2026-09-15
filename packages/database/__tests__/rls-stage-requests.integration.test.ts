@@ -15,8 +15,13 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { PrismaClient } from "../prisma/generated/client";
 
-const RLS_ROLE = "fabric_rls_test";
-const RLS_PASSWORD = "fabric_rls_test";
+// Own LOGIN role on purpose: the shared `fabric_rls_test` role from
+// `_helpers/rls-role.ts` is NOLOGIN and entered with SET LOCAL ROLE inside a
+// superuser transaction, which the delivery module's own transactions cannot
+// do. This suite connects AS the restricted role instead, so every query the
+// choke point issues is evaluated under RLS.
+const RLS_ROLE = "fabric_rls_stage_test";
+const RLS_PASSWORD = "fabric_rls_stage_test";
 
 function rlsUrl(): string {
 	const url = new URL(process.env.DATABASE_URL ?? "");
@@ -43,6 +48,7 @@ vi.mock("../prisma/client", async (importOriginal) => {
 const rootDb = new PrismaClient({
 	adapter: new PrismaPg({ connectionString: process.env.DATABASE_URL ?? "" }),
 });
+
 import {
 	approveStageTransitionRequest,
 	enforceStageTransition,

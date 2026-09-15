@@ -19,6 +19,8 @@ const INTEGRATION_TESTS = [
 	"__tests__/rls/incident-tables.test.ts",
 	// Governed stage-request RLS regression (real Postgres, NOSUPERUSER role).
 	"__tests__/rls-stage-requests.integration.test.ts",
+	// Discovery run posting vs cancel vs completion under real row locks.
+	"__tests__/discovery-run-contention.integration.test.ts",
 	// Excalidraw default-MCP backfill migration replay.
 	// Requires DATABASE_URL to run the migration's data-write steps
 	// against a real Postgres. The test's
