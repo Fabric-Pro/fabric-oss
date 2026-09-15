@@ -1,6 +1,9 @@
 "use client";
 
-import { toSingleLineSubject } from "@repo/utils/publishing-restrictions";
+import {
+	isUnresolvedDecisionStatus,
+	toSingleLineSubject,
+} from "@repo/utils/publishing-restrictions";
 import { useSession } from "@saas/auth/hooks/use-session";
 import { useAiSidebarExpanded } from "@saas/shared/components/copilot/ai-sidebar-layout";
 import { orpc } from "@shared/lib/orpc-query-utils";
@@ -433,7 +436,10 @@ export function TopicItemPage({
 	 * Counted from the SAME threads the tab renders, so a badge cannot claim
 	 * work the page does not show. `CONTENT_TYPE` rows are excluded for the
 	 * reason the questions panel excludes them — they are settings now, and a
-	 * legacy one is not something anybody can answer.
+	 * legacy one is not something anybody can answer. For the QUESTION count,
+	 * unresolved means `OPEN` or `POSSIBLY_RESOLVED` (`isUnresolvedDecisionStatus`)
+	 * — a question a regeneration stopped raising still needs a person; the
+	 * BLOCKER count below stays `OPEN`-only.
 	 */
 	const openBlockerCount = (decisionsQuery.data?.threads ?? []).filter(
 		(thread) =>
@@ -442,7 +448,7 @@ export function TopicItemPage({
 	const openQuestionCount = (decisionsQuery.data?.threads ?? []).filter(
 		(thread) =>
 			thread.root.kind === "QUESTION" &&
-			thread.root.status === "OPEN" &&
+			isUnresolvedDecisionStatus(thread.root.status) &&
 			thread.root.decisionKind !== "CONTENT_TYPE",
 	).length;
 
@@ -464,7 +470,9 @@ export function TopicItemPage({
 	 * has NOT resolved, and an assistant that rewrites the document without
 	 * them writes over the uncertainty instead of around it. CONTENT_TYPE rows
 	 * are excluded for the same reason `TopicQuestionsPanel` excludes them —
-	 * they are settings now, not questions.
+	 * they are settings now, not questions. Unresolved means `OPEN` or
+	 * `POSSIBLY_RESOLVED` (`isUnresolvedDecisionStatus`) — a question a
+	 * regeneration stopped raising still needs a person.
 	 */
 	const assistantContext = useMemo<TopicAssistantContext>(
 		() => ({
@@ -478,7 +486,7 @@ export function TopicItemPage({
 					(t) =>
 						t.root.kind === "QUESTION" &&
 						t.root.decisionKind !== "CONTENT_TYPE" &&
-						t.root.status === "OPEN",
+						isUnresolvedDecisionStatus(t.root.status),
 				)
 				// `??` selects on null, not on emptiness, so a whitespace-only
 				// subject used to win and reach the assistant as a blank entry.

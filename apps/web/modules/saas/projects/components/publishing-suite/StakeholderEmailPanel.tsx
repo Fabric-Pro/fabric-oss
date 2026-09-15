@@ -35,13 +35,14 @@ const BODY_MAX = 24000;
  * WHAT IT DOES NOT MIRROR, and the difference is the point: there is no clamp
  * here, so nothing on this panel is ever attributed to Fabric. The case study's
  * `customerIdentity` and `metricsBasis` are lowered server-side against the
- * topic's own open approval threads, and its panel says "Set by Fabric" where
- * that happened. `releaseStatus` has no such thread to compare against — Fabric
- * stores no decision kind about whether work shipped, and the activity's header
- * documents why inventing one would be worse than none — so every status this
- * panel renders is the DRAFT's claim and is worded as one. Saying "Fabric set
- * this" over a value nothing checked would be the more expensive failure: a
- * reader who believes a status was verified stops verifying it.
+ * topic's own unresolved approval threads, and its panel says "Set by Fabric"
+ * where that happened. `releaseStatus` has no such thread to compare
+ * against — Fabric stores no decision kind about whether work shipped, and the
+ * activity's header documents why inventing one would be worse than none — so
+ * every status this panel renders is the DRAFT's claim and is worded as one.
+ * Saying "Fabric set this" over a value nothing checked would be the more
+ * expensive failure: a reader who believes a status was verified stops
+ * verifying it.
  *
  * What the panel owes a reader is therefore that the safety fields OUTSIDE the
  * editable body are visible, both here and in the file that leaves the app:

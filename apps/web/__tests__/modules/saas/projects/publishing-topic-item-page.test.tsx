@@ -1569,7 +1569,7 @@ describe("TopicItemPage — readiness", () => {
 			authorType: "AGENT" as const,
 			authorUserId: null,
 			questionId: id,
-			decisionKind: "CONTENT_TYPE",
+			decisionKind: "CUSTOMER_NAME",
 			subject: null,
 			summary: null,
 			content: `Question ${id}?`,
@@ -1596,10 +1596,32 @@ describe("TopicItemPage — readiness", () => {
 		);
 	});
 
-	it("counts a soft-closed question as answered, not as reopened", () => {
-		// POSSIBLY_RESOLVED means the newest analysis stopped raising something
-		// somebody had already answered. Treating it as open would make a topic
-		// look less ready every time it regenerated.
+	it("leaves a legacy CONTENT_TYPE row out of the ratio at any status (Fizzy #1988 1B)", () => {
+		// CONTENT_TYPE is a setting now: the questions panel, the Summary &
+		// Questions badge and the assistant all drop it, nothing restricts on
+		// it, and a regeneration soft-closes a legacy row that nobody can then
+		// answer or restore. Counting it would hold the topic "not ready"
+		// forever.
+		const legacy = question("legacy", "POSSIBLY_RESOLVED");
+		state.decisionThreads = [
+			{
+				...legacy,
+				root: { ...legacy.root, decisionKind: "CONTENT_TYPE" },
+			},
+			question("a", "RESOLVED"),
+		];
+		renderPage();
+
+		expect(screen.getByTestId("topic-readiness")).toHaveTextContent(
+			"All 1 decisions answered",
+		);
+	});
+
+	it("does not count a soft-closed question as answered (Fizzy #1988 1B)", () => {
+		// POSSIBLY_RESOLVED is written only for a question that was still OPEN
+		// — nobody answered it — when a regenerated analysis stopped raising
+		// it. The generation tab and the drafting prompts treat it as
+		// unresolved; readiness must not call the topic ready beside them.
 		state.decisionThreads = [
 			question("a", "POSSIBLY_RESOLVED"),
 			question("b", "RESOLVED"),
@@ -1607,7 +1629,7 @@ describe("TopicItemPage — readiness", () => {
 		renderPage();
 
 		expect(screen.getByTestId("topic-readiness")).toHaveTextContent(
-			"All 2 decisions answered",
+			"1 of 2 decisions answered",
 		);
 	});
 
@@ -2099,6 +2121,25 @@ describe("TopicItemPage — tab counts", () => {
 			screen.queryByLabelText(/open question/),
 		).not.toBeInTheDocument();
 	});
+
+	it("counts every unresolved question, a soft-closed one included, and keeps non-safety kinds (Fizzy #1988 1B)", () => {
+		state.decisionThreads = [
+			openQuestionThread("audience", {
+				decisionKind: "AUDIENCE_SCOPE",
+				subject: "who this is written for",
+			}),
+			openQuestionThread("other", {
+				decisionKind: "OTHER",
+				status: "POSSIBLY_RESOLVED",
+				subject: "launch timing",
+			}),
+			openQuestionThread("name-soft", { status: "POSSIBLY_RESOLVED" }),
+			openQuestionThread("name-done", { status: "RESOLVED" }),
+		];
+		renderPage();
+
+		expect(screen.getByLabelText("3 open questions")).toBeInTheDocument();
+	});
 });
 
 /**
@@ -2148,6 +2189,30 @@ describe("TopicItemPage — what the assistant is told is still open (Fizzy #198
 		await waitFor(() =>
 			expect(assistantCapture.context?.openQuestions).toEqual([
 				"May we name the customer?",
+			]),
+		);
+	});
+
+	it("tells the assistant about every unresolved question, soft-closed and non-safety kinds included (1B)", async () => {
+		state.decisionThreads = [
+			openQuestionThread("audience", {
+				decisionKind: "AUDIENCE_SCOPE",
+				subject: "who this is written for",
+			}),
+			openQuestionThread("other", {
+				decisionKind: "OTHER",
+				status: "POSSIBLY_RESOLVED",
+				subject: "launch timing",
+			}),
+			openQuestionThread("name-soft", { status: "POSSIBLY_RESOLVED" }),
+			openQuestionThread("name-done", { status: "RESOLVED" }),
+		];
+		renderPage();
+		await waitFor(() =>
+			expect(assistantCapture.context?.openQuestions).toEqual([
+				"who this is written for",
+				"launch timing",
+				"the customer name",
 			]),
 		);
 	});

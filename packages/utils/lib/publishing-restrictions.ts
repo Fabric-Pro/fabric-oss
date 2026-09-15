@@ -1,5 +1,5 @@
 /**
- * Which of a publishing topic's open questions constrain what a draft may say
+ * Which of a publishing topic's unresolved questions constrain what a draft may say
  * (Fizzy #1853).
  *
  * Lives in `@repo/utils` because TWO very different places must agree on it:
@@ -40,6 +40,25 @@ export interface RestrictionThreadRoot {
 }
 
 /**
+ * Whether a decision root's STATUS still counts as unresolved.
+ *
+ * `OPEN`, or `POSSIBLY_RESOLVED` — the value `reconcileTopicQuestions` writes
+ * for a root that was still `OPEN` (nobody had answered it) when a regenerated
+ * analysis stopped raising it. The writer's own docblock calls those two "the
+ * only two statuses this feature ever leaves a root in that are still awaiting
+ * a person". A soft-closed question is not an answered one.
+ *
+ * The STATUS half only. Each reader keeps its own KIND filter — the drafting
+ * restrictions use `SAFETY_CRITICAL_KINDS` plus a type's extras, while the
+ * Summary & Questions badge and the topic assistant count every question except
+ * `CONTENT_TYPE` — and folding a kind rule in here would silently drop
+ * questions from whichever reader it does not fit.
+ */
+export function isUnresolvedDecisionStatus(status: string): boolean {
+	return status === "OPEN" || status === "POSSIBLY_RESOLVED";
+}
+
+/**
  * Whether ONE thread restricts what a draft may assert.
  *
  * A per-thread predicate, and it must stay one. An earlier version of the panel
@@ -50,13 +69,16 @@ export interface RestrictionThreadRoot {
  * decision kind, which is the one arrangement where the buggy predicate and the
  * correct one agree.
  *
- * Only `OPEN` `QUESTION` roots count. An answered decision is not a restriction
- * — counting one would make the warning permanent and teach its reader to
- * ignore it — and an `AI_UPDATE` is a note, not a question.
+ * Only an UNRESOLVED `QUESTION` root counts — `OPEN` or `POSSIBLY_RESOLVED`
+ * (`isUnresolvedDecisionStatus`). A soft-closed question is not an answered
+ * one: nobody answered it, a regeneration merely stopped asking. An answered
+ * decision is not a restriction — counting one would make the warning
+ * permanent and teach its reader to ignore it — and an `AI_UPDATE` is a note,
+ * not a question.
  */
 export function isRestrictingThread(thread: RestrictionThreadRoot): boolean {
 	const { root } = thread;
-	if (root.kind !== "QUESTION" || root.status !== "OPEN") {
+	if (root.kind !== "QUESTION" || !isUnresolvedDecisionStatus(root.status)) {
 		return false;
 	}
 	const kind = root.decisionKind ?? "";
@@ -160,9 +182,9 @@ export const EXTRA_RESTRICTING_KINDS_BY_POST_TYPE: Readonly<
  * Whether ONE thread restricts what a draft of `postType` may assert.
  *
  * The shared predicate first — a kind that constrains every format constrains
- * this one — then the per-type set, behind the same `OPEN` `QUESTION` gate and
- * for the same reasons: an answered decision is not a restriction, and an
- * `AI_UPDATE` is a note rather than a question.
+ * this one — then the per-type set, behind the same unresolved-`QUESTION` gate
+ * (`isUnresolvedDecisionStatus`) and for the same reasons: an answered decision
+ * is not a restriction, and an `AI_UPDATE` is a note rather than a question.
  *
  * `postType` is a plain `string`, NOT the `PublishingTopicPostType` Prisma enum,
  * and must stay that way. `@repo/utils` declares zero `@repo/*` dependencies —
@@ -183,7 +205,7 @@ export function restrictsPostType(
 		return true;
 	}
 	const { root } = thread;
-	if (root.kind !== "QUESTION" || root.status !== "OPEN") {
+	if (root.kind !== "QUESTION" || !isUnresolvedDecisionStatus(root.status)) {
 		return false;
 	}
 	const extra = EXTRA_RESTRICTING_KINDS_BY_POST_TYPE[postType];
@@ -191,6 +213,104 @@ export function restrictsPostType(
 		return false;
 	}
 	return extra.has(root.decisionKind ?? "");
+}
+
+/** One reply as `settledDecision` reads it — a structural subset of a stored decision entry. */
+export interface SettledDecisionReply {
+	id: string;
+	createdAt: Date;
+	status: string;
+	authorType: string;
+	content: string | null;
+}
+
+/**
+ * A decision thread as `settledDecision` reads it.
+ *
+ * Structural, like `RestrictionThreadRoot`: `@repo/utils` is the leaf package
+ * `@repo/database` and `@repo/temporal` sit on and must not import either.
+ * `summary` is declared only so the docblock below can say why it is NOT read.
+ */
+export interface SettledDecisionThread extends RestrictionThreadRoot {
+	root: RestrictionThreadRoot["root"] & { summary?: string | null };
+	replies: readonly SettledDecisionReply[];
+}
+
+/** A decision a project member settled, as the drafting prompts receive it. */
+export interface SettledDecision {
+	subject: string | null;
+	decisionKind: string;
+	answer: string;
+}
+
+/**
+ * The decision a PERSON settled on this thread, or `null`.
+ *
+ * Who authors each half: the SUBJECT is model-authored (the planning analysis
+ * named it); the ANSWER is the member's own recorded reply. Nothing else is
+ * allowed to stand in for the answer.
+ *
+ * Non-null only when all of these hold:
+ *
+ * - the root is a `QUESTION`, and its status is exactly `RESOLVED` — an
+ *   allow-list. `POSSIBLY_RESOLVED` is excluded because the reconciler writes
+ *   it for questions nobody answered ("still awaiting a person", in the
+ *   writer's own words); `REJECTED`, `FORMATTING_ONLY` and `OPEN` are not
+ *   settled by a person either.
+ * - some reply is authored by a `USER`, has status `RESOLVED`, and carries
+ *   non-blank content. The reply STATUS matters: `answerTopicQuestion` and
+ *   `amendTopicQuestionAnswer` write `RESOLVED`, while `setTopicQuestionAssignees`
+ *   appends an assignment note as a `USER` reply with status `OPEN` — and can
+ *   do so on a root that is already `RESOLVED`, so "the newest USER reply" can
+ *   be a note rather than the answer.
+ *
+ * "Newest" is `createdAt` descending, then `id` descending — the same total
+ * order `amendTopicQuestionAnswer` uses, because two amendments can share a
+ * millisecond. The helper sorts; it does not trust arrival order. A blank
+ * newest reply returns `null` rather than falling back to an older one: a
+ * newer blank answer means the older one was superseded, and presenting a
+ * superseded answer as settled is the failure this helper must not cause. The
+ * write procedures now refuse a whitespace-only answer at the input boundary,
+ * so a blank reply reaching here can only be a historical row.
+ *
+ * There is NO fallback to `root.summary`. For a question root that field holds
+ * the model's own question text (`reconcileTopicQuestions` writes
+ * `summary: question.question`), so falling back to it presented the model's
+ * question as the member's answer. A `RESOLVED` root with no qualifying reply
+ * yields nothing.
+ */
+export function settledDecision(
+	thread: SettledDecisionThread,
+): SettledDecision | null {
+	const { root } = thread;
+	if (root.kind !== "QUESTION" || root.status !== "RESOLVED") {
+		return null;
+	}
+	const newestFirst = [...thread.replies].sort((a, b) => {
+		const byTime = b.createdAt.getTime() - a.createdAt.getTime();
+		if (byTime !== 0) {
+			return byTime;
+		}
+		return a.id < b.id ? 1 : a.id > b.id ? -1 : 0;
+	});
+	for (const reply of newestFirst) {
+		if (reply.authorType !== "USER" || reply.status !== "RESOLVED") {
+			continue;
+		}
+		// The newest USER/RESOLVED reply decides the outcome outright: a blank
+		// one returns null here rather than letting the loop continue to an
+		// older reply (see docblock above).
+		const answer = reply.content?.trim();
+		if (!answer) {
+			return null;
+		}
+		return {
+			subject: root.subject,
+			decisionKind: root.decisionKind ?? "OTHER",
+			answer,
+		};
+	}
+	return null;
 }
 
 /**

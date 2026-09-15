@@ -147,6 +147,7 @@ vi.mock("@ui/components/dropdown-menu", () => {
 	};
 });
 
+import { ASSET_RESTRICTING_KINDS } from "@repo/utils/publishing-asset-clamp";
 import { composeWebinarScriptWorkingDraftBody } from "@repo/utils/publishing-webinar-script-body";
 import { WebinarScriptPanel } from "@saas/projects/components/publishing-suite/WebinarScriptPanel";
 
@@ -746,6 +747,74 @@ describe("WebinarScriptPanel — the prompt-source notice", () => {
 });
 
 describe("WebinarScriptPanel — the asset clamp attribution (Task 8)", () => {
+	/**
+	 * The panel's kind→phrase map is the file's ONE widened map — declared
+	 * `Record<string, string>` because its source, `ASSET_RESTRICTING_KINDS`, is
+	 * a `ReadonlySet<string>` rather than an enum. Nothing in the type system
+	 * links the two, so a kind added there gets no compile error for the
+	 * missing phrase; it silently degrades to the generic fallback.
+	 *
+	 * This table is that link, made at test time: its key set is pinned against
+	 * the real set by IDENTITY below, and the loop under it renders every
+	 * member. A phrase swapped between two members fails the loop; a member
+	 * added to the set without a phrase fails the key-set test.
+	 */
+	const CLAMP_KIND_PHRASES: Record<string, string> = {
+		ASSET_APPROVAL: "an unresolved asset-approval thread",
+		INTERNAL_UI: "an unresolved internal-UI review thread",
+		VIDEO_WALKTHROUGH: "an unresolved video-walkthrough review thread",
+	};
+
+	/** The same document, re-clamped onto one asset of a given kind. */
+	const clampedAs = (kind: string) => ({
+		...CLAMPED_DOCUMENT,
+		generation: {
+			promptSource: "BOUND",
+			clamped: {
+				assets: ["Admin panel screen capture"],
+				assetKinds: { "Admin panel screen capture": kind },
+			},
+		},
+	});
+
+	it("carries one phrase per restricting kind, and exactly these three", () => {
+		expect(Object.keys(CLAMP_KIND_PHRASES).sort()).toEqual(
+			[...ASSET_RESTRICTING_KINDS].sort(),
+		);
+	});
+
+	it("names the review kind that moved the asset, for every kind there is", () => {
+		for (const [kind, phrase] of Object.entries(CLAMP_KIND_PHRASES)) {
+			const view = renderPanel({
+				draft: readyDraft(clampedAs(kind), "d2"),
+			});
+
+			expect(
+				screen.getByText(
+					new RegExp(
+						`admin panel screen capture — moved out of the confirmed list by fabric, from ${phrase} naming it\\.`,
+						"i",
+					),
+				),
+			).toBeInTheDocument();
+			view.unmount();
+		}
+	});
+
+	it("degrades to a generic phrase for a kind this client does not know", () => {
+		// A newer deploy can clamp on a kind added after this bundle shipped.
+		// The fallback is still TRUE — an approval thread of some sort named it
+		// — which is why this is the safe direction to degrade in, and why it
+		// needs a test rather than a type.
+		renderPanel({ draft: readyDraft(clampedAs("SOMETHING_NEWER"), "d2") });
+
+		expect(
+			screen.getByText(
+				/admin panel screen capture — moved out of the confirmed list by fabric, from an unresolved approval thread naming it\./i,
+			),
+		).toBeInTheDocument();
+	});
+
 	it("names the asset AND the kind of review that moved it", () => {
 		renderPanel({ draft: readyDraft(CLAMPED_DOCUMENT, "d2") });
 
@@ -811,7 +880,7 @@ describe("WebinarScriptPanel — copying and downloading the draft", () => {
 		// renders on screen, not the generic joined list
 		// `composeWebinarScriptExport` used to send.
 		expect(exported).toContain(
-			"Admin panel screen capture — Moved out of the confirmed list by Fabric, from an open internal-UI review thread naming it.",
+			"Admin panel screen capture — Moved out of the confirmed list by Fabric, from an unresolved internal-UI review thread naming it.",
 		);
 	});
 

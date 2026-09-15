@@ -361,7 +361,7 @@ export function composeNewsletterBlurbWorkingDraftBody(
  * them apart cannot tell a clamp from ordinary caution.
  */
 const ASSET_CLAMP_NOTE =
-	"Moved out of the confirmed list by Fabric, from an open approval thread naming them:";
+	"Moved out of the confirmed list by Fabric, from an unresolved approval thread naming them:";
 
 /**
  * Compose the export a sender takes out of Fabric — everything the working

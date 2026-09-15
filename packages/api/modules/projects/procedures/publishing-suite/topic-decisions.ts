@@ -37,6 +37,26 @@ import {
 import { assertPublishingSuiteFeatureEnabled } from "../../lib/publishing-suite-feature";
 import { requireEligibleProjectForTopic } from "../../lib/publishing-topic-project";
 
+/**
+ * An answer body: non-empty, bounded, and not merely whitespace.
+ *
+ * `.min(1)` alone accepts `"   "` — its length is 3 — so a regex check sits
+ * on top of it rather than a `.refine()`: a refinement is invisible in the
+ * published OpenAPI document, but `ZodToJsonSchemaConverter` turns a regex
+ * check into a `pattern`, so the rule reaches API consumers too. `\S`
+ * matches exactly the characters `String.prototype.trim` strips, so
+ * "contains a non-`\s` character" is the same rule as "trimmed length > 0".
+ * Not a `.trim()` transform: the stored text must stay exactly what the
+ * person sent, only its acceptance is checked. Shared by
+ * `answerTopicQuestionProcedure` and `amendTopicQuestionProcedure` below, so
+ * the two write paths cannot drift on what counts as blank.
+ */
+const answerBodySchema = z
+	.string()
+	.min(1)
+	.max(10_000)
+	.regex(/\S/, { message: "An answer cannot be only whitespace." });
+
 const TopicDecisionEntrySchema = z.object({
 	id: z.string(),
 	parentId: z.string().nullable(),
@@ -156,7 +176,7 @@ export const answerTopicQuestionProcedure = tenantProtectedProcedure
 			topicId: z.string(),
 			organizationId: z.string().nullable().optional(),
 			questionId: z.string().min(1).max(500),
-			answer: z.string().min(1).max(10_000),
+			answer: answerBodySchema,
 			answerSource: z.enum(["AI_SUGGESTED", "AI_EDITED", "MANUAL"]),
 			/**
 			 * Which kind of root is being settled — a question, or a blocker.
@@ -240,7 +260,7 @@ export const amendTopicQuestionProcedure = tenantProtectedProcedure
 			questionId: z.string().min(1).max(500),
 			/** The answer turn being replaced. */
 			supersedesId: z.string().min(1),
-			answer: z.string().min(1).max(10_000),
+			answer: answerBodySchema,
 			answerSource: z.enum(["AI_SUGGESTED", "AI_EDITED", "MANUAL"]),
 		}),
 	)

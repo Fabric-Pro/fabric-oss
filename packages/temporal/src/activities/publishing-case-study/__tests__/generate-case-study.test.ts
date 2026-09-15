@@ -18,11 +18,11 @@ import { databaseValueImports } from "../../publishing-shared/__tests__/_ast-gua
  *     `openQuestionSubjects`, never in the "NOT approved for use" list.
  *  2. THE CLAMP. `customerIdentity`, `metricsBasis` and `confirmedAssets` are
  *     MODEL claims a downstream reader trusts without re-reading the narrative.
- *     Two enum transitions are corrected against the topic's open approvals and
- *     a claimed-confirmed asset an open approval is about is demoted; the two
- *     TERMINAL SAFE STATES must survive untouched, nothing is ever upgraded,
- *     and an UNRELATED confirmed asset must survive — a clamp that fires on
- *     everything is one its reader learns to ignore.
+ *     Two enum transitions are corrected against the topic's unresolved
+ *     approvals and a claimed-confirmed asset an unresolved approval is about
+ *     is demoted; the two TERMINAL SAFE STATES must survive untouched, nothing
+ *     is ever upgraded, and an UNRELATED confirmed asset must survive — a
+ *     clamp that fires on everything is one its reader learns to ignore.
  *  3. THE WRITE SURFACE. The card's guarantee is that generating a case study
  *     neither publishes anything, nor pushes to a feed, nor creates an asset,
  *     nor mutates a tag. It is asserted as an IMPORT SURFACE rather than as
@@ -202,7 +202,37 @@ function answeredQuestion(
 			subject,
 			summary: null,
 		},
-		replies: [{ authorType: "USER", content: answer }],
+		replies: [
+			{
+				id: "reply-1",
+				createdAt: new Date("2026-09-01T10:00:00Z"),
+				status: "RESOLVED",
+				authorType: "USER",
+				content: answer,
+			},
+		],
+	};
+}
+
+/**
+ * A SOFT-CLOSED question: a regenerated analysis stopped raising it and nobody
+ * answered it. Its `summary` is the model's question text, as
+ * `reconcileTopicQuestions` stores it.
+ */
+function softClosedQuestion(
+	decisionKind: string,
+	subject: string | null,
+	question: string,
+) {
+	return {
+		root: {
+			kind: "QUESTION",
+			status: "POSSIBLY_RESOLVED",
+			decisionKind,
+			subject,
+			summary: question,
+		},
+		replies: [],
 	};
 }
 
@@ -559,6 +589,22 @@ describe("generateCaseStudyActivity — the restriction split", () => {
 		expect(prompt).toContain("Yes, we may name them.");
 		expect(persistedContent().generation.restrictedSubjects).toEqual([]);
 	});
+
+	it("keeps a SOFT-CLOSED safety question restricted", async () => {
+		listTopicDecisions.mockResolvedValue([
+			softClosedQuestion(
+				"CUSTOMER_NAME",
+				"example-org",
+				"May we name example-org?",
+			),
+		]);
+
+		await run();
+
+		expect(persistedContent().generation.restrictedSubjects).toEqual([
+			{ kind: "CUSTOMER_NAME", label: "example-org" },
+		]);
+	});
 });
 
 describe("generateCaseStudyActivity — the clamp", () => {
@@ -569,6 +615,27 @@ describe("generateCaseStudyActivity — the clamp", () => {
 		});
 		listTopicDecisions.mockResolvedValue([
 			openQuestion("CUSTOMER_NAME", "example-org"),
+		]);
+
+		await run();
+
+		expect(persistedContent().customerIdentity).toBe("APPROVAL_NEEDED");
+		expect(persistedContent().generation.clamped).toEqual({
+			customerIdentity: "CUSTOMER_NAME",
+		});
+	});
+
+	it("lowers APPROVED to APPROVAL_NEEDED when a CUSTOMER_NAME question is SOFT-CLOSED", async () => {
+		generateObject.mockResolvedValue({
+			object: { ...MODEL_OUTPUT, customerIdentity: "APPROVED" },
+			usage: {},
+		});
+		listTopicDecisions.mockResolvedValue([
+			softClosedQuestion(
+				"CUSTOMER_NAME",
+				"example-org",
+				"May we name example-org?",
+			),
 		]);
 
 		await run();
@@ -634,10 +701,10 @@ describe("generateCaseStudyActivity — the clamp", () => {
 		expect(persistedContent().generation.clamped).toEqual({});
 	});
 
-	it("never UPGRADES APPROVAL_NEEDED to APPROVED when nothing is open", async () => {
+	it("never UPGRADES APPROVAL_NEEDED to APPROVED when nothing is unresolved", async () => {
 		// The clamp only ever lowers. The model saw the narrative; the absence
-		// of an open question is not evidence that the story stopped needing an
-		// approval.
+		// of an unresolved question is not evidence that the story stopped
+		// needing an approval.
 		generateObject.mockResolvedValue({
 			object: { ...MODEL_OUTPUT, customerIdentity: "APPROVAL_NEEDED" },
 			usage: {},
@@ -650,7 +717,7 @@ describe("generateCaseStudyActivity — the clamp", () => {
 		expect(persistedContent().generation.clamped).toEqual({});
 	});
 
-	it("never UPGRADES PLACEHOLDER to CONFIRMED when nothing is open", async () => {
+	it("never UPGRADES PLACEHOLDER to CONFIRMED when nothing is unresolved", async () => {
 		generateObject.mockResolvedValue({
 			object: { ...MODEL_OUTPUT, metricsBasis: "PLACEHOLDER" },
 			usage: {},
@@ -714,7 +781,7 @@ describe("generateCaseStudyActivity — the clamp", () => {
 		// above — the panel renders it as cleared for use — and it was the one
 		// the clamp did not cover. The NEGATIVE half is the point of this case:
 		// the unrelated asset must SURVIVE, because demoting a whole list on any
-		// open approval teaches the reader to ignore it.
+		// unresolved approval teaches the reader to ignore it.
 		generateObject.mockResolvedValue({
 			object: {
 				...MODEL_OUTPUT,

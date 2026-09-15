@@ -70,7 +70,7 @@ const BODY_MAX = 40000;
  *    the code-side default was recovered (`DEFAULT_RENDER_FAILED`) — and
  *    nothing else on the page says so.
  *  - The asset clamp carries a `kind` the Case Study's does not: which of the
- *    three restricting decision kinds (an open asset approval, an
+ *    three restricting decision kinds (an unresolved asset approval, an
  *    unconfirmed internal-UI capture, an unconfirmed video walkthrough)
  *    caused Fabric to move a claimed-confirmed asset into the
  *    needs-confirmation list. Rendering the LABEL alone would say Fabric
@@ -142,11 +142,11 @@ const PROMPT_SOURCE_NOTICE: Record<
  * the WHY.
  */
 const ASSET_CLAMP_KIND_LABELS: Record<string, string> = {
-	ASSET_APPROVAL: "an open asset-approval thread",
-	INTERNAL_UI: "an open internal-UI review thread",
-	VIDEO_WALKTHROUGH: "an open video-walkthrough review thread",
+	ASSET_APPROVAL: "an unresolved asset-approval thread",
+	INTERNAL_UI: "an unresolved internal-UI review thread",
+	VIDEO_WALKTHROUGH: "an unresolved video-walkthrough review thread",
 };
-const ASSET_CLAMP_KIND_FALLBACK = "an open approval thread";
+const ASSET_CLAMP_KIND_FALLBACK = "an unresolved approval thread";
 
 /**
  * Said of an asset the activity moved OUT of `confirmed`, never of one the

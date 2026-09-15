@@ -78,7 +78,7 @@ export type CaseStudyDecision = ShortPostDecision;
  *    was deliberately written anonymously, or is asserting an identity nobody
  *    has approved yet. An anonymized case study and an unapproved-but-named one
  *    read almost the same to someone skimming; only this field separates them,
- *    and the activity clamps it against the topic's open questions.
+ *    and the activity clamps it against the topic's unresolved questions.
  *  - `metricsBasis` — whether the numbers in the story are confirmed, deliberately
  *    qualitative, or bracketed placeholders. Same reasoning: a plausible number
  *    in a draft is indistinguishable from a confirmed one at a glance.

@@ -21,7 +21,7 @@ import { databaseValueImports } from "../../publishing-shared/__tests__/_ast-gua
  *     study's set does: that is the one difference between the two 2C sets, and
  *     the only case that can tell them apart.
  *  2. NO CLAMP, asserted rather than assumed. The case study lowers three model
- *     claims against the topic's open approvals; this type has nothing to
+ *     claims against the topic's unresolved approvals; this type has nothing to
  *     compare a release claim against, so the activity writes what the model
  *     said. The cases below pin that the stored document is `parsed.data`
  *     unchanged INCLUDING on the fixtures that would trip a naive clamp, so a
@@ -197,7 +197,37 @@ function answeredQuestion(
 			subject,
 			summary: null,
 		},
-		replies: [{ authorType: "USER", content: answer }],
+		replies: [
+			{
+				id: "reply-1",
+				createdAt: new Date("2026-09-01T10:00:00Z"),
+				status: "RESOLVED",
+				authorType: "USER",
+				content: answer,
+			},
+		],
+	};
+}
+
+/**
+ * A SOFT-CLOSED question: a regenerated analysis stopped raising it and nobody
+ * answered it. Its `summary` is the model's question text, as
+ * `reconcileTopicQuestions` stores it.
+ */
+function softClosedQuestion(
+	decisionKind: string,
+	subject: string | null,
+	question: string,
+) {
+	return {
+		root: {
+			kind: "QUESTION",
+			status: "POSSIBLY_RESOLVED",
+			decisionKind,
+			subject,
+			summary: question,
+		},
+		replies: [],
 	};
 }
 
@@ -599,18 +629,34 @@ describe("generateStakeholderEmailActivity — the restriction split", () => {
 		expect(prompt).toContain("The steering group.");
 		expect(persistedContent().generation.openQuestionSubjects).toEqual([]);
 	});
+
+	it("keeps a SOFT-CLOSED safety question restricted", async () => {
+		listTopicDecisions.mockResolvedValue([
+			softClosedQuestion(
+				"CUSTOMER_NAME",
+				"example-org",
+				"May we name example-org?",
+			),
+		]);
+
+		await run();
+
+		expect(persistedContent().generation.restrictedSubjects).toEqual([
+			{ kind: "CUSTOMER_NAME", label: "example-org" },
+		]);
+	});
 });
 
 describe("generateStakeholderEmailActivity — release status is NOT clamped", () => {
 	/**
-	 * The case study clamps three model claims against the topic's open
+	 * The case study clamps three model claims against the topic's unresolved
 	 * approvals, because the claim and the thread name the same thing. Nothing
 	 * here does, and the activity's header explains why: Fabric's decision
 	 * vocabulary has no kind that asks whether the work shipped, and neither the
 	 * topic row nor the collected context carries a release state. A clamp built
 	 * on `CLAIM_STRENGTH` — the nearest-looking kind — would demote correctly
-	 * SHIPPED emails on any topic with an open question about a number, which is
-	 * most of them.
+	 * SHIPPED emails on any topic with an unresolved question about a number,
+	 * which is most of them.
 	 *
 	 * These cases pin that absence on the fixtures a naive clamp would trip, so
 	 * adding one later is a deliberate edit here rather than a silent behaviour
