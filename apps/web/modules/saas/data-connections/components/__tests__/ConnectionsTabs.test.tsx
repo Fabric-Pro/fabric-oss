@@ -6,6 +6,12 @@
  * - `PageTourButton` calls `useFeatureFlag` unconditionally, above its own
  *   early return, and `useFeatureFlag` throws by design without a provider.
  *   Stubbing it is smaller than wrapping every case in a FeatureFlagProvider.
+ *   The stub echoes its `pageId` instead of rendering nothing: which tour this
+ *   header launches is itself behavior worth pinning now that one route
+ *   carries two of them.
+ * - `next/navigation` is re-mocked locally. The global setup stub hands back an
+ *   empty URLSearchParams, which is fine for the default tab and useless for
+ *   every other one, since the tab is read from the query string.
  * - `ConnectionsPageContent` is replaced by a placeholder that renders
  *   `toolbarStart`. That keeps the real component's query/oRPC graph out of
  *   these cases, and — because the segmented control reaches the child as a
@@ -20,10 +26,22 @@ import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ConnectionsTabs } from "../ConnectionsTabs";
 
-const state = vi.hoisted(() => ({ childFails: false }));
+const state = vi.hoisted(() => ({ childFails: false, search: "" }));
+
+vi.mock("next/navigation", () => ({
+	useRouter: () => ({
+		replace: vi.fn(),
+		push: vi.fn(),
+		prefetch: vi.fn(),
+	}),
+	usePathname: () => "/app/example-org/connections",
+	useSearchParams: () => new URLSearchParams(state.search),
+}));
 
 vi.mock("@saas/get-started/components/PageTourButton", () => ({
-	PageTourButton: () => null,
+	PageTourButton: ({ pageId }: { pageId: string }) => (
+		<span data-testid="page-tour" data-page-id={pageId} />
+	),
 }));
 
 vi.mock("../ConnectionsPageContent", () => ({
@@ -56,6 +74,7 @@ const introParagraph = () =>
 describe("ConnectionsTabs", () => {
 	beforeEach(() => {
 		state.childFails = false;
+		state.search = "";
 	});
 
 	// Covers AC6. This pins behavior that already ships — the heading was
@@ -210,5 +229,33 @@ describe("ConnectionsTabs", () => {
 
 		expect(hintText.length).toBeGreaterThan(0);
 		expect(introText.endsWith(hintText)).toBe(true);
+	});
+
+	// The header's compass opens "this page's" tour, and this route stands in
+	// for two pages. The id is pinned per tab because a single constant is both
+	// the easy edit and the bug: it showed the integrations walkthrough to
+	// someone reading the MCP tab, and left the mcp-servers tour with no
+	// launcher at all once /mcp-servers became a redirect.
+	const pageTourId = () =>
+		screen.getByTestId("page-tour").getAttribute("data-page-id");
+
+	it("launches the integrations tour on the default view", () => {
+		renderTabs();
+
+		expect(pageTourId()).toBe("integrations");
+	});
+
+	it("launches the integrations tour on the Integrations tab", () => {
+		state.search = "tab=integrations";
+		renderTabs();
+
+		expect(pageTourId()).toBe("integrations");
+	});
+
+	it("launches the MCP servers tour on the MCP servers tab", () => {
+		state.search = "tab=mcp";
+		renderTabs();
+
+		expect(pageTourId()).toBe("mcp-servers");
 	});
 });

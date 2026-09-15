@@ -245,7 +245,11 @@ const WORKSPACE_GROUP: GsGroup = {
 			description:
 				"Register Model Context Protocol servers to give agents new tools and data sources. They live under Connections, beside the integrations.",
 			icon: ServerIcon,
-			anchor: "nav-integrations",
+			// Not `nav-integrations`: this item and the one above it would then
+			// spotlight the same sidebar row, and "Show me" under a heading that
+			// says MCP servers would highlight one labelled Connections. The href
+			// already opens the tab, so point at something on it.
+			anchor: "mcp-servers-add-registry",
 			href: ({ basePath }) => `${basePath}/connections?tab=mcp`,
 		},
 		{

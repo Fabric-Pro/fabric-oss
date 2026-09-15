@@ -160,7 +160,6 @@ const launcherSource = [
 	"apps/web/modules/saas/projects/components/ProjectsHero.tsx",
 	"apps/web/modules/saas/workflows/components/WorkflowsHero.tsx",
 	"apps/web/modules/saas/workspaces/components/WorkspacesHero.tsx",
-	"apps/web/modules/saas/mcp/components/MCPServersHero.tsx",
 	"apps/web/modules/saas/reports/components/ReportsHero.tsx",
 	"apps/web/modules/saas/skills/components/SkillsHero.tsx",
 	"apps/web/modules/saas/agent-templates/components/AgentTemplatesHero.tsx",

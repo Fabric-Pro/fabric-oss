@@ -52,7 +52,6 @@ import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
 import { useDebounceValue } from "usehooks-ts";
 import { useMcpConnection } from "../hooks/useMcpConnection";
-import { MCPServersHero } from "./MCPServersHero";
 import { McpChatDialog } from "./McpChatDialog";
 import { McpConfigTile } from "./McpConfigTile";
 import { McpServerCard } from "./McpServerCard";
@@ -63,8 +62,6 @@ type ViewMode = "grid" | "list";
 
 type McpServersViewProps = {
 	organizationId?: string | null;
-	/** Rendered inside the Connections page, which has its own header. */
-	embedded?: boolean;
 	/** Prefill the registry search, e.g. from a tile on the Connections page. */
 	initialRegistrySearch?: string;
 };
@@ -229,7 +226,6 @@ function getDefaultSemanticMetadata(server: {
 
 export function McpServersView({
 	organizationId,
-	embedded = false,
 	initialRegistrySearch = "",
 }: McpServersViewProps = {}) {
 	const qc = useQueryClient();
@@ -1128,9 +1124,6 @@ export function McpServersView({
 
 	return (
 		<div className="space-y-6">
-			{/* Hero Section */}
-			{embedded ? null : <MCPServersHero />}
-
 			{/* Header with Search and Add Button */}
 			<div className="app-surface flex flex-col gap-3 rounded-2xl p-3 sm:flex-row sm:items-center sm:justify-between">
 				<div
