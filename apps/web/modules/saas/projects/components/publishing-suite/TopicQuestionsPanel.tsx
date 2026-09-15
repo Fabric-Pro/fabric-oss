@@ -724,15 +724,53 @@ function QuestionCard({
 	// start open and hide them.
 	const hasRecommendation =
 		Boolean(root.recommendedResponse?.trim()) || options.length > 0;
-	// A question with no recommendation has nothing to accept or edit, so its
-	// free-form field IS the only affordance and starts open. One WITH a
-	// recommendation starts collapsed, showing it plus "Use this answer" /
-	// "Edit" — whether the editor was opened FROM the recommendation is what
-	// separates a MANUAL answer from one the AI seeded, the same distinction
-	// `SummaryQuestionsPanel` draws for features.
-	const [isEditing, setIsEditing] = useState(() => !hasRecommendation);
-	const [fromSuggestion, setFromSuggestion] = useState(false);
+	/**
+	 * Whether the person explicitly opened the editor ("Edit", a pencil, "Type
+	 * your own").
+	 *
+	 * DERIVED (`isEditing` below), not stored once at mount. The card keeps its
+	 * key across a refetch (`thread.root.id`), and a regenerated analysis can
+	 * refresh an OPEN root with `answerOptions` it did not have before — exactly
+	 * the upgrade path this feature's own changeset describes. A one-time
+	 * decision made at mount cannot see that: a question with no recommendation
+	 * and no options started in the editor, and when options arrived later on
+	 * the SAME root the stored flag never moved, so they stayed hidden behind an
+	 * editor nobody opened until the card remounted.
+	 *
+	 * The same stored state also broke "Ask" the other way: on a question with
+	 * NOTHING to accept, `cancelEdit` set it `false`, and false with no
+	 * recommendation and no options fell through to the recommendation branch —
+	 * rendering an empty "Suggested: " line beside a "Use this answer" button
+	 * that would have submitted nothing.
+	 */
+	const [editorOpened, setEditorOpened] = useState(false);
+	/**
+	 * The text the editor was seeded with, or `null` when it was opened empty
+	 * (#1907's shape, mirrored from `SummaryQuestionsPanel`). Seeding is what
+	 * separates the three provenances on submit: `null` is MANUAL — nothing was
+	 * taken from the AI, including "type your own" on a question that DID offer
+	 * a recommendation or options — an UNCHANGED seed is a plain AI_SUGGESTED
+	 * acceptance, and a CHANGED one is a real AI_EDITED edit.
+	 *
+	 * Replaces a `fromSuggestion` boolean that compared the typed text against
+	 * `root.recommendedResponse` instead. That comparison is wrong for every
+	 * OPTION: a derived approval question has `recommendedResponse: null`, so
+	 * an untouched option edit always failed the comparison and was recorded
+	 * as `AI_EDITED` regardless of whether anything had actually changed.
+	 */
+	const [editingSeed, setEditingSeed] = useState<string | null>(null);
 	const [draft, setDraft] = useState("");
+	// The editor is SHOWN when the person opened it — including by typing,
+	// which the textarea's `onChange` below also treats as opening it, so a
+	// person mid-draft is never collapsed out from under themselves by
+	// options arriving — or when there is nothing to accept (no
+	// recommendation and no options — the field is then the only affordance,
+	// whatever `editorOpened` says). `editorOpened` alone is enough: every
+	// path that gives `draft` a non-empty value also sets it, and the one
+	// path that clears both together (`cancelEdit`) keeps that true, so a
+	// separate `draft !== ""` term would only ever agree with `editorOpened`
+	// and never catch a case it misses.
+	const isEditing = editorOpened || !hasRecommendation;
 	// Resolved against the members already known, not the filtered search
 	// result: narrowing the list while typing a second name must not silently
 	// un-mention the first.
@@ -741,21 +779,24 @@ function QuestionCard({
 	/**
 	 * Open the editor seeded with the single recommendation, from "Edit".
 	 *
-	 * `fromSuggestion` is true because the person started from the AI's wording.
+	 * The seed is the recommendation's own text, because the person started
+	 * from the AI's wording — saved back UNCHANGED, that is an acceptance
+	 * (`AI_SUGGESTED`); changed, it is `AI_EDITED`.
 	 */
 	const openEditorFromRecommendation = () => {
-		setDraft(root.recommendedResponse ?? "");
-		setFromSuggestion(true);
-		setIsEditing(true);
+		const seed = root.recommendedResponse ?? "";
+		setDraft(seed);
+		setEditingSeed(seed);
+		setEditorOpened(true);
 	};
 
 	/**
 	 * Open an EMPTY editor, from "Type your own".
 	 *
-	 * Seeding nothing and leaving `fromSuggestion` false is what makes the
-	 * answer record `MANUAL`. Both were previously routed through one helper
-	 * that always seeded and always set the flag, so "type your own" pre-filled
-	 * the AI's sentence and then recorded `AI_SUGGESTED`/`AI_EDITED` for it —
+	 * Seeding nothing and leaving `editingSeed` `null` is what makes the answer
+	 * record `MANUAL`. Both were previously routed through one helper that
+	 * always seeded and always set the flag, so "type your own" pre-filled the
+	 * AI's sentence and then recorded `AI_SUGGESTED`/`AI_EDITED` for it —
 	 * `MANUAL` was unreachable on any question that carried a recommendation,
 	 * which is precisely the misclassification
 	 * `20260828120000_repoint_ai_edited_answer_source` swept out of
@@ -763,52 +804,58 @@ function QuestionCard({
 	 */
 	const openEditorBlank = () => {
 		setDraft("");
-		setFromSuggestion(false);
-		setIsEditing(true);
+		setEditingSeed(null);
+		setEditorOpened(true);
 	};
 
 	/**
 	 * Open the editor seeded with ONE of the suggested answers.
 	 *
-	 * `fromSuggestion` stays true, so an answer edited from an option records
-	 * `AI_EDITED` rather than `MANUAL` — the person started from the AI's
-	 * wording, which is a different fact about acceptance from having typed
+	 * The seed is that OPTION's own text — never `root.recommendedResponse`,
+	 * which a derived approval question always carries as `null`. Saved back
+	 * UNCHANGED, this is a plain acceptance (`AI_SUGGESTED`); only a CHANGED
+	 * submission is `AI_EDITED` — the person started from the AI's wording
+	 * either way, which is a different fact about acceptance from having typed
 	 * their own, and the metric measures exactly that difference.
 	 */
 	const openEditorWith = (text: string) => {
 		setDraft(text);
-		setFromSuggestion(true);
-		setIsEditing(true);
+		setEditingSeed(text);
+		setEditorOpened(true);
 	};
 
 	const cancelEdit = () => {
-		setIsEditing(false);
-		setFromSuggestion(false);
+		setEditorOpened(false);
+		setEditingSeed(null);
 		setDraft("");
 	};
 
 	const submitDraft = () => {
-		// Three outcomes, decided by what the field was seeded with, mirroring
-		// `SummaryQuestionsPanel`: no seed means nothing was taken from the AI,
-		// so MANUAL — that covers typing your own even with a recommendation on
-		// offer. A seed saved untouched is a plain acceptance (AI_SUGGESTED),
-		// reached through the editor instead of "Use this answer" but the same
-		// act. Only a seed the person actually changed is AI_EDITED.
+		// Three outcomes, decided by what the field was seeded with (#1907's
+		// shape, mirrored from `SummaryQuestionsPanel`): no seed means nothing
+		// was taken from the AI, so MANUAL — that covers typing your own even
+		// with a recommendation or options on offer. A seed saved untouched is
+		// a plain acceptance (AI_SUGGESTED), reached through the editor instead
+		// of "Use this answer" or an option's own button but the same act. Only
+		// a seed the person actually changed is AI_EDITED.
 		//
-		// Classifying an untouched seed as AI_EDITED would reintroduce exactly
-		// the misclassification `20260828120000_repoint_ai_edited_answer_source`
-		// swept out of `decision_log_entry`, in a second table. The column
-		// exists to measure recommendation acceptance, so two surfaces must not
-		// name the same act differently.
+		// The seed is whatever the editor was actually opened WITH — the single
+		// recommendation, or one option's own text — never
+		// `root.recommendedResponse` compared on its own: a derived approval
+		// question has `recommendedResponse: null`, so comparing against it
+		// made every untouched OPTION edit fail the comparison and read as
+		// AI_EDITED. Classifying an untouched seed as AI_EDITED would also
+		// reintroduce exactly the misclassification
+		// `20260828120000_repoint_ai_edited_answer_source` swept out of
+		// `decision_log_entry`, in a second table. The column exists to measure
+		// recommendation acceptance, so two surfaces must not name the same act
+		// differently.
 		const typed = draft.trim();
-		const seed = fromSuggestion
-			? (root.recommendedResponse ?? "").trim()
-			: null;
 		onAnswer(
 			draft,
-			seed === null
+			editingSeed === null
 				? "MANUAL"
-				: typed === seed
+				: typed === editingSeed.trim()
 					? "AI_SUGGESTED"
 					: "AI_EDITED",
 		);
@@ -871,7 +918,15 @@ function QuestionCard({
 						    whether a name is in it. */}
 						<QuestionMentionTextarea
 							value={draft}
-							onChange={setDraft}
+							onChange={(value) => {
+								setDraft(value);
+								// Typing is opening the editor. Without this, an
+								// editor that was showing only because there was
+								// nothing to accept would collapse the moment
+								// options arrived and the person then cleared
+								// their typed text back to empty.
+								setEditorOpened(true);
+							}}
 							members={members}
 							onQueryChange={onMemberQueryChange}
 							disabled={isSubmitting}
@@ -939,10 +994,13 @@ function QuestionCard({
 					 * with that text so a near-miss can be adjusted rather than
 					 * retyped.
 					 *
-					 * Picking one records `AI_SUGGESTED` — the person took the
-					 * AI's wording. Editing it first records `AI_EDITED`, which
-					 * is what keeps the acceptance metric honest about the
-					 * difference.
+					 * Picking one records `AI_SUGGESTED` directly. Opening the
+					 * pencil and submitting the SAME text is the same
+					 * acceptance, reached through the editor — `AI_SUGGESTED`,
+					 * not `AI_EDITED`. Only a submission that actually CHANGED
+					 * the text is `AI_EDITED`, which is what keeps the
+					 * acceptance metric honest about the difference (see
+					 * `submitDraft`'s `editingSeed` comparison).
 					 */
 					<div className="space-y-2">
 						<p className="flex items-center gap-2 font-medium text-secondary text-xs uppercase tracking-[0.16em]">
@@ -1038,12 +1096,61 @@ function QuestionCard({
 						</div>
 					</div>
 				)
-			) : hasRecommendation ? (
+			) : options.length > 0 ? (
+				<ReadOnlySuggestedOptions options={options} />
+			) : root.recommendedResponse?.trim() ? (
 				<p className="text-muted-foreground text-sm leading-relaxed">
 					Suggested: {root.recommendedResponse}
 				</p>
 			) : null}
 		</li>
+	);
+}
+
+/**
+ * A read-only viewer's view of a question's suggested answers.
+ *
+ * The SAME options `QuestionCard`'s editable branch offers, rendered as plain
+ * text with no buttons — a `canEdit={false}` viewer can see what the AI
+ * suggested and cannot act on any of it.
+ *
+ * This used to fall through to a branch that rendered `Suggested:
+ * {root.recommendedResponse}` whenever `hasRecommendation` was true — which
+ * options alone also satisfy. A derived approval question carries
+ * `recommendedResponse: null` and its options instead, so a read-only viewer
+ * saw the literal empty "Suggested: " line and never saw the options at all.
+ */
+function ReadOnlySuggestedOptions({
+	options,
+}: {
+	options: { text: string; justification: string }[];
+}) {
+	return (
+		<div className="space-y-2">
+			<p className="flex items-center gap-2 font-medium text-secondary text-xs uppercase tracking-[0.16em]">
+				<SparklesIcon className="size-3.5" aria-hidden="true" />
+				Suggested answers
+			</p>
+			<ul className="space-y-2">
+				{options.map((option) => (
+					<li
+						key={option.text}
+						className="rounded-lg border border-border bg-card p-3"
+					>
+						<span className="block font-medium text-sm">
+							{option.text}
+						</span>
+						{/* An option may arrive without one: the text is the
+						    option, the justification is commentary. */}
+						{option.justification ? (
+							<span className="mt-1 block text-muted-foreground text-xs leading-relaxed">
+								{option.justification}
+							</span>
+						) : null}
+					</li>
+				))}
+			</ul>
+		</div>
 	);
 }
 

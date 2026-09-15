@@ -33,8 +33,21 @@ export interface ReconcilableQuestion {
 	subject: string | null;
 	question: string;
 	recommendedResponse: string | null;
-	/** Several answers to choose between; `null` when the model offered none. */
-	answerOptions?: { text: string; justification: string }[] | null;
+	/**
+	 * Several answers to choose between; `null` when the model offered none.
+	 *
+	 * REQUIRED, not optional (Fizzy #1851 fix). The refresh branch below writes
+	 * `question.answerOptions ?? Prisma.DbNull` on every regeneration, so an
+	 * omitted field is not "unchanged" — it is read as `undefined`, which
+	 * still hits the `??`, and ERASES whatever options a prior run stored.
+	 * Optional also let the only production caller
+	 * (`generate-planning-analysis.ts`) compile while silently dropping the
+	 * field it computes. Same class of fix as `questions` on
+	 * `completePlanningAnalysis` (`publishing-planning.ts:222-227`): a caller
+	 * that always has a value pays nothing for the field being required, and
+	 * a mode that can silently wipe stored data is removed.
+	 */
+	answerOptions: { text: string; justification: string }[] | null;
 	whyItMatters: string | null;
 }
 

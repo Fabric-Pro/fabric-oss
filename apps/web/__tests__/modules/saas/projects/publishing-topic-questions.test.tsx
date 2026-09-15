@@ -14,7 +14,7 @@
  * opaque spy call count.
  */
 
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -581,6 +581,189 @@ describe("TopicQuestionsPanel — answering (FR10/FR11)", () => {
 });
 
 /**
+ * Whether the editor shows is DERIVED, not decided once at mount.
+ *
+ * The card is keyed by `thread.root.id`, which a refetch of the SAME root
+ * does not change — so a one-time `useState(() => !hasRecommendation)`
+ * locked in "starts open" or "starts collapsed" for the whole mount. That
+ * broke two ways on the exact same state: options arriving on a later
+ * refresh of an OPEN root (the upgrade path this feature's own changeset
+ * describes) stayed hidden behind an editor nobody opened, and "Ask" on a
+ * question with nothing to accept fell through to a branch that rendered an
+ * empty "Suggested: " line beside a "Use this answer" button that would have
+ * submitted nothing.
+ */
+describe("TopicQuestionsPanel — the editor after a refetch of the same root", () => {
+	const REFRESHED_OPTIONS = [
+		{
+			text: "Approved — the draft may use the customer logo.",
+			justification:
+				"The draft can state it plainly instead of writing around it.",
+		},
+		{
+			text: "Not approved — leave the customer logo out.",
+			justification:
+				"The draft will generalize it, use a neutral placeholder, or omit it rather than assert it.",
+		},
+	];
+
+	/**
+	 * The SAME root id as `OPEN_THREAD_NO_RECOMMENDATION`, now carrying
+	 * options — exactly what a regenerated analysis refreshing an OPEN root
+	 * produces, and exactly what the card's key does NOT change for.
+	 */
+	const withOptionsAddedLater = () => ({
+		root: root({
+			id: OPEN_THREAD_NO_RECOMMENDATION.root.id,
+			questionId: OPEN_THREAD_NO_RECOMMENDATION.root.questionId,
+			recommendedResponse: null,
+			answerOptions: REFRESHED_OPTIONS,
+		}),
+		replies: [],
+	});
+
+	it("collapses an editor nobody opened once options arrive on the same root", () => {
+		const { rerender } = render(
+			<TopicQuestionsPanel
+				{...BASE}
+				threads={[OPEN_THREAD_NO_RECOMMENDATION]}
+			/>,
+		);
+
+		expect(
+			screen.getByRole("textbox", { name: /your answer/i }),
+		).toBeInTheDocument();
+
+		rerender(
+			<TopicQuestionsPanel
+				{...BASE}
+				threads={[withOptionsAddedLater()]}
+			/>,
+		);
+
+		expect(
+			screen.getByText("Approved — the draft may use the customer logo."),
+		).toBeInTheDocument();
+		expect(
+			screen.getByText("Not approved — leave the customer logo out."),
+		).toBeInTheDocument();
+		expect(
+			screen.getByRole("button", {
+				name: /edit "approved — the draft may use the customer logo\."/i,
+			}),
+		).toBeInTheDocument();
+		expect(
+			screen.queryByRole("textbox", { name: /your answer/i }),
+		).not.toBeInTheDocument();
+	});
+
+	it("keeps a draft in progress even after options arrive on the same root", async () => {
+		// Pins that a person's draft text is still there once options arrive
+		// on the same root, whatever else keeps the editor open.
+		const user = userEvent.setup();
+		const { rerender } = render(
+			<TopicQuestionsPanel
+				{...BASE}
+				threads={[OPEN_THREAD_NO_RECOMMENDATION]}
+			/>,
+		);
+
+		await user.type(
+			screen.getByRole("textbox", { name: /your answer/i }),
+			"Still checking with legal.",
+		);
+
+		rerender(
+			<TopicQuestionsPanel
+				{...BASE}
+				threads={[withOptionsAddedLater()]}
+			/>,
+		);
+
+		expect(
+			screen.getByRole("textbox", { name: /your answer/i }),
+		).toHaveValue("Still checking with legal.");
+	});
+
+	it("keeps the editor open once a typed draft is cleared, after options have arrived", async () => {
+		// Clearing a draft back to empty is not the same as never having
+		// opened the editor: typing already opened it, so the field, the
+		// mention picker and Submit/Cancel/Ask must not vanish out from under
+		// an empty textarea the person is still looking at, replaced by the
+		// options view with no action from them.
+		const user = userEvent.setup();
+		const { rerender } = render(
+			<TopicQuestionsPanel
+				{...BASE}
+				threads={[OPEN_THREAD_NO_RECOMMENDATION]}
+			/>,
+		);
+
+		await user.type(
+			screen.getByRole("textbox", { name: /your answer/i }),
+			"Still checking.",
+		);
+
+		rerender(
+			<TopicQuestionsPanel
+				{...BASE}
+				threads={[withOptionsAddedLater()]}
+			/>,
+		);
+
+		await user.clear(screen.getByRole("textbox", { name: /your answer/i }));
+
+		expect(
+			screen.getByRole("textbox", { name: /your answer/i }),
+		).toHaveValue("");
+		expect(
+			screen.queryByRole("button", {
+				name: /approved — the draft may use the customer logo/i,
+			}),
+		).not.toBeInTheDocument();
+	});
+
+	it("keeps the editor open after Ask, on a question with nothing to accept", async () => {
+		// The pre-existing half of the same bug: `cancelEdit` used to set the
+		// stored flag `false`, and false with no recommendation and no options
+		// fell through to the recommendation branch instead of staying on the
+		// only affordance the question has.
+		const user = userEvent.setup();
+		render(
+			<TopicQuestionsPanel
+				{...BASE}
+				members={[
+					{
+						userId: "u-ana",
+						user: {
+							id: "u-ana",
+							name: "Ana",
+							email: "ana@example.com",
+							image: null,
+						},
+					},
+				]}
+				threads={[OPEN_THREAD_NO_RECOMMENDATION]}
+			/>,
+		);
+
+		await userEvent.type(
+			screen.getByRole("textbox", { name: /your answer/i }),
+			"@Ana can you confirm this?",
+		);
+		await user.click(screen.getByRole("button", { name: /^ask$/i }));
+
+		expect(
+			screen.getByRole("textbox", { name: /your answer/i }),
+		).toBeInTheDocument();
+		expect(screen.queryByText(/^suggested:\s*$/i)).not.toBeInTheDocument();
+		expect(
+			screen.queryByRole("button", { name: /use this answer/i }),
+		).not.toBeInTheDocument();
+	});
+});
+
+/**
  * Content types are a SETTING, not a question.
  *
  * This replaces a block asserting they answer with Yes/No buttons. That was the
@@ -1005,6 +1188,30 @@ describe("TopicQuestionsPanel — several suggested answers", () => {
 		);
 	});
 
+	it("opening an option in the editor and submitting it UNCHANGED is AI_SUGGESTED, not AI_EDITED", async () => {
+		// The old rule compared the typed text against `root.recommendedResponse`
+		// — `null` on a derived approval question, which is exactly what every
+		// one of these fixtures is — so an untouched option edit always failed
+		// that comparison: an option opened in the editor and submitted
+		// unchanged was recorded as AI_EDITED instead of AI_SUGGESTED.
+		const user = userEvent.setup();
+		render(<TopicQuestionsPanel {...BASE} threads={[withOptions()]} />);
+
+		await user.click(
+			screen.getByRole("button", {
+				name: /edit "out of scope for this release"/i,
+			}),
+		);
+		await user.click(screen.getByRole("button", { name: /^submit$/i }));
+
+		expect(answerMutation).toHaveBeenCalledWith(
+			expect.objectContaining({
+				answer: "Out of scope for this release",
+				answerSource: "AI_SUGGESTED",
+			}),
+		);
+	});
+
 	it("records editing one as AI_EDITED, not MANUAL", async () => {
 		// Starting from the AI's wording is a different fact about acceptance
 		// from having typed your own, and the metric measures that difference.
@@ -1038,6 +1245,78 @@ describe("TopicQuestionsPanel — several suggested answers", () => {
 		render(<TopicQuestionsPanel {...BASE} threads={[OPEN_THREAD]} />);
 
 		expect(screen.getByText(/suggested:/i)).toBeInTheDocument();
+	});
+
+	it("shows a read-only viewer the options, instead of an empty 'Suggested:' line", () => {
+		// The read-only branch used to render `Suggested: {recommendedResponse}`
+		// whenever `hasRecommendation` was true — which options alone also
+		// satisfy. A derived approval question has `recommendedResponse: null`,
+		// so a read-only viewer saw a bare "Suggested:" line and no option text
+		// at all.
+		render(
+			<TopicQuestionsPanel
+				{...BASE}
+				canEdit={false}
+				threads={[withOptions()]}
+			/>,
+		);
+
+		expect(
+			screen.getByText("Out of scope for this release"),
+		).toBeInTheDocument();
+		expect(
+			screen.getByText("In scope, if it fits the estimate"),
+		).toBeInTheDocument();
+		// No bare "Suggested:" / "Suggested: " text — the empty-recommendation
+		// artifact the bug produced. "Suggested answers" (the options heading)
+		// does not match: it has no colon.
+		expect(screen.queryByText(/^suggested:\s*$/i)).not.toBeInTheDocument();
+		// No button named after an option — a read-only viewer gets plain text,
+		// never the clickable choice or its pencil.
+		expect(
+			screen.queryByRole("button", {
+				name: /out of scope for this release/i,
+			}),
+		).not.toBeInTheDocument();
+	});
+
+	it("still shows 'Suggested: <text>' to a read-only viewer when there are no options", () => {
+		// The single-recommendation fallback must keep working for a read-only
+		// viewer once the options branch is checked first.
+		render(
+			<TopicQuestionsPanel
+				{...BASE}
+				canEdit={false}
+				threads={[OPEN_THREAD]}
+			/>,
+		);
+
+		expect(
+			screen.getByText(/suggested: ask their marketing contact first/i),
+		).toBeInTheDocument();
+	});
+
+	it("renders the read-only options as a list", () => {
+		// `SummaryQuestionsPanel.tsx` renders its suggested options as
+		// `<ul><li>`; the read-only branch here rendered each as a bare `<div>`
+		// with no list semantics at all.
+		const thread = withOptions();
+		render(
+			<TopicQuestionsPanel
+				{...BASE}
+				canEdit={false}
+				threads={[thread]}
+			/>,
+		);
+
+		// Scoped to the card: the panel's own OPEN-questions group is itself a
+		// `<ul>`, so an unscoped `getByRole("list")` would match more than one.
+		const card = screen.getByTestId(`question-${thread.root.id}`);
+		const items = within(card).getAllByRole("listitem");
+
+		expect(items).toHaveLength(2);
+		expect(items[0]).toHaveTextContent("Out of scope for this release");
+		expect(items[1]).toHaveTextContent("In scope, if it fits the estimate");
 	});
 });
 
