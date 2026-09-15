@@ -31,7 +31,7 @@ const ENV_MAX_TOOL_STEPS = Number(
 	process.env.A2A_MAX_TOOL_STEPS || DEFAULT_TOOL_STEPS,
 );
 
-function resolveAgent(
+export function resolveAgent(
 	body: Record<string, unknown>,
 ): "thread" | "spindle" | "weft" | "warp" {
 	const metadata = (body.metadata ?? {}) as Record<string, unknown>;

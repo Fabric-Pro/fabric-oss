@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { describe, it } from "node:test";
+import { describe, it } from "vitest";
 import { withRetry } from "./retry.js";
 
 // Reset module state between tests by clearing circuit breaker state
