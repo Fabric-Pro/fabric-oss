@@ -140,7 +140,30 @@ export function ConnectionsTabs({
 
 	return (
 		<div className="space-y-6">
-			<PageHeader title="Connections" getStartedPageId="integrations" />
+			{/*
+			 * One route, two tours. `mcp-servers` is its own GET_STARTED_PAGES
+			 * entry whose anchors mount only while this tab is selected. Its
+			 * launcher used to live on an MCP page hero that this page never
+			 * rendered, so the tour had no reachable Compass at all once
+			 * /mcp-servers became a redirect; that dead hero is gone now.
+			 * The drift test did not catch that: it greps launcher sources for a
+			 * literal id, which proves the prop is written, not that it renders.
+			 *
+			 * Hence two elements rather than one with a computed id: that same
+			 * grep only matches `getStartedPageId="..."`, so a ternary inside the
+			 * prop would read fine here and silently un-wire both pages there.
+			 */}
+			{tab === "mcp" ? (
+				<PageHeader
+					title="Connections"
+					getStartedPageId="mcp-servers"
+				/>
+			) : (
+				<PageHeader
+					title="Connections"
+					getStartedPageId="integrations"
+				/>
+			)}
 			<p className="max-w-2xl text-sm leading-6 text-muted-foreground">
 				{CONNECTIONS_INTRO}
 			</p>
@@ -155,7 +178,6 @@ export function ConnectionsTabs({
 				<div className="border-t border-border pt-8">
 					<McpServersView
 						organizationId={organizationId}
-						embedded
 						initialRegistrySearch={serverParam}
 					/>
 				</div>
