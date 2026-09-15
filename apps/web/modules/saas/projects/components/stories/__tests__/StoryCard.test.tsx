@@ -394,4 +394,48 @@ describe("StoryCard", () => {
 		// And we don't accidentally double-prefix it.
 		expect(screen.queryByText("B-B-011")).toBeNull();
 	});
+
+	// Roadmap rows align into columns only because every row renders the same
+	// fixed-width cell for each enabled field, empty or not. jsdom does no
+	// layout, so compare each row's sequence of ordered cells and their widths:
+	// a row that skips an empty cell shifts every column left of it.
+	it("renders the same column cells for a row without tags as for a tagged row", () => {
+		const columnSkeleton = (container: HTMLElement) =>
+			Array.from(
+				container.querySelectorAll<HTMLElement>('[style*="order"]'),
+			).map((cell) => ({
+				order: cell.style.order,
+				width: cell.className.match(/(?:^|\s)(w-\S+)/)?.[1] ?? null,
+			}));
+
+		const tagged = renderWithQueryClient(
+			<StoryCard
+				story={buildStory({
+					id: "story_tagged",
+					tags: [
+						{
+							id: "tag_1",
+							value: "example-tag",
+							createdById: null,
+						},
+					],
+				})}
+				projectId="project_1"
+				onSelect={vi.fn()}
+				onDelete={vi.fn()}
+			/>,
+		);
+		const untagged = renderWithQueryClient(
+			<StoryCard
+				story={buildStory({ id: "story_untagged", tags: [] })}
+				projectId="project_1"
+				onSelect={vi.fn()}
+				onDelete={vi.fn()}
+			/>,
+		);
+
+		expect(columnSkeleton(untagged.container)).toEqual(
+			columnSkeleton(tagged.container),
+		);
+	});
 });
