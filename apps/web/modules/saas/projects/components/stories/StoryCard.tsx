@@ -963,9 +963,10 @@ function StoryCardImpl({
 				// Read defensively for symmetry with StoryWorkspace — `tags`
 				// may be absent on partially-hydrated story payloads.
 				const tags = story.tags ?? [];
-				if (tags.length === 0) {
-					return null;
-				}
+				// An untagged row still renders the empty fixed-width cell, like
+				// every other column: the cells are anchored to the kebab, so
+				// dropping this one moves every cell before it out of line with
+				// the tagged rows.
 				const VISIBLE = 3;
 				const shown = tags.slice(0, VISIBLE);
 				const overflow = tags.length - shown.length;
