@@ -222,9 +222,9 @@ const WORKSPACE_GROUP: GsGroup = {
 		},
 		{
 			id: "integrations",
-			label: "Integrations",
+			label: "Connections",
 			description:
-				"Connect the tools Fabric works with — GitHub/GitLab, Jira, Teams, Slack, and more.",
+				"Connect Fabric to external tools and systems using native integrations or MCP servers.",
 			icon: PlugIcon,
 			anchor: "nav-integrations",
 			href: ({ basePath }) => `${basePath}/connections`,
@@ -570,15 +570,6 @@ const SETTINGS_GROUP: GsGroup = {
 			icon: SparklesIcon,
 			cluster: "AI configuration",
 			href: settingsHref("ai-models"),
-		},
-		{
-			id: "settings-integrations",
-			label: "Integrations",
-			description:
-				"Connect GitHub/GitLab, Jira, Teams, Slack and other tools, and check their health.",
-			icon: PlugIcon,
-			cluster: "Tools & connections",
-			href: ({ basePath }) => `${basePath}/connections`,
 		},
 		{
 			id: "settings-mcp",
@@ -1374,7 +1365,7 @@ export const GET_STARTED_PAGES: readonly GsPage[] = [
 	{
 		tab: "integrations",
 		app: true,
-		label: "Integrations",
+		label: "Connections",
 		icon: PlugIcon,
 		components: [
 			{

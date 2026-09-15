@@ -2,7 +2,7 @@ import { redirect } from "next/navigation";
 
 export async function generateMetadata() {
 	return {
-		title: "Integrations",
+		title: "Connections",
 	};
 }
 

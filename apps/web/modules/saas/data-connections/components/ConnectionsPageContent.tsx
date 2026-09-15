@@ -417,7 +417,7 @@ export function ConnectionsPageContent({
 	if (isLoading) {
 		return (
 			<div className="py-12 text-sm text-muted-foreground">
-				Loading integrations...
+				Loading connections…
 			</div>
 		);
 	}
@@ -425,7 +425,7 @@ export function ConnectionsPageContent({
 	if (error) {
 		return (
 			<div className="py-12 text-sm text-destructive">
-				Failed to load integrations.
+				Failed to load connections.
 			</div>
 		);
 	}
@@ -479,7 +479,7 @@ export function ConnectionsPageContent({
 						type="search"
 						value={query}
 						onChange={(event) => setQuery(event.target.value)}
-						placeholder="Search integrations"
+						placeholder="Search connections"
 						className="pl-10"
 					/>
 				</div>
@@ -656,7 +656,7 @@ export function ConnectionsPageContent({
 				</div>
 			) : (
 				<div className="rounded-xl border border-dashed p-10 text-center text-sm text-muted-foreground">
-					No integrations match your current filters.
+					No connections match your current filters.
 				</div>
 			)}
 		</div>

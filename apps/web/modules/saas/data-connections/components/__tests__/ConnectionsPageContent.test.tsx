@@ -10,6 +10,11 @@
  * - Text search and the capability filter chips narrow the grid down to
  *   (or away from) the Databricks card, same as the data-provider cards.
  * - The "actions connected" count badge includes action-only providers.
+ * - List-level copy (loading, error, empty state, search placeholder) names
+ *   the mixed catalogue "connections", not "integrations" — the list holds
+ *   both integration providers and MCP registry tiles. The
+ *   `data-onboarding-target="integrations-*"` anchors keep their frozen
+ *   identifiers, so one test pins the search anchor against a tidy-up rename.
  *
  * The page composes several unrelated systems (organization context,
  * connections, workflow integrations, provider health), so we mock at the
@@ -82,9 +87,12 @@ function renderWithClient(ui: ReactNode) {
 	);
 }
 
-function renderPage(
-	integrations: Array<{ provider: string; hasCredentials: boolean }> = [],
-) {
+/**
+ * Renders the real component with a marked `toolbarStart`, so the half of the
+ * ordering claim a stubbed child cannot make — that this component puts the
+ * toolbar above its provider grid — is pinned against real markup.
+ */
+function renderPageWithToolbar() {
 	mockUseOrganizationContext.mockReturnValue({ organizationId: null });
 	mockUseMonitoringFeatureFlag.mockReturnValue(false);
 	mockUseProviderHealth.mockReturnValue({
@@ -98,6 +106,34 @@ function renderPage(
 		isLoading: false,
 		error: null,
 	});
+	listIntegrationsMock.mockResolvedValue({ integrations: [] });
+
+	return renderWithClient(
+		<ConnectionsPageContent
+			addHref="/app/settings/integrations/add"
+			settingsBasePath="/app/settings/integrations"
+			toolbarStart={<div data-testid="toolbar-slot" />}
+		/>,
+	);
+}
+
+function renderPage(
+	integrations: Array<{ provider: string; hasCredentials: boolean }> = [],
+	connectionsState: {
+		data: unknown[];
+		isLoading: boolean;
+		error: unknown;
+	} = { data: [], isLoading: false, error: null },
+) {
+	mockUseOrganizationContext.mockReturnValue({ organizationId: null });
+	mockUseMonitoringFeatureFlag.mockReturnValue(false);
+	mockUseProviderHealth.mockReturnValue({
+		byProviderKey: {},
+		rows: [],
+		isLoading: false,
+		isError: false,
+	});
+	mockUseConnections.mockReturnValue(connectionsState);
 	listIntegrationsMock.mockResolvedValue({ integrations });
 
 	return renderWithClient(
@@ -151,7 +187,7 @@ describe("ConnectionsPageContent — Databricks Vector Search catalog card", () 
 		await screen.findByRole("link", { name: /Databricks Vector Search/i });
 
 		await user.type(
-			screen.getByPlaceholderText("Search integrations"),
+			screen.getByPlaceholderText("Search connections"),
 			"databricks",
 		);
 
@@ -167,11 +203,13 @@ describe("ConnectionsPageContent — Databricks Vector Search catalog card", () 
 		await screen.findByRole("link", { name: /Databricks Vector Search/i });
 
 		await user.type(
-			screen.getByPlaceholderText("Search integrations"),
+			screen.getByPlaceholderText("Search connections"),
 			"zzzz",
 		);
 
-		expect(screen.getByText(/No integrations match/i)).toBeInTheDocument();
+		expect(
+			screen.getByText("No connections match your current filters."),
+		).toBeInTheDocument();
 		expect(
 			screen.queryByRole("link", { name: /Databricks Vector Search/i }),
 		).not.toBeInTheDocument();
@@ -228,5 +266,83 @@ describe("ConnectionsPageContent — Databricks Vector Search catalog card", () 
 		await waitFor(() => {
 			expect(screen.getByText("1 actions connected")).toBeInTheDocument();
 		});
+	});
+});
+
+describe("ConnectionsPageContent — list-level copy names connections", () => {
+	it("names the catalogue 'connections' while loading", async () => {
+		renderPage([], { data: [], isLoading: true, error: null });
+
+		expect(
+			await screen.findByText("Loading connections…"),
+		).toBeInTheDocument();
+	});
+
+	it("names the catalogue 'connections' when the load fails", async () => {
+		renderPage([], {
+			data: [],
+			isLoading: false,
+			error: new Error("connections request failed"),
+		});
+
+		expect(
+			await screen.findByText("Failed to load connections."),
+		).toBeInTheDocument();
+	});
+
+	it("names the catalogue 'connections' in the no-match empty state", async () => {
+		const user = userEvent.setup();
+		renderPage();
+
+		await screen.findByRole("link", { name: /Databricks Vector Search/i });
+
+		await user.type(
+			screen.getByPlaceholderText("Search connections"),
+			"zzzz",
+		);
+
+		expect(
+			screen.getByText("No connections match your current filters."),
+		).toBeInTheDocument();
+	});
+
+	it("labels the search box 'Search connections'", async () => {
+		renderPage();
+
+		await screen.findByRole("link", { name: /Databricks Vector Search/i });
+
+		expect(
+			screen.getByPlaceholderText("Search connections"),
+		).toBeInTheDocument();
+	});
+
+	it("keeps the integrations-search onboarding anchor on the search wrapper", async () => {
+		const { container } = renderPage();
+
+		await screen.findByRole("link", { name: /Databricks Vector Search/i });
+
+		const anchor = container.querySelector<HTMLElement>(
+			'[data-onboarding-target="integrations-search"]',
+		);
+		expect(anchor).not.toBeNull();
+		expect(
+			within(anchor as HTMLElement).getByPlaceholderText(
+				"Search connections",
+			),
+		).toBeInTheDocument();
+	});
+});
+
+describe("ConnectionsPageContent — toolbar placement", () => {
+	it("renders toolbarStart above the provider catalogue", async () => {
+		renderPageWithToolbar();
+
+		const slot = await screen.findByTestId("toolbar-slot");
+		const search = await screen.findByPlaceholderText("Search connections");
+
+		expect(
+			slot.compareDocumentPosition(search) &
+				Node.DOCUMENT_POSITION_FOLLOWING,
+		).toBeTruthy();
 	});
 });
