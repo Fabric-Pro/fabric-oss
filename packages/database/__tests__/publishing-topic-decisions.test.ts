@@ -119,6 +119,7 @@ const QUESTION_A = {
 	subject: "the named customer",
 	question: "May we name the customer?",
 	recommendedResponse: "Ask their marketing contact first.",
+	answerOptions: null,
 	whyItMatters: "A case study without the name is a different piece.",
 };
 const BASE = {

@@ -1005,6 +1005,30 @@ describe("TopicQuestionsPanel — several suggested answers", () => {
 		);
 	});
 
+	it("opening an option in the editor and submitting it UNCHANGED is AI_SUGGESTED, not AI_EDITED", async () => {
+		// The old rule compared the typed text against `root.recommendedResponse`
+		// — `null` on a derived approval question, which is exactly what every
+		// one of these fixtures is — so an untouched option edit always failed
+		// that comparison: an option opened in the editor and submitted
+		// unchanged was recorded as AI_EDITED instead of AI_SUGGESTED.
+		const user = userEvent.setup();
+		render(<TopicQuestionsPanel {...BASE} threads={[withOptions()]} />);
+
+		await user.click(
+			screen.getByRole("button", {
+				name: /edit "out of scope for this release"/i,
+			}),
+		);
+		await user.click(screen.getByRole("button", { name: /^submit$/i }));
+
+		expect(answerMutation).toHaveBeenCalledWith(
+			expect.objectContaining({
+				answer: "Out of scope for this release",
+				answerSource: "AI_SUGGESTED",
+			}),
+		);
+	});
+
 	it("records editing one as AI_EDITED, not MANUAL", async () => {
 		// Starting from the AI's wording is a different fact about acceptance
 		// from having typed your own, and the metric measures that difference.
@@ -1038,6 +1062,55 @@ describe("TopicQuestionsPanel — several suggested answers", () => {
 		render(<TopicQuestionsPanel {...BASE} threads={[OPEN_THREAD]} />);
 
 		expect(screen.getByText(/suggested:/i)).toBeInTheDocument();
+	});
+
+	it("shows a read-only viewer the options, instead of an empty 'Suggested:' line", () => {
+		// The read-only branch used to render `Suggested: {recommendedResponse}`
+		// whenever `hasRecommendation` was true — which options alone also
+		// satisfy. A derived approval question has `recommendedResponse: null`,
+		// so a read-only viewer saw a bare "Suggested:" line and no option text
+		// at all.
+		render(
+			<TopicQuestionsPanel
+				{...BASE}
+				canEdit={false}
+				threads={[withOptions()]}
+			/>,
+		);
+
+		expect(
+			screen.getByText("Out of scope for this release"),
+		).toBeInTheDocument();
+		expect(
+			screen.getByText("In scope, if it fits the estimate"),
+		).toBeInTheDocument();
+		// No bare "Suggested:" / "Suggested: " text — the empty-recommendation
+		// artifact the bug produced. "Suggested answers" (the options heading)
+		// does not match: it has no colon.
+		expect(screen.queryByText(/^suggested:\s*$/i)).not.toBeInTheDocument();
+		// No button named after an option — a read-only viewer gets plain text,
+		// never the clickable choice or its pencil.
+		expect(
+			screen.queryByRole("button", {
+				name: /out of scope for this release/i,
+			}),
+		).not.toBeInTheDocument();
+	});
+
+	it("still shows 'Suggested: <text>' to a read-only viewer when there are no options", () => {
+		// The single-recommendation fallback must keep working for a read-only
+		// viewer once the options branch is checked first.
+		render(
+			<TopicQuestionsPanel
+				{...BASE}
+				canEdit={false}
+				threads={[OPEN_THREAD]}
+			/>,
+		);
+
+		expect(
+			screen.getByText(/suggested: ask their marketing contact first/i),
+		).toBeInTheDocument();
 	});
 });
 
