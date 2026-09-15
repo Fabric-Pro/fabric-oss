@@ -1,0 +1,58 @@
+-- Narrow the Fabric Code keys that were minted before the mint itself was
+-- narrowed (Fizzy #2380 follow-up).
+--
+-- WHY THIS MIGRATION EXISTS
+-- The commit that scoped the VS Code extension key changed
+-- `/vscode-auth/approve` from `scopes: ["*"]` to
+-- `scopes: ["mcp:read", "mcp:write"]` and shipped no data migration, so every
+-- key that path issued beforehand still carries the wildcard. That is not
+-- inert: `verifyUserApiKey` treats `"*"` as satisfying any required scope, and
+-- it does so deliberately — without it, those keys would have started failing
+-- the moment the Fabric Code routes began requiring a scope, which is the
+-- regression the restored-session fix had to undo. The consequence is that a
+-- credential handed out on a single click, to any member regardless of their
+-- role in the organization, still reaches every scoped surface in the product.
+-- Narrowing the rows is what makes the mint change true of the keys already in
+-- circulation, rather than only of the ones issued from now on.
+--
+-- WHAT IT TARGETS (surgical): rows that are BOTH the Fabric Code mint's own
+-- name AND still hold the wildcard.
+--
+-- WHY IT IS KEYED ON THE NAME AND NOT ON THE WILDCARD ALONE.
+-- `ARRAY['mcp:read','mcp:write']` is the right replacement for exactly one
+-- reason: it is what `/vscode-auth/approve` now issues, so a narrowed key is
+-- indistinguishable from one minted today and the extension notices nothing.
+-- That reasoning does not carry to a wildcard key minted by some other path —
+-- for one of those, these two scopes would be a guess at what its holder
+-- needed, and the migration would be quietly breaking a credential on a hunch.
+-- So the predicate declines to touch anything it cannot name the intent of.
+-- (As of this migration, production holds no wildcard key of any other name, so
+-- the two predicates select the same rows there. The name clause is about what
+-- happens in an environment where they do not.)
+--
+-- WHY IT REPLACES THE ARRAY RATHER THAN REMOVING `'*'` FROM IT.
+-- The mint wrote `["*"]` and nothing else, and no surface in the product edits
+-- a personal key's scopes after creation — `users.apiKeys` exposes create, list
+-- and delete, and only create writes the column. So there is nothing else on
+-- these rows to preserve. Verified against production before writing: both
+-- matching rows hold a single-element `{*}`.
+--
+-- IDEMPOTENT: `'*' = ANY(scopes)` is false of every row this statement has
+-- already rewritten, so a second apply matches nothing.
+--
+-- NOT A REVOCATION, DELIBERATELY. Revoking would also close the gap and would
+-- be more visible, but these keys are dormant rather than abandoned (last used
+-- months ago, and they never expire), and re-authorizing costs their holder a
+-- round-trip through the extension. Narrowing leaves a working key that reaches
+-- exactly what the extension needs. If a holder was using one as a
+-- general-purpose API key, this is the change they will notice — that is the
+-- point of it, and the reason it ships on its own rather than inside a larger
+-- one.
+--
+-- The linter's `unbatched-backfill` rule does not fire here: the statement
+-- carries a WHERE, no `FROM (`, and no subquery. No allow marker is needed, and
+-- one should not be added to silence a future change that does trip it.
+UPDATE "user_api_key"
+SET scopes = ARRAY['mcp:read', 'mcp:write']
+WHERE name = 'Fabric Code - VS Code'
+  AND '*' = ANY(scopes);
