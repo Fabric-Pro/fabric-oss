@@ -43,6 +43,9 @@ export const Permissions = {
 	PROJECT_SETTINGS_EDIT: "project:settings:edit",
 	PROJECT_MEMBERS_READ: "project:members:read",
 	PROJECT_MEMBERS_MANAGE: "project:members:manage",
+	// Engagement profile, gate flags, and stage approvers. Editors hold
+	// PROJECT_UPDATE and must not be able to downgrade governance.
+	PROJECT_GOVERNANCE_MANAGE: "project:governance:manage",
 
 	// Stories / Features
 	STORY_READ: "story:read",
@@ -51,6 +54,8 @@ export const Permissions = {
 	STORY_DELETE: "story:delete",
 	STORY_MOVE: "story:move",
 	STORY_TASK_MANAGE: "story:task:manage",
+	// Approve / reject drafting-stage transition requests (GOVERNED profile)
+	STORY_STAGE_APPROVE: "story:stage:approve",
 
 	// Documents
 	DOCUMENT_READ: "document:read",

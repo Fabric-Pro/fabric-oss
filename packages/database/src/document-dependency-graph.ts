@@ -79,6 +79,9 @@ const GRAPH = {
 	TEST_REPORT: { tier: 1, prerequisites: [] },
 	TRACEABILITY_MATRIX: { tier: 1, prerequisites: [] },
 	SRS: { tier: 1, prerequisites: [] },
+	// Produced per feature by a Discovery run (inverted-loop Slice 4), never
+	// by the wizard or batch generation, so it carries no prerequisites.
+	INTEGRATION_CONTRACT: { tier: 1, prerequisites: [] },
 } satisfies Record<
 	ProjectDocumentType,
 	{ tier: number; prerequisites: ProjectDocumentType[] }

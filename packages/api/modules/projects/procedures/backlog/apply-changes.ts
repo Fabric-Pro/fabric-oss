@@ -1,10 +1,14 @@
 import { ORPCError } from "@orpc/client";
 import type { DecisionPrecheckResult } from "@repo/agent-types";
 import {
+	claimPendingProposalForApply,
 	createBacklogUpdateSession,
 	createPendingBacklogProposal,
 	db,
 	finalizeBacklogUpdateSession,
+	finalizeClaimedProposal,
+	getAppliedChangeIndexes,
+	getPendingBacklogProposal,
 	markProposalApplyDispatched,
 	type Prisma,
 } from "@repo/database";
@@ -112,6 +116,13 @@ async function resolveAppliedDecisionConflicts(
 	return { ...applied, findings };
 }
 
+import {
+	changeItemSchema,
+	readProposalChanges,
+	remapPmSyncOverrides,
+	resolveProposalChangeIndex,
+} from "./change-item-schema";
+
 /**
  * Apply approved backlog changes via Temporal workflow.
  *
@@ -135,100 +146,13 @@ export const applyChangesProcedure = tenantProtectedProcedure
 		z.object({
 			projectId: z.string(),
 			organizationId: z.string().nullable().optional(),
-			approvedChanges: z.array(
-				z.object({
-					type: z.enum(["epic", "feature", "story", "bug"]),
-					action: z.enum(["create", "update"]),
-					existingId: z.string().nullable().optional(),
-					existingIdentifier: z.string().nullable().optional(),
-					existingExternalId: z.string().nullable().optional(),
-					title: z.object({
-						from: z.string().nullable().optional(),
-						to: z.string(),
-					}),
-					description: z
-						.object({
-							from: z.string().nullable().optional(),
-							to: z.string(),
-						})
-						.nullable()
-						.optional(),
-					acceptanceCriteria: z
-						.object({
-							from: z.string().nullable().optional(),
-							to: z.string(),
-						})
-						.nullable()
-						.optional(),
-					priority: z
-						.object({
-							from: z.string().nullable().optional(),
-							to: z.string(),
-						})
-						.nullable()
-						.optional(),
-					size: z
-						.object({
-							from: z.string().nullable().optional(),
-							to: z.string(),
-						})
-						.nullable()
-						.optional(),
-					parentEpicIdentifier: z.string().nullable().optional(),
-					parentFeatureIdentifier: z.string().nullable().optional(),
-					parentEpicTitle: z.string().nullable().optional(),
-					parentFeatureTitle: z.string().nullable().optional(),
-					// Annotation, not payload — see the note on the generation
-					// schema in `analyze-context.ts`. The analyzer is allowed to
-					// return a change without either field, so demanding them
-					// here would only move the failure to the Apply click, after
-					// the reviewer has already spent the effort. The enum still
-					// holds for a sourceContext that IS present.
-					reasoning: z.string().nullable().optional(),
-					sourceContext: z
-						.enum([
-							"teams_messages",
-							"meeting_transcript",
-							"notion_page",
-							"slack_messages",
-							"multiple",
-						])
-						.nullable()
-						.optional(),
-					/**
-					 * Inline PM override of the AI classifier's kind decision.
-					 * Honored by `applyBacklogChanges` for create rows —
-					 * passes `kind` + `skipClassifier: true` to
-					 * createStoryFromProposal so the user's selection wins.
-					 */
-					kindOverride: z
-						.enum(["BUG", "FEATURE"])
-						.nullable()
-						.optional(),
-					/**
-					 * Safe-hold flag stamped by the structure-preserving update
-					 * pass when AI could not safely produce a targeted edit and the
-					 * existing body was kept unchanged. Passed through so the apply
-					 * audit records the safe-hold (the "+ flag" of "safe-hold + flag").
-					 */
-					bodyMergeFallback: z.boolean().optional(),
-					/**
-					 * Set when the analysis-time pass already structure-preserved
-					 * this update's body. Passed through so `applyBacklogChanges`
-					 * skips re-merging (no double LLM call); proposals that bypassed
-					 * analysis arrive without it and are merged at apply time.
-					 */
-					structurePreserved: z.boolean().optional(),
-					/**
-					 * Set when a CREATE's body was drafted through the kind prompt at
-					 * review time (lazy draft on open). Apply persists it verbatim
-					 * (no re-draft, bugs included), carrying `needsMoreInfo`.
-					 */
-					predrafted: z.boolean().optional(),
-					/** Bug triage flag captured by the review-time draft. */
-					needsMoreInfo: z.boolean().optional(),
-				}),
-			),
+			approvedChanges: z.array(changeItemSchema),
+			/**
+			 * Optional PendingBacklogProposal being applied. When set, the
+			 * handler claims the row (plan §F3) before starting the workflow
+			 * and passes the proposal id through so every change is recorded.
+			 */
+			proposalId: z.string().optional(),
 			syncToPM: z.boolean().default(false),
 			pmConfig: z
 				.object({
@@ -409,6 +333,77 @@ export const applyChangesProcedure = tenantProtectedProcedure
 		const hasUnresolvedDecisionConflicts =
 			decisionPrecheck !== null && decisionPrecheck.findings.length > 0;
 
+		// Optional proposal claim (plan §F3). When the review UI applies an
+		// existing PendingBacklogProposal (Teams / scope-intake inbox), resolve
+		// the approved changes to their stored indexes and claim the row BEFORE
+		// starting the workflow, so a concurrent approve gets CONFLICT and no
+		// second workflow is ever started for the same proposal. Changes already
+		// recorded as applied (a retry after a crash) are dropped here.
+		let approvedChanges = input.approvedChanges;
+		let approvedChangeIndexes: number[] | undefined;
+		// Positions in `input.approvedChanges` that survive retry filtering.
+		// `pmSyncOverrides` is keyed by submitted position and the workflow
+		// reads it by position in the array it receives, so the map must be
+		// re-keyed whenever changes are dropped below.
+		let keptPositions = input.approvedChanges.map(
+			(_c, position) => position,
+		);
+		const workflowId = backlogApplyWorkflowId(input.projectId);
+
+		if (input.proposalId) {
+			const existing = await getPendingBacklogProposal(input.proposalId);
+			if (!existing || existing.projectId !== input.projectId) {
+				throw new ORPCError("NOT_FOUND", {
+					message: "Proposal not found",
+				});
+			}
+			const proposalChanges = readProposalChanges(existing.proposal);
+			const indexed = input.approvedChanges.map((change, position) => ({
+				change,
+				index: resolveProposalChangeIndex(proposalChanges, change),
+				position,
+			}));
+			for (const entry of indexed) {
+				if (entry.index < 0) {
+					throw new ORPCError("BAD_REQUEST", {
+						message: `Approved change "${entry.change.title.to}" not found in proposal — it may be stale. Re-open the proposal.`,
+					});
+				}
+			}
+			const alreadyApplied = await getAppliedChangeIndexes(
+				input.proposalId,
+			);
+			const remaining = indexed.filter(
+				({ index }) => !alreadyApplied.has(index),
+			);
+			const claimed = await claimPendingProposalForApply({
+				proposalId: input.proposalId,
+				reviewedBy: user.id,
+				applyWorkflowId: workflowId,
+			});
+			if (!claimed) {
+				throw new ORPCError("CONFLICT", {
+					message:
+						"Proposal is already being applied or was already reviewed",
+				});
+			}
+			if (remaining.length === 0) {
+				await finalizeClaimedProposal({
+					proposalId: input.proposalId,
+					applyWorkflowId: workflowId,
+					outcome: "applied",
+				});
+				return {
+					workflowId: null,
+					message: "All approved changes were already applied",
+					proposalId: input.proposalId,
+				};
+			}
+			approvedChanges = remaining.map((r) => r.change);
+			approvedChangeIndexes = remaining.map((r) => r.index);
+			keptPositions = remaining.map((r) => r.position);
+		}
+
 		// AC #1: write the PendingBacklogProposal row BEFORE starting the
 		// workflow. Order matters — the workflow's terminal handler flips
 		// this row to APPLIED / FAILED, and we don't want a race where the
@@ -417,38 +412,43 @@ export const applyChangesProcedure = tenantProtectedProcedure
 		// contract on newly-created stories; dedup-collision matches do
 		// NOT mutate `pmAutoSyncEnabled` on the existing target story.
 		let proposalId: string;
-		try {
-			const proposal = await createPendingBacklogProposal({
-				projectId: input.projectId,
-				source: "AI_UPDATE_SIDEBAR",
-				proposal: {
-					changes: input.approvedChanges,
-				} as unknown as Prisma.InputJsonValue,
-				summary: `${input.approvedChanges.length} proposed change(s) from AI Update`,
-				changeCount: input.approvedChanges.length,
-				sourceMetadata: {
-					syncToPM: input.syncToPM,
-					pmConfig: input.pmConfig ?? null,
-					conversationId: input.conversationId ?? null,
-				} as unknown as Prisma.InputJsonValue,
-				// Fold the narrowed pre-check under `sourceMetadata.decisionPrecheck`
-				// (the query merges it) so the review UI + Overrides list read it
-				// back durably. Undefined when flag-off / no conflicts ⇒ metadata
-				// is written exactly as before.
-				decisionPrecheck: hasUnresolvedDecisionConflicts
-					? (decisionPrecheck as unknown as Prisma.InputJsonValue)
-					: undefined,
-				userId: user.id,
-				organizationId: resolvedOrganizationId,
-			});
-			proposalId = proposal.id;
-		} catch (error) {
-			throw new ORPCError("INTERNAL_SERVER_ERROR", {
-				message:
-					error instanceof Error
-						? `Failed to persist proposal row: ${error.message}`
-						: "Failed to persist proposal row",
-			});
+		if (input.proposalId) {
+			// Claimed above: the row already exists and carries the claim.
+			proposalId = input.proposalId;
+		} else {
+			try {
+				const proposal = await createPendingBacklogProposal({
+					projectId: input.projectId,
+					source: "AI_UPDATE_SIDEBAR",
+					proposal: {
+						changes: input.approvedChanges,
+					} as unknown as Prisma.InputJsonValue,
+					summary: `${input.approvedChanges.length} proposed change(s) from AI Update`,
+					changeCount: input.approvedChanges.length,
+					sourceMetadata: {
+						syncToPM: input.syncToPM,
+						pmConfig: input.pmConfig ?? null,
+						conversationId: input.conversationId ?? null,
+					} as unknown as Prisma.InputJsonValue,
+					// Fold the narrowed pre-check under `sourceMetadata.decisionPrecheck`
+					// (the query merges it) so the review UI + Overrides list read it
+					// back durably. Undefined when flag-off / no conflicts ⇒ metadata
+					// is written exactly as before.
+					decisionPrecheck: hasUnresolvedDecisionConflicts
+						? (decisionPrecheck as unknown as Prisma.InputJsonValue)
+						: undefined,
+					userId: user.id,
+					organizationId: resolvedOrganizationId,
+				});
+				proposalId = proposal.id;
+			} catch (error) {
+				throw new ORPCError("INTERNAL_SERVER_ERROR", {
+					message:
+						error instanceof Error
+							? `Failed to persist proposal row: ${error.message}`
+							: "Failed to persist proposal row",
+				});
+			}
 		}
 
 		// Session history: record this AI Backlog Update run so it appears in the
@@ -464,7 +464,9 @@ export const applyChangesProcedure = tenantProtectedProcedure
 				projectId: input.projectId,
 				pendingProposalId: proposalId,
 				conversationId: input.conversationId ?? null,
-				source: "AI_UPDATE_SIDEBAR",
+				source: input.proposalId
+					? "PENDING_PROPOSAL"
+					: "AI_UPDATE_SIDEBAR",
 				summary: `${input.approvedChanges.length} proposed change(s) from AI Update`,
 				// Store only the lightweight {action,type,title} the session log
 				// renders — NOT the full change payload (which can be ~1MB and would
@@ -491,8 +493,6 @@ export const applyChangesProcedure = tenantProtectedProcedure
 		try {
 			const client = await getTemporalClient();
 
-			const workflowId = backlogApplyWorkflowId(input.projectId);
-
 			const handle = await client.workflow.start(
 				"backlogApplyChangesWorkflow",
 				withCorrelationMemo({
@@ -504,13 +504,13 @@ export const applyChangesProcedure = tenantProtectedProcedure
 							userId: user.id,
 							approvedByName: user.name ?? null,
 							organizationId: resolvedOrganizationId,
-							approvedChanges: input.approvedChanges,
+							approvedChanges,
+							approvedChangeIndexes,
 							syncToPM: input.syncToPM,
 							pmSyncOverrides: input.pmSyncOverrides
-								? Object.fromEntries(
-										Object.entries(
-											input.pmSyncOverrides,
-										).map(([k, v]) => [Number(k), v]),
+								? remapPmSyncOverrides(
+										input.pmSyncOverrides,
+										keptPositions,
 									)
 								: undefined,
 							pmConfig: input.pmConfig
@@ -574,10 +574,29 @@ export const applyChangesProcedure = tenantProtectedProcedure
 			return {
 				workflowId: handle.workflowId,
 				runId: handle.firstExecutionRunId,
-				message: `Applying ${input.approvedChanges.length} change(s)`,
+				message: `Applying ${approvedChanges.length} change(s)`,
 				proposalId,
 			};
 		} catch (error) {
+			if (input.proposalId) {
+				// Release the claim (plan §F3) so the proposal is retryable
+				// from the inbox; the failure is recorded on the row.
+				await finalizeClaimedProposal({
+					proposalId: input.proposalId,
+					applyWorkflowId: workflowId,
+					outcome: "failed",
+					errorMessage:
+						error instanceof Error
+							? error.message
+							: "Failed to start apply changes workflow",
+				}).catch(() => {});
+				throw new ORPCError("INTERNAL_SERVER_ERROR", {
+					message:
+						error instanceof Error
+							? error.message
+							: "Failed to start apply changes workflow",
+				});
+			}
 			// Workflow start failed AFTER we persisted the proposal row. Mark
 			// the row as FAILED so it surfaces in the inbox / banner — without
 			// this, the row would be stuck PENDING forever and the user would

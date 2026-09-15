@@ -1,6 +1,16 @@
-import { type LookupAddress, type LookupOptions, lookup } from "node:dns";
+import {
+	promises as dnsPromises,
+	type LookupAddress,
+	type LookupOptions,
+	lookup,
+} from "node:dns";
 import { isIP, type LookupFunction } from "node:net";
-import { Agent, Dispatcher1Wrapper } from "undici";
+import {
+	Agent,
+	type Dispatcher,
+	Dispatcher1Wrapper,
+	fetch as undiciFetch,
+} from "undici";
 
 function getUnsafeIpv4ReasonFromOctets(octets: number[]): string | null {
 	const [a, b] = octets;
@@ -197,6 +207,11 @@ function getUnsafeIpAddressReason(address: string): string | null {
 		(groups[0] === 0x3fff && (groups[1] & 0xf000) === 0)
 	) {
 		return "IPv6 reserved or transition network access is not allowed";
+	}
+	// Final word: anything not globally routable is refused (IPv4 special-use
+	// denylist, IPv6 global-unicast allowlist) — see `isPrivateIp`.
+	if (isPrivateIp(address)) {
+		return "Address is not globally routable";
 	}
 	return null;
 }
@@ -419,4 +434,421 @@ export async function safeFetchOutbound(
 		enumerable: true,
 	});
 	return fetch(url, requestInit);
+}
+
+// =============================================================================
+// Pinned outbound fetch (plan Slice 4 prerequisite)
+// =============================================================================
+//
+// `safeFetchOutbound` above validates the literal hostname only: a public
+// DNS name that resolves to a private address (or that is rebound between
+// validation and connect) still reaches the internal network. The pinned
+// variant resolves every A/AAAA answer first, rejects the host if ANY answer
+// is private / link-local / loopback / CGNAT / unspecified, and then connects
+// to one pre-validated address through an undici Agent whose `lookup` returns
+// that address. The request itself keeps the ORIGINAL hostname, so TLS SNI,
+// certificate verification and the `Host` header are unchanged (never connect
+// to a bare IP over HTTPS). Redirects are followed manually (max 3) and every
+// hop is re-validated the same way.
+
+/** IPv4 ranges that must never be reached from a server-side fetch. */
+function isPrivateIpv4Octets(octets: readonly number[]): boolean {
+	const [a, b, c] = octets;
+	// Complete IANA special-use denylist (RFC 6890 / 5737 / 2544 / 7526 etc.),
+	// not just RFC 1918: anything that is not globally routable is refused.
+	return (
+		a === 0 || // 0.0.0.0/8 "this network" (incl. unspecified)
+		a === 10 || // 10/8
+		a === 127 || // 127/8 loopback
+		(a === 169 && b === 254) || // 169.254/16 link-local (cloud metadata)
+		(a === 172 && b >= 16 && b <= 31) || // 172.16/12
+		(a === 192 && b === 0 && c === 0) || // 192.0.0.0/24 IETF protocol assignments
+		(a === 192 && b === 0 && c === 2) || // 192.0.2.0/24 TEST-NET-1
+		(a === 192 && b === 88 && c === 99) || // 192.88.99.0/24 6to4 anycast (deprecated)
+		(a === 192 && b === 168) || // 192.168/16
+		(a === 198 && (b === 18 || b === 19)) || // 198.18.0.0/15 benchmarking
+		(a === 198 && b === 51 && c === 100) || // 198.51.100.0/24 TEST-NET-2
+		(a === 203 && b === 0 && c === 113) || // 203.0.113.0/24 TEST-NET-3
+		(a === 100 && b >= 64 && b <= 127) || // 100.64/10 CGNAT
+		a >= 224 // 224/4 multicast, 240/4 reserved, 255.255.255.255
+	);
+}
+
+/**
+ * True when `ip` (IPv4 or IPv6 literal) must not be reached from a
+ * server-side fetch. IPv4 is a complete IANA special-use denylist. IPv6 is
+ * an ALLOWLIST: only global unicast (2000::/3) minus its special-use
+ * carve-outs is routable; everything else (unspecified, loopback,
+ * IPv4-mapped/compatible, NAT64, discard, unique-local, link-local,
+ * site-local, multicast, and any future/unassigned block) is refused, so a
+ * newly assigned special range fails closed. IPv4-mapped forms are refused
+ * outright rather than by their embedded address: a resolver should hand
+ * back a plain A record, and pinning to a mapped literal would let the
+ * embedded-address check drift from the real socket family.
+ * Unparseable input is treated as private (fail closed).
+ */
+export function isPrivateIp(ip: string): boolean {
+	const family = isIP(ip);
+	if (family === 4) {
+		const octets = parseIpv4Octets(ip);
+		return octets ? isPrivateIpv4Octets(octets) : true;
+	}
+	if (family !== 6) {
+		return true;
+	}
+	const groups = expandIpv6ToHextets(ip);
+	if (!groups) {
+		return true;
+	}
+	return !isGlobalUnicastIpv6(groups);
+}
+
+/**
+ * Global unicast per IANA "IPv6 Special-Purpose Address Registry" and
+ * "IPv6 Global Unicast Address Assignments": 2000::/3 except
+ *   2001::/23      IETF protocol assignments (Teredo 2001::/32,
+ *                  benchmarking 2001:2::/48, AMT 2001:3::/32, ORCHIDv2
+ *                  2001:20::/28, ...)
+ *   2001:db8::/32  documentation
+ *   2002::/16      6to4 (deprecated; never dial it from a server)
+ *   3fff::/20      documentation (RFC 9637)
+ *   5f00::/16      SRv6 SIDs (RFC 9602)
+ */
+function isGlobalUnicastIpv6(groups: readonly number[]): boolean {
+	const first = groups[0];
+	if ((first & 0xe000) !== 0x2000) {
+		return false; // outside 2000::/3
+	}
+	if (first === 0x2001 && (groups[1] & 0xfe00) === 0x0000) {
+		return false; // 2001::/23
+	}
+	if (first === 0x2001 && groups[1] === 0x0db8) {
+		return false; // 2001:db8::/32
+	}
+	if (first === 0x2002) {
+		return false; // 2002::/16
+	}
+	if (first === 0x3fff && (groups[1] & 0xf000) === 0x0000) {
+		return false; // 3fff::/20 (3fff:0000:: – 3fff:0fff:ffff::)
+	}
+	if (first === 0x5f00) {
+		return false; // 5f00::/16
+	}
+	return true;
+}
+
+export interface PinnedFetchOptions {
+	/** Maximum response body size in bytes (default 5 MB). */
+	maxBytes?: number;
+	/** Overall timeout for the request including redirects (default 10 s). */
+	timeoutMs?: number;
+	/**
+	 * Allowed response media types (compared case-insensitively against the
+	 * `content-type` header without parameters). A missing header is
+	 * rejected. Default: JSON, YAML and plain text.
+	 */
+	allowedContentTypes?: string[];
+	/** Maximum redirects to follow, each re-validated (default 3). */
+	maxRedirects?: number;
+	/**
+	 * Test hook: a dispatcher used instead of the pinned Agent. DNS
+	 * validation still runs. Never pass this from production code.
+	 */
+	dispatcher?: Dispatcher;
+	/** Test hook: DNS resolver override (defaults to `dns.promises.lookup`). */
+	lookup?: (hostname: string) => Promise<ResolvedAddress[]>;
+}
+
+export interface ResolvedAddress {
+	address: string;
+	family: number;
+}
+
+export const PINNED_FETCH_DEFAULT_MAX_BYTES = 5 * 1024 * 1024;
+export const PINNED_FETCH_DEFAULT_TIMEOUT_MS = 10_000;
+export const PINNED_FETCH_DEFAULT_MAX_REDIRECTS = 3;
+export const PINNED_FETCH_DEFAULT_CONTENT_TYPES = [
+	"application/json",
+	"application/yaml",
+	"application/x-yaml",
+	"text/yaml",
+	"text/plain",
+];
+
+export class UnsafeOutboundUrlError extends Error {
+	readonly code = "UNSAFE_OUTBOUND_URL" as const;
+	constructor(message: string) {
+		super(message);
+		this.name = "UnsafeOutboundUrlError";
+	}
+}
+
+export class OutboundResponseRejectedError extends Error {
+	readonly code:
+		| "RESPONSE_TOO_LARGE"
+		| "CONTENT_TYPE_NOT_ALLOWED"
+		| "TOO_MANY_REDIRECTS"
+		| "REDIRECT_WITHOUT_LOCATION";
+	constructor(code: OutboundResponseRejectedError["code"], message: string) {
+		super(message);
+		this.name = "OutboundResponseRejectedError";
+		this.code = code;
+	}
+}
+
+async function defaultLookup(hostname: string): Promise<ResolvedAddress[]> {
+	const answers = await dnsPromises.lookup(hostname, { all: true });
+	return answers.map((a) => ({ address: a.address, family: a.family }));
+}
+
+/**
+ * Validate the literal URL, resolve the host and return one address that is
+ * safe to connect to. Throws `UnsafeOutboundUrlError` if the literal check
+ * fails, resolution fails, or ANY answer is private.
+ */
+export async function resolvePinnedAddress(
+	urlString: string,
+	lookup: (hostname: string) => Promise<ResolvedAddress[]> = defaultLookup,
+): Promise<{ url: URL; address: ResolvedAddress }> {
+	const reason = getUnsafeUrlReason(urlString);
+	if (reason) {
+		throw new UnsafeOutboundUrlError(reason);
+	}
+	const url = new URL(urlString);
+	const hostname = url.hostname.replace(/^\[(.*)\]$/, "$1");
+
+	// Literal IP: no DNS, but still subject to the range check.
+	if (isIP(hostname)) {
+		if (isPrivateIp(hostname)) {
+			throw new UnsafeOutboundUrlError(
+				`Address ${hostname} is not a public address`,
+			);
+		}
+		return { url, address: { address: hostname, family: isIP(hostname) } };
+	}
+
+	let answers: ResolvedAddress[];
+	try {
+		answers = await lookup(hostname);
+	} catch (error) {
+		throw new UnsafeOutboundUrlError(
+			`Could not resolve ${hostname}: ${error instanceof Error ? error.message : String(error)}`,
+		);
+	}
+	if (answers.length === 0) {
+		throw new UnsafeOutboundUrlError(`${hostname} did not resolve`);
+	}
+	// Reject the host if ANY answer is private: a mixed public/private set is
+	// the classic rebinding / split-horizon pattern.
+	for (const answer of answers) {
+		if (isPrivateIp(answer.address)) {
+			throw new UnsafeOutboundUrlError(
+				`${hostname} resolves to a non-public address`,
+			);
+		}
+	}
+	return { url, address: answers[0] };
+}
+
+function normalizeContentType(header: string | null): string | null {
+	if (!header) {
+		return null;
+	}
+	return header.split(";")[0].trim().toLowerCase();
+}
+
+function isRedirect(status: number): boolean {
+	return (
+		status === 301 ||
+		status === 302 ||
+		status === 303 ||
+		status === 307 ||
+		status === 308
+	);
+}
+
+async function readBodyCapped(
+	response: globalThis.Response | Awaited<ReturnType<typeof undiciFetch>>,
+	maxBytes: number,
+): Promise<Uint8Array> {
+	const declared = response.headers.get("content-length");
+	if (declared && Number(declared) > maxBytes) {
+		throw new OutboundResponseRejectedError(
+			"RESPONSE_TOO_LARGE",
+			`Response body exceeds ${maxBytes} bytes`,
+		);
+	}
+	const body = response.body;
+	if (!body) {
+		return new Uint8Array(0);
+	}
+	const reader = body.getReader();
+	const chunks: Uint8Array[] = [];
+	let total = 0;
+	try {
+		while (true) {
+			const { done, value } = await reader.read();
+			if (done) {
+				break;
+			}
+			if (value) {
+				total += value.byteLength;
+				if (total > maxBytes) {
+					throw new OutboundResponseRejectedError(
+						"RESPONSE_TOO_LARGE",
+						`Response body exceeds ${maxBytes} bytes`,
+					);
+				}
+				chunks.push(value);
+			}
+		}
+	} finally {
+		try {
+			await reader.cancel();
+		} catch {
+			// Already closed.
+		}
+	}
+	const out = new Uint8Array(total);
+	let offset = 0;
+	for (const chunk of chunks) {
+		out.set(chunk, offset);
+		offset += chunk.byteLength;
+	}
+	return out;
+}
+
+/**
+ * Fetch `input` with DNS-pinned SSRF protection (see the module comment).
+ * The body is buffered (capped at `maxBytes`) and returned as a standard
+ * `Response` so callers can use `.text()` / `.json()` as usual. Redirect
+ * responses are followed manually — the returned response is never a
+ * redirect.
+ */
+export async function safeFetchOutboundPinned(
+	input: string | URL,
+	init?: RequestInit,
+	opts: PinnedFetchOptions = {},
+): Promise<Response> {
+	const maxBytes = opts.maxBytes ?? PINNED_FETCH_DEFAULT_MAX_BYTES;
+	const timeoutMs = opts.timeoutMs ?? PINNED_FETCH_DEFAULT_TIMEOUT_MS;
+	const maxRedirects =
+		opts.maxRedirects ?? PINNED_FETCH_DEFAULT_MAX_REDIRECTS;
+	const allowed = (
+		opts.allowedContentTypes ?? PINNED_FETCH_DEFAULT_CONTENT_TYPES
+	).map((t) => t.toLowerCase());
+	const lookup = opts.lookup ?? defaultLookup;
+
+	const deadline = AbortSignal.timeout(timeoutMs);
+	const signals: AbortSignal[] = [deadline];
+	if (init?.signal) {
+		signals.push(init.signal);
+	}
+	const signal = AbortSignal.any(signals);
+
+	let currentUrl = typeof input === "string" ? input : input.toString();
+	let method = init?.method ?? "GET";
+	let body = init?.body ?? undefined;
+
+	for (let hop = 0; hop <= maxRedirects; hop++) {
+		const { url, address } = await resolvePinnedAddress(currentUrl, lookup);
+
+		const ownAgent = opts.dispatcher
+			? null
+			: new Agent({
+					connect: {
+						// Pin the connection to the pre-validated address while
+						// `servername` / `Host` stay on the original hostname.
+						lookup: (
+							_hostname: string,
+							_options: unknown,
+							callback: (
+								err: Error | null,
+								address: string,
+								family: number,
+							) => void,
+						) => callback(null, address.address, address.family),
+						timeout: timeoutMs,
+					},
+					headersTimeout: timeoutMs,
+					bodyTimeout: timeoutMs,
+				});
+		const dispatcher = opts.dispatcher ?? (ownAgent as Dispatcher);
+
+		let response: Awaited<ReturnType<typeof undiciFetch>>;
+		try {
+			response = await undiciFetch(url.toString(), {
+				...(init as Parameters<typeof undiciFetch>[1]),
+				method,
+				body: body as never,
+				signal,
+				redirect: "manual",
+				dispatcher,
+			});
+
+			if (isRedirect(response.status)) {
+				const location = response.headers.get("location");
+				// Drain so the connection can be reused/closed cleanly.
+				await response.body?.cancel().catch(() => {});
+				if (!location) {
+					throw new OutboundResponseRejectedError(
+						"REDIRECT_WITHOUT_LOCATION",
+						`Redirect ${response.status} without a Location header`,
+					);
+				}
+				if (hop === maxRedirects) {
+					throw new OutboundResponseRejectedError(
+						"TOO_MANY_REDIRECTS",
+						`More than ${maxRedirects} redirects`,
+					);
+				}
+				currentUrl = new URL(location, url).toString();
+				// 303 (and 301/302 for POST) switch to GET without a body.
+				if (
+					response.status === 303 ||
+					((response.status === 301 || response.status === 302) &&
+						method.toUpperCase() === "POST")
+				) {
+					method = "GET";
+					body = undefined;
+				}
+				continue;
+			}
+
+			const contentType = normalizeContentType(
+				response.headers.get("content-type"),
+			);
+			if (!contentType || !allowed.includes(contentType)) {
+				await response.body?.cancel().catch(() => {});
+				throw new OutboundResponseRejectedError(
+					"CONTENT_TYPE_NOT_ALLOWED",
+					`Content type ${contentType ?? "(none)"} is not allowed`,
+				);
+			}
+
+			const bytes = await readBodyCapped(response, maxBytes);
+			const headers = new Headers();
+			response.headers.forEach((value, key) => {
+				headers.set(key, value);
+			});
+			const arrayBuffer = bytes.buffer.slice(
+				bytes.byteOffset,
+				bytes.byteOffset + bytes.byteLength,
+			) as ArrayBuffer;
+			return new Response(arrayBuffer, {
+				status: response.status,
+				statusText: response.statusText,
+				headers,
+			});
+		} finally {
+			if (ownAgent) {
+				await ownAgent.close().catch(() => {});
+			}
+		}
+	}
+
+	throw new OutboundResponseRejectedError(
+		"TOO_MANY_REDIRECTS",
+		`More than ${maxRedirects} redirects`,
+	);
 }

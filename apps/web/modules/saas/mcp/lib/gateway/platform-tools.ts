@@ -3565,7 +3565,11 @@ async function handleUpdateDocument(
 	args: Record<string, unknown>,
 	session: GatewaySession,
 ): Promise<ToolCallResult> {
-	const { updateDocument, getDocumentById } = await import("@repo/database");
+	const {
+		updateDocument,
+		getDocumentById,
+		IntegrationContractStatusManagedError,
+	} = await import("@repo/database");
 
 	const documentId = args.documentId as string;
 	if (!documentId) {
@@ -3589,29 +3593,53 @@ async function handleUpdateDocument(
 		return errorResult("No edit permission for this project");
 	}
 
-	const updated = await updateDocument(documentId, {
-		...(args.title !== undefined ? { title: args.title as string } : {}),
-		...(args.content !== undefined
-			? { content: args.content as string }
-			: {}),
-		...(args.status !== undefined
-			? {
-					status: args.status as
-						| "DRAFT"
-						| "GENERATING"
-						| "IN_PROGRESS"
-						| "REVIEW"
-						| "COMPLETE"
-						| "FAILED",
-				}
-			: {}),
-		...(args.changeDescription !== undefined
-			? { changeDescription: args.changeDescription as string }
-			: {}),
-		lastEditedBy: session.userId,
-		userId: session.userId,
-		organizationId: session.organizationId ?? undefined,
-	});
+	// Integration contract status belongs to the Discovery run (plan Slice 4);
+	// `updateDocument` enforces this, this just returns a clear tool error.
+	if (
+		doc.type === "INTEGRATION_CONTRACT" &&
+		args.status !== undefined &&
+		args.status !== doc.status
+	) {
+		return errorResult(
+			"Integration contract status is managed by the discovery run; use Mark contract complete in Fabric",
+		);
+	}
+
+	let updated: Awaited<ReturnType<typeof updateDocument>>;
+	try {
+		updated = await updateDocument(documentId, {
+			...(args.title !== undefined
+				? { title: args.title as string }
+				: {}),
+			...(args.content !== undefined
+				? { content: args.content as string }
+				: {}),
+			...(args.status !== undefined
+				? {
+						status: args.status as
+							| "DRAFT"
+							| "GENERATING"
+							| "IN_PROGRESS"
+							| "REVIEW"
+							| "COMPLETE"
+							| "FAILED",
+					}
+				: {}),
+			...(args.changeDescription !== undefined
+				? { changeDescription: args.changeDescription as string }
+				: {}),
+			lastEditedBy: session.userId,
+			userId: session.userId,
+			organizationId: session.organizationId ?? undefined,
+		});
+	} catch (error) {
+		// Last line of defence in the query layer (a completion may land
+		// between the pre-read above and its own read).
+		if (error instanceof IntegrationContractStatusManagedError) {
+			return errorResult(error.message);
+		}
+		throw error;
+	}
 
 	return jsonResult({
 		success: true,

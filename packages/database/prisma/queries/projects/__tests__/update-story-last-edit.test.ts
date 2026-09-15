@@ -69,12 +69,37 @@ beforeEach(() => {
 		fn({
 			userStory: {
 				findUnique: txFindUniqueMock,
+				// Read by the stage-transition choke point (plan §F1).
+				findFirst: vi.fn(async () => ({
+					draftingStage: CURRENT_STORY.draftingStage,
+					deliveryTrack: "SPECIFY",
+					description: CURRENT_STORY.description,
+					acceptanceCriteria: CURRENT_STORY.acceptanceCriteria,
+				})),
 				update: txUpdateMock,
 				updateMany: txUpdateManyMock,
 			},
 			featureVersion: { createMany: txVersionCreateManyMock },
 			pendingPmStateChange: { updateMany: vi.fn() },
 			pmTicketMissingStreak: { deleteMany: vi.fn() },
+			// Advisory project (no governed review, gates off) for the choke point.
+			project: {
+				findUnique: vi.fn(async () => ({
+					engagementProfile: "PROPOSAL",
+					enforceSpecifyGate: false,
+					enforceSpikeGate: false,
+					enforceDiscoveryGate: false,
+					organizationId: "org-1",
+					userId: "owner-1",
+					_count: { stageApprovers: 0 },
+				})),
+			},
+			codingRun: { count: vi.fn(async () => 0) },
+			projectDocument: { findFirst: vi.fn(async () => null) },
+			stageTransitionRequest: {
+				updateMany: vi.fn(async () => ({ count: 0 })),
+				create: vi.fn(),
+			},
 		}),
 	);
 });

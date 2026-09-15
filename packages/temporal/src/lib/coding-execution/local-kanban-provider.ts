@@ -11,6 +11,7 @@ import {
 } from "./errors";
 import type {
 	CodingExecutionProvider,
+	CodingExecutionProviderCapabilities,
 	CreateSessionParams,
 	HealthCheckResult,
 	SessionStatus,
@@ -301,7 +302,21 @@ async function runKanbanJsonCommand(
 	})) as Record<string, unknown>;
 }
 
+/**
+ * Plan §F4: spike runs require a proven push of `fabric-spike/<runId>`
+ * without a PR. The local runtime returns only a worker-local
+ * `local_runtime` artifact and reports no pushed branch, so spikes are
+ * unavailable on this provider and the flag stays false.
+ */
+export const KANBAN_LOCAL_CAPABILITIES: CodingExecutionProviderCapabilities = {
+	pushBranchWithoutPr: false,
+};
+
 export class KanbanLocalAdapter implements CodingExecutionProvider {
+	/** See {@link KANBAN_LOCAL_CAPABILITIES}. */
+	readonly capabilities: CodingExecutionProviderCapabilities =
+		KANBAN_LOCAL_CAPABILITIES;
+
 	async createSession(params: CreateSessionParams): Promise<{
 		sessionId: string;
 		externalUrl?: string;

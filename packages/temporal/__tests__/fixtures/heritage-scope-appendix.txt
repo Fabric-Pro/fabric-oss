@@ -1,0 +1,198 @@
+
+DEVELOPER SCOPE  ·  PHASE 1
+Foundations, governance & identity
+  ID  FEATURE  SCOPE NOTE FOR ESTIMATING  SOURCE  DEP.  PRIORITY
+  FND-01  Multi-tenant dealer model  Accounts, branches, dealers and their users with data isolation  Implied  —  Must
+  FND-02  Authentication & SSO  Consumer and trade sign-in, Heritage SSO for internal users  Implied  —  Must
+  FND-03  Role-based permissions  Consumer, contractor, branch associate and admin scopes  Implied  —  Must
+  FND-04  Multi-category architecture  Build once for pool, configure for landscape without a rebuild  Deck · s37  —  Must
+  FND-05  AI governance & model ops  Training data, human review, guardrails and AI disclosure  Deck  —  Must
+  FND-06  Data governance & privacy  Consumer data, photo rights, consent and retention policy  Deck  —  Must
+  FND-07  Analytics & KPI tracking  Instrument quote speed, close rate, adoption and pull-through  Deck  —  Must
+  FND-08  Environments & observability  Dev/stage/prod, CI/CD, logging, monitoring and alerting  Implied  —  Must
+  INT-01  HeritagePool+ SSO & identity  Single sign-on and customer identity from the HeritagePool+ platform  p.28  —  Must
+Heritage PoolVision  Confidential — Internal Leadership Review  50
+
+DEVELOPER SCOPE  ·  PHASE 1
+Product data & render pipeline
+  ID  FEATURE  SCOPE NOTE FOR ESTIMATING  SOURCE  DEP.  PRIORITY
+  CAT-01  Noble tile catalog  1x1 to large format, mosaics, cap tile and accessories  E-3a  —  Must
+  CAT-02  Hardscape catalog  Coping in stone, porcelain, precast, brick, flagstone and paver; veneer  E-3b  —  Must
+  CAT-03  Pool finish catalog  Plaster, quartz and pebble lines plus accessories  E-3c  —  Must
+  CAT-04  Finish additives  Glass bead and abalone shell options rendered on the finish  Cary  —  Must
+  CAT-05  Fire & water features  Bowls, fire/water combos, tables, bubblers, sheers, spillways  E-3e  —  Must
+  CAT-09  Product data model  Attributes, coverage rates and render-ready texture maps per SKU  Deck  —  Must
+  CAT-10  Supplier data ingestion  Feeds for specs, finishes, pricing and imagery from whitelisted suppliers  Deck  —  Must
+  CAT-11  Swatch & texture pipeline  Prepare supplier photography and swatches for the render engine  Deck  —  Must
+Heritage PoolVision  Confidential — Internal Leadership Review  51
+
+DEVELOPER SCOPE  ·  PHASE 1
+Visualization & rendering (1 of 2)
+  ID  FEATURE  SCOPE NOTE FOR ESTIMATING  SOURCE  DEP.  PRIORITY
+  VIS-01  Photo upload & site capture  Guided multi-angle capture of the yard and existing pool; image QC  Deck · E-1  —  Must
+  VIS-02  AI generative rendering  Photo-real before/after for both remodel and new construction  Deck · E-1  —  Must
+  VIS-03  Watercolor simulator  Core engine: finish + additive + tile + depth + light → resulting water color  Cary  —  Must
+  VIS-04  Water depth rendering  Show color shift across shallow, transition and deep zones  E-4 · Cary  —  Must
+  VIS-05  Sky & sun conditions  Time-of-day and weather presets and their effect on water color  E-5 · Cary  —  Must
+Heritage PoolVision  Confidential — Internal Leadership Review  52
+
+DEVELOPER SCOPE  ·  PHASE 1
+Visualization & rendering (2 of 2)
+  ID  FEATURE  SCOPE NOTE FOR ESTIMATING  SOURCE  DEP.  PRIORITY
+  VIS-06  360° orientation control  Rotate the scene; view the design from multiple vantage points  Cary  —  Must
+  VIS-07  Before / after compare  Original vs rendered, slider and side-by-side views  Deck  —  Must
+  VIS-08  Side-by-side option compare  Compare 2–4 material or color combinations in a single view  Cary  —  Must
+  VIS-09  Render versioning & history  Save, name and return to prior renders on a project  Implied  —  Nice
+  VIS-10  Render queue & performance  Job queue, retry, per-render cost controls and target render time  Implied  —  Must
+Heritage PoolVision  Confidential — Internal Leadership Review  53
+
+DEVELOPER SCOPE  ·  PHASE 1
+Design & guided selection
+  ID  FEATURE  SCOPE NOTE FOR ESTIMATING  SOURCE  DEP.  PRIORITY
+  DES-01  Prepopulated shapes & sizes  Standard pool shape and size library ready to drop in  E-1a  —  Must
+  DES-02  Custom shape & size editor  Adjust dimensions and geometry beyond the presets  E-1b  —  Must
+  DES-03  Inspiration pool templates  Curated starting designs: traditional, modern and regionalized  E-1c  —  Must
+  DES-04  Feature configuration  Sun shelves, spillover spas, water features, benches  Deck  —  Must
+  SEL-01  Guided selection flow  Simple, water-first selection path from first click to final look  Cary  —  Must
+  SEL-02  AI material recommendations  Suggest finish, tile and coping from home style, landscape and picks  Cary · Deck  —  Must
+  SEL-03  Suggestive upsell & add-ons  Surface upgrades and complementary products against current selections  E-9  —  Must
+Heritage PoolVision  Confidential — Internal Leadership Review  54
+
+DEVELOPER SCOPE  ·  PHASE 1
+Education, conversion & BOM handoff
+  ID  FEATURE  SCOPE NOTE FOR ESTIMATING  SOURCE  DEP.  PRIORITY
+  SEL-04  Grout selection tool  Recommend grout options driven by the tile and material selections  E-7  —  Must
+  SEL-05  Finish longevity & warranty  Expected service life and warranty options shown per finish  Cary  —  Must
+  SEL-06  Educational pop-ups  Contextual explainers, e.g. the glass bead process and upgrade rationale  E-13  —  Must
+  SEL-07  Quick guide & walkthrough  Consumer onboarding guide plus a short walkthrough video  E-11  —  Must
+  QTE-01  Consumer selections to dealer  Auto-generate and email the quote to the dealer on submission  E-6a  —  Must
+  EST-01  Automated BOM generation  Build the bill of materials directly from the approved design  Deck  —  Must
+Heritage PoolVision  Confidential — Internal Leadership Review  55
+
+DEVELOPER SCOPE  ·  PHASE 1
+Consumer inspiration & sharing
+  ID  FEATURE  SCOPE NOTE FOR ESTIMATING  SOURCE  DEP.  PRIORITY
+  CX-01  Vision boards  Assemble selections and renders into a shareable board  Cary · E-8  —  Must
+  CX-02  Share & solicit feedback  Send a board or render out for comments and reactions  Cary · E-8  —  Must
+  CX-03  Social sharing  Publish renderings and selections to social platforms  E-8 · Deck  —  Must
+  CX-04  Favorites & saved designs  Save, name and return to preferred options  Deck  —  Must
+  CX-05  Finished-project gallery  Browse completed Heritage projects for inspiration  Cary  —  Must
+Heritage PoolVision  Confidential — Internal Leadership Review  56
+
+DEVELOPER SCOPE  ·  PHASE 1
+Service handoffs & dealer setup
+  ID  FEATURE  SCOPE NOTE FOR ESTIMATING  SOURCE  DEP.  PRIORITY
+  CX-06  Sample request  Request physical samples from inside the tool; route to branch  E-10  —  Must
+  CX-07  Simplicity & accessibility  Low-friction, water-first UX with an accessibility standard  Cary  —  Must
+  QTE-02  Dealer profile & standards  Dealers configure their standard and included option sets  E-12  —  Must
+  INT-02  HeritagePool+ commerce services  Customer pricing, branch availability, inventory, promotions and checkout  p.28  —  Must
+  INT-04  Email & notifications  Transactional email and alerts for quotes, shares and requests  E-6a  —  Must
+Heritage PoolVision  Confidential — Internal Leadership Review  57
+
+DEVELOPER SCOPE  ·  PHASE 2
+Site intelligence & platform admin
+  ID  FEATURE  SCOPE NOTE FOR ESTIMATING  SOURCE  DEP.  PRIORITY
+  DES-05  GPS property import  Pull parcel and property dimensions from the service address  E-2  P1  Must
+  DES-06  Buildable envelope calculator  Auto-derive available build space from setbacks and easements  E-2a  P1  Must
+  DES-07  Jurisdiction code rule set  Source, license and maintain local setback and easement rules  E-2a  P1  Must
+  INT-06  GPS, parcel & code data  Third-party property dimension and jurisdiction rule providers  E-2  P1  Must
+  FND-09  Admin & content management  Manage copy, templates, pop-ups, guides and merchandising  Implied  P1  Must
+  FND-10  Regionalization framework  Regional defaults for inspiration, code, product and pricing  E-1c  P1  Nice
+  SEL-08  Inventory-aware suggestions  Bias recommendations toward in-stock and sell-through priorities  Deck  P1  Nice
+Heritage PoolVision  Confidential — Internal Leadership Review  58
+
+DEVELOPER SCOPE  ·  PHASE 2
+Catalog expansion & supplier feeds
+  ID  FEATURE  SCOPE NOTE FOR ESTIMATING  SOURCE  DEP.  PRIORITY
+  CAT-06  Furniture catalog  Ledge Lounger, Tenjam and comparable lines; umbrellas  E-3d  P1  Nice
+  CAT-07  BBQ & outdoor kitchen  Grills and accessories for the outdoor living zone  E-3f  P1  Nice
+  CAT-08  Turf, fencing & landscape  Turf, fencing, rock, pebble and planting elements  E-3g–i  P1  Nice
+  CAT-12  Catalog admin & merchandising  Whitelist governance, preferred placement and default recommendations  Deck  P1  Must
+  INT-05  Supplier product & promo APIs  Per-supplier connectors for catalog and promotion data  Deck  P1  Must
+Heritage PoolVision  Confidential — Internal Leadership Review  59
+
+DEVELOPER SCOPE  ·  PHASE 2
+Takeoff, pricing & dealer quote
+  ID  FEATURE  SCOPE NOTE FOR ESTIMATING  SOURCE  DEP.  PRIORITY
+  EST-02  Takeoff engine  Coping LF, tile band, decking SF, pool finish SF and spa facing  Deck  P1  Must
+  EST-03  Coverage calculations  Square and linear coverage by product with waste factors  Deck · E-6b  P1  Must
+  EST-04  Right-size ordering logic  Perfect-order quantity per SKU to cut returns and shorts  Deck  P1  Must
+  EST-05  Spec sheet auto-send  Email material spec sheets with coverages to the dealer  E-6b  P1  Must
+  QTE-03  Dealer quote generation  Create, revise and version quotes against the live design  Deck  P1  Must
+  QTE-04  Pricing engine  Heritage and customer-specific pricing with contract rules  Deck  P1  Must
+  QTE-05  Private-label proposal  Dealer logo and brand on the proposal, powered-by treatment  Deck  P1  Must
+  QTE-06  Proposal narrative generation  Auto-write why each item, what it costs and what it saves  Deck  P1  Nice
+Heritage PoolVision  Confidential — Internal Leadership Review  60
+
+DEVELOPER SCOPE  ·  PHASE 2
+Approval, promotions & net price
+  ID  FEATURE  SCOPE NOTE FOR ESTIMATING  SOURCE  DEP.  PRIORITY
+  QTE-07  Approval workflow  Consumer review, approve and accept flow with audit trail  Deck  P1  Must
+  REB-01  Supplier promo connectors  Authenticated feeds from supplier partner portals and APIs  Deck  P1  Must
+  REB-02  Promotion ingestion & sync  Item-level offers, amounts and start/end dates kept current  Deck  P1  Must
+  REB-03  Offer-to-SKU matching  Map live offers to the exact SKUs in the design and the BOM  Deck  P1  Must
+  REB-04  Consumer rebate display  Show net-of-rebate pricing on the quote line at selection  Deck  P1  Must
+  REB-05  Pass-through rule engine  Set pass-through by product, segment and deal size; hold margin  Deck  P1  Must
+Heritage PoolVision  Confidential — Internal Leadership Review  61
+
+DEVELOPER SCOPE  ·  PHASE 2
+Equipment intelligence
+  ID  FEATURE  SCOPE NOTE FOR ESTIMATING  SOURCE  DEP.  PRIORITY
+  EQP-01  Pad image recognition  Identify each unit by make, model and era from a single photo  Deck  P1  Must
+  EQP-02  Upgrade matching engine  Map each detected unit to an efficient replacement  Deck  P1  Must
+  EQP-03  Efficiency & savings calc  Energy, season length and estimated bill impact per upgrade  Deck  P1  Must
+  EQP-04  Compatibility & fit checks  Validate unions, pad footprint and flow before quoting  Deck  P1  Must
+  EQP-05  Plumbing & supply list  Generate the install supply list alongside the equipment  Deck  P1  Must
+Heritage PoolVision  Confidential — Internal Leadership Review  62
+
+DEVELOPER SCOPE  ·  PHASE 2
+Commerce & ERP fulfillment
+  ID  FEATURE  SCOPE NOTE FOR ESTIMATING  SOURCE  DEP.  PRIORITY
+  COM-01 Real-time inventory  Live availability by branch surfaced during selection and quoting  Deck  P1  Must
+  COM-02 Freight estimation  Estimate freight by weight, class and destination  Deck  P1  Must
+  COM-03 Delivery scheduling  Schedule delivery windows against the build timeline  Deck  P1  Must
+  COM-04 Order submission  Convert the approved quote into an order in the ERP  Deck  P1  Must
+  INT-03  ERP integration  Pricing, inventory, customer and order write-back behind HeritagePool+  Deck  P1  Must
+Heritage PoolVision  Confidential — Internal Leadership Review  63
+
+DEVELOPER SCOPE  ·  PHASE 3
+Project & homeowner delivery
+  ID  FEATURE  SCOPE NOTE FOR ESTIMATING  SOURCE  DEP.  PRIORITY
+  PRJ-01  Project workspace  One place per job for design, docs, quote and status  Deck  P1–2  Must
+  PRJ-02  Milestone tracking  Construction milestones with dates, owners and status  Deck  P1–2  Must
+  PRJ-03  Mobile field tools  Jobsite access for photos, status and material checks  Deck  P1–2  Must
+  PRJ-04  Permit workflows  Track permit submission, review and approval per jurisdiction  Deck  P1–2  Nice
+  CX-08  Homeowner dashboard  Post-sale project status and document access  Deck  P1–2  Nice
+Heritage PoolVision  Confidential — Internal Leadership Review  64
+
+DEVELOPER SCOPE  ·  PHASE 3
+Post-sale & ecosystem integrations
+  ID  FEATURE  SCOPE NOTE FOR ESTIMATING  SOURCE  DEP.  PRIORITY
+  PRJ-05  Warranty management  Register products and manage warranty claims post-install  Deck  P1–2  Nice
+  COM-05 Delivery tracking  Track shipments through to the jobsite  Deck  P1–2  Must
+  INT-07  CRM integration  Lead, contact and opportunity sync with the sales system  Deck  P1–2  Must
+  INT-08  Contractor tool integrations  Skimmer, Pool Brain and JobTread connectors  Deck  P1–2  Nice
+  INT-09  Financing provider APIs  Application, decisioning and payment terms handoff  Deck  P1–2  Nice
+Heritage PoolVision  Confidential — Internal Leadership Review  65
+
+DEVELOPER SCOPE  ·  PHASE 3
+Commercial optimization & rebates
+  ID  FEATURE  SCOPE NOTE FOR ESTIMATING  SOURCE  DEP.  PRIORITY
+  SEL-09  Margin-optimized suggestions  Weight recommendations by margin and preferred product mix  Deck  P1–2  Nice
+  QTE-08  Financing presentation  Monthly payment display and financing provider handoff  Deck  P2  Nice
+  REB-06  Rebate claim prefill  Push model, serial and invoice into the supplier submission  Deck  P2  Nice
+  REB-07  Back-end rebate tracking  Accrue volume, growth and mix rebates at the Heritage level  Deck  P2  Nice
+Heritage PoolVision  Confidential — Internal Leadership Review  66
+
+DEVELOPER SCOPE  ·  DEPENDENCIES
+Cross-phase dependencies to protect the roadmap
+  01  Core platform → all  FND-01/02/03/06/08 must be stable before P2 pricing, inventory, ordering and P3 field workflows.
+  02  Catalog → recommendations  CAT-09/10/11 and supplier data power P1 rendering and selection; CAT-12 and INT-05 extend them in P2.
+  03  Design/BOM → quoting  DES-01–04 and EST-01 define the design contract consumed by EST-02–05 and QTE-03–07.
+  04  Identity → transactions  INT-01/02 are prerequisites for P2 ERP, inventory, customer pricing, checkout and order submission.
+  05  Supplier APIs → promos  INT-05 and CAT-10 must be available before REB-01–05 can show reliable net pricing.
+  06  Transactions → projects  Approved quotes, BOMs and orders from EST/QTE/COM feed PRJ-01–05 and the homeowner dashboard.
+  07  Promos → rebate ops  REB-01–05 must establish offer-to-SKU rules before claim prefill and back-end accrual in REB-06/07.
+  08  Commerce → extensions  P2 ERP and commerce data precede CRM, contractor-tool and financing integrations in INT-07–09 and QTE-08.
+Critical path: P1 foundations + catalog + visualization/design → P2 estimating/quote/commerce → P3 project and lifecycle features. API access and data completeness remain estimate gates.
+Heritage PoolVision  Confidential — Internal Leadership Review  67

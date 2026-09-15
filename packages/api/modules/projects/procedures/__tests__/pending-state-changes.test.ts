@@ -20,6 +20,8 @@ const {
 	mockApplyTerminalCloseSpy,
 	mockRecordAudit,
 	mockRecordAuditTx,
+	mockEnforceStageTransition,
+	mockWriteStage,
 } = vi.hoisted(() => {
 	const handlers: Record<string, (...args: unknown[]) => unknown> = {};
 	const mockDb = {
@@ -57,6 +59,9 @@ const {
 	const mockApplyTerminalCloseSpy = vi.fn();
 	const mockRecordAudit = vi.fn();
 	const mockRecordAuditTx = vi.fn().mockResolvedValue(undefined);
+	// Stage-transition choke point (plan §F1). Default: apply.
+	const mockEnforceStageTransition = vi.fn();
+	const mockWriteStage = vi.fn().mockResolvedValue(undefined);
 	return {
 		handlers,
 		mockDb,
@@ -67,6 +72,8 @@ const {
 		mockApplyTerminalCloseSpy,
 		mockRecordAudit,
 		mockRecordAuditTx,
+		mockEnforceStageTransition,
+		mockWriteStage,
 	};
 });
 
@@ -74,6 +81,12 @@ vi.mock("@repo/database", () => ({
 	db: mockDb,
 	hasProjectAccess: vi.fn().mockResolvedValue(true),
 	createFeatureVersion: mockCreateFeatureVersion,
+	enforceStageTransition: mockEnforceStageTransition,
+	writeStage: mockWriteStage,
+	StageTransitionBlockedError: class extends Error {},
+	GovernedActorRequiredError: class extends Error {},
+	StageTransitionConflictError: class extends Error {},
+	StageApprovalError: class extends Error {},
 	FeatureDraftingStage: {},
 	applyTerminalUnhide: mockApplyTerminalUnhide,
 	applyPmUnlink: mockApplyPmUnlink,
@@ -294,6 +307,14 @@ describe("countPendingStateChangesProcedure", () => {
 describe("reviewPendingStateChangeProcedure", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
+		mockEnforceStageTransition.mockResolvedValue({
+			mode: "apply",
+			fromStage: "DRAFT",
+			readiness: null,
+		});
+		// STORY closure now runs in a transaction; execute it against the
+		// same mock so assertions on `mockDb.userStory` keep working.
+		mockDb.$transaction.mockImplementation(async (fn: any) => fn(mockDb));
 	});
 
 	it("approves and applies hide on APPROVED decision", async () => {
@@ -395,7 +416,7 @@ describe("reviewPendingStateChangeProcedure", () => {
 		}
 	});
 
-	it("applies hide to UserStory with version increment and FeatureVersion", async () => {
+	it("closes a UserStory through the stage choke point (enforce + CAS write)", async () => {
 		mockDb.pendingPmStateChange.findUnique.mockResolvedValue({
 			id: "ch-1",
 			projectId: "proj-1",
@@ -406,18 +427,14 @@ describe("reviewPendingStateChangeProcedure", () => {
 		});
 		mockDb.userStory.findUnique.mockResolvedValue({
 			id: "story-1",
-			version: 3,
-			description: "My story desc",
-			acceptanceCriteria: "AC here",
-			draftingStage: "DRAFTING",
+			draftingStage: "DRAFT",
 		});
-		mockDb.userStory.update.mockResolvedValue({});
 		mockDb.pendingPmStateChange.update.mockResolvedValue({
 			id: "ch-1",
 			status: "APPROVED",
 		});
 
-		await handlers.review({
+		const result = (await handlers.review({
 			input: {
 				projectId: "proj-1",
 				id: "ch-1",
@@ -425,24 +442,106 @@ describe("reviewPendingStateChangeProcedure", () => {
 				decision: "APPROVED",
 			},
 			context: mockContext,
-		});
+		})) as any;
 
-		expect(mockCreateFeatureVersion).toHaveBeenCalledWith(
+		expect(mockEnforceStageTransition).toHaveBeenCalledWith(
+			mockDb,
 			expect.objectContaining({
 				storyId: "story-1",
-				version: 4,
-				draftingStage: "CLOSED",
+				projectId: "proj-1",
+				toStage: "CLOSED",
+				reason: "system",
+				actor: expect.objectContaining({ userId: "user-1" }),
 			}),
 		);
-		expect(mockDb.userStory.update).toHaveBeenCalledWith(
+		// The gate said "apply", so the close goes through fabric-dev's
+		// terminal-close helper (version snapshot + PM provenance).
+		expect(mockApplyTerminalCloseSpy).toHaveBeenCalledWith(
 			expect.objectContaining({
-				where: { id: "story-1", projectId: "proj-1" },
-				data: expect.objectContaining({
-					draftingStage: "CLOSED",
-					version: 4,
-				}),
+				entityType: "STORY",
+				entityId: "story-1",
+				projectId: "proj-1",
 			}),
 		);
+		expect(result.pendingStageRequest).toBeNull();
+	});
+
+	it("auto-dismisses when the story vanished between lookup and transition", async () => {
+		mockDb.pendingPmStateChange.findUnique.mockResolvedValue({
+			id: "ch-1",
+			projectId: "proj-1",
+			entityType: "STORY",
+			entityId: "story-1",
+			status: "PENDING",
+			proposedAction: "HIDE",
+		});
+		// The story is gone by the time the close runs: the governed
+		// pre-check finds nothing, and the terminal-close helper reports a
+		// no-op, which the procedure turns into a DISMISSED row.
+		mockDb.userStory.findUnique.mockResolvedValue(null);
+		mockDb.pendingPmStateChange.update.mockResolvedValue({
+			id: "ch-1",
+			status: "DISMISSED",
+		});
+
+		const result = (await handlers.review({
+			input: {
+				projectId: "proj-1",
+				id: "ch-1",
+				organizationId: null,
+				decision: "APPROVED",
+			},
+			context: mockContext,
+		})) as any;
+
+		expect(result.change.status).toBe("DISMISSED");
+		expect(mockDb.pendingPmStateChange.update).toHaveBeenCalledWith(
+			expect.objectContaining({
+				data: expect.objectContaining({ status: "DISMISSED" }),
+			}),
+		);
+	});
+
+	it("under GOVERNED review records a stage request and leaves the story unchanged", async () => {
+		mockDb.pendingPmStateChange.findUnique.mockResolvedValue({
+			id: "ch-1",
+			projectId: "proj-1",
+			entityType: "STORY",
+			entityId: "story-1",
+			status: "PENDING",
+			proposedAction: "HIDE",
+		});
+		mockDb.userStory.findUnique.mockResolvedValue({
+			id: "story-1",
+			draftingStage: "PUBLISHED",
+		});
+		mockEnforceStageTransition.mockResolvedValue({
+			mode: "request",
+			fromStage: "PUBLISHED",
+			requestId: "req-42",
+			readiness: null,
+		});
+		mockDb.pendingPmStateChange.update.mockResolvedValue({
+			id: "ch-1",
+			status: "APPROVED",
+		});
+
+		const result = (await handlers.review({
+			input: {
+				projectId: "proj-1",
+				id: "ch-1",
+				organizationId: null,
+				decision: "APPROVED",
+			},
+			context: mockContext,
+		})) as any;
+
+		expect(mockWriteStage).not.toHaveBeenCalled();
+		expect(mockDb.userStory.update).not.toHaveBeenCalled();
+		expect(mockCreateFeatureVersion).not.toHaveBeenCalled();
+		expect(result.pendingStageRequest).toEqual({ id: "req-42" });
+		// The inbound PM change itself is still acknowledged as reviewed.
+		expect(result.change.status).toBe("APPROVED");
 	});
 
 	it("applies hide to Feature with draftingStage: CLOSED", async () => {
@@ -1155,6 +1254,93 @@ describe("review (single-row) FLAG_MISSING atomic consume", () => {
 describe("bulkReviewPendingStateChangesProcedure", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
+		mockEnforceStageTransition.mockResolvedValue({
+			mode: "apply",
+			fromStage: "DRAFT",
+			readiness: null,
+		});
+	});
+
+	it("routes story closure through the choke point and surfaces governed request ids", async () => {
+		const changes = [
+			{
+				id: "ch-1",
+				projectId: "proj-1",
+				entityType: "STORY",
+				entityId: "s-1",
+				status: "PENDING",
+				proposedAction: "HIDE",
+			},
+			{
+				id: "ch-2",
+				projectId: "proj-1",
+				entityType: "STORY",
+				entityId: "s-2",
+				status: "PENDING",
+				proposedAction: "HIDE",
+			},
+		];
+		mockEnforceStageTransition
+			.mockResolvedValueOnce({
+				mode: "apply",
+				fromStage: "DRAFT",
+				readiness: null,
+			})
+			.mockResolvedValueOnce({
+				mode: "request",
+				fromStage: "PUBLISHED",
+				requestId: "req-7",
+				readiness: null,
+			});
+		const txUserStoryUpdate = vi.fn();
+		mockDb.$transaction.mockImplementation(async (fn: any) => {
+			const tx = {
+				pendingPmStateChange: {
+					findMany: vi.fn().mockResolvedValue(changes),
+					update: vi.fn().mockResolvedValue({}),
+				},
+				userStory: {
+					findUnique: vi
+						.fn()
+						.mockResolvedValueOnce({
+							id: "s-1",
+							draftingStage: "DRAFT",
+						})
+						.mockResolvedValueOnce({
+							id: "s-2",
+							draftingStage: "PUBLISHED",
+						}),
+					update: txUserStoryUpdate,
+				},
+				epic: { update: vi.fn() },
+				feature: { update: vi.fn() },
+				featureVersion: { upsert: vi.fn() },
+			};
+			return fn(tx);
+		});
+
+		const result = (await handlers.bulk({
+			input: {
+				projectId: "proj-1",
+				organizationId: null,
+				ids: ["ch-1", "ch-2"],
+				decision: "APPROVED",
+			},
+			context: mockContext,
+		})) as any;
+
+		expect(result.reviewed).toBe(2);
+		expect(mockEnforceStageTransition).toHaveBeenCalledTimes(2);
+		// s-1 was allowed through and closed in the transaction; s-2 became
+		// a governed request and its row was left untouched.
+		expect(txUserStoryUpdate).toHaveBeenCalledTimes(1);
+		expect(txUserStoryUpdate).toHaveBeenCalledWith(
+			expect.objectContaining({
+				where: { id: "s-1", projectId: "proj-1" },
+				data: expect.objectContaining({ draftingStage: "CLOSED" }),
+			}),
+		);
+		expect(result.pendingStageRequestIds).toEqual(["req-7"]);
 	});
 
 	it("applies to all matching PENDING changes", async () => {

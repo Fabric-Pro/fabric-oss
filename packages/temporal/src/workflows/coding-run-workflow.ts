@@ -4,6 +4,20 @@
  * Manages the lifecycle of a background agent coding execution session.
  * For BACKGROUND_AGENTS: hybrid signal+poll approach (fast signal, 5-min fallback).
  * For KANBAN_LOCAL: pure 15s poll loop.
+ *
+ * Run kinds (plan Slice 3): `input.kind === "SPIKE"` takes the spike path
+ * (spike prompt, critical `syncSpikeArtifacts`, terminal DEMO_READY). Any
+ * other value, including the `undefined` carried by histories started
+ * before spikes existed, takes the implement path, which schedules exactly
+ * the same commands as before.
+ *
+ * Replay fixture note: `test:replay` validates against histories under
+ * `__tests__/__fixtures__/histories/<WorkflowType>/` populated by
+ * `fetch:replay-histories`. No `codingRunWorkflow` history exists in the
+ * local Temporal server (this branch's dev DB never ran one), so the
+ * implement-path fixture could not be captured here; capture one from an
+ * environment that has run an implement session before relying on local
+ * replay, and let CI replay validation cover the PR meanwhile.
  */
 
 import {
@@ -22,15 +36,18 @@ import {
 } from "@temporalio/workflow";
 import type * as allActivities from "../activities";
 import type * as codingRunActivities from "../activities/coding-run";
+import { type CodingRunPlan, selectCodingRunPlan } from "./coding-run-plan";
 
 const {
 	updateCodingRunStatusActivity,
 	addCodingRunEventActivity,
 	buildImplementationPrompt,
+	buildSpikePrompt,
 	createExecutionSession,
 	sendExecutionPrompt,
 	pollExecutionStatus,
 	syncCodingRunArtifacts,
+	syncSpikeArtifacts,
 	cancelExecutionSession,
 } = proxyActivities<typeof codingRunActivities>({
 	startToCloseTimeout: "2 minutes",
@@ -90,11 +107,18 @@ export interface CodingRunWorkflowInput {
 	targetBranch?: string;
 	workingDirectory?: string;
 	storyTitle: string;
+	/**
+	 * Run kind (plan Slice 3). Absent on histories started before spikes
+	 * existed; anything but "SPIKE" takes the implement path unchanged.
+	 */
+	kind?: "IMPLEMENT" | "SPIKE";
+	/** Required for SPIKE runs. */
+	spikeQuestion?: string;
 }
 
 export interface CodingRunWorkflowOutput {
 	codingRunId: string;
-	status: "completed" | "failed" | "cancelled";
+	status: "completed" | "demo_ready" | "failed" | "cancelled";
 	pullRequestUrl?: string;
 	error?: string;
 }
@@ -145,8 +169,10 @@ export async function codingRunWorkflow(
 	} = input;
 
 	const { workflowId } = workflowInfo();
+	const plan = selectCodingRunPlan(input);
 
 	const state = {
+		plan,
 		cancelled: false,
 		currentStatus: "STARTING",
 		sessionId: null as string | null,
@@ -219,17 +245,34 @@ export async function codingRunWorkflow(
 			);
 		}
 
-		const prompt = await buildImplementationPrompt({
-			storyId,
-			projectId,
-			storyTaskId: input.storyTaskId,
-			userId,
-			organizationId,
-			repositoryOwner,
-			repositoryName,
-			targetBranch,
-			workingDirectory,
-		});
+		// Implement runs schedule exactly the same activity with the same
+		// arguments as before spikes existed (replay safety).
+		const prompt =
+			plan.prompt === "spike"
+				? await buildSpikePrompt({
+						storyId,
+						projectId,
+						storyTaskId: input.storyTaskId,
+						userId,
+						organizationId,
+						repositoryOwner,
+						repositoryName,
+						targetBranch,
+						workingDirectory,
+						codingRunId,
+						spikeQuestion: input.spikeQuestion ?? "",
+					})
+				: await buildImplementationPrompt({
+						storyId,
+						projectId,
+						storyTaskId: input.storyTaskId,
+						userId,
+						organizationId,
+						repositoryOwner,
+						repositoryName,
+						targetBranch,
+						workingDirectory,
+					});
 		await addCodingRunEventActivity({
 			codingRunId,
 			eventType: "prompt_built",
@@ -325,6 +368,23 @@ export async function codingRunWorkflow(
 				codingRunId,
 				provider,
 				state.sessionId,
+			);
+		}
+
+		if (plan.sync === "spike") {
+			// Spike path (plan Slice 3): no PR sync, artifact sync is critical,
+			// terminal status is DEMO_READY. Nothing below this block runs for
+			// spikes; nothing in this block runs for implement runs.
+			return await finishSpikeRun(
+				codingRunId,
+				finalProviderStatus,
+				state,
+				{
+					userId,
+					organizationId,
+					repositoryOwner,
+					repositoryName,
+				},
 			);
 		}
 
@@ -473,6 +533,7 @@ async function runHybridLoop(
 	sessionId: string,
 	provider: "BACKGROUND_AGENTS" | "KANBAN_LOCAL",
 	state: {
+		plan: CodingRunPlan;
 		cancelled: boolean;
 		currentStatus: string;
 		pullRequestUrl: string | null;
@@ -502,6 +563,7 @@ async function runHybridLoop(
 		});
 
 		if (
+			state.plan.trackPullRequests &&
 			state.signalPayload.pullRequestUrl &&
 			state.currentStatus !== "PR_OPENED"
 		) {
@@ -535,6 +597,7 @@ async function runPollLoop(
 	sessionId: string,
 	provider: "BACKGROUND_AGENTS" | "KANBAN_LOCAL",
 	state: {
+		plan: CodingRunPlan;
 		cancelled: boolean;
 		currentStatus: string;
 		pullRequestUrl: string | null;
@@ -593,7 +656,15 @@ async function runPollLoop(
 			},
 		});
 
+		// Spikes never mirror provider "completed" or PR statuses onto the
+		// run: the only way to a terminal status is the artifact sync.
+		const mirrorsProviderStatus =
+			state.plan.trackPullRequests ||
+			(statusResult.fabricStatus !== "COMPLETED" &&
+				statusResult.fabricStatus !== "PR_OPENED");
+
 		if (
+			mirrorsProviderStatus &&
 			statusResult.fabricStatus !== state.currentStatus &&
 			!(
 				statusResult.pullRequestUrl &&
@@ -608,6 +679,7 @@ async function runPollLoop(
 		}
 
 		if (
+			state.plan.trackPullRequests &&
 			statusResult.pullRequestUrl &&
 			state.currentStatus !== "PR_OPENED"
 		) {
@@ -635,6 +707,95 @@ async function runPollLoop(
 	}
 
 	return finalProviderStatus;
+}
+
+/**
+ * Spike terminal handling (plan Slice 3). Called only when the plan is a
+ * spike, after the provider loop and the cancellation check.
+ */
+async function finishSpikeRun(
+	codingRunId: string,
+	finalProviderStatus: string,
+	state: { currentStatus: string; pollCount: number },
+	ctx: {
+		userId: string;
+		organizationId?: string;
+		repositoryOwner: string;
+		repositoryName: string;
+	},
+): Promise<CodingRunWorkflowOutput> {
+	if (finalProviderStatus === "stopped") {
+		state.currentStatus = "CANCELLED";
+		await updateCodingRunStatusActivity({
+			codingRunId,
+			status: "CANCELLED",
+		});
+		return {
+			codingRunId,
+			status: "cancelled",
+			error: "Session was stopped by the provider",
+		};
+	}
+
+	if (finalProviderStatus !== "completed") {
+		const isTimeout = !TERMINAL_PROVIDER_STATUSES.has(finalProviderStatus);
+		const errorMessage = isTimeout
+			? `Spike run timed out after ${(MAX_POLL_ITERATIONS * POLL_INTERVAL_SECONDS) / 60} minutes`
+			: "Spike agent session failed";
+		state.currentStatus = "FAILED";
+		await updateCodingRunStatusActivity({ codingRunId, status: "FAILED" });
+		await addCodingRunEventActivity({
+			codingRunId,
+			eventType: "workflow_failed",
+			payload: {
+				error: errorMessage,
+				finalProviderStatus,
+				pollCount: state.pollCount,
+			},
+		});
+		return { codingRunId, status: "failed", error: errorMessage };
+	}
+
+	// Critical: the run is DEMO_READY only once the activity has created
+	// the frame. The activity itself marks the run FAILED before throwing;
+	// the status write here covers the case where it never got that far.
+	let synced: Awaited<ReturnType<typeof syncSpikeArtifacts>>;
+	try {
+		synced = await syncSpikeArtifacts({
+			codingRunId,
+			userId: ctx.userId,
+			organizationId: ctx.organizationId,
+			repositoryOwner: ctx.repositoryOwner,
+			repositoryName: ctx.repositoryName,
+		});
+	} catch (error) {
+		const errorMessage = extractErrorMessage(error);
+		state.currentStatus = "FAILED";
+		await updateCodingRunStatusActivity({ codingRunId, status: "FAILED" });
+		await addCodingRunEventActivity({
+			codingRunId,
+			eventType: "workflow_failed",
+			payload: {
+				error: errorMessage,
+				reason: "spike_sync_failed",
+				pollCount: state.pollCount,
+			},
+		});
+		return { codingRunId, status: "failed", error: errorMessage };
+	}
+
+	state.currentStatus = "DEMO_READY";
+	await addCodingRunEventActivity({
+		codingRunId,
+		eventType: "workflow_completed",
+		payload: {
+			status: "DEMO_READY",
+			spikeBranch: synced.spikeBranch,
+			demoFrameId: synced.demoFrameId,
+			pollCount: state.pollCount,
+		},
+	});
+	return { codingRunId, status: "demo_ready" };
 }
 
 async function handleCancellation(

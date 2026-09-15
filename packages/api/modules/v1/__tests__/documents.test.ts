@@ -16,11 +16,20 @@ const mockUpdateDocument = vi.fn();
 const mockHasProjectAccess = vi.fn();
 const mockCanEditProject = vi.fn();
 
+const { IntegrationContractStatusManagedErrorMock } = vi.hoisted(() => {
+	class IntegrationContractStatusManagedErrorMock extends Error {
+		readonly code = "INTEGRATION_CONTRACT_STATUS_MANAGED" as const;
+	}
+	return { IntegrationContractStatusManagedErrorMock };
+});
+
 vi.mock("@repo/database", () => ({
 	resolveUserOrganization: vi.fn(async () => ({
 		kind: "resolved" as const,
 		organizationId: "org-test",
 	})),
+	IntegrationContractStatusManagedError:
+		IntegrationContractStatusManagedErrorMock,
 	listDocuments: (...args: unknown[]) => mockListDocuments(...args),
 	getDocumentById: (...args: unknown[]) => mockGetDocumentById(...args),
 	createDocument: (...args: unknown[]) => mockCreateDocument(...args),
@@ -273,6 +282,51 @@ describe("v1 documents — update", () => {
 				userId: "user-1",
 			}),
 		);
+	});
+
+	it("409 when changing an INTEGRATION_CONTRACT's status (owned by the discovery run)", async () => {
+		mockGetDocumentById.mockResolvedValue(
+			docRow({ type: "INTEGRATION_CONTRACT", status: "REVIEW" }),
+		);
+		const res = await makeApp().request("/documents/doc-1", {
+			method: "PATCH",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ status: "COMPLETE" }),
+		});
+		expect(res.status).toBe(409);
+		const body = (await res.json()) as { error: { code?: string } };
+		expect(body.error.code).toBe("INTEGRATION_CONTRACT_STATUS_MANAGED");
+		expect(mockUpdateDocument).not.toHaveBeenCalled();
+	});
+
+	it("maps the query-layer guard to 409 when the contract completed after the pre-read", async () => {
+		mockGetDocumentById.mockResolvedValue(
+			docRow({ type: "INTEGRATION_CONTRACT", status: "REVIEW" }),
+		);
+		mockUpdateDocument.mockRejectedValue(
+			new IntegrationContractStatusManagedErrorMock("managed"),
+		);
+		const res = await makeApp().request("/documents/doc-1", {
+			method: "PATCH",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ content: "# edited", status: "REVIEW" }),
+		});
+		expect(res.status).toBe(409);
+		const body = (await res.json()) as { error: { code?: string } };
+		expect(body.error.code).toBe("INTEGRATION_CONTRACT_STATUS_MANAGED");
+	});
+
+	it("still lets an INTEGRATION_CONTRACT's content be edited with its status unchanged", async () => {
+		mockGetDocumentById.mockResolvedValue(
+			docRow({ type: "INTEGRATION_CONTRACT", status: "REVIEW" }),
+		);
+		const res = await makeApp().request("/documents/doc-1", {
+			method: "PATCH",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ content: "# edited", status: "REVIEW" }),
+		});
+		expect(res.status).toBe(200);
+		expect(mockUpdateDocument).toHaveBeenCalledTimes(1);
 	});
 
 	it("404 when document missing", async () => {

@@ -55,7 +55,8 @@ export type ProjectDocumentTypeName =
 	| "TEST_PLAN"
 	| "TEST_REPORT"
 	| "TRACEABILITY_MATRIX"
-	| "SRS";
+	| "SRS"
+	| "INTEGRATION_CONTRACT";
 
 export type DocumentTypeCatalogEntry = {
 	/** Human-readable name, used for the type dropdown and the default title. */
@@ -128,6 +129,12 @@ export const DOCUMENT_TYPE_CATALOG: Record<
 		label: "Traceability Matrix",
 		shortLabel: "Traceability Matrix",
 		icon: "🔗",
+	},
+	// Produced per feature by a Discovery run (ADR-020); status is owned by the run.
+	INTEGRATION_CONTRACT: {
+		label: "Integration Contract",
+		shortLabel: "Integration Contract",
+		icon: "🧩",
 	},
 };
 

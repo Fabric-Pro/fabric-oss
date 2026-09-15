@@ -11,8 +11,11 @@
 import {
 	appendAppliedChangeIndexes,
 	clearTeamsChannelFailureState,
+	db,
 	finalizeBacklogUpdateSession,
+	finalizeClaimedProposal,
 	getLinkedTeamsChannelsForMonitor,
+	getPendingBacklogProposal,
 	getTeamsLinkedChannelJobContext,
 	markPendingProposalApplied,
 	markPendingProposalFailed,
@@ -182,7 +185,7 @@ export async function setTeamsChannelScanPageTokenActivity(input: {
  * the proposal row identified by `proposalId` is the same one a retry will
  * flip back to PENDING, so we never delete or re-create it here.
  */
-export async function finalizePendingProposalActivity(input: {
+export interface FinalizePendingProposalInput {
 	proposalId: string;
 	outcome: "applied" | "failed";
 	appliedChangeIndexes?: number[];
@@ -197,7 +200,11 @@ export async function finalizePendingProposalActivity(input: {
 	 * partially-synced run doesn't read as fully "Applied".
 	 */
 	pmConflictCount?: number;
-}): Promise<void> {
+}
+
+export async function finalizePendingProposalActivity(
+	input: FinalizePendingProposalInput,
+): Promise<void> {
 	if (input.appliedChangeIndexes && input.appliedChangeIndexes.length > 0) {
 		await appendAppliedChangeIndexes(
 			input.proposalId,
@@ -214,12 +221,19 @@ export async function finalizePendingProposalActivity(input: {
 		});
 	}
 
-	// Mirror the terminal outcome onto the AI Backlog Update "Session history"
-	// row, if one exists for this proposal (only AI_UPDATE_SIDEBAR applies create
-	// sessions — this is a no-op for channel-monitor proposals). Best-effort: a
-	// session-finalize failure must never fail the proposal finalize. No workflow
-	// command is added — this runs inside the existing activity, so there is no
-	// replay/determinism impact.
+	await mirrorProposalOutcomeOntoSession(input);
+}
+
+/**
+ * Mirror the terminal outcome onto the AI Backlog Update "Session history"
+ * row, if one exists for this proposal (only AI_UPDATE_SIDEBAR applies create
+ * sessions — this is a no-op for channel-monitor proposals). Best-effort: a
+ * session-finalize failure must never fail the proposal finalize. Shared by
+ * the legacy and the claimed finaliser so both paths report identically.
+ */
+async function mirrorProposalOutcomeOntoSession(
+	input: FinalizePendingProposalInput,
+): Promise<void> {
 	try {
 		const appliedIndexCount = input.appliedChangeIndexes?.length ?? 0;
 		const conflictCount = input.pmConflictCount ?? 0;
@@ -262,6 +276,110 @@ export async function finalizePendingProposalActivity(input: {
 			error: error instanceof Error ? error.message : String(error),
 		});
 	}
+}
+
+export interface FinalizeClaimedProposalInput
+	extends FinalizePendingProposalInput {
+	/** `workflowInfo().workflowId` of the apply workflow that claimed the row. */
+	applyWorkflowId: string;
+}
+
+export interface FinalizeClaimedProposalOutput {
+	/** True when this call moved the row out of APPLYING. */
+	finalized: boolean;
+	/** True when the legacy (APPROVED-status) path was used instead. */
+	legacyFallback: boolean;
+}
+
+/**
+ * Claimant-checked terminal transition (plan §F3). Only the workflow whose id
+ * matches `applyWorkflowId` may flip APPLYING → APPLIED | FAILED.
+ *
+ * Transitional fallback: proposals approved by the pre-claim handler sit in
+ * APPROVED with either no `applyWorkflowId` or this workflow's id. Those are
+ * finalised through the legacy unconditional path so in-flight approvals at
+ * deploy time still reach a terminal state. Rows owned by a different
+ * claimant are left untouched and reported as `finalized: false`.
+ */
+export async function finalizeClaimedProposalActivity(
+	input: FinalizeClaimedProposalInput,
+): Promise<FinalizeClaimedProposalOutput> {
+	// Idempotency bookkeeping first: the indexes that fully applied are
+	// recorded whichever finaliser wins, so a retry skips them.
+	if (input.appliedChangeIndexes && input.appliedChangeIndexes.length > 0) {
+		await appendAppliedChangeIndexes(
+			input.proposalId,
+			input.appliedChangeIndexes,
+		);
+	}
+	const finalized = await finalizeClaimedProposal({
+		proposalId: input.proposalId,
+		applyWorkflowId: input.applyWorkflowId,
+		outcome: input.outcome,
+		errorMessage: input.errorMessage,
+	});
+	if (finalized) {
+		if (input.outcome === "failed") {
+			// The CAS wrote status + applyError; carry the classified error the
+			// inbox/banner copy reads, on the row this workflow still owns.
+			await db.pendingBacklogProposal.updateMany({
+				where: {
+					id: input.proposalId,
+					status: "FAILED",
+					applyWorkflowId: input.applyWorkflowId,
+				},
+				data: {
+					errorClass: (input.errorClass ?? "default").slice(0, 200),
+					errorMessage: (
+						input.errorMessage ?? "apply workflow failed"
+					).slice(0, 500),
+					...(input.rawApplyError
+						? { applyError: input.rawApplyError.slice(0, 4000) }
+						: {}),
+				},
+			});
+		}
+		await mirrorProposalOutcomeOntoSession(input);
+		return { finalized: true, legacyFallback: false };
+	}
+
+	const row = await getPendingBacklogProposal(input.proposalId);
+	if (
+		row &&
+		row.status === "APPROVED" &&
+		(row.applyWorkflowId === null ||
+			row.applyWorkflowId === input.applyWorkflowId)
+	) {
+		logger.warn(
+			"[PendingProposal] Finalising APPROVED row via legacy path (pre-claim approval)",
+			{
+				proposalId: input.proposalId,
+				applyWorkflowId: input.applyWorkflowId,
+			},
+		);
+		if (input.outcome === "applied") {
+			await markPendingProposalApplied(input.proposalId);
+		} else {
+			await markPendingProposalFailed(input.proposalId, {
+				errorClass: input.errorClass ?? "default",
+				errorMessage: input.errorMessage ?? "apply workflow failed",
+				rawApplyError: input.rawApplyError,
+			});
+		}
+		await mirrorProposalOutcomeOntoSession(input);
+		return { finalized: true, legacyFallback: true };
+	}
+
+	logger.warn(
+		"[PendingProposal] Refusing to finalise: caller is not the claimant",
+		{
+			proposalId: input.proposalId,
+			applyWorkflowId: input.applyWorkflowId,
+			currentStatus: row?.status ?? null,
+			currentClaimant: row?.applyWorkflowId ?? null,
+		},
+	);
+	return { finalized: false, legacyFallback: false };
 }
 
 /**

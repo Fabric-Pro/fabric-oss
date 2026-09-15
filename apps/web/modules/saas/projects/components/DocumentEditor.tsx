@@ -171,6 +171,7 @@ const DOCUMENT_TYPE_LABELS: Record<string, string> = {
 	TECHNICAL_SPEC: "Technical Spec",
 	USER_STORY: "Feature",
 	API_SPEC: "API Spec",
+	INTEGRATION_CONTRACT: "Integration Contract",
 };
 
 export function getDocumentTypeLabel(type: string): string {

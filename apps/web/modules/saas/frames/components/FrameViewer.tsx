@@ -86,6 +86,7 @@ export function FrameViewer({
 				onRevokeShare={() => revokeMutation.mutate()}
 				publishPending={publishMutation.isPending}
 				revokePending={revokeMutation.isPending}
+				isProjectFrame={Boolean(frame.projectId)}
 			/>
 		</div>
 	);

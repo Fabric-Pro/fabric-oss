@@ -64,9 +64,43 @@ export interface HealthCheckResult {
 }
 
 /**
+ * Provider capabilities that gate which run kinds a provider may offer.
+ *
+ * Plan §F4 (docs/features/inverted-loop-delivery-tracks.md): before
+ * Spike runs are offered on a provider, it must be proven that a session can
+ * push a named branch `fabric-spike/<runId>` to the project repository
+ * without opening a PR, and that Fabric can read files from that branch.
+ * Providers without this capability do not offer spikes.
+ */
+export interface CodingExecutionProviderCapabilities {
+	/** Proven able to push a named branch without opening a pull request. */
+	readonly pushBranchWithoutPr: boolean;
+}
+
+const DEFAULT_PROVIDER_CAPABILITIES: CodingExecutionProviderCapabilities = {
+	pushBranchWithoutPr: false,
+};
+
+/**
+ * Read a provider's capability flags. Providers that predate the flag (or
+ * test doubles that omit it) report every capability as absent — fail
+ * closed, so no run kind is offered without proof (plan §F4).
+ */
+export function getProviderCapabilities(
+	provider: Pick<CodingExecutionProvider, "capabilities"> | null | undefined,
+): CodingExecutionProviderCapabilities {
+	return provider?.capabilities ?? DEFAULT_PROVIDER_CAPABILITIES;
+}
+
+/**
  * Base interface for all coding execution providers
  */
 export interface CodingExecutionProvider {
+	/**
+	 * Capability flags (plan §F4). Read via `getProviderCapabilities()`.
+	 */
+	readonly capabilities: CodingExecutionProviderCapabilities;
+
 	/**
 	 * Creates a new execution session
 	 * @param params - Session creation parameters (will be validated)

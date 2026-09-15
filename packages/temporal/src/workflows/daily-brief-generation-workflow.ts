@@ -13,6 +13,7 @@ import type {
 	AheadItem,
 	GithubItem,
 	MeetingItem,
+	MetricDriftItem,
 	PriorityAction,
 	ReleaseNotesSummary,
 } from "@repo/database";
@@ -34,12 +35,14 @@ import type {
 	collectGitHubPullRequestsActivity as CollectGitHubPullRequestsFn,
 	collectGitHubReleasesActivity as CollectGitHubReleasesFn,
 	collectMeetingTranscripts as CollectMeetingTranscriptsFn,
+	collectMetricDrift as CollectMetricDriftFn,
 	collectStoryActivity as CollectStoryActivityFn,
 	collectTeamsProposals as CollectTeamsProposalsFn,
 	detectPriorityActionsActivity as DetectPriorityActionsFn,
 	extractMeetingInsightsActivity as ExtractMeetingInsightsFn,
 	loadReleaseNoteExclusionsActivity as LoadReleaseNoteExclusionsFn,
 	persistDailyBriefActivity as PersistDailyBriefFn,
+	stampMergedCodingRuns as StampMergedCodingRunsFn,
 	summarizeDailyBriefActivity as SummarizeDailyBriefFn,
 	summarizeReleaseNotesActivity as SummarizeReleaseNotesFn,
 } from "../activities/daily-brief";
@@ -194,6 +197,20 @@ const { collectAhead } = proxyActivities<{
 	},
 });
 
+// Slice 8 (v4): success-metric drift collector and the merged-PR → CodingRun
+// join. Both are DB-local; failures degrade to partialFailures, never fatal.
+const { collectMetricDrift, stampMergedCodingRuns } = proxyActivities<{
+	collectMetricDrift: typeof CollectMetricDriftFn;
+	stampMergedCodingRuns: typeof StampMergedCodingRunsFn;
+}>({
+	...collectTimeout,
+	retry: {
+		maximumAttempts: 2,
+		initialInterval: "2s",
+		nonRetryableErrorTypes: [...PROGRAMMING_ERROR_TYPES],
+	},
+});
+
 const { detectPriorityActionsActivity } = proxyActivities<{
 	detectPriorityActionsActivity: typeof DetectPriorityActionsFn;
 }>({
@@ -267,6 +284,7 @@ const SOURCE_NAMES = [
 	"teamsProposals",
 	"github",
 	"ahead",
+	"metrics",
 ] as const;
 
 /** All `partialFailure.source` values the workflow can emit. Includes
@@ -339,11 +357,15 @@ export async function generateDailyBriefWorkflow(
 		// histories recorded against main (which has neither activity) must
 		// replay through the pre-v2 path to avoid non-determinism errors.
 		const dailyBriefV2 = patched("daily-brief-v2");
+		// v4 (Slice 8) appends collectMetricDrift to the fan-out and runs the
+		// merged-PR → CodingRun join after collection. Histories recorded
+		// before v4 carry no marker and replay through the v2/v1 branches.
+		const dailyBriefV4 = patched("daily-brief-v4-metric-drift");
 
-		// Keep the v1 and v2 branches syntactically separate so each records
-		// a distinct scheduling sequence. v1 is the main-compat path; v2 adds
-		// collectAhead to the parallel fan-out.
-		const settled = dailyBriefV2
+		// Keep the v1, v2 and v4 branches syntactically separate so each
+		// records a distinct scheduling sequence. v1 is the main-compat path;
+		// v2 adds collectAhead; v4 adds collectMetricDrift.
+		const settled = dailyBriefV4
 			? await Promise.allSettled([
 					collectStoryActivity(collectorInput),
 					collectDocumentChanges(collectorInput),
@@ -354,17 +376,30 @@ export async function generateDailyBriefWorkflow(
 						userId: triggeredByUserId,
 					}),
 					collectAhead({ projectId, organizationId }),
+					collectMetricDrift({ projectId, organizationId }),
 				])
-			: await Promise.allSettled([
-					collectStoryActivity(collectorInput),
-					collectDocumentChanges(collectorInput),
-					collectMeetingTranscripts(collectorInput),
-					collectTeamsProposals(collectorInput),
-					collectGitHubPullRequestsActivity({
-						...collectorInput,
-						userId: triggeredByUserId,
-					}),
-				]);
+			: dailyBriefV2
+				? await Promise.allSettled([
+						collectStoryActivity(collectorInput),
+						collectDocumentChanges(collectorInput),
+						collectMeetingTranscripts(collectorInput),
+						collectTeamsProposals(collectorInput),
+						collectGitHubPullRequestsActivity({
+							...collectorInput,
+							userId: triggeredByUserId,
+						}),
+						collectAhead({ projectId, organizationId }),
+					])
+				: await Promise.allSettled([
+						collectStoryActivity(collectorInput),
+						collectDocumentChanges(collectorInput),
+						collectMeetingTranscripts(collectorInput),
+						collectTeamsProposals(collectorInput),
+						collectGitHubPullRequestsActivity({
+							...collectorInput,
+							userId: triggeredByUserId,
+						}),
+					]);
 
 		if (cancelled) {
 			await persistDailyBriefActivity({
@@ -485,6 +520,50 @@ export async function generateDailyBriefWorkflow(
 					source: "ahead",
 					reason: `Ahead lookup failed: ${String(aheadResult.reason)}`,
 				});
+			}
+		}
+
+		let metricDrift: MetricDriftItem[] = [];
+		let metricDriftActions: PriorityAction[] = [];
+		if (dailyBriefV4) {
+			const driftResult = settled[6] as PromiseSettledResult<
+				Awaited<ReturnType<typeof CollectMetricDriftFn>>
+			>;
+			if (driftResult.status === "fulfilled") {
+				metricDrift = driftResult.value.items;
+				metricDriftActions = driftResult.value.priorityActions;
+			} else {
+				partialFailures.push({
+					source: "metrics",
+					reason: `Metric drift lookup failed: ${String(driftResult.reason)}`,
+				});
+			}
+
+			// Slice 8 "shipped" evidence: stamp CodingRun.mergedAt from the
+			// merged PRs the GitHub collector just observed. Best-effort — a
+			// failure here must not sink the brief.
+			const mergedItems = (
+				(sections.github as GithubItem[] | undefined) ?? []
+			)
+				.filter((g) => g.kind === "pr_merged")
+				.map((g) => ({
+					kind: g.kind,
+					url: g.url,
+					occurredAt: g.occurredAt,
+				}));
+			if (mergedItems.length > 0) {
+				try {
+					await stampMergedCodingRuns({
+						projectId,
+						organizationId,
+						mergedItems,
+					});
+				} catch (stampError) {
+					partialFailures.push({
+						source: "github",
+						reason: `Merged-PR join failed: ${String(stampError)}`,
+					});
+				}
 			}
 		}
 
@@ -764,10 +843,12 @@ export async function generateDailyBriefWorkflow(
 			missing_ownership: 5,
 			pr_review_stale: 6,
 			unresolved_dependency: 7,
+			metric_drift: 8,
 		};
 		const priorityActions: PriorityAction[] = [
 			...detected,
 			...stalePrActions,
+			...metricDriftActions,
 		].sort(
 			(a, b) => (KIND_ORDER[a.kind] ?? 99) - (KIND_ORDER[b.kind] ?? 99),
 		);
@@ -845,7 +926,10 @@ export async function generateDailyBriefWorkflow(
 		await persistDailyBriefActivity({
 			briefId,
 			status: finalStatus,
-			content: finalContent,
+			content: {
+				...finalContent,
+				...(metricDrift.length > 0 ? { metricDrift } : {}),
+			},
 			aiUsageTokens: summary.aiUsageTokens,
 		});
 

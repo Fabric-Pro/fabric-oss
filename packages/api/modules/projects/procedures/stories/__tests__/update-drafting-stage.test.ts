@@ -13,6 +13,11 @@
  *   - Permission middleware wiring (STORY_UPDATE required).
  *   - Cross-tenant `NOT_FOUND` surfaces when query throws.
  *   - Zod BAD_REQUEST for unknown stage.
+ *   - Inverted-loop plan §F1 / Slice 5: the procedure passes the acting user
+ *     and a `transitionReason` so the query-layer choke point can enforce
+ *     gates and governed review; blocked transitions map to
+ *     PRECONDITION_FAILED and a governed request is surfaced as
+ *     `pendingStageRequest`.
  */
 
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -78,53 +83,101 @@ vi.mock("../../../lib/start-test-case-draft", () => ({
 	})),
 }));
 
-vi.mock("@repo/database", () => ({
-	updateStoryDraftingStage: vi.fn(fakeUpdateStoryDraftingStage),
-	// Used by the procedure to fetch story.kind for validateStageForKind.
-	// All test fixtures are FEATURE so the validator is a no-op and the
-	// existing assertions continue to hold; cross-tenant rows return null.
-	db: {
-		userStory: {
-			findUnique: vi.fn(async ({ where }: { where: { id: string } }) => {
-				const stage = currentStageByStory[where.id];
-				if (!stage) {
-					return null;
-				}
-				// The full shape the procedure selects. The test-first
-				// auto-draft reads the project switches and the linked-case
-				// count from this same row, and a fixture missing them would
-				// make the guard decide from `undefined`.
-				return {
-					kind: "FEATURE" as const,
-					draftingStage: stage,
-					title: "A feature",
-					// Test-first OFF by default, so these cases exercise the
-					// transition alone. The trigger's own conditions have their
-					// own suite; the wiring tests below flip this fixture.
-					project: {
-						organizationId: autoDraftFixture.projectOrganizationId,
-						generateManualTestCases:
-							autoDraftFixture.generateManualTestCases,
-						applyTddApproach: autoDraftFixture.applyTddApproach,
+vi.mock("@repo/database", () => {
+	// Minimal stand-ins for the delivery-module error classes consumed by
+	// `mapStageTransitionError`. Shape mirrors the real classes.
+	class StageTransitionBlockedError extends Error {
+		code = "STAGE_TRANSITION_BLOCKED" as const;
+		missing: string[];
+		advisory: string[];
+		effectiveTrack: string;
+		toStage: string;
+		constructor(params: {
+			toStage: string;
+			readiness: {
+				missing: string[];
+				advisory: string[];
+				effectiveTrack: string;
+			};
+		}) {
+			super(`Transition to ${params.toStage} blocked`);
+			this.toStage = params.toStage;
+			this.missing = params.readiness.missing;
+			this.advisory = params.readiness.advisory;
+			this.effectiveTrack = params.readiness.effectiveTrack;
+		}
+	}
+	class GovernedActorRequiredError extends Error {
+		code = "GOVERNED_ACTOR_REQUIRED" as const;
+	}
+	class StageTransitionConflictError extends Error {
+		code = "STAGE_TRANSITION_CONFLICT" as const;
+	}
+	class StageApprovalError extends Error {
+		code: string;
+		constructor(code: string, message: string) {
+			super(message);
+			this.code = code;
+		}
+	}
+	return {
+		updateStoryDraftingStage: vi.fn(fakeUpdateStoryDraftingStage),
+		StageTransitionBlockedError,
+		GovernedActorRequiredError,
+		StageTransitionConflictError,
+		StageApprovalError,
+		// Used by the procedure to fetch story.kind for validateStageForKind.
+		// All test fixtures are FEATURE so the validator is a no-op and the
+		// existing assertions continue to hold; cross-tenant rows return null.
+		db: {
+			userStory: {
+				findUnique: vi.fn(
+					async ({ where }: { where: { id: string } }) => {
+						const stage = currentStageByStory[where.id];
+						if (!stage) {
+							return null;
+						}
+						// The full shape the procedure selects. The test-first
+						// auto-draft reads the project switches and the linked-case
+						// count from this same row, and a fixture missing them would
+						// make the guard decide from `undefined`.
+						return {
+							kind: "FEATURE" as const,
+							draftingStage: stage,
+							title: "A feature",
+							// Test-first OFF by default, so these cases exercise the
+							// transition alone. The trigger's own conditions have their
+							// own suite; the wiring tests below flip this fixture.
+							project: {
+								organizationId:
+									autoDraftFixture.projectOrganizationId,
+								generateManualTestCases:
+									autoDraftFixture.generateManualTestCases,
+								applyTddApproach:
+									autoDraftFixture.applyTddApproach,
+							},
+							_count: {
+								testCaseLinks: autoDraftFixture.linkedCaseCount,
+							},
+						};
 					},
-					_count: { testCaseLinks: autoDraftFixture.linkedCaseCount },
-				};
-			}),
+				),
+			},
 		},
-	},
-	FeatureDraftingStageSchema: z.enum([
-		"PLACEHOLDER",
-		"ACTIVE_ANALYSIS",
-		"SANITY_CHECK",
-		"DRAFT",
-		"PUBLISHED",
-		"DECLINED",
-		"CLOSED",
-	]),
-	// Required by transitively imported modules (e.g. `@repo/ai`).
-	GATEWAY_PROVIDERS: [],
-	DB_GATEWAY_PROVIDERS: [],
-}));
+		FeatureDraftingStageSchema: z.enum([
+			"PLACEHOLDER",
+			"ACTIVE_ANALYSIS",
+			"SANITY_CHECK",
+			"DRAFT",
+			"PUBLISHED",
+			"DECLINED",
+			"CLOSED",
+		]),
+		// Required by transitively imported modules (e.g. `@repo/ai`).
+		GATEWAY_PROVIDERS: [],
+		DB_GATEWAY_PROVIDERS: [],
+	};
+});
 
 // Mock the notification service so importing the SUT does not pull the real
 // notification-service graph (@repo/mail / @repo/payments) into the test.
@@ -221,6 +274,7 @@ describe("updateDraftingStageProcedure — input schema & happy paths", () => {
 				changedBy: "user-1",
 				lastEditedByName: null,
 				lastEditedSource: "MANUAL",
+				transitionReason: "manual",
 				organizationId: undefined,
 				userId: "user-1",
 			},
@@ -247,6 +301,7 @@ describe("updateDraftingStageProcedure — input schema & happy paths", () => {
 				changedBy: "user-1",
 				lastEditedByName: null,
 				lastEditedSource: "MANUAL",
+				transitionReason: "manual",
 				organizationId: undefined,
 				userId: "user-1",
 			},

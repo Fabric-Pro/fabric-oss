@@ -1,6 +1,7 @@
 "use client";
 
 import { MIN_DESCRIPTION_LENGTH } from "@repo/api/modules/projects/lib/readiness/thresholds";
+import type { EngagementProfile } from "@repo/database/prisma/generated/enums";
 import { orpc } from "@shared/lib/orpc-query-utils";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Button } from "@ui/components/button";
@@ -35,11 +36,13 @@ import type { SlackChannelSelection } from "../../lib/integration-selection-type
 import { PROJECT_TYPES } from "../../lib/project-constants";
 import { ContextUploaderDialog } from "../ContextUploaderDialog";
 import { ContextPendingItemsList } from "./ContextPendingItemsList";
-import { WizardBacklogCard } from "./WizardBacklogCard";
 // `WizardIntegrationsSection` renders the "Code Repository" section as a plain
 // section (GitHub + GitLab + Azure DevOps provider cards). `AzureDevOpsRepo`
 // flows through `onAzureDevOpsReposChange` so the wizard captures the PAT into
 // transient state and connects repos post-create.
+import { EngagementProfilePicker } from "./EngagementProfilePicker";
+import { VisionFields } from "./VisionFields";
+import { WizardBacklogCard } from "./WizardBacklogCard";
 import {
 	type AzureDevOpsRepo,
 	type GitHubRepo,
@@ -101,7 +104,14 @@ type ProjectFormData = {
 		string,
 		{ promptId?: string; customInstructions?: string }
 	>;
+	engagementProfile: EngagementProfile;
+	visionPurpose: string;
+	visionCoreActions: string[];
+	visionCycle: string;
 };
+
+/** Profiles whose Brief step shows the optional vision fields (plan §1.4). */
+const VISION_PROFILES: readonly EngagementProfile[] = ["EXPLORE", "PROPOSAL"];
 
 interface BasicInfoStepProps {
 	formData: ProjectFormData;
@@ -130,6 +140,12 @@ interface BasicInfoStepProps {
 	projectId?: string;
 	/** "saving" / "saved" / "error" badge driven by the wizard-root autosave mutation */
 	draftSaveState?: "idle" | "saving" | "saved" | "error";
+	/**
+	 * Show the engagement profile picker (new projects and resumed drafts).
+	 * Editing an ACTIVE project hides it: the profile is governance-controlled
+	 * from project settings.
+	 */
+	showEngagementProfile?: boolean;
 }
 
 export function BasicInfoStep({
@@ -144,6 +160,7 @@ export function BasicInfoStep({
 	onAzureDevOpsReposChange,
 	projectId,
 	draftSaveState = "idle",
+	showEngagementProfile = false,
 }: BasicInfoStepProps) {
 	// Warm-neutral editorial card surface (unified-project-setup spec §4.8 /
 	// TG6 chrome cleanup): solid `bg-card` + `border-border`, no glassmorphism
@@ -662,6 +679,28 @@ export function BasicInfoStep({
 					</div>
 				</div>
 			</div>
+
+			{/* Engagement profile + optional vision (plan §1.2, §1.4) */}
+			{showEngagementProfile && (
+				<div className="rounded-2xl border border-border/60 bg-card p-5">
+					<EngagementProfilePicker
+						value={formData.engagementProfile}
+						onChange={(engagementProfile) =>
+							updateFormData({ engagementProfile })
+						}
+					/>
+					{VISION_PROFILES.includes(formData.engagementProfile) && (
+						<div className="mt-6 border-t border-border/60 pt-6">
+							<VisionFields
+								visionPurpose={formData.visionPurpose}
+								visionCoreActions={formData.visionCoreActions}
+								visionCycle={formData.visionCycle}
+								onChange={(updates) => updateFormData(updates)}
+							/>
+						</div>
+					)}
+				</div>
+			)}
 
 			{/* Optional sources. Everything in here can be skipped — the project
 			    creates fine with none of it — so it sits under one label at a

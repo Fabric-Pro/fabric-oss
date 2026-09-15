@@ -16,6 +16,12 @@ const { handlers, mockUpsert, mockVerifyMembership } = vi.hoisted(() => ({
 
 vi.mock("@repo/database", () => ({
 	upsertDraftProjectByKey: (...args: unknown[]) => mockUpsert(...args),
+	engagementProfileSchema: z.enum([
+		"EXPLORE",
+		"PROPOSAL",
+		"GOVERNED",
+		"DELEGATED",
+	]),
 	Prisma: { JsonNull: "__JSON_NULL__", DbNull: "__DB_NULL__" },
 }));
 
@@ -191,6 +197,82 @@ describe("saveDraftProjectProcedure handler", () => {
 
 		const args = mockUpsert.mock.calls[0][0];
 		expect(args.organizationId).toBe("org_xyz");
+	});
+
+	it("round-trips engagement profile and vision fields as typed columns", async () => {
+		mockUpsert.mockResolvedValueOnce({
+			project: {
+				id: "proj_7",
+				name: "Explore Draft",
+				draftKey: "550e8400-e29b-41d4-a716-446655440007",
+				wizardState: null,
+				engagementProfile: "EXPLORE",
+				visionPurpose: "Help field teams close the day in five minutes",
+				visionCoreActions: ["Capture receipt", "Approve expense"],
+				visionCycle: "Daily close",
+				quotedPhases: ["1"],
+			},
+			created: true,
+		});
+
+		const result = (await handlers.saveDraft({
+			input: {
+				draftKey: "550e8400-e29b-41d4-a716-446655440007",
+				name: "Explore Draft",
+				organizationId: null,
+				engagementProfile: "EXPLORE",
+				visionPurpose: "Help field teams close the day in five minutes",
+				visionCoreActions: ["Capture receipt", "Approve expense"],
+				visionCycle: "Daily close",
+				quotedPhases: ["1"],
+			},
+			context: ctx,
+		})) as {
+			project: {
+				engagementProfile: string;
+				visionPurpose: string | null;
+				visionCoreActions: string[];
+				visionCycle: string | null;
+				quotedPhases: string[];
+			};
+		};
+
+		// Typed columns, not wizardState ephemera
+		const args = mockUpsert.mock.calls[0][0];
+		expect(args.engagementProfile).toBe("EXPLORE");
+		expect(args.visionPurpose).toBe(
+			"Help field teams close the day in five minutes",
+		);
+		expect(args.visionCoreActions).toEqual([
+			"Capture receipt",
+			"Approve expense",
+		]);
+		expect(args.visionCycle).toBe("Daily close");
+		expect(args.quotedPhases).toEqual(["1"]);
+		expect(args.wizardState).toBeUndefined();
+
+		// Echoed back so the wizard can rehydrate the Brief step
+		expect(result.project.engagementProfile).toBe("EXPLORE");
+		expect(result.project.visionCoreActions).toEqual([
+			"Capture receipt",
+			"Approve expense",
+		]);
+		expect(result.project.quotedPhases).toEqual(["1"]);
+	});
+
+	it("leaves engagement profile undefined when the client does not send one (server default applies)", async () => {
+		await handlers.saveDraft({
+			input: {
+				draftKey: "550e8400-e29b-41d4-a716-446655440008",
+				name: "Plain Draft",
+				organizationId: null,
+			},
+			context: ctx,
+		});
+
+		const args = mockUpsert.mock.calls[0][0];
+		expect(args.engagementProfile).toBeUndefined();
+		expect(args.visionCoreActions).toBeUndefined();
 	});
 
 	it("returns wizardState in the response so the wizard can rehydrate on resume", async () => {

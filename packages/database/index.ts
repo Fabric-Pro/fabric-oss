@@ -12,11 +12,17 @@ export * from "./prisma/queries/lib/owner-scoped-schedule";
 export * from "./prisma/queries/lib/report-schedule";
 // Daily brief shared schemas
 export * from "./src/daily-brief-schema";
+// Delivery tracks: readiness policy + stage-transition enforcement
+export * from "./src/delivery";
 // Living Documents auto-refresh cadence (pure: interval + due + period-bucket math)
 export * from "./src/document-refresh-cadence";
+// Engagement profiles
+export * from "./src/engagement-profiles";
 // PM custom-field read-mapping shared schema
 export * from "./src/field-mapping-schema";
 export * from "./src/function-tags";
+// Kanban column templates (shared with the web layer)
+export * from "./src/kanban-column-templates";
 export * from "./src/newsletter-cadence";
 // Newsletter shared schemas
 export * from "./src/newsletter-schema";
@@ -37,6 +43,8 @@ export * from "./src/publishing-snooze";
 export * from "./src/publishing-suite-schema";
 // Frame templates seed (for scripts)
 export { seedFrameTemplates } from "./src/queries/frame-templates-seed";
+// Fabric-internal story tags (phase/area/priority markers kept out of PM labels)
+export * from "./src/story-internal-tags";
 export * from "./src/tenant-api-helper";
 // Tenant isolation
 export * from "./src/tenant-context";

@@ -18,6 +18,7 @@ import {
 	protectedProcedure,
 	resolveOrganizationIdForCaller,
 } from "../../../orpc/procedures";
+import { resolveWeaveHandle } from "../lib/temporal-handle";
 
 const GetExecutionInputSchema = z.object({
 	executionId: z.string(),
@@ -267,10 +268,7 @@ export const getExecutionProcedure = protectedProcedure
 		) {
 			try {
 				const temporal = await getTemporalClient();
-				const handle = temporal.workflow.getHandle(
-					execution.workflowId,
-					execution.runId,
-				);
+				const handle = resolveWeaveHandle(temporal, execution);
 				workflowStatus = await handle.query(orchestratorProgressQuery);
 
 				// Check for pending approvals

@@ -13,6 +13,7 @@ const ACTIVE_CODING_RUN_STATUSES = [
 	"RUNNING",
 	"AWAITING_REVIEW",
 	"PR_OPENED",
+	"DEMO_READY",
 ] as const;
 
 export interface WeaveCodingRunRequest {

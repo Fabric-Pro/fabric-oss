@@ -107,6 +107,8 @@ const KIND_SORT_ORDER: Record<PriorityActionKind, number> = {
 	missing_ownership: 5,
 	pr_review_stale: 6,
 	unresolved_dependency: 7,
+	// Slice 8: emitted by collectMetricDrift, merged by the workflow.
+	metric_drift: 8,
 };
 
 /**

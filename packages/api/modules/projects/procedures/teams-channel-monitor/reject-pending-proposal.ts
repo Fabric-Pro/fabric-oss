@@ -47,6 +47,15 @@ export const rejectPendingProposalProcedure = tenantProtectedProcedure
 			});
 		}
 
+		// Plan §F3: a row claimed by an apply workflow may only be advanced by
+		// that workflow. Rejecting mid-apply would race the finaliser.
+		if (proposal.status === "APPLYING") {
+			throw new ORPCError("CONFLICT", {
+				message:
+					"Proposal is being applied and cannot be rejected right now",
+			});
+		}
+
 		const { updated } = await markPendingProposalRejected({
 			proposalId: input.proposalId,
 			reviewedBy: user.id,

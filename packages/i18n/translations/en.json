@@ -2229,6 +2229,113 @@
 		"welcome": "Welcome {name}!"
 	},
 	"projects": {
+		"engagement": {
+			"sectionLabel": "Engagement",
+			"title": "How this engagement is run",
+			"description": "The profile decides intake, default delivery track, review of stage transitions, and which hierarchy levels the project shows. The same engine runs under every profile.",
+			"profileLabel": "Engagement profile",
+			"profileHint": "Pick how much structure this project needs. You can change it later in project settings.",
+			"profileUpdatedAt": "Profile last changed {date}",
+			"readOnly": "Only project owners and organization admins can change governance settings.",
+			"vision": {
+				"title": "Vision",
+				"description": "Optional. A short purpose, the handful of actions users take, and the cycle the product lives on. Used in spike and classification prompts and shown on the outcomes page.",
+				"purpose": "Purpose",
+				"purposePlaceholder": "Why does this product exist, in one or two sentences?",
+				"coreActions": "Core actions",
+				"coreActionsPlaceholder": "Capture receipt, approve expense, export report",
+				"coreActionsHint": "Comma-separated. The three to five things users actually do.",
+				"cycle": "Cycle",
+				"cyclePlaceholder": "Weekly close, per-shift handover, quarterly review"
+			},
+			"gates": {
+				"title": "Enforcement",
+				"description": "Advisory by default. Turn a gate on to block the corresponding transition instead of warning.",
+				"enforceSpecifyGate": "Enforce specify gate",
+				"enforceSpecifyGateHint": "Block a feature from leaving drafting without an approved spec.",
+				"enforceSpikeGate": "Enforce spike gate",
+				"enforceSpikeGateHint": "Block a spike-track feature until its spike has produced a demo.",
+				"enforceDiscoveryGate": "Enforce discovery gate",
+				"enforceDiscoveryGateHint": "Block a discovery-track feature until its integration contract exists.",
+				"documentTiersAdvisory": "Document tiers are advisory",
+				"documentTiersAdvisoryHint": "Show prerequisite hints on document generation without disabling anything.",
+				"unavailableUntilRuns": "Available after spike and discovery runs ship."
+			},
+			"quotedPhases": "Quoted phases",
+			"quotedPhasesHint": "Comma-separated phase labels inside the quoted horizon (for example 1, 2). Work outside them is a DEFER candidate under Proposal.",
+			"quotedPhasesPlaceholder": "1, 2",
+			"approvers": {
+				"title": "Stage approvers",
+				"description": "Under Governed, drafting-stage transitions wait for one of these people. Only the project owner and accepted members are eligible.",
+				"empty": "No approvers configured. Transitions apply immediately until at least one approver is set.",
+				"noEligible": "Invite members to the project before configuring approvers.",
+				"save": "Save approvers",
+				"saved": "Stage approvers saved"
+			},
+			"save": "Save engagement settings",
+			"saved": "Engagement settings saved",
+			"reviewTitle": "Engagement",
+			"reviewVisionEmpty": "No vision captured yet."
+		},
+		"outcomes": {
+			"label": "Customer surface",
+			"title": "Customer outcomes",
+			"subtitle": "A read-only page for your customer: what was decided, what was demoed, what shipped, and how the success metrics are moving. No backlog, no story details.",
+			"published": "Published",
+			"unpublished": "Not published",
+			"publish": "Publish page",
+			"revoke": "Revoke link",
+			"copyLink": "Copy link",
+			"open": "Open",
+			"linkCopied": "Link copied",
+			"publishedToast": "Outcomes page published",
+			"revokedToast": "Outcomes link revoked",
+			"governanceOnly": "Only project owners and organization admins can publish or revoke this page.",
+			"preview": "Preview",
+			"previewHint": "Exactly what the customer sees at the shared link.",
+			"error": "Something went wrong",
+			"metrics": {
+				"label": "Success metrics",
+				"title": "Success metrics",
+				"subtitle": "Define what better looks like, then record values by hand or from a webhook.",
+				"add": "Add metric",
+				"addFormLabel": "New metric",
+				"name": "Name",
+				"direction": "Direction",
+				"up": "Higher is better",
+				"down": "Lower is better",
+				"target": "Target",
+				"source": "Source",
+				"manual": "Manual",
+				"webhook": "Webhook",
+				"webhookHint": "You will receive a secret once. Send observations with Authorization: Bearer <secret>.",
+				"cancel": "Cancel",
+				"save": "Save metric",
+				"loading": "Loading metrics…",
+				"empty": "No metrics yet.",
+				"lastValue": "Last",
+				"previousValue": "Previous",
+				"recordValue": "Record value",
+				"newValue": "New value",
+				"record": "Record",
+				"rotateSecret": "Rotate secret",
+				"delete": "Delete",
+				"created": "Metric created",
+				"recorded": "Value recorded",
+				"rotated": "Secret rotated — the previous one no longer works",
+				"deleted": "Metric deleted",
+				"invalidNumber": "Enter a valid number",
+				"error": "Something went wrong",
+				"secretTitle": "Webhook secret",
+				"secretShownOnce": "This secret is shown once. Copy it now — Fabric stores only a hash and cannot show it again.",
+				"secretValue": "Secret",
+				"secretCopy": "Copy secret",
+				"secretCopied": "Secret copied",
+				"secretEndpoint": "Send observations to",
+				"secretUsage": "POST a JSON body with a numeric value and an optional ISO-8601 observedAt, authenticated with the bearer secret.",
+				"secretDone": "I have saved it"
+			}
+		},
 		"title": "My Projects",
 		"subtitle": "Manage and organize all your Supadev projects",
 		"createProject": "Create Project",
@@ -2305,6 +2412,25 @@
 					"docx": "Word (.docx)",
 					"aria": "Choose download format"
 				}
+			},
+			"scopeIntake": {
+				"action": "Extract scope",
+				"actionAria": "Extract scope items from {title} into a reviewable proposal",
+				"started": "Scope extraction started",
+				"startedDescription": "We are reading the document. You will be able to review the proposed features in the inbox.",
+				"alreadyRunning": "Scope extraction is already running for this document",
+				"failed": "Could not start scope extraction",
+				"progress": {
+					"awaiting_extraction": "Waiting for text extraction…",
+					"extracting": "Reading scope items…",
+					"persisting": "Saving proposal…",
+					"completed": "{count} proposed change(s) ready for review",
+					"failed": "Scope extraction failed",
+					"cancelled": "Scope extraction cancelled",
+					"not_started": "Not started"
+				},
+				"openInbox": "Review proposal",
+				"notReady": "The document must finish extracting before scope can be read"
 			}
 		},
 		"contextSummary": {
@@ -2637,6 +2763,127 @@
 				"announceStarted": "Rewriting the description and acceptance criteria for the new type.",
 				"announceCompleted": "The description and acceptance criteria have been rewritten for the new type.",
 				"announceFailed": "The rewrite did not finish. Your previous description and acceptance criteria were kept."
+			},
+			"estimateConfidence": {
+				"label": "Estimate confidence",
+				"placeholder": "Pick a confidence",
+				"description": "How firm the size and points are. Low-confidence items only count toward the upper bound of a phase total.",
+				"spikeHint": "Spikes stay at low confidence until a spike run is accepted; the estimate firms up once the question is answered.",
+				"saved": "Estimate confidence set to {confidence}",
+				"saveFailed": "Could not save the estimate confidence",
+				"forcedLow": "Kept at low confidence: this spike has no accepted spike run yet."
+			},
+			"scopeEstimate": {
+				"export": "Export estimate",
+				"markdown": "Markdown (.md)",
+				"csv": "CSV (.csv)",
+				"exported": "Exported {count} feature(s)",
+				"exportFailed": "Could not export the scope estimate"
+			},
+			"deliveryTrack": {
+				"label": "Delivery track",
+				"placeholder": "Pick a track",
+				"setBy": {
+					"ai": "AI",
+					"human": "Human"
+				},
+				"saved": "Delivery track set to {track}",
+				"saveFailed": "Could not save the delivery track",
+				"classify": "Classify",
+				"classifying": "Classifying…",
+				"classifyTooltip": "Assign delivery tracks (Spike, Discovery, Specify, Defer) to unclassified features. Tracks set by a person are left alone.",
+				"classifyStarted": "Classification started",
+				"classifyComplete": "Classified {count} feature(s)",
+				"classifyFailed": "Classification failed",
+				"classifyTimeout": "Classification is taking longer than expected. Refresh to see results.",
+				"aiNotConfigured": "Configure an AI provider under Settings › AI Providers before classifying features."
+			},
+			"spike": {
+				"kindBadge": "Spike",
+				"cancel": "Cancel",
+				"questionLabel": "Question",
+				"untitledQuestion": "Untitled spike",
+				"openDemo": "Open demo",
+				"demoReadyHint": "The agent finished. Try the demo, read the findings, then accept them or discard the run.",
+				"inFlight": "The agent is working on the spike…",
+				"findingsLabel": "Findings",
+				"showAllFindings": "Show full findings",
+				"showLessFindings": "Show less",
+				"playNotesLabel": "Play notes",
+				"acceptFindings": "Accept findings",
+				"status": {
+					"RUNNING": "Running",
+					"DEMO_READY": "Demo ready",
+					"COMPLETED": "Accepted",
+					"FAILED": "Failed",
+					"CANCELLED": "Discarded"
+				},
+				"startWork": {
+					"runSpike": "Run a spike",
+					"runSpikeDescription": "Answer the open question with a throwaway demo and findings — no pull request."
+				},
+				"runSpike": {
+					"title": "Run a spike",
+					"description": "A Background Agent explores the question on a throwaway branch and comes back with a self-contained demo and a findings note. Nothing is merged.",
+					"questionLabel": "What should the spike answer?",
+					"questionPlaceholder": "Can we render the mortgage schedule client-side in under 200 ms?",
+					"questionHint": "One concrete question. The agent will answer it, show evidence and recommend the next track.",
+					"questionTooShort": "The question needs at least {min} characters.",
+					"questionTooLong": "The question must be at most {max} characters.",
+					"featureLabel": "Feature",
+					"repositoryLabel": "Repository",
+					"noRepository": "No repository connected",
+					"branchHint": "Work lands on a fabric-spike/<run> branch; product code paths are not modified.",
+					"repositoryRequiredTitle": "Repository required",
+					"repositoryRequired": "Spikes need a repository the agent can push a throwaway branch to. Connect one on the project first.",
+					"providerHintTitle": "Runs on Background Agents",
+					"providerHint": "This project's default provider is {local}. Spikes always run on {background}; no local setup is used.",
+					"aiNotConfiguredTitle": "AI provider not configured",
+					"aiNotConfigured": "Configure an AI provider before running a spike.",
+					"openAiSettings": "Open AI settings",
+					"footerNote": "The result is a demo frame plus findings. Accepting them records play notes on the feature.",
+					"submit": "Run spike",
+					"starting": "Starting…",
+					"started": "Spike started",
+					"startedDescription": "The agent is exploring the question. You'll see a demo here when it is ready.",
+					"failed": "Could not start the spike"
+				},
+				"accept": {
+					"title": "Accept findings",
+					"description": "Record what you tried and what you decided. The findings are appended to the feature and a version snapshot is taken.",
+					"playNotesLabel": "Play notes",
+					"playNotesPlaceholder": "Who tried the demo, what happened, and what was decided…",
+					"playNotesHint": "At least {min} characters. These notes are kept with the feature as evidence.",
+					"playNotesTooShort": "Play notes need at least {min} characters.",
+					"nextTrackLabel": "Recommended next track",
+					"nextTrackHint": "Optional. Set the track this feature should follow now that the question is answered.",
+					"nextTrackNone": "Leave the track unchanged",
+					"submit": "Accept findings",
+					"submitting": "Accepting…",
+					"success": "Findings accepted",
+					"successDescription": "Play notes recorded and the findings were added to the feature.",
+					"failed": "Could not accept the findings"
+				},
+				"discard": {
+					"action": "Discard",
+					"title": "Discard this spike?",
+					"description": "The run is cancelled and its findings are not added to the feature. The demo frame stays available for reference.",
+					"reasonLabel": "Reason (optional)",
+					"reasonPlaceholder": "Why the findings are not being kept",
+					"confirm": "Discard spike",
+					"submitting": "Discarding…",
+					"success": "Spike discarded",
+					"failed": "Could not discard the spike"
+				},
+				"evidence": {
+					"title": "Evidence",
+					"description": "Spike runs and demo frames recorded against this feature.",
+					"loading": "Loading evidence…",
+					"spikeRuns": "{count, plural, one {# spike run} other {# spike runs}}",
+					"frames": "{count, plural, one {# demo frame} other {# demo frames}}",
+					"frame": "Frame",
+					"slideshow": "Slideshow"
+				}
 			},
 			"download": {
 				"action": "Download",
@@ -3274,6 +3521,126 @@
 					"questionRestoreError": "Couldn’t restore that question. Please try again.",
 					"assignError": "Couldn’t update who this question is assigned to. Please try again.",
 					"autoProposeError": "Couldn’t update that setting. Please try again."
+				}
+			},
+			"discovery": {
+				"dialog": {
+					"title": "Run discovery",
+					"description": "Draft an integration contract from the sources you select. The run posts one open question per unknown.",
+					"descriptionWithId": "Draft an integration contract for {id} from the sources you select. The run posts one open question per unknown.",
+					"aiNotConfigured": "No AI provider is configured. Add one in Settings before running discovery.",
+					"cancel": "Cancel",
+					"submit": "Start discovery"
+				},
+				"sources": {
+					"repo": {
+						"label": "Repository",
+						"hint": "Search the linked repository for auth, tenant, integration and permission code related to this feature.",
+						"noRepository": "No repository is linked to this project."
+					},
+					"openApi": {
+						"label": "OpenAPI specification",
+						"none": "None",
+						"fromContext": "Use an uploaded JSON / YAML document",
+						"noContexts": "No uploaded JSON / YAML documents",
+						"selectContext": "Select a document",
+						"fromUrl": "Fetch from a URL",
+						"urlLabel": "OpenAPI URL",
+						"urlHint": "Public HTTPS URLs only. Private and internal addresses are rejected.",
+						"urlInvalid": "Enter a valid http(s) URL."
+					},
+					"mcp": {
+						"label": "MCP servers",
+						"none": "You have no enabled MCP servers in this context."
+					}
+				},
+				"panel": {
+					"title": "Discovery",
+					"loading": "Loading discovery runs…",
+					"noRuns": "No discovery run yet. Start one from Start work → Run discovery.",
+					"awaitingSignOff": "Awaiting sign-off",
+					"markComplete": "Mark contract complete",
+					"cancelRun": "Cancel run",
+					"openQuestions": "{count, plural, one {# open question} other {# open questions}}",
+					"blocking": "blocking",
+					"whyItMatters": "Why it matters"
+				},
+				"status": {
+					"QUEUED": "Queued",
+					"RUNNING": "Running",
+					"CONTRACT_READY": "Contract ready for review",
+					"COMPLETED": "Contract complete",
+					"FAILED": "Failed",
+					"CANCELLED": "Cancelled"
+				},
+				"toasts": {
+					"started": "Discovery run started",
+					"startFailed": "Could not start discovery run",
+					"contractCompleted": "Integration contract marked complete",
+					"completeFailed": "Could not mark the contract complete",
+					"cancelled": "Discovery run cancelled",
+					"cancelFailed": "Could not cancel the discovery run"
+				}
+			},
+			"readiness": {
+				"title": "Readiness",
+				"loading": "Checking readiness…",
+				"ready": "Ready for development",
+				"notReady": "Not ready for development",
+				"deferred": "Deferred — work cannot start",
+				"trackLabel": "Track",
+				"blocks": "blocks",
+				"advisory": "advisory",
+				"reviewRequired": "Review required",
+				"reviewRequiredHint": "Stage changes on this project are applied only after a configured approver reviews them.",
+				"tracks": {
+					"UNCLASSIFIED": "Unclassified",
+					"SPIKE": "Spike",
+					"DISCOVERY": "Discovery",
+					"SPECIFY": "Specify",
+					"DEFER": "Defer"
+				},
+				"gaps": {
+					"UNCLASSIFIED": "Delivery track not set",
+					"DEFERRED": "Feature is deferred",
+					"SPIKE_NOT_ACCEPTED": "No accepted spike run",
+					"INTEGRATION_CONTRACT_MISSING": "Integration contract not complete",
+					"DESCRIPTION_MISSING": "Description missing",
+					"ACCEPTANCE_CRITERIA_MISSING": "Acceptance criteria missing",
+					"EVIDENCE_UNAVAILABLE": "Readiness evidence could not be loaded"
+				},
+				"startWork": {
+					"blocked": "Start work is disabled until this feature is published and its readiness gaps are resolved.",
+					"blockedNotPublished": "Publish this feature (Ready for Dev) before starting work.",
+					"advisoryHint": "Advisory: {gaps}"
+				},
+				"transition": {
+					"gapsTitle": "Readiness for Ready for Dev",
+					"willBlock": "These gaps block publishing:",
+					"advisoryOnly": "Shown for awareness (not enforced):",
+					"allClear": "All readiness gates are met."
+				},
+				"toasts": {
+					"notReadyTitle": "Feature is not ready",
+					"sentForApproval": "Sent for approval",
+					"sentForApprovalDescription": "A configured reviewer must approve this stage change before it applies."
+				},
+				"stageRequests": {
+					"title": "Stage approvals",
+					"description": "Drafting-stage changes waiting for a reviewer. The requester cannot approve their own request.",
+					"loading": "Loading requests…",
+					"empty": "No pending stage requests.",
+					"requestedBy": "Requested by {name} {age}",
+					"noteLabel": "Review note",
+					"notePlaceholder": "Optional note for the requester",
+					"approve": "Approve",
+					"reject": "Reject",
+					"approved": "Stage change approved",
+					"rejected": "Stage change rejected",
+					"approveFailed": "Could not approve request",
+					"rejectFailed": "Could not reject request",
+					"buttonLabel": "{count, plural, one {# stage approval} other {# stage approvals}}",
+					"buttonTooltip": "Review drafting-stage changes that need an approver on this governed project."
 				}
 			}
 		},
@@ -4726,6 +5093,22 @@
 				"systemSuccess": "Re-mapped relationships",
 				"error": "Re-map failed. Please try again."
 			}
+		},
+		"proposals": {
+			"source": {
+				"TEAMS_CHANNEL": "Teams channel",
+				"TEAMS_CHAT": "Teams chat",
+				"SCOPE_DOCUMENT": "Scope document"
+			},
+			"status": {
+				"PENDING": "Pending",
+				"APPROVED": "Approved",
+				"APPLYING": "Applying",
+				"APPLIED": "Applied",
+				"REJECTED": "Rejected",
+				"FAILED": "Failed",
+				"SUPERSEDED": "Superseded"
+			}
 		}
 	},
 	"zod": {
@@ -5137,7 +5520,23 @@
 			"toggleBacklogCard": "Expand to connect a backlog (Jira, Linear, Azure DevOps, GitLab, and more). Optional — you can skip it and connect a backlog later in settings.",
 			"toggleRepositoryCard": "Expand to connect a code repository on GitHub, GitLab, or Azure DevOps. Optional — you can skip it and connect a repository later in settings.",
 			"removeRepositoryUrl": "Remove this repository from the list. Nothing is connected until you create the project.",
-			"removeWebsiteUrl": "Remove this website URL from the list."
+			"removeWebsiteUrl": "Remove this website URL from the list.",
+			"profileHelp": "About the {profile} profile",
+			"profileIntake": {
+				"conversation": "Intake: a conversation — the project opens on the backlog chat and proposes the first spikes.",
+				"document": "Intake: a document — import a deck, RFP or scope table and triage it into tracks.",
+				"handoff": "Intake: a handoff — requirements are provided; the team owns delivery."
+			},
+			"profileDefaultTrack": "Default track when the classifier is unsure: {track}.",
+			"profileDefaultTrackClassifier": "Default track when the classifier is unsure: left unclassified for a person to decide.",
+			"profileReviewed": "Stage transitions are reviewed by configured approvers.",
+			"profileImmediate": "Stage transitions apply immediately.",
+			"profileOutcomes": "Adds a customer Outcomes tab and a shareable outcomes page.",
+			"profileNoOutcomes": "No customer-facing outcomes surface.",
+			"visionHelp": "About {field}",
+			"visionPurpose": "Why the product exists, in a sentence or two. Read by the spike and classification prompts and shown on the customer outcomes page.",
+			"visionCoreActions": "The three to five things users actually do. The prompts use them to judge which features matter; the outcomes page lists them.",
+			"visionCycle": "The rhythm the product lives on (weekly close, per-shift handover). Frames how spikes are scoped and how outcomes are read."
 		},
 		"projectSettings": {
 			"discardChanges": "Revert unsaved changes in this form without saving.",
@@ -5233,6 +5632,11 @@
 			"updateCleanSpecStaleWeeks": "This spec hasn't been refreshed from context in two weeks — you may want to update it.",
 			"updateCleanSpecStaleMonth": "This spec hasn't been refreshed from context in over a month — it may be out of date.",
 			"aiUpdateRoadmap": "Open an AI chat panel to draft roadmap updates. You can accept or reject each suggestion before it writes back to work items.",
+			"groupBy": "Choose the lanes the roadmap is grouped into.",
+			"groupByPriority": "One lane per priority (Critical, High, Medium, Low).",
+			"groupByTrack": "One lane per delivery track (Spike, Discovery, Specify, Defer, Unclassified). Dragging a card to another lane is disabled; change the track from the feature.",
+			"groupByPhase": "One lane per track inside each quoted phase, with the phase's point total (a range when it holds Low-confidence items). Dragging across lanes is disabled; phases come from phase:N tags.",
+			"exportEstimate": "Download the scope estimate grouped by phase (markdown or CSV). Phases with low-confidence items show a point range.",
 			"aiUpdateKanban": "Open an AI chat panel to draft kanban updates. You can accept or reject each suggestion before it writes back to the board.",
 			"pullFromPmTool": "Pick items from your PM tool (Jira, Azure DevOps, etc.) to import as work items on this board.",
 			"addFeature": "Create a new feature in the default status column. A dialog opens for the feature title and details.",
@@ -5363,7 +5767,52 @@
 				"failed": "The last sync to {pmToolName} didn't go through. Opens a menu to review the error, retry, push, pull, or pause.",
 				"conflict": "This item changed in both Fabric and {pmToolName}. Opens a menu to resolve, push, pull, or pause.",
 				"notconfigured": "No PM tool is connected to this project yet. Opens a menu to set one up."
-			}
+			},
+			"trackHelp": "About delivery tracks",
+			"trackIntro": "The track decides what a feature must show before it can be Published and what kind of run it starts.",
+			"track": {
+				"SPIKE": "Spike — an open question answered by building. Before Published it needs an accepted spike run: a branch with findings and a demo you have played with.",
+				"DISCOVERY": "Discovery — the feature depends on a system we have not mapped. Before Published it needs a completed integration contract from a discovery run (identity, roles, data, endpoints, tenancy).",
+				"SPECIFY": "Specify — well understood work. Before Published it needs the document tiers: a description and acceptance criteria.",
+				"DEFER": "Defer — parked outside the quoted horizon. Nothing is required; it cannot start work until it is moved to another track."
+			},
+			"confidenceHelp": "About estimate confidence",
+			"confidenceIntro": "Confidence turns the phase total into a range: Low items widen it, High items count as firm.",
+			"confidence": {
+				"LOW": "Low — the estimate is a guess; the phase total shows a range while this item is in it.",
+				"MEDIUM": "Medium — a fair estimate with some unknowns left.",
+				"HIGH": "High — firm; counts as a fixed number in the phase total."
+			},
+			"confidenceSpikeLock": "A spike item stays at Low until one of its spike runs is accepted; the answer is what firms up the estimate.",
+			"readinessHelp": "About readiness gates",
+			"readinessIntro": "Readiness lists what the feature still needs before Published and before work can start. Enforced gates block; advisory gates only warn.",
+			"readinessGap": {
+				"UNCLASSIFIED": "Unblocked by assigning a delivery track, by hand or with Classify tracks.",
+				"DEFERRED": "Unblocked by moving the feature to another track; deferred work never starts.",
+				"SPIKE_NOT_ACCEPTED": "Unblocked by running a spike and accepting it with play notes.",
+				"INTEGRATION_CONTRACT_MISSING": "Unblocked by running discovery and marking the integration contract complete.",
+				"DESCRIPTION_MISSING": "Unblocked by writing a description for the feature.",
+				"ACCEPTANCE_CRITERIA_MISSING": "Unblocked by adding acceptance criteria to the feature.",
+				"EVIDENCE_UNAVAILABLE": "The evidence could not be read; reload, or check the project's runs and documents."
+			},
+			"readinessEnforced": "Enforced on this project: this gap blocks Published and Start work.",
+			"readinessAdvisory": "Advisory on this project: shown here, never blocks.",
+			"readinessManage": "Change which gates are enforced in Settings › Engagement.",
+			"spikeRunHelp": "About spike runs",
+			"spikeRun": "A spike run sends the feature's question to a coding agent on its own branch. It comes back with a FINDINGS document and a demo you can open here as a frame; nothing is merged.",
+			"spikeAcceptHelp": "About accepting a spike",
+			"spikeAccept": "Accepting appends the findings and your play notes to the feature, snapshots a version, moves the feature into analysis, satisfies the spike gate and optionally sets the next track.",
+			"spikeEvidenceHelp": "About evidence",
+			"spikeEvidence": "Spike runs and demo frames attached to this feature. An accepted run is the evidence the spike gate reads.",
+			"discoveryRunHelp": "About discovery runs",
+			"discoveryRun": "A discovery run reads the sources you pick — the connected repository, an OpenAPI document or URL, and MCP tool listings — and drafts an integration contract with open questions posted as comments.",
+			"discoveryPanelHelp": "About discovery",
+			"discoveryPanel": "Discovery runs for this feature. The latest contract waits for your sign-off; open questions are posted on the feature as comments.",
+			"discoveryMarkComplete": "Marks the integration contract Complete and closes the run in one step, which satisfies the discovery gate. The document's status cannot be changed from the documents list for that reason.",
+			"estimateExport": "Downloads the scope estimate grouped by phase and by track, as markdown or CSV. Phases that hold Low-confidence items show a point range instead of one number.",
+			"classifyConcept": "A delivery track says what a feature must show before Published: Spike (accepted spike run), Discovery (completed integration contract), Specify (description and acceptance criteria) or Defer (parked).",
+			"stageRequestsConcept": "Under a governed profile a drafting-stage change is recorded as a request instead of applied; a configured approver reviews it here.",
+			"kanbanColumnPreset": "Renames the board's columns to a preset that matches how this engagement runs, and creates any columns the preset needs. Titles can be edited afterwards; cards keep their state."
 		},
 		"testCases": {
 			"new": "Create a new test case with ordered steps.",
@@ -5542,6 +5991,14 @@
 			"markUnread": "Mark this topic as unread, so it stands out in the Inbox again.",
 			"snooze": "Hide this topic from the Inbox until a date you pick. It comes back on its own.",
 			"unsnooze": "Bring this topic back into the Inbox now, before its snooze runs out."
+		},
+		"outcomes": {
+			"metricDirectionHelp": "About direction",
+			"metricDirection": "Which way is good: Up means higher values are better, Down means lower. Drift in the Daily Brief is judged against it.",
+			"metricTargetHelp": "About target",
+			"metricTarget": "Optional goal for the metric. The outcomes page and the Daily Brief compare the latest value against it.",
+			"metricSourceHelp": "About source",
+			"metricSource": "Manual: record observations here. Webhook: your system posts values to a signed endpoint; the secret is shown exactly once when the metric is created or rotated, and only its hash is stored."
 		}
 	},
 	"diagrams": {

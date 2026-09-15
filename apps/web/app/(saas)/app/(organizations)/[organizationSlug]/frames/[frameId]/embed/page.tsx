@@ -46,6 +46,7 @@ export default async function OrganizationFrameEmbedPage({
 			frame={frame.document as FrameDocumentView}
 			embedded
 			slideIndex={slideIndex}
+			projectScoped={Boolean(frame.projectId)}
 		/>
 	);
 }

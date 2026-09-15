@@ -13,6 +13,7 @@ import { SourceCard } from "./SourceCard";
 const STATUS_CHIP: Record<TeamsProposalItem["status"], string> = {
 	PENDING: "bg-highlight/10 text-highlight-ink border-highlight/40",
 	APPROVED: "bg-secondary/10 text-secondary border-secondary/30",
+	APPLYING: "Applying",
 	APPLIED: "bg-secondary/10 text-secondary border-secondary/30",
 	REJECTED: "bg-muted text-muted-foreground border-border",
 	FAILED: "bg-destructive/10 text-destructive border-destructive/30",

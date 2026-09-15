@@ -8,13 +8,36 @@ import {
 import { AuthError, NetworkError, SessionValidationError } from "./errors";
 import type {
 	CodingExecutionProvider,
+	CodingExecutionProviderCapabilities,
 	CreateSessionParams,
 	HealthCheckResult,
 	SessionStatus,
 } from "./provider";
 import { validateCreateSessionParams } from "./schemas";
 
+/**
+ * Plan §F4 decision for background agents: `pushBranchWithoutPr` is true.
+ *
+ * Session creation accepts a working `branch` (see `createSession` below and
+ * the fabric-bot path), and the sandbox pushes through the same git path it
+ * uses before opening a PR — whether a PR is opened is decided by the
+ * prompt, not by the runtime. The spike prompt instructs the agent to push
+ * `fabric-spike/<runId>` and not open a PR; `syncSpikeArtifacts` then
+ * verifies the branch exists on GitHub by reading the deliverables from it
+ * and fails the run closed when they are missing. Exported as a constant so
+ * the API can read the flag without constructing the adapter (whose
+ * constructor requires `BACKGROUND_AGENTS_URL`).
+ */
+export const FABRIC_BACKGROUND_CAPABILITIES: CodingExecutionProviderCapabilities =
+	{
+		pushBranchWithoutPr: true,
+	};
+
 export class FabricBackgroundAdapter implements CodingExecutionProvider {
+	/** See {@link FABRIC_BACKGROUND_CAPABILITIES}. */
+	readonly capabilities: CodingExecutionProviderCapabilities =
+		FABRIC_BACKGROUND_CAPABILITIES;
+
 	private readonly controlPlaneUrl: string;
 	private readonly controlPlaneSecret: string;
 

@@ -30,6 +30,10 @@ import { getCodingExecutionProvider } from "../../lib/coding-execution/get-provi
 import { getLocalKanbanSessionUrl } from "../../lib/coding-execution/local-kanban-provider";
 import { dispatchLifecycleEvent } from "../../lib/lifecycle-dispatcher";
 
+// Spike run activities (plan Slice 3) live in ./spike and are part of this
+// activity module so the workflow can proxy them alongside the others.
+export * from "./spike";
+
 // -- Types --
 
 export interface CreateCodingRunRecordInput {

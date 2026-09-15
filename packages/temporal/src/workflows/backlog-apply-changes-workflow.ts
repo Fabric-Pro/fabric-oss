@@ -15,9 +15,11 @@ import {
 	defineQuery,
 	defineSignal,
 	log,
+	ParentClosePolicy,
 	patched,
 	proxyActivities,
 	setHandler,
+	startChild,
 	workflowInfo,
 } from "@temporalio/workflow";
 
@@ -35,7 +37,10 @@ import type { discoverPMToolCapabilities as DiscoverPMToolCapabilitiesFn } from 
 // See sister workflow `backlog-context-analysis-workflow.ts`
 // for the Step 6 proxy rationale (timeout posture is mandatory).
 import type * as postOperationResultModule from "../activities/post-operation-result";
-import type { finalizePendingProposalActivity as FinalizePendingProposalFn } from "../activities/teams-channel-monitor/fetch-channel-cursor";
+import type {
+	finalizeClaimedProposalActivity as FinalizeClaimedProposalFn,
+	finalizePendingProposalActivity as FinalizePendingProposalFn,
+} from "../activities/teams-channel-monitor/fetch-channel-cursor";
 import {
 	computeAppliedProposalIndexes,
 	isPmTicketMissingError,
@@ -68,14 +73,23 @@ export interface BacklogApplyChangesInput {
 	 * Optional: when set, the workflow flips the matching PendingBacklogProposal
 	 * to APPLIED on success or FAILED on error so the approval inbox reaches a
 	 * terminal state without relying on client-side polling.
+	 *
+	 * Plan §F3: the caller must have claimed the proposal (PENDING|FAILED →
+	 * APPLYING) with THIS workflow's id before starting it; the finaliser only
+	 * advances rows it owns.
 	 */
 	pendingProposalId?: string;
 	/**
 	 * Indexes of `proposal.changes[]` corresponding to each item in
-	 * `approvedChanges`. Recorded against `appliedChangeIndexes` on success so
-	 * retries of FAILED proposals skip already-applied updates.
+	 * `approvedChanges`. Each applied change is recorded in the application
+	 * table under its proposal index so retries skip already-applied work.
 	 */
 	approvedChangeIndexes?: number[];
+	/**
+	 * Free-form context (Teams thread transcript) appended to the drafting
+	 * prompt for proposal creates without a `sourceRef`.
+	 */
+	draftingContext?: string;
 	/**
 	 * Per-change PM-sync overrides keyed by index in `approvedChanges`.
 	 * Set by the AI Update review step when the user resolves a conflict
@@ -250,16 +264,21 @@ const { recordPmSyncFailure, clearPmSyncPendingIfLeaked } = proxyActivities<{
 	},
 });
 
-const { finalizePendingProposalActivity } = proxyActivities<{
-	finalizePendingProposalActivity: typeof FinalizePendingProposalFn;
-}>({
-	startToCloseTimeout: "30 seconds",
-	retry: {
-		initialInterval: "1s",
-		backoffCoefficient: 2,
-		maximumAttempts: 5,
-	},
-});
+// Both finalisers stay registered: histories recorded before the claim
+// protocol (plan §F3) scheduled `finalizePendingProposalActivity`, and the
+// `patched()` gate below replays them through that path.
+const { finalizeClaimedProposalActivity, finalizePendingProposalActivity } =
+	proxyActivities<{
+		finalizeClaimedProposalActivity: typeof FinalizeClaimedProposalFn;
+		finalizePendingProposalActivity: typeof FinalizePendingProposalFn;
+	}>({
+		startToCloseTimeout: "30 seconds",
+		retry: {
+			initialInterval: "1s",
+			backoffCoefficient: 2,
+			maximumAttempts: 5,
+		},
+	});
 
 // Operation-result activity proxy. See the sister
 // `backlog-context-analysis-workflow.ts` for the full timeout-strategy
@@ -299,12 +318,56 @@ export async function backlogApplyChangesWorkflow(
 		pmConfig,
 		pendingProposalId,
 		approvedChangeIndexes,
+		draftingContext,
 		pmSyncOverrides,
 		// See input-interface comment above.
 		conversationId,
 		// Bug 1429 — see input-interface comment above.
 		forbidEpics,
 	} = input;
+
+	const { workflowId: applyWorkflowId } = workflowInfo();
+
+	// Replay safety (plan §10): executions started before this version
+	// recorded the pre-claim finaliser and no classification child. The
+	// patch markers keep those histories deterministic; new executions take
+	// the claimed-finaliser + child-classification path.
+	const claimedFinalizerV2 = patched("backlog-apply-claimed-finalizer-v2");
+	const classifyChildV1 = patched("backlog-apply-classify-child-v1");
+
+	type FinalizeArgs = Omit<
+		Parameters<typeof finalizePendingProposalActivity>[0],
+		"proposalId"
+	>;
+	/**
+	 * Terminal write for the originating proposal. New executions go through
+	 * the claimed finaliser (CAS on APPLYING + this workflow id, plan §F3) so
+	 * a duplicate or stale apply can never flip a row it does not own;
+	 * histories recorded before the marker replay the legacy finaliser.
+	 */
+	const finalizeProposal = async (args: FinalizeArgs): Promise<void> => {
+		if (!pendingProposalId) {
+			return;
+		}
+		if (!claimedFinalizerV2) {
+			await finalizePendingProposalActivity({
+				proposalId: pendingProposalId,
+				...args,
+			});
+			return;
+		}
+		const result = await finalizeClaimedProposalActivity({
+			proposalId: pendingProposalId,
+			applyWorkflowId,
+			...args,
+		});
+		if (!result.finalized) {
+			log.warn(
+				"Proposal not finalised: this workflow is not the claimant",
+				{ proposalId: pendingProposalId, applyWorkflowId },
+			);
+		}
+	};
 
 	// Workflow state
 	let cancelled = false;
@@ -352,6 +415,7 @@ export async function backlogApplyChangesWorkflow(
 		if (approvedChanges.length === 0) {
 			progress.status = "completed";
 			progress.message = "No changes to apply.";
+			await finalizeProposal({ outcome: "applied" });
 			return {
 				success: true,
 				appliedCount: 0,
@@ -389,6 +453,10 @@ export async function backlogApplyChangesWorkflow(
 			// Audit history can link each change to its BacklogUpdateSession.
 			// (Activity input-only; same command sequence → replay-safe.)
 			pendingProposalId,
+			// Plan §F3: per-change application records + idempotency keys.
+			proposalId: pendingProposalId,
+			approvedChangeIndexes,
+			draftingContext,
 		});
 
 		progress.completedCount = applyResult.appliedCount;
@@ -562,7 +630,6 @@ export async function backlogApplyChangesWorkflow(
 							changeType: change.type,
 							title: change.title.to,
 						});
-						pmNotNeededPositions.add(changeIndex);
 						continue;
 					}
 
@@ -602,7 +669,6 @@ export async function backlogApplyChangesWorkflow(
 								detectedType: capabilities.detectedType,
 							},
 						);
-						pmNotNeededPositions.add(changeIndex);
 						continue;
 					}
 
@@ -642,7 +708,6 @@ export async function backlogApplyChangesWorkflow(
 
 							if (syncResult.status === "SUCCESS") {
 								syncedToPMCount++;
-								pmSucceededPositions.add(changeIndex);
 								pmSyncResults.push({
 									storyId: itemId,
 									itemType,
@@ -822,11 +887,10 @@ export async function backlogApplyChangesWorkflow(
 
 		// If this workflow was invoked from a PendingBacklogProposal approval,
 		// flip its terminal state here so the inbox doesn't need to poll.
-		// On partial failure we record ONLY the indexes that fully completed
-		// end-to-end — Fabric apply succeeded AND (PM sync succeeded OR PM
-		// sync wasn't needed for this change). Any change that failed PM sync
-		// is deliberately NOT recorded so a retry of the FAILED proposal
-		// re-runs the apply workflow for it and re-attempts the PM sync.
+		// Per-change application records were written by applyBacklogChanges
+		// (plan §F3); a FAILED outcome (Fabric error or PM-sync error) leaves
+		// them in place so the retry skips the Fabric writes already done and
+		// re-attempts only what is missing.
 		if (pendingProposalId) {
 			const hadErrors = progress.errors.length > 0;
 			let appliedIndexes: number[] | undefined;
@@ -871,8 +935,7 @@ export async function backlogApplyChangesWorkflow(
 				? (progress.errors[0] ?? "apply workflow failed").slice(0, 500)
 				: undefined;
 			try {
-				await finalizePendingProposalActivity({
-					proposalId: pendingProposalId,
+				await finalizeProposal({
 					outcome: hadErrors ? "failed" : "applied",
 					appliedChangeIndexes: appliedIndexes,
 					errorClass: hadErrors ? "default" : undefined,
@@ -896,6 +959,45 @@ export async function backlogApplyChangesWorkflow(
 								: String(finalizeError),
 					},
 				);
+			}
+		}
+
+		// Classify freshly created stories into delivery tracks (plan §Slice 2).
+		// Fire-and-forget child: a missing registration or a start failure must
+		// never fail the apply. Behind its own marker so histories recorded
+		// before the child existed replay without it.
+		const createdStoryIds = applyResult.createdItems
+			.filter(
+				(item) =>
+					item.type === "story" ||
+					item.type === "bug" ||
+					item.type === "feature",
+			)
+			.map((item) => item.id);
+		if (classifyChildV1 && createdStoryIds.length > 0) {
+			try {
+				await startChild("deliveryTrackClassificationWorkflow", {
+					taskQueue: "ai-chat",
+					workflowId: `delivery-track-classification-${applyWorkflowId}`,
+					parentClosePolicy:
+						ParentClosePolicy.PARENT_CLOSE_POLICY_ABANDON,
+					args: [
+						{
+							projectId,
+							storyIds: createdStoryIds,
+							userId,
+							organizationId,
+						},
+					],
+				});
+			} catch (classifyError) {
+				log.warn("Delivery track classification could not be started", {
+					error:
+						classifyError instanceof Error
+							? classifyError.message
+							: String(classifyError),
+					storyCount: createdStoryIds.length,
+				});
 			}
 		}
 
@@ -1036,8 +1138,7 @@ export async function backlogApplyChangesWorkflow(
 			unwrapPmSyncError(error);
 		if (pendingProposalId) {
 			try {
-				await finalizePendingProposalActivity({
-					proposalId: pendingProposalId,
+				await finalizeProposal({
 					outcome: "failed",
 					errorClass: classifiedErrorClass,
 					errorMessage: classifiedMessage,

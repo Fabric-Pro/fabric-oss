@@ -21,6 +21,7 @@ import {
 	protectedProcedure,
 	resolveOrganizationIdForCaller,
 } from "../../../orpc/procedures";
+import { resolveWeaveHandle } from "../lib/temporal-handle";
 
 const SignalApprovalInputSchema = z.object({
 	executionId: z.string(),
@@ -81,10 +82,7 @@ export const signalApprovalProcedure = protectedProcedure
 
 		try {
 			const temporal = await getTemporalClient();
-			const handle = temporal.workflow.getHandle(
-				execution.workflowId,
-				execution.runId,
-			);
+			const handle = resolveWeaveHandle(temporal, execution);
 
 			await handle.signal(orchestratorApprovalSignal, {
 				approved: input.approved,
@@ -157,10 +155,7 @@ export const autoApproveAllProcedure = protectedProcedure
 
 		try {
 			const temporal = await getTemporalClient();
-			const handle = temporal.workflow.getHandle(
-				execution.workflowId,
-				execution.runId,
-			);
+			const handle = resolveWeaveHandle(temporal, execution);
 
 			await handle.signal(orchestratorAutoApproveAllSignal);
 		} catch (error) {
@@ -228,10 +223,7 @@ export const revokeAutoApproveProcedure = protectedProcedure
 
 		try {
 			const temporal = await getTemporalClient();
-			const handle = temporal.workflow.getHandle(
-				execution.workflowId,
-				execution.runId,
-			);
+			const handle = resolveWeaveHandle(temporal, execution);
 
 			await handle.signal(orchestratorRevokeAutoApproveSignal);
 		} catch (error) {
@@ -306,10 +298,7 @@ export const retryFromStepProcedure = protectedProcedure
 
 		try {
 			const temporal = await getTemporalClient();
-			const handle = temporal.workflow.getHandle(
-				execution.workflowId,
-				execution.runId,
-			);
+			const handle = resolveWeaveHandle(temporal, execution);
 
 			await handle.signal(orchestratorRetryFromStepSignal, {
 				stepId: input.stepId,

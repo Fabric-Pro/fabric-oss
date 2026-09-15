@@ -341,6 +341,29 @@ export type {
 	SubAgentResult,
 	SubTask,
 } from "./src/workflows/deep-researcher";
+// Delivery Track Classification Workflow (inverted-loop Slice 2)
+export type {
+	ClassificationStatus,
+	DeliveryTrackClassificationInput,
+	DeliveryTrackClassificationOutput,
+	DeliveryTrackClassificationProgress,
+} from "./src/workflows/delivery-track-classification-workflow";
+export {
+	classificationProgressQuery,
+	deliveryTrackClassificationWorkflow,
+} from "./src/workflows/delivery-track-classification-workflow";
+// Discovery Run Workflow (DISCOVERY-track feature → integration contract)
+export type {
+	DiscoveryRunProgress,
+	DiscoveryRunStatusValue,
+	DiscoveryRunWorkflowInput,
+	DiscoveryRunWorkflowOutput,
+} from "./src/workflows/discovery-run-workflow";
+export {
+	cancelDiscoverySignal,
+	discoveryProgressQuery,
+	discoveryRunWorkflow,
+} from "./src/workflows/discovery-run-workflow";
 // Newsletter workflow input/output (consumed by @repo/api's manual-send path).
 // Mirrors the GenerateDailyBriefInput re-export above so the type is reachable
 // via `import { GenerateAndSendNewsletterInput } from "@repo/temporal"`.
@@ -415,6 +438,18 @@ export {
 	projectDeleteCleanupWorkflow,
 	projectPermanentDeleteWorkflow,
 } from "./src/workflows/project-deletion";
+// Scope Intake Workflow (customer scope document → SCOPE_DOCUMENT proposal)
+export type {
+	ScopeIntakeInput,
+	ScopeIntakeOutput,
+	ScopeIntakeProgress,
+	ScopeIntakeStatus,
+} from "./src/workflows/scope-intake-workflow";
+export {
+	cancelIntakeSignal,
+	intakeProgressQuery,
+	scopeIntakeWorkflow,
+} from "./src/workflows/scope-intake-workflow";
 export type {
 	StorySyncProgress,
 	StorySyncWorkflowInput,

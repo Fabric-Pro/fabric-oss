@@ -144,7 +144,14 @@ import {
 } from "../../lib/image-upload-utils";
 import { shouldDeferStoryPropSync } from "../../lib/stories/diff-review-guard";
 import { restorePendingDecisions } from "../../lib/stories/pending-decisions-preserve";
-import { STORY_TAB_PARAM } from "../../lib/stories/routes";
+import {
+	getPendingStageRequest,
+	getReadinessErrorGaps,
+} from "../../lib/stories/readiness";
+import {
+	buildProjectSettingsRoute,
+	STORY_TAB_PARAM,
+} from "../../lib/stories/routes";
 import type {
 	FeatureDraftingStage,
 	MaturationStatus,
@@ -189,6 +196,9 @@ import {
 	type CoverageBlockDetail,
 	CoverageOverrideDialog,
 } from "./CoverageOverrideDialog";
+import { DeliveryTrackSelector } from "./DeliveryTrackSelector";
+import { DiscoveryPanel } from "./DiscoveryPanel";
+import { EstimateConfidenceSelector } from "./EstimateConfidenceSelector";
 import { FeatureTransitionDialog } from "./FeatureTransitionDialog";
 import { FeatureVersionHistory } from "./FeatureVersionHistory";
 import { ConfirmChangeSummaryCard } from "./maturation/ConfirmChangeSummaryCard";
@@ -200,6 +210,8 @@ import type { AnswerSource } from "./maturation/types";
 import { NotifyButton } from "./NotifyButton";
 import { AiReprioritizeControl } from "./priority/AiReprioritizeControl";
 import { useAiReassessEligibility } from "./priority/useAiReassessEligibility";
+import { ReadinessPanel } from "./ReadinessPanel";
+import { StoryEvidence } from "./StoryEvidence";
 import { StoryKindRegenerationNotice } from "./StoryKindRegenerationNotice";
 import { StoryTagEditor } from "./StoryTagEditor";
 import { useConsumeSearchParam } from "./use-consume-search-param";
@@ -208,6 +220,7 @@ import {
 	useStoryKindRegeneration,
 	watchStoryKindRegeneration,
 } from "./useStoryKindRegeneration";
+import { invalidateStoryReadiness } from "./useStoryReadiness";
 import { useUpdateWithContext } from "./useUpdateWithContext";
 
 /** Tailwind `sm` — the width below which CopilotKit goes full-screen. */
@@ -616,7 +629,7 @@ export function StoryWorkspace({
 	const queryClient = useQueryClient();
 	const { user } = useSession();
 	const sessionUser = user;
-	const { organizationId } = useOrganizationContext();
+	const { organizationId, basePath } = useOrganizationContext();
 	// Cross-tab BroadcastChannel listener: mirrors the wiring in
 	// DocumentEditor.tsx so the StoryWorkspace surface (USER_STORY scope)
 	// also picks up history mutations from sibling tabs.
@@ -627,6 +640,7 @@ export function StoryWorkspace({
 		organizationId: organizationId ?? null,
 	});
 	const tWorkspace = useTranslations("projects.stories.workspace");
+	const tReadiness = useTranslations("projects.stories.readiness");
 	const params = useParams();
 
 	// ── Feature Maturation V2 ────────────────────────────────
@@ -3434,15 +3448,41 @@ export function StoryWorkspace({
 			// summary digest, and questions re-hydrate after a stage advance /
 			// Enhance. No-op for v1 (the query isn't mounted there).
 			invalidateMaturationEditor();
-			toast.success(
-				data?.aiEnhanced
-					? `${story.kind === "BUG" ? "Bug" : "Feature"} enhanced with AI`
-					: "Drafting stage updated",
-			);
+			void invalidateStoryReadiness(queryClient, {
+				projectId,
+				storyId: story.id,
+			});
+			// GOVERNED review: the stage change was recorded as a request,
+			// not applied (plan Slice 5).
+			if (getPendingStageRequest(data)) {
+				toast.info(tReadiness("toasts.sentForApproval"), {
+					description: tReadiness(
+						"toasts.sentForApprovalDescription",
+					),
+				});
+			} else {
+				toast.success(
+					data?.aiEnhanced
+						? `${story.kind === "BUG" ? "Bug" : "Feature"} enhanced with AI`
+						: "Drafting stage updated",
+				);
+			}
 			setShowTransitionDialog(false);
 			onStoryUpdated?.();
 		},
 		onError: (error) => {
+			const gaps = getReadinessErrorGaps(error);
+			if (gaps) {
+				toast.error(tReadiness("toasts.notReadyTitle"), {
+					description:
+						gaps.missing.length > 0
+							? gaps.missing
+									.map((gap) => tReadiness(`gaps.${gap}`))
+									.join(", ")
+							: error.message,
+				});
+				return;
+			}
 			toast.error("Failed to update drafting stage", {
 				description: error.message,
 			});
@@ -3465,20 +3505,45 @@ export function StoryWorkspace({
 				acceptanceCriteria: data.acceptanceCriteria,
 			});
 		},
-		onSuccess: () => {
+		onSuccess: (data) => {
 			queryClient.invalidateQueries({
 				queryKey: orpc.projects.stories.get.queryKey({
 					input: { projectId, storyId: story.id, organizationId },
 				}),
 			});
 			queryClient.invalidateQueries({ queryKey: storiesListQueryKey });
-			toast.success(
-				`${story.kind === "BUG" ? "Bug" : "Feature"} enhanced and stage updated`,
-			);
+			void invalidateStoryReadiness(queryClient, {
+				projectId,
+				storyId: story.id,
+			});
+			if (getPendingStageRequest(data)) {
+				toast.info(tReadiness("toasts.sentForApproval"), {
+					description: tReadiness(
+						"toasts.sentForApprovalDescription",
+					),
+				});
+			} else {
+				toast.success(
+					`${story.kind === "BUG" ? "Bug" : "Feature"} enhanced and stage updated`,
+				);
+			}
 			triggerMaturationSeedAfterApply();
 			onStoryUpdated?.();
 		},
 		onError: (error) => {
+			// Readiness gate (plan Slice 5): show the gap list, not a generic error.
+			const gaps = getReadinessErrorGaps(error);
+			if (gaps) {
+				toast.error(tReadiness("toasts.notReadyTitle"), {
+					description:
+						gaps.missing.length > 0
+							? gaps.missing
+									.map((gap) => tReadiness(`gaps.${gap}`))
+									.join(", ")
+							: error.message,
+				});
+				return;
+			}
 			// The stage write is version-guarded now, so it can come back as a
 			// CONFLICT when an autosave landed on the same row while the AI work
 			// was running. That used to be a silent overwrite, and the message
@@ -6050,6 +6115,68 @@ export function StoryWorkspace({
 									</div>
 								</div>
 							)}
+							{/* Delivery track, estimate confidence, readiness gates,
+							    discovery runs and spike evidence (inverted-loop
+							    Slices 2–5, 7) — always visible above the stage rail. */}
+							{!isUserGenerationActive && (
+								<div className="space-y-3 border-b px-6 py-3">
+									<div className="flex flex-wrap items-start gap-4">
+										<DeliveryTrackSelector
+											projectId={projectId}
+											storyId={story.id}
+											track={
+												story.deliveryTrack ??
+												"UNCLASSIFIED"
+											}
+											rationale={story.trackRationale}
+											setBy={story.trackSetBy}
+											disabled={isAiLoading}
+											className="max-w-md"
+										/>
+										<EstimateConfidenceSelector
+											projectId={projectId}
+											storyId={story.id}
+											confidence={
+												story.estimateConfidence ?? null
+											}
+											deliveryTrack={
+												story.deliveryTrack ??
+												"UNCLASSIFIED"
+											}
+											disabled={isAiLoading}
+											className="max-w-md"
+										/>
+									</div>
+									<ReadinessPanel
+										projectId={projectId}
+										storyId={story.id}
+										organizationId={organizationId}
+										version={story.version}
+										canManageGovernance={
+											projectData?.project
+												?.canManageGovernance ??
+											projectData?.project?.userRole ===
+												"owner"
+										}
+										settingsHref={buildProjectSettingsRoute(
+											basePath,
+											projectId,
+										)}
+									/>
+									<DiscoveryPanel
+										projectId={projectId}
+										storyId={story.id}
+										organizationId={organizationId}
+										deliveryTrack={story.deliveryTrack}
+									/>
+									<StoryEvidence
+										projectId={projectId}
+										storyId={story.id}
+										organizationId={organizationId}
+										className="max-w-2xl"
+									/>
+								</div>
+							)}
 							{!isUserGenerationActive &&
 								(() => {
 									const isBug = story.kind === "BUG";
@@ -8043,6 +8170,10 @@ export function StoryWorkspace({
 									storyKind={story.kind}
 									featureIdentifier={story.identifier}
 									featureTitle={story.title}
+									projectId={projectId}
+									storyId={story.id}
+									organizationId={organizationId}
+									storyVersion={story.version}
 									tddNeedsTestCases={
 										(maturationData?.applyTddApproach ??
 											false) &&

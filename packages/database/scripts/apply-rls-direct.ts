@@ -9,6 +9,12 @@
 
 import { pathToFileURL } from "node:url";
 import { db } from "../prisma/client";
+import {
+	buildFrameProjectOrUserPolicySQL,
+	buildParentScopedPolicySQL,
+	buildProjectMemberOrTenantPolicySQL,
+	buildProjectSelfMemberOrTenantPolicySQL,
+} from "./rls-policy-sql";
 
 async function applyRLS() {
 	console.log("🔒 Applying RLS policies to local database...\n");
@@ -219,7 +225,15 @@ async function applyRLS() {
 			{ name: "workflow_version", policy: "user_owned" }, // Workflow version history
 			{ name: "workflow_api_key", policy: "user_owned" }, // API keys for workflows
 			{ name: "workflow_execution_log", policy: "user_owned" }, // Execution logs
-			{ name: "project", policy: "user_owned" },
+			// project: tenant-owned, but also readable/writable by accepted
+			// project members (guests). Under enforced RLS a guest's personal
+			// session could otherwise never read the project row it was invited
+			// to (plan §10, review rounds 4–6).
+			{
+				name: "project",
+				policy: "project_member_or_tenant",
+				childKeyColumn: "id",
+			},
 			{ name: "diagram", policy: "user_owned" }, // Excalidraw diagrams
 			{ name: "project_document", policy: "user_owned" }, // Project documents
 			{ name: "project_document_asset", policy: "user_owned" }, // Binary/HTML artifacts attached to generated docs
@@ -473,6 +487,22 @@ async function applyRLS() {
 				name: "story_priority_change",
 				policy: "project_scoped",
 			},
+			{
+				name: "stage_transition_request",
+				policy: "project_member_or_tenant",
+			}, // Governed stage transition requests (guests may request/approve)
+			{ name: "discovery_run", policy: "user_owned" }, // Discovery runs (integration contracts)
+			{ name: "project_success_metric", policy: "user_owned" }, // Customer success metrics
+			// Parent-scoped: no tenant columns of their own, tenancy is
+			// inherited from the parent row through the FK.
+			{
+				name: "project_stage_approver",
+				policy: "project_member_or_tenant",
+			}, // Configured stage approvers; visible to every authorized project member
+			{
+				name: "pending_backlog_proposal_application",
+				policy: "proposal_parent",
+			}, // Applied-change ledger, scoped by parent proposal
 			{ name: "document_lock", policy: "user_owned" }, // Document locks
 			{ name: "browser_task", policy: "per_user_within_org" },
 			{ name: "template_instance", policy: "user_owned" },
@@ -506,7 +536,9 @@ async function applyRLS() {
 				name: "ai_usage_limit_counter",
 				policy: "ai_usage_limit_counter",
 			},
-			{ name: "agent_workspace_file", policy: "per_user_within_org" },
+			// Per-user-within-org rows as before, PLUS project-scoped frames
+			// (spike demos) readable by authorized project members.
+			{ name: "agent_workspace_file", policy: "frame_project_or_user" },
 			{ name: "wizard_temp_context", policy: "user_owned" }, // Temporary file storage during project wizard
 			{ name: "agent_execution_step", policy: "user_owned" }, // Agent execution steps
 			{ name: "agent_deployment_trigger", policy: "user_owned" }, // Deployment triggers
@@ -1169,6 +1201,44 @@ async function applyRLS() {
 							USING (false)
 							WITH CHECK (false)
 						`;
+						break;
+
+					case "frame_project_or_user":
+						// Creator's per-user rows plus project-scoped frames for
+						// authorized project members (spike demos).
+						policySQL = buildFrameProjectOrUserPolicySQL();
+						break;
+
+					case "project_member_or_tenant":
+						// Parent project visible to the tenant OR the current
+						// user is an accepted, non-expired project member.
+						policySQL =
+							table.name === "project"
+								? buildProjectSelfMemberOrTenantPolicySQL()
+								: buildProjectMemberOrTenantPolicySQL(
+										table.name,
+										(table as { childKeyColumn?: string })
+											.childKeyColumn ?? "projectId",
+									);
+						break;
+
+					case "project_parent":
+						// No tenant columns on the row itself. Visibility is
+						// inherited from the parent `project` row, which uses
+						// the `user_owned` shape.
+						policySQL = buildParentScopedPolicySQL(
+							table.name,
+							"project_parent",
+						);
+						break;
+
+					case "proposal_parent":
+						// Same as above, but the parent is
+						// `pending_backlog_proposal` (also `user_owned`).
+						policySQL = buildParentScopedPolicySQL(
+							table.name,
+							"proposal_parent",
+						);
 						break;
 
 					default:

@@ -240,13 +240,13 @@ export type SDLCPipelineScalarFieldEnum = z.infer<typeof SDLCPipelineScalarField
 
 // File: ProjectScalarFieldEnum.schema.ts
 
-export const ProjectScalarFieldEnumSchema = z.enum(['id', 'name', 'description', 'heroEmojis', 'heroImageUrl', 'goals', 'techStack', 'features', 'projectTypes', 'status', 'projectPhase', 'expectedDevelopmentStartDate', 'tags', 'color', 'icon', 'userId', 'organizationId', 'projectManagementMcpServerId', 'projectManagementMcpConfigId', 'projectManagementContainerId', 'projectManagementContainerName', 'projectManagementAdditionalContext', 'logSourceProvider', 'logSourceConfig', 'adoStatePollActive', 'autoPushPmSync', 'syncAttachments', 'attachmentRetentionDays', 'attachmentRetentionDaysUpdatedAt', 'readOnlyMode', 'lastAdoStatePollAt', 'pmTerminalStatuses', 'pmAutoCloseEnabled', 'pmFieldMappingEnabled', 'prdSourceTitle', 'prdSourceUrl', 'prdSourceContextId', 'prdSourceSyncedAt', 'meetingTranscriptSyncEnabled', 'meetingTranscriptSyncIntervalMin', 'meetingTranscriptSyncLastRun', 'meetingTranscriptSyncWorkflowId', 'meetingTranscriptSyncUserId', 'meetingTranscriptAutoAnalyzeEnabled', 'actionItemRoutingEnabled', 'teamsChannelMonitorEnabled', 'teamsChannelMonitorIntervalMin', 'teamsChannelMonitorQuietWindowMin', 'teamsChannelMonitorLastRun', 'teamsChannelMonitorWorkflowId', 'teamsChannelMonitorUserId', 'teamsChatMonitorEnabled', 'teamsChatMonitorIntervalMin', 'teamsChatMonitorQuietWindowMin', 'teamsChatMonitorLastRun', 'teamsChatMonitorWorkflowId', 'teamsChatMonitorUserId', 'slackChannelMonitorEnabled', 'slackChannelMonitorWorkflowId', 'slackChannelMonitorLastRun', 'slackChannelMonitorDebounceMs', 'slackChannelMonitorMaxHoldMs', 'slackChannelMonitorUserId', 'slackHuddleIngestEnabled', 'slackHuddleIngestEnabledAt', 'slackHuddleIngestIntervalMin', 'slackHuddleIngestLastRun', 'slackHuddleIngestWorkflowId', 'repositoryUrl', 'repositoryOwner', 'repositoryName', 'defaultBranch', 'implementationDefaultChannel', 'implementationDefaultProvider', 'implementationDefaultWorkingDirectory', 'primaryWebsiteUrl', 'additionalWebsiteUrls', 'codeAnalysisStatus', 'codeAnalysisWorkflowId', 'draftKey', 'wizardState', 'nextStoryNumber', 'lastDuplicateScanAt', 'hiddenMaturationStatuses', 'clarifyingQuestionFrequency', 'qaStrategyLevel', 'generateManualTestCases', 'applyTddApproach', 'projectTabConfig', 'autoCreateBugsFromFailures', 'createdAt', 'updatedAt', 'deletedAt', 'deletedBy', 'scheduledPermanentDeleteAt', 'deletionReminderSentAt'])
+export const ProjectScalarFieldEnumSchema = z.enum(['id', 'name', 'description', 'heroEmojis', 'heroImageUrl', 'goals', 'techStack', 'features', 'projectTypes', 'status', 'projectPhase', 'expectedDevelopmentStartDate', 'tags', 'color', 'icon', 'userId', 'organizationId', 'projectManagementMcpServerId', 'projectManagementMcpConfigId', 'projectManagementContainerId', 'projectManagementContainerName', 'projectManagementAdditionalContext', 'logSourceProvider', 'logSourceConfig', 'adoStatePollActive', 'autoPushPmSync', 'syncAttachments', 'attachmentRetentionDays', 'attachmentRetentionDaysUpdatedAt', 'readOnlyMode', 'lastAdoStatePollAt', 'pmTerminalStatuses', 'pmAutoCloseEnabled', 'pmFieldMappingEnabled', 'prdSourceTitle', 'prdSourceUrl', 'prdSourceContextId', 'prdSourceSyncedAt', 'meetingTranscriptSyncEnabled', 'meetingTranscriptSyncIntervalMin', 'meetingTranscriptSyncLastRun', 'meetingTranscriptSyncWorkflowId', 'meetingTranscriptSyncUserId', 'meetingTranscriptAutoAnalyzeEnabled', 'actionItemRoutingEnabled', 'teamsChannelMonitorEnabled', 'teamsChannelMonitorIntervalMin', 'teamsChannelMonitorQuietWindowMin', 'teamsChannelMonitorLastRun', 'teamsChannelMonitorWorkflowId', 'teamsChannelMonitorUserId', 'teamsChatMonitorEnabled', 'teamsChatMonitorIntervalMin', 'teamsChatMonitorQuietWindowMin', 'teamsChatMonitorLastRun', 'teamsChatMonitorWorkflowId', 'teamsChatMonitorUserId', 'slackChannelMonitorEnabled', 'slackChannelMonitorWorkflowId', 'slackChannelMonitorLastRun', 'slackChannelMonitorDebounceMs', 'slackChannelMonitorMaxHoldMs', 'slackChannelMonitorUserId', 'slackHuddleIngestEnabled', 'slackHuddleIngestEnabledAt', 'slackHuddleIngestIntervalMin', 'slackHuddleIngestLastRun', 'slackHuddleIngestWorkflowId', 'repositoryUrl', 'repositoryOwner', 'repositoryName', 'defaultBranch', 'implementationDefaultChannel', 'implementationDefaultProvider', 'implementationDefaultWorkingDirectory', 'primaryWebsiteUrl', 'additionalWebsiteUrls', 'codeAnalysisStatus', 'codeAnalysisWorkflowId', 'draftKey', 'wizardState', 'nextStoryNumber', 'lastDuplicateScanAt', 'hiddenMaturationStatuses', 'clarifyingQuestionFrequency', 'qaStrategyLevel', 'generateManualTestCases', 'applyTddApproach', 'projectTabConfig', 'autoCreateBugsFromFailures', 'createdAt', 'updatedAt', 'engagementProfile', 'engagementProfileUpdatedAt', 'quotedPhases', 'enforceSpecifyGate', 'enforceSpikeGate', 'enforceDiscoveryGate', 'documentTiersAdvisory', 'visionPurpose', 'visionCoreActions', 'visionCycle', 'outcomesShareToken', 'deletedAt', 'deletedBy', 'scheduledPermanentDeleteAt', 'deletionReminderSentAt'])
 
 export type ProjectScalarFieldEnum = z.infer<typeof ProjectScalarFieldEnumSchema>;
 
 // File: ProjectDocumentScalarFieldEnum.schema.ts
 
-export const ProjectDocumentScalarFieldEnumSchema = z.enum(['id', 'projectId', 'type', 'title', 'content', 'status', 'version', 'generationPrompt', 'generationError', 'generationProgress', 'generationStartedAt', 'generationCompletedAt', 'workflowId', 'runId', 'wordCount', 'lastEditedBy', 'decisionPrecheck', 'generationQueueReason', 'generationNotificationEmittedAt', 'source', 'sourceContextId', 'isActive', 'qdrantId', 'embeddedAt', 'contentHash', 'createdAt', 'updatedAt', 'userId', 'organizationId'])
+export const ProjectDocumentScalarFieldEnumSchema = z.enum(['id', 'projectId', 'type', 'title', 'content', 'status', 'version', 'generationPrompt', 'generationError', 'generationProgress', 'generationStartedAt', 'generationCompletedAt', 'workflowId', 'runId', 'wordCount', 'lastEditedBy', 'decisionPrecheck', 'generationQueueReason', 'generationNotificationEmittedAt', 'source', 'sourceContextId', 'isActive', 'storyId', 'qdrantId', 'embeddedAt', 'contentHash', 'createdAt', 'updatedAt', 'userId', 'organizationId'])
 
 export type ProjectDocumentScalarFieldEnum = z.infer<typeof ProjectDocumentScalarFieldEnumSchema>;
 
@@ -550,6 +550,24 @@ export const PendingBacklogProposalScalarFieldEnumSchema = z.enum(['id', 'projec
 
 export type PendingBacklogProposalScalarFieldEnum = z.infer<typeof PendingBacklogProposalScalarFieldEnumSchema>;
 
+// File: PendingBacklogProposalApplicationScalarFieldEnum.schema.ts
+
+export const PendingBacklogProposalApplicationScalarFieldEnumSchema = z.enum(['id', 'proposalId', 'changeIndex', 'createdEntityType', 'createdEntityId', 'action', 'createdAt'])
+
+export type PendingBacklogProposalApplicationScalarFieldEnum = z.infer<typeof PendingBacklogProposalApplicationScalarFieldEnumSchema>;
+
+// File: ProjectStageApproverScalarFieldEnum.schema.ts
+
+export const ProjectStageApproverScalarFieldEnumSchema = z.enum(['projectId', 'userId', 'createdAt'])
+
+export type ProjectStageApproverScalarFieldEnum = z.infer<typeof ProjectStageApproverScalarFieldEnumSchema>;
+
+// File: StageTransitionRequestScalarFieldEnum.schema.ts
+
+export const StageTransitionRequestScalarFieldEnumSchema = z.enum(['id', 'projectId', 'storyId', 'requestedById', 'userId', 'organizationId', 'fromStage', 'toStage', 'patch', 'reason', 'status', 'reviewedById', 'reviewedAt', 'reviewNote', 'createdAt'])
+
+export type StageTransitionRequestScalarFieldEnum = z.infer<typeof StageTransitionRequestScalarFieldEnumSchema>;
+
 // File: BacklogProposalDraftScalarFieldEnum.schema.ts
 
 export const BacklogProposalDraftScalarFieldEnumSchema = z.enum(['id', 'proposalId', 'kind', 'status', 'description', 'acceptanceCriteria', 'needsMoreInfo', 'workflowId', 'error', 'startedAt', 'completedAt', 'createdBy'])
@@ -561,6 +579,18 @@ export type BacklogProposalDraftScalarFieldEnum = z.infer<typeof BacklogProposal
 export const BacklogUpdateSessionScalarFieldEnumSchema = z.enum(['id', 'projectId', 'pendingProposalId', 'conversationId', 'source', 'status', 'summary', 'changes', 'changeCount', 'createCount', 'updateCount', 'messages', 'appliedCount', 'failedCount', 'syncedToPMCount', 'errors', 'finalizedAt', 'createdAt', 'userId', 'organizationId'])
 
 export type BacklogUpdateSessionScalarFieldEnum = z.infer<typeof BacklogUpdateSessionScalarFieldEnumSchema>;
+
+// File: DiscoveryRunScalarFieldEnum.schema.ts
+
+export const DiscoveryRunScalarFieldEnumSchema = z.enum(['id', 'projectId', 'storyId', 'userId', 'organizationId', 'status', 'sources', 'documentId', 'workflowId', 'error', 'createdAt', 'updatedAt'])
+
+export type DiscoveryRunScalarFieldEnum = z.infer<typeof DiscoveryRunScalarFieldEnumSchema>;
+
+// File: ProjectSuccessMetricScalarFieldEnum.schema.ts
+
+export const ProjectSuccessMetricScalarFieldEnumSchema = z.enum(['id', 'projectId', 'userId', 'organizationId', 'name', 'description', 'direction', 'target', 'sourceKind', 'webhookSecretHash', 'lastValue', 'previousValue', 'lastObservedAt', 'createdAt', 'updatedAt'])
+
+export type ProjectSuccessMetricScalarFieldEnum = z.infer<typeof ProjectSuccessMetricScalarFieldEnumSchema>;
 
 // File: ProjectPresenceScalarFieldEnum.schema.ts
 
@@ -690,7 +720,7 @@ export type ProjectStoryStatusScalarFieldEnum = z.infer<typeof ProjectStoryStatu
 
 // File: UserStoryScalarFieldEnum.schema.ts
 
-export const UserStoryScalarFieldEnumSchema = z.enum(['id', 'projectId', 'statusId', 'identifier', 'title', 'description', 'acceptanceCriteria', 'kind', 'priority', 'size', 'storyPoints', 'order', 'roadmapOrder', 'priorityOrder', 'priorityChangedAt', 'priorityChangeReason', 'labels', 'createdById', 'assigneeId', 'externalId', 'externalUrl', 'externalMcpServerId', 'pmAutoSyncEnabled', 'lastSyncedStatusId', 'pipelineExecutionId', 'source', 'originTestCaseId', 'bugFingerprint', 'sourceMeetingTranscriptId', 'createdFromProposalId', 'aiGeneratedTitle', 'titleSource', 'releaseNotes', 'draftingStage', 'draftingStageUpdatedAt', 'maturationStatus', 'coverageOverrideReason', 'coverageOverrideById', 'coverageOverrideAt', 'pmTicketTerminal', 'pmTicketTerminalStatus', 'pmAutoHidden', 'version', 'needsMoreInfo', 'blocked', 'blockedReason', 'reporterName', 'reporterSource', 'reporterSourceUrl', 'lastSyncedPmHash', 'lastSyncedAt', 'lastPmSyncStatus', 'lastPmSyncError', 'lastPmSyncAttemptAt', 'mergedIntoStoryId', 'lastEditedAt', 'lastEditedByName', 'lastEditedSource', 'summaryDigest', 'workingNotesContent', 'lastQuestionScanHash', 'lastSummaryHash', 'lastContextUpdateAt', 'maturationV2OptedIn', 'autoProposeAnswers', 'qaAnalysis', 'cleanSpecApprovalMode', 'decisionLogApprovalMode', 'summaryQuestionsApprovalMode', 'createdAt', 'updatedAt'])
+export const UserStoryScalarFieldEnumSchema = z.enum(['id', 'projectId', 'statusId', 'identifier', 'title', 'description', 'acceptanceCriteria', 'kind', 'priority', 'size', 'storyPoints', 'order', 'roadmapOrder', 'priorityOrder', 'priorityChangedAt', 'priorityChangeReason', 'labels', 'createdById', 'assigneeId', 'externalId', 'externalUrl', 'externalMcpServerId', 'pmAutoSyncEnabled', 'lastSyncedStatusId', 'pipelineExecutionId', 'source', 'originTestCaseId', 'bugFingerprint', 'sourceMeetingTranscriptId', 'createdFromProposalId', 'sourceRef', 'proposalApplicationKey', 'sourceDependencyRaw', 'dependsOnRefs', 'dependsOnPhases', 'deliveryTrack', 'trackRationale', 'trackSetBy', 'trackUpdatedAt', 'estimateConfidence', 'aiGeneratedTitle', 'titleSource', 'releaseNotes', 'draftingStage', 'draftingStageUpdatedAt', 'maturationStatus', 'coverageOverrideReason', 'coverageOverrideById', 'coverageOverrideAt', 'pmTicketTerminal', 'pmTicketTerminalStatus', 'pmAutoHidden', 'version', 'needsMoreInfo', 'blocked', 'blockedReason', 'reporterName', 'reporterSource', 'reporterSourceUrl', 'lastSyncedPmHash', 'lastSyncedAt', 'lastPmSyncStatus', 'lastPmSyncError', 'lastPmSyncAttemptAt', 'mergedIntoStoryId', 'lastEditedAt', 'lastEditedByName', 'lastEditedSource', 'summaryDigest', 'workingNotesContent', 'lastQuestionScanHash', 'lastSummaryHash', 'lastContextUpdateAt', 'maturationV2OptedIn', 'autoProposeAnswers', 'qaAnalysis', 'cleanSpecApprovalMode', 'decisionLogApprovalMode', 'summaryQuestionsApprovalMode', 'createdAt', 'updatedAt'])
 
 export type UserStoryScalarFieldEnum = z.infer<typeof UserStoryScalarFieldEnumSchema>;
 
@@ -1302,7 +1332,7 @@ export type OpenAPIServiceConfigScalarFieldEnum = z.infer<typeof OpenAPIServiceC
 
 // File: AgentWorkspaceFileScalarFieldEnum.schema.ts
 
-export const AgentWorkspaceFileScalarFieldEnumSchema = z.enum(['id', 'conversationId', 'userId', 'organizationId', 'path', 'name', 'extension', 'mimeType', 'content', 'size', 'fileType', 'version', 'previousVersionId', 'status', 'shareToken', 'shareScope', 'isPublic', 'sourceRunType', 'sourceRunId', 'authoritySessionId', 'providerKeys', 'metadata', 'description', 'createdAt', 'updatedAt'])
+export const AgentWorkspaceFileScalarFieldEnumSchema = z.enum(['id', 'conversationId', 'userId', 'organizationId', 'projectId', 'storyId', 'path', 'name', 'extension', 'mimeType', 'content', 'size', 'fileType', 'version', 'previousVersionId', 'status', 'shareToken', 'shareScope', 'isPublic', 'sourceRunType', 'sourceRunId', 'authoritySessionId', 'providerKeys', 'metadata', 'description', 'createdAt', 'updatedAt'])
 
 export type AgentWorkspaceFileScalarFieldEnum = z.infer<typeof AgentWorkspaceFileScalarFieldEnumSchema>;
 
@@ -1818,7 +1848,7 @@ export type KanbanQueueScalarFieldEnum = z.infer<typeof KanbanQueueScalarFieldEn
 
 // File: CodingRunScalarFieldEnum.schema.ts
 
-export const CodingRunScalarFieldEnumSchema = z.enum(['id', 'projectId', 'storyId', 'storyTaskId', 'userId', 'organizationId', 'weaveExecutionId', 'executionChannel', 'provider', 'providerSessionId', 'providerMetadata', 'externalUrl', 'externalStatus', 'status', 'repositoryUrl', 'repositoryOwner', 'repositoryName', 'targetBranch', 'workingDirectory', 'pullRequestUrl', 'pullRequestNumber', 'pullRequestBranch', 'promptText', 'workflowId', 'lastProviderEventAt', 'startedAt', 'lastError', 'createdAt', 'updatedAt'])
+export const CodingRunScalarFieldEnumSchema = z.enum(['id', 'projectId', 'storyId', 'storyTaskId', 'userId', 'organizationId', 'weaveExecutionId', 'executionChannel', 'provider', 'providerSessionId', 'providerMetadata', 'externalUrl', 'externalStatus', 'status', 'repositoryUrl', 'repositoryOwner', 'repositoryName', 'targetBranch', 'workingDirectory', 'pullRequestUrl', 'pullRequestNumber', 'pullRequestBranch', 'mergedAt', 'kind', 'spikeQuestion', 'spikeBranch', 'findings', 'playNotes', 'demoFrameId', 'demoUrl', 'promptText', 'workflowId', 'lastProviderEventAt', 'startedAt', 'lastError', 'createdAt', 'updatedAt'])
 
 export type CodingRunScalarFieldEnum = z.infer<typeof CodingRunScalarFieldEnumSchema>;
 
@@ -1860,7 +1890,7 @@ export type WeavePlanTemplateScalarFieldEnum = z.infer<typeof WeavePlanTemplateS
 
 // File: WeaveExecutionScalarFieldEnum.schema.ts
 
-export const WeaveExecutionScalarFieldEnumSchema = z.enum(['id', 'userId', 'organizationId', 'planId', 'projectId', 'workflowId', 'runId', 'sandboxSessionId', 'status', 'currentStep', 'checkboxes', 'artifacts', 'error', 'createdAt', 'updatedAt', 'startedAt', 'completedAt'])
+export const WeaveExecutionScalarFieldEnumSchema = z.enum(['id', 'userId', 'organizationId', 'planId', 'projectId', 'userStoryId', 'workflowId', 'runId', 'sandboxSessionId', 'status', 'currentStep', 'checkboxes', 'artifacts', 'error', 'createdAt', 'updatedAt', 'startedAt', 'completedAt'])
 
 export type WeaveExecutionScalarFieldEnum = z.infer<typeof WeaveExecutionScalarFieldEnumSchema>;
 
@@ -2092,9 +2122,15 @@ export const QaStrategyLevelSchema = z.enum(['LIGHT', 'STANDARD', 'STRICT'])
 
 export type QaStrategyLevel = z.infer<typeof QaStrategyLevelSchema>;
 
+// File: EngagementProfile.schema.ts
+
+export const EngagementProfileSchema = z.enum(['EXPLORE', 'PROPOSAL', 'GOVERNED', 'DELEGATED'])
+
+export type EngagementProfile = z.infer<typeof EngagementProfileSchema>;
+
 // File: ProjectDocumentType.schema.ts
 
-export const ProjectDocumentTypeSchema = z.enum(['GENERAL', 'BUSINESS_CASE', 'DESIGN_SYSTEM', 'PRD', 'PROPOSAL', 'ARCHITECTURE', 'TECHNICAL_SPEC', 'USER_STORY', 'API_SPEC', 'QA_STRATEGY', 'TEST_PLAN', 'TEST_REPORT', 'TRACEABILITY_MATRIX', 'SRS'])
+export const ProjectDocumentTypeSchema = z.enum(['GENERAL', 'BUSINESS_CASE', 'DESIGN_SYSTEM', 'PRD', 'PROPOSAL', 'ARCHITECTURE', 'TECHNICAL_SPEC', 'USER_STORY', 'API_SPEC', 'QA_STRATEGY', 'TEST_PLAN', 'TEST_REPORT', 'TRACEABILITY_MATRIX', 'SRS', 'INTEGRATION_CONTRACT'])
 
 export type ProjectDocumentType = z.infer<typeof ProjectDocumentTypeSchema>;
 
@@ -2310,15 +2346,21 @@ export type MeetingAgendaStatus = z.infer<typeof MeetingAgendaStatusSchema>;
 
 // File: PendingBacklogProposalSource.schema.ts
 
-export const PendingBacklogProposalSourceSchema = z.enum(['TEAMS_CHANNEL', 'TEAMS_CHAT', 'SLACK_CHANNEL', 'AI_UPDATE_SIDEBAR', 'MONITORED_MEETING'])
+export const PendingBacklogProposalSourceSchema = z.enum(['TEAMS_CHANNEL', 'TEAMS_CHAT', 'SLACK_CHANNEL', 'AI_UPDATE_SIDEBAR', 'MONITORED_MEETING', 'SCOPE_DOCUMENT'])
 
 export type PendingBacklogProposalSource = z.infer<typeof PendingBacklogProposalSourceSchema>;
 
 // File: PendingBacklogProposalStatus.schema.ts
 
-export const PendingBacklogProposalStatusSchema = z.enum(['PENDING', 'APPROVED', 'APPLIED', 'REJECTED', 'FAILED', 'SUPERSEDED', 'BACKLOG'])
+export const PendingBacklogProposalStatusSchema = z.enum(['PENDING', 'APPROVED', 'APPLYING', 'APPLIED', 'REJECTED', 'FAILED', 'SUPERSEDED', 'BACKLOG'])
 
 export type PendingBacklogProposalStatus = z.infer<typeof PendingBacklogProposalStatusSchema>;
+
+// File: StageTransitionRequestStatus.schema.ts
+
+export const StageTransitionRequestStatusSchema = z.enum(['PENDING', 'APPROVED', 'REJECTED', 'SUPERSEDED'])
+
+export type StageTransitionRequestStatus = z.infer<typeof StageTransitionRequestStatusSchema>;
 
 // File: StoryKind.schema.ts
 
@@ -2337,6 +2379,24 @@ export type BacklogProposalDraftStatus = z.infer<typeof BacklogProposalDraftStat
 export const BacklogUpdateSessionStatusSchema = z.enum(['APPLYING', 'APPLIED', 'PARTIALLY_APPLIED', 'FAILED'])
 
 export type BacklogUpdateSessionStatus = z.infer<typeof BacklogUpdateSessionStatusSchema>;
+
+// File: DiscoveryRunStatus.schema.ts
+
+export const DiscoveryRunStatusSchema = z.enum(['QUEUED', 'RUNNING', 'CONTRACT_READY', 'COMPLETED', 'FAILED', 'CANCELLED'])
+
+export type DiscoveryRunStatus = z.infer<typeof DiscoveryRunStatusSchema>;
+
+// File: MetricDirection.schema.ts
+
+export const MetricDirectionSchema = z.enum(['UP', 'DOWN'])
+
+export type MetricDirection = z.infer<typeof MetricDirectionSchema>;
+
+// File: MetricSourceKind.schema.ts
+
+export const MetricSourceKindSchema = z.enum(['MANUAL', 'WEBHOOK'])
+
+export type MetricSourceKind = z.infer<typeof MetricSourceKindSchema>;
 
 // File: PmSyncLogStatus.schema.ts
 
@@ -2370,9 +2430,27 @@ export type StorySize = z.infer<typeof StorySizeSchema>;
 
 // File: StorySource.schema.ts
 
-export const StorySourceSchema = z.enum(['MANUAL', 'JIRA', 'AZURE_DEVOPS', 'FIZZY', 'GITLAB', 'LINEAR', 'GITHUB', 'AI_UPDATE', 'APPROVED_PROPOSAL', 'CUSTOM_AGENT', 'SLACK', 'SECURITY_SCAN', 'PIPELINE_FAILURE'])
+export const StorySourceSchema = z.enum(['MANUAL', 'JIRA', 'AZURE_DEVOPS', 'FIZZY', 'GITLAB', 'LINEAR', 'GITHUB', 'AI_UPDATE', 'APPROVED_PROPOSAL', 'CUSTOM_AGENT', 'SLACK', 'SECURITY_SCAN', 'PIPELINE_FAILURE', 'IMPORTED_SCOPE'])
 
 export type StorySource = z.infer<typeof StorySourceSchema>;
+
+// File: DeliveryTrack.schema.ts
+
+export const DeliveryTrackSchema = z.enum(['UNCLASSIFIED', 'SPIKE', 'DISCOVERY', 'SPECIFY', 'DEFER'])
+
+export type DeliveryTrack = z.infer<typeof DeliveryTrackSchema>;
+
+// File: TrackSetBy.schema.ts
+
+export const TrackSetBySchema = z.enum(['AI', 'HUMAN'])
+
+export type TrackSetBy = z.infer<typeof TrackSetBySchema>;
+
+// File: EstimateConfidence.schema.ts
+
+export const EstimateConfidenceSchema = z.enum(['LOW', 'MEDIUM', 'HIGH'])
+
+export type EstimateConfidence = z.infer<typeof EstimateConfidenceSchema>;
 
 // File: StoryTitleSource.schema.ts
 
@@ -2856,7 +2934,7 @@ export type AgentFileStatus = z.infer<typeof AgentFileStatusSchema>;
 
 // File: FrameShareScope.schema.ts
 
-export const FrameShareScopeSchema = z.enum(['PRIVATE', 'EMAILS_ONLY', 'WORKSPACE_AND_EMAILS', 'PUBLIC'])
+export const FrameShareScopeSchema = z.enum(['PRIVATE', 'EMAILS_ONLY', 'WORKSPACE_AND_EMAILS', 'PUBLIC', 'PROJECT'])
 
 export type FrameShareScope = z.infer<typeof FrameShareScopeSchema>;
 
@@ -3192,9 +3270,15 @@ export type KanbanQueueStatus = z.infer<typeof KanbanQueueStatusSchema>;
 
 // File: CodingRunStatus.schema.ts
 
-export const CodingRunStatusSchema = z.enum(['QUEUED', 'STARTING', 'RUNNING', 'AWAITING_REVIEW', 'PR_OPENED', 'COMPLETED', 'FAILED', 'CANCELLED', 'TERMINATED_STALE'])
+export const CodingRunStatusSchema = z.enum(['QUEUED', 'STARTING', 'RUNNING', 'AWAITING_REVIEW', 'PR_OPENED', 'DEMO_READY', 'COMPLETED', 'FAILED', 'CANCELLED', 'TERMINATED_STALE'])
 
 export type CodingRunStatus = z.infer<typeof CodingRunStatusSchema>;
+
+// File: CodingRunKind.schema.ts
+
+export const CodingRunKindSchema = z.enum(['IMPLEMENT', 'SPIKE'])
+
+export type CodingRunKind = z.infer<typeof CodingRunKindSchema>;
 
 // File: RepositoryProvider.schema.ts
 
@@ -4171,6 +4255,17 @@ export const ProjectSchema = z.object({
   autoCreateBugsFromFailures: z.boolean(),
   createdAt: z.date(),
   updatedAt: z.date(),
+  engagementProfile: EngagementProfileSchema.default("GOVERNED"),
+  engagementProfileUpdatedAt: z.date().nullish(),
+  quotedPhases: z.array(z.string()),
+  enforceSpecifyGate: z.boolean(),
+  enforceSpikeGate: z.boolean(),
+  enforceDiscoveryGate: z.boolean(),
+  documentTiersAdvisory: z.boolean(),
+  visionPurpose: z.string().nullish(),
+  visionCoreActions: z.array(z.string()),
+  visionCycle: z.string().nullish(),
+  outcomesShareToken: z.string().nullish(),
   deletedAt: z.date().nullish(),
   deletedBy: z.string().nullish(),
   scheduledPermanentDeleteAt: z.date().nullish(),
@@ -4205,6 +4300,7 @@ export const ProjectDocumentSchema = z.object({
   source: DocumentSourceSchema.default("GENERATED"),
   sourceContextId: z.string().nullish(),
   isActive: z.boolean().default(true),
+  storyId: z.string().nullish(),
   qdrantId: z.string().nullish(),
   embeddedAt: z.date().nullish(),
   contentHash: z.string().nullish(),
@@ -5448,6 +5544,55 @@ export const PendingBacklogProposalSchema = z.object({
 export type PendingBacklogProposalType = z.infer<typeof PendingBacklogProposalSchema>;
 
 
+// File: PendingBacklogProposalApplication.schema.ts
+
+export const PendingBacklogProposalApplicationSchema = z.object({
+  id: z.string(),
+  proposalId: z.string(),
+  changeIndex: z.number().int(),
+  createdEntityType: z.string().nullish(),
+  createdEntityId: z.string().nullish(),
+  action: z.string(),
+  createdAt: z.date(),
+});
+
+export type PendingBacklogProposalApplicationType = z.infer<typeof PendingBacklogProposalApplicationSchema>;
+
+
+// File: ProjectStageApprover.schema.ts
+
+export const ProjectStageApproverSchema = z.object({
+  projectId: z.string(),
+  userId: z.string(),
+  createdAt: z.date(),
+});
+
+export type ProjectStageApproverType = z.infer<typeof ProjectStageApproverSchema>;
+
+
+// File: StageTransitionRequest.schema.ts
+
+export const StageTransitionRequestSchema = z.object({
+  id: z.string(),
+  projectId: z.string(),
+  storyId: z.string(),
+  requestedById: z.string(),
+  userId: z.string().nullish(),
+  organizationId: z.string().nullish(),
+  fromStage: FeatureDraftingStageSchema,
+  toStage: FeatureDraftingStageSchema,
+  patch: z.unknown().refine((val) => { const getDepth = (obj: unknown, depth: number = 0): number => { if (depth > 10) return depth; if (obj === null || typeof obj !== 'object') return depth; const values = Object.values(obj as Record<string, unknown>); if (values.length === 0) return depth; return Math.max(...values.map(v => getDepth(v, depth + 1))); }; return getDepth(val) <= 10; }, "JSON nesting depth exceeds maximum of 10").nullish(),
+  reason: z.string(),
+  status: StageTransitionRequestStatusSchema.default("PENDING"),
+  reviewedById: z.string().nullish(),
+  reviewedAt: z.date().nullish(),
+  reviewNote: z.string().nullish(),
+  createdAt: z.date(),
+});
+
+export type StageTransitionRequestType = z.infer<typeof StageTransitionRequestSchema>;
+
+
 // File: BacklogProposalDraft.schema.ts
 
 export const BacklogProposalDraftSchema = z.object({
@@ -5494,6 +5639,49 @@ export const BacklogUpdateSessionSchema = z.object({
 });
 
 export type BacklogUpdateSessionType = z.infer<typeof BacklogUpdateSessionSchema>;
+
+
+// File: DiscoveryRun.schema.ts
+
+export const DiscoveryRunSchema = z.object({
+  id: z.string(),
+  projectId: z.string(),
+  storyId: z.string(),
+  userId: z.string(),
+  organizationId: z.string().nullish(),
+  status: DiscoveryRunStatusSchema.default("QUEUED"),
+  sources: z.unknown().refine((val) => { const getDepth = (obj: unknown, depth: number = 0): number => { if (depth > 10) return depth; if (obj === null || typeof obj !== 'object') return depth; const values = Object.values(obj as Record<string, unknown>); if (values.length === 0) return depth; return Math.max(...values.map(v => getDepth(v, depth + 1))); }; return getDepth(val) <= 10; }, "JSON nesting depth exceeds maximum of 10"),
+  documentId: z.string().nullish(),
+  workflowId: z.string().nullish(),
+  error: z.string().nullish(),
+  createdAt: z.date(),
+  updatedAt: z.date(),
+});
+
+export type DiscoveryRunType = z.infer<typeof DiscoveryRunSchema>;
+
+
+// File: ProjectSuccessMetric.schema.ts
+
+export const ProjectSuccessMetricSchema = z.object({
+  id: z.string(),
+  projectId: z.string(),
+  userId: z.string(),
+  organizationId: z.string().nullish(),
+  name: z.string(),
+  description: z.string().nullish(),
+  direction: MetricDirectionSchema.default("UP"),
+  target: z.number().nullish(),
+  sourceKind: MetricSourceKindSchema.default("MANUAL"),
+  webhookSecretHash: z.string().nullish(),
+  lastValue: z.number().nullish(),
+  previousValue: z.number().nullish(),
+  lastObservedAt: z.date().nullish(),
+  createdAt: z.date(),
+  updatedAt: z.date(),
+});
+
+export type ProjectSuccessMetricType = z.infer<typeof ProjectSuccessMetricSchema>;
 
 
 // File: ProjectPresence.schema.ts
@@ -5971,6 +6159,16 @@ export const UserStorySchema = z.object({
   bugFingerprint: z.string().nullish(),
   sourceMeetingTranscriptId: z.string().nullish(),
   createdFromProposalId: z.string().nullish(),
+  sourceRef: z.string().nullish(),
+  proposalApplicationKey: z.string().nullish(),
+  sourceDependencyRaw: z.string().nullish(),
+  dependsOnRefs: z.array(z.string()),
+  dependsOnPhases: z.array(z.string()),
+  deliveryTrack: DeliveryTrackSchema.default("UNCLASSIFIED"),
+  trackRationale: z.string().nullish(),
+  trackSetBy: TrackSetBySchema.nullish(),
+  trackUpdatedAt: z.date().nullish(),
+  estimateConfidence: EstimateConfidenceSchema.nullish(),
   aiGeneratedTitle: z.boolean(),
   titleSource: StoryTitleSourceSchema.nullish(),
   releaseNotes: z.string().nullish(),
@@ -8325,6 +8523,8 @@ export const AgentWorkspaceFileSchema = z.object({
   conversationId: z.string().nullish(),
   userId: z.string(),
   organizationId: z.string().nullish(),
+  projectId: z.string().nullish(),
+  storyId: z.string().nullish(),
   path: z.string(),
   name: z.string(),
   extension: z.string().nullish(),
@@ -10256,6 +10456,14 @@ export const CodingRunSchema = z.object({
   pullRequestUrl: z.string().nullish(),
   pullRequestNumber: z.number().int().nullish(),
   pullRequestBranch: z.string().nullish(),
+  mergedAt: z.date().nullish(),
+  kind: CodingRunKindSchema.default("IMPLEMENT"),
+  spikeQuestion: z.string().nullish(),
+  spikeBranch: z.string().nullish(),
+  findings: z.string().nullish(),
+  playNotes: z.string().nullish(),
+  demoFrameId: z.string().nullish(),
+  demoUrl: z.string().nullish(),
   promptText: z.string().nullish(),
   workflowId: z.string().nullish(),
   lastProviderEventAt: z.date().nullish(),
@@ -10405,6 +10613,7 @@ export const WeaveExecutionSchema = z.object({
   organizationId: z.string().nullish(),
   planId: z.string(),
   projectId: z.string(),
+  userStoryId: z.string().nullish(),
   workflowId: z.string(),
   runId: z.string(),
   sandboxSessionId: z.string().nullish(),

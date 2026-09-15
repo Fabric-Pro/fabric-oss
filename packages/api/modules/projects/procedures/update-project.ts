@@ -2,6 +2,7 @@ import { ORPCError } from "@orpc/client";
 import {
 	cleanupCodeSearchOnRepoUnlink,
 	db,
+	engagementProfileSchema,
 	fieldMappingConfigSchema,
 	moveWizardTempContextsToProject,
 	Prisma,
@@ -37,6 +38,13 @@ import {
 	cancelCodeIndexingForRepo,
 	startCodeIndexingForProject,
 } from "../lib/code-indexing-trigger";
+import {
+	activityUserName,
+	buildGovernanceActivityCreate,
+	diffGovernanceFields,
+	GOVERNANCE_FIELDS,
+	userHasProjectPermissionStrict,
+} from "../lib/governance";
 
 export const updateProjectProcedure = tenantProtectedProcedure
 	.use(
@@ -160,6 +168,24 @@ export const updateProjectProcedure = tenantProtectedProcedure
 				.optional(),
 			// Optional: wizard session ID for migrating temp contexts when editing project
 			tempSessionId: z.string().optional(),
+			// Governance — changing any of these requires PROJECT_GOVERNANCE_MANAGE
+			// (checked in the handler; the middleware above only proves PROJECT_UPDATE).
+			engagementProfile: engagementProfileSchema.optional(),
+			enforceSpecifyGate: z.boolean().optional(),
+			enforceSpikeGate: z.boolean().optional(),
+			enforceDiscoveryGate: z.boolean().optional(),
+			documentTiersAdvisory: z.boolean().optional(),
+			quotedPhases: z
+				.array(z.string().trim().min(1).max(50))
+				.max(50)
+				.optional(),
+			// Vision (advisory; editable with PROJECT_UPDATE)
+			visionPurpose: z.string().max(5000).nullable().optional(),
+			visionCoreActions: z
+				.array(z.string().trim().min(1).max(200))
+				.max(20)
+				.optional(),
+			visionCycle: z.string().max(1000).nullable().optional(),
 		}),
 	)
 	.handler(async ({ input, context }) => {
@@ -169,7 +195,8 @@ export const updateProjectProcedure = tenantProtectedProcedure
 			context.session,
 		);
 
-		// Authorization is enforced by `requireProjectPermission` above.
+		// Authorization for PROJECT_UPDATE is enforced by `requireProjectPermission`
+		// above. Governance fields need the stricter PROJECT_GOVERNANCE_MANAGE.
 
 		// A few fields are stricter than the general PROJECT_UPDATE gate: only
 		// project admins/owners (org admin/owner or project
@@ -290,12 +317,47 @@ export const updateProjectProcedure = tenantProtectedProcedure
 		const existingProject = await db.project.findUnique({
 			where: { id: input.id },
 			select: {
+				name: true,
 				repositoryUrl: true,
 				pmTerminalStatuses: true,
 				attachmentRetentionDays: true,
+				engagementProfile: true,
+				enforceSpecifyGate: true,
+				enforceSpikeGate: true,
+				enforceDiscoveryGate: true,
+				documentTiersAdvisory: true,
+				quotedPhases: true,
 			},
 		});
 		const previousRepoUrl = existingProject?.repositoryUrl ?? null;
+
+		const governanceTouched = GOVERNANCE_FIELDS.some(
+			(field) => input[field] !== undefined,
+		);
+		if (governanceTouched) {
+			// Spike and discovery gates are enforceable now that both run types
+			// exist (Slices 3 and 4). Turning a gate on is a governance change
+			// and is audited below like the profile itself.
+
+			const canManageGovernance = await userHasProjectPermissionStrict(
+				input.id,
+				user.id,
+				Permissions.PROJECT_GOVERNANCE_MANAGE,
+			);
+			if (!canManageGovernance) {
+				throw new ORPCError("FORBIDDEN", {
+					message: `Missing required permission: ${Permissions.PROJECT_GOVERNANCE_MANAGE}`,
+				});
+			}
+		}
+		const governanceChanged = governanceTouched
+			? diffGovernanceFields(
+					existingProject ?? {},
+					input,
+					GOVERNANCE_FIELDS,
+				)
+			: {};
+		const profileChanged = "engagementProfile" in governanceChanged;
 
 		// If repo URL is being cleared, clean up code search artifacts first
 		const repoChanged =
@@ -381,170 +443,201 @@ export const updateProjectProcedure = tenantProtectedProcedure
 			input.status === "ARCHIVED";
 
 		// Update project
-		const project = await updateProject(
-			input.id,
-			user.id,
-			{
-				name: input.name,
-				description: input.description,
-				projectPhase: input.projectPhase,
-				// Leaving Discovery makes the start date meaningless, so clear it
-				// rather than leave a stale date behind the phase that used it.
-				expectedDevelopmentStartDate:
-					input.projectPhase === "DEVELOPMENT_EXECUTION"
-						? null
-						: input.expectedDevelopmentStartDate,
-				goals: input.goals,
-				techStack: input.techStack,
-				features: input.features,
-				projectTypes: input.projectTypes,
-				status: input.status,
-				tags: input.tags,
-				color: input.color,
-				icon: input.icon,
-				projectManagementMcpServerId:
-					input.projectManagementMcpServerId,
-				projectManagementMcpConfigId:
-					input.projectManagementMcpConfigId,
-				projectManagementContainerId:
-					input.projectManagementContainerId,
-				projectManagementContainerName:
-					input.projectManagementContainerName,
-				projectManagementAdditionalContext:
-					input.projectManagementAdditionalContext,
-				prdSourceTitle: input.prdSourceTitle,
-				prdSourceUrl: input.prdSourceUrl,
-				repositoryUrl: input.repositoryUrl,
-				repositoryOwner: input.repositoryOwner,
-				repositoryName: input.repositoryName,
-				defaultBranch: input.defaultBranch,
-				implementationDefaultChannel:
-					input.implementationDefaultChannel,
-				implementationDefaultProvider:
-					input.implementationDefaultProvider,
-				implementationDefaultWorkingDirectory:
-					input.implementationDefaultWorkingDirectory,
-				primaryWebsiteUrl: input.primaryWebsiteUrl,
-				additionalWebsiteUrls: input.additionalWebsiteUrls ?? undefined,
-				// Drop wizard-only ephemera once the project is promoted to ACTIVE
-				...(input.status === "ACTIVE"
-					? { wizardState: Prisma.JsonNull }
+		const updateData: Parameters<typeof updateProject>[2] = {
+			name: input.name,
+			description: input.description,
+			projectPhase: input.projectPhase,
+			// Leaving Discovery makes the start date meaningless, so clear it
+			// rather than leave a stale date behind the phase that used it.
+			expectedDevelopmentStartDate:
+				input.projectPhase === "DEVELOPMENT_EXECUTION"
+					? null
+					: input.expectedDevelopmentStartDate,
+			goals: input.goals,
+			techStack: input.techStack,
+			features: input.features,
+			projectTypes: input.projectTypes,
+			status: input.status,
+			tags: input.tags,
+			color: input.color,
+			icon: input.icon,
+			projectManagementMcpServerId: input.projectManagementMcpServerId,
+			projectManagementMcpConfigId: input.projectManagementMcpConfigId,
+			projectManagementContainerId: input.projectManagementContainerId,
+			projectManagementContainerName:
+				input.projectManagementContainerName,
+			projectManagementAdditionalContext:
+				input.projectManagementAdditionalContext,
+			prdSourceTitle: input.prdSourceTitle,
+			prdSourceUrl: input.prdSourceUrl,
+			repositoryUrl: input.repositoryUrl,
+			repositoryOwner: input.repositoryOwner,
+			repositoryName: input.repositoryName,
+			defaultBranch: input.defaultBranch,
+			implementationDefaultChannel: input.implementationDefaultChannel,
+			implementationDefaultProvider: input.implementationDefaultProvider,
+			implementationDefaultWorkingDirectory:
+				input.implementationDefaultWorkingDirectory,
+			primaryWebsiteUrl: input.primaryWebsiteUrl,
+			additionalWebsiteUrls: input.additionalWebsiteUrls ?? undefined,
+			// Drop wizard-only ephemera once the project is promoted to ACTIVE
+			...(input.status === "ACTIVE"
+				? { wizardState: Prisma.JsonNull }
+				: {}),
+			// Deactivate ADO state polling on disconnect or archive
+			...(shouldDeactivatePoll ? { adoStatePollActive: false } : {}),
+			// Auto-push PM sync toggle (pass through when provided)
+			...(input.autoPushPmSync !== undefined
+				? { autoPushPmSync: input.autoPushPmSync }
+				: {}),
+			// Read-only mode (Fizzy #2007, pass through when provided —
+			// admin/owner enforcement happened above)
+			...(input.readOnlyMode !== undefined
+				? { readOnlyMode: input.readOnlyMode }
+				: {}),
+			// Attachment-sync opt-in (Fizzy #1746, pass through when provided).
+			// A disconnect/archive (shouldDeactivatePoll) always wins over the
+			// input value: the UI hides this toggle once no PM tool is
+			// configured, so a flag left ON would have no affordance to clear,
+			// and a later connect to a DIFFERENT PM tool must not inherit an
+			// opt-in nobody made for it.
+			...(shouldDeactivatePoll
+				? { syncAttachments: false }
+				: input.syncAttachments !== undefined
+					? { syncAttachments: input.syncAttachments }
 					: {}),
-				// Deactivate ADO state polling on disconnect or archive
-				...(shouldDeactivatePoll ? { adoStatePollActive: false } : {}),
-				// Auto-push PM sync toggle (pass through when provided)
-				...(input.autoPushPmSync !== undefined
-					? { autoPushPmSync: input.autoPushPmSync }
-					: {}),
-				// Read-only mode (Fizzy #2007, pass through when provided —
-				// admin/owner enforcement happened above)
-				...(input.readOnlyMode !== undefined
-					? { readOnlyMode: input.readOnlyMode }
-					: {}),
-				// Attachment-sync opt-in (Fizzy #1746, pass through when provided).
-				// A disconnect/archive (shouldDeactivatePoll) always wins over the
-				// input value: the UI hides this toggle once no PM tool is
-				// configured, so a flag left ON would have no affordance to clear,
-				// and a later connect to a DIFFERENT PM tool must not inherit an
-				// opt-in nobody made for it.
-				...(shouldDeactivatePoll
-					? { syncAttachments: false }
-					: input.syncAttachments !== undefined
-						? { syncAttachments: input.syncAttachments }
-						: {}),
-				// Attachment retention window (Fizzy #1749). The timestamp arms
-				// the grace floor and is stamped ONLY on a real change: a no-op
-				// save must not postpone every pending purge.
-				//
-				// The `?? null` is load-bearing beyond null-safety. `findUnique`
-				// is nullable, so without it a missing row reads as `undefined`
-				// and `null !== undefined` would stamp on a request that changed
-				// nothing, needlessly re-arming the grace floor.
-				...(input.attachmentRetentionDays !== undefined &&
-				input.attachmentRetentionDays !==
-					(existingProject?.attachmentRetentionDays ?? null)
-					? {
-							attachmentRetentionDays:
-								input.attachmentRetentionDays,
-							attachmentRetentionDaysUpdatedAt: new Date(),
-						}
-					: {}),
-				// Clarifying-question frequency (pass through when provided)
-				...(input.clarifyingQuestionFrequency !== undefined
-					? {
-							clarifyingQuestionFrequency:
-								input.clarifyingQuestionFrequency,
-						}
-					: {}),
-				// QA Strategy depth level (pass through when provided)
-				...(input.qaStrategyLevel !== undefined
-					? { qaStrategyLevel: input.qaStrategyLevel }
-					: {}),
-				// QA test-case generation settings — passed through when provided
-				...(input.generateManualTestCases !== undefined
-					? { generateManualTestCases: input.generateManualTestCases }
-					: {}),
-				...(input.applyTddApproach !== undefined
-					? { applyTddApproach: input.applyTddApproach }
-					: {}),
-				...(input.autoCreateBugsFromFailures !== undefined
-					? {
-							autoCreateBugsFromFailures:
-								input.autoCreateBugsFromFailures,
-						}
-					: {}),
-				// Auto-close toggle (pass through when provided)
-				...(input.pmAutoCloseEnabled !== undefined
-					? { pmAutoCloseEnabled: input.pmAutoCloseEnabled }
-					: {}),
-				// PM field read-mapping flag
-				...(input.pmFieldMappingEnabled !== undefined
-					? { pmFieldMappingEnabled: input.pmFieldMappingEnabled }
-					: {}),
-				...(input.hiddenMaturationStatuses !== undefined
-					? {
-							hiddenMaturationStatuses:
-								input.hiddenMaturationStatuses,
-						}
-					: {}),
-				// Editing the terminal list forces a full re-snapshot on the next
-				// poll (the poller skips tickets whose ChangedDate <= lastAdoStatePollAt),
-				// so null the timestamp to trigger a backfill (spec D1) — but ONLY
-				// when the normalized list actually changed. A no-op write (same set)
-				// must not wipe the timestamp and re-scan every ticket.
-				...(input.pmTerminalStatuses !== undefined
-					? (() => {
-							const normalize = (list: string[]) =>
-								Array.from(
-									new Set(
-										list
-											.map((s) => s.trim())
-											.filter((s) => s.length > 0),
-									),
-								);
-							const normalizedNext = normalize(
-								input.pmTerminalStatuses,
+			// Attachment retention window (Fizzy #1749). The timestamp arms
+			// the grace floor and is stamped ONLY on a real change: a no-op
+			// save must not postpone every pending purge.
+			//
+			// The `?? null` is load-bearing beyond null-safety. `findUnique`
+			// is nullable, so without it a missing row reads as `undefined`
+			// and `null !== undefined` would stamp on a request that changed
+			// nothing, needlessly re-arming the grace floor.
+			...(input.attachmentRetentionDays !== undefined &&
+			input.attachmentRetentionDays !==
+				(existingProject?.attachmentRetentionDays ?? null)
+				? {
+						attachmentRetentionDays: input.attachmentRetentionDays,
+						attachmentRetentionDaysUpdatedAt: new Date(),
+					}
+				: {}),
+			// Clarifying-question frequency (pass through when provided)
+			...(input.clarifyingQuestionFrequency !== undefined
+				? {
+						clarifyingQuestionFrequency:
+							input.clarifyingQuestionFrequency,
+					}
+				: {}),
+			// QA Strategy depth level (pass through when provided)
+			...(input.qaStrategyLevel !== undefined
+				? { qaStrategyLevel: input.qaStrategyLevel }
+				: {}),
+			// QA test-case generation settings — passed through when provided
+			...(input.generateManualTestCases !== undefined
+				? { generateManualTestCases: input.generateManualTestCases }
+				: {}),
+			...(input.applyTddApproach !== undefined
+				? { applyTddApproach: input.applyTddApproach }
+				: {}),
+			...(input.autoCreateBugsFromFailures !== undefined
+				? {
+						autoCreateBugsFromFailures:
+							input.autoCreateBugsFromFailures,
+					}
+				: {}),
+			// Auto-close toggle (pass through when provided)
+			...(input.pmAutoCloseEnabled !== undefined
+				? { pmAutoCloseEnabled: input.pmAutoCloseEnabled }
+				: {}),
+			// PM field read-mapping flag
+			...(input.pmFieldMappingEnabled !== undefined
+				? { pmFieldMappingEnabled: input.pmFieldMappingEnabled }
+				: {}),
+			...(input.hiddenMaturationStatuses !== undefined
+				? {
+						hiddenMaturationStatuses:
+							input.hiddenMaturationStatuses,
+					}
+				: {}),
+			// Editing the terminal list forces a full re-snapshot on the next
+			// poll (the poller skips tickets whose ChangedDate <= lastAdoStatePollAt),
+			// so null the timestamp to trigger a backfill (spec D1) — but ONLY
+			// when the normalized list actually changed. A no-op write (same set)
+			// must not wipe the timestamp and re-scan every ticket.
+			...(input.pmTerminalStatuses !== undefined
+				? (() => {
+						const normalize = (list: string[]) =>
+							Array.from(
+								new Set(
+									list
+										.map((s) => s.trim())
+										.filter((s) => s.length > 0),
+								),
 							);
-							const normalizedCurrent = normalize(
-								existingProject?.pmTerminalStatuses ?? [],
+						const normalizedNext = normalize(
+							input.pmTerminalStatuses,
+						);
+						const normalizedCurrent = normalize(
+							existingProject?.pmTerminalStatuses ?? [],
+						);
+						const changed =
+							normalizedNext.length !==
+								normalizedCurrent.length ||
+							normalizedNext.some(
+								(s) => !normalizedCurrent.includes(s),
 							);
-							const changed =
-								normalizedNext.length !==
-									normalizedCurrent.length ||
-								normalizedNext.some(
-									(s) => !normalizedCurrent.includes(s),
-								);
-							return {
-								pmTerminalStatuses: normalizedNext,
-								...(changed
-									? { lastAdoStatePollAt: null }
-									: {}),
-							};
-						})()
-					: {}),
-			},
-			organizationId,
-		);
+						return {
+							pmTerminalStatuses: normalizedNext,
+							...(changed ? { lastAdoStatePollAt: null } : {}),
+						};
+					})()
+				: {}),
+			// Governance (permission-checked above)
+			engagementProfile: input.engagementProfile,
+			...(profileChanged
+				? { engagementProfileUpdatedAt: new Date() }
+				: {}),
+			enforceSpecifyGate: input.enforceSpecifyGate,
+			enforceSpikeGate: input.enforceSpikeGate,
+			enforceDiscoveryGate: input.enforceDiscoveryGate,
+			documentTiersAdvisory: input.documentTiersAdvisory,
+			quotedPhases: input.quotedPhases,
+			// Vision
+			visionPurpose: input.visionPurpose,
+			visionCoreActions: input.visionCoreActions,
+			visionCycle: input.visionCycle,
+		};
+
+		let project: Awaited<ReturnType<typeof updateProject>>;
+		if (Object.keys(governanceChanged).length > 0) {
+			// Governance change: the update and its audit row commit together.
+			// Tenant isolation mirrors `updateProject` (XOR org filter).
+			const orgFilter = organizationId
+				? { organizationId }
+				: { organizationId: null };
+			[project] = await db.$transaction([
+				db.project.update({
+					where: { id: input.id, ...orgFilter },
+					data: updateData,
+				}),
+				buildGovernanceActivityCreate({
+					projectId: input.id,
+					organizationId: organizationId ?? null,
+					userId: user.id,
+					userName: activityUserName(user),
+					projectName: input.name ?? existingProject?.name ?? "",
+					changed: governanceChanged,
+				}),
+			]);
+		} else {
+			project = await updateProject(
+				input.id,
+				user.id,
+				updateData,
+				organizationId,
+			);
+		}
 
 		// Seed terminal statuses on first PM connect (best-effort, non-blocking).
 		// A PM connection is identified by EITHER the pinned config id OR the

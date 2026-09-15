@@ -57,11 +57,13 @@ import { getProposalDraftsProcedure } from "./procedures/backlog/get-proposal-dr
 import { listBacklogAuditHistoryProcedure } from "./procedures/backlog/history-audit-list";
 import { getBacklogSessionHistoryProcedure } from "./procedures/backlog/history-session-get";
 import { listBacklogSessionHistoryProcedure } from "./procedures/backlog/history-sessions-list";
+import { intakeProgressProcedure } from "./procedures/backlog/intake-progress";
 import { listCalendarMeetingsProcedure } from "./procedures/backlog/list-calendar-meetings";
 import { retryAllFailedProposalsProcedure } from "./procedures/backlog/retry-all-failed-proposals";
 import { retryFailedProposalProcedure } from "./procedures/backlog/retry-failed-proposal";
 import { startAnalysisProcedure } from "./procedures/backlog/start-analysis";
 import { startProposalDraftProcedure } from "./procedures/backlog/start-proposal-draft";
+import { startScopeIntakeProcedure } from "./procedures/backlog/start-scope-intake";
 import { bulkDeleteProjectsProcedure } from "./procedures/bulk-delete-projects";
 import { bulkReviewPendingStateChangesProcedure } from "./procedures/bulk-review-pending-state-changes";
 import { githubPushWebhookProcedure } from "./procedures/code-indexing/github-webhook";
@@ -121,6 +123,14 @@ import { deleteDiagramProcedure } from "./procedures/diagrams/delete-diagram";
 import { getDiagramProcedure } from "./procedures/diagrams/get-diagram";
 import { listDiagramsProcedure } from "./procedures/diagrams/list-diagrams";
 import { updateDiagramProcedure } from "./procedures/diagrams/update-diagram";
+// Discovery runs (plan Slice 4)
+import {
+	cancelDiscoveryProcedure,
+	getDiscoveryRunProcedure,
+	listDiscoveryRunsProcedure,
+	markContractCompleteProcedure,
+	startDiscoveryProcedure,
+} from "./procedures/discovery";
 import { applyDocumentAutoRefreshProposalProcedure } from "./procedures/documents/apply-auto-refresh-proposal";
 import { batchGenerateDocumentsProcedure } from "./procedures/documents/batch-generate";
 import { createMediaUploadUrlProcedure } from "./procedures/documents/create-media-upload-url";
@@ -162,6 +172,9 @@ import {
 } from "./procedures/github";
 // GitLab procedures
 import { listGitLabProjectsProcedure } from "./procedures/gitlab/list-projects";
+// Governance (engagement profile, stage approvers)
+import { listStageApproversProcedure } from "./procedures/governance/list-stage-approvers";
+import { setStageApproversProcedure } from "./procedures/governance/set-stage-approvers";
 import {
 	getKanbanUserPreferenceProcedure,
 	updateKanbanUserPreferenceProcedure,
@@ -225,6 +238,14 @@ import { removeMemberProcedure } from "./procedures/members/remove-member";
 import { resendProjectInvitationProcedure } from "./procedures/members/resend-invitation";
 import { revokeProjectInvitationProcedure } from "./procedures/members/revoke-invitation";
 import { updateMemberRoleProcedure } from "./procedures/members/update-member-role";
+import {
+	createMetricProcedure,
+	deleteMetricProcedure,
+	listMetricsProcedure,
+	recordMetricObservationProcedure,
+	rotateMetricWebhookSecretProcedure,
+	updateMetricProcedure,
+} from "./procedures/metrics";
 // Notion PRD procedures
 import {
 	bindNotionPageProcedure,
@@ -233,6 +254,11 @@ import {
 	getPrdSourceStatusProcedure,
 	syncPrdSourceProcedure,
 } from "./procedures/notion-prd";
+import {
+	getOutcomesProcedure,
+	publishOutcomesProcedure,
+	revokeOutcomesProcedure,
+} from "./procedures/outcomes";
 import { permanentDeleteProjectProcedure } from "./procedures/permanent-delete-project";
 import {
 	analyseQaFindingProcedure,
@@ -438,6 +464,8 @@ import { listAttachmentsProcedure } from "./procedures/stories/attachments/list-
 import { promoteAttachmentProcedure } from "./procedures/stories/attachments/promote-attachment";
 import { removeAttachmentProcedure } from "./procedures/stories/attachments/remove-attachment";
 import { setAttachmentDesignationProcedure } from "./procedures/stories/attachments/set-attachment-designation";
+import { classificationProgressProcedure } from "./procedures/stories/classification-progress";
+import { classifyTracksProcedure } from "./procedures/stories/classify-tracks";
 import { clearStoriesProcedure } from "./procedures/stories/clear-stories";
 import {
 	createStoryCommentProcedure,
@@ -453,6 +481,7 @@ import { dismissPmSyncConflictProcedure } from "./procedures/stories/dismiss-pm-
 import { dismissPmSyncFailureProcedure } from "./procedures/stories/dismiss-pm-sync-failure";
 import { dismissPmSyncFailureBatchProcedure } from "./procedures/stories/dismiss-pm-sync-failure-batch";
 import { enhanceFeatureProcedure } from "./procedures/stories/enhance-feature";
+import { exportScopeEstimateProcedure } from "./procedures/stories/export-scope-estimate";
 import { generateTasksProcedure } from "./procedures/stories/generate-tasks";
 import { getStoryRegenerationStatusProcedure } from "./procedures/stories/get-regeneration-status";
 import { getStoryProcedure } from "./procedures/stories/get-story";
@@ -490,6 +519,7 @@ import { priorityHistoryProcedure } from "./procedures/stories/priority-history"
 import { proposeDuplicateMergeProcedure } from "./procedures/stories/propose-duplicate-merge";
 import { pushToKanbanProcedure } from "./procedures/stories/push-to-kanban";
 import { queueForKanbanProcedure } from "./procedures/stories/queue-for-kanban";
+import { storyReadinessProcedure } from "./procedures/stories/readiness";
 import { reevaluateBugProcedure } from "./procedures/stories/reevaluate-bug";
 import { reformatProposalBodyProcedure } from "./procedures/stories/reformat-proposal-body";
 import { regenerateStoryTitleProcedure } from "./procedures/stories/regenerate-story-title";
@@ -510,8 +540,14 @@ import { retryPmSyncBatchProcedure } from "./procedures/stories/retry-pm-sync-ba
 import { scanDuplicatesProcedure } from "./procedures/stories/scan-duplicates";
 import { semanticSearchProcedure } from "./procedures/stories/semantic-search";
 import { setBlockedProcedure } from "./procedures/stories/set-blocked";
+import { setDeliveryTrackProcedure } from "./procedures/stories/set-delivery-track";
+import { setEstimateProcedure } from "./procedures/stories/set-estimate";
 import { setStoryPriorityProcedure } from "./procedures/stories/set-story-priority";
 import { shareStoryProcedure } from "./procedures/stories/share-story";
+// Governed stage-transition requests (plan Slice 5)
+import { approveStageRequestProcedure } from "./procedures/stories/stage-requests/approve";
+import { listStageRequestsProcedure } from "./procedures/stories/stage-requests/list";
+import { rejectStageRequestProcedure } from "./procedures/stories/stage-requests/reject";
 import { createStoryStatusProcedure } from "./procedures/stories/statuses/create-status";
 import { deleteStoryStatusProcedure } from "./procedures/stories/statuses/delete-status";
 import { listStoryStatusesProcedure } from "./procedures/stories/statuses/list-statuses";
@@ -712,6 +748,36 @@ export const projectsRouter = {
 	tabPreferences: {
 		get: getProjectTabPreferencesProcedure,
 		set: setProjectTabPreferencesProcedure,
+	},
+
+	// Governance: stage approvers (profile + flags live on projects.update)
+	governance: {
+		listStageApprovers: listStageApproversProcedure,
+		setStageApprovers: setStageApproversProcedure,
+	},
+
+	// Discovery runs (DISCOVERY-track features → integration contract)
+	discovery: {
+		start: startDiscoveryProcedure,
+		list: listDiscoveryRunsProcedure,
+		get: getDiscoveryRunProcedure,
+		cancel: cancelDiscoveryProcedure,
+		markContractComplete: markContractCompleteProcedure,
+	},
+
+	// Slice 8: customer success metrics and the token-scoped outcomes page
+	metrics: {
+		list: listMetricsProcedure,
+		create: createMetricProcedure,
+		update: updateMetricProcedure,
+		delete: deleteMetricProcedure,
+		recordObservation: recordMetricObservationProcedure,
+		rotateWebhookSecret: rotateMetricWebhookSecretProcedure,
+	},
+	outcomes: {
+		get: getOutcomesProcedure,
+		publish: publishOutcomesProcedure,
+		revoke: revokeOutcomesProcedure,
 	},
 
 	// Document operations
@@ -1108,6 +1174,17 @@ export const projectsRouter = {
 		analysisProgress: analysisProgressProcedure,
 		applyChanges: applyChangesProcedure,
 		applyProgress: applyProgressProcedure,
+		// Scope intake (customer document → SCOPE_DOCUMENT proposal)
+		startScopeIntake: startScopeIntakeProcedure,
+		intakeProgress: intakeProgressProcedure,
+		// Source-agnostic pending-proposal inbox. Same procedure objects as
+		// `teamsChannelMonitor.pendingProposals.*` (kept as an alias for one
+		// release); mounted flat to respect the oRPC depth ≤ 3 rule.
+		listPendingProposals: listPendingProposalsProcedure,
+		getPendingProposal: getPendingProposalProcedure,
+		countPendingProposals: countPendingProposalsProcedure,
+		approvePendingProposal: approvePendingProposalProcedure,
+		rejectPendingProposal: rejectPendingProposalProcedure,
 
 		// Persisted, team-shared in-review proposal drafts (one per proposal+kind)
 		drafts: {
@@ -1588,6 +1665,12 @@ export const projectsRouter = {
 		regenerateTitle: regenerateStoryTitleProcedure,
 		updateDraftingStage: updateDraftingStageProcedure,
 		updateStageWithVersion: updateDraftingStageWithVersionProcedure,
+		// Readiness gates + governed approvals (plan Slice 5). Mounted flat
+		// to keep router depth ≤ 3 (see media operations note below).
+		readiness: storyReadinessProcedure,
+		listStageRequests: listStageRequestsProcedure,
+		approveStageRequest: approveStageRequestProcedure,
+		rejectStageRequest: rejectStageRequestProcedure,
 		enhance: enhanceFeatureProcedure,
 		// Fizzy #2048: the server picks the template for a detail-view action,
 		// from the item's STORED kind. The caller sends no kind, no agent name.
@@ -1613,6 +1696,15 @@ export const projectsRouter = {
 		dismissPmSyncFailureBatch: dismissPmSyncFailureBatchProcedure,
 		retryPmSync: retryPmSyncProcedure,
 		retryPmSyncBatch: retryPmSyncBatchProcedure,
+
+		// Delivery tracks (inverted-loop Slice 2)
+		setDeliveryTrack: setDeliveryTrackProcedure,
+		classifyTracks: classifyTracksProcedure,
+		classificationProgress: classificationProgressProcedure,
+
+		// Estimate roll-up (inverted-loop Slice 7)
+		setEstimate: setEstimateProcedure,
+		exportScopeEstimate: exportScopeEstimateProcedure,
 
 		// Media operations (pasted/dropped images in story descriptions) —
 		// flattened to avoid 4-level nesting which causes oRPC RPCLink to

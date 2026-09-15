@@ -84,6 +84,11 @@ export interface BacklogContextAnalysisInput {
 	 * Absent ⇒ Step 6 short-circuits (transient behaviour preserved).
 	 */
 	conversationId?: string;
+	/**
+	 * Prompt variant (plan Slice 6). "explore" proposes spikes + vision
+	 * suggestions for the EXPLORE engagement profile. Omitted = "standard".
+	 */
+	intakeMode?: "standard" | "explore";
 }
 
 export type AnalysisStatus =
@@ -314,6 +319,7 @@ export async function backlogContextAnalysisWorkflow(
 		// bottom of this body) short-circuits when undefined,
 		// preserving today's behaviour for callers that omit it.
 		conversationId,
+		intakeMode,
 	} = input;
 
 	// Workflow state
@@ -931,6 +937,7 @@ export async function backlogContextAnalysisWorkflow(
 			// pre-check and run it as the separate post-return activity below so
 			// the proposal is exposed immediately and conflicts surface after.
 			deferDecisionPrecheck: true,
+			intakeMode,
 		});
 
 		log.info("Analysis complete", {

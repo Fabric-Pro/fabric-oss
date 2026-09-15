@@ -612,3 +612,125 @@ export async function setPendingProposalAttachmentResult(
 		},
 	});
 }
+
+// ---------------------------------------------------------------------------
+// Apply claiming + idempotent application records (plan §F3)
+// ---------------------------------------------------------------------------
+
+/**
+ * Atomically claim a proposal for application: PENDING | FAILED → APPLYING,
+ * stamping the workflow that owns the apply. Returns false when another
+ * claimant won (or the proposal is in a terminal state). Every subsequent
+ * write must include the same `applyWorkflowId`, so only the claimant can
+ * advance the row.
+ */
+export async function claimPendingProposalForApply(params: {
+	proposalId: string;
+	reviewedBy: string;
+	applyWorkflowId: string;
+}): Promise<boolean> {
+	const result = await db.pendingBacklogProposal.updateMany({
+		where: {
+			id: params.proposalId,
+			status: { in: ["PENDING", "FAILED"] },
+		},
+		data: {
+			status: "APPLYING",
+			reviewedAt: new Date(),
+			reviewedBy: params.reviewedBy,
+			applyWorkflowId: params.applyWorkflowId,
+			applyError: null,
+		},
+	});
+	return result.count === 1;
+}
+
+/**
+ * Change indexes already applied for a proposal, read from the application
+ * table (authoritative). `appliedChangeIndexes` is kept as a mirror for one
+ * release for readers that have not migrated.
+ */
+export async function getAppliedChangeIndexes(
+	proposalId: string,
+): Promise<Set<number>> {
+	const rows = await db.pendingBacklogProposalApplication.findMany({
+		where: { proposalId },
+		select: { changeIndex: true },
+	});
+	return new Set(rows.map((r) => r.changeIndex));
+}
+
+/**
+ * Record that `changeIndex` of `proposalId` was applied, in the SAME
+ * transaction as the mutation it records. Idempotent on the unique
+ * (proposalId, changeIndex): a retry that re-applies is rejected by the
+ * unique index before it can create a second entity. Also mirrors into the
+ * legacy `appliedChangeIndexes` array.
+ */
+export async function recordProposalApplication(
+	tx: Prisma.TransactionClient,
+	params: {
+		proposalId: string;
+		changeIndex: number;
+		action: "create" | "update";
+		createdEntityType?: "epic" | "feature" | "story" | "bug";
+		createdEntityId?: string;
+	},
+): Promise<void> {
+	await tx.pendingBacklogProposalApplication.create({
+		data: {
+			proposalId: params.proposalId,
+			changeIndex: params.changeIndex,
+			action: params.action,
+			createdEntityType: params.createdEntityType,
+			createdEntityId: params.createdEntityId,
+		},
+	});
+	const existing = await tx.pendingBacklogProposal.findUnique({
+		where: { id: params.proposalId },
+		select: { appliedChangeIndexes: true },
+	});
+	if (
+		existing &&
+		!existing.appliedChangeIndexes.includes(params.changeIndex)
+	) {
+		await tx.pendingBacklogProposal.update({
+			where: { id: params.proposalId },
+			data: {
+				appliedChangeIndexes: {
+					set: [...existing.appliedChangeIndexes, params.changeIndex],
+				},
+			},
+		});
+	}
+}
+
+/**
+ * Claimant-checked terminal transitions. Only the workflow that claimed the
+ * proposal (matching `applyWorkflowId`) may flip it out of APPLYING.
+ * Returns false when the caller is not the claimant or the row moved on.
+ */
+export async function finalizeClaimedProposal(params: {
+	proposalId: string;
+	applyWorkflowId: string;
+	outcome: "applied" | "failed";
+	errorMessage?: string;
+}): Promise<boolean> {
+	const result = await db.pendingBacklogProposal.updateMany({
+		where: {
+			id: params.proposalId,
+			status: "APPLYING",
+			applyWorkflowId: params.applyWorkflowId,
+		},
+		data:
+			params.outcome === "applied"
+				? { status: "APPLIED", appliedAt: new Date(), applyError: null }
+				: {
+						status: "FAILED",
+						applyError: (
+							params.errorMessage ?? "apply workflow failed"
+						).slice(0, 4000),
+					},
+	});
+	return result.count === 1;
+}

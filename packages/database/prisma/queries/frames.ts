@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { db, type Prisma } from "../client";
-import type { AgentWorkspaceFile } from "../generated/client";
+import type { AgentWorkspaceFile, FrameShareScope } from "../generated/client";
 
 export const FABRIC_FRAME_CONTENT_TYPE = "application/vnd.fabric.frame";
 export const FABRIC_FRAME_SLIDESHOW_CONTENT_TYPE =
@@ -57,6 +57,16 @@ export interface CreateFrameInput {
 	authoritySessionId?: string;
 	providerKeys?: string[];
 	isPublic?: boolean;
+	/**
+	 * Project-scoped frame (plan Slice 3, spike demos). When set the frame is
+	 * readable by the project's members, not only its creator (tenant
+	 * carve-out in `tenant-db.ts` + `frame_project_or_user` RLS); the API
+	 * layer still checks project access. Defaults `shareScope` to PROJECT.
+	 */
+	projectId?: string;
+	/** Story the frame is evidence for; requires `projectId`. */
+	storyId?: string;
+	shareScope?: FrameShareScope;
 }
 
 export interface UpdateFrameInput {
@@ -110,6 +120,8 @@ function mapFrameRecord(file: AgentWorkspaceFile) {
 		conversationId: file.conversationId,
 		userId: file.userId,
 		organizationId: file.organizationId ?? undefined,
+		projectId: file.projectId ?? undefined,
+		storyId: file.storyId ?? undefined,
 		path: file.path,
 		name: file.name,
 		title: document.title,
@@ -134,6 +146,9 @@ function mapFrameRecord(file: AgentWorkspaceFile) {
 
 export async function createFrame(input: CreateFrameInput) {
 	const kind = input.kind ?? "frame";
+	if (input.storyId && !input.projectId) {
+		throw new Error("storyId requires projectId on a frame");
+	}
 	const document = FrameDocumentSchema.parse({
 		version: 1,
 		kind,
@@ -167,6 +182,10 @@ export async function createFrame(input: CreateFrameInput) {
 			status: "COMPLETE",
 			shareToken: input.isPublic ? randomUUID() : null,
 			isPublic: input.isPublic ?? false,
+			projectId: input.projectId ?? null,
+			storyId: input.storyId ?? null,
+			shareScope:
+				input.shareScope ?? (input.projectId ? "PROJECT" : undefined),
 			sourceRunType: input.sourceRunType,
 			sourceRunId: input.sourceRunId,
 			authoritySessionId: input.authoritySessionId,
@@ -197,6 +216,47 @@ export async function getFrameById(input: {
 	return file ? mapFrameRecord(file) : null;
 }
 
+/**
+ * Read a project-scoped frame by id regardless of creator. Only frames with
+ * a `projectId` are returned; callers MUST verify the caller's access to
+ * that project (`hasProjectAccess`) before returning the record. Pass
+ * `projectId` to pin the lookup to a known project.
+ */
+export async function getProjectFrameById(input: {
+	id: string;
+	projectId?: string;
+}) {
+	const file = await db.agentWorkspaceFile.findFirst({
+		where: {
+			id: input.id,
+			projectId: input.projectId ?? { not: null },
+			fileType: { in: ["FRAME", "SLIDESHOW"] },
+		},
+	});
+	return file ? mapFrameRecord(file) : null;
+}
+
+/**
+ * Frames attached to a story (spike demos). Project-scoped, not
+ * creator-scoped: the caller must hold STORY_READ on the project.
+ */
+export async function listFramesForStory(input: {
+	projectId: string;
+	storyId: string;
+	limit?: number;
+}) {
+	const files = await db.agentWorkspaceFile.findMany({
+		where: {
+			projectId: input.projectId,
+			storyId: input.storyId,
+			fileType: { in: ["FRAME", "SLIDESHOW"] },
+		},
+		orderBy: { createdAt: "desc" },
+		take: input.limit ?? 50,
+	});
+	return files.map(mapFrameRecord);
+}
+
 export async function listFrames(input: {
 	userId: string;
 	organizationId?: string;
@@ -204,6 +264,10 @@ export async function listFrames(input: {
 	limit?: number;
 	offset?: number;
 }) {
+	// "My frames": exact creator + tenant ownership. Project frames created
+	// by others are deliberately excluded here (they surface through
+	// `listFramesForStory`); the explicit `userId` predicate keeps the
+	// tenant carve-out for project frames from widening this list.
 	const files = await db.agentWorkspaceFile.findMany({
 		where: {
 			userId: input.userId,

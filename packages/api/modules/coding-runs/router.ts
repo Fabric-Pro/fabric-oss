@@ -4,7 +4,9 @@
  * Routes for managing background agent coding execution sessions.
  */
 
+import { acceptSpikeProcedure } from "./procedures/accept-spike";
 import { cancelCodingRunProcedure } from "./procedures/cancel-coding-run";
+import { discardSpikeProcedure } from "./procedures/discard-spike";
 import { getCodingRunProcedure } from "./procedures/get-coding-run";
 import { listCodingRunsProcedure } from "./procedures/list-coding-runs";
 import { pollLiveStatusProcedure } from "./procedures/poll-live-status";
@@ -18,4 +20,7 @@ export const codingRunsRouter = {
 	cancel: cancelCodingRunProcedure,
 	pollLiveStatus: pollLiveStatusProcedure,
 	sendFollowUp: sendFollowUpProcedure,
+	// Spike runs (plan Slice 3)
+	acceptSpike: acceptSpikeProcedure,
+	discardSpike: discardSpikeProcedure,
 };

@@ -3,6 +3,10 @@
  * Tracks snapshots of feature content at each drafting stage transition
  */
 
+import {
+	enforceStageTransition,
+	StageTransitionConflictError,
+} from "../../../src/delivery/transition-story";
 import { db, type FeatureDraftingStage, type Prisma } from "../../client";
 
 /**
@@ -157,6 +161,34 @@ export async function restoreFeatureVersion(
 
 	return await db.$transaction(async (tx) => {
 		const changedAt = new Date();
+		// Stage-transition choke point (plan §F1): restoring an older version
+		// may change the drafting stage, so it is subject to the same gates
+		// and governed review as any other stage write. When review is
+		// required, content is restored but the stage stays put and the
+		// request id is returned on the story.
+		let restoredStage = versionData.draftingStage;
+		let pendingStageRequestId: string | undefined;
+		if (versionData.draftingStage !== currentStory.draftingStage) {
+			const decision = await enforceStageTransition(tx, {
+				storyId,
+				projectId,
+				toStage: versionData.draftingStage,
+				reason: "restore",
+				actor: {
+					userId: tenantContext.userId,
+					organizationId: tenantContext.organizationId ?? null,
+				},
+				patch: {
+					description: versionData.description,
+					acceptanceCriteria: versionData.acceptanceCriteria,
+				},
+			});
+			if (decision.mode === "request") {
+				restoredStage = currentStory.draftingStage;
+				pendingStageRequestId = decision.requestId;
+			}
+		}
+
 		// Snapshot current content before restoring
 		await tx.featureVersion.create({
 			data: {
@@ -188,13 +220,18 @@ export async function restoreFeatureVersion(
 			},
 		});
 
-		// Update the story with restored content
-		const updated = await tx.userStory.update({
-			where: { id: storyId, projectId },
+		// Update the story with restored content. Compare-and-swap on the
+		// stage we read so a concurrent stage change is not overwritten.
+		const updatedCount = await tx.userStory.updateMany({
+			where: {
+				id: storyId,
+				projectId,
+				draftingStage: currentStory.draftingStage,
+			},
 			data: {
 				description: versionData.description,
 				acceptanceCriteria: versionData.acceptanceCriteria,
-				draftingStage: versionData.draftingStage,
+				draftingStage: restoredStage,
 				draftingStageUpdatedAt: changedAt,
 				version: restoredVersion,
 				pmAutoHidden: false,
@@ -202,12 +239,23 @@ export async function restoreFeatureVersion(
 				lastEditedByName: tenantContext.lastEditedByName ?? null,
 				lastEditedSource: "MANUAL",
 			},
+		});
+		if (updatedCount.count !== 1) {
+			throw new StageTransitionConflictError();
+		}
+		const updated = await tx.userStory.findUnique({
+			where: { id: storyId, projectId },
 			include: {
 				status: true,
 				tasks: { orderBy: { order: "asc" } },
 			},
 		});
+		if (!updated) {
+			throw new Error("Story not found after restore");
+		}
 
-		return updated;
+		return pendingStageRequestId
+			? { ...updated, pendingStageRequestId }
+			: updated;
 	});
 }

@@ -3,11 +3,12 @@ import {
 	type AttachmentWarningRecord,
 	appendAppliedChangeIndexes,
 	buildBacklogDedupGuard,
+	claimPendingProposalForApply,
 	db,
+	getAppliedChangeIndexes,
 	getPendingBacklogProposal,
 	inferDedupFamily,
 	markPendingProposalApplied,
-	markPendingProposalApproved,
 	markPendingProposalFailed,
 	type SkippedDuplicate,
 	setPendingProposalAttachmentResult,
@@ -47,98 +48,31 @@ import {
 } from "../../lib/decision-override-audit";
 import { enqueuePmSync } from "../../lib/enqueue-pm-sync";
 import { resolveMeetingTranscriptForProposal } from "../../lib/meeting-provenance";
+import {
+	type ChangeItem,
+	changeItemSchema,
+} from "../backlog/change-item-schema";
 import { backlogApplyWorkflowId } from "../backlog/workflow-id";
 
 /**
- * AUTHORIZATION: Uses canEditProject() - only project owners/editors can
- * approve proposals.
+ * AUTHORIZATION: `requireProjectPermission(PROJECT_UPDATE)` — only project
+ * owners/editors can approve proposals.
  *
- * Approves a PendingBacklogProposal: CREATE changes are materialized through
- * the same path as the "Add Feature" button (createStoryFromProposal), UPDATE
- * changes are dispatched to the existing backlogApplyChangesWorkflow.
+ * Approves a PendingBacklogProposal (plan §F3 claim protocol):
  *
- * Status transitions:
- *   - All-create proposals with no errors → APPLIED synchronously
- *   - Mixed / update-only proposals → APPROVED + applyWorkflowId set; the
- *     workflow flips the row to APPLIED on completion
- *   - Any CREATE errors → FAILED with applyError populated
+ *   1. Generate the deterministic apply workflow id.
+ *   2. Claim the row: PENDING | FAILED → APPLYING stamped with that id. A
+ *      concurrent approve (or a row already reviewed) loses the CAS and gets
+ *      CONFLICT — nothing was mutated for the loser.
+ *   3. Start `backlogApplyChangesWorkflow` with ALL remaining changes
+ *      (creates and updates). Every mutation happens inside the claimant
+ *      workflow and is recorded per change index, so a crash or retry
+ *      never duplicates a story.
+ *   4. The workflow finalises the row (APPLIED | FAILED); only the claimant
+ *      may do so.
+ *
+ * Source-agnostic: works for Teams channel/chat and scope-document proposals.
  */
-
-const changeItemSchema = z.object({
-	type: z.enum(["epic", "feature", "story", "bug"]),
-	action: z.enum(["create", "update"]),
-	existingId: z.string().nullable().optional(),
-	existingIdentifier: z.string().nullable().optional(),
-	existingExternalId: z.string().nullable().optional(),
-	title: z.object({
-		from: z.string().nullable().optional(),
-		to: z.string(),
-	}),
-	description: z
-		.object({
-			from: z.string().nullable().optional(),
-			to: z.string(),
-		})
-		.nullable()
-		.optional(),
-	acceptanceCriteria: z
-		.object({
-			from: z.string().nullable().optional(),
-			to: z.string(),
-		})
-		.nullable()
-		.optional(),
-	priority: z
-		.object({
-			from: z.string().nullable().optional(),
-			to: z.string(),
-		})
-		.nullable()
-		.optional(),
-	size: z
-		.object({
-			from: z.string().nullable().optional(),
-			to: z.string(),
-		})
-		.nullable()
-		.optional(),
-	parentEpicIdentifier: z.string().nullable().optional(),
-	parentFeatureIdentifier: z.string().nullable().optional(),
-	parentEpicTitle: z.string().nullable().optional(),
-	parentFeatureTitle: z.string().nullable().optional(),
-	// Annotation, not payload — same reasoning as `backlog/apply-changes.ts`.
-	// These rows come from the same analyzer, which is allowed to return a
-	// change without either field.
-	reasoning: z.string().nullable().optional(),
-	sourceContext: z
-		.enum([
-			"teams_messages",
-			"meeting_transcript",
-			"notion_page",
-			"multiple",
-		])
-		.nullable()
-		.optional(),
-	/**
-	 * Inline PM override of the AI classifier's kind decision. When set, the
-	 * approve handler passes `kind` + `skipClassifier: true` to
-	 * createStoryFromProposal so the classifier is bypassed and the user's
-	 * choice wins. Only meaningful for `action: "create"` rows where the
-	 * analyzer proposed feature/story/bug — epics ignore this field.
-	 */
-	kindOverride: z.enum(["BUG", "FEATURE"]).nullable().optional(),
-	/**
-	 * Set by the review UI when this CREATE's body was already drafted through
-	 * the kind-appropriate prompt at review time (lazy draft on open). When true,
-	 * the approve handler persists the proposed body verbatim (skipDrafting) and
-	 * does NOT re-draft from the thread transcript — carrying `needsMoreInfo`.
-	 */
-	predrafted: z.boolean().nullable().optional(),
-	/** Bug triage flag captured by the review-time draft (paired with predrafted). */
-	needsMoreInfo: z.boolean().nullable().optional(),
-});
-
-type ChangeItem = z.infer<typeof changeItemSchema>;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -393,12 +327,10 @@ function buildThreadTranscript(
 			? (sourceMetadata as Record<string, unknown>)
 			: {};
 
-	// Prefer a pre-rendered transcript if the activity inlined one
 	if (typeof meta.transcript === "string" && meta.transcript.length > 0) {
 		return meta.transcript;
 	}
 
-	// Or a structured messages array
 	if (Array.isArray(meta.messages) && meta.messages.length > 0) {
 		const channelName =
 			typeof meta.channelDisplayName === "string"
@@ -425,11 +357,6 @@ function buildThreadTranscript(
 		return lines.join("\n");
 	}
 
-	// Fallback: source reference + LLM's own rationale. The stage prompt can
-	// still produce a reasonable description from the title + rationale alone.
-	// Chat sources expose `chatTopic`; channel sources expose
-	// `channelDisplayName` / `channelName`. Try chat first since chat-monitor
-	// metadata never has a channel name.
 	const chatTopic =
 		typeof meta.chatTopic === "string" ? meta.chatTopic : null;
 	const channelName =
@@ -438,7 +365,17 @@ function buildThreadTranscript(
 			: typeof meta.channelName === "string"
 				? meta.channelName
 				: null;
+	const originalFilename =
+		typeof meta.originalFilename === "string"
+			? meta.originalFilename
+			: null;
 
+	// Fallback: source reference + LLM's own rationale. The stage prompt can
+	// still produce a reasonable description from the title + rationale alone.
+	// Chat sources expose `chatTopic`; channel sources expose
+	// `channelDisplayName` / `channelName`; scope intake (plan Slice 1)
+	// exposes `originalFilename`. Try chat first since chat-monitor metadata
+	// never has a channel name.
 	const parts: string[] = [];
 	if (chatTopic) {
 		parts.push(
@@ -447,6 +384,10 @@ function buildThreadTranscript(
 	} else if (channelName) {
 		parts.push(
 			`Based on a Microsoft Teams channel thread in #${channelName}.`,
+		);
+	} else if (originalFilename) {
+		parts.push(
+			`Based on the customer scope document "${originalFilename}".`,
 		);
 	}
 	if (reasoning) {
@@ -467,7 +408,7 @@ export const approvePendingProposalProcedure = tenantProtectedProcedure
 		tags: ["Projects", "Teams Channel Monitor"],
 		summary: "Approve a pending backlog proposal",
 		description:
-			"Materializes approved CREATE changes via the Add-Feature path and dispatches UPDATEs to the backlog apply workflow.",
+			"Claims the proposal and dispatches the approved changes to the backlog apply workflow.",
 	})
 	.input(
 		z.object({
@@ -614,7 +555,6 @@ export const approvePendingProposalProcedure = tenantProtectedProcedure
 		// stored index and corrupt `appliedChangeIndexes`.
 		const typeForMatch = (t: string): string =>
 			forbidEpics && t === "epic" ? "feature" : t;
-		const alreadyApplied = new Set(proposal.appliedChangeIndexes ?? []);
 
 		// Does stored change `c` match approved `change`? (action + type
 		// [forbidEpics-gated collapse] + title + parentFeature + the
@@ -675,25 +615,38 @@ export const approvePendingProposalProcedure = tenantProtectedProcedure
 				});
 			}
 		}
-		const creates = indexedChanges.filter(
-			({ change, index }) =>
-				change.action === "create" && !alreadyApplied.has(index),
+
+		// Authoritative applied set = application table ∪ legacy mirror.
+		const alreadyApplied = await getAppliedChangeIndexes(input.proposalId);
+		for (const idx of proposal.appliedChangeIndexes ?? []) {
+			alreadyApplied.add(idx);
+		}
+		const remaining = indexedChanges.filter(
+			({ index }) => !alreadyApplied.has(index),
 		);
-		const updates = indexedChanges.filter(
-			({ change, index }) =>
-				change.action === "update" && !alreadyApplied.has(index),
+		const creates = remaining.filter(
+			({ change }) => change.action === "create",
+		);
+		const updates = remaining.filter(
+			({ change }) => change.action === "update",
 		);
 
-		// Claim the approval up-front. We only set APPROVED once, here, before
-		// any work runs — this guarantees that when the apply workflow (below)
-		// calls finalizePendingProposalActivity it can safely transition from
-		// APPROVED → APPLIED/FAILED without this handler racing a later
-		// markPendingProposalApproved() that would overwrite the terminal state.
-		await markPendingProposalApproved({
+		// Claim the row (plan §F3): PENDING|FAILED → APPLYING in one
+		// compare-and-swap, so a concurrent approve gets CONFLICT and the
+		// creates below run exactly once. The claim carries the apply
+		// workflow id that the update dispatch (below) will use.
+		const workflowId = backlogApplyWorkflowId(input.projectId);
+		const claimed = await claimPendingProposalForApply({
 			proposalId: input.proposalId,
 			reviewedBy: user.id,
-			applyWorkflowId: null,
+			applyWorkflowId: workflowId,
 		});
+		if (!claimed) {
+			throw new ORPCError("CONFLICT", {
+				message:
+					"This proposal has already been approved or rejected perhaps by another user.",
+			});
+		}
 
 		// 1. Process CREATE changes sequentially so partial failure leaves a
 		//    clean record of what succeeded. Each successful create's index is
@@ -859,9 +812,21 @@ export const approvePendingProposalProcedure = tenantProtectedProcedure
 							}),
 					priority: mapPriority(change.priority?.to),
 					size: mapSize(change.size?.to),
-					labels,
+					// Scope-intake labels (`phase:N`, `priority:*`, `area:*`)
+					// ride along with the kind label (plan Slice 1).
+					labels: Array.from(
+						new Set([...labels, ...(change.labels ?? [])]),
+					),
 					draftingStage: "PLACEHOLDER",
 					source: "APPROVED_PROPOSAL",
+					// Delivery track proposed by the analyzer (plan Slice 3);
+					// Explore intake proposes its first spikes this way.
+					deliveryTrack: change.deliveryTrack ?? undefined,
+					trackSetBy: change.deliveryTrack ? "AI" : undefined,
+					// Idempotency key (plan §F3): a retry after a crash that
+					// created the row but never recorded the index cannot
+					// create it twice — the partial unique index refuses.
+					proposalApplicationKey: `proposal:${input.proposalId}:${index}`,
 					// F-171: attribute the new story back to its Teams origin
 					// (REQ-8, AC13). The classifier inside createStoryFromProposal
 					// determines the canonical kind regardless of change.type —
@@ -1326,7 +1291,7 @@ export const approvePendingProposalProcedure = tenantProtectedProcedure
 				approvedChangeIds: input.approvedChanges.map((_c, i) =>
 					String(i),
 				),
-				createdStoryIds,
+				createdStoryIds: [] as string[],
 				updateWorkflowId: null,
 				status: "failed" as const,
 				errors: createErrors,
@@ -1361,7 +1326,6 @@ export const approvePendingProposalProcedure = tenantProtectedProcedure
 			try {
 				const { getTemporalClient } = await import("@repo/temporal");
 				const client = await getTemporalClient();
-				const workflowId = backlogApplyWorkflowId(input.projectId);
 				const handle = await client.workflow.start(
 					"backlogApplyChangesWorkflow",
 					withCorrelationMemo({

@@ -10,6 +10,7 @@ import { computeScaledOutputTokenBudget } from "@repo/ai/lib/output-token-budget
 import {
 	createFeatureVersion,
 	createStory,
+	type DeliveryTrack,
 	db,
 	type FeatureDraftingStage,
 	getBoundPromptForAgent,
@@ -19,6 +20,7 @@ import {
 	type StoryPriority,
 	type StorySize,
 	type StorySource,
+	type TrackSetBy,
 } from "@repo/database";
 import { logger } from "@repo/logs";
 import { formatContextsForPrompt, retrieveProjectContexts } from "@repo/rag";
@@ -226,6 +228,15 @@ export interface CreateStoryFromProposalParams {
 	 * files an un-fingerprinted bug that the next sighting will duplicate.
 	 */
 	bugFingerprint?: string | null;
+	/** Idempotency key for proposal-created rows (plan §F3). */
+	proposalApplicationKey?: string;
+	/**
+	 * Delivery track proposed for the item (plan Slice 3). Explore intake
+	 * proposes its first spikes this way; dropping it here would leave the
+	 * spikes UNCLASSIFIED and unrunnable.
+	 */
+	deliveryTrack?: DeliveryTrack;
+	trackSetBy?: TrackSetBy;
 }
 
 export interface CreateStoryFromProposalResult {
@@ -811,6 +822,9 @@ export async function createStoryFromProposal(
 			pmAutoSyncEnabled: params.enablePmAutoSync,
 			createdFromProposalId: params.createdFromProposalId,
 			bugFingerprint: params.bugFingerprint,
+			proposalApplicationKey: params.proposalApplicationKey,
+			deliveryTrack: params.deliveryTrack,
+			trackSetBy: params.trackSetBy,
 		});
 		return { story, aiDrafted: false };
 	}
@@ -949,6 +963,9 @@ export async function createStoryFromProposal(
 			pmAutoSyncEnabled: params.enablePmAutoSync,
 			createdFromProposalId: params.createdFromProposalId,
 			bugFingerprint: params.bugFingerprint,
+			proposalApplicationKey: params.proposalApplicationKey,
+			deliveryTrack: params.deliveryTrack,
+			trackSetBy: params.trackSetBy,
 		});
 		return { story, aiDrafted: false };
 	}
@@ -1000,6 +1017,9 @@ export async function createStoryFromProposal(
 		pmAutoSyncEnabled: params.enablePmAutoSync,
 		createdFromProposalId: params.createdFromProposalId,
 		bugFingerprint: params.bugFingerprint,
+		proposalApplicationKey: params.proposalApplicationKey,
+		deliveryTrack: params.deliveryTrack,
+		trackSetBy: params.trackSetBy,
 	});
 
 	const version = await createFeatureVersion({

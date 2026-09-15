@@ -40,6 +40,7 @@ type BriefStatus = TeamsProposalItem["status"];
 const BRIEF_STATUSES: ReadonlyArray<BriefStatus> = [
 	"PENDING",
 	"APPROVED",
+	"APPLYING",
 	"APPLIED",
 	"REJECTED",
 	"FAILED",

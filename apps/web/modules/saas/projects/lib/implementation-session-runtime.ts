@@ -4,6 +4,7 @@ type CodingRunStatus =
 	| "RUNNING"
 	| "AWAITING_REVIEW"
 	| "PR_OPENED"
+	| "DEMO_READY"
 	| "COMPLETED"
 	| "FAILED"
 	| "CANCELLED"
@@ -17,6 +18,7 @@ const ACTIVE_STATUSES: CodingRunStatus[] = [
 	"RUNNING",
 	"AWAITING_REVIEW",
 	"PR_OPENED",
+	"DEMO_READY",
 ];
 
 export type VibeLinkState = {
@@ -241,6 +243,20 @@ export function getWorkspaceRuntimeState(input: {
 			label: "Workspace completed",
 			shortLabel: "Workspace Done",
 			description: "The workspace runtime finished execution.",
+			tone: "success",
+			reviewRequired,
+			rawExternalStatus: input.externalStatus ?? null,
+			latestProcessStatus,
+			prStatus,
+		};
+	}
+
+	if (input.status === "DEMO_READY") {
+		return {
+			label: "Spike demo ready",
+			shortLabel: "Demo Ready",
+			description:
+				"The spike produced a demo and findings; a person needs to try it and accept or discard.",
 			tone: "success",
 			reviewRequired,
 			rawExternalStatus: input.externalStatus ?? null,

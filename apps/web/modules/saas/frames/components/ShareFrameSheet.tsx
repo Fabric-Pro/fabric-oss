@@ -22,17 +22,40 @@ import {
 } from "@ui/components/sheet";
 import { useToast } from "@ui/hooks/use-toast";
 import { formatDistanceToNow } from "date-fns";
-import { Check, Copy, Globe, Lock, Mail, Users, X } from "lucide-react";
+import {
+	Check,
+	Copy,
+	FolderKanban,
+	Globe,
+	Lock,
+	Mail,
+	Users,
+	X,
+} from "lucide-react";
 import { useState } from "react";
 
 interface ShareFrameSheetProps {
 	frameId: string;
 	organizationId?: string | null;
+	/** True when the frame belongs to a project; exposes the PROJECT scope. */
+	isProjectFrame?: boolean;
 	open: boolean;
 	onOpenChange: (open: boolean) => void;
 }
 
-type ShareScope = "PRIVATE" | "EMAILS_ONLY" | "WORKSPACE_AND_EMAILS" | "PUBLIC";
+type ShareScope =
+	| "PRIVATE"
+	| "EMAILS_ONLY"
+	| "WORKSPACE_AND_EMAILS"
+	| "PROJECT"
+	| "PUBLIC";
+
+/**
+ * PROJECT is assigned by the backend when an agent creates a project frame
+ * (spike demo); `frames.share` does not accept it, so it is shown as the
+ * current state but cannot be selected here.
+ */
+type SelectableShareScope = Exclude<ShareScope, "PROJECT">;
 
 interface _SharingGrant {
 	id: string;
@@ -68,6 +91,13 @@ const SCOPE_OPTIONS: {
 		icon: <Users className="h-4 w-4" />,
 	},
 	{
+		value: "PROJECT",
+		label: "Project members",
+		description:
+			"Accepted members of the frame's project, including project-scoped guests",
+		icon: <FolderKanban className="h-4 w-4" />,
+	},
+	{
 		value: "PUBLIC",
 		label: "Anyone with the link",
 		description: "No sign-in required",
@@ -78,6 +108,7 @@ const SCOPE_OPTIONS: {
 export function ShareFrameSheet({
 	frameId,
 	organizationId,
+	isProjectFrame = false,
 	open,
 	onOpenChange,
 }: ShareFrameSheetProps) {
@@ -99,7 +130,7 @@ export function ShareFrameSheet({
 
 	// Share mutation
 	const shareMutation = useMutation({
-		mutationFn: (shareScope: ShareScope) =>
+		mutationFn: (shareScope: SelectableShareScope) =>
 			orpcClient.frames.share({
 				id: frameId,
 				organizationId: organizationId ?? null,
@@ -159,7 +190,15 @@ export function ShareFrameSheet({
 		},
 	});
 
-	const currentScope = grantsData?.shareScope ?? "PRIVATE";
+	const currentScope = (grantsData?.shareScope ?? "PRIVATE") as ShareScope;
+	// PROJECT only makes sense for project-scoped frames; keep it visible when
+	// it is already the current scope so the label is never blank.
+	const scopeOptions = SCOPE_OPTIONS.filter(
+		(option) =>
+			option.value !== "PROJECT" ||
+			isProjectFrame ||
+			currentScope === "PROJECT",
+	);
 	const grants = grantsData?.grants ?? [];
 
 	const handleCopyLink = async () => {
@@ -208,12 +247,17 @@ export function ShareFrameSheet({
 						<Label>Access Level</Label>
 						<RadioGroup
 							value={currentScope}
-							onValueChange={(value) =>
-								shareMutation.mutate(value as ShareScope)
-							}
+							onValueChange={(value) => {
+								if (value === "PROJECT") {
+									return;
+								}
+								shareMutation.mutate(
+									value as SelectableShareScope,
+								);
+							}}
 							className="space-y-3"
 						>
-							{SCOPE_OPTIONS.map((option) => (
+							{scopeOptions.map((option) => (
 								<div
 									key={option.value}
 									className="flex items-start space-x-3"
@@ -222,6 +266,7 @@ export function ShareFrameSheet({
 										value={option.value}
 										id={option.value}
 										className="mt-1"
+										disabled={option.value === "PROJECT"}
 									/>
 									<div className="flex-1">
 										<Label
@@ -365,6 +410,8 @@ export function ShareFrameSheet({
 									"Only the people you invite by email will be able to access this frame."}
 								{currentScope === "WORKSPACE_AND_EMAILS" &&
 									"All organization members and invited emails can access this frame."}
+								{currentScope === "PROJECT" &&
+									"Accepted members of this frame's project can access it. Same-organization users who are not project members cannot."}
 								{currentScope === "PUBLIC" &&
 									"Anyone with the link can view this frame without signing in."}
 							</CardDescription>

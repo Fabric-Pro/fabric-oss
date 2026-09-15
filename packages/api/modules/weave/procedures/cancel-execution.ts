@@ -6,6 +6,7 @@
 
 import { ORPCError } from "@orpc/server";
 import { db } from "@repo/database";
+import { logger } from "@repo/logs";
 import { getTemporalClient } from "@repo/temporal";
 import { orchestratorCancelSignal } from "@repo/temporal/workflows";
 import { z } from "zod";
@@ -15,6 +16,7 @@ import {
 	protectedProcedure,
 	resolveOrganizationIdForCaller,
 } from "../../../orpc/procedures";
+import { resolveWeaveHandle } from "../lib/temporal-handle";
 
 const CancelExecutionInputSchema = z.object({
 	executionId: z.string(),
@@ -62,7 +64,12 @@ export const cancelExecutionProcedure = protectedProcedure
 			Permissions.AGENT_UPDATE,
 		);
 
+		// PENDING is cancellable so a row left behind by an ambiguous start
+		// (start-execution could not confirm whether Temporal accepted the
+		// start) has a recovery path; the cancel signal still goes to the
+		// deterministic workflow id in case an execution is live behind it.
 		if (
+			execution.status !== "PENDING" &&
 			execution.status !== "RUNNING" &&
 			execution.status !== "PAUSED" &&
 			execution.status !== "CHECKPOINT"
@@ -74,17 +81,30 @@ export const cancelExecutionProcedure = protectedProcedure
 
 		try {
 			const temporal = await getTemporalClient();
-			const handle = temporal.workflow.getHandle(
-				execution.workflowId,
-				execution.runId,
-			);
+			const handle = resolveWeaveHandle(temporal, execution);
 			await handle.signal(orchestratorCancelSignal);
 		} catch (error) {
-			// Workflow may have already completed or been terminated.
-			// Still mark execution as cancelled in DB.
-			console.warn(
-				`[weave] Cancel signal failed for ${execution.workflowId}: ${error instanceof Error ? error.message : "unknown"}`,
-			);
+			// Only a definite "workflow does not exist" lets us mark the row
+			// CANCELLED without a delivered signal. Any other failure
+			// (Temporal unavailable, transport error) leaves the row in its
+			// current status: marking it CANCELLED would release the
+			// one-active-execution partial unique index while the workflow may
+			// still be running, permitting a duplicate execution.
+			const name = error instanceof Error ? error.name : "";
+			if (name !== "WorkflowNotFoundError") {
+				logger.warn(
+					"[weave] Cancel signal failed; execution left active",
+					{
+						workflowId: execution.workflowId,
+						error:
+							error instanceof Error ? error.message : "unknown",
+					},
+				);
+				throw new ORPCError("INTERNAL_SERVER_ERROR", {
+					message:
+						"Could not deliver the cancel signal; the execution remains active. Retry once Temporal is reachable.",
+				});
+			}
 		}
 
 		await db.weaveExecution.update({

@@ -106,6 +106,7 @@ export type ProjectTabId =
 	| "diagrams"
 	| "reports"
 	| "usage"
+	| "outcomes"
 	| "atlas"
 	| "security"
 	| "settings";

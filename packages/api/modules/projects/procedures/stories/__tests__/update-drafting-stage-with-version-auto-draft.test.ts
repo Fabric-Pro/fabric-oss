@@ -41,6 +41,17 @@ const { handlers, mocks, fixture } = vi.hoisted(() => {
 });
 
 vi.mock("@repo/database", () => ({
+	StoryVersionConflictError: class StoryVersionConflictError extends Error {},
+	StageTransitionBlockedError: class StageTransitionBlockedError extends Error {},
+	enforceStageTransition: vi.fn(async () => ({
+		mode: "apply",
+		fromStage: "DRAFT",
+		readiness: null,
+	})),
+	GovernedActorRequiredError: class GovernedActorRequiredError extends Error {},
+	StageTransitionConflictError: class StageTransitionConflictError extends Error {},
+	StageApprovalError: class StageApprovalError extends Error {},
+
 	getStoryById: mocks.getStoryById,
 	createFeatureVersion: mocks.createFeatureVersion,
 	db: {

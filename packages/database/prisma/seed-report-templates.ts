@@ -745,6 +745,107 @@ export const SYSTEM_TEMPLATES = [
 		},
 	},
 	{
+		// Inverted-loop plan Slice 7. Report templates read their data from
+		// MCP / integration / workspace / user-input sources — not from oRPC —
+		// so the estimate itself comes in as a parameter: the markdown that
+		// `projects.stories.exportScopeEstimate` (roadmap "Export estimate")
+		// produces. The AI task restates it per phase with the ranges intact.
+		key: "scope-estimate-by-phase",
+		name: "Scope estimate by phase",
+		description:
+			"Turn a Fabric scope-estimate export into a customer-ready proposal appendix: totals per phase and track, confidence ranges, open spikes, and the dependencies between phases.",
+		heroEmojis: ["📐", "🧮", "🗂️"],
+		templateType: "CUSTOM" as const,
+		category: "Business",
+		tags: ["estimate", "proposal", "scope", "phase"],
+		outputFormat: "MARKDOWN" as const,
+		definition: {
+			dataSources: [
+				{
+					id: "scope-estimate",
+					type: "user-input" as const,
+					config: {
+						inputKey: "content",
+					},
+				},
+			],
+			aiAgents: [
+				{
+					agentId: "default",
+					task: `You are turning a scope-estimate export from Fabric into the estimate section of a customer proposal.
+
+The data source "scope-estimate" is the markdown produced by Fabric's roadmap "Export estimate" action (projects.stories.exportScopeEstimate). It contains: a "Totals by phase" table, a "Totals by track" table, and one table per phase with columns Ref, ID, Title, Track, Priority, Size, Points, Confidence, Depends on phases, Depends on refs.
+
+Rules:
+- Never change a number. Where a phase total is written as a range (e.g. "18–26"), keep the range and explain that the lower bound excludes low-confidence items (open spikes and unknowns) and the upper bound includes them.
+- A row with track "SPIKE" is an open question, not committed scope. List every spike under "Open questions" with its title and the phase it sits in.
+- Rows with track "DEFER" are outside the quoted horizon; list them under "Deferred" and exclude nothing from the totals (the totals are already computed).
+- Use the "Depends on phases" and "Depends on refs" columns to write a short "Sequencing" paragraph per phase.
+
+Write these sections, using ### markdown headers:
+1. Estimate at a glance — one paragraph with the total items and total points (range if given), then a bullet per phase with its item count and points.
+2. Per phase — for each phase: the item count, the points (range if given), a one-line scope summary in plain language, and the sequencing note.
+3. By track — one bullet per track with items and points; call out how many items are unclassified.
+4. Open questions (spikes) — one bullet per spike: title, phase, and what answering it would firm up.
+5. Deferred — items outside the quoted horizon, or "None".
+6. Assumptions — how ranges should be read, and that spike estimates firm up once the spike run is accepted.
+
+Be concise and precise; this text goes in front of a customer.`,
+					outputVariable: "estimate_narrative",
+				},
+			],
+			sections: [
+				headerSection({
+					titleTemplate: "Scope estimate — {{projectName}}",
+					subtitleTemplate: "By phase and delivery track",
+					metadataTemplate:
+						"**Prepared:** {{preparedOn}} · **Source:** Fabric roadmap export",
+				}),
+				analysisSection(
+					"estimate-narrative",
+					"Estimate",
+					"estimate_narrative",
+				),
+				{
+					id: "estimate-source",
+					title: "Estimate tables",
+					type: "text",
+					config: {
+						template:
+							"## Estimate tables\n\n<details>\n<summary>Full export from Fabric</summary>\n\n{{content}}\n\n</details>",
+					},
+				},
+				footerSection({
+					includeTimestamp: true,
+					includeDisclaimer: true,
+					customNote:
+						"📌 *Ranges: the lower bound excludes low-confidence items; the upper bound includes them. Spike lines are open questions until their spike run is accepted.*",
+				}),
+			],
+		},
+		parameters: {
+			required: ["content"],
+			properties: {
+				content: {
+					type: "string",
+					description:
+						"Paste the markdown from Roadmap › Export estimate › Markdown",
+					inputType: "textarea",
+				},
+				projectName: {
+					type: "string",
+					description: "Project name for the report title",
+					default: "Project",
+				},
+				preparedOn: {
+					type: "string",
+					description: "Date the estimate was prepared",
+					default: "{{TODAY}}",
+				},
+			},
+		},
+	},
+	{
 		key: "meeting-notes",
 		name: "Meeting Notes Summarizer",
 		description:

@@ -1,5 +1,10 @@
 "use client";
 
+import {
+	Tooltip,
+	TooltipContent,
+	TooltipTrigger,
+} from "@ui/components/tooltip";
 import { cn } from "@ui/lib";
 import type React from "react";
 
@@ -12,7 +17,13 @@ export function Segmented<T extends string>({
 }: {
 	label: string;
 	value: T;
-	options: { value: T; label: string; icon?: React.ReactNode }[];
+	options: {
+		value: T;
+		label: string;
+		icon?: React.ReactNode;
+		/** What choosing this option means; shown on hover/focus. */
+		tooltip?: string;
+	}[];
 	onChange: (v: T) => void;
 }) {
 	return (
@@ -27,7 +38,7 @@ export function Segmented<T extends string>({
 			>
 				{options.map((o) => {
 					const active = o.value === value;
-					return (
+					const button = (
 						<button
 							key={o.value}
 							type="button"
@@ -43,6 +54,17 @@ export function Segmented<T extends string>({
 							{o.icon}
 							{o.label}
 						</button>
+					);
+					if (!o.tooltip) {
+						return button;
+					}
+					return (
+						<Tooltip key={o.value}>
+							<TooltipTrigger asChild>{button}</TooltipTrigger>
+							<TooltipContent className="max-w-xs text-xs leading-5">
+								{o.tooltip}
+							</TooltipContent>
+						</Tooltip>
 					);
 				})}
 			</div>

@@ -13,7 +13,7 @@ import {
 	type StorySize,
 } from "@repo/database";
 import { logger } from "@repo/logs";
-import { createStoryFromProposal } from "@repo/temporal";
+import { createStoryFromProposal, getTemporalClient } from "@repo/temporal";
 // Subpath, not the barrel: the guard is a pure lib and importing it this way
 // keeps the workflow graph out of the request path (same import
 // `validate-prompt-for-kind.ts` uses).
@@ -31,6 +31,34 @@ import { runInBackground } from "../../../weave/lib/run-in-background";
 import { maybeAutoDraftOnStageChange } from "../../lib/auto-draft-test-cases";
 import { stripInternalStoryFields } from "../../lib/strip-internal-story-fields";
 import { validateStageForKind } from "../../lib/validate-stage-for-kind";
+
+async function startDeliveryTrackClassification(input: {
+	projectId: string;
+	storyId: string;
+	userId: string;
+	organizationId?: string;
+}): Promise<void> {
+	try {
+		const client = await getTemporalClient();
+		await client.workflow.start("deliveryTrackClassificationWorkflow", {
+			taskQueue: "ai-chat",
+			workflowId: `track-classify-${input.projectId}-${Date.now()}`,
+			args: [
+				{
+					projectId: input.projectId,
+					storyIds: [input.storyId],
+					userId: input.userId,
+					organizationId: input.organizationId,
+				},
+			],
+		});
+	} catch (error) {
+		logger.warn(
+			"[createStoryProcedure] failed to start delivery-track classification",
+			error,
+		);
+	}
+}
 
 export const createStoryProcedure = tenantProtectedProcedure
 	.use(requireProjectPermission(Permissions.STORY_CREATE))
@@ -198,6 +226,15 @@ export const createStoryProcedure = tenantProtectedProcedure
 				error,
 			);
 		}
+
+		// Delivery-track classification is fire-and-forget: a missing AI
+		// provider or Temporal outage must never fail story creation.
+		void startDeliveryTrackClassification({
+			projectId: input.projectId,
+			storyId: story.id,
+			userId: user.id,
+			organizationId: organizationId ?? undefined,
+		});
 
 		dispatchLifecycleEvent({
 			resource: "story",

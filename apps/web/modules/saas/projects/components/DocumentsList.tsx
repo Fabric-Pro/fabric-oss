@@ -185,6 +185,14 @@ const documentTypeStyles: Record<
 			"border-indigo-500/20 bg-indigo-500/[0.06] dark:border-indigo-500/15 dark:bg-indigo-500/[0.04]",
 		haloClassName: "from-indigo-500/10 via-indigo-500/5 to-transparent",
 	},
+	// Run-produced (Discovery run, plan Slice 4); never offered for generation.
+	INTEGRATION_CONTRACT: {
+		icon: ClipboardListIcon,
+		iconClassName: "border-primary/30 bg-primary/10 text-primary",
+		panelClassName:
+			"border-primary/20 bg-primary/[0.06] dark:border-primary/15 dark:bg-primary/[0.04]",
+		haloClassName: "from-primary/10 via-primary/5 to-transparent",
+	},
 };
 
 const statusConfig: Record<
@@ -253,6 +261,7 @@ const documentTypeLabels: Record<string, string> = {
 	TEST_REPORT: "Test Report",
 	TRACEABILITY_MATRIX: "Traceability Matrix",
 	SRS: "SRS",
+	INTEGRATION_CONTRACT: "Integration Contract",
 	GENERAL: "General",
 };
 
@@ -279,6 +288,8 @@ const documentTypeDescriptions: Record<string, string> = {
 	TRACEABILITY_MATRIX:
 		"Point-in-time export of acceptance criteria against the cases covering them",
 	SRS: "Formal requirements baseline: scope, functional and non-functional requirements, interfaces, and acceptance criteria",
+	INTEGRATION_CONTRACT:
+		"Per-feature identity, roles, data classes, endpoints, tenancy and open questions from a Discovery run",
 	GENERAL: "General purpose document",
 };
 

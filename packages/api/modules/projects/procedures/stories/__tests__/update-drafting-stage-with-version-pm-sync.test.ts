@@ -27,6 +27,17 @@ const { handlers, mocks } = vi.hoisted(() => {
 });
 
 vi.mock("@repo/database", () => ({
+	StoryVersionConflictError: class StoryVersionConflictError extends Error {},
+	StageTransitionBlockedError: class StageTransitionBlockedError extends Error {},
+	enforceStageTransition: vi.fn(async () => ({
+		mode: "apply",
+		fromStage: "DRAFT",
+		readiness: null,
+	})),
+	GovernedActorRequiredError: class GovernedActorRequiredError extends Error {},
+	StageTransitionConflictError: class StageTransitionConflictError extends Error {},
+	StageApprovalError: class StageApprovalError extends Error {},
+
 	getStoryById: mocks.getStoryById,
 	createFeatureVersion: mocks.createFeatureVersion,
 	db: {
@@ -317,7 +328,10 @@ describe("updateDraftingStageWithVersionProcedure PM sync gate", () => {
 			context: ctx,
 		});
 
-		expect(result).toEqual({ story: updatedRow });
+		expect(result).toEqual({
+			story: updatedRow,
+			pendingStageRequest: null,
+		});
 		await new Promise((r) => setImmediate(r));
 		expect(mocks.loggerWarn).toHaveBeenCalledWith(
 			"enqueuePmSync failed",

@@ -3,6 +3,7 @@ import { config } from "@repo/config";
 import {
 	createFeatureVersion,
 	db,
+	enforceStageTransition,
 	type FeatureDraftingStage,
 	FeatureDraftingStageSchema,
 	getStoryById,
@@ -28,6 +29,7 @@ import {
 import { enqueuePmSync } from "../../lib/enqueue-pm-sync";
 import { extractStoryMediaKeysFromContent } from "../../lib/extract-story-media-keys";
 import { logReinjectedAttachments } from "../../lib/log-reinjected-attachments";
+import { mapStageTransitionError } from "../../lib/stage-transition-errors";
 import { stripInternalStoryFields } from "../../lib/strip-internal-story-fields";
 import { validateStageForKind } from "../../lib/validate-stage-for-kind";
 import { maybeTriggerMaturationScan } from "../scan/lib/start-scan";
@@ -150,6 +152,38 @@ export const updateDraftingStageWithVersionProcedure = tenantProtectedProcedure
 		// is caught below and re-thrown as the typed conflict the API layer maps
 		// to CONFLICT. `createFeatureVersion` above upserts, so a client retry
 		// after a conflict leaves no duplicate snapshot.
+		// Stage-transition choke point (plan §F1), evaluated BEFORE the write:
+		// an enforced readiness gate blocks here (mapped to PRECONDITION_FAILED),
+		// and under GOVERNED review the stage change becomes a request — the
+		// content still lands, the stage is held, and the request id is
+		// surfaced as `pendingStageRequest`. The write itself stays the
+		// version-guarded direct update below (fabric-dev's CAS contract).
+		let stageForWrite = input.targetStage as FeatureDraftingStage;
+		let pendingStageRequestId: string | undefined;
+		try {
+			const decision = await enforceStageTransition(db, {
+				storyId: input.storyId,
+				projectId: input.projectId,
+				toStage: input.targetStage as FeatureDraftingStage,
+				reason: "enhance",
+				actor: {
+					userId: user.id,
+					organizationId: organizationId ?? null,
+				},
+				patch: {
+					description: descriptionAfterGuard ?? story.description,
+					acceptanceCriteria:
+						input.acceptanceCriteria ?? story.acceptanceCriteria,
+				},
+			});
+			if (decision.mode === "request") {
+				pendingStageRequestId = decision.requestId;
+				stageForWrite = story.draftingStage as FeatureDraftingStage;
+			}
+		} catch (error) {
+			throw mapStageTransitionError(error);
+		}
+
 		let updatedStory: Awaited<ReturnType<typeof db.userStory.update>>;
 		try {
 			updatedStory = await db.userStory.update({
@@ -162,8 +196,10 @@ export const updateDraftingStageWithVersionProcedure = tenantProtectedProcedure
 					description: descriptionAfterGuard ?? story.description,
 					acceptanceCriteria:
 						input.acceptanceCriteria ?? story.acceptanceCriteria,
-					draftingStage: input.targetStage as FeatureDraftingStage,
-					draftingStageUpdatedAt: changedAt,
+					draftingStage: stageForWrite,
+					...(stageForWrite !== story.draftingStage
+						? { draftingStageUpdatedAt: changedAt }
+						: {}),
 					lastContextUpdateAt: new Date(),
 					version: newVersion,
 					...(genuinelyChanged
@@ -311,7 +347,12 @@ export const updateDraftingStageWithVersionProcedure = tenantProtectedProcedure
 				);
 			});
 
-		return { story: stripInternalStoryFields(updatedStory) };
+		return {
+			story: stripInternalStoryFields(updatedStory),
+			pendingStageRequest: pendingStageRequestId
+				? { id: pendingStageRequestId }
+				: null,
+		};
 	});
 
 /**

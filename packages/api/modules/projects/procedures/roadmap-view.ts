@@ -15,7 +15,7 @@ import {
 const roadmapViewSchema = z
 	.object({
 		mode: z.enum(["table", "board", "plain", "priority"]).optional(),
-		groupBy: z.enum(["priority", "stage"]).optional(),
+		groupBy: z.enum(["priority", "stage", "track", "phase"]).optional(),
 		columns: z
 			.object({
 				stage: z.boolean(),

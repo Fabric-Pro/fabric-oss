@@ -32,6 +32,16 @@ const { handlers, mocks } = vi.hoisted(() => {
 });
 
 vi.mock("@repo/database", () => ({
+	StageTransitionBlockedError: class StageTransitionBlockedError extends Error {},
+	enforceStageTransition: vi.fn(async () => ({
+		mode: "apply",
+		fromStage: "DRAFT",
+		readiness: null,
+	})),
+	GovernedActorRequiredError: class GovernedActorRequiredError extends Error {},
+	StageTransitionConflictError: class StageTransitionConflictError extends Error {},
+	StageApprovalError: class StageApprovalError extends Error {},
+
 	// Faithful mini-implementation: the handler distinguishes a lost race by
 	// TYPE, so a stub would make every write look like a genuine failure.
 	StoryVersionConflictError: class StoryVersionConflictError extends Error {

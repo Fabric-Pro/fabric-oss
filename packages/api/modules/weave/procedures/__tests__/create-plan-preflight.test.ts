@@ -271,6 +271,8 @@ describe("createPlanProcedure — healthy preflight", () => {
 			success: true,
 			planId: "plan-1",
 			status: "DRAFT",
+			// Advisory readiness is only computed for a linked feature.
+			readiness: null,
 		});
 	});
 

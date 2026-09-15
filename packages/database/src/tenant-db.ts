@@ -187,6 +187,9 @@ const USER_OWNED_TABLES = new Set([
 	"DocumentVersion", // Document version history
 	"DocumentAutoRefreshSettings", // Per-document auto-refresh enrollment; tenant XOR copied from the parent document
 	"FeatureVersion", // Feature (user story) version history
+	"StageTransitionRequest", // Governed drafting-stage transition requests
+	"DiscoveryRun", // Discovery runs (integration contracts) per feature
+	"ProjectSuccessMetric", // Customer success metrics per project
 	"DocumentLock", // Document locks for collaboration
 	"AutomationTemplate",
 	"TemplateInstance",
@@ -322,11 +325,126 @@ const PROJECT_SCOPED_TABLES: Record<string, string> = {
 	PublishingTopicAnalysisRevision: "projectId",
 	Epic: "projectId",
 	Feature: "projectId",
+	DiscoveryRun: "projectId",
+	ProjectSuccessMetric: "projectId",
 	TaskWorkflowPlan: "projectId",
 	KanbanQueue: "projectId",
 	CodingRun: "projectId",
 	AiOutcomeEvent: "projectId",
 };
+
+/**
+ * Tables with NO tenant columns of their own — they are reachable only
+ * through a foreign key to a parent row that carries
+ * `userId` / `organizationId`.
+ *
+ * Defense in depth for these tables comes from three places:
+ *  1. Database: the `project_parent` / `proposal_parent` RLS policies applied
+ *     by `scripts/apply-rls-direct.ts` (SQL built in
+ *     `scripts/rls-policy-sql.ts`), which re-use the parent's `user_owned`
+ *     predicate through an EXISTS join.
+ *  2. Application: the query functions for these models always look the
+ *     parent up under the tenant filter before touching the child rows.
+ *  3. This extension: the relation filter below, so that list/count/bulk
+ *     write operations stay tenant-scoped even if a caller reaches the model
+ *     directly and skips the parent lookup.
+ *
+ * Key = Prisma model name. `relation` = the to-one relation field pointing at
+ * the parent. Both parents follow the `user_owned` shape (org context filters
+ * by organizationId; personal context filters by userId + organizationId
+ * IS NULL), so `getParentScopedFilter` builds that predicate directly rather
+ * than recursing through `getTenantFilter`.
+ */
+const PARENT_SCOPED_TABLES: Record<
+	string,
+	{ relation: string; projectPath: "projectId" | "proposal.projectId" }
+> = {
+	// project_stage_approver.userId is the *approver*, not a tenant column.
+	ProjectStageApprover: { relation: "project", projectPath: "projectId" },
+	PendingBacklogProposalApplication: {
+		relation: "proposal",
+		projectPath: "proposal.projectId",
+	},
+};
+
+/**
+ * Operations that accept a relation filter in `where` and therefore can carry
+ * the parent-scoped filter. `findUnique*` is deliberately excluded: Prisma
+ * only accepts unique-field selectors there, so a relation filter would throw.
+ * Those calls remain covered by layers (1) and (2) above.
+ */
+const PARENT_SCOPED_OPERATIONS = new Set([
+	"findMany",
+	"findFirst",
+	// Throwing twin of findFirst — same where semantics.
+	"findFirstOrThrow",
+	"count",
+	"updateMany",
+	"deleteMany",
+]);
+
+/**
+ * Build the parent-relation filter for a parent-scoped model, or `null` when
+ * the model is not parent-scoped / there is no tenant context.
+ *
+ * Exported for unit testing. Do not call from application code.
+ */
+export function getParentScopedFilter(
+	modelName: string,
+): Record<string, any> | null {
+	const parent = PARENT_SCOPED_TABLES[modelName];
+	if (!parent) {
+		return null;
+	}
+
+	// No tenant context: contribute no filter here. The `ELSE false` branch of
+	// the RLS policy is what denies access in that case.
+	if (!hasTenantContext()) {
+		return null;
+	}
+
+	const ctx = getTenantContext();
+	const parentWhere =
+		ctx.type === "organization"
+			? { organizationId: ctx.organizationId }
+			: { userId: ctx.userId, organizationId: null };
+	const tenantFilter = { [parent.relation]: parentWhere };
+
+	// Project-scoped guests (an accepted ProjectMember row without org
+	// membership) are granted `allowedProjectIds` by the permission
+	// middleware. Mirror the carve-out PROJECT_SCOPED_TABLES get: OR-in rows
+	// whose parent project is in that list, so a guest approver can see the
+	// approver list and application records of the project they were invited
+	// to, and nothing else.
+	if (ctx.allowedProjectIds && ctx.allowedProjectIds.length > 0) {
+		const guestFilter =
+			parent.projectPath === "projectId"
+				? { projectId: { in: ctx.allowedProjectIds } }
+				: { proposal: { projectId: { in: ctx.allowedProjectIds } } };
+		return { OR: [tenantFilter, guestFilter] };
+	}
+
+	return tenantFilter;
+}
+
+/**
+ * Fold the parent-relation filter into an existing `where` clause.
+ *
+ * Exported for unit testing. Do not call from application code.
+ */
+export function mergeWithParentScopedFilter(
+	modelName: string,
+	existingWhere: any,
+): any {
+	const parentFilter = getParentScopedFilter(modelName);
+	if (!parentFilter) {
+		return existingWhere;
+	}
+	if (!existingWhere) {
+		return parentFilter;
+	}
+	return { AND: [existingWhere, parentFilter] };
+}
 
 /**
  * Tables with special handling (public flag, composite keys, etc.).
@@ -427,6 +545,26 @@ function getTenantFilter(modelName: string): TenantFilter | null {
  */
 function getProjectCarveOut(modelName: string): Record<string, any> | null {
 	const ctx = getTenantContext();
+	// Project-scoped frames (spike demos, Slice 3): a frame with a projectId is
+	// readable by the project's members, not only its creator. In org context
+	// that is every org member (the API narrows to project members through
+	// hasProjectAccess); guests reach it through allowedProjectIds below.
+	if (modelName === "AgentWorkspaceFile") {
+		const branches: Record<string, any>[] = [];
+		if (ctx.type === "organization" && ctx.organizationId) {
+			branches.push({
+				projectId: { not: null },
+				organizationId: ctx.organizationId,
+			});
+		}
+		if (ctx.allowedProjectIds && ctx.allowedProjectIds.length > 0) {
+			branches.push({ projectId: { in: ctx.allowedProjectIds } });
+		}
+		if (branches.length === 0) {
+			return null;
+		}
+		return branches.length === 1 ? branches[0] : { OR: branches };
+	}
 	if (!ctx.allowedProjectIds || ctx.allowedProjectIds.length === 0) {
 		return null;
 	}
@@ -631,6 +769,25 @@ function createTenantDb(baseClient: PrismaClient) {
 							},
 						);
 					};
+
+					// Parent-scoped models have no tenant columns to filter
+					// on — scope them through their parent relation instead.
+					// Checked before the generic read/write paths because
+					// `mergeWithTenantFilter` has nothing to contribute for
+					// these models.
+					if (model && PARENT_SCOPED_OPERATIONS.has(operation)) {
+						const parentScopedWhere = mergeWithParentScopedFilter(
+							model,
+							args?.where,
+						);
+						if (parentScopedWhere !== args?.where) {
+							const modifiedArgs = { ...args } as any;
+							modifiedArgs.where = parentScopedWhere;
+							return executeWithRLSContext(() =>
+								query(modifiedArgs),
+							);
+						}
+					}
 
 					// Apply tenant filter for read operations
 					const readOps = [

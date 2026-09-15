@@ -31,6 +31,9 @@ const { handlers, mocks } = vi.hoisted(() => {
 });
 
 vi.mock("@repo/database", () => ({
+	getAppliedChangeIndexes: vi.fn(async () => new Set<number>()),
+	claimPendingProposalForApply: vi.fn(async () => true),
+
 	appendAppliedChangeIndexes: mocks.appendAppliedChangeIndexes,
 	buildBacklogDedupGuard: vi.fn().mockResolvedValue({
 		findCollision: () => null,

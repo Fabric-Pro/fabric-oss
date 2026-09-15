@@ -56,6 +56,12 @@ const EXEMPT: Record<string, string> = {
 	"stories/update-with-context.ts":
 		"Writes description/context fields and carries the story's existing " +
 		"stage through unchanged; it never sets a new one.",
+	"review-pending-state-change.ts":
+		"Only ever asks the stage choke point for the literal 'CLOSED' when a " +
+		"PM-driven hide is approved, so it cannot reach Ready for Dev.",
+	"stories/export-scope-estimate.ts":
+		"Read-only export — selects the stage to label rows in the estimate " +
+		"rollup, persisting nothing.",
 	"bulk-review-pending-state-changes.ts":
 		"Only ever writes the literal 'CLOSED' (lines 66, 78) when declining a " +
 		"pending change, so it cannot reach Ready for Dev.",

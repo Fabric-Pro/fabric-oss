@@ -1,6 +1,8 @@
 "use client";
 
 import { MIN_DESCRIPTION_LENGTH } from "@repo/api/modules/projects/lib/readiness/thresholds";
+import type { EngagementProfile } from "@repo/database/prisma/generated/enums";
+import { DEFAULT_NEW_PROJECT_PROFILE } from "@repo/database/src/engagement-profiles";
 import { useOrganizationContext } from "@saas/organizations/hooks/use-organization-context";
 import { useConfirmationAlert } from "@saas/shared/components/ConfirmationAlertProvider";
 import { orpcClient } from "@shared/lib/orpc-client";
@@ -204,6 +206,10 @@ type ProjectFormData = {
 		string,
 		{ promptId?: string; customInstructions?: string }
 	>;
+	engagementProfile: EngagementProfile; // How the engagement is run (plan §1.2)
+	visionPurpose: string; // Optional vision (plan §1.4)
+	visionCoreActions: string[];
+	visionCycle: string;
 };
 
 function createWizardSessionId(): string {
@@ -219,6 +225,9 @@ function createDraftKey(): string {
 				return v.toString(16);
 			});
 }
+
+// Step definitions live in lib/wizard-steps.ts (STANDARD / CODE_BASED / EXPLORE)
+// so the profile-driven selection can be unit-tested.
 
 const STANDARD_STEPS = [
 	{ id: 1, name: "Brief", description: "Project foundation" },
@@ -669,6 +678,10 @@ export function ProjectCreationWizard({
 		projectManagementAdditionalContext: null,
 		projectManagementDetectedType: null,
 		documentPrompts: {},
+		engagementProfile: DEFAULT_NEW_PROJECT_PROFILE,
+		visionPurpose: "",
+		visionCoreActions: [],
+		visionCycle: "",
 	});
 
 	// Azure DevOps PAT captured from the picker, held in component state ONLY
@@ -1096,6 +1109,12 @@ export function ProjectCreationWizard({
 				projectManagementDetectedType:
 					wizardDetectedPmType ?? prev.projectManagementDetectedType,
 				documentPrompts: wizardDocumentPrompts ?? prev.documentPrompts,
+				// Engagement profile + vision are typed columns on the draft
+				engagementProfile:
+					project.engagementProfile ?? prev.engagementProfile,
+				visionPurpose: project.visionPurpose ?? "",
+				visionCoreActions: project.visionCoreActions ?? [],
+				visionCycle: project.visionCycle ?? "",
 			}));
 
 			// Restore step from wizardState only when the URL hasn't already
@@ -1802,6 +1821,14 @@ export function ProjectCreationWizard({
 					formData.projectManagementContainerName,
 				projectManagementAdditionalContext:
 					formData.projectManagementAdditionalContext,
+				// Engagement profile + vision (typed columns; survive activation)
+				engagementProfile: formData.engagementProfile,
+				visionPurpose: formData.visionPurpose.trim() || undefined,
+				visionCoreActions:
+					formData.visionCoreActions.length > 0
+						? formData.visionCoreActions
+						: undefined,
+				visionCycle: formData.visionCycle.trim() || undefined,
 				// Wizard-only ephemera (server bundles into wizardState JSON)
 				currentStep: overrideStep ?? currentStep,
 				customRequirements:
@@ -2098,6 +2125,14 @@ export function ProjectCreationWizard({
 				organizationId: effectiveOrganizationId,
 				// Pass draftKey so the backend can find and activate the DRAFT
 				draftKey: draftKey || undefined,
+				// Engagement profile + vision (plan §1.2, §1.4)
+				engagementProfile: formData.engagementProfile,
+				visionPurpose: formData.visionPurpose.trim() || undefined,
+				visionCoreActions:
+					formData.visionCoreActions.length > 0
+						? formData.visionCoreActions
+						: undefined,
+				visionCycle: formData.visionCycle.trim() || undefined,
 				// Pass wizard session ID to migrate temp contexts after project creation
 				tempSessionId:
 					formData.tempContextIds.length > 0
@@ -2364,6 +2399,7 @@ export function ProjectCreationWizard({
 						onDuplicateNameChange={setHasDuplicateName}
 						onAzureDevOpsReposChange={handleAzureDevOpsReposChange}
 						projectId={effectiveProjectId ?? undefined}
+						showEngagementProfile={!isEditMode || isDraftResume}
 					/>
 				)}
 				{(!isEditMode || !isLoadingProject) && currentStep === 2 && (

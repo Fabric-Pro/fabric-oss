@@ -39,6 +39,12 @@ const {
 }));
 
 vi.mock("@repo/database", () => ({
+	StoryVersionConflictError: class StoryVersionConflictError extends Error {},
+	StageTransitionBlockedError: class StageTransitionBlockedError extends Error {},
+	GovernedActorRequiredError: class GovernedActorRequiredError extends Error {},
+	StageTransitionConflictError: class StageTransitionConflictError extends Error {},
+	StageApprovalError: class StageApprovalError extends Error {},
+
 	db: {
 		weavePlan: {
 			findFirst: mockPlanFindFirst,
@@ -319,12 +325,17 @@ describe("startExecutionProcedure — prerequisites satisfied (existing behavior
 			context,
 		});
 
+		// The row id is chosen up front so the workflow id is deterministic
+		// and derivable from the row (plan §F2); the run id is a placeholder
+		// until Temporal reports one.
 		expect(mockExecutionCreate).toHaveBeenCalledExactlyOnceWith({
 			data: {
+				id: expect.any(String),
 				planId: "plan-1",
 				projectId: "proj-1",
-				workflowId: expect.stringMatching(/^weave-exec-plan-1-\d+$/),
-				runId: "pending",
+				userStoryId: null,
+				workflowId: expect.stringMatching(/^weave-exec-[a-z0-9]+$/),
+				runId: expect.any(String),
 				status: "PENDING",
 				userId: "user-1",
 				organizationId: "org-1",

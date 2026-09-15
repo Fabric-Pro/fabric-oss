@@ -26,6 +26,7 @@ import {
 	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
+import { codingRunWorkflowId } from "../lib/workflow-id";
 
 export const cancelCodingRunProcedure = tenantProtectedProcedure
 	.use(requirePermission(Permissions.AGENT_DELETE))
@@ -86,24 +87,26 @@ export const cancelCodingRunProcedure = tenantProtectedProcedure
 			});
 		}
 
-		// Signal the Temporal workflow to cancel
-		if (run.workflowId) {
-			try {
-				const temporal = await getTemporalClient();
-				const handle = temporal.workflow.getHandle(run.workflowId);
-				await handle.signal("cancelCodingRun");
-			} catch (error) {
-				// WorkflowNotFoundError means it's already done — safe to mark cancelled.
-				// Any other error (e.g. Temporal unavailable) means the agent may still
-				// be running, so surface it rather than silently marking cancelled.
-				const isNotFound =
-					error instanceof Error &&
-					error.name === "WorkflowNotFoundError";
-				if (!isNotFound) {
-					throw new ORPCError("INTERNAL_SERVER_ERROR", {
-						message: `Failed to cancel workflow: ${error instanceof Error ? error.message : "Unknown error"}`,
-					});
-				}
+		// Signal the Temporal workflow to cancel. The workflow id is
+		// deterministic, so an empty column only means post-start bookkeeping
+		// failed, not that no execution exists: always address the derived id
+		// and let Temporal say whether anything is there.
+		const workflowId = run.workflowId ?? codingRunWorkflowId(run.id);
+		try {
+			const temporal = await getTemporalClient();
+			const handle = temporal.workflow.getHandle(workflowId);
+			await handle.signal("cancelCodingRun");
+		} catch (error) {
+			// WorkflowNotFoundError means it's already done — safe to mark cancelled.
+			// Any other error (e.g. Temporal unavailable) means the agent may still
+			// be running, so surface it rather than silently marking cancelled.
+			const isNotFound =
+				error instanceof Error &&
+				error.name === "WorkflowNotFoundError";
+			if (!isNotFound) {
+				throw new ORPCError("INTERNAL_SERVER_ERROR", {
+					message: `Failed to cancel workflow: ${error instanceof Error ? error.message : "Unknown error"}`,
+				});
 			}
 		}
 

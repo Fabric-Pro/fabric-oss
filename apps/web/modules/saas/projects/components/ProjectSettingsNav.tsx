@@ -5,6 +5,7 @@ import {
 	AlertTriangleIcon,
 	BookOpenIcon,
 	BrainIcon,
+	CompassIcon,
 	FlaskConicalIcon,
 	GlobeIcon,
 	LayoutListIcon,
@@ -20,6 +21,7 @@ import type { ComponentType } from "react";
 
 export type SettingsTab =
 	| "general"
+	| "engagement"
 	| "ai-assistant"
 	| "navigation"
 	| "knowledge"
@@ -47,6 +49,12 @@ const TABS: TabItem[] = [
 		label: "General",
 		icon: SettingsIcon,
 		description: "Name, brief, types, stack",
+	},
+	{
+		id: "engagement",
+		label: "Engagement",
+		icon: CompassIcon,
+		description: "Profile, gates, approvers, vision",
 	},
 	{
 		id: "ai-assistant",

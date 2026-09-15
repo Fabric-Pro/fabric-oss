@@ -15,6 +15,11 @@ import {
 	requireProjectPermission,
 	resolveOrganizationIdForCaller,
 } from "../../../orpc/procedures";
+import {
+	loadStoryReadiness,
+	storyReadinessOutputSchema,
+	toReadinessOutput,
+} from "../../projects/lib/run-readiness";
 import { runInBackground } from "../lib/run-in-background";
 import { runPatternGeneration } from "../lib/run-pattern-generation";
 import { assertWeaveServiceHealthy } from "../lib/weave-preflight";
@@ -34,6 +39,12 @@ const CreatePlanOutputSchema = z.object({
 	success: z.boolean(),
 	planId: z.string(),
 	status: z.string(),
+	/**
+	 * Advisory readiness of the linked feature (plan §F1 / Slice 5). Plan
+	 * creation is never blocked by it; `startExecution` enforces it.
+	 * `null` when the plan is not linked to a feature.
+	 */
+	readiness: storyReadinessOutputSchema.nullable(),
 });
 
 export const createPlanProcedure = protectedProcedure
@@ -78,6 +89,17 @@ export const createPlanProcedure = protectedProcedure
 			localFallback: "http://localhost:8142",
 			serviceDescription: "The Weave planning service",
 		});
+		// Advisory readiness (plan §F1 / Slice 5): computed and returned so
+		// the UI can show gaps while planning; enforcement happens at
+		// `startExecution`. A userStoryId outside this project is NOT_FOUND.
+		const readiness = input.userStoryId
+			? toReadinessOutput(
+					await loadStoryReadiness({
+						storyId: input.userStoryId,
+						projectId: input.projectId,
+					}),
+				)
+			: null;
 
 		// Get project details for Pattern context
 		const project = await db.project.findUnique({
@@ -130,5 +152,6 @@ export const createPlanProcedure = protectedProcedure
 			success: true,
 			planId: plan.id,
 			status: "DRAFT",
+			readiness,
 		};
 	});

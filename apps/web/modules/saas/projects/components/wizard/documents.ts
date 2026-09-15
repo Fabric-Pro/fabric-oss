@@ -24,6 +24,13 @@ export type ProjectDocumentType =
  */
 export { DOCUMENT_TIERS, isDocumentAvailable };
 
+/**
+ * Advisory reading of the same graph (inverted-loop Slice 0,
+ * `documentTiersAdvisory`): callers use it to decide whether to SHOW a
+ * "works best after" hint, never to disable a selection.
+ */
+export const hasRecommendedPrerequisites = isDocumentAvailable;
+
 function getDocumentPrerequisites(type: string): string[] {
 	return DOCUMENT_TIERS[type]?.prerequisites ?? [];
 }

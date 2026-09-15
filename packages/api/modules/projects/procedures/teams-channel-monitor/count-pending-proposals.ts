@@ -27,8 +27,12 @@ export const countPendingProposalsProcedure = tenantProtectedProcedure
 		}),
 	)
 	.handler(async ({ input }) => {
+		// APPLYING is in flight (claimed by an apply workflow) — counted like
+		// APPROVED so the badge does not drop while the apply runs.
 		const count = await countPendingBacklogProposals(input.projectId, [
 			"PENDING",
+			"APPROVED",
+			"APPLYING",
 			"FAILED",
 		]);
 		return { count };

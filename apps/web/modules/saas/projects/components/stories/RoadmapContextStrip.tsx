@@ -79,14 +79,18 @@ function Dot() {
 type Props = {
 	stats: RoadmapStats;
 	/** Active lane grouping — drives the "lanes" tooltip wording. */
-	groupBy: "priority" | "stage";
+	groupBy: "priority" | "stage" | "track" | "phase";
 };
 
 export function RoadmapContextStrip({ stats, groupBy }: Props) {
 	const lanesTip =
 		groupBy === "stage"
 			? "Delivery-stage lanes that currently hold at least one work item."
-			: "Priority lanes (Critical / High / Medium / Low) that currently hold at least one work item.";
+			: groupBy === "track"
+				? "Delivery-track lanes (Spike / Discovery / Specify / Defer / Unclassified) that currently hold at least one work item."
+				: groupBy === "phase"
+					? "Phase × track lanes that currently hold at least one work item."
+					: "Priority lanes (Critical / High / Medium / Low) that currently hold at least one work item.";
 	return (
 		<div className="flex items-center gap-x-3 px-0.5 text-muted-foreground text-sm">
 			{/* Left zone wraps freely (label + stats); the About action stays pinned

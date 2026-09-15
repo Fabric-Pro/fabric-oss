@@ -29,6 +29,7 @@ export default async function SharedFrameEmbedPage({
 			frame={frame.document as FrameDocumentView}
 			embedded
 			slideIndex={slideIndex}
+			projectScoped={Boolean(frame.projectId)}
 		/>
 	);
 }

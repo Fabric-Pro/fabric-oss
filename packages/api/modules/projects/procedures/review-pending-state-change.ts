@@ -4,6 +4,7 @@ import {
 	applyTerminalClose,
 	applyTerminalUnhide,
 	db,
+	enforceStageTransition,
 	hasProjectAccess,
 	recordAudit,
 } from "@repo/database";
@@ -14,6 +15,44 @@ import {
 	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
+import { mapStageTransitionError } from "../lib/stage-transition-errors";
+
+/**
+ * Governed projects (plan §F1): closing a story is a drafting-stage
+ * transition like any other, so when the project has configured stage
+ * approvers the closure is recorded as a StageTransitionRequest and the
+ * story is left unchanged. Returns the request id in that case; `undefined`
+ * means the caller may close the story directly (`applyTerminalClose`).
+ *
+ * Only stories go through this: legacy EPIC/FEATURE pending rows are
+ * no-ops in fabric-dev (the folder tables were dropped).
+ */
+async function requestStageClosureIfGoverned(
+	entityType: string,
+	entityId: string,
+	projectId: string,
+	userId: string,
+	organizationId: string | undefined | null,
+): Promise<string | undefined> {
+	if (entityType !== "STORY") {
+		return undefined;
+	}
+	const story = await db.userStory.findUnique({
+		where: { id: entityId, projectId },
+		select: { id: true, draftingStage: true },
+	});
+	if (!story || story.draftingStage === "CLOSED") {
+		return undefined;
+	}
+	const decision = await enforceStageTransition(db, {
+		storyId: story.id,
+		projectId,
+		toStage: "CLOSED",
+		reason: "system",
+		actor: { userId, organizationId: organizationId ?? null },
+	});
+	return decision.mode === "request" ? decision.requestId : undefined;
+}
 
 export const reviewPendingStateChangeProcedure = tenantProtectedProcedure
 	.use(requireProjectPermission(Permissions.STORY_UPDATE))
@@ -74,48 +113,66 @@ export const reviewPendingStateChangeProcedure = tenantProtectedProcedure
 			});
 		}
 
+		let pendingStageRequestId: string | undefined;
 		if (input.decision === "APPROVED" && change.proposedAction === "HIDE") {
 			try {
-				const { applied } = await applyTerminalClose({
-					entityType: change.entityType,
-					entityId: change.entityId,
-					projectId: input.projectId,
-					userId: user.id,
-					lastEditedByName: user.name ?? null,
-					organizationId: organizationId ?? null,
-					changeDescription:
-						"ADO state sync: item moved to terminal state",
-					// Set the UNHIDE provenance marker for epic/feature: they have no
-					// auto-hide poll path, so a single-row Accept-HIDE is the only
-					// PM-driven close. Without it, an epic/feature hidden via the
-					// single-row UI could never produce a later UNHIDE proposal. STORY
-					// stays false — a human Accept is intentional, not auto-hidden, and
-					// the STORY auto-hide poll path owns that marker.
-					markAutoHidden:
-						change.entityType === "EPIC" ||
-						change.entityType === "FEATURE",
-				});
-
-				// If the entity is missing, already CLOSED, or the guard lost a
-				// concurrent race (applyTerminalClose's { applied } no-op contract),
-				// dismiss the row instead of recording a phantom APPROVED — mirrors
-				// the UNHIDE handling below.
-				if (!applied) {
-					const dismissed = await db.pendingPmStateChange.update({
-						where: { id: input.id },
-						data: {
-							status: "DISMISSED",
-							reviewedAt: new Date(),
-							reviewedBy: user.id,
-						},
+				// Governed review first (plan §F1): a project with configured
+				// stage approvers records the closure as a request and leaves
+				// the story unchanged; the pending change is still marked
+				// APPROVED below so it is not re-proposed.
+				pendingStageRequestId = await requestStageClosureIfGoverned(
+					change.entityType,
+					change.entityId,
+					input.projectId,
+					user.id,
+					organizationId,
+				);
+				if (!pendingStageRequestId) {
+					const { applied } = await applyTerminalClose({
+						entityType: change.entityType,
+						entityId: change.entityId,
+						projectId: input.projectId,
+						userId: user.id,
+						lastEditedByName: user.name ?? null,
+						organizationId: organizationId ?? null,
+						changeDescription:
+							"ADO state sync: item moved to terminal state",
+						// Set the UNHIDE provenance marker for epic/feature: they have no
+						// auto-hide poll path, so a single-row Accept-HIDE is the only
+						// PM-driven close. Without it, an epic/feature hidden via the
+						// single-row UI could never produce a later UNHIDE proposal. STORY
+						// stays false — a human Accept is intentional, not auto-hidden, and
+						// the STORY auto-hide poll path owns that marker.
+						markAutoHidden:
+							change.entityType === "EPIC" ||
+							change.entityType === "FEATURE",
 					});
-					return { change: dismissed };
+
+					// If the entity is missing, already CLOSED, or the guard lost a
+					// concurrent race (applyTerminalClose's { applied } no-op contract),
+					// dismiss the row instead of recording a phantom APPROVED — mirrors
+					// the UNHIDE handling below.
+					if (!applied) {
+						const dismissed = await db.pendingPmStateChange.update({
+							where: { id: input.id },
+							data: {
+								status: "DISMISSED",
+								reviewedAt: new Date(),
+								reviewedBy: user.id,
+							},
+						});
+						return { change: dismissed };
+					}
 				}
 			} catch (error: any) {
 				// If the entity was already deleted, auto-dismiss instead of throwing
+				// P2025 comes from a direct Prisma update; "Story not found" comes
+				// from the stage choke point when the story vanished between the
+				// lookup and the transition (plan §F1).
 				const isNotFound =
 					error?.code === "P2025" ||
-					error?.message?.includes("Record to update not found");
+					error?.message?.includes("Record to update not found") ||
+					/^Story not found/i.test(String(error?.message ?? ""));
 				if (isNotFound) {
 					const dismissed = await db.pendingPmStateChange.update({
 						where: { id: input.id },
@@ -125,9 +182,9 @@ export const reviewPendingStateChangeProcedure = tenantProtectedProcedure
 							reviewedBy: user.id,
 						},
 					});
-					return { change: dismissed };
+					return { change: dismissed, pendingStageRequest: null };
 				}
-				throw error;
+				throw mapStageTransitionError(error);
 			}
 		}
 
@@ -275,5 +332,10 @@ export const reviewPendingStateChangeProcedure = tenantProtectedProcedure
 			},
 		});
 
-		return { change: updated };
+		return {
+			change: updated,
+			pendingStageRequest: pendingStageRequestId
+				? { id: pendingStageRequestId }
+				: null,
+		};
 	});

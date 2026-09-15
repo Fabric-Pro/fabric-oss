@@ -56,6 +56,11 @@ import { PmSyncDiffModal } from "./pm-sync/PmSyncDiffModal";
 import { PmSyncOutageRollup } from "./pm-sync/PmSyncOutageRollup";
 import type { PmSyncError } from "./pm-sync/pmSyncError";
 import { usePersistedProposalDrafts } from "./use-persisted-proposal-drafts";
+import {
+	hasVisionSuggestions,
+	type VisionSuggestions,
+	VisionSuggestionsCard,
+} from "./VisionSuggestionsCard";
 
 // Exported so the per-item detail dialog (`BacklogChangeDetailDialog`)
 // can render the same shape without duplicating the type.
@@ -84,6 +89,7 @@ export type ChangeItem = {
 		| "meeting_transcript"
 		| "notion_page"
 		| "slack_messages"
+		| "scope_document"
 		| "multiple";
 	/**
 	 * PM-supplied override of the AI classifier's kind decision. Sent up by the
@@ -129,7 +135,25 @@ export type ChangeItem = {
 	 * row then renders exactly as it does today.
 	 */
 	routing?: RoutingAnnotation | null;
+	// Scope-intake provenance (plan §Slice 1) — present on SCOPE_DOCUMENT
+	// proposals only.
+	sourceRef?: string;
+	labels?: string[];
+	sourceDependencyRaw?: string;
+	dependsOnRefs?: string[];
+	dependsOnPhases?: string[];
+	sourceChangeKey?: string;
+	deliveryTrack?: "SPIKE" | "DISCOVERY" | "SPECIFY" | "DEFER";
 };
+
+/** `["phase:1","phase:2"]` → `"1, 2"`; undefined when no phase label. */
+function phaseLabelFromLabels(labels?: string[]): string | undefined {
+	const phases = (labels ?? [])
+		.filter((l) => l.startsWith("phase:"))
+		.map((l) => l.slice("phase:".length))
+		.filter((p) => p.length > 0);
+	return phases.length > 0 ? phases.join(", ") : undefined;
+}
 
 /**
  * Map the analyzer's change.type to its default kind for the type selector.
@@ -181,10 +205,17 @@ const VALID_SOURCE_CONTEXTS = new Set([
 	"meeting_transcript",
 	"notion_page",
 	"slack_messages",
+	"scope_document",
 	"multiple",
 ]);
 const VALID_KIND_OVERRIDES: ReadonlySet<ChangeItemKind> =
 	new Set<ChangeItemKind>(["BUG", "FEATURE"]);
+const VALID_DELIVERY_TRACKS = new Set([
+	"SPIKE",
+	"DISCOVERY",
+	"SPECIFY",
+	"DEFER",
+]);
 
 /**
  * Normalize sourceContext — the LLM sometimes returns a comma-separated
@@ -270,6 +301,13 @@ export function normalizeChange(raw: any, forbidEpics = false): ChangeItem {
 	// Helper to coerce null → undefined (Zod z.string().optional() rejects null)
 	const optStr = (v: unknown): string | undefined =>
 		typeof v === "string" ? v : undefined;
+	const optStrArr = (v: unknown): string[] | undefined =>
+		Array.isArray(v)
+			? v.filter((x): x is string => typeof x === "string")
+			: undefined;
+	const rawTrack = optStr(
+		raw.deliveryTrack ?? raw.delivery_track,
+	)?.toUpperCase();
 
 	const rawKindOverride =
 		typeof raw.kindOverride === "string"
@@ -329,6 +367,20 @@ export function normalizeChange(raw: any, forbidEpics = false): ChangeItem {
 		// there is no loose shape to normalize.
 		routing:
 			(raw.routing as RoutingAnnotation | null | undefined) ?? undefined,
+		sourceRef: optStr(raw.sourceRef ?? raw.source_ref),
+		labels: optStrArr(raw.labels),
+		sourceDependencyRaw: optStr(
+			raw.sourceDependencyRaw ?? raw.source_dependency_raw,
+		),
+		dependsOnRefs: optStrArr(raw.dependsOnRefs ?? raw.depends_on_refs),
+		dependsOnPhases: optStrArr(
+			raw.dependsOnPhases ?? raw.depends_on_phases,
+		),
+		sourceChangeKey: optStr(raw.sourceChangeKey ?? raw.source_change_key),
+		deliveryTrack:
+			rawTrack && VALID_DELIVERY_TRACKS.has(rawTrack)
+				? (rawTrack as ChangeItem["deliveryTrack"])
+				: undefined,
 	};
 }
 
@@ -475,6 +527,7 @@ type Props = {
 	proposalStatus?:
 		| "PENDING"
 		| "APPROVED"
+		| "APPLYING"
 		| "APPLIED"
 		| "REJECTED"
 		| "FAILED"
@@ -495,6 +548,12 @@ type Props = {
 	 * tests compile unchanged; defaults to "ai-update".
 	 */
 	panel?: BacklogProposalPanel;
+	/**
+	 * Explore intake (plan Slice 6): purpose / core actions / cycle the
+	 * analysis inferred. Rendered with an "Apply to project vision" action
+	 * when `projectId` is set.
+	 */
+	visionSuggestions?: VisionSuggestions | null;
 	onApprove: (
 		approvedChanges: ChangeItem[],
 		syncToPM: boolean,
@@ -516,6 +575,7 @@ const SOURCE_LABELS: Record<string, string> = {
 	teams_messages: "Teams messages",
 	meeting_transcript: "Meeting transcript",
 	notion_page: "Notion page",
+	scope_document: "Scope document",
 	multiple: "Multiple sources",
 };
 
@@ -563,6 +623,7 @@ export function BacklogChangeProposal({
 	proposalStatus,
 	forbidEpics = false,
 	panel = "ai-update",
+	visionSuggestions,
 	onApprove,
 	onReject,
 	onBacklog,
@@ -1542,6 +1603,14 @@ export function BacklogChangeProposal({
 					{tDecision("checking")}
 				</div>
 			)}
+			{/* Inferred vision (explore intake, plan Slice 6) */}
+			{hasVisionSuggestions(visionSuggestions) && projectId && (
+				<VisionSuggestionsCard
+					suggestions={visionSuggestions}
+					projectId={projectId}
+					organizationId={organizationId}
+				/>
+			)}
 
 			{/* Change Items */}
 			<div className="space-y-2 max-h-[400px] overflow-y-auto">
@@ -1687,6 +1756,27 @@ export function BacklogChangeProposal({
 											<span className="text-xs font-mono text-muted-foreground">
 												{change.existingIdentifier}
 											</span>
+										)}
+										{change.sourceRef && (
+											<span
+												className="text-xs font-mono text-foreground/70"
+												title="Customer line id from the scope document"
+											>
+												{change.sourceRef}
+											</span>
+										)}
+										{phaseLabelFromLabels(
+											change.labels,
+										) && (
+											<Badge
+												variant="outline"
+												className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground border-muted-foreground/30"
+											>
+												Phase{" "}
+												{phaseLabelFromLabels(
+													change.labels,
+												)}
+											</Badge>
 										)}
 										{conflictsByIndex[index]
 											?.hasConflict && (
@@ -1954,13 +2044,31 @@ export function BacklogChangeProposal({
 										</p>
 									)}
 									{/* Source & reasoning */}
-									<div className="flex items-center gap-2 mt-2">
+									<div className="flex flex-wrap items-center gap-2 mt-2">
 										<span className="text-xs text-muted-foreground">
 											Source:{" "}
 											{SOURCE_LABELS[
 												change.sourceContext
 											] ?? change.sourceContext}
 										</span>
+										{change.sourceDependencyRaw && (
+											<span
+												className="text-xs text-muted-foreground"
+												title="Dependency cell as written in the document"
+											>
+												Depends on:{" "}
+												{change.sourceDependencyRaw}
+											</span>
+										)}
+										{change.dependsOnRefs &&
+											change.dependsOnRefs.length > 0 && (
+												<span className="text-xs font-mono text-muted-foreground">
+													After{" "}
+													{change.dependsOnRefs.join(
+														", ",
+													)}
+												</span>
+											)}
 									</div>
 									{change.reasoning && (
 										<p className="text-xs text-muted-foreground italic mt-0.5 line-clamp-2">

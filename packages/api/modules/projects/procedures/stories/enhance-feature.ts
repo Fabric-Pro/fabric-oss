@@ -66,10 +66,18 @@ import { extractMaturationQuestions } from "../../lib/extract-maturation-questio
 import { extractStoryMediaKeysFromContent } from "../../lib/extract-story-media-keys";
 import { logReinjectedAttachments } from "../../lib/log-reinjected-attachments";
 import { getPendingDecisionsIntegrationClause } from "../../lib/record-answer-in-spec";
+import { mapStageTransitionError } from "../../lib/stage-transition-errors";
 import { resolveStoryAttachmentAiContexts } from "../../lib/story-attachment-ai-context";
 import { stripInternalStoryFields } from "../../lib/strip-internal-story-fields";
 import { validatePromptForKind } from "../../lib/validate-prompt-for-kind";
 import { validateStageForKind } from "../../lib/validate-stage-for-kind";
+
+/** Surface a query-layer `pendingStageRequestId` as the wire shape. */
+function toPendingStageRequest(story: unknown) {
+	const id = (story as { pendingStageRequestId?: string } | null)
+		?.pendingStageRequestId;
+	return id ? { id } : null;
+}
 
 const EnhancedFeatureSchema = z.object({
 	description: z
@@ -385,6 +393,16 @@ export const enhanceFeatureProcedure = tenantProtectedProcedure
 			}
 		}
 
+		// Stage-transition actor context (plan §F1): lets the query layer
+		// enforce readiness gates and, under GOVERNED, record a request on
+		// behalf of this user instead of writing the stage.
+		const stageVersionContext = {
+			userId: user.id,
+			organizationId: organizationId ?? undefined,
+			changedBy: user.id,
+			transitionReason: "enhance" as const,
+		};
+
 		// No prompt configured (or prompt is empty). A refresh has nothing to do; a
 		// transition still advances the stage.
 		if (!resolvedPrompt) {
@@ -394,15 +412,23 @@ export const enhanceFeatureProcedure = tenantProtectedProcedure
 					aiEnhanced: false,
 				};
 			}
-			const updatedStory = await updateStoryDraftingStage(
-				input.storyId,
-				input.projectId,
-				effectiveStage,
-				{
-					lastEditedByName: user.name ?? null,
-					lastEditedSource: "AI_MATURATION",
-				},
-			);
+			let updatedStory: Awaited<
+				ReturnType<typeof updateStoryDraftingStage>
+			>;
+			try {
+				updatedStory = await updateStoryDraftingStage(
+					input.storyId,
+					input.projectId,
+					effectiveStage,
+					{
+						...stageVersionContext,
+						lastEditedByName: user.name ?? null,
+						lastEditedSource: "AI_MATURATION",
+					},
+				);
+			} catch (error) {
+				throw mapStageTransitionError(error);
+			}
 			// The stage advanced even though the AI part did not run, so the
 			// test-first trigger owes the same drafting run it would owe on any
 			// other route to Ready for Dev.
@@ -418,6 +444,7 @@ export const enhanceFeatureProcedure = tenantProtectedProcedure
 			return {
 				story: stripInternalStoryFields(updatedStory),
 				aiEnhanced: false,
+				pendingStageRequest: toPendingStageRequest(updatedStory),
 			};
 		}
 
@@ -672,15 +699,23 @@ export const enhanceFeatureProcedure = tenantProtectedProcedure
 					aiEnhanced: false,
 				};
 			}
-			const updatedStory = await updateStoryDraftingStage(
-				input.storyId,
-				input.projectId,
-				effectiveStage,
-				{
-					lastEditedByName: user.name ?? null,
-					lastEditedSource: "AI_MATURATION",
-				},
-			);
+			let updatedStory: Awaited<
+				ReturnType<typeof updateStoryDraftingStage>
+			>;
+			try {
+				updatedStory = await updateStoryDraftingStage(
+					input.storyId,
+					input.projectId,
+					effectiveStage,
+					{
+						...stageVersionContext,
+						lastEditedByName: user.name ?? null,
+						lastEditedSource: "AI_MATURATION",
+					},
+				);
+			} catch (error) {
+				throw mapStageTransitionError(error);
+			}
 			// The stage advanced even though the AI part did not run, so the
 			// test-first trigger owes the same drafting run it would owe on any
 			// other route to Ready for Dev.
@@ -696,6 +731,7 @@ export const enhanceFeatureProcedure = tenantProtectedProcedure
 			return {
 				story: stripInternalStoryFields(updatedStory),
 				aiEnhanced: false,
+				pendingStageRequest: toPendingStageRequest(updatedStory),
 			};
 		}
 
@@ -891,19 +927,28 @@ export const enhanceFeatureProcedure = tenantProtectedProcedure
 
 		// Update content + stage + version together. In refresh mode `effectiveStage`
 		// is the current stage, so the drafting stage is held steady.
-		const updatedStory = await updateStory(
-			input.storyId,
-			input.projectId,
-			{
-				description: enhanced.description,
-				acceptanceCriteria: enhanced.acceptanceCriteria ?? null,
-				draftingStage: effectiveStage,
-			},
-			{
-				lastEditedByName: user.name ?? null,
-				lastEditedSource: "AI_MATURATION",
-			},
-		);
+		// Routed through the choke point (readiness gates, DEFER rule,
+		// GOVERNED review — plan §F1). Under review the content is written
+		// and the stage change becomes a request.
+		let updatedStory: Awaited<ReturnType<typeof updateStory>>;
+		try {
+			updatedStory = await updateStory(
+				input.storyId,
+				input.projectId,
+				{
+					description: enhanced.description,
+					acceptanceCriteria: enhanced.acceptanceCriteria ?? null,
+					draftingStage: effectiveStage,
+				},
+				{
+					...stageVersionContext,
+					lastEditedByName: user.name ?? null,
+					lastEditedSource: "AI_MATURATION",
+				},
+			);
+		} catch (error) {
+			throw mapStageTransitionError(error);
+		}
 
 		// Same trigger as the two non-AI exits above: a successful enhance is
 		// still a route to Ready for Dev.
@@ -959,6 +1004,7 @@ export const enhanceFeatureProcedure = tenantProtectedProcedure
 		return {
 			story: stripInternalStoryFields(updatedStory),
 			aiEnhanced: true,
+			pendingStageRequest: toPendingStageRequest(updatedStory),
 		};
 	});
 

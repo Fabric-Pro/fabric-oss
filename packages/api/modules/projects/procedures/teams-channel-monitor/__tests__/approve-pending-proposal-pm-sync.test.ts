@@ -48,6 +48,9 @@ const { handlers, mocks } = vi.hoisted(() => {
 });
 
 vi.mock("@repo/database", () => ({
+	getAppliedChangeIndexes: vi.fn(async () => new Set<number>()),
+	claimPendingProposalForApply: vi.fn(async () => true),
+
 	getPendingBacklogProposal: mocks.getPendingBacklogProposal,
 	markPendingProposalApproved: mocks.markPendingProposalApproved,
 	markPendingProposalApplied: mocks.markPendingProposalApplied,

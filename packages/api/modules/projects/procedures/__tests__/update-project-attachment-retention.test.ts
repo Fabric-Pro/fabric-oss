@@ -24,7 +24,14 @@ const mockUpdateProject = vi.fn();
 const mockRecordAudit = vi.fn();
 const mockProjectFindUnique = vi.fn();
 
-vi.mock("@repo/database", () => ({
+vi.mock("@repo/database", async () => ({
+	engagementProfileSchema: (await import("zod")).z.enum([
+		"EXPLORE",
+		"PROPOSAL",
+		"GOVERNED",
+		"DELEGATED",
+	]),
+
 	db: {
 		project: {
 			findUnique: (...a: unknown[]) => mockProjectFindUnique(...a),

@@ -69,6 +69,12 @@ export const startAnalysisInputSchema = z.object({
 	 * that omits it.
 	 */
 	conversationId: z.string().max(200).optional(),
+	/**
+	 * Prompt variant (plan Slice 6). "explore" asks for 2–4 SPIKE items and
+	 * vision suggestions instead of a full backlog diff; the EXPLORE
+	 * engagement profile's chat sends it. Omitted = "standard".
+	 */
+	intakeMode: z.enum(["standard", "explore"]).optional(),
 });
 
 export const startAnalysisProcedure = tenantProtectedProcedure
@@ -125,6 +131,7 @@ export const startAnalysisProcedure = tenantProtectedProcedure
 							userPrompt: input.userPrompt,
 							// See input-schema comment above.
 							conversationId: input.conversationId,
+							intakeMode: input.intakeMode,
 						},
 					],
 				}),

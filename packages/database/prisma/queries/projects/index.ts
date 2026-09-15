@@ -34,6 +34,7 @@ export * from "./find-stuck-pm-sync";
 export * from "./function-tags";
 export * from "./generation-dependencies";
 export * from "./has-any-personal-project";
+export * from "./kanban-templates";
 export * from "./list-guest-projects";
 export * from "./log-source";
 export * from "./meeting-action-item-keys";

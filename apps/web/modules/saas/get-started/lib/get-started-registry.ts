@@ -34,6 +34,7 @@ import {
 	SettingsIcon,
 	ShieldCheckIcon,
 	SparklesIcon,
+	TargetIcon,
 	Users2Icon,
 	WorkflowIcon,
 } from "lucide-react";
@@ -449,6 +450,16 @@ const PROJECT_GROUP: GsGroup = {
 			projectTab: "usage",
 			anchor: anchorForProjectTab("usage"),
 			href: projectHref("usage"),
+		},
+		{
+			id: "outcomes",
+			label: "Outcomes",
+			description:
+				"Success metrics, decisions, demos and shipped work in one customer-facing view you can share by link.",
+			icon: TargetIcon,
+			projectTab: "outcomes",
+			anchor: anchorForProjectTab("outcomes"),
+			href: projectHref("outcomes"),
 		},
 		{
 			id: "atlas",
@@ -1053,6 +1064,32 @@ export const GET_STARTED_PAGES: readonly GsPage[] = [
 				title: "A view you can send to someone",
 				body: "Filters, sort and page all live in the address bar, so this exact view is a link — paste it into a ticket and the other person lands on the same rows. It also means Back works: open a case, press Back, and your filters are still there rather than reset to an unfiltered first page.",
 				conditional: true,
+			},
+		],
+	},
+	{
+		tab: "outcomes",
+		label: "Outcomes",
+		icon: TargetIcon,
+		since: "2026-09-15T00:00:00.000Z",
+		components: [
+			{
+				id: "outcomes-metrics",
+				anchor: "outcomes-metrics",
+				title: "Success metrics",
+				body: "A metric is something you and the customer agreed to watch — with a direction (Up or Down is good) and an optional target. Record observations by hand, or give your system a signed webhook; the secret is shown once and only its hash is kept. Drift shows up in the Daily Brief.",
+			},
+			{
+				id: "outcomes-publish",
+				anchor: "outcomes-publish",
+				title: "Share a customer page",
+				body: "Publish creates a token-scoped read-only page with no story ids, descriptions or people on it — only what a customer should see. Copy the link, or revoke it and the link stops working immediately.",
+			},
+			{
+				id: "outcomes-preview",
+				anchor: "outcomes-preview",
+				title: "What the customer sees",
+				body: "The preview is the published page exactly: the project vision, accepted decisions, spike demos you can play with, shipped work with merge dates, and the metrics above. Keep the vision current — it is the first thing they read.",
 			},
 		],
 	},

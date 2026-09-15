@@ -13,6 +13,7 @@ import {
 import {
 	type ClarifyingQuestionFrequency,
 	db,
+	type EngagementProfile,
 	Prisma,
 	type Project,
 	ProjectMemberRole,
@@ -53,10 +54,21 @@ export async function createProject(data: {
 	primaryWebsiteUrl?: string | null;
 	additionalWebsiteUrls?: string[];
 	status?: "DRAFT" | "ACTIVE";
+	// Engagement profile + vision (docs/features/inverted-loop-delivery-tracks.md §1.2, §1.4)
+	engagementProfile?: EngagementProfile;
+	quotedPhases?: string[];
+	visionPurpose?: string;
+	visionCoreActions?: string[];
+	visionCycle?: string;
 }) {
 	return await db.project.create({
 		data: {
 			name: data.name,
+			engagementProfile: data.engagementProfile,
+			quotedPhases: data.quotedPhases ?? [],
+			visionPurpose: data.visionPurpose,
+			visionCoreActions: data.visionCoreActions ?? [],
+			visionCycle: data.visionCycle,
 			description: data.description,
 			projectPhase: data.projectPhase,
 			expectedDevelopmentStartDate: data.expectedDevelopmentStartDate,
@@ -696,6 +708,19 @@ export async function updateProject(
 		hiddenMaturationStatuses?: string[];
 		// Wizard ephemera; nulled on DRAFT → ACTIVE activation
 		wizardState?: Prisma.NullableJsonNullValueInput | Prisma.InputJsonValue;
+		// Engagement profile + governance flags (PROJECT_GOVERNANCE_MANAGE is
+		// enforced by the caller — see update-project.ts)
+		engagementProfile?: EngagementProfile;
+		engagementProfileUpdatedAt?: Date;
+		quotedPhases?: string[];
+		enforceSpecifyGate?: boolean;
+		enforceSpikeGate?: boolean;
+		enforceDiscoveryGate?: boolean;
+		documentTiersAdvisory?: boolean;
+		// Vision fields (advisory; no gate depends on them)
+		visionPurpose?: string | null;
+		visionCoreActions?: string[];
+		visionCycle?: string | null;
 	},
 	organizationId?: string,
 ) {
@@ -1507,6 +1532,12 @@ export async function upsertDraftProjectByKey(data: {
 	projectManagementContainerId?: string | null;
 	projectManagementContainerName?: string | null;
 	projectManagementAdditionalContext?: Prisma.InputJsonValue;
+	// Engagement profile + vision (typed columns; carried into activation)
+	engagementProfile?: EngagementProfile;
+	quotedPhases?: string[];
+	visionPurpose?: string;
+	visionCoreActions?: string[];
+	visionCycle?: string;
 }): Promise<{ project: Project; created: boolean }> {
 	const orgId = data.organizationId ?? null;
 
@@ -1584,6 +1615,21 @@ export async function upsertDraftProjectByKey(data: {
 			updateData.projectManagementAdditionalContext =
 				data.projectManagementAdditionalContext;
 		}
+		if (data.engagementProfile !== undefined) {
+			updateData.engagementProfile = data.engagementProfile;
+		}
+		if (data.quotedPhases !== undefined) {
+			updateData.quotedPhases = data.quotedPhases;
+		}
+		if (data.visionPurpose !== undefined) {
+			updateData.visionPurpose = data.visionPurpose;
+		}
+		if (data.visionCoreActions !== undefined) {
+			updateData.visionCoreActions = data.visionCoreActions;
+		}
+		if (data.visionCycle !== undefined) {
+			updateData.visionCycle = data.visionCycle;
+		}
 		return updateData;
 	};
 
@@ -1654,6 +1700,11 @@ export async function upsertDraftProjectByKey(data: {
 					data.projectManagementContainerName,
 				projectManagementAdditionalContext:
 					data.projectManagementAdditionalContext,
+				engagementProfile: data.engagementProfile,
+				quotedPhases: data.quotedPhases ?? [],
+				visionPurpose: data.visionPurpose,
+				visionCoreActions: data.visionCoreActions ?? [],
+				visionCycle: data.visionCycle,
 			},
 		});
 

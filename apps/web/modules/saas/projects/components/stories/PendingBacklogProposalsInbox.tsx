@@ -120,11 +120,30 @@ type Props = {
 type ProposalStatus =
 	| "PENDING"
 	| "APPROVED"
+	| "APPLYING"
 	| "APPLIED"
 	| "REJECTED"
 	| "FAILED"
 	| "SUPERSEDED"
 	| "BACKLOG";
+
+const SOURCE_BADGE_LABELS: Record<string, string> = {
+	TEAMS_CHANNEL: "Teams channel",
+	TEAMS_CHAT: "Teams chat",
+	SCOPE_DOCUMENT: "Scope document",
+};
+
+function filenameFromMetadata(
+	metadata: Record<string, unknown> | null,
+): string | null {
+	if (!metadata) {
+		return null;
+	}
+	const name =
+		(metadata.originalFilename as string | undefined) ??
+		(metadata.documentTitle as string | undefined);
+	return typeof name === "string" && name.length > 0 ? name : null;
+}
 
 type PendingProposalRow = {
 	id: string;
@@ -157,6 +176,12 @@ type ProposalJson = {
 	summary?: string;
 	contextSummary?: string;
 	changes?: Record<string, unknown>[];
+	/** Explore intake (plan Slice 6). */
+	visionSuggestions?: {
+		purpose?: string | null;
+		coreActions?: string[] | null;
+		cycle?: string | null;
+	} | null;
 };
 
 /**
@@ -303,6 +328,9 @@ function statusPillClasses(status: ProposalStatus): string {
 			return "bg-destructive/10 text-destructive border-destructive/30";
 		case "PENDING":
 			return "bg-highlight/15 text-highlight border-highlight/30";
+		case "APPROVED":
+		case "APPLYING":
+			return "bg-secondary/10 text-secondary border-secondary/30";
 		default:
 			return "bg-muted text-muted-foreground border-foreground/10";
 	}
@@ -648,6 +676,28 @@ export function PendingBacklogProposalsInbox({
 			approvedChanges: unknown[];
 			syncToPM: boolean;
 		}) => {
+			// Scope-document proposals (inverted-loop Slice 1) are applied
+			// through the backlog apply workflow with the proposal id: the
+			// handler claims the row (plan §F3) and every change is recorded
+			// with an application key, so a retried apply cannot create the
+			// same items twice. The channel-monitor approve path materialises
+			// creates synchronously and must not be used for them.
+			if (payload.source === "SCOPE_DOCUMENT") {
+				const dispatched =
+					await orpcClient.projects.backlog.applyChanges({
+						projectId,
+						organizationId,
+						proposalId: payload.proposalId,
+						approvedChanges: payload.approvedChanges as never,
+						syncToPM: false,
+					});
+				return {
+					status: dispatched.workflowId ? "dispatched" : "failed",
+					errors: dispatched.workflowId
+						? undefined
+						: [dispatched.message],
+				} as const;
+			}
 			return await endpointForSource(payload.source).approve({
 				projectId,
 				organizationId,
@@ -666,7 +716,16 @@ export function PendingBacklogProposalsInbox({
 				pmConfig,
 			});
 		},
-		onSuccess: (result) => {
+		onSuccess: (outcome) => {
+			// Two shapes land here: the channel-monitor approve result and the
+			// dispatch stub for scope documents (above). Only the fields the
+			// toasts read are looked at.
+			const result = outcome as {
+				status?: string;
+				errors?: string[];
+				skipped?: Array<{ existingIdentifier: string; title: string }>;
+				createdStoryIds?: string[];
+			};
 			if (result?.status === "failed") {
 				toast.error("Proposal approval failed", {
 					description:
@@ -689,6 +748,11 @@ export function PendingBacklogProposalsInbox({
 						description: `${result.skipped.length} already existed: ${skippedList}`,
 					},
 				);
+			} else if (result?.status === "dispatched") {
+				toast.success("Proposal approved", {
+					description:
+						"Applying in the background — items appear on the roadmap as they are created.",
+				});
 			} else {
 				toast.success("Proposal approved");
 			}
@@ -839,6 +903,9 @@ export function PendingBacklogProposalsInbox({
 
 	const proposals = listQuery.data ?? [];
 	const pendingRows = proposals.filter((p) => p.status === "PENDING");
+	const inFlightRows = proposals.filter(
+		(p) => p.status === "APPROVED" || p.status === "APPLYING",
+	);
 	const failedRows = proposals.filter((p) => p.status === "FAILED");
 	// Rejected rows (stored as BACKLOG) come from their own query and are never
 	// mixed into the active `proposals` list, so the Pending/Failed groups and
@@ -1033,6 +1100,24 @@ export function PendingBacklogProposalsInbox({
 						</div>
 					</section>
 				)}
+				{inFlightRows.length > 0 && (
+					<section>
+						<span className="editorial-label">
+							Applying ({inFlightRows.length})
+						</span>
+						<div className="mt-3 space-y-2">
+							{inFlightRows.map((proposal) => (
+								<ProposalRow
+									key={proposal.id}
+									proposal={proposal}
+									onSelect={() =>
+										setSelectedProposalId(proposal.id)
+									}
+								/>
+							))}
+						</div>
+					</section>
+				)}
 				{failedRows.length > 0 && (
 					<section
 						ref={failedSectionRef}
@@ -1101,6 +1186,7 @@ export function PendingBacklogProposalsInbox({
 		const changes = proposalJson.changes ?? [];
 		const summary = proposalJson.summary ?? detail.summary ?? "";
 		const contextSummary = proposalJson.contextSummary ?? "";
+		const visionSuggestions = proposalJson.visionSuggestions ?? null;
 		const metadata =
 			(detail.sourceMetadata as Record<string, unknown> | null) ?? null;
 		const channelName = channelNameFromMetadata(metadata);
@@ -1120,6 +1206,10 @@ export function PendingBacklogProposalsInbox({
 			decisionPrecheck?.status === "conflicts"
 				? countDistinctDecisions(decisionPrecheck.findings)
 				: 0;
+		const filename = filenameFromMetadata(metadata);
+		const isScopeDocument = detail.source === "SCOPE_DOCUMENT";
+		const isInFlight =
+			detail.status === "APPLYING" || detail.status === "APPROVED";
 
 		return (
 			<div className="space-y-4">
@@ -1135,6 +1225,35 @@ export function PendingBacklogProposalsInbox({
 							: "Back to inbox"}
 					</button>
 				</div>
+
+				{isScopeDocument && (
+					<div className="rounded-lg border border-foreground/10 bg-muted/40 p-3 text-sm">
+						<div className="flex flex-wrap items-center gap-2">
+							<FileTextIcon className="size-3.5 text-muted-foreground" />
+							<span className="text-muted-foreground">
+								Extracted from scope document
+							</span>
+							{filename && (
+								<span className="font-medium text-foreground">
+									{filename}
+								</span>
+							)}
+							{typeof metadata?.rowCount === "number" && (
+								<span className="text-xs text-muted-foreground">
+									{metadata.rowCount} line(s)
+								</span>
+							)}
+						</div>
+					</div>
+				)}
+
+				{isInFlight && (
+					<div className="flex items-center gap-2 rounded-lg border border-secondary/30 bg-secondary/10 p-3 text-sm text-secondary">
+						<Loader2Icon className="size-4 motion-safe:animate-spin" />
+						This proposal is being applied. Changes will appear on
+						the roadmap when it finishes.
+					</div>
+				)}
 
 				{(channelName || threadLink) && (
 					<div className="rounded-lg border border-foreground/10 bg-muted/40 p-3 text-sm">
@@ -1284,6 +1403,7 @@ export function PendingBacklogProposalsInbox({
 					hasPMTool={hasPMTool}
 					pmToolName={pmToolName}
 					defaultSyncToPM={false}
+					visionSuggestions={visionSuggestions}
 					// Scope persisted review state to the proposal id so a
 					// PM who walks away mid-review and comes back to the
 					// inbox lands on the same selection / reviewed-row /
@@ -1433,6 +1553,8 @@ function ProposalRow({
 }) {
 	const metadata =
 		(proposal.sourceMetadata as Record<string, unknown> | null) ?? null;
+	const filename = filenameFromMetadata(metadata);
+	const isScopeDocument = proposal.source === "SCOPE_DOCUMENT";
 	const createdLabel = formatDistanceToNow(new Date(proposal.createdAt), {
 		addSuffix: true,
 	});
@@ -1448,6 +1570,11 @@ function ProposalRow({
 						source={proposal.source}
 						sourceMetadata={metadata}
 					/>
+					{isScopeDocument && filename && (
+						<span className="max-w-[16rem] truncate text-xs text-foreground/70">
+							{filename}
+						</span>
+					)}
 					<span
 						className={cn(
 							"inline-flex items-center rounded-md border px-2 py-0.5 text-xs",

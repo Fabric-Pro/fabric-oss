@@ -1,11 +1,30 @@
 "use client";
 
+import {
+	KANBAN_COLUMN_TEMPLATES,
+	type KanbanColumnTemplateId,
+} from "@repo/database/src/kanban-column-templates";
 import { useRegisterFabricAgentContext } from "@saas/agents/components/FabricAgentLauncher";
+import { useOrganizationContext } from "@saas/organizations/hooks/use-organization-context";
+import { BacklogChatPanel } from "@saas/projects/components/stories/BacklogChatPanel";
 import { useKanbanStatus } from "@saas/projects/hooks/use-kanban-status";
+import { shouldAutoOpenBacklogChat } from "@saas/projects/lib/backlog-chat-intake";
 import { kanbanBridge } from "@saas/projects/lib/kanban-bridge";
 import { buildStandaloneKanbanUrl } from "@saas/projects/lib/kanban-launch";
+import { useConfirmationAlert } from "@saas/shared/components/ConfirmationAlertProvider";
 import { FabricLogo } from "@saas/shared/components/FabricLogo";
+import { orpcClient } from "@shared/lib/orpc-client";
+import { orpc } from "@shared/lib/orpc-query-utils";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@ui/components/button";
+import {
+	DropdownMenu,
+	DropdownMenuContent,
+	DropdownMenuItem,
+	DropdownMenuLabel,
+	DropdownMenuSeparator,
+	DropdownMenuTrigger,
+} from "@ui/components/dropdown-menu";
 import {
 	Tooltip,
 	TooltipContent,
@@ -16,9 +35,11 @@ import {
 	ArrowLeftIcon,
 	ArrowUpIcon,
 	CheckIcon,
+	ColumnsIcon,
 	CopyIcon,
 	ExternalLinkIcon,
 	Loader2Icon,
+	MessageSquareIcon,
 	RefreshCwIcon,
 	TerminalIcon,
 } from "lucide-react";
@@ -88,6 +109,144 @@ export function ProjectKanbanRouteView({
 
 	const router = useRouter();
 	const tStories = useTranslations("tooltips.stories");
+	const { organizationId } = useOrganizationContext();
+	const queryClient = useQueryClient();
+	const { confirm } = useConfirmationAlert();
+
+	// Project + backlog: the engagement profile decides whether the chat opens
+	// by itself (inverted-loop Slice 6) and names the CopilotKit runtime.
+	const { data: projectData } = useQuery(
+		orpc.projects.get.queryOptions({
+			input: { id: projectId, organizationId },
+		}),
+	);
+	const { data: storiesData, isLoading: storiesLoading } = useQuery(
+		orpc.projects.stories.list.queryOptions({
+			input: { projectId, organizationId },
+		}),
+	);
+	const { data: statusesData } = useQuery(
+		orpc.projects.stories.statuses.list.queryOptions({
+			input: { projectId, organizationId },
+		}),
+	);
+	const statuses = useMemo(
+		() =>
+			[...(statusesData?.statuses ?? [])].sort(
+				(a, b) => a.order - b.order,
+			),
+		[statusesData?.statuses],
+	);
+
+	// AI Backlog Update chat. Under EXPLORE an empty backlog opens straight
+	// into it, once per mount so closing it stays closed.
+	const [chatOpen, setChatOpen] = useState(false);
+	const autoOpenedChatRef = useRef(false);
+	useEffect(() => {
+		if (autoOpenedChatRef.current) {
+			return;
+		}
+		if (
+			shouldAutoOpenBacklogChat({
+				profile: projectData?.project?.engagementProfile,
+				backlogLoaded: !storiesLoading && storiesData !== undefined,
+				storyCount: storiesData?.stories?.length ?? 0,
+			})
+		) {
+			autoOpenedChatRef.current = true;
+			setChatOpen(true);
+		}
+	}, [projectData?.project?.engagementProfile, storiesLoading, storiesData]);
+
+	// Column title presets (inverted-loop Slice 0). Titles apply by position
+	// to the existing columns; missing columns are created. Two-phase rename
+	// (unique temp names first) so no intermediate step trips the per-project
+	// unique name constraint.
+	const [applyingTemplate, setApplyingTemplate] = useState(false);
+	const applyColumnTemplate = useCallback(
+		(templateId: KanbanColumnTemplateId) => {
+			const template = KANBAN_COLUMN_TEMPLATES.find(
+				(t) => t.id === templateId,
+			);
+			if (!template) {
+				return;
+			}
+			const toCreate = Math.max(
+				0,
+				template.titles.length - statuses.length,
+			);
+			confirm({
+				title: `Apply "${template.name}" preset?`,
+				message:
+					toCreate > 0
+						? `${template.description}. ${toCreate} new column${toCreate > 1 ? "s" : ""} will be created.`
+						: template.description,
+				confirmLabel: "Apply",
+				cancelLabel: "Cancel",
+				onConfirm: async () => {
+					setApplyingTemplate(true);
+					try {
+						const tempPrefix = `__col_${Date.now()}_`;
+						for (const [i, status] of statuses.entries()) {
+							await orpcClient.projects.stories.statuses.update({
+								projectId,
+								organizationId,
+								statusId: status.id,
+								name: `${tempPrefix}${i}`,
+							});
+						}
+						for (const [i, title] of template.titles.entries()) {
+							const existing = statuses[i];
+							if (existing) {
+								await orpcClient.projects.stories.statuses.update(
+									{
+										projectId,
+										organizationId,
+										statusId: existing.id,
+										name: title,
+									},
+								);
+							} else {
+								await orpcClient.projects.stories.statuses.create(
+									{
+										projectId,
+										organizationId,
+										name: title,
+										color: "#6B7280",
+										order: i,
+									},
+								);
+							}
+						}
+						// Columns beyond the template keep their position but
+						// get their original title back.
+						for (const [i, status] of statuses.entries()) {
+							if (i >= template.titles.length) {
+								await orpcClient.projects.stories.statuses.update(
+									{
+										projectId,
+										organizationId,
+										statusId: status.id,
+										name: status.name,
+									},
+								);
+							}
+						}
+						await queryClient.invalidateQueries({
+							queryKey:
+								orpc.projects.stories.statuses.list.queryKey({
+									input: { projectId, organizationId },
+								}),
+						});
+						kanbanBridge.pullFromFabric();
+					} finally {
+						setApplyingTemplate(false);
+					}
+				},
+			});
+		},
+		[confirm, organizationId, projectId, queryClient, statuses],
+	);
 	const { prepareKanbanLaunch } = useKanbanStatus();
 	const [iframeUrl, setIframeUrl] = useState<string | null>(null);
 	const [standaloneUrl, setStandaloneUrl] = useState<string | null>(null);
@@ -252,36 +411,133 @@ export function ProjectKanbanRouteView({
 					{tStories("kanbanBackToRoadmap")}
 				</TooltipContent>
 			</Tooltip>
-			{standaloneUrl && (
+			<div className="flex items-center gap-2">
+				{/* AI Update — the same backlog chat the Roadmap hosts */}
 				<Tooltip>
 					<TooltipTrigger asChild>
 						<Button
-							variant="outline"
+							variant={chatOpen ? "secondary" : "outline"}
 							size="sm"
-							onClick={() =>
-								window.open(
-									"http://localhost:3484",
-									"_blank",
-									"noopener,noreferrer",
-								)
-							}
+							onClick={() => setChatOpen((prev) => !prev)}
+							aria-pressed={chatOpen}
 						>
-							<ExternalLinkIcon className="mr-2 h-4 w-4" />
-							Open in tab
+							<MessageSquareIcon className="mr-2 h-4 w-4" />
+							AI Update
 						</Button>
 					</TooltipTrigger>
 					<TooltipContent>
-						{tStories("kanbanOpenInTab")}
+						{tStories("aiUpdateRoadmap")}
 					</TooltipContent>
 				</Tooltip>
-			)}
+				{/* Column title presets (inverted-loop Slice 0) */}
+				<DropdownMenu>
+					<Tooltip>
+						<TooltipTrigger asChild>
+							<DropdownMenuTrigger asChild>
+								<Button
+									variant="outline"
+									size="sm"
+									disabled={
+										applyingTemplate ||
+										statuses.length === 0
+									}
+									aria-label="Apply a column title preset"
+								>
+									{applyingTemplate ? (
+										<Loader2Icon className="mr-2 h-4 w-4 animate-spin" />
+									) : (
+										<ColumnsIcon className="mr-2 h-4 w-4" />
+									)}
+									Column preset
+								</Button>
+							</DropdownMenuTrigger>
+						</TooltipTrigger>
+						<TooltipContent className="max-w-xs text-xs leading-5">
+							{tStories("kanbanColumnPreset")}
+						</TooltipContent>
+					</Tooltip>
+					<DropdownMenuContent align="end" className="w-72">
+						<DropdownMenuLabel>
+							Apply column titles
+						</DropdownMenuLabel>
+						<DropdownMenuSeparator />
+						{KANBAN_COLUMN_TEMPLATES.map((template) => (
+							<DropdownMenuItem
+								key={template.id}
+								onSelect={() =>
+									applyColumnTemplate(template.id)
+								}
+								className="flex flex-col items-start gap-0.5"
+							>
+								<span className="font-medium">
+									{template.name}
+								</span>
+								<span className="text-xs text-muted-foreground">
+									{template.description}
+								</span>
+							</DropdownMenuItem>
+						))}
+					</DropdownMenuContent>
+				</DropdownMenu>
+				{standaloneUrl && (
+					<Tooltip>
+						<TooltipTrigger asChild>
+							<Button
+								variant="outline"
+								size="sm"
+								onClick={() =>
+									window.open(
+										"http://localhost:3484",
+										"_blank",
+										"noopener,noreferrer",
+									)
+								}
+							>
+								<ExternalLinkIcon className="mr-2 h-4 w-4" />
+								Open in tab
+							</Button>
+						</TooltipTrigger>
+						<TooltipContent>
+							{tStories("kanbanOpenInTab")}
+						</TooltipContent>
+					</Tooltip>
+				)}
+			</div>
 		</div>
 	);
+
+	// The chat mounts beside whichever state the board is in (loading,
+	// offline, live), so the Explore auto-open never depends on the external
+	// Kanban being reachable.
+	const chatPanel = chatOpen ? (
+		<BacklogChatPanel
+			organizationId={organizationId ?? null}
+			projectId={projectId}
+			projectName={projectData?.project?.name ?? "Project"}
+			engagementProfile={projectData?.project?.engagementProfile}
+			hasTeamsIntegration={false}
+			hasSlackIntegration={false}
+			hasNotionIntegration={false}
+			hasPMTool={false}
+			pmToolName="PM Tool"
+			backlogSummary={`${storiesData?.stories?.length ?? 0} work items across ${statuses.length} statuses`}
+			onClose={() => setChatOpen(false)}
+			onChangesApplied={() => {
+				void queryClient.invalidateQueries({
+					queryKey: orpc.projects.stories.list.queryKey({
+						input: { projectId, organizationId },
+					}),
+				});
+				kanbanBridge.pullFromFabric();
+			}}
+		/>
+	) : null;
 
 	if (kanbanNotRunning) {
 		return (
 			<div className="flex h-full flex-col">
 				{headerBar}
+				{chatPanel}
 				<div className="flex flex-1 items-center justify-center overflow-auto p-8">
 					<div className="w-full max-w-sm space-y-8">
 						{/* Logo + heading */}
@@ -367,6 +623,7 @@ export function ProjectKanbanRouteView({
 		return (
 			<div className="flex h-full flex-col">
 				{headerBar}
+				{chatPanel}
 				<div className="flex flex-1 items-center justify-center p-8">
 					<div className="w-full max-w-md space-y-4 text-center">
 						<p className="text-sm text-muted-foreground">{error}</p>
@@ -394,6 +651,7 @@ export function ProjectKanbanRouteView({
 		return (
 			<div className="flex h-full flex-col">
 				{headerBar}
+				{chatPanel}
 				<div className="flex flex-1 items-center justify-center">
 					<div className="flex items-center gap-2 text-sm text-muted-foreground">
 						<Loader2Icon className="h-4 w-4 animate-spin" />
@@ -407,6 +665,7 @@ export function ProjectKanbanRouteView({
 	return (
 		<div className="flex h-full flex-col">
 			{headerBar}
+			{chatPanel}
 			<div
 				ref={containerRef}
 				className="relative min-h-0 flex-1"

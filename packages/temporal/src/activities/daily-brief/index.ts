@@ -31,6 +31,16 @@ export {
 	collectMeetingTranscripts,
 } from "./collect-meeting-transcripts";
 export {
+	buildMetricDriftActions,
+	type CollectMetricDriftInput,
+	type CollectMetricDriftOutput,
+	collectMetricDrift,
+	evaluateMetricDrift,
+	METRIC_STALE_DAYS,
+	type MetricDriftCandidate,
+	metricsTabLink,
+} from "./collect-metric-drift";
+export {
 	type CollectStoryActivityInput,
 	type CollectStoryActivityOutput,
 	collectStoryActivity,
@@ -62,6 +72,12 @@ export {
 	persistDailyBriefActivity,
 } from "./persist-daily-brief";
 export * from "./reduce-storylines";
+export {
+	normalizePullRequestUrl,
+	type StampMergedCodingRunsInput,
+	type StampMergedCodingRunsOutput,
+	stampMergedCodingRuns,
+} from "./stamp-merged-coding-runs";
 export {
 	type SummarizeDailyBriefInput,
 	type SummarizeDailyBriefOutput,
