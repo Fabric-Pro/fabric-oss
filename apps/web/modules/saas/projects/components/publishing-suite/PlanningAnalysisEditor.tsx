@@ -43,8 +43,12 @@
  * the rail is fine without it.
  */
 
+import { DiffPreviewPanes } from "@saas/projects/components/DiffPreviewPanes";
+import { DiffReviewBar } from "@saas/projects/components/DiffReviewBar";
+import { DiffViewModeToggle } from "@saas/projects/components/DiffViewModeToggle";
 import { DocumentTocRail } from "@saas/projects/components/DocumentTocRail";
 import { EditorToolbar } from "@saas/projects/components/EditorToolbar";
+import { useDiffPreview } from "@saas/projects/hooks/use-diff-view-mode";
 import {
 	fromMarkdown,
 	repairMarkdownDocument,
@@ -65,6 +69,10 @@ import {
 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
+// Every diff rule in this stylesheet is scoped under `.streaming-diff-active`,
+// so without the import the `diffInsert` / `diffDelete` marks are in the
+// document and invisible — a review nobody can see.
+import "../DocumentEditor.css";
 
 const SERIALIZATION_FAILURE_MESSAGE =
 	"Couldn't save your changes — the editor content could not be read. Your text is still here; please copy it somewhere safe and reload the page.";
@@ -105,21 +113,27 @@ const EDITOR_REGION_CLASS =
 const EDITOR_REGION_HEIGHT_CLASS = "h-[clamp(24rem,60vh,44rem)]";
 
 /**
- * The reading measure. 3xl is the cap the topic page already uses for prose
- * (`TopicItemPage`'s pitch paragraph); the analysis rendered full-bleed before
- * this, at line lengths no one reads comfortably.
+ * The prose column: the full width the region gives it.
  *
- * LEFT-ALIGNED, not centred, and that is the whole point of this comment.
- * `mx-auto` here put a wide blank gutter between the contents rail and the
- * text: the rail is `shrink-0` and the measure caps at 768px, so the auto
- * margins split whatever the rail left over and pushed the document away from
- * the very thing it is meant to sit beside. The pattern this cites —
- * `TopicItemPage`'s pitch paragraph — is `max-w-3xl` with NO `mx-auto`, and
- * the two other consumers of `DocumentTocRail` (`DocumentEditor`,
- * `StoryWorkspace`) cap nothing at all, so neither had ever exercised a capped
- * column against the rail's asymmetric layout.
+ * This used to cap at `max-w-3xl` as a reading measure. The cap is gone
+ * deliberately, for parity with the Full Specification editor, which caps
+ * nothing — the two surfaces are the same editor over the same kind of
+ * document, and one of them reading half as wide as the other is the single
+ * most visible difference between them.
+ *
+ * The cap was NOT arbitrary and the reasoning is worth keeping: uncapped prose
+ * runs to line lengths that are uncomfortable to read on a wide monitor. What
+ * changed is where the bound comes from. `DocumentTocRail` on the left and the
+ * assistant rail on the right already bracket this column, which is exactly how
+ * `DocumentEditor` and `StoryWorkspace` — the rail's two other consumers, both
+ * uncapped — stay readable without a cap of their own.
+ *
+ * LEFT-ALIGNED, and that part still matters: `mx-auto` here put a wide blank
+ * gutter between the contents rail and the text, because the rail is
+ * `shrink-0` and the auto margins split whatever it left over, pushing the
+ * document away from the very thing it is meant to sit beside.
  */
-const PROSE_MEASURE_CLASS = "w-full max-w-3xl";
+const PROSE_MEASURE_CLASS = "w-full";
 
 interface SaveAnalysisRevisionResult {
 	saved: true;
@@ -168,6 +182,30 @@ export interface PlanningAnalysisEditorProps {
 	 * that made the stale-analysis banner necessary in the first place.
 	 */
 	isLocked?: boolean;
+	/**
+	 * A proposed rewrite is painted into the document as diff marks and is
+	 * waiting for the author's decision. Absent when nothing is under review.
+	 *
+	 * The editor is handed the DIFF as its `prose` seed, not the proposal —
+	 * `diffPartialText` emits marker tokens that `fromMarkdown` turns into
+	 * `<ins class="diff-ins">` / `<del class="diff-del">`, which the
+	 * `advancedExtensions` schema already binds. So a review needs no new
+	 * effect here: it is an ordinary seed that happens to carry marks.
+	 *
+	 * NEITHER CALLBACK SAVES. `onAcceptAll` receives the document with the
+	 * marks resolved — insertions kept, deletions dropped — and the caller
+	 * re-seeds the editor with it, unsaved. The author's own Save stays the
+	 * only writer, which is the rule Fizzy #1929 bought and the promise the
+	 * assistant's own card already makes.
+	 */
+	diffReview?: {
+		/**
+		 * The merged document, or `null` when serialization failed — the same
+		 * `null`-not-`""` contract `handleSave` treats as refusal.
+		 */
+		onAcceptAll: (merged: string | null) => void;
+		onRejectAll: () => void;
+	} | null;
 	onSaved?: (version: number) => void;
 }
 
@@ -181,6 +219,7 @@ export function PlanningAnalysisEditor({
 	footer,
 	canEdit,
 	isLocked = false,
+	diffReview = null,
 	onSaved,
 }: PlanningAnalysisEditorProps) {
 	const [viewMode, setViewMode] = useState<"rich" | "raw">("rich");
@@ -210,6 +249,21 @@ export function PlanningAnalysisEditor({
 	useEffect(() => {
 		editor?.setEditable(canEdit && !isLocked);
 	}, [editor, canEdit, isLocked]);
+
+	const isDiffReviewActive = diffReview !== null;
+	const {
+		diffViewMode,
+		setDiffViewMode,
+		diffViews,
+		effectiveDiffViewMode,
+		showDiffPreviewPanes,
+	} = useDiffPreview(editor, isDiffReviewActive);
+
+	// Rich mode is the only one that can show a review: raw mode renders
+	// `rawContent`, which is seeded from the plain prose and carries none of
+	// the marks. Forcing it also removes the question of what the Markdown
+	// toggle should do to a half-reviewed document.
+	const effectiveViewMode = isDiffReviewActive ? "rich" : viewMode;
 
 	const saveMutation = useMutation(
 		orpc.projects.publishingSuite.saveAnalysisRevision.mutationOptions({
@@ -329,6 +383,10 @@ export function PlanningAnalysisEditor({
 				className={cn(
 					EDITOR_REGION_CLASS,
 					canEdit && EDITOR_REGION_HEIGHT_CLASS,
+					// Every diff rule in `DocumentEditor.css` is scoped under
+					// this class. Without it the marks are in the document and
+					// render as unstyled <ins>/<del>.
+					isDiffReviewActive && "streaming-diff-active",
 				)}
 				// The height is the contract, and jsdom has no layout engine
 				// to measure it with — only the rule that produces one. This
@@ -352,42 +410,71 @@ export function PlanningAnalysisEditor({
 								<EditorToolbar editor={editor} />
 							) : null}
 						</div>
-						<Button
-							type="button"
-							variant="ghost"
-							size="sm"
-							className="shrink-0"
-							onClick={handleViewModeToggle}
-						>
-							{viewMode === "rich" ? (
-								<>
-									<Code2Icon
-										className="size-4"
-										aria-hidden="true"
-									/>
-									Markdown
-								</>
-							) : (
-								<>
-									<EyeIcon
-										className="size-4"
-										aria-hidden="true"
-									/>
-									Rich text
-								</>
-							)}
-						</Button>
+						{/* Inline / Side by side / Full preview replaces the
+						    raw/rich toggle for the length of a review: raw
+						    mode cannot render the marks, and two toggles
+						    competing for the same corner is how a reader
+						    loses track of which view they are in. */}
+						{isDiffReviewActive ? (
+							<DiffViewModeToggle
+								value={diffViewMode}
+								onChange={setDiffViewMode}
+								className="shrink-0"
+							/>
+						) : (
+							<Button
+								type="button"
+								variant="ghost"
+								size="sm"
+								className="shrink-0"
+								onClick={handleViewModeToggle}
+							>
+								{viewMode === "rich" ? (
+									<>
+										<Code2Icon
+											className="size-4"
+											aria-hidden="true"
+										/>
+										Markdown
+									</>
+								) : (
+									<>
+										<EyeIcon
+											className="size-4"
+											aria-hidden="true"
+										/>
+										Rich text
+									</>
+								)}
+							</Button>
+						)}
 					</div>
+				) : null}
+
+				{/* The review bar sits between the toolbar and the document,
+				    inside the height-owning region, so per-change navigation
+				    scrolls the document under a bar that stays put. */}
+				{diffReview !== null && canEdit ? (
+					<DiffReviewBar
+						editor={editor}
+						mode={effectiveDiffViewMode}
+						onAcceptAll={() =>
+							diffReview.onAcceptAll(
+								getEditorMarkdownForSave(editor),
+							)
+						}
+						onRejectAll={diffReview.onRejectAll}
+					/>
 				) : null}
 
 				<div className="flex min-h-0 flex-1 overflow-hidden">
 					{/* Hidden in raw mode, exactly as `StoryWorkspace` hides
 					    it: the Textarea has no heading DOM to navigate. */}
-					{viewMode === "rich" ? (
+					{effectiveViewMode === "rich" ? (
 						<DocumentTocRail editor={editor} />
 					) : null}
 
-					{viewMode === "rich" ? (
+					{effectiveViewMode === "rich" ? (
 						<div className="min-h-0 flex-1 overflow-y-auto">
 							{/* The measure is a wrapper rather than a class on
 							    `EditorContent`: `prose` carries its own
@@ -399,16 +486,36 @@ export function PlanningAnalysisEditor({
 							    shrinks back to the text. Content taller than
 							    the box overflows them and the scroll container
 							    above scrolls it, as before. */}
-							<div className={`${PROSE_MEASURE_CLASS} h-full`}>
+							{/* HIDDEN, not unmounted, while the panes are
+							    up: the pending diff lives in this editor's
+							    document, and unmounting it would throw the
+							    review away on a view change. */}
+							<div
+								className={cn(
+									PROSE_MEASURE_CLASS,
+									"h-full",
+									showDiffPreviewPanes && "hidden",
+								)}
+								data-testid="planning-analysis-prose-measure"
+							>
 								<EditorContent
 									editor={editor}
 									className="prose prose-sm h-full max-w-none dark:prose-invert"
 								/>
 							</div>
+							{showDiffPreviewPanes && diffViews ? (
+								<DiffPreviewPanes
+									mode={effectiveDiffViewMode}
+									derived={diffViews}
+								/>
+							) : null}
 						</div>
 					) : (
 						<div className="min-h-0 flex-1 overflow-hidden p-4">
-							<div className={`${PROSE_MEASURE_CLASS} h-full`}>
+							<div
+								className={`${PROSE_MEASURE_CLASS} h-full`}
+								data-testid="planning-analysis-prose-measure"
+							>
 								<Textarea
 									value={rawContent}
 									onChange={(e) =>

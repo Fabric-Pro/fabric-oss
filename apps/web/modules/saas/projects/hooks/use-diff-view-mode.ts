@@ -4,10 +4,10 @@ import type { Editor } from "@tiptap/react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
 	DEFAULT_DIFF_VIEW_MODE,
-	DIFF_VIEW_MODE_STORAGE_KEY,
 	type DerivedDiffViews,
-	deriveDiffViews,
+	DIFF_VIEW_MODE_STORAGE_KEY,
 	type DiffViewMode,
+	deriveDiffViews,
 	normalizeDiffViewMode,
 } from "../lib/diff-view-modes";
 
@@ -106,7 +106,12 @@ export function useDiffPreview(
 		// `editor.state.doc` is a dependency so the panes re-derive if the
 		// diffed document changes in place while a review stays active — mirrors
 		// the DiffReviewBar `ranges` memo, which guards the same way.
-	}, [editor, mode, isDiffReviewActive, editor?.state.doc]);
+		// `state` is optional-chained as well as `editor`: the optional chain on
+		// `editor` alone throws for any editor handed in before ProseMirror has
+		// attached its state. Every caller reaches this hook on the render that
+		// creates the editor, so the window is real, and a dependency array is
+		// evaluated before the guarded body can catch anything.
+	}, [editor, mode, isDiffReviewActive, editor?.state?.doc]);
 	return {
 		diffViewMode: mode,
 		setDiffViewMode: setMode,

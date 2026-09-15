@@ -11,7 +11,7 @@ import {
 	TooltipContent,
 	TooltipTrigger,
 } from "@ui/components/tooltip";
-import { Loader2, Pencil, SparklesIcon } from "lucide-react";
+import { Loader2 } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { useEffect, useMemo, useState } from "react";
 import {
@@ -24,6 +24,7 @@ import {
 } from "./QuestionMentionTextarea";
 import type { AiReadinessData } from "./ReadinessBar";
 import { ReadinessBar } from "./ReadinessBar";
+import { SuggestedAnswerOptions } from "./SuggestedAnswerOptions";
 import type {
 	AnswerSource,
 	DecisionLogThread,
@@ -530,100 +531,27 @@ export function SummaryQuestionsPanel({
 						</div>
 					</div>
 				) : hasSuggestions ? (
-					<div className="mt-3 space-y-2">
-						<p className="flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-[0.12em] text-muted-foreground">
-							<SparklesIcon className="size-3 text-primary" />
-							{t("suggestedAnswersLabel")}
-						</p>
-						<ul className="space-y-2">
-							{options.map((opt) => (
-								<li key={opt.text} className="relative">
-									{/* Accept and Edit are siblings, not nested:
-									    the accept affordance is itself a button,
-									    so Edit cannot live inside it. The pencil
-									    is only PAINTED inside, by positioning it
-									    over the corner `pr-10` reserves below —
-									    same DOM, two independent hit targets. */}
-									<Button
-										type="button"
-										variant="outline"
-										size="sm"
-										onClick={() => {
-											if (thread.root.questionId) {
-												onAnswer(
-													thread.root.questionId,
-													opt.text,
-													{
-														answerSource:
-															"AI_SUGGESTED",
-													},
-												);
-											}
-										}}
-										disabled={isAnswering}
-										className="h-auto w-full flex-col items-start gap-0.5 whitespace-normal py-2 pr-10 text-left"
-									>
-										<span className="text-xs font-medium">
-											{opt.text}
-										</span>
-										{opt.justification && (
-											<span className="text-[11px] font-normal text-muted-foreground">
-												{opt.justification}
-											</span>
-										)}
-									</Button>
-									<Tooltip>
-										<TooltipTrigger asChild>
-											<Button
-												type="button"
-												variant="ghost"
-												size="icon"
-												onClick={() =>
-													open(
-														thread.root.id,
-														opt.text,
-													)
-												}
-												disabled={isAnswering}
-												// Several Edit controls render at
-												// once, so a bare "Edit" is
-												// ambiguous to a screen reader —
-												// name the suggestion. The tooltip
-												// is for sighted pointer users;
-												// this is the real name.
-												aria-label={t(
-													"editSuggestionAria",
-													{ text: opt.text },
-												)}
-												// Visible at rest rather than
-												// revealed on hover: a hover-only
-												// icon does not exist on touch.
-												// `hover:bg-transparent` stops the
-												// ghost fill painting a second
-												// rectangle over the card.
-												className="absolute top-1 right-1 size-7 text-muted-foreground opacity-70 transition-[color,opacity] hover:bg-transparent hover:text-foreground hover:opacity-100 focus-visible:opacity-100"
-											>
-												<Pencil className="size-3.5" />
-											</Button>
-										</TooltipTrigger>
-										<TooltipContent side="left">
-											{t("editSuggestion")}
-										</TooltipContent>
-									</Tooltip>
-								</li>
-							))}
-						</ul>
-						<Button
-							type="button"
-							variant="ghost"
-							size="sm"
-							onClick={() => open(thread.root.id)}
-							disabled={isAnswering}
-							className="text-xs"
-						>
-							{t("typeYourOwn")}
-						</Button>
-					</div>
+					<SuggestedAnswerOptions
+						className="mt-3"
+						options={options}
+						labels={{
+							heading: t("suggestedAnswersLabel"),
+							typeYourOwn: t("typeYourOwn"),
+							editAria: (text) =>
+								t("editSuggestionAria", { text }),
+							editTooltip: t("editSuggestion"),
+						}}
+						disabled={isAnswering}
+						onAccept={(opt) => {
+							if (thread.root.questionId) {
+								onAnswer(thread.root.questionId, opt.text, {
+									answerSource: "AI_SUGGESTED",
+								});
+							}
+						}}
+						onEdit={(opt) => open(thread.root.id, opt.text)}
+						onTypeYourOwn={() => open(thread.root.id)}
+					/>
 				) : (
 					<Button
 						type="button"

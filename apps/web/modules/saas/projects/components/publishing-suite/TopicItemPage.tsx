@@ -16,7 +16,7 @@ import {
 } from "@ui/components/popover";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@ui/components/tabs";
 import { cn } from "@ui/lib";
-import { PlusIcon } from "lucide-react";
+import { Loader2Icon, PlusIcon, SparklesIcon } from "lucide-react";
 import dynamic from "next/dynamic";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
@@ -461,6 +461,50 @@ export function TopicItemPage({
 	const answersBehindAnalysis = countAnswersRecordedAfter(
 		analysisQuery.data?.aiCreatedAt ?? null,
 		decisionsQuery.data?.threads,
+	);
+
+	/**
+	 * A run is already in flight, read from the SERVER's row rather than from
+	 * any one button's pending state.
+	 *
+	 * This is what lets a second Regenerate control exist at all: two controls
+	 * holding their own `isPending` can disagree about whether a run has
+	 * started, but two controls reading one `GENERATING` row cannot.
+	 */
+	const isGeneratingAnalysis =
+		latestAttempt?.status === "GENERATING" && !latestAttempt.isExpired;
+
+	/**
+	 * Regenerate, owned at topic level so the banner below can carry the
+	 * action rather than point at it.
+	 *
+	 * The notice used to be a sentence with a link into the Planning &
+	 * Analysis tab, because the full banner lived inside that tab and Radix
+	 * unmounts an inactive `TabsContent` — so the one person who had just made
+	 * the analysis stale, by answering a question, was the one person who could
+	 * not see the banner saying so. Lifting it out of the tab is what Feature
+	 * Maturation does with the same notice, and it is the only way the control
+	 * can sit where the work happens.
+	 */
+	const generateAnalysis = useMutation(
+		orpc.projects.publishingSuite.generatePlanningAnalysis.mutationOptions({
+			onSuccess: (result: { started: boolean; reason?: string }) => {
+				if (!result.started && result.reason === "unavailable") {
+					toast.error(
+						"Generation is temporarily unavailable. Please try again shortly.",
+					);
+				}
+				queryClient.invalidateQueries({
+					queryKey:
+						orpc.projects.publishingSuite.getPlanningAnalysis.queryKey(
+							{ input: { projectId, topicId, organizationId } },
+						),
+				});
+			},
+			onError: () => {
+				toast.error("Could not start the planning analysis.");
+			},
+		}),
 	);
 
 	/**
@@ -977,6 +1021,57 @@ export function TopicItemPage({
 				showMeetingParticipants={false}
 				showEditPostTypes={false}
 			/>
+			{/* ABOVE the tabs, so it is on screen wherever the person is —
+			    including Summary & Questions, which is where answering a
+			    question makes it true. The action lives IN it, as Feature
+			    Maturation's does: a notice that can only point at a control on
+			    another tab is a notice you have to take on trust. */}
+			{answersBehindAnalysis > 0 ? (
+				<div
+					className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-highlight/40 bg-highlight/10 px-4 py-2.5 text-foreground text-sm"
+					data-testid="analysis-behind-decisions"
+				>
+					<p>
+						{answersBehindAnalysis === 1
+							? "1 answer was recorded after the analysis was written"
+							: `${answersBehindAnalysis} answers were recorded after the analysis was written`}
+						{canEdit
+							? " — regenerate to fold it in."
+							: " and are not reflected in it yet."}
+					</p>
+					{canEdit ? (
+						<Button
+							size="sm"
+							className="shrink-0"
+							onClick={() =>
+								generateAnalysis.mutate({
+									projectId,
+									topicId,
+									organizationId,
+								})
+							}
+							disabled={
+								isGeneratingAnalysis ||
+								generateAnalysis.isPending
+							}
+						>
+							{isGeneratingAnalysis ||
+							generateAnalysis.isPending ? (
+								<Loader2Icon
+									className="mr-2 size-4 motion-safe:animate-spin"
+									aria-hidden="true"
+								/>
+							) : (
+								<SparklesIcon
+									className="mr-2 size-4"
+									aria-hidden="true"
+								/>
+							)}
+							Regenerate analysis
+						</Button>
+					) : null}
+				</div>
+			) : null}
 			<Tabs
 				value={activeTab}
 				onValueChange={(v) => {
@@ -1159,42 +1254,6 @@ export function TopicItemPage({
 					<TopicReadiness
 						threads={decisionsQuery.data?.threads ?? []}
 					/>
-					{/* The analysis is behind the answers — said HERE, where
-					    answering happens.
-
-					    The full banner, with its Regenerate button, lives on
-					    the Planning & Analysis tab. Radix unmounts an inactive
-					    `TabsContent`, and the default tab is this one, so that
-					    banner could not fire for the person who had just caused
-					    it: you answered a question, the analysis went stale,
-					    and the only thing that said so was on a tab you were
-					    not on.
-
-					    Compact and a link rather than a second Regenerate
-					    control: two buttons starting the same run must not be
-					    able to disagree about whether one is already running,
-					    which is the reason the banner's own button reuses the
-					    header's handler rather than adding a path. Answering
-					    deliberately does NOT switch tabs on its own — being
-					    moved off the page mid-thought is worse than a notice
-					    you choose to follow. */}
-					{answersBehindAnalysis > 0 ? (
-						<p
-							className="text-muted-foreground text-sm"
-							data-testid="summary-analysis-behind-decisions"
-						>
-							{answersBehindAnalysis === 1
-								? "1 answer was recorded after the analysis was written."
-								: `${answersBehindAnalysis} answers were recorded after the analysis was written.`}{" "}
-							<button
-								type="button"
-								className="underline underline-offset-2 hover:text-foreground"
-								onClick={() => setTab("planningAnalysis")}
-							>
-								Review the analysis
-							</button>
-						</p>
-					) : null}
 					<TopicQuestionsPanel
 						projectId={projectId}
 						topicId={topicId}
@@ -1212,6 +1271,7 @@ export function TopicItemPage({
 					className={REVIEW_MEASURE_CLASS}
 				>
 					<PlanningAnalysisTab
+						generateActionIsElsewhere={answersBehindAnalysis > 0}
 						projectId={projectId}
 						topicId={topicId}
 						organizationId={organizationId}
@@ -1220,8 +1280,6 @@ export function TopicItemPage({
 						latestAttempt={latestAttempt}
 						effective={effective}
 						aiVersion={analysisQuery.data?.aiVersion ?? null}
-						aiCreatedAt={analysisQuery.data?.aiCreatedAt ?? null}
-						decisionThreads={decisionsQuery.data?.threads ?? []}
 						aiModel={analysisQuery.data?.aiModel ?? null}
 						aiPromptSource={
 							analysisQuery.data?.aiPromptSource ?? null
