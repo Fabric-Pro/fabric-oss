@@ -616,6 +616,72 @@ jobs:
           }
           EOF
 
+      - name: Run the governed stage-request RLS suite against real Postgres
+        env:
+          RUN_DB_INTEGRATION: '1'
+          VITEST_INCLUDE_INTEGRATION: '1'
+        # ADR-020: a project-scoped guest on a personal project must be able to
+        # request and, when configured, approve a governed stage transition
+        # under RLS, and an unrelated project's member must not see the rows.
+        # Runs as a NOSUPERUSER NOBYPASSRLS role the suite creates itself;
+        # only real Postgres evaluates the policies.
+        run: |
+          pnpm --filter @repo/database exec vitest run \
+            __tests__/rls-stage-requests.integration.test.ts \
+            --passWithNoTests=false \
+            --reporter=dot \
+            --reporter=json --outputFile=rls-stage-requests-results.json
+
+      - name: 'Guard: assert the governed stage-request RLS suite executed (exact count, zero skips)'
+        # Same anti-false-pass shape as the guards above: the file self-skips
+        # without DATABASE_URL, so a green step proves nothing on its own, and
+        # the count is exact so a dropped case is noticed.
+        run: |
+          node <<'EOF'
+          const fs = require("node:fs");
+          const report = JSON.parse(fs.readFileSync("packages/database/rls-stage-requests-results.json", "utf8"));
+          const files = report.testResults?.length ?? 0;
+          const passed = report.numPassedTests ?? 0;
+          const skipped = (report.numSkippedTests ?? 0) + (report.numPendingTests ?? 0);
+          console.log(`rls-stage-requests-results: ${files} file(s), ${passed} passed, ${skipped} skipped`);
+          if (files !== 1) { console.error("::error::expected exactly 1 test file (__tests__/rls-stage-requests.integration.test.ts)"); process.exit(1); }
+          if (skipped > 0) { console.error(`::error::${skipped} test(s) skipped — the suite self-skipped instead of executing against Postgres`); process.exit(1); }
+          if (passed !== 7) { console.error(`::error::expected exactly 7 passing tests, got ${passed}`); process.exit(1); }
+          EOF
+
+      - name: Run the discovery-run contention suite against real Postgres
+        env:
+          RUN_DB_INTEGRATION: '1'
+          VITEST_INCLUDE_INTEGRATION: '1'
+        # ADR-020: question posting holds the run row FOR UPDATE; a cancel or a
+        # completion issued meanwhile must WAIT for the commit and then win, a
+        # cancel that landed first must be what the posting read sees, and
+        # terminal states must be sticky. Two real connections race here;
+        # a mocked client cannot show a lock being honoured.
+        run: |
+          pnpm --filter @repo/database exec vitest run \
+            __tests__/discovery-run-contention.integration.test.ts \
+            --passWithNoTests=false \
+            --reporter=dot \
+            --reporter=json --outputFile=discovery-run-contention-results.json
+
+      - name: 'Guard: assert the discovery-run contention suite executed (exact count, zero skips)'
+        # Same anti-false-pass shape as the guards above: the file self-skips
+        # without DATABASE_URL, so a green step proves nothing on its own, and
+        # the count is exact so a dropped case is noticed.
+        run: |
+          node <<'EOF'
+          const fs = require("node:fs");
+          const report = JSON.parse(fs.readFileSync("packages/database/discovery-run-contention-results.json", "utf8"));
+          const files = report.testResults?.length ?? 0;
+          const passed = report.numPassedTests ?? 0;
+          const skipped = (report.numSkippedTests ?? 0) + (report.numPendingTests ?? 0);
+          console.log(`discovery-run-contention-results: ${files} file(s), ${passed} passed, ${skipped} skipped`);
+          if (files !== 1) { console.error("::error::expected exactly 1 test file (__tests__/discovery-run-contention.integration.test.ts)"); process.exit(1); }
+          if (skipped > 0) { console.error(`::error::${skipped} test(s) skipped — the suite self-skipped instead of executing against Postgres`); process.exit(1); }
+          if (passed !== 4) { console.error(`::error::expected exactly 4 passing tests, got ${passed}`); process.exit(1); }
+          EOF
+
       - name: Run the chat-delivery kind-partitioning suite against real Postgres
         env:
           RUN_DB_INTEGRATION: '1'
