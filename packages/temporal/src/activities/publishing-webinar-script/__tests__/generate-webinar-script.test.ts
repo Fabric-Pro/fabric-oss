@@ -215,7 +215,37 @@ function answeredQuestion(
 			subject,
 			summary: null,
 		},
-		replies: [{ authorType: "USER", content: answer }],
+		replies: [
+			{
+				id: "reply-1",
+				createdAt: new Date("2026-09-01T10:00:00Z"),
+				status: "RESOLVED",
+				authorType: "USER",
+				content: answer,
+			},
+		],
+	};
+}
+
+/**
+ * A SOFT-CLOSED question: a regenerated analysis stopped raising it and nobody
+ * answered it. Its `summary` is the model's question text, as
+ * `reconcileTopicQuestions` stores it.
+ */
+function softClosedQuestion(
+	decisionKind: string,
+	subject: string | null,
+	question: string,
+) {
+	return {
+		root: {
+			kind: "QUESTION",
+			status: "POSSIBLY_RESOLVED",
+			decisionKind,
+			subject,
+			summary: question,
+		},
+		replies: [],
 	};
 }
 
@@ -578,6 +608,22 @@ describe("generateWebinarScriptActivity — the restriction split", () => {
 		expect(prompt).toContain("Yes, we may name them.");
 		expect(persistedContent().generation.restrictedSubjects).toEqual([]);
 	});
+
+	it("keeps a SOFT-CLOSED safety question restricted", async () => {
+		listTopicDecisions.mockResolvedValue([
+			softClosedQuestion(
+				"CUSTOMER_NAME",
+				"example-org",
+				"May we name example-org?",
+			),
+		]);
+
+		await run();
+
+		expect(persistedContent().generation.restrictedSubjects).toEqual([
+			{ kind: "CUSTOMER_NAME", label: "example-org" },
+		]);
+	});
 });
 
 describe("generateWebinarScriptActivity — the asset clamp", () => {
@@ -594,6 +640,39 @@ describe("generateWebinarScriptActivity — the asset clamp", () => {
 		});
 		listTopicDecisions.mockResolvedValue([
 			openQuestion("ASSET_APPROVAL", "latency chart"),
+		]);
+
+		await run();
+
+		expect(persistedContent().suggestedAssets.confirmed).toEqual([
+			"architecture diagram",
+		]);
+		expect(persistedContent().suggestedAssets.needsConfirmation).toEqual([
+			"The Latency Chart",
+		]);
+		expect(persistedContent().generation.clamped).toEqual({
+			assets: ["The Latency Chart"],
+			assetKinds: { "The Latency Chart": "ASSET_APPROVAL" },
+		});
+	});
+
+	it("demotes a claimed-confirmed asset a SOFT-CLOSED approval is about", async () => {
+		generateObject.mockResolvedValue({
+			object: {
+				...MODEL_OUTPUT,
+				suggestedAssets: {
+					confirmed: ["The Latency Chart", "architecture diagram"],
+					needsConfirmation: [],
+				},
+			},
+			usage: {},
+		});
+		listTopicDecisions.mockResolvedValue([
+			softClosedQuestion(
+				"ASSET_APPROVAL",
+				"latency chart",
+				"Is the latency chart approved for use?",
+			),
 		]);
 
 		await run();

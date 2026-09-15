@@ -316,6 +316,13 @@ describe("generateLinkedInPostActivity — the restriction split", () => {
 		]);
 		expect(await persistedRestrictions()).toEqual([]);
 	});
+
+	it("restricts a SOFT-CLOSED safety-critical question", async () => {
+		listTopicDecisions.mockResolvedValue([
+			thread({ status: "POSSIBLY_RESOLVED" }),
+		]);
+		expect(await persistedRestrictions()).toEqual(["the customer name"]);
+	});
 });
 
 describe("generateLinkedInPostActivity — what it persists", () => {

@@ -457,3 +457,30 @@ describe("generateShortPostActivity — what it persists", () => {
 		expect(completeTopicDraft).not.toHaveBeenCalled();
 	});
 });
+
+describe("generateShortPostActivity — a soft-closed question restricts", () => {
+	it("keeps a SOFT-CLOSED safety question in the NOT-approved block", async () => {
+		listTopicDecisions.mockResolvedValue([
+			{
+				root: {
+					kind: "QUESTION",
+					status: "POSSIBLY_RESOLVED",
+					decisionKind: "CUSTOMER_NAME",
+					subject: "example-org",
+					summary: "May we name example-org?",
+				},
+				replies: [],
+			},
+		]);
+
+		await run();
+
+		const prompt = generateObject.mock.calls[0]?.[0]?.prompt as string;
+		const heading = prompt.indexOf(
+			"## Unresolved approvals for this topic",
+		);
+		expect(heading).toBeGreaterThan(-1);
+		expect(prompt.slice(heading)).toContain("example-org");
+		expect(prompt).not.toContain("May we name example-org?");
+	});
+});

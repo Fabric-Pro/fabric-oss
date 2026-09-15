@@ -5,13 +5,14 @@
  *
  * Originated in Case Study (Fizzy #1854, Phase 2C-1) as an inline pass and
  * moved here once a second content type needed the identical behavior: a
- * claimed-confirmed asset an open approval thread is about gets moved to
+ * claimed-confirmed asset an unresolved approval thread is about gets moved to
  * "needs confirmation" server-side, because the model's own claim of
  * confirmation is not trustworthy evidence of it.
  */
 
 /**
- * Decision kinds whose open thread makes a claimed-confirmed ASSET untrustworthy.
+ * Decision kinds whose unresolved thread makes a claimed-confirmed ASSET
+ * untrustworthy.
  *
  * Wider than `ASSET_APPROVAL` alone: an unapproved internal UI capture or an
  * unconfirmed video walkthrough is the same claim wearing a different kind.
@@ -33,7 +34,8 @@ export function normalizeAssetLabel(value: string): string {
 }
 
 /**
- * Whether a claimed-confirmed asset is the thing an open approval is about.
+ * Whether a claimed-confirmed asset is the thing an unresolved approval is
+ * about.
  *
  * Containment in EITHER direction, because the two sides are written by
  * different authors at different times: a thread subject "latency chart" should
@@ -57,7 +59,7 @@ export function assetIsRestricted(
 }
 
 /**
- * The kind whose open thread makes this asset untrustworthy, or null.
+ * The kind whose unresolved thread makes this asset untrustworthy, or null.
  *
  * Runs over the SAME pre-filtered thread set that decides the move, never over
  * all threads: a subject can be named by a CUSTOMER_NAME thread and by an
@@ -88,9 +90,9 @@ export interface PublishingClampRecord {
 }
 
 /**
- * Move every claimed-confirmed asset an open approval is about into the
+ * Move every claimed-confirmed asset an unresolved approval is about into the
  * needs-confirmation list. Never upgrades: an asset the model itself hedged
- * stays hedged even with no open thread.
+ * stays hedged even with no unresolved thread.
  *
  * `moved` is PRE-dedupe, matching what the Case Study call site has always
  * recorded, and the caller assigns it only when non-empty — an unclamped draft

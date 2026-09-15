@@ -7,6 +7,7 @@ const flagMocks = vi.hoisted(() => ({
 vi.mock("@repo/database", () => ({
 	listTopicDecisions: vi.fn(),
 	answerTopicQuestion: vi.fn(),
+	amendTopicQuestionAnswer: vi.fn(),
 	// The gate resolves the flag per organization and derives the tenant from
 	// the Project row. `resolveProjectTenant` MUST point at flagMocks, not a
 	// bare vi.fn(): the gate reads a null return as "project not resolvable"
@@ -29,12 +30,22 @@ vi.mock("../../../lib/publishing-topic-project", () => ({
 }));
 vi.mock("../../../../../orpc/procedures", () => {
 	const chain: Record<string, unknown> = {};
-	for (const m of ["use", "route", "input", "output"]) {
+	for (const m of ["use", "route", "output"]) {
 		chain[m] = () => chain;
 	}
+	// Unlike the other passthrough links, `.input()` records its argument (the
+	// REAL `z.object({...})` built in topic-decisions.ts) onto the chain, the
+	// same way `requireProjectPermission` records `__permission` below. This
+	// lets the whitespace-only-answer tests run the actual schema instead of a
+	// hand-rolled copy that would only prove the copy is right.
+	chain.input = (schema: unknown) => {
+		chain.__inputSchema = schema;
+		return chain;
+	};
 	chain.handler = (fn: unknown) => ({
 		handler: fn,
 		__permission: chain.__permission,
+		__inputSchema: chain.__inputSchema,
 	});
 	return {
 		tenantProtectedProcedure: chain,
@@ -49,24 +60,57 @@ vi.mock("../../../../../orpc/procedures", () => {
 	};
 });
 
-import { answerTopicQuestion, listTopicDecisions } from "@repo/database";
+import { ZodToJsonSchemaConverter } from "@orpc/zod/zod4";
 import {
+	amendTopicQuestionAnswer,
+	answerTopicQuestion,
+	listTopicDecisions,
+} from "@repo/database";
+import {
+	amendTopicQuestionProcedure,
 	answerTopicQuestionProcedure,
 	listTopicDecisionsProcedure,
 } from "../topic-decisions";
 
-const handler = (
-	listTopicDecisionsProcedure as unknown as { handler: Function }
-).handler;
-const permissionSpy = (
-	listTopicDecisionsProcedure as unknown as { __permission: string }
-).__permission;
+type ZodIssue = { message: string };
+type ZodLikeSchema = {
+	safeParse: (
+		value: unknown,
+	) => { success: true } | { success: false; error: { issues: ZodIssue[] } };
+};
+type HandlerBearing = {
+	handler: Function;
+	__permission: string;
+	__inputSchema: ZodLikeSchema;
+};
+// What `ZodToJsonSchemaConverter.convert()` actually accepts — the captured
+// schemas above are typed as `ZodLikeSchema` for the whitespace-refusal
+// tests, but at runtime they are the same real `z.object({...})` the app
+// builds `/openapi` from, so they convert exactly the way `/openapi` does.
+type ConvertibleSchema = Parameters<
+	InstanceType<typeof ZodToJsonSchemaConverter>["convert"]
+>[0];
+
+const handler = (listTopicDecisionsProcedure as unknown as HandlerBearing)
+	.handler;
+const permissionSpy = (listTopicDecisionsProcedure as unknown as HandlerBearing)
+	.__permission;
 const answerHandler = (
-	answerTopicQuestionProcedure as unknown as { handler: Function }
+	answerTopicQuestionProcedure as unknown as HandlerBearing
 ).handler;
 const answerPermissionSpy = (
-	answerTopicQuestionProcedure as unknown as { __permission: string }
+	answerTopicQuestionProcedure as unknown as HandlerBearing
 ).__permission;
+// The REAL `z.object({...})` from topic-decisions.ts — captured by the
+// `.input()` hook in the mocked chain above, not rebuilt here.
+const answerInputSchema = (
+	answerTopicQuestionProcedure as unknown as HandlerBearing
+).__inputSchema;
+const amendHandler = (amendTopicQuestionProcedure as unknown as HandlerBearing)
+	.handler;
+const amendInputSchema = (
+	amendTopicQuestionProcedure as unknown as HandlerBearing
+).__inputSchema;
 const ctx = {
 	user: { id: "user-session", name: "U", email: "u@example.com" },
 	session: {},
@@ -84,8 +128,21 @@ const API_ANSWER_INPUT = {
 	answerSource: "AI_EDITED" as const,
 };
 
+const API_AMEND_INPUT = {
+	projectId: "proj-1",
+	topicId: "topic-1",
+	questionId: "q-customer-name",
+	supersedesId: "root-1",
+	answer: "Yes, after legal review.",
+	answerSource: "MANUAL" as const,
+};
+
 async function callAnswer(input: Record<string, unknown>) {
 	return answerHandler({ input, context: ctx });
+}
+
+async function callAmend(input: Record<string, unknown>) {
+	return amendHandler({ input, context: ctx });
 }
 
 beforeEach(() => {
@@ -117,6 +174,27 @@ beforeEach(() => {
 			recommendedResponse: null,
 			whyItMatters: null,
 			answerSource: "AI_EDITED",
+			analysisVersion: 1,
+			createdAt: new Date("2026-08-01T00:00:00Z"),
+		},
+	});
+	vi.mocked(amendTopicQuestionAnswer).mockResolvedValue({
+		status: "amended",
+		root: {
+			id: "root-1",
+			parentId: null,
+			kind: "QUESTION",
+			status: "RESOLVED",
+			authorType: "USER",
+			authorUserId: "user-session",
+			questionId: "q-customer-name",
+			decisionKind: "CUSTOMER_NAME",
+			subject: null,
+			summary: "May we name the customer?",
+			content: "Yes, after legal review.",
+			recommendedResponse: null,
+			whyItMatters: null,
+			answerSource: "MANUAL",
 			analysisVersion: 1,
 			createdAt: new Date("2026-08-01T00:00:00Z"),
 		},
@@ -280,4 +358,170 @@ describe("answerTopicQuestion procedure", () => {
 
 		expect(result.status).toBe("deduped");
 	});
+});
+
+/**
+ * A whitespace-only answer is refused at the input boundary, not inside the
+ * handler (Fizzy #1988 1B). `.min(1)` alone accepts `"   "` — its length is
+ * 3 — so both write procedures add a `\S` regex check on top of it; the
+ * stored text is never trimmed, only checked.
+ *
+ * Each case below runs the REAL input schema first, exactly as the real oRPC
+ * pipeline would: a rejected parse must mean the handler — and therefore the
+ * underlying database query — is never reached.
+ */
+describe("answerTopicQuestion: a whitespace-only answer is refused (Fizzy #1988 1B)", () => {
+	async function submitAnswer(input: Record<string, unknown>) {
+		const parsed = answerInputSchema.safeParse(input);
+		if (!parsed.success) {
+			return { accepted: false as const, issues: parsed.error.issues };
+		}
+		return { accepted: true as const, result: await callAnswer(input) };
+	}
+
+	it("refuses '   ' with a clear message, and never reaches answerTopicQuestion", async () => {
+		const outcome = await submitAnswer({
+			...API_ANSWER_INPUT,
+			answer: "   ",
+		});
+
+		expect(outcome.accepted).toBe(false);
+		if (!outcome.accepted) {
+			expect(outcome.issues.map((issue) => issue.message)).toContain(
+				"An answer cannot be only whitespace.",
+			);
+		}
+		expect(answerTopicQuestion).not.toHaveBeenCalled();
+	});
+
+	it("refuses a tab/newline mix the same as plain spaces", async () => {
+		const outcome = await submitAnswer({
+			...API_ANSWER_INPUT,
+			answer: "\t\n  ",
+		});
+
+		expect(outcome.accepted).toBe(false);
+		if (!outcome.accepted) {
+			expect(outcome.issues.map((issue) => issue.message)).toContain(
+				"An answer cannot be only whitespace.",
+			);
+		}
+		expect(answerTopicQuestion).not.toHaveBeenCalled();
+	});
+
+	it("accepts real text surrounded by whitespace, unmodified", async () => {
+		const outcome = await submitAnswer({
+			...API_ANSWER_INPUT,
+			answer: "  Yes  ",
+		});
+
+		expect(outcome.accepted).toBe(true);
+		expect(answerTopicQuestion).toHaveBeenCalledWith(
+			expect.objectContaining({ answer: "  Yes  " }),
+		);
+	});
+
+	it("still accepts a normal answer", async () => {
+		const outcome = await submitAnswer(API_ANSWER_INPUT);
+
+		expect(outcome.accepted).toBe(true);
+		expect(answerTopicQuestion).toHaveBeenCalled();
+	});
+});
+
+describe("amendTopicQuestion: a whitespace-only answer is refused (Fizzy #1988 1B)", () => {
+	async function submitAmend(input: Record<string, unknown>) {
+		const parsed = amendInputSchema.safeParse(input);
+		if (!parsed.success) {
+			return { accepted: false as const, issues: parsed.error.issues };
+		}
+		return { accepted: true as const, result: await callAmend(input) };
+	}
+
+	it("refuses '   ' with a clear message, and never reaches amendTopicQuestionAnswer", async () => {
+		const outcome = await submitAmend({
+			...API_AMEND_INPUT,
+			answer: "   ",
+		});
+
+		expect(outcome.accepted).toBe(false);
+		if (!outcome.accepted) {
+			expect(outcome.issues.map((issue) => issue.message)).toContain(
+				"An answer cannot be only whitespace.",
+			);
+		}
+		expect(amendTopicQuestionAnswer).not.toHaveBeenCalled();
+	});
+
+	it("refuses a tab/newline mix the same as plain spaces", async () => {
+		const outcome = await submitAmend({
+			...API_AMEND_INPUT,
+			answer: "\t\n  ",
+		});
+
+		expect(outcome.accepted).toBe(false);
+		if (!outcome.accepted) {
+			expect(outcome.issues.map((issue) => issue.message)).toContain(
+				"An answer cannot be only whitespace.",
+			);
+		}
+		expect(amendTopicQuestionAnswer).not.toHaveBeenCalled();
+	});
+
+	it("accepts real text surrounded by whitespace, unmodified", async () => {
+		const outcome = await submitAmend({
+			...API_AMEND_INPUT,
+			answer: "  Yes  ",
+		});
+
+		expect(outcome.accepted).toBe(true);
+		expect(amendTopicQuestionAnswer).toHaveBeenCalledWith(
+			expect.objectContaining({ answer: "  Yes  " }),
+		);
+	});
+
+	it("still accepts a normal answer", async () => {
+		const outcome = await submitAmend(API_AMEND_INPUT);
+
+		expect(outcome.accepted).toBe(true);
+		expect(amendTopicQuestionAnswer).toHaveBeenCalled();
+	});
+});
+
+/**
+ * The whitespace-only rule must also show up in the published OpenAPI
+ * document, not just at runtime (Fizzy #1988 1B). A `.refine()` is invisible
+ * to `ZodToJsonSchemaConverter` — the same converter `packages/api/index.ts`
+ * builds `/openapi` with — so this runs the REAL captured input schema
+ * through the REAL converter, the same way `/openapi` does, rather than
+ * asserting against a hand-rolled JSON Schema fragment.
+ */
+describe("answerBodySchema is published as a pattern in the OpenAPI document (Fizzy #1988 1B)", () => {
+	const converter = new ZodToJsonSchemaConverter();
+
+	it.each([
+		["answerTopicQuestionProcedure", answerInputSchema],
+		["amendTopicQuestionProcedure", amendInputSchema],
+	])(
+		"%s advertises answer's whitespace rule as a pattern",
+		(_name, schema) => {
+			const [, json] = converter.convert(
+				schema as unknown as ConvertibleSchema,
+				{
+					strategy: "input",
+				},
+			);
+
+			expect(json).toMatchObject({
+				properties: {
+					answer: {
+						type: "string",
+						minLength: 1,
+						maxLength: 10_000,
+						pattern: "\\S",
+					},
+				},
+			});
+		},
+	);
 });

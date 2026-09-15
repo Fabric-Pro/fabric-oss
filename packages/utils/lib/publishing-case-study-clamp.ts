@@ -3,9 +3,9 @@
  *
  * `customerIdentity` and `metricsBasis` are the MODEL's claim about its own
  * output. The generation activity lowers an over-confident one from the topic's
- * open approval threads, and records WHY it did so in the draft's `generation`
- * block so the panel can say "Fabric set this" rather than letting a clamped
- * label read as the model's own judgement.
+ * unresolved approval threads, and records WHY it did so in the draft's
+ * `generation` block so the panel can say "Fabric set this" rather than
+ * letting a clamped label read as the model's own judgement.
  *
  * Lives in `@repo/utils` — a leaf both `@repo/temporal` and the web app already
  * import from — because the writer and the reader are in different packages and
@@ -17,14 +17,17 @@
  * is to warn.
  */
 
-/** Why a field was clamped: the decision kind whose open thread caused it. */
+/**
+ * Why a field was clamped: the decision kind whose unresolved thread caused
+ * it.
+ */
 export const CASE_STUDY_CLAMP_REASON = {
 	customerIdentity: "CUSTOMER_NAME",
 	metricsBasis: "METRICS_APPROVAL",
 	/**
-	 * Assets are clamped by MATCH, not wholesale: an open approval about one
-	 * asset says nothing about an unrelated one, and demoting every asset would
-	 * teach the reader to ignore the list.
+	 * Assets are clamped by MATCH, not wholesale: an unresolved approval about
+	 * one asset says nothing about an unrelated one, and demoting every asset
+	 * would teach the reader to ignore the list.
 	 */
 	assets: "ASSET_APPROVAL",
 } as const;

@@ -215,7 +215,37 @@ function answeredQuestion(
 			subject,
 			summary: null,
 		},
-		replies: [{ authorType: "USER", content: answer }],
+		replies: [
+			{
+				id: "reply-1",
+				createdAt: new Date("2026-09-01T10:00:00Z"),
+				status: "RESOLVED",
+				authorType: "USER",
+				content: answer,
+			},
+		],
+	};
+}
+
+/**
+ * A SOFT-CLOSED question: a regenerated analysis stopped raising it and nobody
+ * answered it. Its `summary` is the model's question text, as
+ * `reconcileTopicQuestions` stores it.
+ */
+function softClosedQuestion(
+	decisionKind: string,
+	subject: string | null,
+	question: string,
+) {
+	return {
+		root: {
+			kind: "QUESTION",
+			status: "POSSIBLY_RESOLVED",
+			decisionKind,
+			subject,
+			summary: question,
+		},
+		replies: [],
 	};
 }
 
@@ -731,6 +761,83 @@ describe("generateNewsletterBlurbActivity — the restriction split", () => {
 		const prompt = sentPrompt();
 		expect(prompt).toContain(`- "Customer name"`);
 	});
+
+	it("keeps a SOFT-CLOSED safety question in the NOT-approved block", async () => {
+		listTopicDecisions.mockResolvedValue([
+			softClosedQuestion(
+				"CUSTOMER_NAME",
+				"example-org",
+				"May we name example-org in the newsletter?",
+			),
+		]);
+
+		await run();
+
+		const prompt = sentPrompt();
+		const restrictedHeading = prompt.indexOf(
+			"## Unresolved approvals for this topic",
+		);
+		expect(restrictedHeading).toBeGreaterThan(-1);
+		expect(prompt.slice(restrictedHeading)).toContain(`- "example-org"`);
+		expect(persistedContent().generation.restrictedSubjects).toEqual([
+			{ kind: "CUSTOMER_NAME", label: "example-org" },
+		]);
+	});
+
+	it("never presents a soft-closed question's own text as a settled decision", async () => {
+		// OTHER restricts nothing, so this thread reaches the settled-decision
+		// path — where the old code fell back to `root.summary`, the model's
+		// question, and rendered it as the member's answer.
+		listTopicDecisions.mockResolvedValue([
+			softClosedQuestion(
+				"OTHER",
+				"launch timing",
+				"Should the blurb mention the launch date?",
+			),
+		]);
+
+		await run();
+
+		expect(sentPrompt()).not.toContain(
+			"Should the blurb mention the launch date?",
+		);
+	});
+
+	it("uses the member's ANSWER, not an assignment note added after it", async () => {
+		listTopicDecisions.mockResolvedValue([
+			{
+				root: {
+					kind: "QUESTION",
+					status: "RESOLVED",
+					decisionKind: "OTHER",
+					subject: "launch timing",
+					summary: "Should the blurb mention the launch date?",
+				},
+				replies: [
+					{
+						id: "reply-1",
+						createdAt: new Date("2026-09-01T10:00:00Z"),
+						status: "RESOLVED",
+						authorType: "USER",
+						content: "Yes, mention the September launch.",
+					},
+					{
+						id: "reply-2",
+						createdAt: new Date("2026-09-02T10:00:00Z"),
+						status: "OPEN",
+						authorType: "USER",
+						content: "Can someone double-check the date?",
+					},
+				],
+			},
+		]);
+
+		await run();
+
+		const prompt = sentPrompt();
+		expect(prompt).toContain("Yes, mention the September launch.");
+		expect(prompt).not.toContain("Can someone double-check the date?");
+	});
 });
 
 describe("generateNewsletterBlurbActivity — the model call", () => {
@@ -864,6 +971,39 @@ describe("generateNewsletterBlurbActivity — the asset clamp", () => {
 		});
 		listTopicDecisions.mockResolvedValue([
 			openQuestion("ASSET_APPROVAL", "latency chart"),
+		]);
+
+		await run();
+
+		expect(persistedContent().suggestedAssets.confirmed).toEqual([
+			"architecture diagram",
+		]);
+		expect(persistedContent().suggestedAssets.needsConfirmation).toEqual([
+			"The Latency Chart",
+		]);
+		expect(persistedContent().generation.clamped).toEqual({
+			assets: ["The Latency Chart"],
+			assetKinds: { "The Latency Chart": "ASSET_APPROVAL" },
+		});
+	});
+
+	it("demotes a claimed-confirmed asset a SOFT-CLOSED approval is about", async () => {
+		generateObject.mockResolvedValue({
+			object: {
+				...MODEL_OUTPUT,
+				suggestedAssets: {
+					confirmed: ["The Latency Chart", "architecture diagram"],
+					needsConfirmation: [],
+				},
+			},
+			usage: {},
+		});
+		listTopicDecisions.mockResolvedValue([
+			softClosedQuestion(
+				"ASSET_APPROVAL",
+				"latency chart",
+				"Is the latency chart approved for use?",
+			),
 		]);
 
 		await run();

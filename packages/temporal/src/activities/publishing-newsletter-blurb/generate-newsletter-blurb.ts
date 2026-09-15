@@ -35,7 +35,7 @@
  * (`@repo/utils/publishing-asset-clamp`). `suggestedAssets.confirmed` is a model
  * SELF-CLAIM that an asset exists and is safe to use, and this is the format
  * most likely to be pasted into a template and sent to a list without a second
- * read — so an asset an open approval thread is about is moved to
+ * read — so an asset an unresolved approval thread is about is moved to
  * needs-confirmation server-side. Like the Webinar Script and unlike the Case
  * Study, this schema carries no `customerIdentity` / `metricsBasis`-shaped enum,
  * so the clamp below is the asset half only.
@@ -85,6 +85,7 @@ import {
 	isRestrictingThread,
 	restrictionLabel,
 	restrictsPostType,
+	settledDecision,
 } from "@repo/utils/publishing-restrictions";
 import { heartbeat } from "@temporalio/activity";
 import { ApplicationFailure } from "@temporalio/common";
@@ -248,7 +249,7 @@ export async function generateNewsletterBlurbActivity(
 
 	heartbeat(`newsletterBlurb: context assembled for ${draftId}`);
 
-	// ANSWERED threads become instructions; OPEN restricting ones become
+	// SETTLED threads become instructions; UNRESOLVED restricting ones become
 	// constraints. Two lists from one read, and both are derived here rather
 	// than passed in, because the minutes between the button and this line are
 	// exactly when someone answers a question.
@@ -287,24 +288,12 @@ export async function generateNewsletterBlurbActivity(
 			}
 			continue;
 		}
-		if (thread.root.kind !== "QUESTION" || thread.root.status === "OPEN") {
-			continue;
-		}
-		// The settled answer is the newest USER reply; the root's own summary is
-		// the fallback for a question closed without one.
-		const answer =
-			[...thread.replies]
-				.reverse()
-				.find((r) => r.authorType === "USER" && r.content?.trim())
-				?.content?.trim() ??
-			thread.root.summary?.trim() ??
-			"";
-		if (answer) {
-			decisions.push({
-				subject: thread.root.subject,
-				decisionKind: thread.root.decisionKind ?? "OTHER",
-				answer,
-			});
+		// Only a decision a project member settled — a RESOLVED question and
+		// its newest RESOLVED USER reply. Never the root's summary (the model's
+		// own question) and never an assignment note; see `settledDecision`.
+		const settled = settledDecision(thread);
+		if (settled) {
+			decisions.push(settled);
 		}
 	}
 
@@ -410,17 +399,17 @@ export async function generateNewsletterBlurbActivity(
 	// -------------------------------------------------------------------------
 	//
 	// This schema carries no `customerIdentity` / `metricsBasis`-shaped enum, so
-	// unlike the case study there is nothing else to compare against an open
-	// approval — see the file header. `suggestedAssets.confirmed` is the same
-	// kind of model self-claim the case study's `confirmedAssets` is, and it
-	// gets the same treatment, via the SAME shared algorithm
+	// unlike the case study there is nothing else to compare against an
+	// unresolved approval — see the file header. `suggestedAssets.confirmed` is
+	// the same kind of model self-claim the case study's `confirmedAssets` is,
+	// and it gets the same treatment, via the SAME shared algorithm
 	// (`@repo/utils/publishing-asset-clamp`).
 	//
 	// Derived from the SAME `threads` array already in hand — deliberately not a
 	// fresh query. The label has to describe THIS body, and this body was written
 	// against that snapshot; re-reading would let a question answered during the
-	// model call clear a draft that was written as though it were still open (or
-	// flag one that was not).
+	// model call clear a draft that was written as though it were still
+	// unresolved (or flag one that was not).
 	//
 	// Restricted subjects only, not open questions: a framing question is not a
 	// claim about whether an asset exists and may be used.
@@ -453,7 +442,7 @@ export async function generateNewsletterBlurbActivity(
 
 	if (clamped.assets) {
 		logger.info(
-			"[publishing-newsletter-blurb] clamped a model claim against an open approval",
+			"[publishing-newsletter-blurb] clamped a model claim against an unresolved approval",
 			{ draftId, topicId, projectId, clamped },
 		);
 	}

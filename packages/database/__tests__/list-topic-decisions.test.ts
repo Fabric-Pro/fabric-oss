@@ -105,4 +105,20 @@ describe("listTopicDecisions", () => {
 
 		expect(threads).toEqual([]);
 	});
+
+	it("orders by createdAt, then id, so rows sharing a millisecond keep one order", async () => {
+		// A regeneration writes its whole question set in one transaction, and
+		// two amendments can share a millisecond, so createdAt ties are
+		// ordinary. `amendTopicQuestionAnswer` already breaks them by id; this
+		// read must agree with it, or two reads of unchanged data can disagree.
+		findMany.mockResolvedValue([]);
+
+		await listTopicDecisions({ topicId: "topic-1", projectId: "proj-1" });
+
+		expect(findMany).toHaveBeenCalledWith(
+			expect.objectContaining({
+				orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+			}),
+		);
+	});
 });

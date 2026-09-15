@@ -31,21 +31,30 @@ export function TopicReadiness({
 }) {
 	// AI_UPDATE rows are the analysis narrating itself between versions; they
 	// are not decisions anyone can answer, so counting them would make a topic
-	// look less ready every time it regenerated.
-	const questions = threads.filter((t) => t.root.kind === "QUESTION");
+	// look less ready every time it regenerated. CONTENT_TYPE rows are left out
+	// for the reason the questions panel, the Summary & Questions badge and the
+	// assistant leave them out: they are the content-types checklist now,
+	// nothing restricts on them, and a legacy one can be neither answered nor
+	// restored — counting it would hold a topic "not ready" that nobody can make
+	// ready.
+	const questions = threads.filter(
+		(t) =>
+			t.root.kind === "QUESTION" &&
+			t.root.decisionKind !== "CONTENT_TYPE",
+	);
 	const total = questions.length;
 
 	if (total === 0) {
 		return null;
 	}
 
-	// POSSIBLY_RESOLVED means the newest analysis stopped raising a question
-	// somebody had already answered. It is answered — soft-closing it is how
-	// the reconciler avoids losing the answer, not a statement that it reopened.
+	// Only a question a person ANSWERED counts. `POSSIBLY_RESOLVED` is not that:
+	// `reconcileTopicQuestions` writes it only for a root that was still `OPEN`
+	// — nobody had answered it — when a regenerated analysis stopped raising it,
+	// and the generation tab and the drafting prompts treat it as unresolved.
+	// Counting it here would call a topic ready beside a tab that says it is not.
 	const resolved = questions.filter(
-		(t) =>
-			t.root.status === "RESOLVED" ||
-			t.root.status === "POSSIBLY_RESOLVED",
+		(t) => t.root.status === "RESOLVED",
 	).length;
 
 	const open = total - resolved;

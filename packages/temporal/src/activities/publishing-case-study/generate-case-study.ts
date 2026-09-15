@@ -61,6 +61,7 @@ import {
 	isRestrictingThread,
 	restrictionLabel,
 	restrictsPostType,
+	settledDecision,
 } from "@repo/utils/publishing-restrictions";
 import { heartbeat } from "@temporalio/activity";
 import { ApplicationFailure } from "@temporalio/common";
@@ -223,7 +224,7 @@ export async function generateCaseStudyActivity(
 
 	heartbeat(`caseStudy: context assembled for ${draftId}`);
 
-	// ANSWERED threads become instructions; OPEN restricting ones become
+	// SETTLED threads become instructions; UNRESOLVED restricting ones become
 	// constraints. Two lists from one read, and both are derived here rather
 	// than passed in, because the minutes between the button and this line are
 	// exactly when someone answers a question.
@@ -255,24 +256,12 @@ export async function generateCaseStudyActivity(
 			}
 			continue;
 		}
-		if (thread.root.kind !== "QUESTION" || thread.root.status === "OPEN") {
-			continue;
-		}
-		// The settled answer is the newest USER reply; the root's own summary is
-		// the fallback for a question closed without one.
-		const answer =
-			[...thread.replies]
-				.reverse()
-				.find((r) => r.authorType === "USER" && r.content?.trim())
-				?.content?.trim() ??
-			thread.root.summary?.trim() ??
-			"";
-		if (answer) {
-			decisions.push({
-				subject: thread.root.subject,
-				decisionKind: thread.root.decisionKind ?? "OTHER",
-				answer,
-			});
+		// Only a decision a project member settled — a RESOLVED question and
+		// its newest RESOLVED USER reply. Never the root's summary (the model's
+		// own question) and never an assignment note; see `settledDecision`.
+		const settled = settledDecision(thread);
+		if (settled) {
+			decisions.push(settled);
 		}
 	}
 
@@ -371,15 +360,15 @@ export async function generateCaseStudyActivity(
 	// things a downstream reader trusts without re-reading the narrative, and
 	// all three are MODEL claims. A model that ignored the locked clause and
 	// reported APPROVED — or listed a disputed screenshot as confirmed — while
-	// the approval question is still open produces a draft that looks cleared.
-	// This corrects the places where the topic's own state contradicts the
-	// claim.
+	// the approval question is still unresolved produces a draft that looks
+	// cleared. This corrects the places where the topic's own state contradicts
+	// the claim.
 	//
 	// Derived from the SAME `threads` array already in hand — deliberately not a
 	// fresh query. The label has to describe THIS body, and this body was written
 	// against that snapshot; re-reading would let a question answered during the
-	// model call clear a draft that was written as though it were still open (or
-	// flag one that was not).
+	// model call clear a draft that was written as though it were still
+	// unresolved (or flag one that was not).
 	//
 	// ONLY the two over-confident enum transitions. `ANONYMIZED` and
 	// `QUALITATIVE` are TERMINAL SAFE STATES and survive untouched:
@@ -393,10 +382,10 @@ export async function generateCaseStudyActivity(
 	//    APPROVAL_NEEDED and both outcomes store the same value, so nobody can
 	//    ever tell whether the clause works.
 	//
-	// And it never upgrades: APPROVAL_NEEDED with no open question stays
+	// And it never upgrades: APPROVAL_NEEDED with no unresolved question stays
 	// APPROVAL_NEEDED. The model saw the narrative; a closed question is not
 	// evidence that the story stopped needing approval.
-	const openKinds = new Set(
+	const unresolvedKinds = new Set(
 		threads
 			.filter(isRestrictingThread)
 			.map((t) => t.root.decisionKind ?? "OTHER"),
@@ -412,14 +401,14 @@ export async function generateCaseStudyActivity(
 	const clamped: CaseStudyClampRecord = {};
 	const document = { ...parsed.data };
 	if (
-		openKinds.has(CASE_STUDY_CLAMP_REASON.customerIdentity) &&
+		unresolvedKinds.has(CASE_STUDY_CLAMP_REASON.customerIdentity) &&
 		document.customerIdentity === "APPROVED"
 	) {
 		document.customerIdentity = "APPROVAL_NEEDED";
 		clamped.customerIdentity = CASE_STUDY_CLAMP_REASON.customerIdentity;
 	}
 	if (
-		openKinds.has(CASE_STUDY_CLAMP_REASON.metricsBasis) &&
+		unresolvedKinds.has(CASE_STUDY_CLAMP_REASON.metricsBasis) &&
 		document.metricsBasis === "CONFIRMED"
 	) {
 		document.metricsBasis = "PLACEHOLDER";
@@ -428,19 +417,19 @@ export async function generateCaseStudyActivity(
 
 	// ASSETS. `confirmedAssets` is a STRONGER publication claim than either
 	// field above — the panel renders it as cleared for use — and it was the one
-	// the clamp did not cover: a topic with an open ASSET_APPROVAL thread naming
-	// the disputed asset shipped that asset as approved, because the model said
-	// so and nothing checked. Same premise as the two transitions above: a model
-	// self-claim a reader trusts has to be checked server-side.
+	// the clamp did not cover: a topic with an unresolved ASSET_APPROVAL thread
+	// naming the disputed asset shipped that asset as approved, because the model
+	// said so and nothing checked. Same premise as the two transitions above: a
+	// model self-claim a reader trusts has to be checked server-side.
 	//
-	// Matched by SUBJECT, never wholesale. An open approval about one asset says
-	// nothing about an unrelated one, and demoting a whole list would teach the
-	// reader to ignore it. `clampConfirmedAssets` (shared with other content
-	// types, `@repo/utils/publishing-asset-clamp`) is deliberately generous
-	// about what counts as the same thing (containment either way, case- and
-	// whitespace-folded): over-matching moves an asset to "needs confirmation",
-	// which is the safe direction, while a miss leaves an unapproved asset
-	// labelled ready to publish.
+	// Matched by SUBJECT, never wholesale. An unresolved approval about one
+	// asset says nothing about an unrelated one, and demoting a whole list would
+	// teach the reader to ignore it. `clampConfirmedAssets` (shared with other
+	// content types, `@repo/utils/publishing-asset-clamp`) is deliberately
+	// generous about what counts as the same thing (containment either way,
+	// case- and whitespace-folded): over-matching moves an asset to "needs
+	// confirmation", which is the safe direction, while a miss leaves an
+	// unapproved asset labelled ready to publish.
 	//
 	// Restricted subjects only, not open questions: a framing question is not a
 	// claim about whether an asset exists and may be used.
@@ -459,7 +448,7 @@ export async function generateCaseStudyActivity(
 
 	if (clamped.customerIdentity || clamped.metricsBasis || clamped.assets) {
 		logger.info(
-			"[publishing-case-study] clamped a model claim against an open approval",
+			"[publishing-case-study] clamped a model claim against an unresolved approval",
 			{ draftId, topicId, projectId, clamped },
 		);
 	}

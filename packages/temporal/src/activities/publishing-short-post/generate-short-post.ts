@@ -46,6 +46,7 @@ import type { TemplateFormat } from "@repo/utils";
 import {
 	isRestrictingThread,
 	restrictionLabel,
+	settledDecision,
 } from "@repo/utils/publishing-restrictions";
 import { heartbeat } from "@temporalio/activity";
 import { ApplicationFailure } from "@temporalio/common";
@@ -193,10 +194,10 @@ export async function generateShortPostActivity(
 
 	heartbeat(`shortPost: context assembled for ${draftId}`);
 
-	// ANSWERED threads become instructions; OPEN safety-critical ones become
-	// restrictions. Two lists from one read, and both are derived here rather
-	// than passed in, because the minutes between the button and this line are
-	// exactly when someone answers a question.
+	// SETTLED threads become instructions; UNRESOLVED safety-critical ones
+	// become restrictions. Two lists from one read, and both are derived here
+	// rather than passed in, because the minutes between the button and this
+	// line are exactly when someone answers a question.
 	const decisions: ShortPostDecision[] = [];
 	const restrictedSubjects: string[] = [];
 	for (const thread of threads) {
@@ -204,24 +205,12 @@ export async function generateShortPostActivity(
 			restrictedSubjects.push(restrictionLabel(thread));
 			continue;
 		}
-		if (thread.root.kind !== "QUESTION" || thread.root.status === "OPEN") {
-			continue;
-		}
-		// The settled answer is the newest USER reply; the root's own summary is
-		// the fallback for a question closed without one.
-		const answer =
-			[...thread.replies]
-				.reverse()
-				.find((r) => r.authorType === "USER" && r.content?.trim())
-				?.content?.trim() ??
-			thread.root.summary?.trim() ??
-			"";
-		if (answer) {
-			decisions.push({
-				subject: thread.root.subject,
-				decisionKind: thread.root.decisionKind ?? "OTHER",
-				answer,
-			});
+		// Only a decision a project member settled — a RESOLVED question and
+		// its newest RESOLVED USER reply. Never the root's summary (the model's
+		// own question) and never an assignment note; see `settledDecision`.
+		const settled = settledDecision(thread);
+		if (settled) {
+			decisions.push(settled);
 		}
 	}
 

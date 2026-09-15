@@ -365,7 +365,7 @@ export const RELEASE_STATUS_LABELS: Record<
  * clamp from ordinary caution.
  */
 const ASSET_CLAMP_NOTE =
-	"Moved out of the confirmed list by Fabric, from an open approval thread naming them:";
+	"Moved out of the confirmed list by Fabric, from an unresolved approval thread naming them:";
 
 /**
  * Compose the export a presenter takes out of Fabric — everything the

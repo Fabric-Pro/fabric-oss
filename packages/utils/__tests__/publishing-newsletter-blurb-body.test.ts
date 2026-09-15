@@ -397,6 +397,9 @@ describe("composeNewsletterBlurbExport", () => {
 			.split("\n")
 			.find((line) => line.includes("naming them:"));
 		expect(attribution).toBeDefined();
+		expect(attribution).toContain(
+			"Moved out of the confirmed list by Fabric, from an unresolved approval thread naming them:",
+		);
 		expect(attribution).toContain("Recorded walkthrough");
 		expect(attribution).toContain("Latency chart");
 	});

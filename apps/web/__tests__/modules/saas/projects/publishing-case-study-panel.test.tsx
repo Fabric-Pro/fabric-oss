@@ -175,7 +175,7 @@ const SCAFFOLD_DOCUMENT = {
 };
 
 /**
- * A draft whose claims the ACTIVITY lowered against open approvals.
+ * A draft whose claims the ACTIVITY lowered against unresolved approvals.
  *
  * Built FROM `CASE_STUDY_CLAMP_REASON` rather than by restating its values.
  * The panel decides whether to show the clamp note by comparing the stored
@@ -655,19 +655,21 @@ describe("CaseStudyPanel — the approval-sensitive fields", () => {
 
 	it("renders a CLAMPED status differently from one the draft claimed", () => {
 		// THE case for this panel. The activity lowers an APPROVED identity or a
-		// CONFIRMED metrics basis against an open approval thread and records
-		// which question did it. This is the ONLY reader of that record — without
-		// it the clamp is write-only telemetry, and nobody can tell a model that
-		// complied with the locked clause from one that ignored it.
+		// CONFIRMED metrics basis against an unresolved approval thread and
+		// records which question did it. This is the ONLY reader of that record —
+		// without it the clamp is write-only telemetry, and nobody can tell a
+		// model that complied with the locked clause from one that ignored it.
 		renderPanel({ draft: readyDraft(CLAMPED_DOCUMENT, "d2") });
 
 		expect(
 			screen.getByText(
 				/approval needed before the customer can be named/i,
 			),
-		).toHaveTextContent(/set by Fabric from an open approval thread/i);
+		).toHaveTextContent(
+			/set by Fabric from an unresolved approval thread/i,
+		);
 		expect(screen.getByText(/placeholder figures/i)).toHaveTextContent(
-			/set by Fabric from an open approval thread/i,
+			/set by Fabric from an unresolved approval thread/i,
 		);
 	});
 
@@ -678,7 +680,9 @@ describe("CaseStudyPanel — the approval-sensitive fields", () => {
 
 		expect(screen.getByText(/named with approval/i)).toBeInTheDocument();
 		expect(
-			screen.queryByText(/set by Fabric from an open approval thread/i),
+			screen.queryByText(
+				/set by Fabric from an unresolved approval thread/i,
+			),
 		).not.toBeInTheDocument();
 	});
 
@@ -718,7 +722,7 @@ describe("CaseStudyPanel — the approval-sensitive fields", () => {
 	it("does not call a cleared asset safe to publish", () => {
 		// The list is the MODEL's account of the source material — nothing
 		// consulted an approval record to build it, and the two enum fields
-		// beside it are at least clamped against open threads while this is
+		// beside it are at least clamped against unresolved threads while this is
 		// not. A reader told "safe to publish" stops checking, which is the one
 		// behaviour this list must not cause.
 		renderPanel({ draft: readyDraft(SCAFFOLD_DOCUMENT, "d2") });
@@ -731,12 +735,14 @@ describe("CaseStudyPanel — the approval-sensitive fields", () => {
 
 	it("names the assets Fabric took OFF the cleared list", () => {
 		// Without this, an asset the model was merely unsure about and one an
-		// open approval thread contradicts are the same line — and only the
+		// unresolved approval thread contradicts are the same line — and only the
 		// second says the draft claimed something it should not have.
 		renderPanel({ draft: readyDraft(CLAMPED_DOCUMENT, "d2") });
 
 		expect(
-			screen.getByText(/moved out of the cleared list by Fabric/i),
+			screen.getByText(
+				/moved out of the cleared list by Fabric, from an unresolved approval thread/i,
+			),
 		).toHaveTextContent("the customer logo");
 	});
 
@@ -768,9 +774,10 @@ describe("CaseStudyPanel — when the notes describe a different version", () =>
 	 * `doc` is the latest READY generation; the editor, the copy button and the
 	 * download all hold the WORKING draft. A regeneration nobody adopted makes
 	 * those two different documents, and every one of these cases is reachable
-	 * without misuse — an open customer-name question clamps v1's LABEL while
-	 * v1's prose still names the customer, the question is answered "we are not
-	 * naming them" and closed, and the unclamped v2 honestly reports APPROVED.
+	 * without misuse — an unresolved customer-name question clamps v1's LABEL
+	 * while v1's prose still names the customer, the question is answered "we
+	 * are not naming them" and closed, and the unclamped v2 honestly reports
+	 * APPROVED.
 	 */
 	it("qualifies the approval status when the editor holds other text", () => {
 		renderPanel({
@@ -980,7 +987,7 @@ describe("CaseStudyPanel — downloading the draft", () => {
 
 		const blob = mutate.triggerDownload.mock.calls[0][0] as Blob;
 		await expect(blob.text()).resolves.toContain(
-			"Set by Fabric from an open approval thread",
+			"Set by Fabric from an unresolved approval thread",
 		);
 	});
 
@@ -988,7 +995,7 @@ describe("CaseStudyPanel — downloading the draft", () => {
 		// Everything else about this document is clean and the
 		// needs-confirmation list is EMPTY, so an export whose "is this clean"
 		// test read only that list would hand out a caveat-free file with an
-		// asset an open approval thread contradicts presented as cleared.
+		// asset an unresolved approval thread contradicts presented as cleared.
 		const user = userEvent.setup();
 		renderPanel({
 			draft: readyDraft(CLAMPED_ASSET_ONLY_DOCUMENT, "d1"),
@@ -999,7 +1006,9 @@ describe("CaseStudyPanel — downloading the draft", () => {
 
 		const exported = mutate.renderPdf.mock.calls[0][0] as string;
 		expect(exported).toContain("Draft caveats");
-		expect(exported).toContain("Moved out of the cleared list by Fabric");
+		expect(exported).toContain(
+			"Moved out of the cleared list by Fabric, from an unresolved approval thread",
+		);
 		expect(exported).toContain("the customer logo");
 	});
 

@@ -673,4 +673,31 @@ describe("resolveRestrictions", () => {
 
 		expect(r.global).toBe(true);
 	});
+
+	it("marks a SOFT-CLOSED per-type kind on the badge, like an open one (Fizzy #1988 1B)", () => {
+		// AUDIENCE_SCOPE reaches the badge only through this file's OWN
+		// per-type gate — `isRestrictingThread` never admits it — so this is
+		// the case that fails if that third gate is left on OPEN.
+		const r = resolveRestrictions([
+			thread({
+				decisionKind: "AUDIENCE_SCOPE",
+				status: "POSSIBLY_RESOLVED",
+			}),
+		]);
+
+		expect(r.byPostType.has("NEWSLETTER_BLURB")).toBe(true);
+		expect(r.byPostType.has("TWEET")).toBe(false);
+		expect(r.global).toBe(false);
+	});
+
+	it("treats a SOFT-CLOSED safety-critical question as restricting every type (Fizzy #1988 1B)", () => {
+		const r = resolveRestrictions([
+			thread({
+				decisionKind: "CUSTOMER_NAME",
+				status: "POSSIBLY_RESOLVED",
+			}),
+		]);
+
+		expect(r.global).toBe(true);
+	});
 });

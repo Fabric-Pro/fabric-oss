@@ -41,13 +41,13 @@ const BODY_MAX = 40000;
  *
  *  - The `generation.clamped` record is the one that would otherwise be
  *    write-only telemetry. The activity lowers an `APPROVED` customer identity
- *    or a `CONFIRMED` metrics basis when the topic still has the matching open
- *    approval, moves a claimed-confirmed asset an open thread names out of the
- *    cleared list, logs all of it, and stores it. Nobody would ever see that a
- *    claim was lowered — or that the locked clause worked — unless this panel
- *    said so. The reasons are compared against the SHARED
- *    `CASE_STUDY_CLAMP_REASON` vocabulary rather than literals repeated here,
- *    because an unrecognised reason reads as "not clamped".
+ *    or a `CONFIRMED` metrics basis when the topic still has the matching
+ *    unresolved approval, moves a claimed-confirmed asset an unresolved thread
+ *    names out of the cleared list, logs all of it, and stores it. Nobody
+ *    would ever see that a claim was lowered — or that the locked clause
+ *    worked — unless this panel said so. The reasons are compared against the
+ *    SHARED `CASE_STUDY_CLAMP_REASON` vocabulary rather than literals repeated
+ *    here, because an unrecognised reason reads as "not clamped".
  *  - The export carries the same fields, because a download is exactly where
  *    the on-screen safeguards stop applying: the moment the draft becomes an
  *    email attachment. See `composeExportMarkdown`, which also documents why
@@ -94,7 +94,7 @@ const METRICS_BASIS_LABELS: Record<MetricsBasis, string> = {
 
 /** Said of a field the activity lowered, never of one the model chose. */
 const CLAMP_NOTE =
-	"Set by Fabric from an open approval thread, not claimed by the draft.";
+	"Set by Fabric from an unresolved approval thread, not claimed by the draft.";
 
 /**
  * Said of assets the activity moved OUT of `confirmedAssets`.
@@ -105,7 +105,7 @@ const CLAMP_NOTE =
  * that changed.
  */
 const ASSET_CLAMP_NOTE =
-	"Moved out of the cleared list by Fabric, from an open approval thread naming them:";
+	"Moved out of the cleared list by Fabric, from an unresolved approval thread naming them:";
 
 interface CaseStudyDocument {
 	title: string;
@@ -120,7 +120,7 @@ interface CaseStudyDocument {
 	inputsNeeded: string[];
 	safetyNote: string | null;
 	/**
-	 * Which fields the activity lowered against an open approval thread.
+	 * Which fields the activity lowered against an unresolved approval thread.
 	 *
 	 * The two enums are booleans — the value they were lowered TO is already in
 	 * `customerIdentity` / `metricsBasis`, so all this record adds is who set it.
@@ -505,15 +505,15 @@ export function CaseStudyPanel({
 	 * not adopted — at which point the page prints v2's approval status directly
 	 * above v1's prose, with nothing saying so.
 	 *
-	 * That is reachable without any misuse: an open customer-name question
+	 * That is reachable without any misuse: an unresolved customer-name question
 	 * clamps v1 to APPROVAL_NEEDED while v1's body still names the customer (the
 	 * clamp changes the label, not the prose); the question is then answered
 	 * "we are not naming them" and closed; a regeneration produces an unclamped
 	 * v2 that honestly reports APPROVED. `latestReady` is v2, the working body
 	 * is still v1's, and the panel would read "Named with approval" over text
-	 * written under an open question. The scaffold case is worse, because the
-	 * amber banner DISAPPEARS: v2 is a full draft, so the warning vanishes while
-	 * the text about to be shared is still the scaffold.
+	 * written under an unresolved question. The scaffold case is worse, because
+	 * the amber banner DISAPPEARS: v2 is a full draft, so the warning vanishes
+	 * while the text about to be shared is still the scaffold.
 	 *
 	 * Gated on there being a body to qualify. With no working draft the sentence
 	 * would be false — there is no "version this text was saved from" — and the
@@ -938,7 +938,7 @@ export function CaseStudyPanel({
 							    the source material led it to believe, and no
 							    approval record was consulted to produce it. The
 							    two enum fields above are at least clamped
-							    against open threads; a reader told "safe to
+							    against unresolved threads; a reader told "safe to
 							    publish" stops checking, which is the one
 							    behaviour this list must not cause. */}
 							<p className="text-muted-foreground text-xs leading-relaxed">
@@ -968,7 +968,7 @@ export function CaseStudyPanel({
 							    An entry the model itself was unsure about and
 							    one Fabric took off the cleared list are the same
 							    line otherwise, and only the second says the
-							    draft claimed something an open thread contradicts. */}
+							    draft claimed something an unresolved thread contradicts. */}
 							{doc.clamped.assets.length > 0 ? (
 								<p className="text-xs leading-relaxed">
 									{ASSET_CLAMP_NOTE}{" "}

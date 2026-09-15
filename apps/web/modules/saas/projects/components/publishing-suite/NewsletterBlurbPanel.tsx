@@ -151,11 +151,11 @@ const PROMPT_SOURCE_NOTICE: Record<
  * WHY; this map is the WHY.
  */
 const ASSET_CLAMP_KIND_LABELS: Record<string, string> = {
-	ASSET_APPROVAL: "an open asset-approval thread",
-	INTERNAL_UI: "an open internal-UI review thread",
-	VIDEO_WALKTHROUGH: "an open video-walkthrough review thread",
+	ASSET_APPROVAL: "an unresolved asset-approval thread",
+	INTERNAL_UI: "an unresolved internal-UI review thread",
+	VIDEO_WALKTHROUGH: "an unresolved video-walkthrough review thread",
 };
-const ASSET_CLAMP_KIND_FALLBACK = "an open approval thread";
+const ASSET_CLAMP_KIND_FALLBACK = "an unresolved approval thread";
 
 /**
  * Said of an asset the activity moved OUT of `confirmed`, never of one the model

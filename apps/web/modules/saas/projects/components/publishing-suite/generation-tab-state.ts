@@ -19,6 +19,7 @@ import {
 	decisionLabel,
 	EXTRA_RESTRICTING_KINDS_BY_POST_TYPE,
 	isRestrictingThread,
+	isUnresolvedDecisionStatus,
 	restrictsPostType,
 	SAFETY_CRITICAL_KINDS,
 } from "@repo/utils/publishing-restrictions";
@@ -265,7 +266,8 @@ export interface Restrictions {
 export { decisionLabel, isRestrictingThread, restrictsPostType };
 
 /**
- * What the topic's OPEN questions restrict, across the whole thread set.
+ * What the topic's UNRESOLVED questions (`OPEN` or `POSSIBLY_RESOLVED`)
+ * restrict, across the whole thread set.
  *
  * Feeds `needsAttention` — the BADGE. The per-panel LIST is built separately,
  * in `GenerationPanel`, from `restrictsPostType`. Both are needed and neither
@@ -300,7 +302,10 @@ export function resolveRestrictions(
 		// The per-type extras first, and NOT as an `else` — a thread can be
 		// restricting for every type by its kind and named by a type's extra
 		// set at the same time, and the shared branches below `continue`.
-		if (thread.root.kind === "QUESTION" && thread.root.status === "OPEN") {
+		if (
+			thread.root.kind === "QUESTION" &&
+			isUnresolvedDecisionStatus(thread.root.status)
+		) {
 			const kind = thread.root.decisionKind ?? "";
 			for (const [postType, extra] of Object.entries(
 				EXTRA_RESTRICTING_KINDS_BY_POST_TYPE,

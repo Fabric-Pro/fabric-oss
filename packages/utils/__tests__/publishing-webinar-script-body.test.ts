@@ -151,7 +151,9 @@ describe("composeWebinarScriptExport", () => {
 			assets: ["Recorded walkthrough"],
 			assetKinds: { "Recorded walkthrough": "ASSET_APPROVAL" },
 		});
-		expect(exported).toMatch(/Moved out of the confirmed list by Fabric/i);
+		expect(exported).toContain(
+			"Moved out of the confirmed list by Fabric, from an unresolved approval thread naming them:",
+		);
 		expect(exported).toContain("Recorded walkthrough");
 	});
 

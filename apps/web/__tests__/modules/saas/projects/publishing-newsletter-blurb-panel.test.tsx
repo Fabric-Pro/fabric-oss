@@ -1001,9 +1001,9 @@ describe("NewsletterBlurbPanel — the asset clamp attribution", () => {
 	 * added to the set without a phrase fails the key-set test.
 	 */
 	const CLAMP_KIND_PHRASES: Record<string, string> = {
-		ASSET_APPROVAL: "an open asset-approval thread",
-		INTERNAL_UI: "an open internal-UI review thread",
-		VIDEO_WALKTHROUGH: "an open video-walkthrough review thread",
+		ASSET_APPROVAL: "an unresolved asset-approval thread",
+		INTERNAL_UI: "an unresolved internal-UI review thread",
+		VIDEO_WALKTHROUGH: "an unresolved video-walkthrough review thread",
 	};
 
 	/** The same document, re-clamped onto one asset of a given kind. */
@@ -1051,7 +1051,7 @@ describe("NewsletterBlurbPanel — the asset clamp attribution", () => {
 
 		expect(
 			screen.getByText(
-				/admin panel screen capture — moved out of the confirmed list by fabric, from an open approval thread naming it\./i,
+				/admin panel screen capture — moved out of the confirmed list by fabric, from an unresolved approval thread naming it\./i,
 			),
 		).toBeInTheDocument();
 	});
@@ -1156,7 +1156,7 @@ describe("NewsletterBlurbPanel — copying and downloading the draft", () => {
 		// The kind attribution, per asset — the same line the panel renders on
 		// screen, so the file and the page say the same thing.
 		expect(exported).toContain(
-			"Admin panel screen capture — Moved out of the confirmed list by Fabric, from an open internal-UI review thread naming it.",
+			"Admin panel screen capture — Moved out of the confirmed list by Fabric, from an unresolved internal-UI review thread naming it.",
 		);
 		// The success path hands the file to the browser, named from the
 		// draft's own headline. Asserted here because without it the "did not

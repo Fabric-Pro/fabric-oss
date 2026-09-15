@@ -423,7 +423,12 @@ export async function listTopicDecisions(input: {
 			projectId: input.projectId,
 			deletedAt: null,
 		},
-		orderBy: { createdAt: "asc" },
+		// `createdAt` then `id`: the same total order `amendTopicQuestionAnswer`
+		// uses (reversed there), because rows written in one transaction and
+		// amendments inside one millisecond share a timestamp, and Postgres may
+		// return tied rows in any order. `settledDecision` sorts replies again
+		// itself; this keeps the source and the helper in agreement.
+		orderBy: [{ createdAt: "asc" }, { id: "asc" }],
 		// Included rather than fetched separately: the assignee rows are
 		// scoped by the PARENT, which this query has already scoped, so a
 		// second round trip would only be a second chance to scope it

@@ -3,10 +3,13 @@ import {
 	decisionLabel,
 	EXTRA_RESTRICTING_KINDS_BY_POST_TYPE,
 	isRestrictingThread,
+	isUnresolvedDecisionStatus,
 	type RestrictionThreadRoot,
 	renderSubjectBullet,
 	restrictionLabel,
 	restrictsPostType,
+	settledDecision,
+	type SettledDecisionThread,
 } from "../lib/publishing-restrictions";
 
 /**
@@ -512,5 +515,178 @@ describe("decisionLabel", () => {
 		// Distinct from the row above: this one is green whether or not FR2
 		// is present, so it is not a proxy for it.
 		expect(decisionLabel(null, null)).toBe("An unclassified decision");
+	});
+});
+
+describe("isUnresolvedDecisionStatus — the STATUS half of 'still unresolved' (Fizzy #1988 1B)", () => {
+	it("is true for OPEN and POSSIBLY_RESOLVED, and for nothing else", () => {
+		// POSSIBLY_RESOLVED is written by `reconcileTopicQuestions` only for a
+		// root that was still OPEN — nobody had answered it — when a regenerated
+		// analysis stopped raising it. It is soft-closed, not settled.
+		for (const status of ["OPEN", "POSSIBLY_RESOLVED"]) {
+			expect(isUnresolvedDecisionStatus(status)).toBe(true);
+		}
+		for (const status of ["RESOLVED", "REJECTED", "FORMATTING_ONLY"]) {
+			expect(isUnresolvedDecisionStatus(status)).toBe(false);
+		}
+	});
+});
+
+describe("a soft-closed question still restricts (Fizzy #1988 1B)", () => {
+	it("isRestrictingThread: a POSSIBLY_RESOLVED safety-critical question restricts; a RESOLVED one does not", () => {
+		expect(
+			isRestrictingThread(
+				thread({
+					decisionKind: "CUSTOMER_NAME",
+					status: "POSSIBLY_RESOLVED",
+				}),
+			),
+		).toBe(true);
+		expect(
+			isRestrictingThread(
+				thread({ decisionKind: "CUSTOMER_NAME", status: "RESOLVED" }),
+			),
+		).toBe(false);
+	});
+
+	it("restrictsPostType: a POSSIBLY_RESOLVED AUDIENCE_SCOPE question restricts a Newsletter Blurb", () => {
+		// AUDIENCE_SCOPE is a per-type extra, so `isRestrictingThread` says no
+		// to it whatever its status. Only `restrictsPostType`'s OWN gate can
+		// admit it — which is why this case fails if only the shared gate moved.
+		expect(
+			restrictsPostType(
+				thread({
+					decisionKind: "AUDIENCE_SCOPE",
+					status: "POSSIBLY_RESOLVED",
+				}),
+				"NEWSLETTER_BLURB",
+			),
+		).toBe(true);
+	});
+});
+
+describe("settledDecision — a decision is settled only when a person answered it (Fizzy #1988 1B)", () => {
+	const reply = (
+		over: Partial<SettledDecisionThread["replies"][number]> = {},
+	): SettledDecisionThread["replies"][number] => ({
+		id: "reply-1",
+		createdAt: new Date("2026-09-01T10:00:00Z"),
+		status: "RESOLVED",
+		authorType: "USER",
+		content: "Yes, name them.",
+		...over,
+	});
+	const settled = (
+		rootOver: Partial<SettledDecisionThread["root"]> = {},
+		replies: SettledDecisionThread["replies"] = [reply()],
+	): SettledDecisionThread => ({
+		root: {
+			kind: "QUESTION",
+			status: "RESOLVED",
+			decisionKind: "CUSTOMER_NAME",
+			subject: "example-org",
+			summary: "May we name example-org in public material?",
+			...rootOver,
+		},
+		replies,
+	});
+
+	it("returns the newest RESOLVED USER reply, whatever order the replies arrive in", () => {
+		const older = reply({
+			id: "reply-1",
+			createdAt: new Date("2026-09-01T10:00:00Z"),
+			content: "Not yet.",
+		});
+		const newer = reply({
+			id: "reply-2",
+			createdAt: new Date("2026-09-01T11:00:00Z"),
+			content: "Yes, after legal review.",
+		});
+		const expected = {
+			subject: "example-org",
+			decisionKind: "CUSTOMER_NAME",
+			answer: "Yes, after legal review.",
+		};
+		expect(settledDecision(settled({}, [older, newer]))).toEqual(expected);
+		expect(settledDecision(settled({}, [newer, older]))).toEqual(expected);
+	});
+
+	it("returns the ANSWER, not an assignment note added after it", () => {
+		// `setTopicQuestionAssignees` appends a note as a USER reply with
+		// status OPEN, and can do so on a RESOLVED root. The newest USER reply
+		// is then the note, not the answer.
+		const answer = reply({ content: "Yes, name them." });
+		const note = reply({
+			id: "reply-2",
+			createdAt: new Date("2026-09-02T10:00:00Z"),
+			status: "OPEN",
+			content: "Can someone confirm this with legal?",
+		});
+		expect(settledDecision(settled({}, [answer, note]))?.answer).toBe(
+			"Yes, name them.",
+		);
+	});
+
+	it("never falls back to the root's summary, which is the model's own question", () => {
+		// The non-empty summary is the precondition that makes a restored
+		// fallback observable.
+		const agentOnly = reply({
+			authorType: "AGENT",
+			content: "Analysis note.",
+		});
+		expect(settledDecision(settled({}, [agentOnly]))).toBeNull();
+	});
+
+	it.each(["POSSIBLY_RESOLVED", "REJECTED", "FORMATTING_ONLY", "OPEN"])(
+		"returns null for a %s root, even with a qualifying reply present",
+		(status) => {
+			// POSSIBLY_RESOLVED + a RESOLVED USER reply is not reachable through
+			// today's writers; it is pinned because the helper decides, not the
+			// caller.
+			expect(settledDecision(settled({ status }))).toBeNull();
+		},
+	);
+
+	it("returns null for an AI_UPDATE root", () => {
+		expect(settledDecision(settled({ kind: "AI_UPDATE" }))).toBeNull();
+	});
+
+	it("returns null when the newest member answer is blank, rather than reviving an older one", () => {
+		// A whitespace-only answer is now refused at the write procedures, so
+		// this is reachable only through a historical row. The older, real
+		// answer was SUPERSEDED by the newer blank one — presenting it as
+		// settled would show a decision the newer reply took back.
+		const real = reply({ content: "Yes, name them." });
+		const blank = reply({
+			id: "reply-2",
+			createdAt: new Date("2026-09-02T10:00:00Z"),
+			content: "   ",
+		});
+		expect(settledDecision(settled({}, [real, blank]))).toBeNull();
+	});
+
+	it("returns null when every reply is blank", () => {
+		const blank = reply({ content: "   " });
+		expect(settledDecision(settled({}, [blank]))).toBeNull();
+	});
+
+	it("breaks a same-millisecond tie by id, identically for both input orders", () => {
+		// Two amendments can share a millisecond; `amendTopicQuestionAnswer`
+		// orders `createdAt desc, id desc` for exactly that reason.
+		const at = new Date("2026-09-01T10:00:00Z");
+		const a = reply({ id: "reply-a", createdAt: at, content: "Answer A." });
+		const b = reply({ id: "reply-b", createdAt: at, content: "Answer B." });
+		expect(settledDecision(settled({}, [a, b]))?.answer).toBe("Answer B.");
+		expect(settledDecision(settled({}, [b, a]))?.answer).toBe("Answer B.");
+	});
+
+	it("names an unclassified root OTHER and passes the subject through", () => {
+		expect(
+			settledDecision(settled({ decisionKind: null, subject: null })),
+		).toEqual({
+			subject: null,
+			decisionKind: "OTHER",
+			answer: "Yes, name them.",
+		});
 	});
 });

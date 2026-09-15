@@ -632,8 +632,8 @@ describe("StakeholderEmailPanel — the release status", () => {
 	it("attributes every status to the DRAFT, never to Fabric", () => {
 		// The difference from the Case Study panel, and it is load-bearing.
 		// `customerIdentity` and `metricsBasis` are clamped server-side against
-		// the topic's own open approval threads, so that panel can say "Set by
-		// Fabric". Nothing checks a release claim — Fabric stores no record of
+		// the topic's own unresolved approval threads, so that panel can say "Set
+		// by Fabric". Nothing checks a release claim — Fabric stores no record of
 		// what has shipped — so a reader told this was verified stops verifying
 		// it, on the one content type that gets sent to a sponsor.
 		renderPanel({ draft: readyDraft(DOCUMENT, "d2") });

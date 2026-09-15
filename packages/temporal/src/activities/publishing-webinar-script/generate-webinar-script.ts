@@ -30,9 +30,10 @@
  * script is the type most likely to reference a screen recording or a live
  * capture, so `confirmedAssets` claiming one of those is safe to show is
  * exactly the model self-claim `clampConfirmedAssets` exists to check against
- * the topic's own open approval threads. Unlike the case study, there is no
- * `customerIdentity` / `metricsBasis`-shaped enum to clamp here — this schema
- * carries neither field — so the clamp below is the asset half only.
+ * the topic's own unresolved approval threads — OPEN or POSSIBLY_RESOLVED.
+ * Unlike the case study, there is no `customerIdentity` / `metricsBasis`-shaped
+ * enum to clamp here — this schema carries neither field — so the clamp below
+ * is the asset half only.
  *
  * `generation.revisionVersion` and `generation.aiVersion` are persisted, unlike
  * the case study's and the stakeholder email's blocks — spec §5.6 (DV5). Both
@@ -74,6 +75,7 @@ import {
 	isRestrictingThread,
 	restrictionLabel,
 	restrictsPostType,
+	settledDecision,
 } from "@repo/utils/publishing-restrictions";
 import {
 	composeWebinarScriptWorkingDraftBody,
@@ -241,7 +243,7 @@ export async function generateWebinarScriptActivity(
 
 	heartbeat(`webinarScript: context assembled for ${draftId}`);
 
-	// ANSWERED threads become instructions; OPEN restricting ones become
+	// SETTLED threads become instructions; UNRESOLVED restricting ones become
 	// constraints. Two lists from one read, and both are derived here rather
 	// than passed in, because the minutes between the button and this line are
 	// exactly when someone answers a question.
@@ -274,24 +276,12 @@ export async function generateWebinarScriptActivity(
 			}
 			continue;
 		}
-		if (thread.root.kind !== "QUESTION" || thread.root.status === "OPEN") {
-			continue;
-		}
-		// The settled answer is the newest USER reply; the root's own summary is
-		// the fallback for a question closed without one.
-		const answer =
-			[...thread.replies]
-				.reverse()
-				.find((r) => r.authorType === "USER" && r.content?.trim())
-				?.content?.trim() ??
-			thread.root.summary?.trim() ??
-			"";
-		if (answer) {
-			decisions.push({
-				subject: thread.root.subject,
-				decisionKind: thread.root.decisionKind ?? "OTHER",
-				answer,
-			});
+		// Only a decision a project member settled — a RESOLVED question and
+		// its newest RESOLVED USER reply. Never the root's summary (the model's
+		// own question) and never an assignment note; see `settledDecision`.
+		const settled = settledDecision(thread);
+		if (settled) {
+			decisions.push(settled);
 		}
 	}
 
@@ -387,17 +377,17 @@ export async function generateWebinarScriptActivity(
 	// -------------------------------------------------------------------------
 	//
 	// This schema carries no `customerIdentity` / `metricsBasis`-shaped enum, so
-	// unlike the case study there is nothing else to compare against an open
-	// approval — see the file header. `suggestedAssets.confirmed` is the same
-	// kind of model self-claim the case study's `confirmedAssets` is, and it gets
-	// the same treatment, via the SAME shared algorithm (`@repo/utils/publishing-
-	// asset-clamp`).
+	// unlike the case study there is nothing else to compare against an
+	// unresolved approval — see the file header. `suggestedAssets.confirmed` is
+	// the same kind of model self-claim the case study's `confirmedAssets` is,
+	// and it gets the same treatment, via the SAME shared algorithm
+	// (`@repo/utils/publishing-asset-clamp`).
 	//
 	// Derived from the SAME `threads` array already in hand — deliberately not a
 	// fresh query. The label has to describe THIS body, and this body was written
 	// against that snapshot; re-reading would let a question answered during the
-	// model call clear a draft that was written as though it were still open (or
-	// flag one that was not).
+	// model call clear a draft that was written as though it were still
+	// unresolved (or flag one that was not).
 	//
 	// Restricted subjects only, not open questions: a framing question is not a
 	// claim about whether an asset exists and may be used.
@@ -426,7 +416,7 @@ export async function generateWebinarScriptActivity(
 
 	if (clamped.assets) {
 		logger.info(
-			"[publishing-webinar-script] clamped a model claim against an open approval",
+			"[publishing-webinar-script] clamped a model claim against an unresolved approval",
 			{ draftId, topicId, projectId, clamped },
 		);
 	}

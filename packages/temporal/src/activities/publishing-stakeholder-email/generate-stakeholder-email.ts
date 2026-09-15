@@ -29,10 +29,11 @@
  * counterpart here, and that is a finding rather than an omission.
  *
  * The case study clamps three MODEL claims (`customerIdentity`, `metricsBasis`,
- * `confirmedAssets`) against the topic's open approval threads, and it can do
- * that because the claim and the thread name the same thing: `CUSTOMER_NAME`
- * asks "may we name the customer", and `customerIdentity: "APPROVED"` answers
- * it. The clamp is a comparison between two statements about one subject.
+ * `confirmedAssets`) against the topic's unresolved approval threads — OPEN or
+ * POSSIBLY_RESOLVED — and it can do that because the claim and the thread name
+ * the same thing: `CUSTOMER_NAME` asks "may we name the customer", and
+ * `customerIdentity: "APPROVED"` answers it. The clamp is a comparison between
+ * two statements about one subject.
  *
  * `releaseStatus` has no such thread. Fabric's decision vocabulary is eleven
  * kinds — CUSTOMER_NAME, ASSET_APPROVAL, INTERNAL_UI, VIDEO_WALKTHROUGH,
@@ -95,6 +96,7 @@ import {
 	isRestrictingThread,
 	restrictionLabel,
 	restrictsPostType,
+	settledDecision,
 } from "@repo/utils/publishing-restrictions";
 import { composeStakeholderEmailWorkingDraftBody } from "@repo/utils/publishing-stakeholder-email-body";
 import { heartbeat } from "@temporalio/activity";
@@ -258,7 +260,7 @@ export async function generateStakeholderEmailActivity(
 
 	heartbeat(`stakeholderEmail: context assembled for ${draftId}`);
 
-	// ANSWERED threads become instructions; OPEN restricting ones become
+	// SETTLED threads become instructions; UNRESOLVED restricting ones become
 	// constraints. Two lists from one read, and both are derived here rather
 	// than passed in, because the minutes between the button and this line are
 	// exactly when someone answers a question.
@@ -291,24 +293,12 @@ export async function generateStakeholderEmailActivity(
 			}
 			continue;
 		}
-		if (thread.root.kind !== "QUESTION" || thread.root.status === "OPEN") {
-			continue;
-		}
-		// The settled answer is the newest USER reply; the root's own summary is
-		// the fallback for a question closed without one.
-		const answer =
-			[...thread.replies]
-				.reverse()
-				.find((r) => r.authorType === "USER" && r.content?.trim())
-				?.content?.trim() ??
-			thread.root.summary?.trim() ??
-			"";
-		if (answer) {
-			decisions.push({
-				subject: thread.root.subject,
-				decisionKind: thread.root.decisionKind ?? "OTHER",
-				answer,
-			});
+		// Only a decision a project member settled — a RESOLVED question and
+		// its newest RESOLVED USER reply. Never the root's summary (the model's
+		// own question) and never an assignment note; see `settledDecision`.
+		const settled = settledDecision(thread);
+		if (settled) {
+			decisions.push(settled);
 		}
 	}
 
