@@ -168,9 +168,7 @@ export function ConnectionDetailPageContent({
 						Integration not found.
 					</p>
 					<Button className="mt-4" asChild>
-						<Link href={integrationsPath}>
-							Back to Integrations
-						</Link>
+						<Link href={integrationsPath}>Back to Connections</Link>
 					</Button>
 				</CardContent>
 			</Card>

@@ -221,10 +221,15 @@ describe("IntegrationProviderPageContent — health badge wiring", () => {
 		).not.toBeInTheDocument();
 	});
 
-	it("keeps the back-to-integrations link in the header", () => {
+	it("keeps the back link in the header, named for Connections and still routed to settingsBasePath", () => {
 		renderPage({ providerKey: "GOOGLE_DRIVE" });
-		expect(
-			screen.getByRole("link", { name: /Back to Integrations/i }),
-		).toBeInTheDocument();
+		const backLink = screen.getByRole("link", {
+			name: /Back to Connections/i,
+		});
+		expect(backLink).toBeInTheDocument();
+		// The label was the bug, not the route: `settings/integrations`
+		// redirects to `/connections`. Pin the href so a later edit can't
+		// quietly reroute the button while "fixing" the wording.
+		expect(backLink).toHaveAttribute("href", "/app/settings/integrations");
 	});
 });

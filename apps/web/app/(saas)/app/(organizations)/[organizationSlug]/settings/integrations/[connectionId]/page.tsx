@@ -25,7 +25,7 @@ export default async function OrgIntegrationConnectionDetailPage({
 		<>
 			<SettingsHero
 				title="Integration Details"
-				label="Integrations"
+				label="Connections"
 				description="Review sync health, freshness, and indexed resources for this integration."
 			/>
 			<SettingsList>

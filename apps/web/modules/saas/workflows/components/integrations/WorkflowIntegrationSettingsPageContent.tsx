@@ -705,9 +705,7 @@ export function WorkflowIntegrationSettingsPageContent({
 						</Button>
 					) : null}
 					<Button variant="outline" asChild>
-						<Link href={settingsBasePath}>
-							Back to Integrations
-						</Link>
+						<Link href={settingsBasePath}>Back to Connections</Link>
 					</Button>
 				</div>
 			</div>

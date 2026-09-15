@@ -178,6 +178,23 @@ The answer a workspace resolver gives when a person belongs to several and nothi
 
 An ambiguous answer is a refusal, not a default. A caller that converts it into "the first one" has undone the refusal — and where that list has no defined order, has done so unpredictably.
 
+## Connections
+
+### Connections
+The destination holding everything Fabric can reach outside itself, and the umbrella term for its two kinds: Integrations and MCP servers. A top-level section of its own, not a settings panel — the catalogue moved out from under Settings, and only the per-provider and per-action detail pages stayed behind on the old slug.
+
+The containment is the whole point of the word. Both kinds exist so an agent can reach a tool or a body of data at runtime; they differ in how the connection is made, not in what it is for. *Avoid:* "Integrations" for the surface as a whole — it names one of the two kinds, so using it for the container silently claims MCP servers are a kind of integration, and leaves a reader who wants the other kind looking in the wrong place.
+
+### Integration
+A Fabric-native connector for a service Fabric supports directly — GitHub, Slack, Jira, Google Drive, Teams and the rest of the catalogue. Distinct from a [Repository Integration](#repository-integration), which is one project's binding to one git repository; an Integration here is the organization-level connector that binding is made from.
+
+Carries two independent powers, and a connector may have either or both: Search, meaning Fabric can retrieve from the tool, and Actions, meaning agents can operate it.
+
+### MCP server
+A connection made over the Model Context Protocol rather than through a Fabric-authored connector — the open half of Connections, for custom tools, internal systems, databases, scripts, or a SaaS app too niche to have a connector. The choice between the two kinds is a question of whether Fabric already supports the service: an Integration when it does, an MCP server when it does not.
+
+Registered servers live beside the integrations in one catalogue rather than in a separate registry page, so someone adding a capability has one place to look.
+
 ## AI access
 
 ### BYOK

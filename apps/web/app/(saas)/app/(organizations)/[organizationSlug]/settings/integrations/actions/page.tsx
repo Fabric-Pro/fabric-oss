@@ -25,7 +25,7 @@ export default async function OrgWorkflowActionsSettingsPage({
 		<>
 			<SettingsHero
 				title="Integration Providers"
-				label="Integrations"
+				label="Connections"
 				description="Review the connected systems Fabric can call at runtime, then open any provider to configure credentials and available actions."
 			/>
 			<SettingsList>

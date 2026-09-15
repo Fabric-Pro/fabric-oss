@@ -29,7 +29,7 @@ export default async function OrgWorkflowActionIntegrationDetailPage({
 		<>
 			<SettingsHero
 				title="Integration Provider"
-				label="Integrations"
+				label="Connections"
 				description="Review this connected system, manage its credentials, and see which actions Fabric can run through it."
 			/>
 			<SettingsList>
