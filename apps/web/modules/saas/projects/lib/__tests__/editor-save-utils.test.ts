@@ -13,8 +13,15 @@
  */
 
 import TurndownService from "turndown";
+// @ts-expect-error - turndown-plugin-gfm has no types
+import { gfm } from "turndown-plugin-gfm";
 import { describe, expect, it } from "vitest";
-import { disableEmphasisEscape, stripDiffTags } from "../editor-save-utils";
+import {
+	applyGfmStrikethroughFix,
+	applyStrikethroughSerialization,
+	disableEmphasisEscape,
+	stripDiffTags,
+} from "../editor-save-utils";
 
 describe("stripDiffTags", () => {
 	describe("class-marked diff additions", () => {
@@ -433,5 +440,93 @@ describe("disableEmphasisEscape", () => {
 		expect(escapeOf("> quote")).toBe("\\> quote");
 		expect(escapeOf("[link]")).toBe("\\[link\\]");
 		expect(escapeOf("`code`")).toBe("\\`code\\`");
+	});
+});
+
+/**
+ * The two strikethrough overrides, and why they are two.
+ *
+ * `turndown-plugin-gfm@1.0.2` emits invalid single-tilde `~X~` for
+ * `<del>`/`<s>`/`<strike>`. Every service that persists what it serializes
+ * needs that overridden — including the PM-sync conflict dialog and the prompt
+ * editor, which each build their own minimally-configured service.
+ *
+ * What those two must NOT inherit is `diffDelDrop`. In the document pipeline
+ * that rule is defense in depth, because `stripDiffTags` has already removed
+ * the tags and anything left is a deletion the diff owns. Those two components
+ * serialize inbound HTML verbatim and never call `stripDiffTags`, so the same
+ * rule would delete text that merely happens to carry the class — turning a
+ * cosmetic tilde bug into content loss.
+ *
+ * Hence the split, and hence the pair of opposing assertions below: the same
+ * markup must lose its content under one entry point and keep it under the
+ * other. The unfixed plugin behaviour is asserted too, so the override cannot
+ * quietly become vacuous if upstream is ever fixed.
+ */
+describe("strikethrough overrides on a bare service", () => {
+	// The exact construction the conflict dialog and prompt editor use.
+	function bareService(): TurndownService {
+		const service = new TurndownService({
+			headingStyle: "atx",
+			codeBlockStyle: "fenced",
+			bulletListMarker: "-",
+		});
+		service.use(gfm);
+		return service;
+	}
+
+	it("the bundled plugin emits INVALID single-tilde strikethrough without either override", () => {
+		const markdown = bareService().turndown("<p>Keep <s>this</s> out.</p>");
+
+		expect(markdown).toContain("~this~");
+		expect(markdown).not.toContain("~~this~~");
+	});
+
+	it("serializes <s>, bare <del> and <strike> as valid GFM double-tilde", () => {
+		const service = bareService();
+		applyStrikethroughSerialization(service);
+
+		const struck = service.turndown("<p>Keep <s>this</s> out.</p>");
+		expect(struck).toContain("~~this~~");
+		expect(struck).not.toMatch(/(?<!~)~this~(?!~)/);
+
+		expect(service.turndown("<p>a <del>gone</del> b</p>")).toContain(
+			"~~gone~~",
+		);
+		expect(service.turndown("<p>a <strike>old</strike> b</p>")).toContain(
+			"~~old~~",
+		);
+	});
+
+	// The regression this split exists to prevent. A service that never runs
+	// `stripDiffTags` must keep inbound text, not drop it.
+	it("KEEPS diff-marked content when only the strikethrough rule is applied", () => {
+		const service = bareService();
+		applyStrikethroughSerialization(service);
+
+		const markdown = service.turndown(
+			'<p>manage <del class="diff-del">the widget</del> and more</p>',
+		);
+
+		expect(markdown).toContain("the widget");
+		expect(markdown).toContain("manage");
+		expect(markdown).toContain("and more");
+		// Kept, and kept as valid GFM rather than the plugin's single tilde.
+		expect(markdown).not.toMatch(/(?<!~)~the widget~(?!~)/);
+	});
+
+	// The opposing case: the document pipeline's entry point still drops it,
+	// which is correct there and is what the two components must not inherit.
+	it("DROPS diff-marked content under the document pipeline's entry point", () => {
+		const service = bareService();
+		applyGfmStrikethroughFix(service);
+
+		const markdown = service.turndown(
+			'<p>manage <del class="diff-del">the widget</del> and more</p>',
+		);
+
+		expect(markdown).not.toContain("the widget");
+		expect(markdown).toContain("manage");
+		expect(markdown).toContain("and more");
 	});
 });

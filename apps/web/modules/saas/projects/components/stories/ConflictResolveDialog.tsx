@@ -27,6 +27,7 @@ import { toast } from "sonner";
 import TurndownService from "turndown";
 // @ts-expect-error - turndown-plugin-gfm has no types
 import { gfm } from "turndown-plugin-gfm";
+import { applyStrikethroughSerialization } from "../../lib/editor-save-utils";
 import { formatLastEditSource } from "../../lib/last-edit-source-copy";
 import { countWords, formatWordCount } from "../../lib/word-count";
 import {
@@ -50,6 +51,19 @@ const turndownService = new TurndownService({
 	bulletListMarker: "-",
 });
 turndownService.use(gfm);
+// turndown-plugin-gfm@1.0.2 serializes <del>/<s>/<strike> as single-tilde
+// `~X~`, which is not valid GFM and round-trips back as literal text. The
+// merged description this produces is persisted as a story/feature/bug
+// description, so the same override the document serializer installs is
+// needed here. Must come AFTER `use(gfm)` — `Rules.add` unshifts, so the
+// later rule wins.
+//
+// The strikethrough rule ALONE, deliberately: the document pipeline's
+// `applyGfmStrikethroughFix` also drops `<del class="diff-del">` content,
+// which is safe there only because `stripDiffTags` runs first. Nothing
+// strips tags here — this serializes PM-side HTML verbatim — so that rule
+// would silently delete inbound text instead of keeping it.
+applyStrikethroughSerialization(turndownService);
 
 // Matches real HTML tags (`<h1>`, `</p>`, `<img src=…>`) but NOT markdown
 // autolinks like `<https://…>` (no space/`>` after the scheme).

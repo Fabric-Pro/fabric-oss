@@ -131,3 +131,45 @@ describe("normalizeQuoteArtifacts", () => {
 		expect(normalizeQuoteArtifacts(plain)).toBe(plain);
 	});
 });
+
+/**
+ * ASCII quotes: deliberately NOT repaired.
+ *
+ * A later report showed the identical artifact built from straight quotes, and
+ * widening the character class to cover it was tried and reverted. These tests
+ * pin the reverted state so the next person to notice the gap finds the reason
+ * instead of the temptation.
+ *
+ * The document-level signature makes the SHAPE safe — a run must be
+ * contiguous — but it says nothing about WHERE the run sits, and this function
+ * cannot see a code fence. Curly quotes essentially never sit beside a tilde
+ * inside code; ASCII quotes do constantly. In a document the signature has
+ * already condemned, `cd ~"$HOME"` inside a fenced block loses its tilde, and
+ * so does `col ~'regex'` and `rm -rf ~'/tmp'` — silently, and indistinguishably
+ * from a repair.
+ *
+ * Under-repairing prose is recoverable. Rewriting someone's shell command is
+ * not. Covering ASCII needs fence-aware scanning first, not a wider class.
+ */
+describe("normalizeQuoteArtifacts — ASCII quotes are out of scope", () => {
+	it("leaves an ASCII-quote artifact run untouched", () => {
+		const ascii = 'own the ~"~"~"project-level idea~~"~"~~" label';
+		expect(normalizeQuoteArtifacts(ascii)).toBe(ascii);
+	});
+
+	it("leaves ASCII runs alone even beside genuine curly damage", () => {
+		// The curly run IS repaired; the ASCII one in the same string is not.
+		expect(normalizeQuoteArtifacts('~\u201C~\u201Ca and ~"~"b')).toBe(
+			'\u201Ca and ~"~"b',
+		);
+	});
+
+	// The reason the class stays narrow, stated as executable cases.
+	it("never disturbs a tilde inside code, even in a damaged document", () => {
+		const withCode =
+			"cmd: `rm -rf ~'/tmp'` and `cd ~\"$HOME\"` and ~\u201C~\u201Cdamaged";
+		expect(normalizeQuoteArtifacts(withCode)).toBe(
+			"cmd: `rm -rf ~'/tmp'` and `cd ~\"$HOME\"` and \u201Cdamaged",
+		);
+	});
+});

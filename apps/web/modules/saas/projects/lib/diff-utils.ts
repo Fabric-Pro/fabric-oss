@@ -1,4 +1,5 @@
 import { repairDegradedMarkdown } from "@repo/agent-prompts/markdown-repair";
+import { normalizeQuoteArtifacts } from "@repo/utils/quote-artifacts";
 import { diffWords } from "diff";
 import MarkdownIt from "markdown-it";
 import type StateInline from "markdown-it/lib/rules_inline/state_inline.mjs";
@@ -1504,7 +1505,25 @@ export function normalizeMarkdownContent(text: string | undefined): string {
  * call to this from `getEditorMarkdownForSave` or any other save-path code.
  */
 export function repairMarkdownDocument(text: string | undefined): string {
-	const input = text ?? "";
+	// Collapse tilde-prefixed quote artifacts FIRST, and outside the diff-marker
+	// guard below.
+	//
+	// Outside, because the guard exists to stop `repairDegradedMarkdown` from
+	// merging bullets across a marker pair; this repair rewrites no structure at
+	// all — it only shortens contiguous `~"~"` runs to the single quote they
+	// should have been — so a diff-marked document is no reason to leave the
+	// damage on screen. A marker sitting between the tilde and the quote simply
+	// breaks the run's contiguity, and the run stops matching.
+	//
+	// First, because everything downstream reads the text as prose: the parser
+	// sees a lone `~` as literal output, and nothing else in this pipeline knows
+	// the artifact exists.
+	//
+	// This is the LOAD half of the repair. The write half is `sanitizeContent`
+	// in `@repo/database`. Both are needed: without this one a damaged document
+	// keeps rendering damaged until someone saves it, and the round trip is a
+	// fixed point, so a reader who never edits would wait forever.
+	const input = normalizeQuoteArtifacts(text ?? "");
 	// Never restructure diff-marked text: `repairDegradedMarkdown` merges
 	// bullets, which would split an ADD/DEL marker from its pair and corrupt the
 	// diff. Same guard `mergeOrphanBulletContinuations` uses. Diff-marked text is

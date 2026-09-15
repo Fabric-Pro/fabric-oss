@@ -215,3 +215,85 @@ describe("bare fences and escaped list markers", () => {
 		).toContain("## 4. API Specifications");
 	});
 });
+
+/**
+ * Load-path repair of tilde-prefixed quote artifacts.
+ *
+ * This direction had no tilde coverage at all, which is how the defect stayed
+ * visible after the serializer was fixed: every existing test drove HTML ->
+ * markdown, proving the editor could no longer CREATE the artifact, while the
+ * documents already carrying it were read back untouched on every open.
+ *
+ * The load half is where the repair lives, and only there. The round trip is a
+ * fixed point — markdown-it emits a lone tilde as literal text and the Turndown
+ * escape override never escapes one — so a reader could open a damaged
+ * document, edit it, save it and see the identical characters forever. Putting
+ * the repair on the SAVE path instead was tried and reverted: that is the
+ * silent rewrite of user text this pipeline removed in Fizzy #1987, and it also
+ * rewrites code the user never meant to touch.
+ *
+ * Fixtures here are synthetic. The reported document's own prose is not
+ * reproduced, per the repository's identifier rule.
+ */
+describe("load-path quote-artifact repair", () => {
+	const OPEN = "\u201C";
+	const CLOSE = "\u201D";
+	const STORED_CORRUPT = `a proposal to own the ~${OPEN}~${OPEN}~${OPEN}example category~~${CLOSE}~${CLOSE}~~${CLOSE} outright`;
+	const EXPECTED = `a proposal to own the ${OPEN}example category${CLOSE} outright`;
+
+	it("collapses a doubling artifact run to the single quote it should be", () => {
+		expect(repairMarkdownDocument(STORED_CORRUPT)).toBe(EXPECTED);
+	});
+
+	it("leaves no stray tilde in what the reader is shown", () => {
+		const html = fromMarkdown(repairMarkdownDocument(STORED_CORRUPT));
+		expect(html).not.toContain("~");
+		expect(html).toContain("example category");
+	});
+
+	// The repair deliberately sits OUTSIDE the diff-marker guard that protects
+	// `repairDegradedMarkdown`. That guard exists because merging bullets can
+	// split a marker from its pair; collapsing a tilde run restructures nothing,
+	// so a document under review is no reason to keep showing the damage.
+	it("still repairs a document carrying diff markers", () => {
+		// Built from escapes, not literal invisibles: a formatter that
+		// normalised an NBSP would otherwise make this test silently vacuous.
+		const ADD_START = "\u200B\u200BADD_START\u200B\u00A0";
+		const ADD_END = "\u00A0\u200BADD_END\u200B\u200B";
+		const marked = `intro ${ADD_START}added${ADD_END} and ~${OPEN}~${OPEN}quoted`;
+
+		const repaired = repairMarkdownDocument(marked);
+
+		expect(repaired).toContain(`${OPEN}quoted`);
+		expect(repaired).not.toContain(`~${OPEN}~${OPEN}`);
+		// The markers themselves must survive intact, or the diff loses its pair.
+		expect(repaired).toContain(ADD_START);
+		expect(repaired).toContain(ADD_END);
+	});
+
+	it("survives a full load -> save round trip without reintroducing tildes", () => {
+		expect(simulateRoundTrip(STORED_CORRUPT)).toBe(EXPECTED);
+	});
+
+	it("preserves legitimate strikethrough and tilde prose on load", () => {
+		expect(repairMarkdownDocument("a ~~struck~~ b")).toBe("a ~~struck~~ b");
+		expect(repairMarkdownDocument("approx ~2 seconds")).toBe(
+			"approx ~2 seconds",
+		);
+	});
+
+	// ASCII quotes are out of scope by design — see quote-artifacts.ts. Pinned
+	// here too, because this is the path a reader's shell commands travel.
+	it("does not touch tildes beside ASCII quotes, including inside code", () => {
+		const withCode = `\`cd ~"$HOME"\` and \`rm -rf ~'/tmp'\` and ~${OPEN}~${OPEN}damaged`;
+		expect(repairMarkdownDocument(withCode)).toBe(
+			`\`cd ~"$HOME"\` and \`rm -rf ~'/tmp'\` and ${OPEN}damaged`,
+		);
+	});
+
+	it("round-trips clean strikethrough through load and save", () => {
+		expect(simulateRoundTrip("Keep ~~deprecated~~ this text.")).toBe(
+			"Keep ~~deprecated~~ this text.",
+		);
+	});
+});
