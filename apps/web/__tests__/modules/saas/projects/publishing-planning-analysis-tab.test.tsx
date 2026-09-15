@@ -23,7 +23,7 @@
  * `analysis-version-history.test.tsx`.
  */
 
-import { render, screen, within } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useEffect, useState } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -120,6 +120,8 @@ const { editorProps, historyProps, editorMounts } = vi.hoisted(() => ({
 /** The version the stubbed Save reports back, as the server would. */
 const SAVED_VERSION = 7;
 const UNSAVED_KEYSTROKES = "…and a sentence typed after the save.";
+/** What an accepted review hands back: the marks resolved. */
+const MERGED_TEXT = "The reviewed document, as accepted.";
 
 /**
  * Mirrors the TWO properties of the real editor this tab has to work around:
@@ -142,6 +144,11 @@ vi.mock(
 			canEdit: boolean;
 			revisionVersion: number | null;
 			sourceAnalysisVersion: number | null;
+			/** Present only while a proposal is painted in as diff marks. */
+			diffReview?: {
+				onAcceptAll: (merged: string | null) => void;
+				onRejectAll: () => void;
+			} | null;
 			onSaved?: (version: number) => void;
 			/** The document's own tail — supporting assets, source signals.
 			 *  Rendered here because the real editor renders it; a mock that
@@ -174,6 +181,28 @@ vi.mock(
 					>
 						Save
 					</button>
+					{/* Stands in for `DiffReviewBar`'s two bulk controls. The
+					    real bar hands back the document with the marks
+					    resolved; the stub hands back a fixed string, because
+					    what this file tests is what the TAB does with it. */}
+					{props.diffReview ? (
+						<>
+							<button
+								type="button"
+								onClick={() =>
+									props.diffReview?.onAcceptAll(MERGED_TEXT)
+								}
+							>
+								Accept all changes
+							</button>
+							<button
+								type="button"
+								onClick={() => props.diffReview?.onRejectAll()}
+							>
+								Reject all changes
+							</button>
+						</>
+					) : null}
 				</div>
 			);
 		},
@@ -202,6 +231,7 @@ vi.mock(
 );
 
 import { PlanningAnalysisTab } from "@saas/projects/components/publishing-suite/PlanningAnalysisTab";
+import { countAnswersRecordedAfter } from "@saas/projects/components/publishing-suite/TopicQuestionsPanel";
 
 /** The raw analysis row's content, as the model wrote it. */
 const READY_CONTENT = {
@@ -763,36 +793,72 @@ describe("PlanningAnalysisTab — the stale-analysis banner", () => {
 		expect(screen.queryAllByText(/newer/i)).toHaveLength(0);
 	});
 
-	it("replaces through the save path, stamped with the newer analysis", async () => {
+	it("reviews the newer analysis against the document rather than writing it", async () => {
 		renderTab(staleProps);
 
 		await userEvent.click(
 			screen.getByRole("button", {
-				name: /replace with the newer analysis/i,
+				name: /review the newer analysis against this document/i,
 			}),
 		);
 
-		expect(saveMutate).toHaveBeenCalledWith({
-			projectId: "proj-1",
-			topicId: "topic-1",
-			organizationId: null,
-			// The newer AI row's prose, rendered the same way the resolver
-			// renders it — not the author's text, and not the raw JSON.
-			body: expect.stringContaining("An engineering reliability story."),
-			// Compare-and-set on where the document is NOW…
-			expectedVersion: 3,
-			// …and stamped with the analysis it was actually seeded from,
-			// which is the only thing that clears the banner.
-			sourceAnalysisVersion: 2,
-			changeSummary: "Replaced with analysis version 2",
-		});
+		// NOTHING is written. Replacing used to be a save of its own, so the
+		// only way to see what changed was to have memorised the old text.
+		expect(saveMutate).not.toHaveBeenCalled();
+
+		// The editor is seeded with the DIFF, so both sides are on screen.
+		expect(editorProps.current?.diffReview).not.toBeNull();
+		expect(editorProps.current?.prose).toContain(
+			"An engineering reliability story.",
+		);
+	});
+
+	it("stamps an accepted review with the analysis it reviewed, so the banner clears", async () => {
+		renderTab(staleProps);
+
+		await userEvent.click(
+			screen.getByRole("button", {
+				name: /review the newer analysis against this document/i,
+			}),
+		);
+		await userEvent.click(
+			screen.getByRole("button", { name: /accept all changes/i }),
+		);
+
+		// The whole reason Replace was once its own write: `isStale` is
+		// `sourceAnalysisVersion < aiVersion`, so a document reviewed against
+		// version 2 has to be SAVED as version 2's or the banner never goes
+		// away. Accepting resolves the marks and hands the text back unsaved,
+		// so the stamp has to survive until the author presses Save.
+		expect(editorProps.current?.sourceAnalysisVersion).toBe(2);
+		expect(editorProps.current?.prose).toBe(MERGED_TEXT);
+		expect(editorProps.current?.diffReview ?? null).toBeNull();
+	});
+
+	it("leaves the stamp alone when a review is rejected", async () => {
+		renderTab(staleProps);
+
+		await userEvent.click(
+			screen.getByRole("button", {
+				name: /review the newer analysis against this document/i,
+			}),
+		);
+		await userEvent.click(
+			screen.getByRole("button", { name: /reject all changes/i }),
+		);
+
+		// Rejecting took none of version 2, so claiming the document was
+		// written from it would silence a banner that is still true.
+		expect(editorProps.current?.sourceAnalysisVersion).toBe(1);
+		// Back to the author's own document — none of version 2 was taken.
+		expect(editorProps.current?.prose).toContain("The author's own words.");
 	});
 
 	it("shows the newer analysis rather than making the author take it blind", async () => {
 		renderTab(staleProps);
 
 		await userEvent.click(
-			screen.getByRole("button", { name: /view the newer analysis/i }),
+			screen.getByRole("button", { name: /^view the newer analysis$/i }),
 		);
 
 		expect(
@@ -804,11 +870,11 @@ describe("PlanningAnalysisTab — the stale-analysis banner", () => {
 		renderTab({ ...staleProps, canEdit: false });
 
 		expect(
-			screen.getByRole("button", { name: /view the newer analysis/i }),
+			screen.getByRole("button", { name: /^view the newer analysis$/i }),
 		).toBeInTheDocument();
 		expect(
 			screen.queryByRole("button", {
-				name: /replace with the newer analysis/i,
+				name: /review the newer analysis against this document/i,
 			}),
 		).not.toBeInTheDocument();
 	});
@@ -897,15 +963,22 @@ describe("PlanningAnalysisTab — keeping the client's version tokens fresh", ()
 		});
 	});
 
-	it("re-fetches the analysis after a replace", async () => {
+	it("re-fetches the analysis once an accepted review is saved", async () => {
 		renderTab({ ...editedProps, sourceAnalysisVersion: 1 });
-		invalidateQueries.mockClear();
 
 		await userEvent.click(
 			screen.getByRole("button", {
-				name: /replace with the newer analysis/i,
+				name: /review the newer analysis against this document/i,
 			}),
 		);
+		await userEvent.click(
+			screen.getByRole("button", { name: /accept all changes/i }),
+		);
+		invalidateQueries.mockClear();
+
+		// The refetch belongs to the SAVE now, not to accepting: accepting
+		// writes nothing, so there is nothing for the server to have changed.
+		await userEvent.click(screen.getByRole("button", { name: "Save" }));
 
 		expect(invalidateQueries).toHaveBeenCalled();
 	});
@@ -988,13 +1061,17 @@ describe("PlanningAnalysisTab — when the editor is re-seeded, and when it is n
 		);
 	});
 
-	it("re-seeds an unedited document when a newer analysis lands", () => {
+	it("reviews a newer analysis against an unedited document", () => {
 		// A topic nobody has edited holds `revisionVersion === null` forever,
 		// so a key derived from it alone never changes and the editor keeps
 		// rendering the analysis it first mounted with. Nothing warns the
 		// reader either: with no revision, the source version IS the newest
 		// analysis version, so the stale banner is false by construction — the
 		// document simply disagrees with the footer directly beneath it.
+		//
+		// Re-seeding fixed the contradiction but replaced the document in
+		// silence, and no endpoint serves an older analysis's content, so the
+		// text that went was unrecoverable. Both versions are painted in now.
 		const unedited = {
 			effective: {
 				prose: "What version one found.",
@@ -1028,9 +1105,20 @@ describe("PlanningAnalysisTab — when the editor is re-seeded, and when it is n
 			/>,
 		);
 
-		expect(screen.getByTestId("editor-prose")).toHaveTextContent(
-			"What version two found.",
-		);
+		// BOTH sides, in one document. The diff is word-level, so the two
+		// versions INTERLEAVE — "What version <del>one</del><ins>two</ins>
+		// found." — rather than sitting in separate blocks; what matters is
+		// that neither version's wording was thrown away.
+		const seeded = screen.getByTestId("editor-prose").textContent ?? "";
+		expect(seeded).toContain("one");
+		expect(seeded).toContain("two");
+		expect(editorProps.current?.diffReview).not.toBeNull();
+
+		// Still mounted ONCE. The review is opened in the same render pass
+		// that bumps the seed, so the editor does not build on the new prose
+		// and then rebuild on the diff.
+		expect(editorMounts.count).toBe(2);
+
 		// The half that makes it a contradiction rather than a delay: the
 		// footer beside the document has already moved on.
 		expect(
@@ -1425,7 +1513,17 @@ describe("PlanningAnalysisTab — read-only", () => {
  * The action is the Regenerate button already in this header, so the banner
  * points at it rather than adding a second control that does the same thing.
  */
-describe("PlanningAnalysisTab — answers the analysis predates", () => {
+/**
+ * The predicate behind "N answers were recorded after the analysis was
+ * written", tested directly.
+ *
+ * It used to be exercised through this tab, which rendered the banner. The
+ * banner now lives at topic level — above the tabs, so it is on screen for the
+ * person who made it true by answering a question — and its RENDERING is
+ * covered in `publishing-topic-item-page.test.tsx`. What is left here is the
+ * rule itself, which is shared by both surfaces and belongs to neither.
+ */
+describe("countAnswersRecordedAfter — answers the analysis predates", () => {
 	const ANALYSIS_WRITTEN_AT = new Date("2026-09-01T12:00:00Z");
 	const BEFORE = new Date("2026-08-30T09:00:00Z");
 	const AFTER = new Date("2026-09-03T09:00:00Z");
@@ -1464,28 +1562,23 @@ describe("PlanningAnalysisTab — answers the analysis predates", () => {
 			recommendedResponse: null,
 			whyItMatters: null,
 			answerSource: "MANUAL",
-			analysisVersion: null,
+			analysisVersion,
+			assignees: [],
+			createdAt: BEFORE,
 			...over,
 		});
 		return {
-			root: {
+			root: entry({
 				id,
 				parentId: null,
-				kind: "QUESTION" as const,
-				status,
 				authorType: "AGENT" as const,
 				authorUserId: null,
-				questionId: "q1",
-				decisionKind: "CONTENT_TYPE",
-				subject: null,
+				status,
 				summary: "Should we produce a Blog Post for this topic?",
 				content: null,
-				recommendedResponse: null,
-				whyItMatters: null,
 				answerSource: "MANUAL",
-				analysisVersion,
 				createdAt: BEFORE,
-			},
+			}),
 			replies: (
 				replies ??
 				(answeredAt ? [{ createdAt: answeredAt, content: "Yes" }] : [])
@@ -1493,37 +1586,30 @@ describe("PlanningAnalysisTab — answers the analysis predates", () => {
 		};
 	};
 
-	const render2 = (threads: unknown[], aiVersion = 2) =>
-		renderTab({
-			aiVersion,
-			aiCreatedAt: ANALYSIS_WRITTEN_AT,
-			decisionThreads: threads,
-		});
+	const count = (threads: unknown[]) =>
+		countAnswersRecordedAfter(
+			ANALYSIS_WRITTEN_AT,
+			threads as Parameters<typeof countAnswersRecordedAfter>[1],
+		);
 
-	it("says so when an answer landed after the current analysis", () => {
-		render2([answered({ analysisVersion: 2, answeredAt: AFTER })]);
-
+	it("counts an answer that landed after the current analysis", () => {
 		expect(
-			screen.getByTestId("analysis-behind-decisions"),
-		).toHaveTextContent(/1 answer was recorded after this analysis/i);
+			count([answered({ analysisVersion: 2, answeredAt: AFTER })]),
+		).toBe(1);
 	});
 
 	it("stays quiet once the analysis has been regenerated past them", () => {
 		// The question was raised against version 1 and answered; version 2 was
 		// written afterwards, so it already knows.
-		render2([answered({ analysisVersion: 1, answeredAt: BEFORE })]);
-
 		expect(
-			screen.queryByTestId("analysis-behind-decisions"),
-		).not.toBeInTheDocument();
+			count([answered({ analysisVersion: 1, answeredAt: BEFORE })]),
+		).toBe(0);
 	});
 
 	it("does not count a question nobody has answered", () => {
-		render2([answered({ analysisVersion: 2, status: "OPEN" })]);
-
-		expect(
-			screen.queryByTestId("analysis-behind-decisions"),
-		).not.toBeInTheDocument();
+		expect(count([answered({ analysisVersion: 2, status: "OPEN" })])).toBe(
+			0,
+		);
 	});
 
 	/**
@@ -1535,20 +1621,18 @@ describe("PlanningAnalysisTab — answers the analysis predates", () => {
 	 * Someone then amends the answer. Version equality reads 1 !== 2 and says
 	 * the analysis already knows, while the decision changed minutes ago.
 	 */
-	it("fires when an answer is AMENDED after a regeneration", () => {
-		render2([
-			answered({
-				analysisVersion: 1,
-				replies: [
-					{ createdAt: BEFORE, content: "No" },
-					{ createdAt: AFTER, content: "Actually yes" },
-				],
-			}),
-		]);
-
+	it("counts an answer AMENDED after a regeneration", () => {
 		expect(
-			screen.getByTestId("analysis-behind-decisions"),
-		).toHaveTextContent(/1 answer was recorded after this analysis/i);
+			count([
+				answered({
+					analysisVersion: 1,
+					replies: [
+						{ createdAt: BEFORE, content: "No" },
+						{ createdAt: AFTER, content: "Actually yes" },
+					],
+				}),
+			]),
+		).toBe(1);
 	});
 
 	/**
@@ -1556,91 +1640,13 @@ describe("PlanningAnalysisTab — answers the analysis predates", () => {
 	 * so answering a `POSSIBLY_RESOLVED` root after a regeneration also leaves
 	 * `analysisVersion` on the version that raised it.
 	 */
-	it("fires when a soft-closed question is answered after a regeneration", () => {
-		render2([answered({ analysisVersion: 1, answeredAt: AFTER })]);
-
+	it("counts a soft-closed question answered after a regeneration", () => {
 		expect(
-			screen.getByTestId("analysis-behind-decisions"),
-		).toHaveTextContent(/1 answer was recorded after this analysis/i);
-	});
-
-	// The action belongs IN the banner, as Feature Maturation's does. It was
-	// words only — "regenerate to fold them in" — pointing at a button in the
-	// header strip, which on a long analysis is a scroll away from the sentence
-	// explaining why to press it.
-	it("offers the regenerate action inside the banner", async () => {
-		render2([answered({ analysisVersion: 2, answeredAt: AFTER })]);
-
-		const banner = screen.getByTestId("analysis-behind-decisions");
-		const button = within(banner).getByRole("button", {
-			name: /regenerate analysis/i,
-		});
-
-		await userEvent.click(button);
-		expect(generateMutate).toHaveBeenCalled();
-	});
-
-	it("shows a reader the banner but no action", () => {
-		// The server gates generation on PUBLISHING_TOPIC_UPDATE. A button that
-		// can only produce a 403 is worse than no button — and the sentence
-		// changes with it, since "regenerate" is not something they can do.
-		renderTab({
-			canEdit: false,
-			aiVersion: 2,
-			aiCreatedAt: ANALYSIS_WRITTEN_AT,
-			decisionThreads: [
-				answered({ analysisVersion: 2, answeredAt: AFTER }),
-			],
-		});
-
-		const banner = screen.getByTestId("analysis-behind-decisions");
-		expect(
-			within(banner).queryByRole("button", { name: /regenerate/i }),
-		).not.toBeInTheDocument();
-		expect(banner).toHaveTextContent(/not reflected in it yet/i);
-	});
-
-	it("says nothing at all while no analysis has been written", () => {
-		// No READY analysis means no baseline to compare against, and an answer
-		// cannot be "behind" a document that does not exist.
-		renderTab({
-			aiVersion: null,
-			aiCreatedAt: null,
-			decisionThreads: [
-				answered({ analysisVersion: 1, answeredAt: AFTER }),
-			],
-		});
-
-		expect(
-			screen.queryByTestId("analysis-behind-decisions"),
-		).not.toBeInTheDocument();
-	});
-
-	it("ignores AI run notes, which are records rather than questions", () => {
-		const note = answered({ analysisVersion: 2, answeredAt: AFTER });
-		render2([{ ...note, root: { ...note.root, kind: "AI_UPDATE" } }]);
-
-		expect(
-			screen.queryByTestId("analysis-behind-decisions"),
-		).not.toBeInTheDocument();
+			count([answered({ analysisVersion: 1, answeredAt: AFTER })]),
+		).toBe(1);
 	});
 });
 
-/**
- * The AI assistant's rewrite reaching the editor (Fizzy #1851, #15).
- *
- * The assistant proposes and a person applies: accepting in the chat SEEDS
- * this editor and the existing Save is still the only thing that writes. The
- * reason is #1929 — an autosave racing an in-flight agent overwrote the server
- * with pre-answer text — and a revision in this suite is defined as "what a
- * person saved", so a second writer would reintroduce that race.
- *
- * What is pinned here is the half of that contract this component owns: the
- * proposal has to REMOUNT the editor to be visible at all (the real one seeds
- * `prose` once and never re-reads it), it has to be taken exactly once, and
- * both ways out of it — discard, or save — have to leave the tab telling the
- * truth about what is on screen.
- */
 describe("PlanningAnalysisTab — the assistant's proposed rewrite", () => {
 	const PROPOSAL = "### Topic angle\n\nA sharper angle, as instructed.";
 
@@ -1651,7 +1657,7 @@ describe("PlanningAnalysisTab — the assistant's proposed rewrite", () => {
 		...overrides,
 	});
 
-	it("loads the proposal into the editor instead of the server's prose", () => {
+	it("opens a review of the rewrite against the document, not a swap", () => {
 		const onConsumed = vi.fn();
 		renderTab(
 			withAnalysis({
@@ -1660,13 +1666,44 @@ describe("PlanningAnalysisTab — the assistant's proposed rewrite", () => {
 			}),
 		);
 
-		// `editor-prose` is the mock's MOUNT-TIME seed, so reading the
-		// proposal there is the assertion that the editor was rebuilt on it —
-		// passing the text down without a remount would leave the old seed on
-		// screen, which is the whole failure mode this guards.
-		expect(screen.getByTestId("editor-prose")).toHaveTextContent(
-			"A sharper angle, as instructed.",
+		// `editor-prose` is the mock's MOUNT-TIME seed, so reading the diff
+		// there is the assertion that the editor was rebuilt on it — passing
+		// the text down without a remount would leave the old seed on screen,
+		// which is the whole failure mode this guards.
+		//
+		// BOTH sides are in the seed now: the rewrite used to replace the
+		// document outright, so the only record of what it changed was whatever
+		// the author happened to remember.
+		const seeded = screen.getByTestId("editor-prose");
+		expect(seeded).toHaveTextContent("A sharper angle, as instructed");
+		expect(seeded).toHaveTextContent("An engineering reliability story");
+		expect(editorProps.current?.diffReview).not.toBeNull();
+
+		// The notice belongs to the accepted text, not to a pending review —
+		// there is nothing to "discard" while the review's own Reject is up.
+		expect(
+			screen.queryByTestId("assistant-proposal-notice"),
+		).not.toBeInTheDocument();
+	});
+
+	it("keeps the document's own stamp when a rewrite is accepted", async () => {
+		renderTab(
+			withAnalysis({
+				sourceAnalysisVersion: 1,
+				assistantProposal: PROPOSAL,
+				onAssistantProposalConsumed: vi.fn(),
+			}),
 		);
+
+		await userEvent.click(
+			screen.getByRole("button", { name: /accept all changes/i }),
+		);
+
+		// A rewrite is based on the document as it stands, NOT on a newer
+		// analysis, so accepting one must not move `sourceAnalysisVersion` —
+		// moving it would silence a stale banner nothing had addressed.
+		expect(editorProps.current?.sourceAnalysisVersion).toBe(1);
+		expect(editorProps.current?.prose).toBe(MERGED_TEXT);
 		expect(
 			screen.getByTestId("assistant-proposal-notice"),
 		).toHaveTextContent(/nothing is saved until you save it/i);
@@ -1723,7 +1760,7 @@ describe("PlanningAnalysisTab — the assistant's proposed rewrite", () => {
 		);
 	});
 
-	it("puts the server's text back when the rewrite is discarded", async () => {
+	it("puts the server's text back when the rewrite is rejected", async () => {
 		renderTab(
 			withAnalysis({
 				assistantProposal: PROPOSAL,
@@ -1732,12 +1769,12 @@ describe("PlanningAnalysisTab — the assistant's proposed rewrite", () => {
 		);
 
 		await userEvent.click(
-			screen.getByRole("button", { name: /discard it/i }),
+			screen.getByRole("button", { name: /reject all changes/i }),
 		);
 
-		expect(screen.getByTestId("editor-prose")).toHaveTextContent(
-			"An engineering reliability story.",
-		);
+		const seeded = screen.getByTestId("editor-prose");
+		expect(seeded).toHaveTextContent("An engineering reliability story.");
+		expect(seeded).not.toHaveTextContent("A sharper angle, as instructed.");
 		expect(
 			screen.queryByTestId("assistant-proposal-notice"),
 		).not.toBeInTheDocument();

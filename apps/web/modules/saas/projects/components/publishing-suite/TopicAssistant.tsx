@@ -379,10 +379,11 @@ function TopicAssistantAgent({
  * The accept/reject card CopilotKit renders inside the chat when the agent
  * calls `confirm_changes`.
  *
- * Its wording is the honest one for this surface: accepting LOADS the rewrite
- * into the editor, and the person's own Save is still what writes it. Calling
- * the button "Save" would promise something this suite deliberately does not
- * do.
+ * Its wording is the honest one for this surface: accepting opens the rewrite
+ * as a REVIEW in the Planning & Analysis editor — painted over the current
+ * document as diff marks, to be accepted or rejected change by change — and the
+ * person's own Save is still what writes it. Calling the button "Save" would
+ * promise something this suite deliberately does not do.
  */
 function ConfirmRewrite({
 	status,
@@ -423,7 +424,7 @@ function ConfirmRewrite({
 		return (
 			<div className="my-4 rounded-lg border border-border bg-card p-4 text-card-foreground text-sm">
 				{resolved === "accepted"
-					? "Loaded into Planning & Analysis — review it there and save when you're happy."
+					? "Opened in Planning & Analysis — accept or reject each change there, then save."
 					: "Discarded. The analysis is unchanged."}
 			</div>
 		);
@@ -446,13 +447,13 @@ function ConfirmRewrite({
 			<p className="font-medium text-sm">Rewritten planning analysis</p>
 			<p className="mt-1 text-muted-foreground text-sm">
 				{canEdit
-					? "Load it into the Planning & Analysis tab? Nothing is saved until you save it there."
+					? "Review it against the current analysis? You can accept or reject each change, and nothing is saved until you save it there."
 					: "You do not have permission to change this topic's analysis."}
 			</p>
 			{canEdit ? (
 				<div className="mt-3 flex gap-2">
 					<Button size="sm" onClick={() => decide(true)}>
-						Load it in
+						Review changes
 					</Button>
 					<Button
 						size="sm"
