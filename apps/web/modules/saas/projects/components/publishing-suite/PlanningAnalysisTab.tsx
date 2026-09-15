@@ -4,6 +4,7 @@ import {
 	type EffectiveAnalysis,
 	renderAnalysisProse,
 } from "@repo/utils/publishing-analysis-prose";
+import { diffPartialText } from "@saas/projects/lib/diff-utils";
 import { orpc } from "@shared/lib/orpc-query-utils";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@ui/components/button";
@@ -37,15 +38,8 @@ import {
 	isEmptyAnalysis,
 	readPlanningAnalysis,
 } from "./planning-analysis-content";
-import {
-	countAnswersRecordedAfter,
-	type TopicDecisionThread,
-} from "./TopicQuestionsPanel";
 
 const UNKNOWN_AUTHOR_LABEL = "Unknown author";
-const REPLACE_FAILURE_MESSAGE =
-	"Could not replace the analysis. Refresh and try again.";
-
 /**
  * One analysis row as `getPlanningAnalysis` returns it. Local: no other
  * module needs it, because no other module is given the raw AI row.
@@ -70,17 +64,23 @@ interface PlanningAnalysisRow {
 	isExpired?: boolean;
 }
 
-interface SaveAnalysisRevisionResult {
-	saved: true;
-	version: number;
-}
-
 interface PlanningAnalysisTabProps {
 	projectId: string;
 	topicId: string;
 	organizationId: string | null;
 	canEdit: boolean;
 	isLoading: boolean;
+	/**
+	 * The topic-level "answers recorded after the analysis" banner is on
+	 * screen, and it carries its own Regenerate.
+	 *
+	 * The header's control stands down for as long as that is true. Two
+	 * buttons starting the same run is design-QA finding #5: they cannot
+	 * disagree about whether one is in flight — both read the same
+	 * `GENERATING` row — but a reader should not have to work out that the
+	 * filled button and the outlined one beside it do the same thing.
+	 */
+	generateActionIsElsewhere?: boolean;
 	/**
 	 * A rewrite the AI assistant produced and the reader accepted in the chat
 	 * (Fizzy #1851, #15). `null` whenever there is none waiting.
@@ -112,21 +112,6 @@ interface PlanningAnalysisTabProps {
 	effective: EffectiveAnalysis | null;
 	/** Version of the newest READY analysis. `null` when there is none. */
 	aiVersion: number | null;
-	/**
-	 * When the newest READY analysis was written. `null` when there is none.
-	 *
-	 * Separate from `aiVersion` because the two answer different questions: a
-	 * version says WHICH document this is, a timestamp says what it could
-	 * possibly have known. Only the second one survives an amendment, which
-	 * moves an answer without moving any version.
-	 */
-	aiCreatedAt: string | Date | null;
-	/**
-	 * The topic's decision threads, read only to count answers the current
-	 * analysis predates. The panel that renders them lives on another tab; this
-	 * tab needs the COUNT so it can say the document is behind them.
-	 */
-	decisionThreads?: TopicDecisionThread[];
 	/**
 	 * The model that produced the newest READY analysis, and how that run's
 	 * prompt was resolved. Scalars off that row rather than the row itself:
@@ -188,11 +173,10 @@ export function PlanningAnalysisTab({
 	organizationId,
 	canEdit,
 	isLoading,
+	generateActionIsElsewhere = false,
 	latestAttempt,
 	effective,
 	aiVersion,
-	aiCreatedAt,
-	decisionThreads,
 	aiModel,
 	aiPromptSource,
 	revisionVersion,
@@ -260,6 +244,64 @@ export function PlanningAnalysisTab({
 	 * Cleared by a save (the text is the document now) and by Discard.
 	 */
 	const [loadedProposal, setLoadedProposal] = useState<string | null>(null);
+	/**
+	 * A proposed rewrite waiting for the author's decision, as the pair the
+	 * diff is computed from. `null` whenever nothing is under review.
+	 */
+	const [review, setReview] = useState<{
+		baseline: string;
+		proposed: string;
+		/**
+		 * The analysis version an accepted review must be STAMPED with, or
+		 * `null` to keep the document's current stamp.
+		 *
+		 * This is the whole reason `Replace` existed as its own write: a
+		 * revision seeded from analysis version N has to record N as its
+		 * `sourceAnalysisVersion`, because `isStale` is
+		 * `sourceAnalysisVersion < aiVersion` and nothing else clears the
+		 * banner. A rewrite from the assistant carries `null` — it is based on
+		 * the document as it stands, not on a newer analysis, so the stamp must
+		 * not move and the banner must stay up if it was up.
+		 */
+		sourceAnalysisVersion: number | null;
+	} | null>(null);
+	/**
+	 * The stamp an accepted review still owes its save.
+	 *
+	 * Accepting resolves the marks and hands the text back to the editor
+	 * UNSAVED, so the version it must be recorded against has to outlive the
+	 * review itself — right up to the Save the author presses. Cleared by
+	 * `handleSaved`.
+	 */
+	const [pendingSourceVersion, setPendingSourceVersion] = useState<
+		number | null
+	>(null);
+
+	const effectiveProse = effective?.prose ?? "";
+	/**
+	 * The document as it stands, mirrored for readers that must not depend on
+	 * it. The assistant-proposal effect opens a review against this; taking it
+	 * from the closure instead would put `effective.prose` in that effect's
+	 * dependency list, and every poll that changed the document would re-open a
+	 * review the author had already resolved.
+	 */
+	const currentProseRef = useRef(effectiveProse);
+	currentProseRef.current = effectiveProse;
+
+	/**
+	 * The prose as of the last COMMIT, which is the document a newly-generated
+	 * analysis is about to replace.
+	 *
+	 * `currentProseRef` above is written during render and is therefore already
+	 * the new text by the time a regeneration is detected. This one is written
+	 * in an effect with no dependency array, so during any render it still
+	 * holds what was last on screen — the only place the previous document
+	 * survives, since nothing serves an older analysis's content.
+	 */
+	const committedProseRef = useRef(effectiveProse);
+	useEffect(() => {
+		committedProseRef.current = effectiveProse;
+	});
 
 	// Every write that can move the document's version has to land here. The
 	// editor and the history drawer both hold their version tokens as props
@@ -303,6 +345,8 @@ export function PlanningAnalysisTab({
 			// The assistant's text is the document now, so the notice offering
 			// to discard it no longer describes anything true.
 			setLoadedProposal(null);
+			// The stamp has been written; the next save is an ordinary edit.
+			setPendingSourceVersion(null);
 			refreshAnalysis();
 		},
 		[refreshAnalysis, topicId],
@@ -323,21 +367,6 @@ export function PlanningAnalysisTab({
 			},
 			onError: () => {
 				toast.error("Could not start the planning analysis.");
-			},
-		}),
-	);
-
-	const replace = useMutation(
-		orpc.projects.publishingSuite.saveAnalysisRevision.mutationOptions({
-			onSuccess: (result: SaveAnalysisRevisionResult) => {
-				toast.success(
-					`Replaced with analysis version ${aiVersion} (saved as version ${result.version}).`,
-				);
-				setNewerOpen(false);
-				refreshAnalysis();
-			},
-			onError: () => {
-				toast.error(REPLACE_FAILURE_MESSAGE);
 			},
 		}),
 	);
@@ -432,6 +461,40 @@ export function PlanningAnalysisTab({
 			revisionVersion !== seed.revision ||
 			(revisionVersion === null && aiVersion !== seed.ai));
 	if (seedIsStale) {
+		/**
+		 * A regeneration landing on a document nobody has edited.
+		 *
+		 * This is the "Regenerate planning analysis" case, and it used to be
+		 * the quietest replacement of the three: with no revision, a newly
+		 * READY analysis simply became the document, and the text it replaced
+		 * was gone — no endpoint serves an older analysis's content, so there
+		 * was no way back to it. Painted as a review instead, both versions are
+		 * on screen and every change is accepted or rejected on purpose.
+		 *
+		 * `seed.ai !== null` is what keeps the FIRST analysis out of it: the
+		 * tab kicks a run automatically on first open, and a diff against an
+		 * empty document is a review with nothing to weigh. An empty previous
+		 * document is excluded for the same reason.
+		 *
+		 * The review is opened in the SAME render pass that bumps the seed, so
+		 * the editor still mounts exactly once — on the diff.
+		 */
+		const regeneratedOntoUneditedDocument =
+			topicId === seed.topic &&
+			revisionVersion === null &&
+			seed.ai !== null &&
+			aiVersion !== seed.ai &&
+			committedProseRef.current.trim() !== "" &&
+			committedProseRef.current !== effectiveProse;
+		if (regeneratedOntoUneditedDocument && review === null) {
+			// No stamp to carry: with no revision the save path already reports
+			// the newest READY version as the source it was seeded from.
+			setReview({
+				baseline: committedProseRef.current,
+				proposed: effectiveProse,
+				sourceAnalysisVersion: null,
+			});
+		}
 		// Adjusting state during render — React's own pattern for state that
 		// derives from props. It re-runs this render with the new seed before
 		// anything commits, so the editor mounts once, on the right key.
@@ -493,6 +556,70 @@ export function PlanningAnalysisTab({
 	}, [isLoading, canEdit, latestAttempt, generate.isPending, onGenerate]);
 
 	/**
+	 * Open a review: paint `proposed` over `baseline` as diff marks and hand
+	 * the editor the result.
+	 *
+	 * The two callers are the assistant's rewrite and the stale banner's
+	 * Replace. Both used to swap the whole document in one move — one into the
+	 * editor, one straight through `saveAnalysisRevision` — which is what made
+	 * "regenerate" feel like something done TO the document rather than
+	 * proposed to its author.
+	 *
+	 * `diffPartialText` emits marker tokens rather than HTML so the surrounding
+	 * markdown still parses; `fromMarkdown` inside the editor turns them into
+	 * the `<ins class="diff-ins">` / `<del class="diff-del">` that
+	 * `advancedExtensions` binds. Nothing here writes.
+	 */
+	const beginReview = useCallback(
+		(
+			baseline: string,
+			proposed: string,
+			sourceAnalysisVersion: number | null,
+		) => {
+			setReview({ baseline, proposed, sourceAnalysisVersion });
+			setLoadedProposal(null);
+			setSeed((prev) => ({ ...prev, generation: prev.generation + 1 }));
+		},
+		[],
+	);
+
+	/**
+	 * The author accepted what the review left standing.
+	 *
+	 * `merged` is the document with the marks resolved — every insertion they
+	 * kept, without the deletions they accepted. It is loaded into the editor
+	 * UNSAVED, through the same channel the assistant's rewrite already used,
+	 * so the amber "nothing is saved until you save it" notice describes it
+	 * exactly and Save remains the only writer.
+	 */
+	const acceptReview = useCallback(
+		(merged: string | null) => {
+			if (merged === null) {
+				// The same null-not-empty contract the editor's own save path
+				// treats as refusal: a failed serialization must not be allowed to
+				// replace the document with nothing.
+				toast.error(
+					"Couldn't apply the review — the editor content could not be read. Nothing was changed.",
+				);
+				return;
+			}
+			setReview(null);
+			setPendingSourceVersion(review?.sourceAnalysisVersion ?? null);
+			setLoadedProposal(merged);
+			setSeed((prev) => ({ ...prev, generation: prev.generation + 1 }));
+		},
+		[review],
+	);
+
+	/** Drop the proposal entirely and remount on the server's text. */
+	const rejectReview = useCallback(() => {
+		setReview(null);
+		setPendingSourceVersion(null);
+		setLoadedProposal(null);
+		setSeed((prev) => ({ ...prev, generation: prev.generation + 1 }));
+	}, []);
+
+	/**
 	 * Take the assistant's accepted rewrite into the editor.
 	 *
 	 * The generation bump is what makes it visible: `PlanningAnalysisEditor`
@@ -520,10 +647,12 @@ export function PlanningAnalysisTab({
 			return;
 		}
 		consumedProposal.current = assistantProposal;
-		setLoadedProposal(assistantProposal);
-		setSeed((prev) => ({ ...prev, generation: prev.generation + 1 }));
+		// Read the baseline through a ref: adding `effective.prose` to the
+		// dependency list would re-fire this on every poll that changes the
+		// document, re-opening a review the author had already resolved.
+		beginReview(currentProseRef.current, assistantProposal, null);
 		onAssistantProposalConsumed?.();
-	}, [assistantProposal, onAssistantProposalConsumed]);
+	}, [assistantProposal, onAssistantProposalConsumed, beginReview]);
 
 	/** Put the server's text back, and remount the editor onto it. */
 	const discardProposal = useCallback(() => {
@@ -531,23 +660,20 @@ export function PlanningAnalysisTab({
 		setSeed((prev) => ({ ...prev, generation: prev.generation + 1 }));
 	}, []);
 
-	const onReplace = () => {
+	/**
+	 * Review the newer analysis against the document as it stands.
+	 *
+	 * This used to write immediately — `replace.mutate` with the newer prose
+	 * as the whole body — so the only way to see what changed was to have
+	 * memorised the old text. The write still happens through the same Save
+	 * the author presses afterwards; what moved is that they see the change
+	 * first.
+	 */
+	const onReview = () => {
 		if (newerProse === null || aiVersion === null) {
 			return;
 		}
-		replace.mutate({
-			projectId,
-			topicId,
-			organizationId,
-			body: newerProse,
-			// The compare-and-set token: where the document is NOW.
-			expectedVersion: revisionVersion,
-			// The whole point of replacing — the new revision is stamped with
-			// the analysis it was actually seeded from, which is what clears
-			// the stale banner.
-			sourceAnalysisVersion: aiVersion,
-			changeSummary: `Replaced with analysis version ${aiVersion}`,
-		});
+		beginReview(effectiveProse, newerProse, aiVersion);
 	};
 
 	if (isLoading) {
@@ -589,10 +715,6 @@ export function PlanningAnalysisTab({
 	 * The action is the Regenerate button already in this header, so the banner
 	 * points at it rather than adding a second control that does the same thing.
 	 */
-	const answersNotYetFolded = countAnswersRecordedAfter(
-		aiCreatedAt,
-		decisionThreads,
-	);
 
 	return (
 		<TooltipProvider>
@@ -605,51 +727,6 @@ export function PlanningAnalysisTab({
 				    Provenance takes its own line rather than sharing the header
 				    row — it runs to ~140 characters with a model name and a prompt
 				    note, and would wrap badly against the buttons. */}
-				{answersNotYetFolded > 0 ? (
-					<div
-						className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-highlight/40 bg-highlight/10 px-3 py-2 text-foreground text-sm"
-						data-testid="analysis-behind-decisions"
-					>
-						<p>
-							{answersNotYetFolded === 1
-								? "1 answer was recorded after this analysis was written"
-								: `${answersNotYetFolded} answers were recorded after this analysis was written`}
-							{canEdit
-								? "."
-								: " and are not reflected in it yet."}
-						</p>
-						{/* The action lives IN the banner, the way Feature
-						    Maturation's does. It used to be words only — "regenerate
-						    to fold them in" — pointing at a button in the header
-						    strip above, which on a long analysis is a scroll away
-						    from the sentence describing why to press it.
-
-						    Same handler and same disabled rule as that button, not
-						    a second path: two controls that start the same run must
-						    not be able to disagree about whether one is already
-						    running. */}
-						{canEdit ? (
-							<Button
-								size="sm"
-								onClick={onGenerate}
-								disabled={isGenerating || generate.isPending}
-							>
-								{isGenerating || generate.isPending ? (
-									<Loader2Icon
-										className="mr-2 size-4 motion-safe:animate-spin"
-										aria-hidden="true"
-									/>
-								) : (
-									<SparklesIcon
-										className="mr-2 size-4"
-										aria-hidden="true"
-									/>
-								)}
-								Regenerate analysis
-							</Button>
-						) : null}
-					</div>
-				) : null}
 
 				{/* ONE toolbar row, not a stack.
 			    
@@ -709,7 +786,14 @@ export function PlanningAnalysisTab({
 									</TooltipContent>
 								</Tooltip>
 							) : null}
-							{canEdit ? (
+							{/* Stands down while the topic-level banner
+							    carries the same action — except to RETRY,
+							    which that banner never offers: it only fires
+							    on answers landing after a successful run, so
+							    suppressing this button after a failure would
+							    leave no way to start another. */}
+							{canEdit &&
+							(!generateActionIsElsewhere || canRetry) ? (
 								<Button
 									variant={
 										aiVersion !== null
@@ -817,17 +901,10 @@ export function PlanningAnalysisTab({
 										type="button"
 										variant="outline"
 										size="sm"
-										aria-label="Replace with the newer analysis"
-										onClick={onReplace}
-										disabled={replace.isPending}
+										aria-label="Review the newer analysis against this document"
+										onClick={onReview}
 									>
-										{replace.isPending ? (
-											<Loader2Icon
-												className="mr-2 size-4 motion-safe:animate-spin"
-												aria-hidden="true"
-											/>
-										) : null}
-										Replace
+										Review changes
 									</Button>
 								) : null}
 							</>
@@ -889,11 +966,35 @@ export function PlanningAnalysisTab({
 							projectId={projectId}
 							topicId={topicId}
 							organizationId={organizationId}
-							prose={loadedProposal ?? effective.prose}
+							// Under review the seed is the DIFF, not the
+							// proposal: the marker tokens `diffPartialText`
+							// emits survive markdown parsing and become the
+							// `<ins>` / `<del>` the editor's schema binds.
+							prose={
+								review !== null
+									? diffPartialText(
+											review.baseline,
+											review.proposed,
+											true,
+										)
+									: (loadedProposal ?? effective.prose)
+							}
 							revisionVersion={revisionVersion}
-							sourceAnalysisVersion={sourceAnalysisVersion}
+							sourceAnalysisVersion={
+								pendingSourceVersion ?? sourceAnalysisVersion
+							}
 							canEdit={canEdit}
+							// A review is not a run: the author is meant to
+							// type in it, accepting and rejecting hunks.
 							isLocked={isGenerating}
+							diffReview={
+								review !== null
+									? {
+											onAcceptAll: acceptReview,
+											onRejectAll: rejectReview,
+										}
+									: null
+							}
 							onSaved={handleSaved}
 							// Inside the editor's surface, as the document's own
 							// tail rather than a block after it. It rendered as a
@@ -948,16 +1049,12 @@ export function PlanningAnalysisTab({
 							{canEdit ? (
 								<Button
 									type="button"
-									onClick={onReplace}
-									disabled={replace.isPending}
+									onClick={() => {
+										setNewerOpen(false);
+										onReview();
+									}}
 								>
-									{replace.isPending ? (
-										<Loader2Icon
-											className="mr-2 size-4 motion-safe:animate-spin"
-											aria-hidden="true"
-										/>
-									) : null}
-									Replace with the newer analysis
+									Review changes
 								</Button>
 							) : null}
 						</DialogFooter>

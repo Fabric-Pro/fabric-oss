@@ -378,26 +378,39 @@ describe("PlanningAnalysisEditor — the editor region owns its height", () => {
 			capturedEditorOptionsRef.current?.editorProps?.attributes?.class,
 		).toMatch(/\bmin-h-full\b/);
 
-		const measure = region(container)?.querySelector(".max-w-3xl");
+		const measure = region(container)?.querySelector(
+			'[data-testid="planning-analysis-prose-measure"]',
+		);
 		expect(measure?.className).toMatch(/\bh-full\b/);
 		expect(measure?.firstElementChild?.className).toMatch(/\bh-full\b/);
 	});
 
-	it("caps the reading measure in both view modes", async () => {
+	it("gives the prose the region's full width, in both view modes", async () => {
 		// Asserted on the class list because jsdom has no layout engine: there
-		// is no width to measure, only the rule that produces one. The
-		// analysis rendered full-bleed before this.
+		// is no width to measure, only the rule that produces one.
+		//
+		// This used to assert a `max-w-3xl` reading measure. The cap was
+		// dropped deliberately, for parity with the Full Specification editor,
+		// which caps nothing — the contents rail on one side and the assistant
+		// rail on the other are what bound this column now. Asserting the
+		// ABSENCE of a cap is what stops one drifting back in on either mode,
+		// which is the failure this test now exists to catch.
 		const { container } = render(<PlanningAnalysisEditor {...baseProps} />);
 
-		expect(region(container)?.querySelector(".max-w-3xl")).not.toBeNull();
+		const rich = region(container)?.querySelector(
+			'[data-testid="planning-analysis-prose-measure"]',
+		);
+		expect(rich).not.toBeNull();
+		expect(rich?.className).toMatch(/\bw-full\b/);
+		expect(rich?.className).not.toMatch(/\bmax-w-(?!none\b)\S+/);
 
 		await userEvent.click(
 			screen.getByRole("button", { name: /markdown/i }),
 		);
 
-		expect(screen.getByRole("textbox").parentElement?.className).toMatch(
-			/\bmax-w-3xl\b/,
-		);
+		const raw = screen.getByRole("textbox").parentElement;
+		expect(raw?.className).toMatch(/\bw-full\b/);
+		expect(raw?.className).not.toMatch(/\bmax-w-(?!none\b)\S+/);
 	});
 });
 

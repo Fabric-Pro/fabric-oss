@@ -1795,11 +1795,27 @@ describe("TopicItemPage — the analysis is behind the answers", () => {
 		state.decisionThreads = [answeredAt("2026-09-02T10:00:00Z")];
 		renderPage();
 
-		expect(
-			screen.getByTestId("summary-analysis-behind-decisions"),
-		).toHaveTextContent(
-			"1 answer was recorded after the analysis was written.",
+		// ABOVE the tabs, so it is on screen for the person who just made it
+		// true by answering — the notice used to live inside the Planning &
+		// Analysis tab, which Radix unmounts while Summary & Questions is open.
+		const banner = screen.getByTestId("analysis-behind-decisions");
+		expect(banner).toHaveTextContent(
+			"1 answer was recorded after the analysis was written",
 		);
+
+		// And it carries the action, rather than a link to a control on
+		// another tab. One button, because the tab's own header Regenerate
+		// stands down while this is up (design-QA #5).
+		expect(
+			within(banner).getByRole("button", {
+				name: /regenerate analysis/i,
+			}),
+		).toBeInTheDocument();
+		expect(
+			screen.queryAllByRole("button", {
+				name: /regenerate (planning )?analysis/i,
+			}),
+		).toHaveLength(1);
 	});
 
 	it("stays silent when every answer predates the analysis", () => {
@@ -1808,7 +1824,7 @@ describe("TopicItemPage — the analysis is behind the answers", () => {
 		renderPage();
 
 		expect(
-			screen.queryByTestId("summary-analysis-behind-decisions"),
+			screen.queryByTestId("analysis-behind-decisions"),
 		).not.toBeInTheDocument();
 	});
 
@@ -1819,7 +1835,7 @@ describe("TopicItemPage — the analysis is behind the answers", () => {
 		renderPage();
 
 		expect(
-			screen.queryByTestId("summary-analysis-behind-decisions"),
+			screen.queryByTestId("analysis-behind-decisions"),
 		).not.toBeInTheDocument();
 	});
 });

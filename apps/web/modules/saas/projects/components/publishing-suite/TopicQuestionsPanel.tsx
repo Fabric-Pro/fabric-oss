@@ -5,7 +5,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@ui/components/button";
 import { Textarea } from "@ui/components/textarea";
 import { cn } from "@ui/lib";
-import { ChevronDownIcon, PencilIcon, SparklesIcon } from "lucide-react";
+import { ChevronDownIcon, PencilIcon } from "lucide-react";
 import { useMemo, useState } from "react";
 import { toast } from "sonner";
 import {
@@ -16,6 +16,7 @@ import {
 	mentionedMemberIds,
 	QuestionMentionTextarea,
 } from "../stories/maturation/QuestionMentionTextarea";
+import { SuggestedAnswerOptions } from "../stories/maturation/SuggestedAnswerOptions";
 import { useScrollToQuestion } from "../stories/maturation/use-scroll-to-question";
 import type { ProjectMember } from "./topic-shared";
 
@@ -63,6 +64,20 @@ export interface TopicDecisionThread {
 }
 
 type AnswerSource = "AI_SUGGESTED" | "AI_EDITED" | "MANUAL";
+
+/**
+ * The words around a question's suggested answers.
+ *
+ * Hardcoded English, as the rest of this surface still is — Feature Maturation
+ * passes the same shape out of `maturation.summaryQuestions.*`. When this suite
+ * is translated, only this constant moves.
+ */
+const SUGGESTED_ANSWER_LABELS = {
+	heading: "Suggested answers",
+	typeYourOwn: "Type your own",
+	editAria: (text: string) => `Edit "${text}" before answering`,
+	editTooltip: "Edit",
+} as const;
 
 type Props = {
 	projectId: string;
@@ -869,10 +884,10 @@ function QuestionCard({
 			// reader drift apart.
 			data-question-anchor={root.id}
 			data-testid={`question-${root.id}`}
-			className="space-y-2 rounded-lg border border-border bg-card p-4"
+			className="space-y-2 rounded-lg border border-border bg-card p-3"
 		>
 			<div className="flex items-start justify-between gap-3">
-				<p className="min-w-0 flex-1 text-foreground text-sm leading-relaxed">
+				<p className="min-w-0 flex-1 font-medium text-foreground text-sm leading-relaxed">
 					{root.summary}
 				</p>
 				{/* Rendered for a reader too, disabled: who a question is
@@ -1002,65 +1017,16 @@ function QuestionCard({
 					 * acceptance metric honest about the difference (see
 					 * `submitDraft`'s `editingSeed` comparison).
 					 */
-					<div className="space-y-2">
-						<p className="flex items-center gap-2 font-medium text-secondary text-xs uppercase tracking-[0.16em]">
-							<SparklesIcon
-								className="size-3.5"
-								aria-hidden="true"
-							/>
-							Suggested answers
-						</p>
-						{options.map((option) => (
-							<div
-								key={option.text}
-								className="flex items-start gap-2 rounded-lg border border-border bg-card p-3 transition-colors hover:border-primary/40"
-							>
-								<button
-									type="button"
-									disabled={isSubmitting}
-									onClick={() =>
-										onAnswer(option.text, "AI_SUGGESTED")
-									}
-									className="min-w-0 flex-1 text-left"
-								>
-									<span className="block font-medium text-sm">
-										{option.text}
-									</span>
-									{/* An option may arrive without one: the
-									    text is the option, the justification
-									    is commentary. An empty line here drew
-									    a blank gap under the choice. */}
-									{option.justification ? (
-										<span className="mt-1 block text-muted-foreground text-xs leading-relaxed">
-											{option.justification}
-										</span>
-									) : null}
-								</button>
-								<Button
-									type="button"
-									variant="ghost"
-									size="sm"
-									disabled={isSubmitting}
-									aria-label={`Edit "${option.text}" before answering`}
-									onClick={() => openEditorWith(option.text)}
-								>
-									<PencilIcon
-										className="size-3.5"
-										aria-hidden="true"
-									/>
-								</Button>
-							</div>
-						))}
-						<Button
-							type="button"
-							variant="ghost"
-							size="sm"
-							disabled={isSubmitting}
-							onClick={openEditorBlank}
-						>
-							Type your own
-						</Button>
-					</div>
+					<SuggestedAnswerOptions
+						options={options}
+						labels={SUGGESTED_ANSWER_LABELS}
+						disabled={isSubmitting}
+						onAccept={(option) =>
+							onAnswer(option.text, "AI_SUGGESTED")
+						}
+						onEdit={(option) => openEditorWith(option.text)}
+						onTypeYourOwn={openEditorBlank}
+					/>
 				) : (
 					<div className="space-y-2">
 						<p className="text-muted-foreground text-sm leading-relaxed">
@@ -1125,32 +1091,13 @@ function ReadOnlySuggestedOptions({
 }: {
 	options: { text: string; justification: string }[];
 }) {
+	// No `onAccept`, so the shared component renders the same options at the
+	// same typography with no controls at all.
 	return (
-		<div className="space-y-2">
-			<p className="flex items-center gap-2 font-medium text-secondary text-xs uppercase tracking-[0.16em]">
-				<SparklesIcon className="size-3.5" aria-hidden="true" />
-				Suggested answers
-			</p>
-			<ul className="space-y-2">
-				{options.map((option) => (
-					<li
-						key={option.text}
-						className="rounded-lg border border-border bg-card p-3"
-					>
-						<span className="block font-medium text-sm">
-							{option.text}
-						</span>
-						{/* An option may arrive without one: the text is the
-						    option, the justification is commentary. */}
-						{option.justification ? (
-							<span className="mt-1 block text-muted-foreground text-xs leading-relaxed">
-								{option.justification}
-							</span>
-						) : null}
-					</li>
-				))}
-			</ul>
-		</div>
+		<SuggestedAnswerOptions
+			options={options}
+			labels={SUGGESTED_ANSWER_LABELS}
+		/>
 	);
 }
 
@@ -1277,7 +1224,7 @@ function AnsweredCard({
 	};
 
 	return (
-		<li className="space-y-2 rounded-lg border border-border bg-card p-4">
+		<li className="space-y-2 rounded-lg border border-border bg-card p-3">
 			<p className="text-foreground text-sm leading-relaxed">
 				{root.summary}
 			</p>
