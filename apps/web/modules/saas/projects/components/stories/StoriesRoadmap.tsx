@@ -121,6 +121,7 @@ import {
 	useRoadmapView,
 } from "../../hooks/useRoadmapView";
 import { uploadStoryAttachment } from "../../lib/attachment-upload-utils";
+import { shouldAutoOpenBacklogChat } from "../../lib/backlog-chat-intake";
 import { uploadStoryImage } from "../../lib/image-upload-utils";
 import {
 	applyRoadmapFilters,
@@ -137,7 +138,17 @@ import {
 	compareStoriesBy,
 	DEFAULT_ROADMAP_SORT,
 } from "../../lib/roadmap-sorts";
-import { PRIORITY_SECTIONS, type PriorityKey } from "../../lib/roadmap-utils";
+import {
+	formatPhasePoints,
+	groupStoriesByPhaseAndTrack,
+	groupStoriesByTrack,
+	orderPhases,
+	PRIORITY_SECTIONS,
+	type PriorityKey,
+	phaseSortIndex,
+	storyPhase,
+	TRACK_SECTIONS,
+} from "../../lib/roadmap-utils";
 import {
 	buildStoryDetailsRoute,
 	PROPOSAL_PARAM,
@@ -168,7 +179,9 @@ import { AttachmentsField } from "./AttachmentsField";
 import { BacklogAuditDialog, type HistoryView } from "./BacklogAuditDialog";
 import { BacklogSessionHistoryDialog } from "./BacklogSessionHistoryDialog";
 import { BulkUndoToast } from "./BulkUndoToast";
+import { ClassifyTracksButton } from "./ClassifyTracksButton";
 import { CreateStoryDocAttachmentsField } from "./CreateStoryDocAttachmentsField";
+import { ExportEstimateButton } from "./ExportEstimateButton";
 import { pullLifecycleSuffix } from "./lib/pull-lifecycle-suffix";
 import { PendingBacklogProposalsInbox } from "./PendingBacklogProposalsInbox";
 import { PendingProposalsBanner } from "./PendingProposalsBanner";
@@ -181,6 +194,8 @@ import { RoadmapFilterToolbar } from "./RoadmapFilterToolbar";
 import { RoadmapSectionSwitcher } from "./RoadmapSectionSwitcher";
 import { RoadmapSettingsMenu } from "./RoadmapSettingsMenu";
 import { RoadmapSortControl } from "./RoadmapSortControl";
+import { StageRequestsButton } from "./StageRequestsButton";
+import { StageRequestsInbox } from "./StageRequestsInbox";
 import { StoryCard } from "./StoryCard";
 import { StoryKindIcon } from "./StoryKindIcon";
 import { StoryTile } from "./StoryTile";
@@ -270,6 +285,11 @@ const PRIORITY_ORDER: Record<string, number> = {
 	P2_MEDIUM: 2,
 	P3_LOW: 3,
 };
+
+// ---- Track order for flat list sorting (mirrors TRACK_SECTIONS) ----
+const TRACK_ORDER: Record<string, number> = Object.fromEntries(
+	TRACK_SECTIONS.map((section, index) => [section.track, index]),
+);
 
 // ---- Sync Selected Dialog ----
 function SyncSelectedDialog({
@@ -529,6 +549,8 @@ export function StoriesRoadmap({ projectId }: Props) {
 
 	// Sync workflow state
 	const [chatOpen, setChatOpen] = useState(false);
+	// Governed stage approvals inbox (plan Slice 5).
+	const [stageRequestsOpen, setStageRequestsOpen] = useState(false);
 	const [pullFromPMDialogOpen, setPullFromPMDialogOpen] = useState(false);
 	const [inboxOpen, setInboxOpen] = useState(false);
 	// `?proposal=<id>` — how a work item links back to the proposal that created
@@ -549,6 +571,14 @@ export function StoriesRoadmap({ projectId }: Props) {
 			setInboxOpen(true);
 		}
 	}, [deepLinkedProposal]);
+	// `?inbox=proposals` — the Contexts tab's "Review proposal" link after a
+	// scope-document extraction (inverted-loop Slice 1) opens the inbox.
+	const inboxDeepLink = useConsumeSearchParam("inbox");
+	useEffect(() => {
+		if (inboxDeepLink?.value === "proposals") {
+			setInboxOpen(true);
+		}
+	}, [inboxDeepLink]);
 	const handleInboxOpenChange = useCallback((next: boolean) => {
 		setInboxOpen(next);
 		if (!next) {
@@ -887,6 +917,25 @@ export function StoriesRoadmap({ projectId }: Props) {
 		}),
 	);
 
+	// Under EXPLORE an empty backlog opens straight into the chat (plan
+	// Slice 6). Once per mount so closing it stays closed.
+	const autoOpenedChatRef = useRef(false);
+	useEffect(() => {
+		if (autoOpenedChatRef.current) {
+			return;
+		}
+		if (
+			shouldAutoOpenBacklogChat({
+				profile: projectData?.project?.engagementProfile,
+				backlogLoaded: !storiesLoading && storiesData !== undefined,
+				storyCount: storiesData?.stories?.length ?? 0,
+			})
+		) {
+			autoOpenedChatRef.current = true;
+			setChatOpen(true);
+		}
+	}, [projectData?.project?.engagementProfile, storiesLoading, storiesData]);
+
 	// Detect Teams integration via project contexts
 	const { data: integrationContexts } = useQuery(
 		orpc.projects.contexts.list.queryOptions({
@@ -942,6 +991,16 @@ export function StoriesRoadmap({ projectId }: Props) {
 
 	// Flat sorted list, before user-applied filter UI is taken into account.
 	// Used to compute the "of N" denominator in the result count.
+	// Quoted phases (plan §1.2) decide the phase lane order under "phase".
+	const quotedPhases = useMemo(
+		() => projectData?.project?.quotedPhases ?? [],
+		[projectData?.project?.quotedPhases],
+	);
+	const phaseOrder = useMemo(
+		() => orderPhases(stories.map(storyPhase), quotedPhases),
+		[stories, quotedPhases],
+	);
+
 	const visibleStories = useMemo(() => {
 		return stories
 			.filter(
@@ -952,8 +1011,29 @@ export function StoriesRoadmap({ projectId }: Props) {
 						s.draftingStage !== "CLOSED"),
 			)
 			.sort((a, b) => {
-				const pa = PRIORITY_ORDER[a.priority] ?? 99;
-				const pb = PRIORITY_ORDER[b.priority] ?? 99;
+				if (groupBy === "phase") {
+					const pa = phaseSortIndex(a, phaseOrder);
+					const pb = phaseSortIndex(b, phaseOrder);
+					if (pa !== pb) {
+						return pa - pb;
+					}
+					const ta =
+						TRACK_ORDER[a.deliveryTrack ?? "UNCLASSIFIED"] ?? 99;
+					const tb =
+						TRACK_ORDER[b.deliveryTrack ?? "UNCLASSIFIED"] ?? 99;
+					if (ta !== tb) {
+						return ta - tb;
+					}
+					return a.roadmapOrder - b.roadmapOrder;
+				}
+				const pa =
+					groupBy === "track"
+						? (TRACK_ORDER[a.deliveryTrack ?? "UNCLASSIFIED"] ?? 99)
+						: (PRIORITY_ORDER[a.priority] ?? 99);
+				const pb =
+					groupBy === "track"
+						? (TRACK_ORDER[b.deliveryTrack ?? "UNCLASSIFIED"] ?? 99)
+						: (PRIORITY_ORDER[b.priority] ?? 99);
 				if (pa !== pb) {
 					return pa - pb;
 				}
@@ -981,15 +1061,21 @@ export function StoriesRoadmap({ projectId }: Props) {
 					? s.draftingStage === "CLOSED"
 						? "CLOSED"
 						: getMaturationStatus(s)
-					: (s.priority as string),
+					: groupBy === "track"
+						? (s.deliveryTrack ?? "UNCLASSIFIED")
+						: groupBy === "phase"
+							? `${storyPhase(s)}:${s.deliveryTrack ?? "UNCLASSIFIED"}`
+							: (s.priority as string),
 			),
 		);
 		const lanes =
 			groupBy === "stage"
 				? STAGE_SECTIONS.filter((s) => usedKeys.has(s.key)).length
-				: PRIORITY_SECTIONS.filter((s) =>
-						usedKeys.has(s.priority as string),
-					).length;
+				: groupBy === "track" || groupBy === "phase"
+					? usedKeys.size
+					: PRIORITY_SECTIONS.filter((s) =>
+							usedKeys.has(s.priority as string),
+						).length;
 		return {
 			workItems: visibleStories.length,
 			lanes,
@@ -1126,6 +1212,21 @@ export function StoriesRoadmap({ projectId }: Props) {
 		return computeMatchPercentById(sortedStories, scoreById);
 	}, [roadmapFilters.q, semanticRankById, sortedStories]);
 
+	const groupedByTrack = useMemo(
+		() => groupStoriesByTrack(sortedStories, showClosed),
+		[sortedStories, showClosed],
+	);
+
+	const groupedByPhase = useMemo(
+		() =>
+			groupStoriesByPhaseAndTrack(
+				sortedStories,
+				quotedPhases,
+				showClosed,
+			),
+		[sortedStories, quotedPhases, showClosed],
+	);
+
 	// Count of closed features in the project (for empty-state hint)
 	const closedFeatureCount = useMemo(
 		() => stories.filter((s) => s.draftingStage === "CLOSED").length,
@@ -1250,10 +1351,29 @@ export function StoriesRoadmap({ projectId }: Props) {
 		const base: { key: string; label: string }[] =
 			groupBy === "stage"
 				? STAGE_SECTIONS.map((s) => ({ key: s.key, label: s.label }))
-				: PRIORITY_SECTIONS.map((s) => ({
-						key: s.priority as string,
-						label: s.label,
-					}));
+				: groupBy === "track"
+					? TRACK_SECTIONS.map((s) => ({
+							key: s.track,
+							label: s.label,
+						}))
+					: groupBy === "phase"
+						? // One lane per track inside each quoted phase; the first
+							// lane of a phase carries the phase heading with its point
+							// total (a range when any LOW-confidence item is present —
+							// plan Slice 7).
+							groupedByPhase.flatMap((section) =>
+								section.tracks.map((track, index) => ({
+									key: `${section.phase}:${track.track}`,
+									label:
+										index === 0
+											? `${section.label} · ${formatPhasePoints(section.totals)} · ${track.label}`
+											: `${section.label} · ${track.label}`,
+								})),
+							)
+						: PRIORITY_SECTIONS.map((s) => ({
+								key: s.priority as string,
+								label: s.label,
+							}));
 		if (groupBy === "stage" && (showClosed || roadmapFilters.hiddenOnly)) {
 			base.push({ key: "CLOSED", label: "Hidden" });
 		}
@@ -1264,6 +1384,7 @@ export function StoriesRoadmap({ projectId }: Props) {
 			: base;
 	}, [
 		groupBy,
+		groupedByPhase,
 		sortsGroups,
 		sort.direction,
 		showClosed,
@@ -1289,6 +1410,16 @@ export function StoriesRoadmap({ projectId }: Props) {
 					(map[getMaturationStatus(story)] ??= []).push(story);
 				}
 			}
+		} else if (groupBy === "track") {
+			for (const s of TRACK_SECTIONS) {
+				map[s.track] = groupedByTrack[s.track] ?? [];
+			}
+		} else if (groupBy === "phase") {
+			for (const section of groupedByPhase) {
+				for (const track of section.tracks) {
+					map[`${section.phase}:${track.track}`] = track.stories;
+				}
+			}
 		} else {
 			for (const s of PRIORITY_SECTIONS) {
 				map[s.priority] = [];
@@ -1298,7 +1429,14 @@ export function StoriesRoadmap({ projectId }: Props) {
 			}
 		}
 		return map;
-	}, [groupBy, sortedStories, showClosed, roadmapFilters.hiddenOnly]);
+	}, [
+		groupBy,
+		groupedByTrack,
+		groupedByPhase,
+		sortedStories,
+		showClosed,
+		roadmapFilters.hiddenOnly,
+	]);
 
 	// ---- Drag-to-reorder lane state (kanban multi-container pattern) ----
 	// During a drag, `dndLanes` holds the LIVE lane→storyIds membership so that
@@ -2563,13 +2701,29 @@ export function StoriesRoadmap({ projectId }: Props) {
 					? activeStoryData.draftingStage === "CLOSED"
 						? "CLOSED"
 						: getMaturationStatus(activeStoryData)
-					: (activeStoryData.priority as string);
+					: groupBy === "track"
+						? (activeStoryData.deliveryTrack ?? "UNCLASSIFIED")
+						: groupBy === "phase"
+							? `${storyPhase(activeStoryData)}:${activeStoryData.deliveryTrack ?? "UNCLASSIFIED"}`
+							: (activeStoryData.priority as string);
 			const laneOrder = finalLanes[finalLane];
 
 			if (finalLane !== originalLane) {
 				// Cross-lane: change the grouping dimension to the dropped lane. The
 				// migrated layout already sits in dndLanes — hold it until the
 				// optimistic update lands, then clear.
+				if (groupBy === "track" || groupBy === "phase") {
+					// Lanes are never changed by drag: track via the track
+					// selector in the feature workspace, phase via the phase
+					// label (inverted-loop Slices 2 and 7).
+					clearDndLanes();
+					toast.error(
+						groupBy === "phase"
+							? "Cannot change phase or track via drag. Use the phase label and the track selector."
+							: "Cannot change delivery track via drag. Use the track selector.",
+					);
+					return;
+				}
 				if (groupBy === "stage") {
 					moveStoryStageMutation.mutate({
 						storyId: activeId,
@@ -2736,6 +2890,34 @@ export function StoriesRoadmap({ projectId }: Props) {
 					<div className="flex items-center gap-2">
 						{/* Get started with this page */}
 						<PageTourButton pageId="stories" />
+						{/* Export estimate (inverted-loop Slice 7) */}
+						<Tooltip>
+							<TooltipTrigger asChild>
+								<span className="inline-flex">
+									<ExportEstimateButton
+										projectId={projectId}
+									/>
+								</span>
+							</TooltipTrigger>
+							<TooltipContent className="max-w-xs">
+								{tStories("estimateExport")}
+							</TooltipContent>
+						</Tooltip>
+						{/* Governed stage approvals awaiting review (plan Slice 5) */}
+						<StageRequestsButton
+							projectId={projectId}
+							organizationId={organizationId ?? null}
+							userRole={projectData?.project?.userRole}
+							onOpenInbox={() => setStageRequestsOpen(true)}
+						/>
+						{/* Classify into delivery tracks (inverted-loop Slice 2) */}
+						<ClassifyTracksButton
+							projectId={projectId}
+							storiesQueryKey={getStoriesQueryKey(
+								projectId,
+								organizationId,
+							)}
+						/>
 						{/* AI Update */}
 						<Tooltip>
 							<TooltipTrigger asChild>
@@ -3900,6 +4082,14 @@ export function StoriesRoadmap({ projectId }: Props) {
 						);
 					})()}
 
+				{/* Governed stage approvals inbox (plan Slice 5) */}
+				<StageRequestsInbox
+					projectId={projectId}
+					organizationId={organizationId ?? null}
+					open={stageRequestsOpen}
+					onOpenChange={setStageRequestsOpen}
+				/>
+
 				{/* Pull from PM: selective ticket import */}
 				<PullFromPMDialog
 					open={pullFromPMDialogOpen}
@@ -3968,6 +4158,9 @@ export function StoriesRoadmap({ projectId }: Props) {
 						organizationId={organizationId ?? null}
 						projectId={projectId}
 						projectName={projectData?.project?.name ?? "Project"}
+						engagementProfile={
+							projectData?.project?.engagementProfile
+						}
 						hasTeamsIntegration={hasTeamsIntegration}
 						hasSlackIntegration={hasSlackIntegration}
 						hasNotionIntegration={hasNotionIntegration}

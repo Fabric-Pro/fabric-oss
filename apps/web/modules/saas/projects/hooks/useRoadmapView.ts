@@ -12,13 +12,15 @@ import {
 
 /**
  * Per-project roadmap view preferences (persisted to localStorage):
- *  - `groupBy`: group the accordions by Priority or by drafting Stage.
+ *  - `groupBy`: group the accordions by Priority, drafting Stage, delivery
+ *    Track or quoted Phase (inverted-loop Slices 2 and 7).
  *  - `columns`: which optional card columns are shown (the settings gear lets
  *    the user toggle these with Save/Cancel).
  *  - `columnOrder`: the left-to-right order of those columns (drag-reorderable
  *    in the settings gear). Title is always first and is not part of this list.
  */
-export type RoadmapGroupBy = "priority" | "stage";
+export type RoadmapGroupBy = "priority" | "stage" | "track" | "phase";
+const ROADMAP_GROUP_BY = ["priority", "stage", "track", "phase"] as const;
 
 /** "table" = grouped accordions of rows; "board" = kanban-style columns (both
  * sort WITHIN their sections); "plain" = a flat table, no sections (global sort);
@@ -193,7 +195,11 @@ function coerceView(raw: unknown): View {
 	const parsed = raw as Partial<View>;
 	return {
 		mode: coerceMode(parsed.mode),
-		groupBy: parsed.groupBy === "stage" ? "stage" : "priority",
+		groupBy: (ROADMAP_GROUP_BY as readonly string[]).includes(
+			parsed.groupBy as string,
+		)
+			? (parsed.groupBy as RoadmapGroupBy)
+			: "priority",
 		columns: { ...DEFAULT_COLUMNS, ...(parsed.columns ?? {}) },
 		columnOrder: sanitizeOrder(parsed.columnOrder),
 		// Sort is persisted like showClosed (immediate, per user + project).

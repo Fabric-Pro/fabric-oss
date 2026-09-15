@@ -7,6 +7,7 @@ export * from "./get";
 export * from "./get-history";
 export * from "./invite-email";
 export * from "./list";
+export * from "./list-for-story";
 export * from "./list-grants";
 export * from "./list-templates";
 export * from "./publish";

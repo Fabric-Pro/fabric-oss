@@ -38,6 +38,7 @@ import {
 	Rows3Icon,
 	SettingsIcon,
 } from "lucide-react";
+import { useTranslations } from "next-intl";
 import { useEffect, useId, useRef, useState } from "react";
 import {
 	DEFAULT_ROADMAP_COLUMN_ORDER,
@@ -156,6 +157,7 @@ export function RoadmapSettingsMenu({
 	onSave,
 	onCancel,
 }: RoadmapSettingsMenuProps) {
+	const tTips = useTranslations("tooltips.stories");
 	const [open, setOpen] = useState(false);
 	// Two-step Reset: the first click reveals an inline confirm (it wipes every
 	// view setting, so a misclick would be annoying to undo).
@@ -313,8 +315,22 @@ export function RoadmapSettingsMenu({
 						value={groupBy}
 						onChange={onGroupByChange}
 						options={[
-							{ value: "priority", label: "Priority" },
+							{
+								value: "priority",
+								label: "Priority",
+								tooltip: tTips("groupByPriority"),
+							},
 							{ value: "stage", label: "Stage" },
+							{
+								value: "track",
+								label: "Delivery track",
+								tooltip: tTips("groupByTrack"),
+							},
+							{
+								value: "phase",
+								label: "Phase",
+								tooltip: tTips("groupByPhase"),
+							},
 						]}
 					/>
 				)}

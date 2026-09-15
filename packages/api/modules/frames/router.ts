@@ -8,6 +8,7 @@ import {
 	getFrameProcedure,
 	inviteFrameByEmailProcedure,
 	listFrameGrantsProcedure,
+	listFramesForStoryProcedure,
 	listFramesProcedure,
 	listFrameTemplatesProcedure,
 	publishFrameProcedure,
@@ -26,6 +27,8 @@ export const framesRouter = {
 	duplicate: duplicateFrameProcedure,
 	get: getFrameProcedure,
 	list: listFramesProcedure,
+	// Project-scoped frames attached to a story (plan Slice 3)
+	listForStory: listFramesForStoryProcedure,
 	update: updateFrameProcedure,
 	// Code validation
 	validate: validateFrameCodeProcedure,

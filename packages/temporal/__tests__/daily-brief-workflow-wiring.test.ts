@@ -40,7 +40,7 @@ describe("daily-brief workflow wiring", () => {
 		expect(code).toMatch(/assembleFinalBrief\(/);
 	});
 
-	it("passes userId (triggeredByUserId) to the PR-collector activity in both v1 and v2 branches", async () => {
+	it("passes userId (triggeredByUserId) to the PR-collector activity in the v1, v2 and v4 branches", async () => {
 		const source = await readFile(
 			join(
 				__dirname,
@@ -57,7 +57,8 @@ describe("daily-brief workflow wiring", () => {
 			/collectGitHubPullRequestsActivity\(\{[^}]*userId:\s*triggeredByUserId[^}]*\}\)/g,
 		);
 		expect(matches).not.toBeNull();
-		expect(matches?.length).toBe(2);
+		// v1, v2 and v4 (Slice 8 metric drift) fan-outs all pass it.
+		expect(matches?.length).toBe(3);
 	});
 
 	it("gates release-note exclusion filtering behind the v6 patch and wires the pure helper + loader activity", async () => {

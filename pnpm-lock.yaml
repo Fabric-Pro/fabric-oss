@@ -3155,6 +3155,9 @@ importers:
       undici:
         specifier: ^8.9.0
         version: 8.10.0
+      yaml:
+        specifier: ^2.8.3
+        version: 2.9.0
       zod:
         specifier: ^4.2.1
         version: 4.4.3

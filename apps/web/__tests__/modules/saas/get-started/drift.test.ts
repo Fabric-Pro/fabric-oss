@@ -92,6 +92,8 @@ const inPageSource = [
 	"apps/web/modules/saas/projects/components/ContextSummaryPanel.tsx",
 	"apps/web/modules/saas/projects/components/ProjectPipeline.tsx",
 	"apps/web/modules/saas/projects/components/ProjectReports.tsx",
+	"apps/web/modules/saas/projects/components/outcomes/ProjectOutcomesTab.tsx",
+	"apps/web/modules/saas/projects/components/outcomes/ProjectMetricsPanel.tsx",
 	// Top-level app / sidebar pages (anchors live in the list/view component).
 	"apps/web/modules/saas/agents/components/UnifiedAgentView.tsx",
 	"apps/web/modules/saas/prompts/components/PromptsList.tsx",
@@ -178,6 +180,7 @@ const launcherSource = [
 	"apps/web/modules/saas/projects/components/ProjectReports.tsx",
 	"apps/web/modules/saas/projects/components/security/SecurityAccessibilityPage.tsx",
 	"apps/web/modules/saas/projects/components/ProjectDetails.tsx",
+	"apps/web/modules/saas/projects/components/outcomes/ProjectOutcomesTab.tsx",
 	"apps/web/modules/saas/projects/components/stories/StoriesRoadmap.tsx",
 	"apps/web/modules/saas/weave/components/WeaveDashboard.tsx",
 	"apps/web/modules/saas/daily-brief/components/DailyBriefHeader.tsx",

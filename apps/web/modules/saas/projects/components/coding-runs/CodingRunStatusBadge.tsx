@@ -10,6 +10,7 @@ import {
 	CheckCircleIcon,
 	CircleXIcon,
 	ExternalLinkIcon,
+	FlaskConicalIcon,
 	GitPullRequestIcon,
 	Loader2Icon,
 	MessagesSquareIcon,
@@ -22,6 +23,7 @@ type CodingRunStatus =
 	| "RUNNING"
 	| "AWAITING_REVIEW"
 	| "PR_OPENED"
+	| "DEMO_READY"
 	| "COMPLETED"
 	| "FAILED"
 	| "CANCELLED"
@@ -29,6 +31,8 @@ type CodingRunStatus =
 
 type Props = {
 	status: CodingRunStatus;
+	/** Run kind; spike runs get a "Spike" prefix badge. */
+	kind?: "IMPLEMENT" | "SPIKE" | null;
 	pullRequestUrl?: string | null;
 	sessionUrl?: string | null;
 	provider?: "BACKGROUND_AGENTS" | "KANBAN_LOCAL" | null;
@@ -48,6 +52,7 @@ const STATUS_CONFIG: Record<
 	RUNNING: { label: "Agent Working", variant: "secondary" },
 	AWAITING_REVIEW: { label: "Awaiting Review", variant: "default" },
 	PR_OPENED: { label: "PR Opened", variant: "default" },
+	DEMO_READY: { label: "Demo Ready", variant: "default" },
 	COMPLETED: { label: "Completed", variant: "secondary" },
 	FAILED: { label: "Failed", variant: "destructive" },
 	CANCELLED: { label: "Cancelled", variant: "outline" },
@@ -61,6 +66,7 @@ const STATUS_CONFIG: Record<
 
 export function CodingRunStatusBadge({
 	status,
+	kind,
 	pullRequestUrl,
 	sessionUrl,
 	provider: _provider,
@@ -75,6 +81,12 @@ export function CodingRunStatusBadge({
 			variant={config.variant}
 			className="gap-1 text-[10px] font-medium"
 		>
+			{kind === "SPIKE" && (
+				<span className="inline-flex items-center gap-0.5 rounded-sm bg-primary/10 px-1 text-primary">
+					<FlaskConicalIcon className="size-2.5" />
+					Spike
+				</span>
+			)}
 			<StatusIcon status={status} />
 			{label}
 			{sessionUrl && !pullRequestUrl && (
@@ -149,6 +161,8 @@ function StatusIcon({
 			return <MessagesSquareIcon className="size-3" />;
 		case "PR_OPENED":
 			return <GitPullRequestIcon className="size-3" />;
+		case "DEMO_READY":
+			return <FlaskConicalIcon className="size-3" />;
 		case "COMPLETED":
 			return <CheckCircleIcon className="size-3" />;
 		case "FAILED":

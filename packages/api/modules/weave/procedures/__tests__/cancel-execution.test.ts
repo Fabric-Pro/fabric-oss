@@ -140,7 +140,14 @@ describe("cancelExecutionProcedure", () => {
 	});
 
 	it("still reconciles the execution + plan when the cancel signal fails (workflow already gone)", async () => {
-		mockSignal.mockRejectedValue(new Error("workflow not found"));
+		// Only Temporal's typed "no such execution" error is proof the
+		// workflow is gone; any other signal failure leaves the row active
+		// (fail closed — see the next test).
+		mockSignal.mockRejectedValue(
+			Object.assign(new Error("workflow not found"), {
+				name: "WorkflowNotFoundError",
+			}),
+		);
 		const handler = await loadHandler();
 
 		const res = await handler({

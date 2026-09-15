@@ -36,6 +36,24 @@ export function computeDocumentContentHash(content: string): string {
 }
 
 /**
+ * Thrown when a caller tries to change an INTEGRATION_CONTRACT's status
+ * through the generic document update. Contract status is owned by the
+ * Discovery run (plan Slice 4): `projects.discovery.markContractComplete`
+ * completes the run in the same transaction, so a generic COMPLETE would
+ * satisfy the readiness gate while the run stayed active. Enforced here so
+ * every caller (oRPC, v1 REST, MCP) is covered.
+ */
+export class IntegrationContractStatusManagedError extends Error {
+	readonly code = "INTEGRATION_CONTRACT_STATUS_MANAGED" as const;
+	constructor() {
+		super(
+			"Integration contract status is managed by the discovery run. Use Mark contract complete (projects.discovery.markContractComplete).",
+		);
+		this.name = "IntegrationContractStatusManagedError";
+	}
+}
+
+/**
  * Count meaningful prose words in document content.
  * Strips mermaid blocks, code blocks, image references, and base64 data URLs
  * before counting so that non-prose content does not inflate the word count.
@@ -414,6 +432,20 @@ export async function updateDocument(
 		);
 	}
 
+	// Integration-contract status is owned by the Discovery run. A changed
+	// status is refused; an unchanged one is not written at all, so a generic
+	// save that raced a concurrent `markContractComplete` cannot put REVIEW
+	// back over COMPLETE (review sprint3 rounds 2–3).
+	const isContract = currentDoc.type === "INTEGRATION_CONTRACT";
+	if (
+		isContract &&
+		data.status !== undefined &&
+		data.status !== currentDoc.status
+	) {
+		throw new IntegrationContractStatusManagedError();
+	}
+	const nextStatus = isContract ? undefined : data.status;
+
 	// Sanitize content if provided (use !== undefined so empty string is treated as intentional)
 	const sanitizedContent =
 		data.content !== undefined ? sanitizeContent(data.content) : undefined;
@@ -440,7 +472,7 @@ export async function updateDocument(
 				content: sanitizedContent,
 				wordCount: countDocumentWords(sanitizedContent),
 				// Version stays the same — this is a revert, not an edit
-				...(data.status ? { status: data.status } : {}),
+				...(nextStatus ? { status: nextStatus } : {}),
 				...(data.lastEditedBy
 					? { lastEditedBy: data.lastEditedBy }
 					: {}),
@@ -484,7 +516,7 @@ export async function updateDocument(
 					version: currentDoc.version + 1,
 				}
 			: {}),
-		...(data.status ? { status: data.status } : {}),
+		...(nextStatus ? { status: nextStatus } : {}),
 		...(data.lastEditedBy ? { lastEditedBy: data.lastEditedBy } : {}),
 	};
 

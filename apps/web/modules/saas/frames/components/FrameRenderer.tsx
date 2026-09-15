@@ -10,6 +10,12 @@ import {
 	type FrameEmbedToHostMessage,
 	isFrameHostToEmbedMessage,
 } from "../lib/frame-embed-protocol";
+import {
+	buildProjectFrameSrcdoc,
+	isProjectFrameHeightMessage,
+	PROJECT_FRAME_MAX_HEIGHT,
+	PROJECT_FRAME_SANDBOX,
+} from "../lib/project-frame-srcdoc";
 
 /**
  * Sanitizes HTML content for safe iframe rendering.
@@ -211,11 +217,20 @@ export function FrameRenderer({
 	embedded = false,
 	className,
 	slideIndex,
+	projectScoped = false,
 }: {
 	frame: FrameDocumentView;
 	embedded?: boolean;
 	className?: string;
 	slideIndex?: number;
+	/**
+	 * True for frames that belong to a project (agent-authored from customer
+	 * material, e.g. spike demos). HTML blocks are then rendered through the
+	 * hardened path: `sandbox="allow-scripts"` only, a deny-all CSP in the
+	 * srcdoc, and nested browsing contexts stripped. See
+	 * `lib/project-frame-srcdoc.ts`.
+	 */
+	projectScoped?: boolean;
 }) {
 	const rootRef = useRef<HTMLDivElement>(null);
 	const visibleBlocks = useMemo(() => {
@@ -370,11 +385,63 @@ export function FrameRenderer({
 								"px-6 py-6 md:px-8 md:py-8",
 						)}
 					>
-						<FrameBlockRenderer block={block} />
+						<FrameBlockRenderer
+							block={block}
+							projectScoped={projectScoped}
+						/>
 					</div>
 				</section>
 			))}
 		</div>
+	);
+}
+
+/**
+ * Project-scoped HTML block. The iframe has an opaque origin (no
+ * `allow-same-origin`), so the host cannot read `contentDocument` to measure
+ * it; the srcdoc carries a resize reporter that posts its height instead, and
+ * we only trust messages whose `source` is this iframe's window.
+ */
+function ProjectHtmlBlockFrame({ block }: { block: FrameBlockView }) {
+	const iframeRef = useRef<HTMLIFrameElement>(null);
+	const srcdoc = useMemo(
+		() => buildProjectFrameSrcdoc(block.content),
+		[block.content],
+	);
+
+	useEffect(() => {
+		const onMessage = (event: MessageEvent) => {
+			const iframe = iframeRef.current;
+			if (!iframe || event.source !== iframe.contentWindow) {
+				return;
+			}
+			if (!isProjectFrameHeightMessage(event.data)) {
+				return;
+			}
+			const next = Math.min(
+				Math.max(Math.round(event.data.height), 0),
+				PROJECT_FRAME_MAX_HEIGHT,
+			);
+			if (next > 0) {
+				iframe.style.height = `${next}px`;
+			}
+		};
+		window.addEventListener("message", onMessage);
+		return () => window.removeEventListener("message", onMessage);
+	}, []);
+
+	return (
+		<iframe
+			ref={iframeRef}
+			title={block.title || block.id}
+			sandbox={PROJECT_FRAME_SANDBOX}
+			referrerPolicy="no-referrer"
+			srcDoc={srcdoc}
+			scrolling="no"
+			className="w-full"
+			data-frame-scope="project"
+			style={{ height: 480, border: "none", overflow: "hidden" }}
+		/>
 	);
 }
 
@@ -459,10 +526,20 @@ function HtmlBlockFrame({ block }: { block: FrameBlockView }) {
 	);
 }
 
-function FrameBlockRenderer({ block }: { block: FrameBlockView }) {
+function FrameBlockRenderer({
+	block,
+	projectScoped,
+}: {
+	block: FrameBlockView;
+	projectScoped: boolean;
+}) {
 	switch (block.type) {
 		case "html":
-			return <HtmlBlockFrame block={block} />;
+			return projectScoped ? (
+				<ProjectHtmlBlockFrame block={block} />
+			) : (
+				<HtmlBlockFrame block={block} />
+			);
 		case "mermaid":
 			return <Mermaid chart={block.content} />;
 		case "json":

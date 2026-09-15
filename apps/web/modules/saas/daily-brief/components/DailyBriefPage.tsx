@@ -51,6 +51,7 @@ import { formatCursorForSummary } from "./format";
 import { GeneratingState } from "./GeneratingState";
 import { GitHubActivityCard } from "./GitHubActivityCard";
 import { MeetingsCard } from "./MeetingsCard";
+import { MetricDriftPanel } from "./MetricDriftPanel";
 import { PriorityActionsPanel } from "./PriorityActionsPanel";
 import type { HideTarget } from "./ReleaseNotesPanel";
 import { ReleaseNotesPanel } from "./ReleaseNotesPanel";
@@ -513,6 +514,17 @@ export function DailyBriefPage({
 			) : null}
 
 			{brief.ahead ? <AheadPanel items={brief.ahead} /> : null}
+
+			{brief.metricDrift ? (
+				<MetricDriftPanel
+					items={brief.metricDrift}
+					outcomesLink={
+						brief.priorityActions.find(
+							(a) => a.kind === "metric_drift",
+						)?.fabricLink
+					}
+				/>
+			) : null}
 
 			{/* Priority actions always render the full list — never filtered. */}
 			<PriorityActionsPanel actions={brief.priorityActions} />

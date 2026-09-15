@@ -243,6 +243,7 @@ export {
 	requirePermission,
 	requirePermissionAllowGuest,
 	requireProjectPermission,
+	userHasProjectPermission,
 } from "./middleware/require-permission";
 
 /**

@@ -183,6 +183,15 @@ export {
 	statusQuery as deepResearcherStatusQuery,
 	subAgentResultsQuery as deepResearcherSubAgentResultsQuery,
 } from "./deep-researcher";
+// Delivery Track Classification workflow (inverted-loop Slice 2)
+export {
+	type ClassificationStatus,
+	classificationProgressQuery,
+	type DeliveryTrackClassificationInput,
+	type DeliveryTrackClassificationOutput,
+	type DeliveryTrackClassificationProgress,
+	deliveryTrackClassificationWorkflow,
+} from "./delivery-track-classification-workflow";
 // Deployment Execution workflow (child workflow for agent invocation)
 export {
 	cancelExecutionSignal as deploymentCancelExecutionSignal,
@@ -211,6 +220,16 @@ export {
 	type DirectChatPostOperationInput,
 	directChatPostOperationWorkflow,
 } from "./direct-chat-post-operation";
+// Discovery Run workflow (inverted-loop Slice 4)
+export {
+	cancelDiscoverySignal,
+	type DiscoveryRunProgress,
+	type DiscoveryRunStatusValue,
+	type DiscoveryRunWorkflowInput,
+	type DiscoveryRunWorkflowOutput,
+	discoveryProgressQuery,
+	discoveryRunWorkflow,
+} from "./discovery-run-workflow";
 // Document Embedding workflow (durable embedding for PRD/Proposal)
 export {
 	type DocumentEmbeddingWorkflowInput,
@@ -598,6 +617,16 @@ export {
 	type ScheduledWorkflowKickoffOutput,
 	scheduledWorkflowKickoff,
 } from "./scheduled-workflow-kickoff";
+// Scope intake workflow (customer scope document → SCOPE_DOCUMENT proposal)
+export {
+	cancelIntakeSignal,
+	intakeProgressQuery,
+	type ScopeIntakeInput,
+	type ScopeIntakeOutput,
+	type ScopeIntakeProgress,
+	type ScopeIntakeStatus,
+	scopeIntakeWorkflow,
+} from "./scope-intake-workflow";
 // Security & Accessibility scan workflow
 export {
 	type SecurityAccessibilityScanInput,

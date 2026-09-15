@@ -111,6 +111,8 @@ export interface StoryTask {
  */
 export interface LatestCodingRun {
 	id: string;
+	/** IMPLEMENT (default) or SPIKE (inverted-loop Slice 3). */
+	kind?: "IMPLEMENT" | "SPIKE" | null;
 	executionChannel?: "BACKGROUND_AGENTS" | "LOCAL_AGENTS";
 	provider?: "BACKGROUND_AGENTS" | "KANBAN_LOCAL";
 	status: string;
@@ -243,6 +245,17 @@ export interface UserStory {
 		subject: string | null;
 		meetingDate: Date | string | null;
 	} | null;
+	// Delivery track (inverted-loop Slice 2)
+	deliveryTrack: DeliveryTrack;
+	trackRationale?: string | null;
+	trackSetBy?: TrackSetBy | null;
+	trackUpdatedAt?: Date | null;
+	/** Customer's own line id from scope intake (e.g. "VIS-02"). */
+	sourceRef?: string | null;
+	dependsOnRefs: string[];
+	dependsOnPhases: string[];
+	/** Estimate confidence (inverted-loop Slice 7). SPIKE defaults LOW until accepted. */
+	estimateConfidence?: EstimateConfidence | null;
 	// Client-side sync metadata (not persisted)
 	/** Whether story is selected for bulk sync. UI state only. */
 	isSelectedForSync?: boolean;
@@ -308,6 +321,175 @@ export const SIZE_OPTIONS = [
 	{ value: "L", label: "L", description: "Large (1-2 weeks)" },
 	{ value: "XL", label: "XL", description: "Extra Large (2+ weeks)" },
 ] as const;
+
+/**
+ * Delivery track — which kind of run a feature needs before it is ready for
+ * development. Mirrors the Prisma `DeliveryTrack` enum (plan §1.1).
+ */
+export type DeliveryTrack =
+	| "UNCLASSIFIED"
+	| "SPIKE"
+	| "DISCOVERY"
+	| "SPECIFY"
+	| "DEFER";
+
+/** Who last set the track. Mirrors the Prisma `TrackSetBy` enum. */
+export type TrackSetBy = "AI" | "HUMAN";
+
+/** Tracks a human may pick. UNCLASSIFIED is a state, not a choice. */
+export const ASSIGNABLE_DELIVERY_TRACKS = [
+	"SPIKE",
+	"DISCOVERY",
+	"SPECIFY",
+	"DEFER",
+] as const satisfies readonly DeliveryTrack[];
+
+export type DeliveryTrackTone =
+	| "neutral"
+	| "rose"
+	| "amber"
+	| "emerald"
+	| "muted";
+
+export const DELIVERY_TRACK_META: Record<
+	DeliveryTrack,
+	{
+		label: string;
+		shortLabel: string;
+		description: string;
+		tone: DeliveryTrackTone;
+		order: number;
+	}
+> = {
+	SPIKE: {
+		label: "Spike",
+		shortLabel: "Spike",
+		description:
+			"Feasibility or desirability is unverified. Needs a spike run (demo + findings) before it is ready for development.",
+		tone: "rose",
+		order: 0,
+	},
+	DISCOVERY: {
+		label: "Discovery",
+		shortLabel: "Discovery",
+		description:
+			"Touches auth, tenancy, an external system or regulated data. Needs an integration contract before development.",
+		tone: "amber",
+		order: 1,
+	},
+	SPECIFY: {
+		label: "Specify",
+		shortLabel: "Specify",
+		description:
+			"Deterministic and already understood. Needs a description and acceptance criteria, then it is ready for development.",
+		tone: "emerald",
+		order: 2,
+	},
+	UNCLASSIFIED: {
+		label: "Unclassified",
+		shortLabel: "Unclassified",
+		description:
+			"Not yet classified. Run the classifier or pick a track by hand.",
+		tone: "neutral",
+		order: 3,
+	},
+	DEFER: {
+		label: "Deferred",
+		shortLabel: "Defer",
+		description:
+			"Out of scope, outside the quoted horizon, or blocked by an undecided dependency. Cannot start.",
+		tone: "muted",
+		order: 4,
+	},
+};
+
+/** Roadmap lane order: actionable tracks first, unclassified, then deferred. */
+// ---- Estimate confidence (inverted-loop Slice 7) ----
+
+export type EstimateConfidence = "LOW" | "MEDIUM" | "HIGH";
+
+export const ESTIMATE_CONFIDENCE_ORDER: readonly EstimateConfidence[] = [
+	"LOW",
+	"MEDIUM",
+	"HIGH",
+];
+
+/**
+ * Display metadata for the confidence badge / selector. Colors are design
+ * tokens only: amber (`highlight`) for LOW, neutral for MEDIUM, `success`
+ * for HIGH.
+ */
+export const ESTIMATE_CONFIDENCE_META: Record<
+	EstimateConfidence,
+	{
+		label: string;
+		shortLabel: string;
+		description: string;
+		chipClass: string;
+		dotClass: string;
+	}
+> = {
+	LOW: {
+		label: "Low confidence",
+		shortLabel: "Low",
+		description:
+			"Counted only in the upper bound of a phase total. Spikes stay LOW until a spike run is accepted.",
+		chipClass: "border-highlight/40 bg-highlight/10 text-highlight",
+		dotClass: "bg-highlight",
+	},
+	MEDIUM: {
+		label: "Medium confidence",
+		shortLabel: "Med",
+		description: "Estimated from comparable work; no open unknowns.",
+		chipClass: "border-border bg-muted text-muted-foreground",
+		dotClass: "bg-muted-foreground",
+	},
+	HIGH: {
+		label: "High confidence",
+		shortLabel: "High",
+		description: "Scoped and understood; the estimate is firm.",
+		chipClass: "border-success/40 bg-success/10 text-success",
+		dotClass: "bg-success",
+	},
+};
+
+export const DELIVERY_TRACK_ORDER: readonly DeliveryTrack[] = [
+	"SPIKE",
+	"DISCOVERY",
+	"SPECIFY",
+	"UNCLASSIFIED",
+	"DEFER",
+];
+
+/**
+ * Tailwind classes per tone, using design tokens only. `dot` is for the
+ * lane indicator; `chip` for the inline badge.
+ */
+export const DELIVERY_TRACK_TONE_CLASSES: Record<
+	DeliveryTrackTone,
+	{ dot: string; chip: string }
+> = {
+	rose: {
+		dot: "bg-primary",
+		chip: "border-primary/30 bg-primary/10 text-primary",
+	},
+	amber: {
+		dot: "bg-highlight",
+		chip: "border-highlight/30 bg-highlight/10 text-highlight",
+	},
+	emerald: {
+		dot: "bg-secondary",
+		chip: "border-secondary/30 bg-secondary/10 text-secondary",
+	},
+	neutral: {
+		dot: "bg-muted-foreground/40",
+		chip: "border-border bg-muted text-muted-foreground",
+	},
+	muted: {
+		dot: "bg-muted-foreground/25",
+		chip: "border-border/60 bg-muted/60 text-muted-foreground/70 line-through decoration-muted-foreground/40",
+	},
+};
 
 export type FeatureDraftingStage =
 	| "PLACEHOLDER"
@@ -685,6 +867,15 @@ export function transformStory(
 		reporterName: story.reporterName ?? null,
 		reporterSource: story.reporterSource ?? null,
 		reporterSourceUrl: story.reporterSourceUrl ?? null,
+		deliveryTrack: (story.deliveryTrack ?? "UNCLASSIFIED") as DeliveryTrack,
+		trackRationale: story.trackRationale ?? null,
+		trackSetBy: (story.trackSetBy ?? null) as TrackSetBy | null,
+		trackUpdatedAt: story.trackUpdatedAt ?? null,
+		sourceRef: story.sourceRef ?? null,
+		dependsOnRefs: story.dependsOnRefs ?? [],
+		dependsOnPhases: story.dependsOnPhases ?? [],
+		estimateConfidence: (story.estimateConfidence ??
+			null) as EstimateConfidence | null,
 		latestCodingRun: story.codingRuns?.[0] ?? null,
 		latestKanbanQueue: story.kanbanQueue?.[0] ?? null,
 	};

@@ -261,10 +261,14 @@ export {
 	DecisionAuthorType,
 	DecisionSource,
 	DecisionStatus,
+	// Delivery tracks & engagement profiles
+	DeliveryTrack,
 	DeploymentExecutionStatus,
 	DeploymentTriggerType,
+	DiscoveryRunStatus,
 	DocumentStatus,
 	EmbeddingModel,
+	EngagementProfile,
 	// RAG-related enums
 	ExtractionStatus,
 	FeatureDraftingStage,
@@ -284,6 +288,8 @@ export {
 	// Notification center enums
 	NotificationCategory,
 	NotificationType,
+	PendingBacklogProposalSource,
+	PendingBacklogProposalStatus,
 	// PM state-change entity-type enum (card #1360) — re-exported so callers
 	// in @repo/api can type the PendingPmStateChange / PmTicketMissingStreak
 	// `entityType` field without a deep-import into the generated client.
@@ -322,6 +328,7 @@ export {
 	ReporterSource,
 	// Test-case run-result enums (manual mark + PM-sync ingest source)
 	ResultSource,
+	StageTransitionRequestStatus,
 	// User Stories & Tasks enums
 	StoryKind,
 	StoryPriority,
@@ -336,6 +343,7 @@ export {
 	TestFailureKind,
 	TestPlanState,
 	TestResult,
+	TrackSetBy,
 	WorkflowBuilderStatus,
 	WorkflowExecutionStatus,
 	WorkflowIntegrationProvider,

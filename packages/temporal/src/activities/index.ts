@@ -153,8 +153,10 @@ export {
 	type AnalyzeContextInput,
 	type ApplyBacklogChangesInput,
 	type ApplyBacklogChangesResult,
+	CHANGE_SOURCE_CONTEXTS,
 	type ChangeProposal,
 	ChangeProposalSchema,
+	isUniqueViolation,
 	mapPriority,
 	mapSize,
 	type RunBacklogDecisionPrecheckInput,
@@ -305,6 +307,17 @@ export {
 	type UpdateCodingRunStatusInput,
 	updateCodingRunStatusActivity,
 } from "./coding-run";
+// Spike run activities (plan Slice 3)
+export {
+	type ApplySpikeFindingsInput,
+	applySpikeFindings,
+	type BuildSpikePromptInput,
+	buildSpikePrompt,
+	type SyncSpikeArtifactsInput,
+	type SyncSpikeArtifactsOutput,
+	spikeBranchName,
+	syncSpikeArtifacts,
+} from "./coding-run/spike";
 // Connector sync activities (data connections)
 export {
 	type ConnectorConfig,
@@ -357,6 +370,8 @@ export {
 	type CollectGitHubReleasesActivityOutput,
 	type CollectMeetingTranscriptsInput,
 	type CollectMeetingTranscriptsOutput,
+	type CollectMetricDriftInput,
+	type CollectMetricDriftOutput,
 	type CollectStoryActivityInput,
 	type CollectStoryActivityOutput,
 	type CollectTeamsProposalsInput,
@@ -366,6 +381,7 @@ export {
 	collectGitHubPullRequestsActivity,
 	collectGitHubReleasesActivity,
 	collectMeetingTranscripts,
+	collectMetricDrift,
 	collectStoryActivity,
 	collectTeamsProposals,
 	type DetectPriorityActionsInput,
@@ -380,11 +396,14 @@ export {
 	loadReleaseNoteExclusionsActivity,
 	type PersistDailyBriefInput,
 	persistDailyBriefActivity,
+	type StampMergedCodingRunsInput,
+	type StampMergedCodingRunsOutput,
 	type SummarizeDailyBriefInput,
 	type SummarizeDailyBriefOutput,
 	type SummarizeReleaseNotesInput,
 	type SummarizeReleaseNotesOutput,
 	shouldIncludeMeeting,
+	stampMergedCodingRuns,
 	summarizeDailyBriefActivity,
 	summarizeReleaseNotesActivity,
 } from "./daily-brief";
@@ -430,6 +449,15 @@ export {
 	type RefineSubTasksOutput,
 	refineSubTasks,
 } from "./deep-researcher";
+// Delivery track classification (Slice 2 of the inverted-loop plan)
+export {
+	applyDeterministicTrackRules,
+	buildClassificationPrompt,
+	type ClassifyDeliveryTracksInput,
+	type ClassifyDeliveryTracksOutput,
+	classifyDeliveryTracks,
+	type TrackClassificationResult,
+} from "./delivery-track/classify";
 // Deployment execution activities (Temporal-native agent execution)
 export {
 	buildExecutionContext,
@@ -445,6 +473,31 @@ export {
 	signalSupervisorCompletion,
 } from "./deployment-execution";
 export * from "./direct-chat";
+// Discovery run activities (Slice 4 of the inverted-loop plan)
+export {
+	buildIntegrationContractPrompt,
+	DISCOVERY_UNTRUSTED_END,
+	DISCOVERY_UNTRUSTED_START,
+	type DiscoveryEvidence,
+	type DiscoverySources,
+	type DraftIntegrationContractInput,
+	type DraftIntegrationContractOutput,
+	draftIntegrationContract,
+	type GatherDiscoveryEvidenceInput,
+	gatherDiscoveryEvidence,
+	type IntegrationContract,
+	IntegrationContractSchema,
+	type PersistIntegrationContractInput,
+	type PersistIntegrationContractOutput,
+	type PostDiscoveryQuestionsInput,
+	type PostDiscoveryQuestionsOutput,
+	persistIntegrationContract,
+	postDiscoveryQuestions,
+	renderIntegrationContractMarkdown,
+	type SetDiscoveryRunStatusInput,
+	setDiscoveryRunStatus,
+	summarizeOpenApi,
+} from "./discovery";
 export * from "./document-eval";
 export * from "./document-processing";
 // Living Documents auto-refresh activities (hourly sweep + per-document refresh)
@@ -1105,6 +1158,21 @@ export {
 	findDueReportInstancesActivity,
 	reconcileScheduledReportInstancesActivity,
 } from "./scheduled-report";
+// Scope intake activities (customer scope document → SCOPE_DOCUMENT proposal)
+export {
+	type AwaitContextExtractedInput,
+	type AwaitContextExtractedOutput,
+	awaitContextExtracted,
+	type ExtractScopeItemsInput,
+	type ExtractScopeItemsOutput,
+	extractScopeItems,
+	type PersistScopeProposalInput,
+	type PersistScopeProposalOutput,
+	persistScopeProposal,
+	prePassScopeDocument,
+	type ScopePrePass,
+	type ScopeRow,
+} from "./scope-intake";
 // Search Project Slack Messages (Slack parity with Teams)
 export {
 	checkProjectHasSlackIntegration,
@@ -1218,7 +1286,10 @@ export {
 	type FetchedThreadReply,
 	type FetchNewChannelThreadsInput,
 	type FetchNewChannelThreadsOutput,
+	type FinalizeClaimedProposalInput,
+	type FinalizeClaimedProposalOutput,
 	fetchNewChannelThreadsActivity,
+	finalizeClaimedProposalActivity,
 	finalizePendingProposalActivity,
 	formatTeamsThreadForBacklog,
 	type GetLinkedChannelsForMonitorInput,

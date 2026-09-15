@@ -16,17 +16,16 @@ import {
 	CheckCircle2Icon,
 	CodeIcon,
 	FileTextIcon,
+	InfoIcon,
 	LayoutIcon,
-	LockIcon,
 	ServerIcon,
 	SwatchBookIcon,
 	UsersIcon,
 } from "lucide-react";
-import { useEffect } from "react";
 import {
 	DOCUMENT_TIERS,
 	getPrerequisiteHint,
-	isDocumentAvailable,
+	hasRecommendedPrerequisites,
 } from "./documents";
 
 type ProjectFormData = {
@@ -171,7 +170,9 @@ export function DocumentsStep({
 		}
 	}
 
-	// Satisfied types = selected + imported + existing complete (for availability)
+	// Satisfied types = selected + imported + existing complete. Used only to
+	// decide whether to show the advisory prerequisite hint on a card —
+	// document tiers never block selection (see wizard/documents.ts).
 	const satisfiedTypes = new Set<string>([
 		...formData.documents,
 		...importedDocTypes.keys(),
@@ -183,57 +184,23 @@ export function DocumentsStep({
 		? DOCUMENT_TYPES.filter((d) => !excludeDocTypes.includes(d.id))
 		: DOCUMENT_TYPES;
 
-	// Types that depend on a given type (for cascading deselect)
-	const getDependents = (type: string): string[] => {
-		const dependents: string[] = [];
-		for (const [t, config] of Object.entries(DOCUMENT_TIERS)) {
-			if (config.prerequisites.includes(type)) {
-				dependents.push(t);
-			}
-		}
-		return dependents;
-	};
-
 	const toggleDocument = (docId: string) => {
 		// Don't toggle imported documents
 		if (importedDocTypes.has(docId)) {
 			return;
 		}
 
-		// Check availability before allowing select
 		const isAdding = !formData.documents.includes(docId);
-		if (isAdding && !isDocumentAvailable(docId, satisfiedTypes)) {
-			return;
-		}
-
-		let newDocs: string[];
-		if (isAdding) {
-			newDocs = [...formData.documents, docId];
-		} else {
-			// Removing: also remove any dependents recursively
-			const toRemove = new Set<string>([docId]);
-			const collectDependents = (t: string) => {
-				for (const dep of getDependents(t)) {
-					if (
-						formData.documents.includes(dep) &&
-						!toRemove.has(dep)
-					) {
-						toRemove.add(dep);
-						collectDependents(dep);
-					}
-				}
-			};
-			collectDependents(docId);
-			newDocs = formData.documents.filter((d) => !toRemove.has(d));
-		}
+		const newDocs = isAdding
+			? [...formData.documents, docId]
+			: formData.documents.filter((d) => d !== docId);
 		updateFormData({ documents: newDocs });
 	};
 
 	const selectAll = () => {
-		// Only select non-imported visible types that are currently available
+		// Select every non-imported visible type
 		const generatableTypes = visibleDocTypes
 			.filter((doc) => !importedDocTypes.has(doc.id))
-			.filter((doc) => isDocumentAvailable(doc.id, satisfiedTypes))
 			.map((doc) => doc.id);
 		updateFormData({ documents: generatableTypes });
 	};
@@ -245,37 +212,12 @@ export function DocumentsStep({
 	const importedCount = importedDocTypes.size;
 	const generatableCount = visibleDocTypes.length - importedCount;
 
-	// Form state validation: remove any selected docs that are no longer available
-	// (e.g. from localStorage restore or when existingDocs load changes satisfiedTypes)
-	useEffect(() => {
-		const baseSatisfied = new Set([
-			...importedDocTypes.keys(),
-			...existingCompleteTypes,
-		]);
-		// Build valid set; process in tier order so prereqs are satisfied when checking
-		const byTier = [...formData.documents].sort(
-			(a, b) =>
-				(DOCUMENT_TIERS[a]?.tier ?? 1) - (DOCUMENT_TIERS[b]?.tier ?? 1),
-		);
-		const validSelected: string[] = [];
-		for (const docId of byTier) {
-			const satisfied = new Set([...baseSatisfied, ...validSelected]);
-			if (isDocumentAvailable(docId, satisfied)) {
-				validSelected.push(docId);
-			}
-		}
-		if (validSelected.length !== formData.documents.length) {
-			updateFormData({ documents: validSelected });
-		}
-		// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, [existingDocsData?.documents?.length, formData.documents.join(",")]);
-
-	// Phase configuration for visual grouping
+	// Phase configuration for visual grouping (tiers are ordering metadata only)
 	const phases = [
 		{
 			phase: 1,
 			label: "Phase 1: Business Documents",
-			description: "Start here — foundation for all other documents",
+			description: "Usually first — foundation for the other documents",
 			docs: visibleDocTypes.filter(
 				(d) => (DOCUMENT_TIERS[d.id]?.tier ?? 1) === 1,
 			),
@@ -283,7 +225,7 @@ export function DocumentsStep({
 		{
 			phase: 2,
 			label: "Phase 2: Technical Documents",
-			description: "Requires at least one Phase 1 document",
+			description: "Work best after a Phase 1 document",
 			docs: visibleDocTypes.filter(
 				(d) => DOCUMENT_TIERS[d.id]?.tier === 2,
 			),
@@ -291,7 +233,7 @@ export function DocumentsStep({
 		{
 			phase: 3,
 			label: "Phase 3: Features",
-			description: "Requires at least one Phase 2 document",
+			description: "Can start from the brief alone",
 			docs: visibleDocTypes.filter(
 				(d) => DOCUMENT_TIERS[d.id]?.tier === 3,
 			),
@@ -370,15 +312,19 @@ export function DocumentsStep({
 							const Icon = doc.icon;
 							const imported = importedDocTypes.get(doc.id);
 							const isImported = !!imported;
-							const isAvailable =
-								isImported ||
-								isDocumentAvailable(doc.id, satisfiedTypes);
 							const isSelected =
 								isImported ||
 								formData.documents.includes(doc.id);
-							const prerequisiteHint = getPrerequisiteHint(
-								doc.id,
-							);
+							// Advisory: recommended prerequisites missing. The
+							// card stays selectable either way.
+							const prerequisiteHint =
+								!isImported &&
+								!hasRecommendedPrerequisites(
+									doc.id,
+									satisfiedTypes,
+								)
+									? getPrerequisiteHint(doc.id)
+									: "";
 
 							return (
 								<Card
@@ -386,16 +332,12 @@ export function DocumentsStep({
 									className={`transition-colors ${
 										isImported
 											? "border-green-500/50 bg-green-50/30 dark:bg-green-900/10"
-											: !isAvailable
-												? "opacity-60 cursor-not-allowed pointer-events-none"
-												: isSelected
-													? "border-primary bg-primary/5 cursor-pointer"
-													: "hover:border-primary/50 cursor-pointer"
+											: isSelected
+												? "border-primary bg-primary/5 cursor-pointer"
+												: "hover:border-primary/50 cursor-pointer"
 									}`}
 									onClick={() =>
-										isAvailable &&
-										!isImported &&
-										toggleDocument(doc.id)
+										!isImported && toggleDocument(doc.id)
 									}
 								>
 									<CardHeader className="pb-3">
@@ -415,15 +357,6 @@ export function DocumentsStep({
 													<CheckCircle2Icon className="h-3 w-3 mr-1" />
 													Imported
 												</Badge>
-											) : !isAvailable ? (
-												<Badge
-													variant="secondary"
-													className="text-muted-foreground"
-													title={prerequisiteHint}
-												>
-													<LockIcon className="h-3 w-3 mr-1" />
-													{prerequisiteHint}
-												</Badge>
 											) : (
 												<Checkbox
 													checked={isSelected}
@@ -440,12 +373,21 @@ export function DocumentsStep({
 											{doc.title}
 										</CardTitle>
 									</CardHeader>
-									<CardContent>
+									<CardContent className="space-y-2">
 										<CardDescription className="text-sm">
 											{isImported
 												? `Imported: ${imported.title}`
 												: doc.description}
 										</CardDescription>
+										{prerequisiteHint && (
+											<p className="flex items-center gap-1.5 text-xs text-muted-foreground">
+												<InfoIcon
+													className="h-3.5 w-3.5 shrink-0"
+													aria-hidden
+												/>
+												{prerequisiteHint}
+											</p>
+										)}
 									</CardContent>
 								</Card>
 							);

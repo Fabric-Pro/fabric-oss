@@ -10,16 +10,114 @@
 
 import { ORPCError } from "@orpc/client";
 import { db } from "@repo/database";
-import { logWorkflowEvent } from "@repo/logs";
+import { logger, logWorkflowEvent } from "@repo/logs";
 import { getTemporalClient } from "@repo/temporal";
 import { READ_ONLY_MODE_ERROR_CODE, READ_ONLY_MODE_MESSAGE } from "@repo/utils";
 import { z } from "zod";
+import { isUniqueConstraintViolation } from "../../../lib/prisma-unique-violation";
 import { withCorrelationMemo } from "../../../lib/temporal-correlation";
 import {
 	Permissions,
 	requireProjectPermission,
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
+import { assertStoryReadyForRun } from "../../projects/lib/run-readiness";
+import { defaultSpikeQuestion } from "../lib/spike-question";
+import { codingRunWorkflowId } from "../lib/workflow-id";
+
+/** Partial unique index from plan §F2 (one active coding run per story). */
+const ACTIVE_RUN_INDEX = "coding_run_one_active_per_story";
+const ACTIVE_RUN_CONFLICT_MESSAGE =
+	"A coding run is already active for this feature.";
+const SPIKE_AWAITING_DECISION_MESSAGE =
+	"A spike for this feature is awaiting a decision. Accept or discard it first.";
+
+/** Statuses covered by the §F2 partial index (includes DEMO_READY). */
+const ACTIVE_RUN_STATUSES = [
+	"QUEUED",
+	"STARTING",
+	"RUNNING",
+	"AWAITING_REVIEW",
+	"PR_OPENED",
+	"DEMO_READY",
+] as const;
+
+/**
+ * Plan §F4: a provider may only run spikes when it has proven it can push
+ * `fabric-spike/<runId>` without a PR. Read from the adapter definition so
+ * no adapter is constructed in the API process (the background adapter's
+ * constructor requires worker-only env). Dynamic import keeps Temporal
+ * worker code out of the API bundle, as in `pollLiveStatus`.
+ */
+async function providerCanRunSpikes(
+	provider: "BACKGROUND_AGENTS" | "KANBAN_LOCAL",
+): Promise<boolean> {
+	const { getCodingExecutionAdapterDefinition, getProviderCapabilities } =
+		await import("@repo/temporal/coding-execution");
+	return getProviderCapabilities(
+		getCodingExecutionAdapterDefinition(provider),
+	).pushBranchWithoutPr;
+}
+
+type TemporalClient = Awaited<ReturnType<typeof getTemporalClient>>;
+
+/**
+ * Temporal rejects a second start for a workflow id whose execution is
+ * still open. Because the id is derived from the run row, hitting this
+ * means an earlier attempt for this same row already started the
+ * workflow, so the start is confirmed rather than failed. Matched by
+ * name: `@temporalio/client` is not a direct dependency of this package.
+ */
+function isWorkflowAlreadyStartedError(error: unknown): boolean {
+	return (
+		error instanceof Error &&
+		error.name === "WorkflowExecutionAlreadyStartedError"
+	);
+}
+
+/** Temporal's typed "no such execution" error, matched by name as above. */
+function isWorkflowNotFoundError(error: unknown): boolean {
+	return error instanceof Error && error.name === "WorkflowNotFoundError";
+}
+
+type WorkflowStartOutcome =
+	| { status: "exists"; runId: string }
+	| { status: "not-found" }
+	| { status: "unknown"; error: unknown };
+
+/**
+ * A start request can fail on the client (timeout, dropped connection)
+ * after the server has already accepted it, so a generic start error does
+ * not say whether an execution exists. Describing the deterministic
+ * workflow id settles it: a description means the workflow exists, a typed
+ * WorkflowNotFoundError means the start never happened, and any other
+ * failure leaves the question open.
+ */
+async function describeWorkflowStart(
+	client: TemporalClient,
+	workflowId: string,
+): Promise<WorkflowStartOutcome> {
+	try {
+		const description = await client.workflow
+			.getHandle(workflowId)
+			.describe();
+		return { status: "exists", runId: description.runId };
+	} catch (error) {
+		if (isWorkflowNotFoundError(error)) {
+			return { status: "not-found" };
+		}
+		return { status: "unknown", error };
+	}
+}
+
+function toStartError(error: unknown): ORPCError<string, unknown> {
+	if (error instanceof ORPCError) {
+		return error;
+	}
+	return new ORPCError("INTERNAL_SERVER_ERROR", {
+		message: `Failed to start coding run: ${error instanceof Error ? error.message : "Unknown error"}`,
+	});
+}
 
 export const startCodingRunProcedure = tenantProtectedProcedure
 	.use(requireProjectPermission(Permissions.AGENT_EXECUTE))
@@ -37,6 +135,15 @@ export const startCodingRunProcedure = tenantProtectedProcedure
 			organizationId: z.string().nullable().optional(),
 			executionChannel: z.enum(["BACKGROUND_AGENTS"]).optional(),
 			provider: z.enum(["BACKGROUND_AGENTS"]).optional(),
+			/**
+			 * Run kind (plan §1.3). SPIKE (Slice 3) requires the story to be on
+			 * the SPIKE track and the provider to hold the §F4 capability; it
+			 * does not require PUBLISHED/readiness — the spike is how the item
+			 * becomes ready.
+			 */
+			kind: z.enum(["IMPLEMENT", "SPIKE"]).default("IMPLEMENT"),
+			/** SPIKE only. Defaults to the story title + description summary. */
+			spikeQuestion: z.string().min(10).max(2000).optional(),
 		}),
 	)
 	.output(
@@ -49,6 +156,7 @@ export const startCodingRunProcedure = tenantProtectedProcedure
 	.handler(async ({ input, context }) => {
 		const { user } = context;
 		const { projectId, storyId, taskId } = input;
+		const kind = input.kind ?? "IMPLEMENT";
 
 		// Fetch story with project context
 		const story = await db.userStory.findFirst({
@@ -111,7 +219,9 @@ export const startCodingRunProcedure = tenantProtectedProcedure
 		}
 
 		// Test-first projects: no implementation before there is something to
-		// implement against.
+		// implement against. Spikes are exempt: a spike is exploration that
+		// produces the evidence the feature is written against, not the
+		// implementation itself.
 		//
 		// This is the only place Fabric can actually hold the line, because it
 		// is the only implementation it starts — somebody writing code in their
@@ -128,6 +238,7 @@ export const startCodingRunProcedure = tenantProtectedProcedure
 		// Off by default. A project that never turns test-first on never sees
 		// this.
 		if (
+			kind !== "SPIKE" &&
 			story.project.applyTddApproach &&
 			story.testCaseLinks.length === 0
 		) {
@@ -138,12 +249,43 @@ export const startCodingRunProcedure = tenantProtectedProcedure
 			});
 		}
 
+		const executionChannel = "BACKGROUND_AGENTS";
+		const provider = "BACKGROUND_AGENTS";
+
+		let spikeQuestion: string | undefined;
+		if (kind === "SPIKE") {
+			// Spike gates (plan Slice 3): track must be SPIKE and the provider
+			// must hold the §F4 capability. No PUBLISHED/readiness gate: the
+			// spike produces the evidence that makes the item ready.
+			if (story.deliveryTrack !== "SPIKE") {
+				throw new ORPCError("PRECONDITION_FAILED", {
+					message:
+						"Spikes can only run for features on the SPIKE delivery track.",
+					data: {
+						code: "TRACK_NOT_SPIKE",
+						deliveryTrack: story.deliveryTrack,
+					},
+				});
+			}
+			if (!(await providerCanRunSpikes(provider))) {
+				throw new ORPCError("PRECONDITION_FAILED", {
+					message: "This execution provider cannot run spikes",
+					data: { code: "PROVIDER_CANNOT_SPIKE", provider },
+				});
+			}
+			spikeQuestion =
+				input.spikeQuestion?.trim() || defaultSpikeQuestion(story);
+		} else {
+			// Run-start gate (plan §F1 / Slice 5): the feature must be
+			// PUBLISHED and pass readiness for its delivery track. Re-checked
+			// here because evidence can change after publish. Throws
+			// PRECONDITION_FAILED with `data.missing` for the UI.
+			await assertStoryReadyForRun({ storyId, projectId });
+		}
+
 		const selectedTask = taskId
 			? (story.tasks.find((task) => task.id === taskId) ?? null)
 			: null;
-
-		const executionChannel = "BACKGROUND_AGENTS";
-		const provider = "BACKGROUND_AGENTS";
 
 		// Validate repository context exists
 		const repoUrl =
@@ -178,58 +320,103 @@ export const startCodingRunProcedure = tenantProtectedProcedure
 				...(workflowOrgId
 					? { organizationId: workflowOrgId }
 					: { organizationId: null }),
-				status: {
-					in: [
-						"QUEUED",
-						"STARTING",
-						"RUNNING",
-						"AWAITING_REVIEW",
-						"PR_OPENED",
-					],
-				},
+				status: { in: [...ACTIVE_RUN_STATUSES] },
 			},
 		});
 
 		if (activeRun) {
+			const awaitingDecision = activeRun.status === "DEMO_READY";
 			throw new ORPCError("CONFLICT", {
-				message:
-					"A coding run is already active for this feature. Cancel it first.",
+				message: awaitingDecision
+					? SPIKE_AWAITING_DECISION_MESSAGE
+					: `${ACTIVE_RUN_CONFLICT_MESSAGE} Cancel it first.`,
+				data: {
+					code: awaitingDecision
+						? "SPIKE_AWAITING_DECISION"
+						: "ACTIVE_RUN_EXISTS",
+					storyId,
+					activeRunId: activeRun.id,
+				},
 			});
 		}
 
-		// Create CodingRun record
-		const codingRun = await db.codingRun.create({
-			data: {
-				projectId,
-				storyId,
-				storyTaskId: taskId,
-				userId: user.id,
-				organizationId: workflowOrgId,
-				executionChannel,
-				provider,
-				repositoryUrl: repoUrl,
-				repositoryOwner: repoOwner,
-				repositoryName: repoName,
-				targetBranch: targetBranch,
-				status: "QUEUED",
-			},
-		});
+		// Create CodingRun record. The pre-check above is racy on its own;
+		// the partial unique index (plan §F2) is the real guard — a P2002
+		// here means a concurrent start won.
+		let codingRun: Awaited<ReturnType<typeof db.codingRun.create>>;
+		try {
+			codingRun = await db.codingRun.create({
+				data: {
+					projectId,
+					storyId,
+					storyTaskId: taskId,
+					userId: user.id,
+					organizationId: workflowOrgId,
+					executionChannel,
+					provider,
+					repositoryUrl: repoUrl,
+					repositoryOwner: repoOwner,
+					repositoryName: repoName,
+					targetBranch: targetBranch,
+					status: "QUEUED",
+					kind,
+					spikeQuestion,
+				},
+			});
+		} catch (error) {
+			if (isUniqueConstraintViolation(error, ACTIVE_RUN_INDEX)) {
+				throw new ORPCError("CONFLICT", {
+					message: `${ACTIVE_RUN_CONFLICT_MESSAGE} If a spike is awaiting a decision, accept or discard it first.`,
+					data: { code: "ACTIVE_RUN_EXISTS", storyId },
+				});
+			}
+			throw error;
+		}
+
+		// Deterministic: derivable from the row even if persisting it below
+		// fails, and a retried start for the same row maps onto the same
+		// Temporal execution instead of a second one.
+		const workflowId = codingRunWorkflowId(codingRun.id);
+
+		/** Releases the QUEUED row. Only valid while no execution exists. */
+		const releaseQueuedRow = async () => {
+			await db.codingRun
+				.update({
+					where: { id: codingRun.id },
+					data: { status: "FAILED" },
+				})
+				.catch(() => {});
+		};
+
+		// Phase A — start the workflow. This is the only place the QUEUED row
+		// may be released. Once Temporal has accepted the start there is a
+		// live execution behind this row; marking it FAILED after that point
+		// would drop it out of the one-active-per-story index and let a retry
+		// launch a second execution for the same feature.
+		//
+		// The client is obtained before the start attempt so a failure to
+		// build it is known to precede any start request.
+		let temporal: TemporalClient;
+		try {
+			temporal = await getTemporalClient();
+		} catch (error) {
+			await releaseQueuedRow();
+			throw toStartError(error);
+		}
+
+		// Hard ceiling — env-overridable. Bounds the worst-case
+		// runaway-coding-run leak; the every-5-minute watchdog cron
+		// catches rows once Temporal terminates the workflow.
+		const maxRunMinutesRaw = Number.parseInt(
+			process.env.CODING_RUN_MAX_MINUTES ?? "120",
+			10,
+		);
+		const maxRunMinutes =
+			Number.isFinite(maxRunMinutesRaw) && maxRunMinutesRaw > 0
+				? maxRunMinutesRaw
+				: 120;
 
 		try {
-			const temporal = await getTemporalClient();
-			const workflowId = `coding-run-${codingRun.id}`;
-			// Hard ceiling — env-overridable. Bounds the worst-case
-			// runaway-coding-run leak; the every-5-minute watchdog cron
-			// catches rows once Temporal terminates the workflow.
-			const maxRunMinutesRaw = Number.parseInt(
-				process.env.CODING_RUN_MAX_MINUTES ?? "120",
-				10,
-			);
-			const maxRunMinutes =
-				Number.isFinite(maxRunMinutesRaw) && maxRunMinutesRaw > 0
-					? maxRunMinutesRaw
-					: 120;
-
 			await temporal.workflow.start(
 				"codingRunWorkflow",
 				withCorrelationMemo({
@@ -251,11 +438,69 @@ export const startCodingRunProcedure = tenantProtectedProcedure
 							repositoryName: repoName,
 							targetBranch: targetBranch,
 							storyTitle: `${story.identifier} - ${story.title}`,
+							kind,
+							spikeQuestion,
 						},
 					],
 				}),
 			);
+		} catch (error) {
+			if (isWorkflowAlreadyStartedError(error)) {
+				logger.info(
+					{ codingRunId: codingRun.id, workflowId },
+					"[CodingRun] Workflow already started; treating start as confirmed",
+				);
+			} else {
+				// The rejection alone does not say whether Temporal accepted
+				// the start before the client gave up; ask the server.
+				const outcome = await describeWorkflowStart(
+					temporal,
+					workflowId,
+				);
 
+				if (outcome.status === "not-found") {
+					// Temporal has no execution for this id, so nothing is
+					// running for this row: release it so the feature can be
+					// retried.
+					await releaseQueuedRow();
+					throw toStartError(error);
+				}
+
+				if (outcome.status === "unknown") {
+					// Neither the start nor the describe reached a verdict. An
+					// execution may already be live behind this row, and
+					// marking it FAILED would drop it out of the
+					// one-active-per-story index and let a retry launch a
+					// second execution for the same feature. Leave the row
+					// active: a stuck QUEUED row can be cancelled (cancel
+					// signals the deterministic id and only then releases),
+					// whereas a duplicate execution cannot be undone.
+					logger.warn(
+						{
+							err: error,
+							describeErr: outcome.error,
+							codingRunId: codingRun.id,
+							workflowId,
+						},
+						"[CodingRun] Workflow start outcome unknown; leaving row active",
+					);
+					throw new ORPCError("INTERNAL_SERVER_ERROR", {
+						message: `Could not confirm whether the coding run workflow started (${error instanceof Error ? error.message : "Unknown error"}). The run remains active; retry once Temporal is reachable or cancel it.`,
+					});
+				}
+
+				logger.info(
+					{ err: error, codingRunId: codingRun.id, workflowId },
+					"[CodingRun] Start rejected but the workflow exists; treating start as confirmed",
+				);
+			}
+		}
+
+		// Phase B — bookkeeping for a workflow that is already running. A
+		// failure here must not change the row status (see Phase A); the
+		// workflow id stays derivable from the row id, so log and return the
+		// started ids.
+		try {
 			// Persist workflowId + startedAt so the watchdog can identify
 			// stale rows (it scans on `status` non-terminal AND
 			// `startedAt < cutoff`).
@@ -264,12 +509,6 @@ export const startCodingRunProcedure = tenantProtectedProcedure
 				data: { workflowId, startedAt: new Date() },
 			});
 
-			// AUDIT-LOG-V1 SCOPE: This event stays on the stdout/webhook path
-			// (@repo/logs/audit-logger.ts) for v1. Per D5 of
-			// docs/audit-log/README.md, AI/MCP/
-			// workflow events are deferred to Phase 2. Do NOT migrate to recordAudit
-			// without coordination — dual-writing is acceptable but a unilateral migration
-			// loses the stdout/webhook delivery the operator currently relies on.
 			await logWorkflowEvent(
 				"AGENT_TRIGGERED",
 				workflowId,
@@ -283,34 +522,25 @@ export const startCodingRunProcedure = tenantProtectedProcedure
 					codingRunId: codingRun.id,
 					provider,
 					executionChannel,
+					kind,
 					source: "coding_runs_start",
 				},
 			).catch((error) => {
-				console.warn(
-					"[AuditLog] Failed to log implementation session start:",
-					error,
+				logger.warn(
+					{ err: error, codingRunId: codingRun.id, workflowId },
+					"[AuditLog] Failed to log implementation session start",
 				);
 			});
-
-			return {
-				codingRunId: codingRun.id,
-				workflowId,
-				status: "started",
-			};
 		} catch (error) {
-			// Mark the QUEUED row as FAILED so it doesn't block retries
-			await db.codingRun
-				.update({
-					where: { id: codingRun.id },
-					data: { status: "FAILED" },
-				})
-				.catch(() => {});
-
-			if (error instanceof ORPCError) {
-				throw error;
-			}
-			throw new ORPCError("INTERNAL_SERVER_ERROR", {
-				message: `Failed to start coding run: ${error instanceof Error ? error.message : "Unknown error"}`,
-			});
+			logger.warn(
+				{ err: error, codingRunId: codingRun.id, workflowId },
+				"[CodingRun] Workflow started but post-start bookkeeping failed",
+			);
 		}
+
+		return {
+			codingRunId: codingRun.id,
+			workflowId,
+			status: "started",
+		};
 	});

@@ -1,5 +1,6 @@
 "use client";
 
+import { getEngagementProfileConfig } from "@repo/database/src/engagement-profiles";
 import { useRegisterFabricAgentContext } from "@saas/agents/components/FabricAgentLauncher";
 import { useSession } from "@saas/auth/hooks/use-session";
 import { ProjectRoleConfirmationPrompt } from "@saas/get-started/components/ProjectRoleConfirmationPrompt";
@@ -71,6 +72,7 @@ import {
 	type DocumentChangeEvent,
 	useProjectPresence,
 } from "../hooks";
+import { defaultProjectTabForProfile } from "../lib/default-project-tab";
 import { AgentActivityTab } from "./AgentActivityTab";
 // ProjectHeader is always visible, keep static import
 import { ProjectHeader } from "./ProjectHeader";
@@ -187,6 +189,16 @@ const MeetingDigestTab = dynamic(
 	() =>
 		import("@saas/meeting-digest/components").then(
 			(m) => m.MeetingDigestTab,
+		),
+	{ loading: () => <TabContentSkeleton />, ssr: false },
+);
+
+// Slice 8: customer outcomes (metrics, publish/revoke, preview). Only
+// rendered for profiles with `customerOutcomesSurface`.
+const ProjectOutcomesTab = dynamic(
+	() =>
+		import("./outcomes/ProjectOutcomesTab").then(
+			(m) => m.ProjectOutcomesTab,
 		),
 	{ loading: () => <TabContentSkeleton />, ssr: false },
 );
@@ -426,6 +438,12 @@ export function ProjectDetails({ projectId, organizationSlug }: Props) {
 		projectId,
 	});
 
+	// Where the initial tab came from. The built-in default is
+	// profile-dependent (plan Slice 6: EXPLORE lands on the backlog chat), but
+	// the profile is only known once the project loads, so the source is
+	// remembered and the default applied in an effect below. A stored tab or a
+	// deep link is the user's choice and is never overridden.
+	const initialTabSourceRef = useRef<"default" | "stored">("default");
 	// Raw selection (sessionStorage / deep links may name any known tab); see
 	// `activeTab` further down for the viewer-resolved value.
 	const [rawActiveTab, setActiveTab] = useState<TabId>(() => {
@@ -436,6 +454,7 @@ export function ProjectDetails({ projectId, organizationSlug }: Props) {
 			`${TAB_STORAGE_KEY}-${projectId}`,
 		);
 		if (stored && isTabId(stored)) {
+			initialTabSourceRef.current = "stored";
 			return stored;
 		}
 		return "overview";
@@ -446,6 +465,24 @@ export function ProjectDetails({ projectId, organizationSlug }: Props) {
 		setIsFocusMode(false);
 	}, [rawActiveTab, setIsFocusMode]);
 
+	// Wait for org context to load on org routes before querying
+	// organizationSlug indicates we're on an org route and need the org context
+	const isOrgRoute = !!organizationSlug;
+	const orgContextReady = !isOrgRoute || organizationId !== undefined;
+
+	// IMPORTANT: Pass null explicitly for personal context to prevent
+	// session fallback which could leak org data to personal pages
+	const {
+		data,
+		isLoading: isQueryLoading,
+		refetch,
+	} = useQuery({
+		...orpc.projects.get.queryOptions({
+			input: { id: projectId, organizationId },
+		}),
+		enabled: orgContextReady,
+	});
+
 	const tabGates = useProjectTabGates();
 
 	// Decoration, not a gate — deliberately separate from `tabGates`, which
@@ -455,14 +492,25 @@ export function ProjectDetails({ projectId, organizationSlug }: Props) {
 	// The tab set this viewer can see, in their saved order. While a tab's
 	// feature gate is off (or before the preference queries resolve) this is
 	// simply the full static list in its default order.
+	// Slice 8: the Outcomes tab exists only where the engagement profile
+	// generates a customer-facing surface (EXPLORE / DELEGATED). Authorization
+	// for the customer audience is the share token, not this flag.
+	const showOutcomesTab = getEngagementProfileConfig(
+		data?.project?.engagementProfile ?? "GOVERNED",
+	).customerOutcomesSurface;
 	const visibleTabs = useMemo(
 		() =>
 			resolveProjectTabs(tabs, {
 				config: tabCustomization.config,
 				prefs: tabCustomization.prefs,
 				gates: tabGates,
-			}),
-		[tabCustomization.config, tabCustomization.prefs, tabGates],
+			}).filter((tab) => tab.id !== "outcomes" || showOutcomesTab),
+		[
+			tabCustomization.config,
+			tabCustomization.prefs,
+			tabGates,
+			showOutcomesTab,
+		],
 	);
 
 	// The active tab as THIS viewer should see it: a stored or deep-linked tab
@@ -525,6 +573,7 @@ export function ProjectDetails({ projectId, organizationSlug }: Props) {
 	const tabDeepLink = useProjectTabDeepLink(isTabId);
 	useEffect(() => {
 		if (tabDeepLink) {
+			initialTabSourceRef.current = "stored";
 			setActiveTab(tabDeepLink.tab);
 		}
 	}, [tabDeepLink]);
@@ -646,24 +695,6 @@ export function ProjectDetails({ projectId, organizationSlug }: Props) {
 		return () => clearTimeout(id);
 	}, [activeTab, projectId]);
 
-	// Wait for org context to load on org routes before querying
-	// organizationSlug indicates we're on an org route and need the org context
-	const isOrgRoute = !!organizationSlug;
-	const orgContextReady = !isOrgRoute || organizationId !== undefined;
-
-	// IMPORTANT: Pass null explicitly for personal context to prevent
-	// session fallback which could leak org data to personal pages
-	const {
-		data,
-		isLoading: isQueryLoading,
-		refetch,
-	} = useQuery({
-		...orpc.projects.get.queryOptions({
-			input: { id: projectId, organizationId },
-		}),
-		enabled: orgContextReady,
-	});
-
 	// Include org context and tab-preference loading in the overall gate so
 	// neither the tab bar nor a content branch paints a set it is about to
 	// hide. The preference queries run in parallel with projects.get and are
@@ -671,6 +702,21 @@ export function ProjectDetails({ projectId, organizationSlug }: Props) {
 	const isLoading =
 		isQueryLoading || !orgContextReady || !tabCustomization.ready;
 	const project = data?.project;
+
+	// Profile-dependent landing tab (plan Slice 6): once the project is known
+	// and the user made no explicit choice, EXPLORE opens on the backlog chat.
+	useEffect(() => {
+		if (!project || initialTabSourceRef.current !== "default") {
+			return;
+		}
+		initialTabSourceRef.current = "stored";
+		setActiveTab(
+			defaultProjectTabForProfile(
+				project.engagementProfile,
+				tabs.map((t) => t.id),
+			),
+		);
+	}, [project]);
 
 	// Quick-access shortcuts (#1694). Gated on the project having actually
 	// resolved and not being soft-deleted, so the not-found and restore views
@@ -1545,6 +1591,21 @@ export function ProjectDetails({ projectId, organizationSlug }: Props) {
 							<SecurityAccessibilityPage
 								projectId={projectId}
 								organizationId={organizationId}
+							/>
+						)}
+						{activeTab === "outcomes" && showOutcomesTab && (
+							<ProjectOutcomesTab
+								projectId={projectId}
+								organizationId={organizationId}
+								canManageGovernance={
+									project.canManageGovernance ??
+									project.userRole === "owner"
+								}
+								canEdit={
+									project.userRole === "owner" ||
+									project.userRole === "project_admin" ||
+									project.userRole === "editor"
+								}
 							/>
 						)}
 						{activeTab === "settings" && (

@@ -44,6 +44,7 @@ import {
 	ImageIcon,
 	InfoIcon,
 	LinkIcon,
+	ListTreeIcon,
 	LoaderIcon,
 	LockIcon,
 	MessageSquareIcon,
@@ -56,6 +57,7 @@ import {
 	XCircleIcon,
 } from "lucide-react";
 import Link from "next/link";
+import { usePathname, useRouter } from "next/navigation";
 import { useTranslations } from "next-intl";
 import { useCallback, useMemo, useState } from "react";
 import { toast } from "sonner";
@@ -84,6 +86,8 @@ import { getPmToolBrandIcon } from "./stories/pm-sync/pm-tool-brand-icon";
 // spec §8.4. Everything else is Class B (TEXT/NOTE → .md) or Class C
 // (LINK/INTEGRATION/MEETING_TRANSCRIPT → .txt).
 const CLASS_A_TYPES = new Set(["FILE", "IMAGE", "DOCUMENT", "SPREADSHEET"]);
+/** Context types that can be read as a customer scope document (plan §Slice 1). */
+const SCOPE_INTAKE_TYPES = new Set(["FILE", "DOCUMENT", "TEXT"]);
 const CLASS_C_TYPES = new Set(["CODE_FILE", "CODE_FILE_SUMMARY"]);
 
 /**
@@ -745,7 +749,87 @@ export function ProjectContextsList({ projectId }: Props) {
 		: `/app/projects/${projectId}`;
 	const t = useTranslations("tooltips.contextSources");
 	const tDownload = useTranslations("projects.contexts.download");
+	const tScope = useTranslations("projects.contexts.scopeIntake");
 	const { trackEvent } = useAnalytics();
+	const router = useRouter();
+	const pathname = usePathname();
+
+	// Scope intake: one active extraction is tracked at a time; progress is
+	// polled from the deterministic workflow (keyed by contextId).
+	const [scopeIntakeContextId, setScopeIntakeContextId] = useState<
+		string | null
+	>(null);
+	// The progress query only exists once an extraction has been started
+	// from this list; until then nothing touches the backlog router.
+	const intakeProgressQuery = useQuery({
+		...(scopeIntakeContextId
+			? orpc.projects.backlog.intakeProgress.queryOptions({
+					input: {
+						projectId,
+						organizationId,
+						contextId: scopeIntakeContextId,
+					},
+				})
+			: {
+					queryKey: [
+						"projects.backlog.intakeProgress",
+						"idle",
+					] as const,
+					queryFn: async () => null,
+				}),
+		enabled: !!scopeIntakeContextId,
+		refetchInterval: (query) => {
+			const status = query.state.data?.status;
+			return status === "completed" ||
+				status === "failed" ||
+				status === "cancelled" ||
+				status === "not_started"
+				? false
+				: 2500;
+		},
+	});
+	const startScopeIntake = useMutation({
+		mutationFn: (contextId: string) =>
+			orpc.projects.backlog.startScopeIntake.call({
+				projectId,
+				organizationId,
+				contextId,
+			}),
+		onSuccess: (result) => {
+			setScopeIntakeContextId(result.contextId);
+			toast.success(
+				result.alreadyRunning
+					? tScope("alreadyRunning")
+					: tScope("started"),
+				{ description: tScope("startedDescription") },
+			);
+			trackEvent("project_scope_intake_started", {
+				projectId,
+				alreadyRunning: result.alreadyRunning,
+			});
+		},
+		onError: (error) => {
+			toast.error(tScope("failed"), {
+				description:
+					error instanceof Error ? error.message : "Unknown error",
+			});
+		},
+	});
+	const openProposalsInbox = useCallback(() => {
+		if (typeof window !== "undefined") {
+			localStorage.setItem(
+				`fabric-project-active-tab-${projectId}`,
+				"stories",
+			);
+		}
+		router.push(`${pathname}?tab=stories&inbox=proposals`);
+	}, [projectId, pathname, router]);
+	const canExtractScope = (ctx: {
+		type: string;
+		extractionStatus?: string | null;
+	}) =>
+		SCOPE_INTAKE_TYPES.has(ctx.type) &&
+		ctx.extractionStatus === "COMPLETED";
 
 	const handleDownloadRow = useCallback(
 		async (ctx: RowContext, format: "md" | "pdf" | "docx" = "md") => {
@@ -1284,6 +1368,58 @@ export function ProjectContextsList({ projectId }: Props) {
 			/>
 
 			<ContextSummaryPanel projectId={projectId} />
+			{/* Scope intake progress */}
+			{scopeIntakeContextId && intakeProgressQuery.data && (
+				<output className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-foreground/10 bg-muted px-4 py-3 text-sm">
+					<div className="flex items-center gap-2">
+						{intakeProgressQuery.data.status === "completed" ? (
+							<CheckCircleIcon className="size-4 text-success" />
+						) : intakeProgressQuery.data.status === "failed" ||
+							intakeProgressQuery.data.status === "cancelled" ? (
+							<XCircleIcon className="size-4 text-destructive" />
+						) : (
+							<LoaderIcon className="size-4 text-primary motion-safe:animate-spin" />
+						)}
+						<span className="editorial-label">
+							{tScope("action")}
+						</span>
+						<span className="text-foreground/80">
+							{intakeProgressQuery.data.status === "completed"
+								? tScope("progress.completed", {
+										count:
+											intakeProgressQuery.data
+												.changeCount ?? 0,
+									})
+								: intakeProgressQuery.data.status === "failed"
+									? (intakeProgressQuery.data.error ??
+										tScope("progress.failed"))
+									: tScope(
+											`progress.${intakeProgressQuery.data.status}`,
+										)}
+						</span>
+					</div>
+					<div className="flex items-center gap-2">
+						{intakeProgressQuery.data.status === "completed" && (
+							<Button
+								size="sm"
+								variant="ghost"
+								className="text-primary"
+								onClick={openProposalsInbox}
+							>
+								{tScope("openInbox")}
+							</Button>
+						)}
+						<Button
+							size="sm"
+							variant="ghost"
+							aria-label="Dismiss"
+							onClick={() => setScopeIntakeContextId(null)}
+						>
+							<XCircleIcon className="size-4" />
+						</Button>
+					</div>
+				</output>
+			)}
 
 			{/* Contexts list */}
 			{contexts.length === 0 ? (
@@ -2490,6 +2626,42 @@ export function ProjectContextsList({ projectId }: Props) {
 													<DropdownMenuContent align="end">
 														{renderDownloadMenuItem(
 															context as unknown as RowContext,
+														)}
+														{canExtractScope(
+															context as {
+																type: string;
+																extractionStatus?:
+																	| string
+																	| null;
+															},
+														) && (
+															<>
+																<DropdownMenuItem
+																	aria-label={tScope(
+																		"actionAria",
+																		{
+																			title,
+																		},
+																	)}
+																	onClick={(
+																		e,
+																	) => {
+																		e.stopPropagation();
+																		startScopeIntake.mutate(
+																			context.id,
+																		);
+																	}}
+																	disabled={
+																		startScopeIntake.isPending
+																	}
+																>
+																	<ListTreeIcon className="mr-2 size-4" />
+																	{tScope(
+																		"action",
+																	)}
+																</DropdownMenuItem>
+																<DropdownMenuSeparator />
+															</>
 														)}
 														<DestructiveTooltip
 															copy={

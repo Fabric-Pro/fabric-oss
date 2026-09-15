@@ -258,8 +258,7 @@ const COVERAGE_EXEMPTIONS: ReadonlyMap<string, string> = new Map([
 		// leak which providers the org has set up.
 		"self-scoped read — inline membership gate, empty payload for non-admins",
 	],
-	// =============================================================================
-	// Customer-facing system health.
+	// ======================================================================	// Customer-facing system health.
 	//
 	// The two READ procedures are intentionally open to every authenticated
 	// user — the entire purpose of the surface is that a customer can tell a
@@ -475,6 +474,17 @@ const COVERAGE_EXEMPTIONS: ReadonlyMap<string, string> = new Map([
 	[
 		"packages/api/modules/agents/procedures/conversations/document-assistant/rename-for-document.ts",
 		"author-only — inline row-ownership check; updates AgentConversation.title only",
+	],
+	[
+		"packages/api/modules/outcomes/procedures/get-by-token.ts",
+		// Customer outcomes page (plan Slice 8) — rateLimitedPublicProcedure
+		// with no user session: the customer audience is outside the tenant
+		// and never holds STORY_READ. Authorization IS the 32-byte
+		// `Project.outcomesShareToken` capability (set/cleared by the
+		// PROJECT_GOVERNANCE_MANAGE-gated projects.outcomes.publish/revoke),
+		// and the handler returns only the allowlisted DTO from
+		// buildCustomerOutcomes (no ids, descriptions or user names).
+		"public token-scoped read — capability URL, restricted DTO only",
 	],
 ]);
 

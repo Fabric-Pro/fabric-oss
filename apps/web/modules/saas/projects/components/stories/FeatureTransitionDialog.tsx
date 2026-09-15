@@ -17,12 +17,20 @@ import {
 	TooltipContent,
 	TooltipTrigger,
 } from "@ui/components/tooltip";
-import { Loader2Icon, SparklesIcon, TriangleAlertIcon } from "lucide-react";
+import {
+	AlertCircleIcon,
+	CheckCircle2Icon,
+	Loader2Icon,
+	ShieldCheckIcon,
+	SparklesIcon,
+	TriangleAlertIcon,
+} from "lucide-react";
 import { useTranslations } from "next-intl";
 import { useRef, useState } from "react";
 import type { FeatureDraftingStage } from "../../lib/stories/types";
 import { DRAFTING_STAGE_META } from "../../lib/stories/types";
 import { DraftingStageIndicator } from "./DraftingStageIndicator";
+import { useStoryReadiness } from "./useStoryReadiness";
 
 type Props = {
 	open: boolean;
@@ -45,6 +53,15 @@ type Props = {
 	 * learn to dismiss without reading, which costs more than it saves.
 	 */
 	tddNeedsTestCases?: boolean;
+	/**
+	 * When provided together with "storyId", the dialog fetches readiness
+	 * and shows the gaps for a PUBLISHED target (plan Slice 5). Optional so
+	 * existing callers keep working.
+	 */
+	projectId?: string;
+	storyId?: string;
+	organizationId?: string | null;
+	storyVersion?: number | null;
 };
 
 export function FeatureTransitionDialog({
@@ -58,6 +75,10 @@ export function FeatureTransitionDialog({
 	onEnhance,
 	isEnhancing = false,
 	tddNeedsTestCases = false,
+	projectId,
+	storyId,
+	organizationId,
+	storyVersion,
 }: Props) {
 	const targetMeta = DRAFTING_STAGE_META[targetStage];
 	const [selectedPromptId, setSelectedPromptId] = useState<
@@ -65,6 +86,17 @@ export function FeatureTransitionDialog({
 	>();
 	const dialogContentRef = useRef<HTMLDivElement>(null);
 	const tStories = useTranslations("tooltips.stories");
+	const tReadiness = useTranslations("projects.stories.readiness");
+
+	const showReadiness =
+		targetStage === "PUBLISHED" && !!projectId && !!storyId;
+	const { data: readiness, isPending: readinessPending } = useStoryReadiness({
+		projectId: projectId ?? "",
+		storyId: storyId ?? "",
+		organizationId,
+		version: storyVersion,
+		enabled: showReadiness && open,
+	});
 
 	return (
 		<Dialog open={open} onOpenChange={onOpenChange}>
@@ -123,6 +155,114 @@ export function FeatureTransitionDialog({
 							/>
 						</div>
 					</div>
+
+					{/* Readiness gaps for Ready for Dev (plan §1.1 / Slice 5) */}
+					{showReadiness && (
+						<section
+							aria-label={tReadiness("transition.gapsTitle")}
+							className="rounded-md border border-border/70 bg-muted/40 px-3 py-2.5 text-xs"
+						>
+							<div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+								<span className="inline-flex items-center gap-2 font-sans text-[11px] uppercase tracking-[0.2em] text-muted-foreground">
+									<span
+										aria-hidden="true"
+										className="inline-block h-3 w-px bg-primary"
+									/>
+									{tReadiness("transition.gapsTitle")}
+								</span>
+								{readiness?.reviewRequired && (
+									<span
+										className="inline-flex items-center gap-1 rounded-full border border-highlight/40 bg-highlight/10 px-2 py-0.5 text-[11px] text-highlight"
+										title={tReadiness("reviewRequiredHint")}
+									>
+										<ShieldCheckIcon
+											className="size-3"
+											aria-hidden="true"
+										/>
+										{tReadiness("reviewRequired")}
+									</span>
+								)}
+							</div>
+							{readinessPending ? (
+								<p className="mt-1.5 text-muted-foreground">
+									{tReadiness("loading")}
+								</p>
+							) : !readiness ? (
+								<p className="mt-1.5 inline-flex items-center gap-1.5 text-destructive">
+									<AlertCircleIcon
+										className="size-3.5"
+										aria-hidden="true"
+									/>
+									{tReadiness("gaps.EVIDENCE_UNAVAILABLE")}
+								</p>
+							) : (
+								<div className="mt-1.5 space-y-1.5">
+									{readiness.missing.length > 0 ? (
+										<div>
+											<p className="text-foreground">
+												{tReadiness(
+													"transition.willBlock",
+												)}
+											</p>
+											<ul className="mt-1 space-y-0.5">
+												{readiness.missing.map(
+													(gap) => (
+														<li
+															key={gap}
+															className="inline-flex items-center gap-1.5 pr-4 text-foreground"
+														>
+															<span
+																aria-hidden="true"
+																className="inline-block size-1.5 rounded-full bg-destructive"
+															/>
+															{tReadiness(
+																`gaps.${gap}`,
+															)}
+														</li>
+													),
+												)}
+											</ul>
+										</div>
+									) : (
+										<p className="inline-flex items-center gap-1.5 text-secondary">
+											<CheckCircle2Icon
+												className="size-3.5"
+												aria-hidden="true"
+											/>
+											{tReadiness("transition.allClear")}
+										</p>
+									)}
+									{readiness.advisory.length > 0 && (
+										<div>
+											<p className="text-muted-foreground">
+												{tReadiness(
+													"transition.advisoryOnly",
+												)}
+											</p>
+											<ul className="mt-1 space-y-0.5">
+												{readiness.advisory.map(
+													(gap) => (
+														<li
+															key={gap}
+															className="inline-flex items-center gap-1.5 pr-4 text-muted-foreground"
+														>
+															<span
+																aria-hidden="true"
+																className="inline-block size-1.5 rounded-full bg-highlight"
+															/>
+															{tReadiness(
+																`gaps.${gap}`,
+															)}
+														</li>
+													),
+												)}
+											</ul>
+										</div>
+									)}
+								</div>
+							)}
+						</section>
+					)}
 
 					{/* Prompt selector */}
 					<div className="space-y-1.5">

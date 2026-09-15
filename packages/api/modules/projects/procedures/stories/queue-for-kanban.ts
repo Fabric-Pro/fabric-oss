@@ -16,6 +16,7 @@ import {
 	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
+import { assertStoryReadyForRun } from "../../lib/run-readiness";
 
 export const queueForKanbanProcedure = tenantProtectedProcedure
 	.use(requireProjectPermission(Permissions.STORY_UPDATE))
@@ -74,6 +75,13 @@ export const queueForKanbanProcedure = tenantProtectedProcedure
 		if (!story) {
 			throw new ORPCError("NOT_FOUND", { message: "Feature not found" });
 		}
+
+		// Run-start gate (plan §F1 / Slice 5): PUBLISHED + readiness for the
+		// delivery track. Throws PRECONDITION_FAILED with `data.missing`.
+		await assertStoryReadyForRun({
+			storyId: input.storyId,
+			projectId: input.projectId,
+		});
 
 		// Cancel any existing PENDING queue item for this story to avoid duplicates
 		await db.kanbanQueue.updateMany({

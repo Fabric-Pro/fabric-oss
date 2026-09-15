@@ -319,7 +319,13 @@ jobs:
           // Its own tenant-db registration is proved separately in
           // publishing-suite-tenant-db.test.ts — this suite never calls
           // getTenantDb(), so a green run here says nothing about that registry.
-          const EXPECTED = 47;
+          // 47 -> 57: Fizzy #2457 (63f5bd5e3) added the ten "CLI connection
+          // nudge RLS Isolation" cases without recording the bump here, so the
+          // guard has failed every relay that ran this job since (57 observed
+          // on the public runs for PRs 408, 412, 413 and 416). Reconciled with
+          // the suite as it stands; no cases were added by the change that
+          // carries this note.
+          const EXPECTED = 57;
           const j = JSON.parse(fs.readFileSync("packages/database/rls-isolation-results.json","utf8"));
           const files = j.testResults?.length ?? 0;
           const total = j.numTotalTests ?? 0;

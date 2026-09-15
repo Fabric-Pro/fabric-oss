@@ -2,6 +2,7 @@ import { ORPCError } from "@orpc/client";
 import {
 	applyPmUnlinkTx,
 	db,
+	enforceStageTransition,
 	hasProjectAccess,
 	recordAuditTx,
 } from "@repo/database";
@@ -12,6 +13,7 @@ import {
 	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
+import { mapStageTransitionError } from "../lib/stage-transition-errors";
 
 async function applyHideInTransaction(
 	tx: Parameters<Parameters<typeof db.$transaction>[0]>[0],
@@ -21,13 +23,13 @@ async function applyHideInTransaction(
 	userId: string,
 	userName: string | null,
 	organizationId: string | undefined | null,
-) {
+): Promise<{ pendingStageRequestId?: string }> {
 	const now = new Date();
 
 	// Stories are the only work-item rows — legacy EPIC/FEATURE pending rows
 	// are no-ops (the folder tables were dropped).
 	if (entityType !== "STORY") {
-		return;
+		return {};
 	}
 
 	const story = await tx.userStory.findUnique({
@@ -42,10 +44,26 @@ async function applyHideInTransaction(
 	});
 
 	if (!story) {
-		return;
+		return {};
 	}
 	if (story.draftingStage === "CLOSED") {
-		return;
+		return {};
+	}
+
+	// Drafting-stage choke point (plan §F1): governed projects record a
+	// StageTransitionRequest instead of closing the story directly.
+	const decision = await enforceStageTransition(tx, {
+		storyId: story.id,
+		projectId,
+		toStage: "CLOSED",
+		reason: "system",
+		actor: { userId, organizationId: organizationId ?? null },
+	});
+	if (decision.mode === "request") {
+		return { pendingStageRequestId: decision.requestId };
+	}
+	if (decision.mode !== "apply") {
+		return {};
 	}
 
 	const currentVersion = story.version ?? 1;
@@ -86,6 +104,7 @@ async function applyHideInTransaction(
 			pmAutoHidden: false,
 		},
 	});
+	return {};
 }
 
 async function applyUnhideInTransaction(
@@ -214,141 +233,152 @@ export const bulkReviewPendingStateChangesProcedure = tenantProtectedProcedure
 			});
 		}
 
-		const reviewed = await db.$transaction(async (tx) => {
-			const changes = await tx.pendingPmStateChange.findMany({
-				where: {
-					id: { in: input.ids },
-					projectId: input.projectId,
-					status: "PENDING",
-				},
-			});
-
-			// CONTENT_DRIFT carries four outcomes + a heavy per-item ADO ingest
-			// (re-fetch + version bump + push) that does not fit the all-or-nothing
-			// bulk approve/dismiss shape. Refuse loudly so a bulk
-			// "Approve all" never silently runs ADO ingests — single-row
-			// resolution via `resolveContentDrift` is the only Chunk C path.
-			if (changes.some((c) => c.proposedAction === "CONTENT_DRIFT")) {
-				throw new ORPCError("BAD_REQUEST", {
-					message:
-						"Content-drift items cannot be bulk-reviewed; resolve each one individually.",
+		const pendingStageRequestIds: string[] = [];
+		const reviewed = await db
+			.$transaction(async (tx) => {
+				const changes = await tx.pendingPmStateChange.findMany({
+					where: {
+						id: { in: input.ids },
+						projectId: input.projectId,
+						status: "PENDING",
+					},
 				});
-			}
 
-			for (const change of changes) {
-				if (
-					input.decision === "APPROVED" &&
-					change.proposedAction === "HIDE"
-				) {
-					await applyHideInTransaction(
-						tx,
-						change.entityType,
-						change.entityId,
-						input.projectId,
-						user.id,
-						user.name ?? null,
-						organizationId,
-					);
-				} else if (
-					input.decision === "APPROVED" &&
-					change.proposedAction === "UNHIDE"
-				) {
-					const { applied } = await applyUnhideInTransaction(
-						tx,
-						change.entityType,
-						change.entityId,
-						input.projectId,
-						user.id,
-						user.name ?? null,
-						organizationId,
-					);
+				// CONTENT_DRIFT carries four outcomes + a heavy per-item ADO ingest
+				// (re-fetch + version bump + push) that does not fit the all-or-nothing
+				// bulk approve/dismiss shape. Refuse loudly so a bulk
+				// "Approve all" never silently runs ADO ingests — single-row
+				// resolution via `resolveContentDrift` is the only Chunk C path.
+				if (changes.some((c) => c.proposedAction === "CONTENT_DRIFT")) {
+					throw new ORPCError("BAD_REQUEST", {
+						message:
+							"Content-drift items cannot be bulk-reviewed; resolve each one individually.",
+					});
+				}
 
-					// If the story was missing or already unhidden (idempotency guard),
-					// dismiss the row instead of recording a no-op as APPROVED.
-					if (!applied) {
-						await tx.pendingPmStateChange.update({
-							where: { id: change.id },
-							data: {
-								status: "DISMISSED",
-								reviewedAt: new Date(),
-								reviewedBy: user.id,
-							},
-						});
-						continue;
-					}
-				} else if (
-					input.decision === "APPROVED" &&
-					change.proposedAction === "FLAG_MISSING"
-				) {
-					// Atomically claim the PENDING row before unlinking (#1360),
-					// compare-and-swap on the snapshot (externalId + server) so a
-					// poll-refreshed row (different ticket, same id) yields count 0
-					// and is skipped without DISMISSED-poisoning (Codex plan-R2).
-					const consumed = await tx.pendingPmStateChange.updateMany({
-						where: {
-							id: change.id,
-							status: "PENDING",
-							proposedAction: "FLAG_MISSING",
-							externalId: change.externalId,
+				for (const change of changes) {
+					if (
+						input.decision === "APPROVED" &&
+						change.proposedAction === "HIDE"
+					) {
+						const hidden = await applyHideInTransaction(
+							tx,
+							change.entityType,
+							change.entityId,
+							input.projectId,
+							user.id,
+							user.name ?? null,
+							organizationId,
+						);
+						if (hidden.pendingStageRequestId) {
+							pendingStageRequestIds.push(
+								hidden.pendingStageRequestId,
+							);
+						}
+					} else if (
+						input.decision === "APPROVED" &&
+						change.proposedAction === "UNHIDE"
+					) {
+						const { applied } = await applyUnhideInTransaction(
+							tx,
+							change.entityType,
+							change.entityId,
+							input.projectId,
+							user.id,
+							user.name ?? null,
+							organizationId,
+						);
+
+						// If the story was missing or already unhidden (idempotency guard),
+						// dismiss the row instead of recording a no-op as APPROVED.
+						if (!applied) {
+							await tx.pendingPmStateChange.update({
+								where: { id: change.id },
+								data: {
+									status: "DISMISSED",
+									reviewedAt: new Date(),
+									reviewedBy: user.id,
+								},
+							});
+							continue;
+						}
+					} else if (
+						input.decision === "APPROVED" &&
+						change.proposedAction === "FLAG_MISSING"
+					) {
+						// Atomically claim the PENDING row before unlinking (#1360),
+						// compare-and-swap on the snapshot (externalId + server) so a
+						// poll-refreshed row (different ticket, same id) yields count 0
+						// and is skipped without DISMISSED-poisoning (Codex plan-R2).
+						const consumed =
+							await tx.pendingPmStateChange.updateMany({
+								where: {
+									id: change.id,
+									status: "PENDING",
+									proposedAction: "FLAG_MISSING",
+									externalId: change.externalId,
+									expectedExternalMcpServerId:
+										change.expectedExternalMcpServerId,
+								},
+								data: {
+									status: "APPROVED",
+									reviewedAt: new Date(),
+									reviewedBy: user.id,
+								},
+							});
+						if (consumed.count !== 1) {
+							continue; // auto-dismissed / refreshed / already done
+						}
+
+						const { applied } = await applyPmUnlinkTx(tx, {
+							projectId: input.projectId,
+							entityType: change.entityType,
+							entityId: change.entityId,
+							expectedExternalId: change.externalId,
 							expectedExternalMcpServerId:
 								change.expectedExternalMcpServerId,
-						},
+						});
+						if (!applied) {
+							await tx.pendingPmStateChange.update({
+								where: { id: change.id },
+								data: { status: "DISMISSED" },
+							});
+							continue;
+						}
+
+						await recordAuditTx(tx, {
+							action: "story.pm_ticket_unlinked",
+							category: "story",
+							actor: { type: "user", userId: user.id },
+							organizationId: organizationId ?? null,
+							projectId: input.projectId,
+							resource: {
+								type: change.entityType.toLowerCase(),
+								id: change.entityId,
+							},
+							metadata: {
+								externalId: change.externalId,
+								entityType: change.entityType,
+							},
+						});
+						continue; // status already APPROVED — skip the generic trailing update
+					}
+
+					await tx.pendingPmStateChange.update({
+						where: { id: change.id },
 						data: {
-							status: "APPROVED",
+							status: input.decision,
 							reviewedAt: new Date(),
 							reviewedBy: user.id,
 						},
 					});
-					if (consumed.count !== 1) {
-						continue; // auto-dismissed / refreshed / already done
-					}
-
-					const { applied } = await applyPmUnlinkTx(tx, {
-						projectId: input.projectId,
-						entityType: change.entityType,
-						entityId: change.entityId,
-						expectedExternalId: change.externalId,
-						expectedExternalMcpServerId:
-							change.expectedExternalMcpServerId,
-					});
-					if (!applied) {
-						await tx.pendingPmStateChange.update({
-							where: { id: change.id },
-							data: { status: "DISMISSED" },
-						});
-						continue;
-					}
-
-					await recordAuditTx(tx, {
-						action: "story.pm_ticket_unlinked",
-						category: "story",
-						actor: { type: "user", userId: user.id },
-						organizationId: organizationId ?? null,
-						projectId: input.projectId,
-						resource: {
-							type: change.entityType.toLowerCase(),
-							id: change.entityId,
-						},
-						metadata: {
-							externalId: change.externalId,
-							entityType: change.entityType,
-						},
-					});
-					continue; // status already APPROVED — skip the generic trailing update
 				}
 
-				await tx.pendingPmStateChange.update({
-					where: { id: change.id },
-					data: {
-						status: input.decision,
-						reviewedAt: new Date(),
-						reviewedBy: user.id,
-					},
-				});
-			}
+				return changes.length;
+			})
+			.catch((error: unknown) => {
+				throw mapStageTransitionError(error);
+			});
 
-			return changes.length;
-		});
-
-		return { reviewed };
+		return { reviewed, pendingStageRequestIds };
 	});

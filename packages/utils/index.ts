@@ -41,8 +41,13 @@ export * from "./lib/read-only-mode";
 export * from "./lib/render-newsletter-approval-chat-message";
 export * from "./lib/render-newsletter-chat-message";
 export * from "./lib/render-publishing-chat-message";
+export * from "./lib/safe-yaml";
 export * from "./lib/service-url";
 export * from "./lib/upload-size-limits";
+// NOTE: url-security is intentionally NOT re-exported from this barrel — it
+// imports `node:dns` and `undici`, which the client bundler cannot bundle, and
+// this barrel is pulled into client components. Import it via the
+// `@repo/utils/url-security` subpath instead (same as project-context).
 export * from "./lib/work-item-title";
 export * from "./lib/work-item-type-mapping";
 export * from "./lib/workspace-document-upload";

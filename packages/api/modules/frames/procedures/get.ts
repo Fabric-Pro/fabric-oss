@@ -1,4 +1,9 @@
-import { getFrameById } from "@repo/database";
+import { ORPCError } from "@orpc/client";
+import {
+	getFrameById,
+	getProjectFrameById,
+	hasProjectAccess,
+} from "@repo/database";
 import { z } from "zod";
 import {
 	Permissions,
@@ -11,6 +16,22 @@ const inputSchema = z.object({
 	id: z.string(),
 	organizationId: z.string().nullable().optional(),
 });
+
+/**
+ * Project-scoped frames (plan Slice 3: spike demos) are readable by any
+ * member of their project, not only the creator. Access is decided by
+ * `hasProjectAccess` (owner or accepted, non-expired project member; org
+ * membership for org projects). A frame without a projectId is never
+ * returned here.
+ */
+async function getAccessibleProjectFrame(frameId: string, userId: string) {
+	const frame = await getProjectFrameById({ id: frameId });
+	if (!frame?.projectId) {
+		return null;
+	}
+	const allowed = await hasProjectAccess(frame.projectId, userId);
+	return allowed ? frame : null;
+}
 
 export const getFrameProcedure = tenantProtectedProcedure
 	.use(requirePermission(Permissions.WORKSPACE_READ))
@@ -27,14 +48,15 @@ export const getFrameProcedure = tenantProtectedProcedure
 			input.organizationId,
 			context.session,
 		);
-		const frame = await getFrameById({
-			id: input.id,
-			userId: context.user.id,
-			organizationId,
-		});
+		const frame =
+			(await getFrameById({
+				id: input.id,
+				userId: context.user.id,
+				organizationId,
+			})) ?? (await getAccessibleProjectFrame(input.id, context.user.id));
 
 		if (!frame) {
-			throw new Error("Frame not found");
+			throw new ORPCError("NOT_FOUND", { message: "Frame not found" });
 		}
 
 		return {

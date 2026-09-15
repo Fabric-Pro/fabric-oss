@@ -38,6 +38,7 @@ import {
 	ScrollTextIcon,
 	SettingsIcon,
 	ShieldCheckIcon,
+	TargetIcon,
 	WorkflowIcon,
 } from "lucide-react";
 
@@ -147,6 +148,14 @@ export const tabs = [
 		id: "security",
 		label: "Security",
 		icon: ShieldCheckIcon,
+	},
+	// Customer outcomes (inverted-loop Slice 8). Only offered where the
+	// engagement profile has a customer-facing surface; ProjectDetails filters
+	// it out for the others.
+	{
+		id: "outcomes",
+		label: "Outcomes",
+		icon: TargetIcon,
 	},
 	{
 		id: "settings",

@@ -1,7 +1,11 @@
 import { ORPCError } from "@orpc/client";
 import {
+	applyKanbanTemplateForNewProject,
 	createProject,
+	DEFAULT_NEW_PROJECT_PROFILE,
 	db,
+	engagementProfileSchema,
+	getEngagementProfileConfig,
 	moveWizardTempContextsToProject,
 	Prisma,
 	type ProjectDocumentType,
@@ -82,6 +86,18 @@ export const createProjectProcedure = tenantProtectedProcedure
 			skipAutoSync: z.boolean().optional(),
 			// Optional: client-generated UUID to find and activate an existing DRAFT instead of creating a duplicate
 			draftKey: z.string().uuid().optional(),
+			// Engagement profile (default PROPOSAL for wizard-created projects) + vision
+			engagementProfile: engagementProfileSchema.optional(),
+			quotedPhases: z
+				.array(z.string().trim().min(1).max(50))
+				.max(50)
+				.optional(),
+			visionPurpose: z.string().max(5000).optional(),
+			visionCoreActions: z
+				.array(z.string().trim().min(1).max(200))
+				.max(20)
+				.optional(),
+			visionCycle: z.string().max(1000).optional(),
 		}),
 	)
 	.handler(async ({ input, context }) => {
@@ -185,6 +201,16 @@ export const createProjectProcedure = tenantProtectedProcedure
 							status: "ACTIVE",
 							// Drop wizard-only ephemera now that the draft is being promoted
 							wizardState: Prisma.JsonNull,
+							// Profile/vision: the activation payload wins; fall back to
+							// what the draft already stored so an older client cannot
+							// silently reset an EXPLORE draft to the default profile.
+							engagementProfile:
+								input.engagementProfile ??
+								existingDraft.engagementProfile,
+							quotedPhases: input.quotedPhases,
+							visionPurpose: input.visionPurpose,
+							visionCoreActions: input.visionCoreActions,
+							visionCycle: input.visionCycle,
 						},
 					});
 				}
@@ -230,6 +256,12 @@ export const createProjectProcedure = tenantProtectedProcedure
 						(u) => u?.trim(),
 					),
 					status: "ACTIVE",
+					engagementProfile:
+						input.engagementProfile ?? DEFAULT_NEW_PROJECT_PROFILE,
+					quotedPhases: input.quotedPhases,
+					visionPurpose: input.visionPurpose,
+					visionCoreActions: input.visionCoreActions,
+					visionCycle: input.visionCycle,
 				});
 			}
 
@@ -247,6 +279,24 @@ export const createProjectProcedure = tenantProtectedProcedure
 				input.projectManagementMcpServerId
 			) {
 				await seedTerminalStatusesIfEmpty(project.id);
+			}
+
+			// Apply the profile's Kanban column template to the new board
+			// (e.g. EXPLORE → discovery: Ideas / Validating / Prioritized /
+			// In Progress). Column titles must never fail project creation.
+			try {
+				const { kanbanTemplateId } = getEngagementProfileConfig(
+					project.engagementProfile,
+				);
+				await applyKanbanTemplateForNewProject(
+					project.id,
+					kanbanTemplateId,
+				);
+			} catch (templateError) {
+				console.error(
+					"[CreateProject] Failed to apply kanban template:",
+					templateError,
+				);
 			}
 
 			// Create documents from onboarding artifacts (PRD, Architecture, Technical Specs)

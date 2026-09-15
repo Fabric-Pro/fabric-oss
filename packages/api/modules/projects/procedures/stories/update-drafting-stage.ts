@@ -20,6 +20,7 @@ import {
 	shouldDraftOnReadyForDev,
 	startAutoDraft,
 } from "../../lib/auto-draft-test-cases";
+import { mapStageTransitionError } from "../../lib/stage-transition-errors";
 import { stripInternalStoryFields } from "../../lib/strip-internal-story-fields";
 import { validateStageForKind } from "../../lib/validate-stage-for-kind";
 
@@ -75,18 +76,30 @@ export const updateDraftingStageProcedure = tenantProtectedProcedure
 		}
 		validateStageForKind(input.targetStage, existing.kind);
 
-		const story = await updateStoryDraftingStage(
-			input.storyId,
-			input.projectId,
-			input.targetStage as FeatureDraftingStage,
-			{
-				userId: user.id,
-				organizationId: organizationId ?? undefined,
-				changedBy: user.id,
-				lastEditedByName: user.name ?? null,
-				lastEditedSource: "MANUAL",
-			},
-		);
+		// Stage changes go through the delivery choke point (plan §F1): a
+		// readiness gate may block, and under GOVERNED review the change
+		// becomes a request, surfaced as `pendingStageRequest`.
+		let story: Awaited<ReturnType<typeof updateStoryDraftingStage>>;
+		try {
+			story = await updateStoryDraftingStage(
+				input.storyId,
+				input.projectId,
+				input.targetStage as FeatureDraftingStage,
+				{
+					userId: user.id,
+					organizationId: organizationId ?? undefined,
+					changedBy: user.id,
+					lastEditedByName: user.name ?? null,
+					lastEditedSource: "MANUAL",
+					transitionReason: "manual",
+				},
+			);
+		} catch (error) {
+			throw mapStageTransitionError(error);
+		}
+		const pendingStageRequestId = (
+			story as { pendingStageRequestId?: string }
+		).pendingStageRequestId;
 
 		// Subscriber fan-out — notify watchers only on a real stage transition
 		// (updateStoryDraftingStage is a no-op when the stage is unchanged).
@@ -150,5 +163,10 @@ export const updateDraftingStageProcedure = tenantProtectedProcedure
 			);
 		}
 
-		return { story: stripInternalStoryFields(story) };
+		return {
+			story: stripInternalStoryFields(story),
+			pendingStageRequest: pendingStageRequestId
+				? { id: pendingStageRequestId }
+				: null,
+		};
 	});

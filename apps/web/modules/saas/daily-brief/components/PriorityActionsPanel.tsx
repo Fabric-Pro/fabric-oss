@@ -11,6 +11,7 @@
  * - `missing_ownership`    → muted
  * - `pr_review_stale`      → muted
  * - `unresolved_dependency`→ muted
+ * - `metric_drift`         → `--highlight` (amber) — Slice 8, schema v3
  *
  * Note: Priority actions are ALWAYS rendered in full — they do NOT filter
  * under the "since my last review" toggle. That's intentional: urgency is
@@ -27,6 +28,7 @@ import {
 	LightbulbIcon,
 	LinkIcon,
 	ShieldAlertIcon,
+	TrendingDownIcon,
 	UserMinusIcon,
 } from "lucide-react";
 import Link from "next/link";
@@ -40,6 +42,7 @@ const TARGET_TYPE_LABELS: Record<TargetType, string> = {
 	document: "Document",
 	scan: "Scan",
 	architecture_decision: "Architecture decision",
+	metric: "Success metric",
 };
 
 const KIND_META: Record<
@@ -90,6 +93,11 @@ const KIND_META: Record<
 		tone: "muted",
 		icon: LinkIcon,
 	},
+	metric_drift: {
+		label: "Metric drift",
+		tone: "highlight",
+		icon: TrendingDownIcon,
+	},
 };
 
 const ORDER: Kind[] = [
@@ -101,6 +109,7 @@ const ORDER: Kind[] = [
 	"missing_ownership",
 	"pr_review_stale",
 	"unresolved_dependency",
+	"metric_drift",
 ];
 
 function toneClasses(tone: "destructive" | "highlight" | "muted") {

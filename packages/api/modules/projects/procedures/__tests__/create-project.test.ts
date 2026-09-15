@@ -16,7 +16,21 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const mockCreateProject = vi.fn();
 const mockProjectFindFirst = vi.fn();
 
-vi.mock("@repo/database", () => ({
+vi.mock("@repo/database", async () => ({
+	getEngagementProfileConfig: () => ({
+		kanbanTemplateId: "default",
+		intakeMode: "document",
+	}),
+	DEFAULT_NEW_PROJECT_PROFILE: "GOVERNED",
+	applyKanbanTemplateForNewProject: async () => ({ applied: false }),
+
+	engagementProfileSchema: (await import("zod")).z.enum([
+		"EXPLORE",
+		"PROPOSAL",
+		"GOVERNED",
+		"DELEGATED",
+	]),
+
 	createProject: (...args: unknown[]) => mockCreateProject(...args),
 	db: {
 		project: {

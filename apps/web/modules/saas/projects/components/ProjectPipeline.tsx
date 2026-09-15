@@ -9,6 +9,7 @@
  * 3. Display features as expandable list with tasks
  */
 
+import type { HierarchyLevel } from "@repo/database/src/engagement-profiles";
 import { useOrganizationContext } from "@saas/organizations/hooks/use-organization-context";
 import { orpcClient } from "@shared/lib/orpc-client";
 import { orpc } from "@shared/lib/orpc-query-utils";
@@ -179,7 +180,17 @@ interface ProjectPipelineProps {
 		organizationId?: string | null;
 	};
 	onNavigateToTab?: (tabId: TabId) => void;
+	/**
+	 * Hierarchy levels visible under the project's engagement profile
+	 * (`getEngagementProfileConfig(profile).visibleHierarchy`). Defaults to
+	 * showing epics when omitted.
+	 */
+	visibleHierarchy?: readonly HierarchyLevel[];
 }
+
+/** Features description without the epic level for profiles that hide it. */
+const FEATURES_DESCRIPTION_NO_EPICS =
+	"Feature breakdown with acceptance criteria";
 
 type StageStatus =
 	| "PENDING"
@@ -203,7 +214,9 @@ export function ProjectPipeline({
 	projectId,
 	project,
 	onNavigateToTab,
+	visibleHierarchy,
 }: ProjectPipelineProps) {
+	const showEpics = visibleHierarchy?.includes("epic") ?? true;
 	// Organization context
 	const { organizationId, basePath } = useOrganizationContext();
 
@@ -575,7 +588,10 @@ export function ProjectPipeline({
 				return {
 					type: def.type,
 					title: def.title,
-					description: def.description,
+					description:
+						def.type === "USER_STORY" && !showEpics
+							? FEATURES_DESCRIPTION_NO_EPICS
+							: def.description,
 					selected: true,
 					prompt: "",
 					promptId: undefined,

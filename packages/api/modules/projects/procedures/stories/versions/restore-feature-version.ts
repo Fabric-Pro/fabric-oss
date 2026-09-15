@@ -9,6 +9,7 @@ import {
 } from "../../../../../orpc/procedures";
 import { runInBackground } from "../../../../weave/lib/run-in-background";
 import { maybeAutoDraftOnStageChange } from "../../../lib/auto-draft-test-cases";
+import { mapStageTransitionError } from "../../../lib/stage-transition-errors";
 import { stripInternalStoryFields } from "../../../lib/strip-internal-story-fields";
 
 /**
@@ -47,17 +48,29 @@ export const restoreFeatureVersionProcedure = tenantProtectedProcedure
 			});
 		}
 
-		const restoredStory = await restoreFeatureVersion(
-			input.storyId,
-			input.projectId,
-			input.versionNumber,
-			user.id,
-			{
-				userId: user.id,
-				organizationId,
-				lastEditedByName: user.name ?? null,
-			},
-		);
+		// Restoring a version can change `draftingStage`; the query layer
+		// routes that through the stage-transition choke point (plan §F1).
+		// Under GOVERNED review the content is restored and the stage change
+		// becomes a request, surfaced as `pendingStageRequest`.
+		let restoredStory: Awaited<ReturnType<typeof restoreFeatureVersion>>;
+		try {
+			restoredStory = await restoreFeatureVersion(
+				input.storyId,
+				input.projectId,
+				input.versionNumber,
+				user.id,
+				{
+					userId: user.id,
+					organizationId,
+					lastEditedByName: user.name ?? null,
+				},
+			);
+		} catch (error) {
+			throw mapStageTransitionError(error);
+		}
+		const pendingStageRequestId = (
+			restoredStory as { pendingStageRequestId?: string }
+		).pendingStageRequestId;
 
 		// Restoring a snapshot taken at Ready for Dev moves the live feature
 		// there, so this is a stage transition like any other — narrower than the
@@ -72,5 +85,10 @@ export const restoreFeatureVersionProcedure = tenantProtectedProcedure
 			}),
 		);
 
-		return { story: stripInternalStoryFields(restoredStory) };
+		return {
+			story: stripInternalStoryFields(restoredStory),
+			pendingStageRequest: pendingStageRequestId
+				? { id: pendingStageRequestId }
+				: null,
+		};
 	});

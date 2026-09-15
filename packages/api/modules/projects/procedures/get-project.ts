@@ -19,6 +19,7 @@ import {
 	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
+import { userHasProjectPermissionStrict } from "../lib/governance";
 
 export const getProjectProcedure = tenantProtectedProcedure
 	.use(
@@ -117,6 +118,15 @@ export const getProjectProcedure = tenantProtectedProcedure
 			sanitizeRetentionDays(windows.get(project.id)?.days) ??
 			DEFAULT_ATTACHMENT_RETENTION_DAYS;
 
+		// Governance (engagement profile, enforcement flags, approvers) uses
+		// the strict middleware-order check so the UI gate matches what
+		// `projects.update` and `governance.setStageApprovers` enforce.
+		const canManageGovernance = await userHasProjectPermissionStrict(
+			input.id,
+			user.id,
+			Permissions.PROJECT_GOVERNANCE_MANAGE,
+		);
+
 		return {
 			project: {
 				...project,
@@ -126,6 +136,7 @@ export const getProjectProcedure = tenantProtectedProcedure
 				canPublish,
 				canManageMembers,
 				effectiveAttachmentRetentionDays,
+				canManageGovernance,
 			},
 		};
 	});

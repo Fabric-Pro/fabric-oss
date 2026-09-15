@@ -1,6 +1,7 @@
 "use client";
 
 import type { Prisma } from "@repo/database";
+import type { EngagementProfile } from "@repo/database/prisma/generated/enums";
 import { PageTourButton } from "@saas/get-started/components/PageTourButton";
 import { useOrganizationContext } from "@saas/organizations/hooks/use-organization-context";
 import { useConfirmationAlert } from "@saas/shared/components/ConfirmationAlertProvider";
@@ -36,6 +37,7 @@ import { MeetingTranscriptSyncSettings } from "./MeetingTranscriptSyncSettings";
 import { PrdSourceSettings } from "./PrdSourceSettings";
 import { ProjectAiAssistantSettings } from "./ProjectAiAssistantSettings";
 import { ProjectDatabricksKnowledgeSettings } from "./ProjectDatabricksKnowledgeSettings";
+import { ProjectEngagementSettings } from "./ProjectEngagementSettings";
 import { ProjectGeneralSettings } from "./ProjectGeneralSettings";
 import { ProjectImplementationDefaultsSettings } from "./ProjectImplementationDefaultsSettings";
 import { ProjectManagementSettings } from "./ProjectManagementSettings";
@@ -126,6 +128,19 @@ type Project = {
 	hiddenMaturationStatuses?: string[] | null;
 	readOnlyMode?: boolean | null;
 	clarifyingQuestionFrequency?: ClarifyingQuestionFrequency | null;
+	canManageGovernance?: boolean;
+	// Engagement profile, governance flags, vision (Slice 0)
+	engagementProfile?: EngagementProfile;
+	engagementProfileUpdatedAt?: Date | string | null;
+	enforceSpecifyGate?: boolean;
+	enforceSpikeGate?: boolean;
+	enforceDiscoveryGate?: boolean;
+	documentTiersAdvisory?: boolean;
+	quotedPhases?: string[];
+	visionPurpose?: string | null;
+	visionCoreActions?: string[];
+	visionCycle?: string | null;
+	stageApprovers?: Array<{ userId: string }>;
 	repositoryIntegrations?: Array<{
 		id: string;
 		status: string;
@@ -151,7 +166,7 @@ const STORAGE_KEY_PREFIX = "fabric-project-settings-tab-";
 
 // Only ungated sub-tabs are deep-linkable from a notification/CTA (never route a
 // deep link into a role-gated tab like danger). Newsletter is ungated.
-const DEEP_LINKABLE_SETTINGS_TABS: SettingsTab[] = ["newsletter"];
+const DEEP_LINKABLE_SETTINGS_TABS: SettingsTab[] = ["newsletter", "engagement"];
 
 // The QA project tab is gated on this flag (`ProjectDetails.tsx`), and both QA
 // settings pages configure that tab and nothing else — `ProjectEnvironment` has
@@ -396,7 +411,16 @@ export function ProjectSettings({
 					<PageTourButton pageId="settings" />
 				</div>
 				{settingsTab === "general" && (
-					<ProjectGeneralSettings project={project} />
+					<div className="space-y-10">
+						<ProjectGeneralSettings project={project} />
+					</div>
+				)}
+				{/* How the engagement is run: profile, gates, approvers, vision
+				    (ADR-020). Its own section so it is not buried under General. */}
+				{settingsTab === "engagement" && (
+					<div className="space-y-10">
+						<ProjectEngagementSettings project={project} />
+					</div>
 				)}
 				{/* Behaviour rather than identity: how the assistant asks,
 				    how deep QA goes, and whether the project is read-only. */}

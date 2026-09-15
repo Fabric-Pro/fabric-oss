@@ -31,7 +31,16 @@ const {
 	mockProjectMemberFindMany: vi.fn(),
 }));
 
+const { IntegrationContractStatusManagedErrorMock } = vi.hoisted(() => {
+	class IntegrationContractStatusManagedErrorMock extends Error {
+		readonly code = "INTEGRATION_CONTRACT_STATUS_MANAGED" as const;
+	}
+	return { IntegrationContractStatusManagedErrorMock };
+});
+
 vi.mock("@repo/database", () => ({
+	IntegrationContractStatusManagedError:
+		IntegrationContractStatusManagedErrorMock,
 	hasProjectAccess: (...args: unknown[]) => mockHasProjectAccess(...args),
 	updateDocument: (...args: unknown[]) => mockUpdateDocument(...args),
 	// Real implementation, not a stub: it is a pure string builder, and this
@@ -72,6 +81,7 @@ vi.mock("../../../../lib/notification-service", () => ({
 	fanOut: {
 		documentMention: (...args: unknown[]) =>
 			mockFanOutDocumentMention(...args),
+		subscriptionUpdate: vi.fn(async () => undefined),
 	},
 }));
 
@@ -267,5 +277,98 @@ describe("updateDocumentProcedure mention dispatch", () => {
 		const args = mockFanOutDocumentMention.mock.calls[0][0];
 		// The actor must be the session user — never a synthetic/AI actor id.
 		expect(args.actorUserId).toBe(ctx.user.id);
+	});
+});
+
+describe("updateDocumentProcedure integration-contract status guard", () => {
+	beforeEach(() => {
+		vi.clearAllMocks();
+		mockHasProjectAccess.mockResolvedValue(true);
+		mockUpdateDocument.mockResolvedValue({
+			id: "doc_1",
+			title: "Integration contract",
+			content: "",
+		});
+		mockApplySideEffects.mockResolvedValue(undefined);
+		mockOrganizationFindUnique.mockResolvedValue({ slug: "acme" });
+		mockMemberFindMany.mockResolvedValue([]);
+		mockProjectMemberFindMany.mockResolvedValue([]);
+	});
+
+	it("rejects a status change on an INTEGRATION_CONTRACT without writing", async () => {
+		mockProjectDocumentFindUnique.mockResolvedValue({
+			content: "",
+			title: "Integration contract",
+			projectId: "proj_1",
+			type: "INTEGRATION_CONTRACT",
+			status: "REVIEW",
+		});
+		await expect(
+			handlers.updateDocument({
+				input: { ...baseInput, status: "COMPLETE" },
+				context: ctx,
+			}),
+		).rejects.toMatchObject({
+			code: "PRECONDITION_FAILED",
+			data: { code: "INTEGRATION_CONTRACT_STATUS_MANAGED" },
+		});
+		expect(mockUpdateDocument).not.toHaveBeenCalled();
+	});
+
+	it("still allows content and title edits, and an unchanged status, on a contract", async () => {
+		mockProjectDocumentFindUnique.mockResolvedValue({
+			content: "",
+			title: "Integration contract",
+			projectId: "proj_1",
+			type: "INTEGRATION_CONTRACT",
+			status: "REVIEW",
+		});
+		await handlers.updateDocument({
+			input: { ...baseInput, content: "<p>edited</p>", status: "REVIEW" },
+			context: ctx,
+		});
+		await flushPromises();
+		expect(mockUpdateDocument).toHaveBeenCalledTimes(1);
+	});
+
+	it("maps the query-layer guard to PRECONDITION_FAILED when a completion lands after the pre-read", async () => {
+		// The pre-read sees REVIEW and the caller sends REVIEW (unchanged), so
+		// the fast-path guard passes; the query layer re-reads, sees the
+		// contract was completed meanwhile, and refuses.
+		mockProjectDocumentFindUnique.mockResolvedValue({
+			content: "",
+			title: "Integration contract",
+			projectId: "proj_1",
+			type: "INTEGRATION_CONTRACT",
+			status: "REVIEW",
+		});
+		mockUpdateDocument.mockRejectedValue(
+			new IntegrationContractStatusManagedErrorMock("managed"),
+		);
+		await expect(
+			handlers.updateDocument({
+				input: { ...baseInput, status: "REVIEW" },
+				context: ctx,
+			}),
+		).rejects.toMatchObject({
+			code: "PRECONDITION_FAILED",
+			data: { code: "INTEGRATION_CONTRACT_STATUS_MANAGED" },
+		});
+	});
+
+	it("lets other document types change status through the generic update", async () => {
+		mockProjectDocumentFindUnique.mockResolvedValue({
+			content: "",
+			projectId: "proj_1",
+			title: "PRD",
+			type: "PRD",
+			status: "DRAFT",
+		});
+		await handlers.updateDocument({
+			input: { ...baseInput, status: "COMPLETE" },
+			context: ctx,
+		});
+		await flushPromises();
+		expect(mockUpdateDocument).toHaveBeenCalledTimes(1);
 	});
 });

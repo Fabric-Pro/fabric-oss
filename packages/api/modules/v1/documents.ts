@@ -15,6 +15,7 @@ import {
 	createDocument,
 	getDocumentById,
 	hasProjectAccess,
+	IntegrationContractStatusManagedError,
 	listDocuments,
 	updateDocument,
 } from "@repo/database";
@@ -47,7 +48,8 @@ type DocumentType =
 	| "TEST_PLAN"
 	| "TEST_REPORT"
 	| "TRACEABILITY_MATRIX"
-	| "SRS";
+	| "SRS"
+	| "INTEGRATION_CONTRACT";
 
 type DocumentStatus =
 	| "DRAFT"
@@ -73,6 +75,7 @@ const DOCUMENT_TYPES: ReadonlySet<DocumentType> = new Set([
 	"TEST_REPORT",
 	"TRACEABILITY_MATRIX",
 	"SRS",
+	"INTEGRATION_CONTRACT",
 ]);
 
 const DOCUMENT_STATUSES: ReadonlySet<DocumentStatus> = new Set([
@@ -424,6 +427,24 @@ export function registerDocumentRoutes(
 					400,
 				);
 			}
+			// Integration contract status belongs to the Discovery run (plan
+			// Slice 4); the query layer enforces this too, this just gives a
+			// typed 409 instead of a 500.
+			if (
+				existing.type === "INTEGRATION_CONTRACT" &&
+				body.status !== existing.status
+			) {
+				return c.json(
+					{
+						error: {
+							message:
+								"Integration contract status is managed by the discovery run; use Mark contract complete",
+							code: "INTEGRATION_CONTRACT_STATUS_MANAGED",
+						},
+					},
+					409,
+				);
+			}
 			updates.status = body.status;
 		}
 		if (body.changeDescription !== undefined) {
@@ -437,12 +458,25 @@ export function registerDocumentRoutes(
 			return c.json(badRequest("No supported fields to update"), 400);
 		}
 
-		const updated = await updateDocument(c.req.param("id")!, {
-			...updates,
-			lastEditedBy: ctx.userId,
-			userId: ctx.userId,
-			organizationId: ctx.organizationId ?? undefined,
-		});
+		let updated: Awaited<ReturnType<typeof updateDocument>>;
+		try {
+			updated = await updateDocument(c.req.param("id")!, {
+				...updates,
+				lastEditedBy: ctx.userId,
+				userId: ctx.userId,
+				organizationId: ctx.organizationId ?? undefined,
+			});
+		} catch (error) {
+			// Last line of defence in the query layer (a completion may land
+			// between the pre-read above and its own read).
+			if (error instanceof IntegrationContractStatusManagedError) {
+				return c.json(
+					{ error: { message: error.message, code: error.code } },
+					409,
+				);
+			}
+			throw error;
+		}
 
 		return c.json(ok(mapDetail(updated)));
 	});

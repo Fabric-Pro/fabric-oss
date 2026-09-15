@@ -6,7 +6,14 @@ class Decimal {}
 const mockUpdateProject = vi.fn();
 const mockRecordAudit = vi.fn();
 
-vi.mock("@repo/database", () => ({
+vi.mock("@repo/database", async () => ({
+	engagementProfileSchema: (await import("zod")).z.enum([
+		"EXPLORE",
+		"PROPOSAL",
+		"GOVERNED",
+		"DELEGATED",
+	]),
+
 	db: {
 		project: {
 			findUnique: vi.fn().mockResolvedValue({

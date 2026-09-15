@@ -17,6 +17,8 @@ const INTEGRATION_TESTS = [
 	// `describe.skipIf` when env is missing, but we exclude here so the
 	// default run does not load the suite at all.
 	"__tests__/rls/incident-tables.test.ts",
+	// Governed stage-request RLS regression (real Postgres, NOSUPERUSER role).
+	"__tests__/rls-stage-requests.integration.test.ts",
 	// Excalidraw default-MCP backfill migration replay.
 	// Requires DATABASE_URL to run the migration's data-write steps
 	// against a real Postgres. The test's

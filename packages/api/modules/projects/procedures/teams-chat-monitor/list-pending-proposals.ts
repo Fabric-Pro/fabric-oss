@@ -16,6 +16,7 @@ import {
 const statusEnum = z.enum([
 	"PENDING",
 	"APPROVED",
+	"APPLYING",
 	"APPLIED",
 	"REJECTED",
 	"FAILED",
@@ -43,6 +44,11 @@ export const listPendingProposalsProcedure = tenantProtectedProcedure
 	.handler(async ({ input }) => {
 		return await listPendingBacklogProposals({
 			projectId: input.projectId,
-			status: input.status ?? ["PENDING", "FAILED"],
+			status: input.status ?? [
+				"PENDING",
+				"APPROVED",
+				"APPLYING",
+				"FAILED",
+			],
 		});
 	});

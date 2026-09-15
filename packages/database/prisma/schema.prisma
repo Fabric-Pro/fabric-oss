@@ -323,7 +323,7 @@ model User {
   meetingTranscripts ProjectMeetingTranscript[]
 
   // Teams channel monitor relations
-  linkedTeamsChannels      ProjectLinkedTeamsChannel[]
+  linkedTeamsChannels       ProjectLinkedTeamsChannel[]
   // Teams chat monitor relations
   linkedTeamsChats         ProjectLinkedTeamsChat[]
   // Slack channel monitor relations
@@ -333,6 +333,11 @@ model User {
   reviewedBacklogProposals PendingBacklogProposal[]    @relation("PendingBacklogProposalReviewer")
   backlogUpdateSessions    BacklogUpdateSession[]
   pendingPmStateReviews    PendingPmStateChange[]      @relation("PmStateReviewer")
+  stageApproverOf           ProjectStageApprover[]
+  stageTransitionsRequested StageTransitionRequest[]    @relation("StageTransitionRequestedBy")
+  stageTransitionsReviewed  StageTransitionRequest[]    @relation("StageTransitionReviewedBy")
+  discoveryRuns             DiscoveryRun[]
+  successMetrics            ProjectSuccessMetric[]
 
   // Project repository integration relations
   configuredRepoIntegrations ProjectRepositoryIntegration[] @relation("RepoIntegrationConfiguredBy")
@@ -770,6 +775,9 @@ model Organization {
   huddleNotes             ProjectSlackHuddleNote[]
   pendingBacklogProposals PendingBacklogProposal[]
   backlogUpdateSessions   BacklogUpdateSession[]
+  stageTransitionRequests StageTransitionRequest[]
+  discoveryRuns           DiscoveryRun[]
+  successMetrics          ProjectSuccessMetric[]
 
   // Notification center
 
@@ -1878,6 +1886,20 @@ model Project {
   contextPendingVectorCleanups          ProjectContextPendingVectorCleanup[]
   contextSummaries                      ProjectContextSummary[]
   prdSourceContext                      ProjectContext?                    @relation("PrdSourceContext", fields: [prdSourceContextId], references: [id])
+  // Engagement profile + delivery-track governance (docs/features/inverted-loop-delivery-tracks.md)
+  // Existing rows default to GOVERNED (closest to today's uniform gating); enforcement flags default off.
+  engagementProfile                     EngagementProfile          @default(GOVERNED)
+  engagementProfileUpdatedAt            DateTime?
+  quotedPhases                          String[]                   @default([]) // Phase labels inside the quoted horizon; empty = no horizon configured
+  enforceSpecifyGate                    Boolean                    @default(false)
+  enforceSpikeGate                      Boolean                    @default(false)
+  enforceDiscoveryGate                  Boolean                    @default(false)
+  documentTiersAdvisory                 Boolean                    @default(false)
+  visionPurpose                         String?                    @db.Text
+  visionCoreActions                     String[]                   @default([])
+  visionCycle                           String?
+  // Customer outcomes page (Slice 8): token-scoped read-only route; null = not published
+  outcomesShareToken                    String?                    @unique
   documents                             ProjectDocument[]
   ragSettings                           ProjectRagSettings?
   databricksKnowledgeBinding            ProjectDatabricksKnowledgeBinding?
@@ -1981,6 +2003,10 @@ model Project {
   backlogUpdateSessions   BacklogUpdateSession[]
   pendingPmStateChanges   PendingPmStateChange[]
   pmTicketMissingStreaks  PmTicketMissingStreak[]
+  stageApprovers          ProjectStageApprover[]
+  stageTransitionRequests StageTransitionRequest[]
+  discoveryRuns           DiscoveryRun[]
+  successMetrics          ProjectSuccessMetric[]
 
   // AI Chat (project-scoped conversations)
   aiChats AiChat[]
@@ -2084,6 +2110,7 @@ model ProjectDocument {
   source          DocumentSource @default(GENERATED)
   sourceContextId String? // Links to original ProjectContext if imported
   isActive        Boolean        @default(true) // For multiple docs of same type
+  storyId         String? // Per-feature documents (e.g. INTEGRATION_CONTRACT from a Discovery run)
 
   // RAG embedding fields (for using generated docs as context)
   qdrantId    String?
@@ -2115,6 +2142,7 @@ model ProjectDocument {
   @@index([qdrantId])
   @@index([sourceContextId])
   @@index([isActive])
+  @@index([storyId])
   @@map("project_document")
 }
 
@@ -4577,11 +4605,13 @@ enum PendingBacklogProposalSource {
   SLACK_CHANNEL
   AI_UPDATE_SIDEBAR
   MONITORED_MEETING
+  SCOPE_DOCUMENT
 }
 
 enum PendingBacklogProposalStatus {
   PENDING
   APPROVED
+  APPLYING
   APPLIED
   REJECTED
   FAILED
@@ -4645,6 +4675,7 @@ model PendingBacklogProposal {
   seenChatMessages  ProjectLinkedTeamsChatSeenMessage[]
   seenSlackMessages ProjectLinkedSlackChannelSeenMessage[]
   drafts            BacklogProposalDraft[]
+  applications     PendingBacklogProposalApplication[]
 
   @@index([projectId, status])
   @@index([userId])
@@ -4654,6 +4685,85 @@ model PendingBacklogProposal {
   // since gone stale. Keeps the periodic sweep off a sequential scan.
   @@index([status, applyStartedAt])
   @@map("pending_backlog_proposal")
+}
+
+// One row per applied change of a proposal. Written in the same transaction as the
+// Fabric mutation it records, so a retry after a crash cannot re-apply a change.
+model PendingBacklogProposalApplication {
+  id                String   @id @default(cuid())
+  proposalId        String
+  changeIndex       Int
+  createdEntityType String? // "story" | "bug"
+  createdEntityId   String?
+  action            String // "create" | "update"
+  createdAt         DateTime @default(now())
+
+  proposal PendingBacklogProposal @relation(fields: [proposalId], references: [id], onDelete: Cascade)
+
+  @@unique([proposalId, changeIndex])
+  @@index([proposalId])
+  @@map("pending_backlog_proposal_application")
+}
+
+// Governed profile: who may approve drafting-stage transitions on a project.
+model ProjectStageApprover {
+  projectId String
+  userId    String
+  createdAt DateTime @default(now())
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([projectId, userId])
+  @@index([userId])
+  @@map("project_stage_approver")
+}
+
+// Governed profile: a requested drafting-stage transition awaiting review.
+// Partial unique (storyId) WHERE status = 'PENDING' enforced in SQL.
+model StageTransitionRequest {
+  id             String                       @id @default(cuid())
+  projectId      String
+  storyId        String
+  requestedById  String
+  userId         String?
+  organizationId String?
+  fromStage      FeatureDraftingStage
+  toStage        FeatureDraftingStage
+  patch          Json? // description / acceptanceCriteria to apply on approval
+  reason         String
+  status         StageTransitionRequestStatus @default(PENDING)
+  reviewedById   String?
+  reviewedAt     DateTime?
+  reviewNote     String?
+  createdAt      DateTime                     @default(now())
+
+  project      Project       @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  story        UserStory     @relation(fields: [storyId], references: [id], onDelete: Cascade)
+  requestedBy  User          @relation("StageTransitionRequestedBy", fields: [requestedById], references: [id], onDelete: Cascade)
+  reviewedBy   User?         @relation("StageTransitionReviewedBy", fields: [reviewedById], references: [id])
+  organization Organization? @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([projectId, status])
+  @@index([storyId])
+  @@index([userId])
+  @@index([organizationId])
+  @@map("stage_transition_request")
+}
+
+enum EstimateConfidence {
+  LOW
+  MEDIUM
+  HIGH
+}
+
+enum DiscoveryRunStatus {
+  QUEUED
+  RUNNING
+  CONTRACT_READY
+  COMPLETED
+  FAILED
+  CANCELLED
 }
 
 enum BacklogProposalDraftStatus {
@@ -4758,6 +4868,76 @@ model BacklogUpdateSession {
   @@index([userId])
   @@index([organizationId])
   @@map("backlog_update_session")
+}
+
+// A Discovery run inspects the customer's systems (repo, OpenAPI, MCP) for a
+// DISCOVERY-track feature and produces an INTEGRATION_CONTRACT document plus
+// open questions (Slice 4). Partial unique (storyId) WHERE active enforced in SQL.
+model DiscoveryRun {
+  id             String             @id @default(cuid())
+  projectId      String
+  storyId        String
+  userId         String
+  organizationId String?
+  status         DiscoveryRunStatus @default(QUEUED)
+  sources        Json // { repo?: boolean; openApi?: { contextId } | { url }; mcpConfigIds?: string[] }
+  documentId     String?
+  workflowId     String?
+  error          String?            @db.Text
+  createdAt      DateTime           @default(now())
+  updatedAt      DateTime           @updatedAt
+
+  project      Project       @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  story        UserStory     @relation(fields: [storyId], references: [id], onDelete: Cascade)
+  user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organization Organization? @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([projectId])
+  @@index([storyId])
+  @@index([userId])
+  @@index([organizationId])
+  @@index([status])
+  @@map("discovery_run")
+}
+
+enum MetricDirection {
+  UP // higher is better
+  DOWN // lower is better
+}
+
+enum MetricSourceKind {
+  MANUAL
+  WEBHOOK
+}
+
+// Success metrics agreed with the customer; observations arrive manually or via a
+// signed webhook. Feeds the Daily Brief "metric_drift" priority and the customer
+// outcomes page (Slice 8).
+model ProjectSuccessMetric {
+  id                String           @id @default(cuid())
+  projectId         String
+  userId            String
+  organizationId    String?
+  name              String
+  description       String?          @db.Text
+  direction         MetricDirection  @default(UP)
+  target            Float?
+  sourceKind        MetricSourceKind @default(MANUAL)
+  webhookSecretHash String? // sha256 of the webhook secret; the secret itself is never stored
+  lastValue         Float?
+  previousValue     Float?
+  lastObservedAt    DateTime?
+  createdAt         DateTime         @default(now())
+  updatedAt         DateTime         @updatedAt
+
+  project      Project       @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organization Organization? @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([projectId])
+  @@index([userId])
+  @@index([organizationId])
+  @@map("project_success_metric")
 }
 
 // Project Presence - Real-time tracking of who is viewing a project
@@ -5605,6 +5785,7 @@ enum StorySource {
   // ingested from a CI/pipeline run (RCA→BUG). Gated per-project by
   // Project.autoCreateBugsFromFailures.
   PIPELINE_FAILURE
+  IMPORTED_SCOPE
 }
 
 enum StoryTitleSource {
@@ -5962,6 +6143,23 @@ model UserStory {
   // proposals are prunable, and a hard FK would either block their deletion or
   // cascade into work items.
   createdFromProposalId     String?
+  // Scope intake provenance. sourceRef is the customer's own line ID (e.g. "VIS-02") — NOT externalId,
+  // which is the PM-tool ID used by pm-sync. Partial unique (projectId, sourceRef) enforced in SQL.
+  sourceRef              String?
+  // Idempotency key for rows created by applying a proposal change:
+  // "proposal:<proposalId>:<changeIndex>". Partial unique enforced in SQL so a
+  // retried apply cannot create the row twice (plan §F3).
+  proposalApplicationKey String?
+  sourceDependencyRaw    String? // Raw dependency cell from the source document, e.g. "P1–2"
+  dependsOnRefs          String[]             @default([]) // Explicit item edges by sourceRef
+  dependsOnPhases        String[]             @default([]) // Phase-horizon dependencies, e.g. ["1","2"]
+  // Delivery track (SPIKE / DISCOVERY / SPECIFY / DEFER). Set by the classifier (AI) or a human.
+  deliveryTrack          DeliveryTrack        @default(UNCLASSIFIED)
+  trackRationale         String?              @db.Text
+  trackSetBy             TrackSetBy?
+  trackUpdatedAt         DateTime?
+  // Proposal estimate confidence (Slice 7). SPIKE items default LOW until a spike is accepted.
+  estimateConfidence     EstimateConfidence?
   // Telemetry for AI-generated titles. `aiGeneratedTitle` defaults to false so
   // existing rows are unaffected (forward-looking only — no backfill per
   // Decision 9). `titleSource` is null for legacy rows; populated on insert
@@ -6143,6 +6341,8 @@ model UserStory {
   // primary guarantee; this constraint guards against bugs in the allocator or
   // out-of-band data writes.
   @@unique([projectId, identifier])
+  stageTransitionRequests StageTransitionRequest[]
+  discoveryRuns           DiscoveryRun[]
   @@index([projectId])
   @@index([statusId])
   @@index([createdById])
@@ -6157,6 +6357,8 @@ model UserStory {
   @@index([sourceMeetingTranscriptId])
   // RCA→BUG dedup: "is there already a bug for this test case?"
   @@index([originTestCaseId])
+  @@index([projectId, sourceRef])
+  @@index([projectId, deliveryTrack])
   @@map("user_story")
 }
 
@@ -10790,6 +10992,37 @@ enum ProjectDocumentType {
   TEST_REPORT // Outcome of a test run, versioned alongside the feature
   TRACEABILITY_MATRIX // Point-in-time export of AC -> case coverage
   SRS // Software Requirements Specification
+  INTEGRATION_CONTRACT // Per-feature system contract produced by a Discovery run (Slice 4)
+}
+
+// How an engagement is run: controls intake, default delivery track, gate strictness,
+// visible hierarchy and customer-facing surfaces. See docs/features/inverted-loop-delivery-tracks.md §1.2
+enum EngagementProfile {
+  EXPLORE
+  PROPOSAL
+  GOVERNED
+  DELEGATED
+}
+
+// Delivery track of a work item (UserStory). Decides the readiness gate before PUBLISHED and the run type.
+enum DeliveryTrack {
+  UNCLASSIFIED
+  SPIKE
+  DISCOVERY
+  SPECIFY
+  DEFER
+}
+
+enum TrackSetBy {
+  AI
+  HUMAN
+}
+
+enum StageTransitionRequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  SUPERSEDED
 }
 
 enum ProjectDocumentStatus {
@@ -11605,6 +11838,10 @@ model AgentWorkspaceFile {
   conversationId String? // Associated conversation (optional)
   userId         String
   organizationId String?
+  // Project-scoped frames (spike demos). When set, the frame is readable by every
+  // authorized member of the project, not only its creator (Slice 3).
+  projectId      String?
+  storyId        String?
 
   // File metadata
   path      String // Virtual path (e.g., "/documents/report.md")
@@ -11650,6 +11887,8 @@ model AgentWorkspaceFile {
   newerVersions   AgentWorkspaceFile[] @relation("FileVersions")
 
   @@unique([userId, organizationId, path]) // Unique path per user/org
+  @@index([projectId])
+  @@index([storyId])
   @@index([conversationId])
   @@index([userId])
   @@index([organizationId])
@@ -11685,6 +11924,7 @@ enum FrameShareScope {
   EMAILS_ONLY
   WORKSPACE_AND_EMAILS
   PUBLIC
+  PROJECT // Visible to every authorized member of the frame's project
 }
 
 // Autonomy levels for orchestrator execution
@@ -15853,10 +16093,18 @@ enum CodingRunStatus {
   RUNNING
   AWAITING_REVIEW
   PR_OPENED
+  DEMO_READY // Spike: demo + findings ready for a human to play with and accept
   COMPLETED
   FAILED
   CANCELLED
   TERMINATED_STALE
+}
+
+// What a coding run produces. IMPLEMENT ends in a pull request; SPIKE ends in a
+// demo (Frame) + findings and never opens a PR (plan §1.3 / Slice 3).
+enum CodingRunKind {
+  IMPLEMENT
+  SPIKE
 }
 
 // ---------------------------------------------------------------------------
@@ -15941,6 +16189,17 @@ model CodingRun {
   pullRequestUrl    String?
   pullRequestNumber Int?
   pullRequestBranch String?
+  // Set by the Daily Brief GitHub collector when the PR is observed merged (Slice 8 "shipped" evidence)
+  mergedAt          DateTime?
+
+  // Spike runs (Slice 3): question, throwaway branch, artifacts, and what a human decided
+  kind          CodingRunKind @default(IMPLEMENT)
+  spikeQuestion String?       @db.Text
+  spikeBranch   String?
+  findings      String?       @db.Text
+  playNotes     String?       @db.Text // Recorded at acceptance: who tried it, what happened, decision
+  demoFrameId   String?
+  demoUrl       String?
 
   // Prompt sent to the agent
   promptText String? @db.Text
@@ -15978,6 +16237,7 @@ model CodingRun {
   @@index([status])
   @@index([weaveExecutionId])
   @@index([status, startedAt])
+  @@index([kind])
   @@map("coding_run")
 }
 
@@ -16262,8 +16522,9 @@ model WeaveExecution {
   organizationId String?
 
   // Relations
-  planId    String
-  projectId String // Denormalized for easier queries
+  planId      String
+  projectId   String // Denormalized for easier queries
+  userStoryId String? // Denormalized from WeavePlan so an active-execution partial unique index can live on this table
 
   // Temporal
   workflowId String
@@ -16292,6 +16553,7 @@ model WeaveExecution {
 
   @@index([planId])
   @@index([projectId])
+  @@index([userStoryId])
   @@index([userId, organizationId])
   @@index([workflowId])
   @@index([status, startedAt])

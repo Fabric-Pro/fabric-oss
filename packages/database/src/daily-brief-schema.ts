@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-export const DAILY_BRIEF_SCHEMA_VERSION = 2;
+export const DAILY_BRIEF_SCHEMA_VERSION = 3;
 
 export const timeWindowKindSchema = z.enum([
 	"LAST_24H",
@@ -29,6 +29,9 @@ export const priorityActionKindSchema = z.enum([
 	"unresolved_dependency",
 	"story_stale",
 	"pr_review_stale",
+	// v3 (Slice 8): a success metric moved against its direction, missed its
+	// target, or has not been observed for a while.
+	"metric_drift",
 ]);
 export type PriorityActionKind = z.infer<typeof priorityActionKindSchema>;
 
@@ -38,12 +41,14 @@ export const priorityActionSchema = z.object({
 	whyItMatters: z.string(),
 	targetCuid: z.string(),
 	targetIdentifier: z.string(),
+	// `metric` (v3) targets a ProjectSuccessMetric; `targetCuid` is the metric id.
 	targetType: z.enum([
 		"story",
 		"task",
 		"document",
 		"scan",
 		"architecture_decision",
+		"metric",
 	]),
 	fabricLink: z.string(),
 	assigneeUserId: z.string().optional(),
@@ -188,7 +193,14 @@ export type MeetingItem = z.infer<typeof meetingItemSchema>;
 
 export const teamsProposalItemSchema = baseItem.extend({
 	proposalCuid: z.string(),
-	status: z.enum(["PENDING", "APPROVED", "APPLIED", "REJECTED", "FAILED"]),
+	status: z.enum([
+		"PENDING",
+		"APPROVED",
+		"APPLYING",
+		"APPLIED",
+		"REJECTED",
+		"FAILED",
+	]),
 	changeCount: z.number().int(),
 	summary: z.string().optional(),
 	channelName: z.string().optional(),
@@ -205,6 +217,8 @@ export const partialFailureSchema = z.object({
 		"github",
 		"ahead",
 		"releaseNotes",
+		// v3 (Slice 8): success-metric drift collector.
+		"metrics",
 	]),
 	reason: z.string(),
 });
@@ -275,8 +289,37 @@ export const aheadItemSchema = z.object({
 });
 export type AheadItem = z.infer<typeof aheadItemSchema>;
 
+// ---------------------------------------------------------------------------
+// v3 additions (Slice 8 — success metrics). Optional so v1/v2 blobs remain valid.
+// ---------------------------------------------------------------------------
+
+export const metricDriftReasonSchema = z.enum([
+	"moved_against_direction",
+	"missed_target",
+	"stale_observation",
+]);
+export type MetricDriftReason = z.infer<typeof metricDriftReasonSchema>;
+
+/**
+ * One drifting success metric. Values are the metric's own numbers; no
+ * customer-facing names beyond the metric name the team chose.
+ */
+export const metricDriftItemSchema = z.object({
+	metricId: z.string(),
+	name: z.string(),
+	direction: z.enum(["UP", "DOWN"]),
+	target: z.number().nullable(),
+	lastValue: z.number().nullable(),
+	previousValue: z.number().nullable(),
+	lastObservedAt: z.coerce.date().nullable(),
+	reasons: z.array(metricDriftReasonSchema).min(1),
+});
+export type MetricDriftItem = z.infer<typeof metricDriftItemSchema>;
+
 export const dailyBriefContentSchema = z.object({
-	schemaVersion: z.union([z.literal(1), z.literal(2)]),
+	// Stored briefs from every prior version must keep parsing; only the
+	// constant above moves. See __tests__/daily-brief-schema-v3.test.ts.
+	schemaVersion: z.union([z.literal(1), z.literal(2), z.literal(3)]),
 	executiveSummary: z.string(),
 	priorityActions: z.array(priorityActionSchema),
 	sections: dailyBriefSectionsSchema,
@@ -299,6 +342,8 @@ export const dailyBriefContentSchema = z.object({
 	 * `latestProdRelease`. Optional + additive → rollback-safe (old readers strip it).
 	 */
 	latestProdReleasesByRepo: z.array(deploymentItemSchema).optional(),
+	// v3
+	metricDrift: z.array(metricDriftItemSchema).optional(),
 });
 export type DailyBriefContent = z.infer<typeof dailyBriefContentSchema>;
 

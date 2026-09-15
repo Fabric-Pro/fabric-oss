@@ -6,6 +6,7 @@ import type { DecisionPrecheckResult } from "@repo/agent-types";
 import { CopilotAssistantMessageForBacklogUpdater } from "@saas/shared/components/copilot/CopilotAssistantMessage";
 import { useCopilotChatSession } from "@saas/shared/components/copilot/CopilotChatSessionProvider";
 import "@copilotkit/react-ui/styles.css";
+import type { EngagementProfile } from "@repo/database";
 import { useOrganizationContext } from "@saas/organizations/hooks/use-organization-context";
 import { useQueryClient } from "@tanstack/react-query";
 import { Button } from "@ui/components/button";
@@ -26,6 +27,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { orpcClient } from "../../../../shared/lib/orpc-client";
 import { orpc } from "../../../../shared/lib/orpc-query-utils";
+import { resolveBacklogChatIntake } from "../../lib/backlog-chat-intake";
 import { resolveTeamsFetchDecision } from "../../lib/teams-fetch-decision";
 import { BacklogChangeProposal } from "./BacklogChangeProposal";
 import {
@@ -38,6 +40,8 @@ import { MEETINGS_STALE_TIME } from "./use-project-meetings";
 type BacklogUpdaterState = {
 	projectId: string;
 	projectName: string;
+	/** Engagement profile of the project (drives the Explore intake). */
+	engagementProfile?: EngagementProfile | null;
 	organizationId?: string;
 	hasTeamsIntegration: boolean;
 	hasSlackIntegration: boolean;
@@ -54,6 +58,8 @@ type BacklogUpdaterState = {
 type Props = {
 	projectId: string;
 	projectName: string;
+	/** Engagement profile of the project (drives the Explore intake). */
+	engagementProfile?: EngagementProfile | null;
 	hasTeamsIntegration: boolean;
 	hasSlackIntegration: boolean;
 	hasNotionIntegration: boolean;
@@ -200,6 +206,7 @@ function createBacklogSidebarHeader(onOpenSessionHistory?: () => void) {
 export function BacklogChat({
 	projectId,
 	projectName,
+	engagementProfile,
 	hasTeamsIntegration,
 	hasSlackIntegration,
 	hasNotionIntegration,
@@ -219,6 +226,15 @@ export function BacklogChat({
 	// proposal itself surfaces in the Review proposals inbox's Failed
 	// group, where it can be retried.
 	const queryClient = useQueryClient();
+
+	// Engagement profile decides the intake (plan Slice 6): under EXPLORE
+	// the chat is the intake and the analysis runs in "explore" mode. The
+	// hosting surface already holds the project, so it passes the profile in
+	// rather than this panel fetching it again.
+	const intake = resolveBacklogChatIntake(
+		engagementProfile ?? null,
+		projectName,
+	);
 
 	// Local state for progress messages shown in render callbacks
 	const [analysisProgressMsg, setAnalysisProgressMsg] = useState("");
@@ -729,8 +745,12 @@ export function BacklogChat({
 					pmConfig,
 					userPrompt:
 						args.userPrompt ??
-						"Analyze context and suggest backlog updates",
+						(intake.intakeMode === "explore"
+							? "Propose the first spikes for this hunch"
+							: "Analyze context and suggest backlog updates"),
 					conversationId,
+					intakeMode:
+						intake.intakeMode === "explore" ? "explore" : undefined,
 				});
 
 				if (!result.workflowId) {
@@ -1008,6 +1028,7 @@ export function BacklogChat({
 				analysisDecisionConflicts ??
 				storedProposal?.decisionConflicts ??
 				null;
+			const visionSuggestions = storedProposal?.visionSuggestions ?? null;
 
 			return (
 				<BacklogChangeProposal
@@ -1017,6 +1038,7 @@ export function BacklogChat({
 					changes={changes}
 					decisionConflicts={decisionConflicts}
 					decisionPrecheckPending={decisionPrecheckPending}
+					visionSuggestions={visionSuggestions}
 					hasPMTool={hasPMTool}
 					pmToolName={pmToolName}
 					projectId={projectId}
@@ -1399,24 +1421,33 @@ export function BacklogChat({
 				defaultOpen={true}
 				clickOutsideToClose={false}
 				labels={{
-					title: "AI Backlog Update",
+					title:
+						intake.intakeMode === "explore"
+							? "Explore: first spikes"
+							: "AI Backlog Update",
 					initial:
-						hasTeamsIntegration ||
-						hasSlackIntegration ||
-						hasNotionIntegration
-							? `I can help update your backlog for **${projectName}** based on new context from ${[
-									hasTeamsIntegration &&
-										"Teams messages & meetings",
-									hasSlackIntegration && "Slack messages",
-									hasNotionIntegration && "Notion pages",
-								]
-									.filter(Boolean)
-									.join(
-										" and ",
-									)}. What would you like to analyze?`
-							: `I can help manage your backlog for **${projectName}**. Connect Teams, Slack, or Notion in Settings to enable context-based analysis.`,
+						intake.intakeMode === "explore"
+							? intake.initialMessage
+							: hasTeamsIntegration ||
+									hasSlackIntegration ||
+									hasNotionIntegration
+								? `I can help update your backlog for **${projectName}** based on new context from ${[
+										hasTeamsIntegration &&
+											"Teams messages & meetings",
+										hasSlackIntegration && "Slack messages",
+										hasNotionIntegration && "Notion pages",
+									]
+										.filter(Boolean)
+										.join(
+											" and ",
+										)}. What would you like to analyze?`
+								: `I can help manage your backlog for **${projectName}**. Connect Teams, Slack, or Notion in Settings to enable context-based analysis.`,
 				}}
-				suggestions={suggestions}
+				suggestions={
+					intake.intakeMode === "explore"
+						? intake.suggestions
+						: suggestions
+				}
 				Header={BacklogHeader}
 				onSetOpen={(open) => {
 					if (!open) {

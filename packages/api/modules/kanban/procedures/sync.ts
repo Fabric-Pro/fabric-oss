@@ -5,7 +5,7 @@
  */
 
 import { ORPCError } from "@orpc/server";
-import { db, hasProjectAccess } from "@repo/database";
+import { db, hasProjectAccess, type ReadinessGap } from "@repo/database";
 import { z } from "zod";
 import {
 	Permissions,
@@ -13,10 +13,17 @@ import {
 	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
+import {
+	isStoryRunnable,
+	loadStoryReadiness,
+	readinessGapSchema,
+} from "../../projects/lib/run-readiness";
 
 /**
  * Push fabric stories to kanban queue.
  * Stories are added to KanbanQueue with PENDING status for local implementation.
+ * Stories that fail their delivery-track readiness gate (plan §F1 / Slice 5)
+ * are not queued; they are returned in `skipped` with the gap list.
  */
 export const pushToKanban = tenantProtectedProcedure
 	.use(requirePermission(Permissions.STORY_UPDATE))
@@ -44,6 +51,13 @@ export const pushToKanban = tenantProtectedProcedure
 					status: z.string(),
 				}),
 			),
+			/** Stories left out because their readiness gate is not met. */
+			skipped: z.array(
+				z.object({
+					storyId: z.string(),
+					missing: z.array(readinessGapSchema),
+				}),
+			),
 		}),
 	)
 	.handler(async ({ input, context }) => {
@@ -62,7 +76,7 @@ export const pushToKanban = tenantProtectedProcedure
 		}
 
 		// Fetch stories to push (only those not already in queue with pending status)
-		const stories = await db.userStory.findMany({
+		const candidates = await db.userStory.findMany({
 			where: {
 				projectId: input.projectId,
 				...(input.storyIds?.length
@@ -79,6 +93,23 @@ export const pushToKanban = tenantProtectedProcedure
 				priority: true,
 			},
 		});
+
+		// Readiness gate (plan §F1 / Slice 5): PUBLISHED alone is not enough;
+		// the story must also pass its delivery-track gate at start time.
+		// Not-ready stories are reported, never queued.
+		const skipped: { storyId: string; missing: ReadinessGap[] }[] = [];
+		const stories: typeof candidates = [];
+		for (const story of candidates) {
+			const readiness = await loadStoryReadiness({
+				storyId: story.id,
+				projectId: input.projectId,
+			});
+			if (isStoryRunnable(readiness)) {
+				stories.push(story);
+			} else {
+				skipped.push({ storyId: story.id, missing: readiness.missing });
+			}
+		}
 
 		// Create kanban queue entries for each story
 		const queueEntries = [];
@@ -119,6 +150,7 @@ export const pushToKanban = tenantProtectedProcedure
 				title: s.title,
 				status: "PENDING",
 			})),
+			skipped,
 		};
 	});
 

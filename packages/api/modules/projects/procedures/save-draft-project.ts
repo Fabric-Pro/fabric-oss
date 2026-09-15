@@ -1,5 +1,9 @@
 import { ORPCError } from "@orpc/client";
-import { type Prisma, upsertDraftProjectByKey } from "@repo/database";
+import {
+	engagementProfileSchema,
+	type Prisma,
+	upsertDraftProjectByKey,
+} from "@repo/database";
 import { z } from "zod";
 import {
 	Permissions,
@@ -66,6 +70,18 @@ export const saveDraftProjectProcedure = tenantProtectedProcedure
 				.record(z.string(), z.unknown())
 				.nullable()
 				.optional(),
+			// Engagement profile + vision (typed columns; survive activation)
+			engagementProfile: engagementProfileSchema.optional(),
+			quotedPhases: z
+				.array(z.string().trim().min(1).max(50))
+				.max(50)
+				.optional(),
+			visionPurpose: z.string().max(5000).optional(),
+			visionCoreActions: z
+				.array(z.string().trim().min(1).max(200))
+				.max(20)
+				.optional(),
+			visionCycle: z.string().max(1000).optional(),
 			// Wizard-only ephemera — bundled into wizardState JSON blob, nulled on activation.
 			// Loose schemas (z.record/z.unknown) keep the server tolerant to client-side
 			// type evolution; the server doesn't introspect these, only round-trips them.
@@ -220,6 +236,11 @@ export const saveDraftProjectProcedure = tenantProtectedProcedure
 				projectManagementContainerName:
 					input.projectManagementContainerName,
 				projectManagementAdditionalContext,
+				engagementProfile: input.engagementProfile,
+				quotedPhases: input.quotedPhases,
+				visionPurpose: input.visionPurpose,
+				visionCoreActions: input.visionCoreActions,
+				visionCycle: input.visionCycle,
 			});
 
 			return {
@@ -228,6 +249,11 @@ export const saveDraftProjectProcedure = tenantProtectedProcedure
 					name: project.name,
 					draftKey: project.draftKey,
 					wizardState: project.wizardState,
+					engagementProfile: project.engagementProfile,
+					visionPurpose: project.visionPurpose,
+					visionCoreActions: project.visionCoreActions,
+					visionCycle: project.visionCycle,
+					quotedPhases: project.quotedPhases,
 				},
 				created,
 			};

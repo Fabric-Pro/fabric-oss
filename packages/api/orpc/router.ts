@@ -29,6 +29,7 @@ import { notificationsRouter } from "../modules/notifications/router";
 import { openapiRouter } from "../modules/openapi/router";
 import { orchestratorRouter } from "../modules/orchestrator/router";
 import { organizationsRouter } from "../modules/organizations/router";
+import { outcomesRouter } from "../modules/outcomes/router";
 import { paymentsRouter } from "../modules/payments/router";
 import { pipelineRouter } from "../modules/pipeline/router";
 import { projectsRouter } from "../modules/projects/router";
@@ -85,6 +86,7 @@ export const router = publicProcedure
 		openapi: openapiRouter,
 		orchestrator: orchestratorRouter,
 		organizations: organizationsRouter,
+		outcomes: outcomesRouter,
 		payments: paymentsRouter,
 		pipeline: pipelineRouter,
 		projects: projectsRouter,

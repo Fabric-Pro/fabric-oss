@@ -5,8 +5,10 @@ import {
 } from "../src/daily-brief-schema";
 
 describe("daily-brief schema v2", () => {
-	it("exposes schema version 2", () => {
-		expect(DAILY_BRIEF_SCHEMA_VERSION).toBe(2);
+	it("exposes at least schema version 2", () => {
+		// Bumped to 3 by Slice 8 (metric_drift); the v3 suite pins the exact
+		// value, this suite only guards that v2 content still parses.
+		expect(DAILY_BRIEF_SCHEMA_VERSION).toBeGreaterThanOrEqual(2);
 	});
 
 	it("parses a v2 content blob with all new optional fields", () => {

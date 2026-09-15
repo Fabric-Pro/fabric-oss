@@ -3,6 +3,7 @@ import {
 	buildDocumentLink,
 	db,
 	hasProjectAccess,
+	IntegrationContractStatusManagedError,
 	updateDocument,
 } from "@repo/database";
 import { ProjectDocumentStatusSchema } from "@repo/database/prisma/zod";
@@ -91,6 +92,7 @@ export const updateDocumentProcedure = tenantProtectedProcedure
 				content: true,
 				title: true,
 				status: true,
+				type: true,
 				version: true,
 			},
 		});
@@ -105,6 +107,23 @@ export const updateDocumentProcedure = tenantProtectedProcedure
 		if (!prior || prior.projectId !== input.projectId) {
 			throw new ORPCError("NOT_FOUND", { message: "Document not found" });
 		}
+		// Integration contracts (Discovery runs, plan Slice 4) change status only
+		// through `projects.discovery.markContractComplete`, which completes the
+		// owning run in the same transaction. Letting the generic update set
+		// COMPLETE would satisfy the readiness gate while the run stayed active
+		// under the one-active-run index (review sprint3 #4). Content and title
+		// edits remain allowed here.
+		if (
+			prior.type === "INTEGRATION_CONTRACT" &&
+			input.status !== undefined &&
+			input.status !== prior.status
+		) {
+			throw new ORPCError("PRECONDITION_FAILED", {
+				message:
+					"Integration contract status is managed by the discovery run. Use Mark contract complete (projects.discovery.markContractComplete).",
+				data: { code: "INTEGRATION_CONTRACT_STATUS_MANAGED" },
+			});
+		}
 
 		// Update document
 		// TENANT ISOLATION: Pass userId and organizationId for DocumentVersion tenant filtering
@@ -117,6 +136,17 @@ export const updateDocumentProcedure = tenantProtectedProcedure
 			userId: user.id,
 			organizationId,
 			skipVersionBump: input.skipVersionBump,
+		}).catch((error: unknown) => {
+			// The query layer is the last line of defence for contract status
+			// (a completion may land between the pre-read above and its own
+			// read); map it to the same documented error.
+			if (error instanceof IntegrationContractStatusManagedError) {
+				throw new ORPCError("PRECONDITION_FAILED", {
+					message: error.message,
+					data: { code: error.code },
+				});
+			}
+			throw error;
 		});
 
 		// Only embed when the save actually changed content — update-document

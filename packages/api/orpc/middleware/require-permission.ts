@@ -25,6 +25,7 @@ import {
 	hasPermission,
 	type Permission,
 	resolveOrgPermissions,
+	resolveProjectPermissions,
 } from "@repo/permissions";
 import { runWithProjectContext } from "@repo/utils/project-context";
 import { resolveEffectiveProjectPermissions } from "../../lib/effective-project-permissions";
@@ -519,4 +520,62 @@ export function getPermissionFromMiddleware(
 		return (mw as TaggedMiddleware)[PERMISSION_MIDDLEWARE_TAG];
 	}
 	return undefined;
+}
+
+/**
+ * In-handler permission check for a project, using the same resolution
+ * order as `requireProjectPermission` (personal owner → active ProjectMember
+ * row → org role). Use when a procedure needs a *second*, finer permission on
+ * one code path only (e.g. `PROJECT_GOVERNANCE_MANAGE` to clear existing
+ * stories under a GOVERNED profile) without gating the whole procedure.
+ *
+ * Fails closed: any lookup error or missing project yields `false`.
+ */
+export async function userHasProjectPermission(params: {
+	userId: string;
+	projectId: string;
+	permission: Permission;
+}): Promise<boolean> {
+	const { userId, projectId, permission } = params;
+	try {
+		const project = await db.project.findUnique({
+			where: { id: projectId },
+			select: { id: true, organizationId: true, userId: true },
+		});
+		if (!project) {
+			return false;
+		}
+		if (project.userId === userId && project.organizationId === null) {
+			return true;
+		}
+		const member = await db.projectMember.findUnique({
+			where: { projectId_userId: { projectId, userId } },
+			select: { role: true, acceptedAt: true, expiresAt: true },
+		});
+		const memberActive =
+			member !== null &&
+			member.acceptedAt !== null &&
+			(member.expiresAt === null || member.expiresAt > new Date());
+		if (memberActive) {
+			return hasPermission(
+				resolveProjectPermissions(member.role),
+				permission,
+			);
+		}
+		if (project.organizationId) {
+			const orgMember = await db.member.findFirst({
+				where: { organizationId: project.organizationId, userId },
+				select: { role: true },
+			});
+			if (orgMember) {
+				return hasPermission(
+					resolveOrgPermissions(orgMember.role),
+					permission,
+				);
+			}
+		}
+		return false;
+	} catch {
+		return false;
+	}
 }

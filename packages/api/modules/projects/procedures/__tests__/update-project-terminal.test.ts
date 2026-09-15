@@ -4,7 +4,14 @@ const mockUpdateProject = vi.fn();
 const mockGetProject = vi.fn();
 const mockSeed = vi.fn();
 
-vi.mock("@repo/database", () => ({
+vi.mock("@repo/database", async () => ({
+	engagementProfileSchema: (await import("zod")).z.enum([
+		"EXPLORE",
+		"PROPOSAL",
+		"GOVERNED",
+		"DELEGATED",
+	]),
+
 	db: { project: { findUnique: (...a: unknown[]) => mockGetProject(...a) } },
 	updateProject: (...a: unknown[]) => mockUpdateProject(...a),
 	getProjectById: (...a: unknown[]) => mockGetProject(...a),

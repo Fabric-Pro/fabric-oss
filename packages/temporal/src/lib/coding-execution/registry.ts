@@ -4,21 +4,31 @@ import type {
 } from "@repo/database/prisma/generated/client";
 import {
 	BackgroundAgentsProvider,
+	FABRIC_BACKGROUND_CAPABILITIES,
 	FabricBackgroundAdapter,
 } from "./background-agents-provider";
 import { env } from "./env";
 import { RateLimitError } from "./errors";
 import {
+	KANBAN_LOCAL_CAPABILITIES,
 	KanbanLocalAdapter,
 	LocalKanbanProvider,
 } from "./local-kanban-provider";
-import type { CodingExecutionProvider } from "./provider";
+import type {
+	CodingExecutionProvider,
+	CodingExecutionProviderCapabilities,
+} from "./provider";
 
 export interface CodingExecutionAdapterDefinition {
 	provider: CodingRunProvider;
 	executionChannel: CodingRunExecutionChannel;
 	adapterName: "FabricBackgroundAdapter" | "KanbanLocalAdapter";
 	requiresWorkingDirectory: boolean;
+	/**
+	 * Capability flags (plan §F4), readable without constructing the
+	 * adapter. Same object the adapter instance exposes.
+	 */
+	capabilities: CodingExecutionProviderCapabilities;
 	create: () => CodingExecutionProvider;
 }
 
@@ -86,6 +96,7 @@ const CODING_EXECUTION_ADAPTERS: Record<
 		executionChannel: "BACKGROUND_AGENTS",
 		adapterName: "FabricBackgroundAdapter",
 		requiresWorkingDirectory: false,
+		capabilities: FABRIC_BACKGROUND_CAPABILITIES,
 		create: () => new BackgroundAgentsProvider(),
 	},
 	KANBAN_LOCAL: {
@@ -93,6 +104,7 @@ const CODING_EXECUTION_ADAPTERS: Record<
 		executionChannel: "LOCAL_AGENTS",
 		adapterName: "KanbanLocalAdapter",
 		requiresWorkingDirectory: true,
+		capabilities: KANBAN_LOCAL_CAPABILITIES,
 		create: () => new LocalKanbanProvider(),
 	},
 };

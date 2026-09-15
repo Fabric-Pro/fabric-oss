@@ -90,6 +90,10 @@ import {
 } from "../../lib/implementation-session-runtime";
 import { formatLastEditSource } from "../../lib/last-edit-source-copy";
 import {
+	getPendingStageRequest,
+	getReadinessErrorGaps,
+} from "../../lib/stories/readiness";
+import {
 	buildProjectSettingsRoute,
 	buildStoryDetailsRoute,
 } from "../../lib/stories/routes";
@@ -100,6 +104,9 @@ import type {
 	UserStory,
 } from "../../lib/stories/types";
 import {
+	DELIVERY_TRACK_META,
+	DELIVERY_TRACK_TONE_CLASSES,
+	ESTIMATE_CONFIDENCE_META,
 	getMaturationStatus,
 	getPriorityLabel,
 	getSizeDescription,
@@ -143,6 +150,7 @@ const ACTIVE_CODING_RUN_STATUSES = new Set([
 	"RUNNING",
 	"AWAITING_REVIEW",
 	"PR_OPENED",
+	"DEMO_READY",
 ]);
 
 const ACTIVE_AGENT_STATUSES = new Set(["running", "working", "executing"]);
@@ -342,6 +350,7 @@ function StoryCardImpl({
 	const tDownload = useTranslations("projects.stories.download");
 	const tDuplicates = useTranslations("projects.stories.duplicates");
 	const tConvert = useTranslations("projects.stories.convertKind");
+	const tReadiness = useTranslations("projects.stories.readiness");
 	const queryClient = useQueryClient();
 	const lastActivityAt = story.lastEditedAt ?? story.createdAt;
 	// Per-format download actions for the kebab Download submenu. The hook
@@ -662,13 +671,37 @@ function StoryCardImpl({
 					context.previousList,
 				);
 			}
+			// Readiness gate (plan Slice 5): show the gap list, not a generic error.
+			const gaps = getReadinessErrorGaps(error);
+			if (gaps) {
+				toast.error(tReadiness("toasts.notReadyTitle"), {
+					description:
+						gaps.missing.length > 0
+							? gaps.missing
+									.map((gap) => tReadiness(`gaps.${gap}`))
+									.join(", ")
+							: error instanceof Error
+								? error.message
+								: undefined,
+				});
+				return;
+			}
 			toast.error(
 				error instanceof Error
 					? error.message
 					: `Failed to update ${story.kind === "BUG" ? "bug" : "feature"}`,
 			);
 		},
-		onSuccess: (_data, targetStage) => {
+		onSuccess: (data, targetStage) => {
+			// GOVERNED review: recorded as a request, not applied yet.
+			if (getPendingStageRequest(data)) {
+				toast.info(tReadiness("toasts.sentForApproval"), {
+					description: tReadiness(
+						"toasts.sentForApprovalDescription",
+					),
+				});
+				return;
+			}
 			toast.success(
 				targetStage === "CLOSED"
 					? `${story.kind === "BUG" ? "Bug" : "Feature"} hidden`
@@ -1159,6 +1192,55 @@ function StoryCardImpl({
 							</TooltipContent>
 						</Tooltip>
 
+						{/* Delivery track chip (hidden while unclassified) */}
+						{story.deliveryTrack &&
+							story.deliveryTrack !== "UNCLASSIFIED" && (
+								<Tooltip>
+									<TooltipTrigger asChild>
+										<span
+											data-testid="delivery-track-chip"
+											className={cn(
+												"inline-flex shrink-0 items-center rounded-sm border px-1.5 py-px text-[10px] font-medium uppercase tracking-[0.12em] leading-4",
+												DELIVERY_TRACK_TONE_CLASSES[
+													DELIVERY_TRACK_META[
+														story.deliveryTrack
+													].tone
+												].chip,
+											)}
+										>
+											{
+												DELIVERY_TRACK_META[
+													story.deliveryTrack
+												].shortLabel
+											}
+										</span>
+									</TooltipTrigger>
+									<TooltipContent className="max-w-xs">
+										<p className="font-medium">
+											{
+												DELIVERY_TRACK_META[
+													story.deliveryTrack
+												].label
+											}
+											{story.trackSetBy
+												? ` · ${story.trackSetBy === "AI" ? "AI" : "Human"}`
+												: ""}
+										</p>
+										<p className="mt-1 text-xs text-muted-foreground">
+											{story.trackRationale?.trim() ||
+												DELIVERY_TRACK_META[
+													story.deliveryTrack
+												].description}
+										</p>
+										<p className="mt-1 text-xs text-muted-foreground">
+											{tStories(
+												`track.${story.deliveryTrack}`,
+											)}
+										</p>
+									</TooltipContent>
+								</Tooltip>
+							)}
+
 						{/* Identifier — with the always-on "last activity" date
 						    stacked beneath it on the roadmap (showProvenance). */}
 						{showProvenance ? (
@@ -1438,6 +1520,53 @@ function StoryCardImpl({
 									<span className="text-[10px] font-mono text-muted-foreground/60 shrink-0">
 										{story.storyPoints}pt
 									</span>
+								)}
+
+								{/* Estimate confidence (inverted-loop Slice 7) */}
+								{story.estimateConfidence && (
+									<Tooltip>
+										<TooltipTrigger asChild>
+											<span
+												data-testid="estimate-confidence-chip"
+												className={cn(
+													"inline-flex shrink-0 items-center rounded-sm border px-1 py-px text-[9px] font-medium uppercase tracking-[0.12em] leading-4",
+													ESTIMATE_CONFIDENCE_META[
+														story.estimateConfidence
+													].chipClass,
+												)}
+											>
+												{
+													ESTIMATE_CONFIDENCE_META[
+														story.estimateConfidence
+													].shortLabel
+												}
+											</span>
+										</TooltipTrigger>
+										<TooltipContent className="max-w-xs">
+											<p className="font-medium">
+												{
+													ESTIMATE_CONFIDENCE_META[
+														story.estimateConfidence
+													].label
+												}
+											</p>
+											<p className="mt-1 text-xs text-muted-foreground">
+												{
+													ESTIMATE_CONFIDENCE_META[
+														story.estimateConfidence
+													].description
+												}
+											</p>
+											<p className="mt-1 text-xs text-muted-foreground">
+												{tStories(
+													`confidence.${story.estimateConfidence}`,
+												)}
+												{story.deliveryTrack === "SPIKE"
+													? ` ${tStories("confidenceSpikeLock")}`
+													: ""}
+											</p>
+										</TooltipContent>
+									</Tooltip>
 								)}
 
 								{/* Task count toggle */}
@@ -2357,6 +2486,7 @@ function TaskPreviewItem({
 									typeof CodingRunStatusBadge
 								>[0]["status"]
 							}
+							kind={task.latestCodingRun.kind}
 							provider={task.latestCodingRun.provider}
 							externalStatus={task.latestCodingRun.externalStatus}
 							providerMetadata={

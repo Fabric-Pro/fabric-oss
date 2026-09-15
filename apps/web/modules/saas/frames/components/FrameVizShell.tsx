@@ -58,6 +58,8 @@ interface FrameVizShellProps {
 	presentation?: "page" | "panel";
 	onClose?: () => void;
 	organizationId?: string | null;
+	/** Frame belongs to a project (rendered through the hardened sandbox). */
+	isProjectFrame?: boolean;
 }
 
 const RPC_TIMEOUT_MS = 5000;
@@ -84,6 +86,7 @@ export function FrameVizShell({
 	presentation = "page",
 	onClose,
 	organizationId,
+	isProjectFrame = false,
 }: FrameVizShellProps) {
 	const iframeRef = useRef<HTMLIFrameElement>(null);
 	const pendingRequestsRef = useRef<
@@ -589,6 +592,11 @@ export function FrameVizShell({
 											{isPublic ? (
 												<Badge>Shared</Badge>
 											) : null}
+											{isProjectFrame ? (
+												<Badge variant="outline">
+													Project
+												</Badge>
+											) : null}
 											<Badge variant="outline">
 												<Sparkles className="mr-1 h-3 w-3" />{" "}
 												Interactive
@@ -939,6 +947,7 @@ export function FrameVizShell({
 				<ShareFrameSheet
 					frameId={frameId}
 					organizationId={organizationId}
+					isProjectFrame={isProjectFrame}
 					open={shareSheetOpen}
 					onOpenChange={setShareSheetOpen}
 				/>

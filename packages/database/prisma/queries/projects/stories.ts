@@ -1,9 +1,17 @@
+import { splitInternalStoryTags } from "../../../src/story-internal-tags";
 /**
  * Database queries for User Stories & Tasks
  * Handles CRUD operations for Kanban board functionality
  */
 
 import {
+	enforceStageTransition,
+	type StageTransitionActor,
+	type StageTransitionReason,
+	writeStage,
+} from "../../../src/delivery/transition-story";
+import {
+	type DeliveryTrack,
 	db,
 	type FeatureDraftingStage,
 	type LastEditSource,
@@ -15,6 +23,7 @@ import {
 	type StoryPriority,
 	type StorySize,
 	type StorySource,
+	type TrackSetBy,
 } from "../../client";
 import { buildFabricStoryUrl, placeFabricBackLink } from "./fabric-url";
 import { recordPriorityMove } from "./priority-history";
@@ -826,7 +835,19 @@ export async function createStory(data: {
 	// callers that check-then-create. Only the MCP gateway's fabric_create_bug
 	// tool sets this today.
 	bugFingerprint?: string | null;
+	/** Delivery track preset (classifier or import). Defaults to UNCLASSIFIED. */
+	deliveryTrack?: DeliveryTrack;
+	trackRationale?: string;
+	trackSetBy?: TrackSetBy;
+	/** Scope-intake provenance (customer line id and dependency cells). */
+	sourceRef?: string;
+	/** Idempotency key for proposal-created rows: "proposal:<proposalId>:<changeIndex>". */
+	proposalApplicationKey?: string;
+	sourceDependencyRaw?: string;
+	dependsOnRefs?: string[];
+	dependsOnPhases?: string[];
 }) {
+	const markers = splitInternalStoryTags(data.labels);
 	// Get default status if not provided. Status resolution stays outside the
 	// allocator transaction so projects without seeded statuses don't deadlock
 	// on the default-status bootstrap (`createDefaultStoryStatuses` runs
@@ -852,6 +873,23 @@ export async function createStory(data: {
 		throw new Error("Default story status could not be resolved");
 	}
 	const resolvedStatusId = statusId;
+
+	// Creating directly at PUBLISHED must satisfy the same readiness gates as
+	// a transition (plan §F1). Creates are never routed to governed review.
+	if (data.draftingStage === "PUBLISHED") {
+		await enforceStageTransition(db, {
+			storyId: "",
+			projectId: data.projectId,
+			toStage: "PUBLISHED",
+			reason: "create",
+			candidate: {
+				deliveryTrack: data.deliveryTrack ?? "UNCLASSIFIED",
+				description: data.description ?? null,
+				acceptanceCriteria: data.acceptanceCriteria ?? null,
+				fromStage: "PLACEHOLDER",
+			},
+		});
+	}
 
 	// Allocate the per-project identifier and INSERT the row inside a single
 	// transaction so the `UPDATE "project" ... RETURNING` row lock and the
@@ -897,12 +935,37 @@ export async function createStory(data: {
 					storyPoints: data.storyPoints,
 					order,
 					roadmapOrder: order, // Mirror initial order so roadmap also starts in creation order
-					labels: data.labels ?? [],
+					// PM-tool labels only; `phase:`/`area:`/`priority:` markers become
+					// StoryTag rows so the PM sync never pushes them outward.
+					labels: markers.labels,
+					...(markers.tags.length > 0
+						? {
+								tags: {
+									create: markers.tags.map((value) => ({
+										value,
+										createdById: data.createdById,
+									})),
+								},
+							}
+						: {}),
 					createdById: data.createdById,
 					assigneeId: data.assigneeId,
 					pipelineExecutionId: data.pipelineExecutionId,
 					draftingStage: data.draftingStage ?? "PLACEHOLDER",
 					source: data.source,
+					// Delivery track + scope-intake provenance (plan Slices 1–2, 7).
+					// New SPIKE items start at LOW estimate confidence.
+					deliveryTrack: data.deliveryTrack ?? "UNCLASSIFIED",
+					estimateConfidence:
+						data.deliveryTrack === "SPIKE" ? "LOW" : undefined,
+					trackRationale: data.trackRationale,
+					trackSetBy: data.trackSetBy,
+					trackUpdatedAt: data.deliveryTrack ? new Date() : undefined,
+					sourceRef: data.sourceRef,
+					proposalApplicationKey: data.proposalApplicationKey,
+					sourceDependencyRaw: data.sourceDependencyRaw,
+					dependsOnRefs: data.dependsOnRefs ?? [],
+					dependsOnPhases: data.dependsOnPhases ?? [],
 					needsMoreInfo: data.needsMoreInfo ?? false,
 					reporterName: data.reporterName ?? null,
 					reporterSource: data.reporterSource ?? null,
@@ -1192,12 +1255,19 @@ export type UpdateStoryVersionContext = {
 	 */
 	prioritySource?: PriorityChangeSource;
 	priorityReason?: string | null;
+	/**
+	 * Why the stage is changing (for gate enforcement and governed review).
+	 * Defaults to "manual".
+	 */
+	transitionReason?: StageTransitionReason;
+	/** Approval path only: skip governed request creation. */
+	bypassGovernedReview?: boolean;
 };
 
 export async function updateStory(
 	storyId: string,
 	projectId: string,
-	data: UpdateStoryData,
+	requestedData: UpdateStoryData,
 	versionContext?: UpdateStoryVersionContext,
 	// Optional Prisma transaction client. When supplied, the read, the guarded
 	// write and the version snapshot all run inside the CALLER's transaction —
@@ -1241,6 +1311,48 @@ export async function updateStory(
 		if (!currentStory) {
 			throw new Error("Story not found");
 		}
+
+		// Stage-transition choke point (plan §F1). When the project requires
+		// review, the stage change is recorded as a request and NOT applied;
+		// the remaining fields are still written and the returned story
+		// carries `pendingStageRequestId`.
+		let pendingStageRequestId: string | undefined;
+		if (
+			requestedData.draftingStage !== undefined &&
+			requestedData.draftingStage !== currentStory.draftingStage
+		) {
+			const actor: StageTransitionActor | undefined =
+				versionContext?.userId
+					? {
+							userId: versionContext.userId,
+							organizationId:
+								versionContext.organizationId ?? null,
+						}
+					: undefined;
+			const stageDecision = await enforceStageTransition(tx, {
+				storyId,
+				projectId,
+				toStage: requestedData.draftingStage,
+				reason: versionContext?.transitionReason ?? "manual",
+				actor,
+				patch: {
+					description: requestedData.description,
+					acceptanceCriteria: requestedData.acceptanceCriteria,
+				},
+				bypassGovernedReview: versionContext?.bypassGovernedReview,
+			});
+			if (stageDecision.mode === "request") {
+				pendingStageRequestId = stageDecision.requestId;
+			}
+		}
+		const data: UpdateStoryData =
+			pendingStageRequestId !== undefined
+				? { ...requestedData, draftingStage: undefined }
+				: requestedData;
+		const withPending = <T extends object>(story: T) =>
+			pendingStageRequestId !== undefined
+				? { ...story, pendingStageRequestId }
+				: story;
 
 		const descriptionChanged =
 			data.description !== undefined &&
@@ -1417,7 +1529,7 @@ export async function updateStory(
 			if (!updated) {
 				throw new Error("Story not found after update");
 			}
-			return updated;
+			return withPending(updated);
 		}
 
 		const currentVersion = currentStory.version ?? 1;
@@ -1431,9 +1543,17 @@ export async function updateStory(
 			throw new StoryVersionConflictError(storyId);
 		}
 
-		// Optimistic concurrency guard: only update if version is unchanged.
+		// Optimistic concurrency guard: only update if version is unchanged
+		// (and, when the stage changes, if the stage is still what we read).
 		const updatedCount = await tx.userStory.updateMany({
-			where: { id: storyId, projectId, version: currentVersion },
+			where: {
+				id: storyId,
+				projectId,
+				version: currentVersion,
+				...(draftingStageChanged
+					? { draftingStage: currentStory.draftingStage }
+					: {}),
+			},
 			data: {
 				...writeData,
 				version: { increment: 1 },
@@ -1480,7 +1600,7 @@ export async function updateStory(
 			throw new Error("Story not found after update");
 		}
 
-		return updatedStory;
+		return withPending(updatedStory);
 	};
 
 	return existingTx ? await run(existingTx) : await db.$transaction(run);
@@ -1723,6 +1843,9 @@ export async function updateStoryDraftingStage(
 		changeDescription?: string;
 		lastEditedByName?: string | null;
 		lastEditedSource: LastEditSource;
+		transitionReason?: StageTransitionReason;
+		/** Approval path only: skip governed request creation. */
+		bypassGovernedReview?: boolean;
 	},
 	// Optional Prisma transaction client. When supplied, the read / version
 	// snapshot / stage update run against the caller's transaction — so a
@@ -1752,47 +1875,53 @@ export async function updateStoryDraftingStage(
 			return currentStory;
 		}
 
-		await client.featureVersion.createMany({
-			data: [
-				{
-					storyId,
-					version: currentStory.version ?? 1,
-					description: currentStory.description,
-					acceptanceCriteria: currentStory.acceptanceCriteria,
-					draftingStage: currentStory.draftingStage,
-					changeDescription:
-						versionContext?.changeDescription ?? null,
-					changedBy: versionContext?.changedBy ?? null,
-					userId: versionContext?.userId ?? null,
-					organizationId: versionContext?.organizationId ?? null,
-				},
-			],
-			skipDuplicates: true,
+		// Stage-transition choke point (plan §F1): readiness gates, DEFER
+		// rule, and GOVERNED review. Throws StageTransitionBlockedError when
+		// an enforced gate fails.
+		const decision = await enforceStageTransition(client, {
+			storyId,
+			projectId,
+			toStage: stage,
+			reason: versionContext?.transitionReason ?? "manual",
+			actor: versionContext?.userId
+				? {
+						userId: versionContext.userId,
+						organizationId: versionContext.organizationId ?? null,
+					}
+				: undefined,
+			bypassGovernedReview: versionContext?.bypassGovernedReview,
 		});
 
-		const changedAt = new Date();
-		const updatedCount = await client.userStory.updateMany({
-			where: {
-				id: storyId,
-				projectId,
-				// Concurrency token is the semantic edit clock: `updatedAt`
-				// moves on derived writes and would fail a legitimate save,
-				// while `version` is not advanced by this write so it could
-				// never fail at all. See updateStory for the full reasoning.
-				lastEditedAt: currentStory.lastEditedAt,
-			},
-			data: {
-				draftingStage: stage,
-				draftingStageUpdatedAt: changedAt,
-				pmAutoHidden: false,
-				lastEditedAt: changedAt,
-				lastEditedByName: versionContext.lastEditedByName ?? null,
-				lastEditedSource: versionContext.lastEditedSource,
-			},
-		});
-		if (updatedCount.count === 0) {
-			throw new StoryVersionConflictError(storyId);
+		if (decision.mode === "request") {
+			// Review required: nothing written to the story; the request is
+			// persisted in this transaction. Callers surface the request id.
+			return {
+				...currentStory,
+				pendingStageRequestId: decision.requestId,
+			};
 		}
+
+		if (decision.mode === "apply") {
+			// Snapshot + compare-and-swap on the stage we read (a concurrent
+			// stage change is never overwritten).
+			const changedAt = new Date();
+			await writeStage(client, {
+				storyId,
+				projectId,
+				fromStage: decision.fromStage,
+				toStage: stage,
+				versionContext,
+				// Last-edit provenance (conflict-dialog metadata) and the
+				// pmAutoHidden reset travel in the same statement as the stage.
+				extraData: {
+					pmAutoHidden: false,
+					lastEditedAt: changedAt,
+					lastEditedByName: versionContext.lastEditedByName ?? null,
+					lastEditedSource: versionContext.lastEditedSource,
+				},
+			});
+		}
+
 		const updated = await client.userStory.findUnique({
 			where: { id: storyId, projectId },
 			include: {

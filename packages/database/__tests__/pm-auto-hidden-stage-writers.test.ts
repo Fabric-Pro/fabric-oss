@@ -40,10 +40,19 @@ vi.mock("../prisma/client", () => ({
 	},
 }));
 
-// tx object passed into $transaction callbacks
+// tx object passed into $transaction callbacks. The stage-transition choke
+// point (`enforceStageTransition`, plan §F1) reads the project's stage policy
+// and the story's track/content through the same client, so those reads are
+// stubbed with an advisory (non-governed, gates off) project.
 const tx = {
 	userStory: {
 		findUnique: mocks.userStoryFindUnique,
+		findFirst: vi.fn(async () => ({
+			draftingStage: "DRAFT",
+			deliveryTrack: "SPECIFY",
+			description: "desc",
+			acceptanceCriteria: "ac",
+		})),
 		aggregate: mocks.userStoryAggregate,
 		update: mocks.userStoryUpdate,
 		updateMany: mocks.userStoryUpdateMany,
@@ -51,6 +60,23 @@ const tx = {
 	featureVersion: {
 		createMany: mocks.featureVersionCreateMany,
 		create: mocks.featureVersionCreate,
+	},
+	project: {
+		findUnique: vi.fn(async () => ({
+			engagementProfile: "PROPOSAL",
+			enforceSpecifyGate: false,
+			enforceSpikeGate: false,
+			enforceDiscoveryGate: false,
+			organizationId: "org-1",
+			userId: "owner-1",
+			_count: { stageApprovers: 0 },
+		})),
+	},
+	codingRun: { count: vi.fn(async () => 0) },
+	projectDocument: { findFirst: vi.fn(async () => null) },
+	stageTransitionRequest: {
+		updateMany: vi.fn(async () => ({ count: 0 })),
+		create: vi.fn(),
 	},
 };
 
@@ -216,7 +242,8 @@ describe("restoreFeatureVersion — pmAutoHidden always cleared", () => {
 			draftingStage: "CLOSED",
 		});
 		mocks.featureVersionCreate.mockResolvedValue({});
-		mocks.userStoryUpdate.mockResolvedValue({
+		mocks.userStoryUpdateMany.mockResolvedValue({ count: 1 });
+		mocks.userStoryFindUnique.mockResolvedValue({
 			id: "story-1",
 			status: null,
 			tasks: [],
@@ -228,7 +255,9 @@ describe("restoreFeatureVersion — pmAutoHidden always cleared", () => {
 			userId: "user-1",
 		});
 
-		expect(mocks.userStoryUpdate).toHaveBeenCalledWith(
+		// The restore write is a compare-and-swap on the stage that was read
+		// (stage-transition choke point, plan §F1), hence updateMany.
+		expect(mocks.userStoryUpdateMany).toHaveBeenCalledWith(
 			expect.objectContaining({
 				data: expect.objectContaining({ pmAutoHidden: false }),
 			}),

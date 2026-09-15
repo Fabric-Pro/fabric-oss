@@ -18,6 +18,8 @@ export { GeneratingState } from "./GeneratingState";
 export { GitHubActivityCard } from "./GitHubActivityCard";
 export { MeetingInsights } from "./MeetingInsights";
 export { MeetingsCard } from "./MeetingsCard";
+export type { MetricDriftPanelProps } from "./MetricDriftPanel";
+export { MetricDriftPanel } from "./MetricDriftPanel";
 export { PriorityActionsPanel } from "./PriorityActionsPanel";
 export { SourceCard } from "./SourceCard";
 export { StoryChangesCard } from "./StoryChangesCard";

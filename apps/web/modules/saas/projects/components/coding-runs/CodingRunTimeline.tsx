@@ -12,6 +12,7 @@ import {
 	ClockIcon,
 	CodeIcon,
 	ExternalLinkIcon,
+	FlaskConicalIcon,
 	GitBranchIcon,
 	GitPullRequestIcon,
 	Loader2Icon,
@@ -33,12 +34,16 @@ import {
 	asProviderMetadata,
 	formatPrimaryTaskLabel,
 } from "../../lib/implementation-session-runtime";
+import { asSpikeRunView } from "../../lib/spike-runs";
+import { SpikeRunCard } from "./SpikeRunCard";
 
 type Props = {
 	codingRunId: string;
 	organizationId?: string | null;
 	onCancel?: () => void;
 	onFollowUpSent?: () => void;
+	/** Needed to render the spike DEMO_READY actions (accept / discard). */
+	projectId?: string | null;
 };
 
 export function CodingRunTimeline({
@@ -46,6 +51,7 @@ export function CodingRunTimeline({
 	organizationId,
 	onCancel,
 	onFollowUpSent,
+	projectId,
 }: Props) {
 	const [followUpMessage, setFollowUpMessage] = useState("");
 	const queryClient = useQueryClient();
@@ -59,9 +65,13 @@ export function CodingRunTimeline({
 			}),
 		refetchInterval: (query) => {
 			const status = query.state.data?.status;
+			// DEMO_READY only changes through a person accepting or
+			// discarding, which invalidates this query explicitly.
 			if (
 				status &&
-				["COMPLETED", "FAILED", "CANCELLED"].includes(status)
+				["COMPLETED", "FAILED", "CANCELLED", "DEMO_READY"].includes(
+					status,
+				)
 			) {
 				return false;
 			}
@@ -137,6 +147,14 @@ export function CodingRunTimeline({
 		"PR_OPENED",
 	].includes(run.status);
 	const isCompleted = run.status === "COMPLETED";
+	const spikeRun = asSpikeRunView(run);
+	const isSpike = spikeRun?.kind === "SPIKE";
+	const spikeStoryId =
+		spikeRun?.storyId ??
+		(run as { storyId?: string | null }).storyId ??
+		null;
+	const spikeProjectId =
+		projectId ?? (run as { projectId?: string | null }).projectId ?? null;
 	const pullRequestUrl = run.pullRequestUrl ?? null;
 	const hasPR =
 		pullRequestUrl &&
@@ -166,6 +184,15 @@ export function CodingRunTimeline({
 							</span>
 						</div>
 						<div className="flex flex-wrap items-center gap-2 pt-1">
+							{isSpike && (
+								<Badge
+									variant="outline"
+									className="rounded-full border-primary/20 bg-primary/5 px-2.5 py-1 text-[11px] text-primary"
+								>
+									<FlaskConicalIcon className="mr-1 size-3" />
+									Spike
+								</Badge>
+							)}
 							<Badge
 								variant="outline"
 								className="rounded-full px-2.5 py-1 text-[11px]"
@@ -216,6 +243,14 @@ export function CodingRunTimeline({
 					</div>
 				</div>
 			</div>
+
+			{isSpike && spikeRun && spikeStoryId && spikeProjectId && (
+				<SpikeRunCard
+					run={spikeRun}
+					projectId={spikeProjectId}
+					storyId={spikeStoryId}
+				/>
+			)}
 
 			{primaryTaskLabel && (
 				<div className="rounded-2xl border border-highlight/20 bg-highlight/5 p-4">
@@ -504,6 +539,8 @@ function StatusIcon({ status }: { status: string }) {
 			return <MessagesSquareIcon className="size-4 text-highlight" />;
 		case "PR_OPENED":
 			return <GitPullRequestIcon className="size-4 text-primary" />;
+		case "DEMO_READY":
+			return <FlaskConicalIcon className="size-4 text-secondary" />;
 		case "COMPLETED":
 			return <CheckCircleIcon className="size-4 text-success" />;
 		case "FAILED":
@@ -527,6 +564,8 @@ function formatStatus(status: string): string {
 			return "Awaiting review";
 		case "PR_OPENED":
 			return "Pull request opened";
+		case "DEMO_READY":
+			return "Demo ready — try it and accept or discard";
 		case "COMPLETED":
 			return "Completed";
 		case "FAILED":
@@ -547,6 +586,10 @@ const EVENT_LABELS: Record<string, string> = {
 	poll_error: "Status check failed",
 	review_required: "Agent paused — awaiting your input",
 	pr_opened: "Pull request opened",
+	spike_artifacts_synced: "Spike demo and findings synced",
+	spike_demo_ready: "Spike demo ready",
+	spike_accepted: "Spike findings accepted",
+	spike_discarded: "Spike discarded",
 	workflow_completed: "Run completed",
 	workflow_failed: "Run failed",
 	workflow_error: "Run encountered an error",

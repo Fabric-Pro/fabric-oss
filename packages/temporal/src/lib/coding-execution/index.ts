@@ -40,6 +40,7 @@ export {
 // Individual providers
 export {
 	BackgroundAgentsProvider,
+	FABRIC_BACKGROUND_CAPABILITIES,
 	FabricBackgroundAdapter,
 } from "./background-agents-provider";
 // Environment configuration
@@ -64,16 +65,19 @@ export {
 } from "./errors";
 export {
 	getLocalKanbanSessionUrl,
+	KANBAN_LOCAL_CAPABILITIES,
 	KanbanLocalAdapter,
 	LocalKanbanProvider,
 } from "./local-kanban-provider";
 // Core interfaces
 export type {
 	CodingExecutionProvider,
+	CodingExecutionProviderCapabilities,
 	CreateSessionParams,
 	HealthCheckResult,
 	SessionStatus,
 } from "./provider";
+export { getProviderCapabilities } from "./provider";
 // Provider registry
 export {
 	type CodingExecutionAdapterDefinition,

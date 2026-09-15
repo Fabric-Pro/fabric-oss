@@ -8,6 +8,7 @@ import {
 import { computeScaledOutputTokenBudget } from "@repo/ai/lib/output-token-budget";
 import {
 	bulkCreateStories,
+	createPendingBacklogProposal,
 	db,
 	type StoryPriority,
 	type StorySize,
@@ -19,6 +20,7 @@ import {
 	requireProjectPermission,
 	resolveOrganizationId,
 	tenantProtectedProcedure,
+	userHasProjectPermission,
 } from "../../../../orpc/procedures";
 import { clearProjectStoriesAndAttachments } from "../../lib/clear-project-stories-with-attachments";
 
@@ -593,6 +595,57 @@ async function extractFeatures(
 }
 
 // =============================================================================
+// Proposal routing (plan §Slice 1 — pushToKanban is a second intake path)
+// =============================================================================
+
+/** Profiles under which document intake goes through the review inbox. */
+const PROPOSAL_ROUTED_PROFILES = new Set(["PROPOSAL", "GOVERNED"]);
+
+/**
+ * Convert parsed stories into a SCOPE_DOCUMENT proposal. Subtasks are not
+ * representable in a change item; their titles are appended to the story
+ * description so nothing from the document is silently dropped.
+ */
+function buildProposalFromParsedStories(params: {
+	stories: ParsedStory[];
+	documentId: string;
+	documentTitle: string;
+}) {
+	const docLabel = `"${params.documentTitle}"`;
+	const changes = params.stories.map((story, index) => {
+		const taskLines = (story.tasks ?? []).map((t) => `- ${t.title}`);
+		const description = [
+			story.description?.trim(),
+			taskLines.length > 0
+				? `Tasks:\n${taskLines.join("\n")}`
+				: undefined,
+		]
+			.filter((part): part is string => !!part && part.length > 0)
+			.join("\n\n");
+		return {
+			type: "story" as const,
+			action: "create" as const,
+			title: { to: story.title },
+			description: description ? { to: description } : undefined,
+			acceptanceCriteria: story.acceptanceCriteria
+				? { to: story.acceptanceCriteria }
+				: undefined,
+			priority: story.priority ? { to: story.priority } : undefined,
+			size: story.size ? { to: story.size } : undefined,
+			labels: story.labels ?? [],
+			reasoning: `Feature ${index + 1} parsed from the USER_STORY document ${docLabel}.`,
+			sourceContext: "scope_document" as const,
+			sourceChangeKey: `${params.documentId}:${index}`,
+		};
+	});
+	return {
+		summary: `${changes.length} feature(s) parsed from ${docLabel}.`,
+		contextSummary: `Parsed from the project's USER_STORY document ${docLabel}. Review and approve to add them to the roadmap.`,
+		changes,
+	};
+}
+
+// =============================================================================
 // Procedure
 // =============================================================================
 
@@ -629,9 +682,49 @@ export const pushToKanbanProcedure = tenantProtectedProcedure
 			},
 		});
 
+		const project = await db.project.findUnique({
+			where: { id: input.projectId },
+			select: { id: true, engagementProfile: true, organizationId: true },
+		});
+		if (!project) {
+			throw new ORPCError("NOT_FOUND", { message: "Project not found" });
+		}
+		const routeThroughProposal = PROPOSAL_ROUTED_PROFILES.has(
+			project.engagementProfile,
+		);
+
+		// Clearing the board is destructive. Under GOVERNED it is a governance
+		// action (plan §Slice 1) and needs PROJECT_GOVERNANCE_MANAGE on top of
+		// STORY_UPDATE. Checked before any parsing so a denied caller never
+		// spends AI budget.
+		if (input.clearExisting && project.engagementProfile === "GOVERNED") {
+			const allowed = await userHasProjectPermission({
+				userId: user.id,
+				projectId: input.projectId,
+				permission: Permissions.PROJECT_GOVERNANCE_MANAGE,
+			});
+			if (!allowed) {
+				throw new ORPCError("FORBIDDEN", {
+					message:
+						"Clearing existing features under a governed profile requires project governance permission",
+				});
+			}
+		}
+
 		if (!document) {
 			throw new ORPCError("NOT_FOUND", {
 				message: "Document not found",
+			});
+		}
+
+		// An integration contract is not a backlog source, and this procedure
+		// marks its document COMPLETE at the end; on a contract that would
+		// satisfy the DISCOVERY gate without closing the run (plan Slice 4).
+		if (document.type === "INTEGRATION_CONTRACT") {
+			throw new ORPCError("PRECONDITION_FAILED", {
+				message:
+					"Integration contracts cannot be pushed to the backlog. Use Mark contract complete instead.",
+				data: { code: "INTEGRATION_CONTRACT_STATUS_MANAGED" },
 			});
 		}
 
@@ -656,12 +749,53 @@ export const pushToKanbanProcedure = tenantProtectedProcedure
 			});
 		}
 
+		// PROPOSAL / GOVERNED: route through the review inbox instead of
+		// writing stories. Nothing is cleared or created here.
+		if (routeThroughProposal) {
+			const proposal = buildProposalFromParsedStories({
+				stories: parsedStories,
+				documentId: document.id,
+				documentTitle: document.title ?? "User stories",
+			});
+			const created = await createPendingBacklogProposal({
+				projectId: input.projectId,
+				source: "SCOPE_DOCUMENT",
+				proposal: JSON.parse(JSON.stringify(proposal)),
+				summary: proposal.summary,
+				changeCount: proposal.changes.length,
+				sourceMetadata: {
+					documentId: document.id,
+					documentTitle: document.title ?? null,
+					originalFilename: document.title ?? null,
+					rowCount: parsedStories.length,
+					requestedClearExisting: input.clearExisting,
+				},
+				userId: user.id,
+				organizationId:
+					organizationId ?? project.organizationId ?? undefined,
+			});
+			return {
+				success: true,
+				mode: "proposal" as const,
+				proposalId: created.id,
+				storiesCreated: 0,
+				tasksCreated: 0,
+				stories: [] as {
+					id: string;
+					identifier: string;
+					title: string;
+					taskCount: number;
+				}[],
+			};
+		}
+
 		// Optionally clear existing pipeline-generated stories
 		if (input.clearExisting) {
 			await clearProjectStoriesAndAttachments(input.projectId, true);
 		}
 
-		// Create stories in the database
+		// Create stories in the database. `deliveryTrack` defaults to
+		// UNCLASSIFIED at the schema level; classification runs afterwards.
 		const createdStories = await bulkCreateStories(
 			input.projectId,
 			user.id,
@@ -670,13 +804,52 @@ export const pushToKanbanProcedure = tenantProtectedProcedure
 			"AI_UPDATE",
 		);
 
+		// Fire-and-forget delivery-track classification (plan §Slice 2). A
+		// missing registration or unreachable Temporal must not fail the push.
+		if (createdStories.length > 0) {
+			try {
+				const { getTemporalClient } = await import("@repo/temporal");
+				const client = await getTemporalClient();
+				await client.workflow.start(
+					"deliveryTrackClassificationWorkflow",
+					{
+						taskQueue: "ai-chat",
+						workflowId: `delivery-track-classification-push-${input.documentId}-${Date.now()}`,
+						args: [
+							{
+								projectId: input.projectId,
+								storyIds: createdStories.map((s) => s.id),
+								userId: user.id,
+								organizationId:
+									organizationId ??
+									project.organizationId ??
+									undefined,
+							},
+						],
+					},
+				);
+			} catch (classifyError) {
+				console.warn(
+					"[pushToKanban] delivery track classification not started:",
+					classifyError instanceof Error
+						? classifyError.message
+						: classifyError,
+				);
+			}
+		}
+
 		const tasksCreated = createdStories.reduce(
 			(sum, story) => sum + (story.tasks?.length ?? 0),
 			0,
 		);
 
-		await db.projectDocument.update({
-			where: { id: input.documentId },
+		// Never completes an integration contract (rejected above; this is
+		// the belt to that brace, see plan Slice 4).
+		await db.projectDocument.updateMany({
+			where: {
+				id: input.documentId,
+				type: { not: "INTEGRATION_CONTRACT" },
+			},
 			data: {
 				status: "COMPLETE",
 				updatedAt: new Date(),
@@ -685,6 +858,8 @@ export const pushToKanbanProcedure = tenantProtectedProcedure
 
 		return {
 			success: true,
+			mode: "direct" as const,
+			proposalId: null as string | null,
 			storiesCreated: createdStories.length,
 			tasksCreated,
 			stories: createdStories.map((story) => ({
