@@ -245,11 +245,21 @@ const WORKSPACE_GROUP: GsGroup = {
 			description:
 				"Register Model Context Protocol servers to give agents new tools and data sources. They live under Connections, beside the integrations.",
 			icon: ServerIcon,
-			// Not `nav-integrations`: this item and the one above it would then
-			// spotlight the same sidebar row, and "Show me" under a heading that
-			// says MCP servers would highlight one labelled Connections. The href
-			// already opens the tab, so point at something on it.
-			anchor: "mcp-servers-add-registry",
+			// `nav-integrations` on purpose, and it is meant to be the same row
+			// the Connections item above points at. "Show me" renders a card
+			// titled "Where it lives" — the question it answers is where in the
+			// sidebar this thing is reached, and MCP servers really is reached
+			// through Connections. Sharing the row is the answer, not a collision.
+			//
+			// Pointing it at an in-page anchor instead (`mcp-servers-add-registry`,
+			// which mounts only on the MCP tab) was tried and reverted: an `anchor`
+			// target never navigates — `navigate` only fills the "Take me there"
+			// CTA, auto-navigation exists solely for `projectTab`/`projectComponent`
+			// (GetStartedSpotlight.tsx). So from every page except that one tab the
+			// anchor is absent, the spotlight times out into a centered card, and
+			// "Take me there" then lands without scrolling or highlighting
+			// anything. A nav anchor is the only one present everywhere.
+			anchor: "nav-integrations",
 			href: ({ basePath }) => `${basePath}/connections?tab=mcp`,
 		},
 		{
