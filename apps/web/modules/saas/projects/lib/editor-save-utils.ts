@@ -114,24 +114,54 @@ export function collapseAdjacentBoldSpans(markdown: string): string {
  * Call this AFTER `service.use(gfm)` so the override wins.
  */
 export function applyGfmStrikethroughFix(service: TurndownService): void {
+	applyStrikethroughSerialization(service);
+	// Defense in depth for the DOCUMENT pipeline only, where `stripDiffTags`
+	// has already removed these tags and anything still carrying the class is a
+	// deletion the diff owns, so dropping its content is right.
+	//
+	// It is NOT right for a service that serializes arbitrary inbound HTML:
+	// there the same markup is ordinary content that happens to carry that
+	// class, and dropping it deletes text nobody agreed to lose. Such a caller
+	// takes `applyStrikethroughSerialization` alone.
+	//
+	// Registered AFTER that call on purpose. `Rules.add` unshifts and the first
+	// match wins, so the rule added LAST is consulted FIRST — this one therefore
+	// claims `diff-del` before the class-blind strikethrough rule can.
 	service.addRule("diffDelDrop", {
 		filter: (node: HTMLElement) =>
 			node.nodeName === "DEL" && node.classList.contains("diff-del"),
 		replacement: () => "",
 	});
+}
+
+/**
+ * The strikethrough half of {@link applyGfmStrikethroughFix}, without the
+ * diff-deletion drop.
+ *
+ * `turndown-plugin-gfm@1.0.2` serializes `<del>`/`<s>`/`<strike>` as
+ * single-tilde `~X~`, which is not valid GFM and round-trips back as literal
+ * text. Every service that persists what it serializes needs this override,
+ * applied AFTER `service.use(gfm)` so it wins — `Rules.add` unshifts.
+ *
+ * This is the variant for services that do not run `stripDiffTags` first, so
+ * they must not also inherit a rule that deletes content.
+ */
+export function applyStrikethroughSerialization(
+	service: TurndownService,
+): void {
 	service.addRule("gfmStrikethroughFix", {
 		// Function filter — `<strike>` is not in HTMLElementTagNameMap so a
-		// string-array filter can't reference it. Bare `<del>` (no diff-del
-		// class) is user strikethrough from paste and must also serialize
-		// as GFM double-tilde.
-		filter: (node: HTMLElement) => {
-			if (node.nodeName === "S" || node.nodeName === "STRIKE") {
-				return true;
-			}
-			return (
-				node.nodeName === "DEL" && !node.classList.contains("diff-del")
-			);
-		},
+		// string-array filter can't reference it.
+		//
+		// Class-blind on purpose. To a service with no diff pipeline, the
+		// `diff-del` class carries no meaning: the tag is strikethrough and the
+		// correct serialization is double-tilde. `applyGfmStrikethroughFix`
+		// overrides that for the document pipeline by registering its drop rule
+		// afterwards, so it is consulted first.
+		filter: (node: HTMLElement) =>
+			node.nodeName === "S" ||
+			node.nodeName === "STRIKE" ||
+			node.nodeName === "DEL",
 		replacement: (content: string) => `~~${content}~~`,
 	});
 }

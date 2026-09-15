@@ -33,6 +33,28 @@
  * DIFFERENT quotes abut: `~"~"` at a phrase boundary collapsed both into a single
  * character and left the quotation unbalanced.
  *
+ * ## Why straight quotes are NOT included
+ *
+ * Widening the class to ASCII `"` and `'` was tried and reverted. The
+ * signature makes the *shape* safe — a run must be contiguous, so
+ * `| ~"A" | ~"B" |` never forms one — but the signature says nothing about
+ * WHERE in the document a run sits, and this function has no idea what a code
+ * fence is.
+ *
+ * Curly quotes essentially never appear beside a tilde inside code. ASCII
+ * quotes do, constantly: `rm -rf ~'/tmp'`, `cd ~"$HOME"`, `col ~'regex'`.
+ * Inside a document the signature has already condemned, every one of those
+ * loses its tilde — a different path, a different home directory, a broken
+ * Postgres operator — silently, with the damage indistinguishable from a
+ * repair. Measured, not theorised: `cd ~"$HOME"` in a fenced block became
+ * `cd "$HOME"`.
+ *
+ * So the character class is deliberately narrower than the artifact it chases.
+ * An ASCII-quote instance of this damage is currently not repaired at all, and
+ * that is the accepted trade: under-repairing prose is recoverable, rewriting
+ * someone's shell command is not. Covering it needs fence-aware scanning
+ * first, not a wider class.
+ *
  * Idempotent by construction: the output of a repaired document contains no
  * doubled run, so a second application finds no signature and changes nothing.
  */

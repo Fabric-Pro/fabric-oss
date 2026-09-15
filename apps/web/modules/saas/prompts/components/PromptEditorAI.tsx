@@ -12,6 +12,7 @@ import { CopilotChatSessionProvider } from "@saas/shared/components/copilot/Copi
 import { useCopilotErrorHandler } from "@saas/shared/components/copilot/use-copilot-error-handler";
 import "@copilotkit/react-ui/styles.css";
 import { EditorToolbar } from "@saas/projects/components/EditorToolbar";
+import { applyStrikethroughSerialization } from "@saas/projects/lib/editor-save-utils";
 import {
 	createPromptExtensions,
 	getFormatDescription,
@@ -100,6 +101,10 @@ const turndownService = new TurndownService({
 	codeBlockStyle: "fenced",
 });
 turndownService.use(gfm);
+// See ConflictResolveDialog: the bundled gfm plugin emits invalid single-tilde
+// strikethrough, and this output is persisted as prompt content. Strikethrough
+// serialization only — no `stripDiffTags` runs here either.
+applyStrikethroughSerialization(turndownService);
 
 function toMarkdown(html: string): string {
 	return turndownService.turndown(html);
