@@ -105,7 +105,7 @@ describe("foldContextBatch — roadmap + code-repo citations", () => {
 		expect(result.citedMarkers).not.toContain("S99");
 
 		// The prompt actually included the roadmap + codebase blocks.
-		const userMsg = generateObjectMock.mock.calls[0][0].messages[1].content;
+		const userMsg = generateObjectMock.mock.calls[0][0].messages[0].content;
 		expect(userMsg).toContain("PROJECT ROADMAP");
 		expect(userMsg).toContain("CONNECTED CODE REPOSITORY");
 		expect(userMsg).toContain("Auth revamp");
@@ -137,7 +137,7 @@ describe("foldContextBatch — roadmap + code-repo citations", () => {
 			includeProjectSources: true,
 		});
 
-		const userMsg = generateObjectMock.mock.calls[0][0].messages[1].content;
+		const userMsg = generateObjectMock.mock.calls[0][0].messages[0].content;
 		expect(userMsg).not.toContain("PROJECT ROADMAP");
 		expect(userMsg).not.toContain("CONNECTED CODE REPOSITORY");
 	});
@@ -201,8 +201,7 @@ describe("foldContextBatch — usage + system prompt", () => {
 			systemPrompt: "CUSTOM DB PROMPT",
 		});
 
-		const systemMsg =
-			generateObjectMock.mock.calls[0][0].messages[0].content;
+		const systemMsg = generateObjectMock.mock.calls[0][0].system.content;
 		// The admin prompt replaces the content guidance; the built-in guidance
 		// is not used (only the formatting contract is always appended below).
 		expect(systemMsg).toContain("CUSTOM DB PROMPT");
@@ -216,8 +215,7 @@ describe("foldContextBatch — usage + system prompt", () => {
 
 		await foldContextBatch({ ...baseInput });
 
-		const systemMsg =
-			generateObjectMock.mock.calls[0][0].messages[0].content;
+		const systemMsg = generateObjectMock.mock.calls[0][0].system.content;
 		expect(systemMsg).toContain(SYSTEM_GUIDANCE);
 	});
 
@@ -228,8 +226,7 @@ describe("foldContextBatch — usage + system prompt", () => {
 
 		// Built-in guidance path.
 		await foldContextBatch({ ...baseInput });
-		const builtinMsg =
-			generateObjectMock.mock.calls[0][0].messages[0].content;
+		const builtinMsg = generateObjectMock.mock.calls[0][0].system.content;
 		expect(builtinMsg).toContain(FORMATTING_GUIDANCE);
 
 		// Admin DB-prompt path still gets the formatting contract.
@@ -237,8 +234,32 @@ describe("foldContextBatch — usage + system prompt", () => {
 			...baseInput,
 			systemPrompt: "CUSTOM DB PROMPT",
 		});
-		const dbMsg = generateObjectMock.mock.calls[1][0].messages[0].content;
+		const dbMsg = generateObjectMock.mock.calls[1][0].system.content;
 		expect(dbMsg).toContain("CUSTOM DB PROMPT");
 		expect(dbMsg).toContain(FORMATTING_GUIDANCE);
+	});
+
+	// Fizzy #2527: a `role: "system"` entry inside `messages` triggers an AI
+	// SDK warning (and AI SDK 7 will reject the call outright). The system
+	// guidance must travel through the top-level `system` option instead.
+	it("passes the system guidance via `system`, never as a `messages` row", async () => {
+		generateObjectMock.mockResolvedValue({
+			object: { goalsAndScope: "x [S1]." },
+		});
+
+		await foldContextBatch({ ...baseInput });
+
+		const callArgs = generateObjectMock.mock.calls[0][0];
+		expect(callArgs.system).toEqual(
+			expect.objectContaining({
+				role: "system",
+				content: expect.stringContaining(SYSTEM_GUIDANCE),
+			}),
+		);
+		expect(
+			callArgs.messages.some(
+				(m: { role: string }) => m.role === "system",
+			),
+		).toBe(false);
 	});
 });
