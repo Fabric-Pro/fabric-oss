@@ -436,10 +436,30 @@ export function TopicItemPage({
 	 * Counted from the SAME threads the tab renders, so a badge cannot claim
 	 * work the page does not show. `CONTENT_TYPE` rows are excluded for the
 	 * reason the questions panel excludes them — they are settings now, and a
-	 * legacy one is not something anybody can answer. For the QUESTION count,
-	 * unresolved means `OPEN` or `POSSIBLY_RESOLVED` (`isUnresolvedDecisionStatus`)
-	 * — a question a regeneration stopped raising still needs a person; the
-	 * BLOCKER count below stays `OPEN`-only.
+	 * legacy one is not something anybody can answer.
+	 *
+	 * `OPEN` only, for both counts. `POSSIBLY_RESOLVED` is deliberately NOT
+	 * counted here, and this is a REVERSAL: the badge used to include it on the
+	 * reasoning that "a question a regeneration stopped raising still needs a
+	 * person".
+	 *
+	 * Two things retired that reasoning. Feature Maturation — the feature this
+	 * one mirrors, on the same `DecisionStatus` enum — has always grouped
+	 * `POSSIBLY_RESOLVED` with `RESOLVED` (`evaluate-ai-readiness.ts`,
+	 * `StoryWorkspace.tsx`), and the enum's own comment calls it "dropped from
+	 * the active open list". And a soft-closed root does not appear in the
+	 * panel's open list at all — it sits collapsed under "Possibly resolved" —
+	 * so counting it made the badge promise work the tab does not offer.
+	 *
+	 * The observed case: a topic whose every live decision was answered still
+	 * badged `7`, all seven being rows a since-fixed subject-drift bug had
+	 * stranded. Nothing could clear them, so the tab could never reach zero.
+	 *
+	 * This is the COUNTING half only. `isUnresolvedDecisionStatus` is unchanged
+	 * and still admits `POSSIBLY_RESOLVED` for the drafting restrictions
+	 * (`generation-tab-state.ts`) and the assistant context below, which stay
+	 * conservative on purpose: an unapproved customer name is unapproved
+	 * whether or not the newest analysis still asks about it.
 	 */
 	const openBlockerCount = (decisionsQuery.data?.threads ?? []).filter(
 		(thread) =>
@@ -448,7 +468,7 @@ export function TopicItemPage({
 	const openQuestionCount = (decisionsQuery.data?.threads ?? []).filter(
 		(thread) =>
 			thread.root.kind === "QUESTION" &&
-			isUnresolvedDecisionStatus(thread.root.status) &&
+			thread.root.status === "OPEN" &&
 			thread.root.decisionKind !== "CONTENT_TYPE",
 	).length;
 
