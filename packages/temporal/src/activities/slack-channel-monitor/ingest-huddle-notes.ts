@@ -222,6 +222,11 @@ export async function ingestHuddleNotesForChannelActivity(
 				projectId,
 				channelId,
 				errorMessage: error.message,
+				// Archived channel, removed bot, revoked token: the next
+				// interval reproduces it exactly, so stop rather than count it
+				// again. One channel archived in June was still being polled
+				// months later, 53 identical failures deep.
+				permanent: true,
 			});
 			return result;
 		}
