@@ -1501,6 +1501,14 @@ ${toolsEnabled ? "- Your own recent sessions, the workspace's agents and its con
 			system: promptCacheRequest.system,
 			stopWhen: stepCountIs(maxSteps),
 			messages: promptCacheRequest.messages,
+			// Anthropic's mid-conversation-system rolling-history path (only
+			// active when both prompt caching and the mid-conversation-system
+			// beta are supported) appends the variable system context as the
+			// last `messages` entry instead of the `system` option — that
+			// intentional row is the only one allowed to carry `role: "system"`.
+			...(promptCacheEnabled && rollingHistoryEnabled
+				? { allowSystemInMessages: true }
+				: {}),
 			...(shouldUseTools ? { tools: allTools as any } : {}),
 			...(forcedToolChoice ? { toolChoice: forcedToolChoice } : {}),
 			...(providerOptions ? { providerOptions } : {}),

@@ -1,7 +1,32 @@
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+// `createFabricFrame` reaches these via dynamic `await import(...)` rather
+// than a static import (see the source), but vi.mock still intercepts them —
+// hoisting happens regardless of whether the call site is static or dynamic.
+const stubs = vi.hoisted(() => ({
+	generateTextMock: vi.fn(),
+	getAIModelWithMetadataMock: vi.fn(),
+	computeMaxOutputTokenBudgetMock: vi.fn(),
+	uploadFileMock: vi.fn(),
+}));
+
+vi.mock("ai", () => ({
+	generateText: stubs.generateTextMock,
+}));
+vi.mock("@repo/ai", () => ({
+	getAIModelWithMetadata: stubs.getAIModelWithMetadataMock,
+}));
+vi.mock("@repo/ai/lib/output-token-budget", () => ({
+	computeMaxOutputTokenBudget: stubs.computeMaxOutputTokenBudgetMock,
+}));
+vi.mock("@repo/storage", () => ({
+	uploadFile: stubs.uploadFileMock,
+}));
+
 import {
 	buildFabricFramePrompt,
 	buildFallbackFrameContent,
+	createFabricFrame,
 	validateFabricCreateFileInput,
 	validateFabricCreateFrameInput,
 } from "../src/activities/shared/fabric-content-tools";
@@ -156,6 +181,53 @@ describe("fabric-content-tools", () => {
 
 			expect(fallback).toContain("graph TD");
 			expect(fallback).toContain("Start");
+		});
+	});
+
+	// Fizzy #2527: `createFabricFrame` used to send the system prompt as a
+	// `role: "system"` entry inside `messages`, which `ai` 6.0.170+ warns on
+	// and AI SDK 7 will reject. The system text must go through the top-level
+	// `system` option instead, leaving `messages` with only the user turn.
+	describe("createFabricFrame — system prompt placement", () => {
+		beforeEach(() => {
+			stubs.generateTextMock.mockReset();
+			stubs.getAIModelWithMetadataMock.mockReset();
+			stubs.computeMaxOutputTokenBudgetMock.mockReset();
+			stubs.uploadFileMock.mockReset();
+
+			stubs.getAIModelWithMetadataMock.mockResolvedValue({
+				model: { __mockModel: true },
+				metadata: { modelString: "test-model", provider: "test" },
+			});
+			stubs.computeMaxOutputTokenBudgetMock.mockReturnValue(undefined);
+			stubs.uploadFileMock.mockResolvedValue(undefined);
+			stubs.generateTextMock.mockResolvedValue({ text: "<html></html>" });
+		});
+
+		it("sends the system prompt via `system`, not as a message", async () => {
+			await createFabricFrame({
+				title: "Dashboard",
+				description: "Simple admin dashboard",
+				components: [],
+				format: "html",
+				userId: "user-1",
+				organizationId: "org-1",
+			});
+
+			expect(stubs.generateTextMock).toHaveBeenCalledTimes(1);
+			const callArgs = stubs.generateTextMock.mock.calls[0][0] as {
+				system?: unknown;
+				messages: Array<{ role: string }>;
+			};
+
+			expect(typeof callArgs.system).toBe("string");
+			expect(callArgs.system).toContain("wireframe generator");
+			expect(callArgs.messages.some((m) => m.role === "system")).toBe(
+				false,
+			);
+			expect(callArgs.messages).toEqual([
+				{ role: "user", content: expect.any(String) },
+			]);
 		});
 	});
 });

@@ -379,10 +379,8 @@ export async function createFabricFrame(input: {
 
 		const result = await generateText({
 			model,
-			messages: [
-				{ role: "system", content: systemContent },
-				{ role: "user", content: prompt },
-			],
+			system: systemContent,
+			messages: [{ role: "user", content: prompt }],
 			...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
 		});
 		content = result.text?.trim() || "";

@@ -377,12 +377,33 @@ export const addMessageToChat = tenantProtectedProcedure
 			hasSystemMessage: messages.some((m) => m.role === "system"),
 		});
 
+		// Collect any RAG-injected (or client-sent) `role: "system"` rows and
+		// route them through the `system` option instead of leaving them inline
+		// in `messages` — the AI SDK warns on system rows inside `messages` and
+		// AI SDK 7 will reject them outright. Order is preserved (earlier
+		// `unshift` calls land first) and multiple rows are joined with a blank
+		// line. The non-RAG path has no system rows, so `systemText` is empty
+		// and this is a no-op that leaves `messages` unchanged.
+		const systemText = messages
+			.filter((m) => m.role === "system")
+			.map(
+				(m) =>
+					m.parts
+						?.filter((part) => part.type === "text")
+						.map((part) => part.text)
+						.join(" ") ?? "",
+			)
+			.filter((text) => text.length > 0)
+			.join("\n\n");
+		const messagesForModel = messages.filter((m) => m.role !== "system");
+
 		let response: ReturnType<typeof streamText>;
 		const streamStart = Date.now();
 		try {
 			response = streamText({
 				model: aiModel,
-				messages: await convertToModelMessages(messages as any),
+				...(systemText ? { system: systemText } : {}),
+				messages: await convertToModelMessages(messagesForModel as any),
 				// Apply aggressive streaming configuration to prevent paragraph buffering
 				...getAggressiveStreamingConfig(resolvedModel).aiConfig,
 				async onFinish({ text, usage }) {
