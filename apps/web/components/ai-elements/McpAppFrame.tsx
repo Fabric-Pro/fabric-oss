@@ -172,6 +172,21 @@ function stableSerialize(value: unknown): string | null {
 	}
 }
 
+/**
+ * Sandbox flags for the MCP App iframe.
+ *
+ * The app HTML comes from whichever MCP server the user configured and is
+ * loaded through a blob: URL. A blob: document inherits the creator's origin,
+ * so granting `allow-same-origin` would let a malicious or compromised server
+ * script read `window.parent.document`, the app's storage, and call the API
+ * with the session cookie. Without it the frame runs in an opaque origin:
+ * scripts, forms and modals still work, `postMessage` still works (the bridge
+ * targets `"*"` and validates `event.source`), relative assets still resolve
+ * through the injected `<base href>`, and the host fetches every MCP resource
+ * on the app's behalf, so nothing inside needs cookies or the parent origin.
+ */
+const MCP_APP_IFRAME_SANDBOX = "allow-scripts allow-forms allow-modals";
+
 function injectBaseHref(html: string, assetBaseUrl?: string): string {
 	if (!assetBaseUrl) {
 		return html;
@@ -753,8 +768,7 @@ function McpAppIframeFrame({
 			debugLogRef.current("onsandboxready");
 			void bridge.sendSandboxResourceReady({
 				html,
-				sandbox:
-					"allow-scripts allow-forms allow-modals allow-same-origin",
+				sandbox: MCP_APP_IFRAME_SANDBOX,
 			});
 		};
 
@@ -1215,7 +1229,7 @@ function McpAppIframeFrame({
 				<iframe
 					key={iframeGeneration}
 					ref={iframeRef}
-					sandbox="allow-scripts allow-forms allow-modals allow-same-origin"
+					sandbox={MCP_APP_IFRAME_SANDBOX}
 					allow={iframeAllow || undefined}
 					style={{ height: `${iframeHeight}px` }}
 					className="w-full border-none block flex-1"
