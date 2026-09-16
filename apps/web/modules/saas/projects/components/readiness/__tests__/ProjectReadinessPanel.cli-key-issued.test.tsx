@@ -195,7 +195,7 @@ import { ProjectReadinessPanelSlot } from "../ProjectReadinessPanel";
 import { ProjectReadinessProvider } from "../ProjectReadinessProvider";
 
 /** The row, the prompt and the issuing view, each named as a reader finds it. */
-const CLI_ITEM_NAME = "API Key for CLI";
+const CLI_ITEM_NAME = "Organization connected over MCP";
 const CLI_ACTION = "Connect CLI";
 const PROMPT_LABEL = "CLI connection prompt";
 const CREATE_KEY_LABEL = "Create the key";

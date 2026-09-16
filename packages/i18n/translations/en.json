@@ -6149,8 +6149,8 @@
 				}
 			},
 			"apiKeyForCli": {
-				"name": "API Key for CLI",
-				"description": "Connect a coding CLI to Fabric with an API key. This reports the organization, not this project.",
+				"name": "Organization connected over MCP",
+				"description": "Connect a coding tool to Fabric with an API key, so it can read this project's context. Reports the ORGANIZATION, not this project — once anyone connects, it completes on every project.",
 				"tooltip": "A connected CLI lets Fabric feed project context into the coding tools your team already uses, over MCP, instead of asking them to work somewhere else. This item reports the organization rather than this project, so once anyone connects it reads complete on every project."
 			},
 			"businessCase": {

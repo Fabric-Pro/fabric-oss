@@ -115,7 +115,7 @@ const NUDGE_BODY =
  * findable instruction rather than a description.
  */
 const NUDGE_DISMISS_NOTE =
-	'Dismissing this is permanent — it will not come back for you on any project in this organization. The "API Key for CLI" row in this project\'s readiness checklist is where the option stays.';
+	'Dismissing this is permanent — it will not come back for you on any project in this organization. The "Organization connected over MCP" row in this project\'s readiness checklist is where the option stays.';
 
 /** Matches the checklist row's own action, so the two read as one affordance. */
 const NUDGE_CONNECT_LABEL = "Connect CLI";

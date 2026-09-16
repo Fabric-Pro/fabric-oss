@@ -499,8 +499,60 @@ describe("requesting help", () => {
  *        still in the document — hence the last test, which takes the row away
  *        underneath an open view.
  */
+/**
+ * The scope guard, and why it is a test rather than the tooltip it used to be
+ * (Fizzy #2457, QA follow-up).
+ *
+ * This is the ONE organization-scoped row in a project checklist. It completes
+ * when any credential in the organization reaches Fabric over MCP, so one
+ * person connecting completes it on every project — including projects whose
+ * owner configured nothing.
+ *
+ * That was documented, accurately, in the row's `description` and `tooltip`.
+ * It was reported as a bug anyway, and the report was fair: the recently
+ * completed list renders the item NAME and nothing else — no description, no
+ * tooltip, no hover — so "✓ API Key for CLI" was the whole of what a reader
+ * got, sitting under a project heading beside "Chat app connected" and
+ * "Codebase connected", which are project-scoped. The explanation existed
+ * everywhere except the one surface where the row was actually misread.
+ *
+ * The name now carries the scope itself. These tests pin that, on the surface
+ * that renders the name alone, because a name is the only part of this item
+ * guaranteed to reach a reader.
+ */
+describe("the API Key for CLI row — what its name claims", () => {
+	const CLI_KEY = "api-key-for-cli";
+
+	it("names the organization where only the name is rendered", () => {
+		mountWith([], { recentlyCompleted: [{ key: CLI_KEY }] });
+
+		// The completed entry, not the checklist row: this is the element the
+		// QA report was looking at.
+		const entry = screen.getByText(/organization/i);
+		expect(entry).toBeInTheDocument();
+		expect(entry.textContent?.toLowerCase()).toContain("mcp");
+	});
+
+	/**
+	 * The words that put the claim back on the project, and the words that
+	 * would name a kind of client the runtime never records. Asserted on the
+	 * NAME rather than the region, because the region legitimately holds
+	 * instructions — "Connect CLI" on a button tells a reader what to go and
+	 * set up, which this row's own copy guard has always allowed.
+	 */
+	it.each(["api key", "cli", "terminal", "editor", "ide", "this project"])(
+		"claims neither a client kind nor a project scope (%s)",
+		(phrase) => {
+			mountWith([], { recentlyCompleted: [{ key: CLI_KEY }] });
+
+			const name = screen.getByText(/organization/i).textContent ?? "";
+			expect(name.toLowerCase()).not.toContain(phrase);
+		},
+	);
+});
+
 describe("the API Key for CLI row", () => {
-	const CLI_ITEM_NAME = "API Key for CLI";
+	const CLI_ITEM_NAME = "Organization connected over MCP";
 	const CLI_ACTION = "Connect CLI";
 	const VIEW_ONLY = "View only";
 
