@@ -22,7 +22,7 @@
 		"nunjucks": "^3.2.4",
 		"stripe": "^19.2.0",
 		"undici": "^8.5.0",
-		"zod": "^3.22.4"
+		"zod": "^3.25.76"
 	},
 	"devDependencies": {
 		"@types/node": "^20.10.0",
