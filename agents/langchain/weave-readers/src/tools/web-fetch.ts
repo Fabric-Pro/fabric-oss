@@ -1,6 +1,4 @@
-import { tool as aiTool } from "ai";
-
-const tool = aiTool as any;
+import { tool } from "ai";
 
 import { z } from "zod";
 
@@ -121,7 +119,7 @@ export function createWebFetchTools() {
 		fetchRfc: tool({
 			description:
 				"Fetch RFC or specification document sections for verification. Only allows RFC and spec URLs (IETF, W3C, OWASP). Use this to cite specific RFC sections when explaining security patterns or compliance requirements.",
-			parameters: z.object({
+			inputSchema: z.object({
 				url: z.string().describe("The RFC/spec URL to fetch"),
 				section: z
 					.string()
@@ -303,7 +301,7 @@ export function createWebFetchTools() {
 		 */
 		clearRfcCache: tool({
 			description: "Clear the RFC cache to force fresh fetches.",
-			parameters: z.object({}),
+			inputSchema: z.object({}),
 			execute: async () => {
 				const size = rfcCache.size;
 				rfcCache.clear();

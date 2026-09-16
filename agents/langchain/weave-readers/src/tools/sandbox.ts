@@ -1,7 +1,4 @@
-import { tool as aiTool } from "ai";
-
-// Wrapper to handle ai@6 strict overload resolution with union return types
-const tool = aiTool as any;
+import { tool } from "ai";
 
 import { z } from "zod";
 import type { SandboxClient } from "../lib/sandbox-client.js";
@@ -15,7 +12,7 @@ export function createReadOnlySandboxTools(sandbox: SandboxClient) {
 		readFile: tool({
 			description:
 				"Read the contents of a file from the sandbox. Use this to inspect source code, configs, or documentation.",
-			parameters: z.object({
+			inputSchema: z.object({
 				path: z
 					.string()
 					.describe("File path relative to the workspace root"),
@@ -43,7 +40,7 @@ export function createReadOnlySandboxTools(sandbox: SandboxClient) {
 		listFiles: tool({
 			description:
 				"List files and directories in the sandbox. Use recursive=true for a full tree view.",
-			parameters: z.object({
+			inputSchema: z.object({
 				path: z
 					.string()
 					.default(".")
@@ -83,7 +80,7 @@ export function createReadOnlySandboxTools(sandbox: SandboxClient) {
 		searchCode: tool({
 			description:
 				"Search for a pattern in the codebase using grep. Returns matching file paths, line numbers, and content.",
-			parameters: z.object({
+			inputSchema: z.object({
 				pattern: z
 					.string()
 					.describe("Search pattern (grep-compatible)"),
@@ -122,7 +119,7 @@ export function createReadOnlySandboxTools(sandbox: SandboxClient) {
 		execCommand: tool({
 			description:
 				"Execute a read-only shell command. Allowed commands: grep, find, cat, ls, head, tail, wc, pwd",
-			parameters: z.object({
+			inputSchema: z.object({
 				command: z
 					.string()
 					.describe(

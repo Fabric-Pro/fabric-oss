@@ -1,6 +1,4 @@
-import { tool as aiTool } from "ai";
-
-const tool = aiTool as any;
+import { tool } from "ai";
 
 import { z } from "zod";
 
@@ -14,7 +12,7 @@ export function createWebSearchTools() {
 		webSearch: tool({
 			description:
 				"Search the web for documentation, APIs, best practices, and technical information. Returns relevant results with titles, URLs, and snippets.",
-			parameters: z.object({
+			inputSchema: z.object({
 				query: z.string().describe("The search query"),
 				numResults: z
 					.number()
@@ -56,7 +54,7 @@ export function createWebSearchTools() {
 		fetchUrl: tool({
 			description:
 				"Fetch the text content of a web page. Use this to read documentation, API references, or articles found via web search.",
-			parameters: z.object({
+			inputSchema: z.object({
 				url: z.string().url().describe("The URL to fetch"),
 				maxLength: z
 					.number()
@@ -127,7 +125,7 @@ export function createWebSearchTools() {
 		searchNpm: tool({
 			description:
 				"Search the npm registry for packages. Returns package names, descriptions, and download counts.",
-			parameters: z.object({
+			inputSchema: z.object({
 				query: z.string().describe("Package search query"),
 				limit: z
 					.number()
@@ -194,7 +192,7 @@ export function createWebSearchTools() {
 		searchGitHub: tool({
 			description:
 				"Search GitHub for repositories. Returns repository names, descriptions, and stars.",
-			parameters: z.object({
+			inputSchema: z.object({
 				query: z.string().describe("GitHub search query"),
 				limit: z
 					.number()
