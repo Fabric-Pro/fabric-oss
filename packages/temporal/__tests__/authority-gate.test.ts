@@ -105,3 +105,57 @@ describe("classifyIntegrationAccessLevel", () => {
 		);
 	});
 });
+
+describe("classifyToolAccessLevel — vendor-namespaced names", () => {
+	/**
+	 * Real tool inventories do not put the verb at position 0. Slack's MCP
+	 * server names its own tools `slack_search_public`, so a position-0 test
+	 * saw `slack`, learned nothing, and fell through to the conservative WRITE
+	 * default — a public message search demanding write authority. Every
+	 * namespaced read across every connected server did the same, which trains
+	 * people to grant write access in order to read.
+	 */
+	it("reads a verb that sits behind a vendor token", () => {
+		expect(classifyToolAccessLevel("slack_search_public")).toBe("READ");
+		expect(classifyToolAccessLevel("github_list_issues")).toBe("READ");
+		expect(classifyToolAccessLevel("notion_get_page")).toBe("READ");
+	});
+
+	it("reads a verb behind a Vendor__ namespace", () => {
+		expect(classifyToolAccessLevel("Microsoft_Teams__list_teams")).toBe(
+			"READ",
+		);
+	});
+
+	/**
+	 * The safety property, and the reason the namespaced test runs last: it can
+	 * only rescue names that would otherwise have hit the conservative default.
+	 * Nothing may become more permissive than it was.
+	 */
+	it("never lets a namespaced read verb override an explicit write prefix", () => {
+		// `update` matches and returns before the read test sees `search_index`.
+		expect(classifyToolAccessLevel("update_search_index")).toBe("WRITE");
+		expect(classifyToolAccessLevel("delete_get_cache")).toBe("WRITE");
+		expect(classifyToolAccessLevel("create_list_view")).toBe("WRITE");
+	});
+
+	it("keeps writes hiding behind a vendor token as writes", () => {
+		expect(classifyToolAccessLevel("slack_send_message")).toBe("WRITE");
+		expect(classifyToolAccessLevel("slack_delete_message")).toBe("WRITE");
+	});
+
+	it("does not accept a trailing read verb as a read", () => {
+		// A bare verb is never a strip remainder — every test needs a separator
+		// after the verb, so "…_read" stays a write.
+		expect(classifyToolAccessLevel("fizzy_mark_notification_read")).toBe(
+			"WRITE",
+		);
+	});
+
+	it("leaves the names that already classified correctly alone", () => {
+		expect(classifyToolAccessLevel("list_issues")).toBe("READ");
+		expect(classifyToolAccessLevel("get_or_create_page")).toBe("READ");
+		expect(classifyToolAccessLevel("create_view")).toBe("READ");
+		expect(classifyToolAccessLevel("some_unknown_shape")).toBe("WRITE");
+	});
+});

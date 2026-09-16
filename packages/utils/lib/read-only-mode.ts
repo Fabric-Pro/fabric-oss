@@ -114,7 +114,7 @@ const TOKEN_WRITE_VERBS = new Set([
 ]);
 
 /** camelCase/PascalCase → snake_case, lowercased (`getJiraIssue` → `get_jira_issue`). */
-function toSnakeLower(name: string): string {
+export function toSnakeLower(name: string): string {
 	return name.replace(/([a-z0-9])([A-Z])/g, "$1_$2").toLowerCase();
 }
 
@@ -151,6 +151,40 @@ function isBareReadVerb(name: string): boolean {
  *   so `fizzy_mark_notification_read` stays WRITE.
  * Unknown shapes still default to WRITE.
  */
+/**
+ * Every spelling of a tool name under which a read verb might sit at the front.
+ *
+ * Real tool inventories do not put the verb at position 0. A vendor namespaces
+ * its own tools (`slack_search_public`), and Fabric namespaces them again by
+ * server when it hands them to a model (`slack_official_slack_search_public`),
+ * so a position-0 test sees a vendor token and learns nothing. Returns the name
+ * itself, the segment after a `Vendor__` namespace, and each of those with ONE
+ * leading token stripped.
+ *
+ * Shared so the two classifiers cannot drift on it — the reason this module
+ * owns the read vocabulary in the first place. Read-only mode has had this
+ * since a post-ship review found position-0-only refusing `fizzy_get_card`;
+ * the authority gate had not, which is why a Slack search asked for WRITE.
+ *
+ * Callers apply their own verb test. A bare verb is never accepted as a strip
+ * remainder — every caller's test requires a separator after the verb — so
+ * `fizzy_mark_notification_read` does not become a read.
+ */
+export function toolNameReadCandidates(snakeName: string): string[] {
+	const candidates = [snakeName];
+	const namespaceIdx = snakeName.lastIndexOf("__");
+	if (namespaceIdx >= 0) {
+		candidates.push(snakeName.slice(namespaceIdx + 2));
+	}
+	for (const candidate of [...candidates]) {
+		const sep = candidate.indexOf("_");
+		if (sep > 0 && sep < candidate.length - 1) {
+			candidates.push(candidate.slice(sep + 1));
+		}
+	}
+	return candidates;
+}
+
 export function classifyReadOnlyToolAccess(toolName: string): "READ" | "WRITE" {
 	const snake = toSnakeLower(toolName);
 	if (WRITE_SUBSTRINGS.some((verb) => snake.includes(verb))) {
@@ -167,18 +201,9 @@ export function classifyReadOnlyToolAccess(toolName: string): "READ" | "WRITE" {
 	if (isBareReadVerb(snake)) {
 		return "READ";
 	}
-	const candidates = [snake];
-	const namespaceIdx = snake.lastIndexOf("__");
-	if (namespaceIdx >= 0) {
-		candidates.push(snake.slice(namespaceIdx + 2));
-	}
-	for (const candidate of [...candidates]) {
-		const sep = candidate.indexOf("_");
-		if (sep > 0 && sep < candidate.length - 1) {
-			candidates.push(candidate.slice(sep + 1));
-		}
-	}
-	return candidates.some(startsWithReadVerb) ? "READ" : "WRITE";
+	return toolNameReadCandidates(snake).some(startsWithReadVerb)
+		? "READ"
+		: "WRITE";
 }
 
 export interface ReadOnlyBlockedOutput {
