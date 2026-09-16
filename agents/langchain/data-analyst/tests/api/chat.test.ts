@@ -42,6 +42,11 @@ vi.mock("ai", async (importOriginal) => {
 });
 
 describe("Chat API POST", () => {
+	let mcpClient: {
+		tools: ReturnType<typeof vi.fn>;
+		close: ReturnType<typeof vi.fn>;
+	};
+
 	beforeEach(() => {
 		vi.clearAllMocks();
 
@@ -55,15 +60,24 @@ describe("Chat API POST", () => {
 			expiresAt: new Date(Date.now() + 3600_000).toISOString(),
 		});
 
-		(createMCPClient as any).mockResolvedValue({
+		mcpClient = {
 			tools: vi.fn().mockResolvedValue([{ name: "test-tool" }]),
 			close: vi.fn().mockResolvedValue(undefined),
-		});
+		};
+		(createMCPClient as any).mockResolvedValue(mcpClient);
 
+		// AI SDK 7 removed the route's dependency on the `streamText` result
+		// helpers: it now reads `result.stream` and pipes it through the
+		// stateless `toUIMessageStream` / `createUIMessageStreamResponse`
+		// pair, both of which stay unmocked here. The fake result therefore
+		// only has to expose an empty, already-closed source stream, and the
+		// Response the route returns is built by the real helpers.
 		(streamText as any).mockReturnValue({
-			toUIMessageStreamResponse: vi
-				.fn()
-				.mockReturnValue(new Response("Mock Stream")),
+			stream: new ReadableStream({
+				start(controller) {
+					controller.close();
+				},
+			}),
 		});
 
 		(convertToModelMessages as any).mockReturnValue([]);
@@ -81,7 +95,7 @@ describe("Chat API POST", () => {
 		expect(res.status).toBe(401);
 	});
 
-	it("should return 200 and a stream if user is logged in", async () => {
+	it("should return 200 and a consumable SSE stream if user is logged in", async () => {
 		(auth as any).mockResolvedValue({
 			user: { id: "test-user-1" },
 		});
@@ -98,6 +112,49 @@ describe("Chat API POST", () => {
 			console.error("Error Status:", res.status);
 		}
 		expect(res.status).toBe(200);
+
+		// The stateless helpers are what build this response, so assert the
+		// headers they are documented to set rather than trusting that a
+		// Response object came back at all.
+		expect(res.headers.get("content-type")).toBe("text/event-stream");
+		expect(res.headers.get("x-vercel-ai-ui-message-stream")).toBe("v1");
+		expect(res.headers.get("cache-control")).toBe("no-cache");
+
+		// Drain the body. An empty source stream still has to produce a
+		// well-formed SSE terminator, which is the difference between a
+		// Response that was merely constructed and one a client can read.
+		expect(res.body).not.toBeNull();
+		const body = await res.text();
+		expect(body).toBe("data: [DONE]\n\n");
+	});
+
+	it("closes the MCP client when the model run ends", async () => {
+		// `vi.mocked` rather than the `as any` casts the older assertions in
+		// this file use: it is typed, so it keeps the new coverage from adding
+		// to the pre-existing `no-explicit-any` lint debt here.
+		vi.mocked(auth).mockResolvedValue({
+			user: { id: "test-user-onend" },
+		});
+
+		const req = new Request("http://localhost/api/chat", {
+			method: "POST",
+			body: JSON.stringify({
+				messages: [{ role: "user", content: "Hello" }],
+			}),
+		});
+		await POST(req);
+
+		// `onEnd` is SDK 7's rename of `onFinish`; the route hangs MCP
+		// teardown off it. Nothing in this test drives a real model run, so
+		// capture the option the route passed and invoke it the way the SDK
+		// would, then assert the session was actually torn down.
+		const onEnd = vi.mocked(streamText).mock.calls[0][0].onEnd;
+		expect(typeof onEnd).toBe("function");
+		expect(mcpClient.close).not.toHaveBeenCalled();
+
+		await onEnd?.({} as never);
+
+		expect(mcpClient.close).toHaveBeenCalledTimes(1);
 	});
 
 	it("should return 500 Internal Server Error if upstream service fails", async () => {

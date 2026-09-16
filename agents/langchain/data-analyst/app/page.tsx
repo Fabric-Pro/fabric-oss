@@ -120,17 +120,49 @@ export default function Chat() {
 		}
 	}, [messages]);
 
+	// Loading a conversation cannot call the `setMessages` captured in the
+	// click handler. `@ai-sdk/react` 4 binds `setMessages` to one specific
+	// `Chat`: it closes over `chat`, which is `useMemo(..., [chatKey])` keyed
+	// on `id` (dist/index.js:352-356, 417-424). Version 3 wrote through a
+	// mutable `chatRef` instead (dist/index.js:244-251, 313-320), so a
+	// `setMessages` captured before an id change still reached the live chat.
+	// Selecting a conversation changes `chatSessionId`, so by the time the
+	// fetch resolves the captured `setMessages` belongs to the chat we just
+	// navigated away from, and the history would land in a discarded instance
+	// while the selected conversation rendered empty. Hand the history to an
+	// effect keyed on the session it was loaded for instead, so it is applied
+	// by the render that owns the matching `Chat`.
+	const [pendingHistory, setPendingHistory] = useState<{
+		sessionId: string;
+		messages: TypedUIMessage[];
+	} | null>(null);
+	const latestSessionRef = useRef<string | null>(null);
+
 	const handleSelectChat = useCallback(
 		async (chatId: string) => {
+			const sessionId = "session-" + Date.now();
+			latestSessionRef.current = sessionId;
 			setActiveChatId(chatId);
-			setChatSessionId("session-" + Date.now());
+			setChatSessionId(sessionId);
 			const chatMessages = await selectChat(chatId);
-			isLoadingExistingChat.current = true;
-			setMessages(chatMessages as typeof messages);
+			// A newer selection superseded this one while the fetch was in
+			// flight; dropping the stale response keeps the newer history
+			// from being clobbered by an out-of-order resolve.
+			if (latestSessionRef.current !== sessionId) return;
 			setPptUrl(null);
+			setPendingHistory({ sessionId, messages: chatMessages });
 		},
-		[selectChat, setMessages],
+		[selectChat],
 	);
+
+	useEffect(() => {
+		if (!pendingHistory || pendingHistory.sessionId !== chatSessionId) {
+			return;
+		}
+		isLoadingExistingChat.current = true;
+		setMessages(pendingHistory.messages as typeof messages);
+		setPendingHistory(null);
+	}, [pendingHistory, chatSessionId, setMessages]);
 
 	const handleNewChat = useCallback(() => {
 		setActiveChatId(null);
