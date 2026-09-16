@@ -17,7 +17,11 @@
 
 import { checkAuthority, resolveCanonicalProviderKey } from "@repo/database";
 import { getRegisteredOperationAccess } from "@repo/integrations/executor-registry";
-import { hasReadToolPrefix } from "@repo/utils";
+import {
+	hasReadToolPrefix,
+	toolNameReadCandidates,
+	toSnakeLower,
+} from "@repo/utils";
 
 // ─── Provider Key Resolution ────────────────────────────────────────────────
 
@@ -101,6 +105,26 @@ function isContentCreationTool(toolName: string): boolean {
 
 /**
  * Classify a tool name as READ or WRITE.
+ *
+ * The namespaced read test runs LAST, after every explicit WRITE prefix has had
+ * its say, and that order is the safety argument. Only the conservative default
+ * at the bottom can now resolve to READ: a name that already read as READ still
+ * does, and a name that matched a WRITE prefix still does, so no tool becomes
+ * more permissive than it was. `update_search_index` is the case that decides
+ * it — `update` matches and returns before the read test ever sees
+ * `search_index`.
+ *
+ * Without that test a vendor token in front of the verb defeated the whole
+ * classifier. Slack's MCP server names its tools `slack_search_public`, and
+ * Fabric prefixes the server again before handing them to a model, so a public
+ * message search fell through to the default and demanded WRITE authority. So
+ * did every other namespaced read across every connected server, which trains
+ * people to grant write access to read things — the opposite of what a
+ * capability prompt is for.
+ *
+ * `isContentCreationTool` already matched its whitelist as a suffix for exactly
+ * this reason; this generalizes that to the read vocabulary instead of keeping
+ * it a per-name exception.
  */
 export function classifyToolAccessLevel(toolName: string): "READ" | "WRITE" {
 	const lower = toolName.toLowerCase();
@@ -114,6 +138,11 @@ export function classifyToolAccessLevel(toolName: string): "READ" | "WRITE" {
 		if (lower.startsWith(`${prefix}_`) || lower.startsWith(`${prefix}-`)) {
 			return "WRITE";
 		}
+	}
+	if (
+		toolNameReadCandidates(toSnakeLower(toolName)).some(hasReadToolPrefix)
+	) {
+		return "READ";
 	}
 	return "WRITE"; // Conservative default
 }
