@@ -147,7 +147,7 @@ async function buildAgentContextSystemPrompt({
 	focusedStoryId?: string | null;
 	focusedDocumentId?: string | null;
 	focusedTaskId?: string | null;
-}) {
+}): Promise<{ systemPrompt?: string; projectContext?: string }> {
 	try {
 		const { db } = await import("@repo/database");
 		const staleBefore = new Date(
@@ -245,7 +245,10 @@ async function buildAgentContextSystemPrompt({
 		]);
 
 		if (!project) {
-			return baseSystemPrompt;
+			return {
+				systemPrompt: baseSystemPrompt,
+				projectContext: undefined,
+			};
 		}
 
 		// Full-fidelity context for the entity the user is CURRENTLY VIEWING
@@ -440,13 +443,22 @@ async function buildAgentContextSystemPrompt({
 			.filter(Boolean)
 			.join("\n\n");
 
-		return [baseSystemPrompt, contextBlock].filter(Boolean).join("\n\n");
+		// The caller's own instructions stay the only trusted system text. The
+		// focused entity and the workspace summary are read from project records
+		// (story descriptions, document bodies, task notes) that anyone with
+		// write access authored, so they travel separately and the chat
+		// activity wraps them as retrieved, untrusted context before prompt
+		// assembly — never concatenated into `systemPrompt`.
+		return {
+			systemPrompt: baseSystemPrompt,
+			projectContext: contextBlock || undefined,
+		};
 	} catch (error) {
 		console.warn(
 			"[Fabric AI Stream] Failed to build project context:",
 			error,
 		);
-		return baseSystemPrompt;
+		return { systemPrompt: baseSystemPrompt, projectContext: undefined };
 	}
 }
 
@@ -626,15 +638,21 @@ export async function POST(request: NextRequest) {
 			}
 		}
 
-		const contextualSystemPrompt = projectId
-			? await buildAgentContextSystemPrompt({
-					projectId,
-					baseSystemPrompt: systemPrompt ?? undefined,
-					focusedStoryId: storyId,
-					focusedDocumentId: documentId,
-					focusedTaskId: taskId,
-				})
-			: (systemPrompt ?? undefined);
+		// Trusted instructions and route-derived project/focused context are
+		// kept apart from here on: only `systemPrompt` carries authority.
+		const { systemPrompt: contextualSystemPrompt, projectContext } =
+			projectId
+				? await buildAgentContextSystemPrompt({
+						projectId,
+						baseSystemPrompt: systemPrompt ?? undefined,
+						focusedStoryId: storyId,
+						focusedDocumentId: documentId,
+						focusedTaskId: taskId,
+					})
+				: {
+						systemPrompt: systemPrompt ?? undefined,
+						projectContext: undefined,
+					};
 
 		// Get AI model and provider config using centralized entry point
 		let aiModelResult: Awaited<ReturnType<typeof getAIModelWithMetadata>>;
@@ -737,6 +755,7 @@ export async function POST(request: NextRequest) {
 			enabledMcpConfigIds: enabledMcpConfigIds ?? undefined,
 			enabledFabricToolIds: enabledFabricToolIds ?? undefined,
 			systemPrompt: contextualSystemPrompt,
+			projectContext,
 			modelOverride: modelOverride ?? undefined,
 			conversationId: conversationId ?? undefined,
 		});
@@ -789,6 +808,12 @@ async function handleTemporalWorkflow(params: {
 	enabledMcpConfigIds?: string[];
 	enabledFabricToolIds?: string[];
 	systemPrompt?: string;
+	/**
+	 * Route-derived project summary and focused-entity content. Untrusted:
+	 * the chat activity wraps it as retrieved context, so it is never folded
+	 * into `systemPrompt`.
+	 */
+	projectContext?: string;
 	modelOverride?: string;
 	/**
 	 * Optional AgentConversation ID. Threaded into the
@@ -817,6 +842,7 @@ async function handleTemporalWorkflow(params: {
 		enabledMcpConfigIds,
 		enabledFabricToolIds,
 		systemPrompt,
+		projectContext,
 		modelOverride,
 		conversationId,
 	} = params;
@@ -1042,6 +1068,7 @@ async function handleTemporalWorkflow(params: {
 					enabledMcpConfigIds: effectiveEnabledMcpConfigIds,
 					enabledFabricToolIds,
 					systemPrompt,
+					projectContext,
 					modelOverride,
 				};
 

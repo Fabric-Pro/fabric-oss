@@ -87,6 +87,7 @@ import {
 	summarizeOmittedTools,
 	validateMcpToolSet,
 } from "./tool-payload-safety";
+import { collectUntrustedContextSections } from "./untrusted-context";
 
 const logger = {
 	info: (message: string, data?: Record<string, unknown>) =>
@@ -1142,26 +1143,26 @@ ${toolsEnabled ? "- Your own recent sessions, the workspace's agents and its con
 		? `${input.systemPrompt}\n\n---\n\n${defaultSystemInstructions}`
 		: defaultSystemInstructions;
 
-	// Build context sections
-	const contextSections: string[] = [];
+	// Build context sections. Everything retrieved — the activity's own
+	// project block, the route's project summary and focused entity, RAG hits
+	// and session memory — is wrapped as untrusted; only `systemInstructions`
+	// above carries authority.
+	let projectBlock: string | null = null;
 	if (projectId) {
 		const { buildProjectContextBlock } = await import(
 			"../shared/project-context-block"
 		);
-		const projectBlock = await buildProjectContextBlock(projectId, {
+		projectBlock = await buildProjectContextBlock(projectId, {
 			userId,
 			organizationId: organizationId ?? null,
 		});
-		if (projectBlock) {
-			contextSections.push(projectBlock);
-		}
 	}
-	if (ragContext && ragContext.length > 0) {
-		contextSections.push(ragContext);
-	}
-	if (memoryContext && memoryContext.length > 0) {
-		contextSections.push(`## Session Memory:\n${memoryContext}`);
-	}
+	const { sections: contextSections } = collectUntrustedContextSections({
+		projectBlock,
+		projectContext: input.projectContext,
+		ragContext,
+		memoryContext,
+	});
 	if (toolSuggestionContext && toolSuggestionContext.length > 0) {
 		contextSections.push(`## Suggested Tools:\n${toolSuggestionContext}`);
 	}
