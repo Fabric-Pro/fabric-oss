@@ -1,5 +1,39 @@
 # fabric-app
 
+## 1.16.0
+
+### Minor Changes
+
+- 9af13a4: Engagement profiles and delivery tracks: the backlog now runs the inverted loop where it applies
+
+### Patch Changes
+
+- 0e89e35: The Getting Started tour now calls the AI assistant "Advisor", matching the sidebar entry the tour points at, and the Get started drawer and the Model Configuration page use that name too.
+- c889b41: The Vercel AI SDK and every `@ai-sdk/*` provider are now on their current in-major releases, so provider schema additions such as OpenAI cache-write usage fields reach the app without a month-long lag.
+- a665399: The Connections page now opens the MCP servers walkthrough on its MCP tab, and Show me for MCP servers points there instead of the sidebar.
+- 89ebdac: The Get Started guide now calls the connections area "Connections", matching the page it opens, and that page explains when to use a native Integration versus an MCP server — both as an introduction above the two options and as an on-demand hint at the control where the choice is made.
+- a3e93d8: Completed Databricks-served Claude calls through the AI SDK now record prompt-cache write tokens, so cost estimates apply the cache-write rate instead of pricing those tokens as ordinary input.
+- f18e676: A document already carrying stray tilde characters around quoted phrases is now repaired when it is opened, instead of rendering damaged forever.
+- f672e2f: Image generation now calls the AI SDK's stable `generateImage` entry point instead of the deprecated experimental alias, so the image-generation activities keep working when the alias is removed in the next SDK major.
+- d1975c4: A GitLab token refresh that takes a few seconds no longer has its database transaction pulled out from under it, which was retiring the stored credentials and forcing a reconnect.
+- 52b1b15: Slack huddle notes ingest now reports when a missing workspace permission has stopped it, instead of continuing to look like it is running.
+- 52b1b15: Messages from linked Slack and Teams channels are now neutralized before they reach an AI prompt, so channel content cannot pose as instructions.
+- 14d50b3: Read-only agent tools no longer ask for write authority, so a permission prompt means a genuine write again.
+- 6a41038: "Show me" for MCP servers points at the sidebar row again, so it works from any page rather than only from the MCP servers tab.
+- 2577fdb: Narrow the Fabric Code extension keys issued before the mint was scoped, so they no longer act as full-access credentials.
+- f3318e6: Deleting a system prompt now resolves the workspace itself when the session names none and the answer is unambiguous, instead of refusing.
+- 484f6f7: Show the answers a publishing question is generated with — including Approved and Not approved for an asset that needs approval — as choices to pick, instead of only a free-text box. An open question already on a topic gains its choices the next time the topic's planning analysis is regenerated.
+- d12643e: A proposed planning analysis is now reviewed as a diff before it replaces the document.
+- c190059: Treat a publishing decision as settled only when a project member answered it, so a question the planning analysis stopped raising keeps restricting drafts generated from then on, including the assets and safety fields Fabric checks, instead of being reported as confirmed.
+- f63441a: The publishing Planning & Analysis asks for each decision once — not again after it is answered, and not twice in one run.
+- 7b45ba3: Rename the CLI-connection readiness item so its name says which scope it reports.
+- d77e8fa: Keep the roadmap's status, source, tag and PM sync columns lined up across every row, whether or not a row has tags.
+- a2ea75d: A Slack channel that can no longer be read — archived, or with the bot removed — now stops being scanned instead of failing on every interval forever.
+- a2ea75d: A finished Slack channel scan now reports what it found, so a scan with nothing to do is no longer indistinguishable from a broken one.
+- 52b1b15: Slack search results returned to an AI agent are now neutralized, so a channel message cannot pose as retrieval scaffolding.
+- b30356b: Pass system instructions through the AI SDK's system option instead of inline system messages, which removes a per-call SDK warning and prepares the code for AI SDK 7's stricter prompt validation.
+- 069373c: The weave reader agents (Thread, Spindle, Weft, Warp) now advertise their web-search, web-fetch and sandbox tools to the model with real input schemas, so the model can pass a search query, a URL or a file path instead of being limited to argument-less calls.
+
 ## 1.15.1
 
 ### Patch Changes
