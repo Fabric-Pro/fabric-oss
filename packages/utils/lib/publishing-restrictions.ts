@@ -273,6 +273,9 @@ export interface SettledDecision {
  * write procedures now refuse a whitespace-only answer at the input boundary,
  * so a blank reply reaching here can only be a historical row.
  *
+ * `settledBlocker` below is the same computation for a `BLOCKER` root; the two
+ * are separate exports so that widening one does not widen the other.
+ *
  * There is NO fallback to `root.summary`. For a question root that field holds
  * the model's own question text (`reconcileTopicQuestions` writes
  * `summary: question.question`), so falling back to it presented the model's
@@ -282,8 +285,45 @@ export interface SettledDecision {
 export function settledDecision(
 	thread: SettledDecisionThread,
 ): SettledDecision | null {
+	return settledRootOfKind(thread, "QUESTION");
+}
+
+/**
+ * The same thing, for a root the analysis raised as a BLOCKER.
+ *
+ * A blocker is minted by `reconcileTopicQuestions` like a question, answered by
+ * `answerTopicQuestion` like a question, and settled by a member like a
+ * question — only its `kind` column and its vocabulary (`MISSING_QUOTE`,
+ * `MISSING_APPROVAL`, …) differ. So "has somebody settled this" is the same
+ * computation, and it is shared rather than written twice.
+ *
+ * It is a SEPARATE export rather than a widening of `settledDecision`, and the
+ * separation is deliberate. The seven drafting activities call
+ * `settledDecision` to build their "Confirmed decisions" block, and widening
+ * that function would silently add cleared errands to every draft prompt —
+ * possibly right, definitely not this change. The planning analysis is the one
+ * caller that needs both, because it is the one thing that RE-RAISES both.
+ */
+export function settledBlocker(
+	thread: SettledDecisionThread,
+): SettledDecision | null {
+	return settledRootOfKind(thread, "BLOCKER");
+}
+
+/**
+ * The shared body of the two above: a root of `kind`, `RESOLVED`, plus the
+ * newest reply a member actually wrote.
+ *
+ * Kept private so there is still exactly one implementation of "settled" —
+ * the property `settled-decision-usage.test.ts` polices — while the two
+ * exported entry points stay separately callable.
+ */
+function settledRootOfKind(
+	thread: SettledDecisionThread,
+	kind: "QUESTION" | "BLOCKER",
+): SettledDecision | null {
 	const { root } = thread;
-	if (root.kind !== "QUESTION" || root.status !== "RESOLVED") {
+	if (root.kind !== kind || root.status !== "RESOLVED") {
 		return null;
 	}
 	const newestFirst = [...thread.replies].sort((a, b) => {
