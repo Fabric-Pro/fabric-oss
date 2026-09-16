@@ -1,0 +1,11 @@
+---
+"fabric-app": patch
+---
+
+The Getting Started tour now calls the AI assistant "Advisor", matching the sidebar entry the tour points at, and the Get started drawer and the Model Configuration page use that name too.
+
+The assistant was renamed from "Nexus" to "Advisor" in an earlier release, which moved the sidebar label and the Get started registry entry for it. Three user-facing strings kept the old name and have been saying it since: the guided tour's own slide introducing the assistant, in both its title and its body; the drawer's agents page-tour, which described clicking an agent as dropping you into a "Nexus chat"; and the Model Configuration page, which listed the products an AI provider key enables. The tour is the most visible of the three — it sends a new user to a sidebar entry reading "Advisor" one step after introducing the same thing as "Nexus", and it reaches that page from an earlier step.
+
+The name survives deliberately underneath the labels. The onboarding anchor the tour targets, the registry id that keys drawer progress, and the legacy route are all still spelled with it, because the anchor is string-matched against the live sidebar by the drift guard, the id is a stored per-user marker, and the route is real. Renaming any of them would break the tour's own targeting or orphan stored state, so only human-facing copy changed. German needs no parallel edit: it carries no tour copy of its own and falls back to English.
+
+Tests: a new file pins the renamed copy, that both sidebar label variants and the tour agree on one name, that no drawer copy leading to the assistant still says the old one, and that the id, the anchor and the step's target survive — plus that the step defines no inline copy that would shadow the renamed catalogue strings. The "old name is gone" assertion is scoped to copy that leads to the assistant, so it will not misfire on the legacy route. The assertions live in a new file so the existing drift guard stays byte-identical. A second new file renders the slide itself against the shipped catalogue, because the suites here otherwise run under a translation stub that echoes the key back, and under that stub a rename regression is invisible.
