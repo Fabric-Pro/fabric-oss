@@ -20,16 +20,13 @@ vi.mock("@repo/ai", () => ({
 		).imageModel = (m: string) => ({ modelId: m });
 		return gateway;
 	},
-	experimental_generateImage: vi.fn(),
+	generateImage: vi.fn(),
 	generateText: vi.fn(),
 	getAIModelWithMetadata: vi.fn(),
 	getRAGProviderConfig: vi.fn(),
 }));
 
-import {
-	experimental_generateImage as generateImage,
-	getRAGProviderConfig,
-} from "@repo/ai";
+import { generateImage, getRAGProviderConfig } from "@repo/ai";
 import { executeAiGenerateImageStep } from "../ai-generate-image";
 
 const PARAMS = {

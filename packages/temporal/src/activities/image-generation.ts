@@ -282,8 +282,9 @@ async function generateWithGateway(params: {
 		};
 	}
 
-	const { createGateway, experimental_generateImage, generateText } =
-		await import("@repo/ai");
+	const { createGateway, generateImage, generateText } = await import(
+		"@repo/ai"
+	);
 	const gateway = createGateway({ apiKey: providerConfig.apiKey });
 
 	// Nano Banana (Gemini multimodal image) models emit images through the chat
@@ -403,7 +404,7 @@ async function generateWithGateway(params: {
 		`[ImageGeneration] Gateway (image API) request: model=${model}, aspectRatio=${validatedAspectRatio ?? "default"}`,
 	);
 
-	const imageResult = await experimental_generateImage({
+	const imageResult = await generateImage({
 		model: gateway.imageModel(model),
 		prompt,
 		...(validatedAspectRatio ? { aspectRatio: validatedAspectRatio } : {}),
