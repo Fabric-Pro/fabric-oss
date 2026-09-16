@@ -48,13 +48,34 @@ export function TopicReadiness({
 		return null;
 	}
 
-	// Only a question a person ANSWERED counts. `POSSIBLY_RESOLVED` is not that:
-	// `reconcileTopicQuestions` writes it only for a root that was still `OPEN`
-	// — nobody had answered it — when a regenerated analysis stopped raising it,
-	// and the generation tab and the drafting prompts treat it as unresolved.
-	// Counting it here would call a topic ready beside a tab that says it is not.
+	// SETTLED, not necessarily ANSWERED — `RESOLVED` or `POSSIBLY_RESOLVED`.
+	//
+	// This is a REVERSAL. `POSSIBLY_RESOLVED` used to be excluded, on the
+	// reasoning that nobody had answered it and the generation tab treats it as
+	// unresolved, so counting it "would call a topic ready beside a tab that
+	// says it is not".
+	//
+	// What that missed is that nothing can ever clear one. A soft-closed root
+	// is not in the panel's open list — it sits collapsed under "Possibly
+	// resolved" — and it returns to `OPEN` only if a later analysis raises the
+	// same question again. So it sat in this denominator as permanently
+	// unanswerable, and a topic carrying one could never reach 100%. One
+	// observed topic read `21 of 28` with every live decision answered and all
+	// seven strays left by a since-fixed subject-drift bug.
+	//
+	// Feature Maturation, which this mirrors on the same `DecisionStatus` enum,
+	// has always counted it this way (`evaluate-ai-readiness.ts` puts it in
+	// `resolvedQuestions`), and the enum's own comment calls it "dropped from
+	// the active open list".
+	//
+	// The contradiction the old comment guarded against is real but narrower
+	// than it looks: only a SAFETY-CRITICAL soft-closed question still badges a
+	// generation tab, and answering it — which stays possible from the Decision
+	// Log — clears both at once.
 	const resolved = questions.filter(
-		(t) => t.root.status === "RESOLVED",
+		(t) =>
+			t.root.status === "RESOLVED" ||
+			t.root.status === "POSSIBLY_RESOLVED",
 	).length;
 
 	const open = total - resolved;

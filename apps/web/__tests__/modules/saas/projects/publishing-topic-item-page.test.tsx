@@ -1617,11 +1617,21 @@ describe("TopicItemPage — readiness", () => {
 		);
 	});
 
-	it("does not count a soft-closed question as answered (Fizzy #1988 1B)", () => {
-		// POSSIBLY_RESOLVED is written only for a question that was still OPEN
-		// — nobody answered it — when a regenerated analysis stopped raising
-		// it. The generation tab and the drafting prompts treat it as
-		// unresolved; readiness must not call the topic ready beside them.
+	it("counts a soft-closed question as settled (Fizzy #1851)", () => {
+		// REVERSED, deliberately. This used to expect "1 of 2": a
+		// POSSIBLY_RESOLVED root is one nobody answered, so counting it read as
+		// calling a topic ready beside a generation tab that says it is not.
+		//
+		// What that missed is that nothing can ever clear one. It is not in the
+		// panel's open list — it sits collapsed under "Possibly resolved" — and
+		// it returns to OPEN only if a later analysis raises the same question
+		// again. So it sat in the denominator as permanently unanswerable, and a
+		// topic carrying one could never reach 100%. Observed: a topic reading
+		// "21 of 28" with every live decision answered, all seven strays left by
+		// a since-fixed subject-drift bug.
+		//
+		// Feature Maturation, which this mirrors on the same DecisionStatus
+		// enum, has always counted it this way.
 		state.decisionThreads = [
 			question("a", "POSSIBLY_RESOLVED"),
 			question("b", "RESOLVED"),
@@ -1629,7 +1639,7 @@ describe("TopicItemPage — readiness", () => {
 		renderPage();
 
 		expect(screen.getByTestId("topic-readiness")).toHaveTextContent(
-			"1 of 2 decisions answered",
+			"All 2 decisions answered",
 		);
 	});
 
@@ -2138,7 +2148,18 @@ describe("TopicItemPage — tab counts", () => {
 		).not.toBeInTheDocument();
 	});
 
-	it("counts every unresolved question, a soft-closed one included, and keeps non-safety kinds (Fizzy #1988 1B)", () => {
+	it("counts OPEN questions only, whatever their kind (Fizzy #1851)", () => {
+		// REVERSED, deliberately. This used to expect 3 — every question that
+		// was not RESOLVED, soft-closed ones included. But a POSSIBLY_RESOLVED
+		// root is not in the panel's open list, so the badge was promising work
+		// the tab does not offer, and nothing the reader could do made it go
+		// down. A topic whose every live decision was answered still badged 7.
+		//
+		// The drafting side is deliberately NOT changed with it:
+		// `isUnresolvedDecisionStatus` still admits POSSIBLY_RESOLVED for the
+		// generation-tab warnings and the prompt restrictions, because an
+		// unapproved customer name is unapproved whether or not the newest
+		// analysis still asks about it.
 		state.decisionThreads = [
 			openQuestionThread("audience", {
 				decisionKind: "AUDIENCE_SCOPE",
@@ -2154,7 +2175,33 @@ describe("TopicItemPage — tab counts", () => {
 		];
 		renderPage();
 
-		expect(screen.getByLabelText("3 open questions")).toBeInTheDocument();
+		expect(screen.getByLabelText("1 open question")).toBeInTheDocument();
+	});
+
+	it("still badges a generation tab for a soft-closed safety question (Fizzy #1851)", () => {
+		// The pair that proves the two halves were separated rather than both
+		// flipped: the Summary & Questions badge is gone, the drafting caution
+		// is not.
+		state.decisionThreads = [
+			openQuestionThread("name-soft", {
+				decisionKind: "CUSTOMER_NAME",
+				status: "POSSIBLY_RESOLVED",
+			}),
+		];
+		renderPage();
+
+		// Anchored: the tab badge's label is the whole string. A loose
+		// /open question/ also matches the generation tab panels, which are
+		// labelled by a trigger whose own caution text contains the phrase —
+		// the very thing this test is asserting is still there.
+		expect(
+			screen.queryByLabelText(/^\d+ open questions?$/),
+		).not.toBeInTheDocument();
+		expect(
+			screen.getAllByText(
+				/1 open question before this can be drafted cleanly/i,
+			).length,
+		).toBeGreaterThan(0);
 	});
 });
 
