@@ -192,6 +192,40 @@ export async function recordSlackChannelFailure(
 	});
 }
 
+/**
+ * Record a failure that will never clear on its own, and stop scanning.
+ *
+ * `api.errors.ts` classifies these — an archived or deleted channel, a bot that
+ * was removed, a revoked token — precisely so a caller can stop rather than
+ * retry, and its header records what not doing so costs: `not_in_channel` alone
+ * produced roughly two thousand worker errors a week. Until now nothing acted
+ * on the classification, so a channel archived in June was still being polled
+ * every fifteen minutes months later, failing identically each time.
+ *
+ * Stopping reuses the pause column rather than adding a state: the monitor's
+ * own read filters on `deactivatedAt IS NULL`, so setting it is what ends the
+ * polling. `deactivatedById` stays null, and that is the whole discriminator —
+ * a person pausing a channel always stamps their id, so a null actor beside a
+ * set timestamp means the system stopped it, and the UI can say which. The
+ * existing Resume control clears both fields, so recovery is the same one click
+ * it already was.
+ */
+export async function stopSlackChannelForPermanentFailure(
+	linkedChannelId: string,
+	errorMessage: string,
+) {
+	return await db.projectLinkedSlackChannel.update({
+		where: { id: linkedChannelId },
+		data: {
+			consecutiveFailures: { increment: 1 },
+			lastErrorMessage: errorMessage.slice(0, 4000),
+			lastErrorAt: new Date(),
+			deactivatedAt: new Date(),
+			deactivatedById: null,
+		},
+	});
+}
+
 // ---------------------------------------------------------------------------
 // Seen-message dedup
 // ---------------------------------------------------------------------------

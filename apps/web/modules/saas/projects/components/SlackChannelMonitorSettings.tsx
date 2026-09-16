@@ -19,6 +19,7 @@ import { InlineJobProgress } from "@saas/jobs/components/InlineJobProgress";
 import {
 	findJobForSource,
 	useProjectJobProgress,
+	useProjectLastFinishedJob,
 } from "@saas/jobs/hooks/use-project-job-progress";
 import { orpc } from "@shared/lib/orpc-query-utils";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -63,6 +64,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { getSlackChannelMonitorClient } from "../lib/slack-channel-monitor-client";
 import { getSlackHuddleIngestClient } from "../lib/slack-huddle-ingest-client";
+import { LastScanSummary } from "./LastScanSummary";
 import { SlackChannelPickerDialog } from "./SlackChannelPickerDialog";
 import {
 	type MonitorRow,
@@ -139,6 +141,7 @@ export function SlackChannelMonitorSettings({
 }: Props) {
 	const queryClient = useQueryClient();
 	const runningJobs = useProjectJobProgress(projectId);
+	const lastFinishedJobs = useProjectLastFinishedJob(projectId);
 	const t = useTranslations("tooltips.projectSettings");
 	const unlinkCopy = t.raw("unlinkSlackChannel") as DestructiveTooltipCopy;
 	const [pickerOpen, setPickerOpen] = useState(false);
@@ -636,6 +639,13 @@ export function SlackChannelMonitorSettings({
 											"Unnamed channel";
 										const isPaused =
 											channel.deactivatedAt !== null;
+										// A person pausing always stamps their
+										// id, so a null actor beside a set
+										// timestamp is the system having
+										// stopped on an error no retry clears.
+										const isSystemStopped =
+											isPaused &&
+											channel.deactivatedById == null;
 										const monitorRow: MonitorRow = {
 											id: channel.id,
 											label: `#${displayLabel}`,
@@ -696,7 +706,9 @@ export function SlackChannelMonitorSettings({
 															<div className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
 																{isPaused && (
 																	<span className="rounded bg-muted px-1.5 py-0.5 font-medium text-foreground">
-																		Paused
+																		{isSystemStopped
+																			? "Stopped"
+																			: "Paused"}
 																	</span>
 																)}
 																<span>
@@ -706,8 +718,15 @@ export function SlackChannelMonitorSettings({
 																	1
 																		? "s"
 																		: ""}{" "}
-																	scanned
+																	analyzed
 																</span>
+																<LastScanSummary
+																	job={findJobForSource(
+																		lastFinishedJobs,
+																		"slackLinkedChannel",
+																		channel.id,
+																	)}
+																/>
 																{project.slackChannelMonitorLastRun && (
 																	<span className="flex items-center gap-1">
 																		<ClockIcon className="size-3" />

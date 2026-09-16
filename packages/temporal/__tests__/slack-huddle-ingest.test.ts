@@ -97,7 +97,10 @@ vi.mock("../src/client", () => ({
 	}),
 }));
 
-import { ScopeMissingError } from "@repo/integrations/slack";
+import {
+	ScopeMissingError,
+	SlackConfigurationError,
+} from "@repo/integrations/slack";
 import { ingestHuddleNotesForChannelActivity } from "../src/activities/slack-channel-monitor/ingest-huddle-notes";
 
 const HUDDLE_HTML =
@@ -316,6 +319,45 @@ describe("ingestHuddleNotesForChannelActivity", () => {
 			expect(out.failed).toBe(3);
 			expect(m.recordFailure).toHaveBeenCalledTimes(1);
 		});
+	});
+
+	/**
+	 * A channel archived in Slack answers `files.list` with `channel_not_found`
+	 * forever. It was counted as one more failure every interval — 53 deep on
+	 * one staging channel archived months earlier — because nothing acted on
+	 * the permanent classification the error already carried.
+	 */
+	it("stops scanning a channel whose failure no retry can clear", async () => {
+		m.huddleFindUnique.mockResolvedValue(null);
+		m.executeSlackTool.mockRejectedValue(
+			new SlackConfigurationError(
+				"channel_not_found",
+				"Slack API files.list error: channel_not_found",
+			),
+		);
+
+		await ingestHuddleNotesForChannelActivity(BASE_INPUT);
+
+		expect(m.recordFailure).toHaveBeenCalledTimes(1);
+		expect(m.recordFailure.mock.calls[0][0]).toMatchObject({
+			projectId: "p1",
+			channelId: "C1",
+			permanent: true,
+		});
+	});
+
+	it("does not stop a channel over a fault that clears on its own", async () => {
+		m.huddleFindUnique.mockResolvedValue(null);
+		m.downloadSlackFile.mockRejectedValue(
+			new ScopeMissingError("Slack bot token missing files:read scope"),
+		);
+
+		await ingestHuddleNotesForChannelActivity(BASE_INPUT);
+
+		// A missing scope is recorded, but the channel keeps its place: adding
+		// the scope and reconnecting should resume it without a manual resume.
+		expect(m.recordFailure).toHaveBeenCalledTimes(1);
+		expect(m.recordFailure.mock.calls[0][0].permanent).toBeUndefined();
 	});
 
 	it("a healthy run neither records a failure nor flags a missing scope", async () => {

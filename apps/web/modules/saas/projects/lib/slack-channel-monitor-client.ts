@@ -27,6 +27,12 @@ type LinkedSlackChannel = {
 	userId: string | null;
 	organizationId: string | null;
 	deactivatedAt: string | Date | null;
+	/**
+	 * Who paused the channel, or null when the system stopped it on an error no
+	 * retry can clear. The null is load-bearing: it is what lets the row say
+	 * "Stopped" rather than blaming a user for a pause they never made.
+	 */
+	deactivatedById: string | null;
 	_count?: {
 		seenMessages: number;
 	};
