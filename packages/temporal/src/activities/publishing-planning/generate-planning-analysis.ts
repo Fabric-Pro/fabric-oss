@@ -39,9 +39,16 @@ import {
 	effectiveContributorUserIds,
 	getBoundPromptForAgent,
 	getPublishingSuiteSettings,
+	listTopicDecisions,
 	logDraftRefusal,
 } from "@repo/database";
+import { logger } from "@repo/logs";
 import type { TemplateFormat } from "@repo/utils";
+import {
+	type SettledDecision,
+	settledBlocker,
+	settledDecision,
+} from "@repo/utils/publishing-restrictions";
 import { heartbeat } from "@temporalio/activity";
 import { ApplicationFailure } from "@temporalio/common";
 import {
@@ -51,6 +58,7 @@ import {
 import {
 	composePlanningAnalysisPrompt,
 	deriveQuestionId,
+	foldDuplicateDecisions,
 	PUBLISHING_PLANNING_ANALYSIS_AGENT_KEY,
 	PUBLISHING_PLANNING_ANALYSIS_FALLBACK_BODY,
 	PublishingPlanningAnalysisSchema,
@@ -129,7 +137,7 @@ export async function generatePlanningAnalysisActivity(
 		activity: "generatePlanningAnalysisActivity",
 	});
 
-	const [boundPrompt, contextResult, contributors, roleClause] =
+	const [boundPrompt, contextResult, contributors, roleClause, threads] =
 		await Promise.all([
 			// `organizationId ?? undefined` is load-bearing: falsy takes the
 			// personal USER → SYSTEM path, truthy takes ORG → SYSTEM, and the two
@@ -159,9 +167,37 @@ export async function generatePlanningAnalysisActivity(
 				requesterUserId: actorUserId,
 				surface: "publishing-suite",
 			}),
+			// What this topic has already decided. Read on every run rather than
+			// carried in workflow input, for the reason the suite settings below
+			// are: the minutes between the button and this line are exactly when
+			// somebody answers a question.
+			listTopicDecisions({ topicId, projectId }),
 		]);
 
 	heartbeat(`planningAnalysis: context assembled for ${analysisId}`);
+
+	/**
+	 * The decisions this analysis must not reach again.
+	 *
+	 * BOTH passes, one list. `reconcileTopicQuestions` runs twice per completed
+	 * analysis — once over the questions, once over the blockers — so the same
+	 * decision can come back as a question ("may we use the customer's name?")
+	 * or as an errand ("get sign-off to use the customer's name"). To the person
+	 * holding the open items those are one thing asked twice, and suppressing
+	 * only the question-shaped repeat would leave the errand returning forever.
+	 *
+	 * Both resolve through the shared settle helper, which takes a member's
+	 * newest RESOLVED reply and never the root's own summary — that field holds
+	 * the model's question, and presenting it as the answer is the failure the
+	 * helper exists to prevent.
+	 */
+	const settledDecisions: SettledDecision[] = [];
+	for (const thread of threads) {
+		const settled = settledDecision(thread) ?? settledBlocker(thread);
+		if (settled) {
+			settledDecisions.push(settled);
+		}
+	}
 
 	/**
 	 * Whether this project wants the analysis to draft suggested answers.
@@ -192,6 +228,7 @@ export async function generatePlanningAnalysisActivity(
 			contributors,
 		},
 		context: contextResult.context,
+		settledDecisions,
 	});
 
 	const prompt = composed.prompt + (roleClause ? `\n\n${roleClause}` : "");
@@ -265,7 +302,7 @@ export async function generatePlanningAnalysisActivity(
 	// FR39. Identity is derived code-side from (topic, decisionKind, subject) so
 	// it survives a regeneration that rephrases the question — a model-invented
 	// id would not, and stability is the whole point of the key.
-	const questions = resolveConfirmationQuestions(topic.id, parsed.data);
+	const rawQuestions = resolveConfirmationQuestions(topic.id, parsed.data);
 
 	/**
 	 * What the topic is MISSING, keyed the same way its questions are.
@@ -279,7 +316,7 @@ export async function generatePlanningAnalysisActivity(
 	 * the thing does not exist yet, and the only two outcomes are that somebody
 	 * gets it or that somebody decides it is not needed.
 	 */
-	const blockers = (parsed.data.blockers ?? [])
+	const rawBlockers = (parsed.data.blockers ?? [])
 		.filter((b) => b.need.trim().length > 0)
 		.map((b) => {
 			const kind = b.kind ?? "OTHER";
@@ -301,6 +338,31 @@ export async function generatePlanningAnalysisActivity(
 				whyItMatters: b.whyItMatters?.trim() || null,
 			};
 		});
+
+	/**
+	 * One decision, one item — within THIS run.
+	 *
+	 * The identity key recognises a decision across regenerations and cannot
+	 * help inside one: the two producers describe the same thing in different
+	 * vocabularies on purpose, so a run raised "Is the customer name approved?",
+	 * "should we name them as the first trial customer?" and "get sign-off to
+	 * name them publicly" as three items wanting three answers. The owner's
+	 * call is that nobody answers the same thing twice in one run.
+	 *
+	 * Folded, not dropped: `blockers` is stripped from the stored document
+	 * below, so a discarded one would leave no trace at all. See
+	 * `foldDuplicateDecisions`.
+	 */
+	const { questions, blockers, folded } = foldDuplicateDecisions({
+		questions: rawQuestions,
+		blockers: rawBlockers,
+	});
+	if (folded > 0) {
+		logger.info(
+			"[publishing-planning] folded duplicate decisions into their first item",
+			{ analysisId, topicId, folded },
+		);
+	}
 
 	// `recommendedQuestions` is deliberately dropped in favour of `questions`:
 	// the raw array carries no ids, and keeping both would leave the page two

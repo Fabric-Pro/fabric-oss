@@ -8,8 +8,9 @@ import {
 	renderSubjectBullet,
 	restrictionLabel,
 	restrictsPostType,
-	settledDecision,
 	type SettledDecisionThread,
+	settledBlocker,
+	settledDecision,
 } from "../lib/publishing-restrictions";
 
 /**
@@ -688,5 +689,60 @@ describe("settledDecision — a decision is settled only when a person answered 
 			decisionKind: "OTHER",
 			answer: "Yes, name them.",
 		});
+	});
+});
+
+describe("settledBlocker — the same computation, for a root raised as an errand", () => {
+	// A blocker is minted by `reconcileTopicQuestions` like a question, answered
+	// by `answerTopicQuestion` like a question, and differs only in its `kind`
+	// column and its vocabulary. The Planning & Analysis is the one caller that
+	// needs both, because it is the one thing that RE-RAISES both: the same
+	// decision comes back as a question ("may we use the name?") and as an
+	// errand ("get sign-off for the name"), and reading only the first leaves
+	// the second returning after somebody has settled it.
+	const blockerThread = (
+		over: Partial<SettledDecisionThread["root"]> = {},
+	): SettledDecisionThread => ({
+		root: {
+			kind: "BLOCKER",
+			status: "RESOLVED",
+			decisionKind: "MISSING_APPROVAL",
+			subject: "sign-off to name example-org",
+			summary: "Get sign-off from example-org to name them publicly.",
+			...over,
+		},
+		replies: [
+			{
+				id: "reply-1",
+				createdAt: new Date("2026-09-01T10:00:00Z"),
+				status: "RESOLVED",
+				authorType: "USER",
+				content: "Not needed — the piece will not name anyone.",
+			},
+		],
+	});
+
+	it("settles a BLOCKER root a member answered", () => {
+		expect(settledBlocker(blockerThread())).toEqual({
+			subject: "sign-off to name example-org",
+			decisionKind: "MISSING_APPROVAL",
+			answer: "Not needed — the piece will not name anyone.",
+		});
+	});
+
+	it("ignores a QUESTION root, which is settledDecision's job", () => {
+		expect(settledBlocker(blockerThread({ kind: "QUESTION" }))).toBeNull();
+	});
+
+	it("leaves the seven drafting activities seeing questions only", () => {
+		// The two are separate exports rather than one widened function on
+		// purpose: `settledDecision` builds the "Confirmed decisions" block in
+		// every draft prompt, and folding cleared errands into it would change
+		// seven content types at once.
+		expect(settledDecision(blockerThread())).toBeNull();
+	});
+
+	it("refuses a blocker nobody answered", () => {
+		expect(settledBlocker({ ...blockerThread(), replies: [] })).toBeNull();
 	});
 });

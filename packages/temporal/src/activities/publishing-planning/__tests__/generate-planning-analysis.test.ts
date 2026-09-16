@@ -46,6 +46,7 @@ const getBoundPromptForAgent = vi.fn();
 // The project's `autoProposeAnswers` switch, read when the prompt is written.
 const getPublishingSuiteSettings = vi.fn();
 const completePlanningAnalysis = vi.fn();
+const listTopicDecisions = vi.fn();
 vi.mock("@repo/database", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("@repo/database")>();
 	return {
@@ -80,6 +81,7 @@ vi.mock("@repo/database", async (importOriginal) => {
 			getPublishingSuiteSettings(...a),
 		completePlanningAnalysis: (...a: unknown[]) =>
 			completePlanningAnalysis(...a),
+		listTopicDecisions: (...a: unknown[]) => listTopicDecisions(...a),
 	};
 });
 
@@ -174,6 +176,9 @@ beforeEach(() => {
 	// No settings row is the ordinary case, and it means the default: on.
 	getPublishingSuiteSettings.mockResolvedValue(null);
 	collectPlanningContext.mockResolvedValue(CONTEXT_RESULT);
+	// A topic with no settled decisions is the ordinary case for most of this
+	// file; the tests that care supply their own threads.
+	listTopicDecisions.mockResolvedValue([]);
 	getProjectFunctionTagClause.mockResolvedValue("");
 	computeMaxOutputTokenBudget.mockReturnValue(8192);
 	getAIModelWithMetadata.mockResolvedValue({
@@ -703,5 +708,185 @@ describe("generatePlanningAnalysisActivity — output budget", () => {
 		expect(generateObject.mock.calls[0]?.[0]).not.toHaveProperty(
 			"maxOutputTokens",
 		);
+	});
+});
+
+describe("generatePlanningAnalysisActivity — decisions already settled", () => {
+	// WHY. The analysis is re-derived from scratch on every regeneration, and
+	// nothing used to carry into it what a member had already answered. So the
+	// model re-reached the same decisions in slightly different words, and
+	// `deriveQuestionId` — which hashes (kind, subject) precisely so it does NOT
+	// collapse two genuinely different subjects — saw new identities and minted
+	// new roots beside the answered ones. The owner answered the same decision on
+	// four consecutive versions of one topic.
+
+	/** A settled root plus the member reply that settled it. */
+	const settledThread = (
+		kind: "QUESTION" | "BLOCKER",
+		decisionKind: string,
+		subject: string,
+		answer: string,
+	) => ({
+		root: {
+			kind,
+			status: "RESOLVED",
+			decisionKind,
+			subject,
+			summary: "the model's own question, which is never the answer",
+		},
+		replies: [
+			{
+				id: "reply-1",
+				createdAt: new Date("2026-01-01T00:00:00Z"),
+				status: "RESOLVED",
+				authorType: "USER",
+				content: answer,
+			},
+		],
+	});
+
+	it("carries a settled QUESTION into the prompt", async () => {
+		listTopicDecisions.mockResolvedValue([
+			settledThread(
+				"QUESTION",
+				"CUSTOMER_NAME",
+				"the customer name",
+				"Keep the customer unnamed for now.",
+			),
+		]);
+
+		await run();
+
+		const prompt = generateObject.mock.calls[0]?.[0]?.prompt as string;
+		expect(prompt).toContain("ALREADY settled");
+		expect(prompt).toContain("Keep the customer unnamed for now.");
+	});
+
+	it("carries a settled BLOCKER into the prompt as well", async () => {
+		// The second producer. `reconcileTopicQuestions` runs twice per completed
+		// analysis — once over questions, once over blockers — and a blocker root
+		// carries kind "BLOCKER", which `settledDecision` refuses. Reading only
+		// questions would leave the errand form ("get sign-off to name the
+		// customer") coming back after its question form was answered.
+		listTopicDecisions.mockResolvedValue([
+			settledThread(
+				"BLOCKER",
+				"MISSING_APPROVAL",
+				"sign-off to name the customer",
+				"Not needed — the piece will not name anyone.",
+			),
+		]);
+
+		await run();
+
+		expect(generateObject.mock.calls[0]?.[0]?.prompt).toContain(
+			"Not needed — the piece will not name anyone.",
+		);
+	});
+
+	it("leaves an unanswered question out of the settled block", async () => {
+		// POSSIBLY_RESOLVED is what the reconciler writes for a question NOBODY
+		// answered when a later analysis stopped raising it. Presenting it as
+		// settled would stop the analysis ever asking again for a decision that
+		// was never made.
+		listTopicDecisions.mockResolvedValue([
+			{
+				root: {
+					kind: "QUESTION",
+					status: "POSSIBLY_RESOLVED",
+					decisionKind: "CUSTOMER_NAME",
+					subject: "the customer name",
+					summary: "May we name the customer?",
+				},
+				replies: [],
+			},
+		]);
+
+		await run();
+
+		const prompt = generateObject.mock.calls[0]?.[0]?.prompt as string;
+		expect(prompt).not.toContain("ALREADY settled");
+		expect(prompt).not.toContain("May we name the customer?");
+	});
+
+	it("reads the thread scoped to the topic AND the project", async () => {
+		// A topic id is a client input everywhere it appears (DV16); every read
+		// in this activity re-scopes by project.
+		await run();
+
+		expect(listTopicDecisions).toHaveBeenCalledWith({
+			topicId: "topic-1",
+			projectId: "proj-1",
+		});
+	});
+});
+
+describe("generatePlanningAnalysisActivity — one decision, one item per run", () => {
+	// The owner's call: a question and a blocker about the same subject are one
+	// decision in two costumes, and nobody answers the same thing twice in one
+	// run. The identity key cannot do this — the two producers word the same
+	// subject differently on purpose — so the fold is subject-level.
+
+	it("commits one item when a blocker restates a question", async () => {
+		generateObject.mockResolvedValue({
+			object: {
+				...MODEL_OUTPUT,
+				recommendedQuestions: [
+					{
+						decisionKind: "ASSET_APPROVAL",
+						subject: "Customer name/logo (example-org)",
+						question:
+							"Is the Customer name/logo (example-org) approved for use?",
+						whyItMatters: "No approval is recorded.",
+					},
+				],
+				blockers: [
+					{
+						kind: "MISSING_APPROVAL",
+						subject:
+							"customer approval to name example-org publicly",
+						need: "Someone needs explicit sign-off from example-org to name them publicly.",
+					},
+				],
+			},
+			usage: { totalTokens: 100 },
+		});
+
+		await run();
+
+		const committed = completePlanningAnalysis.mock.calls[0]?.[0];
+		expect(committed.blockers).toHaveLength(0);
+		expect(committed.questions).toHaveLength(1);
+		// FOLDED, not dropped: `blockers` never reaches the stored document, so
+		// a discarded one would leave no trace anywhere on the topic.
+		expect(committed.questions[0].whyItMatters).toContain(
+			"No approval is recorded.",
+		);
+		expect(committed.questions[0].whyItMatters).toContain(
+			"sign-off from example-org",
+		);
+	});
+
+	it("still commits a blocker the run raised no question about", async () => {
+		generateObject.mockResolvedValue({
+			object: {
+				...MODEL_OUTPUT,
+				recommendedQuestions: [],
+				blockers: [
+					{
+						kind: "MISSING_DATA",
+						subject: "a confirmed public launch date",
+						need: "Get a firm date from the team driving implementation.",
+					},
+				],
+			},
+			usage: { totalTokens: 100 },
+		});
+
+		await run();
+
+		expect(
+			completePlanningAnalysis.mock.calls[0]?.[0]?.blockers,
+		).toHaveLength(1);
 	});
 });

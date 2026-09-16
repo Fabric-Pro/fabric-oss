@@ -25,6 +25,11 @@ import {
 	PUBLISHING_PLANNING_ANALYSIS_AGENT_KEY,
 	PUBLISHING_PLANNING_ANALYSIS_FALLBACK_BODY,
 } from "@repo/utils/publishing-planning-prompt";
+import {
+	decisionLabel,
+	type SettledDecision,
+	toSingleLineSubject,
+} from "@repo/utils/publishing-restrictions";
 import { z } from "zod";
 import { recoverBoundBody } from "../publishing-shared/recover-bound-body";
 
@@ -87,10 +92,22 @@ export type PublishingDecisionKind = (typeof PUBLISHING_DECISION_KINDS)[number];
  * reader scanning "before this can be published" wants to know what to go and
  * get; why it matters is the sentence underneath.
  *
- * `MISSING_APPROVAL` overlaps `ASSET_APPROVAL` in the question kinds above and
- * that is correct rather than duplication: the question asks whether we MAY use
- * a thing we have, this says we do not have the sign-off yet. One is a decision,
- * the other is an errand.
+ * `MISSING_APPROVAL` overlaps `ASSET_APPROVAL` in the question kinds above.
+ * That overlap was originally recorded here as correct rather than duplication —
+ * the question asks whether we MAY use a thing we have, this says we do not have
+ * the sign-off yet; one a decision, the other an errand.
+ *
+ * THE OWNER OVERRULED THAT, and the reading above no longer describes what this
+ * code does. On a real topic the two arrived together and each wanted its own
+ * answer: *"why would i answer it twice in one run?"*. The distinction survives
+ * in the WORDING — a blocker still reads as an errand and says who has to run
+ * it — but it no longer survives in the ITEM COUNT. `foldDuplicateDecisions`
+ * collapses a blocker onto the question about the same subject, carrying its
+ * sentence across, so one answer settles both.
+ *
+ * The vocabulary is kept because it still earns its place: it is how the model
+ * is told to write a missing thing as an errand rather than a decision, and it
+ * is what distinguishes the two framings a reader now sees on one item.
  */
 export const PUBLISHING_BLOCKER_KINDS = [
 	"MISSING_ASSET",
@@ -234,16 +251,36 @@ export type PublishingPlanningAnalysis = z.infer<
 /**
  * Strip the wording noise that does not change what a phrase names.
  *
- * Lowercase, collapse internal whitespace, drop surrounding whitespace and
- * trailing sentence punctuation. Deliberately conservative: it does NOT stem,
- * reorder or drop stop-words, because two subjects that differ by a real word
- * are two subjects, and collapsing them would silently merge decisions a user
- * made separately.
+ * Lowercase, collapse internal whitespace, close the gap around a slash, drop
+ * surrounding whitespace and trailing sentence punctuation. Deliberately
+ * conservative: it does NOT stem, reorder or drop stop-words, because two
+ * subjects that differ by a real word are two subjects, and collapsing them
+ * would silently merge decisions a user made separately.
+ *
+ * The slash rule is there because it cost a real answer. One topic was asked
+ * about `Customer name/logo (example-org / example)` in one version and
+ * `Customer name/logo (example-org/example)` in the next — the same subject,
+ * two space characters apart. Collapsing whitespace RUNS does not touch a
+ * single space beside punctuation, so the two hashed differently, a second
+ * root was minted beside the one somebody had already answered, and they
+ * answered it again. `a / b` and `a/b` name one thing in any prose; closing
+ * that gap moves no word and merges no two subjects that differ by one.
+ *
+ * CHANGING THIS FUNCTION CHANGES EXISTING IDENTITIES, so it is not a free edit.
+ * A live root whose subject carries a spaced slash re-derives to a new id, and
+ * `reconcileTopicQuestions` then mints a new root and soft-closes the old one —
+ * one extra duplicate, once, on that topic's next regeneration. It cannot do
+ * worse than that: the partial unique index on `(topicId, questionId)` carries
+ * the same `parentId IS NULL AND deletedAt IS NULL` predicate the reconciler
+ * reads with, so a re-derived id can never collide with a row the reconciler
+ * cannot see. A RESOLVED root is unaffected either way — reconciliation skips
+ * it, and the settled-decisions block reads the thread rather than the id.
  */
 function normalizePhrase(text: string): string {
 	return text
 		.toLowerCase()
 		.replace(/\s+/g, " ")
+		.replace(/\s*\/\s*/g, "/")
 		.trim()
 		.replace(/[?!.\s]+$/, "");
 }
@@ -557,6 +594,232 @@ export function resolveConfirmationQuestions(
 }
 
 // =============================================================================
+// One decision, one item
+// =============================================================================
+
+/**
+ * Words that carry no subject.
+ *
+ * Two groups, and the second is the load-bearing one. The ordinary function
+ * words are there so "a customer quote" and "the customer quote" are one
+ * subject. The DECISION vocabulary — approval, confirmation, sign-off, obtain —
+ * is there because it is the only thing that distinguishes a question's subject
+ * from its blocker's: "Customer name (example-org)" against "customer name
+ * approval for example-org" is one decision written twice, and `approval` is
+ * the entire difference. Stripping it is what lets the two recognise each other.
+ */
+const SUBJECT_STOPWORDS: ReadonlySet<string> = new Set([
+	// function words
+	"a",
+	"an",
+	"and",
+	"as",
+	"at",
+	"be",
+	"by",
+	"for",
+	"from",
+	"in",
+	"is",
+	"it",
+	"of",
+	"on",
+	"or",
+	"our",
+	"that",
+	"the",
+	"this",
+	"to",
+	"we",
+	"with",
+	// decision vocabulary — see above
+	"approval",
+	"approve",
+	"approved",
+	"confirm",
+	"confirmation",
+	"confirmed",
+	"explicit",
+	"get",
+	"need",
+	"needed",
+	"needs",
+	"obtain",
+	"off",
+	"publicly",
+	"sign",
+	"signoff",
+	"use",
+	"usage",
+	"used",
+]);
+
+/**
+ * The content words a subject actually names.
+ *
+ * Split on anything that is not a letter or a digit, so `example-org`,
+ * `Customer name/logo` and `(example-org)` all yield the same tokens whatever
+ * punctuation the model chose this run. Single characters are dropped — they
+ * are initials and stray letters, never a subject.
+ */
+function subjectTokens(subject: string): Set<string> {
+	return new Set(
+		subject
+			.toLowerCase()
+			.split(/[^a-z0-9]+/)
+			.filter((word) => word.length > 1 && !SUBJECT_STOPWORDS.has(word)),
+	);
+}
+
+/**
+ * How much of the SMALLER subject must appear in the larger for the two to be
+ * one decision.
+ *
+ * Containment rather than Jaccard, because a blocker names the same thing with
+ * extra words around it ("a stakeholder or leadership quote for the
+ * announcement") and Jaccard punishes it for the extras.
+ *
+ * 0.6 is deliberately not lower. At 0.6 this catches every cross-vocabulary
+ * duplicate observed on real topics with no false merge; the one real duplicate
+ * it MISSES scores 0.5, and it shares that score with a pair that must NOT
+ * merge ("Customer quote" against "Stakeholder quote" — two people, two
+ * decisions). There is no threshold that separates those two, so the miss is
+ * accepted and pinned rather than tuned away. `folding-misses.test.ts` cases
+ * record both.
+ */
+const SUBJECT_MATCH_THRESHOLD = 0.6;
+
+/** A subject needs this many content words before it may match anything. */
+const MIN_MATCHABLE_TOKENS = 2;
+
+function sameSubject(a: Set<string>, b: Set<string>): boolean {
+	const smaller = a.size <= b.size ? a : b;
+	const larger = smaller === a ? b : a;
+	if (smaller.size < MIN_MATCHABLE_TOKENS) {
+		// A one-word subject would be contained in half the list.
+		return false;
+	}
+	let shared = 0;
+	for (const token of smaller) {
+		if (larger.has(token)) {
+			shared += 1;
+		}
+	}
+	return shared / smaller.size >= SUBJECT_MATCH_THRESHOLD;
+}
+
+/** The fields folding reads and rewrites; both questions and blockers have them. */
+export interface FoldableDecision {
+	questionId: string;
+	subject: string | null;
+	question: string;
+	whyItMatters: string | null;
+}
+
+/**
+ * Collapse everything one run raises about the same subject into ONE item.
+ *
+ * WHY. `deriveQuestionId` keys identity on `(decisionKind, subject)`, which is
+ * right for recognising a decision ACROSS regenerations and useless WITHIN one:
+ * the two producers describe the same thing in different vocabularies on
+ * purpose. One observed run asked about naming a customer three times over —
+ * as an `ASSET_APPROVAL` question, as a `CUSTOMER_NAME` question and as a
+ * `MISSING_APPROVAL` blocker — and every one of them wanted its own answer.
+ *
+ * The owner's call, and it overrules the "one is a decision, the other is an
+ * errand" reading recorded on `PUBLISHING_BLOCKER_KINDS`: the distinction may
+ * survive in the WORDING, it may not survive in the item count. Nobody answers
+ * the same thing twice in one run.
+ *
+ * FOLDS, never drops. A blocker that is simply discarded leaves no trace
+ * anywhere — it is not minted as a row, and `blockers` is already stripped out
+ * of the stored analysis document — so a wrong match would silently lose an
+ * errand nobody could recover. Folding puts its sentence on the surviving
+ * item's `whyItMatters`, which the questions panel renders, so a wrong match
+ * costs a wordier question instead. That asymmetry is the whole reason a
+ * similarity rule is acceptable here at all.
+ *
+ * The SURVIVOR is the earliest item, which is the strongest by construction:
+ * `resolveConfirmationQuestions` emits bucket-derived questions first (they
+ * carry the Approved / Not approved options a reader can click), then
+ * model-authored ones, and blockers come last. Every question is absorbed
+ * before any blocker is — enforced by statement order below, not left to the
+ * evaluation order of an object literal — so a blocker can never become the
+ * keeper for a subject one of the questions also names.
+ *
+ * Kind-level coverage was considered and is wrong here, though it is what
+ * `COVERED_BY_CLASSIFICATION` does one function up. That rule is justified by
+ * exhaustiveness — every approvable asset is necessarily in `requiresApproval`,
+ * so a second `ASSET_APPROVAL` question is necessarily a restatement. The
+ * argument does not transfer to a blocker: a MISSING artifact is absent from
+ * `requiresApproval` precisely because there is nothing to approve yet. Applied
+ * at kind level it would have dropped two real blockers on observed topics —
+ * a missing quote on a run with no quote question, and a missing scrubbing
+ * confirmation on a run with no codebase question. Subject level is the only
+ * level that works.
+ */
+export function foldDuplicateDecisions<
+	Q extends FoldableDecision,
+	B extends FoldableDecision,
+>(input: {
+	questions: readonly Q[];
+	blockers: readonly B[];
+}): { questions: Q[]; blockers: B[]; folded: number } {
+	const kept: { tokens: Set<string>; into: FoldableDecision }[] = [];
+	let folded = 0;
+
+	/**
+	 * `true` when this item has been folded into an earlier one and must not be
+	 * kept; `false` when it is the first of its subject and becomes a keeper.
+	 *
+	 * Mutates `kept` and the keeper's `whyItMatters`, so the ORDER it is applied
+	 * in is part of the contract — see the two statements below.
+	 */
+	const absorb = (item: FoldableDecision): boolean => {
+		const tokens = item.subject
+			? subjectTokens(item.subject)
+			: new Set<string>();
+		const match = tokens.size
+			? kept.find((candidate) => sameSubject(candidate.tokens, tokens))
+			: undefined;
+		if (!match) {
+			kept.push({ tokens, into: item });
+			return false;
+		}
+		// The folded item's own sentence survives on the keeper, so the reader
+		// sees both framings of the decision they are answering once.
+		const addition = `Answering this also settles: ${item.question}`;
+		match.into.whyItMatters = match.into.whyItMatters
+			? `${match.into.whyItMatters}\n\n${addition}`
+			: addition;
+		folded += 1;
+		return true;
+	};
+
+	// Copied before folding: these objects are read again by the caller (the
+	// question list is persisted into the analysis document) and mutating the
+	// parsed model output in place would make that document depend on the order
+	// this function happened to run in.
+	const questions = input.questions.map((q) => ({ ...q }));
+	const blockers = input.blockers.map((b) => ({ ...b }));
+
+	// TWO STATEMENTS, not two properties of one object literal. `absorb` has
+	// side effects — it appends to `kept` and rewrites a keeper's
+	// `whyItMatters` — so questions must be walked to completion before any
+	// blocker is, or a blocker could become the keeper for a subject its
+	// question also names. Written as an object literal that ordering would
+	// hold only because property values evaluate top to bottom, which is a
+	// language fact rather than a stated intention: reordering the two keys
+	// would silently invert which item survives.
+	const keptQuestions = questions.filter((question) => !absorb(question));
+	// Blockers are folded against the surviving questions AND against each
+	// other, in that order, because the questions were kept first.
+	const keptBlockers = blockers.filter((blocker) => !absorb(blocker));
+
+	return { questions: keptQuestions, blockers: keptBlockers, folded };
+}
+
+// =============================================================================
 // Prompt input
 // =============================================================================
 
@@ -766,6 +1029,101 @@ export function buildPlanningAnalysisVariables({
 // =============================================================================
 
 /**
+ * How much of one settled answer reaches the prompt.
+ *
+ * Generous — the answers are one or two sentences in practice — but bounded,
+ * because this block grows with every decision a topic ever settles and it
+ * sits in the locked clauses, which no template edit can trim.
+ */
+const SETTLED_ANSWER_CHAR_CAP = 400;
+
+/**
+ * The decisions a member has already made, as a rule the analysis may not
+ * reopen.
+ *
+ * WHY THIS EXISTS. The Planning & Analysis is re-derived from scratch on every
+ * regeneration, and nothing in the prompt used to carry what the last one had
+ * already been answered. So the model re-reached the same decisions, described
+ * them in slightly different words, and `deriveQuestionId` — which hashes
+ * `(kind, subject)` precisely because it must not collapse two genuinely
+ * different subjects — saw new identities and minted new roots beside the
+ * answered ones. One observed topic asked whether it could name a customer in
+ * eight separate rows across four versions, under three different kinds, and
+ * the owner answered it every time. Across that topic's 41 question and blocker
+ * roots there were 41 distinct identities: no regeneration ever recognised a
+ * decision it had already raised.
+ *
+ * The identity key cannot fix that on its own. It only recognises a decision
+ * the model happens to name the same way twice; it gives the model no reason to.
+ * This block is the reason.
+ *
+ * BOTH PRODUCERS, one list. A question ("may we use the customer's name?") and
+ * a blocker ("get sign-off to use the customer's name") are minted by two
+ * different passes with two different vocabularies, and to the person reading
+ * their open items they are one decision asked twice. Suppressing only the
+ * question-shaped repeat would leave the errand coming back forever.
+ *
+ * LOCKED, not templated. Every other topic-derived block reaches the model
+ * through the editable body's variables, and an org whose bound prompt predates
+ * this one would render nothing for a new variable — which is precisely the
+ * prompt that needs this most, since it has been regenerating for longest. It
+ * also belongs here on merit: "do not ask again what has been answered" is a
+ * correctness rule of the same class as FR40-FR42 below, not a house style an
+ * org should be able to edit away.
+ *
+ * DV17 — no read is widened by this. `publishing_topic_decision_entry` is
+ * scoped by `topicId` and `projectId`, and every row quoted here is already
+ * rendered on the topic's own Summary & Questions tab to anyone who can open
+ * the topic, project guests included. Copying it into the analysis discloses
+ * nothing that was not already on the page it will be displayed beside.
+ *
+ * The subject is model-authored and the answer is member-authored, so both are
+ * folded to one line and their quotes downgraded before they land among the
+ * rules — the same treatment `renderSubjectBullet` gives a subject, and for the
+ * same reason: this is the one region a quoted source block must never reach.
+ */
+function buildSettledDecisionsClause(
+	settled: readonly SettledDecision[],
+): string {
+	const lines = settled
+		.map((decision) => {
+			const label = decisionLabel(
+				decision.subject,
+				decision.decisionKind,
+			).replaceAll('"', "'");
+			const answer = toSingleLineSubject(decision.answer)
+				.slice(0, SETTLED_ANSWER_CHAR_CAP)
+				.replaceAll('"', "'");
+			return answer ? `- "${label}" — answered: "${answer}"` : "";
+		})
+		.filter(Boolean);
+
+	if (lines.length === 0) {
+		return "";
+	}
+
+	return `
+
+## Decisions this topic has ALREADY settled
+
+A project member answered each of these. They are settled.
+
+${lines.join("\n")}
+
+- Do NOT raise a question or a blocker about any subject listed above. A
+  rephrasing is the same decision: "may we name the customer?" and "obtain
+  sign-off to name the customer" are one settled thing wearing two costumes,
+  and a reader who has answered it once reads the second as the product having
+  forgotten.
+- Treat each answer as a CONSTRAINT on the rest of this analysis. "Keep the
+  customer unnamed" means the angle, the recommended content types and the
+  supporting assets are planned around a piece that does not name them — not
+  that the question is merely closed.
+- Raise one again ONLY if the source material has changed in a way that
+  genuinely reopens it, and then say in the question what changed.`;
+}
+
+/**
  * Appended after the editable body, and therefore NOT removable by an org
  * override — the same arrangement `buildAgendaLockedClauses` uses, and for the
  * same reason.
@@ -782,7 +1140,15 @@ export function buildPlanningAnalysisVariables({
  *     edit that dropped them would not look like a mistake in the editor.
  */
 export function buildPlanningAnalysisLockedClauses(
-	opts: { autoProposeAnswers?: boolean } = {},
+	opts: {
+		autoProposeAnswers?: boolean;
+		/**
+		 * Decisions a member has already settled on this topic. Omitted by a
+		 * caller that has none — and by an old caller that predates the block,
+		 * which then renders exactly as it did.
+		 */
+		settledDecisions?: readonly SettledDecision[];
+	} = {},
 ): string {
 	/**
 	 * Asked for only when the project wants them.
@@ -805,6 +1171,9 @@ that separates them.
 
 Where the evidence genuinely points one way, say so in the justifications rather
 than inventing a second option to balance the first.`;
+	const SETTLED_CLAUSE = buildSettledDecisionsClause(
+		opts.settledDecisions ?? [],
+	);
 	return `## Output contract
 
 Return one field per section. The value of a field is Markdown; the response as
@@ -868,7 +1237,7 @@ question. "We have no approved quote for the case study" is a blocker.
 Say nothing here about a thing the topic HAS. An asset that exists but is not
 approved is a question about permission, and it is already raised from the
 classification above; repeating it here would ask the reader for an errand they
-do not have to run.
+do not have to run.${SETTLED_CLAUSE}
 
 ## Rules that override anything above
 
@@ -937,6 +1306,7 @@ export async function composePlanningAnalysisPrompt({
 	topic,
 	context,
 	autoProposeAnswers,
+	settledDecisions,
 }: {
 	templateBody: string;
 	format: TemplateFormat;
@@ -948,6 +1318,13 @@ export async function composePlanningAnalysisPrompt({
 	 * being on is what every project had before the switch existed.
 	 */
 	autoProposeAnswers?: boolean;
+	/**
+	 * Questions and blockers a member has already settled on this topic, so the
+	 * analysis does not reach them again. Not part of `context`: that interface
+	 * is what the topic's `provenance` resolved to, and a decision is the
+	 * topic's own history rather than one of its sources.
+	 */
+	settledDecisions?: readonly SettledDecision[];
 }): Promise<ComposedPlanningAnalysisPrompt> {
 	const variables = buildPlanningAnalysisVariables({ topic, context });
 
@@ -977,7 +1354,7 @@ export async function composePlanningAnalysisPrompt({
 	});
 
 	return {
-		prompt: `${body.trimEnd()}\n\n${buildPlanningAnalysisLockedClauses({ autoProposeAnswers })}`,
+		prompt: `${body.trimEnd()}\n\n${buildPlanningAnalysisLockedClauses({ autoProposeAnswers, settledDecisions })}`,
 		formatOverridden,
 		bodyRecovered,
 	};
