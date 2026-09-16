@@ -14,6 +14,10 @@
 
 import { db, type ProjectContextType } from "@repo/database";
 import { executeSlackTool } from "@repo/integrations/slack";
+import {
+	neutralizeAiChatAttachmentBody,
+	neutralizeAiChatAttachmentFilename,
+} from "@repo/utils/ai-chat-attachment";
 
 // Internal type for parsed Slack contexts
 interface SlackIntegrationContext {
@@ -63,6 +67,36 @@ export interface SearchProjectSlackMessagesInput {
 	organizationId?: string;
 	/** Maximum number of messages to return (default: 15) */
 	limit?: number;
+}
+
+/**
+ * Slack text as it can safely enter a model's context.
+ *
+ * Every consumer of this module hands the result to an LLM: the orchestrator
+ * and direct chat return it as a tool result, and the document-generation agent
+ * reaches it over the internal search route. A message body is written by
+ * whoever posted in the channel — no Fabric account required — so text that
+ * opens `### Reference 7` or `## Retrieved Context` at a line start forges
+ * scaffolding the agent reads as structure rather than as content.
+ *
+ * Applied here, where the message object is built, rather than at each
+ * consumer. The render-site rule recorded on `buildRetrievedContextBlock`
+ * exists because no earlier point sees all of a prompt's text; that reasoning
+ * does not hold for this module, which IS the single point every Slack tool
+ * result passes through. Guarding it here means a future consumer cannot
+ * reintroduce the gap by forgetting a wrapper.
+ *
+ * The document-generation path neutralizes again at its render site. Running
+ * twice only lengthens an already-mangled delimiter, which is the outcome that
+ * pass wants anyway.
+ */
+function safeSlackBody(text: string): string {
+	return neutralizeAiChatAttachmentBody(text);
+}
+
+/** An author name, which callers interpolate mid-line. Line breaks go too. */
+function safeSlackAuthor(name: string): string {
+	return neutralizeAiChatAttachmentFilename(name);
 }
 
 /**
@@ -258,8 +292,8 @@ export async function searchProjectSlackMessages(
 			if (msg.channelId && configuredChannelIds.has(msg.channelId)) {
 				filteredMessages.push({
 					id: msg.id,
-					content: msg.content,
-					from: msg.from,
+					content: safeSlackBody(msg.content),
+					from: safeSlackAuthor(msg.from),
 					createdAt: msg.createdAt,
 					channelId: msg.channelId,
 					channelName:
@@ -442,8 +476,8 @@ export async function fetchRecentSlackMessages(
 			for (const msg of result.messages || []) {
 				if (msg.content && msg.content.trim().length > 0) {
 					allMessages.push({
-						content: msg.content,
-						from: msg.from,
+						content: safeSlackBody(msg.content),
+						from: safeSlackAuthor(msg.from),
 						createdAt: msg.createdAt,
 						channelName: ctx.channelName,
 					});

@@ -16,6 +16,10 @@ import {
 	isMicrosoftAccessDeniedError,
 } from "@repo/integrations/microsoft";
 import { executeSlackTool } from "@repo/integrations/slack";
+import {
+	neutralizeAiChatAttachmentBody,
+	neutralizeAiChatAttachmentFilename,
+} from "@repo/utils/ai-chat-attachment";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -340,6 +344,81 @@ async function fetchSlackMessages(
 
 // ─── Formatting ──────────────────────────────────────────────────────────────
 
+/**
+ * The tag this block wraps its contents in, and the one an injected message
+ * would have to close to escape into the surrounding prompt.
+ */
+const LIVE_CONTEXT_TAG = "live_integration_context";
+
+/**
+ * An opening or closing `live_integration_context` tag, however spaced or
+ * cased, with any trailing underscores already applied by a previous pass.
+ */
+const LIVE_CONTEXT_TAG_PATTERN = new RegExp(
+	`<\\s*/?\\s*${LIVE_CONTEXT_TAG}_*\\s*>`,
+	"gi",
+);
+
+/** Line terminators a heading could be anchored to. Mirrors the chat envelope's. */
+const LIVE_CONTEXT_LINE_BREAK_CLASS =
+	"[\\r\\n\\u000B\\u000C\\u0085\\u2028\\u2029]";
+
+/**
+ * A `#` run that would forge one of this block's own section headings.
+ *
+ * Anchored to a line start, because a `#` run is only a heading there — so a
+ * message that merely mentions `## Recent Slack Discussions` mid-sentence keeps
+ * its text.
+ */
+const LIVE_CONTEXT_FORGED_SECTION_PATTERN = new RegExp(
+	`(^|${LIVE_CONTEXT_LINE_BREAK_CLASS})([ \\t]*)#{1,6}(?=[ \\t]+Recent[ \\t]+(?:Slack|Microsoft[ \\t]+Teams)[ \\t]+Discussions)`,
+	"gi",
+);
+
+/**
+ * Mangle one matched tag by appending an underscore to the tag name.
+ *
+ * Moves *away* from the real delimiter, which deletion does not: removing the
+ * inner tag from `<<live_integration_context>live_integration_context>`
+ * reassembles a live one, whereas no amount of nesting converges back onto a
+ * lengthening name.
+ */
+function mangleLiveContextTag(match: string): string {
+	return match.replace(
+		new RegExp(LIVE_CONTEXT_TAG, "i"),
+		`${LIVE_CONTEXT_TAG}_`,
+	);
+}
+
+/**
+ * Neutralize one untrusted message field against every delimiter it could forge.
+ *
+ * Two layers, because two envelopes are in play. `neutralizeAiChatAttachmentBody`
+ * covers the shared chat scaffolding (`### Reference n`, `## Retrieved Context`,
+ * the attachment tag) that this text can end up beside in the same prompt; the
+ * two passes after it cover the delimiters this block owns and that the shared
+ * neutralizer knows nothing about.
+ *
+ * Applied here, in the renderer, rather than at the producers: the text arrives
+ * from Slack and from Teams through separate fetches, so no earlier point sees
+ * all of it — the same reasoning recorded on `buildRetrievedContextBlock`.
+ */
+function neutralizeLiveContextBody(text: string): string {
+	return neutralizeAiChatAttachmentBody(text)
+		.replace(LIVE_CONTEXT_TAG_PATTERN, mangleLiveContextTag)
+		.replace(LIVE_CONTEXT_FORGED_SECTION_PATTERN, "$1$2");
+}
+
+/**
+ * Neutralize a display name, which is interpolated mid-line after `From: `.
+ *
+ * Line breaks are the load-bearing part: once the name cannot contain one it
+ * cannot start a line, and therefore cannot open a heading or a tag of its own.
+ */
+function neutralizeLiveContextName(name: string): string {
+	return neutralizeLiveContextBody(neutralizeAiChatAttachmentFilename(name));
+}
+
 function formatMessage(msg: IntegrationMessage): string {
 	const timestamp = msg.createdAt
 		? new Date(msg.createdAt).toLocaleString("en-US", {
@@ -355,12 +434,23 @@ function formatMessage(msg: IntegrationMessage): string {
 		: `[${msg.source}]`;
 	// Parent source's type label + AI guidance (#1888) — arrives flag-gated;
 	// absent for unannotated sources, so headers stay byte-identical.
+	// Annotations are set by project members rather than by a channel, so a far
+	// lower bar than the message itself — but they are interpolated into the
+	// same block, and a field that can start a line can forge the same headings.
 	const meta =
-		(msg.sourceLabel ? `\n[Source type: ${msg.sourceLabel}]` : "") +
+		(msg.sourceLabel
+			? `\n[Source type: ${neutralizeLiveContextName(msg.sourceLabel)}]`
+			: "") +
 		(msg.sourceGuidance
-			? `\n[Source guidance: ${msg.sourceGuidance}]`
+			? `\n[Source guidance: ${neutralizeLiveContextName(
+					msg.sourceGuidance,
+				)}]`
 			: "");
-	return `${header}${meta}\nFrom: ${msg.from}\n${msg.content}`;
+	// `from` and `content` are the untrusted halves: anyone who can post in a
+	// linked channel controls both, and neither needs a Fabric account.
+	return `${header}${meta}\nFrom: ${neutralizeLiveContextName(
+		msg.from,
+	)}\n${neutralizeLiveContextBody(msg.content)}`;
 }
 
 export function formatLiveContextForPrompt(
