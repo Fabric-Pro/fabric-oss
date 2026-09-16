@@ -1,5 +1,25 @@
 # fabric-app
 
+## 1.16.0
+
+### Minor Changes
+
+- 9af13a4: Engagement profiles and delivery tracks: the backlog now runs the inverted loop where it applies
+
+### Patch Changes
+
+- a665399: The Connections page now opens the MCP servers walkthrough on its MCP tab, and Show me for MCP servers points there instead of the sidebar.
+- 89ebdac: The Get Started guide now calls the connections area "Connections", matching the page it opens, and that page explains when to use a native Integration versus an MCP server — both as an introduction above the two options and as an on-demand hint at the control where the choice is made.
+- a3e93d8: Completed Databricks-served Claude calls through the AI SDK now record prompt-cache write tokens, so cost estimates apply the cache-write rate instead of pricing those tokens as ordinary input.
+- f18e676: A document already carrying stray tilde characters around quoted phrases is now repaired when it is opened, instead of rendering damaged forever.
+- d1975c4: A GitLab token refresh that takes a few seconds no longer has its database transaction pulled out from under it, which was retiring the stored credentials and forcing a reconnect.
+- 6a41038: "Show me" for MCP servers points at the sidebar row again, so it works from any page rather than only from the MCP servers tab.
+- 2577fdb: Narrow the Fabric Code extension keys issued before the mint was scoped, so they no longer act as full-access credentials.
+- 484f6f7: Show the answers a publishing question is generated with — including Approved and Not approved for an asset that needs approval — as choices to pick, instead of only a free-text box. An open question already on a topic gains its choices the next time the topic's planning analysis is regenerated.
+- d12643e: A proposed planning analysis is now reviewed as a diff before it replaces the document.
+- c190059: Treat a publishing decision as settled only when a project member answered it, so a question the planning analysis stopped raising keeps restricting drafts generated from then on, including the assets and safety fields Fabric checks, instead of being reported as confirmed.
+- d77e8fa: Keep the roadmap's status, source, tag and PM sync columns lined up across every row, whether or not a row has tags.
+
 ## 1.15.1
 
 ### Patch Changes
