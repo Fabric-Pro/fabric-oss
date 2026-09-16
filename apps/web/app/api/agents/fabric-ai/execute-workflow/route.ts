@@ -1,5 +1,9 @@
 import { checkRateLimit, RATE_LIMIT_PRESETS } from "@repo/api/lib/rate-limit";
 import {
+	forbiddenOrganizationResponse,
+	resolveRequestedOrganization,
+} from "@repo/api/lib/requested-organization";
+import {
 	createWorkflowExecution,
 	getWorkflowById,
 	type Prisma,
@@ -62,12 +66,27 @@ export async function POST(request: NextRequest) {
 			);
 		}
 
-		const { workflowId } = parseResult.data;
+		const { workflowId, organizationId: requestedOrganizationId } =
+			parseResult.data;
 
-		// SECURITY: Use organizationId from session, not from client payload.
-		// The client cannot be trusted to provide the correct org context.
-		const organizationId =
-			session.session?.activeOrganizationId ?? undefined;
+		// The chat tab says which organization it is bound to. Honour it only
+		// if the caller has a tie to that organization (membership or an
+		// accepted project-guest invitation); without a value the session's
+		// active organization is used, verified with the same tie check so a
+		// stale active organization the caller has since left is refused
+		// rather than served; neither → 403. Never substitute another tenant:
+		// a user with two organizations open in two tabs must confirm the
+		// workflow in the tab's own tenant, not whichever the session last
+		// switched to (ADR-018: no personal/null arm).
+		const resolution = await resolveRequestedOrganization({
+			userId,
+			requestedOrganizationId,
+			activeOrganizationId: session.session?.activeOrganizationId,
+		});
+		if (!resolution.ok) {
+			return forbiddenOrganizationResponse(resolution);
+		}
+		const organizationId = resolution.organizationId;
 
 		// Get the workflow
 		const workflow = await getWorkflowById(

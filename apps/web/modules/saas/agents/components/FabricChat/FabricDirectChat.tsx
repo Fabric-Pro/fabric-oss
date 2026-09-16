@@ -966,7 +966,11 @@ export const FabricDirectChat = forwardRef<
 		restoreContextUsage,
 		stop: stopStream,
 	} = useDirectStream({
-		organizationId,
+		// The launcher passes `undefined` when it has no organization prop;
+		// fall back to the active organization so the stream route binds the
+		// turn to the tenant the user is actually working in instead of a
+		// personal scope that no longer exists in this deployment.
+		organizationId: organizationId ?? activeOrgId ?? undefined,
 		reasoningMode,
 		modelOverride: activeModelOverride,
 		enabledMcpConfigIds: activeMcpConfigIds,
@@ -2312,8 +2316,10 @@ export const FabricDirectChat = forwardRef<
 		setIsExecutingWorkflow(true);
 
 		try {
-			// NOTE: organizationId is intentionally NOT sent in the body.
-			// The backend resolves it from the session to prevent cross-tenant access.
+			// Send the tab's organization so the confirmation runs in the
+			// tenant this chat is bound to; the route verifies the caller's
+			// tie to it and falls back to the session organization when none
+			// is sent.
 			const response = await fetch(
 				"/api/agents/fabric-ai/execute-workflow",
 				{
@@ -2321,6 +2327,7 @@ export const FabricDirectChat = forwardRef<
 					headers: { "Content-Type": "application/json" },
 					body: JSON.stringify({
 						workflowId: confirmation.workflowId,
+						organizationId: organizationId ?? activeOrgId ?? null,
 					}),
 				},
 			);
