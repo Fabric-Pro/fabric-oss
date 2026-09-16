@@ -26,7 +26,10 @@ import { logAiUsageAsync } from "@repo/database";
 import type { AIProvider } from "@repo/database/prisma/generated/client";
 import { logger } from "@repo/logs";
 import { withProviderBreaker } from "@repo/observability";
-import { experimental_transcribe as transcribe } from "ai";
+import {
+	type TranscriptionModel as SdkTranscriptionModel,
+	experimental_transcribe as transcribe,
+} from "ai";
 import { createFabricClient } from "./client";
 import { executeFabricPattern, getFabricAIMode } from "./executor";
 import type { FabricAIMode, FabricConfig, FabricPattern } from "./types";
@@ -287,7 +290,7 @@ async function transcribeHybrid(
 				: providerConfig.provider?.toLowerCase() || requestedProvider;
 
 		// Select the appropriate model based on provider
-		let transcriptionModel: unknown;
+		let transcriptionModel: SdkTranscriptionModel;
 		let finalModelName = modelName;
 
 		if (effectiveProvider === "groq") {
@@ -328,10 +331,9 @@ async function transcribeHybrid(
 		// provider that has a registered breaker — Groq does not. Skip
 		// the wrapper for non-OpenAI providers so we never throw "no
 		// breaker configured" at runtime for them.
-		// Note: Using 'as any' because there's a version mismatch between TranscriptionModelV1/V2/V3
 		const transcribeCall = () =>
 			transcribe({
-				model: transcriptionModel as any,
+				model: transcriptionModel,
 				audio: audioData,
 				providerOptions: language
 					? { openai: { language } }

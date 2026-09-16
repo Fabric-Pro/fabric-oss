@@ -16,14 +16,28 @@ import { createEmptyToolInputRepairMiddleware } from "../lib/empty-tool-input-mi
  * whether the tool actually runs — rather than the shape of the stream.
  */
 
+/**
+ * A LanguageModelV3 `finish` part. `ai` gates tool execution on
+ * `finishReason.unified` (`isToolExecutionAllowedFinishReason`), so the
+ * fixture has to carry the spec's object shape — a bare string is silently
+ * treated as "not tool-calls" and no tool ever runs, with or without the
+ * middleware.
+ */
+function finishPart(unified: "tool-calls" | "length") {
+	return {
+		type: "finish" as const,
+		finishReason: { unified, raw: unified },
+		usage: {
+			inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 },
+			outputTokens: { total: 1, text: 1, reasoning: 0 },
+		},
+	};
+}
+
 const PARTS_WITHOUT_CALL = [
 	{ type: "stream-start" as const, warnings: [] },
 	{ type: "tool-input-start" as const, id: "c1", toolName: "ping" },
-	{
-		type: "finish" as const,
-		finishReason: "tool-calls" as const,
-		usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
-	},
+	finishPart("tool-calls"),
 ];
 
 function mockModel(chunks: unknown[]) {
@@ -89,11 +103,7 @@ describe("empty tool input repair", () => {
 		{ type: "tool-input-start" as const, id: "c1", toolName: "ping" },
 		{ type: "tool-input-delta" as const, id: "c1", delta: "" },
 		{ type: "tool-input-delta" as const, id: "c1", delta: "" },
-		{
-			type: "finish" as const,
-			finishReason: "tool-calls" as const,
-			usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
-		},
+		finishPart("tool-calls"),
 	];
 
 	it("reproduces the drop when the provider sends empty deltas", async () => {
@@ -109,11 +119,7 @@ describe("empty tool input repair", () => {
 			{ type: "stream-start", warnings: [] },
 			{ type: "tool-input-start", id: "c1", toolName: "ping" },
 			{ type: "tool-input-delta", id: "c1", delta: "  \n" },
-			{
-				type: "finish",
-				finishReason: "tool-calls",
-				usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
-			},
+			finishPart("tool-calls"),
 		];
 
 		expect(await runWith(whitespace, true)).toEqual([{}]);
@@ -131,11 +137,7 @@ describe("empty tool input repair", () => {
 				toolName: "ping",
 				input: '{"a":1}',
 			},
-			{
-				type: "finish",
-				finishReason: "tool-calls",
-				usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
-			},
+			finishPart("tool-calls"),
 		];
 
 		expect(await runWith(withCall, true)).toEqual([{ a: 1 }]);
@@ -148,11 +150,7 @@ describe("empty tool input repair", () => {
 			{ type: "stream-start", warnings: [] },
 			{ type: "tool-input-start", id: "c1", toolName: "ping" },
 			{ type: "tool-input-delta", id: "c1", delta: '{"a":' },
-			{
-				type: "finish",
-				finishReason: "length",
-				usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
-			},
+			finishPart("length"),
 		];
 
 		expect(await runWith(truncated, true)).toEqual([]);

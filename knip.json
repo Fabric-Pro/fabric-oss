@@ -98,7 +98,7 @@
 			]
 		},
 		"agents/langchain/weave-planners": {
-			"ignoreDependencies": ["@ai-sdk/openai", "ai", "undici"]
+			"ignoreDependencies": ["undici"]
 		},
 		"agents/langchain/weave-readers": {
 			"entry": ["src/lib/*.test.ts"],
