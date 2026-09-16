@@ -86,6 +86,15 @@ export interface IngestHuddleNotesForChannelOutput {
 	updated: number;
 	skipped: number;
 	failed: number;
+	/**
+	 * A scope the token does not hold stopped this channel's ingestion.
+	 *
+	 * Account-level, not canvas-level: it fails every canvas in the run and no
+	 * retry clears it. Separated from `failed` (which also counts transient
+	 * per-canvas faults) so the workflow can withhold the last-run stamp for
+	 * the one condition that will never resolve on its own.
+	 */
+	scopeMissing: boolean;
 }
 
 export interface UpdateSlackHuddleIngestLastRunInput {
@@ -168,6 +177,7 @@ export async function ingestHuddleNotesForChannelActivity(
 		updated: 0,
 		skipped: 0,
 		failed: 0,
+		scopeMissing: false,
 	};
 
 	heartbeat("resolving slack credentials");
@@ -220,6 +230,8 @@ export async function ingestHuddleNotesForChannelActivity(
 
 	result.canvasesDetected = canvases.length;
 
+	let scopeError: ScopeMissingError | undefined;
+
 	for (const canvas of canvases) {
 		heartbeat(`processing canvas ${canvas.id}`);
 		try {
@@ -237,7 +249,14 @@ export async function ingestHuddleNotesForChannelActivity(
 			result[outcome] += 1;
 		} catch (error) {
 			if (error instanceof ScopeMissingError) {
-				// Decision #7: structured reconnect error (NO token / url), skip.
+				// Decision #7: structured reconnect error (NO token / url).
+				//
+				// Counted as a failure, not a skip. `skipped` means the canvas
+				// needed no work; this one needed work and could not be done,
+				// and conflating the two is what let a wholly dead ingest read
+				// as a healthy one. Recorded once after the loop — the missing
+				// scope belongs to the token, so every canvas raises it and a
+				// per-canvas write would say the same thing N times.
 				logger.error(
 					"[SlackHuddleIngest] Missing Slack scope — reconnect required",
 					{
@@ -247,7 +266,9 @@ export async function ingestHuddleNotesForChannelActivity(
 						reason: "missing_scope",
 					},
 				);
-				result.skipped += 1;
+				result.failed += 1;
+				result.scopeMissing = true;
+				scopeError ??= error;
 				continue;
 			}
 			if (
@@ -272,6 +293,18 @@ export async function ingestHuddleNotesForChannelActivity(
 			});
 			result.failed += 1;
 		}
+	}
+
+	if (scopeError) {
+		// Same treatment the unreadable-channel branch gives its own error: put
+		// it on the channel row so the settings page can say why this produced
+		// nothing. Without this the run reports success and the feature looks
+		// healthy while capturing nothing at all.
+		await recordSlackChannelFailureForKeyActivity({
+			projectId,
+			channelId,
+			errorMessage: scopeError.message,
+		});
 	}
 
 	return result;

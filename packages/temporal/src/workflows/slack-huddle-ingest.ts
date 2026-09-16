@@ -140,6 +140,7 @@ export async function slackHuddleIngestWorkflow(
 		let notesUpdated = 0;
 		let notesSkipped = 0;
 		let notesFailed = 0;
+		let scopeMissing = false;
 
 		// Step 2: per-channel ingestion, fault-isolated (one failure never aborts
 		// the loop or the other channels).
@@ -163,18 +164,39 @@ export async function slackHuddleIngestWorkflow(
 				notesUpdated += r.updated;
 				notesSkipped += r.skipped;
 				notesFailed += r.failed;
+				scopeMissing = scopeMissing || r.scopeMissing === true;
 			} catch {
 				notesFailed += 1;
 			}
 		}
 
 		// Step 3: stamp last-run (non-fatal).
-		try {
-			await activities.updateSlackHuddleIngestLastRunActivity({
-				projectId,
-			});
-		} catch {
-			// Non-fatal
+		//
+		// Withheld when a channel reported a missing scope. The stamp is what
+		// the settings page renders as "Last run", and a token that lacks the
+		// scope captures nothing on this pass or any later one — advancing it
+		// then describes a working feature that is doing no work. Transient
+		// per-canvas faults still stamp: they clear on their own, and freezing
+		// the timestamp for those would raise an alarm that fixes itself.
+		//
+		// Behind its own patch id, because skipping the activity changes the
+		// command sequence: a history recorded before this landed scheduled it
+		// unconditionally, and replaying that against an unguarded skip is a
+		// non-determinism error. Fresh id — NOT the continueAsNew one below.
+		const shouldStampLastRun = patched(
+			"slack-huddle-ingest-scope-gate-2026-09",
+		)
+			? !scopeMissing
+			: true;
+
+		if (shouldStampLastRun) {
+			try {
+				await activities.updateSlackHuddleIngestLastRunActivity({
+					projectId,
+				});
+			} catch {
+				// Non-fatal
+			}
 		}
 
 		syncCount++;

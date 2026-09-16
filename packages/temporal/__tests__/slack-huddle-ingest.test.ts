@@ -35,6 +35,8 @@ const m = vi.hoisted(() => ({
 	removeContextEmbedding: vi.fn(),
 	// temporal client
 	workflowStart: vi.fn(),
+	// sibling activity module
+	recordFailure: vi.fn(),
 }));
 
 vi.mock("@repo/database", async (importOriginal) => {
@@ -82,12 +84,20 @@ vi.mock("@temporalio/activity", () => ({
 	heartbeat: vi.fn(),
 }));
 
+vi.mock(
+	"../src/activities/slack-channel-monitor/update-slack-channel-cursor",
+	() => ({
+		recordSlackChannelFailureForKeyActivity: m.recordFailure,
+	}),
+);
+
 vi.mock("../src/client", () => ({
 	getTemporalClient: vi.fn().mockResolvedValue({
 		workflow: { start: m.workflowStart },
 	}),
 }));
 
+import { ScopeMissingError } from "@repo/integrations/slack";
 import { ingestHuddleNotesForChannelActivity } from "../src/activities/slack-channel-monitor/ingest-huddle-notes";
 
 const HUDDLE_HTML =
@@ -138,6 +148,7 @@ describe("ingestHuddleNotesForChannelActivity", () => {
 		m.upsertRecord.mockResolvedValue({ didChange: true, prior: null });
 		m.removeContextEmbedding.mockResolvedValue(undefined);
 		m.workflowStart.mockResolvedValue({ workflowId: "wf-1" });
+		m.recordFailure.mockResolvedValue(undefined);
 	});
 
 	it("create path: stores a SLACK_HUDDLE_NOTES context + tracking row + embedding; no vector clear", async () => {
@@ -248,5 +259,72 @@ describe("ingestHuddleNotesForChannelActivity", () => {
 			"org-7",
 		);
 		expect(m.upsertRecord.mock.calls[0][0].organizationId).toBe("org-7");
+	});
+	/**
+	 * Regression: a missing scope used to be logged, counted as `skipped` and
+	 * dropped. Nothing was written to the channel row, so the settings page had
+	 * no way to say why ingestion produced nothing, while the workflow kept
+	 * stamping "Last run" every interval. The feature read as healthy forever.
+	 */
+	describe("missing Slack scope is reported, not swallowed", () => {
+		beforeEach(() => {
+			m.huddleFindUnique.mockResolvedValue(null);
+			m.downloadSlackFile.mockRejectedValue(
+				new ScopeMissingError(
+					"Slack bot token missing files:read scope",
+				),
+			);
+		});
+
+		it("records the failure against the channel so the UI can explain it", async () => {
+			await ingestHuddleNotesForChannelActivity(BASE_INPUT);
+
+			expect(m.recordFailure).toHaveBeenCalledTimes(1);
+			expect(m.recordFailure.mock.calls[0][0]).toMatchObject({
+				projectId: "p1",
+				channelId: "C1",
+			});
+			expect(m.recordFailure.mock.calls[0][0].errorMessage).toContain(
+				"files:read",
+			);
+		});
+
+		it("counts it as failed, not skipped, and flags the run", async () => {
+			const out = await ingestHuddleNotesForChannelActivity(BASE_INPUT);
+
+			// `skipped` means the canvas needed no work. This one needed work
+			// and could not be done — conflating them is what hid the bug.
+			expect(out.failed).toBe(1);
+			expect(out.skipped).toBe(0);
+			expect(out.ingested).toBe(0);
+			expect(out.scopeMissing).toBe(true);
+			expect(m.contextCreate).not.toHaveBeenCalled();
+		});
+
+		it("records once per run, not once per canvas", async () => {
+			m.executeSlackTool.mockResolvedValue({
+				files: [
+					huddleCanvas({ id: "F_A" }),
+					huddleCanvas({ id: "F_B" }),
+					huddleCanvas({ id: "F_C" }),
+				],
+			});
+
+			const out = await ingestHuddleNotesForChannelActivity(BASE_INPUT);
+
+			// The scope belongs to the token, so all three raise it.
+			expect(out.failed).toBe(3);
+			expect(m.recordFailure).toHaveBeenCalledTimes(1);
+		});
+	});
+
+	it("a healthy run neither records a failure nor flags a missing scope", async () => {
+		m.huddleFindUnique.mockResolvedValue(null);
+
+		const out = await ingestHuddleNotesForChannelActivity(BASE_INPUT);
+
+		expect(out.ingested).toBe(1);
+		expect(out.scopeMissing).toBe(false);
+		expect(m.recordFailure).not.toHaveBeenCalled();
 	});
 });
