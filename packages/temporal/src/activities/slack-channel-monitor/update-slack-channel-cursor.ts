@@ -11,6 +11,7 @@ import {
 	getLinkedSlackChannelsForMonitor,
 	getSlackLinkedChannelJobContext,
 	recordSlackChannelFailure,
+	stopSlackChannelForPermanentFailure,
 	updateSlackChannelCursor,
 	updateSlackChannelMonitorLastRun,
 } from "@repo/database";
@@ -87,6 +88,12 @@ export interface RecordSlackChannelFailureForKeyInput {
 	projectId: string;
 	channelId: string;
 	errorMessage: string;
+	/**
+	 * The failure will not clear without a person changing the workspace — an
+	 * archived channel, a removed bot, a revoked token. Stops scanning instead
+	 * of counting another identical failure on the next interval.
+	 */
+	permanent?: boolean;
 }
 
 export interface UpdateSlackChannelMonitorLastRunInput {
@@ -152,7 +159,14 @@ export async function recordSlackChannelFailureForKeyActivity(
 			return;
 		}
 		await recordChannelFailureJob(match.id, input.errorMessage);
-		await recordSlackChannelFailure(match.id, input.errorMessage);
+		if (input.permanent) {
+			await stopSlackChannelForPermanentFailure(
+				match.id,
+				input.errorMessage,
+			);
+		} else {
+			await recordSlackChannelFailure(match.id, input.errorMessage);
+		}
 	} catch (error) {
 		logger.error(
 			"[SlackChannelMonitor] recordSlackChannelFailureForKey failed",
